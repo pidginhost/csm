@@ -23,6 +23,17 @@ func CheckOutboundUserConnections(cfg *config.Config, _ *state.Store) []alert.Fi
 		993: true, 995: true, 110: true, 143: true,
 	}
 
+	// Known safe service users — system daemons that make outbound connections
+	safeUsers := map[string]bool{
+		"imunify360-webshield": true,
+		"named":                true,
+		"mysql":                true,
+		"memcached":            true,
+		"icinga":               true,
+		"dovecot":              true,
+		"mailman":              true,
+	}
+
 	data, err := os.ReadFile("/proc/net/tcp")
 	if err != nil {
 		return nil
@@ -59,6 +70,9 @@ func CheckOutboundUserConnections(cfg *config.Config, _ *state.Store) []alert.Fi
 			143: true, 443: true, 465: true, 587: true, 993: true, 995: true,
 			2082: true, 2083: true, 2086: true, 2087: true, 2095: true, 2096: true,
 			3306: true, 4190: true,
+			// Imunify360 webshield ports
+			52223: true, 52224: true, 52227: true, 52228: true,
+			52229: true, 52230: true, 52231: true, 52232: true,
 		}
 		if knownLocalPorts[localPort] {
 			continue
@@ -74,9 +88,14 @@ func CheckOutboundUserConnections(cfg *config.Config, _ *state.Store) []alert.Fi
 			continue
 		}
 
+		// Check if this is a known safe service user
+		user := uidToUser(uid)
+		if safeUsers[user] {
+			continue
+		}
+
 		// This is a non-root user process connecting to a non-standard
 		// port on a non-infra IP — suspicious
-		user := uidToUser(uid)
 		findings = append(findings, alert.Finding{
 			Severity: alert.High,
 			Check:    "user_outbound_connection",
