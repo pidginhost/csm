@@ -293,35 +293,43 @@ func CheckAPITokens(cfg *config.Config, store *state.Store) []alert.Finding {
 		store.SetRaw(key, hash)
 	}
 
-	// User API tokens — check all accounts
-	userDirs, _ := filepath.Glob("/var/cpanel/users/*")
-	for _, userFile := range userDirs {
-		user := filepath.Base(userFile)
-		out, err := runCmd("uapi", "--user="+user, "Tokens", "list")
-		if err != nil {
-			continue
-		}
+	// User API tokens — read directly from disk instead of spawning uapi per user
+	// Token files are JSON at /home/<user>/.cpanel/api_tokens/<token_name>
+	tokenDirs, _ := filepath.Glob("/home/*/.cpanel/api_tokens")
+	for _, tokenDir := range tokenDirs {
+		user := filepath.Base(filepath.Dir(filepath.Dir(tokenDir)))
+		tokenFiles, _ := filepath.Glob(filepath.Join(tokenDir, "*"))
+		for _, tokenFile := range tokenFiles {
+			tokenName := filepath.Base(tokenFile)
+			data, err := os.ReadFile(tokenFile)
+			if err != nil {
+				continue
+			}
+			content := string(data)
 
-		// Check for suspicious tokens
-		outStr := string(out)
-		if strings.Contains(outStr, "has_full_access: 1") {
-			// Check if it has no IP whitelist
-			if strings.Contains(outStr, "whitelist_ips: ~") || strings.Contains(outStr, "whitelist_ips: \n") {
-				// Check if token name is known
+			// Check for full access with no IP whitelist
+			hasFullAccess := strings.Contains(content, `"has_full_access":1`) ||
+				strings.Contains(content, `"has_full_access": 1`)
+			noWhitelist := strings.Contains(content, `"whitelist_ips":null`) ||
+				strings.Contains(content, `"whitelist_ips": null`) ||
+				strings.Contains(content, `"whitelist_ips":[]`) ||
+				strings.Contains(content, `"whitelist_ips": []`) ||
+				!strings.Contains(content, "whitelist_ips")
+
+			if hasFullAccess && noWhitelist {
 				known := false
 				for _, t := range cfg.Suppressions.KnownAPITokens {
-					if strings.Contains(outStr, "name: "+t) {
+					if tokenName == t {
 						known = true
 						break
 					}
 				}
 				if !known {
-					// Verify the token IP isn't in infra range
 					findings = append(findings, alert.Finding{
 						Severity: alert.High,
 						Check:    "api_tokens",
-						Message:  fmt.Sprintf("User %s has full-access API token with no IP whitelist", user),
-						Details:  "This could be attacker-created. Review with: uapi --user=" + user + " Tokens list",
+						Message:  fmt.Sprintf("User %s has full-access API token '%s' with no IP whitelist", user, tokenName),
+						Details:  fmt.Sprintf("File: %s", tokenFile),
 					})
 				}
 			}

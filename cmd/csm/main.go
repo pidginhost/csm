@@ -3,6 +3,9 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"os/signal"
+	"syscall"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
 	"github.com/pidginhost/cpanel-security-monitor/internal/checks"
@@ -10,6 +13,22 @@ import (
 	"github.com/pidginhost/cpanel-security-monitor/internal/integrity"
 	"github.com/pidginhost/cpanel-security-monitor/internal/state"
 )
+
+// activeStore holds a reference to the current store for signal handling.
+var activeStore *state.Store
+
+func init() {
+	// Trap SIGTERM/SIGINT to flush state before exit
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
+		<-c
+		if activeStore != nil {
+			_ = activeStore.Close()
+		}
+		os.Exit(0)
+	}()
+}
 
 var (
 	Version   = "dev"
@@ -156,11 +175,20 @@ func runTieredChecks(tier checks.Tier, sendAlerts bool) {
 		os.Exit(2)
 	}
 
+	// Acquire lock to prevent concurrent runs
+	lock, err := state.AcquireLock(cfg.StatePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Skipping: %v\n", err)
+		return
+	}
+	defer lock.Release()
+
 	store, err := state.Open(cfg.StatePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening state: %v\n", err)
-		os.Exit(1)
+		return
 	}
+	activeStore = store
 	defer func() { _ = store.Close() }()
 
 	findings := checks.RunTier(cfg, store, tier)
@@ -205,13 +233,24 @@ func runStatus() {
 func runBaseline() {
 	cfg := loadConfig()
 
+	// Stop timers during baseline to prevent concurrent access
+	stopTimers()
+	defer startTimers()
+
 	// Force all checks to run regardless of throttle
 	checks.ForceAll = true
+
+	lock, err := state.AcquireLock(cfg.StatePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Cannot acquire lock: %v\n", err)
+		return
+	}
+	defer lock.Release()
 
 	store, err := state.Open(cfg.StatePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening state: %v\n", err)
-		os.Exit(1)
+		return
 	}
 	defer func() { _ = store.Close() }()
 
@@ -244,6 +283,18 @@ func runValidate() {
 		fmt.Printf("  - %s\n", e)
 	}
 	os.Exit(1)
+}
+
+func stopTimers() {
+	for _, timer := range []string{"csm-critical.timer", "csm-deep.timer"} {
+		_ = exec.Command("systemctl", "stop", timer).Run()
+	}
+}
+
+func startTimers() {
+	for _, timer := range []string{"csm-critical.timer", "csm-deep.timer"} {
+		_ = exec.Command("systemctl", "start", timer).Run()
+	}
 }
 
 func runVerify() {

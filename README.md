@@ -33,6 +33,7 @@ The binary verifies its own integrity (SHA256) on each run. If tampered with, it
 | DNS connections | Connections to DNS servers not in `/etc/resolv.conf` (DNS tunneling) |
 | Firewall integrity | CSF config changes; backdoor ports in TCP_IN |
 | Mail queue | Exim queue size spikes (spam from compromised accounts) |
+| Self-health | Verifies CSM dependencies (find, exim, auditctl, whmapi1, wp), auditd rules loaded, state dir writable |
 
 ### Deep Tier (every 60 minutes)
 

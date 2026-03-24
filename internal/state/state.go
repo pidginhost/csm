@@ -13,9 +13,11 @@ import (
 )
 
 type Store struct {
-	mu      sync.RWMutex
-	path    string
-	entries map[string]*Entry
+	mu        sync.RWMutex
+	path      string
+	entries   map[string]*Entry
+	dirty     bool   // true if state changed since last save
+	savedHash string // hash of last saved state
 }
 
 type Entry struct {
@@ -46,6 +48,9 @@ func Open(path string) (*Store, error) {
 }
 
 func (s *Store) Close() error {
+	if !s.dirty {
+		return nil
+	}
 	return s.save()
 }
 
@@ -54,7 +59,28 @@ func (s *Store) save() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(s.path, "state.json"), data, 0600)
+
+	// Skip write if content hasn't changed
+	newHash := fmt.Sprintf("%x", sha256.Sum256(data))
+	if newHash == s.savedHash {
+		s.dirty = false
+		return nil
+	}
+
+	// Atomic write: write to temp file, then rename
+	stateFile := filepath.Join(s.path, "state.json")
+	tmpFile := stateFile + ".tmp"
+	if err := os.WriteFile(tmpFile, data, 0600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpFile, stateFile); err != nil {
+		os.Remove(tmpFile)
+		return err
+	}
+
+	s.savedHash = newHash
+	s.dirty = false
+	return nil
 }
 
 func findingKey(f alert.Finding) string {
@@ -102,6 +128,7 @@ func (s *Store) FilterNew(findings []alert.Finding) []alert.Finding {
 func (s *Store) Update(findings []alert.Finding) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.dirty = true
 	now := time.Now()
 
 	seen := make(map[string]bool)
@@ -142,6 +169,7 @@ func (s *Store) Update(findings []alert.Finding) {
 func (s *Store) SetBaseline(findings []alert.Finding) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.dirty = true
 	s.entries = make(map[string]*Entry)
 	now := time.Now()
 
@@ -195,9 +223,11 @@ func (s *Store) SetRaw(key, value string) {
 			FirstSeen: time.Now(),
 			LastSeen:  time.Now(),
 		}
-	} else {
+		s.dirty = true
+	} else if entry.Hash != value {
 		entry.Hash = value
 		entry.LastSeen = time.Now()
+		s.dirty = true
 	}
 }
 
