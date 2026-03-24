@@ -108,7 +108,7 @@ download_package() {
     mkdir -p "$INSTALL_DIR"
     tmpdir=$(mktemp -d -p "$INSTALL_DIR")
 
-    echo "Downloading ${ARTIFACT_NAME} (version: ${version})..."
+    echo "Downloading ${ARTIFACT_NAME} (version: ${version})..." >&2
 
     local http_code
     http_code=$(pkg_download "${PKG_BASE}/${version}/${ARTIFACT_NAME}" "${tmpdir}/${ARTIFACT_NAME}")
@@ -124,7 +124,7 @@ download_package() {
     fi
 
     # Verify checksum
-    echo "Verifying SHA256 checksum..."
+    echo "Verifying SHA256 checksum..." >&2
     local expected_hash actual_hash
     expected_hash=$(awk '{print $1}' "${tmpdir}/${ARTIFACT_NAME}.sha256")
     actual_hash=$(sha256sum "${tmpdir}/${ARTIFACT_NAME}" | awk '{print $1}')
@@ -135,7 +135,7 @@ download_package() {
   Got:      ${actual_hash}
   The binary may have been tampered with."
     fi
-    echo "Checksum OK (${actual_hash:0:16}...)"
+    echo "Checksum OK (${actual_hash:0:16}...)" >&2
 
     chmod +x "${tmpdir}/${ARTIFACT_NAME}"
     if ! "${tmpdir}/${ARTIFACT_NAME}" version > /dev/null 2>&1; then
@@ -143,7 +143,8 @@ download_package() {
         die "Downloaded binary failed to execute."
     fi
 
-    echo "Downloaded: $("${tmpdir}/${ARTIFACT_NAME}" version)"
+    echo "Downloaded: $("${tmpdir}/${ARTIFACT_NAME}" version)" >&2
+    # Only output the tmpdir path to stdout (for capture)
     echo "$tmpdir"
 }
 
