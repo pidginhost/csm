@@ -1,22 +1,27 @@
 #!/bin/bash
-# cPanel Security Monitor — Secure deploy from GitLab artifacts
-# Downloads the binary + checksum, verifies integrity, installs/upgrades
+# cPanel Security Monitor — Secure deploy from GitLab CI artifacts
+#
+# Downloads the latest binary + SHA256 checksum from the GitLab CI pipeline,
+# verifies integrity, and installs or upgrades.
 #
 # Usage:
-#   deploy.sh install           # First-time install from latest main branch
-#   deploy.sh upgrade           # Upgrade existing installation
-#   deploy.sh install v1.0.0    # Install specific tag
-#   deploy.sh upgrade v1.0.0    # Upgrade to specific tag
+#   deploy.sh install               # First-time install (latest from main)
+#   deploy.sh upgrade               # Upgrade to latest from main
+#   deploy.sh install v1.0.0        # Install specific tag
+#   deploy.sh upgrade v1.0.0        # Upgrade to specific tag
+#   deploy.sh check                 # Check if upgrade available
 #
-# Requires GITLAB_TOKEN env var or /opt/csm/.deploy-token file
+# First run requires: GITLAB_TOKEN env var
+# Token is saved at /opt/csm/.deploy-token for future use.
 set -euo pipefail
 
 GITLAB_HOST="git.internal.example"
-PROJECT="pidginhost/cpanel-security-monitor"
 PROJECT_ENCODED="pidginhost%2Fcpanel-security-monitor"
+API_BASE="https://${GITLAB_HOST}/api/v4/projects/${PROJECT_ENCODED}"
 BINARY_NAME="csm"
 INSTALL_DIR="/opt/csm"
 BINARY_PATH="${INSTALL_DIR}/${BINARY_NAME}"
+TOKEN_FILE="${INSTALL_DIR}/.deploy-token"
 ARCH=$(uname -m)
 
 case "$ARCH" in
@@ -37,11 +42,66 @@ get_token() {
         echo "$GITLAB_TOKEN"
         return
     fi
-    if [ -f "${INSTALL_DIR}/.deploy-token" ]; then
-        cat "${INSTALL_DIR}/.deploy-token"
+    if [ -f "$TOKEN_FILE" ]; then
+        cat "$TOKEN_FILE"
         return
     fi
-    die "No GitLab token found. Set GITLAB_TOKEN env var or create ${INSTALL_DIR}/.deploy-token"
+    die "No GitLab token found. Set GITLAB_TOKEN env var or create ${TOKEN_FILE}
+
+Create a token at: https://${GITLAB_HOST}/-/user_settings/personal_access_tokens
+  - Name: csm-deploy
+  - Scopes: read_api
+  - Expiration: optional (set a reminder if you set one)"
+}
+
+save_token() {
+    if [ -n "${GITLAB_TOKEN:-}" ]; then
+        mkdir -p "$INSTALL_DIR"
+        echo "$GITLAB_TOKEN" > "$TOKEN_FILE"
+        chmod 600 "$TOKEN_FILE"
+        chown root:root "$TOKEN_FILE"
+    fi
+}
+
+resolve_ref() {
+    local requested="${1:-latest}"
+    local token
+    token=$(get_token)
+
+    if [ "$requested" != "latest" ]; then
+        echo "$requested"
+        return
+    fi
+
+    # Find the latest successful pipeline on main and get its SHA
+    local response
+    response=$(curl -sS \
+        --header "PRIVATE-TOKEN: ${token}" \
+        "${API_BASE}/pipelines?ref=main&status=success&per_page=1" 2>/dev/null)
+
+    local sha
+    sha=$(echo "$response" | grep -o '"sha":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+    if [ -z "$sha" ]; then
+        # Fallback to branch name
+        echo "main"
+        return
+    fi
+
+    echo "$sha"
+}
+
+get_latest_version() {
+    local token
+    token=$(get_token)
+
+    # Get the latest tag
+    local response
+    response=$(curl -sS \
+        --header "PRIVATE-TOKEN: ${token}" \
+        "${API_BASE}/repository/tags?per_page=1&order_by=version" 2>/dev/null)
+
+    echo "$response" | grep -o '"name":"[^"]*"' | head -1 | cut -d'"' -f4
 }
 
 download_artifact() {
@@ -51,83 +111,96 @@ download_artifact() {
     local tmpdir
     tmpdir=$(mktemp -d)
 
-    echo "Downloading ${ARTIFACT_NAME} (ref: ${ref})..."
+    echo "Downloading ${ARTIFACT_NAME} (ref: ${ref:0:12})..."
 
     # Download binary
     local http_code
     http_code=$(curl -sS -w '%{http_code}' \
         --header "PRIVATE-TOKEN: ${token}" \
         -o "${tmpdir}/${ARTIFACT_NAME}" \
-        "https://${GITLAB_HOST}/api/v4/projects/${PROJECT_ENCODED}/jobs/artifacts/${ref}/raw/dist/${ARTIFACT_NAME}?job=${JOB_NAME}")
+        "${API_BASE}/jobs/artifacts/${ref}/raw/dist/${ARTIFACT_NAME}?job=${JOB_NAME}")
 
     if [ "$http_code" != "200" ]; then
         rm -rf "$tmpdir"
-        die "Download failed (HTTP ${http_code}). Check ref '${ref}' exists and has a passing pipeline."
+        die "Download failed (HTTP ${http_code}). Check that ref '${ref}' exists and has a passing pipeline."
     fi
 
     # Download checksum
-    curl -sS \
+    http_code=$(curl -sS -w '%{http_code}' \
         --header "PRIVATE-TOKEN: ${token}" \
         -o "${tmpdir}/${ARTIFACT_NAME}.sha256" \
-        "https://${GITLAB_HOST}/api/v4/projects/${PROJECT_ENCODED}/jobs/artifacts/${ref}/raw/dist/${ARTIFACT_NAME}.sha256?job=${JOB_NAME}" \
-        || die "Failed to download checksum"
+        "${API_BASE}/jobs/artifacts/${ref}/raw/dist/${ARTIFACT_NAME}.sha256?job=${JOB_NAME}")
+
+    if [ "$http_code" != "200" ]; then
+        rm -rf "$tmpdir"
+        die "Checksum download failed (HTTP ${http_code})."
+    fi
 
     # Verify checksum
-    echo "Verifying checksum..."
+    echo "Verifying SHA256 checksum..."
     cd "$tmpdir"
     if ! sha256sum -c "${ARTIFACT_NAME}.sha256" > /dev/null 2>&1; then
         local expected actual
         expected=$(cat "${ARTIFACT_NAME}.sha256")
         actual=$(sha256sum "${ARTIFACT_NAME}")
+        cd - > /dev/null
         rm -rf "$tmpdir"
-        die "Checksum verification FAILED!\n  Expected: ${expected}\n  Got:      ${actual}\n  The binary may have been tampered with."
+        die "CHECKSUM VERIFICATION FAILED!
+  Expected: ${expected}
+  Got:      ${actual}
+  The binary may have been tampered with. Do not use it."
     fi
-    echo "Checksum verified OK"
+    echo "Checksum OK"
     cd - > /dev/null
+
+    # Verify binary executes
+    chmod +x "${tmpdir}/${ARTIFACT_NAME}"
+    if ! "${tmpdir}/${ARTIFACT_NAME}" version > /dev/null 2>&1; then
+        rm -rf "$tmpdir"
+        die "Downloaded binary failed to execute."
+    fi
+
+    local version
+    version=$("${tmpdir}/${ARTIFACT_NAME}" version)
+    echo "Downloaded: ${version}"
 
     echo "$tmpdir"
 }
 
 do_install() {
-    local ref="${1:-main}"
+    local ref
+    ref=$(resolve_ref "${1:-latest}")
 
     if [ "$(id -u)" -ne 0 ]; then
         die "Must be run as root"
     fi
 
+    echo "=== cPanel Security Monitor — Install ==="
+    echo ""
+
     local tmpdir
     tmpdir=$(download_artifact "$ref")
 
     mkdir -p "$INSTALL_DIR"
-    chmod +x "${tmpdir}/${ARTIFACT_NAME}"
-
-    # Verify the binary actually runs
-    if ! "${tmpdir}/${ARTIFACT_NAME}" version > /dev/null 2>&1; then
-        rm -rf "$tmpdir"
-        die "Downloaded binary failed to execute"
-    fi
-
     cp "${tmpdir}/${ARTIFACT_NAME}" "$BINARY_PATH"
     rm -rf "$tmpdir"
 
-    echo "Installed: $($BINARY_PATH version)"
+    # Save token for future upgrades
+    save_token
 
-    # Run csm install
+    # Run csm install (sets up systemd, auditd, config)
     "$BINARY_PATH" install
 
-    # Store the deploy token for future upgrades
-    if [ -n "${GITLAB_TOKEN:-}" ] && [ ! -f "${INSTALL_DIR}/.deploy-token" ]; then
-        echo "$GITLAB_TOKEN" > "${INSTALL_DIR}/.deploy-token"
-        chmod 600 "${INSTALL_DIR}/.deploy-token"
-        echo "Deploy token saved to ${INSTALL_DIR}/.deploy-token"
-    fi
-
     echo ""
-    echo "Install complete. Edit ${INSTALL_DIR}/csm.yaml then run: ${BINARY_PATH} baseline"
+    echo "=== Next steps ==="
+    echo "  1. Edit config:    vi ${INSTALL_DIR}/csm.yaml"
+    echo "  2. Set baseline:   ${BINARY_PATH} baseline"
+    echo "  3. Test:           ${BINARY_PATH} check"
 }
 
 do_upgrade() {
-    local ref="${1:-main}"
+    local ref
+    ref=$(resolve_ref "${1:-latest}")
 
     if [ "$(id -u)" -ne 0 ]; then
         die "Must be run as root"
@@ -137,24 +210,30 @@ do_upgrade() {
         die "CSM not installed. Run: $0 install"
     fi
 
+    echo "=== cPanel Security Monitor — Upgrade ==="
+    echo ""
+
     local old_version
     old_version=$("$BINARY_PATH" version 2>/dev/null || echo "unknown")
+    echo "Current: ${old_version}"
 
     local tmpdir
     tmpdir=$(download_artifact "$ref")
 
-    chmod +x "${tmpdir}/${ARTIFACT_NAME}"
-
-    # Verify the binary runs
-    if ! "${tmpdir}/${ARTIFACT_NAME}" version > /dev/null 2>&1; then
-        rm -rf "$tmpdir"
-        die "Downloaded binary failed to execute"
-    fi
-
     local new_version
     new_version=$("${tmpdir}/${ARTIFACT_NAME}" version)
 
-    # Remove immutable flag, replace binary, re-set immutable
+    if [ "$old_version" = "$new_version" ]; then
+        rm -rf "$tmpdir"
+        echo ""
+        echo "Already running the latest version. Nothing to do."
+        exit 0
+    fi
+
+    # Save token if provided
+    save_token
+
+    # Swap binary: remove immutable, copy, re-set immutable
     chattr -i "$BINARY_PATH" 2>/dev/null || true
     cp "${tmpdir}/${ARTIFACT_NAME}" "$BINARY_PATH"
     chattr +i "$BINARY_PATH" 2>/dev/null || true
@@ -169,10 +248,52 @@ do_upgrade() {
     echo "  New: ${new_version}"
 }
 
+do_check() {
+    if [ ! -f "$BINARY_PATH" ]; then
+        echo "CSM not installed."
+        exit 1
+    fi
+
+    local current
+    current=$("$BINARY_PATH" version 2>/dev/null || echo "unknown")
+    echo "Installed: ${current}"
+
+    local ref
+    ref=$(resolve_ref "latest")
+    local token
+    token=$(get_token)
+
+    # Download just the version from latest artifact (small check)
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    local http_code
+    http_code=$(curl -sS -w '%{http_code}' \
+        --header "PRIVATE-TOKEN: ${token}" \
+        -o "${tmpdir}/${ARTIFACT_NAME}" \
+        "${API_BASE}/jobs/artifacts/${ref}/raw/dist/${ARTIFACT_NAME}?job=${JOB_NAME}" 2>/dev/null)
+
+    if [ "$http_code" = "200" ]; then
+        chmod +x "${tmpdir}/${ARTIFACT_NAME}"
+        local latest
+        latest=$("${tmpdir}/${ARTIFACT_NAME}" version 2>/dev/null || echo "unknown")
+        echo "Latest:    ${latest}"
+
+        if [ "$current" = "$latest" ]; then
+            echo "Up to date."
+        else
+            echo "Update available. Run: $0 upgrade"
+        fi
+    else
+        echo "Could not fetch latest version (HTTP ${http_code})."
+    fi
+
+    rm -rf "$tmpdir"
+}
+
 # --- Main ---
 
 CMD="${1:-}"
-REF="${2:-main}"
+REF="${2:-}"
 
 case "$CMD" in
     install)
@@ -181,16 +302,23 @@ case "$CMD" in
     upgrade)
         do_upgrade "$REF"
         ;;
+    check)
+        do_check
+        ;;
     *)
-        echo "cPanel Security Monitor — Deploy Script"
+        echo "cPanel Security Monitor — Deploy"
         echo ""
         echo "Usage:"
-        echo "  GITLAB_TOKEN=xxx $0 install [ref]     # First-time install (default ref: main)"
-        echo "  GITLAB_TOKEN=xxx $0 upgrade [ref]     # Upgrade existing (default ref: main)"
-        echo "  $0 install v1.0.0                     # Install specific tag"
-        echo "  $0 upgrade v1.0.0                     # Upgrade to specific tag"
+        echo "  $0 install              Install latest from main branch"
+        echo "  $0 install v1.0.0       Install specific tag"
+        echo "  $0 upgrade              Upgrade to latest from main"
+        echo "  $0 upgrade v1.0.0       Upgrade to specific tag"
+        echo "  $0 check                Check if update available"
         echo ""
-        echo "The GITLAB_TOKEN is saved on first install for future upgrades."
+        echo "First run requires GITLAB_TOKEN env var (saved for future use)."
+        echo ""
+        echo "Create token at: https://${GITLAB_HOST}/-/user_settings/personal_access_tokens"
+        echo "  Scope: read_api | Name: csm-deploy"
         exit 1
         ;;
 esac
