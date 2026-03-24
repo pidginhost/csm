@@ -4,79 +4,101 @@ Real-time security monitoring for cPanel/WHM shared hosting servers. A single st
 
 Built after a real incident where GSocket reverse shells, LEVIATHAN webshell toolkits, and attacker-created API tokens were found across 6 accounts on a production server.
 
+## Performance
+
+Benchmarked on a production cPanel server with 168 accounts, 275 WordPress sites, 28 million files, and 43,000 directories tracked.
+
+| Tier | Frequency | Duration | RAM | CPU Priority |
+|---|---|---|---|---|
+| **Critical** | Every 10 min | **0.5 seconds** | 35 MB | Normal |
+| **Deep** | Every 60 min | **35 seconds** | 77 MB | Nice 10 (low) |
+
+**How it stays fast:**
+- Pure Go `os.ReadDir` (getdents syscall) instead of `find` — reads directory entries without stat per file
+- Directory mtime caching — unchanged directories are skipped entirely, their entries carried forward from the previous scan
+- Parallel WordPress checksum verification (5 concurrent workers)
+- API tokens read directly from disk instead of spawning 168 `uapi` processes
+- Lazy stat — only stat the small subset of files that match suspicious patterns
+- State written to disk only when data actually changed (dirty tracking)
+
+**Binary size:** ~7 MB (static, no dependencies)
+
+**Disk usage:**
+- Binary: 7 MB (`/opt/csm/csm`)
+- State: ~5 MB (`/opt/csm/state/`)
+- Logs: rotating, max ~32 MB (`/var/log/csm/`)
+
 ## Architecture
 
-CSM runs as two systemd timers with separate check tiers:
+CSM runs as two systemd timers:
 
-| Timer | Frequency | Duration | What it does |
-|---|---|---|---|
-| `csm-critical.timer` | Every 10 min | ~5 seconds | Process inspection, auth changes, network, firewall |
-| `csm-deep.timer` | Every 60 min | ~90 seconds | Filesystem scans, webshells, .htaccess, WP core |
+| Timer | Frequency | What it does |
+|---|---|---|
+| `csm-critical.timer` | Every 10 min | Process inspection, auth changes, network, firewall |
+| `csm-deep.timer` | Every 60 min | Filesystem scans, webshells, .htaccess, WP core |
 
 The binary verifies its own integrity (SHA256) on each run. If tampered with, it sends an alert before doing anything else.
 
 ## Security Checks
 
-### Critical Tier (every 10 minutes)
+### Critical Tier (every 10 minutes, ~0.5 seconds)
 
 | Check | What it detects |
 |---|---|
 | Fake kernel threads | Non-root processes with `[bracketed]` names (GSocket, cryptominers) |
-| Suspicious processes | Execution from `/tmp`, `/dev/shm`, `/.config/`; reverse shells |
-| PHP process inspection | `lsphp` executing from `/wp-content/uploads/`, `/tmp/`, `/dev/shm/` |
-| Shadow changes | `/etc/shadow` modification outside known maintenance windows |
+| Suspicious processes | Execution from `/tmp`, `/dev/shm`, `/.config/`; reverse shells (`bash -i`, `/dev/tcp/`) |
+| PHP process inspection | `lsphp` executing from `/wp-content/uploads/`, `/tmp/`, `/dev/shm/` (active webshell use) |
+| Shadow changes | `/etc/shadow` modification — reports which accounts changed and which process did it |
 | UID 0 accounts | Unauthorized accounts with root privileges |
 | SSH keys | Changes to `authorized_keys` for root and all users |
-| API tokens | New WHM root tokens; user tokens with full access and no IP whitelist |
-| Crontabs | Suspicious patterns: `defunct-kernel`, `base64`, reverse shells |
-| Outbound connections | Connections to known C2 IPs; backdoor port listeners |
-| DNS connections | Connections to DNS servers not in `/etc/resolv.conf` (DNS tunneling) |
-| Firewall integrity | CSF config changes; backdoor ports in TCP_IN |
+| API tokens | New WHM root tokens; user tokens with full access and no IP whitelist (read from disk, no process spawning) |
+| Crontabs | Suspicious patterns: `defunct-kernel`, `base64`, reverse shells, bulk downloaders |
+| Outbound connections | Connections to known C2 IPs; local backdoor port listeners; outbound to backdoor ports on non-infra IPs |
+| DNS connections | Connections to DNS servers not in `/etc/resolv.conf` (DNS tunneling, GSocket relay discovery) |
+| Firewall integrity | CSF config changes; backdoor ports in TCP_IN; port 22 re-added |
 | Mail queue | Exim queue size spikes (spam from compromised accounts) |
-| Self-health | Verifies CSM dependencies (find, exim, auditctl, whmapi1, wp), auditd rules loaded, state dir writable |
+| Self-health | Verifies CSM dependencies (exim, auditctl, whmapi1, wp), auditd rules loaded, state dir writable |
 
-### Deep Tier (every 60 minutes)
+### Deep Tier (every 60 minutes, ~35 seconds)
 
 | Check | What it detects |
 |---|---|
-| Backdoor binaries | GSocket `defunct` in `.config/htop/`; `gs-netcat`, `gsocket` |
-| Webshell filenames | `h4x0r.php`, `c99.php`, `r57.php`, `wso.php`, `LEVIATHAN/` |
-| PHP in uploads | `.php` files in `wp-content/uploads/` (excludes known safe plugin paths) |
+| Backdoor binaries | GSocket `defunct` in `.config/htop/`; `gs-netcat`, `gsocket` anywhere in `.config/` |
+| Webshell filenames | `h4x0r.php`, `c99.php`, `r57.php`, `wso.php`, `alfa.php`, `b374k.php`, `LEVIATHAN/`, `haxorcgiapi/`, `*.haxor` |
 | SUID binaries | SUID files in `/home`, `/tmp`, `/var/tmp`, `/dev/shm` |
-| .htaccess injection | `auto_prepend_file`, `eval`, `base64_decode` in .htaccess files |
-| WP core integrity | `wp core verify-checksums` across all WordPress installations |
-| **File index diff** | Builds index of PHP/executable files, diffs against previous scan. Catches NEW files with unknown names — not just known webshell patterns. Detects new PHP in uploads, new executables in .config, suspicious filenames (shell, cmd, eval, random short names). |
+| .htaccess injection | `auto_prepend_file`, `auto_append_file`, `eval`, `base64_decode` in .htaccess (whitelists Wordfence, LiteSpeed, Really Simple Security) |
+| WP core integrity | `wp core verify-checksums` across all WordPress installations (5 parallel workers) |
+| File index diff | Builds index of PHP/executable files, diffs against previous scan. Catches **new files with unknown names** — not just known patterns. Detects new PHP in uploads, new executables in .config, suspicious filenames (shell, cmd, eval, random short names like `x7y2.php`). Uses directory mtime caching to skip unchanged dirs. |
 
 ### Always-on Features
 
 | Feature | Description |
 |---|---|
-| Binary self-verification | SHA256 hash check on each run |
-| auditd rules | 20 kernel-level audit rules for shadow, passwd, SSH, crontab, CSF |
-| Alert rate limiting | Max alerts per hour (default: 10) to prevent storms |
-| Finding deduplication | Same check+message only alerts once per run |
-| State tracking | No repeat alerts for known findings |
-| History log | Append-only JSONL log of all findings (capped at 10MB) |
-| Heartbeat | Dead man's switch ping after each run |
-| Check timeouts | Individual checks timeout after 5 minutes |
-| Command timeouts | External commands timeout after 2 minutes |
-| Log rotation | Automatic via logrotate (weekly, 4 rotations) |
+| Binary self-verification | SHA256 hash check of binary and config on each run |
+| auditd rules | 20 kernel-level audit rules monitoring shadow, passwd, SSH, crontab, CSF, and the CSM binary itself |
+| Alert rate limiting | Max alerts per hour (default: 10) to prevent email storms |
+| Finding deduplication | Same check+message = one alert, not duplicates |
+| State tracking | Remembers what it already alerted on — no repeat alerts for known findings |
+| History log | Append-only JSONL log of all findings at `/opt/csm/state/history.jsonl` (capped at 10MB) |
+| Heartbeat | Dead man's switch ping (healthchecks.io, cronitor) after each run — alerts you if CSM stops running |
+| Check timeouts | Individual checks timeout after 5 minutes — prevents hangs |
+| Command timeouts | External commands (wp-cli) timeout after 2 minutes with graceful degradation |
+| Log rotation | Automatic via logrotate (weekly, 4 rotations, compressed) |
 | Lock file | `flock`-based locking prevents concurrent CSM runs from corrupting state |
-| Atomic state writes | Writes to temp file then renames — prevents corruption on crash/disk full |
+| Atomic state writes | Writes to temp file then renames — prevents corruption on crash or disk full |
 | Signal handling | SIGTERM/SIGINT flushes state to disk before exit |
-| Write-on-change | State file only written when data actually changed (dirty tracking) |
-| Index validation | Skips diff if current index is empty or <50% of previous (prevents false alert floods) |
-| Self-health check | Verifies CSM dependencies (find, exim, whmapi1, wp, auditctl), auditd rules, state dir |
-| Config validation | `csm validate` checks hostname, alert methods, email recipients, webhook URL |
+| Write-on-change | State file only written to disk when data actually changed (dirty tracking with hash comparison) |
+| Index validation | Skips diff if current index is empty or <50% of previous — prevents false alert floods from failed scans |
+| Directory mtime caching | Unchanged directories carry forward entries from previous scan without re-reading from disk |
+| Config validation | `csm validate` checks for common config mistakes before deploying |
 
 ## Installation
 
-### From GitLab CI artifacts
+### From GitLab Package Registry (recommended)
 
 ```bash
-# First time (requires GitLab token with read_api scope)
-GITLAB_TOKEN=glpat-xxx /opt/csm/deploy.sh install
-
+# First time — requires a project deploy token with read_package_registry scope
+GITLAB_TOKEN=xxx /opt/csm/deploy.sh install
 # Token is saved for future upgrades
 ```
 
@@ -90,7 +112,7 @@ After install:
 1. Edit `/opt/csm/csm.yaml` — set hostname, alert email, infra IPs
 2. Run `csm validate` — check config for mistakes
 3. Run `csm baseline` — record current state as known-good
-4. Run `csm check` — test all checks
+4. Run `csm check` — test all checks (prints to stdout, no alerts)
 
 ## Upgrading
 
@@ -98,7 +120,14 @@ After install:
 /opt/csm/deploy.sh upgrade
 ```
 
-The upgrade script stops timers, backs up binary+config, swaps, baselines, and restarts. If baseline fails, it rolls back automatically.
+The upgrade script:
+1. Stops both systemd timers
+2. Backs up binary and config to `.bak`
+3. Downloads new binary from GitLab Package Registry
+4. Verifies SHA256 checksum
+5. Runs baseline with new binary
+6. If baseline fails, rolls back automatically
+7. Restarts timers
 
 ## Configuration
 
@@ -120,12 +149,12 @@ alerts:
   heartbeat:
     enabled: false
     url: ""  # healthchecks.io / cronitor URL
-  max_per_hour: 10
+  max_per_hour: 10  # alert rate limit
 
 integrity:
-  binary_hash: ""   # set by baseline
-  config_hash: ""   # set by baseline
-  immutable: true
+  binary_hash: ""   # set automatically by baseline
+  config_hash: ""   # set automatically by baseline
+  immutable: true   # chattr +i on binary
 
 thresholds:
   mail_queue_warn: 500
@@ -133,19 +162,19 @@ thresholds:
   state_expiry_hours: 24
   deep_scan_interval_min: 60
 
-infra_ips:
+infra_ips:              # your infrastructure — excluded from network alerts
   - "10.0.0.0/8"
 
 suppressions:
-  upcp_window_start: "00:30"
+  upcp_window_start: "00:30"   # lower severity during cPanel update window
   upcp_window_end: "02:00"
-  known_api_tokens: []
-  ignore_paths:
+  known_api_tokens: []         # token names to ignore
+  ignore_paths:                # paths excluded from filesystem scans
     - "*/imunify-security/*"
     - "*/cache/*"
     - "*/vendor/*"
 
-c2_blocklist: []
+c2_blocklist: []               # known attacker IPs
 backdoor_ports: [4444, 5555, 55553, 55555, 31337]
 ```
 
@@ -154,48 +183,63 @@ backdoor_ports: [4444, 5555, 55553, 55555, 31337]
 | Command | Description |
 |---|---|
 | `csm install` | Deploy config, auditd rules, systemd timers, logrotate |
-| `csm uninstall` | Clean removal |
-| `csm run-critical` | Run critical tier, send alerts (10-min timer) |
-| `csm run-deep` | Run deep tier, send alerts (60-min timer) |
+| `csm uninstall` | Clean removal of everything |
+| `csm run-critical` | Run critical tier, send alerts (called by 10-min timer) |
+| `csm run-deep` | Run deep tier, send alerts (called by 60-min timer) |
 | `csm run` | Run all checks, send alerts |
-| `csm check` | Run all checks, print to stdout (no alerts) |
-| `csm check-critical` | Test critical tier |
-| `csm check-deep` | Test deep tier |
-| `csm status` | Show baseline and active findings |
-| `csm baseline` | Record current state as known-good |
-| `csm validate` | Check config for mistakes |
+| `csm check` | Run all checks, print to stdout (no alerts sent) |
+| `csm check-critical` | Test critical tier only |
+| `csm check-deep` | Test deep tier only |
+| `csm status` | Show baseline entries and active findings |
+| `csm baseline` | Record current state as known-good (stops/restarts timers) |
+| `csm validate` | Check config for common mistakes |
 | `csm verify` | Verify binary and config integrity |
-| `csm version` | Show version and build info |
+| `csm version` | Show version, build hash, build date |
 
-## Security Notes
+## Security
 
-- Single static binary — no runtime dependencies
-- `chattr +i` (immutable flag) prevents modification
-- Self-verification on every run (SHA256)
-- auditd monitors the binary and config for tampering
-- Deploy token at `/opt/csm/.deploy-token` (root-only, mode 600)
+- **Single static binary** — no runtime dependencies, no scripts an attacker can edit
+- **Immutable binary** — `chattr +i` set during install, even root can't modify without explicitly removing the flag
+- **Self-verification** — SHA256 hash of binary and config checked on every run, tamper alert sent before any other checks
+- **auditd integration** — 20 kernel-level rules monitor shadow, passwd, SSH config, crontabs, CSF config, and the CSM binary itself for write/attribute changes
+- **Minimal deploy token** — servers use a project deploy token with `read_package_registry` scope only — no access to source code, issues, pipelines, or settings
+- **Atomic state writes** — all state files written via temp + rename to prevent corruption
+- **Lock file** — prevents concurrent runs from corrupting shared state
 
-**Use project-scoped deploy tokens** (Settings > Repository > Deploy tokens, `read_package_registry` scope only) instead of personal access tokens. The server only downloads published binaries — no access to source code.
+**Deploy token setup:**
+1. Go to GitLab project > Settings > Repository > Deploy tokens
+2. Create token with name `csm-deploy-<hostname>` and scope `read_package_registry`
+3. One token per server — revoke individually if compromised
 
 Binary signing with cosign is planned for a future release.
 
 ## Development
 
 ```bash
-make build-linux    # Build for Linux
+make build-linux    # Cross-compile for Linux amd64
 make lint           # Run golangci-lint
-make test           # Run tests
-make ci             # All CI checks
-make deploy SERVER=hostalias     # Deploy binary
-make upgrade SERVER=hostalias    # Upgrade existing
-make tools          # Install dev tools
+make test           # Run unit tests
+make ci             # All CI checks (fmt, vet, lint, test, build)
+make deploy SERVER=hostalias     # scp binary to server
+make upgrade SERVER=hostalias    # scp + install + baseline
+make tools          # Install golangci-lint and goimports
 ```
+
+### CI/CD Pipeline (GitLab)
+
+| Stage | Jobs |
+|---|---|
+| lint | `golangci-lint`, `go vet`, `gofmt` check |
+| test | `go test -race` |
+| build | Linux amd64 + arm64 static binaries |
+| publish | Upload to GitLab Generic Package Registry with SHA256 checksums |
+| release | Create GitLab release on tag push (`v*`) |
 
 ## Roadmap
 
 - Binary signing with cosign
-- Outbound mail content sampling
+- Outbound mail content sampling (detect phishing/spam patterns)
 - WordPress admin user creation monitoring
-- Multi-server management (Ansible/Salt)
-- Web dashboard for centralized alerts
-- Auto-update mechanism
+- Multi-server config management (Ansible/Salt integration)
+- Web dashboard for centralized alert viewing
+- Auto-update mechanism (self-upgrade on schedule)
