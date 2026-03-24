@@ -47,6 +47,7 @@ func criticalChecks() []namedCheck {
 		{"dns_connections", CheckDNSConnections},
 		{"firewall", CheckFirewall},
 		{"mail_queue", CheckMailQueue},
+		{"health", CheckHealth},
 	}
 }
 

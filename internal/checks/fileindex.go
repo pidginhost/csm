@@ -38,8 +38,19 @@ func CheckFileIndex(cfg *config.Config, store *state.Store) []alert.Finding {
 		return nil
 	}
 
-	// Load previous index
+	// Validate current index — if it's suspiciously empty (find failed/timed out),
+	// skip the diff to prevent false alert floods
 	previousEntries := loadIndex(previousPath)
+	if len(previousEntries) > 10 && len(currentEntries) == 0 {
+		// Previous had entries but current is empty — find likely failed
+		fmt.Fprintf(os.Stderr, "file_index: current index empty but previous had %d entries, skipping diff (find may have failed)\n", len(previousEntries))
+		return nil
+	}
+	if len(previousEntries) > 0 && len(currentEntries) < len(previousEntries)/2 {
+		// Current has less than half the entries of previous — something is wrong
+		fmt.Fprintf(os.Stderr, "file_index: current index (%d entries) is less than half of previous (%d), skipping diff\n", len(currentEntries), len(previousEntries))
+		return nil
+	}
 
 	// Diff: find entries in current that are NOT in previous
 	prevSet := make(map[string]bool, len(previousEntries))
@@ -135,49 +146,27 @@ func CheckFileIndex(cfg *config.Config, store *state.Store) []alert.Finding {
 	return findings
 }
 
-// buildFileIndex uses find to collect PHP files and executables in relevant paths.
+// buildFileIndex uses a single find pass to collect all interesting files.
+// Combines PHP-in-uploads, executables-in-.config, and suspicious extensions
+// into one traversal of /home to minimize I/O.
 func buildFileIndex() []string {
-	var entries []string
-
-	// PHP files in all public_html directories (wp-content/uploads focus)
-	out, _ := runCmd("find", "/home", "-maxdepth", "8",
-		"-path", "*/wp-content/uploads/*.php",
-		"-not", "-name", "index.php",
-		"-type", "f",
-		"-printf", "%p|%s|%T@\\n")
-	if out != nil {
-		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-			if line != "" {
-				entries = append(entries, line)
-			}
-		}
-	}
-
-	// Executables in .config directories (backdoor binary location)
-	out, _ = runCmd("find", "/home", "-maxdepth", "5",
-		"-path", "*/.config/*",
-		"-type", "f",
-		"-executable",
-		"-printf", "%p|%s|%T@\\n")
-	if out != nil {
-		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-			if line != "" {
-				entries = append(entries, line)
-			}
-		}
-	}
-
-	// PHP files with suspicious names anywhere in public_html
-	suspiciousNames := []string{
+	// Single find: walk /home once, match multiple conditions
+	out, _ := runCmd("find", "/home", "-maxdepth", "8", "-type", "f", "(",
+		// PHP files in uploads (not index.php)
+		"(", "-path", "*/wp-content/uploads/*.php", "-not", "-name", "index.php", ")",
+		"-o",
+		// Executables in .config dirs
+		"(", "-path", "*/.config/*", "-executable", ")",
+		"-o",
+		// Suspicious extensions anywhere
 		"-name", "*.phtml",
 		"-o", "-name", "*.pht",
 		"-o", "-name", "*.php5",
 		"-o", "-name", "*.haxor",
 		"-o", "-name", "*.cgix",
-	}
-	args := append([]string{"/home", "-maxdepth", "6", "-type", "f", "("}, suspiciousNames...)
-	args = append(args, ")", "-printf", "%p|%s|%T@\\n")
-	out, _ = runCmd("find", args...)
+		")", "-printf", "%p|%s|%T@\\n")
+
+	var entries []string
 	if out != nil {
 		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 			if line != "" {
