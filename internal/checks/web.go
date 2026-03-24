@@ -30,6 +30,8 @@ func CheckHtaccess(cfg *config.Config, _ *state.Store) []alert.Finding {
 	safePatterns := []string{
 		"wordfence-waf.php",
 		"litespeed",
+		"advanced-headers.php", // Really Simple Security plugin
+		"rsssl",                // Really Simple Security plugin
 	}
 
 	homes, _ := filepath.Glob("/home/*/public_html")

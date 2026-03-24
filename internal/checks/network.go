@@ -15,6 +15,9 @@ func CheckOutboundConnections(cfg *config.Config, _ *state.Store) []alert.Findin
 	var findings []alert.Finding
 
 	// Parse /proc/net/tcp for established connections
+	// Format: sl local_address rem_address st ...
+	// local_address = IP:port we are listening/connecting from
+	// rem_address = IP:port of the remote end
 	data, err := os.ReadFile("/proc/net/tcp")
 	if err != nil {
 		return nil
@@ -26,7 +29,6 @@ func CheckOutboundConnections(cfg *config.Config, _ *state.Store) []alert.Findin
 			continue
 		}
 
-		// Skip header
 		if fields[0] == "sl" {
 			continue
 		}
@@ -36,42 +38,76 @@ func CheckOutboundConnections(cfg *config.Config, _ *state.Store) []alert.Findin
 			continue
 		}
 
+		localAddr := fields[1]
 		remoteAddr := fields[2]
-		ip, port := parseHexAddr(remoteAddr)
-		if ip == "" {
+
+		_, localPort := parseHexAddr(localAddr)
+		remoteIP, remotePort := parseHexAddr(remoteAddr)
+
+		if remoteIP == "" || remoteIP == "127.0.0.1" || remoteIP == "0.0.0.0" {
 			continue
 		}
 
-		// Skip localhost
-		if ip == "127.0.0.1" || ip == "0.0.0.0" {
-			continue
-		}
-
-		// Check against C2 blocklist
+		// Check remote IP against C2 blocklist
 		for _, blocked := range cfg.C2Blocklist {
-			if ip == blocked {
-				// Get PID info from /proc/net/tcp uid field
+			if remoteIP == blocked {
 				findings = append(findings, alert.Finding{
 					Severity: alert.Critical,
 					Check:    "c2_connection",
-					Message:  fmt.Sprintf("Connection to known C2 IP: %s:%d", ip, port),
+					Message:  fmt.Sprintf("Connection to known C2 IP: %s:%d", remoteIP, remotePort),
+					Details:  fmt.Sprintf("Local port: %d", localPort),
 				})
 			}
 		}
 
-		// Check for backdoor ports
+		// Check if OUR LOCAL port is a backdoor port (we're listening on it)
+		// This catches backdoor listeners, not clients connecting from high ports
 		for _, bp := range cfg.BackdoorPorts {
-			if port == bp {
+			if localPort == bp {
+				findings = append(findings, alert.Finding{
+					Severity: alert.Critical,
+					Check:    "backdoor_port",
+					Message:  fmt.Sprintf("Listening on known backdoor port %d, connected from %s:%d", localPort, remoteIP, remotePort),
+				})
+			}
+		}
+
+		// Also check if we're connecting OUT to a backdoor port on a remote host
+		// (e.g. reverse shell calling back to attacker's listener)
+		for _, bp := range cfg.BackdoorPorts {
+			if remotePort == bp {
+				// Skip if the remote IP is our own infra
+				if isInfraIP(remoteIP, cfg.InfraIPs) {
+					continue
+				}
 				findings = append(findings, alert.Finding{
 					Severity: alert.High,
-					Check:    "backdoor_port",
-					Message:  fmt.Sprintf("Connection on known backdoor port: %s:%d", ip, port),
+					Check:    "backdoor_port_outbound",
+					Message:  fmt.Sprintf("Outbound connection to backdoor port: %s:%d", remoteIP, remotePort),
+					Details:  fmt.Sprintf("Local port: %d", localPort),
 				})
 			}
 		}
 	}
 
 	return findings
+}
+
+func isInfraIP(ip string, infraNets []string) bool {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false
+	}
+	for _, cidr := range infraNets {
+		_, network, err := net.ParseCIDR(cidr)
+		if err != nil {
+			continue
+		}
+		if network.Contains(parsed) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseHexAddr(hexAddr string) (string, int) {
