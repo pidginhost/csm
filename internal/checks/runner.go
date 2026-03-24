@@ -52,6 +52,8 @@ func criticalChecks() []namedCheck {
 		{"firewall", CheckFirewall},
 		{"mail_queue", CheckMailQueue},
 		{"mail_per_account", CheckMailPerAccount},
+		{"kernel_modules", CheckKernelModules},
+		{"mysql_users", CheckMySQLUsers},
 		{"health", CheckHealth},
 	}
 }
@@ -64,6 +66,8 @@ func deepChecks() []namedCheck {
 		{"wp_core", CheckWPCore},
 		{"file_index", CheckFileIndex},
 		{"nulled_plugins", CheckNulledPlugins},
+		{"rpm_integrity", CheckRPMIntegrity},
+		{"group_writable_php", CheckGroupWritablePHP},
 	}
 }
 
@@ -145,6 +149,24 @@ func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck) []
 		}
 	}
 	findings = append(findings, extra...)
+
+	// Auto-response: kill malicious processes
+	killActions := AutoKillProcesses(cfg, findings)
+	for i := range killActions {
+		if killActions[i].Timestamp.IsZero() {
+			killActions[i].Timestamp = now
+		}
+	}
+	findings = append(findings, killActions...)
+
+	// Auto-response: quarantine malicious files
+	quarantineActions := AutoQuarantineFiles(cfg, findings)
+	for i := range quarantineActions {
+		if quarantineActions[i].Timestamp.IsZero() {
+			quarantineActions[i].Timestamp = now
+		}
+	}
+	findings = append(findings, quarantineActions...)
 
 	return findings
 }

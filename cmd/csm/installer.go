@@ -202,6 +202,11 @@ suppressions:
     - "*/cache/*"
     - "*/vendor/*"
 
+auto_response:
+  enabled: false          # must be explicitly enabled
+  kill_processes: false    # auto-kill fake kernel threads, reverse shells
+  quarantine_files: false  # auto-move webshells/backdoors to /opt/csm/quarantine/
+
 c2_blocklist:
   - "152.53.173.29"
 
