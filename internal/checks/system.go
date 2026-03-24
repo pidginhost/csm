@@ -12,47 +12,9 @@ import (
 	"github.com/pidginhost/cpanel-security-monitor/internal/state"
 )
 
-// Known safe kernel modules on cPanel/CloudLinux servers
-var safeModules = map[string]bool{
-	"kcare": true, "netconsole": true, "msdos": true, "dm_mod": true,
-	"overlay": true, "fuse": true, "binfmt_misc": true,
-	"nft_reject_inet": true, "xt_nat": true, "xt_comment": true,
-	"xt_set": true, "xt_NFLOG": true, "xt_helper": true, "xt_CT": true,
-	"xt_owner": true, "xt_conntrack": true, "xt_multiport": true,
-	"xt_recent": true, "xt_limit": true, "xt_LOG": true,
-	"ip_set": true, "ip_set_bitmap_port": true, "ip_set_list_set": true,
-	"ip_set_hash_net": true, "ip_set_hash_ip": true,
-	"nf_conntrack": true, "nf_nat": true, "nf_tables": true,
-	"nft_chain_nat": true, "nft_compat": true, "nft_counter": true,
-	"nf_log_syslog": true, "nf_reject_ipv4": true, "nf_reject_ipv6": true,
-	"ip6_tables": true, "ip_tables": true, "iptable_filter": true,
-	"iptable_nat": true, "iptable_raw": true, "iptable_mangle": true,
-	"ip6table_filter": true, "ip6table_nat": true, "ip6table_raw": true,
-	"ip6table_mangle": true,
-	"bridge":          true, "stp": true, "llc": true, "bonding": true,
-	"8021q": true, "vlan": true, "tun": true, "veth": true,
-	"xfs": true, "ext4": true, "jbd2": true, "mbcache": true,
-	"raid456": true, "raid1": true, "raid0": true, "md_mod": true,
-	"async_raid6_recov": true, "async_memcpy": true, "async_pq": true,
-	"async_xor": true, "async_tx": true, "raid6_pq": true,
-	"sd_mod": true, "sg": true, "ahci": true, "libahci": true,
-	"libata": true, "megaraid_sas": true, "mpt3sas": true,
-	"scsi_transport_sas": true, "ses": true, "enclosure": true,
-	"e1000e": true, "igb": true, "ixgbe": true, "i40e": true,
-	"mlx4_en": true, "mlx4_core": true, "mlx5_core": true,
-	"virtio_net": true, "virtio_blk": true, "virtio_scsi": true,
-	"virtio_pci": true, "virtio_ring": true, "virtio": true,
-	"sunrpc": true, "nfs": true, "nfsd": true, "lockd": true,
-	"x86_pkg_temp_thermal": true, "coretemp": true, "crc32_pclmul": true,
-	"ghash_clmulni_intel": true, "aesni_intel": true, "crypto_simd": true,
-	"cryptd": true, "pcspkr": true, "i2c_i801": true, "i2c_core": true,
-	"ipmi_si": true, "ipmi_devintf": true, "ipmi_msghandler": true,
-	"lpc_ich": true, "mei_me": true, "mei": true, "wmi": true,
-	"acpi_ipmi": true, "acpi_power_meter": true,
-}
-
-// CheckKernelModules compares loaded kernel modules against a baseline.
-// New/unknown modules could indicate a rootkit.
+// CheckKernelModules compares loaded kernel modules against baseline.
+// All modules present at baseline time are considered known.
+// Only modules loaded AFTER baseline trigger alerts.
 func CheckKernelModules(_ *config.Config, store *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
@@ -61,27 +23,32 @@ func CheckKernelModules(_ *config.Config, store *state.Store) []alert.Finding {
 		return nil
 	}
 
-	// Check for unknown modules not in safe list and not in baseline
-	for _, mod := range modules {
-		if safeModules[mod] {
-			continue
-		}
+	// Check if baseline exists for kernel modules
+	_, baselineExists := store.GetRaw("_kmod_baseline_set")
 
+	if !baselineExists {
+		// First run — store all current modules as baseline
+		for _, mod := range modules {
+			store.SetRaw("_kmod:"+mod, "baseline")
+		}
+		store.SetRaw("_kmod_baseline_set", "true")
+		return nil
+	}
+
+	// Check for modules not seen at baseline
+	for _, mod := range modules {
 		key := "_kmod:" + mod
 		_, known := store.GetRaw(key)
 		if !known {
 			findings = append(findings, alert.Finding{
 				Severity: alert.High,
 				Check:    "kernel_module",
-				Message:  fmt.Sprintf("Unknown kernel module loaded: %s", mod),
-				Details:  "Not in safe list and not seen at baseline. Could indicate a rootkit.",
+				Message:  fmt.Sprintf("New kernel module loaded after baseline: %s", mod),
+				Details:  "This module was not present when CSM baseline was set. Verify it is legitimate.",
 			})
+			// Store it so we don't re-alert
+			store.SetRaw(key, "new")
 		}
-	}
-
-	// Store current modules for future comparison
-	for _, mod := range modules {
-		store.SetRaw("_kmod:"+mod, "loaded")
 	}
 
 	return findings
