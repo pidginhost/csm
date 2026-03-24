@@ -61,6 +61,13 @@ The binary verifies its own integrity (SHA256) on each run. If tampered with, it
 | Check timeouts | Individual checks timeout after 5 minutes |
 | Command timeouts | External commands timeout after 2 minutes |
 | Log rotation | Automatic via logrotate (weekly, 4 rotations) |
+| Lock file | `flock`-based locking prevents concurrent CSM runs from corrupting state |
+| Atomic state writes | Writes to temp file then renames — prevents corruption on crash/disk full |
+| Signal handling | SIGTERM/SIGINT flushes state to disk before exit |
+| Write-on-change | State file only written when data actually changed (dirty tracking) |
+| Index validation | Skips diff if current index is empty or <50% of previous (prevents false alert floods) |
+| Self-health check | Verifies CSM dependencies (find, exim, whmapi1, wp, auditctl), auditd rules, state dir |
+| Config validation | `csm validate` checks hostname, alert methods, email recipients, webhook URL |
 
 ## Installation
 
