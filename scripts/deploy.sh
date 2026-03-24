@@ -109,7 +109,8 @@ download_artifact() {
     local token
     token=$(get_token)
     local tmpdir
-    tmpdir=$(mktemp -d)
+    mkdir -p "$INSTALL_DIR"
+    tmpdir=$(mktemp -d -p "$INSTALL_DIR")
 
     echo "Downloading ${ARTIFACT_NAME} (ref: ${ref:0:12})..."
 
@@ -262,7 +263,8 @@ do_check() {
 
     # Download just the version from latest artifact (small check)
     local tmpdir
-    tmpdir=$(mktemp -d)
+    mkdir -p "$INSTALL_DIR"
+    tmpdir=$(mktemp -d -p "$INSTALL_DIR")
     local http_code
     http_code=$(curl -sS -w '%{http_code}' \
         --header "PRIVATE-TOKEN: ${token}" \
