@@ -22,15 +22,39 @@ func CheckShadowChanges(cfg *config.Config, store *state.Store) []alert.Finding 
 	}
 
 	mtime := info.ModTime()
-	key := "_shadow_mtime"
-	entry, exists := store.GetRaw(key)
+	mtimeKey := "_shadow_mtime"
+	hashKey := "_shadow_hash"
 
-	if exists {
+	// Load current shadow entries (user:hash pairs, no sensitive data stored)
+	currentEntries := parseShadowUsers()
+	currentHash := hashBytes([]byte(fmt.Sprintf("%v", currentEntries)))
+
+	prevMtimeRaw, mtimeExists := store.GetRaw(mtimeKey)
+	prevHash, hashExists := store.GetRaw(hashKey)
+
+	if mtimeExists {
 		var lastMtime time.Time
-		if err := json.Unmarshal([]byte(entry), &lastMtime); err == nil {
+		if err := json.Unmarshal([]byte(prevMtimeRaw), &lastMtime); err == nil {
 			if mtime.After(lastMtime) {
+				// Shadow file was modified — find what changed
+				var details string
+				if hashExists && prevHash != currentHash {
+					changed := diffShadowChanges(store, currentEntries)
+					if len(changed) > 0 {
+						details = fmt.Sprintf("Previous: %s\nCurrent: %s\nAccounts changed: %s",
+							lastMtime.Format("2006-01-02 15:04:05"),
+							mtime.Format("2006-01-02 15:04:05"),
+							strings.Join(changed, ", "))
+					}
+				}
+				if details == "" {
+					details = fmt.Sprintf("Previous: %s\nCurrent: %s",
+						lastMtime.Format("2006-01-02 15:04:05"),
+						mtime.Format("2006-01-02 15:04:05"))
+				}
+
 				// Check if within upcp window
-				suppressed := false
+				sev := alert.Critical
 				if cfg.Suppressions.UPCPWindowStart != "" {
 					now := time.Now()
 					h, m := now.Hour(), now.Minute()
@@ -38,31 +62,141 @@ func CheckShadowChanges(cfg *config.Config, store *state.Store) []alert.Finding 
 					start := parseTimeMin(cfg.Suppressions.UPCPWindowStart)
 					end := parseTimeMin(cfg.Suppressions.UPCPWindowEnd)
 					if nowMin >= start && nowMin <= end {
-						suppressed = true
+						sev = alert.Warning
 					}
 				}
 
-				sev := alert.Critical
-				if suppressed {
-					sev = alert.Warning
+				// Check auditd for who made the change
+				auditInfo := getAuditShadowInfo()
+				if auditInfo != "" {
+					details += "\n" + auditInfo
 				}
 
 				findings = append(findings, alert.Finding{
 					Severity: sev,
 					Check:    "shadow_change",
 					Message:  "/etc/shadow modified",
-					Details: fmt.Sprintf("Previous: %s\nCurrent: %s",
-						lastMtime.Format("2006-01-02 15:04:05"),
-						mtime.Format("2006-01-02 15:04:05")),
+					Details:  details,
 				})
 			}
 		}
 	}
 
-	data, _ := json.Marshal(mtime)
-	store.SetRaw(key, string(data))
+	// Store current state
+	mtimeData, _ := json.Marshal(mtime)
+	store.SetRaw(mtimeKey, string(mtimeData))
+	store.SetRaw(hashKey, currentHash)
+
+	// Store per-user hashes for diff next time
+	for user, hash := range currentEntries {
+		store.SetRaw("_shadow_user:"+user, hash)
+	}
 
 	return findings
+}
+
+// parseShadowUsers reads /etc/shadow and returns a map of user -> password hash.
+// Only stores a hash of the hash, not the actual password hash.
+func parseShadowUsers() map[string]string {
+	data, err := os.ReadFile("/etc/shadow")
+	if err != nil {
+		return nil
+	}
+	entries := make(map[string]string)
+	for _, line := range strings.Split(string(data), "\n") {
+		parts := strings.SplitN(line, ":", 3)
+		if len(parts) < 2 || parts[0] == "" {
+			continue
+		}
+		// Store a hash of the password field, not the field itself
+		entries[parts[0]] = hashBytes([]byte(parts[1]))
+	}
+	return entries
+}
+
+// diffShadowChanges compares current entries against stored per-user hashes.
+func diffShadowChanges(store *state.Store, current map[string]string) []string {
+	var changed []string
+	for user, hash := range current {
+		prev, exists := store.GetRaw("_shadow_user:" + user)
+		if exists && prev != hash {
+			changed = append(changed, user)
+		} else if !exists {
+			changed = append(changed, user+" (new)")
+		}
+	}
+	return changed
+}
+
+// getAuditShadowInfo checks auditd for recent shadow change events.
+func getAuditShadowInfo() string {
+	out, err := runCmd("grep", "csm_shadow_change", "/var/log/audit/audit.log")
+	if err != nil || len(out) == 0 {
+		return ""
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) == 0 {
+		return ""
+	}
+
+	// Get the last event
+	last := lines[len(lines)-1]
+
+	// Extract exe= field
+	exe := ""
+	for _, part := range strings.Fields(last) {
+		if strings.HasPrefix(part, "exe=") {
+			exe = strings.Trim(strings.TrimPrefix(part, "exe="), "\"")
+			break
+		}
+	}
+
+	// Decode hex comm if present
+	comm := ""
+	for _, part := range strings.Fields(last) {
+		if strings.HasPrefix(part, "comm=") {
+			raw := strings.Trim(strings.TrimPrefix(part, "comm="), "\"")
+			decoded := decodeHexString(raw)
+			if decoded != "" {
+				comm = decoded
+			} else {
+				comm = raw
+			}
+			break
+		}
+	}
+
+	if exe != "" || comm != "" {
+		return fmt.Sprintf("Changed by: %s (command: %s)", exe, comm)
+	}
+	return ""
+}
+
+// decodeHexString tries to decode a hex-encoded string (auditd encodes some comm fields).
+func decodeHexString(s string) string {
+	if len(s)%2 != 0 || len(s) < 4 {
+		return ""
+	}
+	// Check if it looks like hex (all hex chars)
+	for _, c := range s {
+		isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+		if !isHex {
+			return ""
+		}
+	}
+	var result []byte
+	for i := 0; i < len(s); i += 2 {
+		b := byte(hexVal(s[i])<<4 | hexVal(s[i+1]))
+		if b == 0 {
+			break
+		}
+		result = append(result, b)
+	}
+	if len(result) == 0 {
+		return ""
+	}
+	return string(result)
 }
 
 func CheckUID0Accounts(_ *config.Config, _ *state.Store) []alert.Finding {
