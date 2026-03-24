@@ -3,7 +3,6 @@ package checks
 import (
 	"encoding/json"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -197,23 +196,6 @@ func CheckAPITokens(cfg *config.Config, store *state.Store) []alert.Finding {
 	}
 
 	return findings
-}
-
-func isInfraIP(ip string, infraNets []string) bool {
-	parsed := net.ParseIP(ip)
-	if parsed == nil {
-		return false
-	}
-	for _, cidr := range infraNets {
-		_, network, err := net.ParseCIDR(cidr)
-		if err != nil {
-			continue
-		}
-		if network.Contains(parsed) {
-			return true
-		}
-	}
-	return false
 }
 
 func parseTimeMin(s string) int {

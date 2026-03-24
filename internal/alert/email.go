@@ -33,7 +33,7 @@ func SendEmail(cfg *config.Config, subject, body string) error {
 		if dialErr != nil {
 			return fmt.Errorf("smtp dial %s: %w (original: %v)", smtpAddr, dialErr, err)
 		}
-		defer c.Close()
+		defer func() { _ = c.Close() }()
 
 		if err := c.Hello(host); err != nil {
 			return fmt.Errorf("smtp hello: %w", err)

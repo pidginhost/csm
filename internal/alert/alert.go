@@ -8,12 +8,13 @@ import (
 	"github.com/pidginhost/cpanel-security-monitor/internal/config"
 )
 
+// Severity levels for findings.
 type Severity int
 
 const (
 	Warning  Severity = iota
-	High
-	Critical
+	High     Severity = iota
+	Critical Severity = iota
 )
 
 func (s Severity) String() string {
@@ -28,6 +29,7 @@ func (s Severity) String() string {
 	return "UNKNOWN"
 }
 
+// Finding represents a single security check result.
 type Finding struct {
 	Severity  Severity
 	Check     string
@@ -46,6 +48,7 @@ func (f Finding) String() string {
 	return s
 }
 
+// FormatAlert formats a list of findings into a human-readable alert body.
 func FormatAlert(hostname string, findings []Finding) string {
 	var b strings.Builder
 
@@ -63,9 +66,9 @@ func FormatAlert(hostname string, findings []Finding) string {
 		}
 	}
 
-	b.WriteString(fmt.Sprintf("SECURITY ALERT — %s\n", hostname))
-	b.WriteString(fmt.Sprintf("Timestamp: %s\n", time.Now().Format("2006-01-02 15:04:05 MST")))
-	b.WriteString(fmt.Sprintf("Findings: %d critical, %d high, %d warning\n", critCount, highCount, warnCount))
+	fmt.Fprintf(&b, "SECURITY ALERT — %s\n", hostname)
+	fmt.Fprintf(&b, "Timestamp: %s\n", time.Now().Format("2006-01-02 15:04:05 MST"))
+	fmt.Fprintf(&b, "Findings: %d critical, %d high, %d warning\n", critCount, highCount, warnCount)
 	b.WriteString(strings.Repeat("─", 60) + "\n\n")
 
 	// Group by severity
@@ -84,6 +87,7 @@ func FormatAlert(hostname string, findings []Finding) string {
 	return b.String()
 }
 
+// Dispatch sends alerts via all configured channels.
 func Dispatch(cfg *config.Config, findings []Finding) error {
 	body := FormatAlert(cfg.Hostname, findings)
 

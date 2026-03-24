@@ -134,7 +134,7 @@ func runChecks(sendAlerts bool) {
 			Message:  fmt.Sprintf("BINARY/CONFIG TAMPER DETECTED: %v", err),
 		}
 		if sendAlerts {
-			alert.Dispatch(cfg, []alert.Finding{tamperAlert})
+			_ = alert.Dispatch(cfg, []alert.Finding{tamperAlert})
 		} else {
 			fmt.Println(tamperAlert)
 		}
@@ -146,7 +146,7 @@ func runChecks(sendAlerts bool) {
 		fmt.Fprintf(os.Stderr, "Error opening state: %v\n", err)
 		os.Exit(1)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	findings := checks.RunAll(cfg, store)
 
@@ -174,7 +174,7 @@ func runStatus() {
 		fmt.Fprintf(os.Stderr, "Error opening state: %v\n", err)
 		os.Exit(1)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	store.PrintStatus()
 }
@@ -187,7 +187,7 @@ func runBaseline() {
 		fmt.Fprintf(os.Stderr, "Error opening state: %v\n", err)
 		os.Exit(1)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	findings := checks.RunAll(cfg, store)
 	store.SetBaseline(findings)
@@ -198,7 +198,7 @@ func runBaseline() {
 	cfg.Integrity.ConfigHash = configHash
 	if err := config.Save(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
-		os.Exit(1)
+		return
 	}
 
 	fmt.Printf("Baseline established with %d findings recorded as known state\n", len(findings))

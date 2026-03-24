@@ -56,8 +56,7 @@ func Deploy() error {
 	return exec.Command("augenrules", "--load").Run()
 }
 
-func Remove() error {
-	os.Remove(rulesPath)
-	exec.Command("augenrules", "--load").Run()
-	return nil
+func Remove() {
+	_ = os.Remove(rulesPath)
+	_ = exec.Command("augenrules", "--load").Run()
 }
