@@ -36,6 +36,7 @@ type Config struct {
 		MailQueueWarn             int `yaml:"mail_queue_warn"`
 		MailQueueCrit             int `yaml:"mail_queue_crit"`
 		StateExpiryHours          int `yaml:"state_expiry_hours"`
+		DeepScanIntervalMin       int `yaml:"deep_scan_interval_min"`
 		WPCoreCheckIntervalMin    int `yaml:"wp_core_check_interval_min"`
 		WebshellScanIntervalMin   int `yaml:"webshell_scan_interval_min"`
 		FilesystemScanIntervalMin int `yaml:"filesystem_scan_interval_min"`
@@ -80,6 +81,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Thresholds.StateExpiryHours == 0 {
 		cfg.Thresholds.StateExpiryHours = 24
+	}
+	if cfg.Thresholds.DeepScanIntervalMin == 0 {
+		cfg.Thresholds.DeepScanIntervalMin = 60
 	}
 	if cfg.Thresholds.WPCoreCheckIntervalMin == 0 {
 		cfg.Thresholds.WPCoreCheckIntervalMin = 60
