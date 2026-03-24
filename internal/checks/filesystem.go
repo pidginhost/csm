@@ -128,7 +128,7 @@ func CheckWebshells(cfg *config.Config, _ *state.Store) []alert.Finding {
 		"/sucuri/", "/smush/", "/goldish/", "/wpallexport/",
 		"/wpallimport/", "/wph/", "/stm_fonts/", "/smile_fonts/",
 		"/bws-custom-code/", "/wp-import-export-lite/",
-		"/mc4wp-debug-log.php",
+		"/mc4wp-debug-log.php", "/zn_fonts/", "/companies_documents/",
 	}
 
 	// Use find command to search for webshell filenames — much faster than Walk

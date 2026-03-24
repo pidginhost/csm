@@ -74,9 +74,19 @@ func CheckOutboundConnections(cfg *config.Config, _ *state.Store) []alert.Findin
 
 		// Also check if we're connecting OUT to a backdoor port on a remote host
 		// (e.g. reverse shell calling back to attacker's listener)
+		// Skip if our local port is a known service (the remote port is just
+		// the client's ephemeral port, not a backdoor listener)
+		knownServicePorts := map[int]bool{
+			21: true, 25: true, 26: true, 53: true, 80: true, 110: true,
+			143: true, 443: true, 465: true, 587: true, 993: true, 995: true,
+			2082: true, 2083: true, 2086: true, 2087: true, 2095: true, 2096: true,
+			3306: true, 4190: true,
+		}
+		if knownServicePorts[localPort] {
+			continue
+		}
 		for _, bp := range cfg.BackdoorPorts {
 			if remotePort == bp {
-				// Skip if the remote IP is our own infra
 				if isInfraIP(remoteIP, cfg.InfraIPs) {
 					continue
 				}
