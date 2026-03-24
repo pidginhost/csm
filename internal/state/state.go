@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
 )
 
 type Store struct {
+	mu      sync.RWMutex
 	path    string
 	entries map[string]*Entry
 }
@@ -65,6 +67,8 @@ func findingHash(f alert.Finding) string {
 }
 
 func (s *Store) FilterNew(findings []alert.Finding) []alert.Finding {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	var newFindings []alert.Finding
 
 	for _, f := range findings {
@@ -96,6 +100,8 @@ func (s *Store) FilterNew(findings []alert.Finding) []alert.Finding {
 }
 
 func (s *Store) Update(findings []alert.Finding) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	now := time.Now()
 
 	seen := make(map[string]bool)
@@ -134,6 +140,8 @@ func (s *Store) Update(findings []alert.Finding) {
 }
 
 func (s *Store) SetBaseline(findings []alert.Finding) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.entries = make(map[string]*Entry)
 	now := time.Now()
 
@@ -152,6 +160,8 @@ func (s *Store) SetBaseline(findings []alert.Finding) {
 }
 
 func (s *Store) ShouldRunThrottled(checkName string, intervalMin int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	key := fmt.Sprintf("_throttle:%s", checkName)
 	entry, exists := s.entries[key]
 	if !exists {
@@ -166,6 +176,8 @@ func (s *Store) ShouldRunThrottled(checkName string, intervalMin int) bool {
 }
 
 func (s *Store) GetRaw(key string) (string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	entry, ok := s.entries[key]
 	if !ok {
 		return "", false
@@ -174,6 +186,8 @@ func (s *Store) GetRaw(key string) (string, bool) {
 }
 
 func (s *Store) SetRaw(key, value string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	entry, exists := s.entries[key]
 	if !exists {
 		s.entries[key] = &Entry{
