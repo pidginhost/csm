@@ -1,0 +1,3 @@
+dist/
+*.exe
+state/state.json
