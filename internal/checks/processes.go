@@ -142,3 +142,57 @@ func CheckSuspiciousProcesses(_ *config.Config, _ *state.Store) []alert.Finding 
 
 	return findings
 }
+
+// CheckPHPProcesses inspects running lsphp processes to detect active
+// webshell execution. Only reads /proc cmdline — zero disk I/O.
+func CheckPHPProcesses(_ *config.Config, _ *state.Store) []alert.Finding {
+	var findings []alert.Finding
+
+	suspiciousPHPPaths := []string{
+		"/tmp/",
+		"/dev/shm/",
+		"/wp-content/uploads/",
+		"/.config/",
+	}
+
+	procs, _ := filepath.Glob("/proc/[0-9]*/cmdline")
+	for _, cmdPath := range procs {
+		pid := filepath.Base(filepath.Dir(cmdPath))
+
+		cmdline, err := os.ReadFile(cmdPath)
+		if err != nil {
+			continue
+		}
+		cmdStr := strings.ReplaceAll(string(cmdline), "\x00", " ")
+
+		// Only check lsphp processes
+		if !strings.Contains(cmdStr, "lsphp") {
+			continue
+		}
+
+		for _, sus := range suspiciousPHPPaths {
+			if strings.Contains(cmdStr, sus) {
+				statusData, _ := os.ReadFile(filepath.Join("/proc", pid, "status"))
+				var uid string
+				for _, line := range strings.Split(string(statusData), "\n") {
+					if strings.HasPrefix(line, "Uid:\t") {
+						fields := strings.Fields(strings.TrimPrefix(line, "Uid:\t"))
+						if len(fields) > 0 {
+							uid = fields[0]
+						}
+					}
+				}
+
+				findings = append(findings, alert.Finding{
+					Severity: alert.Critical,
+					Check:    "php_suspicious_execution",
+					Message:  fmt.Sprintf("PHP executing from suspicious path: %s", sus),
+					Details:  fmt.Sprintf("PID: %s, UID: %s, cmdline: %s", pid, uid, strings.TrimSpace(cmdStr)),
+				})
+				break
+			}
+		}
+	}
+
+	return findings
+}

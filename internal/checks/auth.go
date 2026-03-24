@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -144,7 +143,7 @@ func CheckAPITokens(cfg *config.Config, store *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	// WHM root API tokens
-	out, err := exec.Command("whmapi1", "api_token_list").Output()
+	out, err := runCmd("whmapi1", "api_token_list")
 	if err == nil {
 		hash := hashBytes(out)
 		key := "_whm_api_tokens_hash"
@@ -164,7 +163,7 @@ func CheckAPITokens(cfg *config.Config, store *state.Store) []alert.Finding {
 	userDirs, _ := filepath.Glob("/var/cpanel/users/*")
 	for _, userFile := range userDirs {
 		user := filepath.Base(userFile)
-		out, err := exec.Command("uapi", "--user="+user, "Tokens", "list").Output()
+		out, err := runCmd("uapi", "--user="+user, "Tokens", "list")
 		if err != nil {
 			continue
 		}

@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -11,6 +12,12 @@ import (
 
 // CheckFunc is the signature for all check functions.
 type CheckFunc func(cfg *config.Config, store *state.Store) []alert.Finding
+
+// namedCheck pairs a check function with its name for timeout reporting.
+type namedCheck struct {
+	name string
+	fn   CheckFunc
+}
 
 // ForceAll forces all checks to run regardless of throttle (used by baseline).
 var ForceAll bool
@@ -24,33 +31,37 @@ const (
 	TierAll      Tier = "all"      // Both tiers
 )
 
-func criticalChecks() []CheckFunc {
-	return []CheckFunc{
-		CheckFakeKernelThreads,
-		CheckSuspiciousProcesses,
-		CheckShadowChanges,
-		CheckUID0Accounts,
-		CheckSSHKeys,
-		CheckAPITokens,
-		CheckCrontabs,
-		CheckOutboundConnections,
-		CheckFirewall,
-		CheckMailQueue,
+const checkTimeout = 5 * time.Minute
+
+func criticalChecks() []namedCheck {
+	return []namedCheck{
+		{"fake_kernel_threads", CheckFakeKernelThreads},
+		{"suspicious_processes", CheckSuspiciousProcesses},
+		{"php_processes", CheckPHPProcesses},
+		{"shadow_changes", CheckShadowChanges},
+		{"uid0_accounts", CheckUID0Accounts},
+		{"ssh_keys", CheckSSHKeys},
+		{"api_tokens", CheckAPITokens},
+		{"crontabs", CheckCrontabs},
+		{"outbound_connections", CheckOutboundConnections},
+		{"dns_connections", CheckDNSConnections},
+		{"firewall", CheckFirewall},
+		{"mail_queue", CheckMailQueue},
 	}
 }
 
-func deepChecks() []CheckFunc {
-	return []CheckFunc{
-		CheckFilesystem,
-		CheckWebshells,
-		CheckHtaccess,
-		CheckWPCore,
+func deepChecks() []namedCheck {
+	return []namedCheck{
+		{"filesystem", CheckFilesystem},
+		{"webshells", CheckWebshells},
+		{"htaccess", CheckHtaccess},
+		{"wp_core", CheckWPCore},
 	}
 }
 
 // RunTier runs only the specified tier of checks.
 func RunTier(cfg *config.Config, store *state.Store, tier Tier) []alert.Finding {
-	var toRun []CheckFunc
+	var toRun []namedCheck
 	switch tier {
 	case TierCritical:
 		toRun = criticalChecks()
@@ -73,22 +84,40 @@ func RunAll(cfg *config.Config, store *state.Store) []alert.Finding {
 	return runParallel(cfg, store, toRun)
 }
 
-func runParallel(cfg *config.Config, store *state.Store, checks []CheckFunc) []alert.Finding {
+func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck) []alert.Finding {
 	var mu sync.Mutex
 	var findings []alert.Finding
 	var wg sync.WaitGroup
 
-	for _, fn := range checks {
+	for _, nc := range checks {
 		wg.Add(1)
-		go func(f CheckFunc) {
+		go func(c namedCheck) {
 			defer wg.Done()
-			results := f(cfg, store)
-			if len(results) > 0 {
+
+			// Run with timeout
+			done := make(chan []alert.Finding, 1)
+			go func() {
+				done <- c.fn(cfg, store)
+			}()
+
+			select {
+			case results := <-done:
+				if len(results) > 0 {
+					mu.Lock()
+					findings = append(findings, results...)
+					mu.Unlock()
+				}
+			case <-time.After(checkTimeout):
 				mu.Lock()
-				findings = append(findings, results...)
+				findings = append(findings, alert.Finding{
+					Severity:  alert.Warning,
+					Check:     "check_timeout",
+					Message:   fmt.Sprintf("Check '%s' timed out after %s", c.name, checkTimeout),
+					Timestamp: time.Now(),
+				})
 				mu.Unlock()
 			}
-		}(fn)
+		}(nc)
 	}
 
 	wg.Wait()

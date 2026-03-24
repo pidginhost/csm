@@ -1,7 +1,10 @@
 package alert
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -31,11 +34,11 @@ func (s Severity) String() string {
 
 // Finding represents a single security check result.
 type Finding struct {
-	Severity  Severity
-	Check     string
-	Message   string
-	Details   string
-	Timestamp time.Time
+	Severity  Severity  `json:"severity"`
+	Check     string    `json:"check"`
+	Message   string    `json:"message"`
+	Details   string    `json:"details,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 func (f Finding) String() string {
@@ -46,6 +49,25 @@ func (f Finding) String() string {
 	}
 	s += fmt.Sprintf("\n  Time: %s", ts)
 	return s
+}
+
+// Key returns a unique key for deduplication.
+func (f Finding) Key() string {
+	return fmt.Sprintf("%s:%s", f.Check, f.Message)
+}
+
+// Deduplicate removes findings with the same Check+Message, keeping the first.
+func Deduplicate(findings []Finding) []Finding {
+	seen := make(map[string]bool)
+	var result []Finding
+	for _, f := range findings {
+		key := f.Key()
+		if !seen[key] {
+			seen[key] = true
+			result = append(result, f)
+		}
+	}
+	return result
 }
 
 // FormatAlert formats a list of findings into a human-readable alert body.
@@ -71,7 +93,6 @@ func FormatAlert(hostname string, findings []Finding) string {
 	fmt.Fprintf(&b, "Findings: %d critical, %d high, %d warning\n", critCount, highCount, warnCount)
 	b.WriteString(strings.Repeat("─", 60) + "\n\n")
 
-	// Group by severity
 	for _, sev := range []Severity{Critical, High, Warning} {
 		for _, f := range findings {
 			if f.Severity == sev {
@@ -87,8 +108,55 @@ func FormatAlert(hostname string, findings []Finding) string {
 	return b.String()
 }
 
+// rateLimitState tracks alerts sent per hour.
+type rateLimitState struct {
+	Hour  string `json:"hour"`
+	Count int    `json:"count"`
+}
+
+// checkRateLimit returns true if we can send more alerts this hour.
+func checkRateLimit(statePath string, maxPerHour int) bool {
+	rlPath := filepath.Join(statePath, "ratelimit.json")
+
+	currentHour := time.Now().Format("2006-01-02T15")
+
+	var rl rateLimitState
+	data, err := os.ReadFile(rlPath)
+	if err == nil {
+		_ = json.Unmarshal(data, &rl)
+	}
+
+	// Reset if new hour
+	if rl.Hour != currentHour {
+		rl = rateLimitState{Hour: currentHour, Count: 0}
+	}
+
+	if rl.Count >= maxPerHour {
+		return false
+	}
+
+	rl.Count++
+	newData, _ := json.Marshal(rl)
+	_ = os.WriteFile(rlPath, newData, 0600)
+
+	return true
+}
+
 // Dispatch sends alerts via all configured channels.
 func Dispatch(cfg *config.Config, findings []Finding) error {
+	// Deduplicate
+	findings = Deduplicate(findings)
+
+	if len(findings) == 0 {
+		return nil
+	}
+
+	// Rate limit check
+	if !checkRateLimit(cfg.StatePath, cfg.Alerts.MaxPerHour) {
+		fmt.Fprintf(os.Stderr, "Alert rate limit reached (%d/hour), skipping alert dispatch\n", cfg.Alerts.MaxPerHour)
+		return nil
+	}
+
 	body := FormatAlert(cfg.Hostname, findings)
 
 	subject := fmt.Sprintf("[CSM] %s — %d security finding(s)", cfg.Hostname, len(findings))
@@ -122,4 +190,18 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 	}
 
 	return nil
+}
+
+// SendHeartbeat pings a dead man's switch URL.
+func SendHeartbeat(cfg *config.Config) {
+	if !cfg.Alerts.Heartbeat.Enabled || cfg.Alerts.Heartbeat.URL == "" {
+		return
+	}
+	client := httpClient(10 * time.Second)
+	resp, err := client.Get(cfg.Alerts.Heartbeat.URL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Heartbeat failed: %v\n", err)
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
 }

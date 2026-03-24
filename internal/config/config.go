@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -24,6 +25,11 @@ type Config struct {
 			URL     string `yaml:"url"`
 			Type    string `yaml:"type"` // slack, discord, generic
 		} `yaml:"webhook"`
+		Heartbeat struct {
+			Enabled bool   `yaml:"enabled"`
+			URL     string `yaml:"url"`
+		} `yaml:"heartbeat"`
+		MaxPerHour int `yaml:"max_per_hour"`
 	} `yaml:"alerts"`
 
 	Integrity struct {
@@ -70,6 +76,7 @@ func Load(path string) (*Config, error) {
 
 	cfg.ConfigFile = path
 
+	// Defaults
 	if cfg.StatePath == "" {
 		cfg.StatePath = "/opt/csm/state"
 	}
@@ -94,6 +101,9 @@ func Load(path string) (*Config, error) {
 	if cfg.Thresholds.FilesystemScanIntervalMin == 0 {
 		cfg.Thresholds.FilesystemScanIntervalMin = 30
 	}
+	if cfg.Alerts.MaxPerHour == 0 {
+		cfg.Alerts.MaxPerHour = 10
+	}
 
 	return cfg, nil
 }
@@ -104,4 +114,41 @@ func Save(cfg *Config) error {
 		return fmt.Errorf("marshaling config: %w", err)
 	}
 	return os.WriteFile(cfg.ConfigFile, data, 0600)
+}
+
+// Validate checks the config for common mistakes.
+func Validate(cfg *Config) []string {
+	var errs []string
+
+	if cfg.Hostname == "" || cfg.Hostname == "SET_HOSTNAME_HERE" {
+		errs = append(errs, "hostname is not set")
+	}
+
+	if !cfg.Alerts.Email.Enabled && !cfg.Alerts.Webhook.Enabled {
+		errs = append(errs, "no alert method enabled (enable email or webhook)")
+	}
+
+	if cfg.Alerts.Email.Enabled {
+		if len(cfg.Alerts.Email.To) == 0 {
+			errs = append(errs, "email alerts enabled but no recipients configured")
+		}
+		for _, to := range cfg.Alerts.Email.To {
+			if to == "SET_EMAIL_HERE" || !strings.Contains(to, "@") {
+				errs = append(errs, fmt.Sprintf("invalid email recipient: %s", to))
+			}
+		}
+		if cfg.Alerts.Email.SMTP == "" {
+			errs = append(errs, "email alerts enabled but no SMTP server configured")
+		}
+	}
+
+	if cfg.Alerts.Webhook.Enabled && cfg.Alerts.Webhook.URL == "" {
+		errs = append(errs, "webhook alerts enabled but no URL configured")
+	}
+
+	if cfg.Alerts.Heartbeat.Enabled && cfg.Alerts.Heartbeat.URL == "" {
+		errs = append(errs, "heartbeat enabled but no URL configured")
+	}
+
+	return errs
 }

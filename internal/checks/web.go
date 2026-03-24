@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -34,8 +33,8 @@ func CheckHtaccess(cfg *config.Config, _ *state.Store) []alert.Finding {
 	}
 
 	// Use find to locate .htaccess files instead of walking entire trees
-	out, err := exec.Command("find", "/home", "-maxdepth", "6",
-		"-name", ".htaccess", "-type", "f").Output()
+	out, err := runCmd("find", "/home", "-maxdepth", "6",
+		"-name", ".htaccess", "-type", "f")
 	if err != nil {
 		return findings
 	}
@@ -106,8 +105,8 @@ func CheckWPCore(_ *config.Config, _ *state.Store) []alert.Finding {
 		wpPath := filepath.Dir(wpConfig)
 		user := extractUser(wpPath)
 
-		out, err := exec.Command("wp", "core", "verify-checksums",
-			"--path="+wpPath, "--allow-root").CombinedOutput()
+		out, err := runCmdCombined("wp", "core", "verify-checksums",
+			"--path="+wpPath, "--allow-root")
 		if err != nil {
 			outStr := string(out)
 			lines := strings.Split(outStr, "\n")

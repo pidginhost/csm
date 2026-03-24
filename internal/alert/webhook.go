@@ -10,6 +10,10 @@ import (
 	"github.com/pidginhost/cpanel-security-monitor/internal/config"
 )
 
+func httpClient(timeout time.Duration) *http.Client {
+	return &http.Client{Timeout: timeout}
+}
+
 func SendWebhook(cfg *config.Config, subject, body string) error {
 	url := cfg.Alerts.Webhook.URL
 	if url == "" {
@@ -38,12 +42,12 @@ func SendWebhook(cfg *config.Config, subject, body string) error {
 		return fmt.Errorf("marshaling webhook payload: %w", err)
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := httpClient(10 * time.Second)
 	resp, err := client.Post(url, "application/json", bytes.NewReader(payload))
 	if err != nil {
 		return fmt.Errorf("webhook POST: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("webhook returned %d", resp.StatusCode)

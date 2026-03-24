@@ -2,7 +2,6 @@ package checks
 
 import (
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
 
@@ -14,9 +13,8 @@ import (
 func CheckMailQueue(cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	// Get exim queue count
-	out, err := exec.Command("exim", "-bpc").Output()
-	if err != nil {
+	out, err := runCmd("exim", "-bpc")
+	if err != nil || out == nil {
 		return nil
 	}
 
