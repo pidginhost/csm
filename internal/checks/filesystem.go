@@ -3,6 +3,7 @@ package checks
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -14,44 +15,52 @@ import (
 func CheckFilesystem(_ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	// GSocket / backdoor binaries in .config dirs
+	// GSocket / backdoor binaries in .config dirs — targeted glob, not walk
 	backdoorNames := []string{"defunct", "defunct.dat", "gs-netcat", "gs-sftp", "gs-mount", "gsocket"}
-	homes, _ := filepath.Glob("/home/*/.config/htop/*")
-	for _, path := range homes {
-		name := filepath.Base(path)
-		for _, bad := range backdoorNames {
-			if name == bad {
-				info, _ := os.Stat(path)
-				var details string
-				if info != nil {
-					details = fmt.Sprintf("Size: %d bytes, Mtime: %s", info.Size(), info.ModTime().Format("2006-01-02 15:04:05"))
+
+	configGlobs := []string{
+		"/home/*/.config/htop/*",
+		"/home/*/.config/*/*",
+	}
+	for _, pattern := range configGlobs {
+		matches, _ := filepath.Glob(pattern)
+		for _, path := range matches {
+			name := filepath.Base(path)
+			for _, bad := range backdoorNames {
+				if name == bad {
+					info, _ := os.Stat(path)
+					var details string
+					if info != nil {
+						details = fmt.Sprintf("Size: %d bytes, Mtime: %s", info.Size(), info.ModTime().Format("2006-01-02 15:04:05"))
+					}
+					findings = append(findings, alert.Finding{
+						Severity: alert.Critical,
+						Check:    "backdoor_binary",
+						Message:  fmt.Sprintf("Backdoor binary found: %s", path),
+						Details:  details,
+					})
 				}
-				findings = append(findings, alert.Finding{
-					Severity: alert.Critical,
-					Check:    "backdoor_binary",
-					Message:  fmt.Sprintf("Backdoor binary found: %s", path),
-					Details:  details,
-				})
 			}
 		}
 	}
 
-	// Also check broader patterns
-	patterns := []string{
-		"/home/*/.config/*/defunct",
-		"/home/*/.config/*/defunct.dat",
-		"/tmp/.*",
-		"/dev/shm/.*",
-	}
-	for _, pattern := range patterns {
+	// Hidden files in /tmp and /dev/shm — targeted glob, not walk
+	tmpGlobs := []string{"/tmp/.*", "/dev/shm/.*", "/var/tmp/.*"}
+	for _, pattern := range tmpGlobs {
 		matches, _ := filepath.Glob(pattern)
 		for _, match := range matches {
 			info, err := os.Stat(match)
 			if err != nil || info.IsDir() {
 				continue
 			}
+			base := filepath.Base(match)
 			// Skip known safe files
-			if strings.Contains(match, "/tmp/lshttpd/") || strings.Contains(match, "/tmp/.s.PGSQL") {
+			if strings.HasPrefix(base, ".s.PGSQL") ||
+				strings.HasPrefix(base, ".font-unix") ||
+				strings.HasPrefix(base, ".ICE-unix") ||
+				strings.HasPrefix(base, ".X11-unix") ||
+				strings.HasPrefix(base, ".XIM-unix") ||
+				strings.HasPrefix(base, ".crontab.") {
 				continue
 			}
 			findings = append(findings, alert.Finding{
@@ -63,26 +72,40 @@ func CheckFilesystem(_ *config.Config, _ *state.Store) []alert.Finding {
 		}
 	}
 
-	// SUID binaries in unusual locations
-	suidDirs := []string{"/home", "/tmp", "/var/tmp", "/dev/shm"}
+	// SUID binaries in unusual locations — use find command with maxdepth
+	// instead of filepath.Walk which traverses millions of files
+	suidDirs := []string{"/tmp", "/var/tmp", "/dev/shm"}
 	for _, dir := range suidDirs {
-		filepath.Walk(dir, func(path string, info os.FileInfo, err error) error { //nolint:errcheck
-			if err != nil {
-				return filepath.SkipDir
+		out, err := exec.Command("find", dir, "-maxdepth", "3", "-perm", "-4000", "-type", "f").Output()
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			if line == "" {
+				continue
 			}
-			if info == nil || info.IsDir() {
-				return nil
+			findings = append(findings, alert.Finding{
+				Severity: alert.Critical,
+				Check:    "suid_binary",
+				Message:  fmt.Sprintf("SUID binary in unusual location: %s", line),
+			})
+		}
+	}
+
+	// SUID in /home — only check shallow depths, not entire trees
+	out, err := exec.Command("find", "/home", "-maxdepth", "4", "-perm", "-4000", "-type", "f",
+		"-not", "-path", "*/virtfs/*").Output()
+	if err == nil {
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			if line == "" {
+				continue
 			}
-			if info.Mode()&os.ModeSetuid != 0 {
-				findings = append(findings, alert.Finding{
-					Severity: alert.Critical,
-					Check:    "suid_binary",
-					Message:  fmt.Sprintf("SUID binary in unusual location: %s", path),
-					Details:  fmt.Sprintf("Mode: %s, Size: %d", info.Mode(), info.Size()),
-				})
-			}
-			return nil
-		})
+			findings = append(findings, alert.Finding{
+				Severity: alert.Critical,
+				Check:    "suid_binary",
+				Message:  fmt.Sprintf("SUID binary in home directory: %s", line),
+			})
+		}
 	}
 
 	return findings
@@ -91,96 +114,117 @@ func CheckFilesystem(_ *config.Config, _ *state.Store) []alert.Finding {
 func CheckWebshells(cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	// Known webshell filenames
-	webshellNames := []string{
-		"h4x0r.php", "c99.php", "r57.php", "wso.php", "alfa.php",
-		"b374k.php", "mini.php", "adminer.php",
+	webshellNames := map[string]bool{
+		"h4x0r.php": true, "c99.php": true, "r57.php": true,
+		"wso.php": true, "alfa.php": true, "b374k.php": true,
+		"mini.php": true, "adminer.php": true,
 	}
-	webshellDirs := []string{"LEVIATHAN", "haxorcgiapi"}
+	webshellDirs := map[string]bool{
+		"LEVIATHAN": true, "haxorcgiapi": true,
+	}
 
-	homes, _ := filepath.Glob("/home/*/public_html")
-	for _, home := range homes {
-		filepath.Walk(home, func(path string, info os.FileInfo, err error) error { //nolint:errcheck
-			if err != nil {
-				return filepath.SkipDir
+	knownSafeUploadPaths := []string{
+		"/cache/", "/imunify", "/redux/", "/mailchimp-for-wp/",
+		"/sucuri/", "/smush/", "/goldish/", "/wpallexport/",
+		"/wpallimport/", "/wph/", "/stm_fonts/", "/smile_fonts/",
+		"/bws-custom-code/", "/wp-import-export-lite/",
+		"/mc4wp-debug-log.php",
+	}
+
+	// Use find command to search for webshell filenames — much faster than Walk
+	// Search only top-level and common webshell drop locations
+	findArgs := []string{"/home", "-maxdepth", "6", "("}
+	first := true
+	for name := range webshellNames {
+		if !first {
+			findArgs = append(findArgs, "-o")
+		}
+		findArgs = append(findArgs, "-name", name)
+		first = false
+	}
+	// Also search for webshell directories
+	for name := range webshellDirs {
+		findArgs = append(findArgs, "-o", "-name", name, "-type", "d")
+	}
+	// Also search for .haxor files
+	findArgs = append(findArgs, "-o", "-name", "*.haxor")
+	findArgs = append(findArgs, ")")
+
+	out, err := exec.Command("find", findArgs...).Output()
+	if err == nil {
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			if line == "" {
+				continue
 			}
-			if info == nil {
-				return nil
-			}
-
-			name := info.Name()
-
 			// Skip suppressed paths
+			suppressed := false
 			for _, ignore := range cfg.Suppressions.IgnorePaths {
-				if matchGlob(path, ignore) {
-					return nil
+				if matchGlob(line, ignore) {
+					suppressed = true
+					break
 				}
 			}
-
-			if info.IsDir() {
-				for _, d := range webshellDirs {
-					if name == d {
-						findings = append(findings, alert.Finding{
-							Severity: alert.Critical,
-							Check:    "webshell",
-							Message:  fmt.Sprintf("Webshell directory found: %s", path),
-						})
-					}
-				}
-				return nil
+			if suppressed {
+				continue
 			}
 
-			// Check filenames
-			for _, ws := range webshellNames {
-				if strings.EqualFold(name, ws) {
-					findings = append(findings, alert.Finding{
-						Severity: alert.Critical,
-						Check:    "webshell",
-						Message:  fmt.Sprintf("Known webshell found: %s", path),
-						Details:  fmt.Sprintf("Size: %d, Mtime: %s", info.Size(), info.ModTime()),
-					})
-				}
-			}
-
-			// Check for .php files in uploads dirs
-			if strings.Contains(path, "/wp-content/uploads/") && strings.HasSuffix(name, ".php") {
-				// Skip known safe plugin/theme upload paths
-				knownSafePaths := []string{
-					"/cache/", "/imunify", "/redux/", "/mailchimp-for-wp/",
-					"/sucuri/", "/smush/", "/goldish/", "/wpallexport/",
-					"/wpallimport/", "/wph/", "/stm_fonts/", "/smile_fonts/",
-					"/bws-custom-code/", "/wp-import-export-lite/",
-					"/mc4wp-debug-log.php",
-				}
-				safe := name == "index.php"
-				for _, sp := range knownSafePaths {
-					if strings.Contains(path, sp) {
-						safe = true
-						break
-					}
-				}
-				if safe {
-					return nil
-				}
-				findings = append(findings, alert.Finding{
-					Severity: alert.High,
-					Check:    "php_in_uploads",
-					Message:  fmt.Sprintf("PHP file in uploads directory: %s", path),
-					Details:  fmt.Sprintf("Size: %d, Mtime: %s", info.Size(), info.ModTime()),
-				})
-			}
-
-			// Check for CGI files with suspicious extensions
-			if strings.HasSuffix(name, ".haxor") || strings.HasSuffix(name, ".cgix") {
+			info, _ := os.Stat(line)
+			if info != nil && info.IsDir() {
 				findings = append(findings, alert.Finding{
 					Severity: alert.Critical,
 					Check:    "webshell",
-					Message:  fmt.Sprintf("Suspicious CGI file: %s", path),
+					Message:  fmt.Sprintf("Webshell directory found: %s", line),
+				})
+			} else {
+				var details string
+				if info != nil {
+					details = fmt.Sprintf("Size: %d, Mtime: %s", info.Size(), info.ModTime())
+				}
+				findings = append(findings, alert.Finding{
+					Severity: alert.Critical,
+					Check:    "webshell",
+					Message:  fmt.Sprintf("Known webshell found: %s", line),
+					Details:  details,
 				})
 			}
+		}
+	}
 
-			return nil
-		})
+	// PHP files in uploads dirs — targeted find instead of walking everything
+	out, err = exec.Command("find", "/home", "-maxdepth", "8",
+		"-path", "*/wp-content/uploads/*.php",
+		"-not", "-name", "index.php",
+		"-type", "f").Output()
+	if err == nil {
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			if line == "" {
+				continue
+			}
+
+			// Skip known safe paths
+			safe := false
+			for _, sp := range knownSafeUploadPaths {
+				if strings.Contains(line, sp) {
+					safe = true
+					break
+				}
+			}
+			if safe {
+				continue
+			}
+
+			info, _ := os.Stat(line)
+			var details string
+			if info != nil {
+				details = fmt.Sprintf("Size: %d, Mtime: %s", info.Size(), info.ModTime())
+			}
+			findings = append(findings, alert.Finding{
+				Severity: alert.High,
+				Check:    "php_in_uploads",
+				Message:  fmt.Sprintf("PHP file in uploads directory: %s", line),
+				Details:  details,
+			})
+		}
 	}
 
 	return findings
@@ -191,7 +235,6 @@ func matchGlob(path, pattern string) bool {
 	if matched {
 		return true
 	}
-	// Simple contains match for patterns like "*/cache/*"
 	pattern = strings.ReplaceAll(pattern, "*", "")
 	return strings.Contains(path, pattern)
 }
