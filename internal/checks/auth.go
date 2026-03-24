@@ -72,12 +72,43 @@ func CheckShadowChanges(cfg *config.Config, store *state.Store) []alert.Finding 
 					details += "\n" + auditInfo
 				}
 
-				findings = append(findings, alert.Finding{
-					Severity: sev,
-					Check:    "shadow_change",
-					Message:  "/etc/shadow modified",
-					Details:  details,
-				})
+				// Separate root password change (higher severity)
+				changed := diffShadowChanges(store, currentEntries)
+				rootChanged := false
+				userCount := 0
+				for _, c := range changed {
+					if c == "root" {
+						rootChanged = true
+					} else {
+						userCount++
+					}
+				}
+
+				if rootChanged {
+					findings = append(findings, alert.Finding{
+						Severity: alert.Critical,
+						Check:    "root_password_change",
+						Message:  "Root password changed",
+						Details:  details,
+					})
+				}
+
+				// Bulk password changes (5+ accounts at once)
+				if userCount >= 5 {
+					findings = append(findings, alert.Finding{
+						Severity: alert.High,
+						Check:    "bulk_password_change",
+						Message:  fmt.Sprintf("Bulk password change: %d accounts modified", userCount),
+						Details:  details,
+					})
+				} else {
+					findings = append(findings, alert.Finding{
+						Severity: sev,
+						Check:    "shadow_change",
+						Message:  "/etc/shadow modified",
+						Details:  details,
+					})
+				}
 			}
 		}
 	}
