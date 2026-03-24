@@ -26,72 +26,72 @@ func CheckHtaccess(cfg *config.Config, _ *state.Store) []alert.Finding {
 		"php_value disable_functions",
 	}
 
-	// Known safe patterns to whitelist
 	safePatterns := []string{
 		"wordfence-waf.php",
 		"litespeed",
-		"advanced-headers.php", // Really Simple Security plugin
-		"rsssl",                // Really Simple Security plugin
+		"advanced-headers.php",
+		"rsssl",
 	}
 
-	homes, _ := filepath.Glob("/home/*/public_html")
-	for _, home := range homes {
-		_ = filepath.Walk(home, func(path string, info os.FileInfo, err error) error {
-			if err != nil {
-				return filepath.SkipDir
-			}
-			if info == nil || info.IsDir() {
-				return nil
-			}
-			if info.Name() != ".htaccess" {
-				return nil
-			}
+	// Use find to locate .htaccess files instead of walking entire trees
+	out, err := exec.Command("find", "/home", "-maxdepth", "6",
+		"-name", ".htaccess", "-type", "f").Output()
+	if err != nil {
+		return findings
+	}
 
-			// Skip suppressed paths
-			for _, ignore := range cfg.Suppressions.IgnorePaths {
-				if matchGlob(path, ignore) {
-					return nil
-				}
+	for _, path := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if path == "" {
+			continue
+		}
+
+		// Skip suppressed paths
+		suppressed := false
+		for _, ignore := range cfg.Suppressions.IgnorePaths {
+			if matchGlob(path, ignore) {
+				suppressed = true
+				break
 			}
+		}
+		if suppressed {
+			continue
+		}
 
-			f, err := os.Open(path)
-			if err != nil {
-				return nil
-			}
-			defer func() { _ = f.Close() }()
+		f, err := os.Open(path)
+		if err != nil {
+			continue
+		}
 
-			scanner := bufio.NewScanner(f)
-			lineNum := 0
-			for scanner.Scan() {
-				lineNum++
-				line := scanner.Text()
-				lineLower := strings.ToLower(line)
+		scanner := bufio.NewScanner(f)
+		lineNum := 0
+		for scanner.Scan() {
+			lineNum++
+			line := scanner.Text()
+			lineLower := strings.ToLower(line)
 
-				for _, pattern := range suspiciousPatterns {
-					if strings.Contains(lineLower, strings.ToLower(pattern)) {
-						// Check if it matches a safe pattern
-						safe := false
-						for _, sp := range safePatterns {
-							if strings.Contains(lineLower, strings.ToLower(sp)) {
-								safe = true
-								break
-							}
+			for _, pattern := range suspiciousPatterns {
+				if strings.Contains(lineLower, strings.ToLower(pattern)) {
+					safe := false
+					for _, sp := range safePatterns {
+						if strings.Contains(lineLower, strings.ToLower(sp)) {
+							safe = true
+							break
 						}
-						if safe {
-							continue
-						}
-
-						findings = append(findings, alert.Finding{
-							Severity: alert.High,
-							Check:    "htaccess_injection",
-							Message:  fmt.Sprintf("Suspicious .htaccess directive: %s", pattern),
-							Details:  fmt.Sprintf("File: %s (line %d)\nContent: %s", path, lineNum, strings.TrimSpace(line)),
-						})
 					}
+					if safe {
+						continue
+					}
+
+					findings = append(findings, alert.Finding{
+						Severity: alert.High,
+						Check:    "htaccess_injection",
+						Message:  fmt.Sprintf("Suspicious .htaccess directive: %s", pattern),
+						Details:  fmt.Sprintf("File: %s (line %d)\nContent: %s", path, lineNum, strings.TrimSpace(line)),
+					})
 				}
 			}
-			return nil
-		})
+		}
+		_ = f.Close()
 	}
 
 	return findings
@@ -100,7 +100,6 @@ func CheckHtaccess(cfg *config.Config, _ *state.Store) []alert.Finding {
 func CheckWPCore(_ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	// Find all WordPress installations
 	wpConfigs, _ := filepath.Glob("/home/*/public_html/wp-config.php")
 
 	for _, wpConfig := range wpConfigs {
@@ -111,7 +110,6 @@ func CheckWPCore(_ *config.Config, _ *state.Store) []alert.Finding {
 			"--path="+wpPath, "--allow-root").CombinedOutput()
 		if err != nil {
 			outStr := string(out)
-			// Filter out error_log warnings
 			lines := strings.Split(outStr, "\n")
 			for _, line := range lines {
 				if strings.Contains(line, "should not exist") && !strings.Contains(line, "error_log") {
