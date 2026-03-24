@@ -108,13 +108,16 @@ func (inst *Installer) Uninstall() error {
 	// Remove immutable flag
 	exec.Command("chattr", "-i", inst.BinaryPath).Run()
 
-	// Stop and remove systemd timer
-	exec.Command("systemctl", "stop", "csm.timer").Run()
-	exec.Command("systemctl", "disable", "csm.timer").Run()
-	os.Remove("/etc/systemd/system/csm.service")
-	os.Remove("/etc/systemd/system/csm.timer")
+	// Stop and remove systemd timers
+	for _, name := range []string{"csm.timer", "csm-critical.timer", "csm-deep.timer"} {
+		exec.Command("systemctl", "stop", name).Run()
+		exec.Command("systemctl", "disable", name).Run()
+	}
+	for _, name := range []string{"csm.service", "csm.timer", "csm-critical.service", "csm-critical.timer", "csm-deep.service", "csm-deep.timer"} {
+		os.Remove("/etc/systemd/system/" + name)
+	}
 	exec.Command("systemctl", "daemon-reload").Run()
-	fmt.Println("  systemd timer removed")
+	fmt.Println("  systemd timers removed")
 
 	// Remove cron
 	os.Remove("/etc/cron.d/csm")
@@ -167,6 +170,7 @@ thresholds:
   mail_queue_warn: 500
   mail_queue_crit: 2000
   state_expiry_hours: 24
+  deep_scan_interval_min: 60
   wp_core_check_interval_min: 60
   webshell_scan_interval_min: 30
   filesystem_scan_interval_min: 30
@@ -201,18 +205,19 @@ backdoor_ports:
 }
 
 func deploySystemdTimer() error {
-	service := `[Unit]
-Description=cPanel Security Monitor
+	// Critical checks — fast, every 10 minutes
+	critService := `[Unit]
+Description=cPanel Security Monitor — Critical Checks
 After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/opt/csm/csm run
+ExecStart=/opt/csm/csm run-critical
 StandardOutput=append:/var/log/csm/monitor.log
 StandardError=append:/var/log/csm/monitor.log
 `
-	timer := `[Unit]
-Description=Run cPanel Security Monitor every 10 minutes
+	critTimer := `[Unit]
+Description=Run CSM critical checks every 10 minutes
 
 [Timer]
 OnBootSec=2min
@@ -222,22 +227,70 @@ AccuracySec=30s
 [Install]
 WantedBy=timers.target
 `
-	if err := os.WriteFile("/etc/systemd/system/csm.service", []byte(service), 0644); err != nil {
-		return err
+
+	// Deep checks — filesystem scans, every 60 minutes
+	deepService := `[Unit]
+Description=cPanel Security Monitor — Deep Scan
+After=network.target
+
+[Service]
+Type=oneshot
+Nice=10
+ExecStart=/opt/csm/csm run-deep
+StandardOutput=append:/var/log/csm/monitor.log
+StandardError=append:/var/log/csm/monitor.log
+`
+	deepTimer := `[Unit]
+Description=Run CSM deep filesystem scan every 60 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=60min
+AccuracySec=60s
+
+[Install]
+WantedBy=timers.target
+`
+
+	units := map[string]string{
+		"/etc/systemd/system/csm-critical.service": critService,
+		"/etc/systemd/system/csm-critical.timer":   critTimer,
+		"/etc/systemd/system/csm-deep.service":     deepService,
+		"/etc/systemd/system/csm-deep.timer":       deepTimer,
 	}
-	if err := os.WriteFile("/etc/systemd/system/csm.timer", []byte(timer), 0644); err != nil {
-		return err
+
+	for path, content := range units {
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			return err
+		}
 	}
+
+	// Remove old single timer if it exists
+	exec.Command("systemctl", "stop", "csm.timer").Run()
+	exec.Command("systemctl", "disable", "csm.timer").Run()
+	os.Remove("/etc/systemd/system/csm.service")
+	os.Remove("/etc/systemd/system/csm.timer")
+
 	if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
 		return err
 	}
-	if err := exec.Command("systemctl", "enable", "csm.timer").Run(); err != nil {
-		return err
+
+	for _, timer := range []string{"csm-critical.timer", "csm-deep.timer"} {
+		if err := exec.Command("systemctl", "enable", timer).Run(); err != nil {
+			return err
+		}
+		if err := exec.Command("systemctl", "start", timer).Run(); err != nil {
+			return err
+		}
 	}
-	return exec.Command("systemctl", "start", "csm.timer").Run()
+
+	return nil
 }
 
 func deployCron(binaryPath string) error {
-	content := fmt.Sprintf("*/10 * * * * root %s run >> /var/log/csm/monitor.log 2>&1\n", binaryPath)
+	content := fmt.Sprintf(
+		"*/10 * * * * root %s run-critical >> /var/log/csm/monitor.log 2>&1\n"+
+			"5 * * * * root %s run-deep >> /var/log/csm/monitor.log 2>&1\n",
+		binaryPath, binaryPath)
 	return os.WriteFile("/etc/cron.d/csm", []byte(content), 0644)
 }

@@ -9,14 +9,23 @@ import (
 	"github.com/pidginhost/cpanel-security-monitor/internal/state"
 )
 
+// CheckFunc is the signature for all check functions.
 type CheckFunc func(cfg *config.Config, store *state.Store) []alert.Finding
 
-// ForceAll controls whether throttled checks are forced to run.
+// ForceAll forces all checks to run regardless of throttle (used by baseline).
 var ForceAll bool
 
-func RunAll(cfg *config.Config, store *state.Store) []alert.Finding {
-	// Always-run checks (fast, every invocation)
-	alwaysRun := []CheckFunc{
+// Tier identifies which set of checks to run.
+type Tier string
+
+const (
+	TierCritical Tier = "critical" // Fast checks — processes, auth, network (~5 seconds)
+	TierDeep     Tier = "deep"     // Filesystem scans — webshells, htaccess, WP core (~90 seconds)
+	TierAll      Tier = "all"      // Both tiers
+)
+
+func criticalChecks() []CheckFunc {
+	return []CheckFunc{
 		CheckFakeKernelThreads,
 		CheckSuspiciousProcesses,
 		CheckShadowChanges,
@@ -28,27 +37,48 @@ func RunAll(cfg *config.Config, store *state.Store) []alert.Finding {
 		CheckFirewall,
 		CheckMailQueue,
 	}
+}
 
-	// Throttled checks (filesystem-heavy, run less frequently)
-	type throttledCheck struct {
-		name     string
-		interval int
-		fn       CheckFunc
+func deepChecks() []CheckFunc {
+	return []CheckFunc{
+		CheckFilesystem,
+		CheckWebshells,
+		CheckHtaccess,
+		CheckWPCore,
 	}
-	throttled := []throttledCheck{
-		{"filesystem", cfg.Thresholds.FilesystemScanIntervalMin, CheckFilesystem},
-		{"webshells", cfg.Thresholds.WebshellScanIntervalMin, CheckWebshells},
-		{"htaccess", cfg.Thresholds.WebshellScanIntervalMin, CheckHtaccess},
-		{"wp_core", cfg.Thresholds.WPCoreCheckIntervalMin, CheckWPCore},
+}
+
+// RunTier runs only the specified tier of checks.
+func RunTier(cfg *config.Config, store *state.Store, tier Tier) []alert.Finding {
+	var toRun []CheckFunc
+	switch tier {
+	case TierCritical:
+		toRun = criticalChecks()
+	case TierDeep:
+		toRun = deepChecks()
+	case TierAll:
+		toRun = append(criticalChecks(), deepChecks()...)
+	}
+	return runParallel(cfg, store, toRun)
+}
+
+// RunAll runs critical checks always. Deep checks run if throttle allows or ForceAll is set.
+func RunAll(cfg *config.Config, store *state.Store) []alert.Finding {
+	toRun := criticalChecks()
+
+	if ForceAll || store.ShouldRunThrottled("deep_scan", cfg.Thresholds.DeepScanIntervalMin) {
+		toRun = append(toRun, deepChecks()...)
 	}
 
+	return runParallel(cfg, store, toRun)
+}
+
+func runParallel(cfg *config.Config, store *state.Store, checks []CheckFunc) []alert.Finding {
 	var mu sync.Mutex
 	var findings []alert.Finding
-
 	var wg sync.WaitGroup
 
-	// Run always-run checks in parallel
-	for _, fn := range alwaysRun {
+	for _, fn := range checks {
 		wg.Add(1)
 		go func(f CheckFunc) {
 			defer wg.Done()
@@ -61,25 +91,8 @@ func RunAll(cfg *config.Config, store *state.Store) []alert.Finding {
 		}(fn)
 	}
 
-	// Run throttled checks if due (or if ForceAll is set, e.g. during baseline)
-	for _, tc := range throttled {
-		if ForceAll || store.ShouldRunThrottled(tc.name, tc.interval) {
-			wg.Add(1)
-			go func(f CheckFunc) {
-				defer wg.Done()
-				results := f(cfg, store)
-				if len(results) > 0 {
-					mu.Lock()
-					findings = append(findings, results...)
-					mu.Unlock()
-				}
-			}(tc.fn)
-		}
-	}
-
 	wg.Wait()
 
-	// Set timestamp on all findings
 	now := time.Now()
 	for i := range findings {
 		if findings[i].Timestamp.IsZero() {

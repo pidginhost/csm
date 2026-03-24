@@ -40,9 +40,17 @@ func main() {
 	case "uninstall":
 		runUninstall()
 	case "run":
-		runChecks(true)
+		runTieredChecks(checks.TierAll, true)
+	case "run-critical":
+		runTieredChecks(checks.TierCritical, true)
+	case "run-deep":
+		runTieredChecks(checks.TierDeep, true)
 	case "check":
-		runChecks(false)
+		runTieredChecks(checks.TierAll, false)
+	case "check-critical":
+		runTieredChecks(checks.TierCritical, false)
+	case "check-deep":
+		runTieredChecks(checks.TierDeep, false)
 	case "status":
 		runStatus()
 	case "baseline":
@@ -62,14 +70,18 @@ func printUsage() {
 Usage: csm <command>
 
 Commands:
-  install    Deploy to /opt/csm/, set up auditd, create cron/systemd timer, establish baseline
-  uninstall  Clean removal
-  run        Run all checks (what cron/timer calls every 10min), send alerts
-  check      Run checks and print to stdout (no alerts, for testing)
-  status     Show current state, last run, active findings
-  baseline   Reset state — mark current state as "known good"
-  verify     Verify binary + config integrity
-  version    Version info + build hash
+  install       Deploy to /opt/csm/, set up auditd, create systemd timers, establish baseline
+  uninstall     Clean removal
+  run           Run all checks, send alerts (legacy single-timer mode)
+  run-critical  Run critical checks only (every 10min timer)
+  run-deep      Run deep filesystem scans only (every 60min timer)
+  check         Run all checks, print to stdout (no alerts, for testing)
+  check-critical  Test critical checks only
+  check-deep      Test deep checks only
+  status        Show current state, last run, active findings
+  baseline      Reset state — mark current state as "known good"
+  verify        Verify binary + config integrity
+  version       Version info + build hash
 
 Options:
   --config <path>   Config file path (default: %s)
@@ -124,7 +136,7 @@ func runUninstall() {
 	}
 }
 
-func runChecks(sendAlerts bool) {
+func runTieredChecks(tier checks.Tier, sendAlerts bool) {
 	cfg := loadConfig()
 
 	if err := integrity.Verify(binaryPath, cfg); err != nil {
@@ -148,7 +160,7 @@ func runChecks(sendAlerts bool) {
 	}
 	defer func() { _ = store.Close() }()
 
-	findings := checks.RunAll(cfg, store)
+	findings := checks.RunTier(cfg, store, tier)
 
 	newFindings := store.FilterNew(findings)
 
