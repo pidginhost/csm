@@ -8,10 +8,10 @@ Built after a real incident where GSocket reverse shells, LEVIATHAN webshell too
 
 Benchmarked on a production cPanel server with 168 accounts, 275 WordPress sites, 28 million files, and 43,000 directories tracked.
 
-| Tier | Frequency | Duration | RAM | CPU Priority |
-|---|---|---|---|---|
-| **Critical** | Every 10 min | **0.5 seconds** | 35 MB | Normal |
-| **Deep** | Every 60 min | **35 seconds** | 77 MB | Nice 10 (low) |
+| Tier | Checks | Frequency | Duration | RAM | CPU Priority |
+|---|---|---|---|---|---|
+| **Critical** | 18 checks | Every 10 min | **0.5 seconds** | 52 MB | Normal |
+| **Deep** | 7 checks | Every 30-60 min | **38 seconds** | 107 MB | Nice 10 (low) |
 
 **How it stays fast:**
 - Pure Go `os.ReadDir` (getdents syscall) instead of `find` — reads directory entries without stat per file
@@ -41,7 +41,7 @@ The binary verifies its own integrity (SHA256) on each run. If tampered with, it
 
 ## Security Checks
 
-### Critical Tier (every 10 minutes, ~0.5 seconds)
+### Critical Tier (18 checks, every 10 minutes, ~0.5 seconds)
 
 | Check | What it detects |
 |---|---|
@@ -49,26 +49,36 @@ The binary verifies its own integrity (SHA256) on each run. If tampered with, it
 | Suspicious processes | Execution from `/tmp`, `/dev/shm`, `/.config/`; reverse shells (`bash -i`, `/dev/tcp/`) |
 | PHP process inspection | `lsphp` executing from `/wp-content/uploads/`, `/tmp/`, `/dev/shm/` (active webshell use) |
 | Shadow changes | `/etc/shadow` modification — reports which accounts changed and which process did it |
+| Root password change | Separate critical alert when root password is changed |
+| Bulk password changes | Detects 5+ account passwords changed at once |
 | UID 0 accounts | Unauthorized accounts with root privileges |
 | SSH keys | Changes to `authorized_keys` for root and all users |
+| sshd_config changes | Alerts if PasswordAuthentication or PermitRootLogin changed to 'yes' |
+| SSH login anomalies | SSH logins from IPs not in infra_ips |
 | API tokens | New WHM root tokens; user tokens with full access and no IP whitelist (read from disk, no process spawning) |
+| WHM access monitoring | Password changes and account actions from non-infra IPs in WHM access log |
 | Crontabs | Suspicious patterns: `defunct-kernel`, `base64`, reverse shells, bulk downloaders |
 | Outbound connections | Connections to known C2 IPs; local backdoor port listeners; outbound to backdoor ports on non-infra IPs |
+| User outbound profiling | Non-root user processes connecting to non-standard ports on non-infra IPs |
 | DNS connections | Connections to DNS servers not in `/etc/resolv.conf` (DNS tunneling, GSocket relay discovery) |
 | Firewall integrity | CSF config changes; backdoor ports in TCP_IN; port 22 re-added |
 | Mail queue | Exim queue size spikes (spam from compromised accounts) |
+| Per-account email rate | Alerts when a single domain sends >100 emails in recent log window |
 | Self-health | Verifies CSM dependencies (exim, auditctl, whmapi1, wp), auditd rules loaded, state dir writable |
 
-### Deep Tier (every 60 minutes, ~35 seconds)
+### Deep Tier (7 checks, every 30-60 minutes, ~38 seconds)
 
 | Check | What it detects |
 |---|---|
 | Backdoor binaries | GSocket `defunct` in `.config/htop/`; `gs-netcat`, `gsocket` anywhere in `.config/` |
 | Webshell filenames | `h4x0r.php`, `c99.php`, `r57.php`, `wso.php`, `alfa.php`, `b374k.php`, `LEVIATHAN/`, `haxorcgiapi/`, `*.haxor` |
 | SUID binaries | SUID files in `/home`, `/tmp`, `/var/tmp`, `/dev/shm` |
+| World-writable PHP | PHP files with world-writable permissions (0666, 0777) |
 | .htaccess injection | `auto_prepend_file`, `auto_append_file`, `eval`, `base64_decode` in .htaccess (whitelists Wordfence, LiteSpeed, Really Simple Security) |
 | WP core integrity | `wp core verify-checksums` across all WordPress installations (5 parallel workers) |
-| File index diff | Builds index of PHP/executable files, diffs against previous scan. Catches **new files with unknown names** — not just known patterns. Detects new PHP in uploads, new executables in .config, suspicious filenames (shell, cmd, eval, random short names like `x7y2.php`). Uses directory mtime caching to skip unchanged dirs. |
+| File index diff | Builds index of PHP/executable files, diffs against previous scan. Catches **new files with unknown names** — not just known patterns. Uses directory mtime caching to skip unchanged dirs. |
+| Nulled plugin detection | Scans WordPress plugin PHP files for crack signatures: `nulled by`, `gpl-club`, `license_key_bypass`, `activation_bypass`, etc. |
+| Cross-account correlation | Detects coordinated attacks: 3+ accounts with critical findings, or same malware type across multiple accounts |
 
 ### Always-on Features
 
