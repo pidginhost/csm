@@ -193,7 +193,7 @@ func runBaseline() {
 	store.SetBaseline(findings)
 
 	binaryHash, _ := integrity.HashFile(binaryPath)
-	configHash, _ := integrity.HashFile(cfg.ConfigFile)
+	configHash, _ := integrity.HashConfigStable(cfg.ConfigFile)
 	cfg.Integrity.BinaryHash = binaryHash
 	cfg.Integrity.ConfigHash = configHash
 	if err := config.Save(cfg); err != nil {
