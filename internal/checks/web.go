@@ -6,11 +6,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
 	"github.com/pidginhost/cpanel-security-monitor/internal/config"
 	"github.com/pidginhost/cpanel-security-monitor/internal/state"
 )
+
+const wpChecksumWorkers = 5 // concurrent wp core verify-checksums
 
 // CheckHtaccess scans for malicious .htaccess directives using pure Go ReadDir.
 func CheckHtaccess(cfg *config.Config, _ *state.Store) []alert.Finding {
@@ -134,34 +137,56 @@ func checkHtaccessFile(path string, suspicious, safe []string, findings *[]alert
 	}
 }
 
-// CheckWPCore runs wp core verify-checksums for each WordPress installation.
-// This is the only check that still uses an external command (wp-cli).
+// CheckWPCore runs wp core verify-checksums for each WordPress installation
+// using a bounded worker pool for concurrency.
 func CheckWPCore(_ *config.Config, _ *state.Store) []alert.Finding {
-	var findings []alert.Finding
-
 	wpConfigs, _ := filepath.Glob("/home/*/public_html/wp-config.php")
+	if len(wpConfigs) == 0 {
+		return nil
+	}
 
-	for _, wpConfig := range wpConfigs {
-		wpPath := filepath.Dir(wpConfig)
-		user := extractUser(wpPath)
+	var mu sync.Mutex
+	var findings []alert.Finding
+	var wg sync.WaitGroup
 
-		out, err := runCmdCombined("wp", "core", "verify-checksums",
-			"--path="+wpPath, "--allow-root")
-		if err != nil && out != nil {
-			outStr := string(out)
-			lines := strings.Split(outStr, "\n")
-			for _, line := range lines {
-				if strings.Contains(line, "should not exist") && !strings.Contains(line, "error_log") {
-					findings = append(findings, alert.Finding{
-						Severity: alert.High,
-						Check:    "wp_core_integrity",
-						Message:  fmt.Sprintf("WordPress core integrity failure for %s", user),
-						Details:  fmt.Sprintf("Path: %s\n%s", wpPath, line),
-					})
+	// Bounded worker pool
+	jobs := make(chan string, len(wpConfigs))
+	for i := 0; i < wpChecksumWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for wpConfig := range jobs {
+				wpPath := filepath.Dir(wpConfig)
+				user := extractUser(wpPath)
+
+				out, err := runCmdCombined("wp", "core", "verify-checksums",
+					"--path="+wpPath, "--allow-root")
+				if err == nil || out == nil {
+					continue
+				}
+
+				outStr := string(out)
+				for _, line := range strings.Split(outStr, "\n") {
+					if strings.Contains(line, "should not exist") && !strings.Contains(line, "error_log") {
+						mu.Lock()
+						findings = append(findings, alert.Finding{
+							Severity: alert.High,
+							Check:    "wp_core_integrity",
+							Message:  fmt.Sprintf("WordPress core integrity failure for %s", user),
+							Details:  fmt.Sprintf("Path: %s\n%s", wpPath, line),
+						})
+						mu.Unlock()
+					}
 				}
 			}
-		}
+		}()
 	}
+
+	for _, wpConfig := range wpConfigs {
+		jobs <- wpConfig
+	}
+	close(jobs)
+	wg.Wait()
 
 	return findings
 }
