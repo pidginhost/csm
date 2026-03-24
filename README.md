@@ -10,8 +10,8 @@ Benchmarked on a production cPanel server with 168 accounts, 275 WordPress sites
 
 | Tier | Checks | Frequency | Duration | RAM | CPU Priority |
 |---|---|---|---|---|---|
-| **Critical** | 18 checks | Every 10 min | **0.5 seconds** | 52 MB | Normal |
-| **Deep** | 7 checks | Every 30-60 min | **38 seconds** | 107 MB | Nice 10 (low) |
+| **Critical** | 20 checks | Every 10 min | **< 1 second** | ~55 MB | Normal |
+| **Deep** | 10 checks | Every 30 min | **~40 seconds** | ~110 MB | Nice 10 (low) |
 
 **How it stays fast:**
 - Pure Go `os.ReadDir` (getdents syscall) instead of `find` — reads directory entries without stat per file
@@ -64,6 +64,8 @@ The binary verifies its own integrity (SHA256) on each run. If tampered with, it
 | Firewall integrity | CSF config changes; backdoor ports in TCP_IN; port 22 re-added |
 | Mail queue | Exim queue size spikes (spam from compromised accounts) |
 | Per-account email rate | Alerts when a single domain sends >100 emails in recent log window |
+| Kernel module audit | Compares loaded kernel modules against baseline — new unknown modules could indicate rootkit |
+| MySQL superuser audit | Monitors MySQL users with SUPER privilege — alerts on changes |
 | Self-health | Verifies CSM dependencies (exim, auditctl, whmapi1, wp), auditd rules loaded, state dir writable |
 
 ### Deep Tier (7 checks, every 30-60 minutes, ~38 seconds)
@@ -78,7 +80,24 @@ The binary verifies its own integrity (SHA256) on each run. If tampered with, it
 | WP core integrity | `wp core verify-checksums` across all WordPress installations (5 parallel workers) |
 | File index diff | Builds index of PHP/executable files, diffs against previous scan. Catches **new files with unknown names** — not just known patterns. Uses directory mtime caching to skip unchanged dirs. |
 | Nulled plugin detection | Scans WordPress plugin PHP files for crack signatures: `nulled by`, `gpl-club`, `license_key_bypass`, `activation_bypass`, etc. |
+| RPM binary verification | Verifies critical system packages (openssh-server, shadow-utils, sudo, coreutils) haven't been modified — catches trojaned binaries |
+| Group-writable PHP | PHP files writable by web server group (nobody/apache) — allows webshells to persist via HTTP |
 | Cross-account correlation | Detects coordinated attacks: 3+ accounts with critical findings, or same malware type across multiple accounts |
+
+### Auto-Response (optional, disabled by default)
+
+| Action | What it does |
+|---|---|
+| Auto-kill processes | Kills fake kernel threads, reverse shells, GSocket processes (never kills root/system processes) |
+| Auto-quarantine files | Moves webshells and backdoor binaries to `/opt/csm/quarantine/` with metadata sidecar |
+
+Enable in config:
+```yaml
+auto_response:
+  enabled: true
+  kill_processes: true
+  quarantine_files: true
+```
 
 ### Always-on Features
 

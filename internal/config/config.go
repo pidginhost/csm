@@ -59,6 +59,12 @@ type Config struct {
 		IgnorePaths     []string `yaml:"ignore_paths"`
 	} `yaml:"suppressions"`
 
+	AutoResponse struct {
+		Enabled         bool `yaml:"enabled"`
+		KillProcesses   bool `yaml:"kill_processes"`
+		QuarantineFiles bool `yaml:"quarantine_files"`
+	} `yaml:"auto_response"`
+
 	C2Blocklist   []string `yaml:"c2_blocklist"`
 	BackdoorPorts []int    `yaml:"backdoor_ports"`
 }
