@@ -66,8 +66,11 @@ func CheckFilesystem(_ *config.Config, _ *state.Store) []alert.Finding {
 	// SUID binaries in unusual locations
 	suidDirs := []string{"/home", "/tmp", "/var/tmp", "/dev/shm"}
 	for _, dir := range suidDirs {
-		filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info == nil || info.IsDir() {
+		filepath.Walk(dir, func(path string, info os.FileInfo, err error) error { //nolint:errcheck
+			if err != nil {
+				return filepath.SkipDir
+			}
+			if info == nil || info.IsDir() {
 				return nil
 			}
 			if info.Mode()&os.ModeSetuid != 0 {
@@ -97,8 +100,11 @@ func CheckWebshells(cfg *config.Config, _ *state.Store) []alert.Finding {
 
 	homes, _ := filepath.Glob("/home/*/public_html")
 	for _, home := range homes {
-		filepath.Walk(home, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info == nil {
+		filepath.Walk(home, func(path string, info os.FileInfo, err error) error { //nolint:errcheck
+			if err != nil {
+				return filepath.SkipDir
+			}
+			if info == nil {
 				return nil
 			}
 

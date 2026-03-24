@@ -37,7 +37,7 @@ func Open(path string) (*Store, error) {
 	stateFile := filepath.Join(path, "state.json")
 	data, err := os.ReadFile(stateFile)
 	if err == nil {
-		json.Unmarshal(data, &s.entries)
+		_ = json.Unmarshal(data, &s.entries)
 	}
 
 	return s, nil
@@ -130,7 +130,7 @@ func (s *Store) Update(findings []alert.Finding) {
 		}
 	}
 
-	s.save()
+	_ = s.save()
 }
 
 func (s *Store) SetBaseline(findings []alert.Finding) {
@@ -148,7 +148,7 @@ func (s *Store) SetBaseline(findings []alert.Finding) {
 		}
 	}
 
-	s.save()
+	_ = s.save()
 }
 
 func (s *Store) ShouldRunThrottled(checkName string, intervalMin int) bool {

@@ -34,8 +34,11 @@ func CheckHtaccess(cfg *config.Config, _ *state.Store) []alert.Finding {
 
 	homes, _ := filepath.Glob("/home/*/public_html")
 	for _, home := range homes {
-		filepath.Walk(home, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info == nil || info.IsDir() {
+		_ = filepath.Walk(home, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return filepath.SkipDir
+			}
+			if info == nil || info.IsDir() {
 				return nil
 			}
 			if info.Name() != ".htaccess" {
@@ -53,7 +56,7 @@ func CheckHtaccess(cfg *config.Config, _ *state.Store) []alert.Finding {
 			if err != nil {
 				return nil
 			}
-			defer f.Close()
+			defer func() { _ = f.Close() }()
 
 			scanner := bufio.NewScanner(f)
 			lineNum := 0
