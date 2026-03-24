@@ -245,15 +245,8 @@ func scanForWebshells(dir string, maxDepth int, names map[string]bool, dirs map[
 						Details:  fmt.Sprintf("Mode: %s", mode),
 					})
 				}
-				// Executable PHP (should never need +x)
-				if mode&0111 != 0 {
-					*findings = append(*findings, alert.Finding{
-						Severity: alert.Warning,
-						Check:    "executable_php",
-						Message:  fmt.Sprintf("Executable PHP file: %s", fullPath),
-						Details:  fmt.Sprintf("Mode: %s", mode),
-					})
-				}
+				// Note: executable PHP check removed — most PHP files on cPanel
+				// have +x due to suPHP/lsapi, making this too noisy.
 			}
 		}
 	}
