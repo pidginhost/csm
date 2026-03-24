@@ -1,16 +1,16 @@
 #!/bin/bash
 # cPanel Security Monitor — Secure deploy from GitLab Package Registry
 #
-# Downloads the latest binary + SHA256 checksum from the GitLab Generic
-# Package Registry, verifies integrity, and installs or upgrades.
+# Downloads the latest binary + SHA256 checksum, verifies integrity,
+# and installs or upgrades.
 #
 # The server token only needs read_package_registry scope — NO access to
 # source code, issues, pipelines, or anything else.
 #
 # Usage:
-#   deploy.sh install               # First-time install (latest from main)
-#   deploy.sh upgrade               # Upgrade to latest
-#   deploy.sh check                 # Check if upgrade available
+#   deploy.sh install        Install latest
+#   deploy.sh upgrade        Upgrade to latest
+#   deploy.sh check          Check if update available
 #
 # First run requires: GITLAB_TOKEN env var
 # Token is saved at /opt/csm/.deploy-token for future use.
@@ -25,6 +25,7 @@ INSTALL_DIR="/opt/csm"
 BINARY_PATH="${INSTALL_DIR}/${BINARY_NAME}"
 TOKEN_FILE="${INSTALL_DIR}/.deploy-token"
 ARCH=$(uname -m)
+AUTH_HEADER=""
 
 case "$ARCH" in
     x86_64)  ARCH="amd64" ;;
@@ -49,12 +50,40 @@ get_token() {
     fi
     die "No GitLab token found. Set GITLAB_TOKEN env var or create ${TOKEN_FILE}
 
-Create a PROJECT DEPLOY TOKEN (not personal) at:
+Create a PROJECT DEPLOY TOKEN at:
   https://${GITLAB_HOST}/pidginhost/cpanel-security-monitor/-/settings/repository
   -> Deploy tokens
   -> Name: csm-deploy-\$(hostname)
-  -> Scopes: read_package_registry ONLY
-  -> This gives access to download binaries only, not source code"
+  -> Scopes: read_package_registry ONLY"
+}
+
+# Detect whether this is a personal token or deploy token
+detect_auth_header() {
+    local token
+    token=$(get_token)
+
+    # Try Deploy-Token first (project deploy tokens)
+    local code
+    code=$(curl -sS -w '%{http_code}' -o /dev/null \
+        --header "Deploy-Token: ${token}" \
+        "${PKG_BASE}/latest/${ARTIFACT_NAME}.sha256" 2>/dev/null)
+
+    if [ "$code" = "200" ]; then
+        AUTH_HEADER="Deploy-Token: ${token}"
+        return
+    fi
+
+    # Try PRIVATE-TOKEN (personal access tokens)
+    code=$(curl -sS -w '%{http_code}' -o /dev/null \
+        --header "PRIVATE-TOKEN: ${token}" \
+        "${PKG_BASE}/latest/${ARTIFACT_NAME}.sha256" 2>/dev/null)
+
+    if [ "$code" = "200" ]; then
+        AUTH_HEADER="PRIVATE-TOKEN: ${token}"
+        return
+    fi
+
+    die "Token authentication failed (HTTP ${code}). Check token has read_package_registry scope."
 }
 
 save_token() {
@@ -66,47 +95,32 @@ save_token() {
     fi
 }
 
+# Download a file from package registry using detected auth
+pkg_download() {
+    local url="$1"
+    local output="$2"
+    curl -sS -w '%{http_code}' --header "${AUTH_HEADER}" -o "$output" "$url"
+}
+
 download_package() {
     local version="${1:-latest}"
-    local token
-    token=$(get_token)
     local tmpdir
     mkdir -p "$INSTALL_DIR"
     tmpdir=$(mktemp -d -p "$INSTALL_DIR")
 
     echo "Downloading ${ARTIFACT_NAME} (version: ${version})..."
 
-    # Download binary from package registry
     local http_code
-    http_code=$(curl -sS -w '%{http_code}' \
-        --header "PRIVATE-TOKEN: ${token}" \
-        -o "${tmpdir}/${ARTIFACT_NAME}" \
-        "${PKG_BASE}/${version}/${ARTIFACT_NAME}")
-
-    if [ "$http_code" != "200" ]; then
-        # Try with deploy token header format
-        http_code=$(curl -sS -w '%{http_code}' \
-            --header "Deploy-Token: ${token}" \
-            -o "${tmpdir}/${ARTIFACT_NAME}" \
-            "${PKG_BASE}/${version}/${ARTIFACT_NAME}")
-    fi
-
+    http_code=$(pkg_download "${PKG_BASE}/${version}/${ARTIFACT_NAME}" "${tmpdir}/${ARTIFACT_NAME}")
     if [ "$http_code" != "200" ]; then
         rm -rf "$tmpdir"
-        die "Download failed (HTTP ${http_code}). Check token permissions (needs read_package_registry)."
+        die "Binary download failed (HTTP ${http_code})."
     fi
 
-    # Download checksum
-    http_code=$(curl -sS -w '%{http_code}' \
-        --header "PRIVATE-TOKEN: ${token}" \
-        -o "${tmpdir}/${ARTIFACT_NAME}.sha256" \
-        "${PKG_BASE}/${version}/${ARTIFACT_NAME}.sha256")
-
+    http_code=$(pkg_download "${PKG_BASE}/${version}/${ARTIFACT_NAME}.sha256" "${tmpdir}/${ARTIFACT_NAME}.sha256")
     if [ "$http_code" != "200" ]; then
-        curl -sS -w '%{http_code}' \
-            --header "Deploy-Token: ${token}" \
-            -o "${tmpdir}/${ARTIFACT_NAME}.sha256" \
-            "${PKG_BASE}/${version}/${ARTIFACT_NAME}.sha256" > /dev/null
+        rm -rf "$tmpdir"
+        die "Checksum download failed (HTTP ${http_code})."
     fi
 
     # Verify checksum
@@ -119,31 +133,26 @@ download_package() {
         die "CHECKSUM VERIFICATION FAILED!
   Expected: ${expected_hash}
   Got:      ${actual_hash}
-  The binary may have been tampered with. Do not use it."
+  The binary may have been tampered with."
     fi
     echo "Checksum OK (${actual_hash:0:16}...)"
 
-    # Verify binary executes
     chmod +x "${tmpdir}/${ARTIFACT_NAME}"
     if ! "${tmpdir}/${ARTIFACT_NAME}" version > /dev/null 2>&1; then
         rm -rf "$tmpdir"
         die "Downloaded binary failed to execute."
     fi
 
-    local ver
-    ver=$("${tmpdir}/${ARTIFACT_NAME}" version)
-    echo "Downloaded: ${ver}"
-
+    echo "Downloaded: $("${tmpdir}/${ARTIFACT_NAME}" version)"
     echo "$tmpdir"
 }
 
 do_install() {
-    if [ "$(id -u)" -ne 0 ]; then
-        die "Must be run as root"
-    fi
+    if [ "$(id -u)" -ne 0 ]; then die "Must be run as root"; fi
 
     echo "=== cPanel Security Monitor — Install ==="
     echo ""
+    detect_auth_header
 
     local tmpdir
     tmpdir=$(download_package "latest")
@@ -153,7 +162,6 @@ do_install() {
     rm -rf "$tmpdir"
 
     save_token
-
     "$BINARY_PATH" install
 
     echo ""
@@ -164,16 +172,12 @@ do_install() {
 }
 
 do_upgrade() {
-    if [ "$(id -u)" -ne 0 ]; then
-        die "Must be run as root"
-    fi
-
-    if [ ! -f "$BINARY_PATH" ]; then
-        die "CSM not installed. Run: $0 install"
-    fi
+    if [ "$(id -u)" -ne 0 ]; then die "Must be run as root"; fi
+    if [ ! -f "$BINARY_PATH" ]; then die "CSM not installed. Run: $0 install"; fi
 
     echo "=== cPanel Security Monitor — Upgrade ==="
     echo ""
+    detect_auth_header
 
     local old_version
     old_version=$("$BINARY_PATH" version 2>/dev/null || echo "unknown")
@@ -187,80 +191,68 @@ do_upgrade() {
 
     if [ "$old_version" = "$new_version" ]; then
         rm -rf "$tmpdir"
-        echo ""
-        echo "Already running the latest version. Nothing to do."
+        echo "Already running the latest version."
         exit 0
     fi
 
     save_token
 
-    # Stop timers during upgrade
+    # Stop timers
     systemctl stop csm-critical.timer csm-deep.timer 2>/dev/null || true
 
-    # Backup current binary and config
+    # Backup
     cp "$BINARY_PATH" "${BINARY_PATH}.bak" 2>/dev/null || true
     cp "${INSTALL_DIR}/csm.yaml" "${INSTALL_DIR}/csm.yaml.bak" 2>/dev/null || true
-    echo "Backup created: ${BINARY_PATH}.bak"
 
-    # Swap binary
+    # Swap
     chattr -i "$BINARY_PATH" 2>/dev/null || true
     cp "${tmpdir}/${ARTIFACT_NAME}" "$BINARY_PATH"
     rm -rf "$tmpdir"
 
-    # Re-baseline
+    # Baseline — rollback if fails
     if ! "$BINARY_PATH" baseline 2>&1; then
         echo "WARNING: Baseline failed, rolling back..."
         cp "${BINARY_PATH}.bak" "$BINARY_PATH" 2>/dev/null || true
         cp "${INSTALL_DIR}/csm.yaml.bak" "${INSTALL_DIR}/csm.yaml" 2>/dev/null || true
         chattr +i "$BINARY_PATH" 2>/dev/null || true
         systemctl start csm-critical.timer csm-deep.timer 2>/dev/null || true
-        die "Upgrade failed — rolled back to previous version"
+        die "Upgrade failed — rolled back"
     fi
 
     chattr +i "$BINARY_PATH" 2>/dev/null || true
     systemctl start csm-critical.timer csm-deep.timer 2>/dev/null || true
 
     echo ""
-    echo "Upgrade complete"
-    echo "  Old: ${old_version}"
-    echo "  New: ${new_version}"
+    echo "Upgrade complete: ${old_version} -> ${new_version}"
 }
 
 do_check() {
-    if [ ! -f "$BINARY_PATH" ]; then
-        echo "CSM not installed."
-        exit 1
-    fi
+    if [ ! -f "$BINARY_PATH" ]; then echo "CSM not installed."; exit 1; fi
+    detect_auth_header
 
     local current
     current=$("$BINARY_PATH" version 2>/dev/null || echo "unknown")
     echo "Installed: ${current}"
 
-    local token
-    token=$(get_token)
     local tmpdir
     mkdir -p "$INSTALL_DIR"
     tmpdir=$(mktemp -d -p "$INSTALL_DIR")
 
     local http_code
-    http_code=$(curl -sS -w '%{http_code}' \
-        --header "PRIVATE-TOKEN: ${token}" \
-        -o "${tmpdir}/${ARTIFACT_NAME}" \
-        "${PKG_BASE}/latest/${ARTIFACT_NAME}" 2>/dev/null)
+    http_code=$(pkg_download "${PKG_BASE}/latest/${ARTIFACT_NAME}" "${tmpdir}/${ARTIFACT_NAME}")
 
     if [ "$http_code" = "200" ]; then
         chmod +x "${tmpdir}/${ARTIFACT_NAME}"
         local latest
         latest=$("${tmpdir}/${ARTIFACT_NAME}" version 2>/dev/null || echo "unknown")
         echo "Latest:    ${latest}"
-
         if [ "$current" = "$latest" ]; then
             echo "Up to date."
         else
             echo "Update available. Run: $0 upgrade"
         fi
     else
-        echo "Could not fetch latest version (HTTP ${http_code})."
+        echo "Could not fetch latest (HTTP ${http_code})."
     fi
 
     rm -rf "$tmpdir"
@@ -268,31 +260,20 @@ do_check() {
 
 # --- Main ---
 
-CMD="${1:-}"
-
-case "$CMD" in
-    install)
-        do_install
-        ;;
-    upgrade)
-        do_upgrade
-        ;;
-    check)
-        do_check
-        ;;
+case "${1:-}" in
+    install)  do_install ;;
+    upgrade)  do_upgrade ;;
+    check)    do_check ;;
     *)
         echo "cPanel Security Monitor — Deploy"
         echo ""
         echo "Usage:"
-        echo "  $0 install        Install latest"
-        echo "  $0 upgrade        Upgrade to latest"
-        echo "  $0 check          Check if update available"
+        echo "  $0 install     Install latest"
+        echo "  $0 upgrade     Upgrade to latest"
+        echo "  $0 check       Check if update available"
         echo ""
-        echo "First run requires GITLAB_TOKEN env var (saved for future use)."
-        echo ""
-        echo "Create a PROJECT DEPLOY TOKEN at:"
-        echo "  https://${GITLAB_HOST}/pidginhost/cpanel-security-monitor/-/settings/repository"
-        echo "  -> Deploy tokens -> Scope: read_package_registry ONLY"
+        echo "Requires GITLAB_TOKEN env var on first run (saved for future use)."
+        echo "Token scope: read_package_registry ONLY"
         exit 1
         ;;
 esac
