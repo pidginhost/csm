@@ -257,11 +257,11 @@ StandardOutput=append:/var/log/csm/monitor.log
 StandardError=append:/var/log/csm/monitor.log
 `
 	deepTimer := `[Unit]
-Description=Run CSM deep filesystem scan every 30 minutes
+Description=Run CSM deep filesystem scan every 60 minutes
 
 [Timer]
 OnBootSec=5min
-OnUnitActiveSec=30min
+OnUnitActiveSec=60min
 AccuracySec=60s
 
 [Install]
