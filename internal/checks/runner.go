@@ -56,6 +56,7 @@ func deepChecks() []namedCheck {
 		{"webshells", CheckWebshells},
 		{"htaccess", CheckHtaccess},
 		{"wp_core", CheckWPCore},
+		{"file_index", CheckFileIndex},
 	}
 }
 

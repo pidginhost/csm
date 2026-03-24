@@ -44,6 +44,7 @@ The binary verifies its own integrity (SHA256) on each run. If tampered with, it
 | SUID binaries | SUID files in `/home`, `/tmp`, `/var/tmp`, `/dev/shm` |
 | .htaccess injection | `auto_prepend_file`, `eval`, `base64_decode` in .htaccess files |
 | WP core integrity | `wp core verify-checksums` across all WordPress installations |
+| **File index diff** | Builds index of PHP/executable files, diffs against previous scan. Catches NEW files with unknown names — not just known webshell patterns. Detects new PHP in uploads, new executables in .config, suspicious filenames (shell, cmd, eval, random short names). |
 
 ### Always-on Features
 
@@ -166,7 +167,7 @@ backdoor_ports: [4444, 5555, 55553, 55555, 31337]
 - auditd monitors the binary and config for tampering
 - Deploy token at `/opt/csm/.deploy-token` (root-only, mode 600)
 
-**Use project-scoped deploy tokens** (Settings > Repository > Deploy tokens, `read_repository` scope) instead of personal access tokens to limit blast radius.
+**Use project-scoped deploy tokens** (Settings > Repository > Deploy tokens, `read_package_registry` scope only) instead of personal access tokens. The server only downloads published binaries — no access to source code.
 
 Binary signing with cosign is planned for a future release.
 
