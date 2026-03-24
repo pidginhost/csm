@@ -138,20 +138,17 @@ download_artifact() {
 
     # Verify checksum
     echo "Verifying SHA256 checksum..."
-    cd "$tmpdir"
-    if ! sha256sum -c "${ARTIFACT_NAME}.sha256" > /dev/null 2>&1; then
-        local expected actual
-        expected=$(cat "${ARTIFACT_NAME}.sha256")
-        actual=$(sha256sum "${ARTIFACT_NAME}")
-        cd - > /dev/null
+    local expected_hash actual_hash
+    expected_hash=$(awk '{print $1}' "${tmpdir}/${ARTIFACT_NAME}.sha256")
+    actual_hash=$(sha256sum "${tmpdir}/${ARTIFACT_NAME}" | awk '{print $1}')
+    if [ "$expected_hash" != "$actual_hash" ]; then
         rm -rf "$tmpdir"
         die "CHECKSUM VERIFICATION FAILED!
-  Expected: ${expected}
-  Got:      ${actual}
+  Expected: ${expected_hash}
+  Got:      ${actual_hash}
   The binary may have been tampered with. Do not use it."
     fi
-    echo "Checksum OK"
-    cd - > /dev/null
+    echo "Checksum OK (${actual_hash:0:16}...)"
 
     # Verify binary executes
     chmod +x "${tmpdir}/${ARTIFACT_NAME}"
