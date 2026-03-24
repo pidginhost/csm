@@ -182,6 +182,9 @@ func runStatus() {
 func runBaseline() {
 	cfg := loadConfig()
 
+	// Force all checks to run regardless of throttle
+	checks.ForceAll = true
+
 	store, err := state.Open(cfg.StatePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening state: %v\n", err)

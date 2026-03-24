@@ -11,6 +11,9 @@ import (
 
 type CheckFunc func(cfg *config.Config, store *state.Store) []alert.Finding
 
+// ForceAll controls whether throttled checks are forced to run.
+var ForceAll bool
+
 func RunAll(cfg *config.Config, store *state.Store) []alert.Finding {
 	// Always-run checks (fast, every invocation)
 	alwaysRun := []CheckFunc{
@@ -58,9 +61,9 @@ func RunAll(cfg *config.Config, store *state.Store) []alert.Finding {
 		}(fn)
 	}
 
-	// Run throttled checks if due
+	// Run throttled checks if due (or if ForceAll is set, e.g. during baseline)
 	for _, tc := range throttled {
-		if store.ShouldRunThrottled(tc.name, tc.interval) {
+		if ForceAll || store.ShouldRunThrottled(tc.name, tc.interval) {
 			wg.Add(1)
 			go func(f CheckFunc) {
 				defer wg.Done()

@@ -144,8 +144,22 @@ func CheckWebshells(cfg *config.Config, _ *state.Store) []alert.Finding {
 
 			// Check for .php files in uploads dirs
 			if strings.Contains(path, "/wp-content/uploads/") && strings.HasSuffix(name, ".php") {
-				// Skip known safe files
-				if name == "index.php" || strings.Contains(path, "/cache/") || strings.Contains(path, "/imunify") {
+				// Skip known safe plugin/theme upload paths
+				knownSafePaths := []string{
+					"/cache/", "/imunify", "/redux/", "/mailchimp-for-wp/",
+					"/sucuri/", "/smush/", "/goldish/", "/wpallexport/",
+					"/wpallimport/", "/wph/", "/stm_fonts/", "/smile_fonts/",
+					"/bws-custom-code/", "/wp-import-export-lite/",
+					"/mc4wp-debug-log.php",
+				}
+				safe := name == "index.php"
+				for _, sp := range knownSafePaths {
+					if strings.Contains(path, sp) {
+						safe = true
+						break
+					}
+				}
+				if safe {
 					return nil
 				}
 				findings = append(findings, alert.Finding{
