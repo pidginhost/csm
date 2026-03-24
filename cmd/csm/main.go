@@ -55,6 +55,8 @@ func main() {
 		runStatus()
 	case "baseline":
 		runBaseline()
+	case "validate":
+		runValidate()
 	case "verify":
 		runVerify()
 	default:
@@ -80,6 +82,7 @@ Commands:
   check-deep      Test deep checks only
   status        Show current state, last run, active findings
   baseline      Reset state — mark current state as "known good"
+  validate      Validate config file for common mistakes
   verify        Verify binary + config integrity
   version       Version info + build hash
 
@@ -162,6 +165,9 @@ func runTieredChecks(tier checks.Tier, sendAlerts bool) {
 
 	findings := checks.RunTier(cfg, store, tier)
 
+	// Log all findings to history
+	store.AppendHistory(findings)
+
 	newFindings := store.FilterNew(findings)
 
 	if sendAlerts && len(newFindings) > 0 {
@@ -177,6 +183,11 @@ func runTieredChecks(tier checks.Tier, sendAlerts bool) {
 	}
 
 	store.Update(findings)
+
+	// Send heartbeat after successful run
+	if sendAlerts {
+		alert.SendHeartbeat(cfg)
+	}
 }
 
 func runStatus() {
@@ -219,6 +230,20 @@ func runBaseline() {
 	fmt.Printf("Baseline established with %d findings recorded as known state\n", len(findings))
 	fmt.Printf("Binary hash: %s\n", binaryHash)
 	fmt.Printf("Config hash: %s\n", configHash)
+}
+
+func runValidate() {
+	cfg := loadConfig()
+	errs := config.Validate(cfg)
+	if len(errs) == 0 {
+		fmt.Println("Config valid")
+		return
+	}
+	fmt.Println("Config errors:")
+	for _, e := range errs {
+		fmt.Printf("  - %s\n", e)
+	}
+	os.Exit(1)
 }
 
 func runVerify() {

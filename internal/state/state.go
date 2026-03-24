@@ -187,6 +187,46 @@ func (s *Store) SetRaw(key, value string) {
 	}
 }
 
+// AppendHistory writes findings to an append-only JSONL history file.
+// Caps file at 10MB by truncating the oldest half.
+func (s *Store) AppendHistory(findings []alert.Finding) {
+	if len(findings) == 0 {
+		return
+	}
+
+	histPath := filepath.Join(s.path, "history.jsonl")
+
+	// Check size, truncate if over 10MB
+	if info, err := os.Stat(histPath); err == nil && info.Size() > 10*1024*1024 {
+		data, err := os.ReadFile(histPath)
+		if err == nil {
+			// Keep the second half
+			half := len(data) / 2
+			for half < len(data) && data[half] != '\n' {
+				half++
+			}
+			if half < len(data) {
+				_ = os.WriteFile(histPath, data[half+1:], 0600)
+			}
+		}
+	}
+
+	f, err := os.OpenFile(histPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		return
+	}
+	defer func() { _ = f.Close() }()
+
+	for _, finding := range findings {
+		line, err := json.Marshal(finding)
+		if err != nil {
+			continue
+		}
+		_, _ = f.Write(line)
+		_, _ = f.Write([]byte("\n"))
+	}
+}
+
 func (s *Store) PrintStatus() {
 	if len(s.entries) == 0 {
 		fmt.Println("No state entries. Run 'csm baseline' first.")

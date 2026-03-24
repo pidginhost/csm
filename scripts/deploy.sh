@@ -231,14 +231,33 @@ do_upgrade() {
     # Save token if provided
     save_token
 
+    # Stop timers during upgrade
+    systemctl stop csm-critical.timer csm-deep.timer 2>/dev/null || true
+
+    # Backup current binary and config
+    cp "$BINARY_PATH" "${BINARY_PATH}.bak" 2>/dev/null || true
+    cp "${INSTALL_DIR}/csm.yaml" "${INSTALL_DIR}/csm.yaml.bak" 2>/dev/null || true
+    echo "Backup created: ${BINARY_PATH}.bak"
+
     # Swap binary: remove immutable, copy, re-set immutable
     chattr -i "$BINARY_PATH" 2>/dev/null || true
     cp "${tmpdir}/${ARTIFACT_NAME}" "$BINARY_PATH"
-    chattr +i "$BINARY_PATH" 2>/dev/null || true
     rm -rf "$tmpdir"
 
     # Re-baseline with new binary hash
-    "$BINARY_PATH" baseline
+    if ! "$BINARY_PATH" baseline 2>&1; then
+        echo "WARNING: Baseline failed, rolling back..."
+        cp "${BINARY_PATH}.bak" "$BINARY_PATH" 2>/dev/null || true
+        cp "${INSTALL_DIR}/csm.yaml.bak" "${INSTALL_DIR}/csm.yaml" 2>/dev/null || true
+        chattr +i "$BINARY_PATH" 2>/dev/null || true
+        systemctl start csm-critical.timer csm-deep.timer 2>/dev/null || true
+        die "Upgrade failed — rolled back to previous version"
+    fi
+
+    chattr +i "$BINARY_PATH" 2>/dev/null || true
+
+    # Restart timers
+    systemctl start csm-critical.timer csm-deep.timer 2>/dev/null || true
 
     echo ""
     echo "Upgrade complete"

@@ -3,7 +3,6 @@ package checks
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -76,7 +75,7 @@ func CheckFilesystem(_ *config.Config, _ *state.Store) []alert.Finding {
 	// instead of filepath.Walk which traverses millions of files
 	suidDirs := []string{"/tmp", "/var/tmp", "/dev/shm"}
 	for _, dir := range suidDirs {
-		out, err := exec.Command("find", dir, "-maxdepth", "3", "-perm", "-4000", "-type", "f").Output()
+		out, err := runCmd("find", dir, "-maxdepth", "3", "-perm", "-4000", "-type", "f")
 		if err != nil {
 			continue
 		}
@@ -93,8 +92,8 @@ func CheckFilesystem(_ *config.Config, _ *state.Store) []alert.Finding {
 	}
 
 	// SUID in /home — only check shallow depths, not entire trees
-	out, err := exec.Command("find", "/home", "-maxdepth", "4", "-perm", "-4000", "-type", "f",
-		"-not", "-path", "*/virtfs/*").Output()
+	out, err := runCmd("find", "/home", "-maxdepth", "4", "-perm", "-4000", "-type", "f",
+		"-not", "-path", "*/virtfs/*")
 	if err == nil {
 		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 			if line == "" {
@@ -150,7 +149,7 @@ func CheckWebshells(cfg *config.Config, _ *state.Store) []alert.Finding {
 	findArgs = append(findArgs, "-o", "-name", "*.haxor")
 	findArgs = append(findArgs, ")")
 
-	out, err := exec.Command("find", findArgs...).Output()
+	out, err := runCmd("find", findArgs...)
 	if err == nil {
 		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 			if line == "" {
@@ -191,10 +190,10 @@ func CheckWebshells(cfg *config.Config, _ *state.Store) []alert.Finding {
 	}
 
 	// PHP files in uploads dirs — targeted find instead of walking everything
-	out, err = exec.Command("find", "/home", "-maxdepth", "8",
+	out, err = runCmd("find", "/home", "-maxdepth", "8",
 		"-path", "*/wp-content/uploads/*.php",
 		"-not", "-name", "index.php",
-		"-type", "f").Output()
+		"-type", "f")
 	if err == nil {
 		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 			if line == "" {

@@ -1,3 +1,4 @@
 dist/
 *.exe
 state/state.json
+.claude/

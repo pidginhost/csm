@@ -82,6 +82,13 @@ func (inst *Installer) Install() error {
 		fmt.Println("  systemd timer deployed and started")
 	}
 
+	// Deploy logrotate config
+	if err := deployLogrotate(); err != nil {
+		fmt.Printf("  Warning: logrotate deploy failed: %v\n", err)
+	} else {
+		fmt.Println("  logrotate config deployed")
+	}
+
 	// Set immutable attribute on binary
 	if err := exec.Command("chattr", "+i", inst.BinaryPath).Run(); err != nil {
 		fmt.Printf("  Warning: could not set immutable flag: %v\n", err)
@@ -119,9 +126,10 @@ func (inst *Installer) Uninstall() error {
 	exec.Command("systemctl", "daemon-reload").Run()
 	fmt.Println("  systemd timers removed")
 
-	// Remove cron
+	// Remove cron and logrotate
 	os.Remove("/etc/cron.d/csm")
-	fmt.Println("  cron job removed")
+	os.Remove("/etc/logrotate.d/csm")
+	fmt.Println("  cron job and logrotate removed")
 
 	// Remove auditd rules
 	auditd.Remove()
@@ -160,6 +168,9 @@ alerts:
     enabled: false
     url: ""
     type: "slack"  # slack, discord, generic
+  heartbeat:
+    enabled: false
+    url: ""  # healthchecks.io, cronitor, or similar dead man's switch URL
 
 integrity:
   binary_hash: ""
@@ -285,6 +296,19 @@ WantedBy=timers.target
 	}
 
 	return nil
+}
+
+func deployLogrotate() error {
+	content := `/var/log/csm/monitor.log {
+    weekly
+    rotate 4
+    compress
+    missingok
+    notifempty
+    create 0640 root root
+}
+`
+	return os.WriteFile("/etc/logrotate.d/csm", []byte(content), 0644)
 }
 
 func deployCron(binaryPath string) error {
