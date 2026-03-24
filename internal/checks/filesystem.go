@@ -230,6 +230,32 @@ func scanForWebshells(dir string, maxDepth int, names map[string]bool, dirs map[
 				Message:  fmt.Sprintf("Suspicious CGI file: %s", fullPath),
 			})
 		}
+
+		// File permission anomalies — only check PHP files to keep it fast
+		if strings.HasSuffix(nameLower, ".php") {
+			info, err := entry.Info()
+			if err == nil {
+				mode := info.Mode()
+				// World-writable PHP
+				if mode&0002 != 0 {
+					*findings = append(*findings, alert.Finding{
+						Severity: alert.High,
+						Check:    "world_writable_php",
+						Message:  fmt.Sprintf("World-writable PHP file: %s", fullPath),
+						Details:  fmt.Sprintf("Mode: %s", mode),
+					})
+				}
+				// Executable PHP (should never need +x)
+				if mode&0111 != 0 {
+					*findings = append(*findings, alert.Finding{
+						Severity: alert.Warning,
+						Check:    "executable_php",
+						Message:  fmt.Sprintf("Executable PHP file: %s", fullPath),
+						Details:  fmt.Sprintf("Mode: %s", mode),
+					})
+				}
+			}
+		}
 	}
 }
 

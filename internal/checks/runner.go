@@ -41,12 +41,17 @@ func criticalChecks() []namedCheck {
 		{"shadow_changes", CheckShadowChanges},
 		{"uid0_accounts", CheckUID0Accounts},
 		{"ssh_keys", CheckSSHKeys},
+		{"sshd_config", CheckSSHDConfig},
+		{"ssh_logins", CheckSSHLogins},
 		{"api_tokens", CheckAPITokens},
 		{"crontabs", CheckCrontabs},
 		{"outbound_connections", CheckOutboundConnections},
+		{"user_outbound", CheckOutboundUserConnections},
 		{"dns_connections", CheckDNSConnections},
+		{"whm_access", CheckWHMAccess},
 		{"firewall", CheckFirewall},
 		{"mail_queue", CheckMailQueue},
+		{"mail_per_account", CheckMailPerAccount},
 		{"health", CheckHealth},
 	}
 }
@@ -58,6 +63,7 @@ func deepChecks() []namedCheck {
 		{"htaccess", CheckHtaccess},
 		{"wp_core", CheckWPCore},
 		{"file_index", CheckFileIndex},
+		{"nulled_plugins", CheckNulledPlugins},
 	}
 }
 
@@ -130,6 +136,15 @@ func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck) []
 			findings[i].Timestamp = now
 		}
 	}
+
+	// Cross-account correlation
+	extra := CorrelateFindings(findings)
+	for i := range extra {
+		if extra[i].Timestamp.IsZero() {
+			extra[i].Timestamp = now
+		}
+	}
+	findings = append(findings, extra...)
 
 	return findings
 }
