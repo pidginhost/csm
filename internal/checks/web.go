@@ -27,6 +27,9 @@ func CheckHtaccess(cfg *config.Config, _ *state.Store) []alert.Finding {
 		"gzinflate",
 		"str_rot13",
 		"php_value disable_functions",
+		"addhandler",
+		"addtype",
+		"sethandler",
 	}
 
 	safePatterns := []string{
@@ -34,6 +37,18 @@ func CheckHtaccess(cfg *config.Config, _ *state.Store) []alert.Finding {
 		"litespeed",
 		"advanced-headers.php",
 		"rsssl",
+		// Standard handler directives for PHP/static files are safe
+		"application/x-httpd-php",
+		"application/x-httpd-php5",
+		"application/x-httpd-ea-php",
+		"application/x-httpd-alt-php",
+		"text/html",
+		"text/css",
+		"text/javascript",
+		"application/javascript",
+		"image/",
+		"font/",
+		"proxy:unix",
 	}
 
 	// Scan each user's document roots

@@ -100,7 +100,9 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 	for _, f := range findings {
 		// Only quarantine specific file-based findings
 		switch f.Check {
-		case "webshell", "backdoor_binary", "new_webshell_file", "new_executable_in_config":
+		case "webshell", "backdoor_binary", "new_webshell_file", "new_executable_in_config",
+			"obfuscated_php", "php_dropper", "suspicious_php_content",
+			"new_php_in_languages", "new_php_in_upgrade", "cpanel_file_upload":
 		default:
 			continue
 		}
@@ -114,7 +116,7 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 			continue
 		}
 
-		// Verify file exists
+		// Verify file or directory exists
 		info, err := os.Stat(path)
 		if err != nil {
 			continue
@@ -135,17 +137,25 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 			gid = int(stat.Gid)
 		}
 
-		// Move file to quarantine
-		if err := os.Rename(path, qPath); err != nil {
-			// If rename fails (cross-device), copy and delete
-			data, readErr := os.ReadFile(path)
-			if readErr != nil {
+		// Handle directory quarantine (e.g., LEVIATHAN/ webshell directories)
+		if info.IsDir() {
+			if err := os.Rename(path, qPath); err != nil {
+				// Cross-device: skip directory move (too complex for auto-response)
 				continue
 			}
-			if writeErr := os.WriteFile(qPath, data, 0600); writeErr != nil {
-				continue
+		} else {
+			// Move file to quarantine
+			if err := os.Rename(path, qPath); err != nil {
+				// If rename fails (cross-device), copy and delete
+				data, readErr := os.ReadFile(path)
+				if readErr != nil {
+					continue
+				}
+				if writeErr := os.WriteFile(qPath, data, 0600); writeErr != nil {
+					continue
+				}
+				os.Remove(path)
 			}
-			os.Remove(path)
 		}
 
 		// Write metadata sidecar

@@ -142,6 +142,24 @@ func CheckFileIndex(cfg *config.Config, _ *state.Store) []alert.Finding {
 			message = fmt.Sprintf("New PHP file in uploads: %s", path)
 		}
 
+		// PHP files in wp-content/languages — should only contain .mo/.po/.l10n.php
+		if strings.Contains(path, "/wp-content/languages/") && strings.HasSuffix(nameLower, ".php") {
+			if !strings.HasSuffix(nameLower, ".l10n.php") && nameLower != "index.php" {
+				severity = alert.Critical
+				check = "new_php_in_languages"
+				message = fmt.Sprintf("New PHP file in wp-content/languages (should only contain translations): %s", path)
+			}
+		}
+
+		// PHP files in wp-content/upgrade — should be empty except index.php
+		if strings.Contains(path, "/wp-content/upgrade/") && strings.HasSuffix(nameLower, ".php") {
+			if nameLower != "index.php" {
+				severity = alert.Critical
+				check = "new_php_in_upgrade"
+				message = fmt.Sprintf("New PHP file in wp-content/upgrade (should be empty): %s", path)
+			}
+		}
+
 		if strings.Contains(path, "/.config/") {
 			severity = alert.Critical
 			check = "new_executable_in_config"
@@ -214,6 +232,13 @@ func buildFileIndex(dirCache dirMtimeCache, prevByDir map[string][]string) []str
 		uploadDirs := []string{
 			filepath.Join(homeDir, "public_html", "wp-content", "uploads"),
 		}
+		// Scan directories that shouldn't normally contain user PHP:
+		// languages (translation files only), upgrade (temp dir), mu-plugins
+		sensitiveWPDirs := []string{
+			filepath.Join(homeDir, "public_html", "wp-content", "languages"),
+			filepath.Join(homeDir, "public_html", "wp-content", "upgrade"),
+			filepath.Join(homeDir, "public_html", "wp-content", "mu-plugins"),
+		}
 		subDirs, _ := os.ReadDir(homeDir)
 		for _, sd := range subDirs {
 			if sd.IsDir() && sd.Name() != "public_html" && sd.Name() != "mail" &&
@@ -223,11 +248,23 @@ func buildFileIndex(dirCache dirMtimeCache, prevByDir map[string][]string) []str
 				if info, err := os.Stat(uploadsPath); err == nil && info.IsDir() {
 					uploadDirs = append(uploadDirs, uploadsPath)
 				}
+				// Also track sensitive dirs for addon domains
+				for _, subDir := range []string{"languages", "upgrade", "mu-plugins"} {
+					sensitiveDir := filepath.Join(homeDir, sd.Name(), "wp-content", subDir)
+					if info, err := os.Stat(sensitiveDir); err == nil && info.IsDir() {
+						sensitiveWPDirs = append(sensitiveWPDirs, sensitiveDir)
+					}
+				}
 			}
 		}
 
 		for _, uploadsDir := range uploadDirs {
 			scanDirForPHP(uploadsDir, 6, dirCache, prevByDir, &entries)
+		}
+
+		// Scan sensitive WP directories for any PHP files
+		for _, sensitiveDir := range sensitiveWPDirs {
+			scanDirForPHP(sensitiveDir, 4, dirCache, prevByDir, &entries)
 		}
 
 		// Scan .config for executables
