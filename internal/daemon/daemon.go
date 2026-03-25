@@ -157,10 +157,11 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// Log to history
 	d.store.AppendHistory(newFindings)
 
-	// Auto-response
+	// Auto-response (kill and quarantine on new findings only)
 	killActions := checks.AutoKillProcesses(d.cfg, newFindings)
 	quarantineActions := checks.AutoQuarantineFiles(d.cfg, newFindings)
-	blockActions := checks.AutoBlockIPs(d.cfg, newFindings)
+	// Auto-block uses ALL findings — reputation IPs must be blocked even if previously seen
+	blockActions := checks.AutoBlockIPs(d.cfg, findings)
 	newFindings = append(newFindings, killActions...)
 	newFindings = append(newFindings, quarantineActions...)
 	newFindings = append(newFindings, blockActions...)

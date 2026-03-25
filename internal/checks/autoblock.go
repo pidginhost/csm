@@ -32,8 +32,9 @@ type blockState struct {
 }
 
 // AutoBlockIPs processes findings and blocks attacker IPs via CSF.
-// Only blocks IPs that triggered CRITICAL or HIGH findings related to
-// brute force, unauthorized access, or active attacks.
+// Blocks IPs from brute force, C2 connections, and bad IP reputation.
+// Note: this should be called with ALL findings (not just new ones)
+// for reputation-based blocking to work on repeat offenders.
 func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding {
 	if !cfg.AutoResponse.Enabled || !cfg.AutoResponse.BlockIPs {
 		return nil
