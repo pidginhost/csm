@@ -68,6 +68,8 @@ func deepChecks() []namedCheck {
 		{"nulled_plugins", CheckNulledPlugins},
 		{"rpm_integrity", CheckRPMIntegrity},
 		{"group_writable_php", CheckGroupWritablePHP},
+		{"open_basedir", CheckOpenBasedir},
+		{"symlink_attacks", CheckSymlinkAttacks},
 	}
 }
 
