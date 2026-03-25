@@ -90,6 +90,19 @@ func RunTier(cfg *config.Config, store *state.Store, tier Tier) []alert.Finding 
 	return runParallel(cfg, store, toRun)
 }
 
+// RunReducedDeep runs only the deep checks that fanotify can't replace.
+// Used by the daemon when fanotify is active.
+func RunReducedDeep(cfg *config.Config, store *state.Store) []alert.Finding {
+	reduced := []namedCheck{
+		{"wp_core", CheckWPCore},
+		{"nulled_plugins", CheckNulledPlugins},
+		{"rpm_integrity", CheckRPMIntegrity},
+		{"open_basedir", CheckOpenBasedir},
+		{"symlink_attacks", CheckSymlinkAttacks},
+	}
+	return runParallel(cfg, store, reduced)
+}
+
 // RunAll runs critical checks always. Deep checks run if throttle allows or ForceAll is set.
 func RunAll(cfg *config.Config, store *state.Store) []alert.Finding {
 	toRun := criticalChecks()

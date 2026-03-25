@@ -49,6 +49,20 @@ func CheckHtaccess(cfg *config.Config, _ *state.Store) []alert.Finding {
 		"image/",
 		"font/",
 		"proxy:unix",
+		// Security plugins that use handler directives to BLOCK execution
+		"-execcgi",                   // Options -ExecCGI disables CGI (Wordfence pattern)
+		"sethandler none",            // Disables all handlers (security measure)
+		"sethandler default-handler", // Resets to default (security measure)
+		// Legitimate MIME type additions
+		"application/font",
+		"application/vnd",
+		".woff",
+		".woff2",
+		".ttf",
+		".eot",
+		".svg",
+		// Wordfence code execution protection
+		"wordfence",
 	}
 
 	// Scan each user's document roots
@@ -120,17 +134,29 @@ func checkHtaccessFile(path string, suspicious, safe []string, findings *[]alert
 	}
 	defer func() { _ = f.Close() }()
 
+	// Read entire file to check cross-line context (e.g., AddHandler + Options -ExecCGI)
+	var lines []string
 	scanner := bufio.NewScanner(f)
-	lineNum := 0
 	for scanner.Scan() {
-		lineNum++
-		line := scanner.Text()
+		lines = append(lines, scanner.Text())
+	}
+
+	// Build full file content for context checks
+	fullContentLower := strings.ToLower(strings.Join(lines, "\n"))
+
+	// If file contains handler directives paired with -ExecCGI, the whole
+	// block is a security measure (e.g., Wordfence execution protection)
+	hasExecCGIBlock := strings.Contains(fullContentLower, "-execcgi")
+
+	for lineNum, line := range lines {
 		lineLower := strings.ToLower(line)
 
 		for _, pattern := range suspicious {
 			if !strings.Contains(lineLower, strings.ToLower(pattern)) {
 				continue
 			}
+
+			// Check per-line safe patterns
 			isSafe := false
 			for _, sp := range safe {
 				if strings.Contains(lineLower, strings.ToLower(sp)) {
@@ -142,12 +168,49 @@ func checkHtaccessFile(path string, suspicious, safe []string, findings *[]alert
 				continue
 			}
 
+			// For handler directives, check if paired with -ExecCGI
+			// (Wordfence pattern: AddHandler cgi-script + Options -ExecCGI)
+			patternLower := strings.ToLower(pattern)
+			if (patternLower == "addhandler" || patternLower == "sethandler") && hasExecCGIBlock {
+				continue
+			}
+
+			// Skip AddType for safe MIME types not caught by safePatterns
+			if patternLower == "addtype" {
+				if strings.Contains(lineLower, "application/") || strings.Contains(lineLower, "text/") {
+					continue
+				}
+			}
+
 			*findings = append(*findings, alert.Finding{
 				Severity: alert.High,
 				Check:    "htaccess_injection",
 				Message:  fmt.Sprintf("Suspicious .htaccess directive: %s", pattern),
-				Details:  fmt.Sprintf("File: %s (line %d)\nContent: %s", path, lineNum, strings.TrimSpace(line)),
+				Details:  fmt.Sprintf("File: %s (line %d)\nContent: %s", path, lineNum+1, strings.TrimSpace(line)),
 			})
+		}
+	}
+
+	// Special check: AddHandler mapping non-standard extensions WITHOUT -ExecCGI
+	// (actual attack pattern — e.g., AddHandler cgi-script .haxor)
+	if !hasExecCGIBlock && strings.Contains(fullContentLower, "addhandler") {
+		for lineNum, line := range lines {
+			lineLower := strings.ToLower(line)
+			if !strings.Contains(lineLower, "addhandler") {
+				continue
+			}
+			// Flag if it maps unusual extensions like .haxor, .cgix, etc.
+			dangerousExts := []string{".haxor", ".cgix", ".suspected", ".bak.php"}
+			for _, ext := range dangerousExts {
+				if strings.Contains(lineLower, ext) {
+					*findings = append(*findings, alert.Finding{
+						Severity: alert.Critical,
+						Check:    "htaccess_handler_abuse",
+						Message:  fmt.Sprintf("Malicious handler mapping for %s extension", ext),
+						Details:  fmt.Sprintf("File: %s (line %d)\nContent: %s", path, lineNum+1, strings.TrimSpace(line)),
+					})
+				}
+			}
 		}
 	}
 }

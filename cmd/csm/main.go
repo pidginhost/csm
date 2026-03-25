@@ -10,6 +10,7 @@ import (
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
 	"github.com/pidginhost/cpanel-security-monitor/internal/checks"
 	"github.com/pidginhost/cpanel-security-monitor/internal/config"
+	"github.com/pidginhost/cpanel-security-monitor/internal/daemon"
 	"github.com/pidginhost/cpanel-security-monitor/internal/integrity"
 	"github.com/pidginhost/cpanel-security-monitor/internal/state"
 )
@@ -54,6 +55,8 @@ func main() {
 	switch cmd {
 	case "version":
 		fmt.Printf("csm %s (build: %s, date: %s)\n", Version, BuildHash, BuildTime)
+	case "daemon":
+		runDaemon()
 	case "install":
 		runInstall()
 	case "uninstall":
@@ -91,6 +94,7 @@ func printUsage() {
 Usage: csm <command>
 
 Commands:
+  daemon        Run as persistent daemon (real-time monitoring with fanotify + inotify)
   install       Deploy to /opt/csm/, set up auditd, create systemd timers, establish baseline
   uninstall     Clean removal
   run           Run all checks, send alerts (legacy single-timer mode)
@@ -123,6 +127,29 @@ func loadConfig() *config.Config {
 		os.Exit(1)
 	}
 	return cfg
+}
+
+func runDaemon() {
+	cfg := loadConfig()
+
+	lock, err := state.AcquireLock(cfg.StatePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Cannot start daemon: %v\n", err)
+		os.Exit(1)
+	}
+
+	store, err := state.Open(cfg.StatePath)
+	if err != nil {
+		lock.Release()
+		fmt.Fprintf(os.Stderr, "Error opening state: %v\n", err)
+		os.Exit(1)
+	}
+
+	d := daemon.New(cfg, store, lock, binaryPath)
+	if err := d.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Daemon error: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func runInstall() {
