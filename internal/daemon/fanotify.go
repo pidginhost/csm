@@ -23,17 +23,17 @@ const (
 
 // fanotify constants (not all in Go stdlib)
 const (
-	FAN_MARK_ADD          = 0x00000001
-	FAN_MARK_MOUNT        = 0x00000010
-	FAN_CLOSE_WRITE       = 0x00000008
-	FAN_CREATE            = 0x00000100
-	FAN_ONDIR             = 0x40000000
-	FAN_EVENT_ON_CHILD    = 0x08000000
-	FAN_CLASS_NOTIF       = 0x00000000
-	FAN_CLOEXEC           = 0x00000001
-	FAN_NONBLOCK          = 0x00000002
-	FAN_REPORT_FID        = 0x00000200
-	FAN_REPORT_DFID_NAME  = 0x00000C00
+	FAN_MARK_ADD                  = 0x00000001
+	FAN_MARK_MOUNT                = 0x00000010
+	FAN_CLOSE_WRITE               = 0x00000008
+	FAN_CREATE                    = 0x00000100
+	FAN_ONDIR                     = 0x40000000
+	FAN_EVENT_ON_CHILD            = 0x08000000
+	FAN_CLASS_NOTIF               = 0x00000000
+	FAN_CLOEXEC                   = 0x00000001
+	FAN_NONBLOCK                  = 0x00000002
+	FAN_REPORT_FID                = 0x00000200
+	FAN_REPORT_DFID_NAME          = 0x00000C00
 	FAN_EVENT_INFO_TYPE_DFID_NAME = 2
 )
 
@@ -52,10 +52,10 @@ const metadataSize = int(unsafe.Sizeof(fanotifyEventMetadata{}))
 
 // FileMonitor watches mount points for file creation/modification using fanotify.
 type FileMonitor struct {
-	fd      int
-	cfg     *config.Config
-	alertCh chan<- alert.Finding
-	dropped int64 // atomic counter for dropped events
+	fd         int
+	cfg        *config.Config
+	alertCh    chan<- alert.Finding
+	dropped    int64 // atomic counter for dropped events
 	analyzerCh chan fileEvent
 }
 
@@ -154,7 +154,7 @@ func (fm *FileMonitor) Run(stopCh <-chan struct{}) {
 
 // Stop closes the fanotify fd.
 func (fm *FileMonitor) Stop() {
-	syscall.Close(fm.fd)
+	_ = syscall.Close(fm.fd)
 	close(fm.analyzerCh)
 }
 
@@ -162,13 +162,13 @@ func (fm *FileMonitor) handleEvent(fd int) {
 	// Get the file path from the fd via /proc/self/fd/N
 	path, err := os.Readlink(fmt.Sprintf("/proc/self/fd/%d", fd))
 	if err != nil {
-		syscall.Close(fd)
+		_ = syscall.Close(fd)
 		return
 	}
 
 	// Fast filter — decide if this file is interesting based on path only
 	if !fm.isInteresting(path) {
-		syscall.Close(fd)
+		_ = syscall.Close(fd)
 		return
 	}
 
@@ -178,7 +178,7 @@ func (fm *FileMonitor) handleEvent(fd int) {
 	default:
 		// Queue full — drop event and count
 		atomic.AddInt64(&fm.dropped, 1)
-		syscall.Close(fd)
+		_ = syscall.Close(fd)
 	}
 }
 
@@ -226,7 +226,7 @@ func (fm *FileMonitor) analyzerWorker(stopCh <-chan struct{}) {
 				return
 			}
 			fm.analyzeFile(event)
-			syscall.Close(event.fd)
+			_ = syscall.Close(event.fd)
 		}
 	}
 }
