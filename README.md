@@ -57,8 +57,8 @@ csm daemon
 │   3 analyzer workers with bounded queue
 │
 ├── Real-time: inotify Log Watchers
-│   Tails session_log, access_log, secure, exim_mainlog
-│   Detects logins, uploads, SSH in ~2 seconds
+│   Tails session_log, access_log, secure, exim_mainlog, messages
+│   Detects logins, uploads, SSH, FTP, API failures in ~2 seconds
 │
 ├── Periodic: Critical Scanner (every 10 min)
 │   Processes, network, tokens, firewall, kernel modules
@@ -102,6 +102,7 @@ Falls back to timer-based mode if the kernel doesn't support fanotify.
 | Executable in .config | Executable files created in user .config directories (GSocket backdoor pattern) |
 | .htaccess injection | .htaccess modified with auto_prepend_file, eval, base64_decode |
 | PHP content analysis | Obfuscated PHP: remote payload URLs, eval+decode chains, goto spaghetti, shell execution with request input |
+| PHP config tampering | .user.ini modified to disable security functions (disable_functions cleared, allow_url_include enabled) |
 | Suspicious extensions | .haxor, .cgix, .phtml, .pht, .php5 files created |
 
 ### Real-time: inotify Log Watchers
@@ -113,8 +114,11 @@ Falls back to timer-based mode if the kernel doesn't support fanotify.
 | File Manager upload | File Manager write operations from non-infra IPs (access_log) |
 | SSH login | SSH logins from unknown IPs (/var/log/secure) |
 | Exim anomalies | Frozen bounce messages (exim_mainlog) |
+| FTP login/auth failure | FTP logins and failed auth from non-infra IPs (/var/log/messages) |
+| cPanel API failures | API authentication failures (401/403) in real-time |
+| Webmail login attempts | Webmail login attempts from non-infra IPs |
 
-### Periodic: Critical Tier (22 checks, every 10 minutes, < 1 second)
+### Periodic: Critical Tier (28 checks, every 10 minutes, < 1 second)
 
 | Check | What it detects |
 |---|---|
@@ -139,9 +143,17 @@ Falls back to timer-based mode if the kernel doesn't support fanotify.
 | Mail queue + per-account rate | Queue spikes and single-domain email bursts (>100 messages) |
 | Kernel module audit | New modules loaded after baseline (rootkit detection) |
 | MySQL superuser audit | Changes to MySQL users with SUPER privilege |
+| Database dump detection | mysqldump/pg_dump running under non-root users (data exfiltration) |
+| Outbound paste sites | Processes connecting to pastebin.com, transfer.sh, gist.githubusercontent.com, etc. |
+| wp-login.php brute force | >20 POST requests to wp-login.php from single IP |
+| xmlrpc.php abuse | >30 POST requests to xmlrpc.php (brute force or amplification) |
+| WordPress user enumeration | Requests to /wp-json/wp/v2/users or ?author= (username discovery) |
+| FTP login monitoring | FTP logins from non-infra IPs and brute force (>10 failed per IP) |
+| Webmail brute force | Login brute force on ports 2095/2096 |
+| cPanel API auth failures | Failed API authentication (401/403) from non-infra IPs |
 | Self-health | Dependency verification, auditd rules, state dir |
 
-### Periodic: Deep Tier (5 checks when daemon active, 12 when timer mode)
+### Periodic: Deep Tier (8 checks when daemon active, 15 when timer mode)
 
 When the daemon is running with fanotify, only checks that fanotify can't replace run periodically:
 
@@ -152,6 +164,9 @@ When the daemon is running with fanotify, only checks that fanotify can't replac
 | RPM binary verification | Modified system binaries (openssh-server, sudo, coreutils) |
 | open_basedir verification | Accounts with CageFS disabled and no open_basedir |
 | Symlink attack detection | Symlinks pointing to other users' directories or /etc/shadow |
+| PHP configuration changes | .user.ini changes: disable_functions cleared, allow_url_include enabled, open_basedir removed |
+| DNS zone modifications | Changes to /var/named/*.db zone files (DNS hijacking) |
+| SSL certificate issuance | New certificates via AutoSSL (phishing domain certs) |
 
 ### Auto-Response (optional, disabled by default)
 
