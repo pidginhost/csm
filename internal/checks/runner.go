@@ -76,6 +76,7 @@ func deepChecks() []namedCheck {
 		{"wp_core", CheckWPCore},
 		{"file_index", CheckFileIndex},
 		{"php_content", CheckPHPContent},
+		{"phishing", CheckPhishing},
 		{"nulled_plugins", CheckNulledPlugins},
 		{"rpm_integrity", CheckRPMIntegrity},
 		{"group_writable_php", CheckGroupWritablePHP},
