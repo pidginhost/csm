@@ -82,6 +82,8 @@ The binary verifies its own integrity (SHA256) on each run. If tampered with, it
 | Nulled plugin detection | Scans WordPress plugin PHP files for crack signatures: `nulled by`, `gpl-club`, `license_key_bypass`, `activation_bypass`, etc. |
 | RPM binary verification | Verifies critical system packages (openssh-server, shadow-utils, sudo, coreutils) haven't been modified — catches trojaned binaries |
 | Group-writable PHP | PHP files writable by web server group (nobody/apache) — allows webshells to persist via HTTP |
+| open_basedir verification | Flags accounts with CageFS disabled AND no open_basedir — PHP can read any file on the server |
+| Symlink attack detection | Detects symlinks in public_html pointing to other users' directories or sensitive system files (/etc/shadow, /root/) |
 | Cross-account correlation | Detects coordinated attacks: 3+ accounts with critical findings, or same malware type across multiple accounts |
 
 ### Auto-Response (optional, disabled by default)
