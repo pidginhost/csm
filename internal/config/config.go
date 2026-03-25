@@ -46,6 +46,8 @@ type Config struct {
 		WPCoreCheckIntervalMin    int `yaml:"wp_core_check_interval_min"`
 		WebshellScanIntervalMin   int `yaml:"webshell_scan_interval_min"`
 		FilesystemScanIntervalMin int `yaml:"filesystem_scan_interval_min"`
+		MultiIPLoginThreshold     int `yaml:"multi_ip_login_threshold"`
+		MultiIPLoginWindowMin     int `yaml:"multi_ip_login_window_min"`
 	} `yaml:"thresholds"`
 
 	InfraIPs []string `yaml:"infra_ips"`
