@@ -48,7 +48,13 @@ func CheckCpanelLogins(cfg *config.Config, store *state.Store) []alert.Finding {
 		}
 
 		// Detect cPanel logins from non-infra IPs
+		// Skip API/portal sessions (create_user_session) — only alert on direct form login
 		if strings.Contains(line, "[cpaneld]") && strings.Contains(line, " NEW ") {
+			if strings.Contains(line, "method=create_user_session") ||
+				strings.Contains(line, "method=create_session") {
+				continue
+			}
+
 			ip, account := parseCpanelLogin(line)
 			if ip == "" || account == "" {
 				continue
@@ -64,11 +70,16 @@ func CheckCpanelLogins(cfg *config.Config, store *state.Store) []alert.Finding {
 			}
 			accountIPs[account][ip] = true
 
-			// Alert on individual non-infra cPanel login
+			// Direct form login from non-infra = higher severity
+			sev := alert.High
+			if strings.Contains(line, "method=handle_form_login") {
+				sev = alert.Critical
+			}
+
 			findings = append(findings, alert.Finding{
-				Severity: alert.High,
+				Severity: sev,
 				Check:    "cpanel_login",
-				Message:  fmt.Sprintf("cPanel login from non-infra IP: %s (account: %s)", ip, account),
+				Message:  fmt.Sprintf("cPanel direct login from non-infra IP: %s (account: %s)", ip, account),
 				Details:  truncateString(line, 300),
 			})
 		}

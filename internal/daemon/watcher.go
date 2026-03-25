@@ -165,16 +165,34 @@ func (w *LogWatcher) reopen() {
 func parseSessionLogLine(line string, cfg *config.Config) []alert.Finding {
 	var findings []alert.Finding
 
-	// cPanel login from non-infra IP
+	// cPanel login from non-infra IP — only alert on direct form login,
+	// not API-created sessions (from portal create_user_session)
 	if strings.Contains(line, "[cpaneld]") && strings.Contains(line, " NEW ") {
-		ip, account := parseCpanelSessionLogin(line)
-		if ip != "" && account != "" && !isInfraIPDaemon(ip, cfg.InfraIPs) {
-			findings = append(findings, alert.Finding{
-				Severity: alert.High,
-				Check:    "cpanel_login_realtime",
-				Message:  fmt.Sprintf("cPanel login from non-infra IP: %s (account: %s)", ip, account),
-				Details:  truncateDaemon(line, 300),
-			})
+		// Skip API/portal sessions — these are legitimate
+		if strings.Contains(line, "method=create_user_session") ||
+			strings.Contains(line, "method=create_session") {
+			// Portal-created session — no alert
+		} else {
+			ip, account := parseCpanelSessionLogin(line)
+			if ip != "" && account != "" && !isInfraIPDaemon(ip, cfg.InfraIPs) {
+				severity := alert.High
+				method := "unknown"
+				if strings.Contains(line, "method=handle_form_login") {
+					method = "direct form login"
+					severity = alert.Critical // Direct form login from non-infra = suspicious
+				} else if idx := strings.Index(line, "method="); idx >= 0 {
+					rest := line[idx+7:]
+					if comma := strings.IndexAny(rest, ",\n "); comma > 0 {
+						method = rest[:comma]
+					}
+				}
+				findings = append(findings, alert.Finding{
+					Severity: severity,
+					Check:    "cpanel_login_realtime",
+					Message:  fmt.Sprintf("cPanel direct login from non-infra IP: %s (account: %s, method: %s)", ip, account, method),
+					Details:  truncateDaemon(line, 300),
+				})
+			}
 		}
 	}
 
