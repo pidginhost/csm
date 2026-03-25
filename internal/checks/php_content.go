@@ -299,6 +299,11 @@ func isSafePHPInWPDir(path, name string) bool {
 			strings.Contains(path, "/languages/themes/") {
 			return true
 		}
+		// WP 6.5+ PHP translation files: xx_XX.php format (2-5 letter locale codes)
+		noExt := strings.TrimSuffix(nameLower, ".php")
+		if strings.Contains(noExt, "_") && len(noExt) <= 10 && !strings.ContainsAny(noExt, " /.\\") {
+			return true
+		}
 	}
 
 	// Known safe in mu-plugins — common hosting provider mu-plugins
