@@ -54,26 +54,37 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// Collect IPs to block from findings
 	ipsToBlock := make(map[string]string) // ip -> reason
 
-	blockableChecks := map[string]bool{
-		"wp_login_bruteforce":         true,
-		"xmlrpc_abuse":                true,
-		"ftp_bruteforce":              true,
-		"webmail_bruteforce":          true,
-		"api_auth_failure":            true,
-		"ssh_login_unknown_ip":        true,
-		"ssh_login_realtime":          true,
+	// Always blockable (brute force, C2, known malicious)
+	alwaysBlock := map[string]bool{
+		"wp_login_bruteforce":  true,
+		"xmlrpc_abuse":         true,
+		"ftp_bruteforce":       true,
+		"ssh_login_unknown_ip": true,
+		"ssh_login_realtime":   true,
+		"c2_connection":        true,
+		"ip_reputation":        true,
+	}
+
+	// Only blockable when block_cpanel_logins is enabled (disabled by default)
+	cpanelWebmailChecks := map[string]bool{
 		"cpanel_login":                true,
 		"cpanel_login_realtime":       true,
 		"cpanel_multi_ip_login":       true,
 		"cpanel_file_upload_realtime": true,
+		"api_auth_failure":            true,
+		"api_auth_failure_realtime":   true,
+		"webmail_bruteforce":          true,
+		"webmail_login_realtime":      true,
 		"ftp_login_realtime":          true,
 		"ftp_auth_failure_realtime":   true,
-		"api_auth_failure_realtime":   true,
-		"c2_connection":               true,
 	}
 
 	for _, f := range findings {
-		if !blockableChecks[f.Check] {
+		isBlockable := alwaysBlock[f.Check]
+		if !isBlockable && cfg.AutoResponse.BlockCpanelLogins && cpanelWebmailChecks[f.Check] {
+			isBlockable = true
+		}
+		if !isBlockable {
 			continue
 		}
 

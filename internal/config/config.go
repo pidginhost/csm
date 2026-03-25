@@ -55,18 +55,21 @@ type Config struct {
 	StatePath string `yaml:"state_path"`
 
 	Suppressions struct {
-		UPCPWindowStart string   `yaml:"upcp_window_start"`
-		UPCPWindowEnd   string   `yaml:"upcp_window_end"`
-		KnownAPITokens  []string `yaml:"known_api_tokens"`
-		IgnorePaths     []string `yaml:"ignore_paths"`
+		UPCPWindowStart     string   `yaml:"upcp_window_start"`
+		UPCPWindowEnd       string   `yaml:"upcp_window_end"`
+		KnownAPITokens      []string `yaml:"known_api_tokens"`
+		IgnorePaths         []string `yaml:"ignore_paths"`
+		SuppressWebmail     bool     `yaml:"suppress_webmail_alerts"`      // don't alert on webmail logins
+		SuppressCpanelLogin bool     `yaml:"suppress_cpanel_login_alerts"` // don't alert on cPanel direct logins
 	} `yaml:"suppressions"`
 
 	AutoResponse struct {
-		Enabled         bool   `yaml:"enabled"`
-		KillProcesses   bool   `yaml:"kill_processes"`
-		QuarantineFiles bool   `yaml:"quarantine_files"`
-		BlockIPs        bool   `yaml:"block_ips"`
-		BlockExpiry     string `yaml:"block_expiry"` // e.g. "24h", "12h"
+		Enabled           bool   `yaml:"enabled"`
+		KillProcesses     bool   `yaml:"kill_processes"`
+		QuarantineFiles   bool   `yaml:"quarantine_files"`
+		BlockIPs          bool   `yaml:"block_ips"`
+		BlockExpiry       string `yaml:"block_expiry"`        // e.g. "24h", "12h"
+		BlockCpanelLogins bool   `yaml:"block_cpanel_logins"` // block IPs on cPanel/webmail login alerts (default false)
 	} `yaml:"auto_response"`
 
 	Reputation struct {

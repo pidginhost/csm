@@ -203,9 +203,12 @@ suppressions:
     - "*/vendor/*"
 
 auto_response:
-  enabled: false          # must be explicitly enabled
-  kill_processes: false    # auto-kill fake kernel threads, reverse shells
-  quarantine_files: false  # auto-move webshells/backdoors to /opt/csm/quarantine/
+  enabled: false              # must be explicitly enabled
+  kill_processes: false       # auto-kill fake kernel threads, reverse shells
+  quarantine_files: false     # auto-move webshells/backdoors to /opt/csm/quarantine/
+  block_ips: false            # auto-block attacker IPs via CSF
+  block_expiry: "24h"         # how long IPs stay blocked
+  block_cpanel_logins: false  # block IPs on cPanel/webmail login alerts (enable after portal-only login)
 
 c2_blocklist:
   - "152.53.173.29"

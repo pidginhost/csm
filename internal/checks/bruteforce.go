@@ -156,6 +156,10 @@ func CheckFTPLogins(cfg *config.Config, _ *state.Store) []alert.Finding {
 
 // CheckWebmailLogins parses cPanel access log for webmail logins from non-infra IPs.
 func CheckWebmailLogins(cfg *config.Config, _ *state.Store) []alert.Finding {
+	if cfg.Suppressions.SuppressWebmail {
+		return nil
+	}
+
 	var findings []alert.Finding
 
 	lines := tailFile("/usr/local/cpanel/logs/access_log", 300)

@@ -58,14 +58,16 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 	}
 
 	// Webmail login attempts (port 2095/2096)
-	if strings.Contains(line, "2095") || strings.Contains(line, "2096") {
-		if strings.Contains(lineLower, "post") {
-			findings = append(findings, alert.Finding{
-				Severity: alert.Warning,
-				Check:    "webmail_login_realtime",
-				Message:  fmt.Sprintf("Webmail login attempt from non-infra IP: %s", ip),
-				Details:  truncateDaemon(line, 200),
-			})
+	if !cfg.Suppressions.SuppressWebmail {
+		if strings.Contains(line, "2095") || strings.Contains(line, "2096") {
+			if strings.Contains(lineLower, "post") {
+				findings = append(findings, alert.Finding{
+					Severity: alert.Warning,
+					Check:    "webmail_login_realtime",
+					Message:  fmt.Sprintf("Webmail login attempt from non-infra IP: %s", ip),
+					Details:  truncateDaemon(line, 200),
+				})
+			}
 		}
 	}
 
