@@ -7,15 +7,46 @@ import (
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
 )
 
+// Checks that indicate active security events (not static config issues).
+// Only these are used for cross-account correlation.
+var securityEventChecks = map[string]bool{
+	"fake_kernel_thread":            true,
+	"suspicious_process":            true,
+	"php_suspicious_execution":      true,
+	"backdoor_binary":               true,
+	"webshell":                      true,
+	"new_webshell_file":             true,
+	"new_executable_in_config":      true,
+	"new_php_in_uploads":            true,
+	"new_php_in_languages":          true,
+	"new_php_in_upgrade":            true,
+	"obfuscated_php":                true,
+	"php_dropper":                   true,
+	"webshell_realtime":             true,
+	"php_in_uploads_realtime":       true,
+	"php_in_sensitive_dir_realtime": true,
+	"executable_in_config_realtime": true,
+	"obfuscated_php_realtime":       true,
+	"webshell_content_realtime":     true,
+	"c2_connection":                 true,
+	"cpanel_file_upload_realtime":   true,
+	"shadow_change":                 true,
+	"root_password_change":          true,
+}
+
 // CorrelateFindings analyzes findings for cross-account attack patterns.
-// Called after all checks complete, adds correlation alerts if patterns match.
+// Only considers active security events, not static config issues
+// (like WAF status, open_basedir, world-writable files).
 func CorrelateFindings(findings []alert.Finding) []alert.Finding {
 	var extra []alert.Finding
 
-	// Count critical findings per account
+	// Count security event findings per account
 	accountCriticals := make(map[string]int)
 	for _, f := range findings {
 		if f.Severity != alert.Critical {
+			continue
+		}
+		if !securityEventChecks[f.Check] {
 			continue
 		}
 		account := extractAccountFromFinding(f)
@@ -24,7 +55,7 @@ func CorrelateFindings(findings []alert.Finding) []alert.Finding {
 		}
 	}
 
-	// If 3+ accounts have critical findings, it's a coordinated attack
+	// If 3+ accounts have critical security events, it's a coordinated attack
 	affectedAccounts := 0
 	var accountNames []string
 	for account, count := range accountCriticals {
@@ -38,23 +69,23 @@ func CorrelateFindings(findings []alert.Finding) []alert.Finding {
 		extra = append(extra, alert.Finding{
 			Severity: alert.Critical,
 			Check:    "coordinated_attack",
-			Message:  fmt.Sprintf("Possible coordinated attack: %d accounts have critical findings", affectedAccounts),
+			Message:  fmt.Sprintf("Possible coordinated attack: %d accounts have critical security events", affectedAccounts),
 			Details:  fmt.Sprintf("Affected accounts: %s", strings.Join(accountNames, ", ")),
 		})
 	}
 
-	// Check for same malware hash across accounts
-	malwareByHash := make(map[string][]string)
+	// Check for same malware type across accounts
+	malwareByCheck := make(map[string][]string)
 	for _, f := range findings {
-		if f.Check == "new_executable_in_config" || f.Check == "backdoor_binary" {
-			// Use message as key since it contains the path
+		if f.Check == "new_executable_in_config" || f.Check == "backdoor_binary" ||
+			f.Check == "webshell" || f.Check == "new_webshell_file" {
 			account := extractAccountFromFinding(f)
 			if account != "" {
-				malwareByHash[f.Check] = append(malwareByHash[f.Check], account)
+				malwareByCheck[f.Check] = append(malwareByCheck[f.Check], account)
 			}
 		}
 	}
-	for check, accounts := range malwareByHash {
+	for check, accounts := range malwareByCheck {
 		unique := uniqueStrings(accounts)
 		if len(unique) >= 2 {
 			extra = append(extra, alert.Finding{
@@ -70,7 +101,6 @@ func CorrelateFindings(findings []alert.Finding) []alert.Finding {
 }
 
 func extractAccountFromFinding(f alert.Finding) string {
-	// Try to extract account name from message or details containing /home/<user>/
 	for _, s := range []string{f.Message, f.Details} {
 		if idx := strings.Index(s, "/home/"); idx >= 0 {
 			rest := s[idx+6:]
