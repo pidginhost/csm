@@ -149,7 +149,13 @@ func checkHtaccessFile(path string, suspicious, safe []string, findings *[]alert
 	hasExecCGIBlock := strings.Contains(fullContentLower, "-execcgi")
 
 	for lineNum, line := range lines {
-		lineLower := strings.ToLower(line)
+		trimmed := strings.TrimSpace(line)
+		lineLower := strings.ToLower(trimmed)
+
+		// Skip comments entirely — commented-out directives are not active
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
 
 		for _, pattern := range suspicious {
 			if !strings.Contains(lineLower, strings.ToLower(pattern)) {
@@ -168,16 +174,66 @@ func checkHtaccessFile(path string, suspicious, safe []string, findings *[]alert
 				continue
 			}
 
-			// For handler directives, check if paired with -ExecCGI
-			// (Wordfence pattern: AddHandler cgi-script + Options -ExecCGI)
 			patternLower := strings.ToLower(pattern)
-			if (patternLower == "addhandler" || patternLower == "sethandler") && hasExecCGIBlock {
-				continue
+
+			// For handler directives, apply context-aware checks
+			if patternLower == "addhandler" || patternLower == "sethandler" {
+				// Skip if paired with -ExecCGI (Wordfence protection)
+				if hasExecCGIBlock {
+					continue
+				}
+				// Skip Drupal security handlers
+				if strings.Contains(lineLower, "drupal_security") {
+					continue
+				}
+				// Skip SetHandler none/default (disabling handlers = security measure)
+				if strings.Contains(lineLower, "sethandler none") ||
+					strings.Contains(lineLower, "sethandler default") {
+					continue
+				}
+				// Skip AddHandler for standard CGI extensions only (.cgi, .pl)
+				if strings.Contains(lineLower, "addhandler") {
+					// Only flag if mapping non-standard extensions
+					standardCGI := true
+					hasNonStandard := false
+					// Check each extension on the line
+					for _, ext := range []string{".haxor", ".cgix", ".phtml", ".php3",
+						".php5", ".suspected", ".bak.php", ".shtml", ".sh"} {
+						if strings.Contains(lineLower, ext) {
+							hasNonStandard = true
+							break
+						}
+					}
+					// If line only has .cgi and/or .pl, it's standard
+					if !hasNonStandard && standardCGI {
+						onlyStandard := true
+						parts := strings.Fields(lineLower)
+						for _, p := range parts {
+							if strings.HasPrefix(p, ".") && p != ".cgi" && p != ".pl" && p != ".py" &&
+								p != ".php" && p != ".jsp" && p != ".asp" {
+								// Has non-standard extension
+								onlyStandard = false
+								break
+							}
+						}
+						if onlyStandard {
+							continue
+						}
+					}
+				}
 			}
 
-			// Skip AddType for safe MIME types not caught by safePatterns
+			// Skip AddType for any MIME type (application/*, text/*, x-mapp-*, etc.)
 			if patternLower == "addtype" {
-				if strings.Contains(lineLower, "application/") || strings.Contains(lineLower, "text/") {
+				// AddType is only dangerous if it maps to a PHP/CGI handler
+				// Standard MIME type declarations are safe
+				if strings.Contains(lineLower, "application/") ||
+					strings.Contains(lineLower, "text/") ||
+					strings.Contains(lineLower, "image/") ||
+					strings.Contains(lineLower, "font/") ||
+					strings.Contains(lineLower, "x-mapp-") ||
+					strings.Contains(lineLower, "audio/") ||
+					strings.Contains(lineLower, "video/") {
 					continue
 				}
 			}
@@ -186,7 +242,7 @@ func checkHtaccessFile(path string, suspicious, safe []string, findings *[]alert
 				Severity: alert.High,
 				Check:    "htaccess_injection",
 				Message:  fmt.Sprintf("Suspicious .htaccess directive: %s", pattern),
-				Details:  fmt.Sprintf("File: %s (line %d)\nContent: %s", path, lineNum+1, strings.TrimSpace(line)),
+				Details:  fmt.Sprintf("File: %s (line %d)\nContent: %s", path, lineNum+1, trimmed),
 			})
 		}
 	}
