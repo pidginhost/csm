@@ -56,6 +56,12 @@ func criticalChecks() []namedCheck {
 		{"mail_per_account", CheckMailPerAccount},
 		{"kernel_modules", CheckKernelModules},
 		{"mysql_users", CheckMySQLUsers},
+		{"database_dumps", CheckDatabaseDumps},
+		{"exfiltration_paste", CheckOutboundPasteSites},
+		{"wp_bruteforce", CheckWPBruteForce},
+		{"ftp_logins", CheckFTPLogins},
+		{"webmail_logins", CheckWebmailLogins},
+		{"api_auth_failures", CheckAPIAuthFailures},
 		{"health", CheckHealth},
 	}
 }
@@ -73,6 +79,9 @@ func deepChecks() []namedCheck {
 		{"group_writable_php", CheckGroupWritablePHP},
 		{"open_basedir", CheckOpenBasedir},
 		{"symlink_attacks", CheckSymlinkAttacks},
+		{"php_config_changes", CheckPHPConfigChanges},
+		{"dns_zones", CheckDNSZoneChanges},
+		{"ssl_certs", CheckSSLCertIssuance},
 	}
 }
 
