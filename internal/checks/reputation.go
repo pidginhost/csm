@@ -58,10 +58,10 @@ func CheckIPReputation(cfg *config.Config, _ *state.Store) []alert.Finding {
 			if time.Since(entry.CheckedAt) < cacheExpiry {
 				if entry.Score >= abuseConfidenceThreshold {
 					findings = append(findings, alert.Finding{
-						Severity: alert.High,
+						Severity: alert.Critical,
 						Check:    "ip_reputation",
-						Message:  fmt.Sprintf("Known malicious IP active: %s (AbuseIPDB score: %d)", ip, entry.Score),
-						Details:  fmt.Sprintf("Category: %s", entry.Category),
+						Message:  fmt.Sprintf("Known malicious IP accessing server: %s (AbuseIPDB score: %d/100)", ip, entry.Score),
+						Details:  fmt.Sprintf("Category: %s\nThis IP is reported in threat intelligence databases", entry.Category),
 					})
 				}
 				continue
