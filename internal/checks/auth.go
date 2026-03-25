@@ -72,6 +72,13 @@ func CheckShadowChanges(cfg *config.Config, store *state.Store) []alert.Finding 
 					details += "\n" + auditInfo
 				}
 
+				// Suppress alerts for password changes made by infra IPs
+				// (admin-initiated password resets via WHM/xml-api)
+				if isInfraShadowChange(cfg) {
+					// Still update state, but don't alert
+					goto storeState
+				}
+
 				// Separate root password change (higher severity)
 				changed := diffShadowChanges(store, currentEntries)
 				rootChanged := false
@@ -113,6 +120,7 @@ func CheckShadowChanges(cfg *config.Config, store *state.Store) []alert.Finding 
 		}
 	}
 
+storeState:
 	// Store current state
 	mtimeData, _ := json.Marshal(mtime)
 	store.SetRaw(mtimeKey, string(mtimeData))
@@ -368,6 +376,44 @@ func CheckAPITokens(cfg *config.Config, store *state.Store) []alert.Finding {
 	}
 
 	return findings
+}
+
+// isInfraShadowChange checks the WHM access log for recent password change
+// API calls from infra IPs. If the shadow change was triggered by an admin
+// password reset from a trusted IP, we suppress the alert.
+func isInfraShadowChange(cfg *config.Config) bool {
+	// Check cPanel access_log for recent xml-api password changes
+	lines := tailFile("/usr/local/cpanel/logs/access_log", 50)
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := lines[i]
+		lineLower := strings.ToLower(line)
+
+		// Look for password change API calls
+		isPasswdCall := false
+		for _, action := range []string{"passwd", "chpasswd", "force_password_change", "resetpass"} {
+			if strings.Contains(lineLower, action) {
+				isPasswdCall = true
+				break
+			}
+		}
+		if !isPasswdCall {
+			continue
+		}
+
+		// Extract IP
+		fields := strings.Fields(line)
+		if len(fields) < 1 {
+			continue
+		}
+		ip := fields[0]
+
+		// Check if from infra IP
+		if isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1" {
+			return true
+		}
+	}
+
+	return false
 }
 
 func parseTimeMin(s string) int {

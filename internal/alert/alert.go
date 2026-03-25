@@ -71,6 +71,7 @@ func Deduplicate(findings []Finding) []Finding {
 }
 
 // FormatAlert formats a list of findings into a human-readable alert body.
+// Sensitive data (passwords, tokens) is redacted before sending.
 func FormatAlert(hostname string, findings []Finding) string {
 	var b strings.Builder
 
@@ -96,7 +97,7 @@ func FormatAlert(hostname string, findings []Finding) string {
 	for _, sev := range []Severity{Critical, High, Warning} {
 		for _, f := range findings {
 			if f.Severity == sev {
-				b.WriteString(f.String())
+				b.WriteString(sanitizeFinding(f).String())
 				b.WriteString("\n\n")
 			}
 		}
@@ -106,6 +107,67 @@ func FormatAlert(hostname string, findings []Finding) string {
 	b.WriteString("CSM — cPanel Security Monitor\n")
 
 	return b.String()
+}
+
+// sanitizeFinding redacts sensitive data (passwords, tokens, secrets)
+// from finding messages and details before including them in alerts.
+func sanitizeFinding(f Finding) Finding {
+	f.Message = redactSensitive(f.Message)
+	f.Details = redactSensitive(f.Details)
+	return f
+}
+
+// redactSensitive replaces password values and tokens in text with [REDACTED].
+func redactSensitive(s string) string {
+	if s == "" {
+		return s
+	}
+
+	// Redact password= values in URLs and POST data
+	// Matches: password=X, pass=X, passwd=X (up to next & or space or quote)
+	for _, prefix := range []string{
+		"password=", "pass=", "passwd=", "new_password=",
+		"old_password=", "confirmpassword=",
+	} {
+		for {
+			lower := strings.ToLower(s)
+			idx := strings.Index(lower, prefix)
+			if idx < 0 {
+				break
+			}
+			valStart := idx + len(prefix)
+			valEnd := valStart
+			for valEnd < len(s) {
+				c := s[valEnd]
+				if c == '&' || c == ' ' || c == '\n' || c == '"' || c == '\'' || c == ',' {
+					break
+				}
+				valEnd++
+			}
+			if valEnd > valStart {
+				s = s[:valStart] + "[REDACTED]" + s[valEnd:]
+			} else {
+				break
+			}
+		}
+	}
+
+	// Redact API token values (long alphanumeric strings after token-like keys)
+	for _, prefix := range []string{"token_value=", "api_token="} {
+		lower := strings.ToLower(s)
+		if idx := strings.Index(lower, prefix); idx >= 0 {
+			valStart := idx + len(prefix)
+			valEnd := valStart
+			for valEnd < len(s) && s[valEnd] != ' ' && s[valEnd] != '\n' && s[valEnd] != '&' {
+				valEnd++
+			}
+			if valEnd > valStart {
+				s = s[:valStart] + "[REDACTED]" + s[valEnd:]
+			}
+		}
+	}
+
+	return s
 }
 
 // rateLimitState tracks alerts sent per hour.

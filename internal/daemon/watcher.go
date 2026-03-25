@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"strings"
 	"time"
@@ -326,9 +327,20 @@ func parsePurgeDaemon(line string) string {
 }
 
 func isInfraIPDaemon(ip string, infraNets []string) bool {
-	// Simple implementation — avoid importing checks package
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false
+	}
 	for _, cidr := range infraNets {
-		if strings.HasPrefix(ip, strings.TrimSuffix(strings.TrimSuffix(cidr, "/24"), "/16")) {
+		_, network, err := net.ParseCIDR(cidr)
+		if err != nil {
+			// Try as plain IP
+			if ip == cidr {
+				return true
+			}
+			continue
+		}
+		if network.Contains(parsed) {
 			return true
 		}
 	}
