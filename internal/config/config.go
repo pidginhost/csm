@@ -62,10 +62,16 @@ type Config struct {
 	} `yaml:"suppressions"`
 
 	AutoResponse struct {
-		Enabled         bool `yaml:"enabled"`
-		KillProcesses   bool `yaml:"kill_processes"`
-		QuarantineFiles bool `yaml:"quarantine_files"`
+		Enabled         bool   `yaml:"enabled"`
+		KillProcesses   bool   `yaml:"kill_processes"`
+		QuarantineFiles bool   `yaml:"quarantine_files"`
+		BlockIPs        bool   `yaml:"block_ips"`
+		BlockExpiry     string `yaml:"block_expiry"` // e.g. "24h", "12h"
 	} `yaml:"auto_response"`
+
+	Reputation struct {
+		AbuseIPDBKey string `yaml:"abuseipdb_key"`
+	} `yaml:"reputation"`
 
 	C2Blocklist   []string `yaml:"c2_blocklist"`
 	BackdoorPorts []int    `yaml:"backdoor_ports"`

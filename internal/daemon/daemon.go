@@ -160,8 +160,10 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// Auto-response
 	killActions := checks.AutoKillProcesses(d.cfg, newFindings)
 	quarantineActions := checks.AutoQuarantineFiles(d.cfg, newFindings)
+	blockActions := checks.AutoBlockIPs(d.cfg, newFindings)
 	newFindings = append(newFindings, killActions...)
 	newFindings = append(newFindings, quarantineActions...)
+	newFindings = append(newFindings, blockActions...)
 
 	// Correlation
 	extra := checks.CorrelateFindings(newFindings)

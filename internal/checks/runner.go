@@ -62,6 +62,8 @@ func criticalChecks() []namedCheck {
 		{"ftp_logins", CheckFTPLogins},
 		{"webmail_logins", CheckWebmailLogins},
 		{"api_auth_failures", CheckAPIAuthFailures},
+		{"ip_reputation", CheckIPReputation},
+		{"modsec_audit", CheckModSecAuditLog},
 		{"health", CheckHealth},
 	}
 }
@@ -82,6 +84,7 @@ func deepChecks() []namedCheck {
 		{"php_config_changes", CheckPHPConfigChanges},
 		{"dns_zones", CheckDNSZoneChanges},
 		{"ssl_certs", CheckSSLCertIssuance},
+		{"waf_status", CheckWAFStatus},
 	}
 }
 
@@ -194,6 +197,15 @@ func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck) []
 		}
 	}
 	findings = append(findings, quarantineActions...)
+
+	// Auto-response: block attacker IPs via CSF
+	blockActions := AutoBlockIPs(cfg, findings)
+	for i := range blockActions {
+		if blockActions[i].Timestamp.IsZero() {
+			blockActions[i].Timestamp = now
+		}
+	}
+	findings = append(findings, blockActions...)
 
 	return findings
 }
