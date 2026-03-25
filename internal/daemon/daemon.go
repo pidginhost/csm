@@ -265,9 +265,10 @@ func (d *Daemon) startLogWatchers() {
 		handler func(string, *config.Config) []alert.Finding
 	}{
 		{"/usr/local/cpanel/logs/session_log", parseSessionLogLine},
-		{"/usr/local/cpanel/logs/access_log", parseAccessLogLine},
+		{"/usr/local/cpanel/logs/access_log", parseAccessLogLineEnhanced},
 		{"/var/log/secure", parseSecureLogLine},
 		{"/var/log/exim_mainlog", parseEximLogLine},
+		{"/var/log/messages", parseFTPLogLine},
 	}
 
 	for _, lf := range logFiles {

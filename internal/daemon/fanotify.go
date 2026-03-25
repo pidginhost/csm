@@ -197,8 +197,8 @@ func (fm *FileMonitor) isInteresting(path string) bool {
 		return true
 	}
 
-	// .htaccess files
-	if strings.HasSuffix(lower, ".htaccess") {
+	// .htaccess and .user.ini files
+	if strings.HasSuffix(lower, ".htaccess") || strings.HasSuffix(lower, ".user.ini") {
 		return true
 	}
 
@@ -299,6 +299,12 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 		return
 	}
 
+	// .user.ini modification — check for dangerous PHP settings
+	if nameLower == ".user.ini" {
+		fm.checkUserINI(path)
+		return
+	}
+
 	// PHP content analysis — read first 8KB
 	if strings.HasSuffix(nameLower, ".php") {
 		fm.checkPHPContent(path)
@@ -328,6 +334,51 @@ func (fm *FileMonitor) checkHtaccess(path string) {
 				fm.sendAlert(alert.High, "htaccess_injection_realtime",
 					fmt.Sprintf("Suspicious .htaccess modification: %s", path),
 					fmt.Sprintf("Pattern: %s", d))
+				return
+			}
+		}
+	}
+}
+
+func (fm *FileMonitor) checkUserINI(path string) {
+	data := readHead(path, 4096)
+	if data == nil {
+		return
+	}
+	content := strings.ToLower(string(data))
+
+	dangerous := []struct {
+		pattern string
+		desc    string
+	}{
+		{"allow_url_include", "allow_url_include (remote code inclusion)"},
+		{"disable_functions", "disable_functions modified"},
+	}
+
+	for _, d := range dangerous {
+		if strings.Contains(content, d.pattern) {
+			// Check if it's being set to a dangerous value
+			if d.pattern == "disable_functions" {
+				// Only alert if clearing or reducing
+				for _, line := range strings.Split(content, "\n") {
+					if strings.HasPrefix(strings.TrimSpace(line), "disable_functions") {
+						parts := strings.SplitN(line, "=", 2)
+						if len(parts) == 2 {
+							val := strings.TrimSpace(parts[1])
+							if val == "" || val == "\"\"" || val == "none" {
+								fm.sendAlert(alert.Critical, "php_config_realtime",
+									fmt.Sprintf("PHP disable_functions cleared: %s", path),
+									"All dangerous PHP functions enabled — shell execution possible")
+								return
+							}
+						}
+					}
+				}
+			}
+			if d.pattern == "allow_url_include" && (strings.Contains(content, "on") || strings.Contains(content, "= 1")) {
+				fm.sendAlert(alert.Critical, "php_config_realtime",
+					fmt.Sprintf("PHP allow_url_include enabled: %s", path),
+					"Remote PHP file inclusion is now possible")
 				return
 			}
 		}

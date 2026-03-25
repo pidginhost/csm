@@ -193,45 +193,6 @@ func parseSessionLogLine(line string, cfg *config.Config) []alert.Finding {
 	return findings
 }
 
-func parseAccessLogLine(line string, cfg *config.Config) []alert.Finding {
-	var findings []alert.Finding
-
-	// File Manager operations from non-infra IPs
-	if !strings.Contains(line, "2083") {
-		return nil
-	}
-
-	fields := strings.Fields(line)
-	if len(fields) < 1 {
-		return nil
-	}
-	ip := fields[0]
-
-	if isInfraIPDaemon(ip, cfg.InfraIPs) || ip == "127.0.0.1" {
-		return nil
-	}
-
-	filemanActions := []string{
-		"fileman/save_file", "fileman/upload_files",
-		"Fileman/save_file", "Fileman/upload",
-		"/execute/Fileman/",
-	}
-	lineLower := strings.ToLower(line)
-	for _, action := range filemanActions {
-		if strings.Contains(lineLower, strings.ToLower(action)) {
-			findings = append(findings, alert.Finding{
-				Severity: alert.Critical,
-				Check:    "cpanel_file_upload_realtime",
-				Message:  fmt.Sprintf("cPanel File Manager write from non-infra IP: %s", ip),
-				Details:  truncateDaemon(line, 300),
-			})
-			break
-		}
-	}
-
-	return findings
-}
-
 func parseSecureLogLine(line string, cfg *config.Config) []alert.Finding {
 	var findings []alert.Finding
 
