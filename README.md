@@ -192,6 +192,7 @@ When the daemon is running with fanotify, only checks that fanotify can't replac
 | Auto-kill processes | Kills fake kernel threads, reverse shells, GSocket (never kills root/system) |
 | Auto-quarantine files | Moves webshells/backdoors/phishing to `/opt/csm/quarantine/` with metadata sidecar |
 | Auto-block IPs | Blocks attacker IPs via CSF with configurable expiry (brute-force, C2, credential stuffing) |
+| Malware cleaning | Surgical removal of @include injections, prepend/append injections, inline eval chains. Backup created before any change. |
 
 ```yaml
 auto_response:
@@ -388,6 +389,7 @@ backdoor_ports: [4444, 5555, 55553, 55555, 31337]
 | `csm validate` | Check config for mistakes |
 | `csm verify` | Verify binary and config integrity |
 | `csm update-rules` | Download latest malware signature rules |
+| `csm clean <path>` | Clean an infected PHP file — removes injections, creates backup |
 | `csm version` | Show version and build info |
 
 ## Security
@@ -427,7 +429,6 @@ make tools          # Install dev tools
 ## Roadmap
 
 - YARA-X integration (VirusTotal's next-gen YARA engine) for advanced malware signatures
-- Malware cleaning/disinfection (surgical removal of injected code, not just quarantine)
 - PHP runtime protection via auto_prepend_file security handler
 - PAM integration for real-time brute-force blocking (seconds, not minutes)
 - WAF rule management and custom ModSecurity rule deployment
