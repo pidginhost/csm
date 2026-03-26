@@ -30,10 +30,11 @@ type Engine struct {
 	chainIn  *nftables.Chain
 	chainOut *nftables.Chain
 
-	setBlocked *nftables.Set
-	setAllowed *nftables.Set
-	setInfra   *nftables.Set
-	setCountry *nftables.Set
+	setBlocked    *nftables.Set
+	setBlockedNet *nftables.Set
+	setAllowed    *nftables.Set
+	setInfra      *nftables.Set
+	setCountry    *nftables.Set
 
 	statePath string
 }
@@ -53,10 +54,18 @@ type AllowedEntry struct {
 	Port   int    `json:"port,omitempty"` // 0 = all ports
 }
 
+// SubnetEntry represents a blocked CIDR range.
+type SubnetEntry struct {
+	CIDR      string    `json:"cidr"`
+	Reason    string    `json:"reason"`
+	BlockedAt time.Time `json:"blocked_at"`
+}
+
 // FirewallState is persisted to disk for restore on restart.
 type FirewallState struct {
-	Blocked []BlockedEntry `json:"blocked"`
-	Allowed []AllowedEntry `json:"allowed"`
+	Blocked    []BlockedEntry `json:"blocked"`
+	BlockedNet []SubnetEntry  `json:"blocked_nets"`
+	Allowed    []AllowedEntry `json:"allowed"`
 }
 
 // NewEngine creates a new nftables firewall engine.
@@ -105,6 +114,10 @@ func ConnectExisting(cfg *FirewallConfig, statePath string) (*Engine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("blocked_ips set not found: %w", err)
 	}
+	setBlockedNet, err := conn.GetSetByName(table, "blocked_nets")
+	if err != nil {
+		return nil, fmt.Errorf("blocked_nets set not found: %w", err)
+	}
 	setAllowed, err := conn.GetSetByName(table, "allowed_ips")
 	if err != nil {
 		return nil, fmt.Errorf("allowed_ips set not found: %w", err)
@@ -115,13 +128,14 @@ func ConnectExisting(cfg *FirewallConfig, statePath string) (*Engine, error) {
 	}
 
 	return &Engine{
-		conn:       conn,
-		cfg:        cfg,
-		table:      table,
-		setBlocked: setBlocked,
-		setAllowed: setAllowed,
-		setInfra:   setInfra,
-		statePath:  filepath.Join(statePath, "firewall"),
+		conn:          conn,
+		cfg:           cfg,
+		table:         table,
+		setBlocked:    setBlocked,
+		setBlockedNet: setBlockedNet,
+		setAllowed:    setAllowed,
+		setInfra:      setInfra,
+		statePath:     filepath.Join(statePath, "firewall"),
 	}, nil
 }
 
@@ -187,6 +201,17 @@ func (e *Engine) createSets() error {
 	}
 	if err := e.conn.AddSet(e.setBlocked, nil); err != nil {
 		return fmt.Errorf("blocked set: %w", err)
+	}
+
+	// Blocked subnets set (interval for CIDR ranges, permanent)
+	e.setBlockedNet = &nftables.Set{
+		Table:    e.table,
+		Name:     "blocked_nets",
+		KeyType:  nftables.TypeIPAddr,
+		Interval: true,
+	}
+	if err := e.conn.AddSet(e.setBlockedNet, nil); err != nil {
+		return fmt.Errorf("blocked nets set: %w", err)
 	}
 
 	// Allowed IPs set
@@ -329,10 +354,13 @@ func (e *Engine) createInputChain() error {
 		},
 	})
 
-	// Rule 4: Drop blocked IPs (O(1) set lookup)
+	// Rule 4: Drop blocked IPs (O(1) hash set lookup)
 	e.addSetMatchRule(e.setBlocked, expr.VerdictDrop)
 
-	// Rule 4: Allow infra IPs (all ports)
+	// Rule 5: Drop blocked subnets (interval set for CIDR ranges)
+	e.addSetMatchRule(e.setBlockedNet, expr.VerdictDrop)
+
+	// Rule 6: Allow infra IPs (all ports)
 	e.addSetMatchRule(e.setInfra, expr.VerdictAccept)
 
 	// Rule 5: Allow explicitly allowed IPs
@@ -678,6 +706,18 @@ func (e *Engine) createOutputChain() error {
 		},
 	})
 
+	// REJECT outbound TCP with RST (faster failure than silent DROP)
+	// UDP still silently drops via chain policy.
+	e.conn.AddRule(&nftables.Rule{
+		Table: e.table,
+		Chain: e.chainOut,
+		Exprs: []expr.Any{
+			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{6}},
+			&expr.Reject{Type: 1}, // NFT_REJECT_TCP_RST
+		},
+	})
+
 	return nil
 }
 
@@ -923,6 +963,68 @@ func (e *Engine) FlushBlocked() error {
 	return nil
 }
 
+// BlockSubnet adds a CIDR range to the blocked subnets set.
+func (e *Engine) BlockSubnet(cidr string, reason string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	_, network, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return fmt.Errorf("invalid CIDR: %s", cidr)
+	}
+	start := network.IP.To4()
+	end := lastIPInRange(network)
+	if start == nil || end == nil {
+		return fmt.Errorf("IPv6 not yet supported: %s", cidr)
+	}
+
+	elements := []nftables.SetElement{
+		{Key: start},
+		{Key: nextIP(end), IntervalEnd: true},
+	}
+	if err := e.conn.SetAddElements(e.setBlockedNet, elements); err != nil {
+		return fmt.Errorf("adding to blocked_nets: %w", err)
+	}
+	if err := e.conn.Flush(); err != nil {
+		return fmt.Errorf("flushing: %w", err)
+	}
+
+	e.saveSubnetEntry(SubnetEntry{CIDR: network.String(), Reason: reason, BlockedAt: time.Now()})
+	AppendAudit(e.statePath, "block_subnet", network.String(), reason, 0)
+	return nil
+}
+
+// UnblockSubnet removes a CIDR range from the blocked subnets set.
+func (e *Engine) UnblockSubnet(cidr string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	_, network, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return fmt.Errorf("invalid CIDR: %s", cidr)
+	}
+	start := network.IP.To4()
+	end := lastIPInRange(network)
+	if start == nil || end == nil {
+		return fmt.Errorf("IPv6 not yet supported: %s", cidr)
+	}
+
+	elements := []nftables.SetElement{
+		{Key: start},
+		{Key: nextIP(end), IntervalEnd: true},
+	}
+	if err := e.conn.SetDeleteElements(e.setBlockedNet, elements); err != nil {
+		return fmt.Errorf("removing from blocked_nets: %w", err)
+	}
+	if err := e.conn.Flush(); err != nil {
+		return fmt.Errorf("flushing: %w", err)
+	}
+
+	e.removeSubnetState(network.String())
+	AppendAudit(e.statePath, "unblock_subnet", network.String(), "", 0)
+	return nil
+}
+
 // Status returns current firewall statistics.
 func (e *Engine) Status() map[string]interface{} {
 	state := e.loadStateFile()
@@ -976,6 +1078,23 @@ func (e *Engine) loadState() error {
 			continue
 		}
 		_ = e.conn.SetAddElements(e.setAllowed, []nftables.SetElement{{Key: ip4}})
+	}
+
+	// Restore blocked subnets
+	for _, entry := range state.BlockedNet {
+		_, network, err := net.ParseCIDR(entry.CIDR)
+		if err != nil {
+			continue
+		}
+		start := network.IP.To4()
+		end := lastIPInRange(network)
+		if start == nil || end == nil {
+			continue
+		}
+		_ = e.conn.SetAddElements(e.setBlockedNet, []nftables.SetElement{
+			{Key: start},
+			{Key: nextIP(end), IntervalEnd: true},
+		})
 	}
 
 	return e.conn.Flush()
@@ -1057,6 +1176,29 @@ func (e *Engine) removeAllowedState(ip string) {
 		}
 	}
 	state.Allowed = remaining
+	e.saveState(&state)
+}
+
+func (e *Engine) saveSubnetEntry(entry SubnetEntry) {
+	state := e.loadStateFile()
+	for _, existing := range state.BlockedNet {
+		if existing.CIDR == entry.CIDR {
+			return
+		}
+	}
+	state.BlockedNet = append(state.BlockedNet, entry)
+	e.saveState(&state)
+}
+
+func (e *Engine) removeSubnetState(cidr string) {
+	state := e.loadStateFile()
+	var remaining []SubnetEntry
+	for _, entry := range state.BlockedNet {
+		if entry.CIDR != cidr {
+			remaining = append(remaining, entry)
+		}
+	}
+	state.BlockedNet = remaining
 	e.saveState(&state)
 }
 
