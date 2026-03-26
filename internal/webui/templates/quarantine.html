@@ -15,6 +15,7 @@
                 <a href="/findings">Findings</a>
                 <a href="/history">History</a>
                 <a href="/quarantine" class="active">Quarantine</a>
+                <a href="/blocked">Blocked IPs</a>
             </nav>
         </div>
     </header>
@@ -30,27 +31,45 @@
         <div class="container">CSM — cPanel Security Monitor | {{.Hostname}}</div>
     </footer>
     <script>
-    fetch('/api/v1/quarantine', {credentials:'same-origin'})
-        .then(function(r){return r.json()})
-        .then(function(files){
-            var el = document.getElementById('quarantine-table');
-            if (!files || files.length === 0) {
-                el.innerHTML = '<div class="empty-state">No quarantined files.</div>';
-                return;
-            }
-            var html = '<table><thead><tr><th>Original Path</th><th>Size</th><th>Quarantined</th><th>Reason</th></tr></thead><tbody>';
-            for (var i = 0; i < files.length; i++) {
-                var f = files[i];
-                html += '<tr><td class="mono">' + esc(f.original_path) + '</td><td>' + formatSize(f.size) + '</td><td class="mono">' + esc(f.quarantined_at) + '</td><td>' + esc(f.reason) + '</td></tr>';
-            }
-            html += '</tbody></table>';
-            el.innerHTML = html;
-        })
-        .catch(function(){
-            document.getElementById('quarantine-table').innerHTML = '<div class="empty-state">Error loading quarantine data.</div>';
-        });
+    function loadQuarantine() {
+        fetch('/api/v1/quarantine', {credentials:'same-origin'})
+            .then(function(r){return r.json()})
+            .then(function(files){
+                var el = document.getElementById('quarantine-table');
+                if (!files || files.length === 0) {
+                    el.innerHTML = '<div class="empty-state">No quarantined files.</div>';
+                    return;
+                }
+                var html = '<table><thead><tr><th>Original Path</th><th>Size</th><th>Quarantined</th><th>Reason</th><th>Action</th></tr></thead><tbody>';
+                for (var i = 0; i < files.length; i++) {
+                    var f = files[i];
+                    html += '<tr><td class="mono">' + esc(f.original_path) + '</td><td>' + formatSize(f.size) + '</td><td class="mono">' + esc(f.quarantined_at) + '</td><td>' + esc(f.reason) + '</td><td><button onclick="restoreFile(\'' + esc(f.id) + '\')" style="padding:0.3rem 0.6rem;background:var(--high);color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:0.8rem">Restore</button></td></tr>';
+                }
+                html += '</tbody></table>';
+                el.innerHTML = html;
+            })
+            .catch(function(){
+                document.getElementById('quarantine-table').innerHTML = '<div class="empty-state">Error loading quarantine data.</div>';
+            });
+    }
+
+    function restoreFile(id) {
+        if (!confirm('Restore this file to its original location? A re-scan is recommended after restore.')) return;
+        fetch('/api/v1/quarantine-restore', {
+            method: 'POST', credentials: 'same-origin',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({id: id})
+        }).then(function(r){return r.json()}).then(function(data){
+            if (data.error) { alert('Error: ' + data.error); }
+            else { alert('Restored: ' + data.path + '\n\n' + data.warning); }
+            loadQuarantine();
+        }).catch(function(e){ alert('Error: ' + e); });
+    }
+
     function esc(s){var d=document.createElement('div');d.appendChild(document.createTextNode(s||''));return d.innerHTML;}
     function formatSize(b){if(b<1024)return b+'B';if(b<1048576)return(b/1024).toFixed(1)+'KB';return(b/1048576).toFixed(1)+'MB';}
+
+    loadQuarantine();
     </script>
 </body>
 </html>

@@ -476,18 +476,25 @@ Access at `https://localhost:9443/login`. Auto-generates a self-signed TLS cert 
 
 **Pages:**
 - **Dashboard** — summary cards (critical/high/warning counts), live WebSocket feed, uptime, hostname, signature count
-- **Findings** — active findings table with check type, message, timestamps
+- **Findings** — active findings table with dismiss button to acknowledge findings
 - **History** — paginated history from history.jsonl (newest first)
-- **Quarantine** — quarantined file list with original path, size, reason
+- **Quarantine** — quarantined file list with one-click restore to original location
+- **Blocked IPs** — view/manage CSF-blocked IPs, block new IPs, unblock with one click
 
 **API Endpoints:**
 ```
-GET  /api/v1/status        Daemon status, uptime, component health
-GET  /api/v1/findings      Current active findings
-GET  /api/v1/history       Paginated history (?limit=50&offset=0)
-GET  /api/v1/quarantine    Quarantined files with metadata
-GET  /api/v1/stats         Severity counts and per-check breakdown
-WS   /ws/findings          Real-time finding stream (WebSocket)
+GET  /api/v1/status             Daemon status, uptime, component health
+GET  /api/v1/findings           Current active findings
+GET  /api/v1/history            Paginated history (?limit=50&offset=0)
+GET  /api/v1/quarantine         Quarantined files with metadata
+GET  /api/v1/stats              Severity counts and per-check breakdown
+GET  /api/v1/blocked-ips        Currently blocked IPs with reason/expiry
+WS   /ws/findings               Real-time finding stream (WebSocket)
+
+POST /api/v1/block-ip           Block an IP via CSF {"ip":"...","reason":"..."}
+POST /api/v1/unblock-ip         Unblock an IP from CSF {"ip":"..."}
+POST /api/v1/dismiss            Dismiss/acknowledge a finding {"key":"check:message"}
+POST /api/v1/quarantine-restore Restore quarantined file {"id":"..."}
 ```
 
 **Security:** Token auth (Bearer header, cookie, or query param for WebSocket), TLS-only, localhost-bound by default, rate-limited login (5/min), auto-escaping templates, HttpOnly/Secure/SameSite=Strict cookies.
@@ -496,8 +503,18 @@ WS   /ws/findings          Real-time finding stream (WebSocket)
 
 ## Roadmap
 
+### Web UI — Next
+- Account view: all findings, quarantine, login history per cPanel account
+- Search & filter: by severity, check type, date range, account name
+- Findings timeline chart (inline SVG, no JS library)
+- System health page: fanotify/watcher status, disk usage, last scan times
+- Rule management: view loaded rules, trigger reload from UI
+- Export: download findings/history as CSV or JSON
+
+### Platform
 - WAF rule management and custom ModSecurity rule deployment
 - WHM plugin integration for Web UI dashboard
 - CAPTCHA/challenge pages instead of hard IP blocks
+- Trusted country IP allowlist for cPanel login alerts
 - Binary signing with cosign
 - Multi-server config management

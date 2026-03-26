@@ -2,10 +2,13 @@ package webui
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
@@ -145,6 +148,213 @@ func (s *Server) apiStats(w http.ResponseWriter, _ *http.Request) {
 		"by_check": byCheck,
 	}
 	writeJSON(w, result)
+}
+
+// --- Action endpoints ---
+
+// apiBlockIP blocks an IP via CSF.
+// POST /api/v1/block-ip  body: {"ip": "1.2.3.4", "reason": "..."}
+func (s *Server) apiBlockIP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		IP     string `json:"ip"`
+		Reason string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.IP == "" {
+		writeJSONError(w, "IP is required", http.StatusBadRequest)
+		return
+	}
+	if req.Reason == "" {
+		req.Reason = "Blocked via CSM Web UI"
+	}
+
+	out, err := exec.Command("csf", "-d", req.IP, req.Reason).CombinedOutput()
+	if err != nil {
+		writeJSONError(w, fmt.Sprintf("CSF block failed: %s", string(out)), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, map[string]string{"status": "blocked", "ip": req.IP})
+}
+
+// apiUnblockIP removes an IP from CSF.
+// POST /api/v1/unblock-ip  body: {"ip": "1.2.3.4"}
+func (s *Server) apiUnblockIP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		IP string `json:"ip"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IP == "" {
+		writeJSONError(w, "IP is required", http.StatusBadRequest)
+		return
+	}
+
+	out, err := exec.Command("csf", "-dr", req.IP).CombinedOutput()
+	if err != nil {
+		writeJSONError(w, fmt.Sprintf("CSF unblock failed: %s", string(out)), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, map[string]string{"status": "unblocked", "ip": req.IP})
+}
+
+// apiBlockedIPs returns the list of currently blocked IPs from CSF.
+func (s *Server) apiBlockedIPs(w http.ResponseWriter, _ *http.Request) {
+	// Read from CSM's block state file
+	stateFile := filepath.Join(s.cfg.StatePath, "blocked_ips.json")
+	data, err := os.ReadFile(stateFile)
+	if err != nil {
+		writeJSON(w, []interface{}{})
+		return
+	}
+
+	var blockState struct {
+		IPs []struct {
+			IP        string    `json:"ip"`
+			Reason    string    `json:"reason"`
+			BlockedAt time.Time `json:"blocked_at"`
+			ExpiresAt time.Time `json:"expires_at"`
+		} `json:"ips"`
+	}
+	if err := json.Unmarshal(data, &blockState); err != nil {
+		writeJSON(w, []interface{}{})
+		return
+	}
+
+	type blockedView struct {
+		IP        string `json:"ip"`
+		Reason    string `json:"reason"`
+		BlockedAt string `json:"blocked_at"`
+		ExpiresAt string `json:"expires_at"`
+		ExpiresIn string `json:"expires_in"`
+	}
+
+	var result []blockedView
+	for _, b := range blockState.IPs {
+		expiresIn := time.Until(b.ExpiresAt)
+		if expiresIn < 0 {
+			continue // already expired
+		}
+		result = append(result, blockedView{
+			IP:        b.IP,
+			Reason:    b.Reason,
+			BlockedAt: b.BlockedAt.Format(time.RFC3339),
+			ExpiresAt: b.ExpiresAt.Format(time.RFC3339),
+			ExpiresIn: fmt.Sprintf("%dh%dm", int(expiresIn.Hours()), int(expiresIn.Minutes())%60),
+		})
+	}
+	writeJSON(w, result)
+}
+
+// apiDismissFinding marks a finding as baseline (acknowledged/dismissed).
+// POST /api/v1/dismiss  body: {"key": "check:message"}
+func (s *Server) apiDismissFinding(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Key string `json:"key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Key == "" {
+		writeJSONError(w, "Key is required", http.StatusBadRequest)
+		return
+	}
+
+	s.store.DismissFinding(req.Key)
+	writeJSON(w, map[string]string{"status": "dismissed", "key": req.Key})
+}
+
+// apiQuarantineRestore restores a quarantined file to its original location.
+// POST /api/v1/quarantine-restore  body: {"id": "filename"}
+func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+		writeJSONError(w, "ID is required", http.StatusBadRequest)
+		return
+	}
+
+	const quarantineDir = "/opt/csm/quarantine"
+
+	// Sanitize ID to prevent path traversal
+	id := filepath.Base(req.ID)
+	metaFile := filepath.Join(quarantineDir, id+".meta")
+	quarFile := filepath.Join(quarantineDir, id)
+
+	metaData, err := os.ReadFile(metaFile)
+	if err != nil {
+		writeJSONError(w, "Quarantine entry not found", http.StatusNotFound)
+		return
+	}
+
+	var meta struct {
+		OriginalPath string `json:"original_path"`
+		Owner        int    `json:"owner_uid"`
+		Group        int    `json:"group_gid"`
+		Mode         string `json:"mode"`
+	}
+	if unmarshalErr := json.Unmarshal(metaData, &meta); unmarshalErr != nil {
+		writeJSONError(w, "Invalid metadata", http.StatusInternalServerError)
+		return
+	}
+
+	// Ensure parent directory exists
+	parentDir := filepath.Dir(meta.OriginalPath)
+	if mkdirErr := os.MkdirAll(parentDir, 0755); mkdirErr != nil {
+		writeJSONError(w, fmt.Sprintf("Cannot create parent directory: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Copy file back (don't use rename — might be cross-device)
+	data, err := os.ReadFile(quarFile)
+	if err != nil {
+		writeJSONError(w, fmt.Sprintf("Cannot read quarantined file: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	if err := os.WriteFile(meta.OriginalPath, data, 0644); err != nil {
+		writeJSONError(w, fmt.Sprintf("Cannot write restored file: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Restore ownership
+	_ = syscall.Chown(meta.OriginalPath, meta.Owner, meta.Group)
+
+	// Remove quarantined copies
+	os.Remove(quarFile)
+	os.Remove(metaFile)
+
+	writeJSON(w, map[string]string{
+		"status":  "restored",
+		"path":    meta.OriginalPath,
+		"warning": "File restored to original location. Re-scan recommended.",
+	})
+}
+
+func writeJSONError(w http.ResponseWriter, message string, code int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
 }
 
 func writeJSON(w http.ResponseWriter, data interface{}) {

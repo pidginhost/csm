@@ -71,12 +71,22 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/history", s.requireAuth(http.HandlerFunc(s.handleHistory)))
 	mux.Handle("/quarantine", s.requireAuth(http.HandlerFunc(s.handleQuarantine)))
 
-	// Auth-protected API
+	// Auth-protected pages
+	mux.Handle("/blocked", s.requireAuth(http.HandlerFunc(s.handleBlocked)))
+
+	// Auth-protected API — read
 	mux.Handle("/api/v1/status", s.requireAuth(http.HandlerFunc(s.apiStatus)))
 	mux.Handle("/api/v1/findings", s.requireAuth(http.HandlerFunc(s.apiFindings)))
 	mux.Handle("/api/v1/history", s.requireAuth(http.HandlerFunc(s.apiHistory)))
 	mux.Handle("/api/v1/quarantine", s.requireAuth(http.HandlerFunc(s.apiQuarantine)))
 	mux.Handle("/api/v1/stats", s.requireAuth(http.HandlerFunc(s.apiStats)))
+	mux.Handle("/api/v1/blocked-ips", s.requireAuth(http.HandlerFunc(s.apiBlockedIPs)))
+
+	// Auth-protected API — actions
+	mux.Handle("/api/v1/block-ip", s.requireAuth(http.HandlerFunc(s.apiBlockIP)))
+	mux.Handle("/api/v1/unblock-ip", s.requireAuth(http.HandlerFunc(s.apiUnblockIP)))
+	mux.Handle("/api/v1/dismiss", s.requireAuth(http.HandlerFunc(s.apiDismissFinding)))
+	mux.Handle("/api/v1/quarantine-restore", s.requireAuth(http.HandlerFunc(s.apiQuarantineRestore)))
 
 	// WebSocket (auth via query param)
 	mux.HandleFunc("/ws/findings", s.handleWSFindings)
