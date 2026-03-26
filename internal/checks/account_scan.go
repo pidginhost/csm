@@ -139,9 +139,9 @@ type fakeDirEntry struct {
 }
 
 func (f fakeDirEntry) Name() string               { return f.fi.Name() }
-func (f fakeDirEntry) IsDir() bool                 { return f.fi.IsDir() }
-func (f fakeDirEntry) Type() os.FileMode           { return f.fi.Mode().Type() }
-func (f fakeDirEntry) Info() (os.FileInfo, error)   { return f.fi, nil }
+func (f fakeDirEntry) IsDir() bool                { return f.fi.IsDir() }
+func (f fakeDirEntry) Type() os.FileMode          { return f.fi.Mode().Type() }
+func (f fakeDirEntry) Info() (os.FileInfo, error) { return f.fi, nil }
 
 // makeAccountSSHKeyCheck creates a check for SSH keys of a specific account.
 func makeAccountSSHKeyCheck(account string) CheckFunc {
