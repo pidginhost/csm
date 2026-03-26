@@ -31,8 +31,11 @@ type reputationEntry struct {
 	CheckedAt time.Time `json:"checked_at"`
 }
 
-// CheckIPReputation looks up non-infra IPs from recent findings against
-// AbuseIPDB threat intelligence. Flags IPs with high abuse confidence scores.
+// CheckIPReputation looks up non-infra IPs against threat intelligence.
+// Tiered approach to minimize API calls and alert noise:
+//  1. Skip if IP is already blocked in CSF → no alert, no API call
+//  2. Skip if IP is in local cache with bad score → block immediately, no API call
+//  3. Only query AbuseIPDB for truly new IPs never seen before
 func CheckIPReputation(cfg *config.Config, _ *state.Store) []alert.Finding {
 	if cfg.Reputation.AbuseIPDBKey == "" {
 		return nil
@@ -40,11 +43,13 @@ func CheckIPReputation(cfg *config.Config, _ *state.Store) []alert.Finding {
 
 	var findings []alert.Finding
 
-	// Collect unique non-infra IPs from recent log activity
 	ips := collectRecentIPs(cfg)
 	if len(ips) == 0 {
 		return nil
 	}
+
+	// Load blocked IPs from CSF deny list + CSM block state
+	alreadyBlocked := loadAllBlockedIPs(cfg.StatePath)
 
 	// Load reputation cache
 	cache := loadReputationCache(cfg.StatePath)
@@ -53,22 +58,28 @@ func CheckIPReputation(cfg *config.Config, _ *state.Store) []alert.Finding {
 
 	checked := 0
 	for ip := range ips {
-		// Skip if cached and fresh
+		// Tier 1: Skip if already blocked in CSF — no alert, no API call
+		if alreadyBlocked[ip] {
+			continue
+		}
+
+		// Tier 2: Check local cache — if known bad, alert + block without API call
 		if entry, ok := cache.Entries[ip]; ok {
 			if time.Since(entry.CheckedAt) < cacheExpiry {
 				if entry.Score >= abuseConfidenceThreshold {
 					findings = append(findings, alert.Finding{
-						Severity: alert.Critical,
-						Check:    "ip_reputation",
-						Message:  fmt.Sprintf("Known malicious IP accessing server: %s (AbuseIPDB score: %d/100)", ip, entry.Score),
-						Details:  fmt.Sprintf("Category: %s\nThis IP is reported in threat intelligence databases", entry.Category),
+						Severity:  alert.Critical,
+						Check:     "ip_reputation",
+						Message:   fmt.Sprintf("Known malicious IP accessing server: %s (AbuseIPDB score: %d/100)", ip, entry.Score),
+						Details:   fmt.Sprintf("Category: %s\nThis IP is reported in threat intelligence databases", entry.Category),
+						Timestamp: time.Now(),
 					})
 				}
 				continue
 			}
 		}
 
-		// Rate limit — max 10 lookups per check cycle
+		// Tier 3: Query AbuseIPDB for new IPs — max 10 per cycle
 		if checked >= 10 {
 			break
 		}
@@ -84,10 +95,11 @@ func CheckIPReputation(cfg *config.Config, _ *state.Store) []alert.Finding {
 
 		if score >= abuseConfidenceThreshold {
 			findings = append(findings, alert.Finding{
-				Severity: alert.Critical,
-				Check:    "ip_reputation",
-				Message:  fmt.Sprintf("Known malicious IP accessing server: %s (AbuseIPDB score: %d/100)", ip, score),
-				Details:  fmt.Sprintf("Category: %s\nThis IP is reported in threat intelligence databases", category),
+				Severity:  alert.Critical,
+				Check:     "ip_reputation",
+				Message:   fmt.Sprintf("Known malicious IP accessing server: %s (AbuseIPDB score: %d/100)", ip, score),
+				Details:   fmt.Sprintf("Category: %s\nThis IP is reported in threat intelligence databases", category),
+				Timestamp: time.Now(),
 			})
 		}
 	}
@@ -107,7 +119,6 @@ func CheckIPReputation(cfg *config.Config, _ *state.Store) []alert.Finding {
 func collectRecentIPs(cfg *config.Config) map[string]bool {
 	ips := make(map[string]bool)
 
-	// From SSH logins
 	lines := tailFile("/var/log/secure", 50)
 	for _, line := range lines {
 		if !strings.Contains(line, "Accepted") {
@@ -124,7 +135,6 @@ func collectRecentIPs(cfg *config.Config) map[string]bool {
 		}
 	}
 
-	// From cPanel access log
 	lines = tailFile("/usr/local/cpanel/logs/access_log", 100)
 	for _, line := range lines {
 		fields := strings.Fields(line)
@@ -137,6 +147,55 @@ func collectRecentIPs(cfg *config.Config) map[string]bool {
 	}
 
 	return ips
+}
+
+// loadAllBlockedIPs returns all IPs currently blocked in CSF deny list
+// and CSM's own block state. These IPs are skipped entirely.
+func loadAllBlockedIPs(statePath string) map[string]bool {
+	blocked := make(map[string]bool)
+
+	// Read CSF deny list
+	data, err := os.ReadFile("/etc/csf/csf.deny")
+	if err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			// Format: IP # comment  or  IP
+			parts := strings.Fields(line)
+			if len(parts) > 0 {
+				ip := strings.Split(parts[0], "/")[0] // strip CIDR notation
+				if strings.Count(ip, ".") == 3 {
+					blocked[ip] = true
+				}
+			}
+		}
+	}
+
+	// Read CSM block state
+	type blockedEntry struct {
+		IP        string    `json:"ip"`
+		ExpiresAt time.Time `json:"expires_at"`
+	}
+	type blockFile struct {
+		IPs []blockedEntry `json:"ips"`
+	}
+
+	data, err = os.ReadFile(filepath.Join(statePath, "blocked_ips.json"))
+	if err == nil {
+		var bf blockFile
+		if err := json.Unmarshal(data, &bf); err == nil {
+			now := time.Now()
+			for _, entry := range bf.IPs {
+				if now.Before(entry.ExpiresAt) {
+					blocked[entry.IP] = true
+				}
+			}
+		}
+	}
+
+	return blocked
 }
 
 type abuseIPDBResponse struct {
