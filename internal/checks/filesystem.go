@@ -82,7 +82,7 @@ func CheckFilesystem(_ *config.Config, _ *state.Store) []alert.Finding {
 	}
 
 	// SUID in /home — shallow scan only
-	homeDirs, _ := os.ReadDir("/home")
+	homeDirs, _ := GetScanHomeDirs()
 	for _, entry := range homeDirs {
 		if !entry.IsDir() {
 			continue
@@ -142,7 +142,7 @@ func CheckWebshells(cfg *config.Config, _ *state.Store) []alert.Finding {
 	}
 
 	// Scan each user's public_html and addon domains
-	homeDirs, _ := os.ReadDir("/home")
+	homeDirs, _ := GetScanHomeDirs()
 	for _, homeEntry := range homeDirs {
 		if !homeEntry.IsDir() {
 			continue

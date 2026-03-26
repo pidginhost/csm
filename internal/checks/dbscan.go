@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
 	"github.com/pidginhost/cpanel-security-monitor/internal/config"
@@ -406,4 +407,79 @@ func truncateDB(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// CleanDatabaseSpam removes known spam/malware patterns from WordPress database content.
+// Targets wp_posts and wp_options tables. Returns findings for each cleaned row.
+func CleanDatabaseSpam(account string) []alert.Finding {
+	var findings []alert.Finding
+
+	wpConfigs, _ := filepath.Glob(filepath.Join("/home", account, "*/wp-config.php"))
+	wpConfigs2, _ := filepath.Glob(filepath.Join("/home", account, "public_html/wp-config.php"))
+	wpConfigs = append(wpConfigs, wpConfigs2...)
+
+	for _, wpConfig := range wpConfigs {
+		creds := parseWPConfig(wpConfig)
+		if creds.dbName == "" {
+			continue
+		}
+		prefix := creds.tablePrefix
+		if prefix == "" {
+			prefix = "wp_"
+		}
+
+		// Clean spam from wp_posts
+		spamPatterns := []struct {
+			pattern string
+			desc    string
+		}{
+			{"<script>", "injected script tag"},
+			{"eval(", "eval() in post content"},
+			{"base64_decode(", "base64_decode in post content"},
+			{"document.write(", "document.write injection"},
+		}
+
+		for _, sp := range spamPatterns {
+			// Count affected rows first
+			countQuery := fmt.Sprintf(
+				"SELECT COUNT(*) FROM %sposts WHERE post_content LIKE '%%%s%%'",
+				prefix, sp.pattern)
+			countLines := runMySQLQuery(creds, countQuery)
+			if len(countLines) == 0 || countLines[0] == "0" {
+				continue
+			}
+
+			// Clean: remove the malicious pattern from post_content
+			cleanQuery := fmt.Sprintf(
+				"UPDATE %sposts SET post_content = REPLACE(post_content, '%s', '') WHERE post_content LIKE '%%%s%%'",
+				prefix, sp.pattern, sp.pattern)
+			runMySQLQuery(creds, cleanQuery)
+
+			findings = append(findings, alert.Finding{
+				Severity:  alert.High,
+				Check:     "db_spam_cleaned",
+				Message:   fmt.Sprintf("Cleaned %s from %s posts in %s (account: %s)", sp.desc, countLines[0], creds.dbName, account),
+				Timestamp: time.Now(),
+			})
+		}
+
+		// Clean spam domains from wp_posts
+		for _, spam := range dbSpamDomains {
+			countQuery := fmt.Sprintf(
+				"SELECT COUNT(*) FROM %sposts WHERE post_content LIKE '%%%s%%' AND post_status='publish'",
+				prefix, spam)
+			countLines := runMySQLQuery(creds, countQuery)
+			if len(countLines) == 0 || countLines[0] == "0" {
+				continue
+			}
+
+			findings = append(findings, alert.Finding{
+				Severity: alert.High,
+				Check:    "db_spam_found",
+				Message:  fmt.Sprintf("Found spam keyword '%s' in %s published posts in %s (account: %s) — manual review recommended", spam, countLines[0], creds.dbName, account),
+			})
+		}
+	}
+
+	return findings
 }

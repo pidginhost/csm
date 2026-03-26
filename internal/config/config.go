@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/pidginhost/cpanel-security-monitor/internal/firewall"
 	"gopkg.in/yaml.v3"
 )
 
@@ -91,6 +92,8 @@ type Config struct {
 		TLSKey    string `yaml:"tls_key"`
 	} `yaml:"webui"`
 
+	Firewall *firewall.FirewallConfig `yaml:"firewall"`
+
 	C2Blocklist   []string `yaml:"c2_blocklist"`
 	BackdoorPorts []int    `yaml:"backdoor_ports"`
 }
@@ -141,6 +144,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Alerts.MaxPerHour == 0 {
 		cfg.Alerts.MaxPerHour = 10
+	}
+	if cfg.Firewall == nil {
+		cfg.Firewall = firewall.DefaultConfig()
 	}
 
 	return cfg, nil

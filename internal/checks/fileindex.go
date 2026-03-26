@@ -216,7 +216,7 @@ func groupEntriesByUploadDir(entries []string) map[string][]string {
 func buildFileIndex(dirCache dirMtimeCache, prevByDir map[string][]string) []string {
 	var entries []string
 
-	homeDirs, err := os.ReadDir("/home")
+	homeDirs, err := GetScanHomeDirs()
 	if err != nil {
 		return nil
 	}

@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
 	"github.com/pidginhost/cpanel-security-monitor/internal/checks"
@@ -86,6 +87,10 @@ func main() {
 		runUpdateRules()
 	case "clean":
 		runClean()
+	case "scan":
+		runScanAccount()
+	case "firewall":
+		runFirewall()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
 		printUsage()
@@ -114,6 +119,8 @@ Commands:
   verify        Verify binary + config integrity
   update-rules  Download latest malware signature rules
   clean <path>  Attempt to clean an infected PHP file (backup created first)
+  scan <user>   Scan a single cPanel account (add --alert to send alerts)
+  firewall ...  Firewall management (deny, allow, status, ports, etc.)
   version       Version info + build hash
 
 Options:
@@ -384,5 +391,53 @@ func runClean() {
 	fmt.Fprintln(os.Stderr, checks.FormatCleanResult(result))
 	if !result.Cleaned {
 		os.Exit(1)
+	}
+}
+
+func runScanAccount() {
+	if len(os.Args) < 3 {
+		fmt.Fprintf(os.Stderr, "Usage: csm scan <username>\n")
+		os.Exit(1)
+	}
+	account := os.Args[2]
+	cfg := loadConfig()
+
+	// Initialize signatures for scanning
+	signatures.Init(cfg.Signatures.RulesDir)
+
+	store, err := state.Open(cfg.StatePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening state: %v\n", err)
+		os.Exit(1)
+	}
+	defer func() { _ = store.Close() }()
+
+	fmt.Fprintf(os.Stderr, "Scanning account: %s\n", account)
+	start := time.Now()
+
+	findings := checks.RunAccountScan(cfg, store, account)
+
+	elapsed := time.Since(start).Round(time.Millisecond)
+	fmt.Fprintf(os.Stderr, "Scan completed in %s: %d finding(s)\n\n", elapsed, len(findings))
+
+	if len(findings) == 0 {
+		fmt.Println("No findings. Account is clean.")
+		return
+	}
+
+	// Print findings
+	for _, f := range findings {
+		fmt.Println(f.String())
+		fmt.Println()
+	}
+
+	// Send alerts if --alert flag present
+	for _, arg := range os.Args[3:] {
+		if arg == "--alert" {
+			if err := alert.Dispatch(cfg, findings); err != nil {
+				fmt.Fprintf(os.Stderr, "Alert dispatch error: %v\n", err)
+			}
+			break
+		}
 	}
 }

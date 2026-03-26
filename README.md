@@ -1,8 +1,10 @@
 # CSM — cPanel Security Monitor
 
-Real-time security monitoring for cPanel/WHM shared hosting servers. A single static Go binary with a persistent daemon that detects compromises, backdoors, and suspicious activity in **real-time** — then alerts you within seconds.
+Real-time security monitoring for cPanel/WHM shared hosting servers. A single static Go binary with a persistent daemon that detects compromises, backdoors, phishing, and suspicious activity in **real-time** — then alerts you within seconds.
 
-Built after a real incident where GSocket reverse shells, LEVIATHAN webshell toolkits, and attacker-created API tokens were found across 6 accounts on a production server.
+Designed as a full Imunify360 replacement. 48 security checks, 14 real-time detection types, 6 log watchers, 47 malware signature rules, PHP runtime protection, PAM brute-force integration, 7-strategy malware cleaning, IP blocking, outbound email scanning, per-account on-demand scanning, and a web dashboard with real-time WebSocket feed.
+
+Built after real incidents where GSocket reverse shells, LEVIATHAN webshell toolkits, credential-stuffed cPanel accounts, and phishing kits were found across 12+ accounts on production servers.
 
 ## Performance
 
@@ -38,6 +40,8 @@ Benchmarked on a production cPanel server with 168 accounts, 275 WordPress sites
 - Analyzer worker pool with backpressure (bounded queue, overflow detection)
 
 **Binary size:** ~8 MB (static, no dependencies)
+
+**Codebase:** 68 Go files, ~15,500 lines of code, 2 dependencies (yaml.v3 + yara-x)
 
 **Disk usage:**
 - Binary: 8 MB (`/opt/csm/csm`)
@@ -125,7 +129,7 @@ Falls back to timer-based mode if the kernel doesn't support fanotify.
 | cPanel API failures | API authentication failures (401/403) in real-time |
 | Webmail login attempts | Webmail login attempts from non-infra IPs |
 
-### Periodic: Critical Tier (28 checks, every 10 minutes, < 1 second)
+### Periodic: Critical Tier (30 checks, every 10 minutes, < 1 second)
 
 | Check | What it detects |
 |---|---|
@@ -160,7 +164,7 @@ Falls back to timer-based mode if the kernel doesn't support fanotify.
 | cPanel API auth failures | Failed API authentication (401/403) from non-infra IPs |
 | Self-health | Dependency verification, auditd rules, state dir |
 
-### Periodic: Deep Tier (8 checks when daemon active, 15 when timer mode)
+### Periodic: Deep Tier (5 checks when daemon active, 17 when timer mode)
 
 When the daemon is running with fanotify, only checks that fanotify can't replace run periodically:
 
@@ -183,6 +187,7 @@ When the daemon is running with fanotify, only checks that fanotify can't replac
 | WP rogue admin accounts | New administrator accounts created in the last 7 days |
 | WP suspicious admin email | Admin accounts using disposable/temporary email domains |
 | WP spam injection | Pharma/casino/gambling spam content in published posts |
+| Outbound email scanning | Samples email headers/body for phishing URLs, Reply-To mismatch, brand spoofing, suspicious mailers |
 | DNS zone modifications | Changes to /var/named/*.db zone files (DNS hijacking) |
 | SSL certificate issuance | New certificates via AutoSSL (phishing domain certs) |
 
@@ -193,7 +198,7 @@ When the daemon is running with fanotify, only checks that fanotify can't replac
 | Auto-kill processes | Kills fake kernel threads, reverse shells, GSocket (never kills root/system) |
 | Auto-quarantine files | Moves webshells/backdoors/phishing to `/opt/csm/quarantine/` with metadata sidecar |
 | Auto-block IPs | Blocks attacker IPs via CSF with configurable expiry (brute-force, C2, credential stuffing) |
-| Malware cleaning | Surgical removal of @include injections, prepend/append injections, inline eval chains. Backup created before any change. |
+| Malware cleaning | 7 strategies: @include injection, prepend/append injection, inline eval, multi-layer base64 chains, chr()/pack() code construction, hex-encoded variable injection. Plus DB spam cleaning. Backup created before any change. |
 | PHP runtime shield | `auto_prepend_file` protection — blocks PHP execution from uploads/tmp, detects webshell parameters, logs suspicious POST requests |
 | PAM brute-force | Real-time login failure tracking via Unix socket — blocks IPs within seconds of threshold breach (SSH, FTP, email) |
 
@@ -421,6 +426,7 @@ backdoor_ports: [4444, 5555, 55553, 55555, 31337]
 | `csm verify` | Verify binary and config integrity |
 | `csm update-rules` | Download latest malware signature rules |
 | `csm clean <path>` | Clean an infected PHP file — removes injections, creates backup |
+| `csm scan <user>` | Scan a single cPanel account (16 checks, ~5 sec). Add `--alert` to send alerts |
 | `csm version` | Show version and build info |
 
 ## Security
@@ -476,7 +482,7 @@ Access at `https://localhost:9443/login`. Auto-generates a self-signed TLS cert 
 
 **Pages:**
 - **Dashboard** — summary cards (critical/high/warning counts), live WebSocket feed, uptime, hostname, signature count
-- **Findings** — active findings table with dismiss button to acknowledge findings
+- **Findings** — active findings table with dismiss buttons, plus per-account scan form (enter username, get results inline)
 - **History** — paginated history from history.jsonl (newest first)
 - **Quarantine** — quarantined file list with one-click restore to original location
 - **Blocked IPs** — view/manage CSF-blocked IPs, block new IPs, unblock with one click
@@ -495,11 +501,37 @@ POST /api/v1/block-ip           Block an IP via CSF {"ip":"...","reason":"..."}
 POST /api/v1/unblock-ip         Unblock an IP from CSF {"ip":"..."}
 POST /api/v1/dismiss            Dismiss/acknowledge a finding {"key":"check:message"}
 POST /api/v1/quarantine-restore Restore quarantined file {"id":"..."}
+POST /api/v1/scan-account       Scan single account {"account":"username"}
 ```
 
 **Security:** Token auth (Bearer header, cookie, or query param for WebSocket), TLS-only, localhost-bound by default, rate-limited login (5/min), auto-escaping templates, HttpOnly/Secure/SameSite=Strict cookies.
 
 **Architecture:** Go `html/template` + vanilla JS, zero external dependencies, embedded via `embed.FS` (~30KB binary size increase), stdlib-only WebSocket implementation.
+
+## CSM vs Imunify360
+
+| Capability | CSM | Imunify360 |
+|---|---|---|
+| Real-time file monitoring | fanotify (< 1 sec) | fanotify |
+| Malware signatures | 47 rules (YAML + YARA) | Proprietary database (thousands) |
+| PHP runtime protection | auto_prepend_file shield | PHP extension (deeper hooks) |
+| Brute-force protection | PAM integration + 7 log-based vectors | PAM + gray listing |
+| WAF | ModSecurity status/rule monitoring | Full ModSecurity ruleset management |
+| Malware cleaning | 7 surgical strategies + DB spam cleaning | Hundreds of cleaning patterns |
+| Outbound email scanning | Header + body analysis for phishing/spam | Content scanning + blocking |
+| Per-account scan | `csm scan <user>` CLI + Web UI (16 checks, ~5 sec) | Per-account scan from UI |
+| Web dashboard | Embedded HTTPS + WebSocket + actions (block/unblock/dismiss/restore/scan) | WHM plugin |
+| IP blocking | CSF integration with auto-expiry | CSF + CAPTCHA gray listing |
+| cPanel session monitoring | Multi-IP correlation, credential stuffing | Not available |
+| Cross-account correlation | Coordinated attack detection | Not available |
+| Phishing detection | 8-layer (brand, structural, directory, PHP, iframe, credential logs, ZIPs) | Not available |
+| WordPress DB scanning | Post/option injection, rogue admins, spam | Not available |
+| Nulled plugin detection | Crack signature scanning | Not available |
+| External signature updates | `csm update-rules` + SIGHUP reload | Automatic daily |
+| Password hijack detection | Correlates password change + re-login from new IP | Not available |
+| Transparency | Full finding details, check names, evidence | Black box |
+| Dependencies | 2 (yaml.v3, yara-x) | Hundreds (Python, ClamAV, etc.) |
+| Binary size | ~8 MB static | ~500 MB+ installed |
 
 ## Roadmap
 
@@ -511,10 +543,12 @@ POST /api/v1/quarantine-restore Restore quarantined file {"id":"..."}
 - Rule management: view loaded rules, trigger reload from UI
 - Export: download findings/history as CSV or JSON
 
+### Imunify360 Parity
+- Trusted country IP filtering for cPanel login alerts (reduce false positives)
+- CAPTCHA/challenge pages instead of hard IP blocks (gray listing)
+- Virtual patching — auto-updated WAF rules for new WordPress CVEs
+
 ### Platform
-- WAF rule management and custom ModSecurity rule deployment
 - WHM plugin integration for Web UI dashboard
-- CAPTCHA/challenge pages instead of hard IP blocks
-- Trusted country IP allowlist for cPanel login alerts
 - Binary signing with cosign
 - Multi-server config management

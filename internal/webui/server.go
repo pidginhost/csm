@@ -17,6 +17,12 @@ import (
 	"github.com/pidginhost/cpanel-security-monitor/internal/state"
 )
 
+// IPBlocker abstracts the firewall engine for block/unblock operations.
+type IPBlocker interface {
+	BlockIP(ip string, reason string, timeout time.Duration) error
+	UnblockIP(ip string) error
+}
+
 // Server is the embedded web UI HTTP server.
 type Server struct {
 	cfg       *config.Config
@@ -26,6 +32,7 @@ type Server struct {
 	templates *template.Template
 	startTime time.Time
 	sigCount  int // loaded signature rule count
+	blocker   IPBlocker
 
 	// Login rate limiting
 	loginMu       sync.Mutex
@@ -83,6 +90,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/blocked-ips", s.requireAuth(http.HandlerFunc(s.apiBlockedIPs)))
 
 	// Auth-protected API — actions
+	mux.Handle("/api/v1/scan-account", s.requireAuth(http.HandlerFunc(s.apiScanAccount)))
 	mux.Handle("/api/v1/block-ip", s.requireAuth(http.HandlerFunc(s.apiBlockIP)))
 	mux.Handle("/api/v1/unblock-ip", s.requireAuth(http.HandlerFunc(s.apiUnblockIP)))
 	mux.Handle("/api/v1/dismiss", s.requireAuth(http.HandlerFunc(s.apiDismissFinding)))
@@ -133,6 +141,11 @@ func (s *Server) Broadcast(findings []alert.Finding) {
 // SetSigCount sets the loaded signature count for the status API.
 func (s *Server) SetSigCount(count int) {
 	s.sigCount = count
+}
+
+// SetIPBlocker sets the firewall engine for block/unblock operations.
+func (s *Server) SetIPBlocker(b IPBlocker) {
+	s.blocker = b
 }
 
 // --- Authentication ---

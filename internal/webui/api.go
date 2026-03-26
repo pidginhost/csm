@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
+	"github.com/pidginhost/cpanel-security-monitor/internal/checks"
 	"github.com/pidginhost/cpanel-security-monitor/internal/state"
 )
 
@@ -152,7 +153,7 @@ func (s *Server) apiStats(w http.ResponseWriter, _ *http.Request) {
 
 // --- Action endpoints ---
 
-// apiBlockIP blocks an IP via CSF.
+// apiBlockIP blocks an IP via the firewall engine (or CSF fallback).
 // POST /api/v1/block-ip  body: {"ip": "1.2.3.4", "reason": "..."}
 func (s *Server) apiBlockIP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -176,16 +177,23 @@ func (s *Server) apiBlockIP(w http.ResponseWriter, r *http.Request) {
 		req.Reason = "Blocked via CSM Web UI"
 	}
 
-	out, err := exec.Command("csf", "-d", req.IP, req.Reason).CombinedOutput()
-	if err != nil {
-		writeJSONError(w, fmt.Sprintf("CSF block failed: %s", string(out)), http.StatusInternalServerError)
-		return
+	if s.blocker != nil {
+		if err := s.blocker.BlockIP(req.IP, req.Reason, 0); err != nil {
+			writeJSONError(w, fmt.Sprintf("Block failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		out, err := exec.Command("csf", "-d", req.IP, req.Reason).CombinedOutput()
+		if err != nil {
+			writeJSONError(w, fmt.Sprintf("CSF block failed: %s", string(out)), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	writeJSON(w, map[string]string{"status": "blocked", "ip": req.IP})
 }
 
-// apiUnblockIP removes an IP from CSF.
+// apiUnblockIP removes an IP from the firewall (or CSF fallback).
 // POST /api/v1/unblock-ip  body: {"ip": "1.2.3.4"}
 func (s *Server) apiUnblockIP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -201,18 +209,72 @@ func (s *Server) apiUnblockIP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := exec.Command("csf", "-dr", req.IP).CombinedOutput()
-	if err != nil {
-		writeJSONError(w, fmt.Sprintf("CSF unblock failed: %s", string(out)), http.StatusInternalServerError)
-		return
+	if s.blocker != nil {
+		if err := s.blocker.UnblockIP(req.IP); err != nil {
+			writeJSONError(w, fmt.Sprintf("Unblock failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		out, err := exec.Command("csf", "-dr", req.IP).CombinedOutput()
+		if err != nil {
+			writeJSONError(w, fmt.Sprintf("CSF unblock failed: %s", string(out)), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	writeJSON(w, map[string]string{"status": "unblocked", "ip": req.IP})
 }
 
-// apiBlockedIPs returns the list of currently blocked IPs from CSF.
+// apiBlockedIPs returns the list of currently blocked IPs.
+// Reads from firewall engine state if available, falls back to CSF blocked_ips.json.
 func (s *Server) apiBlockedIPs(w http.ResponseWriter, _ *http.Request) {
-	// Read from CSM's block state file
+	type blockedView struct {
+		IP        string `json:"ip"`
+		Reason    string `json:"reason"`
+		BlockedAt string `json:"blocked_at"`
+		ExpiresAt string `json:"expires_at"`
+		ExpiresIn string `json:"expires_in"`
+	}
+
+	var result []blockedView
+	now := time.Now()
+
+	// Try firewall engine state first
+	fwFile := filepath.Join(s.cfg.StatePath, "firewall", "state.json")
+	if fwData, err := os.ReadFile(fwFile); err == nil {
+		var fwState struct {
+			Blocked []struct {
+				IP        string    `json:"ip"`
+				Reason    string    `json:"reason"`
+				BlockedAt time.Time `json:"blocked_at"`
+				ExpiresAt time.Time `json:"expires_at"`
+			} `json:"blocked"`
+		}
+		if json.Unmarshal(fwData, &fwState) == nil {
+			for _, b := range fwState.Blocked {
+				if !b.ExpiresAt.IsZero() && now.After(b.ExpiresAt) {
+					continue
+				}
+				view := blockedView{
+					IP:        b.IP,
+					Reason:    b.Reason,
+					BlockedAt: b.BlockedAt.Format(time.RFC3339),
+				}
+				if !b.ExpiresAt.IsZero() {
+					remaining := time.Until(b.ExpiresAt)
+					view.ExpiresAt = b.ExpiresAt.Format(time.RFC3339)
+					view.ExpiresIn = fmt.Sprintf("%dh%dm", int(remaining.Hours()), int(remaining.Minutes())%60)
+				} else {
+					view.ExpiresIn = "permanent"
+				}
+				result = append(result, view)
+			}
+			writeJSON(w, result)
+			return
+		}
+	}
+
+	// Fall back to CSF blocked_ips.json
 	stateFile := filepath.Join(s.cfg.StatePath, "blocked_ips.json")
 	data, err := os.ReadFile(stateFile)
 	if err != nil {
@@ -233,19 +295,10 @@ func (s *Server) apiBlockedIPs(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 
-	type blockedView struct {
-		IP        string `json:"ip"`
-		Reason    string `json:"reason"`
-		BlockedAt string `json:"blocked_at"`
-		ExpiresAt string `json:"expires_at"`
-		ExpiresIn string `json:"expires_in"`
-	}
-
-	var result []blockedView
 	for _, b := range blockState.IPs {
 		expiresIn := time.Until(b.ExpiresAt)
 		if expiresIn < 0 {
-			continue // already expired
+			continue
 		}
 		result = append(result, blockedView{
 			IP:        b.IP,
@@ -349,6 +402,43 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 		"path":    meta.OriginalPath,
 		"warning": "File restored to original location. Re-scan recommended.",
 	})
+}
+
+// apiScanAccount runs an on-demand scan for a single cPanel account.
+// POST /api/v1/scan-account  body: {"account": "username"}
+func (s *Server) apiScanAccount(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Account string `json:"account"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Account == "" {
+		writeJSONError(w, "Account name is required", http.StatusBadRequest)
+		return
+	}
+
+	// Sanitize — only allow alphanumeric + underscore (cPanel usernames)
+	for _, c := range req.Account {
+		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_') {
+			writeJSONError(w, "Invalid account name", http.StatusBadRequest)
+			return
+		}
+	}
+
+	start := time.Now()
+	findings := checks.RunAccountScan(s.cfg, s.store, req.Account)
+	elapsed := time.Since(start).Round(time.Millisecond)
+
+	result := map[string]interface{}{
+		"account":  req.Account,
+		"findings": findings,
+		"count":    len(findings),
+		"elapsed":  elapsed.String(),
+	}
+	writeJSON(w, result)
 }
 
 func writeJSONError(w http.ResponseWriter, message string, code int) {

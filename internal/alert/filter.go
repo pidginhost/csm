@@ -61,33 +61,45 @@ func FilterBlockedAlerts(cfg *config.Config, findings []Finding) []Finding {
 	return filtered
 }
 
-// loadBlockedIPs reads the blocked_ips.json state file and returns
-// all IPs that are currently blocked (not expired).
+// loadBlockedIPs reads blocked IPs from both the firewall engine state
+// and the legacy blocked_ips.json file.
 func loadBlockedIPs(statePath string) map[string]bool {
 	ips := make(map[string]bool)
-
-	type blockedEntry struct {
-		IP        string    `json:"ip"`
-		ExpiresAt time.Time `json:"expires_at"`
-	}
-	type blockFile struct {
-		IPs []blockedEntry `json:"ips"`
-	}
-
-	data, err := os.ReadFile(filepath.Join(statePath, "blocked_ips.json"))
-	if err != nil {
-		return ips
-	}
-
-	var bf blockFile
-	if err := json.Unmarshal(data, &bf); err != nil {
-		return ips
-	}
-
 	now := time.Now()
-	for _, entry := range bf.IPs {
-		if now.Before(entry.ExpiresAt) {
-			ips[entry.IP] = true
+
+	// Read from firewall engine state (nftables)
+	if fwData, err := os.ReadFile(filepath.Join(statePath, "firewall", "state.json")); err == nil {
+		var fwState struct {
+			Blocked []struct {
+				IP        string    `json:"ip"`
+				ExpiresAt time.Time `json:"expires_at"`
+			} `json:"blocked"`
+		}
+		if json.Unmarshal(fwData, &fwState) == nil {
+			for _, entry := range fwState.Blocked {
+				if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
+					ips[entry.IP] = true
+				}
+			}
+		}
+	}
+
+	// Also read from legacy blocked_ips.json (CSF auto-block)
+	type blockFile struct {
+		IPs []struct {
+			IP        string    `json:"ip"`
+			ExpiresAt time.Time `json:"expires_at"`
+		} `json:"ips"`
+	}
+
+	if data, err := os.ReadFile(filepath.Join(statePath, "blocked_ips.json")); err == nil {
+		var bf blockFile
+		if json.Unmarshal(data, &bf) == nil {
+			for _, entry := range bf.IPs {
+				if now.Before(entry.ExpiresAt) {
+					ips[entry.IP] = true
+				}
+			}
 		}
 	}
 
