@@ -51,7 +51,8 @@ func CheckCpanelLogins(cfg *config.Config, store *state.Store) []alert.Finding {
 		// Skip API/portal sessions (create_user_session) — only alert on direct form login
 		if strings.Contains(line, "[cpaneld]") && strings.Contains(line, " NEW ") {
 			if strings.Contains(line, "method=create_user_session") ||
-				strings.Contains(line, "method=create_session") {
+				strings.Contains(line, "method=create_session") ||
+				strings.Contains(line, "create_user_session") {
 				continue
 			}
 

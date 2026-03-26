@@ -242,6 +242,9 @@ func runTieredChecks(tier checks.Tier, sendAlerts bool) {
 	activeStore = store
 	defer func() { _ = store.Close() }()
 
+	// Initialize threat DB for timer mode
+	checks.InitThreatDB(cfg.StatePath)
+
 	findings := checks.RunTier(cfg, store, tier)
 
 	// Log all findings to history

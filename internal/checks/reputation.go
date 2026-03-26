@@ -51,7 +51,8 @@ func CheckIPReputation(cfg *config.Config, _ *state.Store) []alert.Finding {
 	// Load blocked IPs from CSF deny list + CSM block state
 	alreadyBlocked := loadAllBlockedIPs(cfg.StatePath)
 
-	// Load reputation cache
+	// Load local threat database and reputation cache
+	threatDB := GetThreatDB()
 	cache := loadReputationCache(cfg.StatePath)
 
 	client := &http.Client{Timeout: 10 * time.Second}
@@ -63,7 +64,21 @@ func CheckIPReputation(cfg *config.Config, _ *state.Store) []alert.Finding {
 			continue
 		}
 
-		// Tier 2: Check local cache — if known bad, alert + block without API call
+		// Tier 2: Check local threat database (permanent blocklist + free feeds)
+		if threatDB != nil {
+			if source, found := threatDB.Lookup(ip); found {
+				findings = append(findings, alert.Finding{
+					Severity:  alert.Critical,
+					Check:     "ip_reputation",
+					Message:   fmt.Sprintf("Known malicious IP accessing server: %s (source: %s)", ip, source),
+					Details:   "Matched in local threat intelligence database",
+					Timestamp: time.Now(),
+				})
+				continue
+			}
+		}
+
+		// Tier 3: Check AbuseIPDB cache — if known bad, alert without API call
 		if entry, ok := cache.Entries[ip]; ok {
 			if time.Since(entry.CheckedAt) < cacheExpiry {
 				if entry.Score >= abuseConfidenceThreshold {
@@ -79,9 +94,9 @@ func CheckIPReputation(cfg *config.Config, _ *state.Store) []alert.Finding {
 			}
 		}
 
-		// Tier 3: Query AbuseIPDB for new IPs — max 10 per cycle
-		if checked >= 10 {
-			break
+		// Tier 4: Query AbuseIPDB for truly unknown IPs — max 10 per cycle
+		if cfg.Reputation.AbuseIPDBKey == "" || checked >= 10 {
+			continue
 		}
 
 		score, category := queryAbuseIPDB(client, ip, cfg.Reputation.AbuseIPDBKey)
