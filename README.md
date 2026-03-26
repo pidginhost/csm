@@ -170,10 +170,18 @@ When the daemon is running with fanotify, only checks that fanotify can't replac
 | RPM binary verification | Modified system binaries (openssh-server, sudo, coreutils) |
 | open_basedir verification | Accounts with CageFS disabled and no open_basedir |
 | Symlink attack detection | Symlinks pointing to other users' directories or /etc/shadow |
+| WAF engine mode | Alerts if ModSecurity is in DetectionOnly mode (logging but not blocking) |
+| WAF rule staleness | Alerts if vendor rules haven't been updated in 30+ days |
+| WAF per-account bypass | Detects domains with ModSecurity disabled |
 | PHP configuration changes | .user.ini changes: disable_functions cleared, allow_url_include enabled, open_basedir removed |
 | Phishing page detection | 8-layer detection: brand impersonation, credential harvesting, structural analysis, directory anomalies, PHP phishing, open redirectors, credential logs, kit archives |
 | PHP content analysis | Obfuscated droppers: goto spaghetti, hex strings, call_user_func construction, remote payload URLs |
 | Signature rule scanning | External YAML rules scanned against files in sensitive directories |
+| WP database injection | `<script>`, `eval()`, `base64_decode` in wp_posts and wp_options content |
+| WP siteurl hijacking | Malicious code injected into WordPress siteurl/home options |
+| WP rogue admin accounts | New administrator accounts created in the last 7 days |
+| WP suspicious admin email | Admin accounts using disposable/temporary email domains |
+| WP spam injection | Pharma/casino/gambling spam content in published posts |
 | DNS zone modifications | Changes to /var/named/*.db zone files (DNS hijacking) |
 | SSL certificate issuance | New certificates via AutoSSL (phishing domain certs) |
 
@@ -419,7 +427,6 @@ make tools          # Install dev tools
 ## Roadmap
 
 - YARA-X integration (VirusTotal's next-gen YARA engine) for advanced malware signatures
-- WordPress database malware scanning (wp_posts, wp_options content inspection)
 - Malware cleaning/disinfection (surgical removal of injected code, not just quarantine)
 - PHP runtime protection via auto_prepend_file security handler
 - PAM integration for real-time brute-force blocking (seconds, not minutes)

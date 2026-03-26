@@ -378,42 +378,54 @@ func CheckAPITokens(cfg *config.Config, store *state.Store) []alert.Finding {
 	return findings
 }
 
-// isInfraShadowChange checks the WHM access log for recent password change
-// API calls from infra IPs. If the shadow change was triggered by an admin
-// password reset from a trusted IP, we suppress the alert.
+// isInfraShadowChange checks the cPanel session log for recent password
+// change PURGE events from infra IPs. This is more reliable than the
+// access log because it captures the actual IP that triggered the change.
+//
+// Returns true only if ALL recent password purges came from infra IPs.
+// If any came from non-infra → returns false (possible attack).
 func isInfraShadowChange(cfg *config.Config) bool {
-	// Check cPanel access_log for recent xml-api password changes
-	lines := tailFile("/usr/local/cpanel/logs/access_log", 50)
+	lines := tailFile("/usr/local/cpanel/logs/session_log", 100)
+
+	foundAny := false
+	allInfra := true
+
+	// Check recent PURGE password_change events (last ~5 minutes of log)
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := lines[i]
-		lineLower := strings.ToLower(line)
 
-		// Look for password change API calls
-		isPasswdCall := false
-		for _, action := range []string{"passwd", "chpasswd", "force_password_change", "resetpass"} {
-			if strings.Contains(lineLower, action) {
-				isPasswdCall = true
+		if !strings.Contains(line, "PURGE") || !strings.Contains(line, "password_change") {
+			continue
+		}
+
+		foundAny = true
+
+		// Extract IP from session log
+		// Format: [timestamp] info [xml-api] IP PURGE account:token password_change
+		// Format: [timestamp] info [whostmgr] IP PURGE account:token password_change
+		var ip string
+		for _, tag := range []string{"[xml-api]", "[whostmgr]", "[security]"} {
+			if idx := strings.Index(line, tag); idx >= 0 {
+				rest := strings.TrimSpace(line[idx+len(tag):])
+				fields := strings.Fields(rest)
+				if len(fields) > 0 {
+					ip = fields[0]
+				}
 				break
 			}
 		}
-		if !isPasswdCall {
-			continue
+
+		if ip == "" || ip == "internal" {
+			continue // internal events are safe
 		}
 
-		// Extract IP
-		fields := strings.Fields(line)
-		if len(fields) < 1 {
-			continue
-		}
-		ip := fields[0]
-
-		// Check if from infra IP
-		if isInfraIP(ip, cfg.InfraIPs) || ip == "127.0.0.1" {
-			return true
+		if !isInfraIP(ip, cfg.InfraIPs) && ip != "127.0.0.1" {
+			allInfra = false
+			break // found a non-infra password change — don't suppress
 		}
 	}
 
-	return false
+	return foundAny && allInfra
 }
 
 func parseTimeMin(s string) int {
