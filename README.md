@@ -476,9 +476,10 @@ webui:
   auth_token: "your-secret-token"
   # tls_cert: ""  # optional: custom cert path
   # tls_key: ""   # optional: custom key path
+  # ui_dir: "/opt/csm/ui"  # path to frontend files (default)
 ```
 
-Access at `https://localhost:9443/login`. Auto-generates a self-signed TLS cert on first start.
+Access at `https://localhost:9443/login`. Auto-generates a self-signed TLS cert on first start. Frontend files are loaded from `/opt/csm/ui/` — if missing, only the API is available.
 
 **Pages:**
 - **Dashboard** — summary cards, 24-hour findings timeline chart (SVG), fanotify status, live WebSocket feed with expandable details
@@ -518,7 +519,7 @@ POST /api/v1/scan-account       Scan single account {"account":"username"}
 - Logout endpoint clears session cookie
 - MaxHeaderBytes limit (1MB)
 
-**Architecture:** Go `html/template` + vanilla JS, zero external dependencies, embedded via `embed.FS` (~30KB binary size increase), stdlib-only WebSocket implementation. Auth token never exposed to browser JS — WebSocket uses cookie auth.
+**Architecture:** Two-layer design — the Go binary serves the REST API, WebSocket, and auth (~8MB). The frontend ([Tabler](https://tabler.io) dark theme, MIT-licensed) lives on disk at `/opt/csm/ui/` and is loaded at startup. If the UI directory is missing, the server runs in API-only mode. Auth token never exposed to browser JS — WebSocket uses cookie auth.
 
 ## CSM vs Imunify360
 

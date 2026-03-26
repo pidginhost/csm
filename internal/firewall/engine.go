@@ -306,7 +306,23 @@ func (e *Engine) createInputChain() error {
 		},
 	})
 
-	// Rule 3: Drop blocked IPs (O(1) set lookup)
+	// Rule 3: Drop INVALID conntrack state (malformed packets)
+	e.conn.AddRule(&nftables.Rule{
+		Table: e.table,
+		Chain: e.chainIn,
+		Exprs: []expr.Any{
+			&expr.Ct{Register: 1, SourceRegister: false, Key: expr.CtKeySTATE},
+			&expr.Bitwise{
+				SourceRegister: 1, DestRegister: 1, Len: 4,
+				Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitINVALID),
+				Xor:  binaryutil.NativeEndian.PutUint32(0),
+			},
+			&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(0)},
+			&expr.Verdict{Kind: expr.VerdictDrop},
+		},
+	})
+
+	// Rule 4: Drop blocked IPs (O(1) set lookup)
 	e.addSetMatchRule(e.setBlocked, expr.VerdictDrop)
 
 	// Rule 4: Allow infra IPs (all ports)
@@ -787,6 +803,7 @@ func (e *Engine) BlockIP(ip string, reason string, timeout time.Duration) error 
 		entry.ExpiresAt = time.Now().Add(timeout)
 	}
 	e.saveBlockedEntry(entry)
+	AppendAudit(e.statePath, "block", ip, reason, timeout)
 
 	return nil
 }
@@ -812,8 +829,8 @@ func (e *Engine) UnblockIP(ip string) error {
 		return fmt.Errorf("flushing: %w", err)
 	}
 
-	// Remove from state
 	e.removeBlockedState(ip)
+	AppendAudit(e.statePath, "unblock", ip, "", 0)
 
 	return nil
 }
@@ -839,8 +856,8 @@ func (e *Engine) AllowIP(ip string, reason string) error {
 		return fmt.Errorf("flushing: %w", err)
 	}
 
-	// Persist
 	e.saveAllowedEntry(AllowedEntry{IP: ip, Reason: reason})
+	AppendAudit(e.statePath, "allow", ip, reason, 0)
 
 	return nil
 }
@@ -867,6 +884,7 @@ func (e *Engine) RemoveAllowIP(ip string) error {
 	}
 
 	e.removeAllowedState(ip)
+	AppendAudit(e.statePath, "remove_allow", ip, "", 0)
 	return nil
 }
 
@@ -881,8 +899,10 @@ func (e *Engine) FlushBlocked() error {
 	}
 
 	state := e.loadStateFile()
+	count := len(state.Blocked)
 	state.Blocked = nil
 	e.saveState(&state)
+	AppendAudit(e.statePath, "flush", "", fmt.Sprintf("cleared %d entries", count), 0)
 
 	return nil
 }
