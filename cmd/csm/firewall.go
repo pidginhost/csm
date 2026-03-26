@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -52,6 +53,10 @@ func runFirewall() {
 		fwAudit()
 	case "profile":
 		fwProfile()
+	case "update-geoip":
+		fwUpdateGeoIP()
+	case "lookup":
+		fwLookup()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown firewall command: %s\n", os.Args[2])
 		printFirewallUsage()
@@ -83,6 +88,8 @@ Commands:
   profile save <name>               Save current firewall config as named profile
   profile list                      List saved profiles
   profile restore <name>            Restore firewall config from profile
+  update-geoip                      Download/update country IP block lists
+  lookup <ip>                       Look up IP country and block status
 `)
 }
 
@@ -567,14 +574,14 @@ func fwProfile() {
 			fmt.Fprintf(os.Stderr, "Usage: csm firewall profile save <name>\n")
 			os.Exit(1)
 		}
-		name := args[1]
+		name := filepath.Base(args[1]) // sanitize — prevent path traversal
 		src := cfg.ConfigFile
 		data, err := os.ReadFile(src)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error reading config: %v\n", err)
 			os.Exit(1)
 		}
-		dst := profileDir + "/" + name + ".yaml"
+		dst := filepath.Join(profileDir, name+".yaml")
 		if err := os.WriteFile(dst, data, 0600); err != nil {
 			fmt.Fprintf(os.Stderr, "Error saving profile: %v\n", err)
 			os.Exit(1)
@@ -604,8 +611,8 @@ func fwProfile() {
 			fmt.Fprintf(os.Stderr, "Usage: csm firewall profile restore <name>\n")
 			os.Exit(1)
 		}
-		name := args[1]
-		src := profileDir + "/" + name + ".yaml"
+		name := filepath.Base(args[1]) // sanitize — prevent path traversal
+		src := filepath.Join(profileDir, name+".yaml")
 		data, err := os.ReadFile(src)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Profile not found: %s\n", name)
@@ -622,6 +629,98 @@ func fwProfile() {
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown profile command: %s\n", args[0])
 		os.Exit(1)
+	}
+}
+
+func fwUpdateGeoIP() {
+	cfg := loadConfig()
+	fwCfg := cfg.Firewall
+
+	codes := fwCfg.CountryBlock
+	if len(codes) == 0 {
+		fmt.Fprintf(os.Stderr, "No country_block codes configured in firewall config.\n")
+		fmt.Fprintf(os.Stderr, "Add country codes to firewall.country_block in csm.yaml\n")
+		os.Exit(1)
+	}
+
+	dbPath := fwCfg.CountryDBPath
+	if dbPath == "" {
+		dbPath = filepath.Join(cfg.StatePath, "geoip")
+		fmt.Fprintf(os.Stderr, "No country_db_path configured, using: %s\n", dbPath)
+	}
+
+	fmt.Fprintf(os.Stderr, "Downloading GeoIP data for %d countries...\n", len(codes))
+	updated, err := firewall.UpdateGeoIPDB(dbPath, codes)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Updated %d country CIDR files in %s\n", updated, dbPath)
+	if updated > 0 {
+		fmt.Println("Run 'csm firewall restart' to apply country blocking rules.")
+	}
+}
+
+func fwLookup() {
+	args := fwArgs()
+	if len(args) < 1 {
+		fmt.Fprintf(os.Stderr, "Usage: csm firewall lookup <ip>\n")
+		os.Exit(1)
+	}
+
+	ip := args[0]
+	if net.ParseIP(ip) == nil {
+		fmt.Fprintf(os.Stderr, "Invalid IP: %s\n", ip)
+		os.Exit(1)
+	}
+
+	cfg := loadConfig()
+
+	// Check block status
+	state, _ := firewall.LoadState(cfg.StatePath)
+	for _, b := range state.Blocked {
+		if b.IP == ip {
+			ago := time.Since(b.BlockedAt).Truncate(time.Minute)
+			fmt.Printf("BLOCKED  since %s ago  %s\n", ago, b.Reason)
+		}
+	}
+	for _, s := range state.BlockedNet {
+		_, network, err := net.ParseCIDR(s.CIDR)
+		if err == nil && network.Contains(net.ParseIP(ip)) {
+			fmt.Printf("SUBNET   %s  %s\n", s.CIDR, s.Reason)
+		}
+	}
+	for _, a := range state.Allowed {
+		if a.IP == ip {
+			fmt.Printf("ALLOWED  %s\n", a.Reason)
+		}
+	}
+	for _, infra := range cfg.Firewall.InfraIPs {
+		_, network, err := net.ParseCIDR(infra)
+		if err == nil && network.Contains(net.ParseIP(ip)) {
+			fmt.Printf("INFRA    %s\n", infra)
+		} else if infra == ip {
+			fmt.Printf("INFRA    exact match\n")
+		}
+	}
+
+	// GeoIP lookup
+	dbPath := cfg.Firewall.CountryDBPath
+	if dbPath == "" {
+		dbPath = filepath.Join(cfg.StatePath, "geoip")
+	}
+	countries := firewall.LookupIP(dbPath, ip)
+	if len(countries) > 0 {
+		fmt.Printf("COUNTRY  %s\n", strings.Join(countries, ", "))
+		for _, code := range countries {
+			for _, blocked := range cfg.Firewall.CountryBlock {
+				if strings.EqualFold(code, blocked) {
+					fmt.Printf("         %s is in country_block list\n", code)
+				}
+			}
+		}
+	} else {
+		fmt.Printf("COUNTRY  unknown (no GeoIP data — run 'csm firewall update-geoip')\n")
 	}
 }
 
