@@ -18,9 +18,10 @@ type BlockedEntry struct {
 }
 
 type AllowedEntry struct {
-	IP     string `json:"ip"`
-	Reason string `json:"reason"`
-	Port   int    `json:"port,omitempty"`
+	IP        string    `json:"ip"`
+	Reason    string    `json:"reason"`
+	Port      int       `json:"port,omitempty"`
+	ExpiresAt time.Time `json:"expires_at,omitempty"`
 }
 
 type SubnetEntry struct {
@@ -43,12 +44,14 @@ func ConnectExisting(_ *FirewallConfig, _ string) (*Engine, error) {
 	return nil, fmt.Errorf("nftables firewall not available on this platform")
 }
 
-func (e *Engine) Apply() error                                      { return nil }
-func (e *Engine) BlockIP(_ string, _ string, _ time.Duration) error { return nil }
-func (e *Engine) UnblockIP(_ string) error                          { return nil }
-func (e *Engine) AllowIP(_ string, _ string) error                  { return nil }
-func (e *Engine) RemoveAllowIP(_ string) error                      { return nil }
-func (e *Engine) BlockSubnet(_ string, _ string) error              { return nil }
-func (e *Engine) UnblockSubnet(_ string) error                      { return nil }
-func (e *Engine) FlushBlocked() error                               { return nil }
-func (e *Engine) Status() map[string]interface{}                    { return nil }
+func (e *Engine) Apply() error                                          { return nil }
+func (e *Engine) BlockIP(_ string, _ string, _ time.Duration) error     { return nil }
+func (e *Engine) UnblockIP(_ string) error                              { return nil }
+func (e *Engine) AllowIP(_ string, _ string) error                      { return nil }
+func (e *Engine) RemoveAllowIP(_ string) error                          { return nil }
+func (e *Engine) BlockSubnet(_ string, _ string) error                  { return nil }
+func (e *Engine) UnblockSubnet(_ string) error                          { return nil }
+func (e *Engine) TempAllowIP(_ string, _ string, _ time.Duration) error { return nil }
+func (e *Engine) CleanExpiredAllows() int                               { return 0 }
+func (e *Engine) FlushBlocked() error                                   { return nil }
+func (e *Engine) Status() map[string]interface{}                        { return nil }

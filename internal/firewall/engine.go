@@ -61,9 +61,10 @@ type BlockedEntry struct {
 
 // AllowedEntry represents an allowed IP with metadata.
 type AllowedEntry struct {
-	IP     string `json:"ip"`
-	Reason string `json:"reason"`
-	Port   int    `json:"port,omitempty"` // 0 = all ports
+	IP        string    `json:"ip"`
+	Reason    string    `json:"reason"`
+	Port      int       `json:"port,omitempty"`       // 0 = all ports
+	ExpiresAt time.Time `json:"expires_at,omitempty"` // zero = permanent
 }
 
 // SubnetEntry represents a blocked CIDR range.
@@ -1103,6 +1104,71 @@ func (e *Engine) AllowIP(ip string, reason string) error {
 	AppendAudit(e.statePath, "allow", ip, reason, 0)
 
 	return nil
+}
+
+// TempAllowIP adds a temporary allow with expiry. Uses the same allowed set
+// but tracks expiry in state — CleanExpiredAllows removes them periodically.
+func (e *Engine) TempAllowIP(ip string, reason string, timeout time.Duration) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	blockedSet, blockedKey, _ := e.resolveIPSet(ip, e.setBlocked, e.setBlocked6)
+	allowedSet, allowedKey, err := e.resolveIPSet(ip, e.setAllowed, e.setAllowed6)
+	if err != nil {
+		return err
+	}
+
+	if blockedSet != nil {
+		_ = e.conn.SetDeleteElements(blockedSet, []nftables.SetElement{{Key: blockedKey}})
+	}
+	if err := e.conn.SetAddElements(allowedSet, []nftables.SetElement{{Key: allowedKey}}); err != nil {
+		return fmt.Errorf("adding to allowed set: %w", err)
+	}
+	if err := e.conn.Flush(); err != nil {
+		return fmt.Errorf("flushing: %w", err)
+	}
+
+	e.removeBlockedState(ip)
+	entry := AllowedEntry{IP: ip, Reason: reason}
+	if timeout > 0 {
+		entry.ExpiresAt = time.Now().Add(timeout)
+	}
+	e.saveAllowedEntry(entry)
+	AppendAudit(e.statePath, "temp_allow", ip, reason, timeout)
+
+	return nil
+}
+
+// CleanExpiredAllows removes expired temporary allows from the set and state.
+// Called periodically by the daemon.
+func (e *Engine) CleanExpiredAllows() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	state := e.loadStateFile()
+	now := time.Now()
+	var active []AllowedEntry
+	removed := 0
+
+	for _, entry := range state.Allowed {
+		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
+			// Remove from nftables
+			if set, key, err := e.resolveIPSet(entry.IP, e.setAllowed, e.setAllowed6); err == nil {
+				_ = e.conn.SetDeleteElements(set, []nftables.SetElement{{Key: key}})
+			}
+			removed++
+			AppendAudit(e.statePath, "temp_allow_expired", entry.IP, "", 0)
+		} else {
+			active = append(active, entry)
+		}
+	}
+
+	if removed > 0 {
+		_ = e.conn.Flush()
+		state.Allowed = active
+		e.saveState(&state)
+	}
+	return removed
 }
 
 // RemoveAllowIP removes an IP from the allowed set and state.
