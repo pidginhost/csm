@@ -170,7 +170,7 @@ func fixKillAndQuarantine(path, details string) RemediationResult {
 	result := fixQuarantine(path)
 	if result.Success && pid != "" {
 		result.Action = fmt.Sprintf("killed PID %s and %s", pid, result.Action)
-		result.Description = fmt.Sprintf("Process killed and file quarantined")
+		result.Description = "Process killed and file quarantined"
 	}
 	return result
 }
