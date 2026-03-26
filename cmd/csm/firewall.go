@@ -455,14 +455,34 @@ func fwMigrate() {
 	}
 
 	// Restore blocked/allowed from CSF state
+	blockOK, blockFail := 0, 0
 	for _, b := range state.Blocked {
-		_ = engine.BlockIP(b.IP, b.Reason, 0)
+		if err := engine.BlockIP(b.IP, b.Reason, 0); err != nil {
+			if blockFail == 0 {
+				fmt.Fprintf(os.Stderr, "Warning: some blocks failed (first: %s — %v)\n", b.IP, err)
+			}
+			blockFail++
+		} else {
+			blockOK++
+		}
 	}
+	allowOK, allowFail := 0, 0
 	for _, a := range state.Allowed {
-		_ = engine.AllowIP(a.IP, a.Reason)
+		if err := engine.AllowIP(a.IP, a.Reason); err != nil {
+			if allowFail == 0 {
+				fmt.Fprintf(os.Stderr, "Warning: some allows failed (first: %s — %v)\n", a.IP, err)
+			}
+			allowFail++
+		} else {
+			allowOK++
+		}
 	}
 
 	fmt.Printf("\nMigration applied. CSF rules converted to nftables.\n")
+	fmt.Printf("Restored: %d blocked, %d allowed\n", blockOK, allowOK)
+	if blockFail > 0 || allowFail > 0 {
+		fmt.Printf("Failed:   %d blocked, %d allowed (check deny_ip_limit if too many)\n", blockFail, allowFail)
+	}
 	fmt.Printf("IMPORTANT: Verify connectivity, then disable CSF:\n")
 	fmt.Printf("  csf -x\n")
 	fmt.Printf("  systemctl stop csf lfd\n")

@@ -420,8 +420,8 @@ func (e *Engine) createInputChain() error {
 		if pf.Proto == "udp" {
 			proto = 17
 		}
-		// Convert hits/seconds to per-minute rate
-		ratePerMin := uint64(pf.Hits * 60 / pf.Seconds)
+		// Convert hits/seconds to per-minute rate (multiply first to reduce truncation)
+		ratePerMin := uint64(pf.Hits) * 60 / uint64(pf.Seconds)
 		if ratePerMin < 1 {
 			ratePerMin = 1
 		}
