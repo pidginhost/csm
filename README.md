@@ -483,7 +483,7 @@ Access at `https://localhost:9443/login`. Auto-generates a self-signed TLS cert 
 
 **Pages:**
 - **Dashboard** — summary cards, 24-hour findings timeline chart (SVG), fanotify status, live WebSocket feed with expandable details
-- **Findings** — active findings with search/filter, dismiss buttons, per-account scan form (enter username, get results inline)
+- **Findings** — active findings with search/filter, per-finding Fix button (chmod, quarantine, kill+quarantine), bulk select + Fix Selected, dismiss buttons, per-account scan form
 - **History** — paginated history with severity dropdown filter, click-to-expand finding details, CSV export button
 - **Quarantine** — quarantined file list with one-click restore to original location
 - **Blocked IPs** — view/manage blocked IPs (nftables or CSF), block new IPs, unblock with one click
@@ -505,6 +505,9 @@ POST /api/v1/unblock-ip         Unblock an IP {"ip":"..."}
 POST /api/v1/dismiss            Dismiss/acknowledge a finding {"key":"check:message"}
 POST /api/v1/quarantine-restore Restore quarantined file {"id":"..."}
 POST /api/v1/scan-account       Scan single account {"account":"username"}
+POST /api/v1/fix                Apply fix for a finding {"check":"...","message":"..."}
+POST /api/v1/fix-bulk           Apply fixes to multiple findings [{...}, ...]
+GET  /api/v1/fix-preview        Preview what a fix would do (?check=...&message=...)
 ```
 
 **Security:**

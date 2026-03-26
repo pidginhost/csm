@@ -202,6 +202,107 @@ func csvEscape(s string) string {
 	return s
 }
 
+// apiFix applies a known remediation action for a finding.
+// POST /api/v1/fix  body: {"check": "check_type", "message": "...", "details": "..."}
+func (s *Server) apiFix(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Check   string `json:"check"`
+		Message string `json:"message"`
+		Details string `json:"details"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Check == "" {
+		writeJSONError(w, "check and message are required", http.StatusBadRequest)
+		return
+	}
+
+	if !checks.HasFix(req.Check) {
+		writeJSONError(w, "no automated fix available for this check type", http.StatusBadRequest)
+		return
+	}
+
+	result := checks.ApplyFix(req.Check, req.Message, req.Details)
+
+	// If fix succeeded, dismiss the finding from state
+	if result.Success {
+		key := req.Check + ":" + req.Message
+		s.store.DismissFinding(key)
+	}
+
+	writeJSON(w, result)
+}
+
+// apiBulkFix applies fixes to multiple findings at once.
+// POST /api/v1/fix-bulk  body: [{"check":"...", "message":"...", "details":"..."}, ...]
+func (s *Server) apiBulkFix(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var reqs []struct {
+		Check   string `json:"check"`
+		Message string `json:"message"`
+		Details string `json:"details"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&reqs); err != nil {
+		writeJSONError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	var results []checks.RemediationResult
+	for _, req := range reqs {
+		if !checks.HasFix(req.Check) {
+			results = append(results, checks.RemediationResult{
+				Error: fmt.Sprintf("no fix for %s", req.Check),
+			})
+			continue
+		}
+		result := checks.ApplyFix(req.Check, req.Message, req.Details)
+		if result.Success {
+			key := req.Check + ":" + req.Message
+			s.store.DismissFinding(key)
+		}
+		results = append(results, result)
+	}
+
+	succeeded := 0
+	for _, r := range results {
+		if r.Success {
+			succeeded++
+		}
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"results":   results,
+		"total":     len(results),
+		"succeeded": succeeded,
+		"failed":    len(results) - succeeded,
+	})
+}
+
+// apiFixPreview returns what a fix would do without applying it.
+// GET /api/v1/fix-preview?check=...&message=...
+func (s *Server) apiFixPreview(w http.ResponseWriter, r *http.Request) {
+	checkType := r.URL.Query().Get("check")
+	message := r.URL.Query().Get("message")
+
+	desc := checks.FixDescription(checkType, message)
+	if desc == "" {
+		writeJSONError(w, "no fix available", http.StatusNotFound)
+		return
+	}
+
+	writeJSON(w, map[string]string{
+		"check":       checkType,
+		"description": desc,
+	})
+}
+
 // --- Action endpoints ---
 
 // apiBlockIP blocks an IP via the firewall engine (or CSF fallback).

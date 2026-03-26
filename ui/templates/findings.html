@@ -1,0 +1,189 @@
+{{define "title"}}Findings{{end}}
+{{define "page"}}findings{{end}}
+{{define "content"}}
+    <!-- Scan Account -->
+    <div class="card mb-3">
+        <div class="card-header"><h3 class="card-title"><i class="ti ti-search"></i>&nbsp;Scan Account</h3></div>
+        <div class="card-body">
+            <form id="scan-form" class="row g-2 align-items-end">
+                <div class="col-auto">
+                    <input type="text" id="scan-account" class="form-control form-control-sm font-monospace" placeholder="cPanel username" style="width:200px">
+                </div>
+                <div class="col-auto">
+                    <button type="submit" id="scan-btn" class="btn btn-primary btn-sm"><i class="ti ti-radar-2"></i>&nbsp;Scan</button>
+                </div>
+                <div class="col-auto" id="scan-status"><span class="text-muted small"></span></div>
+            </form>
+            <div id="scan-results" class="mt-3 d-none">
+                <table class="table table-vcenter table-sm" id="scan-table">
+                    <thead><tr><th>Severity</th><th>Check</th><th>Message</th></tr></thead>
+                    <tbody id="scan-tbody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Active Findings -->
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title"><i class="ti ti-alert-triangle"></i>&nbsp;Active Findings ({{len .Entries}})</h3>
+            <div class="card-actions d-flex gap-2">
+                <input type="text" id="findings-search" class="form-control form-control-sm" placeholder="Search..." style="width:200px">
+                <button id="fix-selected-btn" class="btn btn-warning btn-sm d-none" onclick="fixSelected()"><i class="ti ti-tool"></i>&nbsp;Fix Selected (<span id="fix-count">0</span>)</button>
+            </div>
+        </div>
+        {{if .Entries}}
+        <div class="table-responsive">
+            <table class="table table-vcenter card-table" id="findings-table">
+                <thead>
+                    <tr>
+                        <th style="width:30px"><input type="checkbox" id="select-all" onchange="toggleSelectAll()" class="form-check-input"></th>
+                        <th>Check</th>
+                        <th>Message</th>
+                        <th>First Seen</th>
+                        <th>Last Seen</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="findings-tbody">
+                    {{range .Entries}}
+                    <tr class="finding-row" data-check="{{.Check}}" data-message="{{.Message}}" data-fixable="{{.HasFix}}">
+                        <td>
+                            {{if .HasFix}}<input type="checkbox" class="form-check-input fix-checkbox" onchange="updateFixCount()">{{end}}
+                        </td>
+                        <td><code>{{.Check}}</code></td>
+                        <td>{{.Message}}</td>
+                        <td class="text-nowrap"><span class="font-monospace small">{{.FirstSeen}}</span></td>
+                        <td class="text-nowrap"><span class="font-monospace small">{{.LastSeen}}</span></td>
+                        <td class="text-nowrap">
+                            {{if .HasFix}}
+                            <button onclick="fixFinding(this)" class="btn btn-warning btn-sm me-1" title="{{.FixDesc}}"><i class="ti ti-tool"></i>&nbsp;Fix</button>
+                            {{end}}
+                            <button onclick="dismissFinding('{{.Check}}:{{.Message}}')" class="btn btn-ghost-secondary btn-sm">Dismiss</button>
+                        </td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+        </div>
+        {{else}}
+        <div class="card-body text-center text-muted py-4"><i class="ti ti-circle-check"></i> No active findings. All clear.</div>
+        {{end}}
+    </div>
+{{end}}
+{{define "scripts"}}
+<script>
+// Initialize table with search, sort, pagination
+if (document.getElementById('findings-table')) {
+    new CSM.Table({
+        tableId: 'findings-table',
+        perPage: 25,
+        search: true,
+        searchId: 'findings-search',
+        sortable: true
+    });
+}
+
+function dismissFinding(key) {
+    if (!confirm('Dismiss this finding?')) return;
+    CSM.post('/api/v1/dismiss', {key: key}).then(function(){ location.reload(); }).catch(function(e){ alert('Error: ' + e); });
+}
+
+function fixFinding(btn) {
+    var row = btn.closest('tr');
+    var check = row.getAttribute('data-check');
+    var message = row.getAttribute('data-message');
+    var desc = btn.getAttribute('title');
+    if (!confirm('Apply fix?\n\n' + desc)) return;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+    CSM.post('/api/v1/fix', {check: check, message: message}).then(function(data) {
+        if (data.success) {
+            row.style.opacity = '0.3';
+            btn.innerHTML = '<i class="ti ti-check"></i> Fixed';
+            btn.className = 'btn btn-success btn-sm me-1';
+            setTimeout(function(){ location.reload(); }, 1500);
+        } else {
+            alert('Fix failed: ' + (data.error || 'unknown error'));
+            btn.disabled = false;
+            btn.innerHTML = '<i class="ti ti-tool"></i>&nbsp;Fix';
+        }
+    }).catch(function(e) {
+        alert('Error: ' + e);
+        btn.disabled = false;
+        btn.innerHTML = '<i class="ti ti-tool"></i>&nbsp;Fix';
+    });
+}
+
+function toggleSelectAll() {
+    var checked = document.getElementById('select-all').checked;
+    document.querySelectorAll('.fix-checkbox').forEach(function(cb) { cb.checked = checked; });
+    updateFixCount();
+}
+
+function updateFixCount() {
+    var count = document.querySelectorAll('.fix-checkbox:checked').length;
+    var btn = document.getElementById('fix-selected-btn');
+    document.getElementById('fix-count').textContent = count;
+    btn.classList.toggle('d-none', count === 0);
+}
+
+function fixSelected() {
+    var items = [];
+    document.querySelectorAll('.fix-checkbox:checked').forEach(function(cb) {
+        var row = cb.closest('tr');
+        items.push({
+            check: row.getAttribute('data-check'),
+            message: row.getAttribute('data-message'),
+            details: ''
+        });
+    });
+    if (items.length === 0) return;
+
+    var descriptions = items.map(function(item) { return item.check + ': ' + item.message.substring(0, 80); });
+    if (!confirm('Apply ' + items.length + ' fix(es)?\n\n' + descriptions.join('\n'))) return;
+
+    var btn = document.getElementById('fix-selected-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>&nbsp;Fixing...';
+
+    CSM.post('/api/v1/fix-bulk', items).then(function(data) {
+        alert('Fixed ' + data.succeeded + ' of ' + data.total + ' findings' +
+              (data.failed > 0 ? ' (' + data.failed + ' failed)' : ''));
+        location.reload();
+    }).catch(function(e) {
+        alert('Error: ' + e);
+        btn.disabled = false;
+        btn.innerHTML = '<i class="ti ti-tool"></i>&nbsp;Fix Selected (<span id="fix-count">' + items.length + '</span>)';
+    });
+}
+
+document.getElementById('scan-form').addEventListener('submit', function(e) {
+    e.preventDefault();
+    var account = document.getElementById('scan-account').value.trim();
+    if (!account) return;
+    var btn = document.getElementById('scan-btn');
+    var status = document.getElementById('scan-status').querySelector('span');
+    var results = document.getElementById('scan-results');
+    var tbody = document.getElementById('scan-tbody');
+    btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Scanning...';
+    status.textContent = ''; results.classList.add('d-none'); tbody.innerHTML = '';
+    CSM.post('/api/v1/scan-account', {account: account}).then(function(data) {
+        btn.disabled = false; btn.innerHTML = '<i class="ti ti-radar-2"></i>&nbsp;Scan';
+        if (data.error) { status.textContent = data.error; status.className = 'text-danger small'; return; }
+        if (!data.count) { status.textContent = account + ' is clean (' + data.elapsed + ')'; status.className = 'text-success small'; return; }
+        status.textContent = data.count + ' finding(s) in ' + data.elapsed; status.className = 'text-danger small';
+        results.classList.remove('d-none');
+        (data.findings||[]).forEach(function(f) {
+            var sev = f.severity===2?'critical':f.severity===1?'high':'warning';
+            var label = f.severity===2?'CRITICAL':f.severity===1?'HIGH':'WARNING';
+            var tr = document.createElement('tr');
+            tr.innerHTML = '<td><span class="badge badge-'+sev+'">'+label+'</span></td><td><code>'+esc(f.check)+'</code></td><td>'+esc(f.message)+'</td>';
+            tbody.appendChild(tr);
+        });
+    }).catch(function(e) { btn.disabled=false; btn.innerHTML='<i class="ti ti-radar-2"></i>&nbsp;Scan'; status.textContent='Error: '+e; status.className='text-danger small'; });
+});
+function esc(s){var d=document.createElement('div');d.appendChild(document.createTextNode(s||''));return d.innerHTML;}
+</script>
+{{end}}
+{{template "layout" .}}
