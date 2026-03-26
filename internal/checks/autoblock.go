@@ -45,8 +45,8 @@ type blockState struct {
 	HourKey        string      `json:"hour_key"`
 }
 
-// AutoBlockIPs processes findings and blocks attacker IPs via CSF.
-// Blocks IPs from brute force, C2 connections, and bad IP reputation.
+// AutoBlockIPs processes findings and blocks attacker IPs via the firewall engine.
+// Falls back to CSF if the engine is not available.
 // Note: this should be called with ALL findings (not just new ones)
 // for reputation-based blocking to work on repeat offenders.
 func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding {
