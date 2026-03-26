@@ -2,8 +2,9 @@ package checks
 
 import (
 	"fmt"
-	"os"
+	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
 	"github.com/pidginhost/cpanel-security-monitor/internal/config"
@@ -13,70 +14,86 @@ import (
 func CheckFirewall(cfg *config.Config, store *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	// CSF config integrity
-	csfFiles := map[string]string{
-		"/etc/csf/csf.conf":  "_csf_conf_hash",
-		"/etc/csf/csf.allow": "_csf_allow_hash",
-	}
-
-	for file, key := range csfFiles {
-		hash, err := hashFileContent(file)
-		if err != nil {
-			continue
-		}
-		prev, exists := store.GetRaw(key)
-		if exists && prev != hash {
-			findings = append(findings, alert.Finding{
-				Severity: alert.High,
-				Check:    "csf_integrity",
-				Message:  fmt.Sprintf("CSF config modified: %s", file),
-			})
-		}
-		store.SetRaw(key, hash)
-	}
-
-	// Check for suspicious ports in TCP_IN
-	data, err := os.ReadFile("/etc/csf/csf.conf")
-	if err != nil {
+	if !cfg.Firewall.Enabled {
+		// Firewall not managed by CSM — skip nftables checks
 		return findings
 	}
 
-	for _, line := range strings.Split(string(data), "\n") {
-		if !strings.HasPrefix(line, "TCP_IN") {
-			continue
-		}
+	// Verify the CSM nftables table exists and has expected components
+	out, err := exec.Command("nft", "list", "table", "inet", "csm").CombinedOutput()
+	if err != nil {
+		findings = append(findings, alert.Finding{
+			Severity:  alert.Critical,
+			Check:     "firewall",
+			Message:   "CSM firewall table not found in nftables — rules may not be active",
+			Timestamp: time.Now(),
+		})
+		return findings
+	}
 
-		// Check for port 22 (should not be globally open)
-		ports := extractPorts(line)
-		for _, p := range ports {
-			if p == "22" {
-				findings = append(findings, alert.Finding{
-					Severity: alert.Warning,
-					Check:    "csf_ports",
-					Message:  "Port 22 found in TCP_IN (SSH default port should not be globally open)",
-				})
-			}
-			for _, bp := range cfg.BackdoorPorts {
-				if p == fmt.Sprintf("%d", bp) {
-					findings = append(findings, alert.Finding{
-						Severity: alert.High,
-						Check:    "csf_ports",
-						Message:  fmt.Sprintf("Known backdoor port %s found in TCP_IN", p),
-					})
-				}
-			}
+	output := string(out)
+	required := []string{"chain input", "chain output", "set blocked_ips", "set allowed_ips", "set infra_ips"}
+	for _, component := range required {
+		if !strings.Contains(output, component) {
+			findings = append(findings, alert.Finding{
+				Severity:  alert.High,
+				Check:     "firewall",
+				Message:   fmt.Sprintf("Firewall missing expected component: %s", component),
+				Timestamp: time.Now(),
+			})
 		}
 	}
+
+	// Hash the ruleset to detect unexpected modifications
+	hash := hashBytes(out)
+	prev, exists := store.GetRaw("_nftables_ruleset_hash")
+	if exists && prev != hash {
+		findings = append(findings, alert.Finding{
+			Severity:  alert.High,
+			Check:     "firewall",
+			Message:   "nftables ruleset modified outside of CSM",
+			Timestamp: time.Now(),
+		})
+	}
+	store.SetRaw("_nftables_ruleset_hash", hash)
+
+	// Check for dangerous ports in config
+	findings = append(findings, checkDangerousPorts(cfg)...)
 
 	return findings
 }
 
-func extractPorts(line string) []string {
-	// TCP_IN = "20,21,22,..."
-	parts := strings.SplitN(line, "=", 2)
-	if len(parts) != 2 {
-		return nil
+func checkDangerousPorts(cfg *config.Config) []alert.Finding {
+	var findings []alert.Finding
+
+	dangerousPorts := make(map[int]bool)
+	for _, p := range cfg.BackdoorPorts {
+		dangerousPorts[p] = true
 	}
-	portStr := strings.Trim(strings.TrimSpace(parts[1]), "\"")
-	return strings.Split(portStr, ",")
+
+	restricted := make(map[int]bool)
+	for _, p := range cfg.Firewall.RestrictedTCP {
+		restricted[p] = true
+	}
+
+	for _, port := range cfg.Firewall.TCPIn {
+		if dangerousPorts[port] {
+			findings = append(findings, alert.Finding{
+				Severity:  alert.High,
+				Check:     "firewall_ports",
+				Message:   fmt.Sprintf("Known backdoor port %d is open in firewall TCP_IN", port),
+				Timestamp: time.Now(),
+			})
+		}
+		if restricted[port] {
+			findings = append(findings, alert.Finding{
+				Severity:  alert.High,
+				Check:     "firewall_ports",
+				Message:   fmt.Sprintf("Restricted port %d found in public TCP_IN — should be infra-only", port),
+				Timestamp: time.Now(),
+			})
+		}
+	}
+
+	return findings
 }

@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,6 +31,7 @@ type Engine struct {
 	setBlocked *nftables.Set
 	setAllowed *nftables.Set
 	setInfra   *nftables.Set
+	setCountry *nftables.Set
 
 	statePath string
 }
@@ -227,6 +229,29 @@ func (e *Engine) createSets() error {
 		return fmt.Errorf("infra set: %w", err)
 	}
 
+	// Country-blocked IPs set (interval for CIDR ranges)
+	if len(e.cfg.CountryBlock) > 0 && e.cfg.CountryDBPath != "" {
+		e.setCountry = &nftables.Set{
+			Table:    e.table,
+			Name:     "country_blocked",
+			KeyType:  nftables.TypeIPAddr,
+			Interval: true,
+		}
+
+		var countryElements []nftables.SetElement
+		for _, code := range e.cfg.CountryBlock {
+			countryElements = append(countryElements, loadCountryCIDRs(e.cfg.CountryDBPath, code)...)
+		}
+
+		if err := e.conn.AddSet(e.setCountry, countryElements); err != nil {
+			fmt.Fprintf(os.Stderr, "firewall: warning creating country set: %v\n", err)
+			e.setCountry = nil
+		} else if len(countryElements) > 0 {
+			fmt.Fprintf(os.Stderr, "firewall: loaded %d country block ranges for %v\n",
+				len(countryElements)/2, e.cfg.CountryBlock)
+		}
+	}
+
 	return nil
 }
 
@@ -305,6 +330,61 @@ func (e *Engine) createInputChain() error {
 			&expr.Verdict{Kind: expr.VerdictAccept},
 		},
 	})
+
+	// Rule 7: SYN flood protection — rate limit initial SYN packets
+	if e.cfg.SYNFloodProtection {
+		e.conn.AddRule(&nftables.Rule{
+			Table: e.table,
+			Chain: e.chainIn,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{6}}, // TCP
+				// Match SYN flag set, ACK flag not set (initial SYN only)
+				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 13, Len: 1},
+				&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 1, Mask: []byte{0x12}, Xor: []byte{0x00}},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{0x02}},
+				// Drop when SYN rate exceeds 25/second (burst 100)
+				&expr.Limit{Type: expr.LimitTypePkts, Rate: 25, Unit: expr.LimitTimeSecond, Burst: 100, Over: true},
+				&expr.Verdict{Kind: expr.VerdictDrop},
+			},
+		})
+	}
+
+	// Rule 8: New connection rate limit — drop excessive new connections
+	if e.cfg.ConnRateLimit > 0 {
+		burst := uint32(e.cfg.ConnRateLimit / 2)
+		if burst < 5 {
+			burst = 5
+		}
+		e.conn.AddRule(&nftables.Rule{
+			Table: e.table,
+			Chain: e.chainIn,
+			Exprs: []expr.Any{
+				// Match new connections only
+				&expr.Ct{Register: 1, SourceRegister: false, Key: expr.CtKeySTATE},
+				&expr.Bitwise{
+					SourceRegister: 1, DestRegister: 1, Len: 4,
+					Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitNEW),
+					Xor:  binaryutil.NativeEndian.PutUint32(0),
+				},
+				&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(0)},
+				// Drop when new connection rate exceeds limit
+				&expr.Limit{
+					Type:  expr.LimitTypePkts,
+					Rate:  uint64(e.cfg.ConnRateLimit),
+					Unit:  expr.LimitTimeMinute,
+					Burst: burst,
+					Over:  true,
+				},
+				&expr.Verdict{Kind: expr.VerdictDrop},
+			},
+		})
+	}
+
+	// Rule 9: Country block — drop traffic from blocked countries
+	if e.setCountry != nil {
+		e.addSetMatchRule(e.setCountry, expr.VerdictDrop)
+	}
 
 	// Build restricted port set — these are only reachable via infra IPs (rule 4)
 	restricted := make(map[int]bool)
@@ -818,4 +898,35 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// loadCountryCIDRs reads CIDR ranges from a country file.
+// Expected format: one CIDR per line in {dbPath}/{CODE}.cidr
+func loadCountryCIDRs(dbPath, countryCode string) []nftables.SetElement {
+	file := filepath.Join(dbPath, strings.ToUpper(countryCode)+".cidr")
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return nil
+	}
+
+	var elements []nftables.SetElement
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		_, network, err := net.ParseCIDR(line)
+		if err != nil {
+			continue
+		}
+		start := network.IP.To4()
+		end := lastIPInRange(network)
+		if start != nil && end != nil {
+			elements = append(elements,
+				nftables.SetElement{Key: start},
+				nftables.SetElement{Key: nextIP(end), IntervalEnd: true},
+			)
+		}
+	}
+	return elements
 }
