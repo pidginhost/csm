@@ -542,13 +542,13 @@ func fwDenyFile() {
 			continue
 		}
 		// Format: IP [# reason]
-		ip := line
-		reason := "Blocked via deny-file"
+		var ip, reason string
 		if idx := strings.Index(line, "#"); idx > 0 {
 			reason = strings.TrimSpace(line[idx+1:])
 			ip = strings.TrimSpace(line[:idx])
 		} else {
 			ip = strings.Fields(line)[0]
+			reason = "Blocked via deny-file"
 		}
 		if net.ParseIP(ip) == nil {
 			skipped++
@@ -593,13 +593,13 @@ func fwAllowFile() {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		ip := line
-		reason := "Allowed via allow-file"
+		var ip, reason string
 		if idx := strings.Index(line, "#"); idx > 0 {
 			reason = strings.TrimSpace(line[idx+1:])
 			ip = strings.TrimSpace(line[:idx])
 		} else {
 			ip = strings.Fields(line)[0]
+			reason = "Allowed via allow-file"
 		}
 		if net.ParseIP(ip) == nil {
 			skipped++
