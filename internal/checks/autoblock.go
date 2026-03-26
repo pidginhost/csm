@@ -128,6 +128,12 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		}
 
 		state.BlocksThisHour++
+
+		// Add to permanent local threat database
+		if db := GetThreatDB(); db != nil {
+			db.AddPermanent(ip, reason)
+		}
+
 		state.IPs = append(state.IPs, blockedIP{
 			IP:        ip,
 			Reason:    reason,

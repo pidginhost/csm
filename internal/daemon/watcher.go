@@ -170,7 +170,8 @@ func parseSessionLogLine(line string, cfg *config.Config) []alert.Finding {
 	if strings.Contains(line, "[cpaneld]") && strings.Contains(line, " NEW ") {
 		// Skip API/portal sessions — these are legitimate
 		if strings.Contains(line, "method=create_user_session") ||
-			strings.Contains(line, "method=create_session") {
+			strings.Contains(line, "method=create_session") ||
+			strings.Contains(line, "create_user_session") {
 			// Portal-created session — no alert
 		} else {
 			ip, account := parseCpanelSessionLogin(line)

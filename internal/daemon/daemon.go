@@ -77,6 +77,12 @@ func (d *Daemon) Run() error {
 		fmt.Fprintf(os.Stderr, "[%s] YARA-X scanner active: %d rule file(s)\n", ts(), yaraScanner.RuleCount())
 	}
 
+	// Initialize local threat database
+	checks.InitThreatDB(d.cfg.StatePath)
+	if db := checks.GetThreatDB(); db != nil {
+		fmt.Fprintf(os.Stderr, "[%s] Threat DB initialized (%d entries)\n", ts(), db.Count())
+	}
+
 	// Create password hijack detector
 	d.hijackDetector = NewPasswordHijackDetector(d.cfg, d.alertCh)
 
@@ -256,6 +262,11 @@ func (d *Daemon) deepScanner() {
 		case <-d.stopCh:
 			return
 		case <-ticker.C:
+			// Update threat intelligence feeds (once per day)
+			if db := checks.GetThreatDB(); db != nil {
+				_ = db.UpdateFeeds()
+			}
+
 			// Only run the checks fanotify can't replace
 			findings := checks.RunReducedDeep(d.cfg, d.store)
 			if len(findings) > 0 {
