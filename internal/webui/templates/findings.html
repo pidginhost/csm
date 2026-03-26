@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CSM — Active Findings</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1><span>CSM</span> Security Monitor</h1>
+            <nav>
+                <a href="/dashboard">Dashboard</a>
+                <a href="/findings" class="active">Findings</a>
+                <a href="/history">History</a>
+                <a href="/quarantine">Quarantine</a>
+            </nav>
+        </div>
+    </header>
+    <main>
+        <div class="container">
+            <h2 style="margin-bottom:1rem">Active Findings ({{len .Entries}})</h2>
+            {{if .Entries}}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Check</th>
+                        <th>Message</th>
+                        <th>First Seen</th>
+                        <th>Last Seen</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .Entries}}
+                    <tr>
+                        <td><span class="mono">{{.Check}}</span></td>
+                        <td>{{.Message}}</td>
+                        <td class="mono">{{.FirstSeen}}</td>
+                        <td class="mono">{{.LastSeen}}</td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+            {{else}}
+            <div class="empty-state">No active findings. All clear.</div>
+            {{end}}
+        </div>
+    </main>
+    <footer>
+        <div class="container">CSM — cPanel Security Monitor | {{.Hostname}}</div>
+    </footer>
+</body>
+</html>

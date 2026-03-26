@@ -296,3 +296,83 @@ func (s *Store) PrintStatus() {
 	}
 	fmt.Printf("\nBaseline entries: %d, Active findings: %d\n", baselineCount, activeCount)
 }
+
+// Entries returns a snapshot copy of current state entries (thread-safe).
+func (s *Store) Entries() map[string]*Entry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	copy := make(map[string]*Entry, len(s.entries))
+	for k, v := range s.entries {
+		if k[0] == '_' {
+			continue // skip internal keys
+		}
+		entryCopy := *v
+		copy[k] = &entryCopy
+	}
+	return copy
+}
+
+// ReadHistory reads the last limit entries from history.jsonl, starting at offset.
+// Returns the findings (newest first) and total count.
+func (s *Store) ReadHistory(limit, offset int) ([]alert.Finding, int) {
+	historyPath := filepath.Join(s.path, "history.jsonl")
+	data, err := os.ReadFile(historyPath)
+	if err != nil {
+		return nil, 0
+	}
+
+	var all []alert.Finding
+	for _, line := range splitLines(data) {
+		if len(line) == 0 {
+			continue
+		}
+		var f alert.Finding
+		if err := json.Unmarshal(line, &f); err != nil {
+			continue
+		}
+		all = append(all, f)
+	}
+
+	// Reverse (newest first)
+	for i, j := 0, len(all)-1; i < j; i, j = i+1, j-1 {
+		all[i], all[j] = all[j], all[i]
+	}
+
+	total := len(all)
+	if offset >= total {
+		return nil, total
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	return all[offset:end], total
+}
+
+func splitLines(data []byte) [][]byte {
+	var lines [][]byte
+	start := 0
+	for i, b := range data {
+		if b == '\n' {
+			if i > start {
+				lines = append(lines, data[start:i])
+			}
+			start = i + 1
+		}
+	}
+	if start < len(data) {
+		lines = append(lines, data[start:])
+	}
+	return lines
+}
+
+// ParseKey splits a state key "check:message" into its components.
+func ParseKey(key string) (check, message string) {
+	for i := 0; i < len(key); i++ {
+		if key[i] == ':' {
+			return key[:i], key[i+1:]
+		}
+	}
+	return key, ""
+}

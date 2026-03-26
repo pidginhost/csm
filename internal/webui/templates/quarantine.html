@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CSM — Quarantine</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1><span>CSM</span> Security Monitor</h1>
+            <nav>
+                <a href="/dashboard">Dashboard</a>
+                <a href="/findings">Findings</a>
+                <a href="/history">History</a>
+                <a href="/quarantine" class="active">Quarantine</a>
+            </nav>
+        </div>
+    </header>
+    <main>
+        <div class="container">
+            <h2 style="margin-bottom:1rem">Quarantined Files</h2>
+            <div id="quarantine-table">
+                <div class="empty-state">Loading...</div>
+            </div>
+        </div>
+    </main>
+    <footer>
+        <div class="container">CSM — cPanel Security Monitor | {{.Hostname}}</div>
+    </footer>
+    <script>
+    fetch('/api/v1/quarantine', {credentials:'same-origin'})
+        .then(function(r){return r.json()})
+        .then(function(files){
+            var el = document.getElementById('quarantine-table');
+            if (!files || files.length === 0) {
+                el.innerHTML = '<div class="empty-state">No quarantined files.</div>';
+                return;
+            }
+            var html = '<table><thead><tr><th>Original Path</th><th>Size</th><th>Quarantined</th><th>Reason</th></tr></thead><tbody>';
+            for (var i = 0; i < files.length; i++) {
+                var f = files[i];
+                html += '<tr><td class="mono">' + esc(f.original_path) + '</td><td>' + formatSize(f.size) + '</td><td class="mono">' + esc(f.quarantined_at) + '</td><td>' + esc(f.reason) + '</td></tr>';
+            }
+            html += '</tbody></table>';
+            el.innerHTML = html;
+        })
+        .catch(function(){
+            document.getElementById('quarantine-table').innerHTML = '<div class="empty-state">Error loading quarantine data.</div>';
+        });
+    function esc(s){var d=document.createElement('div');d.appendChild(document.createTextNode(s||''));return d.innerHTML;}
+    function formatSize(b){if(b<1024)return b+'B';if(b<1048576)return(b/1024).toFixed(1)+'KB';return(b/1048576).toFixed(1)+'MB';}
+    </script>
+</body>
+</html>
