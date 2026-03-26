@@ -22,11 +22,12 @@ type Daemon struct {
 	lock       *state.LockFile
 	binaryPath string
 
-	logWatchers []*LogWatcher
-	fileMonitor *FileMonitor
-	alertCh     chan alert.Finding
-	stopCh      chan struct{}
-	wg          sync.WaitGroup
+	logWatchers    []*LogWatcher
+	fileMonitor    *FileMonitor
+	hijackDetector *PasswordHijackDetector
+	alertCh        chan alert.Finding
+	stopCh         chan struct{}
+	wg             sync.WaitGroup
 }
 
 // New creates a new daemon instance.
@@ -67,6 +68,9 @@ func (d *Daemon) Run() error {
 	}
 	d.store.Update(initialFindings)
 	fmt.Fprintf(os.Stderr, "[%s] Initial scan complete: %d findings (%d new)\n", ts(), len(initialFindings), len(newFindings))
+
+	// Create password hijack detector
+	d.hijackDetector = NewPasswordHijackDetector(d.cfg, d.alertCh)
 
 	// Start alert dispatcher
 	d.wg.Add(1)
@@ -258,16 +262,25 @@ func (d *Daemon) heartbeat() {
 			return
 		case <-ticker.C:
 			alert.SendHeartbeat(d.cfg)
+			d.hijackDetector.Cleanup()
 		}
 	}
 }
 
 func (d *Daemon) startLogWatchers() {
+	// Session log handler wrapper — feeds events to both the alert handler and hijack detector
+	sessionHandler := func(line string, cfg *config.Config) []alert.Finding {
+		// Feed to hijack detector (tracks password changes + correlates with logins)
+		ParseSessionLineForHijack(line, d.hijackDetector)
+		// Regular session log handling
+		return parseSessionLogLine(line, cfg)
+	}
+
 	logFiles := []struct {
 		path    string
 		handler func(string, *config.Config) []alert.Finding
 	}{
-		{"/usr/local/cpanel/logs/session_log", parseSessionLogLine},
+		{"/usr/local/cpanel/logs/session_log", sessionHandler},
 		{"/usr/local/cpanel/logs/access_log", parseAccessLogLineEnhanced},
 		{"/var/log/secure", parseSecureLogLine},
 		{"/var/log/exim_mainlog", parseEximLogLine},
