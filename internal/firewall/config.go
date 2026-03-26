@@ -27,17 +27,15 @@ type FirewallConfig struct {
 	// Infra IPs (CIDR notation)
 	InfraIPs []string `yaml:"infra_ips"`
 
-	// Rate limiting — these are GLOBAL limits (not per-source-IP).
-	// Per-source metering requires nftables meters/dynsets (see roadmap).
-	// A single busy source can consume the entire allowance.
-	ConnRateLimit      int  `yaml:"conn_rate_limit"` // new connections per minute (global)
+	// Rate limiting (per-source-IP via nftables meters)
+	ConnRateLimit      int  `yaml:"conn_rate_limit"` // new connections per minute per IP
 	SYNFloodProtection bool `yaml:"syn_flood_protection"`
+	ConnLimit          int  `yaml:"conn_limit"` // max concurrent connections per IP (0 = disabled)
 
-	// Per-port flood protection — global per-port rate limit (not per-source).
-	// Limits new connections to specific ports within a time window.
+	// Per-port flood protection — per-source rate limit per port
 	PortFlood []PortFloodRule `yaml:"port_flood"`
 
-	// UDP flood protection — global rate limit on all UDP packets (not per-source)
+	// UDP flood protection — per-source rate limit on UDP packets
 	UDPFlood      bool `yaml:"udp_flood"`
 	UDPFloodRate  int  `yaml:"udp_flood_rate"`  // packets per second
 	UDPFloodBurst int  `yaml:"udp_flood_burst"` // burst allowance

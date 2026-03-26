@@ -42,6 +42,12 @@ type Engine struct {
 	setAllowed6    *nftables.Set
 	setInfra6      *nftables.Set
 
+	// Meters for per-IP rate limiting
+	meterSYN     *nftables.Set
+	meterConn    *nftables.Set
+	meterUDP     *nftables.Set
+	meterConnlim *nftables.Set
+
 	statePath string
 }
 
@@ -360,6 +366,36 @@ func (e *Engine) createSets() error {
 		}
 	}
 
+	// Meter sets for per-IP rate limiting (dynamic sets)
+	if e.cfg.SYNFloodProtection {
+		e.meterSYN = &nftables.Set{
+			Table: e.table, Name: "meter_syn", KeyType: nftables.TypeIPAddr,
+			Dynamic: true, HasTimeout: true, Timeout: time.Minute,
+		}
+		_ = e.conn.AddSet(e.meterSYN, nil)
+	}
+	if e.cfg.ConnRateLimit > 0 {
+		e.meterConn = &nftables.Set{
+			Table: e.table, Name: "meter_conn", KeyType: nftables.TypeIPAddr,
+			Dynamic: true, HasTimeout: true, Timeout: time.Minute,
+		}
+		_ = e.conn.AddSet(e.meterConn, nil)
+	}
+	if e.cfg.UDPFlood && e.cfg.UDPFloodRate > 0 {
+		e.meterUDP = &nftables.Set{
+			Table: e.table, Name: "meter_udp", KeyType: nftables.TypeIPAddr,
+			Dynamic: true, HasTimeout: true, Timeout: time.Minute,
+		}
+		_ = e.conn.AddSet(e.meterUDP, nil)
+	}
+	if e.cfg.ConnLimit > 0 {
+		e.meterConnlim = &nftables.Set{
+			Table: e.table, Name: "meter_connlimit", KeyType: nftables.TypeIPAddr,
+			Dynamic: true,
+		}
+		_ = e.conn.AddSet(e.meterConnlim, nil)
+	}
+
 	return nil
 }
 
@@ -474,27 +510,35 @@ func (e *Engine) createInputChain() error {
 		}
 	}
 
-	// Rule 7: SYN flood protection — rate limit initial SYN packets
-	if e.cfg.SYNFloodProtection {
+	// Per-IP SYN flood protection via meter
+	if e.cfg.SYNFloodProtection && e.meterSYN != nil {
 		e.conn.AddRule(&nftables.Rule{
 			Table: e.table,
 			Chain: e.chainIn,
 			Exprs: []expr.Any{
 				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{6}}, // TCP
-				// Match SYN flag set, ACK flag not set (initial SYN only)
 				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 13, Len: 1},
 				&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 1, Mask: []byte{0x12}, Xor: []byte{0x00}},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{0x02}},
-				// Drop when SYN rate exceeds 25/second (burst 100)
-				&expr.Limit{Type: expr.LimitTypePkts, Rate: 25, Unit: expr.LimitTimeSecond, Burst: 100, Over: true},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{0x02}}, // SYN only
+				// Load source IP for per-IP metering
+				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
+				&expr.Dynset{
+					SrcRegKey: 1,
+					SetName:   e.meterSYN.Name,
+					SetID:     e.meterSYN.ID,
+					Operation: 1, // NFT_DYNSET_OP_UPDATE
+					Exprs: []expr.Any{
+						&expr.Limit{Type: expr.LimitTypePkts, Rate: 25, Unit: expr.LimitTimeSecond, Burst: 100, Over: true},
+					},
+				},
 				&expr.Verdict{Kind: expr.VerdictDrop},
 			},
 		})
 	}
 
-	// Rule 8: New connection rate limit — drop excessive new connections
-	if e.cfg.ConnRateLimit > 0 {
+	// Per-IP new connection rate limit via meter
+	if e.cfg.ConnRateLimit > 0 && e.meterConn != nil {
 		burst := uint32(e.cfg.ConnRateLimit / 2)
 		if burst < 5 {
 			burst = 5
@@ -503,7 +547,6 @@ func (e *Engine) createInputChain() error {
 			Table: e.table,
 			Chain: e.chainIn,
 			Exprs: []expr.Any{
-				// Match new connections only
 				&expr.Ct{Register: 1, SourceRegister: false, Key: expr.CtKeySTATE},
 				&expr.Bitwise{
 					SourceRegister: 1, DestRegister: 1, Len: 4,
@@ -511,13 +554,44 @@ func (e *Engine) createInputChain() error {
 					Xor:  binaryutil.NativeEndian.PutUint32(0),
 				},
 				&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(0)},
-				// Drop when new connection rate exceeds limit
-				&expr.Limit{
-					Type:  expr.LimitTypePkts,
-					Rate:  uint64(e.cfg.ConnRateLimit),
-					Unit:  expr.LimitTimeMinute,
-					Burst: burst,
-					Over:  true,
+				// Load source IP for per-IP metering
+				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
+				&expr.Dynset{
+					SrcRegKey: 1,
+					SetName:   e.meterConn.Name,
+					SetID:     e.meterConn.ID,
+					Operation: 1,
+					Exprs: []expr.Any{
+						&expr.Limit{Type: expr.LimitTypePkts, Rate: uint64(e.cfg.ConnRateLimit), Unit: expr.LimitTimeMinute, Burst: burst, Over: true},
+					},
+				},
+				&expr.Verdict{Kind: expr.VerdictDrop},
+			},
+		})
+	}
+
+	// Per-IP concurrent connection limit (CONNLIMIT)
+	if e.cfg.ConnLimit > 0 && e.meterConnlim != nil {
+		e.conn.AddRule(&nftables.Rule{
+			Table: e.table,
+			Chain: e.chainIn,
+			Exprs: []expr.Any{
+				&expr.Ct{Register: 1, SourceRegister: false, Key: expr.CtKeySTATE},
+				&expr.Bitwise{
+					SourceRegister: 1, DestRegister: 1, Len: 4,
+					Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitNEW),
+					Xor:  binaryutil.NativeEndian.PutUint32(0),
+				},
+				&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(0)},
+				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
+				&expr.Dynset{
+					SrcRegKey: 1,
+					SetName:   e.meterConnlim.Name,
+					SetID:     e.meterConnlim.ID,
+					Operation: 1,
+					Exprs: []expr.Any{
+						&expr.Connlimit{Count: uint32(e.cfg.ConnLimit), Flags: 1}, // 1 = over
+					},
 				},
 				&expr.Verdict{Kind: expr.VerdictDrop},
 			},
@@ -568,8 +642,8 @@ func (e *Engine) createInputChain() error {
 		})
 	}
 
-	// UDP flood protection — global rate limit on UDP packets
-	if e.cfg.UDPFlood && e.cfg.UDPFloodRate > 0 {
+	// Per-IP UDP flood protection via meter
+	if e.cfg.UDPFlood && e.cfg.UDPFloodRate > 0 && e.meterUDP != nil {
 		burst := uint32(e.cfg.UDPFloodBurst)
 		if burst < 10 {
 			burst = 10
@@ -580,9 +654,15 @@ func (e *Engine) createInputChain() error {
 			Exprs: []expr.Any{
 				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{17}}, // UDP
-				&expr.Limit{
-					Type: expr.LimitTypePkts, Rate: uint64(e.cfg.UDPFloodRate),
-					Unit: expr.LimitTimeSecond, Burst: burst, Over: true,
+				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
+				&expr.Dynset{
+					SrcRegKey: 1,
+					SetName:   e.meterUDP.Name,
+					SetID:     e.meterUDP.ID,
+					Operation: 1,
+					Exprs: []expr.Any{
+						&expr.Limit{Type: expr.LimitTypePkts, Rate: uint64(e.cfg.UDPFloodRate), Unit: expr.LimitTimeSecond, Burst: burst, Over: true},
+					},
 				},
 				&expr.Verdict{Kind: expr.VerdictDrop},
 			},
