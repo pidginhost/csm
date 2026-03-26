@@ -40,6 +40,10 @@ func runFirewall() {
 		fwRestart()
 	case "migrate-from-csf":
 		fwMigrate()
+	case "deny-subnet":
+		fwDenySubnet()
+	case "remove-subnet":
+		fwRemoveSubnet()
 	case "deny-file":
 		fwDenyFile()
 	case "allow-file":
@@ -69,7 +73,9 @@ Commands:
   flush                             Remove all dynamic IP blocks
   restart                           Reapply full firewall ruleset
   migrate-from-csf [--apply]        Migrate from CSF (dry run unless --apply)
-  deny-file <path>                  Bulk block IPs from file (one per line)
+  deny-subnet <cidr> [reason]         Block a subnet (e.g. 1.2.3.0/24)
+  remove-subnet <cidr>                Remove subnet block
+  deny-file <path>                    Bulk block IPs from file (one per line)
   allow-file <path>                 Bulk allow IPs from file (one per line)
   audit [limit]                     Show recent firewall audit log (default: 50)
 `)
@@ -120,7 +126,7 @@ func fwStatus() {
 	fmt.Printf("Restricted:  %s\n", fmtPorts(fwCfg.RestrictedTCP))
 	fmt.Printf("Passive FTP: %d-%d\n", fwCfg.PassiveFTPStart, fwCfg.PassiveFTPEnd)
 	fmt.Printf("Infra IPs:   %d entries\n", len(fwCfg.InfraIPs))
-	fmt.Printf("Blocked:     %d IPs\n", len(state.Blocked))
+	fmt.Printf("Blocked:     %d IPs, %d subnets\n", len(state.Blocked), len(state.BlockedNet))
 	fmt.Printf("Allowed:     %d IPs\n", len(state.Allowed))
 	fmt.Printf("SYN Flood:   %v\n", fwCfg.SYNFloodProtection)
 	fmt.Printf("Rate Limit:  %d conn/min\n", fwCfg.ConnRateLimit)
@@ -289,6 +295,15 @@ func fwGrep() {
 				port = fmt.Sprintf(" port:%d", a.Port)
 			}
 			fmt.Printf("ALLOWED  %-18s%s  %s\n", a.IP, port, a.Reason)
+			found++
+		}
+	}
+
+	for _, s := range state.BlockedNet {
+		if strings.Contains(strings.ToLower(s.CIDR), pattern) ||
+			strings.Contains(strings.ToLower(s.Reason), pattern) {
+			ago := time.Since(s.BlockedAt).Truncate(time.Minute)
+			fmt.Printf("SUBNET   %-18s (%s ago)  %s\n", s.CIDR, ago, s.Reason)
 			found++
 		}
 	}
@@ -539,6 +554,60 @@ func parseFWDuration(s string) (time.Duration, error) {
 		return time.Duration(days) * 24 * time.Hour, nil
 	}
 	return time.ParseDuration(s)
+}
+
+func fwDenySubnet() {
+	args := fwArgs()
+	if len(args) < 1 {
+		fmt.Fprintf(os.Stderr, "Usage: csm firewall deny-subnet <cidr> [reason]\n")
+		fmt.Fprintf(os.Stderr, "  Example: csm firewall deny-subnet 1.2.3.0/24 brute force range\n")
+		os.Exit(1)
+	}
+
+	cidr := args[0]
+	if !strings.Contains(cidr, "/") {
+		fmt.Fprintf(os.Stderr, "Invalid CIDR: %s (must include prefix, e.g. /24)\n", cidr)
+		os.Exit(1)
+	}
+
+	reason := "Blocked via CLI"
+	if len(args) > 1 {
+		reason = strings.Join(args[1:], " ")
+	}
+
+	cfg := loadConfig()
+	engine, err := firewall.ConnectExisting(cfg.Firewall, cfg.StatePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := engine.BlockSubnet(cidr, reason); err != nil {
+		fmt.Fprintf(os.Stderr, "Error blocking subnet: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Blocked subnet %s — %s\n", cidr, reason)
+}
+
+func fwRemoveSubnet() {
+	args := fwArgs()
+	if len(args) < 1 {
+		fmt.Fprintf(os.Stderr, "Usage: csm firewall remove-subnet <cidr>\n")
+		os.Exit(1)
+	}
+
+	cfg := loadConfig()
+	engine, err := firewall.ConnectExisting(cfg.Firewall, cfg.StatePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := engine.UnblockSubnet(args[0]); err != nil {
+		fmt.Fprintf(os.Stderr, "Error removing subnet: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Removed subnet block %s\n", args[0])
 }
 
 func fwDenyFile() {

@@ -565,6 +565,10 @@ CSM includes a native nftables firewall engine that replaces CSF (ConfigServer F
 - Silent drop for scanner-targeted ports (no log noise)
 - Deny IP limits (prevents memory exhaustion from runaway blocking)
 - Restricted TCP ports (WHM/SSH only accessible from infra IPs)
+- INVALID conntrack state drop (malformed packets rejected early)
+- Outbound TCP REJECT (sends RST instead of silent DROP for faster failure)
+- Subnet/CIDR blocking via `blocked_nets` interval set
+- Firewall audit trail (JSONL log of all changes, 10MB rotation)
 - State persistence with atomic writes (survives restart)
 - CSF migration tool (`csm firewall migrate-from-csf`)
 
@@ -577,8 +581,13 @@ csm firewall remove <ip>                Remove from blocked/allowed
 csm firewall grep <pattern>             Search by IP or reason
 csm firewall tempban <ip> <dur> [reason] Temporary block (1h, 24h, 7d)
 csm firewall ports                      Show port configuration
+csm firewall deny-subnet <cidr> [reason] Block a subnet (e.g. 1.2.3.0/24)
+csm firewall remove-subnet <cidr>       Remove subnet block
+csm firewall deny-file <path>           Bulk block IPs from file
+csm firewall allow-file <path>          Bulk allow IPs from file
 csm firewall flush                      Clear all dynamic blocks
 csm firewall restart                    Reapply full ruleset
+csm firewall audit [limit]              View firewall audit log
 csm firewall migrate-from-csf [--apply] CSF migration (dry-run default)
 ```
 
@@ -587,20 +596,18 @@ csm firewall migrate-from-csf [--apply] CSF migration (dry-run default)
 ### Firewall — Remaining for Full CSF Parity
 - IPv6 support (TCP6_IN/OUT, UDP6_IN/OUT, IPv6 sets, dual-stack rules)
 - Per-IP concurrent connection limit (CONNLIMIT via nftables connlimit/meter)
-- Per-IP SYN flood protection (currently global rate limit, needs per-source metering)
+- Per-IP SYN/connection/UDP flood metering (currently global, needs nftables dynsets)
 - Subnet auto-blocking (auto-block /24 when 3+ IPs from same range are blocked)
 - Dynamic DNS support (resolve hostnames to IPs, update periodically)
 - Port knocking (open SSH port after connection sequence)
-- REJECT for outbound drops (send TCP RST instead of silent DROP)
 - Automatic GeoIP database download and updates
 - Config profiles and backup/restore
 - IP geolocation lookup from CLI (`csm firewall lookup <ip>`)
 - Cluster mode (synchronize block lists across multiple servers)
 - CloudFlare WAF integration (push blocks to CF firewall)
 - Messenger (redirect blocked users to explanation page instead of dropping)
-- INVALID conntrack state handling (drop malformed packets explicitly)
-- Firewall audit trail (persistent log of all block/allow/config changes)
 - WebUI firewall status page (rule viewer, live blocked IP count, set sizes)
+- Firewall API endpoints (status, deny, allow, flush, audit — handler code ready, needs route wiring)
 
 ### Web UI — Security Hardening
 - Move inline JavaScript to external files for strict CSP
