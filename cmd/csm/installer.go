@@ -326,3 +326,95 @@ func deployCron(binaryPath string) error {
 		binaryPath, binaryPath)
 	return os.WriteFile("/etc/cron.d/csm", []byte(content), 0644)
 }
+
+const phpShieldPath = "/opt/csm/php_shield.php"
+
+// InstallPHPShield deploys the PHP runtime protection shield.
+// Adds auto_prepend_file to the global PHP configuration.
+func (inst *Installer) InstallPHPShield() error {
+	fmt.Println("\n=== PHP Shield — Runtime Protection ===")
+
+	// Deploy the shield PHP file
+	shieldContent := `<?php
+/**
+ * CSM PHP Shield — Runtime Protection
+ * Blocks PHP execution from dangerous paths, logs suspicious requests.
+ * See /opt/csm/configs/php_shield.php for full version.
+ */
+try {
+    define('CSM_SHIELD_LOG', '/var/run/csm/php_events.log');
+    $csm_script = isset($_SERVER['SCRIPT_FILENAME']) ? $_SERVER['SCRIPT_FILENAME'] : '';
+    if ($csm_script === '' || $csm_script === __FILE__) return;
+    $csm_lower = strtolower($csm_script);
+    $csm_blocked = array('/wp-content/uploads/', '/wp-content/upgrade/', '/tmp/', '/dev/shm/', '/var/tmp/');
+    foreach ($csm_blocked as $b) {
+        if (strpos($csm_lower, $b) !== false) {
+            $bn = basename($csm_lower);
+            if ($bn === 'index.php') continue;
+            $safe = array('/cache/', '/imunify', '/sucuri/', '/smush/');
+            $ok = false;
+            foreach ($safe as $s) { if (strpos($csm_lower, $s) !== false) { $ok = true; break; } }
+            if ($ok) continue;
+            @file_put_contents(CSM_SHIELD_LOG, sprintf("[%s] BLOCK_PATH ip=%s script=%s uri=%s\n", date('Y-m-d H:i:s'), $_SERVER['REMOTE_ADDR'], $csm_script, substr($_SERVER['REQUEST_URI'],0,200)), FILE_APPEND|LOCK_EX);
+            http_response_code(403);
+            exit;
+        }
+    }
+    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+        $cmds = array('cmd','command','exec','execute','c','e','shell');
+        foreach ($cmds as $p) {
+            if (isset($_REQUEST[$p])) {
+                @file_put_contents(CSM_SHIELD_LOG, sprintf("[%s] WEBSHELL_PARAM ip=%s script=%s details=%s\n", date('Y-m-d H:i:s'), $_SERVER['REMOTE_ADDR'], $csm_script, $p), FILE_APPEND|LOCK_EX);
+                break;
+            }
+        }
+    }
+} catch (Exception $e) {}
+`
+	if err := os.MkdirAll(filepath.Dir(phpShieldPath), 0755); err != nil {
+		return fmt.Errorf("creating shield directory: %w", err)
+	}
+	if err := os.WriteFile(phpShieldPath, []byte(shieldContent), 0644); err != nil {
+		return fmt.Errorf("writing shield file: %w", err)
+	}
+	fmt.Printf("  Deployed: %s\n", phpShieldPath)
+
+	// Create the events log directory
+	if err := os.MkdirAll("/var/run/csm", 0750); err != nil {
+		return fmt.Errorf("creating events dir: %w", err)
+	}
+
+	// Find PHP ini directory and add auto_prepend_file
+	phpIniPaths := []string{
+		"/opt/cpanel/ea-php82/root/etc/php.d/",
+		"/opt/cpanel/ea-php83/root/etc/php.d/",
+		"/opt/cpanel/ea-php81/root/etc/php.d/",
+		"/opt/cpanel/ea-php80/root/etc/php.d/",
+		"/opt/cpanel/ea-php74/root/etc/php.d/",
+	}
+
+	deployed := 0
+	for _, iniDir := range phpIniPaths {
+		if _, err := os.Stat(iniDir); os.IsNotExist(err) {
+			continue
+		}
+		iniPath := filepath.Join(iniDir, "zzz_csm_shield.ini")
+		iniContent := fmt.Sprintf("; CSM PHP Shield — runtime protection\nauto_prepend_file = %s\n", phpShieldPath)
+		if err := os.WriteFile(iniPath, []byte(iniContent), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "  Warning: could not write %s: %v\n", iniPath, err)
+			continue
+		}
+		fmt.Printf("  Configured: %s\n", iniPath)
+		deployed++
+	}
+
+	if deployed == 0 {
+		fmt.Println("  Warning: no PHP versions found to configure. Deploy manually:")
+		fmt.Printf("  echo 'auto_prepend_file = %s' > /path/to/php.d/zzz_csm_shield.ini\n", phpShieldPath)
+	} else {
+		fmt.Printf("  PHP Shield active for %d PHP versions\n", deployed)
+		fmt.Println("  Restart PHP: systemctl restart lsws || apachectl graceful")
+	}
+
+	return nil
+}

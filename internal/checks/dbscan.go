@@ -220,9 +220,7 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 		}
 		// Skip legitimate options that commonly contain these patterns
 		optName := parts[0]
-		if optName == "active_plugins" || optName == "widget_text" ||
-			strings.HasPrefix(optName, "wordfence") || strings.HasPrefix(optName, "wf_") ||
-			strings.HasPrefix(optName, "ithemes-security") || strings.HasPrefix(optName, "aio_wp_security") {
+		if isKnownSafeDBOption(optName) {
 			continue
 		}
 
@@ -235,6 +233,49 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 	}
 
 	return findings
+}
+
+// isKnownSafeDBOption returns true for wp_options entries that legitimately
+// contain patterns like eval(), base64_decode, <script> etc.
+func isKnownSafeDBOption(name string) bool {
+	// Exact matches
+	safeOptions := map[string]bool{
+		"active_plugins": true,
+		"widget_text":    true,
+		"cron":           true,
+	}
+	if safeOptions[name] {
+		return true
+	}
+
+	// Prefix matches — security plugins, caching, core transients
+	safePrefixes := []string{
+		// Security plugins (store rules/signatures with eval/script patterns)
+		"wordfence", "wf_",
+		"ithemes-security", "aio_wp_security",
+		"imunify_security", "_transient_imunify_security",
+		"csm_security", "_transient_csm_security",
+		"sucuri_", "bulletproof_",
+
+		// WordPress core transients (RSS feeds, update checks)
+		"_site_transient_feed_",
+		"_site_transient_update_",
+		"_transient_feed_",
+		"_transient_dash_",
+		"_transient_timeout_",
+
+		// Caching plugins
+		"litespeed", "_lscache_",
+		"w3tc_", "wc_",
+	}
+	nameLower := strings.ToLower(name)
+	for _, prefix := range safePrefixes {
+		if strings.HasPrefix(nameLower, prefix) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // checkWPPosts checks post content for injected scripts and malware.
