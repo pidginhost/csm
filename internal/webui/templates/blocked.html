@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>CSM — Blocked IPs</title>
     <link rel="stylesheet" href="/static/css/style.css">
+    <meta name="csrf-token" content="{{csrfToken}}">
 </head>
 <body>
     <header>
@@ -40,6 +41,7 @@
     <footer>
         <div class="container">CSM — cPanel Security Monitor | {{.Hostname}}</div>
     </footer>
+    <script src="/static/js/csrf.js"></script>
     <script>
     function loadBlocked() {
         fetch('/api/v1/blocked-ips', {credentials:'same-origin'})
@@ -63,11 +65,7 @@
 
     function unblockIP(ip) {
         if (!confirm('Unblock ' + ip + '?')) return;
-        fetch('/api/v1/unblock-ip', {
-            method: 'POST', credentials: 'same-origin',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ip: ip})
-        }).then(function(r){return r.json()}).then(function(data){
+        CSM.post('/api/v1/unblock-ip', {ip: ip}).then(function(data){
             showStatus(data.error || 'Unblocked: ' + ip, !data.error);
             loadBlocked();
         }).catch(function(e){ showStatus('Error: ' + e, false); });
@@ -78,11 +76,8 @@
         var ip = document.getElementById('block-ip').value.trim();
         var reason = document.getElementById('block-reason').value.trim() || 'Blocked via CSM Web UI';
         if (!ip) return;
-        fetch('/api/v1/block-ip', {
-            method: 'POST', credentials: 'same-origin',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ip: ip, reason: reason})
-        }).then(function(r){return r.json()}).then(function(data){
+        if (!confirm('Block IP ' + ip + '?')) return;
+        CSM.post('/api/v1/block-ip', {ip: ip, reason: reason}).then(function(data){
             showStatus(data.error || 'Blocked: ' + ip, !data.error);
             document.getElementById('block-ip').value = '';
             document.getElementById('block-reason').value = '';

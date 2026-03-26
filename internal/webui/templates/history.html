@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>CSM — History</title>
     <link rel="stylesheet" href="/static/css/style.css">
+    <meta name="csrf-token" content="{{csrfToken}}">
 </head>
 <body>
     <header>
@@ -16,14 +17,26 @@
                 <a href="/history" class="active">History</a>
                 <a href="/quarantine">Quarantine</a>
                 <a href="/blocked">Blocked IPs</a>
+                <a href="/logout" style="color:var(--text-muted)">Logout</a>
             </nav>
         </div>
     </header>
     <main>
         <div class="container">
-            <h2 style="margin-bottom:1rem">Finding History</h2>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+                <h2>Finding History</h2>
+                <div style="display:flex;gap:0.5rem;align-items:center">
+                    <select id="sev-filter" onchange="filterSeverity()" style="padding:0.4rem;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;color:var(--text)">
+                        <option value="all">All Severities</option>
+                        <option value="critical">Critical Only</option>
+                        <option value="high">High Only</option>
+                        <option value="warning">Warning Only</option>
+                    </select>
+                    <a href="/api/v1/history/csv" style="padding:0.4rem 0.8rem;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;color:var(--text);text-decoration:none;font-size:0.85rem">Export CSV</a>
+                </div>
+            </div>
             {{if .Findings}}
-            <table>
+            <table id="history-table">
                 <thead>
                     <tr>
                         <th>Severity</th>
@@ -34,12 +47,17 @@
                 </thead>
                 <tbody>
                     {{range .Findings}}
-                    <tr>
+                    <tr class="history-row" data-sev="{{.SevClass}}" onclick="toggleDetails(this)" style="cursor:pointer">
                         <td><span class="badge {{.SevClass}}">{{.Severity}}</span></td>
                         <td><span class="mono">{{.Check}}</span></td>
                         <td>{{.Message}}</td>
                         <td class="mono" title="{{.Timestamp}}">{{.TimeAgo}}</td>
                     </tr>
+                    {{if .Details}}
+                    <tr class="details-row" style="display:none">
+                        <td colspan="4" style="padding:0.5rem 1rem 1rem;background:var(--bg-input);font-size:0.85rem;white-space:pre-wrap;color:var(--text-muted)">{{.Details}}</td>
+                    </tr>
+                    {{end}}
                     {{end}}
                 </tbody>
             </table>
@@ -56,5 +74,28 @@
     <footer>
         <div class="container">CSM — cPanel Security Monitor | {{.Hostname}}</div>
     </footer>
+    <script>
+    function toggleDetails(row) {
+        var next = row.nextElementSibling;
+        if (next && next.classList.contains('details-row')) {
+            next.style.display = next.style.display === 'none' ? '' : 'none';
+        }
+    }
+    function filterSeverity() {
+        var val = document.getElementById('sev-filter').value;
+        var rows = document.querySelectorAll('.history-row');
+        rows.forEach(function(row) {
+            var detailsRow = row.nextElementSibling;
+            if (val === 'all' || row.getAttribute('data-sev') === val) {
+                row.style.display = '';
+            } else {
+                row.style.display = 'none';
+                if (detailsRow && detailsRow.classList.contains('details-row')) {
+                    detailsRow.style.display = 'none';
+                }
+            }
+        });
+    }
+    </script>
 </body>
 </html>

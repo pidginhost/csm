@@ -22,6 +22,10 @@ type namedCheck struct {
 // ForceAll forces all checks to run regardless of throttle (used by baseline).
 var ForceAll bool
 
+// DryRun disables auto-response actions (kill, quarantine, block).
+// Used by `check` (read-only) and `baseline` commands.
+var DryRun bool
+
 // Tier identifies which set of checks to run.
 type Tier string
 
@@ -183,32 +187,32 @@ func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck) []
 	}
 	findings = append(findings, extra...)
 
-	// Auto-response: kill malicious processes
-	killActions := AutoKillProcesses(cfg, findings)
-	for i := range killActions {
-		if killActions[i].Timestamp.IsZero() {
-			killActions[i].Timestamp = now
+	// Auto-response: skip when DryRun is set (check/baseline commands)
+	if !DryRun {
+		killActions := AutoKillProcesses(cfg, findings)
+		for i := range killActions {
+			if killActions[i].Timestamp.IsZero() {
+				killActions[i].Timestamp = now
+			}
 		}
-	}
-	findings = append(findings, killActions...)
+		findings = append(findings, killActions...)
 
-	// Auto-response: quarantine malicious files
-	quarantineActions := AutoQuarantineFiles(cfg, findings)
-	for i := range quarantineActions {
-		if quarantineActions[i].Timestamp.IsZero() {
-			quarantineActions[i].Timestamp = now
+		quarantineActions := AutoQuarantineFiles(cfg, findings)
+		for i := range quarantineActions {
+			if quarantineActions[i].Timestamp.IsZero() {
+				quarantineActions[i].Timestamp = now
+			}
 		}
-	}
-	findings = append(findings, quarantineActions...)
+		findings = append(findings, quarantineActions...)
 
-	// Auto-response: block attacker IPs via CSF
-	blockActions := AutoBlockIPs(cfg, findings)
-	for i := range blockActions {
-		if blockActions[i].Timestamp.IsZero() {
-			blockActions[i].Timestamp = now
+		blockActions := AutoBlockIPs(cfg, findings)
+		for i := range blockActions {
+			if blockActions[i].Timestamp.IsZero() {
+				blockActions[i].Timestamp = now
+			}
 		}
+		findings = append(findings, blockActions...)
 	}
-	findings = append(findings, blockActions...)
 
 	return findings
 }

@@ -481,9 +481,9 @@ webui:
 Access at `https://localhost:9443/login`. Auto-generates a self-signed TLS cert on first start.
 
 **Pages:**
-- **Dashboard** — summary cards (critical/high/warning counts), live WebSocket feed, uptime, hostname, signature count
-- **Findings** — active findings table with dismiss buttons, plus per-account scan form (enter username, get results inline)
-- **History** — paginated history from history.jsonl (newest first)
+- **Dashboard** — summary cards, 24-hour findings timeline chart (SVG), fanotify status, live WebSocket feed with expandable details
+- **Findings** — active findings with search/filter, dismiss buttons, per-account scan form (enter username, get results inline)
+- **History** — paginated history with severity dropdown filter, click-to-expand finding details, CSV export button
 - **Quarantine** — quarantined file list with one-click restore to original location
 - **Blocked IPs** — view/manage CSF-blocked IPs, block new IPs, unblock with one click
 
@@ -495,6 +495,8 @@ GET  /api/v1/history            Paginated history (?limit=50&offset=0)
 GET  /api/v1/quarantine         Quarantined files with metadata
 GET  /api/v1/stats              Severity counts and per-check breakdown
 GET  /api/v1/blocked-ips        Currently blocked IPs with reason/expiry
+GET  /api/v1/health             Daemon health: fanotify status, watchers, uptime
+GET  /api/v1/history/csv        Export full history as CSV download
 WS   /ws/findings               Real-time finding stream (WebSocket)
 
 POST /api/v1/block-ip           Block an IP via CSF {"ip":"...","reason":"..."}
@@ -504,9 +506,19 @@ POST /api/v1/quarantine-restore Restore quarantined file {"id":"..."}
 POST /api/v1/scan-account       Scan single account {"account":"username"}
 ```
 
-**Security:** Token auth (Bearer header, cookie, or query param for WebSocket), TLS-only, localhost-bound by default, rate-limited login (5/min), auto-escaping templates, HttpOnly/Secure/SameSite=Strict cookies.
+**Security:**
+- Token auth via Bearer header or HttpOnly/Secure/SameSite=Strict cookie
+- CSRF protection on all POST endpoints (HMAC-derived token, validated via X-CSRF-Token header)
+- Security headers: X-Frame-Options DENY, CSP, HSTS, X-Content-Type-Options nosniff, X-XSS-Protection, Referrer-Policy
+- TLS-only with auto-generated self-signed cert (localhost-bound by default)
+- Rate-limited login (5/min per IP, port-stripped)
+- Rate-limited account scanning (one concurrent scan at a time)
+- IP format validation on block operations (`net.ParseIP`)
+- Auto-escaping templates (`html/template`), cookie auth for WebSocket (no token in URL)
+- Logout endpoint clears session cookie
+- MaxHeaderBytes limit (1MB)
 
-**Architecture:** Go `html/template` + vanilla JS, zero external dependencies, embedded via `embed.FS` (~30KB binary size increase), stdlib-only WebSocket implementation.
+**Architecture:** Go `html/template` + vanilla JS, zero external dependencies, embedded via `embed.FS` (~30KB binary size increase), stdlib-only WebSocket implementation. Auth token never exposed to browser JS — WebSocket uses cookie auth.
 
 ## CSM vs Imunify360
 
@@ -535,13 +547,25 @@ POST /api/v1/scan-account       Scan single account {"account":"username"}
 
 ## Roadmap
 
-### Web UI — Next
-- Account view: all findings, quarantine, login history per cPanel account
-- Search & filter: by severity, check type, date range, account name
-- Findings timeline chart (inline SVG, no JS library)
-- System health page: fanotify/watcher status, disk usage, last scan times
-- Rule management: view loaded rules, trigger reload from UI
-- Export: download findings/history as CSV or JSON
+### Web UI — Security Hardening (Remaining)
+- Move inline JavaScript to external files for strict CSP
+- CORS/origin validation on API endpoints
+- Audit log of all UI actions (who blocked/unblocked/dismissed what)
+
+### Web UI — Features
+- Account view page: per-account findings, quarantine, login history
+- Date range picker on history page
+- Rule management: view loaded YAML/YARA rules, trigger reload via UI
+- Bulk actions: dismiss multiple findings, restore multiple files, unblock multiple IPs
+- Audit log: track who dismissed/blocked/restored what and when
+
+### Web UI — UX
+- Responsive mobile layout (media queries, hamburger menu)
+- Loading spinners for async operations
+- Toast notifications instead of alert() dialogs
+- Form labels and ARIA attributes for accessibility
+- Confirmation dialog on IP block action
+- Dark/light theme toggle
 
 ### Imunify360 Parity
 - Trusted country IP filtering for cPanel login alerts (reduce false positives)

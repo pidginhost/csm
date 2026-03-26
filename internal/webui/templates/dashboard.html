@@ -5,8 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>CSM — Dashboard</title>
     <link rel="stylesheet" href="/static/css/style.css">
+    <meta name="csrf-token" content="{{csrfToken}}">
 </head>
-<body data-token="{{.AuthToken}}">
+<body>
     <header>
         <div class="container">
             <h1><span>CSM</span> Security Monitor</h1>
@@ -16,6 +17,7 @@
                 <a href="/history">History</a>
                 <a href="/quarantine">Quarantine</a>
                 <a href="/blocked">Blocked IPs</a>
+                <a href="/logout" style="color:var(--text-muted)">Logout</a>
             </nav>
         </div>
     </header>
@@ -50,23 +52,40 @@
                     <div class="value" style="font-size:1.2rem">{{.Hostname}}</div>
                 </div>
                 <div class="card">
+                    <h3>fanotify</h3>
+                    <div class="value" style="font-size:1.2rem">{{if .FanotifyActive}}<span style="color:var(--success)">Active</span>{{else}}<span style="color:var(--high)">Fallback</span>{{end}}</div>
+                </div>
+                <div class="card">
                     <h3>Signature Rules</h3>
                     <div class="value" style="font-size:1.2rem">{{.SigCount}}</div>
                 </div>
-                <div class="card">
-                    <h3>WS Clients</h3>
-                    <div class="value" style="font-size:1.2rem">{{.WSClients}}</div>
-                </div>
+            </div>
+
+            <!-- Timeline chart: findings per hour over last 24h -->
+            <div class="card" style="margin-bottom:1.5rem;padding:1rem">
+                <h3 style="margin-bottom:0.75rem">Findings Timeline (24h)</h3>
+                <svg width="100%" height="120" viewBox="0 0 720 120" preserveAspectRatio="none" style="display:block">
+                    {{range $i, $bar := .TimelineBars}}
+                    {{if gt $bar.Total 0}}
+                    <rect x="{{multiply $i 30}}" y="{{subtract 100 $bar.Height}}" width="26" height="{{$bar.Height}}"
+                          rx="2" fill="{{if gt $bar.Critical 0}}var(--critical){{else if gt $bar.High 0}}var(--high){{else}}var(--warning){{end}}"
+                          opacity="0.8">
+                        <title>{{$bar.Hour}}: {{$bar.Total}} ({{$bar.Critical}}C / {{$bar.High}}H / {{$bar.Warning}}W)</title>
+                    </rect>
+                    {{end}}
+                    <text x="{{add (multiply $i 30) 13}}" y="115" text-anchor="middle" fill="var(--text-muted)" font-size="8">{{if divisibleBy $i 4}}{{$bar.Hour}}{{end}}</text>
+                    {{end}}
+                </svg>
             </div>
 
             <div class="live-feed">
                 <h2><span class="dot" id="ws-status"></span> Live Feed</h2>
                 <div class="entries" id="live-feed-entries">
                     {{range .RecentFindings}}
-                    <div class="entry">
+                    <div class="entry" onclick="this.querySelector('.details')&&this.querySelector('.details').classList.toggle('show')" style="cursor:pointer">
                         <span class="time">{{.Timestamp}}</span>
                         <span class="badge {{.SevClass}}">{{.Severity}}</span>
-                        <span class="msg">{{.Check}} — {{.Message}}</span>
+                        <span class="msg">{{.Check}} — {{.Message}}{{if .Details}}<div class="details" style="display:none;margin-top:0.5rem;font-size:0.8rem;color:var(--text-muted);white-space:pre-wrap">{{.Details}}</div>{{end}}</span>
                     </div>
                     {{else}}
                     <div class="empty-state">No recent findings. Waiting for events...</div>

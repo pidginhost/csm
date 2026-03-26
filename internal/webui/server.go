@@ -2,10 +2,14 @@ package webui
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"fmt"
 	"html/template"
 	"io/fs"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -25,18 +29,22 @@ type IPBlocker interface {
 
 // Server is the embedded web UI HTTP server.
 type Server struct {
-	cfg       *config.Config
-	store     *state.Store
-	hub       *Hub
-	httpSrv   *http.Server
-	templates *template.Template
-	startTime time.Time
-	sigCount  int // loaded signature rule count
-	blocker   IPBlocker
+	cfg             *config.Config
+	store           *state.Store
+	hub             *Hub
+	httpSrv         *http.Server
+	templates       *template.Template
+	startTime       time.Time
+	sigCount        int // loaded signature rule count
+	fanotifyActive  bool
+	logWatcherCount int
+	blocker         IPBlocker
 
-	// Login rate limiting
+	// Rate limiting
 	loginMu       sync.Mutex
 	loginAttempts map[string][]time.Time
+	scanMu        sync.Mutex
+	scanRunning   bool // only one scan at a time
 }
 
 // New creates a new web UI server.
@@ -55,6 +63,11 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		"severityLabel": severityLabel,
 		"timeAgo":       timeAgo,
 		"formatTime":    formatTime,
+		"csrfToken":     s.csrfToken,
+		"multiply":      func(a, b int) int { return a * b },
+		"add":           func(a, b int) int { return a + b },
+		"subtract":      func(a, b int) int { return a - b },
+		"divisibleBy":   func(a, b int) bool { return b != 0 && a%b == 0 },
 	}).ParseFS(templateFS, "templates/*.html")
 	if err != nil {
 		return nil, fmt.Errorf("parsing templates: %w", err)
@@ -88,23 +101,29 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/quarantine", s.requireAuth(http.HandlerFunc(s.apiQuarantine)))
 	mux.Handle("/api/v1/stats", s.requireAuth(http.HandlerFunc(s.apiStats)))
 	mux.Handle("/api/v1/blocked-ips", s.requireAuth(http.HandlerFunc(s.apiBlockedIPs)))
+	mux.Handle("/api/v1/health", s.requireAuth(http.HandlerFunc(s.apiHealth)))
+	mux.Handle("/api/v1/history/csv", s.requireAuth(http.HandlerFunc(s.apiHistoryCSV)))
 
-	// Auth-protected API — actions
-	mux.Handle("/api/v1/scan-account", s.requireAuth(http.HandlerFunc(s.apiScanAccount)))
-	mux.Handle("/api/v1/block-ip", s.requireAuth(http.HandlerFunc(s.apiBlockIP)))
-	mux.Handle("/api/v1/unblock-ip", s.requireAuth(http.HandlerFunc(s.apiUnblockIP)))
-	mux.Handle("/api/v1/dismiss", s.requireAuth(http.HandlerFunc(s.apiDismissFinding)))
-	mux.Handle("/api/v1/quarantine-restore", s.requireAuth(http.HandlerFunc(s.apiQuarantineRestore)))
+	// Auth-protected API — actions (with CSRF validation)
+	mux.Handle("/api/v1/scan-account", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiScanAccount))))
+	mux.Handle("/api/v1/block-ip", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiBlockIP))))
+	mux.Handle("/api/v1/unblock-ip", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiUnblockIP))))
+	mux.Handle("/api/v1/dismiss", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiDismissFinding))))
+	mux.Handle("/api/v1/quarantine-restore", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiQuarantineRestore))))
 
-	// WebSocket (auth via query param)
+	// Logout (clears cookie)
+	mux.HandleFunc("/logout", s.handleLogout)
+
+	// WebSocket (auth via cookie)
 	mux.HandleFunc("/ws/findings", s.handleWSFindings)
 
 	s.httpSrv = &http.Server{
-		Addr:         cfg.WebUI.Listen,
-		Handler:      mux,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:           cfg.WebUI.Listen,
+		Handler:        s.securityHeaders(mux),
+		ReadTimeout:    15 * time.Second,
+		WriteTimeout:   15 * time.Second,
+		IdleTimeout:    60 * time.Second,
+		MaxHeaderBytes: 1 << 20, // 1MB
 	}
 
 	return s, nil
@@ -146,6 +165,12 @@ func (s *Server) SetSigCount(count int) {
 // SetIPBlocker sets the firewall engine for block/unblock operations.
 func (s *Server) SetIPBlocker(b IPBlocker) {
 	s.blocker = b
+}
+
+// SetHealthInfo sets daemon health info for the health API.
+func (s *Server) SetHealthInfo(fanotifyActive bool, logWatchers int) {
+	s.fanotifyActive = fanotifyActive
+	s.logWatcherCount = logWatchers
 }
 
 // --- Authentication ---
@@ -203,8 +228,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Rate limit: 5 attempts per minute per IP
+	// Rate limit: 5 attempts per minute per IP (strip port from RemoteAddr)
 	ip := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(ip); err == nil {
+		ip = host
+	}
 	s.loginMu.Lock()
 	now := time.Now()
 	attempts := s.loginAttempts[ip]
@@ -292,4 +320,99 @@ func timeAgo(t time.Time) string {
 
 func formatTime(t time.Time) string {
 	return t.Format("2006-01-02 15:04:05")
+}
+
+// --- Security headers middleware ---
+
+func (s *Server) securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-XSS-Protection", "1; mode=block")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		// CSP: allow inline styles (needed for card styling) but block inline scripts
+		// except those with the nonce — we use 'unsafe-inline' for now since templates
+		// have inline scripts; tighten when scripts are moved to external files
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// --- CSRF protection ---
+
+// csrfToken generates a deterministic CSRF token from the auth token.
+// This is safe because the auth token is secret and the CSRF token is
+// derived via HMAC — knowing the CSRF token doesn't reveal the auth token.
+func (s *Server) csrfToken() string {
+	mac := hmac.New(sha256.New, []byte("csm-csrf-v1"))
+	mac.Write([]byte(s.cfg.WebUI.AuthToken))
+	return hex.EncodeToString(mac.Sum(nil))[:32]
+}
+
+// validateCSRF checks the CSRF token on POST requests.
+// Checks X-CSRF-Token header (for API calls) or csrf_token form field (for form posts).
+func (s *Server) validateCSRF(r *http.Request) bool {
+	if r.Method != http.MethodPost {
+		return true // only validate POST
+	}
+
+	expected := s.csrfToken()
+
+	// Check header (API calls from JS use this)
+	if token := r.Header.Get("X-CSRF-Token"); token != "" {
+		return subtle.ConstantTimeCompare([]byte(token), []byte(expected)) == 1
+	}
+
+	// Check form field (traditional form posts)
+	if token := r.FormValue("csrf_token"); token != "" {
+		return subtle.ConstantTimeCompare([]byte(token), []byte(expected)) == 1
+	}
+
+	return false
+}
+
+// requireCSRF wraps a handler to validate CSRF on POST requests.
+func (s *Server) requireCSRF(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && !s.validateCSRF(r) {
+			http.Error(w, "Invalid CSRF token", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// --- Logout ---
+
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "csm_auth",
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   -1, // delete cookie
+	})
+	http.Redirect(w, r, "/login", http.StatusFound)
+}
+
+// --- Scan rate limiting ---
+
+// acquireScan tries to start a scan. Returns false if a scan is already running.
+func (s *Server) acquireScan() bool {
+	s.scanMu.Lock()
+	defer s.scanMu.Unlock()
+	if s.scanRunning {
+		return false
+	}
+	s.scanRunning = true
+	return true
+}
+
+func (s *Server) releaseScan() {
+	s.scanMu.Lock()
+	s.scanRunning = false
+	s.scanMu.Unlock()
 }
