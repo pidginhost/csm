@@ -50,6 +50,8 @@ func runFirewall() {
 		fwAllowFile()
 	case "audit":
 		fwAudit()
+	case "profile":
+		fwProfile()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown firewall command: %s\n", os.Args[2])
 		printFirewallUsage()
@@ -78,6 +80,9 @@ Commands:
   deny-file <path>                    Bulk block IPs from file (one per line)
   allow-file <path>                 Bulk allow IPs from file (one per line)
   audit [limit]                     Show recent firewall audit log (default: 50)
+  profile save <name>               Save current firewall config as named profile
+  profile list                      List saved profiles
+  profile restore <name>            Restore firewall config from profile
 `)
 }
 
@@ -543,6 +548,81 @@ func fmtPortsWrap(ports []int, width int) string {
 		lines = append(lines, current)
 	}
 	return strings.Join(lines, "\n  ")
+}
+
+func fwProfile() {
+	args := fwArgs()
+	if len(args) < 1 {
+		fmt.Fprintf(os.Stderr, "Usage: csm firewall profile <save|list|restore> [name]\n")
+		os.Exit(1)
+	}
+
+	cfg := loadConfig()
+	profileDir := cfg.StatePath + "/firewall/profiles"
+	_ = os.MkdirAll(profileDir, 0700)
+
+	switch args[0] {
+	case "save":
+		if len(args) < 2 {
+			fmt.Fprintf(os.Stderr, "Usage: csm firewall profile save <name>\n")
+			os.Exit(1)
+		}
+		name := args[1]
+		src := cfg.ConfigFile
+		data, err := os.ReadFile(src)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error reading config: %v\n", err)
+			os.Exit(1)
+		}
+		dst := profileDir + "/" + name + ".yaml"
+		if err := os.WriteFile(dst, data, 0600); err != nil {
+			fmt.Fprintf(os.Stderr, "Error saving profile: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Profile saved: %s\n", dst)
+
+	case "list":
+		entries, _ := os.ReadDir(profileDir)
+		if len(entries) == 0 {
+			fmt.Println("No saved profiles.")
+			return
+		}
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".yaml") {
+				info, _ := e.Info()
+				name := strings.TrimSuffix(e.Name(), ".yaml")
+				ts := ""
+				if info != nil {
+					ts = info.ModTime().Format("2006-01-02 15:04:05")
+				}
+				fmt.Printf("  %-20s %s\n", name, ts)
+			}
+		}
+
+	case "restore":
+		if len(args) < 2 {
+			fmt.Fprintf(os.Stderr, "Usage: csm firewall profile restore <name>\n")
+			os.Exit(1)
+		}
+		name := args[1]
+		src := profileDir + "/" + name + ".yaml"
+		data, err := os.ReadFile(src)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Profile not found: %s\n", name)
+			os.Exit(1)
+		}
+		dst := cfg.ConfigFile
+		if err := os.WriteFile(dst, data, 0600); err != nil {
+			fmt.Fprintf(os.Stderr, "Error restoring config: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Config restored from profile: %s\n", name)
+		fmt.Println("Run 'csm firewall restart' to apply the restored config.")
+
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown profile command: %s\n", args[0])
+		os.Exit(1)
+	}
 }
 
 func parseFWDuration(s string) (time.Duration, error) {

@@ -569,6 +569,9 @@ CSM includes a native nftables firewall engine that replaces CSF (ConfigServer F
 - Outbound TCP REJECT (sends RST instead of silent DROP for faster failure)
 - Subnet/CIDR blocking via `blocked_nets` interval set
 - Firewall audit trail (JSONL log of all changes, 10MB rotation)
+- Subnet auto-blocking (auto-block /24 when 3+ IPs from same range)
+- Dynamic DNS (resolve hostnames to IPs, update allowed set every 5 min)
+- Config profiles (save/list/restore firewall configuration snapshots)
 - State persistence with atomic writes (survives restart)
 - CSF migration tool (`csm firewall migrate-from-csf`)
 
@@ -588,6 +591,7 @@ csm firewall allow-file <path>          Bulk allow IPs from file
 csm firewall flush                      Clear all dynamic blocks
 csm firewall restart                    Reapply full ruleset
 csm firewall audit [limit]              View firewall audit log
+csm firewall profile save|list|restore  Config profile management
 csm firewall migrate-from-csf [--apply] CSF migration (dry-run default)
 ```
 
@@ -597,11 +601,8 @@ csm firewall migrate-from-csf [--apply] CSF migration (dry-run default)
 - IPv6 support (TCP6_IN/OUT, UDP6_IN/OUT, IPv6 sets, dual-stack rules)
 - Per-IP concurrent connection limit (CONNLIMIT via nftables connlimit/meter)
 - Per-IP SYN/connection/UDP flood metering (currently global, needs nftables dynsets)
-- Subnet auto-blocking (auto-block /24 when 3+ IPs from same range are blocked)
-- Dynamic DNS support (resolve hostnames to IPs, update periodically)
 - Port knocking (open SSH port after connection sequence)
 - Automatic GeoIP database download and updates
-- Config profiles and backup/restore
 - IP geolocation lookup from CLI (`csm firewall lookup <ip>`)
 - Cluster mode (synchronize block lists across multiple servers)
 - CloudFlare WAF integration (push blocks to CF firewall)

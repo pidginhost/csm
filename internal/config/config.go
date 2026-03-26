@@ -72,6 +72,8 @@ type Config struct {
 		BlockIPs          bool   `yaml:"block_ips"`
 		BlockExpiry       string `yaml:"block_expiry"`        // e.g. "24h", "12h"
 		BlockCpanelLogins bool   `yaml:"block_cpanel_logins"` // block IPs on cPanel/webmail login alerts (default false)
+		NetBlock          bool   `yaml:"netblock"`            // auto-block /24 when threshold IPs from same subnet
+		NetBlockThreshold int    `yaml:"netblock_threshold"`  // IPs from same /24 before subnet block (default 3)
 	} `yaml:"auto_response"`
 
 	Reputation struct {

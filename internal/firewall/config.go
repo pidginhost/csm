@@ -51,6 +51,9 @@ type FirewallConfig struct {
 	SMTPAllowUsers []string `yaml:"smtp_allow_users"` // usernames allowed to send
 	SMTPPorts      []int    `yaml:"smtp_ports"`
 
+	// Dynamic DNS — resolve hostnames to IPs, update allowed set periodically
+	DynDNSHosts []string `yaml:"dyndns_hosts"`
+
 	// Logging
 	LogDropped bool `yaml:"log_dropped"`
 	LogRate    int  `yaml:"log_rate"` // log entries per minute
