@@ -217,6 +217,8 @@ func runUninstall() {
 }
 
 func runTieredChecks(tier checks.Tier, sendAlerts bool) {
+	// When not sending alerts (check mode), disable auto-response actions
+	checks.DryRun = !sendAlerts
 	cfg := loadConfig()
 
 	if err := integrity.Verify(binaryPath, cfg); err != nil {
@@ -298,8 +300,9 @@ func runBaseline() {
 	stopTimers()
 	defer startTimers()
 
-	// Force all checks to run regardless of throttle
+	// Force all checks to run regardless of throttle, but don't trigger auto-response
 	checks.ForceAll = true
+	checks.DryRun = true
 
 	lock, err := state.AcquireLock(cfg.StatePath)
 	if err != nil {

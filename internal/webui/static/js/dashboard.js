@@ -4,13 +4,13 @@
 
     var feed = document.getElementById('live-feed-entries');
     var wsStatus = document.getElementById('ws-status');
-    var token = document.body.getAttribute('data-token');
     var reconnectDelay = 1000;
     var ws;
 
     function connect() {
         var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        ws = new WebSocket(proto + '//' + location.host + '/ws/findings?token=' + encodeURIComponent(token));
+        // Cookie auth is sent automatically by the browser on same-origin WebSocket
+        ws = new WebSocket(proto + '//' + location.host + '/ws/findings');
 
         ws.onopen = function() {
             reconnectDelay = 1000;
@@ -94,7 +94,7 @@
     }
 
     // Initialize
-    if (token && feed) {
+    if (feed) {
         connect();
         setInterval(refreshStats, 30000);
     }

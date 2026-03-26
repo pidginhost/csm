@@ -271,8 +271,9 @@ func (d *Daemon) criticalScanner() {
 	}
 }
 
-// deepScanner runs reduced deep checks every 60 minutes.
-// Only checks that fanotify can't replace: WP core, RPM, nulled plugins, open_basedir, symlinks.
+// deepScanner runs deep checks every 60 minutes.
+// If fanotify is active, runs only the checks it can't replace (reduced set).
+// If fanotify is NOT active (fallback mode), runs the full deep tier for timer-mode parity.
 func (d *Daemon) deepScanner() {
 	defer d.wg.Done()
 
@@ -289,8 +290,14 @@ func (d *Daemon) deepScanner() {
 				_ = db.UpdateFeeds()
 			}
 
-			// Only run the checks fanotify can't replace
-			findings := checks.RunReducedDeep(d.cfg, d.store)
+			// If fanotify is active, only run checks it can't replace.
+			// If fanotify is NOT active, run the full deep tier.
+			var findings []alert.Finding
+			if d.fileMonitor != nil {
+				findings = checks.RunReducedDeep(d.cfg, d.store)
+			} else {
+				findings = checks.RunTier(d.cfg, d.store, checks.TierDeep)
+			}
 			if len(findings) > 0 {
 				for _, f := range findings {
 					d.alertCh <- f

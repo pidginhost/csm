@@ -15,9 +15,11 @@ import (
 )
 
 // ScanAccount restricts filesystem-based checks to a single account.
-// When set (non-empty), checks that iterate /home/* will only scan this account.
-// Must be reset to "" after the scan completes.
-var ScanAccount string
+// Protected by scanMu — concurrent scans are serialized to prevent scope bleed.
+var (
+	ScanAccount string
+	scanMu      sync.Mutex
+)
 
 // RunAccountScan runs all applicable checks scoped to a single cPanel account.
 // Returns findings for that account only. Does NOT trigger auto-response actions.
@@ -33,9 +35,13 @@ func RunAccountScan(cfg *config.Config, store *state.Store, account string) []al
 		}}
 	}
 
-	// Set the global account filter — checks will read this
+	// Acquire scan lock — only one account scan at a time to prevent scope bleed
+	scanMu.Lock()
 	ScanAccount = account
-	defer func() { ScanAccount = "" }()
+	defer func() {
+		ScanAccount = ""
+		scanMu.Unlock()
+	}()
 
 	// Account-scoped checks (filesystem + account-specific)
 	accountChecks := []namedCheck{

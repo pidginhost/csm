@@ -63,6 +63,10 @@ tr:hover { background: rgba(88,166,255,0.04); }
 .live-feed .entry .time { color: var(--text-muted); white-space: nowrap; font-family: monospace; font-size: 0.8rem; }
 .live-feed .entry .msg { flex: 1; word-break: break-word; }
 .empty-state { padding: 2rem; text-align: center; color: var(--text-muted); }
+.details { display: none; }
+.details.show { display: block; }
+.details-row td { border-top: none !important; }
+tr[style*="cursor:pointer"]:hover { background: rgba(88,166,255,0.06); }
 
 /* Login */
 .login-box { max-width: 400px; margin: 5rem auto; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 2rem; }

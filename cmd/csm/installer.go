@@ -354,10 +354,28 @@ WantedBy=timers.target
 		}
 	}
 
+	// Deploy daemon service unit (recommended mode)
+	daemonService := fmt.Sprintf(`[Unit]
+Description=CSM — cPanel Security Monitor Daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%s daemon
+Restart=always
+RestartSec=10
+WatchdogSec=300
+
+[Install]
+WantedBy=multi-user.target
+`, "/opt/csm/csm")
+	if err := os.WriteFile("/etc/systemd/system/csm.service", []byte(daemonService), 0644); err != nil {
+		return err
+	}
+
 	// Remove old single timer if it exists
 	exec.Command("systemctl", "stop", "csm.timer").Run()
 	exec.Command("systemctl", "disable", "csm.timer").Run()
-	os.Remove("/etc/systemd/system/csm.service")
 	os.Remove("/etc/systemd/system/csm.timer")
 
 	if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {

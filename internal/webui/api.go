@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -153,6 +154,52 @@ func (s *Server) apiStats(w http.ResponseWriter, _ *http.Request) {
 		"by_check": byCheck,
 	}
 	writeJSON(w, result)
+}
+
+// apiHealth returns daemon health status.
+func (s *Server) apiHealth(w http.ResponseWriter, _ *http.Request) {
+	health := map[string]interface{}{
+		"daemon_mode":    true,
+		"uptime":         time.Since(s.startTime).String(),
+		"uptime_seconds": int(time.Since(s.startTime).Seconds()),
+		"ws_clients":     s.hub.ClientCount(),
+		"rules_loaded":   s.sigCount,
+		"fanotify":       s.fanotifyActive,
+		"log_watchers":   s.logWatcherCount,
+	}
+	writeJSON(w, health)
+}
+
+// apiHistoryCSV exports history as CSV download.
+func (s *Server) apiHistoryCSV(w http.ResponseWriter, _ *http.Request) {
+	findings, _ := s.store.ReadHistory(5000, 0)
+
+	w.Header().Set("Content-Type", "text/csv")
+	w.Header().Set("Content-Disposition", "attachment; filename=csm-history.csv")
+
+	// CSV header
+	fmt.Fprintf(w, "Timestamp,Severity,Check,Message,Details\n")
+	for _, f := range findings {
+		sev := "WARNING"
+		switch f.Severity {
+		case alert.Critical:
+			sev = "CRITICAL"
+		case alert.High:
+			sev = "HIGH"
+		}
+		// Escape CSV fields
+		msg := csvEscape(f.Message)
+		details := csvEscape(f.Details)
+		fmt.Fprintf(w, "%s,%s,%s,%s,%s\n",
+			f.Timestamp.Format(time.RFC3339), sev, f.Check, msg, details)
+	}
+}
+
+func csvEscape(s string) string {
+	if strings.ContainsAny(s, ",\"\n\r") {
+		return "\"" + strings.ReplaceAll(s, "\"", "\"\"") + "\""
+	}
+	return s
 }
 
 // --- Action endpoints ---
