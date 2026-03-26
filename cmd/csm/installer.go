@@ -210,6 +210,76 @@ auto_response:
   block_expiry: "24h"         # how long IPs stay blocked
   block_cpanel_logins: false  # block IPs on cPanel/webmail login alerts (enable after portal-only login)
 
+firewall:
+  enabled: false              # enable to activate nftables firewall (replaces CSF)
+  tcp_in:
+    - 20
+    - 21
+    - 25
+    - 26
+    - 53
+    - 80
+    - 110
+    - 143
+    - 443
+    - 465
+    - 587
+    - 993
+    - 995
+    - 2077
+    - 2078
+    - 2079
+    - 2080
+    - 2082
+    - 2083
+    - 2091
+    - 2095
+    - 2096
+  tcp_out:
+    - 20
+    - 21
+    - 25
+    - 26
+    - 37
+    - 43
+    - 53
+    - 80
+    - 110
+    - 113
+    - 443
+    - 465
+    - 587
+    - 873
+    - 993
+    - 995
+    - 2082
+    - 2083
+    - 2086
+    - 2087
+    - 2089
+    - 2195
+    - 2325
+    - 2703
+  udp_in:
+    - 53
+    - 443
+  udp_out:
+    - 53
+    - 113
+    - 123
+    - 443
+    - 873
+  restricted_tcp:               # ports only accessible from infra_ips
+    - 2086
+    - 2087
+    - 2325
+  passive_ftp_start: 49152
+  passive_ftp_end: 65534
+  conn_rate_limit: 30           # per-IP new connections per minute
+  syn_flood_protection: true
+  log_dropped: true
+  log_rate: 5                   # dropped packet log entries per minute
+
 c2_blocklist:
   - "152.53.173.29"
 

@@ -69,6 +69,18 @@ func CleanInfectedFile(path string) CleanResult {
 	content, removed = removeInlineEvalInjections(content)
 	removals = append(removals, removed...)
 
+	// Strategy 5: Remove multi-layer base64 decode chains
+	content, removed = removeMultiLayerBase64(content)
+	removals = append(removals, removed...)
+
+	// Strategy 6: Remove chr()/pack() constructed code
+	content, removed = removeChrPackInjections(content)
+	removals = append(removals, removed...)
+
+	// Strategy 7: Remove hex-encoded variable injections
+	content, removed = removeHexVarInjections(content)
+	removals = append(removals, removed...)
+
 	// If nothing was removed, file couldn't be cleaned
 	if len(removals) == 0 || len(content) == originalLen {
 		result.Error = "no known injection patterns found — file may need manual review"
@@ -364,4 +376,106 @@ func FormatCleanResult(r CleanResult) string {
 		fmt.Fprintf(&b, "  - %s\n", removal)
 	}
 	return b.String()
+}
+
+// --- Strategy 5: Multi-layer base64 decode chains ---
+// Catches: eval(base64_decode(base64_decode("...")))
+// Catches: $x=base64_decode("...");$y=base64_decode($x);eval($y);
+func removeMultiLayerBase64(content string) (string, []string) {
+	var removals []string
+	lines := strings.Split(content, "\n")
+	var clean []string
+
+	// Multi-layer base64: 2+ nested base64_decode calls on one line
+	multiB64 := regexp.MustCompile(`(?i)(?:base64_decode\s*\(\s*){2,}`)
+	// Chained base64 across variables: $x = base64_decode(...); eval($x);
+	chainedB64 := regexp.MustCompile(`(?i)\$\w+\s*=\s*base64_decode\s*\(\s*base64_decode`)
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if len(trimmed) < 80 {
+			clean = append(clean, line)
+			continue
+		}
+		if multiB64.MatchString(trimmed) || chainedB64.MatchString(trimmed) {
+			removals = append(removals, fmt.Sprintf("removed multi-layer base64 chain (%d chars)", len(trimmed)))
+			continue
+		}
+		clean = append(clean, line)
+	}
+
+	return strings.Join(clean, "\n"), removals
+}
+
+// --- Strategy 6: chr()/pack() constructed code ---
+// Catches: eval(chr(115).chr(121).chr(115)...);
+// Catches: $f = pack("H*", "73797374656d"); $f($_POST['cmd']);
+func removeChrPackInjections(content string) (string, []string) {
+	var removals []string
+	lines := strings.Split(content, "\n")
+	var clean []string
+
+	// 5+ chr() calls concatenated — building function names from char codes
+	chrChain := regexp.MustCompile(`(?i)(?:chr\s*\(\s*\d+\s*\)\s*\.?\s*){5,}`)
+	// pack("H*", ...) — hex string to function name construction
+	packHex := regexp.MustCompile(`(?i)pack\s*\(\s*["']H\*["']\s*,`)
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		if chrChain.MatchString(trimmed) {
+			removals = append(removals, fmt.Sprintf("removed chr() chain injection (line %d, %d chars)", i+1, len(trimmed)))
+			continue
+		}
+
+		if packHex.MatchString(trimmed) {
+			lower := strings.ToLower(trimmed)
+			// Only remove if combined with execution
+			if strings.Contains(lower, "eval") || strings.Contains(lower, "$_") ||
+				strings.Contains(lower, "system") || strings.Contains(lower, "exec") {
+				removals = append(removals, fmt.Sprintf("removed pack() code construction (line %d)", i+1))
+				continue
+			}
+		}
+
+		clean = append(clean, line)
+	}
+
+	return strings.Join(clean, "\n"), removals
+}
+
+// --- Strategy 7: Hex-encoded variable injections ---
+// Catches: $GLOBALS["\x61\x64\x6d\x69\x6e"] = eval(...)
+// Catches: ${"\x47\x4c\x4f\x42\x41\x4c\x53"}[...] = ...
+func removeHexVarInjections(content string) (string, []string) {
+	var removals []string
+	lines := strings.Split(content, "\n")
+	var clean []string
+
+	// Variable names built from hex: $GLOBALS["\x41\x42\x43"]
+	hexVar := regexp.MustCompile(`(?:"\x5c\x78[0-9a-fA-F]{2}){3,}|(?:\\x[0-9a-fA-F]{2}){3,}`)
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if len(trimmed) < 30 {
+			clean = append(clean, line)
+			continue
+		}
+
+		if hexVar.MatchString(trimmed) {
+			lower := strings.ToLower(trimmed)
+			// Only remove if combined with dangerous operations
+			if strings.Contains(lower, "eval") || strings.Contains(lower, "system(") ||
+				strings.Contains(lower, "exec(") || strings.Contains(lower, "base64_decode") ||
+				strings.Contains(lower, "assert(") || strings.Contains(lower, "$_post") ||
+				strings.Contains(lower, "$_request") || strings.Contains(lower, "$_get") {
+				removals = append(removals, fmt.Sprintf("removed hex-encoded variable injection (line %d, %d chars)", i+1, len(trimmed)))
+				continue
+			}
+		}
+
+		clean = append(clean, line)
+	}
+
+	return strings.Join(clean, "\n"), removals
 }

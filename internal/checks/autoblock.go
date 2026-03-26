@@ -18,6 +18,20 @@ const (
 	blockStateFile     = "blocked_ips.json"
 )
 
+// IPBlocker abstracts the firewall engine for auto-blocking.
+// When set, blocks go through nftables instead of CSF.
+type IPBlocker interface {
+	BlockIP(ip string, reason string, timeout time.Duration) error
+	UnblockIP(ip string) error
+}
+
+var fwBlocker IPBlocker
+
+// SetIPBlocker sets the firewall engine for auto-blocking.
+func SetIPBlocker(b IPBlocker) {
+	fwBlocker = b
+}
+
 type blockedIP struct {
 	IP        string    `json:"ip"`
 	Reason    string    `json:"reason"`
@@ -120,11 +134,18 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			break
 		}
 
-		// Block via CSF
-		csfReason := fmt.Sprintf("CSM auto-block: %s", truncate(reason, 100))
-		out, err := runCmd("csf", "-d", ip, csfReason)
-		if err != nil && out == nil {
-			continue
+		// Block via firewall engine (nftables) or CSF fallback
+		blockReason := fmt.Sprintf("CSM auto-block: %s", truncate(reason, 100))
+		if fwBlocker != nil {
+			if err := fwBlocker.BlockIP(ip, blockReason, expiry); err != nil {
+				fmt.Fprintf(os.Stderr, "auto-block: error blocking %s: %v\n", ip, err)
+				continue
+			}
+		} else {
+			out, err := runCmd("csf", "-d", ip, blockReason)
+			if err != nil && out == nil {
+				continue
+			}
 		}
 
 		state.BlocksThisHour++
@@ -144,7 +165,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		actions = append(actions, alert.Finding{
 			Severity:  alert.Critical,
 			Check:     "auto_block",
-			Message:   fmt.Sprintf("AUTO-BLOCK: %s blocked in CSF (expires in %s)", ip, expiry),
+			Message:   fmt.Sprintf("AUTO-BLOCK: %s blocked (expires in %s)", ip, expiry),
 			Details:   fmt.Sprintf("Reason: %s", reason),
 			Timestamp: time.Now(),
 		})
@@ -154,12 +175,16 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	var activeIPs []blockedIP
 	for _, blocked := range state.IPs {
 		if time.Now().After(blocked.ExpiresAt) {
-			// Unblock
-			_, _ = runCmd("csf", "-dr", blocked.IP)
+			// Unblock via firewall engine or CSF fallback
+			if fwBlocker != nil {
+				_ = fwBlocker.UnblockIP(blocked.IP)
+			} else {
+				_, _ = runCmd("csf", "-dr", blocked.IP)
+			}
 			actions = append(actions, alert.Finding{
 				Severity:  alert.Warning,
 				Check:     "auto_block",
-				Message:   fmt.Sprintf("AUTO-UNBLOCK: %s removed from CSF (expired)", blocked.IP),
+				Message:   fmt.Sprintf("AUTO-UNBLOCK: %s removed (expired)", blocked.IP),
 				Timestamp: time.Now(),
 			})
 		} else {

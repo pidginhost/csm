@@ -17,7 +17,7 @@ import (
 func CheckPHPConfigChanges(_ *config.Config, store *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	homeDirs, _ := os.ReadDir("/home")
+	homeDirs, _ := GetScanHomeDirs()
 	for _, homeEntry := range homeDirs {
 		if !homeEntry.IsDir() {
 			continue

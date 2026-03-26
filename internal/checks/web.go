@@ -66,7 +66,7 @@ func CheckHtaccess(cfg *config.Config, _ *state.Store) []alert.Finding {
 	}
 
 	// Scan each user's document roots
-	homeDirs, _ := os.ReadDir("/home")
+	homeDirs, _ := GetScanHomeDirs()
 	for _, homeEntry := range homeDirs {
 		if !homeEntry.IsDir() {
 			continue

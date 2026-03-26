@@ -13,6 +13,7 @@ import (
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
 	"github.com/pidginhost/cpanel-security-monitor/internal/checks"
 	"github.com/pidginhost/cpanel-security-monitor/internal/config"
+	"github.com/pidginhost/cpanel-security-monitor/internal/firewall"
 	"github.com/pidginhost/cpanel-security-monitor/internal/integrity"
 	"github.com/pidginhost/cpanel-security-monitor/internal/signatures"
 	"github.com/pidginhost/cpanel-security-monitor/internal/state"
@@ -32,6 +33,7 @@ type Daemon struct {
 	hijackDetector *PasswordHijackDetector
 	pamListener    *PAMListener
 	webServer      *webui.Server
+	fwEngine       *firewall.Engine
 	alertCh        chan alert.Finding
 	stopCh         chan struct{}
 	wg             sync.WaitGroup
@@ -86,6 +88,9 @@ func (d *Daemon) Run() error {
 	if db := checks.GetThreatDB(); db != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Threat DB initialized (%d entries)\n", ts(), db.Count())
 	}
+
+	// Start firewall engine if enabled
+	d.startFirewall()
 
 	// Create password hijack detector
 	d.hijackDetector = NewPasswordHijackDetector(d.cfg, d.alertCh)
@@ -384,6 +389,9 @@ func (d *Daemon) startWebUI() {
 	}
 
 	d.webServer = srv
+	if d.fwEngine != nil {
+		srv.SetIPBlocker(d.fwEngine)
+	}
 	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
@@ -421,6 +429,37 @@ func (d *Daemon) startFileMonitor() {
 		fm.Run(d.stopCh)
 	}()
 	fmt.Fprintf(os.Stderr, "[%s] fanotify file monitor active on /home, /tmp, /dev/shm\n", ts())
+}
+
+func (d *Daemon) startFirewall() {
+	if !d.cfg.Firewall.Enabled {
+		return
+	}
+
+	// Ensure firewall uses main config's infra IPs if its own list is empty
+	if len(d.cfg.Firewall.InfraIPs) == 0 {
+		d.cfg.Firewall.InfraIPs = d.cfg.InfraIPs
+	}
+
+	engine, err := firewall.NewEngine(d.cfg.Firewall, d.cfg.StatePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] Firewall engine init error: %v\n", ts(), err)
+		return
+	}
+
+	if err := engine.Apply(); err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] Firewall apply error: %v\n", ts(), err)
+		return
+	}
+
+	d.fwEngine = engine
+
+	// Set firewall engine for auto-blocking
+	checks.SetIPBlocker(engine)
+
+	fwState, _ := firewall.LoadState(d.cfg.StatePath)
+	fmt.Fprintf(os.Stderr, "[%s] Firewall active: %d blocked, %d allowed IPs\n",
+		ts(), len(fwState.Blocked), len(fwState.Allowed))
 }
 
 func notifyWatchdog() {

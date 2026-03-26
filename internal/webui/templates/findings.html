@@ -21,6 +21,21 @@
     </header>
     <main>
         <div class="container">
+            <div class="card" style="margin-bottom:1.5rem;padding:1rem">
+                <h3 style="margin-bottom:0.75rem">Scan Account</h3>
+                <form id="scan-form" style="display:flex;gap:0.5rem;align-items:center">
+                    <input type="text" id="scan-account" placeholder="cPanel username" style="flex:1;padding:0.5rem;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:monospace">
+                    <button type="submit" id="scan-btn" style="padding:0.5rem 1rem;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;white-space:nowrap">Scan Account</button>
+                </form>
+                <div id="scan-status" style="margin-top:0.5rem;font-size:0.85rem"></div>
+                <div id="scan-results" style="margin-top:0.75rem;display:none">
+                    <table id="scan-table">
+                        <thead><tr><th>Severity</th><th>Check</th><th>Message</th></tr></thead>
+                        <tbody id="scan-tbody"></tbody>
+                    </table>
+                </div>
+            </div>
+
             <h2 style="margin-bottom:1rem">Active Findings ({{len .Entries}})</h2>
             {{if .Entries}}
             <table>
@@ -65,5 +80,62 @@
     <footer>
         <div class="container">CSM — cPanel Security Monitor | {{.Hostname}}</div>
     </footer>
+    <script>
+    document.getElementById('scan-form').addEventListener('submit', function(e) {
+        e.preventDefault();
+        var account = document.getElementById('scan-account').value.trim();
+        if (!account) return;
+        var btn = document.getElementById('scan-btn');
+        var status = document.getElementById('scan-status');
+        var results = document.getElementById('scan-results');
+        var tbody = document.getElementById('scan-tbody');
+
+        btn.disabled = true;
+        btn.textContent = 'Scanning...';
+        status.textContent = 'Scanning ' + account + '...';
+        status.style.color = 'var(--text-muted)';
+        results.style.display = 'none';
+        tbody.innerHTML = '';
+
+        fetch('/api/v1/scan-account', {
+            method: 'POST', credentials: 'same-origin',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({account: account})
+        }).then(function(r){return r.json()}).then(function(data) {
+            btn.disabled = false;
+            btn.textContent = 'Scan Account';
+            if (data.error) {
+                status.textContent = 'Error: ' + data.error;
+                status.style.color = 'var(--critical)';
+                return;
+            }
+            var count = data.count || 0;
+            var elapsed = data.elapsed || '';
+            if (count === 0) {
+                status.textContent = 'Account ' + account + ' is clean. Scanned in ' + elapsed;
+                status.style.color = 'var(--success)';
+                return;
+            }
+            status.textContent = count + ' finding(s) for ' + account + ' (scanned in ' + elapsed + ')';
+            status.style.color = 'var(--critical)';
+            results.style.display = 'block';
+            var findings = data.findings || [];
+            for (var i = 0; i < findings.length; i++) {
+                var f = findings[i];
+                var sev = f.severity === 2 ? 'critical' : f.severity === 1 ? 'high' : 'warning';
+                var sevLabel = f.severity === 2 ? 'CRITICAL' : f.severity === 1 ? 'HIGH' : 'WARNING';
+                var tr = document.createElement('tr');
+                tr.innerHTML = '<td><span class="badge ' + sev + '">' + sevLabel + '</span></td><td class="mono">' + esc(f.check) + '</td><td>' + esc(f.message) + '</td>';
+                tbody.appendChild(tr);
+            }
+        }).catch(function(err) {
+            btn.disabled = false;
+            btn.textContent = 'Scan Account';
+            status.textContent = 'Error: ' + err;
+            status.style.color = 'var(--critical)';
+        });
+    });
+    function esc(s){var d=document.createElement('div');d.appendChild(document.createTextNode(s||''));return d.innerHTML;}
+    </script>
 </body>
 </html>

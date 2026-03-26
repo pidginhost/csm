@@ -72,6 +72,55 @@ func NewEngine(cfg *FirewallConfig, statePath string) (*Engine, error) {
 	return e, nil
 }
 
+// ConnectExisting connects to an already-running CSM firewall.
+// Used by CLI commands to modify the live ruleset without reapplying all rules.
+func ConnectExisting(cfg *FirewallConfig, statePath string) (*Engine, error) {
+	conn, err := nftables.New()
+	if err != nil {
+		return nil, fmt.Errorf("nftables connection: %w", err)
+	}
+
+	// Find existing CSM table
+	tables, err := conn.ListTables()
+	if err != nil {
+		return nil, fmt.Errorf("listing tables: %w", err)
+	}
+
+	var table *nftables.Table
+	for _, t := range tables {
+		if t.Name == "csm" && t.Family == nftables.TableFamilyINet {
+			table = t
+			break
+		}
+	}
+	if table == nil {
+		return nil, fmt.Errorf("CSM firewall not running (table 'csm' not found) — run 'csm firewall restart' first")
+	}
+
+	setBlocked, err := conn.GetSetByName(table, "blocked_ips")
+	if err != nil {
+		return nil, fmt.Errorf("blocked_ips set not found: %w", err)
+	}
+	setAllowed, err := conn.GetSetByName(table, "allowed_ips")
+	if err != nil {
+		return nil, fmt.Errorf("allowed_ips set not found: %w", err)
+	}
+	setInfra, err := conn.GetSetByName(table, "infra_ips")
+	if err != nil {
+		return nil, fmt.Errorf("infra_ips set not found: %w", err)
+	}
+
+	return &Engine{
+		conn:       conn,
+		cfg:        cfg,
+		table:      table,
+		setBlocked: setBlocked,
+		setAllowed: setAllowed,
+		setInfra:   setInfra,
+		statePath:  filepath.Join(statePath, "firewall"),
+	}, nil
+}
+
 // Apply builds and atomically applies the complete nftables ruleset.
 // If the new ruleset fails to apply, logs the error but doesn't leave
 // the server without a firewall (nftables keeps the old ruleset on failure).
@@ -257,8 +306,17 @@ func (e *Engine) createInputChain() error {
 		},
 	})
 
-	// Rule 7: Open TCP ports (public)
+	// Build restricted port set — these are only reachable via infra IPs (rule 4)
+	restricted := make(map[int]bool)
+	for _, p := range e.cfg.RestrictedTCP {
+		restricted[p] = true
+	}
+
+	// Rule 7: Open TCP ports (public) — restricted ports excluded
 	for _, port := range e.cfg.TCPIn {
+		if restricted[port] {
+			continue // only reachable via infra IPs (rule 4)
+		}
 		e.addPortAcceptRule(port, true)
 	}
 
@@ -569,6 +627,23 @@ func (e *Engine) RemoveAllowIP(ip string) error {
 	}
 
 	e.removeAllowedState(ip)
+	return nil
+}
+
+// FlushBlocked removes all IPs from the blocked set and clears persisted state.
+func (e *Engine) FlushBlocked() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	e.conn.FlushSet(e.setBlocked)
+	if err := e.conn.Flush(); err != nil {
+		return fmt.Errorf("flushing blocked set: %w", err)
+	}
+
+	state := e.loadStateFile()
+	state.Blocked = nil
+	e.saveState(&state)
+
 	return nil
 }
 

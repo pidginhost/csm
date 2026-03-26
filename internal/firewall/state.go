@@ -1,0 +1,38 @@
+package firewall
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"time"
+)
+
+// LoadState reads the firewall state file directly without requiring a running engine.
+// Used by CLI commands that only need to display state.
+func LoadState(statePath string) (*FirewallState, error) {
+	stateFile := filepath.Join(statePath, "firewall", "state.json")
+	data, err := os.ReadFile(stateFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &FirewallState{}, nil
+		}
+		return nil, err
+	}
+
+	var state FirewallState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, err
+	}
+
+	// Clean expired entries
+	now := time.Now()
+	var active []BlockedEntry
+	for _, entry := range state.Blocked {
+		if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
+			active = append(active, entry)
+		}
+	}
+	state.Blocked = active
+
+	return &state, nil
+}

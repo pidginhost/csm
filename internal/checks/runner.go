@@ -87,6 +87,7 @@ func deepChecks() []namedCheck {
 		{"ssl_certs", CheckSSLCertIssuance},
 		{"waf_status", CheckWAFStatus},
 		{"db_content", CheckDatabaseContent},
+		{"email_content", CheckOutboundEmailContent},
 	}
 }
 

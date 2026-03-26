@@ -182,7 +182,7 @@ var embeddedAssetPatterns = []string{
 func CheckPhishing(cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	homeDirs, err := os.ReadDir("/home")
+	homeDirs, err := GetScanHomeDirs()
 	if err != nil {
 		return nil
 	}
