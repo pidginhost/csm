@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"sort"
 	"sync"
 	"time"
 )
@@ -12,7 +13,7 @@ import (
 type DynDNSResolver struct {
 	mu       sync.Mutex
 	hosts    []string
-	resolved map[string]string // hostname -> last resolved IP
+	resolved map[string][]string // hostname -> all resolved IPs
 	engine   interface {
 		AllowIP(ip string, reason string) error
 		RemoveAllowIP(ip string) error
@@ -26,14 +27,13 @@ func NewDynDNSResolver(hosts []string, engine interface {
 }) *DynDNSResolver {
 	return &DynDNSResolver{
 		hosts:    hosts,
-		resolved: make(map[string]string),
+		resolved: make(map[string][]string),
 		engine:   engine,
 	}
 }
 
 // Run starts the periodic resolver. Blocks until stopCh is closed.
 func (d *DynDNSResolver) Run(stopCh <-chan struct{}) {
-	// Resolve immediately on start
 	d.resolveAll()
 
 	ticker := time.NewTicker(5 * time.Minute)
@@ -50,38 +50,58 @@ func (d *DynDNSResolver) Run(stopCh <-chan struct{}) {
 }
 
 func (d *DynDNSResolver) resolveAll() {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
 	for _, host := range d.hosts {
-		ips, err := net.LookupHost(host)
-		if err != nil || len(ips) == 0 {
-			fmt.Fprintf(os.Stderr, "dyndns: failed to resolve %s: %v\n", host, err)
-			continue
-		}
-
-		newIP := ips[0] // use first resolved IP
-		oldIP := d.resolved[host]
-
-		if newIP == oldIP {
-			continue // no change
-		}
-
-		// Remove old IP if it was previously resolved
-		if oldIP != "" {
-			_ = d.engine.RemoveAllowIP(oldIP)
-			fmt.Fprintf(os.Stderr, "dyndns: %s changed %s -> %s\n", host, oldIP, newIP)
-		} else {
-			fmt.Fprintf(os.Stderr, "dyndns: %s resolved to %s\n", host, newIP)
-		}
-
-		// Add new IP
-		reason := fmt.Sprintf("dyndns: %s", host)
-		if err := d.engine.AllowIP(newIP, reason); err != nil {
-			fmt.Fprintf(os.Stderr, "dyndns: error allowing %s (%s): %v\n", newIP, host, err)
-			continue
-		}
-
-		d.resolved[host] = newIP
+		d.resolveHost(host)
 	}
+}
+
+func (d *DynDNSResolver) resolveHost(host string) {
+	newIPs, err := net.LookupHost(host)
+	if err != nil || len(newIPs) == 0 {
+		fmt.Fprintf(os.Stderr, "dyndns: failed to resolve %s: %v\n", host, err)
+		return
+	}
+	sort.Strings(newIPs)
+
+	d.mu.Lock()
+	oldIPs := d.resolved[host]
+	d.mu.Unlock()
+
+	oldSet := make(map[string]bool)
+	for _, ip := range oldIPs {
+		oldSet[ip] = true
+	}
+	newSet := make(map[string]bool)
+	for _, ip := range newIPs {
+		newSet[ip] = true
+	}
+
+	// Remove IPs no longer in DNS
+	for _, ip := range oldIPs {
+		if !newSet[ip] {
+			_ = d.engine.RemoveAllowIP(ip)
+			fmt.Fprintf(os.Stderr, "dyndns: %s removed %s (no longer resolves)\n", host, ip)
+		}
+	}
+
+	// Add new IPs
+	reason := fmt.Sprintf("dyndns: %s", host)
+	var successIPs []string
+	for _, ip := range newIPs {
+		if oldSet[ip] {
+			successIPs = append(successIPs, ip) // already allowed
+			continue
+		}
+		if err := d.engine.AllowIP(ip, reason); err != nil {
+			fmt.Fprintf(os.Stderr, "dyndns: error allowing %s (%s): %v\n", ip, host, err)
+			continue
+		}
+		successIPs = append(successIPs, ip)
+		fmt.Fprintf(os.Stderr, "dyndns: %s resolved to %s (added)\n", host, ip)
+	}
+
+	// Only update resolved map with successfully allowed IPs
+	d.mu.Lock()
+	d.resolved[host] = successIPs
+	d.mu.Unlock()
 }
