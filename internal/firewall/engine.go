@@ -444,23 +444,35 @@ func (e *Engine) createInputChain() error {
 	e.addSetMatchRule(e.setAllowed, expr.VerdictAccept)
 	e.addSetMatchRuleV6(e.setAllowed6, expr.VerdictAccept)
 
-	// Rule 6: ICMP echo-request only (type 8)
+	// ICMPv4 echo-request (type 8)
 	e.conn.AddRule(&nftables.Rule{
 		Table: e.table,
 		Chain: e.chainIn,
 		Exprs: []expr.Any{
 			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{1}}, // ICMP
-			&expr.Payload{
-				DestRegister: 1,
-				Base:         expr.PayloadBaseTransportHeader,
-				Offset:       0, // ICMP type field
-				Len:          1,
-			},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{1}}, // ICMPv4
+			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 0, Len: 1},
 			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{8}}, // echo-request
 			&expr.Verdict{Kind: expr.VerdictAccept},
 		},
 	})
+
+	// ICMPv6 echo-request (type 128) + neighbor discovery (types 133-137, required for IPv6)
+	if e.cfg.IPv6 {
+		for _, icmp6Type := range []byte{128, 133, 134, 135, 136, 137} {
+			e.conn.AddRule(&nftables.Rule{
+				Table: e.table,
+				Chain: e.chainIn,
+				Exprs: []expr.Any{
+					&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{58}}, // ICMPv6
+					&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 0, Len: 1},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{icmp6Type}},
+					&expr.Verdict{Kind: expr.VerdictAccept},
+				},
+			})
+		}
+	}
 
 	// Rule 7: SYN flood protection — rate limit initial SYN packets
 	if e.cfg.SYNFloodProtection {
@@ -1041,6 +1053,9 @@ func (e *Engine) FlushBlocked() error {
 	defer e.mu.Unlock()
 
 	e.conn.FlushSet(e.setBlocked)
+	if e.setBlocked6 != nil {
+		e.conn.FlushSet(e.setBlocked6)
+	}
 	if err := e.conn.Flush(); err != nil {
 		return fmt.Errorf("flushing blocked set: %w", err)
 	}
@@ -1054,7 +1069,7 @@ func (e *Engine) FlushBlocked() error {
 	return nil
 }
 
-// BlockSubnet adds a CIDR range to the blocked subnets set.
+// BlockSubnet adds a CIDR range to the blocked subnets set (IPv4 or IPv6).
 func (e *Engine) BlockSubnet(cidr string, reason string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -1063,17 +1078,17 @@ func (e *Engine) BlockSubnet(cidr string, reason string) error {
 	if err != nil {
 		return fmt.Errorf("invalid CIDR: %s", cidr)
 	}
-	start := network.IP.To4()
-	end := lastIPInRange(network)
-	if start == nil || end == nil {
-		return fmt.Errorf("IPv6 not yet supported: %s", cidr)
+
+	targetSet, start, end := e.resolveSubnetSet(network)
+	if targetSet == nil {
+		return fmt.Errorf("no matching set for %s (IPv6 disabled?)", cidr)
 	}
 
 	elements := []nftables.SetElement{
 		{Key: start},
 		{Key: nextIP(end), IntervalEnd: true},
 	}
-	if err := e.conn.SetAddElements(e.setBlockedNet, elements); err != nil {
+	if err := e.conn.SetAddElements(targetSet, elements); err != nil {
 		return fmt.Errorf("adding to blocked_nets: %w", err)
 	}
 	if err := e.conn.Flush(); err != nil {
@@ -1085,7 +1100,7 @@ func (e *Engine) BlockSubnet(cidr string, reason string) error {
 	return nil
 }
 
-// UnblockSubnet removes a CIDR range from the blocked subnets set.
+// UnblockSubnet removes a CIDR range from the blocked subnets set (IPv4 or IPv6).
 func (e *Engine) UnblockSubnet(cidr string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -1094,17 +1109,17 @@ func (e *Engine) UnblockSubnet(cidr string) error {
 	if err != nil {
 		return fmt.Errorf("invalid CIDR: %s", cidr)
 	}
-	start := network.IP.To4()
-	end := lastIPInRange(network)
-	if start == nil || end == nil {
-		return fmt.Errorf("IPv6 not yet supported: %s", cidr)
+
+	targetSet, start, end := e.resolveSubnetSet(network)
+	if targetSet == nil {
+		return fmt.Errorf("no matching set for %s (IPv6 disabled?)", cidr)
 	}
 
 	elements := []nftables.SetElement{
 		{Key: start},
 		{Key: nextIP(end), IntervalEnd: true},
 	}
-	if err := e.conn.SetDeleteElements(e.setBlockedNet, elements); err != nil {
+	if err := e.conn.SetDeleteElements(targetSet, elements); err != nil {
 		return fmt.Errorf("removing from blocked_nets: %w", err)
 	}
 	if err := e.conn.Flush(); err != nil {
@@ -1114,6 +1129,18 @@ func (e *Engine) UnblockSubnet(cidr string) error {
 	e.removeSubnetState(network.String())
 	AppendAudit(e.statePath, "unblock_subnet", network.String(), "", 0)
 	return nil
+}
+
+// resolveSubnetSet returns the correct blocked_nets set and start/end keys for a CIDR.
+func (e *Engine) resolveSubnetSet(network *net.IPNet) (*nftables.Set, net.IP, net.IP) {
+	end := lastIPInRange(network)
+	if start := network.IP.To4(); start != nil {
+		return e.setBlockedNet, start, end
+	}
+	if e.setBlockedNet6 != nil {
+		return e.setBlockedNet6, network.IP.To16(), end
+	}
+	return nil, nil, nil
 }
 
 // Status returns current firewall statistics.
