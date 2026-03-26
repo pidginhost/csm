@@ -2,6 +2,7 @@ package checks
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -22,9 +23,9 @@ type CleanResult struct {
 // while preserving the legitimate content. Always creates a backup first.
 //
 // Cleaning strategies (tried in order):
-// 1. WP core file — restore from wp core download if checksum mismatch
-// 2. @include injection — remove @include lines pointing to /tmp, eval, base64
-// 3. Prepend/append injection — remove malicious code blocks at start/end of file
+// 1. @include injection — remove @include lines pointing to /tmp, eval, base64, or via variables
+// 2. Prepend injection — remove malicious code blocks at start of file (entropy-validated)
+// 3. Append injection — remove malicious code after closing ?> or end of PSR-12 file
 // 4. Inline eval injection — remove eval(base64_decode(...)) single-line injections
 func CleanInfectedFile(path string) CleanResult {
 	result := CleanResult{Path: path}
@@ -52,15 +53,15 @@ func CleanInfectedFile(path string) CleanResult {
 	originalLen := len(content)
 	var removals []string
 
-	// Strategy 1: Remove @include injections
+	// Strategy 1: Remove @include injections (including variable-based)
 	content, removed := removeIncludeInjections(content)
 	removals = append(removals, removed...)
 
-	// Strategy 2: Remove prepend injections (malicious code before <?php)
+	// Strategy 2: Remove prepend injections (with entropy validation)
 	content, removed = removePrependInjection(content)
 	removals = append(removals, removed...)
 
-	// Strategy 3: Remove append injections (malicious code after closing ?>)
+	// Strategy 3: Remove append injections (handles files with and without closing ?>)
 	content, removed = removeAppendInjection(content)
 	removals = append(removals, removed...)
 
@@ -90,14 +91,39 @@ func CleanInfectedFile(path string) CleanResult {
 	return result
 }
 
+// ShouldCleanInsteadOfQuarantine returns true if the file should be cleaned
+// (surgical removal) instead of quarantined (full removal).
+// WP core files and plugin files are better cleaned — removing them breaks the site.
+// Unknown standalone files (droppers, webshells) should be quarantined.
+func ShouldCleanInsteadOfQuarantine(path string) bool {
+	// WP core files — always clean, never quarantine
+	if strings.Contains(path, "/wp-includes/") || strings.Contains(path, "/wp-admin/") {
+		return true
+	}
+	// Plugin/theme main files — clean to preserve functionality
+	if strings.Contains(path, "/wp-content/plugins/") || strings.Contains(path, "/wp-content/themes/") {
+		// But not if the file itself is the malware (h4x0r.php inside a theme)
+		name := strings.ToLower(filepath.Base(path))
+		if isWebshellName(name) {
+			return false // quarantine this — it's a standalone webshell
+		}
+		return true
+	}
+	// Everything else — quarantine
+	return false
+}
+
 // removeIncludeInjections removes @include lines that load malicious files.
-// Pattern: @include("/tmp/...") or @include(base64_decode("..."))
+// Catches:
+// - @include("/tmp/...") — literal paths to temp dirs
+// - @include(base64_decode("...")) — encoded includes
+// - @include($var) where $var is built from obfuscated strings nearby
 func removeIncludeInjections(content string) (string, []string) {
 	var removals []string
 	lines := strings.Split(content, "\n")
 	var clean []string
 
-	// Patterns for malicious @include
+	// Pattern 1: @include with literal malicious paths or encoding functions
 	maliciousInclude := regexp.MustCompile(
 		`(?i)^\s*@include\s*\(\s*(?:` +
 			`['"](?:/tmp/|/dev/shm/|/var/tmp/)` + // include from temp dirs
@@ -106,88 +132,147 @@ func removeIncludeInjections(content string) (string, []string) {
 			`|gzinflate\s*\(` + // include with gzip
 			`)`)
 
-	for _, line := range lines {
+	// Pattern 2: @include($variable) — suspicious variable-based include
+	// Only flag if the variable is defined nearby with concatenation/obfuscation
+	varInclude := regexp.MustCompile(`(?i)^\s*@include\s*\(\s*\$[a-zA-Z_]+\s*\)`)
+
+	for i, line := range lines {
 		if maliciousInclude.MatchString(line) {
 			removals = append(removals, fmt.Sprintf("removed @include injection: %s", strings.TrimSpace(line)))
-		} else {
-			clean = append(clean, line)
+			continue
 		}
+
+		// Variable-based @include — check surrounding context for obfuscation
+		if varInclude.MatchString(line) {
+			context := getLineContext(lines, i, 3)
+			contextLower := strings.ToLower(context)
+			isObfuscated := strings.Contains(contextLower, "base64_decode") ||
+				strings.Contains(contextLower, "str_rot13") ||
+				strings.Contains(contextLower, "chr(") ||
+				strings.Contains(contextLower, `"\x`) ||
+				strings.Count(contextLower, ". ") > 5 // heavy string concatenation
+			if isObfuscated {
+				removals = append(removals, fmt.Sprintf("removed obfuscated @include: %s", strings.TrimSpace(line)))
+				continue
+			}
+		}
+
+		clean = append(clean, line)
 	}
 
 	return strings.Join(clean, "\n"), removals
 }
 
 // removePrependInjection removes malicious PHP code injected before the
-// legitimate file content. Common pattern: eval(base64_decode("...")) or
-// long obfuscated block before the first legitimate <?php tag.
+// legitimate file content. Uses entropy analysis to verify the prefix
+// is actually obfuscated (not legitimate minified code).
 func removePrependInjection(content string) (string, []string) {
 	var removals []string
 
-	// Pattern: file starts with <?php followed by eval/base64 on the same or next line,
-	// then has a second <?php that starts the real content
-	if !strings.HasPrefix(strings.TrimSpace(content), "<?php") {
+	trimmed := strings.TrimSpace(content)
+	if !strings.HasPrefix(trimmed, "<?php") {
 		return content, nil
 	}
 
-	// Find if there's a malicious block at the start followed by a closing ?> and new <?php
-	// Common: <?php eval(base64_decode("...")); ?><?php (real content)
+	// Find if there's a malicious block at the start followed by ?><?php
 	closeOpen := regexp.MustCompile(`\?>\s*<\?php`)
 	loc := closeOpen.FindStringIndex(content)
 	if loc == nil {
 		return content, nil
 	}
 
-	prefix := strings.ToLower(content[:loc[0]])
-	// Check if the prefix contains malicious patterns
-	isMalicious := strings.Contains(prefix, "eval(") ||
-		strings.Contains(prefix, "base64_decode") ||
-		strings.Contains(prefix, "gzinflate") ||
-		strings.Contains(prefix, "str_rot13") ||
-		strings.Contains(prefix, "@include")
+	prefix := content[:loc[0]]
+	prefixLower := strings.ToLower(prefix)
 
-	if !isMalicious {
+	// Check if the prefix contains malicious patterns
+	hasMaliciousPatterns := strings.Contains(prefixLower, "eval(") ||
+		strings.Contains(prefixLower, "base64_decode") ||
+		strings.Contains(prefixLower, "gzinflate") ||
+		strings.Contains(prefixLower, "str_rot13") ||
+		strings.Contains(prefixLower, "@include")
+
+	if !hasMaliciousPatterns {
+		return content, nil
+	}
+
+	// Additional safety: verify the prefix has high entropy (obfuscated code)
+	// or contains long encoded strings. This prevents false positives on
+	// legitimate minified PHP that happens to use ?><?php patterns.
+	entropy := shannonEntropy(prefix)
+	hasLongStrings := containsLongEncodedString(prefix, 100)
+
+	if entropy < 4.5 && !hasLongStrings {
+		// Low entropy and no long encoded strings — likely legitimate code
 		return content, nil
 	}
 
 	// Remove everything before the second <?php
 	cleaned := "<?php" + content[loc[1]:]
-	removals = append(removals, fmt.Sprintf("removed %d-byte prepend injection", loc[1]))
+	removals = append(removals, fmt.Sprintf("removed %d-byte prepend injection (entropy: %.2f)", loc[1], entropy))
 
 	return cleaned, removals
 }
 
-// removeAppendInjection removes malicious code appended after a closing ?> tag.
+// removeAppendInjection removes malicious code appended after the end of
+// legitimate PHP content. Handles both files with closing ?> and files
+// without (PSR-12 style).
 func removeAppendInjection(content string) (string, []string) {
 	var removals []string
 
-	// Find the last ?> followed by <?php with malicious content
+	// Case 1: File has closing ?> with malicious code after it
 	lastClose := strings.LastIndex(content, "?>")
-	if lastClose < 0 {
+	if lastClose >= 0 {
+		after := content[lastClose+2:]
+		afterTrimmed := strings.TrimSpace(after)
+		if afterTrimmed != "" {
+			afterLower := strings.ToLower(afterTrimmed)
+			isMalicious := strings.Contains(afterLower, "eval(") ||
+				strings.Contains(afterLower, "base64_decode") ||
+				strings.Contains(afterLower, "gzinflate") ||
+				strings.Contains(afterLower, "system(") ||
+				strings.Contains(afterLower, "exec(") ||
+				strings.Contains(afterLower, "@include") ||
+				strings.Contains(afterLower, "<?php") // second PHP block appended
+
+			if isMalicious {
+				cleaned := content[:lastClose+2] + "\n"
+				removals = append(removals, fmt.Sprintf("removed %d-byte append injection (after ?>)", len(after)))
+				return cleaned, removals
+			}
+		}
+	}
+
+	// Case 2: PSR-12 style file (no closing ?>) — check if there's a malicious
+	// block appended at the very end, separated by multiple newlines
+	lines := strings.Split(content, "\n")
+	if len(lines) < 5 {
 		return content, nil
 	}
 
-	after := content[lastClose+2:]
-	afterTrimmed := strings.TrimSpace(after)
-	if afterTrimmed == "" {
-		return content, nil // nothing after ?>, normal
+	// Check last 10 lines for injected code block
+	startCheck := len(lines) - 10
+	if startCheck < 0 {
+		startCheck = 0
 	}
 
-	afterLower := strings.ToLower(afterTrimmed)
-	isMalicious := strings.Contains(afterLower, "eval(") ||
-		strings.Contains(afterLower, "base64_decode") ||
-		strings.Contains(afterLower, "gzinflate") ||
-		strings.Contains(afterLower, "system(") ||
-		strings.Contains(afterLower, "exec(") ||
-		strings.Contains(afterLower, "@include")
-
-	if !isMalicious {
-		return content, nil
+	blankLineIdx := -1
+	for i := startCheck; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == "" && blankLineIdx < 0 {
+			blankLineIdx = i
+		}
 	}
 
-	cleaned := content[:lastClose+2] + "\n"
-	removals = append(removals, fmt.Sprintf("removed %d-byte append injection", len(after)))
+	if blankLineIdx >= 0 {
+		tailBlock := strings.Join(lines[blankLineIdx:], "\n")
+		tailLower := strings.ToLower(tailBlock)
+		if strings.Contains(tailLower, "eval(") && strings.Contains(tailLower, "base64_decode") {
+			cleaned := strings.Join(lines[:blankLineIdx], "\n") + "\n"
+			removals = append(removals, fmt.Sprintf("removed %d-byte PSR-12 append injection", len(tailBlock)))
+			return cleaned, removals
+		}
+	}
 
-	return cleaned, removals
+	return content, nil
 }
 
 // removeInlineEvalInjections removes single-line eval(base64_decode("..."));
@@ -202,12 +287,12 @@ func removeInlineEvalInjections(content string) (string, []string) {
 		`(?i)^\s*(?:@?)eval\s*\(\s*(?:base64_decode|gzinflate|gzuncompress|str_rot13)\s*\(`)
 
 	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if evalInject.MatchString(trimmed) {
+		trimmedLine := strings.TrimSpace(line)
+		if evalInject.MatchString(trimmedLine) {
 			// Verify it's a standalone injection (not part of legitimate code)
-			// Standalone = the line is mostly just the eval call
-			if len(trimmed) > 50 { // short eval() is likely legitimate, long = encoded payload
-				removals = append(removals, fmt.Sprintf("removed inline eval injection (%d chars)", len(trimmed)))
+			// Standalone injections are long (encoded payload) — short eval() is likely legitimate
+			if len(trimmedLine) > 50 {
+				removals = append(removals, fmt.Sprintf("removed inline eval injection (%d chars)", len(trimmedLine)))
 				continue
 			}
 		}
@@ -215,6 +300,52 @@ func removeInlineEvalInjections(content string) (string, []string) {
 	}
 
 	return strings.Join(clean, "\n"), removals
+}
+
+// --- Helper functions ---
+
+// shannonEntropy calculates the Shannon entropy of a string.
+// Obfuscated/encoded code typically has entropy > 5.0.
+// Normal PHP code typically has entropy 4.0-4.5.
+func shannonEntropy(s string) float64 {
+	if len(s) == 0 {
+		return 0
+	}
+
+	freq := make(map[byte]float64)
+	for i := 0; i < len(s); i++ {
+		freq[s[i]]++
+	}
+
+	length := float64(len(s))
+	entropy := 0.0
+	for _, count := range freq {
+		p := count / length
+		if p > 0 {
+			entropy -= p * math.Log2(p)
+		}
+	}
+	return entropy
+}
+
+// containsLongEncodedString checks if the text contains a long base64-like
+// string (alphanumeric + /+ without spaces).
+func containsLongEncodedString(s string, minLength int) bool {
+	encoded := regexp.MustCompile(`[A-Za-z0-9+/=]{` + fmt.Sprintf("%d", minLength) + `,}`)
+	return encoded.MatchString(s)
+}
+
+// getLineContext returns N lines before and after the given line index.
+func getLineContext(lines []string, idx, window int) string {
+	start := idx - window
+	if start < 0 {
+		start = 0
+	}
+	end := idx + window + 1
+	if end > len(lines) {
+		end = len(lines)
+	}
+	return strings.Join(lines[start:end], "\n")
 }
 
 // FormatCleanResult returns a human-readable summary of a clean operation.
@@ -229,8 +360,8 @@ func FormatCleanResult(r CleanResult) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "CLEANED %s\n", r.Path)
 	fmt.Fprintf(&b, "  Backup: %s\n", r.BackupPath)
-	for _, r := range r.Removals {
-		fmt.Fprintf(&b, "  - %s\n", r)
+	for _, removal := range r.Removals {
+		fmt.Fprintf(&b, "  - %s\n", removal)
 	}
 	return b.String()
 }
