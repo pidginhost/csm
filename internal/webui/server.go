@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"html/template"
-	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -27,13 +26,16 @@ type IPBlocker interface {
 	UnblockIP(ip string) error
 }
 
-// Server is the embedded web UI HTTP server.
+// Server is the web UI HTTP server. Serves API always; serves HTML pages
+// and static files only if the UI directory exists on disk.
 type Server struct {
 	cfg             *config.Config
 	store           *state.Store
 	hub             *Hub
 	httpSrv         *http.Server
-	templates       *template.Template
+	templates       map[string]*template.Template
+	hasUI           bool   // true if UI directory with templates exists
+	uiDir           string // path to UI directory on disk
 	startTime       time.Time
 	sigCount        int // loaded signature rule count
 	fanotifyActive  bool
@@ -57,8 +59,13 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		loginAttempts: make(map[string][]time.Time),
 	}
 
-	// Parse embedded templates
-	tmpl, err := template.New("").Funcs(template.FuncMap{
+	// Check if UI directory exists on disk
+	s.uiDir = cfg.WebUI.UIDir
+	if s.uiDir == "" {
+		s.uiDir = "/opt/csm/ui"
+	}
+
+	funcMap := template.FuncMap{
 		"severityClass": severityClass,
 		"severityLabel": severityLabel,
 		"timeAgo":       timeAgo,
@@ -68,31 +75,48 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		"add":           func(a, b int) int { return a + b },
 		"subtract":      func(a, b int) int { return a - b },
 		"divisibleBy":   func(a, b int) bool { return b != 0 && a%b == 0 },
-	}).ParseFS(templateFS, "templates/*.html")
-	if err != nil {
-		return nil, fmt.Errorf("parsing templates: %w", err)
 	}
-	s.templates = tmpl
+
+	// Try to load templates from disk
+	templateDir := filepath.Join(s.uiDir, "templates")
+	staticDir := filepath.Join(s.uiDir, "static")
+	if _, err := os.Stat(templateDir); err == nil {
+		s.templates = make(map[string]*template.Template)
+		layoutPath := filepath.Join(templateDir, "layout.html")
+		for _, page := range []string{"dashboard", "findings", "history", "quarantine", "blocked"} {
+			pagePath := filepath.Join(templateDir, page+".html")
+			t, err := template.New(page+".html").Funcs(funcMap).ParseFiles(layoutPath, pagePath)
+			if err != nil {
+				return nil, fmt.Errorf("parsing template %s from %s: %w", page, templateDir, err)
+			}
+			s.templates[page+".html"] = t
+		}
+		loginPath := filepath.Join(templateDir, "login.html")
+		loginTmpl, err := template.New("login.html").Funcs(funcMap).ParseFiles(loginPath)
+		if err != nil {
+			return nil, fmt.Errorf("parsing login template: %w", err)
+		}
+		s.templates["login.html"] = loginTmpl
+		s.hasUI = true
+		fmt.Fprintf(os.Stderr, "WebUI: loaded templates from %s\n", templateDir)
+	} else {
+		fmt.Fprintf(os.Stderr, "WebUI: UI directory not found at %s — running in API-only mode\n", s.uiDir)
+	}
 
 	// Set up routes
 	mux := http.NewServeMux()
 
-	// Static files (no auth required)
-	staticSub, _ := fs.Sub(staticFS, "static")
-	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
-
-	// Login (no auth required)
-	mux.HandleFunc("/login", s.handleLogin)
-
-	// Auth-protected pages
-	mux.Handle("/", s.requireAuth(http.HandlerFunc(s.handleDashboard)))
-	mux.Handle("/dashboard", s.requireAuth(http.HandlerFunc(s.handleDashboard)))
-	mux.Handle("/findings", s.requireAuth(http.HandlerFunc(s.handleFindings)))
-	mux.Handle("/history", s.requireAuth(http.HandlerFunc(s.handleHistory)))
-	mux.Handle("/quarantine", s.requireAuth(http.HandlerFunc(s.handleQuarantine)))
-
-	// Auth-protected pages
-	mux.Handle("/blocked", s.requireAuth(http.HandlerFunc(s.handleBlocked)))
+	// Static files and HTML pages — only if UI directory exists
+	if s.hasUI {
+		mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir(staticDir))))
+		mux.HandleFunc("/login", s.handleLogin)
+		mux.Handle("/", s.requireAuth(http.HandlerFunc(s.handleDashboard)))
+		mux.Handle("/dashboard", s.requireAuth(http.HandlerFunc(s.handleDashboard)))
+		mux.Handle("/findings", s.requireAuth(http.HandlerFunc(s.handleFindings)))
+		mux.Handle("/history", s.requireAuth(http.HandlerFunc(s.handleHistory)))
+		mux.Handle("/quarantine", s.requireAuth(http.HandlerFunc(s.handleQuarantine)))
+		mux.Handle("/blocked", s.requireAuth(http.HandlerFunc(s.handleBlocked)))
+	}
 
 	// Auth-protected API — read
 	mux.Handle("/api/v1/status", s.requireAuth(http.HandlerFunc(s.apiStatus)))
@@ -105,6 +129,9 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/history/csv", s.requireAuth(http.HandlerFunc(s.apiHistoryCSV)))
 
 	// Auth-protected API — actions (with CSRF validation)
+	mux.Handle("/api/v1/fix", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiFix))))
+	mux.Handle("/api/v1/fix-bulk", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiBulkFix))))
+	mux.Handle("/api/v1/fix-preview", s.requireAuth(http.HandlerFunc(s.apiFixPreview)))
 	mux.Handle("/api/v1/scan-account", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiScanAccount))))
 	mux.Handle("/api/v1/block-ip", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiBlockIP))))
 	mux.Handle("/api/v1/unblock-ip", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiUnblockIP))))
@@ -160,6 +187,11 @@ func (s *Server) Broadcast(findings []alert.Finding) {
 // SetSigCount sets the loaded signature count for the status API.
 func (s *Server) SetSigCount(count int) {
 	s.sigCount = count
+}
+
+// HasUI returns true if UI templates were loaded from disk.
+func (s *Server) HasUI() bool {
+	return s.hasUI
 }
 
 // SetIPBlocker sets the firewall engine for block/unblock operations.
@@ -219,7 +251,7 @@ func (s *Server) isAuthenticated(r *http.Request) bool {
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
-		_ = s.templates.ExecuteTemplate(w, "login.html", nil)
+		_ = s.templates["login.html"].Execute(w, nil)
 		return
 	}
 
@@ -252,7 +284,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	token := r.FormValue("token")
 	if subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.WebUI.AuthToken)) != 1 {
-		_ = s.templates.ExecuteTemplate(w, "login.html", map[string]string{"Error": "Invalid token"})
+		_ = s.templates["login.html"].Execute(w, map[string]string{"Error": "Invalid token"})
 		return
 	}
 

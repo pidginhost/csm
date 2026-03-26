@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CSM — Login</title>
+    <link rel="stylesheet" href="/static/css/tabler.min.css">
+    <style>body { background-color: #1a2234; }</style>
+</head>
+<body class="theme-dark d-flex flex-column">
+    <div class="page page-center">
+        <div class="container container-tight py-4">
+            <div class="card card-md">
+                <div class="card-body">
+                    <h2 class="h2 text-center mb-4">CSM Security Monitor</h2>
+                    {{if .Error}}<div class="alert alert-danger">{{.Error}}</div>{{end}}
+                    <form method="POST" action="/login" autocomplete="off">
+                        <div class="mb-3">
+                            <label class="form-label">Authentication Token</label>
+                            <input type="password" name="token" class="form-control" placeholder="Enter token" autofocus required>
+                        </div>
+                        <div class="form-footer">
+                            <button type="submit" class="btn btn-primary w-100">Sign In</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

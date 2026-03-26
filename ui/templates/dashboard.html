@@ -1,0 +1,117 @@
+{{define "title"}}Dashboard{{end}}
+{{define "page"}}dashboard{{end}}
+{{define "content"}}
+    <div class="row row-deck row-cards mb-3">
+        <div class="col-sm-6 col-lg-3">
+            <div class="card">
+                <div class="card-body">
+                    <div class="subheader">Critical (24h)</div>
+                    <div class="h1 mb-0 text-critical" id="stat-critical">{{.Critical}}</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-sm-6 col-lg-3">
+            <div class="card">
+                <div class="card-body">
+                    <div class="subheader">High (24h)</div>
+                    <div class="h1 mb-0 text-high" id="stat-high">{{.High}}</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-sm-6 col-lg-3">
+            <div class="card">
+                <div class="card-body">
+                    <div class="subheader">Warning (24h)</div>
+                    <div class="h1 mb-0 text-warning" id="stat-warning">{{.Warning}}</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-sm-6 col-lg-3">
+            <div class="card">
+                <div class="card-body">
+                    <div class="subheader">Total (24h)</div>
+                    <div class="h1 mb-0 text-green" id="stat-total">{{.Total}}</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row row-deck row-cards mb-3">
+        <div class="col-sm-6 col-lg-3">
+            <div class="card">
+                <div class="card-body">
+                    <div class="subheader">Uptime</div>
+                    <div class="h3 mb-0">{{.Uptime}}</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-sm-6 col-lg-3">
+            <div class="card">
+                <div class="card-body">
+                    <div class="subheader">Hostname</div>
+                    <div class="h3 mb-0">{{.Hostname}}</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-sm-6 col-lg-3">
+            <div class="card">
+                <div class="card-body">
+                    <div class="subheader">fanotify</div>
+                    <div class="h3 mb-0">{{if .FanotifyActive}}<span class="text-green"><i class="ti ti-circle-check"></i> Active</span>{{else}}<span class="text-warning"><i class="ti ti-alert-circle"></i> Fallback</span>{{end}}</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-sm-6 col-lg-3">
+            <div class="card">
+                <div class="card-body">
+                    <div class="subheader">Signature Rules</div>
+                    <div class="h3 mb-0">{{.SigCount}}</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Timeline -->
+    <div class="card mb-3">
+        <div class="card-header"><h3 class="card-title"><i class="ti ti-chart-bar"></i>&nbsp;Findings Timeline (24h)</h3></div>
+        <div class="card-body">
+            <svg width="100%" height="120" viewBox="0 0 720 120" preserveAspectRatio="none">
+                {{range $i, $bar := .TimelineBars}}
+                {{if gt $bar.Total 0}}
+                <rect class="timeline-bar" x="{{multiply $i 30}}" y="{{subtract 100 $bar.Height}}" width="26" height="{{$bar.Height}}"
+                      rx="2" fill="{{if gt $bar.Critical 0}}#d63939{{else if gt $bar.High 0}}#f76707{{else}}#f59f00{{end}}"
+                      opacity="0.7">
+                    <title>{{$bar.Hour}}: {{$bar.Total}} findings ({{$bar.Critical}}C / {{$bar.High}}H / {{$bar.Warning}}W)</title>
+                </rect>
+                {{end}}
+                <text x="{{add (multiply $i 30) 13}}" y="115" text-anchor="middle" fill="#6c7a91" font-size="9">{{if divisibleBy $i 4}}{{$bar.Hour}}{{end}}</text>
+                {{end}}
+            </svg>
+        </div>
+    </div>
+
+    <!-- Live Feed -->
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title"><span class="status-dot status-dot-animated bg-green" id="ws-status"></span>&nbsp;Live Feed</h3>
+        </div>
+        <div class="list-group list-group-flush overflow-auto" style="max-height:400px" id="live-feed-entries">
+            {{range .RecentFindings}}
+            <div class="list-group-item" style="cursor:pointer" onclick="var d=this.querySelector('.detail');if(d)d.classList.toggle('d-none')">
+                <div class="row align-items-center">
+                    <div class="col-auto"><span class="text-muted font-monospace small">{{.Timestamp}}</span></div>
+                    <div class="col-auto"><span class="badge badge-{{.SevClass}}">{{.Severity}}</span></div>
+                    <div class="col"><span class="font-monospace small">{{.Check}}</span> — {{.Message}}</div>
+                </div>
+                {{if .Details}}<div class="detail d-none mt-2 small text-muted" style="white-space:pre-wrap">{{.Details}}</div>{{end}}
+            </div>
+            {{else}}
+            <div class="list-group-item text-center text-muted py-4">No recent findings. Waiting for events...</div>
+            {{end}}
+        </div>
+    </div>
+{{end}}
+{{define "scripts"}}
+<script src="/static/js/dashboard.js"></script>
+{{end}}
+{{template "layout" .}}

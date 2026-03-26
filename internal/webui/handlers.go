@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
+	"github.com/pidginhost/cpanel-security-monitor/internal/checks"
 	"github.com/pidginhost/cpanel-security-monitor/internal/state"
 )
 
@@ -43,6 +44,8 @@ type findingEntry struct {
 	FirstSeen string
 	LastSeen  string
 	Baseline  bool
+	HasFix    bool
+	FixDesc   string
 }
 
 type historyData struct {
@@ -179,7 +182,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 		RecentFindings: recent,
 		TimelineBars:   bars,
 	}
-	_ = s.templates.ExecuteTemplate(w, "dashboard.html", data)
+	_ = s.templates["dashboard.html"].ExecuteTemplate(w, "dashboard.html", data)
 }
 
 func (s *Server) handleFindings(w http.ResponseWriter, _ *http.Request) {
@@ -197,6 +200,8 @@ func (s *Server) handleFindings(w http.ResponseWriter, _ *http.Request) {
 			FirstSeen: entry.FirstSeen.Format("2006-01-02 15:04"),
 			LastSeen:  entry.LastSeen.Format("2006-01-02 15:04"),
 			Baseline:  entry.IsBaseline,
+			HasFix:    checks.HasFix(check),
+			FixDesc:   checks.FixDescription(check, message),
 		})
 	}
 
@@ -204,18 +209,12 @@ func (s *Server) handleFindings(w http.ResponseWriter, _ *http.Request) {
 		Hostname: s.cfg.Hostname,
 		Entries:  items,
 	}
-	_ = s.templates.ExecuteTemplate(w, "findings.html", data)
+	_ = s.templates["findings.html"].ExecuteTemplate(w, "findings.html", data)
 }
 
-func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
-	page := queryInt(r, "page", 1)
-	if page < 1 {
-		page = 1
-	}
-	perPage := 50
-	offset := (page - 1) * perPage
-
-	findings, total := s.store.ReadHistory(perPage, offset)
+func (s *Server) handleHistory(w http.ResponseWriter, _ *http.Request) {
+	// Load all recent history — client-side CSM.Table handles pagination
+	findings, _ := s.store.ReadHistory(1000, 0)
 
 	var items []historyEntry
 	for _, f := range findings {
@@ -233,23 +232,18 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	data := historyData{
 		Hostname: s.cfg.Hostname,
 		Findings: items,
-		Page:     page,
-		NextPage: page + 1,
-		PrevPage: page - 1,
-		HasNext:  offset+perPage < total,
-		HasPrev:  page > 1,
 	}
-	_ = s.templates.ExecuteTemplate(w, "history.html", data)
+	_ = s.templates["history.html"].ExecuteTemplate(w, "history.html", data)
 }
 
 func (s *Server) handleQuarantine(w http.ResponseWriter, _ *http.Request) {
-	_ = s.templates.ExecuteTemplate(w, "quarantine.html", quarantineData{
+	_ = s.templates["quarantine.html"].ExecuteTemplate(w, "quarantine.html", quarantineData{
 		Hostname: s.cfg.Hostname,
 	})
 }
 
 func (s *Server) handleBlocked(w http.ResponseWriter, _ *http.Request) {
-	_ = s.templates.ExecuteTemplate(w, "blocked.html", map[string]string{
+	_ = s.templates["blocked.html"].ExecuteTemplate(w, "blocked.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
 	})
 }

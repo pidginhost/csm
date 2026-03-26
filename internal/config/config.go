@@ -90,6 +90,7 @@ type Config struct {
 		AuthToken string `yaml:"auth_token"`
 		TLSCert   string `yaml:"tls_cert"`
 		TLSKey    string `yaml:"tls_key"`
+		UIDir     string `yaml:"ui_dir"` // path to UI files on disk (default: /opt/csm/ui)
 	} `yaml:"webui"`
 
 	Firewall *firewall.FirewallConfig `yaml:"firewall"`
