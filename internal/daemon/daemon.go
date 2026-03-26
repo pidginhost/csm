@@ -8,12 +8,15 @@ import (
 	"syscall"
 	"time"
 
+	"context"
+
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
 	"github.com/pidginhost/cpanel-security-monitor/internal/checks"
 	"github.com/pidginhost/cpanel-security-monitor/internal/config"
 	"github.com/pidginhost/cpanel-security-monitor/internal/integrity"
 	"github.com/pidginhost/cpanel-security-monitor/internal/signatures"
 	"github.com/pidginhost/cpanel-security-monitor/internal/state"
+	"github.com/pidginhost/cpanel-security-monitor/internal/webui"
 	"github.com/pidginhost/cpanel-security-monitor/internal/yara"
 )
 
@@ -28,6 +31,7 @@ type Daemon struct {
 	fileMonitor    *FileMonitor
 	hijackDetector *PasswordHijackDetector
 	pamListener    *PAMListener
+	webServer      *webui.Server
 	alertCh        chan alert.Finding
 	stopCh         chan struct{}
 	wg             sync.WaitGroup
@@ -96,6 +100,9 @@ func (d *Daemon) Run() error {
 	// Start PAM listener for real-time brute-force detection
 	d.startPAMListener()
 
+	// Start Web UI server if enabled
+	d.startWebUI()
+
 	// Start fanotify file monitor (falls back to periodic if kernel doesn't support it)
 	d.startFileMonitor()
 
@@ -145,6 +152,11 @@ func (d *Daemon) Run() error {
 	// Stop all watchers
 	for _, w := range d.logWatchers {
 		w.Stop()
+	}
+	if d.webServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = d.webServer.Shutdown(ctx)
+		cancel()
 	}
 	if d.fileMonitor != nil {
 		d.fileMonitor.Stop()
@@ -222,7 +234,12 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	}
 	newFindings = append(newFindings, extra...)
 
-	// Dispatch
+	// Broadcast to WebSocket clients
+	if d.webServer != nil {
+		d.webServer.Broadcast(newFindings)
+	}
+
+	// Dispatch via email/webhook
 	if err := alert.Dispatch(d.cfg, newFindings); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Alert dispatch error: %v\n", ts(), err)
 	}
@@ -349,6 +366,31 @@ func (d *Daemon) startLogWatchers() {
 		}(w)
 		fmt.Fprintf(os.Stderr, "[%s] Watching: %s\n", ts(), lf.path)
 	}
+}
+
+func (d *Daemon) startWebUI() {
+	if !d.cfg.WebUI.Enabled {
+		return
+	}
+	srv, err := webui.New(d.cfg, d.store)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] WebUI init error: %v\n", ts(), err)
+		return
+	}
+
+	// Set signature count for status API
+	if scanner := signatures.Global(); scanner != nil {
+		srv.SetSigCount(scanner.RuleCount())
+	}
+
+	d.webServer = srv
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		if err := srv.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "[%s] WebUI server error: %v\n", ts(), err)
+		}
+	}()
 }
 
 func (d *Daemon) startPAMListener() {

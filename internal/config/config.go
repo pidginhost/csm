@@ -82,6 +82,14 @@ type Config struct {
 		UpdateURL string `yaml:"update_url"`
 	} `yaml:"signatures"`
 
+	WebUI struct {
+		Enabled   bool   `yaml:"enabled"`
+		Listen    string `yaml:"listen"`
+		AuthToken string `yaml:"auth_token"`
+		TLSCert   string `yaml:"tls_cert"`
+		TLSKey    string `yaml:"tls_key"`
+	} `yaml:"webui"`
+
 	C2Blocklist   []string `yaml:"c2_blocklist"`
 	BackdoorPorts []int    `yaml:"backdoor_ports"`
 }
@@ -105,6 +113,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Signatures.RulesDir == "" {
 		cfg.Signatures.RulesDir = "/opt/csm/rules"
+	}
+	if cfg.WebUI.Listen == "" {
+		cfg.WebUI.Listen = "localhost:9443"
 	}
 	if cfg.Thresholds.MailQueueWarn == 0 {
 		cfg.Thresholds.MailQueueWarn = 500
@@ -174,6 +185,10 @@ func Validate(cfg *Config) []string {
 
 	if cfg.Alerts.Heartbeat.Enabled && cfg.Alerts.Heartbeat.URL == "" {
 		errs = append(errs, "heartbeat enabled but no URL configured")
+	}
+
+	if cfg.WebUI.Enabled && cfg.WebUI.AuthToken == "" {
+		errs = append(errs, "webui enabled but no auth_token configured")
 	}
 
 	return errs

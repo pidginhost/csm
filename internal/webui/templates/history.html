@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CSM — History</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1><span>CSM</span> Security Monitor</h1>
+            <nav>
+                <a href="/dashboard">Dashboard</a>
+                <a href="/findings">Findings</a>
+                <a href="/history" class="active">History</a>
+                <a href="/quarantine">Quarantine</a>
+            </nav>
+        </div>
+    </header>
+    <main>
+        <div class="container">
+            <h2 style="margin-bottom:1rem">Finding History</h2>
+            {{if .Findings}}
+            <table>
+                <thead>
+                    <tr>
+                        <th>Severity</th>
+                        <th>Check</th>
+                        <th>Message</th>
+                        <th>Time</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .Findings}}
+                    <tr>
+                        <td><span class="badge {{.SevClass}}">{{.Severity}}</span></td>
+                        <td><span class="mono">{{.Check}}</span></td>
+                        <td>{{.Message}}</td>
+                        <td class="mono" title="{{.Timestamp}}">{{.TimeAgo}}</td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+            <div class="pagination">
+                {{if .HasPrev}}<a href="/history?page={{.PrevPage}}">Previous</a>{{end}}
+                <span>Page {{.Page}}</span>
+                {{if .HasNext}}<a href="/history?page={{.NextPage}}">Next</a>{{end}}
+            </div>
+            {{else}}
+            <div class="empty-state">No history entries yet.</div>
+            {{end}}
+        </div>
+    </main>
+    <footer>
+        <div class="container">CSM — cPanel Security Monitor | {{.Hostname}}</div>
+    </footer>
+</body>
+</html>

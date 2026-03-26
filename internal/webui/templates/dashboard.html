@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CSM — Dashboard</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body data-token="{{.AuthToken}}">
+    <header>
+        <div class="container">
+            <h1><span>CSM</span> Security Monitor</h1>
+            <nav>
+                <a href="/dashboard" class="active">Dashboard</a>
+                <a href="/findings">Findings</a>
+                <a href="/history">History</a>
+                <a href="/quarantine">Quarantine</a>
+            </nav>
+        </div>
+    </header>
+    <main>
+        <div class="container">
+            <div class="cards">
+                <div class="card critical">
+                    <h3>Critical (24h)</h3>
+                    <div class="value" id="stat-critical">{{.Critical}}</div>
+                </div>
+                <div class="card high">
+                    <h3>High (24h)</h3>
+                    <div class="value" id="stat-high">{{.High}}</div>
+                </div>
+                <div class="card warning">
+                    <h3>Warning (24h)</h3>
+                    <div class="value" id="stat-warning">{{.Warning}}</div>
+                </div>
+                <div class="card success">
+                    <h3>Total (24h)</h3>
+                    <div class="value" id="stat-total">{{.Total}}</div>
+                </div>
+            </div>
+
+            <div class="cards">
+                <div class="card">
+                    <h3>Uptime</h3>
+                    <div class="value" style="font-size:1.2rem">{{.Uptime}}</div>
+                </div>
+                <div class="card">
+                    <h3>Hostname</h3>
+                    <div class="value" style="font-size:1.2rem">{{.Hostname}}</div>
+                </div>
+                <div class="card">
+                    <h3>Signature Rules</h3>
+                    <div class="value" style="font-size:1.2rem">{{.SigCount}}</div>
+                </div>
+                <div class="card">
+                    <h3>WS Clients</h3>
+                    <div class="value" style="font-size:1.2rem">{{.WSClients}}</div>
+                </div>
+            </div>
+
+            <div class="live-feed">
+                <h2><span class="dot" id="ws-status"></span> Live Feed</h2>
+                <div class="entries" id="live-feed-entries">
+                    {{range .RecentFindings}}
+                    <div class="entry">
+                        <span class="time">{{.Timestamp}}</span>
+                        <span class="badge {{.SevClass}}">{{.Severity}}</span>
+                        <span class="msg">{{.Check}} — {{.Message}}</span>
+                    </div>
+                    {{else}}
+                    <div class="empty-state">No recent findings. Waiting for events...</div>
+                    {{end}}
+                </div>
+            </div>
+        </div>
+    </main>
+    <footer>
+        <div class="container">CSM — cPanel Security Monitor</div>
+    </footer>
+    <script src="/static/js/dashboard.js"></script>
+</body>
+</html>

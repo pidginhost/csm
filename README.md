@@ -458,10 +458,46 @@ make tools          # Install dev tools
 | publish | GitLab Generic Package Registry + SHA256 checksums |
 | release | GitLab release on tag push (v*) |
 
+## Web UI Dashboard
+
+Embedded HTTPS dashboard with real-time WebSocket feed, active findings, history, and quarantine management.
+
+```yaml
+# /opt/csm/csm.yaml
+webui:
+  enabled: true
+  listen: "localhost:9443"
+  auth_token: "your-secret-token"
+  # tls_cert: ""  # optional: custom cert path
+  # tls_key: ""   # optional: custom key path
+```
+
+Access at `https://localhost:9443/login`. Auto-generates a self-signed TLS cert on first start.
+
+**Pages:**
+- **Dashboard** — summary cards (critical/high/warning counts), live WebSocket feed, uptime, hostname, signature count
+- **Findings** — active findings table with check type, message, timestamps
+- **History** — paginated history from history.jsonl (newest first)
+- **Quarantine** — quarantined file list with original path, size, reason
+
+**API Endpoints:**
+```
+GET  /api/v1/status        Daemon status, uptime, component health
+GET  /api/v1/findings      Current active findings
+GET  /api/v1/history       Paginated history (?limit=50&offset=0)
+GET  /api/v1/quarantine    Quarantined files with metadata
+GET  /api/v1/stats         Severity counts and per-check breakdown
+WS   /ws/findings          Real-time finding stream (WebSocket)
+```
+
+**Security:** Token auth (Bearer header, cookie, or query param for WebSocket), TLS-only, localhost-bound by default, rate-limited login (5/min), auto-escaping templates, HttpOnly/Secure/SameSite=Strict cookies.
+
+**Architecture:** Go `html/template` + vanilla JS, zero external dependencies, embedded via `embed.FS` (~30KB binary size increase), stdlib-only WebSocket implementation.
+
 ## Roadmap
 
 - WAF rule management and custom ModSecurity rule deployment
-- Web dashboard (WHM plugin) for centralized management
+- WHM plugin integration for Web UI dashboard
 - CAPTCHA/challenge pages instead of hard IP blocks
 - Binary signing with cosign
 - Multi-server config management
