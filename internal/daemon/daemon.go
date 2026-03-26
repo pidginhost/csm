@@ -475,6 +475,18 @@ func (d *Daemon) startFirewall() {
 	fwState, _ := firewall.LoadState(d.cfg.StatePath)
 	fmt.Fprintf(os.Stderr, "[%s] Firewall active: %d blocked, %d allowed IPs\n",
 		ts(), len(fwState.Blocked), len(fwState.Allowed))
+
+	// Start Dynamic DNS resolver if configured
+	if len(d.cfg.Firewall.DynDNSHosts) > 0 {
+		resolver := firewall.NewDynDNSResolver(d.cfg.Firewall.DynDNSHosts, engine)
+		d.wg.Add(1)
+		go func() {
+			defer d.wg.Done()
+			resolver.Run(d.stopCh)
+		}()
+		fmt.Fprintf(os.Stderr, "[%s] DynDNS resolver active for %d host(s)\n",
+			ts(), len(d.cfg.Firewall.DynDNSHosts))
+	}
 }
 
 func notifyWatchdog() {

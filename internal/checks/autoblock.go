@@ -171,6 +171,42 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		})
 	}
 
+	// Subnet auto-blocking: detect /24 patterns
+	if cfg.AutoResponse.NetBlock && fwBlocker != nil {
+		threshold := cfg.AutoResponse.NetBlockThreshold
+		if threshold < 2 {
+			threshold = 3
+		}
+		// Count blocked IPs per /24
+		subnetCounts := make(map[string]int)
+		subnetBlocked := make(map[string]bool)
+		for _, b := range state.IPs {
+			prefix := extractPrefix24(b.IP)
+			if prefix != "" {
+				subnetCounts[prefix]++
+			}
+		}
+		for prefix, count := range subnetCounts {
+			if count >= threshold && !subnetBlocked[prefix] {
+				cidr := prefix + ".0/24"
+				if sb, ok := fwBlocker.(interface {
+					BlockSubnet(string, string) error
+				}); ok {
+					reason := fmt.Sprintf("Auto-netblock: %d IPs from %s", count, cidr)
+					if err := sb.BlockSubnet(cidr, reason); err == nil {
+						subnetBlocked[prefix] = true
+						actions = append(actions, alert.Finding{
+							Severity:  alert.Critical,
+							Check:     "auto_block",
+							Message:   fmt.Sprintf("AUTO-NETBLOCK: %s blocked (%d IPs from same /24)", cidr, count),
+							Timestamp: time.Now(),
+						})
+					}
+				}
+			}
+		}
+	}
+
 	// Unblock expired IPs
 	var activeIPs []blockedIP
 	for _, blocked := range state.IPs {
@@ -250,4 +286,13 @@ func saveBlockState(statePath string, state *blockState) {
 	tmpPath := filepath.Join(statePath, blockStateFile+".tmp")
 	_ = os.WriteFile(tmpPath, data, 0600)
 	_ = os.Rename(tmpPath, filepath.Join(statePath, blockStateFile))
+}
+
+// extractPrefix24 returns the first 3 octets of an IPv4 address (e.g. "1.2.3").
+func extractPrefix24(ip string) string {
+	parts := strings.Split(ip, ".")
+	if len(parts) != 4 {
+		return ""
+	}
+	return parts[0] + "." + parts[1] + "." + parts[2]
 }

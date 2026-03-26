@@ -209,6 +209,8 @@ auto_response:
   block_ips: false            # auto-block attacker IPs via CSF
   block_expiry: "24h"         # how long IPs stay blocked
   block_cpanel_logins: false  # block IPs on cPanel/webmail login alerts (enable after portal-only login)
+  netblock: false             # auto-block /24 subnet when threshold IPs from same range
+  netblock_threshold: 3       # IPs from same /24 before subnet auto-block
 
 firewall:
   enabled: false              # enable to activate nftables firewall (replaces CSF)
@@ -318,6 +320,8 @@ firewall:
     - 25
     - 465
     - 587
+  # dyndns_hosts:               # resolve hostnames to IPs, update allowed set every 5 min
+  #   - "myhost.dyndns.org"
   log_dropped: true
   log_rate: 5                   # dropped packet log entries per minute
 
