@@ -277,8 +277,9 @@ firewall:
     - 2325
   passive_ftp_start: 49152
   passive_ftp_end: 65534
-  conn_rate_limit: 30           # new connections per minute (global)
+  conn_rate_limit: 30           # new connections per minute per IP
   syn_flood_protection: true
+  conn_limit: 50                # max concurrent connections per IP (0 = disabled)
   port_flood:                   # per-port rate limiting (CSF PORTFLOOD)
     - port: 25
       proto: tcp
