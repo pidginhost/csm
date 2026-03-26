@@ -37,12 +37,12 @@
                     </a>
                 </div>
                 <div class="collapse navbar-collapse" id="navbar-menu">
-                    <ul class="navbar-nav">
-                        <li class="nav-item"><a class="nav-link {{if eq (template "page" .) "dashboard"}}active{{end}}" href="/dashboard"><i class="ti ti-dashboard"></i>&nbsp;Dashboard</a></li>
-                        <li class="nav-item"><a class="nav-link {{if eq (template "page" .) "findings"}}active{{end}}" href="/findings"><i class="ti ti-alert-triangle"></i>&nbsp;Findings</a></li>
-                        <li class="nav-item"><a class="nav-link {{if eq (template "page" .) "history"}}active{{end}}" href="/history"><i class="ti ti-history"></i>&nbsp;History</a></li>
-                        <li class="nav-item"><a class="nav-link {{if eq (template "page" .) "quarantine"}}active{{end}}" href="/quarantine"><i class="ti ti-lock"></i>&nbsp;Quarantine</a></li>
-                        <li class="nav-item"><a class="nav-link {{if eq (template "page" .) "blocked"}}active{{end}}" href="/blocked"><i class="ti ti-shield-off"></i>&nbsp;Blocked IPs</a></li>
+                    <ul class="navbar-nav" id="csm-nav">
+                        <li class="nav-item"><a class="nav-link" href="/dashboard"><i class="ti ti-dashboard"></i>&nbsp;Dashboard</a></li>
+                        <li class="nav-item"><a class="nav-link" href="/findings"><i class="ti ti-alert-triangle"></i>&nbsp;Findings</a></li>
+                        <li class="nav-item"><a class="nav-link" href="/history"><i class="ti ti-history"></i>&nbsp;History</a></li>
+                        <li class="nav-item"><a class="nav-link" href="/quarantine"><i class="ti ti-lock"></i>&nbsp;Quarantine</a></li>
+                        <li class="nav-item"><a class="nav-link" href="/blocked"><i class="ti ti-shield-off"></i>&nbsp;Blocked IPs</a></li>
                     </ul>
                 </div>
             </div>
@@ -63,6 +63,7 @@
     <script src="/static/js/tabler.min.js"></script>
     <script src="/static/js/csrf.js"></script>
     <script src="/static/js/table.js"></script>
+    <script>document.querySelectorAll('#csm-nav a.nav-link').forEach(function(a){if(a.getAttribute('href')===window.location.pathname)a.classList.add('active')})</script>
     {{template "scripts" .}}
 </body>
 </html>
