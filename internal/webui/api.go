@@ -15,7 +15,6 @@ import (
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
 	"github.com/pidginhost/cpanel-security-monitor/internal/checks"
-	"github.com/pidginhost/cpanel-security-monitor/internal/state"
 )
 
 // apiStatus returns daemon status and uptime.
@@ -30,30 +29,31 @@ func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, status)
 }
 
-// apiFindings returns current active state entries.
+// apiFindings returns current scan results — "what's wrong right now."
 func (s *Server) apiFindings(w http.ResponseWriter, _ *http.Request) {
-	entries := s.store.Entries()
+	latest := s.store.LatestFindings()
 
 	type entryView struct {
-		Check     string `json:"check"`
-		Message   string `json:"message"`
-		FirstSeen string `json:"first_seen"`
-		LastSeen  string `json:"last_seen"`
-		Baseline  bool   `json:"is_baseline"`
+		Severity int    `json:"severity"`
+		Check    string `json:"check"`
+		Message  string `json:"message"`
+		Details  string `json:"details,omitempty"`
+		Time     string `json:"time"`
+		HasFix   bool   `json:"has_fix"`
 	}
 
 	var result []entryView
-	for key, entry := range entries {
-		if entry.IsBaseline {
-			continue // don't return dismissed/baseline entries as "active"
+	for _, f := range latest {
+		if f.Check == "auto_response" || f.Check == "auto_block" || f.Check == "check_timeout" || f.Check == "health" {
+			continue
 		}
-		check, message := state.ParseKey(key)
 		result = append(result, entryView{
-			Check:     check,
-			Message:   message,
-			FirstSeen: entry.FirstSeen.Format(time.RFC3339),
-			LastSeen:  entry.LastSeen.Format(time.RFC3339),
-			Baseline:  entry.IsBaseline,
+			Severity: int(f.Severity),
+			Check:    f.Check,
+			Message:  f.Message,
+			Details:  f.Details,
+			Time:     f.Timestamp.Format(time.RFC3339),
+			HasFix:   checks.HasFix(f.Check),
 		})
 	}
 	writeJSON(w, result)
@@ -303,6 +303,34 @@ func (s *Server) apiFixPreview(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// apiAccounts returns a list of cPanel account usernames for the scan dropdown.
+func (s *Server) apiAccounts(w http.ResponseWriter, _ *http.Request) {
+	entries, err := os.ReadDir("/home")
+	if err != nil {
+		writeJSON(w, []string{})
+		return
+	}
+
+	var accounts []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		// Skip system/hidden directories
+		if strings.HasPrefix(name, ".") || name == "virtfs" || name == "cPanelInstall" ||
+			name == "cpanelsolr" || name == "lost+found" {
+			continue
+		}
+		// Must have public_html to be a real cPanel account
+		if _, err := os.Stat(filepath.Join("/home", name, "public_html")); err == nil {
+			accounts = append(accounts, name)
+		}
+	}
+
+	writeJSON(w, accounts)
+}
+
 // --- Action endpoints ---
 
 // apiBlockIP blocks an IP via the firewall engine (or CSF fallback).
@@ -489,6 +517,7 @@ func (s *Server) apiDismissFinding(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.store.DismissFinding(req.Key)
+	s.store.DismissLatestFinding(req.Key)
 	writeJSON(w, map[string]string{"status": "dismissed", "key": req.Key})
 }
 

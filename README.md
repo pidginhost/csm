@@ -595,6 +595,7 @@ CSM includes a native nftables firewall engine that replaces CSF (ConfigServer F
 - GeoIP auto-update (download country CIDR lists from public source)
 - IP geolocation lookup (`csm firewall lookup <ip>` — shows country, block status, infra match)
 - Temporary allows with TTL (auto-expire, cleaned every 10 min by daemon)
+- Permanent block escalation (auto-promote after N temp blocks within interval — CSF's LF_PERMBLOCK)
 - State persistence with atomic writes (survives restart)
 - CSF migration tool (`csm firewall migrate-from-csf`)
 
@@ -624,7 +625,6 @@ csm firewall migrate-from-csf [--apply] CSF migration (dry-run default)
 ## Roadmap
 
 ### Firewall — Remaining for Full CSF Parity
-- Permanent block escalation (auto-promote to permanent after N temp blocks within interval — CSF's LF_PERMBLOCK)
 - Port knocking (open SSH port after connection sequence)
 - Cluster mode (synchronize block lists across multiple servers)
 - CloudFlare WAF integration (push blocks to CF firewall)

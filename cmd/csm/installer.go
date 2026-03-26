@@ -211,6 +211,9 @@ auto_response:
   block_cpanel_logins: false  # block IPs on cPanel/webmail login alerts (enable after portal-only login)
   netblock: false             # auto-block /24 subnet when threshold IPs from same range
   netblock_threshold: 3       # IPs from same /24 before subnet auto-block
+  permblock: false            # auto-promote to permanent after N temp blocks
+  permblock_count: 4          # temp blocks before permanent
+  permblock_interval: "24h"   # window for counting temp blocks
 
 firewall:
   enabled: false              # enable to activate nftables firewall (replaces CSF)
