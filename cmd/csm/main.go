@@ -12,6 +12,7 @@ import (
 	"github.com/pidginhost/cpanel-security-monitor/internal/config"
 	"github.com/pidginhost/cpanel-security-monitor/internal/daemon"
 	"github.com/pidginhost/cpanel-security-monitor/internal/integrity"
+	"github.com/pidginhost/cpanel-security-monitor/internal/signatures"
 	"github.com/pidginhost/cpanel-security-monitor/internal/state"
 )
 
@@ -81,6 +82,8 @@ func main() {
 		runValidate()
 	case "verify":
 		runVerify()
+	case "update-rules":
+		runUpdateRules()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
 		printUsage()
@@ -107,6 +110,7 @@ Commands:
   baseline      Reset state — mark current state as "known good"
   validate      Validate config file for common mistakes
   verify        Verify binary + config integrity
+  update-rules  Download latest malware signature rules
   version       Version info + build hash
 
 Options:
@@ -131,6 +135,12 @@ func loadConfig() *config.Config {
 
 func runDaemon() {
 	cfg := loadConfig()
+
+	// Initialize signature scanner
+	scanner := signatures.Init(cfg.Signatures.RulesDir)
+	if scanner.RuleCount() > 0 {
+		fmt.Fprintf(os.Stderr, "Loaded %d signature rules (version %d)\n", scanner.RuleCount(), scanner.Version())
+	}
 
 	lock, err := state.AcquireLock(cfg.StatePath)
 	if err != nil {
@@ -331,4 +341,17 @@ func runVerify() {
 		os.Exit(2)
 	}
 	fmt.Println("Integrity check passed")
+}
+
+func runUpdateRules() {
+	cfg := loadConfig()
+
+	fmt.Fprintf(os.Stderr, "Downloading rules from %s...\n", cfg.Signatures.UpdateURL)
+	count, err := signatures.Update(cfg.Signatures.RulesDir, cfg.Signatures.UpdateURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Update failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "Updated: %d rules installed to %s\n", count, cfg.Signatures.RulesDir)
+	fmt.Fprintf(os.Stderr, "Reload running daemon with: kill -HUP $(pidof csm)\n")
 }

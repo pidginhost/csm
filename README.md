@@ -87,6 +87,8 @@ Falls back to timer-based mode if the kernel doesn't support fanotify.
 | File Manager upload | 10 min | **~2 seconds** |
 | SSH login from unknown IP | 10 min | **~2 seconds** |
 | Password change | 10 min | **~2 seconds** |
+| Phishing page uploaded | 60 min | **< 1 second** |
+| Credential harvest log created | 60 min | **< 1 second** |
 | Fake kernel thread started | 10 min | 10 min |
 | WP core file modified | 60 min | 60 min |
 
@@ -104,6 +106,10 @@ Falls back to timer-based mode if the kernel doesn't support fanotify.
 | PHP content analysis | Obfuscated PHP: remote payload URLs, eval+decode chains, goto spaghetti, shell execution with request input |
 | PHP config tampering | .user.ini modified to disable security functions (disable_functions cleared, allow_url_include enabled) |
 | Suspicious extensions | .haxor, .cgix, .phtml, .pht, .php5 files created |
+| HTML phishing pages | Brand impersonation (Microsoft/Google/Dropbox/etc.) + credential harvesting + redirect/exfiltration |
+| Credential harvest logs | Files like results.txt, data.txt with email:password pairs (phishing kit output) |
+| Phishing kit ZIPs | ZIP archives with brand-related names (office365.zip, sharepoint.zip) uploaded to public_html |
+| Signature rule matches | External YAML signature rules scanned against new PHP files in real-time |
 
 ### Real-time: inotify Log Watchers
 
@@ -165,6 +171,9 @@ When the daemon is running with fanotify, only checks that fanotify can't replac
 | open_basedir verification | Accounts with CageFS disabled and no open_basedir |
 | Symlink attack detection | Symlinks pointing to other users' directories or /etc/shadow |
 | PHP configuration changes | .user.ini changes: disable_functions cleared, allow_url_include enabled, open_basedir removed |
+| Phishing page detection | 8-layer detection: brand impersonation, credential harvesting, structural analysis, directory anomalies, PHP phishing, open redirectors, credential logs, kit archives |
+| PHP content analysis | Obfuscated droppers: goto spaghetti, hex strings, call_user_func construction, remote payload URLs |
+| Signature rule scanning | External YAML rules scanned against files in sensitive directories |
 | DNS zone modifications | Changes to /var/named/*.db zone files (DNS hijacking) |
 | SSL certificate issuance | New certificates via AutoSSL (phishing domain certs) |
 
@@ -173,7 +182,8 @@ When the daemon is running with fanotify, only checks that fanotify can't replac
 | Action | What it does |
 |---|---|
 | Auto-kill processes | Kills fake kernel threads, reverse shells, GSocket (never kills root/system) |
-| Auto-quarantine files | Moves webshells/backdoors to `/opt/csm/quarantine/` with metadata sidecar |
+| Auto-quarantine files | Moves webshells/backdoors/phishing to `/opt/csm/quarantine/` with metadata sidecar |
+| Auto-block IPs | Blocks attacker IPs via CSF with configurable expiry (brute-force, C2, credential stuffing) |
 
 ```yaml
 auto_response:
@@ -253,6 +263,43 @@ Two systemd timers: `csm-critical.timer` (10 min) and `csm-deep.timer` (60 min).
 
 Stops daemon/timers, backs up, downloads, verifies checksum, baselines, restarts. Rolls back on failure.
 
+## Signature Rules
+
+CSM supports external malware signature rules in YAML format, loaded from `/opt/csm/rules/`. Rules are scanned against new files in real-time (fanotify) and during deep scans.
+
+```yaml
+# /opt/csm/rules/malware.yml
+version: 1
+updated: "2026-03-26"
+
+rules:
+  - name: webshell_c99
+    description: "C99 webshell"
+    severity: critical
+    category: webshell
+    file_types: [".php"]
+    patterns: ["c99shell", "c99_buff_prepare"]   # literal (case-insensitive)
+    min_match: 1
+
+  - name: php_eval_decode
+    description: "Obfuscated PHP eval chain"
+    severity: critical
+    category: dropper
+    file_types: [".php"]
+    patterns: ["eval("]
+    regexes: ["(?:base64_decode|gzinflate|gzuncompress)"]  # regex
+    min_match: 2
+```
+
+**Update rules:** `csm update-rules` downloads latest rules from the configured URL. The running daemon reloads rules on `SIGHUP`:
+
+```bash
+csm update-rules
+kill -HUP $(pidof csm)    # reload without restart
+```
+
+A default rule set with 25+ rules ships in `configs/malware.yml`, covering webshells, backdoors, droppers, phishing kits, CGI abuse, credential harvesters, and exploits.
+
 ## Configuration
 
 Config file: `/opt/csm/csm.yaml`
@@ -279,6 +326,12 @@ auto_response:
   enabled: false
   kill_processes: false
   quarantine_files: false
+  block_ips: false
+  block_expiry: "24h"
+
+signatures:
+  rules_dir: "/opt/csm/rules"
+  update_url: ""  # URL to download latest rules
 
 integrity:
   binary_hash: ""   # set by baseline
@@ -326,6 +379,7 @@ backdoor_ports: [4444, 5555, 55553, 55555, 31337]
 | `csm baseline` | Record current state as known-good |
 | `csm validate` | Check config for mistakes |
 | `csm verify` | Verify binary and config integrity |
+| `csm update-rules` | Download latest malware signature rules |
 | `csm version` | Show version and build info |
 
 ## Security
@@ -364,9 +418,13 @@ make tools          # Install dev tools
 
 ## Roadmap
 
+- YARA-X integration (VirusTotal's next-gen YARA engine) for advanced malware signatures
+- WordPress database malware scanning (wp_posts, wp_options content inspection)
+- Malware cleaning/disinfection (surgical removal of injected code, not just quarantine)
+- PHP runtime protection via auto_prepend_file security handler
+- PAM integration for real-time brute-force blocking (seconds, not minutes)
+- WAF rule management and custom ModSecurity rule deployment
+- Web dashboard (WHM plugin) for centralized management
+- CAPTCHA/challenge pages instead of hard IP blocks
 - Binary signing with cosign
-- Outbound mail content sampling
-- WordPress admin user creation monitoring
 - Multi-server config management
-- Web dashboard for centralized alerts
-- Auto-update mechanism

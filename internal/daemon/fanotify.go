@@ -14,6 +14,7 @@ import (
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
 	"github.com/pidginhost/cpanel-security-monitor/internal/config"
+	"github.com/pidginhost/cpanel-security-monitor/internal/signatures"
 )
 
 const (
@@ -202,6 +203,23 @@ func (fm *FileMonitor) isInteresting(path string) bool {
 		return true
 	}
 
+	// HTML files in /home (phishing pages)
+	if strings.HasPrefix(path, "/home/") &&
+		(strings.HasSuffix(lower, ".html") || strings.HasSuffix(lower, ".htm")) {
+		return true
+	}
+
+	// Credential log files — known phishing harvest filenames
+	base := filepath.Base(lower)
+	if credentialLogNames[base] {
+		return true
+	}
+
+	// ZIP archives in /home (phishing kit uploads)
+	if strings.HasPrefix(path, "/home/") && strings.HasSuffix(lower, ".zip") {
+		return true
+	}
+
 	// Anything in .config directories
 	if strings.Contains(path, "/.config/") {
 		return true
@@ -213,6 +231,17 @@ func (fm *FileMonitor) isInteresting(path string) bool {
 	}
 
 	return false
+}
+
+// credentialLogNames are filenames commonly used by phishing kits to store
+// harvested credentials. Checked in isInteresting() for real-time detection.
+var credentialLogNames = map[string]bool{
+	"results.txt": true, "result.txt": true, "log.txt": true,
+	"logs.txt": true, "emails.txt": true, "data.txt": true,
+	"passwords.txt": true, "creds.txt": true, "credentials.txt": true,
+	"victims.txt": true, "output.txt": true, "harvested.txt": true,
+	"results.log": true, "emails.log": true, "data.log": true,
+	"results.csv": true, "emails.csv": true, "data.csv": true,
 }
 
 // analyzerWorker processes file events from the bounded channel.
@@ -308,6 +337,25 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	// PHP content analysis — read first 8KB
 	if strings.HasSuffix(nameLower, ".php") {
 		fm.checkPHPContent(path)
+		return
+	}
+
+	// HTML phishing page detection
+	if strings.HasSuffix(nameLower, ".html") || strings.HasSuffix(nameLower, ".htm") {
+		fm.checkHTMLPhishing(path)
+		return
+	}
+
+	// Credential log files
+	if credentialLogNames[nameLower] {
+		fm.checkCredentialLog(path)
+		return
+	}
+
+	// Phishing kit ZIP archives
+	if strings.HasSuffix(nameLower, ".zip") {
+		fm.checkPhishingZip(path, nameLower)
+		return
 	}
 }
 
@@ -432,6 +480,203 @@ func (fm *FileMonitor) checkPHPContent(path string) {
 		fm.sendAlert(alert.Critical, "webshell_content_realtime",
 			fmt.Sprintf("Webshell pattern detected: %s", path),
 			"Shell execution function with request input")
+		return
+	}
+
+	// External signature scanning (if rules are loaded)
+	if scanner := signatures.Global(); scanner != nil {
+		matches := scanner.ScanContent(data, filepath.Ext(path))
+		if len(matches) > 0 {
+			m := matches[0] // one alert per file — use first match
+			sev := alert.High
+			if m.Severity == "critical" {
+				sev = alert.Critical
+			}
+			fm.sendAlert(sev, "signature_match_realtime",
+				fmt.Sprintf("Signature match [%s]: %s", m.RuleName, path),
+				fmt.Sprintf("Category: %s\nDescription: %s\nMatched: %s",
+					m.Category, m.Description, strings.Join(m.Matched, ", ")))
+		}
+	}
+}
+
+// checkHTMLPhishing reads an HTML file and checks for phishing indicators:
+// brand impersonation + credential input + redirect/exfiltration.
+func (fm *FileMonitor) checkHTMLPhishing(path string) {
+	// Only check files in web-accessible directories
+	if !strings.Contains(path, "/public_html/") {
+		return
+	}
+
+	// Skip known safe directories
+	for _, safe := range []string{"/wp-admin/", "/wp-includes/", "/wp-content/themes/",
+		"/wp-content/plugins/", "/node_modules/", "/vendor/", "/.well-known/"} {
+		if strings.Contains(path, safe) {
+			return
+		}
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		return
+	}
+	// Phishing pages are self-contained: typically 3KB-100KB
+	if info.Size() < 3000 || info.Size() > 100000 {
+		return
+	}
+
+	data := readHead(path, 16384)
+	if data == nil {
+		return
+	}
+	content := strings.ToLower(string(data))
+
+	// Must have a form with credential inputs
+	if !strings.Contains(content, "<form") && !strings.Contains(content, "<input") {
+		return
+	}
+	hasCredInput := strings.Contains(content, "type=\"email\"") ||
+		strings.Contains(content, "type=\"password\"") ||
+		strings.Contains(content, "type='email'") ||
+		strings.Contains(content, "type='password'") ||
+		strings.Contains(content, "name=\"email\"") ||
+		strings.Contains(content, "name=\"password\"") ||
+		strings.Contains(content, "placeholder=\"you@")
+	if !hasCredInput {
+		return
+	}
+
+	// Check for brand impersonation
+	brands := []struct {
+		name     string
+		patterns []string
+	}{
+		{"Microsoft/SharePoint", []string{"sharepoint", "onedrive", "microsoft 365", "outlook web", "office 365"}},
+		{"Google", []string{"google drive", "google docs", "accounts.google", "gmail"}},
+		{"Dropbox", []string{"dropbox"}},
+		{"DocuSign", []string{"docusign"}},
+		{"Adobe", []string{"adobe sign", "adobe document"}},
+		{"Apple/iCloud", []string{"icloud", "apple id"}},
+		{"Webmail", []string{"roundcube", "horde", "webmail login", "zimbra"}},
+		{"Generic", []string{"secure access", "verify your", "confirm your identity", "account verification"}},
+	}
+
+	brandMatch := ""
+	for _, b := range brands {
+		for _, p := range b.patterns {
+			if strings.Contains(content, p) {
+				brandMatch = b.name
+				break
+			}
+		}
+		if brandMatch != "" {
+			break
+		}
+	}
+	if brandMatch == "" {
+		return
+	}
+
+	// Check for redirect/exfiltration patterns
+	exfilPatterns := []string{
+		"window.location.href", "window.location.replace", "window.location =",
+		".workers.dev", "fetch(", "xmlhttprequest",
+	}
+	hasExfil := false
+	for _, p := range exfilPatterns {
+		if strings.Contains(content, p) {
+			hasExfil = true
+			break
+		}
+	}
+
+	// Also check for trust badges (strong phishing signal)
+	hasTrustBadge := strings.Contains(content, "secured by microsoft") ||
+		strings.Contains(content, "secured by google") ||
+		strings.Contains(content, "256-bit encrypted") ||
+		strings.Contains(content, "256‑bit encrypted")
+
+	if hasExfil || hasTrustBadge {
+		fm.sendAlert(alert.Critical, "phishing_realtime",
+			fmt.Sprintf("Phishing page created (%s impersonation): %s", brandMatch, path),
+			fmt.Sprintf("Size: %d bytes", info.Size()))
+	}
+}
+
+// checkCredentialLog reads a text file and checks if it contains harvested
+// email:password pairs — output from an active phishing kit.
+func (fm *FileMonitor) checkCredentialLog(path string) {
+	if !strings.Contains(path, "/public_html/") {
+		return
+	}
+
+	data := readHead(path, 4096)
+	if data == nil {
+		return
+	}
+	content := string(data)
+	lines := strings.Split(content, "\n")
+
+	credLines := 0
+	emailCount := 0
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.Contains(line, "@") {
+			emailCount++
+			for _, delim := range []string{":", "|", "\t", ","} {
+				parts := strings.SplitN(line, delim, 3)
+				if len(parts) >= 2 {
+					p0 := strings.TrimSpace(parts[0])
+					p1 := strings.TrimSpace(parts[1])
+					if strings.Contains(p0, "@") && len(p1) > 0 && !strings.Contains(p1, " ") {
+						credLines++
+						break
+					}
+				}
+			}
+		}
+	}
+
+	if credLines >= 3 {
+		fm.sendAlert(alert.Critical, "credential_log_realtime",
+			fmt.Sprintf("Harvested credential log detected: %s", path),
+			fmt.Sprintf("%d credential lines (email:password format) found", credLines))
+	} else if emailCount >= 10 {
+		fm.sendAlert(alert.High, "credential_log_realtime",
+			fmt.Sprintf("Possible harvested email list: %s", path),
+			fmt.Sprintf("%d email addresses found in %s", emailCount, filepath.Base(path)))
+	}
+}
+
+// checkPhishingZip checks if a newly created ZIP file matches known phishing
+// kit archive names.
+func (fm *FileMonitor) checkPhishingZip(path, nameLower string) {
+	if !strings.Contains(path, "/public_html/") {
+		return
+	}
+
+	kitNames := []string{
+		"office365", "office 365", "sharepoint", "onedrive",
+		"microsoft", "outlook", "google", "gmail",
+		"dropbox", "docusign", "adobe", "wetransfer",
+		"paypal", "apple", "icloud", "netflix",
+		"facebook", "instagram", "linkedin",
+		"login", "phish", "scam", "kit",
+		"webmail", "roundcube", "cpanel",
+		"bank", "verify", "secure",
+	}
+
+	for _, kit := range kitNames {
+		if strings.Contains(nameLower, kit) {
+			fm.sendAlert(alert.High, "phishing_kit_realtime",
+				fmt.Sprintf("Suspected phishing kit archive uploaded: %s", path),
+				fmt.Sprintf("Filename matches phishing kit pattern: '%s'", kit))
+			return
+		}
 	}
 }
 

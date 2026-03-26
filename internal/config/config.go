@@ -77,6 +77,11 @@ type Config struct {
 		AbuseIPDBKey string `yaml:"abuseipdb_key"`
 	} `yaml:"reputation"`
 
+	Signatures struct {
+		RulesDir  string `yaml:"rules_dir"`
+		UpdateURL string `yaml:"update_url"`
+	} `yaml:"signatures"`
+
 	C2Blocklist   []string `yaml:"c2_blocklist"`
 	BackdoorPorts []int    `yaml:"backdoor_ports"`
 }
@@ -97,6 +102,9 @@ func Load(path string) (*Config, error) {
 	// Defaults
 	if cfg.StatePath == "" {
 		cfg.StatePath = "/opt/csm/state"
+	}
+	if cfg.Signatures.RulesDir == "" {
+		cfg.Signatures.RulesDir = "/opt/csm/rules"
 	}
 	if cfg.Thresholds.MailQueueWarn == 0 {
 		cfg.Thresholds.MailQueueWarn = 500
