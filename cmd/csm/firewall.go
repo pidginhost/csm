@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"net"
 	"os"
@@ -39,6 +40,12 @@ func runFirewall() {
 		fwRestart()
 	case "migrate-from-csf":
 		fwMigrate()
+	case "deny-file":
+		fwDenyFile()
+	case "allow-file":
+		fwAllowFile()
+	case "audit":
+		fwAudit()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown firewall command: %s\n", os.Args[2])
 		printFirewallUsage()
@@ -62,6 +69,9 @@ Commands:
   flush                             Remove all dynamic IP blocks
   restart                           Reapply full firewall ruleset
   migrate-from-csf [--apply]        Migrate from CSF (dry run unless --apply)
+  deny-file <path>                  Bulk block IPs from file (one per line)
+  allow-file <path>                 Bulk allow IPs from file (one per line)
+  audit [limit]                     Show recent firewall audit log (default: 50)
 `)
 }
 
@@ -500,4 +510,137 @@ func parseFWDuration(s string) (time.Duration, error) {
 		return time.Duration(days) * 24 * time.Hour, nil
 	}
 	return time.ParseDuration(s)
+}
+
+func fwDenyFile() {
+	args := fwArgs()
+	if len(args) < 1 {
+		fmt.Fprintf(os.Stderr, "Usage: csm firewall deny-file <path>\n")
+		fmt.Fprintf(os.Stderr, "  File format: one IP per line, optional # comment\n")
+		os.Exit(1)
+	}
+
+	cfg := loadConfig()
+	engine, err := firewall.ConnectExisting(cfg.Firewall, cfg.StatePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	f, err := os.Open(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening file: %v\n", err)
+		os.Exit(1)
+	}
+	defer f.Close()
+
+	blocked, skipped := 0, 0
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// Format: IP [# reason]
+		ip := line
+		reason := "Blocked via deny-file"
+		if idx := strings.Index(line, "#"); idx > 0 {
+			reason = strings.TrimSpace(line[idx+1:])
+			ip = strings.TrimSpace(line[:idx])
+		} else {
+			ip = strings.Fields(line)[0]
+		}
+		if net.ParseIP(ip) == nil {
+			skipped++
+			continue
+		}
+		if err := engine.BlockIP(ip, reason, 0); err != nil {
+			fmt.Fprintf(os.Stderr, "  skip %s: %v\n", ip, err)
+			skipped++
+			continue
+		}
+		blocked++
+	}
+	fmt.Printf("Blocked %d IPs (%d skipped)\n", blocked, skipped)
+}
+
+func fwAllowFile() {
+	args := fwArgs()
+	if len(args) < 1 {
+		fmt.Fprintf(os.Stderr, "Usage: csm firewall allow-file <path>\n")
+		fmt.Fprintf(os.Stderr, "  File format: one IP per line, optional # comment\n")
+		os.Exit(1)
+	}
+
+	cfg := loadConfig()
+	engine, err := firewall.ConnectExisting(cfg.Firewall, cfg.StatePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	f, err := os.Open(args[0])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error opening file: %v\n", err)
+		os.Exit(1)
+	}
+	defer f.Close()
+
+	allowed, skipped := 0, 0
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		ip := line
+		reason := "Allowed via allow-file"
+		if idx := strings.Index(line, "#"); idx > 0 {
+			reason = strings.TrimSpace(line[idx+1:])
+			ip = strings.TrimSpace(line[:idx])
+		} else {
+			ip = strings.Fields(line)[0]
+		}
+		if net.ParseIP(ip) == nil {
+			skipped++
+			continue
+		}
+		if err := engine.AllowIP(ip, reason); err != nil {
+			fmt.Fprintf(os.Stderr, "  skip %s: %v\n", ip, err)
+			skipped++
+			continue
+		}
+		allowed++
+	}
+	fmt.Printf("Allowed %d IPs (%d skipped)\n", allowed, skipped)
+}
+
+func fwAudit() {
+	args := fwArgs()
+	limit := 50
+	if len(args) > 0 {
+		if n, err := strconv.Atoi(args[0]); err == nil && n > 0 {
+			limit = n
+		}
+	}
+
+	cfg := loadConfig()
+	entries := firewall.ReadAuditLog(cfg.StatePath, limit)
+	if len(entries) == 0 {
+		fmt.Println("No audit entries.")
+		return
+	}
+
+	for _, e := range entries {
+		ts := e.Timestamp.Format("2006-01-02 15:04:05")
+		dur := ""
+		if e.Duration != "" {
+			dur = fmt.Sprintf(" (%s)", e.Duration)
+		}
+		reason := ""
+		if e.Reason != "" {
+			reason = fmt.Sprintf("  %s", e.Reason)
+		}
+		fmt.Printf("%s  %-13s %-18s%s%s\n", ts, e.Action, e.IP, dur, reason)
+	}
 }

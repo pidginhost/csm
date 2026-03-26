@@ -146,6 +146,14 @@ func (d *Daemon) Run() error {
 					fmt.Fprintf(os.Stderr, "[%s] Reloaded %d YARA rule file(s)\n", ts(), yaraScanner.RuleCount())
 				}
 			}
+			// Reload firewall rules if engine is running
+			if d.fwEngine != nil {
+				if err := d.fwEngine.Apply(); err != nil {
+					fmt.Fprintf(os.Stderr, "[%s] Firewall reload error: %v\n", ts(), err)
+				} else {
+					fmt.Fprintf(os.Stderr, "[%s] Firewall rules reloaded\n", ts())
+				}
+			}
 			continue
 		}
 		break // SIGTERM or SIGINT
