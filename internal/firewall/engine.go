@@ -604,7 +604,11 @@ func (e *Engine) createOutputChain() error {
 				fmt.Fprintf(os.Stderr, "firewall: smtp_allow_users: unknown user %q\n", username)
 				continue
 			}
-			uid, _ := strconv.ParseUint(u.Uid, 10, 32)
+			uid, parseErr := strconv.ParseUint(u.Uid, 10, 32)
+			if parseErr != nil {
+				fmt.Fprintf(os.Stderr, "firewall: smtp_allow_users: invalid uid for %s: %v\n", username, parseErr)
+				continue
+			}
 			allowedUIDs = append(allowedUIDs, uint32(uid))
 		}
 		// Always allow root
