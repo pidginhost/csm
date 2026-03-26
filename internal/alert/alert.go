@@ -209,6 +209,9 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 	// Deduplicate
 	findings = Deduplicate(findings)
 
+	// Filter out blocked IP alerts if configured
+	findings = FilterBlockedAlerts(cfg, findings)
+
 	if len(findings) == 0 {
 		return nil
 	}

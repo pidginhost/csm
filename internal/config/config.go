@@ -55,12 +55,13 @@ type Config struct {
 	StatePath string `yaml:"state_path"`
 
 	Suppressions struct {
-		UPCPWindowStart     string   `yaml:"upcp_window_start"`
-		UPCPWindowEnd       string   `yaml:"upcp_window_end"`
-		KnownAPITokens      []string `yaml:"known_api_tokens"`
-		IgnorePaths         []string `yaml:"ignore_paths"`
-		SuppressWebmail     bool     `yaml:"suppress_webmail_alerts"`      // don't alert on webmail logins
-		SuppressCpanelLogin bool     `yaml:"suppress_cpanel_login_alerts"` // don't alert on cPanel direct logins
+		UPCPWindowStart       string   `yaml:"upcp_window_start"`
+		UPCPWindowEnd         string   `yaml:"upcp_window_end"`
+		KnownAPITokens        []string `yaml:"known_api_tokens"`
+		IgnorePaths           []string `yaml:"ignore_paths"`
+		SuppressWebmail       bool     `yaml:"suppress_webmail_alerts"`      // don't alert on webmail logins
+		SuppressCpanelLogin   bool     `yaml:"suppress_cpanel_login_alerts"` // don't alert on cPanel direct logins
+		SuppressBlockedAlerts bool     `yaml:"suppress_blocked_alerts"`      // don't alert on IPs that were auto-blocked
 	} `yaml:"suppressions"`
 
 	AutoResponse struct {
