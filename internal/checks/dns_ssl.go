@@ -11,11 +11,15 @@ import (
 	"github.com/pidginhost/cpanel-security-monitor/internal/state"
 )
 
-// CheckDNSZoneChanges monitors named zone files for modifications.
-// Zone file tampering can redirect traffic or enable phishing.
-func CheckDNSZoneChanges(_ *config.Config, store *state.Store) []alert.Finding {
-	var findings []alert.Finding
+// maxBulkDNSChanges is the threshold above which zone changes are considered
+// a cPanel bulk operation (AutoSSL, serial bump, DNSSEC rotation) and suppressed.
+// Only 1-5 zone changes at once are reported — likely targeted modifications.
+const maxBulkDNSChanges = 5
 
+// CheckDNSZoneChanges monitors named zone files for modifications.
+// Suppresses bulk changes (>5 zones at once = cPanel maintenance).
+// Only alerts on targeted changes (1-5 zones) which may indicate tampering.
+func CheckDNSZoneChanges(_ *config.Config, store *state.Store) []alert.Finding {
 	// cPanel stores zone files in /var/named/
 	zoneDir := "/var/named"
 	zones, err := os.ReadDir(zoneDir)
@@ -23,12 +27,13 @@ func CheckDNSZoneChanges(_ *config.Config, store *state.Store) []alert.Finding {
 		return nil
 	}
 
+	// First pass: count how many zones changed
+	var changedZones []string
 	for _, zone := range zones {
 		if zone.IsDir() {
 			continue
 		}
 		name := zone.Name()
-		// Only check .db zone files
 		if !strings.HasSuffix(name, ".db") {
 			continue
 		}
@@ -44,13 +49,24 @@ func CheckDNSZoneChanges(_ *config.Config, store *state.Store) []alert.Finding {
 		store.SetRaw(key, hash)
 
 		if exists && prev != hash {
-			findings = append(findings, alert.Finding{
-				Severity: alert.High,
-				Check:    "dns_zone_change",
-				Message:  fmt.Sprintf("DNS zone file modified: %s", name),
-				Details:  fmt.Sprintf("File: %s\nThis could indicate DNS hijacking or unauthorized domain changes", fullPath),
-			})
+			changedZones = append(changedZones, name)
 		}
+	}
+
+	// If many zones changed at once, it's cPanel maintenance — suppress
+	if len(changedZones) > maxBulkDNSChanges {
+		return nil
+	}
+
+	// Only alert on targeted changes (1-5 zones)
+	var findings []alert.Finding
+	for _, name := range changedZones {
+		findings = append(findings, alert.Finding{
+			Severity: alert.High,
+			Check:    "dns_zone_change",
+			Message:  fmt.Sprintf("DNS zone file modified: %s", name),
+			Details:  fmt.Sprintf("File: %s\nThis could indicate DNS hijacking or unauthorized domain changes", filepath.Join(zoneDir, name)),
+		})
 	}
 
 	return findings
