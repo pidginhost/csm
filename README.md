@@ -41,7 +41,7 @@ Benchmarked on a production cPanel server with 168 accounts, 275 WordPress sites
 
 **Binary size:** ~8 MB (static, no dependencies)
 
-**Codebase:** 68 Go files, ~15,500 lines of code, 2 dependencies (yaml.v3 + yara-x)
+**Codebase:** 96 Go files, ~22,600 lines of code, 3 dependencies (yaml.v3, yara-x, google/nftables)
 
 **Disk usage:**
 - Binary: 8 MB (`/opt/csm/csm`)
@@ -70,6 +70,10 @@ csm daemon
 ├── Periodic: Deep Scanner (every 60 min)
 │   WP core checksums, RPM integrity, nulled plugins,
 │   open_basedir, symlinks (only checks fanotify can't do)
+│
+├── nftables Firewall Engine
+│   Replaces CSF. Atomic rules, per-IP metering, IPv6,
+│   SMTP block, country block, subnet block, DynDNS
 │
 ├── Alert Dispatcher
 │   Batching, deduplication, rate limiting, auto-response
@@ -214,7 +218,7 @@ auto_response:
 | Feature | Description |
 |---|---|
 | Binary self-verification | SHA256 hash check on each run/startup |
-| auditd rules | 20 kernel-level audit rules for shadow, passwd, SSH, crontab, CSF |
+| auditd rules | 20 kernel-level audit rules for shadow, passwd, SSH, crontab |
 | Alert rate limiting | Max alerts per hour (default: 10) |
 | Alert batching | 5-second window to group related findings (daemon mode) |
 | Finding deduplication | Same check+message = one alert |
@@ -322,7 +326,7 @@ rules:
     min_match: 2
 ```
 
-**Update rules:** `csm update-rules` downloads latest rules from the configured URL. The running daemon reloads rules on `SIGHUP`:
+**Update rules:** `csm update-rules` downloads latest rules from the configured URL. The running daemon reloads signature rules + firewall ruleset on `SIGHUP`:
 
 ```bash
 csm update-rules
@@ -373,6 +377,18 @@ auto_response:
   quarantine_files: false
   block_ips: false
   block_expiry: "24h"
+  netblock: false             # auto-block /24 subnet when 3+ IPs from same range
+  netblock_threshold: 3
+
+firewall:
+  enabled: false              # enable to activate nftables firewall (replaces CSF)
+  ipv6: false                 # enable IPv6 dual-stack filtering
+  conn_rate_limit: 30         # new connections per minute per IP
+  syn_flood_protection: true
+  conn_limit: 50              # max concurrent connections per IP
+  udp_flood: true
+  smtp_block: false           # restrict outbound SMTP to allowed users
+  # dyndns_hosts: ["myhost.dyndns.org"]
 
 signatures:
   rules_dir: "/opt/csm/rules"
@@ -427,6 +443,7 @@ backdoor_ports: [4444, 5555, 55553, 55555, 31337]
 | `csm update-rules` | Download latest malware signature rules |
 | `csm clean <path>` | Clean an infected PHP file — removes injections, creates backup |
 | `csm scan <user>` | Scan a single cPanel account (16 checks, ~5 sec). Add `--alert` to send alerts |
+| `csm firewall ...` | Firewall management — see [nftables Firewall Engine](#nftables-firewall-engine) below |
 | `csm version` | Show version and build info |
 
 ## Security
@@ -546,7 +563,7 @@ GET  /api/v1/fix-preview        Preview what a fix would do (?check=...&message=
 | External signature updates | `csm update-rules` + SIGHUP reload | Automatic daily |
 | Password hijack detection | Correlates password change + re-login from new IP | Not available |
 | Transparency | Full finding details, check names, evidence | Black box |
-| Dependencies | 2 (yaml.v3, yara-x) | Hundreds (Python, ClamAV, etc.) |
+| Dependencies | 3 (yaml.v3, yara-x, nftables) | Hundreds (Python, ClamAV, etc.) |
 | Binary size | ~8 MB static | ~500 MB+ installed |
 
 ## nftables Firewall Engine
