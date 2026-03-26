@@ -169,6 +169,29 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			Details:   fmt.Sprintf("Reason: %s", reason),
 			Timestamp: time.Now(),
 		})
+
+		// Permanent block escalation: promote to permanent after N temp blocks
+		if cfg.AutoResponse.PermBlock && fwBlocker != nil {
+			count := cfg.AutoResponse.PermBlockCount
+			if count < 2 {
+				count = 4
+			}
+			interval := parseExpiry(cfg.AutoResponse.PermBlockInterval)
+			if interval == 0 {
+				interval = 24 * time.Hour
+			}
+			if checkPermBlockEscalation(cfg.StatePath, ip, count, interval) {
+				permReason := fmt.Sprintf("PERMBLOCK: %d temp blocks within %s", count, interval)
+				if err := fwBlocker.BlockIP(ip, permReason, 0); err == nil {
+					actions = append(actions, alert.Finding{
+						Severity:  alert.Critical,
+						Check:     "auto_block",
+						Message:   fmt.Sprintf("AUTO-PERMBLOCK: %s promoted to permanent block (%d temp blocks)", ip, count),
+						Timestamp: time.Now(),
+					})
+				}
+			}
+		}
 	}
 
 	// Subnet auto-blocking: detect /24 patterns
@@ -295,4 +318,65 @@ func extractPrefix24(ip string) string {
 		return ""
 	}
 	return parts[0] + "." + parts[1] + "." + parts[2]
+}
+
+// --- Permanent block escalation (LF_PERMBLOCK) ---
+
+type permBlockTracker struct {
+	IPs map[string][]time.Time `json:"ips"` // IP -> list of block timestamps
+}
+
+// checkPermBlockEscalation records a new block and returns true if the IP
+// has been temp-blocked count times within interval.
+func checkPermBlockEscalation(statePath, ip string, count int, interval time.Duration) bool {
+	tracker := loadPermBlockTracker(statePath)
+	now := time.Now()
+	cutoff := now.Add(-interval)
+
+	// Add current block timestamp
+	tracker.IPs[ip] = append(tracker.IPs[ip], now)
+
+	// Clean old entries for this IP
+	var recent []time.Time
+	for _, t := range tracker.IPs[ip] {
+		if t.After(cutoff) {
+			recent = append(recent, t)
+		}
+	}
+	tracker.IPs[ip] = recent
+
+	// Clean old IPs entirely (haven't been seen in 2x the interval)
+	for k, times := range tracker.IPs {
+		if len(times) == 0 {
+			delete(tracker.IPs, k)
+			continue
+		}
+		latest := times[len(times)-1]
+		if now.Sub(latest) > interval*2 {
+			delete(tracker.IPs, k)
+		}
+	}
+
+	savePermBlockTracker(statePath, tracker)
+
+	return len(recent) >= count
+}
+
+func loadPermBlockTracker(statePath string) *permBlockTracker {
+	tracker := &permBlockTracker{IPs: make(map[string][]time.Time)}
+	data, err := os.ReadFile(filepath.Join(statePath, "permblock_tracker.json"))
+	if err == nil {
+		_ = json.Unmarshal(data, tracker)
+		if tracker.IPs == nil {
+			tracker.IPs = make(map[string][]time.Time)
+		}
+	}
+	return tracker
+}
+
+func savePermBlockTracker(statePath string, tracker *permBlockTracker) {
+	data, _ := json.MarshalIndent(tracker, "", "  ")
+	tmpPath := filepath.Join(statePath, "permblock_tracker.json.tmp")
+	_ = os.WriteFile(tmpPath, data, 0600)
+	_ = os.Rename(tmpPath, filepath.Join(statePath, "permblock_tracker.json"))
 }

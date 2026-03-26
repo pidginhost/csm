@@ -74,6 +74,9 @@ type Config struct {
 		BlockCpanelLogins bool   `yaml:"block_cpanel_logins"` // block IPs on cPanel/webmail login alerts (default false)
 		NetBlock          bool   `yaml:"netblock"`            // auto-block /24 when threshold IPs from same subnet
 		NetBlockThreshold int    `yaml:"netblock_threshold"`  // IPs from same /24 before subnet block (default 3)
+		PermBlock         bool   `yaml:"permblock"`           // auto-promote to permanent after N temp blocks
+		PermBlockCount    int    `yaml:"permblock_count"`     // temp blocks before permanent (default 4)
+		PermBlockInterval string `yaml:"permblock_interval"`  // window for counting temp blocks (default "24h")
 	} `yaml:"auto_response"`
 
 	Reputation struct {

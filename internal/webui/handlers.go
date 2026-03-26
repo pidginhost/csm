@@ -3,11 +3,11 @@ package webui
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
 	"github.com/pidginhost/cpanel-security-monitor/internal/checks"
-	"github.com/pidginhost/cpanel-security-monitor/internal/state"
 )
 
 type dashboardData struct {
@@ -34,8 +34,9 @@ type timelineBar struct {
 }
 
 type findingsData struct {
-	Hostname string
-	Entries  []findingEntry
+	Hostname   string
+	Entries    []findingEntry
+	CheckTypes []string // unique check types for filter dropdown
 }
 
 type findingEntry struct {
@@ -66,6 +67,8 @@ type historyEntry struct {
 	Details   string
 	Timestamp string
 	TimeAgo   string
+	HasFix    bool
+	FixDesc   string
 }
 
 type quarantineData struct {
@@ -133,6 +136,8 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 				Details:   f.Details,
 				Timestamp: f.Timestamp.Format("15:04:05"),
 				TimeAgo:   timeAgo(f.Timestamp),
+				HasFix:    checks.HasFix(f.Check),
+				FixDesc:   checks.FixDescription(f.Check, f.Message),
 			})
 		}
 	}
@@ -186,30 +191,45 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleFindings(w http.ResponseWriter, _ *http.Request) {
-	entries := s.store.Entries()
+	// Read from latest scan results — shows "what's wrong right now"
+	// (not the alert dedup state, which only tracks what's been emailed)
+	latest := s.store.LatestFindings()
 
+	// Filter out auto_response actions and internal checks from the view
 	var items []findingEntry
-	for key, entry := range entries {
-		if entry.IsBaseline {
+	for _, f := range latest {
+		// Skip auto-response action logs and internal check results
+		if f.Check == "auto_response" || f.Check == "auto_block" || f.Check == "check_timeout" || f.Check == "health" {
 			continue
 		}
-		check, message := state.ParseKey(key)
 		items = append(items, findingEntry{
-			Check:     check,
-			Message:   message,
-			FirstSeen: entry.FirstSeen.Format("2006-01-02 15:04"),
-			LastSeen:  entry.LastSeen.Format("2006-01-02 15:04"),
-			Baseline:  entry.IsBaseline,
-			HasFix:    checks.HasFix(check),
-			FixDesc:   checks.FixDescription(check, message),
+			Check:     f.Check,
+			Message:   f.Message,
+			FirstSeen: f.Timestamp.Format("2006-01-02 15:04"),
+			LastSeen:  f.Timestamp.Format("2006-01-02 15:04"),
+			HasFix:    checks.HasFix(f.Check),
+			FixDesc:   checks.FixDescription(f.Check, f.Message),
 		})
 	}
 
-	data := findingsData{
-		Hostname: s.cfg.Hostname,
-		Entries:  items,
+	// Collect unique check types for filter dropdown
+	checkTypeMap := make(map[string]bool)
+	for _, item := range items {
+		checkTypeMap[item.Check] = true
 	}
-	_ = s.templates["findings.html"].ExecuteTemplate(w, "findings.html", data)
+	var checkTypes []string
+	for ct := range checkTypeMap {
+		checkTypes = append(checkTypes, ct)
+	}
+
+	data := findingsData{
+		Hostname:   s.cfg.Hostname,
+		Entries:    items,
+		CheckTypes: checkTypes,
+	}
+	if err := s.templates["findings.html"].ExecuteTemplate(w, "findings.html", data); err != nil {
+		fmt.Fprintf(os.Stderr, "[webui] findings template error: %v\n", err)
+	}
 }
 
 func (s *Server) handleHistory(w http.ResponseWriter, _ *http.Request) {
