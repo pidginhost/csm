@@ -26,6 +26,7 @@ type Daemon struct {
 	logWatchers    []*LogWatcher
 	fileMonitor    *FileMonitor
 	hijackDetector *PasswordHijackDetector
+	pamListener    *PAMListener
 	alertCh        chan alert.Finding
 	stopCh         chan struct{}
 	wg             sync.WaitGroup
@@ -80,6 +81,9 @@ func (d *Daemon) Run() error {
 	// Start inotify log watchers
 	d.startLogWatchers()
 
+	// Start PAM listener for real-time brute-force detection
+	d.startPAMListener()
+
 	// Start fanotify file monitor (falls back to periodic if kernel doesn't support it)
 	d.startFileMonitor()
 
@@ -125,6 +129,9 @@ func (d *Daemon) Run() error {
 	}
 	if d.fileMonitor != nil {
 		d.fileMonitor.Stop()
+	}
+	if d.pamListener != nil {
+		d.pamListener.Stop()
 	}
 
 	d.wg.Wait()
@@ -301,6 +308,7 @@ func (d *Daemon) startLogWatchers() {
 		{"/var/log/secure", parseSecureLogLine},
 		{"/var/log/exim_mainlog", parseEximLogLine},
 		{"/var/log/messages", parseFTPLogLine},
+		{phpEventsLogPath, parsePHPShieldLogLine},
 	}
 
 	for _, lf := range logFiles {
@@ -317,6 +325,21 @@ func (d *Daemon) startLogWatchers() {
 		}(w)
 		fmt.Fprintf(os.Stderr, "[%s] Watching: %s\n", ts(), lf.path)
 	}
+}
+
+func (d *Daemon) startPAMListener() {
+	pl, err := NewPAMListener(d.cfg, d.alertCh)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] PAM listener not available: %v\n", ts(), err)
+		return
+	}
+	d.pamListener = pl
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		pl.Run(d.stopCh)
+	}()
+	fmt.Fprintf(os.Stderr, "[%s] PAM listener active: %s\n", ts(), pamSocketPath)
 }
 
 func (d *Daemon) startFileMonitor() {

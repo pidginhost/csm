@@ -167,9 +167,13 @@ func runDaemon() {
 
 func runInstall() {
 	cfgPath := defaultConfigPath
+	phpShield := false
 	for i, arg := range os.Args {
 		if arg == "--config" && i+1 < len(os.Args) {
 			cfgPath = os.Args[i+1]
+		}
+		if arg == "--php-shield" {
+			phpShield = true
 		}
 	}
 
@@ -182,6 +186,13 @@ func runInstall() {
 	if err := installer.Install(); err != nil {
 		fmt.Fprintf(os.Stderr, "Install failed: %v\n", err)
 		os.Exit(1)
+	}
+
+	if phpShield {
+		if err := installer.InstallPHPShield(); err != nil {
+			fmt.Fprintf(os.Stderr, "PHP Shield install failed: %v\n", err)
+			os.Exit(1)
+		}
 	}
 }
 

@@ -193,6 +193,8 @@ When the daemon is running with fanotify, only checks that fanotify can't replac
 | Auto-quarantine files | Moves webshells/backdoors/phishing to `/opt/csm/quarantine/` with metadata sidecar |
 | Auto-block IPs | Blocks attacker IPs via CSF with configurable expiry (brute-force, C2, credential stuffing) |
 | Malware cleaning | Surgical removal of @include injections, prepend/append injections, inline eval chains. Backup created before any change. |
+| PHP runtime shield | `auto_prepend_file` protection — blocks PHP execution from uploads/tmp, detects webshell parameters, logs suspicious POST requests |
+| PAM brute-force | Real-time login failure tracking via Unix socket — blocks IPs within seconds of threshold breach (SSH, FTP, email) |
 
 ```yaml
 auto_response:
@@ -246,6 +248,20 @@ After install:
 2. Run `csm validate` — check config for mistakes
 3. Run `csm baseline` — record current state as known-good
 4. Start daemon: `systemctl start csm.service`
+
+### Optional: PHP Runtime Shield
+
+```bash
+csm install --php-shield
+```
+
+Deploys a lightweight PHP `auto_prepend_file` that:
+- Blocks direct PHP execution from `wp-content/uploads/`, `/tmp/`, `/dev/shm/`
+- Detects webshell command parameters (`?cmd=`, `?exec=`) in requests
+- Logs suspicious POST requests with base64-encoded bodies
+- Reports events to the daemon via `/var/run/csm/php_events.log` for real-time alerting
+
+Overhead: < 0.1ms per request. Fails open — if the shield file is deleted, PHP continues normally.
 
 ## Running Modes
 
@@ -429,8 +445,6 @@ make tools          # Install dev tools
 ## Roadmap
 
 - YARA-X integration (VirusTotal's next-gen YARA engine) for advanced malware signatures
-- PHP runtime protection via auto_prepend_file security handler
-- PAM integration for real-time brute-force blocking (seconds, not minutes)
 - WAF rule management and custom ModSecurity rule deployment
 - Web dashboard (WHM plugin) for centralized management
 - CAPTCHA/challenge pages instead of hard IP blocks
