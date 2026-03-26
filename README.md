@@ -150,7 +150,7 @@ Falls back to timer-based mode if the kernel doesn't support fanotify.
 | Crontabs | Suspicious patterns: defunct-kernel, base64, reverse shells |
 | Outbound connections | C2 IPs, backdoor port listeners, suspicious user outbound connections |
 | DNS connections | Connections to non-configured DNS resolvers (DNS tunneling) |
-| Firewall integrity | CSF config changes, backdoor ports in TCP_IN |
+| Firewall integrity | nftables ruleset hash monitoring, backdoor ports in TCP_IN |
 | Mail queue + per-account rate | Queue spikes and single-domain email bursts (>100 messages) |
 | Kernel module audit | New modules loaded after baseline (rootkit detection) |
 | MySQL superuser audit | Changes to MySQL users with SUPER privilege |
@@ -197,7 +197,7 @@ When the daemon is running with fanotify, only checks that fanotify can't replac
 |---|---|
 | Auto-kill processes | Kills fake kernel threads, reverse shells, GSocket (never kills root/system) |
 | Auto-quarantine files | Moves webshells/backdoors/phishing to `/opt/csm/quarantine/` with metadata sidecar |
-| Auto-block IPs | Blocks attacker IPs via CSF with configurable expiry (brute-force, C2, credential stuffing) |
+| Auto-block IPs | Blocks attacker IPs via nftables firewall engine with configurable expiry (brute-force, C2, credential stuffing). Falls back to CSF if firewall disabled. |
 | Malware cleaning | 7 strategies: @include injection, prepend/append injection, inline eval, multi-layer base64 chains, chr()/pack() code construction, hex-encoded variable injection. Plus DB spam cleaning. Backup created before any change. |
 | PHP runtime shield | `auto_prepend_file` protection — blocks PHP execution from uploads/tmp, detects webshell parameters, logs suspicious POST requests |
 | PAM brute-force | Real-time login failure tracking via Unix socket — blocks IPs within seconds of threshold breach (SSH, FTP, email) |
@@ -485,7 +485,7 @@ Access at `https://localhost:9443/login`. Auto-generates a self-signed TLS cert 
 - **Findings** — active findings with search/filter, dismiss buttons, per-account scan form (enter username, get results inline)
 - **History** — paginated history with severity dropdown filter, click-to-expand finding details, CSV export button
 - **Quarantine** — quarantined file list with one-click restore to original location
-- **Blocked IPs** — view/manage CSF-blocked IPs, block new IPs, unblock with one click
+- **Blocked IPs** — view/manage blocked IPs (nftables or CSF), block new IPs, unblock with one click
 
 **API Endpoints:**
 ```
@@ -499,8 +499,8 @@ GET  /api/v1/health             Daemon health: fanotify status, watchers, uptime
 GET  /api/v1/history/csv        Export full history as CSV download
 WS   /ws/findings               Real-time finding stream (WebSocket)
 
-POST /api/v1/block-ip           Block an IP via CSF {"ip":"...","reason":"..."}
-POST /api/v1/unblock-ip         Unblock an IP from CSF {"ip":"..."}
+POST /api/v1/block-ip           Block an IP {"ip":"...","reason":"..."}
+POST /api/v1/unblock-ip         Unblock an IP {"ip":"..."}
 POST /api/v1/dismiss            Dismiss/acknowledge a finding {"key":"check:message"}
 POST /api/v1/quarantine-restore Restore quarantined file {"id":"..."}
 POST /api/v1/scan-account       Scan single account {"account":"username"}
@@ -533,7 +533,7 @@ POST /api/v1/scan-account       Scan single account {"account":"username"}
 | Outbound email scanning | Header + body analysis for phishing/spam | Content scanning + blocking |
 | Per-account scan | `csm scan <user>` CLI + Web UI (16 checks, ~5 sec) | Per-account scan from UI |
 | Web dashboard | Embedded HTTPS + WebSocket + actions (block/unblock/dismiss/restore/scan) | WHM plugin |
-| IP blocking | CSF integration with auto-expiry | CSF + CAPTCHA gray listing |
+| IP blocking | Native nftables engine (O(1) set lookup) with auto-expiry | CSF + CAPTCHA gray listing |
 | cPanel session monitoring | Multi-IP correlation, credential stuffing | Not available |
 | Cross-account correlation | Coordinated attack detection | Not available |
 | Phishing detection | 8-layer (brand, structural, directory, PHP, iframe, credential logs, ZIPs) | Not available |
@@ -545,9 +545,60 @@ POST /api/v1/scan-account       Scan single account {"account":"username"}
 | Dependencies | 2 (yaml.v3, yara-x) | Hundreds (Python, ClamAV, etc.) |
 | Binary size | ~8 MB static | ~500 MB+ installed |
 
+## nftables Firewall Engine
+
+CSM includes a native nftables firewall engine that replaces CSF (ConfigServer Firewall). The engine uses the kernel netlink API directly via Go — no iptables, no Perl, no shell commands.
+
+**Implemented:**
+- Atomic ruleset application (all-or-nothing via single netlink transaction)
+- Named IP sets: `blocked_ips` (with per-element timeout), `allowed_ips`, `infra_ips` (CIDR intervals), `country_blocked`
+- SYN flood protection (rate-limited SYN packets before port rules)
+- Per-minute new connection rate limiting
+- Per-port flood protection (SMTP ports: 40 connections per 300 seconds)
+- UDP flood protection (configurable rate/burst)
+- Country blocking via CIDR range files
+- Outbound SMTP restriction by UID (prevents compromised accounts from spamming)
+- Silent drop for scanner-targeted ports (no log noise)
+- Deny IP limits (prevents memory exhaustion from runaway blocking)
+- Restricted TCP ports (WHM/SSH only accessible from infra IPs)
+- State persistence with atomic writes (survives restart)
+- CSF migration tool (`csm firewall migrate-from-csf`)
+
+**Firewall CLI:**
+```
+csm firewall status                     Show firewall status
+csm firewall deny <ip> [reason]         Block an IP permanently
+csm firewall allow <ip> [reason]        Add to allowed list
+csm firewall remove <ip>                Remove from blocked/allowed
+csm firewall grep <pattern>             Search by IP or reason
+csm firewall tempban <ip> <dur> [reason] Temporary block (1h, 24h, 7d)
+csm firewall ports                      Show port configuration
+csm firewall flush                      Clear all dynamic blocks
+csm firewall restart                    Reapply full ruleset
+csm firewall migrate-from-csf [--apply] CSF migration (dry-run default)
+```
+
 ## Roadmap
 
-### Web UI — Security Hardening (Remaining)
+### Firewall — Remaining for Full CSF Parity
+- IPv6 support (TCP6_IN/OUT, UDP6_IN/OUT, IPv6 sets, dual-stack rules)
+- Per-IP concurrent connection limit (CONNLIMIT via nftables connlimit/meter)
+- Per-IP SYN flood protection (currently global rate limit, needs per-source metering)
+- Subnet auto-blocking (auto-block /24 when 3+ IPs from same range are blocked)
+- Dynamic DNS support (resolve hostnames to IPs, update periodically)
+- Port knocking (open SSH port after connection sequence)
+- REJECT for outbound drops (send TCP RST instead of silent DROP)
+- Automatic GeoIP database download and updates
+- Config profiles and backup/restore
+- IP geolocation lookup from CLI (`csm firewall lookup <ip>`)
+- Cluster mode (synchronize block lists across multiple servers)
+- CloudFlare WAF integration (push blocks to CF firewall)
+- Messenger (redirect blocked users to explanation page instead of dropping)
+- INVALID conntrack state handling (drop malformed packets explicitly)
+- Firewall audit trail (persistent log of all block/allow/config changes)
+- WebUI firewall status page (rule viewer, live blocked IP count, set sizes)
+
+### Web UI — Security Hardening
 - Move inline JavaScript to external files for strict CSP
 - CORS/origin validation on API endpoints
 - Audit log of all UI actions (who blocked/unblocked/dismissed what)
@@ -557,14 +608,10 @@ POST /api/v1/scan-account       Scan single account {"account":"username"}
 - Date range picker on history page
 - Rule management: view loaded YAML/YARA rules, trigger reload via UI
 - Bulk actions: dismiss multiple findings, restore multiple files, unblock multiple IPs
-- Audit log: track who dismissed/blocked/restored what and when
 
 ### Web UI — UX
 - Responsive mobile layout (media queries, hamburger menu)
-- Loading spinners for async operations
 - Toast notifications instead of alert() dialogs
-- Form labels and ARIA attributes for accessibility
-- Confirmation dialog on IP block action
 - Dark/light theme toggle
 
 ### Imunify360 Parity

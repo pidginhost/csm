@@ -21,16 +21,48 @@ type FirewallConfig struct {
 	InfraIPs []string `yaml:"infra_ips"`
 
 	// Rate limiting
-	ConnRateLimit      int  `yaml:"conn_rate_limit"` // per-IP new connections per minute
+	ConnRateLimit      int  `yaml:"conn_rate_limit"` // new connections per minute (global)
 	SYNFloodProtection bool `yaml:"syn_flood_protection"`
+
+	// Per-port flood protection (CSF PORTFLOOD equivalent)
+	// Limits new connections per port per time window
+	PortFlood []PortFloodRule `yaml:"port_flood"`
+
+	// UDP flood protection
+	UDPFlood      bool `yaml:"udp_flood"`
+	UDPFloodRate  int  `yaml:"udp_flood_rate"`  // packets per second
+	UDPFloodBurst int  `yaml:"udp_flood_burst"` // burst allowance
+
+	// Per-IP concurrent connection limit (0 = disabled)
+	ConnLimit int `yaml:"conn_limit"`
 
 	// Country blocking
 	CountryBlock  []string `yaml:"country_block"` // ISO country codes
 	CountryDBPath string   `yaml:"country_db_path"`
 
+	// Ports to drop silently without logging (reduces log noise from scanners)
+	DropNoLog []int `yaml:"drop_nolog"`
+
+	// Max blocked IPs (prevents memory exhaustion, 0 = unlimited)
+	DenyIPLimit     int `yaml:"deny_ip_limit"`
+	DenyTempIPLimit int `yaml:"deny_temp_ip_limit"`
+
+	// Outbound SMTP restriction — block outgoing mail except from allowed users
+	SMTPBlock      bool     `yaml:"smtp_block"`
+	SMTPAllowUsers []string `yaml:"smtp_allow_users"` // usernames allowed to send
+	SMTPPorts      []int    `yaml:"smtp_ports"`
+
 	// Logging
 	LogDropped bool `yaml:"log_dropped"`
 	LogRate    int  `yaml:"log_rate"` // log entries per minute
+}
+
+// PortFloodRule defines per-port connection rate limiting.
+type PortFloodRule struct {
+	Port    int    `yaml:"port"`
+	Proto   string `yaml:"proto"`   // "tcp" or "udp"
+	Hits    int    `yaml:"hits"`    // max new connections
+	Seconds int    `yaml:"seconds"` // time window in seconds
 }
 
 // DefaultConfig returns a sensible default firewall configuration
@@ -55,7 +87,20 @@ func DefaultConfig() *FirewallConfig {
 		PassiveFTPEnd:      65534,
 		ConnRateLimit:      30,
 		SYNFloodProtection: true,
-		LogDropped:         true,
-		LogRate:            5,
+		PortFlood: []PortFloodRule{
+			{Port: 25, Proto: "tcp", Hits: 40, Seconds: 300},
+			{Port: 465, Proto: "tcp", Hits: 40, Seconds: 300},
+			{Port: 587, Proto: "tcp", Hits: 40, Seconds: 300},
+		},
+		UDPFlood:        true,
+		UDPFloodRate:    100,
+		UDPFloodBurst:   500,
+		DropNoLog:       []int{23, 67, 68, 111, 113, 135, 136, 137, 138, 139, 445, 500, 513, 520},
+		DenyIPLimit:     3000,
+		DenyTempIPLimit: 500,
+		SMTPBlock:       false,
+		SMTPPorts:       []int{25, 465, 587},
+		LogDropped:      true,
+		LogRate:         5,
 	}
 }

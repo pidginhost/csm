@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -386,31 +388,117 @@ func (e *Engine) createInputChain() error {
 		e.addSetMatchRule(e.setCountry, expr.VerdictDrop)
 	}
 
+	// Per-port flood protection — rate limit new connections per port
+	for _, pf := range e.cfg.PortFlood {
+		if pf.Hits <= 0 || pf.Seconds <= 0 {
+			continue
+		}
+		proto := byte(6) // TCP
+		if pf.Proto == "udp" {
+			proto = 17
+		}
+		// Convert hits/seconds to per-minute rate
+		ratePerMin := uint64(pf.Hits * 60 / pf.Seconds)
+		if ratePerMin < 1 {
+			ratePerMin = 1
+		}
+		burst := uint32(ratePerMin / 4)
+		if burst < 2 {
+			burst = 2
+		}
+		e.conn.AddRule(&nftables.Rule{
+			Table: e.table,
+			Chain: e.chainIn,
+			Exprs: []expr.Any{
+				&expr.Ct{Register: 1, SourceRegister: false, Key: expr.CtKeySTATE},
+				&expr.Bitwise{
+					SourceRegister: 1, DestRegister: 1, Len: 4,
+					Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitNEW),
+					Xor:  binaryutil.NativeEndian.PutUint32(0),
+				},
+				&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(0)},
+				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{proto}},
+				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(uint16(pf.Port))},
+				&expr.Limit{Type: expr.LimitTypePkts, Rate: ratePerMin, Unit: expr.LimitTimeMinute, Burst: burst, Over: true},
+				&expr.Verdict{Kind: expr.VerdictDrop},
+			},
+		})
+	}
+
+	// UDP flood protection — global rate limit on UDP packets
+	if e.cfg.UDPFlood && e.cfg.UDPFloodRate > 0 {
+		burst := uint32(e.cfg.UDPFloodBurst)
+		if burst < 10 {
+			burst = 10
+		}
+		e.conn.AddRule(&nftables.Rule{
+			Table: e.table,
+			Chain: e.chainIn,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{17}}, // UDP
+				&expr.Limit{
+					Type: expr.LimitTypePkts, Rate: uint64(e.cfg.UDPFloodRate),
+					Unit: expr.LimitTimeSecond, Burst: burst, Over: true,
+				},
+				&expr.Verdict{Kind: expr.VerdictDrop},
+			},
+		})
+	}
+
 	// Build restricted port set — these are only reachable via infra IPs (rule 4)
 	restricted := make(map[int]bool)
 	for _, p := range e.cfg.RestrictedTCP {
 		restricted[p] = true
 	}
 
-	// Rule 7: Open TCP ports (public) — restricted ports excluded
+	// Open TCP ports (public) — restricted ports excluded
 	for _, port := range e.cfg.TCPIn {
 		if restricted[port] {
-			continue // only reachable via infra IPs (rule 4)
+			continue
 		}
 		e.addPortAcceptRule(port, true)
 	}
 
-	// Rule 8: Open UDP ports (public)
+	// Open UDP ports (public)
 	for _, port := range e.cfg.UDPIn {
 		e.addPortAcceptRule(port, false)
 	}
 
-	// Rule 9: Passive FTP range
+	// Passive FTP range
 	if e.cfg.PassiveFTPStart > 0 && e.cfg.PassiveFTPEnd > 0 {
 		e.addPortRangeAcceptRule(e.cfg.PassiveFTPStart, e.cfg.PassiveFTPEnd, true)
 	}
 
-	// Rule 10: Rate-limited log for dropped packets
+	// Silent drop for commonly-scanned ports (no logging)
+	for _, port := range e.cfg.DropNoLog {
+		e.conn.AddRule(&nftables.Rule{
+			Table: e.table,
+			Chain: e.chainIn,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{6}}, // TCP
+				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(uint16(port))},
+				&expr.Verdict{Kind: expr.VerdictDrop},
+			},
+		})
+		e.conn.AddRule(&nftables.Rule{
+			Table: e.table,
+			Chain: e.chainIn,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{17}}, // UDP
+				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(uint16(port))},
+				&expr.Verdict{Kind: expr.VerdictDrop},
+			},
+		})
+	}
+
+	// Rate-limited log for remaining dropped packets
 	if e.cfg.LogDropped {
 		e.conn.AddRule(&nftables.Rule{
 			Table: e.table,
@@ -489,8 +577,61 @@ func (e *Engine) createOutputChain() error {
 		},
 	})
 
-	// Allow configured outbound TCP ports
+	// SMTP block — restrict outbound mail to allowed users only
+	smtpBlocked := make(map[int]bool)
+	if e.cfg.SMTPBlock && len(e.cfg.SMTPPorts) > 0 {
+		// Resolve usernames to UIDs
+		var allowedUIDs []uint32
+		for _, username := range e.cfg.SMTPAllowUsers {
+			u, err := user.Lookup(username)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "firewall: smtp_allow_users: unknown user %q\n", username)
+				continue
+			}
+			uid, _ := strconv.ParseUint(u.Uid, 10, 32)
+			allowedUIDs = append(allowedUIDs, uint32(uid))
+		}
+		// Always allow root
+		allowedUIDs = append(allowedUIDs, 0)
+
+		for _, port := range e.cfg.SMTPPorts {
+			smtpBlocked[port] = true
+			// Accept from each allowed UID
+			for _, uid := range allowedUIDs {
+				e.conn.AddRule(&nftables.Rule{
+					Table: e.table,
+					Chain: e.chainOut,
+					Exprs: []expr.Any{
+						&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+						&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{6}},
+						&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+						&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(uint16(port))},
+						&expr.Meta{Key: expr.MetaKeySKUID, Register: 1},
+						&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(uid)},
+						&expr.Verdict{Kind: expr.VerdictAccept},
+					},
+				})
+			}
+			// Drop SMTP from everyone else
+			e.conn.AddRule(&nftables.Rule{
+				Table: e.table,
+				Chain: e.chainOut,
+				Exprs: []expr.Any{
+					&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{6}},
+					&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(uint16(port))},
+					&expr.Verdict{Kind: expr.VerdictDrop},
+				},
+			})
+		}
+	}
+
+	// Allow configured outbound TCP ports (skip SMTP-blocked ports — handled above)
 	for _, port := range e.cfg.TCPOut {
+		if smtpBlocked[port] {
+			continue
+		}
 		e.addOutboundPortRule(port, true)
 	}
 
@@ -607,6 +748,25 @@ func (e *Engine) BlockIP(ip string, reason string, timeout time.Duration) error 
 	ip4 := parsed.To4()
 	if ip4 == nil {
 		return fmt.Errorf("IPv6 not yet supported: %s", ip)
+	}
+
+	// Enforce deny IP limits
+	if e.cfg.DenyIPLimit > 0 || e.cfg.DenyTempIPLimit > 0 {
+		st := e.loadStateFile()
+		perm, temp := 0, 0
+		for _, b := range st.Blocked {
+			if b.ExpiresAt.IsZero() {
+				perm++
+			} else {
+				temp++
+			}
+		}
+		if timeout == 0 && e.cfg.DenyIPLimit > 0 && perm >= e.cfg.DenyIPLimit {
+			return fmt.Errorf("permanent deny limit reached (%d)", e.cfg.DenyIPLimit)
+		}
+		if timeout > 0 && e.cfg.DenyTempIPLimit > 0 && temp >= e.cfg.DenyTempIPLimit {
+			return fmt.Errorf("temporary deny limit reached (%d)", e.cfg.DenyTempIPLimit)
+		}
 	}
 
 	elem := []nftables.SetElement{{Key: ip4, Timeout: timeout}}
