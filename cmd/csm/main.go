@@ -243,7 +243,7 @@ func runTieredChecks(tier checks.Tier, sendAlerts bool) {
 	defer func() { _ = store.Close() }()
 
 	// Initialize threat DB for timer mode
-	checks.InitThreatDB(cfg.StatePath)
+	checks.InitThreatDB(cfg.StatePath, cfg.Reputation.Whitelist)
 
 	findings := checks.RunTier(cfg, store, tier)
 

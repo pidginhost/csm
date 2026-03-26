@@ -82,7 +82,7 @@ func (d *Daemon) Run() error {
 	}
 
 	// Initialize local threat database
-	checks.InitThreatDB(d.cfg.StatePath)
+	checks.InitThreatDB(d.cfg.StatePath, d.cfg.Reputation.Whitelist)
 	if db := checks.GetThreatDB(); db != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Threat DB initialized (%d entries)\n", ts(), db.Count())
 	}

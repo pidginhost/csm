@@ -173,8 +173,13 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleQuarantine(w http.ResponseWriter, _ *http.Request) {
-	// Reuse API logic but render as HTML
 	_ = s.templates.ExecuteTemplate(w, "quarantine.html", quarantineData{
 		Hostname: s.cfg.Hostname,
+	})
+}
+
+func (s *Server) handleBlocked(w http.ResponseWriter, _ *http.Request) {
+	_ = s.templates.ExecuteTemplate(w, "blocked.html", map[string]string{
+		"Hostname": s.cfg.Hostname,
 	})
 }

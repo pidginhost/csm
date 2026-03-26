@@ -74,7 +74,8 @@ type Config struct {
 	} `yaml:"auto_response"`
 
 	Reputation struct {
-		AbuseIPDBKey string `yaml:"abuseipdb_key"`
+		AbuseIPDBKey string   `yaml:"abuseipdb_key"`
+		Whitelist    []string `yaml:"whitelist"` // IPs to never flag as malicious
 	} `yaml:"reputation"`
 
 	Signatures struct {

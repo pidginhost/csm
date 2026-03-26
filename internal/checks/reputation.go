@@ -18,7 +18,8 @@ const (
 	abuseIPDBEndpoint        = "https://api.abuseipdb.com/api/v2/check"
 	reputationCacheFile      = "reputation_cache.json"
 	cacheExpiry              = 6 * time.Hour
-	abuseConfidenceThreshold = 50 // AbuseIPDB confidence score 0-100
+	abuseConfidenceThreshold = 50
+	maxCacheEntries          = 5000 // cap cache size
 )
 
 type reputationCache struct {
@@ -32,15 +33,12 @@ type reputationEntry struct {
 }
 
 // CheckIPReputation looks up non-infra IPs against threat intelligence.
-// Tiered approach to minimize API calls and alert noise:
-//  1. Skip if IP is already blocked in CSF → no alert, no API call
-//  2. Skip if IP is in local cache with bad score → block immediately, no API call
-//  3. Only query AbuseIPDB for truly new IPs never seen before
+// Four-tier approach:
+//  1. Skip if already blocked in CSF
+//  2. Check local threat DB (permanent blocklist + free feeds)
+//  3. Check AbuseIPDB cache
+//  4. Query AbuseIPDB for truly unknown IPs (max 10/cycle)
 func CheckIPReputation(cfg *config.Config, _ *state.Store) []alert.Finding {
-	if cfg.Reputation.AbuseIPDBKey == "" {
-		return nil
-	}
-
 	var findings []alert.Finding
 
 	ips := collectRecentIPs(cfg)
@@ -48,23 +46,21 @@ func CheckIPReputation(cfg *config.Config, _ *state.Store) []alert.Finding {
 		return nil
 	}
 
-	// Load blocked IPs from CSF deny list + CSM block state
 	alreadyBlocked := loadAllBlockedIPs(cfg.StatePath)
-
-	// Load local threat database and reputation cache
 	threatDB := GetThreatDB()
 	cache := loadReputationCache(cfg.StatePath)
 
 	client := &http.Client{Timeout: 10 * time.Second}
+	quotaExhausted := false
 
 	checked := 0
 	for ip := range ips {
-		// Tier 1: Skip if already blocked in CSF — no alert, no API call
+		// Tier 1: Skip if already blocked
 		if alreadyBlocked[ip] {
 			continue
 		}
 
-		// Tier 2: Check local threat database (permanent blocklist + free feeds)
+		// Tier 2: Check local threat DB
 		if threatDB != nil {
 			if source, found := threatDB.Lookup(ip); found {
 				findings = append(findings, alert.Finding{
@@ -78,7 +74,7 @@ func CheckIPReputation(cfg *config.Config, _ *state.Store) []alert.Finding {
 			}
 		}
 
-		// Tier 3: Check AbuseIPDB cache — if known bad, alert without API call
+		// Tier 3: Check AbuseIPDB cache
 		if entry, ok := cache.Entries[ip]; ok {
 			if time.Since(entry.CheckedAt) < cacheExpiry {
 				if entry.Score >= abuseConfidenceThreshold {
@@ -94,12 +90,20 @@ func CheckIPReputation(cfg *config.Config, _ *state.Store) []alert.Finding {
 			}
 		}
 
-		// Tier 4: Query AbuseIPDB for truly unknown IPs — max 10 per cycle
-		if cfg.Reputation.AbuseIPDBKey == "" || checked >= 10 {
+		// Tier 4: Query AbuseIPDB — skip if no key, quota exhausted, or limit reached
+		if cfg.Reputation.AbuseIPDBKey == "" || quotaExhausted || checked >= 10 {
 			continue
 		}
 
-		score, category := queryAbuseIPDB(client, ip, cfg.Reputation.AbuseIPDBKey)
+		score, category, err := queryAbuseIPDB(client, ip, cfg.Reputation.AbuseIPDBKey)
+		if err != nil {
+			if strings.Contains(err.Error(), "429") || strings.Contains(err.Error(), "402") {
+				fmt.Fprintf(os.Stderr, "abuseipdb: quota exhausted (%v), stopping lookups for this cycle\n", err)
+				quotaExhausted = true
+				continue
+			}
+			continue
+		}
 		checked++
 
 		cache.Entries[ip] = &reputationEntry{
@@ -119,44 +123,67 @@ func CheckIPReputation(cfg *config.Config, _ *state.Store) []alert.Finding {
 		}
 	}
 
-	// Clean old entries
-	for ip, entry := range cache.Entries {
-		if time.Since(entry.CheckedAt) > 24*time.Hour {
-			delete(cache.Entries, ip)
-		}
-	}
-
+	// Clean and cap cache
+	cleanCache(cache)
 	saveReputationCache(cfg.StatePath, cache)
 
 	return findings
 }
 
+// collectRecentIPs gathers non-infra IPs from multiple log sources.
 func collectRecentIPs(cfg *config.Config) map[string]bool {
 	ips := make(map[string]bool)
 
-	lines := tailFile("/var/log/secure", 50)
-	for _, line := range lines {
+	// SSH logins
+	for _, line := range tailFile("/var/log/secure", 50) {
 		if !strings.Contains(line, "Accepted") {
 			continue
 		}
-		parts := strings.Fields(line)
-		for i, p := range parts {
-			if p == "from" && i+1 < len(parts) {
-				ip := parts[i+1]
-				if !isInfraIP(ip, cfg.InfraIPs) && ip != "127.0.0.1" {
-					ips[ip] = true
-				}
+		if ip := extractIPAfterKeyword(line, "from"); ip != "" {
+			addIfNotInfra(ips, ip, cfg)
+		}
+	}
+
+	// cPanel access log
+	for _, line := range tailFile("/usr/local/cpanel/logs/access_log", 100) {
+		if ip := firstField(line); ip != "" {
+			addIfNotInfra(ips, ip, cfg)
+		}
+	}
+
+	// Web server access log (LiteSpeed/Apache) — biggest source of attacker IPs
+	webLogPaths := []string{
+		"/usr/local/apache/logs/access_log",
+		"/var/log/apache2/access_log",
+		"/etc/apache2/logs/access_log",
+	}
+	for _, path := range webLogPaths {
+		lines := tailFile(path, 100)
+		if len(lines) == 0 {
+			continue
+		}
+		for _, line := range lines {
+			if ip := firstField(line); ip != "" {
+				addIfNotInfra(ips, ip, cfg)
+			}
+		}
+		break // only use first available log
+	}
+
+	// Exim log — SMTP auth failures
+	for _, line := range tailFile("/var/log/exim_mainlog", 50) {
+		if strings.Contains(line, "authenticator failed") || strings.Contains(line, "rejected RCPT") {
+			if ip := extractBracketedIP(line); ip != "" {
+				addIfNotInfra(ips, ip, cfg)
 			}
 		}
 	}
 
-	lines = tailFile("/usr/local/cpanel/logs/access_log", 100)
-	for _, line := range lines {
-		fields := strings.Fields(line)
-		if len(fields) > 0 {
-			ip := fields[0]
-			if !isInfraIP(ip, cfg.InfraIPs) && ip != "127.0.0.1" && strings.Count(ip, ".") == 3 {
-				ips[ip] = true
+	// Dovecot — IMAP/POP3 auth failures
+	for _, line := range tailFile("/var/log/maillog", 50) {
+		if strings.Contains(line, "auth failed") || strings.Contains(line, "Aborted login") {
+			if ip := extractIPAfterKeyword(line, "rip="); ip != "" {
+				addIfNotInfra(ips, ip, cfg)
 			}
 		}
 	}
@@ -164,12 +191,68 @@ func collectRecentIPs(cfg *config.Config) map[string]bool {
 	return ips
 }
 
-// loadAllBlockedIPs returns all IPs currently blocked in CSF deny list
-// and CSM's own block state. These IPs are skipped entirely.
+func addIfNotInfra(ips map[string]bool, ip string, cfg *config.Config) {
+	if ip == "127.0.0.1" || ip == "::1" || ip == "" {
+		return
+	}
+	if isInfraIP(ip, cfg.InfraIPs) {
+		return
+	}
+	ips[ip] = true
+}
+
+func firstField(line string) string {
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return ""
+	}
+	ip := fields[0]
+	// Validate it looks like an IP (v4 or v6)
+	if strings.Count(ip, ".") == 3 || strings.Contains(ip, ":") {
+		return ip
+	}
+	return ""
+}
+
+func extractIPAfterKeyword(line, keyword string) string {
+	idx := strings.Index(line, keyword)
+	if idx < 0 {
+		return ""
+	}
+	rest := line[idx+len(keyword):]
+	rest = strings.TrimLeft(rest, " =")
+	fields := strings.Fields(rest)
+	if len(fields) == 0 {
+		return ""
+	}
+	ip := strings.TrimRight(fields[0], ",:;)([]")
+	if strings.Count(ip, ".") == 3 || strings.Contains(ip, ":") {
+		return ip
+	}
+	return ""
+}
+
+func extractBracketedIP(line string) string {
+	// Extract IP from [1.2.3.4] format common in exim logs
+	start := strings.Index(line, "[")
+	if start < 0 {
+		return ""
+	}
+	end := strings.Index(line[start:], "]")
+	if end < 0 {
+		return ""
+	}
+	ip := line[start+1 : start+end]
+	if strings.Count(ip, ".") == 3 || strings.Contains(ip, ":") {
+		return ip
+	}
+	return ""
+}
+
+// loadAllBlockedIPs returns all IPs currently blocked in CSF and CSM.
 func loadAllBlockedIPs(statePath string) map[string]bool {
 	blocked := make(map[string]bool)
 
-	// Read CSF deny list
 	data, err := os.ReadFile("/etc/csf/csf.deny")
 	if err == nil {
 		for _, line := range strings.Split(string(data), "\n") {
@@ -177,18 +260,14 @@ func loadAllBlockedIPs(statePath string) map[string]bool {
 			if line == "" || strings.HasPrefix(line, "#") {
 				continue
 			}
-			// Format: IP # comment  or  IP
 			parts := strings.Fields(line)
 			if len(parts) > 0 {
-				ip := strings.Split(parts[0], "/")[0] // strip CIDR notation
-				if strings.Count(ip, ".") == 3 {
-					blocked[ip] = true
-				}
+				ip := strings.Split(parts[0], "/")[0]
+				blocked[ip] = true
 			}
 		}
 	}
 
-	// Read CSM block state
 	type blockedEntry struct {
 		IP        string    `json:"ip"`
 		ExpiresAt time.Time `json:"expires_at"`
@@ -220,32 +299,48 @@ type abuseIPDBResponse struct {
 		ISP                  string `json:"isp"`
 		TotalReports         int    `json:"totalReports"`
 	} `json:"data"`
+	Errors []struct {
+		Detail string `json:"detail"`
+		Status int    `json:"status"`
+	} `json:"errors"`
 }
 
-func queryAbuseIPDB(client *http.Client, ip, apiKey string) (score int, category string) {
+// queryAbuseIPDB returns (score, category, error).
+// Returns specific errors for rate limiting (429) and quota exhaustion (402).
+func queryAbuseIPDB(client *http.Client, ip, apiKey string) (int, string, error) {
 	req, err := http.NewRequest("GET", abuseIPDBEndpoint+"?ipAddress="+ip+"&maxAgeInDays=90", nil)
 	if err != nil {
-		return 0, ""
+		return 0, "", err
 	}
 	req.Header.Set("Key", apiKey)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, ""
+		return 0, "", err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	if resp.StatusCode == 429 {
+		return 0, "", fmt.Errorf("429 rate limited")
+	}
+	if resp.StatusCode == 402 {
+		return 0, "", fmt.Errorf("402 quota exceeded")
+	}
 	if resp.StatusCode != 200 {
-		return 0, ""
+		return 0, "", fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
 	var result abuseIPDBResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return 0, ""
+		return 0, "", err
 	}
 
-	category = result.Data.UsageType
+	if len(result.Errors) > 0 {
+		return 0, "", fmt.Errorf("API error: %s", result.Errors[0].Detail)
+	}
+
+	category := result.Data.UsageType
 	if result.Data.ISP != "" {
 		category += " (" + result.Data.ISP + ")"
 	}
@@ -253,7 +348,43 @@ func queryAbuseIPDB(client *http.Client, ip, apiKey string) (score int, category
 		category += fmt.Sprintf(", %d reports", result.Data.TotalReports)
 	}
 
-	return result.Data.AbuseConfidenceScore, category
+	return result.Data.AbuseConfidenceScore, category, nil
+}
+
+// cleanCache removes expired entries and caps at maxCacheEntries.
+func cleanCache(cache *reputationCache) {
+	now := time.Now()
+
+	// Remove expired entries
+	for ip, entry := range cache.Entries {
+		if now.Sub(entry.CheckedAt) > 24*time.Hour {
+			delete(cache.Entries, ip)
+		}
+	}
+
+	// Cap at max entries — remove oldest if over limit
+	if len(cache.Entries) > maxCacheEntries {
+		type aged struct {
+			ip  string
+			age time.Duration
+		}
+		var entries []aged
+		for ip, entry := range cache.Entries {
+			entries = append(entries, aged{ip, now.Sub(entry.CheckedAt)})
+		}
+		// Sort by age descending (oldest first)
+		for i := 0; i < len(entries); i++ {
+			for j := i + 1; j < len(entries); j++ {
+				if entries[j].age > entries[i].age {
+					entries[i], entries[j] = entries[j], entries[i]
+				}
+			}
+		}
+		// Remove oldest until under limit
+		for i := 0; i < len(entries)-maxCacheEntries; i++ {
+			delete(cache.Entries, entries[i].ip)
+		}
+	}
 }
 
 func loadReputationCache(statePath string) *reputationCache {

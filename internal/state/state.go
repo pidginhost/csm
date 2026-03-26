@@ -367,6 +367,18 @@ func splitLines(data []byte) [][]byte {
 	return lines
 }
 
+// DismissFinding marks a finding as baseline (acknowledged/dismissed).
+// It will no longer appear in active findings or trigger new alerts.
+func (s *Store) DismissFinding(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if entry, exists := s.entries[key]; exists {
+		entry.IsBaseline = true
+		s.dirty = true
+	}
+}
+
 // ParseKey splits a state key "check:message" into its components.
 func ParseKey(key string) (check, message string) {
 	for i := 0; i < len(key); i++ {

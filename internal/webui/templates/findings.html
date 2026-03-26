@@ -15,6 +15,7 @@
                 <a href="/findings" class="active">Findings</a>
                 <a href="/history">History</a>
                 <a href="/quarantine">Quarantine</a>
+                <a href="/blocked">Blocked IPs</a>
             </nav>
         </div>
     </header>
@@ -29,19 +30,33 @@
                         <th>Message</th>
                         <th>First Seen</th>
                         <th>Last Seen</th>
+                        <th>Action</th>
                     </tr>
                 </thead>
                 <tbody>
                     {{range .Entries}}
-                    <tr>
+                    <tr id="finding-{{.Check}}">
                         <td><span class="mono">{{.Check}}</span></td>
                         <td>{{.Message}}</td>
                         <td class="mono">{{.FirstSeen}}</td>
                         <td class="mono">{{.LastSeen}}</td>
+                        <td><button onclick="dismissFinding('{{.Check}}:{{.Message}}')" style="padding:0.3rem 0.6rem;background:var(--bg-input);color:var(--text-muted);border:1px solid var(--border);border-radius:3px;cursor:pointer;font-size:0.8rem">Dismiss</button></td>
                     </tr>
                     {{end}}
                 </tbody>
             </table>
+            <script>
+            function dismissFinding(key) {
+                if (!confirm('Dismiss this finding? It will be marked as acknowledged and hidden from active findings.')) return;
+                fetch('/api/v1/dismiss', {
+                    method: 'POST', credentials: 'same-origin',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({key: key})
+                }).then(function(r){return r.json()}).then(function(){
+                    location.reload();
+                }).catch(function(e){ alert('Error: ' + e); });
+            }
+            </script>
             {{else}}
             <div class="empty-state">No active findings. All clear.</div>
             {{end}}
