@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+const maxAuditFileSize = 10 * 1024 * 1024 // 10 MB
+
 // AuditEntry records a firewall modification for compliance and forensics.
 type AuditEntry struct {
 	Timestamp time.Time `json:"timestamp"`
@@ -18,6 +20,7 @@ type AuditEntry struct {
 }
 
 // AppendAudit writes an audit entry to the JSONL audit log.
+// Rotates the log when it exceeds 10 MB.
 func AppendAudit(statePath, action, ip, reason string, duration time.Duration) {
 	entry := AuditEntry{
 		Timestamp: time.Now(),
@@ -35,6 +38,11 @@ func AppendAudit(statePath, action, ip, reason string, duration time.Duration) {
 		return
 	}
 	data = append(data, '\n')
+
+	// Rotate if file exceeds max size
+	if info, err := os.Stat(path); err == nil && info.Size() > maxAuditFileSize {
+		_ = os.Rename(path, path+".1")
+	}
 
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
