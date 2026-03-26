@@ -40,7 +40,7 @@ func AppendAudit(statePath, action, ip, reason string, duration time.Duration) {
 	data = append(data, '\n')
 
 	// Rotate if file exceeds max size
-	if info, err := os.Stat(path); err == nil && info.Size() > maxAuditFileSize {
+	if info, statErr := os.Stat(path); statErr == nil && info.Size() > maxAuditFileSize {
 		_ = os.Rename(path, path+".1")
 	}
 
