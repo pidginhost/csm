@@ -1,7 +1,6 @@
 package checks
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,11 +11,11 @@ import (
 
 // CleanResult describes the outcome of a cleaning attempt.
 type CleanResult struct {
-	Path        string
-	Cleaned     bool
-	BackupPath  string
-	Removals    []string // descriptions of what was removed
-	Error       string
+	Path       string
+	Cleaned    bool
+	BackupPath string
+	Removals   []string // descriptions of what was removed
+	Error      string
 }
 
 // CleanInfectedFile attempts to surgically remove malicious code from a PHP file

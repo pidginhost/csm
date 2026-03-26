@@ -113,6 +113,7 @@ Commands:
   validate      Validate config file for common mistakes
   verify        Verify binary + config integrity
   update-rules  Download latest malware signature rules
+  clean <path>  Attempt to clean an infected PHP file (backup created first)
   version       Version info + build hash
 
 Options:
@@ -356,4 +357,18 @@ func runUpdateRules() {
 	}
 	fmt.Fprintf(os.Stderr, "Updated: %d rules installed to %s\n", count, cfg.Signatures.RulesDir)
 	fmt.Fprintf(os.Stderr, "Reload running daemon with: kill -HUP $(pidof csm)\n")
+}
+
+func runClean() {
+	if len(os.Args) < 3 {
+		fmt.Fprintf(os.Stderr, "Usage: csm clean <path>\n")
+		os.Exit(1)
+	}
+	path := os.Args[2]
+
+	result := checks.CleanInfectedFile(path)
+	fmt.Fprintln(os.Stderr, checks.FormatCleanResult(result))
+	if !result.Cleaned {
+		os.Exit(1)
+	}
 }
