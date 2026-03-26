@@ -275,8 +275,49 @@ firewall:
     - 2325
   passive_ftp_start: 49152
   passive_ftp_end: 65534
-  conn_rate_limit: 30           # per-IP new connections per minute
+  conn_rate_limit: 30           # new connections per minute (global)
   syn_flood_protection: true
+  port_flood:                   # per-port rate limiting (CSF PORTFLOOD)
+    - port: 25
+      proto: tcp
+      hits: 40
+      seconds: 300
+    - port: 465
+      proto: tcp
+      hits: 40
+      seconds: 300
+    - port: 587
+      proto: tcp
+      hits: 40
+      seconds: 300
+  udp_flood: true
+  udp_flood_rate: 100           # packets per second
+  udp_flood_burst: 500
+  drop_nolog:                   # silently drop without logging (scanner noise)
+    - 23
+    - 67
+    - 68
+    - 111
+    - 113
+    - 135
+    - 136
+    - 137
+    - 138
+    - 139
+    - 445
+    - 500
+    - 513
+    - 520
+  deny_ip_limit: 3000          # max permanent blocks (0 = unlimited)
+  deny_temp_ip_limit: 500      # max temporary blocks
+  smtp_block: false             # restrict outbound SMTP to allowed users only
+  smtp_allow_users:             # users allowed to send mail (root always allowed)
+    - cpanel
+    - mailman
+  smtp_ports:
+    - 25
+    - 465
+    - 587
   log_dropped: true
   log_rate: 5                   # dropped packet log entries per minute
 
