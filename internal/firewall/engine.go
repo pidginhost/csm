@@ -1427,10 +1427,20 @@ func fileExistsFirewall(path string) bool {
 
 func lastIPInRange(network *net.IPNet) net.IP {
 	ip := network.IP.To4()
+	if ip == nil {
+		ip = network.IP.To16()
+	}
+	if ip == nil {
+		return nil
+	}
 	mask := network.Mask
 	last := make(net.IP, len(ip))
 	for i := range ip {
-		last[i] = ip[i] | ^mask[i]
+		if i < len(mask) {
+			last[i] = ip[i] | ^mask[i]
+		} else {
+			last[i] = ip[i]
+		}
 	}
 	return last
 }
