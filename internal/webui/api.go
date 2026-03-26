@@ -3,6 +3,7 @@ package webui
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -42,6 +43,9 @@ func (s *Server) apiFindings(w http.ResponseWriter, _ *http.Request) {
 
 	var result []entryView
 	for key, entry := range entries {
+		if entry.IsBaseline {
+			continue // don't return dismissed/baseline entries as "active"
+		}
 		check, message := state.ParseKey(key)
 		result = append(result, entryView{
 			Check:     check,
@@ -173,6 +177,10 @@ func (s *Server) apiBlockIP(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
+	if net.ParseIP(req.IP) == nil {
+		writeJSONError(w, "Invalid IP address format", http.StatusBadRequest)
+		return
+	}
 	if req.Reason == "" {
 		req.Reason = "Blocked via CSM Web UI"
 	}
@@ -296,17 +304,22 @@ func (s *Server) apiBlockedIPs(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	for _, b := range blockState.IPs {
-		expiresIn := time.Until(b.ExpiresAt)
-		if expiresIn < 0 {
-			continue
-		}
-		result = append(result, blockedView{
+		view := blockedView{
 			IP:        b.IP,
 			Reason:    b.Reason,
 			BlockedAt: b.BlockedAt.Format(time.RFC3339),
-			ExpiresAt: b.ExpiresAt.Format(time.RFC3339),
-			ExpiresIn: fmt.Sprintf("%dh%dm", int(expiresIn.Hours()), int(expiresIn.Minutes())%60),
-		})
+		}
+		if !b.ExpiresAt.IsZero() {
+			expiresIn := time.Until(b.ExpiresAt)
+			if expiresIn < 0 {
+				continue // expired
+			}
+			view.ExpiresAt = b.ExpiresAt.Format(time.RFC3339)
+			view.ExpiresIn = fmt.Sprintf("%dh%dm", int(expiresIn.Hours()), int(expiresIn.Minutes())%60)
+		} else {
+			view.ExpiresIn = "permanent"
+		}
+		result = append(result, view)
 	}
 	writeJSON(w, result)
 }
@@ -374,27 +387,49 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 	// Ensure parent directory exists
 	parentDir := filepath.Dir(meta.OriginalPath)
 	if mkdirErr := os.MkdirAll(parentDir, 0755); mkdirErr != nil {
-		writeJSONError(w, fmt.Sprintf("Cannot create parent directory: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, fmt.Sprintf("Cannot create parent directory: %v", mkdirErr), http.StatusInternalServerError)
 		return
 	}
 
-	// Copy file back (don't use rename — might be cross-device)
-	data, err := os.ReadFile(quarFile)
+	// Check if quarantined item is a directory or file
+	quarInfo, err := os.Stat(quarFile)
 	if err != nil {
-		writeJSONError(w, fmt.Sprintf("Cannot read quarantined file: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, fmt.Sprintf("Cannot stat quarantined file: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	if err := os.WriteFile(meta.OriginalPath, data, 0644); err != nil {
-		writeJSONError(w, fmt.Sprintf("Cannot write restored file: %v", err), http.StatusInternalServerError)
-		return
+	// Parse original mode from metadata (format: "-rw-r--r--" or "drwxr-xr-x")
+	restoredMode := os.FileMode(0644)
+	if meta.Mode != "" && len(meta.Mode) >= 10 {
+		restoredMode = parseModeString(meta.Mode)
+	}
+
+	if quarInfo.IsDir() {
+		// Directory restore: use os.Rename (same device)
+		if err := os.Rename(quarFile, meta.OriginalPath); err != nil {
+			writeJSONError(w, fmt.Sprintf("Cannot restore directory: %v", err), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		// File restore: copy back with original permissions
+		data, readErr := os.ReadFile(quarFile)
+		if readErr != nil {
+			writeJSONError(w, fmt.Sprintf("Cannot read quarantined file: %v", readErr), http.StatusInternalServerError)
+			return
+		}
+		if writeErr := os.WriteFile(meta.OriginalPath, data, restoredMode); writeErr != nil {
+			writeJSONError(w, fmt.Sprintf("Cannot write restored file: %v", writeErr), http.StatusInternalServerError)
+			return
+		}
+		os.Remove(quarFile)
 	}
 
 	// Restore ownership
 	_ = syscall.Chown(meta.OriginalPath, meta.Owner, meta.Group)
+	// Restore mode explicitly (WriteFile may be affected by umask)
+	_ = os.Chmod(meta.OriginalPath, restoredMode)
 
-	// Remove quarantined copies
-	os.Remove(quarFile)
+	// Remove metadata sidecar
 	os.Remove(metaFile)
 
 	writeJSON(w, map[string]string{
@@ -428,6 +463,13 @@ func (s *Server) apiScanAccount(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Rate limit: only one scan at a time
+	if !s.acquireScan() {
+		writeJSONError(w, "A scan is already in progress. Please wait.", http.StatusTooManyRequests)
+		return
+	}
+	defer s.releaseScan()
+
 	start := time.Now()
 	findings := checks.RunAccountScan(s.cfg, s.store, req.Account)
 	elapsed := time.Since(start).Round(time.Millisecond)
@@ -439,6 +481,29 @@ func (s *Server) apiScanAccount(w http.ResponseWriter, r *http.Request) {
 		"elapsed":  elapsed.String(),
 	}
 	writeJSON(w, result)
+}
+
+// parseModeString converts a permission string like "-rw-r--r--" to os.FileMode.
+func parseModeString(s string) os.FileMode {
+	if len(s) < 10 {
+		return 0644
+	}
+	var mode os.FileMode
+	perms := s[len(s)-9:] // last 9 chars: "rwxr-xr-x"
+	bits := []os.FileMode{
+		0400, 0200, 0100, // owner r/w/x
+		0040, 0020, 0010, // group r/w/x
+		0004, 0002, 0001, // other r/w/x
+	}
+	for i, b := range bits {
+		if i < len(perms) && perms[i] != '-' {
+			mode |= b
+		}
+	}
+	if mode == 0 {
+		mode = 0644 // fallback
+	}
+	return mode
 }
 
 func writeJSONError(w http.ResponseWriter, message string, code int) {
