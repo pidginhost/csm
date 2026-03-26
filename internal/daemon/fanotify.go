@@ -15,6 +15,7 @@ import (
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
 	"github.com/pidginhost/cpanel-security-monitor/internal/config"
 	"github.com/pidginhost/cpanel-security-monitor/internal/signatures"
+	"github.com/pidginhost/cpanel-security-monitor/internal/yara"
 )
 
 const (
@@ -483,7 +484,7 @@ func (fm *FileMonitor) checkPHPContent(path string) {
 		return
 	}
 
-	// External signature scanning (if rules are loaded)
+	// External YAML signature scanning (if rules are loaded)
 	if scanner := signatures.Global(); scanner != nil {
 		matches := scanner.ScanContent(data, filepath.Ext(path))
 		if len(matches) > 0 {
@@ -496,6 +497,17 @@ func (fm *FileMonitor) checkPHPContent(path string) {
 				fmt.Sprintf("Signature match [%s]: %s", m.RuleName, path),
 				fmt.Sprintf("Category: %s\nDescription: %s\nMatched: %s",
 					m.Category, m.Description, strings.Join(m.Matched, ", ")))
+			return
+		}
+	}
+
+	// YARA-X scanning (if compiled in and rules loaded)
+	if yaraScanner := yara.Global(); yaraScanner != nil {
+		matches := yaraScanner.ScanBytes(data)
+		if len(matches) > 0 {
+			fm.sendAlert(alert.Critical, "yara_match_realtime",
+				fmt.Sprintf("YARA rule match [%s]: %s", matches[0].RuleName, path),
+				fmt.Sprintf("Matched %d YARA rule(s)", len(matches)))
 		}
 	}
 }

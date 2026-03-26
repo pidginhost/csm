@@ -14,6 +14,7 @@ import (
 	"github.com/pidginhost/cpanel-security-monitor/internal/integrity"
 	"github.com/pidginhost/cpanel-security-monitor/internal/signatures"
 	"github.com/pidginhost/cpanel-security-monitor/internal/state"
+	"github.com/pidginhost/cpanel-security-monitor/internal/yara"
 )
 
 // Daemon is the main persistent monitoring process.
@@ -71,6 +72,11 @@ func (d *Daemon) Run() error {
 	d.store.Update(initialFindings)
 	fmt.Fprintf(os.Stderr, "[%s] Initial scan complete: %d findings (%d new)\n", ts(), len(initialFindings), len(newFindings))
 
+	// Initialize YARA-X scanner (if compiled in and rules exist)
+	if yaraScanner := yara.Init(d.cfg.Signatures.RulesDir); yaraScanner != nil {
+		fmt.Fprintf(os.Stderr, "[%s] YARA-X scanner active: %d rule file(s)\n", ts(), yaraScanner.RuleCount())
+	}
+
 	// Create password hijack detector
 	d.hijackDetector = NewPasswordHijackDetector(d.cfg, d.alertCh)
 
@@ -107,12 +113,19 @@ func (d *Daemon) Run() error {
 	for sig := range sigCh {
 		if sig == syscall.SIGHUP {
 			// Reload signature rules on SIGHUP
-			fmt.Fprintf(os.Stderr, "[%s] SIGHUP received — reloading signature rules\n", ts())
+			fmt.Fprintf(os.Stderr, "[%s] SIGHUP received — reloading rules\n", ts())
 			if scanner := signatures.Global(); scanner != nil {
 				if err := scanner.Reload(); err != nil {
-					fmt.Fprintf(os.Stderr, "[%s] Rule reload error: %v\n", ts(), err)
+					fmt.Fprintf(os.Stderr, "[%s] YAML rule reload error: %v\n", ts(), err)
 				} else {
-					fmt.Fprintf(os.Stderr, "[%s] Reloaded %d rules (version %d)\n", ts(), scanner.RuleCount(), scanner.Version())
+					fmt.Fprintf(os.Stderr, "[%s] Reloaded %d YAML rules (version %d)\n", ts(), scanner.RuleCount(), scanner.Version())
+				}
+			}
+			if yaraScanner := yara.Global(); yaraScanner != nil {
+				if err := yaraScanner.Reload(); err != nil {
+					fmt.Fprintf(os.Stderr, "[%s] YARA rule reload error: %v\n", ts(), err)
+				} else {
+					fmt.Fprintf(os.Stderr, "[%s] Reloaded %d YARA rule file(s)\n", ts(), yaraScanner.RuleCount())
 				}
 			}
 			continue
