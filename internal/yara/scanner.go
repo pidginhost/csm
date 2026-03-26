@@ -14,9 +14,9 @@ import (
 
 // Scanner wraps YARA-X for malware file scanning.
 type Scanner struct {
-	mu       sync.RWMutex
-	rules    *yara_x.Rules
-	rulesDir string
+	mu        sync.RWMutex
+	rules     *yara_x.Rules
+	rulesDir  string
 	ruleCount int
 }
 
