@@ -422,7 +422,7 @@ func (s *Server) apiScanAccount(w http.ResponseWriter, r *http.Request) {
 
 	// Sanitize — only allow alphanumeric + underscore (cPanel usernames)
 	for _, c := range req.Account {
-		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_') {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '_' {
 			writeJSONError(w, "Invalid account name", http.StatusBadRequest)
 			return
 		}

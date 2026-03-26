@@ -419,8 +419,8 @@ func fwMigrate() {
 
 	cfg := loadConfig()
 	cfg.Firewall = fwCfg
-	if err := config.Save(cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
+	if saveErr := config.Save(cfg); saveErr != nil {
+		fmt.Fprintf(os.Stderr, "Error saving config: %v\n", saveErr)
 		os.Exit(1)
 	}
 
