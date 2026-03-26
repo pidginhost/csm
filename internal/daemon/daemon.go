@@ -12,6 +12,7 @@ import (
 	"github.com/pidginhost/cpanel-security-monitor/internal/checks"
 	"github.com/pidginhost/cpanel-security-monitor/internal/config"
 	"github.com/pidginhost/cpanel-security-monitor/internal/integrity"
+	"github.com/pidginhost/cpanel-security-monitor/internal/signatures"
 	"github.com/pidginhost/cpanel-security-monitor/internal/state"
 )
 
@@ -97,8 +98,23 @@ func (d *Daemon) Run() error {
 
 	// Wait for signals
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-	<-sigCh
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+
+	for sig := range sigCh {
+		if sig == syscall.SIGHUP {
+			// Reload signature rules on SIGHUP
+			fmt.Fprintf(os.Stderr, "[%s] SIGHUP received — reloading signature rules\n", ts())
+			if scanner := signatures.Global(); scanner != nil {
+				if err := scanner.Reload(); err != nil {
+					fmt.Fprintf(os.Stderr, "[%s] Rule reload error: %v\n", ts(), err)
+				} else {
+					fmt.Fprintf(os.Stderr, "[%s] Reloaded %d rules (version %d)\n", ts(), scanner.RuleCount(), scanner.Version())
+				}
+			}
+			continue
+		}
+		break // SIGTERM or SIGINT
+	}
 
 	fmt.Fprintf(os.Stderr, "[%s] Shutting down\n", ts())
 	close(d.stopCh)
