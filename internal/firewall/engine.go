@@ -73,13 +73,15 @@ func NewEngine(cfg *FirewallConfig, statePath string) (*Engine, error) {
 }
 
 // Apply builds and atomically applies the complete nftables ruleset.
+// If the new ruleset fails to apply, logs the error but doesn't leave
+// the server without a firewall (nftables keeps the old ruleset on failure).
 func (e *Engine) Apply() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	// Flush existing CSM table if it exists
-	e.conn.FlushTable(&nftables.Table{Name: "csm", Family: nftables.TableFamilyINet})
-	_ = e.conn.Flush()
+	// Delete existing CSM table (nftables keeps old rules if Flush fails)
+	e.conn.DelTable(&nftables.Table{Name: "csm", Family: nftables.TableFamilyINet})
+	_ = e.conn.Flush() // ignore error if table doesn't exist
 
 	// Create table
 	e.table = e.conn.AddTable(&nftables.Table{
@@ -100,12 +102,12 @@ func (e *Engine) Apply() error {
 		return fmt.Errorf("creating output chain: %w", err)
 	}
 
-	// Apply atomically
+	// Apply atomically — if this fails, nftables keeps whatever was running before
 	if err := e.conn.Flush(); err != nil {
 		return fmt.Errorf("applying ruleset: %w", err)
 	}
 
-	// Populate sets from state
+	// Populate sets from persisted state
 	if err := e.loadState(); err != nil {
 		fmt.Fprintf(os.Stderr, "firewall: warning loading state: %v\n", err)
 	}
@@ -121,7 +123,7 @@ func (e *Engine) createSets() error {
 		Name:       "blocked_ips",
 		KeyType:    nftables.TypeIPAddr,
 		HasTimeout: true,
-		Timeout:    24 * time.Hour, // default timeout
+		Timeout:    24 * time.Hour,
 	}
 	if err := e.conn.AddSet(e.setBlocked, nil); err != nil {
 		return fmt.Errorf("blocked set: %w", err)
@@ -145,21 +147,20 @@ func (e *Engine) createSets() error {
 		Interval: true,
 	}
 
-	// Populate infra IPs from config
 	var infraElements []nftables.SetElement
 	for _, cidr := range e.cfg.InfraIPs {
 		_, network, err := net.ParseCIDR(cidr)
 		if err != nil {
-			// Try as plain IP
 			ip := net.ParseIP(cidr)
-			if ip != nil {
-				ip4 := ip.To4()
-				if ip4 != nil {
-					infraElements = append(infraElements,
-						nftables.SetElement{Key: ip4},
-						nftables.SetElement{Key: nextIP(ip4), IntervalEnd: true},
-					)
-				}
+			if ip == nil {
+				continue
+			}
+			ip4 := ip.To4()
+			if ip4 != nil {
+				infraElements = append(infraElements,
+					nftables.SetElement{Key: ip4},
+					nftables.SetElement{Key: nextIP(ip4), IntervalEnd: true},
+				)
 			}
 			continue
 		}
@@ -180,7 +181,7 @@ func (e *Engine) createSets() error {
 	return nil
 }
 
-// createInputChain builds the input filter chain.
+// createInputChain builds the input filter chain with proper rule ordering.
 func (e *Engine) createInputChain() error {
 	policy := nftables.ChainPolicyDrop
 	e.chainIn = e.conn.AddChain(&nftables.Chain{
@@ -230,74 +231,38 @@ func (e *Engine) createInputChain() error {
 	})
 
 	// Rule 3: Drop blocked IPs (O(1) set lookup)
-	e.conn.AddRule(&nftables.Rule{
-		Table: e.table,
-		Chain: e.chainIn,
-		Exprs: []expr.Any{
-			&expr.Payload{
-				DestRegister: 1,
-				Base:         expr.PayloadBaseNetworkHeader,
-				Offset:       12,
-				Len:          4,
-			},
-			&expr.Lookup{
-				SourceRegister: 1,
-				SetName:        e.setBlocked.Name,
-				SetID:          e.setBlocked.ID,
-			},
-			&expr.Verdict{Kind: expr.VerdictDrop},
-		},
-	})
+	e.addSetMatchRule(e.setBlocked, expr.VerdictDrop)
 
 	// Rule 4: Allow infra IPs (all ports)
-	e.conn.AddRule(&nftables.Rule{
-		Table: e.table,
-		Chain: e.chainIn,
-		Exprs: []expr.Any{
-			&expr.Payload{
-				DestRegister: 1,
-				Base:         expr.PayloadBaseNetworkHeader,
-				Offset:       12,
-				Len:          4,
-			},
-			&expr.Lookup{
-				SourceRegister: 1,
-				SetName:        e.setInfra.Name,
-				SetID:          e.setInfra.ID,
-			},
-			&expr.Verdict{Kind: expr.VerdictAccept},
-		},
-	})
+	e.addSetMatchRule(e.setInfra, expr.VerdictAccept)
 
 	// Rule 5: Allow explicitly allowed IPs
+	e.addSetMatchRule(e.setAllowed, expr.VerdictAccept)
+
+	// Rule 6: ICMP echo-request only (type 8)
 	e.conn.AddRule(&nftables.Rule{
 		Table: e.table,
 		Chain: e.chainIn,
 		Exprs: []expr.Any{
+			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{1}}, // ICMP
 			&expr.Payload{
 				DestRegister: 1,
-				Base:         expr.PayloadBaseNetworkHeader,
-				Offset:       12,
-				Len:          4,
+				Base:         expr.PayloadBaseTransportHeader,
+				Offset:       0, // ICMP type field
+				Len:          1,
 			},
-			&expr.Lookup{
-				SourceRegister: 1,
-				SetName:        e.setAllowed.Name,
-				SetID:          e.setAllowed.ID,
-			},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{8}}, // echo-request
 			&expr.Verdict{Kind: expr.VerdictAccept},
 		},
 	})
 
-	// Rule 6: ICMP rate limited
-	e.addICMPRule()
-
-	// Rule 7: Open TCP ports
+	// Rule 7: Open TCP ports (public)
 	for _, port := range e.cfg.TCPIn {
 		e.addPortAcceptRule(port, true)
 	}
 
-	// Rule 8: Open UDP ports
+	// Rule 8: Open UDP ports (public)
 	for _, port := range e.cfg.UDPIn {
 		e.addPortAcceptRule(port, false)
 	}
@@ -307,23 +272,47 @@ func (e *Engine) createInputChain() error {
 		e.addPortRangeAcceptRule(e.cfg.PassiveFTPStart, e.cfg.PassiveFTPEnd, true)
 	}
 
-	// Rule 10: Log dropped packets (rate limited)
+	// Rule 10: Rate-limited log for dropped packets
 	if e.cfg.LogDropped {
 		e.conn.AddRule(&nftables.Rule{
 			Table: e.table,
 			Chain: e.chainIn,
 			Exprs: []expr.Any{
+				&expr.Limit{
+					Type:  expr.LimitTypePkts,
+					Rate:  uint64(max(e.cfg.LogRate, 1)),
+					Unit:  expr.LimitTimeMinute,
+					Burst: 5,
+				},
 				&expr.Log{Key: 1, Data: []byte("CSM-DROP: ")},
 			},
 		})
 	}
 
+	// Default policy is DROP — anything not matched above is dropped
+
 	return nil
 }
 
-// createOutputChain builds the output filter chain (permissive by default).
+// createOutputChain builds the output filter chain.
+// Restricts outbound to configured ports only (prevents C2 on non-standard ports).
 func (e *Engine) createOutputChain() error {
-	policy := nftables.ChainPolicyAccept
+	if len(e.cfg.TCPOut) == 0 && len(e.cfg.UDPOut) == 0 {
+		// No outbound restrictions configured — accept all
+		policy := nftables.ChainPolicyAccept
+		e.chainOut = e.conn.AddChain(&nftables.Chain{
+			Name:     "output",
+			Table:    e.table,
+			Type:     nftables.ChainTypeFilter,
+			Hooknum:  nftables.ChainHookOutput,
+			Priority: nftables.ChainPriorityFilter,
+			Policy:   &policy,
+		})
+		return nil
+	}
+
+	// Outbound filtering enabled
+	policy := nftables.ChainPolicyDrop
 	e.chainOut = e.conn.AddChain(&nftables.Chain{
 		Name:     "output",
 		Table:    e.table,
@@ -332,22 +321,79 @@ func (e *Engine) createOutputChain() error {
 		Priority: nftables.ChainPriorityFilter,
 		Policy:   &policy,
 	})
+
+	// Allow established/related outbound
+	e.conn.AddRule(&nftables.Rule{
+		Table: e.table,
+		Chain: e.chainOut,
+		Exprs: []expr.Any{
+			&expr.Ct{Register: 1, SourceRegister: false, Key: expr.CtKeySTATE},
+			&expr.Bitwise{
+				SourceRegister: 1,
+				DestRegister:   1,
+				Len:            4,
+				Mask:           binaryutil.NativeEndian.PutUint32(expr.CtStateBitESTABLISHED | expr.CtStateBitRELATED),
+				Xor:            binaryutil.NativeEndian.PutUint32(0),
+			},
+			&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(0)},
+			&expr.Verdict{Kind: expr.VerdictAccept},
+		},
+	})
+
+	// Allow loopback outbound
+	e.conn.AddRule(&nftables.Rule{
+		Table: e.table,
+		Chain: e.chainOut,
+		Exprs: []expr.Any{
+			&expr.Meta{Key: expr.MetaKeyOIFNAME, Register: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte("lo\x00")},
+			&expr.Verdict{Kind: expr.VerdictAccept},
+		},
+	})
+
+	// Allow configured outbound TCP ports
+	for _, port := range e.cfg.TCPOut {
+		e.addOutboundPortRule(port, true)
+	}
+
+	// Allow configured outbound UDP ports
+	for _, port := range e.cfg.UDPOut {
+		e.addOutboundPortRule(port, false)
+	}
+
+	// Allow ICMP outbound
+	e.conn.AddRule(&nftables.Rule{
+		Table: e.table,
+		Chain: e.chainOut,
+		Exprs: []expr.Any{
+			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{1}},
+			&expr.Verdict{Kind: expr.VerdictAccept},
+		},
+	})
+
 	return nil
 }
 
-func (e *Engine) addICMPRule() {
-	// Allow ICMP echo-request (ping)
+// --- Helper methods ---
+
+func (e *Engine) addSetMatchRule(set *nftables.Set, verdict expr.VerdictKind) {
 	e.conn.AddRule(&nftables.Rule{
 		Table: e.table,
 		Chain: e.chainIn,
 		Exprs: []expr.Any{
-			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-			&expr.Cmp{
-				Op:       expr.CmpOpEq,
-				Register: 1,
-				Data:     []byte{1}, // ICMP protocol
+			&expr.Payload{
+				DestRegister: 1,
+				Base:         expr.PayloadBaseNetworkHeader,
+				Offset:       12, // source IP
+				Len:          4,
 			},
-			&expr.Verdict{Kind: expr.VerdictAccept},
+			&expr.Lookup{
+				SourceRegister: 1,
+				SetName:        set.Name,
+				SetID:          set.ID,
+			},
+			&expr.Verdict{Kind: verdict},
 		},
 	})
 }
@@ -357,30 +403,14 @@ func (e *Engine) addPortAcceptRule(port int, tcp bool) {
 	if !tcp {
 		proto = 17 // UDP
 	}
-
 	e.conn.AddRule(&nftables.Rule{
 		Table: e.table,
 		Chain: e.chainIn,
 		Exprs: []expr.Any{
-			// Match protocol
 			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-			&expr.Cmp{
-				Op:       expr.CmpOpEq,
-				Register: 1,
-				Data:     []byte{proto},
-			},
-			// Match destination port
-			&expr.Payload{
-				DestRegister: 1,
-				Base:         expr.PayloadBaseTransportHeader,
-				Offset:       2,
-				Len:          2,
-			},
-			&expr.Cmp{
-				Op:       expr.CmpOpEq,
-				Register: 1,
-				Data:     binaryutil.BigEndian.PutUint16(uint16(port)),
-			},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{proto}},
+			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(uint16(port))},
 			&expr.Verdict{Kind: expr.VerdictAccept},
 		},
 	})
@@ -391,59 +421,57 @@ func (e *Engine) addPortRangeAcceptRule(startPort, endPort int, tcp bool) {
 	if !tcp {
 		proto = 17
 	}
-
 	e.conn.AddRule(&nftables.Rule{
 		Table: e.table,
 		Chain: e.chainIn,
 		Exprs: []expr.Any{
 			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-			&expr.Cmp{
-				Op:       expr.CmpOpEq,
-				Register: 1,
-				Data:     []byte{proto},
-			},
-			&expr.Payload{
-				DestRegister: 1,
-				Base:         expr.PayloadBaseTransportHeader,
-				Offset:       2,
-				Len:          2,
-			},
-			&expr.Cmp{
-				Op:       expr.CmpOpGte,
-				Register: 1,
-				Data:     binaryutil.BigEndian.PutUint16(uint16(startPort)),
-			},
-			&expr.Payload{
-				DestRegister: 1,
-				Base:         expr.PayloadBaseTransportHeader,
-				Offset:       2,
-				Len:          2,
-			},
-			&expr.Cmp{
-				Op:       expr.CmpOpLte,
-				Register: 1,
-				Data:     binaryutil.BigEndian.PutUint16(uint16(endPort)),
-			},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{proto}},
+			// Load dest port once, check range
+			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+			&expr.Cmp{Op: expr.CmpOpGte, Register: 1, Data: binaryutil.BigEndian.PutUint16(uint16(startPort))},
+			&expr.Cmp{Op: expr.CmpOpLte, Register: 1, Data: binaryutil.BigEndian.PutUint16(uint16(endPort))},
 			&expr.Verdict{Kind: expr.VerdictAccept},
 		},
 	})
 }
 
+func (e *Engine) addOutboundPortRule(port int, tcp bool) {
+	proto := byte(6)
+	if !tcp {
+		proto = 17
+	}
+	e.conn.AddRule(&nftables.Rule{
+		Table: e.table,
+		Chain: e.chainOut,
+		Exprs: []expr.Any{
+			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{proto}},
+			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(uint16(port))},
+			&expr.Verdict{Kind: expr.VerdictAccept},
+		},
+	})
+}
+
+// --- Public API ---
+
 // BlockIP adds an IP to the blocked set with optional timeout.
+// timeout 0 = permanent block.
 func (e *Engine) BlockIP(ip string, reason string, timeout time.Duration) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	parsed := net.ParseIP(ip).To4()
+	parsed := net.ParseIP(ip)
 	if parsed == nil {
 		return fmt.Errorf("invalid IP: %s", ip)
 	}
+	ip4 := parsed.To4()
+	if ip4 == nil {
+		return fmt.Errorf("IPv6 not yet supported: %s", ip)
+	}
 
-	elem := []nftables.SetElement{{
-		Key:     parsed,
-		Timeout: timeout,
-	}}
-
+	elem := []nftables.SetElement{{Key: ip4, Timeout: timeout}}
 	if err := e.conn.SetAddElements(e.setBlocked, elem); err != nil {
 		return fmt.Errorf("adding to blocked set: %w", err)
 	}
@@ -451,56 +479,111 @@ func (e *Engine) BlockIP(ip string, reason string, timeout time.Duration) error 
 		return fmt.Errorf("flushing: %w", err)
 	}
 
-	// Persist to state
-	e.appendBlockedState(BlockedEntry{
+	// Persist — zero ExpiresAt means permanent
+	entry := BlockedEntry{
 		IP:        ip,
 		Reason:    reason,
 		BlockedAt: time.Now(),
-		ExpiresAt: time.Now().Add(timeout),
-	})
+	}
+	if timeout > 0 {
+		entry.ExpiresAt = time.Now().Add(timeout)
+	}
+	e.saveBlockedEntry(entry)
 
 	return nil
 }
 
-// UnblockIP removes an IP from the blocked set.
+// UnblockIP removes an IP from the blocked set and state.
 func (e *Engine) UnblockIP(ip string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	parsed := net.ParseIP(ip).To4()
+	parsed := net.ParseIP(ip)
 	if parsed == nil {
 		return fmt.Errorf("invalid IP: %s", ip)
 	}
+	ip4 := parsed.To4()
+	if ip4 == nil {
+		return fmt.Errorf("IPv6 not yet supported: %s", ip)
+	}
 
-	if err := e.conn.SetDeleteElements(e.setBlocked, []nftables.SetElement{{Key: parsed}}); err != nil {
+	if err := e.conn.SetDeleteElements(e.setBlocked, []nftables.SetElement{{Key: ip4}}); err != nil {
 		return fmt.Errorf("removing from blocked set: %w", err)
 	}
-	return e.conn.Flush()
+	if err := e.conn.Flush(); err != nil {
+		return fmt.Errorf("flushing: %w", err)
+	}
+
+	// Remove from state
+	e.removeBlockedState(ip)
+
+	return nil
 }
 
-// AllowIP adds an IP to the allowed set.
+// AllowIP adds an IP to the allowed set and persists it.
 func (e *Engine) AllowIP(ip string, reason string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	parsed := net.ParseIP(ip).To4()
+	parsed := net.ParseIP(ip)
 	if parsed == nil {
 		return fmt.Errorf("invalid IP: %s", ip)
 	}
+	ip4 := parsed.To4()
+	if ip4 == nil {
+		return fmt.Errorf("IPv6 not yet supported: %s", ip)
+	}
 
-	if err := e.conn.SetAddElements(e.setAllowed, []nftables.SetElement{{Key: parsed}}); err != nil {
+	if err := e.conn.SetAddElements(e.setAllowed, []nftables.SetElement{{Key: ip4}}); err != nil {
 		return fmt.Errorf("adding to allowed set: %w", err)
 	}
-	return e.conn.Flush()
+	if err := e.conn.Flush(); err != nil {
+		return fmt.Errorf("flushing: %w", err)
+	}
+
+	// Persist
+	e.saveAllowedEntry(AllowedEntry{IP: ip, Reason: reason})
+
+	return nil
+}
+
+// RemoveAllowIP removes an IP from the allowed set and state.
+func (e *Engine) RemoveAllowIP(ip string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return fmt.Errorf("invalid IP: %s", ip)
+	}
+	ip4 := parsed.To4()
+	if ip4 == nil {
+		return fmt.Errorf("IPv6 not yet supported: %s", ip)
+	}
+
+	if err := e.conn.SetDeleteElements(e.setAllowed, []nftables.SetElement{{Key: ip4}}); err != nil {
+		return fmt.Errorf("removing from allowed set: %w", err)
+	}
+	if err := e.conn.Flush(); err != nil {
+		return fmt.Errorf("flushing: %w", err)
+	}
+
+	e.removeAllowedState(ip)
+	return nil
 }
 
 // Status returns current firewall statistics.
 func (e *Engine) Status() map[string]interface{} {
+	state := e.loadStateFile()
 	return map[string]interface{}{
 		"enabled":     e.cfg.Enabled,
 		"tcp_in":      e.cfg.TCPIn,
+		"tcp_out":     e.cfg.TCPOut,
 		"udp_in":      e.cfg.UDPIn,
+		"udp_out":     e.cfg.UDPOut,
 		"infra_ips":   e.cfg.InfraIPs,
+		"blocked":     len(state.Blocked),
+		"allowed":     len(state.Allowed),
 		"log_dropped": e.cfg.LogDropped,
 	}
 }
@@ -508,63 +591,122 @@ func (e *Engine) Status() map[string]interface{} {
 // --- State persistence ---
 
 func (e *Engine) loadState() error {
-	stateFile := filepath.Join(e.statePath, "state.json")
-	if !fileExistsFirewall(stateFile) {
-		return nil
-	}
-	data, _ := os.ReadFile(stateFile)
-
-	var state FirewallState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return err
-	}
-
+	state := e.loadStateFile()
 	now := time.Now()
 
-	// Restore blocked IPs
+	// Restore blocked IPs (skip expired)
 	for _, entry := range state.Blocked {
 		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
-			continue // expired
+			continue
 		}
-		parsed := net.ParseIP(entry.IP).To4()
+		parsed := net.ParseIP(entry.IP)
 		if parsed == nil {
+			continue
+		}
+		ip4 := parsed.To4()
+		if ip4 == nil {
 			continue
 		}
 		timeout := time.Duration(0)
 		if !entry.ExpiresAt.IsZero() {
 			timeout = time.Until(entry.ExpiresAt)
 		}
-		elem := []nftables.SetElement{{Key: parsed, Timeout: timeout}}
-		_ = e.conn.SetAddElements(e.setBlocked, elem)
+		_ = e.conn.SetAddElements(e.setBlocked, []nftables.SetElement{{Key: ip4, Timeout: timeout}})
 	}
 
 	// Restore allowed IPs
 	for _, entry := range state.Allowed {
-		parsed := net.ParseIP(entry.IP).To4()
+		parsed := net.ParseIP(entry.IP)
 		if parsed == nil {
 			continue
 		}
-		_ = e.conn.SetAddElements(e.setAllowed, []nftables.SetElement{{Key: parsed}})
+		ip4 := parsed.To4()
+		if ip4 == nil {
+			continue
+		}
+		_ = e.conn.SetAddElements(e.setAllowed, []nftables.SetElement{{Key: ip4}})
 	}
 
 	return e.conn.Flush()
 }
 
-func (e *Engine) appendBlockedState(entry BlockedEntry) {
-	path := filepath.Join(e.statePath, "state.json")
+func (e *Engine) loadStateFile() FirewallState {
 	var state FirewallState
-
-	data, err := os.ReadFile(path)
-	if err == nil {
-		_ = json.Unmarshal(data, &state)
+	stateFile := filepath.Join(e.statePath, "state.json")
+	if !fileExistsFirewall(stateFile) {
+		return state
 	}
+	data, _ := os.ReadFile(stateFile)
+	_ = json.Unmarshal(data, &state)
 
-	state.Blocked = append(state.Blocked, entry)
+	// Clean expired entries
+	now := time.Now()
+	var active []BlockedEntry
+	for _, entry := range state.Blocked {
+		if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
+			active = append(active, entry)
+		}
+	}
+	state.Blocked = active
 
-	newData, _ := json.MarshalIndent(state, "", "  ")
+	return state
+}
+
+func (e *Engine) saveState(state *FirewallState) {
+	path := filepath.Join(e.statePath, "state.json")
+	data, _ := json.MarshalIndent(state, "", "  ")
 	tmpPath := path + ".tmp"
-	_ = os.WriteFile(tmpPath, newData, 0600)
+	_ = os.WriteFile(tmpPath, data, 0600)
 	_ = os.Rename(tmpPath, path)
+}
+
+func (e *Engine) saveBlockedEntry(entry BlockedEntry) {
+	state := e.loadStateFile()
+	// Deduplicate
+	for i, existing := range state.Blocked {
+		if existing.IP == entry.IP {
+			state.Blocked[i] = entry
+			e.saveState(&state)
+			return
+		}
+	}
+	state.Blocked = append(state.Blocked, entry)
+	e.saveState(&state)
+}
+
+func (e *Engine) removeBlockedState(ip string) {
+	state := e.loadStateFile()
+	var remaining []BlockedEntry
+	for _, entry := range state.Blocked {
+		if entry.IP != ip {
+			remaining = append(remaining, entry)
+		}
+	}
+	state.Blocked = remaining
+	e.saveState(&state)
+}
+
+func (e *Engine) saveAllowedEntry(entry AllowedEntry) {
+	state := e.loadStateFile()
+	for _, existing := range state.Allowed {
+		if existing.IP == entry.IP {
+			return // already exists
+		}
+	}
+	state.Allowed = append(state.Allowed, entry)
+	e.saveState(&state)
+}
+
+func (e *Engine) removeAllowedState(ip string) {
+	state := e.loadStateFile()
+	var remaining []AllowedEntry
+	for _, entry := range state.Allowed {
+		if entry.IP != ip {
+			remaining = append(remaining, entry)
+		}
+	}
+	state.Allowed = remaining
+	e.saveState(&state)
 }
 
 // --- IP helpers ---
@@ -594,4 +736,11 @@ func lastIPInRange(network *net.IPNet) net.IP {
 		last[i] = ip[i] | ^mask[i]
 	}
 	return last
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
