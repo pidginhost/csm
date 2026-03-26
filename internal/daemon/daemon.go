@@ -67,23 +67,10 @@ func (d *Daemon) Run() error {
 		return fmt.Errorf("integrity check failed: %w", err)
 	}
 
-	// Run initial baseline scan (catches existing files before fanotify starts)
-	fmt.Fprintf(os.Stderr, "[%s] Running initial baseline scan\n", ts())
-	initialFindings := checks.RunTier(d.cfg, d.store, checks.TierAll)
-	d.store.AppendHistory(initialFindings)
-	newFindings := d.store.FilterNew(initialFindings)
-	if len(newFindings) > 0 {
-		_ = alert.Dispatch(d.cfg, newFindings)
-	}
-	d.store.Update(initialFindings)
-	fmt.Fprintf(os.Stderr, "[%s] Initial scan complete: %d findings (%d new)\n", ts(), len(initialFindings), len(newFindings))
-
-	// Initialize YARA-X scanner (if compiled in and rules exist)
+	// Initialize signature scanners and threat DB (fast, no I/O scan)
 	if yaraScanner := yara.Init(d.cfg.Signatures.RulesDir); yaraScanner != nil {
 		fmt.Fprintf(os.Stderr, "[%s] YARA-X scanner active: %d rule file(s)\n", ts(), yaraScanner.RuleCount())
 	}
-
-	// Initialize local threat database
 	checks.InitThreatDB(d.cfg.StatePath, d.cfg.Reputation.Whitelist)
 	if db := checks.GetThreatDB(); db != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Threat DB initialized (%d entries)\n", ts(), db.Count())
@@ -105,11 +92,26 @@ func (d *Daemon) Run() error {
 	// Start PAM listener for real-time brute-force detection
 	d.startPAMListener()
 
-	// Start Web UI server if enabled
+	// Start Web UI server EARLY — available immediately, before initial scan
 	d.startWebUI()
 
-	// Start fanotify file monitor (falls back to periodic if kernel doesn't support it)
+	// Start fanotify file monitor (real-time detection starts immediately)
 	d.startFileMonitor()
+
+	// Run initial baseline scan in background (doesn't block startup)
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		fmt.Fprintf(os.Stderr, "[%s] Running initial baseline scan (background)\n", ts())
+		initialFindings := checks.RunTier(d.cfg, d.store, checks.TierAll)
+		d.store.AppendHistory(initialFindings)
+		newFindings := d.store.FilterNew(initialFindings)
+		if len(newFindings) > 0 {
+			_ = alert.Dispatch(d.cfg, newFindings)
+		}
+		d.store.Update(initialFindings)
+		fmt.Fprintf(os.Stderr, "[%s] Initial scan complete: %d findings (%d new)\n", ts(), len(initialFindings), len(newFindings))
+	}()
 
 	// Start periodic scanners
 	d.wg.Add(1)
@@ -121,6 +123,11 @@ func (d *Daemon) Run() error {
 	// Start heartbeat
 	d.wg.Add(1)
 	go d.heartbeat()
+
+	// Update WebUI health info now that all components are initialized
+	if d.webServer != nil {
+		d.webServer.SetHealthInfo(d.fileMonitor != nil, len(d.logWatchers))
+	}
 
 	fmt.Fprintf(os.Stderr, "[%s] CSM daemon running\n", ts())
 
@@ -347,6 +354,10 @@ func (d *Daemon) heartbeat() {
 		case <-ticker.C:
 			alert.SendHeartbeat(d.cfg)
 			d.hijackDetector.Cleanup()
+			// Clean expired temporary allows
+			if d.fwEngine != nil {
+				d.fwEngine.CleanExpiredAllows()
+			}
 		}
 	}
 }

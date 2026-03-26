@@ -33,6 +33,8 @@ func runFirewall() {
 		fwGrep()
 	case "tempban":
 		fwTempban()
+	case "tempallow":
+		fwTempAllow()
 	case "ports":
 		fwPorts()
 	case "flush":
@@ -76,6 +78,7 @@ Commands:
   remove <ip>                       Remove IP from blocked and allowed lists
   grep <pattern>                    Search blocked/allowed IPs by pattern
   tempban <ip> <duration> [reason]  Temporary block (e.g. 24h, 7d, 1h30m)
+  tempallow <ip> <duration> [reason] Temporary allow (e.g. 4h, 1d)
   ports                             Show configured port rules
   flush                             Remove all dynamic IP blocks
   restart                           Reapply full firewall ruleset
@@ -369,6 +372,45 @@ func fwTempban() {
 		os.Exit(1)
 	}
 	fmt.Printf("Blocked %s for %s — %s\n", ip, duration, reason)
+}
+
+func fwTempAllow() {
+	args := fwArgs()
+	if len(args) < 2 {
+		fmt.Fprintf(os.Stderr, "Usage: csm firewall tempallow <ip> <duration> [reason]\n")
+		fmt.Fprintf(os.Stderr, "  Duration examples: 4h, 1d, 30m\n")
+		os.Exit(1)
+	}
+
+	ip := args[0]
+	if net.ParseIP(ip) == nil {
+		fmt.Fprintf(os.Stderr, "Invalid IP address: %s\n", ip)
+		os.Exit(1)
+	}
+
+	duration, err := parseFWDuration(args[1])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Invalid duration '%s': %v\n", args[1], err)
+		os.Exit(1)
+	}
+
+	reason := "Temp allow via CLI"
+	if len(args) > 2 {
+		reason = strings.Join(args[2:], " ")
+	}
+
+	cfg := loadConfig()
+	engine, err := firewall.ConnectExisting(cfg.Firewall, cfg.StatePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := engine.TempAllowIP(ip, reason, duration); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Allowed %s for %s — %s\n", ip, duration, reason)
 }
 
 func fwPorts() {
