@@ -861,10 +861,8 @@ func (e *Engine) AllowIP(ip string, reason string) error {
 		return fmt.Errorf("IPv6 not yet supported: %s", ip)
 	}
 
-	// Remove from blocked set first — allow must override block
+	// Remove from blocked set + add to allowed set in same batch
 	_ = e.conn.SetDeleteElements(e.setBlocked, []nftables.SetElement{{Key: ip4}})
-	e.removeBlockedState(ip)
-
 	if err := e.conn.SetAddElements(e.setAllowed, []nftables.SetElement{{Key: ip4}}); err != nil {
 		return fmt.Errorf("adding to allowed set: %w", err)
 	}
@@ -872,6 +870,8 @@ func (e *Engine) AllowIP(ip string, reason string) error {
 		return fmt.Errorf("flushing: %w", err)
 	}
 
+	// State mutations only after successful flush
+	e.removeBlockedState(ip)
 	e.saveAllowedEntry(AllowedEntry{IP: ip, Reason: reason})
 	AppendAudit(e.statePath, "allow", ip, reason, 0)
 
