@@ -126,17 +126,24 @@ func ConnectExisting(cfg *FirewallConfig, statePath string) (*Engine, error) {
 }
 
 // Apply builds and atomically applies the complete nftables ruleset.
-// If the new ruleset fails to apply, logs the error but doesn't leave
-// the server without a firewall (nftables keeps the old ruleset on failure).
+// All operations (delete old table + create new table/rules) are batched
+// into a single netlink transaction. If the flush fails, the kernel keeps
+// whatever ruleset was running before — the server is never left without a firewall.
 func (e *Engine) Apply() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	// Delete existing CSM table (nftables keeps old rules if Flush fails)
-	e.conn.DelTable(&nftables.Table{Name: "csm", Family: nftables.TableFamilyINet})
-	_ = e.conn.Flush() // ignore error if table doesn't exist
+	// Check if existing CSM table needs replacing.
+	// If so, include the delete in the same atomic batch as the new table.
+	tables, _ := e.conn.ListTables()
+	for _, t := range tables {
+		if t.Name == "csm" && t.Family == nftables.TableFamilyINet {
+			e.conn.DelTable(t)
+			break
+		}
+	}
 
-	// Create table
+	// Create table — all operations below are batched, nothing is sent until Flush()
 	e.table = e.conn.AddTable(&nftables.Table{
 		Name:   "csm",
 		Family: nftables.TableFamilyINet,
@@ -840,6 +847,7 @@ func (e *Engine) UnblockIP(ip string) error {
 }
 
 // AllowIP adds an IP to the allowed set and persists it.
+// If the IP is currently blocked, the block is removed first.
 func (e *Engine) AllowIP(ip string, reason string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -852,6 +860,10 @@ func (e *Engine) AllowIP(ip string, reason string) error {
 	if ip4 == nil {
 		return fmt.Errorf("IPv6 not yet supported: %s", ip)
 	}
+
+	// Remove from blocked set first — allow must override block
+	_ = e.conn.SetDeleteElements(e.setBlocked, []nftables.SetElement{{Key: ip4}})
+	e.removeBlockedState(ip)
 
 	if err := e.conn.SetAddElements(e.setAllowed, []nftables.SetElement{{Key: ip4}}); err != nil {
 		return fmt.Errorf("adding to allowed set: %w", err)
