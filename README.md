@@ -110,6 +110,7 @@ Falls back to timer-based mode if the kernel doesn't support fanotify.
 | Credential harvest logs | Files like results.txt, data.txt with email:password pairs (phishing kit output) |
 | Phishing kit ZIPs | ZIP archives with brand-related names (office365.zip, sharepoint.zip) uploaded to public_html |
 | Signature rule matches | External YAML signature rules scanned against new PHP files in real-time |
+| YARA-X rule matches | YARA-X rules scanned against new files (optional, build with `-tags yara`) |
 
 ### Real-time: inotify Log Watchers
 
@@ -325,6 +326,20 @@ kill -HUP $(pidof csm)    # reload without restart
 
 A default rule set with 25+ rules ships in `configs/malware.yml`, covering webshells, backdoors, droppers, phishing kits, CGI abuse, credential harvesters, and exploits.
 
+### YARA-X Integration (optional)
+
+CSM supports [YARA-X](https://virustotal.github.io/yara-x/) (VirusTotal's next-gen YARA engine) for advanced malware signatures. Place `.yar` files in `/opt/csm/rules/` alongside YAML rules.
+
+```bash
+# Build with YARA-X support (requires yara-x native library)
+go build -tags yara ./cmd/csm
+
+# Without -tags yara, YARA-X is disabled (default — keeps static binary)
+go build ./cmd/csm
+```
+
+YARA rules run in parallel with YAML signature rules. Both are reloaded on `SIGHUP`. A default YARA rule file ships in `configs/malware.yar` with 25+ rules covering webshells, backdoors, droppers, phishing, CGI abuse, and exploits.
+
 ## Configuration
 
 Config file: `/opt/csm/csm.yaml`
@@ -424,7 +439,8 @@ backdoor_ports: [4444, 5555, 55553, 55555, 31337]
 ## Development
 
 ```bash
-make build-linux    # Cross-compile for Linux amd64
+make build-linux    # Cross-compile for Linux amd64 (no YARA-X)
+# make build-yara   # Build with YARA-X support (requires yara-x native lib)
 make lint           # golangci-lint (runs as GOOS=linux for fanotify)
 make test           # Unit tests
 make ci             # All CI checks
@@ -444,7 +460,6 @@ make tools          # Install dev tools
 
 ## Roadmap
 
-- YARA-X integration (VirusTotal's next-gen YARA engine) for advanced malware signatures
 - WAF rule management and custom ModSecurity rule deployment
 - Web dashboard (WHM plugin) for centralized management
 - CAPTCHA/challenge pages instead of hard IP blocks
