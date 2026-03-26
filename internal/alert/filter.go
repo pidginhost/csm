@@ -96,7 +96,7 @@ func loadBlockedIPs(statePath string) map[string]bool {
 		var bf blockFile
 		if json.Unmarshal(data, &bf) == nil {
 			for _, entry := range bf.IPs {
-				if now.Before(entry.ExpiresAt) {
+				if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
 					ips[entry.IP] = true
 				}
 			}
