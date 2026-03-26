@@ -388,6 +388,11 @@ func fwRestart() {
 		os.Exit(1)
 	}
 
+	// Sync infra IPs from main config (same as daemon startup)
+	if len(cfg.Firewall.InfraIPs) == 0 {
+		cfg.Firewall.InfraIPs = cfg.InfraIPs
+	}
+
 	engine, err := firewall.NewEngine(cfg.Firewall, cfg.StatePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating engine: %v\n", err)
@@ -429,6 +434,10 @@ func fwMigrate() {
 
 	cfg := loadConfig()
 	cfg.Firewall = fwCfg
+	// Sync infra IPs from main config
+	if len(cfg.Firewall.InfraIPs) == 0 {
+		cfg.Firewall.InfraIPs = cfg.InfraIPs
+	}
 	if saveErr := config.Save(cfg); saveErr != nil {
 		fmt.Fprintf(os.Stderr, "Error saving config: %v\n", saveErr)
 		os.Exit(1)

@@ -87,10 +87,8 @@ func parseCSFConf(cfg *FirewallConfig) error {
 			cfg.UDPOut = parsePorts(val)
 		case "SYNFLOOD":
 			cfg.SYNFloodProtection = val == "1"
-		case "CONNLIMIT":
-			if n, err := strconv.Atoi(val); err == nil && n > 0 {
-				cfg.ConnRateLimit = n
-			}
+		// CONNLIMIT is per-port concurrent limits ("22;5;80;20") — not yet supported,
+		// intentionally not mapped to conn_rate_limit which is a different feature.
 		case "DROP_LOGGING":
 			cfg.LogDropped = val == "1"
 		}
@@ -196,13 +194,18 @@ func parseCSFDeny() ([]BlockedEntry, error) {
 			line = strings.TrimSpace(line[:idx])
 		}
 
-		ip := strings.Fields(line)[0]
-		ip = strings.Split(ip, "/")[0] // strip CIDR
+		raw := strings.Fields(line)[0]
+		// Normalize: if it's a CIDR, extract just the IP (engine only supports single IPs for now)
+		ip := strings.Split(raw, "/")[0]
 
 		entries = append(entries, BlockedEntry{
 			IP:     ip,
 			Reason: reason,
 		})
+		// Warn if CIDR was collapsed
+		if strings.Contains(raw, "/") && !strings.HasSuffix(raw, "/32") {
+			fmt.Fprintf(os.Stderr, "migrate: warning: CIDR block %s collapsed to single IP %s\n", raw, ip)
+		}
 	}
 
 	return entries, nil
@@ -242,5 +245,21 @@ func FormatMigrationReport(cfg *FirewallConfig, state *FirewallState) string {
 	fmt.Fprintf(&b, "Blocked IPs:   %d entries\n", len(state.Blocked))
 	fmt.Fprintf(&b, "SYN flood:     %v\n", cfg.SYNFloodProtection)
 	fmt.Fprintf(&b, "Drop logging:  %v\n", cfg.LogDropped)
+
+	// Warn about lossy conversions
+	fmt.Fprintf(&b, "\nMigration warnings:\n")
+	portSpecific := 0
+	for _, a := range state.Allowed {
+		if a.Port > 0 {
+			portSpecific++
+		}
+	}
+	if portSpecific > 0 {
+		fmt.Fprintf(&b, "  - %d port-specific allow rules will become full-IP allows (engine limitation)\n", portSpecific)
+	}
+	fmt.Fprintf(&b, "  - CSF CONNLIMIT (per-port concurrent limits) is not migrated — not yet supported\n")
+	fmt.Fprintf(&b, "  - CSF PORTFLOOD settings are not migrated — configure port_flood manually\n")
+	fmt.Fprintf(&b, "  - CIDR blocks in csf.deny are collapsed to single IPs\n")
+
 	return b.String()
 }
