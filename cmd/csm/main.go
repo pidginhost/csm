@@ -84,6 +84,8 @@ func main() {
 		runVerify()
 	case "update-rules":
 		runUpdateRules()
+	case "clean":
+		runClean()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
 		printUsage()

@@ -86,6 +86,7 @@ func deepChecks() []namedCheck {
 		{"dns_zones", CheckDNSZoneChanges},
 		{"ssl_certs", CheckSSLCertIssuance},
 		{"waf_status", CheckWAFStatus},
+		{"db_content", CheckDatabaseContent},
 	}
 }
 

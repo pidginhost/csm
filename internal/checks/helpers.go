@@ -51,3 +51,19 @@ func runCmdCombined(name string, args ...string) ([]byte, error) {
 	}
 	return out, err
 }
+
+// runCmdWithEnv executes a command with extra environment variables.
+// Used for passing secrets (e.g., MYSQL_PWD) without exposing on command line.
+func runCmdWithEnv(name string, args []string, extraEnv ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = append(os.Environ(), extraEnv...)
+	out, err := cmd.Output()
+	if ctx.Err() == context.DeadlineExceeded {
+		fmt.Fprintf(os.Stderr, "Command timed out: %s\n", name)
+		return nil, nil
+	}
+	return out, err
+}
