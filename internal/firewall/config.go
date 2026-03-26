@@ -4,11 +4,18 @@ package firewall
 type FirewallConfig struct {
 	Enabled bool `yaml:"enabled"`
 
-	// Open ports
+	// Open ports (IPv4)
 	TCPIn  []int `yaml:"tcp_in"`
 	TCPOut []int `yaml:"tcp_out"`
 	UDPIn  []int `yaml:"udp_in"`
 	UDPOut []int `yaml:"udp_out"`
+
+	// IPv6 — enable dual-stack filtering
+	IPv6    bool  `yaml:"ipv6"`
+	TCP6In  []int `yaml:"tcp6_in"`  // if empty, uses tcp_in
+	TCP6Out []int `yaml:"tcp6_out"` // if empty, uses tcp_out
+	UDP6In  []int `yaml:"udp6_in"`  // if empty, uses udp_in
+	UDP6Out []int `yaml:"udp6_out"` // if empty, uses udp_out
 
 	// Ports restricted to infra IPs only
 	RestrictedTCP []int `yaml:"restricted_tcp"`

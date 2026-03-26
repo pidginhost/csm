@@ -36,6 +36,12 @@ type Engine struct {
 	setInfra      *nftables.Set
 	setCountry    *nftables.Set
 
+	// IPv6 sets (nil if IPv6 disabled)
+	setBlocked6    *nftables.Set
+	setBlockedNet6 *nftables.Set
+	setAllowed6    *nftables.Set
+	setInfra6      *nftables.Set
+
 	statePath string
 }
 
@@ -127,7 +133,7 @@ func ConnectExisting(cfg *FirewallConfig, statePath string) (*Engine, error) {
 		return nil, fmt.Errorf("infra_ips set not found: %w", err)
 	}
 
-	return &Engine{
+	e := &Engine{
 		conn:          conn,
 		cfg:           cfg,
 		table:         table,
@@ -136,7 +142,23 @@ func ConnectExisting(cfg *FirewallConfig, statePath string) (*Engine, error) {
 		setAllowed:    setAllowed,
 		setInfra:      setInfra,
 		statePath:     filepath.Join(statePath, "firewall"),
-	}, nil
+	}
+
+	// Try to find IPv6 sets (optional — may not exist if IPv6 disabled)
+	if s, err := conn.GetSetByName(table, "blocked_ips6"); err == nil {
+		e.setBlocked6 = s
+	}
+	if s, err := conn.GetSetByName(table, "blocked_nets6"); err == nil {
+		e.setBlockedNet6 = s
+	}
+	if s, err := conn.GetSetByName(table, "allowed_ips6"); err == nil {
+		e.setAllowed6 = s
+	}
+	if s, err := conn.GetSetByName(table, "infra_ips6"); err == nil {
+		e.setInfra6 = s
+	}
+
+	return e, nil
 }
 
 // Apply builds and atomically applies the complete nftables ruleset.
@@ -224,7 +246,7 @@ func (e *Engine) createSets() error {
 		return fmt.Errorf("allowed set: %w", err)
 	}
 
-	// Infra IPs set (interval for CIDR support)
+	// Infra IPs set (interval for CIDR support) — split IPv4 and IPv6
 	e.setInfra = &nftables.Set{
 		Table:    e.table,
 		Name:     "infra_ips",
@@ -233,6 +255,7 @@ func (e *Engine) createSets() error {
 	}
 
 	var infraElements []nftables.SetElement
+	var infra6Elements []nftables.SetElement
 	for _, cidr := range e.cfg.InfraIPs {
 		_, network, err := net.ParseCIDR(cidr)
 		if err != nil {
@@ -240,22 +263,38 @@ func (e *Engine) createSets() error {
 			if ip == nil {
 				continue
 			}
-			ip4 := ip.To4()
-			if ip4 != nil {
+			if ip4 := ip.To4(); ip4 != nil {
 				infraElements = append(infraElements,
 					nftables.SetElement{Key: ip4},
 					nftables.SetElement{Key: nextIP(ip4), IntervalEnd: true},
 				)
+			} else if e.cfg.IPv6 {
+				ip16 := ip.To16()
+				infra6Elements = append(infra6Elements,
+					nftables.SetElement{Key: ip16},
+					nftables.SetElement{Key: nextIP(ip16), IntervalEnd: true},
+				)
 			}
 			continue
 		}
-		start := network.IP.To4()
-		end := lastIPInRange(network)
-		if start != nil && end != nil {
-			infraElements = append(infraElements,
-				nftables.SetElement{Key: start},
-				nftables.SetElement{Key: nextIP(end), IntervalEnd: true},
-			)
+		if network.IP.To4() != nil {
+			start := network.IP.To4()
+			end := lastIPInRange(network)
+			if start != nil && end != nil {
+				infraElements = append(infraElements,
+					nftables.SetElement{Key: start},
+					nftables.SetElement{Key: nextIP(end), IntervalEnd: true},
+				)
+			}
+		} else if e.cfg.IPv6 {
+			start := network.IP.To16()
+			end := lastIPInRange(network)
+			if start != nil && end != nil {
+				infra6Elements = append(infra6Elements,
+					nftables.SetElement{Key: start},
+					nftables.SetElement{Key: nextIP(end), IntervalEnd: true},
+				)
+			}
 		}
 	}
 
@@ -283,6 +322,41 @@ func (e *Engine) createSets() error {
 		} else if len(countryElements) > 0 {
 			fmt.Fprintf(os.Stderr, "firewall: loaded %d country block ranges for %v\n",
 				len(countryElements)/2, e.cfg.CountryBlock)
+		}
+	}
+
+	// IPv6 sets
+	if e.cfg.IPv6 {
+		e.setBlocked6 = &nftables.Set{
+			Table: e.table, Name: "blocked_ips6",
+			KeyType: nftables.TypeIP6Addr, HasTimeout: true, Timeout: 24 * time.Hour,
+		}
+		if err := e.conn.AddSet(e.setBlocked6, nil); err != nil {
+			return fmt.Errorf("blocked6 set: %w", err)
+		}
+
+		e.setBlockedNet6 = &nftables.Set{
+			Table: e.table, Name: "blocked_nets6",
+			KeyType: nftables.TypeIP6Addr, Interval: true,
+		}
+		if err := e.conn.AddSet(e.setBlockedNet6, nil); err != nil {
+			return fmt.Errorf("blocked_nets6 set: %w", err)
+		}
+
+		e.setAllowed6 = &nftables.Set{
+			Table: e.table, Name: "allowed_ips6",
+			KeyType: nftables.TypeIP6Addr,
+		}
+		if err := e.conn.AddSet(e.setAllowed6, nil); err != nil {
+			return fmt.Errorf("allowed6 set: %w", err)
+		}
+
+		e.setInfra6 = &nftables.Set{
+			Table: e.table, Name: "infra_ips6",
+			KeyType: nftables.TypeIP6Addr, Interval: true,
+		}
+		if err := e.conn.AddSet(e.setInfra6, infra6Elements); err != nil {
+			return fmt.Errorf("infra6 set: %w", err)
 		}
 	}
 
@@ -356,15 +430,19 @@ func (e *Engine) createInputChain() error {
 
 	// Rule 4: Drop blocked IPs (O(1) hash set lookup)
 	e.addSetMatchRule(e.setBlocked, expr.VerdictDrop)
+	e.addSetMatchRuleV6(e.setBlocked6, expr.VerdictDrop)
 
 	// Rule 5: Drop blocked subnets (interval set for CIDR ranges)
 	e.addSetMatchRule(e.setBlockedNet, expr.VerdictDrop)
+	e.addSetMatchRuleV6(e.setBlockedNet6, expr.VerdictDrop)
 
 	// Rule 6: Allow infra IPs (all ports)
 	e.addSetMatchRule(e.setInfra, expr.VerdictAccept)
+	e.addSetMatchRuleV6(e.setInfra6, expr.VerdictAccept)
 
-	// Rule 5: Allow explicitly allowed IPs
+	// Rule 7: Allow explicitly allowed IPs
 	e.addSetMatchRule(e.setAllowed, expr.VerdictAccept)
+	e.addSetMatchRuleV6(e.setAllowed6, expr.VerdictAccept)
 
 	// Rule 6: ICMP echo-request only (type 8)
 	e.conn.AddRule(&nftables.Rule{
@@ -723,22 +801,48 @@ func (e *Engine) createOutputChain() error {
 
 // --- Helper methods ---
 
+// resolveIPSet returns the appropriate set and key bytes for an IP address.
+// Falls back to IPv6 set if the IP is not IPv4.
+func (e *Engine) resolveIPSet(ip string, set4, set6 *nftables.Set) (*nftables.Set, []byte, error) {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return nil, nil, fmt.Errorf("invalid IP: %s", ip)
+	}
+	if ip4 := parsed.To4(); ip4 != nil {
+		return set4, ip4, nil
+	}
+	if set6 == nil {
+		return nil, nil, fmt.Errorf("IPv6 not enabled in firewall config: %s", ip)
+	}
+	return set6, parsed.To16(), nil
+}
+
+// addSetMatchRule adds an IPv4 source-IP set match rule on the input chain.
 func (e *Engine) addSetMatchRule(set *nftables.Set, verdict expr.VerdictKind) {
 	e.conn.AddRule(&nftables.Rule{
 		Table: e.table,
 		Chain: e.chainIn,
 		Exprs: []expr.Any{
-			&expr.Payload{
-				DestRegister: 1,
-				Base:         expr.PayloadBaseNetworkHeader,
-				Offset:       12, // source IP
-				Len:          4,
-			},
-			&expr.Lookup{
-				SourceRegister: 1,
-				SetName:        set.Name,
-				SetID:          set.ID,
-			},
+			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
+			&expr.Lookup{SourceRegister: 1, SetName: set.Name, SetID: set.ID},
+			&expr.Verdict{Kind: verdict},
+		},
+	})
+}
+
+// addSetMatchRuleV6 adds an IPv6 source-IP set match rule on the input chain.
+func (e *Engine) addSetMatchRuleV6(set *nftables.Set, verdict expr.VerdictKind) {
+	if set == nil {
+		return
+	}
+	e.conn.AddRule(&nftables.Rule{
+		Table: e.table,
+		Chain: e.chainIn,
+		Exprs: []expr.Any{
+			&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{10}}, // NFPROTO_IPV6
+			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 8, Len: 16},
+			&expr.Lookup{SourceRegister: 1, SetName: set.Name, SetID: set.ID},
 			&expr.Verdict{Kind: verdict},
 		},
 	})
@@ -808,13 +912,9 @@ func (e *Engine) BlockIP(ip string, reason string, timeout time.Duration) error 
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	parsed := net.ParseIP(ip)
-	if parsed == nil {
-		return fmt.Errorf("invalid IP: %s", ip)
-	}
-	ip4 := parsed.To4()
-	if ip4 == nil {
-		return fmt.Errorf("IPv6 not yet supported: %s", ip)
+	targetSet, key, err := e.resolveIPSet(ip, e.setBlocked, e.setBlocked6)
+	if err != nil {
+		return err
 	}
 
 	// Enforce deny IP limits
@@ -836,8 +936,8 @@ func (e *Engine) BlockIP(ip string, reason string, timeout time.Duration) error 
 		}
 	}
 
-	elem := []nftables.SetElement{{Key: ip4, Timeout: timeout}}
-	if err := e.conn.SetAddElements(e.setBlocked, elem); err != nil {
+	elem := []nftables.SetElement{{Key: key, Timeout: timeout}}
+	if err := e.conn.SetAddElements(targetSet, elem); err != nil {
 		return fmt.Errorf("adding to blocked set: %w", err)
 	}
 	if err := e.conn.Flush(); err != nil {
@@ -864,16 +964,12 @@ func (e *Engine) UnblockIP(ip string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	parsed := net.ParseIP(ip)
-	if parsed == nil {
-		return fmt.Errorf("invalid IP: %s", ip)
-	}
-	ip4 := parsed.To4()
-	if ip4 == nil {
-		return fmt.Errorf("IPv6 not yet supported: %s", ip)
+	targetSet, key, err := e.resolveIPSet(ip, e.setBlocked, e.setBlocked6)
+	if err != nil {
+		return err
 	}
 
-	if err := e.conn.SetDeleteElements(e.setBlocked, []nftables.SetElement{{Key: ip4}}); err != nil {
+	if err := e.conn.SetDeleteElements(targetSet, []nftables.SetElement{{Key: key}}); err != nil {
 		return fmt.Errorf("removing from blocked set: %w", err)
 	}
 	if err := e.conn.Flush(); err != nil {
@@ -892,18 +988,17 @@ func (e *Engine) AllowIP(ip string, reason string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	parsed := net.ParseIP(ip)
-	if parsed == nil {
-		return fmt.Errorf("invalid IP: %s", ip)
-	}
-	ip4 := parsed.To4()
-	if ip4 == nil {
-		return fmt.Errorf("IPv6 not yet supported: %s", ip)
+	blockedSet, blockedKey, _ := e.resolveIPSet(ip, e.setBlocked, e.setBlocked6)
+	allowedSet, allowedKey, err := e.resolveIPSet(ip, e.setAllowed, e.setAllowed6)
+	if err != nil {
+		return err
 	}
 
 	// Remove from blocked set + add to allowed set in same batch
-	_ = e.conn.SetDeleteElements(e.setBlocked, []nftables.SetElement{{Key: ip4}})
-	if err := e.conn.SetAddElements(e.setAllowed, []nftables.SetElement{{Key: ip4}}); err != nil {
+	if blockedSet != nil {
+		_ = e.conn.SetDeleteElements(blockedSet, []nftables.SetElement{{Key: blockedKey}})
+	}
+	if err := e.conn.SetAddElements(allowedSet, []nftables.SetElement{{Key: allowedKey}}); err != nil {
 		return fmt.Errorf("adding to allowed set: %w", err)
 	}
 	if err := e.conn.Flush(); err != nil {
@@ -923,16 +1018,12 @@ func (e *Engine) RemoveAllowIP(ip string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	parsed := net.ParseIP(ip)
-	if parsed == nil {
-		return fmt.Errorf("invalid IP: %s", ip)
-	}
-	ip4 := parsed.To4()
-	if ip4 == nil {
-		return fmt.Errorf("IPv6 not yet supported: %s", ip)
+	targetSet, key, err := e.resolveIPSet(ip, e.setAllowed, e.setAllowed6)
+	if err != nil {
+		return err
 	}
 
-	if err := e.conn.SetDeleteElements(e.setAllowed, []nftables.SetElement{{Key: ip4}}); err != nil {
+	if err := e.conn.SetDeleteElements(targetSet, []nftables.SetElement{{Key: key}}); err != nil {
 		return fmt.Errorf("removing from allowed set: %w", err)
 	}
 	if err := e.conn.Flush(); err != nil {
@@ -1047,7 +1138,7 @@ func (e *Engine) loadState() error {
 	state := e.loadStateFile()
 	now := time.Now()
 
-	// Restore blocked IPs (skip expired)
+	// Restore blocked IPs (skip expired, route to IPv4 or IPv6 set)
 	for _, entry := range state.Blocked {
 		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
 			continue
@@ -1056,31 +1147,31 @@ func (e *Engine) loadState() error {
 		if parsed == nil {
 			continue
 		}
-		ip4 := parsed.To4()
-		if ip4 == nil {
-			continue
-		}
 		timeout := time.Duration(0)
 		if !entry.ExpiresAt.IsZero() {
 			timeout = time.Until(entry.ExpiresAt)
 		}
-		_ = e.conn.SetAddElements(e.setBlocked, []nftables.SetElement{{Key: ip4, Timeout: timeout}})
+		if ip4 := parsed.To4(); ip4 != nil {
+			_ = e.conn.SetAddElements(e.setBlocked, []nftables.SetElement{{Key: ip4, Timeout: timeout}})
+		} else if e.setBlocked6 != nil {
+			_ = e.conn.SetAddElements(e.setBlocked6, []nftables.SetElement{{Key: parsed.To16(), Timeout: timeout}})
+		}
 	}
 
-	// Restore allowed IPs
+	// Restore allowed IPs (route to IPv4 or IPv6 set)
 	for _, entry := range state.Allowed {
 		parsed := net.ParseIP(entry.IP)
 		if parsed == nil {
 			continue
 		}
-		ip4 := parsed.To4()
-		if ip4 == nil {
-			continue
+		if ip4 := parsed.To4(); ip4 != nil {
+			_ = e.conn.SetAddElements(e.setAllowed, []nftables.SetElement{{Key: ip4}})
+		} else if e.setAllowed6 != nil {
+			_ = e.conn.SetAddElements(e.setAllowed6, []nftables.SetElement{{Key: parsed.To16()}})
 		}
-		_ = e.conn.SetAddElements(e.setAllowed, []nftables.SetElement{{Key: ip4}})
 	}
 
-	// Restore blocked subnets
+	// Restore blocked subnets (route to IPv4 or IPv6 set)
 	for _, entry := range state.BlockedNet {
 		_, network, err := net.ParseCIDR(entry.CIDR)
 		if err != nil {
@@ -1088,13 +1179,19 @@ func (e *Engine) loadState() error {
 		}
 		start := network.IP.To4()
 		end := lastIPInRange(network)
-		if start == nil || end == nil {
-			continue
+		if start != nil && end != nil {
+			_ = e.conn.SetAddElements(e.setBlockedNet, []nftables.SetElement{
+				{Key: start},
+				{Key: nextIP(end), IntervalEnd: true},
+			})
+		} else if e.setBlockedNet6 != nil {
+			start6 := network.IP.To16()
+			end6 := lastIPInRange(network)
+			_ = e.conn.SetAddElements(e.setBlockedNet6, []nftables.SetElement{
+				{Key: start6},
+				{Key: nextIP(end6), IntervalEnd: true},
+			})
 		}
-		_ = e.conn.SetAddElements(e.setBlockedNet, []nftables.SetElement{
-			{Key: start},
-			{Key: nextIP(end), IntervalEnd: true},
-		})
 	}
 
 	return e.conn.Flush()

@@ -572,6 +572,7 @@ CSM includes a native nftables firewall engine that replaces CSF (ConfigServer F
 - Subnet auto-blocking (auto-block /24 when 3+ IPs from same range)
 - Dynamic DNS (resolve hostnames to IPs, update allowed set every 5 min)
 - Config profiles (save/list/restore firewall configuration snapshots)
+- IPv6 dual-stack (separate IPv6 sets for blocked/allowed/infra, dual-stack rule matching)
 - GeoIP auto-update (download country CIDR lists from public source)
 - IP geolocation lookup (`csm firewall lookup <ip>` — shows country, block status, infra match)
 - State persistence with atomic writes (survives restart)
@@ -602,7 +603,6 @@ csm firewall migrate-from-csf [--apply] CSF migration (dry-run default)
 ## Roadmap
 
 ### Firewall — Remaining for Full CSF Parity
-- IPv6 support (TCP6_IN/OUT, UDP6_IN/OUT, IPv6 sets, dual-stack rules)
 - Per-IP concurrent connection limit (CONNLIMIT via nftables connlimit/meter)
 - Per-IP SYN/connection/UDP flood metering (currently global, needs nftables dynsets)
 - Port knocking (open SSH port after connection sequence)
