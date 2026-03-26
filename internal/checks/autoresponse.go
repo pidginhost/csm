@@ -123,6 +123,35 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 			continue
 		}
 
+		// For WP core/plugin/theme files: clean surgically instead of quarantining.
+		// This preserves site functionality while removing the injected code.
+		if !info.IsDir() && ShouldCleanInsteadOfQuarantine(path) {
+			result := CleanInfectedFile(path)
+			switch {
+			case result.Cleaned:
+				actions = append(actions, alert.Finding{
+					Severity:  alert.Critical,
+					Check:     "auto_response",
+					Message:   fmt.Sprintf("AUTO-CLEAN: %s surgically cleaned", path),
+					Details:   fmt.Sprintf("Backup: %s\n%s", result.BackupPath, strings.Join(result.Removals, "\n")),
+					Timestamp: time.Now(),
+				})
+				continue // successfully cleaned, skip quarantine
+			case result.Error != "":
+				// Cleaning failed — fall through to quarantine
+				actions = append(actions, alert.Finding{
+					Severity:  alert.Warning,
+					Check:     "auto_response",
+					Message:   fmt.Sprintf("AUTO-CLEAN failed for %s, quarantining instead", path),
+					Details:   result.Error,
+					Timestamp: time.Now(),
+				})
+				// Don't continue — fall through to quarantine below
+			default:
+				continue // no changes needed
+			}
+		}
+
 		// Create quarantine directory
 		_ = os.MkdirAll(quarantineDir, 0700)
 
