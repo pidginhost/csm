@@ -17,6 +17,7 @@ import (
 	"github.com/pidginhost/cpanel-security-monitor/internal/checks"
 	"github.com/pidginhost/cpanel-security-monitor/internal/config"
 	"github.com/pidginhost/cpanel-security-monitor/internal/firewall"
+	"github.com/pidginhost/cpanel-security-monitor/internal/geoip"
 	"github.com/pidginhost/cpanel-security-monitor/internal/integrity"
 	"github.com/pidginhost/cpanel-security-monitor/internal/signatures"
 	"github.com/pidginhost/cpanel-security-monitor/internal/state"
@@ -94,6 +95,9 @@ func (d *Daemon) Run() error {
 
 	// Start firewall engine if enabled
 	d.startFirewall()
+
+	// Initialize GeoIP databases
+	d.initGeoIP()
 
 	// Start challenge server if enabled (gray listing)
 	d.startChallengeServer()
@@ -568,6 +572,14 @@ func (d *Daemon) startChallengeServer() {
 			fmt.Fprintf(os.Stderr, "[%s] Challenge server error: %v\n", ts(), err)
 		}
 	}()
+}
+
+func (d *Daemon) initGeoIP() {
+	dbDir := filepath.Join(d.cfg.StatePath, "geoip")
+	db := geoip.Open(dbDir)
+	if db != nil {
+		webui.SetGeoIPDB(db)
+	}
 }
 
 func (d *Daemon) startFirewall() {
