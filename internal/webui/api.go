@@ -304,6 +304,8 @@ func (s *Server) apiFixPreview(w http.ResponseWriter, r *http.Request) {
 }
 
 // apiAccounts returns a list of cPanel account usernames for the scan dropdown.
+//
+//nolint:unused // registered via mux.Handle in server.go
 func (s *Server) apiAccounts(w http.ResponseWriter, _ *http.Request) {
 	entries, err := os.ReadDir("/home")
 	if err != nil {
