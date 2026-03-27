@@ -205,9 +205,17 @@ do_upgrade() {
     cp "$BINARY_PATH" "${BINARY_PATH}.bak" 2>/dev/null || true
     cp "${INSTALL_DIR}/csm.yaml" "${INSTALL_DIR}/csm.yaml.bak" 2>/dev/null || true
 
-    # Swap
+    # Swap binary
     chattr -i "$BINARY_PATH" 2>/dev/null || true
     cp "${tmpdir}/${ARTIFACT_NAME}" "$BINARY_PATH"
+
+    # Download and extract UI + config assets
+    local assets_code
+    assets_code=$(pkg_download "${PKG_BASE}/latest/csm-assets.tar.gz" "${tmpdir}/csm-assets.tar.gz")
+    if [ "$assets_code" = "200" ]; then
+        tar xzf "${tmpdir}/csm-assets.tar.gz" -C "$INSTALL_DIR" 2>/dev/null || true
+    fi
+
     rm -rf "$tmpdir"
 
     # Baseline — rollback if fails

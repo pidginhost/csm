@@ -26,13 +26,20 @@
 
     <!-- Active Findings -->
     <div class="card">
-        <div class="card-header">
-            <h3 class="card-title"><i class="ti ti-alert-triangle"></i>&nbsp;Active Findings ({{len .Entries}})</h3>
-            <div class="card-actions d-flex gap-2 flex-wrap">
-                <input type="text" id="findings-search" class="form-control form-control-sm" placeholder="Search..." style="width:160px">
+        <div class="card-header d-flex flex-wrap align-items-center gap-2">
+            <h3 class="card-title me-auto"><i class="ti ti-alert-triangle"></i>&nbsp;Active Findings ({{len .Entries}})</h3>
+            <div class="d-flex gap-2 flex-wrap align-items-center">
+                <input type="text" id="findings-search" class="form-control form-control-sm" placeholder="Search..." style="width:140px">
                 <select id="check-filter" class="form-select form-select-sm" style="width:auto">
                     <option value="all">All Types</option>
                     {{range .CheckTypes}}<option value="{{.}}">{{.}}</option>{{end}}
+                </select>
+                <select id="per-page" class="form-select form-select-sm" style="width:auto" onchange="changePerPage()">
+                    <option value="25">25/page</option>
+                    <option value="50">50/page</option>
+                    <option value="100">100/page</option>
+                    <option value="250">250/page</option>
+                    <option value="0">All</option>
                 </select>
                 <div id="bulk-actions" class="d-none d-flex gap-1 align-items-center">
                     <span class="text-muted small me-1"><strong id="selected-count">0</strong> selected</span>
@@ -44,14 +51,14 @@
             </div>
         </div>
         {{if .Entries}}
-        <div class="table-responsive">
-            <table class="table table-vcenter card-table" id="findings-table" style="table-layout:fixed;width:100%">
+        <div class="table-responsive" style="overflow-x:auto">
+            <table class="table table-vcenter card-table" id="findings-table" style="table-layout:fixed;width:100%;min-width:700px">
                 <colgroup>
                     <col style="width:36px">
-                    <col style="width:180px">
+                    <col style="width:150px">
                     <col>
-                    <col style="width:145px">
-                    <col style="width:145px">
+                    <col style="width:130px">
+                    <col style="width:130px">
                     <col style="width:80px">
                 </colgroup>
                 <thead>
@@ -68,8 +75,8 @@
                     {{range .Entries}}
                     <tr class="finding-row" data-check="{{.Check}}" data-message="{{.Message}}" data-hasFix="{{.HasFix}}" data-fixdesc="{{.FixDesc}}">
                         <td><input type="checkbox" class="form-check-input row-checkbox" onchange="updateSelection()"></td>
-                        <td><code class="text-truncate d-block">{{.Check}}</code></td>
-                        <td class="text-truncate" title="{{.Message}}">{{.Message}}</td>
+                        <td><code style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block">{{.Check}}</code></td>
+                        <td title="{{.Message}}"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%">{{.Message}}</div></td>
                         <td class="text-nowrap"><span class="font-monospace small">{{.FirstSeen}}</span></td>
                         <td class="text-nowrap"><span class="font-monospace small">{{.LastSeen}}</span></td>
                         <td class="text-nowrap action-cell"></td>
@@ -96,6 +103,15 @@ if (document.getElementById('findings-table')) {
         sortable: true,
         filters: [{ id: 'check-filter', attr: 'data-check' }]
     });
+}
+
+function changePerPage() {
+    var pp = parseInt(document.getElementById('per-page').value, 10);
+    if (findingsTable) {
+        findingsTable.perPage = pp || 0;
+        findingsTable.currentPage = 1;
+        findingsTable.render();
+    }
 }
 
 // --- Selection management ---
