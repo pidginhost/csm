@@ -118,9 +118,24 @@ HTML
 
 # Rewrite URLs in HTML to route through CGI proxy
 if ($ct =~ /text\/html/) {
+    # Nav links and form actions
     $body =~ s{(href|action)="(/(?:dashboard|findings|history|quarantine|blocked|firewall|login)[^"]*)"}{$1="addon_csm.cgi?path=$2"}g;
+    # Static assets (CSS, JS, images)
     $body =~ s{(href|src)="/static/([^"]+)"}{$1="addon_csm.cgi?path=/static/$2"}g;
+    # Login form
     $body =~ s{action="/login"}{action="addon_csm.cgi?path=/login"}g;
+    # API links (e.g. CSV download)
+    $body =~ s{href="/api/([^"]+)"}{href="addon_csm.cgi?path=/api/$1"}g;
+    # JavaScript fetch() and CSM.post() API calls
+    $body =~ s{fetch\('/api/}{fetch('addon_csm.cgi?path=/api/}g;
+    $body =~ s{fetch\("/api/}{fetch("addon_csm.cgi?path=/api/}g;
+    # CSM.post/CSM.get helpers
+    $body =~ s{CSM\.post\('/api/}{CSM.post('addon_csm.cgi?path=/api/}g;
+    $body =~ s{CSM\.post\("/api/}{CSM.post("addon_csm.cgi?path=/api/}g;
+    # Logout link
+    $body =~ s{href="/logout"}{href="addon_csm.cgi?path=/logout"}g;
+    # WebSocket URL — replace with polling fallback marker
+    $body =~ s{'/ws/findings'}{'/ws/findings'/* WHM proxy */}g;
 }
 
 # Rewrite relative url() in CSS to absolute paths through proxy
