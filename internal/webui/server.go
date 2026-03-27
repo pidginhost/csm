@@ -7,12 +7,14 @@ import (
 	"crypto/subtle"
 	"crypto/tls"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -72,10 +74,14 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		"timeAgo":       timeAgo,
 		"formatTime":    formatTime,
 		"csrfToken":     s.csrfToken,
-		"multiply":      func(a, b int) int { return a * b },
-		"add":           func(a, b int) int { return a + b },
-		"subtract":      func(a, b int) int { return a - b },
-		"divisibleBy":   func(a, b int) bool { return b != 0 && a%b == 0 },
+		"json": func(v any) template.JS {
+			b, _ := json.Marshal(v)
+			return template.JS(b)
+		},
+		"multiply":    func(a, b int) int { return a * b },
+		"add":         func(a, b int) int { return a + b },
+		"subtract":    func(a, b int) int { return a - b },
+		"divisibleBy": func(a, b int) bool { return b != 0 && a%b == 0 },
 	}
 
 	// Try to load templates from disk
@@ -84,7 +90,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	if _, err := os.Stat(templateDir); err == nil {
 		s.templates = make(map[string]*template.Template)
 		layoutPath := filepath.Join(templateDir, "layout.html")
-		for _, page := range []string{"dashboard", "findings", "history", "quarantine", "firewall", "threat"} {
+		for _, page := range []string{"dashboard", "findings", "history", "quarantine", "firewall", "threat", "rules"} {
 			pagePath := filepath.Join(templateDir, page+".html")
 			t, err := template.New(page+".html").Funcs(funcMap).ParseFiles(layoutPath, pagePath)
 			if err != nil {
@@ -119,6 +125,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		mux.Handle("/blocked", s.requireAuth(http.HandlerFunc(s.handleFirewall))) // redirect old URL
 		mux.Handle("/firewall", s.requireAuth(http.HandlerFunc(s.handleFirewall)))
 		mux.Handle("/threat", s.requireAuth(http.HandlerFunc(s.handleThreat)))
+		mux.Handle("/rules", s.requireAuth(http.HandlerFunc(s.handleRules)))
 	}
 
 	// Auth-protected API — read
@@ -145,11 +152,19 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/threat/clear-ip", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiThreatClearIP))))
 	mux.Handle("/api/v1/threat/temp-whitelist-ip", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiThreatTempWhitelistIP))))
 
+	// Rules API
+	mux.Handle("/api/v1/rules/status", s.requireAuth(http.HandlerFunc(s.apiRulesStatus)))
+	mux.Handle("/api/v1/rules/list", s.requireAuth(http.HandlerFunc(s.apiRulesList)))
+	mux.Handle("/api/v1/rules/reload", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiRulesReload))))
+
 	// Firewall API
 	mux.Handle("/api/v1/firewall/status", s.requireAuth(http.HandlerFunc(s.apiFirewallStatus)))
 	mux.Handle("/api/v1/firewall/audit", s.requireAuth(http.HandlerFunc(s.apiFirewallAudit)))
 	mux.Handle("/api/v1/firewall/subnets", s.requireAuth(http.HandlerFunc(s.apiFirewallSubnets)))
 	mux.Handle("/api/v1/firewall/check", s.requireAuth(http.HandlerFunc(s.apiFirewallCheck)))
+
+	// GeoIP API
+	mux.Handle("/api/v1/geoip", s.requireAuth(http.HandlerFunc(s.apiGeoIPLookup)))
 
 	// Auth-protected API — actions (with CSRF validation)
 	mux.Handle("/api/v1/fix", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiFix))))
@@ -422,9 +437,34 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-XSS-Protection", "1; mode=block")
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
 		w.Header().Set("Cache-Control", "no-store")
+
+		// CORS/origin validation: reject cross-origin API requests
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			origin := r.Header.Get("Origin")
+			if origin != "" {
+				// Only allow same-origin requests — compare against our listen address
+				host := r.Host
+				if host == "" {
+					host = s.cfg.Hostname
+				}
+				allowed := "https://" + host
+				if origin != allowed {
+					http.Error(w, "Cross-origin request blocked", http.StatusForbidden)
+					return
+				}
+				w.Header().Set("Access-Control-Allow-Origin", allowed)
+				w.Header().Set("Access-Control-Allow-Credentials", "true")
+			}
+			// Deny CORS preflight from unknown origins
+			if r.Method == "OPTIONS" {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+		}
+
 		next.ServeHTTP(w, r)
 	})
 }
