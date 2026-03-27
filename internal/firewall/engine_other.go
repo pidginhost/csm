@@ -30,10 +30,18 @@ type SubnetEntry struct {
 	BlockedAt time.Time `json:"blocked_at"`
 }
 
+type PortAllowEntry struct {
+	IP     string `json:"ip"`
+	Port   int    `json:"port"`
+	Proto  string `json:"proto"`
+	Reason string `json:"reason"`
+}
+
 type FirewallState struct {
-	Blocked    []BlockedEntry `json:"blocked"`
-	BlockedNet []SubnetEntry  `json:"blocked_nets"`
-	Allowed    []AllowedEntry `json:"allowed"`
+	Blocked     []BlockedEntry   `json:"blocked"`
+	BlockedNet  []SubnetEntry    `json:"blocked_nets"`
+	Allowed     []AllowedEntry   `json:"allowed"`
+	PortAllowed []PortAllowEntry `json:"port_allowed"`
 }
 
 func NewEngine(_ *FirewallConfig, _ string) (*Engine, error) {
@@ -52,6 +60,8 @@ func (e *Engine) RemoveAllowIP(_ string) error                          { return
 func (e *Engine) BlockSubnet(_ string, _ string) error                  { return nil }
 func (e *Engine) UnblockSubnet(_ string) error                          { return nil }
 func (e *Engine) TempAllowIP(_ string, _ string, _ time.Duration) error { return nil }
+func (e *Engine) AllowIPPort(_ string, _ int, _ string, _ string) error { return nil }
+func (e *Engine) RemoveAllowIPPort(_ string, _ int, _ string) error     { return nil }
 func (e *Engine) CleanExpiredAllows() int                               { return 0 }
 func (e *Engine) FlushBlocked() error                                   { return nil }
 func (e *Engine) Status() map[string]interface{}                        { return nil }

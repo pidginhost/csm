@@ -19,12 +19,13 @@ func MigrateFromCSF() (*FirewallConfig, *FirewallState, error) {
 		return nil, nil, fmt.Errorf("parsing csf.conf: %w", err)
 	}
 
-	// Parse csf.allow for allowed IPs
-	allowed, err := parseCSFAllow()
+	// Parse csf.allow for allowed IPs (full-IP and port-specific)
+	allowed, portAllowed, err := parseCSFAllow()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "migrate: warning parsing csf.allow: %v\n", err)
 	}
 	state.Allowed = allowed
+	state.PortAllowed = portAllowed
 
 	// Parse csf.deny for blocked IPs
 	blocked, err := parseCSFDeny()
@@ -124,14 +125,15 @@ func parsePorts(val string) []int {
 	return ports
 }
 
-func parseCSFAllow() ([]AllowedEntry, error) {
+func parseCSFAllow() ([]AllowedEntry, []PortAllowEntry, error) {
 	f, err := os.Open("/etc/csf/csf.allow")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer func() { _ = f.Close() }()
 
 	var entries []AllowedEntry
+	var portEntries []PortAllowEntry
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -149,8 +151,9 @@ func parseCSFAllow() ([]AllowedEntry, error) {
 		// Port-specific rules: tcp|in|d=2325|s=1.2.3.4
 		if strings.Contains(line, "|") {
 			parts := strings.Split(line, "|")
-			var ip string
+			var ip, proto string
 			var port int
+			proto = "tcp"
 			for _, p := range parts {
 				if strings.HasPrefix(p, "s=") {
 					ip = p[2:]
@@ -158,9 +161,16 @@ func parseCSFAllow() ([]AllowedEntry, error) {
 				if strings.HasPrefix(p, "d=") {
 					port, _ = strconv.Atoi(p[2:])
 				}
+				if p == "udp" {
+					proto = "udp"
+				}
 			}
-			if ip != "" {
-				entries = append(entries, AllowedEntry{IP: ip, Reason: reason, Port: port})
+			if ip != "" && port > 0 {
+				portEntries = append(portEntries, PortAllowEntry{
+					IP: ip, Port: port, Proto: proto, Reason: reason,
+				})
+			} else if ip != "" {
+				entries = append(entries, AllowedEntry{IP: ip, Reason: reason})
 			}
 			continue
 		}
@@ -170,7 +180,7 @@ func parseCSFAllow() ([]AllowedEntry, error) {
 		entries = append(entries, AllowedEntry{IP: ip, Reason: reason})
 	}
 
-	return entries, nil
+	return entries, portEntries, nil
 }
 
 func parseCSFDeny() ([]BlockedEntry, error) {
@@ -247,16 +257,11 @@ func FormatMigrationReport(cfg *FirewallConfig, state *FirewallState) string {
 	fmt.Fprintf(&b, "Drop logging:  %v\n", cfg.LogDropped)
 
 	// Warn about lossy conversions
+	if len(state.PortAllowed) > 0 {
+		fmt.Fprintf(&b, "Port-specific allows: %d entries\n", len(state.PortAllowed))
+	}
+
 	fmt.Fprintf(&b, "\nMigration warnings:\n")
-	portSpecific := 0
-	for _, a := range state.Allowed {
-		if a.Port > 0 {
-			portSpecific++
-		}
-	}
-	if portSpecific > 0 {
-		fmt.Fprintf(&b, "  - %d port-specific allow rules will become full-IP allows (engine limitation)\n", portSpecific)
-	}
 	fmt.Fprintf(&b, "  - CSF CONNLIMIT (per-port concurrent limits) is not migrated — not yet supported\n")
 	fmt.Fprintf(&b, "  - CSF PORTFLOOD settings are not migrated — configure port_flood manually\n")
 	fmt.Fprintf(&b, "  - CIDR blocks in csf.deny are collapsed to single IPs\n")
