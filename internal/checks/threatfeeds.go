@@ -19,13 +19,13 @@ import (
 // 2. Public threat intelligence feeds (updated daily)
 // 3. AbuseIPDB as fallback for unknown IPs
 type ThreatDB struct {
-	mu         sync.RWMutex
-	badIPs     map[string]string // ip -> source/reason
-	badNets    []*net.IPNet      // CIDR ranges from feeds
-	whitelist     map[string]bool              // IPs to never flag
-	whitelistMeta map[string]*whitelistEntry  // expiry metadata
+	mu            sync.RWMutex
+	badIPs        map[string]string          // ip -> source/reason
+	badNets       []*net.IPNet               // CIDR ranges from feeds
+	whitelist     map[string]bool            // IPs to never flag
+	whitelistMeta map[string]*whitelistEntry // expiry metadata
 	lastUpdate    time.Time
-	dbPath     string
+	dbPath        string
 
 	// Stats for WebUI
 	PermanentCount int
