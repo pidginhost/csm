@@ -591,39 +591,27 @@ func (d *Daemon) reloadSignatures() {
 	}
 }
 
-// deployConfigs copies bundled config files to their system locations on startup.
+// deployConfigs writes embedded config files to their system locations on startup.
 // Ensures WHM plugin CGI and ModSec rules stay current after binary upgrades.
 func deployConfigs() {
-	base := "/opt/csm/configs"
-
-	// WHM plugin CGI
+	// WHM plugin CGI — embedded in binary
 	if _, err := os.Stat("/usr/local/cpanel"); err == nil {
-		src := base + "/whm/addon_csm.cgi"
 		dst := "/usr/local/cpanel/whostmgr/docroot/cgi/addon_csm.cgi"
-		if data, err := os.ReadFile(src); err == nil {
-			if err := os.WriteFile(dst, data, 0755); err == nil {
-				fmt.Fprintf(os.Stderr, "[%s] WHM plugin CGI deployed\n", ts())
-			}
+		if err := os.WriteFile(dst, embeddedWHMCGI, 0755); err == nil {
+			fmt.Fprintf(os.Stderr, "[%s] WHM plugin CGI deployed\n", ts())
 		}
-		// AppConfig
-		src = base + "/whm/csm.conf"
-		if data, err := os.ReadFile(src); err == nil {
-			_ = os.MkdirAll("/var/cpanel/apps", 0755)
-			_ = os.WriteFile("/var/cpanel/apps/csm.conf", data, 0644)
-		}
+		_ = os.MkdirAll("/var/cpanel/apps", 0755)
+		_ = os.WriteFile("/var/cpanel/apps/csm.conf", embeddedWHMConf, 0644)
 	}
 
 	// ModSecurity virtual patches
-	src := base + "/csm_modsec_custom.conf"
-	if data, err := os.ReadFile(src); err == nil {
-		for _, dst := range []string{
-			"/etc/apache2/conf.d/modsec/modsec2.user.conf",
-			"/usr/local/apache/conf/modsec2.user.conf",
-		} {
-			if _, err := os.Stat(filepath.Dir(dst)); err == nil {
-				_ = os.WriteFile(dst, data, 0644)
-				break
-			}
+	for _, dst := range []string{
+		"/etc/apache2/conf.d/modsec/modsec2.user.conf",
+		"/usr/local/apache/conf/modsec2.user.conf",
+	} {
+		if _, err := os.Stat(filepath.Dir(dst)); err == nil {
+			_ = os.WriteFile(dst, embeddedModSec, 0644)
+			break
 		}
 	}
 }
