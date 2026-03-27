@@ -235,6 +235,18 @@ func (db *ThreatDB) loadPersistedWhitelist() {
 	}
 }
 
+// WhitelistedIPs returns all whitelisted IPs.
+func (db *ThreatDB) WhitelistedIPs() []string {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	ips := make([]string, 0, len(db.whitelist))
+	for ip := range db.whitelist {
+		ips = append(ips, ip)
+	}
+	sort.Strings(ips)
+	return ips
+}
+
 // Count returns the total number of entries in the database.
 func (db *ThreatDB) Count() int {
 	db.mu.RLock()

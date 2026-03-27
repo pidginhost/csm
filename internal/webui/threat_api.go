@@ -197,4 +197,51 @@ func (s *Server) apiThreatWhitelistIP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// GET /api/v1/threat/whitelist — list all whitelisted IPs
+func (s *Server) apiThreatWhitelist(w http.ResponseWriter, r *http.Request) {
+	tdb := checks.GetThreatDB()
+	if tdb == nil {
+		writeJSON(w, []string{})
+		return
+	}
+	writeJSON(w, tdb.WhitelistedIPs())
+}
+
+// POST /api/v1/threat/unwhitelist-ip — remove an IP from the whitelist
+func (s *Server) apiThreatUnwhitelistIP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		IP string `json:"ip"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IP == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]string{"error": "IP is required"})
+		return
+	}
+	if net.ParseIP(req.IP) == nil {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]string{"error": "invalid IP address"})
+		return
+	}
+
+	if tdb := checks.GetThreatDB(); tdb != nil {
+		tdb.RemoveWhitelist(req.IP)
+	}
+
+	// Also remove from firewall allow list
+	if s.blocker != nil {
+		if remover, ok := s.blocker.(interface {
+			RemoveAllowIP(string) error
+		}); ok {
+			_ = remover.RemoveAllowIP(req.IP)
+		}
+	}
+
+	writeJSON(w, map[string]string{"status": "removed", "ip": req.IP})
+}
+
 // writeJSON is defined in api.go
