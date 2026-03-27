@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
+
+const statsCacheTTL = 30 * time.Second
 
 // AttackStats contains aggregate statistics for the API and dashboard.
 type AttackStats struct {
@@ -21,8 +24,34 @@ type AttackStats struct {
 	DailyBuckets  [7]int             `json:"daily_buckets"`  // last 7 days, index 0 = oldest day
 }
 
-// Stats computes aggregate statistics from the attack database.
+var (
+	cachedStats     AttackStats
+	cachedStatsTime time.Time
+	cachedStatsMu   sync.Mutex
+)
+
+// Stats returns aggregate statistics, cached for 30 seconds to avoid
+// re-scanning the full events.jsonl on every API call.
 func (db *DB) Stats() AttackStats {
+	cachedStatsMu.Lock()
+	if time.Since(cachedStatsTime) < statsCacheTTL {
+		s := cachedStats
+		cachedStatsMu.Unlock()
+		return s
+	}
+	cachedStatsMu.Unlock()
+
+	stats := db.computeStats()
+
+	cachedStatsMu.Lock()
+	cachedStats = stats
+	cachedStatsTime = time.Now()
+	cachedStatsMu.Unlock()
+
+	return stats
+}
+
+func (db *DB) computeStats() AttackStats {
 	now := time.Now()
 	cutoff24h := now.Add(-24 * time.Hour)
 	cutoff7d := now.Add(-7 * 24 * time.Hour)
@@ -49,7 +78,6 @@ func (db *DB) Stats() AttackStats {
 	for _, ev := range events {
 		if ev.Timestamp.After(cutoff24h) {
 			stats.Last24hEvents++
-			// Hourly bucket: hours ago from now (0-23), mapped so index 0 = oldest
 			hoursAgo := int(now.Sub(ev.Timestamp).Hours())
 			if hoursAgo >= 0 && hoursAgo < 24 {
 				stats.HourlyBuckets[23-hoursAgo]++
@@ -57,7 +85,6 @@ func (db *DB) Stats() AttackStats {
 		}
 		if ev.Timestamp.After(cutoff7d) {
 			stats.Last7dEvents++
-			// Daily bucket: days ago from now (0-6), mapped so index 0 = oldest
 			daysAgo := int(now.Sub(ev.Timestamp).Hours() / 24)
 			if daysAgo >= 0 && daysAgo < 7 {
 				stats.DailyBuckets[6-daysAgo]++

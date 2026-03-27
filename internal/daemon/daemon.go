@@ -213,7 +213,7 @@ func (d *Daemon) Run() error {
 
 	d.wg.Wait()
 	if adb := attackdb.Global(); adb != nil {
-		_ = adb.Flush()
+		adb.Stop()
 	}
 	_ = d.store.Close()
 	d.lock.Release()

@@ -66,6 +66,22 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// Load block state
 	state := loadBlockState(cfg.StatePath)
 
+	// Unblock expired IPs FIRST — so isAlreadyBlocked won't match stale entries
+	var activeIPs []blockedIP
+	for _, blocked := range state.IPs {
+		if time.Now().After(blocked.ExpiresAt) {
+			if fwBlocker != nil {
+				_ = fwBlocker.UnblockIP(blocked.IP)
+			} else {
+				_, _ = runCmd("csf", "-dr", blocked.IP)
+			}
+			fmt.Fprintf(os.Stderr, "[%s] AUTO-UNBLOCK: %s removed (expired)\n", time.Now().Format("2006-01-02 15:04:05"), blocked.IP)
+		} else {
+			activeIPs = append(activeIPs, blocked)
+		}
+	}
+	state.IPs = activeIPs
+
 	// Check rate limit
 	currentHour := time.Now().Format("2006-01-02T15")
 	if state.HourKey != currentHour {
@@ -253,25 +269,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		}
 	}
 
-	// Unblock expired IPs
-	var activeIPs []blockedIP
-	for _, blocked := range state.IPs {
-		if time.Now().After(blocked.ExpiresAt) {
-			// Unblock via firewall engine or CSF fallback
-			if fwBlocker != nil {
-				_ = fwBlocker.UnblockIP(blocked.IP)
-			} else {
-				_, _ = runCmd("csf", "-dr", blocked.IP)
-			}
-			// Log unblock to stderr only — don't trigger email alerts for routine expiry
-			fmt.Fprintf(os.Stderr, "[%s] AUTO-UNBLOCK: %s removed (expired)\n", time.Now().Format("2006-01-02 15:04:05"), blocked.IP)
-		} else {
-			activeIPs = append(activeIPs, blocked)
-		}
-	}
-	state.IPs = activeIPs
-
-	// Save state
+	// Save state (expired IPs were already pruned at the top of this function)
 	saveBlockState(cfg.StatePath, state)
 
 	return actions

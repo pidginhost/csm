@@ -37,8 +37,12 @@ type IPIntelligence struct {
 }
 
 // Lookup returns the full intelligence picture for an IP.
-// All reads are local (no network calls).
+// All reads are local (no network calls). Pre-loads shared state files
+// once (same as LookupBatch) to avoid re-reading per field.
 func Lookup(ip, statePath string) *IPIntelligence {
+	abuseCache := loadFullAbuseCache(statePath)
+	blockMap := loadFullBlockState(statePath)
+
 	intel := &IPIntelligence{
 		IP:         ip,
 		AbuseScore: -1, // not cached
@@ -60,32 +64,23 @@ func Lookup(ip, statePath string) *IPIntelligence {
 		}
 	}
 
-	// 3. AbuseIPDB cache
-	loadAbuseCache(ip, statePath, intel)
-
-	// 4. Firewall state
-	loadBlockState(ip, statePath, intel)
-
-	// Compute unified score and verdict
-	intel.UnifiedScore = intel.LocalScore
-	if intel.AbuseScore > intel.UnifiedScore {
-		intel.UnifiedScore = intel.AbuseScore
-	}
-	if intel.InThreatDB && intel.UnifiedScore < 100 {
-		intel.UnifiedScore = 100
+	// 3. AbuseIPDB from pre-loaded cache
+	if entry, ok := abuseCache[ip]; ok {
+		intel.AbuseScore = entry.Score
+		intel.AbuseCategory = entry.Category
 	}
 
-	switch {
-	case intel.CurrentlyBlocked:
-		intel.Verdict = "blocked"
-	case intel.UnifiedScore >= 80:
-		intel.Verdict = "malicious"
-	case intel.UnifiedScore >= 40:
-		intel.Verdict = "suspicious"
-	default:
-		intel.Verdict = "clean"
+	// 4. Block state from pre-loaded map
+	if bs, ok := blockMap[ip]; ok {
+		intel.CurrentlyBlocked = true
+		intel.BlockReason = bs.reason
+		if !bs.expiresAt.IsZero() {
+			t := bs.expiresAt
+			intel.BlockExpiresAt = &t
+		}
 	}
 
+	computeVerdict(intel)
 	return intel
 }
 
@@ -134,29 +129,31 @@ func LookupBatch(ips []string, statePath string) []*IPIntelligence {
 			}
 		}
 
-		// Unified score and verdict
-		intel.UnifiedScore = intel.LocalScore
-		if intel.AbuseScore > intel.UnifiedScore {
-			intel.UnifiedScore = intel.AbuseScore
-		}
-		if intel.InThreatDB && intel.UnifiedScore < 100 {
-			intel.UnifiedScore = 100
-		}
-
-		switch {
-		case intel.CurrentlyBlocked:
-			intel.Verdict = "blocked"
-		case intel.UnifiedScore >= 80:
-			intel.Verdict = "malicious"
-		case intel.UnifiedScore >= 40:
-			intel.Verdict = "suspicious"
-		default:
-			intel.Verdict = "clean"
-		}
-
+		computeVerdict(intel)
 		results[i] = intel
 	}
 	return results
+}
+
+func computeVerdict(intel *IPIntelligence) {
+	intel.UnifiedScore = intel.LocalScore
+	if intel.AbuseScore > intel.UnifiedScore {
+		intel.UnifiedScore = intel.AbuseScore
+	}
+	if intel.InThreatDB && intel.UnifiedScore < 100 {
+		intel.UnifiedScore = 100
+	}
+
+	switch {
+	case intel.CurrentlyBlocked:
+		intel.Verdict = "blocked"
+	case intel.UnifiedScore >= 80:
+		intel.Verdict = "malicious"
+	case intel.UnifiedScore >= 40:
+		intel.Verdict = "suspicious"
+	default:
+		intel.Verdict = "clean"
+	}
 }
 
 // --- AbuseIPDB cache reader ---
@@ -164,14 +161,6 @@ func LookupBatch(ips []string, statePath string) []*IPIntelligence {
 type abuseEntry struct {
 	Score    int    `json:"score"`
 	Category string `json:"category"`
-}
-
-func loadAbuseCache(ip, statePath string, intel *IPIntelligence) {
-	cache := loadFullAbuseCache(statePath)
-	if entry, ok := cache[ip]; ok {
-		intel.AbuseScore = entry.Score
-		intel.AbuseCategory = entry.Category
-	}
 }
 
 func loadFullAbuseCache(statePath string) map[string]*abuseEntry {
@@ -208,18 +197,6 @@ func loadFullAbuseCache(statePath string) map[string]*abuseEntry {
 type blockEntry struct {
 	reason    string
 	expiresAt time.Time
-}
-
-func loadBlockState(ip, statePath string, intel *IPIntelligence) {
-	blockMap := loadFullBlockState(statePath)
-	if bs, ok := blockMap[ip]; ok {
-		intel.CurrentlyBlocked = true
-		intel.BlockReason = bs.reason
-		if !bs.expiresAt.IsZero() {
-			t := bs.expiresAt
-			intel.BlockExpiresAt = &t
-		}
-	}
 }
 
 func loadFullBlockState(statePath string) map[string]*blockEntry {
