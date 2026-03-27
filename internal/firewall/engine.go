@@ -920,16 +920,37 @@ func (e *Engine) createOutputChain() error {
 		e.addOutboundPortRule(port, false)
 	}
 
-	// Allow ICMP outbound
-	e.conn.AddRule(&nftables.Rule{
-		Table: e.table,
-		Chain: e.chainOut,
-		Exprs: []expr.Any{
-			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{1}},
-			&expr.Verdict{Kind: expr.VerdictAccept},
-		},
-	})
+	// Allow only safe ICMP outbound (echo-reply + echo-request, block dest-unreachable)
+	// Blocking ICMP type 3 (dest-unreachable) prevents leaking closed port info to scanners
+	for _, icmpType := range []byte{0, 8} { // 0=echo-reply, 8=echo-request
+		e.conn.AddRule(&nftables.Rule{
+			Table: e.table,
+			Chain: e.chainOut,
+			Exprs: []expr.Any{
+				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{1}}, // ICMP
+				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 0, Len: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{icmpType}},
+				&expr.Verdict{Kind: expr.VerdictAccept},
+			},
+		})
+	}
+	// ICMPv6 outbound — allow echo-reply (129) + echo-request (128) + ND (133-137)
+	if e.cfg.IPv6 {
+		for _, icmp6Type := range []byte{128, 129, 133, 134, 135, 136, 137} {
+			e.conn.AddRule(&nftables.Rule{
+				Table: e.table,
+				Chain: e.chainOut,
+				Exprs: []expr.Any{
+					&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{58}}, // ICMPv6
+					&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 0, Len: 1},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{icmp6Type}},
+					&expr.Verdict{Kind: expr.VerdictAccept},
+				},
+			})
+		}
+	}
 
 	// REJECT outbound TCP with RST (faster failure than silent DROP)
 	// UDP still silently drops via chain policy.
