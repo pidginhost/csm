@@ -198,7 +198,15 @@ document.getElementById('lookup-form').addEventListener('submit',function(e){
         html+='<tr><td class="text-muted">AbuseIPDB Score</td><td>'+(intel.abuse_score>=0?intel.abuse_score+'/100':'Not cached')+'</td></tr>';
         if(intel.abuse_category)html+='<tr><td class="text-muted">AbuseIPDB Category</td><td>'+esc(intel.abuse_category)+'</td></tr>';
         html+='<tr><td class="text-muted">In Threat DB</td><td>'+(intel.in_threat_db?'<span class="badge bg-danger">Yes</span> ('+esc(intel.threat_db_source)+')':'No')+'</td></tr>';
-        html+='<tr><td class="text-muted">Currently Blocked</td><td>'+(intel.currently_blocked?'<span class="badge bg-secondary">Yes</span>':'No')+'</td></tr>';
+        if(intel.currently_blocked){
+            var blockType=intel.block_permanent?'<span class="badge bg-dark">Permanent</span>':'<span class="badge bg-warning">Temporary</span>';
+            html+='<tr><td class="text-muted">Block Status</td><td><span class="badge bg-secondary">Blocked</span> '+blockType+'</td></tr>';
+            if(intel.block_reason)html+='<tr><td class="text-muted">Block Reason</td><td class="small">'+esc(intel.block_reason)+'</td></tr>';
+            if(intel.blocked_at)html+='<tr><td class="text-muted">Blocked At</td><td>'+fmtDate(intel.blocked_at)+'</td></tr>';
+            if(intel.block_expires_at && !intel.block_permanent)html+='<tr><td class="text-muted">Expires At</td><td>'+fmtDate(intel.block_expires_at)+'</td></tr>';
+        } else {
+            html+='<tr><td class="text-muted">Block Status</td><td>Not blocked</td></tr>';
+        }
         if(intel.attack_record){
             var rec=intel.attack_record;
             html+='<tr><td class="text-muted">Events</td><td>'+rec.event_count+'</td></tr>';

@@ -29,7 +29,9 @@ type IPIntelligence struct {
 	// Firewall state
 	CurrentlyBlocked bool       `json:"currently_blocked"`
 	BlockReason      string     `json:"block_reason,omitempty"`
+	BlockedAt        *time.Time `json:"blocked_at,omitempty"`
 	BlockExpiresAt   *time.Time `json:"block_expires_at,omitempty"`
+	BlockPermanent   bool       `json:"block_permanent,omitempty"`
 
 	// Composite
 	UnifiedScore int    `json:"unified_score"`
@@ -71,14 +73,7 @@ func Lookup(ip, statePath string) *IPIntelligence {
 	}
 
 	// 4. Block state from pre-loaded map
-	if bs, ok := blockMap[ip]; ok {
-		intel.CurrentlyBlocked = true
-		intel.BlockReason = bs.reason
-		if !bs.expiresAt.IsZero() {
-			t := bs.expiresAt
-			intel.BlockExpiresAt = &t
-		}
-	}
+	applyBlockState(intel, blockMap)
 
 	computeVerdict(intel)
 	return intel
@@ -120,14 +115,7 @@ func LookupBatch(ips []string, statePath string) []*IPIntelligence {
 		}
 
 		// Block state from pre-loaded map
-		if bs, ok := blockMap[ip]; ok {
-			intel.CurrentlyBlocked = true
-			intel.BlockReason = bs.reason
-			if !bs.expiresAt.IsZero() {
-				t := bs.expiresAt
-				intel.BlockExpiresAt = &t
-			}
-		}
+		applyBlockState(intel, blockMap)
 
 		computeVerdict(intel)
 		results[i] = intel
@@ -153,6 +141,24 @@ func computeVerdict(intel *IPIntelligence) {
 		intel.Verdict = "suspicious"
 	default:
 		intel.Verdict = "clean"
+	}
+}
+
+func applyBlockState(intel *IPIntelligence, blockMap map[string]*blockEntry) {
+	bs, ok := blockMap[intel.IP]
+	if !ok {
+		return
+	}
+	intel.CurrentlyBlocked = true
+	intel.BlockReason = bs.reason
+	intel.BlockPermanent = bs.permanent
+	if !bs.blockedAt.IsZero() {
+		t := bs.blockedAt
+		intel.BlockedAt = &t
+	}
+	if !bs.expiresAt.IsZero() && bs.expiresAt.Year() > 1 {
+		t := bs.expiresAt
+		intel.BlockExpiresAt = &t
 	}
 }
 
@@ -196,7 +202,9 @@ func loadFullAbuseCache(statePath string) map[string]*abuseEntry {
 
 type blockEntry struct {
 	reason    string
+	blockedAt time.Time
 	expiresAt time.Time
+	permanent bool
 }
 
 func loadFullBlockState(statePath string) map[string]*blockEntry {
@@ -207,6 +215,7 @@ func loadFullBlockState(statePath string) map[string]*blockEntry {
 	type fwEntry struct {
 		IP        string    `json:"ip"`
 		Reason    string    `json:"reason"`
+		BlockedAt time.Time `json:"blocked_at"`
 		ExpiresAt time.Time `json:"expires_at"`
 	}
 	type fwState struct {
@@ -218,7 +227,13 @@ func loadFullBlockState(statePath string) map[string]*blockEntry {
 		if json.Unmarshal(data, &fs) == nil {
 			for _, entry := range fs.Blocked {
 				if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
-					result[entry.IP] = &blockEntry{reason: entry.Reason, expiresAt: entry.ExpiresAt}
+					perm := entry.ExpiresAt.IsZero() || entry.ExpiresAt.Year() <= 1
+					result[entry.IP] = &blockEntry{
+						reason:    entry.Reason,
+						blockedAt: entry.BlockedAt,
+						expiresAt: entry.ExpiresAt,
+						permanent: perm,
+					}
 				}
 			}
 		}
@@ -228,6 +243,7 @@ func loadFullBlockState(statePath string) map[string]*blockEntry {
 	type csmEntry struct {
 		IP        string    `json:"ip"`
 		Reason    string    `json:"reason"`
+		BlockedAt time.Time `json:"blocked_at"`
 		ExpiresAt time.Time `json:"expires_at"`
 	}
 	type csmFile struct {
@@ -239,7 +255,13 @@ func loadFullBlockState(statePath string) map[string]*blockEntry {
 			for _, entry := range cf.IPs {
 				if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
 					if _, exists := result[entry.IP]; !exists {
-						result[entry.IP] = &blockEntry{reason: entry.Reason, expiresAt: entry.ExpiresAt}
+						perm := entry.ExpiresAt.IsZero() || entry.ExpiresAt.Year() <= 1
+						result[entry.IP] = &blockEntry{
+							reason:    entry.Reason,
+							blockedAt: entry.BlockedAt,
+							expiresAt: entry.ExpiresAt,
+							permanent: perm,
+						}
 					}
 				}
 			}
