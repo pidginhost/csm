@@ -61,6 +61,8 @@ func (s *Server) apiThreatTopAttackers(w http.ResponseWriter, r *http.Request) {
 		AbuseScore   int    `json:"abuse_score"`
 		InThreatDB   bool   `json:"in_threat_db"`
 		Blocked      bool   `json:"currently_blocked"`
+		Country      string `json:"country,omitempty"`
+		ASOrg        string `json:"as_org,omitempty"`
 	}
 
 	results := make([]enriched, len(recs))
@@ -72,6 +74,11 @@ func (s *Server) apiThreatTopAttackers(w http.ResponseWriter, r *http.Request) {
 			AbuseScore:   intels[i].AbuseScore,
 			InThreatDB:   intels[i].InThreatDB,
 			Blocked:      intels[i].CurrentlyBlocked,
+		}
+		if geoIPDB != nil {
+			geo := geoIPDB.Lookup(rec.IP)
+			results[i].Country = geo.Country
+			results[i].ASOrg = geo.ASOrg
 		}
 	}
 
@@ -88,6 +95,18 @@ func (s *Server) apiThreatIP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	intel := threat.Lookup(ip, s.cfg.StatePath)
+
+	// Enrich with GeoIP data if available
+	if geoIPDB != nil {
+		geo := geoIPDB.Lookup(ip)
+		intel.Country = geo.Country
+		intel.CountryName = geo.CountryName
+		intel.City = geo.City
+		intel.ASN = geo.ASN
+		intel.ASOrg = geo.ASOrg
+		intel.Network = geo.Network
+	}
+
 	writeJSON(w, intel)
 }
 

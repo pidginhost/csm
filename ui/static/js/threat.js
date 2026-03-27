@@ -69,7 +69,7 @@ fetch('/api/v1/threat/stats',{credentials:'same-origin'}).then(function(r){retur
 // Load top attackers
 fetch('/api/v1/threat/top-attackers?limit=50',{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(data){
     var tbody=document.getElementById('attackers-tbody');
-    if(!data||data.length===0){tbody.innerHTML='<tr><td colspan="8" class="text-center text-muted">No attack data recorded yet</td></tr>';return;}
+    if(!data||data.length===0){tbody.innerHTML='<tr><td colspan="9" class="text-center text-muted">No attack data recorded yet</td></tr>';return;}
     var html='';
     for(var i=0;i<data.length;i++){
         var r=data[i];
@@ -77,6 +77,7 @@ fetch('/api/v1/threat/top-attackers?limit=50',{credentials:'same-origin'}).then(
                         r.in_threat_db?'<span class="badge bg-danger-lt">Threat DB</span>':'';
         html+='<tr class="ip-row" style="cursor:pointer" data-ip="'+esc(r.ip)+'">';
         html+='<td><code class="font-monospace">'+esc(r.ip)+'</code></td>';
+        html+='<td class="text-nowrap">'+(r.country?esc(r.country):'')+(r.as_org?' <span class="text-muted small">'+esc(r.as_org)+'</span>':'')+'</td>';
         html+='<td>'+verdictBadge(r.verdict,r.unified_score)+'</td>';
         html+='<td>'+r.event_count+'</td>';
         html+='<td>'+typeBadges(r.attack_counts)+'</td>';
@@ -125,6 +126,9 @@ document.getElementById('lookup-form').addEventListener('submit',function(e){
         // Details
         html+='<div class="col-md-9"><div class="card"><div class="card-body"><table class="table table-sm mb-0">';
         html+='<tr><td class="text-muted" style="width:160px">Local Score</td><td>'+intel.local_score+'/100</td></tr>';
+        if(intel.country)html+='<tr><td class="text-muted">Country</td><td><strong>'+esc(intel.country)+'</strong>'+(intel.country_name?' — '+esc(intel.country_name):'')+(intel.city?', '+esc(intel.city):'')+'</td></tr>';
+        if(intel.as_org)html+='<tr><td class="text-muted">ISP / ASN</td><td>'+esc(intel.as_org)+(intel.asn?' <span class="text-muted">(AS'+intel.asn+')</span>':'')+'</td></tr>';
+        if(intel.network)html+='<tr><td class="text-muted">Network</td><td><code>'+esc(intel.network)+'</code></td></tr>';
         html+='<tr><td class="text-muted">AbuseIPDB Score</td><td>'+(intel.abuse_score>=0?intel.abuse_score+'/100':'Not cached')+'</td></tr>';
         if(intel.abuse_category)html+='<tr><td class="text-muted">AbuseIPDB Category</td><td>'+esc(intel.abuse_category)+'</td></tr>';
         html+='<tr><td class="text-muted">In Threat DB</td><td>'+(intel.in_threat_db?'<span class="badge bg-danger">Yes</span> ('+esc(intel.threat_db_source)+')':'No')+'</td></tr>';
