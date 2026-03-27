@@ -629,8 +629,6 @@ csm firewall migrate-from-csf [--apply] CSF migration (dry-run default)
 - Cluster mode (synchronize block lists across multiple servers)
 - CloudFlare WAF integration (push blocks to CF firewall)
 - Messenger (redirect blocked users to explanation page instead of dropping)
-- WebUI firewall status page (rule viewer, live blocked IP count, set sizes)
-- Firewall API endpoints (status, deny, allow, flush, audit — handler code ready, needs route wiring)
 
 ### Web UI — Security Hardening
 - Move inline JavaScript to external files for strict CSP
