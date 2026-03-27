@@ -363,7 +363,10 @@ func cacheWPCoreFiles(cache *CMSHashCache, wpPath string) {
 
 	for _, dir := range coreDirs {
 		_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() {
 				return nil
 			}
 			name := strings.ToLower(info.Name())
