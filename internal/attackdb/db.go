@@ -1,6 +1,7 @@
 package attackdb
 
 import (
+	"bufio"
 	"fmt"
 	"net"
 	"os"
@@ -158,6 +159,69 @@ func Init(statePath string) *DB {
 		globalDB = db
 	})
 	return globalDB
+}
+
+// SeedFromPermanentBlocklist imports IPs from the threat DB permanent blocklist
+// into the attack database. These are IPs that already attacked and were auto-blocked.
+// Only imports IPs not already in the attack DB.
+func (db *DB) SeedFromPermanentBlocklist(statePath string) int {
+	path := statePath + "/threat_db/permanent.txt"
+	f, err := os.Open(path)
+	if err != nil {
+		return 0
+	}
+	defer func() { _ = f.Close() }()
+
+	imported := 0
+	now := time.Now()
+	scanner := bufio.NewScanner(f)
+	db.mu.Lock()
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		ip := fields[0]
+		if net.ParseIP(ip) == nil {
+			continue
+		}
+		if _, exists := db.records[ip]; exists {
+			continue // already tracked
+		}
+
+		// Extract reason from comment: "1.2.3.4 # reason [date]"
+		reason := "auto-blocked (historical)"
+		if idx := strings.Index(line, "# "); idx > 0 {
+			reason = strings.TrimSpace(line[idx+2:])
+		}
+
+		db.records[ip] = &IPRecord{
+			IP:           ip,
+			FirstSeen:    now,
+			LastSeen:     now,
+			EventCount:   1,
+			AttackCounts: map[AttackType]int{AttackOther: 1},
+			Accounts:     make(map[string]int),
+			AutoBlocked:  true,
+		}
+		db.records[ip].ThreatScore = ComputeScore(db.records[ip])
+
+		db.pendingEvents = append(db.pendingEvents, Event{
+			Timestamp:  now,
+			IP:         ip,
+			AttackType: AttackOther,
+			CheckName:  "permanent_blocklist_import",
+			Severity:   2,
+			Message:    truncate(reason, 200),
+		})
+		imported++
+	}
+	if imported > 0 {
+		db.dirty = true
+	}
+	db.mu.Unlock()
+	return imported
 }
 
 // Global returns the global attack database instance.
