@@ -1,0 +1,93 @@
+package attackdb
+
+import (
+	"bufio"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"time"
+)
+
+// AttackStats contains aggregate statistics for the API and dashboard.
+type AttackStats struct {
+	TotalIPs      int                `json:"total_ips"`
+	TotalEvents   int                `json:"total_events"`
+	Last24hEvents int                `json:"last_24h_events"`
+	Last7dEvents  int                `json:"last_7d_events"`
+	BlockedIPs    int                `json:"blocked_ips"`
+	ByType        map[AttackType]int `json:"by_type"`
+	TopAttackers  []*IPRecord        `json:"top_attackers"`
+	HourlyBuckets [24]int            `json:"hourly_buckets"` // last 24h, index 0 = oldest hour
+	DailyBuckets  [7]int             `json:"daily_buckets"`  // last 7 days, index 0 = oldest day
+}
+
+// Stats computes aggregate statistics from the attack database.
+func (db *DB) Stats() AttackStats {
+	now := time.Now()
+	cutoff24h := now.Add(-24 * time.Hour)
+	cutoff7d := now.Add(-7 * 24 * time.Hour)
+
+	db.mu.RLock()
+	stats := AttackStats{
+		TotalIPs: len(db.records),
+		ByType:   make(map[AttackType]int),
+	}
+
+	for _, rec := range db.records {
+		stats.TotalEvents += rec.EventCount
+		if rec.AutoBlocked {
+			stats.BlockedIPs++
+		}
+		for atype, count := range rec.AttackCounts {
+			stats.ByType[atype] += count
+		}
+	}
+	db.mu.RUnlock()
+
+	// Compute time-based stats from events log
+	events := db.readAllEvents()
+	for _, ev := range events {
+		if ev.Timestamp.After(cutoff24h) {
+			stats.Last24hEvents++
+			// Hourly bucket: hours ago from now (0-23), mapped so index 0 = oldest
+			hoursAgo := int(now.Sub(ev.Timestamp).Hours())
+			if hoursAgo >= 0 && hoursAgo < 24 {
+				stats.HourlyBuckets[23-hoursAgo]++
+			}
+		}
+		if ev.Timestamp.After(cutoff7d) {
+			stats.Last7dEvents++
+			// Daily bucket: days ago from now (0-6), mapped so index 0 = oldest
+			daysAgo := int(now.Sub(ev.Timestamp).Hours() / 24)
+			if daysAgo >= 0 && daysAgo < 7 {
+				stats.DailyBuckets[6-daysAgo]++
+			}
+		}
+	}
+
+	stats.TopAttackers = db.TopAttackers(10)
+
+	return stats
+}
+
+// readAllEvents reads all events from the JSONL file (for stats computation).
+func (db *DB) readAllEvents() []Event {
+	path := filepath.Join(db.dbPath, eventsFile)
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = f.Close() }()
+
+	var events []Event
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	for scanner.Scan() {
+		var ev Event
+		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
+			continue
+		}
+		events = append(events, ev)
+	}
+	return events
+}

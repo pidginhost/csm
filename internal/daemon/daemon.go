@@ -12,6 +12,7 @@ import (
 	"context"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
+	"github.com/pidginhost/cpanel-security-monitor/internal/attackdb"
 	"github.com/pidginhost/cpanel-security-monitor/internal/challenge"
 	"github.com/pidginhost/cpanel-security-monitor/internal/checks"
 	"github.com/pidginhost/cpanel-security-monitor/internal/config"
@@ -80,6 +81,9 @@ func (d *Daemon) Run() error {
 	checks.InitThreatDB(d.cfg.StatePath, d.cfg.Reputation.Whitelist)
 	if db := checks.GetThreatDB(); db != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Threat DB initialized (%d entries)\n", ts(), db.Count())
+	}
+	if adb := attackdb.Init(d.cfg.StatePath); adb != nil {
+		fmt.Fprintf(os.Stderr, "[%s] Attack DB initialized (%s)\n", ts(), adb.FormatTopLine())
 	}
 
 	// Start firewall engine if enabled
@@ -183,6 +187,9 @@ func (d *Daemon) Run() error {
 	}
 
 	d.wg.Wait()
+	if adb := attackdb.Global(); adb != nil {
+		_ = adb.Flush()
+	}
 	_ = d.store.Close()
 	d.lock.Release()
 	fmt.Fprintf(os.Stderr, "[%s] CSM daemon stopped\n", ts())
@@ -243,6 +250,19 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	newFindings = append(newFindings, permActions...)
 	newFindings = append(newFindings, blockActions...)
 
+	// Record all findings in attack database
+	if adb := attackdb.Global(); adb != nil {
+		for _, f := range findings {
+			adb.RecordFinding(f)
+		}
+		// Mark auto-blocked IPs
+		for _, f := range blockActions {
+			if ip := checks.ExtractIPFromFinding(f); ip != "" {
+				adb.MarkBlocked(ip)
+			}
+		}
+	}
+
 	// Correlation
 	extra := checks.CorrelateFindings(newFindings)
 	now := time.Now()
@@ -302,6 +322,10 @@ func (d *Daemon) deepScanner() {
 			// Update threat intelligence feeds (once per day)
 			if db := checks.GetThreatDB(); db != nil {
 				_ = db.UpdateFeeds()
+			}
+			// Prune expired attack DB records (90-day retention)
+			if adb := attackdb.Global(); adb != nil {
+				adb.PruneExpired()
 			}
 
 			// If fanotify is active, only run checks it can't replace.
