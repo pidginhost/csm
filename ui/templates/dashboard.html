@@ -82,74 +82,9 @@
             </div>
         </div>
         <div class="card-body py-3">
-            <div id="timeline-chart"></div>
+            <div id="timeline-chart" data-bars="{{json .TimelineBars}}"></div>
         </div>
     </div>
-    <script>
-    (function(){
-        var bars = [{{range $i, $bar := .TimelineBars}}{{if $i}},{{end}}{h:"{{$bar.Hour}}",c:{{$bar.Critical}},hi:{{$bar.High}},w:{{$bar.Warning}},t:{{$bar.Total}}}{{end}}];
-
-        var container = document.getElementById('timeline-chart');
-        var vW = 1400, vH = 160;
-        var padL = 38, padR = 8, padT = 8, padB = 22;
-        var chartW = vW - padL - padR;
-        var chartH = vH - padT - padB;
-        var barW = chartW / 24;
-        var barPad = Math.max(1, barW * 0.12);
-
-        var maxVal = 1;
-        for (var i = 0; i < bars.length; i++) { if (bars[i].t > maxVal) maxVal = bars[i].t; }
-        var gridLines = 4;
-        var step = Math.ceil(maxVal / gridLines);
-        if (step === 0) step = 1;
-        maxVal = step * gridLines;
-
-        var isDark = document.documentElement.classList.contains('theme-dark');
-        var gridColor = isDark ? '#2d3a4e' : '#e6e8eb';
-        var textColor = isDark ? '#6b7a8d' : '#9da9b5';
-
-        var svg = '<svg viewBox="0 0 '+vW+' '+vH+'" preserveAspectRatio="xMidYMid meet" style="display:block;width:100%;height:auto">';
-
-        for (var g = 0; g <= gridLines; g++) {
-            var val = step * g;
-            var y = padT + chartH - (val / maxVal * chartH);
-            svg += '<line x1="'+padL+'" y1="'+y+'" x2="'+(vW-padR)+'" y2="'+y+'" stroke="'+gridColor+'" stroke-width="0.5"/>';
-            svg += '<text x="'+(padL-6)+'" y="'+(y+3.5)+'" text-anchor="end" fill="'+textColor+'" font-size="9">'+val+'</text>';
-        }
-
-        for (var i = 0; i < bars.length; i++) {
-            var b = bars[i];
-            var x = padL + i * barW + barPad;
-            var bw = barW - barPad * 2;
-            if (bw < 3) bw = 3;
-            var baseY = padT + chartH;
-            var tip = b.h+': '+b.t+' findings ('+b.c+'C / '+b.hi+'H / '+b.w+'W)';
-
-            if (b.w > 0) {
-                var wH = b.w / maxVal * chartH;
-                svg += '<rect x="'+x+'" y="'+(baseY-wH)+'" width="'+bw+'" height="'+wH+'" fill="#f59f00" rx="1.5" class="timeline-bar"><title>'+tip+'</title></rect>';
-                baseY -= wH;
-            }
-            if (b.hi > 0) {
-                var hH = b.hi / maxVal * chartH;
-                svg += '<rect x="'+x+'" y="'+(baseY-hH)+'" width="'+bw+'" height="'+hH+'" fill="#f76707" rx="1.5" class="timeline-bar"><title>'+tip+'</title></rect>';
-                baseY -= hH;
-            }
-            if (b.c > 0) {
-                var cH = b.c / maxVal * chartH;
-                svg += '<rect x="'+x+'" y="'+(baseY-cH)+'" width="'+bw+'" height="'+cH+'" fill="#d63939" rx="1.5" class="timeline-bar"><title>'+tip+'</title></rect>';
-            }
-
-            if (i % 3 === 0) {
-                svg += '<text x="'+(padL+i*barW+barW/2)+'" y="'+(vH-4)+'" text-anchor="middle" fill="'+textColor+'" font-size="9">'+b.h+'</text>';
-            }
-        }
-
-        svg += '<line x1="'+padL+'" y1="'+(padT+chartH)+'" x2="'+(vW-padR)+'" y2="'+(padT+chartH)+'" stroke="'+gridColor+'" stroke-width="0.5"/>';
-        svg += '</svg>';
-        container.innerHTML = svg;
-    })();
-    </script>
 
     <!-- Live Feed -->
     <div class="card">
@@ -158,12 +93,12 @@
         </div>
         <div class="list-group list-group-flush overflow-auto" style="max-height:400px" id="live-feed-entries">
             {{range .RecentFindings}}
-            <div class="list-group-item" style="cursor:pointer" onclick="var d=this.querySelector('.detail');if(d)d.classList.toggle('d-none')">
+            <div class="list-group-item feed-item" style="cursor:pointer">
                 <div class="row align-items-center">
                     <div class="col-auto"><span class="text-muted font-monospace small">{{.Timestamp}}</span></div>
                     <div class="col-auto"><span class="badge badge-{{.SevClass}}">{{.Severity}}</span></div>
                     <div class="col"><span class="font-monospace small">{{.Check}}</span> — {{.Message}}</div>
-                    {{if .HasFix}}<div class="col-auto"><button class="btn btn-warning btn-sm" onclick="event.stopPropagation();fixFromFeed(this,'{{.Check}}','{{.Message}}','{{.FixDesc}}')" title="{{.FixDesc}}"><i class="ti ti-tool"></i></button></div>{{end}}
+                    {{if .HasFix}}<div class="col-auto"><button class="btn btn-warning btn-sm feed-fix-btn" data-check="{{.Check}}" data-message="{{.Message}}" data-fixdesc="{{.FixDesc}}" title="{{.FixDesc}}"><i class="ti ti-tool"></i></button></div>{{end}}
                 </div>
                 {{if .Details}}<div class="detail d-none mt-2 small text-muted" style="white-space:pre-wrap">{{.Details}}</div>{{end}}
             </div>
@@ -175,27 +110,6 @@
 {{end}}
 {{define "scripts"}}
 <script src="/static/js/dashboard.js"></script>
-<script>
-function fixFromFeed(btn, check, message, desc) {
-    if (!confirm('Apply fix?\n\n' + desc)) return;
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
-    CSM.post('/api/v1/fix', {check: check, message: message}).then(function(data) {
-        if (data.success) {
-            btn.innerHTML = '<i class="ti ti-check"></i>';
-            btn.className = 'btn btn-success btn-sm';
-            btn.closest('.list-group-item').style.opacity = '0.3';
-        } else {
-            alert('Fix failed: ' + (data.error || 'unknown'));
-            btn.disabled = false;
-            btn.innerHTML = '<i class="ti ti-tool"></i>';
-        }
-    }).catch(function(e) {
-        alert('Error: ' + e);
-        btn.disabled = false;
-        btn.innerHTML = '<i class="ti ti-tool"></i>';
-    });
-}
-</script>
+<script src="/static/js/dashboard-page.js"></script>
 {{end}}
 {{template "layout" .}}

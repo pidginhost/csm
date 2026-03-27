@@ -30,7 +30,7 @@
                 </thead>
                 <tbody>
                     {{range .Findings}}
-                    <tr class="history-row" data-sev="{{.SevClass}}" style="cursor:pointer" onclick="historyTable&&historyTable.toggleDetail(this)">
+                    <tr class="history-row" data-sev="{{.SevClass}}" style="cursor:pointer">
                         <td><span class="badge badge-{{.SevClass}}">{{.Severity}}</span></td>
                         <td><code>{{.Check}}</code></td>
                         <td>{{.Message}}</td>
@@ -51,21 +51,6 @@
     </div>
 {{end}}
 {{define "scripts"}}
-<script>
-var historyTable;
-if (document.getElementById('history-table')) {
-    historyTable = new CSM.Table({
-        tableId: 'history-table',
-        perPage: 25,
-        search: true,
-        searchId: 'history-search',
-        sortable: true,
-        detailRows: true,
-        filters: [
-            { id: 'sev-filter', attr: 'data-sev' }
-        ]
-    });
-}
-</script>
+<script src="/static/js/history.js"></script>
 {{end}}
 {{template "layout" .}}

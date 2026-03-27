@@ -1,0 +1,54 @@
+{{define "title"}}Rules{{end}}
+{{define "page"}}rules{{end}}
+{{define "content"}}
+    <!-- Stats Cards -->
+    <div class="row row-deck row-cards mb-3">
+        <div class="col-sm-6 col-lg-3"><div class="card"><div class="card-body"><div class="subheader">YAML Rules</div><div class="h1 mb-0" id="stat-yaml">—</div></div></div></div>
+        <div class="col-sm-6 col-lg-3"><div class="card"><div class="card-body"><div class="subheader">YARA Rules</div><div class="h1 mb-0" id="stat-yara">—</div></div></div></div>
+        <div class="col-sm-6 col-lg-3"><div class="card"><div class="card-body"><div class="subheader">Rules Version</div><div class="h1 mb-0" id="stat-version">—</div></div></div></div>
+        <div class="col-sm-6 col-lg-3"><div class="card"><div class="card-body"><div class="subheader">Auto-update</div><div class="h1 mb-0" id="stat-autoupdate">—</div></div></div></div>
+    </div>
+
+    <!-- Actions -->
+    <div class="card mb-3">
+        <div class="card-header">
+            <h3 class="card-title"><i class="ti ti-refresh"></i>&nbsp;Actions</h3>
+        </div>
+        <div class="card-body">
+            <div class="row align-items-center">
+                <div class="col-auto">
+                    <button id="btn-reload" class="btn btn-primary">
+                        <i class="ti ti-refresh"></i>&nbsp;Reload Rules
+                    </button>
+                </div>
+                <div class="col">
+                    <span class="text-muted small">Reload all YAML and YARA rule files from the rules directory.</span>
+                    <div id="rules-dir" class="text-muted small font-monospace mt-1"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Rule Files Table -->
+    <div class="card">
+        <div class="card-header"><h3 class="card-title"><i class="ti ti-file-code"></i>&nbsp;Rule Files</h3></div>
+        <div class="table-responsive">
+            <table class="table table-vcenter card-table table-sm" id="rules-table">
+                <thead>
+                    <tr>
+                        <th>File Name</th>
+                        <th>Type</th>
+                        <th>Size</th>
+                    </tr>
+                </thead>
+                <tbody id="rules-tbody">
+                    <tr><td colspan="3" class="text-center text-muted">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+{{end}}
+{{define "scripts"}}
+<script src="/static/js/rules.js"></script>
+{{end}}
+{{template "layout" .}}
