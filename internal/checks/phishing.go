@@ -66,7 +66,9 @@ var phishingBrands = []struct {
 	{
 		name:          "Webmail/Roundcube",
 		titlePatterns: []string{"roundcube", "horde", "webmail login", "webmail ::", "squirrelmail", "zimbra"},
-		bodyPatterns:  []string{"roundcube", "horde login", "squirrelmail", "zimbra", "webmail login"},
+		bodyPatterns:  []string{"roundcube webmail", "horde login", "zimbra web client", "webmail login"},
+		// Note: bare "squirrelmail"/"roundcube" removed from body — sites legitimately
+		// link to their server's webmail (e.g. href="squirrelmail/index.php").
 	},
 	{
 		name:          "cPanel/WHM",
@@ -707,6 +709,20 @@ func looksLikeBusinessName(name string) bool {
 	}
 
 	nameLower := strings.ToLower(name)
+
+	// Skip names that start with tech/dev terms — these are tutorial
+	// or test directories, not business names (e.g. "php-email-form",
+	// "PHP-Login", "JavaScript Login")
+	techPrefixes := []string{
+		"php", "javascript", "js-", "css", "html", "python",
+		"java", "node", "react", "vue", "angular", "jquery",
+		"bootstrap", "wordpress", "wp-", "laravel",
+	}
+	for _, prefix := range techPrefixes {
+		if strings.HasPrefix(nameLower, prefix) {
+			return false
+		}
+	}
 
 	// Skip standard web directories
 	standardDirs := []string{
