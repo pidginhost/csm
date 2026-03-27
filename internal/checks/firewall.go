@@ -44,9 +44,24 @@ func CheckFirewall(cfg *config.Config, store *state.Store) []alert.Finding {
 		}
 	}
 
-	// Hash the ruleset to detect unexpected modifications
-	hash := hashBytes(out)
-	prev, exists := store.GetRaw("_nftables_ruleset_hash")
+	// Hash the rule structure (excluding dynamic set elements which change on every block/unblock).
+	// Only detects if someone manually added/removed chains or rules.
+	var stableLines []byte
+	for _, line := range strings.Split(string(out), "\n") {
+		trimmed := strings.TrimSpace(line)
+		// Skip set element lines (start with IPs or "elements = {" or "expires")
+		if strings.HasPrefix(trimmed, "elements") || strings.Contains(trimmed, "expires") {
+			continue
+		}
+		// Skip empty element continuation lines (just IPs)
+		if len(trimmed) > 0 && (trimmed[0] >= '0' && trimmed[0] <= '9') {
+			continue
+		}
+		stableLines = append(stableLines, line...)
+		stableLines = append(stableLines, '\n')
+	}
+	hash := hashBytes(stableLines)
+	prev, exists := store.GetRaw("_nftables_rules_hash")
 	if exists && prev != hash {
 		findings = append(findings, alert.Finding{
 			Severity:  alert.High,
@@ -55,7 +70,7 @@ func CheckFirewall(cfg *config.Config, store *state.Store) []alert.Finding {
 			Timestamp: time.Now(),
 		})
 	}
-	store.SetRaw("_nftables_ruleset_hash", hash)
+	store.SetRaw("_nftables_rules_hash", hash)
 
 	// Check for dangerous ports in config
 	findings = append(findings, checkDangerousPorts(cfg)...)
