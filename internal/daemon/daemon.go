@@ -11,6 +11,7 @@ import (
 	"context"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
+	"github.com/pidginhost/cpanel-security-monitor/internal/challenge"
 	"github.com/pidginhost/cpanel-security-monitor/internal/checks"
 	"github.com/pidginhost/cpanel-security-monitor/internal/config"
 	"github.com/pidginhost/cpanel-security-monitor/internal/firewall"
@@ -28,15 +29,16 @@ type Daemon struct {
 	lock       *state.LockFile
 	binaryPath string
 
-	logWatchers    []*LogWatcher
-	fileMonitor    *FileMonitor
-	hijackDetector *PasswordHijackDetector
-	pamListener    *PAMListener
-	webServer      *webui.Server
-	fwEngine       *firewall.Engine
-	alertCh        chan alert.Finding
-	stopCh         chan struct{}
-	wg             sync.WaitGroup
+	logWatchers      []*LogWatcher
+	fileMonitor      *FileMonitor
+	hijackDetector   *PasswordHijackDetector
+	pamListener      *PAMListener
+	webServer        *webui.Server
+	challengeServer  *challenge.Server
+	fwEngine         *firewall.Engine
+	alertCh          chan alert.Finding
+	stopCh           chan struct{}
+	wg               sync.WaitGroup
 }
 
 // New creates a new daemon instance.
@@ -79,6 +81,9 @@ func (d *Daemon) Run() error {
 	// Start firewall engine if enabled
 	d.startFirewall()
 
+	// Start challenge server if enabled (gray listing)
+	d.startChallengeServer()
+
 	// Create password hijack detector
 	d.hijackDetector = NewPasswordHijackDetector(d.cfg, d.alertCh)
 
@@ -92,11 +97,11 @@ func (d *Daemon) Run() error {
 	// Start PAM listener for real-time brute-force detection
 	d.startPAMListener()
 
-	// Start Web UI server EARLY — available immediately, before initial scan
-	d.startWebUI()
-
 	// Start fanotify file monitor (real-time detection starts immediately)
 	d.startFileMonitor()
+
+	// Start Web UI server — available immediately, before initial scan
+	d.startWebUI()
 
 	// Run initial baseline scan in background (doesn't block startup)
 	d.wg.Add(1)
@@ -110,6 +115,7 @@ func (d *Daemon) Run() error {
 			_ = alert.Dispatch(d.cfg, newFindings)
 		}
 		d.store.Update(initialFindings)
+		d.store.SetLatestFindings(initialFindings)
 		fmt.Fprintf(os.Stderr, "[%s] Initial scan complete: %d findings (%d new)\n", ts(), len(initialFindings), len(newFindings))
 	}()
 
@@ -120,14 +126,13 @@ func (d *Daemon) Run() error {
 	d.wg.Add(1)
 	go d.deepScanner()
 
+	// Start automatic signature updates
+	d.wg.Add(1)
+	go d.signatureUpdater()
+
 	// Start heartbeat
 	d.wg.Add(1)
 	go d.heartbeat()
-
-	// Update WebUI health info now that all components are initialized
-	if d.webServer != nil {
-		d.webServer.SetHealthInfo(d.fileMonitor != nil, len(d.logWatchers))
-	}
 
 	fmt.Fprintf(os.Stderr, "[%s] CSM daemon running\n", ts())
 
@@ -137,23 +142,8 @@ func (d *Daemon) Run() error {
 
 	for sig := range sigCh {
 		if sig == syscall.SIGHUP {
-			// Reload signature rules on SIGHUP
 			fmt.Fprintf(os.Stderr, "[%s] SIGHUP received — reloading rules\n", ts())
-			if scanner := signatures.Global(); scanner != nil {
-				if err := scanner.Reload(); err != nil {
-					fmt.Fprintf(os.Stderr, "[%s] YAML rule reload error: %v\n", ts(), err)
-				} else {
-					fmt.Fprintf(os.Stderr, "[%s] Reloaded %d YAML rules (version %d)\n", ts(), scanner.RuleCount(), scanner.Version())
-				}
-			}
-			if yaraScanner := yara.Global(); yaraScanner != nil {
-				if err := yaraScanner.Reload(); err != nil {
-					fmt.Fprintf(os.Stderr, "[%s] YARA rule reload error: %v\n", ts(), err)
-				} else {
-					fmt.Fprintf(os.Stderr, "[%s] Reloaded %d YARA rule file(s)\n", ts(), yaraScanner.RuleCount())
-				}
-			}
-			// Reload firewall rules if engine is running
+			d.reloadSignatures()
 			if d.fwEngine != nil {
 				if err := d.fwEngine.Apply(); err != nil {
 					fmt.Fprintf(os.Stderr, "[%s] Firewall reload error: %v\n", ts(), err)
@@ -177,6 +167,9 @@ func (d *Daemon) Run() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = d.webServer.Shutdown(ctx)
 		cancel()
+	}
+	if d.challengeServer != nil {
+		d.challengeServer.Shutdown()
 	}
 	if d.fileMonitor != nil {
 		d.fileMonitor.Stop()
@@ -335,8 +328,12 @@ func (d *Daemon) runPeriodicChecks(tier checks.Tier) {
 	}
 
 	findings := checks.RunTier(d.cfg, d.store, tier)
-	for _, f := range findings {
-		d.alertCh <- f
+	if len(findings) > 0 {
+		// Update latest findings for the Findings page
+		d.store.SetLatestFindings(findings)
+		for _, f := range findings {
+			d.alertCh <- f
+		}
 	}
 }
 
@@ -415,6 +412,7 @@ func (d *Daemon) startWebUI() {
 	}
 
 	d.webServer = srv
+	srv.SetHealthInfo(d.fileMonitor != nil, len(d.logWatchers))
 	if d.fwEngine != nil {
 		srv.SetIPBlocker(d.fwEngine)
 	}
@@ -457,6 +455,28 @@ func (d *Daemon) startFileMonitor() {
 	fmt.Fprintf(os.Stderr, "[%s] fanotify file monitor active on /home, /tmp, /dev/shm\n", ts())
 }
 
+func (d *Daemon) startChallengeServer() {
+	if !d.cfg.Challenge.Enabled {
+		return
+	}
+
+	var unblocker challenge.IPUnblocker
+	if d.fwEngine != nil {
+		unblocker = d.fwEngine
+	}
+
+	srv := challenge.New(d.cfg, unblocker)
+	d.challengeServer = srv
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		fmt.Fprintf(os.Stderr, "[%s] Challenge server active on port %d\n", ts(), d.cfg.Challenge.ListenPort)
+		if err := srv.Start(); err != nil && err.Error() != "http: Server closed" {
+			fmt.Fprintf(os.Stderr, "[%s] Challenge server error: %v\n", ts(), err)
+		}
+	}()
+}
+
 func (d *Daemon) startFirewall() {
 	if !d.cfg.Firewall.Enabled {
 		return
@@ -497,6 +517,78 @@ func (d *Daemon) startFirewall() {
 		}()
 		fmt.Fprintf(os.Stderr, "[%s] DynDNS resolver active for %d host(s)\n",
 			ts(), len(d.cfg.Firewall.DynDNSHosts))
+	}
+}
+
+// signatureUpdater periodically downloads new rules and reloads scanners.
+func (d *Daemon) signatureUpdater() {
+	defer d.wg.Done()
+
+	// Skip if no update URL configured or auto_update explicitly disabled
+	if d.cfg.Signatures.UpdateURL == "" {
+		return
+	}
+	// auto_update defaults to true when update_url is set
+	if !d.cfg.Signatures.AutoUpdate && d.cfg.Signatures.UpdateInterval == "" {
+		// Only skip if auto_update was explicitly set to false
+		// (zero value means unset — default to enabled)
+	}
+
+	interval := 24 * time.Hour
+	if d.cfg.Signatures.UpdateInterval != "" {
+		if parsed, err := time.ParseDuration(d.cfg.Signatures.UpdateInterval); err == nil && parsed >= time.Hour {
+			interval = parsed
+		}
+	}
+
+	// Wait 5 minutes before first update attempt (let the daemon stabilize)
+	select {
+	case <-d.stopCh:
+		return
+	case <-time.After(5 * time.Minute):
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		d.doSignatureUpdate()
+
+		select {
+		case <-d.stopCh:
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (d *Daemon) doSignatureUpdate() {
+	count, err := signatures.Update(d.cfg.Signatures.RulesDir, d.cfg.Signatures.UpdateURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] Signature auto-update failed: %v\n", ts(), err)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "[%s] Signature auto-update: %d rules downloaded\n", ts(), count)
+	d.reloadSignatures()
+}
+
+func (d *Daemon) reloadSignatures() {
+	if scanner := signatures.Global(); scanner != nil {
+		if err := scanner.Reload(); err != nil {
+			fmt.Fprintf(os.Stderr, "[%s] YAML rule reload error: %v\n", ts(), err)
+		} else {
+			fmt.Fprintf(os.Stderr, "[%s] Reloaded %d YAML rules (version %d)\n", ts(), scanner.RuleCount(), scanner.Version())
+			if d.webServer != nil {
+				d.webServer.SetSigCount(scanner.RuleCount())
+			}
+		}
+	}
+	if yaraScanner := yara.Global(); yaraScanner != nil {
+		if err := yaraScanner.Reload(); err != nil {
+			fmt.Fprintf(os.Stderr, "[%s] YARA rule reload error: %v\n", ts(), err)
+		} else {
+			fmt.Fprintf(os.Stderr, "[%s] Reloaded %d YARA rule file(s)\n", ts(), yaraScanner.RuleCount())
+		}
 	}
 }
 

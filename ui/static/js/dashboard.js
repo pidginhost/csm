@@ -1,4 +1,5 @@
 // CSM Dashboard — WebSocket live feed + auto-refresh
+// Detects WHM proxy mode and falls back to polling when WebSocket isn't available
 (function() {
     'use strict';
 
@@ -6,15 +7,26 @@
     var wsStatus = document.getElementById('ws-status');
     var reconnectDelay = 1000;
     var ws;
+    var wsDisabled = false;
+
+    // Detect if running through WHM CGI proxy (WebSocket won't work through CGI)
+    var isProxy = window.location.pathname.indexOf('addon_csm.cgi') >= 0 ||
+                  window.location.search.indexOf('path=') >= 0;
 
     function connect() {
+        if (isProxy || wsDisabled) {
+            // WHM proxy can't handle WebSocket — use polling instead
+            if (wsStatus) wsStatus.className = 'status-dot bg-yellow';
+            setInterval(pollFindings, 10000);
+            return;
+        }
+
         var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        // Cookie auth is sent automatically by the browser on same-origin WebSocket
         ws = new WebSocket(proto + '//' + location.host + '/ws/findings');
 
         ws.onopen = function() {
             reconnectDelay = 1000;
-            if (wsStatus) wsStatus.className = 'dot';
+            if (wsStatus) wsStatus.className = 'status-dot status-dot-animated bg-green';
         };
 
         ws.onmessage = function(e) {
@@ -23,11 +35,18 @@
                 for (var i = 0; i < findings.length; i++) {
                     addEntry(findings[i]);
                 }
-            } catch(err) {}
+            } catch(err) { /* malformed JSON */ }
         };
 
         ws.onclose = function() {
-            if (wsStatus) wsStatus.className = 'dot disconnected';
+            if (wsStatus) wsStatus.className = 'status-dot bg-red';
+            // After 5 failed reconnects, switch to polling
+            if (reconnectDelay > 16000) {
+                wsDisabled = true;
+                if (wsStatus) wsStatus.className = 'status-dot bg-yellow';
+                setInterval(pollFindings, 10000);
+                return;
+            }
             setTimeout(function() {
                 reconnectDelay = Math.min(reconnectDelay * 2, 30000);
                 connect();
@@ -37,10 +56,29 @@
         ws.onerror = function() { ws.close(); };
     }
 
+    // Polling fallback — fetch recent history
+    var lastPollTimestamp = '';
+    function pollFindings() {
+        fetch(apiUrl('/api/v1/history?limit=10&offset=0'), { credentials: 'same-origin' })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                var findings = data.findings || [];
+                for (var i = findings.length - 1; i >= 0; i--) {
+                    var f = findings[i];
+                    var ts = f.timestamp || '';
+                    if (ts > lastPollTimestamp) {
+                        addEntry(f);
+                        lastPollTimestamp = ts;
+                    }
+                }
+            })
+            .catch(function() {});
+    }
+
     function addEntry(f) {
         if (!feed) return;
         var div = document.createElement('div');
-        div.className = 'entry';
+        div.className = 'list-group-item';
 
         var sevClass = 'warning';
         var sevLabel = 'WARNING';
@@ -52,33 +90,43 @@
                    now.getMinutes().toString().padStart(2,'0') + ':' +
                    now.getSeconds().toString().padStart(2,'0');
 
-        div.innerHTML = '<span class="time">' + time + '</span>' +
-            '<span class="badge ' + sevClass + '">' + sevLabel + '</span>' +
-            '<span class="msg">' + escapeHtml(f.check) + ' — ' + escapeHtml(f.message) + '</span>';
+        div.innerHTML = '<div class="row align-items-center">' +
+            '<div class="col-auto"><span class="text-muted font-monospace small">' + time + '</span></div>' +
+            '<div class="col-auto"><span class="badge badge-' + sevClass + '">' + sevLabel + '</span></div>' +
+            '<div class="col"><span class="font-monospace small">' + esc(f.check) + '</span> — ' + esc(f.message) + '</div>' +
+            '</div>';
 
         feed.insertBefore(div, feed.firstChild);
 
-        // Keep max 50 entries
         while (feed.children.length > 50) {
             feed.removeChild(feed.lastChild);
         }
 
-        // Remove empty state
-        var empty = feed.querySelector('.empty-state');
+        var empty = feed.querySelector('.text-center');
         if (empty) empty.remove();
     }
 
-    function escapeHtml(s) {
-        var div = document.createElement('div');
-        div.appendChild(document.createTextNode(s || ''));
-        return div.innerHTML;
+    function esc(s) {
+        var d = document.createElement('div');
+        d.appendChild(document.createTextNode(s || ''));
+        return d.innerHTML;
+    }
+
+    // Resolve API URLs — use CGI proxy path if in WHM context
+    function apiUrl(path) {
+        if (isProxy) {
+            // Through WHM proxy: use addon_csm.cgi?path=
+            return 'addon_csm.cgi?path=' + encodeURIComponent(path);
+        }
+        return path;
     }
 
     // Auto-refresh stats every 30 seconds
     function refreshStats() {
-        fetch('/api/v1/stats', { credentials: 'same-origin' })
+        fetch(apiUrl('/api/v1/stats'), { credentials: 'same-origin' })
             .then(function(r) { return r.json(); })
             .then(function(data) {
+                if (!data.last_24h) return;
                 var s = data.last_24h;
                 setText('stat-critical', s.critical);
                 setText('stat-high', s.high);

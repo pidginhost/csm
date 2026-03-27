@@ -51,6 +51,15 @@ func Open(path string) (*Store, error) {
 		_ = json.Unmarshal(data, &s.entries)
 	}
 
+	// Load latest findings from disk (survives restart)
+	latestFile := filepath.Join(path, "latest_findings.json")
+	if latestData, err := os.ReadFile(latestFile); err == nil {
+		var findings []alert.Finding
+		if json.Unmarshal(latestData, &findings) == nil {
+			s.latestFindings = findings
+		}
+	}
+
 	return s, nil
 }
 
@@ -374,27 +383,41 @@ func splitLines(data []byte) [][]byte {
 	return lines
 }
 
-// SetLatestFindings stores the full results of the most recent scan cycle.
-// Called by the daemon after each periodic scan completes.
+// SetLatestFindings merges scan results into the current findings set.
+// Called by the daemon after each periodic scan completes. Merges rather
+// than replaces — critical scan results coexist with deep scan results.
+// Use ClearLatestFindings() + SetLatestFindings() for a full replace.
 func (s *Store) SetLatestFindings(findings []alert.Finding) {
 	s.latestMu.Lock()
 	defer s.latestMu.Unlock()
 
-	// Deduplicate by check:message (keep the most recent per key)
-	seen := make(map[string]bool)
-	var deduped []alert.Finding
+	// Build map of existing findings by key
+	existing := make(map[string]alert.Finding)
+	for _, f := range s.latestFindings {
+		key := f.Check + ":" + f.Message
+		existing[key] = f
+	}
+
+	// Merge new findings (update existing, add new)
 	for _, f := range findings {
 		key := f.Check + ":" + f.Message
-		if !seen[key] {
-			seen[key] = true
-			deduped = append(deduped, f)
-		}
+		existing[key] = f // newer overwrites older
 	}
-	s.latestFindings = deduped
+
+	// Flatten back to slice
+	var merged []alert.Finding
+	for _, f := range existing {
+		merged = append(merged, f)
+	}
+	// Cap at 15,000 findings to prevent unbounded memory growth
+	if len(merged) > 15000 {
+		merged = merged[:15000]
+	}
+	s.latestFindings = merged
 	s.latestScanTime = time.Now()
 
-	// Also persist to disk so it survives restart
-	data, _ := json.Marshal(deduped)
+	// Persist to disk
+	data, _ := json.Marshal(merged)
 	tmpPath := filepath.Join(s.path, "latest_findings.json.tmp")
 	_ = os.WriteFile(tmpPath, data, 0600)
 	_ = os.Rename(tmpPath, filepath.Join(s.path, "latest_findings.json"))
@@ -405,24 +428,6 @@ func (s *Store) SetLatestFindings(findings []alert.Finding) {
 func (s *Store) LatestFindings() []alert.Finding {
 	s.latestMu.RLock()
 	defer s.latestMu.RUnlock()
-
-	// If in-memory is empty (fresh start), load from disk
-	if len(s.latestFindings) == 0 {
-		data, err := os.ReadFile(filepath.Join(s.path, "latest_findings.json"))
-		if err == nil {
-			var findings []alert.Finding
-			if json.Unmarshal(data, &findings) == nil {
-				s.latestMu.RUnlock()
-				s.latestMu.Lock()
-				s.latestFindings = findings
-				s.latestMu.Unlock()
-				s.latestMu.RLock()
-				return findings
-			}
-		}
-	}
-
-	// Return a copy
 	result := make([]alert.Finding, len(s.latestFindings))
 	copy(result, s.latestFindings)
 	return result

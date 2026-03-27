@@ -102,6 +102,7 @@
                     <div class="col-auto"><span class="text-muted font-monospace small">{{.Timestamp}}</span></div>
                     <div class="col-auto"><span class="badge badge-{{.SevClass}}">{{.Severity}}</span></div>
                     <div class="col"><span class="font-monospace small">{{.Check}}</span> — {{.Message}}</div>
+                    {{if .HasFix}}<div class="col-auto"><button class="btn btn-warning btn-sm" onclick="event.stopPropagation();fixFromFeed(this,'{{.Check}}','{{.Message}}','{{.FixDesc}}')" title="{{.FixDesc}}"><i class="ti ti-tool"></i></button></div>{{end}}
                 </div>
                 {{if .Details}}<div class="detail d-none mt-2 small text-muted" style="white-space:pre-wrap">{{.Details}}</div>{{end}}
             </div>
@@ -113,5 +114,27 @@
 {{end}}
 {{define "scripts"}}
 <script src="/static/js/dashboard.js"></script>
+<script>
+function fixFromFeed(btn, check, message, desc) {
+    if (!confirm('Apply fix?\n\n' + desc)) return;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+    CSM.post('/api/v1/fix', {check: check, message: message}).then(function(data) {
+        if (data.success) {
+            btn.innerHTML = '<i class="ti ti-check"></i>';
+            btn.className = 'btn btn-success btn-sm';
+            btn.closest('.list-group-item').style.opacity = '0.3';
+        } else {
+            alert('Fix failed: ' + (data.error || 'unknown'));
+            btn.disabled = false;
+            btn.innerHTML = '<i class="ti ti-tool"></i>';
+        }
+    }).catch(function(e) {
+        alert('Error: ' + e);
+        btn.disabled = false;
+        btn.innerHTML = '<i class="ti ti-tool"></i>';
+    });
+}
+</script>
 {{end}}
 {{template "layout" .}}
