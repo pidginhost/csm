@@ -26,9 +26,9 @@
 
     <!-- Active Findings -->
     <div class="card">
-        <div class="card-header d-flex flex-wrap align-items-center gap-2">
-            <h3 class="card-title me-auto"><i class="ti ti-alert-triangle"></i>&nbsp;Active Findings ({{len .Entries}})</h3>
-            <div class="d-flex gap-2 flex-wrap align-items-center">
+        <div class="card-header">
+            <h3 class="card-title"><i class="ti ti-alert-triangle"></i>&nbsp;Active Findings ({{len .Entries}})</h3>
+            <div class="card-actions d-flex gap-2 flex-wrap align-items-center">
                 <input type="text" id="findings-search" class="form-control form-control-sm" placeholder="Search..." style="width:140px">
                 <select id="check-filter" class="form-select form-select-sm" style="width:auto">
                     <option value="all">All Types</option>
@@ -51,15 +51,15 @@
             </div>
         </div>
         {{if .Entries}}
-        <div class="table-responsive" style="overflow-x:auto">
-            <table class="table table-vcenter card-table" id="findings-table" style="table-layout:fixed;width:100%;min-width:700px">
+        <div class="table-responsive">
+            <table class="table table-vcenter card-table" id="findings-table" style="table-layout:fixed;width:100%">
                 <colgroup>
-                    <col style="width:36px">
-                    <col style="width:150px">
-                    <col>
-                    <col style="width:130px">
-                    <col style="width:130px">
-                    <col style="width:80px">
+                    <col style="width:30px">
+                    <col style="width:12%">
+                    <col style="width:auto">
+                    <col style="width:120px">
+                    <col style="width:120px">
+                    <col style="width:70px">
                 </colgroup>
                 <thead>
                     <tr>
