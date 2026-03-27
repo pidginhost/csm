@@ -73,22 +73,93 @@
 
     <!-- Timeline -->
     <div class="card mb-3">
-        <div class="card-header"><h3 class="card-title"><i class="ti ti-chart-bar"></i>&nbsp;Findings Timeline (24h)</h3></div>
-        <div class="card-body">
-            <svg width="100%" height="120" viewBox="0 0 720 120" preserveAspectRatio="none">
-                {{range $i, $bar := .TimelineBars}}
-                {{if gt $bar.Total 0}}
-                <rect class="timeline-bar" x="{{multiply $i 30}}" y="{{subtract 100 $bar.Height}}" width="26" height="{{$bar.Height}}"
-                      rx="2" fill="{{if gt $bar.Critical 0}}#d63939{{else if gt $bar.High 0}}#f76707{{else}}#f59f00{{end}}"
-                      opacity="0.7">
-                    <title>{{$bar.Hour}}: {{$bar.Total}} findings ({{$bar.Critical}}C / {{$bar.High}}H / {{$bar.Warning}}W)</title>
-                </rect>
-                {{end}}
-                <text x="{{add (multiply $i 30) 13}}" y="115" text-anchor="middle" fill="#6c7a91" font-size="9">{{if divisibleBy $i 4}}{{$bar.Hour}}{{end}}</text>
-                {{end}}
-            </svg>
+        <div class="card-header">
+            <h3 class="card-title"><i class="ti ti-chart-bar"></i>&nbsp;Findings Timeline (24h)</h3>
+            <div class="card-actions">
+                <span class="legend me-2"><span class="legend-dot" style="background:#d63939"></span> Critical</span>
+                <span class="legend me-2"><span class="legend-dot" style="background:#f76707"></span> High</span>
+                <span class="legend"><span class="legend-dot" style="background:#f59f00"></span> Warning</span>
+            </div>
+        </div>
+        <div class="card-body py-3">
+            <div id="timeline-chart" style="position:relative"></div>
         </div>
     </div>
+    <script>
+    (function(){
+        var bars = [{{range $i, $bar := .TimelineBars}}{{if $i}},{{end}}{h:"{{$bar.Hour}}",c:{{$bar.Critical}},hi:{{$bar.High}},w:{{$bar.Warning}},t:{{$bar.Total}}}{{end}}];
+
+        var container = document.getElementById('timeline-chart');
+        var W = container.offsetWidth || 700;
+        var H = 200;
+        var padL = 40, padR = 10, padT = 10, padB = 30;
+        var chartW = W - padL - padR;
+        var chartH = H - padT - padB;
+        var barW = Math.floor(chartW / 24);
+        var barPad = Math.max(2, Math.floor(barW * 0.15));
+
+        // Find max for Y scale
+        var maxVal = 1;
+        for (var i = 0; i < bars.length; i++) { if (bars[i].t > maxVal) maxVal = bars[i].t; }
+        // Round up to nice number
+        var gridLines = 4;
+        var step = Math.ceil(maxVal / gridLines);
+        if (step === 0) step = 1;
+        maxVal = step * gridLines;
+
+        var isDark = document.documentElement.classList.contains('theme-dark');
+        var gridColor = isDark ? '#2d3a4e' : '#e6e8eb';
+        var textColor = isDark ? '#6b7a8d' : '#9da9b5';
+
+        var svg = '<svg width="' + W + '" height="' + H + '" style="display:block;width:100%">';
+
+        // Grid lines + Y labels
+        for (var g = 0; g <= gridLines; g++) {
+            var val = step * g;
+            var y = padT + chartH - (val / maxVal * chartH);
+            svg += '<line x1="' + padL + '" y1="' + y + '" x2="' + (W - padR) + '" y2="' + y + '" stroke="' + gridColor + '" stroke-width="1"/>';
+            svg += '<text x="' + (padL - 8) + '" y="' + (y + 4) + '" text-anchor="end" fill="' + textColor + '" font-size="11">' + val + '</text>';
+        }
+
+        // Bars (stacked: warning bottom, high middle, critical top)
+        for (var i = 0; i < bars.length; i++) {
+            var b = bars[i];
+            var x = padL + i * barW + barPad;
+            var bw = barW - barPad * 2;
+            if (bw < 4) bw = 4;
+            var baseY = padT + chartH;
+
+            // Warning (bottom)
+            if (b.w > 0) {
+                var wH = b.w / maxVal * chartH;
+                svg += '<rect x="'+x+'" y="'+(baseY - wH)+'" width="'+bw+'" height="'+wH+'" fill="#f59f00" rx="1" class="timeline-bar"><title>'+b.h+': '+b.t+' findings ('+b.c+'C / '+b.hi+'H / '+b.w+'W)</title></rect>';
+                baseY -= wH;
+            }
+            // High (middle)
+            if (b.hi > 0) {
+                var hH = b.hi / maxVal * chartH;
+                svg += '<rect x="'+x+'" y="'+(baseY - hH)+'" width="'+bw+'" height="'+hH+'" fill="#f76707" rx="1" class="timeline-bar"><title>'+b.h+': '+b.t+' findings ('+b.c+'C / '+b.hi+'H / '+b.w+'W)</title></rect>';
+                baseY -= hH;
+            }
+            // Critical (top)
+            if (b.c > 0) {
+                var cH = b.c / maxVal * chartH;
+                svg += '<rect x="'+x+'" y="'+(baseY - cH)+'" width="'+bw+'" height="'+cH+'" fill="#d63939" rx="1" class="timeline-bar"><title>'+b.h+': '+b.t+' findings ('+b.c+'C / '+b.hi+'H / '+b.w+'W)</title></rect>';
+            }
+
+            // X labels (every 3rd bar to avoid crowding)
+            if (i % 3 === 0) {
+                svg += '<text x="' + (padL + i * barW + barW/2) + '" y="' + (H - 6) + '" text-anchor="middle" fill="' + textColor + '" font-size="11">' + b.h + '</text>';
+            }
+        }
+
+        // Bottom axis line
+        svg += '<line x1="' + padL + '" y1="' + (padT + chartH) + '" x2="' + (W - padR) + '" y2="' + (padT + chartH) + '" stroke="' + gridColor + '" stroke-width="1"/>';
+        svg += '</svg>';
+
+        container.innerHTML = svg;
+    })();
+    </script>
 
     <!-- Live Feed -->
     <div class="card">
