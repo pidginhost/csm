@@ -19,7 +19,7 @@ for my $pair (split /&/, $qs) {
 
 my $path = $params{path} || '';
 
-# Read CSM auth token from config (simple regex — no YAML dependency)
+# Read CSM auth token from config
 my $token = '';
 my $listen = 'localhost:9443';
 if (open my $fh, '<', '/opt/csm/csm.yaml') {
@@ -30,27 +30,30 @@ if (open my $fh, '<', '/opt/csm/csm.yaml') {
     close $fh;
 }
 
-# If no path — serve the main dashboard page
+# Default to dashboard
 if (!$path || $path eq '/') {
     $path = '/dashboard';
 }
 
-# Sanitize path — only allow /api/, /static/, and page routes
-if ($path !~ m{^/(?:api/|static/|dashboard|findings|history|quarantine|blocked|login|ws/)}) {
+# Sanitize path
+if ($path !~ m{^/(?:api/|static/|dashboard|findings|history|quarantine|blocked|firewall|login|ws/)}) {
     $path = '/dashboard';
 }
 
-# Build target URL
 my $url = "https://$listen$path";
-
-# Use curl for HTTPS (always available on cPanel, handles self-signed certs)
 my $method = $ENV{REQUEST_METHOD} || 'GET';
-my @cmd = ('curl', '-sk', '--max-time', '30',
-           '-H', "Authorization: Bearer $token",
-           '-H', "Cookie: csm_auth=$token");
+
+# Build curl command — use -L to follow redirects, -b for cookie auth
+# Write response headers to temp file, body to stdout
+my $hdr_file = "/tmp/csm_cgi_$$.hdr";
+
+my @cmd = (
+    'curl', '-sk', '-L', '--max-time', '30',
+    '-b', "csm_auth=$token",
+    '-D', $hdr_file,
+);
 
 if ($method eq 'POST') {
-    # Read POST body from STDIN
     my $content_type = $ENV{CONTENT_TYPE} || 'application/json';
     my $content_length = $ENV{CONTENT_LENGTH} || 0;
     my $body = '';
@@ -60,24 +63,44 @@ if ($method eq 'POST') {
 
     push @cmd, '-X', 'POST';
     push @cmd, '-H', "Content-Type: $content_type";
-    push @cmd, '-d', $body;
-}
+    push @cmd, '--data-binary', $body;
 
-# Add CSRF token header for POST requests
-if ($method eq 'POST') {
-    # Read CSRF token from HTTP header forwarded by WHM
+    # Forward CSRF token
     my $csrf = $ENV{HTTP_X_CSRF_TOKEN} || '';
     push @cmd, '-H', "X-CSRF-Token: $csrf" if $csrf;
 }
 
-# Include response headers to detect content type
-push @cmd, '-i', $url;
+push @cmd, $url;
 
-my $response = `@cmd 2>/dev/null`;
+# Execute — use open() for proper arg handling (no shell interpolation)
+my $body = '';
+my $pid = open(my $pipe, '-|', @cmd);
+if (!$pid) {
+    print "Content-Type: text/html\r\nStatus: 502\r\n\r\n";
+    print "<h1>CSM Unavailable</h1><p>Could not connect to CSM daemon.</p>";
+    exit;
+}
+{
+    local $/;
+    $body = <$pipe>;
+}
+close $pipe;
 
-if (!$response) {
-    print "Content-Type: text/html\r\n";
-    print "Status: 502\r\n\r\n";
+# Read content-type from saved response headers
+my $ct = 'text/html';
+if (open my $hf, '<', $hdr_file) {
+    while (<$hf>) {
+        if (/^content-type:\s*(.+?)$/i) {
+            $ct = $1;
+            $ct =~ s/[\r\n]//g;
+        }
+    }
+    close $hf;
+}
+unlink $hdr_file;
+
+if (!defined $body || $body eq '') {
+    print "Content-Type: text/html\r\nStatus: 502\r\n\r\n";
     print <<'HTML';
 <!DOCTYPE html>
 <html><head><title>CSM Unavailable</title>
@@ -93,30 +116,13 @@ HTML
     exit;
 }
 
-# Parse response: split headers and body
-my ($headers_block, $body) = split /\r?\n\r?\n/, $response, 2;
-$body //= '';
-
-# Extract content-type from response headers
-my $ct = 'text/html';
-if ($headers_block =~ /^Content-Type:\s*(.+?)$/mi) {
-    $ct = $1;
-    $ct =~ s/\r//g;
-}
-
-# For HTML responses, rewrite URLs to route through CGI proxy
+# Rewrite URLs in HTML to route through CGI proxy
 if ($ct =~ /text\/html/) {
-    # Rewrite href="/dashboard" to href="addon_csm.cgi?path=/dashboard"
-    $body =~ s{(href|action)="(/[^"]+)"}{$1="addon_csm.cgi?path=$2"}g;
-    # Rewrite src="/static/ to route through proxy
-    $body =~ s{src="/static/([^"]+)"}{src="addon_csm.cgi?path=/static/$1"}g;
-    # Rewrite link href="/static/
-    $body =~ s{href="/static/([^"]+)"}{href="addon_csm.cgi?path=/static/$1"}g;
-    # Fix login form action
+    $body =~ s{(href|action)="(/(?:dashboard|findings|history|quarantine|blocked|firewall|login)[^"]*)"}{$1="addon_csm.cgi?path=$2"}g;
+    $body =~ s{(href|src)="/static/([^"]+)"}{$1="addon_csm.cgi?path=/static/$2"}g;
     $body =~ s{action="/login"}{action="addon_csm.cgi?path=/login"}g;
 }
 
-# Output
 print "Content-Type: $ct\r\n";
 print "\r\n";
 print $body;
