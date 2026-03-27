@@ -39,8 +39,14 @@ type blockedIP struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
+type pendingIP struct {
+	IP     string `json:"ip"`
+	Reason string `json:"reason"`
+}
+
 type blockState struct {
 	IPs            []blockedIP `json:"ips"`
+	Pending        []pendingIP `json:"pending,omitempty"` // IPs waiting for rate-limit reset
 	BlocksThisHour int         `json:"blocks_this_hour"`
 	HourKey        string      `json:"hour_key"`
 }
@@ -94,6 +100,14 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		"ftp_auth_failure_realtime":   true,
 	}
 
+	// Drain pending queue first (IPs from prior rate-limited cycles)
+	for _, p := range state.Pending {
+		if !isAlreadyBlocked(state, p.IP) {
+			ipsToBlock[p.IP] = p.Reason
+		}
+	}
+	state.Pending = nil
+
 	for _, f := range findings {
 		isBlockable := alwaysBlock[f.Check]
 		if !isBlockable && cfg.AutoResponse.BlockCpanelLogins && cpanelWebmailChecks[f.Check] {
@@ -121,17 +135,15 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		ipsToBlock[ip] = f.Message
 	}
 
-	// Block IPs
+	// Block IPs — queue any that can't be blocked due to rate limit
 	expiry := parseExpiry(cfg.AutoResponse.BlockExpiry)
+	rateLimited := false
 	for ip, reason := range ipsToBlock {
 		if state.BlocksThisHour >= maxBlocksPerHour {
-			actions = append(actions, alert.Finding{
-				Severity:  alert.Warning,
-				Check:     "auto_block",
-				Message:   fmt.Sprintf("Auto-block rate limit reached (%d/hour), skipping IP: %s", maxBlocksPerHour, ip),
-				Timestamp: time.Now(),
-			})
-			break
+			// Queue for next cycle instead of dropping
+			state.Pending = append(state.Pending, pendingIP{IP: ip, Reason: reason})
+			rateLimited = true
+			continue
 		}
 
 		// Block via firewall engine (nftables) or CSF fallback
@@ -194,6 +206,15 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		}
 	}
 
+	if rateLimited {
+		actions = append(actions, alert.Finding{
+			Severity:  alert.Warning,
+			Check:     "auto_block",
+			Message:   fmt.Sprintf("Auto-block rate limit reached (%d/hour), %d IPs queued for next cycle", maxBlocksPerHour, len(state.Pending)),
+			Timestamp: time.Now(),
+		})
+	}
+
 	// Subnet auto-blocking: detect /24 patterns
 	if cfg.AutoResponse.NetBlock && fwBlocker != nil {
 		threshold := cfg.AutoResponse.NetBlockThreshold
@@ -240,12 +261,8 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			} else {
 				_, _ = runCmd("csf", "-dr", blocked.IP)
 			}
-			actions = append(actions, alert.Finding{
-				Severity:  alert.Warning,
-				Check:     "auto_block",
-				Message:   fmt.Sprintf("AUTO-UNBLOCK: %s removed (expired)", blocked.IP),
-				Timestamp: time.Now(),
-			})
+			// Log unblock to stderr only — don't trigger email alerts for routine expiry
+			fmt.Fprintf(os.Stderr, "[%s] AUTO-UNBLOCK: %s removed (expired)\n", time.Now().Format("2006-01-02 15:04:05"), blocked.IP)
 		} else {
 			activeIPs = append(activeIPs, blocked)
 		}
@@ -309,6 +326,17 @@ func saveBlockState(statePath string, state *blockState) {
 	tmpPath := filepath.Join(statePath, blockStateFile+".tmp")
 	_ = os.WriteFile(tmpPath, data, 0600)
 	_ = os.Rename(tmpPath, filepath.Join(statePath, blockStateFile))
+}
+
+// PendingBlockIPs returns IPs queued for blocking (rate-limited).
+// Used by alert.FilterBlockedAlerts to suppress reputation alerts for these IPs.
+func PendingBlockIPs(statePath string) map[string]bool {
+	state := loadBlockState(statePath)
+	ips := make(map[string]bool, len(state.Pending))
+	for _, p := range state.Pending {
+		ips[p.IP] = true
+	}
+	return ips
 }
 
 // extractPrefix24 returns the first 3 octets of an IPv4 address (e.g. "1.2.3").

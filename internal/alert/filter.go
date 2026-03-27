@@ -33,6 +33,12 @@ func FilterBlockedAlerts(cfg *config.Config, findings []Finding) []Finding {
 		}
 	}
 
+	// Also suppress alerts for IPs queued for blocking (rate-limited).
+	// These will be blocked once the rate limit resets — no need to alert.
+	for ip := range loadPendingIPs(cfg.StatePath) {
+		blockedIPs[ip] = true
+	}
+
 	if len(blockedIPs) == 0 {
 		return findings
 	}
@@ -52,13 +58,34 @@ func FilterBlockedAlerts(cfg *config.Config, findings []Finding) []Finding {
 				continue
 			}
 		}
-		if f.Check == "auto_block" && strings.Contains(f.Message, "AUTO-BLOCK:") {
-			continue
+		if f.Check == "auto_block" {
+			continue // suppress both AUTO-BLOCK and AUTO-UNBLOCK notifications
 		}
 		filtered = append(filtered, f)
 	}
 
 	return filtered
+}
+
+// loadPendingIPs reads IPs queued for blocking from blocked_ips.json.
+func loadPendingIPs(statePath string) map[string]bool {
+	ips := make(map[string]bool)
+	type pending struct {
+		IP string `json:"ip"`
+	}
+	type blockFile struct {
+		Pending []pending `json:"pending"`
+	}
+	data, err := os.ReadFile(filepath.Join(statePath, "blocked_ips.json"))
+	if err == nil {
+		var bf blockFile
+		if json.Unmarshal(data, &bf) == nil {
+			for _, p := range bf.Pending {
+				ips[p.IP] = true
+			}
+		}
+	}
+	return ips
 }
 
 // loadBlockedIPs reads blocked IPs from both the firewall engine state

@@ -7,7 +7,8 @@
         <div class="card-body">
             <form id="scan-form" class="row g-2 align-items-end">
                 <div class="col-auto">
-                    <input type="text" id="scan-account" class="form-control form-control-sm font-monospace" placeholder="cPanel username" style="width:200px">
+                    <input type="text" id="scan-account" list="account-list" class="form-control form-control-sm font-monospace" placeholder="Search accounts..." style="width:250px" autocomplete="off">
+                    <datalist id="account-list"></datalist>
                 </div>
                 <div class="col-auto">
                     <button type="submit" id="scan-btn" class="btn btn-primary btn-sm"><i class="ti ti-radar-2"></i>&nbsp;Scan</button>
@@ -16,7 +17,7 @@
             </form>
             <div id="scan-results" class="mt-3 d-none">
                 <table class="table table-vcenter table-sm" id="scan-table">
-                    <thead><tr><th>Severity</th><th>Check</th><th>Message</th></tr></thead>
+                    <thead><tr><th>Severity</th><th>Check</th><th>Message</th><th>Action</th></tr></thead>
                     <tbody id="scan-tbody"></tbody>
                 </table>
             </div>
@@ -27,17 +28,35 @@
     <div class="card">
         <div class="card-header">
             <h3 class="card-title"><i class="ti ti-alert-triangle"></i>&nbsp;Active Findings ({{len .Entries}})</h3>
-            <div class="card-actions d-flex gap-2">
-                <input type="text" id="findings-search" class="form-control form-control-sm" placeholder="Search..." style="width:200px">
-                <button id="fix-selected-btn" class="btn btn-warning btn-sm d-none" onclick="fixSelected()"><i class="ti ti-tool"></i>&nbsp;Fix Selected (<span id="fix-count">0</span>)</button>
+            <div class="card-actions d-flex gap-2 flex-wrap">
+                <input type="text" id="findings-search" class="form-control form-control-sm" placeholder="Search..." style="width:160px">
+                <select id="check-filter" class="form-select form-select-sm" style="width:auto">
+                    <option value="all">All Types</option>
+                    {{range .CheckTypes}}<option value="{{.}}">{{.}}</option>{{end}}
+                </select>
+                <div id="bulk-actions" class="d-none d-flex gap-1 align-items-center">
+                    <span class="text-muted small me-1"><strong id="selected-count">0</strong> selected</span>
+                    <div class="btn-group btn-group-sm">
+                        <button id="bulk-fix-btn" class="btn btn-warning d-none" onclick="bulkAction('fix')"><i class="ti ti-tool"></i>&nbsp;Fix</button>
+                        <button class="btn btn-ghost-secondary" onclick="bulkAction('dismiss')"><i class="ti ti-x"></i>&nbsp;Dismiss</button>
+                    </div>
+                </div>
             </div>
         </div>
         {{if .Entries}}
         <div class="table-responsive">
-            <table class="table table-vcenter card-table" id="findings-table">
+            <table class="table table-vcenter card-table" id="findings-table" style="table-layout:fixed;width:100%">
+                <colgroup>
+                    <col style="width:36px">
+                    <col style="width:180px">
+                    <col>
+                    <col style="width:145px">
+                    <col style="width:145px">
+                    <col style="width:80px">
+                </colgroup>
                 <thead>
                     <tr>
-                        <th style="width:30px"><input type="checkbox" id="select-all" onchange="toggleSelectAll()" class="form-check-input"></th>
+                        <th><input type="checkbox" id="select-all" class="form-check-input" onchange="toggleSelectAll()"></th>
                         <th>Check</th>
                         <th>Message</th>
                         <th>First Seen</th>
@@ -47,20 +66,13 @@
                 </thead>
                 <tbody id="findings-tbody">
                     {{range .Entries}}
-                    <tr class="finding-row" data-check="{{.Check}}" data-message="{{.Message}}" data-fixable="{{.HasFix}}">
-                        <td>
-                            {{if .HasFix}}<input type="checkbox" class="form-check-input fix-checkbox" onchange="updateFixCount()">{{end}}
-                        </td>
-                        <td><code>{{.Check}}</code></td>
-                        <td>{{.Message}}</td>
+                    <tr class="finding-row" data-check="{{.Check}}" data-message="{{.Message}}" data-hasFix="{{.HasFix}}" data-fixdesc="{{.FixDesc}}">
+                        <td><input type="checkbox" class="form-check-input row-checkbox" onchange="updateSelection()"></td>
+                        <td><code class="text-truncate d-block">{{.Check}}</code></td>
+                        <td class="text-truncate" title="{{.Message}}">{{.Message}}</td>
                         <td class="text-nowrap"><span class="font-monospace small">{{.FirstSeen}}</span></td>
                         <td class="text-nowrap"><span class="font-monospace small">{{.LastSeen}}</span></td>
-                        <td class="text-nowrap">
-                            {{if .HasFix}}
-                            <button onclick="fixFinding(this)" class="btn btn-warning btn-sm me-1" title="{{.FixDesc}}"><i class="ti ti-tool"></i>&nbsp;Fix</button>
-                            {{end}}
-                            <button onclick="dismissFinding('{{.Check}}:{{.Message}}')" class="btn btn-ghost-secondary btn-sm">Dismiss</button>
-                        </td>
+                        <td class="text-nowrap action-cell"></td>
                     </tr>
                     {{end}}
                 </tbody>
@@ -73,91 +85,129 @@
 {{end}}
 {{define "scripts"}}
 <script>
-// Initialize table with search, sort, pagination
+// --- Table init with search + check type filter ---
+var findingsTable;
 if (document.getElementById('findings-table')) {
-    new CSM.Table({
+    findingsTable = new CSM.Table({
         tableId: 'findings-table',
         perPage: 25,
         search: true,
         searchId: 'findings-search',
-        sortable: true
+        sortable: true,
+        filters: [{ id: 'check-filter', attr: 'data-check' }]
     });
 }
 
-function dismissFinding(key) {
-    if (!confirm('Dismiss this finding?')) return;
-    CSM.post('/api/v1/dismiss', {key: key}).then(function(){ location.reload(); }).catch(function(e){ alert('Error: ' + e); });
+// --- Selection management ---
+function getVisibleRows() {
+    return Array.from(document.querySelectorAll('.finding-row')).filter(function(r) {
+        return r.style.display !== 'none';
+    });
 }
 
-function fixFinding(btn) {
-    var row = btn.closest('tr');
-    var check = row.getAttribute('data-check');
-    var message = row.getAttribute('data-message');
-    var desc = btn.getAttribute('title');
-    if (!confirm('Apply fix?\n\n' + desc)) return;
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
-    CSM.post('/api/v1/fix', {check: check, message: message}).then(function(data) {
-        if (data.success) {
-            row.style.opacity = '0.3';
-            btn.innerHTML = '<i class="ti ti-check"></i> Fixed';
-            btn.className = 'btn btn-success btn-sm me-1';
-            setTimeout(function(){ location.reload(); }, 1500);
-        } else {
-            alert('Fix failed: ' + (data.error || 'unknown error'));
-            btn.disabled = false;
-            btn.innerHTML = '<i class="ti ti-tool"></i>&nbsp;Fix';
-        }
-    }).catch(function(e) {
-        alert('Error: ' + e);
-        btn.disabled = false;
-        btn.innerHTML = '<i class="ti ti-tool"></i>&nbsp;Fix';
+function getSelectedRows() {
+    return getVisibleRows().filter(function(r) {
+        var cb = r.querySelector('.row-checkbox');
+        return cb && cb.checked;
     });
 }
 
 function toggleSelectAll() {
     var checked = document.getElementById('select-all').checked;
-    document.querySelectorAll('.fix-checkbox').forEach(function(cb) { cb.checked = checked; });
-    updateFixCount();
+    getVisibleRows().forEach(function(r) {
+        var cb = r.querySelector('.row-checkbox');
+        if (cb) cb.checked = checked;
+    });
+    updateSelection();
 }
 
-function updateFixCount() {
-    var count = document.querySelectorAll('.fix-checkbox:checked').length;
-    var btn = document.getElementById('fix-selected-btn');
-    document.getElementById('fix-count').textContent = count;
-    btn.classList.toggle('d-none', count === 0);
+function updateSelection() {
+    var selected = getSelectedRows();
+    var count = selected.length;
+    document.getElementById('selected-count').textContent = count;
+    document.getElementById('bulk-actions').classList.toggle('d-none', count === 0);
+    // Show Fix button only if any selected row is fixable
+    var hasFixable = selected.some(function(r) { return r.getAttribute('data-hasFix') === 'true'; });
+    document.getElementById('bulk-fix-btn').classList.toggle('d-none', !hasFixable);
 }
 
-function fixSelected() {
-    var items = [];
-    document.querySelectorAll('.fix-checkbox:checked').forEach(function(cb) {
-        var row = cb.closest('tr');
-        items.push({
+// Reset select-all when filter changes
+document.getElementById('check-filter').addEventListener('change', function() {
+    document.getElementById('select-all').checked = false;
+    document.querySelectorAll('.row-checkbox').forEach(function(cb) { cb.checked = false; });
+    updateSelection();
+});
+
+// --- Single actions ---
+function fixOne(btn) {
+    var row = btn.closest('tr');
+    var desc = row.getAttribute('data-fixdesc');
+    if (!confirm('Apply fix?\n\n' + desc)) return;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+    CSM.post('/api/v1/fix', {
+        check: row.getAttribute('data-check'),
+        message: row.getAttribute('data-message')
+    }).then(function(data) {
+        if (data.success) {
+            row.style.opacity = '0.3';
+            btn.innerHTML = '<i class="ti ti-check"></i>';
+            btn.className = 'btn btn-success btn-sm me-1';
+            setTimeout(function() { location.reload(); }, 1000);
+        } else {
+            alert('Fix failed: ' + (data.error || 'unknown'));
+            btn.disabled = false;
+            btn.innerHTML = '<i class="ti ti-tool"></i>';
+        }
+    }).catch(function(e) { alert('Error: ' + e); btn.disabled = false; btn.innerHTML = '<i class="ti ti-tool"></i>'; });
+}
+
+function dismissOne(key) {
+    if (!confirm('Dismiss this finding?')) return;
+    CSM.post('/api/v1/dismiss', {key: key}).then(function() { location.reload(); }).catch(function(e) { alert('Error: ' + e); });
+}
+
+// --- Bulk actions ---
+function bulkAction(action) {
+    var selected = getSelectedRows();
+    if (selected.length === 0) return;
+
+    var items = selected.map(function(row) {
+        return {
             check: row.getAttribute('data-check'),
             message: row.getAttribute('data-message'),
-            details: ''
+            fixable: row.getAttribute('data-hasFix') === 'true'
+        };
+    });
+
+    if (action === 'fix') {
+        var fixable = items.filter(function(i) { return i.fixable; });
+        if (fixable.length === 0) { alert('None of the selected findings have automated fixes.'); return; }
+        if (!confirm('Fix ' + fixable.length + ' finding(s)?\n\nThis will apply automated fixes (chmod, quarantine, etc.) to the selected items.')) return;
+        var fixItems = fixable.map(function(i) { return { check: i.check, message: i.message, details: '' }; });
+        CSM.post('/api/v1/fix-bulk', fixItems).then(function(data) {
+            alert('Fixed ' + data.succeeded + ' of ' + data.total + (data.failed > 0 ? ' (' + data.failed + ' failed)' : ''));
+            location.reload();
+        }).catch(function(e) { alert('Error: ' + e); });
+
+    } else if (action === 'dismiss') {
+        if (!confirm('Dismiss ' + items.length + ' finding(s)?')) return;
+        var promises = items.map(function(i) {
+            return CSM.post('/api/v1/dismiss', { key: i.check + ':' + i.message });
         });
-    });
-    if (items.length === 0) return;
+        Promise.all(promises).then(function() { location.reload(); }).catch(function(e) { alert('Error: ' + e); });
 
-    var descriptions = items.map(function(item) { return item.check + ': ' + item.message.substring(0, 80); });
-    if (!confirm('Apply ' + items.length + ' fix(es)?\n\n' + descriptions.join('\n'))) return;
-
-    var btn = document.getElementById('fix-selected-btn');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>&nbsp;Fixing...';
-
-    CSM.post('/api/v1/fix-bulk', items).then(function(data) {
-        alert('Fixed ' + data.succeeded + ' of ' + data.total + ' findings' +
-              (data.failed > 0 ? ' (' + data.failed + ' failed)' : ''));
-        location.reload();
-    }).catch(function(e) {
-        alert('Error: ' + e);
-        btn.disabled = false;
-        btn.innerHTML = '<i class="ti ti-tool"></i>&nbsp;Fix Selected (<span id="fix-count">' + items.length + '</span>)';
-    });
+    } else if (action === 'quarantine') {
+        if (!confirm('Quarantine ' + items.length + ' file(s)?\n\nFiles will be moved to /opt/csm/quarantine/')) return;
+        var quarItems = items.map(function(i) { return { check: i.check, message: i.message, details: '' }; });
+        CSM.post('/api/v1/fix-bulk', quarItems).then(function(data) {
+            alert('Quarantined ' + data.succeeded + ' of ' + data.total);
+            location.reload();
+        }).catch(function(e) { alert('Error: ' + e); });
+    }
 }
 
+// --- Scan account ---
 document.getElementById('scan-form').addEventListener('submit', function(e) {
     e.preventDefault();
     var account = document.getElementById('scan-account').value.trim();
@@ -174,16 +224,66 @@ document.getElementById('scan-form').addEventListener('submit', function(e) {
         if (!data.count) { status.textContent = account + ' is clean (' + data.elapsed + ')'; status.className = 'text-success small'; return; }
         status.textContent = data.count + ' finding(s) in ' + data.elapsed; status.className = 'text-danger small';
         results.classList.remove('d-none');
+        var fixableChecks = {'world_writable_php':1,'group_writable_php':1,'webshell':1,'new_webshell_file':1,'obfuscated_php':1,'php_dropper':1,'suspicious_php_content':1,'new_php_in_languages':1,'new_php_in_upgrade':1,'phishing_page':1,'phishing_directory':1,'backdoor_binary':1,'new_executable_in_config':1};
         (data.findings||[]).forEach(function(f) {
             var sev = f.severity===2?'critical':f.severity===1?'high':'warning';
             var label = f.severity===2?'CRITICAL':f.severity===1?'HIGH':'WARNING';
             var tr = document.createElement('tr');
-            tr.innerHTML = '<td><span class="badge badge-'+sev+'">'+label+'</span></td><td><code>'+esc(f.check)+'</code></td><td>'+esc(f.message)+'</td>';
+            var actionHtml = '';
+            if (fixableChecks[f.check]) {
+                actionHtml = '<button class="btn btn-warning btn-sm scan-fix-btn" data-check="'+esc(f.check)+'" data-message="'+esc(f.message)+'"><i class="ti ti-tool"></i>&nbsp;Fix</button>';
+            }
+            tr.innerHTML = '<td><span class="badge badge-'+sev+'">'+label+'</span></td><td><code>'+esc(f.check)+'</code></td><td>'+esc(f.message)+'</td><td>'+actionHtml+'</td>';
             tbody.appendChild(tr);
+        });
+        // Bind fix buttons on scan results
+        document.querySelectorAll('.scan-fix-btn').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var check = this.getAttribute('data-check');
+                var message = this.getAttribute('data-message');
+                if (!confirm('Apply fix for ' + check + '?')) return;
+                this.disabled = true;
+                this.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+                var self = this;
+                CSM.post('/api/v1/fix', {check: check, message: message}).then(function(d) {
+                    if (d.success) { self.innerHTML = '<i class="ti ti-check"></i>'; self.className = 'btn btn-success btn-sm'; }
+                    else { alert('Failed: ' + (d.error||'')); self.disabled = false; self.innerHTML = '<i class="ti ti-tool"></i>&nbsp;Fix'; }
+                }).catch(function(e) { alert('Error: '+e); self.disabled=false; self.innerHTML='<i class="ti ti-tool"></i>&nbsp;Fix'; });
+            });
         });
     }).catch(function(e) { btn.disabled=false; btn.innerHTML='<i class="ti ti-radar-2"></i>&nbsp;Scan'; status.textContent='Error: '+e; status.className='text-danger small'; });
 });
 function esc(s){var d=document.createElement('div');d.appendChild(document.createTextNode(s||''));return d.innerHTML;}
+
+// Load account list for autocomplete dropdown
+fetch('/api/v1/accounts', {credentials:'same-origin'}).then(function(r){return r.json()}).then(function(accounts) {
+    var dl = document.getElementById('account-list');
+    (accounts||[]).forEach(function(a) {
+        var opt = document.createElement('option');
+        opt.value = a;
+        dl.appendChild(opt);
+    });
+}).catch(function(){});
+
+// Build action buttons from data attributes (avoids Go template escaping issues)
+document.querySelectorAll('.finding-row').forEach(function(row) {
+    var cell = row.querySelector('.action-cell');
+    if (!cell) return;
+    var hasFix = row.getAttribute('data-hasFix') === 'true';
+    var html = '';
+    if (hasFix) {
+        html += '<button class="btn btn-warning btn-sm me-1 fix-btn" title="' + esc(row.getAttribute('data-fixdesc') || '') + '"><i class="ti ti-tool"></i></button>';
+    }
+    html += '<button class="btn btn-ghost-secondary btn-sm dismiss-btn"><i class="ti ti-x"></i></button>';
+    cell.innerHTML = html;
+
+    var fixBtn = cell.querySelector('.fix-btn');
+    if (fixBtn) fixBtn.addEventListener('click', function() { fixOne(this); });
+    var dismissBtn = cell.querySelector('.dismiss-btn');
+    if (dismissBtn) dismissBtn.addEventListener('click', function() {
+        dismissOne(row.getAttribute('data-check') + ':' + row.getAttribute('data-message'));
+    });
+});
 </script>
 {{end}}
 {{template "layout" .}}

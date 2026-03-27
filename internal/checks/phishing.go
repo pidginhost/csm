@@ -798,7 +798,9 @@ func analyzePHPForPhishing(path string) *phishingResult {
 	content := string(buf[:n])
 	contentLower := strings.ToLower(content)
 
-	// PHP phishing indicators: credential handling code
+	// PHP phishing indicators: credential handling code.
+	// Only truly specific patterns belong here — generic functions like
+	// mail() and fwrite() are handled separately with context checks below.
 	phpPhishingPatterns := []string{
 		"$_post['email']",
 		"$_post['password']",
@@ -808,8 +810,6 @@ func analyzePHPForPhishing(path string) *phishingResult {
 		"$_post[\"pass\"]",
 		"$_request['email']",
 		"$_request['password']",
-		"mail(",   // emailing harvested creds
-		"fwrite(", // writing creds to log file
 	}
 
 	var indicators []string
@@ -883,15 +883,20 @@ func analyzePHPForPhishing(path string) *phishingResult {
 		}
 	}
 
-	// PHP-specific exfil: emailing credentials
-	if strings.Contains(contentLower, "mail(") &&
+	// PHP-specific exfil: emailing or writing harvested credentials.
+	// These only fire when the file also reads from $_POST/$_REQUEST,
+	// because a phishing kit must capture form data before exfiltrating it.
+	// Without this gate, any PHP file using fwrite()+config keywords triggers.
+	hasPostData := strings.Contains(contentLower, "$_post") || strings.Contains(contentLower, "$_request")
+
+	if hasPostData && strings.Contains(contentLower, "mail(") &&
 		(strings.Contains(contentLower, "password") || strings.Contains(contentLower, "email")) {
 		score += 2
 		indicators = append(indicators, "PHP mail() with credential data")
 	}
 
-	// PHP-specific: writing to result/log files
-	if strings.Contains(contentLower, "fwrite(") || strings.Contains(contentLower, "file_put_contents(") {
+	if hasPostData &&
+		(strings.Contains(contentLower, "fwrite(") || strings.Contains(contentLower, "file_put_contents(")) {
 		if strings.Contains(contentLower, "password") || strings.Contains(contentLower, "email") ||
 			strings.Contains(contentLower, "result") || strings.Contains(contentLower, "log") {
 			score += 2
