@@ -53,7 +53,6 @@ type blockState struct {
 }
 
 // AutoBlockIPs processes findings and blocks attacker IPs via the firewall engine.
-// Falls back to CSF if the engine is not available.
 // Note: this should be called with ALL findings (not just new ones)
 // for reputation-based blocking to work on repeat offenders.
 func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding {
@@ -72,8 +71,6 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		if time.Now().After(blocked.ExpiresAt) {
 			if fwBlocker != nil {
 				_ = fwBlocker.UnblockIP(blocked.IP)
-			} else {
-				_, _ = runCmd("csf", "-dr", blocked.IP)
 			}
 			fmt.Fprintf(os.Stderr, "[%s] AUTO-UNBLOCK: %s removed (expired)\n", time.Now().Format("2006-01-02 15:04:05"), blocked.IP)
 		} else {
@@ -164,18 +161,15 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			continue
 		}
 
-		// Block via firewall engine (nftables) or CSF fallback
+		// Block via firewall engine (nftables)
 		blockReason := fmt.Sprintf("CSM auto-block: %s", truncate(reason, 100))
-		if fwBlocker != nil {
-			if err := fwBlocker.BlockIP(ip, blockReason, expiry); err != nil {
-				fmt.Fprintf(os.Stderr, "auto-block: error blocking %s: %v\n", ip, err)
-				continue
-			}
-		} else {
-			out, err := runCmd("csf", "-d", ip, blockReason)
-			if err != nil && out == nil {
-				continue
-			}
+		if fwBlocker == nil {
+			fmt.Fprintf(os.Stderr, "auto-block: firewall engine not available, skipping %s\n", ip)
+			continue
+		}
+		if err := fwBlocker.BlockIP(ip, blockReason, expiry); err != nil {
+			fmt.Fprintf(os.Stderr, "auto-block: error blocking %s: %v\n", ip, err)
+			continue
 		}
 
 		state.BlocksThisHour++

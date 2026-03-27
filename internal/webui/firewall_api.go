@@ -305,10 +305,6 @@ func (s *Server) apiFirewallUnban(w http.ResponseWriter, r *http.Request) {
 	// 2. Flush from cphulk
 	_, _ = exec.Command("whmapi1", "flush_cphulk_login_history_for_ips", "ip="+req.IP).Output()
 
-	// 3. Remove from CSF too (if still running during transition)
-	_, _ = exec.Command("csf", "-dr", req.IP).Output()
-	_, _ = exec.Command("csf", "-tr", req.IP).Output()
-
 	writeJSON(w, map[string]interface{}{"success": true, "ip": req.IP})
 }
 
