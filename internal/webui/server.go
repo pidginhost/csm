@@ -84,7 +84,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	if _, err := os.Stat(templateDir); err == nil {
 		s.templates = make(map[string]*template.Template)
 		layoutPath := filepath.Join(templateDir, "layout.html")
-		for _, page := range []string{"dashboard", "findings", "history", "quarantine", "blocked", "firewall", "threat"} {
+		for _, page := range []string{"dashboard", "findings", "history", "quarantine", "firewall", "threat"} {
 			pagePath := filepath.Join(templateDir, page+".html")
 			t, err := template.New(page+".html").Funcs(funcMap).ParseFiles(layoutPath, pagePath)
 			if err != nil {
@@ -116,7 +116,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		mux.Handle("/findings", s.requireAuth(http.HandlerFunc(s.handleFindings)))
 		mux.Handle("/history", s.requireAuth(http.HandlerFunc(s.handleHistory)))
 		mux.Handle("/quarantine", s.requireAuth(http.HandlerFunc(s.handleQuarantine)))
-		mux.Handle("/blocked", s.requireAuth(http.HandlerFunc(s.handleBlocked)))
+		mux.Handle("/blocked", s.requireAuth(http.HandlerFunc(s.handleFirewall))) // redirect old URL
 		mux.Handle("/firewall", s.requireAuth(http.HandlerFunc(s.handleFirewall)))
 		mux.Handle("/threat", s.requireAuth(http.HandlerFunc(s.handleThreat)))
 	}

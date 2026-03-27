@@ -35,6 +35,21 @@
         <div id="subnet-content"><div class="card-body text-center text-muted py-3"><span class="spinner-border spinner-border-sm"></span></div></div>
     </div>
 
+    <!-- Blocked IPs -->
+    <div class="card mb-3">
+        <div class="card-header">
+            <h3 class="card-title"><i class="ti ti-shield-off"></i>&nbsp;Blocked IPs</h3>
+            <div class="card-actions">
+                <form id="block-form" class="d-flex gap-2">
+                    <input type="text" id="block-ip" class="form-control form-control-sm font-monospace" placeholder="IP address" style="width:160px">
+                    <input type="text" id="block-reason" class="form-control form-control-sm" placeholder="Reason" style="width:180px">
+                    <button type="submit" class="btn btn-danger btn-sm text-nowrap"><i class="ti ti-shield-off"></i>&nbsp;Block</button>
+                </form>
+            </div>
+        </div>
+        <div id="blocked-content"><div class="card-body text-center text-muted py-3"><span class="spinner-border spinner-border-sm"></span></div></div>
+    </div>
+
     <!-- Audit Log -->
     <div class="card">
         <div class="card-header"><h3 class="card-title"><i class="ti ti-history"></i>&nbsp;Audit Log</h3></div>
@@ -122,7 +137,37 @@ document.getElementById('subnet-form').addEventListener('submit',function(e){
     });
 });
 
-loadStatus();loadSubnets();loadAudit();
+function loadBlocked(){
+    fetch('/api/v1/blocked-ips',{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(ips){
+        var el=document.getElementById('blocked-content');
+        if(!ips||ips.length===0){el.innerHTML='<div class="card-body text-center text-muted py-3">No blocked IPs.</div>';return;}
+        var h='<div class="table-responsive"><table class="table table-vcenter card-table table-sm" id="blocked-table"><thead><tr><th>IP</th><th>Reason</th><th>Expires</th><th>Action</th></tr></thead><tbody>';
+        for(var i=0;i<ips.length;i++){
+            h+='<tr><td><code>'+esc(ips[i].ip)+'</code></td><td class="small">'+esc(ips[i].reason)+'</td><td class="small text-muted">'+esc(ips[i].expires_in)+'</td><td><button onclick="unblockIP(\''+esc(ips[i].ip)+'\')" class="btn btn-sm btn-ghost-success">Unblock</button></td></tr>';
+        }
+        h+='</tbody></table></div>';
+        el.innerHTML=h;
+        if(typeof CSM!=='undefined'&&CSM.Table) new CSM.Table({tableId:'blocked-table',perPage:25,sortable:true});
+    });
+}
+function unblockIP(ip){
+    if(!confirm('Unblock '+ip+'?'))return;
+    CSM.post('/api/v1/unblock-ip',{ip:ip}).then(function(){loadBlocked();loadStatus();loadAudit();});
+}
+document.getElementById('block-form').addEventListener('submit',function(e){
+    e.preventDefault();
+    var ip=document.getElementById('block-ip').value.trim();
+    var reason=document.getElementById('block-reason').value.trim()||'Blocked via CSM Web UI';
+    if(!ip)return;
+    if(!confirm('Block IP '+ip+'?'))return;
+    CSM.post('/api/v1/block-ip',{ip:ip,reason:reason}).then(function(){
+        document.getElementById('block-ip').value='';
+        document.getElementById('block-reason').value='';
+        loadBlocked();loadStatus();loadAudit();
+    });
+});
+
+loadStatus();loadSubnets();loadBlocked();loadAudit();
 </script>
 {{end}}
 {{template "layout" .}}

@@ -337,7 +337,7 @@ func (s *Server) apiAccounts(w http.ResponseWriter, _ *http.Request) {
 
 // --- Action endpoints ---
 
-// apiBlockIP blocks an IP via the firewall engine (or CSF fallback).
+// apiBlockIP blocks an IP via the firewall engine.
 // POST /api/v1/block-ip  body: {"ip": "1.2.3.4", "reason": "..."}
 func (s *Server) apiBlockIP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -365,23 +365,19 @@ func (s *Server) apiBlockIP(w http.ResponseWriter, r *http.Request) {
 		req.Reason = "Blocked via CSM Web UI"
 	}
 
-	if s.blocker != nil {
-		if err := s.blocker.BlockIP(req.IP, req.Reason, 0); err != nil {
-			writeJSONError(w, fmt.Sprintf("Block failed: %v", err), http.StatusInternalServerError)
-			return
-		}
-	} else {
-		out, err := exec.Command("csf", "-d", req.IP, req.Reason).CombinedOutput()
-		if err != nil {
-			writeJSONError(w, fmt.Sprintf("CSF block failed: %s", string(out)), http.StatusInternalServerError)
-			return
-		}
+	if s.blocker == nil {
+		writeJSONError(w, "Firewall engine not available", http.StatusServiceUnavailable)
+		return
+	}
+	if err := s.blocker.BlockIP(req.IP, req.Reason, 0); err != nil {
+		writeJSONError(w, fmt.Sprintf("Block failed: %v", err), http.StatusInternalServerError)
+		return
 	}
 
 	writeJSON(w, map[string]string{"status": "blocked", "ip": req.IP})
 }
 
-// apiUnblockIP removes an IP from the firewall (or CSF fallback).
+// apiUnblockIP removes an IP from the firewall + cphulk.
 // POST /api/v1/unblock-ip  body: {"ip": "1.2.3.4"}
 func (s *Server) apiUnblockIP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -402,17 +398,13 @@ func (s *Server) apiUnblockIP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.blocker != nil {
-		if err := s.blocker.UnblockIP(req.IP); err != nil {
-			writeJSONError(w, fmt.Sprintf("Unblock failed: %v", err), http.StatusInternalServerError)
-			return
-		}
-	} else {
-		out, err := exec.Command("csf", "-dr", req.IP).CombinedOutput()
-		if err != nil {
-			writeJSONError(w, fmt.Sprintf("CSF unblock failed: %s", string(out)), http.StatusInternalServerError)
-			return
-		}
+	if s.blocker == nil {
+		writeJSONError(w, "Firewall engine not available", http.StatusServiceUnavailable)
+		return
+	}
+	if err := s.blocker.UnblockIP(req.IP); err != nil {
+		writeJSONError(w, fmt.Sprintf("Unblock failed: %v", err), http.StatusInternalServerError)
+		return
 	}
 
 	// Also flush from cphulk (cPanel brute force detector)
