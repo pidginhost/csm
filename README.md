@@ -650,14 +650,14 @@ csm firewall migrate-from-csf [--apply] CSF migration (dry-run default)
 
 ### Web UI — Security Hardening
 - ~~Audit log of all UI actions (who blocked/unblocked/dismissed what)~~ Done: `ui_audit.jsonl` + `/api/v1/audit`
-- Move inline JavaScript to external files for strict CSP
-- CORS/origin validation on API endpoints
+- ~~Move inline JavaScript to external files for strict CSP~~ Done: all JS in `ui/static/js/`, CSP is `script-src 'self'`
+- ~~CORS/origin validation on API endpoints~~ Done: rejects cross-origin API requests, allows same-origin only
 
 ### Web UI — Features
 - ~~Date range picker on history page~~ Done: from/to date inputs with server-side filtering
 - ~~Bulk actions: dismiss multiple findings, restore multiple files, unblock multiple IPs~~ Done: bulk dismiss/fix on findings, bulk unblock on blocked IPs
+- ~~Rule management: view loaded YAML/YARA rules, trigger reload via UI~~ Done: `/rules` page with file list, stats, reload button
 - Account view page: per-account findings, quarantine, login history
-- Rule management: view loaded YAML/YARA rules, trigger reload via UI
 
 ### Web UI — UX
 - ~~Toast notifications instead of alert() dialogs~~ Done: `CSM.toast()` + `CSM.confirm()` modal

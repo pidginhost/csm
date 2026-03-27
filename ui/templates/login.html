@@ -27,10 +27,6 @@
             </div>
         </div>
     </div>
-    <script>
-    var saved = localStorage.getItem('csm-theme');
-    var theme = saved || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
-    document.body.className = (theme === 'light' ? 'theme-light' : 'theme-dark') + ' d-flex flex-column';
-    </script>
+    <script src="/static/js/login.js"></script>
 </body>
 </html>

@@ -38,11 +38,7 @@
         th[style*="cursor"] { user-select: none; }
         html, body, .page { overflow-x: hidden; max-width: 100vw; }
     </style>
-    <script>
-    var __theme = localStorage.getItem('csm-theme') || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
-    document.documentElement.setAttribute('data-bs-theme', __theme);
-    document.documentElement.className = __theme === 'light' ? 'theme-light' : 'theme-dark';
-    </script>
+    <script src="/static/js/theme-init.js"></script>
 </head>
 <body class="layout-fluid">
     <div class="page">
@@ -52,7 +48,7 @@
                     <span class="text-primary">CSM</span>&nbsp;Security Monitor
                 </h1>
                 <div class="navbar-nav flex-row order-md-last gap-2">
-                    <button id="theme-toggle" class="btn btn-ghost-secondary btn-sm" onclick="toggleTheme()" title="Toggle dark/light mode">
+                    <button id="theme-toggle" class="btn btn-ghost-secondary btn-sm" title="Toggle dark/light mode">
                         <i class="ti ti-sun-moon"></i>
                     </button>
                     <a href="/logout" class="btn btn-ghost-secondary btn-sm">
@@ -67,6 +63,7 @@
                         <li class="nav-item"><a class="nav-link" href="/quarantine"><i class="ti ti-lock"></i>&nbsp;Quarantine</a></li>
                         <li class="nav-item"><a class="nav-link" href="/firewall"><i class="ti ti-firewall"></i>&nbsp;Firewall</a></li>
                         <li class="nav-item"><a class="nav-link" href="/threat"><i class="ti ti-spy"></i>&nbsp;Threat Intel</a></li>
+                        <li class="nav-item"><a class="nav-link" href="/rules"><i class="ti ti-file-code"></i>&nbsp;Rules</a></li>
                     </ul>
                 </div>
             </div>
@@ -100,23 +97,7 @@
     <script src="/static/js/toast.js"></script>
     <script src="/static/js/csrf.js"></script>
     <script src="/static/js/table.js"></script>
-    <script>
-    document.querySelectorAll('#csm-nav a.nav-link').forEach(function(a){if(a.getAttribute('href')===window.location.pathname)a.classList.add('active')});
-    function applyTheme(t) {
-        document.documentElement.setAttribute('data-bs-theme', t);
-        document.documentElement.classList.remove('theme-dark', 'theme-light');
-        document.documentElement.classList.add(t === 'light' ? 'theme-light' : 'theme-dark');
-        var icon = document.querySelector('#theme-toggle i');
-        if (icon) icon.className = t === 'light' ? 'ti ti-moon' : 'ti ti-sun';
-    }
-    function toggleTheme() {
-        var current = document.documentElement.getAttribute('data-bs-theme') || 'dark';
-        var next = current === 'dark' ? 'light' : 'dark';
-        applyTheme(next);
-        localStorage.setItem('csm-theme', next);
-    }
-    applyTheme(__theme);
-    </script>
+    <script src="/static/js/layout.js"></script>
     {{template "scripts" .}}
 </body>
 </html>

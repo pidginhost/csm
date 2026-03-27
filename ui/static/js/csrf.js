@@ -14,3 +14,10 @@ CSM.post = function(url, body) {
         body: JSON.stringify(body)
     }).then(function(r) { return r.json(); });
 };
+
+// Shared HTML-escape helper used across all pages
+CSM.esc = function(s) {
+    var d = document.createElement('div');
+    d.appendChild(document.createTextNode(s || ''));
+    return d.innerHTML;
+};
