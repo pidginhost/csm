@@ -924,7 +924,10 @@ func fwApplyConfirmed() {
 	rollbackCmd := exec.Command("bash", "-c", fmt.Sprintf(
 		"sleep %d && if [ -f %s ]; then bash %s; fi",
 		minutes*60, confirmFile, rollbackFile))
-	rollbackCmd.Start()
+	if err := rollbackCmd.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not start rollback timer: %v\n", err)
+		fmt.Fprintf(os.Stderr, "You MUST manually rollback if connectivity is lost.\n")
+	}
 
 	state, _ := firewall.LoadState(cfg.StatePath)
 	fmt.Printf("Firewall applied. %d blocked, %d allowed IPs restored.\n",
