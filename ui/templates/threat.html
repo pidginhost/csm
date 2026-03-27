@@ -1,0 +1,234 @@
+{{define "title"}}Threat Intelligence{{end}}
+{{define "page"}}threat{{end}}
+{{define "content"}}
+    <!-- Stats Cards -->
+    <div class="row row-deck row-cards mb-3">
+        <div class="col-sm-6 col-lg-3"><div class="card"><div class="card-body"><div class="subheader">Tracked IPs</div><div class="h1 mb-0" id="stat-total-ips">—</div></div></div></div>
+        <div class="col-sm-6 col-lg-3"><div class="card"><div class="card-body"><div class="subheader">Events (24h)</div><div class="h1 mb-0" id="stat-24h">—</div></div></div></div>
+        <div class="col-sm-6 col-lg-3"><div class="card"><div class="card-body"><div class="subheader">Events (7d)</div><div class="h1 mb-0" id="stat-7d">—</div></div></div></div>
+        <div class="col-sm-6 col-lg-3"><div class="card"><div class="card-body"><div class="subheader">Auto-blocked</div><div class="h1 mb-0" id="stat-blocked">—</div></div></div></div>
+    </div>
+
+    <!-- Attack Type Breakdown -->
+    <div class="row row-deck row-cards mb-3">
+        <div class="col-lg-6">
+            <div class="card">
+                <div class="card-header"><h3 class="card-title"><i class="ti ti-chart-bar"></i>&nbsp;Attack Types</h3></div>
+                <div class="card-body">
+                    <div id="chart-types" style="min-height:200px"></div>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-6">
+            <div class="card">
+                <div class="card-header"><h3 class="card-title"><i class="ti ti-chart-line"></i>&nbsp;Attack Trend (24h)</h3></div>
+                <div class="card-body">
+                    <div id="chart-hourly" style="min-height:200px"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- IP Lookup -->
+    <div class="card mb-3">
+        <div class="card-header"><h3 class="card-title"><i class="ti ti-search"></i>&nbsp;IP Lookup</h3></div>
+        <div class="card-body">
+            <form id="lookup-form" class="row g-2 align-items-end">
+                <div class="col-auto">
+                    <input type="text" id="lookup-ip" class="form-control form-control-sm font-monospace" placeholder="1.2.3.4" style="width:200px">
+                </div>
+                <div class="col-auto">
+                    <button type="submit" class="btn btn-primary btn-sm"><i class="ti ti-search"></i>&nbsp;Lookup</button>
+                </div>
+                <div class="col-auto"><span id="lookup-status" class="text-muted small"></span></div>
+            </form>
+            <div id="lookup-result" class="mt-3 d-none"></div>
+        </div>
+    </div>
+
+    <!-- Top Attackers -->
+    <div class="card">
+        <div class="card-header"><h3 class="card-title"><i class="ti ti-skull"></i>&nbsp;Top Attackers</h3></div>
+        <div class="table-responsive">
+            <table class="table table-vcenter card-table table-sm" id="attackers-table">
+                <thead>
+                    <tr>
+                        <th>IP</th>
+                        <th>Score</th>
+                        <th>Events</th>
+                        <th>Attack Types</th>
+                        <th>Accounts</th>
+                        <th>First Seen</th>
+                        <th>Last Seen</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody id="attackers-tbody"></tbody>
+            </table>
+        </div>
+    </div>
+{{end}}
+{{define "scripts"}}
+<script>
+function esc(s){var d=document.createElement('div');d.appendChild(document.createTextNode(s||''));return d.innerHTML;}
+function fmtDate(s){if(!s)return '—';var d=new Date(s);return d.toISOString().substring(0,16).replace('T',' ');}
+
+function verdictBadge(v,score){
+    var cls = v==='blocked'?'bg-secondary':v==='malicious'?'bg-danger':v==='suspicious'?'bg-warning':'bg-success';
+    return '<span class="badge '+cls+'">'+score+'/100</span>';
+}
+
+function typeBadges(counts){
+    if(!counts)return '—';
+    var html='';
+    var order=['brute_force','webshell','phishing','c2','waf_block','spam','cpanel_login','file_upload','recon','other'];
+    var colors={brute_force:'blue',webshell:'red',phishing:'orange',c2:'purple',waf_block:'cyan',spam:'yellow',cpanel_login:'teal',file_upload:'pink',recon:'lime',other:'secondary'};
+    for(var i=0;i<order.length;i++){
+        var t=order[i];
+        if(counts[t]&&counts[t]>0){
+            html+='<span class="badge bg-'+( colors[t]||'secondary')+'-lt me-1">'+t.replace('_',' ')+': '+counts[t]+'</span>';
+        }
+    }
+    return html||'—';
+}
+
+// Load stats
+fetch('/api/v1/threat/stats',{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(data){
+    document.getElementById('stat-total-ips').textContent=data.total_ips||0;
+    document.getElementById('stat-24h').textContent=data.last_24h_events||0;
+    document.getElementById('stat-7d').textContent=data.last_7d_events||0;
+    document.getElementById('stat-blocked').textContent=data.blocked_ips||0;
+
+    // Attack types chart (horizontal bars using inline SVG)
+    var typesDiv=document.getElementById('chart-types');
+    var byType=data.by_type||{};
+    var types=Object.keys(byType).sort(function(a,b){return byType[b]-byType[a]});
+    if(types.length===0){typesDiv.innerHTML='<p class="text-muted">No attack data yet</p>';return;}
+    var maxVal=byType[types[0]]||1;
+    var html='<table class="table table-sm mb-0">';
+    for(var i=0;i<types.length;i++){
+        var t=types[i], v=byType[t];
+        var pct=Math.round(v/maxVal*100);
+        html+='<tr><td style="width:120px" class="text-nowrap small">'+esc(t.replace(/_/g,' '))+'</td>';
+        html+='<td><div class="progress progress-sm"><div class="progress-bar bg-primary" style="width:'+pct+'%"></div></div></td>';
+        html+='<td style="width:50px" class="text-end small font-monospace">'+v+'</td></tr>';
+    }
+    html+='</table>';
+    typesDiv.innerHTML=html;
+
+    // Hourly chart (simple SVG bars)
+    var hourlyDiv=document.getElementById('chart-hourly');
+    var buckets=data.hourly_buckets||[];
+    if(buckets.length===0){hourlyDiv.innerHTML='<p class="text-muted">No recent data</p>';return;}
+    var maxH=Math.max.apply(null,buckets)||1;
+    var svgW=hourlyDiv.offsetWidth||500,svgH=180,barW=Math.floor((svgW-20)/24),pad=2;
+    var svg='<svg width="'+svgW+'" height="'+svgH+'" style="display:block">';
+    for(var h=0;h<24;h++){
+        var barH=Math.round(buckets[h]/maxH*(svgH-30));
+        var x=10+h*barW;
+        var y=svgH-25-barH;
+        svg+='<rect x="'+x+'" y="'+y+'" width="'+(barW-pad)+'" height="'+barH+'" fill="var(--tblr-primary)" rx="2">';
+        svg+='<title>'+(24-h)+'h ago: '+buckets[h]+' events</title></rect>';
+    }
+    svg+='<text x="10" y="'+(svgH-5)+'" font-size="11" fill="var(--tblr-muted)">24h ago</text>';
+    svg+='<text x="'+(svgW-40)+'" y="'+(svgH-5)+'" font-size="11" fill="var(--tblr-muted)">Now</text>';
+    svg+='</svg>';
+    hourlyDiv.innerHTML=svg;
+}).catch(function(e){console.error('threat stats:',e)});
+
+// Load top attackers
+fetch('/api/v1/threat/top-attackers?limit=50',{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(data){
+    var tbody=document.getElementById('attackers-tbody');
+    if(!data||data.length===0){tbody.innerHTML='<tr><td colspan="8" class="text-center text-muted">No attack data recorded yet</td></tr>';return;}
+    var html='';
+    for(var i=0;i<data.length;i++){
+        var r=data[i];
+        var statusBadge=r.currently_blocked?'<span class="badge bg-secondary">Blocked</span>':
+                        r.in_threat_db?'<span class="badge bg-danger-lt">Threat DB</span>':'';
+        html+='<tr class="ip-row" style="cursor:pointer" data-ip="'+esc(r.ip)+'">';
+        html+='<td><code class="font-monospace">'+esc(r.ip)+'</code></td>';
+        html+='<td>'+verdictBadge(r.verdict,r.unified_score)+'</td>';
+        html+='<td>'+r.event_count+'</td>';
+        html+='<td>'+typeBadges(r.attack_counts)+'</td>';
+        html+='<td>'+(r.accounts?Object.keys(r.accounts).length:0)+'</td>';
+        html+='<td class="text-nowrap small">'+fmtDate(r.first_seen)+'</td>';
+        html+='<td class="text-nowrap small">'+fmtDate(r.last_seen)+'</td>';
+        html+='<td>'+statusBadge+'</td>';
+        html+='</tr>';
+    }
+    tbody.innerHTML=html;
+    // Click row to lookup
+    document.querySelectorAll('.ip-row').forEach(function(row){
+        row.addEventListener('click',function(){
+            document.getElementById('lookup-ip').value=this.getAttribute('data-ip');
+            document.getElementById('lookup-form').dispatchEvent(new Event('submit'));
+        });
+    });
+}).catch(function(e){console.error('top attackers:',e)});
+
+// IP Lookup
+document.getElementById('lookup-form').addEventListener('submit',function(e){
+    e.preventDefault();
+    var ip=document.getElementById('lookup-ip').value.trim();
+    if(!ip)return;
+    var status=document.getElementById('lookup-status');
+    var result=document.getElementById('lookup-result');
+    status.textContent='Looking up...';status.className='text-muted small';
+    result.classList.add('d-none');
+
+    Promise.all([
+        fetch('/api/v1/threat/ip?ip='+encodeURIComponent(ip),{credentials:'same-origin'}).then(function(r){return r.json()}),
+        fetch('/api/v1/threat/events?ip='+encodeURIComponent(ip)+'&limit=20',{credentials:'same-origin'}).then(function(r){return r.json()})
+    ]).then(function(results){
+        var intel=results[0], events=results[1];
+        if(intel.error){status.textContent=intel.error;status.className='text-danger small';return;}
+        status.textContent='';
+        result.classList.remove('d-none');
+
+        var html='<div class="row mb-3">';
+        // Score card
+        html+='<div class="col-md-3"><div class="card"><div class="card-body text-center">';
+        html+='<div class="subheader">Unified Score</div>';
+        html+='<div class="h1 mb-1">'+verdictBadge(intel.verdict,intel.unified_score)+'</div>';
+        html+='<div class="text-muted small">'+esc(intel.verdict)+'</div>';
+        html+='</div></div></div>';
+        // Details
+        html+='<div class="col-md-9"><div class="card"><div class="card-body"><table class="table table-sm mb-0">';
+        html+='<tr><td class="text-muted" style="width:160px">Local Score</td><td>'+intel.local_score+'/100</td></tr>';
+        html+='<tr><td class="text-muted">AbuseIPDB Score</td><td>'+(intel.abuse_score>=0?intel.abuse_score+'/100':'Not cached')+'</td></tr>';
+        if(intel.abuse_category)html+='<tr><td class="text-muted">AbuseIPDB Category</td><td>'+esc(intel.abuse_category)+'</td></tr>';
+        html+='<tr><td class="text-muted">In Threat DB</td><td>'+(intel.in_threat_db?'<span class="badge bg-danger">Yes</span> ('+esc(intel.threat_db_source)+')':'No')+'</td></tr>';
+        html+='<tr><td class="text-muted">Currently Blocked</td><td>'+(intel.currently_blocked?'<span class="badge bg-secondary">Yes</span>':'No')+'</td></tr>';
+        if(intel.attack_record){
+            var rec=intel.attack_record;
+            html+='<tr><td class="text-muted">Events</td><td>'+rec.event_count+'</td></tr>';
+            html+='<tr><td class="text-muted">Attack Types</td><td>'+typeBadges(rec.attack_counts)+'</td></tr>';
+            html+='<tr><td class="text-muted">Accounts Targeted</td><td>'+(rec.accounts?Object.keys(rec.accounts).join(', '):'—')+'</td></tr>';
+            html+='<tr><td class="text-muted">First Seen</td><td>'+fmtDate(rec.first_seen)+'</td></tr>';
+            html+='<tr><td class="text-muted">Last Seen</td><td>'+fmtDate(rec.last_seen)+'</td></tr>';
+        }
+        html+='</table></div></div></div>';
+        html+='</div>';
+
+        // Events timeline
+        if(events&&events.length>0){
+            html+='<div class="card mt-2"><div class="card-header"><h3 class="card-title">Recent Events</h3></div>';
+            html+='<div class="table-responsive"><table class="table table-sm table-vcenter card-table">';
+            html+='<thead><tr><th>Time</th><th>Type</th><th>Check</th><th>Account</th><th>Message</th></tr></thead><tbody>';
+            for(var i=0;i<events.length;i++){
+                var ev=events[i];
+                html+='<tr><td class="text-nowrap small">'+fmtDate(ev.ts)+'</td>';
+                html+='<td><span class="badge bg-azure-lt">'+esc((ev.type||'').replace(/_/g,' '))+'</span></td>';
+                html+='<td><code class="small">'+esc(ev.check)+'</code></td>';
+                html+='<td>'+esc(ev.account||'—')+'</td>';
+                html+='<td class="small">'+esc(ev.msg||'')+'</td></tr>';
+            }
+            html+='</tbody></table></div></div>';
+        }
+
+        result.innerHTML=html;
+    }).catch(function(e){status.textContent='Error: '+e;status.className='text-danger small'});
+});
+</script>
+{{end}}
+{{template "layout" .}}

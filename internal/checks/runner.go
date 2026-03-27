@@ -67,6 +67,7 @@ func criticalChecks() []namedCheck {
 		{"webmail_logins", CheckWebmailLogins},
 		{"api_auth_failures", CheckAPIAuthFailures},
 		{"ip_reputation", CheckIPReputation},
+		{"local_threat_score", CheckLocalThreatScore},
 		{"modsec_audit", CheckModSecAuditLog},
 		{"health", CheckHealth},
 	}

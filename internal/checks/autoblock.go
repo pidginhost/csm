@@ -85,6 +85,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		"ssh_login_realtime":   true,
 		"c2_connection":        true,
 		"ip_reputation":        true,
+		"local_threat_score":   true,
 	}
 
 	// Only blockable when block_cpanel_logins is enabled (disabled by default)
@@ -274,6 +275,11 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	saveBlockState(cfg.StatePath, state)
 
 	return actions
+}
+
+// ExtractIPFromFinding extracts an IP address from a finding message.
+func ExtractIPFromFinding(f alert.Finding) string {
+	return extractIPFromFinding(f)
 }
 
 func extractIPFromFinding(f alert.Finding) string {

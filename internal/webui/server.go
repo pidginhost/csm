@@ -83,7 +83,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	if _, err := os.Stat(templateDir); err == nil {
 		s.templates = make(map[string]*template.Template)
 		layoutPath := filepath.Join(templateDir, "layout.html")
-		for _, page := range []string{"dashboard", "findings", "history", "quarantine", "blocked", "firewall"} {
+		for _, page := range []string{"dashboard", "findings", "history", "quarantine", "blocked", "firewall", "threat"} {
 			pagePath := filepath.Join(templateDir, page+".html")
 			t, err := template.New(page+".html").Funcs(funcMap).ParseFiles(layoutPath, pagePath)
 			if err != nil {
@@ -117,6 +117,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		mux.Handle("/quarantine", s.requireAuth(http.HandlerFunc(s.handleQuarantine)))
 		mux.Handle("/blocked", s.requireAuth(http.HandlerFunc(s.handleBlocked)))
 		mux.Handle("/firewall", s.requireAuth(http.HandlerFunc(s.handleFirewall)))
+		mux.Handle("/threat", s.requireAuth(http.HandlerFunc(s.handleThreat)))
 	}
 
 	// Auth-protected API — read
@@ -129,6 +130,13 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/health", s.requireAuth(http.HandlerFunc(s.apiHealth)))
 	mux.Handle("/api/v1/accounts", s.requireAuth(http.HandlerFunc(s.apiAccounts)))
 	mux.Handle("/api/v1/history/csv", s.requireAuth(http.HandlerFunc(s.apiHistoryCSV)))
+
+	// Threat Intelligence API
+	mux.Handle("/api/v1/threat/stats", s.requireAuth(http.HandlerFunc(s.apiThreatStats)))
+	mux.Handle("/api/v1/threat/top-attackers", s.requireAuth(http.HandlerFunc(s.apiThreatTopAttackers)))
+	mux.Handle("/api/v1/threat/ip", s.requireAuth(http.HandlerFunc(s.apiThreatIP)))
+	mux.Handle("/api/v1/threat/events", s.requireAuth(http.HandlerFunc(s.apiThreatEvents)))
+	mux.Handle("/api/v1/threat/db-stats", s.requireAuth(http.HandlerFunc(s.apiThreatDBStats)))
 
 	// Firewall API
 	mux.Handle("/api/v1/firewall/status", s.requireAuth(http.HandlerFunc(s.apiFirewallStatus)))
