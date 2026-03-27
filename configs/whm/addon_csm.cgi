@@ -116,6 +116,26 @@ HTML
     exit;
 }
 
+# For HTML responses: strip outer <html>/<head>/<body> so CSM renders
+# cleanly inside WHM's own page frame (avoids nested documents).
+if ($ct =~ /text\/html/) {
+    # Extract <head> content (styles, scripts, meta) and <body> content
+    my $head_content = '';
+    if ($body =~ m{<head[^>]*>(.*?)</head>}si) {
+        $head_content = $1;
+        # Remove <title> and <meta charset> — WHM provides those
+        $head_content =~ s{<title>.*?</title>}{}si;
+        $head_content =~ s{<meta\s+charset[^>]*>}{}gi;
+        $head_content =~ s{<meta\s+name="viewport"[^>]*>}{}gi;
+    }
+    my $body_content = $body;
+    if ($body =~ m{<body[^>]*>(.*)</body>}si) {
+        $body_content = $1;
+    }
+    # Reconstruct: head content (CSS/scripts) + body content
+    $body = $head_content . "\n" . $body_content;
+}
+
 # Rewrite URLs in HTML to route through CGI proxy
 if ($ct =~ /text\/html/) {
     # Nav links and form actions

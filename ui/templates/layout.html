@@ -17,8 +17,6 @@
         .theme-dark .table thead th { background-color: #1a2234; border-color: #2d3a4e; }
         .theme-dark .table td { border-color: #2d3a4e; }
         .theme-dark .navbar { background-color: #1a2234 !important; border-color: #2d3a4e; }
-        /* Stretch navbar to full viewport width regardless of parent padding (WHM frame) */
-        .navbar { width: 100vw; position: relative; left: 50%; right: 50%; margin-left: -50vw; margin-right: -50vw; padding-left: 16px; padding-right: 16px; box-sizing: border-box; }
         .theme-dark .footer { border-color: #2d3a4e; }
         .theme-dark .form-control, .theme-dark .form-select { background-color: #1a2234; border-color: #2d3a4e; color: #c8d3e0; }
         .theme-dark .list-group-item { background-color: #1e293b; border-color: #2d3a4e; color: #c8d3e0; }
@@ -39,16 +37,15 @@
         th[style*="cursor"] { user-select: none; }
     </style>
     <script>
-    // Theme detection — runs before body renders to prevent flash
     var __theme = localStorage.getItem('csm-theme') || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
     document.documentElement.setAttribute('data-bs-theme', __theme);
     document.documentElement.className = __theme === 'light' ? 'theme-light' : 'theme-dark';
     </script>
 </head>
-<body>
+<body class="layout-fluid">
     <div class="page">
         <header class="navbar navbar-expand-md d-print-none" data-bs-theme="dark">
-            <div class="container-fluid">
+            <div class="container-xl">
                 <h1 class="navbar-brand navbar-brand-autodark d-none-navbar-btn">
                     <span class="text-primary">CSM</span>&nbsp;Security Monitor
                 </h1>
@@ -74,12 +71,12 @@
         </header>
         <div class="page-wrapper">
             <div class="page-body">
-                <div class="container-fluid">
+                <div class="container-xl">
                     {{template "content" .}}
                 </div>
             </div>
             <footer class="footer footer-transparent d-print-none">
-                <div class="container-fluid">
+                <div class="container-xl">
                     <div class="text-muted text-center">CSM — cPanel Security Monitor</div>
                 </div>
             </footer>
@@ -89,17 +86,11 @@
     <script src="/static/js/csrf.js"></script>
     <script src="/static/js/table.js"></script>
     <script>
-    // Active nav link
     document.querySelectorAll('#csm-nav a.nav-link').forEach(function(a){if(a.getAttribute('href')===window.location.pathname)a.classList.add('active')});
-    // Theme: apply saved preference and set up toggle
     function applyTheme(t) {
         document.documentElement.setAttribute('data-bs-theme', t);
         document.documentElement.classList.remove('theme-dark', 'theme-light');
         document.documentElement.classList.add(t === 'light' ? 'theme-light' : 'theme-dark');
-        // Update navbar theme
-        var nav = document.querySelector('[data-bs-theme]');
-        if (nav) nav.setAttribute('data-bs-theme', t);
-        // Update toggle icon
         var icon = document.querySelector('#theme-toggle i');
         if (icon) icon.className = t === 'light' ? 'ti ti-moon' : 'ti ti-sun';
     }
@@ -109,7 +100,6 @@
         applyTheme(next);
         localStorage.setItem('csm-theme', next);
     }
-    // Apply on load
     applyTheme(__theme);
     </script>
     {{template "scripts" .}}
