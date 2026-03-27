@@ -134,6 +134,45 @@ func (db *ThreatDB) AddPermanent(ip, reason string) {
 	fmt.Fprintf(f, "%s # %s [%s]\n", ip, reason, time.Now().Format("2006-01-02"))
 }
 
+// RemovePermanent removes an IP from the permanent blocklist and in-memory DB.
+func (db *ThreatDB) RemovePermanent(ip string) {
+	db.mu.Lock()
+	delete(db.badIPs, ip)
+	db.mu.Unlock()
+
+	// Rewrite permanent.txt without this IP
+	path := filepath.Join(db.dbPath, "permanent.txt")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var kept []string
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			kept = append(kept, line)
+			continue
+		}
+		fields := strings.Fields(trimmed)
+		if len(fields) > 0 && fields[0] == ip {
+			continue // skip this IP
+		}
+		kept = append(kept, line)
+	}
+	tmpPath := path + ".tmp"
+	_ = os.WriteFile(tmpPath, []byte(strings.Join(kept, "\n")+"\n"), 0600)
+	_ = os.Rename(tmpPath, path)
+}
+
+// AddWhitelist adds an IP to the runtime whitelist (never flag as malicious).
+func (db *ThreatDB) AddWhitelist(ip string) {
+	db.mu.Lock()
+	db.whitelist[ip] = true
+	// Also remove from badIPs if present
+	delete(db.badIPs, ip)
+	db.mu.Unlock()
+}
+
 // Count returns the total number of entries in the database.
 func (db *ThreatDB) Count() int {
 	db.mu.RLock()
