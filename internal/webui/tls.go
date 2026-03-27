@@ -30,11 +30,17 @@ func EnsureTLSCert(certPath, keyPath string, extraNames ...string) error {
 
 	serial, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 
+	// Use first extra name (hostname) as CN, fall back to localhost
+	cn := "localhost"
+	if len(extraNames) > 0 && extraNames[0] != "" {
+		cn = extraNames[0]
+	}
+
 	template := &x509.Certificate{
 		SerialNumber: serial,
 		Subject: pkix.Name{
 			Organization: []string{"CSM Security Monitor"},
-			CommonName:   "localhost",
+			CommonName:   cn,
 		},
 		NotBefore:             time.Now(),
 		NotAfter:              time.Now().Add(365 * 24 * time.Hour),
