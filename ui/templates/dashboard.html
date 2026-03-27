@@ -90,7 +90,7 @@
         var bars = [{{range $i, $bar := .TimelineBars}}{{if $i}},{{end}}{h:"{{$bar.Hour}}",c:{{$bar.Critical}},hi:{{$bar.High}},w:{{$bar.Warning}},t:{{$bar.Total}}}{{end}}];
 
         var container = document.getElementById('timeline-chart');
-        var vW = 800, vH = 160;
+        var vW = 1400, vH = 160;
         var padL = 38, padR = 8, padT = 8, padB = 22;
         var chartW = vW - padL - padR;
         var chartH = vH - padT - padB;
