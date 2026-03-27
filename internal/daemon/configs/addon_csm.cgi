@@ -36,7 +36,7 @@ if (!$path || $path eq '/') {
 }
 
 # Sanitize path
-if ($path !~ m{^/(?:api/|static/|dashboard|findings|history|quarantine|blocked|firewall|login|ws/)}) {
+if ($path !~ m{^/(?:api/|static/|dashboard|findings|history|quarantine|blocked|firewall|threat|login|ws/)}) {
     $path = '/dashboard';
 }
 
@@ -139,7 +139,7 @@ if ($ct =~ /text\/html/) {
 # Rewrite URLs in HTML to route through CGI proxy
 if ($ct =~ /text\/html/) {
     # Nav links and form actions
-    $body =~ s{(href|action)="(/(?:dashboard|findings|history|quarantine|blocked|firewall|login)[^"]*)"}{$1="addon_csm.cgi?path=$2"}g;
+    $body =~ s{(href|action)="(/(?:dashboard|findings|history|quarantine|blocked|firewall|threat|login)[^"]*)"}{$1="addon_csm.cgi?path=$2"}g;
     # Static assets (CSS, JS, images)
     $body =~ s{(href|src)="/static/([^"]+)"}{$1="addon_csm.cgi?path=/static/$2"}g;
     # Login form
