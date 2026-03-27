@@ -213,12 +213,12 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 }
 
 // AutoFixPermissions sets world/group-writable PHP files to 0644.
-func AutoFixPermissions(cfg *config.Config, findings []alert.Finding) []alert.Finding {
+// Returns the auto-response action findings and the keys of original findings
+// that were successfully fixed (so the caller can dismiss them from the UI).
+func AutoFixPermissions(cfg *config.Config, findings []alert.Finding) (actions []alert.Finding, fixedKeys []string) {
 	if !cfg.AutoResponse.Enabled || !cfg.AutoResponse.EnforcePermissions {
-		return nil
+		return nil, nil
 	}
-
-	var actions []alert.Finding
 
 	for _, f := range findings {
 		switch f.Check {
@@ -253,9 +253,10 @@ func AutoFixPermissions(cfg *config.Config, findings []alert.Finding) []alert.Fi
 			Message:   fmt.Sprintf("AUTO-FIX: %s permissions set to 644 (was %o)", path, oldMode),
 			Timestamp: time.Now(),
 		})
+		fixedKeys = append(fixedKeys, f.Check+":"+f.Message)
 	}
 
-	return actions
+	return actions, fixedKeys
 }
 
 func extractPID(details string) string {

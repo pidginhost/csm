@@ -119,9 +119,34 @@ func (d *Daemon) Run() error {
 		initialFindings := checks.RunTier(d.cfg, d.store, checks.TierAll)
 		d.store.AppendHistory(initialFindings)
 		newFindings := d.store.FilterNew(initialFindings)
+
+		// Auto-response on initial scan (same as periodic scans)
 		if len(newFindings) > 0 {
+			killActions := checks.AutoKillProcesses(d.cfg, newFindings)
+			quarantineActions := checks.AutoQuarantineFiles(d.cfg, newFindings)
+			permActions, permFixedKeys := checks.AutoFixPermissions(d.cfg, newFindings)
+			blockActions := checks.AutoBlockIPs(d.cfg, initialFindings)
+			newFindings = append(newFindings, killActions...)
+			newFindings = append(newFindings, quarantineActions...)
+			newFindings = append(newFindings, permActions...)
+			newFindings = append(newFindings, blockActions...)
 			_ = alert.Dispatch(d.cfg, newFindings)
+
+			// Remove auto-fixed findings before storing to UI
+			fixedSet := make(map[string]bool, len(permFixedKeys))
+			for _, k := range permFixedKeys {
+				fixedSet[k] = true
+			}
+			var filtered []alert.Finding
+			for _, f := range initialFindings {
+				key := f.Check + ":" + f.Message
+				if !fixedSet[key] {
+					filtered = append(filtered, f)
+				}
+			}
+			initialFindings = filtered
 		}
+
 		d.store.Update(initialFindings)
 		d.store.SetLatestFindings(initialFindings)
 		fmt.Fprintf(os.Stderr, "[%s] Initial scan complete: %d findings (%d new)\n", ts(), len(initialFindings), len(newFindings))
@@ -242,13 +267,19 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// Auto-response (kill, quarantine, fix perms on new findings only)
 	killActions := checks.AutoKillProcesses(d.cfg, newFindings)
 	quarantineActions := checks.AutoQuarantineFiles(d.cfg, newFindings)
-	permActions := checks.AutoFixPermissions(d.cfg, newFindings)
+	permActions, permFixedKeys := checks.AutoFixPermissions(d.cfg, newFindings)
 	// Auto-block uses ALL findings — reputation IPs must be blocked even if previously seen
 	blockActions := checks.AutoBlockIPs(d.cfg, findings)
 	newFindings = append(newFindings, killActions...)
 	newFindings = append(newFindings, quarantineActions...)
 	newFindings = append(newFindings, permActions...)
 	newFindings = append(newFindings, blockActions...)
+
+	// Dismiss auto-fixed findings from the Findings page so they don't
+	// remain visible after the underlying issue has been remediated.
+	for _, key := range permFixedKeys {
+		d.store.DismissLatestFinding(key)
+	}
 
 	// Record all findings in attack database
 	if adb := attackdb.Global(); adb != nil {
