@@ -9,15 +9,15 @@ GOBIN := $(shell go env GOPATH)/bin
 
 # Build native binary
 build:
-	go build -ldflags "$(LDFLAGS)" -o dist/$(BINARY_NAME) ./cmd/csm/
+	go build -tags yara -ldflags "$(LDFLAGS)" -o dist/$(BINARY_NAME) ./cmd/csm/
 
 # Build static Linux amd64 binary (production target)
 build-linux:
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o dist/$(BINARY_NAME)-linux-amd64 ./cmd/csm/
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags yara -ldflags "$(LDFLAGS)" -o dist/$(BINARY_NAME)-linux-amd64 ./cmd/csm/
 
 # Build all targets
 build-all: build-linux
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o dist/$(BINARY_NAME)-linux-arm64 ./cmd/csm/
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags yara -ldflags "$(LDFLAGS)" -o dist/$(BINARY_NAME)-linux-arm64 ./cmd/csm/
 
 # Run tests with race detector
 test:
