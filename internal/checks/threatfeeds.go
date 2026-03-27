@@ -72,6 +72,7 @@ func InitThreatDB(statePath string, whitelistIPs []string) *ThreatDB {
 		}
 		_ = os.MkdirAll(db.dbPath, 0700)
 		db.loadPermanentBlocklist()
+		db.loadPersistedWhitelist()
 		db.loadFeedCache()
 		globalThreatDB = db
 	})
@@ -164,13 +165,74 @@ func (db *ThreatDB) RemovePermanent(ip string) {
 	_ = os.Rename(tmpPath, path)
 }
 
-// AddWhitelist adds an IP to the runtime whitelist (never flag as malicious).
+// AddWhitelist adds an IP to the whitelist (never flag as malicious).
+// Persists to disk so it survives restarts.
 func (db *ThreatDB) AddWhitelist(ip string) {
 	db.mu.Lock()
 	db.whitelist[ip] = true
-	// Also remove from badIPs if present
 	delete(db.badIPs, ip)
 	db.mu.Unlock()
+
+	// Append to persistent whitelist file
+	f, err := os.OpenFile(filepath.Join(db.dbPath, "whitelist.txt"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		return
+	}
+	defer func() { _ = f.Close() }()
+	fmt.Fprintf(f, "%s # whitelisted [%s]\n", ip, time.Now().Format("2006-01-02"))
+}
+
+// RemoveWhitelist removes an IP from the whitelist.
+func (db *ThreatDB) RemoveWhitelist(ip string) {
+	db.mu.Lock()
+	delete(db.whitelist, ip)
+	db.mu.Unlock()
+
+	// Rewrite whitelist file without this IP
+	path := filepath.Join(db.dbPath, "whitelist.txt")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var kept []string
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		fields := strings.Fields(trimmed)
+		if len(fields) > 0 && fields[0] == ip {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	tmpPath := path + ".tmp"
+	_ = os.WriteFile(tmpPath, []byte(strings.Join(kept, "\n")+"\n"), 0600)
+	_ = os.Rename(tmpPath, path)
+}
+
+// loadPersistedWhitelist loads IPs from the whitelist file into memory.
+func (db *ThreatDB) loadPersistedWhitelist() {
+	path := filepath.Join(db.dbPath, "whitelist.txt")
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer func() { _ = f.Close() }()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		ip := strings.Fields(line)[0]
+		if net.ParseIP(ip) != nil {
+			db.whitelist[ip] = true
+			// Ensure whitelisted IPs are never in badIPs
+			delete(db.badIPs, ip)
+		}
+	}
 }
 
 // Count returns the total number of entries in the database.
