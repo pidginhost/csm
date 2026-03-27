@@ -2,10 +2,12 @@ package webui
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"os/exec"
 	"strconv"
+	"time"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/attackdb"
 	"github.com/pidginhost/cpanel-security-monitor/internal/checks"
@@ -242,6 +244,130 @@ func (s *Server) apiThreatUnwhitelistIP(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, map[string]string{"status": "removed", "ip": req.IP})
+}
+
+// POST /api/v1/threat/clear-ip — unblock + clear from all DBs without whitelisting.
+// For dynamic IP customers: one-time cleanup, IP can be re-blocked later.
+func (s *Server) apiThreatClearIP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		IP string `json:"ip"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IP == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]string{"error": "IP is required"})
+		return
+	}
+	if net.ParseIP(req.IP) == nil {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]string{"error": "invalid IP address"})
+		return
+	}
+
+	var actions []string
+
+	// 1. Unblock from firewall (but don't add to allow list)
+	if s.blocker != nil {
+		if err := s.blocker.UnblockIP(req.IP); err == nil {
+			actions = append(actions, "unblocked from firewall")
+		}
+	}
+
+	// 2. Remove from threat DB permanent blocklist (but don't whitelist)
+	if tdb := checks.GetThreatDB(); tdb != nil {
+		tdb.RemovePermanent(req.IP)
+		actions = append(actions, "removed from threat DB")
+	}
+
+	// 3. Remove from attack DB
+	if adb := attackdb.Global(); adb != nil {
+		adb.RemoveIP(req.IP)
+		actions = append(actions, "removed from attack DB")
+	}
+
+	// 4. Flush cphulk
+	_, _ = exec.Command("whmapi1", "flush_cphulk_login_history_for_ips", "ip="+req.IP).Output()
+	actions = append(actions, "flushed cPanel login history")
+
+	writeJSON(w, map[string]interface{}{
+		"status":  "cleared",
+		"ip":      req.IP,
+		"actions": actions,
+	})
+}
+
+// POST /api/v1/threat/temp-whitelist-ip — whitelist for a specified duration.
+func (s *Server) apiThreatTempWhitelistIP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		IP    string `json:"ip"`
+		Hours int    `json:"hours"` // default 24
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IP == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]string{"error": "IP is required"})
+		return
+	}
+	if net.ParseIP(req.IP) == nil {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]string{"error": "invalid IP address"})
+		return
+	}
+	if req.Hours <= 0 {
+		req.Hours = 24
+	}
+	if req.Hours > 168 { // max 7 days
+		req.Hours = 168
+	}
+
+	ttl := time.Duration(req.Hours) * time.Hour
+	var actions []string
+
+	// 1. Unblock from firewall
+	if s.blocker != nil {
+		if err := s.blocker.UnblockIP(req.IP); err == nil {
+			actions = append(actions, "unblocked from firewall")
+		}
+		// Temp allow in firewall too
+		if allower, ok := s.blocker.(interface {
+			TempAllowIP(string, string, time.Duration) error
+		}); ok {
+			if err := allower.TempAllowIP(req.IP, "CSM temp whitelist", ttl); err == nil {
+				actions = append(actions, fmt.Sprintf("temp allowed in firewall for %dh", req.Hours))
+			}
+		}
+	}
+
+	// 2. Remove from threat DB + temp whitelist
+	if tdb := checks.GetThreatDB(); tdb != nil {
+		tdb.RemovePermanent(req.IP)
+		tdb.TempWhitelist(req.IP, ttl)
+		actions = append(actions, fmt.Sprintf("temp whitelisted for %dh", req.Hours))
+	}
+
+	// 3. Remove from attack DB
+	if adb := attackdb.Global(); adb != nil {
+		adb.RemoveIP(req.IP)
+		actions = append(actions, "removed from attack DB")
+	}
+
+	// 4. Flush cphulk
+	_, _ = exec.Command("whmapi1", "flush_cphulk_login_history_for_ips", "ip="+req.IP).Output()
+
+	writeJSON(w, map[string]interface{}{
+		"status":  "temp_whitelisted",
+		"ip":      req.IP,
+		"hours":   req.Hours,
+		"actions": actions,
+	})
 }
 
 // writeJSON is defined in api.go

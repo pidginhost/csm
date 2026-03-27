@@ -444,6 +444,10 @@ func (d *Daemon) heartbeat() {
 			if d.fwEngine != nil {
 				d.fwEngine.CleanExpiredAllows()
 			}
+			// Clean expired temporary whitelist entries
+			if tdb := checks.GetThreatDB(); tdb != nil {
+				tdb.PruneExpiredWhitelist()
+			}
 		}
 	}
 }
