@@ -423,6 +423,14 @@ func (s *Store) SetLatestFindings(findings []alert.Finding) {
 	_ = os.Rename(tmpPath, filepath.Join(s.path, "latest_findings.json"))
 }
 
+// ClearLatestFindings removes all findings from the latest set.
+// Use before SetLatestFindings for a full replace (e.g. initial scan).
+func (s *Store) ClearLatestFindings() {
+	s.latestMu.Lock()
+	defer s.latestMu.Unlock()
+	s.latestFindings = nil
+}
+
 // LatestFindings returns the full results of the most recent scan.
 // This is what the Findings page shows — "what's wrong right now."
 func (s *Store) LatestFindings() []alert.Finding {
