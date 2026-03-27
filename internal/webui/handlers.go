@@ -264,12 +264,6 @@ func (s *Server) handleQuarantine(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-func (s *Server) handleBlocked(w http.ResponseWriter, _ *http.Request) {
-	_ = s.templates["blocked.html"].ExecuteTemplate(w, "blocked.html", map[string]string{
-		"Hostname": s.cfg.Hostname,
-	})
-}
-
 func (s *Server) handleFirewall(w http.ResponseWriter, _ *http.Request) {
 	_ = s.templates["firewall.html"].ExecuteTemplate(w, "firewall.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
