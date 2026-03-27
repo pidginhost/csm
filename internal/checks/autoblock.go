@@ -3,6 +3,7 @@ package checks
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -283,7 +284,8 @@ func extractIPFromFinding(f alert.Finding) string {
 			fields := strings.Fields(rest)
 			if len(fields) > 0 {
 				ip := strings.TrimRight(fields[0], ",:;)([]")
-				if len(ip) >= 7 && strings.Count(ip, ".") == 3 {
+				// Support both IPv4 and IPv6
+				if net.ParseIP(ip) != nil {
 					return ip
 				}
 			}
