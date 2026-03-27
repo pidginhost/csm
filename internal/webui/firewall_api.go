@@ -297,15 +297,34 @@ func (s *Server) apiFirewallUnban(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. Unblock from CSM firewall
+	// 1. Unblock from CSM firewall (individual IP)
 	if s.blocker != nil {
 		_ = s.blocker.UnblockIP(req.IP)
 	}
 
-	// 2. Flush from cphulk
+	// 2. Also remove from any covering subnet block
+	state, _ := firewall.LoadState(s.cfg.StatePath)
+	parsedIP := net.ParseIP(req.IP)
+	subnetRemoved := ""
+	if sb, ok := s.blocker.(interface{ UnblockSubnet(string) error }); ok {
+		for _, sn := range state.BlockedNet {
+			_, network, err := net.ParseCIDR(sn.CIDR)
+			if err == nil && network.Contains(parsedIP) {
+				_ = sb.UnblockSubnet(sn.CIDR)
+				subnetRemoved = sn.CIDR
+				break
+			}
+		}
+	}
+
+	// 3. Flush from cphulk
 	_, _ = exec.Command("whmapi1", "flush_cphulk_login_history_for_ips", "ip="+req.IP).Output()
 
-	writeJSON(w, map[string]interface{}{"success": true, "ip": req.IP})
+	result := map[string]interface{}{"success": true, "ip": req.IP}
+	if subnetRemoved != "" {
+		result["subnet_removed"] = subnetRemoved
+	}
+	writeJSON(w, result)
 }
 
 func containsBytes(haystack, needle []byte) bool {
