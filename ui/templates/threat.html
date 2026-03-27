@@ -67,6 +67,25 @@
             </table>
         </div>
     </div>
+
+    <!-- Whitelisted IPs -->
+    <div class="card mt-3">
+        <div class="card-header">
+            <h3 class="card-title"><i class="ti ti-shield-check"></i>&nbsp;Whitelisted IPs (Customer IPs)</h3>
+            <div class="card-actions">
+                <form id="add-wl-form" class="d-flex gap-2">
+                    <input type="text" id="add-wl-ip" class="form-control form-control-sm font-monospace" placeholder="1.2.3.4" style="width:160px">
+                    <button type="submit" class="btn btn-success btn-sm"><i class="ti ti-plus"></i>&nbsp;Add</button>
+                </form>
+            </div>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-vcenter card-table table-sm">
+                <thead><tr><th>IP Address</th><th style="width:100px">Actions</th></tr></thead>
+                <tbody id="wl-tbody"><tr><td colspan="2" class="text-center text-muted">Loading...</td></tr></tbody>
+            </table>
+        </div>
+    </div>
 {{end}}
 {{define "scripts"}}
 <script>
@@ -241,6 +260,39 @@ document.getElementById('lookup-form').addEventListener('submit',function(e){
         result.innerHTML=html;
     }).catch(function(e){status.textContent='Error: '+e;status.className='text-danger small'});
 });
+
+// --- Whitelist management ---
+function loadWhitelist() {
+    fetch('/api/v1/threat/whitelist',{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(ips){
+        var tbody=document.getElementById('wl-tbody');
+        if(!ips||ips.length===0){
+            tbody.innerHTML='<tr><td colspan="2" class="text-center text-muted">No whitelisted IPs</td></tr>';
+            return;
+        }
+        var html='';
+        for(var i=0;i<ips.length;i++){
+            html+='<tr><td><code class="font-monospace">'+esc(ips[i])+'</code></td>';
+            html+='<td><button class="btn btn-ghost-danger btn-sm" onclick="removeWhitelist(\''+esc(ips[i])+'\')"><i class="ti ti-x"></i>&nbsp;Remove</button></td></tr>';
+        }
+        tbody.innerHTML=html;
+    }).catch(function(){});
+}
+loadWhitelist();
+
+document.getElementById('add-wl-form').addEventListener('submit',function(e){
+    e.preventDefault();
+    var ip=document.getElementById('add-wl-ip').value.trim();
+    if(!ip)return;
+    whitelistIP(ip);
+});
+
+function removeWhitelist(ip) {
+    if(!confirm('Remove '+ip+' from whitelist?\n\nThis IP will be subject to threat detection and auto-blocking again.'))return;
+    CSM.post('/api/v1/threat/unwhitelist-ip',{ip:ip}).then(function(data){
+        if(data.error){alert('Error: '+data.error);return;}
+        loadWhitelist();
+    }).catch(function(e){alert('Error: '+e)});
+}
 
 function whitelistIP(ip) {
     if (!confirm('Whitelist ' + ip + ' as a customer IP?\n\nThis will:\n- Unblock from firewall\n- Add to firewall allow list\n- Remove from threat DB and attack DB\n- Add to reputation whitelist\n- Flush cPanel login history')) return;
