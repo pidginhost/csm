@@ -125,8 +125,8 @@ func (s *Server) apiThreatDBStats(w http.ResponseWriter, r *http.Request) {
 	}
 	if adb := attackdb.Global(); adb != nil {
 		result["attack_db"] = map[string]interface{}{
-			"total_ips":  adb.TotalIPs(),
-			"top_line":   adb.FormatTopLine(),
+			"total_ips": adb.TotalIPs(),
+			"top_line":  adb.FormatTopLine(),
 		}
 	}
 
