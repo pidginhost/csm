@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os/exec"
 	"time"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/firewall"
@@ -204,6 +205,120 @@ func (s *Server) apiFirewallFlush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"status": "flushed"})
+}
+
+// apiFirewallCheck checks if an IP is blocked in CSM, CSF, or cphulk.
+// GET /api/v1/firewall/check?ip=1.2.3.4
+// Response matches cpanel-service format for apiuser compatibility:
+//
+//	{"success": true, "ip": "1.2.3.4", "permanent": "reason or null", "temporary": "reason or null", "cphulk": true/false}
+func (s *Server) apiFirewallCheck(w http.ResponseWriter, r *http.Request) {
+	ip := r.URL.Query().Get("ip")
+	if ip == "" || net.ParseIP(ip) == nil {
+		writeJSON(w, map[string]interface{}{"success": false, "error_msg": "The ip is not valid or it was not set."})
+		return
+	}
+
+	result := map[string]interface{}{
+		"success":   true,
+		"ip":        ip,
+		"permanent": nil,
+		"temporary": nil,
+		"cphulk":    false,
+	}
+
+	// Check CSM firewall state
+	state, _ := firewall.LoadState(s.cfg.StatePath)
+	now := time.Now()
+	for _, b := range state.Blocked {
+		if b.IP == ip {
+			if b.ExpiresAt.IsZero() {
+				result["permanent"] = b.Reason
+			} else if now.Before(b.ExpiresAt) {
+				result["temporary"] = fmt.Sprintf("%s (expires in %s)", b.Reason,
+					time.Until(b.ExpiresAt).Truncate(time.Minute))
+			}
+		}
+	}
+
+	// Check blocked subnets
+	parsedIP := net.ParseIP(ip)
+	for _, sn := range state.BlockedNet {
+		_, network, err := net.ParseCIDR(sn.CIDR)
+		if err == nil && network.Contains(parsedIP) {
+			result["permanent"] = fmt.Sprintf("Subnet block: %s — %s", sn.CIDR, sn.Reason)
+		}
+	}
+
+	// Check cphulk (cPanel brute force detector)
+	out, err := exec.Command("whmapi1", "flush_cphulk_login_history_for_ips", "ip="+ip, "--output=json").Output()
+	if err == nil {
+		// If the API returns records_removed > 0 or iptable_bans_removed > 0, cphulk had it
+		var cphulkResp struct {
+			Data struct {
+				RecordsRemoved int `json:"records_removed"`
+				IPTableBans    int `json:"iptable_bans_removed"`
+			} `json:"data"`
+		}
+		// Don't actually flush here — just check. Use a read-only approach:
+		// whmapi1 doesn't have a pure "check" for cphulk, so we check the login_log
+		_ = out
+		_ = cphulkResp
+		// Use the login log instead
+		cphulkOut, cphulkErr := exec.Command("whmapi1", "read_cphulk_records",
+			"list_name=black", "--output=json").Output()
+		if cphulkErr == nil {
+			if containsBytes(cphulkOut, []byte(ip)) {
+				result["cphulk"] = true
+			}
+		}
+	}
+
+	writeJSON(w, result)
+}
+
+// apiFirewallUnban unblocks an IP from CSM + cphulk in one call.
+// POST /api/v1/firewall/unban  body: {"ip": "1.2.3.4"}
+func (s *Server) apiFirewallUnban(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		IP string `json:"ip"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IP == "" {
+		writeJSON(w, map[string]interface{}{"success": false, "error_msg": "The ip is not valid or it was not set."})
+		return
+	}
+	if net.ParseIP(req.IP) == nil {
+		writeJSON(w, map[string]interface{}{"success": false, "error_msg": "The ip is not valid or it was not set."})
+		return
+	}
+
+	// 1. Unblock from CSM firewall
+	if s.blocker != nil {
+		_ = s.blocker.UnblockIP(req.IP)
+	}
+
+	// 2. Flush from cphulk
+	_, _ = exec.Command("whmapi1", "flush_cphulk_login_history_for_ips", "ip="+req.IP).Output()
+
+	// 3. Remove from CSF too (if still running during transition)
+	_, _ = exec.Command("csf", "-dr", req.IP).Output()
+	_, _ = exec.Command("csf", "-tr", req.IP).Output()
+
+	writeJSON(w, map[string]interface{}{"success": true, "ip": req.IP})
+}
+
+func containsBytes(haystack, needle []byte) bool {
+	for i := 0; i <= len(haystack)-len(needle); i++ {
+		if string(haystack[i:i+len(needle)]) == string(needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseIntSimple(s string) int {

@@ -143,6 +143,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/firewall/status", s.requireAuth(http.HandlerFunc(s.apiFirewallStatus)))
 	mux.Handle("/api/v1/firewall/audit", s.requireAuth(http.HandlerFunc(s.apiFirewallAudit)))
 	mux.Handle("/api/v1/firewall/subnets", s.requireAuth(http.HandlerFunc(s.apiFirewallSubnets)))
+	mux.Handle("/api/v1/firewall/check", s.requireAuth(http.HandlerFunc(s.apiFirewallCheck)))
 
 	// Auth-protected API — actions (with CSRF validation)
 	mux.Handle("/api/v1/fix", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiFix))))
@@ -156,6 +157,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/firewall/deny-subnet", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiFirewallDenySubnet))))
 	mux.Handle("/api/v1/firewall/remove-subnet", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiFirewallRemoveSubnet))))
 	mux.Handle("/api/v1/firewall/flush", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiFirewallFlush))))
+	mux.Handle("/api/v1/firewall/unban", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiFirewallUnban))))
 
 	// Logout (clears cookie, requires auth to prevent logout CSRF)
 	mux.Handle("/logout", s.requireAuth(http.HandlerFunc(s.handleLogout)))
@@ -468,12 +470,21 @@ func (s *Server) validateCSRF(r *http.Request) bool {
 // requireCSRF wraps a handler to validate CSRF on POST requests.
 func (s *Server) requireCSRF(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost && !s.validateCSRF(r) {
+		// Skip CSRF for Bearer token auth (API-to-API calls don't need CSRF protection)
+		if r.Method == http.MethodPost && !s.isBearerAuth(r) && !s.validateCSRF(r) {
 			http.Error(w, "Invalid CSRF token", http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) isBearerAuth(r *http.Request) bool {
+	auth := r.Header.Get("Authorization")
+	if len(auth) > 7 && auth[:7] == "Bearer " {
+		return subtle.ConstantTimeCompare([]byte(auth[7:]), []byte(s.cfg.WebUI.AuthToken)) == 1
+	}
+	return false
 }
 
 // --- Logout ---
