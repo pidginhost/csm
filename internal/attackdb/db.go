@@ -92,8 +92,10 @@ var checkToAttack = map[string]AttackType{
 	"cpanel_file_upload_realtime": AttackFileUpload,
 
 	// Reputation (not an attack by itself, but the IP is known bad)
-	"ip_reputation":     AttackOther,
-	"local_threat_score": AttackOther,
+	"ip_reputation": AttackOther,
+	// NOTE: "local_threat_score" is intentionally excluded — it is a derived
+	// finding, not a raw attack. Recording it would create a feedback loop
+	// that inflates EventCount by +1 every 10-minute cycle.
 }
 
 // Event is a single observed attack incident.
@@ -360,10 +362,11 @@ func extractAccount(message, details string) string {
 }
 
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	r := []rune(s)
+	if len(r) <= n {
 		return s
 	}
-	return s[:n]
+	return string(r[:n])
 }
 
 // PruneExpired removes records older than 90 days.
@@ -390,13 +393,21 @@ func (db *DB) TotalIPs() int {
 	return len(db.records)
 }
 
-// AllRecords returns a snapshot of all records (for stats computation).
+// AllRecords returns a deep-copy snapshot of all records.
 func (db *DB) AllRecords() []*IPRecord {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 	result := make([]*IPRecord, 0, len(db.records))
 	for _, rec := range db.records {
 		cp := *rec
+		cp.AttackCounts = make(map[AttackType]int, len(rec.AttackCounts))
+		for k, v := range rec.AttackCounts {
+			cp.AttackCounts[k] = v
+		}
+		cp.Accounts = make(map[string]int, len(rec.Accounts))
+		for k, v := range rec.Accounts {
+			cp.Accounts[k] = v
+		}
 		result = append(result, &cp)
 	}
 	return result
