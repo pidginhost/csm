@@ -74,11 +74,20 @@ type SubnetEntry struct {
 	BlockedAt time.Time `json:"blocked_at"`
 }
 
+// PortAllowEntry represents a port-specific IP allow (CSF's tcp|in|d=PORT|s=IP).
+type PortAllowEntry struct {
+	IP     string `json:"ip"`
+	Port   int    `json:"port"`
+	Proto  string `json:"proto"` // "tcp" or "udp"
+	Reason string `json:"reason"`
+}
+
 // FirewallState is persisted to disk for restore on restart.
 type FirewallState struct {
-	Blocked    []BlockedEntry `json:"blocked"`
-	BlockedNet []SubnetEntry  `json:"blocked_nets"`
-	Allowed    []AllowedEntry `json:"allowed"`
+	Blocked     []BlockedEntry   `json:"blocked"`
+	BlockedNet  []SubnetEntry    `json:"blocked_nets"`
+	Allowed     []AllowedEntry   `json:"allowed"`
+	PortAllowed []PortAllowEntry `json:"port_allowed"`
 }
 
 // NewEngine creates a new nftables firewall engine.
@@ -480,6 +489,51 @@ func (e *Engine) createInputChain() error {
 	// Rule 7: Allow explicitly allowed IPs
 	e.addSetMatchRule(e.setAllowed, expr.VerdictAccept)
 	e.addSetMatchRuleV6(e.setAllowed6, expr.VerdictAccept)
+
+	// Rule 8: Port-specific allows (IP+port, e.g. MySQL access for specific IPs)
+	state := e.loadStateFile()
+	for _, pa := range state.PortAllowed {
+		parsed := net.ParseIP(pa.IP)
+		if parsed == nil {
+			continue
+		}
+		proto := byte(6) // TCP
+		if pa.Proto == "udp" {
+			proto = 17
+		}
+		if ip4 := parsed.To4(); ip4 != nil {
+			e.conn.AddRule(&nftables.Rule{
+				Table: e.table,
+				Chain: e.chainIn,
+				Exprs: []expr.Any{
+					&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{proto}},
+					&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: ip4},
+					&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(uint16(pa.Port))},
+					&expr.Verdict{Kind: expr.VerdictAccept},
+				},
+			})
+		} else if e.cfg.IPv6 {
+			ip16 := parsed.To16()
+			e.conn.AddRule(&nftables.Rule{
+				Table: e.table,
+				Chain: e.chainIn,
+				Exprs: []expr.Any{
+					&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{proto}},
+					&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{10}},
+					&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 8, Len: 16},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: ip16},
+					&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(uint16(pa.Port))},
+					&expr.Verdict{Kind: expr.VerdictAccept},
+				},
+			})
+		}
+	}
 
 	// ICMPv4 echo-request (type 8)
 	e.conn.AddRule(&nftables.Rule{
@@ -1190,6 +1244,61 @@ func (e *Engine) RemoveAllowIP(ip string) error {
 
 	e.removeAllowedState(ip)
 	AppendAudit(e.statePath, "remove_allow", ip, "", 0)
+	return nil
+}
+
+// AllowIPPort adds a port-specific IP allow. The rule is persisted to state
+// and applied on the next Apply(). For immediate effect, call Apply() after.
+func (e *Engine) AllowIPPort(ip string, port int, proto string, reason string) error {
+	if net.ParseIP(ip) == nil {
+		return fmt.Errorf("invalid IP: %s", ip)
+	}
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("invalid port: %d", port)
+	}
+	if proto != "tcp" && proto != "udp" {
+		proto = "tcp"
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	st := e.loadStateFile()
+	// Deduplicate
+	for _, existing := range st.PortAllowed {
+		if existing.IP == ip && existing.Port == port && existing.Proto == proto {
+			return nil // already exists
+		}
+	}
+	st.PortAllowed = append(st.PortAllowed, PortAllowEntry{
+		IP: ip, Port: port, Proto: proto, Reason: reason,
+	})
+	e.saveState(&st)
+	AppendAudit(e.statePath, "allow_port", fmt.Sprintf("%s:%d/%s", ip, port, proto), reason, 0)
+	return nil
+}
+
+// RemoveAllowIPPort removes a port-specific IP allow from state.
+func (e *Engine) RemoveAllowIPPort(ip string, port int, proto string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	st := e.loadStateFile()
+	var remaining []PortAllowEntry
+	found := false
+	for _, entry := range st.PortAllowed {
+		if entry.IP == ip && entry.Port == port && entry.Proto == proto {
+			found = true
+			continue
+		}
+		remaining = append(remaining, entry)
+	}
+	if !found {
+		return fmt.Errorf("port allow not found: %s:%d/%s", ip, port, proto)
+	}
+	st.PortAllowed = remaining
+	e.saveState(&st)
+	AppendAudit(e.statePath, "remove_port_allow", fmt.Sprintf("%s:%d/%s", ip, port, proto), "", 0)
 	return nil
 }
 

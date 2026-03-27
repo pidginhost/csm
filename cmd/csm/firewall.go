@@ -27,6 +27,10 @@ func runFirewall() {
 		fwDeny()
 	case "allow":
 		fwAllow()
+	case "allow-port":
+		fwAllowPort()
+	case "remove-port":
+		fwRemovePort()
 	case "remove":
 		fwRemove()
 	case "grep":
@@ -74,7 +78,9 @@ Usage: csm firewall <command> [args]
 Commands:
   status                            Show firewall status and statistics
   deny <ip> [reason]                Block an IP permanently
-  allow <ip> [reason]               Add IP to allowed list
+  allow <ip> [reason]               Add IP to allowed list (all ports)
+  allow-port <ip> <port> [reason]   Allow IP on specific port only (e.g. MySQL 3306)
+  remove-port <ip> <port>           Remove port-specific allow
   remove <ip>                       Remove IP from blocked and allowed lists
   grep <pattern>                    Search blocked/allowed IPs by pattern
   tempban <ip> <duration> [reason]  Temporary block (e.g. 24h, 7d, 1h30m)
@@ -233,6 +239,75 @@ func fwAllow() {
 		os.Exit(1)
 	}
 	fmt.Printf("Allowed %s — %s\n", ip, reason)
+}
+
+func fwAllowPort() {
+	args := fwArgs()
+	if len(args) < 2 {
+		fmt.Fprintf(os.Stderr, "Usage: csm firewall allow-port <ip> <port> [reason]\n")
+		fmt.Fprintf(os.Stderr, "  Example: csm firewall allow-port 176.124.106.76 3306 tenantuser MySQL\n")
+		os.Exit(1)
+	}
+
+	ip := args[0]
+	if net.ParseIP(ip) == nil {
+		fmt.Fprintf(os.Stderr, "Invalid IP: %s\n", ip)
+		os.Exit(1)
+	}
+
+	port, err := strconv.Atoi(args[1])
+	if err != nil || port < 1 || port > 65535 {
+		fmt.Fprintf(os.Stderr, "Invalid port: %s\n", args[1])
+		os.Exit(1)
+	}
+
+	reason := "Port allow via CLI"
+	if len(args) > 2 {
+		reason = strings.Join(args[2:], " ")
+	}
+
+	cfg := loadConfig()
+	engine, err := firewall.ConnectExisting(cfg.Firewall, cfg.StatePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := engine.AllowIPPort(ip, port, "tcp", reason); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Allowed %s on port %d/tcp — %s\n", ip, port, reason)
+	fmt.Println("Run 'csm firewall restart' to apply the rule.")
+}
+
+func fwRemovePort() {
+	args := fwArgs()
+	if len(args) < 2 {
+		fmt.Fprintf(os.Stderr, "Usage: csm firewall remove-port <ip> <port>\n")
+		os.Exit(1)
+	}
+
+	ip := args[0]
+	port, err := strconv.Atoi(args[1])
+	if err != nil || port < 1 || port > 65535 {
+		fmt.Fprintf(os.Stderr, "Invalid port: %s\n", args[1])
+		os.Exit(1)
+	}
+
+	cfg := loadConfig()
+	engine, err := firewall.ConnectExisting(cfg.Firewall, cfg.StatePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := engine.RemoveAllowIPPort(ip, port, "tcp"); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Removed port allow %s:%d/tcp\n", ip, port)
+	fmt.Println("Run 'csm firewall restart' to apply the change.")
 }
 
 func fwRemove() {
@@ -547,10 +622,21 @@ func fwMigrate() {
 		}
 	}
 
+	// Restore port-specific allows
+	portOK := 0
+	for _, pa := range state.PortAllowed {
+		if err := engine.AllowIPPort(pa.IP, pa.Port, pa.Proto, pa.Reason); err == nil {
+			portOK++
+		}
+	}
+
 	fmt.Printf("\nMigration applied. CSF rules converted to nftables.\n")
-	fmt.Printf("Restored: %d blocked, %d allowed\n", blockOK, allowOK)
+	fmt.Printf("Restored: %d blocked, %d allowed, %d port-specific\n", blockOK, allowOK, portOK)
 	if blockFail > 0 || allowFail > 0 {
 		fmt.Printf("Failed:   %d blocked, %d allowed (check deny_ip_limit if too many)\n", blockFail, allowFail)
+	}
+	if portOK > 0 {
+		fmt.Println("Port-specific allows require 'csm firewall restart' to take effect in nftables rules.")
 	}
 	fmt.Printf("IMPORTANT: Verify connectivity, then disable CSF:\n")
 	fmt.Printf("  csf -x\n")
