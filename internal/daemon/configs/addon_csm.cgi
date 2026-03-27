@@ -47,8 +47,11 @@ my $method = $ENV{REQUEST_METHOD} || 'GET';
 # Write response headers to temp file, body to stdout
 my $hdr_file = "/tmp/csm_cgi_$$.hdr";
 
+# Scan endpoints can take minutes — use a longer timeout for API calls
+my $timeout = ($path =~ m{^/api/}) ? '300' : '30';
+
 my @cmd = (
-    'curl', '-sk', '-L', '--max-time', '30',
+    'curl', '-sk', '-L', '--max-time', $timeout,
     '-b', "csm_auth=$token",
     '-D', $hdr_file,
 );
