@@ -415,6 +415,9 @@ func (s *Server) apiUnblockIP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Also flush from cphulk (cPanel brute force detector)
+	_, _ = exec.Command("whmapi1", "flush_cphulk_login_history_for_ips", "ip="+req.IP).Output()
+
 	writeJSON(w, map[string]string{"status": "unblocked", "ip": req.IP})
 }
 
