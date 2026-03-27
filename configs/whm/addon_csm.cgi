@@ -123,6 +123,12 @@ if ($ct =~ /text\/html/) {
     $body =~ s{action="/login"}{action="addon_csm.cgi?path=/login"}g;
 }
 
+# Rewrite relative url() in CSS to absolute paths through proxy
+# e.g. url("fonts/tabler-icons.woff2") -> url("addon_csm.cgi?path=/static/css/fonts/tabler-icons.woff2")
+if ($ct =~ /text\/css/) {
+    $body =~ s{url\("fonts/([^"]+?)(?:\?[^"]*)?"\)}{url("addon_csm.cgi?path=/static/css/fonts/$1")}g;
+}
+
 print "Content-Type: $ct\r\n";
 print "\r\n";
 print $body;
