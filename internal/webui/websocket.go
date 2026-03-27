@@ -84,6 +84,27 @@ func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate Origin header to prevent cross-origin WebSocket hijacking
+	if origin := r.Header.Get("Origin"); origin != "" {
+		host := r.Host
+		// Allow same-origin connections only
+		validOrigins := []string{
+			"https://" + host,
+			"http://" + host, // during development
+		}
+		originOK := false
+		for _, v := range validOrigins {
+			if origin == v {
+				originOK = true
+				break
+			}
+		}
+		if !originOK {
+			http.Error(w, "Origin not allowed", http.StatusForbidden)
+			return
+		}
+	}
+
 	key := r.Header.Get("Sec-WebSocket-Key")
 	if key == "" {
 		http.Error(w, "Missing Sec-WebSocket-Key", http.StatusBadRequest)

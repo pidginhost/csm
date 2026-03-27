@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/tls"
 	"encoding/hex"
 	"fmt"
 	"html/template"
@@ -156,8 +157,8 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/firewall/remove-subnet", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiFirewallRemoveSubnet))))
 	mux.Handle("/api/v1/firewall/flush", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiFirewallFlush))))
 
-	// Logout (clears cookie)
-	mux.HandleFunc("/logout", s.handleLogout)
+	// Logout (clears cookie, requires auth to prevent logout CSRF)
+	mux.Handle("/logout", s.requireAuth(http.HandlerFunc(s.handleLogout)))
 
 	// WebSocket (auth via cookie)
 	mux.HandleFunc("/ws/findings", s.handleWSFindings)
@@ -169,9 +170,46 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		WriteTimeout:   300 * time.Second, // account scans can take several minutes
 		IdleTimeout:    60 * time.Second,
 		MaxHeaderBytes: 1 << 20, // 1MB
+		TLSConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			CipherSuites: []uint16{
+				// TLS 1.3 cipher suites are always included by Go automatically.
+				// Below are the allowed TLS 1.2 cipher suites (AEAD only, no CBC).
+				tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+				tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+				tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
+				tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+				tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+				tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+			},
+		},
 	}
 
 	return s, nil
+}
+
+// pruneLoginAttempts periodically cleans up stale rate-limit entries.
+func (s *Server) pruneLoginAttempts() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.loginMu.Lock()
+		cutoff := time.Now().Add(-time.Minute)
+		for ip, attempts := range s.loginAttempts {
+			var recent []time.Time
+			for _, t := range attempts {
+				if t.After(cutoff) {
+					recent = append(recent, t)
+				}
+			}
+			if len(recent) == 0 {
+				delete(s.loginAttempts, ip)
+			} else {
+				s.loginAttempts[ip] = recent
+			}
+		}
+		s.loginMu.Unlock()
+	}
 }
 
 // Start starts the HTTPS server. Blocks until shutdown.
@@ -187,6 +225,8 @@ func (s *Server) Start() error {
 	if err := EnsureTLSCert(certPath, keyPath, s.cfg.Hostname); err != nil {
 		return fmt.Errorf("TLS cert setup: %w", err)
 	}
+
+	go s.pruneLoginAttempts()
 
 	fmt.Fprintf(os.Stderr, "WebUI listening on https://%s\n", s.cfg.WebUI.Listen)
 	return s.httpSrv.ListenAndServeTLS(certPath, keyPath)
@@ -253,13 +293,6 @@ func (s *Server) isAuthenticated(r *http.Request) bool {
 	// Check cookie
 	if cookie, err := r.Cookie("csm_auth"); err == nil {
 		if subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(token)) == 1 {
-			return true
-		}
-	}
-
-	// Check query param (for WebSocket)
-	if q := r.URL.Query().Get("token"); q != "" {
-		if subtle.ConstantTimeCompare([]byte(q), []byte(token)) == 1 {
 			return true
 		}
 	}
@@ -381,10 +414,9 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-XSS-Protection", "1; mode=block")
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-		// CSP: allow inline styles (needed for card styling) but block inline scripts
-		// except those with the nonce — we use 'unsafe-inline' for now since templates
-		// have inline scripts; tighten when scripts are moved to external files
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
+		w.Header().Set("Cache-Control", "no-store")
 		next.ServeHTTP(w, r)
 	})
 }
