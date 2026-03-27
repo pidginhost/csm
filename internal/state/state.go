@@ -18,6 +18,13 @@ type Store struct {
 	entries   map[string]*Entry
 	dirty     bool   // true if state changed since last save
 	savedHash string // hash of last saved state
+
+	// LatestFindings holds the full output of the most recent scan cycle.
+	// This is what the Findings page shows — "what's wrong right now" —
+	// separate from the alert dedup state above which controls "what to email."
+	latestMu       sync.RWMutex
+	latestFindings []alert.Finding
+	latestScanTime time.Time
 }
 
 type Entry struct {
@@ -365,6 +372,80 @@ func splitLines(data []byte) [][]byte {
 		lines = append(lines, data[start:])
 	}
 	return lines
+}
+
+// SetLatestFindings stores the full results of the most recent scan cycle.
+// Called by the daemon after each periodic scan completes.
+func (s *Store) SetLatestFindings(findings []alert.Finding) {
+	s.latestMu.Lock()
+	defer s.latestMu.Unlock()
+
+	// Deduplicate by check:message (keep the most recent per key)
+	seen := make(map[string]bool)
+	var deduped []alert.Finding
+	for _, f := range findings {
+		key := f.Check + ":" + f.Message
+		if !seen[key] {
+			seen[key] = true
+			deduped = append(deduped, f)
+		}
+	}
+	s.latestFindings = deduped
+	s.latestScanTime = time.Now()
+
+	// Also persist to disk so it survives restart
+	data, _ := json.Marshal(deduped)
+	tmpPath := filepath.Join(s.path, "latest_findings.json.tmp")
+	_ = os.WriteFile(tmpPath, data, 0600)
+	_ = os.Rename(tmpPath, filepath.Join(s.path, "latest_findings.json"))
+}
+
+// LatestFindings returns the full results of the most recent scan.
+// This is what the Findings page shows — "what's wrong right now."
+func (s *Store) LatestFindings() []alert.Finding {
+	s.latestMu.RLock()
+	defer s.latestMu.RUnlock()
+
+	// If in-memory is empty (fresh start), load from disk
+	if len(s.latestFindings) == 0 {
+		data, err := os.ReadFile(filepath.Join(s.path, "latest_findings.json"))
+		if err == nil {
+			var findings []alert.Finding
+			if json.Unmarshal(data, &findings) == nil {
+				s.latestMu.RUnlock()
+				s.latestMu.Lock()
+				s.latestFindings = findings
+				s.latestMu.Unlock()
+				s.latestMu.RLock()
+				return findings
+			}
+		}
+	}
+
+	// Return a copy
+	result := make([]alert.Finding, len(s.latestFindings))
+	copy(result, s.latestFindings)
+	return result
+}
+
+// LatestScanTime returns when the last scan completed.
+func (s *Store) LatestScanTime() time.Time {
+	s.latestMu.RLock()
+	defer s.latestMu.RUnlock()
+	return s.latestScanTime
+}
+
+// DismissLatestFinding removes a finding from the latest scan results.
+func (s *Store) DismissLatestFinding(key string) {
+	s.latestMu.Lock()
+	defer s.latestMu.Unlock()
+	var filtered []alert.Finding
+	for _, f := range s.latestFindings {
+		if f.Check+":"+f.Message != key {
+			filtered = append(filtered, f)
+		}
+	}
+	s.latestFindings = filtered
 }
 
 // DismissFinding marks a finding as baseline (acknowledged/dismissed).
