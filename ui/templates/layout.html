@@ -35,6 +35,7 @@
         th.sort-asc::after { content: ' ▲'; opacity: 0.5; }
         th.sort-desc::after { content: ' ▼'; opacity: 0.5; }
         th[style*="cursor"] { user-select: none; }
+        .page { overflow-x: hidden; }
     </style>
     <script>
     var __theme = localStorage.getItem('csm-theme') || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
