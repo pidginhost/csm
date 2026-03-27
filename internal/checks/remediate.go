@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -139,6 +140,24 @@ func fixQuarantine(path string) RemediationResult {
 			return RemediationResult{Error: fmt.Sprintf("cannot quarantine directory: %v", err)}
 		}
 	}
+
+	// Write metadata sidecar for restore
+	var uid, gid int
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+		uid = int(stat.Uid)
+		gid = int(stat.Gid)
+	}
+	meta := map[string]interface{}{
+		"original_path": path,
+		"owner_uid":     uid,
+		"group_gid":     gid,
+		"mode":          info.Mode().String(),
+		"size":          info.Size(),
+		"quarantine_at": time.Now(),
+		"reason":        "Fixed via CSM Web UI",
+	}
+	metaData, _ := json.MarshalIndent(meta, "", "  ")
+	_ = os.WriteFile(qPath+".meta", metaData, 0600)
 
 	return RemediationResult{
 		Success:     true,

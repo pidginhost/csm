@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>CSM — Login</title>
     <link rel="stylesheet" href="/static/css/tabler.min.css">
-    <style>body { background-color: #1a2234; }</style>
+    <style>body.theme-dark { background-color: #1a2234; }</style>
 </head>
 <body class="theme-dark d-flex flex-column">
     <div class="page page-center">
@@ -27,5 +27,10 @@
             </div>
         </div>
     </div>
+    <script>
+    var saved = localStorage.getItem('csm-theme');
+    var theme = saved || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+    document.body.className = (theme === 'light' ? 'theme-light' : 'theme-dark') + ' d-flex flex-column';
+    </script>
 </body>
 </html>

@@ -296,8 +296,15 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	// PHP in uploads directories
 	if strings.Contains(path, "/wp-content/uploads/") && strings.HasSuffix(nameLower, ".php") {
 		if nameLower != "index.php" && !isKnownSafeUploadDaemon(path) {
-			fm.sendAlert(alert.Critical, "php_in_uploads_realtime",
-				fmt.Sprintf("PHP file created in uploads: %s", path), "")
+			if looksLikePluginUpdate(path) {
+				// Verified plugin update — lower severity, don't suppress entirely
+				fm.sendAlert(alert.Warning, "php_in_uploads_realtime",
+					fmt.Sprintf("PHP file created in uploads (plugin update): %s", path),
+					"Appears to be a legitimate plugin update temp directory")
+			} else {
+				fm.sendAlert(alert.Critical, "php_in_uploads_realtime",
+					fmt.Sprintf("PHP file created in uploads: %s", path), "")
+			}
 		}
 		return
 	}
@@ -752,6 +759,37 @@ func isKnownSafeUploadDaemon(path string) bool {
 	for _, sp := range safePaths {
 		if strings.Contains(path, sp) {
 			return true
+		}
+	}
+
+	return false
+}
+
+// looksLikePluginUpdate checks if a PHP file in uploads looks like a plugin
+// update temp directory (e.g., elementor_t0q9y). Returns true if it matches
+// the pattern of a known plugin extracting an update.
+func looksLikePluginUpdate(path string) bool {
+	pathLower := strings.ToLower(path)
+	// Pattern: /uploads/{pluginname}_{random}/ — plugin update temp dirs
+	// Only match if the plugin also exists in wp-content/plugins/
+	updatePrefixes := []string{
+		"elementor_", "elementor-", "wpbakery_", "js_composer_",
+		"revslider_", "starter-templates", "starter_templates",
+	}
+	for _, prefix := range updatePrefixes {
+		if strings.Contains(pathLower, "/uploads/"+prefix) {
+			// Verify the plugin actually exists in plugins/
+			pluginName := strings.Split(prefix, "_")[0]
+			pluginName = strings.Split(pluginName, "-")[0]
+			// Extract the WP install path from the uploads path
+			uploadsIdx := strings.Index(path, "/wp-content/uploads/")
+			if uploadsIdx > 0 {
+				wpRoot := path[:uploadsIdx]
+				pluginDir := wpRoot + "/wp-content/plugins/" + pluginName
+				if _, err := os.Stat(pluginDir); err == nil {
+					return true
+				}
+			}
 		}
 	}
 	return false

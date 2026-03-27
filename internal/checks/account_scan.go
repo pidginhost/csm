@@ -128,9 +128,12 @@ func RunAccountScan(cfg *config.Config, store *state.Store, account string) []al
 // GetScanHomeDirs returns the list of home directories to scan.
 // If ScanAccount is set, returns only that account. Otherwise returns all.
 func GetScanHomeDirs() ([]os.DirEntry, error) {
-	if ScanAccount != "" {
+	scanMu.Lock()
+	account := ScanAccount
+	scanMu.Unlock()
+	if account != "" {
 		// Return a single synthetic DirEntry for the target account
-		info, err := os.Stat(filepath.Join("/home", ScanAccount))
+		info, err := os.Stat(filepath.Join("/home", account))
 		if err != nil {
 			return nil, err
 		}

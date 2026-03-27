@@ -215,7 +215,7 @@ func (s *Server) apiFix(w http.ResponseWriter, r *http.Request) {
 		Message string `json:"message"`
 		Details string `json:"details"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Check == "" {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Check == "" || req.Message == "" {
 		writeJSONError(w, "check and message are required", http.StatusBadRequest)
 		return
 	}
@@ -227,10 +227,11 @@ func (s *Server) apiFix(w http.ResponseWriter, r *http.Request) {
 
 	result := checks.ApplyFix(req.Check, req.Message, req.Details)
 
-	// If fix succeeded, dismiss the finding from state
+	// If fix succeeded, dismiss from both alert state and latest findings
 	if result.Success {
 		key := req.Check + ":" + req.Message
 		s.store.DismissFinding(key)
+		s.store.DismissLatestFinding(key)
 	}
 
 	writeJSON(w, result)
@@ -266,6 +267,7 @@ func (s *Server) apiBulkFix(w http.ResponseWriter, r *http.Request) {
 		if result.Success {
 			key := req.Check + ":" + req.Message
 			s.store.DismissFinding(key)
+			s.store.DismissLatestFinding(key)
 		}
 		results = append(results, result)
 	}

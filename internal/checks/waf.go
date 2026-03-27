@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -101,18 +102,29 @@ func CheckWAFStatus(_ *config.Config, _ *state.Store) []alert.Finding {
 		})
 	}
 
-	// --- Rule age check ---
+	// --- Rule age check + auto-update ---
 	if hasRules {
 		staleAge := checkRuleAge(ruleDirs)
 		if staleAge > 0 {
-			findings = append(findings, alert.Finding{
-				Severity: alert.Warning,
-				Check:    "waf_rules_stale",
-				Message:  fmt.Sprintf("ModSecurity rules are %d days old — update recommended", staleAge),
-				Details:  "Vendor rules should be updated at least monthly. Check: WHM > Security Center > ModSecurity Vendors > Update",
-			})
+			// Attempt auto-update before alerting
+			updated := autoUpdateWAFRules()
+			if updated {
+				// Re-check age after update
+				staleAge = checkRuleAge(ruleDirs)
+			}
+			if staleAge > 0 {
+				findings = append(findings, alert.Finding{
+					Severity: alert.Warning,
+					Check:    "waf_rules_stale",
+					Message:  fmt.Sprintf("ModSecurity rules are %d days old — update recommended", staleAge),
+					Details:  "Vendor rules should be updated at least monthly. Check: WHM > Security Center > ModSecurity Vendors > Update",
+				})
+			}
 		}
 	}
+
+	// --- Virtual patch deployment ---
+	deployVirtualPatches()
 
 	// --- Per-account WAF bypass check ---
 	bypassed := checkPerAccountBypass()
@@ -239,6 +251,99 @@ func checkPerAccountBypass() []string {
 	}
 
 	return bypassed
+}
+
+// deployVirtualPatches ensures CSM's custom ModSec rules are installed.
+// These provide virtual patches for known WordPress CVEs.
+func deployVirtualPatches() {
+	// Possible modsec user config paths
+	destPaths := []string{
+		"/etc/apache2/conf.d/modsec/modsec2.user.conf",
+		"/usr/local/apache/conf/modsec2.user.conf",
+	}
+
+	srcPath := "/opt/csm/configs/csm_modsec_custom.conf"
+	srcData, err := os.ReadFile(srcPath)
+	if err != nil {
+		return // no custom rules to deploy
+	}
+
+	for _, dest := range destPaths {
+		dir := filepath.Dir(dest)
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			continue
+		}
+
+		// Check if CSM rules are already included
+		existing, err := os.ReadFile(dest)
+		if err == nil && strings.Contains(string(existing), "CSM Custom ModSecurity Rules") {
+			// Already deployed — check if rules need updating
+			if string(existing) == string(srcData) {
+				return // up to date
+			}
+		}
+
+		// Deploy: if file exists and has non-CSM content, append. Otherwise write.
+		if err == nil && len(existing) > 0 && !strings.Contains(string(existing), "CSM Custom ModSecurity Rules") {
+			// Append to existing user config
+			f, err := os.OpenFile(dest, os.O_APPEND|os.O_WRONLY, 0644)
+			if err != nil {
+				continue
+			}
+			_, _ = f.Write([]byte("\n\n"))
+			_, _ = f.Write(srcData)
+			_ = f.Close()
+		} else {
+			// Write or overwrite
+			_ = os.WriteFile(dest, srcData, 0644)
+		}
+
+		fmt.Fprintf(os.Stderr, "[%s] Virtual patches deployed to %s\n",
+			time.Now().Format("2006-01-02 15:04:05"), dest)
+		return
+	}
+}
+
+// autoUpdateWAFRules triggers ModSecurity vendor rule updates via whmapi1.
+// Returns true if an update was successfully triggered.
+func autoUpdateWAFRules() bool {
+	// Get installed vendors
+	out, err := runCmd("whmapi1", "modsec_get_vendors")
+	if err != nil || out == nil {
+		return false
+	}
+
+	// Parse vendor IDs from output (look for "vendor_id:" lines)
+	var vendors []string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "vendor_id:") || strings.HasPrefix(line, "id:") {
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				vid := strings.TrimSpace(parts[1])
+				if vid != "" {
+					vendors = append(vendors, vid)
+				}
+			}
+		}
+	}
+
+	if len(vendors) == 0 {
+		return false
+	}
+
+	// Update each vendor
+	updated := false
+	for _, vid := range vendors {
+		out, err := runCmd("whmapi1", "modsec_update_vendor", fmt.Sprintf("vendor_id=%s", vid))
+		if err == nil && out != nil && strings.Contains(string(out), "result: 1") {
+			fmt.Fprintf(os.Stderr, "[%s] WAF auto-update: vendor %s updated successfully\n",
+				time.Now().Format("2006-01-02 15:04:05"), vid)
+			updated = true
+		}
+	}
+
+	return updated
 }
 
 // CheckModSecAuditLog parses the ModSecurity audit log for blocked attacks.

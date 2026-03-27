@@ -96,6 +96,17 @@ func (inst *Installer) Install() error {
 		fmt.Println("  Binary set as immutable (chattr +i)")
 	}
 
+	// Deploy WHM plugin if cPanel is present
+	if err := inst.InstallWHMPlugin(); err != nil {
+		fmt.Printf("  Warning: WHM plugin not installed: %v\n", err)
+	}
+
+	// Deploy ModSecurity virtual patches
+	inst.DeployModSecRules()
+
+	// Deploy challenge page config
+	inst.DeployChallengeConfig()
+
 	fmt.Println()
 	fmt.Println("Install complete. Next steps:")
 	fmt.Printf("  1. Edit %s with your settings\n", inst.ConfigPath)
@@ -134,6 +145,19 @@ func (inst *Installer) Uninstall() error {
 	// Remove auditd rules
 	auditd.Remove()
 	fmt.Println("  auditd rules removed")
+
+	// Remove WHM plugin
+	os.Remove("/usr/local/cpanel/whostmgr/docroot/cgi/addon_csm.cgi")
+	os.Remove("/var/cpanel/apps/csm.conf")
+	fmt.Println("  WHM plugin removed")
+
+	// Remove ModSecurity custom rules
+	for _, p := range []string{
+		"/etc/apache2/conf.d/modsec/modsec2.user.conf",
+		"/etc/apache2/conf.d/csm_challenge.conf",
+	} {
+		os.Remove(p)
+	}
 
 	// Remove binary and state
 	os.Remove(inst.BinaryPath)
@@ -462,6 +486,92 @@ func deployCron(binaryPath string) error {
 			"5 * * * * root %s run-deep >> /var/log/csm/monitor.log 2>&1\n",
 		binaryPath, binaryPath)
 	return os.WriteFile("/etc/cron.d/csm", []byte(content), 0644)
+}
+
+// InstallWHMPlugin deploys the CGI proxy and AppConfig registration
+// so CSM appears in the WHM sidebar under Security.
+func (inst *Installer) InstallWHMPlugin() error {
+	// Check if cPanel is installed
+	if _, err := os.Stat("/usr/local/cpanel"); os.IsNotExist(err) {
+		return fmt.Errorf("cPanel not found")
+	}
+
+	cgiDest := "/usr/local/cpanel/whostmgr/docroot/cgi/addon_csm.cgi"
+	confDest := "/var/cpanel/apps/csm.conf"
+
+	// Deploy CGI proxy
+	cgiSrc := "/opt/csm/configs/whm/addon_csm.cgi"
+	if _, err := os.Stat(cgiSrc); os.IsNotExist(err) {
+		// Try embedded path relative to binary
+		cgiSrc = filepath.Join(filepath.Dir(inst.BinaryPath), "configs", "whm", "addon_csm.cgi")
+	}
+
+	cgiData, err := os.ReadFile(cgiSrc)
+	if err != nil {
+		return fmt.Errorf("reading CGI script: %w", err)
+	}
+	if err := os.WriteFile(cgiDest, cgiData, 0755); err != nil {
+		return fmt.Errorf("deploying CGI: %w", err)
+	}
+
+	// Deploy AppConfig
+	confSrc := "/opt/csm/configs/whm/csm.conf"
+	if _, err := os.Stat(confSrc); os.IsNotExist(err) {
+		confSrc = filepath.Join(filepath.Dir(inst.BinaryPath), "configs", "whm", "csm.conf")
+	}
+
+	confData, err := os.ReadFile(confSrc)
+	if err != nil {
+		return fmt.Errorf("reading AppConfig: %w", err)
+	}
+	os.MkdirAll("/var/cpanel/apps", 0755)
+	if err := os.WriteFile(confDest, confData, 0644); err != nil {
+		return fmt.Errorf("deploying AppConfig: %w", err)
+	}
+
+	fmt.Printf("  WHM plugin installed (CGI: %s)\n", cgiDest)
+	return nil
+}
+
+// DeployModSecRules copies CSM's ModSecurity virtual patches.
+func (inst *Installer) DeployModSecRules() {
+	src := "/opt/csm/configs/csm_modsec_custom.conf"
+	if _, err := os.Stat(src); os.IsNotExist(err) {
+		return
+	}
+
+	dests := []string{
+		"/etc/apache2/conf.d/modsec/modsec2.user.conf",
+		"/usr/local/apache/conf/modsec2.user.conf",
+	}
+	for _, dest := range dests {
+		if _, err := os.Stat(filepath.Dir(dest)); os.IsNotExist(err) {
+			continue
+		}
+		data, _ := os.ReadFile(src)
+		if err := os.WriteFile(dest, data, 0644); err == nil {
+			fmt.Printf("  ModSecurity virtual patches deployed to %s\n", dest)
+			return
+		}
+	}
+}
+
+// DeployChallengeConfig copies the Apache challenge redirect config.
+func (inst *Installer) DeployChallengeConfig() {
+	src := "/opt/csm/configs/csm_challenge.conf"
+	if _, err := os.Stat(src); os.IsNotExist(err) {
+		return
+	}
+
+	dest := "/etc/apache2/conf.d/csm_challenge.conf"
+	if _, err := os.Stat(filepath.Dir(dest)); os.IsNotExist(err) {
+		return
+	}
+
+	data, _ := os.ReadFile(src)
+	if err := os.WriteFile(dest, data, 0644); err == nil {
+		fmt.Printf("  Challenge page config deployed to %s\n", dest)
+	}
 }
 
 const phpShieldPath = "/opt/csm/php_shield.php"

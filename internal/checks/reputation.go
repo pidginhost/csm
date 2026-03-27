@@ -114,7 +114,7 @@ func CheckIPReputation(cfg *config.Config, _ *state.Store) []alert.Finding {
 
 		if score >= abuseConfidenceThreshold {
 			findings = append(findings, alert.Finding{
-				Severity:  alert.Critical,
+				Severity:  alert.High,
 				Check:     "ip_reputation",
 				Message:   fmt.Sprintf("Known malicious IP accessing server: %s (AbuseIPDB score: %d/100)", ip, score),
 				Details:   fmt.Sprintf("Category: %s\nThis IP is reported in threat intelligence databases", category),
