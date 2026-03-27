@@ -22,8 +22,9 @@ type ThreatDB struct {
 	mu         sync.RWMutex
 	badIPs     map[string]string // ip -> source/reason
 	badNets    []*net.IPNet      // CIDR ranges from feeds
-	whitelist  map[string]bool   // IPs to never flag
-	lastUpdate time.Time
+	whitelist     map[string]bool              // IPs to never flag
+	whitelistMeta map[string]*whitelistEntry  // expiry metadata
+	lastUpdate    time.Time
 	dbPath     string
 
 	// Stats for WebUI
@@ -165,54 +166,124 @@ func (db *ThreatDB) RemovePermanent(ip string) {
 	_ = os.Rename(tmpPath, path)
 }
 
-// AddWhitelist adds an IP to the whitelist (never flag as malicious).
-// Persists to disk so it survives restarts.
+// whitelistEntry tracks an IP with optional expiry.
+type whitelistEntry struct {
+	ExpiresAt time.Time // zero = permanent
+}
+
+// AddWhitelist adds an IP to the permanent whitelist.
 func (db *ThreatDB) AddWhitelist(ip string) {
+	db.addWhitelistEntry(ip, time.Time{})
+}
+
+// TempWhitelist adds an IP to the whitelist with a TTL.
+func (db *ThreatDB) TempWhitelist(ip string, ttl time.Duration) {
+	db.addWhitelistEntry(ip, time.Now().Add(ttl))
+}
+
+func (db *ThreatDB) addWhitelistEntry(ip string, expiresAt time.Time) {
 	db.mu.Lock()
 	db.whitelist[ip] = true
+	if db.whitelistMeta == nil {
+		db.whitelistMeta = make(map[string]*whitelistEntry)
+	}
+	db.whitelistMeta[ip] = &whitelistEntry{ExpiresAt: expiresAt}
 	delete(db.badIPs, ip)
 	db.mu.Unlock()
 
-	// Append to persistent whitelist file
-	f, err := os.OpenFile(filepath.Join(db.dbPath, "whitelist.txt"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
-	if err != nil {
-		return
-	}
-	defer func() { _ = f.Close() }()
-	fmt.Fprintf(f, "%s # whitelisted [%s]\n", ip, time.Now().Format("2006-01-02"))
+	db.saveWhitelistFile()
 }
 
 // RemoveWhitelist removes an IP from the whitelist.
 func (db *ThreatDB) RemoveWhitelist(ip string) {
 	db.mu.Lock()
 	delete(db.whitelist, ip)
+	delete(db.whitelistMeta, ip)
 	db.mu.Unlock()
 
-	// Rewrite whitelist file without this IP
+	db.saveWhitelistFile()
+}
+
+// PruneExpiredWhitelist removes expired temporary whitelist entries.
+// Called periodically from the daemon heartbeat.
+func (db *ThreatDB) PruneExpiredWhitelist() int {
+	now := time.Now()
+	pruned := 0
+	db.mu.Lock()
+	for ip, entry := range db.whitelistMeta {
+		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
+			delete(db.whitelist, ip)
+			delete(db.whitelistMeta, ip)
+			pruned++
+		}
+	}
+	db.mu.Unlock()
+
+	if pruned > 0 {
+		db.saveWhitelistFile()
+		fmt.Fprintf(os.Stderr, "[%s] Pruned %d expired whitelist entries\n",
+			time.Now().Format("2006-01-02 15:04:05"), pruned)
+	}
+	return pruned
+}
+
+// WhitelistInfo returns all whitelisted IPs with their expiry info.
+type WhitelistIP struct {
+	IP        string     `json:"ip"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"` // nil = permanent
+	Permanent bool       `json:"permanent"`
+}
+
+func (db *ThreatDB) WhitelistedIPs() []WhitelistIP {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	var ips []string
+	for ip := range db.whitelist {
+		ips = append(ips, ip)
+	}
+	sort.Strings(ips)
+
+	result := make([]WhitelistIP, len(ips))
+	for i, ip := range ips {
+		entry := db.whitelistMeta[ip]
+		w := WhitelistIP{IP: ip, Permanent: true}
+		if entry != nil && !entry.ExpiresAt.IsZero() {
+			t := entry.ExpiresAt
+			w.ExpiresAt = &t
+			w.Permanent = false
+		}
+		result[i] = w
+	}
+	return result
+}
+
+func (db *ThreatDB) saveWhitelistFile() {
 	path := filepath.Join(db.dbPath, "whitelist.txt")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return
-	}
-	var kept []string
-	for _, line := range strings.Split(string(data), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
+	db.mu.RLock()
+	var lines []string
+	for ip := range db.whitelist {
+		entry := db.whitelistMeta[ip]
+		if entry != nil && !entry.ExpiresAt.IsZero() {
+			lines = append(lines, fmt.Sprintf("%s expires=%s", ip, entry.ExpiresAt.Format(time.RFC3339)))
+		} else {
+			lines = append(lines, fmt.Sprintf("%s permanent", ip))
 		}
-		fields := strings.Fields(trimmed)
-		if len(fields) > 0 && fields[0] == ip {
-			continue
-		}
-		kept = append(kept, line)
 	}
+	db.mu.RUnlock()
+
+	sort.Strings(lines)
 	tmpPath := path + ".tmp"
-	_ = os.WriteFile(tmpPath, []byte(strings.Join(kept, "\n")+"\n"), 0600)
+	_ = os.WriteFile(tmpPath, []byte(strings.Join(lines, "\n")+"\n"), 0600)
 	_ = os.Rename(tmpPath, path)
 }
 
 // loadPersistedWhitelist loads IPs from the whitelist file into memory.
 func (db *ThreatDB) loadPersistedWhitelist() {
+	if db.whitelistMeta == nil {
+		db.whitelistMeta = make(map[string]*whitelistEntry)
+	}
+
 	path := filepath.Join(db.dbPath, "whitelist.txt")
 	f, err := os.Open(path)
 	if err != nil {
@@ -220,31 +291,47 @@ func (db *ThreatDB) loadPersistedWhitelist() {
 	}
 	defer func() { _ = f.Close() }()
 
+	now := time.Now()
+	needsRewrite := false
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		ip := strings.Fields(line)[0]
-		if net.ParseIP(ip) != nil {
-			db.whitelist[ip] = true
-			// Ensure whitelisted IPs are never in badIPs
-			delete(db.badIPs, ip)
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
 		}
-	}
-}
+		ip := fields[0]
+		if net.ParseIP(ip) == nil {
+			continue
+		}
 
-// WhitelistedIPs returns all whitelisted IPs.
-func (db *ThreatDB) WhitelistedIPs() []string {
-	db.mu.RLock()
-	defer db.mu.RUnlock()
-	ips := make([]string, 0, len(db.whitelist))
-	for ip := range db.whitelist {
-		ips = append(ips, ip)
+		entry := &whitelistEntry{}
+		// Parse "expires=2026-03-28T19:00:00Z" if present
+		for _, f := range fields[1:] {
+			if strings.HasPrefix(f, "expires=") {
+				if t, err := time.Parse(time.RFC3339, f[8:]); err == nil {
+					entry.ExpiresAt = t
+				}
+			}
+		}
+
+		// Skip expired entries
+		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
+			needsRewrite = true
+			continue
+		}
+
+		db.whitelist[ip] = true
+		db.whitelistMeta[ip] = entry
+		delete(db.badIPs, ip)
 	}
-	sort.Strings(ips)
-	return ips
+
+	if needsRewrite {
+		go db.saveWhitelistFile() // clean up expired entries from file
+	}
 }
 
 // Count returns the total number of entries in the database.
