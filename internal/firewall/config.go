@@ -89,7 +89,7 @@ func DefaultConfig() *FirewallConfig {
 		},
 		UDPIn:              []int{53, 443},
 		UDPOut:             []int{53, 113, 123, 443, 873},
-		RestrictedTCP:      []int{2086, 2087, 2325},
+		RestrictedTCP:      []int{2086, 2087, 2325, 9443},
 		PassiveFTPStart:    49152,
 		PassiveFTPEnd:      65534,
 		ConnRateLimit:      30,

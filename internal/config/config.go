@@ -135,7 +135,7 @@ func Load(path string) (*Config, error) {
 		cfg.Signatures.RulesDir = "/opt/csm/rules"
 	}
 	if cfg.WebUI.Listen == "" {
-		cfg.WebUI.Listen = "localhost:9443"
+		cfg.WebUI.Listen = "0.0.0.0:9443"
 	}
 	if cfg.Thresholds.MailQueueWarn == 0 {
 		cfg.Thresholds.MailQueueWarn = 500

@@ -397,6 +397,11 @@ func (s *Server) apiUnblockIP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if net.ParseIP(req.IP) == nil {
+		writeJSONError(w, "Invalid IP address", http.StatusBadRequest)
+		return
+	}
+
 	if s.blocker != nil {
 		if err := s.blocker.UnblockIP(req.IP); err != nil {
 			writeJSONError(w, fmt.Sprintf("Unblock failed: %v", err), http.StatusInternalServerError)

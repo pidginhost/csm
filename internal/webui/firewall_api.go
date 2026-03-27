@@ -3,6 +3,7 @@ package webui
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"time"
 
@@ -128,6 +129,10 @@ func (s *Server) apiFirewallDenySubnet(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "CIDR is required", http.StatusBadRequest)
 		return
 	}
+	if _, _, err := net.ParseCIDR(req.CIDR); err != nil {
+		writeJSONError(w, "Invalid CIDR notation", http.StatusBadRequest)
+		return
+	}
 	if req.Reason == "" {
 		req.Reason = "Blocked via CSM Web UI"
 	}
@@ -159,6 +164,10 @@ func (s *Server) apiFirewallRemoveSubnet(w http.ResponseWriter, r *http.Request)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.CIDR == "" {
 		writeJSONError(w, "CIDR is required", http.StatusBadRequest)
+		return
+	}
+	if _, _, err := net.ParseCIDR(req.CIDR); err != nil {
+		writeJSONError(w, "Invalid CIDR notation", http.StatusBadRequest)
 		return
 	}
 
