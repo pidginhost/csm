@@ -212,6 +212,52 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 	return actions
 }
 
+// AutoFixPermissions sets world/group-writable PHP files to 0644.
+func AutoFixPermissions(cfg *config.Config, findings []alert.Finding) []alert.Finding {
+	if !cfg.AutoResponse.Enabled || !cfg.AutoResponse.EnforcePermissions {
+		return nil
+	}
+
+	var actions []alert.Finding
+
+	for _, f := range findings {
+		switch f.Check {
+		case "world_writable_php", "group_writable_php":
+		default:
+			continue
+		}
+
+		path := extractFilePath(f.Message)
+		if path == "" {
+			continue
+		}
+
+		// Verify it's under /home/ (never touch system files)
+		if !strings.HasPrefix(path, "/home/") {
+			continue
+		}
+
+		info, err := os.Stat(path)
+		if err != nil || info.IsDir() {
+			continue
+		}
+
+		oldMode := info.Mode().Perm()
+		if err := os.Chmod(path, 0644); err != nil {
+			continue
+		}
+
+		actions = append(actions, alert.Finding{
+			Severity:  alert.Warning,
+			Check:     "auto_response",
+			Message:   fmt.Sprintf("AUTO-FIX: %s permissions set to 644 (was %o)", path, oldMode),
+			Timestamp: time.Now(),
+		})
+	}
+
+	return actions
+}
+
 func extractPID(details string) string {
 	// Look for "PID: 12345" pattern
 	if idx := strings.Index(details, "PID: "); idx >= 0 {
