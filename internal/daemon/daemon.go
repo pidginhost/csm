@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -68,6 +69,9 @@ func (d *Daemon) Run() error {
 		_ = alert.Dispatch(d.cfg, []alert.Finding{tamper})
 		return fmt.Errorf("integrity check failed: %w", err)
 	}
+
+	// Deploy WHM plugin and configs if cPanel is present
+	deployConfigs()
 
 	// Initialize signature scanners and threat DB (fast, no I/O scan)
 	if yaraScanner := yara.Init(d.cfg.Signatures.RulesDir); yaraScanner != nil {
@@ -583,6 +587,43 @@ func (d *Daemon) reloadSignatures() {
 			fmt.Fprintf(os.Stderr, "[%s] YARA rule reload error: %v\n", ts(), err)
 		} else {
 			fmt.Fprintf(os.Stderr, "[%s] Reloaded %d YARA rule file(s)\n", ts(), yaraScanner.RuleCount())
+		}
+	}
+}
+
+// deployConfigs copies bundled config files to their system locations on startup.
+// Ensures WHM plugin CGI and ModSec rules stay current after binary upgrades.
+func deployConfigs() {
+	base := "/opt/csm/configs"
+
+	// WHM plugin CGI
+	if _, err := os.Stat("/usr/local/cpanel"); err == nil {
+		src := base + "/whm/addon_csm.cgi"
+		dst := "/usr/local/cpanel/whostmgr/docroot/cgi/addon_csm.cgi"
+		if data, err := os.ReadFile(src); err == nil {
+			if err := os.WriteFile(dst, data, 0755); err == nil {
+				fmt.Fprintf(os.Stderr, "[%s] WHM plugin CGI deployed\n", ts())
+			}
+		}
+		// AppConfig
+		src = base + "/whm/csm.conf"
+		if data, err := os.ReadFile(src); err == nil {
+			_ = os.MkdirAll("/var/cpanel/apps", 0755)
+			_ = os.WriteFile("/var/cpanel/apps/csm.conf", data, 0644)
+		}
+	}
+
+	// ModSecurity virtual patches
+	src := base + "/csm_modsec_custom.conf"
+	if data, err := os.ReadFile(src); err == nil {
+		for _, dst := range []string{
+			"/etc/apache2/conf.d/modsec/modsec2.user.conf",
+			"/usr/local/apache/conf/modsec2.user.conf",
+		} {
+			if _, err := os.Stat(filepath.Dir(dst)); err == nil {
+				_ = os.WriteFile(dst, data, 0644)
+				break
+			}
 		}
 	}
 }
