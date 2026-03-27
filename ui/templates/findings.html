@@ -150,29 +150,31 @@ document.getElementById('check-filter').addEventListener('change', function() {
 function fixOne(btn) {
     var row = btn.closest('tr');
     var desc = row.getAttribute('data-fixdesc');
-    if (!confirm('Apply fix?\n\n' + desc)) return;
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
-    CSM.post('/api/v1/fix', {
-        check: row.getAttribute('data-check'),
-        message: row.getAttribute('data-message')
-    }).then(function(data) {
-        if (data.success) {
-            row.style.opacity = '0.3';
-            btn.innerHTML = '<i class="ti ti-check"></i>';
-            btn.className = 'btn btn-success btn-sm me-1';
-            setTimeout(function() { location.reload(); }, 1000);
-        } else {
-            alert('Fix failed: ' + (data.error || 'unknown'));
-            btn.disabled = false;
-            btn.innerHTML = '<i class="ti ti-tool"></i>';
-        }
-    }).catch(function(e) { alert('Error: ' + e); btn.disabled = false; btn.innerHTML = '<i class="ti ti-tool"></i>'; });
+    CSM.confirm('Apply fix?\n\n' + desc).then(function() {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+        CSM.post('/api/v1/fix', {
+            check: row.getAttribute('data-check'),
+            message: row.getAttribute('data-message')
+        }).then(function(data) {
+            if (data.success) {
+                row.style.opacity = '0.3';
+                btn.innerHTML = '<i class="ti ti-check"></i>';
+                btn.className = 'btn btn-success btn-sm me-1';
+                setTimeout(function() { location.reload(); }, 1000);
+            } else {
+                CSM.toast('Fix failed: ' + (data.error || 'unknown'), 'error');
+                btn.disabled = false;
+                btn.innerHTML = '<i class="ti ti-tool"></i>';
+            }
+        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); btn.disabled = false; btn.innerHTML = '<i class="ti ti-tool"></i>'; });
+    }).catch(function() {});
 }
 
 function dismissOne(key) {
-    if (!confirm('Dismiss this finding?')) return;
-    CSM.post('/api/v1/dismiss', {key: key}).then(function() { location.reload(); }).catch(function(e) { alert('Error: ' + e); });
+    CSM.confirm('Dismiss this finding?').then(function() {
+        CSM.post('/api/v1/dismiss', {key: key}).then(function() { location.reload(); }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+    }).catch(function() {});
 }
 
 // --- Bulk actions ---
@@ -190,28 +192,31 @@ function bulkAction(action) {
 
     if (action === 'fix') {
         var fixable = items.filter(function(i) { return i.fixable; });
-        if (fixable.length === 0) { alert('None of the selected findings have automated fixes.'); return; }
-        if (!confirm('Fix ' + fixable.length + ' finding(s)?\n\nThis will apply automated fixes (chmod, quarantine, etc.) to the selected items.')) return;
-        var fixItems = fixable.map(function(i) { return { check: i.check, message: i.message, details: '' }; });
-        CSM.post('/api/v1/fix-bulk', fixItems).then(function(data) {
-            alert('Fixed ' + data.succeeded + ' of ' + data.total + (data.failed > 0 ? ' (' + data.failed + ' failed)' : ''));
-            location.reload();
-        }).catch(function(e) { alert('Error: ' + e); });
+        if (fixable.length === 0) { CSM.toast('None of the selected findings have automated fixes.', 'warning'); return; }
+        CSM.confirm('Fix ' + fixable.length + ' finding(s)?\n\nThis will apply automated fixes (chmod, quarantine, etc.) to the selected items.').then(function() {
+            var fixItems = fixable.map(function(i) { return { check: i.check, message: i.message, details: '' }; });
+            CSM.post('/api/v1/fix-bulk', fixItems).then(function(data) {
+                CSM.toast('Fixed ' + data.succeeded + ' of ' + data.total + (data.failed > 0 ? ' (' + data.failed + ' failed)' : ''), 'success');
+                location.reload();
+            }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        }).catch(function() {});
 
     } else if (action === 'dismiss') {
-        if (!confirm('Dismiss ' + items.length + ' finding(s)?')) return;
-        var promises = items.map(function(i) {
-            return CSM.post('/api/v1/dismiss', { key: i.check + ':' + i.message });
-        });
-        Promise.all(promises).then(function() { location.reload(); }).catch(function(e) { alert('Error: ' + e); });
+        CSM.confirm('Dismiss ' + items.length + ' finding(s)?').then(function() {
+            var promises = items.map(function(i) {
+                return CSM.post('/api/v1/dismiss', { key: i.check + ':' + i.message });
+            });
+            Promise.all(promises).then(function() { location.reload(); }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        }).catch(function() {});
 
     } else if (action === 'quarantine') {
-        if (!confirm('Quarantine ' + items.length + ' file(s)?\n\nFiles will be moved to /opt/csm/quarantine/')) return;
-        var quarItems = items.map(function(i) { return { check: i.check, message: i.message, details: '' }; });
-        CSM.post('/api/v1/fix-bulk', quarItems).then(function(data) {
-            alert('Quarantined ' + data.succeeded + ' of ' + data.total);
-            location.reload();
-        }).catch(function(e) { alert('Error: ' + e); });
+        CSM.confirm('Quarantine ' + items.length + ' file(s)?\n\nFiles will be moved to /opt/csm/quarantine/').then(function() {
+            var quarItems = items.map(function(i) { return { check: i.check, message: i.message, details: '' }; });
+            CSM.post('/api/v1/fix-bulk', quarItems).then(function(data) {
+                CSM.toast('Quarantined ' + data.succeeded + ' of ' + data.total, 'success');
+                location.reload();
+            }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        }).catch(function() {});
     }
 }
 
@@ -249,14 +254,15 @@ document.getElementById('scan-form').addEventListener('submit', function(e) {
             btn.addEventListener('click', function() {
                 var check = this.getAttribute('data-check');
                 var message = this.getAttribute('data-message');
-                if (!confirm('Apply fix for ' + check + '?')) return;
-                this.disabled = true;
-                this.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
                 var self = this;
-                CSM.post('/api/v1/fix', {check: check, message: message}).then(function(d) {
-                    if (d.success) { self.innerHTML = '<i class="ti ti-check"></i>'; self.className = 'btn btn-success btn-sm'; }
-                    else { alert('Failed: ' + (d.error||'')); self.disabled = false; self.innerHTML = '<i class="ti ti-tool"></i>&nbsp;Fix'; }
-                }).catch(function(e) { alert('Error: '+e); self.disabled=false; self.innerHTML='<i class="ti ti-tool"></i>&nbsp;Fix'; });
+                CSM.confirm('Apply fix for ' + check + '?').then(function() {
+                    self.disabled = true;
+                    self.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+                    CSM.post('/api/v1/fix', {check: check, message: message}).then(function(d) {
+                        if (d.success) { self.innerHTML = '<i class="ti ti-check"></i>'; self.className = 'btn btn-success btn-sm'; }
+                        else { CSM.toast('Failed: ' + (d.error||''), 'error'); self.disabled = false; self.innerHTML = '<i class="ti ti-tool"></i>&nbsp;Fix'; }
+                    }).catch(function(e) { CSM.toast('Error: '+e, 'error'); self.disabled=false; self.innerHTML='<i class="ti ti-tool"></i>&nbsp;Fix'; });
+                }).catch(function() {});
             });
         });
     }).catch(function(e) { btn.disabled=false; btn.innerHTML='<i class="ti ti-radar-2"></i>&nbsp;Scan'; status.textContent='Error: '+e; status.className='text-danger small'; });

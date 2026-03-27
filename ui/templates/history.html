@@ -4,14 +4,21 @@
     <div class="card">
         <div class="card-header">
             <h3 class="card-title"><i class="ti ti-history"></i>&nbsp;Finding History</h3>
-            <div class="card-actions d-flex gap-2">
-                <input type="text" id="history-search" class="form-control form-control-sm" placeholder="Search..." style="width:200px">
+            <div class="card-actions d-flex gap-2 flex-wrap align-items-center">
+                <input type="text" id="history-search" class="form-control form-control-sm" placeholder="Search..." style="width:160px">
                 <select id="sev-filter" class="form-select form-select-sm" style="width:auto">
                     <option value="all">All Severities</option>
                     <option value="critical">Critical</option>
                     <option value="high">High</option>
                     <option value="warning">Warning</option>
                 </select>
+                <form id="date-range-form" class="d-flex gap-1 align-items-center" method="get" action="/history">
+                    <input type="date" name="from" class="form-control form-control-sm" style="width:140px" value="{{.FromDate}}" title="From date">
+                    <span class="text-muted small">to</span>
+                    <input type="date" name="to" class="form-control form-control-sm" style="width:140px" value="{{.ToDate}}" title="To date">
+                    <button type="submit" class="btn btn-primary btn-sm"><i class="ti ti-filter"></i></button>
+                    {{if or .FromDate .ToDate}}<a href="/history" class="btn btn-ghost-secondary btn-sm" title="Clear filter"><i class="ti ti-x"></i></a>{{end}}
+                </form>
                 <a href="/api/v1/history/csv" class="btn btn-ghost-secondary btn-sm"><i class="ti ti-download"></i>&nbsp;CSV</a>
             </div>
         </div>

@@ -192,6 +192,7 @@ func (s *Server) apiThreatWhitelistIP(w http.ResponseWriter, r *http.Request) {
 	// 4. Flush cphulk
 	_, _ = exec.Command("whmapi1", "flush_cphulk_login_history_for_ips", "ip="+req.IP).Output()
 
+	s.auditLog(r, "whitelist_ip", req.IP, "permanent whitelist")
 	writeJSON(w, map[string]interface{}{
 		"status":  "whitelisted",
 		"ip":      req.IP,
@@ -293,6 +294,7 @@ func (s *Server) apiThreatClearIP(w http.ResponseWriter, r *http.Request) {
 	_, _ = exec.Command("whmapi1", "flush_cphulk_login_history_for_ips", "ip="+req.IP).Output()
 	actions = append(actions, "flushed cPanel login history")
 
+	s.auditLog(r, "clear_ip", req.IP, "unblock & clear")
 	writeJSON(w, map[string]interface{}{
 		"status":  "cleared",
 		"ip":      req.IP,
@@ -362,6 +364,7 @@ func (s *Server) apiThreatTempWhitelistIP(w http.ResponseWriter, r *http.Request
 	// 4. Flush cphulk
 	_, _ = exec.Command("whmapi1", "flush_cphulk_login_history_for_ips", "ip="+req.IP).Output()
 
+	s.auditLog(r, "temp_whitelist_ip", req.IP, fmt.Sprintf("%dh temp whitelist", req.Hours))
 	writeJSON(w, map[string]interface{}{
 		"status":  "temp_whitelisted",
 		"ip":      req.IP,

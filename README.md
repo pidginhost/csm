@@ -649,27 +649,27 @@ csm firewall migrate-from-csf [--apply] CSF migration (dry-run default)
 - Messenger (redirect blocked users to explanation page instead of dropping)
 
 ### Web UI — Security Hardening
+- ~~Audit log of all UI actions (who blocked/unblocked/dismissed what)~~ Done: `ui_audit.jsonl` + `/api/v1/audit`
 - Move inline JavaScript to external files for strict CSP
 - CORS/origin validation on API endpoints
-- Audit log of all UI actions (who blocked/unblocked/dismissed what)
 
 ### Web UI — Features
+- ~~Date range picker on history page~~ Done: from/to date inputs with server-side filtering
+- ~~Bulk actions: dismiss multiple findings, restore multiple files, unblock multiple IPs~~ Done: bulk dismiss/fix on findings, bulk unblock on blocked IPs
 - Account view page: per-account findings, quarantine, login history
-- Date range picker on history page
 - Rule management: view loaded YAML/YARA rules, trigger reload via UI
-- Bulk actions: dismiss multiple findings, restore multiple files, unblock multiple IPs
 
 ### Web UI — UX
-- Responsive mobile layout (media queries, hamburger menu)
-- Toast notifications instead of alert() dialogs
-- Dark/light theme toggle
+- ~~Toast notifications instead of alert() dialogs~~ Done: `CSM.toast()` + `CSM.confirm()` modal
+- ~~Dark/light theme toggle~~ Done: localStorage-persisted theme toggle
+- ~~Responsive mobile layout~~ Done: Tabler/Bootstrap responsive grid + viewport meta
 
 ### Imunify360 Parity
+- ~~CAPTCHA/challenge pages instead of hard IP blocks (gray listing)~~ Done: proof-of-work challenge server
 - Trusted country IP filtering for cPanel login alerts (reduce false positives)
-- CAPTCHA/challenge pages instead of hard IP blocks (gray listing)
 - Virtual patching — auto-updated WAF rules for new WordPress CVEs
 
 ### Platform
-- WHM plugin integration for Web UI dashboard
+- ~~WHM plugin integration for Web UI dashboard~~ Done: CGI redirect plugin
 - Binary signing with cosign
 - Multi-server config management

@@ -293,43 +293,46 @@ document.getElementById('add-wl-form').addEventListener('submit',function(e){
 });
 
 function removeWhitelist(ip) {
-    if(!confirm('Remove '+ip+' from whitelist?\n\nThis IP will be subject to threat detection and auto-blocking again.'))return;
-    CSM.post('/api/v1/threat/unwhitelist-ip',{ip:ip}).then(function(data){
-        if(data.error){alert('Error: '+data.error);return;}
-        loadWhitelist();
-    }).catch(function(e){alert('Error: '+e)});
+    CSM.confirm('Remove '+ip+' from whitelist?\n\nThis IP will be subject to threat detection and auto-blocking again.').then(function() {
+        CSM.post('/api/v1/threat/unwhitelist-ip',{ip:ip}).then(function(data){
+            if(data.error){CSM.toast('Error: '+data.error,'error');return;}
+            loadWhitelist();
+        }).catch(function(e){CSM.toast('Error: '+e,'error')});
+    }).catch(function() {});
 }
 
 function clearIP(ip) {
-    if(!confirm('Unblock & Clear '+ip+'?\n\nThis will unblock and remove from all databases, but will NOT whitelist.\nThe IP can be re-blocked if it triggers detections again.\n\nUse this for dynamic IP customers.'))return;
-    CSM.post('/api/v1/threat/clear-ip',{ip:ip}).then(function(data){
-        if(data.error){alert('Error: '+data.error);return;}
-        alert('IP '+ip+' cleared.\n\nActions: '+(data.actions||[]).join(', '));
-        document.getElementById('lookup-form').dispatchEvent(new Event('submit'));
-    }).catch(function(e){alert('Error: '+e)});
+    CSM.confirm('Unblock & Clear '+ip+'?\n\nThis will unblock and remove from all databases, but will NOT whitelist.\nThe IP can be re-blocked if it triggers detections again.\n\nUse this for dynamic IP customers.').then(function() {
+        CSM.post('/api/v1/threat/clear-ip',{ip:ip}).then(function(data){
+            if(data.error){CSM.toast('Error: '+data.error,'error');return;}
+            CSM.toast('IP '+ip+' cleared.\n\nActions: '+(data.actions||[]).join(', '),'success');
+            document.getElementById('lookup-form').dispatchEvent(new Event('submit'));
+        }).catch(function(e){CSM.toast('Error: '+e,'error')});
+    }).catch(function() {});
 }
 
 function tempWhitelistIP(ip) {
-    var hours=prompt('Temp whitelist '+ip+' for how many hours?','24');
-    if(!hours)return;
-    hours=parseInt(hours,10);
-    if(isNaN(hours)||hours<1){alert('Invalid number of hours');return;}
-    CSM.post('/api/v1/threat/temp-whitelist-ip',{ip:ip,hours:hours}).then(function(data){
-        if(data.error){alert('Error: '+data.error);return;}
-        alert('IP '+ip+' temp-whitelisted for '+data.hours+'h.\n\nActions: '+(data.actions||[]).join(', '));
-        loadWhitelist();
-        document.getElementById('lookup-form').dispatchEvent(new Event('submit'));
-    }).catch(function(e){alert('Error: '+e)});
+    CSM.prompt('Temp whitelist '+ip+' for how many hours?','24').then(function(hours) {
+        hours=parseInt(hours,10);
+        if(isNaN(hours)||hours<1){CSM.toast('Invalid number of hours','warning');return;}
+        CSM.post('/api/v1/threat/temp-whitelist-ip',{ip:ip,hours:hours}).then(function(data){
+            if(data.error){CSM.toast('Error: '+data.error,'error');return;}
+            CSM.toast('IP '+ip+' temp-whitelisted for '+data.hours+'h.\n\nActions: '+(data.actions||[]).join(', '),'success');
+            loadWhitelist();
+            document.getElementById('lookup-form').dispatchEvent(new Event('submit'));
+        }).catch(function(e){CSM.toast('Error: '+e,'error')});
+    }).catch(function() {});
 }
 
 function whitelistIP(ip) {
-    if(!confirm('Permanently whitelist '+ip+'?\n\nUse this only for static IPs (offices, dedicated servers).\nFor dynamic IPs, use "Temp Whitelist" instead.\n\nThis will:\n- Unblock from firewall\n- Add to permanent allow list\n- Remove from all threat databases\n- Never flag this IP again'))return;
-    CSM.post('/api/v1/threat/whitelist-ip',{ip:ip}).then(function(data){
-        if(data.error){alert('Error: '+data.error);return;}
-        alert('IP '+ip+' permanently whitelisted.\n\nActions: '+(data.actions||[]).join(', '));
-        loadWhitelist();
-        document.getElementById('lookup-form').dispatchEvent(new Event('submit'));
-    }).catch(function(e){alert('Error: '+e)});
+    CSM.confirm('Permanently whitelist '+ip+'?\n\nUse this only for static IPs (offices, dedicated servers).\nFor dynamic IPs, use "Temp Whitelist" instead.\n\nThis will:\n- Unblock from firewall\n- Add to permanent allow list\n- Remove from all threat databases\n- Never flag this IP again').then(function() {
+        CSM.post('/api/v1/threat/whitelist-ip',{ip:ip}).then(function(data){
+            if(data.error){CSM.toast('Error: '+data.error,'error');return;}
+            CSM.toast('IP '+ip+' permanently whitelisted.\n\nActions: '+(data.actions||[]).join(', '),'success');
+            loadWhitelist();
+            document.getElementById('lookup-form').dispatchEvent(new Event('submit'));
+        }).catch(function(e){CSM.toast('Error: '+e,'error')});
+    }).catch(function() {});
 }
 </script>
 {{end}}

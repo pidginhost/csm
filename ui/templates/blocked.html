@@ -24,8 +24,11 @@
     <div class="card">
         <div class="card-header">
             <h3 class="card-title"><i class="ti ti-shield-off"></i>&nbsp;Currently Blocked</h3>
-            <div class="card-actions">
-                <input type="text" id="blocked-search" class="form-control form-control-sm" placeholder="Search..." style="width:200px">
+            <div class="card-actions d-flex gap-2 align-items-center">
+                <input type="text" id="blocked-search" class="form-control form-control-sm" placeholder="Search..." style="width:160px">
+                <div id="bulk-unblock" class="d-none">
+                    <button class="btn btn-success btn-sm" onclick="bulkUnblock()"><i class="ti ti-shield-check"></i>&nbsp;Unblock Selected (<span id="unblock-count">0</span>)</button>
+                </div>
             </div>
         </div>
         <div id="blocked-content">
@@ -39,10 +42,10 @@ function loadBlocked() {
     fetch('/api/v1/blocked-ips', {credentials:'same-origin'}).then(function(r){return r.json()}).then(function(ips){
         var el = document.getElementById('blocked-content');
         if (!ips || ips.length === 0) { el.innerHTML = '<div class="card-body text-center text-muted py-4"><i class="ti ti-circle-check"></i> No blocked IPs.</div>'; return; }
-        var html = '<div class="table-responsive"><table class="table table-vcenter card-table" id="blocked-table"><thead><tr><th>IP</th><th>Reason</th><th>Blocked</th><th>Expires</th><th>Action</th></tr></thead><tbody>';
+        var html = '<div class="table-responsive"><table class="table table-vcenter card-table" id="blocked-table"><thead><tr><th style="width:30px"><input type="checkbox" class="form-check-input" id="select-all-blocked" onchange="toggleAllBlocked()"></th><th>IP</th><th>Reason</th><th>Blocked</th><th>Expires</th><th>Action</th></tr></thead><tbody>';
         for (var i = 0; i < ips.length; i++) {
             var ip = ips[i];
-            html += '<tr><td><code>'+esc(ip.ip)+'</code></td><td class="small">'+esc(ip.reason)+'</td><td class="text-nowrap small text-muted">'+esc(ip.blocked_at)+'</td><td>'+esc(ip.expires_in)+'</td><td><button onclick="unblockIP(\''+esc(ip.ip)+'\')" class="btn btn-sm btn-success">Unblock</button></td></tr>';
+            html += '<tr><td><input type="checkbox" class="form-check-input blocked-cb" data-ip="'+esc(ip.ip)+'" onchange="updateUnblockCount()"></td><td><code>'+esc(ip.ip)+'</code></td><td class="small">'+esc(ip.reason)+'</td><td class="text-nowrap small text-muted">'+esc(ip.blocked_at)+'</td><td>'+esc(ip.expires_in)+'</td><td><button onclick="unblockIP(\''+esc(ip.ip)+'\')" class="btn btn-sm btn-success">Unblock</button></td></tr>';
         }
         html += '</tbody></table></div>';
         el.innerHTML = html;
@@ -73,6 +76,32 @@ function showStatus(msg, ok) {
     setTimeout(function(){ el.textContent = ''; }, 5000);
 }
 function esc(s){var d=document.createElement('div');d.appendChild(document.createTextNode(s||''));return d.innerHTML;}
+function toggleAllBlocked() {
+    var checked = document.getElementById('select-all-blocked').checked;
+    document.querySelectorAll('.blocked-cb').forEach(function(cb){ cb.checked = checked; });
+    updateUnblockCount();
+}
+function updateUnblockCount() {
+    var count = document.querySelectorAll('.blocked-cb:checked').length;
+    document.getElementById('unblock-count').textContent = count;
+    document.getElementById('bulk-unblock').classList.toggle('d-none', count === 0);
+}
+function bulkUnblock() {
+    var cbs = document.querySelectorAll('.blocked-cb:checked');
+    var ips = [];
+    cbs.forEach(function(cb){ ips.push(cb.getAttribute('data-ip')); });
+    if (ips.length === 0) return;
+    if (!confirm('Unblock ' + ips.length + ' IP(s)?')) return;
+    var done = 0, failed = 0;
+    ips.forEach(function(ip) {
+        CSM.post('/api/v1/unblock-ip', {ip: ip}).then(function(data){
+            done++; if (data.error) failed++;
+            if (done === ips.length) { showStatus('Unblocked ' + (done-failed) + '/' + ips.length + ' IPs', failed === 0); loadBlocked(); }
+        }).catch(function(){ done++; failed++;
+            if (done === ips.length) { showStatus('Unblocked ' + (done-failed) + '/' + ips.length + ' IPs', false); loadBlocked(); }
+        });
+    });
+}
 loadBlocked();
 </script>
 {{end}}
