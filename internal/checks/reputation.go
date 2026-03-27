@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -18,7 +19,9 @@ const (
 	abuseIPDBEndpoint        = "https://api.abuseipdb.com/api/v2/check"
 	reputationCacheFile      = "reputation_cache.json"
 	cacheExpiry              = 6 * time.Hour
+	errorCacheExpiry         = 1 * time.Hour // cache transient API errors to avoid retrying same IP
 	abuseConfidenceThreshold = 50
+	maxQueriesPerCycle       = 5    // max AbuseIPDB API calls per 10-min cycle (~720/day, fits free tier)
 	maxCacheEntries          = 5000 // cap cache size
 )
 
@@ -37,7 +40,7 @@ type reputationEntry struct {
 //  1. Skip if already blocked in CSF
 //  2. Check local threat DB (permanent blocklist + free feeds)
 //  3. Check AbuseIPDB cache
-//  4. Query AbuseIPDB for truly unknown IPs (max 10/cycle)
+//  4. Query AbuseIPDB for truly unknown IPs (max 5/cycle, ~720/day)
 func CheckIPReputation(cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
@@ -91,7 +94,7 @@ func CheckIPReputation(cfg *config.Config, _ *state.Store) []alert.Finding {
 		}
 
 		// Tier 4: Query AbuseIPDB — skip if no key, quota exhausted, or limit reached
-		if cfg.Reputation.AbuseIPDBKey == "" || quotaExhausted || checked >= 10 {
+		if cfg.Reputation.AbuseIPDBKey == "" || quotaExhausted || checked >= maxQueriesPerCycle {
 			continue
 		}
 
@@ -102,6 +105,13 @@ func CheckIPReputation(cfg *config.Config, _ *state.Store) []alert.Finding {
 				quotaExhausted = true
 				continue
 			}
+			// Cache transient errors with short expiry to avoid retrying same IP every cycle
+			cache.Entries[ip] = &reputationEntry{
+				Score:     -1, // sentinel: lookup failed
+				Category:  fmt.Sprintf("error: %v", err),
+				CheckedAt: time.Now().Add(cacheExpiry - errorCacheExpiry), // expires after errorCacheExpiry
+			}
+			checked++
 			continue
 		}
 		checked++
@@ -114,7 +124,7 @@ func CheckIPReputation(cfg *config.Config, _ *state.Store) []alert.Finding {
 
 		if score >= abuseConfidenceThreshold {
 			findings = append(findings, alert.Finding{
-				Severity:  alert.High,
+				Severity:  alert.Critical,
 				Check:     "ip_reputation",
 				Message:   fmt.Sprintf("Known malicious IP accessing server: %s (AbuseIPDB score: %d/100)", ip, score),
 				Details:   fmt.Sprintf("Category: %s\nThis IP is reported in threat intelligence databases", category),
@@ -355,9 +365,9 @@ func queryAbuseIPDB(client *http.Client, ip, apiKey string) (int, string, error)
 func cleanCache(cache *reputationCache) {
 	now := time.Now()
 
-	// Remove expired entries
+	// Remove expired entries — use same expiry as cache freshness check
 	for ip, entry := range cache.Entries {
-		if now.Sub(entry.CheckedAt) > 24*time.Hour {
+		if now.Sub(entry.CheckedAt) > cacheExpiry {
 			delete(cache.Entries, ip)
 		}
 	}
@@ -368,18 +378,14 @@ func cleanCache(cache *reputationCache) {
 			ip  string
 			age time.Duration
 		}
-		var entries []aged
+		entries := make([]aged, 0, len(cache.Entries))
 		for ip, entry := range cache.Entries {
 			entries = append(entries, aged{ip, now.Sub(entry.CheckedAt)})
 		}
 		// Sort by age descending (oldest first)
-		for i := 0; i < len(entries); i++ {
-			for j := i + 1; j < len(entries); j++ {
-				if entries[j].age > entries[i].age {
-					entries[i], entries[j] = entries[j], entries[i]
-				}
-			}
-		}
+		sort.Slice(entries, func(i, j int) bool {
+			return entries[i].age > entries[j].age
+		})
 		// Remove oldest until under limit
 		for i := 0; i < len(entries)-maxCacheEntries; i++ {
 			delete(cache.Entries, entries[i].ip)

@@ -182,12 +182,12 @@ func (db *ThreatDB) UpdateFeeds() error {
 			continue
 		}
 
-		// Validate feed — check minimum expected entries
+		// Validate feed — reject partial downloads to avoid losing good data
 		minExpected := feedMinEntries[feed.name]
 		if minExpected > 0 && len(ips)+len(nets) < minExpected {
-			fmt.Fprintf(os.Stderr, "threatdb: WARNING %s returned only %d entries (expected >%d), possibly corrupted\n",
+			fmt.Fprintf(os.Stderr, "threatdb: WARNING %s returned only %d entries (expected >%d), keeping cached version\n",
 				feed.name, len(ips)+len(nets), minExpected)
-			// Still use it but log the warning
+			continue // keep previous cached data for this feed
 		}
 
 		for _, ip := range ips {

@@ -108,12 +108,17 @@ func isInfraIP(ip string, infraNets []string) bool {
 	if parsed == nil {
 		return false
 	}
-	for _, cidr := range infraNets {
-		_, network, err := net.ParseCIDR(cidr)
-		if err != nil {
+	for _, entry := range infraNets {
+		// Try CIDR first (e.g. "10.0.0.0/8")
+		_, network, err := net.ParseCIDR(entry)
+		if err == nil {
+			if network.Contains(parsed) {
+				return true
+			}
 			continue
 		}
-		if network.Contains(parsed) {
+		// Fall back to plain IP match (e.g. "1.2.3.4")
+		if net.ParseIP(entry) != nil && entry == ip {
 			return true
 		}
 	}
