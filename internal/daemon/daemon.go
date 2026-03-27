@@ -83,6 +83,12 @@ func (d *Daemon) Run() error {
 		fmt.Fprintf(os.Stderr, "[%s] Threat DB initialized (%d entries)\n", ts(), db.Count())
 	}
 	if adb := attackdb.Init(d.cfg.StatePath); adb != nil {
+		// Seed from permanent blocklist on first run (when attack DB is empty)
+		if adb.TotalIPs() == 0 {
+			if n := adb.SeedFromPermanentBlocklist(d.cfg.StatePath); n > 0 {
+				fmt.Fprintf(os.Stderr, "[%s] Attack DB seeded %d IPs from permanent blocklist\n", ts(), n)
+			}
+		}
 		fmt.Fprintf(os.Stderr, "[%s] Attack DB initialized (%s)\n", ts(), adb.FormatTopLine())
 	}
 
