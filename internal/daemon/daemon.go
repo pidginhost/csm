@@ -120,19 +120,24 @@ func (d *Daemon) Run() error {
 		d.store.AppendHistory(initialFindings)
 		newFindings := d.store.FilterNew(initialFindings)
 
-		// Auto-response on initial scan (same as periodic scans)
+		// Permission auto-fix runs on ALL findings (not just new) because
+		// it's safe/idempotent and should fix baseline findings too.
+		permActions, permFixedKeys := checks.AutoFixPermissions(d.cfg, initialFindings)
+
+		// Other auto-response only on new findings
 		if len(newFindings) > 0 {
 			killActions := checks.AutoKillProcesses(d.cfg, newFindings)
 			quarantineActions := checks.AutoQuarantineFiles(d.cfg, newFindings)
-			permActions, permFixedKeys := checks.AutoFixPermissions(d.cfg, newFindings)
 			blockActions := checks.AutoBlockIPs(d.cfg, initialFindings)
 			newFindings = append(newFindings, killActions...)
 			newFindings = append(newFindings, quarantineActions...)
 			newFindings = append(newFindings, permActions...)
 			newFindings = append(newFindings, blockActions...)
 			_ = alert.Dispatch(d.cfg, newFindings)
+		}
 
-			// Remove auto-fixed findings before storing to UI
+		// Remove auto-fixed findings before storing to UI
+		if len(permFixedKeys) > 0 {
 			fixedSet := make(map[string]bool, len(permFixedKeys))
 			for _, k := range permFixedKeys {
 				fixedSet[k] = true
@@ -264,10 +269,11 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// Log to history
 	d.store.AppendHistory(newFindings)
 
-	// Auto-response (kill, quarantine, fix perms on new findings only)
+	// Auto-response (kill, quarantine on new findings only)
 	killActions := checks.AutoKillProcesses(d.cfg, newFindings)
 	quarantineActions := checks.AutoQuarantineFiles(d.cfg, newFindings)
-	permActions, permFixedKeys := checks.AutoFixPermissions(d.cfg, newFindings)
+	// Permission fix runs on ALL findings — safe, idempotent, and must fix baseline findings too
+	permActions, permFixedKeys := checks.AutoFixPermissions(d.cfg, findings)
 	// Auto-block uses ALL findings — reputation IPs must be blocked even if previously seen
 	blockActions := checks.AutoBlockIPs(d.cfg, findings)
 	newFindings = append(newFindings, killActions...)
