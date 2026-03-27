@@ -83,7 +83,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	if _, err := os.Stat(templateDir); err == nil {
 		s.templates = make(map[string]*template.Template)
 		layoutPath := filepath.Join(templateDir, "layout.html")
-		for _, page := range []string{"dashboard", "findings", "history", "quarantine", "blocked"} {
+		for _, page := range []string{"dashboard", "findings", "history", "quarantine", "blocked", "firewall"} {
 			pagePath := filepath.Join(templateDir, page+".html")
 			t, err := template.New(page+".html").Funcs(funcMap).ParseFiles(layoutPath, pagePath)
 			if err != nil {
@@ -116,6 +116,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		mux.Handle("/history", s.requireAuth(http.HandlerFunc(s.handleHistory)))
 		mux.Handle("/quarantine", s.requireAuth(http.HandlerFunc(s.handleQuarantine)))
 		mux.Handle("/blocked", s.requireAuth(http.HandlerFunc(s.handleBlocked)))
+		mux.Handle("/firewall", s.requireAuth(http.HandlerFunc(s.handleFirewall)))
 	}
 
 	// Auth-protected API — read
@@ -126,7 +127,13 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/stats", s.requireAuth(http.HandlerFunc(s.apiStats)))
 	mux.Handle("/api/v1/blocked-ips", s.requireAuth(http.HandlerFunc(s.apiBlockedIPs)))
 	mux.Handle("/api/v1/health", s.requireAuth(http.HandlerFunc(s.apiHealth)))
+	mux.Handle("/api/v1/accounts", s.requireAuth(http.HandlerFunc(s.apiAccounts)))
 	mux.Handle("/api/v1/history/csv", s.requireAuth(http.HandlerFunc(s.apiHistoryCSV)))
+
+	// Firewall API
+	mux.Handle("/api/v1/firewall/status", s.requireAuth(http.HandlerFunc(s.apiFirewallStatus)))
+	mux.Handle("/api/v1/firewall/audit", s.requireAuth(http.HandlerFunc(s.apiFirewallAudit)))
+	mux.Handle("/api/v1/firewall/subnets", s.requireAuth(http.HandlerFunc(s.apiFirewallSubnets)))
 
 	// Auth-protected API — actions (with CSRF validation)
 	mux.Handle("/api/v1/fix", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiFix))))
@@ -137,6 +144,9 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/unblock-ip", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiUnblockIP))))
 	mux.Handle("/api/v1/dismiss", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiDismissFinding))))
 	mux.Handle("/api/v1/quarantine-restore", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiQuarantineRestore))))
+	mux.Handle("/api/v1/firewall/deny-subnet", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiFirewallDenySubnet))))
+	mux.Handle("/api/v1/firewall/remove-subnet", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiFirewallRemoveSubnet))))
+	mux.Handle("/api/v1/firewall/flush", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiFirewallFlush))))
 
 	// Logout (clears cookie)
 	mux.HandleFunc("/logout", s.handleLogout)
@@ -148,7 +158,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		Addr:           cfg.WebUI.Listen,
 		Handler:        s.securityHeaders(mux),
 		ReadTimeout:    15 * time.Second,
-		WriteTimeout:   15 * time.Second,
+		WriteTimeout:   120 * time.Second, // account scans can take 30-60s
 		IdleTimeout:    60 * time.Second,
 		MaxHeaderBytes: 1 << 20, // 1MB
 	}
@@ -387,6 +397,17 @@ func (s *Server) csrfToken() string {
 func (s *Server) validateCSRF(r *http.Request) bool {
 	if r.Method != http.MethodPost {
 		return true // only validate POST
+	}
+
+	// Skip CSRF for Bearer token auth — the token itself proves identity.
+	// CSRF protection is only needed for cookie-based browser sessions.
+	if auth := r.Header.Get("Authorization"); auth != "" {
+		if len(auth) > 7 && auth[:7] == "Bearer " {
+			token := s.cfg.WebUI.AuthToken
+			if subtle.ConstantTimeCompare([]byte(auth[7:]), []byte(token)) == 1 {
+				return true
+			}
+		}
 	}
 
 	expected := s.csrfToken()
