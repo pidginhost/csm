@@ -101,10 +101,10 @@ func (db *DB) Close() {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	if db.cityDB != nil {
-		db.cityDB.Close()
+		_ = db.cityDB.Close()
 	}
 	if db.asnDB != nil {
-		db.asnDB.Close()
+		_ = db.asnDB.Close()
 	}
 }
 
