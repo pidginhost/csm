@@ -14,6 +14,12 @@ func (s *Server) apiFirewallStatus(w http.ResponseWriter, _ *http.Request) {
 	cfg := s.cfg.Firewall
 	state, _ := firewall.LoadState(s.cfg.StatePath)
 
+	// Use top-level infra_ips if firewall.infra_ips is empty (daemon syncs at runtime)
+	infraIPs := cfg.InfraIPs
+	if len(infraIPs) == 0 {
+		infraIPs = s.cfg.InfraIPs
+	}
+
 	result := map[string]interface{}{
 		"enabled":              cfg.Enabled,
 		"ipv6":                 cfg.IPv6,
@@ -33,7 +39,8 @@ func (s *Server) apiFirewallStatus(w http.ResponseWriter, _ *http.Request) {
 		"blocked_count":        len(state.Blocked),
 		"blocked_net_count":    len(state.BlockedNet),
 		"allowed_count":        len(state.Allowed),
-		"infra_count":          len(cfg.InfraIPs),
+		"infra_ips":            infraIPs,
+		"infra_count":          len(infraIPs),
 		"port_flood_rules":     len(cfg.PortFlood),
 		"country_block":        cfg.CountryBlock,
 		"dyndns_hosts":         cfg.DynDNSHosts,
