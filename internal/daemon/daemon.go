@@ -604,6 +604,9 @@ func deployConfigs() {
 		_ = os.WriteFile("/var/cpanel/apps/csm.conf", embeddedWHMConf, 0644)
 	}
 
+	// Deploy script (self-updating)
+	_ = os.WriteFile("/opt/csm/deploy.sh", embeddedDeployScript, 0755)
+
 	// ModSecurity virtual patches
 	for _, dst := range []string{
 		"/etc/apache2/conf.d/modsec/modsec2.user.conf",

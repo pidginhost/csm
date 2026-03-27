@@ -10,3 +10,6 @@ var embeddedWHMConf []byte
 
 //go:embed configs/csm_modsec_custom.conf
 var embeddedModSec []byte
+
+//go:embed configs/deploy.sh
+var embeddedDeployScript []byte
