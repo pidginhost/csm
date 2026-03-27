@@ -153,6 +153,9 @@ func (d *Daemon) Run() error {
 		}
 
 		d.store.Update(initialFindings)
+		// Full replace — initial scan runs all checks, so stale findings
+		// from previous daemon runs must not persist.
+		d.store.ClearLatestFindings()
 		d.store.SetLatestFindings(initialFindings)
 		fmt.Fprintf(os.Stderr, "[%s] Initial scan complete: %d findings (%d new)\n", ts(), len(initialFindings), len(newFindings))
 	}()
