@@ -43,10 +43,10 @@ func New(cfg *config.Config, unblocker IPUnblocker) *Server {
 	}
 
 	s := &Server{
-		cfg:      cfg,
-		secret:   secret,
+		cfg:       cfg,
+		secret:    secret,
 		unblocker: unblocker,
-		verified: make(map[string]time.Time),
+		verified:  make(map[string]time.Time),
 	}
 
 	mux := http.NewServeMux()

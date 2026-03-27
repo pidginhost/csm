@@ -510,13 +510,13 @@ func (inst *Installer) InstallWHMPlugin() error {
 	if err != nil {
 		return fmt.Errorf("reading CGI script: %w", err)
 	}
-	if err := os.WriteFile(cgiDest, cgiData, 0755); err != nil {
-		return fmt.Errorf("deploying CGI: %w", err)
+	if writeErr := os.WriteFile(cgiDest, cgiData, 0755); writeErr != nil {
+		return fmt.Errorf("deploying CGI: %w", writeErr)
 	}
 
 	// Deploy AppConfig
 	confSrc := "/opt/csm/configs/whm/csm.conf"
-	if _, err := os.Stat(confSrc); os.IsNotExist(err) {
+	if _, statErr := os.Stat(confSrc); os.IsNotExist(statErr) {
 		confSrc = filepath.Join(filepath.Dir(inst.BinaryPath), "configs", "whm", "csm.conf")
 	}
 
@@ -524,9 +524,11 @@ func (inst *Installer) InstallWHMPlugin() error {
 	if err != nil {
 		return fmt.Errorf("reading AppConfig: %w", err)
 	}
-	os.MkdirAll("/var/cpanel/apps", 0755)
-	if err := os.WriteFile(confDest, confData, 0644); err != nil {
-		return fmt.Errorf("deploying AppConfig: %w", err)
+	if mkErr := os.MkdirAll("/var/cpanel/apps", 0755); mkErr != nil {
+		return fmt.Errorf("creating apps dir: %w", mkErr)
+	}
+	if writeErr := os.WriteFile(confDest, confData, 0644); writeErr != nil {
+		return fmt.Errorf("deploying AppConfig: %w", writeErr)
 	}
 
 	fmt.Printf("  WHM plugin installed (CGI: %s)\n", cgiDest)

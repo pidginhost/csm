@@ -29,16 +29,16 @@ type Daemon struct {
 	lock       *state.LockFile
 	binaryPath string
 
-	logWatchers      []*LogWatcher
-	fileMonitor      *FileMonitor
-	hijackDetector   *PasswordHijackDetector
-	pamListener      *PAMListener
-	webServer        *webui.Server
-	challengeServer  *challenge.Server
-	fwEngine         *firewall.Engine
-	alertCh          chan alert.Finding
-	stopCh           chan struct{}
-	wg               sync.WaitGroup
+	logWatchers     []*LogWatcher
+	fileMonitor     *FileMonitor
+	hijackDetector  *PasswordHijackDetector
+	pamListener     *PAMListener
+	webServer       *webui.Server
+	challengeServer *challenge.Server
+	fwEngine        *firewall.Engine
+	alertCh         chan alert.Finding
+	stopCh          chan struct{}
+	wg              sync.WaitGroup
 }
 
 // New creates a new daemon instance.
@@ -524,14 +524,9 @@ func (d *Daemon) startFirewall() {
 func (d *Daemon) signatureUpdater() {
 	defer d.wg.Done()
 
-	// Skip if no update URL configured or auto_update explicitly disabled
+	// Skip if no update URL configured
 	if d.cfg.Signatures.UpdateURL == "" {
 		return
-	}
-	// auto_update defaults to true when update_url is set
-	if !d.cfg.Signatures.AutoUpdate && d.cfg.Signatures.UpdateInterval == "" {
-		// Only skip if auto_update was explicitly set to false
-		// (zero value means unset — default to enabled)
 	}
 
 	interval := 24 * time.Hour
