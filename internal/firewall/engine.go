@@ -474,17 +474,17 @@ func (e *Engine) createInputChain() error {
 		},
 	})
 
-	// Rule 4: Drop blocked IPs (O(1) hash set lookup)
+	// Rule 4: Allow infra IPs FIRST — infra must NEVER be blocked, even accidentally
+	e.addSetMatchRule(e.setInfra, expr.VerdictAccept)
+	e.addSetMatchRuleV6(e.setInfra6, expr.VerdictAccept)
+
+	// Rule 5: Drop blocked IPs (O(1) hash set lookup)
 	e.addSetMatchRule(e.setBlocked, expr.VerdictDrop)
 	e.addSetMatchRuleV6(e.setBlocked6, expr.VerdictDrop)
 
-	// Rule 5: Drop blocked subnets (interval set for CIDR ranges)
+	// Rule 6: Drop blocked subnets (interval set for CIDR ranges)
 	e.addSetMatchRule(e.setBlockedNet, expr.VerdictDrop)
 	e.addSetMatchRuleV6(e.setBlockedNet6, expr.VerdictDrop)
-
-	// Rule 6: Allow infra IPs (all ports)
-	e.addSetMatchRule(e.setInfra, expr.VerdictAccept)
-	e.addSetMatchRuleV6(e.setInfra6, expr.VerdictAccept)
 
 	// Rule 7: Allow explicitly allowed IPs
 	e.addSetMatchRule(e.setAllowed, expr.VerdictAccept)
@@ -1083,6 +1083,20 @@ func (e *Engine) BlockIP(ip string, reason string, timeout time.Duration) error 
 	targetSet, key, err := e.resolveIPSet(ip, e.setBlocked, e.setBlocked6)
 	if err != nil {
 		return err
+	}
+
+	// SAFETY: never block infra IPs — prevents admin lockout
+	for _, cidr := range e.cfg.InfraIPs {
+		_, network, cidrErr := net.ParseCIDR(cidr)
+		if cidrErr != nil {
+			if cidr == ip {
+				return fmt.Errorf("refusing to block infra IP: %s", ip)
+			}
+			continue
+		}
+		if network.Contains(net.ParseIP(ip)) {
+			return fmt.Errorf("refusing to block infra IP: %s (in %s)", ip, cidr)
+		}
 	}
 
 	// Enforce deny IP limits

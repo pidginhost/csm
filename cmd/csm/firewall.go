@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -45,6 +46,10 @@ func runFirewall() {
 		fwFlush()
 	case "restart":
 		fwRestart()
+	case "apply-confirmed":
+		fwApplyConfirmed()
+	case "confirm":
+		fwConfirm()
 	case "migrate-from-csf":
 		fwMigrate()
 	case "deny-subnet":
@@ -88,6 +93,8 @@ Commands:
   ports                             Show configured port rules
   flush                             Remove all dynamic IP blocks
   restart                           Reapply full firewall ruleset
+  apply-confirmed <minutes>         Apply rules with auto-rollback timer (like Juniper commit confirmed)
+  confirm                           Confirm applied rules (cancel rollback timer)
   migrate-from-csf [--apply]        Migrate from CSF (dry run unless --apply)
   deny-subnet <cidr> [reason]         Block a subnet (e.g. 1.2.3.0/24)
   remove-subnet <cidr>                Remove subnet block
@@ -861,6 +868,85 @@ func parseFWDuration(s string) (time.Duration, error) {
 		return time.Duration(days) * 24 * time.Hour, nil
 	}
 	return time.ParseDuration(s)
+}
+
+func fwApplyConfirmed() {
+	args := fwArgs()
+	minutes := 3
+	if len(args) > 0 {
+		if n, err := strconv.Atoi(args[0]); err == nil && n > 0 && n <= 60 {
+			minutes = n
+		}
+	}
+
+	cfg := loadConfig()
+	if !cfg.Firewall.Enabled {
+		fmt.Fprintf(os.Stderr, "Firewall is disabled in config. Set firewall.enabled: true first.\n")
+		os.Exit(1)
+	}
+	if len(cfg.Firewall.InfraIPs) == 0 {
+		cfg.Firewall.InfraIPs = cfg.InfraIPs
+	}
+
+	// Save rollback snapshot: current iptables/nftables state
+	confirmFile := filepath.Join(cfg.StatePath, "firewall", "confirm_pending")
+	rollbackFile := filepath.Join(cfg.StatePath, "firewall", "rollback.sh")
+
+	// Capture current nftables ruleset for rollback
+	nftDump, err := exec.Command("nft", "list", "ruleset").Output()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not capture current ruleset for rollback: %v\n", err)
+	}
+	if len(nftDump) > 0 {
+		rollbackScript := fmt.Sprintf("#!/bin/bash\n# Auto-rollback: restore previous nftables ruleset\nnft flush ruleset\nnft -f - <<'NFTEOF'\n%s\nNFTEOF\nrm -f %s %s\necho 'Firewall rolled back to previous state'\n",
+			string(nftDump), confirmFile, rollbackFile)
+		_ = os.WriteFile(rollbackFile, []byte(rollbackScript), 0700)
+	}
+
+	// Apply new ruleset
+	engine, err := firewall.NewEngine(cfg.Firewall, cfg.StatePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating engine: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Fprintf(os.Stderr, "Applying firewall ruleset with %d-minute confirmation timer...\n", minutes)
+	if err := engine.Apply(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error applying rules: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Write confirm-pending marker with deadline
+	deadline := time.Now().Add(time.Duration(minutes) * time.Minute)
+	_ = os.WriteFile(confirmFile, []byte(deadline.Format(time.RFC3339)), 0600)
+
+	// Fork a background process that will rollback if not confirmed
+	rollbackCmd := exec.Command("bash", "-c", fmt.Sprintf(
+		"sleep %d && if [ -f %s ]; then bash %s; fi",
+		minutes*60, confirmFile, rollbackFile))
+	rollbackCmd.Start()
+
+	state, _ := firewall.LoadState(cfg.StatePath)
+	fmt.Printf("Firewall applied. %d blocked, %d allowed IPs restored.\n",
+		len(state.Blocked), len(state.Allowed))
+	fmt.Printf("\n*** CONFIRM within %d minutes or rules will be rolled back ***\n", minutes)
+	fmt.Printf("Run: csm firewall confirm\n")
+}
+
+func fwConfirm() {
+	cfg := loadConfig()
+	confirmFile := filepath.Join(cfg.StatePath, "firewall", "confirm_pending")
+	rollbackFile := filepath.Join(cfg.StatePath, "firewall", "rollback.sh")
+
+	if _, err := os.Stat(confirmFile); os.IsNotExist(err) {
+		fmt.Println("No pending confirmation. Firewall is already confirmed.")
+		return
+	}
+
+	// Remove the marker — the background sleep process will see it's gone and skip rollback
+	os.Remove(confirmFile)
+	os.Remove(rollbackFile)
+	fmt.Println("Firewall confirmed. Rollback timer cancelled.")
 }
 
 func fwDenySubnet() {
