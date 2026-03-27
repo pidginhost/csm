@@ -13,6 +13,7 @@ import (
 	"unsafe"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
+	"github.com/pidginhost/cpanel-security-monitor/internal/checks"
 	"github.com/pidginhost/cpanel-security-monitor/internal/config"
 	"github.com/pidginhost/cpanel-security-monitor/internal/signatures"
 	"github.com/pidginhost/cpanel-security-monitor/internal/yara"
@@ -488,6 +489,15 @@ func (fm *FileMonitor) checkPHPContent(path string) {
 		fm.sendAlert(alert.Critical, "webshell_content_realtime",
 			fmt.Sprintf("Webshell pattern detected: %s", path),
 			"Shell execution function with request input")
+		return
+	}
+
+	// Skip signature/YARA scanning for verified CMS core files.
+	// The wp_core periodic check validates files against official checksums;
+	// if a file's hash matches a known-clean core file, signature matches
+	// on it are false positives (e.g. $_POST in wp-includes, mail() in
+	// PHPMailer, fsockopen() in POP3.php).
+	if checks.IsVerifiedCMSFile(path) {
 		return
 	}
 

@@ -273,11 +273,16 @@ func checkHtaccessFile(path string, suspicious, safe []string, findings *[]alert
 
 // CheckWPCore runs wp core verify-checksums for each WordPress installation
 // using a bounded worker pool for concurrency.
+// Installations that pass verification have their core files cached in
+// GlobalCMSCache so the real-time scanner can skip signature matches
+// on known-clean CMS files.
 func CheckWPCore(_ *config.Config, _ *state.Store) []alert.Finding {
 	wpConfigs, _ := filepath.Glob("/home/*/public_html/wp-config.php")
 	if len(wpConfigs) == 0 {
 		return nil
 	}
+
+	cache := GlobalCMSCache()
 
 	var mu sync.Mutex
 	var findings []alert.Finding
@@ -295,7 +300,14 @@ func CheckWPCore(_ *config.Config, _ *state.Store) []alert.Finding {
 
 				out, err := runCmdCombined("wp", "core", "verify-checksums",
 					"--path="+wpPath, "--allow-root")
-				if err == nil || out == nil {
+
+				if err == nil {
+					// Verification passed — cache all core files
+					cacheWPCoreFiles(cache, wpPath)
+					continue
+				}
+
+				if out == nil {
 					continue
 				}
 
@@ -322,7 +334,47 @@ func CheckWPCore(_ *config.Config, _ *state.Store) []alert.Finding {
 	close(jobs)
 	wg.Wait()
 
+	fmt.Fprintf(os.Stderr, "CMS hash cache: %d verified core files cached\n", cache.Size())
+
 	return findings
+}
+
+// cacheWPCoreFiles hashes all PHP files in wp-includes/ and wp-admin/
+// for a verified-clean WordPress installation and adds them to the cache.
+func cacheWPCoreFiles(cache *CMSHashCache, wpPath string) {
+	coreDirs := []string{
+		filepath.Join(wpPath, "wp-includes"),
+		filepath.Join(wpPath, "wp-admin"),
+	}
+	// Also cache root-level WP core files
+	rootFiles := []string{
+		"wp-config.php", "wp-cron.php", "wp-login.php", "wp-settings.php",
+		"wp-load.php", "wp-blog-header.php", "wp-links-opml.php",
+		"wp-mail.php", "wp-signup.php", "wp-activate.php",
+		"wp-comments-post.php", "wp-trackback.php", "xmlrpc.php",
+		"index.php",
+	}
+	for _, name := range rootFiles {
+		path := filepath.Join(wpPath, name)
+		if hash := HashFile(path); hash != "" {
+			cache.Add(hash)
+		}
+	}
+
+	for _, dir := range coreDirs {
+		_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+			if err != nil || info.IsDir() {
+				return nil
+			}
+			name := strings.ToLower(info.Name())
+			if strings.HasSuffix(name, ".php") || strings.HasSuffix(name, ".js") {
+				if hash := HashFile(path); hash != "" {
+					cache.Add(hash)
+				}
+			}
+			return nil
+		})
+	}
 }
 
 func extractUser(path string) string {
