@@ -52,15 +52,7 @@
         </div>
         {{if .Entries}}
         <div class="table-responsive">
-            <table class="table table-vcenter card-table" id="findings-table" style="table-layout:fixed;width:100%">
-                <colgroup>
-                    <col style="width:30px">
-                    <col style="width:12%">
-                    <col style="width:auto">
-                    <col style="width:120px">
-                    <col style="width:120px">
-                    <col style="width:70px">
-                </colgroup>
+            <table class="table table-vcenter card-table" id="findings-table">
                 <thead>
                     <tr>
                         <th><input type="checkbox" id="select-all" class="form-check-input" onchange="toggleSelectAll()"></th>
@@ -75,8 +67,8 @@
                     {{range .Entries}}
                     <tr class="finding-row" data-check="{{.Check}}" data-message="{{.Message}}" data-hasFix="{{.HasFix}}" data-fixdesc="{{.FixDesc}}">
                         <td><input type="checkbox" class="form-check-input row-checkbox" onchange="updateSelection()"></td>
-                        <td><code style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block">{{.Check}}</code></td>
-                        <td title="{{.Message}}"><div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%">{{.Message}}</div></td>
+                        <td><code>{{.Check}}</code></td>
+                        <td class="text-secondary" style="word-break:break-all">{{.Message}}</td>
                         <td class="text-nowrap"><span class="font-monospace small">{{.FirstSeen}}</span></td>
                         <td class="text-nowrap"><span class="font-monospace small">{{.LastSeen}}</span></td>
                         <td class="text-nowrap action-cell"></td>
