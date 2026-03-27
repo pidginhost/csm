@@ -518,12 +518,21 @@ GET  /api/v1/history/csv        Export full history as CSV download
 WS   /ws/findings               Real-time finding stream (WebSocket)
 
 POST /api/v1/block-ip           Block an IP {"ip":"...","reason":"..."}
-POST /api/v1/unblock-ip         Unblock an IP {"ip":"..."}
+POST /api/v1/unblock-ip         Unblock an IP + flush cphulk {"ip":"..."}
 POST /api/v1/dismiss            Dismiss/acknowledge a finding {"key":"check:message"}
 POST /api/v1/quarantine-restore Restore quarantined file {"id":"..."}
 POST /api/v1/scan-account       Scan single account {"account":"username"}
 POST /api/v1/fix                Apply fix for a finding {"check":"...","message":"..."}
 POST /api/v1/fix-bulk           Apply fixes to multiple findings [{...}, ...]
+
+GET  /api/v1/firewall/status    Firewall config, set sizes, feature flags
+GET  /api/v1/firewall/audit     Firewall audit log (?limit=N)
+GET  /api/v1/firewall/subnets   Blocked subnet list
+GET  /api/v1/firewall/check     Check if IP is blocked (?ip=X) — CSM + cphulk
+POST /api/v1/firewall/unban     Unblock IP from CSM + cphulk {"ip":"..."}
+POST /api/v1/firewall/deny-subnet   Block a CIDR range {"cidr":"...","reason":"..."}
+POST /api/v1/firewall/remove-subnet Remove subnet block {"cidr":"..."}
+POST /api/v1/firewall/flush     Clear all blocked IPs
 GET  /api/v1/fix-preview        Preview what a fix would do (?check=...&message=...)
 ```
 
@@ -555,6 +564,7 @@ GET  /api/v1/fix-preview        Preview what a fix would do (?check=...&message=
 | Per-account scan | `csm scan <user>` CLI + Web UI (16 checks, ~5 sec) | Per-account scan from UI |
 | Web dashboard | Embedded HTTPS + WebSocket + actions (block/unblock/dismiss/restore/scan) | WHM plugin |
 | IP blocking | Native nftables engine (O(1) set lookup) with auto-expiry | CSF + CAPTCHA gray listing |
+| fail2ban replacement | All standard jails covered + subnet auto-block + threat feeds | Not applicable |
 | cPanel session monitoring | Multi-IP correlation, credential stuffing | Not available |
 | Cross-account correlation | Coordinated attack detection | Not available |
 | Phishing detection | 8-layer (brand, structural, directory, PHP, iframe, credential logs, ZIPs) | Not available |
@@ -565,6 +575,14 @@ GET  /api/v1/fix-preview        Preview what a fix would do (?check=...&message=
 | Transparency | Full finding details, check names, evidence | Black box |
 | Dependencies | 3 (yaml.v3, yara-x, nftables) | Hundreds (Python, ClamAV, etc.) |
 | Binary size | ~8 MB static | ~500 MB+ installed |
+
+## Replaces CSF, LFD, fail2ban, and cpanel-service
+
+CSM fully replaces:
+- **CSF** (ConfigServer Firewall) — nftables engine with O(1) hash sets, per-IP meters, IPv6, atomic apply
+- **LFD** (Login Failure Daemon) — PAM listener + 7 log-based brute force detection vectors, faster than LFD's Perl regex parsing
+- **fail2ban** — all standard jails covered: sshd, apache-auth, postfix/dovecot, FTP, WordPress, cPanel. Plus subnet auto-blocking, threat intelligence feeds, and permanent block escalation that fail2ban doesn't have
+- **cpanel-service** (IP unblock API) — native `/api/v1/firewall/check` and `/api/v1/firewall/unban` endpoints with Bearer token auth, cphulk integration
 
 ## nftables Firewall Engine
 
@@ -624,8 +642,8 @@ csm firewall migrate-from-csf [--apply] CSF migration (dry-run default)
 
 ## Roadmap
 
-### Firewall — Remaining for Full CSF Parity
-- Port knocking (open SSH port after connection sequence)
+### Firewall — Nice-to-have (CSF is fully replaced)
+- Port knocking (open SSH port after connection sequence — SSH already behind restricted_tcp)
 - Cluster mode (synchronize block lists across multiple servers)
 - CloudFlare WAF integration (push blocks to CF firewall)
 - Messenger (redirect blocked users to explanation page instead of dropping)
