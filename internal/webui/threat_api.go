@@ -1,8 +1,10 @@
 package webui
 
 import (
+	"encoding/json"
 	"net"
 	"net/http"
+	"os/exec"
 	"strconv"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/attackdb"
@@ -131,6 +133,68 @@ func (s *Server) apiThreatDBStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, result)
+}
+
+// POST /api/v1/threat/whitelist-ip — mark an IP as a known customer
+// Unblocks, removes from threat DB + attack DB, adds to whitelist.
+func (s *Server) apiThreatWhitelistIP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		IP string `json:"ip"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IP == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]string{"error": "IP is required"})
+		return
+	}
+	if net.ParseIP(req.IP) == nil {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]string{"error": "invalid IP address"})
+		return
+	}
+
+	var actions []string
+
+	// 1. Unblock from firewall
+	if s.blocker != nil {
+		if err := s.blocker.UnblockIP(req.IP); err == nil {
+			actions = append(actions, "unblocked from firewall")
+		}
+		// Also add to firewall allow list so it doesn't get re-blocked
+		if allower, ok := s.blocker.(interface {
+			AllowIP(string, string) error
+		}); ok {
+			if err := allower.AllowIP(req.IP, "CSM whitelist: customer IP"); err == nil {
+				actions = append(actions, "added to firewall allow list")
+			}
+		}
+	}
+
+	// 2. Remove from threat DB permanent blocklist + add to whitelist
+	if tdb := checks.GetThreatDB(); tdb != nil {
+		tdb.RemovePermanent(req.IP)
+		tdb.AddWhitelist(req.IP)
+		actions = append(actions, "removed from threat DB, added to whitelist")
+	}
+
+	// 3. Remove from attack DB
+	if adb := attackdb.Global(); adb != nil {
+		adb.RemoveIP(req.IP)
+		actions = append(actions, "removed from attack DB")
+	}
+
+	// 4. Flush cphulk
+	_, _ = exec.Command("whmapi1", "flush_cphulk_login_history_for_ips", "ip="+req.IP).Output()
+
+	writeJSON(w, map[string]interface{}{
+		"status":  "whitelisted",
+		"ip":      req.IP,
+		"actions": actions,
+	})
 }
 
 // writeJSON is defined in api.go

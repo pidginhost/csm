@@ -433,6 +433,14 @@ func truncate(s string, n int) string {
 	return string(r[:n])
 }
 
+// RemoveIP removes an IP from the attack database entirely.
+func (db *DB) RemoveIP(ip string) {
+	db.mu.Lock()
+	delete(db.records, ip)
+	db.dirty = true
+	db.mu.Unlock()
+}
+
 // PruneExpired removes records older than 90 days.
 func (db *DB) PruneExpired() {
 	db.pruneExpired()
