@@ -904,20 +904,14 @@ func analyzePHPForPhishing(path string) *phishingResult {
 		}
 	}
 
-	// With brand: need 4+, with PHP cred handling: need 4+, otherwise need 6+
-	if brandMatch != "" && score >= 4 {
-		return &phishingResult{brand: brandMatch, score: score, indicators: indicators}
+	// Require brand impersonation to flag as phishing.
+	// PHP files with $_POST['email'] + mail() are normal (contact forms, CMS user
+	// admin, gallery software). Without brand impersonation, these are almost
+	// always legitimate applications.
+	if brandMatch == "" {
+		return nil
 	}
-	if phpCredHandling && score >= 4 {
-		if brandMatch == "" {
-			brandMatch = "Unknown"
-		}
-		return &phishingResult{brand: brandMatch, score: score, indicators: indicators}
-	}
-	if score >= 6 {
-		if brandMatch == "" {
-			brandMatch = "Unknown"
-		}
+	if score >= 4 {
 		return &phishingResult{brand: brandMatch, score: score, indicators: indicators}
 	}
 
@@ -959,22 +953,46 @@ func checkPHPRedirector(path string) string {
 	}
 	content := strings.ToLower(string(buf[:n]))
 
-	// Pattern 1: header("Location: " . $_GET['url'])
 	hasHeader := strings.Contains(content, "header(") &&
 		(strings.Contains(content, "location:") || strings.Contains(content, "location :"))
-	hasParam := strings.Contains(content, "$_get") || strings.Contains(content, "$_request") ||
-		strings.Contains(content, "$_post")
 
-	if hasHeader && hasParam {
-		return "PHP redirect using header() with user-supplied URL parameter"
+	if !hasHeader {
+		return ""
+	}
+
+	// Pattern 1: user-controlled redirect target — the URL in header() must
+	// come from user input. Just having $_GET anywhere + header() is too broad;
+	// normal form handlers use $_POST for data then header() for redirect.
+	// Only flag when the redirect URL itself is parameterized.
+	userControlledRedirect := false
+	redirectPatterns := []string{
+		"$_get['url']", "$_get[\"url\"]",
+		"$_get['redirect']", "$_get[\"redirect\"]",
+		"$_get['r']", "$_get[\"r\"]",
+		"$_get['return']", "$_get[\"return\"]",
+		"$_get['next']", "$_get[\"next\"]",
+		"$_get['goto']", "$_get[\"goto\"]",
+		"$_get['link']", "$_get[\"link\"]",
+		"$_request['url']", "$_request[\"url\"]",
+		"$_request['redirect']", "$_request[\"redirect\"]",
+		"header(\"location: \".$_get", "header(\"location: \".$_request",
+		"header('location: '.$_get", "header('location: '.$_request",
+		"header(\"location:\".$_get", "header('location:'.$_get",
+	}
+	for _, p := range redirectPatterns {
+		if strings.Contains(content, p) {
+			userControlledRedirect = true
+			break
+		}
+	}
+	if userControlledRedirect {
+		return "PHP open redirector: header(Location) with user-supplied URL"
 	}
 
 	// Pattern 2: Hardcoded redirect to suspicious domain
-	if hasHeader {
-		for _, pattern := range exfilPatterns {
-			if strings.Contains(content, pattern) {
-				return fmt.Sprintf("PHP redirect to suspicious destination matching '%s'", pattern)
-			}
+	for _, pattern := range exfilPatterns {
+		if strings.Contains(content, pattern) {
+			return fmt.Sprintf("PHP redirect to suspicious destination matching '%s'", pattern)
 		}
 	}
 
@@ -1159,27 +1177,39 @@ func checkIframePhishing(path string) string {
 // ---------------------------------------------------------------------------
 
 // isPhishingKitZip checks if a ZIP filename matches common phishing kit names.
+// Requires 2+ keyword matches to reduce false positives (e.g. "CssCheckboxKit"
+// matched "kit" alone, but legitimate UI kits, CSS kits, etc. are common).
 func isPhishingKitZip(nameLower string) bool {
-	// Known phishing kit archive names
-	kitNames := []string{
+	// High-confidence single-match keywords (brand impersonation in filename)
+	singleMatch := []string{
 		"office365", "office 365", "sharepoint", "onedrive",
-		"microsoft", "outlook", "google", "gmail",
-		"dropbox", "docusign", "adobe", "wetransfer",
-		"paypal", "apple", "icloud", "netflix",
+		"microsoft", "outlook", "gmail",
+		"dropbox", "docusign", "wetransfer",
+		"paypal", "icloud", "netflix",
 		"facebook", "instagram", "linkedin",
-		"login", "phish", "scam", "kit",
-		"webmail", "roundcube", "cpanel",
-		"bank", "verify", "secure",
+		"roundcube", "cpanel",
+		"phish", "scam",
 	}
-	for _, kit := range kitNames {
-		if strings.Contains(nameLower, kit) {
+	for _, kw := range singleMatch {
+		if strings.Contains(nameLower, kw) {
 			return true
 		}
 	}
 
-	// Generic: short random names in web-accessible directories are suspicious
-	// but too many false positives — only flag known kit names
-	return false
+	// Lower-confidence keywords — require 2+ matches to flag.
+	// Words like "login", "verify", "secure", "google", "apple", "bank"
+	// appear in legitimate archives too.
+	multiMatch := []string{
+		"login", "verify", "secure", "bank",
+		"google", "apple", "adobe", "webmail",
+	}
+	matches := 0
+	for _, kw := range multiMatch {
+		if strings.Contains(nameLower, kw) {
+			matches++
+		}
+	}
+	return matches >= 2
 }
 
 // ---------------------------------------------------------------------------
