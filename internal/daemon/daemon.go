@@ -117,6 +117,14 @@ func (d *Daemon) Run() error {
 		defer d.wg.Done()
 		fmt.Fprintf(os.Stderr, "[%s] Running initial baseline scan (background)\n", ts())
 		initialFindings := checks.RunTier(d.cfg, d.store, checks.TierAll)
+
+		// Seed the attack database with initial scan findings
+		if adb := attackdb.Global(); adb != nil {
+			for _, f := range initialFindings {
+				adb.RecordFinding(f)
+			}
+		}
+
 		d.store.AppendHistory(initialFindings)
 		newFindings := d.store.FilterNew(initialFindings)
 
@@ -263,6 +271,15 @@ func (d *Daemon) alertDispatcher() {
 func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	findings = alert.Deduplicate(findings)
 
+	// Record ALL findings in attack database (before filtering —
+	// repeated attacks from the same IP must still be counted even if
+	// the alert is suppressed by FilterNew).
+	if adb := attackdb.Global(); adb != nil {
+		for _, f := range findings {
+			adb.RecordFinding(f)
+		}
+	}
+
 	// Filter through state
 	newFindings := d.store.FilterNew(findings)
 	if len(newFindings) == 0 {
@@ -290,12 +307,8 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 		d.store.DismissLatestFinding(key)
 	}
 
-	// Record all findings in attack database
+	// Mark auto-blocked IPs in attack database
 	if adb := attackdb.Global(); adb != nil {
-		for _, f := range findings {
-			adb.RecordFinding(f)
-		}
-		// Mark auto-blocked IPs
 		for _, f := range blockActions {
 			if ip := checks.ExtractIPFromFinding(f); ip != "" {
 				adb.MarkBlocked(ip)
