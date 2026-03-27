@@ -1428,9 +1428,11 @@ func (e *Engine) removeBlockedState(ip string) {
 
 func (e *Engine) saveAllowedEntry(entry AllowedEntry) {
 	state := e.loadStateFile()
-	for _, existing := range state.Allowed {
+	for i, existing := range state.Allowed {
 		if existing.IP == entry.IP {
-			return // already exists
+			state.Allowed[i] = entry // update reason/expiry
+			e.saveState(&state)
+			return
 		}
 	}
 	state.Allowed = append(state.Allowed, entry)
