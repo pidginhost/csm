@@ -83,7 +83,7 @@ type Config struct {
 		Enabled    bool   `yaml:"enabled"`     // enable challenge pages instead of hard block for some IPs
 		ListenPort int    `yaml:"listen_port"` // port for challenge server (default: 8439)
 		Secret     string `yaml:"secret"`      // HMAC secret for challenge tokens (auto-generated if empty)
-		Difficulty int    `yaml:"difficulty"`   // proof-of-work difficulty 0-5 (default: 2)
+		Difficulty int    `yaml:"difficulty"`  // proof-of-work difficulty 0-5 (default: 2)
 	} `yaml:"challenge"`
 
 	Reputation struct {
@@ -94,8 +94,8 @@ type Config struct {
 	Signatures struct {
 		RulesDir       string `yaml:"rules_dir"`
 		UpdateURL      string `yaml:"update_url"`
-		AutoUpdate     bool   `yaml:"auto_update"`      // auto-download rules daily (default: true if update_url set)
-		UpdateInterval string `yaml:"update_interval"`   // how often to check (default: "24h")
+		AutoUpdate     bool   `yaml:"auto_update"`     // auto-download rules daily (default: true if update_url set)
+		UpdateInterval string `yaml:"update_interval"` // how often to check (default: "24h")
 	} `yaml:"signatures"`
 
 	WebUI struct {
