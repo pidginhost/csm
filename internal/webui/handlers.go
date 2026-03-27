@@ -53,6 +53,8 @@ type findingEntry struct {
 type historyData struct {
 	Hostname string
 	Findings []historyEntry
+	FromDate string
+	ToDate   string
 	Page     int
 	NextPage int
 	PrevPage int
@@ -234,12 +236,33 @@ func (s *Server) handleFindings(w http.ResponseWriter, _ *http.Request) {
 	}
 }
 
-func (s *Server) handleHistory(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
+	// Parse optional date range from query params
+	fromStr := r.URL.Query().Get("from")
+	toStr := r.URL.Query().Get("to")
+
+	var fromDate, toDate time.Time
+	if fromStr != "" {
+		fromDate, _ = time.ParseInLocation("2006-01-02", fromStr, time.Local)
+	}
+	if toStr != "" {
+		toDate, _ = time.ParseInLocation("2006-01-02", toStr, time.Local)
+		// Include the full "to" day
+		toDate = toDate.Add(24*time.Hour - time.Second)
+	}
+
 	// Load all recent history — client-side CSM.Table handles pagination
-	findings, _ := s.store.ReadHistory(1000, 0)
+	findings, _ := s.store.ReadHistory(5000, 0)
 
 	var items []historyEntry
 	for _, f := range findings {
+		// Apply date range filter
+		if !fromDate.IsZero() && f.Timestamp.Before(fromDate) {
+			continue
+		}
+		if !toDate.IsZero() && f.Timestamp.After(toDate) {
+			continue
+		}
 		items = append(items, historyEntry{
 			Severity:  severityLabel(f.Severity),
 			SevClass:  severityClass(f.Severity),
@@ -254,6 +277,8 @@ func (s *Server) handleHistory(w http.ResponseWriter, _ *http.Request) {
 	data := historyData{
 		Hostname: s.cfg.Hostname,
 		Findings: items,
+		FromDate: fromStr,
+		ToDate:   toStr,
 	}
 	_ = s.templates["history.html"].ExecuteTemplate(w, "history.html", data)
 }

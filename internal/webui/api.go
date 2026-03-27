@@ -232,6 +232,7 @@ func (s *Server) apiFix(w http.ResponseWriter, r *http.Request) {
 		key := req.Check + ":" + req.Message
 		s.store.DismissFinding(key)
 		s.store.DismissLatestFinding(key)
+		s.auditLog(r, "fix", req.Check, result.Action)
 	}
 
 	writeJSON(w, result)
@@ -374,6 +375,7 @@ func (s *Server) apiBlockIP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.auditLog(r, "block_ip", req.IP, req.Reason)
 	writeJSON(w, map[string]string{"status": "blocked", "ip": req.IP})
 }
 
@@ -410,6 +412,7 @@ func (s *Server) apiUnblockIP(w http.ResponseWriter, r *http.Request) {
 	// Also flush from cphulk (cPanel brute force detector)
 	_, _ = exec.Command("whmapi1", "flush_cphulk_login_history_for_ips", "ip="+req.IP).Output()
 
+	s.auditLog(r, "unblock_ip", req.IP, "manual unblock via UI")
 	writeJSON(w, map[string]string{"status": "unblocked", "ip": req.IP})
 }
 
@@ -522,6 +525,7 @@ func (s *Server) apiDismissFinding(w http.ResponseWriter, r *http.Request) {
 
 	s.store.DismissFinding(req.Key)
 	s.store.DismissLatestFinding(req.Key)
+	s.auditLog(r, "dismiss", req.Key, "")
 	writeJSON(w, map[string]string{"status": "dismissed", "key": req.Key})
 }
 
@@ -613,6 +617,7 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 	// Remove metadata sidecar
 	os.Remove(metaFile)
 
+	s.auditLog(r, "restore", meta.OriginalPath, "quarantine restore")
 	writeJSON(w, map[string]string{
 		"status":  "restored",
 		"path":    meta.OriginalPath,
