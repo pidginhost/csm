@@ -51,18 +51,24 @@ function loadStatus(){
         document.getElementById('fw-blocked').textContent = d.blocked_count;
         document.getElementById('fw-subnets').textContent = d.blocked_net_count;
         document.getElementById('fw-allowed').textContent = d.allowed_count;
-        var t1 = '<tr><td class="text-muted">TCP In</td><td>'+(d.tcp_in||[]).length+' ports</td></tr>';
-        t1 += '<tr><td class="text-muted">TCP Out</td><td>'+(d.tcp_out||[]).length+' ports</td></tr>';
-        t1 += '<tr><td class="text-muted">Restricted</td><td>'+esc((d.restricted_tcp||[]).join(', '))+'</td></tr>';
-        t1 += '<tr><td class="text-muted">Passive FTP</td><td>'+d.passive_ftp[0]+'-'+d.passive_ftp[1]+'</td></tr>';
-        t1 += '<tr><td class="text-muted">Infra IPs</td><td>'+d.infra_count+'</td></tr>';
+        function portList(ports){return '<code class="small">'+(ports||[]).join(', ')+'</code>';}
+        var t1 = '<tr><td class="text-muted">TCP In</td><td>'+portList(d.tcp_in)+'</td></tr>';
+        t1 += '<tr><td class="text-muted">TCP Out</td><td>'+portList(d.tcp_out)+'</td></tr>';
+        t1 += '<tr><td class="text-muted">UDP In</td><td>'+portList(d.udp_in)+'</td></tr>';
+        t1 += '<tr><td class="text-muted">UDP Out</td><td>'+portList(d.udp_out)+'</td></tr>';
+        t1 += '<tr><td class="text-muted">Restricted</td><td><code class="small">'+esc((d.restricted_tcp||[]).join(', '))+'</code></td></tr>';
+        t1 += '<tr><td class="text-muted">Passive FTP</td><td><code>'+d.passive_ftp[0]+'-'+d.passive_ftp[1]+'</code></td></tr>';
+        var infraList = (d.infra_ips||[]);
+        t1 += '<tr><td class="text-muted">Infra IPs</td><td>'+( infraList.length > 0 ? '<code class="small">'+esc(infraList.join(', '))+'</code>' : '<span class="text-danger">none configured</span>')+'</td></tr>';
         document.getElementById('fw-config-table').innerHTML = t1;
         var t2 = '<tr><td class="text-muted">Conn Rate</td><td>'+d.conn_rate_limit+'/min per IP</td></tr>';
         t2 += '<tr><td class="text-muted">Conn Limit</td><td>'+(d.conn_limit||'disabled')+'</td></tr>';
-        t2 += '<tr><td class="text-muted">SYN Flood</td><td>'+(d.syn_flood_protection?'on':'off')+'</td></tr>';
-        t2 += '<tr><td class="text-muted">UDP Flood</td><td>'+(d.udp_flood?'on':'off')+'</td></tr>';
-        t2 += '<tr><td class="text-muted">SMTP Block</td><td>'+(d.smtp_block?'on':'off')+'</td></tr>';
-        t2 += '<tr><td class="text-muted">IPv6</td><td>'+(d.ipv6?'on':'off')+'</td></tr>';
+        t2 += '<tr><td class="text-muted">SYN Flood</td><td>'+(d.syn_flood_protection?'<span class="text-success">on</span>':'off')+'</td></tr>';
+        t2 += '<tr><td class="text-muted">UDP Flood</td><td>'+(d.udp_flood?'<span class="text-success">on</span>':'off')+'</td></tr>';
+        t2 += '<tr><td class="text-muted">SMTP Block</td><td>'+(d.smtp_block?'<span class="text-success">on</span>':'off')+'</td></tr>';
+        t2 += '<tr><td class="text-muted">IPv6</td><td>'+(d.ipv6?'<span class="text-success">on</span>':'off')+'</td></tr>';
+        t2 += '<tr><td class="text-muted">Drop Logging</td><td>'+(d.log_dropped?'on':'off')+'</td></tr>';
+        t2 += '<tr><td class="text-muted">Deny Limit</td><td>'+(d.deny_ip_limit||'unlimited')+'</td></tr>';
         document.getElementById('fw-config-table2').innerHTML = t2;
     });
 }
