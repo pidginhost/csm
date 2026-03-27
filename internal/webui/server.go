@@ -166,7 +166,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		Addr:           cfg.WebUI.Listen,
 		Handler:        s.securityHeaders(mux),
 		ReadTimeout:    15 * time.Second,
-		WriteTimeout:   120 * time.Second, // account scans can take 30-60s
+		WriteTimeout:   300 * time.Second, // account scans can take several minutes
 		IdleTimeout:    60 * time.Second,
 		MaxHeaderBytes: 1 << 20, // 1MB
 	}
