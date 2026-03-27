@@ -35,6 +35,7 @@ func (s *Server) apiRulesStatus(w http.ResponseWriter, _ *http.Request) {
 	result := map[string]interface{}{
 		"yaml_rules":      yamlCount,
 		"yara_rules":      yaraCount,
+		"yara_available":  yara.Available(),
 		"yaml_version":    yamlVersion,
 		"rules_dir":       s.cfg.Signatures.RulesDir,
 		"auto_update":     s.cfg.Signatures.UpdateURL != "",

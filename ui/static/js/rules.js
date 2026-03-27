@@ -10,7 +10,10 @@ function fmtSize(bytes) {
 function loadStatus() {
     fetch('/api/v1/rules/status', {credentials: 'same-origin'}).then(function(r) { return r.json(); }).then(function(data) {
         document.getElementById('stat-yaml').textContent = data.yaml_rules || 0;
-        document.getElementById('stat-yara').textContent = data.yara_rules || 0;
+        document.getElementById('stat-yara').textContent = data.yara_available ? (data.yara_rules || 0) : 'N/A';
+        if (!data.yara_available) {
+            document.getElementById('stat-yara').title = 'Binary compiled without YARA-X support (build tag: yara)';
+        }
         document.getElementById('stat-version').textContent = data.yaml_version || '—';
         document.getElementById('stat-autoupdate').textContent = data.auto_update ? 'Enabled' : 'Disabled';
         if (data.rules_dir) {
