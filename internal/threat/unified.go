@@ -33,6 +33,14 @@ type IPIntelligence struct {
 	BlockExpiresAt   *time.Time `json:"block_expires_at,omitempty"`
 	BlockPermanent   bool       `json:"block_permanent,omitempty"`
 
+	// GeoIP (populated by API layer, not by Lookup)
+	Country     string `json:"country,omitempty"`
+	CountryName string `json:"country_name,omitempty"`
+	City        string `json:"city,omitempty"`
+	ASN         uint   `json:"asn,omitempty"`
+	ASOrg       string `json:"as_org,omitempty"`
+	Network     string `json:"network,omitempty"`
+
 	// Composite
 	UnifiedScore int    `json:"unified_score"`
 	Verdict      string `json:"verdict"` // "clean", "suspicious", "malicious", "blocked"
