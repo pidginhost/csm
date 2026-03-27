@@ -62,17 +62,17 @@ var checkToAttack = map[string]AttackType{
 	"phishing_directory":      AttackPhishing,
 
 	// C2 and suspicious processes
-	"fake_kernel_thread":        AttackC2,
-	"suspicious_process":        AttackC2,
-	"php_suspicious_execution":  AttackC2,
-	"user_outbound_connection":  AttackC2,
-	"exfiltration_paste_site":   AttackC2,
+	"fake_kernel_thread":       AttackC2,
+	"suspicious_process":       AttackC2,
+	"php_suspicious_execution": AttackC2,
+	"user_outbound_connection": AttackC2,
+	"exfiltration_paste_site":  AttackC2,
 
 	// Recon
 	"wp_user_enumeration": AttackRecon,
 
 	// SPAM
-	"mail_per_account": AttackSPAM,
+	"mail_per_account":     AttackSPAM,
 	"exim_frozen_realtime": AttackSPAM,
 
 	// WAF
@@ -80,13 +80,13 @@ var checkToAttack = map[string]AttackType{
 	"waf_block":    AttackWAFBlock,
 
 	// cPanel/webmail login
-	"cpanel_login":                AttackCPanelLogin,
-	"cpanel_login_realtime":       AttackCPanelLogin,
-	"cpanel_multi_ip_login":       AttackCPanelLogin,
-	"webmail_login_realtime":      AttackCPanelLogin,
-	"ftp_login":                   AttackCPanelLogin,
-	"ftp_login_realtime":          AttackCPanelLogin,
-	"pam_login":                   AttackCPanelLogin,
+	"cpanel_login":           AttackCPanelLogin,
+	"cpanel_login_realtime":  AttackCPanelLogin,
+	"cpanel_multi_ip_login":  AttackCPanelLogin,
+	"webmail_login_realtime": AttackCPanelLogin,
+	"ftp_login":              AttackCPanelLogin,
+	"ftp_login_realtime":     AttackCPanelLogin,
+	"pam_login":              AttackCPanelLogin,
 
 	// File upload
 	"cpanel_file_upload_realtime": AttackFileUpload,
