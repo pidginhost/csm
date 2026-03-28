@@ -11,10 +11,10 @@ function loadStatus(){
         t1 += '<tr><td class="text-muted">TCP Out</td><td>'+portList(d.tcp_out)+'</td></tr>';
         t1 += '<tr><td class="text-muted">UDP In</td><td>'+portList(d.udp_in)+'</td></tr>';
         t1 += '<tr><td class="text-muted">UDP Out</td><td>'+portList(d.udp_out)+'</td></tr>';
-        t1 += '<tr><td class="text-muted">Restricted</td><td><code class="small">'+esc((d.restricted_tcp||[]).join(', '))+'</code></td></tr>';
+        t1 += '<tr><td class="text-muted">Restricted</td><td><code class="small">'+CSM.esc((d.restricted_tcp||[]).join(', '))+'</code></td></tr>';
         t1 += '<tr><td class="text-muted">Passive FTP</td><td><code>'+d.passive_ftp[0]+'-'+d.passive_ftp[1]+'</code></td></tr>';
         var infraList = (d.infra_ips||[]);
-        t1 += '<tr><td class="text-muted">Infra IPs</td><td>'+( infraList.length > 0 ? '<code class="small">'+esc(infraList.join(', '))+'</code>' : '<span class="text-danger">none configured</span>')+'</td></tr>';
+        t1 += '<tr><td class="text-muted">Infra IPs</td><td>'+( infraList.length > 0 ? '<code class="small">'+CSM.esc(infraList.join(', '))+'</code>' : '<span class="text-danger">none configured</span>')+'</td></tr>';
         document.getElementById('fw-config-table').innerHTML = t1;
         var t2 = '<tr><td class="text-muted">Conn Rate</td><td>'+d.conn_rate_limit+'/min per IP</td></tr>';
         t2 += '<tr><td class="text-muted">Conn Limit</td><td>'+(d.conn_limit||'disabled')+'</td></tr>';
@@ -25,7 +25,7 @@ function loadStatus(){
         t2 += '<tr><td class="text-muted">Drop Logging</td><td>'+(d.log_dropped?'on':'off')+'</td></tr>';
         t2 += '<tr><td class="text-muted">Deny Limit</td><td>'+(d.deny_ip_limit||'unlimited')+'</td></tr>';
         document.getElementById('fw-config-table2').innerHTML = t2;
-    });
+    }).catch(function(){ document.getElementById('fw-config-table').innerHTML = '<tr><td colspan="2" class="text-danger">Error loading status.</td></tr>'; });
 }
 
 function loadSubnets(){
@@ -34,7 +34,7 @@ function loadSubnets(){
         if(!subs||subs.length===0){el.innerHTML='<div class="card-body text-center text-muted py-3">No blocked subnets.</div>';return;}
         var h='<div class="table-responsive"><table class="table table-vcenter card-table"><thead><tr><th>CIDR</th><th>Reason</th><th>Blocked</th><th>Action</th></tr></thead><tbody>';
         for(var i=0;i<subs.length;i++){
-            h+='<tr><td><code>'+esc(subs[i].cidr)+'</code></td><td class="small">'+esc(subs[i].reason)+'</td><td class="small text-muted">'+esc(subs[i].time_ago)+'</td><td><button class="btn btn-sm btn-success remove-subnet-btn" data-cidr="'+esc(subs[i].cidr)+'">Remove</button></td></tr>';
+            h+='<tr><td><code>'+CSM.esc(subs[i].cidr)+'</code></td><td class="small">'+CSM.esc(subs[i].reason)+'</td><td class="small text-muted">'+CSM.esc(subs[i].time_ago)+'</td><td><button class="btn btn-sm btn-success remove-subnet-btn" data-cidr="'+CSM.esc(subs[i].cidr)+'">Remove</button></td></tr>';
         }
         h+='</tbody></table></div>';
         el.innerHTML=h;
@@ -42,7 +42,7 @@ function loadSubnets(){
         el.querySelectorAll('.remove-subnet-btn').forEach(function(btn) {
             btn.addEventListener('click', function() { removeSubnet(this.getAttribute('data-cidr')); });
         });
-    });
+    }).catch(function(){ document.getElementById('subnet-content').innerHTML = '<div class="card-body text-center text-danger py-3">Error loading subnets.</div>'; });
 }
 
 function loadAudit(){
@@ -56,16 +56,17 @@ function loadAudit(){
             if(e.action.indexOf('block')>=0) cls='text-danger';
             else if(e.action.indexOf('allow')>=0) cls='text-success';
             else if(e.action==='flush') cls='text-warning';
-            h+='<tr><td class="text-nowrap small text-muted">'+esc(e.time_ago)+'</td><td class="'+cls+'">'+esc(e.action)+'</td><td><code>'+esc(e.ip)+'</code></td><td class="small">'+esc(e.reason)+'</td></tr>';
+            h+='<tr><td class="text-nowrap small text-muted">'+CSM.esc(e.time_ago)+'</td><td class="'+cls+'">'+CSM.esc(e.action)+'</td><td><code>'+CSM.esc(e.ip)+'</code></td><td class="small">'+CSM.esc(e.reason)+'</td></tr>';
         }
         h+='</tbody></table></div>';
         el.innerHTML=h;
-    });
+    }).catch(function(){ document.getElementById('audit-content').innerHTML = '<div class="card-body text-center text-danger py-3">Error loading audit log.</div>'; });
 }
 
 function removeSubnet(cidr){
-    if(!confirm('Remove subnet block '+cidr+'?'))return;
-    CSM.post('/api/v1/firewall/remove-subnet',{cidr:cidr}).then(function(){loadSubnets();loadStatus();loadAudit();});
+    CSM.confirm('Remove subnet block '+cidr+'?').then(function(){
+        CSM.post('/api/v1/firewall/remove-subnet',{cidr:cidr}).then(function(){loadSubnets();loadStatus();loadAudit();}).catch(function(e){ CSM.toast('Error: ' + e, 'error'); });
+    }).catch(function(){});
 }
 
 document.getElementById('subnet-form').addEventListener('submit',function(e){
@@ -73,12 +74,13 @@ document.getElementById('subnet-form').addEventListener('submit',function(e){
     var cidr=document.getElementById('subnet-cidr').value.trim();
     var reason=document.getElementById('subnet-reason').value.trim()||'Blocked via CSM Web UI';
     if(!cidr)return;
-    if(!confirm('Block subnet '+cidr+'?'))return;
-    CSM.post('/api/v1/firewall/deny-subnet',{cidr:cidr,reason:reason}).then(function(){
-        document.getElementById('subnet-cidr').value='';
-        document.getElementById('subnet-reason').value='';
-        loadSubnets();loadStatus();loadAudit();
-    });
+    CSM.confirm('Block subnet '+cidr+'?').then(function(){
+        CSM.post('/api/v1/firewall/deny-subnet',{cidr:cidr,reason:reason}).then(function(){
+            document.getElementById('subnet-cidr').value='';
+            document.getElementById('subnet-reason').value='';
+            loadSubnets();loadStatus();loadAudit();
+        }).catch(function(e){ CSM.toast('Error: ' + e, 'error'); });
+    }).catch(function(){});
 });
 
 function loadBlocked(){
@@ -87,7 +89,7 @@ function loadBlocked(){
         if(!ips||ips.length===0){el.innerHTML='<div class="card-body text-center text-muted py-3">No blocked IPs.</div>';return;}
         var h='<div class="table-responsive"><table class="table table-vcenter card-table table-sm" id="blocked-table"><thead><tr><th>IP</th><th>Reason</th><th>Expires</th><th>Action</th></tr></thead><tbody>';
         for(var i=0;i<ips.length;i++){
-            h+='<tr><td><code>'+esc(ips[i].ip)+'</code></td><td class="small">'+esc(ips[i].reason)+'</td><td class="small text-muted">'+esc(ips[i].expires_in)+'</td><td><button class="btn btn-sm btn-ghost-success fw-unblock-btn" data-ip="'+esc(ips[i].ip)+'">Unblock</button></td></tr>';
+            h+='<tr><td><code>'+CSM.esc(ips[i].ip)+'</code></td><td class="small">'+CSM.esc(ips[i].reason)+'</td><td class="small text-muted">'+CSM.esc(ips[i].expires_in)+'</td><td><button class="btn btn-sm btn-ghost-success fw-unblock-btn" data-ip="'+CSM.esc(ips[i].ip)+'">Unblock</button></td></tr>';
         }
         h+='</tbody></table></div>';
         el.innerHTML=h;
@@ -96,23 +98,25 @@ function loadBlocked(){
         el.querySelectorAll('.fw-unblock-btn').forEach(function(btn) {
             btn.addEventListener('click', function() { unblockIP(this.getAttribute('data-ip')); });
         });
-    });
+    }).catch(function(){ document.getElementById('blocked-content').innerHTML = '<div class="card-body text-center text-danger py-3">Error loading blocked IPs.</div>'; });
 }
 function unblockIP(ip){
-    if(!confirm('Unblock '+ip+'?'))return;
-    CSM.post('/api/v1/unblock-ip',{ip:ip}).then(function(){loadBlocked();loadStatus();loadAudit();});
+    CSM.confirm('Unblock '+ip+'?').then(function(){
+        CSM.post('/api/v1/unblock-ip',{ip:ip}).then(function(){loadBlocked();loadStatus();loadAudit();}).catch(function(e){ CSM.toast('Error: ' + e, 'error'); });
+    }).catch(function(){});
 }
 document.getElementById('block-form').addEventListener('submit',function(e){
     e.preventDefault();
     var ip=document.getElementById('block-ip').value.trim();
     var reason=document.getElementById('block-reason').value.trim()||'Blocked via CSM Web UI';
     if(!ip)return;
-    if(!confirm('Block IP '+ip+'?'))return;
-    CSM.post('/api/v1/block-ip',{ip:ip,reason:reason}).then(function(){
-        document.getElementById('block-ip').value='';
-        document.getElementById('block-reason').value='';
-        loadBlocked();loadStatus();loadAudit();
-    });
+    CSM.confirm('Block IP '+ip+'?').then(function(){
+        CSM.post('/api/v1/block-ip',{ip:ip,reason:reason}).then(function(){
+            document.getElementById('block-ip').value='';
+            document.getElementById('block-reason').value='';
+            loadBlocked();loadStatus();loadAudit();
+        }).catch(function(e){ CSM.toast('Error: ' + e, 'error'); });
+    }).catch(function(){});
 });
 
 loadStatus();loadSubnets();loadBlocked();loadAudit();
