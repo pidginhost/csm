@@ -137,7 +137,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 			}
 		}
 
-		if len(recent) < 10 {
+		if len(recent) < 20 {
 			recent = append(recent, historyEntry{
 				Severity:  severityLabel(f.Severity),
 				SevClass:  severityClass(f.Severity),
