@@ -15,7 +15,7 @@ import (
 )
 
 func (s *Server) handleThreat(w http.ResponseWriter, _ *http.Request) {
-	_ = s.templates["threat.html"].ExecuteTemplate(w, "threat.html", map[string]string{
+	s.renderTemplate(w, "threat.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
 	})
 }

@@ -102,7 +102,7 @@ func readUIAuditLog(statePath string, limit int) []UIAuditEntry {
 }
 
 func (s *Server) handleAudit(w http.ResponseWriter, _ *http.Request) {
-	_ = s.templates["audit.html"].ExecuteTemplate(w, "audit.html", map[string]string{
+	s.renderTemplate(w, "audit.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
 	})
 }

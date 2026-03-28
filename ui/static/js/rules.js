@@ -1,5 +1,4 @@
 // CSM Rules page
-var esc = CSM.esc;
 
 function fmtSize(bytes) {
     if (bytes < 1024) return bytes + ' B';

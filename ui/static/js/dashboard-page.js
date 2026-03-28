@@ -112,15 +112,8 @@
 
 // --- Blocked vs Total IPs stat card ---
 (function(){
-    function apiUrl(path) {
-        if (window.location.pathname.indexOf('addon_csm.cgi') >= 0 || window.location.search.indexOf('path=') >= 0) {
-            return 'addon_csm.cgi?path=' + encodeURIComponent(path);
-        }
-        return path;
-    }
-
     function updateBlockedStat() {
-        fetch(apiUrl('/api/v1/threat/stats'), { credentials: 'same-origin' })
+        fetch(CSM.apiUrl('/api/v1/threat/stats'), { credentials: 'same-origin' })
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 var blocked = data.blocked_ips || 0;
@@ -148,13 +141,6 @@
 
 // --- Top Attack Types bar chart ---
 (function(){
-    function apiUrl(path) {
-        if (window.location.pathname.indexOf('addon_csm.cgi') >= 0 || window.location.search.indexOf('path=') >= 0) {
-            return 'addon_csm.cgi?path=' + encodeURIComponent(path);
-        }
-        return path;
-    }
-
     var colors = {
         brute_force:  '#d63939',
         waf_block:    '#f76707',
@@ -185,7 +171,7 @@
         var container = document.getElementById('attack-types-chart');
         if (!container) return;
 
-        fetch(apiUrl('/api/v1/threat/stats'), { credentials: 'same-origin' })
+        fetch(CSM.apiUrl('/api/v1/threat/stats'), { credentials: 'same-origin' })
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 var byType = data.by_type || {};

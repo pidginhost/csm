@@ -1,5 +1,4 @@
 // CSM Audit Log page
-var esc = CSM.esc;
 
 var actionBadges = {
     block_ip:          'bg-red',

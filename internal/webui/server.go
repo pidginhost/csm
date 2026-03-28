@@ -50,6 +50,9 @@ type Server struct {
 	loginAttempts map[string][]time.Time
 	scanMu        sync.Mutex
 	scanRunning   bool // only one scan at a time
+
+	// Graceful shutdown signal for background goroutines
+	pruneDone chan struct{}
 }
 
 // New creates a new web UI server.
@@ -60,6 +63,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		hub:           NewHub(),
 		startTime:     time.Now(),
 		loginAttempts: make(map[string][]time.Time),
+		pruneDone:     make(chan struct{}),
 	}
 
 	// Check if UI directory exists on disk
@@ -213,26 +217,32 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 }
 
 // pruneLoginAttempts periodically cleans up stale rate-limit entries.
+// It returns when s.pruneDone is closed.
 func (s *Server) pruneLoginAttempts() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
-	for range ticker.C {
-		s.loginMu.Lock()
-		cutoff := time.Now().Add(-time.Minute)
-		for ip, attempts := range s.loginAttempts {
-			var recent []time.Time
-			for _, t := range attempts {
-				if t.After(cutoff) {
-					recent = append(recent, t)
+	for {
+		select {
+		case <-s.pruneDone:
+			return
+		case <-ticker.C:
+			s.loginMu.Lock()
+			cutoff := time.Now().Add(-time.Minute)
+			for ip, attempts := range s.loginAttempts {
+				var recent []time.Time
+				for _, t := range attempts {
+					if t.After(cutoff) {
+						recent = append(recent, t)
+					}
+				}
+				if len(recent) == 0 {
+					delete(s.loginAttempts, ip)
+				} else {
+					s.loginAttempts[ip] = recent
 				}
 			}
-			if len(recent) == 0 {
-				delete(s.loginAttempts, ip)
-			} else {
-				s.loginAttempts[ip] = recent
-			}
+			s.loginMu.Unlock()
 		}
-		s.loginMu.Unlock()
 	}
 }
 
@@ -258,6 +268,7 @@ func (s *Server) Start() error {
 
 // Shutdown gracefully stops the server.
 func (s *Server) Shutdown(ctx context.Context) error {
+	close(s.pruneDone)
 	return s.httpSrv.Shutdown(ctx)
 }
 
@@ -325,8 +336,14 @@ func (s *Server) isAuthenticated(r *http.Request) bool {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	// Redirect already-authenticated users to dashboard
+	if s.isAuthenticated(r) {
+		http.Redirect(w, r, "/dashboard", http.StatusFound)
+		return
+	}
+
 	if r.Method == http.MethodGet {
-		_ = s.templates["login.html"].Execute(w, nil)
+		s.renderTemplate(w, "login.html", nil)
 		return
 	}
 
@@ -359,7 +376,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	token := r.FormValue("token")
 	if subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.WebUI.AuthToken)) != 1 {
-		_ = s.templates["login.html"].Execute(w, map[string]string{"Error": "Invalid token"})
+		s.renderTemplate(w, "login.html", map[string]string{"Error": "Invalid token"})
 		return
 	}
 

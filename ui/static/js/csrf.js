@@ -12,7 +12,10 @@ CSM.post = function(url, body) {
             'X-CSRF-Token': CSM.csrfToken
         },
         body: JSON.stringify(body)
-    }).then(function(r) { return r.json(); });
+    }).then(function(r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+    });
 };
 
 // Shared HTML-escape helper used across all pages
@@ -66,3 +69,11 @@ CSM.initTimeAgo = function() {
     }
     _startTimeAgo();
 })();
+
+// Resolve API URLs — use CGI proxy path if in WHM context
+CSM.apiUrl = function(path) {
+    if (window.location.pathname.indexOf('addon_csm.cgi') >= 0) {
+        return 'addon_csm.cgi?path=' + path;
+    }
+    return path;
+};

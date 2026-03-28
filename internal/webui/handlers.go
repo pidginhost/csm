@@ -11,6 +11,13 @@ import (
 	"github.com/pidginhost/cpanel-security-monitor/internal/checks"
 )
 
+// renderTemplate executes a named template and logs errors to stderr.
+func (s *Server) renderTemplate(w http.ResponseWriter, name string, data interface{}) {
+	if err := s.templates[name].ExecuteTemplate(w, name, data); err != nil {
+		fmt.Fprintf(os.Stderr, "[webui] template %s error: %v\n", name, err)
+	}
+}
+
 type dashboardData struct {
 	Hostname       string
 	Uptime         string
@@ -190,7 +197,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 		RecentFindings: recent,
 		TimelineBars:   bars,
 	}
-	_ = s.templates["dashboard.html"].ExecuteTemplate(w, "dashboard.html", data)
+	s.renderTemplate(w, "dashboard.html", data)
 }
 
 func (s *Server) handleFindings(w http.ResponseWriter, _ *http.Request) {
@@ -231,9 +238,7 @@ func (s *Server) handleFindings(w http.ResponseWriter, _ *http.Request) {
 		Entries:    items,
 		CheckTypes: checkTypes,
 	}
-	if err := s.templates["findings.html"].ExecuteTemplate(w, "findings.html", data); err != nil {
-		fmt.Fprintf(os.Stderr, "[webui] findings template error: %v\n", err)
-	}
+	s.renderTemplate(w, "findings.html", data)
 }
 
 func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
@@ -280,17 +285,17 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		FromDate: fromStr,
 		ToDate:   toStr,
 	}
-	_ = s.templates["history.html"].ExecuteTemplate(w, "history.html", data)
+	s.renderTemplate(w, "history.html", data)
 }
 
 func (s *Server) handleQuarantine(w http.ResponseWriter, _ *http.Request) {
-	_ = s.templates["quarantine.html"].ExecuteTemplate(w, "quarantine.html", quarantineData{
+	s.renderTemplate(w, "quarantine.html", quarantineData{
 		Hostname: s.cfg.Hostname,
 	})
 }
 
 func (s *Server) handleFirewall(w http.ResponseWriter, _ *http.Request) {
-	_ = s.templates["firewall.html"].ExecuteTemplate(w, "firewall.html", map[string]string{
+	s.renderTemplate(w, "firewall.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
 	})
 }

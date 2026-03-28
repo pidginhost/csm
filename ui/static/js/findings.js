@@ -1,5 +1,4 @@
 // CSM Findings page
-var esc = CSM.esc;
 
 // --- Table init with search + check type filter ---
 var findingsTable;

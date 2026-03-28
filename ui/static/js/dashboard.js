@@ -13,11 +13,18 @@
     var isProxy = window.location.pathname.indexOf('addon_csm.cgi') >= 0 ||
                   window.location.search.indexOf('path=') >= 0;
 
+    var _pollingStarted = false;
+    function startPolling() {
+        if (_pollingStarted) return;
+        _pollingStarted = true;
+        setInterval(pollFindings, 10000);
+    }
+
     function connect() {
         if (isProxy || wsDisabled) {
             // WHM proxy can't handle WebSocket — use polling instead
             if (wsStatus) wsStatus.className = 'status-dot bg-yellow';
-            setInterval(pollFindings, 10000);
+            startPolling();
             return;
         }
 
@@ -44,7 +51,7 @@
             if (reconnectDelay > 16000) {
                 wsDisabled = true;
                 if (wsStatus) wsStatus.className = 'status-dot bg-yellow';
-                setInterval(pollFindings, 10000);
+                startPolling();
                 return;
             }
             setTimeout(function() {
@@ -59,7 +66,7 @@
     // Polling fallback — fetch recent history
     var lastPollTimestamp = '';
     function pollFindings() {
-        fetch(apiUrl('/api/v1/history?limit=10&offset=0'), { credentials: 'same-origin' })
+        fetch(CSM.apiUrl('/api/v1/history?limit=10&offset=0'), { credentials: 'same-origin' })
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 var findings = data.findings || [];
@@ -93,7 +100,7 @@
         div.innerHTML = '<div class="row align-items-center">' +
             '<div class="col-auto"><span class="text-muted font-monospace small">' + time + '</span></div>' +
             '<div class="col-auto"><span class="badge badge-' + sevClass + '">' + sevLabel + '</span></div>' +
-            '<div class="col"><span class="font-monospace small">' + esc(f.check) + '</span> — ' + esc(f.message) + '</div>' +
+            '<div class="col"><span class="font-monospace small">' + CSM.esc(f.check) + '</span> — ' + CSM.esc(f.message) + '</div>' +
             '</div>';
 
         feed.insertBefore(div, feed.firstChild);
@@ -106,24 +113,10 @@
         if (empty) empty.remove();
     }
 
-    function esc(s) {
-        var d = document.createElement('div');
-        d.appendChild(document.createTextNode(s || ''));
-        return d.innerHTML;
-    }
-
-    // Resolve API URLs — use CGI proxy path if in WHM context
-    function apiUrl(path) {
-        if (isProxy) {
-            // Through WHM proxy: use addon_csm.cgi?path=
-            return 'addon_csm.cgi?path=' + encodeURIComponent(path);
-        }
-        return path;
-    }
 
     // Auto-refresh stats every 30 seconds
     function refreshStats() {
-        fetch(apiUrl('/api/v1/stats'), { credentials: 'same-origin' })
+        fetch(CSM.apiUrl('/api/v1/stats'), { credentials: 'same-origin' })
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 if (!data.last_24h) return;
