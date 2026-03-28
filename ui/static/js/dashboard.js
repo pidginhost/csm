@@ -29,7 +29,16 @@
         }
 
         var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        ws = new WebSocket(proto + '//' + location.host + '/ws/findings');
+        try {
+            ws = new WebSocket(proto + '//' + location.host + '/ws/findings');
+        } catch(e) {
+            // WebSocket creation failed — fall back to polling immediately
+            wsDisabled = true;
+            if (wsStatus) wsStatus.className = 'status-dot bg-yellow';
+            if (statusLabel) statusLabel.textContent = 'Polling';
+            startPolling();
+            return;
+        }
 
         ws.onopen = function() {
             reconnectDelay = 1000;
@@ -47,8 +56,8 @@
 
         ws.onclose = function() {
             if (wsStatus) wsStatus.className = 'status-dot bg-red';
-            // After 5 failed reconnects, switch to polling
-            if (reconnectDelay > 16000) {
+            // After 3 failed reconnects, switch to polling
+            if (reconnectDelay > 4000) {
                 wsDisabled = true;
                 if (wsStatus) wsStatus.className = 'status-dot bg-yellow';
                 startPolling();
