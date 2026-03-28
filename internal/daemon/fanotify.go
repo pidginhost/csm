@@ -484,8 +484,27 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 		return
 	}
 
+	// Executables in /tmp or /dev/shm — detect dropped malware/miners
+	// Uses unix.Fstat on event fd for TOCTOU safety (attacker can't chmod -x after event)
+	if strings.HasPrefix(path, "/tmp/") || strings.HasPrefix(path, "/dev/shm/") {
+		var tmpStat unix.Stat_t
+		if err := unix.Fstat(event.fd, &tmpStat); err == nil {
+			isDir := tmpStat.Mode&unix.S_IFMT == unix.S_IFDIR
+			isExec := tmpStat.Mode&0111 != 0
+			if !isDir && isExec {
+				fm.sendAlert(alert.Critical, "executable_in_tmp_realtime",
+					fmt.Sprintf("Executable created in %s: %s", filepath.Dir(path), path),
+					fmt.Sprintf("Size: %d, Mode: %04o", tmpStat.Size, tmpStat.Mode&0777))
+			}
+		}
+		// Fall through to PHP checks below for .php files in /tmp
+		if !isPHPExtension(nameLower) {
+			return
+		}
+	}
+
 	// PHP in uploads directories
-	if strings.Contains(path, "/wp-content/uploads/") && strings.HasSuffix(nameLower, ".php") {
+	if strings.Contains(path, "/wp-content/uploads/") && isPHPExtension(nameLower) {
 		if nameLower != "index.php" && !isKnownSafeUploadDaemon(path) {
 			if looksLikePluginUpdate(path) {
 				// Verified plugin update — lower severity, don't suppress entirely
@@ -502,7 +521,7 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 
 	// PHP in languages/upgrade directories
 	if (strings.Contains(path, "/wp-content/languages/") || strings.Contains(path, "/wp-content/upgrade/")) &&
-		strings.HasSuffix(nameLower, ".php") {
+		isPHPExtension(nameLower) {
 		if nameLower != "index.php" && !strings.HasSuffix(nameLower, ".l10n.php") {
 			fm.sendAlert(alert.Critical, "php_in_sensitive_dir_realtime",
 				fmt.Sprintf("PHP file created in sensitive WP directory: %s", path), "")
@@ -534,14 +553,14 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	}
 
 	// PHP content analysis (C3 — read from fd; M4 — 32KB scan size)
-	if strings.HasSuffix(nameLower, ".php") {
+	if isPHPExtension(nameLower) {
 		fm.checkPHPContent(event.fd, path)
 		return
 	}
 
-	// HTML phishing page detection (path-based — needs os.Stat for size)
+	// HTML phishing page detection (uses event fd for content, unix.Fstat for size)
 	if strings.HasSuffix(nameLower, ".html") || strings.HasSuffix(nameLower, ".htm") {
-		fm.checkHTMLPhishing(path)
+		fm.checkHTMLPhishing(event.fd, path)
 		return
 	}
 
@@ -561,7 +580,7 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 // checkHtaccess reads .htaccess content from the event fd and checks for injection.
 // C3 — reads from fd, not path. H5 — per-line safe check.
 func (fm *FileMonitor) checkHtaccess(fd int, path string) {
-	data := readFromFd(fd, 4096)
+	data := readFromFd(fd, 16384)
 	if data == nil {
 		return
 	}
@@ -748,8 +767,8 @@ func (fm *FileMonitor) checkPHPContent(fd int, path string) {
 
 // checkHTMLPhishing reads an HTML file and checks for phishing indicators:
 // brand impersonation + credential input + redirect/exfiltration.
-// Uses path-based reads because it needs os.Stat for file size checks.
-func (fm *FileMonitor) checkHTMLPhishing(path string) {
+// Uses event fd for content read and unix.Fstat for size (TOCTOU-safe).
+func (fm *FileMonitor) checkHTMLPhishing(fd int, path string) {
 	// Only check files in web-accessible directories
 	if !strings.Contains(path, "/public_html/") {
 		return
@@ -763,16 +782,16 @@ func (fm *FileMonitor) checkHTMLPhishing(path string) {
 		}
 	}
 
-	info, err := os.Stat(path)
-	if err != nil {
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
 		return
 	}
-	// H4 — widen phishing HTML size filter
-	if info.Size() < 500 || info.Size() > 500000 {
+	size := stat.Size
+	if size < 500 || size > 500000 {
 		return
 	}
 
-	data := readHead(path, 16384)
+	data := readFromFd(fd, 16384)
 	if data == nil {
 		return
 	}
@@ -846,7 +865,7 @@ func (fm *FileMonitor) checkHTMLPhishing(path string) {
 	if hasExfil || hasTrustBadge {
 		fm.sendAlert(alert.Critical, "phishing_realtime",
 			fmt.Sprintf("Phishing page created (%s impersonation): %s", brandMatch, path),
-			fmt.Sprintf("Size: %d bytes", info.Size()))
+			fmt.Sprintf("Size: %d bytes", size))
 	}
 }
 
@@ -968,6 +987,14 @@ func (fm *FileMonitor) overflowReporter() {
 			}
 		}
 	}
+}
+
+// isPHPExtension returns true for all PHP file extensions that can execute code.
+func isPHPExtension(nameLower string) bool {
+	return strings.HasSuffix(nameLower, ".php") ||
+		strings.HasSuffix(nameLower, ".phtml") ||
+		strings.HasSuffix(nameLower, ".pht") ||
+		strings.HasSuffix(nameLower, ".php5")
 }
 
 // matchSuppression checks if a file path matches a suppression glob pattern.
