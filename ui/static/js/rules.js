@@ -63,5 +63,24 @@ document.getElementById('btn-reload').addEventListener('click', function() {
     }).catch(function() {});
 });
 
+document.getElementById('btn-test-alert').addEventListener('click', function() {
+    var btn = this;
+    btn.disabled = true;
+    btn.innerHTML = '<i class="ti ti-loader"></i>&nbsp;Sending...';
+    CSM.post('/api/v1/test-alert', {}).then(function(data) {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="ti ti-bell-ringing"></i>&nbsp;Send Test Alert';
+        if (data.status === 'sent') {
+            CSM.toast('Test alert sent successfully', 'success');
+        } else {
+            CSM.toast('Failed: ' + (data.error || 'unknown error'), 'error');
+        }
+    }).catch(function(e) {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="ti ti-bell-ringing"></i>&nbsp;Send Test Alert';
+        CSM.toast('Error: ' + e, 'error');
+    });
+});
+
 loadStatus();
 loadFiles();

@@ -752,6 +752,28 @@ func (s *Server) apiQuarantinePreview(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// apiTestAlert sends a test finding through all configured alert channels.
+func (s *Server) apiTestAlert(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	testFinding := []alert.Finding{{
+		Severity:  alert.Warning,
+		Check:     "test_alert",
+		Message:   "Test alert from CSM Web UI",
+		Details:   fmt.Sprintf("Sent by admin at %s", time.Now().Format("2006-01-02 15:04:05")),
+		Timestamp: time.Now(),
+	}}
+	err := alert.Dispatch(s.cfg, testFinding)
+	if err != nil {
+		writeJSON(w, map[string]interface{}{"status": "error", "error": err.Error()})
+		return
+	}
+	s.auditLog(r, "test_alert", "notification", "sent test alert")
+	writeJSON(w, map[string]interface{}{"status": "sent"})
+}
+
 // apiScanAccount runs an on-demand scan for a single cPanel account.
 // POST /api/v1/scan-account  body: {"account": "username"}
 func (s *Server) apiScanAccount(w http.ResponseWriter, r *http.Request) {
