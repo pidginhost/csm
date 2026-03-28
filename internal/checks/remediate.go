@@ -211,8 +211,14 @@ func fixHtaccess(path, message string) RemediationResult {
 
 	dangerous := []string{"auto_prepend_file", "auto_append_file", "eval(", "base64_decode",
 		"gzinflate", "str_rot13", "addhandler", "sethandler"}
-	safe := []string{"wordfence-waf.php", "litespeed", "advanced-headers.php", "rsssl",
-		"application/x-httpd-php", "-execcgi", "sethandler none", "sethandler default-handler"}
+	safe := []string{
+		"wordfence-waf.php", "litespeed", "advanced-headers.php", "rsssl",
+		"application/x-httpd-php", "application/x-httpd-ea-php", "application/x-httpd-alt-php",
+		"-execcgi", "sethandler none", "sethandler default-handler",
+		"text/html", "text/css", "text/javascript", "application/javascript",
+		"image/", "font/", ".woff", ".woff2", ".ttf", ".eot", ".svg",
+		"wordfence",
+	}
 
 	var cleaned []string
 	removed := 0
