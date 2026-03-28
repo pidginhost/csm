@@ -3,51 +3,29 @@
 {{define "content"}}
     <div class="card">
         <div class="card-header">
-            <h3 class="card-title"><i class="ti ti-history"></i>&nbsp;Finding History</h3>
+            <h3 class="card-title"><i class="ti ti-history"></i>&nbsp;Finding History <span class="text-muted ms-2" id="history-count"></span></h3>
             <div class="card-actions d-flex gap-2 flex-wrap align-items-center">
                 <input type="text" id="history-search" class="form-control form-control-sm" placeholder="Search..." style="width:160px">
                 <select id="sev-filter" class="form-select form-select-sm" style="width:auto">
                     <option value="all">All Severities</option>
-                    <option value="critical">Critical</option>
-                    <option value="high">High</option>
-                    <option value="warning">Warning</option>
+                    <option value="2">Critical</option>
+                    <option value="1">High</option>
+                    <option value="0">Warning</option>
                 </select>
-                <form id="date-range-form" class="d-flex gap-1 align-items-center" method="get" action="/history">
-                    <input type="date" name="from" class="form-control form-control-sm" style="width:140px" value="{{.FromDate}}" title="From date">
+                <div class="d-flex gap-1 align-items-center">
+                    <input type="date" id="date-from" class="form-control form-control-sm" style="width:140px" title="From date">
                     <span class="text-muted small">to</span>
-                    <input type="date" name="to" class="form-control form-control-sm" style="width:140px" value="{{.ToDate}}" title="To date">
-                    <button type="submit" class="btn btn-primary btn-sm"><i class="ti ti-filter"></i></button>
-                    {{if or .FromDate .ToDate}}<a href="/history" class="btn btn-ghost-secondary btn-sm" title="Clear filter"><i class="ti ti-x"></i></a>{{end}}
-                </form>
+                    <input type="date" id="date-to" class="form-control form-control-sm" style="width:140px" title="To date">
+                    <button type="button" class="btn btn-primary btn-sm" id="date-filter-btn"><i class="ti ti-filter"></i></button>
+                    <button type="button" class="btn btn-ghost-secondary btn-sm d-none" id="date-clear-btn" title="Clear filter"><i class="ti ti-x"></i></button>
+                </div>
                 <a href="/api/v1/history/csv" class="btn btn-ghost-secondary btn-sm"><i class="ti ti-download"></i>&nbsp;CSV</a>
             </div>
         </div>
-        {{if .Findings}}
-        <div class="table-responsive">
-            <table class="table table-vcenter card-table" id="history-table">
-                <thead>
-                    <tr><th>Severity</th><th>Check</th><th>Message</th><th>Time</th></tr>
-                </thead>
-                <tbody>
-                    {{range .Findings}}
-                    <tr class="history-row" data-sev="{{.SevClass}}" style="cursor:pointer">
-                        <td><span class="badge badge-{{.SevClass}}">{{.Severity}}</span></td>
-                        <td><code>{{.Check}}</code></td>
-                        <td>{{.Message}}</td>
-                        <td class="text-nowrap" title="{{.Timestamp}}"><span class="text-muted small">{{.TimeAgo}}</span></td>
-                    </tr>
-                    {{if .Details}}
-                    <tr class="details-row">
-                        <td colspan="4" style="white-space:pre-wrap;font-size:0.8rem" class="text-muted bg-dark-lt">{{.Details}}</td>
-                    </tr>
-                    {{end}}
-                    {{end}}
-                </tbody>
-            </table>
+        <div id="history-content">
+            <div class="card-body text-center text-muted py-4">Loading...</div>
         </div>
-        {{else}}
-        <div class="card-body text-center text-muted py-4">No history entries yet.</div>
-        {{end}}
+        <div class="card-footer d-flex justify-content-between align-items-center" id="history-pager"></div>
     </div>
 {{end}}
 {{define "scripts"}}
