@@ -105,7 +105,7 @@
 
         feed.insertBefore(div, feed.firstChild);
 
-        while (feed.children.length > 50) {
+        while (feed.children.length > 15) {
             feed.removeChild(feed.lastChild);
         }
 
