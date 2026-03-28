@@ -105,10 +105,6 @@ func (d *Daemon) Run() error {
 	// Create password hijack detector
 	d.hijackDetector = NewPasswordHijackDetector(d.cfg, d.alertCh)
 
-	// Start alert dispatcher
-	d.wg.Add(1)
-	go d.alertDispatcher()
-
 	// Start inotify log watchers
 	d.startLogWatchers()
 
@@ -121,62 +117,62 @@ func (d *Daemon) Run() error {
 	// Start Web UI server — available immediately, before initial scan
 	d.startWebUI()
 
-	// Run initial critical scan in background (fast — deep checks wait for timer)
+	// Run initial scan synchronously (before dispatcher starts)
+	fmt.Fprintf(os.Stderr, "[%s] Running initial baseline scan...\n", ts())
+	initialFindings := checks.RunTier(d.cfg, d.store, checks.TierCritical)
+
+	// Seed the attack database with initial scan findings
+	if adb := attackdb.Global(); adb != nil {
+		for _, f := range initialFindings {
+			adb.RecordFinding(f)
+		}
+	}
+
+	d.store.AppendHistory(initialFindings)
+	newFindings := d.store.FilterNew(initialFindings)
+
+	// Permission auto-fix runs on ALL findings (not just new) because
+	// it's safe/idempotent and should fix baseline findings too.
+	permActions, permFixedKeys := checks.AutoFixPermissions(d.cfg, initialFindings)
+
+	// Other auto-response only on new findings
+	if len(newFindings) > 0 {
+		killActions := checks.AutoKillProcesses(d.cfg, newFindings)
+		quarantineActions := checks.AutoQuarantineFiles(d.cfg, newFindings)
+		blockActions := checks.AutoBlockIPs(d.cfg, initialFindings)
+		newFindings = append(newFindings, killActions...)
+		newFindings = append(newFindings, quarantineActions...)
+		newFindings = append(newFindings, permActions...)
+		newFindings = append(newFindings, blockActions...)
+		_ = alert.Dispatch(d.cfg, newFindings)
+	}
+
+	// Remove auto-fixed findings before storing to UI
+	if len(permFixedKeys) > 0 {
+		fixedSet := make(map[string]bool, len(permFixedKeys))
+		for _, k := range permFixedKeys {
+			fixedSet[k] = true
+		}
+		var filtered []alert.Finding
+		for _, f := range initialFindings {
+			key := f.Check + ":" + f.Message
+			if !fixedSet[key] {
+				filtered = append(filtered, f)
+			}
+		}
+		initialFindings = filtered
+	}
+
+	d.store.Update(initialFindings)
+	// Full replace — initial scan runs all checks, so stale findings
+	// from previous daemon runs must not persist.
+	d.store.ClearLatestFindings()
+	d.store.SetLatestFindings(initialFindings)
+	fmt.Fprintf(os.Stderr, "[%s] Initial scan complete: %d findings (%d new)\n", ts(), len(initialFindings), len(newFindings))
+
+	// NOW start the alert dispatcher — no more race with initial scan
 	d.wg.Add(1)
-	go func() {
-		defer d.wg.Done()
-		fmt.Fprintf(os.Stderr, "[%s] Running initial critical scan (background)\n", ts())
-		initialFindings := checks.RunTier(d.cfg, d.store, checks.TierCritical)
-
-		// Seed the attack database with initial scan findings
-		if adb := attackdb.Global(); adb != nil {
-			for _, f := range initialFindings {
-				adb.RecordFinding(f)
-			}
-		}
-
-		d.store.AppendHistory(initialFindings)
-		newFindings := d.store.FilterNew(initialFindings)
-
-		// Permission auto-fix runs on ALL findings (not just new) because
-		// it's safe/idempotent and should fix baseline findings too.
-		permActions, permFixedKeys := checks.AutoFixPermissions(d.cfg, initialFindings)
-
-		// Other auto-response only on new findings
-		if len(newFindings) > 0 {
-			killActions := checks.AutoKillProcesses(d.cfg, newFindings)
-			quarantineActions := checks.AutoQuarantineFiles(d.cfg, newFindings)
-			blockActions := checks.AutoBlockIPs(d.cfg, initialFindings)
-			newFindings = append(newFindings, killActions...)
-			newFindings = append(newFindings, quarantineActions...)
-			newFindings = append(newFindings, permActions...)
-			newFindings = append(newFindings, blockActions...)
-			_ = alert.Dispatch(d.cfg, newFindings)
-		}
-
-		// Remove auto-fixed findings before storing to UI
-		if len(permFixedKeys) > 0 {
-			fixedSet := make(map[string]bool, len(permFixedKeys))
-			for _, k := range permFixedKeys {
-				fixedSet[k] = true
-			}
-			var filtered []alert.Finding
-			for _, f := range initialFindings {
-				key := f.Check + ":" + f.Message
-				if !fixedSet[key] {
-					filtered = append(filtered, f)
-				}
-			}
-			initialFindings = filtered
-		}
-
-		d.store.Update(initialFindings)
-		// Full replace — initial scan runs all checks, so stale findings
-		// from previous daemon runs must not persist.
-		d.store.ClearLatestFindings()
-		d.store.SetLatestFindings(initialFindings)
-		fmt.Fprintf(os.Stderr, "[%s] Initial scan complete: %d findings (%d new)\n", ts(), len(initialFindings), len(newFindings))
-	}()
+	go d.alertDispatcher()
 
 	// Start periodic scanners
 	d.wg.Add(1)
