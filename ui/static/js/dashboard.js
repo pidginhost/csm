@@ -13,8 +13,7 @@
     var isProxy = window.location.pathname.indexOf('addon_csm.cgi') >= 0 ||
                   window.location.search.indexOf('path=') >= 0;
 
-    // WebSocket disabled — polling mode only. WS causes pending requests that block page load.
-    wsDisabled = true;
+    // WebSocket enabled — ReadTimeout fix should prevent the 15s connection kill
 
     var _pollingStarted = false;
     function startPolling() {
