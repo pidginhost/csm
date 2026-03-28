@@ -90,7 +90,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	if _, err := os.Stat(templateDir); err == nil {
 		s.templates = make(map[string]*template.Template)
 		layoutPath := filepath.Join(templateDir, "layout.html")
-		for _, page := range []string{"dashboard", "findings", "history", "quarantine", "firewall", "threat", "rules"} {
+		for _, page := range []string{"dashboard", "findings", "history", "quarantine", "firewall", "threat", "rules", "audit"} {
 			pagePath := filepath.Join(templateDir, page+".html")
 			t, err := template.New(page+".html").Funcs(funcMap).ParseFiles(layoutPath, pagePath)
 			if err != nil {
@@ -126,6 +126,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		mux.Handle("/firewall", s.requireAuth(http.HandlerFunc(s.handleFirewall)))
 		mux.Handle("/threat", s.requireAuth(http.HandlerFunc(s.handleThreat)))
 		mux.Handle("/rules", s.requireAuth(http.HandlerFunc(s.handleRules)))
+		mux.Handle("/audit", s.requireAuth(http.HandlerFunc(s.handleAudit)))
 	}
 
 	// Auth-protected API — read

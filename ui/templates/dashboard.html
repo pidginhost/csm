@@ -1,6 +1,36 @@
 {{define "title"}}Dashboard{{end}}
 {{define "page"}}dashboard{{end}}
 {{define "content"}}
+    <style>
+        @keyframes csm-feed-highlight {
+            from { background-color: rgba(32, 107, 196, 0.15); }
+            to   { background-color: transparent; }
+        }
+        .feed-highlight {
+            animation: csm-feed-highlight 1.5s ease-out;
+        }
+        @keyframes csm-pulse {
+            0%, 100% { opacity: 1; }
+            50%      { opacity: 0.4; }
+        }
+        .ws-live { animation: csm-pulse 1.5s ease-in-out infinite; }
+        .bar-chart-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+        .bar-chart-label { flex: 0 0 120px; font-size: .8125rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }
+        .bar-chart-track { flex: 1; height: 18px; background: var(--tblr-bg-surface-secondary, #f1f5f9); border-radius: 3px; overflow: hidden; position: relative; }
+        .bar-chart-fill { height: 100%; border-radius: 3px; transition: width 0.4s ease; min-width: 2px; }
+        .bar-chart-value { flex: 0 0 36px; font-size: .75rem; text-align: right; color: var(--tblr-muted); }
+        .theme-dark .bar-chart-track { background: #2d3a4e; }
+        .feed-relative-time { min-width: 56px; text-align: right; }
+        .timeline-tooltip {
+            position: absolute; pointer-events: none; z-index: 10;
+            background: rgba(0,0,0,.85); color: #fff; font-size: 11px;
+            padding: 4px 8px; border-radius: 4px; white-space: nowrap;
+            transform: translate(-50%, -100%); margin-top: -6px;
+            opacity: 0; transition: opacity 0.15s;
+        }
+        .timeline-tooltip.visible { opacity: 1; }
+    </style>
+
     <div class="row row-deck row-cards mb-3">
         <div class="col-sm-6 col-lg-3">
             <div class="card">
@@ -64,8 +94,13 @@
         <div class="col-sm-6 col-lg-3">
             <div class="card">
                 <div class="card-body">
-                    <div class="subheader">Signature Rules</div>
-                    <div class="h3 mb-0">{{.SigCount}}</div>
+                    <div class="subheader">Blocked / Total IPs</div>
+                    <div class="d-flex align-items-center gap-2 mb-1">
+                        <span class="h3 mb-0" id="stat-blocked-ratio">--</span>
+                    </div>
+                    <div class="progress progress-sm">
+                        <div class="progress-bar bg-red" id="stat-blocked-bar" style="width:0%" role="progressbar"></div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -81,30 +116,51 @@
                 <span class="d-inline-flex align-items-center text-nowrap" style="font-size:.8125rem;color:var(--tblr-muted)"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#f59f00;margin-right:4px"></span>Warning</span>
             </div>
         </div>
-        <div class="card-body py-3">
+        <div class="card-body py-3" style="position:relative">
             <div id="timeline-chart" data-bars="{{json .TimelineBars}}"></div>
+            <div class="timeline-tooltip" id="timeline-tooltip"></div>
         </div>
     </div>
 
-    <!-- Live Feed -->
-    <div class="card">
-        <div class="card-header">
-            <h3 class="card-title"><span class="status-dot status-dot-animated bg-green" id="ws-status"></span>&nbsp;Live Feed</h3>
-        </div>
-        <div class="list-group list-group-flush overflow-auto" style="max-height:400px" id="live-feed-entries">
-            {{range .RecentFindings}}
-            <div class="list-group-item feed-item" style="cursor:pointer">
-                <div class="row align-items-center">
-                    <div class="col-auto"><span class="text-muted font-monospace small">{{.Timestamp}}</span></div>
-                    <div class="col-auto"><span class="badge badge-{{.SevClass}}">{{.Severity}}</span></div>
-                    <div class="col"><span class="font-monospace small">{{.Check}}</span> — {{.Message}}</div>
-                    {{if .HasFix}}<div class="col-auto"><button class="btn btn-warning btn-sm feed-fix-btn" data-check="{{.Check}}" data-message="{{.Message}}" data-fixdesc="{{.FixDesc}}" title="{{.FixDesc}}"><i class="ti ti-tool"></i></button></div>{{end}}
+    <!-- Top Attack Types + Live Feed side by side -->
+    <div class="row row-deck row-cards mb-3">
+        <!-- Top Attack Types -->
+        <div class="col-lg-4">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title"><i class="ti ti-chart-bar-popular"></i>&nbsp;Top Attack Types</h3>
                 </div>
-                {{if .Details}}<div class="detail d-none mt-2 small text-muted" style="white-space:pre-wrap">{{.Details}}</div>{{end}}
+                <div class="card-body" id="attack-types-chart">
+                    <div class="text-muted text-center py-3">Loading...</div>
+                </div>
             </div>
-            {{else}}
-            <div class="list-group-item text-center text-muted py-4">No recent findings. Waiting for events...</div>
-            {{end}}
+        </div>
+        <!-- Live Feed -->
+        <div class="col-lg-8">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">
+                        <span id="ws-status" class="status-dot bg-muted" style="margin-right:6px"></span>
+                        Live Feed
+                        <span class="text-muted ms-2" style="font-size:.75rem" id="ws-status-label">Connecting...</span>
+                    </h3>
+                </div>
+                <div class="list-group list-group-flush overflow-auto" style="max-height:400px" id="live-feed-entries">
+                    {{range .RecentFindings}}
+                    <div class="list-group-item feed-item" style="cursor:pointer">
+                        <div class="row align-items-center">
+                            <div class="col-auto"><span class="text-muted font-monospace small">{{.Timestamp}}</span></div>
+                            <div class="col-auto"><span class="badge badge-{{.SevClass}}">{{.Severity}}</span></div>
+                            <div class="col"><span class="font-monospace small">{{.Check}}</span> — {{.Message}}</div>
+                            {{if .HasFix}}<div class="col-auto"><button class="btn btn-warning btn-sm feed-fix-btn" data-check="{{.Check}}" data-message="{{.Message}}" data-fixdesc="{{.FixDesc}}" title="{{.FixDesc}}"><i class="ti ti-tool"></i></button></div>{{end}}
+                        </div>
+                        {{if .Details}}<div class="detail d-none mt-2 small text-muted" style="white-space:pre-wrap">{{.Details}}</div>{{end}}
+                    </div>
+                    {{else}}
+                    <div class="list-group-item text-center text-muted py-4">No recent findings. Waiting for events...</div>
+                    {{end}}
+                </div>
+            </div>
         </div>
     </div>
 {{end}}
