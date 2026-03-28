@@ -374,3 +374,32 @@ document.querySelectorAll('.finding-row').forEach(function(row) {
         dismissOne(row.getAttribute('data-check') + ':' + row.getAttribute('data-message'));
     });
 });
+
+// --- Auto-refresh: poll for new findings every 15 seconds ---
+(function() {
+    var currentKeys = {};
+    document.querySelectorAll('.finding-row').forEach(function(r) {
+        currentKeys[r.dataset.check + ':' + r.dataset.message] = true;
+    });
+    var currentCount = Object.keys(currentKeys).length;
+
+    setInterval(function() {
+        fetch(CSM.apiUrl('/api/v1/findings'), { credentials: 'same-origin' })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (!data) return;
+                var changed = data.length !== currentCount;
+                if (!changed) {
+                    for (var i = 0; i < data.length; i++) {
+                        var key = data[i].check + ':' + data[i].message;
+                        if (!currentKeys[key]) { changed = true; break; }
+                    }
+                }
+                if (changed) {
+                    var banner = document.getElementById('refresh-banner');
+                    if (banner) banner.classList.remove('d-none');
+                }
+            })
+            .catch(function() {});
+    }, 15000);
+})();
