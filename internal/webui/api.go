@@ -16,6 +16,7 @@ import (
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
 	"github.com/pidginhost/cpanel-security-monitor/internal/checks"
+	"github.com/pidginhost/cpanel-security-monitor/internal/state"
 )
 
 // apiStatus returns daemon status and uptime.
@@ -903,6 +904,98 @@ func parseModeString(s string) os.FileMode {
 // flushCphulk removes brute-force login history for an IP from cPanel's cphulk.
 func flushCphulk(ip string) {
 	_, _ = exec.Command("whmapi1", "flush_cphulk_login_history_for_ips", "ip="+ip).Output()
+}
+
+// apiExport returns a JSON bundle of exportable state.
+func (s *Server) apiExport(w http.ResponseWriter, _ *http.Request) {
+	// Collect suppressions
+	suppressions := s.store.LoadSuppressions()
+	if suppressions == nil {
+		suppressions = []state.SuppressionRule{}
+	}
+
+	// Collect whitelist
+	var whitelist []checks.WhitelistIP
+	if tdb := checks.GetThreatDB(); tdb != nil {
+		whitelist = tdb.WhitelistedIPs()
+	}
+	if whitelist == nil {
+		whitelist = []checks.WhitelistIP{}
+	}
+
+	bundle := map[string]interface{}{
+		"exported_at":  time.Now().Format(time.RFC3339),
+		"hostname":     s.cfg.Hostname,
+		"suppressions": suppressions,
+		"whitelist":    whitelist,
+	}
+
+	w.Header().Set("Content-Disposition", "attachment; filename=csm-state-export.json")
+	writeJSON(w, bundle)
+}
+
+// apiImport merges an exported state bundle into the current state.
+func (s *Server) apiImport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var bundle struct {
+		Suppressions []state.SuppressionRule `json:"suppressions"`
+		Whitelist    []struct {
+			IP string `json:"ip"`
+		} `json:"whitelist"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&bundle); err != nil {
+		writeJSONError(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	imported := 0
+
+	// Merge suppressions (dedup by ID)
+	if len(bundle.Suppressions) > 0 {
+		existing := s.store.LoadSuppressions()
+		existingIDs := make(map[string]bool)
+		for _, rule := range existing {
+			existingIDs[rule.ID] = true
+		}
+		for _, rule := range bundle.Suppressions {
+			if !existingIDs[rule.ID] {
+				existing = append(existing, rule)
+				imported++
+			}
+		}
+		if err := s.store.SaveSuppressions(existing); err != nil {
+			writeJSONError(w, fmt.Sprintf("failed to save suppressions: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Merge whitelist IPs
+	if len(bundle.Whitelist) > 0 {
+		if tdb := checks.GetThreatDB(); tdb != nil {
+			existingWL := tdb.WhitelistedIPs()
+			existingSet := make(map[string]bool)
+			for _, w := range existingWL {
+				existingSet[w.IP] = true
+			}
+			for _, entry := range bundle.Whitelist {
+				if entry.IP != "" && !existingSet[entry.IP] {
+					tdb.AddWhitelist(entry.IP)
+					imported++
+				}
+			}
+		}
+	}
+
+	s.auditLog(r, "import", "state", fmt.Sprintf("imported %d items", imported))
+	writeJSON(w, map[string]interface{}{
+		"status":   "imported",
+		"imported": imported,
+		"summary":  fmt.Sprintf("%d items imported", imported),
+	})
 }
 
 func writeJSONError(w http.ResponseWriter, message string, code int) {

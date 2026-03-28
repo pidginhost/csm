@@ -132,6 +132,28 @@ function loadSuppressions() {
     }).catch(function(e) { console.error('suppressions:', e); });
 }
 
+var importFile = document.getElementById('import-file');
+if (importFile) {
+    importFile.addEventListener('change', function() {
+        var file = this.files[0];
+        if (!file) return;
+        var reader = new FileReader();
+        reader.onload = function(e) {
+            try {
+                var data = JSON.parse(e.target.result);
+                CSM.post('/api/v1/import', data).then(function(result) {
+                    CSM.toast('Import complete: ' + (result.summary || 'done'), 'success');
+                    loadSuppressions();
+                }).catch(function(err) { CSM.toast('Import failed: ' + err, 'error'); });
+            } catch(ex) {
+                CSM.toast('Invalid JSON file', 'error');
+            }
+        };
+        reader.readAsText(file);
+        this.value = '';
+    });
+}
+
 loadStatus();
 loadFiles();
 loadSuppressions();
