@@ -537,9 +537,10 @@ func (s *Store) SaveSuppressions(rules []SuppressionRule) error {
 	return nil
 }
 
-// IsSuppressed checks if a finding matches any suppression rule.
-func (s *Store) IsSuppressed(f alert.Finding) bool {
-	rules := s.LoadSuppressions()
+// IsSuppressed checks if a finding matches any loaded suppression rule.
+// Load rules once with LoadSuppressions() and pass them in to avoid
+// re-reading the file for every finding.
+func (s *Store) IsSuppressed(f alert.Finding, rules []SuppressionRule) bool {
 	for _, rule := range rules {
 		if f.Check != rule.Check {
 			continue

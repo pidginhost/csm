@@ -286,32 +286,12 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 		}
 	}
 
-	// Filter through state
-	newFindings := d.store.FilterNew(findings)
-	if len(newFindings) == 0 {
-		return
-	}
-
-	// Log to history
-	d.store.AppendHistory(newFindings)
-
-	// Auto-response (kill, quarantine on new findings only)
-	killActions := checks.AutoKillProcesses(d.cfg, newFindings)
-	quarantineActions := checks.AutoQuarantineFiles(d.cfg, newFindings)
-	// Permission fix runs on ALL findings — safe, idempotent, and must fix baseline findings too
-	permActions, permFixedKeys := checks.AutoFixPermissions(d.cfg, findings)
-	// Auto-block uses ALL findings — reputation IPs must be blocked even if previously seen
+	// Auto-block and permission fix run on ALL findings (not just new ones).
+	// These must execute BEFORE FilterNew because repeat offender IPs and
+	// recurring permission issues need to be fixed even if the alert was
+	// already sent in a previous cycle.
 	blockActions := checks.AutoBlockIPs(d.cfg, findings)
-	newFindings = append(newFindings, killActions...)
-	newFindings = append(newFindings, quarantineActions...)
-	newFindings = append(newFindings, permActions...)
-	newFindings = append(newFindings, blockActions...)
-
-	// Dismiss auto-fixed findings from the Findings page so they don't
-	// remain visible after the underlying issue has been remediated.
-	for _, key := range permFixedKeys {
-		d.store.DismissLatestFinding(key)
-	}
+	permActions, permFixedKeys := checks.AutoFixPermissions(d.cfg, findings)
 
 	// Mark auto-blocked IPs in attack database
 	if adb := attackdb.Global(); adb != nil {
@@ -321,6 +301,32 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 			}
 		}
 	}
+
+	// Dismiss auto-fixed findings from the Findings page
+	for _, key := range permFixedKeys {
+		d.store.DismissLatestFinding(key)
+	}
+
+	// Filter through state — only new findings get alerted and logged
+	newFindings := d.store.FilterNew(findings)
+
+	// Append auto-response actions to new findings for alerting
+	newFindings = append(newFindings, blockActions...)
+	newFindings = append(newFindings, permActions...)
+
+	if len(newFindings) == 0 {
+		d.store.Update(findings)
+		return
+	}
+
+	// Log to history
+	d.store.AppendHistory(newFindings)
+
+	// Kill and quarantine only run on NEW findings (don't re-kill/re-quarantine)
+	killActions := checks.AutoKillProcesses(d.cfg, newFindings)
+	quarantineActions := checks.AutoQuarantineFiles(d.cfg, newFindings)
+	newFindings = append(newFindings, killActions...)
+	newFindings = append(newFindings, quarantineActions...)
 
 	// Correlation
 	extra := checks.CorrelateFindings(newFindings)

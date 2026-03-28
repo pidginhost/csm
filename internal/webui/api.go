@@ -51,13 +51,14 @@ func (s *Server) apiFindings(w http.ResponseWriter, _ *http.Request) {
 		HasFix    bool   `json:"has_fix"`
 	}
 
+	suppressions := s.store.LoadSuppressions()
 	var result []entryView
 	for _, f := range latest {
 		if f.Check == "auto_response" || f.Check == "auto_block" || f.Check == "check_timeout" || f.Check == "health" {
 			continue
 		}
 		// Skip suppressed findings
-		if s.store.IsSuppressed(f) {
+		if s.store.IsSuppressed(f, suppressions) {
 			continue
 		}
 		firstSeen := f.Timestamp
@@ -81,7 +82,7 @@ func (s *Server) apiFindings(w http.ResponseWriter, _ *http.Request) {
 }
 
 // apiHistory returns paginated history from history.jsonl.
-// Supports optional date range filtering via "from" and "to" query params (YYYY-MM-DD).
+// Supports optional filtering via "from", "to" (YYYY-MM-DD), and "severity" (0/1/2) query params.
 func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 	limit := queryInt(r, "limit", 50)
 	if limit > 5000 {
@@ -91,9 +92,10 @@ func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 
 	fromStr := r.URL.Query().Get("from")
 	toStr := r.URL.Query().Get("to")
+	sevStr := r.URL.Query().Get("severity")
 
-	// If no date filter, use simple paginated read
-	if fromStr == "" && toStr == "" {
+	// If no filters, use simple paginated read
+	if fromStr == "" && toStr == "" && sevStr == "" {
 		findings, total := s.store.ReadHistory(limit, offset)
 		writeJSON(w, map[string]interface{}{
 			"findings": findings,
@@ -104,7 +106,7 @@ func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// With date filter: read all history, filter, then paginate
+	// With filters: read all history, filter, then paginate
 	var fromDate, toDate time.Time
 	if fromStr != "" {
 		fromDate, _ = time.ParseInLocation("2006-01-02", fromStr, time.Local)
@@ -112,6 +114,10 @@ func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 	if toStr != "" {
 		toDate, _ = time.ParseInLocation("2006-01-02", toStr, time.Local)
 		toDate = toDate.Add(24*time.Hour - time.Second)
+	}
+	sevFilter := -1
+	if sevStr != "" {
+		sevFilter = queryInt(r, "severity", -1)
 	}
 
 	allFindings, _ := s.store.ReadHistory(5000, 0)
@@ -121,6 +127,9 @@ func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		if !toDate.IsZero() && f.Timestamp.After(toDate) {
+			continue
+		}
+		if sevFilter >= 0 && int(f.Severity) != sevFilter {
 			continue
 		}
 		filtered = append(filtered, f)
@@ -231,7 +240,7 @@ func (s *Server) apiStats(w http.ResponseWriter, _ *http.Request) {
 			"warning":  warning,
 			"total":    critical + high + warning,
 		},
-		"by_check":         byCheck,
+		"by_check":          byCheck,
 		"last_critical_ago": lastCriticalAgo,
 	}
 	writeJSON(w, result)

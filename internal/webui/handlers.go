@@ -104,7 +104,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 
 		// Timeline bucket
 		hoursAgo := int(time.Since(f.Timestamp).Hours())
-		if hoursAgo < 24 {
+		if hoursAgo >= 0 && hoursAgo < 24 {
 			b := buckets[hoursAgo]
 			switch f.Severity {
 			case alert.Critical:
@@ -174,17 +174,17 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 
 	// Stats counters start at 0 — dashboard.js populates them via /api/v1/stats
 	data := dashboardData{
-		Hostname:       s.cfg.Hostname,
-		Uptime:         time.Since(s.startTime).Round(time.Second).String(),
-		Critical:       0,
-		High:           0,
-		Warning:        0,
-		Total:          0,
-		SigCount:       s.sigCount,
+		Hostname:        s.cfg.Hostname,
+		Uptime:          time.Since(s.startTime).Round(time.Second).String(),
+		Critical:        0,
+		High:            0,
+		Warning:         0,
+		Total:           0,
+		SigCount:        s.sigCount,
 		FanotifyActive:  s.fanotifyActive,
 		LastCriticalAgo: lastCriticalAgo,
 		RecentFindings:  recent,
-		TimelineBars:   bars,
+		TimelineBars:    bars,
 	}
 	s.renderTemplate(w, "dashboard.html", data)
 }
@@ -195,6 +195,7 @@ func (s *Server) handleFindings(w http.ResponseWriter, _ *http.Request) {
 	latest := s.store.LatestFindings()
 
 	// Filter out auto_response actions, internal checks, and suppressed findings
+	suppressions := s.store.LoadSuppressions()
 	var items []findingEntry
 	for _, f := range latest {
 		// Skip auto-response action logs and internal check results
@@ -202,7 +203,7 @@ func (s *Server) handleFindings(w http.ResponseWriter, _ *http.Request) {
 			continue
 		}
 		// Skip suppressed findings
-		if s.store.IsSuppressed(f) {
+		if s.store.IsSuppressed(f, suppressions) {
 			continue
 		}
 		firstSeen := f.Timestamp

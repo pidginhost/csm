@@ -43,9 +43,16 @@ function viewFile(id, path) {
             var body = document.getElementById('csm-confirm-body');
             var modal = document.getElementById('csm-confirm-modal');
             if (body && modal) {
+                // Close any existing modal first to prevent backdrop leak
+                var existingBackdrop = document.querySelector('.modal-backdrop');
+                if (existingBackdrop) existingBackdrop.remove();
+                if (modal.classList.contains('show')) {
+                    modal.classList.remove('show');
+                    modal.style.display = 'none';
+                }
+
                 body.innerHTML = '<div style="margin-bottom:8px"><strong>' + title + '</strong><span class="text-muted small">' + info + '</span></div>' +
                     '<pre style="max-height:400px;overflow:auto;background:var(--tblr-bg-surface);padding:8px;border-radius:4px;font-size:0.75rem;white-space:pre-wrap;word-break:break-all">' + CSM.esc(data.preview) + '</pre>';
-                // Show modal (reuse confirm modal)
                 var ok = document.getElementById('csm-confirm-ok');
                 var cancel = document.getElementById('csm-confirm-cancel');
                 if (ok) ok.textContent = 'Close';

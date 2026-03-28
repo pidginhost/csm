@@ -9,11 +9,11 @@ import (
 
 type timelineEvent struct {
 	Timestamp string `json:"timestamp"`
-	Type      string `json:"type"`              // "finding", "action", "block"
-	Severity  int    `json:"severity"`           // 0=info, 1=high, 2=critical
+	Type      string `json:"type"`     // "finding", "action", "block"
+	Severity  int    `json:"severity"` // 0=info, 1=high, 2=critical
 	Summary   string `json:"summary"`
 	Details   string `json:"details,omitempty"`
-	Source    string `json:"source"`             // "history", "audit", "firewall"
+	Source    string `json:"source"` // "history", "audit", "firewall"
 }
 
 func (s *Server) handleIncident(w http.ResponseWriter, _ *http.Request) {
