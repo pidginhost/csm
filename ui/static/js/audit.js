@@ -23,11 +23,11 @@ function loadAudit() {
             var e = entries[i];
             var badgeClass = actionBadges[e.action] || 'bg-secondary';
             html += '<tr>';
-            html += '<td class="text-nowrap" title="' + esc(e.timestamp) + '"><span class="text-muted small">' + esc(CSM.timeAgo(e.timestamp)) + '</span></td>';
-            html += '<td><span class="badge ' + badgeClass + '">' + esc(e.action) + '</span></td>';
-            html += '<td><code>' + esc(e.target) + '</code></td>';
-            html += '<td class="small">' + esc(e.details || '') + '</td>';
-            html += '<td class="font-monospace small">' + esc(e.source_ip || '') + '</td>';
+            html += '<td class="text-nowrap" title="' + CSM.esc(e.timestamp) + '"><span class="text-muted small">' + CSM.esc(CSM.timeAgo(e.timestamp)) + '</span></td>';
+            html += '<td><span class="badge ' + badgeClass + '">' + CSM.esc(e.action) + '</span></td>';
+            html += '<td><code>' + CSM.esc(e.target) + '</code></td>';
+            html += '<td class="small">' + CSM.esc(e.details || '') + '</td>';
+            html += '<td class="font-monospace small">' + CSM.esc(e.source_ip || '') + '</td>';
             html += '</tr>';
         }
         html += '</tbody></table></div>';

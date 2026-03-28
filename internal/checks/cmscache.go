@@ -81,6 +81,15 @@ func HashFile(path string) string {
 
 // IsVerifiedCMSFile checks if a file at the given path matches a
 // known-clean CMS core file by comparing its SHA256 hash against the cache.
+//
+// The cache is keyed by SHA256 hash alone (not path+hash) — this is correct:
+//   - SHA256 preimage resistance makes it computationally infeasible for an
+//     attacker to craft a file that produces the same hash as a legitimate
+//     WP core file. Birthday attacks do not apply here because the attacker
+//     must hit a specific pre-existing hash, not merely find any collision.
+//   - If file content matches a known WP core file byte-for-byte, it IS that
+//     file regardless of where it is located on disk. The path is irrelevant
+//     to whether the content is clean.
 func IsVerifiedCMSFile(path string) bool {
 	cache := GlobalCMSCache()
 	if cache.Size() == 0 {

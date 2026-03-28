@@ -35,7 +35,7 @@ function loadFiles() {
                 ? '<span class="badge bg-purple-lt">YARA</span>'
                 : '<span class="badge bg-blue-lt">YAML</span>';
             html += '<tr>';
-            html += '<td><code class="font-monospace">' + esc(f.name) + '</code></td>';
+            html += '<td><code class="font-monospace">' + CSM.esc(f.name) + '</code></td>';
             html += '<td>' + typeBadge + '</td>';
             html += '<td class="text-muted">' + fmtSize(f.size) + '</td>';
             html += '</tr>';

@@ -43,7 +43,7 @@ fetch('/api/v1/threat/stats',{credentials:'same-origin'}).then(function(r){retur
     for(var i=0;i<types.length;i++){
         var t=types[i], v=byType[t];
         var pct=Math.round(v/maxVal*100);
-        html+='<tr><td style="width:120px" class="text-nowrap small">'+esc(t.replace(/_/g,' '))+'</td>';
+        html+='<tr><td style="width:120px" class="text-nowrap small">'+CSM.esc(t.replace(/_/g,' '))+'</td>';
         html+='<td><div class="progress progress-sm"><div class="progress-bar bg-primary" style="width:'+pct+'%"></div></div></td>';
         html+='<td style="width:50px" class="text-end small font-monospace">'+v+'</td></tr>';
     }
@@ -79,9 +79,9 @@ fetch('/api/v1/threat/top-attackers?limit=50',{credentials:'same-origin'}).then(
         var r=data[i];
         var statusBadge=r.currently_blocked?'<span class="badge bg-secondary">Blocked</span>':
                         r.in_threat_db?'<span class="badge bg-danger-lt">Threat DB</span>':'';
-        html+='<tr class="ip-row" style="cursor:pointer" data-ip="'+esc(r.ip)+'">';
-        html+='<td><code class="font-monospace">'+esc(r.ip)+'</code></td>';
-        html+='<td class="text-nowrap">'+(r.country?countryFlag(r.country)+' '+esc(r.country):'')+(r.as_org?' <span class="text-muted small">'+esc(r.as_org)+'</span>':'')+'</td>';
+        html+='<tr class="ip-row" style="cursor:pointer" data-ip="'+CSM.esc(r.ip)+'">';
+        html+='<td><code class="font-monospace">'+CSM.esc(r.ip)+'</code></td>';
+        html+='<td class="text-nowrap">'+(r.country?countryFlag(r.country)+' '+CSM.esc(r.country):'')+(r.as_org?' <span class="text-muted small">'+CSM.esc(r.as_org)+'</span>':'')+'</td>';
         html+='<td>'+verdictBadge(r.verdict,r.unified_score)+'</td>';
         html+='<td>'+r.event_count+'</td>';
         html+='<td>'+typeBadges(r.attack_counts)+'</td>';
@@ -125,21 +125,21 @@ document.getElementById('lookup-form').addEventListener('submit',function(e){
         html+='<div class="col-md-3"><div class="card"><div class="card-body text-center">';
         html+='<div class="subheader">Unified Score</div>';
         html+='<div class="h1 mb-1">'+verdictBadge(intel.verdict,intel.unified_score)+'</div>';
-        html+='<div class="text-muted small">'+esc(intel.verdict)+'</div>';
+        html+='<div class="text-muted small">'+CSM.esc(intel.verdict)+'</div>';
         html+='</div></div></div>';
         // Details
         html+='<div class="col-md-9"><div class="card"><div class="card-body"><table class="table table-sm mb-0">';
         html+='<tr><td class="text-muted" style="width:160px">Local Score</td><td>'+intel.local_score+'/100</td></tr>';
-        if(intel.country)html+='<tr><td class="text-muted">Country</td><td>'+countryFlag(intel.country)+' <strong>'+esc(intel.country)+'</strong>'+(intel.country_name?' — '+esc(intel.country_name):'')+(intel.city?', '+esc(intel.city):'')+'</td></tr>';
-        if(intel.as_org)html+='<tr><td class="text-muted">ISP / ASN</td><td>'+esc(intel.as_org)+(intel.asn?' <span class="text-muted">(AS'+intel.asn+')</span>':'')+'</td></tr>';
-        if(intel.network)html+='<tr><td class="text-muted">Network</td><td><code>'+esc(intel.network)+'</code></td></tr>';
+        if(intel.country)html+='<tr><td class="text-muted">Country</td><td>'+countryFlag(intel.country)+' <strong>'+CSM.esc(intel.country)+'</strong>'+(intel.country_name?' — '+CSM.esc(intel.country_name):'')+(intel.city?', '+CSM.esc(intel.city):'')+'</td></tr>';
+        if(intel.as_org)html+='<tr><td class="text-muted">ISP / ASN</td><td>'+CSM.esc(intel.as_org)+(intel.asn?' <span class="text-muted">(AS'+intel.asn+')</span>':'')+'</td></tr>';
+        if(intel.network)html+='<tr><td class="text-muted">Network</td><td><code>'+CSM.esc(intel.network)+'</code></td></tr>';
         html+='<tr><td class="text-muted">AbuseIPDB Score</td><td>'+(intel.abuse_score>=0?intel.abuse_score+'/100':'Not cached')+'</td></tr>';
-        if(intel.abuse_category)html+='<tr><td class="text-muted">AbuseIPDB Category</td><td>'+esc(intel.abuse_category)+'</td></tr>';
-        html+='<tr><td class="text-muted">In Threat DB</td><td>'+(intel.in_threat_db?'<span class="badge bg-danger">Yes</span> ('+esc(intel.threat_db_source)+')':'No')+'</td></tr>';
+        if(intel.abuse_category)html+='<tr><td class="text-muted">AbuseIPDB Category</td><td>'+CSM.esc(intel.abuse_category)+'</td></tr>';
+        html+='<tr><td class="text-muted">In Threat DB</td><td>'+(intel.in_threat_db?'<span class="badge bg-danger">Yes</span> ('+CSM.esc(intel.threat_db_source)+')':'No')+'</td></tr>';
         if(intel.currently_blocked){
             var blockType=intel.block_permanent?'<span class="badge bg-dark">Permanent</span>':'<span class="badge bg-warning">Temporary</span>';
             html+='<tr><td class="text-muted">Block Status</td><td><span class="badge bg-secondary">Blocked</span> '+blockType+'</td></tr>';
-            if(intel.block_reason)html+='<tr><td class="text-muted">Block Reason</td><td class="small">'+esc(intel.block_reason)+'</td></tr>';
+            if(intel.block_reason)html+='<tr><td class="text-muted">Block Reason</td><td class="small">'+CSM.esc(intel.block_reason)+'</td></tr>';
             if(intel.blocked_at)html+='<tr><td class="text-muted">Blocked At</td><td>'+fmtDate(intel.blocked_at)+'</td></tr>';
             if(intel.block_expires_at && !intel.block_permanent)html+='<tr><td class="text-muted">Expires At</td><td>'+fmtDate(intel.block_expires_at)+'</td></tr>';
         } else {
@@ -155,9 +155,9 @@ document.getElementById('lookup-form').addEventListener('submit',function(e){
         }
         html+='</table>';
         html+='<div class="mt-3 d-flex gap-2 flex-wrap">';
-        html+='<button class="btn btn-outline-primary btn-sm clear-ip-btn" data-ip="'+esc(intel.ip)+'"><i class="ti ti-eraser"></i>&nbsp;Unblock &amp; Clear</button>';
-        html+='<button class="btn btn-outline-warning btn-sm temp-wl-btn" data-ip="'+esc(intel.ip)+'"><i class="ti ti-clock"></i>&nbsp;Temp Whitelist (24h)</button>';
-        html+='<button class="btn btn-success btn-sm perm-wl-btn" data-ip="'+esc(intel.ip)+'"><i class="ti ti-shield-check"></i>&nbsp;Permanent Whitelist</button>';
+        html+='<button class="btn btn-outline-primary btn-sm clear-ip-btn" data-ip="'+CSM.esc(intel.ip)+'"><i class="ti ti-eraser"></i>&nbsp;Unblock &amp; Clear</button>';
+        html+='<button class="btn btn-outline-warning btn-sm temp-wl-btn" data-ip="'+CSM.esc(intel.ip)+'"><i class="ti ti-clock"></i>&nbsp;Temp Whitelist (24h)</button>';
+        html+='<button class="btn btn-success btn-sm perm-wl-btn" data-ip="'+CSM.esc(intel.ip)+'"><i class="ti ti-shield-check"></i>&nbsp;Permanent Whitelist</button>';
         html+='</div>';
         html+='</div></div></div>';
         html+='</div>';
@@ -170,10 +170,10 @@ document.getElementById('lookup-form').addEventListener('submit',function(e){
             for(var i=0;i<events.length;i++){
                 var ev=events[i];
                 html+='<tr><td class="text-nowrap small">'+fmtDate(ev.ts)+'</td>';
-                html+='<td><span class="badge bg-azure-lt">'+esc((ev.type||'').replace(/_/g,' '))+'</span></td>';
-                html+='<td><code class="small">'+esc(ev.check)+'</code></td>';
-                html+='<td>'+esc(ev.account||'—')+'</td>';
-                html+='<td class="small">'+esc(ev.msg||'')+'</td></tr>';
+                html+='<td><span class="badge bg-azure-lt">'+CSM.esc((ev.type||'').replace(/_/g,' '))+'</span></td>';
+                html+='<td><code class="small">'+CSM.esc(ev.check)+'</code></td>';
+                html+='<td>'+CSM.esc(ev.account||'—')+'</td>';
+                html+='<td class="small">'+CSM.esc(ev.msg||'')+'</td></tr>';
             }
             html+='</tbody></table></div></div>';
         }
@@ -202,9 +202,9 @@ function loadWhitelist() {
             var e=entries[i];
             var typeBadge=e.permanent?'<span class="badge bg-success-lt">Permanent</span>':
                 '<span class="badge bg-warning-lt">Expires '+fmtDate(e.expires_at)+'</span>';
-            html+='<tr><td><code class="font-monospace">'+esc(e.ip)+'</code></td>';
+            html+='<tr><td><code class="font-monospace">'+CSM.esc(e.ip)+'</code></td>';
             html+='<td>'+typeBadge+'</td>';
-            html+='<td><button class="btn btn-ghost-danger btn-sm remove-wl-btn" data-ip="'+esc(e.ip)+'"><i class="ti ti-x"></i>&nbsp;Remove</button></td></tr>';
+            html+='<td><button class="btn btn-ghost-danger btn-sm remove-wl-btn" data-ip="'+CSM.esc(e.ip)+'"><i class="ti ti-x"></i>&nbsp;Remove</button></td></tr>';
         }
         tbody.innerHTML=html;
         // Bind remove buttons after DOM insertion
