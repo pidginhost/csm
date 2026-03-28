@@ -259,21 +259,24 @@ func extractBracketedIP(line string) string {
 	return ""
 }
 
-// loadAllBlockedIPs returns all IPs currently blocked in CSF and CSM.
+// loadAllBlockedIPs returns all IPs currently blocked in CSM.
 func loadAllBlockedIPs(statePath string) map[string]bool {
 	blocked := make(map[string]bool)
 
-	data, err := os.ReadFile("/etc/csf/csf.deny")
-	if err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" || strings.HasPrefix(line, "#") {
-				continue
-			}
-			parts := strings.Fields(line)
-			if len(parts) > 0 {
-				ip := strings.Split(parts[0], "/")[0]
-				blocked[ip] = true
+	// Read from nftables firewall engine state
+	if fwData, err := os.ReadFile(filepath.Join(statePath, "firewall", "state.json")); err == nil {
+		var fwState struct {
+			Blocked []struct {
+				IP        string    `json:"ip"`
+				ExpiresAt time.Time `json:"expires_at"`
+			} `json:"blocked"`
+		}
+		if json.Unmarshal(fwData, &fwState) == nil {
+			now := time.Now()
+			for _, entry := range fwState.Blocked {
+				if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
+					blocked[entry.IP] = true
+				}
 			}
 		}
 	}
@@ -286,7 +289,7 @@ func loadAllBlockedIPs(statePath string) map[string]bool {
 		IPs []blockedEntry `json:"ips"`
 	}
 
-	data, err = os.ReadFile(filepath.Join(statePath, "blocked_ips.json"))
+	data, err := os.ReadFile(filepath.Join(statePath, "blocked_ips.json"))
 	if err == nil {
 		var bf blockFile
 		if err := json.Unmarshal(data, &bf); err == nil {

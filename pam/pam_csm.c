@@ -3,7 +3,7 @@
  *
  * Reports authentication events (success/failure) to the CSM daemon
  * via a Unix domain socket. The daemon tracks failures per IP and
- * blocks attackers via CSF after a configurable threshold.
+ * blocks attackers via CSM auto-blocking after a configurable threshold.
  *
  * Build:
  *   gcc -shared -fPIC -o pam_csm.so pam_csm.c -lpam

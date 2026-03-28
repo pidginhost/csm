@@ -419,7 +419,7 @@ func (s *Server) apiUnblockIP(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "unblocked", "ip": req.IP})
 }
 
-// blockedEntry is a raw blocked IP record from either firewall state or CSF.
+// blockedEntry is a raw blocked IP record from firewall state.
 type blockedEntry struct {
 	IP        string    `json:"ip"`
 	Reason    string    `json:"reason"`
@@ -455,7 +455,7 @@ func formatBlockedView(b blockedEntry) (blockedView, bool) {
 }
 
 // apiBlockedIPs returns the list of currently blocked IPs.
-// Reads from firewall engine state if available, falls back to CSF blocked_ips.json.
+// Reads from firewall engine state if available, falls back to blocked_ips.json.
 func (s *Server) apiBlockedIPs(w http.ResponseWriter, _ *http.Request) {
 	var result []blockedView
 
@@ -476,7 +476,7 @@ func (s *Server) apiBlockedIPs(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 
-	// Fall back to CSF blocked_ips.json
+	// Fall back to blocked_ips.json
 	stateFile := filepath.Join(s.cfg.StatePath, "blocked_ips.json")
 	data, err := os.ReadFile(stateFile)
 	if err != nil {

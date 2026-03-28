@@ -230,7 +230,7 @@ auto_response:
   enabled: false              # must be explicitly enabled
   kill_processes: false       # auto-kill fake kernel threads, reverse shells
   quarantine_files: false     # auto-move webshells/backdoors to /opt/csm/quarantine/
-  block_ips: false            # auto-block attacker IPs via CSF
+  block_ips: false            # auto-block attacker IPs via nftables
   block_expiry: "24h"         # how long IPs stay blocked
   block_cpanel_logins: false  # block IPs on cPanel/webmail login alerts (enable after portal-only login)
   netblock: false             # auto-block /24 subnet when threshold IPs from same range
@@ -240,7 +240,7 @@ auto_response:
   permblock_interval: "24h"   # window for counting temp blocks
 
 firewall:
-  enabled: false              # enable to activate nftables firewall (replaces CSF)
+  enabled: false              # enable to activate nftables-based firewall engine
   tcp_in:
     - 20
     - 21

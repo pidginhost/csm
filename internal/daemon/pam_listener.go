@@ -16,7 +16,7 @@ import (
 const pamSocketPath = "/var/run/csm/pam.sock"
 
 // PAMListener listens on a Unix socket for authentication events from the
-// pam_csm.so PAM module. Tracks failures per IP and triggers CSF blocks.
+// pam_csm.so PAM module. Tracks failures per IP and triggers CSM auto-blocking.
 type PAMListener struct {
 	cfg      *config.Config
 	alertCh  chan<- alert.Finding
