@@ -250,27 +250,12 @@ func (s *Server) apiFirewallCheck(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Check cphulk (cPanel brute force detector)
-	out, err := exec.Command("whmapi1", "flush_cphulk_login_history_for_ips", "ip="+ip, "--output=json").Output()
-	if err == nil {
-		// If the API returns records_removed > 0 or iptable_bans_removed > 0, cphulk had it
-		var cphulkResp struct {
-			Data struct {
-				RecordsRemoved int `json:"records_removed"`
-				IPTableBans    int `json:"iptable_bans_removed"`
-			} `json:"data"`
-		}
-		// Don't actually flush here — just check. Use a read-only approach:
-		// whmapi1 doesn't have a pure "check" for cphulk, so we check the login_log
-		_ = out
-		_ = cphulkResp
-		// Use the login log instead
-		cphulkOut, cphulkErr := exec.Command("whmapi1", "read_cphulk_records",
-			"list_name=black", "--output=json").Output()
-		if cphulkErr == nil {
-			if containsBytes(cphulkOut, []byte(ip)) {
-				result["cphulk"] = true
-			}
+	// Check cphulk (cPanel brute force detector) — read-only check
+	cphulkOut, cphulkErr := exec.Command("whmapi1", "read_cphulk_records",
+		"list_name=black", "--output=json").Output()
+	if cphulkErr == nil {
+		if containsBytes(cphulkOut, []byte(ip)) {
+			result["cphulk"] = true
 		}
 	}
 

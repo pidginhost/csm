@@ -1,5 +1,4 @@
 // CSM Firewall page
-var esc = CSM.esc;
 
 function loadStatus(){
     fetch('/api/v1/firewall/status',{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(d){

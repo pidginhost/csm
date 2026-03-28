@@ -62,6 +62,9 @@ func (s *Server) apiFindings(w http.ResponseWriter, _ *http.Request) {
 // apiHistory returns paginated history from history.jsonl.
 func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 	limit := queryInt(r, "limit", 50)
+	if limit > 5000 {
+		limit = 5000
+	}
 	offset := queryInt(r, "offset", 0)
 
 	findings, total := s.store.ReadHistory(limit, offset)

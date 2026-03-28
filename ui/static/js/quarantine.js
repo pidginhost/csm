@@ -1,5 +1,4 @@
 // CSM Quarantine page
-var esc = CSM.esc;
 
 function loadQuarantine() {
     fetch('/api/v1/quarantine', {credentials:'same-origin'}).then(function(r){return r.json()}).then(function(files){

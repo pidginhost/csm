@@ -1,5 +1,4 @@
 // CSM Threat Intelligence page
-var esc = CSM.esc;
 
 function fmtDate(s){if(!s)return '—';var d=new Date(s);return d.toISOString().substring(0,16).replace('T',' ');}
 

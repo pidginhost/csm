@@ -13,7 +13,7 @@ import (
 )
 
 func (s *Server) handleRules(w http.ResponseWriter, _ *http.Request) {
-	_ = s.templates["rules.html"].ExecuteTemplate(w, "rules.html", map[string]string{
+	s.renderTemplate(w, "rules.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
 	})
 }

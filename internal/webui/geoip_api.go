@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"net"
 	"net/http"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/geoip"
@@ -21,6 +22,10 @@ func (s *Server) apiGeoIPLookup(w http.ResponseWriter, r *http.Request) {
 	ip := r.URL.Query().Get("ip")
 	if ip == "" {
 		writeJSONError(w, "ip parameter required", http.StatusBadRequest)
+		return
+	}
+	if net.ParseIP(ip) == nil {
+		writeJSONError(w, "invalid IP address", http.StatusBadRequest)
 		return
 	}
 
