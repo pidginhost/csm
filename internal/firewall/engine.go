@@ -1164,6 +1164,21 @@ func (e *Engine) UnblockIP(ip string) error {
 	return nil
 }
 
+// IsBlocked returns true if the IP is currently in the engine's blocked state.
+// Uses the persisted state file (which is cleaned of expired entries on load).
+func (e *Engine) IsBlocked(ip string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	st := e.loadStateFile()
+	for _, entry := range st.Blocked {
+		if entry.IP == ip {
+			return true
+		}
+	}
+	return false
+}
+
 // AllowIP adds an IP to the allowed set and persists it.
 // If the IP is currently blocked, the block is removed first.
 func (e *Engine) AllowIP(ip string, reason string) error {

@@ -55,6 +55,7 @@ func ConnectExisting(_ *FirewallConfig, _ string) (*Engine, error) {
 func (e *Engine) Apply() error                                          { return nil }
 func (e *Engine) BlockIP(_ string, _ string, _ time.Duration) error     { return nil }
 func (e *Engine) UnblockIP(_ string) error                              { return nil }
+func (e *Engine) IsBlocked(_ string) bool                               { return false }
 func (e *Engine) AllowIP(_ string, _ string) error                      { return nil }
 func (e *Engine) RemoveAllowIP(_ string) error                          { return nil }
 func (e *Engine) BlockSubnet(_ string, _ string) error                  { return nil }
