@@ -13,8 +13,7 @@
     var isProxy = window.location.pathname.indexOf('addon_csm.cgi') >= 0 ||
                   window.location.search.indexOf('path=') >= 0;
 
-    // TODO: WebSocket disabled until browser freeze is debugged
-    wsDisabled = true;
+    // WebSocket enabled — coder/websocket handles HTTP/1.1 + HTTP/2 correctly
 
     var _pollingStarted = false;
     function startPolling() {

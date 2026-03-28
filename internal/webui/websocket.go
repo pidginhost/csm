@@ -1,35 +1,30 @@
 package webui
 
 import (
-	"crypto/sha1"
-	"encoding/base64"
+	"context"
 	"encoding/json"
-	"fmt"
-	"net"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
 )
-
-const websocketMagic = "258EAFA5-E914-47DA-95CA-5AB5DFFB7E03"
 
 // Hub manages WebSocket clients and broadcasts findings to all connected clients.
 type Hub struct {
 	mu      sync.RWMutex
-	clients map[net.Conn]struct{}
+	clients map[*websocket.Conn]context.CancelFunc
 }
 
 // NewHub creates a new WebSocket hub.
 func NewHub() *Hub {
 	return &Hub{
-		clients: make(map[net.Conn]struct{}),
+		clients: make(map[*websocket.Conn]context.CancelFunc),
 	}
 }
 
 // Broadcast sends findings to all connected WebSocket clients as JSON.
-// Non-blocking — slow clients are disconnected.
 func (h *Hub) Broadcast(findings []alert.Finding) {
 	if len(findings) == 0 {
 		return
@@ -39,20 +34,21 @@ func (h *Hub) Broadcast(findings []alert.Finding) {
 	if err != nil {
 		return
 	}
-	frame := buildWSFrame(data)
 
 	h.mu.RLock()
-	clients := make([]net.Conn, 0, len(h.clients))
-	for conn := range h.clients {
-		clients = append(clients, conn)
+	clients := make(map[*websocket.Conn]context.CancelFunc, len(h.clients))
+	for conn, cancel := range h.clients {
+		clients[conn] = cancel
 	}
 	h.mu.RUnlock()
 
-	for _, conn := range clients {
-		_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-		if _, err := conn.Write(frame); err != nil {
+	for conn := range clients {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := conn.Write(ctx, websocket.MessageText, data)
+		cancel()
+		if err != nil {
 			h.removeClient(conn)
-			_ = conn.Close()
+			conn.Close(websocket.StatusGoingAway, "write failed")
 		}
 	}
 }
@@ -64,131 +60,68 @@ func (h *Hub) ClientCount() int {
 	return len(h.clients)
 }
 
-func (h *Hub) addClient(conn net.Conn) {
+func (h *Hub) addClient(conn *websocket.Conn, cancel context.CancelFunc) {
 	h.mu.Lock()
-	h.clients[conn] = struct{}{}
+	h.clients[conn] = cancel
 	h.mu.Unlock()
 }
 
-func (h *Hub) removeClient(conn net.Conn) {
+func (h *Hub) removeClient(conn *websocket.Conn) {
 	h.mu.Lock()
-	delete(h.clients, conn)
+	if cancel, ok := h.clients[conn]; ok {
+		cancel()
+		delete(h.clients, conn)
+	}
 	h.mu.Unlock()
 }
 
-// HandleWebSocket upgrades an HTTP connection to WebSocket using stdlib only.
+// HandleWebSocket upgrades an HTTP connection to WebSocket.
 func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
-	// Validate WebSocket upgrade request
-	if r.Header.Get("Upgrade") != "websocket" {
-		http.Error(w, "Not a WebSocket request", http.StatusBadRequest)
-		return
-	}
-
-	// Origin validation: WebSocket is already protected by cookie-based auth.
-	// The auth check in handleWSFindings runs before this, so only authenticated
-	// users reach here. No additional origin check needed.
-
-	key := r.Header.Get("Sec-WebSocket-Key")
-	if key == "" {
-		http.Error(w, "Missing Sec-WebSocket-Key", http.StatusBadRequest)
-		return
-	}
-
-	// Compute accept key
-	hasher := sha1.New()
-	hasher.Write([]byte(key + websocketMagic))
-	acceptKey := base64.StdEncoding.EncodeToString(hasher.Sum(nil))
-
-	// Hijack the connection
-	hijacker, ok := w.(http.Hijacker)
-	if !ok {
-		http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
-		return
-	}
-
-	conn, bufrw, err := hijacker.Hijack()
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		// No origin check — auth is handled by cookie in handleWSFindings
+		InsecureSkipVerify: true,
+	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Send upgrade response
-	resp := fmt.Sprintf("HTTP/1.1 101 Switching Protocols\r\n"+
-		"Upgrade: websocket\r\n"+
-		"Connection: Upgrade\r\n"+
-		"Sec-WebSocket-Accept: %s\r\n\r\n", acceptKey)
-	if _, err := bufrw.WriteString(resp); err != nil {
-		_ = conn.Close()
-		return
-	}
-	if err := bufrw.Flush(); err != nil {
-		_ = conn.Close()
-		return
-	}
+	ctx, cancel := context.WithCancel(r.Context())
+	h.addClient(conn, cancel)
 
-	h.addClient(conn)
-
-	// Read loop — keep connection alive, handle close/ping frames
-	// Also sends server-initiated pings every 30s to keep idle connections alive
+	// Read loop — keeps connection alive, handles close frames
 	go func() {
 		defer func() {
 			h.removeClient(conn)
-			_ = conn.Close()
+			conn.Close(websocket.StatusNormalClosure, "")
 		}()
 
-		pingTicker := time.NewTicker(30 * time.Second)
-		defer pingTicker.Stop()
-
-		buf := make([]byte, 1024)
 		for {
-			// Check for pending pings before blocking on read
-			select {
-			case <-pingTicker.C:
-				ping := []byte{0x89, 0x00} // ping frame, no payload
-				_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-				if _, err := conn.Write(ping); err != nil {
-					return
-				}
-			default:
-			}
-
-			_ = conn.SetReadDeadline(time.Now().Add(60 * time.Second))
-			n, err := conn.Read(buf)
+			// Read with timeout — if no message in 60s, client is gone
+			readCtx, readCancel := context.WithTimeout(ctx, 60*time.Second)
+			_, _, err := conn.Read(readCtx)
+			readCancel()
 			if err != nil {
 				return
 			}
-			if n > 0 && buf[0]&0x0F == 0x8 {
-				return // close frame
-			}
-			// Send pong for ping frames
-			if n > 0 && buf[0]&0x0F == 0x9 {
-				pong := []byte{0x8A, 0x00} // pong with no payload
-				_, _ = conn.Write(pong)
+		}
+	}()
+
+	// Send a ping every 30s to keep the connection alive
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
+				err := conn.Ping(pingCtx)
+				pingCancel()
+				if err != nil {
+					return
+				}
 			}
 		}
 	}()
-}
-
-// buildWSFrame creates a WebSocket text frame from payload bytes.
-func buildWSFrame(payload []byte) []byte {
-	length := len(payload)
-	var frame []byte
-
-	// Opcode 0x1 = text frame, FIN bit set
-	frame = append(frame, 0x81)
-
-	switch {
-	case length < 126:
-		frame = append(frame, byte(length))
-	case length < 65536:
-		frame = append(frame, 126, byte(length>>8), byte(length))
-	default:
-		frame = append(frame, 127)
-		for i := 7; i >= 0; i-- {
-			frame = append(frame, byte(length>>(i*8)))
-		}
-	}
-
-	frame = append(frame, payload...)
-	return frame
 }
