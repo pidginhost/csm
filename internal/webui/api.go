@@ -293,22 +293,6 @@ func (s *Server) apiBulkFix(w http.ResponseWriter, r *http.Request) {
 
 // apiFixPreview returns what a fix would do without applying it.
 // GET /api/v1/fix-preview?check=...&message=...
-func (s *Server) apiFixPreview(w http.ResponseWriter, r *http.Request) {
-	checkType := r.URL.Query().Get("check")
-	message := r.URL.Query().Get("message")
-
-	desc := checks.FixDescription(checkType, message)
-	if desc == "" {
-		writeJSONError(w, "no fix available", http.StatusNotFound)
-		return
-	}
-
-	writeJSON(w, map[string]string{
-		"check":       checkType,
-		"description": desc,
-	})
-}
-
 // apiAccounts returns a list of cPanel account usernames for the scan dropdown.
 //
 //nolint:unused // registered via mux.Handle in server.go
