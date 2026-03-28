@@ -3,8 +3,6 @@
     'use strict';
 
     var feed = document.getElementById('live-feed-entries');
-    var wsStatus = document.getElementById('ws-status');
-    var statusLabel = document.getElementById('ws-status-label');
 
     // Polling — fetch recent history every 10 seconds
     var lastPollTimestamp = '';
@@ -78,8 +76,6 @@
 
     // Initialize
     if (feed) {
-        if (wsStatus) wsStatus.className = 'status-dot bg-yellow';
-        if (statusLabel) statusLabel.textContent = 'Polling';
         pollFindings();
         setInterval(pollFindings, 10000);
         refreshStats();

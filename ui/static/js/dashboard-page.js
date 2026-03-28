@@ -214,37 +214,6 @@
     setInterval(renderAttackTypesChart, 60000);
 })();
 
-// --- Live Feed WebSocket status label sync ---
-(function(){
-    var statusDot = document.getElementById('ws-status');
-    var statusLabel = document.getElementById('ws-status-label');
-    if (!statusDot || !statusLabel) return;
-
-    // MutationObserver to sync the label text with the dot's class changes
-    // (dashboard.js controls the dot class; we derive the label from it)
-    var observer = new MutationObserver(function() {
-        var cls = statusDot.className;
-        if (cls.indexOf('bg-green') >= 0) {
-            statusLabel.textContent = 'Connected';
-            statusLabel.style.color = '';
-            statusDot.classList.add('ws-live');
-        } else if (cls.indexOf('bg-red') >= 0) {
-            statusLabel.textContent = 'Offline';
-            statusLabel.style.color = '#d63939';
-            statusDot.classList.remove('ws-live');
-        } else if (cls.indexOf('bg-yellow') >= 0) {
-            statusLabel.textContent = 'Polling';
-            statusLabel.style.color = '#f59f00';
-            statusDot.classList.remove('ws-live');
-        } else {
-            statusLabel.textContent = 'Connecting...';
-            statusLabel.style.color = '';
-            statusDot.classList.remove('ws-live');
-        }
-    });
-    observer.observe(statusDot, { attributes: true, attributeFilter: ['class'] });
-})();
-
 // --- Live Feed: enhance new entries with highlight animation and relative time ---
 (function(){
     var feed = document.getElementById('live-feed-entries');
