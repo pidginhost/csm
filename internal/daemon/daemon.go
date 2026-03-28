@@ -401,7 +401,11 @@ func (d *Daemon) deepScanner() {
 			}
 			if len(findings) > 0 {
 				for _, f := range findings {
-					d.alertCh <- f
+					select {
+					case d.alertCh <- f:
+					default:
+						fmt.Fprintf(os.Stderr, "[%s] alert channel full, dropping deep finding: %s\n", ts(), f.Check)
+					}
 				}
 			}
 		}
@@ -411,11 +415,15 @@ func (d *Daemon) deepScanner() {
 func (d *Daemon) runPeriodicChecks(tier checks.Tier) {
 	// Verify integrity
 	if err := integrity.Verify(d.binaryPath, d.cfg); err != nil {
-		d.alertCh <- alert.Finding{
+		select {
+		case d.alertCh <- alert.Finding{
 			Severity:  alert.Critical,
 			Check:     "integrity",
 			Message:   fmt.Sprintf("BINARY/CONFIG TAMPER DETECTED: %v", err),
 			Timestamp: time.Now(),
+		}:
+		default:
+			fmt.Fprintf(os.Stderr, "[%s] alert channel full, dropping integrity finding\n", ts())
 		}
 		return
 	}
@@ -425,7 +433,11 @@ func (d *Daemon) runPeriodicChecks(tier checks.Tier) {
 		// Update latest findings for the Findings page
 		d.store.SetLatestFindings(findings)
 		for _, f := range findings {
-			d.alertCh <- f
+			select {
+			case d.alertCh <- f:
+			default:
+				fmt.Fprintf(os.Stderr, "[%s] alert channel full, dropping periodic finding: %s\n", ts(), f.Check)
+			}
 		}
 	}
 }
