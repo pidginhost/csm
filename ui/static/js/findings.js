@@ -165,9 +165,9 @@ document.getElementById('scan-form').addEventListener('submit', function(e) {
             var tr = document.createElement('tr');
             var actionHtml = '';
             if (fixableChecks[f.check]) {
-                actionHtml = '<button class="btn btn-warning btn-sm scan-fix-btn" data-check="'+esc(f.check)+'" data-message="'+esc(f.message)+'"><i class="ti ti-tool"></i>&nbsp;Fix</button>';
+                actionHtml = '<button class="btn btn-warning btn-sm scan-fix-btn" data-check="'+CSM.esc(f.check)+'" data-message="'+CSM.esc(f.message)+'"><i class="ti ti-tool"></i>&nbsp;Fix</button>';
             }
-            tr.innerHTML = '<td><span class="badge badge-'+sev+'">'+label+'</span></td><td><code>'+esc(f.check)+'</code></td><td>'+esc(f.message)+'</td><td>'+actionHtml+'</td>';
+            tr.innerHTML = '<td><span class="badge badge-'+sev+'">'+label+'</span></td><td><code>'+CSM.esc(f.check)+'</code></td><td>'+CSM.esc(f.message)+'</td><td>'+actionHtml+'</td>';
             tbody.appendChild(tr);
         });
         // Bind fix buttons on scan results
@@ -361,7 +361,7 @@ document.querySelectorAll('.finding-row').forEach(function(row) {
     var hasFix = row.getAttribute('data-hasFix') === 'true';
     var html = '';
     if (hasFix) {
-        html += '<button class="btn btn-warning btn-sm me-1 fix-btn" title="' + esc(row.getAttribute('data-fixdesc') || '') + '"><i class="ti ti-tool"></i></button>';
+        html += '<button class="btn btn-warning btn-sm me-1 fix-btn" title="' + CSM.esc(row.getAttribute('data-fixdesc') || '') + '"><i class="ti ti-tool"></i></button>';
     }
     html += '<button class="btn btn-ghost-secondary btn-sm dismiss-btn"><i class="ti ti-x"></i></button>';
     cell.innerHTML = html;

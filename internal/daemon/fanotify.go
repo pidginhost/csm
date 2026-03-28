@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 	"unsafe"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
 	"github.com/pidginhost/cpanel-security-monitor/internal/checks"
@@ -19,25 +22,17 @@ import (
 	"github.com/pidginhost/cpanel-security-monitor/internal/yara"
 )
 
-const (
-	sysFanotifyInit = 300
-	sysFanotifyMark = 301
-)
-
 // fanotify constants (not all in Go stdlib)
 const (
-	FAN_MARK_ADD                  = 0x00000001
-	FAN_MARK_MOUNT                = 0x00000010
-	FAN_CLOSE_WRITE               = 0x00000008
-	FAN_CREATE                    = 0x00000100
-	FAN_ONDIR                     = 0x40000000
-	FAN_EVENT_ON_CHILD            = 0x08000000
-	FAN_CLASS_NOTIF               = 0x00000000
-	FAN_CLOEXEC                   = 0x00000001
-	FAN_NONBLOCK                  = 0x00000002
-	FAN_REPORT_FID                = 0x00000200
-	FAN_REPORT_DFID_NAME          = 0x00000C00
-	FAN_EVENT_INFO_TYPE_DFID_NAME = 2
+	FAN_MARK_ADD       = 0x00000001
+	FAN_MARK_MOUNT     = 0x00000010
+	FAN_CLOSE_WRITE    = 0x00000008
+	FAN_CREATE         = 0x00000100
+	FAN_ONDIR          = 0x40000000
+	FAN_EVENT_ON_CHILD = 0x08000000
+	FAN_CLASS_NOTIF    = 0x00000000
+	FAN_CLOEXEC        = 0x00000001
+	FAN_NONBLOCK       = 0x00000002
 )
 
 // fanotifyEventMetadata is the header for each fanotify event.
@@ -53,13 +48,43 @@ type fanotifyEventMetadata struct {
 
 const metadataSize = int(unsafe.Sizeof(fanotifyEventMetadata{}))
 
+// M1 — webshells map at package level (avoid per-call allocation)
+var knownWebshells = map[string]bool{
+	"h4x0r.php": true, "c99.php": true, "r57.php": true,
+	"wso.php": true, "alfa.php": true, "b374k.php": true,
+	"shell.php": true, "cmd.php": true, "backdoor.php": true,
+	"webshell.php": true,
+}
+
+// M3 — plugin stat cache with TTL
+type pluginCacheEntry struct {
+	exists bool
+	ts     time.Time
+}
+
+var pluginStatCache sync.Map // key: pluginDir string → value: pluginCacheEntry
+
+const pluginCacheTTL = 5 * time.Minute
+
 // FileMonitor watches mount points for file creation/modification using fanotify.
 type FileMonitor struct {
 	fd         int
 	cfg        *config.Config
 	alertCh    chan<- alert.Finding
-	dropped    int64 // atomic counter for dropped events
 	analyzerCh chan fileEvent
+
+	// M7 — separate counters for dropped events and alerts
+	droppedEvents int64
+	droppedAlerts int64
+
+	// C4 — pipe for epoll stop signaling
+	pipeFds [2]int // [0]=read, [1]=write
+
+	// C2 — sync.Once for safe Stop
+	stopOnce  sync.Once
+	drainOnce sync.Once
+	stopCh    chan struct{} // internal stop channel
+	wg        sync.WaitGroup
 }
 
 type fileEvent struct {
@@ -70,34 +95,49 @@ type fileEvent struct {
 // NewFileMonitor creates a fanotify-based file monitor.
 // Returns error if the kernel doesn't support the required features.
 func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMonitor, error) {
-	// Try FAN_REPORT_DFID_NAME first (Linux 5.9+), then FAN_REPORT_FID (5.1+), then basic
-	var fd int
-	var err error
-
-	// Basic fanotify without filename reporting — we'll use /proc/self/fd/N readlink
-	fd, err = fanotifyInit(FAN_CLASS_NOTIF|FAN_CLOEXEC|FAN_NONBLOCK, syscall.O_RDONLY)
+	// H1 — use golang.org/x/sys/unix for fanotify_init
+	fd, err := unix.FanotifyInit(FAN_CLASS_NOTIF|FAN_CLOEXEC|FAN_NONBLOCK, unix.O_RDONLY)
 	if err != nil {
 		return nil, fmt.Errorf("fanotify_init: %w (kernel may not support fanotify)", err)
 	}
 
-	// Mark mount points
+	// Mark mount points; M2 — track successful mounts
 	mountPaths := []string{"/home", "/tmp", "/dev/shm"}
+	mountOK := 0
 	for _, path := range mountPaths {
-		err = fanotifyMark(fd, FAN_MARK_ADD|FAN_MARK_MOUNT, FAN_CLOSE_WRITE|FAN_CREATE, -1, path)
+		// H1 — use golang.org/x/sys/unix for fanotify_mark
+		err = unix.FanotifyMark(fd, FAN_MARK_ADD|FAN_MARK_MOUNT, FAN_CLOSE_WRITE|FAN_CREATE, -1, path)
 		if err != nil {
 			// Try without FAN_CREATE (older kernels)
-			err = fanotifyMark(fd, FAN_MARK_ADD|FAN_MARK_MOUNT, FAN_CLOSE_WRITE, -1, path)
+			err = unix.FanotifyMark(fd, FAN_MARK_ADD|FAN_MARK_MOUNT, FAN_CLOSE_WRITE, -1, path)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "[%s] Warning: cannot watch %s: %v\n", ts(), path, err)
+				continue
 			}
 		}
+		mountOK++
+	}
+
+	// M2 — error on zero successful mounts
+	if mountOK == 0 {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("no mount points could be watched (tried %v)", mountPaths)
+	}
+
+	// C4 — create pipe for epoll stop signaling
+	var pipeFds [2]int
+	if err := unix.Pipe2(pipeFds[:], unix.O_NONBLOCK|unix.O_CLOEXEC); err != nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("pipe2: %w", err)
 	}
 
 	fm := &FileMonitor{
 		fd:         fd,
 		cfg:        cfg,
 		alertCh:    alertCh,
-		analyzerCh: make(chan fileEvent, 1000), // bounded queue
+		analyzerCh: make(chan fileEvent, 1000),
+		pipeFds:    pipeFds,
+		stopCh:     make(chan struct{}),
 	}
 
 	return fm, nil
@@ -105,27 +145,143 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 
 // Run starts the file monitor event loop and analyzer workers.
 func (fm *FileMonitor) Run(stopCh <-chan struct{}) {
-	// Start analyzer workers
-	for i := 0; i < 3; i++ {
-		go fm.analyzerWorker(stopCh)
+	// H7 — configurable workers: min 4, max 16, based on NumCPU
+	numWorkers := runtime.NumCPU()
+	if numWorkers < 4 {
+		numWorkers = 4
+	}
+	if numWorkers > 16 {
+		numWorkers = 16
+	}
+
+	for i := 0; i < numWorkers; i++ {
+		fm.wg.Add(1)
+		go fm.analyzerWorker()
 	}
 
 	// Start overflow reporter
-	go fm.overflowReporter(stopCh)
+	fm.wg.Add(1)
+	go fm.overflowReporter()
 
-	buf := make([]byte, 4096*24) // Large buffer for event batches
+	// C4 — create epoll instance, watch fanotify fd + pipe read end
+	epfd, err := unix.EpollCreate1(unix.EPOLL_CLOEXEC)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] epoll_create1 failed: %v, falling back to poll loop\n", ts(), err)
+		fm.runPollFallback(stopCh)
+		return
+	}
+	defer unix.Close(epfd)
 
-	for {
+	// Add fanotify fd to epoll
+	if err := unix.EpollCtl(epfd, unix.EPOLL_CTL_ADD, fm.fd, &unix.EpollEvent{
+		Events: unix.EPOLLIN,
+		Fd:     int32(fm.fd),
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] epoll_ctl(fanotify): %v\n", ts(), err)
+		fm.runPollFallback(stopCh)
+		return
+	}
+
+	// Add pipe read end to epoll (for stop signaling)
+	if err := unix.EpollCtl(epfd, unix.EPOLL_CTL_ADD, fm.pipeFds[0], &unix.EpollEvent{
+		Events: unix.EPOLLIN,
+		Fd:     int32(fm.pipeFds[0]),
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] epoll_ctl(pipe): %v\n", ts(), err)
+		fm.runPollFallback(stopCh)
+		return
+	}
+
+	// Forward external stopCh to our internal mechanism
+	go func() {
 		select {
 		case <-stopCh:
+			fm.Stop()
+		case <-fm.stopCh:
+		}
+	}()
+
+	buf := make([]byte, 4096*24) // Large buffer for event batches
+	events := make([]unix.EpollEvent, 4)
+
+	for {
+		n, err := unix.EpollWait(epfd, events, 500) // 500ms timeout
+		if err != nil {
+			if err == unix.EINTR {
+				continue
+			}
+			// Check if we've been stopped
+			select {
+			case <-fm.stopCh:
+				fm.drainAndClose()
+				return
+			default:
+			}
+			fmt.Fprintf(os.Stderr, "[%s] epoll_wait error: %v\n", ts(), err)
+			time.Sleep(1 * time.Second)
+			continue
+		}
+
+		// Check for stop first
+		select {
+		case <-fm.stopCh:
+			fm.drainAndClose()
 			return
 		default:
 		}
 
-		n, err := syscall.Read(fm.fd, buf)
+		for i := 0; i < n; i++ {
+			if events[i].Fd == int32(fm.pipeFds[0]) {
+				// Stop signal received via pipe
+				fm.drainAndClose()
+				return
+			}
+
+			if events[i].Fd == int32(fm.fd) {
+				// fanotify events ready
+				for {
+					nr, err := unix.Read(fm.fd, buf)
+					if err != nil {
+						if err == unix.EAGAIN || err == unix.EINTR {
+							break
+						}
+						fmt.Fprintf(os.Stderr, "[%s] fanotify read error: %v\n", ts(), err)
+						break
+					}
+					if nr < metadataSize {
+						break
+					}
+					fm.processEvents(buf[:nr])
+				}
+			}
+		}
+	}
+}
+
+// runPollFallback is used when epoll setup fails; falls back to sleep-based polling.
+func (fm *FileMonitor) runPollFallback(stopCh <-chan struct{}) {
+	// Forward external stopCh to our internal mechanism
+	go func() {
+		select {
+		case <-stopCh:
+			fm.Stop()
+		case <-fm.stopCh:
+		}
+	}()
+
+	buf := make([]byte, 4096*24)
+
+	for {
+		select {
+		case <-fm.stopCh:
+			fm.drainAndClose()
+			return
+		default:
+		}
+
+		n, err := unix.Read(fm.fd, buf)
 		if err != nil {
-			if err == syscall.EAGAIN || err == syscall.EINTR {
-				// No events ready — sleep briefly to avoid busy loop
+			if err == unix.EAGAIN || err == unix.EINTR {
 				time.Sleep(100 * time.Millisecond)
 				continue
 			}
@@ -138,40 +294,69 @@ func (fm *FileMonitor) Run(stopCh <-chan struct{}) {
 			continue
 		}
 
-		// Process events
-		offset := 0
-		for offset+metadataSize <= n {
-			event := (*fanotifyEventMetadata)(unsafe.Pointer(&buf[offset]))
-			if event.EventLen < uint32(metadataSize) {
-				break
-			}
-
-			if event.Fd >= 0 {
-				fm.handleEvent(int(event.Fd))
-			}
-
-			offset += int(event.EventLen)
-		}
+		fm.processEvents(buf[:n])
 	}
 }
 
-// Stop closes the fanotify fd.
+// processEvents parses a buffer of fanotify event metadata and dispatches each event.
+func (fm *FileMonitor) processEvents(buf []byte) {
+	offset := 0
+	for offset+metadataSize <= len(buf) {
+		event := (*fanotifyEventMetadata)(unsafe.Pointer(&buf[offset]))
+		if event.EventLen < uint32(metadataSize) {
+			break
+		}
+
+		if event.Fd >= 0 {
+			fm.handleEvent(int(event.Fd))
+		}
+
+		offset += int(event.EventLen)
+	}
+}
+
+// drainAndClose drains the analyzerCh and waits for workers to finish.
+// C1 — ensures no fd leak on shutdown.
+func (fm *FileMonitor) drainAndClose() {
+	fm.drainOnce.Do(func() {
+		close(fm.analyzerCh)
+		fm.wg.Wait()
+		// Close pipe fds after all goroutines are done (BUG-3 fix)
+		unix.Close(fm.pipeFds[0])
+		unix.Close(fm.pipeFds[1])
+	})
+}
+
+// Stop signals the monitor to shut down.
+// C2 — sync.Once ensures safe concurrent calls; does not close analyzerCh directly.
 func (fm *FileMonitor) Stop() {
-	_ = syscall.Close(fm.fd)
-	close(fm.analyzerCh)
+	fm.stopOnce.Do(func() {
+		close(fm.stopCh)
+		// Wake epoll so Run() exits and calls drainAndClose
+		_, _ = unix.Write(fm.pipeFds[1], []byte{0})
+		// Close fanotify fd — causes any pending Read/EpollWait to return
+		_ = unix.Close(fm.fd)
+		// Pipe fds are closed in drainAndClose after all goroutines exit
+	})
 }
 
 func (fm *FileMonitor) handleEvent(fd int) {
 	// Get the file path from the fd via /proc/self/fd/N
 	path, err := os.Readlink(fmt.Sprintf("/proc/self/fd/%d", fd))
 	if err != nil {
-		_ = syscall.Close(fd)
+		_ = unix.Close(fd)
+		return
+	}
+
+	// M5 — skip directory events
+	if strings.HasSuffix(path, "/") {
+		_ = unix.Close(fd)
 		return
 	}
 
 	// Fast filter — decide if this file is interesting based on path only
 	if !fm.isInteresting(path) {
-		_ = syscall.Close(fd)
+		_ = unix.Close(fd)
 		return
 	}
 
@@ -180,8 +365,8 @@ func (fm *FileMonitor) handleEvent(fd int) {
 	case fm.analyzerCh <- fileEvent{path: path, fd: fd}:
 	default:
 		// Queue full — drop event and count
-		atomic.AddInt64(&fm.dropped, 1)
-		_ = syscall.Close(fd)
+		atomic.AddInt64(&fm.droppedEvents, 1)
+		_ = unix.Close(fd)
 	}
 }
 
@@ -247,19 +432,27 @@ var credentialLogNames = map[string]bool{
 }
 
 // analyzerWorker processes file events from the bounded channel.
-func (fm *FileMonitor) analyzerWorker(stopCh <-chan struct{}) {
-	for {
-		select {
-		case <-stopCh:
-			return
-		case event, ok := <-fm.analyzerCh:
-			if !ok {
-				return
-			}
-			fm.analyzeFile(event)
-			_ = syscall.Close(event.fd)
-		}
+// C1 — on channel close, drains remaining events and closes their fds.
+func (fm *FileMonitor) analyzerWorker() {
+	defer fm.wg.Done()
+	for event := range fm.analyzerCh {
+		fm.analyzeFile(event)
+		_ = unix.Close(event.fd)
 	}
+}
+
+// readFromFd reads up to maxBytes from a file descriptor at position 0.
+// C3 — avoids TOCTOU by reading from the original fanotify event fd.
+// readFromFd reads up to maxBytes from the fanotify event fd using pread
+// at offset 0. Uses unix.Pread directly to avoid os.NewFile's GC finalizer
+// which would close the fd out-of-band, racing with the worker's explicit close.
+func readFromFd(fd int, maxBytes int) []byte {
+	buf := make([]byte, maxBytes)
+	n, err := unix.Pread(fd, buf, 0)
+	if n <= 0 || (err != nil && n == 0) {
+		return nil
+	}
+	return buf[:n]
 }
 
 func (fm *FileMonitor) analyzeFile(event fileEvent) {
@@ -267,21 +460,15 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	name := filepath.Base(path)
 	nameLower := strings.ToLower(name)
 
-	// Skip suppressed paths
+	// H2 — suppression path matching using filepath.Match
 	for _, ignore := range fm.cfg.Suppressions.IgnorePaths {
-		if strings.Contains(path, strings.ReplaceAll(ignore, "*", "")) {
+		if matchSuppression(ignore, path) {
 			return
 		}
 	}
 
-	// Immediate CRITICAL: known webshell filenames
-	webshells := map[string]bool{
-		"h4x0r.php": true, "c99.php": true, "r57.php": true,
-		"wso.php": true, "alfa.php": true, "b374k.php": true,
-		"shell.php": true, "cmd.php": true, "backdoor.php": true,
-		"webshell.php": true,
-	}
-	if webshells[nameLower] {
+	// Immediate CRITICAL: known webshell filenames (M1 — package-level var)
+	if knownWebshells[nameLower] {
 		fm.sendAlert(alert.Critical, "webshell_realtime",
 			fmt.Sprintf("Webshell file created: %s", path), "")
 		return
@@ -331,45 +518,47 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 		return
 	}
 
-	// .htaccess modification — check for injection
+	// .htaccess modification — check for injection (C3 — read from fd)
 	if nameLower == ".htaccess" {
-		fm.checkHtaccess(path)
+		fm.checkHtaccess(event.fd, path)
 		return
 	}
 
-	// .user.ini modification — check for dangerous PHP settings
+	// .user.ini modification — check for dangerous PHP settings (C3 — read from fd)
 	if nameLower == ".user.ini" {
-		fm.checkUserINI(path)
+		fm.checkUserINI(event.fd, path)
 		return
 	}
 
-	// PHP content analysis — read first 8KB
+	// PHP content analysis (C3 — read from fd; M4 — 32KB scan size)
 	if strings.HasSuffix(nameLower, ".php") {
-		fm.checkPHPContent(path)
+		fm.checkPHPContent(event.fd, path)
 		return
 	}
 
-	// HTML phishing page detection
+	// HTML phishing page detection (path-based — needs os.Stat for size)
 	if strings.HasSuffix(nameLower, ".html") || strings.HasSuffix(nameLower, ".htm") {
 		fm.checkHTMLPhishing(path)
 		return
 	}
 
-	// Credential log files
+	// Credential log files (path-based)
 	if credentialLogNames[nameLower] {
 		fm.checkCredentialLog(path)
 		return
 	}
 
-	// Phishing kit ZIP archives
+	// Phishing kit ZIP archives (path-based)
 	if strings.HasSuffix(nameLower, ".zip") {
 		fm.checkPhishingZip(path, nameLower)
 		return
 	}
 }
 
-func (fm *FileMonitor) checkHtaccess(path string) {
-	data := readHead(path, 4096)
+// checkHtaccess reads .htaccess content from the event fd and checks for injection.
+// C3 — reads from fd, not path. H5 — per-line safe check.
+func (fm *FileMonitor) checkHtaccess(fd int, path string) {
+	data := readFromFd(fd, 4096)
 	if data == nil {
 		return
 	}
@@ -378,27 +567,36 @@ func (fm *FileMonitor) checkHtaccess(path string) {
 	dangerous := []string{"auto_prepend_file", "auto_append_file", "eval(", "base64_decode"}
 	safe := []string{"wordfence-waf.php", "litespeed", "advanced-headers.php", "rsssl"}
 
-	for _, d := range dangerous {
-		if strings.Contains(content, d) {
-			isSafe := false
-			for _, s := range safe {
-				if strings.Contains(content, s) {
-					isSafe = true
-					break
+	// H5 — check each non-comment line individually
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		for _, d := range dangerous {
+			if strings.Contains(line, d) {
+				isSafe := false
+				for _, s := range safe {
+					if strings.Contains(line, s) {
+						isSafe = true
+						break
+					}
 				}
-			}
-			if !isSafe {
-				fm.sendAlert(alert.High, "htaccess_injection_realtime",
-					fmt.Sprintf("Suspicious .htaccess modification: %s", path),
-					fmt.Sprintf("Pattern: %s", d))
-				return
+				if !isSafe {
+					fm.sendAlert(alert.High, "htaccess_injection_realtime",
+						fmt.Sprintf("Suspicious .htaccess modification: %s", path),
+						fmt.Sprintf("Pattern: %s", d))
+					return
+				}
 			}
 		}
 	}
 }
 
-func (fm *FileMonitor) checkUserINI(path string) {
-	data := readHead(path, 4096)
+// checkUserINI reads .user.ini content from the event fd and checks for dangerous PHP settings.
+// C3 — reads from fd, not path. H6 — proper allow_url_include parsing.
+func (fm *FileMonitor) checkUserINI(fd int, path string) {
+	data := readFromFd(fd, 4096)
 	if data == nil {
 		return
 	}
@@ -413,37 +611,53 @@ func (fm *FileMonitor) checkUserINI(path string) {
 	}
 
 	for _, d := range dangerous {
-		if strings.Contains(content, d.pattern) {
-			// Check if it's being set to a dangerous value
-			if d.pattern == "disable_functions" {
-				// Only alert if clearing or reducing
-				for _, line := range strings.Split(content, "\n") {
-					if strings.HasPrefix(strings.TrimSpace(line), "disable_functions") {
-						parts := strings.SplitN(line, "=", 2)
-						if len(parts) == 2 {
-							val := strings.TrimSpace(parts[1])
-							if val == "" || val == "\"\"" || val == "none" {
-								fm.sendAlert(alert.Critical, "php_config_realtime",
-									fmt.Sprintf("PHP disable_functions cleared: %s", path),
-									"All dangerous PHP functions enabled — shell execution possible")
-								return
-							}
+		if !strings.Contains(content, d.pattern) {
+			continue
+		}
+
+		if d.pattern == "disable_functions" {
+			for _, line := range strings.Split(content, "\n") {
+				if strings.HasPrefix(strings.TrimSpace(line), "disable_functions") {
+					parts := strings.SplitN(line, "=", 2)
+					if len(parts) == 2 {
+						val := strings.TrimSpace(parts[1])
+						if val == "" || val == "\"\"" || val == "none" {
+							fm.sendAlert(alert.Critical, "php_config_realtime",
+								fmt.Sprintf("PHP disable_functions cleared: %s", path),
+								"All dangerous PHP functions enabled — shell execution possible")
+							return
 						}
 					}
 				}
 			}
-			if d.pattern == "allow_url_include" && (strings.Contains(content, "on") || strings.Contains(content, "= 1")) {
-				fm.sendAlert(alert.Critical, "php_config_realtime",
-					fmt.Sprintf("PHP allow_url_include enabled: %s", path),
-					"Remote PHP file inclusion is now possible")
-				return
+		}
+
+		// H6 — parse the specific line value instead of checking for "on" anywhere
+		if d.pattern == "allow_url_include" {
+			for _, line := range strings.Split(content, "\n") {
+				line = strings.TrimSpace(line)
+				if !strings.HasPrefix(line, "allow_url_include") {
+					continue
+				}
+				parts := strings.SplitN(line, "=", 2)
+				if len(parts) == 2 {
+					val := strings.TrimSpace(strings.ToLower(parts[1]))
+					if val == "on" || val == "1" || val == "\"on\"" || val == "'on'" {
+						fm.sendAlert(alert.Critical, "php_config_realtime",
+							fmt.Sprintf("PHP allow_url_include enabled: %s", path),
+							"Remote PHP file inclusion is now possible")
+						return
+					}
+				}
 			}
 		}
 	}
 }
 
-func (fm *FileMonitor) checkPHPContent(path string) {
-	data := readHead(path, 8192)
+// checkPHPContent reads PHP content from the event fd and checks for malicious patterns.
+// C3 — reads from fd, not path. M4 — 32KB scan size.
+func (fm *FileMonitor) checkPHPContent(fd int, path string) {
+	data := readFromFd(fd, 32768)
 	if data == nil {
 		return
 	}
@@ -531,6 +745,7 @@ func (fm *FileMonitor) checkPHPContent(path string) {
 
 // checkHTMLPhishing reads an HTML file and checks for phishing indicators:
 // brand impersonation + credential input + redirect/exfiltration.
+// Uses path-based reads because it needs os.Stat for file size checks.
 func (fm *FileMonitor) checkHTMLPhishing(path string) {
 	// Only check files in web-accessible directories
 	if !strings.Contains(path, "/public_html/") {
@@ -549,8 +764,8 @@ func (fm *FileMonitor) checkHTMLPhishing(path string) {
 	if err != nil {
 		return
 	}
-	// Phishing pages are self-contained: typically 3KB-100KB
-	if info.Size() < 3000 || info.Size() > 100000 {
+	// H4 — widen phishing HTML size filter
+	if info.Size() < 500 || info.Size() > 500000 {
 		return
 	}
 
@@ -634,6 +849,7 @@ func (fm *FileMonitor) checkHTMLPhishing(path string) {
 
 // checkCredentialLog reads a text file and checks if it contains harvested
 // email:password pairs — output from an active phishing kit.
+// Uses path-based reads because it needs path context.
 func (fm *FileMonitor) checkCredentialLog(path string) {
 	if !strings.Contains(path, "/public_html/") {
 		return
@@ -683,6 +899,7 @@ func (fm *FileMonitor) checkCredentialLog(path string) {
 
 // checkPhishingZip checks if a newly created ZIP file matches known phishing
 // kit archive names.
+// Uses path-based approach since it only checks the filename.
 func (fm *FileMonitor) checkPhishingZip(path, nameLower string) {
 	if !strings.Contains(path, "/public_html/") {
 		return
@@ -709,6 +926,7 @@ func (fm *FileMonitor) checkPhishingZip(path, nameLower string) {
 	}
 }
 
+// M7 — sendAlert uses droppedAlerts counter, separate from droppedEvents.
 func (fm *FileMonitor) sendAlert(severity alert.Severity, check, message, details string) {
 	finding := alert.Finding{
 		Severity:  severity,
@@ -720,30 +938,78 @@ func (fm *FileMonitor) sendAlert(severity alert.Severity, check, message, detail
 	select {
 	case fm.alertCh <- finding:
 	default:
-		atomic.AddInt64(&fm.dropped, 1)
+		atomic.AddInt64(&fm.droppedAlerts, 1)
 	}
 }
 
-// overflowReporter periodically checks for dropped events.
-func (fm *FileMonitor) overflowReporter(stopCh <-chan struct{}) {
+// M7 — overflowReporter reports dropped events and alerts separately.
+func (fm *FileMonitor) overflowReporter() {
+	defer fm.wg.Done()
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-stopCh:
+		case <-fm.stopCh:
 			return
 		case <-ticker.C:
-			dropped := atomic.SwapInt64(&fm.dropped, 0)
-			if dropped > 0 {
+			droppedEv := atomic.SwapInt64(&fm.droppedEvents, 0)
+			droppedAl := atomic.SwapInt64(&fm.droppedAlerts, 0)
+			if droppedEv > 0 {
 				fm.sendAlert(alert.Warning, "fanotify_overflow",
-					fmt.Sprintf("fanotify event queue overflowed: %d events dropped in last minute", dropped),
+					fmt.Sprintf("fanotify event queue overflowed: %d events dropped in last minute", droppedEv),
 					"Possible event storm (backup, bulk update) or high-volume attack")
+			}
+			if droppedAl > 0 {
+				fmt.Fprintf(os.Stderr, "[%s] alert channel full: %d alerts dropped in last minute\n", ts(), droppedAl)
 			}
 		}
 	}
 }
 
+// matchSuppression checks if a file path matches a suppression glob pattern.
+// Supports patterns like "*/cache/*", "*/vendor/*", "*.log".
+// Uses filepath.Match per path segment for wildcard patterns.
+func matchSuppression(pattern, path string) bool {
+	// Direct match against full path
+	if m, _ := filepath.Match(pattern, path); m {
+		return true
+	}
+	// Match against basename (e.g. "*.log")
+	if m, _ := filepath.Match(pattern, filepath.Base(path)); m {
+		return true
+	}
+	// For patterns like "*/cache/*": check if any directory segment matches
+	// the non-wildcard core of the pattern. We split the pattern on "/" and
+	// match each pattern segment against the corresponding path segments.
+	patParts := strings.Split(pattern, "/")
+	pathParts := strings.Split(path, "/")
+	if len(patParts) < 2 {
+		return false
+	}
+	// Sliding window: try to align pattern segments with path segments
+	for i := 0; i <= len(pathParts)-len(patParts); i++ {
+		allMatch := true
+		for j, pp := range patParts {
+			if pp == "" {
+				continue
+			}
+			m, _ := filepath.Match(pp, pathParts[i+j])
+			if !m {
+				allMatch = false
+				break
+			}
+		}
+		if allMatch {
+			return true
+		}
+	}
+	return false
+}
+
+// readHead opens a file by path and reads the first maxBytes.
+// Kept for path-based checks (HTML phishing, credential logs, ZIP checks)
+// that need os.Stat for file size anyway.
 func readHead(path string, maxBytes int) []byte {
 	f, err := os.Open(path)
 	if err != nil {
@@ -778,6 +1044,7 @@ func isKnownSafeUploadDaemon(path string) bool {
 // looksLikePluginUpdate checks if a PHP file in uploads looks like a plugin
 // update temp directory (e.g., elementor_t0q9y). Returns true if it matches
 // the pattern of a known plugin extracting an update.
+// M3 — uses sync.Map cache with 5-minute TTL for plugin directory stat results.
 func looksLikePluginUpdate(path string) bool {
 	pathLower := strings.ToLower(path)
 	// Pattern: /uploads/{pluginname}_{random}/ — plugin update temp dirs
@@ -796,41 +1063,26 @@ func looksLikePluginUpdate(path string) bool {
 			if uploadsIdx > 0 {
 				wpRoot := path[:uploadsIdx]
 				pluginDir := wpRoot + "/wp-content/plugins/" + pluginName
-				if _, err := os.Stat(pluginDir); err == nil {
+
+				// M3 — check cache first
+				if cached, ok := pluginStatCache.Load(pluginDir); ok {
+					entry := cached.(pluginCacheEntry)
+					if time.Since(entry.ts) < pluginCacheTTL {
+						return entry.exists
+					}
+				}
+
+				_, err := os.Stat(pluginDir)
+				exists := err == nil
+				pluginStatCache.Store(pluginDir, pluginCacheEntry{
+					exists: exists,
+					ts:     time.Now(),
+				})
+				if exists {
 					return true
 				}
 			}
 		}
 	}
 	return false
-}
-
-// --- syscall wrappers ---
-
-func fanotifyInit(flags, eventFlags uint) (int, error) {
-	fd, _, errno := syscall.Syscall(uintptr(sysFanotifyInit), uintptr(flags), uintptr(eventFlags), 0)
-	if errno != 0 {
-		return -1, errno
-	}
-	return int(fd), nil
-}
-
-func fanotifyMark(fd int, flags, mask uint64, dirfd int, path string) error {
-	pathBytes, err := syscall.BytePtrFromString(path)
-	if err != nil {
-		return err
-	}
-	_, _, errno := syscall.Syscall6(
-		uintptr(sysFanotifyMark),
-		uintptr(fd),
-		uintptr(flags),
-		uintptr(mask),
-		uintptr(dirfd),
-		uintptr(unsafe.Pointer(pathBytes)),
-		0,
-	)
-	if errno != 0 {
-		return errno
-	}
-	return nil
 }
