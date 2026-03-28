@@ -161,7 +161,7 @@ func CheckWebshells(cfg *config.Config, _ *state.Store) []alert.Finding {
 		}
 
 		for _, docRoot := range docRoots {
-			scanForWebshells(docRoot, 5, webshellNames, webshellDirs, cfg, &findings)
+			scanForWebshells(docRoot, 8, webshellNames, webshellDirs, cfg, &findings)
 		}
 	}
 
