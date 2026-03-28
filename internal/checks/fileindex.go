@@ -190,6 +190,7 @@ func CheckFileIndex(cfg *config.Config, _ *state.Store) []alert.Finding {
 				Check:    check,
 				Message:  message,
 				Details:  details,
+				FilePath: path,
 			})
 		}
 	}

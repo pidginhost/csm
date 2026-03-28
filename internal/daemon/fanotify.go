@@ -472,15 +472,15 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 
 	// Immediate CRITICAL: known webshell filenames (M1 — package-level var)
 	if knownWebshells[nameLower] {
-		fm.sendAlert(alert.Critical, "webshell_realtime",
-			fmt.Sprintf("Webshell file created: %s", path), "")
+		fm.sendAlertWithPath(alert.Critical, "webshell_realtime",
+			fmt.Sprintf("Webshell file created: %s", path), "", path)
 		return
 	}
 
 	// Webshell extensions
 	if strings.HasSuffix(nameLower, ".haxor") || strings.HasSuffix(nameLower, ".cgix") {
-		fm.sendAlert(alert.Critical, "webshell_realtime",
-			fmt.Sprintf("Suspicious CGI file created: %s", path), "")
+		fm.sendAlertWithPath(alert.Critical, "webshell_realtime",
+			fmt.Sprintf("Suspicious CGI file created: %s", path), "", path)
 		return
 	}
 
@@ -492,9 +492,9 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 			isDir := tmpStat.Mode&unix.S_IFMT == unix.S_IFDIR
 			isExec := tmpStat.Mode&0111 != 0
 			if !isDir && isExec {
-				fm.sendAlert(alert.Critical, "executable_in_tmp_realtime",
+				fm.sendAlertWithPath(alert.Critical, "executable_in_tmp_realtime",
 					fmt.Sprintf("Executable created in %s: %s", filepath.Dir(path), path),
-					fmt.Sprintf("Size: %d, Mode: %04o", tmpStat.Size, tmpStat.Mode&0777))
+					fmt.Sprintf("Size: %d, Mode: %04o", tmpStat.Size, tmpStat.Mode&0777), path)
 			}
 		}
 		// Fall through to PHP checks below for .php files in /tmp
@@ -508,12 +508,12 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 		if nameLower != "index.php" && !isKnownSafeUploadDaemon(path) {
 			if looksLikePluginUpdate(path) {
 				// Verified plugin update — lower severity, don't suppress entirely
-				fm.sendAlert(alert.Warning, "php_in_uploads_realtime",
+				fm.sendAlertWithPath(alert.Warning, "php_in_uploads_realtime",
 					fmt.Sprintf("PHP file created in uploads (plugin update): %s", path),
-					"Appears to be a legitimate plugin update temp directory")
+					"Appears to be a legitimate plugin update temp directory", path)
 			} else {
-				fm.sendAlert(alert.Critical, "php_in_uploads_realtime",
-					fmt.Sprintf("PHP file created in uploads: %s", path), "")
+				fm.sendAlertWithPath(alert.Critical, "php_in_uploads_realtime",
+					fmt.Sprintf("PHP file created in uploads: %s", path), "", path)
 			}
 		}
 		return
@@ -523,8 +523,8 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	if (strings.Contains(path, "/wp-content/languages/") || strings.Contains(path, "/wp-content/upgrade/")) &&
 		isPHPExtension(nameLower) {
 		if nameLower != "index.php" && !strings.HasSuffix(nameLower, ".l10n.php") {
-			fm.sendAlert(alert.Critical, "php_in_sensitive_dir_realtime",
-				fmt.Sprintf("PHP file created in sensitive WP directory: %s", path), "")
+			fm.sendAlertWithPath(alert.Critical, "php_in_sensitive_dir_realtime",
+				fmt.Sprintf("PHP file created in sensitive WP directory: %s", path), "", path)
 		}
 		return
 	}
@@ -533,9 +533,9 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	if strings.Contains(path, "/.config/") {
 		info, err := os.Stat(path)
 		if err == nil && info.Mode()&0111 != 0 {
-			fm.sendAlert(alert.Critical, "executable_in_config_realtime",
+			fm.sendAlertWithPath(alert.Critical, "executable_in_config_realtime",
 				fmt.Sprintf("Executable created in .config: %s", path),
-				fmt.Sprintf("Size: %d", info.Size()))
+				fmt.Sprintf("Size: %d", info.Size()), path)
 		}
 		return
 	}
@@ -605,9 +605,9 @@ func (fm *FileMonitor) checkHtaccess(fd int, path string) {
 					}
 				}
 				if !isSafe {
-					fm.sendAlert(alert.High, "htaccess_injection_realtime",
+					fm.sendAlertWithPath(alert.High, "htaccess_injection_realtime",
 						fmt.Sprintf("Suspicious .htaccess modification: %s", path),
-						fmt.Sprintf("Pattern: %s", d))
+						fmt.Sprintf("Pattern: %s", d), path)
 					return
 				}
 			}
@@ -644,9 +644,9 @@ func (fm *FileMonitor) checkUserINI(fd int, path string) {
 					if len(parts) == 2 {
 						val := strings.TrimSpace(parts[1])
 						if val == "" || val == "\"\"" || val == "none" {
-							fm.sendAlert(alert.Critical, "php_config_realtime",
+							fm.sendAlertWithPath(alert.Critical, "php_config_realtime",
 								fmt.Sprintf("PHP disable_functions cleared: %s", path),
-								"All dangerous PHP functions enabled — shell execution possible")
+								"All dangerous PHP functions enabled — shell execution possible", path)
 							return
 						}
 					}
@@ -665,9 +665,9 @@ func (fm *FileMonitor) checkUserINI(fd int, path string) {
 				if len(parts) == 2 {
 					val := strings.TrimSpace(strings.ToLower(parts[1]))
 					if val == "on" || val == "1" || val == "\"on\"" || val == "'on'" {
-						fm.sendAlert(alert.Critical, "php_config_realtime",
+						fm.sendAlertWithPath(alert.Critical, "php_config_realtime",
 							fmt.Sprintf("PHP allow_url_include enabled: %s", path),
-							"Remote PHP file inclusion is now possible")
+							"Remote PHP file inclusion is now possible", path)
 						return
 					}
 				}
@@ -689,9 +689,9 @@ func (fm *FileMonitor) checkPHPContent(fd int, path string) {
 	payloads := []string{"gist.githubusercontent.com", "raw.githubusercontent.com", "pastebin.com/raw"}
 	for _, p := range payloads {
 		if strings.Contains(content, p) {
-			fm.sendAlert(alert.Critical, "php_dropper_realtime",
+			fm.sendAlertWithPath(alert.Critical, "php_dropper_realtime",
 				fmt.Sprintf("PHP dropper with remote payload URL: %s", path),
-				fmt.Sprintf("Fetches from: %s", p))
+				fmt.Sprintf("Fetches from: %s", p), path)
 			return
 		}
 	}
@@ -700,9 +700,9 @@ func (fm *FileMonitor) checkPHPContent(fd int, path string) {
 	hasEval := strings.Contains(content, "eval(") || strings.Contains(content, "assert(")
 	hasDecoder := strings.Contains(content, "base64_decode") || strings.Contains(content, "gzinflate") || strings.Contains(content, "gzuncompress")
 	if hasEval && hasDecoder {
-		fm.sendAlert(alert.Critical, "obfuscated_php_realtime",
+		fm.sendAlertWithPath(alert.Critical, "obfuscated_php_realtime",
 			fmt.Sprintf("Obfuscated PHP detected: %s", path),
-			"eval() combined with encoding/compression function")
+			"eval() combined with encoding/compression function", path)
 		return
 	}
 
@@ -722,9 +722,9 @@ func (fm *FileMonitor) checkPHPContent(fd int, path string) {
 		}
 	}
 	if hasShell && hasInput {
-		fm.sendAlert(alert.Critical, "webshell_content_realtime",
+		fm.sendAlertWithPath(alert.Critical, "webshell_content_realtime",
 			fmt.Sprintf("Webshell pattern detected: %s", path),
-			"Shell execution function with request input")
+			"Shell execution function with request input", path)
 		return
 	}
 
@@ -746,10 +746,10 @@ func (fm *FileMonitor) checkPHPContent(fd int, path string) {
 			if m.Severity == "critical" {
 				sev = alert.Critical
 			}
-			fm.sendAlert(sev, "signature_match_realtime",
+			fm.sendAlertWithPath(sev, "signature_match_realtime",
 				fmt.Sprintf("Signature match [%s]: %s", m.RuleName, path),
 				fmt.Sprintf("Category: %s\nDescription: %s\nMatched: %s",
-					m.Category, m.Description, strings.Join(m.Matched, ", ")))
+					m.Category, m.Description, strings.Join(m.Matched, ", ")), path)
 			return
 		}
 	}
@@ -758,9 +758,9 @@ func (fm *FileMonitor) checkPHPContent(fd int, path string) {
 	if yaraScanner := yara.Global(); yaraScanner != nil {
 		matches := yaraScanner.ScanBytes(data)
 		if len(matches) > 0 {
-			fm.sendAlert(alert.Critical, "yara_match_realtime",
+			fm.sendAlertWithPath(alert.Critical, "yara_match_realtime",
 				fmt.Sprintf("YARA rule match [%s]: %s", matches[0].RuleName, path),
-				fmt.Sprintf("Matched %d YARA rule(s)", len(matches)))
+				fmt.Sprintf("Matched %d YARA rule(s)", len(matches)), path)
 		}
 	}
 }
@@ -863,9 +863,9 @@ func (fm *FileMonitor) checkHTMLPhishing(fd int, path string) {
 		strings.Contains(content, "256‑bit encrypted")
 
 	if hasExfil || hasTrustBadge {
-		fm.sendAlert(alert.Critical, "phishing_realtime",
+		fm.sendAlertWithPath(alert.Critical, "phishing_realtime",
 			fmt.Sprintf("Phishing page created (%s impersonation): %s", brandMatch, path),
-			fmt.Sprintf("Size: %d bytes", size))
+			fmt.Sprintf("Size: %d bytes", size), path)
 	}
 }
 
@@ -909,13 +909,13 @@ func (fm *FileMonitor) checkCredentialLog(path string) {
 	}
 
 	if credLines >= 3 {
-		fm.sendAlert(alert.Critical, "credential_log_realtime",
+		fm.sendAlertWithPath(alert.Critical, "credential_log_realtime",
 			fmt.Sprintf("Harvested credential log detected: %s", path),
-			fmt.Sprintf("%d credential lines (email:password format) found", credLines))
+			fmt.Sprintf("%d credential lines (email:password format) found", credLines), path)
 	} else if emailCount >= 10 {
-		fm.sendAlert(alert.High, "credential_log_realtime",
+		fm.sendAlertWithPath(alert.High, "credential_log_realtime",
 			fmt.Sprintf("Possible harvested email list: %s", path),
-			fmt.Sprintf("%d email addresses found in %s", emailCount, filepath.Base(path)))
+			fmt.Sprintf("%d email addresses found in %s", emailCount, filepath.Base(path)), path)
 	}
 }
 
@@ -940,9 +940,9 @@ func (fm *FileMonitor) checkPhishingZip(path, nameLower string) {
 
 	for _, kit := range kitNames {
 		if strings.Contains(nameLower, kit) {
-			fm.sendAlert(alert.High, "phishing_kit_realtime",
+			fm.sendAlertWithPath(alert.High, "phishing_kit_realtime",
 				fmt.Sprintf("Suspected phishing kit archive uploaded: %s", path),
-				fmt.Sprintf("Filename matches phishing kit pattern: '%s'", kit))
+				fmt.Sprintf("Filename matches phishing kit pattern: '%s'", kit), path)
 			return
 		}
 	}
@@ -955,6 +955,24 @@ func (fm *FileMonitor) sendAlert(severity alert.Severity, check, message, detail
 		Check:     check,
 		Message:   message,
 		Details:   details,
+		Timestamp: time.Now(),
+	}
+	select {
+	case fm.alertCh <- finding:
+	default:
+		atomic.AddInt64(&fm.droppedAlerts, 1)
+	}
+}
+
+// sendAlertWithPath is like sendAlert but also sets the FilePath field
+// for structured file-path propagation to auto-response.
+func (fm *FileMonitor) sendAlertWithPath(severity alert.Severity, check, message, details, filePath string) {
+	finding := alert.Finding{
+		Severity:  severity,
+		Check:     check,
+		Message:   message,
+		Details:   details,
+		FilePath:  filePath,
 		Timestamp: time.Now(),
 	}
 	select {

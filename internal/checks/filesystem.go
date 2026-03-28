@@ -39,6 +39,7 @@ func CheckFilesystem(_ *config.Config, _ *state.Store) []alert.Finding {
 					Check:    "backdoor_binary",
 					Message:  fmt.Sprintf("Backdoor binary found: %s", path),
 					Details:  details,
+					FilePath: path,
 				})
 			}
 		}
@@ -72,6 +73,7 @@ func CheckFilesystem(_ *config.Config, _ *state.Store) []alert.Finding {
 				Check:    "suspicious_file",
 				Message:  fmt.Sprintf("Suspicious hidden file: %s", match),
 				Details:  fmt.Sprintf("Size: %d, Mtime: %s", info.Size(), info.ModTime()),
+				FilePath: match,
 			})
 		}
 	}
@@ -122,6 +124,7 @@ func scanForSUID(dir string, maxDepth int, findings *[]alert.Finding) {
 				Check:    "suid_binary",
 				Message:  fmt.Sprintf("SUID binary in unusual location: %s", fullPath),
 				Details:  fmt.Sprintf("Mode: %s, Size: %d", info.Mode(), info.Size()),
+				FilePath: fullPath,
 			})
 		}
 	}
@@ -201,6 +204,7 @@ func scanForWebshells(dir string, maxDepth int, names map[string]bool, dirs map[
 					Severity: alert.Critical,
 					Check:    "webshell",
 					Message:  fmt.Sprintf("Webshell directory found: %s", fullPath),
+					FilePath: fullPath,
 				})
 			}
 			scanForWebshells(fullPath, maxDepth-1, names, dirs, cfg, findings)
@@ -219,6 +223,7 @@ func scanForWebshells(dir string, maxDepth int, names map[string]bool, dirs map[
 				Check:    "webshell",
 				Message:  fmt.Sprintf("Known webshell found: %s", fullPath),
 				Details:  details,
+				FilePath: fullPath,
 			})
 		}
 
@@ -228,6 +233,7 @@ func scanForWebshells(dir string, maxDepth int, names map[string]bool, dirs map[
 				Severity: alert.Critical,
 				Check:    "webshell",
 				Message:  fmt.Sprintf("Suspicious CGI file: %s", fullPath),
+				FilePath: fullPath,
 			})
 		}
 
@@ -243,6 +249,7 @@ func scanForWebshells(dir string, maxDepth int, names map[string]bool, dirs map[
 						Check:    "world_writable_php",
 						Message:  fmt.Sprintf("World-writable PHP file: %s", fullPath),
 						Details:  fmt.Sprintf("Mode: %s", mode),
+						FilePath: fullPath,
 					})
 				}
 				// Note: executable PHP check removed — most PHP files on cPanel
