@@ -83,5 +83,7 @@
         setInterval(pollFindings, 10000);
         refreshStats();
         setInterval(refreshStats, 30000);
+        // Reload page every 5 minutes for timeline chart freshness
+        setTimeout(function() { location.reload(); }, 300000);
     }
 })();
