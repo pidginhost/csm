@@ -265,6 +265,63 @@ func (s *Server) apiThreatUnwhitelistIP(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, map[string]string{"status": "removed", "ip": req.IP})
 }
 
+// POST /api/v1/threat/block-ip — manually block an IP for 24 hours.
+func (s *Server) apiThreatBlockIP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		IP string `json:"ip"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IP == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]string{"error": "IP is required"})
+		return
+	}
+	if net.ParseIP(req.IP) == nil {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]string{"error": "invalid IP address"})
+		return
+	}
+
+	var actions []string
+
+	// 1. Block in firewall with 24h expiry
+	if s.blocker != nil {
+		if err := s.blocker.BlockIP(req.IP, "Manually blocked via CSM Web UI", 24*time.Hour); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, map[string]string{"error": fmt.Sprintf("block failed: %v", err)})
+			return
+		}
+		actions = append(actions, "blocked in firewall for 24h")
+	} else {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		writeJSON(w, map[string]string{"error": "firewall engine not available"})
+		return
+	}
+
+	// 2. Add to threat DB permanent blocklist
+	if tdb := checks.GetThreatDB(); tdb != nil {
+		tdb.AddPermanent(req.IP, "Manually blocked via CSM Web UI")
+		actions = append(actions, "added to threat DB")
+	}
+
+	// 3. Record in attack DB
+	if adb := attackdb.Global(); adb != nil {
+		adb.MarkBlocked(req.IP)
+		actions = append(actions, "recorded in attack DB")
+	}
+
+	s.auditLog(r, "block_ip", req.IP, "manual block 24h")
+	writeJSON(w, map[string]interface{}{
+		"status":  "blocked",
+		"ip":      req.IP,
+		"actions": actions,
+	})
+}
+
 // POST /api/v1/threat/clear-ip — unblock + clear from all DBs without whitelisting.
 // For dynamic IP customers: one-time cleanup, IP can be re-blocked later.
 func (s *Server) apiThreatClearIP(w http.ResponseWriter, r *http.Request) {

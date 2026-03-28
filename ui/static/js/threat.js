@@ -155,6 +155,9 @@ document.getElementById('lookup-form').addEventListener('submit',function(e){
         }
         html+='</table>';
         html+='<div class="mt-3 d-flex gap-2 flex-wrap">';
+        if(!intel.currently_blocked){
+            html+='<button class="btn btn-danger btn-sm block-ip-btn" data-ip="'+CSM.esc(intel.ip)+'"><i class="ti ti-shield-lock"></i>&nbsp;Block (24h)</button>';
+        }
         html+='<button class="btn btn-outline-primary btn-sm clear-ip-btn" data-ip="'+CSM.esc(intel.ip)+'"><i class="ti ti-eraser"></i>&nbsp;Unblock &amp; Clear</button>';
         html+='<button class="btn btn-outline-warning btn-sm temp-wl-btn" data-ip="'+CSM.esc(intel.ip)+'"><i class="ti ti-clock"></i>&nbsp;Temp Whitelist (24h)</button>';
         html+='<button class="btn btn-success btn-sm perm-wl-btn" data-ip="'+CSM.esc(intel.ip)+'"><i class="ti ti-shield-check"></i>&nbsp;Permanent Whitelist</button>';
@@ -180,6 +183,8 @@ document.getElementById('lookup-form').addEventListener('submit',function(e){
 
         result.innerHTML=html;
         // Bind action buttons after DOM insertion
+        var blockBtn=result.querySelector('.block-ip-btn');
+        if(blockBtn) blockBtn.addEventListener('click',function(){blockIP(this.getAttribute('data-ip'));});
         var clearBtn=result.querySelector('.clear-ip-btn');
         if(clearBtn) clearBtn.addEventListener('click',function(){clearIP(this.getAttribute('data-ip'));});
         var tempBtn=result.querySelector('.temp-wl-btn');
@@ -227,6 +232,16 @@ function removeWhitelist(ip) {
         CSM.post('/api/v1/threat/unwhitelist-ip',{ip:ip}).then(function(data){
             if(data.error){CSM.toast('Error: '+data.error,'error');return;}
             loadWhitelist();
+        }).catch(function(e){CSM.toast('Error: '+e,'error')});
+    }).catch(function() {});
+}
+
+function blockIP(ip) {
+    CSM.confirm('Block '+ip+' for 24 hours?\n\nThis will block the IP in the firewall and add it to the threat database.').then(function() {
+        CSM.post('/api/v1/threat/block-ip',{ip:ip}).then(function(data){
+            if(data.error){CSM.toast('Error: '+data.error,'error');return;}
+            CSM.toast('IP '+ip+' blocked for 24h.\n\nActions: '+(data.actions||[]).join(', '),'success');
+            document.getElementById('lookup-form').dispatchEvent(new Event('submit'));
         }).catch(function(e){CSM.toast('Error: '+e,'error')});
     }).catch(function() {});
 }
