@@ -206,7 +206,9 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		MaxHeaderBytes:    1 << 20, // 1MB
 		TLSConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
-			NextProtos: []string{"h2", "http/1.1"},
+			// HTTP/1.1 only — coder/websocket doesn't support HTTP/2 WebSocket (RFC 8441).
+			// Browser sends CONNECT over HTTP/2 which hangs, blocking all multiplexed streams.
+			NextProtos: []string{"http/1.1"},
 			CipherSuites: []uint16{
 				tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
 				tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
