@@ -64,6 +64,8 @@ func HasFix(checkType string) bool {
 		"phishing_directory":       true,
 		"backdoor_binary":          true,
 		"new_executable_in_config": true,
+		"htaccess_injection":       true,
+		"htaccess_handler_abuse":   true,
 	}
 	return fixableChecks[checkType]
 }
@@ -81,6 +83,8 @@ func ApplyFix(checkType, message, details string) RemediationResult {
 		return fixQuarantine(path)
 	case "backdoor_binary", "new_executable_in_config":
 		return fixKillAndQuarantine(path, details)
+	case "htaccess_injection", "htaccess_handler_abuse":
+		return fixHtaccess(path, message)
 	default:
 		return RemediationResult{Error: fmt.Sprintf("no automated fix available for check type '%s'", checkType)}
 	}
@@ -192,6 +196,67 @@ func fixKillAndQuarantine(path, details string) RemediationResult {
 		result.Description = "Process killed and file quarantined"
 	}
 	return result
+}
+
+// fixHtaccess removes malicious directives from an .htaccess file while
+// preserving comments and known-safe directives (e.g., Wordfence, LiteSpeed).
+func fixHtaccess(path, message string) RemediationResult {
+	if path == "" {
+		return RemediationResult{Error: "could not extract file path"}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return RemediationResult{Error: fmt.Sprintf("cannot read: %v", err)}
+	}
+
+	dangerous := []string{"auto_prepend_file", "auto_append_file", "eval(", "base64_decode",
+		"gzinflate", "str_rot13", "addhandler", "sethandler"}
+	safe := []string{"wordfence-waf.php", "litespeed", "advanced-headers.php", "rsssl",
+		"application/x-httpd-php", "-execcgi", "sethandler none", "sethandler default-handler"}
+
+	var cleaned []string
+	removed := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		lineLower := strings.ToLower(strings.TrimSpace(line))
+		if strings.HasPrefix(lineLower, "#") {
+			cleaned = append(cleaned, line)
+			continue
+		}
+		isDangerous := false
+		for _, d := range dangerous {
+			if strings.Contains(lineLower, d) {
+				isSafe := false
+				for _, s := range safe {
+					if strings.Contains(lineLower, s) {
+						isSafe = true
+						break
+					}
+				}
+				if !isSafe {
+					isDangerous = true
+					break
+				}
+			}
+		}
+		if isDangerous {
+			removed++
+		} else {
+			cleaned = append(cleaned, line)
+		}
+	}
+
+	if removed == 0 {
+		return RemediationResult{Error: "no malicious directives found to remove"}
+	}
+
+	if err := os.WriteFile(path, []byte(strings.Join(cleaned, "\n")), 0644); err != nil {
+		return RemediationResult{Error: fmt.Sprintf("write failed: %v", err)}
+	}
+	return RemediationResult{
+		Success:     true,
+		Action:      fmt.Sprintf("removed %d malicious directive(s) from %s", removed, path),
+		Description: fmt.Sprintf("Cleaned .htaccess: removed %d line(s)", removed),
+	}
 }
 
 // extractFilePathFromMessage extracts a file path from a finding message.
