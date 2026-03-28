@@ -10,7 +10,8 @@ if (document.getElementById('findings-table')) {
         search: true,
         searchId: 'findings-search',
         sortable: true,
-        filters: [{ id: 'check-filter', attr: 'data-check' }]
+        filters: [{ id: 'check-filter', attr: 'data-check' }],
+        stateKey: 'csm-findings-table'
     });
 }
 
@@ -210,6 +211,146 @@ var _bulkFixBtn = document.getElementById('bulk-fix-btn');
 if (_bulkFixBtn) _bulkFixBtn.addEventListener('click', function() { bulkAction('fix'); });
 var _bulkDismissBtn = document.getElementById('bulk-dismiss-btn');
 if (_bulkDismissBtn) _bulkDismissBtn.addEventListener('click', function() { bulkAction('dismiss'); });
+
+// --- Findings grouping ---
+(function() {
+    var groupByEl = document.getElementById('group-by');
+    if (!groupByEl) return;
+
+    // Inject CSS for group headers
+    var style = document.createElement('style');
+    style.textContent =
+        '.csm-group-header { cursor: pointer; user-select: none; }' +
+        '.csm-group-header td { background-color: rgba(0,0,0,0.03); font-weight: 600; padding: 8px 12px !important; }' +
+        '.theme-dark .csm-group-header td { background-color: rgba(255,255,255,0.04); }' +
+        '.csm-group-header .csm-group-arrow { display: inline-block; transition: transform 0.2s; margin-right: 6px; }' +
+        '.csm-group-header.collapsed .csm-group-arrow { transform: rotate(-90deg); }';
+    document.head.appendChild(style);
+
+    function extractAccount(row) {
+        var msg = row.getAttribute('data-message') || '';
+        var match = msg.match(/\/home\/([^\/\s]+)\//);
+        return match ? match[1] : '(unknown)';
+    }
+
+    function getGroupKey(row, mode) {
+        if (mode === 'account') return extractAccount(row);
+        if (mode === 'check') return row.getAttribute('data-check') || '(unknown)';
+        return null;
+    }
+
+    function removeGroupHeaders() {
+        var headers = document.querySelectorAll('.csm-group-header');
+        for (var i = 0; i < headers.length; i++) {
+            headers[i].remove();
+        }
+    }
+
+    var _savedPerPage = null;
+
+    function applyGrouping() {
+        var mode = groupByEl.value;
+        removeGroupHeaders();
+
+        // Show all finding rows (remove group-hidden state)
+        document.querySelectorAll('.finding-row').forEach(function(r) {
+            r.removeAttribute('data-csm-group');
+            r.classList.remove('csm-group-hidden');
+        });
+
+        if (mode === 'none') {
+            // Restore original perPage and re-render
+            if (findingsTable && _savedPerPage !== null) {
+                findingsTable.perPage = _savedPerPage;
+                _savedPerPage = null;
+            }
+            if (findingsTable) findingsTable.applyFilters();
+            return;
+        }
+
+        // When grouping, show all rows (disable pagination)
+        if (findingsTable) {
+            if (_savedPerPage === null) {
+                _savedPerPage = findingsTable.perPage;
+            }
+            findingsTable.perPage = 0;
+            findingsTable.applyFilters();
+        }
+
+        var tbody = document.getElementById('findings-tbody');
+        if (!tbody) return;
+
+        // Get all filtered rows (all visible since pagination is disabled)
+        var visibleRows = Array.from(tbody.querySelectorAll('.finding-row')).filter(function(r) {
+            return r.style.display !== 'none';
+        });
+
+        // Build groups
+        var groups = {};
+        var groupOrder = [];
+        visibleRows.forEach(function(row) {
+            var key = getGroupKey(row, mode);
+            if (!groups[key]) {
+                groups[key] = [];
+                groupOrder.push(key);
+            }
+            groups[key].push(row);
+            row.setAttribute('data-csm-group', key);
+        });
+
+        // Sort group names
+        groupOrder.sort();
+
+        // Get number of columns from thead
+        var colCount = 6;
+        var theadRow = document.querySelector('#findings-table thead tr');
+        if (theadRow) colCount = theadRow.children.length;
+
+        // Insert group headers and reorder rows
+        groupOrder.forEach(function(key) {
+            var headerRow = document.createElement('tr');
+            headerRow.className = 'csm-group-header';
+            headerRow.setAttribute('data-csm-group-key', key);
+            var td = document.createElement('td');
+            td.colSpan = colCount;
+            td.innerHTML = '<span class="csm-group-arrow">&#9660;</span>' +
+                CSM.esc(key) + ' <span class="text-muted small">(' + groups[key].length + ' finding' + (groups[key].length !== 1 ? 's' : '') + ')</span>';
+            headerRow.appendChild(td);
+
+            // Append header and then all group rows in order
+            tbody.appendChild(headerRow);
+            groups[key].forEach(function(row) {
+                tbody.appendChild(row);
+            });
+
+            // Click to collapse/expand
+            headerRow.addEventListener('click', function() {
+                var isCollapsed = headerRow.classList.toggle('collapsed');
+                groups[key].forEach(function(row) {
+                    row.style.display = isCollapsed ? 'none' : '';
+                });
+            });
+        });
+    }
+
+    groupByEl.addEventListener('change', applyGrouping);
+
+    // Re-apply grouping when table filters change
+    var checkFilter = document.getElementById('check-filter');
+    if (checkFilter) {
+        checkFilter.addEventListener('change', function() {
+            setTimeout(applyGrouping, 50);
+        });
+    }
+    var searchEl = document.getElementById('findings-search');
+    if (searchEl) {
+        searchEl.addEventListener('input', function() {
+            if (groupByEl.value !== 'none') {
+                setTimeout(applyGrouping, 50);
+            }
+        });
+    }
+})();
 
 // Build action buttons from data attributes (avoids Go template escaping issues)
 document.querySelectorAll('.finding-row').forEach(function(row) {

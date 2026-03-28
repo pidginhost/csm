@@ -13,6 +13,7 @@
  *     sortable: true,               // enable column sorting (default true)
  *     detailRows: true,             // rows with class 'details-row' are expandable
  *     controlsId: 'my-controls',    // ID of div for pagination controls (auto-created)
+ *     stateKey: 'my-table-state',   // localStorage key for persistent state (optional)
  *   });
  */
 var CSM = CSM || {};
@@ -32,6 +33,7 @@ CSM.Table = function(opts) {
     this.sortAsc = true;
     this.hasDetailRows = opts.detailRows || false;
     this.filters = opts.filters || [];
+    this.stateKey = opts.stateKey || null;
 
     // Collect all data rows (skip detail rows)
     this.allRows = [];
@@ -60,6 +62,7 @@ CSM.Table = function(opts) {
                 self.searchText = this.value.toLowerCase();
                 self.currentPage = 1;
                 self.applyFilters();
+                self._saveState();
             });
         }
     }
@@ -104,10 +107,14 @@ CSM.Table = function(opts) {
                     header.classList.add(tbl.sortAsc ? 'sort-asc' : 'sort-desc');
                     tbl.applySort();
                     tbl.render();
+                    tbl._saveState();
                 });
             })(h, headers[h], this);
         }
     }
+
+    // Restore saved state before initial render
+    this._restoreState(opts);
 
     // Initial render
     this.applyFilters();
@@ -174,11 +181,13 @@ CSM.Table.prototype.applySort = function() {
 
 CSM.Table.prototype.render = function() {
     var total = this.filteredRows.length;
-    var totalPages = Math.max(1, Math.ceil(total / this.perPage));
+    var showAll = !this.perPage;
+    var perPage = showAll ? total : this.perPage;
+    var totalPages = Math.max(1, Math.ceil(total / (perPage || 1)));
     if (this.currentPage > totalPages) this.currentPage = totalPages;
 
-    var start = (this.currentPage - 1) * this.perPage;
-    var end = Math.min(start + this.perPage, total);
+    var start = showAll ? 0 : (this.currentPage - 1) * perPage;
+    var end = showAll ? total : Math.min(start + perPage, total);
 
     // Hide all rows first
     for (var i = 0; i < this.allRows.length; i++) {
@@ -235,6 +244,7 @@ CSM.Table.prototype._renderControls = function(total, totalPages) {
         buttons[b].addEventListener('click', function() {
             self.currentPage = parseInt(this.getAttribute('data-page'));
             self.render();
+            self._saveState();
         });
     }
 };
@@ -248,4 +258,46 @@ CSM.Table.prototype.toggleDetail = function(row) {
     if (item && item.detail) {
         item.detail.style.display = item.detail.style.display === 'none' ? '' : 'none';
     }
+};
+
+// Persistent table state — save to localStorage
+CSM.Table.prototype._saveState = function() {
+    if (!this.stateKey) return;
+    try {
+        var state = {
+            page: this.currentPage,
+            sortCol: this.sortColumn,
+            sortAsc: this.sortAsc,
+            search: this.searchText
+        };
+        localStorage.setItem(this.stateKey, JSON.stringify(state));
+    } catch (e) { /* localStorage may be unavailable */ }
+};
+
+// Persistent table state — restore from localStorage
+CSM.Table.prototype._restoreState = function(opts) {
+    if (!this.stateKey) return;
+    try {
+        var raw = localStorage.getItem(this.stateKey);
+        if (!raw) return;
+        var state = JSON.parse(raw);
+        if (typeof state.page === 'number' && state.page > 0) {
+            this.currentPage = state.page;
+        }
+        if (typeof state.sortCol === 'number' && state.sortCol >= 0) {
+            this.sortColumn = state.sortCol;
+            this.sortAsc = state.sortAsc !== false;
+            // Apply visual indicator to the header
+            var headers = this.table.querySelectorAll('thead th');
+            if (headers[state.sortCol]) {
+                headers[state.sortCol].classList.add(this.sortAsc ? 'sort-asc' : 'sort-desc');
+            }
+        }
+        if (state.search) {
+            this.searchText = state.search;
+            // Also set the search input value
+            var searchEl = opts.searchId ? document.getElementById(opts.searchId) : null;
+            if (searchEl) searchEl.value = state.search;
+        }
+    } catch (e) { /* ignore parse errors */ }
 };

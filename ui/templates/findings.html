@@ -34,6 +34,11 @@
                     <option value="all">All Types</option>
                     {{range .CheckTypes}}<option value="{{.}}">{{.}}</option>{{end}}
                 </select>
+                <select id="group-by" class="form-select form-select-sm" style="width:auto">
+                    <option value="none">No Grouping</option>
+                    <option value="account">Group by Account</option>
+                    <option value="check">Group by Check Type</option>
+                </select>
                 <select id="per-page" class="form-select form-select-sm" style="width:auto">
                     <option value="25">25/page</option>
                     <option value="50">50/page</option>
@@ -83,6 +88,8 @@
     </div>
 {{end}}
 {{define "scripts"}}
+<script src="/static/js/skeleton.js"></script>
+<script src="/static/js/shortcuts.js"></script>
 <script src="/static/js/findings.js"></script>
 {{end}}
 {{template "layout" .}}

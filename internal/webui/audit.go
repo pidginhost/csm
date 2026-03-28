@@ -98,6 +98,12 @@ func readUIAuditLog(statePath string, limit int) []UIAuditEntry {
 	return all
 }
 
+func (s *Server) handleAudit(w http.ResponseWriter, _ *http.Request) {
+	_ = s.templates["audit.html"].ExecuteTemplate(w, "audit.html", map[string]string{
+		"Hostname": s.cfg.Hostname,
+	})
+}
+
 // GET /api/v1/audit — return UI audit log
 func (s *Server) apiUIAudit(w http.ResponseWriter, r *http.Request) {
 	entries := readUIAuditLog(s.cfg.StatePath, 200)
