@@ -1,0 +1,19 @@
+{{define "title"}}Audit Log{{end}}
+{{define "page"}}audit{{end}}
+{{define "content"}}
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title"><i class="ti ti-clipboard-list"></i>&nbsp;Audit Log</h3>
+            <div class="card-actions">
+                <input type="text" id="audit-search" class="form-control form-control-sm" placeholder="Search..." style="width:160px">
+            </div>
+        </div>
+        <div id="audit-content">
+            <div class="card-body text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
+        </div>
+    </div>
+{{end}}
+{{define "scripts"}}
+<script src="/static/js/audit.js"></script>
+{{end}}
+{{template "layout" .}}

@@ -3,6 +3,11 @@ var esc = CSM.esc;
 
 function fmtDate(s){if(!s)return '—';var d=new Date(s);return d.toISOString().substring(0,16).replace('T',' ');}
 
+function countryFlag(code){
+    if(!code||code.length!==2)return '';
+    return String.fromCodePoint.apply(null,[].map.call(code.toUpperCase(),function(c){return 127397+c.charCodeAt(0);}));
+}
+
 function verdictBadge(v,score){
     var cls = v==='blocked'?'bg-secondary':v==='malicious'?'bg-danger':v==='suspicious'?'bg-warning':'bg-success';
     return '<span class="badge '+cls+'">'+score+'/100</span>';
@@ -77,7 +82,7 @@ fetch('/api/v1/threat/top-attackers?limit=50',{credentials:'same-origin'}).then(
                         r.in_threat_db?'<span class="badge bg-danger-lt">Threat DB</span>':'';
         html+='<tr class="ip-row" style="cursor:pointer" data-ip="'+esc(r.ip)+'">';
         html+='<td><code class="font-monospace">'+esc(r.ip)+'</code></td>';
-        html+='<td class="text-nowrap">'+(r.country?esc(r.country):'')+(r.as_org?' <span class="text-muted small">'+esc(r.as_org)+'</span>':'')+'</td>';
+        html+='<td class="text-nowrap">'+(r.country?countryFlag(r.country)+' '+esc(r.country):'')+(r.as_org?' <span class="text-muted small">'+esc(r.as_org)+'</span>':'')+'</td>';
         html+='<td>'+verdictBadge(r.verdict,r.unified_score)+'</td>';
         html+='<td>'+r.event_count+'</td>';
         html+='<td>'+typeBadges(r.attack_counts)+'</td>';
@@ -126,7 +131,7 @@ document.getElementById('lookup-form').addEventListener('submit',function(e){
         // Details
         html+='<div class="col-md-9"><div class="card"><div class="card-body"><table class="table table-sm mb-0">';
         html+='<tr><td class="text-muted" style="width:160px">Local Score</td><td>'+intel.local_score+'/100</td></tr>';
-        if(intel.country)html+='<tr><td class="text-muted">Country</td><td><strong>'+esc(intel.country)+'</strong>'+(intel.country_name?' — '+esc(intel.country_name):'')+(intel.city?', '+esc(intel.city):'')+'</td></tr>';
+        if(intel.country)html+='<tr><td class="text-muted">Country</td><td>'+countryFlag(intel.country)+' <strong>'+esc(intel.country)+'</strong>'+(intel.country_name?' — '+esc(intel.country_name):'')+(intel.city?', '+esc(intel.city):'')+'</td></tr>';
         if(intel.as_org)html+='<tr><td class="text-muted">ISP / ASN</td><td>'+esc(intel.as_org)+(intel.asn?' <span class="text-muted">(AS'+intel.asn+')</span>':'')+'</td></tr>';
         if(intel.network)html+='<tr><td class="text-muted">Network</td><td><code>'+esc(intel.network)+'</code></td></tr>';
         html+='<tr><td class="text-muted">AbuseIPDB Score</td><td>'+(intel.abuse_score>=0?intel.abuse_score+'/100':'Not cached')+'</td></tr>';
