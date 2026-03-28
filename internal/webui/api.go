@@ -34,12 +34,14 @@ func (s *Server) apiFindings(w http.ResponseWriter, _ *http.Request) {
 	latest := s.store.LatestFindings()
 
 	type entryView struct {
-		Severity int    `json:"severity"`
-		Check    string `json:"check"`
-		Message  string `json:"message"`
-		Details  string `json:"details,omitempty"`
-		Time     string `json:"time"`
-		HasFix   bool   `json:"has_fix"`
+		Severity  int    `json:"severity"`
+		Check     string `json:"check"`
+		Message   string `json:"message"`
+		Details   string `json:"details,omitempty"`
+		Time      string `json:"time"`
+		FirstSeen string `json:"first_seen"`
+		LastSeen  string `json:"last_seen"`
+		HasFix    bool   `json:"has_fix"`
 	}
 
 	var result []entryView
@@ -47,13 +49,21 @@ func (s *Server) apiFindings(w http.ResponseWriter, _ *http.Request) {
 		if f.Check == "auto_response" || f.Check == "auto_block" || f.Check == "check_timeout" || f.Check == "health" {
 			continue
 		}
+		firstSeen := f.Timestamp
+		lastSeen := f.Timestamp
+		if entry, ok := s.store.EntryForKey(f.Key()); ok {
+			firstSeen = entry.FirstSeen
+			lastSeen = entry.LastSeen
+		}
 		result = append(result, entryView{
-			Severity: int(f.Severity),
-			Check:    f.Check,
-			Message:  f.Message,
-			Details:  f.Details,
-			Time:     f.Timestamp.Format(time.RFC3339),
-			HasFix:   checks.HasFix(f.Check),
+			Severity:  int(f.Severity),
+			Check:     f.Check,
+			Message:   f.Message,
+			Details:   f.Details,
+			Time:      f.Timestamp.Format(time.RFC3339),
+			FirstSeen: firstSeen.Format(time.RFC3339),
+			LastSeen:  lastSeen.Format(time.RFC3339),
+			HasFix:    checks.HasFix(f.Check),
 		})
 	}
 	writeJSON(w, result)

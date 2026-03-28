@@ -329,6 +329,17 @@ func (s *Store) Entries() map[string]*Entry {
 	return copy
 }
 
+// EntryForKey returns the dedup entry for a finding key (check:message).
+func (s *Store) EntryForKey(key string) (Entry, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e, ok := s.entries[key]
+	if !ok {
+		return Entry{}, false
+	}
+	return *e, true
+}
+
 // ReadHistory reads the last limit entries from history.jsonl, starting at offset.
 // Returns the findings (newest first) and total count.
 func (s *Store) ReadHistory(limit, offset int) ([]alert.Finding, int) {
