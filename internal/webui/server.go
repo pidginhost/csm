@@ -205,8 +205,10 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		MaxHeaderBytes: 1 << 20, // 1MB
 		TLSConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
-			// Support both HTTP/2 and HTTP/1.1. Browsers use HTTP/1.1 for WebSocket.
-			NextProtos: []string{"h2", "http/1.1"},
+			// HTTP/1.1 only — Go's net/http doesn't support WebSocket over HTTP/2.
+			// Browsers multiplex all requests over a single HTTP/2 connection,
+			// so the WS upgrade fails. HTTP/1.1 has no practical downside here.
+			NextProtos: []string{"http/1.1"},
 			CipherSuites: []uint16{
 				tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
 				tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
