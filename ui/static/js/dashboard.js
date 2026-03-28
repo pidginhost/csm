@@ -13,6 +13,9 @@
     var isProxy = window.location.pathname.indexOf('addon_csm.cgi') >= 0 ||
                   window.location.search.indexOf('path=') >= 0;
 
+    // WebSocket disabled — use polling until WS stability is resolved
+    wsDisabled = true;
+
     var _pollingStarted = false;
     function startPolling() {
         if (_pollingStarted) return;
