@@ -25,7 +25,7 @@ func (s *Server) apiAccountDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	// Sanitize: only allow alphanumeric + underscore
 	for _, c := range name {
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '_' {
 			writeJSONError(w, "invalid account name", http.StatusBadRequest)
 			return
 		}
