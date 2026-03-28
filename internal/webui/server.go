@@ -197,12 +197,13 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.HandleFunc("/ws/findings", s.handleWSFindings)
 
 	s.httpSrv = &http.Server{
-		Addr:           cfg.WebUI.Listen,
-		Handler:        s.securityHeaders(mux),
-		ReadTimeout:    15 * time.Second,
-		WriteTimeout:   300 * time.Second, // account scans can take several minutes
-		IdleTimeout:    60 * time.Second,
-		MaxHeaderBytes: 1 << 20, // 1MB
+		Addr:              cfg.WebUI.Listen,
+		Handler:           s.securityHeaders(mux),
+		ReadHeaderTimeout: 10 * time.Second, // time to read request headers (slowloris protection)
+		ReadTimeout:       0,                // disabled — WebSocket needs long-lived connections
+		WriteTimeout:      0,                // disabled — WebSocket + long scans need unlimited write time
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1MB
 		TLSConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
 			// HTTP/1.1 only — HTTP/2 multiplexing causes WebSocket to block other
