@@ -220,7 +220,6 @@ func isSymlinkSafe(target, user, homeDir string) bool {
 		"/usr/",
 		"/var/lib/mysql/",
 		"/var/run/",
-		"/tmp/",
 	}
 	for _, safe := range safeTargets {
 		if strings.HasPrefix(target, safe) {
