@@ -121,12 +121,12 @@ func (d *Daemon) Run() error {
 	// Start Web UI server — available immediately, before initial scan
 	d.startWebUI()
 
-	// Run initial baseline scan in background (doesn't block startup)
+	// Run initial critical scan in background (fast — deep checks wait for timer)
 	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
-		fmt.Fprintf(os.Stderr, "[%s] Running initial baseline scan (background)\n", ts())
-		initialFindings := checks.RunTier(d.cfg, d.store, checks.TierAll)
+		fmt.Fprintf(os.Stderr, "[%s] Running initial critical scan (background)\n", ts())
+		initialFindings := checks.RunTier(d.cfg, d.store, checks.TierCritical)
 
 		// Seed the attack database with initial scan findings
 		if adb := attackdb.Global(); adb != nil {

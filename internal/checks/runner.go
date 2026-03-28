@@ -139,10 +139,15 @@ func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck) []
 	var findings []alert.Finding
 	var wg sync.WaitGroup
 
+	// Limit concurrent checks to avoid saturating CPU (keeps WebUI responsive)
+	sem := make(chan struct{}, 5)
+
 	for _, nc := range checks {
 		wg.Add(1)
 		go func(c namedCheck) {
 			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
 
 			// Run with timeout
 			done := make(chan []alert.Finding, 1)
