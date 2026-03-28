@@ -51,13 +51,6 @@ html, body, .page { overflow-x: hidden; max-width: 100vw; }
     animation: csm-feed-highlight 1.5s ease-out;
 }
 
-/* --- dashboard.html: WebSocket pulse indicator --------------------------- */
-@keyframes csm-pulse {
-    0%, 100% { opacity: 1; }
-    50%      { opacity: 0.4; }
-}
-.ws-live { animation: csm-pulse 1.5s ease-in-out infinite; }
-
 /* --- dashboard.html: horizontal bar-chart -------------------------------- */
 .bar-chart-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .bar-chart-label { flex: 0 0 120px; font-size: .8125rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }

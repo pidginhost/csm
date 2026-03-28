@@ -332,7 +332,7 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	}
 	newFindings = append(newFindings, extra...)
 
-	// Broadcast to WebSocket clients
+	// Broadcast findings (no-op; dashboard uses polling)
 	if d.webServer != nil {
 		d.webServer.Broadcast(newFindings)
 	}
