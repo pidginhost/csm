@@ -16,6 +16,7 @@
         var url = '/api/v1/history?limit=' + perPage + '&offset=' + (page * perPage);
         if (fromDate) url += '&from=' + fromDate;
         if (toDate) url += '&to=' + toDate;
+        if (sevFilter !== 'all') url += '&severity=' + sevFilter;
 
         fetch(CSM.apiUrl(url), { credentials: 'same-origin' })
             .then(function(r) { return r.json(); })
@@ -47,14 +48,6 @@
             var sev = f.severity !== undefined ? f.severity : 0;
             var sevClass = sevClasses[sev] || 'warning';
             var sevLabel = sevLabels[sev] || 'WARNING';
-
-            // Client-side severity filter
-            if (sevFilter !== 'all' && String(sev) !== sevFilter) continue;
-            // Client-side search filter
-            if (searchTerm) {
-                var haystack = (f.check + ' ' + f.message + ' ' + (f.details || '')).toLowerCase();
-                if (haystack.indexOf(searchTerm.toLowerCase()) === -1) continue;
-            }
 
             var ts = f.timestamp ? CSM.fmtDate(f.timestamp) : '';
             var ago = f.timestamp ? CSM.timeAgo(f.timestamp) : '';
@@ -133,7 +126,8 @@
     if (sevSelect) {
         sevSelect.addEventListener('change', function() {
             sevFilter = this.value;
-            renderTable._lastFindings ? renderTable(renderTable._lastFindings, renderTable._lastTotal) : loadHistory();
+            page = 0;
+            loadHistory();
         });
     }
 

@@ -57,7 +57,7 @@ func CheckIPReputation(cfg *config.Config, _ *state.Store) []alert.Finding {
 	quotaExhausted := false
 
 	checked := 0
-	for ip := range ips {
+	for ip, source := range ips {
 		// Tier 1: Skip if already blocked
 		if alreadyBlocked[ip] {
 			continue
@@ -65,12 +65,12 @@ func CheckIPReputation(cfg *config.Config, _ *state.Store) []alert.Finding {
 
 		// Tier 2: Check local threat DB
 		if threatDB != nil {
-			if source, found := threatDB.Lookup(ip); found {
+			if dbSource, found := threatDB.Lookup(ip); found {
 				findings = append(findings, alert.Finding{
 					Severity:  alert.Critical,
 					Check:     "ip_reputation",
-					Message:   fmt.Sprintf("Known malicious IP accessing server: %s (source: %s)", ip, source),
-					Details:   "Matched in local threat intelligence database",
+					Message:   fmt.Sprintf("Known malicious IP accessing server: %s (source: %s)", ip, dbSource),
+					Details:   fmt.Sprintf("Detected via: %s\nMatched in local threat intelligence database", source),
 					Timestamp: time.Now(),
 				})
 				continue
@@ -85,7 +85,7 @@ func CheckIPReputation(cfg *config.Config, _ *state.Store) []alert.Finding {
 						Severity:  alert.Critical,
 						Check:     "ip_reputation",
 						Message:   fmt.Sprintf("Known malicious IP accessing server: %s (AbuseIPDB score: %d/100)", ip, entry.Score),
-						Details:   fmt.Sprintf("Category: %s\nThis IP is reported in threat intelligence databases", entry.Category),
+						Details:   fmt.Sprintf("Detected via: %s\nCategory: %s\nThis IP is reported in threat intelligence databases", source, entry.Category),
 						Timestamp: time.Now(),
 					})
 				}
@@ -105,11 +105,10 @@ func CheckIPReputation(cfg *config.Config, _ *state.Store) []alert.Finding {
 				quotaExhausted = true
 				continue
 			}
-			// Cache transient errors with short expiry to avoid retrying same IP every cycle
 			cache.Entries[ip] = &reputationEntry{
-				Score:     -1, // sentinel: lookup failed
+				Score:     -1,
 				Category:  fmt.Sprintf("error: %v", err),
-				CheckedAt: time.Now().Add(cacheExpiry - errorCacheExpiry), // expires after errorCacheExpiry
+				CheckedAt: time.Now().Add(cacheExpiry - errorCacheExpiry),
 			}
 			checked++
 			continue
@@ -127,7 +126,7 @@ func CheckIPReputation(cfg *config.Config, _ *state.Store) []alert.Finding {
 				Severity:  alert.Critical,
 				Check:     "ip_reputation",
 				Message:   fmt.Sprintf("Known malicious IP accessing server: %s (AbuseIPDB score: %d/100)", ip, score),
-				Details:   fmt.Sprintf("Category: %s\nThis IP is reported in threat intelligence databases", category),
+				Details:   fmt.Sprintf("Detected via: %s\nCategory: %s\nThis IP is reported in threat intelligence databases", source, category),
 				Timestamp: time.Now(),
 			})
 		}
@@ -141,8 +140,10 @@ func CheckIPReputation(cfg *config.Config, _ *state.Store) []alert.Finding {
 }
 
 // collectRecentIPs gathers non-infra IPs from multiple log sources.
-func collectRecentIPs(cfg *config.Config) map[string]bool {
-	ips := make(map[string]bool)
+// collectRecentIPs gathers non-infra IPs from multiple log sources.
+// Returns map of IP → source description (e.g. "SSH login", "Dovecot IMAP auth failure").
+func collectRecentIPs(cfg *config.Config) map[string]string {
+	ips := make(map[string]string)
 
 	// SSH logins
 	for _, line := range tailFile("/var/log/secure", 50) {
@@ -150,18 +151,18 @@ func collectRecentIPs(cfg *config.Config) map[string]bool {
 			continue
 		}
 		if ip := extractIPAfterKeyword(line, "from"); ip != "" {
-			addIfNotInfra(ips, ip, cfg)
+			addIfNotInfra(ips, ip, "SSH login", cfg)
 		}
 	}
 
 	// cPanel access log
 	for _, line := range tailFile("/usr/local/cpanel/logs/access_log", 100) {
 		if ip := firstField(line); ip != "" {
-			addIfNotInfra(ips, ip, cfg)
+			addIfNotInfra(ips, ip, "cPanel/WHM access", cfg)
 		}
 	}
 
-	// Web server access log (LiteSpeed/Apache) — biggest source of attacker IPs
+	// Web server access log (LiteSpeed/Apache)
 	webLogPaths := []string{
 		"/usr/local/apache/logs/access_log",
 		"/var/log/apache2/access_log",
@@ -174,17 +175,17 @@ func collectRecentIPs(cfg *config.Config) map[string]bool {
 		}
 		for _, line := range lines {
 			if ip := firstField(line); ip != "" {
-				addIfNotInfra(ips, ip, cfg)
+				addIfNotInfra(ips, ip, "HTTP request", cfg)
 			}
 		}
-		break // only use first available log
+		break
 	}
 
 	// Exim log — SMTP auth failures
 	for _, line := range tailFile("/var/log/exim_mainlog", 50) {
 		if strings.Contains(line, "authenticator failed") || strings.Contains(line, "rejected RCPT") {
 			if ip := extractBracketedIP(line); ip != "" {
-				addIfNotInfra(ips, ip, cfg)
+				addIfNotInfra(ips, ip, "SMTP auth failure", cfg)
 			}
 		}
 	}
@@ -193,7 +194,7 @@ func collectRecentIPs(cfg *config.Config) map[string]bool {
 	for _, line := range tailFile("/var/log/maillog", 50) {
 		if strings.Contains(line, "auth failed") || strings.Contains(line, "Aborted login") {
 			if ip := extractIPAfterKeyword(line, "rip="); ip != "" {
-				addIfNotInfra(ips, ip, cfg)
+				addIfNotInfra(ips, ip, "Dovecot IMAP/POP3 auth failure", cfg)
 			}
 		}
 	}
@@ -201,14 +202,16 @@ func collectRecentIPs(cfg *config.Config) map[string]bool {
 	return ips
 }
 
-func addIfNotInfra(ips map[string]bool, ip string, cfg *config.Config) {
+func addIfNotInfra(ips map[string]string, ip, source string, cfg *config.Config) {
 	if ip == "127.0.0.1" || ip == "::1" || ip == "" {
 		return
 	}
 	if isInfraIP(ip, cfg.InfraIPs) {
 		return
 	}
-	ips[ip] = true
+	if _, exists := ips[ip]; !exists {
+		ips[ip] = source
+	}
 }
 
 func firstField(line string) string {
