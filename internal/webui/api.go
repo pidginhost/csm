@@ -148,6 +148,15 @@ func (s *Server) apiStats(w http.ResponseWriter, _ *http.Request) {
 		byCheck[f.Check]++
 	}
 
+	// Find most recent critical finding for "time since last critical"
+	lastCriticalAgo := "None"
+	for _, f := range findings {
+		if f.Severity == alert.Critical {
+			lastCriticalAgo = timeAgo(f.Timestamp)
+			break
+		}
+	}
+
 	result := map[string]interface{}{
 		"last_24h": map[string]interface{}{
 			"critical": critical,
@@ -155,7 +164,8 @@ func (s *Server) apiStats(w http.ResponseWriter, _ *http.Request) {
 			"warning":  warning,
 			"total":    critical + high + warning,
 		},
-		"by_check": byCheck,
+		"by_check":         byCheck,
+		"last_critical_ago": lastCriticalAgo,
 	}
 	writeJSON(w, result)
 }

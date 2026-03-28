@@ -110,35 +110,6 @@
     window._csmTimelineBars = bars;
 })();
 
-// --- Blocked vs Total IPs stat card ---
-(function(){
-    function updateBlockedStat() {
-        fetch(CSM.apiUrl('/api/v1/threat/stats'), { credentials: 'same-origin' })
-            .then(function(r) { return r.json(); })
-            .then(function(data) {
-                var blocked = data.blocked_ips || 0;
-                var total = data.total_ips || 0;
-                var ratioEl = document.getElementById('stat-blocked-ratio');
-                var barEl = document.getElementById('stat-blocked-bar');
-                if (ratioEl) {
-                    ratioEl.textContent = blocked + ' / ' + total;
-                }
-                if (barEl) {
-                    var pct = total > 0 ? Math.round((blocked / total) * 100) : 0;
-                    barEl.style.width = pct + '%';
-                    barEl.title = pct + '% blocked';
-                }
-            })
-            .catch(function() {
-                var ratioEl = document.getElementById('stat-blocked-ratio');
-                if (ratioEl) ratioEl.textContent = 'N/A';
-            });
-    }
-
-    updateBlockedStat();
-    setInterval(updateBlockedStat, 30000);
-})();
-
 // --- Top Attack Types bar chart ---
 (function(){
     var colors = {

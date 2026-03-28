@@ -19,16 +19,17 @@ func (s *Server) renderTemplate(w http.ResponseWriter, name string, data interfa
 }
 
 type dashboardData struct {
-	Hostname       string
-	Uptime         string
-	Critical       int
-	High           int
-	Warning        int
-	Total          int
-	SigCount       int
-	FanotifyActive bool
-	RecentFindings []historyEntry
-	TimelineBars   []timelineBar // 24 hourly bars for the timeline chart
+	Hostname        string
+	Uptime          string
+	Critical        int
+	High            int
+	Warning         int
+	Total           int
+	SigCount        int
+	FanotifyActive  bool
+	LastCriticalAgo string
+	RecentFindings  []historyEntry
+	TimelineBars    []timelineBar // 24 hourly bars for the timeline chart
 }
 
 type timelineBar struct {
@@ -169,6 +170,15 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 		})
 	}
 
+	// Find most recent critical finding
+	lastCriticalAgo := "None"
+	for _, f := range findings {
+		if f.Severity == alert.Critical {
+			lastCriticalAgo = timeAgo(f.Timestamp)
+			break // findings are newest-first
+		}
+	}
+
 	// Stats counters start at 0 — dashboard.js populates them via /api/v1/stats
 	data := dashboardData{
 		Hostname:       s.cfg.Hostname,
@@ -178,8 +188,9 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 		Warning:        0,
 		Total:          0,
 		SigCount:       s.sigCount,
-		FanotifyActive: s.fanotifyActive,
-		RecentFindings: recent,
+		FanotifyActive:  s.fanotifyActive,
+		LastCriticalAgo: lastCriticalAgo,
+		RecentFindings:  recent,
 		TimelineBars:   bars,
 	}
 	s.renderTemplate(w, "dashboard.html", data)
