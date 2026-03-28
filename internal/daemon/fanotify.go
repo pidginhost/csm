@@ -169,7 +169,7 @@ func (fm *FileMonitor) Run(stopCh <-chan struct{}) {
 		fm.runPollFallback(stopCh)
 		return
 	}
-	defer unix.Close(epfd)
+	defer func() { _ = unix.Close(epfd) }()
 
 	// Add fanotify fd to epoll
 	if err := unix.EpollCtl(epfd, unix.EPOLL_CTL_ADD, fm.fd, &unix.EpollEvent{
@@ -323,8 +323,8 @@ func (fm *FileMonitor) drainAndClose() {
 		// Mark pipe as closed before actually closing, so Stop() won't
 		// write to an already-closed fd (H2 fix).
 		atomic.StoreInt32(&fm.pipeClosed, 1)
-		unix.Close(fm.pipeFds[0])
-		unix.Close(fm.pipeFds[1])
+		_ = unix.Close(fm.pipeFds[0])
+		_ = unix.Close(fm.pipeFds[1])
 	})
 }
 
