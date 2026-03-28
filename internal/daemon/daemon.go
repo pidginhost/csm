@@ -578,7 +578,9 @@ func (d *Daemon) initGeoIP() {
 	dbDir := filepath.Join(d.cfg.StatePath, "geoip")
 	db := geoip.Open(dbDir)
 	if db != nil {
-		webui.SetGeoIPDB(db)
+		if d.webServer != nil {
+			d.webServer.SetGeoIPDB(db)
+		}
 	}
 }
 

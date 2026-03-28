@@ -7,12 +7,9 @@ import (
 	"github.com/pidginhost/cpanel-security-monitor/internal/geoip"
 )
 
-// geoIPDB is set by the daemon when MaxMind databases are available.
-var geoIPDB *geoip.DB
-
 // SetGeoIPDB sets the GeoIP database for IP lookups.
-func SetGeoIPDB(db *geoip.DB) {
-	geoIPDB = db
+func (s *Server) SetGeoIPDB(db *geoip.DB) {
+	s.geoIPDB = db
 }
 
 // apiGeoIPLookup returns geolocation info for an IP.
@@ -29,16 +26,16 @@ func (s *Server) apiGeoIPLookup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if geoIPDB == nil {
+	if s.geoIPDB == nil {
 		writeJSONError(w, "GeoIP databases not loaded (place GeoLite2-City.mmdb and GeoLite2-ASN.mmdb in /opt/csm/geoip/)", http.StatusServiceUnavailable)
 		return
 	}
 
 	var info geoip.Info
 	if r.URL.Query().Get("detail") == "1" {
-		info = geoIPDB.LookupWithRDAP(ip)
+		info = s.geoIPDB.LookupWithRDAP(ip)
 	} else {
-		info = geoIPDB.Lookup(ip)
+		info = s.geoIPDB.Lookup(ip)
 	}
 
 	writeJSON(w, info)

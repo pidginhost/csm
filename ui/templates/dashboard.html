@@ -1,36 +1,6 @@
 {{define "title"}}Dashboard{{end}}
 {{define "page"}}dashboard{{end}}
 {{define "content"}}
-    <style>
-        @keyframes csm-feed-highlight {
-            from { background-color: rgba(32, 107, 196, 0.15); }
-            to   { background-color: transparent; }
-        }
-        .feed-highlight {
-            animation: csm-feed-highlight 1.5s ease-out;
-        }
-        @keyframes csm-pulse {
-            0%, 100% { opacity: 1; }
-            50%      { opacity: 0.4; }
-        }
-        .ws-live { animation: csm-pulse 1.5s ease-in-out infinite; }
-        .bar-chart-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-        .bar-chart-label { flex: 0 0 120px; font-size: .8125rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }
-        .bar-chart-track { flex: 1; height: 18px; background: var(--tblr-bg-surface-secondary, #f1f5f9); border-radius: 3px; overflow: hidden; position: relative; }
-        .bar-chart-fill { height: 100%; border-radius: 3px; transition: width 0.4s ease; min-width: 2px; }
-        .bar-chart-value { flex: 0 0 36px; font-size: .75rem; text-align: right; color: var(--tblr-muted); }
-        .theme-dark .bar-chart-track { background: #2d3a4e; }
-        .feed-relative-time { min-width: 56px; text-align: right; }
-        .timeline-tooltip {
-            position: absolute; pointer-events: none; z-index: 10;
-            background: rgba(0,0,0,.85); color: #fff; font-size: 11px;
-            padding: 4px 8px; border-radius: 4px; white-space: nowrap;
-            transform: translate(-50%, -100%); margin-top: -6px;
-            opacity: 0; transition: opacity 0.15s;
-        }
-        .timeline-tooltip.visible { opacity: 1; }
-    </style>
-
     <div class="row row-deck row-cards mb-3">
         <div class="col-sm-6 col-lg-3">
             <div class="card">

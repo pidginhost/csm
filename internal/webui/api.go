@@ -421,49 +421,57 @@ func (s *Server) apiUnblockIP(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "unblocked", "ip": req.IP})
 }
 
+// blockedEntry is a raw blocked IP record from either firewall state or CSF.
+type blockedEntry struct {
+	IP        string    `json:"ip"`
+	Reason    string    `json:"reason"`
+	BlockedAt time.Time `json:"blocked_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+type blockedView struct {
+	IP        string `json:"ip"`
+	Reason    string `json:"reason"`
+	BlockedAt string `json:"blocked_at"`
+	ExpiresAt string `json:"expires_at"`
+	ExpiresIn string `json:"expires_in"`
+}
+
+func formatBlockedView(b blockedEntry) (blockedView, bool) {
+	if !b.ExpiresAt.IsZero() && time.Now().After(b.ExpiresAt) {
+		return blockedView{}, false // expired
+	}
+	view := blockedView{
+		IP:        b.IP,
+		Reason:    b.Reason,
+		BlockedAt: b.BlockedAt.Format(time.RFC3339),
+	}
+	if !b.ExpiresAt.IsZero() {
+		remaining := time.Until(b.ExpiresAt)
+		view.ExpiresAt = b.ExpiresAt.Format(time.RFC3339)
+		view.ExpiresIn = fmt.Sprintf("%dh%dm", int(remaining.Hours()), int(remaining.Minutes())%60)
+	} else {
+		view.ExpiresIn = "permanent"
+	}
+	return view, true
+}
+
 // apiBlockedIPs returns the list of currently blocked IPs.
 // Reads from firewall engine state if available, falls back to CSF blocked_ips.json.
 func (s *Server) apiBlockedIPs(w http.ResponseWriter, _ *http.Request) {
-	type blockedView struct {
-		IP        string `json:"ip"`
-		Reason    string `json:"reason"`
-		BlockedAt string `json:"blocked_at"`
-		ExpiresAt string `json:"expires_at"`
-		ExpiresIn string `json:"expires_in"`
-	}
-
 	var result []blockedView
-	now := time.Now()
 
 	// Try firewall engine state first
 	fwFile := filepath.Join(s.cfg.StatePath, "firewall", "state.json")
 	if fwData, err := os.ReadFile(fwFile); err == nil {
 		var fwState struct {
-			Blocked []struct {
-				IP        string    `json:"ip"`
-				Reason    string    `json:"reason"`
-				BlockedAt time.Time `json:"blocked_at"`
-				ExpiresAt time.Time `json:"expires_at"`
-			} `json:"blocked"`
+			Blocked []blockedEntry `json:"blocked"`
 		}
 		if json.Unmarshal(fwData, &fwState) == nil {
 			for _, b := range fwState.Blocked {
-				if !b.ExpiresAt.IsZero() && now.After(b.ExpiresAt) {
-					continue
+				if view, ok := formatBlockedView(b); ok {
+					result = append(result, view)
 				}
-				view := blockedView{
-					IP:        b.IP,
-					Reason:    b.Reason,
-					BlockedAt: b.BlockedAt.Format(time.RFC3339),
-				}
-				if !b.ExpiresAt.IsZero() {
-					remaining := time.Until(b.ExpiresAt)
-					view.ExpiresAt = b.ExpiresAt.Format(time.RFC3339)
-					view.ExpiresIn = fmt.Sprintf("%dh%dm", int(remaining.Hours()), int(remaining.Minutes())%60)
-				} else {
-					view.ExpiresIn = "permanent"
-				}
-				result = append(result, view)
 			}
 			writeJSON(w, result)
 			return
@@ -479,12 +487,7 @@ func (s *Server) apiBlockedIPs(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	var blockState struct {
-		IPs []struct {
-			IP        string    `json:"ip"`
-			Reason    string    `json:"reason"`
-			BlockedAt time.Time `json:"blocked_at"`
-			ExpiresAt time.Time `json:"expires_at"`
-		} `json:"ips"`
+		IPs []blockedEntry `json:"ips"`
 	}
 	if err := json.Unmarshal(data, &blockState); err != nil {
 		writeJSON(w, []interface{}{})
@@ -492,22 +495,9 @@ func (s *Server) apiBlockedIPs(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	for _, b := range blockState.IPs {
-		view := blockedView{
-			IP:        b.IP,
-			Reason:    b.Reason,
-			BlockedAt: b.BlockedAt.Format(time.RFC3339),
+		if view, ok := formatBlockedView(b); ok {
+			result = append(result, view)
 		}
-		if !b.ExpiresAt.IsZero() {
-			expiresIn := time.Until(b.ExpiresAt)
-			if expiresIn < 0 {
-				continue // expired
-			}
-			view.ExpiresAt = b.ExpiresAt.Format(time.RFC3339)
-			view.ExpiresIn = fmt.Sprintf("%dh%dm", int(expiresIn.Hours()), int(expiresIn.Minutes())%60)
-		} else {
-			view.ExpiresIn = "permanent"
-		}
-		result = append(result, view)
 	}
 	writeJSON(w, result)
 }

@@ -20,6 +20,7 @@ import (
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
 	"github.com/pidginhost/cpanel-security-monitor/internal/config"
+	"github.com/pidginhost/cpanel-security-monitor/internal/geoip"
 	"github.com/pidginhost/cpanel-security-monitor/internal/state"
 )
 
@@ -44,10 +45,13 @@ type Server struct {
 	fanotifyActive  bool
 	logWatcherCount int
 	blocker         IPBlocker
+	geoIPDB         *geoip.DB
 
 	// Rate limiting
 	loginMu       sync.Mutex
 	loginAttempts map[string][]time.Time
+	apiMu         sync.Mutex
+	apiRequests   map[string][]time.Time // per-IP API rate limiting
 	scanMu        sync.Mutex
 	scanRunning   bool // only one scan at a time
 
@@ -63,6 +67,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		hub:           NewHub(),
 		startTime:     time.Now(),
 		loginAttempts: make(map[string][]time.Time),
+		apiRequests:   make(map[string][]time.Time),
 		pruneDone:     make(chan struct{}),
 	}
 
@@ -242,6 +247,23 @@ func (s *Server) pruneLoginAttempts() {
 				}
 			}
 			s.loginMu.Unlock()
+
+			// Also prune API rate-limit entries
+			s.apiMu.Lock()
+			for ip, reqs := range s.apiRequests {
+				var recent []time.Time
+				for _, t := range reqs {
+					if t.After(cutoff) {
+						recent = append(recent, t)
+					}
+				}
+				if len(recent) == 0 {
+					delete(s.apiRequests, ip)
+				} else {
+					s.apiRequests[ip] = recent
+				}
+			}
+			s.apiMu.Unlock()
 		}
 	}
 }
@@ -460,7 +482,7 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-XSS-Protection", "1; mode=block")
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
 		w.Header().Set("Cache-Control", "no-store")
 
@@ -495,6 +517,30 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 				w.WriteHeader(http.StatusNoContent)
 				return
 			}
+		}
+
+		// API rate limiting: 120 requests per minute per IP
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			ip := r.RemoteAddr
+			if idx := strings.LastIndex(ip, ":"); idx >= 0 {
+				ip = ip[:idx]
+			}
+			s.apiMu.Lock()
+			now := time.Now()
+			cutoff := now.Add(-time.Minute)
+			var recent []time.Time
+			for _, t := range s.apiRequests[ip] {
+				if t.After(cutoff) {
+					recent = append(recent, t)
+				}
+			}
+			if len(recent) >= 120 {
+				s.apiMu.Unlock()
+				http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
+				return
+			}
+			s.apiRequests[ip] = append(recent, now)
+			s.apiMu.Unlock()
 		}
 
 		next.ServeHTTP(w, r)

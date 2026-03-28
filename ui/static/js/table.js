@@ -34,6 +34,7 @@ CSM.Table = function(opts) {
     this.hasDetailRows = opts.detailRows || false;
     this.filters = opts.filters || [];
     this.stateKey = opts.stateKey || null;
+    this.onRender = opts.onRender || null;
 
     // Collect all data rows (skip detail rows)
     this.allRows = [];
@@ -127,7 +128,9 @@ CSM.Table.prototype._buildControls = function(opts) {
         controls = document.createElement('div');
         controls.id = controlsId;
         controls.className = 'card-footer d-flex justify-content-between align-items-center';
-        this.table.parentNode.appendChild(controls);
+        // Append to card level so controls don't end up inside table-responsive overflow
+        var card = this.table.closest('.card');
+        (card || this.table.parentNode).appendChild(controls);
     }
     this.controlsEl = controls;
 };
@@ -202,6 +205,9 @@ CSM.Table.prototype.render = function() {
 
     // Render pagination controls
     this._renderControls(total, totalPages);
+
+    // Notify caller (e.g. findings page resets bulk selection)
+    if (this.onRender) this.onRender();
 };
 
 CSM.Table.prototype._renderControls = function(total, totalPages) {
@@ -209,7 +215,9 @@ CSM.Table.prototype._renderControls = function(total, totalPages) {
     var showAll = !this.perPage;
     var start = total === 0 ? 0 : (showAll ? 1 : (this.currentPage - 1) * this.perPage + 1);
     var end = showAll ? total : Math.min(this.currentPage * this.perPage, total);
-    var html = '<span class="text-muted small">Showing ' + start + '–' + end + ' of ' + total + '</span>';
+    var totalAll = this.allRows ? this.allRows.length : total;
+    var suffix = (total < totalAll) ? ' (' + totalAll + ' total)' : '';
+    var html = '<span class="text-muted small">Showing ' + start + '\u2013' + end + ' of ' + total + suffix + '</span>';
 
     if (totalPages > 1) {
         html += '<div class="d-flex gap-1">';
