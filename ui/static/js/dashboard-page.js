@@ -252,24 +252,25 @@
 
     // Override: observe new children being added to the feed by dashboard.js
     // and enhance them with highlight animation + relative time
+    var _feedProcessing = false;
     var feedObserver = new MutationObserver(function(mutations) {
+        if (_feedProcessing) return; // prevent re-entry from our own DOM changes
+        _feedProcessing = true;
         for (var m = 0; m < mutations.length; m++) {
             var added = mutations[m].addedNodes;
             for (var n = 0; n < added.length; n++) {
                 var node = added[n];
                 if (node.nodeType !== 1 || !node.classList.contains('list-group-item')) continue;
-                // Add highlight animation
                 node.classList.add('feed-highlight');
-                // Add relative time badge
                 addRelativeTime(node);
-                // Re-attach expand/collapse and fix button listeners
                 attachFeedItemListeners(node);
             }
         }
-        // Enforce max 10 visible items in the live section
+        // Enforce max 10 visible items — disconnect observer first to avoid cascade
         while (feed.children.length > 10) {
             feed.removeChild(feed.lastChild);
         }
+        _feedProcessing = false;
     });
     feedObserver.observe(feed, { childList: true });
 
