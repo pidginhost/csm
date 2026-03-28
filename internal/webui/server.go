@@ -204,6 +204,9 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		WriteTimeout:      0,                // disabled — WebSocket + long scans need unlimited write time
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    1 << 20, // 1MB
+		// Go only disables HTTP/2 when TLSNextProto is non-nil and lacks an h2 handler.
+		// NextProtos alone is not enough; net/http will re-add h2 during ServeTLS.
+		TLSNextProto: map[string]func(*http.Server, *tls.Conn, http.Handler){},
 		TLSConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
 			// HTTP/1.1 only — coder/websocket doesn't support HTTP/2 WebSocket (RFC 8441).
