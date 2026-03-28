@@ -89,14 +89,16 @@ function loadBlocked(){
         if(!ips||ips.length===0){el.innerHTML='<div class="card-body text-center text-muted py-3">No blocked IPs.</div>';return;}
         var h='<div class="table-responsive"><table class="table table-vcenter card-table table-sm" id="blocked-table"><thead><tr>';
         h+='<th><input type="checkbox" class="form-check-input" id="blocked-select-all"></th>';
-        h+='<th>IP</th><th>Reason</th><th>Expires</th><th>Action</th></tr></thead><tbody>';
+        h+='<th>IP</th><th>Location</th><th>Reason</th><th>Expires</th><th>Action</th></tr></thead><tbody>';
         for(var i=0;i<ips.length;i++){
             h+='<tr><td><input type="checkbox" class="form-check-input blocked-cb" data-ip="'+CSM.esc(ips[i].ip)+'"></td>';
-            h+='<td><code>'+CSM.esc(ips[i].ip)+'</code></td><td class="small">'+CSM.esc(ips[i].reason)+'</td><td class="small text-muted">'+CSM.esc(ips[i].expires_in)+'</td><td><button class="btn btn-sm btn-ghost-success fw-unblock-btn" data-ip="'+CSM.esc(ips[i].ip)+'">Unblock</button></td></tr>';
+            h+='<td><code>'+CSM.esc(ips[i].ip)+'</code></td><td class="small text-muted geo-cell" data-ip="'+CSM.esc(ips[i].ip)+'"></td><td class="small">'+CSM.esc(ips[i].reason)+'</td><td class="small text-muted">'+CSM.esc(ips[i].expires_in)+'</td><td><button class="btn btn-sm btn-ghost-success fw-unblock-btn" data-ip="'+CSM.esc(ips[i].ip)+'">Unblock</button></td></tr>';
         }
         h+='</tbody></table></div>';
         el.innerHTML=h;
         if(typeof CSM!=='undefined'&&CSM.Table) new CSM.Table({tableId:'blocked-table',perPage:25,searchId:'blocked-search',sortable:true});
+        // GeoIP enrichment — fetch country/ASN for each blocked IP
+        enrichBlockedGeoIP(el);
         // Bind unblock buttons
         el.querySelectorAll('.fw-unblock-btn').forEach(function(btn) {
             btn.addEventListener('click', function() { unblockIP(this.getAttribute('data-ip')); });
@@ -155,5 +157,28 @@ document.getElementById('block-form').addEventListener('submit',function(e){
         }).catch(function(e){ CSM.toast('Error: ' + e, 'error'); });
     }).catch(function(){});
 });
+
+function enrichBlockedGeoIP(container) {
+    var cells = container.querySelectorAll('.geo-cell');
+    var idx = 0;
+    function next() {
+        if (idx >= cells.length) return;
+        var cell = cells[idx++];
+        var ip = cell.dataset.ip;
+        if (!ip) { next(); return; }
+        fetch(CSM.apiUrl('/api/v1/geoip?ip=' + encodeURIComponent(ip)), { credentials: 'same-origin' })
+            .then(function(r) { return r.json(); })
+            .then(function(geo) {
+                var parts = [];
+                if (geo.country) parts.push(geo.country);
+                if (geo.as_org) parts.push(geo.as_org);
+                cell.textContent = parts.join(' / ') || '-';
+            })
+            .catch(function() { cell.textContent = '-'; })
+            .finally(function() { setTimeout(next, 50); }); // throttle: 50ms between requests
+    }
+    // Start 3 concurrent fetchers
+    for (var c = 0; c < 3 && c < cells.length; c++) { next(); }
+}
 
 loadStatus();loadSubnets();loadBlocked();loadAudit();
