@@ -387,7 +387,7 @@ func CheckModSecAuditLog(cfg *config.Config, store *state.Store) []alert.Finding
 				Severity: alert.High,
 				Check:    "waf_attack_blocked",
 				Message:  fmt.Sprintf("WAF blocking high-volume attacker: %s (%d blocked requests)", ip, count),
-				Details:  fmt.Sprintf("IP %s has been blocked %d times by ModSecurity. Consider permanent CSF block.", ip, count),
+				Details:  fmt.Sprintf("IP %s has been blocked %d times by ModSecurity. Consider permanent block via CSM.", ip, count),
 			})
 		}
 	}

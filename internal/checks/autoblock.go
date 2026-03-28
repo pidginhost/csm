@@ -21,7 +21,7 @@ const (
 )
 
 // IPBlocker abstracts the firewall engine for auto-blocking.
-// When set, blocks go through nftables instead of CSF.
+// When set, blocks go through nftables firewall engine.
 type IPBlocker interface {
 	BlockIP(ip string, reason string, timeout time.Duration) error
 	UnblockIP(ip string) error

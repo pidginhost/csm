@@ -21,11 +21,6 @@ const rules = `## cPanel Security Monitor — auditd rules
 # WHM API tokens
 -w /var/cpanel/authn/api_tokens_v2/ -p wa -k csm_whm_api_tokens
 
-# CSF firewall config
--w /etc/csf/csf.conf -p wa -k csm_csf_config
--w /etc/csf/csf.allow -p wa -k csm_csf_allow
--w /etc/csf/csf.deny -p wa -k csm_csf_deny
-
 # Crontab modifications
 -w /var/spool/cron/ -p wa -k csm_crontab_change
 -w /etc/cron.d/ -p wa -k csm_crond_change

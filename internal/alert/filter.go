@@ -11,7 +11,7 @@ import (
 )
 
 // FilterBlockedAlerts removes reputation and auto-block alerts for IPs
-// that are currently blocked in CSF (either just blocked or previously blocked).
+// that are currently blocked in CSM firewall (either just blocked or previously blocked).
 func FilterBlockedAlerts(cfg *config.Config, findings []Finding) []Finding {
 	if !cfg.Suppressions.SuppressBlockedAlerts {
 		return findings
@@ -55,7 +55,7 @@ func FilterBlockedAlerts(cfg *config.Config, findings []Finding) []Finding {
 			if cfg.AutoResponse.Enabled && cfg.AutoResponse.BlockIPs {
 				continue
 			}
-			// Otherwise check if the IP is already blocked (manual block or CSF)
+			// Otherwise check if the IP is already blocked (manual block or CSM firewall)
 			isBlocked := false
 			for ip := range blockedIPs {
 				if strings.Contains(f.Message, ip) {
@@ -120,7 +120,7 @@ func loadBlockedIPs(statePath string) map[string]bool {
 		}
 	}
 
-	// Also read from legacy blocked_ips.json (CSF auto-block)
+	// Also read from blocked_ips.json (CSM auto-block)
 	type blockFile struct {
 		IPs []struct {
 			IP        string    `json:"ip"`

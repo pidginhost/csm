@@ -203,7 +203,7 @@ func (s *Server) apiFirewallFlush(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "flushed"})
 }
 
-// apiFirewallCheck checks if an IP is blocked in CSM, CSF, or cphulk.
+// apiFirewallCheck checks if an IP is blocked in CSM or cphulk.
 // GET /api/v1/firewall/check?ip=1.2.3.4
 // Response matches cpanel-service format for apiuser compatibility:
 //
