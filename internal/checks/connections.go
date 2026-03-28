@@ -1,9 +1,12 @@
 package checks
 
 import (
+	"encoding/hex"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
@@ -104,6 +107,68 @@ func CheckOutboundUserConnections(cfg *config.Config, _ *state.Store) []alert.Fi
 		})
 	}
 
+	// Parse /proc/net/tcp6 for IPv6 connections
+	tcp6Data, err := os.ReadFile("/proc/net/tcp6")
+	if err == nil {
+		for _, line := range strings.Split(string(tcp6Data), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 8 || fields[0] == "sl" {
+				continue
+			}
+
+			// State 01 = ESTABLISHED
+			if fields[3] != "01" {
+				continue
+			}
+
+			uid := fields[7]
+			if uid == "0" {
+				continue
+			}
+
+			_, localPort6 := parseHex6Addr(fields[1])
+			remoteIP6, remotePort6 := parseHex6Addr(fields[2])
+
+			if remoteIP6 == nil || remoteIP6.IsLoopback() || remoteIP6.IsUnspecified() {
+				continue
+			}
+
+			// Skip if local port is a known service (we're the server)
+			knownLocalPorts6 := map[int]bool{
+				21: true, 25: true, 26: true, 53: true, 80: true, 110: true,
+				143: true, 443: true, 465: true, 587: true, 993: true, 995: true,
+				2082: true, 2083: true, 2086: true, 2087: true, 2095: true, 2096: true,
+				3306: true, 4190: true,
+				52223: true, 52224: true, 52227: true, 52228: true,
+				52229: true, 52230: true, 52231: true, 52232: true,
+			}
+			if knownLocalPorts6[localPort6] {
+				continue
+			}
+
+			if safeRemotePorts[remotePort6] {
+				continue
+			}
+
+			remoteIPStr := remoteIP6.String()
+			if isInfraIP(remoteIPStr, cfg.InfraIPs) {
+				continue
+			}
+
+			user := uidToUser(uid)
+			if safeUsers[user] {
+				continue
+			}
+
+			findings = append(findings, alert.Finding{
+				Severity: alert.High,
+				Check:    "user_outbound_connection",
+				Message:  fmt.Sprintf("Non-root user connecting to unusual destination: [%s]:%d", remoteIPStr, remotePort6),
+				Details:  fmt.Sprintf("UID: %s (%s), Local port: %d, Proto: tcp6", uid, user, localPort6),
+			})
+		}
+	}
+
 	return findings
 }
 
@@ -120,6 +185,38 @@ func uidToUser(uid string) string {
 		}
 	}
 	return uid
+}
+
+// parseHex6Addr parses an IPv6 address:port from /proc/net/tcp6 format.
+// IPv6 addresses are 32 hex chars (128 bits) in little-endian 4-byte groups.
+func parseHex6Addr(s string) (net.IP, int) {
+	parts := strings.SplitN(s, ":", 2)
+	if len(parts) != 2 {
+		return nil, 0
+	}
+	hexIP := parts[0]
+	hexPort := parts[1]
+	if len(hexIP) != 32 {
+		return nil, 0
+	}
+
+	port, _ := strconv.ParseInt(hexPort, 16, 32)
+
+	// Parse as 4 little-endian 32-bit words
+	ip := make(net.IP, 16)
+	for i := 0; i < 4; i++ {
+		word := hexIP[i*8 : (i+1)*8]
+		b, _ := hex.DecodeString(word)
+		if len(b) != 4 {
+			return nil, 0
+		}
+		// Reverse bytes within each 32-bit word (little-endian to big-endian)
+		ip[i*4+0] = b[3]
+		ip[i*4+1] = b[2]
+		ip[i*4+2] = b[1]
+		ip[i*4+3] = b[0]
+	}
+	return ip, int(port)
 }
 
 // CheckSSHDConfig monitors sshd_config for dangerous changes.
