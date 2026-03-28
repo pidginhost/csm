@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/config"
@@ -176,8 +177,13 @@ type rateLimitState struct {
 	Count int    `json:"count"`
 }
 
+var rateLimitMu sync.Mutex
+
 // checkRateLimit returns true if we can send more alerts this hour.
 func checkRateLimit(statePath string, maxPerHour int) bool {
+	rateLimitMu.Lock()
+	defer rateLimitMu.Unlock()
+
 	rlPath := filepath.Join(statePath, "ratelimit.json")
 
 	currentHour := time.Now().Format("2006-01-02T15")
