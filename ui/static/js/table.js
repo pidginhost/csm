@@ -206,10 +206,10 @@ CSM.Table.prototype.render = function() {
 
 CSM.Table.prototype._renderControls = function(total, totalPages) {
     var self = this;
-    var html = '<span class="text-muted small">Showing ' +
-        (total === 0 ? '0' : ((this.currentPage - 1) * this.perPage + 1)) +
-        '–' + Math.min(this.currentPage * this.perPage, total) +
-        ' of ' + total + '</span>';
+    var showAll = !this.perPage;
+    var start = total === 0 ? 0 : (showAll ? 1 : (this.currentPage - 1) * this.perPage + 1);
+    var end = showAll ? total : Math.min(this.currentPage * this.perPage, total);
+    var html = '<span class="text-muted small">Showing ' + start + '–' + end + ' of ' + total + '</span>';
 
     if (totalPages > 1) {
         html += '<div class="d-flex gap-1">';

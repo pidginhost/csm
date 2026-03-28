@@ -446,10 +446,19 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			origin := r.Header.Get("Origin")
 			if origin != "" {
-				// Only allow same-origin requests — compare against our listen address
+				// Only allow same-origin — use r.Host which includes port
 				host := r.Host
 				if host == "" {
+					// Fallback: build from config (hostname + listen port)
 					host = s.cfg.Hostname
+					if listen := s.cfg.WebUI.Listen; listen != "" {
+						if idx := strings.LastIndex(listen, ":"); idx >= 0 {
+							port := listen[idx+1:]
+							if port != "443" {
+								host = host + ":" + port
+							}
+						}
+					}
 				}
 				allowed := "https://" + host
 				if origin != allowed {

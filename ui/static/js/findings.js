@@ -23,7 +23,8 @@ function changePerPage() {
         findingsTable.render();
     }
 }
-document.getElementById('per-page').addEventListener('change', changePerPage);
+var perPageEl = document.getElementById('per-page');
+if (perPageEl) perPageEl.addEventListener('change', changePerPage);
 
 // --- Selection management ---
 function getVisibleRows() {
@@ -59,8 +60,10 @@ function updateSelection() {
 }
 
 // Reset select-all when filter changes
-document.getElementById('check-filter').addEventListener('change', function() {
-    document.getElementById('select-all').checked = false;
+var checkFilterEl = document.getElementById('check-filter');
+if (checkFilterEl) checkFilterEl.addEventListener('change', function() {
+    var selectAll = document.getElementById('select-all');
+    if (selectAll) selectAll.checked = false;
     document.querySelectorAll('.row-checkbox').forEach(function(cb) { cb.checked = false; });
     updateSelection();
 });
