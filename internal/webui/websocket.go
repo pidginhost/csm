@@ -144,15 +144,30 @@ func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	h.addClient(conn)
 
-	// Read loop — keep connection alive, handle close frames
+	// Read loop — keep connection alive, handle close/ping frames
+	// Also sends server-initiated pings every 30s to keep idle connections alive
 	go func() {
 		defer func() {
 			h.removeClient(conn)
 			_ = conn.Close()
 		}()
 
+		pingTicker := time.NewTicker(30 * time.Second)
+		defer pingTicker.Stop()
+
 		buf := make([]byte, 1024)
 		for {
+			// Check for pending pings before blocking on read
+			select {
+			case <-pingTicker.C:
+				ping := []byte{0x89, 0x00} // ping frame, no payload
+				_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+				if _, err := conn.Write(ping); err != nil {
+					return
+				}
+			default:
+			}
+
 			_ = conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 			n, err := conn.Read(buf)
 			if err != nil {

@@ -7,37 +7,8 @@
     <title>CSM — {{template "title" .}}</title>
     <link rel="stylesheet" href="/static/css/tabler.min.css">
     <link rel="stylesheet" href="/static/css/tabler-icons.min.css">
+    <link rel="stylesheet" href="/static/css/csm.css">
     <meta name="csrf-token" content="{{csrfToken}}">
-    <style>
-        .theme-dark, .theme-dark body { background-color: #1a2234; color: #c8d3e0; }
-        .theme-dark .card { background-color: #1e293b; border-color: #2d3a4e; color: #c8d3e0; }
-        .theme-dark .card-header { border-color: #2d3a4e; }
-        .theme-dark .card-footer { border-color: #2d3a4e; }
-        .theme-dark .table { color: #c8d3e0; }
-        .theme-dark .table thead th { background-color: #1a2234; border-color: #2d3a4e; }
-        .theme-dark .table td { border-color: #2d3a4e; }
-        .theme-dark .navbar { background-color: #1a2234 !important; border-color: #2d3a4e; }
-        .theme-dark .footer { border-color: #2d3a4e; }
-        .theme-dark .form-control, .theme-dark .form-select { background-color: #1a2234; border-color: #2d3a4e; color: #c8d3e0; }
-        .theme-dark .list-group-item { background-color: #1e293b; border-color: #2d3a4e; color: #c8d3e0; }
-        .theme-dark .text-muted { color: #6b7a8d !important; }
-        .theme-dark .subheader { color: #6b7a8d; }
-        .theme-dark code { color: #7ec8e3; }
-        .badge-critical { background: #d63939; color: #fff; }
-        .badge-high { background: #f76707; color: #fff; }
-        .badge-warning { background: #f59f00; color: #fff; }
-        .text-critical { color: #d63939; }
-        .text-high { color: #f76707; }
-        .text-warning { color: #f59f00; }
-        .details-row { display: none; }
-        .details-row.show { display: table-row; }
-        .timeline-bar { opacity: 0.85; transition: opacity 0.15s; }
-        .timeline-bar:hover { opacity: 1 !important; }
-        th.sort-asc::after { content: ' ▲'; opacity: 0.5; }
-        th.sort-desc::after { content: ' ▼'; opacity: 0.5; }
-        th[style*="cursor"] { user-select: none; }
-        html, body, .page { overflow-x: hidden; max-width: 100vw; }
-    </style>
     <script src="/static/js/theme-init.js"></script>
 </head>
 <body class="layout-fluid">
@@ -98,7 +69,6 @@
     <script src="/static/js/toast.js"></script>
     <script src="/static/js/csrf.js"></script>
     <script src="/static/js/table.js"></script>
-    <script src="/static/js/skeleton.js"></script>
     <script src="/static/js/shortcuts.js"></script>
     <script src="/static/js/layout.js"></script>
     {{template "scripts" .}}

@@ -10,7 +10,8 @@ if (document.getElementById('findings-table')) {
         searchId: 'findings-search',
         sortable: true,
         filters: [{ id: 'check-filter', attr: 'data-check' }],
-        stateKey: 'csm-findings-table'
+        stateKey: 'csm-findings-table',
+        onRender: function() { if (typeof updateSelection === 'function') updateSelection(); }
     });
 }
 
