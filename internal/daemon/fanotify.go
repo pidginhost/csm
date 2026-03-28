@@ -101,7 +101,7 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 	}
 
 	// Mark mount points; M2 — track successful mounts
-	mountPaths := []string{"/home", "/tmp", "/dev/shm"}
+	mountPaths := []string{"/home", "/tmp", "/dev/shm", "/var/tmp"}
 	mountOK := 0
 	for _, path := range mountPaths {
 		// H1 — use golang.org/x/sys/unix for fanotify_mark
@@ -416,7 +416,7 @@ func (fm *FileMonitor) isInteresting(path string) bool {
 	}
 
 	// Executables in /tmp or /dev/shm
-	if strings.HasPrefix(path, "/tmp/") || strings.HasPrefix(path, "/dev/shm/") {
+	if strings.HasPrefix(path, "/tmp/") || strings.HasPrefix(path, "/dev/shm/") || strings.HasPrefix(path, "/var/tmp/") {
 		return true
 	}
 
@@ -486,7 +486,7 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 
 	// Executables in /tmp or /dev/shm — detect dropped malware/miners
 	// Uses unix.Fstat on event fd for TOCTOU safety (attacker can't chmod -x after event)
-	if strings.HasPrefix(path, "/tmp/") || strings.HasPrefix(path, "/dev/shm/") {
+	if strings.HasPrefix(path, "/tmp/") || strings.HasPrefix(path, "/dev/shm/") || strings.HasPrefix(path, "/var/tmp/") {
 		var tmpStat unix.Stat_t
 		if err := unix.Fstat(event.fd, &tmpStat); err == nil {
 			isDir := tmpStat.Mode&unix.S_IFMT == unix.S_IFDIR
@@ -722,10 +722,36 @@ func (fm *FileMonitor) checkPHPContent(fd int, path string) {
 		}
 	}
 	if hasShell && hasInput {
-		fm.sendAlertWithPath(alert.Critical, "webshell_content_realtime",
-			fmt.Sprintf("Webshell pattern detected: %s", path),
-			"Shell execution function with request input", path)
-		return
+		// Exclude WordPress filesystem API — themes/plugins legitimately use
+		// shell_exec for WP_Filesystem operations alongside $_POST for forms.
+		if strings.Contains(content, "$wp_filesystem") || strings.Contains(content, "wp_filesystem") {
+			// WP filesystem API — not a webshell, skip
+		} else {
+			// Require shell function + request variable on the SAME line
+			// to avoid flagging theme admin panels that have both in different contexts
+			for _, line := range strings.Split(content, "\n") {
+				lineHasShell := false
+				lineHasInput := false
+				for _, sf := range shellFuncs {
+					if strings.Contains(line, sf) {
+						lineHasShell = true
+						break
+					}
+				}
+				for _, rv := range requestVars {
+					if strings.Contains(line, rv) {
+						lineHasInput = true
+						break
+					}
+				}
+				if lineHasShell && lineHasInput {
+					fm.sendAlertWithPath(alert.Critical, "webshell_content_realtime",
+						fmt.Sprintf("Webshell pattern detected: %s", path),
+						fmt.Sprintf("Shell execution with request input on same line: %s", strings.TrimSpace(line)), path)
+					return
+				}
+			}
+		}
 	}
 
 	// Skip signature/YARA scanning for verified CMS core files.
