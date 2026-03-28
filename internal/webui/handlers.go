@@ -208,11 +208,17 @@ func (s *Server) handleFindings(w http.ResponseWriter, _ *http.Request) {
 		if f.Check == "auto_response" || f.Check == "auto_block" || f.Check == "check_timeout" || f.Check == "health" {
 			continue
 		}
+		firstSeen := f.Timestamp
+		lastSeen := f.Timestamp
+		if entry, ok := s.store.EntryForKey(f.Key()); ok {
+			firstSeen = entry.FirstSeen
+			lastSeen = entry.LastSeen
+		}
 		items = append(items, findingEntry{
 			Check:     f.Check,
 			Message:   f.Message,
-			FirstSeen: f.Timestamp.Format("2006-01-02 15:04"),
-			LastSeen:  f.Timestamp.Format("2006-01-02 15:04"),
+			FirstSeen: firstSeen.Format("2006-01-02 15:04"),
+			LastSeen:  lastSeen.Format("2006-01-02 15:04"),
 			HasFix:    checks.HasFix(f.Check),
 			FixDesc:   checks.FixDescription(f.Check, f.Message),
 		})
