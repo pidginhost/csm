@@ -64,13 +64,8 @@
         <div class="col-sm-6 col-lg-3">
             <div class="card">
                 <div class="card-body">
-                    <div class="subheader">Blocked / Total IPs</div>
-                    <div class="d-flex align-items-center gap-2 mb-1">
-                        <span class="h3 mb-0" id="stat-blocked-ratio">--</span>
-                    </div>
-                    <div class="progress progress-sm">
-                        <div class="progress-bar bg-red" id="stat-blocked-bar" style="width:0%" role="progressbar"></div>
-                    </div>
+                    <div class="subheader">Last Critical</div>
+                    <div class="h3 mb-0" id="stat-last-critical">{{.LastCriticalAgo}}</div>
                 </div>
             </div>
         </div>
