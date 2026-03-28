@@ -87,18 +87,55 @@ function loadBlocked(){
     fetch('/api/v1/blocked-ips',{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(ips){
         var el=document.getElementById('blocked-content');
         if(!ips||ips.length===0){el.innerHTML='<div class="card-body text-center text-muted py-3">No blocked IPs.</div>';return;}
-        var h='<div class="table-responsive"><table class="table table-vcenter card-table table-sm" id="blocked-table"><thead><tr><th>IP</th><th>Reason</th><th>Expires</th><th>Action</th></tr></thead><tbody>';
+        var h='<div class="table-responsive"><table class="table table-vcenter card-table table-sm" id="blocked-table"><thead><tr>';
+        h+='<th><input type="checkbox" class="form-check-input" id="blocked-select-all"></th>';
+        h+='<th>IP</th><th>Reason</th><th>Expires</th><th>Action</th></tr></thead><tbody>';
         for(var i=0;i<ips.length;i++){
-            h+='<tr><td><code>'+CSM.esc(ips[i].ip)+'</code></td><td class="small">'+CSM.esc(ips[i].reason)+'</td><td class="small text-muted">'+CSM.esc(ips[i].expires_in)+'</td><td><button class="btn btn-sm btn-ghost-success fw-unblock-btn" data-ip="'+CSM.esc(ips[i].ip)+'">Unblock</button></td></tr>';
+            h+='<tr><td><input type="checkbox" class="form-check-input blocked-cb" data-ip="'+CSM.esc(ips[i].ip)+'"></td>';
+            h+='<td><code>'+CSM.esc(ips[i].ip)+'</code></td><td class="small">'+CSM.esc(ips[i].reason)+'</td><td class="small text-muted">'+CSM.esc(ips[i].expires_in)+'</td><td><button class="btn btn-sm btn-ghost-success fw-unblock-btn" data-ip="'+CSM.esc(ips[i].ip)+'">Unblock</button></td></tr>';
         }
         h+='</tbody></table></div>';
         el.innerHTML=h;
         if(typeof CSM!=='undefined'&&CSM.Table) new CSM.Table({tableId:'blocked-table',perPage:25,searchId:'blocked-search',sortable:true});
-        // Bind unblock buttons after DOM insertion
+        // Bind unblock buttons
         el.querySelectorAll('.fw-unblock-btn').forEach(function(btn) {
             btn.addEventListener('click', function() { unblockIP(this.getAttribute('data-ip')); });
         });
+        // Select all checkbox
+        var selectAll = document.getElementById('blocked-select-all');
+        if (selectAll) {
+            selectAll.addEventListener('change', function() {
+                var checked = this.checked;
+                el.querySelectorAll('.blocked-cb').forEach(function(cb) { cb.checked = checked; });
+                updateBulkUnblock();
+            });
+        }
+        el.querySelectorAll('.blocked-cb').forEach(function(cb) {
+            cb.addEventListener('change', updateBulkUnblock);
+        });
     }).catch(function(){ document.getElementById('blocked-content').innerHTML = '<div class="card-body text-center text-danger py-3">Error loading blocked IPs.</div>'; });
+}
+
+function updateBulkUnblock() {
+    var checked = document.querySelectorAll('.blocked-cb:checked');
+    var btn = document.getElementById('bulk-unblock-btn');
+    if (btn) {
+        btn.classList.toggle('d-none', checked.length === 0);
+        btn.textContent = 'Unblock ' + checked.length + ' IPs';
+    }
+}
+
+function bulkUnblock() {
+    var checked = document.querySelectorAll('.blocked-cb:checked');
+    if (checked.length === 0) return;
+    var ips = [];
+    checked.forEach(function(cb) { ips.push(cb.dataset.ip); });
+    CSM.confirm('Unblock ' + ips.length + ' IPs?').then(function() {
+        CSM.post('/api/v1/unblock-bulk', { ips: ips }).then(function(data) {
+            CSM.toast('Unblocked ' + (data.succeeded || 0) + ' of ' + (data.total || 0) + ' IPs', 'success');
+            loadBlocked(); loadStatus(); loadAudit();
+        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+    }).catch(function() {});
 }
 function unblockIP(ip){
     CSM.confirm('Unblock '+ip+'?').then(function(){

@@ -39,7 +39,8 @@
     <div class="card mb-3">
         <div class="card-header">
             <h3 class="card-title"><i class="ti ti-shield-off"></i>&nbsp;Blocked IPs</h3>
-            <div class="card-actions d-flex gap-2">
+            <div class="card-actions d-flex gap-2 flex-wrap">
+                <button class="btn btn-success btn-sm d-none" id="bulk-unblock-btn" onclick="bulkUnblock()">Unblock 0 IPs</button>
                 <input type="text" id="blocked-search" class="form-control form-control-sm" placeholder="Search IPs..." style="width:180px">
                 <form id="block-form" class="d-flex gap-2">
                     <input type="text" id="block-ip" class="form-control form-control-sm font-monospace" placeholder="IP address" style="width:160px">
