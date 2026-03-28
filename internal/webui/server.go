@@ -97,7 +97,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	if _, err := os.Stat(templateDir); err == nil {
 		s.templates = make(map[string]*template.Template)
 		layoutPath := filepath.Join(templateDir, "layout.html")
-		for _, page := range []string{"dashboard", "findings", "history", "quarantine", "firewall", "threat", "rules", "audit", "account"} {
+		for _, page := range []string{"dashboard", "findings", "history", "quarantine", "firewall", "threat", "rules", "audit", "account", "incident"} {
 			pagePath := filepath.Join(templateDir, page+".html")
 			t, err := template.New(page+".html").Funcs(funcMap).ParseFiles(layoutPath, pagePath)
 			if err != nil {
@@ -135,6 +135,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		mux.Handle("/rules", s.requireAuth(http.HandlerFunc(s.handleRules)))
 		mux.Handle("/audit", s.requireAuth(http.HandlerFunc(s.handleAudit)))
 		mux.Handle("/account", s.requireAuth(http.HandlerFunc(s.handleAccount)))
+		mux.Handle("/incident", s.requireAuth(http.HandlerFunc(s.handleIncident)))
 	}
 
 	// Auth-protected API — read
@@ -151,6 +152,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/history/csv", s.requireAuth(http.HandlerFunc(s.apiHistoryCSV)))
 	mux.Handle("/api/v1/export", s.requireAuth(http.HandlerFunc(s.apiExport)))
 	mux.Handle("/api/v1/import", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiImport))))
+	mux.Handle("/api/v1/incident", s.requireAuth(http.HandlerFunc(s.apiIncident)))
 
 	// Threat Intelligence API
 	mux.Handle("/api/v1/threat/stats", s.requireAuth(http.HandlerFunc(s.apiThreatStats)))
@@ -159,6 +161,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/threat/events", s.requireAuth(http.HandlerFunc(s.apiThreatEvents)))
 	mux.Handle("/api/v1/threat/db-stats", s.requireAuth(http.HandlerFunc(s.apiThreatDBStats)))
 	mux.Handle("/api/v1/audit", s.requireAuth(http.HandlerFunc(s.apiUIAudit)))
+	mux.Handle("/api/v1/finding-detail", s.requireAuth(http.HandlerFunc(s.apiFindingDetail)))
 	mux.Handle("/api/v1/threat/whitelist-ip", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiThreatWhitelistIP))))
 	mux.Handle("/api/v1/threat/whitelist", s.requireAuth(http.HandlerFunc(s.apiThreatWhitelist)))
 	mux.Handle("/api/v1/threat/unwhitelist-ip", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiThreatUnwhitelistIP))))

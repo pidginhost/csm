@@ -998,6 +998,60 @@ func (s *Server) apiImport(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// apiFindingDetail returns detail about a specific finding including related actions.
+func (s *Server) apiFindingDetail(w http.ResponseWriter, r *http.Request) {
+	check := r.URL.Query().Get("check")
+	message := r.URL.Query().Get("message")
+	if check == "" {
+		writeJSONError(w, "check is required", http.StatusBadRequest)
+		return
+	}
+
+	key := check + ":" + message
+
+	// Get state entry for this finding (first/last seen)
+	var firstSeen, lastSeen string
+	if entry, ok := s.store.EntryForKey(key); ok {
+		firstSeen = entry.FirstSeen.Format(time.RFC3339)
+		lastSeen = entry.LastSeen.Format(time.RFC3339)
+	}
+
+	// Search audit log for related actions
+	actions := s.searchAuditEntries(check, 20)
+
+	// Search history for related findings (same check type, last 50)
+	allHistory, _ := s.store.ReadHistory(2000, 0)
+	type histEntry struct {
+		Severity  int    `json:"severity"`
+		Check     string `json:"check"`
+		Message   string `json:"message"`
+		Timestamp string `json:"timestamp"`
+	}
+	var related []histEntry
+	for _, f := range allHistory {
+		if len(related) >= 50 {
+			break
+		}
+		if f.Check == check {
+			related = append(related, histEntry{
+				Severity:  int(f.Severity),
+				Check:     f.Check,
+				Message:   f.Message,
+				Timestamp: f.Timestamp.Format(time.RFC3339),
+			})
+		}
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"check":      check,
+		"message":    message,
+		"first_seen": firstSeen,
+		"last_seen":  lastSeen,
+		"actions":    actions,
+		"related":    related,
+	})
+}
+
 func writeJSONError(w http.ResponseWriter, message string, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)

@@ -101,6 +101,27 @@ func readUIAuditLog(statePath string, limit int) []UIAuditEntry {
 	return all
 }
 
+// searchAuditEntries returns audit entries whose target or details contain the search string.
+func (s *Server) searchAuditEntries(search string, limit int) []UIAuditEntry {
+	if search == "" || limit <= 0 {
+		return nil
+	}
+	all := readUIAuditLog(s.cfg.StatePath, 0) // 0 = no limit, get all entries (already newest-first)
+	searchLower := strings.ToLower(search)
+	var matched []UIAuditEntry
+	for _, e := range all {
+		if strings.Contains(strings.ToLower(e.Target), searchLower) ||
+			strings.Contains(strings.ToLower(e.Details), searchLower) ||
+			strings.Contains(strings.ToLower(e.Action), searchLower) {
+			matched = append(matched, e)
+			if len(matched) >= limit {
+				break
+			}
+		}
+	}
+	return matched
+}
+
 func (s *Server) handleAudit(w http.ResponseWriter, _ *http.Request) {
 	s.renderTemplate(w, "audit.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
