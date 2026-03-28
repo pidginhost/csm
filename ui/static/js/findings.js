@@ -399,6 +399,67 @@ document.querySelectorAll('.finding-row').forEach(function(row) {
     });
 });
 
+// --- Click-to-expand finding detail (remediation action tracking) ---
+function toggleFindingDetail(row) {
+    var existing = row.nextElementSibling;
+    if (existing && existing.classList.contains('finding-detail-row')) {
+        existing.remove();
+        return;
+    }
+    // Remove any other open detail rows
+    document.querySelectorAll('.finding-detail-row').forEach(function(r) { r.remove(); });
+
+    var check = row.dataset.check;
+    var message = row.dataset.message;
+    var detailRow = document.createElement('tr');
+    detailRow.className = 'finding-detail-row';
+    var td = document.createElement('td');
+    td.colSpan = row.children.length || 6;
+    td.innerHTML = '<div class="p-2 text-muted small"><span class="spinner-border spinner-border-sm"></span> Loading...</div>';
+    detailRow.appendChild(td);
+    row.after(detailRow);
+
+    fetch(CSM.apiUrl('/api/v1/finding-detail?check=' + encodeURIComponent(check) + '&message=' + encodeURIComponent(message)), { credentials: 'same-origin' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var html = '<div class="p-3 bg-dark-lt" style="font-size:0.8rem">';
+            // Timeline info
+            if (data.first_seen) {
+                html += '<div class="mb-2"><strong>First seen:</strong> ' + CSM.fmtDate(data.first_seen) + ' &mdash; <strong>Last seen:</strong> ' + CSM.fmtDate(data.last_seen) + '</div>';
+            }
+            // Actions taken
+            var actions = data.actions || [];
+            if (actions.length > 0) {
+                html += '<div class="mb-2"><strong>Actions taken (' + actions.length + '):</strong>';
+                html += '<ul class="mb-0 mt-1">';
+                for (var i = 0; i < Math.min(actions.length, 10); i++) {
+                    var a = actions[i];
+                    html += '<li>' + CSM.esc(a.action) + ' &mdash; ' + CSM.esc(a.target || '') + ' <span class="text-muted">(' + CSM.fmtDate(a.timestamp || '') + ')</span></li>';
+                }
+                if (actions.length > 10) html += '<li class="text-muted">...and ' + (actions.length - 10) + ' more</li>';
+                html += '</ul></div>';
+            } else {
+                html += '<div class="mb-2 text-muted">No recorded actions for this finding.</div>';
+            }
+            // Related findings count
+            var related = data.related || [];
+            if (related.length > 0) {
+                html += '<div><strong>Historical occurrences:</strong> ' + related.length + ' times in history</div>';
+            }
+            html += '</div>';
+            td.innerHTML = html;
+        })
+        .catch(function() { td.innerHTML = '<div class="p-2 text-danger small">Failed to load details.</div>'; });
+}
+
+document.querySelectorAll('.finding-row').forEach(function(row) {
+    row.style.cursor = 'pointer';
+    row.addEventListener('click', function(e) {
+        if (e.target.closest('button') || e.target.closest('input')) return;
+        toggleFindingDetail(this);
+    });
+});
+
 // --- Auto-refresh: poll for new findings every 15 seconds ---
 (function() {
     var currentKeys = {};
