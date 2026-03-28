@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
@@ -27,6 +28,7 @@ type IPBlocker interface {
 }
 
 var fwBlocker IPBlocker
+var blockStateMu sync.Mutex
 
 // SetIPBlocker sets the firewall engine for auto-blocking.
 func SetIPBlocker(b IPBlocker) {
@@ -59,6 +61,8 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	if !cfg.AutoResponse.Enabled || !cfg.AutoResponse.BlockIPs {
 		return nil
 	}
+	blockStateMu.Lock()
+	defer blockStateMu.Unlock()
 
 	var actions []alert.Finding
 
