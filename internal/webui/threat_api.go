@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"os/exec"
 	"strconv"
 	"time"
 
@@ -209,7 +208,7 @@ func (s *Server) apiThreatWhitelistIP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 4. Flush cphulk
-	_, _ = exec.Command("whmapi1", "flush_cphulk_login_history_for_ips", "ip="+req.IP).Output()
+	flushCphulk(req.IP)
 
 	s.auditLog(r, "whitelist_ip", req.IP, "permanent whitelist")
 	writeJSON(w, map[string]interface{}{
@@ -310,7 +309,7 @@ func (s *Server) apiThreatClearIP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 4. Flush cphulk
-	_, _ = exec.Command("whmapi1", "flush_cphulk_login_history_for_ips", "ip="+req.IP).Output()
+	flushCphulk(req.IP)
 	actions = append(actions, "flushed cPanel login history")
 
 	s.auditLog(r, "clear_ip", req.IP, "unblock & clear")
@@ -381,7 +380,7 @@ func (s *Server) apiThreatTempWhitelistIP(w http.ResponseWriter, r *http.Request
 	}
 
 	// 4. Flush cphulk
-	_, _ = exec.Command("whmapi1", "flush_cphulk_login_history_for_ips", "ip="+req.IP).Output()
+	flushCphulk(req.IP)
 
 	s.auditLog(r, "temp_whitelist_ip", req.IP, fmt.Sprintf("%dh temp whitelist", req.Hours))
 	writeJSON(w, map[string]interface{}{

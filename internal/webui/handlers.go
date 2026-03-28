@@ -259,7 +259,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	// Load all recent history — client-side CSM.Table handles pagination
 	findings, _ := s.store.ReadHistory(5000, 0)
 
-	var items []historyEntry
+	items := make([]historyEntry, 0, len(findings))
 	for _, f := range findings {
 		// Apply date range filter
 		if !fromDate.IsZero() && f.Timestamp.Before(fromDate) {

@@ -1,7 +1,6 @@
 package webui
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -139,6 +138,5 @@ func (s *Server) apiRulesReload(w http.ResponseWriter, r *http.Request) {
 		result["errors"] = errors
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(result)
+	writeJSON(w, result)
 }

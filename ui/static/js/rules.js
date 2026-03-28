@@ -1,10 +1,6 @@
 // CSM Rules page
 
-function fmtSize(bytes) {
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
-    return (bytes / 1048576).toFixed(1) + ' MB';
-}
+var fmtSize = CSM.formatSize;
 
 function loadStatus() {
     fetch('/api/v1/rules/status', {credentials: 'same-origin'}).then(function(r) { return r.json(); }).then(function(data) {

@@ -14,6 +14,9 @@ var actionBadges = {
 function loadAudit() {
     fetch('/api/v1/audit', {credentials:'same-origin'}).then(function(r){return r.json()}).then(function(entries){
         var el = document.getElementById('audit-content');
+        // Update card title with count
+        var title = document.querySelector('.card-title');
+        if (title) title.innerHTML = '<i class="ti ti-clipboard-list"></i>&nbsp;Audit Log (' + (entries ? entries.length : 0) + ')';
         if (!entries || entries.length === 0) {
             el.innerHTML = '<div class="card-body text-center text-muted py-4"><i class="ti ti-clipboard-check"></i> No audit entries yet.</div>';
             return;

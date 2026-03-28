@@ -90,7 +90,6 @@ func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		// Allow same-origin connections only
 		validOrigins := []string{
 			"https://" + host,
-			"http://" + host, // during development
 		}
 		originOK := false
 		for _, v := range validOrigins {
