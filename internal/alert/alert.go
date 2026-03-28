@@ -39,6 +39,7 @@ type Finding struct {
 	Check     string    `json:"check"`
 	Message   string    `json:"message"`
 	Details   string    `json:"details,omitempty"`
+	FilePath  string    `json:"file_path,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
 }
 

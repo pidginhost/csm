@@ -279,6 +279,7 @@ func scanForPhishing(dir string, maxDepth int, user string, cfg *config.Config, 
 						Message:  fmt.Sprintf("Phishing page detected (%s impersonation): %s", result.brand, fullPath),
 						Details: fmt.Sprintf("Account: %s\nBrand: %s\nScore: %d/10\nIndicators:\n- %s\nSize: %d bytes",
 							user, result.brand, result.score, strings.Join(result.indicators, "\n- "), size),
+						FilePath: fullPath,
 					})
 				}
 			}
@@ -291,6 +292,7 @@ func scanForPhishing(dir string, maxDepth int, user string, cfg *config.Config, 
 						Check:    "phishing_iframe",
 						Message:  fmt.Sprintf("Iframe phishing page detected: %s", fullPath),
 						Details:  fmt.Sprintf("Account: %s\n%s", user, result),
+						FilePath: fullPath,
 					})
 				}
 			}
@@ -313,6 +315,7 @@ func scanForPhishing(dir string, maxDepth int, user string, cfg *config.Config, 
 						Message:  fmt.Sprintf("PHP phishing page detected (%s): %s", result.brand, fullPath),
 						Details: fmt.Sprintf("Account: %s\nBrand: %s\nScore: %d/10\nIndicators:\n- %s\nSize: %d bytes",
 							user, result.brand, result.score, strings.Join(result.indicators, "\n- "), size),
+						FilePath: fullPath,
 					})
 				}
 			}
@@ -324,6 +327,7 @@ func scanForPhishing(dir string, maxDepth int, user string, cfg *config.Config, 
 						Check:    "phishing_redirector",
 						Message:  fmt.Sprintf("PHP open redirector detected: %s", fullPath),
 						Details:  fmt.Sprintf("Account: %s\n%s", user, result),
+						FilePath: fullPath,
 					})
 				}
 			}
@@ -338,6 +342,7 @@ func scanForPhishing(dir string, maxDepth int, user string, cfg *config.Config, 
 					Check:    "phishing_credential_log",
 					Message:  fmt.Sprintf("Harvested credential log file detected: %s", fullPath),
 					Details:  fmt.Sprintf("Account: %s\n%s", user, result),
+					FilePath: fullPath,
 				})
 			}
 			continue
@@ -352,6 +357,7 @@ func scanForPhishing(dir string, maxDepth int, user string, cfg *config.Config, 
 					Message:  fmt.Sprintf("Suspected phishing kit archive: %s", fullPath),
 					Details: fmt.Sprintf("Account: %s\nFilename: %s\nSize: %d bytes",
 						user, name, size),
+					FilePath: fullPath,
 				})
 			}
 		}
@@ -698,6 +704,7 @@ func analyzeDirectoryStructure(dir string, user string) *alert.Finding {
 		Message:  fmt.Sprintf("Suspected phishing directory (lone HTML in business-named folder): %s", dir),
 		Details: fmt.Sprintf("Account: %s\nDirectory: %s\nHTML files: %s\nIndicators:\n- %s",
 			user, dirName, strings.Join(htmlFiles, ", "), strings.Join(indicators, "\n- ")),
+		FilePath: dir,
 	}
 }
 

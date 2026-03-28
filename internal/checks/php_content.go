@@ -118,6 +118,7 @@ func scanDirForObfuscatedPHP(dir string, maxDepth int, cfg *config.Config, findi
 				Check:    result.check,
 				Message:  fmt.Sprintf("%s: %s", result.message, fullPath),
 				Details:  details,
+				FilePath: fullPath,
 			})
 		}
 	}

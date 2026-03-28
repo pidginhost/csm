@@ -111,8 +111,11 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 			continue
 		}
 
-		// Extract file path from message
-		path := extractFilePath(f.Message)
+		// Extract file path — prefer structured field, fallback to message parsing
+		path := f.FilePath
+		if path == "" {
+			path = extractFilePath(f.Message) // fallback for legacy findings
+		}
 		if path == "" {
 			continue
 		}

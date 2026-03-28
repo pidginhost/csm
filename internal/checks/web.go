@@ -243,6 +243,7 @@ func checkHtaccessFile(path string, suspicious, safe []string, findings *[]alert
 				Check:    "htaccess_injection",
 				Message:  fmt.Sprintf("Suspicious .htaccess directive: %s", pattern),
 				Details:  fmt.Sprintf("File: %s (line %d)\nContent: %s", path, lineNum+1, trimmed),
+				FilePath: path,
 			})
 		}
 	}
@@ -264,6 +265,7 @@ func checkHtaccessFile(path string, suspicious, safe []string, findings *[]alert
 						Check:    "htaccess_handler_abuse",
 						Message:  fmt.Sprintf("Malicious handler mapping for %s extension", ext),
 						Details:  fmt.Sprintf("File: %s (line %d)\nContent: %s", path, lineNum+1, strings.TrimSpace(line)),
+						FilePath: path,
 					})
 				}
 			}
