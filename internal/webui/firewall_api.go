@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -52,12 +53,7 @@ func (s *Server) apiFirewallStatus(w http.ResponseWriter, _ *http.Request) {
 
 // apiFirewallAudit returns recent firewall audit log entries.
 func (s *Server) apiFirewallAudit(w http.ResponseWriter, r *http.Request) {
-	limit := 100
-	if l := r.URL.Query().Get("limit"); l != "" {
-		if n := parseIntSimple(l); n > 0 {
-			limit = n
-		}
-	}
+	limit := queryInt(r, "limit", 100)
 
 	entries := firewall.ReadAuditLog(s.cfg.StatePath, limit)
 	if entries == nil {
@@ -254,7 +250,7 @@ func (s *Server) apiFirewallCheck(w http.ResponseWriter, r *http.Request) {
 	cphulkOut, cphulkErr := exec.Command("whmapi1", "read_cphulk_records",
 		"list_name=black", "--output=json").Output()
 	if cphulkErr == nil {
-		if containsBytes(cphulkOut, []byte(ip)) {
+		if bytes.Contains(cphulkOut, []byte(ip)) {
 			result["cphulk"] = true
 		}
 	}
@@ -303,31 +299,11 @@ func (s *Server) apiFirewallUnban(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 3. Flush from cphulk
-	_, _ = exec.Command("whmapi1", "flush_cphulk_login_history_for_ips", "ip="+req.IP).Output()
+	flushCphulk(req.IP)
 
 	result := map[string]interface{}{"success": true, "ip": req.IP}
 	if subnetRemoved != "" {
 		result["subnet_removed"] = subnetRemoved
 	}
 	writeJSON(w, result)
-}
-
-func containsBytes(haystack, needle []byte) bool {
-	for i := 0; i <= len(haystack)-len(needle); i++ {
-		if string(haystack[i:i+len(needle)]) == string(needle) {
-			return true
-		}
-	}
-	return false
-}
-
-func parseIntSimple(s string) int {
-	n := 0
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return 0
-		}
-		n = n*10 + int(c-'0')
-	}
-	return n
 }

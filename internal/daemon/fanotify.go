@@ -24,15 +24,13 @@ import (
 
 // fanotify constants (not all in Go stdlib)
 const (
-	FAN_MARK_ADD       = 0x00000001
-	FAN_MARK_MOUNT     = 0x00000010
-	FAN_CLOSE_WRITE    = 0x00000008
-	FAN_CREATE         = 0x00000100
-	FAN_ONDIR          = 0x40000000
-	FAN_EVENT_ON_CHILD = 0x08000000
-	FAN_CLASS_NOTIF    = 0x00000000
-	FAN_CLOEXEC        = 0x00000001
-	FAN_NONBLOCK       = 0x00000002
+	FAN_MARK_ADD    = 0x00000001
+	FAN_MARK_MOUNT  = 0x00000010
+	FAN_CLOSE_WRITE = 0x00000008
+	FAN_CREATE      = 0x00000100
+	FAN_CLASS_NOTIF = 0x00000000
+	FAN_CLOEXEC     = 0x00000001
+	FAN_NONBLOCK    = 0x00000002
 )
 
 // fanotifyEventMetadata is the header for each fanotify event.
@@ -78,7 +76,8 @@ type FileMonitor struct {
 	droppedAlerts int64
 
 	// C4 — pipe for epoll stop signaling
-	pipeFds [2]int // [0]=read, [1]=write
+	pipeFds    [2]int // [0]=read, [1]=write
+	pipeClosed int32  // atomic flag: 1 = pipe fds closed by drainAndClose
 
 	// C2 — sync.Once for safe Stop
 	stopOnce  sync.Once
@@ -321,7 +320,9 @@ func (fm *FileMonitor) drainAndClose() {
 	fm.drainOnce.Do(func() {
 		close(fm.analyzerCh)
 		fm.wg.Wait()
-		// Close pipe fds after all goroutines are done (BUG-3 fix)
+		// Mark pipe as closed before actually closing, so Stop() won't
+		// write to an already-closed fd (H2 fix).
+		atomic.StoreInt32(&fm.pipeClosed, 1)
 		unix.Close(fm.pipeFds[0])
 		unix.Close(fm.pipeFds[1])
 	})
@@ -332,11 +333,13 @@ func (fm *FileMonitor) drainAndClose() {
 func (fm *FileMonitor) Stop() {
 	fm.stopOnce.Do(func() {
 		close(fm.stopCh)
-		// Wake epoll so Run() exits and calls drainAndClose
-		_, _ = unix.Write(fm.pipeFds[1], []byte{0})
+		// Wake epoll so Run() exits and calls drainAndClose.
+		// Only write if pipe hasn't been closed by drainAndClose yet.
+		if atomic.LoadInt32(&fm.pipeClosed) == 0 {
+			_, _ = unix.Write(fm.pipeFds[1], []byte{0})
+		}
 		// Close fanotify fd — causes any pending Read/EpollWait to return
 		_ = unix.Close(fm.fd)
-		// Pipe fds are closed in drainAndClose after all goroutines exit
 	})
 }
 
@@ -987,12 +990,17 @@ func matchSuppression(pattern, path string) bool {
 	if len(patParts) < 2 {
 		return false
 	}
-	// Sliding window: try to align pattern segments with path segments
+	// Sliding window: try to align pattern segments with path segments.
+	// Empty pattern parts (from leading/trailing/double slashes) match any segment.
 	for i := 0; i <= len(pathParts)-len(patParts); i++ {
 		allMatch := true
 		for j, pp := range patParts {
 			if pp == "" {
-				continue
+				continue // empty segment matches anything (acts as wildcard)
+			}
+			if i+j >= len(pathParts) {
+				allMatch = false
+				break
 			}
 			m, _ := filepath.Match(pp, pathParts[i+j])
 			if !m {
@@ -1000,8 +1008,18 @@ func matchSuppression(pattern, path string) bool {
 				break
 			}
 		}
+		// Only count as match if we consumed at least one non-empty pattern part
 		if allMatch {
-			return true
+			hasNonEmpty := false
+			for _, pp := range patParts {
+				if pp != "" {
+					hasNonEmpty = true
+					break
+				}
+			}
+			if hasNonEmpty {
+				return true
+			}
 		}
 	}
 	return false
