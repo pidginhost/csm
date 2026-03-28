@@ -282,17 +282,26 @@ func ExtractIPFromFinding(f alert.Finding) string {
 }
 
 func extractIPFromFinding(f alert.Finding) string {
-	// Try to extract IP from message — look for patterns like "from X.X.X.X" or ": X.X.X.X"
+	msg := f.Message
+
+	// Use LastIndex to find the rightmost separator — log-injected content
+	// tends to appear earlier in the message, while the structurally-parsed
+	// IP from the log parser appears at the end.
 	for _, sep := range []string{" from ", ": "} {
-		if idx := strings.Index(f.Message, sep); idx >= 0 {
-			rest := f.Message[idx+len(sep):]
+		if idx := strings.LastIndex(msg, sep); idx >= 0 {
+			rest := msg[idx+len(sep):]
 			fields := strings.Fields(rest)
 			if len(fields) > 0 {
-				ip := strings.TrimRight(fields[0], ",:;)([]")
-				// Support both IPv4 and IPv6
-				if net.ParseIP(ip) != nil {
-					return ip
+				candidate := strings.TrimRight(fields[0], ",:;)([]")
+				ip := net.ParseIP(candidate)
+				if ip == nil {
+					continue
 				}
+				// Reject loopback and unspecified — never block these
+				if ip.IsLoopback() || ip.IsUnspecified() {
+					continue
+				}
+				return ip.String()
 			}
 		}
 	}
