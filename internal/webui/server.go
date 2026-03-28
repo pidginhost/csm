@@ -142,6 +142,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/history", s.requireAuth(http.HandlerFunc(s.apiHistory)))
 	mux.Handle("/api/v1/quarantine", s.requireAuth(http.HandlerFunc(s.apiQuarantine)))
 	mux.Handle("/api/v1/stats", s.requireAuth(http.HandlerFunc(s.apiStats)))
+	mux.Handle("/api/v1/stats/trend", s.requireAuth(http.HandlerFunc(s.apiStatsTrend)))
 	mux.Handle("/api/v1/blocked-ips", s.requireAuth(http.HandlerFunc(s.apiBlockedIPs)))
 	mux.Handle("/api/v1/health", s.requireAuth(http.HandlerFunc(s.apiHealth)))
 	mux.Handle("/api/v1/accounts", s.requireAuth(http.HandlerFunc(s.apiAccounts)))
@@ -165,6 +166,9 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/rules/status", s.requireAuth(http.HandlerFunc(s.apiRulesStatus)))
 	mux.Handle("/api/v1/rules/list", s.requireAuth(http.HandlerFunc(s.apiRulesList)))
 	mux.Handle("/api/v1/rules/reload", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiRulesReload))))
+
+	// Suppressions API (CSRF validated inside handler for POST/DELETE)
+	mux.Handle("/api/v1/suppressions", s.requireAuth(http.HandlerFunc(s.apiSuppressions)))
 
 	// Firewall API
 	mux.Handle("/api/v1/firewall/status", s.requireAuth(http.HandlerFunc(s.apiFirewallStatus)))

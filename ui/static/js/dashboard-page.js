@@ -297,3 +297,45 @@ function fixFromFeed(btn) {
         });
     }).catch(function() { /* cancelled */ });
 }
+
+// --- 30-Day Trend Chart ---
+(function(){
+    function loadTrend() {
+        fetch(CSM.apiUrl('/api/v1/stats/trend'), { credentials: 'same-origin' })
+            .then(function(r) { return r.json(); })
+            .then(function(days) {
+                var container = document.getElementById('trend-chart');
+                if (!container || !days || !days.length) return;
+                var maxVal = 1;
+                days.forEach(function(d) { if (d.total > maxVal) maxVal = d.total; });
+                var w = container.clientWidth || 800;
+                var barW = Math.floor((w - 60) / days.length) - 2;
+                if (barW < 4) barW = 4;
+                var h = 120;
+                var padL = 30, padB = 18;
+                var chartH = h - padB;
+
+                var isDark = document.documentElement.classList.contains('theme-dark');
+                var textColor = isDark ? '#6b7a8d' : '#9da9b5';
+
+                var svg = '<svg width="' + w + '" height="' + h + '">';
+                days.forEach(function(d, i) {
+                    var x = padL + i * (barW + 2);
+                    var barH = Math.max(1, Math.round(d.total / maxVal * (chartH - 4)));
+                    var color = d.critical > 0 ? '#d63939' : d.high > 0 ? '#f76707' : d.total > 0 ? '#f59f00' : '#2d3a4e';
+                    svg += '<rect x="' + x + '" y="' + (chartH - barH) + '" width="' + barW + '" height="' + barH + '" fill="' + color + '" rx="1.5">';
+                    svg += '<title>' + d.date + ': ' + d.total + ' (' + d.critical + ' crit, ' + d.high + ' high, ' + d.warning + ' warn)</title></rect>';
+                    if (i % 7 === 0) {
+                        svg += '<text x="' + (x + barW/2) + '" y="' + (h - 2) + '" text-anchor="middle" fill="' + textColor + '" style="font-size:9px">' + d.date.slice(5) + '</text>';
+                    }
+                });
+                svg += '</svg>';
+                container.innerHTML = svg;
+            })
+            .catch(function() {
+                var c = document.getElementById('trend-chart');
+                if (c) c.innerHTML = '<div class="text-muted text-center py-3">Could not load trend data</div>';
+            });
+    }
+    loadTrend();
+})();
