@@ -24,7 +24,6 @@ func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 		"hostname":     s.cfg.Hostname,
 		"uptime":       time.Since(s.startTime).String(),
 		"started_at":   s.startTime.Format(time.RFC3339),
-		"ws_clients":   s.hub.ClientCount(),
 		"rules_loaded": s.sigCount,
 	}
 	writeJSON(w, status)
@@ -167,7 +166,6 @@ func (s *Server) apiHealth(w http.ResponseWriter, _ *http.Request) {
 		"daemon_mode":    true,
 		"uptime":         time.Since(s.startTime).String(),
 		"uptime_seconds": int(time.Since(s.startTime).Seconds()),
-		"ws_clients":     s.hub.ClientCount(),
 		"rules_loaded":   s.sigCount,
 		"fanotify":       s.fanotifyActive,
 		"log_watchers":   s.logWatcherCount,

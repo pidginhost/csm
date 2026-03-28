@@ -35,7 +35,6 @@ type IPBlocker interface {
 type Server struct {
 	cfg             *config.Config
 	store           *state.Store
-	hub             *Hub
 	httpSrv         *http.Server
 	templates       map[string]*template.Template
 	hasUI           bool   // true if UI directory with templates exists
@@ -64,7 +63,6 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	s := &Server{
 		cfg:           cfg,
 		store:         store,
-		hub:           NewHub(),
 		startTime:     time.Now(),
 		loginAttempts: make(map[string][]time.Time),
 		apiRequests:   make(map[string][]time.Time),
@@ -193,25 +191,16 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	// Logout (clears cookie, requires auth to prevent logout CSRF)
 	mux.Handle("/logout", s.requireAuth(http.HandlerFunc(s.handleLogout)))
 
-	// WebSocket (auth via cookie)
-	mux.HandleFunc("/ws/findings", s.handleWSFindings)
-
 	s.httpSrv = &http.Server{
 		Addr:              cfg.WebUI.Listen,
 		Handler:           s.securityHeaders(mux),
-		ReadHeaderTimeout: 10 * time.Second, // time to read request headers (slowloris protection)
-		ReadTimeout:       0,                // disabled — WebSocket needs long-lived connections
-		WriteTimeout:      0,                // disabled — WebSocket + long scans need unlimited write time
+		ReadHeaderTimeout: 10 * time.Second,  // slowloris protection
+		ReadTimeout:       30 * time.Second,  // max time to read full request
+		WriteTimeout:      300 * time.Second, // account scans can take several minutes
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    1 << 20, // 1MB
-		// Go only disables HTTP/2 when TLSNextProto is non-nil and lacks an h2 handler.
-		// NextProtos alone is not enough; net/http will re-add h2 during ServeTLS.
-		TLSNextProto: map[string]func(*http.Server, *tls.Conn, http.Handler){},
 		TLSConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
-			// HTTP/1.1 only — coder/websocket doesn't support HTTP/2 WebSocket (RFC 8441).
-			// Browser sends CONNECT over HTTP/2 which hangs, blocking all multiplexed streams.
-			NextProtos: []string{"http/1.1"},
 			CipherSuites: []uint16{
 				tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
 				tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
@@ -299,10 +288,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.httpSrv.Shutdown(ctx)
 }
 
-// Broadcast sends findings to all WebSocket clients.
-func (s *Server) Broadcast(findings []alert.Finding) {
-	s.hub.Broadcast(findings)
-}
+// Broadcast is a no-op — WebSocket was removed, dashboard uses polling.
+func (s *Server) Broadcast(_ []alert.Finding) {}
 
 // SetSigCount sets the loaded signature count for the status API.
 func (s *Server) SetSigCount(count int) {
@@ -424,13 +411,6 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/dashboard", http.StatusFound)
 }
 
-func (s *Server) handleWSFindings(w http.ResponseWriter, r *http.Request) {
-	if !s.isAuthenticated(r) {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-	s.hub.HandleWebSocket(w, r)
-}
 
 // --- Template helpers ---
 

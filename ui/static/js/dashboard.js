@@ -1,84 +1,12 @@
-// CSM Dashboard — WebSocket live feed + auto-refresh
-// Detects WHM proxy mode and falls back to polling when WebSocket isn't available
+// CSM Dashboard — polling-based live feed + auto-refresh
 (function() {
     'use strict';
 
     var feed = document.getElementById('live-feed-entries');
     var wsStatus = document.getElementById('ws-status');
     var statusLabel = document.getElementById('ws-status-label');
-    var reconnectDelay = 1000;
-    var ws;
-    var wsDisabled = true;
 
-    // Detect if running through WHM CGI proxy (WebSocket won't work through CGI)
-    var isProxy = window.location.pathname.indexOf('addon_csm.cgi') >= 0 ||
-                  window.location.search.indexOf('path=') >= 0;
-
-    // Polling mode by default. The WebSocket path has repeatedly caused
-    // browser request starvation in real deployments and should stay off
-    // until it is proven stable end-to-end.
-
-    var _pollingStarted = false;
-    function startPolling() {
-        if (_pollingStarted) return;
-        _pollingStarted = true;
-        pollFindings();
-        setInterval(pollFindings, 10000);
-    }
-
-    function connect() {
-        if (isProxy || wsDisabled) {
-            // WHM proxy can't handle WebSocket — use polling instead
-            if (wsStatus) wsStatus.className = 'status-dot bg-yellow';
-            startPolling();
-            return;
-        }
-
-        var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        try {
-            ws = new WebSocket(proto + '//' + location.host + '/ws/findings');
-        } catch(e) {
-            // WebSocket creation failed — fall back to polling immediately
-            wsDisabled = true;
-            if (wsStatus) wsStatus.className = 'status-dot bg-yellow';
-            if (statusLabel) statusLabel.textContent = 'Polling';
-            startPolling();
-            return;
-        }
-
-        ws.onopen = function() {
-            reconnectDelay = 1000;
-            if (wsStatus) wsStatus.className = 'status-dot status-dot-animated bg-green';
-        };
-
-        ws.onmessage = function(e) {
-            try {
-                var findings = JSON.parse(e.data);
-                for (var i = 0; i < findings.length; i++) {
-                    addEntry(findings[i]);
-                }
-            } catch(err) { /* malformed JSON */ }
-        };
-
-        ws.onclose = function() {
-            if (wsStatus) wsStatus.className = 'status-dot bg-red';
-            // After 3 failed reconnects, switch to polling
-            if (reconnectDelay > 4000) {
-                wsDisabled = true;
-                if (wsStatus) wsStatus.className = 'status-dot bg-yellow';
-                startPolling();
-                return;
-            }
-            setTimeout(function() {
-                reconnectDelay = Math.min(reconnectDelay * 2, 30000);
-                connect();
-            }, reconnectDelay);
-        };
-
-        ws.onerror = function() { ws.close(); };
-    }
-
-    // Polling fallback — fetch recent history
+    // Polling — fetch recent history every 10 seconds
     var lastPollTimestamp = '';
     function pollFindings() {
         fetch(CSM.apiUrl('/api/v1/history?limit=10&offset=0'), { credentials: 'same-origin' })
@@ -128,7 +56,6 @@
         if (empty) empty.remove();
     }
 
-
     // Auto-refresh stats every 30 seconds
     function refreshStats() {
         fetch(CSM.apiUrl('/api/v1/stats'), { credentials: 'same-origin' })
@@ -151,7 +78,10 @@
 
     // Initialize
     if (feed) {
-        connect();
+        if (wsStatus) wsStatus.className = 'status-dot bg-yellow';
+        if (statusLabel) statusLabel.textContent = 'Polling';
+        pollFindings();
+        setInterval(pollFindings, 10000);
         refreshStats();
         setInterval(refreshStats, 30000);
     }
