@@ -57,13 +57,6 @@ type findingEntry struct {
 	FixDesc   string
 }
 
-type historyData struct {
-	Hostname string
-	Findings []historyEntry
-	FromDate string
-	ToDate   string
-}
-
 type historyEntry struct {
 	Severity  string
 	SevClass  string
@@ -243,51 +236,11 @@ func (s *Server) handleFindings(w http.ResponseWriter, _ *http.Request) {
 	s.renderTemplate(w, "findings.html", data)
 }
 
-func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
-	// Parse optional date range from query params
-	fromStr := r.URL.Query().Get("from")
-	toStr := r.URL.Query().Get("to")
-
-	var fromDate, toDate time.Time
-	if fromStr != "" {
-		fromDate, _ = time.ParseInLocation("2006-01-02", fromStr, time.Local)
-	}
-	if toStr != "" {
-		toDate, _ = time.ParseInLocation("2006-01-02", toStr, time.Local)
-		// Include the full "to" day
-		toDate = toDate.Add(24*time.Hour - time.Second)
-	}
-
-	// Load all recent history — client-side CSM.Table handles pagination
-	findings, _ := s.store.ReadHistory(5000, 0)
-
-	items := make([]historyEntry, 0, len(findings))
-	for _, f := range findings {
-		// Apply date range filter
-		if !fromDate.IsZero() && f.Timestamp.Before(fromDate) {
-			continue
-		}
-		if !toDate.IsZero() && f.Timestamp.After(toDate) {
-			continue
-		}
-		items = append(items, historyEntry{
-			Severity:  severityLabel(f.Severity),
-			SevClass:  severityClass(f.Severity),
-			Check:     f.Check,
-			Message:   f.Message,
-			Details:   f.Details,
-			Timestamp: f.Timestamp.Format("2006-01-02 15:04:05"),
-			TimeAgo:   timeAgo(f.Timestamp),
-		})
-	}
-
-	data := historyData{
-		Hostname: s.cfg.Hostname,
-		Findings: items,
-		FromDate: fromStr,
-		ToDate:   toStr,
-	}
-	s.renderTemplate(w, "history.html", data)
+func (s *Server) handleHistory(w http.ResponseWriter, _ *http.Request) {
+	// History page is now fully JS-driven — API provides paginated data
+	s.renderTemplate(w, "history.html", map[string]string{
+		"Hostname": s.cfg.Hostname,
+	})
 }
 
 func (s *Server) handleQuarantine(w http.ResponseWriter, _ *http.Request) {

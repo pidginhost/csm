@@ -70,6 +70,7 @@ func (s *Server) apiFindings(w http.ResponseWriter, _ *http.Request) {
 }
 
 // apiHistory returns paginated history from history.jsonl.
+// Supports optional date range filtering via "from" and "to" query params (YYYY-MM-DD).
 func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 	limit := queryInt(r, "limit", 50)
 	if limit > 5000 {
@@ -77,15 +78,60 @@ func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	offset := queryInt(r, "offset", 0)
 
-	findings, total := s.store.ReadHistory(limit, offset)
+	fromStr := r.URL.Query().Get("from")
+	toStr := r.URL.Query().Get("to")
 
-	result := map[string]interface{}{
-		"findings": findings,
+	// If no date filter, use simple paginated read
+	if fromStr == "" && toStr == "" {
+		findings, total := s.store.ReadHistory(limit, offset)
+		writeJSON(w, map[string]interface{}{
+			"findings": findings,
+			"total":    total,
+			"limit":    limit,
+			"offset":   offset,
+		})
+		return
+	}
+
+	// With date filter: read all history, filter, then paginate
+	var fromDate, toDate time.Time
+	if fromStr != "" {
+		fromDate, _ = time.ParseInLocation("2006-01-02", fromStr, time.Local)
+	}
+	if toStr != "" {
+		toDate, _ = time.ParseInLocation("2006-01-02", toStr, time.Local)
+		toDate = toDate.Add(24*time.Hour - time.Second)
+	}
+
+	allFindings, _ := s.store.ReadHistory(5000, 0)
+	var filtered []alert.Finding
+	for _, f := range allFindings {
+		if !fromDate.IsZero() && f.Timestamp.Before(fromDate) {
+			continue
+		}
+		if !toDate.IsZero() && f.Timestamp.After(toDate) {
+			continue
+		}
+		filtered = append(filtered, f)
+	}
+
+	total := len(filtered)
+	// Apply offset and limit
+	if offset > len(filtered) {
+		filtered = nil
+	} else {
+		filtered = filtered[offset:]
+		if len(filtered) > limit {
+			filtered = filtered[:limit]
+		}
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"findings": filtered,
 		"total":    total,
 		"limit":    limit,
 		"offset":   offset,
-	}
-	writeJSON(w, result)
+	})
 }
 
 const quarantineDir = "/opt/csm/quarantine"
