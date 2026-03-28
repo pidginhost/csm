@@ -80,10 +80,10 @@ func (s *Scanner) Reload() error {
 
 	s.mu.Lock()
 	s.rules = rules
-	s.ruleCount = ruleCount
+	s.ruleCount = rules.Count()
 	s.mu.Unlock()
 
-	fmt.Fprintf(os.Stderr, "yara: compiled %d rule file(s) from %s\n", ruleCount, s.rulesDir)
+	fmt.Fprintf(os.Stderr, "yara: compiled %d rules from %d file(s) in %s\n", s.ruleCount, ruleCount, s.rulesDir)
 	return nil
 }
 
