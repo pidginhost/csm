@@ -716,6 +716,42 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// apiQuarantinePreview returns the first 8KB of a quarantined file for inspection.
+func (s *Server) apiQuarantinePreview(w http.ResponseWriter, r *http.Request) {
+	id := filepath.Base(r.URL.Query().Get("id"))
+	if id == "" || id == "." || id == ".." {
+		writeJSONError(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+	qPath := filepath.Join(quarantineDir, id)
+	info, err := os.Stat(qPath)
+	if err != nil {
+		writeJSONError(w, "not found", http.StatusNotFound)
+		return
+	}
+	if info.IsDir() {
+		writeJSON(w, map[string]interface{}{
+			"id": id, "is_dir": true,
+			"preview": "[directory — content preview not available]",
+		})
+		return
+	}
+	f, err := os.Open(qPath)
+	if err != nil {
+		writeJSONError(w, "cannot read file", http.StatusInternalServerError)
+		return
+	}
+	defer f.Close()
+	buf := make([]byte, 8192)
+	n, _ := f.Read(buf)
+	writeJSON(w, map[string]interface{}{
+		"id":         id,
+		"preview":    string(buf[:n]),
+		"truncated":  info.Size() > 8192,
+		"total_size": info.Size(),
+	})
+}
+
 // apiScanAccount runs an on-demand scan for a single cPanel account.
 // POST /api/v1/scan-account  body: {"account": "username"}
 func (s *Server) apiScanAccount(w http.ResponseWriter, r *http.Request) {
