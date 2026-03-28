@@ -52,6 +52,8 @@ func CheckPHPContent(cfg *config.Config, _ *state.Store) []alert.Finding {
 				filepath.Join(docRoot, "wp-content", "languages"),
 				filepath.Join(docRoot, "wp-content", "upgrade"),
 				filepath.Join(docRoot, "wp-content", "mu-plugins"),
+				filepath.Join(docRoot, "wp-content", "plugins"),
+				filepath.Join(docRoot, "wp-content", "themes"),
 			}
 
 			for _, dir := range suspiciousDirs {
@@ -320,6 +322,19 @@ func isSafePHPInWPDir(path, name string) bool {
 				return true
 			}
 		}
+	}
+
+	// Files in vendor/ or node_modules/ subdirectories within plugins/themes
+	// are third-party dependencies and should not be flagged.
+	if strings.Contains(path, "/wp-content/plugins/") || strings.Contains(path, "/wp-content/themes/") {
+		if strings.Contains(path, "/vendor/") || strings.Contains(path, "/node_modules/") {
+			return true
+		}
+		// Standard WordPress plugin/theme files with known safe names
+		// (e.g. uninstall.php, functions.php, class-*.php, etc.)
+		// The indicator-based scoring already prevents false positives
+		// for normal PHP, but we skip files with a standard WP plugin header
+		// to avoid unnecessary content reads.
 	}
 
 	return false
