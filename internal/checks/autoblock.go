@@ -25,6 +25,7 @@ const (
 type IPBlocker interface {
 	BlockIP(ip string, reason string, timeout time.Duration) error
 	UnblockIP(ip string) error
+	IsBlocked(ip string) bool
 }
 
 var fwBlocker IPBlocker
@@ -69,19 +70,21 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// Load block state
 	state := loadBlockState(cfg.StatePath)
 
-	// Unblock expired IPs FIRST — so isAlreadyBlocked won't match stale entries
-	var activeIPs []blockedIP
-	for _, blocked := range state.IPs {
-		if time.Now().After(blocked.ExpiresAt) {
-			if fwBlocker != nil {
-				_ = fwBlocker.UnblockIP(blocked.IP)
+	// Prune IPs that the firewall engine no longer has blocked.
+	// The engine handles expiry natively via nftables timeouts —
+	// we just sync our state to match.
+	var stillBlocked []blockedIP
+	for _, b := range state.IPs {
+		if fwBlocker != nil {
+			if !fwBlocker.IsBlocked(b.IP) {
+				// Engine expired this block — clean up our state
+				fmt.Fprintf(os.Stderr, "[%s] AUTO-UNBLOCK: %s removed (engine expired)\n", time.Now().Format("2006-01-02 15:04:05"), b.IP)
+				continue
 			}
-			fmt.Fprintf(os.Stderr, "[%s] AUTO-UNBLOCK: %s removed (expired)\n", time.Now().Format("2006-01-02 15:04:05"), blocked.IP)
-		} else {
-			activeIPs = append(activeIPs, blocked)
 		}
+		stillBlocked = append(stillBlocked, b)
 	}
-	state.IPs = activeIPs
+	state.IPs = stillBlocked
 
 	// Check rate limit
 	currentHour := time.Now().Format("2006-01-02T15")
