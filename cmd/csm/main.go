@@ -79,6 +79,8 @@ func main() {
 		runStatus()
 	case "baseline":
 		runBaseline()
+	case "rehash":
+		runRehash()
 	case "validate":
 		runValidate()
 	case "verify":
@@ -331,6 +333,26 @@ func runBaseline() {
 	}
 
 	fmt.Printf("Baseline established with %d findings recorded as known state\n", len(findings))
+	fmt.Printf("Binary hash: %s\n", binaryHash)
+	fmt.Printf("Config hash: %s\n", configHash)
+}
+
+// runRehash updates only the binary and config hashes without running a full
+// scan. Use this after upgrading the binary or editing csm.yaml — it's instant
+// compared to baseline which re-scans the entire server.
+func runRehash() {
+	cfg := loadConfig()
+
+	binaryHash, _ := integrity.HashFile(binaryPath)
+	configHash, _ := integrity.HashConfigStable(cfg.ConfigFile)
+	cfg.Integrity.BinaryHash = binaryHash
+	cfg.Integrity.ConfigHash = configHash
+	if err := config.Save(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Hashes updated (no scan performed)\n")
 	fmt.Printf("Binary hash: %s\n", binaryHash)
 	fmt.Printf("Config hash: %s\n", configHash)
 }

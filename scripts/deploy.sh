@@ -168,7 +168,7 @@ do_install() {
     echo ""
     echo "=== Next steps ==="
     echo "  1. Edit config:    vi ${INSTALL_DIR}/csm.yaml"
-    echo "  2. Set baseline:   ${BINARY_PATH} baseline"
+    echo "  2. Set baseline:   ${BINARY_PATH} baseline (or 'rehash' for hash-only update)"
     echo "  3. Test:           ${BINARY_PATH} check"
 }
 
@@ -218,9 +218,9 @@ do_upgrade() {
 
     rm -rf "$tmpdir"
 
-    # Baseline — rollback if fails
-    if ! "$BINARY_PATH" baseline 2>&1; then
-        echo "WARNING: Baseline failed, rolling back..."
+    # Rehash — update binary/config hashes without full re-scan
+    if ! "$BINARY_PATH" rehash 2>&1; then
+        echo "WARNING: Rehash failed, rolling back..."
         cp "${BINARY_PATH}.bak" "$BINARY_PATH" 2>/dev/null || true
         cp "${INSTALL_DIR}/csm.yaml.bak" "${INSTALL_DIR}/csm.yaml" 2>/dev/null || true
         chattr +i "$BINARY_PATH" 2>/dev/null || true
