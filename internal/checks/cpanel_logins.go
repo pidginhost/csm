@@ -12,7 +12,7 @@ import (
 
 const (
 	sessionLogPath          = "/usr/local/cpanel/logs/session_log"
-	sessionLogTailLines     = 200
+	sessionLogTailLines     = 1000
 	defaultMultiIPThreshold = 3
 	defaultMultiIPWindowMin = 60
 )
