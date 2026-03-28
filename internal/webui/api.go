@@ -55,6 +55,10 @@ func (s *Server) apiFindings(w http.ResponseWriter, _ *http.Request) {
 		if f.Check == "auto_response" || f.Check == "auto_block" || f.Check == "check_timeout" || f.Check == "health" {
 			continue
 		}
+		// Skip suppressed findings
+		if s.store.IsSuppressed(f) {
+			continue
+		}
 		firstSeen := f.Timestamp
 		lastSeen := f.Timestamp
 		if entry, ok := s.store.EntryForKey(f.Key()); ok {
@@ -230,6 +234,55 @@ func (s *Server) apiStats(w http.ResponseWriter, _ *http.Request) {
 		"last_critical_ago": lastCriticalAgo,
 	}
 	writeJSON(w, result)
+}
+
+// apiStatsTrend returns 30-day daily finding counts by severity.
+func (s *Server) apiStatsTrend(w http.ResponseWriter, _ *http.Request) {
+	findings, _ := s.store.ReadHistory(5000, 0)
+
+	type dayBucket struct {
+		Date     string `json:"date"`
+		Critical int    `json:"critical"`
+		High     int    `json:"high"`
+		Warning  int    `json:"warning"`
+		Total    int    `json:"total"`
+	}
+
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+
+	// Build 30 daily buckets keyed by date string
+	buckets := make([]dayBucket, 30)
+	dateIndex := make(map[string]int, 30)
+	for i := 0; i < 30; i++ {
+		d := today.AddDate(0, 0, -(29 - i))
+		key := d.Format("2006-01-02")
+		buckets[i] = dayBucket{Date: key}
+		dateIndex[key] = i
+	}
+
+	cutoff := today.AddDate(0, 0, -29)
+	for _, f := range findings {
+		if f.Timestamp.Before(cutoff) {
+			continue
+		}
+		key := f.Timestamp.Format("2006-01-02")
+		idx, ok := dateIndex[key]
+		if !ok {
+			continue
+		}
+		buckets[idx].Total++
+		switch f.Severity {
+		case alert.Critical:
+			buckets[idx].Critical++
+		case alert.High:
+			buckets[idx].High++
+		case alert.Warning:
+			buckets[idx].Warning++
+		}
+	}
+
+	writeJSON(w, buckets)
 }
 
 // apiHealth returns daemon health status.
