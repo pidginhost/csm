@@ -1,0 +1,26 @@
+{{define "title"}}Incidents{{end}}
+{{define "page"}}incident{{end}}
+{{define "content"}}
+    <div class="card mb-3">
+        <div class="card-header">
+            <h3 class="card-title"><i class="ti ti-timeline-event"></i>&nbsp;Incident Timeline</h3>
+            <div class="card-actions d-flex gap-2">
+                <input type="text" id="incident-query" class="form-control form-control-sm" placeholder="IP or account name..." style="width:220px">
+                <select id="incident-hours" class="form-select form-select-sm" style="width:auto">
+                    <option value="24">Last 24h</option>
+                    <option value="72" selected>Last 3 days</option>
+                    <option value="168">Last 7 days</option>
+                    <option value="720">Last 30 days</option>
+                </select>
+                <button class="btn btn-primary btn-sm" id="incident-search-btn"><i class="ti ti-search"></i>&nbsp;Search</button>
+            </div>
+        </div>
+        <div id="incident-content">
+            <div class="card-body text-center text-muted py-4">Enter an IP address or account name to view the incident timeline.</div>
+        </div>
+    </div>
+{{end}}
+{{define "scripts"}}
+<script src="/static/js/incident.js"></script>
+{{end}}
+{{template "layout" .}}
