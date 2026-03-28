@@ -4,7 +4,6 @@ go 1.26.1
 
 require (
 	github.com/VirusTotal/yara-x/go v1.14.0
-	github.com/coder/websocket v1.8.14
 	github.com/google/nftables v0.3.0
 	github.com/oschwald/maxminddb-golang/v2 v2.1.1
 	golang.org/x/sys v0.42.0

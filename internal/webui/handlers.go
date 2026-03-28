@@ -25,7 +25,6 @@ type dashboardData struct {
 	High           int
 	Warning        int
 	Total          int
-	WSClients      int
 	SigCount       int
 	FanotifyActive bool
 	RecentFindings []historyEntry
@@ -191,7 +190,6 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 		High:           high,
 		Warning:        warning,
 		Total:          critical + high + warning,
-		WSClients:      s.hub.ClientCount(),
 		SigCount:       s.sigCount,
 		FanotifyActive: s.fanotifyActive,
 		RecentFindings: recent,
