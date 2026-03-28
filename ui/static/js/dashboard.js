@@ -8,18 +8,21 @@
     var statusLabel = document.getElementById('ws-status-label');
     var reconnectDelay = 1000;
     var ws;
-    var wsDisabled = false;
+    var wsDisabled = true;
 
     // Detect if running through WHM CGI proxy (WebSocket won't work through CGI)
     var isProxy = window.location.pathname.indexOf('addon_csm.cgi') >= 0 ||
                   window.location.search.indexOf('path=') >= 0;
 
-    // WebSocket enabled — ReadTimeout fix should prevent the 15s connection kill
+    // Polling mode by default. The WebSocket path has repeatedly caused
+    // browser request starvation in real deployments and should stay off
+    // until it is proven stable end-to-end.
 
     var _pollingStarted = false;
     function startPolling() {
         if (_pollingStarted) return;
         _pollingStarted = true;
+        pollFindings();
         setInterval(pollFindings, 10000);
     }
 
@@ -149,6 +152,7 @@
     // Initialize
     if (feed) {
         connect();
+        refreshStats();
         setInterval(refreshStats, 30000);
     }
 })();
