@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -54,16 +55,18 @@ func (s *Server) auditLog(r *http.Request, action, target, details string) {
 }
 
 func extractClientIP(r *http.Request) string {
-	// Check X-Forwarded-For first (behind proxy)
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		return xff
-	}
-	// Fall back to RemoteAddr (strip port)
+	// Use RemoteAddr directly — XFF is trivially spoofable and this is
+	// a security audit log, so we only trust the TCP connection source.
 	host := r.RemoteAddr
-	for i := len(host) - 1; i >= 0; i-- {
-		if host[i] == ':' {
-			return host[:i]
+	// Strip port from "ip:port" or "[ipv6]:port"
+	if last := strings.LastIndex(host, ":"); last >= 0 {
+		if host[0] == '[' {
+			// IPv6: [::1]:port
+			if bracket := strings.Index(host, "]"); bracket >= 0 {
+				return host[1:bracket]
+			}
 		}
+		return host[:last]
 	}
 	return host
 }
