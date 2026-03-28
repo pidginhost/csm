@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -492,4 +493,73 @@ func ParseKey(key string) (check, message string) {
 		}
 	}
 	return key, ""
+}
+
+// --- Suppression rules ---
+
+// SuppressionRule defines a rule for suppressing specific findings.
+type SuppressionRule struct {
+	ID          string    `json:"id"`
+	Check       string    `json:"check"`
+	PathPattern string    `json:"path_pattern,omitempty"`
+	Reason      string    `json:"reason"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// LoadSuppressions reads suppression rules from disk.
+func (s *Store) LoadSuppressions() []SuppressionRule {
+	data, err := os.ReadFile(filepath.Join(s.path, "suppressions.json"))
+	if err != nil {
+		return nil
+	}
+	var rules []SuppressionRule
+	if err := json.Unmarshal(data, &rules); err != nil {
+		return nil
+	}
+	return rules
+}
+
+// SaveSuppressions writes suppression rules to disk atomically.
+func (s *Store) SaveSuppressions(rules []SuppressionRule) error {
+	data, err := json.MarshalIndent(rules, "", "  ")
+	if err != nil {
+		return err
+	}
+	target := filepath.Join(s.path, "suppressions.json")
+	tmp := target + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, target); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+// IsSuppressed checks if a finding matches any suppression rule.
+func (s *Store) IsSuppressed(f alert.Finding) bool {
+	rules := s.LoadSuppressions()
+	for _, rule := range rules {
+		if f.Check != rule.Check {
+			continue
+		}
+		// If no path pattern, suppress all findings for this check type
+		if rule.PathPattern == "" {
+			return true
+		}
+		// Match against the finding's FilePath
+		if f.FilePath != "" {
+			if matched, _ := filepath.Match(rule.PathPattern, f.FilePath); matched {
+				return true
+			}
+		}
+		// Match against paths embedded in the message
+		if strings.Contains(f.Message, "/") {
+			if matched, _ := filepath.Match(rule.PathPattern, f.Message); matched {
+				return true
+			}
+		}
+	}
+	return false
 }
