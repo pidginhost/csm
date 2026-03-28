@@ -88,22 +88,13 @@ func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	h.addClient(conn, cancel)
 
-	// Read loop — keeps connection alive, handles close frames
+	// This feed is server-push only. CloseRead keeps control frames flowing
+	// without imposing an idle deadline that would disconnect quiet dashboards.
+	readCtx := conn.CloseRead(ctx)
 	go func() {
-		defer func() {
-			h.removeClient(conn)
-			_ = conn.Close(websocket.StatusNormalClosure, "")
-		}()
-
-		for {
-			// Read with timeout — if no message in 60s, client is gone
-			readCtx, readCancel := context.WithTimeout(ctx, 60*time.Second)
-			_, _, err := conn.Read(readCtx)
-			readCancel()
-			if err != nil {
-				return
-			}
-		}
+		<-readCtx.Done()
+		h.removeClient(conn)
+		_ = conn.Close(websocket.StatusNormalClosure, "")
 	}()
 
 	// Send a ping every 30s to keep the connection alive

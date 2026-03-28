@@ -5,6 +5,7 @@
 
     var feed = document.getElementById('live-feed-entries');
     var wsStatus = document.getElementById('ws-status');
+    var statusLabel = document.getElementById('ws-status-label');
     var reconnectDelay = 1000;
     var ws;
     var wsDisabled = false;
