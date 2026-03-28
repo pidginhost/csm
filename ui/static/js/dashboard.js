@@ -85,6 +85,18 @@
             .catch(function() {});
     }
 
+    function refreshScanStatus() {
+        fetch(CSM.apiUrl('/api/v1/status'), { credentials: 'same-origin' })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                setText('scan-status', data.scan_running ? 'Scanning...' : 'Idle');
+                if (data.last_scan_time) {
+                    setText('scan-detail', 'Last scan: ' + CSM.timeAgo(data.last_scan_time));
+                }
+            })
+            .catch(function() {});
+    }
+
     function setText(id, val) {
         var el = document.getElementById(id);
         if (el) el.textContent = val;
@@ -95,7 +107,9 @@
         pollFindings();
         setInterval(pollFindings, 10000);
         refreshStats();
+        refreshScanStatus();
         setInterval(refreshStats, 30000);
+        setInterval(refreshScanStatus, 10000);
         // Reload page every 5 minutes for timeline chart freshness
         setTimeout(function() { location.reload(); }, 300000);
     }

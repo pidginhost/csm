@@ -20,11 +20,17 @@ import (
 
 // apiStatus returns daemon status and uptime.
 func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
+	s.scanMu.Lock()
+	scanning := s.scanRunning
+	s.scanMu.Unlock()
+
 	status := map[string]interface{}{
-		"hostname":     s.cfg.Hostname,
-		"uptime":       time.Since(s.startTime).String(),
-		"started_at":   s.startTime.Format(time.RFC3339),
-		"rules_loaded": s.sigCount,
+		"hostname":       s.cfg.Hostname,
+		"uptime":         time.Since(s.startTime).String(),
+		"started_at":     s.startTime.Format(time.RFC3339),
+		"rules_loaded":   s.sigCount,
+		"scan_running":   scanning,
+		"last_scan_time": s.store.LatestScanTime().Format(time.RFC3339),
 	}
 	writeJSON(w, status)
 }
