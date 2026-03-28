@@ -23,6 +23,11 @@
                     <button id="btn-test-alert" class="btn btn-outline-warning ms-2">
                         <i class="ti ti-bell-ringing"></i>&nbsp;Send Test Alert
                     </button>
+                    <a href="/api/v1/export" class="btn btn-outline-secondary ms-2"><i class="ti ti-download"></i>&nbsp;Export State</a>
+                    <label class="btn btn-outline-secondary ms-2 mb-0">
+                        <i class="ti ti-upload"></i>&nbsp;Import State
+                        <input type="file" accept=".json" style="display:none" id="import-file">
+                    </label>
                 </div>
                 <div class="col">
                     <span class="text-muted small">Reload all YAML and YARA rule files from the rules directory.</span>
