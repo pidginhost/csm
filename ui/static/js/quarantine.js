@@ -3,6 +3,8 @@
 function loadQuarantine() {
     fetch('/api/v1/quarantine', {credentials:'same-origin'}).then(function(r){return r.json()}).then(function(files){
         var el = document.getElementById('quarantine-content');
+        var title = document.querySelector('.card-title');
+        if (title) title.innerHTML = '<i class="ti ti-lock"></i>&nbsp;Quarantined Files (' + (files ? files.length : 0) + ')';
         if (!files || files.length === 0) { el.innerHTML = '<div class="card-body text-center text-muted py-4"><i class="ti ti-circle-check"></i> No quarantined files.</div>'; return; }
         var html = '<div class="table-responsive"><table class="table table-vcenter card-table" id="quarantine-table"><thead><tr><th>Original Path</th><th>Size</th><th>Quarantined</th><th>Reason</th><th>Action</th></tr></thead><tbody>';
         for (var i = 0; i < files.length; i++) {
@@ -28,5 +30,5 @@ function restoreFile(id) {
         }).catch(function(e){ CSM.toast('Error: ' + e, 'error'); });
     }).catch(function(){});
 }
-function formatSize(b){if(b<1024)return b+'B';if(b<1048576)return(b/1024).toFixed(1)+'KB';return(b/1048576).toFixed(1)+'MB';}
+var formatSize = CSM.formatSize;
 loadQuarantine();

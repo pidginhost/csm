@@ -306,6 +306,11 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		// API calls get 401 JSON; browser requests get redirect to login
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			writeJSONError(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
 		http.Redirect(w, r, "/login", http.StatusFound)
 	})
 }
@@ -502,8 +507,9 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 // This is safe because the auth token is secret and the CSRF token is
 // derived via HMAC — knowing the CSRF token doesn't reveal the auth token.
 func (s *Server) csrfToken() string {
-	mac := hmac.New(sha256.New, []byte("csm-csrf-v1"))
-	mac.Write([]byte(s.cfg.WebUI.AuthToken))
+	mac := hmac.New(sha256.New, []byte(s.cfg.WebUI.AuthToken))
+	// Include start time so token rotates on each daemon restart
+	fmt.Fprintf(mac, "csm-csrf-v1:%d", s.startTime.Unix())
 	return hex.EncodeToString(mac.Sum(nil))[:32]
 }
 

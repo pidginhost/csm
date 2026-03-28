@@ -130,9 +130,28 @@
 
             function onOk() { cleanup(); resolve(); }
             function onCancel() { cleanup(); reject(); }
+            function onKeydown(e) {
+                if (e.key === 'Tab') {
+                    // Trap focus between noBtn and okBtn
+                    if (e.shiftKey && document.activeElement === noBtn) {
+                        e.preventDefault(); okBtn.focus();
+                    } else if (!e.shiftKey && document.activeElement === okBtn) {
+                        e.preventDefault(); noBtn.focus();
+                    }
+                }
+                if (e.key === 'Escape') { onCancel(); }
+            }
 
             okBtn.addEventListener('click', onOk);
             noBtn.addEventListener('click', onCancel);
+            document.addEventListener('keydown', onKeydown);
+            okBtn.focus();
+
+            var _origCleanup = cleanup;
+            cleanup = function() {
+                document.removeEventListener('keydown', onKeydown);
+                _origCleanup();
+            };
         });
     };
 

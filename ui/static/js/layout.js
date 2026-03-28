@@ -1,5 +1,8 @@
 // CSM Layout — nav active state and theme toggle
-document.querySelectorAll('#csm-nav a.nav-link').forEach(function(a){if(a.getAttribute('href')===window.location.pathname)a.classList.add('active')});
+document.querySelectorAll('#csm-nav a.nav-link').forEach(function(a){
+    var href = a.getAttribute('href');
+    if (href && href !== '/' && window.location.pathname.indexOf(href) === 0) a.classList.add('active');
+});
 function applyTheme(t) {
     document.documentElement.setAttribute('data-bs-theme', t);
     document.documentElement.classList.remove('theme-dark', 'theme-light');

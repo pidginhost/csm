@@ -13,7 +13,10 @@ CSM.post = function(url, body) {
         },
         body: JSON.stringify(body)
     }).then(function(r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
+        if (!r.ok) {
+            return r.json().catch(function() { throw new Error('HTTP ' + r.status); })
+                .then(function(body) { throw new Error(body.error || 'HTTP ' + r.status); });
+        }
         return r.json();
     });
 };
@@ -69,6 +72,21 @@ CSM.initTimeAgo = function() {
     }
     _startTimeAgo();
 })();
+
+// Format file sizes: bytes -> "1.2 KB", "3.4 MB"
+CSM.formatSize = function(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / 1048576).toFixed(1) + ' MB';
+};
+
+// Format ISO timestamp to "YYYY-MM-DD HH:MM"
+CSM.fmtDate = function(s) {
+    if (!s) return '\u2014';
+    var d = new Date(s);
+    if (isNaN(d.getTime())) return s;
+    return d.toISOString().substring(0, 16).replace('T', ' ');
+};
 
 // Resolve API URLs — use CGI proxy path if in WHM context
 CSM.apiUrl = function(path) {

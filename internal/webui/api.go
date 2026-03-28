@@ -3,6 +3,7 @@ package webui
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -78,9 +79,10 @@ func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, result)
 }
 
+const quarantineDir = "/opt/csm/quarantine"
+
 // apiQuarantine lists quarantined files with metadata.
 func (s *Server) apiQuarantine(w http.ResponseWriter, _ *http.Request) {
-	const quarantineDir = "/opt/csm/quarantine"
 
 	type quarantineEntry struct {
 		ID           string `json:"id"`
@@ -413,7 +415,7 @@ func (s *Server) apiUnblockIP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Also flush from cphulk (cPanel brute force detector)
-	_, _ = exec.Command("whmapi1", "flush_cphulk_login_history_for_ips", "ip="+req.IP).Output()
+	flushCphulk(req.IP)
 
 	s.auditLog(r, "unblock_ip", req.IP, "manual unblock via UI")
 	writeJSON(w, map[string]string{"status": "unblocked", "ip": req.IP})
@@ -548,8 +550,6 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	const quarantineDir = "/opt/csm/quarantine"
-
 	// Sanitize ID to prevent path traversal
 	id := filepath.Base(req.ID)
 	metaFile := filepath.Join(quarantineDir, id+".meta")
@@ -599,14 +599,24 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		// File restore: copy back with original permissions
-		data, readErr := os.ReadFile(quarFile)
+		// File restore: use O_EXCL to prevent overwriting an existing file
+		src, readErr := os.Open(quarFile)
 		if readErr != nil {
 			writeJSONError(w, fmt.Sprintf("Cannot read quarantined file: %v", readErr), http.StatusInternalServerError)
 			return
 		}
-		if writeErr := os.WriteFile(meta.OriginalPath, data, restoredMode); writeErr != nil {
-			writeJSONError(w, fmt.Sprintf("Cannot write restored file: %v", writeErr), http.StatusInternalServerError)
+		dst, createErr := os.OpenFile(meta.OriginalPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, restoredMode)
+		if createErr != nil {
+			_ = src.Close()
+			writeJSONError(w, fmt.Sprintf("Cannot restore — file already exists at original path: %v", createErr), http.StatusConflict)
+			return
+		}
+		_, copyErr := io.Copy(dst, src)
+		_ = src.Close()
+		_ = dst.Close()
+		if copyErr != nil {
+			os.Remove(meta.OriginalPath)
+			writeJSONError(w, fmt.Sprintf("Cannot write restored file: %v", copyErr), http.StatusInternalServerError)
 			return
 		}
 		os.Remove(quarFile)
@@ -693,6 +703,11 @@ func parseModeString(s string) os.FileMode {
 		mode = 0644 // fallback
 	}
 	return mode
+}
+
+// flushCphulk removes brute-force login history for an IP from cPanel's cphulk.
+func flushCphulk(ip string) {
+	_, _ = exec.Command("whmapi1", "flush_cphulk_login_history_for_ips", "ip="+ip).Output()
 }
 
 func writeJSONError(w http.ResponseWriter, message string, code int) {

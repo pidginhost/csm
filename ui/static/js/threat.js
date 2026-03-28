@@ -1,6 +1,6 @@
 // CSM Threat Intelligence page
 
-function fmtDate(s){if(!s)return '—';var d=new Date(s);return d.toISOString().substring(0,16).replace('T',' ');}
+var fmtDate = CSM.fmtDate;
 
 function countryFlag(code){
     if(!code||code.length!==2)return '';
