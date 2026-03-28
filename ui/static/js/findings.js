@@ -99,6 +99,25 @@ function dismissOne(key) {
     }).catch(function() {});
 }
 
+function suppressFinding(check, message) {
+    var reason = prompt('Reason for suppression (optional):');
+    if (reason === null) return; // cancelled
+    var pathPattern = prompt('Path pattern to match (optional, e.g. /home/user/*):', '');
+    if (pathPattern === null) return; // cancelled
+    CSM.post('/api/v1/suppressions', {
+        check: check,
+        path_pattern: pathPattern,
+        reason: reason || 'Suppressed from findings page'
+    }).then(function(data) {
+        if (data.status === 'created') {
+            CSM.toast('Suppression rule created', 'success');
+            location.reload();
+        } else {
+            CSM.toast('Failed: ' + (data.error || 'unknown'), 'error');
+        }
+    }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+}
+
 // --- Bulk actions ---
 function bulkAction(action) {
     var selected = getSelectedRows();
@@ -364,7 +383,8 @@ document.querySelectorAll('.finding-row').forEach(function(row) {
     if (hasFix) {
         html += '<button class="btn btn-warning btn-sm me-1 fix-btn" title="' + CSM.esc(row.getAttribute('data-fixdesc') || '') + '"><i class="ti ti-tool"></i></button>';
     }
-    html += '<button class="btn btn-ghost-secondary btn-sm dismiss-btn"><i class="ti ti-x"></i></button>';
+    html += '<button class="btn btn-ghost-secondary btn-sm me-1 dismiss-btn"><i class="ti ti-x"></i></button>';
+    html += '<button class="btn btn-ghost-secondary btn-sm suppress-btn" title="Suppress"><i class="ti ti-eye-off"></i></button>';
     cell.innerHTML = html;
 
     var fixBtn = cell.querySelector('.fix-btn');
@@ -372,6 +392,10 @@ document.querySelectorAll('.finding-row').forEach(function(row) {
     var dismissBtn = cell.querySelector('.dismiss-btn');
     if (dismissBtn) dismissBtn.addEventListener('click', function() {
         dismissOne(row.getAttribute('data-check') + ':' + row.getAttribute('data-message'));
+    });
+    var suppressBtn = cell.querySelector('.suppress-btn');
+    if (suppressBtn) suppressBtn.addEventListener('click', function() {
+        suppressFinding(row.getAttribute('data-check'), row.getAttribute('data-message'));
     });
 });
 

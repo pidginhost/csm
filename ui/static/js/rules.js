@@ -82,5 +82,56 @@ document.getElementById('btn-test-alert').addEventListener('click', function() {
     });
 });
 
+function loadSuppressions() {
+    fetch('/api/v1/suppressions', {credentials: 'same-origin'}).then(function(r) { return r.json(); }).then(function(data) {
+        var container = document.getElementById('suppressions-content');
+        if (!data || data.length === 0) {
+            container.innerHTML = '<div class="card-body text-center text-muted py-4">No suppression rules configured.</div>';
+            return;
+        }
+        var html = '<div class="table-responsive"><table class="table table-vcenter card-table table-sm">';
+        html += '<thead><tr><th>Check</th><th>Path Pattern</th><th>Reason</th><th>Created</th><th>Actions</th></tr></thead><tbody>';
+        for (var i = 0; i < data.length; i++) {
+            var s = data[i];
+            var created = s.created_at ? new Date(s.created_at).toLocaleString() : '—';
+            html += '<tr>';
+            html += '<td><code>' + CSM.esc(s.check) + '</code></td>';
+            html += '<td class="font-monospace small">' + CSM.esc(s.path_pattern || '(all)') + '</td>';
+            html += '<td class="text-muted">' + CSM.esc(s.reason || '') + '</td>';
+            html += '<td class="text-nowrap small">' + CSM.esc(created) + '</td>';
+            html += '<td><button class="btn btn-ghost-danger btn-sm delete-suppression-btn" data-id="' + CSM.esc(s.id) + '"><i class="ti ti-trash"></i></button></td>';
+            html += '</tr>';
+        }
+        html += '</tbody></table></div>';
+        container.innerHTML = html;
+
+        // Bind delete buttons
+        container.querySelectorAll('.delete-suppression-btn').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var id = this.getAttribute('data-id');
+                CSM.confirm('Remove this suppression rule?').then(function() {
+                    fetch('/api/v1/suppressions', {
+                        method: 'DELETE',
+                        credentials: 'same-origin',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-CSRF-Token': CSM.csrfToken
+                        },
+                        body: JSON.stringify({id: id})
+                    }).then(function(r) { return r.json(); }).then(function(data) {
+                        if (data.status === 'deleted') {
+                            CSM.toast('Suppression rule removed', 'success');
+                            loadSuppressions();
+                        } else {
+                            CSM.toast('Failed: ' + (data.error || 'unknown'), 'error');
+                        }
+                    }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+                }).catch(function() {});
+            });
+        });
+    }).catch(function(e) { console.error('suppressions:', e); });
+}
+
 loadStatus();
 loadFiles();
+loadSuppressions();

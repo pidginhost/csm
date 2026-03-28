@@ -194,11 +194,15 @@ func (s *Server) handleFindings(w http.ResponseWriter, _ *http.Request) {
 	// (not the alert dedup state, which only tracks what's been emailed)
 	latest := s.store.LatestFindings()
 
-	// Filter out auto_response actions and internal checks from the view
+	// Filter out auto_response actions, internal checks, and suppressed findings
 	var items []findingEntry
 	for _, f := range latest {
 		// Skip auto-response action logs and internal check results
 		if f.Check == "auto_response" || f.Check == "auto_block" || f.Check == "check_timeout" || f.Check == "health" {
+			continue
+		}
+		// Skip suppressed findings
+		if s.store.IsSuppressed(f) {
 			continue
 		}
 		firstSeen := f.Timestamp
