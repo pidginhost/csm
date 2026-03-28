@@ -205,9 +205,9 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		MaxHeaderBytes: 1 << 20, // 1MB
 		TLSConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
+			// Force HTTP/1.1 — WebSocket upgrade requires HTTP/1.1 (not HTTP/2)
+			NextProtos: []string{"http/1.1"},
 			CipherSuites: []uint16{
-				// TLS 1.3 cipher suites are always included by Go automatically.
-				// Below are the allowed TLS 1.2 cipher suites (AEAD only, no CBC).
 				tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
 				tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
 				tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
