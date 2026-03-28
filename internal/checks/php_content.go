@@ -11,7 +11,7 @@ import (
 	"github.com/pidginhost/cpanel-security-monitor/internal/state"
 )
 
-const phpContentReadSize = 8192 // Read first 8KB for analysis
+const phpContentReadSize = 32768 // Read first 32KB for analysis
 
 // CheckPHPContent scans new/suspicious PHP files for obfuscation patterns,
 // remote payload fetching, and eval chains. This is designed to catch droppers
