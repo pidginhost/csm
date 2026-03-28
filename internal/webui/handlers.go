@@ -61,11 +61,6 @@ type historyData struct {
 	Findings []historyEntry
 	FromDate string
 	ToDate   string
-	Page     int
-	NextPage int
-	PrevPage int
-	HasNext  bool
-	HasPrev  bool
 }
 
 type historyEntry struct {
@@ -96,7 +91,6 @@ type quarantineEntry struct {
 func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 	findings, _ := s.store.ReadHistory(500, 0)
 
-	critical, high, warning := 0, 0, 0
 	last24h := time.Now().Add(-24 * time.Hour)
 	var recent []historyEntry
 
@@ -112,14 +106,6 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 	for _, f := range findings {
 		if f.Timestamp.Before(last24h) {
 			continue
-		}
-		switch f.Severity {
-		case alert.Critical:
-			critical++
-		case alert.High:
-			high++
-		case alert.Warning:
-			warning++
 		}
 
 		// Timeline bucket
@@ -183,13 +169,14 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 		})
 	}
 
+	// Stats counters start at 0 — dashboard.js populates them via /api/v1/stats
 	data := dashboardData{
 		Hostname:       s.cfg.Hostname,
 		Uptime:         time.Since(s.startTime).Round(time.Second).String(),
-		Critical:       critical,
-		High:           high,
-		Warning:        warning,
-		Total:          critical + high + warning,
+		Critical:       0,
+		High:           0,
+		Warning:        0,
+		Total:          0,
 		SigCount:       s.sigCount,
 		FanotifyActive: s.fanotifyActive,
 		RecentFindings: recent,
