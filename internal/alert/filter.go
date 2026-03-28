@@ -43,10 +43,19 @@ func FilterBlockedAlerts(cfg *config.Config, findings []Finding) []Finding {
 		return findings
 	}
 
-	// Filter out reputation alerts for blocked IPs AND auto_block notifications
+	// Filter out alerts for IPs that are handled automatically.
+	// When suppress_blocked_alerts is on, the operator doesn't want to be
+	// notified about IPs that are already dealt with — they only want alerts
+	// that require human action.
 	var filtered []Finding
 	for _, f := range findings {
-		if f.Check == "ip_reputation" {
+		if f.Check == "ip_reputation" || f.Check == "local_threat_score" {
+			// If auto-blocking is enabled, these IPs are handled automatically.
+			// Skip the alert — there's nothing for the operator to do.
+			if cfg.AutoResponse.Enabled && cfg.AutoResponse.BlockIPs {
+				continue
+			}
+			// Otherwise check if the IP is already blocked (manual block or CSF)
 			isBlocked := false
 			for ip := range blockedIPs {
 				if strings.Contains(f.Message, ip) {
@@ -59,7 +68,7 @@ func FilterBlockedAlerts(cfg *config.Config, findings []Finding) []Finding {
 			}
 		}
 		if f.Check == "auto_block" {
-			continue // suppress both AUTO-BLOCK and AUTO-UNBLOCK notifications
+			continue
 		}
 		filtered = append(filtered, f)
 	}
