@@ -11,9 +11,18 @@ import (
 	"github.com/pidginhost/cpanel-security-monitor/internal/state"
 )
 
+// DNS server processes that legitimately connect to many resolvers
+// (e.g. BIND doing recursive resolution on a cPanel server).
+var dnsServerUsers = map[string]bool{
+	"named":   true, // BIND
+	"unbound": true, // Unbound
+	"pdns":    true, // PowerDNS
+}
+
 // CheckDNSConnections looks for established connections to port 53 on
 // DNS servers that are NOT in /etc/resolv.conf. This catches DNS
 // tunneling, GSocket relay discovery, and malware using hardcoded resolvers.
+// Connections owned by known DNS server processes (e.g. named) are skipped.
 func CheckDNSConnections(cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
@@ -31,6 +40,11 @@ func CheckDNSConnections(cfg *config.Config, _ *state.Store) []alert.Finding {
 		allowed[r] = true
 	}
 
+	// Build a set of UIDs belonging to DNS server processes (named, unbound,
+	// etc.) so we can skip their connections without reading /etc/passwd
+	// on every loop iteration.
+	dnsServerUIDs := resolveDNSServerUIDs()
+
 	// Parse /proc/net/tcp for connections to port 53
 	data, err := os.ReadFile("/proc/net/tcp")
 	if err != nil {
@@ -39,7 +53,7 @@ func CheckDNSConnections(cfg *config.Config, _ *state.Store) []alert.Finding {
 
 	for _, line := range strings.Split(string(data), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 4 || fields[0] == "sl" {
+		if len(fields) < 8 || fields[0] == "sl" {
 			continue
 		}
 
@@ -62,6 +76,12 @@ func CheckDNSConnections(cfg *config.Config, _ *state.Store) []alert.Finding {
 			continue
 		}
 
+		// Skip connections owned by DNS server processes (e.g. named
+		// doing recursive resolution talks to many different servers)
+		if dnsServerUIDs[fields[7]] {
+			continue
+		}
+
 		_, localPort := parseHexAddr(fields[1])
 		findings = append(findings, alert.Finding{
 			Severity: alert.High,
@@ -72,6 +92,23 @@ func CheckDNSConnections(cfg *config.Config, _ *state.Store) []alert.Finding {
 	}
 
 	return findings
+}
+
+// resolveDNSServerUIDs returns a set of UIDs that belong to known DNS
+// server users (named, unbound, pdns) by reading /etc/passwd once.
+func resolveDNSServerUIDs() map[string]bool {
+	uids := make(map[string]bool)
+	data, err := os.ReadFile("/etc/passwd")
+	if err != nil {
+		return uids
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Split(line, ":")
+		if len(fields) >= 3 && dnsServerUsers[fields[0]] {
+			uids[fields[2]] = true
+		}
+	}
+	return uids
 }
 
 func parseResolvers() []string {
