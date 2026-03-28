@@ -4,6 +4,11 @@
 
     var feed = document.getElementById('live-feed-entries');
 
+    // Request browser notification permission
+    if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission();
+    }
+
     // Polling — fetch recent history every 10 seconds
     var lastPollTimestamp = '';
     function pollFindings() {
@@ -45,6 +50,14 @@
             '</div>';
 
         feed.insertBefore(div, feed.firstChild);
+
+        // Browser notification for critical findings
+        if (f.severity === 2 && 'Notification' in window && Notification.permission === 'granted') {
+            new Notification('CSM Critical Alert', {
+                body: f.check + ': ' + f.message,
+                tag: f.check + ':' + f.message
+            });
+        }
 
         while (feed.children.length > 15) {
             feed.removeChild(feed.lastChild);
