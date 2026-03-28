@@ -48,7 +48,7 @@ func (h *Hub) Broadcast(findings []alert.Finding) {
 		cancel()
 		if err != nil {
 			h.removeClient(conn)
-			conn.Close(websocket.StatusGoingAway, "write failed")
+			_ = conn.Close(websocket.StatusGoingAway, "write failed")
 		}
 	}
 }
@@ -92,7 +92,7 @@ func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer func() {
 			h.removeClient(conn)
-			conn.Close(websocket.StatusNormalClosure, "")
+			_ = conn.Close(websocket.StatusNormalClosure, "")
 		}()
 
 		for {
