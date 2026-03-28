@@ -469,6 +469,46 @@ func (s *Server) apiUnblockIP(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "unblocked", "ip": req.IP})
 }
 
+// apiUnblockBulk unblocks multiple IPs at once.
+func (s *Server) apiUnblockBulk(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		IPs []string `json:"ips"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.IPs) == 0 {
+		writeJSONError(w, "IPs array is required", http.StatusBadRequest)
+		return
+	}
+	if s.blocker == nil {
+		writeJSONError(w, "Firewall engine not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	succeeded := 0
+	for _, ip := range req.IPs {
+		parsed := net.ParseIP(ip)
+		if parsed == nil {
+			continue
+		}
+		if err := s.blocker.UnblockIP(parsed.String()); err != nil {
+			continue
+		}
+		flushCphulk(parsed.String())
+		s.auditLog(r, "unblock_ip", parsed.String(), "bulk unblock via UI")
+		succeeded++
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"status":    "completed",
+		"total":     len(req.IPs),
+		"succeeded": succeeded,
+	})
+}
+
 // blockedEntry is a raw blocked IP record from firewall state.
 type blockedEntry struct {
 	IP        string    `json:"ip"`
