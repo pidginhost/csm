@@ -1091,43 +1091,51 @@ func isKnownSafeUploadDaemon(path string) bool {
 // the pattern of a known plugin extracting an update.
 // M3 — uses sync.Map cache with 5-minute TTL for plugin directory stat results.
 func looksLikePluginUpdate(path string) bool {
-	pathLower := strings.ToLower(path)
-	// Pattern: /uploads/{pluginname}_{random}/ — plugin update temp dirs
-	// Only match if the plugin also exists in wp-content/plugins/
-	updatePrefixes := []string{
-		"elementor_", "elementor-", "wpbakery_", "js_composer_",
-		"revslider_", "starter-templates", "starter_templates",
+	// WordPress plugin updates extract to /uploads/{pluginname}_{random}/
+	// Detect by extracting the directory name under uploads/ and checking
+	// if a matching plugin exists in wp-content/plugins/.
+	// No hardcoded whitelist — works for all 60,000+ WP plugins.
+	uploadsIdx := strings.Index(path, "/wp-content/uploads/")
+	if uploadsIdx < 0 {
+		return false
 	}
-	for _, prefix := range updatePrefixes {
-		if strings.Contains(pathLower, "/uploads/"+prefix) {
-			// Verify the plugin actually exists in plugins/
-			pluginName := strings.Split(prefix, "_")[0]
-			pluginName = strings.Split(pluginName, "-")[0]
-			// Extract the WP install path from the uploads path
-			uploadsIdx := strings.Index(path, "/wp-content/uploads/")
-			if uploadsIdx > 0 {
-				wpRoot := path[:uploadsIdx]
-				pluginDir := wpRoot + "/wp-content/plugins/" + pluginName
+	wpRoot := path[:uploadsIdx]
+	afterUploads := path[uploadsIdx+len("/wp-content/uploads/"):]
 
-				// M3 — check cache first
-				if cached, ok := pluginStatCache.Load(pluginDir); ok {
-					entry := cached.(pluginCacheEntry)
-					if time.Since(entry.ts) < pluginCacheTTL {
-						return entry.exists
-					}
-				}
+	// Extract the first directory component: "header-footer_7ocsd"
+	slashIdx := strings.Index(afterUploads, "/")
+	if slashIdx < 0 {
+		return false
+	}
+	dirName := afterUploads[:slashIdx]
 
-				_, err := os.Stat(pluginDir)
-				exists := err == nil
-				pluginStatCache.Store(pluginDir, pluginCacheEntry{
-					exists: exists,
-					ts:     time.Now(),
-				})
-				if exists {
-					return true
-				}
-			}
+	// Strip the random suffix (e.g. "_7ocsd") — WordPress appends _XXXXX
+	// The plugin name is everything before the last underscore-followed-by-random
+	pluginName := dirName
+	if lastUnderscore := strings.LastIndex(dirName, "_"); lastUnderscore > 0 {
+		suffix := dirName[lastUnderscore+1:]
+		// Random suffixes are short alphanumeric strings (5-8 chars)
+		if len(suffix) >= 4 && len(suffix) <= 10 {
+			pluginName = dirName[:lastUnderscore]
 		}
 	}
-	return false
+
+	// Check if a matching plugin directory exists in plugins/
+	pluginDir := wpRoot + "/wp-content/plugins/" + pluginName
+
+	// M3 — check cache first
+	if cached, ok := pluginStatCache.Load(pluginDir); ok {
+		entry := cached.(pluginCacheEntry)
+		if time.Since(entry.ts) < pluginCacheTTL {
+			return entry.exists
+		}
+	}
+
+	_, err := os.Stat(pluginDir)
+	exists := err == nil
+	pluginStatCache.Store(pluginDir, pluginCacheEntry{
+		exists: exists,
+		ts:     time.Now(),
+	})
+	return exists
 }
