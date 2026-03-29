@@ -176,7 +176,6 @@
                 var findings = data.findings || [];
                 renderFindingsTable(findings);
                 renderTimeline(findings);
-                updateStatCards(findings);
             })
             .catch(function() {
                 var tbody = document.getElementById('email-tbody');
@@ -365,7 +364,7 @@
             var h = Math.max(4, Math.round(t / maxTotal * 80));
             var cH = Math.round(bk.critical / t * h);
             var hH = Math.round(bk.high / t * h);
-            var wH = h - cH - hH;
+            var wH = Math.max(0, h - cH - hH);
             var hour = keys[m].substring(11, 13) + ':00';
             html += '<div title="' + hour + ': ' + t + ' events" style="width:' + barWidth + 'px;display:flex;flex-direction:column;justify-content:flex-end">';
             if (cH > 0) html += '<div style="height:' + cH + 'px;background:#d63939;border-radius:2px 2px 0 0"></div>';
@@ -395,6 +394,20 @@
         if (el) el.textContent = val;
     }
 
+    // --- Stat cards (always show totals, independent of filter) ---
+
+    function loadStatCards() {
+        var from = (document.getElementById('filter-from') || {}).value || '';
+        var to = (document.getElementById('filter-to') || {}).value || '';
+        var params = 'checks=' + EMAIL_CHECKS + '&limit=5000';
+        if (from) params += '&from=' + from;
+        if (to) params += '&to=' + to;
+        fetch(CSM.apiUrl('/api/v1/history?' + params), { credentials: 'same-origin' })
+            .then(function(r) { return r.json(); })
+            .then(function(data) { updateStatCards(data.findings || []); })
+            .catch(function() {});
+    }
+
     // --- Filter form ---
 
     var filterForm = document.getElementById('email-filters');
@@ -402,6 +415,7 @@
         filterForm.addEventListener('submit', function(e) {
             e.preventDefault();
             loadFindings();
+            loadStatCards();
         });
     }
 
@@ -409,6 +423,8 @@
 
     loadEmailStats();
     loadFindings();
+    loadStatCards();
     setInterval(loadEmailStats, 30000);
     setInterval(loadFindings, 30000);
+    setInterval(loadStatCards, 30000);
 })();
