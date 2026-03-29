@@ -284,6 +284,9 @@ do_upgrade() {
     fi
 
     # Rehash — update binary/config hashes without full re-scan
+    # Run twice: first pass writes new hashes into csm.yaml, second pass
+    # stabilizes the config hash (which includes the hash fields themselves)
+    "$BINARY_PATH" rehash 2>&1 || true
     if ! "$BINARY_PATH" rehash 2>&1; then
         echo "WARNING: Rehash failed, rolling back..."
         cp "${BINARY_PATH}.bak" "$BINARY_PATH" 2>/dev/null || true
