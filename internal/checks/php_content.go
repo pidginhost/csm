@@ -370,8 +370,9 @@ func containsStandaloneFunc(content, funcCall string) bool {
 		}
 		prev := content[absPos-1]
 		// Must not be preceded by a letter, digit, or underscore
-		if !((prev >= 'a' && prev <= 'z') || (prev >= 'A' && prev <= 'Z') ||
-			(prev >= '0' && prev <= '9') || prev == '_') {
+		isAlnum := (prev >= 'a' && prev <= 'z') || (prev >= 'A' && prev <= 'Z') ||
+			(prev >= '0' && prev <= '9') || prev == '_'
+		if !isAlnum {
 			return true
 		}
 		idx = absPos + len(funcCall)
