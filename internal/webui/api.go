@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -203,7 +204,7 @@ func (s *Server) apiQuarantine(w http.ResponseWriter, _ *http.Request) {
 
 // apiStats returns severity counts and per-check breakdown.
 func (s *Server) apiStats(w http.ResponseWriter, _ *http.Request) {
-	findings, _ := s.store.ReadHistory(500, 0)
+	findings, _ := s.store.ReadHistory(5000, 0)
 
 	critical, high, warning := 0, 0, 0
 	byCheck := make(map[string]int)
@@ -233,6 +234,76 @@ func (s *Server) apiStats(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 
+	// Compute accounts at risk: accounts with critical/high findings in 24h
+	accountRisk := make(map[string]int) // account -> highest severity
+	// Auto-response summary: count actions by type in 24h
+	autoBlocked, autoQuarantined, autoKilled := 0, 0, 0
+	// Top targeted accounts
+	accountHits := make(map[string]int)
+
+	for _, f := range findings {
+		if f.Timestamp.Before(last24h) {
+			continue
+		}
+		// Extract account from finding path/message
+		acct := extractAccountFromMessage(f.Message)
+		if acct != "" {
+			accountHits[acct]++
+			sev := int(f.Severity)
+			if prev, ok := accountRisk[acct]; !ok || sev > prev {
+				accountRisk[acct] = sev
+			}
+		}
+		// Count auto-response actions
+		if f.Check == "auto_block" {
+			autoBlocked++
+		} else if f.Check == "auto_response" {
+			if strings.Contains(f.Message, "quarantin") {
+				autoQuarantined++
+			} else if strings.Contains(f.Message, "kill") || strings.Contains(f.Message, "Kill") {
+				autoKilled++
+			}
+		}
+	}
+
+	// Accounts at risk: those with critical or high severity
+	var atRisk []map[string]interface{}
+	for acct, sev := range accountRisk {
+		if sev >= int(alert.High) {
+			atRisk = append(atRisk, map[string]interface{}{
+				"account":  acct,
+				"severity": sev,
+				"findings": accountHits[acct],
+			})
+		}
+	}
+	// Sort by severity desc, then findings desc
+	sort.Slice(atRisk, func(i, j int) bool {
+		if atRisk[i]["severity"].(int) != atRisk[j]["severity"].(int) {
+			return atRisk[i]["severity"].(int) > atRisk[j]["severity"].(int)
+		}
+		return atRisk[i]["findings"].(int) > atRisk[j]["findings"].(int)
+	})
+	if len(atRisk) > 10 {
+		atRisk = atRisk[:10]
+	}
+
+	// Top targeted accounts (by finding count)
+	type acctCount struct {
+		Account string `json:"account"`
+		Count   int    `json:"count"`
+	}
+	var topAccounts []acctCount
+	for acct, count := range accountHits {
+		topAccounts = append(topAccounts, acctCount{acct, count})
+	}
+	sort.Slice(topAccounts, func(i, j int) bool {
+		return topAccounts[i].Count > topAccounts[j].Count
+	})
+	if len(topAccounts) > 5 {
+		topAccounts = topAccounts[:5]
+	}
+
 	result := map[string]interface{}{
 		"last_24h": map[string]interface{}{
 			"critical": critical,
@@ -242,6 +313,13 @@ func (s *Server) apiStats(w http.ResponseWriter, _ *http.Request) {
 		},
 		"by_check":          byCheck,
 		"last_critical_ago": lastCriticalAgo,
+		"accounts_at_risk":  atRisk,
+		"auto_response": map[string]int{
+			"blocked":      autoBlocked,
+			"quarantined":  autoQuarantined,
+			"killed":       autoKilled,
+		},
+		"top_accounts": topAccounts,
 	}
 	writeJSON(w, result)
 }
@@ -1059,6 +1137,22 @@ func (s *Server) apiFindingDetail(w http.ResponseWriter, r *http.Request) {
 		"actions":    actions,
 		"related":    related,
 	})
+}
+
+// extractAccountFromMessage extracts a cPanel account name from a finding message
+// by looking for /home/{user}/ patterns.
+func extractAccountFromMessage(msg string) string {
+	const prefix = "/home/"
+	idx := strings.Index(msg, prefix)
+	if idx < 0 {
+		return ""
+	}
+	rest := msg[idx+len(prefix):]
+	end := strings.IndexByte(rest, '/')
+	if end <= 0 {
+		return ""
+	}
+	return rest[:end]
 }
 
 func writeJSONError(w http.ResponseWriter, message string, code int) {

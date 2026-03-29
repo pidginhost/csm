@@ -83,7 +83,7 @@ type quarantineEntry struct {
 }
 
 func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
-	findings, _ := s.store.ReadHistory(500, 0)
+	findings, _ := s.store.ReadHistory(5000, 0)
 
 	last24h := time.Now().Add(-24 * time.Hour)
 	var recent []historyEntry
