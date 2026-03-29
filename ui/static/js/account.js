@@ -14,7 +14,7 @@
             if (data.error) { document.getElementById('account-page').innerHTML = '<div class="alert alert-danger">' + CSM.esc(data.error) + '</div>'; return; }
             renderAccount(data);
         })
-        .catch(function(e) { document.getElementById('account-page').innerHTML = '<div class="alert alert-danger">Error: ' + CSM.esc(String(e)) + '</div>'; });
+        .catch(function() { CSM.loadError(document.getElementById('account-page'), function() { location.reload(); }); });
 
     function renderAccount(data) {
         var container = document.getElementById('account-page');

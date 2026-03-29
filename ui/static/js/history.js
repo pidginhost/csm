@@ -25,10 +25,7 @@
                 renderTable(data.findings || [], data.total || 0);
                 renderPager(data.total || 0);
             })
-            .catch(function() {
-                document.getElementById('history-content').innerHTML =
-                    '<div class="card-body text-center text-muted py-4">Failed to load history.</div>';
-            });
+            .catch(function() { CSM.loadError(document.getElementById('history-content'), loadHistory); });
     }
 
     function renderTable(findings, total) {

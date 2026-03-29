@@ -22,7 +22,7 @@
         fetch(CSM.apiUrl(url), { credentials: 'same-origin' })
             .then(function(r) { return r.json(); })
             .then(function(data) { renderTimeline(data); })
-            .catch(function(e) { container.innerHTML = '<div class="card-body text-center text-danger py-4">Error: ' + CSM.esc(String(e)) + '</div>'; });
+            .catch(function() { CSM.loadError(container, loadIncident); });
     }
 
     function renderTimeline(data) {

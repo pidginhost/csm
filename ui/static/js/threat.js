@@ -70,7 +70,7 @@ fetch('/api/v1/threat/stats',{credentials:'same-origin'}).then(checkResp).then(f
     svg+='<text x="'+(svgW-40)+'" y="'+(svgH-5)+'" font-size="11" fill="var(--tblr-muted)">Now</text>';
     svg+='</svg>';
     hourlyDiv.innerHTML=svg;
-}).catch(function(e){console.error('threat stats:',e)});
+}).catch(function(){ CSM.loadError(document.getElementById('chart-types'), function(){ location.reload(); }); });
 
 // Load top attackers
 fetch('/api/v1/threat/top-attackers?limit=50',{credentials:'same-origin'}).then(checkResp).then(function(data){
@@ -102,7 +102,7 @@ fetch('/api/v1/threat/top-attackers?limit=50',{credentials:'same-origin'}).then(
             document.getElementById('lookup-form').dispatchEvent(new Event('submit'));
         });
     });
-}).catch(function(e){console.error('top attackers:',e)});
+}).catch(function(){ CSM.loadError(document.getElementById('attackers-tbody').parentElement.parentElement.parentElement, function(){ location.reload(); }); });
 
 // IP Lookup
 document.getElementById('lookup-form').addEventListener('submit',function(e){
@@ -219,7 +219,7 @@ function loadWhitelist() {
         tbody.querySelectorAll('.remove-wl-btn').forEach(function(btn){
             btn.addEventListener('click',function(){removeWhitelist(this.getAttribute('data-ip'));});
         });
-    }).catch(function(){});
+    }).catch(function(){ CSM.loadError(document.getElementById('wl-tbody').parentElement.parentElement, loadWhitelist); });
 }
 loadWhitelist();
 

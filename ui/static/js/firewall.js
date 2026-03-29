@@ -25,7 +25,7 @@ function loadStatus(){
         t2 += '<tr><td class="text-muted">Drop Logging</td><td>'+(d.log_dropped?'on':'off')+'</td></tr>';
         t2 += '<tr><td class="text-muted">Deny Limit</td><td>'+(d.deny_ip_limit||'unlimited')+'</td></tr>';
         document.getElementById('fw-config-table2').innerHTML = t2;
-    }).catch(function(){ document.getElementById('fw-config-table').innerHTML = '<tr><td colspan="2" class="text-danger">Error loading status.</td></tr>'; });
+    }).catch(function(){ CSM.loadError(document.getElementById('fw-config'), loadStatus); });
 }
 
 function loadSubnets(){
@@ -42,7 +42,7 @@ function loadSubnets(){
         el.querySelectorAll('.remove-subnet-btn').forEach(function(btn) {
             btn.addEventListener('click', function() { removeSubnet(this.getAttribute('data-cidr')); });
         });
-    }).catch(function(){ document.getElementById('subnet-content').innerHTML = '<div class="card-body text-center text-danger py-3">Error loading subnets.</div>'; });
+    }).catch(function(){ CSM.loadError(document.getElementById('subnet-content'), loadSubnets); });
 }
 
 function removeSubnet(cidr){
@@ -96,7 +96,7 @@ function loadBlocked(){
         el.querySelectorAll('.blocked-cb').forEach(function(cb) {
             cb.addEventListener('change', updateBulkUnblock);
         });
-    }).catch(function(){ document.getElementById('blocked-content').innerHTML = '<div class="card-body text-center text-danger py-3">Error loading blocked IPs.</div>'; });
+    }).catch(function(){ CSM.loadError(document.getElementById('blocked-content'), loadBlocked); });
 }
 
 function getVisibleChecked() {
@@ -165,7 +165,7 @@ function loadWhitelist(){
         el.querySelectorAll('.wl-remove-btn').forEach(function(btn){
             btn.addEventListener('click',function(){ removeWhitelist(this.getAttribute('data-ip')); });
         });
-    }).catch(function(){ document.getElementById('whitelist-content').innerHTML='<div class="card-body text-center text-danger py-3">Error loading whitelist.</div>'; });
+    }).catch(function(){ CSM.loadError(document.getElementById('whitelist-content'), loadWhitelist); });
 }
 
 function removeWhitelist(ip){

@@ -88,6 +88,22 @@ CSM.fmtDate = function(s) {
     return d.toISOString().substring(0, 16).replace('T', ' ');
 };
 
+// Render a loading skeleton placeholder
+CSM.loading = function(el) {
+    if (el) el.innerHTML = '<div class="card-body text-center text-muted py-4"><span class="spinner-border spinner-border-sm me-2"></span>Loading...</div>';
+};
+
+// Render an error state with retry button
+CSM.loadError = function(el, retryFn) {
+    if (!el) return;
+    el.innerHTML = '<div class="card-body text-center py-4"><div class="text-danger mb-2">Failed to load data</div>' +
+        (retryFn ? '<button class="btn btn-sm btn-outline-secondary csm-retry-btn">Retry</button>' : '') + '</div>';
+    if (retryFn) {
+        var btn = el.querySelector('.csm-retry-btn');
+        if (btn) btn.addEventListener('click', retryFn);
+    }
+};
+
 // Resolve API URLs — use CGI proxy path if in WHM context
 CSM.apiUrl = function(path) {
     if (window.location.pathname.indexOf('addon_csm.cgi') >= 0) {
