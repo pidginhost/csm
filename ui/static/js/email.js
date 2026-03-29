@@ -155,27 +155,32 @@
 
     var emailTable = null;
 
-    function getFilterParams() {
+    function loadFindings() {
+        // Always fetch all email checks for the date range — stat cards need the full set
         var from = (document.getElementById('filter-from') || {}).value || '';
         var to = (document.getElementById('filter-to') || {}).value || '';
-        var sev = (document.getElementById('filter-severity') || {}).value || '';
-        var check = (document.getElementById('filter-check') || {}).value || '';
-        var checks = check || EMAIL_CHECKS;
-        var params = 'checks=' + checks + '&limit=5000';
+        var params = 'checks=' + EMAIL_CHECKS + '&limit=5000';
         if (from) params += '&from=' + from;
         if (to) params += '&to=' + to;
-        if (sev) params += '&severity=' + sev;
-        return params;
-    }
-
-    function loadFindings() {
-        var params = getFilterParams();
         fetch(CSM.apiUrl('/api/v1/history?' + params), { credentials: 'same-origin' })
             .then(function(r) { return r.json(); })
             .then(function(data) {
-                var findings = data.findings || [];
-                renderFindingsTable(findings);
-                renderTimeline(findings);
+                var allFindings = data.findings || [];
+                // Stat cards always reflect full date range, no check/severity filter
+                updateStatCards(allFindings);
+                // Apply check type and severity filters client-side for table + timeline
+                var sev = (document.getElementById('filter-severity') || {}).value || '';
+                var check = (document.getElementById('filter-check') || {}).value || '';
+                var filtered = allFindings;
+                if (sev || check) {
+                    filtered = allFindings.filter(function(f) {
+                        if (sev && String(f.severity) !== sev) return false;
+                        if (check && f.check !== check) return false;
+                        return true;
+                    });
+                }
+                renderFindingsTable(filtered);
+                renderTimeline(filtered);
             })
             .catch(function() {
                 var tbody = document.getElementById('email-tbody');
@@ -394,20 +399,6 @@
         if (el) el.textContent = val;
     }
 
-    // --- Stat cards (always show totals, independent of filter) ---
-
-    function loadStatCards() {
-        var from = (document.getElementById('filter-from') || {}).value || '';
-        var to = (document.getElementById('filter-to') || {}).value || '';
-        var params = 'checks=' + EMAIL_CHECKS + '&limit=5000';
-        if (from) params += '&from=' + from;
-        if (to) params += '&to=' + to;
-        fetch(CSM.apiUrl('/api/v1/history?' + params), { credentials: 'same-origin' })
-            .then(function(r) { return r.json(); })
-            .then(function(data) { updateStatCards(data.findings || []); })
-            .catch(function() {});
-    }
-
     // --- Filter form ---
 
     var filterForm = document.getElementById('email-filters');
@@ -415,7 +406,6 @@
         filterForm.addEventListener('submit', function(e) {
             e.preventDefault();
             loadFindings();
-            loadStatCards();
         });
     }
 
@@ -423,8 +413,6 @@
 
     loadEmailStats();
     loadFindings();
-    loadStatCards();
     setInterval(loadEmailStats, 30000);
     setInterval(loadFindings, 30000);
-    setInterval(loadStatCards, 30000);
 })();
