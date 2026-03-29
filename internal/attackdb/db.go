@@ -25,6 +25,7 @@ const (
 	AttackSPAM        AttackType = "spam"
 	AttackCPanelLogin AttackType = "cpanel_login"
 	AttackFileUpload  AttackType = "file_upload"
+	AttackReputation  AttackType = "reputation"
 	AttackOther       AttackType = "other"
 )
 
@@ -92,8 +93,8 @@ var checkToAttack = map[string]AttackType{
 	// File upload
 	"cpanel_file_upload_realtime": AttackFileUpload,
 
-	// Reputation (not an attack by itself, but the IP is known bad)
-	"ip_reputation": AttackOther,
+	// Reputation — known malicious IPs from threat database
+	"ip_reputation": AttackReputation,
 	// NOTE: "local_threat_score" is intentionally excluded — it is a derived
 	// finding, not a raw attack. Recording it would create a feedback loop
 	// that inflates EventCount by +1 every 10-minute cycle.
