@@ -272,3 +272,9 @@ func (s *Server) handleFirewall(w http.ResponseWriter, _ *http.Request) {
 		"Hostname": s.cfg.Hostname,
 	})
 }
+
+func (s *Server) handleEmail(w http.ResponseWriter, _ *http.Request) {
+	s.renderTemplate(w, "email.html", map[string]string{
+		"Hostname": s.cfg.Hostname,
+	})
+}
