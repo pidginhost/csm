@@ -182,7 +182,7 @@ func analyzePHPContent(path string) phpAnalysisResult {
 	hasEval := false
 	hasDecoder := false
 	for _, ep := range evalPatterns {
-		if strings.Contains(contentLower, ep.pattern) {
+		if containsStandaloneFunc(contentLower, ep.pattern) {
 			hasEval = true
 		}
 	}
@@ -252,7 +252,7 @@ func analyzePHPContent(path string) phpAnalysisResult {
 
 	// --- High: base64 encoding/decoding of commands (CGI shell pattern) ---
 	if strings.Contains(contentLower, "base64_decode") && strings.Contains(contentLower, "base64_encode") {
-		if hasShell || strings.Contains(contentLower, "eval(") {
+		if hasShell || containsStandaloneFunc(contentLower, "eval(") {
 			indicators = append(indicators, "base64 encode+decode with execution (command relay pattern)")
 		}
 	}
@@ -352,6 +352,33 @@ func countOccurrences(s, substr string) int {
 		offset += idx + len(substr)
 	}
 	return count
+}
+
+// containsStandaloneFunc checks if content contains a function call like "eval("
+// without it being part of a longer function name (e.g. "doubleval(").
+// Requires the character before the match to be non-alphanumeric or start-of-string.
+func containsStandaloneFunc(content, funcCall string) bool {
+	idx := 0
+	for {
+		pos := strings.Index(content[idx:], funcCall)
+		if pos < 0 {
+			return false
+		}
+		absPos := idx + pos
+		if absPos == 0 {
+			return true // at start of content
+		}
+		prev := content[absPos-1]
+		// Must not be preceded by a letter, digit, or underscore
+		if !((prev >= 'a' && prev <= 'z') || (prev >= 'A' && prev <= 'Z') ||
+			(prev >= '0' && prev <= '9') || prev == '_') {
+			return true
+		}
+		idx = absPos + len(funcCall)
+		if idx >= len(content) {
+			return false
+		}
+	}
 }
 
 func containsAny(strs []string, substrs ...string) bool {
