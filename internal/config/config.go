@@ -63,6 +63,7 @@ type Config struct {
 		SuppressWebmail       bool     `yaml:"suppress_webmail_alerts"`      // don't alert on webmail logins
 		SuppressCpanelLogin   bool     `yaml:"suppress_cpanel_login_alerts"` // don't alert on cPanel direct logins
 		SuppressBlockedAlerts bool     `yaml:"suppress_blocked_alerts"`      // don't alert on IPs that were auto-blocked
+		TrustedCountries      []string `yaml:"trusted_countries"`            // ISO 3166-1 alpha-2 codes — suppress cPanel login alerts from these countries
 	} `yaml:"suppressions"`
 
 	AutoResponse struct {
@@ -222,6 +223,12 @@ func Validate(cfg *Config) []string {
 
 	if cfg.WebUI.Enabled && cfg.WebUI.AuthToken == "" {
 		errs = append(errs, "webui enabled but no auth_token configured")
+	}
+
+	for _, cc := range cfg.Suppressions.TrustedCountries {
+		if len(cc) != 2 {
+			errs = append(errs, fmt.Sprintf("invalid country code in trusted_countries: %q (expected 2-letter ISO code)", cc))
+		}
 	}
 
 	return errs

@@ -643,6 +643,7 @@ func (d *Daemon) initGeoIP() {
 	dbDir := filepath.Join(d.cfg.StatePath, "geoip")
 	db := geoip.Open(dbDir)
 	if db != nil {
+		setGeoIPDB(db) // make available to log watcher handlers for country filtering
 		if d.webServer != nil {
 			d.webServer.SetGeoIPDB(db)
 		}

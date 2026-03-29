@@ -64,6 +64,10 @@ var pluginStatCache sync.Map // key: pluginDir string → value: pluginCacheEntr
 
 const pluginCacheTTL = 5 * time.Minute
 
+// alertDedupTTL is the cooldown period for duplicate alerts on the same
+// check+filepath combination. Prevents alert storms from rapid writes.
+const alertDedupTTL = 30 * time.Second
+
 // FileMonitor watches mount points for file creation/modification using fanotify.
 type FileMonitor struct {
 	fd         int
@@ -84,11 +88,15 @@ type FileMonitor struct {
 	drainOnce sync.Once
 	stopCh    chan struct{} // internal stop channel
 	wg        sync.WaitGroup
+
+	// Per-path alert deduplication: "check:filepath" → last alert time
+	alertDedup sync.Map
 }
 
 type fileEvent struct {
 	path string
 	fd   int
+	pid  int32
 }
 
 // NewFileMonitor creates a fanotify-based file monitor.
@@ -307,7 +315,7 @@ func (fm *FileMonitor) processEvents(buf []byte) {
 		}
 
 		if event.Fd >= 0 {
-			fm.handleEvent(int(event.Fd))
+			fm.handleEvent(int(event.Fd), event.Pid)
 		}
 
 		offset += int(event.EventLen)
@@ -343,7 +351,7 @@ func (fm *FileMonitor) Stop() {
 	})
 }
 
-func (fm *FileMonitor) handleEvent(fd int) {
+func (fm *FileMonitor) handleEvent(fd int, pid int32) {
 	// Get the file path from the fd via /proc/self/fd/N
 	path, err := os.Readlink(fmt.Sprintf("/proc/self/fd/%d", fd))
 	if err != nil {
@@ -365,7 +373,7 @@ func (fm *FileMonitor) handleEvent(fd int) {
 
 	// Send to analyzer pool (with backpressure)
 	select {
-	case fm.analyzerCh <- fileEvent{path: path, fd: fd}:
+	case fm.analyzerCh <- fileEvent{path: path, fd: fd, pid: pid}:
 	default:
 		// Queue full — drop event and count
 		atomic.AddInt64(&fm.droppedEvents, 1)
@@ -420,6 +428,13 @@ func (fm *FileMonitor) isInteresting(path string) bool {
 		return true
 	}
 
+	// PHP in sensitive directories that should never contain PHP
+	if (strings.Contains(path, "/.ssh/") || strings.Contains(path, "/.cpanel/") ||
+		strings.Contains(path, "/mail/") || strings.Contains(path, "/.gnupg/") ||
+		strings.Contains(path, "/.cagefs/")) && isPHPExtension(strings.ToLower(filepath.Base(path))) {
+		return true
+	}
+
 	return false
 }
 
@@ -458,10 +473,49 @@ func readFromFd(fd int, maxBytes int) []byte {
 	return buf[:n]
 }
 
+// resolveProcessInfo reads /proc/<pid>/comm and /proc/<pid>/status
+// to build a "pid=N cmd=name uid=N" string for alert enrichment.
+// Returns empty string on any error (process may have exited).
+func resolveProcessInfo(pid int32) string {
+	if pid <= 0 {
+		return ""
+	}
+	procDir := fmt.Sprintf("/proc/%d", pid)
+
+	// Read process name
+	comm, err := os.ReadFile(procDir + "/comm")
+	if err != nil {
+		return ""
+	}
+	name := strings.TrimSpace(string(comm))
+
+	info := fmt.Sprintf("pid=%d cmd=%s", pid, name)
+
+	// Read UID from status to map to cPanel username
+	statusData, err := os.ReadFile(procDir + "/status")
+	if err != nil {
+		return info
+	}
+	for _, line := range strings.Split(string(statusData), "\n") {
+		if strings.HasPrefix(line, "Uid:") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				info += fmt.Sprintf(" uid=%s", fields[1])
+			}
+			break
+		}
+	}
+
+	return info
+}
+
 func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	path := event.path
 	name := filepath.Base(path)
 	nameLower := strings.ToLower(name)
+
+	// Resolve process info from PID (best-effort — process may have exited)
+	procInfo := resolveProcessInfo(event.pid)
 
 	// H2 — suppression path matching using filepath.Match
 	for _, ignore := range fm.cfg.Suppressions.IgnorePaths {
@@ -470,17 +524,29 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 		}
 	}
 
+	// Location-based severity escalation: PHP in dirs that should NEVER have PHP
+	if isPHPExtension(nameLower) {
+		for _, sensitive := range []string{"/.ssh/", "/.cpanel/", "/mail/", "/.gnupg/", "/.cagefs/"} {
+			if strings.Contains(path, sensitive) {
+				fm.sendAlertWithPath(alert.Critical, "php_in_sensitive_dir_realtime",
+					fmt.Sprintf("PHP file in critical directory: %s", path),
+					fmt.Sprintf("PHP should never exist in %s — likely webshell or backdoor", sensitive), path, procInfo)
+				return
+			}
+		}
+	}
+
 	// Immediate CRITICAL: known webshell filenames (M1 — package-level var)
 	if knownWebshells[nameLower] {
 		fm.sendAlertWithPath(alert.Critical, "webshell_realtime",
-			fmt.Sprintf("Webshell file created: %s", path), "", path)
+			fmt.Sprintf("Webshell file created: %s", path), "", path, procInfo)
 		return
 	}
 
 	// Webshell extensions
 	if strings.HasSuffix(nameLower, ".haxor") || strings.HasSuffix(nameLower, ".cgix") {
 		fm.sendAlertWithPath(alert.Critical, "webshell_realtime",
-			fmt.Sprintf("Suspicious CGI file created: %s", path), "", path)
+			fmt.Sprintf("Suspicious CGI file created: %s", path), "", path, procInfo)
 		return
 	}
 
@@ -494,7 +560,7 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 			if !isDir && isExec {
 				fm.sendAlertWithPath(alert.Critical, "executable_in_tmp_realtime",
 					fmt.Sprintf("Executable created in %s: %s", filepath.Dir(path), path),
-					fmt.Sprintf("Size: %d, Mode: %04o", tmpStat.Size, tmpStat.Mode&0777), path)
+					fmt.Sprintf("Size: %d, Mode: %04o", tmpStat.Size, tmpStat.Mode&0777), path, procInfo)
 			}
 		}
 		// Fall through to PHP checks below for .php files in /tmp
@@ -507,13 +573,21 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	if strings.Contains(path, "/wp-content/uploads/") && isPHPExtension(nameLower) {
 		if nameLower != "index.php" && !isKnownSafeUploadDaemon(path) {
 			if looksLikePluginUpdate(path) {
-				// Verified plugin update — lower severity, don't suppress entirely
+				// Verified plugin update — emit one alert per temp directory, not per file.
+				// Extract the temp dir (e.g. "cookie-notice_b3hfq") for dedup.
+				uploadsIdx := strings.Index(path, "/wp-content/uploads/")
+				afterUploads := path[uploadsIdx+len("/wp-content/uploads/"):]
+				tempDir := afterUploads
+				if slashIdx := strings.Index(afterUploads, "/"); slashIdx > 0 {
+					tempDir = afterUploads[:slashIdx]
+				}
+				updateDir := path[:uploadsIdx] + "/wp-content/uploads/" + tempDir
 				fm.sendAlertWithPath(alert.Warning, "php_in_uploads_realtime",
-					fmt.Sprintf("PHP file created in uploads (plugin update): %s", path),
-					"Appears to be a legitimate plugin update temp directory", path)
+					fmt.Sprintf("Plugin update in uploads: %s", updateDir),
+					fmt.Sprintf("File: %s", filepath.Base(path)), updateDir, procInfo)
 			} else {
 				fm.sendAlertWithPath(alert.Critical, "php_in_uploads_realtime",
-					fmt.Sprintf("PHP file created in uploads: %s", path), "", path)
+					fmt.Sprintf("PHP file created in uploads: %s", path), "", path, procInfo)
 			}
 		}
 		return
@@ -524,62 +598,62 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 		isPHPExtension(nameLower) {
 		if nameLower != "index.php" && !strings.HasSuffix(nameLower, ".l10n.php") {
 			fm.sendAlertWithPath(alert.Critical, "php_in_sensitive_dir_realtime",
-				fmt.Sprintf("PHP file created in sensitive WP directory: %s", path), "", path)
+				fmt.Sprintf("PHP file created in sensitive WP directory: %s", path), "", path, procInfo)
 		}
 		return
 	}
 
 	// Executables in .config
 	if strings.Contains(path, "/.config/") {
-		info, err := os.Stat(path)
-		if err == nil && info.Mode()&0111 != 0 {
+		finfo, err := os.Stat(path)
+		if err == nil && finfo.Mode()&0111 != 0 {
 			fm.sendAlertWithPath(alert.Critical, "executable_in_config_realtime",
 				fmt.Sprintf("Executable created in .config: %s", path),
-				fmt.Sprintf("Size: %d", info.Size()), path)
+				fmt.Sprintf("Size: %d", finfo.Size()), path, procInfo)
 		}
 		return
 	}
 
 	// .htaccess modification — check for injection (C3 — read from fd)
 	if nameLower == ".htaccess" {
-		fm.checkHtaccess(event.fd, path)
+		fm.checkHtaccess(event.fd, path, procInfo)
 		return
 	}
 
 	// .user.ini modification — check for dangerous PHP settings (C3 — read from fd)
 	if nameLower == ".user.ini" {
-		fm.checkUserINI(event.fd, path)
+		fm.checkUserINI(event.fd, path, procInfo)
 		return
 	}
 
 	// PHP content analysis (C3 — read from fd; M4 — 32KB scan size)
 	if isPHPExtension(nameLower) {
-		fm.checkPHPContent(event.fd, path)
+		fm.checkPHPContent(event.fd, path, procInfo)
 		return
 	}
 
 	// HTML phishing page detection (uses event fd for content, unix.Fstat for size)
 	if strings.HasSuffix(nameLower, ".html") || strings.HasSuffix(nameLower, ".htm") {
-		fm.checkHTMLPhishing(event.fd, path)
+		fm.checkHTMLPhishing(event.fd, path, procInfo)
 		return
 	}
 
 	// Credential log files (path-based)
 	if credentialLogNames[nameLower] {
-		fm.checkCredentialLog(path)
+		fm.checkCredentialLog(path, procInfo)
 		return
 	}
 
 	// Phishing kit ZIP archives (path-based)
 	if strings.HasSuffix(nameLower, ".zip") {
-		fm.checkPhishingZip(path, nameLower)
+		fm.checkPhishingZip(path, nameLower, procInfo)
 		return
 	}
 }
 
 // checkHtaccess reads .htaccess content from the event fd and checks for injection.
 // C3 — reads from fd, not path. H5 — per-line safe check.
-func (fm *FileMonitor) checkHtaccess(fd int, path string) {
+func (fm *FileMonitor) checkHtaccess(fd int, path, procInfo string) {
 	data := readFromFd(fd, 16384)
 	if data == nil {
 		return
@@ -607,17 +681,20 @@ func (fm *FileMonitor) checkHtaccess(fd int, path string) {
 				if !isSafe {
 					fm.sendAlertWithPath(alert.High, "htaccess_injection_realtime",
 						fmt.Sprintf("Suspicious .htaccess modification: %s", path),
-						fmt.Sprintf("Pattern: %s", d), path)
+						fmt.Sprintf("Pattern: %s", d), path, procInfo)
 					return
 				}
 			}
 		}
 	}
+
+	// Run signature/YARA scanning on .htaccess content
+	fm.runSignatureScan(data, path, ".htaccess", procInfo)
 }
 
 // checkUserINI reads .user.ini content from the event fd and checks for dangerous PHP settings.
 // C3 — reads from fd, not path. H6 — proper allow_url_include parsing.
-func (fm *FileMonitor) checkUserINI(fd int, path string) {
+func (fm *FileMonitor) checkUserINI(fd int, path, procInfo string) {
 	data := readFromFd(fd, 4096)
 	if data == nil {
 		return
@@ -646,7 +723,7 @@ func (fm *FileMonitor) checkUserINI(fd int, path string) {
 						if val == "" || val == "\"\"" || val == "none" {
 							fm.sendAlertWithPath(alert.Critical, "php_config_realtime",
 								fmt.Sprintf("PHP disable_functions cleared: %s", path),
-								"All dangerous PHP functions enabled — shell execution possible", path)
+								"All dangerous PHP functions enabled — shell execution possible", path, procInfo)
 							return
 						}
 					}
@@ -667,18 +744,21 @@ func (fm *FileMonitor) checkUserINI(fd int, path string) {
 					if val == "on" || val == "1" || val == "\"on\"" || val == "'on'" {
 						fm.sendAlertWithPath(alert.Critical, "php_config_realtime",
 							fmt.Sprintf("PHP allow_url_include enabled: %s", path),
-							"Remote PHP file inclusion is now possible", path)
+							"Remote PHP file inclusion is now possible", path, procInfo)
 						return
 					}
 				}
 			}
 		}
 	}
+
+	// Run signature/YARA scanning on .user.ini content
+	fm.runSignatureScan(data, path, ".ini", procInfo)
 }
 
 // checkPHPContent reads PHP content from the event fd and checks for malicious patterns.
 // C3 — reads from fd, not path. M4 — 32KB scan size.
-func (fm *FileMonitor) checkPHPContent(fd int, path string) {
+func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) {
 	data := readFromFd(fd, 32768)
 	if data == nil {
 		return
@@ -691,7 +771,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path string) {
 		if strings.Contains(content, p) {
 			fm.sendAlertWithPath(alert.Critical, "php_dropper_realtime",
 				fmt.Sprintf("PHP dropper with remote payload URL: %s", path),
-				fmt.Sprintf("Fetches from: %s", p), path)
+				fmt.Sprintf("Fetches from: %s", p), path, procInfo)
 			return
 		}
 	}
@@ -702,7 +782,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path string) {
 	if hasEval && hasDecoder {
 		fm.sendAlertWithPath(alert.Critical, "obfuscated_php_realtime",
 			fmt.Sprintf("Obfuscated PHP detected: %s", path),
-			"eval() combined with encoding/compression function", path)
+			"eval() combined with encoding/compression function", path, procInfo)
 		return
 	}
 
@@ -747,7 +827,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path string) {
 				if lineHasShell && lineHasInput {
 					fm.sendAlertWithPath(alert.Critical, "webshell_content_realtime",
 						fmt.Sprintf("Webshell pattern detected: %s", path),
-						fmt.Sprintf("Shell execution with request input on same line: %s", strings.TrimSpace(line)), path)
+						fmt.Sprintf("Shell execution with request input on same line: %s", strings.TrimSpace(line)), path, procInfo)
 					return
 				}
 			}
@@ -763,38 +843,14 @@ func (fm *FileMonitor) checkPHPContent(fd int, path string) {
 		return
 	}
 
-	// External YAML signature scanning (if rules are loaded)
-	if scanner := signatures.Global(); scanner != nil {
-		matches := scanner.ScanContent(data, filepath.Ext(path))
-		if len(matches) > 0 {
-			m := matches[0] // one alert per file — use first match
-			sev := alert.High
-			if m.Severity == "critical" {
-				sev = alert.Critical
-			}
-			fm.sendAlertWithPath(sev, "signature_match_realtime",
-				fmt.Sprintf("Signature match [%s]: %s", m.RuleName, path),
-				fmt.Sprintf("Category: %s\nDescription: %s\nMatched: %s",
-					m.Category, m.Description, strings.Join(m.Matched, ", ")), path)
-			return
-		}
-	}
-
-	// YARA-X scanning (if compiled in and rules loaded)
-	if yaraScanner := yara.Global(); yaraScanner != nil {
-		matches := yaraScanner.ScanBytes(data)
-		if len(matches) > 0 {
-			fm.sendAlertWithPath(alert.Critical, "yara_match_realtime",
-				fmt.Sprintf("YARA rule match [%s]: %s", matches[0].RuleName, path),
-				fmt.Sprintf("Matched %d YARA rule(s)", len(matches)), path)
-		}
-	}
+	// External signature + YARA scanning
+	fm.runSignatureScan(data, path, filepath.Ext(path), procInfo)
 }
 
 // checkHTMLPhishing reads an HTML file and checks for phishing indicators:
 // brand impersonation + credential input + redirect/exfiltration.
 // Uses event fd for content read and unix.Fstat for size (TOCTOU-safe).
-func (fm *FileMonitor) checkHTMLPhishing(fd int, path string) {
+func (fm *FileMonitor) checkHTMLPhishing(fd int, path, procInfo string) {
 	// Only check files in web-accessible directories
 	if !strings.Contains(path, "/public_html/") {
 		return
@@ -891,14 +947,18 @@ func (fm *FileMonitor) checkHTMLPhishing(fd int, path string) {
 	if hasExfil || hasTrustBadge {
 		fm.sendAlertWithPath(alert.Critical, "phishing_realtime",
 			fmt.Sprintf("Phishing page created (%s impersonation): %s", brandMatch, path),
-			fmt.Sprintf("Size: %d bytes", size), path)
+			fmt.Sprintf("Size: %d bytes", size), path, procInfo)
+		return
 	}
+
+	// Run signature/YARA scanning on HTML content not caught by phishing heuristics
+	fm.runSignatureScan(data, path, ".html", procInfo)
 }
 
 // checkCredentialLog reads a text file and checks if it contains harvested
 // email:password pairs — output from an active phishing kit.
 // Uses path-based reads because it needs path context.
-func (fm *FileMonitor) checkCredentialLog(path string) {
+func (fm *FileMonitor) checkCredentialLog(path, procInfo string) {
 	if !strings.Contains(path, "/public_html/") {
 		return
 	}
@@ -937,18 +997,18 @@ func (fm *FileMonitor) checkCredentialLog(path string) {
 	if credLines >= 3 {
 		fm.sendAlertWithPath(alert.Critical, "credential_log_realtime",
 			fmt.Sprintf("Harvested credential log detected: %s", path),
-			fmt.Sprintf("%d credential lines (email:password format) found", credLines), path)
+			fmt.Sprintf("%d credential lines (email:password format) found", credLines), path, procInfo)
 	} else if emailCount >= 10 {
 		fm.sendAlertWithPath(alert.High, "credential_log_realtime",
 			fmt.Sprintf("Possible harvested email list: %s", path),
-			fmt.Sprintf("%d email addresses found in %s", emailCount, filepath.Base(path)), path)
+			fmt.Sprintf("%d email addresses found in %s", emailCount, filepath.Base(path)), path, procInfo)
 	}
 }
 
 // checkPhishingZip checks if a newly created ZIP file matches known phishing
 // kit archive names.
 // Uses path-based approach since it only checks the filename.
-func (fm *FileMonitor) checkPhishingZip(path, nameLower string) {
+func (fm *FileMonitor) checkPhishingZip(path, nameLower, procInfo string) {
 	if !strings.Contains(path, "/public_html/") {
 		return
 	}
@@ -968,13 +1028,47 @@ func (fm *FileMonitor) checkPhishingZip(path, nameLower string) {
 		if strings.Contains(nameLower, kit) {
 			fm.sendAlertWithPath(alert.High, "phishing_kit_realtime",
 				fmt.Sprintf("Suspected phishing kit archive uploaded: %s", path),
-				fmt.Sprintf("Filename matches phishing kit pattern: '%s'", kit), path)
+				fmt.Sprintf("Filename matches phishing kit pattern: '%s'", kit), path, procInfo)
 			return
 		}
 	}
 }
 
+// runSignatureScan runs YAML and YARA signature scanning on file content.
+// Returns true if a match was found and an alert was sent.
+func (fm *FileMonitor) runSignatureScan(data []byte, path, ext, procInfo string) bool {
+	if scanner := signatures.Global(); scanner != nil {
+		matches := scanner.ScanContent(data, ext)
+		if len(matches) > 0 {
+			m := matches[0]
+			sev := alert.High
+			if m.Severity == "critical" {
+				sev = alert.Critical
+			}
+			fm.sendAlertWithPath(sev, "signature_match_realtime",
+				fmt.Sprintf("Signature match [%s]: %s", m.RuleName, path),
+				fmt.Sprintf("Category: %s\nDescription: %s\nMatched: %s",
+					m.Category, m.Description, strings.Join(m.Matched, ", ")), path, procInfo)
+			return true
+		}
+	}
+
+	if yaraScanner := yara.Global(); yaraScanner != nil {
+		matches := yaraScanner.ScanBytes(data)
+		if len(matches) > 0 {
+			fm.sendAlertWithPath(alert.Critical, "yara_match_realtime",
+				fmt.Sprintf("YARA rule match [%s]: %s", matches[0].RuleName, path),
+				fmt.Sprintf("Matched %d YARA rule(s)", len(matches)), path, procInfo)
+			return true
+		}
+	}
+
+	return false
+}
+
 // M7 — sendAlert uses droppedAlerts counter, separate from droppedEvents.
+// No dedup — only used for system-level alerts (overflow reporting) that are
+// already ticker-gated. File-related alerts should use sendAlertWithPath.
 func (fm *FileMonitor) sendAlert(severity alert.Severity, check, message, details string) {
 	finding := alert.Finding{
 		Severity:  severity,
@@ -990,22 +1084,46 @@ func (fm *FileMonitor) sendAlert(severity alert.Severity, check, message, detail
 	}
 }
 
-// sendAlertWithPath is like sendAlert but also sets the FilePath field
-// for structured file-path propagation to auto-response.
-func (fm *FileMonitor) sendAlertWithPath(severity alert.Severity, check, message, details, filePath string) {
+// sendAlertWithPath is like sendAlert but also sets the FilePath and
+// ProcessInfo fields for structured propagation to auto-response.
+// Applies per-path deduplication to prevent alert storms from rapid writes.
+func (fm *FileMonitor) sendAlertWithPath(severity alert.Severity, check, message, details, filePath, processInfo string) {
+	if !fm.shouldAlert(check, filePath) {
+		return
+	}
 	finding := alert.Finding{
-		Severity:  severity,
-		Check:     check,
-		Message:   message,
-		Details:   details,
-		FilePath:  filePath,
-		Timestamp: time.Now(),
+		Severity:    severity,
+		Check:       check,
+		Message:     message,
+		Details:     details,
+		FilePath:    filePath,
+		ProcessInfo: processInfo,
+		Timestamp:   time.Now(),
 	}
 	select {
 	case fm.alertCh <- finding:
 	default:
 		atomic.AddInt64(&fm.droppedAlerts, 1)
 	}
+}
+
+// shouldAlert returns true if this check+path combination hasn't been alerted
+// recently. Prevents duplicate alerts from rapid writes to the same file.
+// Uses LoadOrStore for atomic initial insertion to avoid TOCTOU races
+// between concurrent analyzer workers.
+func (fm *FileMonitor) shouldAlert(check, filePath string) bool {
+	if filePath == "" {
+		return true // no path = no dedup possible
+	}
+	key := check + ":" + filePath
+	now := time.Now()
+	if v, loaded := fm.alertDedup.LoadOrStore(key, now); loaded {
+		if now.Sub(v.(time.Time)) < alertDedupTTL {
+			return false
+		}
+		fm.alertDedup.Store(key, now) // refresh TTL on expiry
+	}
+	return true
 }
 
 // M7 — overflowReporter reports dropped events and alerts separately.
@@ -1029,6 +1147,14 @@ func (fm *FileMonitor) overflowReporter() {
 			if droppedAl > 0 {
 				fmt.Fprintf(os.Stderr, "[%s] alert channel full: %d alerts dropped in last minute\n", ts(), droppedAl)
 			}
+			// Evict stale dedup entries every minute
+			now := time.Now()
+			fm.alertDedup.Range(func(key, value any) bool {
+				if now.Sub(value.(time.Time)) > alertDedupTTL {
+					fm.alertDedup.Delete(key)
+				}
+				return true
+			})
 		}
 	}
 }

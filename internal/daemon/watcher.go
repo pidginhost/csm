@@ -175,7 +175,8 @@ func parseSessionLogLine(line string, cfg *config.Config) []alert.Finding {
 			// Portal-created session — no alert
 		} else {
 			ip, account := parseCpanelSessionLogin(line)
-			if ip != "" && account != "" && !isInfraIPDaemon(ip, cfg.InfraIPs) {
+			if ip != "" && account != "" && !isInfraIPDaemon(ip, cfg.InfraIPs) &&
+				!isTrustedCountry(ip, cfg.Suppressions.TrustedCountries) {
 				severity := alert.High
 				method := "unknown"
 				if strings.Contains(line, "method=handle_form_login") {

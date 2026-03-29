@@ -35,12 +35,13 @@ func (s Severity) String() string {
 
 // Finding represents a single security check result.
 type Finding struct {
-	Severity  Severity  `json:"severity"`
-	Check     string    `json:"check"`
-	Message   string    `json:"message"`
-	Details   string    `json:"details,omitempty"`
-	FilePath  string    `json:"file_path,omitempty"`
-	Timestamp time.Time `json:"timestamp"`
+	Severity    Severity  `json:"severity"`
+	Check       string    `json:"check"`
+	Message     string    `json:"message"`
+	Details     string    `json:"details,omitempty"`
+	FilePath    string    `json:"file_path,omitempty"`
+	ProcessInfo string    `json:"process_info,omitempty"` // "pid=N cmd=name uid=N" from fanotify
+	Timestamp   time.Time `json:"timestamp"`
 }
 
 func (f Finding) String() string {
@@ -48,6 +49,9 @@ func (f Finding) String() string {
 	s := fmt.Sprintf("[%s] %s — %s", f.Severity, f.Check, f.Message)
 	if f.Details != "" {
 		s += "\n  " + strings.ReplaceAll(f.Details, "\n", "\n  ")
+	}
+	if f.ProcessInfo != "" {
+		s += fmt.Sprintf("\n  Process: %s", f.ProcessInfo)
 	}
 	s += fmt.Sprintf("\n  Time: %s", ts)
 	return s

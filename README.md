@@ -59,9 +59,9 @@ Benchmarked on a production cPanel server (168 accounts, 275 WordPress sites, 28
 
 ### Real-Time (< 2 seconds)
 
-**File monitor (fanotify):** webshell creation, PHP in uploads/languages/upgrade dirs, executable drops in .config, .htaccess injection, obfuscated PHP analysis, .user.ini tampering, phishing pages, credential harvest logs, phishing kit ZIPs, YAML + YARA signature matching.
+**File monitor (fanotify):** webshell creation, PHP in uploads/languages/upgrade dirs, PHP in .ssh/.cpanel/mail dirs (critical escalation), executable drops in .config, .htaccess injection, obfuscated PHP analysis, .user.ini tampering, phishing pages, credential harvest logs, phishing kit ZIPs, YAML + YARA signature matching (PHP, HTML, .htaccess, .user.ini), per-path alert deduplication (30s cooldown), process info enrichment (PID/command/UID).
 
-**Log watchers (inotify):** cPanel logins from non-infra IPs, password changes, File Manager uploads, SSH logins, FTP logins/failures, exim anomalies, API auth failures, webmail attempts.
+**Log watchers (inotify):** cPanel logins from non-infra IPs (with trusted country filtering), password changes, File Manager uploads, SSH logins, FTP logins/failures, exim anomalies, API auth failures, webmail attempts.
 
 **PAM listener:** SSH/FTP/email brute force — blocks IPs within seconds of threshold breach.
 
@@ -261,6 +261,9 @@ webui:
 infra_ips:
   - "10.0.0.0/8"
 
+suppressions:
+  trusted_countries: ["US", "RO"]  # suppress cPanel login alerts from these countries
+
 signatures:
   rules_dir: "/opt/csm/rules"
 ```
@@ -308,11 +311,5 @@ CI/CD: lint, test, build (amd64 + arm64), publish to GitLab Package Registry, re
 
 ### Open
 
-- Per-path fanotify alert debounce (prevent duplicate alerts from rapid writes)
-- Process info in fanotify alerts (PID, process name, cPanel username)
-- Location-based severity escalation (PHP in .ssh/.cpanel/mail dirs)
-- In-flight event deduplication (coalesce rapid writes to same file)
-- Trusted country filtering for cPanel login alerts
-- Virtual patching (auto-updated WAF rules for WordPress CVEs)
 - Binary signing with cosign
 - Multi-server management (centralized dashboard, block list sync)
