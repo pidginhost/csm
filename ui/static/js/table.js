@@ -293,7 +293,7 @@ CSM.Table.prototype._restoreState = function(opts) {
         if (typeof state.page === 'number' && state.page > 0) {
             this.currentPage = state.page;
         }
-        if (typeof state.perPage === 'number' && state.perPage >= 0) {
+        if (typeof state.perPage === 'number' && state.perPage > 0) {
             this.perPage = state.perPage;
         }
         if (typeof state.sortCol === 'number' && state.sortCol >= 0) {
