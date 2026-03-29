@@ -122,6 +122,11 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 			}
 		}
 
+		// Skip internal checks from the live feed
+		if f.Check == "auto_response" || f.Check == "auto_block" || f.Check == "check_timeout" || f.Check == "health" {
+			continue
+		}
+
 		if len(recent) < 10 {
 			recent = append(recent, historyEntry{
 				Severity:     severityLabel(f.Severity),

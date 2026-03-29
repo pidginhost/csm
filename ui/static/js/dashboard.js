@@ -22,12 +22,14 @@
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 var findings = data.findings || [];
+                var internalChecks = { auto_response: 1, auto_block: 1, check_timeout: 1, health: 1 };
                 for (var i = findings.length - 1; i >= 0; i--) {
                     var f = findings[i];
                     var ts = f.timestamp || '';
                     if (ts > lastPollTimestamp) {
-                        addEntry(f);
                         lastPollTimestamp = ts;
+                        if (internalChecks[f.check]) continue;
+                        addEntry(f);
                     }
                 }
             })
