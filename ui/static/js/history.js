@@ -66,7 +66,7 @@
             html += '<td><span class="badge badge-' + sevClass + '">' + sevLabel + '</span></td>';
             html += '<td><code>' + CSM.esc(f.check) + '</code></td>';
             html += '<td>' + CSM.esc(f.message) + '</td>';
-            html += '<td class="text-nowrap" title="' + CSM.esc(ts) + '"><span class="text-muted small">' + CSM.esc(ago) + '</span></td>';
+            html += '<td class="text-nowrap"><span class="text-muted small" data-timestamp="' + CSM.esc(f.timestamp || '') + '">' + CSM.esc(ago) + '</span></td>';
             html += '</tr>';
 
             if (f.details) {
