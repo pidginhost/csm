@@ -52,10 +52,25 @@
         <div id="blocked-content"><div class="card-body text-center text-muted py-3"><span class="spinner-border spinner-border-sm"></span></div></div>
     </div>
 
-    <!-- Audit Log -->
+    <!-- Whitelisted IPs -->
+    <div class="card mb-3">
+        <div class="card-header">
+            <h3 class="card-title"><i class="ti ti-shield-check"></i>&nbsp;Whitelisted IPs</h3>
+            <div class="card-actions">
+                <form id="whitelist-form" class="d-flex gap-2">
+                    <input type="text" id="whitelist-ip" class="form-control form-control-sm font-monospace" placeholder="IP address" style="width:160px">
+                    <button type="submit" class="btn btn-success btn-sm text-nowrap"><i class="ti ti-shield-check"></i>&nbsp;Whitelist</button>
+                </form>
+            </div>
+        </div>
+        <div id="whitelist-content"><div class="card-body text-center text-muted py-3"><span class="spinner-border spinner-border-sm"></span></div></div>
+    </div>
+
+    <!-- Audit link -->
     <div class="card">
-        <div class="card-header"><h3 class="card-title"><i class="ti ti-history"></i>&nbsp;Audit Log</h3></div>
-        <div id="audit-content"><div class="card-body text-center text-muted py-3"><span class="spinner-border spinner-border-sm"></span></div></div>
+        <div class="card-body text-center py-3">
+            <a href="/audit" class="btn btn-ghost-secondary"><i class="ti ti-clipboard-list"></i>&nbsp;View Full Audit Log</a>
+        </div>
     </div>
 {{end}}
 {{define "scripts"}}

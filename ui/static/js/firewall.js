@@ -38,34 +38,15 @@ function loadSubnets(){
         }
         h+='</tbody></table></div>';
         el.innerHTML=h;
-        // Bind remove buttons after DOM insertion
         el.querySelectorAll('.remove-subnet-btn').forEach(function(btn) {
             btn.addEventListener('click', function() { removeSubnet(this.getAttribute('data-cidr')); });
         });
     }).catch(function(){ document.getElementById('subnet-content').innerHTML = '<div class="card-body text-center text-danger py-3">Error loading subnets.</div>'; });
 }
 
-function loadAudit(){
-    fetch('/api/v1/firewall/audit?limit=50',{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(entries){
-        var el = document.getElementById('audit-content');
-        if(!entries||entries.length===0){el.innerHTML='<div class="card-body text-center text-muted py-3">No audit entries.</div>';return;}
-        var h='<div class="table-responsive"><table class="table table-vcenter card-table table-sm"><thead><tr><th>Time</th><th>Action</th><th>IP/CIDR</th><th>Reason</th></tr></thead><tbody>';
-        for(var i=entries.length-1;i>=0;i--){
-            var e=entries[i];
-            var cls='';
-            if(e.action.indexOf('block')>=0) cls='text-danger';
-            else if(e.action.indexOf('allow')>=0) cls='text-success';
-            else if(e.action==='flush') cls='text-warning';
-            h+='<tr><td class="text-nowrap small text-muted">'+CSM.esc(e.time_ago)+'</td><td class="'+cls+'">'+CSM.esc(e.action)+'</td><td><code>'+CSM.esc(e.ip)+'</code></td><td class="small">'+CSM.esc(e.reason)+'</td></tr>';
-        }
-        h+='</tbody></table></div>';
-        el.innerHTML=h;
-    }).catch(function(){ document.getElementById('audit-content').innerHTML = '<div class="card-body text-center text-danger py-3">Error loading audit log.</div>'; });
-}
-
 function removeSubnet(cidr){
     CSM.confirm('Remove subnet block '+cidr+'?').then(function(){
-        CSM.post('/api/v1/firewall/remove-subnet',{cidr:cidr}).then(function(){loadSubnets();loadStatus();loadAudit();}).catch(function(e){ CSM.toast('Error: ' + e, 'error'); });
+        CSM.post('/api/v1/firewall/remove-subnet',{cidr:cidr}).then(function(){loadSubnets();loadStatus();}).catch(function(e){ CSM.toast('Error: ' + e, 'error'); });
     }).catch(function(){});
 }
 
@@ -78,7 +59,7 @@ document.getElementById('subnet-form').addEventListener('submit',function(e){
         CSM.post('/api/v1/firewall/deny-subnet',{cidr:cidr,reason:reason}).then(function(){
             document.getElementById('subnet-cidr').value='';
             document.getElementById('subnet-reason').value='';
-            loadSubnets();loadStatus();loadAudit();
+            loadSubnets();loadStatus();
         }).catch(function(e){ CSM.toast('Error: ' + e, 'error'); });
     }).catch(function(){});
 });
@@ -97,13 +78,10 @@ function loadBlocked(){
         h+='</tbody></table></div>';
         el.innerHTML=h;
         if(typeof CSM!=='undefined'&&CSM.Table) new CSM.Table({tableId:'blocked-table',perPage:25,searchId:'blocked-search',sortable:true});
-        // GeoIP enrichment — fetch country/ASN for each blocked IP
         enrichBlockedGeoIP(el);
-        // Bind unblock buttons
         el.querySelectorAll('.fw-unblock-btn').forEach(function(btn) {
             btn.addEventListener('click', function() { unblockIP(this.getAttribute('data-ip')); });
         });
-        // Select all checkbox
         var selectAll = document.getElementById('blocked-select-all');
         if (selectAll) {
             selectAll.addEventListener('change', function() {
@@ -135,15 +113,17 @@ function bulkUnblock() {
     CSM.confirm('Unblock ' + ips.length + ' IPs?').then(function() {
         CSM.post('/api/v1/unblock-bulk', { ips: ips }).then(function(data) {
             CSM.toast('Unblocked ' + (data.succeeded || 0) + ' of ' + (data.total || 0) + ' IPs', 'success');
-            loadBlocked(); loadStatus(); loadAudit();
+            loadBlocked(); loadStatus();
         }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
     }).catch(function() {});
 }
+
 function unblockIP(ip){
     CSM.confirm('Unblock '+ip+'?').then(function(){
-        CSM.post('/api/v1/unblock-ip',{ip:ip}).then(function(){loadBlocked();loadStatus();loadAudit();}).catch(function(e){ CSM.toast('Error: ' + e, 'error'); });
+        CSM.post('/api/v1/unblock-ip',{ip:ip}).then(function(){loadBlocked();loadStatus();}).catch(function(e){ CSM.toast('Error: ' + e, 'error'); });
     }).catch(function(){});
 }
+
 document.getElementById('block-form').addEventListener('submit',function(e){
     e.preventDefault();
     var ip=document.getElementById('block-ip').value.trim();
@@ -153,11 +133,51 @@ document.getElementById('block-form').addEventListener('submit',function(e){
         CSM.post('/api/v1/block-ip',{ip:ip,reason:reason}).then(function(){
             document.getElementById('block-ip').value='';
             document.getElementById('block-reason').value='';
-            loadBlocked();loadStatus();loadAudit();
+            loadBlocked();loadStatus();
         }).catch(function(e){ CSM.toast('Error: ' + e, 'error'); });
     }).catch(function(){});
 });
 
+// --- Whitelist management ---
+function loadWhitelist(){
+    fetch(CSM.apiUrl('/api/v1/threat/whitelist'),{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(ips){
+        var el=document.getElementById('whitelist-content');
+        if(!ips||ips.length===0){el.innerHTML='<div class="card-body text-center text-muted py-3">No whitelisted IPs.</div>';return;}
+        var h='<div class="table-responsive"><table class="table table-vcenter card-table table-sm"><thead><tr><th>IP</th><th>Action</th></tr></thead><tbody>';
+        for(var i=0;i<ips.length;i++){
+            h+='<tr><td><code>'+CSM.esc(ips[i])+'</code></td><td><button class="btn btn-sm btn-ghost-danger wl-remove-btn" data-ip="'+CSM.esc(ips[i])+'">Remove</button></td></tr>';
+        }
+        h+='</tbody></table></div>';
+        el.innerHTML=h;
+        el.querySelectorAll('.wl-remove-btn').forEach(function(btn){
+            btn.addEventListener('click',function(){ removeWhitelist(this.getAttribute('data-ip')); });
+        });
+    }).catch(function(){ document.getElementById('whitelist-content').innerHTML='<div class="card-body text-center text-danger py-3">Error loading whitelist.</div>'; });
+}
+
+function removeWhitelist(ip){
+    CSM.confirm('Remove '+ip+' from whitelist?').then(function(){
+        CSM.post('/api/v1/threat/unwhitelist-ip',{ip:ip}).then(function(){
+            CSM.toast('Removed from whitelist','success');
+            loadWhitelist();loadStatus();
+        }).catch(function(e){ CSM.toast('Error: '+e,'error'); });
+    }).catch(function(){});
+}
+
+document.getElementById('whitelist-form').addEventListener('submit',function(e){
+    e.preventDefault();
+    var ip=document.getElementById('whitelist-ip').value.trim();
+    if(!ip)return;
+    CSM.confirm('Whitelist '+ip+'?\n\nThis will unblock the IP and prevent future auto-blocking.').then(function(){
+        CSM.post('/api/v1/threat/whitelist-ip',{ip:ip}).then(function(){
+            document.getElementById('whitelist-ip').value='';
+            CSM.toast('IP whitelisted','success');
+            loadWhitelist();loadBlocked();loadStatus();
+        }).catch(function(e){ CSM.toast('Error: '+e,'error'); });
+    }).catch(function(){});
+});
+
+// --- GeoIP enrichment ---
 function enrichBlockedGeoIP(container) {
     var cells = container.querySelectorAll('.geo-cell');
     var idx = 0;
@@ -175,10 +195,9 @@ function enrichBlockedGeoIP(container) {
                 cell.textContent = parts.join(' / ') || '-';
             })
             .catch(function() { cell.textContent = '-'; })
-            .finally(function() { setTimeout(next, 50); }); // throttle: 50ms between requests
+            .finally(function() { setTimeout(next, 50); });
     }
-    // Start 3 concurrent fetchers
     for (var c = 0; c < 3 && c < cells.length; c++) { next(); }
 }
 
-loadStatus();loadSubnets();loadBlocked();loadAudit();
+loadStatus();loadSubnets();loadBlocked();loadWhitelist();
