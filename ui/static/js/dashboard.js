@@ -81,6 +81,12 @@
                 if (data.last_critical_ago) {
                     setText('stat-last-critical', data.last_critical_ago);
                 }
+                // Update accounts at risk widget
+                renderAccountsAtRisk(data.accounts_at_risk || []);
+                // Update auto-response summary
+                renderAutoResponse(data.auto_response || {});
+                // Update top targeted accounts
+                renderTopTargeted(data.top_accounts || []);
             })
             .catch(function() {});
     }
@@ -95,6 +101,76 @@
                 }
             })
             .catch(function() {});
+    }
+
+    var sevClasses = { 2: 'critical', 1: 'high', 0: 'warning' };
+    var sevLabelsMap = { 2: 'CRITICAL', 1: 'HIGH', 0: 'WARNING' };
+
+    function renderAccountsAtRisk(accounts) {
+        var el = document.getElementById('accounts-at-risk');
+        if (!el) return;
+        if (!accounts || accounts.length === 0) {
+            el.innerHTML = '<div class="text-muted text-center py-3">No accounts at risk</div>';
+            return;
+        }
+        var html = '<div class="list-group list-group-flush">';
+        for (var i = 0; i < accounts.length; i++) {
+            var a = accounts[i];
+            var cls = sevClasses[a.severity] || 'warning';
+            html += '<div class="list-group-item">';
+            html += '<div class="d-flex align-items-center">';
+            html += '<span class="badge badge-' + cls + ' me-2">' + (sevLabelsMap[a.severity] || '?') + '</span>';
+            html += '<a href="/account?name=' + CSM.esc(a.account) + '" class="font-monospace">' + CSM.esc(a.account) + '</a>';
+            html += '<span class="ms-auto text-muted small">' + a.findings + ' findings</span>';
+            html += '</div></div>';
+        }
+        html += '</div>';
+        el.innerHTML = html;
+    }
+
+    function renderAutoResponse(ar) {
+        var el = document.getElementById('auto-response-summary');
+        if (!el) return;
+        var total = (ar.blocked || 0) + (ar.quarantined || 0) + (ar.killed || 0);
+        if (total === 0) {
+            el.innerHTML = '<div class="text-muted text-center py-3">No auto-response actions today</div>';
+            return;
+        }
+        var html = '<div class="d-flex flex-column gap-3">';
+        html += '<div class="d-flex align-items-center justify-content-between">';
+        html += '<span><i class="ti ti-shield-off text-danger"></i>&nbsp;IPs Blocked</span>';
+        html += '<span class="h3 mb-0">' + (ar.blocked || 0) + '</span></div>';
+        html += '<div class="d-flex align-items-center justify-content-between">';
+        html += '<span><i class="ti ti-lock text-warning"></i>&nbsp;Files Quarantined</span>';
+        html += '<span class="h3 mb-0">' + (ar.quarantined || 0) + '</span></div>';
+        html += '<div class="d-flex align-items-center justify-content-between">';
+        html += '<span><i class="ti ti-skull text-critical"></i>&nbsp;Processes Killed</span>';
+        html += '<span class="h3 mb-0">' + (ar.killed || 0) + '</span></div>';
+        html += '</div>';
+        el.innerHTML = html;
+    }
+
+    function renderTopTargeted(accounts) {
+        var el = document.getElementById('top-targeted-accounts');
+        if (!el) return;
+        if (!accounts || accounts.length === 0) {
+            el.innerHTML = '<div class="text-muted text-center py-3">No targeted accounts</div>';
+            return;
+        }
+        var maxCount = accounts[0].count || 1;
+        var html = '<div class="list-group list-group-flush">';
+        for (var i = 0; i < accounts.length; i++) {
+            var a = accounts[i];
+            var pct = Math.round(a.count / maxCount * 100);
+            html += '<div class="list-group-item">';
+            html += '<div class="d-flex align-items-center mb-1">';
+            html += '<a href="/account?name=' + CSM.esc(a.account) + '" class="font-monospace">' + CSM.esc(a.account) + '</a>';
+            html += '<span class="ms-auto text-muted small">' + a.count + '</span></div>';
+            html += '<div class="progress progress-sm"><div class="progress-bar bg-primary" style="width:' + pct + '%"></div></div>';
+            html += '</div>';
+        }
+        html += '</div>';
+        el.innerHTML = html;
     }
 
     function setText(id, val) {
