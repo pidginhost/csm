@@ -69,7 +69,7 @@
                 var e = history[h];
                 html += '<tr><td><span class="badge badge-' + (sevClasses[e.severity] || 'warning') + '">' + (sevLabels[e.severity] || 'WARNING') + '</span></td>';
                 html += '<td><code>' + CSM.esc(e.check) + '</code></td><td>' + CSM.esc(e.message) + '</td>';
-                html += '<td class="text-nowrap small text-muted">' + CSM.timeAgo(e.timestamp) + '</td></tr>';
+                html += '<td class="text-nowrap"><span class="text-muted small" data-timestamp="' + CSM.esc(e.timestamp) + '">' + CSM.esc(CSM.timeAgo(e.timestamp)) + '</span></td></tr>';
             }
             html += '</tbody></table></div>';
         } else {

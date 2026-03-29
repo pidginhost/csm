@@ -45,7 +45,7 @@
             var ago = CSM.timeAgo(e.timestamp);
 
             html += '<div class="d-flex mb-2 align-items-start">';
-            html += '<div class="text-nowrap me-3 text-muted small" style="min-width:80px" title="' + CSM.esc(CSM.fmtDate(e.timestamp)) + '">' + CSM.esc(ago) + '</div>';
+            html += '<div class="text-nowrap me-3 text-muted small" style="min-width:80px" data-timestamp="' + CSM.esc(e.timestamp) + '">' + CSM.esc(ago) + '</div>';
             html += '<div class="me-2"><span class="badge badge-' + sevClass + '">' + sevLabel + '</span></div>';
             html += '<div class="me-2"><span class="badge bg-azure-lt">' + CSM.esc(typeLabel) + '</span></div>';
             html += '<div style="word-break:break-all">' + CSM.esc(e.summary);

@@ -26,7 +26,7 @@ function loadAudit() {
             var e = entries[i];
             var badgeClass = actionBadges[e.action] || 'bg-secondary';
             html += '<tr>';
-            html += '<td class="text-nowrap" title="' + CSM.esc(e.timestamp) + '"><span class="text-muted small">' + CSM.esc(CSM.timeAgo(e.timestamp)) + '</span></td>';
+            html += '<td class="text-nowrap"><span class="text-muted small" data-timestamp="' + CSM.esc(e.timestamp) + '">' + CSM.esc(CSM.timeAgo(e.timestamp)) + '</span></td>';
             html += '<td><span class="badge ' + badgeClass + '">' + CSM.esc(e.action) + '</span></td>';
             html += '<td><code>' + CSM.esc(e.target) + '</code></td>';
             html += '<td class="small">' + CSM.esc(e.details || '') + '</td>';
