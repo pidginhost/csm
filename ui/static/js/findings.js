@@ -75,6 +75,14 @@ function updateSelection() {
     document.getElementById('bulk-fix-btn').classList.toggle('d-none', !hasFixable);
 }
 
+// Warn before navigating away with active selections
+window.addEventListener('beforeunload', function(e) {
+    if (getSelectedRows().length > 0) {
+        e.preventDefault();
+        e.returnValue = '';
+    }
+});
+
 // Reset select-all when filter changes
 var checkFilterEl = document.getElementById('check-filter');
 if (checkFilterEl) checkFilterEl.addEventListener('change', function() {
