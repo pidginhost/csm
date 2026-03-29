@@ -37,6 +37,7 @@ function loadFiles() {
             html += '</tr>';
         }
         tbody.innerHTML = html;
+        new CSM.Table({ tableId: 'rules-table', sortable: true });
     }).catch(function(e) { console.error('rules list:', e); });
 }
 

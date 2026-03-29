@@ -17,6 +17,7 @@
         if (fromDate) url += '&from=' + fromDate;
         if (toDate) url += '&to=' + toDate;
         if (sevFilter !== 'all') url += '&severity=' + sevFilter;
+        if (searchTerm) url += '&search=' + encodeURIComponent(searchTerm);
 
         fetch(CSM.apiUrl(url), { credentials: 'same-origin' })
             .then(function(r) { return r.json(); })
@@ -138,6 +139,7 @@
         searchInput.addEventListener('input', function() {
             clearTimeout(searchTimer);
             searchTerm = this.value;
+            page = 0;
             searchTimer = setTimeout(function() { loadHistory(); }, 300);
         });
     }

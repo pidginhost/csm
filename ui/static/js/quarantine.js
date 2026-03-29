@@ -14,7 +14,7 @@ function loadQuarantine() {
         html += '</tbody></table></div>';
         el.innerHTML = html;
         // Initialize table component after DOM is ready
-        new CSM.Table({ tableId: 'quarantine-table', perPage: 25, searchId: 'quarantine-search', sortable: true });
+        new CSM.Table({ tableId: 'quarantine-table', perPage: 25, searchId: 'quarantine-search', sortable: true, stateKey: 'csm-quarantine-table' });
         // Bind restore and view buttons after DOM insertion
         el.querySelectorAll('.restore-btn').forEach(function(btn) {
             btn.addEventListener('click', function() { restoreFile(this.getAttribute('data-id')); });

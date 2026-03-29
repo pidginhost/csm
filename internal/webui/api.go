@@ -95,8 +95,10 @@ func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 	toStr := r.URL.Query().Get("to")
 	sevStr := r.URL.Query().Get("severity")
 
+	searchStr := r.URL.Query().Get("search")
+
 	// If no filters, use simple paginated read
-	if fromStr == "" && toStr == "" && sevStr == "" {
+	if fromStr == "" && toStr == "" && sevStr == "" && searchStr == "" {
 		findings, total := s.store.ReadHistory(limit, offset)
 		writeJSON(w, map[string]interface{}{
 			"findings": findings,
@@ -120,6 +122,7 @@ func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 	if sevStr != "" {
 		sevFilter = queryInt(r, "severity", -1)
 	}
+	searchLower := strings.ToLower(searchStr)
 
 	allFindings, _ := s.store.ReadHistory(5000, 0)
 	var filtered []alert.Finding
@@ -132,6 +135,13 @@ func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 		}
 		if sevFilter >= 0 && int(f.Severity) != sevFilter {
 			continue
+		}
+		if searchStr != "" {
+			if !strings.Contains(strings.ToLower(f.Check), searchLower) &&
+				!strings.Contains(strings.ToLower(f.Message), searchLower) &&
+				!strings.Contains(strings.ToLower(f.Details), searchLower) {
+				continue
+			}
 		}
 		filtered = append(filtered, f)
 	}
