@@ -11,6 +11,9 @@ import (
 	"time"
 )
 
+// eximMsgIDRegex validates Exim message ID format (e.g., 2jKPFm-000abc-1X).
+var eximMsgIDRegex = regexp.MustCompile(`^[0-9A-Za-z]{6}-[0-9A-Za-z]{6}-[0-9A-Za-z]{2}$`)
+
 // RemediationResult describes the outcome of a fix action.
 type RemediationResult struct {
 	Success     bool   `json:"success"`
@@ -322,7 +325,7 @@ func fixQuarantineSpoolMessage(message string) RemediationResult {
 		return RemediationResult{Error: "could not extract Exim message ID from finding"}
 	}
 	// Validate Exim message ID format to prevent path traversal
-	if !regexp.MustCompile(`^[0-9A-Za-z]{6}-[0-9A-Za-z]{6}-[0-9A-Za-z]{2}$`).MatchString(msgID) {
+	if !eximMsgIDRegex.MatchString(msgID) {
 		return RemediationResult{Error: fmt.Sprintf("invalid Exim message ID format: %s", msgID)}
 	}
 
