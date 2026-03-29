@@ -68,6 +68,7 @@
                 <thead>
                     <tr>
                         <th><input type="checkbox" id="select-all" class="form-check-input"></th>
+                        <th>Severity</th>
                         <th>Check</th>
                         <th>Message</th>
                         <th>First Seen</th>
@@ -79,6 +80,7 @@
                     {{range .Entries}}
                     <tr class="finding-row" data-check="{{.Check}}" data-message="{{.Message}}" data-hasFix="{{.HasFix}}" data-fixdesc="{{.FixDesc}}">
                         <td><input type="checkbox" class="form-check-input row-checkbox"></td>
+                        <td><span class="badge badge-{{.SevClass}}">{{.Severity}}</span></td>
                         <td><code>{{.Check}}</code></td>
                         <td class="text-secondary" style="word-break:break-all">{{.Message}}</td>
                         <td class="text-nowrap"><span class="font-monospace small">{{.FirstSeen}}</span></td>
