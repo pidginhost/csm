@@ -13,17 +13,20 @@ import (
 
 // Rule represents a single malware detection rule loaded from an external file.
 type Rule struct {
-	Name        string   `yaml:"name"`
-	Description string   `yaml:"description"`
-	Severity    string   `yaml:"severity"`   // "critical", "high", "warning"
-	Category    string   `yaml:"category"`   // "webshell", "backdoor", "phishing", "dropper", "exploit"
-	FileTypes   []string `yaml:"file_types"` // [".php", ".html", "*"] — which extensions to scan
-	Patterns    []string `yaml:"patterns"`   // literal string patterns (case-insensitive match)
-	Regexes     []string `yaml:"regexes"`    // regex patterns (for complex matching)
-	MinMatch    int      `yaml:"min_match"`  // minimum patterns that must match (default: 1)
+	Name            string   `yaml:"name"`
+	Description     string   `yaml:"description"`
+	Severity        string   `yaml:"severity"`         // "critical", "high", "warning"
+	Category        string   `yaml:"category"`         // "webshell", "backdoor", "phishing", "dropper", "exploit"
+	FileTypes       []string `yaml:"file_types"`       // [".php", ".html", "*"] — which extensions to scan
+	Patterns        []string `yaml:"patterns"`         // literal string patterns (case-insensitive match)
+	Regexes         []string `yaml:"regexes"`          // regex patterns (for complex matching)
+	ExcludePatterns []string `yaml:"exclude_patterns"` // if any match, rule is skipped (false positive reduction)
+	ExcludeRegexes  []string `yaml:"exclude_regexes"`  // regex exclusions
+	MinMatch        int      `yaml:"min_match"`        // minimum patterns that must match (default: 1)
 
 	// Compiled regexes (populated by Compile())
-	compiledRegexes []*regexp.Regexp
+	compiledRegexes        []*regexp.Regexp
+	compiledExcludeRegexes []*regexp.Regexp
 }
 
 // RuleFile is the top-level structure of a rules YAML file.
@@ -130,6 +133,14 @@ func (r *Rule) compile() error {
 		}
 		r.compiledRegexes = append(r.compiledRegexes, re)
 	}
+	r.compiledExcludeRegexes = nil
+	for _, pattern := range r.ExcludeRegexes {
+		re, err := regexp.Compile("(?i)" + pattern)
+		if err != nil {
+			return fmt.Errorf("invalid exclude regex '%s': %w", pattern, err)
+		}
+		r.compiledExcludeRegexes = append(r.compiledExcludeRegexes, re)
+	}
 	return nil
 }
 
@@ -159,6 +170,26 @@ func (s *Scanner) ScanContent(content []byte, fileExt string) []Match {
 	for _, rule := range s.rules {
 		// Check if this rule applies to this file type
 		if !ruleMatchesExt(rule, extLower) {
+			continue
+		}
+
+		// Check exclusions first — if any exclude pattern matches, skip this rule
+		excluded := false
+		for _, pattern := range rule.ExcludePatterns {
+			if strings.Contains(contentLower, strings.ToLower(pattern)) {
+				excluded = true
+				break
+			}
+		}
+		if !excluded {
+			for _, re := range rule.compiledExcludeRegexes {
+				if re.Match(content) {
+					excluded = true
+					break
+				}
+			}
+		}
+		if excluded {
 			continue
 		}
 
