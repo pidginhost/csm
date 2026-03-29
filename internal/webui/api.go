@@ -97,8 +97,20 @@ func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 
 	searchStr := r.URL.Query().Get("search")
 
+	checksStr := r.URL.Query().Get("checks")
+	var checksFilter map[string]bool
+	if checksStr != "" {
+		checksFilter = make(map[string]bool)
+		for _, c := range strings.Split(checksStr, ",") {
+			c = strings.TrimSpace(c)
+			if c != "" {
+				checksFilter[c] = true
+			}
+		}
+	}
+
 	// If no filters, use simple paginated read
-	if fromStr == "" && toStr == "" && sevStr == "" && searchStr == "" {
+	if fromStr == "" && toStr == "" && sevStr == "" && searchStr == "" && checksStr == "" {
 		findings, total := s.store.ReadHistory(limit, offset)
 		writeJSON(w, map[string]interface{}{
 			"findings": findings,
@@ -142,6 +154,9 @@ func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 				!strings.Contains(strings.ToLower(f.Details), searchLower) {
 				continue
 			}
+		}
+		if checksFilter != nil && !checksFilter[f.Check] {
+			continue
 		}
 		filtered = append(filtered, f)
 	}
