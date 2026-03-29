@@ -48,8 +48,10 @@ type findingsData struct {
 }
 
 type findingEntry struct {
-	Check     string
-	Message   string
+	Severity string
+	SevClass string
+	Check    string
+	Message  string
 	FirstSeen string
 	LastSeen  string
 	Baseline  bool
@@ -217,6 +219,8 @@ func (s *Server) handleFindings(w http.ResponseWriter, _ *http.Request) {
 			lastSeen = entry.LastSeen
 		}
 		items = append(items, findingEntry{
+			Severity:  severityLabel(f.Severity),
+			SevClass:  severityClass(f.Severity),
 			Check:     f.Check,
 			Message:   f.Message,
 			FirstSeen: firstSeen.Format("2006-01-02 15:04"),
