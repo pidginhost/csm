@@ -96,9 +96,6 @@ func (d *Daemon) Run() error {
 	// Start firewall engine if enabled
 	d.startFirewall()
 
-	// Initialize GeoIP databases
-	d.initGeoIP()
-
 	// Start challenge server if enabled (gray listing)
 	d.startChallengeServer()
 
@@ -116,6 +113,9 @@ func (d *Daemon) Run() error {
 
 	// Start Web UI server — available immediately, before initial scan
 	d.startWebUI()
+
+	// Initialize GeoIP databases (after webServer so SetGeoIPDB can attach)
+	d.initGeoIP()
 
 	// Run initial scan synchronously (before dispatcher starts)
 	fmt.Fprintf(os.Stderr, "[%s] Running initial baseline scan...\n", ts())
