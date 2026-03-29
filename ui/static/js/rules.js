@@ -14,7 +14,7 @@ function loadStatus() {
         if (data.rules_dir) {
             document.getElementById('rules-dir').textContent = 'Rules directory: ' + data.rules_dir;
         }
-    }).catch(function(e) { console.error('rules status:', e); });
+    }).catch(function() { CSM.loadError(document.getElementById('stat-yaml').closest('.card') || document.getElementById('stat-yaml').parentElement, loadStatus); });
 }
 
 function loadFiles() {
@@ -38,7 +38,7 @@ function loadFiles() {
         }
         tbody.innerHTML = html;
         new CSM.Table({ tableId: 'rules-table', sortable: true });
-    }).catch(function(e) { console.error('rules list:', e); });
+    }).catch(function() { CSM.loadError(document.getElementById('rules-tbody').parentElement.parentElement.parentElement, loadFiles); });
 }
 
 document.getElementById('btn-reload').addEventListener('click', function() {

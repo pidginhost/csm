@@ -22,7 +22,7 @@ function loadQuarantine() {
         el.querySelectorAll('.view-btn').forEach(function(btn) {
             btn.addEventListener('click', function() { viewFile(this.getAttribute('data-id'), this.getAttribute('data-path')); });
         });
-    }).catch(function(){ document.getElementById('quarantine-content').innerHTML = '<div class="card-body text-center text-danger py-4">Error loading data.</div>'; });
+    }).catch(function(){ CSM.loadError(document.getElementById('quarantine-content'), loadQuarantine); });
 }
 function restoreFile(id) {
     CSM.confirm('Restore this file? A re-scan is recommended after restore.').then(function() {
