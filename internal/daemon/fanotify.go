@@ -573,18 +573,9 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	if strings.Contains(path, "/wp-content/uploads/") && isPHPExtension(nameLower) {
 		if nameLower != "index.php" && !isKnownSafeUploadDaemon(path) {
 			if looksLikePluginUpdate(path) {
-				// Verified plugin update — emit one alert per temp directory, not per file.
-				// Extract the temp dir (e.g. "cookie-notice_b3hfq") for dedup.
-				uploadsIdx := strings.Index(path, "/wp-content/uploads/")
-				afterUploads := path[uploadsIdx+len("/wp-content/uploads/"):]
-				tempDir := afterUploads
-				if slashIdx := strings.Index(afterUploads, "/"); slashIdx > 0 {
-					tempDir = afterUploads[:slashIdx]
-				}
-				updateDir := path[:uploadsIdx] + "/wp-content/uploads/" + tempDir
-				fm.sendAlertWithPath(alert.Warning, "php_in_uploads_realtime",
-					fmt.Sprintf("Plugin update in uploads: %s", updateDir),
-					fmt.Sprintf("File: %s", filepath.Base(path)), updateDir, procInfo)
+				// Verified plugin update — plugin exists in wp-content/plugins/,
+				// WordPress is extracting the update to a temp dir in uploads/.
+				// No alert — this is normal WordPress behavior.
 			} else {
 				fm.sendAlertWithPath(alert.Critical, "php_in_uploads_realtime",
 					fmt.Sprintf("PHP file created in uploads: %s", path), "", path, procInfo)
@@ -787,12 +778,14 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) {
 	}
 
 	// Shell execution with request input
+	// Uses containsFunc to avoid substring false positives
+	// (e.g. "WP_Filesystem(" matching "exec(", "preg_match(" matching "exec(")
 	shellFuncs := []string{"system(", "passthru(", "exec(", "shell_exec(", "popen("}
 	requestVars := []string{"$_request", "$_post", "$_get", "$_cookie"}
 	hasShell := false
 	hasInput := false
 	for _, sf := range shellFuncs {
-		if strings.Contains(content, sf) {
+		if containsFunc(content, sf) {
 			hasShell = true
 		}
 	}
@@ -813,7 +806,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) {
 				lineHasShell := false
 				lineHasInput := false
 				for _, sf := range shellFuncs {
-					if strings.Contains(line, sf) {
+					if containsFunc(line, sf) {
 						lineHasShell = true
 						break
 					}
@@ -1036,6 +1029,9 @@ func (fm *FileMonitor) checkPhishingZip(path, nameLower, procInfo string) {
 
 // runSignatureScan runs YAML and YARA signature scanning on file content.
 // Returns true if a match was found and an alert was sent.
+// Non-critical YAML matches use directory-level dedup to avoid alert floods
+// when a plugin directory has many files matching the same rule.
+// Critical matches (backdoors, webshells) always alert per-file.
 func (fm *FileMonitor) runSignatureScan(data []byte, path, ext, procInfo string) bool {
 	if scanner := signatures.Global(); scanner != nil {
 		matches := scanner.ScanContent(data, ext)
@@ -1044,6 +1040,15 @@ func (fm *FileMonitor) runSignatureScan(data []byte, path, ext, procInfo string)
 			sev := alert.High
 			if m.Severity == "critical" {
 				sev = alert.Critical
+			}
+			// Non-critical: dedup by rule+directory so 30 files in the same
+			// plugin matching the same rule produce one alert, not 30.
+			// Critical matches always alert per-file (real path for quarantine).
+			if sev != alert.Critical {
+				dirKey := m.RuleName + ":" + filepath.Dir(path)
+				if !fm.shouldAlert("signature_match_realtime", dirKey) {
+					return true // suppressed by dedup, but still counts as "matched"
+				}
 			}
 			fm.sendAlertWithPath(sev, "signature_match_realtime",
 				fmt.Sprintf("Signature match [%s]: %s", m.RuleName, path),
@@ -1160,6 +1165,33 @@ func (fm *FileMonitor) overflowReporter() {
 }
 
 // isPHPExtension returns true for all PHP file extensions that can execute code.
+// containsFunc checks if content contains a function call that isn't part of
+// a longer identifier. Prevents "WP_Filesystem(" matching "exec(" or
+// "preg_match(" matching "exec(". Checks the character before the match
+// is not a letter, digit, or underscore.
+func containsFunc(content, funcCall string) bool {
+	idx := 0
+	for {
+		pos := strings.Index(content[idx:], funcCall)
+		if pos < 0 {
+			return false
+		}
+		absPos := idx + pos
+		if absPos == 0 {
+			return true
+		}
+		prev := content[absPos-1]
+		if !((prev >= 'a' && prev <= 'z') || (prev >= 'A' && prev <= 'Z') ||
+			(prev >= '0' && prev <= '9') || prev == '_') {
+			return true
+		}
+		idx = absPos + len(funcCall)
+		if idx >= len(content) {
+			return false
+		}
+	}
+}
+
 func isPHPExtension(nameLower string) bool {
 	return strings.HasSuffix(nameLower, ".php") ||
 		strings.HasSuffix(nameLower, ".phtml") ||
