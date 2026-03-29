@@ -48,10 +48,10 @@ type findingsData struct {
 }
 
 type findingEntry struct {
-	Severity string
-	SevClass string
-	Check    string
-	Message  string
+	Severity  string
+	SevClass  string
+	Check     string
+	Message   string
 	FirstSeen string
 	LastSeen  string
 	Baseline  bool
