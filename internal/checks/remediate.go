@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -319,6 +320,10 @@ func fixQuarantineSpoolMessage(message string) RemediationResult {
 	msgID := extractEximMsgID(message)
 	if msgID == "" {
 		return RemediationResult{Error: "could not extract Exim message ID from finding"}
+	}
+	// Validate Exim message ID format to prevent path traversal
+	if !regexp.MustCompile(`^[0-9A-Za-z]{6}-[0-9A-Za-z]{6}-[0-9A-Za-z]{2}$`).MatchString(msgID) {
+		return RemediationResult{Error: fmt.Sprintf("invalid Exim message ID format: %s", msgID)}
 	}
 
 	spoolDirs := []string{"/var/spool/exim/input", "/var/spool/exim4/input"}
