@@ -173,7 +173,8 @@ func (s *Server) apiQuarantine(w http.ResponseWriter, _ *http.Request) {
 	// Scan both root quarantine dir and pre_clean subdirectory
 	rootMetas, _ := filepath.Glob(filepath.Join(quarantineDir, "*.meta"))
 	preCleanMetas, _ := filepath.Glob(filepath.Join(quarantineDir, "pre_clean", "*.meta"))
-	metaFiles := append(rootMetas, preCleanMetas...)
+	metaFiles := rootMetas
+	metaFiles = append(metaFiles, preCleanMetas...)
 	for _, metaFile := range metaFiles {
 		data, err := os.ReadFile(metaFile)
 		if err != nil {
@@ -258,9 +259,10 @@ func (s *Server) apiStats(w http.ResponseWriter, _ *http.Request) {
 			}
 		}
 		// Count auto-response actions
-		if f.Check == "auto_block" {
+		switch f.Check {
+		case "auto_block":
 			autoBlocked++
-		} else if f.Check == "auto_response" {
+		case "auto_response":
 			if strings.Contains(f.Message, "quarantin") {
 				autoQuarantined++
 			} else if strings.Contains(f.Message, "kill") || strings.Contains(f.Message, "Kill") {
@@ -318,9 +320,9 @@ func (s *Server) apiStats(w http.ResponseWriter, _ *http.Request) {
 		"last_critical_ago": lastCriticalAgo,
 		"accounts_at_risk":  atRisk,
 		"auto_response": map[string]int{
-			"blocked":      autoBlocked,
-			"quarantined":  autoQuarantined,
-			"killed":       autoKilled,
+			"blocked":     autoBlocked,
+			"quarantined": autoQuarantined,
+			"killed":      autoKilled,
 		},
 		"top_accounts": topAccounts,
 	}
