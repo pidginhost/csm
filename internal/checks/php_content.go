@@ -211,33 +211,36 @@ func analyzePHPContent(path string) phpAnalysisResult {
 	}
 
 	// --- High: Hex-encoded string construction ---
+	// Only flag hex strings when accompanied by concatenation — real obfuscation
+	// builds function names like "\x63" . "\x75" . "\x72" . "\x6c" (= "curl").
+	// Standalone hex arrays (Wordfence IPv6 subnet masks, binary data) are benign.
 	hexStringCount := countOccurrences(content, `"\x`)
-	if hexStringCount > 20 {
-		indicators = append(indicators, fmt.Sprintf("heavy hex-encoded strings (%d occurrences)", hexStringCount))
-	}
-
-	// --- High: String concatenation obfuscation ---
-	// Pattern: "\x63" . "\x75" . "\x72" . "\x6c" to build "curl"
 	dotConcatCount := countOccurrences(content, `" . "`)
-	if dotConcatCount > 20 {
+	if hexStringCount > 20 && dotConcatCount > 10 {
+		indicators = append(indicators, fmt.Sprintf("heavy hex-encoded strings with concatenation (%d hex, %d concat — obfuscation pattern)", hexStringCount, dotConcatCount))
+	} else if dotConcatCount > 30 {
 		indicators = append(indicators, fmt.Sprintf("excessive string concatenation (%d — function name obfuscation)", dotConcatCount))
 	}
 
-	// --- High: Variable function calls (indirect execution) ---
-	if strings.Contains(contentLower, "call_user_func_array") ||
-		(strings.Contains(contentLower, "call_user_func") && strings.Contains(contentLower, "$")) {
-		if hasDecoder {
-			indicators = append(indicators, "variable function call with decoder")
+	// --- High: Variable function calls with obfuscated names ---
+	// call_user_func + decoder alone is too broad — Elementor, WooCommerce, and
+	// dozens of plugins use call_user_func_array with base64_decode legitimately.
+	// Only flag when combined with actual obfuscation (hex strings, heavy concat).
+	if strings.Contains(contentLower, "call_user_func") && hasDecoder {
+		if hexStringCount > 5 || dotConcatCount > 5 {
+			indicators = append(indicators, "variable function call with decoder and obfuscation")
 		}
 	}
 
 	// --- High: Shell execution functions combined with request input ---
+	// Uses containsStandaloneFunc to avoid substring false positives
+	// (e.g. "WP_Filesystem(" matching "exec(", "preg_match(" matching "exec(")
 	shellFuncs := []string{"system(", "passthru(", "exec(", "shell_exec(", "popen(", "proc_open(", "pcntl_exec("}
 	requestVars := []string{"$_request", "$_post", "$_get", "$_cookie", "$_server"}
 	hasShell := false
 	hasInput := false
 	for _, sf := range shellFuncs {
-		if strings.Contains(contentLower, sf) {
+		if containsStandaloneFunc(contentLower, sf) {
 			hasShell = true
 		}
 	}
