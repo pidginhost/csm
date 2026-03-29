@@ -214,6 +214,9 @@ do_upgrade() {
     assets_code=$(pkg_download "${PKG_BASE}/latest/csm-assets.tar.gz" "${tmpdir}/csm-assets.tar.gz")
     if [ "$assets_code" = "200" ]; then
         tar xzf "${tmpdir}/csm-assets.tar.gz" -C "$INSTALL_DIR" 2>/dev/null || true
+        # Copy signature rules from configs/ to the active rules/ directory
+        cp "${INSTALL_DIR}/configs/malware.yml" "${INSTALL_DIR}/rules/malware.yml" 2>/dev/null || true
+        cp "${INSTALL_DIR}/configs/malware.yar" "${INSTALL_DIR}/rules/malware.yar" 2>/dev/null || true
     fi
 
     rm -rf "$tmpdir"
