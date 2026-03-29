@@ -517,7 +517,7 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 			}
 		}
 
-		// API rate limiting: 120 requests per minute per IP
+		// API rate limiting: 600 requests per minute per IP
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			ip := r.RemoteAddr
 			if idx := strings.LastIndex(ip, ":"); idx >= 0 {
@@ -532,7 +532,7 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 					recent = append(recent, t)
 				}
 			}
-			if len(recent) >= 120 {
+			if len(recent) >= 600 {
 				s.apiMu.Unlock()
 				http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
 				return

@@ -26,8 +26,10 @@ function typeBadges(counts){
     return html||'—';
 }
 
+function checkResp(r){if(!r.ok)throw new Error(r.status+' '+r.statusText);return r.json();}
+
 // Load stats
-fetch('/api/v1/threat/stats',{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(data){
+fetch('/api/v1/threat/stats',{credentials:'same-origin'}).then(checkResp).then(function(data){
     document.getElementById('stat-total-ips').textContent=data.total_ips||0;
     document.getElementById('stat-24h').textContent=data.last_24h_events||0;
     document.getElementById('stat-7d').textContent=data.last_7d_events||0;
@@ -71,7 +73,7 @@ fetch('/api/v1/threat/stats',{credentials:'same-origin'}).then(function(r){retur
 }).catch(function(e){console.error('threat stats:',e)});
 
 // Load top attackers
-fetch('/api/v1/threat/top-attackers?limit=50',{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(data){
+fetch('/api/v1/threat/top-attackers?limit=50',{credentials:'same-origin'}).then(checkResp).then(function(data){
     var tbody=document.getElementById('attackers-tbody');
     if(!data||data.length===0){tbody.innerHTML='<tr><td colspan="9" class="text-center text-muted">No attack data recorded yet</td></tr>';return;}
     var html='';
@@ -196,7 +198,7 @@ document.getElementById('lookup-form').addEventListener('submit',function(e){
 
 // --- Whitelist management ---
 function loadWhitelist() {
-    fetch('/api/v1/threat/whitelist',{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(entries){
+    fetch('/api/v1/threat/whitelist',{credentials:'same-origin'}).then(checkResp).then(function(entries){
         var tbody=document.getElementById('wl-tbody');
         if(!entries||entries.length===0){
             tbody.innerHTML='<tr><td colspan="3" class="text-center text-muted">No whitelisted IPs</td></tr>';
