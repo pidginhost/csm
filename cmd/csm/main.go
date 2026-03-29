@@ -243,8 +243,7 @@ func runEnable() {
 		StatePath:  defaultStatePath,
 		LogPath:    defaultLogPath,
 	}
-	switch feature {
-	case "php-shield":
+	if feature == "php-shield" {
 		if err := installer.EnablePHPShield(); err != nil {
 			fmt.Fprintf(os.Stderr, "Enable failed: %v\n", err)
 			os.Exit(1)
@@ -270,8 +269,7 @@ func runDisable() {
 		StatePath:  defaultStatePath,
 		LogPath:    defaultLogPath,
 	}
-	switch feature {
-	case "php-shield":
+	if feature == "php-shield" {
 		if err := installer.DisablePHPShield(); err != nil {
 			fmt.Fprintf(os.Stderr, "Disable failed: %v\n", err)
 			os.Exit(1)
