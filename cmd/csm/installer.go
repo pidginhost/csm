@@ -5,9 +5,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/auditd"
+	"github.com/pidginhost/cpanel-security-monitor/internal/config"
 )
 
 type Installer struct {
@@ -127,6 +127,9 @@ func (inst *Installer) Uninstall() error {
 	// Remove immutable flag
 	exec.Command("chattr", "-i", inst.BinaryPath).Run()
 
+	// Stop daemon service first
+	exec.Command("systemctl", "stop", "csm.service").Run()
+
 	// Stop and remove systemd timers
 	for _, name := range []string{"csm.timer", "csm-critical.timer", "csm-deep.timer"} {
 		exec.Command("systemctl", "stop", name).Run()
@@ -162,6 +165,7 @@ func (inst *Installer) Uninstall() error {
 
 	// Remove PHP Shield
 	os.Remove(phpShieldPath)
+	os.Remove(phpShieldConfPath)
 	iniGlob, _ := filepath.Glob("/opt/cpanel/ea-php*/root/etc/php.d/zzz_csm_shield.ini")
 	for _, p := range iniGlob {
 		os.Remove(p)
@@ -486,6 +490,16 @@ func deployLogrotate() error {
     notifempty
     create 0640 root root
 }
+
+/var/run/csm/php_events.log {
+    daily
+    rotate 7
+    compress
+    missingok
+    notifempty
+    create 0640 root root
+    size 5M
+}
 `
 	return os.WriteFile("/etc/logrotate.d/csm", []byte(content), 0644)
 }
@@ -587,44 +601,66 @@ func (inst *Installer) DeployChallengeConfig() {
 }
 
 const phpShieldPath = "/opt/csm/php_shield.php"
+const phpShieldConfPath = "/opt/csm/shield.conf.php"
 
-// shieldContent is the minified PHP Shield deployed to servers.
-// Step 8 of the plan will replace this with go:embed from configs/php_shield.php.
+// shieldContent is the PHP Shield deployed to servers. Kept in sync with configs/php_shield.php.
 var shieldContent = `<?php
-/**
- * CSM PHP Shield — Runtime Protection
- * Blocks PHP execution from dangerous paths, logs suspicious requests.
- * See /opt/csm/configs/php_shield.php for full version.
- */
+// CSM PHP Shield v2.0.0 — Runtime Protection (auto_prepend_file)
+// Fails open: errors don't break sites. See configs/php_shield.php for docs.
 try {
+    define('CSM_SHIELD_VERSION', '2.0.0');
     define('CSM_SHIELD_LOG', '/var/run/csm/php_events.log');
+    define('CSM_SHIELD_CONF', '/opt/csm/shield.conf.php');
+    define('CSM_SHIELD_MAX_LOG_BYTES', 10485760);
     $csm_script = isset($_SERVER['SCRIPT_FILENAME']) ? $_SERVER['SCRIPT_FILENAME'] : '';
     if ($csm_script === '' || $csm_script === __FILE__) return;
+    // Per-account disable
+    if (preg_match('#^/home/([^/]+)/#', $csm_script, $csm_m)) {
+        if (file_exists('/home/' . $csm_m[1] . '/.csm-shield-disable')) return;
+    }
+    // Load config
+    $csm_conf = array('blocked_paths' => array('/wp-content/uploads/','/wp-content/upgrade/','/tmp/','/dev/shm/','/var/tmp/'), 'allowed_ips' => array());
+    if (file_exists(CSM_SHIELD_CONF)) { $c = @include CSM_SHIELD_CONF; if (is_array($c)) { if (isset($c['blocked_paths']) && is_array($c['blocked_paths'])) $csm_conf['blocked_paths'] = $c['blocked_paths']; if (isset($c['allowed_ips']) && is_array($c['allowed_ips'])) $csm_conf['allowed_ips'] = $c['allowed_ips']; } }
+    // IP allowlist
+    $csm_ip = isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : '';
+    if ($csm_ip !== '' && in_array($csm_ip, $csm_conf['allowed_ips'], true)) return;
     $csm_lower = strtolower($csm_script);
-    $csm_blocked = array('/wp-content/uploads/', '/wp-content/upgrade/', '/tmp/', '/dev/shm/', '/var/tmp/');
-    foreach ($csm_blocked as $b) {
+    // 1. Block dangerous paths
+    foreach ($csm_conf['blocked_paths'] as $b) {
         if (strpos($csm_lower, $b) !== false) {
             $bn = basename($csm_lower);
-            if ($bn === 'index.php') continue;
+            if ($bn === 'index.php' || $bn === 'wp-cron.php') continue;
             $safe = array('/cache/', '/imunify', '/sucuri/', '/smush/');
             $ok = false;
             foreach ($safe as $s) { if (strpos($csm_lower, $s) !== false) { $ok = true; break; } }
             if ($ok) continue;
-            @file_put_contents(CSM_SHIELD_LOG, sprintf("[%s] BLOCK_PATH ip=%s script=%s uri=%s\n", date('Y-m-d H:i:s'), $_SERVER['REMOTE_ADDR'], $csm_script, substr($_SERVER['REQUEST_URI'],0,200)), FILE_APPEND|LOCK_EX);
+            csm_log_event('BLOCK_PATH', $csm_script, 'PHP execution from blocked path');
             http_response_code(403);
+            echo "<!DOCTYPE html><html><head><title>403 Forbidden</title></head><body><h1>403 Forbidden</h1><p>PHP execution is not allowed from this location.</p><hr><small>Security Policy</small></body></html>";
             exit;
         }
     }
-    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-        $cmds = array('cmd','command','exec','execute','c','e','shell');
-        foreach ($cmds as $p) {
-            if (isset($_REQUEST[$p])) {
-                @file_put_contents(CSM_SHIELD_LOG, sprintf("[%s] WEBSHELL_PARAM ip=%s script=%s details=%s\n", date('Y-m-d H:i:s'), $_SERVER['REMOTE_ADDR'], $csm_script, $p), FILE_APPEND|LOCK_EX);
-                break;
-            }
+    // 2. Webshell params (GET + POST)
+    $cmds = array('cmd','command','exec','execute','c','e','shell');
+    foreach ($cmds as $p) { if (isset($_REQUEST[$p])) { csm_log_event('WEBSHELL_PARAM', $csm_script, $p); break; } }
+    // 3. Eval chain detection
+    register_shutdown_function(function() {
+        $e = error_get_last();
+        if ($e !== null && $e['type'] === E_ERROR && strpos($e['message'], 'eval()') !== false) {
+            csm_log_event('EVAL_FATAL', $e['file'], 'Fatal in eval(): ' . substr($e['message'], 0, 200));
         }
-    }
+    });
 } catch (Exception $e) {}
+function csm_log_event($type, $script, $details) {
+    $f = CSM_SHIELD_LOG; $dir = dirname($f);
+    if (!is_dir($dir)) @mkdir($dir, 0750, true);
+    if (!is_writable($dir)) { if (!defined('CSM_SHIELD_LOG_WARNED')) { define('CSM_SHIELD_LOG_WARNED', true); error_log('CSM PHP Shield: cannot write to ' . $dir); } return; }
+    $sz = @filesize($f); if ($sz !== false && $sz > CSM_SHIELD_MAX_LOG_BYTES) return;
+    $ip = isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : '-';
+    $uri = isset($_SERVER['REQUEST_URI']) ? substr($_SERVER['REQUEST_URI'], 0, 200) : '-';
+    $ua = isset($_SERVER['HTTP_USER_AGENT']) ? substr($_SERVER['HTTP_USER_AGENT'], 0, 100) : '-';
+    @file_put_contents($f, sprintf("[%s] %s ip=%s script=%s uri=%s ua=%s details=%s\n", date('Y-m-d H:i:s'), $type, $ip, $script, $uri, $ua, $details), FILE_APPEND|LOCK_EX);
+}
 `
 
 // InstallPHPShield deploys the PHP runtime protection shield.
@@ -639,6 +675,9 @@ func (inst *Installer) InstallPHPShield() error {
 		return fmt.Errorf("writing shield file: %w", err)
 	}
 	fmt.Printf("  Deployed: %s\n", phpShieldPath)
+
+	// Generate shield config with allowed IPs from main config
+	inst.deployShieldConfig()
 
 	// Create the events log directory
 	if err := os.MkdirAll("/var/run/csm", 0750); err != nil {
@@ -759,23 +798,49 @@ func (inst *Installer) DisablePHPShield() error {
 	return nil
 }
 
-// patchConfigPHPShield sets php_shield.enabled in csm.yaml.
+// patchConfigPHPShield sets php_shield.enabled in csm.yaml using config.Load/Save
+// to avoid fragile string-based YAML manipulation.
 func (inst *Installer) patchConfigPHPShield(enabled bool) {
-	data, err := os.ReadFile(inst.ConfigPath)
+	cfg, err := config.Load(inst.ConfigPath)
 	if err != nil {
 		return
 	}
-	content := string(data)
+	cfg.PHPShield.Enabled = enabled
+	_ = config.Save(cfg)
+}
 
-	if strings.Contains(content, "php_shield:") {
-		if enabled {
-			content = strings.Replace(content, "php_shield:\n  enabled: false", "php_shield:\n  enabled: true", 1)
-		} else {
-			content = strings.Replace(content, "php_shield:\n  enabled: true", "php_shield:\n  enabled: false", 1)
-		}
-	} else {
-		content += fmt.Sprintf("\nphp_shield:\n  enabled: %v\n", enabled)
+// deployShieldConfig generates /opt/csm/shield.conf.php with allowed IPs from main config.
+func (inst *Installer) deployShieldConfig() {
+	cfg, err := config.Load(inst.ConfigPath)
+	if err != nil {
+		return
 	}
 
-	_ = os.WriteFile(inst.ConfigPath, []byte(content), 0644)
+	var ips string
+	for _, ip := range cfg.InfraIPs {
+		ips += fmt.Sprintf("    '%s',\n", ip)
+	}
+
+	confContent := fmt.Sprintf(`<?php
+// CSM Shield config — generated by csm install --php-shield
+// Edit this file to customize blocked paths or allowed IPs.
+// Changes take effect immediately (PHP re-reads on each request).
+return array(
+    'blocked_paths' => array(
+        '/wp-content/uploads/',
+        '/wp-content/upgrade/',
+        '/tmp/',
+        '/dev/shm/',
+        '/var/tmp/',
+    ),
+    'allowed_ips' => array(
+%s    ),
+);
+`, ips)
+
+	if err := os.WriteFile(phpShieldConfPath, []byte(confContent), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "  Warning: could not write shield config: %v\n", err)
+		return
+	}
+	fmt.Printf("  Shield config: %s (%d infra IPs allowlisted)\n", phpShieldConfPath, len(cfg.InfraIPs))
 }

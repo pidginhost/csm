@@ -33,6 +33,7 @@ type Daemon struct {
 	binaryPath string
 
 	logWatchers     []*LogWatcher
+	logWatchersMu   sync.Mutex
 	fileMonitor     *FileMonitor
 	hijackDetector  *PasswordHijackDetector
 	pamListener     *PAMListener
@@ -215,7 +216,10 @@ func (d *Daemon) Run() error {
 	close(d.stopCh)
 
 	// Stop all watchers
-	for _, w := range d.logWatchers {
+	d.logWatchersMu.Lock()
+	watchers := d.logWatchers
+	d.logWatchersMu.Unlock()
+	for _, w := range watchers {
 		w.Stop()
 	}
 	if d.webServer != nil {
@@ -503,6 +507,7 @@ func (d *Daemon) startLogWatchers() {
 		if err != nil {
 			if os.IsNotExist(err) {
 				// File doesn't exist yet — retry periodically until it appears
+				d.wg.Add(1)
 				go d.retryLogWatcher(lf.path, lf.handler)
 			} else {
 				fmt.Fprintf(os.Stderr, "[%s] Warning: could not watch %s: %v\n", ts(), lf.path, err)
@@ -522,6 +527,7 @@ func (d *Daemon) startLogWatchers() {
 // retryLogWatcher polls for a missing log file every 60 seconds.
 // When the file appears, it starts a watcher and returns.
 func (d *Daemon) retryLogWatcher(path string, handler LogLineHandler) {
+	defer d.wg.Done()
 	fmt.Fprintf(os.Stderr, "[%s] Warning: %s not found, will retry every 60s\n", ts(), path)
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
@@ -535,7 +541,9 @@ func (d *Daemon) retryLogWatcher(path string, handler LogLineHandler) {
 			if err != nil {
 				continue // still missing, keep retrying
 			}
+			d.logWatchersMu.Lock()
 			d.logWatchers = append(d.logWatchers, w)
+			d.logWatchersMu.Unlock()
 			d.wg.Add(1)
 			go func(w *LogWatcher) {
 				defer d.wg.Done()
@@ -563,7 +571,10 @@ func (d *Daemon) startWebUI() {
 	}
 
 	d.webServer = srv
-	srv.SetHealthInfo(d.fileMonitor != nil, len(d.logWatchers))
+	d.logWatchersMu.Lock()
+	numWatchers := len(d.logWatchers)
+	d.logWatchersMu.Unlock()
+	srv.SetHealthInfo(d.fileMonitor != nil, numWatchers)
 	if d.fwEngine != nil {
 		srv.SetIPBlocker(d.fwEngine)
 	}
