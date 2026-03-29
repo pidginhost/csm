@@ -1181,8 +1181,8 @@ func containsFunc(content, funcCall string) bool {
 			return true
 		}
 		prev := content[absPos-1]
-		if !((prev >= 'a' && prev <= 'z') || (prev >= 'A' && prev <= 'Z') ||
-			(prev >= '0' && prev <= '9') || prev == '_') {
+		if (prev < 'a' || prev > 'z') && (prev < 'A' || prev > 'Z') &&
+			(prev < '0' || prev > '9') && prev != '_' {
 			return true
 		}
 		idx = absPos + len(funcCall)
