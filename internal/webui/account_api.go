@@ -64,7 +64,9 @@ func (s *Server) apiAccountDetail(w http.ResponseWriter, r *http.Request) {
 		Reason       string `json:"reason"`
 	}
 	var quarantined []qEntry
-	metas, _ := filepath.Glob(filepath.Join("/opt/csm/quarantine", "*.meta"))
+	rootMetas, _ := filepath.Glob(filepath.Join("/opt/csm/quarantine", "*.meta"))
+	preCleanMetas, _ := filepath.Glob(filepath.Join("/opt/csm/quarantine", "pre_clean", "*.meta"))
+	metas := append(rootMetas, preCleanMetas...)
 	for _, metaPath := range metas {
 		data, err := os.ReadFile(metaPath)
 		if err != nil {

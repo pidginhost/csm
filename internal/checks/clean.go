@@ -1,12 +1,14 @@
 package checks
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -49,6 +51,31 @@ func CleanInfectedFile(path string) CleanResult {
 	}
 	result.BackupPath = backupPath
 
+	// Write metadata sidecar so the WebUI quarantine page can list pre-clean backups
+	info, _ := os.Stat(path)
+	var fileSize int64
+	var fileMode string
+	var uid, gid int
+	if info != nil {
+		fileSize = info.Size()
+		fileMode = info.Mode().String()
+		if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+			uid = int(stat.Uid)
+			gid = int(stat.Gid)
+		}
+	}
+	meta := map[string]interface{}{
+		"original_path":  path,
+		"owner_uid":      uid,
+		"group_gid":      gid,
+		"mode":           fileMode,
+		"size":           fileSize,
+		"quarantined_at": time.Now(),
+		"reason":         fmt.Sprintf("Pre-clean backup (surgical cleaning)"),
+	}
+	metaData, _ := json.MarshalIndent(meta, "", "  ")
+	_ = os.WriteFile(backupPath+".meta", metaData, 0600)
+
 	content := string(data)
 	originalLen := len(content)
 	var removals []string
@@ -88,7 +115,7 @@ func CleanInfectedFile(path string) CleanResult {
 	}
 
 	// Write cleaned file
-	info, _ := os.Stat(path)
+	info, _ = os.Stat(path)
 	mode := os.FileMode(0644)
 	if info != nil {
 		mode = info.Mode()
