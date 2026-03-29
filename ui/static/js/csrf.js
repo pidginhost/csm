@@ -104,6 +104,28 @@ CSM.loadError = function(el, retryFn) {
     }
 };
 
+// Click-to-copy: delegated handler for .csm-copy elements
+document.addEventListener('click', function(e) {
+    var el = e.target.closest('.csm-copy');
+    if (el) {
+        e.stopPropagation();
+        CSM.copyText(el.textContent.trim(), el);
+    }
+});
+
+// Copy text to clipboard with visual feedback
+CSM.copyText = function(text, el) {
+    navigator.clipboard.writeText(text).then(function() {
+        if (el) {
+            var orig = el.textContent;
+            el.textContent = 'Copied!';
+            setTimeout(function() { el.textContent = orig; }, 1000);
+        } else {
+            CSM.toast('Copied to clipboard', 'success');
+        }
+    }).catch(function() {});
+};
+
 // Resolve API URLs — use CGI proxy path if in WHM context
 CSM.apiUrl = function(path) {
     if (window.location.pathname.indexOf('addon_csm.cgi') >= 0) {
