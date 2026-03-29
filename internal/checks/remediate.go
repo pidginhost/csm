@@ -44,6 +44,11 @@ func FixDescription(checkType, message string) string {
 		if path != "" {
 			return fmt.Sprintf("Remove malicious directives from %s", path)
 		}
+	case "email_phishing_content":
+		msgID := extractEximMsgID(message)
+		if msgID != "" {
+			return fmt.Sprintf("Quarantine Exim spool message %s", msgID)
+		}
 	}
 	return ""
 }
@@ -66,6 +71,7 @@ func HasFix(checkType string) bool {
 		"new_executable_in_config": true,
 		"htaccess_injection":       true,
 		"htaccess_handler_abuse":   true,
+		"email_phishing_content":   true,
 	}
 	return fixableChecks[checkType]
 }
@@ -85,6 +91,8 @@ func ApplyFix(checkType, message, details string) RemediationResult {
 		return fixKillAndQuarantine(path, details)
 	case "htaccess_injection", "htaccess_handler_abuse":
 		return fixHtaccess(path, message)
+	case "email_phishing_content":
+		return fixQuarantineSpoolMessage(message)
 	default:
 		return RemediationResult{Error: fmt.Sprintf("no automated fix available for check type '%s'", checkType)}
 	}
@@ -287,4 +295,86 @@ func extractFilePathFromMessage(message string) string {
 		return rest[:endIdx]
 	}
 	return ""
+}
+
+// extractEximMsgID extracts an Exim message ID from a finding message.
+// Matches the pattern "(message: XXXXXX-XXXXXX-XX)" used by emailscan.go.
+func extractEximMsgID(message string) string {
+	prefix := "(message: "
+	idx := strings.Index(message, prefix)
+	if idx < 0 {
+		return ""
+	}
+	rest := message[idx+len(prefix):]
+	end := strings.Index(rest, ")")
+	if end < 0 {
+		return ""
+	}
+	return strings.TrimSpace(rest[:end])
+}
+
+// fixQuarantineSpoolMessage moves Exim spool files (-H header and -D body)
+// for a message ID into quarantine.
+func fixQuarantineSpoolMessage(message string) RemediationResult {
+	msgID := extractEximMsgID(message)
+	if msgID == "" {
+		return RemediationResult{Error: "could not extract Exim message ID from finding"}
+	}
+
+	spoolDirs := []string{"/var/spool/exim/input", "/var/spool/exim4/input"}
+	var spoolDir string
+	for _, dir := range spoolDirs {
+		if _, err := os.Stat(filepath.Join(dir, msgID+"-H")); err == nil {
+			spoolDir = dir
+			break
+		}
+	}
+	if spoolDir == "" {
+		return RemediationResult{Error: fmt.Sprintf("spool message %s not found (already delivered or removed)", msgID)}
+	}
+
+	_ = os.MkdirAll(quarantineDir, 0700)
+	ts := time.Now().Format("20060102-150405")
+	moved := 0
+
+	for _, suffix := range []string{"-H", "-D"} {
+		src := filepath.Join(spoolDir, msgID+suffix)
+		if _, err := os.Stat(src); err != nil {
+			continue
+		}
+		dst := filepath.Join(quarantineDir, fmt.Sprintf("%s_exim_%s%s", ts, msgID, suffix))
+		if err := os.Rename(src, dst); err != nil {
+			// Cross-device fallback
+			data, readErr := os.ReadFile(src)
+			if readErr != nil {
+				return RemediationResult{Error: fmt.Sprintf("cannot read %s: %v", src, readErr)}
+			}
+			if writeErr := os.WriteFile(dst, data, 0600); writeErr != nil {
+				return RemediationResult{Error: fmt.Sprintf("cannot write quarantine: %v", writeErr)}
+			}
+			os.Remove(src)
+		}
+		moved++
+	}
+
+	if moved == 0 {
+		return RemediationResult{Error: fmt.Sprintf("no spool files found for message %s", msgID)}
+	}
+
+	// Write metadata sidecar
+	meta := map[string]interface{}{
+		"message_id":    msgID,
+		"spool_dir":     spoolDir,
+		"quarantine_at": time.Now(),
+		"reason":        "Phishing email quarantined via CSM Web UI",
+	}
+	metaData, _ := json.MarshalIndent(meta, "", "  ")
+	metaPath := filepath.Join(quarantineDir, fmt.Sprintf("%s_exim_%s.meta", ts, msgID))
+	_ = os.WriteFile(metaPath, metaData, 0600)
+
+	return RemediationResult{
+		Success:     true,
+		Action:      fmt.Sprintf("quarantined spool message %s (%d files)", msgID, moved),
+		Description: fmt.Sprintf("Exim spool files moved to quarantine for message %s", msgID),
+	}
 }
