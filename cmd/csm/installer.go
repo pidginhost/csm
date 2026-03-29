@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/auditd"
 )
@@ -158,6 +159,15 @@ func (inst *Installer) Uninstall() error {
 	} {
 		os.Remove(p)
 	}
+
+	// Remove PHP Shield
+	os.Remove(phpShieldPath)
+	iniGlob, _ := filepath.Glob("/opt/cpanel/ea-php*/root/etc/php.d/zzz_csm_shield.ini")
+	for _, p := range iniGlob {
+		os.Remove(p)
+	}
+	os.RemoveAll("/var/run/csm")
+	fmt.Println("  PHP Shield removed")
 
 	// Remove binary and state
 	os.Remove(inst.BinaryPath)
@@ -578,13 +588,9 @@ func (inst *Installer) DeployChallengeConfig() {
 
 const phpShieldPath = "/opt/csm/php_shield.php"
 
-// InstallPHPShield deploys the PHP runtime protection shield.
-// Adds auto_prepend_file to the global PHP configuration.
-func (inst *Installer) InstallPHPShield() error {
-	fmt.Println("\n=== PHP Shield — Runtime Protection ===")
-
-	// Deploy the shield PHP file
-	shieldContent := `<?php
+// shieldContent is the minified PHP Shield deployed to servers.
+// Step 8 of the plan will replace this with go:embed from configs/php_shield.php.
+var shieldContent = `<?php
 /**
  * CSM PHP Shield — Runtime Protection
  * Blocks PHP execution from dangerous paths, logs suspicious requests.
@@ -620,6 +626,12 @@ try {
     }
 } catch (Exception $e) {}
 `
+
+// InstallPHPShield deploys the PHP runtime protection shield.
+// Adds auto_prepend_file to the global PHP configuration.
+func (inst *Installer) InstallPHPShield() error {
+	fmt.Println("\n=== PHP Shield — Runtime Protection ===")
+
 	if err := os.MkdirAll(filepath.Dir(phpShieldPath), 0755); err != nil {
 		return fmt.Errorf("creating shield directory: %w", err)
 	}
@@ -665,5 +677,105 @@ try {
 		fmt.Println("  Restart PHP: systemctl restart lsws || apachectl graceful")
 	}
 
+	// Patch config to enable PHP Shield monitoring in daemon
+	inst.patchConfigPHPShield(true)
+
 	return nil
+}
+
+// RedeployPHPShield re-writes the shield PHP file without touching .ini files.
+// Used by deploy.sh upgrade to keep the shield in sync with the binary version.
+func (inst *Installer) RedeployPHPShield() error {
+	if _, err := os.Stat(phpShieldPath); os.IsNotExist(err) {
+		return fmt.Errorf("PHP Shield not installed (missing %s)", phpShieldPath)
+	}
+
+	if err := os.WriteFile(phpShieldPath, []byte(shieldContent), 0644); err != nil {
+		return fmt.Errorf("writing shield file: %w", err)
+	}
+	fmt.Printf("PHP Shield updated: %s\n", phpShieldPath)
+	return nil
+}
+
+// EnablePHPShield re-creates .ini files and enables config monitoring.
+func (inst *Installer) EnablePHPShield() error {
+	if os.Getuid() != 0 {
+		return fmt.Errorf("must be run as root")
+	}
+
+	// Ensure shield PHP file exists
+	if _, err := os.Stat(phpShieldPath); os.IsNotExist(err) {
+		if err := os.MkdirAll(filepath.Dir(phpShieldPath), 0755); err != nil {
+			return fmt.Errorf("creating shield directory: %w", err)
+		}
+		if err := os.WriteFile(phpShieldPath, []byte(shieldContent), 0644); err != nil {
+			return fmt.Errorf("writing shield file: %w", err)
+		}
+	}
+
+	phpIniPaths := []string{
+		"/opt/cpanel/ea-php82/root/etc/php.d/",
+		"/opt/cpanel/ea-php83/root/etc/php.d/",
+		"/opt/cpanel/ea-php81/root/etc/php.d/",
+		"/opt/cpanel/ea-php80/root/etc/php.d/",
+		"/opt/cpanel/ea-php74/root/etc/php.d/",
+	}
+
+	deployed := 0
+	for _, iniDir := range phpIniPaths {
+		if _, err := os.Stat(iniDir); os.IsNotExist(err) {
+			continue
+		}
+		iniPath := filepath.Join(iniDir, "zzz_csm_shield.ini")
+		iniContent := fmt.Sprintf("; CSM PHP Shield — runtime protection\nauto_prepend_file = %s\n", phpShieldPath)
+		if err := os.WriteFile(iniPath, []byte(iniContent), 0644); err != nil {
+			continue
+		}
+		deployed++
+	}
+
+	inst.patchConfigPHPShield(true)
+
+	fmt.Printf("PHP Shield enabled for %d PHP versions\n", deployed)
+	fmt.Println("Restart PHP: systemctl restart lsws || apachectl graceful")
+	return nil
+}
+
+// DisablePHPShield removes .ini files but keeps the shield PHP for easy re-enable.
+func (inst *Installer) DisablePHPShield() error {
+	if os.Getuid() != 0 {
+		return fmt.Errorf("must be run as root")
+	}
+
+	iniGlob, _ := filepath.Glob("/opt/cpanel/ea-php*/root/etc/php.d/zzz_csm_shield.ini")
+	for _, p := range iniGlob {
+		os.Remove(p)
+	}
+
+	inst.patchConfigPHPShield(false)
+
+	fmt.Println("PHP Shield disabled (ini files removed, shield PHP file preserved)")
+	fmt.Println("Restart PHP: systemctl restart lsws || apachectl graceful")
+	return nil
+}
+
+// patchConfigPHPShield sets php_shield.enabled in csm.yaml.
+func (inst *Installer) patchConfigPHPShield(enabled bool) {
+	data, err := os.ReadFile(inst.ConfigPath)
+	if err != nil {
+		return
+	}
+	content := string(data)
+
+	if strings.Contains(content, "php_shield:") {
+		if enabled {
+			content = strings.Replace(content, "php_shield:\n  enabled: false", "php_shield:\n  enabled: true", 1)
+		} else {
+			content = strings.Replace(content, "php_shield:\n  enabled: true", "php_shield:\n  enabled: false", 1)
+		}
+	} else {
+		content += fmt.Sprintf("\nphp_shield:\n  enabled: %v\n", enabled)
+	}
+
+	_ = os.WriteFile(inst.ConfigPath, []byte(content), 0644)
 }

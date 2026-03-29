@@ -72,13 +72,6 @@ func parsePHPShieldLine(line string) *alert.Finding {
 			Message:  fmt.Sprintf("PHP Shield detected webshell command parameter: %s", script),
 			Details:  fmt.Sprintf("IP: %s\n%s", ip, details),
 		}
-	case "SUSPICIOUS_POST":
-		return &alert.Finding{
-			Severity: alert.High,
-			Check:    "php_shield_suspicious",
-			Message:  fmt.Sprintf("PHP Shield detected suspicious POST request: %s", script),
-			Details:  fmt.Sprintf("IP: %s\n%s", ip, details),
-		}
 	case "EVAL_FATAL":
 		return &alert.Finding{
 			Severity: alert.High,

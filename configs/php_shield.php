@@ -65,21 +65,10 @@ try {
         }
     }
 
-    // --- 2. Log suspicious POST requests ---
-    if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST)) {
-        // Check for base64-encoded request bodies (common in webshell C2)
-        $csm_raw = file_get_contents('php://input');
-        if ($csm_raw !== false && strlen($csm_raw) > 100) {
-            // Detect if POST body is mostly base64
-            $csm_b64_chars = preg_match_all('/[A-Za-z0-9+\/=]/', $csm_raw);
-            if ($csm_b64_chars > strlen($csm_raw) * 0.9 && strlen($csm_raw) > 200) {
-                // Suspicious: >90% base64 chars in a POST body > 200 bytes
-                csm_shield_log('SUSPICIOUS_POST', $csm_script,
-                    'POST body is ' . strlen($csm_raw) . ' bytes, ' . round($csm_b64_chars/strlen($csm_raw)*100) . '% base64');
-            }
-        }
-
-        // Check for webshell command parameters
+    // --- 2. Detect webshell command parameters ---
+    // Only inspects $_POST/$_GET/$_REQUEST arrays — never reads php://input
+    // (reading the raw body would break REST APIs, WooCommerce, webhooks, etc.)
+    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $csm_cmd_params = array('cmd', 'command', 'exec', 'execute', 'c', 'e', 'shell');
         foreach ($csm_cmd_params as $param) {
             if (isset($_POST[$param]) || isset($_GET[$param]) || isset($_REQUEST[$param])) {
@@ -115,6 +104,14 @@ function csm_shield_log($event_type, $script, $details) {
     $dir = dirname($log_file);
     if (!is_dir($dir)) {
         @mkdir($dir, 0750, true);
+    }
+
+    if (!is_writable($dir)) {
+        if (!defined('CSM_SHIELD_LOG_WARNED')) {
+            define('CSM_SHIELD_LOG_WARNED', true);
+            error_log('CSM PHP Shield: cannot write to ' . $dir . ' — events will not be logged');
+        }
+        return;
     }
 
     $ip = isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : '-';

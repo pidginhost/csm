@@ -87,6 +87,10 @@ type Config struct {
 		Difficulty int    `yaml:"difficulty"`  // proof-of-work difficulty 0-5 (default: 2)
 	} `yaml:"challenge"`
 
+	PHPShield struct {
+		Enabled bool `yaml:"enabled"` // watch php_events.log for PHP Shield alerts (default: false)
+	} `yaml:"php_shield"`
+
 	Reputation struct {
 		AbuseIPDBKey string   `yaml:"abuseipdb_key"`
 		Whitelist    []string `yaml:"whitelist"` // IPs to never flag as malicious
