@@ -12,6 +12,17 @@
     var sevLabels = { 2: 'CRITICAL', 1: 'HIGH', 0: 'WARNING' };
     var sevClasses = { 2: 'critical', 1: 'high', 0: 'warning' };
 
+    function syncURL() {
+        var params = new URLSearchParams();
+        if (fromDate) params.set('from', fromDate);
+        if (toDate) params.set('to', toDate);
+        if (sevFilter !== 'all') params.set('severity', sevFilter);
+        if (searchTerm) params.set('search', searchTerm);
+        if (page > 0) params.set('page', page);
+        var qs = params.toString();
+        history.replaceState(null, '', '/history' + (qs ? '?' + qs : ''));
+    }
+
     function loadHistory() {
         var url = '/api/v1/history?limit=' + perPage + '&offset=' + (page * perPage);
         if (fromDate) url += '&from=' + fromDate;
@@ -26,6 +37,7 @@
                 renderPager(data.total || 0);
             })
             .catch(function() { CSM.loadError(document.getElementById('history-content'), loadHistory); });
+        syncURL();
     }
 
     function renderTable(findings, total) {
@@ -140,6 +152,15 @@
             searchTimer = setTimeout(function() { loadHistory(); }, 300);
         });
     }
+
+    // Restore filter state from URL params
+    var params = new URLSearchParams(window.location.search);
+    if (params.get('from')) { fromDate = params.get('from'); document.getElementById('date-from').value = fromDate; }
+    if (params.get('to')) { toDate = params.get('to'); document.getElementById('date-to').value = toDate; }
+    if (params.get('severity')) { sevFilter = params.get('severity'); document.getElementById('sev-filter').value = sevFilter; }
+    if (params.get('search')) { searchTerm = params.get('search'); document.getElementById('history-search').value = searchTerm; }
+    if (params.get('page')) { page = parseInt(params.get('page'), 10) || 0; }
+    if (fromDate || toDate) { var clearBtn = document.getElementById('date-clear-btn'); if (clearBtn) clearBtn.classList.remove('d-none'); }
 
     // Initial load
     loadHistory();

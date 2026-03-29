@@ -15,6 +15,21 @@ if (document.getElementById('findings-table')) {
     });
 }
 
+// Restore filter state from URL params
+(function() {
+    var params = new URLSearchParams(window.location.search);
+    var checkParam = params.get('check');
+    var searchParam = params.get('search');
+    if (checkParam) {
+        var filter = document.getElementById('check-filter');
+        if (filter) { filter.value = checkParam; filter.dispatchEvent(new Event('change')); }
+    }
+    if (searchParam) {
+        var search = document.getElementById('findings-search');
+        if (search) { search.value = searchParam; search.dispatchEvent(new Event('input')); }
+    }
+})();
+
 function changePerPage() {
     var pp = parseInt(document.getElementById('per-page').value, 10);
     if (findingsTable) {
