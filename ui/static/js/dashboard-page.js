@@ -122,6 +122,7 @@
         spam:         '#f59f00',
         cpanel_login: '#f76707',
         file_upload:  '#0ca678',
+        reputation:   '#e8590c',
         other:        '#6b7a8d'
     };
 
@@ -135,6 +136,7 @@
         spam:         'Spam',
         cpanel_login: 'cPanel Login',
         file_upload:  'File Upload',
+        reputation:   'Known Malicious IP',
         other:        'Other'
     };
 
@@ -146,7 +148,7 @@
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 var byType = data.by_type || {};
-                // Sort by count descending, take top 5
+                // Sort by count descending, take top 8
                 var entries = [];
                 for (var key in byType) {
                     if (byType.hasOwnProperty(key)) {
@@ -154,7 +156,7 @@
                     }
                 }
                 entries.sort(function(a, b) { return b.count - a.count; });
-                entries = entries.slice(0, 5);
+                entries = entries.slice(0, 8);
 
                 if (entries.length === 0) {
                     container.innerHTML = '<div class="text-muted text-center py-3">No attack data yet</div>';
