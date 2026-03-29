@@ -170,7 +170,10 @@ func (s *Server) apiQuarantine(w http.ResponseWriter, _ *http.Request) {
 
 	var entries []quarantineEntry
 
-	metaFiles, _ := filepath.Glob(filepath.Join(quarantineDir, "*.meta"))
+	// Scan both root quarantine dir and pre_clean subdirectory
+	rootMetas, _ := filepath.Glob(filepath.Join(quarantineDir, "*.meta"))
+	preCleanMetas, _ := filepath.Glob(filepath.Join(quarantineDir, "pre_clean", "*.meta"))
+	metaFiles := append(rootMetas, preCleanMetas...)
 	for _, metaFile := range metaFiles {
 		data, err := os.ReadFile(metaFile)
 		if err != nil {
@@ -180,7 +183,7 @@ func (s *Server) apiQuarantine(w http.ResponseWriter, _ *http.Request) {
 		var meta struct {
 			OriginalPath string    `json:"original_path"`
 			Size         int64     `json:"size"`
-			QuarantineAt time.Time `json:"quarantine_at"`
+			QuarantineAt time.Time `json:"quarantined_at"`
 			Reason       string    `json:"reason"`
 		}
 		if err := json.Unmarshal(data, &meta); err != nil {
@@ -246,7 +249,7 @@ func (s *Server) apiStats(w http.ResponseWriter, _ *http.Request) {
 			continue
 		}
 		// Extract account from finding path/message
-		acct := extractAccountFromMessage(f.Message)
+		acct := extractAccountFromFinding(f)
 		if acct != "" {
 			accountHits[acct]++
 			sev := int(f.Severity)
@@ -1139,20 +1142,31 @@ func (s *Server) apiFindingDetail(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// extractAccountFromMessage extracts a cPanel account name from a finding message
-// by looking for /home/{user}/ patterns.
-func extractAccountFromMessage(msg string) string {
-	const prefix = "/home/"
-	idx := strings.Index(msg, prefix)
-	if idx < 0 {
-		return ""
+// extractAccountFromFinding extracts a cPanel account name from a finding
+// by checking the message, details, and file path for /home/{user}/ patterns
+// or "Account: " / "user: " in the details field (used by login checks).
+func extractAccountFromFinding(f alert.Finding) string {
+	for _, s := range []string{f.Message, f.Details, f.FilePath} {
+		if idx := strings.Index(s, "/home/"); idx >= 0 {
+			rest := s[idx+6:]
+			if end := strings.IndexByte(rest, '/'); end > 0 {
+				return rest[:end]
+			}
+		}
 	}
-	rest := msg[idx+len(prefix):]
-	end := strings.IndexByte(rest, '/')
-	if end <= 0 {
-		return ""
+	for _, prefix := range []string{"Account: ", "user: "} {
+		if idx := strings.Index(f.Details, prefix); idx >= 0 {
+			rest := f.Details[idx+len(prefix):]
+			end := strings.IndexAny(rest, " \n\t,")
+			if end > 0 {
+				return rest[:end]
+			}
+			if len(rest) > 0 {
+				return rest
+			}
+		}
 	}
-	return rest[:end]
+	return ""
 }
 
 func writeJSONError(w http.ResponseWriter, message string, code int) {

@@ -58,15 +58,16 @@ type findingEntry struct {
 }
 
 type historyEntry struct {
-	Severity  string
-	SevClass  string
-	Check     string
-	Message   string
-	Details   string
-	Timestamp string
-	TimeAgo   string
-	HasFix    bool
-	FixDesc   string
+	Severity     string
+	SevClass     string
+	Check        string
+	Message      string
+	Details      string
+	Timestamp    string
+	TimestampISO string // RFC3339 for JS comparison
+	TimeAgo      string
+	HasFix       bool
+	FixDesc      string
 }
 
 type quarantineData struct {
@@ -88,10 +89,12 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 	last24h := time.Now().Add(-24 * time.Hour)
 	var recent []historyEntry
 
-	// Timeline: 24 hourly buckets
+	// Timeline: 24 hourly buckets keyed by truncated clock hour
 	type hourBucket struct {
 		critical, high, warning int
 	}
+	now := time.Now()
+	currentHour := now.Truncate(time.Hour)
 	buckets := make(map[int]*hourBucket) // key: hours ago (0=current, 23=oldest)
 	for i := 0; i < 24; i++ {
 		buckets[i] = &hourBucket{}
@@ -102,8 +105,9 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 			continue
 		}
 
-		// Timeline bucket
-		hoursAgo := int(time.Since(f.Timestamp).Hours())
+		// Timeline bucket — use truncated clock hours for consistency with labels
+		fHour := f.Timestamp.Truncate(time.Hour)
+		hoursAgo := int(currentHour.Sub(fHour).Hours())
 		if hoursAgo >= 0 && hoursAgo < 24 {
 			b := buckets[hoursAgo]
 			switch f.Severity {
@@ -116,17 +120,18 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 			}
 		}
 
-		if len(recent) < 20 {
+		if len(recent) < 10 {
 			recent = append(recent, historyEntry{
-				Severity:  severityLabel(f.Severity),
-				SevClass:  severityClass(f.Severity),
-				Check:     f.Check,
-				Message:   f.Message,
-				Details:   f.Details,
-				Timestamp: f.Timestamp.Format("15:04:05"),
-				TimeAgo:   timeAgo(f.Timestamp),
-				HasFix:    checks.HasFix(f.Check),
-				FixDesc:   checks.FixDescription(f.Check, f.Message),
+				Severity:     severityLabel(f.Severity),
+				SevClass:     severityClass(f.Severity),
+				Check:        f.Check,
+				Message:      f.Message,
+				Details:      f.Details,
+				Timestamp:    f.Timestamp.Format("15:04:05"),
+				TimestampISO: f.Timestamp.Format(time.RFC3339),
+				TimeAgo:      timeAgo(f.Timestamp),
+				HasFix:       checks.HasFix(f.Check),
+				FixDesc:      checks.FixDescription(f.Check, f.Message),
 			})
 		}
 	}
@@ -141,7 +146,6 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	var bars []timelineBar
-	now := time.Now()
 	for i := 23; i >= 0; i-- {
 		b := buckets[i]
 		total := b.critical + b.high + b.warning
@@ -152,7 +156,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 				height = 5 // minimum visible bar
 			}
 		}
-		t := now.Add(-time.Duration(i) * time.Hour)
+		t := currentHour.Add(-time.Duration(i) * time.Hour)
 		bars = append(bars, timelineBar{
 			Hour:     fmt.Sprintf("%02d:00", t.Hour()),
 			Critical: b.critical,
