@@ -228,9 +228,9 @@ func runInstall() {
 func runEnable() {
 	cfgPath := defaultConfigPath
 	feature := ""
-	for i, arg := range os.Args[2:] {
-		if arg == "--config" && i+3 < len(os.Args) {
-			cfgPath = os.Args[i+3]
+	for i, arg := range os.Args {
+		if arg == "--config" && i+1 < len(os.Args) {
+			cfgPath = os.Args[i+1]
 		}
 		if arg == "--php-shield" {
 			feature = "php-shield"
@@ -258,9 +258,9 @@ func runEnable() {
 func runDisable() {
 	cfgPath := defaultConfigPath
 	feature := ""
-	for i, arg := range os.Args[2:] {
-		if arg == "--config" && i+3 < len(os.Args) {
-			cfgPath = os.Args[i+3]
+	for i, arg := range os.Args {
+		if arg == "--config" && i+1 < len(os.Args) {
+			cfgPath = os.Args[i+1]
 		}
 		if arg == "--php-shield" {
 			feature = "php-shield"

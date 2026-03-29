@@ -38,9 +38,9 @@ try {
     // --- Load config (blocked paths, allowed IPs) ---
     $csm_conf = csm_shield_load_config();
 
-    // --- IP allowlist check ---
+    // --- IP allowlist check (supports both plain IPs and CIDR notation) ---
     $csm_ip = isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : '';
-    if ($csm_ip !== '' && in_array($csm_ip, $csm_conf['allowed_ips'], true)) return;
+    if ($csm_ip !== '' && csm_shield_ip_allowed($csm_ip, $csm_conf['allowed_ips'])) return;
 
     $csm_script_lower = strtolower($csm_script);
 
@@ -99,6 +99,27 @@ try {
 
 } catch (Exception $e) {
     // Fail open — don't break sites if shield has a bug
+}
+
+/**
+ * Check if an IP matches any entry in the allowlist (plain IP or CIDR).
+ */
+function csm_shield_ip_allowed($ip, $allowlist) {
+    $ip_long = ip2long($ip);
+    if ($ip_long === false) return false;
+
+    foreach ($allowlist as $entry) {
+        if (strpos($entry, '/') !== false) {
+            // CIDR notation
+            list($subnet, $bits) = explode('/', $entry, 2);
+            $subnet_long = ip2long($subnet);
+            $mask = -1 << (32 - (int)$bits);
+            if (($ip_long & $mask) === ($subnet_long & $mask)) return true;
+        } else {
+            if ($ip === $entry) return true;
+        }
+    }
+    return false;
 }
 
 /**
