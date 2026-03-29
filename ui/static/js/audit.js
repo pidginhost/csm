@@ -35,7 +35,7 @@ function loadAudit() {
         }
         html += '</tbody></table></div>';
         el.innerHTML = html;
-        new CSM.Table({ tableId: 'audit-table', perPage: 25, searchId: 'audit-search', sortable: true });
+        new CSM.Table({ tableId: 'audit-table', perPage: 25, searchId: 'audit-search', sortable: true, stateKey: 'csm-audit-table' });
     }).catch(function(){
         document.getElementById('audit-content').innerHTML = '<div class="card-body text-center text-danger py-4">Error loading audit log.</div>';
     });

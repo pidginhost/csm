@@ -32,12 +32,13 @@ function loadSubnets(){
     fetch('/api/v1/firewall/subnets',{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(subs){
         var el = document.getElementById('subnet-content');
         if(!subs||subs.length===0){el.innerHTML='<div class="card-body text-center text-muted py-3">No blocked subnets.</div>';return;}
-        var h='<div class="table-responsive"><table class="table table-vcenter card-table"><thead><tr><th>CIDR</th><th>Reason</th><th>Blocked</th><th>Action</th></tr></thead><tbody>';
+        var h='<div class="table-responsive"><table class="table table-vcenter card-table" id="subnets-table"><thead><tr><th>CIDR</th><th>Reason</th><th>Blocked</th><th>Action</th></tr></thead><tbody>';
         for(var i=0;i<subs.length;i++){
             h+='<tr><td><code>'+CSM.esc(subs[i].cidr)+'</code></td><td class="small">'+CSM.esc(subs[i].reason)+'</td><td class="small text-muted">'+CSM.esc(subs[i].time_ago)+'</td><td><button class="btn btn-sm btn-success remove-subnet-btn" data-cidr="'+CSM.esc(subs[i].cidr)+'">Remove</button></td></tr>';
         }
         h+='</tbody></table></div>';
         el.innerHTML=h;
+        new CSM.Table({ tableId: 'subnets-table', sortable: true });
         el.querySelectorAll('.remove-subnet-btn').forEach(function(btn) {
             btn.addEventListener('click', function() { removeSubnet(this.getAttribute('data-cidr')); });
         });
@@ -86,7 +87,9 @@ function loadBlocked(){
         if (selectAll) {
             selectAll.addEventListener('change', function() {
                 var checked = this.checked;
-                el.querySelectorAll('.blocked-cb').forEach(function(cb) { cb.checked = checked; });
+                el.querySelectorAll('.blocked-cb').forEach(function(cb) {
+                    if (cb.closest('tr').style.display !== 'none') cb.checked = checked;
+                });
                 updateBulkUnblock();
             });
         }
@@ -96,8 +99,17 @@ function loadBlocked(){
     }).catch(function(){ document.getElementById('blocked-content').innerHTML = '<div class="card-body text-center text-danger py-3">Error loading blocked IPs.</div>'; });
 }
 
+function getVisibleChecked() {
+    var all = document.querySelectorAll('.blocked-cb:checked');
+    var visible = [];
+    all.forEach(function(cb) {
+        if (cb.closest('tr').style.display !== 'none') visible.push(cb);
+    });
+    return visible;
+}
+
 function updateBulkUnblock() {
-    var checked = document.querySelectorAll('.blocked-cb:checked');
+    var checked = getVisibleChecked();
     var btn = document.getElementById('bulk-unblock-btn');
     if (btn) {
         btn.classList.toggle('d-none', checked.length === 0);
@@ -106,7 +118,7 @@ function updateBulkUnblock() {
 }
 
 function bulkUnblock() {
-    var checked = document.querySelectorAll('.blocked-cb:checked');
+    var checked = getVisibleChecked();
     if (checked.length === 0) return;
     var ips = [];
     checked.forEach(function(cb) { ips.push(cb.dataset.ip); });
@@ -143,12 +155,13 @@ function loadWhitelist(){
     fetch(CSM.apiUrl('/api/v1/threat/whitelist'),{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(ips){
         var el=document.getElementById('whitelist-content');
         if(!ips||ips.length===0){el.innerHTML='<div class="card-body text-center text-muted py-3">No whitelisted IPs.</div>';return;}
-        var h='<div class="table-responsive"><table class="table table-vcenter card-table table-sm"><thead><tr><th>IP</th><th>Action</th></tr></thead><tbody>';
+        var h='<div class="table-responsive"><table class="table table-vcenter card-table table-sm" id="whitelist-table"><thead><tr><th>IP</th><th>Action</th></tr></thead><tbody>';
         for(var i=0;i<ips.length;i++){
             h+='<tr><td><code>'+CSM.esc(ips[i])+'</code></td><td><button class="btn btn-sm btn-ghost-danger wl-remove-btn" data-ip="'+CSM.esc(ips[i])+'">Remove</button></td></tr>';
         }
         h+='</tbody></table></div>';
         el.innerHTML=h;
+        new CSM.Table({ tableId: 'whitelist-table', sortable: true });
         el.querySelectorAll('.wl-remove-btn').forEach(function(btn){
             btn.addEventListener('click',function(){ removeWhitelist(this.getAttribute('data-ip')); });
         });

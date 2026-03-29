@@ -274,6 +274,7 @@ CSM.Table.prototype._saveState = function() {
     try {
         var state = {
             page: this.currentPage,
+            perPage: this.perPage,
             sortCol: this.sortColumn,
             sortAsc: this.sortAsc,
             search: this.searchText
@@ -291,6 +292,9 @@ CSM.Table.prototype._restoreState = function(opts) {
         var state = JSON.parse(raw);
         if (typeof state.page === 'number' && state.page > 0) {
             this.currentPage = state.page;
+        }
+        if (typeof state.perPage === 'number' && state.perPage >= 0) {
+            this.perPage = state.perPage;
         }
         if (typeof state.sortCol === 'number' && state.sortCol >= 0) {
             this.sortColumn = state.sortCol;

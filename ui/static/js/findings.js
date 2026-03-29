@@ -21,6 +21,7 @@ function changePerPage() {
         findingsTable.perPage = pp || 0;
         findingsTable.currentPage = 1;
         findingsTable.render();
+        findingsTable._saveState();
     }
 }
 var perPageEl = document.getElementById('per-page');
