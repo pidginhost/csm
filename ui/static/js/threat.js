@@ -82,7 +82,7 @@ fetch('/api/v1/threat/top-attackers?limit=50',{credentials:'same-origin'}).then(
         var statusBadge=r.currently_blocked?'<span class="badge bg-secondary">Blocked</span>':
                         r.in_threat_db?'<span class="badge bg-danger-lt">Threat DB</span>':'';
         html+='<tr class="ip-row" style="cursor:pointer" data-ip="'+CSM.esc(r.ip)+'">';
-        html+='<td><code class="font-monospace">'+CSM.esc(r.ip)+'</code></td>';
+        html+='<td><code class="font-monospace csm-copy" title="Click to copy">'+CSM.esc(r.ip)+'</code></td>';
         html+='<td class="text-nowrap">'+(r.country?countryFlag(r.country)+' '+CSM.esc(r.country):'')+(r.as_org?' <span class="text-muted small">'+CSM.esc(r.as_org)+'</span>':'')+'</td>';
         html+='<td>'+verdictBadge(r.verdict,r.unified_score)+'</td>';
         html+='<td>'+r.event_count+'</td>';

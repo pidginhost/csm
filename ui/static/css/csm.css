@@ -2,6 +2,10 @@
    CSM — cPanel Security Monitor  –  extracted inline styles
    ========================================================================== */
 
+/* --- click-to-copy cursor ------------------------------------------------ */
+.csm-copy { cursor: pointer; }
+.csm-copy:hover { text-decoration: underline dotted; }
+
 /* --- layout.html: dark theme overrides ----------------------------------- */
 .theme-dark, .theme-dark body { background-color: #1a2234; color: #c8d3e0; }
 .theme-dark .card { background-color: #1e293b; border-color: #2d3a4e; color: #c8d3e0; }
