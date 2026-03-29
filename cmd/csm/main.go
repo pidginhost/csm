@@ -226,20 +226,24 @@ func runInstall() {
 }
 
 func runEnable() {
+	cfgPath := defaultConfigPath
 	feature := ""
-	for _, arg := range os.Args[2:] {
+	for i, arg := range os.Args[2:] {
+		if arg == "--config" && i+3 < len(os.Args) {
+			cfgPath = os.Args[i+3]
+		}
 		if arg == "--php-shield" {
 			feature = "php-shield"
 		}
 	}
 	if feature == "" {
-		fmt.Fprintln(os.Stderr, "Usage: csm enable --php-shield")
+		fmt.Fprintln(os.Stderr, "Usage: csm enable --php-shield [--config <path>]")
 		os.Exit(1)
 	}
 
 	installer := &Installer{
 		BinaryPath: binaryPath,
-		ConfigPath: defaultConfigPath,
+		ConfigPath: cfgPath,
 		StatePath:  defaultStatePath,
 		LogPath:    defaultLogPath,
 	}
@@ -252,20 +256,24 @@ func runEnable() {
 }
 
 func runDisable() {
+	cfgPath := defaultConfigPath
 	feature := ""
-	for _, arg := range os.Args[2:] {
+	for i, arg := range os.Args[2:] {
+		if arg == "--config" && i+3 < len(os.Args) {
+			cfgPath = os.Args[i+3]
+		}
 		if arg == "--php-shield" {
 			feature = "php-shield"
 		}
 	}
 	if feature == "" {
-		fmt.Fprintln(os.Stderr, "Usage: csm disable --php-shield")
+		fmt.Fprintln(os.Stderr, "Usage: csm disable --php-shield [--config <path>]")
 		os.Exit(1)
 	}
 
 	installer := &Installer{
 		BinaryPath: binaryPath,
-		ConfigPath: defaultConfigPath,
+		ConfigPath: cfgPath,
 		StatePath:  defaultStatePath,
 		LogPath:    defaultLogPath,
 	}

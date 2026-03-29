@@ -182,8 +182,9 @@ stop_services() {
         pkill -9 -f "${BINARY_PATH} daemon" 2>/dev/null || true
         sleep 1
     fi
-    # Clear stale lock/pid
+    # Clear stale lock/pid and reset systemd failure state to prevent auto-restart
     rm -f "${INSTALL_DIR}/state/csm.lock" "${INSTALL_DIR}/state/csm.pid" 2>/dev/null || true
+    systemctl reset-failed "${SERVICE_NAME}" 2>/dev/null || true
 }
 
 # Start daemon and timers
@@ -275,6 +276,12 @@ do_upgrade() {
     fi
 
     rm -rf "$tmpdir"
+
+    # Redeploy PHP Shield if it was previously installed
+    if [ -f "${INSTALL_DIR}/php_shield.php" ]; then
+        echo "Updating PHP Shield..."
+        "$BINARY_PATH" install --php-shield-only 2>/dev/null || true
+    fi
 
     # Rehash — update binary/config hashes without full re-scan
     if ! "$BINARY_PATH" rehash 2>&1; then
