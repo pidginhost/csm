@@ -66,7 +66,8 @@ func (s *Server) apiAccountDetail(w http.ResponseWriter, r *http.Request) {
 	var quarantined []qEntry
 	rootMetas, _ := filepath.Glob(filepath.Join("/opt/csm/quarantine", "*.meta"))
 	preCleanMetas, _ := filepath.Glob(filepath.Join("/opt/csm/quarantine", "pre_clean", "*.meta"))
-	metas := append(rootMetas, preCleanMetas...)
+	metas := rootMetas
+	metas = append(metas, preCleanMetas...)
 	for _, metaPath := range metas {
 		data, err := os.ReadFile(metaPath)
 		if err != nil {

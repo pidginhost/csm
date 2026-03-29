@@ -71,7 +71,7 @@ func CleanInfectedFile(path string) CleanResult {
 		"mode":           fileMode,
 		"size":           fileSize,
 		"quarantined_at": time.Now(),
-		"reason":         fmt.Sprintf("Pre-clean backup (surgical cleaning)"),
+		"reason":         "Pre-clean backup (surgical cleaning)",
 	}
 	metaData, _ := json.MarshalIndent(meta, "", "  ")
 	_ = os.WriteFile(backupPath+".meta", metaData, 0600)
