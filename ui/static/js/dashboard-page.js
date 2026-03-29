@@ -79,7 +79,6 @@
     // Tooltip behavior
     var tooltip = document.getElementById('timeline-tooltip');
     if (tooltip) {
-        var svgEl = container.querySelector('svg');
         container.parentElement.addEventListener('mousemove', function(e) {
             var hoverEl = document.elementFromPoint(e.clientX, e.clientY);
             if (!hoverEl || !hoverEl.classList.contains('timeline-hover')) {

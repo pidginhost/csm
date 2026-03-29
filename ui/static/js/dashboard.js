@@ -10,7 +10,13 @@
     }
 
     // Polling — fetch recent history every 10 seconds
+    // Initialize lastPollTimestamp from server-rendered feed items to avoid
+    // duplicating them on first poll (and after page auto-reload)
     var lastPollTimestamp = '';
+    var serverItems = feed ? feed.querySelectorAll('.feed-item[data-ts]') : [];
+    if (serverItems.length > 0) {
+        lastPollTimestamp = serverItems[0].getAttribute('data-ts') || '';
+    }
     function pollFindings() {
         fetch(CSM.apiUrl('/api/v1/history?limit=10&offset=0'), { credentials: 'same-origin' })
             .then(function(r) { return r.json(); })
@@ -59,7 +65,7 @@
             });
         }
 
-        while (feed.children.length > 15) {
+        while (feed.children.length > 10) {
             feed.removeChild(feed.lastChild);
         }
 
