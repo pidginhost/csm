@@ -23,15 +23,16 @@
             .then(function(data) {
                 var findings = data.findings || [];
                 var internalChecks = { auto_response: 1, auto_block: 1, check_timeout: 1, health: 1 };
+                var maxTs = lastPollTimestamp;
                 for (var i = findings.length - 1; i >= 0; i--) {
                     var f = findings[i];
                     var ts = f.timestamp || '';
-                    if (ts > lastPollTimestamp) {
-                        lastPollTimestamp = ts;
-                        if (internalChecks[f.check]) continue;
+                    if (ts > maxTs) maxTs = ts;
+                    if (ts > lastPollTimestamp && !internalChecks[f.check]) {
                         addEntry(f);
                     }
                 }
+                lastPollTimestamp = maxTs;
             })
             .catch(function() {});
     }
