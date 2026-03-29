@@ -92,6 +92,14 @@ if (checkFilterEl) checkFilterEl.addEventListener('change', function() {
     updateSelection();
 });
 
+// Clear selections before reload so beforeunload guard does not block
+function clearAndReload() {
+    document.querySelectorAll('.row-checkbox').forEach(function(cb) { cb.checked = false; });
+    var sa = document.getElementById('select-all');
+    if (sa) sa.checked = false;
+    clearAndReload();
+}
+
 // --- Single actions ---
 function fixOne(btn) {
     var row = btn.closest('tr');
@@ -107,7 +115,7 @@ function fixOne(btn) {
                 row.style.opacity = '0.3';
                 btn.innerHTML = '<i class="ti ti-check"></i>';
                 btn.className = 'btn btn-success btn-sm me-1';
-                setTimeout(function() { location.reload(); }, 1000);
+                setTimeout(clearAndReload, 1000);
             } else {
                 CSM.toast('Fix failed: ' + (data.error || 'unknown'), 'error');
                 btn.disabled = false;
@@ -119,7 +127,7 @@ function fixOne(btn) {
 
 function dismissOne(key) {
     CSM.confirm('Dismiss this finding?').then(function() {
-        CSM.post('/api/v1/dismiss', {key: key}).then(function() { location.reload(); }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        CSM.post('/api/v1/dismiss', {key: key}).then(function() { clearAndReload(); }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
     }).catch(function() {});
 }
 
@@ -135,7 +143,7 @@ function suppressFinding(check, message) {
     }).then(function(data) {
         if (data.status === 'created') {
             CSM.toast('Suppression rule created', 'success');
-            location.reload();
+            clearAndReload();
         } else {
             CSM.toast('Failed: ' + (data.error || 'unknown'), 'error');
         }
@@ -162,7 +170,7 @@ function bulkAction(action) {
             var fixItems = fixable.map(function(i) { return { check: i.check, message: i.message, details: '' }; });
             CSM.post('/api/v1/fix-bulk', fixItems).then(function(data) {
                 CSM.toast('Fixed ' + data.succeeded + ' of ' + data.total + (data.failed > 0 ? ' (' + data.failed + ' failed)' : ''), 'success');
-                location.reload();
+                clearAndReload();
             }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
         }).catch(function() {});
 
@@ -171,7 +179,7 @@ function bulkAction(action) {
             var promises = items.map(function(i) {
                 return CSM.post('/api/v1/dismiss', { key: i.check + ':' + i.message });
             });
-            Promise.all(promises).then(function() { location.reload(); }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+            Promise.all(promises).then(function() { clearAndReload(); }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
         }).catch(function() {});
 
     } else if (action === 'quarantine') {
@@ -179,7 +187,7 @@ function bulkAction(action) {
             var quarItems = items.map(function(i) { return { check: i.check, message: i.message, details: '' }; });
             CSM.post('/api/v1/fix-bulk', quarItems).then(function(data) {
                 CSM.toast('Quarantined ' + data.succeeded + ' of ' + data.total, 'success');
-                location.reload();
+                clearAndReload();
             }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
         }).catch(function() {});
     }
