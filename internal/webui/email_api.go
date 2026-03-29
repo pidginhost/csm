@@ -106,7 +106,9 @@ func topMailSenders(tailLines, topK int) []senderEntry {
 	info, _ := f.Stat()
 	var data []byte
 	if info != nil && info.Size() > 256*1024 {
-		f.Seek(-256*1024, 2)
+		if _, err := f.Seek(-256*1024, 2); err != nil {
+			return nil
+		}
 		data, _ = io.ReadAll(f)
 	} else {
 		data, _ = io.ReadAll(f)
