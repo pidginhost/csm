@@ -276,6 +276,12 @@ do_upgrade() {
 
     rm -rf "$tmpdir"
 
+    # Redeploy PHP Shield if it was previously installed
+    if [ -f "${INSTALL_DIR}/php_shield.php" ]; then
+        echo "Updating PHP Shield..."
+        "$BINARY_PATH" install --php-shield-only 2>/dev/null || true
+    fi
+
     # Rehash — update binary/config hashes without full re-scan
     if ! "$BINARY_PATH" rehash 2>&1; then
         echo "WARNING: Rehash failed, rolling back..."

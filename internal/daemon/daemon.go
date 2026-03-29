@@ -488,13 +488,25 @@ func (d *Daemon) startLogWatchers() {
 		{"/var/log/secure", parseSecureLogLine},
 		{"/var/log/exim_mainlog", parseEximLogLine},
 		{"/var/log/messages", parseFTPLogLine},
-		{phpEventsLogPath, parsePHPShieldLogLine},
+	}
+
+	// Only watch PHP Shield events if enabled in config
+	if d.cfg.PHPShield.Enabled {
+		logFiles = append(logFiles, struct {
+			path    string
+			handler func(string, *config.Config) []alert.Finding
+		}{phpEventsLogPath, parsePHPShieldLogLine})
 	}
 
 	for _, lf := range logFiles {
 		w, err := NewLogWatcher(lf.path, d.cfg, lf.handler, d.alertCh)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[%s] Warning: could not watch %s: %v\n", ts(), lf.path, err)
+			if os.IsNotExist(err) {
+				// File doesn't exist yet — retry periodically until it appears
+				go d.retryLogWatcher(lf.path, lf.handler)
+			} else {
+				fmt.Fprintf(os.Stderr, "[%s] Warning: could not watch %s: %v\n", ts(), lf.path, err)
+			}
 			continue
 		}
 		d.logWatchers = append(d.logWatchers, w)
@@ -504,6 +516,34 @@ func (d *Daemon) startLogWatchers() {
 			w.Run(d.stopCh)
 		}(w)
 		fmt.Fprintf(os.Stderr, "[%s] Watching: %s\n", ts(), lf.path)
+	}
+}
+
+// retryLogWatcher polls for a missing log file every 60 seconds.
+// When the file appears, it starts a watcher and returns.
+func (d *Daemon) retryLogWatcher(path string, handler LogLineHandler) {
+	fmt.Fprintf(os.Stderr, "[%s] Warning: %s not found, will retry every 60s\n", ts(), path)
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-d.stopCh:
+			return
+		case <-ticker.C:
+			w, err := NewLogWatcher(path, d.cfg, handler, d.alertCh)
+			if err != nil {
+				continue // still missing, keep retrying
+			}
+			d.logWatchers = append(d.logWatchers, w)
+			d.wg.Add(1)
+			go func(w *LogWatcher) {
+				defer d.wg.Done()
+				w.Run(d.stopCh)
+			}(w)
+			fmt.Fprintf(os.Stderr, "[%s] Watching: %s (appeared after retry)\n", ts(), path)
+			return
+		}
 	}
 }
 

@@ -93,6 +93,10 @@ func main() {
 		runScanAccount()
 	case "firewall":
 		runFirewall()
+	case "enable":
+		runEnable()
+	case "disable":
+		runDisable()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
 		printUsage()
@@ -123,6 +127,8 @@ Commands:
   clean <path>  Attempt to clean an infected PHP file (backup created first)
   scan <user>   Scan a single cPanel account (add --alert to send alerts)
   firewall ...  Firewall management (deny, allow, status, ports, etc.)
+  enable        Enable optional features (--php-shield)
+  disable       Disable optional features (--php-shield)
   version       Version info + build hash
 
 Options:
@@ -177,12 +183,16 @@ func runDaemon() {
 func runInstall() {
 	cfgPath := defaultConfigPath
 	phpShield := false
+	phpShieldOnly := false
 	for i, arg := range os.Args {
 		if arg == "--config" && i+1 < len(os.Args) {
 			cfgPath = os.Args[i+1]
 		}
 		if arg == "--php-shield" {
 			phpShield = true
+		}
+		if arg == "--php-shield-only" {
+			phpShieldOnly = true
 		}
 	}
 
@@ -192,6 +202,16 @@ func runInstall() {
 		StatePath:  defaultStatePath,
 		LogPath:    defaultLogPath,
 	}
+
+	// --php-shield-only: just redeploy the PHP file (used by deploy.sh upgrade)
+	if phpShieldOnly {
+		if err := installer.RedeployPHPShield(); err != nil {
+			fmt.Fprintf(os.Stderr, "PHP Shield redeploy failed: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if err := installer.Install(); err != nil {
 		fmt.Fprintf(os.Stderr, "Install failed: %v\n", err)
 		os.Exit(1)
@@ -200,6 +220,60 @@ func runInstall() {
 	if phpShield {
 		if err := installer.InstallPHPShield(); err != nil {
 			fmt.Fprintf(os.Stderr, "PHP Shield install failed: %v\n", err)
+			os.Exit(1)
+		}
+	}
+}
+
+func runEnable() {
+	feature := ""
+	for _, arg := range os.Args[2:] {
+		if arg == "--php-shield" {
+			feature = "php-shield"
+		}
+	}
+	if feature == "" {
+		fmt.Fprintln(os.Stderr, "Usage: csm enable --php-shield")
+		os.Exit(1)
+	}
+
+	installer := &Installer{
+		BinaryPath: binaryPath,
+		ConfigPath: defaultConfigPath,
+		StatePath:  defaultStatePath,
+		LogPath:    defaultLogPath,
+	}
+	switch feature {
+	case "php-shield":
+		if err := installer.EnablePHPShield(); err != nil {
+			fmt.Fprintf(os.Stderr, "Enable failed: %v\n", err)
+			os.Exit(1)
+		}
+	}
+}
+
+func runDisable() {
+	feature := ""
+	for _, arg := range os.Args[2:] {
+		if arg == "--php-shield" {
+			feature = "php-shield"
+		}
+	}
+	if feature == "" {
+		fmt.Fprintln(os.Stderr, "Usage: csm disable --php-shield")
+		os.Exit(1)
+	}
+
+	installer := &Installer{
+		BinaryPath: binaryPath,
+		ConfigPath: defaultConfigPath,
+		StatePath:  defaultStatePath,
+		LogPath:    defaultLogPath,
+	}
+	switch feature {
+	case "php-shield":
+		if err := installer.DisablePHPShield(); err != nil {
+			fmt.Fprintf(os.Stderr, "Disable failed: %v\n", err)
 			os.Exit(1)
 		}
 	}
