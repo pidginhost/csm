@@ -140,11 +140,11 @@ func CheckCpanelFileManager(cfg *config.Config, _ *state.Store) []alert.Finding 
 
 	// Only match actual write actions — not read-only calls like get_homedir.
 	// Skip 401/403 responses — the server rejected the request, no write occurred.
+	// Match against request URI only, not the full line (referer can contain "upload").
 	filemanWriteActions := []string{
 		"fileman/save_file_content",
 		"fileman/upload_files",
 		"fileman/save_file",
-		"fileman/upload",
 		"fileman/paste",
 		"fileman/rename",
 		"fileman/delete",
@@ -171,9 +171,11 @@ func CheckCpanelFileManager(cfg *config.Config, _ *state.Store) []alert.Finding 
 			continue
 		}
 
-		lineLower := strings.ToLower(line)
+		// Extract request URI (between first pair of quotes) to avoid
+		// matching "upload" in referer URLs like upload-ajax.html
+		requestURI := extractRequestURIChecks(line)
 		for _, action := range filemanWriteActions {
-			if strings.Contains(lineLower, strings.ToLower(action)) {
+			if strings.Contains(strings.ToLower(requestURI), strings.ToLower(action)) {
 				findings = append(findings, alert.Finding{
 					Severity: alert.Critical,
 					Check:    "cpanel_file_upload",
@@ -271,4 +273,18 @@ func multiIPWindowMin(cfg *config.Config) int {
 		return cfg.Thresholds.MultiIPLoginWindowMin
 	}
 	return defaultMultiIPWindowMin
+}
+
+// extractRequestURIChecks extracts the request line from an access log entry.
+// Format: ... "METHOD /path HTTP/1.1" ... → returns "METHOD /path HTTP/1.1"
+func extractRequestURIChecks(line string) string {
+	start := strings.Index(line, "\"")
+	if start < 0 {
+		return ""
+	}
+	end := strings.Index(line[start+1:], "\"")
+	if end < 0 {
+		return ""
+	}
+	return line[start+1 : start+1+end]
 }
