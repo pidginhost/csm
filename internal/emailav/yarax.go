@@ -13,25 +13,36 @@ import (
 // Unlike internal/yara.Scanner, this adapter extracts rule metadata (severity)
 // and returns Verdict types compatible with the emailav Scanner interface.
 type YaraXScanner struct {
-	rules *yara_x.Rules
+	rules    *yara_x.Rules
+	supplier interface {
+		GlobalRules() *yara_x.Rules
+	}
 }
 
 // NewYaraXScanner creates a scanner from pre-compiled rules.
 // Pass the same *yara_x.Rules used by the filesystem scanner so hot-reload works.
-func NewYaraXScanner(rules *yara_x.Rules) *YaraXScanner {
-	return &YaraXScanner{rules: rules}
+func NewYaraXScanner(source any) *YaraXScanner {
+	switch v := source.(type) {
+	case *yara_x.Rules:
+		return &YaraXScanner{rules: v}
+	case interface{ GlobalRules() *yara_x.Rules }:
+		return &YaraXScanner{supplier: v}
+	default:
+		return &YaraXScanner{}
+	}
 }
 
 func (s *YaraXScanner) Name() string { return "yara-x" }
 
 func (s *YaraXScanner) Available() bool {
-	return s.rules != nil
+	return s.currentRules() != nil
 }
 
 // Scan reads the file and matches against compiled YARA rules.
 // Returns the first matching rule's verdict (with severity from rule metadata).
 func (s *YaraXScanner) Scan(path string) (Verdict, error) {
-	if s.rules == nil {
+	rules := s.currentRules()
+	if rules == nil {
 		return Verdict{}, fmt.Errorf("no YARA rules compiled")
 	}
 
@@ -40,7 +51,7 @@ func (s *YaraXScanner) Scan(path string) (Verdict, error) {
 		return Verdict{}, fmt.Errorf("reading file: %w", err)
 	}
 
-	results, err := s.rules.Scan(data)
+	results, err := rules.Scan(data)
 	if err != nil {
 		return Verdict{}, fmt.Errorf("scanning: %w", err)
 	}
@@ -66,4 +77,11 @@ func (s *YaraXScanner) Scan(path string) (Verdict, error) {
 		Signature: rule.Identifier(),
 		Severity:  severity,
 	}, nil
+}
+
+func (s *YaraXScanner) currentRules() *yara_x.Rules {
+	if s.supplier != nil {
+		return s.supplier.GlobalRules()
+	}
+	return s.rules
 }

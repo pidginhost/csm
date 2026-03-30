@@ -12,10 +12,8 @@ import (
 
 // Orchestrator runs multiple scanners in parallel against extracted email parts.
 type Orchestrator struct {
-	scanners        []Scanner
-	scanTimeout     time.Duration
-	lastDegradedLog time.Time // rate-limit degraded warnings to once per minute
-	mu              sync.Mutex
+	scanners    []Scanner
+	scanTimeout time.Duration
 }
 
 // NewOrchestrator creates an orchestrator with the given scanners and per-scan timeout.

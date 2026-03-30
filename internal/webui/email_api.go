@@ -2,6 +2,7 @@ package webui
 
 import (
 	"context"
+	"crypto/subtle"
 	"io"
 	"net/http"
 	"os"
@@ -155,11 +156,15 @@ func (s *Server) apiEmailQuarantineAction(w http.ResponseWriter, r *http.Request
 		writeJSON(w, map[string]string{"status": "released", "message_id": msgID})
 
 	case http.MethodDelete:
-		// requireCSRF only validates POST; explicitly enforce CSRF for DELETE
-		// unless the request authenticates via Bearer token.
-		if !s.isBearerAuth(r) && !s.validateCSRF(r) {
-			writeJSONError(w, "Invalid CSRF token", http.StatusForbidden)
-			return
+		// requireCSRF middleware only validates POST. For DELETE, check the
+		// CSRF token directly — validateCSRF() skips non-POST methods.
+		if !s.isBearerAuth(r) {
+			expected := s.csrfToken()
+			token := r.Header.Get("X-CSRF-Token")
+			if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(expected)) != 1 {
+				writeJSONError(w, "Invalid CSRF token", http.StatusForbidden)
+				return
+			}
 		}
 		if err := s.emailQuarantine.DeleteMessage(msgID); err != nil {
 			writeJSONError(w, "Failed to delete message: "+err.Error(), http.StatusInternalServerError)

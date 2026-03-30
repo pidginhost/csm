@@ -116,3 +116,54 @@ func TestYaraXScannerNilRules(t *testing.T) {
 		t.Error("scanner with nil rules should not be available")
 	}
 }
+
+type reloadingRulesSupplier struct {
+	rules *yara_x.Rules
+}
+
+func (s *reloadingRulesSupplier) GlobalRules() *yara_x.Rules {
+	return s.rules
+}
+
+func TestYaraXScannerUsesReloadedRules(t *testing.T) {
+	supplier := &reloadingRulesSupplier{
+		rules: compileTestRules(t, `
+rule original_rule {
+    strings:
+        $s1 = "FIRST_SIGNATURE"
+    condition:
+        $s1
+}`),
+	}
+	scanner := NewYaraXScanner(supplier)
+
+	tmpFile := filepath.Join(t.TempDir(), "reload.bin")
+	os.WriteFile(tmpFile, []byte("contains FIRST_SIGNATURE here"), 0644)
+
+	verdict, err := scanner.Scan(tmpFile)
+	if err != nil {
+		t.Fatalf("Scan before reload: %v", err)
+	}
+	if verdict.Signature != "original_rule" {
+		t.Fatalf("Signature before reload = %q, want %q", verdict.Signature, "original_rule")
+	}
+
+	supplier.rules = compileTestRules(t, `
+rule reloaded_rule {
+    strings:
+        $s1 = "SECOND_SIGNATURE"
+    condition:
+        $s1
+}`)
+	if err := os.WriteFile(tmpFile, []byte("contains SECOND_SIGNATURE here"), 0644); err != nil {
+		t.Fatalf("updating test file: %v", err)
+	}
+
+	verdict, err = scanner.Scan(tmpFile)
+	if err != nil {
+		t.Fatalf("Scan after reload: %v", err)
+	}
+	if verdict.Signature != "reloaded_rule" {
+		t.Errorf("Signature after reload = %q, want %q", verdict.Signature, "reloaded_rule")
+	}
+}

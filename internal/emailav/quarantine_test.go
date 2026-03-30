@@ -196,3 +196,29 @@ func TestCleanExpired(t *testing.T) {
 		t.Error("expired quarantine should be cleaned")
 	}
 }
+
+func TestQuarantineMessageRollsBackOnMetadataWriteFailure(t *testing.T) {
+	qDir := filepath.Join(t.TempDir(), "quarantine", "email")
+	q := NewQuarantine(qDir)
+	msgID := "2jKPFm-000abc-1X"
+	spoolDir := setupTestSpool(t, msgID)
+
+	msgDir := filepath.Join(qDir, msgID)
+	if err := os.MkdirAll(filepath.Join(msgDir, "metadata.json"), 0700); err != nil {
+		t.Fatalf("creating blocking metadata dir: %v", err)
+	}
+
+	result := &ScanResult{MessageID: msgID, Infected: true, Findings: []Finding{{Filename: "f.exe", Engine: "clamav", Signature: "Sig", Severity: "critical"}}}
+	env := QuarantineEnvelope{From: "a@b.com", To: []string{"c@d.com"}, Subject: "test", Direction: "inbound"}
+
+	if err := q.QuarantineMessage(msgID, spoolDir, result, env); err == nil {
+		t.Fatal("QuarantineMessage should fail when metadata.json is not writable")
+	}
+
+	if _, err := os.Stat(filepath.Join(spoolDir, msgID+"-H")); err != nil {
+		t.Errorf("spool -H file should be restored after rollback: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(spoolDir, msgID+"-D")); err != nil {
+		t.Errorf("spool -D file should be restored after rollback: %v", err)
+	}
+}

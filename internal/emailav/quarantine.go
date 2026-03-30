@@ -8,6 +8,11 @@ import (
 	"time"
 )
 
+type movedFile struct {
+	src string
+	dst string
+}
+
 // QuarantineEnvelope holds the email envelope info for quarantine metadata.
 type QuarantineEnvelope struct {
 	From      string
@@ -43,27 +48,8 @@ func NewQuarantine(baseDir string) *Quarantine {
 // QuarantineMessage moves spool files into a per-message quarantine directory
 // and writes metadata.json.
 func (q *Quarantine) QuarantineMessage(msgID, spoolDir string, result *ScanResult, env QuarantineEnvelope) error {
+	msgID = filepath.Base(msgID) // sanitize against path traversal
 	msgDir := filepath.Join(q.baseDir, msgID)
-	if err := os.MkdirAll(msgDir, 0700); err != nil {
-		return fmt.Errorf("creating quarantine dir: %w", err)
-	}
-
-	// Move spool files
-	moved := 0
-	for _, suffix := range []string{"-H", "-D"} {
-		src := filepath.Join(spoolDir, msgID+suffix)
-		dst := filepath.Join(msgDir, msgID+suffix)
-		if err := moveFile(src, dst); err != nil {
-			continue
-		}
-		moved++
-	}
-	if moved == 0 {
-		os.Remove(msgDir)
-		return fmt.Errorf("no spool files found for %s", msgID)
-	}
-
-	// Write metadata
 	meta := QuarantineMetadata{
 		MessageID:        msgID,
 		Direction:        env.Direction,
@@ -81,8 +67,32 @@ func (q *Quarantine) QuarantineMessage(msgID, spoolDir string, result *ScanResul
 	if err != nil {
 		return fmt.Errorf("marshaling metadata: %w", err)
 	}
+
+	if err := os.MkdirAll(msgDir, 0700); err != nil {
+		return fmt.Errorf("creating quarantine dir: %w", err)
+	}
+
+	var moved []movedFile
+	for _, suffix := range []string{"-H", "-D"} {
+		src := filepath.Join(spoolDir, msgID+suffix)
+		dst := filepath.Join(msgDir, msgID+suffix)
+		if err := moveFile(src, dst); err != nil {
+			continue
+		}
+		moved = append(moved, movedFile{src: src, dst: dst})
+	}
+	if len(moved) == 0 {
+		os.Remove(msgDir)
+		return fmt.Errorf("no spool files found for %s", msgID)
+	}
+
 	metaPath := filepath.Join(msgDir, "metadata.json")
 	if err := os.WriteFile(metaPath, metaData, 0600); err != nil {
+		rollbackErr := rollbackMovedFiles(moved)
+		_ = os.RemoveAll(msgDir)
+		if rollbackErr != nil {
+			return fmt.Errorf("writing metadata: %w (rollback failed: %v)", err, rollbackErr)
+		}
 		return fmt.Errorf("writing metadata: %w", err)
 	}
 
@@ -115,12 +125,13 @@ func (q *Quarantine) ListMessages() ([]QuarantineMetadata, error) {
 
 // GetMessage returns the metadata for a single quarantined message.
 func (q *Quarantine) GetMessage(msgID string) (*QuarantineMetadata, error) {
-	return q.readMetadata(msgID)
+	return q.readMetadata(filepath.Base(msgID))
 }
 
 // ReleaseMessage moves spool files back to the original spool directory
 // and removes the quarantine directory.
 func (q *Quarantine) ReleaseMessage(msgID string) error {
+	msgID = filepath.Base(msgID) // sanitize against path traversal
 	meta, err := q.readMetadata(msgID)
 	if err != nil {
 		return fmt.Errorf("reading metadata: %w", err)
@@ -178,6 +189,7 @@ func (q *Quarantine) CleanExpired(maxAge time.Duration) (int, error) {
 }
 
 func (q *Quarantine) readMetadata(msgID string) (*QuarantineMetadata, error) {
+	msgID = filepath.Base(msgID) // defense in depth
 	metaPath := filepath.Join(q.baseDir, msgID, "metadata.json")
 	data, err := os.ReadFile(metaPath)
 	if err != nil {
@@ -202,6 +214,15 @@ func moveFile(src, dst string) error {
 			return writeErr
 		}
 		os.Remove(src)
+	}
+	return nil
+}
+
+func rollbackMovedFiles(moved []movedFile) error {
+	for i := len(moved) - 1; i >= 0; i-- {
+		if err := moveFile(moved[i].dst, moved[i].src); err != nil {
+			return err
+		}
 	}
 	return nil
 }
