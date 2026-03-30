@@ -35,6 +35,28 @@
                 </div>
             </div>
         </div>
+        <div class="col-sm-6 col-lg-3">
+            <div class="card">
+                <div class="card-body">
+                    <div class="d-flex align-items-center">
+                        <div class="subheader">Malware Blocked</div>
+                    </div>
+                    <div class="h1 mb-0" id="stat-malware-blocked">0</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-sm-6 col-lg-3">
+            <div class="card">
+                <div class="card-body">
+                    <div class="d-flex align-items-center">
+                        <div class="subheader">AV Engines</div>
+                    </div>
+                    <div class="h1 mb-0" id="stat-av-engines">
+                        <span id="av-status-badge" class="badge bg-secondary">--</span>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Filter Row -->
@@ -122,6 +144,16 @@
                     <div id="email-timeline" style="min-height:80px"></div>
                 </div>
             </div>
+
+            <!-- Quarantined Messages -->
+            <div class="card mt-3">
+                <div class="card-header">
+                    <h3 class="card-title">Quarantined Messages</h3>
+                </div>
+                <div class="card-body">
+                    <div id="quarantine-table"></div>
+                </div>
+            </div>
         </div>
 
         <!-- Right column: Queue + Senders + Firewall -->
@@ -147,6 +179,27 @@
                 <div class="card-header"><h3 class="card-title"><i class="ti ti-firewall"></i>&nbsp;SMTP Firewall</h3></div>
                 <div class="card-body" id="smtp-firewall">
                     <div class="text-muted text-center py-3">Loading...</div>
+                </div>
+            </div>
+
+            <!-- AV Engine Status -->
+            <div class="card mt-3">
+                <div class="card-header">
+                    <h3 class="card-title">AV Engine Status</h3>
+                </div>
+                <div class="card-body">
+                    <div class="mb-2">
+                        <span class="status-dot" id="clamd-dot"></span>
+                        ClamAV: <span id="clamd-status">--</span>
+                    </div>
+                    <div class="mb-2">
+                        <span class="status-dot" id="yarax-dot"></span>
+                        YARA-X: <span id="yarax-status">--</span>
+                        (<span id="yarax-rules">0</span> rules)
+                    </div>
+                    <div class="mb-2">
+                        Watcher: <span id="watcher-mode">--</span>
+                    </div>
                 </div>
             </div>
         </div>
