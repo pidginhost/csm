@@ -190,9 +190,48 @@ document.getElementById('whitelist-form').addEventListener('submit',function(e){
     }).catch(function(){});
 });
 
-// --- GeoIP enrichment ---
+// --- GeoIP enrichment (batch) ---
 function enrichBlockedGeoIP(container) {
     var cells = container.querySelectorAll('.geo-cell');
+    if (cells.length === 0) return;
+
+    var ips = [];
+    var cellMap = {};
+    for (var i = 0; i < cells.length; i++) {
+        var ip = cells[i].dataset.ip;
+        if (ip) {
+            ips.push(ip);
+            cellMap[ip] = cellMap[ip] || [];
+            cellMap[ip].push(cells[i]);
+        }
+    }
+    if (ips.length === 0) return;
+
+    CSM.post(CSM.apiUrl('/api/v1/geoip/batch'), { ips: ips })
+        .then(function(data) {
+            var results = data.results || {};
+            for (var ip in results) {
+                var geo = results[ip];
+                var text = '-';
+                if (!geo.error) {
+                    var parts = [];
+                    if (geo.country) parts.push(geo.country);
+                    if (geo.as_org) parts.push(geo.as_org);
+                    text = parts.join(' / ') || '-';
+                }
+                var targets = cellMap[ip] || [];
+                for (var j = 0; j < targets.length; j++) {
+                    targets[j].textContent = text;
+                }
+            }
+        })
+        .catch(function() {
+            // Fallback: per-IP requests on batch failure
+            enrichBlockedGeoIPFallback(cells);
+        });
+}
+
+function enrichBlockedGeoIPFallback(cells) {
     var idx = 0;
     function next() {
         if (idx >= cells.length) return;
