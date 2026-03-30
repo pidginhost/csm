@@ -171,11 +171,23 @@ CSM.Table.prototype.applySort = function() {
         var cellA = a.row.cells[col];
         var cellB = b.row.cells[col];
         if (!cellA || !cellB) return 0;
+
+        // Check for data-timestamp attribute (on cell or child element)
+        var tsElA = cellA.getAttribute('data-timestamp') ? cellA : cellA.querySelector('[data-timestamp]');
+        var tsElB = cellB.getAttribute('data-timestamp') ? cellB : cellB.querySelector('[data-timestamp]');
+        if (tsElA && tsElB) {
+            var tsA = tsElA.getAttribute('data-timestamp');
+            var tsB = tsElB.getAttribute('data-timestamp');
+            if (tsA && tsB) {
+                return asc ? tsA.localeCompare(tsB) : tsB.localeCompare(tsA);
+            }
+        }
+
         var valA = cellA.textContent.trim().toLowerCase();
         var valB = cellB.textContent.trim().toLowerCase();
-        // Try numeric sort
+        // Try numeric sort — only if the entire value is a number
         var numA = parseFloat(valA), numB = parseFloat(valB);
-        if (!isNaN(numA) && !isNaN(numB)) {
+        if (!isNaN(numA) && !isNaN(numB) && String(numA) === valA && String(numB) === valB) {
             return asc ? numA - numB : numB - numA;
         }
         return asc ? valA.localeCompare(valB) : valB.localeCompare(valA);
