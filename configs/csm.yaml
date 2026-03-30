@@ -1,0 +1,11 @@
+# Email antivirus scanning
+email_av:
+  enabled: false
+  clamd_socket: "/var/run/clamd.scan/clamd.sock"
+  scan_timeout: "30s"
+  max_attachment_size: 26214400   # 25 MB
+  max_archive_depth: 1
+  max_archive_files: 50
+  max_extraction_size: 104857600  # 100 MB
+  quarantine_infected: true
+  scan_concurrency: 4
