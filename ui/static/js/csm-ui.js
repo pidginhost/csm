@@ -24,6 +24,12 @@ CSM.emptyState = function(message, colspan) {
     return '<div class="text-muted text-center py-3">' + CSM.esc(message) + '</div>';
 };
 
+// Country flag emoji from 2-letter ISO code (e.g. "US" → 🇺🇸)
+CSM.countryFlag = function(code) {
+    if (!code || code.length !== 2) return '';
+    return String.fromCodePoint.apply(null, [].map.call(code.toUpperCase(), function(c) { return 127397 + c.charCodeAt(0); }));
+};
+
 // Make a non-table element keyboard-accessible (tabindex + Enter/Space activation)
 CSM.makeClickable = function(el) {
     el.setAttribute('tabindex', '0');

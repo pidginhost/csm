@@ -2,10 +2,7 @@
 
 var fmtDate = CSM.fmtDate;
 
-function countryFlag(code){
-    if(!code||code.length!==2)return '';
-    return String.fromCodePoint.apply(null,[].map.call(code.toUpperCase(),function(c){return 127397+c.charCodeAt(0);}));
-}
+var countryFlag = CSM.countryFlag;
 
 function verdictBadge(v,score){
     var cls = v==='blocked'?'bg-secondary':v==='malicious'?'bg-danger':v==='suspicious'?'bg-warning':'bg-success';
