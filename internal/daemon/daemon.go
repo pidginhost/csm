@@ -374,13 +374,14 @@ func (d *Daemon) criticalScanner() {
 	}
 }
 
-// deepScanner runs deep checks every 60 minutes.
+// deepScanner runs deep checks at the configured interval (default 60 min).
 // If fanotify is active, runs only the checks it can't replace (reduced set).
 // If fanotify is NOT active (fallback mode), runs the full deep tier for timer-mode parity.
 func (d *Daemon) deepScanner() {
 	defer d.wg.Done()
 
-	ticker := time.NewTicker(60 * time.Minute)
+	interval := time.Duration(d.cfg.Thresholds.DeepScanIntervalMin) * time.Minute
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
@@ -406,6 +407,8 @@ func (d *Daemon) deepScanner() {
 				findings = checks.RunTier(d.cfg, d.store, checks.TierDeep)
 			}
 			if len(findings) > 0 {
+				// Merge into Findings page (same as criticalScanner does)
+				d.store.SetLatestFindings(findings)
 				for _, f := range findings {
 					select {
 					case d.alertCh <- f:
