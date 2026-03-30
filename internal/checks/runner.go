@@ -112,13 +112,23 @@ func RunTier(cfg *config.Config, store *state.Store, tier Tier) []alert.Finding 
 
 // RunReducedDeep runs only the deep checks that fanotify can't replace.
 // Used by the daemon when fanotify is active.
+//
+// Skipped (fanotify handles these in real-time):
+//   filesystem, webshells, htaccess, file_index, php_content,
+//   phishing, php_config_changes
 func RunReducedDeep(cfg *config.Config, store *state.Store) []alert.Finding {
 	reduced := []namedCheck{
 		{"wp_core", CheckWPCore},
 		{"nulled_plugins", CheckNulledPlugins},
 		{"rpm_integrity", CheckRPMIntegrity},
+		{"group_writable_php", CheckGroupWritablePHP},
 		{"open_basedir", CheckOpenBasedir},
 		{"symlink_attacks", CheckSymlinkAttacks},
+		{"dns_zones", CheckDNSZoneChanges},
+		{"ssl_certs", CheckSSLCertIssuance},
+		{"waf_status", CheckWAFStatus},
+		{"db_content", CheckDatabaseContent},
+		{"email_content", CheckOutboundEmailContent},
 	}
 	return runParallel(cfg, store, reduced)
 }
