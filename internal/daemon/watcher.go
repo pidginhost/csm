@@ -168,14 +168,14 @@ func parseSessionLogLine(line string, cfg *config.Config) []alert.Finding {
 	// cPanel login from non-infra IP — only alert on direct form login,
 	// not API-created sessions (from portal create_user_session)
 	if strings.Contains(line, "[cpaneld]") && strings.Contains(line, " NEW ") {
-		// Fully suppressed by config
-		if cfg.Suppressions.SuppressCpanelLogin {
+		switch {
+		case cfg.Suppressions.SuppressCpanelLogin:
 			// Skip all cPanel login alerts
-		} else if strings.Contains(line, "method=create_user_session") ||
+		case strings.Contains(line, "method=create_user_session") ||
 			strings.Contains(line, "method=create_session") ||
-			strings.Contains(line, "create_user_session") {
+			strings.Contains(line, "create_user_session"):
 			// Portal-created session — no alert
-		} else {
+		default:
 			ip, account := parseCpanelSessionLogin(line)
 			if ip != "" && account != "" && !isInfraIPDaemon(ip, cfg.InfraIPs) &&
 				!isTrustedCountry(ip, cfg.Suppressions.TrustedCountries) {
