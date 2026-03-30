@@ -124,13 +124,13 @@ func NewSpoolWatcher(cfg *config.Config, alertCh chan<- alert.Finding, orch *ema
 	}
 
 	if marked == 0 {
-		unix.Close(sw.fd)
+		_ = unix.Close(sw.fd)
 		return nil, fmt.Errorf("no Exim spool directories found to watch")
 	}
 
 	// Create pipe for stop signaling
 	if err := unix.Pipe2(sw.pipeFds[:], unix.O_NONBLOCK|unix.O_CLOEXEC); err != nil {
-		unix.Close(sw.fd)
+		_ = unix.Close(sw.fd)
 		return nil, fmt.Errorf("creating pipe: %w", err)
 	}
 
@@ -155,10 +155,16 @@ func (sw *SpoolWatcher) Run() {
 		fmt.Fprintf(os.Stderr, "[%s] spool watcher: epoll_create: %v\n", ts(), err)
 		return
 	}
-	defer unix.Close(epfd)
+	defer func() { _ = unix.Close(epfd) }()
 
-	unix.EpollCtl(epfd, unix.EPOLL_CTL_ADD, sw.fd, &unix.EpollEvent{Events: unix.EPOLLIN, Fd: int32(sw.fd)})
-	unix.EpollCtl(epfd, unix.EPOLL_CTL_ADD, sw.pipeFds[0], &unix.EpollEvent{Events: unix.EPOLLIN, Fd: int32(sw.pipeFds[0])})
+	if err := unix.EpollCtl(epfd, unix.EPOLL_CTL_ADD, sw.fd, &unix.EpollEvent{Events: unix.EPOLLIN, Fd: int32(sw.fd)}); err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] spool watcher: epoll_ctl(fanotify fd): %v\n", ts(), err)
+		return
+	}
+	if err := unix.EpollCtl(epfd, unix.EPOLL_CTL_ADD, sw.pipeFds[0], &unix.EpollEvent{Events: unix.EPOLLIN, Fd: int32(sw.pipeFds[0])}); err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] spool watcher: epoll_ctl(pipe fd): %v\n", ts(), err)
+		return
+	}
 
 	events := make([]unix.EpollEvent, 16)
 	buf := make([]byte, 4096)
@@ -218,7 +224,7 @@ func (sw *SpoolWatcher) readEvents(buf []byte) {
 				if sw.permissionMode {
 					sw.writeResponse(meta.Fd, FAN_ALLOW)
 				}
-				unix.Close(int(meta.Fd))
+				_ = unix.Close(int(meta.Fd))
 				offset += int(meta.EventLen)
 				continue
 			}
@@ -228,7 +234,7 @@ func (sw *SpoolWatcher) readEvents(buf []byte) {
 				if sw.permissionMode {
 					sw.writeResponse(meta.Fd, FAN_ALLOW)
 				}
-				unix.Close(int(meta.Fd))
+				_ = unix.Close(int(meta.Fd))
 				offset += int(meta.EventLen)
 				continue
 			}
@@ -251,7 +257,7 @@ func (sw *SpoolWatcher) readEvents(buf []byte) {
 				if sw.permissionMode {
 					sw.writeResponse(meta.Fd, FAN_ALLOW)
 				}
-				unix.Close(int(meta.Fd))
+				_ = unix.Close(int(meta.Fd))
 			}
 
 			offset += int(meta.EventLen)
@@ -284,7 +290,7 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 		if evt.needResp {
 			sw.writeResponse(int32(evt.fd), response)
 		}
-		unix.Close(evt.fd)
+		_ = unix.Close(evt.fd)
 	}()
 
 	// Derive message ID: strip -D suffix and directory
@@ -385,7 +391,7 @@ func (sw *SpoolWatcher) writeResponse(fd int32, response uint32) {
 // closeFd closes the fanotify fd exactly once, even if called from multiple paths.
 func (sw *SpoolWatcher) closeFd() {
 	if atomic.CompareAndSwapInt32(&sw.fdClosed, 0, 1) {
-		unix.Close(sw.fd)
+		_ = unix.Close(sw.fd)
 	}
 }
 
@@ -420,8 +426,8 @@ func (sw *SpoolWatcher) drainAndClose() {
 		sw.wg.Wait()
 		sw.closeFd()
 		if atomic.CompareAndSwapInt32(&sw.pipeClosed, 0, 1) {
-			unix.Close(sw.pipeFds[0])
-			unix.Close(sw.pipeFds[1])
+			_ = unix.Close(sw.pipeFds[0])
+			_ = unix.Close(sw.pipeFds[1])
 		}
 	})
 }
