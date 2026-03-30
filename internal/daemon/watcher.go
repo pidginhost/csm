@@ -168,8 +168,10 @@ func parseSessionLogLine(line string, cfg *config.Config) []alert.Finding {
 	// cPanel login from non-infra IP — only alert on direct form login,
 	// not API-created sessions (from portal create_user_session)
 	if strings.Contains(line, "[cpaneld]") && strings.Contains(line, " NEW ") {
-		// Skip API/portal sessions — these are legitimate
-		if strings.Contains(line, "method=create_user_session") ||
+		// Fully suppressed by config
+		if cfg.Suppressions.SuppressCpanelLogin {
+			// Skip all cPanel login alerts
+		} else if strings.Contains(line, "method=create_user_session") ||
 			strings.Contains(line, "method=create_session") ||
 			strings.Contains(line, "create_user_session") {
 			// Portal-created session — no alert
@@ -177,11 +179,12 @@ func parseSessionLogLine(line string, cfg *config.Config) []alert.Finding {
 			ip, account := parseCpanelSessionLogin(line)
 			if ip != "" && account != "" && !isInfraIPDaemon(ip, cfg.InfraIPs) &&
 				!isTrustedCountry(ip, cfg.Suppressions.TrustedCountries) {
-				severity := alert.High
+				// WARNING severity — logins are useful for audit trail but
+				// not paging-level. Multi-IP correlation and brute-force
+				// stay at CRITICAL/HIGH via their own checks.
 				method := "unknown"
 				if strings.Contains(line, "method=handle_form_login") {
 					method = "direct form login"
-					severity = alert.Critical // Direct form login from non-infra = suspicious
 				} else if idx := strings.Index(line, "method="); idx >= 0 {
 					rest := line[idx+7:]
 					if comma := strings.IndexAny(rest, ",\n "); comma > 0 {
@@ -189,7 +192,7 @@ func parseSessionLogLine(line string, cfg *config.Config) []alert.Finding {
 					}
 				}
 				findings = append(findings, alert.Finding{
-					Severity: severity,
+					Severity: alert.Warning,
 					Check:    "cpanel_login_realtime",
 					Message:  fmt.Sprintf("cPanel direct login from non-infra IP: %s (account: %s, method: %s)", ip, account, method),
 					Details:  truncateDaemon(line, 300),
