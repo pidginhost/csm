@@ -225,13 +225,20 @@
         if (el) el.textContent = val;
     }
 
-    // Initialize
+    // Initialize — two cadences with failure isolation
     if (feed) {
-        pollFindings();
-        setInterval(pollFindings, 10000);
+        // Fast cadence (10s): findings + scan status, independent of each other
+        function fastPoll() {
+            try { pollFindings(); } catch(e) {}
+            try { refreshScanStatus(); } catch(e) {}
+        }
+        fastPoll();
+        setInterval(fastPoll, 10000);
+
+        // Slow cadence (60s): stats (24h aggregates don't need 30s refresh)
         refreshStats();
-        refreshScanStatus();
-        setInterval(refreshStats, 30000);
-        setInterval(refreshScanStatus, 10000);
+        setInterval(function() {
+            try { refreshStats(); } catch(e) {}
+        }, 60000);
     }
 })();
