@@ -81,6 +81,7 @@
         // Click sender domain to filter findings table
         var items = el.querySelectorAll('[data-sender-domain]');
         for (var j = 0; j < items.length; j++) {
+            CSM.makeClickable(items[j]);
             items[j].addEventListener('click', function() {
                 var domain = this.getAttribute('data-sender-domain');
                 var searchEl = document.getElementById('email-search');
