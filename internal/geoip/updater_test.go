@@ -38,8 +38,8 @@ func TestExtractMMDB(t *testing.T) {
 	if _, err := tw.Write(content); err != nil {
 		t.Fatal(err)
 	}
-	tw.Close()
-	gw.Close()
+	_ = tw.Close()
+	_ = gw.Close()
 
 	tmpDir := t.TempDir()
 	destPath := filepath.Join(tmpDir, "GeoLite2-City.mmdb.tmp")
@@ -69,10 +69,10 @@ func TestExtractMMDB_NoMMDB(t *testing.T) {
 		Size: int64(len(content)),
 		Mode: 0600,
 	}
-	tw.WriteHeader(hdr)
-	tw.Write(content)
-	tw.Close()
-	gw.Close()
+	_ = tw.WriteHeader(hdr)
+	_, _ = tw.Write(content)
+	_ = tw.Close()
+	_ = gw.Close()
 
 	tmpDir := t.TempDir()
 	destPath := filepath.Join(tmpDir, "GeoLite2-City.mmdb.tmp")
