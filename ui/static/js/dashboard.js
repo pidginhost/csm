@@ -4,9 +4,42 @@
 
     var feed = document.getElementById('live-feed-entries');
 
-    // Request browser notification permission
-    if ('Notification' in window && Notification.permission === 'default') {
-        Notification.requestPermission();
+    // Notification toggle — gated on BOTH browser permission AND user preference
+    // localStorage 'csm-notif' stores the user's opt-in choice ('on' or 'off')
+    var notifBtn = document.getElementById('notif-toggle');
+    if (notifBtn && 'Notification' in window) {
+        notifBtn.classList.remove('d-none');
+        var notifPref = localStorage.getItem('csm-notif'); // 'on', 'off', or null
+        function updateNotifIcon() {
+            var icon = notifBtn.querySelector('i');
+            var isActive = Notification.permission === 'granted' && notifPref === 'on';
+            if (Notification.permission === 'denied') {
+                notifBtn.classList.add('d-none');
+            } else if (isActive) {
+                icon.className = 'ti ti-bell-ringing';
+                notifBtn.title = 'Desktop alerts ON (click to disable)';
+            } else {
+                icon.className = 'ti ti-bell';
+                notifBtn.title = 'Enable desktop alerts';
+            }
+        }
+        updateNotifIcon();
+        notifBtn.addEventListener('click', function() {
+            if (Notification.permission === 'granted') {
+                // Toggle preference
+                notifPref = (notifPref === 'on') ? 'off' : 'on';
+                localStorage.setItem('csm-notif', notifPref);
+                updateNotifIcon();
+            } else if (Notification.permission === 'default') {
+                Notification.requestPermission().then(function(result) {
+                    if (result === 'granted') {
+                        notifPref = 'on';
+                        localStorage.setItem('csm-notif', 'on');
+                    }
+                    updateNotifIcon();
+                });
+            }
+        });
     }
 
     // Polling — fetch recent history every 10 seconds
@@ -66,7 +99,7 @@
         feed.insertBefore(div, feed.firstChild);
 
         // Browser notification for critical findings
-        if (f.severity === 2 && 'Notification' in window && Notification.permission === 'granted') {
+        if (f.severity === 2 && 'Notification' in window && Notification.permission === 'granted' && localStorage.getItem('csm-notif') === 'on') {
             new Notification('CSM Critical Alert', {
                 body: f.check + ': ' + f.message,
                 tag: f.check + ':' + f.message
@@ -200,7 +233,5 @@
         refreshScanStatus();
         setInterval(refreshStats, 30000);
         setInterval(refreshScanStatus, 10000);
-        // Reload page every 5 minutes for timeline chart freshness
-        setTimeout(function() { location.reload(); }, 300000);
     }
 })();
