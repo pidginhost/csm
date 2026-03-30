@@ -5,8 +5,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/firewall"
 	"gopkg.in/yaml.v3"
+
+	"github.com/pidginhost/cpanel-security-monitor/internal/firewall"
 )
 
 type Config struct {
