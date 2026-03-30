@@ -553,22 +553,21 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	// Executables in /tmp or /dev/shm — detect dropped malware/miners
 	// Uses unix.Fstat on event fd for TOCTOU safety (attacker can't chmod -x after event)
 	if strings.HasPrefix(path, "/tmp/") || strings.HasPrefix(path, "/dev/shm/") || strings.HasPrefix(path, "/var/tmp/") {
-		// Skip cPanel work directories — SpamAssassin compiles .so regex modules,
-		// UPCP stages scripts, etc. These are legitimate root-owned operations.
-		if strings.Contains(path, "/cpanel.TMP.work.") || strings.Contains(path, "/cPanel-") {
-			if !isPHPExtension(nameLower) {
-				return
-			}
-			// Fall through to PHP checks for .php in cPanel work dirs
-		} else {
-			var tmpStat unix.Stat_t
-			if err := unix.Fstat(event.fd, &tmpStat); err == nil {
-				isDir := tmpStat.Mode&unix.S_IFMT == unix.S_IFDIR
-				isExec := tmpStat.Mode&0111 != 0
-				if !isDir && isExec {
+		var tmpStat unix.Stat_t
+		if err := unix.Fstat(event.fd, &tmpStat); err == nil {
+			isDir := tmpStat.Mode&unix.S_IFMT == unix.S_IFDIR
+			isExec := tmpStat.Mode&0111 != 0
+			if !isDir && isExec {
+				// Skip cPanel work directories ONLY if root-owned — SpamAssassin
+				// compiles .so regex modules, UPCP stages scripts. Non-root files
+				// in these paths are suspicious (attacker could mkdir /tmp/cPanel-*/).
+				isCpanelWork := strings.Contains(path, "/cpanel.TMP.work.") || strings.Contains(path, "/cPanel-")
+				if isCpanelWork && tmpStat.Uid == 0 {
+					// Root-owned executable in cPanel work dir — legitimate, skip
+				} else {
 					fm.sendAlertWithPath(alert.Critical, "executable_in_tmp_realtime",
 						fmt.Sprintf("Executable created in %s: %s", filepath.Dir(path), path),
-						fmt.Sprintf("Size: %d, Mode: %04o", tmpStat.Size, tmpStat.Mode&0777), path, procInfo)
+						fmt.Sprintf("Size: %d, Mode: %04o, UID: %d", tmpStat.Size, tmpStat.Mode&0777, tmpStat.Uid), path, procInfo)
 				}
 			}
 		}
@@ -582,9 +581,18 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	if strings.Contains(path, "/wp-content/uploads/") && isPHPExtension(nameLower) {
 		if nameLower != "index.php" && !isKnownSafeUploadDaemon(path) {
 			if looksLikePluginUpdate(path) {
-				// Verified plugin update — plugin exists in wp-content/plugins/,
-				// WordPress is extracting the update to a temp dir in uploads/.
-				// No alert — this is normal WordPress behavior.
+				// Verified plugin update — emit one low-severity alert per temp directory.
+				// Cannot suppress entirely — attacker could create a decoy plugin dir.
+				uploadsIdx := strings.Index(path, "/wp-content/uploads/")
+				afterUploads := path[uploadsIdx+len("/wp-content/uploads/"):]
+				tempDir := afterUploads
+				if slashIdx := strings.Index(afterUploads, "/"); slashIdx > 0 {
+					tempDir = afterUploads[:slashIdx]
+				}
+				updateDir := path[:uploadsIdx] + "/wp-content/uploads/" + tempDir
+				fm.sendAlertWithPath(alert.Warning, "php_in_uploads_realtime",
+					fmt.Sprintf("Plugin update in uploads: %s", updateDir),
+					"Verified: matching plugin exists in plugins/", updateDir, procInfo)
 			} else {
 				fm.sendAlertWithPath(alert.Critical, "php_in_uploads_realtime",
 					fmt.Sprintf("PHP file created in uploads: %s", path), "", path, procInfo)
