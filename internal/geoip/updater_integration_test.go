@@ -23,10 +23,10 @@ func buildFakeTarGz(edition string) []byte {
 		Size: int64(len(content)),
 		Mode: 0600,
 	}
-	tw.WriteHeader(hdr)
-	tw.Write(content)
-	tw.Close()
-	gw.Close()
+	_ = tw.WriteHeader(hdr)
+	_, _ = tw.Write(content)
+	_ = tw.Close()
+	_ = gw.Close()
 	return buf.Bytes()
 }
 
@@ -45,7 +45,7 @@ func TestUpdateIntegration(t *testing.T) {
 		if r.Method == "HEAD" {
 			return
 		}
-		w.Write(tarData)
+		_, _ = w.Write(tarData)
 	}))
 	defer srv.Close()
 

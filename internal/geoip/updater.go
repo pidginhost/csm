@@ -143,7 +143,7 @@ func extractMMDB(r io.Reader, destPath, edition string) error {
 	if err != nil {
 		return fmt.Errorf("gzip: %w", err)
 	}
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 
 	tr := tar.NewReader(gz)
 	suffix := edition + ".mmdb"
