@@ -80,10 +80,11 @@ scripts:
 
 overrides:
   rpm:
-    group: "System Environment/Base"
     depends:
       - systemd
+    recommends:
       - audit
+      - logrotate
   deb:
     depends:
       - systemd
