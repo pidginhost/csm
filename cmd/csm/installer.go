@@ -151,8 +151,10 @@ func (inst *Installer) Uninstall() error {
 	fmt.Println("  auditd rules removed")
 
 	// Remove WHM plugin
+	_ = exec.Command("/usr/local/cpanel/bin/unregister_appconfig", "csm").Run()
 	os.Remove("/usr/local/cpanel/whostmgr/docroot/cgi/addon_csm.cgi")
 	os.Remove("/var/cpanel/apps/csm.conf")
+	os.Remove("/var/cpanel/pluginscache.cache")
 	fmt.Println("  WHM plugin removed")
 
 	// Remove ModSecurity custom rules
@@ -523,39 +525,54 @@ func (inst *Installer) InstallWHMPlugin() error {
 	cgiDest := "/usr/local/cpanel/whostmgr/docroot/cgi/addon_csm.cgi"
 	confDest := "/var/cpanel/apps/csm.conf"
 
-	// Deploy CGI proxy
-	cgiSrc := "/opt/csm/configs/whm/addon_csm.cgi"
-	if _, err := os.Stat(cgiSrc); os.IsNotExist(err) {
-		// Try embedded path relative to binary
-		cgiSrc = filepath.Join(filepath.Dir(inst.BinaryPath), "configs", "whm", "addon_csm.cgi")
+	// Deploy CGI redirect script (embedded — no external file dependency)
+	cgiContent := `#!/usr/bin/perl
+# CSM Security Monitor — WHM Plugin Redirect
+use strict;
+use warnings;
+my $hostname = '';
+my $port = '9443';
+if (open my $fh, '<', '/opt/csm/csm.yaml') {
+    while (<$fh>) {
+        if (/^\s*hostname:\s*["']?([^"'\s]+)/) { $hostname = $1; }
+        if (/^\s*listen:\s*["']?(?:[^:]+):(\d+)/)  { $port = $1; }
+    }
+    close $fh;
+}
+if (!$hostname) {
+    print "Content-Type: text/html\r\nStatus: 500\r\n\r\n";
+    print "<h1>CSM Configuration Error</h1><p>No hostname in /opt/csm/csm.yaml</p>";
+    exit;
+}
+my $url = "https://${hostname}:${port}/dashboard";
+print "Status: 302 Found\r\nLocation: $url\r\nContent-Type: text/html\r\n\r\n";
+print qq{<html><body><p>Redirecting to <a href="$url">CSM Security Monitor</a>...</p></body></html>};
+`
+	if err := os.WriteFile(cgiDest, []byte(cgiContent), 0755); err != nil {
+		return fmt.Errorf("deploying CGI: %w", err)
 	}
 
-	cgiData, err := os.ReadFile(cgiSrc)
-	if err != nil {
-		return fmt.Errorf("reading CGI script: %w", err)
+	// Deploy AppConfig (embedded)
+	confContent := `name=csm
+service=whostmgr
+url=/cgi/addon_csm.cgi
+displayname=CSM Security Monitor
+entryurl=addon_csm.cgi
+target=_self
+acls=all
+`
+	if err := os.MkdirAll("/var/cpanel/apps", 0755); err != nil {
+		return fmt.Errorf("creating apps dir: %w", err)
 	}
-	if writeErr := os.WriteFile(cgiDest, cgiData, 0755); writeErr != nil {
-		return fmt.Errorf("deploying CGI: %w", writeErr)
-	}
-
-	// Deploy AppConfig
-	confSrc := "/opt/csm/configs/whm/csm.conf"
-	if _, statErr := os.Stat(confSrc); os.IsNotExist(statErr) {
-		confSrc = filepath.Join(filepath.Dir(inst.BinaryPath), "configs", "whm", "csm.conf")
-	}
-
-	confData, err := os.ReadFile(confSrc)
-	if err != nil {
-		return fmt.Errorf("reading AppConfig: %w", err)
-	}
-	if mkErr := os.MkdirAll("/var/cpanel/apps", 0755); mkErr != nil {
-		return fmt.Errorf("creating apps dir: %w", mkErr)
-	}
-	if writeErr := os.WriteFile(confDest, confData, 0644); writeErr != nil {
-		return fmt.Errorf("deploying AppConfig: %w", writeErr)
+	if err := os.WriteFile(confDest, []byte(confContent), 0644); err != nil {
+		return fmt.Errorf("deploying AppConfig: %w", err)
 	}
 
-	fmt.Printf("  WHM plugin installed (CGI: %s)\n", cgiDest)
+	// Register with cPanel's AppConfig system and clear plugin cache
+	_ = exec.Command("/usr/local/cpanel/bin/register_appconfig", confDest).Run()
+	_ = os.Remove("/var/cpanel/pluginscache.cache")
+
+	fmt.Println("  WHM plugin registered (CSM Security Monitor)")
 	return nil
 }
 
