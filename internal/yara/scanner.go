@@ -137,6 +137,14 @@ func (s *Scanner) RuleCount() int {
 	return s.ruleCount
 }
 
+// GlobalRules returns the compiled YARA-X rules for sharing with other scanners
+// (e.g., the email AV YaraXScanner adapter). Thread-safe.
+func (s *Scanner) GlobalRules() *yara_x.Rules {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.rules
+}
+
 // Available returns true (YARA-X is compiled in).
 func Available() bool {
 	return true

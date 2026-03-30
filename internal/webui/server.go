@@ -21,6 +21,7 @@ import (
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
 	"github.com/pidginhost/cpanel-security-monitor/internal/config"
+	"github.com/pidginhost/cpanel-security-monitor/internal/emailav"
 	"github.com/pidginhost/cpanel-security-monitor/internal/geoip"
 	"github.com/pidginhost/cpanel-security-monitor/internal/state"
 )
@@ -44,8 +45,10 @@ type Server struct {
 	sigCount        int // loaded signature rule count
 	fanotifyActive  bool
 	logWatcherCount int
-	blocker         IPBlocker
-	geoIPDB         atomic.Pointer[geoip.DB]
+	blocker            IPBlocker
+	geoIPDB            atomic.Pointer[geoip.DB]
+	emailQuarantine    *emailav.Quarantine
+	emailAVWatcherMode string
 
 	// Rate limiting
 	loginMu       sync.Mutex
@@ -328,6 +331,16 @@ func (s *Server) SetIPBlocker(b IPBlocker) {
 func (s *Server) SetHealthInfo(fanotifyActive bool, logWatchers int) {
 	s.fanotifyActive = fanotifyActive
 	s.logWatcherCount = logWatchers
+}
+
+// SetEmailQuarantine sets the email quarantine for the email AV API endpoints.
+func (s *Server) SetEmailQuarantine(q *emailav.Quarantine) {
+	s.emailQuarantine = q
+}
+
+// SetEmailAVWatcherMode sets the watcher mode string for the email AV status API.
+func (s *Server) SetEmailAVWatcherMode(mode string) {
+	s.emailAVWatcherMode = mode
 }
 
 // --- Authentication ---
