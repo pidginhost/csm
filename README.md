@@ -8,19 +8,42 @@ Built after real incidents where GSocket reverse shells, LEVIATHAN webshell tool
 
 ## Quick Start
 
+### Option 1: Curl installer (interactive)
+
 ```bash
-# Install from GitLab Package Registry
+curl -sSL https://get.pidginhost.com/csm | bash -s -- --token YOUR_DEPLOY_TOKEN
+```
+
+Auto-detects hostname, email, generates WebUI auth token. Prompts for confirmation.
+
+Non-interactive: `bash install.sh --token TOKEN --email admin@example.com --non-interactive`
+
+### Option 2: RPM (CentOS/AlmaLinux/CloudLinux)
+
+```bash
+rpm -i csm-VERSION-1.x86_64.rpm
+vi /opt/csm/csm.yaml       # review auto-detected config
+csm baseline
+systemctl enable --now csm.service
+```
+
+### Option 3: DEB (Ubuntu/Debian)
+
+```bash
+dpkg -i csm_VERSION_amd64.deb
+vi /opt/csm/csm.yaml
+csm baseline
+systemctl enable --now csm.service
+```
+
+### Option 4: Manual (deploy.sh)
+
+```bash
 GITLAB_TOKEN=xxx /opt/csm/deploy.sh install
-
-# Configure
 vi /opt/csm/csm.yaml   # set hostname, alert email, infra IPs
-
-# Validate and baseline
 csm validate
 csm baseline
-
-# Start
-systemctl start csm.service
+systemctl enable --now csm.service
 ```
 
 Web UI: `https://<server>:9443/login`
@@ -37,9 +60,11 @@ csm daemon
  +-- periodic critical scanner    Every 10 min (processes, network, tokens, firewall)
  +-- periodic deep scanner        Every 60 min (WP integrity, RPM, DB injection, phishing)
  +-- nftables firewall engine     Replaces CSF/LFD/fail2ban
- +-- threat intelligence          IP reputation, attack tracking, auto-blocking
+ +-- threat intelligence          IP reputation, attack tracking, GeoIP enrichment
+ +-- attack database              Real-time tracking, scoring, correlation
  +-- alert dispatcher             Batching, dedup, rate limiting, auto-response
  +-- web UI                       HTTPS dashboard, findings, firewall, threat intel
+ +-- GeoIP auto-updater           MaxMind GeoLite2 City + ASN (24h update cycle)
 ```
 
 ## Performance
@@ -83,24 +108,28 @@ WordPress core integrity (parallel checksums), nulled plugin detection, RPM bina
 | Clean malware | 7 strategies: @include, prepend/append, inline eval, base64 chains, chr/pack, hex injection + DB spam |
 | PHP shield | Blocks PHP execution from uploads/tmp, detects webshell parameters |
 | PAM integration | Real-time login failure blocking |
+| Subnet blocking | Auto-block /24 when 3+ IPs from same range |
+| Permblock escalation | Auto-promote to permanent after repeated temp blocks |
 
 ## Web UI
 
-HTTPS dashboard with real-time monitoring, active findings management, threat intelligence, and firewall control.
+HTTPS dashboard with polling-based live updates (10s feed, 30s stats). Dark/light theme.
 
 ### Pages
 
 | Page | Purpose |
 |---|---|
-| **Dashboard** | 24h stats, timeline chart, live feed, accounts at risk, auto-response summary, top attacked accounts, 30-day trend |
+| **Dashboard** | 24h stats, timeline chart, live feed, accounts at risk, auto-response summary, top attacked accounts, attack types |
 | **Findings** | Active findings with search/filter/group, fix/dismiss/suppress, bulk actions, on-demand account scan |
 | **History** | Paginated archive with date/severity filters, CSV export |
 | **Quarantine** | Quarantined files with content preview and restore |
-| **Firewall** | Config display, blocked IPs/subnets with GeoIP, whitelist management, bulk unblock |
-| **Threat Intel** | IP lookup with scoring, top attackers, attack type breakdown, whitelist management |
+| **Firewall** | Config display, blocked IPs/subnets with GeoIP, whitelist management, search, audit log |
+| **Threat Intel** | IP lookup with scoring/GeoIP/ASN, top attackers, attack type breakdown, hourly trend, whitelist management |
 | **Incidents** | Forensic timeline correlating events by IP or account |
 | **Rules** | YAML/YARA rule management, suppression rules, state export/import, test alerts |
 | **Audit** | System-wide action log (block, fix, dismiss, whitelist, restore) |
+| **Account** | Per-account security view with findings, quarantine, and history |
+| **Email** | Email security dashboard and statistics |
 
 ### Security
 
@@ -108,8 +137,8 @@ HTTPS dashboard with real-time monitoring, active findings management, threat in
 - CSRF protection on all mutations (HMAC-derived token)
 - Security headers: X-Frame-Options DENY, CSP, HSTS, nosniff
 - TLS-only with auto-generated self-signed cert
-- Rate-limited login (5/min per IP) and API (120/min per IP)
-- Browser notifications for critical findings
+- Rate-limited login (5/min per IP) and API (600/min per IP)
+- Bearer auth skips CSRF (API-to-API calls)
 
 ### API
 
@@ -127,10 +156,12 @@ Status & Data:
   GET  /api/v1/account             Per-account findings/quarantine/history (?name=)
   GET  /api/v1/health              Daemon health
   GET  /api/v1/history/csv         CSV export
-  GET  /api/v1/geoip               IP geolocation (?ip=&detail=)
+  GET  /api/v1/geoip               IP geolocation (?ip=&detail=1)
   GET  /api/v1/audit               UI audit log
   GET  /api/v1/finding-detail      Finding detail with action history (?check=&message=)
   GET  /api/v1/export              Export state (suppressions, whitelist)
+  GET  /api/v1/incident            Incident timeline (?ip=&account=&hours=)
+  GET  /api/v1/email/stats         Email security statistics
 
 Threat Intelligence:
   GET  /api/v1/threat/stats        Attack stats, type breakdown, hourly trend
@@ -138,7 +169,7 @@ Threat Intelligence:
   GET  /api/v1/threat/ip           IP threat lookup (?ip=)
   GET  /api/v1/threat/events       IP event history (?ip=&limit=)
   GET  /api/v1/threat/whitelist    Whitelisted IPs
-  GET  /api/v1/incident            Incident timeline (?ip=&account=&hours=)
+  GET  /api/v1/threat/db-stats     Attack database statistics
 
 Firewall:
   GET  /api/v1/firewall/status     Config, blocked/allowed counts
@@ -176,20 +207,23 @@ Actions (POST, CSRF required):
 
 ## nftables Firewall Engine
 
-Replaces CSF, LFD, and fail2ban. Uses the kernel netlink API directly — no iptables, no Perl, no shell commands.
+Replaces CSF, LFD, and fail2ban. Uses the kernel netlink API directly via `google/nftables` — no iptables, no Perl, no shell commands.
 
 - Atomic ruleset application (single netlink transaction)
 - Named IP sets with per-element timeouts (blocked, allowed, infra, country)
-- SYN flood, UDP flood, per-IP connection rate limiting
-- Country blocking via CIDR range files
+- SYN flood, UDP flood, per-IP connection rate limiting, per-port flood limiting
+- Country blocking via MaxMind GeoIP CIDR ranges
 - Outbound SMTP restriction by UID
 - Subnet/CIDR blocking, auto-block /24 when 3+ IPs from same range
 - Permanent block escalation after repeated temp blocks
 - Dynamic DNS hostname resolution (updated every 5 min)
-- IPv6 dual-stack
+- IPv6 dual-stack with separate sets
+- Commit-confirmed safety (Juniper-style auto-rollback timer)
+- Infra IP protection (refuses to block infrastructure IPs)
 - Firewall audit trail (JSONL, 10MB rotation)
 - State persistence with atomic writes
-- CSF migration tool
+- CSF migration tool with per-IP:port allow support
+- cphulk integration (unblock flushes cphulk too)
 
 ```bash
 csm firewall status                       # Show status
@@ -197,10 +231,42 @@ csm firewall deny <ip> [reason]           # Block IP
 csm firewall allow <ip> [reason]          # Allow IP
 csm firewall tempban <ip> <dur> [reason]  # Temporary block
 csm firewall deny-subnet <cidr> [reason]  # Block subnet
-csm firewall grep <pattern>              # Search blocks
-csm firewall audit [limit]               # View audit log
-csm firewall migrate-from-csf [--apply]  # Migrate from CSF
+csm firewall remove-subnet <cidr>         # Remove subnet block
+csm firewall grep <pattern>               # Search blocks
+csm firewall ports                        # Show allowed ports
+csm firewall allow-port <port> <proto>    # Open a port
+csm firewall deny-file <path>             # Bulk block from file
+csm firewall profile                      # Detect and apply port profile
+csm firewall audit [limit]                # View audit log
+csm firewall lookup <ip>                  # GeoIP + block status lookup
+csm firewall apply-confirmed <seconds>    # Apply with auto-rollback timer
+csm firewall confirm                      # Confirm applied changes
+csm firewall migrate-from-csf [--apply]   # Migrate from CSF
+csm firewall flush                        # Clear all blocks
+csm update-geoip                          # Update MaxMind GeoLite2 databases
 ```
+
+## GeoIP
+
+MaxMind GeoLite2 integration for IP geolocation and ASN enrichment.
+
+- Auto-downloads City + ASN databases on first use
+- Auto-updates every 24 hours (configurable)
+- Used in: threat intel page, top attackers, IP lookup, firewall audit
+- RDAP fallback for ISP/org details (24h cache)
+
+```yaml
+geoip:
+  account_id: "YOUR_MAXMIND_ACCOUNT_ID"
+  license_key: "YOUR_MAXMIND_LICENSE_KEY"
+  editions:
+    - GeoLite2-City
+    - GeoLite2-ASN
+  auto_update: true
+  update_interval: 24h
+```
+
+Free account: https://www.maxmind.com/en/geolite2/signup
 
 ## Signature Rules
 
@@ -236,7 +302,15 @@ alerts:
     enabled: false
     url: ""
     type: "slack"   # slack, discord, generic
+  heartbeat:
+    enabled: false
+    url: ""         # healthchecks.io, cronitor, dead man's switch
   max_per_hour: 10
+
+webui:
+  enabled: true
+  listen: "0.0.0.0:9443"
+  auth_token: "your-secret-token"  # auto-generated on package install
 
 auto_response:
   enabled: false
@@ -246,23 +320,28 @@ auto_response:
   block_expiry: "24h"
   netblock: false
   netblock_threshold: 3
+  permblock: false
+  permblock_count: 4
 
 firewall:
   enabled: false
   ipv6: false
-  conn_rate_limit: 30
+  conn_rate_limit: 30       # new connections per minute per IP
   syn_flood_protection: true
+  conn_limit: 50            # max concurrent connections per IP
+  smtp_block: false         # restrict outbound SMTP to allowed users
+  log_dropped: true
 
-webui:
-  enabled: true
-  listen: "0.0.0.0:9443"
-  auth_token: "your-secret-token"
+geoip:
+  account_id: ""
+  license_key: ""
 
-infra_ips:
-  - "10.0.0.0/8"
+infra_ips: []               # YOUR management/monitoring network CIDRs
 
 suppressions:
-  trusted_countries: ["US", "RO"]  # suppress cPanel login alerts from these countries
+  trusted_countries: ["US", "RO"]   # suppress cPanel login alerts from these
+  upcp_window_start: "00:30"        # cPanel nightly update window
+  upcp_window_end: "02:00"
 
 signatures:
   rules_dir: "/opt/csm/rules"
@@ -273,18 +352,35 @@ signatures:
 | Command | Description |
 |---|---|
 | `csm daemon` | Run as persistent daemon |
-| `csm install` | Deploy config, systemd, auditd rules, logrotate |
+| `csm install` | Deploy config, systemd, auditd rules, logrotate, WHM plugin |
 | `csm uninstall` | Clean removal |
 | `csm run` | Run all checks once, send alerts |
-| `csm check` | Run all checks, print to stdout |
+| `csm check` | Run all checks, print to stdout (no alerts) |
+| `csm run-critical` | Run critical checks only (used by systemd timer) |
+| `csm run-deep` | Run deep scan only (used by systemd timer) |
 | `csm scan <user>` | Scan single account (16 checks) |
 | `csm clean <path>` | Clean infected PHP file |
 | `csm baseline` | Record current state as known-good |
-| `csm validate` | Check config |
+| `csm rehash` | Update binary/config hashes without scanning |
+| `csm validate` | Check config for errors |
 | `csm verify` | Verify binary and config integrity |
 | `csm update-rules` | Download latest signature rules |
-| `csm firewall ...` | Firewall management |
+| `csm update-geoip` | Update MaxMind GeoLite2 databases |
+| `csm enable --php-shield` | Enable PHP runtime protection |
+| `csm disable --php-shield` | Disable PHP runtime protection |
+| `csm firewall ...` | Firewall management (18 subcommands) |
 | `csm version` | Version and build info |
+
+## Installation Methods
+
+| Method | Command | Best for |
+|---|---|---|
+| Curl installer | `curl -sSL .../install.sh \| bash -s -- --token TOKEN` | Quick trial, first install |
+| RPM | `rpm -i csm-VERSION.x86_64.rpm` | CentOS/AlmaLinux/CloudLinux production |
+| DEB | `dpkg -i csm_VERSION_amd64.deb` | Ubuntu/Debian production |
+| deploy.sh | `/opt/csm/deploy.sh install` | Existing deploy token setup |
+
+All methods produce the same installed state. RPM/DEB auto-detect hostname and email, generate auth token.
 
 ## Upgrading
 
@@ -292,7 +388,9 @@ signatures:
 /opt/csm/deploy.sh upgrade
 ```
 
-Stops daemon, backs up, downloads, verifies checksum, baselines, restarts. Rolls back on failure.
+Stops daemon, backs up binary, downloads new version, verifies SHA256 checksum, extracts UI assets and rules, rehashes config, restarts daemon. Rolls back on failure.
+
+RPM/DEB: `yum update csm` / `dpkg -i csm_NEW.deb` — handles stop/start automatically.
 
 ## Development
 
@@ -303,9 +401,7 @@ make test           # Unit tests
 make deploy SERVER=cluster6
 ```
 
-98 Go files, ~26,600 lines. 34 UI files (JS/HTML/CSS), ~3,800 lines. 3 Go dependencies (yaml.v3, yara-x, google/nftables).
-
-CI/CD: lint, test, build (amd64 + arm64), publish to GitLab Package Registry, release on tag push.
+CI/CD: lint, vet, test, build (amd64 + arm64), package (RPM + DEB via nFPM), publish to GitLab Package Registry, cleanup old packages, release on tag push.
 
 ## Roadmap
 
@@ -313,3 +409,6 @@ CI/CD: lint, test, build (amd64 + arm64), publish to GitLab Package Registry, re
 
 - Binary signing with cosign
 - Multi-server management (centralized dashboard, block list sync)
+- YUM/APT repository hosting for automated updates
+- `csm config` CLI for editing settings with validation
+- `csm backup` / `csm restore` for state portability
