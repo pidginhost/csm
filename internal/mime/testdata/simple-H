@@ -1,0 +1,10 @@
+Exim message header file
+2jKPFm-000abc-1X
+From: sender@example.com
+To: user@domain.com
+Subject: Test message
+Date: Mon, 30 Mar 2026 12:00:00 +0000
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 7bit
+

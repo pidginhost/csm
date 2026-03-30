@@ -1,0 +1,9 @@
+Exim message header file
+3kLQGn-000def-2Y
+Received: from [203.0.113.50] (helo=mail.attacker.com) by hostalias.example.com with esmtp (Exim 4.96) id 3kLQGn-000def-2Y for user@domain.com; Mon, 30 Mar 2026 12:00:00 +0000
+From: sender@external.com
+To: user@domain.com
+Subject: Document attached
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="BOUNDARY123"
+
