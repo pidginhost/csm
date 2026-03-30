@@ -27,6 +27,9 @@ func (s *Scanner) ScanFile(_ string, _ int) []Match { return nil }
 // RuleCount returns 0 without YARA-X.
 func (s *Scanner) RuleCount() int { return 0 }
 
+// GlobalRules returns nil without YARA-X (no compiled rules available).
+func (s *Scanner) GlobalRules() interface{} { return nil }
+
 // Available returns false (YARA-X is not compiled in).
 func Available() bool {
 	return false

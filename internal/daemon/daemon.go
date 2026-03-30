@@ -16,6 +16,7 @@ import (
 	"github.com/pidginhost/cpanel-security-monitor/internal/challenge"
 	"github.com/pidginhost/cpanel-security-monitor/internal/checks"
 	"github.com/pidginhost/cpanel-security-monitor/internal/config"
+	"github.com/pidginhost/cpanel-security-monitor/internal/emailav"
 	"github.com/pidginhost/cpanel-security-monitor/internal/firewall"
 	"github.com/pidginhost/cpanel-security-monitor/internal/geoip"
 	"github.com/pidginhost/cpanel-security-monitor/internal/integrity"
@@ -37,6 +38,8 @@ type Daemon struct {
 	fileMonitor     *FileMonitor
 	hijackDetector  *PasswordHijackDetector
 	pamListener     *PAMListener
+	spoolWatcher    *SpoolWatcher
+	emailQuarantine *emailav.Quarantine
 	webServer       *webui.Server
 	challengeServer *challenge.Server
 	fwEngine        *firewall.Engine
@@ -114,8 +117,21 @@ func (d *Daemon) Run() error {
 	// Start fanotify file monitor (real-time detection starts immediately)
 	d.startFileMonitor()
 
+	// Start email AV spool watcher (separate fanotify for Exim spool)
+	d.startSpoolWatcher()
+
 	// Start Web UI server — available immediately, before initial scan
 	d.startWebUI()
+
+	// Wire email quarantine to web server (after both start)
+	if d.spoolWatcher != nil && d.webServer != nil {
+		d.webServer.SetEmailQuarantine(d.emailQuarantine)
+		if d.spoolWatcher.PermissionMode() {
+			d.webServer.SetEmailAVWatcherMode("permission")
+		} else {
+			d.webServer.SetEmailAVWatcherMode("notification")
+		}
+	}
 
 	// Initialize GeoIP databases (after webServer so SetGeoIPDB can attach)
 	d.initGeoIP()
@@ -238,6 +254,9 @@ func (d *Daemon) Run() error {
 	}
 	if d.fileMonitor != nil {
 		d.fileMonitor.Stop()
+	}
+	if d.spoolWatcher != nil {
+		d.spoolWatcher.Stop()
 	}
 	if d.pamListener != nil {
 		d.pamListener.Stop()
@@ -624,6 +643,75 @@ func (d *Daemon) startFileMonitor() {
 		fm.Run(d.stopCh)
 	}()
 	fmt.Fprintf(os.Stderr, "[%s] fanotify file monitor active on /home, /tmp, /dev/shm\n", ts())
+}
+
+func (d *Daemon) startSpoolWatcher() {
+	if !d.cfg.EmailAV.Enabled {
+		return
+	}
+
+	// Create ClamAV scanner
+	clamScanner := emailav.NewClamdScanner(d.cfg.EmailAV.ClamdSocket)
+
+	// Create YARA-X scanner — share compiled rules from the global YARA scanner
+	var yaraScanner *emailav.YaraXScanner
+	if gs := yara.Global(); gs != nil {
+		yaraScanner = emailav.NewYaraXScanner(gs.GlobalRules())
+	} else {
+		yaraScanner = emailav.NewYaraXScanner(nil)
+	}
+
+	// Create orchestrator with both engines
+	scanners := []emailav.Scanner{clamScanner, yaraScanner}
+	orch := emailav.NewOrchestrator(scanners, d.cfg.EmailAV.ScanTimeoutDuration())
+
+	// Create quarantine
+	quar := emailav.NewQuarantine("/opt/csm/quarantine/email")
+	d.emailQuarantine = quar
+
+	// Create and start spool watcher
+	sw, err := NewSpoolWatcher(d.cfg, d.alertCh, orch, quar)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] Email AV spool watcher not available: %v\n", ts(), err)
+		return
+	}
+	d.spoolWatcher = sw
+
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		sw.Run()
+	}()
+
+	// Start quarantine cleanup goroutine
+	d.wg.Add(1)
+	go d.emailQuarantineCleanup()
+
+	fmt.Fprintf(os.Stderr, "[%s] Email AV spool watcher active\n", ts())
+}
+
+// emailQuarantineCleanup periodically removes expired quarantined email messages.
+func (d *Daemon) emailQuarantineCleanup() {
+	defer d.wg.Done()
+
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-d.stopCh:
+			return
+		case <-ticker.C:
+			if d.emailQuarantine != nil {
+				cleaned, err := d.emailQuarantine.CleanExpired(30 * 24 * time.Hour)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "[%s] Email quarantine cleanup error: %v\n", ts(), err)
+				} else if cleaned > 0 {
+					fmt.Fprintf(os.Stderr, "[%s] Email quarantine cleanup: removed %d expired messages\n", ts(), cleaned)
+				}
+			}
+		}
+	}
 }
 
 func (d *Daemon) startChallengeServer() {
