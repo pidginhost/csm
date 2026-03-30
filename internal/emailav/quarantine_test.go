@@ -11,8 +11,12 @@ import (
 func setupTestSpool(t *testing.T, msgID string) (spoolDir string) {
 	t.Helper()
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, msgID+"-H"), []byte("test header data"), 0644)
-	os.WriteFile(filepath.Join(dir, msgID+"-D"), []byte("test body data"), 0644)
+	if err := os.WriteFile(filepath.Join(dir, msgID+"-H"), []byte("test header data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, msgID+"-D"), []byte("test body data"), 0644); err != nil {
+		t.Fatal(err)
+	}
 	return dir
 }
 
@@ -41,20 +45,20 @@ func TestQuarantineMessage(t *testing.T) {
 	}
 
 	// Verify spool files moved
-	if _, err := os.Stat(filepath.Join(spoolDir, msgID+"-H")); !os.IsNotExist(err) {
+	if _, statErr := os.Stat(filepath.Join(spoolDir, msgID+"-H")); !os.IsNotExist(statErr) {
 		t.Error("spool -H file should have been moved")
 	}
-	if _, err := os.Stat(filepath.Join(spoolDir, msgID+"-D")); !os.IsNotExist(err) {
+	if _, statErr := os.Stat(filepath.Join(spoolDir, msgID+"-D")); !os.IsNotExist(statErr) {
 		t.Error("spool -D file should have been moved")
 	}
 
 	// Verify quarantine directory created
 	msgDir := filepath.Join(qDir, msgID)
-	if _, err := os.Stat(filepath.Join(msgDir, msgID+"-H")); err != nil {
-		t.Errorf("quarantine -H file missing: %v", err)
+	if _, statErr := os.Stat(filepath.Join(msgDir, msgID+"-H")); statErr != nil {
+		t.Errorf("quarantine -H file missing: %v", statErr)
 	}
-	if _, err := os.Stat(filepath.Join(msgDir, msgID+"-D")); err != nil {
-		t.Errorf("quarantine -D file missing: %v", err)
+	if _, statErr := os.Stat(filepath.Join(msgDir, msgID+"-D")); statErr != nil {
+		t.Errorf("quarantine -D file missing: %v", statErr)
 	}
 
 	// Verify metadata
@@ -105,7 +109,9 @@ func TestGetMessage(t *testing.T) {
 
 	result := &ScanResult{MessageID: msgID, Infected: true, Findings: []Finding{{Filename: "f.exe", Engine: "clamav", Signature: "Sig", Severity: "critical"}}}
 	env := QuarantineEnvelope{From: "a@b.com", To: []string{"c@d.com"}, Subject: "test", Direction: "inbound"}
-	q.QuarantineMessage(msgID, spoolDir, result, env)
+	if err := q.QuarantineMessage(msgID, spoolDir, result, env); err != nil {
+		t.Fatalf("QuarantineMessage: %v", err)
+	}
 
 	msg, err := q.GetMessage(msgID)
 	if err != nil {
@@ -124,7 +130,9 @@ func TestReleaseMessage(t *testing.T) {
 
 	result := &ScanResult{MessageID: msgID, Infected: true, Findings: []Finding{{Filename: "f.exe", Engine: "clamav", Signature: "Sig", Severity: "critical"}}}
 	env := QuarantineEnvelope{From: "a@b.com", To: []string{"c@d.com"}, Subject: "test", Direction: "inbound"}
-	q.QuarantineMessage(msgID, spoolDir, result, env)
+	if err := q.QuarantineMessage(msgID, spoolDir, result, env); err != nil {
+		t.Fatalf("QuarantineMessage: %v", err)
+	}
 
 	err := q.ReleaseMessage(msgID)
 	if err != nil {
@@ -153,7 +161,9 @@ func TestDeleteMessage(t *testing.T) {
 
 	result := &ScanResult{MessageID: msgID, Infected: true, Findings: []Finding{{Filename: "f.exe", Engine: "clamav", Signature: "Sig", Severity: "critical"}}}
 	env := QuarantineEnvelope{From: "a@b.com", To: []string{"c@d.com"}, Subject: "test", Direction: "inbound"}
-	q.QuarantineMessage(msgID, spoolDir, result, env)
+	if err := q.QuarantineMessage(msgID, spoolDir, result, env); err != nil {
+		t.Fatalf("QuarantineMessage: %v", err)
+	}
 
 	err := q.DeleteMessage(msgID)
 	if err != nil {
@@ -173,20 +183,32 @@ func TestCleanExpired(t *testing.T) {
 
 	result := &ScanResult{MessageID: msgID, Infected: true, Findings: []Finding{{Filename: "f.exe", Engine: "clamav", Signature: "Sig", Severity: "critical"}}}
 	env := QuarantineEnvelope{From: "a@b.com", To: []string{"c@d.com"}, Subject: "test", Direction: "inbound"}
-	q.QuarantineMessage(msgID, spoolDir, result, env)
+	if err := q.QuarantineMessage(msgID, spoolDir, result, env); err != nil {
+		t.Fatalf("QuarantineMessage: %v", err)
+	}
 
 	// Backdate the metadata
 	metaPath := filepath.Join(qDir, msgID, "metadata.json")
-	metaData, _ := os.ReadFile(metaPath)
+	metaData, readErr := os.ReadFile(metaPath)
+	if readErr != nil {
+		t.Fatalf("reading metadata: %v", readErr)
+	}
 	var meta QuarantineMetadata
-	json.Unmarshal(metaData, &meta)
+	if unmarshalErr := json.Unmarshal(metaData, &meta); unmarshalErr != nil {
+		t.Fatalf("parsing metadata: %v", unmarshalErr)
+	}
 	meta.QuarantinedAt = time.Now().Add(-31 * 24 * time.Hour) // 31 days ago
-	updated, _ := json.MarshalIndent(meta, "", "  ")
-	os.WriteFile(metaPath, updated, 0600)
+	updated, marshalErr := json.MarshalIndent(meta, "", "  ")
+	if marshalErr != nil {
+		t.Fatalf("marshaling metadata: %v", marshalErr)
+	}
+	if writeErr := os.WriteFile(metaPath, updated, 0600); writeErr != nil {
+		t.Fatalf("writing metadata: %v", writeErr)
+	}
 
-	cleaned, err := q.CleanExpired(30 * 24 * time.Hour)
-	if err != nil {
-		t.Fatalf("CleanExpired: %v", err)
+	cleaned, cleanErr := q.CleanExpired(30 * 24 * time.Hour)
+	if cleanErr != nil {
+		t.Fatalf("CleanExpired: %v", cleanErr)
 	}
 	if cleaned != 1 {
 		t.Errorf("CleanExpired = %d, want 1", cleaned)

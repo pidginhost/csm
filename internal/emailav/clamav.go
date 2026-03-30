@@ -28,7 +28,7 @@ func (s *ClamdScanner) Available() bool {
 	if err != nil {
 		return false
 	}
-	conn.Close()
+	_ = conn.Close()
 	return true
 }
 
@@ -44,12 +44,16 @@ func (s *ClamdScanner) Scan(path string) (Verdict, error) {
 	if err != nil {
 		return Verdict{}, fmt.Errorf("connecting to clamd: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
-	conn.SetDeadline(time.Now().Add(30 * time.Second))
+	err = conn.SetDeadline(time.Now().Add(30 * time.Second))
+	if err != nil {
+		return Verdict{}, fmt.Errorf("setting deadline: %w", err)
+	}
 
 	// Send INSTREAM command
-	if _, err := conn.Write([]byte("nINSTREAM\n")); err != nil {
+	_, err = conn.Write([]byte("nINSTREAM\n"))
+	if err != nil {
 		return Verdict{}, fmt.Errorf("sending INSTREAM: %w", err)
 	}
 
@@ -60,10 +64,12 @@ func (s *ClamdScanner) Scan(path string) (Verdict, error) {
 		n, readErr := f.Read(buf)
 		if n > 0 {
 			binary.BigEndian.PutUint32(lenBuf, uint32(n))
-			if _, err := conn.Write(lenBuf); err != nil {
+			_, err = conn.Write(lenBuf)
+			if err != nil {
 				return Verdict{}, fmt.Errorf("sending chunk length: %w", err)
 			}
-			if _, err := conn.Write(buf[:n]); err != nil {
+			_, err = conn.Write(buf[:n])
+			if err != nil {
 				return Verdict{}, fmt.Errorf("sending chunk data: %w", err)
 			}
 		}
@@ -77,7 +83,8 @@ func (s *ClamdScanner) Scan(path string) (Verdict, error) {
 
 	// Send terminator (4 zero bytes)
 	binary.BigEndian.PutUint32(lenBuf, 0)
-	if _, err := conn.Write(lenBuf); err != nil {
+	_, err = conn.Write(lenBuf)
+	if err != nil {
 		return Verdict{}, fmt.Errorf("sending terminator: %w", err)
 	}
 

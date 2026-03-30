@@ -56,9 +56,7 @@ func (o *Orchestrator) ScanParts(messageID string, parts []emime.ExtractedPart, 
 	for _, part := range parts {
 		findings, timedOut := o.scanPart(part, available)
 		result.Findings = append(result.Findings, findings...)
-		for _, eng := range timedOut {
-			result.TimedOutEngines = append(result.TimedOutEngines, eng)
-		}
+		result.TimedOutEngines = append(result.TimedOutEngines, timedOut...)
 	}
 
 	result.Infected = len(result.Findings) > 0

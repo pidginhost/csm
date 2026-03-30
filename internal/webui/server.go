@@ -35,16 +35,16 @@ type IPBlocker interface {
 // Server is the web UI HTTP server. Serves API always; serves HTML pages
 // and static files only if the UI directory exists on disk.
 type Server struct {
-	cfg             *config.Config
-	store           *state.Store
-	httpSrv         *http.Server
-	templates       map[string]*template.Template
-	hasUI           bool   // true if UI directory with templates exists
-	uiDir           string // path to UI directory on disk
-	startTime       time.Time
-	sigCount        int // loaded signature rule count
-	fanotifyActive  bool
-	logWatcherCount int
+	cfg                *config.Config
+	store              *state.Store
+	httpSrv            *http.Server
+	templates          map[string]*template.Template
+	hasUI              bool   // true if UI directory with templates exists
+	uiDir              string // path to UI directory on disk
+	startTime          time.Time
+	sigCount           int // loaded signature rule count
+	fanotifyActive     bool
+	logWatcherCount    int
 	blocker            IPBlocker
 	geoIPDB            atomic.Pointer[geoip.DB]
 	emailQuarantine    *emailav.Quarantine

@@ -19,7 +19,7 @@ type mockScanner struct {
 	delay     time.Duration
 }
 
-func (m *mockScanner) Name() string { return m.name }
+func (m *mockScanner) Name() string    { return m.name }
 func (m *mockScanner) Available() bool { return m.available }
 func (m *mockScanner) Scan(path string) (Verdict, error) {
 	if m.delay > 0 {
@@ -31,7 +31,9 @@ func (m *mockScanner) Scan(path string) (Verdict, error) {
 func makeTempPart(t *testing.T, content string) emime.ExtractedPart {
 	t.Helper()
 	tmpFile := filepath.Join(t.TempDir(), "test-part")
-	os.WriteFile(tmpFile, []byte(content), 0644)
+	if err := os.WriteFile(tmpFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
 	return emime.ExtractedPart{
 		Filename:    "test.exe",
 		ContentType: "application/octet-stream",
