@@ -233,6 +233,7 @@
 
 // --- Feed item expand/collapse ---
 function attachFeedItemListeners(item) {
+    CSM.makeClickable(item);
     item.style.cursor = 'pointer';
     item.addEventListener('click', function(e) {
         if (e.target.closest('button')) return;
