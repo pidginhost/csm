@@ -1,0 +1,13 @@
+[Unit]
+Description=CSM — cPanel Security Monitor Daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/opt/csm/csm daemon
+Restart=always
+RestartSec=10
+WatchdogSec=300
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,92 @@
+name: csm
+arch: "${ARCH}"
+version: "${VERSION}"
+maintainer: "PidginHost <support@pidginhost.com>"
+description: "cPanel Security Monitor — real-time server security for cPanel/WHM"
+homepage: "https://git.pidginhost.net/pidginhost/cpanel-security-monitor"
+license: "Proprietary"
+vendor: "PidginHost"
+
+depends:
+  - systemd
+recommends:
+  - audit
+  - logrotate
+
+contents:
+  - src: dist/csm-linux-${ARCH}
+    dst: /opt/csm/csm
+    file_info:
+      mode: 0700
+      owner: root
+      group: root
+
+  - src: build/packaging/csm.yaml.default
+    dst: /opt/csm/csm.yaml
+    type: config|noreplace
+    file_info:
+      mode: 0600
+      owner: root
+      group: root
+
+  - src: build/packaging/systemd/csm.service
+    dst: /etc/systemd/system/csm.service
+  - src: build/packaging/systemd/csm-critical.service
+    dst: /etc/systemd/system/csm-critical.service
+  - src: build/packaging/systemd/csm-critical.timer
+    dst: /etc/systemd/system/csm-critical.timer
+  - src: build/packaging/systemd/csm-deep.service
+    dst: /etc/systemd/system/csm-deep.service
+  - src: build/packaging/systemd/csm-deep.timer
+    dst: /etc/systemd/system/csm-deep.timer
+
+  - src: configs/logrotate.conf
+    dst: /etc/logrotate.d/csm
+    type: config|noreplace
+
+  - src: build/packaging/csm.audit.rules
+    dst: /etc/audit/rules.d/csm.rules
+    file_info:
+      mode: 0640
+
+  - src: ui/
+    dst: /opt/csm/ui/
+
+  - src: configs/
+    dst: /opt/csm/configs/
+
+  - src: configs/malware.yml
+    dst: /opt/csm/rules/malware.yml
+  - src: configs/malware.yar
+    dst: /opt/csm/rules/malware.yar
+
+  - dst: /opt/csm/state
+    type: dir
+    file_info:
+      mode: 0700
+  - dst: /opt/csm/quarantine
+    type: dir
+    file_info:
+      mode: 0700
+  - dst: /var/log/csm
+    type: dir
+    file_info:
+      mode: 0700
+
+scripts:
+  postinstall: build/packaging/scripts/postinstall.sh
+  preremove: build/packaging/scripts/preremove.sh
+  postremove: build/packaging/scripts/postremove.sh
+
+overrides:
+  rpm:
+    group: "System Environment/Base"
+    depends:
+      - systemd
+      - audit
+  deb:
+    depends:
+      - systemd
+    recommends:
+      - auditd
+      - logrotate
