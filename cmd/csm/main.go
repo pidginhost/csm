@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/pidginhost/cpanel-security-monitor/internal/checks"
 	"github.com/pidginhost/cpanel-security-monitor/internal/config"
 	"github.com/pidginhost/cpanel-security-monitor/internal/daemon"
+	"github.com/pidginhost/cpanel-security-monitor/internal/geoip"
 	"github.com/pidginhost/cpanel-security-monitor/internal/integrity"
 	"github.com/pidginhost/cpanel-security-monitor/internal/signatures"
 	"github.com/pidginhost/cpanel-security-monitor/internal/state"
@@ -87,6 +89,8 @@ func main() {
 		runVerify()
 	case "update-rules":
 		runUpdateRules()
+	case "update-geoip":
+		runUpdateGeoIP()
 	case "clean":
 		runClean()
 	case "scan":
@@ -124,6 +128,7 @@ Commands:
   validate      Validate config file for common mistakes
   verify        Verify binary + config integrity
   update-rules  Download latest malware signature rules
+  update-geoip  Download latest MaxMind GeoLite2 databases
   clean <path>  Attempt to clean an infected PHP file (backup created first)
   scan <user>   Scan a single cPanel account (add --alert to send alerts)
   firewall ...  Firewall management (deny, allow, status, ports, etc.)
@@ -483,6 +488,42 @@ func runUpdateRules() {
 	}
 	fmt.Fprintf(os.Stderr, "Updated: %d rules installed to %s\n", count, cfg.Signatures.RulesDir)
 	fmt.Fprintf(os.Stderr, "Reload running daemon with: kill -HUP $(pidof csm)\n")
+}
+
+func runUpdateGeoIP() {
+	cfg := loadConfig()
+
+	if cfg.GeoIP.AccountID == "" || cfg.GeoIP.LicenseKey == "" {
+		fmt.Fprintf(os.Stderr, "No MaxMind credentials configured (set geoip.account_id and geoip.license_key in csm.yaml)\n")
+		return
+	}
+
+	dbDir := filepath.Join(cfg.StatePath, "geoip")
+	fmt.Fprintf(os.Stderr, "Checking MaxMind for updates...\n")
+
+	results := geoip.Update(dbDir, cfg.GeoIP.AccountID, cfg.GeoIP.LicenseKey, cfg.GeoIP.Editions)
+
+	anyUpdated := false
+	anyError := false
+	for _, r := range results {
+		switch r.Status {
+		case "updated":
+			fmt.Fprintf(os.Stderr, "  %s: updated\n", r.Edition)
+			anyUpdated = true
+		case "up_to_date":
+			fmt.Fprintf(os.Stderr, "  %s: up to date\n", r.Edition)
+		case "error":
+			fmt.Fprintf(os.Stderr, "  %s: error: %v\n", r.Edition, r.Err)
+			anyError = true
+		}
+	}
+
+	if anyUpdated {
+		fmt.Fprintf(os.Stderr, "Reload running daemon with: kill -HUP $(pidof csm)\n")
+	}
+	if anyError {
+		os.Exit(1)
+	}
 }
 
 func runClean() {
