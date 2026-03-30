@@ -50,7 +50,9 @@ func CheckCpanelLogins(cfg *config.Config, store *state.Store) []alert.Finding {
 		// Detect cPanel logins from non-infra IPs
 		// Skip API/portal sessions (create_user_session) — only alert on direct form login
 		if strings.Contains(line, "[cpaneld]") && strings.Contains(line, " NEW ") {
-			if strings.Contains(line, "method=create_user_session") ||
+			if cfg.Suppressions.SuppressCpanelLogin {
+				// Still track IPs for multi-IP correlation even when suppressed
+			} else if strings.Contains(line, "method=create_user_session") ||
 				strings.Contains(line, "method=create_session") ||
 				strings.Contains(line, "create_user_session") {
 				continue
@@ -65,24 +67,22 @@ func CheckCpanelLogins(cfg *config.Config, store *state.Store) []alert.Finding {
 				continue
 			}
 
-			// Track for multi-IP correlation
+			// Always track for multi-IP correlation (even when login alerts suppressed)
 			if accountIPs[account] == nil {
 				accountIPs[account] = make(map[string]bool)
 			}
 			accountIPs[account][ip] = true
 
-			// Direct form login from non-infra = higher severity
-			sev := alert.High
-			if strings.Contains(line, "method=handle_form_login") {
-				sev = alert.Critical
+			// WARNING severity — logins are audit trail, not paging-level.
+			// Multi-IP correlation stays CRITICAL via its own check below.
+			if !cfg.Suppressions.SuppressCpanelLogin {
+				findings = append(findings, alert.Finding{
+					Severity: alert.Warning,
+					Check:    "cpanel_login",
+					Message:  fmt.Sprintf("cPanel direct login from non-infra IP: %s (account: %s)", ip, account),
+					Details:  truncateString(line, 300),
+				})
 			}
-
-			findings = append(findings, alert.Finding{
-				Severity: sev,
-				Check:    "cpanel_login",
-				Message:  fmt.Sprintf("cPanel direct login from non-infra IP: %s (account: %s)", ip, account),
-				Details:  truncateString(line, 300),
-			})
 		}
 
 		// Detect password change purge events
