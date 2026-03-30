@@ -74,8 +74,8 @@ func (s *Server) apiThreatTopAttackers(w http.ResponseWriter, r *http.Request) {
 			InThreatDB:   intels[i].InThreatDB,
 			Blocked:      intels[i].CurrentlyBlocked,
 		}
-		if s.geoIPDB != nil {
-			geo := s.geoIPDB.Lookup(rec.IP)
+		if gdb := s.geoIPDB.Load(); gdb != nil {
+			geo := gdb.Lookup(rec.IP)
 			results[i].Country = geo.Country
 			results[i].ASOrg = geo.ASOrg
 		}
@@ -96,8 +96,8 @@ func (s *Server) apiThreatIP(w http.ResponseWriter, r *http.Request) {
 	intel := threat.Lookup(ip, s.cfg.StatePath)
 
 	// Enrich with GeoIP data if available
-	if s.geoIPDB != nil {
-		geo := s.geoIPDB.Lookup(ip)
+	if gdb := s.geoIPDB.Load(); gdb != nil {
+		geo := gdb.Lookup(ip)
 		intel.Country = geo.Country
 		intel.CountryName = geo.CountryName
 		intel.City = geo.City

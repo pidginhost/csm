@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
@@ -44,7 +45,7 @@ type Server struct {
 	fanotifyActive  bool
 	logWatcherCount int
 	blocker         IPBlocker
-	geoIPDB         *geoip.DB
+	geoIPDB         atomic.Pointer[geoip.DB]
 
 	// Rate limiting
 	loginMu       sync.Mutex

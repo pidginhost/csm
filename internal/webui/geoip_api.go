@@ -10,7 +10,7 @@ import (
 
 // SetGeoIPDB sets the GeoIP database for IP lookups.
 func (s *Server) SetGeoIPDB(db *geoip.DB) {
-	s.geoIPDB = db
+	s.geoIPDB.Store(db)
 }
 
 // apiGeoIPLookup returns geolocation info for an IP.
@@ -27,16 +27,17 @@ func (s *Server) apiGeoIPLookup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.geoIPDB == nil {
+	db := s.geoIPDB.Load()
+	if db == nil {
 		writeJSONError(w, "GeoIP databases not loaded (place GeoLite2-City.mmdb and GeoLite2-ASN.mmdb in /opt/csm/geoip/)", http.StatusServiceUnavailable)
 		return
 	}
 
 	var info geoip.Info
 	if r.URL.Query().Get("detail") == "1" {
-		info = s.geoIPDB.LookupWithRDAP(ip)
+		info = db.LookupWithRDAP(ip)
 	} else {
-		info = s.geoIPDB.Lookup(ip)
+		info = db.Lookup(ip)
 	}
 
 	writeJSON(w, info)
@@ -70,17 +71,18 @@ func (s *Server) apiGeoIPBatch(w http.ResponseWriter, r *http.Request) {
 		Error       string `json:"error,omitempty"`
 	}
 
+	db := s.geoIPDB.Load()
 	results := make(map[string]geoResult, len(req.IPs))
 	for _, ip := range req.IPs {
 		if net.ParseIP(ip) == nil {
 			results[ip] = geoResult{Error: "invalid IP format"}
 			continue
 		}
-		if s.geoIPDB == nil {
+		if db == nil {
 			results[ip] = geoResult{Error: "GeoIP database not loaded"}
 			continue
 		}
-		info := s.geoIPDB.Lookup(ip)
+		info := db.Lookup(ip)
 		results[ip] = geoResult{
 			Country:     info.Country,
 			CountryName: info.CountryName,
