@@ -36,7 +36,7 @@
         <div class="card-header">
             <h3 class="card-title"><i class="ti ti-alert-triangle"></i>&nbsp;Active Findings ({{len .Entries}})</h3>
             <div class="card-actions d-flex gap-2 flex-wrap align-items-center">
-                <input type="text" id="findings-search" class="form-control form-control-sm" placeholder="Search..." style="width:140px">
+                <input type="text" id="findings-search" class="form-control form-control-sm csm-input-sm" placeholder="Search...">
                 <select id="check-filter" class="form-select form-select-sm" style="width:auto">
                     <option value="all">All Types</option>
                     {{range .CheckTypes}}<option value="{{.}}">{{.}}</option>{{end}}

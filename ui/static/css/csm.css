@@ -78,3 +78,11 @@ html, body, .page { overflow-x: hidden; max-width: 100vw; }
 
 /* --- login.html: dark-theme body ----------------------------------------- */
 body.theme-dark { background-color: #1a2234; }
+
+/* Responsive input widths — replaces inline style="width:Xpx" */
+.csm-input-sm { width: 140px; }
+.csm-input-md { width: 180px; }
+.csm-input-lg { width: 240px; }
+@media (max-width: 768px) {
+    .csm-input-sm, .csm-input-md, .csm-input-lg { width: 100%; }
+}
