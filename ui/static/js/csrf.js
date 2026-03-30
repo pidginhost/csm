@@ -80,12 +80,18 @@ CSM.formatSize = function(bytes) {
     return (bytes / 1048576).toFixed(1) + ' MB';
 };
 
-// Format ISO timestamp to "YYYY-MM-DD HH:MM"
+// Format ISO timestamp to "YYYY-MM-DD HH:MM TZ" in browser-local timezone
 CSM.fmtDate = function(s) {
     if (!s) return '\u2014';
     var d = new Date(s);
     if (isNaN(d.getTime())) return s;
-    return d.toISOString().substring(0, 16).replace('T', ' ');
+    var pad = function(n) { return n < 10 ? '0' + n : n; };
+    var tz = '';
+    try {
+        tz = ' ' + d.toLocaleTimeString('en-US', { timeZoneName: 'short' }).split(' ').pop();
+    } catch(e) {}
+    return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()) +
+           ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + tz;
 };
 
 // Render a loading skeleton placeholder
