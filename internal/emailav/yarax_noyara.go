@@ -10,8 +10,8 @@ func NewYaraXScanner(_ interface{}) *YaraXScanner {
 	return &YaraXScanner{}
 }
 
-func (s *YaraXScanner) Name() string             { return "yara-x" }
-func (s *YaraXScanner) Available() bool           { return false }
+func (s *YaraXScanner) Name() string    { return "yara-x" }
+func (s *YaraXScanner) Available() bool { return false }
 func (s *YaraXScanner) Scan(_ string) (Verdict, error) {
 	return Verdict{}, nil
 }

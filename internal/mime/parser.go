@@ -86,10 +86,10 @@ func ParseSpoolMessage(headerPath, bodyPath string, limits Limits) (*ExtractionR
 		ct = "text/plain"
 	}
 
-	mediaType, params, err := mime.ParseMediaType(ct)
-	if err != nil {
+	mediaType, params, parseErr := mime.ParseMediaType(ct)
+	if parseErr != nil {
 		// Unparseable content type — treat as plain text, no attachments
-		return result, nil
+		return result, nil //nolint:nilerr // fail-open by design
 	}
 
 	if strings.HasPrefix(mediaType, "multipart/") {
@@ -98,9 +98,9 @@ func ParseSpoolMessage(headerPath, bodyPath string, limits Limits) (*ExtractionR
 			return result, nil
 		}
 		var totalSize int64
-		err = extractMultipart(bytes.NewReader(bodyData), boundary, limits, result, &totalSize, 0)
-		if err != nil {
-			return result, nil // fail-open: return what we have
+		extractErr := extractMultipart(bytes.NewReader(bodyData), boundary, limits, result, &totalSize, 0)
+		if extractErr != nil {
+			return result, nil //nolint:nilerr // fail-open by design: return what we extracted so far
 		}
 	} else if !strings.HasPrefix(mediaType, "text/") {
 		// Single-part non-text message (e.g. application/octet-stream,
@@ -118,9 +118,9 @@ func ParseSpoolMessage(headerPath, bodyPath string, limits Limits) (*ExtractionR
 		}
 
 		if int64(len(decoded)) <= limits.MaxAttachmentSize {
-			tmpFile, err := os.CreateTemp("", "csm-emailav-single-*")
-			if err == nil {
-				tmpFile.Write(decoded)
+			tmpFile, tmpErr := os.CreateTemp("", "csm-emailav-single-*")
+			if tmpErr == nil {
+				_, _ = tmpFile.Write(decoded)
 				tmpFile.Close()
 				filename := params["name"]
 				if filename == "" {
@@ -169,8 +169,8 @@ func parseEximHeader(path string) (*envelope, textproto.MIMEHeader, error) {
 	var headerBuf bytes.Buffer
 	inHeaders := false
 	for {
-		line, err := reader.ReadString('\n')
-		if err != nil && line == "" {
+		line, readErr := reader.ReadString('\n')
+		if readErr != nil && line == "" {
 			break
 		}
 		trimmed := strings.TrimRight(line, "\r\n")
@@ -201,10 +201,10 @@ func parseEximHeader(path string) (*envelope, textproto.MIMEHeader, error) {
 	}
 
 	// Parse the collected headers
-	msg, err := mail.ReadMessage(&headerBuf)
-	if err != nil {
+	msg, msgErr := mail.ReadMessage(&headerBuf)
+	if msgErr != nil {
 		// Try to extract what we can from the raw data
-		return env, make(textproto.MIMEHeader), nil
+		return env, make(textproto.MIMEHeader), nil //nolint:nilerr // fail-open: return empty headers
 	}
 
 	env.from = msg.Header.Get("From")
@@ -259,8 +259,8 @@ func extractMultipart(r io.Reader, boundary string, limits Limits, result *Extra
 		// Recurse into nested multipart
 		if strings.HasPrefix(mediaType, "multipart/") {
 			if b := params["boundary"]; b != "" {
-				if err := extractMultipart(part, b, limits, result, totalSize, depth); err != nil {
-					return err
+				if nestedErr := extractMultipart(part, b, limits, result, totalSize, depth); nestedErr != nil {
+					return nestedErr
 				}
 			}
 			continue
@@ -426,7 +426,7 @@ func extractTarGz(tgzPath, archiveName string, limits Limits, result *Extraction
 	if err != nil {
 		return
 	}
-	defer gr.Close()
+	defer func() { _ = gr.Close() }()
 
 	tr := tar.NewReader(gr)
 	extracted := 0

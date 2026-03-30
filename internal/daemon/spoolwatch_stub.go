@@ -17,6 +17,6 @@ func NewSpoolWatcher(_ *config.Config, _ chan<- alert.Finding, _ *emailav.Orches
 	return nil, fmt.Errorf("spool watcher requires Linux (fanotify)")
 }
 
-func (sw *SpoolWatcher) Run()              {}
-func (sw *SpoolWatcher) Stop()             {}
+func (sw *SpoolWatcher) Run()                 {}
+func (sw *SpoolWatcher) Stop()                {}
 func (sw *SpoolWatcher) PermissionMode() bool { return false }

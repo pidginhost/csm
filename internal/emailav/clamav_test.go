@@ -25,7 +25,7 @@ func mockClamd(t *testing.T, response string) (socketPath string, cleanup func()
 				return
 			}
 			go func(c net.Conn) {
-				defer c.Close()
+				defer func() { _ = c.Close() }()
 				// Read and discard the INSTREAM command and data
 				buf := make([]byte, 65536)
 				for {
@@ -38,7 +38,7 @@ func mockClamd(t *testing.T, response string) (socketPath string, cleanup func()
 						data := buf[:n]
 						for i := 0; i <= len(data)-4; i++ {
 							if data[i] == 0 && data[i+1] == 0 && data[i+2] == 0 && data[i+3] == 0 {
-								c.Write([]byte(response))
+								_, _ = c.Write([]byte(response))
 								return
 							}
 						}
@@ -48,7 +48,7 @@ func mockClamd(t *testing.T, response string) (socketPath string, cleanup func()
 		}
 	}()
 
-	return sock, func() { ln.Close() }
+	return sock, func() { _ = ln.Close() }
 }
 
 func TestClamdScannerClean(t *testing.T) {
@@ -65,7 +65,9 @@ func TestClamdScannerClean(t *testing.T) {
 
 	// Create a temp file to scan
 	tmpFile := filepath.Join(t.TempDir(), "clean.txt")
-	os.WriteFile(tmpFile, []byte("hello world"), 0644)
+	if err := os.WriteFile(tmpFile, []byte("hello world"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	verdict, err := scanner.Scan(tmpFile)
 	if err != nil {
@@ -83,7 +85,9 @@ func TestClamdScannerInfected(t *testing.T) {
 	scanner := NewClamdScanner(sock)
 
 	tmpFile := filepath.Join(t.TempDir(), "malware.exe")
-	os.WriteFile(tmpFile, []byte("fake malware content"), 0644)
+	if err := os.WriteFile(tmpFile, []byte("fake malware content"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	verdict, err := scanner.Scan(tmpFile)
 	if err != nil {
