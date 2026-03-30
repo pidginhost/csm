@@ -114,8 +114,9 @@ func RunTier(cfg *config.Config, store *state.Store, tier Tier) []alert.Finding 
 // Used by the daemon when fanotify is active.
 //
 // Skipped (fanotify handles these in real-time):
-//   filesystem, webshells, htaccess, file_index, php_content,
-//   phishing, php_config_changes
+//
+//	filesystem, webshells, htaccess, file_index, php_content,
+//	phishing, php_config_changes
 func RunReducedDeep(cfg *config.Config, store *state.Store) []alert.Finding {
 	reduced := []namedCheck{
 		{"wp_core", CheckWPCore},
