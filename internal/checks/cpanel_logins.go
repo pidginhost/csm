@@ -138,18 +138,26 @@ func CheckCpanelFileManager(cfg *config.Config, _ *state.Store) []alert.Finding 
 
 	lines := tailFile("/usr/local/cpanel/logs/access_log", 300)
 
-	filemanActions := []string{
+	// Only match actual write actions — not read-only calls like get_homedir.
+	// Skip 401/403 responses — the server rejected the request, no write occurred.
+	filemanWriteActions := []string{
 		"fileman/save_file_content",
 		"fileman/upload_files",
 		"fileman/save_file",
-		"Fileman/save_file",
-		"Fileman/upload",
-		"/execute/Fileman/",
+		"fileman/upload",
+		"fileman/paste",
+		"fileman/rename",
+		"fileman/delete",
 	}
 
 	for _, line := range lines {
 		// Only check cPanel (port 2083) entries
 		if !strings.Contains(line, "2083") {
+			continue
+		}
+
+		// Skip rejected requests — no write occurred
+		if strings.Contains(line, "\" 401 ") || strings.Contains(line, "\" 403 ") {
 			continue
 		}
 
@@ -164,7 +172,7 @@ func CheckCpanelFileManager(cfg *config.Config, _ *state.Store) []alert.Finding 
 		}
 
 		lineLower := strings.ToLower(line)
-		for _, action := range filemanActions {
+		for _, action := range filemanWriteActions {
 			if strings.Contains(lineLower, strings.ToLower(action)) {
 				findings = append(findings, alert.Finding{
 					Severity: alert.Critical,

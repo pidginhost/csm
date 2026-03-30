@@ -553,14 +553,23 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	// Executables in /tmp or /dev/shm — detect dropped malware/miners
 	// Uses unix.Fstat on event fd for TOCTOU safety (attacker can't chmod -x after event)
 	if strings.HasPrefix(path, "/tmp/") || strings.HasPrefix(path, "/dev/shm/") || strings.HasPrefix(path, "/var/tmp/") {
-		var tmpStat unix.Stat_t
-		if err := unix.Fstat(event.fd, &tmpStat); err == nil {
-			isDir := tmpStat.Mode&unix.S_IFMT == unix.S_IFDIR
-			isExec := tmpStat.Mode&0111 != 0
-			if !isDir && isExec {
-				fm.sendAlertWithPath(alert.Critical, "executable_in_tmp_realtime",
-					fmt.Sprintf("Executable created in %s: %s", filepath.Dir(path), path),
-					fmt.Sprintf("Size: %d, Mode: %04o", tmpStat.Size, tmpStat.Mode&0777), path, procInfo)
+		// Skip cPanel work directories — SpamAssassin compiles .so regex modules,
+		// UPCP stages scripts, etc. These are legitimate root-owned operations.
+		if strings.Contains(path, "/cpanel.TMP.work.") || strings.Contains(path, "/cPanel-") {
+			if !isPHPExtension(nameLower) {
+				return
+			}
+			// Fall through to PHP checks for .php in cPanel work dirs
+		} else {
+			var tmpStat unix.Stat_t
+			if err := unix.Fstat(event.fd, &tmpStat); err == nil {
+				isDir := tmpStat.Mode&unix.S_IFMT == unix.S_IFDIR
+				isExec := tmpStat.Mode&0111 != 0
+				if !isDir && isExec {
+					fm.sendAlertWithPath(alert.Critical, "executable_in_tmp_realtime",
+						fmt.Sprintf("Executable created in %s: %s", filepath.Dir(path), path),
+						fmt.Sprintf("Size: %d, Mode: %04o", tmpStat.Size, tmpStat.Mode&0777), path, procInfo)
+				}
 			}
 		}
 		// Fall through to PHP checks below for .php files in /tmp
