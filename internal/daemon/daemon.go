@@ -40,6 +40,8 @@ type Daemon struct {
 	webServer       *webui.Server
 	challengeServer *challenge.Server
 	fwEngine        *firewall.Engine
+	geoipDB         *geoip.DB
+	geoipMu         sync.Mutex // protects geoipDB for publishGeoIP
 	alertCh         chan alert.Finding
 	stopCh          chan struct{}
 	wg              sync.WaitGroup
@@ -186,6 +188,9 @@ func (d *Daemon) Run() error {
 	d.wg.Add(1)
 	go d.signatureUpdater()
 
+	d.wg.Add(1)
+	go d.geoipUpdater()
+
 	// Start heartbeat
 	d.wg.Add(1)
 	go d.heartbeat()
@@ -200,6 +205,7 @@ func (d *Daemon) Run() error {
 		if sig == syscall.SIGHUP {
 			fmt.Fprintf(os.Stderr, "[%s] SIGHUP received — reloading rules\n", ts())
 			d.reloadSignatures()
+			d.publishGeoIP()
 			if d.fwEngine != nil {
 				if err := d.fwEngine.Apply(); err != nil {
 					fmt.Fprintf(os.Stderr, "[%s] Firewall reload error: %v\n", ts(), err)
@@ -646,10 +652,111 @@ func (d *Daemon) initGeoIP() {
 	dbDir := filepath.Join(d.cfg.StatePath, "geoip")
 	db := geoip.Open(dbDir)
 	if db != nil {
+		d.geoipDB = db
 		setGeoIPDB(db) // make available to log watcher handlers for country filtering
 		if d.webServer != nil {
 			d.webServer.SetGeoIPDB(db)
 		}
+	}
+}
+
+// publishGeoIP reloads existing GeoIP databases or creates a new DB
+// if databases were downloaded for the first time.
+// Mutex-protected: safe to call from geoipUpdater goroutine and SIGHUP handler concurrently.
+func (d *Daemon) publishGeoIP() {
+	d.geoipMu.Lock()
+	defer d.geoipMu.Unlock()
+
+	if d.geoipDB != nil {
+		if err := d.geoipDB.Reload(); err != nil {
+			fmt.Fprintf(os.Stderr, "[%s] GeoIP reload error: %v\n", ts(), err)
+		} else {
+			fmt.Fprintf(os.Stderr, "[%s] GeoIP databases reloaded\n", ts())
+		}
+		return
+	}
+
+	// First-time: no DB existed at startup, try to open freshly downloaded files
+	dbDir := filepath.Join(d.cfg.StatePath, "geoip")
+	db := geoip.OpenFresh(dbDir)
+	if db != nil {
+		d.geoipDB = db
+		setGeoIPDB(db)
+		if d.webServer != nil {
+			d.webServer.SetGeoIPDB(db)
+		}
+		fmt.Fprintf(os.Stderr, "[%s] GeoIP databases loaded for the first time\n", ts())
+	}
+}
+
+// geoipUpdater periodically downloads updated GeoLite2 databases.
+func (d *Daemon) geoipUpdater() {
+	defer d.wg.Done()
+
+	// Skip if no credentials configured
+	if d.cfg.GeoIP.AccountID == "" || d.cfg.GeoIP.LicenseKey == "" {
+		return
+	}
+
+	// Skip if auto_update is explicitly false
+	if d.cfg.GeoIP.AutoUpdate != nil && !*d.cfg.GeoIP.AutoUpdate {
+		return
+	}
+
+	interval := 24 * time.Hour
+	if d.cfg.GeoIP.UpdateInterval != "" {
+		if parsed, err := time.ParseDuration(d.cfg.GeoIP.UpdateInterval); err == nil && parsed >= time.Hour {
+			interval = parsed
+		}
+	}
+
+	// Wait 5 minutes before first update attempt (let the daemon stabilize)
+	select {
+	case <-d.stopCh:
+		return
+	case <-time.After(5 * time.Minute):
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		d.doGeoIPUpdate()
+
+		select {
+		case <-d.stopCh:
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (d *Daemon) doGeoIPUpdate() {
+	results := geoip.Update(
+		filepath.Join(d.cfg.StatePath, "geoip"),
+		d.cfg.GeoIP.AccountID,
+		d.cfg.GeoIP.LicenseKey,
+		d.cfg.GeoIP.Editions,
+	)
+	if results == nil {
+		return
+	}
+
+	anyUpdated := false
+	for _, r := range results {
+		switch r.Status {
+		case "updated":
+			fmt.Fprintf(os.Stderr, "[%s] GeoIP auto-update: %s updated\n", ts(), r.Edition)
+			anyUpdated = true
+		case "up_to_date":
+			// silent
+		case "error":
+			fmt.Fprintf(os.Stderr, "[%s] GeoIP auto-update: %s error: %v\n", ts(), r.Edition, r.Err)
+		}
+	}
+
+	if anyUpdated {
+		d.publishGeoIP()
 	}
 }
 
