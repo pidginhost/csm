@@ -51,7 +51,7 @@
         }
 
         var html = '<div class="table-responsive"><table class="table table-vcenter card-table" id="history-table"><thead>';
-        html += '<tr><th>Severity</th><th>Check</th><th>Message</th><th>Time</th></tr></thead><tbody>';
+        html += '<tr><th>Severity</th><th>Check</th><th>Message</th><th>Time</th><th></th></tr></thead><tbody>';
 
         for (var i = 0; i < findings.length; i++) {
             var f = findings[i];
@@ -62,16 +62,18 @@
             var ts = f.timestamp ? CSM.fmtDate(f.timestamp) : '';
             var ago = f.timestamp ? CSM.timeAgo(f.timestamp) : '';
 
-            html += '<tr class="history-row" style="cursor:pointer" data-idx="' + i + '">';
+            html += '<tr class="history-row" data-idx="' + i + '">';
             html += '<td><span class="badge badge-' + sevClass + '">' + sevLabel + '</span></td>';
             html += '<td><code>' + CSM.esc(f.check) + '</code></td>';
             html += '<td>' + CSM.esc(f.message) + '</td>';
             html += '<td class="text-nowrap"><span class="text-muted small" data-timestamp="' + CSM.esc(f.timestamp || '') + '">' + CSM.esc(ago) + '</span></td>';
+            var expandBtn = f.details ? '<button class="btn btn-ghost-secondary btn-sm expand-btn" title="Show details"><i class="ti ti-chevron-down"></i></button>' : '';
+            html += '<td>' + expandBtn + '</td>';
             html += '</tr>';
 
             if (f.details) {
                 html += '<tr class="details-row" style="display:none">';
-                html += '<td colspan="4" style="white-space:pre-wrap;font-size:0.8rem" class="text-muted bg-dark-lt">' + CSM.esc(f.details) + '</td>';
+                html += '<td colspan="5" style="white-space:pre-wrap;font-size:0.8rem" class="text-muted bg-dark-lt">' + CSM.esc(f.details) + '</td>';
                 html += '</tr>';
             }
         }
@@ -79,15 +81,6 @@
         html += '</tbody></table></div>';
         container.innerHTML = html;
 
-        // Bind row click to expand details
-        container.querySelectorAll('.history-row').forEach(function(row) {
-            row.addEventListener('click', function() {
-                var next = this.nextElementSibling;
-                if (next && next.classList.contains('details-row')) {
-                    next.style.display = next.style.display === 'none' ? '' : 'none';
-                }
-            });
-        });
     }
 
     function renderPager(total) {
@@ -161,6 +154,23 @@
     if (params.get('search')) { searchTerm = params.get('search'); document.getElementById('history-search').value = searchTerm; }
     if (params.get('page')) { page = parseInt(params.get('page'), 10) || 0; }
     if (fromDate || toDate) { var clearBtn = document.getElementById('date-clear-btn'); if (clearBtn) clearBtn.classList.remove('d-none'); }
+
+    // Event delegation for history table expand buttons
+    var historyContainer = document.getElementById('history-content');
+    if (historyContainer) {
+        historyContainer.addEventListener('click', function(e) {
+            var expandBtn = e.target.closest('.expand-btn');
+            if (expandBtn) {
+                var row = expandBtn.closest('tr');
+                if (row) {
+                    var next = row.nextElementSibling;
+                    if (next && next.classList.contains('details-row')) {
+                        next.style.display = next.style.display === 'none' ? '' : 'none';
+                    }
+                }
+            }
+        });
+    }
 
     // Initial load
     loadHistory();

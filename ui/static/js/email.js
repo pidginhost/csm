@@ -219,12 +219,13 @@
                 }
             }
 
-            html += '<tr data-sev="' + cls + '" style="cursor:pointer">';
+            html += '<tr data-sev="' + cls + '">';
             html += '<td>' + CSM.severityBadge(f.severity) + '</td>';
             html += '<td><span class="font-monospace small">' + CSM.esc(f.check) + '</span></td>';
             html += '<td>' + CSM.esc(f.message) + '</td>';
             html += '<td data-timestamp="' + CSM.esc(f.timestamp || '') + '">' + CSM.fmtDate(f.timestamp) + '</td>';
-            html += '<td>' + action + '</td>';
+            var expandBtn = f.details ? ' <button class="btn btn-ghost-secondary btn-sm expand-btn" title="Show details"><i class="ti ti-chevron-down"></i></button>' : '';
+            html += '<td>' + action + expandBtn + '</td>';
             html += '</tr>';
 
             // Detail row (hidden, toggled on click)
@@ -244,28 +245,6 @@
             detailRows: true,
             stateKey: 'csm-email-table'
         });
-
-        // Bind row click to toggle detail
-        var rows = tbody.querySelectorAll('tr:not(.details-row)');
-        for (var j = 0; j < rows.length; j++) {
-            rows[j].addEventListener('click', function(e) {
-                if (e.target.closest('button') || e.target.closest('a')) return;
-                if (emailTable) emailTable.toggleDetail(this);
-            });
-        }
-
-        // Bind quarantine buttons
-        var qBtns = tbody.querySelectorAll('.email-quarantine-btn');
-        for (var k = 0; k < qBtns.length; k++) {
-            qBtns[k].addEventListener('click', function(e) {
-                e.stopPropagation();
-                var btn = this;
-                var check = btn.getAttribute('data-check');
-                var message = btn.getAttribute('data-message');
-                var details = btn.getAttribute('data-details');
-                confirmQuarantine(check, message, details, btn);
-            });
-        }
 
         // Update relative timestamps
         CSM.initTimeAgo();
@@ -408,6 +387,32 @@
     }
 
     // --- Initialize ---
+
+    // Event delegation for email findings table
+    var emailTbody = document.getElementById('email-tbody');
+    if (emailTbody) {
+        emailTbody.addEventListener('click', function(e) {
+            // Expand button
+            var expandBtn = e.target.closest('.expand-btn');
+            if (expandBtn) {
+                var row = expandBtn.closest('tr');
+                if (row && emailTable) emailTable.toggleDetail(row);
+                return;
+            }
+            // Quarantine button
+            var qBtn = e.target.closest('.email-quarantine-btn');
+            if (qBtn) {
+                e.stopPropagation();
+                confirmQuarantine(
+                    qBtn.getAttribute('data-check'),
+                    qBtn.getAttribute('data-message'),
+                    qBtn.getAttribute('data-details'),
+                    qBtn
+                );
+                return;
+            }
+        });
+    }
 
     loadEmailStats();
     loadFindings();
