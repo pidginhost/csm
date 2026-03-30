@@ -97,7 +97,7 @@ function clearAndReload() {
     document.querySelectorAll('.row-checkbox').forEach(function(cb) { cb.checked = false; });
     var sa = document.getElementById('select-all');
     if (sa) sa.checked = false;
-    clearAndReload();
+    location.reload();
 }
 
 // --- Single actions ---
