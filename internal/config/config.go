@@ -115,6 +115,14 @@ type Config struct {
 
 	Firewall *firewall.FirewallConfig `yaml:"firewall"`
 
+	GeoIP struct {
+		AccountID      string   `yaml:"account_id"`
+		LicenseKey     string   `yaml:"license_key"`
+		Editions       []string `yaml:"editions"`
+		AutoUpdate     *bool    `yaml:"auto_update"`     // nil = true when credentials set
+		UpdateInterval string   `yaml:"update_interval"` // default "24h"
+	} `yaml:"geoip"`
+
 	C2Blocklist   []string `yaml:"c2_blocklist"`
 	BackdoorPorts []int    `yaml:"backdoor_ports"`
 }
@@ -174,6 +182,12 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Firewall == nil {
 		cfg.Firewall = firewall.DefaultConfig()
+	}
+	if len(cfg.GeoIP.Editions) == 0 {
+		cfg.GeoIP.Editions = []string{"GeoLite2-City", "GeoLite2-ASN"}
+	}
+	if cfg.GeoIP.UpdateInterval == "" {
+		cfg.GeoIP.UpdateInterval = "24h"
 	}
 
 	return cfg, nil
