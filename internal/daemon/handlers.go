@@ -28,14 +28,16 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 	// File Manager write operations (port 2083)
 	// Only match actual write actions — not read-only calls like get_homedir.
 	// Skip 401/403 responses — the server rejected the request, no write occurred.
+	// Match against the request URI only (between first pair of quotes), not the
+	// full line which includes the referer URL that can contain "upload" in paths.
 	if strings.Contains(line, "2083") && !strings.Contains(line, "\" 401 ") && !strings.Contains(line, "\" 403 ") {
+		requestURI := extractRequestURI(lineLower)
 		filemanWriteActions := []string{
 			"fileman/save_file", "fileman/upload_files",
-			"fileman/upload", "fileman/paste",
-			"fileman/rename", "fileman/delete",
+			"fileman/paste", "fileman/rename", "fileman/delete",
 		}
 		for _, action := range filemanWriteActions {
-			if strings.Contains(lineLower, action) {
+			if strings.Contains(requestURI, action) {
 				findings = append(findings, alert.Finding{
 					Severity: alert.Critical,
 					Check:    "cpanel_file_upload_realtime",
@@ -111,6 +113,21 @@ func parseFTPLogLine(line string, cfg *config.Config) []alert.Finding {
 	}
 
 	return findings
+}
+
+// extractRequestURI extracts the request URI from an access log line.
+// Format: ... "METHOD /path HTTP/1.1" ... → returns "/path"
+// Returns the content between the first pair of quotes (the request line).
+func extractRequestURI(line string) string {
+	start := strings.Index(line, "\"")
+	if start < 0 {
+		return ""
+	}
+	end := strings.Index(line[start+1:], "\"")
+	if end < 0 {
+		return ""
+	}
+	return line[start+1 : start+1+end]
 }
 
 func extractIPFromLogDaemon(line string) string {
