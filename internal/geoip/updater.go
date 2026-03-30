@@ -50,7 +50,11 @@ func Update(dbDir, accountID, licenseKey string, editions []string) []EditionRes
 }
 
 func updateEdition(client *http.Client, dbDir, accountID, licenseKey, edition string) EditionResult {
-	url := fmt.Sprintf("%s/%s/download?suffix=tar.gz", maxMindBaseURL, edition)
+	return updateEditionWithURL(client, dbDir, accountID, licenseKey, edition, maxMindBaseURL)
+}
+
+func updateEditionWithURL(client *http.Client, dbDir, accountID, licenseKey, edition, baseURL string) EditionResult {
+	url := fmt.Sprintf("%s/%s/download?suffix=tar.gz", baseURL, edition)
 	markerPath := filepath.Join(dbDir, ".last-modified-"+edition)
 
 	// Read stored Last-Modified
