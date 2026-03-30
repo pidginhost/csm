@@ -348,14 +348,14 @@ func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionRe
 	if err != nil {
 		return // fail-open: skip corrupt archives
 	}
+	defer f.Close()
+
 	info, err := f.Stat()
 	if err != nil {
-		f.Close()
 		return
 	}
 	zr, err := zip.NewReader(f, info.Size())
 	if err != nil {
-		f.Close()
 		return
 	}
 

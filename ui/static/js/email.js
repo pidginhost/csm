@@ -2,7 +2,7 @@
 (function() {
     'use strict';
 
-    var EMAIL_CHECKS = 'mail_queue,mail_per_account,email_phishing_content';
+    var EMAIL_CHECKS = 'mail_queue,mail_per_account,email_phishing_content,email_malware,email_av_degraded,email_av_timeout,email_av_parse_error';
     var EMAIL_BLOCKED_KEYWORDS = ['mail', 'smtp', 'spam', 'phish', 'mailer'];
 
     // Set default date filter to today
@@ -452,8 +452,8 @@
                     html += '<td>' + CSM.esc(msg.subject) + '</td>';
                     html += '<td><code>' + CSM.esc(threats.join(', ')) + '</code></td>';
                     html += '<td>';
-                    html += '<button class="btn btn-sm btn-warning" onclick="releaseMessage(\'' + msgID + '\')">Release</button> ';
-                    html += '<button class="btn btn-sm btn-danger" onclick="deleteMessage(\'' + msgID + '\')">Delete</button>';
+                    html += '<button class="btn btn-sm btn-warning" data-email-release="' + msgID + '">Release</button> ';
+                    html += '<button class="btn btn-sm btn-danger" data-email-delete="' + msgID + '">Delete</button>';
                     html += '</td>';
                     html += '</tr>';
                 }
@@ -521,6 +521,22 @@
                     qBtn
                 );
                 return;
+            }
+        });
+    }
+
+    var quarantineTable = document.getElementById('quarantine-table');
+    if (quarantineTable) {
+        quarantineTable.addEventListener('click', function(e) {
+            var releaseBtn = e.target.closest('[data-email-release]');
+            if (releaseBtn) {
+                releaseMessage(releaseBtn.getAttribute('data-email-release'));
+                return;
+            }
+
+            var deleteBtn = e.target.closest('[data-email-delete]');
+            if (deleteBtn) {
+                deleteMessage(deleteBtn.getAttribute('data-email-delete'));
             }
         });
     }

@@ -39,6 +39,7 @@ type Daemon struct {
 	hijackDetector  *PasswordHijackDetector
 	pamListener     *PAMListener
 	spoolWatcher    *SpoolWatcher
+	spoolWatcherMu  sync.Mutex
 	emailQuarantine *emailav.Quarantine
 	webServer       *webui.Server
 	challengeServer *challenge.Server
@@ -124,14 +125,7 @@ func (d *Daemon) Run() error {
 	d.startWebUI()
 
 	// Wire email quarantine to web server (after both start)
-	if d.spoolWatcher != nil && d.webServer != nil {
-		d.webServer.SetEmailQuarantine(d.emailQuarantine)
-		if d.spoolWatcher.PermissionMode() {
-			d.webServer.SetEmailAVWatcherMode("permission")
-		} else {
-			d.webServer.SetEmailAVWatcherMode("notification")
-		}
-	}
+	d.syncEmailAVWebState()
 
 	// Initialize GeoIP databases (after webServer so SetGeoIPDB can attach)
 	d.initGeoIP()
@@ -255,8 +249,8 @@ func (d *Daemon) Run() error {
 	if d.fileMonitor != nil {
 		d.fileMonitor.Stop()
 	}
-	if d.spoolWatcher != nil {
-		d.spoolWatcher.Stop()
+	if sw := d.getSpoolWatcher(); sw != nil {
+		sw.Stop()
 	}
 	if d.pamListener != nil {
 		d.pamListener.Stop()
@@ -656,7 +650,7 @@ func (d *Daemon) startSpoolWatcher() {
 	// Create YARA-X scanner — share compiled rules from the global YARA scanner
 	var yaraScanner *emailav.YaraXScanner
 	if gs := yara.Global(); gs != nil {
-		yaraScanner = emailav.NewYaraXScanner(gs.GlobalRules())
+		yaraScanner = emailav.NewYaraXScanner(gs)
 	} else {
 		yaraScanner = emailav.NewYaraXScanner(nil)
 	}
@@ -675,12 +669,12 @@ func (d *Daemon) startSpoolWatcher() {
 		fmt.Fprintf(os.Stderr, "[%s] Email AV spool watcher not available: %v\n", ts(), err)
 		return
 	}
-	d.spoolWatcher = sw
+	d.setSpoolWatcher(sw)
 
 	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
-		sw.Run()
+		d.runSpoolWatcherLoop(sw, orch, quar)
 	}()
 
 	// Start quarantine cleanup goroutine
@@ -688,6 +682,61 @@ func (d *Daemon) startSpoolWatcher() {
 	go d.emailQuarantineCleanup()
 
 	fmt.Fprintf(os.Stderr, "[%s] Email AV spool watcher active\n", ts())
+}
+
+func (d *Daemon) runSpoolWatcherLoop(sw *SpoolWatcher, orch *emailav.Orchestrator, quar *emailav.Quarantine) {
+	current := sw
+	for {
+		current.Run()
+
+		select {
+		case <-d.stopCh:
+			return
+		default:
+		}
+
+		fmt.Fprintf(os.Stderr, "[%s] Email AV spool watcher stopped unexpectedly; restarting in 2s\n", ts())
+		select {
+		case <-d.stopCh:
+			return
+		case <-time.After(2 * time.Second):
+		}
+
+		next, err := NewSpoolWatcher(d.cfg, d.alertCh, orch, quar)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[%s] Email AV spool watcher restart failed: %v\n", ts(), err)
+			continue
+		}
+		current = next
+		d.setSpoolWatcher(next)
+	}
+}
+
+func (d *Daemon) setSpoolWatcher(sw *SpoolWatcher) {
+	d.spoolWatcherMu.Lock()
+	d.spoolWatcher = sw
+	d.spoolWatcherMu.Unlock()
+	d.syncEmailAVWebState()
+}
+
+func (d *Daemon) getSpoolWatcher() *SpoolWatcher {
+	d.spoolWatcherMu.Lock()
+	defer d.spoolWatcherMu.Unlock()
+	return d.spoolWatcher
+}
+
+func (d *Daemon) syncEmailAVWebState() {
+	if d.webServer == nil || d.emailQuarantine == nil {
+		return
+	}
+	d.webServer.SetEmailQuarantine(d.emailQuarantine)
+	if sw := d.getSpoolWatcher(); sw != nil {
+		if sw.PermissionMode() {
+			d.webServer.SetEmailAVWatcherMode("permission")
+		} else {
+			d.webServer.SetEmailAVWatcherMode("notification")
+		}
+	}
 }
 
 // emailQuarantineCleanup periodically removes expired quarantined email messages.

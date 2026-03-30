@@ -22,10 +22,11 @@ import (
 
 // fanotify constants for permission events (not in Go stdlib).
 const (
-	FAN_CLASS_CONTENT = 0x00000004
-	FAN_OPEN_PERM     = 0x00010000
-	FAN_ALLOW         = 0x01
-	FAN_DENY          = 0x02
+	FAN_CLASS_CONTENT  = 0x00000004
+	FAN_OPEN_PERM      = 0x00010000
+	FAN_ALLOW          = 0x01
+	FAN_DENY           = 0x02
+	FAN_EVENT_ON_CHILD = 0x08000000
 )
 
 // fanotifyResponse is the struct written back to the fanotify fd
@@ -48,13 +49,15 @@ type SpoolWatcher struct {
 	quarantine     *emailav.Quarantine
 	permissionMode bool // true if using FAN_OPEN_PERM, false if fallback to FAN_CLOSE_WRITE
 
-	scanCh   chan spoolEvent
-	pipeFds  [2]int
-	stopOnce sync.Once
-	stopCh   chan struct{}
-	wg       sync.WaitGroup
+	scanCh    chan spoolEvent
+	pipeFds   [2]int
+	stopOnce  sync.Once
+	drainOnce sync.Once
+	stopCh    chan struct{}
+	wg        sync.WaitGroup
 
 	pipeClosed     int32 // atomic
+	fdClosed       int32 // atomic — guards sw.fd against double-close
 	degradedMu     sync.Mutex
 	lastDegradedAt time.Time
 }
@@ -100,9 +103,9 @@ func NewSpoolWatcher(cfg *config.Config, alertCh chan<- alert.Finding, orch *ema
 	spoolDirs := []string{"/var/spool/exim/input", "/var/spool/exim4/input"}
 	var eventMask uint64
 	if sw.permissionMode {
-		eventMask = FAN_OPEN_PERM
+		eventMask = FAN_OPEN_PERM | FAN_EVENT_ON_CHILD
 	} else {
-		eventMask = FAN_CLOSE_WRITE
+		eventMask = FAN_CLOSE_WRITE | FAN_EVENT_ON_CHILD
 	}
 
 	marked := 0
@@ -374,8 +377,15 @@ func (sw *SpoolWatcher) writeResponse(fd int32, response uint32) {
 		// close it to release ALL pending permission events (fail-open),
 		// then signal the event loop to exit so the daemon can restart us.
 		fmt.Fprintf(os.Stderr, "[%s] spool watcher: FATAL — fanotify response write failed: %v — closing fd to release pending events\n", ts(), err)
-		unix.Close(sw.fd)
+		sw.closeFd()
 		sw.Stop()
+	}
+}
+
+// closeFd closes the fanotify fd exactly once, even if called from multiple paths.
+func (sw *SpoolWatcher) closeFd() {
+	if atomic.CompareAndSwapInt32(&sw.fdClosed, 0, 1) {
+		unix.Close(sw.fd)
 	}
 }
 
@@ -405,13 +415,15 @@ func (sw *SpoolWatcher) emitDegradedWarning(message string) {
 }
 
 func (sw *SpoolWatcher) drainAndClose() {
-	close(sw.scanCh)
-	sw.wg.Wait()
-	unix.Close(sw.fd)
-	if atomic.CompareAndSwapInt32(&sw.pipeClosed, 0, 1) {
-		unix.Close(sw.pipeFds[0])
-		unix.Close(sw.pipeFds[1])
-	}
+	sw.drainOnce.Do(func() {
+		close(sw.scanCh)
+		sw.wg.Wait()
+		sw.closeFd()
+		if atomic.CompareAndSwapInt32(&sw.pipeClosed, 0, 1) {
+			unix.Close(sw.pipeFds[0])
+			unix.Close(sw.pipeFds[1])
+		}
+	})
 }
 
 // PermissionMode returns true if using FAN_OPEN_PERM, false if FAN_CLOSE_WRITE fallback.
@@ -426,6 +438,6 @@ func (sw *SpoolWatcher) Stop() {
 		if atomic.LoadInt32(&sw.pipeClosed) == 0 {
 			_, _ = unix.Write(sw.pipeFds[1], []byte{0})
 		}
-		unix.Close(sw.fd)
+		sw.closeFd()
 	})
 }
