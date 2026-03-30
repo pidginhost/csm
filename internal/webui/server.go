@@ -187,6 +187,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 
 	// GeoIP API
 	mux.Handle("/api/v1/geoip", s.requireAuth(http.HandlerFunc(s.apiGeoIPLookup)))
+	mux.Handle("/api/v1/geoip/batch", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiGeoIPBatch))))
 
 	// Auth-protected API — actions (with CSRF validation)
 	mux.Handle("/api/v1/fix", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiFix))))
