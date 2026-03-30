@@ -113,6 +113,8 @@ type Config struct {
 		UIDir     string `yaml:"ui_dir"` // path to UI files on disk (default: /opt/csm/ui)
 	} `yaml:"webui"`
 
+	EmailAV EmailAVConfig `yaml:"email_av"`
+
 	Firewall *firewall.FirewallConfig `yaml:"firewall"`
 
 	GeoIP struct {
@@ -189,6 +191,7 @@ func Load(path string) (*Config, error) {
 	if cfg.GeoIP.UpdateInterval == "" {
 		cfg.GeoIP.UpdateInterval = "24h"
 	}
+	EmailAVDefaults(&cfg.EmailAV)
 
 	return cfg, nil
 }
