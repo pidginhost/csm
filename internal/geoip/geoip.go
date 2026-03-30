@@ -108,6 +108,57 @@ func (db *DB) Close() {
 	}
 }
 
+// Reload opens new database readers and swaps them in atomically.
+// Opens replacement readers first — if both fail, the old readers stay in place.
+// If one succeeds and the other fails, only the successful one is swapped.
+func (db *DB) Reload() error {
+	if db == nil {
+		return fmt.Errorf("geoip: cannot reload nil DB")
+	}
+
+	cityPath := filepath.Join(db.dbDir, "GeoLite2-City.mmdb")
+	asnPath := filepath.Join(db.dbDir, "GeoLite2-ASN.mmdb")
+
+	// Open replacements before taking lock
+	newCity, cityErr := maxminddb.Open(cityPath)
+	newASN, asnErr := maxminddb.Open(asnPath)
+
+	if cityErr != nil && asnErr != nil {
+		return fmt.Errorf("geoip: reload failed — city: %v, asn: %v", cityErr, asnErr)
+	}
+
+	db.mu.Lock()
+	if newCity != nil {
+		if db.cityDB != nil {
+			_ = db.cityDB.Close()
+		}
+		db.cityDB = newCity
+	}
+	if newASN != nil {
+		if db.asnDB != nil {
+			_ = db.asnDB.Close()
+		}
+		db.asnDB = newASN
+	}
+	db.mu.Unlock()
+
+	if cityErr != nil {
+		fmt.Fprintf(os.Stderr, "geoip: reload warning — city DB failed: %v\n", cityErr)
+	}
+	if asnErr != nil {
+		fmt.Fprintf(os.Stderr, "geoip: reload warning — ASN DB failed: %v\n", asnErr)
+	}
+
+	return nil
+}
+
+// OpenFresh creates a new DB from databases on disk.
+// Use when no DB existed at startup and databases have since been downloaded.
+// Returns nil if no databases found (same behavior as Open).
+func OpenFresh(dbDir string) *DB {
+	return Open(dbDir)
+}
+
 // Lookup returns geolocation info for an IP from local MaxMind databases.
 // Fast (microseconds), no network calls.
 func (db *DB) Lookup(ip string) Info {
