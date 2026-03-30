@@ -2,14 +2,19 @@ package webui
 
 import (
 	"context"
+	"crypto/subtle"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/pidginhost/cpanel-security-monitor/internal/emailav"
+	"github.com/pidginhost/cpanel-security-monitor/internal/yara"
 )
 
 type emailStatsResponse struct {
@@ -76,6 +81,150 @@ func (s *Server) apiEmailStats(w http.ResponseWriter, _ *http.Request) {
 	resp.TopSenders = topMailSenders(500, 10)
 	if resp.TopSenders == nil {
 		resp.TopSenders = []senderEntry{}
+	}
+
+	writeJSON(w, resp)
+}
+
+// apiEmailQuarantineList handles GET /api/v1/email/quarantine and returns all
+// quarantined email messages, or an empty array if the quarantine is not configured.
+func (s *Server) apiEmailQuarantineList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.emailQuarantine == nil {
+		writeJSON(w, []emailav.QuarantineMetadata{})
+		return
+	}
+	msgs, err := s.emailQuarantine.ListMessages()
+	if err != nil {
+		writeJSONError(w, "Failed to list quarantine", http.StatusInternalServerError)
+		return
+	}
+	if msgs == nil {
+		msgs = []emailav.QuarantineMetadata{}
+	}
+	writeJSON(w, msgs)
+}
+
+// apiEmailQuarantineAction handles GET, POST (release), and DELETE operations on
+// individual quarantined messages at /api/v1/email/quarantine/{msgID}.
+func (s *Server) apiEmailQuarantineAction(w http.ResponseWriter, r *http.Request) {
+	// Extract everything after the prefix, e.g. "abc123" or "abc123/release"
+	tail := strings.TrimPrefix(r.URL.Path, "/api/v1/email/quarantine/")
+	if tail == "" {
+		writeJSONError(w, "Missing message ID", http.StatusBadRequest)
+		return
+	}
+
+	parts := strings.SplitN(tail, "/", 2)
+	msgID := filepath.Base(parts[0]) // sanitize path traversal
+	action := ""
+	if len(parts) == 2 {
+		action = parts[1]
+	}
+
+	if msgID == "" || msgID == "." {
+		writeJSONError(w, "Invalid message ID", http.StatusBadRequest)
+		return
+	}
+
+	if s.emailQuarantine == nil {
+		writeJSONError(w, "Email quarantine not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		meta, err := s.emailQuarantine.GetMessage(msgID)
+		if err != nil {
+			writeJSONError(w, "Message not found", http.StatusNotFound)
+			return
+		}
+		writeJSON(w, meta)
+
+	case http.MethodPost:
+		if action != "release" {
+			writeJSONError(w, "Unknown action; use /release", http.StatusBadRequest)
+			return
+		}
+		if err := s.emailQuarantine.ReleaseMessage(msgID); err != nil {
+			writeJSONError(w, "Failed to release message: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]string{"status": "released", "message_id": msgID})
+
+	case http.MethodDelete:
+		// requireCSRF middleware only validates POST. For DELETE, check the
+		// CSRF token directly — validateCSRF() skips non-POST methods.
+		if !s.isBearerAuth(r) {
+			expected := s.csrfToken()
+			token := r.Header.Get("X-CSRF-Token")
+			if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(expected)) != 1 {
+				writeJSONError(w, "Invalid CSRF token", http.StatusForbidden)
+				return
+			}
+		}
+		if err := s.emailQuarantine.DeleteMessage(msgID); err != nil {
+			writeJSONError(w, "Failed to delete message: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]string{"status": "deleted", "message_id": msgID})
+
+	default:
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+type emailAVStatusResponse struct {
+	Enabled        bool   `json:"enabled"`
+	ClamdAvailable bool   `json:"clamd_available"`
+	ClamdSocket    string `json:"clamd_socket"`
+	YaraXAvailable bool   `json:"yarax_available"`
+	YaraXRuleCount int    `json:"yarax_rule_count"`
+	WatcherMode    string `json:"watcher_mode"`
+	Quarantined    int    `json:"quarantined"`
+}
+
+// apiEmailAVStatus handles GET /api/v1/email/av/status and returns the current
+// state of the email AV subsystem (ClamAV, YARA-X, quarantine count, watcher mode).
+func (s *Server) apiEmailAVStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	resp := emailAVStatusResponse{
+		Enabled: s.cfg.EmailAV.Enabled,
+	}
+
+	// ClamAV availability — probe the configured socket.
+	clamdSocket := s.cfg.EmailAV.ClamdSocket
+	if clamdSocket == "" {
+		clamdSocket = "/var/run/clamd.scan/clamd.sock"
+	}
+	resp.ClamdSocket = clamdSocket
+	resp.ClamdAvailable = emailav.NewClamdScanner(clamdSocket).Available()
+
+	// YARA-X availability and rule count.
+	resp.YaraXAvailable = yara.Available()
+	if gs := yara.Global(); gs != nil {
+		resp.YaraXRuleCount = gs.RuleCount()
+	}
+
+	// Watcher mode (set by daemon on startup).
+	resp.WatcherMode = s.emailAVWatcherMode
+	if resp.WatcherMode == "" {
+		resp.WatcherMode = "disabled"
+	}
+
+	// Count of currently quarantined messages.
+	if s.emailQuarantine != nil {
+		msgs, err := s.emailQuarantine.ListMessages()
+		if err == nil {
+			resp.Quarantined = len(msgs)
+		}
 	}
 
 	writeJSON(w, resp)

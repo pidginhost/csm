@@ -1,0 +1,9 @@
+Exim message header file
+4mNRHo-000ghi-3Z
+From: sender@example.com
+To: user@domain.com
+Subject: Binary payload
+MIME-Version: 1.0
+Content-Type: application/pdf; name="report.pdf"
+Content-Transfer-Encoding: base64
+

@@ -2,7 +2,7 @@
 (function() {
     'use strict';
 
-    var EMAIL_CHECKS = 'mail_queue,mail_per_account,email_phishing_content';
+    var EMAIL_CHECKS = 'mail_queue,mail_per_account,email_phishing_content,email_malware,email_av_degraded,email_av_timeout,email_av_parse_error';
     var EMAIL_BLOCKED_KEYWORDS = ['mail', 'smtp', 'spam', 'phish', 'mailer'];
 
     // Set default date filter to today
@@ -369,6 +369,117 @@
         el.innerHTML = html;
     }
 
+    // --- Email AV Status & Quarantine ---
+
+    function loadAVStatus() {
+        fetch(CSM.apiUrl('/api/v1/email/av/status'), { credentials: 'same-origin' })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                // AV engines badge
+                var badge = document.getElementById('av-status-badge');
+                if (badge) {
+                    if (data.clamd_available && data.yarax_available) {
+                        badge.className = 'badge bg-green'; badge.textContent = 'Both Up';
+                    } else if (data.clamd_available || data.yarax_available) {
+                        badge.className = 'badge bg-yellow'; badge.textContent = 'Degraded';
+                    } else if (data.enabled) {
+                        badge.className = 'badge bg-red'; badge.textContent = 'Down';
+                    } else {
+                        badge.className = 'badge bg-secondary'; badge.textContent = 'Disabled';
+                    }
+                }
+
+                // Sidebar status dots
+                var clamdDot = document.getElementById('clamd-dot');
+                var clamdStatusEl = document.getElementById('clamd-status');
+                if (clamdDot && clamdStatusEl) {
+                    clamdDot.className = 'status-dot ' + (data.clamd_available ? 'status-dot-green' : 'status-dot-red');
+                    clamdStatusEl.textContent = data.clamd_available ? 'Connected' : 'Unavailable';
+                }
+
+                var yaraxDot = document.getElementById('yarax-dot');
+                var yaraxStatusEl = document.getElementById('yarax-status');
+                if (yaraxDot && yaraxStatusEl) {
+                    yaraxDot.className = 'status-dot ' + (data.yarax_available ? 'status-dot-green' : 'status-dot-red');
+                    yaraxStatusEl.textContent = data.yarax_available ? 'Active' : 'Unavailable';
+                }
+
+                var yaraxRulesEl = document.getElementById('yarax-rules');
+                if (yaraxRulesEl) yaraxRulesEl.textContent = data.yarax_rule_count || 0;
+
+                var watcherModeEl = document.getElementById('watcher-mode');
+                if (watcherModeEl) watcherModeEl.textContent = data.watcher_mode || '--';
+
+                // Malware blocked stat card
+                var malwareBlocked = document.getElementById('stat-malware-blocked');
+                if (malwareBlocked) malwareBlocked.textContent = data.quarantined || 0;
+            })
+            .catch(function() {});
+    }
+
+    function loadQuarantine() {
+        fetch(CSM.apiUrl('/api/v1/email/quarantine'), { credentials: 'same-origin' })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                var container = document.getElementById('quarantine-table');
+                if (!container) return;
+
+                if (!data || data.length === 0) {
+                    container.innerHTML = '<p class="text-muted">No quarantined messages.</p>';
+                    return;
+                }
+
+                var html = '<div class="table-responsive"><table class="table table-vcenter card-table">';
+                html += '<thead><tr><th>Time</th><th>Dir</th><th>From</th><th>To</th><th>Subject</th><th>Threat</th><th>Actions</th></tr></thead><tbody>';
+                for (var i = 0; i < data.length; i++) {
+                    var msg = data[i];
+                    var time = CSM.timeAgo ? CSM.timeAgo(msg.quarantined_at) : CSM.esc(msg.quarantined_at);
+                    var dir = msg.direction === 'inbound'
+                        ? '<span class="badge bg-blue">IN</span>'
+                        : '<span class="badge bg-orange">OUT</span>';
+                    var findings = msg.findings || [];
+                    var threats = [];
+                    for (var j = 0; j < findings.length; j++) {
+                        threats.push(findings[j].signature + ' (' + findings[j].engine + ')');
+                    }
+                    var to = (msg.to || []).join(', ');
+                    var msgID = CSM.esc(msg.message_id);
+                    html += '<tr>';
+                    html += '<td>' + time + '</td>';
+                    html += '<td>' + dir + '</td>';
+                    html += '<td>' + CSM.esc(msg.from) + '</td>';
+                    html += '<td>' + CSM.esc(to) + '</td>';
+                    html += '<td>' + CSM.esc(msg.subject) + '</td>';
+                    html += '<td><code>' + CSM.esc(threats.join(', ')) + '</code></td>';
+                    html += '<td>';
+                    html += '<button class="btn btn-sm btn-warning" data-email-release="' + msgID + '">Release</button> ';
+                    html += '<button class="btn btn-sm btn-danger" data-email-delete="' + msgID + '">Delete</button>';
+                    html += '</td>';
+                    html += '</tr>';
+                }
+                html += '</tbody></table></div>';
+                container.innerHTML = html;
+            })
+            .catch(function() {});
+    }
+
+    function releaseMessage(msgID) {
+        if (!confirm('Release this message back to the mail queue? Only do this for confirmed false positives.')) return;
+        CSM.post(CSM.apiUrl('/api/v1/email/quarantine/' + encodeURIComponent(msgID) + '/release'), {})
+            .then(function() { loadQuarantine(); loadAVStatus(); })
+            .catch(function() {});
+    }
+
+    function deleteMessage(msgID) {
+        if (!confirm('Permanently delete this quarantined message?')) return;
+        fetch(CSM.apiUrl('/api/v1/email/quarantine/' + encodeURIComponent(msgID)), {
+            method: 'DELETE',
+            credentials: 'same-origin',
+            headers: { 'X-CSRF-Token': CSM.csrfToken }
+        }).then(function() { loadQuarantine(); loadAVStatus(); })
+          .catch(function() {});
+    }
+
     // --- Utilities ---
 
     function setText(id, val) {
@@ -414,8 +525,28 @@
         });
     }
 
+    var quarantineTable = document.getElementById('quarantine-table');
+    if (quarantineTable) {
+        quarantineTable.addEventListener('click', function(e) {
+            var releaseBtn = e.target.closest('[data-email-release]');
+            if (releaseBtn) {
+                releaseMessage(releaseBtn.getAttribute('data-email-release'));
+                return;
+            }
+
+            var deleteBtn = e.target.closest('[data-email-delete]');
+            if (deleteBtn) {
+                deleteMessage(deleteBtn.getAttribute('data-email-delete'));
+            }
+        });
+    }
+
     loadEmailStats();
     loadFindings();
+    loadAVStatus();
+    loadQuarantine();
     setInterval(loadEmailStats, 30000);
     setInterval(loadFindings, 30000);
+    setInterval(loadAVStatus, 30000);
+    setInterval(loadQuarantine, 30000);
 })();

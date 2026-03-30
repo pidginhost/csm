@@ -21,6 +21,7 @@ import (
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
 	"github.com/pidginhost/cpanel-security-monitor/internal/config"
+	"github.com/pidginhost/cpanel-security-monitor/internal/emailav"
 	"github.com/pidginhost/cpanel-security-monitor/internal/geoip"
 	"github.com/pidginhost/cpanel-security-monitor/internal/state"
 )
@@ -34,18 +35,20 @@ type IPBlocker interface {
 // Server is the web UI HTTP server. Serves API always; serves HTML pages
 // and static files only if the UI directory exists on disk.
 type Server struct {
-	cfg             *config.Config
-	store           *state.Store
-	httpSrv         *http.Server
-	templates       map[string]*template.Template
-	hasUI           bool   // true if UI directory with templates exists
-	uiDir           string // path to UI directory on disk
-	startTime       time.Time
-	sigCount        int // loaded signature rule count
-	fanotifyActive  bool
-	logWatcherCount int
-	blocker         IPBlocker
-	geoIPDB         atomic.Pointer[geoip.DB]
+	cfg                *config.Config
+	store              *state.Store
+	httpSrv            *http.Server
+	templates          map[string]*template.Template
+	hasUI              bool   // true if UI directory with templates exists
+	uiDir              string // path to UI directory on disk
+	startTime          time.Time
+	sigCount           int // loaded signature rule count
+	fanotifyActive     bool
+	logWatcherCount    int
+	blocker            IPBlocker
+	geoIPDB            atomic.Pointer[geoip.DB]
+	emailQuarantine    *emailav.Quarantine
+	emailAVWatcherMode string
 
 	// Rate limiting
 	loginMu       sync.Mutex
@@ -156,6 +159,9 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/import", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiImport))))
 	mux.Handle("/api/v1/incident", s.requireAuth(http.HandlerFunc(s.apiIncident)))
 	mux.Handle("/api/v1/email/stats", s.requireAuth(http.HandlerFunc(s.apiEmailStats)))
+	mux.Handle("/api/v1/email/quarantine", s.requireAuth(http.HandlerFunc(s.apiEmailQuarantineList)))
+	mux.Handle("/api/v1/email/quarantine/", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiEmailQuarantineAction))))
+	mux.Handle("/api/v1/email/av/status", s.requireAuth(http.HandlerFunc(s.apiEmailAVStatus)))
 
 	// Threat Intelligence API
 	mux.Handle("/api/v1/threat/stats", s.requireAuth(http.HandlerFunc(s.apiThreatStats)))
@@ -328,6 +334,16 @@ func (s *Server) SetIPBlocker(b IPBlocker) {
 func (s *Server) SetHealthInfo(fanotifyActive bool, logWatchers int) {
 	s.fanotifyActive = fanotifyActive
 	s.logWatcherCount = logWatchers
+}
+
+// SetEmailQuarantine sets the email quarantine for the email AV API endpoints.
+func (s *Server) SetEmailQuarantine(q *emailav.Quarantine) {
+	s.emailQuarantine = q
+}
+
+// SetEmailAVWatcherMode sets the watcher mode string for the email AV status API.
+func (s *Server) SetEmailAVWatcherMode(mode string) {
+	s.emailAVWatcherMode = mode
 }
 
 // --- Authentication ---

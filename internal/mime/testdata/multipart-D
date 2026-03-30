@@ -1,0 +1,11 @@
+--BOUNDARY123
+Content-Type: text/plain; charset=utf-8
+
+Please see the attached document.
+--BOUNDARY123
+Content-Type: application/octet-stream; name="test.exe"
+Content-Disposition: attachment; filename="test.exe"
+Content-Transfer-Encoding: base64
+
+TVqQAAMAAAAEAAAA//8AALgAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==
+--BOUNDARY123--
