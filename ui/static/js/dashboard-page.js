@@ -218,37 +218,17 @@
     function addRelativeTime(item) {
         var row = item.querySelector('.row');
         if (!row) return;
-        // Check if already has a relative time element
         if (item.querySelector('.feed-relative-time')) return;
         var span = document.createElement('div');
         span.className = 'col-auto feed-relative-time';
-        span.innerHTML = '<span class="text-muted small">just now</span>';
-        span.setAttribute('data-ts', Date.now().toString());
+        // Use the finding's actual timestamp from data-ts, not Date.now()
+        var ts = item.getAttribute('data-ts') || new Date().toISOString();
+        span.innerHTML = '<span class="text-muted small" data-timestamp="' + CSM.esc(ts) + '">' + CSM.timeAgo(ts) + '</span>';
         row.appendChild(span);
     }
 
-    // Periodically update relative times
-    setInterval(function() {
-        var items = feed.querySelectorAll('.feed-relative-time');
-        var now = Date.now();
-        for (var i = 0; i < items.length; i++) {
-            var ts = parseInt(items[i].getAttribute('data-ts'), 10);
-            if (isNaN(ts)) continue;
-            var diff = Math.floor((now - ts) / 1000);
-            var text;
-            if (diff < 5) {
-                text = 'just now';
-            } else if (diff < 60) {
-                text = diff + 's ago';
-            } else if (diff < 3600) {
-                text = Math.floor(diff / 60) + 'm ago';
-            } else {
-                text = Math.floor(diff / 3600) + 'h ago';
-            }
-            var span = items[i].querySelector('span');
-            if (span) span.textContent = text;
-        }
-    }, 5000);
+    // Periodically update relative times via the shared CSM.initTimeAgo helper
+    setInterval(CSM.initTimeAgo, 5000);
 })();
 
 // --- Feed item expand/collapse ---
@@ -269,6 +249,7 @@ function attachFeedItemListeners(item) {
 }
 
 document.querySelectorAll('.feed-item').forEach(function(item) {
+    addRelativeTime(item);
     attachFeedItemListeners(item);
 });
 

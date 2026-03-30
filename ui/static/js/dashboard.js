@@ -47,11 +47,16 @@
         if (f.severity === 2) { sevClass = 'critical'; sevLabel = 'CRITICAL'; }
         else if (f.severity === 1) { sevClass = 'high'; sevLabel = 'HIGH'; }
 
-        var now = new Date();
-        var time = now.getHours().toString().padStart(2,'0') + ':' +
-                   now.getMinutes().toString().padStart(2,'0') + ':' +
-                   now.getSeconds().toString().padStart(2,'0');
+        // Use finding's actual timestamp, fall back to current time
+        var ts = f.timestamp || new Date().toISOString();
+        var time = CSM.fmtDate(ts).substring(11); // "HH:MM TZ"
+        if (!time || time === '\u2014') {
+            var now = new Date();
+            time = now.getHours().toString().padStart(2,'0') + ':' +
+                   now.getMinutes().toString().padStart(2,'0');
+        }
 
+        div.setAttribute('data-ts', ts);
         div.innerHTML = '<div class="row align-items-center">' +
             '<div class="col-auto"><span class="text-muted font-monospace small">' + time + '</span></div>' +
             '<div class="col-auto"><span class="badge badge-' + sevClass + '">' + sevLabel + '</span></div>' +
