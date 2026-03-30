@@ -25,14 +25,16 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 
 	lineLower := strings.ToLower(line)
 
-	// File Manager operations (port 2083)
-	if strings.Contains(line, "2083") {
-		filemanActions := []string{
+	// File Manager write operations (port 2083)
+	// Only match actual write actions — not read-only calls like get_homedir.
+	// Skip 401/403 responses — the server rejected the request, no write occurred.
+	if strings.Contains(line, "2083") && !strings.Contains(line, "\" 401 ") && !strings.Contains(line, "\" 403 ") {
+		filemanWriteActions := []string{
 			"fileman/save_file", "fileman/upload_files",
-			"fileman/save_file", "fileman/upload",
-			"/execute/fileman/",
+			"fileman/upload", "fileman/paste",
+			"fileman/rename", "fileman/delete",
 		}
-		for _, action := range filemanActions {
+		for _, action := range filemanWriteActions {
 			if strings.Contains(lineLower, action) {
 				findings = append(findings, alert.Finding{
 					Severity: alert.Critical,
