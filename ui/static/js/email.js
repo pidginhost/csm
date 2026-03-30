@@ -185,7 +185,7 @@
             })
             .catch(function() {
                 var tbody = document.getElementById('email-tbody');
-                if (tbody) tbody.innerHTML = CSM.emptyState('Failed to load data', 5);
+                if (tbody) tbody.innerHTML = '<tr><td colspan="5" class="text-center text-danger py-4">Failed to load data</td></tr>';
             });
     }
 

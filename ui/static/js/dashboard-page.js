@@ -229,6 +229,11 @@
 
     // Periodically update relative times via the shared CSM.initTimeAgo helper
     setInterval(CSM.initTimeAgo, 5000);
+
+    // Initial pass: add relative-time chips to server-rendered feed items
+    document.querySelectorAll('.feed-item').forEach(function(item) {
+        addRelativeTime(item);
+    });
 })();
 
 // --- Feed item expand/collapse ---
@@ -250,7 +255,6 @@ function attachFeedItemListeners(item) {
 }
 
 document.querySelectorAll('.feed-item').forEach(function(item) {
-    addRelativeTime(item);
     attachFeedItemListeners(item);
 });
 
