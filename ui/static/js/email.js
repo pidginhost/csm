@@ -185,7 +185,7 @@
             })
             .catch(function() {
                 var tbody = document.getElementById('email-tbody');
-                if (tbody) tbody.innerHTML = '<tr><td colspan="5" class="text-center text-danger py-4">Failed to load data</td></tr>';
+                if (tbody) tbody.innerHTML = CSM.emptyState('Failed to load data', 5);
             });
     }
 
@@ -194,19 +194,16 @@
         if (!tbody) return;
 
         if (findings.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-4">No email findings in this period</td></tr>';
+            tbody.innerHTML = CSM.emptyState('No email findings in this period', 5);
             emailTable = null;
             return;
         }
 
-        var sevClasses = { 2: 'critical', 1: 'high', 0: 'warning' };
-        var sevLabels = { 2: 'CRITICAL', 1: 'HIGH', 0: 'WARNING' };
         var html = '';
 
         for (var i = 0; i < findings.length; i++) {
             var f = findings[i];
-            var cls = sevClasses[f.severity] || 'warning';
-            var label = sevLabels[f.severity] || 'WARNING';
+            var cls = CSM.severityClass(f.severity);
             var action = '';
 
             if (f.check === 'email_phishing_content') {
@@ -223,7 +220,7 @@
             }
 
             html += '<tr data-sev="' + cls + '" style="cursor:pointer">';
-            html += '<td><span class="badge badge-' + cls + '">' + label + '</span></td>';
+            html += '<td>' + CSM.severityBadge(f.severity) + '</td>';
             html += '<td><span class="font-monospace small">' + CSM.esc(f.check) + '</span></td>';
             html += '<td>' + CSM.esc(f.message) + '</td>';
             html += '<td data-timestamp="' + CSM.esc(f.timestamp || '') + '">' + CSM.fmtDate(f.timestamp) + '</td>';
