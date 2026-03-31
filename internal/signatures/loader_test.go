@@ -64,8 +64,8 @@ function drop_shell() { file_put_contents(__DIR__.'/shell.php', base64_decode($p
 		if m.RuleName == "test_require_regex" {
 			t.Error("require_regex rule should NOT match legitimate plugin (only patterns matched, no regex)")
 		}
-		if m.RuleName == "test_no_require_regex" {
-			// This is expected — without require_regex, patterns alone satisfy min_match
+		if m.RuleName == "test_no_require_regex" { //nolint:staticcheck // expected match, handled below
+			continue
 		}
 	}
 
