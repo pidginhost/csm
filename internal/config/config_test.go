@@ -42,19 +42,27 @@ func TestLoadDefaults(t *testing.T) {
 
 func TestValidate(t *testing.T) {
 	tests := []struct {
-		name    string
-		cfg     Config
-		wantErr int
+		name      string
+		cfg       Config
+		wantError int
 	}{
 		{
-			name:    "empty hostname",
-			cfg:     Config{Hostname: ""},
-			wantErr: 2, // hostname + no alert method
+			name: "empty hostname",
+			cfg: func() Config {
+				c := Config{Hostname: ""}
+				c.Alerts.MaxPerHour = 10
+				return c
+			}(),
+			wantError: 2, // hostname + no alert method
 		},
 		{
-			name:    "placeholder hostname",
-			cfg:     Config{Hostname: "SET_HOSTNAME_HERE"},
-			wantErr: 2,
+			name: "placeholder hostname",
+			cfg: func() Config {
+				c := Config{Hostname: "SET_HOSTNAME_HERE"}
+				c.Alerts.MaxPerHour = 10
+				return c
+			}(),
+			wantError: 2,
 		},
 		{
 			name: "email enabled no recipients",
@@ -62,18 +70,21 @@ func TestValidate(t *testing.T) {
 				c := Config{Hostname: "test"}
 				c.Alerts.Email.Enabled = true
 				c.Alerts.Email.SMTP = "localhost:25"
+				c.Alerts.Email.From = "csm@test.com"
+				c.Alerts.MaxPerHour = 10
 				return c
 			}(),
-			wantErr: 1,
+			wantError: 1,
 		},
 		{
 			name: "webhook enabled no URL",
 			cfg: func() Config {
 				c := Config{Hostname: "test"}
 				c.Alerts.Webhook.Enabled = true
+				c.Alerts.MaxPerHour = 10
 				return c
 			}(),
-			wantErr: 1,
+			wantError: 1,
 		},
 		{
 			name: "valid config",
@@ -82,17 +93,25 @@ func TestValidate(t *testing.T) {
 				c.Alerts.Email.Enabled = true
 				c.Alerts.Email.To = []string{"admin@test.com"}
 				c.Alerts.Email.SMTP = "localhost:25"
+				c.Alerts.Email.From = "csm@test.com"
+				c.Alerts.MaxPerHour = 10
 				return c
 			}(),
-			wantErr: 0,
+			wantError: 0,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			errs := Validate(&tt.cfg)
-			if len(errs) != tt.wantErr {
-				t.Errorf("Validate() returned %d errors, want %d: %v", len(errs), tt.wantErr, errs)
+			results := Validate(&tt.cfg)
+			errors := 0
+			for _, r := range results {
+				if r.Level == "error" {
+					errors++
+				}
+			}
+			if errors != tt.wantError {
+				t.Errorf("Validate() returned %d errors, want %d: %v", errors, tt.wantError, results)
 			}
 		})
 	}

@@ -444,16 +444,18 @@ func runRehash() {
 
 func runValidate() {
 	cfg := loadConfig()
-	errs := config.Validate(cfg)
-	if len(errs) == 0 {
-		fmt.Println("Config valid")
-		return
+	results := config.Validate(cfg)
+	hasErrors := false
+	for _, r := range results {
+		if r.Level == "error" {
+			hasErrors = true
+		}
+		fmt.Printf("  %s\n", r)
 	}
-	fmt.Println("Config errors:")
-	for _, e := range errs {
-		fmt.Printf("  - %s\n", e)
+	if hasErrors {
+		os.Exit(1)
 	}
-	os.Exit(1)
+	fmt.Println("Config valid")
 }
 
 func stopTimers() {
