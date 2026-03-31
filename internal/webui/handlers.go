@@ -52,6 +52,7 @@ type findingEntry struct {
 	SevClass  string
 	Check     string
 	Message   string
+	FilePath  string
 	FirstSeen string
 	LastSeen  string
 	Baseline  bool
@@ -228,6 +229,7 @@ func (s *Server) handleFindings(w http.ResponseWriter, _ *http.Request) {
 			SevClass:  severityClass(f.Severity),
 			Check:     f.Check,
 			Message:   f.Message,
+			FilePath:  f.FilePath,
 			FirstSeen: firstSeen.Format("2006-01-02 15:04"),
 			LastSeen:  lastSeen.Format("2006-01-02 15:04"),
 			HasFix:    checks.HasFix(f.Check),

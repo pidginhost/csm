@@ -78,7 +78,7 @@
                 </thead>
                 <tbody id="findings-tbody">
                     {{range .Entries}}
-                    <tr class="finding-row" data-check="{{.Check}}" data-message="{{.Message}}" data-hasFix="{{.HasFix}}" data-fixdesc="{{.FixDesc}}">
+                    <tr class="finding-row" data-check="{{.Check}}" data-message="{{.Message}}" data-filepath="{{.FilePath}}" data-hasFix="{{.HasFix}}" data-fixdesc="{{.FixDesc}}">
                         <td><input type="checkbox" class="form-check-input row-checkbox"></td>
                         <td><span class="badge badge-{{.SevClass}}">{{.Severity}}</span></td>
                         <td><code>{{.Check}}</code></td>

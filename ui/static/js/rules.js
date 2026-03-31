@@ -155,6 +155,49 @@ if (importFile) {
     });
 }
 
+// Create suppression rule from form
+document.getElementById('suppression-form').addEventListener('submit', function(e) {
+    e.preventDefault();
+    var check = document.getElementById('suppress-check').value.trim();
+    if (!check) return;
+    var pathPattern = document.getElementById('suppress-path').value.trim();
+    var reason = document.getElementById('suppress-reason').value.trim();
+    CSM.post('/api/v1/suppressions', {
+        check: check,
+        path_pattern: pathPattern,
+        reason: reason || 'Created from Rules page'
+    }).then(function(data) {
+        if (data.status === 'created') {
+            CSM.toast('Suppression rule created', 'success');
+            document.getElementById('suppress-check').value = '';
+            document.getElementById('suppress-path').value = '';
+            document.getElementById('suppress-reason').value = '';
+            loadSuppressions();
+        } else {
+            CSM.toast('Failed: ' + (data.error || 'unknown'), 'error');
+        }
+    }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+});
+
+// Populate check-type datalist from active findings
+function loadCheckTypes() {
+    fetch('/api/v1/findings', {credentials: 'same-origin'}).then(function(r) { return r.json(); }).then(function(findings) {
+        var types = {};
+        for (var i = 0; i < findings.length; i++) {
+            if (findings[i].check) types[findings[i].check] = true;
+        }
+        var dl = document.getElementById('check-types');
+        if (!dl) return;
+        dl.innerHTML = '';
+        Object.keys(types).sort().forEach(function(t) {
+            var opt = document.createElement('option');
+            opt.value = t;
+            dl.appendChild(opt);
+        });
+    }).catch(function() {});
+}
+
 loadStatus();
 loadFiles();
 loadSuppressions();
+loadCheckTypes();

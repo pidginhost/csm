@@ -58,7 +58,30 @@
 
     <!-- Suppression Rules -->
     <div class="card mt-3">
-        <div class="card-header"><h3 class="card-title"><i class="ti ti-eye-off"></i>&nbsp;Suppression Rules</h3></div>
+        <div class="card-header">
+            <h3 class="card-title"><i class="ti ti-eye-off"></i>&nbsp;Suppression Rules</h3>
+        </div>
+        <div class="card-body">
+            <p class="text-muted small mb-3">Suppression rules prevent specific findings from triggering email/webhook alerts. They are stored in state, not in rule files, so they survive rule updates.</p>
+            <form id="suppression-form" class="row g-2 align-items-end">
+                <div class="col-sm-3">
+                    <label class="form-label">Check Type</label>
+                    <input type="text" class="form-control" id="suppress-check" placeholder="e.g. yara_match_realtime" list="check-types" required>
+                    <datalist id="check-types"></datalist>
+                </div>
+                <div class="col-sm-4">
+                    <label class="form-label">Path Pattern <span class="text-muted">(optional)</span></label>
+                    <input type="text" class="form-control font-monospace" id="suppress-path" placeholder="e.g. /home/user/site/crud/*">
+                </div>
+                <div class="col-sm-3">
+                    <label class="form-label">Reason <span class="text-muted">(optional)</span></label>
+                    <input type="text" class="form-control" id="suppress-reason" placeholder="e.g. False positive — JS eval">
+                </div>
+                <div class="col-sm-2">
+                    <button type="submit" class="btn btn-primary w-100"><i class="ti ti-plus"></i>&nbsp;Add Rule</button>
+                </div>
+            </form>
+        </div>
         <div id="suppressions-content"><div class="card-body text-center text-muted py-4">Loading...</div></div>
     </div>
 {{end}}

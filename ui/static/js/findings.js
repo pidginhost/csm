@@ -131,10 +131,19 @@ function dismissOne(key) {
     }).catch(function() {});
 }
 
-function suppressFinding(check, message) {
+function suppressFinding(check, message, filePath) {
+    // Pre-fill with file path if available, suggest wildcard for directory
+    var defaultPath = '';
+    if (filePath) {
+        defaultPath = filePath;
+    } else {
+        // Try to extract path from message (e.g. "YARA rule match: /home/user/file.php")
+        var m = message.match(/:\s*(\/\S+)/);
+        if (m) defaultPath = m[1];
+    }
     var reason = prompt('Reason for suppression (optional):');
     if (reason === null) return; // cancelled
-    var pathPattern = prompt('Path pattern to match (optional, e.g. /home/user/*):', '');
+    var pathPattern = prompt('Path pattern to match (optional, e.g. /home/user/site/*):', defaultPath);
     if (pathPattern === null) return; // cancelled
     CSM.post('/api/v1/suppressions', {
         check: check,
@@ -427,7 +436,7 @@ document.querySelectorAll('.finding-row').forEach(function(row) {
     });
     var suppressBtn = cell.querySelector('.suppress-btn');
     if (suppressBtn) suppressBtn.addEventListener('click', function() {
-        suppressFinding(row.getAttribute('data-check'), row.getAttribute('data-message'));
+        suppressFinding(row.getAttribute('data-check'), row.getAttribute('data-message'), row.getAttribute('data-filepath'));
     });
 });
 

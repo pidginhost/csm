@@ -333,6 +333,20 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// Filter through state — only new findings get alerted and logged
 	newFindings := d.store.FilterNew(findings)
 
+	// Filter out suppressed findings — prevents email/webhook alerts for
+	// paths the admin has explicitly suppressed (e.g. false positives).
+	// Suppressions are stored in state/suppressions.json, not in rule files.
+	suppressions := d.store.LoadSuppressions()
+	if len(suppressions) > 0 {
+		var unsuppressed []alert.Finding
+		for _, f := range newFindings {
+			if !d.store.IsSuppressed(f, suppressions) {
+				unsuppressed = append(unsuppressed, f)
+			}
+		}
+		newFindings = unsuppressed
+	}
+
 	// Append auto-response actions to new findings for alerting
 	newFindings = append(newFindings, blockActions...)
 	newFindings = append(newFindings, permActions...)
