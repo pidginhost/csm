@@ -86,3 +86,42 @@ body.theme-dark { background-color: #1a2234; }
 @media (max-width: 768px) {
     .csm-input-sm, .csm-input-md, .csm-input-lg { width: 100%; }
 }
+
+/* --- findings.html: sticky filter header -------------------------------- */
+#findings-table-card > .card-header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: var(--tblr-bg-surface, #fff);
+    transition: box-shadow 0.2s;
+}
+.theme-dark #findings-table-card > .card-header {
+    background: #1e293b;
+}
+#findings-table-card > .card-header.csm-stuck {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+.theme-dark #findings-table-card > .card-header.csm-stuck {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+/* --- findings.html: collapsible scan section ---------------------------- */
+.csm-collapse-icon {
+    display: inline-block;
+    transition: transform 0.2s ease;
+    font-size: 1rem;
+}
+.csm-collapse-icon.collapsed {
+    transform: rotate(-90deg);
+}
+#scan-body {
+    overflow: hidden;
+    transition: max-height 0.25s ease, padding 0.25s ease, opacity 0.2s ease;
+}
+#scan-body.collapsed {
+    max-height: 0 !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+    opacity: 0;
+    border-top: none;
+}

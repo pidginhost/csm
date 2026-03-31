@@ -30,12 +30,75 @@ if (document.getElementById('findings-table')) {
     }
     if (accountParam) {
         var filter = document.getElementById('account-filter');
-        if (filter) { filter.value = accountParam; filter.dispatchEvent(new Event('change')); }
+        if (filter) { filter.value = accountParam; filter.dispatchEvent(new Event('input')); }
     }
     if (searchParam) {
         var search = document.getElementById('findings-search');
         if (search) { search.value = searchParam; search.dispatchEvent(new Event('input')); }
     }
+})();
+
+// --- Collapsible scan section ---
+(function() {
+    var header = document.getElementById('scan-header');
+    var body = document.getElementById('scan-body');
+    var icon = document.getElementById('scan-collapse-icon');
+    if (!header || !body || !icon) return;
+
+    var STORAGE_KEY = 'csm-scan-collapsed';
+
+    function collapse() {
+        body.style.maxHeight = body.scrollHeight + 'px';
+        body.offsetHeight; // force reflow
+        body.classList.add('collapsed');
+        body.style.maxHeight = '0';
+        icon.classList.add('collapsed');
+        localStorage.setItem(STORAGE_KEY, '1');
+    }
+
+    function expand() {
+        body.classList.remove('collapsed');
+        body.style.maxHeight = body.scrollHeight + 'px';
+        icon.classList.remove('collapsed');
+        localStorage.setItem(STORAGE_KEY, '0');
+        var cleanup = function() {
+            body.style.maxHeight = '';
+            body.removeEventListener('transitionend', cleanup);
+        };
+        body.addEventListener('transitionend', cleanup);
+    }
+
+    header.addEventListener('click', function() {
+        if (body.classList.contains('collapsed')) {
+            expand();
+        } else {
+            collapse();
+        }
+    });
+
+    // Restore state — default collapsed
+    if (localStorage.getItem(STORAGE_KEY) !== '0') {
+        body.classList.add('collapsed');
+        body.style.maxHeight = '0';
+        icon.classList.add('collapsed');
+    }
+})();
+
+// --- Sticky header shadow on scroll ---
+(function() {
+    var cardHeader = document.querySelector('#findings-table-card > .card-header');
+    if (!cardHeader) return;
+
+    var sentinel = document.createElement('div');
+    sentinel.className = 'csm-sticky-sentinel';
+    sentinel.style.height = '1px';
+    sentinel.style.marginBottom = '-1px';
+    cardHeader.parentNode.insertBefore(sentinel, cardHeader);
+
+    var observer = new IntersectionObserver(function(entries) {
+        cardHeader.classList.toggle('csm-stuck', !entries[0].isIntersecting);
+    }, { threshold: [1] });
+    observer.observe(sentinel);
 })();
 
 function changePerPage() {
@@ -94,6 +157,20 @@ window.addEventListener('beforeunload', function(e) {
 // Reset select-all when filter changes
 var checkFilterEl = document.getElementById('check-filter');
 if (checkFilterEl) checkFilterEl.addEventListener('change', function() {
+    var selectAll = document.getElementById('select-all');
+    if (selectAll) selectAll.checked = false;
+    document.querySelectorAll('.row-checkbox').forEach(function(cb) { cb.checked = false; });
+    updateSelection();
+});
+
+// Account filter is a search input — bind 'input' to trigger table filtering
+var accountFilterEl = document.getElementById('account-filter');
+if (accountFilterEl) accountFilterEl.addEventListener('input', function() {
+    if (findingsTable) {
+        findingsTable.filterValues['account-filter'] = this.value;
+        findingsTable.currentPage = 1;
+        findingsTable.applyFilters();
+    }
     var selectAll = document.getElementById('select-all');
     if (selectAll) selectAll.checked = false;
     document.querySelectorAll('.row-checkbox').forEach(function(cb) { cb.checked = false; });
@@ -217,10 +294,8 @@ document.getElementById('scan-form').addEventListener('submit', function(e) {
     if (!account) return;
     var btn = document.getElementById('scan-btn');
     var status = document.getElementById('scan-status').querySelector('span');
-    var results = document.getElementById('scan-results');
-    var tbody = document.getElementById('scan-tbody');
     btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Scanning...';
-    status.textContent = ''; results.classList.add('d-none'); tbody.innerHTML = '';
+    status.textContent = '';
     // Elapsed timer
     var scanStart = Date.now();
     var timerInterval = setInterval(function() {
@@ -233,48 +308,24 @@ document.getElementById('scan-form').addEventListener('submit', function(e) {
         btn.disabled = false; btn.innerHTML = '<i class="ti ti-radar-2"></i>&nbsp;Scan';
         if (data.error) { status.textContent = data.error; status.className = 'text-danger small'; return; }
         if (!data.count) { status.textContent = account + ' is clean (' + data.elapsed + ')'; status.className = 'text-success small'; return; }
-        status.innerHTML = data.count + ' finding(s) in ' + data.elapsed +
-            ' &mdash; <a href="/findings?account=' + encodeURIComponent(account) + '">Refresh &amp; filter to ' + CSM.esc(account) + '</a>';
-        status.className = 'text-danger small';
-        results.classList.remove('d-none');
-        var fixableChecks = {'world_writable_php':1,'group_writable_php':1,'webshell':1,'new_webshell_file':1,'obfuscated_php':1,'php_dropper':1,'suspicious_php_content':1,'new_php_in_languages':1,'new_php_in_upgrade':1,'phishing_page':1,'phishing_directory':1,'backdoor_binary':1,'new_executable_in_config':1};
-        (data.findings||[]).forEach(function(f) {
-            var sev = f.severity===2?'critical':f.severity===1?'high':'warning';
-            var label = f.severity===2?'CRITICAL':f.severity===1?'HIGH':'WARNING';
-            var tr = document.createElement('tr');
-            var actionHtml = '';
-            if (fixableChecks[f.check]) {
-                actionHtml = '<button class="btn btn-warning btn-sm scan-fix-btn" data-check="'+CSM.esc(f.check)+'" data-message="'+CSM.esc(f.message)+'"><i class="ti ti-tool"></i>&nbsp;Fix</button>';
-            }
-            tr.innerHTML = '<td><span class="badge badge-'+sev+'">'+label+'</span></td><td><code>'+CSM.esc(f.check)+'</code></td><td>'+CSM.esc(f.message)+'</td><td>'+actionHtml+'</td>';
-            tbody.appendChild(tr);
-        });
-        // Bind fix buttons on scan results
-        document.querySelectorAll('.scan-fix-btn').forEach(function(btn) {
-            btn.addEventListener('click', function() {
-                var check = this.getAttribute('data-check');
-                var message = this.getAttribute('data-message');
-                var self = this;
-                CSM.confirm('Apply fix for ' + check + '?').then(function() {
-                    self.disabled = true;
-                    self.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
-                    CSM.post('/api/v1/fix', {check: check, message: message}).then(function(d) {
-                        if (d.success) { self.innerHTML = '<i class="ti ti-check"></i>'; self.className = 'btn btn-success btn-sm'; }
-                        else { CSM.toast('Failed: ' + (d.error||''), 'error'); self.disabled = false; self.innerHTML = '<i class="ti ti-tool"></i>&nbsp;Fix'; }
-                    }).catch(function(e) { CSM.toast('Error: '+e, 'error'); self.disabled=false; self.innerHTML='<i class="ti ti-tool"></i>&nbsp;Fix'; });
-                }).catch(function() {});
-            });
-        });
+        // Redirect to filtered view for the scanned account
+        window.location.href = '/findings?account=' + encodeURIComponent(account);
     }).catch(function(e) { clearInterval(timerInterval); btn.disabled=false; btn.innerHTML='<i class="ti ti-radar-2"></i>&nbsp;Scan'; status.textContent='Error: '+e; status.className='text-danger small'; });
 });
 
-// Load account list for autocomplete dropdown
+// Load account list for autocomplete dropdowns (scan + filter)
 fetch('/api/v1/accounts', {credentials:'same-origin'}).then(function(r){return r.json()}).then(function(accounts) {
     var dl = document.getElementById('account-list');
+    var filterDl = document.getElementById('account-filter-list');
     (accounts||[]).forEach(function(a) {
         var opt = document.createElement('option');
         opt.value = a;
         dl.appendChild(opt);
+        if (filterDl) {
+            var opt2 = document.createElement('option');
+            opt2.value = a;
+            filterDl.appendChild(opt2);
+        }
     });
 }).catch(function(){});
 
@@ -431,6 +482,14 @@ if (_bulkDismissBtn) _bulkDismissBtn.addEventListener('click', function() { bulk
             }
         });
     }
+    var accountFilter2 = document.getElementById('account-filter');
+    if (accountFilter2) {
+        accountFilter2.addEventListener('input', function() {
+            if (groupByEl.value !== 'none') {
+                setTimeout(applyGrouping, 50);
+            }
+        });
+    }
 })();
 
 // Build action buttons from data attributes (avoids Go template escaping issues)
@@ -518,6 +577,64 @@ document.querySelectorAll('.finding-row').forEach(function(row) {
         toggleFindingDetail(this);
     });
 });
+
+// --- Export findings (CSV / JSON) ---
+function getExportData() {
+    var rows = getVisibleRows();
+    return rows.map(function(r) {
+        return {
+            severity: r.querySelector('.badge') ? r.querySelector('.badge').textContent.trim() : '',
+            check: r.getAttribute('data-check') || '',
+            account: r.getAttribute('data-account') || '',
+            message: r.getAttribute('data-message') || '',
+            first_seen: r.cells[4] ? r.cells[4].textContent.trim() : '',
+            last_seen: r.cells[5] ? r.cells[5].textContent.trim() : ''
+        };
+    });
+}
+
+function downloadFile(content, filename, mimeType) {
+    var blob = new Blob([content], { type: mimeType });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+function exportCSV() {
+    var data = getExportData();
+    if (!data.length) { CSM.toast('No findings to export.', 'warning'); return; }
+    var headers = ['Severity', 'Check', 'Account', 'Message', 'First Seen', 'Last Seen'];
+    var lines = [headers.join(',')];
+    data.forEach(function(row) {
+        lines.push([
+            row.severity,
+            row.check,
+            row.account,
+            '"' + row.message.replace(/"/g, '""') + '"',
+            row.first_seen,
+            row.last_seen
+        ].join(','));
+    });
+    var timestamp = new Date().toISOString().slice(0, 10);
+    downloadFile(lines.join('\n'), 'csm-findings-' + timestamp + '.csv', 'text/csv');
+}
+
+function exportJSON() {
+    var data = getExportData();
+    if (!data.length) { CSM.toast('No findings to export.', 'warning'); return; }
+    var timestamp = new Date().toISOString().slice(0, 10);
+    downloadFile(JSON.stringify(data, null, 2), 'csm-findings-' + timestamp + '.json', 'application/json');
+}
+
+var csvBtn = document.getElementById('export-csv');
+if (csvBtn) csvBtn.addEventListener('click', function(e) { e.preventDefault(); exportCSV(); });
+var jsonBtn = document.getElementById('export-json');
+if (jsonBtn) jsonBtn.addEventListener('click', function(e) { e.preventDefault(); exportJSON(); });
 
 // --- Auto-refresh: poll for new findings every 15 seconds ---
 (function() {

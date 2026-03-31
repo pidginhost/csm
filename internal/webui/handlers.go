@@ -6,6 +6,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
@@ -14,6 +15,7 @@ import (
 
 // renderTemplate executes a named template and logs errors to stderr.
 var reHomeAccount = regexp.MustCompile(`/home/([^/\s]+)/`)
+var reIPReputation = regexp.MustCompile(`Known malicious IP accessing server: (\S+) \((.+)\)`)
 
 // extractAccount returns the cPanel account from a file path or message.
 func extractAccount(filePath, message string) string {
@@ -56,10 +58,13 @@ type timelineBar struct {
 }
 
 type findingsData struct {
-	Hostname   string
-	Entries    []findingEntry
-	CheckTypes []string // unique check types for filter dropdown
-	Accounts   []string // unique accounts for filter dropdown
+	Hostname      string
+	Entries       []findingEntry
+	CheckTypes    []string // unique check types for filter dropdown
+	Accounts      []string // unique accounts for filter dropdown
+	CriticalCount int
+	HighCount     int
+	WarningCount  int
 }
 
 type findingEntry struct {
@@ -254,6 +259,67 @@ func (s *Server) handleFindings(w http.ResponseWriter, _ *http.Request) {
 		})
 	}
 
+	// Dedup ip_reputation findings — group by IP, merge sources into one entry
+	type ipGroup struct {
+		entry   findingEntry
+		sources []string
+	}
+	ipGroups := make(map[string]*ipGroup) // keyed by IP address
+	var ipOrder []string                  // preserve first-seen order
+	var merged []findingEntry
+	for _, item := range items {
+		if item.Check != "ip_reputation" {
+			merged = append(merged, item)
+			continue
+		}
+		m := reIPReputation.FindStringSubmatch(item.Message)
+		if m == nil {
+			merged = append(merged, item)
+			continue
+		}
+		ip, source := m[1], m[2]
+		if g, ok := ipGroups[ip]; ok {
+			g.sources = append(g.sources, source)
+			// Keep earliest FirstSeen and latest LastSeen
+			if item.FirstSeen < g.entry.FirstSeen {
+				g.entry.FirstSeen = item.FirstSeen
+			}
+			if item.LastSeen > g.entry.LastSeen {
+				g.entry.LastSeen = item.LastSeen
+			}
+			// Promote severity: CRITICAL > HIGH > WARNING
+			if severityRank(item.Severity) > severityRank(g.entry.Severity) {
+				g.entry.Severity = item.Severity
+				g.entry.SevClass = item.SevClass
+			}
+		} else {
+			ipGroups[ip] = &ipGroup{
+				entry:   item,
+				sources: []string{source},
+			}
+			ipOrder = append(ipOrder, ip)
+		}
+	}
+	for _, ip := range ipOrder {
+		g := ipGroups[ip]
+		g.entry.Message = fmt.Sprintf("Known malicious IP accessing server: %s (%s)", ip, strings.Join(g.sources, ", "))
+		merged = append(merged, g.entry)
+	}
+	items = merged
+
+	// Compute severity counts (after dedup so counts reflect merged list)
+	var critCount, highCount, warnCount int
+	for _, item := range items {
+		switch item.Severity {
+		case "CRITICAL":
+			critCount++
+		case "HIGH":
+			highCount++
+		default:
+			warnCount++
+		}
+	}
+
 	// Collect unique check types and accounts for filter dropdowns
 	checkTypeMap := make(map[string]bool)
 	accountMap := make(map[string]bool)
@@ -275,10 +341,13 @@ func (s *Server) handleFindings(w http.ResponseWriter, _ *http.Request) {
 	sort.Strings(accounts)
 
 	data := findingsData{
-		Hostname:   s.cfg.Hostname,
-		Entries:    items,
-		CheckTypes: checkTypes,
-		Accounts:   accounts,
+		Hostname:      s.cfg.Hostname,
+		Entries:       items,
+		CheckTypes:    checkTypes,
+		Accounts:      accounts,
+		CriticalCount: critCount,
+		HighCount:     highCount,
+		WarningCount:  warnCount,
 	}
 	s.renderTemplate(w, "findings.html", data)
 }

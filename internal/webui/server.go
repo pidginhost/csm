@@ -473,6 +473,20 @@ func severityLabel(sev alert.Severity) string {
 	}
 }
 
+// severityRank returns a numeric rank for severity labels (higher = more severe).
+func severityRank(label string) int {
+	switch label {
+	case "CRITICAL":
+		return 3
+	case "HIGH":
+		return 2
+	case "WARNING":
+		return 1
+	default:
+		return 0
+	}
+}
+
 func timeAgo(t time.Time) string {
 	d := time.Since(t)
 	switch {

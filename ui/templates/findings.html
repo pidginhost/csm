@@ -2,9 +2,13 @@
 {{define "page"}}findings{{end}}
 {{define "content"}}
     <!-- Scan Account -->
-    <div class="card mb-3">
-        <div class="card-header"><h3 class="card-title"><i class="ti ti-search"></i>&nbsp;Scan Account</h3></div>
-        <div class="card-body">
+    <div class="card mb-3" id="scan-card">
+        <div class="card-header" id="scan-header" style="cursor:pointer">
+            <h3 class="card-title">
+                <i class="ti ti-chevron-down csm-collapse-icon" id="scan-collapse-icon"></i>&nbsp;Scan Account
+            </h3>
+        </div>
+        <div class="card-body" id="scan-body">
             <form id="scan-form" class="row g-2 align-items-end">
                 <div class="col-auto">
                     <input type="text" id="scan-account" list="account-list" class="form-control form-control-sm font-monospace" placeholder="Search accounts..." style="width:250px" autocomplete="off">
@@ -15,12 +19,6 @@
                 </div>
                 <div class="col-auto" id="scan-status"><span class="text-muted small"></span></div>
             </form>
-            <div id="scan-results" class="mt-3 d-none">
-                <table class="table table-vcenter table-sm" id="scan-table">
-                    <thead><tr><th>Severity</th><th>Check</th><th>Message</th><th>Action</th></tr></thead>
-                    <tbody id="scan-tbody"></tbody>
-                </table>
-            </div>
         </div>
     </div>
 
@@ -32,19 +30,26 @@
     </div>
 
     <!-- Active Findings -->
-    <div class="card">
+    <div class="card" id="findings-table-card">
         <div class="card-header">
-            <h3 class="card-title"><i class="ti ti-alert-triangle"></i>&nbsp;Active Findings ({{len .Entries}})</h3>
+            <h3 class="card-title">
+                <i class="ti ti-alert-triangle"></i>&nbsp;Active Findings ({{len .Entries}})
+                {{if .Entries}}
+                <span class="ms-2 fw-normal" style="font-size:0.8rem">
+                    {{if .CriticalCount}}<span class="badge badge-critical">{{.CriticalCount}} critical</span> {{end}}
+                    {{if .HighCount}}<span class="badge badge-high">{{.HighCount}} high</span> {{end}}
+                    {{if .WarningCount}}<span class="badge badge-warning">{{.WarningCount}} warning</span> {{end}}
+                </span>
+                {{end}}
+            </h3>
             <div class="card-actions d-flex gap-2 flex-wrap align-items-center">
                 <input type="text" id="findings-search" class="form-control form-control-sm csm-input-sm" placeholder="Search...">
                 <select id="check-filter" class="form-select form-select-sm" style="width:auto">
                     <option value="all">All Types</option>
                     {{range .CheckTypes}}<option value="{{.}}">{{.}}</option>{{end}}
                 </select>
-                <select id="account-filter" class="form-select form-select-sm" style="width:auto">
-                    <option value="all">All Accounts</option>
-                    {{range .Accounts}}<option value="{{.}}">{{.}}</option>{{end}}
-                </select>
+                <input type="search" id="account-filter" list="account-filter-list" class="form-control form-control-sm" placeholder="All Accounts" style="width:140px" autocomplete="off">
+                <datalist id="account-filter-list"></datalist>
                 <select id="group-by" class="form-select form-select-sm" style="width:auto">
                     <option value="none">No Grouping</option>
                     <option value="account">Group by Account</option>
@@ -57,6 +62,15 @@
                     <option value="250">250/page</option>
                     <option value="0">All</option>
                 </select>
+                <div class="dropdown">
+                    <button class="btn btn-ghost-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">
+                        <i class="ti ti-download"></i>&nbsp;Export
+                    </button>
+                    <div class="dropdown-menu dropdown-menu-end">
+                        <a class="dropdown-item" href="#" id="export-csv"><i class="ti ti-file-spreadsheet me-2"></i>CSV</a>
+                        <a class="dropdown-item" href="#" id="export-json"><i class="ti ti-braces me-2"></i>JSON</a>
+                    </div>
+                </div>
                 <div id="bulk-actions" class="d-none d-flex gap-1 align-items-center">
                     <span class="text-muted small me-1"><strong id="selected-count">0</strong> selected</span>
                     <div class="btn-group btn-group-sm">
