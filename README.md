@@ -65,6 +65,8 @@ csm daemon
  +-- alert dispatcher             Batching, dedup, rate limiting, auto-response
  +-- web UI                       HTTPS dashboard, findings, firewall, threat intel
  +-- GeoIP auto-updater           MaxMind GeoLite2 City + ASN (24h update cycle)
+ +-- email AV orchestrator        ClamAV + YARA-X scanning on Exim spool
+ +-- challenge server             Proof-of-work challenge pages for suspicious IPs
 ```
 
 ## Performance
@@ -75,8 +77,8 @@ Benchmarked on a production cPanel server (168 accounts, 275 WordPress sites, 28
 |---|---|---|
 | fanotify file monitor | < 1 second | < 0.1% CPU, ~5 MB |
 | inotify log watchers | ~2 seconds | < 0.1% CPU, ~1 MB |
-| Critical checks (30) | Every 10 min, < 1 sec | ~35 MB peak |
-| Deep checks (17) | Every 60 min, ~40 sec | ~100 MB peak |
+| Critical checks (31) | Every 10 min, < 1 sec | ~35 MB peak |
+| Deep checks (18) | Every 60 min, ~40 sec | ~100 MB peak |
 | Daemon idle | — | 45 MB resident |
 | Binary size | — | ~8 MB static |
 
@@ -90,13 +92,13 @@ Benchmarked on a production cPanel server (168 accounts, 275 WordPress sites, 28
 
 **PAM listener:** SSH/FTP/email brute force — blocks IPs within seconds of threshold breach.
 
-### Periodic Critical (30 checks, every 10 min)
+### Periodic Critical (31 checks, every 10 min)
 
-Fake kernel threads, suspicious processes, PHP process inspection, shadow/root password changes, UID 0 accounts, SSH keys/config, API tokens, WHM access, cPanel logins with multi-IP correlation, crontab inspection, outbound connections (C2, backdoor ports), DNS tunneling, firewall integrity, mail queue, kernel modules, MySQL superuser audit, database dump detection, paste site exfiltration, WordPress login/xmlrpc brute force, user enumeration, FTP/webmail brute force, self-health.
+Fake kernel threads, suspicious processes, PHP process inspection, shadow/root password changes, UID 0 accounts, SSH keys/config, SSHD config audit, SSH login analysis, API tokens, WHM access, cPanel logins with multi-IP correlation, cPanel File Manager uploads, crontab inspection, outbound connections (C2, backdoor ports), per-user outbound connections, DNS tunneling, firewall integrity, mail queue, per-account mail volume, kernel modules, MySQL superuser audit, database dump detection, paste site exfiltration, WordPress login/xmlrpc brute force, FTP logins/failures, webmail brute force, API auth failures, IP reputation scoring, local threat scoring, ModSecurity audit log, self-health.
 
-### Periodic Deep (17 checks, every 60 min)
+### Periodic Deep (18 checks, every 60 min)
 
-WordPress core integrity (parallel checksums), nulled plugin detection, RPM binary verification, open_basedir checks, symlink attacks, WAF mode/staleness/bypass, PHP config changes, 8-layer phishing detection, PHP content analysis, signature scanning, WP database injection/siteurl hijacking/rogue admins/spam, outbound email scanning, DNS zone changes, SSL certificate issuance.
+Filesystem scanning, webshell detection, .htaccess injection scanning, WordPress core integrity (parallel checksums), file baseline changes, PHP content analysis, 8-layer phishing detection, nulled plugin detection, RPM binary verification, group-writable PHP audit, open_basedir checks, symlink attacks, PHP config changes, DNS zone changes, SSL certificate issuance, WAF mode/staleness/bypass, WP database injection/siteurl hijacking/rogue admins/spam, outbound email scanning.
 
 ### Auto-Response
 
@@ -156,12 +158,17 @@ Status & Data:
   GET  /api/v1/account             Per-account findings/quarantine/history (?name=)
   GET  /api/v1/health              Daemon health
   GET  /api/v1/history/csv         CSV export
-  GET  /api/v1/geoip               IP geolocation (?ip=&detail=1)
   GET  /api/v1/audit               UI audit log
   GET  /api/v1/finding-detail      Finding detail with action history (?check=&message=)
   GET  /api/v1/export              Export state (suppressions, whitelist)
   GET  /api/v1/incident            Incident timeline (?ip=&account=&hours=)
   GET  /api/v1/email/stats         Email security statistics
+  GET  /api/v1/email/quarantine    Quarantined email list
+  GET  /api/v1/email/av/status     Email AV watcher status
+
+GeoIP:
+  GET  /api/v1/geoip               IP geolocation (?ip=&detail=1)
+  POST /api/v1/geoip/batch         Batch GeoIP lookup (CSRF required)
 
 Threat Intelligence:
   GET  /api/v1/threat/stats        Attack stats, type breakdown, hourly trend
@@ -170,6 +177,7 @@ Threat Intelligence:
   GET  /api/v1/threat/events       IP event history (?ip=&limit=)
   GET  /api/v1/threat/whitelist    Whitelisted IPs
   GET  /api/v1/threat/db-stats     Attack database statistics
+  POST /api/v1/threat/block-ip           Block IP via threat intel
 
 Firewall:
   GET  /api/v1/firewall/status     Config, blocked/allowed counts
@@ -191,6 +199,7 @@ Actions (POST, CSRF required):
   POST /api/v1/unblock-ip          Unblock an IP
   POST /api/v1/unblock-bulk        Bulk unblock IPs
   POST /api/v1/quarantine-restore  Restore quarantined file
+  POST /api/v1/email/quarantine/   Email quarantine actions (release/delete)
   POST /api/v1/test-alert          Send test alert through all channels
   POST /api/v1/import              Import state bundle
   POST /api/v1/threat/whitelist-ip       Permanent whitelist
@@ -226,24 +235,29 @@ Replaces CSF, LFD, and fail2ban. Uses the kernel netlink API directly via `googl
 - cphulk integration (unblock flushes cphulk too)
 
 ```bash
-csm firewall status                       # Show status
-csm firewall deny <ip> [reason]           # Block IP
-csm firewall allow <ip> [reason]          # Allow IP
-csm firewall tempban <ip> <dur> [reason]  # Temporary block
-csm firewall deny-subnet <cidr> [reason]  # Block subnet
-csm firewall remove-subnet <cidr>         # Remove subnet block
-csm firewall grep <pattern>               # Search blocks
-csm firewall ports                        # Show allowed ports
-csm firewall allow-port <port> <proto>    # Open a port
-csm firewall deny-file <path>             # Bulk block from file
-csm firewall profile                      # Detect and apply port profile
-csm firewall audit [limit]                # View audit log
-csm firewall lookup <ip>                  # GeoIP + block status lookup
-csm firewall apply-confirmed <seconds>    # Apply with auto-rollback timer
-csm firewall confirm                      # Confirm applied changes
-csm firewall migrate-from-csf [--apply]   # Migrate from CSF
-csm firewall flush                        # Clear all blocks
-csm update-geoip                          # Update MaxMind GeoLite2 databases
+csm firewall status                              # Show status and statistics
+csm firewall deny <ip> [reason]                  # Block IP permanently
+csm firewall allow <ip> [reason]                 # Allow IP (all ports)
+csm firewall allow-port <ip> <port> [reason]     # Allow IP on specific port
+csm firewall remove-port <ip> <port>             # Remove port-specific allow
+csm firewall remove <ip>                         # Remove from blocked and allowed
+csm firewall grep <pattern>                      # Search blocked/allowed IPs
+csm firewall tempban <ip> <dur> [reason]         # Temporary block
+csm firewall tempallow <ip> <dur> [reason]       # Temporary allow
+csm firewall deny-subnet <cidr> [reason]         # Block subnet
+csm firewall remove-subnet <cidr>               # Remove subnet block
+csm firewall ports                               # Show configured port rules
+csm firewall deny-file <path>                    # Bulk block from file
+csm firewall allow-file <path>                   # Bulk allow from file
+csm firewall flush                               # Clear all dynamic blocks
+csm firewall restart                             # Reapply full ruleset
+csm firewall apply-confirmed <minutes>           # Apply with auto-rollback timer
+csm firewall confirm                             # Confirm applied changes
+csm firewall migrate-from-csf [--apply]          # Migrate from CSF
+csm firewall profile save|list|restore <name>    # Profile management
+csm firewall audit [limit]                       # View audit log
+csm firewall update-geoip                        # Download country IP blocks
+csm firewall lookup <ip>                         # GeoIP + block status lookup
 ```
 
 ## GeoIP
@@ -356,19 +370,24 @@ signatures:
 | `csm uninstall` | Clean removal |
 | `csm run` | Run all checks once, send alerts |
 | `csm check` | Run all checks, print to stdout (no alerts) |
+| `csm check-critical` | Test critical checks only (no alerts) |
+| `csm check-deep` | Test deep checks only (no alerts) |
 | `csm run-critical` | Run critical checks only (used by systemd timer) |
 | `csm run-deep` | Run deep scan only (used by systemd timer) |
+| `csm status` | Show current state, last run, active findings |
 | `csm scan <user>` | Scan single account (16 checks) |
 | `csm clean <path>` | Clean infected PHP file |
 | `csm baseline` | Record current state as known-good |
 | `csm rehash` | Update binary/config hashes without scanning |
-| `csm validate` | Check config for errors |
+| `csm validate` | Validate config with structured output |
+| `csm validate --deep` | Validate config with connectivity probes |
+| `csm config show` | Display config with secrets redacted |
 | `csm verify` | Verify binary and config integrity |
 | `csm update-rules` | Download latest signature rules |
 | `csm update-geoip` | Update MaxMind GeoLite2 databases |
 | `csm enable --php-shield` | Enable PHP runtime protection |
 | `csm disable --php-shield` | Disable PHP runtime protection |
-| `csm firewall ...` | Firewall management (18 subcommands) |
+| `csm firewall ...` | Firewall management (23 subcommands) |
 | `csm version` | Version and build info |
 
 ## Installation Methods
@@ -410,5 +429,4 @@ CI/CD: lint, vet, test, build (amd64 + arm64), package (RPM + DEB via nFPM), pub
 - Binary signing with cosign
 - Multi-server management (centralized dashboard, block list sync)
 - YUM/APT repository hosting for automated updates
-- `csm config` CLI for editing settings with validation
 - `csm backup` / `csm restore` for state portability
