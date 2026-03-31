@@ -63,8 +63,8 @@ func configShow() {
 			os.Exit(1)
 		}
 		var m map[string]interface{}
-		if err := yaml.Unmarshal(yamlData, &m); err != nil {
-			fmt.Fprintf(os.Stderr, "Error converting config: %v\n", err)
+		if unmarshalErr := yaml.Unmarshal(yamlData, &m); unmarshalErr != nil {
+			fmt.Fprintf(os.Stderr, "Error converting config: %v\n", unmarshalErr)
 			os.Exit(1)
 		}
 		jsonData, err := json.MarshalIndent(m, "", "  ")

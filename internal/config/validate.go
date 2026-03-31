@@ -305,7 +305,7 @@ func probeSMTP(addr string) []ValidationResult {
 	if err != nil {
 		return []ValidationResult{{"error", "alerts.email.smtp", fmt.Sprintf("cannot connect to %s: %v", addr, err)}}
 	}
-	conn.Close()
+	_ = conn.Close()
 	return []ValidationResult{{"ok", "alerts.email.smtp", fmt.Sprintf("connected to %s", addr)}}
 }
 
@@ -315,7 +315,7 @@ func probeClamd(socket string) []ValidationResult {
 	if err != nil {
 		return []ValidationResult{{"error", "email_av.clamd_socket", fmt.Sprintf("cannot connect to %s: %v", socket, err)}}
 	}
-	conn.Close()
+	_ = conn.Close()
 	return []ValidationResult{{"ok", "email_av.clamd_socket", fmt.Sprintf("connected to %s", socket)}}
 }
 

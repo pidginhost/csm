@@ -478,7 +478,7 @@ func TestValidateDeepRulesDir(t *testing.T) {
 	}
 
 	// Dir with yaml file
-	os.WriteFile(dir+"/test.yaml", []byte("rules: []"), 0644)
+	_ = os.WriteFile(dir+"/test.yaml", []byte("rules: []"), 0644)
 	results = ValidateDeep(cfg)
 	if !hasResult(results, "ok", "signatures.rules_dir") {
 		t.Error("expected ok for rules dir with yaml")
@@ -523,8 +523,8 @@ func TestValidateDeepGeoIP(t *testing.T) {
 
 	// Create the db file
 	geoDir := dir + "/geoip"
-	os.MkdirAll(geoDir, 0755)
-	os.WriteFile(geoDir+"/GeoLite2-City.mmdb", []byte("test"), 0644)
+	_ = os.MkdirAll(geoDir, 0755)
+	_ = os.WriteFile(geoDir+"/GeoLite2-City.mmdb", []byte("test"), 0644)
 	results = ValidateDeep(cfg)
 	if !hasResult(results, "ok", "geoip") {
 		t.Error("expected ok for present geoip db")

@@ -203,4 +203,3 @@ func Save(cfg *Config) error {
 	}
 	return os.WriteFile(cfg.ConfigFile, data, 0600)
 }
-
