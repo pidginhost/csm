@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -101,6 +102,8 @@ func main() {
 		runEnable()
 	case "disable":
 		runDisable()
+	case "config":
+		runConfig()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
 		printUsage()
@@ -125,7 +128,8 @@ Commands:
   check-deep      Test deep checks only
   status        Show current state, last run, active findings
   baseline      Reset state — mark current state as "known good"
-  validate      Validate config file for common mistakes
+  validate      Validate config (--deep for connectivity probes)
+  config        Config display (config show [--no-redact] [--json])
   verify        Verify binary + config integrity
   update-rules  Download latest malware signature rules
   update-geoip  Download latest MaxMind GeoLite2 databases
@@ -444,18 +448,56 @@ func runRehash() {
 
 func runValidate() {
 	cfg := loadConfig()
-	results := config.Validate(cfg)
-	hasErrors := false
-	for _, r := range results {
-		if r.Level == "error" {
-			hasErrors = true
+
+	deep := false
+	for _, arg := range os.Args[2:] {
+		if arg == "--deep" {
+			deep = true
 		}
-		fmt.Printf("  %s\n", r)
 	}
-	if hasErrors {
+
+	errors := 0
+	warnings := 0
+
+	printResults := func(results []config.ValidationResult) {
+		for _, r := range results {
+			switch r.Level {
+			case "error":
+				fmt.Printf("[ERROR] %s: %s\n", r.Field, r.Message)
+				errors++
+			case "warn":
+				fmt.Printf("[WARN]  %s: %s\n", r.Field, r.Message)
+				warnings++
+			case "ok":
+				fmt.Printf("[OK]    %s: %s\n", r.Field, r.Message)
+			}
+		}
+	}
+
+	printResults(config.Validate(cfg))
+
+	if deep {
+		fmt.Println("---")
+		printResults(config.ValidateDeep(cfg))
+	}
+
+	fmt.Println("---")
+	if errors == 0 && warnings == 0 {
+		fmt.Println("Validation passed")
+	} else {
+		var parts []string
+		if errors > 0 {
+			parts = append(parts, fmt.Sprintf("%d error(s)", errors))
+		}
+		if warnings > 0 {
+			parts = append(parts, fmt.Sprintf("%d warning(s)", warnings))
+		}
+		fmt.Printf("Validation: %s\n", strings.Join(parts, ", "))
+	}
+
+	if errors > 0 {
 		os.Exit(1)
 	}
-	fmt.Println("Config valid")
 }
 
 func stopTimers() {
