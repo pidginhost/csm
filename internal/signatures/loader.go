@@ -23,6 +23,7 @@ type Rule struct {
 	ExcludePatterns []string `yaml:"exclude_patterns"` // if any match, rule is skipped (false positive reduction)
 	ExcludeRegexes  []string `yaml:"exclude_regexes"`  // regex exclusions
 	MinMatch        int      `yaml:"min_match"`        // minimum patterns that must match (default: 1)
+	RequireRegex    bool     `yaml:"require_regex"`    // if true, at least one regex must match in addition to min_match
 
 	// Compiled regexes (populated by Compile())
 	compiledRegexes        []*regexp.Regexp
@@ -195,6 +196,7 @@ func (s *Scanner) ScanContent(content []byte, fileExt string) []Match {
 
 		// Count pattern matches
 		var matched []string
+		regexMatched := false
 
 		for _, pattern := range rule.Patterns {
 			if strings.Contains(contentLower, strings.ToLower(pattern)) {
@@ -205,10 +207,11 @@ func (s *Scanner) ScanContent(content []byte, fileExt string) []Match {
 		for _, re := range rule.compiledRegexes {
 			if re.Match(content) {
 				matched = append(matched, re.String())
+				regexMatched = true
 			}
 		}
 
-		if len(matched) >= rule.MinMatch {
+		if len(matched) >= rule.MinMatch && (!rule.RequireRegex || regexMatched) {
 			matches = append(matches, Match{
 				RuleName:    rule.Name,
 				Description: rule.Description,
