@@ -50,14 +50,20 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 	}
 
 	// API authentication failures (401/403)
+	// Suppress 401s that are stale-session artifacts from a recent password change.
+	// When a user changes their password, in-flight browser AJAX requests (notification
+	// polls, etc.) will 401 against the now-invalidated session — that's expected, not
+	// an attack. Real API abuse won't correlate with a recent purge for the same account.
 	if strings.Contains(line, "\" 401 ") || strings.Contains(line, "\" 403 ") {
 		if strings.Contains(lineLower, "json-api") || strings.Contains(lineLower, "/execute/") {
-			findings = append(findings, alert.Finding{
-				Severity: alert.High,
-				Check:    "api_auth_failure_realtime",
-				Message:  fmt.Sprintf("cPanel API auth failure from %s", ip),
-				Details:  truncateDaemon(line, 300),
-			})
+			if !purgeTracker.isPostPurge401(ip) {
+				findings = append(findings, alert.Finding{
+					Severity: alert.High,
+					Check:    "api_auth_failure_realtime",
+					Message:  fmt.Sprintf("cPanel API auth failure from %s", ip),
+					Details:  truncateDaemon(line, 300),
+				})
+			}
 		}
 	}
 

@@ -168,6 +168,11 @@ func parseSessionLogLine(line string, cfg *config.Config) []alert.Finding {
 	// cPanel login from non-infra IP — only alert on direct form login,
 	// not API-created sessions (from portal create_user_session)
 	if strings.Contains(line, "[cpaneld]") && strings.Contains(line, " NEW ") {
+		// Track IP→account for purge correlation (before any filtering)
+		if loginIP, loginAccount := parseCpanelSessionLogin(line); loginIP != "" && loginAccount != "" {
+			purgeTracker.recordLogin(loginIP, loginAccount)
+		}
+
 		switch {
 		case cfg.Suppressions.SuppressCpanelLogin:
 			// Skip all cPanel login alerts
@@ -205,6 +210,7 @@ func parseSessionLogLine(line string, cfg *config.Config) []alert.Finding {
 	if strings.Contains(line, "PURGE") && strings.Contains(line, "password_change") {
 		account := parsePurgeDaemon(line)
 		if account != "" {
+			purgeTracker.recordPurge(account)
 			findings = append(findings, alert.Finding{
 				Severity: alert.High,
 				Check:    "cpanel_password_purge_realtime",
