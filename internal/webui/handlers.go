@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"regexp"
 	"sort"
 	"time"
 
@@ -12,6 +13,19 @@ import (
 )
 
 // renderTemplate executes a named template and logs errors to stderr.
+var reHomeAccount = regexp.MustCompile(`/home/([^/\s]+)/`)
+
+// extractAccount returns the cPanel account from a file path or message.
+func extractAccount(filePath, message string) string {
+	if m := reHomeAccount.FindStringSubmatch(filePath); m != nil {
+		return m[1]
+	}
+	if m := reHomeAccount.FindStringSubmatch(message); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
 func (s *Server) renderTemplate(w http.ResponseWriter, name string, data interface{}) {
 	if err := s.templates[name].ExecuteTemplate(w, name, data); err != nil {
 		fmt.Fprintf(os.Stderr, "[webui] template %s error: %v\n", name, err)
@@ -45,6 +59,7 @@ type findingsData struct {
 	Hostname   string
 	Entries    []findingEntry
 	CheckTypes []string // unique check types for filter dropdown
+	Accounts   []string // unique accounts for filter dropdown
 }
 
 type findingEntry struct {
@@ -53,6 +68,7 @@ type findingEntry struct {
 	Check     string
 	Message   string
 	FilePath  string
+	Account   string // cPanel account extracted from path
 	FirstSeen string
 	LastSeen  string
 	Baseline  bool
@@ -230,6 +246,7 @@ func (s *Server) handleFindings(w http.ResponseWriter, _ *http.Request) {
 			Check:     f.Check,
 			Message:   f.Message,
 			FilePath:  f.FilePath,
+			Account:   extractAccount(f.FilePath, f.Message),
 			FirstSeen: firstSeen.Format("2006-01-02 15:04"),
 			LastSeen:  lastSeen.Format("2006-01-02 15:04"),
 			HasFix:    checks.HasFix(f.Check),
@@ -237,21 +254,31 @@ func (s *Server) handleFindings(w http.ResponseWriter, _ *http.Request) {
 		})
 	}
 
-	// Collect unique check types for filter dropdown
+	// Collect unique check types and accounts for filter dropdowns
 	checkTypeMap := make(map[string]bool)
+	accountMap := make(map[string]bool)
 	for _, item := range items {
 		checkTypeMap[item.Check] = true
+		if item.Account != "" {
+			accountMap[item.Account] = true
+		}
 	}
 	var checkTypes []string
 	for ct := range checkTypeMap {
 		checkTypes = append(checkTypes, ct)
 	}
 	sort.Strings(checkTypes)
+	var accounts []string
+	for a := range accountMap {
+		accounts = append(accounts, a)
+	}
+	sort.Strings(accounts)
 
 	data := findingsData{
 		Hostname:   s.cfg.Hostname,
 		Entries:    items,
 		CheckTypes: checkTypes,
+		Accounts:   accounts,
 	}
 	s.renderTemplate(w, "findings.html", data)
 }

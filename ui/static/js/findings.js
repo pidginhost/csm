@@ -9,7 +9,10 @@ if (document.getElementById('findings-table')) {
         search: true,
         searchId: 'findings-search',
         sortable: true,
-        filters: [{ id: 'check-filter', attr: 'data-check' }],
+        filters: [
+            { id: 'check-filter', attr: 'data-check' },
+            { id: 'account-filter', attr: 'data-account' }
+        ],
         stateKey: 'csm-findings-table',
         onRender: function() { if (typeof updateSelection === 'function') updateSelection(); }
     });
@@ -20,9 +23,14 @@ if (document.getElementById('findings-table')) {
     var params = new URLSearchParams(window.location.search);
     var checkParam = params.get('check');
     var searchParam = params.get('search');
+    var accountParam = params.get('account');
     if (checkParam) {
         var filter = document.getElementById('check-filter');
         if (filter) { filter.value = checkParam; filter.dispatchEvent(new Event('change')); }
+    }
+    if (accountParam) {
+        var filter = document.getElementById('account-filter');
+        if (filter) { filter.value = accountParam; filter.dispatchEvent(new Event('change')); }
     }
     if (searchParam) {
         var search = document.getElementById('findings-search');
@@ -213,11 +221,21 @@ document.getElementById('scan-form').addEventListener('submit', function(e) {
     var tbody = document.getElementById('scan-tbody');
     btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Scanning...';
     status.textContent = ''; results.classList.add('d-none'); tbody.innerHTML = '';
+    // Elapsed timer
+    var scanStart = Date.now();
+    var timerInterval = setInterval(function() {
+        var secs = Math.floor((Date.now() - scanStart) / 1000);
+        status.textContent = 'Scanning ' + account + '... ' + secs + 's';
+        status.className = 'text-muted small';
+    }, 1000);
     CSM.post('/api/v1/scan-account', {account: account}).then(function(data) {
+        clearInterval(timerInterval);
         btn.disabled = false; btn.innerHTML = '<i class="ti ti-radar-2"></i>&nbsp;Scan';
         if (data.error) { status.textContent = data.error; status.className = 'text-danger small'; return; }
         if (!data.count) { status.textContent = account + ' is clean (' + data.elapsed + ')'; status.className = 'text-success small'; return; }
-        status.textContent = data.count + ' finding(s) in ' + data.elapsed; status.className = 'text-danger small';
+        status.innerHTML = data.count + ' finding(s) in ' + data.elapsed +
+            ' &mdash; <a href="/findings?account=' + encodeURIComponent(account) + '">Refresh &amp; filter to ' + CSM.esc(account) + '</a>';
+        status.className = 'text-danger small';
         results.classList.remove('d-none');
         var fixableChecks = {'world_writable_php':1,'group_writable_php':1,'webshell':1,'new_webshell_file':1,'obfuscated_php':1,'php_dropper':1,'suspicious_php_content':1,'new_php_in_languages':1,'new_php_in_upgrade':1,'phishing_page':1,'phishing_directory':1,'backdoor_binary':1,'new_executable_in_config':1};
         (data.findings||[]).forEach(function(f) {
@@ -247,7 +265,7 @@ document.getElementById('scan-form').addEventListener('submit', function(e) {
                 }).catch(function() {});
             });
         });
-    }).catch(function(e) { btn.disabled=false; btn.innerHTML='<i class="ti ti-radar-2"></i>&nbsp;Scan'; status.textContent='Error: '+e; status.className='text-danger small'; });
+    }).catch(function(e) { clearInterval(timerInterval); btn.disabled=false; btn.innerHTML='<i class="ti ti-radar-2"></i>&nbsp;Scan'; status.textContent='Error: '+e; status.className='text-danger small'; });
 });
 
 // Load account list for autocomplete dropdown

@@ -41,6 +41,10 @@
                     <option value="all">All Types</option>
                     {{range .CheckTypes}}<option value="{{.}}">{{.}}</option>{{end}}
                 </select>
+                <select id="account-filter" class="form-select form-select-sm" style="width:auto">
+                    <option value="all">All Accounts</option>
+                    {{range .Accounts}}<option value="{{.}}">{{.}}</option>{{end}}
+                </select>
                 <select id="group-by" class="form-select form-select-sm" style="width:auto">
                     <option value="none">No Grouping</option>
                     <option value="account">Group by Account</option>
@@ -78,7 +82,7 @@
                 </thead>
                 <tbody id="findings-tbody">
                     {{range .Entries}}
-                    <tr class="finding-row" data-check="{{.Check}}" data-message="{{.Message}}" data-filepath="{{.FilePath}}" data-hasFix="{{.HasFix}}" data-fixdesc="{{.FixDesc}}">
+                    <tr class="finding-row" data-check="{{.Check}}" data-message="{{.Message}}" data-filepath="{{.FilePath}}" data-account="{{.Account}}" data-hasFix="{{.HasFix}}" data-fixdesc="{{.FixDesc}}">
                         <td><input type="checkbox" class="form-check-input row-checkbox"></td>
                         <td><span class="badge badge-{{.SevClass}}">{{.Severity}}</span></td>
                         <td><code>{{.Check}}</code></td>
