@@ -916,10 +916,11 @@ func (d *Daemon) startFirewall() {
 		return
 	}
 
-	// Ensure firewall uses main config's infra IPs if its own list is empty
-	if len(d.cfg.Firewall.InfraIPs) == 0 {
-		d.cfg.Firewall.InfraIPs = d.cfg.InfraIPs
-	}
+	// Merge top-level infra IPs into firewall's list. Top-level controls
+	// alert suppression (tight: only admin IPs), firewall may include
+	// additional CIDRs (e.g. server's own range) that need port access
+	// but should still be tracked for security alerts.
+	d.cfg.Firewall.InfraIPs = mergeInfraIPs(d.cfg.InfraIPs, d.cfg.Firewall.InfraIPs)
 
 	engine, err := firewall.NewEngine(d.cfg.Firewall, d.cfg.StatePath)
 	if err != nil {

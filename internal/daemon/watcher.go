@@ -337,6 +337,27 @@ func isInfraIPDaemon(ip string, infraNets []string) bool {
 	return false
 }
 
+// mergeInfraIPs combines top-level infra IPs with firewall-specific ones,
+// deduplicating entries. This allows the firewall to include additional CIDRs
+// (e.g. server's own range) that need port access but shouldn't suppress alerts.
+func mergeInfraIPs(topLevel, fwSpecific []string) []string {
+	seen := make(map[string]bool, len(topLevel)+len(fwSpecific))
+	var merged []string
+	for _, ip := range topLevel {
+		if !seen[ip] {
+			seen[ip] = true
+			merged = append(merged, ip)
+		}
+	}
+	for _, ip := range fwSpecific {
+		if !seen[ip] {
+			seen[ip] = true
+			merged = append(merged, ip)
+		}
+	}
+	return merged
+}
+
 func truncateDaemon(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
