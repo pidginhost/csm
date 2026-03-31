@@ -2,6 +2,10 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -26,7 +30,7 @@ func Validate(cfg *Config) []ValidationResult {
 	if cfg.Hostname == "" || cfg.Hostname == "SET_HOSTNAME_HERE" {
 		results = append(results, ValidationResult{"error", "hostname", "hostname is not set"})
 	} else {
-		results = append(results, ValidationResult{"ok", "hostname", "hostname is set"})
+		results = append(results, ValidationResult{"ok", "hostname", cfg.Hostname})
 	}
 
 	// --- Alerts ---
@@ -47,7 +51,7 @@ func Validate(cfg *Config) []ValidationResult {
 				}
 			}
 			if valid {
-				results = append(results, ValidationResult{"ok", "alerts.email.to", "email recipients configured"})
+				results = append(results, ValidationResult{"ok", "alerts.email.to", strings.Join(cfg.Alerts.Email.To, ", ")})
 			}
 		}
 
@@ -58,7 +62,7 @@ func Validate(cfg *Config) []ValidationResult {
 		if cfg.Alerts.Email.SMTP == "" {
 			results = append(results, ValidationResult{"error", "alerts.email.smtp", "email alerts enabled but no SMTP server configured"})
 		} else {
-			results = append(results, ValidationResult{"ok", "alerts.email.smtp", "SMTP server configured"})
+			results = append(results, ValidationResult{"ok", "alerts.email.smtp", cfg.Alerts.Email.SMTP})
 		}
 	}
 
@@ -67,7 +71,7 @@ func Validate(cfg *Config) []ValidationResult {
 		if cfg.Alerts.Webhook.URL == "" {
 			results = append(results, ValidationResult{"error", "alerts.webhook.url", "webhook alerts enabled but no URL configured"})
 		} else {
-			results = append(results, ValidationResult{"ok", "alerts.webhook.url", "webhook URL configured"})
+			results = append(results, ValidationResult{"ok", "alerts.webhook.url", cfg.Alerts.Webhook.URL})
 		}
 	}
 
@@ -76,7 +80,7 @@ func Validate(cfg *Config) []ValidationResult {
 		if cfg.Alerts.Heartbeat.URL == "" {
 			results = append(results, ValidationResult{"error", "alerts.heartbeat.url", "heartbeat enabled but no URL configured"})
 		} else {
-			results = append(results, ValidationResult{"ok", "alerts.heartbeat.url", "heartbeat URL configured"})
+			results = append(results, ValidationResult{"ok", "alerts.heartbeat.url", cfg.Alerts.Heartbeat.URL})
 		}
 	}
 
@@ -91,8 +95,8 @@ func Validate(cfg *Config) []ValidationResult {
 			results = append(results, ValidationResult{"error", "webui.auth_token", "webui enabled but no auth_token configured"})
 		}
 	}
-	if cfg.WebUI.Listen != "" {
-		results = append(results, ValidationResult{"ok", "webui.listen", "webui listen address configured"})
+	if cfg.WebUI.Enabled && cfg.WebUI.AuthToken != "" {
+		results = append(results, ValidationResult{"ok", "webui", fmt.Sprintf("listening on %s", cfg.WebUI.Listen)})
 	}
 
 	// --- Trusted countries ---
@@ -138,7 +142,7 @@ func Validate(cfg *Config) []ValidationResult {
 			results = append(results, ValidationResult{"error", "firewall.conn_limit", "conn_limit must be >= 0 when firewall enabled (0 = disabled)"})
 		}
 		if cfg.Firewall.ConnRateLimit > 0 && cfg.Firewall.ConnLimit >= 0 {
-			results = append(results, ValidationResult{"ok", "firewall", "firewall configuration valid"})
+			results = append(results, ValidationResult{"ok", "firewall", fmt.Sprintf("enabled, conn_rate_limit=%d, conn_limit=%d", cfg.Firewall.ConnRateLimit, cfg.Firewall.ConnLimit)})
 		}
 	}
 
@@ -198,5 +202,148 @@ func validateWarnings(cfg *Config) []ValidationResult {
 		results = append(results, ValidationResult{"warn", "auto_response.permblock_count", fmt.Sprintf("permblock_count=%d is very low (< 2), may permanently block too quickly", cfg.AutoResponse.PermBlockCount)})
 	}
 
+	return results
+}
+
+// ValidateDeep performs connectivity probes against configured services.
+// It does NOT call Validate(); the caller should invoke both separately.
+func ValidateDeep(cfg *Config) []ValidationResult {
+	var results []ValidationResult
+
+	// State directory
+	results = append(results, probeStatePath(cfg.StatePath)...)
+
+	// Signature rules directory
+	if cfg.Signatures.RulesDir != "" {
+		results = append(results, probeRulesDir(cfg.Signatures.RulesDir)...)
+	}
+
+	// SMTP
+	if cfg.Alerts.Email.Enabled && cfg.Alerts.Email.SMTP != "" {
+		results = append(results, probeSMTP(cfg.Alerts.Email.SMTP)...)
+	}
+
+	// ClamAV socket
+	if cfg.EmailAV.Enabled && cfg.EmailAV.ClamdSocket != "" {
+		results = append(results, probeClamd(cfg.EmailAV.ClamdSocket)...)
+	}
+
+	// TLS cert/key (only when custom paths set)
+	if cfg.WebUI.TLSCert != "" {
+		if _, err := os.Stat(cfg.WebUI.TLSCert); err != nil {
+			results = append(results, ValidationResult{"error", "webui.tls_cert", fmt.Sprintf("file not found: %s", cfg.WebUI.TLSCert)})
+		} else {
+			results = append(results, ValidationResult{"ok", "webui.tls_cert", cfg.WebUI.TLSCert})
+		}
+	}
+	if cfg.WebUI.TLSKey != "" {
+		if _, err := os.Stat(cfg.WebUI.TLSKey); err != nil {
+			results = append(results, ValidationResult{"error", "webui.tls_key", fmt.Sprintf("file not found: %s", cfg.WebUI.TLSKey)})
+		} else {
+			results = append(results, ValidationResult{"ok", "webui.tls_key", cfg.WebUI.TLSKey})
+		}
+	}
+
+	// Webhook
+	if cfg.Alerts.Webhook.Enabled && cfg.Alerts.Webhook.URL != "" {
+		results = append(results, probeWebhook(cfg.Alerts.Webhook.URL)...)
+	}
+
+	// GeoIP database files
+	if cfg.GeoIP.AccountID != "" && cfg.GeoIP.LicenseKey != "" && len(cfg.GeoIP.Editions) > 0 {
+		results = append(results, probeGeoIPDBs(cfg.StatePath, cfg.GeoIP.Editions)...)
+	}
+
+	return results
+}
+
+// probeStatePath checks that the state directory exists and is writable.
+func probeStatePath(path string) []ValidationResult {
+	info, err := os.Stat(path)
+	if err != nil {
+		return []ValidationResult{{"error", "state_path", fmt.Sprintf("directory not found: %s", path)}}
+	}
+	if !info.IsDir() {
+		return []ValidationResult{{"error", "state_path", fmt.Sprintf("not a directory: %s", path)}}
+	}
+
+	probe := filepath.Join(path, ".csm-validate-probe")
+	f, err := os.Create(probe)
+	if err != nil {
+		return []ValidationResult{{"error", "state_path", fmt.Sprintf("directory not writable: %s", path)}}
+	}
+	f.Close()
+	os.Remove(probe)
+
+	return []ValidationResult{{"ok", "state_path", path}}
+}
+
+// probeRulesDir checks that the rules directory exists and contains rule files.
+func probeRulesDir(path string) []ValidationResult {
+	info, err := os.Stat(path)
+	if err != nil {
+		return []ValidationResult{{"error", "signatures.rules_dir", fmt.Sprintf("directory not found: %s", path)}}
+	}
+	if !info.IsDir() {
+		return []ValidationResult{{"error", "signatures.rules_dir", fmt.Sprintf("not a directory: %s", path)}}
+	}
+
+	// Check for rule files
+	for _, pattern := range []string{"*.yaml", "*.yml", "*.yar", "*.yara"} {
+		matches, _ := filepath.Glob(filepath.Join(path, pattern))
+		if len(matches) > 0 {
+			return []ValidationResult{{"ok", "signatures.rules_dir", fmt.Sprintf("%s (%d rule files)", path, len(matches))}}
+		}
+	}
+
+	return []ValidationResult{{"error", "signatures.rules_dir", fmt.Sprintf("no rule files (.yaml/.yml/.yar/.yara) found in %s", path)}}
+}
+
+// probeSMTP attempts a TCP dial to the SMTP server.
+func probeSMTP(addr string) []ValidationResult {
+	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+	if err != nil {
+		return []ValidationResult{{"error", "alerts.email.smtp", fmt.Sprintf("cannot connect to %s: %v", addr, err)}}
+	}
+	conn.Close()
+	return []ValidationResult{{"ok", "alerts.email.smtp", fmt.Sprintf("connected to %s", addr)}}
+}
+
+// probeClamd attempts to connect to the ClamAV unix socket.
+func probeClamd(socket string) []ValidationResult {
+	conn, err := net.DialTimeout("unix", socket, 3*time.Second)
+	if err != nil {
+		return []ValidationResult{{"error", "email_av.clamd_socket", fmt.Sprintf("cannot connect to %s: %v", socket, err)}}
+	}
+	conn.Close()
+	return []ValidationResult{{"ok", "email_av.clamd_socket", fmt.Sprintf("connected to %s", socket)}}
+}
+
+// probeWebhook performs an HTTP HEAD request to verify the webhook endpoint is reachable.
+// DNS/TCP/TLS failures are errors; HTTP status codes (even 401/403/404/405) mean reachable.
+func probeWebhook(url string) []ValidationResult {
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Head(url)
+	if err != nil {
+		return []ValidationResult{{"error", "alerts.webhook.url", fmt.Sprintf("cannot reach %s: %v", url, err)}}
+	}
+	resp.Body.Close()
+	return []ValidationResult{{"ok", "alerts.webhook.url", fmt.Sprintf("reachable (HTTP %d)", resp.StatusCode)}}
+}
+
+// probeGeoIPDBs checks that expected GeoIP database files exist on disk.
+func probeGeoIPDBs(statePath string, editions []string) []ValidationResult {
+	var results []ValidationResult
+	allOK := true
+	for _, edition := range editions {
+		dbPath := filepath.Join(statePath, "geoip", edition+".mmdb")
+		if _, err := os.Stat(dbPath); err != nil {
+			results = append(results, ValidationResult{"error", "geoip", fmt.Sprintf("database not found: %s", dbPath)})
+			allOK = false
+		}
+	}
+	if allOK {
+		results = append(results, ValidationResult{"ok", "geoip", fmt.Sprintf("all %d edition databases present", len(editions))})
+	}
 	return results
 }

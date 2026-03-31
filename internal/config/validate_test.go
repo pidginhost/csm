@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"testing"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/firewall"
@@ -448,5 +449,84 @@ func TestValidateWarningPermblockCount(t *testing.T) {
 	results := Validate(cfg)
 	if !hasResult(results, "warn", "auto_response.permblock_count") {
 		t.Errorf("expected warning for permblock_count < 2; results=%v", results)
+	}
+}
+
+func TestValidateDeepStatePath(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &Config{StatePath: dir}
+	results := ValidateDeep(cfg)
+	if !hasResult(results, "ok", "state_path") {
+		t.Error("expected ok for writable state_path")
+	}
+
+	cfg.StatePath = "/nonexistent/path/csm-test"
+	results = ValidateDeep(cfg)
+	if !hasResult(results, "error", "state_path") {
+		t.Error("expected error for non-existent state_path")
+	}
+}
+
+func TestValidateDeepRulesDir(t *testing.T) {
+	// Empty dir
+	dir := t.TempDir()
+	cfg := &Config{StatePath: t.TempDir()}
+	cfg.Signatures.RulesDir = dir
+	results := ValidateDeep(cfg)
+	if !hasResult(results, "error", "signatures.rules_dir") {
+		t.Error("expected error for empty rules dir")
+	}
+
+	// Dir with yaml file
+	os.WriteFile(dir+"/test.yaml", []byte("rules: []"), 0644)
+	results = ValidateDeep(cfg)
+	if !hasResult(results, "ok", "signatures.rules_dir") {
+		t.Error("expected ok for rules dir with yaml")
+	}
+}
+
+func TestValidateDeepTLSFiles(t *testing.T) {
+	cfg := &Config{StatePath: t.TempDir()}
+	cfg.WebUI.Enabled = true
+	cfg.WebUI.AuthToken = "test"
+
+	// No custom TLS paths -> no check
+	results := ValidateDeep(cfg)
+	if hasResult(results, "error", "webui.tls_cert") {
+		t.Error("unexpected error when no custom TLS cert set")
+	}
+
+	// Custom paths that don't exist
+	cfg.WebUI.TLSCert = "/nonexistent/cert.pem"
+	cfg.WebUI.TLSKey = "/nonexistent/key.pem"
+	results = ValidateDeep(cfg)
+	if !hasResult(results, "error", "webui.tls_cert") {
+		t.Error("expected error for missing TLS cert")
+	}
+	if !hasResult(results, "error", "webui.tls_key") {
+		t.Error("expected error for missing TLS key")
+	}
+}
+
+func TestValidateDeepGeoIP(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &Config{StatePath: dir}
+	cfg.GeoIP.AccountID = "123"
+	cfg.GeoIP.LicenseKey = "key"
+	cfg.GeoIP.Editions = []string{"GeoLite2-City"}
+
+	// Missing db file
+	results := ValidateDeep(cfg)
+	if !hasResult(results, "error", "geoip") {
+		t.Error("expected error for missing geoip db")
+	}
+
+	// Create the db file
+	geoDir := dir + "/geoip"
+	os.MkdirAll(geoDir, 0755)
+	os.WriteFile(geoDir+"/GeoLite2-City.mmdb", []byte("test"), 0644)
+	results = ValidateDeep(cfg)
+	if !hasResult(results, "ok", "geoip") {
+		t.Error("expected ok for present geoip db")
 	}
 }
