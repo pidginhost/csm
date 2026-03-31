@@ -66,15 +66,20 @@ func RunAccountScan(cfg *config.Config, store *state.Store, account string) []al
 		namedCheck{"backdoor_binaries", makeAccountBackdoorCheck(account)},
 	)
 
-	// Run in parallel (no auto-response — scan-only mode)
+	// Run with bounded parallelism — filesystem checks all walk the same
+	// directory tree, so too many concurrent checks starve each other on
+	// loaded servers with slow I/O.
 	var mu sync.Mutex
 	var findings []alert.Finding
 	var wg sync.WaitGroup
+	sem := make(chan struct{}, 4) // max 4 concurrent checks
 
 	for _, nc := range accountChecks {
 		wg.Add(1)
 		go func(c namedCheck) {
 			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
 
 			done := make(chan []alert.Finding, 1)
 			go func() {
@@ -88,7 +93,7 @@ func RunAccountScan(cfg *config.Config, store *state.Store, account string) []al
 					findings = append(findings, results...)
 					mu.Unlock()
 				}
-			case <-time.After(2 * time.Minute):
+			case <-time.After(5 * time.Minute):
 				mu.Lock()
 				findings = append(findings, alert.Finding{
 					Severity:  alert.Warning,
