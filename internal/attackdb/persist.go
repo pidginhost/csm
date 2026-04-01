@@ -24,12 +24,12 @@ func (db *DB) load() {
 		storeRecords := sdb.LoadAllIPRecords()
 		for ip, sr := range storeRecords {
 			rec := &IPRecord{
-				IP:          sr.IP,
-				FirstSeen:   sr.FirstSeen,
-				LastSeen:    sr.LastSeen,
-				EventCount:  sr.EventCount,
-				ThreatScore: sr.ThreatScore,
-				AutoBlocked: sr.AutoBlocked,
+				IP:           sr.IP,
+				FirstSeen:    sr.FirstSeen,
+				LastSeen:     sr.LastSeen,
+				EventCount:   sr.EventCount,
+				ThreatScore:  sr.ThreatScore,
+				AutoBlocked:  sr.AutoBlocked,
 				AttackCounts: make(map[AttackType]int),
 				Accounts:     make(map[string]int),
 			}
@@ -74,12 +74,12 @@ func (db *DB) saveRecords() {
 		db.mu.RLock()
 		for _, rec := range db.records {
 			sr := store.IPRecord{
-				IP:          rec.IP,
-				FirstSeen:   rec.FirstSeen,
-				LastSeen:    rec.LastSeen,
-				EventCount:  rec.EventCount,
-				ThreatScore: rec.ThreatScore,
-				AutoBlocked: rec.AutoBlocked,
+				IP:           rec.IP,
+				FirstSeen:    rec.FirstSeen,
+				LastSeen:     rec.LastSeen,
+				EventCount:   rec.EventCount,
+				ThreatScore:  rec.ThreatScore,
+				AutoBlocked:  rec.AutoBlocked,
 				AttackCounts: make(map[string]int),
 				Accounts:     make(map[string]int),
 			}
