@@ -69,14 +69,14 @@ func (db *DB) GetPermanentBlock(ip string) (PermanentBlockEntry, bool) {
 	var entry PermanentBlockEntry
 	var found bool
 
-	db.bolt.View(func(tx *bolt.Tx) error {
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("threats"))
 		v := b.Get([]byte(ip))
 		if v == nil {
 			return nil
 		}
-		if err := json.Unmarshal(v, &entry); err != nil {
-			return nil
+		if json.Unmarshal(v, &entry) != nil {
+			return nil //nolint:nilerr // skip corrupt entry
 		}
 		found = true
 		return nil
@@ -89,12 +89,12 @@ func (db *DB) GetPermanentBlock(ip string) (PermanentBlockEntry, bool) {
 func (db *DB) AllPermanentBlocks() []PermanentBlockEntry {
 	var entries []PermanentBlockEntry
 
-	db.bolt.View(func(tx *bolt.Tx) error {
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("threats"))
 		return b.ForEach(func(k, v []byte) error {
 			var entry PermanentBlockEntry
-			if err := json.Unmarshal(v, &entry); err != nil {
-				return nil
+			if json.Unmarshal(v, &entry) != nil {
+				return nil //nolint:nilerr // skip corrupt entry
 			}
 			entries = append(entries, entry)
 			return nil
@@ -134,15 +134,15 @@ func (db *DB) RemoveWhitelistEntry(ip string) error {
 func (db *DB) IsWhitelisted(ip string) bool {
 	var whitelisted bool
 
-	db.bolt.View(func(tx *bolt.Tx) error {
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("threats:whitelist"))
 		v := b.Get([]byte(ip))
 		if v == nil {
 			return nil
 		}
 		var entry WhitelistEntry
-		if err := json.Unmarshal(v, &entry); err != nil {
-			return nil
+		if json.Unmarshal(v, &entry) != nil {
+			return nil //nolint:nilerr // skip corrupt entry
 		}
 		if entry.Permanent || entry.ExpiresAt.After(time.Now()) {
 			whitelisted = true
@@ -157,12 +157,12 @@ func (db *DB) IsWhitelisted(ip string) bool {
 func (db *DB) ListWhitelist() []WhitelistEntry {
 	var entries []WhitelistEntry
 
-	db.bolt.View(func(tx *bolt.Tx) error {
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("threats:whitelist"))
 		return b.ForEach(func(k, v []byte) error {
 			var entry WhitelistEntry
-			if err := json.Unmarshal(v, &entry); err != nil {
-				return nil
+			if json.Unmarshal(v, &entry) != nil {
+				return nil //nolint:nilerr // skip corrupt entry
 			}
 			entries = append(entries, entry)
 			return nil
@@ -179,15 +179,15 @@ func (db *DB) PruneExpiredWhitelist() int {
 	var removed int
 	now := time.Now()
 
-	db.bolt.Update(func(tx *bolt.Tx) error {
+	_ = db.bolt.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("threats:whitelist"))
 
 		// Collect keys to delete.
 		var toDelete [][]byte
-		b.ForEach(func(k, v []byte) error {
+		_ = b.ForEach(func(k, v []byte) error {
 			var entry WhitelistEntry
-			if err := json.Unmarshal(v, &entry); err != nil {
-				return nil
+			if json.Unmarshal(v, &entry) != nil {
+				return nil //nolint:nilerr // skip corrupt entry
 			}
 			if !entry.Permanent && !entry.ExpiresAt.After(now) {
 				keyCopy := make([]byte, len(k))

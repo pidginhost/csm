@@ -84,14 +84,14 @@ func (db *DB) GetBlockedIP(ip string) (FWBlockedEntry, bool) {
 	var entry FWBlockedEntry
 	var found bool
 
-	db.bolt.View(func(tx *bolt.Tx) error {
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("fw:blocked"))
 		v := b.Get([]byte(ip))
 		if v == nil {
 			return nil
 		}
-		if err := json.Unmarshal(v, &entry); err != nil {
-			return nil
+		if json.Unmarshal(v, &entry) != nil {
+			return nil //nolint:nilerr // skip corrupt entry
 		}
 		// Filter expired entries (zero ExpiresAt = permanent).
 		if !entry.ExpiresAt.IsZero() && !entry.ExpiresAt.After(time.Now()) {
@@ -187,12 +187,12 @@ func (db *DB) RemovePortAllow(ip string, port int, proto string) error {
 func (db *DB) ListPortAllows() []FWPortAllowEntry {
 	var entries []FWPortAllowEntry
 
-	db.bolt.View(func(tx *bolt.Tx) error {
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("fw:port_allowed"))
 		return b.ForEach(func(k, v []byte) error {
 			var entry FWPortAllowEntry
-			if err := json.Unmarshal(v, &entry); err != nil {
-				return nil
+			if json.Unmarshal(v, &entry) != nil {
+				return nil //nolint:nilerr // skip corrupt entry
 			}
 			entries = append(entries, entry)
 			return nil
@@ -208,13 +208,13 @@ func (db *DB) LoadFirewallState() FirewallState {
 	var state FirewallState
 	now := time.Now()
 
-	db.bolt.View(func(tx *bolt.Tx) error {
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
 		// fw:blocked — filter expired
 		blocked := tx.Bucket([]byte("fw:blocked"))
-		blocked.ForEach(func(k, v []byte) error {
+		_ = blocked.ForEach(func(k, v []byte) error {
 			var entry FWBlockedEntry
-			if err := json.Unmarshal(v, &entry); err != nil {
-				return nil
+			if json.Unmarshal(v, &entry) != nil {
+				return nil //nolint:nilerr // skip corrupt entry
 			}
 			if !entry.ExpiresAt.IsZero() && !entry.ExpiresAt.After(now) {
 				return nil // expired
@@ -225,10 +225,10 @@ func (db *DB) LoadFirewallState() FirewallState {
 
 		// fw:allowed
 		allowed := tx.Bucket([]byte("fw:allowed"))
-		allowed.ForEach(func(k, v []byte) error {
+		_ = allowed.ForEach(func(k, v []byte) error {
 			var entry FWAllowedEntry
-			if err := json.Unmarshal(v, &entry); err != nil {
-				return nil
+			if json.Unmarshal(v, &entry) != nil {
+				return nil //nolint:nilerr // skip corrupt entry
 			}
 			state.Allowed = append(state.Allowed, entry)
 			return nil
@@ -236,10 +236,10 @@ func (db *DB) LoadFirewallState() FirewallState {
 
 		// fw:subnets
 		subnets := tx.Bucket([]byte("fw:subnets"))
-		subnets.ForEach(func(k, v []byte) error {
+		_ = subnets.ForEach(func(k, v []byte) error {
 			var entry FWSubnetEntry
-			if err := json.Unmarshal(v, &entry); err != nil {
-				return nil
+			if json.Unmarshal(v, &entry) != nil {
+				return nil //nolint:nilerr // skip corrupt entry
 			}
 			state.Subnets = append(state.Subnets, entry)
 			return nil
@@ -247,10 +247,10 @@ func (db *DB) LoadFirewallState() FirewallState {
 
 		// fw:port_allowed
 		portAllowed := tx.Bucket([]byte("fw:port_allowed"))
-		portAllowed.ForEach(func(k, v []byte) error {
+		_ = portAllowed.ForEach(func(k, v []byte) error {
 			var entry FWPortAllowEntry
-			if err := json.Unmarshal(v, &entry); err != nil {
-				return nil
+			if json.Unmarshal(v, &entry) != nil {
+				return nil //nolint:nilerr // skip corrupt entry
 			}
 			state.PortAllowed = append(state.PortAllowed, entry)
 			return nil

@@ -10,7 +10,7 @@ func TestAddRemovePermanent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Add 2 IPs.
 	if err := db.AddPermanentBlock("10.0.0.1", "brute-force"); err != nil {
@@ -67,7 +67,7 @@ func TestWhitelistWithExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	now := time.Now()
 
@@ -131,7 +131,7 @@ func TestAllPermanentBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	ips := []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"}
 	for _, ip := range ips {

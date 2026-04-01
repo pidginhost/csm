@@ -14,8 +14,8 @@ func TestOpenClose(t *testing.T) {
 	if db.bolt == nil {
 		t.Fatal("bolt handle is nil")
 	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
+	if cerr := db.Close(); cerr != nil {
+		t.Fatalf("Close: %v", cerr)
 	}
 
 	// Reopen — should succeed without re-creating buckets
@@ -84,7 +84,7 @@ func TestGlobalSingleton(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	SetGlobal(db)
 	if Global() != db {
@@ -116,7 +116,7 @@ func TestEnsureOpen(t *testing.T) {
 	}
 
 	// Clean up
-	g.Close()
+	_ = g.Close()
 	SetGlobal(nil)
 	// Reset ensureOnce for other tests — we can't easily, so this test should be last
 }

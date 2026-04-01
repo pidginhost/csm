@@ -33,14 +33,14 @@ func (db *DB) GetReputation(ip string) (ReputationEntry, bool) {
 	var entry ReputationEntry
 	var found bool
 
-	db.bolt.View(func(tx *bolt.Tx) error {
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("reputation"))
 		v := b.Get([]byte(ip))
 		if v == nil {
 			return nil
 		}
-		if err := json.Unmarshal(v, &entry); err != nil {
-			return nil
+		if json.Unmarshal(v, &entry) != nil {
+			return nil //nolint:nilerr // skip corrupt entry
 		}
 		found = true
 		return nil
@@ -56,15 +56,15 @@ func (db *DB) CleanExpiredReputation(maxAge time.Duration) int {
 	var removed int
 	cutoff := time.Now().Add(-maxAge)
 
-	db.bolt.Update(func(tx *bolt.Tx) error {
+	_ = db.bolt.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("reputation"))
 
 		// Collect keys to delete.
 		var toDelete [][]byte
-		b.ForEach(func(k, v []byte) error {
+		_ = b.ForEach(func(k, v []byte) error {
 			var entry ReputationEntry
-			if err := json.Unmarshal(v, &entry); err != nil {
-				return nil
+			if json.Unmarshal(v, &entry) != nil {
+				return nil //nolint:nilerr // skip corrupt entry
 			}
 			if entry.CheckedAt.Before(cutoff) {
 				keyCopy := make([]byte, len(k))
@@ -94,7 +94,7 @@ func (db *DB) CleanExpiredReputation(maxAge time.Duration) int {
 func (db *DB) EnforceReputationCap(max int) int {
 	var removed int
 
-	db.bolt.Update(func(tx *bolt.Tx) error {
+	_ = db.bolt.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("reputation"))
 
 		// Collect all entries with their keys.
@@ -104,10 +104,10 @@ func (db *DB) EnforceReputationCap(max int) int {
 		}
 		var all []keyed
 
-		b.ForEach(func(k, v []byte) error {
+		_ = b.ForEach(func(k, v []byte) error {
 			var entry ReputationEntry
-			if err := json.Unmarshal(v, &entry); err != nil {
-				return nil
+			if json.Unmarshal(v, &entry) != nil {
+				return nil //nolint:nilerr // skip corrupt entry
 			}
 			keyCopy := make([]byte, len(k))
 			copy(keyCopy, k)

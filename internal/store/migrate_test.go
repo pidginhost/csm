@@ -25,8 +25,8 @@ func TestMigrateHistoryJSONL(t *testing.T) {
 	}
 	enc := json.NewEncoder(f)
 	for _, finding := range findings {
-		if err := enc.Encode(finding); err != nil {
-			t.Fatal(err)
+		if eerr := enc.Encode(finding); eerr != nil {
+			t.Fatal(eerr)
 		}
 	}
 	f.Close()
@@ -35,7 +35,7 @@ func TestMigrateHistoryJSONL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	results, total := db.ReadHistory(10, 0)
 	if total != 3 {
@@ -62,8 +62,8 @@ func TestMigrateIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	enc := json.NewEncoder(f)
-	if err := enc.Encode(alert.Finding{Severity: alert.Warning, Check: "test", Message: "msg", Timestamp: time.Now()}); err != nil {
-		t.Fatal(err)
+	if eerr := enc.Encode(alert.Finding{Severity: alert.Warning, Check: "test", Message: "msg", Timestamp: time.Now()}); eerr != nil {
+		t.Fatal(eerr)
 	}
 	f.Close()
 
@@ -71,13 +71,13 @@ func TestMigrateIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	db1.Close()
+	_ = db1.Close()
 
 	db2, err := Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db2.Close()
+	defer func() { _ = db2.Close() }()
 
 	_, total := db2.ReadHistory(10, 0)
 	if total != 1 {
@@ -101,7 +101,7 @@ func TestMigratePermanentTxt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	_, ok := db.GetPermanentBlock("1.2.3.4")
 	if !ok {

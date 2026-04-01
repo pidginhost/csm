@@ -12,7 +12,7 @@ func TestAppendAndReadHistory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	base := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
 	var findings []alert.Finding
@@ -51,7 +51,7 @@ func TestReadHistoryPagination(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	base := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
 	var findings []alert.Finding
@@ -109,7 +109,7 @@ func TestHistoryPruning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	base := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
 	var findings []alert.Finding

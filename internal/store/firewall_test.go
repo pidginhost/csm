@@ -10,7 +10,7 @@ func TestFirewallBlockUnblock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Block an IP (permanent — zero expiry).
 	if err := db.BlockIP("10.0.0.1", "brute-force", time.Time{}); err != nil {
@@ -46,7 +46,7 @@ func TestFirewallPortAllows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Add 3 port allows for the same IP.
 	if err := db.AddPortAllow("10.0.0.2", 443, "tcp", "HTTPS"); err != nil {
@@ -88,7 +88,7 @@ func TestFirewallLoadState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	now := time.Now()
 

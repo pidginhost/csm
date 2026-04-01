@@ -69,7 +69,7 @@ func (db *DB) ReadHistory(limit, offset int) ([]alert.Finding, int) {
 	total := db.getCounter("history:count")
 	var results []alert.Finding
 
-	db.bolt.View(func(tx *bolt.Tx) error {
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("history"))
 		c := b.Cursor()
 
@@ -114,7 +114,7 @@ func (db *DB) ReadHistoryFiltered(limit, offset int, from, to string, severity i
 		toPrefix = ParseTimeKeyPrefix(to) + "99" // "YYYYMMDD99" is > any time on that day
 	}
 
-	db.bolt.View(func(tx *bolt.Tx) error {
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("history"))
 		c := b.Cursor()
 

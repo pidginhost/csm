@@ -38,7 +38,7 @@ func (db *DB) runMigration(statePath string) error {
 		return fmt.Errorf("partial migration: %s", strings.Join(errs, "; "))
 	}
 
-	db.bolt.Update(func(tx *bolt.Tx) error {
+	_ = db.bolt.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket([]byte("meta")).Put([]byte("migrated"), []byte(time.Now().Format(time.RFC3339)))
 	})
 
@@ -208,8 +208,8 @@ func (db *DB) migrateThreatDB(statePath string) error {
 
 func (db *DB) migrateFirewall(statePath string) error {
 	path := filepath.Join(statePath, "firewall", "state.json")
-	if _, err := os.Stat(path); err != nil {
-		return nil
+	if _, serr := os.Stat(path); serr != nil {
+		return nil //nolint:nilerr // file does not exist, skip migration
 	}
 
 	data, err := os.ReadFile(path)
@@ -281,8 +281,8 @@ func (db *DB) migrateFirewall(statePath string) error {
 
 func (db *DB) migrateReputation(statePath string) error {
 	path := filepath.Join(statePath, "reputation_cache.json")
-	if _, err := os.Stat(path); err != nil {
-		return nil
+	if _, serr := os.Stat(path); serr != nil {
+		return nil //nolint:nilerr // file does not exist, skip migration
 	}
 
 	data, err := os.ReadFile(path)
@@ -312,5 +312,5 @@ func (db *DB) migrateReputation(statePath string) error {
 }
 
 func renameToBackup(path string) {
-	os.Rename(path, path+".bak")
+	_ = os.Rename(path, path+".bak")
 }

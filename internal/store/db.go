@@ -85,14 +85,14 @@ func Open(statePath string) (*DB, error) {
 	// Create all buckets
 	err = bdb.Update(func(tx *bolt.Tx) error {
 		for _, name := range bucketNames {
-			if _, err := tx.CreateBucketIfNotExists([]byte(name)); err != nil {
-				return fmt.Errorf("creating bucket %s: %w", name, err)
+			if _, berr := tx.CreateBucketIfNotExists([]byte(name)); berr != nil {
+				return fmt.Errorf("creating bucket %s: %w", name, berr)
 			}
 		}
 		return nil
 	})
 	if err != nil {
-		bdb.Close()
+		_ = bdb.Close()
 		return nil, err
 	}
 
@@ -135,10 +135,10 @@ func ParseTimeKeyPrefix(date string) string {
 // getCounter reads a counter from the meta bucket. Returns 0 if not found.
 func (db *DB) getCounter(key string) int {
 	var count int
-	db.bolt.View(func(tx *bolt.Tx) error {
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("meta"))
 		if v := b.Get([]byte(key)); v != nil {
-			fmt.Sscanf(string(v), "%d", &count)
+			_, _ = fmt.Sscanf(string(v), "%d", &count)
 		}
 		return nil
 	})
@@ -164,7 +164,7 @@ func incrCounter(tx *bolt.Tx, key string, delta int) error {
 // migrateIfNeeded checks for the meta:migrated key and runs migration if absent.
 func (db *DB) migrateIfNeeded(statePath string) error {
 	var migrated bool
-	db.bolt.View(func(tx *bolt.Tx) error {
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("meta"))
 		if b.Get([]byte("migrated")) != nil {
 			migrated = true
@@ -176,4 +176,3 @@ func (db *DB) migrateIfNeeded(statePath string) error {
 	}
 	return db.runMigration(statePath)
 }
-

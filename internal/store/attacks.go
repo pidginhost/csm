@@ -26,14 +26,14 @@ type AttackEvent struct {
 
 // IPRecord is the store-layer representation of an IP attack record.
 type IPRecord struct {
-	IP           string            `json:"ip"`
-	FirstSeen    time.Time         `json:"first_seen"`
-	LastSeen     time.Time         `json:"last_seen"`
-	EventCount   int               `json:"event_count"`
-	AttackCounts map[string]int    `json:"attack_counts,omitempty"`
-	Accounts     map[string]int    `json:"accounts,omitempty"`
-	ThreatScore  int               `json:"threat_score"`
-	AutoBlocked  bool              `json:"auto_blocked,omitempty"`
+	IP           string         `json:"ip"`
+	FirstSeen    time.Time      `json:"first_seen"`
+	LastSeen     time.Time      `json:"last_seen"`
+	EventCount   int            `json:"event_count"`
+	AttackCounts map[string]int `json:"attack_counts,omitempty"`
+	Accounts     map[string]int `json:"accounts,omitempty"`
+	ThreatScore  int            `json:"threat_score"`
+	AutoBlocked  bool           `json:"auto_blocked,omitempty"`
 }
 
 // RecordAttackEvent inserts an attack event into both the primary bucket
@@ -108,7 +108,7 @@ func (db *DB) QueryAttackEvents(ip string, limit int) []AttackEvent {
 	var results []AttackEvent
 	prefix := []byte(ip + "/")
 
-	db.bolt.View(func(tx *bolt.Tx) error {
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("attacks:events:ip"))
 		c := b.Cursor()
 
@@ -154,14 +154,14 @@ func (db *DB) LoadIPRecord(ip string) (IPRecord, bool) {
 	var record IPRecord
 	var found bool
 
-	db.bolt.View(func(tx *bolt.Tx) error {
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("attacks:records"))
 		v := b.Get([]byte(ip))
 		if v == nil {
 			return nil
 		}
-		if err := json.Unmarshal(v, &record); err != nil {
-			return nil
+		if json.Unmarshal(v, &record) != nil {
+			return nil //nolint:nilerr // skip corrupt entry
 		}
 		found = true
 		return nil
@@ -174,12 +174,12 @@ func (db *DB) LoadIPRecord(ip string) (IPRecord, bool) {
 func (db *DB) LoadAllIPRecords() map[string]*IPRecord {
 	records := make(map[string]*IPRecord)
 
-	db.bolt.View(func(tx *bolt.Tx) error {
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("attacks:records"))
 		return b.ForEach(func(k, v []byte) error {
 			var record IPRecord
-			if err := json.Unmarshal(v, &record); err != nil {
-				return nil
+			if json.Unmarshal(v, &record) != nil {
+				return nil //nolint:nilerr // skip corrupt entry
 			}
 			records[string(k)] = &record
 			return nil

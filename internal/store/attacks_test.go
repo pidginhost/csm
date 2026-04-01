@@ -13,7 +13,7 @@ func TestRecordAndQueryEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	base := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
 
@@ -56,10 +56,10 @@ func TestRecordAndQueryEvents(t *testing.T) {
 
 	// Verify counter = 4.
 	var count int
-	db.bolt.View(func(tx *bolt.Tx) error {
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("meta"))
 		if v := b.Get([]byte("attacks:events:count")); v != nil {
-			fmt.Sscanf(string(v), "%d", &count)
+			_, _ = fmt.Sscanf(string(v), "%d", &count)
 		}
 		return nil
 	})
@@ -73,7 +73,7 @@ func TestSaveLoadIPRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
 	record := IPRecord{

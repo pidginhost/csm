@@ -11,7 +11,7 @@ func TestReputationGetSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	now := time.Now().Truncate(time.Second)
 
@@ -52,7 +52,7 @@ func TestReputationCleanExpired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	now := time.Now()
 
@@ -109,7 +109,7 @@ func TestReputationMaxCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	base := time.Now().Add(-24 * time.Hour)
 
