@@ -24,14 +24,20 @@ func TestWPCheckSuppressesWebshellFP(t *testing.T) {
 	// Set up fake WP install with shell.php (legitimate WP core file)
 	wpRoot := filepath.Join(dir, "home", "user", "public_html")
 	diffEngine := filepath.Join(wpRoot, "wp-includes", "Text", "Diff", "Engine")
-	os.MkdirAll(diffEngine, 0755)
-	os.WriteFile(filepath.Join(wpRoot, "wp-includes", "version.php"),
-		[]byte("<?php\n$wp_version = '6.9.4';\n"), 0644)
+	if err := os.MkdirAll(diffEngine, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wpRoot, "wp-includes", "version.php"),
+		[]byte("<?php\n$wp_version = '6.9.4';\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	// Write a file named shell.php with known content
 	shellContent := []byte("<?php\n// Text_Diff_Engine_shell — legitimate WP core\nclass Text_Diff_Engine_shell {}\n")
 	shellPath := filepath.Join(diffEngine, "shell.php")
-	os.WriteFile(shellPath, shellContent, 0644)
+	if err := os.WriteFile(shellPath, shellContent, 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	shellHash := md5.Sum(shellContent)
 	shellMD5 := hex.EncodeToString(shellHash[:])
@@ -43,7 +49,9 @@ func TestWPCheckSuppressesWebshellFP(t *testing.T) {
 		"wp-includes/Text/Diff/Engine/shell.php": shellMD5,
 	}
 	rawJSON, _ := json.Marshal(map[string]interface{}{"checksums": checksums})
-	wpCache.PersistChecksums("6.9.4", "en_US", rawJSON, checksums)
+	if err := wpCache.PersistChecksums("6.9.4", "en_US", rawJSON, checksums); err != nil {
+		t.Fatal(err)
+	}
 
 	// Create minimal FileMonitor
 	alertCh := make(chan alert.Finding, 10)
@@ -78,14 +86,20 @@ func TestWPCheckAllowsModifiedFile(t *testing.T) {
 
 	wpRoot := filepath.Join(dir, "home", "user", "public_html")
 	diffEngine := filepath.Join(wpRoot, "wp-includes", "Text", "Diff", "Engine")
-	os.MkdirAll(diffEngine, 0755)
-	os.WriteFile(filepath.Join(wpRoot, "wp-includes", "version.php"),
-		[]byte("<?php\n$wp_version = '6.9.4';\n"), 0644)
+	if err := os.MkdirAll(diffEngine, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wpRoot, "wp-includes", "version.php"),
+		[]byte("<?php\n$wp_version = '6.9.4';\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	// Write a MODIFIED shell.php (injected webshell)
 	maliciousContent := []byte("<?php eval($_POST['cmd']); // injected webshell\n")
 	shellPath := filepath.Join(diffEngine, "shell.php")
-	os.WriteFile(shellPath, maliciousContent, 0644)
+	if err := os.WriteFile(shellPath, maliciousContent, 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	// Set up wpcheck cache with the LEGITIMATE checksum (won't match)
 	stateDir := filepath.Join(dir, "state")
@@ -94,7 +108,9 @@ func TestWPCheckAllowsModifiedFile(t *testing.T) {
 		"wp-includes/Text/Diff/Engine/shell.php": "7443bb26aa932003ba7742d0e64007c6", // real WP checksum
 	}
 	rawJSON, _ := json.Marshal(map[string]interface{}{"checksums": checksums})
-	wpCache.PersistChecksums("6.9.4", "en_US", rawJSON, checksums)
+	if err := wpCache.PersistChecksums("6.9.4", "en_US", rawJSON, checksums); err != nil {
+		t.Fatal(err)
+	}
 
 	alertCh := make(chan alert.Finding, 10)
 	fm := &FileMonitor{

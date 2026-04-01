@@ -41,8 +41,12 @@ func TestDetectWPRoot(t *testing.T) {
 func TestDetectWPRootIndexPHP(t *testing.T) {
 	dir := t.TempDir()
 	wpIncludes := filepath.Join(dir, "wp-includes")
-	os.MkdirAll(wpIncludes, 0755)
-	os.WriteFile(filepath.Join(wpIncludes, "version.php"), []byte("<?php $wp_version = '6.9.4';"), 0644)
+	if err := os.MkdirAll(wpIncludes, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wpIncludes, "version.php"), []byte("<?php $wp_version = '6.9.4';"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	indexPath := filepath.Join(dir, "index.php")
 	got := DetectWPRoot(indexPath)

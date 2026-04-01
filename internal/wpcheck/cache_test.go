@@ -74,7 +74,9 @@ func TestChecksumLookupMisses(t *testing.T) {
 
 	checksums := map[string]string{"wp-includes/version.php": "abc123"}
 	rawJSON := []byte(`{"checksums":{"wp-includes/version.php":"abc123"}}`)
-	c.PersistChecksums("6.9.4", "en_US", rawJSON, checksums)
+	if err := c.PersistChecksums("6.9.4", "en_US", rawJSON, checksums); err != nil {
+		t.Fatal(err)
+	}
 
 	_, ok := c.lookupChecksum("6.8.0", "en_US", "wp-includes/version.php")
 	if ok {
@@ -100,16 +102,22 @@ func TestIsVerifiedCoreFile(t *testing.T) {
 	wpRoot := filepath.Join(dir, "public_html")
 	wpIncludes := filepath.Join(wpRoot, "wp-includes")
 	diffEngine := filepath.Join(wpIncludes, "Text", "Diff", "Engine")
-	os.MkdirAll(diffEngine, 0755)
+	if err := os.MkdirAll(diffEngine, 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	// Write version.php
 	versionContent := []byte("<?php\n$wp_version = '6.9.4';\n")
-	os.WriteFile(filepath.Join(wpIncludes, "version.php"), versionContent, 0644)
+	if err := os.WriteFile(filepath.Join(wpIncludes, "version.php"), versionContent, 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	// Write a "core" file with known content
 	coreContent := []byte("<?php // legitimate WordPress core file\n")
 	corePath := filepath.Join(diffEngine, "shell.php")
-	os.WriteFile(corePath, coreContent, 0644)
+	if err := os.WriteFile(corePath, coreContent, 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	// Compute expected MD5
 	expectedHash := md5.Sum(coreContent)
@@ -123,7 +131,9 @@ func TestIsVerifiedCoreFile(t *testing.T) {
 		"wp-includes/version.php":                "ignored",
 	}
 	rawJSON, _ := json.Marshal(map[string]interface{}{"checksums": checksums})
-	c.PersistChecksums("6.9.4", "en_US", rawJSON, checksums)
+	if err := c.PersistChecksums("6.9.4", "en_US", rawJSON, checksums); err != nil {
+		t.Fatal(err)
+	}
 
 	// Open the file to get a real fd (simulating fanotify event fd)
 	f, err := os.Open(corePath)
@@ -141,7 +151,9 @@ func TestIsVerifiedCoreFile(t *testing.T) {
 	// Modified file → false
 	modifiedContent := []byte("<?php eval(base64_decode('malicious')); // injected\n")
 	modifiedPath := filepath.Join(diffEngine, "shell.php")
-	os.WriteFile(modifiedPath, modifiedContent, 0644)
+	if err := os.WriteFile(modifiedPath, modifiedContent, 0644); err != nil {
+		t.Fatal(err)
+	}
 	f2, _ := os.Open(modifiedPath)
 	defer f2.Close()
 	if c.IsVerifiedCoreFile(int(f2.Fd()), modifiedPath) {
@@ -150,7 +162,9 @@ func TestIsVerifiedCoreFile(t *testing.T) {
 
 	// Non-WP file → false
 	nonWPPath := filepath.Join(dir, "random.php")
-	os.WriteFile(nonWPPath, []byte("<?php echo 'hi';"), 0644)
+	if err := os.WriteFile(nonWPPath, []byte("<?php echo 'hi';"), 0644); err != nil {
+		t.Fatal(err)
+	}
 	f3, _ := os.Open(nonWPPath)
 	defer f3.Close()
 	if c.IsVerifiedCoreFile(int(f3.Fd()), nonWPPath) {
@@ -159,9 +173,13 @@ func TestIsVerifiedCoreFile(t *testing.T) {
 
 	// Plugin file (not in checksums) → false
 	pluginDir := filepath.Join(wpRoot, "wp-content", "plugins", "akismet")
-	os.MkdirAll(pluginDir, 0755)
+	if err := os.MkdirAll(pluginDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 	pluginPath := filepath.Join(pluginDir, "akismet.php")
-	os.WriteFile(pluginPath, []byte("<?php // plugin"), 0644)
+	if err := os.WriteFile(pluginPath, []byte("<?php // plugin"), 0644); err != nil {
+		t.Fatal(err)
+	}
 	f4, _ := os.Open(pluginPath)
 	defer f4.Close()
 	if c.IsVerifiedCoreFile(int(f4.Fd()), pluginPath) {
@@ -174,13 +192,19 @@ func TestVersionInvalidationOnMismatch(t *testing.T) {
 
 	wpRoot := filepath.Join(dir, "public_html")
 	wpIncludes := filepath.Join(wpRoot, "wp-includes")
-	os.MkdirAll(wpIncludes, 0755)
-	os.WriteFile(filepath.Join(wpIncludes, "version.php"),
-		[]byte("<?php\n$wp_version = '6.9.4';\n"), 0644)
+	if err := os.MkdirAll(wpIncludes, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wpIncludes, "version.php"),
+		[]byte("<?php\n$wp_version = '6.9.4';\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	coreContent := []byte("<?php // new version content\n")
 	corePath := filepath.Join(wpIncludes, "class-wp.php")
-	os.WriteFile(corePath, coreContent, 0644)
+	if err := os.WriteFile(corePath, coreContent, 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	expectedHash := md5.Sum(coreContent)
 	expectedMD5 := hex.EncodeToString(expectedHash[:])
@@ -191,12 +215,16 @@ func TestVersionInvalidationOnMismatch(t *testing.T) {
 	// Old version — different checksum for this file
 	oldChecksums := map[string]string{"wp-includes/class-wp.php": "old_hash_wont_match"}
 	oldJSON, _ := json.Marshal(map[string]interface{}{"checksums": oldChecksums})
-	c.PersistChecksums("6.8.0", "en_US", oldJSON, oldChecksums)
+	if err := c.PersistChecksums("6.8.0", "en_US", oldJSON, oldChecksums); err != nil {
+		t.Fatal(err)
+	}
 
 	// New version — correct checksum
 	newChecksums := map[string]string{"wp-includes/class-wp.php": expectedMD5}
 	newJSON, _ := json.Marshal(map[string]interface{}{"checksums": newChecksums})
-	c.PersistChecksums("6.9.4", "en_US", newJSON, newChecksums)
+	if err := c.PersistChecksums("6.9.4", "en_US", newJSON, newChecksums); err != nil {
+		t.Fatal(err)
+	}
 
 	// Pre-populate root cache with OLD version (simulating stale cache)
 	c.setRoot(wpRoot, "6.8.0", "en_US")
@@ -216,10 +244,14 @@ func TestVersionPhpInvalidation(t *testing.T) {
 
 	wpRoot := filepath.Join(dir, "public_html")
 	wpIncludes := filepath.Join(wpRoot, "wp-includes")
-	os.MkdirAll(wpIncludes, 0755)
+	if err := os.MkdirAll(wpIncludes, 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	versionPath := filepath.Join(wpIncludes, "version.php")
-	os.WriteFile(versionPath, []byte("<?php\n$wp_version = '6.9.4';\n"), 0644)
+	if err := os.WriteFile(versionPath, []byte("<?php\n$wp_version = '6.9.4';\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	stateDir := filepath.Join(dir, "state")
 	c := NewCache(stateDir)
