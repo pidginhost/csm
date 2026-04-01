@@ -386,6 +386,15 @@ func isHighConfidenceRealtimeMatch(f alert.Finding, path string) bool {
 		return false
 	}
 
+	// Shannon entropy is unreliable for very small files — a 200-byte
+	// legitimate PHP file can reach 4.8+ just from character diversity.
+	// Real obfuscated malware (goto chains, encrypted payloads) is always
+	// larger: LEVIATHAN droppers ~350KB, encrypted webshells ~28KB, even
+	// minimal PHP webshells are 1KB+.
+	if len(data) < 512 {
+		return false
+	}
+
 	return shannonEntropy(string(data)) >= 4.8
 }
 

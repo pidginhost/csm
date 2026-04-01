@@ -151,6 +151,21 @@ func TestIsHighConfidenceRealtimeMatch_VendorExclusion(t *testing.T) {
 	}
 }
 
+func TestIsHighConfidenceRealtimeMatch_SmallFileExclusion(t *testing.T) {
+	dir := t.TempDir()
+	tiny := filepath.Join(dir, "tiny.php")
+	// A short file with diverse characters can have high entropy but
+	// should NOT be quarantined — entropy is unreliable below 512 bytes.
+	writeTestFile(t, tiny, []byte(`<?php eval(base64_decode($_POST['x'])); ?>`))
+
+	f := alert.Finding{
+		Details: "Category: webshell\nDescription: eval injection",
+	}
+	if isHighConfidenceRealtimeMatch(f, tiny) {
+		t.Error("files under 512 bytes should not be high-confidence (entropy unreliable)")
+	}
+}
+
 func TestIsHighConfidenceRealtimeMatch_MissingFile(t *testing.T) {
 	f := alert.Finding{
 		Details: "Category: dropper\nDescription: goto obfuscation",
