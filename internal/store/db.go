@@ -177,8 +177,3 @@ func (db *DB) migrateIfNeeded(statePath string) error {
 	return db.runMigration(statePath)
 }
 
-// runMigration is implemented in migrate.go (Task 8).
-// This placeholder allows db.go to compile before migrate.go exists.
-func (db *DB) runMigration(statePath string) error {
-	return nil
-}
