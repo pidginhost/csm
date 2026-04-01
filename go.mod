@@ -14,6 +14,7 @@ require (
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/mdlayher/netlink v1.9.0 // indirect
 	github.com/mdlayher/socket v0.5.1 // indirect
+	go.etcd.io/bbolt v1.4.0 // indirect
 	golang.org/x/net v0.52.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
