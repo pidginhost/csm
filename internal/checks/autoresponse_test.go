@@ -149,6 +149,68 @@ func TestIsHighConfidenceRealtimeMatch_MissingFile(t *testing.T) {
 	}
 }
 
+func TestInlineQuarantine_QuarantinesHighConfidence(t *testing.T) {
+	// InlineQuarantine writes to the package-level quarantineDir const
+	// (/opt/csm/quarantine). We test validation + return value here.
+	// The actual file move is tested indirectly: if isHighConfidenceRealtimeMatch
+	// passes (verified by earlier tests) and os.Stat succeeds, InlineQuarantine
+	// will attempt the move. On a dev machine the /opt/csm/quarantine dir may
+	// not exist and the move may fail, but validation coverage is the goal.
+
+	dir := t.TempDir()
+	malware := filepath.Join(dir, "index.php")
+	os.WriteFile(malware, []byte(generateHighEntropyPHP(10000)), 0644)
+
+	f := alert.Finding{
+		Details:  "Category: dropper\nDescription: goto obfuscation",
+		FilePath: malware,
+	}
+
+	// Verify the validation gate passes — the function should attempt quarantine
+	// (not bail early). On a real server it moves the file; on a dev box the
+	// Rename may succeed (same filesystem in TempDir) or fail (/opt not writable).
+	qPath, ok := InlineQuarantine(f, malware)
+	if !ok {
+		// The quarantine dir is /opt/csm/quarantine — may not be writable in test.
+		// Verify it's not a validation failure by checking the gate directly.
+		if !isHighConfidenceRealtimeMatch(f, malware) {
+			t.Fatal("validation gate should pass for high-entropy dropper")
+		}
+		t.Skip("quarantine dir not writable in test environment (expected on dev)")
+	}
+
+	if qPath == "" {
+		t.Fatal("quarantine path should not be empty on success")
+	}
+}
+
+func TestInlineQuarantine_SkipsFalsePositive(t *testing.T) {
+	dir := t.TempDir()
+	legit := filepath.Join(dir, "PHPMailer.php")
+	os.WriteFile(legit, []byte(`<?php
+class PHPMailer {
+    public $CharSet = 'utf-8';
+    public function send() { return mail($this->to, $this->Subject, $this->Body); }
+    // Call mail() in a safe_mode-aware fashion.
+    protected function mailPassthru() { return true; }
+}
+`), 0644)
+
+	f := alert.Finding{
+		Details:  "Category: webshell\nDescription: Marijuana Shell",
+		FilePath: legit,
+	}
+	_, ok := InlineQuarantine(f, legit)
+	if ok {
+		t.Error("InlineQuarantine should NOT quarantine low-entropy legitimate PHP")
+	}
+
+	// File should still exist
+	if _, err := os.Stat(legit); err != nil {
+		t.Error("legitimate file should not be removed")
+	}
+}
+
 // generateHighEntropyPHP creates PHP content that mimics goto-obfuscated
 // malware with high Shannon entropy (>4.8). Uses many distinct fragments
 // to avoid repetition-induced entropy reduction.

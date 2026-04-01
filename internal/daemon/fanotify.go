@@ -1079,10 +1079,29 @@ func (fm *FileMonitor) runSignatureScan(data []byte, path, ext, procInfo string)
 					return true // suppressed by dedup, but still counts as "matched"
 				}
 			}
+			details := fmt.Sprintf("Category: %s\nDescription: %s\nMatched: %s",
+				m.Category, m.Description, strings.Join(m.Matched, ", "))
 			fm.sendAlertWithPath(sev, "signature_match_realtime",
 				fmt.Sprintf("Signature match [%s]: %s", m.RuleName, path),
-				fmt.Sprintf("Category: %s\nDescription: %s\nMatched: %s",
-					m.Category, m.Description, strings.Join(m.Matched, ", ")), path, procInfo)
+				details, path, procInfo)
+
+			// Inline quarantine: move high-confidence malware to quarantine
+			// immediately instead of waiting for the 5-second batch dispatcher.
+			// Uses the same 3-gate validation as AutoQuarantineFiles (category +
+			// library exclusion + entropy >= 4.8) to prevent false positives.
+			if sev == alert.Critical {
+				finding := alert.Finding{
+					Severity: sev,
+					Check:    "signature_match_realtime",
+					Details:  details,
+					FilePath: path,
+				}
+				if qPath, ok := checks.InlineQuarantine(finding, path); ok {
+					fm.sendAlert(alert.Critical, "auto_response",
+						fmt.Sprintf("AUTO-QUARANTINE (inline): %s moved to quarantine", path),
+						fmt.Sprintf("Quarantined to: %s\nRule: %s", qPath, m.RuleName))
+				}
+			}
 			return true
 		}
 	}

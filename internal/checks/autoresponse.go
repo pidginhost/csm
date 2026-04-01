@@ -403,6 +403,60 @@ var knownLibraryPaths = []string{
 	"/monolog/",
 }
 
+// InlineQuarantine moves a file to quarantine immediately if it passes the
+// high-confidence validation gates. Called from fanotify's analyzeFile to
+// quarantine malware without waiting for the 5-second batch dispatcher.
+// Returns the quarantine path and true if the file was quarantined.
+func InlineQuarantine(f alert.Finding, path string) (string, bool) {
+	if !isHighConfidenceRealtimeMatch(f, path) {
+		return "", false
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", false
+	}
+
+	_ = os.MkdirAll(quarantineDir, 0700)
+	safeName := strings.ReplaceAll(path, "/", "_")
+	ts := time.Now().Format("20060102-150405")
+	qPath := filepath.Join(quarantineDir, fmt.Sprintf("%s_%s", ts, safeName))
+
+	if err := os.Rename(path, qPath); err != nil {
+		if info.IsDir() {
+			return "", false
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return "", false
+		}
+		if writeErr := os.WriteFile(qPath, data, 0600); writeErr != nil {
+			return "", false
+		}
+		os.Remove(path)
+	}
+
+	// Write metadata sidecar
+	var uid, gid int
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+		uid = int(stat.Uid)
+		gid = int(stat.Gid)
+	}
+	meta := QuarantineMeta{
+		OriginalPath: path,
+		Owner:        uid,
+		Group:        gid,
+		Mode:         info.Mode().String(),
+		Size:         info.Size(),
+		QuarantineAt: time.Now(),
+		Reason:       "Inline quarantine: high-confidence realtime signature match",
+	}
+	metaData, _ := json.MarshalIndent(meta, "", "  ")
+	_ = os.WriteFile(qPath+".meta", metaData, 0600)
+
+	return qPath, true
+}
+
 // extractCategory parses "Category: <value>" from a finding's Details field.
 func extractCategory(details string) string {
 	for _, line := range strings.Split(details, "\n") {
