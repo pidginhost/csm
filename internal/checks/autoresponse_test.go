@@ -29,13 +29,24 @@ func TestExtractCategory(t *testing.T) {
 	}
 }
 
+func writeTestFile(t *testing.T, path string, data []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatalf("failed to write test file %s: %v", path, err)
+	}
+}
+
+func mkdirTest(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(path, 0755); err != nil {
+		t.Fatalf("failed to create test dir %s: %v", path, err)
+	}
+}
+
 func TestIsHighConfidenceRealtimeMatch_CategoryFilter(t *testing.T) {
-	// Create a high-entropy temp file (simulates obfuscated malware)
 	dir := t.TempDir()
 	malware := filepath.Join(dir, "evil.php")
-	// Goto-obfuscated PHP: lots of random-looking labels and hex = high entropy
-	content := generateHighEntropyPHP(8000)
-	os.WriteFile(malware, []byte(content), 0644)
+	writeTestFile(t, malware, []byte(generateHighEntropyPHP(8000)))
 
 	// Dropper category → should match
 	f := alert.Finding{
@@ -72,7 +83,7 @@ func TestIsHighConfidenceRealtimeMatch_EntropyFilter(t *testing.T) {
 
 	// Low entropy file (normal PHP) → should NOT match
 	normalPHP := filepath.Join(dir, "normal.php")
-	os.WriteFile(normalPHP, []byte(`<?php
+	writeTestFile(t, normalPHP, []byte(`<?php
 class PHPMailer {
     public $CharSet = 'utf-8';
     public $ContentType = 'text/plain';
@@ -84,14 +95,14 @@ class PHPMailer {
         return true;
     }
 }
-`), 0644)
+`))
 	if isHighConfidenceRealtimeMatch(dropper, normalPHP) {
 		t.Error("normal PHP code (low entropy) should not be high-confidence")
 	}
 
 	// High entropy file (obfuscated malware) → should match
 	obfuscated := filepath.Join(dir, "obfuscated.php")
-	os.WriteFile(obfuscated, []byte(generateHighEntropyPHP(10000)), 0644)
+	writeTestFile(t, obfuscated, []byte(generateHighEntropyPHP(10000)))
 	if !isHighConfidenceRealtimeMatch(dropper, obfuscated) {
 		t.Error("obfuscated PHP (high entropy) should be high-confidence")
 	}
@@ -102,9 +113,9 @@ func TestIsHighConfidenceRealtimeMatch_LibraryExclusion(t *testing.T) {
 
 	// Create a high-entropy file inside a phpmailer directory
 	phpmailerDir := filepath.Join(dir, "server", "phpmailer")
-	os.MkdirAll(phpmailerDir, 0755)
+	mkdirTest(t, phpmailerDir)
 	libFile := filepath.Join(phpmailerDir, "PHPMailer.php")
-	os.WriteFile(libFile, []byte(generateHighEntropyPHP(8000)), 0644)
+	writeTestFile(t, libFile, []byte(generateHighEntropyPHP(8000)))
 
 	f := alert.Finding{
 		Details: "Category: webshell\nDescription: Marijuana Shell\nMatched: passthru(",
@@ -115,9 +126,9 @@ func TestIsHighConfidenceRealtimeMatch_LibraryExclusion(t *testing.T) {
 
 	// Same file outside library path → should match
 	nonLib := filepath.Join(dir, "wp-admin", "maint")
-	os.MkdirAll(nonLib, 0755)
+	mkdirTest(t, nonLib)
 	evilFile := filepath.Join(nonLib, "index.php")
-	os.WriteFile(evilFile, []byte(generateHighEntropyPHP(8000)), 0644)
+	writeTestFile(t, evilFile, []byte(generateHighEntropyPHP(8000)))
 
 	f.Details = "Category: dropper\nDescription: goto obfuscation"
 	if !isHighConfidenceRealtimeMatch(f, evilFile) {
@@ -128,9 +139,9 @@ func TestIsHighConfidenceRealtimeMatch_LibraryExclusion(t *testing.T) {
 func TestIsHighConfidenceRealtimeMatch_VendorExclusion(t *testing.T) {
 	dir := t.TempDir()
 	vendorDir := filepath.Join(dir, "vendor", "somepackage")
-	os.MkdirAll(vendorDir, 0755)
+	mkdirTest(t, vendorDir)
 	vendorFile := filepath.Join(vendorDir, "obfuscated.php")
-	os.WriteFile(vendorFile, []byte(generateHighEntropyPHP(8000)), 0644)
+	writeTestFile(t, vendorFile, []byte(generateHighEntropyPHP(8000)))
 
 	f := alert.Finding{
 		Details: "Category: webshell\nDescription: hex-encoded function",
@@ -150,25 +161,15 @@ func TestIsHighConfidenceRealtimeMatch_MissingFile(t *testing.T) {
 }
 
 func TestInlineQuarantine_QuarantinesHighConfidence(t *testing.T) {
-	// InlineQuarantine writes to the package-level quarantineDir const
-	// (/opt/csm/quarantine). We test validation + return value here.
-	// The actual file move is tested indirectly: if isHighConfidenceRealtimeMatch
-	// passes (verified by earlier tests) and os.Stat succeeds, InlineQuarantine
-	// will attempt the move. On a dev machine the /opt/csm/quarantine dir may
-	// not exist and the move may fail, but validation coverage is the goal.
-
 	dir := t.TempDir()
 	malware := filepath.Join(dir, "index.php")
-	os.WriteFile(malware, []byte(generateHighEntropyPHP(10000)), 0644)
+	writeTestFile(t, malware, []byte(generateHighEntropyPHP(10000)))
 
 	f := alert.Finding{
 		Details:  "Category: dropper\nDescription: goto obfuscation",
 		FilePath: malware,
 	}
 
-	// Verify the validation gate passes — the function should attempt quarantine
-	// (not bail early). On a real server it moves the file; on a dev box the
-	// Rename may succeed (same filesystem in TempDir) or fail (/opt not writable).
 	qPath, ok := InlineQuarantine(f, malware)
 	if !ok {
 		// The quarantine dir is /opt/csm/quarantine — may not be writable in test.
@@ -187,14 +188,14 @@ func TestInlineQuarantine_QuarantinesHighConfidence(t *testing.T) {
 func TestInlineQuarantine_SkipsFalsePositive(t *testing.T) {
 	dir := t.TempDir()
 	legit := filepath.Join(dir, "PHPMailer.php")
-	os.WriteFile(legit, []byte(`<?php
+	writeTestFile(t, legit, []byte(`<?php
 class PHPMailer {
     public $CharSet = 'utf-8';
     public function send() { return mail($this->to, $this->Subject, $this->Body); }
     // Call mail() in a safe_mode-aware fashion.
     protected function mailPassthru() { return true; }
 }
-`), 0644)
+`))
 
 	f := alert.Finding{
 		Details:  "Category: webshell\nDescription: Marijuana Shell",
@@ -217,9 +218,6 @@ class PHPMailer {
 func generateHighEntropyPHP(size int) string {
 	var b strings.Builder
 	b.WriteString("<?php\n goto v8k7T;")
-	// Many distinct fragments with different character distributions —
-	// mirrors real LEVIATHAN samples with random labels, hex strings,
-	// and encoded payloads.
 	fragments := []string{
 		`tWgqB:goto Og31z;dGB2A:PzsUc:goto WlstR;pSGLA:GCxUl:goto CsDy8;`,
 		`$a="\x50\x4b\x03\x04\x48\x65\x6c\x6c\x6f\x57\x6f\x72\x6c\x64";`,
