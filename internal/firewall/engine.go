@@ -20,7 +20,7 @@ import (
 )
 
 // Engine manages the nftables firewall ruleset.
-// Replaces CSF with native Go nftables via netlink.
+// Manages the nftables ruleset via netlink.
 type Engine struct {
 	mu   sync.Mutex
 	conn *nftables.Conn
@@ -74,7 +74,7 @@ type SubnetEntry struct {
 	BlockedAt time.Time `json:"blocked_at"`
 }
 
-// PortAllowEntry represents a port-specific IP allow (CSF's tcp|in|d=PORT|s=IP).
+// PortAllowEntry represents a port-specific IP allow (e.g. tcp|in|d=PORT|s=IP).
 type PortAllowEntry struct {
 	IP     string `json:"ip"`
 	Port   int    `json:"port"`

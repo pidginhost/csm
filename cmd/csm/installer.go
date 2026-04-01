@@ -323,7 +323,7 @@ firewall:
   conn_rate_limit: 30           # new connections per minute per IP
   syn_flood_protection: true
   conn_limit: 50                # max concurrent connections per IP (0 = disabled)
-  port_flood:                   # per-port rate limiting (CSF PORTFLOOD)
+  port_flood:                   # per-port rate limiting
     - port: 25
       proto: tcp
       hits: 40

@@ -37,7 +37,7 @@ type reputationEntry struct {
 
 // CheckIPReputation looks up non-infra IPs against threat intelligence.
 // Four-tier approach:
-//  1. Skip if already blocked in CSF
+//  1. Skip if already blocked
 //  2. Check local threat DB (permanent blocklist + free feeds)
 //  3. Check AbuseIPDB cache
 //  4. Query AbuseIPDB for truly unknown IPs (max 5/cycle, ~720/day)

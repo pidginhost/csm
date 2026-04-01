@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/config"
 	"github.com/pidginhost/cpanel-security-monitor/internal/firewall"
 )
 
@@ -50,8 +49,6 @@ func runFirewall() {
 		fwApplyConfirmed()
 	case "confirm":
 		fwConfirm()
-	case "migrate-from-csf":
-		fwMigrate()
 	case "deny-subnet":
 		fwDenySubnet()
 	case "remove-subnet":
@@ -95,7 +92,6 @@ Commands:
   restart                           Reapply full firewall ruleset
   apply-confirmed <minutes>         Apply rules with auto-rollback timer (like Juniper commit confirmed)
   confirm                           Confirm applied rules (cancel rollback timer)
-  migrate-from-csf [--apply]        Migrate from CSF (dry run unless --apply)
   deny-subnet <cidr> [reason]         Block a subnet (e.g. 1.2.3.0/24)
   remove-subnet <cidr>                Remove subnet block
   deny-file <path>                    Bulk block IPs from file (one per line)
@@ -559,96 +555,6 @@ func fwRestart() {
 	state, _ := firewall.LoadState(cfg.StatePath)
 	fmt.Printf("Firewall restarted. %d blocked, %d allowed IPs restored.\n",
 		len(state.Blocked), len(state.Allowed))
-}
-
-func fwMigrate() {
-	args := fwArgs()
-	apply := false
-	for _, arg := range args {
-		if arg == "--apply" {
-			apply = true
-		}
-	}
-
-	fwCfg, state, err := firewall.MigrateFromCSF()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Migration failed: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Print(firewall.FormatMigrationReport(fwCfg, state))
-
-	if !apply {
-		fmt.Printf("\nDry run. Use --apply to apply the migration.\n")
-		return
-	}
-
-	cfg := loadConfig()
-	cfg.Firewall = fwCfg
-	// Sync infra IPs from main config
-	if len(cfg.Firewall.InfraIPs) == 0 {
-		cfg.Firewall.InfraIPs = cfg.InfraIPs
-	}
-	if saveErr := config.Save(cfg); saveErr != nil {
-		fmt.Fprintf(os.Stderr, "Error saving config: %v\n", saveErr)
-		os.Exit(1)
-	}
-
-	engine, err := firewall.NewEngine(cfg.Firewall, cfg.StatePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating engine: %v\n", err)
-		os.Exit(1)
-	}
-
-	if err := engine.Apply(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error applying rules: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Restore blocked/allowed from CSF state
-	blockOK, blockFail := 0, 0
-	for _, b := range state.Blocked {
-		if err := engine.BlockIP(b.IP, b.Reason, 0); err != nil {
-			if blockFail == 0 {
-				fmt.Fprintf(os.Stderr, "Warning: some blocks failed (first: %s — %v)\n", b.IP, err)
-			}
-			blockFail++
-		} else {
-			blockOK++
-		}
-	}
-	allowOK, allowFail := 0, 0
-	for _, a := range state.Allowed {
-		if err := engine.AllowIP(a.IP, a.Reason); err != nil {
-			if allowFail == 0 {
-				fmt.Fprintf(os.Stderr, "Warning: some allows failed (first: %s — %v)\n", a.IP, err)
-			}
-			allowFail++
-		} else {
-			allowOK++
-		}
-	}
-
-	// Restore port-specific allows
-	portOK := 0
-	for _, pa := range state.PortAllowed {
-		if err := engine.AllowIPPort(pa.IP, pa.Port, pa.Proto, pa.Reason); err == nil {
-			portOK++
-		}
-	}
-
-	fmt.Printf("\nMigration applied. CSF rules converted to nftables.\n")
-	fmt.Printf("Restored: %d blocked, %d allowed, %d port-specific\n", blockOK, allowOK, portOK)
-	if blockFail > 0 || allowFail > 0 {
-		fmt.Printf("Failed:   %d blocked, %d allowed (check deny_ip_limit if too many)\n", blockFail, allowFail)
-	}
-	if portOK > 0 {
-		fmt.Println("Port-specific allows require 'csm firewall restart' to take effect in nftables rules.")
-	}
-	fmt.Printf("IMPORTANT: Verify connectivity, then disable CSF:\n")
-	fmt.Printf("  csf -x\n")
-	fmt.Printf("  systemctl stop csf lfd\n")
-	fmt.Printf("  systemctl disable csf lfd\n")
 }
 
 // --- Helpers ---

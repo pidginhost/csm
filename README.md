@@ -2,7 +2,7 @@
 
 Real-time security monitoring daemon for cPanel/WHM shared hosting servers. A single static Go binary that detects compromises, backdoors, phishing, and suspicious activity — then alerts and responds within seconds.
 
-Designed as a full Imunify360 replacement. Also replaces CSF, LFD, and fail2ban with a native nftables firewall engine.
+Designed as a full Imunify360 replacement. Includes a native nftables firewall engine replacing LFD and fail2ban.
 
 Built after real incidents where GSocket reverse shells, LEVIATHAN webshell toolkits, credential-stuffed cPanel accounts, and phishing kits were found across production servers.
 
@@ -59,7 +59,7 @@ csm daemon
  +-- PHP runtime shield           auto_prepend_file protection
  +-- periodic critical scanner    Every 10 min (processes, network, tokens, firewall)
  +-- periodic deep scanner        Every 60 min (WP integrity, RPM, DB injection, phishing)
- +-- nftables firewall engine     Replaces CSF/LFD/fail2ban
+ +-- nftables firewall engine     Replaces LFD/fail2ban
  +-- threat intelligence          IP reputation, attack tracking, GeoIP enrichment
  +-- attack database              Real-time tracking, scoring, correlation
  +-- alert dispatcher             Batching, dedup, rate limiting, auto-response
@@ -216,7 +216,7 @@ Actions (POST, CSRF required):
 
 ## nftables Firewall Engine
 
-Replaces CSF, LFD, and fail2ban. Uses the kernel netlink API directly via `google/nftables` — no iptables, no Perl, no shell commands.
+Uses the kernel netlink API directly via `google/nftables` — no iptables, no Perl, no shell commands.
 
 - Atomic ruleset application (single netlink transaction)
 - Named IP sets with per-element timeouts (blocked, allowed, infra, country)
@@ -231,7 +231,6 @@ Replaces CSF, LFD, and fail2ban. Uses the kernel netlink API directly via `googl
 - Infra IP protection (refuses to block infrastructure IPs)
 - Firewall audit trail (JSONL, 10MB rotation)
 - State persistence with atomic writes
-- CSF migration tool with per-IP:port allow support
 - cphulk integration (unblock flushes cphulk too)
 
 ```bash
@@ -253,7 +252,6 @@ csm firewall flush                               # Clear all dynamic blocks
 csm firewall restart                             # Reapply full ruleset
 csm firewall apply-confirmed <minutes>           # Apply with auto-rollback timer
 csm firewall confirm                             # Confirm applied changes
-csm firewall migrate-from-csf [--apply]          # Migrate from CSF
 csm firewall profile save|list|restore <name>    # Profile management
 csm firewall audit [limit]                       # View audit log
 csm firewall update-geoip                        # Download country IP blocks
