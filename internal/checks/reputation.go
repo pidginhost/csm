@@ -13,6 +13,7 @@ import (
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
 	"github.com/pidginhost/cpanel-security-monitor/internal/config"
 	"github.com/pidginhost/cpanel-security-monitor/internal/state"
+	"github.com/pidginhost/cpanel-security-monitor/internal/store"
 )
 
 const (
@@ -263,27 +264,37 @@ func extractBracketedIP(line string) string {
 }
 
 // loadAllBlockedIPs returns all IPs currently blocked in CSM.
+// Uses bbolt store when available, falls back to flat files.
 func loadAllBlockedIPs(statePath string) map[string]bool {
 	blocked := make(map[string]bool)
 
-	// Read from nftables firewall engine state
-	if fwData, err := os.ReadFile(filepath.Join(statePath, "firewall", "state.json")); err == nil {
-		var fwState struct {
-			Blocked []struct {
-				IP        string    `json:"ip"`
-				ExpiresAt time.Time `json:"expires_at"`
-			} `json:"blocked"`
+	// Try bbolt store first.
+	if sdb := store.Global(); sdb != nil {
+		ss := sdb.LoadFirewallState()
+		for _, entry := range ss.Blocked {
+			blocked[entry.IP] = true
 		}
-		if json.Unmarshal(fwData, &fwState) == nil {
-			now := time.Now()
-			for _, entry := range fwState.Blocked {
-				if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
-					blocked[entry.IP] = true
+	} else {
+		// Fallback: read from firewall engine state (nftables) flat file.
+		if fwData, err := os.ReadFile(filepath.Join(statePath, "firewall", "state.json")); err == nil {
+			var fwState struct {
+				Blocked []struct {
+					IP        string    `json:"ip"`
+					ExpiresAt time.Time `json:"expires_at"`
+				} `json:"blocked"`
+			}
+			if json.Unmarshal(fwData, &fwState) == nil {
+				now := time.Now()
+				for _, entry := range fwState.Blocked {
+					if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
+						blocked[entry.IP] = true
+					}
 				}
 			}
 		}
 	}
 
+	// Also read from blocked_ips.json (legacy CSM auto-block)
 	type blockedEntry struct {
 		IP        string    `json:"ip"`
 		ExpiresAt time.Time `json:"expires_at"`
@@ -369,6 +380,14 @@ func queryAbuseIPDB(client *http.Client, ip, apiKey string) (int, string, error)
 
 // cleanCache removes expired entries and caps at maxCacheEntries.
 func cleanCache(cache *reputationCache) {
+	// When using bbolt store, delegate cleanup to store methods.
+	if sdb := store.Global(); sdb != nil {
+		sdb.CleanExpiredReputation(cacheExpiry)
+		sdb.EnforceReputationCap(maxCacheEntries)
+		return
+	}
+
+	// Fallback: in-memory cache cleanup.
 	now := time.Now()
 
 	// Remove expired entries — use same expiry as cache freshness check
@@ -401,6 +420,13 @@ func cleanCache(cache *reputationCache) {
 
 func loadReputationCache(statePath string) *reputationCache {
 	cache := &reputationCache{Entries: make(map[string]*reputationEntry)}
+
+	// Note: the reputation cache is always loaded into a local map for batch
+	// processing within CheckIPReputation. The bbolt store is used to persist
+	// individual entries but we populate the local cache from the flat file or
+	// from store lookups as needed. Since CheckIPReputation iterates a small
+	// set of recent IPs and checks cache by key, we keep the flat-file based
+	// loading for now and let saveReputationCache handle store persistence.
 	data, err := os.ReadFile(filepath.Join(statePath, reputationCacheFile))
 	if err == nil {
 		_ = json.Unmarshal(data, cache)
@@ -412,6 +438,18 @@ func loadReputationCache(statePath string) *reputationCache {
 }
 
 func saveReputationCache(statePath string, cache *reputationCache) {
+	if sdb := store.Global(); sdb != nil {
+		for ip, entry := range cache.Entries {
+			_ = sdb.SetReputation(ip, store.ReputationEntry{
+				Score:     entry.Score,
+				Category:  entry.Category,
+				CheckedAt: entry.CheckedAt,
+			})
+		}
+		return
+	}
+
+	// Fallback: flat-file JSON.
 	data, _ := json.MarshalIndent(cache, "", "  ")
 	tmpPath := filepath.Join(statePath, reputationCacheFile+".tmp")
 	_ = os.WriteFile(tmpPath, data, 0600)

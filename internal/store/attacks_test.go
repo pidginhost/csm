@@ -18,10 +18,10 @@ func TestRecordAndQueryEvents(t *testing.T) {
 	base := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
 
 	events := []AttackEvent{
-		{Timestamp: base, IP: "1.2.3.4", AttackType: 1, CheckName: "brute-force", Severity: 3},
-		{Timestamp: base.Add(1 * time.Minute), IP: "1.2.3.4", AttackType: 2, CheckName: "php-shell", Severity: 4},
-		{Timestamp: base.Add(2 * time.Minute), IP: "5.6.7.8", AttackType: 1, CheckName: "brute-force", Severity: 3},
-		{Timestamp: base.Add(3 * time.Minute), IP: "1.2.3.4", AttackType: 3, CheckName: "htaccess", Severity: 2},
+		{Timestamp: base, IP: "1.2.3.4", AttackType: "brute_force", CheckName: "brute-force", Severity: 3},
+		{Timestamp: base.Add(1 * time.Minute), IP: "1.2.3.4", AttackType: "webshell", CheckName: "php-shell", Severity: 4},
+		{Timestamp: base.Add(2 * time.Minute), IP: "5.6.7.8", AttackType: "brute_force", CheckName: "brute-force", Severity: 3},
+		{Timestamp: base.Add(3 * time.Minute), IP: "1.2.3.4", AttackType: "recon", CheckName: "htaccess", Severity: 2},
 	}
 
 	for i, ev := range events {
@@ -81,9 +81,9 @@ func TestSaveLoadIPRecord(t *testing.T) {
 		FirstSeen:  now.Add(-24 * time.Hour),
 		LastSeen:   now,
 		EventCount: 42,
-		AttackCounts: map[int]int{
-			1: 30,
-			2: 12,
+		AttackCounts: map[string]int{
+			"brute_force": 30,
+			"webshell":    12,
 		},
 		Accounts: map[string]int{
 			"user1": 25,
@@ -110,8 +110,8 @@ func TestSaveLoadIPRecord(t *testing.T) {
 	if !loaded.AutoBlocked {
 		t.Error("AutoBlocked = false, want true")
 	}
-	if loaded.AttackCounts[1] != 30 {
-		t.Errorf("AttackCounts[1] = %d, want 30", loaded.AttackCounts[1])
+	if loaded.AttackCounts["brute_force"] != 30 {
+		t.Errorf("AttackCounts[brute_force] = %d, want 30", loaded.AttackCounts["brute_force"])
 	}
 	if loaded.Accounts["user2"] != 17 {
 		t.Errorf("Accounts[user2] = %d, want 17", loaded.Accounts["user2"])

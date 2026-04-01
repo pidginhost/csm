@@ -8,6 +8,8 @@ import (
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/attackdb"
 	"github.com/pidginhost/cpanel-security-monitor/internal/checks"
+	"github.com/pidginhost/cpanel-security-monitor/internal/firewall"
+	"github.com/pidginhost/cpanel-security-monitor/internal/store"
 )
 
 // IPIntelligence is the complete picture of an IP from all sources.
@@ -219,35 +221,35 @@ func loadFullBlockState(statePath string) map[string]*blockEntry {
 	result := make(map[string]*blockEntry)
 	now := time.Now()
 
-	// Firewall engine state (nftables)
-	type fwEntry struct {
-		IP        string    `json:"ip"`
-		Reason    string    `json:"reason"`
-		BlockedAt time.Time `json:"blocked_at"`
-		ExpiresAt time.Time `json:"expires_at"`
-	}
-	type fwState struct {
-		Blocked []fwEntry `json:"blocked"`
-	}
-
-	if data, err := os.ReadFile(filepath.Join(statePath, "firewall", "state.json")); err == nil {
-		var fs fwState
-		if json.Unmarshal(data, &fs) == nil {
-			for _, entry := range fs.Blocked {
-				if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
-					perm := entry.ExpiresAt.IsZero() || entry.ExpiresAt.Year() <= 1
-					result[entry.IP] = &blockEntry{
-						reason:    entry.Reason,
-						blockedAt: entry.BlockedAt,
-						expiresAt: entry.ExpiresAt,
-						permanent: perm,
-					}
+	// Try bbolt store first.
+	if sdb := store.Global(); sdb != nil {
+		ss := sdb.LoadFirewallState()
+		for _, entry := range ss.Blocked {
+			perm := entry.ExpiresAt.IsZero() || entry.ExpiresAt.Year() <= 1
+			result[entry.IP] = &blockEntry{
+				reason:    entry.Reason,
+				blockedAt: entry.BlockedAt,
+				expiresAt: entry.ExpiresAt,
+				permanent: perm,
+			}
+		}
+	} else {
+		// Fallback: firewall.LoadState() reads flat-file state.json.
+		fwState, err := firewall.LoadState(statePath)
+		if err == nil && fwState != nil {
+			for _, entry := range fwState.Blocked {
+				perm := entry.ExpiresAt.IsZero() || entry.ExpiresAt.Year() <= 1
+				result[entry.IP] = &blockEntry{
+					reason:    entry.Reason,
+					blockedAt: entry.BlockedAt,
+					expiresAt: entry.ExpiresAt,
+					permanent: perm,
 				}
 			}
 		}
 	}
 
-	// CSM blocked_ips.json
+	// CSM blocked_ips.json (legacy)
 	type csmEntry struct {
 		IP        string    `json:"ip"`
 		Reason    string    `json:"reason"`

@@ -17,7 +17,7 @@ var maxAttackEvents = 100_000
 type AttackEvent struct {
 	Timestamp  time.Time `json:"timestamp"`
 	IP         string    `json:"ip"`
-	AttackType int       `json:"attack_type"`
+	AttackType string    `json:"attack_type"`
 	CheckName  string    `json:"check_name"`
 	Severity   int       `json:"severity"`
 	Account    string    `json:"account,omitempty"`
@@ -26,14 +26,14 @@ type AttackEvent struct {
 
 // IPRecord is the store-layer representation of an IP attack record.
 type IPRecord struct {
-	IP           string      `json:"ip"`
-	FirstSeen    time.Time   `json:"first_seen"`
-	LastSeen     time.Time   `json:"last_seen"`
-	EventCount   int         `json:"event_count"`
-	AttackCounts map[int]int `json:"attack_counts,omitempty"`
-	Accounts     map[string]int `json:"accounts,omitempty"`
-	ThreatScore  int            `json:"threat_score"`
-	AutoBlocked  bool           `json:"auto_blocked,omitempty"`
+	IP           string            `json:"ip"`
+	FirstSeen    time.Time         `json:"first_seen"`
+	LastSeen     time.Time         `json:"last_seen"`
+	EventCount   int               `json:"event_count"`
+	AttackCounts map[string]int    `json:"attack_counts,omitempty"`
+	Accounts     map[string]int    `json:"accounts,omitempty"`
+	ThreatScore  int               `json:"threat_score"`
+	AutoBlocked  bool              `json:"auto_blocked,omitempty"`
 }
 
 // RecordAttackEvent inserts an attack event into both the primary bucket

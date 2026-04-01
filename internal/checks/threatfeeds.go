@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/pidginhost/cpanel-security-monitor/internal/store"
 )
 
 // ThreatDB is a local IP reputation database built from:
@@ -123,11 +125,17 @@ func (db *ThreatDB) AddPermanent(ip, reason string) {
 	db.badIPs[ip] = reason
 	db.mu.Unlock()
 
-	// Only append to file if this is a new IP (dedup)
+	// Only persist if this is a new IP (dedup)
 	if exists {
 		return
 	}
 
+	if sdb := store.Global(); sdb != nil {
+		_ = sdb.AddPermanentBlock(ip, reason)
+		return
+	}
+
+	// Fallback: flat-file permanent.txt.
 	f, err := os.OpenFile(filepath.Join(db.dbPath, "permanent.txt"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		return
@@ -142,7 +150,12 @@ func (db *ThreatDB) RemovePermanent(ip string) {
 	delete(db.badIPs, ip)
 	db.mu.Unlock()
 
-	// Rewrite permanent.txt without this IP
+	if sdb := store.Global(); sdb != nil {
+		_ = sdb.RemovePermanentBlock(ip)
+		return
+	}
+
+	// Fallback: rewrite permanent.txt without this IP.
 	path := filepath.Join(db.dbPath, "permanent.txt")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -191,6 +204,12 @@ func (db *ThreatDB) addWhitelistEntry(ip string, expiresAt time.Time) {
 	delete(db.badIPs, ip)
 	db.mu.Unlock()
 
+	if sdb := store.Global(); sdb != nil {
+		permanent := expiresAt.IsZero()
+		_ = sdb.AddWhitelistEntry(ip, expiresAt, permanent)
+		return
+	}
+
 	db.saveWhitelistFile()
 }
 
@@ -200,6 +219,11 @@ func (db *ThreatDB) RemoveWhitelist(ip string) {
 	delete(db.whitelist, ip)
 	delete(db.whitelistMeta, ip)
 	db.mu.Unlock()
+
+	if sdb := store.Global(); sdb != nil {
+		_ = sdb.RemoveWhitelistEntry(ip)
+		return
+	}
 
 	db.saveWhitelistFile()
 }
@@ -220,7 +244,11 @@ func (db *ThreatDB) PruneExpiredWhitelist() int {
 	db.mu.Unlock()
 
 	if pruned > 0 {
-		db.saveWhitelistFile()
+		if sdb := store.Global(); sdb != nil {
+			sdb.PruneExpiredWhitelist()
+		} else {
+			db.saveWhitelistFile()
+		}
 		fmt.Fprintf(os.Stderr, "[%s] Pruned %d expired whitelist entries\n",
 			time.Now().Format("2006-01-02 15:04:05"), pruned)
 	}
@@ -278,12 +306,29 @@ func (db *ThreatDB) saveWhitelistFile() {
 	_ = os.Rename(tmpPath, path)
 }
 
-// loadPersistedWhitelist loads IPs from the whitelist file into memory.
+// loadPersistedWhitelist loads IPs from the bbolt store (if available)
+// or from the flat-file whitelist.txt.
 func (db *ThreatDB) loadPersistedWhitelist() {
 	if db.whitelistMeta == nil {
 		db.whitelistMeta = make(map[string]*whitelistEntry)
 	}
 
+	if sdb := store.Global(); sdb != nil {
+		entries := sdb.ListWhitelist()
+		now := time.Now()
+		for _, e := range entries {
+			// Skip expired entries
+			if !e.Permanent && !e.ExpiresAt.IsZero() && now.After(e.ExpiresAt) {
+				continue
+			}
+			db.whitelist[e.IP] = true
+			db.whitelistMeta[e.IP] = &whitelistEntry{ExpiresAt: e.ExpiresAt}
+			delete(db.badIPs, e.IP)
+		}
+		return
+	}
+
+	// Fallback: flat-file whitelist.txt.
 	path := filepath.Join(db.dbPath, "whitelist.txt")
 	f, err := os.Open(path)
 	if err != nil {
@@ -439,8 +484,19 @@ func (db *ThreatDB) UpdateFeeds() error {
 	return nil
 }
 
-// loadPermanentBlocklist loads and deduplicates the permanent blocklist.
+// loadPermanentBlocklist loads the permanent blocklist from bbolt store
+// (if available) or from the flat-file permanent.txt.
 func (db *ThreatDB) loadPermanentBlocklist() {
+	if sdb := store.Global(); sdb != nil {
+		blocks := sdb.AllPermanentBlocks()
+		for _, b := range blocks {
+			db.badIPs[b.IP] = "permanent-blocklist"
+		}
+		db.PermanentCount = len(blocks)
+		return
+	}
+
+	// Fallback: flat-file permanent.txt.
 	path := filepath.Join(db.dbPath, "permanent.txt")
 	f, err := os.Open(path)
 	if err != nil {

@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
+
+	"github.com/pidginhost/cpanel-security-monitor/internal/store"
 )
 
 const (
@@ -14,8 +17,34 @@ const (
 	maxEventsBytes = 10 * 1024 * 1024 // 10 MB
 )
 
-// load reads the records file from disk into memory.
+// load reads IP records from the bbolt store (if available) or from
+// the flat-file records.json.
 func (db *DB) load() {
+	if sdb := store.Global(); sdb != nil {
+		storeRecords := sdb.LoadAllIPRecords()
+		for ip, sr := range storeRecords {
+			rec := &IPRecord{
+				IP:          sr.IP,
+				FirstSeen:   sr.FirstSeen,
+				LastSeen:    sr.LastSeen,
+				EventCount:  sr.EventCount,
+				ThreatScore: sr.ThreatScore,
+				AutoBlocked: sr.AutoBlocked,
+				AttackCounts: make(map[AttackType]int),
+				Accounts:     make(map[string]int),
+			}
+			for k, v := range sr.AttackCounts {
+				rec.AttackCounts[AttackType(k)] = v
+			}
+			for k, v := range sr.Accounts {
+				rec.Accounts[k] = v
+			}
+			db.records[ip] = rec
+		}
+		return
+	}
+
+	// Fallback: flat-file records.json.
 	path := filepath.Join(db.dbPath, recordsFile)
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -38,8 +67,37 @@ func (db *DB) load() {
 	db.records = records
 }
 
-// saveRecords writes the records map to disk atomically.
+// saveRecords writes records to the bbolt store (if available) or to
+// the flat-file records.json.
 func (db *DB) saveRecords() {
+	if sdb := store.Global(); sdb != nil {
+		db.mu.RLock()
+		for _, rec := range db.records {
+			sr := store.IPRecord{
+				IP:          rec.IP,
+				FirstSeen:   rec.FirstSeen,
+				LastSeen:    rec.LastSeen,
+				EventCount:  rec.EventCount,
+				ThreatScore: rec.ThreatScore,
+				AutoBlocked: rec.AutoBlocked,
+				AttackCounts: make(map[string]int),
+				Accounts:     make(map[string]int),
+			}
+			for k, v := range rec.AttackCounts {
+				sr.AttackCounts[string(k)] = v
+			}
+			for k, v := range rec.Accounts {
+				sr.Accounts[k] = v
+			}
+			if err := sdb.SaveIPRecord(sr); err != nil {
+				fmt.Fprintf(os.Stderr, "attackdb: store save %s: %v\n", rec.IP, err)
+			}
+		}
+		db.mu.RUnlock()
+		return
+	}
+
+	// Fallback: flat-file records.json.
 	db.mu.RLock()
 	data, err := json.Marshal(db.records)
 	db.mu.RUnlock()
@@ -58,8 +116,32 @@ func (db *DB) saveRecords() {
 	_ = os.Rename(tmpPath, path)
 }
 
-// appendEvents appends events to the JSONL file, rotating if needed.
+// appendEvents writes events to the bbolt store (if available) or appends
+// to the JSONL file, rotating if needed.
 func (db *DB) appendEvents(events []Event) {
+	if sdb := store.Global(); sdb != nil {
+		for i, ev := range events {
+			ts := ev.Timestamp
+			if ts.IsZero() {
+				ts = time.Now()
+			}
+			se := store.AttackEvent{
+				Timestamp:  ts,
+				IP:         ev.IP,
+				AttackType: string(ev.AttackType),
+				CheckName:  ev.CheckName,
+				Severity:   ev.Severity,
+				Account:    ev.Account,
+				Message:    ev.Message,
+			}
+			if err := sdb.RecordAttackEvent(se, i); err != nil {
+				fmt.Fprintf(os.Stderr, "attackdb: store event: %v\n", err)
+			}
+		}
+		return
+	}
+
+	// Fallback: flat-file JSONL.
 	path := filepath.Join(db.dbPath, eventsFile)
 
 	// Check file size and rotate if needed
@@ -109,9 +191,28 @@ func rotateEventsFile(path string) {
 	_ = os.Rename(tmpPath, path)
 }
 
-// QueryEvents reads events for a specific IP from the JSONL file.
-// Returns the most recent `limit` events in reverse chronological order.
+// QueryEvents reads events for a specific IP from the bbolt store (if
+// available) or from the JSONL file. Returns the most recent `limit`
+// events in reverse chronological order.
 func (db *DB) QueryEvents(ip string, limit int) []Event {
+	if sdb := store.Global(); sdb != nil {
+		storeEvents := sdb.QueryAttackEvents(ip, limit)
+		result := make([]Event, len(storeEvents))
+		for i, se := range storeEvents {
+			result[i] = Event{
+				Timestamp:  se.Timestamp,
+				IP:         se.IP,
+				AttackType: AttackType(se.AttackType),
+				CheckName:  se.CheckName,
+				Severity:   se.Severity,
+				Account:    se.Account,
+				Message:    se.Message,
+			}
+		}
+		return result
+	}
+
+	// Fallback: flat-file JSONL.
 	path := filepath.Join(db.dbPath, eventsFile)
 	f, err := os.Open(path)
 	if err != nil {

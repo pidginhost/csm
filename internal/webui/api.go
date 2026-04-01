@@ -19,6 +19,7 @@ import (
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
 	"github.com/pidginhost/cpanel-security-monitor/internal/checks"
 	"github.com/pidginhost/cpanel-security-monitor/internal/state"
+	"github.com/pidginhost/cpanel-security-monitor/internal/store"
 )
 
 var reIPReputation = regexp.MustCompile(`Known malicious IP accessing server: (\S+) \((.+)\)`)
@@ -866,11 +867,29 @@ func formatBlockedView(b blockedEntry) (blockedView, bool) {
 }
 
 // apiBlockedIPs returns the list of currently blocked IPs.
-// Reads from firewall engine state if available, falls back to blocked_ips.json.
+// Uses bbolt store when available, falls back to flat files.
 func (s *Server) apiBlockedIPs(w http.ResponseWriter, _ *http.Request) {
 	var result []blockedView
 
-	// Try firewall engine state first
+	// Try bbolt store first.
+	if sdb := store.Global(); sdb != nil {
+		ss := sdb.LoadFirewallState()
+		for _, entry := range ss.Blocked {
+			b := blockedEntry{
+				IP:        entry.IP,
+				Reason:    entry.Reason,
+				BlockedAt: entry.BlockedAt,
+				ExpiresAt: entry.ExpiresAt,
+			}
+			if view, ok := formatBlockedView(b); ok {
+				result = append(result, view)
+			}
+		}
+		writeJSON(w, result)
+		return
+	}
+
+	// Fallback: try firewall engine state.json
 	fwFile := filepath.Join(s.cfg.StatePath, "firewall", "state.json")
 	if fwData, err := os.ReadFile(fwFile); err == nil {
 		var fwState struct {
@@ -887,7 +906,7 @@ func (s *Server) apiBlockedIPs(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 
-	// Fall back to blocked_ips.json
+	// Fall back to blocked_ips.json (legacy)
 	stateFile := filepath.Join(s.cfg.StatePath, "blocked_ips.json")
 	data, err := os.ReadFile(stateFile)
 	if err != nil {

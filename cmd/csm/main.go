@@ -18,6 +18,7 @@ import (
 	"github.com/pidginhost/cpanel-security-monitor/internal/integrity"
 	"github.com/pidginhost/cpanel-security-monitor/internal/signatures"
 	"github.com/pidginhost/cpanel-security-monitor/internal/state"
+	"github.com/pidginhost/cpanel-security-monitor/internal/store"
 )
 
 // activeStore holds a reference to the current store for signal handling.
@@ -31,6 +32,9 @@ func init() {
 		<-c
 		if activeStore != nil {
 			_ = activeStore.Close()
+		}
+		if db := store.Global(); db != nil {
+			_ = db.Close()
 		}
 		os.Exit(0)
 	}()
@@ -157,6 +161,13 @@ func loadConfig() *config.Config {
 		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Initialize bbolt store (idempotent — uses sync.Once).
+	if err := store.EnsureOpen(cfg.StatePath); err != nil {
+		fmt.Fprintf(os.Stderr, "store: %v\n", err)
+		os.Exit(1)
+	}
+
 	return cfg
 }
 

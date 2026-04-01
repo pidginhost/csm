@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
+	"github.com/pidginhost/cpanel-security-monitor/internal/store"
 )
 
 type Store struct {
@@ -248,13 +249,28 @@ func (s *Store) SetRaw(key, value string) {
 	}
 }
 
-// AppendHistory writes findings to an append-only JSONL history file.
-// Caps file at 10MB by truncating the oldest half.
+// AppendHistory writes findings to the bbolt store (if available) or
+// falls back to the append-only JSONL history file.
 func (s *Store) AppendHistory(findings []alert.Finding) {
 	if len(findings) == 0 {
 		return
 	}
 
+	// Use bbolt store when available.
+	if db := store.Global(); db != nil {
+		if err := db.AppendHistory(findings); err != nil {
+			fmt.Fprintf(os.Stderr, "store: append history: %v\n", err)
+		}
+		return
+	}
+
+	// Fallback: flat-file JSONL.
+	s.appendHistoryFile(findings)
+}
+
+// appendHistoryFile writes findings to the append-only JSONL history file.
+// Caps file at 10MB by truncating the oldest half.
+func (s *Store) appendHistoryFile(findings []alert.Finding) {
 	histPath := filepath.Join(s.path, "history.jsonl")
 
 	// Check size, truncate if over 10MB
@@ -341,9 +357,16 @@ func (s *Store) EntryForKey(key string) (Entry, bool) {
 	return *e, true
 }
 
-// ReadHistory reads the last limit entries from history.jsonl, starting at offset.
+// ReadHistory reads the last limit entries, starting at offset.
 // Returns the findings (newest first) and total count.
+// Uses bbolt store when available, falls back to flat-file JSONL.
 func (s *Store) ReadHistory(limit, offset int) ([]alert.Finding, int) {
+	// Use bbolt store when available.
+	if db := store.Global(); db != nil {
+		return db.ReadHistory(limit, offset)
+	}
+
+	// Fallback: flat-file JSONL.
 	historyPath := filepath.Join(s.path, "history.jsonl")
 	data, err := os.ReadFile(historyPath)
 	if err != nil {
