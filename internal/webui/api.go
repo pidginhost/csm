@@ -151,7 +151,7 @@ func (s *Server) apiFindingsEnriched(w http.ResponseWriter, _ *http.Request) {
 	latest := s.store.LatestFindings()
 	suppressions := s.store.LoadSuppressions()
 
-	var items []enrichedFinding
+	items := make([]enrichedFinding, 0)
 	for _, f := range latest {
 		if f.Check == "auto_response" || f.Check == "auto_block" || f.Check == "check_timeout" || f.Check == "health" {
 			continue
@@ -171,7 +171,7 @@ func (s *Server) apiFindingsEnriched(w http.ResponseWriter, _ *http.Request) {
 			Check:     f.Check,
 			Message:   f.Message,
 			FilePath:  f.FilePath,
-			Account:   extractAccount(f.FilePath, f.Message),
+			Account:   extractAccountFromFinding(f),
 			FirstSeen: firstSeen.Format(time.RFC3339),
 			LastSeen:  lastSeen.Format(time.RFC3339),
 			HasFix:    checks.HasFix(f.Check),
@@ -201,12 +201,12 @@ func (s *Server) apiFindingsEnriched(w http.ResponseWriter, _ *http.Request) {
 			accountSet[item.Account] = true
 		}
 	}
-	var checkTypes []string
+	checkTypes := make([]string, 0, len(checkTypeSet))
 	for ct := range checkTypeSet {
 		checkTypes = append(checkTypes, ct)
 	}
 	sort.Strings(checkTypes)
-	var accounts []string
+	accounts := make([]string, 0, len(accountSet))
 	for a := range accountSet {
 		accounts = append(accounts, a)
 	}
