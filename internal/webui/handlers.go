@@ -4,27 +4,11 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"regexp"
 	"time"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
 	"github.com/pidginhost/cpanel-security-monitor/internal/checks"
 )
-
-// renderTemplate executes a named template and logs errors to stderr.
-var reHomeAccount = regexp.MustCompile(`/home/([^/\s]+)/`)
-var reIPReputation = regexp.MustCompile(`Known malicious IP accessing server: (\S+) \((.+)\)`)
-
-// extractAccount returns the cPanel account from a file path or message.
-func extractAccount(filePath, message string) string {
-	if m := reHomeAccount.FindStringSubmatch(filePath); m != nil {
-		return m[1]
-	}
-	if m := reHomeAccount.FindStringSubmatch(message); m != nil {
-		return m[1]
-	}
-	return ""
-}
 
 func (s *Server) renderTemplate(w http.ResponseWriter, name string, data interface{}) {
 	if err := s.templates[name].ExecuteTemplate(w, name, data); err != nil {

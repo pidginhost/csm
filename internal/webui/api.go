@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,6 +20,8 @@ import (
 	"github.com/pidginhost/cpanel-security-monitor/internal/checks"
 	"github.com/pidginhost/cpanel-security-monitor/internal/state"
 )
+
+var reIPReputation = regexp.MustCompile(`Known malicious IP accessing server: (\S+) \((.+)\)`)
 
 // apiStatus returns daemon status and uptime.
 func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {

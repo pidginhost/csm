@@ -5,14 +5,12 @@
 
 // --- State ---
 var findingsTable = null;
-var findingsData = [];  // raw array from API for export/polling
 
 // --- Fetch and render findings from enriched API ---
 function loadFindings() {
     fetch(CSM.apiUrl('/api/v1/findings/enriched'), { credentials: 'same-origin' })
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            findingsData = data.findings || [];
             renderFindings(data);
         })
         .catch(function() {
@@ -86,8 +84,8 @@ function renderFindings(data) {
             '<td><span class="badge badge-' + CSM.esc(f.sev_class) + '">' + CSM.esc(f.severity) + '</span></td>' +
             '<td><code>' + CSM.esc(f.check) + '</code></td>' +
             '<td class="text-secondary" style="word-break:break-all">' + CSM.esc(f.message) + '</td>' +
-            '<td class="text-nowrap" data-timestamp="' + CSM.esc(f.first_seen) + '"><span class="font-monospace small">' + CSM.fmtDateTime(f.first_seen) + '</span></td>' +
-            '<td class="text-nowrap" data-timestamp="' + CSM.esc(f.last_seen) + '"><span class="font-monospace small">' + CSM.fmtDateTime(f.last_seen) + '</span></td>' +
+            '<td class="text-nowrap"><span class="font-monospace small" data-timestamp="' + CSM.esc(f.first_seen) + '">' + CSM.fmtDateTime(f.first_seen) + '</span></td>' +
+            '<td class="text-nowrap"><span class="font-monospace small" data-timestamp="' + CSM.esc(f.last_seen) + '">' + CSM.fmtDateTime(f.last_seen) + '</span></td>' +
             '<td class="text-nowrap action-cell"></td>' +
             '</tr>';
     }
