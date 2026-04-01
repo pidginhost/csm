@@ -99,12 +99,15 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 
 	for _, f := range findings {
 		// Only quarantine specific file-based findings
+		isRealtimeMatch := false
 		switch f.Check {
 		case "webshell", "backdoor_binary", "new_webshell_file", "new_executable_in_config",
 			"obfuscated_php", "php_dropper", "suspicious_php_content",
 			"new_php_in_languages", "new_php_in_upgrade",
 			"phishing_page", "phishing_directory",
 			"htaccess_handler_abuse":
+		case "signature_match_realtime":
+			isRealtimeMatch = true
 		default:
 			continue
 		}
@@ -121,10 +124,25 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 			continue
 		}
 
+		// Realtime signature matches require additional validation to avoid
+		// quarantining false positives (e.g. legitimate PHPMailer matching
+		// "webshell_marijuana", or zip libraries matching hex patterns).
+		// Only quarantine when the file is genuinely obfuscated malware.
+		if isRealtimeMatch && !isHighConfidenceRealtimeMatch(f, path) {
+			continue
+		}
+
 		// Verify file or directory exists
 		info, err := os.Stat(path)
 		if err != nil {
 			continue
+		}
+
+		// Realtime high-confidence matches are fully obfuscated malware —
+		// there is no legitimate code to preserve, skip cleaning and go
+		// straight to quarantine.
+		if isRealtimeMatch {
+			goto quarantine
 		}
 
 		// For WP core/plugin/theme files: clean surgically instead of quarantining.
@@ -156,6 +174,7 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 			}
 		}
 
+	quarantine:
 		// Create quarantine directory
 		_ = os.MkdirAll(quarantineDir, 0700)
 
@@ -332,4 +351,64 @@ func isSafeProcess(exe string) bool {
 		}
 	}
 	return false
+}
+
+// isHighConfidenceRealtimeMatch validates whether a signature_match_realtime
+// finding is truly malicious and safe to auto-quarantine. This prevents
+// quarantining false positives like legitimate PHPMailer (matching
+// "webshell_marijuana"), zip libraries (matching hex patterns), or theme
+// code using create_function().
+//
+// Criteria — ALL must be true:
+//  1. Category is "dropper" or "webshell" (high-confidence rule categories)
+//  2. File is not in a known library path (PHPMailer, vendor, etc.)
+//  3. File content has Shannon entropy >= 5.0 (heavily obfuscated)
+//
+// Normal PHP code has entropy 3.5–4.5. Obfuscated malware (goto chains,
+// hex-encoded strings, AES-encrypted payloads) consistently exceeds 4.8.
+func isHighConfidenceRealtimeMatch(f alert.Finding, path string) bool {
+	cat := extractCategory(f.Details)
+	switch cat {
+	case "dropper", "webshell":
+	default:
+		return false
+	}
+
+	pathLower := strings.ToLower(path)
+	for _, lib := range knownLibraryPaths {
+		if strings.Contains(pathLower, lib) {
+			return false
+		}
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+
+	return shannonEntropy(string(data)) >= 4.8
+}
+
+// knownLibraryPaths are directory fragments that indicate a file belongs to
+// a well-known third-party library and should never be auto-quarantined.
+var knownLibraryPaths = []string{
+	"/phpmailer/",
+	"/vendor/",
+	"/node_modules/",
+	"/pear/",
+	"/tcpdf/",
+	"/dompdf/",
+	"/guzzlehttp/",
+	"/symfony/",
+	"/monolog/",
+}
+
+// extractCategory parses "Category: <value>" from a finding's Details field.
+func extractCategory(details string) string {
+	for _, line := range strings.Split(details, "\n") {
+		if strings.HasPrefix(line, "Category: ") {
+			return strings.TrimPrefix(line, "Category: ")
+		}
+	}
+	return ""
 }

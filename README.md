@@ -105,7 +105,7 @@ Filesystem scanning, webshell detection, .htaccess injection scanning, WordPress
 | Action | Description |
 |---|---|
 | Kill processes | Fake kernel threads, reverse shells, GSocket (never root/system) |
-| Quarantine files | Webshells, backdoors, phishing to `/opt/csm/quarantine/` with metadata |
+| Quarantine files | Webshells, backdoors, phishing to `/opt/csm/quarantine/` with metadata; realtime signature matches auto-quarantined when high-confidence (category + entropy validation) |
 | Block IPs | Attacker IPs via nftables with configurable expiry |
 | Clean malware | 7 strategies: @include, prepend/append, inline eval, base64 chains, chr/pack, hex injection + DB spam |
 | PHP shield | Blocks PHP execution from uploads/tmp, detects webshell parameters |
