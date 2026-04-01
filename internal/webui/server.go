@@ -147,6 +147,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	// Auth-protected API — read
 	mux.Handle("/api/v1/status", s.requireAuth(http.HandlerFunc(s.apiStatus)))
 	mux.Handle("/api/v1/findings", s.requireAuth(http.HandlerFunc(s.apiFindings)))
+	mux.Handle("/api/v1/findings/enriched", s.requireAuth(http.HandlerFunc(s.apiFindingsEnriched)))
 	mux.Handle("/api/v1/history", s.requireAuth(http.HandlerFunc(s.apiHistory)))
 	mux.Handle("/api/v1/quarantine", s.requireAuth(http.HandlerFunc(s.apiQuarantine)))
 	mux.Handle("/api/v1/stats", s.requireAuth(http.HandlerFunc(s.apiStats)))

@@ -82,6 +82,147 @@ func (s *Server) apiFindings(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, result)
 }
 
+// enrichedFinding is the JSON response type for the enriched findings endpoint.
+type enrichedFinding struct {
+	Severity  string `json:"severity"`
+	SevClass  string `json:"sev_class"`
+	Check     string `json:"check"`
+	Message   string `json:"message"`
+	FilePath  string `json:"file_path,omitempty"`
+	Account   string `json:"account,omitempty"`
+	FirstSeen string `json:"first_seen"`
+	LastSeen  string `json:"last_seen"`
+	HasFix    bool   `json:"has_fix"`
+	FixDesc   string `json:"fix_desc,omitempty"`
+}
+
+// dedupIPReputation groups ip_reputation findings by IP, merging sources and
+// promoting to the highest severity. Non-ip_reputation findings pass through unchanged.
+func dedupIPReputation(items []enrichedFinding) []enrichedFinding {
+	type ipGroup struct {
+		entry   enrichedFinding
+		sources []string
+	}
+	ipGroups := make(map[string]*ipGroup)
+	var ipOrder []string
+	var result []enrichedFinding
+
+	for _, item := range items {
+		if item.Check != "ip_reputation" {
+			result = append(result, item)
+			continue
+		}
+		m := reIPReputation.FindStringSubmatch(item.Message)
+		if m == nil {
+			result = append(result, item)
+			continue
+		}
+		ip, source := m[1], m[2]
+		if g, ok := ipGroups[ip]; ok {
+			g.sources = append(g.sources, source)
+			if item.FirstSeen < g.entry.FirstSeen {
+				g.entry.FirstSeen = item.FirstSeen
+			}
+			if item.LastSeen > g.entry.LastSeen {
+				g.entry.LastSeen = item.LastSeen
+			}
+			if severityRank(item.Severity) > severityRank(g.entry.Severity) {
+				g.entry.Severity = item.Severity
+				g.entry.SevClass = item.SevClass
+			}
+		} else {
+			ipGroups[ip] = &ipGroup{
+				entry:   item,
+				sources: []string{source},
+			}
+			ipOrder = append(ipOrder, ip)
+		}
+	}
+	for _, ip := range ipOrder {
+		g := ipGroups[ip]
+		g.entry.Message = fmt.Sprintf("Known malicious IP accessing server: %s (%s)", ip, strings.Join(g.sources, ", "))
+		result = append(result, g.entry)
+	}
+	return result
+}
+
+// apiFindingsEnriched returns findings with IP dedup, account extraction, and severity counts.
+func (s *Server) apiFindingsEnriched(w http.ResponseWriter, _ *http.Request) {
+	latest := s.store.LatestFindings()
+	suppressions := s.store.LoadSuppressions()
+
+	var items []enrichedFinding
+	for _, f := range latest {
+		if f.Check == "auto_response" || f.Check == "auto_block" || f.Check == "check_timeout" || f.Check == "health" {
+			continue
+		}
+		if s.store.IsSuppressed(f, suppressions) {
+			continue
+		}
+		firstSeen := f.Timestamp
+		lastSeen := f.Timestamp
+		if entry, ok := s.store.EntryForKey(f.Key()); ok {
+			firstSeen = entry.FirstSeen
+			lastSeen = entry.LastSeen
+		}
+		items = append(items, enrichedFinding{
+			Severity:  severityLabel(f.Severity),
+			SevClass:  severityClass(f.Severity),
+			Check:     f.Check,
+			Message:   f.Message,
+			FilePath:  f.FilePath,
+			Account:   extractAccount(f.FilePath, f.Message),
+			FirstSeen: firstSeen.Format(time.RFC3339),
+			LastSeen:  lastSeen.Format(time.RFC3339),
+			HasFix:    checks.HasFix(f.Check),
+			FixDesc:   checks.FixDescription(f.Check, f.Message),
+		})
+	}
+
+	items = dedupIPReputation(items)
+
+	var critCount, highCount, warnCount int
+	for _, item := range items {
+		switch item.Severity {
+		case "CRITICAL":
+			critCount++
+		case "HIGH":
+			highCount++
+		default:
+			warnCount++
+		}
+	}
+
+	checkTypeSet := make(map[string]bool)
+	accountSet := make(map[string]bool)
+	for _, item := range items {
+		checkTypeSet[item.Check] = true
+		if item.Account != "" {
+			accountSet[item.Account] = true
+		}
+	}
+	var checkTypes []string
+	for ct := range checkTypeSet {
+		checkTypes = append(checkTypes, ct)
+	}
+	sort.Strings(checkTypes)
+	var accounts []string
+	for a := range accountSet {
+		accounts = append(accounts, a)
+	}
+	sort.Strings(accounts)
+
+	writeJSON(w, map[string]interface{}{
+		"findings":       items,
+		"check_types":    checkTypes,
+		"accounts":       accounts,
+		"critical_count": critCount,
+		"high_count":     highCount,
+		"warning_count":  warnCount,
+		"total":          len(items),
+	})
+}
+
 // apiHistory returns paginated history from history.jsonl.
 // Supports optional filtering via "from", "to" (YYYY-MM-DD), and "severity" (0/1/2) query params.
 func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
