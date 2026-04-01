@@ -85,6 +85,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		"timeAgo":       timeAgo,
 		"formatTime":    formatTime,
 		"csrfToken":     s.csrfToken,
+		"csmConfig":     func() template.JS { return template.JS(s.csmConfigJSON()) },
 		"json": func(v any) template.JS {
 			b, _ := json.Marshal(v)
 			return template.JS(b)
@@ -344,6 +345,21 @@ func (s *Server) SetEmailQuarantine(q *emailav.Quarantine) {
 // SetEmailAVWatcherMode sets the watcher mode string for the email AV status API.
 func (s *Server) SetEmailAVWatcherMode(mode string) {
 	s.emailAVWatcherMode = mode
+}
+
+// csmConfigJSON returns a JSON string of feature flags for the frontend.
+func (s *Server) csmConfigJSON() string {
+	flags := map[string]interface{}{
+		"emailAV":      s.cfg.EmailAV.Enabled,
+		"firewall":     s.cfg.Firewall != nil && s.cfg.Firewall.Enabled,
+		"autoResponse": s.cfg.AutoResponse.Enabled,
+		"threatIntel":  s.cfg.Reputation.AbuseIPDBKey != "",
+		"signatures":   s.cfg.Signatures.RulesDir != "",
+		"challenge":    s.cfg.Challenge.Difficulty > 0,
+		"hostname":     s.cfg.Hostname,
+	}
+	b, _ := json.Marshal(flags)
+	return string(b)
 }
 
 // --- Authentication ---
