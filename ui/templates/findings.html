@@ -33,20 +33,13 @@
     <div class="card" id="findings-table-card">
         <div class="card-header">
             <h3 class="card-title">
-                <i class="ti ti-alert-triangle"></i>&nbsp;Active Findings ({{len .Entries}})
-                {{if .Entries}}
-                <span class="ms-2 fw-normal" style="font-size:0.8rem">
-                    {{if .CriticalCount}}<span class="badge badge-critical">{{.CriticalCount}} critical</span> {{end}}
-                    {{if .HighCount}}<span class="badge badge-high">{{.HighCount}} high</span> {{end}}
-                    {{if .WarningCount}}<span class="badge badge-warning">{{.WarningCount}} warning</span> {{end}}
-                </span>
-                {{end}}
+                <i class="ti ti-alert-triangle"></i>&nbsp;Active Findings <span id="findings-count"></span>
+                <span id="severity-badges" class="ms-2 fw-normal" style="font-size:0.8rem"></span>
             </h3>
             <div class="card-actions d-flex gap-2 flex-wrap align-items-center">
                 <input type="text" id="findings-search" class="form-control form-control-sm csm-input-sm" placeholder="Search...">
                 <select id="check-filter" class="form-select form-select-sm" style="width:auto">
                     <option value="all">All Types</option>
-                    {{range .CheckTypes}}<option value="{{.}}">{{.}}</option>{{end}}
                 </select>
                 <input type="search" id="account-filter" list="account-filter-list" class="form-control form-control-sm" placeholder="All Accounts" style="width:140px" autocomplete="off">
                 <datalist id="account-filter-list"></datalist>
@@ -80,8 +73,13 @@
                 </div>
             </div>
         </div>
-        {{if .Entries}}
-        <div class="table-responsive">
+        <div id="findings-loading" class="card-body text-center text-muted py-4">
+            <span class="spinner-border spinner-border-sm"></span> Loading findings...
+        </div>
+        <div id="findings-empty" class="card-body text-center text-muted py-4 d-none">
+            <i class="ti ti-circle-check"></i> No active findings. All clear.
+        </div>
+        <div class="table-responsive d-none" id="findings-table-wrap">
             <table class="table table-vcenter card-table w-100" id="findings-table">
                 <thead>
                     <tr>
@@ -94,24 +92,9 @@
                         <th>Actions</th>
                     </tr>
                 </thead>
-                <tbody id="findings-tbody">
-                    {{range .Entries}}
-                    <tr class="finding-row" data-check="{{.Check}}" data-message="{{.Message}}" data-filepath="{{.FilePath}}" data-account="{{.Account}}" data-hasFix="{{.HasFix}}" data-fixdesc="{{.FixDesc}}">
-                        <td><input type="checkbox" class="form-check-input row-checkbox"></td>
-                        <td><span class="badge badge-{{.SevClass}}">{{.Severity}}</span></td>
-                        <td><code>{{.Check}}</code></td>
-                        <td class="text-secondary" style="word-break:break-all">{{.Message}}</td>
-                        <td class="text-nowrap"><span class="font-monospace small">{{.FirstSeen}}</span></td>
-                        <td class="text-nowrap"><span class="font-monospace small">{{.LastSeen}}</span></td>
-                        <td class="text-nowrap action-cell"></td>
-                    </tr>
-                    {{end}}
-                </tbody>
+                <tbody id="findings-tbody"></tbody>
             </table>
         </div>
-        {{else}}
-        <div class="card-body text-center text-muted py-4"><i class="ti ti-circle-check"></i> No active findings. All clear.</div>
-        {{end}}
     </div>
 {{end}}
 {{define "scripts"}}

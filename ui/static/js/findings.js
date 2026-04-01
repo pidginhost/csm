@@ -1,8 +1,122 @@
-// CSM Findings page
+// CSM Findings page — Client-side rendered via /api/v1/findings/enriched
 
-// --- Table init with search + check type filter ---
-var findingsTable;
-if (document.getElementById('findings-table')) {
+(function() {
+'use strict';
+
+// --- State ---
+var findingsTable = null;
+var findingsData = [];  // raw array from API for export/polling
+
+// --- Fetch and render findings from enriched API ---
+function loadFindings() {
+    fetch(CSM.apiUrl('/api/v1/findings/enriched'), { credentials: 'same-origin' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            findingsData = data.findings || [];
+            renderFindings(data);
+        })
+        .catch(function() {
+            document.getElementById('findings-loading').classList.add('d-none');
+            CSM.loadError(document.getElementById('findings-table-card'), loadFindings);
+        });
+}
+
+function renderFindings(data) {
+    var findings = data.findings || [];
+    var checkTypes = data.check_types || [];
+    var accounts = data.accounts || [];
+    var total = data.total || 0;
+
+    // Hide loading spinner
+    document.getElementById('findings-loading').classList.add('d-none');
+
+    // Update header count and severity badges
+    var countEl = document.getElementById('findings-count');
+    if (countEl) countEl.textContent = '(' + total + ')';
+
+    var badgesEl = document.getElementById('severity-badges');
+    if (badgesEl) {
+        var badgeHtml = '';
+        if (data.critical_count) badgeHtml += '<span class="badge badge-critical">' + data.critical_count + ' critical</span> ';
+        if (data.high_count) badgeHtml += '<span class="badge badge-high">' + data.high_count + ' high</span> ';
+        if (data.warning_count) badgeHtml += '<span class="badge badge-warning">' + data.warning_count + ' warning</span> ';
+        badgesEl.innerHTML = badgeHtml;
+    }
+
+    // Populate check type filter dropdown
+    var checkFilter = document.getElementById('check-filter');
+    if (checkFilter) {
+        for (var i = 0; i < checkTypes.length; i++) {
+            var opt = document.createElement('option');
+            opt.value = checkTypes[i];
+            opt.textContent = checkTypes[i];
+            checkFilter.appendChild(opt);
+        }
+    }
+
+    // Populate account filter datalist
+    var filterDl = document.getElementById('account-filter-list');
+    if (filterDl) {
+        for (var j = 0; j < accounts.length; j++) {
+            var opt2 = document.createElement('option');
+            opt2.value = accounts[j];
+            filterDl.appendChild(opt2);
+        }
+    }
+
+    if (findings.length === 0) {
+        document.getElementById('findings-empty').classList.remove('d-none');
+        return;
+    }
+
+    // Render table rows
+    var tbody = document.getElementById('findings-tbody');
+    var html = '';
+    for (var k = 0; k < findings.length; k++) {
+        var f = findings[k];
+        html += '<tr class="finding-row"' +
+            ' data-check="' + CSM.esc(f.check) + '"' +
+            ' data-message="' + CSM.esc(f.message) + '"' +
+            ' data-filepath="' + CSM.esc(f.file_path || '') + '"' +
+            ' data-account="' + CSM.esc(f.account || '') + '"' +
+            ' data-hasFix="' + (f.has_fix ? 'true' : 'false') + '"' +
+            ' data-fixdesc="' + CSM.esc(f.fix_desc || '') + '"' +
+            ' style="cursor:pointer">' +
+            '<td><input type="checkbox" class="form-check-input row-checkbox"></td>' +
+            '<td><span class="badge badge-' + CSM.esc(f.sev_class) + '">' + CSM.esc(f.severity) + '</span></td>' +
+            '<td><code>' + CSM.esc(f.check) + '</code></td>' +
+            '<td class="text-secondary" style="word-break:break-all">' + CSM.esc(f.message) + '</td>' +
+            '<td class="text-nowrap" data-timestamp="' + CSM.esc(f.first_seen) + '"><span class="font-monospace small">' + CSM.fmtDateTime(f.first_seen) + '</span></td>' +
+            '<td class="text-nowrap" data-timestamp="' + CSM.esc(f.last_seen) + '"><span class="font-monospace small">' + CSM.fmtDateTime(f.last_seen) + '</span></td>' +
+            '<td class="text-nowrap action-cell"></td>' +
+            '</tr>';
+    }
+    tbody.innerHTML = html;
+
+    // Show the table wrapper
+    document.getElementById('findings-table-wrap').classList.remove('d-none');
+
+    // Build action buttons for each row
+    var rows = tbody.querySelectorAll('.finding-row');
+    for (var r = 0; r < rows.length; r++) {
+        buildActionButtons(rows[r]);
+    }
+
+    // Bind row checkboxes
+    var checkboxes = tbody.querySelectorAll('.row-checkbox');
+    for (var c = 0; c < checkboxes.length; c++) {
+        checkboxes[c].addEventListener('change', updateSelection);
+    }
+
+    // Bind click-to-expand on rows
+    for (var rx = 0; rx < rows.length; rx++) {
+        rows[rx].addEventListener('click', function(e) {
+            if (e.target.closest('button') || e.target.closest('input')) return;
+            toggleFindingDetail(this);
+        });
+    }
+
+    // Initialize CSM.Table after rows are in the DOM
     findingsTable = new CSM.Table({
         tableId: 'findings-table',
         perPage: 25,
@@ -14,12 +128,43 @@ if (document.getElementById('findings-table')) {
             { id: 'account-filter', attr: 'data-account' }
         ],
         stateKey: 'csm-findings-table',
-        onRender: function() { if (typeof updateSelection === 'function') updateSelection(); }
+        onRender: function() { updateSelection(); }
+    });
+
+    // Restore filter state from URL params (after table init)
+    restoreURLParams();
+
+    // Set up auto-refresh polling
+    initAutoRefresh(findings);
+}
+
+// --- Build action buttons for a row ---
+function buildActionButtons(row) {
+    var cell = row.querySelector('.action-cell');
+    if (!cell) return;
+    var hasFix = row.getAttribute('data-hasFix') === 'true';
+    var btnHtml = '';
+    if (hasFix) {
+        btnHtml += '<button class="btn btn-warning btn-sm me-1 fix-btn" title="' + CSM.esc(row.getAttribute('data-fixdesc') || '') + '"><i class="ti ti-tool"></i></button>';
+    }
+    btnHtml += '<button class="btn btn-ghost-secondary btn-sm me-1 dismiss-btn"><i class="ti ti-x"></i></button>';
+    btnHtml += '<button class="btn btn-ghost-secondary btn-sm suppress-btn" title="Suppress"><i class="ti ti-eye-off"></i></button>';
+    cell.innerHTML = btnHtml;
+
+    var fixBtn = cell.querySelector('.fix-btn');
+    if (fixBtn) fixBtn.addEventListener('click', function() { fixOne(this); });
+    var dismissBtn = cell.querySelector('.dismiss-btn');
+    if (dismissBtn) dismissBtn.addEventListener('click', function() {
+        dismissOne(row.getAttribute('data-check') + ':' + row.getAttribute('data-message'));
+    });
+    var suppressBtn = cell.querySelector('.suppress-btn');
+    if (suppressBtn) suppressBtn.addEventListener('click', function() {
+        suppressFinding(row.getAttribute('data-check'), row.getAttribute('data-message'), row.getAttribute('data-filepath'));
     });
 }
 
-// Restore filter state from URL params
-(function() {
+// --- URL param restore ---
+function restoreURLParams() {
     var params = new URLSearchParams(window.location.search);
     var checkParam = params.get('check');
     var searchParam = params.get('search');
@@ -29,14 +174,14 @@ if (document.getElementById('findings-table')) {
         if (filter) { filter.value = checkParam; filter.dispatchEvent(new Event('change')); }
     }
     if (accountParam) {
-        var filter = document.getElementById('account-filter');
-        if (filter) { filter.value = accountParam; filter.dispatchEvent(new Event('input')); }
+        var filter2 = document.getElementById('account-filter');
+        if (filter2) { filter2.value = accountParam; filter2.dispatchEvent(new Event('input')); }
     }
     if (searchParam) {
         var search = document.getElementById('findings-search');
         if (search) { search.value = searchParam; search.dispatchEvent(new Event('input')); }
     }
-})();
+}
 
 // --- Collapsible scan section ---
 (function() {
@@ -101,17 +246,17 @@ if (document.getElementById('findings-table')) {
     observer.observe(sentinel);
 })();
 
-function changePerPage() {
-    var pp = parseInt(document.getElementById('per-page').value, 10);
+// --- Per-page selector ---
+var perPageEl = document.getElementById('per-page');
+if (perPageEl) perPageEl.addEventListener('change', function() {
+    var pp = parseInt(this.value, 10);
     if (findingsTable) {
         findingsTable.perPage = pp || 0;
         findingsTable.currentPage = 1;
         findingsTable.render();
         findingsTable._saveState();
     }
-}
-var perPageEl = document.getElementById('per-page');
-if (perPageEl) perPageEl.addEventListener('change', changePerPage);
+});
 
 // --- Selection management ---
 function getVisibleRows() {
@@ -139,11 +284,14 @@ function toggleSelectAll() {
 function updateSelection() {
     var selected = getSelectedRows();
     var count = selected.length;
-    document.getElementById('selected-count').textContent = count;
-    document.getElementById('bulk-actions').classList.toggle('d-none', count === 0);
+    var countEl = document.getElementById('selected-count');
+    if (countEl) countEl.textContent = count;
+    var bulkEl = document.getElementById('bulk-actions');
+    if (bulkEl) bulkEl.classList.toggle('d-none', count === 0);
     // Show Fix button only if any selected row is fixable
     var hasFixable = selected.some(function(r) { return r.getAttribute('data-hasFix') === 'true'; });
-    document.getElementById('bulk-fix-btn').classList.toggle('d-none', !hasFixable);
+    var fixBtn = document.getElementById('bulk-fix-btn');
+    if (fixBtn) fixBtn.classList.toggle('d-none', !hasFixable);
 }
 
 // Warn before navigating away with active selections
@@ -154,7 +302,7 @@ window.addEventListener('beforeunload', function(e) {
     }
 });
 
-// Reset select-all when filter changes
+// Reset select-all when check filter changes
 var checkFilterEl = document.getElementById('check-filter');
 if (checkFilterEl) checkFilterEl.addEventListener('change', function() {
     var selectAll = document.getElementById('select-all');
@@ -163,7 +311,7 @@ if (checkFilterEl) checkFilterEl.addEventListener('change', function() {
     updateSelection();
 });
 
-// Account filter is a search input — bind 'input' to trigger table filtering
+// Account filter — bind 'input' to trigger table filtering
 var accountFilterEl = document.getElementById('account-filter');
 if (accountFilterEl) accountFilterEl.addEventListener('input', function() {
     if (findingsTable) {
@@ -313,30 +461,19 @@ document.getElementById('scan-form').addEventListener('submit', function(e) {
     }).catch(function(e) { clearInterval(timerInterval); btn.disabled=false; btn.innerHTML='<i class="ti ti-radar-2"></i>&nbsp;Scan'; status.textContent='Error: '+e; status.className='text-danger small'; });
 });
 
-// Load account list for autocomplete dropdowns (scan + filter)
-fetch('/api/v1/accounts', {credentials:'same-origin'}).then(function(r){return r.json()}).then(function(accounts) {
+// Load account list for scan autocomplete dropdown
+fetch(CSM.apiUrl('/api/v1/accounts'), {credentials:'same-origin'}).then(function(r){return r.json()}).then(function(accounts) {
     var dl = document.getElementById('account-list');
-    var filterDl = document.getElementById('account-filter-list');
     (accounts||[]).forEach(function(a) {
         var opt = document.createElement('option');
         opt.value = a;
         dl.appendChild(opt);
-        if (filterDl) {
-            var opt2 = document.createElement('option');
-            opt2.value = a;
-            filterDl.appendChild(opt2);
-        }
     });
 }).catch(function(){});
 
 // Bind select-all checkbox
 var _selectAll = document.getElementById('select-all');
 if (_selectAll) _selectAll.addEventListener('change', toggleSelectAll);
-
-// Bind row checkboxes
-document.querySelectorAll('.row-checkbox').forEach(function(cb) {
-    cb.addEventListener('change', updateSelection);
-});
 
 // Bind bulk action buttons
 var _bulkFixBtn = document.getElementById('bulk-fix-btn');
@@ -360,6 +497,9 @@ if (_bulkDismissBtn) _bulkDismissBtn.addEventListener('click', function() { bulk
     document.head.appendChild(style);
 
     function extractAccount(row) {
+        // Prefer data-account attribute (set from API response)
+        var acct = row.getAttribute('data-account');
+        if (acct) return acct;
         var msg = row.getAttribute('data-message') || '';
         var match = msg.match(/\/home\/([^\/\s]+)\//);
         return match ? match[1] : '(unknown)';
@@ -434,7 +574,7 @@ if (_bulkDismissBtn) _bulkDismissBtn.addEventListener('click', function() { bulk
         groupOrder.sort();
 
         // Get number of columns from thead
-        var colCount = 6;
+        var colCount = 7;
         var theadRow = document.querySelector('#findings-table thead tr');
         if (theadRow) colCount = theadRow.children.length;
 
@@ -492,31 +632,6 @@ if (_bulkDismissBtn) _bulkDismissBtn.addEventListener('click', function() { bulk
     }
 })();
 
-// Build action buttons from data attributes (avoids Go template escaping issues)
-document.querySelectorAll('.finding-row').forEach(function(row) {
-    var cell = row.querySelector('.action-cell');
-    if (!cell) return;
-    var hasFix = row.getAttribute('data-hasFix') === 'true';
-    var html = '';
-    if (hasFix) {
-        html += '<button class="btn btn-warning btn-sm me-1 fix-btn" title="' + CSM.esc(row.getAttribute('data-fixdesc') || '') + '"><i class="ti ti-tool"></i></button>';
-    }
-    html += '<button class="btn btn-ghost-secondary btn-sm me-1 dismiss-btn"><i class="ti ti-x"></i></button>';
-    html += '<button class="btn btn-ghost-secondary btn-sm suppress-btn" title="Suppress"><i class="ti ti-eye-off"></i></button>';
-    cell.innerHTML = html;
-
-    var fixBtn = cell.querySelector('.fix-btn');
-    if (fixBtn) fixBtn.addEventListener('click', function() { fixOne(this); });
-    var dismissBtn = cell.querySelector('.dismiss-btn');
-    if (dismissBtn) dismissBtn.addEventListener('click', function() {
-        dismissOne(row.getAttribute('data-check') + ':' + row.getAttribute('data-message'));
-    });
-    var suppressBtn = cell.querySelector('.suppress-btn');
-    if (suppressBtn) suppressBtn.addEventListener('click', function() {
-        suppressFinding(row.getAttribute('data-check'), row.getAttribute('data-message'), row.getAttribute('data-filepath'));
-    });
-});
-
 // --- Click-to-expand finding detail (remediation action tracking) ---
 function toggleFindingDetail(row) {
     var existing = row.nextElementSibling;
@@ -532,7 +647,7 @@ function toggleFindingDetail(row) {
     var detailRow = document.createElement('tr');
     detailRow.className = 'finding-detail-row';
     var td = document.createElement('td');
-    td.colSpan = row.children.length || 6;
+    td.colSpan = row.children.length || 7;
     td.innerHTML = '<div class="p-2 text-muted small"><span class="spinner-border spinner-border-sm"></span> Loading...</div>';
     detailRow.appendChild(td);
     row.after(detailRow);
@@ -569,14 +684,6 @@ function toggleFindingDetail(row) {
         })
         .catch(function() { td.innerHTML = '<div class="p-2 text-danger small">Failed to load details.</div>'; });
 }
-
-document.querySelectorAll('.finding-row').forEach(function(row) {
-    row.style.cursor = 'pointer';
-    row.addEventListener('click', function(e) {
-        if (e.target.closest('button') || e.target.closest('input')) return;
-        toggleFindingDetail(this);
-    });
-});
 
 // --- Export findings (CSV / JSON) ---
 function getExportData() {
@@ -637,12 +744,13 @@ var jsonBtn = document.getElementById('export-json');
 if (jsonBtn) jsonBtn.addEventListener('click', function(e) { e.preventDefault(); exportJSON(); });
 
 // --- Auto-refresh: poll for new findings every 15 seconds ---
-(function() {
+function initAutoRefresh(initialFindings) {
     var currentKeys = {};
-    document.querySelectorAll('.finding-row').forEach(function(r) {
-        currentKeys[r.dataset.check + ':' + r.dataset.message] = true;
-    });
-    var currentCount = Object.keys(currentKeys).length;
+    for (var i = 0; i < initialFindings.length; i++) {
+        var f = initialFindings[i];
+        currentKeys[f.check + ':' + f.message] = true;
+    }
+    var currentCount = initialFindings.length;
 
     setInterval(function() {
         fetch(CSM.apiUrl('/api/v1/findings'), { credentials: 'same-origin' })
@@ -651,8 +759,8 @@ if (jsonBtn) jsonBtn.addEventListener('click', function(e) { e.preventDefault();
                 if (!data) return;
                 var changed = data.length !== currentCount;
                 if (!changed) {
-                    for (var i = 0; i < data.length; i++) {
-                        var key = data[i].check + ':' + data[i].message;
+                    for (var j = 0; j < data.length; j++) {
+                        var key = data[j].check + ':' + data[j].message;
                         if (!currentKeys[key]) { changed = true; break; }
                     }
                 }
@@ -663,4 +771,9 @@ if (jsonBtn) jsonBtn.addEventListener('click', function(e) { e.preventDefault();
             })
             .catch(function() {});
     }, 15000);
+}
+
+// --- Kick off ---
+loadFindings();
+
 })();

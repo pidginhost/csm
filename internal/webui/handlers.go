@@ -5,8 +5,6 @@ import (
 	"net/http"
 	"os"
 	"regexp"
-	"sort"
-	"strings"
 	"time"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
@@ -55,30 +53,6 @@ type timelineBar struct {
 	Warning  int
 	Total    int
 	Height   int // percentage height (0-100) for SVG rendering
-}
-
-type findingsData struct {
-	Hostname      string
-	Entries       []findingEntry
-	CheckTypes    []string // unique check types for filter dropdown
-	Accounts      []string // unique accounts for filter dropdown
-	CriticalCount int
-	HighCount     int
-	WarningCount  int
-}
-
-type findingEntry struct {
-	Severity  string
-	SevClass  string
-	Check     string
-	Message   string
-	FilePath  string
-	Account   string // cPanel account extracted from path
-	FirstSeen string
-	LastSeen  string
-	Baseline  bool
-	HasFix    bool
-	FixDesc   string
 }
 
 type historyEntry struct {
@@ -223,133 +197,10 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleFindings(w http.ResponseWriter, _ *http.Request) {
-	// Read from latest scan results — shows "what's wrong right now"
-	// (not the alert dedup state, which only tracks what's been emailed)
-	latest := s.store.LatestFindings()
-
-	// Filter out auto_response actions, internal checks, and suppressed findings
-	suppressions := s.store.LoadSuppressions()
-	var items []findingEntry
-	for _, f := range latest {
-		// Skip auto-response action logs and internal check results
-		if f.Check == "auto_response" || f.Check == "auto_block" || f.Check == "check_timeout" || f.Check == "health" {
-			continue
-		}
-		// Skip suppressed findings
-		if s.store.IsSuppressed(f, suppressions) {
-			continue
-		}
-		firstSeen := f.Timestamp
-		lastSeen := f.Timestamp
-		if entry, ok := s.store.EntryForKey(f.Key()); ok {
-			firstSeen = entry.FirstSeen
-			lastSeen = entry.LastSeen
-		}
-		items = append(items, findingEntry{
-			Severity:  severityLabel(f.Severity),
-			SevClass:  severityClass(f.Severity),
-			Check:     f.Check,
-			Message:   f.Message,
-			FilePath:  f.FilePath,
-			Account:   extractAccount(f.FilePath, f.Message),
-			FirstSeen: firstSeen.Format("2006-01-02 15:04"),
-			LastSeen:  lastSeen.Format("2006-01-02 15:04"),
-			HasFix:    checks.HasFix(f.Check),
-			FixDesc:   checks.FixDescription(f.Check, f.Message),
-		})
-	}
-
-	// Dedup ip_reputation findings — group by IP, merge sources into one entry
-	type ipGroup struct {
-		entry   findingEntry
-		sources []string
-	}
-	ipGroups := make(map[string]*ipGroup) // keyed by IP address
-	var ipOrder []string                  // preserve first-seen order
-	var merged []findingEntry
-	for _, item := range items {
-		if item.Check != "ip_reputation" {
-			merged = append(merged, item)
-			continue
-		}
-		m := reIPReputation.FindStringSubmatch(item.Message)
-		if m == nil {
-			merged = append(merged, item)
-			continue
-		}
-		ip, source := m[1], m[2]
-		if g, ok := ipGroups[ip]; ok {
-			g.sources = append(g.sources, source)
-			// Keep earliest FirstSeen and latest LastSeen
-			if item.FirstSeen < g.entry.FirstSeen {
-				g.entry.FirstSeen = item.FirstSeen
-			}
-			if item.LastSeen > g.entry.LastSeen {
-				g.entry.LastSeen = item.LastSeen
-			}
-			// Promote severity: CRITICAL > HIGH > WARNING
-			if severityRank(item.Severity) > severityRank(g.entry.Severity) {
-				g.entry.Severity = item.Severity
-				g.entry.SevClass = item.SevClass
-			}
-		} else {
-			ipGroups[ip] = &ipGroup{
-				entry:   item,
-				sources: []string{source},
-			}
-			ipOrder = append(ipOrder, ip)
-		}
-	}
-	for _, ip := range ipOrder {
-		g := ipGroups[ip]
-		g.entry.Message = fmt.Sprintf("Known malicious IP accessing server: %s (%s)", ip, strings.Join(g.sources, ", "))
-		merged = append(merged, g.entry)
-	}
-	items = merged
-
-	// Compute severity counts (after dedup so counts reflect merged list)
-	var critCount, highCount, warnCount int
-	for _, item := range items {
-		switch item.Severity {
-		case "CRITICAL":
-			critCount++
-		case "HIGH":
-			highCount++
-		default:
-			warnCount++
-		}
-	}
-
-	// Collect unique check types and accounts for filter dropdowns
-	checkTypeMap := make(map[string]bool)
-	accountMap := make(map[string]bool)
-	for _, item := range items {
-		checkTypeMap[item.Check] = true
-		if item.Account != "" {
-			accountMap[item.Account] = true
-		}
-	}
-	var checkTypes []string
-	for ct := range checkTypeMap {
-		checkTypes = append(checkTypes, ct)
-	}
-	sort.Strings(checkTypes)
-	var accounts []string
-	for a := range accountMap {
-		accounts = append(accounts, a)
-	}
-	sort.Strings(accounts)
-
-	data := findingsData{
-		Hostname:      s.cfg.Hostname,
-		Entries:       items,
-		CheckTypes:    checkTypes,
-		Accounts:      accounts,
-		CriticalCount: critCount,
-		HighCount:     highCount,
-		WarningCount:  warnCount,
-	}
-	s.renderTemplate(w, "findings.html", data)
+	// Findings page is now JS-driven — enriched API provides data
+	s.renderTemplate(w, "findings.html", map[string]string{
+		"Hostname": s.cfg.Hostname,
+	})
 }
 
 func (s *Server) handleHistory(w http.ResponseWriter, _ *http.Request) {
