@@ -9,13 +9,36 @@ var findingsTable = null;
 // --- Fetch and render findings from enriched API ---
 function loadFindings() {
     fetch(CSM.apiUrl('/api/v1/findings/enriched'), { credentials: 'same-origin' })
-        .then(function(r) { return r.json(); })
+        .then(function(r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.json();
+        })
         .then(function(data) {
+            if (data.error) throw new Error(data.error);
             renderFindings(data);
         })
-        .catch(function() {
-            document.getElementById('findings-loading').classList.add('d-none');
-            CSM.loadError(document.getElementById('findings-table-card'), loadFindings);
+        .catch(function(err) {
+            var loading = document.getElementById('findings-loading');
+            if (loading) loading.classList.add('d-none');
+            var card = document.getElementById('findings-table-card');
+            if (!card) return;
+            // Show error with retry — insert into card rather than replacing it
+            var errDiv = document.getElementById('findings-error');
+            if (!errDiv) {
+                errDiv = document.createElement('div');
+                errDiv.id = 'findings-error';
+                errDiv.className = 'card-body text-center py-4';
+                card.appendChild(errDiv);
+            }
+            errDiv.innerHTML = '<div class="text-danger"><i class="ti ti-alert-triangle"></i> Failed to load findings: ' +
+                CSM.esc(err.message || 'unknown error') + '</div>' +
+                '<button class="btn btn-sm btn-primary mt-2" id="findings-retry">Retry</button>';
+            document.getElementById('findings-retry').addEventListener('click', function() {
+                errDiv.remove();
+                var newLoading = document.getElementById('findings-loading');
+                if (newLoading) newLoading.classList.remove('d-none');
+                loadFindings();
+            });
         });
 }
 
@@ -61,6 +84,9 @@ function renderFindings(data) {
             filterDl.appendChild(opt2);
         }
     }
+
+    // Start auto-refresh polling regardless of whether we have findings
+    initAutoRefresh(findings);
 
     if (findings.length === 0) {
         document.getElementById('findings-empty').classList.remove('d-none');
@@ -131,9 +157,6 @@ function renderFindings(data) {
 
     // Restore filter state from URL params (after table init)
     restoreURLParams();
-
-    // Set up auto-refresh polling
-    initAutoRefresh(findings);
 }
 
 // --- Build action buttons for a row ---
