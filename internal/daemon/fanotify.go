@@ -19,6 +19,7 @@ import (
 	"github.com/pidginhost/cpanel-security-monitor/internal/checks"
 	"github.com/pidginhost/cpanel-security-monitor/internal/config"
 	"github.com/pidginhost/cpanel-security-monitor/internal/signatures"
+	"github.com/pidginhost/cpanel-security-monitor/internal/wpcheck"
 	"github.com/pidginhost/cpanel-security-monitor/internal/yara"
 )
 
@@ -91,6 +92,9 @@ type FileMonitor struct {
 
 	// Per-path alert deduplication: "check:filepath" → last alert time
 	alertDedup sync.Map
+
+	// WordPress core checksum verifier — skips detection on unmodified WP core files
+	wpCache *wpcheck.Cache
 }
 
 type fileEvent struct {
@@ -146,6 +150,8 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 		pipeFds:    pipeFds,
 		stopCh:     make(chan struct{}),
 	}
+
+	fm.wpCache = wpcheck.NewCache(cfg.StatePath)
 
 	return fm, nil
 }
@@ -522,6 +528,12 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 		if matchSuppression(ignore, path) {
 			return
 		}
+	}
+
+	// Skip verified WordPress core files — checksum matches official WP.org checksums.
+	// Content is read from the event fd (not path) to preserve TOCTOU safety.
+	if fm.wpCache != nil && fm.wpCache.IsVerifiedCoreFile(event.fd, path) {
+		return
 	}
 
 	// Location-based severity escalation: PHP in dirs that should NEVER have PHP
