@@ -257,22 +257,6 @@ func recordCSMDeny(ip string, now time.Time) bool {
 	return false
 }
 
-// extractRuleIDFromFinding extracts the rule ID from a finding's Message field.
-// The message contains "rule NNNN" or "rule NNNN from".
-// Only used by tests — production code extracts directly from log line.
-func extractRuleIDFromFinding(f alert.Finding) string {
-	const marker = "rule "
-	idx := strings.Index(f.Message, marker)
-	if idx < 0 {
-		return ""
-	}
-	rest := f.Message[idx+len(marker):]
-	if sp := strings.IndexByte(rest, ' '); sp >= 0 {
-		return rest[:sp]
-	}
-	return rest
-}
-
 // StartModSecEviction starts a background goroutine that prunes expired dedup
 // and counter entries every modsecEvictInterval to prevent unbounded memory
 // growth. It returns when stopCh is closed.
