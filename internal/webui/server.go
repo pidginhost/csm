@@ -142,6 +142,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		mux.Handle("/account", s.requireAuth(http.HandlerFunc(s.handleAccount)))
 		mux.Handle("/incident", s.requireAuth(http.HandlerFunc(s.handleIncident)))
 		mux.Handle("/email", s.requireAuth(http.HandlerFunc(s.handleEmail)))
+		mux.Handle("/modsec", s.requireAuth(http.HandlerFunc(s.handleModSec)))
 	}
 
 	// Auth-protected API — read
@@ -153,6 +154,9 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/stats", s.requireAuth(http.HandlerFunc(s.apiStats)))
 	mux.Handle("/api/v1/stats/trend", s.requireAuth(http.HandlerFunc(s.apiStatsTrend)))
 	mux.Handle("/api/v1/blocked-ips", s.requireAuth(http.HandlerFunc(s.apiBlockedIPs)))
+	mux.Handle("/api/v1/modsec/stats", s.requireAuth(http.HandlerFunc(s.apiModSecStats)))
+	mux.Handle("/api/v1/modsec/blocks", s.requireAuth(http.HandlerFunc(s.apiModSecBlocks)))
+	mux.Handle("/api/v1/modsec/events", s.requireAuth(http.HandlerFunc(s.apiModSecEvents)))
 	mux.Handle("/api/v1/health", s.requireAuth(http.HandlerFunc(s.apiHealth)))
 	mux.Handle("/api/v1/accounts", s.requireAuth(http.HandlerFunc(s.apiAccounts)))
 	mux.Handle("/api/v1/account", s.requireAuth(http.HandlerFunc(s.apiAccountDetail)))

@@ -1,0 +1,285 @@
+package webui
+
+import (
+	"net/http"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
+	"github.com/pidginhost/cpanel-security-monitor/internal/store"
+)
+
+func (s *Server) handleModSec(w http.ResponseWriter, _ *http.Request) {
+	s.renderTemplate(w, "modsec.html", map[string]string{
+		"Hostname": s.cfg.Hostname,
+	})
+}
+
+// modsecBlockView is an aggregated view of blocks per IP+rule.
+type modsecBlockView struct {
+	IP          string `json:"ip"`
+	RuleID      string `json:"rule_id"`
+	Description string `json:"description"`
+	Domains     string `json:"domains"`
+	Hits        int    `json:"hits"`
+	LastSeen    string `json:"last_seen"`
+	Escalated   bool   `json:"escalated"`
+}
+
+// modsecEventView is a single ModSecurity event.
+type modsecEventView struct {
+	Time     string `json:"time"`
+	IP       string `json:"ip"`
+	RuleID   string `json:"rule_id"`
+	Hostname string `json:"hostname"`
+	URI      string `json:"uri"`
+	Severity string `json:"severity"`
+}
+
+// apiModSecStats returns 24h summary stats for ModSecurity blocks.
+func (s *Server) apiModSecStats(w http.ResponseWriter, _ *http.Request) {
+	findings := s.modsecFindings24h()
+
+	uniqueIPs := make(map[string]bool)
+	ruleCounts := make(map[string]int)
+	escalated := 0
+
+	for _, f := range findings {
+		ip := extractModSecIP(f)
+		if ip != "" {
+			uniqueIPs[ip] = true
+		}
+		rule := extractModSecRule(f)
+		if rule != "" {
+			ruleCounts[rule]++
+		}
+		if f.Check == "modsec_csm_block_escalation" {
+			escalated++
+		}
+	}
+
+	topRule := "--"
+	topCount := 0
+	for rule, count := range ruleCounts {
+		if count > topCount {
+			topCount = count
+			topRule = rule
+		}
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"total":      len(findings),
+		"unique_ips": len(uniqueIPs),
+		"escalated":  escalated,
+		"top_rule":   topRule,
+	})
+}
+
+// apiModSecBlocks returns aggregated blocks per IP+rule for the last 24h.
+func (s *Server) apiModSecBlocks(w http.ResponseWriter, _ *http.Request) {
+	findings := s.modsecFindings24h()
+
+	// Aggregate by IP
+	type ipAgg struct {
+		ruleID      string
+		description string
+		domains     map[string]bool
+		hits        int
+		lastSeen    time.Time
+		escalated   bool
+	}
+
+	byIP := make(map[string]*ipAgg)
+
+	for _, f := range findings {
+		if f.Check == "modsec_csm_block_escalation" {
+			// Mark IP as escalated
+			ip := extractModSecIP(f)
+			if ip != "" {
+				if agg, ok := byIP[ip]; ok {
+					agg.escalated = true
+				} else {
+					byIP[ip] = &ipAgg{escalated: true, domains: make(map[string]bool)}
+				}
+			}
+			continue
+		}
+
+		ip := extractModSecIP(f)
+		if ip == "" {
+			continue
+		}
+
+		rule := extractModSecRule(f)
+		desc := extractModSecDescription(f)
+		domain := extractModSecHostname(f)
+
+		agg, ok := byIP[ip]
+		if !ok {
+			agg = &ipAgg{
+				ruleID:      rule,
+				description: desc,
+				domains:     make(map[string]bool),
+			}
+			byIP[ip] = agg
+		}
+		agg.hits++
+		if f.Timestamp.After(agg.lastSeen) {
+			agg.lastSeen = f.Timestamp
+			// Update rule/desc to the most recent
+			if rule != "" {
+				agg.ruleID = rule
+			}
+			if desc != "" {
+				agg.description = desc
+			}
+		}
+		if domain != "" {
+			agg.domains[domain] = true
+		}
+	}
+
+	var result []modsecBlockView
+	for ip, agg := range byIP {
+		if agg.hits == 0 && !agg.escalated {
+			continue
+		}
+		var domainList []string
+		for d := range agg.domains {
+			domainList = append(domainList, d)
+		}
+		sort.Strings(domainList)
+		domains := strings.Join(domainList, ", ")
+		if len(domains) > 80 {
+			domains = domains[:77] + "..."
+		}
+
+		lastSeen := ""
+		if !agg.lastSeen.IsZero() {
+			lastSeen = agg.lastSeen.Format("15:04:05")
+		}
+
+		result = append(result, modsecBlockView{
+			IP:          ip,
+			RuleID:      agg.ruleID,
+			Description: agg.description,
+			Domains:     domains,
+			Hits:        agg.hits,
+			LastSeen:    lastSeen,
+			Escalated:   agg.escalated,
+		})
+	}
+
+	// Sort by hits descending
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Hits > result[j].Hits
+	})
+
+	writeJSON(w, result)
+}
+
+// apiModSecEvents returns the most recent individual ModSecurity events.
+func (s *Server) apiModSecEvents(w http.ResponseWriter, r *http.Request) {
+	limit := 100
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 500 {
+			limit = n
+		}
+	}
+
+	findings := s.modsecFindings24h()
+
+	// Reverse to newest first
+	for i, j := 0, len(findings)-1; i < j; i, j = i+1, j-1 {
+		findings[i], findings[j] = findings[j], findings[i]
+	}
+
+	if len(findings) > limit {
+		findings = findings[:limit]
+	}
+
+	var result []modsecEventView
+	for _, f := range findings {
+		if f.Check == "modsec_csm_block_escalation" {
+			continue // skip escalation meta-events
+		}
+		result = append(result, modsecEventView{
+			Time:     f.Timestamp.Format("15:04:05"),
+			IP:       extractModSecIP(f),
+			RuleID:   extractModSecRule(f),
+			Hostname: extractModSecHostname(f),
+			URI:      extractModSecURI(f),
+			Severity: f.Severity.String(),
+		})
+	}
+
+	writeJSON(w, result)
+}
+
+// modsecFindings24h returns all modsec findings from the last 24 hours.
+func (s *Server) modsecFindings24h() []alert.Finding {
+	db := store.Global()
+	if db == nil {
+		return nil
+	}
+
+	// ReadHistoryFiltered expects "YYYY-MM-DD" for the from parameter.
+	// Use yesterday's date to ensure we cover the full 24h window.
+	cutoff := time.Now().Add(-24 * time.Hour)
+	all, _ := db.ReadHistoryFiltered(10000, 0, cutoff.Format("2006-01-02"), "", -1, "modsec_")
+
+	// Further filter to exact 24h window (from prefix is date-level granularity)
+	var filtered []alert.Finding
+	for _, f := range all {
+		if f.Timestamp.After(cutoff) {
+			filtered = append(filtered, f)
+		}
+	}
+	return filtered
+}
+
+// --- Field extraction from finding Details ---
+// Details format: "Rule: NNNN\nMessage: ...\nHostname: ...\nURI: ..."
+
+func extractModSecIP(f alert.Finding) string {
+	// Try from message: "... from IP on ..." or "... from IP ..."
+	msg := f.Message
+	if idx := strings.Index(msg, " from "); idx >= 0 {
+		rest := msg[idx+6:]
+		if sp := strings.IndexAny(rest, " \n"); sp >= 0 {
+			rest = rest[:sp]
+		}
+		// Validate it looks like an IP
+		if len(rest) >= 7 && rest[0] >= '0' && rest[0] <= '9' && strings.Count(rest, ".") == 3 {
+			return rest
+		}
+	}
+	return ""
+}
+
+func extractModSecRule(f alert.Finding) string {
+	return extractDetailField(f.Details, "Rule: ")
+}
+
+func extractModSecDescription(f alert.Finding) string {
+	return extractDetailField(f.Details, "Message: ")
+}
+
+func extractModSecHostname(f alert.Finding) string {
+	return extractDetailField(f.Details, "Hostname: ")
+}
+
+func extractModSecURI(f alert.Finding) string {
+	return extractDetailField(f.Details, "URI: ")
+}
+
+func extractDetailField(details, prefix string) string {
+	for _, line := range strings.Split(details, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimPrefix(line, prefix)
+		}
+	}
+	return ""
+}
