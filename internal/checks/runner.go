@@ -93,6 +93,7 @@ func deepChecks() []namedCheck {
 		{"waf_status", CheckWAFStatus},
 		{"db_content", CheckDatabaseContent},
 		{"email_content", CheckOutboundEmailContent},
+		{"outdated_plugins", CheckOutdatedPlugins},
 	}
 }
 
@@ -130,6 +131,7 @@ func RunReducedDeep(cfg *config.Config, store *state.Store) []alert.Finding {
 		{"waf_status", CheckWAFStatus},
 		{"db_content", CheckDatabaseContent},
 		{"email_content", CheckOutboundEmailContent},
+		{"outdated_plugins", CheckOutdatedPlugins},
 	}
 	return runParallel(cfg, store, reduced)
 }
