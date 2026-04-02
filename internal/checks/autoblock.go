@@ -98,14 +98,15 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 
 	// Always blockable (brute force, C2, known malicious)
 	alwaysBlock := map[string]bool{
-		"wp_login_bruteforce":  true,
-		"xmlrpc_abuse":         true,
-		"ftp_bruteforce":       true,
-		"ssh_login_unknown_ip": true,
-		"ssh_login_realtime":   true,
-		"c2_connection":        true,
-		"ip_reputation":        true,
-		"local_threat_score":   true,
+		"wp_login_bruteforce":         true,
+		"xmlrpc_abuse":                true,
+		"ftp_bruteforce":              true,
+		"ssh_login_unknown_ip":        true,
+		"ssh_login_realtime":          true,
+		"c2_connection":               true,
+		"ip_reputation":               true,
+		"local_threat_score":          true,
+		"modsec_csm_block_escalation": true,
 	}
 
 	// Only blockable when block_cpanel_logins is enabled (disabled by default)
