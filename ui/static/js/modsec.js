@@ -75,7 +75,7 @@ function loadEvents(){
             }
             h+='</tbody></table></div>';
             document.getElementById('modsec-events').innerHTML=h;
-            new CSM.Table({tableId:'events-table',perPage:25,sortable:true});
+            new CSM.Table({tableId:'events-table',perPage:25,searchId:'events-search',sortable:true});
         })
         .catch(function(e){
             document.getElementById('modsec-events').innerHTML='<div class="card-body text-center text-danger py-3">Failed to load events</div>';

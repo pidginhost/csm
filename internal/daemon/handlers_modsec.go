@@ -110,11 +110,16 @@ func parseModSecLogLine(line string, cfg *config.Config) []alert.Finding {
 		message += fmt.Sprintf(" — %s", msg)
 	}
 
+	// Store structured details so the web UI can extract fields consistently
+	// regardless of whether the source was Apache or LiteSpeed format.
+	details := fmt.Sprintf("Rule: %s\nMessage: %s\nHostname: %s\nURI: %s\nRaw: %s",
+		ruleID, msg, hostname, uri, truncateDaemon(line, 300))
+
 	return []alert.Finding{{
 		Severity: severity,
 		Check:    check,
 		Message:  message,
-		Details:  truncateDaemon(line, 400),
+		Details:  details,
 	}}
 }
 
