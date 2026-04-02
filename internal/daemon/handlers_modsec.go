@@ -208,8 +208,14 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 	ruleID := extractModSecField(line, `[id "`, `"]`)
 	ruleNum, _ := strconv.Atoi(ruleID)
 	isCSM := f.Check == "modsec_block_realtime" && ruleNum >= 900000 && ruleNum <= 900999
+	// Some CSM rules are informational blocks that shouldn't escalate to
+	// nftables firewall bans (e.g., user enumeration — legitimate users can
+	// trigger these during normal browsing across multiple sites).
+	noEscalateRules := map[int]bool{
+		900112: true, // WordPress user enumeration (/wp-json/wp/v2/users)
+	}
 
-	if isCSM && ip != "" {
+	if isCSM && ip != "" && !noEscalateRules[ruleNum] {
 		if recordCSMDeny(ip, now) {
 			results = append(results, alert.Finding{
 				Severity: alert.Critical,
