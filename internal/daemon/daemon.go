@@ -380,8 +380,19 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 		d.webServer.Broadcast(newFindings)
 	}
 
-	// Dispatch via email/webhook
-	if err := alert.Dispatch(d.cfg, newFindings); err != nil {
+	// Dispatch via email/webhook — filter out informational modsec blocks.
+	// Individual ModSecurity blocks are already handled (403 returned) and
+	// visible on the /modsec web page. Only escalation findings
+	// (modsec_csm_block_escalation) are actionable and should alert.
+	var alertable []alert.Finding
+	for _, f := range newFindings {
+		switch f.Check {
+		case "modsec_block_realtime", "modsec_warning_realtime":
+			continue // web UI only — don't email/webhook
+		}
+		alertable = append(alertable, f)
+	}
+	if err := alert.Dispatch(d.cfg, alertable); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Alert dispatch error: %v\n", ts(), err)
 	}
 
