@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -207,5 +208,45 @@ func TestModSecCRSNoEscalation(t *testing.T) {
 				t.Fatalf("CRS rule %s should NOT trigger escalation, but got: %v", ruleID, f)
 			}
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Log path discovery tests
+// ---------------------------------------------------------------------------
+
+func TestDiscoverModSecLogPath_ConfigOverride(t *testing.T) {
+	cfg := &config.Config{ModSecErrorLog: "/custom/path/error_log"}
+	got := discoverModSecLogPath(cfg)
+	if got != "/custom/path/error_log" {
+		t.Errorf("want config override, got %q", got)
+	}
+}
+
+func TestDiscoverModSecLogPath_AutoDiscovery(t *testing.T) {
+	dir := t.TempDir()
+	fakePath := dir + "/error_log"
+	os.WriteFile(fakePath, []byte("test"), 0644)
+
+	origPaths := modsecLogPaths
+	modsecLogPaths = []string{"/nonexistent/path", fakePath, "/another/missing"}
+	defer func() { modsecLogPaths = origPaths }()
+
+	cfg := &config.Config{}
+	got := discoverModSecLogPath(cfg)
+	if got != fakePath {
+		t.Errorf("want %q, got %q", fakePath, got)
+	}
+}
+
+func TestDiscoverModSecLogPath_NoneFound(t *testing.T) {
+	origPaths := modsecLogPaths
+	modsecLogPaths = []string{"/nonexistent/a", "/nonexistent/b"}
+	defer func() { modsecLogPaths = origPaths }()
+
+	cfg := &config.Config{}
+	got := discoverModSecLogPath(cfg)
+	if got != "" {
+		t.Errorf("want empty, got %q", got)
 	}
 }

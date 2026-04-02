@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -287,6 +288,24 @@ func StartModSecEviction(stopCh <-chan struct{}) {
 			}
 		}
 	}()
+}
+
+var modsecLogPaths = []string{
+	"/var/log/apache2/error_log",
+	"/usr/local/apache/logs/error_log",
+	"/var/log/httpd/error_log",
+}
+
+func discoverModSecLogPath(cfg *config.Config) string {
+	if cfg.ModSecErrorLog != "" {
+		return cfg.ModSecErrorLog
+	}
+	for _, p := range modsecLogPaths {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
 }
 
 // evictModSecState prunes expired entries from modsecDedup and modsecCSMCounter.

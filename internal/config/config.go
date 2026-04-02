@@ -126,6 +126,8 @@ type Config struct {
 		UpdateInterval string   `yaml:"update_interval"` // default "24h"
 	} `yaml:"geoip"`
 
+	ModSecErrorLog string `yaml:"modsec_error_log"`
+
 	C2Blocklist   []string `yaml:"c2_blocklist"`
 	BackdoorPorts []int    `yaml:"backdoor_ports"`
 }
