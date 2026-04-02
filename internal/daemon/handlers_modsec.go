@@ -6,9 +6,29 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
 	"github.com/pidginhost/cpanel-security-monitor/internal/config"
+)
+
+// modsecIPCounter tracks deny timestamps for a single IP.
+type modsecIPCounter struct {
+	mu    sync.Mutex
+	times []time.Time
+}
+
+var (
+	modsecDedup      sync.Map // key: "IP:ruleID" → value: time.Time
+	modsecCSMCounter sync.Map // key: IP → value: *modsecIPCounter
+)
+
+const (
+	modsecDedupTTL       = 60 * time.Second
+	modsecEscalationWin  = 10 * time.Minute
+	modsecEscalationHits = 3
+	modsecEvictInterval  = 10 * time.Minute
 )
 
 // parseModSecLogLine parses a ModSecurity log line from Apache or LiteSpeed
@@ -142,4 +162,161 @@ func extractLiteSpeedIP(line string) string {
 		}
 		start = closeBracket + 1
 	}
+}
+
+// parseModSecLogLineDeduped wraps parseModSecLogLine with dedup and CSM-rule
+// threshold escalation. It is the handler registered with the log watcher.
+//
+// Order of operations (critical for correctness):
+//  1. Parse the raw line.
+//  2. ALWAYS increment the CSM escalation counter (even if dedup will suppress).
+//  3. Then check dedup — suppress the base finding if a duplicate, but still
+//     return any escalation finding from step 2.
+func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding {
+	raw := parseModSecLogLine(line, cfg)
+	if len(raw) == 0 {
+		return nil
+	}
+	f := raw[0]
+
+	now := time.Now()
+	var results []alert.Finding
+
+	// --- Step 1: CSM escalation (before dedup) ---
+	ip := extractIPFromFinding(f)
+	ruleID := extractRuleIDFromFinding(f)
+	ruleNum, _ := strconv.Atoi(ruleID)
+	isCSM := f.Check == "modsec_block_realtime" && ruleNum >= 900000 && ruleNum <= 900999
+
+	if isCSM && ip != "" {
+		if recordCSMDeny(ip, now) {
+			results = append(results, alert.Finding{
+				Severity: alert.Critical,
+				Check:    "modsec_csm_block_escalation",
+				Message:  fmt.Sprintf("CSM rule escalation: %d+ denies from %s within %v", modsecEscalationHits, ip, modsecEscalationWin),
+				Details:  truncateDaemon(line, 400),
+			})
+		}
+	}
+
+	// --- Step 2: Dedup ---
+	dedupKey := ip + ":" + ruleID
+	if prev, loaded := modsecDedup.Load(dedupKey); loaded {
+		if now.Sub(prev.(time.Time)) < modsecDedupTTL {
+			// Suppress the base finding but still return any escalation.
+			if len(results) > 0 {
+				return results
+			}
+			return nil
+		}
+	}
+	modsecDedup.Store(dedupKey, now)
+
+	results = append(results, f)
+	return results
+}
+
+// recordCSMDeny records a deny event for the given IP and returns true if the
+// escalation threshold has been reached (>= modsecEscalationHits within the
+// escalation window).
+func recordCSMDeny(ip string, now time.Time) bool {
+	val, _ := modsecCSMCounter.LoadOrStore(ip, &modsecIPCounter{})
+	ctr := val.(*modsecIPCounter)
+
+	ctr.mu.Lock()
+	defer ctr.mu.Unlock()
+
+	// Prune entries older than the escalation window.
+	cutoff := now.Add(-modsecEscalationWin)
+	recent := ctr.times[:0]
+	for _, t := range ctr.times {
+		if !t.Before(cutoff) {
+			recent = append(recent, t)
+		}
+	}
+	recent = append(recent, now)
+	ctr.times = recent
+
+	return len(recent) >= modsecEscalationHits
+}
+
+// extractIPFromFinding extracts the IP address from a finding's Message field.
+// The message format is "... from IP ..." or "... from IP on ...".
+func extractIPFromFinding(f alert.Finding) string {
+	const marker = " from "
+	idx := strings.Index(f.Message, marker)
+	if idx < 0 {
+		return ""
+	}
+	rest := f.Message[idx+len(marker):]
+	// IP ends at space or end of string.
+	if sp := strings.IndexByte(rest, ' '); sp >= 0 {
+		return rest[:sp]
+	}
+	return rest
+}
+
+// extractRuleIDFromFinding extracts the rule ID from a finding's Message field.
+// The message contains "rule NNNN" or "rule NNNN from".
+func extractRuleIDFromFinding(f alert.Finding) string {
+	const marker = "rule "
+	idx := strings.Index(f.Message, marker)
+	if idx < 0 {
+		return ""
+	}
+	rest := f.Message[idx+len(marker):]
+	if sp := strings.IndexByte(rest, ' '); sp >= 0 {
+		return rest[:sp]
+	}
+	return rest
+}
+
+// StartModSecEviction starts a background goroutine that prunes expired dedup
+// and counter entries every modsecEvictInterval to prevent unbounded memory
+// growth. It returns when stopCh is closed.
+func StartModSecEviction(stopCh <-chan struct{}) {
+	go func() {
+		ticker := time.NewTicker(modsecEvictInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopCh:
+				return
+			case now := <-ticker.C:
+				evictModSecState(now)
+			}
+		}
+	}()
+}
+
+// evictModSecState prunes expired entries from modsecDedup and modsecCSMCounter.
+func evictModSecState(now time.Time) {
+	// Prune dedup entries older than modsecDedupTTL.
+	modsecDedup.Range(func(key, value any) bool {
+		if now.Sub(value.(time.Time)) >= modsecDedupTTL {
+			modsecDedup.Delete(key)
+		}
+		return true
+	})
+
+	// Prune counter entries.
+	cutoff := now.Add(-modsecEscalationWin)
+	modsecCSMCounter.Range(func(key, value any) bool {
+		ctr := value.(*modsecIPCounter)
+		ctr.mu.Lock()
+		recent := ctr.times[:0]
+		for _, t := range ctr.times {
+			if !t.Before(cutoff) {
+				recent = append(recent, t)
+			}
+		}
+		ctr.times = recent
+		empty := len(recent) == 0
+		ctr.mu.Unlock()
+
+		if empty {
+			modsecCSMCounter.Delete(key)
+		}
+		return true
+	})
 }
