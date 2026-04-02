@@ -177,9 +177,10 @@ func (d *Daemon) Run() error {
 	}
 
 	d.store.Update(initialFindings)
-	// Full replace — initial scan runs all checks, so stale findings
-	// from previous daemon runs must not persist.
-	d.store.ClearLatestFindings()
+	// Merge initial scan findings into the existing set. Previous deep scan
+	// results (outdated_plugins, wp_core, etc.) persist across restarts until
+	// the next deep scan replaces them. ClearLatestFindings is NOT called
+	// here — it would wipe deep scan findings that haven't re-run yet.
 	d.store.SetLatestFindings(initialFindings)
 	fmt.Fprintf(os.Stderr, "[%s] Initial scan complete: %d findings (%d new)\n", ts(), len(initialFindings), len(newFindings))
 
