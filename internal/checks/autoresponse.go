@@ -365,11 +365,11 @@ func isSafeProcess(exe string) bool {
 //  3. File must be >= 512 bytes (entropy unreliable below this)
 //  4. Content must show obfuscation indicators (category-dependent):
 //     - "dropper": auto-quarantine — signature rules (e.g. 10+ goto statements)
-//       are already highly specific. No legitimate PHP has 10+ goto statements.
+//     are already highly specific. No legitimate PHP has 10+ goto statements.
 //     - "webshell": requires Shannon entropy >= 4.8 OR high hex-encoding density
-//       (>20% of content is \xNN sequences). Hex-encoded webshells like the
-//       LEVIATHAN AES variant have low entropy (~3.5) because \x[0-9a-f]{2}
-//       uses a tiny repeating character set, but the hex density is unmistakable.
+//     (>20% of content is \xNN sequences). Hex-encoded webshells like the
+//     LEVIATHAN AES variant have low entropy (~3.5) because \x[0-9a-f]{2}
+//     uses a tiny repeating character set, but the hex density is unmistakable.
 func isHighConfidenceRealtimeMatch(f alert.Finding, path string) bool {
 	cat := extractCategory(f.Details)
 	switch cat {
