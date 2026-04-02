@@ -1,6 +1,8 @@
 package checks
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestCompareVersions(t *testing.T) {
 	tests := []struct {
@@ -49,5 +51,27 @@ func TestPluginAlertSeverity(t *testing.T) {
 					tt.installed, tt.available, got, tt.wantSev)
 			}
 		})
+	}
+}
+
+func TestParseWPOrgResponse(t *testing.T) {
+	body := `{"name":"Elementor","slug":"elementor","version":"4.0.1","tested":"6.9.4"}`
+	info, err := parseWPOrgPluginResponse([]byte(body))
+	if err != nil {
+		t.Fatalf("parseWPOrgPluginResponse: %v", err)
+	}
+	if info.LatestVersion != "4.0.1" {
+		t.Errorf("LatestVersion = %q, want %q", info.LatestVersion, "4.0.1")
+	}
+	if info.TestedUpTo != "6.9.4" {
+		t.Errorf("TestedUpTo = %q, want %q", info.TestedUpTo, "6.9.4")
+	}
+}
+
+func TestParseWPOrgResponseNotFound(t *testing.T) {
+	body := `{"error":"Plugin not found."}`
+	_, err := parseWPOrgPluginResponse([]byte(body))
+	if err == nil {
+		t.Error("expected error for plugin not found")
 	}
 }
