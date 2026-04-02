@@ -251,28 +251,63 @@ func extractModSecIP(f alert.Finding) string {
 		if sp := strings.IndexAny(rest, " \n"); sp >= 0 {
 			rest = rest[:sp]
 		}
-		// Validate it looks like an IP
 		if len(rest) >= 7 && rest[0] >= '0' && rest[0] <= '9' && strings.Count(rest, ".") == 3 {
 			return rest
+		}
+	}
+	// Fallback: parse [client IP] from raw log line in Details
+	if ip := extractBetween(f.Details, "[client ", "]"); ip != "" {
+		// Strip port if present (Apache 2.4: "IP:port")
+		if strings.Count(ip, ":") == 1 {
+			if idx := strings.LastIndex(ip, ":"); idx > 0 {
+				ip = ip[:idx]
+			}
+		}
+		return ip
+	}
+	// Fallback: LiteSpeed format — IP in [IP:PORT-CONN#VHOST]
+	for _, field := range strings.Fields(f.Details) {
+		if strings.HasPrefix(field, "[") && strings.Contains(field, "#") {
+			inner := strings.TrimPrefix(field, "[")
+			if colonIdx := strings.Index(inner, ":"); colonIdx > 0 {
+				ip := inner[:colonIdx]
+				if len(ip) >= 7 && ip[0] >= '0' && ip[0] <= '9' {
+					return ip
+				}
+			}
 		}
 	}
 	return ""
 }
 
 func extractModSecRule(f alert.Finding) string {
-	return extractDetailField(f.Details, "Rule: ")
+	// Try structured format first
+	if v := extractDetailField(f.Details, "Rule: "); v != "" {
+		return v
+	}
+	// Fallback: parse [id "NNNN"] from raw log line in Details
+	return extractBetween(f.Details, `[id "`, `"]`)
 }
 
 func extractModSecDescription(f alert.Finding) string {
-	return extractDetailField(f.Details, "Message: ")
+	if v := extractDetailField(f.Details, "Message: "); v != "" {
+		return v
+	}
+	return extractBetween(f.Details, `[msg "`, `"]`)
 }
 
 func extractModSecHostname(f alert.Finding) string {
-	return extractDetailField(f.Details, "Hostname: ")
+	if v := extractDetailField(f.Details, "Hostname: "); v != "" {
+		return v
+	}
+	return extractBetween(f.Details, `[hostname "`, `"]`)
 }
 
 func extractModSecURI(f alert.Finding) string {
-	return extractDetailField(f.Details, "URI: ")
+	if v := extractDetailField(f.Details, "URI: "); v != "" {
+		return v
+	}
+	return extractBetween(f.Details, `[uri "`, `"]`)
 }
 
 func extractDetailField(details, prefix string) string {
@@ -282,4 +317,19 @@ func extractDetailField(details, prefix string) string {
 		}
 	}
 	return ""
+}
+
+// extractBetween extracts the value between start and end delimiters.
+// Used as fallback for old findings where Details is the raw log line.
+func extractBetween(s, start, end string) string {
+	idx := strings.Index(s, start)
+	if idx < 0 {
+		return ""
+	}
+	rest := s[idx+len(start):]
+	endIdx := strings.Index(rest, end)
+	if endIdx < 0 {
+		return ""
+	}
+	return rest[:endIdx]
 }
