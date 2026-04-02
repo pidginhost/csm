@@ -42,6 +42,8 @@ func TestPluginAlertSeverity(t *testing.T) {
 		{"1 minor", "6.4.0", "6.5.13", "warning"},
 		{"same version", "5.6", "5.6", ""},
 		{"patch only", "6.1.3", "6.1.5", "warning"},
+		{"installed ahead", "6.5.0", "6.4.9", ""},
+		{"installed ahead major", "5.0.0", "4.9.9", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

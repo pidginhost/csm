@@ -62,8 +62,10 @@ func parseModSecLogLine(line string, cfg *config.Config) []alert.Finding {
 		uri = extractModSecField(line, `[uri "`, `"]`)
 	}
 
-	// Skip infra IPs.
-	if ip != "" && isInfraIPDaemon(ip, cfg.InfraIPs) {
+	// Skip infra and loopback IPs — consistent with other realtime handlers
+	// (handlers.go:22, autoblock.go:149). Prevents noisy findings and
+	// false escalation from proxied or locally forwarded Apache traffic.
+	if ip != "" && (isInfraIPDaemon(ip, cfg.InfraIPs) || ip == "127.0.0.1" || ip == "::1") {
 		return nil
 	}
 

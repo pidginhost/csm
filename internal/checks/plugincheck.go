@@ -128,12 +128,13 @@ func pluginAlertSeverity(installed, available string) string {
 		return ""
 	}
 
-	// Compare all parsed components to detect any difference (including patch).
+	// Compare all parsed components to detect if available is actually newer.
+	// If installed >= available at every component, the site is up to date
+	// (or ahead, e.g. custom/premium builds). Only warn when behind.
 	maxLen := len(iv)
 	if len(av) > maxLen {
 		maxLen = len(av)
 	}
-	differs := false
 	for i := 0; i < maxLen; i++ {
 		var a, b int
 		if i < len(iv) {
@@ -142,16 +143,14 @@ func pluginAlertSeverity(installed, available string) string {
 		if i < len(av) {
 			b = av[i]
 		}
-		if a != b {
-			differs = true
-			break
+		if b > a {
+			return "warning" // available is newer at this component
+		}
+		if a > b {
+			return "" // installed is ahead — not outdated
 		}
 	}
-
-	if differs {
-		return "warning"
-	}
-	return ""
+	return "" // identical
 }
 
 const pluginCheckWorkers = 5
@@ -331,13 +330,26 @@ func refreshPluginCache(db *store.DB) {
 		}
 	}
 
-	// Only mark refresh time if at least one site succeeded.
+	// Only mark refresh as complete if the majority of sites refreshed
+	// successfully. A partial failure (e.g. one wp-cli timeout on a 100-site
+	// server) should not freeze ALL stale data for 24 hours. But if most
+	// sites failed (e.g. transient PHP issue), don't mark as fresh — allow
+	// retry next cycle.
 	mu.Lock()
-	ok := successCount > 0
+	sc := successCount
 	mu.Unlock()
-	if ok {
-		_ = db.SetPluginRefreshTime(time.Now())
+	failCount := len(wpConfigs) - sc
+	if sc == 0 {
+		fmt.Fprintf(os.Stderr, "[%s] Plugin cache refresh FAILED: 0/%d sites succeeded, not updating timestamp\n",
+			time.Now().Format("2006-01-02 15:04:05"), len(wpConfigs))
+		return
 	}
+	if failCount > sc {
+		fmt.Fprintf(os.Stderr, "[%s] Plugin cache refresh PARTIAL: %d/%d sites failed (majority), not updating timestamp\n",
+			time.Now().Format("2006-01-02 15:04:05"), failCount, len(wpConfigs))
+		return
+	}
+	_ = db.SetPluginRefreshTime(time.Now())
 }
 
 // evaluatePluginCache reads the cached plugin inventory and emits findings
