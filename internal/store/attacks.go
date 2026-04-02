@@ -196,3 +196,21 @@ func (db *DB) DeleteIPRecord(ip string) error {
 		return b.Delete([]byte(ip))
 	})
 }
+
+// ReadAllAttackEvents returns all attack events from the primary bucket.
+// Used for stats computation (hourly/daily bucketing).
+func (db *DB) ReadAllAttackEvents() []AttackEvent {
+	var events []AttackEvent
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("attacks:events"))
+		return b.ForEach(func(k, v []byte) error {
+			var ev AttackEvent
+			if json.Unmarshal(v, &ev) != nil {
+				return nil //nolint:nilerr // skip corrupt entry
+			}
+			events = append(events, ev)
+			return nil
+		})
+	})
+	return events
+}

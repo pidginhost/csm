@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/pidginhost/cpanel-security-monitor/internal/store"
 )
 
 const statsCacheTTL = 30 * time.Second
@@ -97,8 +99,27 @@ func (db *DB) computeStats() AttackStats {
 	return stats
 }
 
-// readAllEvents reads all events from the JSONL file (for stats computation).
+// readAllEvents reads all events for stats computation.
+// Uses bbolt store when available, falls back to JSONL file.
 func (db *DB) readAllEvents() []Event {
+	if sdb := store.Global(); sdb != nil {
+		storeEvents := sdb.ReadAllAttackEvents()
+		events := make([]Event, 0, len(storeEvents))
+		for _, se := range storeEvents {
+			events = append(events, Event{
+				Timestamp:  se.Timestamp,
+				IP:         se.IP,
+				AttackType: AttackType(se.AttackType),
+				CheckName:  se.CheckName,
+				Severity:   se.Severity,
+				Account:    se.Account,
+				Message:    se.Message,
+			})
+		}
+		return events
+	}
+
+	// Fallback: flat-file events.jsonl
 	path := filepath.Join(db.dbPath, eventsFile)
 	f, err := os.Open(path)
 	if err != nil {
