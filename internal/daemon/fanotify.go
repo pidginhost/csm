@@ -570,12 +570,14 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 			isDir := tmpStat.Mode&unix.S_IFMT == unix.S_IFDIR
 			isExec := tmpStat.Mode&0111 != 0
 			if !isDir && isExec {
-				// Skip cPanel work directories ONLY if root-owned — SpamAssassin
-				// compiles .so regex modules, UPCP stages scripts. Non-root files
-				// in these paths are suspicious (attacker could mkdir /tmp/cPanel-*/).
+				// Skip known root-owned work directories:
+				// - cPanel: SpamAssassin compiles .so regex modules, UPCP stages scripts
+				// - dracut: rebuilds initramfs after kernel updates, copies system binaries
+				// Non-root files in these paths are still suspicious.
 				isCpanelWork := strings.Contains(path, "/cpanel.TMP.work.") || strings.Contains(path, "/cPanel-")
-				if isCpanelWork && tmpStat.Uid == 0 {
-					// Root-owned executable in cPanel work dir — legitimate, skip
+				isDracutWork := strings.Contains(path, "/dracut.")
+				if (isCpanelWork || isDracutWork) && tmpStat.Uid == 0 {
+					// Root-owned executable in system work dir — legitimate, skip
 				} else {
 					fm.sendAlertWithPath(alert.Critical, "executable_in_tmp_realtime",
 						fmt.Sprintf("Executable created in %s: %s", filepath.Dir(path), path),
