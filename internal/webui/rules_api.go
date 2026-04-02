@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/signatures"
+	"github.com/pidginhost/cpanel-security-monitor/internal/store"
 	"github.com/pidginhost/cpanel-security-monitor/internal/yara"
 )
 
@@ -139,4 +141,45 @@ func (s *Server) apiRulesReload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, result)
+}
+
+// GET/POST /api/v1/rules/modsec-escalation — manage rules excluded from auto-block
+func (s *Server) apiModSecEscalation(w http.ResponseWriter, r *http.Request) {
+	db := store.Global()
+
+	if r.Method == http.MethodPost {
+		if db == nil {
+			writeJSONError(w, "Store not available", http.StatusInternalServerError)
+			return
+		}
+		var req struct {
+			Rules []int `json:"rules"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSONError(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+		rules := make(map[int]bool)
+		for _, id := range req.Rules {
+			rules[id] = true
+		}
+		if err := db.SetModSecNoEscalateRules(rules); err != nil {
+			writeJSONError(w, fmt.Sprintf("Save failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]interface{}{"ok": true, "count": len(rules)})
+		return
+	}
+
+	// GET
+	var ids []int
+	if db != nil {
+		for id := range db.GetModSecNoEscalateRules() {
+			ids = append(ids, id)
+		}
+	}
+	if ids == nil {
+		ids = []int{}
+	}
+	writeJSON(w, map[string]interface{}{"rules": ids})
 }

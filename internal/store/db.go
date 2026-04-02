@@ -103,6 +103,13 @@ func Open(statePath string) (*DB, error) {
 		fmt.Fprintf(os.Stderr, "store: migration warning: %v\n", err)
 	}
 
+	// Seed default ModSecurity no-escalate rules if not yet configured
+	if len(db.GetModSecNoEscalateRules()) == 0 {
+		_ = db.SetModSecNoEscalateRules(map[int]bool{
+			900112: true, // WordPress user enumeration — blocks at HTTP level only
+		})
+	}
+
 	return db, nil
 }
 

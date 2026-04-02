@@ -197,7 +197,75 @@ function loadCheckTypes() {
     }).catch(function() {});
 }
 
+// --- ModSecurity escalation exclusions ---
+var _modsecRules = [];
+
+function loadModSecEscalation() {
+    fetch(CSM.apiUrl('/api/v1/rules/modsec-escalation'), {credentials: 'same-origin'})
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            _modsecRules = data.rules || [];
+            renderModSecEscalation();
+        })
+        .catch(function() {});
+}
+
+function renderModSecEscalation() {
+    var container = document.getElementById('modsec-escalation-list');
+    if (!container) return;
+    if (_modsecRules.length === 0) {
+        container.innerHTML = '<div class="text-muted small">No rules excluded — all CSM rules (900000-900999) will escalate to firewall blocks.</div>';
+        return;
+    }
+    var html = '<table class="table table-sm table-vcenter"><thead><tr><th>Rule ID</th><th>Action</th></tr></thead><tbody>';
+    _modsecRules.sort();
+    for (var i = 0; i < _modsecRules.length; i++) {
+        html += '<tr><td><code>' + _modsecRules[i] + '</code></td>' +
+            '<td><button class="btn btn-ghost-danger btn-sm modsec-remove-btn" data-id="' + _modsecRules[i] + '"><i class="ti ti-trash"></i></button></td></tr>';
+    }
+    html += '</tbody></table>';
+    container.innerHTML = html;
+
+    container.querySelectorAll('.modsec-remove-btn').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            var id = parseInt(this.getAttribute('data-id'), 10);
+            _modsecRules = _modsecRules.filter(function(r) { return r !== id; });
+            saveModSecEscalation();
+        });
+    });
+}
+
+function saveModSecEscalation() {
+    CSM.post('/api/v1/rules/modsec-escalation', {rules: _modsecRules}).then(function(data) {
+        if (data.ok) {
+            CSM.toast('ModSecurity escalation rules updated', 'success');
+            renderModSecEscalation();
+        }
+    }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+}
+
+var modsecForm = document.getElementById('modsec-escalation-form');
+if (modsecForm) {
+    modsecForm.addEventListener('submit', function(e) {
+        e.preventDefault();
+        var input = document.getElementById('modsec-rule-id');
+        var id = parseInt(input.value, 10);
+        if (isNaN(id) || id < 900000 || id > 900999) {
+            CSM.toast('Rule ID must be between 900000 and 900999', 'warning');
+            return;
+        }
+        if (_modsecRules.indexOf(id) >= 0) {
+            CSM.toast('Rule ' + id + ' is already excluded', 'warning');
+            return;
+        }
+        _modsecRules.push(id);
+        input.value = '';
+        saveModSecEscalation();
+    });
+}
+
 loadStatus();
 loadFiles();
 loadSuppressions();
 loadCheckTypes();
+loadModSecEscalation();
