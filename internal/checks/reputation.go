@@ -421,12 +421,19 @@ func cleanCache(cache *reputationCache) {
 func loadReputationCache(statePath string) *reputationCache {
 	cache := &reputationCache{Entries: make(map[string]*reputationEntry)}
 
-	// Note: the reputation cache is always loaded into a local map for batch
-	// processing within CheckIPReputation. The bbolt store is used to persist
-	// individual entries but we populate the local cache from the flat file or
-	// from store lookups as needed. Since CheckIPReputation iterates a small
-	// set of recent IPs and checks cache by key, we keep the flat-file based
-	// loading for now and let saveReputationCache handle store persistence.
+	// Try bbolt store first — after migration the flat file is renamed to .bak.
+	if sdb := store.Global(); sdb != nil {
+		for ip, entry := range sdb.AllReputation() {
+			cache.Entries[ip] = &reputationEntry{
+				Score:     entry.Score,
+				Category:  entry.Category,
+				CheckedAt: entry.CheckedAt,
+			}
+		}
+		return cache
+	}
+
+	// Fallback: flat-file JSON (pre-migration).
 	data, err := os.ReadFile(filepath.Join(statePath, reputationCacheFile))
 	if err == nil {
 		_ = json.Unmarshal(data, cache)

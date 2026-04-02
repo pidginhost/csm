@@ -168,6 +168,20 @@ func loadConfig() *config.Config {
 		os.Exit(1)
 	}
 
+	// Wire alert filter to read blocked IPs from bbolt when available.
+	// This avoids a circular import (store imports alert, so alert can't
+	// import store) by injecting the loader at startup.
+	if sdb := store.Global(); sdb != nil {
+		alert.BlockedIPsFunc = func() map[string]bool {
+			ips := make(map[string]bool)
+			ss := sdb.LoadFirewallState()
+			for _, entry := range ss.Blocked {
+				ips[entry.IP] = true
+			}
+			return ips
+		}
+	}
+
 	return cfg
 }
 

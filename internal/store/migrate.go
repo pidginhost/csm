@@ -226,13 +226,13 @@ func (db *DB) migrateFirewall(statePath string) error {
 	type rawAllowed struct {
 		IP        string    `json:"ip"`
 		Reason    string    `json:"reason"`
-		Port      int       `json:"port"`
-		ExpiresAt time.Time `json:"expires_at"`
+		Port      int       `json:"port,omitempty"`
+		ExpiresAt time.Time `json:"expires_at,omitempty"`
 	}
 	type rawSubnet struct {
-		CIDR    string    `json:"cidr"`
-		Reason  string    `json:"reason"`
-		AddedAt time.Time `json:"added_at"`
+		CIDR      string    `json:"cidr"`
+		Reason    string    `json:"reason"`
+		BlockedAt time.Time `json:"blocked_at"`
 	}
 	type rawPortAllow struct {
 		IP     string `json:"ip"`
@@ -241,10 +241,10 @@ func (db *DB) migrateFirewall(statePath string) error {
 		Reason string `json:"reason"`
 	}
 	type rawState struct {
-		Blocked     []rawBlocked   `json:"Blocked"`
-		BlockedNet  []rawSubnet    `json:"BlockedNet"`
-		Allowed     []rawAllowed   `json:"Allowed"`
-		PortAllowed []rawPortAllow `json:"PortAllowed"`
+		Blocked     []rawBlocked   `json:"blocked"`
+		BlockedNet  []rawSubnet    `json:"blocked_nets"`
+		Allowed     []rawAllowed   `json:"allowed"`
+		PortAllowed []rawPortAllow `json:"port_allowed"`
 	}
 
 	var state rawState

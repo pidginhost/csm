@@ -88,6 +88,22 @@ func (db *DB) CleanExpiredReputation(maxAge time.Duration) int {
 	return removed
 }
 
+// AllReputation returns all reputation entries keyed by IP.
+func (db *DB) AllReputation() map[string]ReputationEntry {
+	entries := make(map[string]ReputationEntry)
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("reputation")).ForEach(func(k, v []byte) error {
+			var e ReputationEntry
+			if json.Unmarshal(v, &e) != nil {
+				return nil //nolint:nilerr // skip corrupt entry
+			}
+			entries[string(k)] = e
+			return nil
+		})
+	})
+	return entries
+}
+
 // EnforceReputationCap ensures the reputation bucket has at most max entries.
 // If the count exceeds max, the oldest entries (by CheckedAt) are deleted.
 // Returns the count of entries removed.

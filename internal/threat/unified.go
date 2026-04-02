@@ -180,6 +180,21 @@ type abuseEntry struct {
 }
 
 func loadFullAbuseCache(statePath string) map[string]*abuseEntry {
+	result := make(map[string]*abuseEntry)
+	sixHoursAgo := time.Now().Add(-6 * time.Hour)
+
+	// Try bbolt store first — after migration the flat file is renamed to .bak.
+	if sdb := store.Global(); sdb != nil {
+		for ip, entry := range sdb.AllReputation() {
+			if entry.CheckedAt.Before(sixHoursAgo) || entry.Score < 0 {
+				continue // expired or error sentinel
+			}
+			result[ip] = &abuseEntry{Score: entry.Score, Category: entry.Category}
+		}
+		return result
+	}
+
+	// Fallback: flat-file JSON (pre-migration).
 	type cacheEntry struct {
 		Score     int       `json:"score"`
 		Category  string    `json:"category"`
@@ -189,7 +204,6 @@ func loadFullAbuseCache(statePath string) map[string]*abuseEntry {
 		Entries map[string]*cacheEntry `json:"entries"`
 	}
 
-	result := make(map[string]*abuseEntry)
 	data, err := os.ReadFile(filepath.Join(statePath, "reputation_cache.json"))
 	if err != nil {
 		return result
@@ -198,7 +212,6 @@ func loadFullAbuseCache(statePath string) map[string]*abuseEntry {
 	if json.Unmarshal(data, &cf) != nil || cf.Entries == nil {
 		return result
 	}
-	sixHoursAgo := time.Now().Add(-6 * time.Hour)
 	for ip, entry := range cf.Entries {
 		if entry.CheckedAt.Before(sixHoursAgo) || entry.Score < 0 {
 			continue // expired or error sentinel

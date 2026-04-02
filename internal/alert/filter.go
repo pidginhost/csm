@@ -97,24 +97,37 @@ func loadPendingIPs(statePath string) map[string]bool {
 	return ips
 }
 
+// BlockedIPsFunc is an optional callback that returns currently blocked IPs.
+// Set by the daemon (or tests) to provide blocked IPs from bbolt store,
+// avoiding a circular import between alert and store packages.
+// When nil, loadBlockedIPs falls back to reading flat files.
+var BlockedIPsFunc func() map[string]bool
+
 // loadBlockedIPs reads blocked IPs from both the firewall engine state
 // and the legacy blocked_ips.json file.
 func loadBlockedIPs(statePath string) map[string]bool {
 	ips := make(map[string]bool)
 	now := time.Now()
 
-	// Read from firewall engine state (nftables)
-	if fwData, err := os.ReadFile(filepath.Join(statePath, "firewall", "state.json")); err == nil {
-		var fwState struct {
-			Blocked []struct {
-				IP        string    `json:"ip"`
-				ExpiresAt time.Time `json:"expires_at"`
-			} `json:"blocked"`
+	// Use injected loader (bbolt-backed) when available.
+	if BlockedIPsFunc != nil {
+		for ip, v := range BlockedIPsFunc() {
+			ips[ip] = v
 		}
-		if json.Unmarshal(fwData, &fwState) == nil {
-			for _, entry := range fwState.Blocked {
-				if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
-					ips[entry.IP] = true
+	} else {
+		// Fallback: read from firewall engine state.json (nftables) flat file.
+		if fwData, err := os.ReadFile(filepath.Join(statePath, "firewall", "state.json")); err == nil {
+			var fwState struct {
+				Blocked []struct {
+					IP        string    `json:"ip"`
+					ExpiresAt time.Time `json:"expires_at"`
+				} `json:"blocked"`
+			}
+			if json.Unmarshal(fwData, &fwState) == nil {
+				for _, entry := range fwState.Blocked {
+					if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
+						ips[entry.IP] = true
+					}
 				}
 			}
 		}
