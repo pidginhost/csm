@@ -1,5 +1,3 @@
-//go:build linux
-
 package daemon
 
 import (
@@ -226,7 +224,9 @@ func TestDiscoverModSecLogPath_ConfigOverride(t *testing.T) {
 func TestDiscoverModSecLogPath_AutoDiscovery(t *testing.T) {
 	dir := t.TempDir()
 	fakePath := dir + "/error_log"
-	os.WriteFile(fakePath, []byte("test"), 0644)
+	if err := os.WriteFile(fakePath, []byte("test"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	origPaths := modsecLogPaths
 	modsecLogPaths = []string{"/nonexistent/path", fakePath, "/another/missing"}
