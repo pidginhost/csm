@@ -322,11 +322,52 @@ func extractModSecRule(f alert.Finding) string {
 	return extractBetween(f.Details, `[id "`, `"]`)
 }
 
+// csmRuleDescriptions provides fallback descriptions for CSM custom rules.
+// LiteSpeed error logs omit the [msg "..."] field, so the log-extracted
+// description is often empty. This map ensures the UI always shows a
+// meaningful description for rules we define ourselves.
+var csmRuleDescriptions = map[string]string{
+	"900001": "Blocked LEVIATHAN CGI extension access",
+	"900002": "Blocked LEVIATHAN directory access",
+	"900003": "Blocked PHP execution in uploads directory",
+	"900004": "Blocked PHP execution in languages directory",
+	"900005": "Blocked direct wp-config.php access",
+	"900007": "XML-RPC rate limit exceeded",
+	"900008": "Blocked known webshell filename access",
+	"900009": "Blocked GSocket User-Agent",
+	"900100": "WP-Automatic SQLi (CVE-2024-27956)",
+	"900101": "LayerSlider SQLi (CVE-2024-2879)",
+	"900102": "Really Simple Security auth bypass (CVE-2024-10924)",
+	"900103": "LiteSpeed Cache directory traversal (CVE-2024-4345)",
+	"900104": "Ultimate Member SQLi (CVE-2024-1071)",
+	"900105": "Backup Migration RCE (CVE-2023-6553)",
+	"900106": "GiveWP object injection (CVE-2024-5932)",
+	"900107": "WP File Manager arbitrary upload (CVE-2024-3400)",
+	"900110": "PHP object injection attempt",
+	"900111": "Blocked PHP in wp-content/upgrade",
+	"900112": "WordPress user enumeration blocked",
+	"900113": "wp-login brute force rate limit",
+	"900114": "wp-login brute force rate limit",
+	"900115": "Blocked .env file access",
+	"900116": "Blocked scanner probe",
+	"900120": "Blocked wp-coder preview endpoint",
+	"900121": "Blocked wp-coder attributes endpoint",
+}
+
 func extractModSecDescription(f alert.Finding) string {
 	if v := extractDetailField(f.Details, "Message: "); v != "" {
 		return v
 	}
-	return extractBetween(f.Details, `[msg "`, `"]`)
+	if v := extractBetween(f.Details, `[msg "`, `"]`); v != "" {
+		return v
+	}
+	// Fallback: use static description for CSM custom rules when the log
+	// format (e.g. LiteSpeed) doesn't include the [msg "..."] field.
+	rule := extractModSecRule(f)
+	if desc, ok := csmRuleDescriptions[rule]; ok {
+		return desc
+	}
+	return ""
 }
 
 func extractModSecHostname(f alert.Finding) string {

@@ -47,6 +47,9 @@ func parseModSecLogLine(line string, cfg *config.Config) []alert.Finding {
 	if isLiteSpeed {
 		ip = extractLiteSpeedIP(line)
 		ruleID = extractModSecField(line, `[id "`, `"]`)
+		msg = extractModSecField(line, `[msg "`, `"]`)
+		hostname = extractModSecField(line, `[hostname "`, `"]`)
+		uri = extractModSecField(line, `[uri "`, `"]`)
 	} else {
 		// Apache format: [client IP] or [client IP:port]
 		raw := extractModSecField(line, "[client ", "]")
