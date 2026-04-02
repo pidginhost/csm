@@ -538,6 +538,53 @@ func (d *Daemon) startLogWatchers() {
 		}{phpEventsLogPath, parsePHPShieldLogLine})
 	}
 
+	// ModSecurity error log — auto-discover path across cPanel variants.
+	if modsecPath := discoverModSecLogPath(d.cfg); modsecPath != "" {
+		logFiles = append(logFiles, struct {
+			path    string
+			handler func(string, *config.Config) []alert.Finding
+		}{modsecPath, parseModSecLogLineDeduped})
+	} else {
+		// No log found at startup. Retry loop polls ALL candidate paths
+		// every 60s until one appears (handles late log creation, delayed
+		// ModSecurity enablement, or startup ordering).
+		fmt.Fprintf(os.Stderr, "[%s] ModSecurity error log not found (checked %v), will retry every 60s\n", ts(), modsecLogPaths)
+		d.wg.Add(1)
+		go func() {
+			defer d.wg.Done()
+			ticker := time.NewTicker(60 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-d.stopCh:
+					return
+				case <-ticker.C:
+					path := discoverModSecLogPath(d.cfg)
+					if path == "" {
+						continue
+					}
+					w, err := NewLogWatcher(path, d.cfg, parseModSecLogLineDeduped, d.alertCh)
+					if err != nil {
+						continue
+					}
+					d.logWatchersMu.Lock()
+					d.logWatchers = append(d.logWatchers, w)
+					d.logWatchersMu.Unlock()
+					d.wg.Add(1)
+					go func(w *LogWatcher) {
+						defer d.wg.Done()
+						w.Run(d.stopCh)
+					}(w)
+					fmt.Fprintf(os.Stderr, "[%s] Watching: %s (appeared after retry)\n", ts(), path)
+					return
+				}
+			}
+		}()
+	}
+
+	// Start background eviction for modsec dedup/escalation state
+	StartModSecEviction(d.stopCh)
+
 	for _, lf := range logFiles {
 		w, err := NewLogWatcher(lf.path, d.cfg, lf.handler, d.alertCh)
 		if err != nil {
