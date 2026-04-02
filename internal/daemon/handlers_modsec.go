@@ -79,11 +79,14 @@ func parseModSecLogLine(line string, cfg *config.Config) []alert.Finding {
 	}
 
 	// Determine severity from rule ID.
+	// Individual blocks are informational — ModSecurity already denied the
+	// request. Only the escalation finding (3+ from same IP) is CRITICAL
+	// because it triggers auto-block at the firewall level.
 	severity := alert.Warning
 	if ruleNum, err := strconv.Atoi(ruleID); err == nil {
 		switch {
 		case ruleNum >= 900000 && ruleNum <= 900999:
-			severity = alert.Critical // CSM custom rules
+			severity = alert.High // CSM custom rules — attack blocked, informational
 		case ruleNum >= 910000:
 			severity = alert.High // OWASP CRS
 		}

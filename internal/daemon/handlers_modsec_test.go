@@ -47,8 +47,8 @@ func TestParseModSecLogLine_CSMCustomRule(t *testing.T) {
 	if f.Check != "modsec_block_realtime" {
 		t.Errorf("check = %q, want modsec_block_realtime", f.Check)
 	}
-	if f.Severity != alert.Critical {
-		t.Errorf("severity = %v, want Critical (CSM custom rule)", f.Severity)
+	if f.Severity != alert.High {
+		t.Errorf("severity = %v, want High (CSM custom rule — block is informational)", f.Severity)
 	}
 	if !strings.Contains(f.Message, "900115") {
 		t.Errorf("message should contain rule ID 900115, got %q", f.Message)
