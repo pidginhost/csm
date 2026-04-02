@@ -154,8 +154,6 @@ func TestIsHighConfidenceRealtimeMatch_VendorExclusion(t *testing.T) {
 func TestIsHighConfidenceRealtimeMatch_SmallFileExclusion(t *testing.T) {
 	dir := t.TempDir()
 	tiny := filepath.Join(dir, "tiny.php")
-	// A short file with diverse characters can have high entropy but
-	// should NOT be quarantined — entropy is unreliable below 512 bytes.
 	writeTestFile(t, tiny, []byte(`<?php eval(base64_decode($_POST['x'])); ?>`))
 
 	f := alert.Finding{
@@ -163,6 +161,57 @@ func TestIsHighConfidenceRealtimeMatch_SmallFileExclusion(t *testing.T) {
 	}
 	if isHighConfidenceRealtimeMatch(f, tiny) {
 		t.Error("files under 512 bytes should not be high-confidence (entropy unreliable)")
+	}
+}
+
+func TestIsHighConfidenceRealtimeMatch_DropperSkipsEntropy(t *testing.T) {
+	// Dropper category should auto-quarantine regardless of entropy.
+	// The LEVIATHAN goto-obfuscated AES webshell has entropy of only ~3.5
+	// because \xNN hex encoding uses a tiny repeating character set.
+	dir := t.TempDir()
+	hexWebshell := filepath.Join(dir, "index.php")
+	writeTestFile(t, hexWebshell, []byte(generateHexEncodedPHP(8000)))
+
+	f := alert.Finding{
+		Details: "Category: dropper\nDescription: PHP goto obfuscation\nMatched: goto",
+	}
+	if !isHighConfidenceRealtimeMatch(f, hexWebshell) {
+		t.Error("dropper category should be quarantined even with low entropy (hex-encoded content)")
+	}
+}
+
+func TestIsHighConfidenceRealtimeMatch_WebshellHexDensity(t *testing.T) {
+	// Webshell with low entropy but high hex density should still be caught.
+	dir := t.TempDir()
+	hexWebshell := filepath.Join(dir, "shell.php")
+	writeTestFile(t, hexWebshell, []byte(generateHexEncodedPHP(8000)))
+
+	f := alert.Finding{
+		Details: "Category: webshell\nDescription: hex-encoded function\nMatched: hex",
+	}
+	if !isHighConfidenceRealtimeMatch(f, hexWebshell) {
+		t.Error("webshell with high hex density should be high-confidence even with low entropy")
+	}
+}
+
+func TestHexEncodingDensity(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		minDens float64
+		maxDens float64
+	}{
+		{"pure hex", `\x41\x42\x43\x44\x45\x46\x47\x48`, 0.9, 1.1},
+		{"normal PHP", `<?php echo "hello world"; function foo() { return 42; } ?>`, 0.0, 0.01},
+		{"mixed", `<?php $a = "\x50\x4b\x03\x04"; echo $a; ?>`, 0.2, 0.5},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := hexEncodingDensity(tt.content)
+			if d < tt.minDens || d > tt.maxDens {
+				t.Errorf("hexEncodingDensity = %.2f, want between %.2f and %.2f", d, tt.minDens, tt.maxDens)
+			}
+		})
 	}
 }
 
@@ -225,6 +274,31 @@ class PHPMailer {
 	if _, err := os.Stat(legit); err != nil {
 		t.Error("legitimate file should not be removed")
 	}
+}
+
+// generateHexEncodedPHP creates PHP content that mimics the LEVIATHAN
+// AES-encrypted webshell — heavy hex encoding with goto obfuscation.
+// This has LOW Shannon entropy (~3.5) but HIGH hex density (>30%).
+func generateHexEncodedPHP(size int) string {
+	var b strings.Builder
+	b.WriteString("<?php\n goto o8ip9;")
+	fragments := []string{
+		`$t7Mx9="\131\x50\103\x4f\114\155\67\170\x58\x4a\142\114\x35\67\x4c\x51\145\x54\104\53";`,
+		`$yR5Wo="\x31\62\x33\64\x35\66\x37\x38\x39\x30\141\x62\143\144\x65\146";`,
+		`$f5s8i=openssl_decrypt($t7Mx9,"\101\x45\123\x2d\61\62\70\x2d\x45\103\102",$yR5Wo,0);`,
+		`ini_set("\x64\x69\163\x70\x6c\x61\x79\x5f\x65\x72\x72\x6f\x72\x73",0);`,
+		`if($_SERVER["\122\x45\121\125\x45\123\x54\137\115\x45\x54\x48\117\104"]==="\x50\x4f\123\124"){`,
+		`eval("\77\x3e".$f5s8i);`,
+	}
+	for b.Len() < size {
+		for _, frag := range fragments {
+			b.WriteString(frag)
+			if b.Len() >= size {
+				break
+			}
+		}
+	}
+	return b.String()
 }
 
 // generateHighEntropyPHP creates PHP content that mimics goto-obfuscated

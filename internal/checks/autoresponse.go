@@ -359,13 +359,17 @@ func isSafeProcess(exe string) bool {
 // "webshell_marijuana"), zip libraries (matching hex patterns), or theme
 // code using create_function().
 //
-// Criteria — ALL must be true:
-//  1. Category is "dropper" or "webshell" (high-confidence rule categories)
-//  2. File is not in a known library path (PHPMailer, vendor, etc.)
-//  3. File content has Shannon entropy >= 5.0 (heavily obfuscated)
-//
-// Normal PHP code has entropy 3.5–4.5. Obfuscated malware (goto chains,
-// hex-encoded strings, AES-encrypted payloads) consistently exceeds 4.8.
+// Criteria:
+//  1. Category must be "dropper" or "webshell"
+//  2. File must not be in a known library path
+//  3. File must be >= 512 bytes (entropy unreliable below this)
+//  4. Content must show obfuscation indicators (category-dependent):
+//     - "dropper": auto-quarantine — signature rules (e.g. 10+ goto statements)
+//       are already highly specific. No legitimate PHP has 10+ goto statements.
+//     - "webshell": requires Shannon entropy >= 4.8 OR high hex-encoding density
+//       (>20% of content is \xNN sequences). Hex-encoded webshells like the
+//       LEVIATHAN AES variant have low entropy (~3.5) because \x[0-9a-f]{2}
+//       uses a tiny repeating character set, but the hex density is unmistakable.
 func isHighConfidenceRealtimeMatch(f alert.Finding, path string) bool {
 	cat := extractCategory(f.Details)
 	switch cat {
@@ -386,16 +390,45 @@ func isHighConfidenceRealtimeMatch(f alert.Finding, path string) bool {
 		return false
 	}
 
-	// Shannon entropy is unreliable for very small files — a 200-byte
-	// legitimate PHP file can reach 4.8+ just from character diversity.
-	// Real obfuscated malware (goto chains, encrypted payloads) is always
-	// larger: LEVIATHAN droppers ~350KB, encrypted webshells ~28KB, even
-	// minimal PHP webshells are 1KB+.
 	if len(data) < 512 {
 		return false
 	}
 
-	return shannonEntropy(string(data)) >= 4.8
+	// Dropper rules (goto obfuscation, etc.) are inherently high-confidence —
+	// the signature already validated a very specific pattern. No need for
+	// additional content analysis.
+	if cat == "dropper" {
+		return true
+	}
+
+	// Webshell category needs extra validation to avoid FPs on legitimate
+	// libraries that happen to contain "passthru", "fsockopen", etc.
+	content := string(data)
+	return shannonEntropy(content) >= 4.8 || hexEncodingDensity(content) > 0.20
+}
+
+// hexEncodingDensity returns the fraction of a string's bytes that are part
+// of PHP hex escape sequences (\xNN). LEVIATHAN AES-encrypted webshells
+// encode their payload as long hex strings — the \x prefix repeats so
+// frequently that Shannon entropy drops to ~3.5 (below normal PHP), but
+// the hex density reaches 40-60%.
+func hexEncodingDensity(s string) float64 {
+	if len(s) == 0 {
+		return 0
+	}
+	hexBytes := 0
+	for i := 0; i < len(s)-3; i++ {
+		if s[i] == '\\' && s[i+1] == 'x' &&
+			isHexDigit(s[i+2]) && isHexDigit(s[i+3]) {
+			hexBytes += 4
+			i += 3 // skip past this sequence
+		}
+	}
+	return float64(hexBytes) / float64(len(s))
+}
+
+func isHexDigit(b byte) bool {
+	return (b >= '0' && b <= '9') || (b >= 'a' && b <= 'f') || (b >= 'A' && b <= 'F')
 }
 
 // knownLibraryPaths are directory fragments that indicate a file belongs to
