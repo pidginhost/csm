@@ -1145,15 +1145,20 @@ func (s *Server) apiScanAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.releaseScan()
 
+	// Extend the write deadline for this long-running request.
+	// Account scans can take several minutes; the default WriteTimeout (300s)
+	// causes ERR_HTTP2_PROTOCOL_ERROR in browsers when it fires mid-stream.
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Now().Add(10 * time.Minute))
+
 	start := time.Now()
 	findings := checks.RunAccountScan(s.cfg, s.store, req.Account)
 	elapsed := time.Since(start).Round(time.Millisecond)
 
 	result := map[string]interface{}{
-		"account":  req.Account,
-		"findings": findings,
-		"count":    len(findings),
-		"elapsed":  elapsed.String(),
+		"account": req.Account,
+		"count":   len(findings),
+		"elapsed": elapsed.String(),
 	}
 	writeJSON(w, result)
 }
