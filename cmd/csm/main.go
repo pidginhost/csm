@@ -150,17 +150,7 @@ Options:
 }
 
 func loadConfig() *config.Config {
-	cfgPath := defaultConfigPath
-	for i, arg := range os.Args {
-		if arg == "--config" && i+1 < len(os.Args) {
-			cfgPath = os.Args[i+1]
-		}
-	}
-	cfg, err := config.Load(cfgPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
-		os.Exit(1)
-	}
+	cfg := loadConfigLite()
 
 	// Initialize bbolt store (idempotent — uses sync.Once).
 	if err := store.EnsureOpen(cfg.StatePath); err != nil {
@@ -169,8 +159,6 @@ func loadConfig() *config.Config {
 	}
 
 	// Wire alert filter to read blocked IPs from bbolt when available.
-	// This avoids a circular import (store imports alert, so alert can't
-	// import store) by injecting the loader at startup.
 	if sdb := store.Global(); sdb != nil {
 		alert.BlockedIPsFunc = func() map[string]bool {
 			ips := make(map[string]bool)
@@ -182,6 +170,24 @@ func loadConfig() *config.Config {
 		}
 	}
 
+	return cfg
+}
+
+// loadConfigLite loads config without opening bbolt. Used by CLI commands
+// that don't need the shared database (scan, check, clean, status, etc.)
+// so they can run while the daemon holds the bbolt lock.
+func loadConfigLite() *config.Config {
+	cfgPath := defaultConfigPath
+	for i, arg := range os.Args {
+		if arg == "--config" && i+1 < len(os.Args) {
+			cfgPath = os.Args[i+1]
+		}
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+		os.Exit(1)
+	}
 	return cfg
 }
 
@@ -615,7 +621,7 @@ func runScanAccount() {
 		os.Exit(1)
 	}
 	account := os.Args[2]
-	cfg := loadConfig()
+	cfg := loadConfigLite()
 
 	// Initialize signatures for scanning
 	signatures.Init(cfg.Signatures.RulesDir)
