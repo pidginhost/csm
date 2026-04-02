@@ -380,15 +380,15 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 		d.webServer.Broadcast(newFindings)
 	}
 
-	// Dispatch via email/webhook — filter out informational modsec blocks.
-	// Individual ModSecurity blocks are already handled (403 returned) and
-	// visible on the /modsec web page. Only escalation findings
-	// (modsec_csm_block_escalation) are actionable and should alert.
+	// Dispatch via email/webhook — filter out all modsec findings.
+	// Individual blocks are already handled (ModSecurity returned 403).
+	// Escalations are already handled (AutoBlockIPs blocks at nftables).
+	// Both are visible on the /modsec web page — no human action needed.
 	var alertable []alert.Finding
 	for _, f := range newFindings {
 		switch f.Check {
-		case "modsec_block_realtime", "modsec_warning_realtime":
-			continue // web UI only — don't email/webhook
+		case "modsec_block_realtime", "modsec_warning_realtime", "modsec_csm_block_escalation":
+			continue // fully automated — web UI only
 		}
 		alertable = append(alertable, f)
 	}
