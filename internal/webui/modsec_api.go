@@ -40,7 +40,7 @@ type modsecEventView struct {
 
 // apiModSecStats returns 24h summary stats for ModSecurity blocks.
 func (s *Server) apiModSecStats(w http.ResponseWriter, _ *http.Request) {
-	findings := s.modsecFindings24h()
+	findings := deduplicateModSecFindings(s.modsecFindings24h())
 
 	uniqueIPs := make(map[string]bool)
 	ruleCounts := make(map[string]int)
@@ -79,7 +79,7 @@ func (s *Server) apiModSecStats(w http.ResponseWriter, _ *http.Request) {
 
 // apiModSecBlocks returns aggregated blocks per IP+rule for the last 24h.
 func (s *Server) apiModSecBlocks(w http.ResponseWriter, _ *http.Request) {
-	findings := s.modsecFindings24h()
+	findings := deduplicateModSecFindings(s.modsecFindings24h())
 
 	// Aggregate by IP
 	type ipAgg struct {
@@ -136,7 +136,10 @@ func (s *Server) apiModSecBlocks(w http.ResponseWriter, _ *http.Request) {
 				agg.description = desc
 			}
 		}
-		if domain != "" {
+		// Skip server IPs and empty hostnames — only show actual domain names.
+		// ModSecurity logs the server IP as hostname when the request doesn't
+		// match a specific vhost (e.g. direct IP access, SNI mismatch).
+		if domain != "" && !looksLikeIP(domain) {
 			agg.domains[domain] = true
 		}
 	}
@@ -189,21 +192,20 @@ func (s *Server) apiModSecEvents(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	findings := s.modsecFindings24h()
+	findings := deduplicateModSecFindings(s.modsecFindings24h())
 
 	// Reverse to newest first
 	for i, j := 0, len(findings)-1; i < j; i, j = i+1, j-1 {
 		findings[i], findings[j] = findings[j], findings[i]
 	}
 
-	if len(findings) > limit {
-		findings = findings[:limit]
-	}
-
 	var result []modsecEventView
 	for _, f := range findings {
 		if f.Check == "modsec_csm_block_escalation" {
-			continue // skip escalation meta-events
+			continue
+		}
+		if len(result) >= limit {
+			break
 		}
 		result = append(result, modsecEventView{
 			Time:     f.Timestamp.Format("15:04:05"),
@@ -216,6 +218,37 @@ func (s *Server) apiModSecEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, result)
+}
+
+// deduplicateModSecFindings merges Apache + LiteSpeed duplicate events.
+// Both log the same block within the same second — keep one with merged fields.
+func deduplicateModSecFindings(findings []alert.Finding) []alert.Finding {
+	type dedupKey struct {
+		second string
+		ip     string
+		rule   string
+	}
+	seen := make(map[dedupKey]int) // key → index in result
+	var result []alert.Finding
+
+	for _, f := range findings {
+		ip := extractModSecIP(f)
+		rule := extractModSecRule(f)
+		ts := f.Timestamp.Format("15:04:05")
+		key := dedupKey{second: ts, ip: ip, rule: rule}
+
+		if idx, ok := seen[key]; ok {
+			// Merge richer details into existing entry
+			existing := &result[idx]
+			if extractModSecHostname(f) != "" && extractModSecHostname(*existing) == "" {
+				existing.Details = f.Details
+			}
+		} else {
+			seen[key] = len(result)
+			result = append(result, f)
+		}
+	}
+	return result
 }
 
 // modsecFindings24h returns all modsec findings from the last 24 hours.
@@ -317,6 +350,19 @@ func extractDetailField(details, prefix string) string {
 		}
 	}
 	return ""
+}
+
+// looksLikeIP returns true if the string looks like an IP address (not a domain).
+func looksLikeIP(s string) bool {
+	if len(s) < 7 {
+		return false
+	}
+	for _, c := range s {
+		if c != '.' && (c < '0' || c > '9') {
+			return false
+		}
+	}
+	return strings.Count(s, ".") == 3
 }
 
 // extractBetween extracts the value between start and end delimiters.
