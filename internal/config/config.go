@@ -49,6 +49,7 @@ type Config struct {
 		FilesystemScanIntervalMin int `yaml:"filesystem_scan_interval_min"`
 		MultiIPLoginThreshold     int `yaml:"multi_ip_login_threshold"`
 		MultiIPLoginWindowMin     int `yaml:"multi_ip_login_window_min"`
+		PluginCheckIntervalMin    int `yaml:"plugin_check_interval_min"`
 	} `yaml:"thresholds"`
 
 	InfraIPs []string `yaml:"infra_ips"`
@@ -172,6 +173,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Thresholds.FilesystemScanIntervalMin == 0 {
 		cfg.Thresholds.FilesystemScanIntervalMin = 30
+	}
+	if cfg.Thresholds.PluginCheckIntervalMin == 0 {
+		cfg.Thresholds.PluginCheckIntervalMin = 1440
 	}
 	if cfg.Alerts.MaxPerHour == 0 {
 		cfg.Alerts.MaxPerHour = 10
