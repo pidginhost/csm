@@ -14,8 +14,9 @@ import (
 
 // modsecIPCounter tracks deny timestamps for a single IP.
 type modsecIPCounter struct {
-	mu    sync.Mutex
-	times []time.Time
+	mu        sync.Mutex
+	times     []time.Time
+	escalated bool // set once escalation fires — prevents repeated findings per window
 }
 
 var (
@@ -184,8 +185,19 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 	var results []alert.Finding
 
 	// --- Step 1: CSM escalation (before dedup) ---
-	ip := extractIPFromFinding(f)
-	ruleID := extractRuleIDFromFinding(f)
+	// Extract IP and rule ID directly from the raw log line — NOT from the
+	// finding message, which could be manipulated via log injection.
+	ip := extractModSecField(line, "[client ", "]")
+	if ip == "" {
+		ip = extractLiteSpeedIP(line)
+	}
+	// Strip port from Apache 2.4 format (IP:port)
+	if strings.Count(ip, ":") == 1 {
+		if idx := strings.LastIndex(ip, ":"); idx > 0 {
+			ip = ip[:idx]
+		}
+	}
+	ruleID := extractModSecField(line, `[id "`, `"]`)
 	ruleNum, _ := strconv.Atoi(ruleID)
 	isCSM := f.Check == "modsec_block_realtime" && ruleNum >= 900000 && ruleNum <= 900999
 
@@ -238,27 +250,16 @@ func recordCSMDeny(ip string, now time.Time) bool {
 	recent = append(recent, now)
 	ctr.times = recent
 
-	return len(recent) >= modsecEscalationHits
-}
-
-// extractIPFromFinding extracts the IP address from a finding's Message field.
-// The message format is "... from IP ..." or "... from IP on ...".
-func extractIPFromFinding(f alert.Finding) string {
-	const marker = " from "
-	idx := strings.Index(f.Message, marker)
-	if idx < 0 {
-		return ""
+	if len(recent) >= modsecEscalationHits && !ctr.escalated {
+		ctr.escalated = true
+		return true
 	}
-	rest := f.Message[idx+len(marker):]
-	// IP ends at space or end of string.
-	if sp := strings.IndexByte(rest, ' '); sp >= 0 {
-		return rest[:sp]
-	}
-	return rest
+	return false
 }
 
 // extractRuleIDFromFinding extracts the rule ID from a finding's Message field.
 // The message contains "rule NNNN" or "rule NNNN from".
+// Only used by tests — production code extracts directly from log line.
 func extractRuleIDFromFinding(f alert.Finding) string {
 	const marker = "rule "
 	idx := strings.Index(f.Message, marker)
@@ -291,9 +292,11 @@ func StartModSecEviction(stopCh <-chan struct{}) {
 }
 
 var modsecLogPaths = []string{
-	"/var/log/apache2/error_log",
-	"/usr/local/apache/logs/error_log",
-	"/var/log/httpd/error_log",
+	"/var/log/apache2/error_log",       // cPanel EA4 default
+	"/usr/local/apache/logs/error_log", // older cPanel
+	"/var/log/httpd/error_log",         // CentOS/RHEL default
+	"/usr/local/lsws/logs/error.log",   // LiteSpeed default
+	"/var/log/lsws/error.log",          // LiteSpeed alternate
 }
 
 func discoverModSecLogPath(cfg *config.Config) string {
@@ -331,6 +334,9 @@ func evictModSecState(now time.Time) {
 		}
 		ctr.times = recent
 		empty := len(recent) == 0
+		if len(recent) < modsecEscalationHits {
+			ctr.escalated = false // reset cooldown when counter drops below threshold
+		}
 		ctr.mu.Unlock()
 
 		if empty {

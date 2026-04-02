@@ -52,25 +52,25 @@ func TestIsHighConfidenceRealtimeMatch_CategoryFilter(t *testing.T) {
 	f := alert.Finding{
 		Details: "Category: dropper\nDescription: PHP goto obfuscation\nMatched: goto",
 	}
-	if !isHighConfidenceRealtimeMatch(f, malware) {
+	if !isHighConfidenceRealtimeMatch(f, malware, nil) {
 		t.Error("dropper category with high entropy should be high-confidence")
 	}
 
 	// Webshell category → should match
 	f.Details = "Category: webshell\nDescription: hex-encoded function\nMatched: hex"
-	if !isHighConfidenceRealtimeMatch(f, malware) {
+	if !isHighConfidenceRealtimeMatch(f, malware, nil) {
 		t.Error("webshell category with high entropy should be high-confidence")
 	}
 
 	// Backdoor category → should NOT match (not in allowed categories)
 	f.Details = "Category: backdoor\nDescription: create_function\nMatched: create_function("
-	if isHighConfidenceRealtimeMatch(f, malware) {
+	if isHighConfidenceRealtimeMatch(f, malware, nil) {
 		t.Error("backdoor category should not be high-confidence")
 	}
 
 	// Mailer category → should NOT match
 	f.Details = "Category: mailer\nDescription: forged headers\nMatched: mail("
-	if isHighConfidenceRealtimeMatch(f, malware) {
+	if isHighConfidenceRealtimeMatch(f, malware, nil) {
 		t.Error("mailer category should not be high-confidence")
 	}
 }
@@ -96,14 +96,14 @@ class PHPMailer {
     }
 }
 `))
-	if isHighConfidenceRealtimeMatch(dropper, normalPHP) {
+	if isHighConfidenceRealtimeMatch(dropper, normalPHP, nil) {
 		t.Error("normal PHP code (low entropy) should not be high-confidence")
 	}
 
 	// High entropy file (obfuscated malware) → should match
 	obfuscated := filepath.Join(dir, "obfuscated.php")
 	writeTestFile(t, obfuscated, []byte(generateHighEntropyPHP(10000)))
-	if !isHighConfidenceRealtimeMatch(dropper, obfuscated) {
+	if !isHighConfidenceRealtimeMatch(dropper, obfuscated, nil) {
 		t.Error("obfuscated PHP (high entropy) should be high-confidence")
 	}
 }
@@ -120,7 +120,7 @@ func TestIsHighConfidenceRealtimeMatch_LibraryExclusion(t *testing.T) {
 	f := alert.Finding{
 		Details: "Category: webshell\nDescription: Marijuana Shell\nMatched: passthru(",
 	}
-	if isHighConfidenceRealtimeMatch(f, libFile) {
+	if isHighConfidenceRealtimeMatch(f, libFile, nil) {
 		t.Error("file in /phpmailer/ path should be excluded even with high entropy")
 	}
 
@@ -131,7 +131,7 @@ func TestIsHighConfidenceRealtimeMatch_LibraryExclusion(t *testing.T) {
 	writeTestFile(t, evilFile, []byte(generateHighEntropyPHP(8000)))
 
 	f.Details = "Category: dropper\nDescription: goto obfuscation"
-	if !isHighConfidenceRealtimeMatch(f, evilFile) {
+	if !isHighConfidenceRealtimeMatch(f, evilFile, nil) {
 		t.Error("file outside library paths with high entropy should be high-confidence")
 	}
 }
@@ -146,7 +146,7 @@ func TestIsHighConfidenceRealtimeMatch_VendorExclusion(t *testing.T) {
 	f := alert.Finding{
 		Details: "Category: webshell\nDescription: hex-encoded function",
 	}
-	if isHighConfidenceRealtimeMatch(f, vendorFile) {
+	if isHighConfidenceRealtimeMatch(f, vendorFile, nil) {
 		t.Error("file in /vendor/ path should be excluded")
 	}
 }
@@ -159,7 +159,7 @@ func TestIsHighConfidenceRealtimeMatch_SmallFileExclusion(t *testing.T) {
 	f := alert.Finding{
 		Details: "Category: webshell\nDescription: eval injection",
 	}
-	if isHighConfidenceRealtimeMatch(f, tiny) {
+	if isHighConfidenceRealtimeMatch(f, tiny, nil) {
 		t.Error("files under 512 bytes should not be high-confidence (entropy unreliable)")
 	}
 }
@@ -175,7 +175,7 @@ func TestIsHighConfidenceRealtimeMatch_DropperSkipsEntropy(t *testing.T) {
 	f := alert.Finding{
 		Details: "Category: dropper\nDescription: PHP goto obfuscation\nMatched: goto",
 	}
-	if !isHighConfidenceRealtimeMatch(f, hexWebshell) {
+	if !isHighConfidenceRealtimeMatch(f, hexWebshell, nil) {
 		t.Error("dropper category should be quarantined even with low entropy (hex-encoded content)")
 	}
 }
@@ -189,7 +189,7 @@ func TestIsHighConfidenceRealtimeMatch_WebshellHexDensity(t *testing.T) {
 	f := alert.Finding{
 		Details: "Category: webshell\nDescription: hex-encoded function\nMatched: hex",
 	}
-	if !isHighConfidenceRealtimeMatch(f, hexWebshell) {
+	if !isHighConfidenceRealtimeMatch(f, hexWebshell, nil) {
 		t.Error("webshell with high hex density should be high-confidence even with low entropy")
 	}
 }
@@ -219,7 +219,7 @@ func TestIsHighConfidenceRealtimeMatch_MissingFile(t *testing.T) {
 	f := alert.Finding{
 		Details: "Category: dropper\nDescription: goto obfuscation",
 	}
-	if isHighConfidenceRealtimeMatch(f, "/nonexistent/path/evil.php") {
+	if isHighConfidenceRealtimeMatch(f, "/nonexistent/path/evil.php", nil) {
 		t.Error("nonexistent file should not be high-confidence")
 	}
 }
@@ -234,11 +234,11 @@ func TestInlineQuarantine_QuarantinesHighConfidence(t *testing.T) {
 		FilePath: malware,
 	}
 
-	qPath, ok := InlineQuarantine(f, malware)
+	qPath, ok := InlineQuarantine(f, malware, nil)
 	if !ok {
 		// The quarantine dir is /opt/csm/quarantine — may not be writable in test.
 		// Verify it's not a validation failure by checking the gate directly.
-		if !isHighConfidenceRealtimeMatch(f, malware) {
+		if !isHighConfidenceRealtimeMatch(f, malware, nil) {
 			t.Fatal("validation gate should pass for high-entropy dropper")
 		}
 		t.Skip("quarantine dir not writable in test environment (expected on dev)")
@@ -265,7 +265,7 @@ class PHPMailer {
 		Details:  "Category: webshell\nDescription: Marijuana Shell",
 		FilePath: legit,
 	}
-	_, ok := InlineQuarantine(f, legit)
+	_, ok := InlineQuarantine(f, legit, nil)
 	if ok {
 		t.Error("InlineQuarantine should NOT quarantine low-entropy legitimate PHP")
 	}

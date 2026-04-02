@@ -128,7 +128,7 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 		// quarantining false positives (e.g. legitimate PHPMailer matching
 		// "webshell_marijuana", or zip libraries matching hex patterns).
 		// Only quarantine when the file is genuinely obfuscated malware.
-		if isRealtimeMatch && !isHighConfidenceRealtimeMatch(f, path) {
+		if isRealtimeMatch && !isHighConfidenceRealtimeMatch(f, path, nil) {
 			continue
 		}
 
@@ -353,11 +353,12 @@ func isSafeProcess(exe string) bool {
 	return false
 }
 
-// isHighConfidenceRealtimeMatch validates whether a signature_match_realtime
-// finding is truly malicious and safe to auto-quarantine. This prevents
-// quarantining false positives like legitimate PHPMailer (matching
-// "webshell_marijuana"), zip libraries (matching hex patterns), or theme
-// code using create_function().
+// isHighConfidenceRealtimeMatch validates whether a realtime signature match
+// is truly malicious and safe to auto-quarantine. Prevents false positives
+// on legitimate libraries (PHPMailer, zip) and theme code.
+//
+// The data parameter should be the file content already read by the caller
+// (fanotify fd or scanner) to avoid TOCTOU re-reads. Pass nil to read from path.
 //
 // Criteria:
 //  1. Category must be "dropper" or "webshell"
@@ -365,12 +366,9 @@ func isSafeProcess(exe string) bool {
 //  3. File must be >= 512 bytes (entropy unreliable below this)
 //  4. Content must show obfuscation indicators (category-dependent):
 //     - "dropper": auto-quarantine — signature rules (e.g. 10+ goto statements)
-//     are already highly specific. No legitimate PHP has 10+ goto statements.
-//     - "webshell": requires Shannon entropy >= 4.8 OR high hex-encoding density
-//     (>20% of content is \xNN sequences). Hex-encoded webshells like the
-//     LEVIATHAN AES variant have low entropy (~3.5) because \x[0-9a-f]{2}
-//     uses a tiny repeating character set, but the hex density is unmistakable.
-func isHighConfidenceRealtimeMatch(f alert.Finding, path string) bool {
+//     are already highly specific. No legitimate PHP has that.
+//     - "webshell": requires Shannon entropy >= 4.8 OR hex density > 20%
+func isHighConfidenceRealtimeMatch(f alert.Finding, path string, data []byte) bool {
 	cat := extractCategory(f.Details)
 	switch cat {
 	case "dropper", "webshell":
@@ -385,9 +383,12 @@ func isHighConfidenceRealtimeMatch(f alert.Finding, path string) bool {
 		}
 	}
 
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false
+	if data == nil {
+		var err error
+		data, err = os.ReadFile(path)
+		if err != nil {
+			return false
+		}
 	}
 
 	if len(data) < 512 {
@@ -448,9 +449,11 @@ var knownLibraryPaths = []string{
 // InlineQuarantine moves a file to quarantine immediately if it passes the
 // high-confidence validation gates. Called from fanotify's analyzeFile to
 // quarantine malware without waiting for the 5-second batch dispatcher.
+// The data parameter is the file content already read by the caller (avoids
+// TOCTOU re-read). Pass nil to read from path.
 // Returns the quarantine path and true if the file was quarantined.
-func InlineQuarantine(f alert.Finding, path string) (string, bool) {
-	if !isHighConfidenceRealtimeMatch(f, path) {
+func InlineQuarantine(f alert.Finding, path string, data []byte) (string, bool) {
+	if !isHighConfidenceRealtimeMatch(f, path, data) {
 		return "", false
 	}
 

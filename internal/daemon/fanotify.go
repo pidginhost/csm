@@ -1098,7 +1098,7 @@ func (fm *FileMonitor) runSignatureScan(data []byte, path, ext, procInfo string)
 					Details:  details,
 					FilePath: path,
 				}
-				if qPath, ok := checks.InlineQuarantine(finding, path); ok {
+				if qPath, ok := checks.InlineQuarantine(finding, path, data); ok {
 					fm.sendAlert(alert.Critical, "auto_response",
 						fmt.Sprintf("AUTO-QUARANTINE (inline): %s moved to quarantine", path),
 						fmt.Sprintf("Quarantined to: %s\nRule: %s", qPath, m.RuleName))

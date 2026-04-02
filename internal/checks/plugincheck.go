@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -50,7 +51,7 @@ func parseWPOrgPluginResponse(body []byte) (store.PluginInfo, error) {
 // given slug and returns the parsed PluginInfo.
 func fetchWPOrgPluginInfo(slug string) (store.PluginInfo, error) {
 	url := "https://api.wordpress.org/plugins/info/1.2/?action=plugin_information" +
-		"&request[slug]=" + slug +
+		"&request[slug]=" + neturl.QueryEscape(slug) +
 		"&request[fields][version]=1&request[fields][tested]=1"
 
 	resp, err := wpOrgHTTPClient.Get(url) //nolint:noctx // simple GET, no context needed
@@ -249,10 +250,12 @@ func refreshPluginCache(db *store.DB) {
 				discoveredPaths[wpPath] = true
 				mu.Unlock()
 
-				// Run wp plugin list as the site owner
-				cmd := fmt.Sprintf("cd %s && wp plugin list --fields=name,status,version,update_version --format=json",
-					wpPath)
-				out, err := exec.Command("su", "-", user, "-s", "/bin/bash", "-c", cmd).Output() //nolint:gosec // user from filepath
+				// Run wp plugin list as the site owner.
+				// Use --path flag instead of shell cd to avoid shell injection
+				// via crafted directory names on shared hosting.
+				out, err := exec.Command("su", "-", user, "-s", "/bin/bash", "-c",
+					"wp plugin list --fields=name,status,version,update_version --format=json --path="+shellQuote(wpPath),
+				).Output()
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "plugincheck: wp-cli failed for %s: %v\n", wpPath, err)
 					continue
@@ -414,8 +417,9 @@ func evaluatePluginCache(db *store.DB) []alert.Finding {
 // extractWPDomain runs `wp option get siteurl` to discover the site's domain.
 // Falls back to directory name heuristics if wp-cli fails.
 func extractWPDomain(wpPath, user string) string {
-	cmd := fmt.Sprintf("cd %s && wp option get siteurl", wpPath)
-	out, err := exec.Command("su", "-", user, "-s", "/bin/bash", "-c", cmd).Output() //nolint:gosec // user from filepath
+	out, err := exec.Command("su", "-", user, "-s", "/bin/bash", "-c",
+		"wp option get siteurl --path="+shellQuote(wpPath),
+	).Output()
 	if err == nil {
 		url := strings.TrimSpace(string(out))
 		if url != "" {
@@ -435,4 +439,10 @@ func extractWPDomain(wpPath, user string) string {
 		}
 	}
 	return user
+}
+
+// shellQuote wraps a string in single quotes for safe shell argument passing.
+// Any embedded single quotes are escaped as '\” (end quote, literal quote, start quote).
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
