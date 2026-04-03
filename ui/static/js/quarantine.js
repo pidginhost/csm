@@ -1,7 +1,7 @@
 // CSM Quarantine page
 
 function loadQuarantine() {
-    fetch('/api/v1/quarantine', {credentials:'same-origin'}).then(function(r){return r.json()}).then(function(files){
+    fetch(CSM.apiUrl('/api/v1/quarantine'), {credentials:'same-origin'}).then(function(r){return r.json()}).then(function(files){
         var el = document.getElementById('quarantine-content');
         var title = document.querySelector('.card-title');
         if (title) title.innerHTML = '<i class="ti ti-lock"></i>&nbsp;Quarantined Files (' + (files ? files.length : 0) + ')';

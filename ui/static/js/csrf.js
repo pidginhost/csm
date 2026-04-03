@@ -4,7 +4,8 @@ CSM.csrfToken = (document.querySelector('meta[name="csrf-token"]') || {}).conten
 
 // Wrapper for POST requests with CSRF token
 CSM.post = function(url, body) {
-    return fetch(url, {
+    var resolvedUrl = (typeof CSM.apiUrl === 'function') ? CSM.apiUrl(url) : url;
+    return fetch(resolvedUrl, {
         method: 'POST',
         credentials: 'same-origin',
         headers: {

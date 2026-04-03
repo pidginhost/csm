@@ -1,7 +1,7 @@
 // CSM Firewall page
 
 function loadStatus(){
-    fetch('/api/v1/firewall/status',{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(d){
+    fetch(CSM.apiUrl('/api/v1/firewall/status'),{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(d){
         document.getElementById('fw-enabled').innerHTML = d.enabled ? '<span class="text-success">ACTIVE</span>' : '<span class="text-muted">DISABLED</span>';
         document.getElementById('fw-blocked').textContent = d.blocked_count;
         document.getElementById('fw-subnets').textContent = d.blocked_net_count;
@@ -29,7 +29,7 @@ function loadStatus(){
 }
 
 function loadSubnets(){
-    fetch('/api/v1/firewall/subnets',{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(subs){
+    fetch(CSM.apiUrl('/api/v1/firewall/subnets'),{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(subs){
         var el = document.getElementById('subnet-content');
         if(!subs||subs.length===0){el.innerHTML='<div class="card-body text-center text-muted py-3">No blocked subnets.</div>';return;}
         var h='<div class="table-responsive"><table class="table table-vcenter card-table" id="subnets-table"><thead><tr><th>CIDR</th><th>Location</th><th>Reason</th><th>Blocked</th><th>Action</th></tr></thead><tbody>';
@@ -69,7 +69,7 @@ document.getElementById('subnet-form').addEventListener('submit',function(e){
 });
 
 function loadBlocked(){
-    fetch('/api/v1/blocked-ips',{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(ips){
+    fetch(CSM.apiUrl('/api/v1/blocked-ips'),{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(ips){
         var el=document.getElementById('blocked-content');
         if(!ips||ips.length===0){el.innerHTML='<div class="card-body text-center text-muted py-3">No blocked IPs.</div>';return;}
         var h='<div class="table-responsive"><table class="table table-vcenter card-table table-sm" id="blocked-table"><thead><tr>';

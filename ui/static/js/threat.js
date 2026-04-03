@@ -26,7 +26,7 @@ function typeBadges(counts){
 function checkResp(r){if(!r.ok)throw new Error(r.status+' '+r.statusText);return r.json();}
 
 // Load stats
-fetch('/api/v1/threat/stats',{credentials:'same-origin'}).then(checkResp).then(function(data){
+fetch(CSM.apiUrl('/api/v1/threat/stats'),{credentials:'same-origin'}).then(checkResp).then(function(data){
     document.getElementById('stat-total-ips').textContent=data.total_ips||0;
     document.getElementById('stat-24h').textContent=data.last_24h_events||0;
     document.getElementById('stat-7d').textContent=data.last_7d_events||0;
@@ -70,7 +70,7 @@ fetch('/api/v1/threat/stats',{credentials:'same-origin'}).then(checkResp).then(f
 }).catch(function(){ CSM.loadError(document.getElementById('chart-types'), function(){ location.reload(); }); });
 
 // Load top attackers
-fetch('/api/v1/threat/top-attackers?limit=50',{credentials:'same-origin'}).then(checkResp).then(function(data){
+fetch(CSM.apiUrl('/api/v1/threat/top-attackers?limit=50'),{credentials:'same-origin'}).then(checkResp).then(function(data){
     var tbody=document.getElementById('attackers-tbody');
     if(!data||data.length===0){tbody.innerHTML='<tr><td colspan="9" class="text-center text-muted">No attack data recorded yet</td></tr>';return;}
     var html='';
@@ -112,8 +112,8 @@ document.getElementById('lookup-form').addEventListener('submit',function(e){
     result.classList.add('d-none');
 
     Promise.all([
-        fetch('/api/v1/threat/ip?ip='+encodeURIComponent(ip),{credentials:'same-origin'}).then(function(r){return r.json()}),
-        fetch('/api/v1/threat/events?ip='+encodeURIComponent(ip)+'&limit=20',{credentials:'same-origin'}).then(function(r){return r.json()})
+        fetch(CSM.apiUrl('/api/v1/threat/ip?ip='+encodeURIComponent(ip)),{credentials:'same-origin'}).then(function(r){return r.json()}),
+        fetch(CSM.apiUrl('/api/v1/threat/events?ip='+encodeURIComponent(ip)+'&limit=20'),{credentials:'same-origin'}).then(function(r){return r.json()})
     ]).then(function(results){
         var intel=results[0], events=results[1];
         if(intel.error){status.textContent=intel.error;status.className='text-danger small';return;}
@@ -196,7 +196,7 @@ document.getElementById('lookup-form').addEventListener('submit',function(e){
 
 // --- Whitelist management ---
 function loadWhitelist() {
-    fetch('/api/v1/threat/whitelist',{credentials:'same-origin'}).then(checkResp).then(function(entries){
+    fetch(CSM.apiUrl('/api/v1/threat/whitelist'),{credentials:'same-origin'}).then(checkResp).then(function(entries){
         var tbody=document.getElementById('wl-tbody');
         if(!entries||entries.length===0){
             tbody.innerHTML='<tr><td colspan="3" class="text-center text-muted">No whitelisted IPs</td></tr>';

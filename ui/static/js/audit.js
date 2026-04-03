@@ -12,7 +12,7 @@ var actionBadges = {
 };
 
 function loadAudit() {
-    fetch('/api/v1/audit', {credentials:'same-origin'}).then(function(r){return r.json()}).then(function(entries){
+    fetch(CSM.apiUrl('/api/v1/audit'), {credentials:'same-origin'}).then(function(r){return r.json()}).then(function(entries){
         var el = document.getElementById('audit-content');
         // Update card title with count
         var title = document.querySelector('.card-title');
