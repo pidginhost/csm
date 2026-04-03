@@ -91,8 +91,7 @@
             </div>
         </div>
         <div class="card-body py-3" style="position:relative">
-            <div id="timeline-chart" data-bars="{{json .TimelineBars}}"></div>
-            <div class="timeline-tooltip" id="timeline-tooltip"></div>
+            <canvas id="timeline-chart" height="160"></canvas>
         </div>
     </div>
 
@@ -132,8 +131,8 @@
                 <div class="card-header">
                     <h3 class="card-title"><i class="ti ti-chart-bar-popular"></i>&nbsp;Top Attack Types</h3>
                 </div>
-                <div class="card-body" id="attack-types-chart">
-                    <div class="text-muted text-center py-3">Loading...</div>
+                <div class="card-body">
+                    <canvas id="attack-types-chart" height="200"></canvas>
                 </div>
             </div>
         </div>
@@ -168,12 +167,13 @@
 
     <div class="card mb-3">
         <div class="card-header"><h3 class="card-title"><i class="ti ti-chart-line"></i>&nbsp;30-Day Trend</h3></div>
-        <div class="card-body py-3" id="trend-chart" style="min-height:120px">
-            <div class="text-muted text-center py-3">Loading...</div>
+        <div class="card-body py-3" style="min-height:160px">
+            <canvas id="trend-chart" height="160"></canvas>
         </div>
     </div>
 {{end}}
 {{define "scripts"}}
+<script src="/static/js/chart.min.js"></script>
 <script src="/static/js/dashboard.js"></script>
 {{end}}
 {{template "layout" .}}

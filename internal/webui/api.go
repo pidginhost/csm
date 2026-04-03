@@ -378,16 +378,13 @@ func (s *Server) apiQuarantine(w http.ResponseWriter, _ *http.Request) {
 
 // apiStats returns severity counts and per-check breakdown.
 func (s *Server) apiStats(w http.ResponseWriter, _ *http.Request) {
-	findings, _ := s.store.ReadHistory(5000, 0)
+	last24h := time.Now().Add(-24 * time.Hour)
+	findings := s.store.ReadHistorySince(last24h)
 
 	critical, high, warning := 0, 0, 0
 	byCheck := make(map[string]int)
-	last24h := time.Now().Add(-24 * time.Hour)
 
 	for _, f := range findings {
-		if f.Timestamp.Before(last24h) {
-			continue
-		}
 		switch f.Severity {
 		case alert.Critical:
 			critical++
@@ -400,6 +397,7 @@ func (s *Server) apiStats(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	// Find most recent critical finding for "time since last critical"
+	// (findings are newest-first from ReadHistorySince)
 	lastCriticalAgo := "None"
 	for _, f := range findings {
 		if f.Severity == alert.Critical {
@@ -416,9 +414,6 @@ func (s *Server) apiStats(w http.ResponseWriter, _ *http.Request) {
 	accountHits := make(map[string]int)
 
 	for _, f := range findings {
-		if f.Timestamp.Before(last24h) {
-			continue
-		}
 		// Extract account from finding path/message
 		acct := extractAccountFromFinding(f)
 		if acct != "" {
@@ -500,52 +495,15 @@ func (s *Server) apiStats(w http.ResponseWriter, _ *http.Request) {
 }
 
 // apiStatsTrend returns 30-day daily finding counts by severity.
+// Uses efficient bbolt cursor seeking instead of loading all findings into memory.
 func (s *Server) apiStatsTrend(w http.ResponseWriter, _ *http.Request) {
-	findings, _ := s.store.ReadHistory(5000, 0)
+	writeJSON(w, s.store.AggregateByDay())
+}
 
-	type dayBucket struct {
-		Date     string `json:"date"`
-		Critical int    `json:"critical"`
-		High     int    `json:"high"`
-		Warning  int    `json:"warning"`
-		Total    int    `json:"total"`
-	}
-
-	now := time.Now()
-	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
-
-	// Build 30 daily buckets keyed by date string
-	buckets := make([]dayBucket, 30)
-	dateIndex := make(map[string]int, 30)
-	for i := 0; i < 30; i++ {
-		d := today.AddDate(0, 0, -(29 - i))
-		key := d.Format("2006-01-02")
-		buckets[i] = dayBucket{Date: key}
-		dateIndex[key] = i
-	}
-
-	cutoff := today.AddDate(0, 0, -29)
-	for _, f := range findings {
-		if f.Timestamp.Before(cutoff) {
-			continue
-		}
-		key := f.Timestamp.Format("2006-01-02")
-		idx, ok := dateIndex[key]
-		if !ok {
-			continue
-		}
-		buckets[idx].Total++
-		switch f.Severity {
-		case alert.Critical:
-			buckets[idx].Critical++
-		case alert.High:
-			buckets[idx].High++
-		case alert.Warning:
-			buckets[idx].Warning++
-		}
-	}
-
-	writeJSON(w, buckets)
+// apiStatsTimeline returns 24 hourly buckets for the findings timeline chart.
+// Uses efficient bbolt cursor seeking instead of loading all findings into memory.
+func (s *Server) apiStatsTimeline(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, s.store.AggregateByHour())
 }
 
 // apiHealth returns daemon health status.

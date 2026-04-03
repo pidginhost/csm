@@ -34,10 +34,6 @@
 .details-row { display: none; }
 .details-row.show { display: table-row; }
 
-/* --- layout.html: timeline bars ------------------------------------------ */
-.timeline-bar { opacity: 0.85; transition: opacity 0.15s; }
-.timeline-bar:hover { opacity: 1 !important; }
-
 /* --- layout.html: sortable table headers --------------------------------- */
 th.sort-asc::after { content: ' ▲'; opacity: 0.5; }
 th.sort-desc::after { content: ' ▼'; opacity: 0.5; }
@@ -55,26 +51,8 @@ html, body, .page { overflow-x: hidden; max-width: 100vw; }
     animation: csm-feed-highlight 1.5s ease-out;
 }
 
-/* --- dashboard.html: horizontal bar-chart -------------------------------- */
-.bar-chart-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-.bar-chart-label { flex: 0 0 120px; font-size: .8125rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }
-.bar-chart-track { flex: 1; height: 18px; background: var(--tblr-bg-surface-secondary, #f1f5f9); border-radius: 3px; overflow: hidden; position: relative; }
-.bar-chart-fill { height: 100%; border-radius: 3px; transition: width 0.4s ease; min-width: 2px; }
-.bar-chart-value { flex: 0 0 36px; font-size: .75rem; text-align: right; color: var(--tblr-muted); }
-.theme-dark .bar-chart-track { background: #2d3a4e; }
-
 /* --- dashboard.html: live-feed relative timestamps ----------------------- */
 .feed-relative-time { min-width: 56px; text-align: right; }
-
-/* --- dashboard.html: timeline tooltip ------------------------------------ */
-.timeline-tooltip {
-    position: absolute; pointer-events: none; z-index: 10;
-    background: rgba(0,0,0,.85); color: #fff; font-size: 11px;
-    padding: 4px 8px; border-radius: 4px; white-space: nowrap;
-    transform: translate(-50%, -100%); margin-top: -6px;
-    opacity: 0; transition: opacity 0.15s;
-}
-.timeline-tooltip.visible { opacity: 1; }
 
 /* --- login.html: dark-theme body ----------------------------------------- */
 body.theme-dark { background-color: #1a2234; }

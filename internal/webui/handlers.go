@@ -27,16 +27,6 @@ type dashboardData struct {
 	FanotifyActive  bool
 	LastCriticalAgo string
 	RecentFindings  []historyEntry
-	TimelineBars    []timelineBar // 24 hourly bars for the timeline chart
-}
-
-type timelineBar struct {
-	Hour     string // "14:00"
-	Critical int
-	High     int
-	Warning  int
-	Total    int
-	Height   int // percentage height (0-100) for SVG rendering
 }
 
 type historyEntry struct {
@@ -66,42 +56,11 @@ type quarantineEntry struct {
 }
 
 func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
-	findings, _ := s.store.ReadHistory(5000, 0)
-
 	last24h := time.Now().Add(-24 * time.Hour)
+	findings := s.store.ReadHistorySince(last24h)
+
 	var recent []historyEntry
-
-	// Timeline: 24 hourly buckets keyed by truncated clock hour
-	type hourBucket struct {
-		critical, high, warning int
-	}
-	now := time.Now()
-	currentHour := now.Truncate(time.Hour)
-	buckets := make(map[int]*hourBucket) // key: hours ago (0=current, 23=oldest)
-	for i := 0; i < 24; i++ {
-		buckets[i] = &hourBucket{}
-	}
-
 	for _, f := range findings {
-		if f.Timestamp.Before(last24h) {
-			continue
-		}
-
-		// Timeline bucket — use truncated clock hours for consistency with labels
-		fHour := f.Timestamp.Truncate(time.Hour)
-		hoursAgo := int(currentHour.Sub(fHour).Hours())
-		if hoursAgo >= 0 && hoursAgo < 24 {
-			b := buckets[hoursAgo]
-			switch f.Severity {
-			case alert.Critical:
-				b.critical++
-			case alert.High:
-				b.high++
-			case alert.Warning:
-				b.warning++
-			}
-		}
-
 		// Skip internal checks from the live feed
 		if f.Check == "auto_response" || f.Check == "auto_block" || f.Check == "check_timeout" || f.Check == "health" {
 			continue
@@ -123,43 +82,12 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 
-	// Build timeline bars (oldest to newest: 23h ago → 0h ago)
-	maxTotal := 1
-	for _, b := range buckets {
-		total := b.critical + b.high + b.warning
-		if total > maxTotal {
-			maxTotal = total
-		}
-	}
-
-	var bars []timelineBar
-	for i := 23; i >= 0; i-- {
-		b := buckets[i]
-		total := b.critical + b.high + b.warning
-		height := 0
-		if total > 0 {
-			height = (total * 100) / maxTotal
-			if height < 5 {
-				height = 5 // minimum visible bar
-			}
-		}
-		t := currentHour.Add(-time.Duration(i) * time.Hour)
-		bars = append(bars, timelineBar{
-			Hour:     fmt.Sprintf("%02d:00", t.Hour()),
-			Critical: b.critical,
-			High:     b.high,
-			Warning:  b.warning,
-			Total:    total,
-			Height:   height,
-		})
-	}
-
-	// Find most recent critical finding
+	// Find most recent critical finding (findings are newest-first)
 	lastCriticalAgo := "None"
 	for _, f := range findings {
 		if f.Severity == alert.Critical {
 			lastCriticalAgo = timeAgo(f.Timestamp)
-			break // findings are newest-first
+			break
 		}
 	}
 
@@ -175,7 +103,6 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 		FanotifyActive:  s.fanotifyActive,
 		LastCriticalAgo: lastCriticalAgo,
 		RecentFindings:  recent,
-		TimelineBars:    bars,
 	}
 	s.renderTemplate(w, "dashboard.html", data)
 }

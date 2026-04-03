@@ -401,6 +401,31 @@ func (s *Store) ReadHistory(limit, offset int) ([]alert.Finding, int) {
 	return all[offset:end], total
 }
 
+// ReadHistorySince returns all findings since the given time.
+// Uses bbolt cursor seeking for efficiency. Results are newest-first.
+func (s *Store) ReadHistorySince(since time.Time) []alert.Finding {
+	if db := store.Global(); db != nil {
+		return db.ReadHistorySince(since)
+	}
+	return nil
+}
+
+// AggregateByHour returns 24 hourly severity buckets for the last 24 hours.
+func (s *Store) AggregateByHour() []store.HourBucket {
+	if db := store.Global(); db != nil {
+		return db.AggregateByHour()
+	}
+	return nil
+}
+
+// AggregateByDay returns 30 daily severity buckets for the last 30 days.
+func (s *Store) AggregateByDay() []store.DayBucket {
+	if db := store.Global(); db != nil {
+		return db.AggregateByDay()
+	}
+	return nil
+}
+
 func splitLines(data []byte) [][]byte {
 	var lines [][]byte
 	start := 0
