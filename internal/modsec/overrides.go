@@ -24,7 +24,7 @@ func WriteOverrides(path string, disabledIDs []int) error {
 	}
 
 	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, []byte(sb.String()), 0644); err != nil {
+	if err := os.WriteFile(tmpPath, []byte(sb.String()), 0640); err != nil {
 		return fmt.Errorf("writing overrides tmp: %w", err)
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
@@ -79,7 +79,7 @@ func RestoreOverrides(path string, content []byte) error {
 		return nil
 	}
 	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, content, 0644); err != nil {
+	if err := os.WriteFile(tmpPath, content, 0640); err != nil {
 		return fmt.Errorf("writing rollback tmp: %w", err)
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
@@ -95,7 +95,7 @@ func RestoreOverrides(path string, content []byte) error {
 // write-open to avoid appending duplicate Include directives.
 func EnsureOverridesInclude(rulesFile, overridesFile string) {
 	// Open for read+write to check-then-append atomically (same fd).
-	f, err := os.OpenFile(rulesFile, os.O_RDWR|os.O_APPEND, 0644)
+	f, err := os.OpenFile(rulesFile, os.O_RDWR|os.O_APPEND, 0640)
 	if err != nil {
 		return
 	}
@@ -111,6 +111,6 @@ func EnsureOverridesInclude(rulesFile, overridesFile string) {
 
 	// Create empty overrides file if it doesn't exist
 	if _, err := os.Stat(overridesFile); os.IsNotExist(err) {
-		_ = os.WriteFile(overridesFile, []byte(overridesHeader), 0644)
+		_ = os.WriteFile(overridesFile, []byte(overridesHeader), 0640)
 	}
 }

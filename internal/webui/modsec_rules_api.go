@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/modsec"
 	"github.com/pidginhost/cpanel-security-monitor/internal/store"
@@ -41,7 +42,8 @@ func (s *Server) apiModSecRules(w http.ResponseWriter, _ *http.Request) {
 	// Parse rules from config file
 	allRules, err := modsec.ParseRulesFile(cfg.RulesFile)
 	if err != nil {
-		writeJSONError(w, fmt.Sprintf("Failed to parse rules file: %v", err), http.StatusInternalServerError)
+		fmt.Fprintf(os.Stderr, "modsec: parse rules failed: %v\n", err)
+		writeJSONError(w, "Failed to parse rules file", http.StatusInternalServerError)
 		return
 	}
 
@@ -125,7 +127,7 @@ func (s *Server) apiModSecRulesApply(w http.ResponseWriter, r *http.Request) {
 	defer s.modSecApplyMu.Unlock()
 
 	cfg := s.cfg.ModSec
-	if cfg.OverridesFile == "" || cfg.ReloadCommand == "" {
+	if cfg.RulesFile == "" || cfg.OverridesFile == "" || cfg.ReloadCommand == "" {
 		writeJSONError(w, "ModSecurity not configured", http.StatusBadRequest)
 		return
 	}
@@ -133,6 +135,7 @@ func (s *Server) apiModSecRulesApply(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Disabled []int `json:"disabled"`
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64*1024) // 64KB limit
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, "Invalid request body", http.StatusBadRequest)
 		return
@@ -141,7 +144,8 @@ func (s *Server) apiModSecRulesApply(w http.ResponseWriter, r *http.Request) {
 	// Validate: only allow disabling known CSM rule IDs from the parsed rules file
 	allRules, err := modsec.ParseRulesFile(cfg.RulesFile)
 	if err != nil {
-		writeJSONError(w, fmt.Sprintf("Failed to parse rules: %v", err), http.StatusInternalServerError)
+		fmt.Fprintf(os.Stderr, "modsec: parse rules failed: %v\n", err)
+		writeJSONError(w, "Failed to parse rules file", http.StatusInternalServerError)
 		return
 	}
 	knownIDs := make(map[int]bool)
@@ -160,7 +164,8 @@ func (s *Server) apiModSecRulesApply(w http.ResponseWriter, r *http.Request) {
 
 	// Write new overrides
 	if writeErr := modsec.WriteOverrides(cfg.OverridesFile, req.Disabled); writeErr != nil {
-		writeJSONError(w, fmt.Sprintf("Failed to write overrides: %v", writeErr), http.StatusInternalServerError)
+		fmt.Fprintf(os.Stderr, "modsec: write overrides failed: %v\n", writeErr)
+		writeJSONError(w, "Failed to write overrides", http.StatusInternalServerError)
 		return
 	}
 
@@ -169,10 +174,16 @@ func (s *Server) apiModSecRulesApply(w http.ResponseWriter, r *http.Request) {
 	if reloadErr != nil {
 		// Rollback on failure
 		_ = modsec.RestoreOverrides(cfg.OverridesFile, previousContent)
+		fmt.Fprintf(os.Stderr, "modsec: reload failed (rolled back): %v\noutput: %s\n", reloadErr, output)
+		// Truncate output for client — may contain sensitive system paths
+		clientOutput := output
+		if len(clientOutput) > 500 {
+			clientOutput = clientOutput[:500] + "... (truncated)"
+		}
 		writeJSON(w, map[string]interface{}{
 			"ok":            false,
-			"error":         reloadErr.Error(),
-			"reload_output": output,
+			"error":         "Web server reload failed, changes rolled back",
+			"reload_output": clientOutput,
 			"rolled_back":   true,
 		})
 		return
@@ -180,7 +191,6 @@ func (s *Server) apiModSecRulesApply(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, map[string]interface{}{
 		"ok":             true,
-		"reload_output":  output,
 		"disabled_count": len(req.Disabled),
 	})
 }
@@ -202,8 +212,15 @@ func (s *Server) apiModSecRulesEscalation(w http.ResponseWriter, r *http.Request
 		RuleID   int  `json:"rule_id"`
 		Escalate bool `json:"escalate"`
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4*1024) // 4KB — single rule ID
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Validate: only accept known CSM rule IDs (900000-900999)
+	if req.RuleID < 900000 || req.RuleID > 900999 {
+		writeJSONError(w, "Rule ID must be a CSM custom rule (900000-900999)", http.StatusBadRequest)
 		return
 	}
 
@@ -215,7 +232,8 @@ func (s *Server) apiModSecRulesEscalation(w http.ResponseWriter, r *http.Request
 	}
 
 	if err != nil {
-		writeJSONError(w, fmt.Sprintf("Failed to update: %v", err), http.StatusInternalServerError)
+		fmt.Fprintf(os.Stderr, "modsec: escalation update failed: %v\n", err)
+		writeJSONError(w, "Failed to update escalation setting", http.StatusInternalServerError)
 		return
 	}
 

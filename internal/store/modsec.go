@@ -147,12 +147,19 @@ func (db *DB) GetModSecRuleHits() map[int]RuleHitStats {
 	cutoffBucket := hourBucket(cutoff)
 	prefix := []byte("modsec:hits:")
 
-	_ = db.bolt.Update(func(tx *bolt.Tx) error {
+	// Track which keys need pruning — read first with View (no write lock),
+	// then prune in a separate Update only if needed.
+	type pruneItem struct {
+		key  []byte
+		data ruleHitData
+	}
+	var toPrune []pruneItem
+
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte("meta"))
 		c := b.Cursor()
 
 		for k, v := c.Seek(prefix); k != nil && len(k) >= len(prefix) && string(k[:len(prefix)]) == string(prefix); k, v = c.Next() {
-			// Extract rule ID from key "modsec:hits:NNNNNN"
 			idStr := string(k[len(prefix):])
 			ruleID, err := strconv.Atoi(idStr)
 			if err != nil {
@@ -164,21 +171,21 @@ func (db *DB) GetModSecRuleHits() map[int]RuleHitStats {
 				continue
 			}
 
-			// Sum recent buckets, prune old ones
 			total := 0
-			pruned := false
+			needsPrune := false
 			for bk, count := range data.Buckets {
 				if bk >= cutoffBucket {
 					total += count
 				} else {
-					delete(data.Buckets, bk)
-					pruned = true
+					needsPrune = true
 				}
 			}
 
-			if pruned {
-				val, _ := json.Marshal(data)
-				_ = b.Put(k, val)
+			if needsPrune {
+				// Deep copy key (bbolt keys are only valid inside tx)
+				keyCopy := make([]byte, len(k))
+				copy(keyCopy, k)
+				toPrune = append(toPrune, pruneItem{key: keyCopy, data: data})
 			}
 
 			if total > 0 || !data.LastHit.IsZero() {
@@ -190,5 +197,23 @@ func (db *DB) GetModSecRuleHits() map[int]RuleHitStats {
 		}
 		return nil
 	})
+
+	// Prune old buckets in a separate write transaction (only if needed)
+	if len(toPrune) > 0 {
+		_ = db.bolt.Update(func(tx *bolt.Tx) error {
+			b := tx.Bucket([]byte("meta"))
+			for _, item := range toPrune {
+				for bk := range item.data.Buckets {
+					if bk < cutoffBucket {
+						delete(item.data.Buckets, bk)
+					}
+				}
+				val, _ := json.Marshal(item.data)
+				_ = b.Put(item.key, val)
+			}
+			return nil
+		})
+	}
+
 	return result
 }

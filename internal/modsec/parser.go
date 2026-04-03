@@ -21,7 +21,7 @@ type Rule struct {
 }
 
 var (
-	reID     = regexp.MustCompile(`id[:\s]*['"]?(\d+)`)
+	reID     = regexp.MustCompile(`[,"]id:(\d+)`)
 	reMsg    = regexp.MustCompile(`msg:'([^']*)'`)
 	rePhase  = regexp.MustCompile(`phase:(\d)`)
 	reStatus = regexp.MustCompile(`status:(\d+)`)
@@ -90,7 +90,11 @@ func ParseRulesFile(path string) ([]Rule, error) {
 		if block.Len() > 0 || strings.HasPrefix(line, "SecRule ") {
 			block.WriteString(line)
 			block.WriteString("\n")
-			chainPending = hasChainAction(line)
+			// Only update chainPending for SecRule lines — non-SecRule
+			// directives between chained rules must not reset the flag.
+			if strings.HasPrefix(line, "SecRule ") {
+				chainPending = hasChainAction(line)
+			}
 		}
 	}
 	flushBlock()
@@ -151,14 +155,16 @@ func parseBlock(block string) (Rule, bool) {
 		r.Phase, _ = strconv.Atoi(pm[1])
 	}
 
-	// Extract action
+	// Extract action from the action string (quoted section).
+	// Use comma/quote-prefixed matching to avoid false matches
+	// in variable names or patterns (e.g. "nolog" matching "log").
 	lower := strings.ToLower(block)
 	switch {
-	case strings.Contains(lower, "deny"):
+	case strings.Contains(lower, ",deny") || strings.Contains(lower, "\"deny"):
 		r.Action = "deny"
-	case strings.Contains(lower, "pass"):
+	case strings.Contains(lower, ",pass") || strings.Contains(lower, "\"pass"):
 		r.Action = "pass"
-	case strings.Contains(lower, "log"):
+	case strings.Contains(lower, ",log,") || strings.Contains(lower, ",log\"") || strings.Contains(lower, "\"log,"):
 		r.Action = "log"
 	}
 

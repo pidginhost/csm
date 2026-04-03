@@ -103,10 +103,22 @@ func Open(statePath string) (*DB, error) {
 		fmt.Fprintf(os.Stderr, "store: migration warning: %v\n", err)
 	}
 
-	// Seed default ModSecurity no-escalate rules if not yet configured
-	if len(db.GetModSecNoEscalateRules()) == 0 {
+	// Seed default ModSecurity no-escalate rules (one-time only).
+	// Uses a sentinel key so an admin who deliberately empties the set
+	// won't have defaults re-added on every restart.
+	var seeded bool
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
+		if v := tx.Bucket([]byte("meta")).Get([]byte("modsec:no_escalate_seeded")); v != nil {
+			seeded = true
+		}
+		return nil
+	})
+	if !seeded {
 		_ = db.SetModSecNoEscalateRules(map[int]bool{
 			900112: true, // WordPress user enumeration — blocks at HTTP level only
+		})
+		_ = db.bolt.Update(func(tx *bolt.Tx) error {
+			return tx.Bucket([]byte("meta")).Put([]byte("modsec:no_escalate_seeded"), []byte("1"))
 		})
 	}
 
