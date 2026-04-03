@@ -213,6 +213,13 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 	ruleNum, _ := strconv.Atoi(ruleID)
 	isCSM := f.Check == "modsec_block_realtime" && ruleNum >= 900000 && ruleNum <= 900999
 
+	// Record hit for per-rule stats (24h hourly buckets)
+	if ruleNum >= 900000 && ruleNum <= 900999 {
+		if sdb := store.Global(); sdb != nil {
+			sdb.IncrModSecRuleHit(ruleNum, now)
+		}
+	}
+
 	// Check if this rule is excluded from auto-block escalation.
 	// Configurable via the Rules page in the web UI.
 	noEscalate := false

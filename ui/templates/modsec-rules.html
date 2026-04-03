@@ -1,0 +1,83 @@
+{{define "title"}}ModSecurity Rules{{end}}
+{{define "page"}}modsec{{end}}
+{{define "content"}}
+<div class="page-header mb-3">
+    <div class="row align-items-center">
+        <div class="col-auto"><h2 class="page-title">ModSecurity Rule Configuration</h2></div>
+        <div class="col-auto ms-auto">
+            <a href="/modsec" class="btn btn-ghost-secondary btn-sm"><i class="ti ti-arrow-left"></i>&nbsp;Back to Dashboard</a>
+        </div>
+    </div>
+</div>
+
+<div id="modsec-rules-loading" class="text-center text-muted py-4">
+    <span class="spinner-border spinner-border-sm"></span> Loading rules...
+</div>
+
+<div id="modsec-rules-unconfigured" class="d-none">
+    <div class="card">
+        <div class="card-body text-center py-4">
+            <i class="ti ti-settings-off text-muted" style="font-size:2rem"></i>
+            <p class="text-muted mt-2">ModSecurity rule management is not configured.</p>
+            <p class="text-muted small">Missing settings: <code id="missing-fields"></code></p>
+            <p class="text-muted small">Add <code>modsec.rules_file</code>, <code>modsec.overrides_file</code>, and <code>modsec.reload_command</code> to csm.yaml.</p>
+        </div>
+    </div>
+</div>
+
+<div id="modsec-rules-content" class="d-none">
+    <!-- Stats -->
+    <div class="row row-deck row-cards mb-3">
+        <div class="col-sm-4"><div class="card"><div class="card-body"><div class="subheader">Total CSM Rules</div><div class="h1 mb-0" id="stat-total">--</div></div></div></div>
+        <div class="col-sm-4"><div class="card"><div class="card-body"><div class="subheader">Active Rules</div><div class="h1 mb-0" id="stat-active">--</div></div></div></div>
+        <div class="col-sm-4"><div class="card"><div class="card-body"><div class="subheader">Escalation Excluded</div><div class="h1 mb-0" id="stat-no-escalate">--</div></div></div></div>
+    </div>
+
+    <!-- Rules Table -->
+    <div class="card mb-3">
+        <div class="card-header">
+            <h3 class="card-title"><i class="ti ti-shield"></i>&nbsp;CSM Custom Rules (900xxx)</h3>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-vcenter card-table" id="rules-table">
+                <thead>
+                    <tr>
+                        <th>Enabled</th>
+                        <th>ID</th>
+                        <th>Description</th>
+                        <th>Action</th>
+                        <th>Phase</th>
+                        <th>Hits (24h)</th>
+                        <th>Escalate</th>
+                        <th>Last Hit</th>
+                    </tr>
+                </thead>
+                <tbody id="rules-tbody"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- OWASP CRS Placeholder -->
+    <div class="card mb-3">
+        <div class="card-header">
+            <h3 class="card-title"><i class="ti ti-shield-lock"></i>&nbsp;OWASP CRS Rules</h3>
+        </div>
+        <div class="card-body text-center text-muted py-4">
+            OWASP CRS rule management coming soon.
+        </div>
+    </div>
+</div>
+
+<!-- Sticky Apply Bar -->
+<div id="apply-bar" class="d-none" style="position:fixed;bottom:0;left:0;right:0;background:var(--tblr-bg-surface);border-top:2px solid var(--tblr-primary);padding:12px 24px;z-index:1000;display:flex;align-items:center;justify-content:space-between">
+    <span><strong id="pending-count">0</strong> changes pending</span>
+    <div>
+        <button class="btn btn-ghost-secondary btn-sm me-2" id="btn-discard"><i class="ti ti-x"></i>&nbsp;Discard</button>
+        <button class="btn btn-primary btn-sm" id="btn-apply"><i class="ti ti-check"></i>&nbsp;Apply Changes</button>
+    </div>
+</div>
+{{end}}
+{{define "scripts"}}
+<script src="/static/js/modsec-rules.js"></script>
+{{end}}
+{{template "layout" .}}

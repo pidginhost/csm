@@ -128,6 +128,12 @@ type Config struct {
 
 	ModSecErrorLog string `yaml:"modsec_error_log"`
 
+	ModSec struct {
+		RulesFile     string `yaml:"rules_file"`     // path to modsec2.user.conf
+		OverridesFile string `yaml:"overrides_file"` // path to csm-overrides.conf
+		ReloadCommand string `yaml:"reload_command"` // e.g. "systemctl restart lsws"
+	} `yaml:"modsec"`
+
 	C2Blocklist   []string `yaml:"c2_blocklist"`
 	BackdoorPorts []int    `yaml:"backdoor_ports"`
 }

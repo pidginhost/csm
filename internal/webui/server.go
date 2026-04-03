@@ -56,7 +56,8 @@ type Server struct {
 	apiMu         sync.Mutex
 	apiRequests   map[string][]time.Time // per-IP API rate limiting
 	scanMu        sync.Mutex
-	scanRunning   bool // only one scan at a time
+	scanRunning   bool       // only one scan at a time
+	modSecApplyMu sync.Mutex // serializes modsec rules apply (write+reload+rollback)
 
 	// Graceful shutdown signal for background goroutines
 	pruneDone chan struct{}
@@ -102,7 +103,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	if _, err := os.Stat(templateDir); err == nil {
 		s.templates = make(map[string]*template.Template)
 		layoutPath := filepath.Join(templateDir, "layout.html")
-		for _, page := range []string{"dashboard", "findings", "history", "quarantine", "firewall", "modsec", "threat", "rules", "audit", "account", "incident", "email"} {
+		for _, page := range []string{"dashboard", "findings", "history", "quarantine", "firewall", "modsec", "modsec-rules", "threat", "rules", "audit", "account", "incident", "email"} {
 			pagePath := filepath.Join(templateDir, page+".html")
 			t, err := template.New(page+".html").Funcs(funcMap).ParseFiles(layoutPath, pagePath)
 			if err != nil {
@@ -143,6 +144,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		mux.Handle("/incident", s.requireAuth(http.HandlerFunc(s.handleIncident)))
 		mux.Handle("/email", s.requireAuth(http.HandlerFunc(s.handleEmail)))
 		mux.Handle("/modsec", s.requireAuth(http.HandlerFunc(s.handleModSec)))
+		mux.Handle("/modsec/rules", s.requireAuth(http.HandlerFunc(s.handleModSecRules)))
 	}
 
 	// Auth-protected API — read
@@ -157,6 +159,9 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/modsec/stats", s.requireAuth(http.HandlerFunc(s.apiModSecStats)))
 	mux.Handle("/api/v1/modsec/blocks", s.requireAuth(http.HandlerFunc(s.apiModSecBlocks)))
 	mux.Handle("/api/v1/modsec/events", s.requireAuth(http.HandlerFunc(s.apiModSecEvents)))
+	mux.Handle("/api/v1/modsec/rules", s.requireAuth(http.HandlerFunc(s.apiModSecRules)))
+	mux.Handle("/api/v1/modsec/rules/apply", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiModSecRulesApply))))
+	mux.Handle("/api/v1/modsec/rules/escalation", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiModSecRulesEscalation))))
 	mux.Handle("/api/v1/health", s.requireAuth(http.HandlerFunc(s.apiHealth)))
 	mux.Handle("/api/v1/accounts", s.requireAuth(http.HandlerFunc(s.apiAccounts)))
 	mux.Handle("/api/v1/account", s.requireAuth(http.HandlerFunc(s.apiAccountDetail)))

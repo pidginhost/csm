@@ -8,6 +8,7 @@ import (
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/auditd"
 	"github.com/pidginhost/cpanel-security-monitor/internal/config"
+	"github.com/pidginhost/cpanel-security-monitor/internal/modsec"
 )
 
 type Installer struct {
@@ -594,6 +595,8 @@ func (inst *Installer) DeployModSecRules() {
 		data, _ := os.ReadFile(src)
 		if err := os.WriteFile(dest, data, 0644); err == nil {
 			fmt.Printf("  ModSecurity virtual patches deployed to %s\n", dest)
+			overridesFile := filepath.Join(filepath.Dir(dest), "modsec2.csm-overrides.conf")
+			modsec.EnsureOverridesInclude(dest, overridesFile)
 			return
 		}
 	}

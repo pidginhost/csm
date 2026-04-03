@@ -20,6 +20,7 @@ import (
 	"github.com/pidginhost/cpanel-security-monitor/internal/firewall"
 	"github.com/pidginhost/cpanel-security-monitor/internal/geoip"
 	"github.com/pidginhost/cpanel-security-monitor/internal/integrity"
+	"github.com/pidginhost/cpanel-security-monitor/internal/modsec"
 	"github.com/pidginhost/cpanel-security-monitor/internal/signatures"
 	"github.com/pidginhost/cpanel-security-monitor/internal/state"
 	"github.com/pidginhost/cpanel-security-monitor/internal/webui"
@@ -1104,6 +1105,8 @@ func deployConfigs() {
 	} {
 		if _, err := os.Stat(filepath.Dir(dst)); err == nil {
 			_ = os.WriteFile(dst, embeddedModSec, 0644)
+			overridesFile := filepath.Join(filepath.Dir(dst), "modsec2.csm-overrides.conf")
+			modsec.EnsureOverridesInclude(dst, overridesFile)
 			break
 		}
 	}
