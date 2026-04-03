@@ -159,19 +159,19 @@ func (s *Server) apiModSecRulesApply(w http.ResponseWriter, r *http.Request) {
 	previousContent := modsec.ReadOverridesRaw(cfg.OverridesFile)
 
 	// Write new overrides
-	if err := modsec.WriteOverrides(cfg.OverridesFile, req.Disabled); err != nil {
-		writeJSONError(w, fmt.Sprintf("Failed to write overrides: %v", err), http.StatusInternalServerError)
+	if writeErr := modsec.WriteOverrides(cfg.OverridesFile, req.Disabled); writeErr != nil {
+		writeJSONError(w, fmt.Sprintf("Failed to write overrides: %v", writeErr), http.StatusInternalServerError)
 		return
 	}
 
 	// Reload web server
-	output, err := modsec.Reload(cfg.ReloadCommand)
-	if err != nil {
+	output, reloadErr := modsec.Reload(cfg.ReloadCommand)
+	if reloadErr != nil {
 		// Rollback on failure
 		_ = modsec.RestoreOverrides(cfg.OverridesFile, previousContent)
 		writeJSON(w, map[string]interface{}{
 			"ok":            false,
-			"error":         err.Error(),
+			"error":         reloadErr.Error(),
 			"reload_output": output,
 			"rolled_back":   true,
 		})

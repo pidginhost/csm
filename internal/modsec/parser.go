@@ -153,11 +153,12 @@ func parseBlock(block string) (Rule, bool) {
 
 	// Extract action
 	lower := strings.ToLower(block)
-	if strings.Contains(lower, "deny") {
+	switch {
+	case strings.Contains(lower, "deny"):
 		r.Action = "deny"
-	} else if strings.Contains(lower, "pass") {
+	case strings.Contains(lower, "pass"):
 		r.Action = "pass"
-	} else if strings.Contains(lower, "log") {
+	case strings.Contains(lower, "log"):
 		r.Action = "log"
 	}
 
