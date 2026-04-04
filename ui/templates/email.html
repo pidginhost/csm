@@ -38,6 +38,14 @@
         <div class="col-6 col-lg">
             <div class="card">
                 <div class="card-body">
+                    <div class="subheader">Compromised</div>
+                    <div class="h1 mb-0 text-critical" id="stat-compromised">0</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-lg">
+            <div class="card">
+                <div class="card-body">
                     <div class="subheader">Queue Alerts</div>
                     <div class="h1 mb-0 text-info" id="stat-queue-alerts">0</div>
                 </div>
@@ -72,6 +80,10 @@
                         <option value="">All</option>
                         <option value="email_phishing_content">Phishing</option>
                         <option value="email_malware">Malware</option>
+                        <option value="email_compromised_account">Compromised Account</option>
+                        <option value="email_spam_outbreak">Spam Outbreak</option>
+                        <option value="email_credential_leak">Credential Leak</option>
+                        <option value="email_auth_failure_realtime">Auth Failure</option>
                         <option value="mail_per_account">Volume</option>
                         <option value="mail_queue">Queue</option>
                     </select>

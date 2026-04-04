@@ -2,7 +2,7 @@
 (function() {
     'use strict';
 
-    var EMAIL_CHECKS = 'mail_queue,mail_per_account,email_phishing_content,email_malware,email_av_degraded,email_av_timeout,email_av_parse_error';
+    var EMAIL_CHECKS = 'mail_queue,mail_per_account,email_phishing_content,email_malware,email_av_degraded,email_av_timeout,email_av_parse_error,email_compromised_account,email_spam_outbreak,email_credential_leak,email_auth_failure_realtime,exim_frozen_realtime';
     var EMAIL_BLOCKED_KEYWORDS = ['mail', 'smtp', 'spam', 'phish', 'mailer'];
 
     // Set default date filter to today
@@ -291,7 +291,7 @@
     }
 
     function updateStatCards(findings) {
-        var phishing = 0, accounts = {}, queueAlerts = 0;
+        var phishing = 0, accounts = {}, queueAlerts = 0, compromised = 0;
         for (var i = 0; i < findings.length; i++) {
             var f = findings[i];
             if (f.check === 'email_phishing_content') phishing++;
@@ -300,9 +300,11 @@
                 if (d) accounts[d] = true;
             }
             else if (f.check === 'mail_queue') queueAlerts++;
+            else if (f.check === 'email_compromised_account' || f.check === 'email_spam_outbreak' || f.check === 'email_credential_leak') compromised++;
         }
         setText('stat-phishing', phishing);
         setText('stat-accounts', Object.keys(accounts).length);
+        setText('stat-compromised', compromised);
         setText('stat-queue-alerts', queueAlerts);
     }
 
