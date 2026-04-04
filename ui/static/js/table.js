@@ -59,11 +59,14 @@ CSM.Table = function(opts) {
         var searchEl = opts.searchId ? document.getElementById(opts.searchId) : null;
         if (searchEl) {
             var self = this;
-            searchEl.addEventListener('input', function() {
-                self.searchText = this.value.toLowerCase();
+            var _searchDebounce = CSM.debounce(function(val) {
+                self.searchText = val;
                 self.currentPage = 1;
                 self.applyFilters();
                 self._saveState();
+            }, 300);
+            searchEl.addEventListener('input', function() {
+                _searchDebounce(this.value.toLowerCase());
             });
         }
     }

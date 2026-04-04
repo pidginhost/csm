@@ -54,11 +54,13 @@ func CheckFakeKernelThreads(_ *config.Config, _ *state.Store) []alert.Finding {
 			exe, _ := os.Readlink(filepath.Join("/proc", pid, "exe"))
 			uidInt, _ := strconv.Atoi(uid)
 
+			pidInt, _ := strconv.Atoi(pid)
 			findings = append(findings, alert.Finding{
 				Severity: alert.Critical,
 				Check:    "fake_kernel_thread",
 				Message:  fmt.Sprintf("Non-root process masquerading as kernel thread: [%s]", name),
 				Details:  fmt.Sprintf("PID: %s, UID: %d, exe: %s, cmdline: %s", pid, uidInt, exe, cmdStr),
+				PID:      pidInt,
 			})
 		}
 	}
@@ -80,6 +82,7 @@ func CheckSuspiciousProcesses(_ *config.Config, _ *state.Store) []alert.Finding 
 	procs, _ := filepath.Glob("/proc/[0-9]*/exe")
 	for _, exePath := range procs {
 		pid := filepath.Base(filepath.Dir(exePath))
+		pidInt, _ := strconv.Atoi(pid)
 
 		statusData, _ := os.ReadFile(filepath.Join("/proc", pid, "status"))
 		var uid string
@@ -108,6 +111,7 @@ func CheckSuspiciousProcesses(_ *config.Config, _ *state.Store) []alert.Finding 
 					Check:    "suspicious_process",
 					Message:  fmt.Sprintf("Suspicious process name: %s", exeName),
 					Details:  fmt.Sprintf("PID: %s, UID: %s, exe: %s, cmdline: %s", pid, uid, exe, cmdStr),
+					PID:      pidInt,
 				})
 			}
 		}
@@ -121,6 +125,7 @@ func CheckSuspiciousProcesses(_ *config.Config, _ *state.Store) []alert.Finding 
 					Check:    "suspicious_process",
 					Message:  fmt.Sprintf("Suspicious cmdline pattern: %s", s),
 					Details:  fmt.Sprintf("PID: %s, UID: %s, exe: %s, cmdline: %s", pid, uid, exe, cmdStr),
+					PID:      pidInt,
 				})
 				break
 			}
@@ -134,6 +139,7 @@ func CheckSuspiciousProcesses(_ *config.Config, _ *state.Store) []alert.Finding 
 					Check:    "suspicious_process",
 					Message:  fmt.Sprintf("Process running from suspicious path: %s", exe),
 					Details:  fmt.Sprintf("PID: %s, UID: %s, cmdline: %s", pid, uid, cmdStr),
+					PID:      pidInt,
 				})
 				break
 			}
@@ -158,6 +164,7 @@ func CheckPHPProcesses(_ *config.Config, _ *state.Store) []alert.Finding {
 	procs, _ := filepath.Glob("/proc/[0-9]*/cmdline")
 	for _, cmdPath := range procs {
 		pid := filepath.Base(filepath.Dir(cmdPath))
+		pidInt, _ := strconv.Atoi(pid)
 
 		cmdline, err := os.ReadFile(cmdPath)
 		if err != nil {
@@ -188,6 +195,7 @@ func CheckPHPProcesses(_ *config.Config, _ *state.Store) []alert.Finding {
 					Check:    "php_suspicious_execution",
 					Message:  fmt.Sprintf("PHP executing from suspicious path: %s", sus),
 					Details:  fmt.Sprintf("PID: %s, UID: %s, cmdline: %s", pid, uid, strings.TrimSpace(cmdStr)),
+					PID:      pidInt,
 				})
 				break
 			}

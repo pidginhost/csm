@@ -13,13 +13,13 @@
                     <option value="0">Warning</option>
                 </select>
                 <div class="d-flex gap-1 align-items-center">
-                    <input type="date" id="date-from" class="form-control form-control-sm csm-input-sm" title="From date">
+                    <input type="date" id="date-from" class="form-control form-control-sm csm-input-sm" title="Show findings from this date">
                     <span class="text-muted small">to</span>
-                    <input type="date" id="date-to" class="form-control form-control-sm csm-input-sm" title="To date">
-                    <button type="button" class="btn btn-primary btn-sm" id="date-filter-btn"><i class="ti ti-filter"></i></button>
-                    <button type="button" class="btn btn-ghost-secondary btn-sm d-none" id="date-clear-btn" title="Clear filter"><i class="ti ti-x"></i></button>
+                    <input type="date" id="date-to" class="form-control form-control-sm csm-input-sm" title="Show findings up to this date">
+                    <button type="button" class="btn btn-primary btn-sm" id="date-filter-btn" title="Apply date range filter" aria-label="Apply date filter"><i class="ti ti-filter"></i></button>
+                    <button type="button" class="btn btn-ghost-secondary btn-sm d-none" id="date-clear-btn" title="Clear date filter" aria-label="Clear date filter"><i class="ti ti-x"></i></button>
                 </div>
-                <a href="/api/v1/history/csv" class="btn btn-ghost-secondary btn-sm"><i class="ti ti-download"></i>&nbsp;CSV</a>
+                <a href="/api/v1/history/csv" class="btn btn-ghost-secondary btn-sm" title="Download full history as CSV"><i class="ti ti-download"></i>&nbsp;CSV</a>
             </div>
         </div>
         <div id="history-content">

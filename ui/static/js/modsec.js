@@ -1,6 +1,12 @@
 (function(){
 'use strict';
 
+var _modsecPoller = null;
+
+window.addEventListener('beforeunload', function() {
+    if (_modsecPoller) { _modsecPoller.stop(); _modsecPoller = null; }
+});
+
 function loadStats(){
     fetch(CSM.apiUrl('/api/v1/modsec/stats'),{credentials:'same-origin'})
         .then(function(r){return r.json()})
@@ -10,7 +16,7 @@ function loadStats(){
             document.getElementById('stat-escalated').textContent=d.escalated||0;
             document.getElementById('stat-top-rule').textContent=d.top_rule||'--';
         })
-        .catch(function(){});
+        .catch(function(err){ console.error('modsec loadStats:', err); });
 }
 
 function loadBlocked(){
@@ -99,11 +105,17 @@ function enrichGeoIP(container){
                 }
             }
         })
-        .catch(function(){});
+        .catch(function(err){ console.error('modsec enrichGeoIP:', err); });
 }
 
 loadStats();
 loadBlocked();
 loadEvents();
-setInterval(loadStats,30000);
+_modsecPoller = CSM.poll('/api/v1/modsec/stats', 30000, function(err, d) {
+    if (err) { console.error('modsec poll:', err); return; }
+    document.getElementById('stat-total').textContent=d.total||0;
+    document.getElementById('stat-ips').textContent=d.unique_ips||0;
+    document.getElementById('stat-escalated').textContent=d.escalated||0;
+    document.getElementById('stat-top-rule').textContent=d.top_rule||'--';
+});
 })();

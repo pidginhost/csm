@@ -826,14 +826,21 @@ func fwApplyConfirmed() {
 	deadline := time.Now().Add(time.Duration(minutes) * time.Minute)
 	_ = os.WriteFile(confirmFile, []byte(deadline.Format(time.RFC3339)), 0600)
 
-	// Fork a background process that will rollback if not confirmed
-	rollbackCmd := exec.Command("bash", "-c", fmt.Sprintf(
-		"sleep %d && if [ -f %s ]; then bash %s; fi",
-		minutes*60, confirmFile, rollbackFile))
-	if err := rollbackCmd.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not start rollback timer: %v\n", err)
-		fmt.Fprintf(os.Stderr, "You MUST manually rollback if connectivity is lost.\n")
-	}
+	// Start a background goroutine that will rollback if not confirmed.
+	// Uses pure Go instead of shell interpolation to avoid command injection.
+	go func() {
+		time.Sleep(time.Duration(minutes) * time.Minute)
+		if _, err := os.Stat(confirmFile); err != nil {
+			return // confirm file removed — user confirmed, skip rollback
+		}
+		if _, err := os.Stat(rollbackFile); err != nil {
+			return // rollback script missing
+		}
+		cmd := exec.Command("bash", rollbackFile)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "Rollback failed: %v\n%s\n", err, out)
+		}
+	}()
 
 	state, _ := firewall.LoadState(cfg.StatePath)
 	fmt.Printf("Firewall applied. %d blocked, %d allowed IPs restored.\n",

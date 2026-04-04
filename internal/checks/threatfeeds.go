@@ -34,6 +34,7 @@ type ThreatDB struct {
 	FeedIPCount    int
 	FeedNetCount   int
 	LastFeedUpdate time.Time
+	LastUpdated    time.Time // tracks when feeds were last successfully loaded
 }
 
 var (
@@ -400,6 +401,16 @@ func (db *ThreatDB) Stats() map[string]interface{} {
 	}
 }
 
+// FeedsStale returns true if threat feeds have not been updated in over 7 days.
+func (db *ThreatDB) FeedsStale() bool {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	if db.LastUpdated.IsZero() {
+		return db.lastUpdate.IsZero() || time.Since(db.lastUpdate) > 7*24*time.Hour
+	}
+	return time.Since(db.LastUpdated) > 7*24*time.Hour
+}
+
 // UpdateFeeds downloads fresh threat intelligence feeds.
 // Downloads outside the lock, then swaps data under lock to avoid blocking lookups.
 func (db *ThreatDB) UpdateFeeds() error {
@@ -468,10 +479,12 @@ func (db *ThreatDB) UpdateFeeds() error {
 	}
 	// Replace CIDR ranges entirely (fixes accumulation bug)
 	db.badNets = newNets
-	db.lastUpdate = time.Now()
+	now := time.Now()
+	db.lastUpdate = now
 	db.FeedIPCount = totalIPs
 	db.FeedNetCount = totalNets
-	db.LastFeedUpdate = time.Now()
+	db.LastFeedUpdate = now
+	db.LastUpdated = now
 	db.mu.Unlock()
 
 	// Save timestamp
@@ -566,6 +579,7 @@ func (db *ThreatDB) loadFeedCache() {
 		if t, err := time.Parse(time.RFC3339, strings.TrimSpace(string(data))); err == nil {
 			db.lastUpdate = t
 			db.LastFeedUpdate = t
+			db.LastUpdated = t
 		}
 	}
 
@@ -576,6 +590,14 @@ func (db *ThreatDB) loadFeedCache() {
 			db.badIPs[ip] = feed.name
 		}
 		db.FeedIPCount += len(lines)
+	}
+
+	// Warn on startup if feeds are stale
+	if db.LastUpdated.IsZero() && db.FeedIPCount == 0 {
+		fmt.Fprintf(os.Stderr, "threatdb: WARNING no threat feed data loaded, feeds have never been fetched\n")
+	} else if !db.LastUpdated.IsZero() && time.Since(db.LastUpdated) > 7*24*time.Hour {
+		fmt.Fprintf(os.Stderr, "threatdb: WARNING threat feeds are stale (last updated %s, %d days ago)\n",
+			db.LastUpdated.Format("2006-01-02"), int(time.Since(db.LastUpdated).Hours()/24))
 	}
 }
 

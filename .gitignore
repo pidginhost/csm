@@ -4,3 +4,29 @@ state/state.json
 .claude/
 .remember/
 /csm
+
+# Environment / secrets
+.env
+.env.local
+.env*.local
+
+# TLS certificates and keys
+*.key
+*.pem
+*.crt
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.o
+*.a
+*.so

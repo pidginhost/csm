@@ -108,7 +108,20 @@ func fixPermissions(path string) RemediationResult {
 		return RemediationResult{Error: "could not extract file path from finding"}
 	}
 
-	info, err := os.Stat(path)
+	// Resolve symlinks to prevent TOCTOU race via symlink substitution
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return RemediationResult{Error: fmt.Sprintf("file not found: %v", err)}
+	}
+	if resolved != path {
+		if !strings.HasPrefix(resolved, "/home/") {
+			return RemediationResult{Error: fmt.Sprintf("symlink %s points outside /home/: %s, skipping", path, resolved)}
+		}
+		fmt.Fprintf(os.Stderr, "warning: remediation path %s resolved to %s via symlink\n", path, resolved)
+	}
+	path = resolved
+
+	info, err := os.Lstat(path)
 	if err != nil {
 		return RemediationResult{Error: fmt.Sprintf("file not found: %v", err)}
 	}
@@ -131,7 +144,20 @@ func fixQuarantine(path string) RemediationResult {
 		return RemediationResult{Error: "could not extract file path from finding"}
 	}
 
-	info, err := os.Stat(path)
+	// Resolve symlinks to prevent TOCTOU race via symlink substitution
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return RemediationResult{Error: fmt.Sprintf("file not found: %v", err)}
+	}
+	if resolved != path {
+		if !strings.HasPrefix(resolved, "/home/") {
+			return RemediationResult{Error: fmt.Sprintf("symlink %s points outside /home/: %s, skipping", path, resolved)}
+		}
+		fmt.Fprintf(os.Stderr, "warning: remediation path %s resolved to %s via symlink\n", path, resolved)
+	}
+	path = resolved
+
+	info, err := os.Lstat(path)
 	if err != nil {
 		return RemediationResult{Error: fmt.Sprintf("file not found: %v", err)}
 	}
@@ -173,7 +199,9 @@ func fixQuarantine(path string) RemediationResult {
 		"reason":        "Fixed via CSM Web UI",
 	}
 	metaData, _ := json.MarshalIndent(meta, "", "  ")
-	_ = os.WriteFile(qPath+".meta", metaData, 0600)
+	if err := os.WriteFile(qPath+".meta", metaData, 0600); err != nil {
+		fmt.Fprintf(os.Stderr, "remediate: error writing quarantine metadata %s: %v\n", qPath+".meta", err)
+	}
 
 	return RemediationResult{
 		Success:     true,
@@ -378,7 +406,9 @@ func fixQuarantineSpoolMessage(message string) RemediationResult {
 	}
 	metaData, _ := json.MarshalIndent(meta, "", "  ")
 	metaPath := filepath.Join(quarantineDir, fmt.Sprintf("%s_exim_%s.meta", ts, msgID))
-	_ = os.WriteFile(metaPath, metaData, 0600)
+	if err := os.WriteFile(metaPath, metaData, 0600); err != nil {
+		fmt.Fprintf(os.Stderr, "remediate: error writing spool quarantine metadata %s: %v\n", metaPath, err)
+	}
 
 	return RemediationResult{
 		Success:     true,

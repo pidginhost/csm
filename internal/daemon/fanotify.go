@@ -382,7 +382,10 @@ func (fm *FileMonitor) handleEvent(fd int, pid int32) {
 	case fm.analyzerCh <- fileEvent{path: path, fd: fd, pid: pid}:
 	default:
 		// Queue full — drop event and count
-		atomic.AddInt64(&fm.droppedEvents, 1)
+		n := atomic.AddInt64(&fm.droppedEvents, 1)
+		if n%100 == 0 {
+			fmt.Fprintf(os.Stderr, "[%s] fanotify: %d events dropped (analyzer queue full)\n", ts(), n)
+		}
 		_ = unix.Close(fd)
 	}
 }
@@ -987,6 +990,16 @@ func (fm *FileMonitor) checkCredentialLog(path, procInfo string) {
 		return
 	}
 
+	// Exclude known config file paths — these legitimately contain email-like patterns.
+	if strings.HasPrefix(path, "/etc/") {
+		return
+	}
+	for _, suffix := range []string{".conf", ".cfg", ".ini", ".yaml", ".yml"} {
+		if strings.HasSuffix(path, suffix) {
+			return
+		}
+	}
+
 	data := readHead(path, 4096)
 	if data == nil {
 		return
@@ -1018,7 +1031,7 @@ func (fm *FileMonitor) checkCredentialLog(path, procInfo string) {
 		}
 	}
 
-	if credLines >= 3 {
+	if credLines >= 5 {
 		fm.sendAlertWithPath(alert.Critical, "credential_log_realtime",
 			fmt.Sprintf("Harvested credential log detected: %s", path),
 			fmt.Sprintf("%d credential lines (email:password format) found", credLines), path, procInfo)

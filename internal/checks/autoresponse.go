@@ -47,10 +47,13 @@ func AutoKillProcesses(cfg *config.Config, findings []alert.Finding) []alert.Fin
 			continue
 		}
 
-		// Extract PID from details
-		pid := extractPID(f.Details)
-		if pid == "" {
-			continue
+		// Use structured PID field when available, fall back to text extraction
+		pid := fmt.Sprintf("%d", f.PID)
+		if f.PID == 0 {
+			pid = extractPID(f.Details)
+			if pid == "" {
+				continue
+			}
 		}
 
 		// Safety: verify the process is not root/system
@@ -66,8 +69,10 @@ func AutoKillProcesses(cfg *config.Config, findings []alert.Finding) []alert.Fin
 		}
 
 		// Kill it
-		pidInt := 0
-		fmt.Sscanf(pid, "%d", &pidInt)
+		pidInt := f.PID
+		if pidInt == 0 {
+			fmt.Sscanf(pid, "%d", &pidInt)
+		}
 		if pidInt <= 1 {
 			continue
 		}
@@ -207,7 +212,12 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 				if writeErr := os.WriteFile(qPath, data, 0600); writeErr != nil {
 					continue
 				}
-				os.Remove(path)
+				if rmErr := os.Remove(path); rmErr != nil {
+					// Remove failed — delete the copy to avoid duplication
+					os.Remove(qPath)
+					fmt.Fprintf(os.Stderr, "autoresponse: cross-device quarantine failed, cannot remove original %s: %v\n", path, rmErr)
+					continue
+				}
 			}
 		}
 

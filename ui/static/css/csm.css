@@ -2,6 +2,31 @@
    CSM — cPanel Security Monitor  –  extracted inline styles
    ========================================================================== */
 
+/* --- CSS custom properties (light theme defaults) ------------------------ */
+:root {
+  --csm-critical: #d63939;
+  --csm-high: #f76707;
+  --csm-warning: #f59f00;
+  --csm-info: #4299e1;
+  --csm-low: #2fb344;
+  --csm-text: #1e293b;
+  --csm-text-muted: #64748b;
+  --csm-bg-card: #ffffff;
+  --csm-border: #e2e8f0;
+}
+
+.theme-dark {
+  --csm-critical: #ff6b6b;
+  --csm-high: #ff922b;
+  --csm-warning: #ffd43b;
+  --csm-info: #74c0fc;
+  --csm-low: #51cf66;
+  --csm-text: #e2e8f0;
+  --csm-text-muted: #94a3b8;
+  --csm-bg-card: #1e293b;
+  --csm-border: #334155;
+}
+
 /* --- click-to-copy cursor ------------------------------------------------ */
 .csm-copy { cursor: pointer; }
 .csm-copy:hover { text-decoration: underline dotted; }
@@ -23,12 +48,12 @@
 .theme-dark code { color: #7ec8e3; }
 
 /* --- layout.html: severity badges & text --------------------------------- */
-.badge-critical { background: #d63939; color: #fff; }
-.badge-high { background: #f76707; color: #fff; }
-.badge-warning { background: #f59f00; color: #fff; }
-.text-critical { color: #d63939; }
-.text-high { color: #f76707; }
-.text-warning { color: #f59f00; }
+.badge-critical { background: var(--csm-critical); color: #fff; }
+.badge-high { background: var(--csm-high); color: #fff; }
+.badge-warning { background: var(--csm-warning); color: #fff; }
+.text-critical { color: var(--csm-critical); }
+.text-high { color: var(--csm-high); }
+.text-warning { color: var(--csm-warning); }
 
 /* --- layout.html: finding details rows ----------------------------------- */
 .details-row { display: none; }

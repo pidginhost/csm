@@ -19,7 +19,7 @@ const (
 
 // CheckWPBruteForce parses the LiteSpeed/Apache access log for brute force
 // attacks against wp-login.php and xmlrpc.php.
-func CheckWPBruteForce(_ *config.Config, _ *state.Store) []alert.Finding {
+func CheckWPBruteForce(cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	// Check LiteSpeed access log (most common on cPanel)
@@ -29,9 +29,14 @@ func CheckWPBruteForce(_ *config.Config, _ *state.Store) []alert.Finding {
 		"/etc/apache2/logs/access_log",
 	}
 
+	window := cfg.Thresholds.BruteForceWindow
+	if window <= 0 {
+		window = 5000
+	}
+
 	var lines []string
 	for _, path := range logPaths {
-		lines = tailFile(path, 500)
+		lines = tailFile(path, window)
 		if len(lines) > 0 {
 			break
 		}

@@ -194,6 +194,23 @@ func loadConfigLite() *config.Config {
 func runDaemon() {
 	cfg := loadConfig()
 
+	// Validate config on startup
+	results := config.Validate(cfg)
+	hasErrors := false
+	for _, r := range results {
+		switch r.Level {
+		case "error":
+			fmt.Fprintf(os.Stderr, "[ERROR] %s: %s\n", r.Field, r.Message)
+			hasErrors = true
+		case "warn":
+			fmt.Fprintf(os.Stderr, "[WARN]  %s: %s\n", r.Field, r.Message)
+		}
+	}
+	if hasErrors {
+		fmt.Fprintf(os.Stderr, "Daemon startup aborted due to config errors\n")
+		os.Exit(1)
+	}
+
 	// Initialize signature scanner
 	scanner := signatures.Init(cfg.Signatures.RulesDir)
 	if scanner.RuleCount() > 0 {

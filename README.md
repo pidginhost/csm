@@ -1,5 +1,7 @@
 # CSM — cPanel Security Monitor
 
+![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
+
 Real-time security monitoring daemon for cPanel/WHM shared hosting servers. A single static Go binary that detects compromises, backdoors, phishing, and suspicious activity — then alerts and responds within seconds.
 
 Designed as a full Imunify360 replacement. Includes a native nftables firewall engine replacing LFD and fail2ban.
@@ -11,12 +13,12 @@ Built after real incidents where GSocket reverse shells, LEVIATHAN webshell tool
 ### Option 1: Curl installer (interactive)
 
 ```bash
-curl -sSL https://get.pidginhost.com/csm | bash -s -- --token YOUR_DEPLOY_TOKEN
+curl -sSL https://get.example.com/csm | bash
 ```
 
 Auto-detects hostname, email, generates WebUI auth token. Prompts for confirmation.
 
-Non-interactive: `bash install.sh --token TOKEN --email admin@example.com --non-interactive`
+Non-interactive: `bash install.sh --email admin@example.com --non-interactive`
 
 ### Option 2: RPM (CentOS/AlmaLinux/CloudLinux)
 
@@ -39,7 +41,7 @@ systemctl enable --now csm.service
 ### Option 4: Manual (deploy.sh)
 
 ```bash
-GITLAB_TOKEN=xxx /opt/csm/deploy.sh install
+/opt/csm/deploy.sh install
 vi /opt/csm/csm.yaml   # set hostname, alert email, infra IPs
 csm validate
 csm baseline
@@ -392,7 +394,7 @@ signatures:
 
 | Method | Command | Best for |
 |---|---|---|
-| Curl installer | `curl -sSL .../install.sh \| bash -s -- --token TOKEN` | Quick trial, first install |
+| Curl installer | `curl -sSL .../install.sh \| bash` | Quick trial, first install |
 | RPM | `rpm -i csm-VERSION.x86_64.rpm` | CentOS/AlmaLinux/CloudLinux production |
 | DEB | `dpkg -i csm_VERSION_amd64.deb` | Ubuntu/Debian production |
 | deploy.sh | `/opt/csm/deploy.sh install` | Existing deploy token setup |
@@ -418,7 +420,19 @@ make test           # Unit tests
 make deploy SERVER=cluster6
 ```
 
-CI/CD: lint, vet, test, build (amd64 + arm64), package (RPM + DEB via nFPM), publish to GitLab Package Registry, cleanup old packages, release on tag push.
+CI/CD: lint, vet, test, build (amd64 + arm64), package (RPM + DEB via nFPM), publish to package registry, cleanup old packages, release on tag push.
+
+## Contributing
+
+Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on submitting bug reports, feature requests, and pull requests.
+
+## Security
+
+For responsible disclosure of security vulnerabilities, see [SECURITY.md](SECURITY.md).
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for a full history of releases and changes.
 
 ## Roadmap
 

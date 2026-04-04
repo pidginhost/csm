@@ -67,7 +67,7 @@ fetch(CSM.apiUrl('/api/v1/threat/stats'),{credentials:'same-origin'}).then(check
     svg+='<text x="'+(svgW-40)+'" y="'+(svgH-5)+'" font-size="11" fill="var(--tblr-muted)">Now</text>';
     svg+='</svg>';
     hourlyDiv.innerHTML=svg;
-}).catch(function(){ CSM.loadError(document.getElementById('chart-types'), function(){ location.reload(); }); });
+}).catch(function(err){ console.error('threat stats:', err); CSM.loadError(document.getElementById('chart-types'), function(){ location.reload(); }); });
 
 // Load top attackers
 fetch(CSM.apiUrl('/api/v1/threat/top-attackers?limit=50'),{credentials:'same-origin'}).then(checkResp).then(function(data){
@@ -99,7 +99,7 @@ fetch(CSM.apiUrl('/api/v1/threat/top-attackers?limit=50'),{credentials:'same-ori
             document.getElementById('lookup-form').dispatchEvent(new Event('submit'));
         });
     });
-}).catch(function(){ CSM.loadError(document.getElementById('attackers-tbody').parentElement.parentElement.parentElement, function(){ location.reload(); }); });
+}).catch(function(err){ console.error('top-attackers:', err); CSM.loadError(document.getElementById('attackers-tbody').parentElement.parentElement.parentElement, function(){ location.reload(); }); });
 
 // IP Lookup
 document.getElementById('lookup-form').addEventListener('submit',function(e){
@@ -156,11 +156,11 @@ document.getElementById('lookup-form').addEventListener('submit',function(e){
         html+='</table>';
         html+='<div class="mt-3 d-flex gap-2 flex-wrap">';
         if(!intel.currently_blocked){
-            html+='<button class="btn btn-danger btn-sm block-ip-btn" data-ip="'+CSM.esc(intel.ip)+'"><i class="ti ti-shield-lock"></i>&nbsp;Block (24h)</button>';
+            html+='<button class="btn btn-danger btn-sm block-ip-btn" data-ip="'+CSM.esc(intel.ip)+'" title="Block this IP in the firewall for 24 hours"><i class="ti ti-shield-lock"></i>&nbsp;Block (24h)</button>';
         }
-        html+='<button class="btn btn-outline-primary btn-sm clear-ip-btn" data-ip="'+CSM.esc(intel.ip)+'"><i class="ti ti-eraser"></i>&nbsp;Unblock &amp; Clear</button>';
-        html+='<button class="btn btn-outline-warning btn-sm temp-wl-btn" data-ip="'+CSM.esc(intel.ip)+'"><i class="ti ti-clock"></i>&nbsp;Temp Whitelist (24h)</button>';
-        html+='<button class="btn btn-success btn-sm perm-wl-btn" data-ip="'+CSM.esc(intel.ip)+'"><i class="ti ti-shield-check"></i>&nbsp;Permanent Whitelist</button>';
+        html+='<button class="btn btn-outline-primary btn-sm clear-ip-btn" data-ip="'+CSM.esc(intel.ip)+'" title="Unblock IP and remove from all threat databases"><i class="ti ti-eraser"></i>&nbsp;Unblock &amp; Clear</button>';
+        html+='<button class="btn btn-outline-warning btn-sm temp-wl-btn" data-ip="'+CSM.esc(intel.ip)+'" title="Temporarily allow this IP for a set number of hours"><i class="ti ti-clock"></i>&nbsp;Temp Whitelist (24h)</button>';
+        html+='<button class="btn btn-success btn-sm perm-wl-btn" data-ip="'+CSM.esc(intel.ip)+'" title="Permanently allow this IP — never block or flag it again"><i class="ti ti-shield-check"></i>&nbsp;Permanent Whitelist</button>';
         html+='</div>';
         html+='</div></div></div>';
         html+='</div>';
@@ -209,7 +209,7 @@ function loadWhitelist() {
                 '<span class="badge bg-warning-lt">Expires '+fmtDate(e.expires_at)+'</span>';
             html+='<tr><td><code class="font-monospace">'+CSM.esc(e.ip)+'</code></td>';
             html+='<td>'+typeBadge+'</td>';
-            html+='<td><button class="btn btn-ghost-danger btn-sm remove-wl-btn" data-ip="'+CSM.esc(e.ip)+'"><i class="ti ti-x"></i>&nbsp;Remove</button></td></tr>';
+            html+='<td><button class="btn btn-ghost-danger btn-sm remove-wl-btn" data-ip="'+CSM.esc(e.ip)+'" title="Remove IP from whitelist — it may be blocked again if it triggers detections"><i class="ti ti-x"></i>&nbsp;Remove</button></td></tr>';
         }
         tbody.innerHTML=html;
         // Bind remove buttons after DOM insertion

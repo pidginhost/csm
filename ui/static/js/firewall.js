@@ -36,7 +36,7 @@ function loadSubnets(){
         for(var i=0;i<subs.length;i++){
             // Use the network base address (strip /mask) for GeoIP lookup
             var baseIP = subs[i].cidr.replace(/\/.*/, '');
-            h+='<tr><td><code class="csm-copy" title="Click to copy">'+CSM.esc(subs[i].cidr)+'</code></td><td class="small text-muted text-nowrap geo-cell" data-ip="'+CSM.esc(baseIP)+'"></td><td class="small">'+CSM.esc(subs[i].reason)+'</td><td class="small text-muted">'+CSM.esc(subs[i].time_ago)+'</td><td><button class="btn btn-sm btn-success remove-subnet-btn" data-cidr="'+CSM.esc(subs[i].cidr)+'">Remove</button></td></tr>';
+            h+='<tr><td><code class="csm-copy" title="Click to copy">'+CSM.esc(subs[i].cidr)+'</code></td><td class="small text-muted text-nowrap geo-cell" data-ip="'+CSM.esc(baseIP)+'"></td><td class="small">'+CSM.esc(subs[i].reason)+'</td><td class="small text-muted">'+CSM.esc(subs[i].time_ago)+'</td><td><button class="btn btn-sm btn-success remove-subnet-btn" data-cidr="'+CSM.esc(subs[i].cidr)+'" title="Remove subnet block from firewall">Remove</button></td></tr>';
         }
         h+='</tbody></table></div>';
         el.innerHTML=h;
@@ -77,7 +77,7 @@ function loadBlocked(){
         h+='<th>IP</th><th>Location</th><th>Reason</th><th>Expires</th><th>Action</th></tr></thead><tbody>';
         for(var i=0;i<ips.length;i++){
             h+='<tr><td><input type="checkbox" class="form-check-input blocked-cb" data-ip="'+CSM.esc(ips[i].ip)+'"></td>';
-            h+='<td><code class="csm-copy" title="Click to copy">'+CSM.esc(ips[i].ip)+'</code></td><td class="small text-muted text-nowrap geo-cell" data-ip="'+CSM.esc(ips[i].ip)+'"></td><td class="small">'+CSM.esc(ips[i].reason)+'</td><td class="small text-muted">'+CSM.esc(ips[i].expires_in)+'</td><td><button class="btn btn-sm btn-ghost-success fw-unblock-btn" data-ip="'+CSM.esc(ips[i].ip)+'">Unblock</button></td></tr>';
+            h+='<td><code class="csm-copy" title="Click to copy">'+CSM.esc(ips[i].ip)+'</code></td><td class="small text-muted text-nowrap geo-cell" data-ip="'+CSM.esc(ips[i].ip)+'"></td><td class="small">'+CSM.esc(ips[i].reason)+'</td><td class="small text-muted">'+CSM.esc(ips[i].expires_in)+'</td><td><button class="btn btn-sm btn-ghost-success fw-unblock-btn" data-ip="'+CSM.esc(ips[i].ip)+'" title="Remove firewall block for this IP">Unblock</button></td></tr>';
         }
         h+='</tbody></table></div>';
         el.innerHTML=h;
@@ -160,7 +160,7 @@ function loadWhitelist(){
         if(!ips||ips.length===0){el.innerHTML='<div class="card-body text-center text-muted py-3">No whitelisted IPs.</div>';return;}
         var h='<div class="table-responsive"><table class="table table-vcenter card-table table-sm" id="whitelist-table"><thead><tr><th>IP</th><th>Action</th></tr></thead><tbody>';
         for(var i=0;i<ips.length;i++){
-            h+='<tr><td><code>'+CSM.esc(ips[i])+'</code></td><td><button class="btn btn-sm btn-ghost-danger wl-remove-btn" data-ip="'+CSM.esc(ips[i])+'">Remove</button></td></tr>';
+            h+='<tr><td><code>'+CSM.esc(ips[i])+'</code></td><td><button class="btn btn-sm btn-ghost-danger wl-remove-btn" data-ip="'+CSM.esc(ips[i])+'" title="Remove IP from whitelist">Remove</button></td></tr>';
         }
         h+='</tbody></table></div>';
         el.innerHTML=h;

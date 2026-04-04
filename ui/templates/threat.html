@@ -3,10 +3,10 @@
 {{define "content"}}
     <!-- Stats Cards -->
     <div class="row row-deck row-cards mb-3">
-        <div class="col-sm-6 col-lg-3"><div class="card"><div class="card-body"><div class="subheader">Tracked IPs</div><div class="h1 mb-0" id="stat-total-ips">—</div></div></div></div>
-        <div class="col-sm-6 col-lg-3"><div class="card"><div class="card-body"><div class="subheader">Events (24h)</div><div class="h1 mb-0" id="stat-24h">—</div></div></div></div>
-        <div class="col-sm-6 col-lg-3"><div class="card"><div class="card-body"><div class="subheader">Events (7d)</div><div class="h1 mb-0" id="stat-7d">—</div></div></div></div>
-        <div class="col-sm-6 col-lg-3"><div class="card"><div class="card-body"><div class="subheader">Auto-blocked</div><div class="h1 mb-0" id="stat-blocked">—</div></div></div></div>
+        <div class="col-sm-6 col-lg-3"><div class="card"><div class="card-body"><div class="subheader" title="Total unique IPs seen in threat events">Tracked IPs</div><div class="h1 mb-0" id="stat-total-ips">—</div></div></div></div>
+        <div class="col-sm-6 col-lg-3"><div class="card"><div class="card-body"><div class="subheader" title="Attack events recorded in the last 24 hours">Events (24h)</div><div class="h1 mb-0" id="stat-24h">—</div></div></div></div>
+        <div class="col-sm-6 col-lg-3"><div class="card"><div class="card-body"><div class="subheader" title="Attack events recorded in the last 7 days">Events (7d)</div><div class="h1 mb-0" id="stat-7d">—</div></div></div></div>
+        <div class="col-sm-6 col-lg-3"><div class="card"><div class="card-body"><div class="subheader" title="IPs automatically blocked by threat response">Auto-blocked</div><div class="h1 mb-0" id="stat-blocked">—</div></div></div></div>
     </div>
 
     <!-- Attack Type Breakdown -->
@@ -38,7 +38,7 @@
                     <input type="text" id="lookup-ip" class="form-control form-control-sm font-monospace csm-input-lg" placeholder="1.2.3.4">
                 </div>
                 <div class="col-auto">
-                    <button type="submit" class="btn btn-primary btn-sm"><i class="ti ti-search"></i>&nbsp;Lookup</button>
+                    <button type="submit" class="btn btn-primary btn-sm" title="Look up threat intelligence data for this IP"><i class="ti ti-search"></i>&nbsp;Lookup</button>
                 </div>
                 <div class="col-auto"><span id="lookup-status" class="text-muted small"></span></div>
             </form>
@@ -81,7 +81,7 @@
             <div class="card-actions">
                 <form id="add-wl-form" class="d-flex gap-2">
                     <input type="text" id="add-wl-ip" class="form-control form-control-sm font-monospace" placeholder="1.2.3.4" style="width:160px">
-                    <button type="submit" class="btn btn-success btn-sm"><i class="ti ti-plus"></i>&nbsp;Add</button>
+                    <button type="submit" class="btn btn-success btn-sm" title="Permanently whitelist this IP — never block or flag it"><i class="ti ti-plus"></i>&nbsp;Add</button>
                 </form>
             </div>
         </div>

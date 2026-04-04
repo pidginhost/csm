@@ -67,7 +67,7 @@
             html += '<td><code>' + CSM.esc(f.check) + '</code></td>';
             html += '<td>' + CSM.esc(f.message) + '</td>';
             html += '<td class="text-nowrap"><span class="text-muted small" data-timestamp="' + CSM.esc(f.timestamp || '') + '">' + CSM.esc(ago) + '</span></td>';
-            var expandBtn = f.details ? '<button class="btn btn-ghost-secondary btn-sm expand-btn" title="Show details"><i class="ti ti-chevron-down"></i></button>' : '';
+            var expandBtn = f.details ? '<button class="btn btn-ghost-secondary btn-sm expand-btn" title="Expand details" aria-label="Expand details"><i class="ti ti-chevron-down"></i></button>' : '';
             html += '<td>' + expandBtn + '</td>';
             html += '</tr>';
 
@@ -89,9 +89,9 @@
         var totalPages = Math.ceil(total / perPage);
         if (totalPages <= 1) { pager.innerHTML = ''; return; }
 
-        var html = '<div class="text-muted small">Page ' + (page + 1) + ' of ' + totalPages + '</div><div class="btn-group btn-group-sm">';
-        html += '<button class="btn btn-ghost-secondary" ' + (page === 0 ? 'disabled' : '') + ' id="pager-prev">Prev</button>';
-        html += '<button class="btn btn-ghost-secondary" ' + (page >= totalPages - 1 ? 'disabled' : '') + ' id="pager-next">Next</button>';
+        var html = '<div class="text-muted small" title="Showing ' + perPage + ' entries per page">Page ' + (page + 1) + ' of ' + totalPages + '</div><div class="btn-group btn-group-sm">';
+        html += '<button class="btn btn-ghost-secondary" ' + (page === 0 ? 'disabled' : '') + ' id="pager-prev" title="Previous page">Prev</button>';
+        html += '<button class="btn btn-ghost-secondary" ' + (page >= totalPages - 1 ? 'disabled' : '') + ' id="pager-next" title="Next page">Next</button>';
         html += '</div>';
         pager.innerHTML = html;
 

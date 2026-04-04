@@ -3,7 +3,7 @@
 {{define "content"}}
     <div class="row row-deck row-cards mb-3">
         <div class="col-sm-6 col-lg-3">
-            <div class="card">
+            <div class="card" title="Critical severity findings in the last 24 hours — require immediate attention">
                 <div class="card-body">
                     <div class="subheader">Critical (24h)</div>
                     <div class="h1 mb-0 text-critical" id="stat-critical">{{.Critical}}</div>
@@ -11,7 +11,7 @@
             </div>
         </div>
         <div class="col-sm-6 col-lg-3">
-            <div class="card">
+            <div class="card" title="High severity findings in the last 24 hours — should be addressed promptly">
                 <div class="card-body">
                     <div class="subheader">High (24h)</div>
                     <div class="h1 mb-0 text-high" id="stat-high">{{.High}}</div>
@@ -19,7 +19,7 @@
             </div>
         </div>
         <div class="col-sm-6 col-lg-3">
-            <div class="card">
+            <div class="card" title="Warning severity findings in the last 24 hours — low-risk issues to review">
                 <div class="card-body">
                     <div class="subheader">Warning (24h)</div>
                     <div class="h1 mb-0 text-warning" id="stat-warning">{{.Warning}}</div>
@@ -27,7 +27,7 @@
             </div>
         </div>
         <div class="col-sm-6 col-lg-3">
-            <div class="card">
+            <div class="card" title="Total findings across all severity levels in the last 24 hours">
                 <div class="card-body">
                     <div class="subheader">Total (24h)</div>
                     <div class="h1 mb-0 text-green" id="stat-total">{{.Total}}</div>
@@ -38,7 +38,7 @@
 
     <div class="row row-deck row-cards mb-3">
         <div class="col-sm-6 col-lg-3">
-            <div class="card">
+            <div class="card" title="How long the CSM daemon has been running">
                 <div class="card-body">
                     <div class="subheader">Uptime</div>
                     <div class="h3 mb-0">{{.Uptime}}</div>
@@ -46,7 +46,7 @@
             </div>
         </div>
         <div class="col-sm-6 col-lg-3">
-            <div class="card">
+            <div class="card" title="Server hostname being monitored">
                 <div class="card-body">
                     <div class="subheader">Hostname</div>
                     <div class="h3 mb-0">{{.Hostname}}</div>
@@ -54,7 +54,7 @@
             </div>
         </div>
         <div class="col-sm-6 col-lg-3">
-            <div class="card">
+            <div class="card" title="fanotify: real-time file monitoring (Active = kernel-level; Fallback = polling)">
                 <div class="card-body">
                     <div class="subheader">fanotify</div>
                     <div class="h3 mb-0">{{if .FanotifyActive}}<span class="text-green"><i class="ti ti-circle-check"></i> Active</span>{{else}}<span class="text-warning"><i class="ti ti-alert-circle"></i> Fallback</span>{{end}}</div>
@@ -65,11 +65,11 @@
             <div class="card">
                 <div class="card-body">
                     <div class="d-flex align-items-center justify-content-between">
-                        <div>
+                        <div title="Time since the most recent critical severity finding">
                             <div class="subheader">Last Critical</div>
                             <div class="h3 mb-0" id="stat-last-critical">{{.LastCriticalAgo}}</div>
                         </div>
-                        <div class="text-end">
+                        <div class="text-end" title="Background account scanner status">
                             <div class="subheader">Scanner</div>
                             <div class="h3 mb-0" id="scan-status">—</div>
                             <div class="text-muted small" id="scan-detail"></div>

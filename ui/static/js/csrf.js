@@ -140,3 +140,85 @@ CSM.apiUrl = function(path) {
     }
     return path;
 };
+
+// Fetch wrapper with 30s timeout and error toast
+CSM.fetch = function(url, options) {
+    var resolvedUrl = (typeof CSM.apiUrl === 'function') ? CSM.apiUrl(url) : url;
+    var controller = new AbortController();
+    var timeoutId = setTimeout(function() { controller.abort(); }, 30000);
+    var opts = Object.assign({}, options || {}, { signal: controller.signal, credentials: 'same-origin' });
+    return fetch(resolvedUrl, opts).then(function(r) {
+        clearTimeout(timeoutId);
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+    }).catch(function(err) {
+        clearTimeout(timeoutId);
+        if (err.name === 'AbortError') {
+            CSM.toast('Request timed out', 'danger');
+        } else {
+            CSM.toast('Request failed: ' + err.message, 'danger');
+        }
+        throw err;
+    });
+};
+
+// Polling utility with visibility-pause and exponential backoff
+CSM.poll = function(url, interval, callback) {
+    var baseInterval = interval;
+    var currentInterval = interval;
+    var maxInterval = 300000; // 5 minutes
+    var timerId = null;
+    var stopped = false;
+
+    function run() {
+        if (stopped) return;
+        fetch((typeof CSM.apiUrl === 'function') ? CSM.apiUrl(url) : url, { credentials: 'same-origin' })
+            .then(function(r) {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
+            })
+            .then(function(data) {
+                currentInterval = baseInterval; // reset on success
+                callback(null, data);
+            })
+            .catch(function(err) {
+                currentInterval = Math.min(currentInterval * 2, maxInterval);
+                callback(err, null);
+            })
+            .finally(function() {
+                if (!stopped && !document.hidden) {
+                    timerId = setTimeout(run, currentInterval);
+                }
+            });
+    }
+
+    function onVisibility() {
+        if (document.hidden) {
+            if (timerId) { clearTimeout(timerId); timerId = null; }
+        } else if (!stopped) {
+            currentInterval = baseInterval;
+            if (!timerId) { timerId = setTimeout(run, 100); }
+        }
+    }
+
+    document.addEventListener('visibilitychange', onVisibility);
+    timerId = setTimeout(run, currentInterval);
+
+    return {
+        stop: function() {
+            stopped = true;
+            if (timerId) { clearTimeout(timerId); timerId = null; }
+            document.removeEventListener('visibilitychange', onVisibility);
+        }
+    };
+};
+
+// Debounce utility
+CSM.debounce = function(fn, delay) {
+    var timer = null;
+    return function() {
+        var ctx = this, args = arguments;
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(function() { fn.apply(ctx, args); }, delay);
+    };
+};

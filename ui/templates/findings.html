@@ -15,7 +15,7 @@
                     <datalist id="account-list"></datalist>
                 </div>
                 <div class="col-auto">
-                    <button type="submit" id="scan-btn" class="btn btn-primary btn-sm"><i class="ti ti-radar-2"></i>&nbsp;Scan</button>
+                    <button type="submit" id="scan-btn" class="btn btn-primary btn-sm" title="Run all security checks on this cPanel account"><i class="ti ti-radar-2"></i>&nbsp;Scan</button>
                 </div>
                 <div class="col-auto" id="scan-status"><span class="text-muted small"></span></div>
             </form>
@@ -43,7 +43,7 @@
                 </select>
                 <input type="search" id="account-filter" list="account-filter-list" class="form-control form-control-sm" placeholder="All Accounts" style="width:140px" autocomplete="off">
                 <datalist id="account-filter-list"></datalist>
-                <select id="group-by" class="form-select form-select-sm" style="width:auto">
+                <select id="group-by" class="form-select form-select-sm" style="width:auto" title="Group findings by account or check type">
                     <option value="none">No Grouping</option>
                     <option value="account">Group by Account</option>
                     <option value="check">Group by Check Type</option>
@@ -56,19 +56,19 @@
                     <option value="0">All</option>
                 </select>
                 <div class="dropdown">
-                    <button class="btn btn-ghost-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">
+                    <button class="btn btn-ghost-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="Export visible findings">
                         <i class="ti ti-download"></i>&nbsp;Export
                     </button>
                     <div class="dropdown-menu dropdown-menu-end">
-                        <a class="dropdown-item" href="#" id="export-csv"><i class="ti ti-file-spreadsheet me-2"></i>CSV</a>
-                        <a class="dropdown-item" href="#" id="export-json"><i class="ti ti-braces me-2"></i>JSON</a>
+                        <a class="dropdown-item" href="#" id="export-csv" title="Download findings as CSV spreadsheet"><i class="ti ti-file-spreadsheet me-2"></i>CSV</a>
+                        <a class="dropdown-item" href="#" id="export-json" title="Download findings as JSON data file"><i class="ti ti-braces me-2"></i>JSON</a>
                     </div>
                 </div>
                 <div id="bulk-actions" class="d-none d-flex gap-1 align-items-center">
                     <span class="text-muted small me-1"><strong id="selected-count">0</strong> selected</span>
                     <div class="btn-group btn-group-sm">
-                        <button id="bulk-fix-btn" class="btn btn-warning d-none" data-action="fix"><i class="ti ti-tool"></i>&nbsp;Fix</button>
-                        <button id="bulk-dismiss-btn" class="btn btn-ghost-secondary" data-action="dismiss"><i class="ti ti-x"></i>&nbsp;Dismiss</button>
+                        <button id="bulk-fix-btn" class="btn btn-warning d-none" data-action="fix" title="Apply automated fixes to all selected findings"><i class="ti ti-tool"></i>&nbsp;Fix</button>
+                        <button id="bulk-dismiss-btn" class="btn btn-ghost-secondary" data-action="dismiss" title="Dismiss all selected findings"><i class="ti ti-x"></i>&nbsp;Dismiss</button>
                     </div>
                 </div>
             </div>

@@ -41,6 +41,7 @@ type Finding struct {
 	Details     string    `json:"details,omitempty"`
 	FilePath    string    `json:"file_path,omitempty"`
 	ProcessInfo string    `json:"process_info,omitempty"` // "pid=N cmd=name uid=N" from fanotify
+	PID         int       `json:"pid,omitempty"`          // structured PID for auto-response
 	Timestamp   time.Time `json:"timestamp"`
 }
 

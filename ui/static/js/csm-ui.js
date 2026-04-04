@@ -2,11 +2,17 @@
 var CSM = CSM || {};
 
 // Severity badge HTML
+var _sevTitles = {
+    2: 'Critical: immediate action required',
+    1: 'High: should be addressed promptly',
+    0: 'Warning: low-risk issue to review'
+};
 CSM.severityBadge = function(severity) {
     var cls = 'warning', label = 'WARNING';
     if (severity === 2) { cls = 'critical'; label = 'CRITICAL'; }
     else if (severity === 1) { cls = 'high'; label = 'HIGH'; }
-    return '<span class="badge badge-' + cls + '">' + label + '</span>';
+    var title = _sevTitles[severity] || _sevTitles[0];
+    return '<span class="badge badge-' + cls + '" title="' + title + '">' + label + '</span>';
 };
 
 // Severity class name from numeric severity

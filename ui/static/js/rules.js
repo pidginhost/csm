@@ -194,7 +194,7 @@ function loadCheckTypes() {
             opt.value = t;
             dl.appendChild(opt);
         });
-    }).catch(function() {});
+    }).catch(function(err) { console.error('loadCheckTypes:', err); });
 }
 
 // --- ModSecurity escalation exclusions ---
@@ -207,7 +207,7 @@ function loadModSecEscalation() {
             _modsecRules = data.rules || [];
             renderModSecEscalation();
         })
-        .catch(function() {});
+        .catch(function(err) { console.error('loadModSecEscalation:', err); });
 }
 
 function renderModSecEscalation() {

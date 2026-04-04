@@ -166,10 +166,10 @@ function buildActionButtons(row) {
     var hasFix = row.getAttribute('data-hasFix') === 'true';
     var btnHtml = '';
     if (hasFix) {
-        btnHtml += '<button class="btn btn-warning btn-sm me-1 fix-btn" title="' + CSM.esc(row.getAttribute('data-fixdesc') || '') + '"><i class="ti ti-tool"></i></button>';
+        btnHtml += '<button class="btn btn-warning btn-sm me-1 fix-btn" title="Apply automated fix for this finding" aria-label="Fix finding"><i class="ti ti-tool"></i></button>';
     }
-    btnHtml += '<button class="btn btn-ghost-secondary btn-sm me-1 dismiss-btn"><i class="ti ti-x"></i></button>';
-    btnHtml += '<button class="btn btn-ghost-secondary btn-sm suppress-btn" title="Suppress"><i class="ti ti-eye-off"></i></button>';
+    btnHtml += '<button class="btn btn-ghost-secondary btn-sm me-1 dismiss-btn" title="Dismiss this finding (can be restored)" aria-label="Dismiss finding"><i class="ti ti-x"></i></button>';
+    btnHtml += '<button class="btn btn-ghost-secondary btn-sm suppress-btn" title="Create a suppression rule to hide similar findings" aria-label="Suppress finding"><i class="ti ti-eye-off"></i></button>';
     cell.innerHTML = btnHtml;
 
     var fixBtn = cell.querySelector('.fix-btn');
@@ -490,7 +490,7 @@ fetch(CSM.apiUrl('/api/v1/accounts'), {credentials:'same-origin'}).then(function
         opt.value = a;
         dl.appendChild(opt);
     });
-}).catch(function(){});
+}).catch(function(err){ console.error('loadAccounts:', err); });
 
 // Bind select-all checkbox
 var _selectAll = document.getElementById('select-all');
@@ -604,6 +604,7 @@ if (_bulkDismissBtn) _bulkDismissBtn.addEventListener('click', function() { bulk
             var headerRow = document.createElement('tr');
             headerRow.className = 'csm-group-header';
             headerRow.setAttribute('data-csm-group-key', key);
+            headerRow.setAttribute('aria-expanded', 'true');
             var td = document.createElement('td');
             td.colSpan = colCount;
             td.innerHTML = '<span class="csm-group-arrow">&#9660;</span>' +
@@ -619,6 +620,7 @@ if (_bulkDismissBtn) _bulkDismissBtn.addEventListener('click', function() { bulk
             // Click to collapse/expand
             headerRow.addEventListener('click', function() {
                 var isCollapsed = headerRow.classList.toggle('collapsed');
+                headerRow.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
                 groups[key].forEach(function(row) {
                     row.style.display = isCollapsed ? 'none' : '';
                 });
@@ -703,7 +705,7 @@ function toggleFindingDetail(row) {
             html += '</div>';
             td.innerHTML = html;
         })
-        .catch(function() { td.innerHTML = '<div class="p-2 text-danger small">Failed to load details.</div>'; });
+        .catch(function(err) { console.error('findingDetail:', err); td.innerHTML = '<div class="p-2 text-danger small">Failed to load details.</div>'; });
 }
 
 // --- Export findings (CSV / JSON) ---
@@ -765,6 +767,8 @@ var jsonBtn = document.getElementById('export-json');
 if (jsonBtn) jsonBtn.addEventListener('click', function(e) { e.preventDefault(); exportJSON(); });
 
 // --- Auto-refresh: poll for new findings every 15 seconds ---
+var _findingsPoller = null;
+
 function initAutoRefresh(initialFindings) {
     var currentKeys = {};
     for (var i = 0; i < initialFindings.length; i++) {
@@ -773,26 +777,29 @@ function initAutoRefresh(initialFindings) {
     }
     var currentCount = initialFindings.length;
 
-    setInterval(function() {
-        fetch(CSM.apiUrl('/api/v1/findings'), { credentials: 'same-origin' })
-            .then(function(r) { return r.json(); })
-            .then(function(data) {
-                if (!data) return;
-                var changed = data.length !== currentCount;
-                if (!changed) {
-                    for (var j = 0; j < data.length; j++) {
-                        var key = data[j].check + ':' + data[j].message;
-                        if (!currentKeys[key]) { changed = true; break; }
-                    }
-                }
-                if (changed) {
-                    var banner = document.getElementById('refresh-banner');
-                    if (banner) banner.classList.remove('d-none');
-                }
-            })
-            .catch(function() {});
-    }, 15000);
+    // Stop any previous poller
+    if (_findingsPoller) { _findingsPoller.stop(); _findingsPoller = null; }
+
+    _findingsPoller = CSM.poll('/api/v1/findings', 15000, function(err, data) {
+        if (err) { console.error('findings auto-refresh:', err); return; }
+        if (!data) return;
+        var changed = data.length !== currentCount;
+        if (!changed) {
+            for (var j = 0; j < data.length; j++) {
+                var key = data[j].check + ':' + data[j].message;
+                if (!currentKeys[key]) { changed = true; break; }
+            }
+        }
+        if (changed) {
+            var banner = document.getElementById('refresh-banner');
+            if (banner) banner.classList.remove('d-none');
+        }
+    });
 }
+
+window.addEventListener('beforeunload', function() {
+    if (_findingsPoller) { _findingsPoller.stop(); _findingsPoller = null; }
+});
 
 // --- Kick off ---
 loadFindings();

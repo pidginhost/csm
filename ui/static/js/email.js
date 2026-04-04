@@ -149,7 +149,7 @@
                 var el = document.getElementById('smtp-blocked-count');
                 if (el) el.textContent = count;
             })
-            .catch(function() {});
+            .catch(function(err) { console.error('loadBlockedIPCount:', err); });
     }
 
     // --- Left column: findings table + timeline ---
@@ -414,7 +414,7 @@
                 var malwareBlocked = document.getElementById('stat-malware-blocked');
                 if (malwareBlocked) malwareBlocked.textContent = data.quarantined || 0;
             })
-            .catch(function() {});
+            .catch(function(err) { console.error('loadAVStatus:', err); });
     }
 
     function loadQuarantine() {
@@ -460,14 +460,14 @@
                 html += '</tbody></table></div>';
                 container.innerHTML = html;
             })
-            .catch(function() {});
+            .catch(function(err) { console.error('loadQuarantine:', err); });
     }
 
     function releaseMessage(msgID) {
         if (!confirm('Release this message back to the mail queue? Only do this for confirmed false positives.')) return;
         CSM.post(CSM.apiUrl('/api/v1/email/quarantine/' + encodeURIComponent(msgID) + '/release'), {})
             .then(function() { loadQuarantine(); loadAVStatus(); })
-            .catch(function() {});
+            .catch(function(err) { CSM.toast('Release failed: ' + err.message, 'danger'); });
     }
 
     function deleteMessage(msgID) {
@@ -477,7 +477,7 @@
             credentials: 'same-origin',
             headers: { 'X-CSRF-Token': CSM.csrfToken }
         }).then(function() { loadQuarantine(); loadAVStatus(); })
-          .catch(function() {});
+          .catch(function(err) { CSM.toast('Delete failed: ' + err.message, 'danger'); });
     }
 
     // --- Utilities ---
@@ -545,8 +545,34 @@
     loadFindings();
     loadAVStatus();
     loadQuarantine();
-    setInterval(loadEmailStats, 30000);
-    setInterval(loadFindings, 30000);
-    setInterval(loadAVStatus, 30000);
-    setInterval(loadQuarantine, 30000);
+
+    var _emailIntervals = [];
+    function _startEmailPolling() {
+        _emailIntervals.push(setInterval(function() {
+            try { loadEmailStats(); } catch(e) { console.error('email stats:', e); }
+        }, 30000));
+        _emailIntervals.push(setInterval(function() {
+            try { loadFindings(); } catch(e) { console.error('email findings:', e); }
+        }, 30000));
+        _emailIntervals.push(setInterval(function() {
+            try { loadAVStatus(); } catch(e) { console.error('email AV:', e); }
+        }, 30000));
+        _emailIntervals.push(setInterval(function() {
+            try { loadQuarantine(); } catch(e) { console.error('email quarantine:', e); }
+        }, 30000));
+    }
+    _startEmailPolling();
+
+    document.addEventListener('visibilitychange', function() {
+        if (document.hidden) {
+            for (var i = 0; i < _emailIntervals.length; i++) clearInterval(_emailIntervals[i]);
+            _emailIntervals = [];
+        } else {
+            _startEmailPolling();
+        }
+    });
+    window.addEventListener('beforeunload', function() {
+        for (var i = 0; i < _emailIntervals.length; i++) clearInterval(_emailIntervals[i]);
+        _emailIntervals = [];
+    });
 })();

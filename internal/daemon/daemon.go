@@ -1,15 +1,15 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
-
-	"context"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
 	"github.com/pidginhost/cpanel-security-monitor/internal/attackdb"
@@ -48,6 +48,7 @@ type Daemon struct {
 	geoipDB         *geoip.DB
 	geoipMu         sync.Mutex // protects geoipDB for publishGeoIP
 	alertCh         chan alert.Finding
+	droppedAlerts   int64 // atomic counter for alert channel backpressure drops
 	stopCh          chan struct{}
 	wg              sync.WaitGroup
 }
@@ -262,10 +263,18 @@ func (d *Daemon) Run() error {
 	if adb := attackdb.Global(); adb != nil {
 		adb.Stop()
 	}
-	_ = d.store.Close()
+	if err := d.store.Close(); err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] error closing state store: %v\n", ts(), err)
+	}
 	d.lock.Release()
 	fmt.Fprintf(os.Stderr, "[%s] CSM daemon stopped\n", ts())
 	return nil
+}
+
+// DroppedAlerts returns the total number of alerts dropped due to
+// channel backpressure since the daemon started.
+func (d *Daemon) DroppedAlerts() int64 {
+	return atomic.LoadInt64(&d.droppedAlerts)
 }
 
 // alertDispatcher batches and dispatches alerts.
@@ -281,9 +290,20 @@ func (d *Daemon) alertDispatcher() {
 	for {
 		select {
 		case <-d.stopCh:
-			// Flush remaining
+			// Flush remaining with a timeout to avoid blocking shutdown
 			if len(batch) > 0 {
-				d.dispatchBatch(batch)
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				done := make(chan struct{})
+				go func() {
+					d.dispatchBatch(batch)
+					close(done)
+				}()
+				select {
+				case <-done:
+				case <-ctx.Done():
+					fmt.Fprintf(os.Stderr, "[%s] shutdown flush timed out after 30s, %d findings not dispatched\n", ts(), len(batch))
+				}
+				cancel()
 			}
 			return
 
@@ -460,6 +480,7 @@ func (d *Daemon) deepScanner() {
 					select {
 					case d.alertCh <- f:
 					default:
+						atomic.AddInt64(&d.droppedAlerts, 1)
 						fmt.Fprintf(os.Stderr, "[%s] alert channel full, dropping deep finding: %s\n", ts(), f.Check)
 					}
 				}
@@ -479,6 +500,7 @@ func (d *Daemon) runPeriodicChecks(tier checks.Tier) {
 			Timestamp: time.Now(),
 		}:
 		default:
+			atomic.AddInt64(&d.droppedAlerts, 1)
 			fmt.Fprintf(os.Stderr, "[%s] alert channel full, dropping integrity finding\n", ts())
 		}
 		return
@@ -492,6 +514,7 @@ func (d *Daemon) runPeriodicChecks(tier checks.Tier) {
 			select {
 			case d.alertCh <- f:
 			default:
+				atomic.AddInt64(&d.droppedAlerts, 1)
 				fmt.Fprintf(os.Stderr, "[%s] alert channel full, dropping periodic finding: %s\n", ts(), f.Check)
 			}
 		}

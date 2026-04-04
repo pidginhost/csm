@@ -50,6 +50,7 @@ type Config struct {
 		MultiIPLoginThreshold     int `yaml:"multi_ip_login_threshold"`
 		MultiIPLoginWindowMin     int `yaml:"multi_ip_login_window_min"`
 		PluginCheckIntervalMin    int `yaml:"plugin_check_interval_min"`
+		BruteForceWindow          int `yaml:"brute_force_window"`
 	} `yaml:"thresholds"`
 
 	InfraIPs []string `yaml:"infra_ips"`
@@ -184,6 +185,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Thresholds.PluginCheckIntervalMin == 0 {
 		cfg.Thresholds.PluginCheckIntervalMin = 1440
+	}
+	if cfg.Thresholds.BruteForceWindow == 0 {
+		cfg.Thresholds.BruteForceWindow = 5000
 	}
 	if cfg.Alerts.MaxPerHour == 0 {
 		cfg.Alerts.MaxPerHour = 10

@@ -50,14 +50,22 @@ func Open(path string) (*Store, error) {
 	stateFile := filepath.Join(path, "state.json")
 	data, err := os.ReadFile(stateFile)
 	if err == nil {
-		_ = json.Unmarshal(data, &s.entries)
+		// Backup state file before loading in case of corruption
+		_ = os.WriteFile(stateFile+".bak", data, 0600)
+		if unmarshalErr := json.Unmarshal(data, &s.entries); unmarshalErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to parse %s: %v (backup saved to %s.bak)\n", stateFile, unmarshalErr, stateFile)
+		}
 	}
 
 	// Load latest findings from disk (survives restart)
 	latestFile := filepath.Join(path, "latest_findings.json")
 	if latestData, err := os.ReadFile(latestFile); err == nil {
+		// Backup latest findings before loading
+		_ = os.WriteFile(latestFile+".bak", latestData, 0600)
 		var findings []alert.Finding
-		if json.Unmarshal(latestData, &findings) == nil {
+		if unmarshalErr := json.Unmarshal(latestData, &findings); unmarshalErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to parse %s: %v (backup saved to %s.bak)\n", latestFile, unmarshalErr, latestFile)
+		} else {
 			s.latestFindings = findings
 		}
 	}
@@ -102,7 +110,13 @@ func (s *Store) save() error {
 }
 
 func findingKey(f alert.Finding) string {
-	return fmt.Sprintf("%s:%s", f.Check, f.Message)
+	// Include a truncated hash of Details to prevent collisions when
+	// the same Check:Message pair has different Details content.
+	if f.Details == "" {
+		return fmt.Sprintf("%s:%s", f.Check, f.Message)
+	}
+	h := sha256.Sum256([]byte(f.Details))
+	return fmt.Sprintf("%s:%s:%x", f.Check, f.Message, h[:4])
 }
 
 func findingHash(f alert.Finding) string {
@@ -181,7 +195,9 @@ func (s *Store) Update(findings []alert.Finding) {
 		}
 	}
 
-	_ = s.save()
+	if err := s.save(); err != nil {
+		fmt.Fprintf(os.Stderr, "state: error saving after update: %v\n", err)
+	}
 }
 
 func (s *Store) SetBaseline(findings []alert.Finding) {
@@ -202,7 +218,9 @@ func (s *Store) SetBaseline(findings []alert.Finding) {
 		}
 	}
 
-	_ = s.save()
+	if err := s.save(); err != nil {
+		fmt.Fprintf(os.Stderr, "state: error saving baseline: %v\n", err)
+	}
 }
 
 func (s *Store) ShouldRunThrottled(checkName string, intervalMin int) bool {
@@ -251,12 +269,13 @@ func (s *Store) SetRaw(key, value string) {
 
 // AppendHistory writes findings to the bbolt store (if available) or
 // falls back to the append-only JSONL history file.
+// The JSONL fallback is deprecated and will be removed in a future release.
 func (s *Store) AppendHistory(findings []alert.Finding) {
 	if len(findings) == 0 {
 		return
 	}
 
-	// Use bbolt store when available.
+	// Use bbolt store when available; skip JSONL writes entirely.
 	if db := store.Global(); db != nil {
 		if err := db.AppendHistory(findings); err != nil {
 			fmt.Fprintf(os.Stderr, "store: append history: %v\n", err)
@@ -264,7 +283,9 @@ func (s *Store) AppendHistory(findings []alert.Finding) {
 		return
 	}
 
-	// Fallback: flat-file JSONL.
+	// Deprecated: flat-file JSONL fallback has a truncation race condition.
+	// This path is kept only for installations that have not yet migrated to bbolt.
+	fmt.Fprintf(os.Stderr, "DEPRECATION: using JSONL history fallback; migrate to bbolt store\n")
 	s.appendHistoryFile(findings)
 }
 

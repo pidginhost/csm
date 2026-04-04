@@ -2,6 +2,29 @@
 (function() {
     'use strict';
 
+    var _intervals = [];
+    var _pollers = [];
+
+    function _trackInterval(id) { _intervals.push(id); return id; }
+
+    function _cleanup() {
+        for (var i = 0; i < _intervals.length; i++) clearInterval(_intervals[i]);
+        _intervals = [];
+        for (var j = 0; j < _pollers.length; j++) _pollers[j].stop();
+        _pollers = [];
+    }
+
+    window.addEventListener('beforeunload', _cleanup);
+    document.addEventListener('visibilitychange', function() {
+        if (document.hidden) {
+            for (var i = 0; i < _intervals.length; i++) clearInterval(_intervals[i]);
+            _intervals = [];
+        } else {
+            // Restart intervals on visibility restore
+            _startPolling();
+        }
+    });
+
     // --- Chart.js global defaults for dark/light theme ---
     var isDark = document.documentElement.classList.contains('theme-dark');
     var gridColor = isDark ? 'rgba(45,58,78,0.6)' : 'rgba(230,232,235,0.8)';
@@ -133,7 +156,7 @@
     });
 
     // Periodically update relative times
-    setInterval(CSM.initTimeAgo, 5000);
+    _trackInterval(setInterval(CSM.initTimeAgo, 5000));
 
     // Polling — fetch recent history every 10 seconds
     var lastPollTimestamp = '';
@@ -158,7 +181,7 @@
                 }
                 lastPollTimestamp = maxTs;
             })
-            .catch(function() {});
+            .catch(function(err) { console.error('pollFindings:', err); });
     }
 
     function addEntry(f) {
@@ -252,7 +275,7 @@
                 renderAutoResponse(data.auto_response || {});
                 renderTopTargeted(data.top_accounts || []);
             })
-            .catch(function() {});
+            .catch(function(err) { console.error('refreshStats:', err); });
     }
 
     function refreshScanStatus() {
@@ -264,7 +287,7 @@
                     setText('scan-detail', 'Last scan: ' + CSM.timeAgo(data.last_scan_time));
                 }
             })
-            .catch(function() {});
+            .catch(function(err) { console.error('refreshScanStatus:', err); });
     }
 
     var sevClasses = { 2: 'critical', 1: 'high', 0: 'warning' };
@@ -395,21 +418,23 @@
     }
 
     // Initialize — two cadences with failure isolation
-    if (feed) {
+    function _startPolling() {
+        if (!feed) return;
         // Fast cadence (10s): findings + scan status
         function fastPoll() {
-            try { pollFindings(); } catch(e) {}
-            try { refreshScanStatus(); } catch(e) {}
+            try { pollFindings(); } catch(e) { console.error('fastPoll:', e); }
+            try { refreshScanStatus(); } catch(e) { console.error('fastPoll:', e); }
         }
         fastPoll();
-        setInterval(fastPoll, 10000);
+        _trackInterval(setInterval(fastPoll, 10000));
 
         // Slow cadence (60s): stats
         refreshStats();
-        setInterval(function() {
-            try { refreshStats(); } catch(e) {}
-        }, 60000);
+        _trackInterval(setInterval(function() {
+            try { refreshStats(); } catch(e) { console.error('refreshStats:', e); }
+        }, 60000));
     }
+    _startPolling();
 })();
 
 // ============================================================================
@@ -418,29 +443,50 @@
 (function() {
     'use strict';
 
+    function getThemeColor(varName, fallback) {
+        var val = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+        return val || fallback;
+    }
+
+    function buildColors() {
+        var isDark = document.documentElement.classList.contains('theme-dark');
+        var critical = getThemeColor('--csm-critical', '#d63939');
+        var high     = getThemeColor('--csm-high',     '#f76707');
+        var warning  = getThemeColor('--csm-warning',  '#f59f00');
+        return {
+            critical:   critical,
+            criticalBg: isDark ? critical + 'd9' : critical + 'cc',
+            high:       high,
+            highBg:     isDark ? high + 'd9' : high + 'cc',
+            warning:    warning,
+            warningBg:  isDark ? warning + 'd9' : warning + 'cc'
+        };
+    }
+
+    function buildTooltipStyle() {
+        var isDark = document.documentElement.classList.contains('theme-dark');
+        return {
+            backgroundColor: isDark ? '#1e293b' : '#fff',
+            titleColor: isDark ? '#c8d3e0' : '#1a2234',
+            bodyColor: isDark ? '#c8d3e0' : '#1a2234',
+            borderColor: isDark ? '#2d3a4e' : '#e6e8eb',
+            borderWidth: 1,
+            cornerRadius: 6,
+            padding: 10,
+            displayColors: true,
+            boxPadding: 4
+        };
+    }
+
+    function buildGridColor() {
+        var isDark = document.documentElement.classList.contains('theme-dark');
+        return isDark ? 'rgba(45,58,78,0.6)' : 'rgba(230,232,235,0.8)';
+    }
+
     var isDark = document.documentElement.classList.contains('theme-dark');
-    var gridColor = isDark ? 'rgba(45,58,78,0.6)' : 'rgba(230,232,235,0.8)';
-
-    var COLORS = {
-        critical:    '#d63939',
-        criticalBg:  isDark ? 'rgba(214,57,57,0.85)' : 'rgba(214,57,57,0.8)',
-        high:        '#f76707',
-        highBg:      isDark ? 'rgba(247,103,7,0.85)' : 'rgba(247,103,7,0.8)',
-        warning:     '#f59f00',
-        warningBg:   isDark ? 'rgba(245,159,0,0.85)' : 'rgba(245,159,0,0.8)'
-    };
-
-    var tooltipStyle = {
-        backgroundColor: isDark ? '#1e293b' : '#fff',
-        titleColor: isDark ? '#c8d3e0' : '#1a2234',
-        bodyColor: isDark ? '#c8d3e0' : '#1a2234',
-        borderColor: isDark ? '#2d3a4e' : '#e6e8eb',
-        borderWidth: 1,
-        cornerRadius: 6,
-        padding: 10,
-        displayColors: true,
-        boxPadding: 4
-    };
+    var gridColor = buildGridColor();
+    var COLORS = buildColors();
+    var tooltipStyle = buildTooltipStyle();
 
     // --- 24-Hour Timeline (stacked bar) ---
     var timelineChart = null;
@@ -545,7 +591,7 @@
                     timelineChart = new Chart(canvas, config);
                 }
             })
-            .catch(function() {});
+            .catch(function(err) { console.error('loadTimeline:', err); });
     }
 
     // --- Top Attack Types (horizontal bar) ---
@@ -671,7 +717,7 @@
                     attackChart = new Chart(canvas, config);
                 }
             })
-            .catch(function() {});
+            .catch(function(err) { console.error('loadAttackTypes:', err); });
     }
 
     // --- 30-Day Trend (line chart with filled area) ---
@@ -792,22 +838,51 @@
                     trendChart = new Chart(canvas, config);
                 }
             })
-            .catch(function() {});
+            .catch(function(err) { console.error('loadTrend:', err); });
     }
 
     // --- Load all charts and set up auto-refresh ---
-    loadTimeline();
-    loadAttackTypes();
-    loadTrend();
+    var _chartIntervals = [];
 
-    // Refresh charts every 60 seconds
-    setInterval(function() {
-        try { loadTimeline(); } catch(e) {}
-        try { loadAttackTypes(); } catch(e) {}
-    }, 60000);
+    function _startChartPolling() {
+        // Refresh theme-derived values in case theme changed since page load
+        gridColor    = buildGridColor();
+        COLORS       = buildColors();
+        tooltipStyle = buildTooltipStyle();
 
-    // Refresh trend every 5 minutes (daily data doesn't change fast)
-    setInterval(function() {
-        try { loadTrend(); } catch(e) {}
-    }, 300000);
+        loadTimeline();
+        loadAttackTypes();
+        loadTrend();
+
+        // Refresh charts every 60 seconds
+        _chartIntervals.push(setInterval(function() {
+            try { loadTimeline(); } catch(e) { console.error('loadTimeline:', e); }
+            try { loadAttackTypes(); } catch(e) { console.error('loadAttackTypes:', e); }
+        }, 60000));
+
+        // Refresh trend every 5 minutes (daily data doesn't change fast)
+        _chartIntervals.push(setInterval(function() {
+            try { loadTrend(); } catch(e) { console.error('loadTrend:', e); }
+        }, 300000));
+    }
+
+    function _cleanupCharts() {
+        for (var i = 0; i < _chartIntervals.length; i++) clearInterval(_chartIntervals[i]);
+        _chartIntervals = [];
+        if (timelineChart) { timelineChart.destroy(); timelineChart = null; }
+        if (attackChart) { attackChart.destroy(); attackChart = null; }
+        if (trendChart) { trendChart.destroy(); trendChart = null; }
+    }
+
+    window.addEventListener('beforeunload', _cleanupCharts);
+    document.addEventListener('visibilitychange', function() {
+        if (document.hidden) {
+            for (var i = 0; i < _chartIntervals.length; i++) clearInterval(_chartIntervals[i]);
+            _chartIntervals = [];
+        } else {
+            _startChartPolling();
+        }
+    });
+
+    _startChartPolling();
 })();
