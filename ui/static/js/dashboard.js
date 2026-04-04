@@ -164,6 +164,17 @@
     if (serverItems.length > 0) {
         lastPollTimestamp = serverItems[0].getAttribute('data-ts') || '';
     }
+    function _setPollStatus(ok, err) {
+        var dot = document.getElementById('poll-status-dot');
+        if (!dot) return;
+        if (ok) {
+            dot.className = 'status-dot bg-yellow';
+            dot.title = 'Polling active';
+        } else {
+            dot.className = 'status-dot bg-red';
+            dot.title = 'Polling failed' + (err ? ': ' + err : '');
+        }
+    }
     function pollFindings() {
         fetch(CSM.apiUrl('/api/v1/history?limit=10&offset=0'), { credentials: 'same-origin' })
             .then(function(r) { return r.json(); })
@@ -180,8 +191,12 @@
                     }
                 }
                 lastPollTimestamp = maxTs;
+                _setPollStatus(true);
             })
-            .catch(function(err) { console.error('pollFindings:', err); });
+            .catch(function(err) {
+                console.error('pollFindings:', err);
+                _setPollStatus(false, err);
+            });
     }
 
     function addEntry(f) {
