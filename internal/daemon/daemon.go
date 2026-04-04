@@ -418,6 +418,8 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 			continue // informational, visible on findings page
 		case "email_dkim_failure", "email_spf_rejection":
 			continue // operational email auth issues — visible on findings page
+		case "email_auth_failure_realtime", "pam_bruteforce", "exim_frozen_realtime":
+			continue // failed logins and frozen bounces — informational, no action needed
 		}
 		alertable = append(alertable, f)
 	}
