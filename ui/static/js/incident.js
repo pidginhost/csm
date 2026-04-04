@@ -35,6 +35,7 @@
 
         var html = '<div class="card-body">';
         html += '<div class="text-muted small mb-3">' + events.length + ' events found</div>';
+        html += '<button class="btn btn-ghost-secondary btn-sm mb-3" id="incident-export"><i class="ti ti-download"></i>&nbsp;Export CSV</button>';
         html += '<div class="timeline-list">';
 
         for (var i = 0; i < events.length; i++) {
@@ -57,11 +58,38 @@
 
         html += '</div></div>';
         container.innerHTML = html;
+
+        var exportBtn = document.getElementById('incident-export');
+        if (exportBtn) {
+            exportBtn.addEventListener('click', function() {
+                var lines = ['Timestamp,Severity,Type,Summary,Details'];
+                for (var j = 0; j < events.length; j++) {
+                    var ev = events[j];
+                    lines.push([
+                        '"' + (ev.timestamp || '').replace(/"/g, '""') + '"',
+                        '"' + (sevLabels[ev.severity] || 'WARNING') + '"',
+                        '"' + (ev.type || '').replace(/"/g, '""') + '"',
+                        '"' + (ev.summary || '').replace(/"/g, '""') + '"',
+                        '"' + (ev.details || '').replace(/"/g, '""') + '"'
+                    ].join(','));
+                }
+                var blob = new Blob([lines.join('\n')], {type: 'text/csv'});
+                var url = URL.createObjectURL(blob);
+                var a = document.createElement('a');
+                a.href = url; a.download = 'csm-incident-' + new Date().toISOString().slice(0,10) + '.csv';
+                document.body.appendChild(a); a.click(); document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            });
+        }
     }
 
     document.getElementById('incident-search-btn').addEventListener('click', loadIncident);
     document.getElementById('incident-query').addEventListener('keydown', function(e) {
         if (e.key === 'Enter') loadIncident();
+    });
+    document.getElementById('incident-hours').addEventListener('change', function() {
+        var query = document.getElementById('incident-query').value.trim();
+        if (query) loadIncident();
     });
 
     // Check URL params for pre-populated search
