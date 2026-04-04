@@ -49,24 +49,65 @@ fetch(CSM.apiUrl('/api/v1/threat/stats'),{credentials:'same-origin'}).then(check
     html+='</table>';
     typesDiv.innerHTML=html;
 
-    // Hourly chart (simple SVG bars)
+    // Hourly chart (Chart.js)
     var hourlyDiv=document.getElementById('chart-hourly');
     var buckets=data.hourly_buckets||[];
-    if(buckets.length===0){hourlyDiv.innerHTML='<p class="text-muted">No recent data</p>';return;}
-    var maxH=Math.max.apply(null,buckets)||1;
-    var svgW=hourlyDiv.offsetWidth||500,svgH=180,barW=Math.floor((svgW-20)/24),pad=2;
-    var svg='<svg width="'+svgW+'" height="'+svgH+'" style="display:block">';
-    for(var h=0;h<24;h++){
-        var barH=Math.round(buckets[h]/maxH*(svgH-30));
-        var x=10+h*barW;
-        var y=svgH-25-barH;
-        svg+='<rect x="'+x+'" y="'+y+'" width="'+(barW-pad)+'" height="'+barH+'" fill="var(--tblr-primary)" rx="2">';
-        svg+='<title>'+(24-h)+'h ago: '+buckets[h]+' events</title></rect>';
+    if(buckets.length===0){hourlyDiv.textContent='No recent data';return;}
+    // Replace div with canvas if needed
+    var canvas=hourlyDiv.querySelector('canvas');
+    if(!canvas){
+        hourlyDiv.textContent='';
+        canvas=document.createElement('canvas');
+        hourlyDiv.appendChild(canvas);
     }
-    svg+='<text x="10" y="'+(svgH-5)+'" font-size="11" fill="var(--tblr-muted)">24h ago</text>';
-    svg+='<text x="'+(svgW-40)+'" y="'+(svgH-5)+'" font-size="11" fill="var(--tblr-muted)">Now</text>';
-    svg+='</svg>';
-    hourlyDiv.innerHTML=svg;
+    var labels=[];
+    for(var h=0;h<buckets.length;h++){
+        labels.push((buckets.length-h)+'h');
+    }
+    var isDark=document.documentElement.classList.contains('theme-dark');
+    var gridColor=isDark?'rgba(45,58,78,0.6)':'rgba(230,232,235,0.8)';
+    if(window._csmThreatHourlyChart){
+        window._csmThreatHourlyChart.data.labels=labels;
+        window._csmThreatHourlyChart.data.datasets[0].data=buckets;
+        window._csmThreatHourlyChart.update();
+    } else {
+        window._csmThreatHourlyChart=new Chart(canvas,{
+            type:'bar',
+            data:{
+                labels:labels,
+                datasets:[{
+                    label:'Events',
+                    data:buckets,
+                    backgroundColor:isDark?'rgba(66,153,225,0.7)':'rgba(66,153,225,0.6)',
+                    borderColor:'#4299e1',
+                    borderWidth:1,
+                    borderRadius:2
+                }]
+            },
+            options:{
+                responsive:true,
+                maintainAspectRatio:false,
+                plugins:{
+                    legend:{display:false},
+                    tooltip:{
+                        backgroundColor:isDark?'#1e293b':'#fff',
+                        titleColor:isDark?'#c8d3e0':'#1a2234',
+                        bodyColor:isDark?'#c8d3e0':'#1a2234',
+                        borderColor:isDark?'#2d3a4e':'#e6e8eb',
+                        borderWidth:1,
+                        callbacks:{
+                            title:function(items){return items[0].label+' ago';},
+                            label:function(ctx){return ctx.parsed.y+' events';}
+                        }
+                    }
+                },
+                scales:{
+                    x:{grid:{display:false},ticks:{maxRotation:0,callback:function(v,i){return i%4===0?this.getLabelForValue(v):'';}}},
+                    y:{beginAtZero:true,grid:{color:gridColor},ticks:{precision:0}}
+                }
+            }
+        });
+    }
 }).catch(function(err){ console.error('threat stats:', err); CSM.loadError(document.getElementById('chart-types'), function(){ location.reload(); }); });
 
 // Load top attackers
