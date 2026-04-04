@@ -395,22 +395,22 @@ function suppressFinding(check, message, filePath) {
         var m = message.match(/:\s*(\/\S+)/);
         if (m) defaultPath = m[1];
     }
-    var reason = prompt('Reason for suppression (optional):');
-    if (reason === null) return; // cancelled
-    var pathPattern = prompt('Path pattern to match (optional, e.g. /home/user/site/*):', defaultPath);
-    if (pathPattern === null) return; // cancelled
-    CSM.post('/api/v1/suppressions', {
-        check: check,
-        path_pattern: pathPattern,
-        reason: reason || 'Suppressed from findings page'
-    }).then(function(data) {
-        if (data.status === 'created') {
-            CSM.toast('Suppression rule created', 'success');
-            clearAndReload();
-        } else {
-            CSM.toast('Failed: ' + (data.error || 'unknown'), 'error');
-        }
-    }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+    CSM.prompt('Reason for suppression (optional):', '').then(function(reason) {
+        CSM.prompt('Path pattern to match (optional, e.g. /home/user/site/*):', defaultPath).then(function(pathPattern) {
+            CSM.post('/api/v1/suppressions', {
+                check: check,
+                path_pattern: pathPattern,
+                reason: reason || 'Suppressed from findings page'
+            }).then(function(data) {
+                if (data.status === 'created') {
+                    CSM.toast('Suppression rule created', 'success');
+                    clearAndReload();
+                } else {
+                    CSM.toast('Failed: ' + (data.error || 'unknown'), 'error');
+                }
+            }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+        }).catch(function() { /* cancelled */ });
+    }).catch(function() { /* cancelled */ });
 }
 
 // --- Bulk actions ---
@@ -439,10 +439,21 @@ function bulkAction(action) {
 
     } else if (action === 'dismiss') {
         CSM.confirm('Dismiss ' + items.length + ' finding(s)?').then(function() {
-            var promises = items.map(function(i) {
-                return CSM.post('/api/v1/dismiss', { key: i.check + ':' + i.message });
+            var succeeded = 0, failed = 0;
+            var chain = Promise.resolve();
+            items.forEach(function(i) {
+                chain = chain.then(function() {
+                    return CSM.post('/api/v1/dismiss', { key: i.check + ':' + i.message })
+                        .then(function() { succeeded++; })
+                        .catch(function() { failed++; });
+                });
             });
-            Promise.all(promises).then(function() { clearAndReload(); }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+            chain.then(function() {
+                if (failed > 0) {
+                    CSM.toast('Dismissed ' + succeeded + ' of ' + (succeeded + failed) + ' (' + failed + ' failed)', 'warning');
+                }
+                clearAndReload();
+            });
         }).catch(function() {});
 
     } else if (action === 'quarantine') {
