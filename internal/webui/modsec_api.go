@@ -352,6 +352,20 @@ var csmRuleDescriptions = map[string]string{
 	"900116": "Blocked scanner probe",
 	"900120": "Blocked wp-coder preview endpoint",
 	"900121": "Blocked wp-coder attributes endpoint",
+	// OWASP CRS common rules
+	"210710": "OWASP: HTTP Request Smuggling",
+	"210381": "OWASP: HTTP Request Smuggling",
+	"214930": "OWASP: Protocol enforcement",
+	"218420": "OWASP: Request content type restriction",
+	"920170": "OWASP: Validate GET/HEAD request",
+	"920420": "OWASP: Request content type is not allowed by policy",
+	"920600": "OWASP: Illegal Accept header",
+	"930100": "OWASP: Path traversal attack",
+	"930110": "OWASP: Path traversal attack",
+	"930120": "OWASP: OS file access attempt",
+	"941100": "OWASP: XSS attack detected via libinjection",
+	"941160": "OWASP: XSS Filter - Category 1",
+	"942100": "OWASP: SQL injection attack detected via libinjection",
 }
 
 func extractModSecDescription(f alert.Finding) string {
