@@ -510,33 +510,42 @@
                 }
 
                 var config = {
-                    type: 'bar',
+                    type: 'line',
                     data: {
                         labels: labels,
                         datasets: [
                             {
                                 label: 'Critical',
                                 data: critData,
-                                backgroundColor: COLORS.criticalBg,
                                 borderColor: COLORS.critical,
-                                borderWidth: 1,
-                                borderRadius: 2
+                                backgroundColor: 'rgba(214,57,57,0.18)',
+                                fill: 'origin',
+                                tension: 0.3,
+                                pointRadius: 2,
+                                pointHoverRadius: 5,
+                                borderWidth: 2
                             },
                             {
                                 label: 'High',
                                 data: highData,
-                                backgroundColor: COLORS.highBg,
                                 borderColor: COLORS.high,
-                                borderWidth: 1,
-                                borderRadius: 2
+                                backgroundColor: 'rgba(247,103,7,0.14)',
+                                fill: 'origin',
+                                tension: 0.3,
+                                pointRadius: 2,
+                                pointHoverRadius: 5,
+                                borderWidth: 2
                             },
                             {
                                 label: 'Warning',
                                 data: warnData,
-                                backgroundColor: COLORS.warningBg,
                                 borderColor: COLORS.warning,
-                                borderWidth: 1,
-                                borderRadius: 2
+                                backgroundColor: 'rgba(245,159,0,0.10)',
+                                fill: 'origin',
+                                tension: 0.3,
+                                pointRadius: 2,
+                                pointHoverRadius: 5,
+                                borderWidth: 2
                             }
                         ]
                     },
@@ -548,6 +557,17 @@
                             intersect: false
                         },
                         plugins: {
+                            legend: {
+                                display: true,
+                                position: 'top',
+                                labels: {
+                                    boxWidth: 10,
+                                    boxHeight: 10,
+                                    usePointStyle: true,
+                                    pointStyle: 'circle',
+                                    padding: 16
+                                }
+                            },
                             tooltip: Object.assign({}, tooltipStyle, {
                                 callbacks: {
                                     title: function(items) {
@@ -563,7 +583,6 @@
                         },
                         scales: {
                             x: {
-                                stacked: true,
                                 grid: { display: false },
                                 ticks: {
                                     maxRotation: 0,
