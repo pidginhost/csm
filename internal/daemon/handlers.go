@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
-	"github.com/pidginhost/cpanel-security-monitor/internal/config"
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 )
 
 // Enhanced access_log handler — catches File Manager, API failures,

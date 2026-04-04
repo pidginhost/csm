@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/signatures"
-	"github.com/pidginhost/cpanel-security-monitor/internal/store"
-	"github.com/pidginhost/cpanel-security-monitor/internal/yara"
+	"github.com/pidginhost/csm/internal/signatures"
+	"github.com/pidginhost/csm/internal/store"
+	"github.com/pidginhost/csm/internal/yara"
 )
 
 func (s *Server) handleRules(w http.ResponseWriter, _ *http.Request) {

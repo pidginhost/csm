@@ -1,5 +1,5 @@
-# cPanel Security Monitor configuration
-# Full documentation: https://git.pidginhost.net/pidginhost/cpanel-security-monitor
+# Continuous Security Monitor configuration
+# Full documentation: https://git.pidginhost.net/pidginhost/csm
 
 hostname: "SET_HOSTNAME_HERE"
 

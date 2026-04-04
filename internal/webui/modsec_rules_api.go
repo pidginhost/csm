@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/modsec"
-	"github.com/pidginhost/cpanel-security-monitor/internal/store"
+	"github.com/pidginhost/csm/internal/modsec"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 func (s *Server) handleModSecRules(w http.ResponseWriter, _ *http.Request) {

@@ -5,7 +5,7 @@ package daemon
 import (
 	"fmt"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
+	"github.com/pidginhost/csm/internal/alert"
 )
 
 // ForwarderWatcher is a no-op on non-Linux platforms.

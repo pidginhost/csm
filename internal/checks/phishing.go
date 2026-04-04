@@ -7,9 +7,9 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
-	"github.com/pidginhost/cpanel-security-monitor/internal/config"
-	"github.com/pidginhost/cpanel-security-monitor/internal/state"
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/state"
 )
 
 const phishingReadSize = 16384 // Read first 16KB — phishing pages are self-contained

@@ -10,15 +10,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
-	"github.com/pidginhost/cpanel-security-monitor/internal/checks"
-	"github.com/pidginhost/cpanel-security-monitor/internal/config"
-	"github.com/pidginhost/cpanel-security-monitor/internal/daemon"
-	"github.com/pidginhost/cpanel-security-monitor/internal/geoip"
-	"github.com/pidginhost/cpanel-security-monitor/internal/integrity"
-	"github.com/pidginhost/cpanel-security-monitor/internal/signatures"
-	"github.com/pidginhost/cpanel-security-monitor/internal/state"
-	"github.com/pidginhost/cpanel-security-monitor/internal/store"
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/daemon"
+	"github.com/pidginhost/csm/internal/geoip"
+	"github.com/pidginhost/csm/internal/integrity"
+	"github.com/pidginhost/csm/internal/signatures"
+	"github.com/pidginhost/csm/internal/state"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // activeStore holds a reference to the current store for signal handling.
@@ -116,7 +116,7 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Fprintf(os.Stderr, `csm — cPanel Security Monitor
+	fmt.Fprintf(os.Stderr, `csm — Continuous Security Monitor
 
 Usage: csm <command>
 

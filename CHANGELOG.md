@@ -98,5 +98,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Infra IP protection: daemon refuses to block infrastructure CIDRs
 - Commit-confirmed firewall apply with auto-rollback timer
 
-[Unreleased]: https://github.com/your-org/cpanel-security-monitor/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/your-org/cpanel-security-monitor/releases/tag/v1.0.0
+[Unreleased]: https://github.com/pidginhost/csm/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/pidginhost/csm/releases/tag/v1.0.0

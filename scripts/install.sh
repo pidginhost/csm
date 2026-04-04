@@ -1,5 +1,5 @@
 #!/bin/bash
-# cPanel Security Monitor — Standalone Installer
+# Continuous Security Monitor — Standalone Installer
 #
 # Quick install:
 #   curl -sSL https://get.pidginhost.com/csm | bash -s -- --token YOUR_TOKEN
@@ -10,7 +10,7 @@ set -euo pipefail
 
 # --- Defaults ---
 GITLAB_HOST="git.pidginhost.net"
-PROJECT_ENCODED="pidginhost%2Fcpanel-security-monitor"
+PROJECT_ENCODED="pidginhost%2Fcsm"
 PKG_BASE="https://${GITLAB_HOST}/api/v4/projects/${PROJECT_ENCODED}/packages/generic/csm"
 INSTALL_DIR="/opt/csm"
 BINARY_PATH="${INSTALL_DIR}/csm"
@@ -85,7 +85,7 @@ get_token() {
     echo ""
     echo "  A GitLab deploy token is needed to download CSM."
     echo "  Create one at:"
-    echo "    https://${GITLAB_HOST}/pidginhost/cpanel-security-monitor/-/settings/repository"
+    echo "    https://${GITLAB_HOST}/pidginhost/csm/-/settings/repository"
     echo "    -> Deploy tokens -> Scopes: read_package_registry"
     echo ""
     local token=""
@@ -146,7 +146,7 @@ pkg_download() {
 
 echo ""
 echo "  ====================================="
-echo "   CSM - cPanel Security Monitor"
+echo "   CSM - Continuous Security Monitor"
 echo "  ====================================="
 echo ""
 

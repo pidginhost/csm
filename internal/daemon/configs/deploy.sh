@@ -1,5 +1,5 @@
 #!/bin/bash
-# cPanel Security Monitor — Secure deploy from GitLab Package Registry
+# Continuous Security Monitor — Secure deploy from GitLab Package Registry
 #
 # Downloads the latest binary + SHA256 checksum, verifies integrity,
 # and installs or upgrades.
@@ -17,7 +17,7 @@
 set -euo pipefail
 
 GITLAB_HOST="git.pidginhost.net"
-PROJECT_ENCODED="pidginhost%2Fcpanel-security-monitor"
+PROJECT_ENCODED="pidginhost%2Fcsm"
 API_BASE="https://${GITLAB_HOST}/api/v4/projects/${PROJECT_ENCODED}"
 PKG_BASE="${API_BASE}/packages/generic/csm"
 BINARY_NAME="csm"
@@ -52,7 +52,7 @@ get_token() {
     die "No GitLab token found. Set GITLAB_TOKEN env var or create ${TOKEN_FILE}
 
 Create a PROJECT DEPLOY TOKEN at:
-  https://${GITLAB_HOST}/pidginhost/cpanel-security-monitor/-/settings/repository
+  https://${GITLAB_HOST}/pidginhost/csm/-/settings/repository
   -> Deploy tokens
   -> Name: csm-deploy-\$(hostname)
   -> Scopes: read_package_registry ONLY"
@@ -204,7 +204,7 @@ start_services() {
 do_install() {
     if [ "$(id -u)" -ne 0 ]; then die "Must be run as root"; fi
 
-    echo "=== cPanel Security Monitor — Install ==="
+    echo "=== Continuous Security Monitor — Install ==="
     echo ""
     detect_auth_header
 
@@ -229,7 +229,7 @@ do_upgrade() {
     if [ "$(id -u)" -ne 0 ]; then die "Must be run as root"; fi
     if [ ! -f "$BINARY_PATH" ]; then die "CSM not installed. Run: $0 install"; fi
 
-    echo "=== cPanel Security Monitor — Upgrade ==="
+    echo "=== Continuous Security Monitor — Upgrade ==="
     echo ""
     detect_auth_header
 
@@ -352,7 +352,7 @@ case "${1:-}" in
     upgrade)  do_upgrade ;;
     check)    do_check ;;
     *)
-        echo "cPanel Security Monitor — Deploy"
+        echo "Continuous Security Monitor — Deploy"
         echo ""
         echo "Usage:"
         echo "  $0 install     Install latest"

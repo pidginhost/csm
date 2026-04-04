@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/config"
+	"github.com/pidginhost/csm/internal/config"
 )
 
 // Severity levels for findings.
@@ -111,7 +111,7 @@ func FormatAlert(hostname string, findings []Finding) string {
 	}
 
 	b.WriteString(strings.Repeat("─", 60) + "\n")
-	b.WriteString("CSM — cPanel Security Monitor\n")
+	b.WriteString("CSM — Continuous Security Monitor\n")
 
 	return b.String()
 }

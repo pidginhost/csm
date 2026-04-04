@@ -16,10 +16,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
-	"github.com/pidginhost/cpanel-security-monitor/internal/checks"
-	"github.com/pidginhost/cpanel-security-monitor/internal/state"
-	"github.com/pidginhost/cpanel-security-monitor/internal/store"
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/state"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 var reIPReputation = regexp.MustCompile(`Known malicious IP accessing server: (\S+) \((.+)\)`)

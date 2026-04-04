@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/config"
+	"github.com/pidginhost/csm/internal/config"
 )
 
 func httpClient(timeout time.Duration) *http.Client {

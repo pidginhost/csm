@@ -1,10 +1,10 @@
-# CSM — cPanel Security Monitor
+# CSM — Continuous Security Monitor
 
 ## Project Overview
 
 CSM is a real-time security monitoring daemon for cPanel/WHM servers. It watches log files, filesystem events (fanotify), and system state to detect attacks, webshells, brute force, phishing kits, and malware — then auto-responds (block IPs, quarantine files, kill processes) and alerts operators via email, webhooks, and a web dashboard.
 
-**Module:** `github.com/pidginhost/cpanel-security-monitor`
+**Module:** `github.com/pidginhost/csm`
 **Language:** Go 1.26+ (single binary, CGO optional for YARA-X)
 **Target OS:** Linux (cPanel/WHM servers — CentOS, AlmaLinux, CloudLinux)
 **Binary name:** `csm`
@@ -84,7 +84,7 @@ The CI pipeline builds, tests, lints, packages, and publishes. Production server
 
 ### Go
 - **Linter config:** `.golangci.yml` — errcheck, govet, staticcheck, unused, ineffassign, gocritic, misspell, bodyclose, nilerr
-- **Imports:** stdlib → blank line → third-party → blank line → internal packages. Use `goimports` with `-local github.com/pidginhost/cpanel-security-monitor`
+- **Imports:** stdlib → blank line → third-party → blank line → internal packages. Use `goimports` with `-local github.com/pidginhost/csm`
 - **Error handling:** Return errors up the call stack. Use `fmt.Errorf("context: %w", err)` for wrapping
 - **Store pattern:** `store.Global()` returns the singleton bbolt DB. Nil-safe — always check `if db := store.Global(); db != nil`
 - **State pattern:** `state.Store` is the in-memory findings/stats store, passed to subsystems at init

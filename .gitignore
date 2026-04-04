@@ -30,3 +30,6 @@ Thumbs.db
 *.o
 *.a
 *.so
+
+# mdBook output
+docs/book/

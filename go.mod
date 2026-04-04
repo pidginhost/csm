@@ -1,4 +1,4 @@
-module github.com/pidginhost/cpanel-security-monitor
+module github.com/pidginhost/csm
 
 go 1.26.1
 

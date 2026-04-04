@@ -3,7 +3,7 @@ package daemon
 import (
 	"testing"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/config"
+	"github.com/pidginhost/csm/internal/config"
 )
 
 func TestParseDovecotUser(t *testing.T) {

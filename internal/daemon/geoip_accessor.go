@@ -4,7 +4,7 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/geoip"
+	"github.com/pidginhost/csm/internal/geoip"
 )
 
 // daemonGeoIPDB is a package-level pointer to the GeoIP database, set once

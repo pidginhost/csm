@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/config"
+	"github.com/pidginhost/csm/internal/config"
 )
 
 // IPUnblocker is the interface for temporarily allowing an IP.

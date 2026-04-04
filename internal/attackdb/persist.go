@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/store"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 const (

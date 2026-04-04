@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
-	"github.com/pidginhost/cpanel-security-monitor/internal/store"
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 func (s *Server) handleModSec(w http.ResponseWriter, _ *http.Request) {

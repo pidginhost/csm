@@ -5,8 +5,8 @@ package daemon
 import (
 	"fmt"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
-	"github.com/pidginhost/cpanel-security-monitor/internal/config"
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 )
 
 // FileMonitor stub for non-Linux platforms.

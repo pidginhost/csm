@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
-	"github.com/pidginhost/cpanel-security-monitor/internal/config"
-	"github.com/pidginhost/cpanel-security-monitor/internal/state"
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/state"
 )
 
 // perfEnabled returns false only if Performance.Enabled is explicitly set to false.

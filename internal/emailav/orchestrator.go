@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	emime "github.com/pidginhost/cpanel-security-monitor/internal/mime"
+	emime "github.com/pidginhost/csm/internal/mime"
 )
 
 // Orchestrator runs multiple scanners in parallel against extracted email parts.

@@ -1,4 +1,4 @@
-## cPanel Security Monitor — auditd rules
+## Continuous Security Monitor — auditd rules
 
 # Password/auth file changes
 -w /etc/shadow -p wa -k csm_shadow_change

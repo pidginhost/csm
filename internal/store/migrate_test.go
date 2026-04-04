@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
+	"github.com/pidginhost/csm/internal/alert"
 )
 
 func TestMigrateHistoryJSONL(t *testing.T) {

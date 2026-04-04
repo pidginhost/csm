@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/attackdb"
-	"github.com/pidginhost/cpanel-security-monitor/internal/checks"
-	"github.com/pidginhost/cpanel-security-monitor/internal/threat"
+	"github.com/pidginhost/csm/internal/attackdb"
+	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/threat"
 )
 
 func (s *Server) handleThreat(w http.ResponseWriter, _ *http.Request) {

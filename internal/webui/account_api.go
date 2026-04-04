@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/checks"
+	"github.com/pidginhost/csm/internal/checks"
 )
 
 func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {

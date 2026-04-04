@@ -5,7 +5,7 @@ import (
 	"net"
 	"net/http"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/geoip"
+	"github.com/pidginhost/csm/internal/geoip"
 )
 
 // SetGeoIPDB sets the GeoIP database for IP lookups.

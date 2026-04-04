@@ -6,9 +6,9 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/auditd"
-	"github.com/pidginhost/cpanel-security-monitor/internal/config"
-	"github.com/pidginhost/cpanel-security-monitor/internal/modsec"
+	"github.com/pidginhost/csm/internal/auditd"
+	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/modsec"
 )
 
 type Installer struct {
@@ -19,7 +19,7 @@ type Installer struct {
 }
 
 func (inst *Installer) Install() error {
-	fmt.Println("=== cPanel Security Monitor — Install ===")
+	fmt.Println("=== Continuous Security Monitor — Install ===")
 
 	if os.Getuid() != 0 {
 		return fmt.Errorf("install must be run as root")
@@ -119,7 +119,7 @@ func (inst *Installer) Install() error {
 }
 
 func (inst *Installer) Uninstall() error {
-	fmt.Println("=== cPanel Security Monitor — Uninstall ===")
+	fmt.Println("=== Continuous Security Monitor — Uninstall ===")
 
 	if os.Getuid() != 0 {
 		return fmt.Errorf("uninstall must be run as root")
@@ -193,8 +193,8 @@ func deployDefaultConfig(path string) error {
 		return err
 	}
 
-	content := `# cPanel Security Monitor configuration
-# Documentation: https://github.com/pidginhost/cpanel-security-monitor
+	content := `# Continuous Security Monitor configuration
+# Documentation: https://github.com/pidginhost/csm
 
 hostname: "SET_HOSTNAME_HERE"
 
@@ -386,7 +386,7 @@ backdoor_ports:
 func deploySystemdTimer() error {
 	// Critical checks — fast, every 10 minutes
 	critService := `[Unit]
-Description=cPanel Security Monitor — Critical Checks
+Description=Continuous Security Monitor — Critical Checks
 After=network.target
 
 [Service]
@@ -409,7 +409,7 @@ WantedBy=timers.target
 
 	// Deep checks — filesystem scans, every 60 minutes
 	deepService := `[Unit]
-Description=cPanel Security Monitor — Deep Scan
+Description=Continuous Security Monitor — Deep Scan
 After=network.target
 
 [Service]
@@ -446,7 +446,7 @@ WantedBy=timers.target
 
 	// Deploy daemon service unit (recommended mode)
 	daemonService := fmt.Sprintf(`[Unit]
-Description=CSM — cPanel Security Monitor Daemon
+Description=CSM — Continuous Security Monitor Daemon
 After=network.target
 
 [Service]

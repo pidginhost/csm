@@ -34,7 +34,7 @@ vet:
 # Format code
 fmt:
 	gofmt -w -s .
-	@test -f $(GOBIN)/goimports && $(GOBIN)/goimports -w -local github.com/pidginhost/cpanel-security-monitor . || true
+	@test -f $(GOBIN)/goimports && $(GOBIN)/goimports -w -local github.com/pidginhost/csm . || true
 
 # Check formatting (fails if not formatted)
 fmt-check:

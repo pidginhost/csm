@@ -42,7 +42,7 @@ formatters:
 
 formatters-settings:
   goimports:
-    local-prefixes: github.com/pidginhost/cpanel-security-monitor
+    local-prefixes: github.com/pidginhost/csm
 
 issues:
   exclude-use-default: false

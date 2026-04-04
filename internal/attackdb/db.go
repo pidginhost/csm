@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
+	"github.com/pidginhost/csm/internal/alert"
 )
 
 // AttackType categorises observed attacks for grouping and scoring.

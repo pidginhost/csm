@@ -9,7 +9,7 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/firewall"
+	"github.com/pidginhost/csm/internal/firewall"
 )
 
 // apiFirewallStatus returns the firewall engine configuration and state summary.

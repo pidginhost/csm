@@ -6,8 +6,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
-	"github.com/pidginhost/cpanel-security-monitor/internal/checks"
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 )
 
 func (s *Server) renderTemplate(w http.ResponseWriter, name string, data interface{}) {

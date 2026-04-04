@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
-	"github.com/pidginhost/cpanel-security-monitor/internal/attackdb"
-	"github.com/pidginhost/cpanel-security-monitor/internal/config"
-	"github.com/pidginhost/cpanel-security-monitor/internal/state"
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/attackdb"
+	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/state"
 )
 
 // CheckLocalThreatScore generates findings for IPs that have accumulated

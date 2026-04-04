@@ -1,5 +1,5 @@
 [Unit]
-Description=cPanel Security Monitor — Deep Scan
+Description=Continuous Security Monitor — Deep Scan
 After=network.target
 
 [Service]

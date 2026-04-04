@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/state"
+	"github.com/pidginhost/csm/internal/state"
 )
 
 func (s *Server) apiSuppressions(w http.ResponseWriter, r *http.Request) {

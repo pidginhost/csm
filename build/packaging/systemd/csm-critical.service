@@ -1,5 +1,5 @@
 [Unit]
-Description=cPanel Security Monitor — Critical Checks
+Description=Continuous Security Monitor — Critical Checks
 After=network.target
 
 [Service]

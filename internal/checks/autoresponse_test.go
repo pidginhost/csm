@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
+	"github.com/pidginhost/csm/internal/alert"
 )
 
 func TestExtractCategory(t *testing.T) {

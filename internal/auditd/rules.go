@@ -7,7 +7,7 @@ import (
 
 const rulesPath = "/etc/audit/rules.d/csm.rules"
 
-const rules = `## cPanel Security Monitor — auditd rules
+const rules = `## Continuous Security Monitor — auditd rules
 
 # Password/auth file changes
 -w /etc/shadow -p wa -k csm_shadow_change

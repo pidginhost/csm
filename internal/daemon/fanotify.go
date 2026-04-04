@@ -15,12 +15,12 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
-	"github.com/pidginhost/cpanel-security-monitor/internal/checks"
-	"github.com/pidginhost/cpanel-security-monitor/internal/config"
-	"github.com/pidginhost/cpanel-security-monitor/internal/signatures"
-	"github.com/pidginhost/cpanel-security-monitor/internal/wpcheck"
-	"github.com/pidginhost/cpanel-security-monitor/internal/yara"
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/signatures"
+	"github.com/pidginhost/csm/internal/wpcheck"
+	"github.com/pidginhost/csm/internal/yara"
 )
 
 // fanotify constants (not all in Go stdlib)

@@ -3,7 +3,7 @@ package checks
 import (
 	"testing"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/config"
+	"github.com/pidginhost/csm/internal/config"
 )
 
 func testPerfConfig() *config.Config {

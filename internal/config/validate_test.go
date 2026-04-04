@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/firewall"
+	"github.com/pidginhost/csm/internal/firewall"
 )
 
 func countLevel(results []ValidationResult, level string) int {

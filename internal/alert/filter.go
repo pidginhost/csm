@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/config"
+	"github.com/pidginhost/csm/internal/config"
 )
 
 // FilterBlockedAlerts removes reputation and auto-block alerts for IPs

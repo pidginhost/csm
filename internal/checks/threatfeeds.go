@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/store"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // ThreatDB is a local IP reputation database built from:

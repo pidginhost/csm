@@ -12,7 +12,7 @@
 **Clone and build:**
 ```bash
 git clone <repo>
-cd cpanel-security-monitor
+cd csm
 make build-linux        # cross-compile for Linux amd64
 ```
 

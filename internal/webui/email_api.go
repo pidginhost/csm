@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/emailav"
-	"github.com/pidginhost/cpanel-security-monitor/internal/yara"
+	"github.com/pidginhost/csm/internal/emailav"
+	"github.com/pidginhost/csm/internal/yara"
 )
 
 type emailStatsResponse struct {

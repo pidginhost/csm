@@ -19,11 +19,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
-	"github.com/pidginhost/cpanel-security-monitor/internal/config"
-	"github.com/pidginhost/cpanel-security-monitor/internal/emailav"
-	"github.com/pidginhost/cpanel-security-monitor/internal/geoip"
-	"github.com/pidginhost/cpanel-security-monitor/internal/state"
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/emailav"
+	"github.com/pidginhost/csm/internal/geoip"
+	"github.com/pidginhost/csm/internal/state"
 )
 
 // IPBlocker abstracts the firewall engine for block/unblock operations.

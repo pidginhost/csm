@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
+	"github.com/pidginhost/csm/internal/alert"
 	bolt "go.etcd.io/bbolt"
 )
 

@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/attackdb"
-	"github.com/pidginhost/cpanel-security-monitor/internal/checks"
-	"github.com/pidginhost/cpanel-security-monitor/internal/firewall"
-	"github.com/pidginhost/cpanel-security-monitor/internal/store"
+	"github.com/pidginhost/csm/internal/attackdb"
+	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // IPIntelligence is the complete picture of an IP from all sources.

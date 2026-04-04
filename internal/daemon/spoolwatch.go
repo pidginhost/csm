@@ -14,10 +14,10 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
-	"github.com/pidginhost/cpanel-security-monitor/internal/config"
-	"github.com/pidginhost/cpanel-security-monitor/internal/emailav"
-	emime "github.com/pidginhost/cpanel-security-monitor/internal/mime"
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/emailav"
+	emime "github.com/pidginhost/csm/internal/mime"
 )
 
 // fanotify constants for permission events (not in Go stdlib).

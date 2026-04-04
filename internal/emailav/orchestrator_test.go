@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	emime "github.com/pidginhost/cpanel-security-monitor/internal/mime"
+	emime "github.com/pidginhost/csm/internal/mime"
 )
 
 // mockScanner implements Scanner for testing.

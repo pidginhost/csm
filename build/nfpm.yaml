@@ -2,8 +2,8 @@ name: csm
 arch: "${ARCH}"
 version: "${VERSION}"
 maintainer: "PidginHost <support@pidginhost.com>"
-description: "cPanel Security Monitor — real-time server security for cPanel/WHM"
-homepage: "https://git.pidginhost.net/pidginhost/cpanel-security-monitor"
+description: "Continuous Security Monitor — real-time server security for cPanel/WHM"
+homepage: "https://git.pidginhost.net/pidginhost/csm"
 license: "Proprietary"
 vendor: "PidginHost"
 

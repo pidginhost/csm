@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/config"
+	"github.com/pidginhost/csm/internal/config"
 )
 
 // HashFile returns the SHA256 hash of a file.

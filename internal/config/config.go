@@ -6,7 +6,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/pidginhost/cpanel-security-monitor/internal/firewall"
+	"github.com/pidginhost/csm/internal/firewall"
 )
 
 type Config struct {
