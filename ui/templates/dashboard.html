@@ -90,8 +90,8 @@
                 <span class="d-inline-flex align-items-center text-nowrap" style="font-size:.8125rem;color:var(--tblr-muted)"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#f59f00;margin-right:4px"></span>Warning</span>
             </div>
         </div>
-        <div class="card-body py-3" style="position:relative">
-            <canvas id="timeline-chart" height="160"></canvas>
+        <div class="card-body py-3" style="position:relative;height:180px">
+            <canvas id="timeline-chart"></canvas>
         </div>
     </div>
 
@@ -131,8 +131,8 @@
                 <div class="card-header">
                     <h3 class="card-title"><i class="ti ti-chart-bar-popular"></i>&nbsp;Top Attack Types</h3>
                 </div>
-                <div class="card-body">
-                    <canvas id="attack-types-chart" height="200"></canvas>
+                <div class="card-body" style="position:relative;height:280px">
+                    <canvas id="attack-types-chart"></canvas>
                 </div>
             </div>
         </div>
@@ -167,8 +167,8 @@
 
     <div class="card mb-3">
         <div class="card-header"><h3 class="card-title"><i class="ti ti-chart-line"></i>&nbsp;30-Day Trend</h3></div>
-        <div class="card-body py-3" style="min-height:160px">
-            <canvas id="trend-chart" height="160"></canvas>
+        <div class="card-body py-3" style="position:relative;height:180px">
+            <canvas id="trend-chart"></canvas>
         </div>
     </div>
 {{end}}
