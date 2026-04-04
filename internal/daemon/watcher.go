@@ -2,10 +2,12 @@ package daemon
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -281,10 +283,14 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 		if sender == "" {
 			sender = extractEximSender(line) // fallback
 		}
+		// Auto-suspend: confirmed spam — hold outgoing mail for the cPanel account
+		if sender != "" {
+			autoSuspendOutgoingMail(sender)
+		}
 		findings = append(findings, alert.Finding{
 			Severity: alert.Critical,
 			Check:    "email_compromised_account",
-			Message:  fmt.Sprintf("Account %s has outgoing mail hold (spam detected by cPanel)", sender),
+			Message:  fmt.Sprintf("Account %s has outgoing mail hold — outgoing mail auto-suspended", sender),
 			Details:  truncateDaemon(line, 300),
 		})
 		domain := extractDomainFromEmail(sender)
@@ -296,10 +302,12 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 	// 3. Max defers/failures exceeded — active spam outbreak
 	if strings.Contains(line, "max defers and failures per hour") {
 		domain := extractEximDomain(line)
+		// Auto-suspend: confirmed spam outbreak
+		autoSuspendOutgoingMail(domain)
 		findings = append(findings, alert.Finding{
 			Severity: alert.Critical,
 			Check:    "email_spam_outbreak",
-			Message:  fmt.Sprintf("Spam outbreak: %s exceeded max defers/failures per hour", domain),
+			Message:  fmt.Sprintf("Spam outbreak: %s exceeded max defers/failures — outgoing mail auto-suspended", domain),
 			Details:  truncateDaemon(line, 300),
 		})
 		if domain != "" {
@@ -553,10 +561,68 @@ func mergeInfraIPs(topLevel, fwSpecific []string) []string {
 	return merged
 }
 
+// autoSuspendOutgoingMail calls whmapi1 to hold outgoing mail for the cPanel
+// account that owns the given domain or email address. This is safe to call
+// on confirmed spam (cPanel already flagged it via mail hold or max defers).
+func autoSuspendOutgoingMail(domainOrEmail string) {
+	if domainOrEmail == "" {
+		return
+	}
+	// Extract domain from email if needed
+	domain := domainOrEmail
+	if atIdx := strings.LastIndexByte(domain, '@'); atIdx >= 0 {
+		domain = domain[atIdx+1:]
+	}
+	// Look up cPanel username for this domain
+	user := lookupCPanelUser(domain)
+	if user == "" {
+		fmt.Fprintf(os.Stderr, "[%s] auto-suspend: could not find cPanel user for domain %s\n",
+			time.Now().Format("2006-01-02 15:04:05"), domain)
+		return
+	}
+	// Hold outgoing mail
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "whmapi1", "hold_outgoing_email", "user="+user).CombinedOutput()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] auto-suspend: whmapi1 hold_outgoing_email failed for %s: %v\n%s\n",
+			time.Now().Format("2006-01-02 15:04:05"), user, err, string(out))
+		return
+	}
+	fmt.Fprintf(os.Stderr, "[%s] AUTO-SUSPEND: outgoing mail held for cPanel user %s (domain: %s)\n",
+		time.Now().Format("2006-01-02 15:04:05"), user, domain)
+}
+
+// lookupCPanelUser finds the cPanel username that owns a domain.
+// Reads /etc/userdomains which maps domain → username.
+func lookupCPanelUser(domain string) string {
+	f, err := os.Open("/etc/userdomains")
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		d := strings.TrimSpace(parts[0])
+		u := strings.TrimSpace(parts[1])
+		if strings.EqualFold(d, domain) {
+			return u
+		}
+	}
+	return ""
+}
+
 // extractMailHoldSender extracts the account/domain from outgoing mail hold messages.
+//
 // Two formats:
-//   "Sender user@domain has an outgoing mail hold" → "user@domain"
-//   "Domain example.com has an outgoing mail hold" → "example.com"
+//
+//	"Sender user@domain has an outgoing mail hold" -> "user@domain"
+//	"Domain example.com has an outgoing mail hold" -> "example.com"
 func extractMailHoldSender(line string) string {
 	// Try "Sender user@domain" first
 	if idx := strings.Index(line, "Sender "); idx >= 0 {
