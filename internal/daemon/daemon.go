@@ -567,6 +567,7 @@ func (d *Daemon) startLogWatchers() {
 		{"/var/log/secure", parseSecureLogLine},
 		{"/var/log/exim_mainlog", parseEximLogLine},
 		{"/var/log/messages", parseFTPLogLine},
+		{"/var/log/maillog", parseDovecotLogLine},
 	}
 
 	// Only watch PHP Shield events if enabled in config
