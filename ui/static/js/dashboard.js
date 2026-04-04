@@ -286,7 +286,7 @@
                     setText('stat-last-critical', data.last_critical_ago);
                 }
                 renderAccountsAtRisk(data.accounts_at_risk || []);
-                renderAutoResponse(data.auto_response || {});
+                renderAutoResponse(data.auto_response || {}, data.by_check || {});
                 renderTopTargeted(data.top_accounts || []);
             })
             .catch(function(err) { console.error('refreshStats:', err); });
@@ -346,40 +346,70 @@
         el.appendChild(list);
     }
 
-    function renderAutoResponse(ar) {
+    function renderAutoResponse(ar, byCheck) {
         var el = document.getElementById('auto-response-summary');
         if (!el) return;
         el.textContent = '';
-        var total = (ar.blocked || 0) + (ar.quarantined || 0) + (ar.killed || 0);
-        if (total === 0) {
-            var empty = document.createElement('div');
-            empty.className = 'text-muted text-center py-3';
-            empty.textContent = 'No auto-response actions today';
-            el.appendChild(empty);
-            return;
-        }
+
         var container = document.createElement('div');
-        container.className = 'd-flex flex-column gap-3';
-        var items = [
-            { icon: 'ti-shield-off', color: 'text-danger', label: 'IPs Blocked', val: ar.blocked || 0 },
-            { icon: 'ti-lock', color: 'text-warning', label: 'Files Quarantined', val: ar.quarantined || 0 },
-            { icon: 'ti-skull', color: 'text-critical', label: 'Processes Killed', val: ar.killed || 0 }
+
+        // Auto-response counters (compact row)
+        var arItems = [
+            { icon: 'ti-shield-off', color: 'text-danger', label: 'Blocked', val: ar.blocked || 0 },
+            { icon: 'ti-lock', color: 'text-warning', label: 'Quarantined', val: ar.quarantined || 0 },
+            { icon: 'ti-skull', color: 'text-critical', label: 'Killed', val: ar.killed || 0 }
         ];
-        for (var i = 0; i < items.length; i++) {
-            var row = document.createElement('div');
-            row.className = 'd-flex align-items-center justify-content-between';
-            var labelSpan = document.createElement('span');
+        var arRow = document.createElement('div');
+        arRow.className = 'd-flex gap-3 mb-3';
+        for (var i = 0; i < arItems.length; i++) {
+            var pill = document.createElement('div');
+            pill.className = 'text-center flex-fill';
+            var valEl = document.createElement('div');
+            valEl.className = 'h2 mb-0 ' + arItems[i].color;
+            valEl.textContent = arItems[i].val;
+            var labelEl = document.createElement('div');
+            labelEl.className = 'text-muted small';
             var ic = document.createElement('i');
-            ic.className = 'ti ' + items[i].icon + ' ' + items[i].color;
-            labelSpan.appendChild(ic);
-            labelSpan.appendChild(document.createTextNode('\u00a0' + items[i].label));
-            var valSpan = document.createElement('span');
-            valSpan.className = 'h3 mb-0';
-            valSpan.textContent = items[i].val;
-            row.appendChild(labelSpan);
-            row.appendChild(valSpan);
-            container.appendChild(row);
+            ic.className = 'ti ' + arItems[i].icon + ' me-1';
+            labelEl.appendChild(ic);
+            labelEl.appendChild(document.createTextNode(arItems[i].label));
+            pill.appendChild(valEl);
+            pill.appendChild(labelEl);
+            arRow.appendChild(pill);
         }
+        container.appendChild(arRow);
+
+        // Top check types from by_check (fills remaining space)
+        if (byCheck) {
+            var checks = [];
+            for (var ck in byCheck) {
+                if (byCheck.hasOwnProperty(ck) && ck !== 'auto_response' && ck !== 'auto_block' && ck !== 'health' && ck !== 'check_timeout') {
+                    checks.push({ name: ck, count: byCheck[ck] });
+                }
+            }
+            checks.sort(function(a, b) { return b.count - a.count; });
+            if (checks.length > 5) checks = checks.slice(0, 5);
+            if (checks.length > 0) {
+                var divider = document.createElement('div');
+                divider.className = 'text-muted small mb-2';
+                divider.textContent = 'Top Check Types (24h)';
+                container.appendChild(divider);
+                for (var j = 0; j < checks.length; j++) {
+                    var row = document.createElement('div');
+                    row.className = 'd-flex align-items-center justify-content-between mb-1';
+                    var nameSpan = document.createElement('span');
+                    nameSpan.className = 'font-monospace small';
+                    nameSpan.textContent = checks[j].name;
+                    var countSpan = document.createElement('span');
+                    countSpan.className = 'text-muted small';
+                    countSpan.textContent = checks[j].count;
+                    row.appendChild(nameSpan);
+                    row.appendChild(countSpan);
+                    container.appendChild(row);
+                }
+            }
+        }
+
         el.appendChild(container);
     }
 

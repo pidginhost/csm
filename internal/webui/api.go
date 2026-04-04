@@ -454,8 +454,8 @@ func (s *Server) apiStats(w http.ResponseWriter, _ *http.Request) {
 		}
 		return atRisk[i]["findings"].(int) > atRisk[j]["findings"].(int)
 	})
-	if len(atRisk) > 10 {
-		atRisk = atRisk[:10]
+	if len(atRisk) > 50 {
+		atRisk = atRisk[:50]
 	}
 
 	// Top targeted accounts (by finding count)
