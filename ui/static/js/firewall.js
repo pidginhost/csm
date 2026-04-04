@@ -161,7 +161,12 @@ function loadWhitelist(){
         if(!ips||ips.length===0){el.innerHTML='<div class="card-body text-center text-muted py-3">No whitelisted IPs.</div>';return;}
         var h='<div class="table-responsive"><table class="table table-vcenter card-table table-sm" id="whitelist-table"><thead><tr><th>IP</th><th>Action</th></tr></thead><tbody>';
         for(var i=0;i<ips.length;i++){
-            h+='<tr><td><code>'+CSM.esc(ips[i])+'</code></td><td><button class="btn btn-sm btn-ghost-danger wl-remove-btn" data-ip="'+CSM.esc(ips[i])+'" title="Remove IP from whitelist">Remove</button></td></tr>';
+            var wl = ips[i];
+            var ip = typeof wl === 'string' ? wl : wl.ip;
+            var typeInfo = '';
+            if (wl.permanent) typeInfo = '<span class="badge bg-green-lt ms-2">Permanent</span>';
+            else if (wl.expires_at) typeInfo = '<span class="badge bg-yellow-lt ms-2">Expires ' + CSM.fmtDate(wl.expires_at) + '</span>';
+            h+='<tr><td><code>'+CSM.esc(ip)+'</code>' + typeInfo + '</td><td><button class="btn btn-sm btn-ghost-danger wl-remove-btn" data-ip="'+CSM.esc(ip)+'" title="Remove IP from whitelist">Remove</button></td></tr>';
         }
         h+='</tbody></table></div>';
         el.innerHTML=h;
