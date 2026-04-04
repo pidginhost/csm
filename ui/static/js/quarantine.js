@@ -38,41 +38,10 @@ function viewFile(id, path) {
         .then(function(r) { return r.json(); })
         .then(function(data) {
             if (data.error) { CSM.toast('Error: ' + data.error, 'error'); return; }
-            var title = CSM.esc(path);
             var info = data.truncated ? ' (first 8KB of ' + CSM.formatSize(data.total_size) + ')' : '';
-            var body = document.getElementById('csm-confirm-body');
-            var modal = document.getElementById('csm-confirm-modal');
-            if (body && modal) {
-                // Close any existing modal first to prevent backdrop leak
-                var existingBackdrop = document.querySelector('.modal-backdrop');
-                if (existingBackdrop) existingBackdrop.remove();
-                if (modal.classList.contains('show')) {
-                    modal.classList.remove('show');
-                    modal.style.display = 'none';
-                }
-
-                body.innerHTML = '<div style="margin-bottom:8px"><strong>' + title + '</strong><span class="text-muted small">' + info + '</span></div>' +
-                    '<pre style="max-height:400px;overflow:auto;background:var(--tblr-bg-surface);padding:8px;border-radius:4px;font-size:0.75rem;white-space:pre-wrap;word-break:break-all">' + CSM.esc(data.preview) + '</pre>';
-                var ok = document.getElementById('csm-confirm-ok');
-                var cancel = document.getElementById('csm-confirm-cancel');
-                if (ok) ok.textContent = 'Close';
-                if (cancel) cancel.style.display = 'none';
-                modal.classList.add('show');
-                modal.style.display = 'block';
-                modal.setAttribute('aria-hidden', 'false');
-                var backdrop = document.createElement('div');
-                backdrop.className = 'modal-backdrop fade show';
-                document.body.appendChild(backdrop);
-                function closeModal() {
-                    modal.classList.remove('show');
-                    modal.style.display = 'none';
-                    modal.setAttribute('aria-hidden', 'true');
-                    if (ok) { ok.textContent = 'OK'; ok.removeEventListener('click', closeModal); }
-                    if (cancel) cancel.style.display = '';
-                    backdrop.remove();
-                }
-                if (ok) ok.addEventListener('click', closeModal);
-            }
+            var preview = data.preview || '(empty file)';
+            if (preview.length > 8000) preview = preview.substring(0, 8000) + '\n\n... (truncated)';
+            CSM.confirm(path + info + '\n\n' + preview).catch(function() {});
         })
         .catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
 }
