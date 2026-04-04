@@ -504,6 +504,39 @@ func (s *Store) SetLatestFindings(findings []alert.Finding) {
 	_ = os.Rename(tmpPath, filepath.Join(s.path, "latest_findings.json"))
 }
 
+// PurgeFindingsByChecks removes all findings whose Check field matches
+// any of the given check names and persists the result to disk.
+// Used to clear stale performance findings before merging fresh results
+// from a scan tier.
+func (s *Store) PurgeFindingsByChecks(checks []string) {
+	if len(checks) == 0 {
+		return
+	}
+	s.latestMu.Lock()
+	defer s.latestMu.Unlock()
+
+	remove := make(map[string]bool, len(checks))
+	for _, c := range checks {
+		remove[c] = true
+	}
+
+	n := 0
+	for _, f := range s.latestFindings {
+		if !remove[f.Check] {
+			s.latestFindings[n] = f
+			n++
+		}
+	}
+	s.latestFindings = s.latestFindings[:n]
+
+	// Persist to disk so purged findings don't reappear after restart.
+	// Mirrors the persistence logic at the end of SetLatestFindings().
+	data, _ := json.Marshal(s.latestFindings)
+	tmpPath := filepath.Join(s.path, "latest_findings.json.tmp")
+	_ = os.WriteFile(tmpPath, data, 0600)
+	_ = os.Rename(tmpPath, filepath.Join(s.path, "latest_findings.json"))
+}
+
 // ClearLatestFindings removes all findings from the latest set.
 // Use before SetLatestFindings for a full replace (e.g. initial scan).
 func (s *Store) ClearLatestFindings() {
