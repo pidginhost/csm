@@ -412,6 +412,8 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 			continue // ModSecurity: fully automated, visible on /modsec
 		case "outdated_plugins":
 			continue // informational, visible on findings page
+		case "email_dkim_failure", "email_spf_rejection":
+			continue // operational email auth issues — visible on findings page
 		}
 		alertable = append(alertable, f)
 	}
