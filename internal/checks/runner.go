@@ -94,6 +94,7 @@ func deepChecks() []namedCheck {
 		{"db_content", CheckDatabaseContent},
 		{"email_content", CheckOutboundEmailContent},
 		{"outdated_plugins", CheckOutdatedPlugins},
+		{"email_weak_password", CheckEmailPasswords},
 	}
 }
 
@@ -132,6 +133,7 @@ func RunReducedDeep(cfg *config.Config, store *state.Store) []alert.Finding {
 		{"db_content", CheckDatabaseContent},
 		{"email_content", CheckOutboundEmailContent},
 		{"outdated_plugins", CheckOutdatedPlugins},
+		{"email_weak_password", CheckEmailPasswords},
 	}
 	return runParallel(cfg, store, reduced)
 }
