@@ -194,12 +194,6 @@ func CheckPHPProcessLoad(cfg *config.Config, _ *state.Store) []alert.Finding {
 
 	cores := getCPUCores()
 
-	// pid → list of cmdline strings for that pid
-	type procInfo struct {
-		uid     string
-		cmdline string
-	}
-
 	cmdlinePaths, _ := filepath.Glob("/proc/[0-9]*/cmdline")
 
 	// user → list of cmdline samples
@@ -301,7 +295,7 @@ func CheckSwapAndOOM(cfg *config.Config, _ *state.Store) []alert.Finding {
 		cutoff := time.Now().Add(-1 * time.Hour)
 		for _, line := range strings.Split(string(dmesgOut), "\n") {
 			lower := strings.ToLower(line)
-			if !(strings.Contains(lower, "out of memory") || strings.Contains(lower, "oom_reaper")) {
+			if !strings.Contains(lower, "out of memory") && !strings.Contains(lower, "oom_reaper") {
 				continue
 			}
 			if useISO {
@@ -754,9 +748,9 @@ func CheckRedisConfig(cfg *config.Config, store *state.Store) []alert.Finding {
 		}
 		if aggressiveSave {
 			findings = append(findings, alert.Finding{
-				Severity:  alert.High,
-				Check:     "perf_redis_config",
-				Message:   "Redis bgsave interval too aggressive for dataset size",
+				Severity: alert.High,
+				Check:    "perf_redis_config",
+				Message:  "Redis bgsave interval too aggressive for dataset size",
 				Details: fmt.Sprintf(
 					"Used memory: %s, Threshold: %s, Minimum safe bgsave interval: %ds",
 					humanBytes(usedMemoryBytes),
@@ -1254,9 +1248,9 @@ func scanWPCron(dir, account string, depth int, findings *[]alert.Finding) {
 
 		if !defined || !enabled {
 			*findings = append(*findings, alert.Finding{
-				Severity:  alert.Warning,
-				Check:     "perf_wp_cron",
-				Message:   fmt.Sprintf("WP-Cron not disabled for %s", account),
+				Severity: alert.Warning,
+				Check:    "perf_wp_cron",
+				Message:  fmt.Sprintf("WP-Cron not disabled for %s", account),
 				Details: fmt.Sprintf(
 					"File: %s — add define('DISABLE_WP_CRON', true); and use a real cron job instead",
 					fullPath,
