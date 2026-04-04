@@ -88,6 +88,12 @@ fetch(CSM.apiUrl('/api/v1/threat/top-attackers?limit=50'),{credentials:'same-ori
         html+='<td class="text-nowrap small">'+fmtDate(r.first_seen)+'</td>';
         html+='<td class="text-nowrap small">'+fmtDate(r.last_seen)+'</td>';
         html+='<td>'+statusBadge+'</td>';
+        html+='<td class="text-nowrap">';
+        if(!r.currently_blocked){
+            html+='<button class="btn btn-ghost-danger btn-sm quick-block-btn" data-ip="'+CSM.esc(r.ip)+'" title="Block 24h"><i class="ti ti-shield-lock"></i></button>';
+        }
+        html+='<button class="btn btn-ghost-success btn-sm quick-wl-btn" data-ip="'+CSM.esc(r.ip)+'" title="Whitelist"><i class="ti ti-shield-check"></i></button>';
+        html+='</td>';
         html+='</tr>';
     }
     tbody.innerHTML=html;
@@ -97,6 +103,19 @@ fetch(CSM.apiUrl('/api/v1/threat/top-attackers?limit=50'),{credentials:'same-ori
         row.addEventListener('click',function(){
             document.getElementById('lookup-ip').value=this.getAttribute('data-ip');
             document.getElementById('lookup-form').dispatchEvent(new Event('submit'));
+        });
+    });
+    // Inline action buttons
+    document.querySelectorAll('.quick-block-btn').forEach(function(btn){
+        btn.addEventListener('click',function(e){
+            e.stopPropagation();
+            blockIP(this.getAttribute('data-ip'));
+        });
+    });
+    document.querySelectorAll('.quick-wl-btn').forEach(function(btn){
+        btn.addEventListener('click',function(e){
+            e.stopPropagation();
+            whitelistIP(this.getAttribute('data-ip'));
         });
     });
 }).catch(function(err){ console.error('top-attackers:', err); CSM.loadError(document.getElementById('attackers-tbody').parentElement.parentElement.parentElement, function(){ location.reload(); }); });
