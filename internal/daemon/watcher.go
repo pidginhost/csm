@@ -11,6 +11,7 @@ import (
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
 	"github.com/pidginhost/cpanel-security-monitor/internal/config"
+	"github.com/pidginhost/cpanel-security-monitor/internal/store"
 )
 
 // LogLineHandler parses a log line and returns findings (if any).
@@ -356,6 +357,42 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 		})
 	}
 
+	// 7. DKIM signing failures
+	if dkimDomain := parseDKIMFailureDomain(line); dkimDomain != "" {
+		dedupKey := "dkim_fail:" + dkimDomain
+		if db := store.Global(); db != nil {
+			lastAlert := db.GetMetaString(dedupKey)
+			if lastAlert == "" || isDedupExpired(lastAlert, 24*time.Hour) {
+				_ = db.SetMetaString(dedupKey, time.Now().Format(time.RFC3339))
+				findings = append(findings, alert.Finding{
+					Severity:  alert.Warning,
+					Check:     "email_dkim_failure",
+					Message:   fmt.Sprintf("DKIM signing failed for %s — check key file and DNS TXT record", dkimDomain),
+					Details:   truncateDaemon(line, 300),
+					Timestamp: time.Now(),
+				})
+			}
+		}
+	}
+
+	// 8. SPF/DMARC outbound rejections
+	if spfDomain, spfReason := parseSPFDMARCRejection(line); spfDomain != "" {
+		dedupKey := "spf_reject:" + spfDomain
+		if db := store.Global(); db != nil {
+			lastAlert := db.GetMetaString(dedupKey)
+			if lastAlert == "" || isDedupExpired(lastAlert, 24*time.Hour) {
+				_ = db.SetMetaString(dedupKey, time.Now().Format(time.RFC3339))
+				findings = append(findings, alert.Finding{
+					Severity:  alert.High,
+					Check:     "email_spf_rejection",
+					Message:   fmt.Sprintf("Outbound mail from %s rejected due to SPF/DMARC failure", spfDomain),
+					Details:   fmt.Sprintf("Reason: %s\n%s", spfReason, truncateDaemon(line, 200)),
+					Timestamp: time.Now(),
+				})
+			}
+		}
+	}
+
 	return findings
 }
 
@@ -492,3 +529,88 @@ func truncateDaemon(s string, maxLen int) string {
 	}
 	return s[:maxLen] + "..."
 }
+
+// parseDKIMFailureDomain extracts domain from "DKIM: signing failed for {domain}"
+func parseDKIMFailureDomain(line string) string {
+	const prefix = "DKIM: signing failed for "
+	idx := strings.Index(line, prefix)
+	if idx < 0 {
+		return ""
+	}
+	rest := line[idx+len(prefix):]
+	end := strings.IndexAny(rest, ": \t\n")
+	if end < 0 {
+		return rest
+	}
+	return rest[:end]
+}
+
+// parseSPFDMARCRejection extracts SENDER domain and rejection reason from
+// exim ** permanent failure lines. Sender comes from <envelope_sender>.
+func parseSPFDMARCRejection(line string) (senderDomain, reason string) {
+	if !strings.Contains(line, " ** ") {
+		return "", ""
+	}
+	// Extract envelope sender from <sender@domain>
+	ltIdx := strings.Index(line, "<")
+	gtIdx := strings.Index(line, ">")
+	if ltIdx < 0 || gtIdx < 0 || gtIdx <= ltIdx+1 {
+		return "", ""
+	}
+	sender := line[ltIdx+1 : gtIdx]
+	atIdx := strings.LastIndexByte(sender, '@')
+	if atIdx < 0 || atIdx >= len(sender)-1 {
+		return "", ""
+	}
+	domain := sender[atIdx+1:]
+
+	// Extract rejection reason after last " : "
+	colonIdx := strings.LastIndex(line, " : ")
+	if colonIdx < 0 {
+		return "", ""
+	}
+	reason = strings.TrimSpace(line[colonIdx+3:])
+	if !isSPFDMARCRelated(reason) {
+		return "", ""
+	}
+	if len(reason) > 200 {
+		reason = reason[:200]
+	}
+	return domain, reason
+}
+
+// isSPFDMARCRelated checks if a rejection reason is SPF/DMARC related.
+// Generic 5.7.1 alone is NOT sufficient — requires explicit auth keywords.
+func isSPFDMARCRelated(reason string) bool {
+	if reason == "" {
+		return false
+	}
+	lower := strings.ToLower(reason)
+	for _, kw := range []string{"spf", "dmarc", "dkim"} {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	for _, code := range []string{"5.7.23", "5.7.25", "5.7.26"} {
+		if strings.Contains(lower, code) {
+			return true
+		}
+	}
+	if strings.Contains(lower, "5.7.1") {
+		if strings.Contains(lower, "authentication") || strings.Contains(lower, "ptr record") ||
+			strings.Contains(lower, "sender policy") || strings.Contains(lower, "alignment") {
+			return true
+		}
+	}
+	return false
+}
+
+// isDedupExpired checks if a stored RFC3339 timestamp is older than the given duration.
+func isDedupExpired(stored string, window time.Duration) bool {
+	t, err := time.Parse(time.RFC3339, stored)
+	if err != nil {
+		return true
+	}
+	return time.Since(t) > window
+}
+
