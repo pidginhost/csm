@@ -165,7 +165,9 @@
                 if (row) {
                     var next = row.nextElementSibling;
                     if (next && next.classList.contains('details-row')) {
-                        next.style.display = next.style.display === 'none' ? '' : 'none';
+                        var showing = next.style.display === 'none';
+                        next.style.display = showing ? '' : 'none';
+                        expandBtn.classList.toggle('expanded', showing);
                     }
                 }
             }

@@ -507,7 +507,11 @@
             var expandBtn = e.target.closest('.expand-btn');
             if (expandBtn) {
                 var row = expandBtn.closest('tr');
-                if (row && emailTable) emailTable.toggleDetail(row);
+                if (row && emailTable) {
+                    emailTable.toggleDetail(row);
+                    var next = row.nextElementSibling;
+                    expandBtn.classList.toggle('expanded', next && next.style.display !== 'none');
+                }
                 return;
             }
             // Quarantine button
