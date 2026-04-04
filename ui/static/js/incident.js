@@ -2,8 +2,8 @@
 (function() {
     'use strict';
 
-    var sevLabels = { 2: 'CRITICAL', 1: 'HIGH', 0: 'INFO' };
-    var sevClasses = { 2: 'critical', 1: 'high', 0: 'info' };
+    var sevLabels = {}; for (var sk in CSM.sevMap) sevLabels[sk] = CSM.sevMap[sk].label;
+    var sevClasses = {}; for (var sk2 in CSM.sevMap) sevClasses[sk2] = CSM.sevMap[sk2].cls;
 
     function loadIncident() {
         var query = document.getElementById('incident-query').value.trim();

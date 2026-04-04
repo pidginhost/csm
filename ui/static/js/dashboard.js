@@ -289,8 +289,8 @@
             .catch(function(err) { console.error('refreshScanStatus:', err); });
     }
 
-    var sevClasses = { 2: 'critical', 1: 'high', 0: 'warning' };
-    var sevLabelsMap = { 2: 'CRITICAL', 1: 'HIGH', 0: 'WARNING' };
+    var sevClasses = {}; for (var sk in CSM.sevMap) sevClasses[sk] = CSM.sevMap[sk].cls;
+    var sevLabelsMap = {}; for (var sl in CSM.sevMap) sevLabelsMap[sl] = CSM.sevMap[sl].label;
 
     function renderAccountsAtRisk(accounts) {
         var el = document.getElementById('accounts-at-risk');
