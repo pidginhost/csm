@@ -40,6 +40,7 @@
                 <div class="card-body">
                     <div class="subheader">Compromised</div>
                     <div class="h1 mb-0 text-critical" id="stat-compromised">0</div>
+                    <div class="small text-muted mt-1" id="stat-compromised-detail"></div>
                 </div>
             </div>
         </div>
@@ -112,14 +113,15 @@
                 <thead>
                     <tr>
                         <th>Severity</th>
-                        <th>Check</th>
-                        <th>Message</th>
+                        <th>Type</th>
+                        <th>Account</th>
+                        <th>IP</th>
+                        <th>Details</th>
                         <th>Time</th>
-                        <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody id="email-tbody">
-                    <tr><td colspan="5" class="text-center text-muted py-4">Loading...</td></tr>
+                    <tr><td colspan="6" class="text-center text-muted py-4">Loading...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -129,9 +131,9 @@
     <div class="row row-deck row-cards mb-3">
         <div class="col-lg-4">
             <div class="card">
-                <div class="card-header"><h3 class="card-title"><i class="ti ti-chart-bar"></i>&nbsp;Email Timeline</h3></div>
-                <div class="card-body py-3">
-                    <div id="email-timeline" style="min-height:80px"></div>
+                <div class="card-header"><h3 class="card-title"><i class="ti ti-alert-triangle"></i>&nbsp;Recent Threats</h3></div>
+                <div class="card-body p-0" id="recent-threats" style="max-height:250px;overflow-y:auto">
+                    <div class="text-muted text-center py-3">Loading...</div>
                 </div>
             </div>
         </div>
@@ -140,6 +142,16 @@
                 <div class="card-header"><h3 class="card-title"><i class="ti ti-mailbox"></i>&nbsp;Queue Health</h3></div>
                 <div class="card-body" id="queue-health">
                     <div class="text-muted text-center py-3">Loading...</div>
+                </div>
+            </div>
+            <div class="card mt-3">
+                <div class="card-header"><h3 class="card-title"><i class="ti ti-shield-check"></i>&nbsp;Email Protection</h3></div>
+                <div class="card-body" id="email-protection-status">
+                    <div class="mb-2"><span class="text-muted small">Password Audit</span> <span class="ms-auto badge bg-blue" id="pw-audit-status">--</span></div>
+                    <div class="mb-2"><span class="text-muted small">Geo Login Tracking</span> <span class="ms-auto badge bg-blue" id="geo-status">Active</span></div>
+                    <div class="mb-2"><span class="text-muted small">Rate Limiting</span> <span class="ms-auto badge bg-blue" id="rate-status">Active</span></div>
+                    <div class="mb-2"><span class="text-muted small">Forwarder Audit</span> <span class="ms-auto badge bg-blue" id="fwd-status">--</span></div>
+                    <div><span class="text-muted small">DKIM/SPF Monitor</span> <span class="ms-auto badge bg-blue">Active</span></div>
                 </div>
             </div>
         </div>

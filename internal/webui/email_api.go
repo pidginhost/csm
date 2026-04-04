@@ -21,6 +21,8 @@ type emailStatsResponse struct {
 	QueueSize      int              `json:"queue_size"`
 	QueueWarn      int              `json:"queue_warn"`
 	QueueCrit      int              `json:"queue_crit"`
+	FrozenCount    int              `json:"frozen_count"`
+	OldestAge      string           `json:"oldest_age"`
 	SMTPBlock      bool             `json:"smtp_block"`
 	SMTPAllowUsers []string         `json:"smtp_allow_users"`
 	SMTPPorts      []int            `json:"smtp_ports"`
@@ -46,8 +48,9 @@ func (s *Server) apiEmailStats(w http.ResponseWriter, _ *http.Request) {
 		QueueCrit: s.cfg.Thresholds.MailQueueCrit,
 	}
 
-	// Live queue size via exim -bpc
+	// Live queue size and frozen/oldest via exim
 	resp.QueueSize = eximQueueSize()
+	resp.FrozenCount, resp.OldestAge = eximQueueDetails()
 
 	// Firewall config
 	fw := s.cfg.Firewall
@@ -240,6 +243,35 @@ func eximQueueSize() int {
 	}
 	n, _ := strconv.Atoi(strings.TrimSpace(string(out)))
 	return n
+}
+
+// eximQueueDetails returns the frozen message count and the age of the oldest
+// message in the queue. Uses `exim -bp` which lists all queued messages.
+func eximQueueDetails() (frozen int, oldestAge string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "exim", "-bp").Output()
+	if err != nil {
+		return 0, ""
+	}
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "*** frozen ***") {
+			frozen++
+		}
+		// First field of queue listing lines is the age (e.g., "4d", "15h", "30m")
+		fields := strings.Fields(line)
+		if len(fields) >= 3 {
+			age := fields[0]
+			// Only consider lines where first field looks like an age
+			if len(age) >= 2 && (age[len(age)-1] == 'd' || age[len(age)-1] == 'h' || age[len(age)-1] == 'm' || age[len(age)-1] == 's') {
+				if oldestAge == "" {
+					oldestAge = age // first entry is the oldest (queue sorted oldest first)
+				}
+			}
+		}
+	}
+	return frozen, oldestAge
 }
 
 // topMailSenders parses the last N lines of exim_mainlog and returns the

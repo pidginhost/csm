@@ -46,13 +46,52 @@
         if (data.queue_size >= data.queue_crit) color = 'bg-danger';
         else if (data.queue_size >= data.queue_warn) color = 'bg-warning';
 
-        el.innerHTML =
-            '<div class="d-flex justify-content-between mb-1">' +
-            '<span class="text-muted small">Queue Size</span>' +
-            '<span class="fw-bold">' + data.queue_size + ' / ' + data.queue_crit + '</span></div>' +
-            '<div class="progress progress-sm mb-2"><div class="progress-bar ' + color + '" style="width:' + pct + '%"></div></div>' +
-            '<div class="d-flex justify-content-between text-muted small">' +
-            '<span>0</span><span>' + data.queue_warn + ' warn</span><span>' + data.queue_crit + ' crit</span></div>';
+        var frozen = data.frozen_count || 0;
+        var oldest = data.oldest_age || '';
+
+        el.textContent = '';
+
+        // Queue size bar
+        var row1 = document.createElement('div');
+        row1.className = 'd-flex justify-content-between mb-1';
+        var label1 = document.createElement('span');
+        label1.className = 'text-muted small';
+        label1.textContent = 'Queue Size';
+        var val1 = document.createElement('span');
+        val1.className = 'fw-bold';
+        val1.textContent = data.queue_size + ' / ' + data.queue_crit;
+        row1.appendChild(label1);
+        row1.appendChild(val1);
+        el.appendChild(row1);
+
+        var progWrap = document.createElement('div');
+        progWrap.className = 'progress progress-sm mb-3';
+        var progBar = document.createElement('div');
+        progBar.className = 'progress-bar ' + color;
+        progBar.style.width = pct + '%';
+        progWrap.appendChild(progBar);
+        el.appendChild(progWrap);
+
+        // Additional stats
+        var stats = [
+            ['Frozen Messages', frozen, frozen > 0 ? 'text-warning fw-bold' : ''],
+            ['Oldest Message', oldest || 'none', oldest && oldest.indexOf('d') >= 0 ? 'text-danger fw-bold' : ''],
+            ['Warn Threshold', data.queue_warn, ''],
+            ['Crit Threshold', data.queue_crit, '']
+        ];
+        for (var s = 0; s < stats.length; s++) {
+            var row = document.createElement('div');
+            row.className = 'd-flex justify-content-between mb-1';
+            var lbl = document.createElement('span');
+            lbl.className = 'text-muted small';
+            lbl.textContent = stats[s][0];
+            var v = document.createElement('span');
+            v.className = 'small ' + stats[s][2];
+            v.textContent = stats[s][1];
+            row.appendChild(lbl);
+            row.appendChild(v);
+            el.appendChild(row);
+        }
     }
 
     function renderTopSenders(senders) {
@@ -181,7 +220,7 @@
                     });
                 }
                 renderFindingsTable(filtered);
-                renderTimeline(filtered);
+                renderRecentThreats(filtered);
             })
             .catch(function() {
                 var tbody = document.getElementById('email-tbody');
@@ -204,34 +243,51 @@
         for (var i = 0; i < findings.length; i++) {
             var f = findings[i];
             var cls = CSM.severityClass(f.severity);
-            var action = '';
 
-            if (f.check === 'email_phishing_content') {
-                action = '<button class="btn btn-warning btn-sm email-quarantine-btn" ' +
-                    'data-check="' + CSM.esc(f.check) + '" ' +
-                    'data-message="' + CSM.esc(f.message) + '" ' +
-                    'data-details="' + CSM.esc(f.details || '') + '" ' +
-                    'title="Quarantine spool message"><i class="ti ti-lock"></i></button>';
-            } else if (f.check === 'mail_per_account') {
-                var domain = extractDomain(f.message);
-                if (domain) {
-                    action = '<a href="/incident?account=' + encodeURIComponent(domain) + '" class="btn btn-outline-primary btn-sm" title="Investigate"><i class="ti ti-search"></i></a>';
-                }
-            }
+            // Extract useful fields from message and details
+            var account = extractFieldFromDetails(f.details, 'Account') || extractAccountFromMessage(f.message);
+            var ip = extractFieldFromDetails(f.details, 'IP') || extractIPFromMessage(f.message);
+            var shortMsg = f.message;
+            // Make check name human-readable
+            var checkLabel = f.check.replace(/_/g, ' ').replace(/realtime$/, '').replace(/^email /, '');
 
             html += '<tr data-sev="' + cls + '">';
             html += '<td>' + CSM.severityBadge(f.severity) + '</td>';
-            html += '<td><span class="font-monospace small">' + CSM.esc(f.check) + '</span></td>';
-            html += '<td>' + CSM.esc(f.message) + '</td>';
+            html += '<td><span class="small">' + CSM.esc(checkLabel) + '</span></td>';
+            html += '<td>' + CSM.esc(account || '') + '</td>';
+            html += '<td><code>' + CSM.esc(ip || '') + '</code></td>';
+            html += '<td class="text-wrap" style="max-width:400px">' + CSM.esc(shortMsg) + '</td>';
             html += '<td data-timestamp="' + CSM.esc(f.timestamp || '') + '">' + CSM.fmtDate(f.timestamp) + '</td>';
-            var expandBtn = f.details ? ' <button class="btn btn-ghost-secondary btn-sm expand-btn" title="Show details"><i class="ti ti-chevron-down"></i></button>' : '';
-            html += '<td>' + action + expandBtn + '</td>';
             html += '</tr>';
 
-            // Detail row (hidden, toggled on click)
+            // Detail row (hidden, toggled by clicking the row)
             if (f.details) {
-                html += '<tr class="details-row" style="display:none"><td colspan="5"><div class="small text-muted" style="white-space:pre-wrap">' + CSM.esc(f.details) + '</div></td></tr>';
+                html += '<tr class="details-row" style="display:none"><td colspan="6"><div class="small text-muted" style="white-space:pre-wrap">' + CSM.esc(f.details) + '</div></td></tr>';
             }
+        }
+
+        // Helper: extract field from details (format "Key: value\n")
+        function extractFieldFromDetails(details, key) {
+            if (!details) return '';
+            var lines = details.split('\n');
+            for (var j = 0; j < lines.length; j++) {
+                if (lines[j].indexOf(key + ':') === 0 || lines[j].indexOf(key + ': ') === 0) {
+                    return lines[j].substring(key.length + 1).trim();
+                }
+            }
+            return '';
+        }
+
+        function extractAccountFromMessage(msg) {
+            // "Account xyz has outgoing mail hold" → "xyz"
+            var m = msg.match(/(?:Account |account |from )(\S+)/);
+            return m ? m[1] : '';
+        }
+
+        function extractIPFromMessage(msg) {
+            // "... from 1.2.3.4" or "failure from 1.2.3.4"
+            var m = msg.match(/from (\d+\.\d+\.\d+\.\d+)/);
+            return m ? m[1] : '';
         }
 
         tbody.innerHTML = html;
@@ -291,7 +347,8 @@
     }
 
     function updateStatCards(findings) {
-        var phishing = 0, accounts = {}, queueAlerts = 0, compromised = 0;
+        var phishing = 0, accounts = {}, queueAlerts = 0;
+        var compromisedAccounts = 0, spamOutbreaks = 0, credLeaks = 0;
         for (var i = 0; i < findings.length; i++) {
             var f = findings[i];
             if (f.check === 'email_phishing_content') phishing++;
@@ -300,75 +357,107 @@
                 if (d) accounts[d] = true;
             }
             else if (f.check === 'mail_queue') queueAlerts++;
-            else if (f.check === 'email_compromised_account' || f.check === 'email_spam_outbreak' || f.check === 'email_credential_leak') compromised++;
+            else if (f.check === 'email_compromised_account') compromisedAccounts++;
+            else if (f.check === 'email_spam_outbreak') spamOutbreaks++;
+            else if (f.check === 'email_credential_leak') credLeaks++;
         }
         setText('stat-phishing', phishing);
         setText('stat-accounts', Object.keys(accounts).length);
-        setText('stat-compromised', compromised);
+        var totalCompromised = compromisedAccounts + spamOutbreaks + credLeaks;
+        setText('stat-compromised', totalCompromised);
+
+        // Breakdown detail under the number
+        var detail = [];
+        if (compromisedAccounts > 0) detail.push(compromisedAccounts + ' compromised');
+        if (spamOutbreaks > 0) detail.push(spamOutbreaks + ' spam outbreaks');
+        if (credLeaks > 0) detail.push(credLeaks + ' credential leaks');
+        var detailEl = document.getElementById('stat-compromised-detail');
+        if (detailEl) detailEl.textContent = detail.join(', ') || 'No incidents';
+
         setText('stat-queue-alerts', queueAlerts);
     }
 
-    // --- Timeline ---
+    // --- Recent Threats (replaces timeline chart) ---
+    // All user-supplied values escaped via CSM.esc() before insertion
 
-    function renderTimeline(findings) {
-        var el = document.getElementById('email-timeline');
+    function renderRecentThreats(findings) {
+        var el = document.getElementById('recent-threats');
         if (!el) return;
 
-        if (findings.length === 0) {
-            el.innerHTML = '<div class="text-muted text-center small">No events in this period</div>';
+        var threats = [];
+        for (var i = 0; i < findings.length; i++) {
+            var f = findings[i];
+            if (f.severity < 1) continue;
+            if (f.check === 'exim_frozen_realtime' || f.check === 'email_auth_failure_realtime') continue;
+            threats.push(f);
+        }
+
+        if (threats.length === 0) {
+            el.textContent = '';
+            var empty = document.createElement('div');
+            empty.className = 'text-muted text-center py-3';
+            empty.textContent = 'No actionable threats today';
+            el.appendChild(empty);
             return;
         }
 
-        // Group by hour
-        var buckets = {};
-        for (var i = 0; i < findings.length; i++) {
-            var f = findings[i];
-            var ts = new Date(f.timestamp);
-            if (isNaN(ts.getTime())) continue;
-            var key = ts.toISOString().substring(0, 13); // "2026-03-29T14"
-            if (!buckets[key]) buckets[key] = { critical: 0, high: 0, warning: 0 };
-            if (f.severity === 2) buckets[key].critical++;
-            else if (f.severity === 1) buckets[key].high++;
-            else buckets[key].warning++;
+        var limit = Math.min(threats.length, 10);
+        var container = document.createElement('div');
+        container.className = 'list-group list-group-flush';
+
+        for (var j = 0; j < limit; j++) {
+            var t = threats[j];
+            var sevClass = t.severity === 2 ? 'bg-red' : 'bg-orange';
+            var account = extractAccountFromMsg(t.message);
+            var checkLabel = t.check.replace(/_/g, ' ').replace(/realtime$/, '').replace(/^email /, '');
+
+            var item = document.createElement('div');
+            item.className = 'list-group-item py-2';
+
+            var row = document.createElement('div');
+            row.className = 'd-flex align-items-center';
+
+            var badge = document.createElement('span');
+            badge.className = 'badge ' + sevClass + ' me-2';
+            badge.textContent = checkLabel;
+            row.appendChild(badge);
+
+            if (account) {
+                var acctSpan = document.createElement('span');
+                acctSpan.className = 'font-monospace small';
+                acctSpan.textContent = account;
+                row.appendChild(acctSpan);
+            }
+
+            var timeSpan = document.createElement('span');
+            timeSpan.className = 'ms-auto text-muted small';
+            timeSpan.textContent = CSM.fmtDate(t.timestamp);
+            row.appendChild(timeSpan);
+
+            item.appendChild(row);
+
+            var msgDiv = document.createElement('div');
+            msgDiv.className = 'small text-muted text-truncate mt-1';
+            msgDiv.textContent = t.message;
+            item.appendChild(msgDiv);
+
+            container.appendChild(item);
         }
 
-        var keys = Object.keys(buckets).sort();
-        var maxTotal = 1;
-        for (var k = 0; k < keys.length; k++) {
-            var b = buckets[keys[k]];
-            var total = b.critical + b.high + b.warning;
-            if (total > maxTotal) maxTotal = total;
-        }
+        el.textContent = '';
+        el.appendChild(container);
 
-        var barWidth = Math.max(8, Math.floor((el.clientWidth - 20) / Math.max(keys.length, 1)) - 2);
-        var html = '<div style="display:flex;align-items:flex-end;gap:2px;height:80px">';
-        for (var m = 0; m < keys.length; m++) {
-            var bk = buckets[keys[m]];
-            var t = bk.critical + bk.high + bk.warning;
-            var h = Math.max(4, Math.round(t / maxTotal * 80));
-            var cH = Math.round(bk.critical / t * h);
-            var hH = Math.round(bk.high / t * h);
-            var wH = Math.max(0, h - cH - hH);
-            var hour = keys[m].substring(11, 13) + ':00';
-            html += '<div title="' + hour + ': ' + t + ' events" style="width:' + barWidth + 'px;display:flex;flex-direction:column;justify-content:flex-end">';
-            if (cH > 0) html += '<div style="height:' + cH + 'px;background:#d63939;border-radius:2px 2px 0 0"></div>';
-            if (hH > 0) html += '<div style="height:' + hH + 'px;background:#f76707"></div>';
-            if (wH > 0) html += '<div style="height:' + wH + 'px;background:#f59f00;border-radius:0 0 2px 2px"></div>';
-            html += '</div>';
+        if (threats.length > 10) {
+            var more = document.createElement('div');
+            more.className = 'text-center text-muted small py-1';
+            more.textContent = '+' + (threats.length - 10) + ' more';
+            el.appendChild(more);
         }
-        html += '</div>';
+    }
 
-        // Hour labels
-        html += '<div style="display:flex;gap:2px">';
-        for (var n = 0; n < keys.length; n++) {
-            var lbl = keys[n].substring(11, 13);
-            // Show every 3rd label to avoid crowding
-            var show = (n % 3 === 0 || n === keys.length - 1);
-            html += '<div style="width:' + barWidth + 'px;text-align:center;font-size:9px;color:var(--tblr-muted)">' + (show ? lbl : '') + '</div>';
-        }
-        html += '</div>';
-
-        el.innerHTML = html;
+    function extractAccountFromMsg(msg) {
+        var m = msg.match(/(?:Account |account |from )(\S+)/);
+        return m ? m[1] : '';
     }
 
     // --- Email AV Status & Quarantine ---
