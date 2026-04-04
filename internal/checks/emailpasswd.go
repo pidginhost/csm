@@ -28,8 +28,9 @@ var doveadmSemaphore = make(chan struct{}, 3)
 // hibpClient is used for HIBP API requests.
 var hibpClient = &http.Client{Timeout: 10 * time.Second}
 
-// currentYear is set once for candidate generation (testable).
-var currentYear = time.Now().Year()
+// currentYear returns the current year. Called each audit cycle so
+// long-running daemons don't use a stale year after Jan 1.
+func currentYear() int { return time.Now().Year() }
 
 // weakPasswordCache caches the bundled wordlist (loaded once).
 var (
@@ -84,7 +85,8 @@ func generateCandidates(username, domain string) []string {
 		add(upper)
 
 		// Year variants: current year +/- 2
-		for y := currentYear - 2; y <= currentYear+2; y++ {
+		year := currentYear()
+		for y := year - 2; y <= year+2; y++ {
 			ys := strconv.Itoa(y)
 			add(base + ys)
 			add(upper + ys)

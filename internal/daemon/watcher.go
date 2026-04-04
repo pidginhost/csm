@@ -565,16 +565,19 @@ func parseDKIMFailureDomain(line string) string {
 // parseSPFDMARCRejection extracts SENDER domain and rejection reason from
 // exim ** permanent failure lines. Sender comes from <envelope_sender>.
 func parseSPFDMARCRejection(line string) (senderDomain, reason string) {
-	if !strings.Contains(line, " ** ") {
+	starIdx := strings.Index(line, " ** ")
+	if starIdx < 0 {
 		return "", ""
 	}
-	// Extract envelope sender from <sender@domain>
-	ltIdx := strings.Index(line, "<")
-	gtIdx := strings.Index(line, ">")
+	// Extract envelope sender from <sender@domain> — search AFTER the **
+	// marker to avoid matching earlier <> fields (e.g. H=<hostname>).
+	rest := line[starIdx:]
+	ltIdx := strings.Index(rest, "<")
+	gtIdx := strings.Index(rest, ">")
 	if ltIdx < 0 || gtIdx < 0 || gtIdx <= ltIdx+1 {
 		return "", ""
 	}
-	sender := line[ltIdx+1 : gtIdx]
+	sender := rest[ltIdx+1 : gtIdx]
 	atIdx := strings.LastIndexByte(sender, '@')
 	if atIdx < 0 || atIdx >= len(sender)-1 {
 		return "", ""
@@ -748,6 +751,10 @@ func RecordCompromisedDomain(domain string) {
 // checkEmailRate processes an outbound email for rate limiting.
 // Returns findings if thresholds are exceeded.
 func checkEmailRate(user string, cfg *config.Config) []alert.Finding {
+	// Guard: skip if thresholds are zero (misconfigured or disabled)
+	if cfg.EmailProtection.RateWarnThreshold <= 0 || cfg.EmailProtection.RateCritThreshold <= 0 {
+		return nil
+	}
 	if isHighVolumeSender(user, cfg.EmailProtection.HighVolumeSenders) {
 		return nil
 	}
@@ -762,13 +769,20 @@ func checkEmailRate(user string, cfg *config.Config) []alert.Finding {
 	rw.mu.Lock()
 	defer rw.mu.Unlock()
 
-	rw.add(now)
-	count := rw.countInWindow(now, windowDur)
-
-	// Check domain suppression (avoid duplicate noise with compromised account alerts)
+	// Check domain suppression BEFORE adding to window — prevents
+	// phantom rate inflation for suppressed domains.
 	domain := extractDomainFromEmail(user)
 	if domain != "" && hasRecentCompromisedFinding(domain) {
 		return nil
+	}
+
+	rw.add(now)
+	count := rw.countInWindow(now, windowDur)
+
+	// Reset alerted state when count drops below warn threshold —
+	// allows re-alerting on the next burst after the window slides.
+	if count < cfg.EmailProtection.RateWarnThreshold {
+		rw.alerted = ""
 	}
 
 	var findings []alert.Finding
