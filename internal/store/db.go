@@ -26,6 +26,8 @@ var bucketNames = []string{
 	"plugins",
 	"plugins:sites",
 	"meta",
+	"email:geo",
+	"email:fwd",
 }
 
 // DB wraps a bbolt database.
