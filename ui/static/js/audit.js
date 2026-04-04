@@ -40,3 +40,30 @@ function loadAudit() {
 }
 
 loadAudit();
+
+var auditExportBtn = document.getElementById('audit-export-csv');
+if (auditExportBtn) {
+    auditExportBtn.addEventListener('click', function() {
+        var rows = document.querySelectorAll('#audit-table tbody tr');
+        if (!rows.length) { CSM.toast('No data to export', 'warning'); return; }
+        var lines = ['Time,Action,Target,Details,Admin IP'];
+        rows.forEach(function(r) {
+            if (r.style.display === 'none') return;
+            var cells = r.querySelectorAll('td');
+            if (cells.length < 5) return;
+            lines.push([
+                '"' + (cells[0].textContent.trim()).replace(/"/g, '""') + '"',
+                '"' + (cells[1].textContent.trim()).replace(/"/g, '""') + '"',
+                '"' + (cells[2].textContent.trim()).replace(/"/g, '""') + '"',
+                '"' + (cells[3].textContent.trim()).replace(/"/g, '""') + '"',
+                '"' + (cells[4].textContent.trim()).replace(/"/g, '""') + '"'
+            ].join(','));
+        });
+        var blob = new Blob([lines.join('\n')], {type: 'text/csv'});
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url; a.download = 'csm-audit-' + new Date().toISOString().slice(0,10) + '.csv';
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    });
+}
