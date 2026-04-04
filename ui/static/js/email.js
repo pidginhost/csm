@@ -471,15 +471,18 @@
             sevDot.className = 'status-dot ' + (t.severity === 2 ? 'status-dot-red' : 'status-dot-orange') + ' me-2';
             row.appendChild(sevDot);
 
-            if (account) {
-                var acctSpan = document.createElement('strong');
-                acctSpan.className = 'font-monospace';
-                acctSpan.textContent = account;
-                row.appendChild(acctSpan);
-            }
+            var acctSpan = document.createElement('strong');
+            acctSpan.className = 'font-monospace';
+            acctSpan.textContent = account || 'unknown';
+            row.appendChild(acctSpan);
+
+            var sep = document.createElement('span');
+            sep.className = 'text-muted mx-1';
+            sep.textContent = '—';
+            row.appendChild(sep);
 
             var typeSpan = document.createElement('span');
-            typeSpan.className = 'text-muted small ms-2';
+            typeSpan.className = 'small';
             typeSpan.textContent = checkLabel;
             row.appendChild(typeSpan);
 
@@ -490,9 +493,16 @@
 
             item.appendChild(row);
 
+            // Show a useful description, not the generic message
+            var description = t.message;
+            if (!account && description.indexOf('Account has') === 0) {
+                // Old finding without account in message — try to show something useful from details
+                description = 'Spam detected by cPanel';
+            }
+
             var msgDiv = document.createElement('div');
             msgDiv.className = 'small text-muted text-truncate mt-1';
-            msgDiv.textContent = t.message;
+            msgDiv.textContent = description;
             item.appendChild(msgDiv);
 
             container.appendChild(item);
