@@ -553,18 +553,28 @@ func mergeInfraIPs(topLevel, fwSpecific []string) []string {
 	return merged
 }
 
-// extractMailHoldSender extracts the sender from "Sender user@domain has an outgoing mail hold"
+// extractMailHoldSender extracts the account/domain from outgoing mail hold messages.
+// Two formats:
+//   "Sender user@domain has an outgoing mail hold" → "user@domain"
+//   "Domain example.com has an outgoing mail hold" → "example.com"
 func extractMailHoldSender(line string) string {
-	const prefix = "Sender "
-	idx := strings.Index(line, prefix)
-	if idx < 0 {
-		return ""
+	// Try "Sender user@domain" first
+	if idx := strings.Index(line, "Sender "); idx >= 0 {
+		rest := line[idx+7:]
+		if sp := strings.IndexByte(rest, ' '); sp > 0 {
+			return rest[:sp]
+		}
+		return rest
 	}
-	rest := line[idx+len(prefix):]
-	if sp := strings.IndexByte(rest, ' '); sp > 0 {
-		return rest[:sp]
+	// Try "Domain example.com" format
+	if idx := strings.Index(line, "Domain "); idx >= 0 {
+		rest := line[idx+7:]
+		if sp := strings.IndexByte(rest, ' '); sp > 0 {
+			return rest[:sp]
+		}
+		return rest
 	}
-	return rest
+	return ""
 }
 
 // extractBracketedIP extracts an IP from [IP]:port or [IP] format in exim logs.
