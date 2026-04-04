@@ -2,6 +2,7 @@ package checks
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -317,6 +318,403 @@ func CheckSwapAndOOM(cfg *config.Config, _ *state.Store) []alert.Finding {
 				Check:     "perf_memory",
 				Message:   "High swap usage",
 				Details:   fmt.Sprintf("Swap used: %s / %s (%.0f%%)", humanBytes(int64(swapUsed)*1024), humanBytes(int64(swapTotal)*1024), usagePct),
+				Timestamp: time.Now(),
+			})
+		}
+	}
+
+	return findings
+}
+
+// CheckPHPHandler detects PHP CGI handler usage on LiteSpeed servers.
+// On LiteSpeed, CGI is significantly slower than LSAPI; this check fires
+// a Critical finding for each PHP version using the CGI handler.
+func CheckPHPHandler(cfg *config.Config, store *state.Store) []alert.Finding {
+	if !perfEnabled(cfg) {
+		return nil
+	}
+	if !store.ShouldRunThrottled("perf_php_handler", 60) {
+		return nil
+	}
+
+	// Only relevant on LiteSpeed
+	if _, err := os.Stat("/usr/local/lsws/bin/litespeed"); err != nil {
+		return nil
+	}
+
+	var cgiVersions []string
+
+	// Try whmapi1 first
+	out, err := runCmd("whmapi1", "php_get_handlers", "--output=json")
+	if err == nil && len(out) > 0 {
+		// Parse JSON: look for handler entries with type "cgi"
+		var result struct {
+			Data struct {
+				Handlers []struct {
+					Version string `json:"version"`
+					Handler string `json:"handler"`
+					Type    string `json:"type"`
+				} `json:"handlers"`
+			} `json:"data"`
+		}
+		if jsonErr := json.Unmarshal(out, &result); jsonErr == nil {
+			for _, h := range result.Data.Handlers {
+				t := strings.ToLower(h.Handler + " " + h.Type)
+				if strings.Contains(t, "cgi") && !strings.Contains(t, "lsapi") && !strings.Contains(t, "fpm") {
+					cgiVersions = append(cgiVersions, h.Version)
+				}
+			}
+		}
+	} else {
+		// Fallback: read /etc/cpanel/ea4/ea4.conf
+		data, readErr := os.ReadFile("/etc/cpanel/ea4/ea4.conf")
+		if readErr == nil {
+			for _, line := range strings.Split(string(data), "\n") {
+				line = strings.TrimSpace(line)
+				// Lines like: ea-php74.handler = cgi
+				if !strings.Contains(line, ".handler") {
+					continue
+				}
+				parts := strings.SplitN(line, "=", 2)
+				if len(parts) != 2 {
+					continue
+				}
+				val := strings.TrimSpace(parts[1])
+				if val == "cgi" {
+					versionPart := strings.TrimSpace(parts[0])
+					cgiVersions = append(cgiVersions, versionPart)
+				}
+			}
+		}
+	}
+
+	if len(cgiVersions) == 0 {
+		return nil
+	}
+
+	return []alert.Finding{{
+		Severity:  alert.Critical,
+		Check:     "perf_php_handler",
+		Message:   "PHP handler set to CGI instead of LSAPI on LiteSpeed",
+		Details:   fmt.Sprintf("Affected PHP versions: %s", strings.Join(cgiVersions, ", ")),
+		Timestamp: time.Now(),
+	}}
+}
+
+// CheckMySQLConfig inspects MySQL global variables and runtime status for
+// performance-impacting misconfigurations. Each issue emits its own finding
+// with a stable message so deduplication works correctly.
+func CheckMySQLConfig(cfg *config.Config, store *state.Store) []alert.Finding {
+	if !perfEnabled(cfg) {
+		return nil
+	}
+	if !store.ShouldRunThrottled("perf_mysql_config", 60) {
+		return nil
+	}
+
+	var findings []alert.Finding
+
+	// --- Global variables ---
+	varOut, err := runCmd("mysql", "-N", "-B", "-e",
+		"SHOW GLOBAL VARIABLES WHERE Variable_name IN ('join_buffer_size','wait_timeout','interactive_timeout','max_user_connections','slow_query_log')")
+	if err == nil && len(varOut) > 0 {
+		joinBufThresholdBytes := int64(cfg.Performance.MySQLJoinBufferMaxMB) * 1024 * 1024
+		waitTimeoutMax := cfg.Performance.MySQLWaitTimeoutMax
+
+		for _, line := range strings.Split(string(varOut), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 2 {
+				continue
+			}
+			name := fields[0]
+			val := fields[1]
+
+			switch name {
+			case "join_buffer_size":
+				v, convErr := strconv.ParseInt(val, 10, 64)
+				if convErr == nil && v > joinBufThresholdBytes {
+					findings = append(findings, alert.Finding{
+						Severity:  alert.Critical,
+						Check:     "perf_mysql_config",
+						Message:   "MySQL join_buffer_size exceeds safe maximum",
+						Details:   fmt.Sprintf("Current: %s, Max: %s", humanBytes(v), humanBytes(joinBufThresholdBytes)),
+						Timestamp: time.Now(),
+					})
+				}
+			case "wait_timeout":
+				v, convErr := strconv.Atoi(val)
+				if convErr == nil && v > waitTimeoutMax {
+					findings = append(findings, alert.Finding{
+						Severity:  alert.High,
+						Check:     "perf_mysql_config",
+						Message:   "MySQL wait_timeout is too high",
+						Details:   fmt.Sprintf("Current: %ds, Max: %ds", v, waitTimeoutMax),
+						Timestamp: time.Now(),
+					})
+				}
+			case "interactive_timeout":
+				v, convErr := strconv.Atoi(val)
+				if convErr == nil && v > waitTimeoutMax {
+					findings = append(findings, alert.Finding{
+						Severity:  alert.High,
+						Check:     "perf_mysql_config",
+						Message:   "MySQL interactive_timeout is too high",
+						Details:   fmt.Sprintf("Current: %ds, Max: %ds", v, waitTimeoutMax),
+						Timestamp: time.Now(),
+					})
+				}
+			case "max_user_connections":
+				if val == "0" {
+					findings = append(findings, alert.Finding{
+						Severity:  alert.Warning,
+						Check:     "perf_mysql_config",
+						Message:   "MySQL max_user_connections is unlimited",
+						Details:   fmt.Sprintf("Current: 0 (unlimited), Recommended: %d", cfg.Performance.MySQLMaxConnectionsPerUser),
+						Timestamp: time.Now(),
+					})
+				}
+			case "slow_query_log":
+				if strings.ToUpper(val) == "OFF" {
+					findings = append(findings, alert.Finding{
+						Severity:  alert.Warning,
+						Check:     "perf_mysql_config",
+						Message:   "MySQL slow query log is disabled",
+						Details:   "Set slow_query_log=ON to help diagnose performance issues",
+						Timestamp: time.Now(),
+					})
+				}
+			}
+		}
+	}
+
+	// --- InnoDB buffer pool hit ratio ---
+	statusOut, err := runCmd("mysql", "-N", "-B", "-e",
+		"SHOW GLOBAL STATUS WHERE Variable_name IN ('Innodb_buffer_pool_read_requests','Innodb_buffer_pool_reads')")
+	if err == nil && len(statusOut) > 0 {
+		var readRequests, reads int64
+		for _, line := range strings.Split(string(statusOut), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 2 {
+				continue
+			}
+			v, convErr := strconv.ParseInt(fields[1], 10, 64)
+			if convErr != nil {
+				continue
+			}
+			switch fields[0] {
+			case "Innodb_buffer_pool_read_requests":
+				readRequests = v
+			case "Innodb_buffer_pool_reads":
+				reads = v
+			}
+		}
+		if readRequests > 0 {
+			hitRatio := float64(readRequests-reads) / float64(readRequests) * 100
+			if hitRatio < 95.0 {
+				findings = append(findings, alert.Finding{
+					Severity:  alert.High,
+					Check:     "perf_mysql_config",
+					Message:   "InnoDB buffer pool hit ratio is low",
+					Details:   fmt.Sprintf("Hit ratio: %.1f%% (threshold: 95%%), disk reads: %d", hitRatio, reads),
+					Timestamp: time.Now(),
+				})
+			}
+		}
+	}
+
+	// --- Per-user connection counts ---
+	plOut, err := runCmd("mysql", "-N", "-B", "-e", "SHOW PROCESSLIST")
+	if err == nil && len(plOut) > 0 {
+		userCounts := make(map[string]int)
+		for _, line := range strings.Split(string(plOut), "\n") {
+			fields := strings.Fields(line)
+			// SHOW PROCESSLIST columns: Id, User, Host, db, Command, Time, State, Info
+			if len(fields) < 2 {
+				continue
+			}
+			user := fields[1]
+			if user == "" || user == "User" {
+				continue
+			}
+			userCounts[user]++
+		}
+		maxConn := cfg.Performance.MySQLMaxConnectionsPerUser
+		for dbUser, count := range userCounts {
+			if count > maxConn {
+				findings = append(findings, alert.Finding{
+					Severity:  alert.High,
+					Check:     "perf_mysql_config",
+					Message:   "MySQL user holding excessive connections",
+					Details:   fmt.Sprintf("User: %s, Connections: %d, Threshold: %d", dbUser, count, maxConn),
+					Timestamp: time.Now(),
+				})
+			}
+		}
+	}
+
+	return findings
+}
+
+// CheckRedisConfig inspects a local Redis instance for performance-impacting
+// misconfigurations: unset maxmemory, noeviction policy, non-expiring keys,
+// and an overly aggressive bgsave schedule for the dataset size.
+func CheckRedisConfig(cfg *config.Config, store *state.Store) []alert.Finding {
+	if !perfEnabled(cfg) {
+		return nil
+	}
+	if !store.ShouldRunThrottled("perf_redis_config", 60) {
+		return nil
+	}
+
+	// Locate redis-cli
+	redisCLI := ""
+	for _, candidate := range []string{"/usr/bin/redis-cli", "/usr/local/bin/redis-cli"} {
+		if _, err := os.Stat(candidate); err == nil {
+			redisCLI = candidate
+			break
+		}
+	}
+	if redisCLI == "" {
+		return nil
+	}
+
+	var findings []alert.Finding
+
+	// --- maxmemory ---
+	maxMemOut, err := runCmd(redisCLI, "config", "get", "maxmemory")
+	if err == nil && len(maxMemOut) > 0 {
+		lines := strings.Fields(string(maxMemOut))
+		// redis config get returns two tokens: key value
+		if len(lines) >= 2 && lines[1] == "0" {
+			findings = append(findings, alert.Finding{
+				Severity:  alert.Critical,
+				Check:     "perf_redis_config",
+				Message:   "Redis maxmemory is not set",
+				Details:   "maxmemory=0 means Redis will use all available system memory without bound",
+				Timestamp: time.Now(),
+			})
+		}
+	}
+
+	// --- maxmemory-policy ---
+	policyOut, err := runCmd(redisCLI, "config", "get", "maxmemory-policy")
+	if err == nil && len(policyOut) > 0 {
+		lines := strings.Fields(string(policyOut))
+		if len(lines) >= 2 && strings.ToLower(lines[1]) == "noeviction" {
+			findings = append(findings, alert.Finding{
+				Severity:  alert.High,
+				Check:     "perf_redis_config",
+				Message:   "Redis maxmemory-policy is noeviction",
+				Details:   "noeviction causes Redis to return errors when memory is full instead of evicting keys",
+				Timestamp: time.Now(),
+			})
+		}
+	}
+
+	// --- Non-expiring keys ratio via keyspace ---
+	keyspaceOut, err := runCmd(redisCLI, "info", "keyspace")
+	if err == nil && len(keyspaceOut) > 0 {
+		var totalKeys, totalExpires int64
+		for _, line := range strings.Split(string(keyspaceOut), "\n") {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, "db") {
+				continue
+			}
+			// format: db0:keys=123,expires=45,avg_ttl=...
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) < 2 {
+				continue
+			}
+			for _, kv := range strings.Split(parts[1], ",") {
+				kv = strings.TrimSpace(kv)
+				kvParts := strings.SplitN(kv, "=", 2)
+				if len(kvParts) != 2 {
+					continue
+				}
+				v, convErr := strconv.ParseInt(kvParts[1], 10, 64)
+				if convErr != nil {
+					continue
+				}
+				switch kvParts[0] {
+				case "keys":
+					totalKeys += v
+				case "expires":
+					totalExpires += v
+				}
+			}
+		}
+		if totalKeys > 0 {
+			nonExpiring := totalKeys - totalExpires
+			ratio := float64(nonExpiring) / float64(totalKeys) * 100
+			if ratio > 95.0 {
+				findings = append(findings, alert.Finding{
+					Severity:  alert.Warning,
+					Check:     "perf_redis_config",
+					Message:   "Redis has excessive non-expiring keys",
+					Details:   fmt.Sprintf("Non-expiring: %d / %d total keys (%.1f%%)", nonExpiring, totalKeys, ratio),
+					Timestamp: time.Now(),
+				})
+			}
+		}
+	}
+
+	// --- bgsave interval vs dataset size ---
+	saveOut, _ := runCmd(redisCLI, "config", "get", "save")
+	infoOut, _ := runCmd(redisCLI, "info", "memory")
+
+	var usedMemoryBytes int64
+	if len(infoOut) > 0 {
+		for _, line := range strings.Split(string(infoOut), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "used_memory:") {
+				parts := strings.SplitN(line, ":", 2)
+				if len(parts) == 2 {
+					v, convErr := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
+					if convErr == nil {
+						usedMemoryBytes = v
+					}
+				}
+				break
+			}
+		}
+	}
+
+	const gbBytes = 1024 * 1024 * 1024
+	largeDatasetBytes := int64(cfg.Performance.RedisLargeDatasetGB) * gbBytes
+	bgsaveMinInterval := cfg.Performance.RedisBgsaveMinInterval
+
+	if usedMemoryBytes > largeDatasetBytes && len(saveOut) > 0 {
+		// save config output: "save\n<seconds> <changes>\n<seconds> <changes>\n..."
+		lines := strings.Split(string(saveOut), "\n")
+		aggressiveSave := false
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			fields := strings.Fields(line)
+			if len(fields) < 1 {
+				continue
+			}
+			// Skip the "save" key line itself
+			if fields[0] == "save" {
+				continue
+			}
+			// Each remaining line is "<seconds> <changes>" or a combined token
+			seconds, convErr := strconv.Atoi(fields[0])
+			if convErr == nil && seconds < bgsaveMinInterval {
+				aggressiveSave = true
+				break
+			}
+		}
+		if aggressiveSave {
+			findings = append(findings, alert.Finding{
+				Severity:  alert.High,
+				Check:     "perf_redis_config",
+				Message:   "Redis bgsave interval too aggressive for dataset size",
+				Details: fmt.Sprintf(
+					"Used memory: %s, Threshold: %s, Minimum safe bgsave interval: %ds",
+					humanBytes(usedMemoryBytes),
+					humanBytes(largeDatasetBytes),
+					bgsaveMinInterval,
+				),
 				Timestamp: time.Now(),
 			})
 		}
