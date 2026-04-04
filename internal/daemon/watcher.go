@@ -275,8 +275,12 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 	}
 
 	// 2. Outgoing mail hold — account suspended for spam
+	// Format: "Sender office@nordkey.ro has an outgoing mail hold"
 	if strings.Contains(line, "outgoing mail hold") {
-		sender := extractEximSender(line)
+		sender := extractMailHoldSender(line)
+		if sender == "" {
+			sender = extractEximSender(line) // fallback
+		}
 		findings = append(findings, alert.Finding{
 			Severity: alert.Critical,
 			Check:    "email_compromised_account",
@@ -354,14 +358,23 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 		}
 	}
 
-	// 6. High bounce rate indicator — dovecot auth failure after successful send
+	// 6. Dovecot auth failure — brute force indicator
+	// Format: "dovecot_login authenticator failed for H=(hostname) [IP]:port: 535 ... (set_id=user@domain)"
 	if strings.Contains(line, "authenticator failed") && strings.Contains(line, "dovecot") {
-		ip := extractIPFromLogDaemon(line)
+		ip := extractBracketedIP(line)
+		account := extractSetID(line)
+		msg := "Email authentication failure"
+		if account != "" {
+			msg += " for " + account
+		}
+		if ip != "" {
+			msg += " from " + ip
+		}
 		findings = append(findings, alert.Finding{
 			Severity: alert.High,
 			Check:    "email_auth_failure_realtime",
-			Message:  fmt.Sprintf("Email authentication failure from %s", ip),
-			Details:  truncateDaemon(line, 200),
+			Message:  msg,
+			Details:  truncateDaemon(line, 300),
 		})
 	}
 
@@ -538,6 +551,54 @@ func mergeInfraIPs(topLevel, fwSpecific []string) []string {
 		}
 	}
 	return merged
+}
+
+// extractMailHoldSender extracts the sender from "Sender user@domain has an outgoing mail hold"
+func extractMailHoldSender(line string) string {
+	const prefix = "Sender "
+	idx := strings.Index(line, prefix)
+	if idx < 0 {
+		return ""
+	}
+	rest := line[idx+len(prefix):]
+	if sp := strings.IndexByte(rest, ' '); sp > 0 {
+		return rest[:sp]
+	}
+	return rest
+}
+
+// extractBracketedIP extracts an IP from [IP]:port or [IP] format in exim logs.
+func extractBracketedIP(line string) string {
+	// Find the LAST [IP] in the line (the client IP, not the hostname)
+	lastBracket := strings.LastIndex(line, "[")
+	if lastBracket < 0 {
+		return ""
+	}
+	rest := line[lastBracket+1:]
+	end := strings.IndexByte(rest, ']')
+	if end < 0 {
+		return ""
+	}
+	ip := rest[:end]
+	if len(ip) >= 7 && (ip[0] >= '0' && ip[0] <= '9' || ip[0] == ':') {
+		return ip
+	}
+	return ""
+}
+
+// extractSetID extracts the account from "(set_id=user@domain)" or "(set_id=user)" in exim logs.
+func extractSetID(line string) string {
+	const prefix = "set_id="
+	idx := strings.Index(line, prefix)
+	if idx < 0 {
+		return ""
+	}
+	rest := line[idx+len(prefix):]
+	end := strings.IndexAny(rest, ")\n ")
+	if end < 0 {
+		return rest
+	}
+	return rest[:end]
 }
 
 func truncateDaemon(s string, maxLen int) string {

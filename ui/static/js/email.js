@@ -417,17 +417,21 @@
             var row = document.createElement('div');
             row.className = 'd-flex align-items-center';
 
-            var badge = document.createElement('span');
-            badge.className = 'badge ' + sevClass + ' me-2';
-            badge.textContent = checkLabel;
-            row.appendChild(badge);
+            var sevDot = document.createElement('span');
+            sevDot.className = 'status-dot ' + (t.severity === 2 ? 'status-dot-red' : 'status-dot-orange') + ' me-2';
+            row.appendChild(sevDot);
 
             if (account) {
-                var acctSpan = document.createElement('span');
-                acctSpan.className = 'font-monospace small';
+                var acctSpan = document.createElement('strong');
+                acctSpan.className = 'font-monospace';
                 acctSpan.textContent = account;
                 row.appendChild(acctSpan);
             }
+
+            var typeSpan = document.createElement('span');
+            typeSpan.className = 'text-muted small ms-2';
+            typeSpan.textContent = '(' + checkLabel + ')';
+            row.appendChild(typeSpan);
 
             var timeSpan = document.createElement('span');
             timeSpan.className = 'ms-auto text-muted small';
