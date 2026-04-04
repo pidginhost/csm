@@ -25,6 +25,7 @@ type dashboardData struct {
 	Total           int
 	SigCount        int
 	FanotifyActive  bool
+	LogWatchers     int
 	LastCriticalAgo string
 	RecentFindings  []historyEntry
 }
@@ -60,7 +61,19 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 	findings := s.store.ReadHistorySince(last24h)
 
 	var recent []historyEntry
+	critical, high, warning := 0, 0, 0
+
 	for _, f := range findings {
+		// Count all findings by severity
+		switch f.Severity {
+		case alert.Critical:
+			critical++
+		case alert.High:
+			high++
+		case alert.Warning:
+			warning++
+		}
+
 		// Skip internal checks from the live feed
 		if f.Check == "auto_response" || f.Check == "auto_block" || f.Check == "check_timeout" || f.Check == "health" {
 			continue
@@ -91,16 +104,16 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 
-	// Stats counters start at 0 — dashboard.js populates them via /api/v1/stats
 	data := dashboardData{
 		Hostname:        s.cfg.Hostname,
 		Uptime:          time.Since(s.startTime).Round(time.Second).String(),
-		Critical:        0,
-		High:            0,
-		Warning:         0,
-		Total:           0,
+		Critical:        critical,
+		High:            high,
+		Warning:         warning,
+		Total:           critical + high + warning,
 		SigCount:        s.sigCount,
 		FanotifyActive:  s.fanotifyActive,
+		LogWatchers:     s.logWatcherCount,
 		LastCriticalAgo: lastCriticalAgo,
 		RecentFindings:  recent,
 	}

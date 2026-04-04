@@ -267,7 +267,6 @@
                 setText('stat-critical', s.critical);
                 setText('stat-high', s.high);
                 setText('stat-warning', s.warning);
-                setText('stat-total', s.total);
                 if (data.last_critical_ago) {
                     setText('stat-last-critical', data.last_critical_ago);
                 }
