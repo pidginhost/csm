@@ -111,15 +111,7 @@ function loadSuppressions() {
             btn.addEventListener('click', function() {
                 var id = this.getAttribute('data-id');
                 CSM.confirm('Remove this suppression rule?').then(function() {
-                    fetch(CSM.apiUrl('/api/v1/suppressions'), {
-                        method: 'DELETE',
-                        credentials: 'same-origin',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'X-CSRF-Token': CSM.csrfToken
-                        },
-                        body: JSON.stringify({id: id})
-                    }).then(function(r) { return r.json(); }).then(function(data) {
+                    CSM.delete('/api/v1/suppressions', {id: id}).then(function(data) {
                         if (data.status === 'deleted') {
                             CSM.toast('Suppression rule removed', 'success');
                             loadSuppressions();
