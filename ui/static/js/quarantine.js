@@ -6,10 +6,10 @@ function loadQuarantine() {
         var title = document.querySelector('.card-title');
         if (title) title.innerHTML = '<i class="ti ti-lock"></i>&nbsp;Quarantined Files (' + (files ? files.length : 0) + ')';
         if (!files || files.length === 0) { el.innerHTML = '<div class="card-body text-center text-muted py-4"><i class="ti ti-circle-check"></i> No quarantined files.</div>'; return; }
-        var html = '<div class="table-responsive"><table class="table table-vcenter card-table" id="quarantine-table"><thead><tr><th>Original Path</th><th>Size</th><th>Quarantined</th><th>Reason</th><th>Action</th></tr></thead><tbody>';
+        var html = '<div class="table-responsive"><table class="table table-vcenter card-table" id="quarantine-table"><thead><tr><th><input type="checkbox" class="form-check-input" id="q-select-all"></th><th>Original Path</th><th>Size</th><th>Quarantined</th><th>Reason</th><th>Action</th></tr></thead><tbody>';
         for (var i = 0; i < files.length; i++) {
             var f = files[i];
-            html += '<tr><td><code>'+CSM.esc(f.original_path)+'</code></td><td>'+formatSize(f.size)+'</td><td class="text-nowrap"><span class="text-muted small">'+CSM.esc(f.quarantined_at)+'</span></td><td class="small">'+CSM.esc(f.reason)+'</td><td><button class="btn btn-sm btn-ghost-secondary me-1 view-btn" data-id="'+CSM.esc(f.id)+'" data-path="'+CSM.esc(f.original_path)+'">View</button><button class="btn btn-sm btn-warning restore-btn" data-id="'+CSM.esc(f.id)+'">Restore</button></td></tr>';
+            html += '<tr><td><input type="checkbox" class="form-check-input q-cb" data-id="'+CSM.esc(f.id)+'"></td><td><code>'+CSM.esc(f.original_path)+'</code></td><td>'+formatSize(f.size)+'</td><td class="text-nowrap"><span class="text-muted small">'+CSM.esc(f.quarantined_at)+'</span></td><td class="small">'+CSM.esc(f.reason)+'</td><td><button class="btn btn-sm btn-ghost-secondary me-1 view-btn" data-id="'+CSM.esc(f.id)+'" data-path="'+CSM.esc(f.original_path)+'">View</button><button class="btn btn-sm btn-warning restore-btn" data-id="'+CSM.esc(f.id)+'">Restore</button></td></tr>';
         }
         html += '</tbody></table></div>';
         el.innerHTML = html;
@@ -21,6 +21,18 @@ function loadQuarantine() {
         });
         el.querySelectorAll('.view-btn').forEach(function(btn) {
             btn.addEventListener('click', function() { viewFile(this.getAttribute('data-id'), this.getAttribute('data-path')); });
+        });
+        // Bulk restore: select-all and per-row checkboxes
+        var selectAll = document.getElementById('q-select-all');
+        if (selectAll) {
+            selectAll.addEventListener('change', function() {
+                var checked = this.checked;
+                el.querySelectorAll('.q-cb').forEach(function(cb) { cb.checked = checked; });
+                updateBulkRestore();
+            });
+        }
+        el.querySelectorAll('.q-cb').forEach(function(cb) {
+            cb.addEventListener('change', updateBulkRestore);
         });
     }).catch(function(){ CSM.loadError(document.getElementById('quarantine-content'), loadQuarantine); });
 }
@@ -46,4 +58,39 @@ function viewFile(id, path) {
         .catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
 }
 var formatSize = CSM.formatSize;
+
+function updateBulkRestore() {
+    var checked = document.querySelectorAll('.q-cb:checked');
+    var btn = document.getElementById('bulk-restore-btn');
+    if (btn) {
+        btn.classList.toggle('d-none', checked.length === 0);
+        btn.textContent = 'Restore ' + checked.length + ' file(s)';
+    }
+}
+
+var bulkRestoreBtn = document.getElementById('bulk-restore-btn');
+if (bulkRestoreBtn) {
+    bulkRestoreBtn.addEventListener('click', function() {
+        var checked = document.querySelectorAll('.q-cb:checked');
+        if (checked.length === 0) return;
+        var ids = [];
+        checked.forEach(function(cb) { ids.push(cb.dataset.id); });
+        CSM.confirm('Restore ' + ids.length + ' file(s)? A re-scan is recommended after restore.').then(function() {
+            var succeeded = 0, failed = 0;
+            var chain = Promise.resolve();
+            ids.forEach(function(id) {
+                chain = chain.then(function() {
+                    return CSM.post('/api/v1/quarantine-restore', {id: id})
+                        .then(function() { succeeded++; })
+                        .catch(function() { failed++; });
+                });
+            });
+            chain.then(function() {
+                CSM.toast('Restored ' + succeeded + ' of ' + (succeeded + failed) + ' file(s)', failed > 0 ? 'warning' : 'success');
+                loadQuarantine();
+            });
+        }).catch(function() {});
+    });
+}
+
 loadQuarantine();
