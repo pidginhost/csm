@@ -110,6 +110,27 @@ func deepChecks() []namedCheck {
 	}
 }
 
+// PerfCheckNamesForTier returns the perf_* check names registered in the given tier.
+// Used by the daemon to perform an atomic purge-and-merge when storing findings.
+func PerfCheckNamesForTier(tier Tier) []string {
+	var toScan []namedCheck
+	switch tier {
+	case TierCritical:
+		toScan = criticalChecks()
+	case TierDeep:
+		toScan = deepChecks()
+	case TierAll:
+		toScan = append(criticalChecks(), deepChecks()...)
+	}
+	var names []string
+	for _, nc := range toScan {
+		if strings.HasPrefix(nc.name, "perf_") {
+			names = append(names, nc.name)
+		}
+	}
+	return names
+}
+
 // RunTier runs only the specified tier of checks.
 func RunTier(cfg *config.Config, store *state.Store, tier Tier) []alert.Finding {
 	var toRun []namedCheck
@@ -211,17 +232,6 @@ func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck) []
 	}
 
 	wg.Wait()
-
-	// Purge stale perf findings for checks in this batch before merge.
-	var perfCheckNames []string
-	for _, nc := range checks {
-		if strings.HasPrefix(nc.name, "perf_") {
-			perfCheckNames = append(perfCheckNames, nc.name)
-		}
-	}
-	if len(perfCheckNames) > 0 {
-		store.PurgeFindingsByChecks(perfCheckNames)
-	}
 
 	now := time.Now()
 	for i := range findings {

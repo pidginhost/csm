@@ -537,6 +537,52 @@ func (s *Store) PurgeFindingsByChecks(checks []string) {
 	_ = os.Rename(tmpPath, filepath.Join(s.path, "latest_findings.json"))
 }
 
+// PurgeAndMergeFindings atomically removes findings matching the given check
+// names and then merges the new findings. This prevents a race window where
+// concurrent readers could see findings with perf checks missing.
+func (s *Store) PurgeAndMergeFindings(purgeChecks []string, findings []alert.Finding) {
+	s.latestMu.Lock()
+	defer s.latestMu.Unlock()
+
+	// Build set of checks to purge
+	remove := make(map[string]bool, len(purgeChecks))
+	for _, c := range purgeChecks {
+		remove[c] = true
+	}
+
+	// Build map: keep existing non-purged findings
+	existing := make(map[string]alert.Finding)
+	for _, f := range s.latestFindings {
+		if !remove[f.Check] {
+			key := f.Check + ":" + f.Message
+			existing[key] = f
+		}
+	}
+
+	// Merge new findings
+	for _, f := range findings {
+		key := f.Check + ":" + f.Message
+		existing[key] = f
+	}
+
+	// Flatten
+	var merged []alert.Finding
+	for _, f := range existing {
+		merged = append(merged, f)
+	}
+	if len(merged) > 15000 {
+		merged = merged[:15000]
+	}
+	s.latestFindings = merged
+	s.latestScanTime = time.Now()
+
+	// Persist
+	data, _ := json.Marshal(merged)
+	tmpPath := filepath.Join(s.path, "latest_findings.json.tmp")
+	_ = os.WriteFile(tmpPath, data, 0600)
+	_ = os.Rename(tmpPath, filepath.Join(s.path, "latest_findings.json"))
+}
+
 // ClearLatestFindings removes all findings from the latest set.
 // Use before SetLatestFindings for a full replace (e.g. initial scan).
 func (s *Store) ClearLatestFindings() {

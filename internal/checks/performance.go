@@ -290,20 +290,51 @@ func CheckSwapAndOOM(cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	// Check dmesg for OOM events
-	dmesgOut, err := runCmd("dmesg", "--level=err", "-T")
-	if err == nil && dmesgOut != nil {
+	// Prefer ISO timestamps so we can filter to the last hour.
+	// Fall back to -T (human-readable) on older kernels that don't support --time-format.
+	dmesgOut, isoErr := runCmd("dmesg", "--time-format", "iso", "--level=err")
+	useISO := isoErr == nil && dmesgOut != nil
+	if !useISO {
+		dmesgOut, _ = runCmd("dmesg", "--level=err", "-T")
+	}
+	if dmesgOut != nil {
+		cutoff := time.Now().Add(-1 * time.Hour)
 		for _, line := range strings.Split(string(dmesgOut), "\n") {
 			lower := strings.ToLower(line)
-			if strings.Contains(lower, "out of memory") || strings.Contains(lower, "oom_reaper") {
-				findings = append(findings, alert.Finding{
-					Severity:  alert.Critical,
-					Check:     "perf_memory",
-					Message:   "OOM killer invoked in the last hour",
-					Details:   strings.TrimSpace(line),
-					Timestamp: time.Now(),
-				})
-				break // one finding is enough
+			if !(strings.Contains(lower, "out of memory") || strings.Contains(lower, "oom_reaper")) {
+				continue
 			}
+			if useISO {
+				// ISO format: 2006-01-02T15:04:05,000000+0300
+				// The timestamp is the first field before the first space.
+				ts := strings.SplitN(line, " ", 2)[0]
+				// Normalise: replace comma-decimal with period so time.Parse handles it.
+				ts = strings.Replace(ts, ",", ".", 1)
+				// Try parsing with timezone offset (+hhmm or +hh:mm).
+				var parsed time.Time
+				var parseErr error
+				for _, layout := range []string{"2006-01-02T15:04:05.000000-0700", "2006-01-02T15:04:05.000000-07:00"} {
+					parsed, parseErr = time.Parse(layout, ts)
+					if parseErr == nil {
+						break
+					}
+				}
+				if parseErr != nil || parsed.Before(cutoff) {
+					continue
+				}
+			}
+			message := "OOM killer detected in dmesg"
+			if useISO {
+				message = "OOM killer invoked in the last hour"
+			}
+			findings = append(findings, alert.Finding{
+				Severity:  alert.Critical,
+				Check:     "perf_memory",
+				Message:   message,
+				Details:   strings.TrimSpace(line),
+				Timestamp: time.Now(),
+			})
+			break // one finding is enough
 		}
 	}
 
@@ -488,11 +519,11 @@ func CheckMySQLConfig(cfg *config.Config, store *state.Store) []alert.Finding {
 		}
 	}
 
-	// --- InnoDB buffer pool hit ratio ---
+	// --- InnoDB buffer pool hit ratio + temporary disk tables ---
 	statusOut, err := runCmd("mysql", "-N", "-B", "-e",
-		"SHOW GLOBAL STATUS WHERE Variable_name IN ('Innodb_buffer_pool_read_requests','Innodb_buffer_pool_reads')")
+		"SHOW GLOBAL STATUS WHERE Variable_name IN ('Innodb_buffer_pool_read_requests','Innodb_buffer_pool_reads','Created_tmp_disk_tables','Created_tmp_tables')")
 	if err == nil && len(statusOut) > 0 {
-		var readRequests, reads int64
+		var readRequests, reads, tmpDiskTables, tmpTables int64
 		for _, line := range strings.Split(string(statusOut), "\n") {
 			fields := strings.Fields(line)
 			if len(fields) < 2 {
@@ -507,6 +538,22 @@ func CheckMySQLConfig(cfg *config.Config, store *state.Store) []alert.Finding {
 				readRequests = v
 			case "Innodb_buffer_pool_reads":
 				reads = v
+			case "Created_tmp_disk_tables":
+				tmpDiskTables = v
+			case "Created_tmp_tables":
+				tmpTables = v
+			}
+		}
+		if tmpTables > 0 && tmpDiskTables > 0 {
+			diskRatio := float64(tmpDiskTables) / float64(tmpTables) * 100
+			if diskRatio > 25.0 {
+				findings = append(findings, alert.Finding{
+					Severity:  alert.Warning,
+					Check:     "perf_mysql_config",
+					Message:   "MySQL creating excessive temporary tables on disk",
+					Details:   fmt.Sprintf("Disk ratio: %.1f%% (%d disk tables / %d total tables)", diskRatio, tmpDiskTables, tmpTables),
+					Timestamp: time.Now(),
+				})
 			}
 		}
 		if readRequests > 0 {

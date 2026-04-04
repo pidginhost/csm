@@ -477,14 +477,17 @@ func (d *Daemon) deepScanner() {
 			// If fanotify is active, only run checks it can't replace.
 			// If fanotify is NOT active, run the full deep tier.
 			var findings []alert.Finding
+			var deepTier checks.Tier
 			if d.fileMonitor != nil {
 				findings = checks.RunReducedDeep(d.cfg, d.store)
+				deepTier = checks.TierDeep
 			} else {
-				findings = checks.RunTier(d.cfg, d.store, checks.TierDeep)
+				deepTier = checks.TierDeep
+				findings = checks.RunTier(d.cfg, d.store, deepTier)
 			}
 			if len(findings) > 0 {
-				// Merge into Findings page (same as criticalScanner does)
-				d.store.SetLatestFindings(findings)
+				// Atomically purge stale perf findings and merge new ones.
+				d.store.PurgeAndMergeFindings(checks.PerfCheckNamesForTier(deepTier), findings)
 				for _, f := range findings {
 					if strings.HasPrefix(f.Check, "perf_") && f.Severity == alert.Warning {
 						continue
@@ -520,8 +523,8 @@ func (d *Daemon) runPeriodicChecks(tier checks.Tier) {
 
 	findings := checks.RunTier(d.cfg, d.store, tier)
 	if len(findings) > 0 {
-		// Update latest findings for the Findings page
-		d.store.SetLatestFindings(findings)
+		// Atomically purge stale perf findings and merge new ones.
+		d.store.PurgeAndMergeFindings(checks.PerfCheckNamesForTier(tier), findings)
 		for _, f := range findings {
 			if strings.HasPrefix(f.Check, "perf_") && f.Severity == alert.Warning {
 				continue

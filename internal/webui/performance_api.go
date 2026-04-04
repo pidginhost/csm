@@ -32,7 +32,6 @@ type perfMetrics struct {
 	SwapUsedMB  uint64      `json:"swap_used_mb"`
 	PHPProcs    int         `json:"php_procs_total"`
 	TopPHPUsers []userProcs `json:"top_php_users"`
-	MySQLCPU    float64     `json:"mysql_cpu_pct"`
 	MySQLMemMB  uint64      `json:"mysql_mem_mb"`
 	MySQLConns  int         `json:"mysql_conns"`
 	RedisMemMB  uint64      `json:"redis_mem_mb"`
