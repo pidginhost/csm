@@ -92,6 +92,37 @@
             row.appendChild(v);
             el.appendChild(row);
         }
+
+        // Protection features status (merged into same card)
+        var hr = document.createElement('hr');
+        hr.className = 'my-2';
+        el.appendChild(hr);
+
+        var protTitle = document.createElement('div');
+        protTitle.className = 'subheader mb-2';
+        protTitle.textContent = 'Protection Features';
+        el.appendChild(protTitle);
+
+        var features = [
+            ['Password Audit', '24h cycle'],
+            ['Geo Login', 'Realtime'],
+            ['Rate Limiting', 'Realtime'],
+            ['Forwarder Audit', 'Realtime + 24h'],
+            ['DKIM/SPF', 'Realtime']
+        ];
+        for (var p = 0; p < features.length; p++) {
+            var frow = document.createElement('div');
+            frow.className = 'd-flex justify-content-between mb-1';
+            var fl = document.createElement('span');
+            fl.className = 'text-muted small';
+            fl.textContent = features[p][0];
+            var fv = document.createElement('span');
+            fv.className = 'small text-green';
+            fv.textContent = features[p][1];
+            frow.appendChild(fl);
+            frow.appendChild(fv);
+            el.appendChild(frow);
+        }
     }
 
     function renderTopSenders(senders) {
@@ -245,8 +276,8 @@
             var cls = CSM.severityClass(f.severity);
 
             // Extract useful fields from message and details
-            var account = extractFieldFromDetails(f.details, 'Account') || extractAccountFromMessage(f.message);
-            var ip = extractFieldFromDetails(f.details, 'IP') || extractIPFromMessage(f.message);
+            var account = extractAccountFromMessage(f.message, f.details);
+            var ip = extractIPFromMessage(f.message, f.details);
             var shortMsg = f.message;
             // Make check name human-readable
             var checkLabel = f.check.replace(/_/g, ' ').replace(/realtime$/, '').replace(/^email /, '');
@@ -266,28 +297,45 @@
             }
         }
 
-        // Helper: extract field from details (format "Key: value\n")
-        function extractFieldFromDetails(details, key) {
-            if (!details) return '';
-            var lines = details.split('\n');
-            for (var j = 0; j < lines.length; j++) {
-                if (lines[j].indexOf(key + ':') === 0 || lines[j].indexOf(key + ': ') === 0) {
-                    return lines[j].substring(key.length + 1).trim();
-                }
+        function extractAccountFromMessage(msg, details) {
+            // "Email authentication failure for admin@arvamet.ro from 73.85.44.247"
+            var m = msg.match(/for (\S+@\S+)/);
+            if (m) return m[1];
+            // "Account office@nordkey.ro has outgoing mail hold"
+            m = msg.match(/Account (\S+@\S+)/);
+            if (m) return m[1];
+            // "Compromised email account user@domain"
+            m = msg.match(/account (\S+@\S+)/);
+            if (m) return m[1];
+            // "High email volume from example.com"
+            m = msg.match(/volume from (\S+)/);
+            if (m) return m[1];
+            // Fallback: extract set_id from details
+            if (details) {
+                m = details.match(/set_id=(\S+)/);
+                if (m) return m[1].replace(/[)]/g, '');
             }
+            // Fallback: extract Sender from details
+            if (details) {
+                m = details.match(/Sender (\S+@\S+)/);
+                if (m) return m[1];
+            }
+            // "Domain example.com has exceeded"
+            m = msg.match(/Domain (\S+)/);
+            if (m) return m[1];
             return '';
         }
 
-        function extractAccountFromMessage(msg) {
-            // "Account xyz has outgoing mail hold" → "xyz"
-            var m = msg.match(/(?:Account |account |from )(\S+)/);
-            return m ? m[1] : '';
-        }
-
-        function extractIPFromMessage(msg) {
-            // "... from 1.2.3.4" or "failure from 1.2.3.4"
+        function extractIPFromMessage(msg, details) {
+            // "... from 1.2.3.4"
             var m = msg.match(/from (\d+\.\d+\.\d+\.\d+)/);
-            return m ? m[1] : '';
+            if (m) return m[1];
+            // Fallback: [IP] in details
+            if (details) {
+                m = details.match(/\[(\d+\.\d+\.\d+\.\d+)\]/);
+                if (m) return m[1];
+            }
+            return '';
         }
 
         tbody.innerHTML = html;
@@ -417,6 +465,8 @@
             var row = document.createElement('div');
             row.className = 'd-flex align-items-center';
 
+            var account = extractAccountFromMsg(t.message, t.details);
+
             var sevDot = document.createElement('span');
             sevDot.className = 'status-dot ' + (t.severity === 2 ? 'status-dot-red' : 'status-dot-orange') + ' me-2';
             row.appendChild(sevDot);
@@ -430,7 +480,7 @@
 
             var typeSpan = document.createElement('span');
             typeSpan.className = 'text-muted small ms-2';
-            typeSpan.textContent = '(' + checkLabel + ')';
+            typeSpan.textContent = checkLabel;
             row.appendChild(typeSpan);
 
             var timeSpan = document.createElement('span');
@@ -459,9 +509,22 @@
         }
     }
 
-    function extractAccountFromMsg(msg) {
-        var m = msg.match(/(?:Account |account |from )(\S+)/);
-        return m ? m[1] : '';
+    function extractAccountFromMsg(msg, details) {
+        var m = msg.match(/for (\S+@\S+)/);
+        if (m) return m[1];
+        m = msg.match(/Account (\S+@\S+)/);
+        if (m) return m[1];
+        m = msg.match(/account (\S+@\S+)/);
+        if (m) return m[1];
+        if (details) {
+            m = details.match(/Sender (\S+@\S+)/);
+            if (m) return m[1];
+            m = details.match(/set_id=(\S+)/);
+            if (m) return m[1].replace(/[)]/g, '');
+        }
+        m = msg.match(/Domain (\S+)/);
+        if (m) return m[1];
+        return '';
     }
 
     // --- Email AV Status & Quarantine ---
