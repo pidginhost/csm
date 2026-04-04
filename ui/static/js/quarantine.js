@@ -54,13 +54,19 @@ function viewFile(id, path) {
             var preview = data.preview || '(empty file)';
 
             var modal = document.getElementById('csm-confirm-modal');
+            var dialog = modal ? modal.querySelector('.modal-dialog') : null;
             var body = document.getElementById('csm-confirm-body');
             var okBtn = document.getElementById('csm-confirm-ok');
             var cancelBtn = document.getElementById('csm-confirm-cancel');
-            if (!modal || !body) return;
+            if (!modal || !body || !dialog) return;
 
-            // Build preview content using DOM methods
+            // Make modal large for file preview
+            dialog.classList.remove('modal-sm');
+            dialog.classList.add('modal-lg');
+
+            // Build preview content
             body.textContent = '';
+            body.style.whiteSpace = 'normal';
             var header = document.createElement('div');
             header.style.cssText = 'margin-bottom:8px';
             var strong = document.createElement('strong');
@@ -75,15 +81,13 @@ function viewFile(id, path) {
             body.appendChild(header);
 
             var pre = document.createElement('pre');
-            pre.style.cssText = 'max-height:400px;overflow:auto;background:var(--tblr-bg-surface);padding:12px;border-radius:4px;font-size:0.75rem;white-space:pre-wrap;word-break:break-all;border:1px solid var(--tblr-border-color)';
+            pre.style.cssText = 'max-height:60vh;overflow:auto;padding:12px;border-radius:4px;font-size:0.75rem;white-space:pre-wrap;word-break:break-all;border:1px solid var(--csm-border);background:var(--csm-bg-card);color:var(--csm-text)';
             pre.textContent = preview;
             body.appendChild(pre);
 
-            // Configure buttons
             if (okBtn) okBtn.textContent = 'Close';
             if (cancelBtn) cancelBtn.style.display = 'none';
 
-            // Show modal
             modal.classList.add('show');
             modal.style.display = 'block';
             modal.setAttribute('aria-hidden', 'false');
@@ -95,6 +99,10 @@ function viewFile(id, path) {
                 modal.classList.remove('show');
                 modal.style.display = 'none';
                 modal.setAttribute('aria-hidden', 'true');
+                // Restore modal to default small size
+                dialog.classList.remove('modal-lg');
+                dialog.classList.add('modal-sm');
+                body.style.whiteSpace = '';
                 if (okBtn) { okBtn.textContent = 'OK'; okBtn.removeEventListener('click', closeModal); }
                 if (cancelBtn) cancelBtn.style.display = '';
                 if (backdrop.parentNode) backdrop.parentNode.removeChild(backdrop);
