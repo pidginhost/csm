@@ -117,6 +117,15 @@ type Config struct {
 
 	EmailAV EmailAVConfig `yaml:"email_av"`
 
+	EmailProtection struct {
+		PasswordCheckIntervalMin int      `yaml:"password_check_interval_min"`
+		HighVolumeSenders        []string `yaml:"high_volume_senders"`
+		RateWarnThreshold        int      `yaml:"rate_warn_threshold"`
+		RateCritThreshold        int      `yaml:"rate_crit_threshold"`
+		RateWindowMin            int      `yaml:"rate_window_min"`
+		KnownForwarders          []string `yaml:"known_forwarders"`
+	} `yaml:"email_protection"`
+
 	Firewall *firewall.FirewallConfig `yaml:"firewall"`
 
 	GeoIP struct {
@@ -208,6 +217,19 @@ func Load(path string) (*Config, error) {
 		cfg.GeoIP.UpdateInterval = "24h"
 	}
 	EmailAVDefaults(&cfg.EmailAV)
+
+	if cfg.EmailProtection.PasswordCheckIntervalMin == 0 {
+		cfg.EmailProtection.PasswordCheckIntervalMin = 1440
+	}
+	if cfg.EmailProtection.RateWarnThreshold == 0 {
+		cfg.EmailProtection.RateWarnThreshold = 50
+	}
+	if cfg.EmailProtection.RateCritThreshold == 0 {
+		cfg.EmailProtection.RateCritThreshold = 100
+	}
+	if cfg.EmailProtection.RateWindowMin == 0 {
+		cfg.EmailProtection.RateWindowMin = 10
+	}
 
 	return cfg, nil
 }
