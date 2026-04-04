@@ -31,19 +31,17 @@
 
     <!-- IP Lookup -->
     <div class="card mb-3">
-        <div class="card-header"><h3 class="card-title"><i class="ti ti-search"></i>&nbsp;IP Lookup</h3></div>
-        <div class="card-body">
-            <form id="lookup-form" class="row g-2 align-items-end">
-                <div class="col-auto">
+        <div class="card-header">
+            <h3 class="card-title"><i class="ti ti-search"></i>&nbsp;IP Lookup</h3>
+            <div class="card-actions">
+                <form id="lookup-form" class="d-flex gap-2 align-items-center">
                     <input type="text" id="lookup-ip" class="form-control form-control-sm font-monospace csm-input-lg" placeholder="1.2.3.4">
-                </div>
-                <div class="col-auto">
-                    <button type="submit" class="btn btn-primary btn-sm" title="Look up threat intelligence data for this IP"><i class="ti ti-search"></i>&nbsp;Lookup</button>
-                </div>
-                <div class="col-auto"><span id="lookup-status" class="text-muted small"></span></div>
-            </form>
-            <div id="lookup-result" class="mt-3 d-none"></div>
+                    <button type="submit" class="btn btn-primary btn-sm text-nowrap" title="Look up threat intelligence data for this IP"><i class="ti ti-search"></i>&nbsp;Lookup</button>
+                    <span id="lookup-status" class="text-muted small text-nowrap"></span>
+                </form>
+            </div>
         </div>
+        <div id="lookup-result" class="d-none p-3"></div>
     </div>
 
     <!-- Top Attackers -->
