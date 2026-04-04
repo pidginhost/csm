@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -485,6 +486,9 @@ func (d *Daemon) deepScanner() {
 				// Merge into Findings page (same as criticalScanner does)
 				d.store.SetLatestFindings(findings)
 				for _, f := range findings {
+					if strings.HasPrefix(f.Check, "perf_") && f.Severity == alert.Warning {
+						continue
+					}
 					select {
 					case d.alertCh <- f:
 					default:
@@ -519,6 +523,9 @@ func (d *Daemon) runPeriodicChecks(tier checks.Tier) {
 		// Update latest findings for the Findings page
 		d.store.SetLatestFindings(findings)
 		for _, f := range findings {
+			if strings.HasPrefix(f.Check, "perf_") && f.Severity == alert.Warning {
+				continue
+			}
 			select {
 			case d.alertCh <- f:
 			default:

@@ -2,6 +2,7 @@ package checks
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -70,6 +71,9 @@ func criticalChecks() []namedCheck {
 		{"local_threat_score", CheckLocalThreatScore},
 		{"modsec_audit", CheckModSecAuditLog},
 		{"health", CheckHealth},
+		{"perf_load", CheckLoadAverage},
+		{"perf_php_processes", CheckPHPProcessLoad},
+		{"perf_memory", CheckSwapAndOOM},
 	}
 }
 
@@ -96,6 +100,13 @@ func deepChecks() []namedCheck {
 		{"outdated_plugins", CheckOutdatedPlugins},
 		{"email_weak_password", CheckEmailPasswords},
 		{"email_forwarder_audit", CheckForwarders},
+		{"perf_php_handler", CheckPHPHandler},
+		{"perf_mysql_config", CheckMySQLConfig},
+		{"perf_redis_config", CheckRedisConfig},
+		{"perf_error_logs", CheckErrorLogBloat},
+		{"perf_wp_config", CheckWPConfig},
+		{"perf_wp_transients", CheckWPTransientBloat},
+		{"perf_wp_cron", CheckWPCron},
 	}
 }
 
@@ -136,6 +147,13 @@ func RunReducedDeep(cfg *config.Config, store *state.Store) []alert.Finding {
 		{"outdated_plugins", CheckOutdatedPlugins},
 		{"email_weak_password", CheckEmailPasswords},
 		{"email_forwarder_audit", CheckForwarders},
+		{"perf_php_handler", CheckPHPHandler},
+		{"perf_mysql_config", CheckMySQLConfig},
+		{"perf_redis_config", CheckRedisConfig},
+		{"perf_error_logs", CheckErrorLogBloat},
+		{"perf_wp_config", CheckWPConfig},
+		{"perf_wp_transients", CheckWPTransientBloat},
+		{"perf_wp_cron", CheckWPCron},
 	}
 	return runParallel(cfg, store, reduced)
 }
@@ -193,6 +211,17 @@ func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck) []
 	}
 
 	wg.Wait()
+
+	// Purge stale perf findings for checks in this batch before merge.
+	var perfCheckNames []string
+	for _, nc := range checks {
+		if strings.HasPrefix(nc.name, "perf_") {
+			perfCheckNames = append(perfCheckNames, nc.name)
+		}
+	}
+	if len(perfCheckNames) > 0 {
+		store.PurgeFindingsByChecks(perfCheckNames)
+	}
 
 	now := time.Now()
 	for i := range findings {

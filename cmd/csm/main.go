@@ -401,7 +401,14 @@ func runTieredChecks(tier checks.Tier, sendAlerts bool) {
 	newFindings := store.FilterNew(findings)
 
 	if sendAlerts && len(newFindings) > 0 {
-		if err := alert.Dispatch(cfg, newFindings); err != nil {
+		var alertFindings []alert.Finding
+		for _, f := range newFindings {
+			if strings.HasPrefix(f.Check, "perf_") && f.Severity == alert.Warning {
+				continue
+			}
+			alertFindings = append(alertFindings, f)
+		}
+		if err := alert.Dispatch(cfg, alertFindings); err != nil {
 			fmt.Fprintf(os.Stderr, "Error sending alert: %v\n", err)
 		}
 	}
@@ -672,7 +679,14 @@ func runScanAccount() {
 	// Send alerts if --alert flag present
 	for _, arg := range os.Args[3:] {
 		if arg == "--alert" {
-			if err := alert.Dispatch(cfg, findings); err != nil {
+			var alertFindings []alert.Finding
+			for _, f := range findings {
+				if strings.HasPrefix(f.Check, "perf_") && f.Severity == alert.Warning {
+					continue
+				}
+				alertFindings = append(alertFindings, f)
+			}
+			if err := alert.Dispatch(cfg, alertFindings); err != nil {
 				fmt.Fprintf(os.Stderr, "Alert dispatch error: %v\n", err)
 			}
 			break
