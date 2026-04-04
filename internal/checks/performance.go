@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -720,5 +721,534 @@ func CheckRedisConfig(cfg *config.Config, store *state.Store) []alert.Finding {
 		}
 	}
 
+	return findings
+}
+
+// ---------------------------------------------------------------------------
+// Performance check helpers (WP-specific)
+// ---------------------------------------------------------------------------
+
+// safeIdentifier returns true if s matches ^[a-zA-Z0-9_]+$ (non-empty).
+// Used to reject values with shell metacharacters before use in commands/SQL.
+var safeIdentRe = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
+
+func safeIdentifier(s string) bool {
+	return s != "" && safeIdentRe.MatchString(s)
+}
+
+// extractPHPDefine extracts the value argument from a PHP define() line:
+//
+//	define('KEY', 'value');   or   define("KEY", "value");
+//
+// It is distinct from extractDefine (dbscan.go) which requires a key parameter.
+// Returns the empty string if no value can be extracted.
+func extractPHPDefine(line string) string {
+	// Trim whitespace and trailing semicolons/comments.
+	line = strings.TrimSpace(line)
+	// Find the opening parenthesis.
+	parenIdx := strings.Index(line, "(")
+	if parenIdx < 0 {
+		return ""
+	}
+	inner := line[parenIdx+1:]
+	// Strip closing paren and anything after.
+	if closeIdx := strings.LastIndex(inner, ")"); closeIdx >= 0 {
+		inner = inner[:closeIdx]
+	}
+	// inner is now like: 'KEY', 'value'  or  "KEY", "value"
+	// Split on the first comma, ignoring the key part.
+	commaIdx := strings.Index(inner, ",")
+	if commaIdx < 0 {
+		return ""
+	}
+	valuePart := strings.TrimSpace(inner[commaIdx+1:])
+	if len(valuePart) < 2 {
+		return ""
+	}
+	// Strip surrounding quotes (single or double).
+	q := valuePart[0]
+	if q != '\'' && q != '"' {
+		return ""
+	}
+	end := strings.LastIndexByte(valuePart, q)
+	if end <= 0 {
+		return ""
+	}
+	return valuePart[1:end]
+}
+
+// ---------------------------------------------------------------------------
+// Subdirs to skip in recursive helpers.
+// ---------------------------------------------------------------------------
+
+var skipDirs = map[string]bool{
+	"wp-admin":     true,
+	"wp-content":   true,
+	"wp-includes":  true,
+	"cache":        true,
+	"node_modules": true,
+	"vendor":       true,
+}
+
+// ---------------------------------------------------------------------------
+// CheckErrorLogBloat
+// ---------------------------------------------------------------------------
+
+// scanErrorLogs recursively walks dir up to maxDepth looking for error_log
+// files larger than threshold bytes. Results are appended to *findings (capped
+// at 20).
+func scanErrorLogs(dir string, thresholdBytes int64, depth int, findings *[]alert.Finding) {
+	if depth < 0 || len(*findings) >= 20 {
+		return
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+
+	for _, e := range entries {
+		if len(*findings) >= 20 {
+			return
+		}
+		name := e.Name()
+		fullPath := filepath.Join(dir, name)
+
+		if e.IsDir() {
+			if skipDirs[name] {
+				continue
+			}
+			scanErrorLogs(fullPath, thresholdBytes, depth-1, findings)
+			continue
+		}
+
+		if name != "error_log" {
+			continue
+		}
+		info, statErr := e.Info()
+		if statErr != nil {
+			continue
+		}
+		if info.Size() > thresholdBytes {
+			*findings = append(*findings, alert.Finding{
+				Severity:  alert.Warning,
+				Check:     "perf_error_logs",
+				Message:   fmt.Sprintf("Bloated error_log: %s", fullPath),
+				Details:   fmt.Sprintf("Size: %s", humanBytes(info.Size())),
+				Timestamp: time.Now(),
+			})
+		}
+	}
+}
+
+// CheckErrorLogBloat walks /home/*/public_html (max depth 3) looking for
+// error_log files that exceed the configured size threshold. Throttled to
+// once every 60 minutes.
+func CheckErrorLogBloat(cfg *config.Config, store *state.Store) []alert.Finding {
+	if !perfEnabled(cfg) {
+		return nil
+	}
+	if !store.ShouldRunThrottled("perf_error_logs", 60) {
+		return nil
+	}
+
+	thresholdBytes := int64(cfg.Performance.ErrorLogWarnSizeMB) * 1024 * 1024
+
+	homeDirs, _ := filepath.Glob("/home/*/public_html")
+
+	var findings []alert.Finding
+	for _, dir := range homeDirs {
+		scanErrorLogs(dir, thresholdBytes, 3, &findings)
+		if len(findings) >= 20 {
+			break
+		}
+	}
+	return findings
+}
+
+// ---------------------------------------------------------------------------
+// CheckWPConfig
+// ---------------------------------------------------------------------------
+
+// parseMemoryLimit converts a PHP memory_limit string (e.g. "256M", "1G")
+// to megabytes. Returns 0 if the value cannot be parsed.
+func parseMemoryLimit(s string) int {
+	s = strings.TrimSpace(strings.ToUpper(s))
+	if s == "" || s == "-1" {
+		return 0
+	}
+	suffix := s[len(s)-1]
+	numStr := s
+	mult := 1
+	switch suffix {
+	case 'K':
+		numStr = s[:len(s)-1]
+		v, err := strconv.Atoi(numStr)
+		if err != nil {
+			return 0
+		}
+		return v / 1024
+	case 'M':
+		numStr = s[:len(s)-1]
+		mult = 1
+	case 'G':
+		numStr = s[:len(s)-1]
+		mult = 1024
+	}
+	v, err := strconv.Atoi(numStr)
+	if err != nil {
+		return 0
+	}
+	return v * mult
+}
+
+// scanWPConfigs recursively searches dir (max depth) for wp-config.php files
+// and checks WP_MEMORY_LIMIT and co-located config files for issues.
+func scanWPConfigs(dir, account string, cfg *config.Config, depth int, findings *[]alert.Finding) {
+	if depth < 0 {
+		return
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+
+	for _, e := range entries {
+		name := e.Name()
+		fullPath := filepath.Join(dir, name)
+
+		if e.IsDir() {
+			if skipDirs[name] {
+				continue
+			}
+			scanWPConfigs(fullPath, account, cfg, depth-1, findings)
+			continue
+		}
+
+		if name != "wp-config.php" {
+			continue
+		}
+
+		// --- WP_MEMORY_LIMIT ---
+		wpData, readErr := os.ReadFile(fullPath)
+		if readErr == nil {
+			for _, line := range strings.Split(string(wpData), "\n") {
+				if strings.Contains(line, "WP_MEMORY_LIMIT") {
+					val := extractPHPDefine(strings.TrimSpace(line))
+					if mb := parseMemoryLimit(val); mb > cfg.Performance.WPMemoryLimitMaxMB {
+						*findings = append(*findings, alert.Finding{
+							Severity:  alert.Warning,
+							Check:     "perf_wp_config",
+							Message:   fmt.Sprintf("Excessive WP_MEMORY_LIMIT for %s", account),
+							Details:   fmt.Sprintf("File: %s, Value: %s", fullPath, val),
+							Timestamp: time.Now(),
+						})
+					}
+					break
+				}
+			}
+		}
+
+		// --- Co-located PHP config files ---
+		wpDir := filepath.Dir(fullPath)
+		for _, cfgFile := range []string{".htaccess", "php.ini", ".user.ini"} {
+			cfgPath := filepath.Join(wpDir, cfgFile)
+			data, readErr2 := os.ReadFile(cfgPath)
+			if readErr2 != nil {
+				continue
+			}
+			for _, line := range strings.Split(string(data), "\n") {
+				trimmed := strings.TrimSpace(line)
+				// Skip comment lines
+				if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, ";") {
+					continue
+				}
+				lc := strings.ToLower(trimmed)
+
+				switch {
+				case strings.Contains(lc, "max_execution_time"):
+					// max_execution_time = 0  (or  php_value max_execution_time 0)
+					parts := strings.FieldsFunc(trimmed, func(r rune) bool { return r == '=' || r == ' ' || r == '\t' })
+					if len(parts) >= 2 && parts[len(parts)-1] == "0" {
+						*findings = append(*findings, alert.Finding{
+							Severity:  alert.High,
+							Check:     "perf_wp_config",
+							Message:   fmt.Sprintf("Unlimited max_execution_time for %s", account),
+							Details:   fmt.Sprintf("File: %s, Value: 0", cfgPath),
+							Timestamp: time.Now(),
+						})
+					}
+				case strings.Contains(lc, "display_errors"):
+					parts := strings.FieldsFunc(trimmed, func(r rune) bool { return r == '=' || r == ' ' || r == '\t' })
+					if len(parts) >= 2 && strings.ToLower(parts[len(parts)-1]) == "on" {
+						*findings = append(*findings, alert.Finding{
+							Severity:  alert.Warning,
+							Check:     "perf_wp_config",
+							Message:   fmt.Sprintf("display_errors enabled in production for %s", account),
+							Details:   fmt.Sprintf("File: %s, Value: On", cfgPath),
+							Timestamp: time.Now(),
+						})
+					}
+				}
+			}
+		}
+	}
+}
+
+// CheckWPConfig scans /home/*/public_html (max depth 2) for wp-config.php
+// files and reports excessive WP_MEMORY_LIMIT values, unlimited
+// max_execution_time, and display_errors enabled in production.
+// Throttled to once every 60 minutes.
+func CheckWPConfig(cfg *config.Config, store *state.Store) []alert.Finding {
+	if !perfEnabled(cfg) {
+		return nil
+	}
+	if !store.ShouldRunThrottled("perf_wp_config", 60) {
+		return nil
+	}
+
+	homeDirs, _ := filepath.Glob("/home/*/public_html")
+
+	var findings []alert.Finding
+	for _, dir := range homeDirs {
+		// Derive account name from path: /home/<account>/public_html
+		parts := strings.Split(dir, string(filepath.Separator))
+		account := ""
+		for i, p := range parts {
+			if p == "home" && i+1 < len(parts) {
+				account = parts[i+1]
+				break
+			}
+		}
+		scanWPConfigs(dir, account, cfg, 2, &findings)
+	}
+	return findings
+}
+
+// ---------------------------------------------------------------------------
+// CheckWPTransientBloat
+// ---------------------------------------------------------------------------
+
+// findWPTransients recursively searches dir for wp-config.php files and
+// queries the WordPress database for bloated transients.
+func findWPTransients(dir string, cfg *config.Config, warnBytes, critBytes int64, depth int, findings *[]alert.Finding) {
+	if depth < 0 {
+		return
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+
+	for _, e := range entries {
+		name := e.Name()
+		fullPath := filepath.Join(dir, name)
+
+		if e.IsDir() {
+			if skipDirs[name] {
+				continue
+			}
+			findWPTransients(fullPath, cfg, warnBytes, critBytes, depth-1, findings)
+			continue
+		}
+
+		if name != "wp-config.php" {
+			continue
+		}
+
+		info := parseWPConfig(fullPath)
+		if info.dbName == "" || info.dbUser == "" {
+			continue
+		}
+
+		// Apply default table prefix when not set.
+		if info.tablePrefix == "" {
+			info.tablePrefix = "wp_"
+		}
+
+		// Security: validate identifiers before use in SQL.
+		if !safeIdentifier(info.dbName) || !safeIdentifier(info.dbUser) || !safeIdentifier(info.tablePrefix) {
+			continue
+		}
+
+		query := fmt.Sprintf(
+			"SELECT option_name, LENGTH(option_value) as size FROM %soptions WHERE option_name LIKE '_transient_%%' AND LENGTH(option_value) > %d ORDER BY size DESC LIMIT 5",
+			info.tablePrefix,
+			warnBytes,
+		)
+
+		args := []string{
+			"-N", "-B",
+			"-h", info.dbHost,
+			"-u", info.dbUser,
+			info.dbName,
+			"-e", query,
+		}
+
+		out, runErr := runCmdWithEnv("mysql", args, "MYSQL_PWD="+info.dbPass)
+		if runErr != nil || len(out) == 0 {
+			continue
+		}
+
+		for _, line := range strings.Split(string(out), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 2 {
+				continue
+			}
+			optionName := fields[0]
+			sizeBytes, convErr := strconv.ParseInt(fields[1], 10, 64)
+			if convErr != nil {
+				continue
+			}
+
+			var sev alert.Severity
+			switch {
+			case sizeBytes > critBytes:
+				sev = alert.High
+			case sizeBytes > warnBytes:
+				sev = alert.Warning
+			default:
+				continue
+			}
+
+			*findings = append(*findings, alert.Finding{
+				Severity:  sev,
+				Check:     "perf_wp_transients",
+				Message:   fmt.Sprintf("Bloated transient %s in %s", optionName, info.dbName),
+				Details:   fmt.Sprintf("Size: %s", humanBytes(sizeBytes)),
+				Timestamp: time.Now(),
+			})
+		}
+	}
+}
+
+// CheckWPTransientBloat scans /home/*/public_html for WordPress installs and
+// queries each database for oversized transients. DB credentials are read
+// from wp-config.php; the password is passed via MYSQL_PWD environment
+// variable (never on the command line).
+// Throttled to once every 60 minutes.
+func CheckWPTransientBloat(cfg *config.Config, store *state.Store) []alert.Finding {
+	if !perfEnabled(cfg) {
+		return nil
+	}
+	if !store.ShouldRunThrottled("perf_wp_transients", 60) {
+		return nil
+	}
+
+	warnBytes := int64(cfg.Performance.WPTransientWarnMB) * 1024 * 1024
+	critBytes := int64(cfg.Performance.WPTransientCriticalMB) * 1024 * 1024
+
+	homeDirs, _ := filepath.Glob("/home/*/public_html")
+
+	var findings []alert.Finding
+	for _, dir := range homeDirs {
+		findWPTransients(dir, cfg, warnBytes, critBytes, 2, &findings)
+	}
+	return findings
+}
+
+// ---------------------------------------------------------------------------
+// CheckWPCron
+// ---------------------------------------------------------------------------
+
+// scanWPCron recursively searches dir for wp-config.php files and checks
+// whether DISABLE_WP_CRON is defined and set to true.
+func scanWPCron(dir, account string, depth int, findings *[]alert.Finding) {
+	if depth < 0 || len(*findings) >= 30 {
+		return
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+
+	for _, e := range entries {
+		if len(*findings) >= 30 {
+			return
+		}
+		name := e.Name()
+		fullPath := filepath.Join(dir, name)
+
+		if e.IsDir() {
+			if skipDirs[name] {
+				continue
+			}
+			scanWPCron(fullPath, account, depth-1, findings)
+			continue
+		}
+
+		if name != "wp-config.php" {
+			continue
+		}
+
+		data, readErr := os.ReadFile(fullPath)
+		if readErr != nil {
+			continue
+		}
+
+		defined := false
+		enabled := false // true when defined as true
+
+		for _, line := range strings.Split(string(data), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if !strings.Contains(trimmed, "DISABLE_WP_CRON") {
+				continue
+			}
+			val := strings.ToLower(extractPHPDefine(trimmed))
+			defined = true
+			if val == "true" || val == "1" {
+				enabled = true
+			}
+			break
+		}
+
+		if !defined || !enabled {
+			*findings = append(*findings, alert.Finding{
+				Severity:  alert.Warning,
+				Check:     "perf_wp_cron",
+				Message:   fmt.Sprintf("WP-Cron not disabled for %s", account),
+				Details: fmt.Sprintf(
+					"File: %s — add define('DISABLE_WP_CRON', true); and use a real cron job instead",
+					fullPath,
+				),
+				Timestamp: time.Now(),
+			})
+		}
+	}
+}
+
+// CheckWPCron scans /home/*/public_html (max depth 2) for WordPress installs
+// that have not disabled the built-in WP-Cron mechanism. Running WP-Cron via
+// HTTP is a common cause of high load on busy sites.
+// Throttled to once every 60 minutes.
+func CheckWPCron(cfg *config.Config, store *state.Store) []alert.Finding {
+	if !perfEnabled(cfg) {
+		return nil
+	}
+	if !store.ShouldRunThrottled("perf_wp_cron", 60) {
+		return nil
+	}
+
+	homeDirs, _ := filepath.Glob("/home/*/public_html")
+
+	var findings []alert.Finding
+	for _, dir := range homeDirs {
+		// Derive account name from path.
+		parts := strings.Split(dir, string(filepath.Separator))
+		account := ""
+		for i, p := range parts {
+			if p == "home" && i+1 < len(parts) {
+				account = parts[i+1]
+				break
+			}
+		}
+		scanWPCron(dir, account, 2, &findings)
+		if len(findings) >= 30 {
+			break
+		}
+	}
 	return findings
 }
