@@ -72,7 +72,7 @@
                     var totalMB = m.mem_total_mb || 1;
                     var ramPct = Math.round(usedMB / totalMB * 100);
                     ramEl.textContent = usedMB + ' / ' + totalMB + ' MB';
-                    ramEl.className = 'h1 mb-0 ' + colorClass(ramPct, 75, 90);
+                    ramEl.className = 'h1 mb-0 ' + colorClass(ramPct, 70, 90);
                     if (ramBarEl) {
                         ramBarEl.style.width = ramPct + '%';
                         ramBarEl.className = 'progress-bar ' + (ramPct >= 90 ? 'bg-danger' : ramPct >= 75 ? 'bg-warning' : 'bg-success');
