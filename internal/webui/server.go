@@ -49,6 +49,8 @@ type Server struct {
 	geoIPDB            atomic.Pointer[geoip.DB]
 	emailQuarantine    *emailav.Quarantine
 	emailAVWatcherMode string
+	perfSnapshot       atomic.Pointer[perfMetrics]
+	perfCancel         context.CancelFunc
 
 	// Rate limiting
 	loginMu       sync.Mutex
@@ -103,7 +105,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	if _, err := os.Stat(templateDir); err == nil {
 		s.templates = make(map[string]*template.Template)
 		layoutPath := filepath.Join(templateDir, "layout.html")
-		for _, page := range []string{"dashboard", "findings", "history", "quarantine", "firewall", "modsec", "modsec-rules", "threat", "rules", "audit", "account", "incident", "email"} {
+		for _, page := range []string{"dashboard", "findings", "quarantine", "firewall", "modsec", "modsec-rules", "threat", "rules", "audit", "account", "incident", "email"} {
 			pagePath := filepath.Join(templateDir, page+".html")
 			t, err := template.New(page+".html").Funcs(funcMap).ParseFiles(layoutPath, pagePath)
 			if err != nil {
@@ -133,7 +135,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		mux.Handle("/", s.requireAuth(http.HandlerFunc(s.handleDashboard)))
 		mux.Handle("/dashboard", s.requireAuth(http.HandlerFunc(s.handleDashboard)))
 		mux.Handle("/findings", s.requireAuth(http.HandlerFunc(s.handleFindings)))
-		mux.Handle("/history", s.requireAuth(http.HandlerFunc(s.handleHistory)))
+		mux.Handle("/history", s.requireAuth(http.HandlerFunc(s.handleHistoryRedirect)))
 		mux.Handle("/quarantine", s.requireAuth(http.HandlerFunc(s.handleQuarantine)))
 		mux.Handle("/blocked", s.requireAuth(http.HandlerFunc(s.handleFirewall))) // redirect old URL
 		mux.Handle("/firewall", s.requireAuth(http.HandlerFunc(s.handleFirewall)))
@@ -321,12 +323,19 @@ func (s *Server) Start() error {
 
 	go s.pruneLoginAttempts()
 
+	perfCtx, perfCancel := context.WithCancel(context.Background())
+	s.perfCancel = perfCancel
+	go s.sampleMetricsLoop(perfCtx)
+
 	fmt.Fprintf(os.Stderr, "WebUI listening on https://%s\n", s.cfg.WebUI.Listen)
 	return s.httpSrv.ListenAndServeTLS(certPath, keyPath)
 }
 
 // Shutdown gracefully stops the server.
 func (s *Server) Shutdown(ctx context.Context) error {
+	if s.perfCancel != nil {
+		s.perfCancel()
+	}
 	close(s.pruneDone)
 	return s.httpSrv.Shutdown(ctx)
 }
