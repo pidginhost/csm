@@ -544,8 +544,8 @@ func CheckMySQLConfig(cfg *config.Config, store *state.Store) []alert.Finding {
 				findings = append(findings, alert.Finding{
 					Severity:  alert.High,
 					Check:     "perf_mysql_config",
-					Message:   "MySQL user holding excessive connections",
-					Details:   fmt.Sprintf("User: %s, Connections: %d, Threshold: %d", dbUser, count, maxConn),
+					Message:   fmt.Sprintf("MySQL user %s holding excessive connections", dbUser),
+					Details:   fmt.Sprintf("Connections: %d, Threshold: %d", count, maxConn),
 					Timestamp: time.Now(),
 				})
 			}
