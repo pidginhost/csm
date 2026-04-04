@@ -259,19 +259,147 @@ func parseSecureLogLine(line string, cfg *config.Config) []alert.Finding {
 	return findings
 }
 
-func parseEximLogLine(line string, _ *config.Config) []alert.Finding {
-	// Count outbound per domain — this is handled by the periodic check.
-	// Real-time exim monitoring would need a more complex rate tracking system.
-	// For now, only flag obvious spam indicators in real-time.
-	if strings.Contains(line, "frozen") && strings.Contains(line, "bounce") {
-		return []alert.Finding{{
+func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
+	var findings []alert.Finding
+
+	// 1. Frozen bounces — spam indicator
+	if strings.Contains(line, "frozen") {
+		findings = append(findings, alert.Finding{
 			Severity: alert.Warning,
 			Check:    "exim_frozen_realtime",
-			Message:  "Exim frozen bounce detected",
+			Message:  "Exim frozen message detected",
 			Details:  truncateDaemon(line, 200),
-		}}
+		})
 	}
-	return nil
+
+	// 2. Outgoing mail hold — account suspended for spam
+	if strings.Contains(line, "outgoing mail hold") {
+		sender := extractEximSender(line)
+		findings = append(findings, alert.Finding{
+			Severity: alert.Critical,
+			Check:    "email_compromised_account",
+			Message:  fmt.Sprintf("Account %s has outgoing mail hold (spam detected by cPanel)", sender),
+			Details:  truncateDaemon(line, 300),
+		})
+	}
+
+	// 3. Max defers/failures exceeded — active spam outbreak
+	if strings.Contains(line, "max defers and failures per hour") {
+		domain := extractEximDomain(line)
+		findings = append(findings, alert.Finding{
+			Severity: alert.Critical,
+			Check:    "email_spam_outbreak",
+			Message:  fmt.Sprintf("Spam outbreak: %s exceeded max defers/failures per hour", domain),
+			Details:  truncateDaemon(line, 300),
+		})
+	}
+
+	// 4. SMTP credentials leaked in subject — compromised account
+	// Pattern: T="...host:port,user@domain,PASSWORD..." in the subject field
+	if strings.Contains(line, " <= ") && strings.Contains(line, "T=\"") {
+		subject := extractEximSubject(line)
+		subjectLower := strings.ToLower(subject)
+		// Detect credential patterns: host:port,user,password or
+		// SMTP credentials in subject (common in credential stuffing attacks)
+		if (strings.Contains(subject, ":587,") || strings.Contains(subject, ":465,") ||
+			strings.Contains(subject, ":25,")) &&
+			strings.Contains(subject, "@") {
+			sender := extractEximSender(line)
+			findings = append(findings, alert.Finding{
+				Severity: alert.Critical,
+				Check:    "email_credential_leak",
+				Message:  fmt.Sprintf("SMTP credentials leaked in email subject from %s", sender),
+				Details:  fmt.Sprintf("The email subject contains what appears to be SMTP credentials (host:port,user,password). This account is likely compromised by a bulk mail service.\nSubject: %s", truncateDaemon(subject, 100)),
+			})
+		}
+		// Also detect common spam subject patterns
+		if strings.Contains(subjectLower, "password") && strings.Contains(subjectLower, "smtp") {
+			sender := extractEximSender(line)
+			findings = append(findings, alert.Finding{
+				Severity: alert.High,
+				Check:    "email_credential_leak",
+				Message:  fmt.Sprintf("Suspicious email subject with SMTP/password keywords from %s", sender),
+				Details:  truncateDaemon(line, 300),
+			})
+		}
+	}
+
+	// 5. Authentication from known bulk mail services
+	if strings.Contains(line, " <= ") && strings.Contains(line, "A=dovecot_") {
+		knownSpamServices := []string{
+			"truelist.io", "sendinblue.com", "mailspree.co",
+			"bulkmailer.", "massmailsoftware.", "sendblaster.",
+		}
+		lineLower := strings.ToLower(line)
+		for _, service := range knownSpamServices {
+			if strings.Contains(lineLower, service) {
+				sender := extractEximSender(line)
+				findings = append(findings, alert.Finding{
+					Severity: alert.Critical,
+					Check:    "email_compromised_account",
+					Message:  fmt.Sprintf("Compromised email account %s authenticated from bulk mail service %s", sender, service),
+					Details:  truncateDaemon(line, 300),
+				})
+				break
+			}
+		}
+	}
+
+	// 6. High bounce rate indicator — dovecot auth failure after successful send
+	if strings.Contains(line, "authenticator failed") && strings.Contains(line, "dovecot") {
+		ip := extractIPFromLogDaemon(line)
+		findings = append(findings, alert.Finding{
+			Severity: alert.High,
+			Check:    "email_auth_failure_realtime",
+			Message:  fmt.Sprintf("Email authentication failure from %s", ip),
+			Details:  truncateDaemon(line, 200),
+		})
+	}
+
+	return findings
+}
+
+// extractEximSender extracts the sender address from an exim log line.
+// Format: "... <= sender@domain.com H=..."
+func extractEximSender(line string) string {
+	idx := strings.Index(line, " <= ")
+	if idx < 0 {
+		return ""
+	}
+	rest := line[idx+4:]
+	fields := strings.Fields(rest)
+	if len(fields) > 0 {
+		return fields[0]
+	}
+	return ""
+}
+
+// extractEximDomain extracts a domain from an exim log line mentioning
+// "Domain X has exceeded".
+func extractEximDomain(line string) string {
+	idx := strings.Index(line, "Domain ")
+	if idx < 0 {
+		return ""
+	}
+	rest := line[idx+7:]
+	if sp := strings.IndexByte(rest, ' '); sp > 0 {
+		return rest[:sp]
+	}
+	return rest
+}
+
+// extractEximSubject extracts the subject from T="..." in an exim log line.
+func extractEximSubject(line string) string {
+	idx := strings.Index(line, "T=\"")
+	if idx < 0 {
+		return ""
+	}
+	rest := line[idx+3:]
+	end := strings.Index(rest, "\"")
+	if end < 0 {
+		return rest
+	}
+	return rest[:end]
 }
 
 // --- Helpers (avoid import cycle with checks package) ---
