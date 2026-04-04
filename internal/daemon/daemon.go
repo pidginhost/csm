@@ -34,23 +34,24 @@ type Daemon struct {
 	lock       *state.LockFile
 	binaryPath string
 
-	logWatchers     []*LogWatcher
-	logWatchersMu   sync.Mutex
-	fileMonitor     *FileMonitor
-	hijackDetector  *PasswordHijackDetector
-	pamListener     *PAMListener
-	spoolWatcher    *SpoolWatcher
-	spoolWatcherMu  sync.Mutex
-	emailQuarantine *emailav.Quarantine
-	webServer       *webui.Server
-	challengeServer *challenge.Server
-	fwEngine        *firewall.Engine
-	geoipDB         *geoip.DB
-	geoipMu         sync.Mutex // protects geoipDB for publishGeoIP
-	alertCh         chan alert.Finding
-	droppedAlerts   int64 // atomic counter for alert channel backpressure drops
-	stopCh          chan struct{}
-	wg              sync.WaitGroup
+	logWatchers      []*LogWatcher
+	logWatchersMu    sync.Mutex
+	fileMonitor      *FileMonitor
+	hijackDetector   *PasswordHijackDetector
+	pamListener      *PAMListener
+	spoolWatcher     *SpoolWatcher
+	spoolWatcherMu   sync.Mutex
+	forwarderWatcher *ForwarderWatcher
+	emailQuarantine  *emailav.Quarantine
+	webServer        *webui.Server
+	challengeServer  *challenge.Server
+	fwEngine         *firewall.Engine
+	geoipDB          *geoip.DB
+	geoipMu          sync.Mutex // protects geoipDB for publishGeoIP
+	alertCh          chan alert.Finding
+	droppedAlerts    int64 // atomic counter for alert channel backpressure drops
+	stopCh           chan struct{}
+	wg               sync.WaitGroup
 }
 
 // New creates a new daemon instance.
@@ -122,6 +123,9 @@ func (d *Daemon) Run() error {
 
 	// Start email AV spool watcher (separate fanotify for Exim spool)
 	d.startSpoolWatcher()
+
+	// Start forwarder watcher for real-time valiases change detection
+	d.startForwarderWatcher()
 
 	// Start Web UI server — available immediately, before initial scan
 	d.startWebUI()
@@ -827,6 +831,22 @@ func (d *Daemon) getSpoolWatcher() *SpoolWatcher {
 	d.spoolWatcherMu.Lock()
 	defer d.spoolWatcherMu.Unlock()
 	return d.spoolWatcher
+}
+
+// startForwarderWatcher starts the inotify watcher for /etc/valiases/.
+func (d *Daemon) startForwarderWatcher() {
+	fw, err := NewForwarderWatcher(d.alertCh, d.cfg.EmailProtection.KnownForwarders)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] Warning: forwarder watcher not started: %v\n", ts(), err)
+		return
+	}
+	d.forwarderWatcher = fw
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		fw.Run(d.stopCh)
+	}()
+	fmt.Fprintf(os.Stderr, "[%s] Watching: /etc/valiases/ (inotify forwarder watcher)\n", ts())
 }
 
 func (d *Daemon) syncEmailAVWebState() {
