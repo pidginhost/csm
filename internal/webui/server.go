@@ -105,7 +105,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	if _, err := os.Stat(templateDir); err == nil {
 		s.templates = make(map[string]*template.Template)
 		layoutPath := filepath.Join(templateDir, "layout.html")
-		for _, page := range []string{"dashboard", "findings", "quarantine", "firewall", "modsec", "modsec-rules", "threat", "rules", "audit", "account", "incident", "email"} {
+		for _, page := range []string{"dashboard", "findings", "quarantine", "firewall", "modsec", "modsec-rules", "threat", "rules", "audit", "account", "incident", "email", "performance"} {
 			pagePath := filepath.Join(templateDir, page+".html")
 			t, err := template.New(page+".html").Funcs(funcMap).ParseFiles(layoutPath, pagePath)
 			if err != nil {
@@ -145,6 +145,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		mux.Handle("/account", s.requireAuth(http.HandlerFunc(s.handleAccount)))
 		mux.Handle("/incident", s.requireAuth(http.HandlerFunc(s.handleIncident)))
 		mux.Handle("/email", s.requireAuth(http.HandlerFunc(s.handleEmail)))
+		mux.Handle("/performance", s.requireAuth(http.HandlerFunc(s.handlePerformance)))
 		mux.Handle("/modsec", s.requireAuth(http.HandlerFunc(s.handleModSec)))
 		mux.Handle("/modsec/rules", s.requireAuth(http.HandlerFunc(s.handleModSecRules)))
 	}
@@ -176,6 +177,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/email/quarantine", s.requireAuth(http.HandlerFunc(s.apiEmailQuarantineList)))
 	mux.Handle("/api/v1/email/quarantine/", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiEmailQuarantineAction))))
 	mux.Handle("/api/v1/email/av/status", s.requireAuth(http.HandlerFunc(s.apiEmailAVStatus)))
+	mux.Handle("/api/v1/performance", s.requireAuth(http.HandlerFunc(s.apiPerformance)))
 
 	// Threat Intelligence API
 	mux.Handle("/api/v1/threat/stats", s.requireAuth(http.HandlerFunc(s.apiThreatStats)))
