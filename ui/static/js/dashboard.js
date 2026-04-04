@@ -898,7 +898,18 @@
             for (var i = 0; i < _chartIntervals.length; i++) clearInterval(_chartIntervals[i]);
             _chartIntervals = [];
         } else {
-            _startChartPolling();
+            // Restart refresh intervals (charts survive tab switches)
+            _chartIntervals.push(setInterval(function() {
+                try { loadTimeline(); } catch(e) {}
+                try { loadAttackTypes(); } catch(e) {}
+            }, 60000));
+            _chartIntervals.push(setInterval(function() {
+                try { loadTrend(); } catch(e) {}
+            }, 300000));
+            // Immediate refresh on return
+            try { loadTimeline(); } catch(e) {}
+            try { loadAttackTypes(); } catch(e) {}
+            try { loadTrend(); } catch(e) {}
         }
     });
 
