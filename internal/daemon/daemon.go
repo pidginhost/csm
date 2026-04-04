@@ -625,6 +625,9 @@ func (d *Daemon) startLogWatchers() {
 	// Start background eviction for modsec dedup/escalation state
 	StartModSecEviction(d.stopCh)
 
+	// Start background eviction for email rate limiting state
+	StartEmailRateEviction(d.stopCh)
+
 	for _, lf := range logFiles {
 		w, err := NewLogWatcher(lf.path, d.cfg, lf.handler, d.alertCh)
 		if err != nil {

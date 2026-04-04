@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pidginhost/cpanel-security-monitor/internal/alert"
@@ -282,6 +283,10 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 			Message:  fmt.Sprintf("Account %s has outgoing mail hold (spam detected by cPanel)", sender),
 			Details:  truncateDaemon(line, 300),
 		})
+		domain := extractDomainFromEmail(sender)
+		if domain != "" {
+			RecordCompromisedDomain(domain)
+		}
 	}
 
 	// 3. Max defers/failures exceeded — active spam outbreak
@@ -293,6 +298,9 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 			Message:  fmt.Sprintf("Spam outbreak: %s exceeded max defers/failures per hour", domain),
 			Details:  truncateDaemon(line, 300),
 		})
+		if domain != "" {
+			RecordCompromisedDomain(domain)
+		}
 	}
 
 	// 4. SMTP credentials leaked in subject — compromised account
@@ -390,6 +398,15 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 					Timestamp: time.Now(),
 				})
 			}
+		}
+	}
+
+	// 9. Outbound rate limiting for authenticated users
+	if strings.Contains(line, " <= ") && strings.Contains(line, "A=dovecot_") {
+		authUser := extractAuthUser(line)
+		if authUser != "" {
+			rateFindings := checkEmailRate(authUser, cfg)
+			findings = append(findings, rateFindings...)
 		}
 	}
 
@@ -612,4 +629,218 @@ func isDedupExpired(stored string, window time.Duration) bool {
 		return true
 	}
 	return time.Since(t) > window
+}
+
+// --- Outbound email rate limiting ---
+
+// rateWindow tracks send timestamps for a single authenticated user.
+type rateWindow struct {
+	mu      sync.Mutex
+	times   []time.Time
+	alerted string // last threshold level alerted ("warn" or "crit") — prevents repeated alerts per window
+}
+
+// add appends a timestamp to the window.
+func (rw *rateWindow) add(t time.Time) {
+	rw.times = append(rw.times, t)
+}
+
+// countInWindow returns the number of timestamps within the window duration.
+// Caller must hold rw.mu.
+func (rw *rateWindow) countInWindow(now time.Time, window time.Duration) int {
+	cutoff := now.Add(-window)
+	count := 0
+	for _, t := range rw.times {
+		if t.After(cutoff) {
+			count++
+		}
+	}
+	return count
+}
+
+// prune removes timestamps older than the window duration and resets the
+// alerted flag when the count drops below thresholds. Caller must hold rw.mu.
+func (rw *rateWindow) prune(now time.Time, window time.Duration) {
+	cutoff := now.Add(-window)
+	kept := rw.times[:0]
+	for _, t := range rw.times {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	rw.times = kept
+}
+
+// emailRateWindows tracks per-user send rate windows.
+var emailRateWindows sync.Map // map[string]*rateWindow
+
+// extractAuthUser extracts the authenticated user from an exim <= line.
+// Looks for A=dovecot_login:{user} or A=dovecot_plain:{user}.
+// Returns empty string if not found or line is not an acceptance line.
+func extractAuthUser(line string) string {
+	if !strings.Contains(line, " <= ") {
+		return ""
+	}
+
+	// Look for A=dovecot_login: or A=dovecot_plain:
+	for _, prefix := range []string{"A=dovecot_login:", "A=dovecot_plain:"} {
+		idx := strings.Index(line, prefix)
+		if idx < 0 {
+			continue
+		}
+		rest := line[idx+len(prefix):]
+		end := strings.IndexAny(rest, " \t\n")
+		if end < 0 {
+			return rest
+		}
+		return rest[:end]
+	}
+	return ""
+}
+
+// isHighVolumeSender checks if a user is in the high-volume senders allowlist.
+func isHighVolumeSender(user string, allowlist []string) bool {
+	for _, allowed := range allowlist {
+		if strings.EqualFold(user, allowed) {
+			return true
+		}
+	}
+	return false
+}
+
+// extractDomainFromEmail returns the domain part of an email address.
+func extractDomainFromEmail(email string) string {
+	idx := strings.LastIndexByte(email, '@')
+	if idx < 0 || idx >= len(email)-1 {
+		return ""
+	}
+	return email[idx+1:]
+}
+
+// hasRecentCompromisedFinding checks if there's a recent email_compromised_account
+// or email_spam_outbreak finding for the given domain (suppresses rate alerts).
+func hasRecentCompromisedFinding(domain string) bool {
+	emailRateSuppressed.mu.Lock()
+	defer emailRateSuppressed.mu.Unlock()
+	if ts, ok := emailRateSuppressed.domains[domain]; ok {
+		if time.Since(ts) < time.Hour {
+			return true
+		}
+		delete(emailRateSuppressed.domains, domain)
+	}
+	return false
+}
+
+// emailRateSuppressed tracks domains with recent compromised/spam findings.
+var emailRateSuppressed = struct {
+	mu      sync.Mutex
+	domains map[string]time.Time
+}{domains: make(map[string]time.Time)}
+
+// RecordCompromisedDomain marks a domain as having a recent compromised finding.
+// Called from parseEximLogLine when email_compromised_account or email_spam_outbreak fires.
+func RecordCompromisedDomain(domain string) {
+	emailRateSuppressed.mu.Lock()
+	defer emailRateSuppressed.mu.Unlock()
+	emailRateSuppressed.domains[domain] = time.Now()
+}
+
+// checkEmailRate processes an outbound email for rate limiting.
+// Returns findings if thresholds are exceeded.
+func checkEmailRate(user string, cfg *config.Config) []alert.Finding {
+	if isHighVolumeSender(user, cfg.EmailProtection.HighVolumeSenders) {
+		return nil
+	}
+
+	// Load or create rate window for this user
+	val, _ := emailRateWindows.LoadOrStore(user, &rateWindow{})
+	rw := val.(*rateWindow)
+
+	now := time.Now()
+	windowDur := time.Duration(cfg.EmailProtection.RateWindowMin) * time.Minute
+
+	rw.mu.Lock()
+	defer rw.mu.Unlock()
+
+	rw.add(now)
+	count := rw.countInWindow(now, windowDur)
+
+	// Check domain suppression (avoid duplicate noise with compromised account alerts)
+	domain := extractDomainFromEmail(user)
+	if domain != "" && hasRecentCompromisedFinding(domain) {
+		return nil
+	}
+
+	var findings []alert.Finding
+
+	if count >= cfg.EmailProtection.RateCritThreshold {
+		if rw.alerted != "crit" {
+			rw.alerted = "crit"
+			findings = append(findings, alert.Finding{
+				Severity: alert.Critical,
+				Check:    "email_rate_critical",
+				Message:  fmt.Sprintf("Email rate CRITICAL: %s sent %d messages in %d minutes (threshold: %d)", user, count, cfg.EmailProtection.RateWindowMin, cfg.EmailProtection.RateCritThreshold),
+				Details:  fmt.Sprintf("User: %s\nMessages in window: %d\nWindow: %d minutes\nThreshold: %d", user, count, cfg.EmailProtection.RateWindowMin, cfg.EmailProtection.RateCritThreshold),
+			})
+		}
+	} else if count >= cfg.EmailProtection.RateWarnThreshold {
+		if rw.alerted != "warn" && rw.alerted != "crit" {
+			rw.alerted = "warn"
+			findings = append(findings, alert.Finding{
+				Severity: alert.High,
+				Check:    "email_rate_warning",
+				Message:  fmt.Sprintf("Email rate WARNING: %s sent %d messages in %d minutes (threshold: %d)", user, count, cfg.EmailProtection.RateWindowMin, cfg.EmailProtection.RateWarnThreshold),
+				Details:  fmt.Sprintf("User: %s\nMessages in window: %d\nWindow: %d minutes\nThreshold: %d", user, count, cfg.EmailProtection.RateWindowMin, cfg.EmailProtection.RateWarnThreshold),
+			})
+		}
+	}
+
+	return findings
+}
+
+// StartEmailRateEviction starts a background goroutine that prunes expired
+// rate windows every 10 minutes. Same pattern as StartModSecEviction.
+func StartEmailRateEviction(stopCh <-chan struct{}) {
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopCh:
+				return
+			case now := <-ticker.C:
+				evictEmailRateWindows(now)
+			}
+		}
+	}()
+}
+
+// evictEmailRateWindows prunes all per-user rate windows and deletes empty entries.
+func evictEmailRateWindows(now time.Time) {
+	// Use a generous 60-minute eviction window to avoid premature deletion.
+	// The actual rate window is checked during rate evaluation.
+	evictWindow := 60 * time.Minute
+	emailRateWindows.Range(func(key, val any) bool {
+		rw := val.(*rateWindow)
+		rw.mu.Lock()
+		rw.prune(now, evictWindow)
+		empty := len(rw.times) == 0
+		if empty {
+			rw.alerted = ""
+		}
+		rw.mu.Unlock()
+		if empty {
+			emailRateWindows.Delete(key)
+		}
+		return true
+	})
+
+	// Also prune the suppressed domains map
+	emailRateSuppressed.mu.Lock()
+	for domain, ts := range emailRateSuppressed.domains {
+		if time.Since(ts) > time.Hour {
+			delete(emailRateSuppressed.domains, domain)
+		}
+	}
+	emailRateSuppressed.mu.Unlock()
 }
