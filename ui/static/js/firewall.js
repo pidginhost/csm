@@ -12,7 +12,8 @@ function loadStatus(){
         t1 += '<tr><td class="text-muted">UDP In</td><td>'+portList(d.udp_in)+'</td></tr>';
         t1 += '<tr><td class="text-muted">UDP Out</td><td>'+portList(d.udp_out)+'</td></tr>';
         t1 += '<tr><td class="text-muted">Restricted</td><td><code class="small">'+CSM.esc((d.restricted_tcp||[]).join(', '))+'</code></td></tr>';
-        t1 += '<tr><td class="text-muted">Passive FTP</td><td><code>'+d.passive_ftp[0]+'-'+d.passive_ftp[1]+'</code></td></tr>';
+        var passiveFtp = d.passive_ftp && d.passive_ftp.length >= 2 ? d.passive_ftp[0]+'-'+d.passive_ftp[1] : 'not configured';
+        t1 += '<tr><td class="text-muted">Passive FTP</td><td><code>'+passiveFtp+'</code></td></tr>';
         var infraList = (d.infra_ips||[]);
         t1 += '<tr><td class="text-muted">Infra IPs</td><td>'+( infraList.length > 0 ? '<code class="small">'+CSM.esc(infraList.join(', '))+'</code>' : '<span class="text-danger">none configured</span>')+'</td></tr>';
         document.getElementById('fw-config-table').innerHTML = t1;
