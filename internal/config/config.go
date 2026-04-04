@@ -144,6 +144,23 @@ type Config struct {
 		ReloadCommand string `yaml:"reload_command"` // e.g. "systemctl restart lsws"
 	} `yaml:"modsec"`
 
+	Performance struct {
+		Enabled                     *bool   `yaml:"enabled"`
+		LoadHighMultiplier          float64 `yaml:"load_high_multiplier"`
+		LoadCriticalMultiplier      float64 `yaml:"load_critical_multiplier"`
+		PHPProcessWarnPerUser       int     `yaml:"php_process_warn_per_user"`
+		PHPProcessCriticalTotalMult int     `yaml:"php_process_critical_total_multiplier"`
+		ErrorLogWarnSizeMB          int     `yaml:"error_log_warn_size_mb"`
+		MySQLJoinBufferMaxMB        int     `yaml:"mysql_join_buffer_max_mb"`
+		MySQLWaitTimeoutMax         int     `yaml:"mysql_wait_timeout_max"`
+		MySQLMaxConnectionsPerUser  int     `yaml:"mysql_max_connections_per_user"`
+		RedisBgsaveMinInterval      int     `yaml:"redis_bgsave_min_interval"`
+		RedisLargeDatasetGB         int     `yaml:"redis_large_dataset_gb"`
+		WPMemoryLimitMaxMB          int     `yaml:"wp_memory_limit_max_mb"`
+		WPTransientWarnMB           int     `yaml:"wp_transient_warn_mb"`
+		WPTransientCriticalMB       int     `yaml:"wp_transient_critical_mb"`
+	} `yaml:"performance"`
+
 	C2Blocklist   []string `yaml:"c2_blocklist"`
 	BackdoorPorts []int    `yaml:"backdoor_ports"`
 }
@@ -229,6 +246,51 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.EmailProtection.RateWindowMin == 0 {
 		cfg.EmailProtection.RateWindowMin = 10
+	}
+
+	// Performance defaults
+	if cfg.Performance.Enabled == nil {
+		t := true
+		cfg.Performance.Enabled = &t
+	}
+	if cfg.Performance.LoadHighMultiplier == 0 {
+		cfg.Performance.LoadHighMultiplier = 1.0
+	}
+	if cfg.Performance.LoadCriticalMultiplier == 0 {
+		cfg.Performance.LoadCriticalMultiplier = 2.0
+	}
+	if cfg.Performance.PHPProcessWarnPerUser == 0 {
+		cfg.Performance.PHPProcessWarnPerUser = 20
+	}
+	if cfg.Performance.PHPProcessCriticalTotalMult == 0 {
+		cfg.Performance.PHPProcessCriticalTotalMult = 5
+	}
+	if cfg.Performance.ErrorLogWarnSizeMB == 0 {
+		cfg.Performance.ErrorLogWarnSizeMB = 50
+	}
+	if cfg.Performance.MySQLJoinBufferMaxMB == 0 {
+		cfg.Performance.MySQLJoinBufferMaxMB = 64
+	}
+	if cfg.Performance.MySQLWaitTimeoutMax == 0 {
+		cfg.Performance.MySQLWaitTimeoutMax = 3600
+	}
+	if cfg.Performance.MySQLMaxConnectionsPerUser == 0 {
+		cfg.Performance.MySQLMaxConnectionsPerUser = 10
+	}
+	if cfg.Performance.RedisBgsaveMinInterval == 0 {
+		cfg.Performance.RedisBgsaveMinInterval = 900
+	}
+	if cfg.Performance.RedisLargeDatasetGB == 0 {
+		cfg.Performance.RedisLargeDatasetGB = 4
+	}
+	if cfg.Performance.WPMemoryLimitMaxMB == 0 {
+		cfg.Performance.WPMemoryLimitMaxMB = 512
+	}
+	if cfg.Performance.WPTransientWarnMB == 0 {
+		cfg.Performance.WPTransientWarnMB = 1
+	}
+	if cfg.Performance.WPTransientCriticalMB == 0 {
+		cfg.Performance.WPTransientCriticalMB = 10
 	}
 
 	return cfg, nil
