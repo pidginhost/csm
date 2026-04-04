@@ -22,6 +22,27 @@ CSM.post = function(url, body) {
     });
 };
 
+// Wrapper for DELETE requests with CSRF token
+CSM.delete = function(url, body) {
+    var resolvedUrl = (typeof CSM.apiUrl === 'function') ? CSM.apiUrl(url) : url;
+    var opts = {
+        method: 'DELETE',
+        credentials: 'same-origin',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': CSM.csrfToken
+        }
+    };
+    if (body !== undefined) { opts.body = JSON.stringify(body); }
+    return fetch(resolvedUrl, opts).then(function(r) {
+        if (!r.ok) {
+            return r.json().catch(function() { throw new Error('HTTP ' + r.status); })
+                .then(function(body) { throw new Error(body.error || 'HTTP ' + r.status); });
+        }
+        return r.json();
+    });
+};
+
 // Shared HTML-escape helper used across all pages
 CSM.esc = function(s) {
     var d = document.createElement('div');

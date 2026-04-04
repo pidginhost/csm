@@ -22,6 +22,13 @@ CSM.severityClass = function(severity) {
     return 'warning';
 };
 
+// Centralized severity map: numeric level → { label, cls }
+CSM.sevMap = {
+    2: { label: 'CRITICAL', cls: 'critical' },
+    1: { label: 'HIGH', cls: 'high' },
+    0: { label: 'WARNING', cls: 'warning' }
+};
+
 // Empty state placeholder HTML
 CSM.emptyState = function(message, colspan) {
     if (colspan) {

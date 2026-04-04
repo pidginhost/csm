@@ -79,6 +79,10 @@ html, body, .page { overflow-x: hidden; max-width: 100vw; }
 /* --- dashboard.html: live-feed relative timestamps ----------------------- */
 .feed-relative-time { min-width: 56px; text-align: right; }
 
+/* --- expandable rows: animated chevron ------------------------------------ */
+.expand-btn .ti { transition: transform 0.2s; }
+.expand-btn.expanded .ti { transform: rotate(180deg); }
+
 /* --- login.html: dark-theme body ----------------------------------------- */
 body.theme-dark { background-color: #1a2234; }
 
