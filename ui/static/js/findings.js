@@ -20,7 +20,7 @@ function loadFindings() {
         .catch(function(err) {
             var loading = document.getElementById('findings-loading');
             if (loading) loading.classList.add('d-none');
-            var card = document.getElementById('findings-table-card');
+            var card = document.getElementById('findings-card');
             if (!card) return;
             // Show error with retry — insert into card rather than replacing it
             var errDiv = document.getElementById('findings-error');
@@ -252,7 +252,7 @@ function restoreURLParams() {
 
 // --- Sticky header shadow on scroll ---
 (function() {
-    var cardHeader = document.querySelector('#findings-table-card > .card-header');
+    var cardHeader = document.querySelector('#findings-card > .card-header');
     if (!cardHeader) return;
 
     var sentinel = document.createElement('div');
@@ -265,6 +265,21 @@ function restoreURLParams() {
         cardHeader.classList.toggle('csm-stuck', !entries[0].isIntersecting);
     }, { threshold: [1] });
     observer.observe(sentinel);
+})();
+
+// --- Tab URL sync: remove tab param when Active tab is shown ---
+(function() {
+    var activeTabLink = document.querySelector('[href="#tab-active"]');
+    if (activeTabLink) {
+        activeTabLink.addEventListener('shown.bs.tab', function() {
+            var params = new URLSearchParams(window.location.search);
+            params.delete('tab');
+            params.delete('from'); params.delete('to');
+            params.delete('severity'); params.delete('hsearch'); params.delete('hpage');
+            var qs = params.toString();
+            history.replaceState(null, '', '/findings' + (qs ? '?' + qs : ''));
+        });
+    }
 })();
 
 // --- Per-page selector ---

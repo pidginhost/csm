@@ -127,11 +127,13 @@ func (s *Server) handleFindings(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-func (s *Server) handleHistory(w http.ResponseWriter, _ *http.Request) {
-	// History page is now fully JS-driven — API provides paginated data
-	s.renderTemplate(w, "history.html", map[string]string{
-		"Hostname": s.cfg.Hostname,
-	})
+func (s *Server) handleHistoryRedirect(w http.ResponseWriter, r *http.Request) {
+	// History is now a tab on the findings page — redirect for backward compat
+	target := "/findings?tab=history"
+	if qs := r.URL.RawQuery; qs != "" {
+		target = "/findings?tab=history&" + qs
+	}
+	http.Redirect(w, r, target, http.StatusFound)
 }
 
 func (s *Server) handleQuarantine(w http.ResponseWriter, _ *http.Request) {

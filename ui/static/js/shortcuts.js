@@ -12,7 +12,7 @@ CSM.shortcuts = (function() {
     var _chords = {
         d: '/dashboard',
         f: '/findings',
-        h: '/history',
+        h: '/findings?tab=history',
         t: '/threat',
         r: '/rules',
         b: '/firewall'
@@ -24,7 +24,7 @@ CSM.shortcuts = (function() {
         { keys: '/', desc: 'Focus search input' },
         { keys: 'g d', desc: 'Go to Dashboard' },
         { keys: 'g f', desc: 'Go to Findings' },
-        { keys: 'g h', desc: 'Go to History' },
+        { keys: 'g h', desc: 'Go to Findings > History tab' },
         { keys: 'g t', desc: 'Go to Threat Intel' },
         { keys: 'g r', desc: 'Go to Rules' },
         { keys: 'g b', desc: 'Go to Blocked IPs (Firewall)' },
