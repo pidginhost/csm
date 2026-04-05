@@ -173,9 +173,10 @@ func filterDisabledRules(content []byte, disabled []string) []byte {
 
 		if skipping {
 			for _, ch := range trimmed {
-				if ch == '{' {
+				switch ch {
+				case '{':
 					braceDepth++
-				} else if ch == '}' {
+				case '}':
 					braceDepth--
 				}
 			}
@@ -191,9 +192,10 @@ func filterDisabledRules(content []byte, disabled []string) []byte {
 			skipping = true
 			braceDepth = 0
 			for _, ch := range trimmed {
-				if ch == '{' {
+				switch ch {
+				case '{':
 					braceDepth++
-				} else if ch == '}' {
+				case '}':
 					braceDepth--
 				}
 			}
@@ -211,10 +213,7 @@ func filterDisabledRules(content []byte, disabled []string) []byte {
 }
 
 func extractRuleName(line string) string {
-	s := line
-	if strings.HasPrefix(s, "private ") {
-		s = s[8:]
-	}
+	s := strings.TrimPrefix(line, "private ")
 	if !strings.HasPrefix(s, "rule ") {
 		return ""
 	}
