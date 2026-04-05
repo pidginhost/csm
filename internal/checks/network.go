@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -119,6 +120,43 @@ func isInfraIP(ip string, infraNets []string) bool {
 		}
 		// Fall back to plain IP match (e.g. "1.2.3.4")
 		if net.ParseIP(entry) != nil && entry == ip {
+			return true
+		}
+	}
+	// Also check Cloudflare IPs - these must never be blocked/challenged
+	// because blocking a CF edge IP blocks thousands of legitimate users.
+	// The detection/alert still fires; only the nftables action is skipped.
+	if isCloudflareIP(parsed) {
+		return true
+	}
+	return false
+}
+
+var (
+	cfNets   []*net.IPNet
+	cfNetsMu sync.RWMutex
+)
+
+// SetCloudflareNets updates the cached Cloudflare IP ranges.
+// Called by the daemon after fetching CF IPs.
+func SetCloudflareNets(cidrs []string) {
+	var nets []*net.IPNet
+	for _, cidr := range cidrs {
+		_, network, err := net.ParseCIDR(cidr)
+		if err == nil {
+			nets = append(nets, network)
+		}
+	}
+	cfNetsMu.Lock()
+	cfNets = nets
+	cfNetsMu.Unlock()
+}
+
+func isCloudflareIP(ip net.IP) bool {
+	cfNetsMu.RLock()
+	defer cfNetsMu.RUnlock()
+	for _, network := range cfNets {
+		if network.Contains(ip) {
 			return true
 		}
 	}

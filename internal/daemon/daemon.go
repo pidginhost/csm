@@ -1210,6 +1210,13 @@ func (d *Daemon) refreshCloudflareIPs() {
 	}
 
 	firewall.SaveCFState(d.cfg.StatePath, ipv4, ipv6, time.Now())
+
+	// Update the checks package so AutoBlockIPs/ChallengeRouteIPs skip CF IPs.
+	// Blocking a CF edge IP would block thousands of legitimate users.
+	allCF := make([]string, 0, len(ipv4)+len(ipv6))
+	allCF = append(allCF, ipv4...)
+	allCF = append(allCF, ipv6...)
+	checks.SetCloudflareNets(allCF)
 }
 
 // signatureUpdater periodically downloads new rules and reloads scanners.
