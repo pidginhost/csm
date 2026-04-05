@@ -161,6 +161,11 @@ type Config struct {
 		WPTransientCriticalMB       int     `yaml:"wp_transient_critical_mb"`
 	} `yaml:"performance"`
 
+	Cloudflare struct {
+		Enabled      bool `yaml:"enabled"`
+		RefreshHours int  `yaml:"refresh_hours"`
+	} `yaml:"cloudflare"`
+
 	C2Blocklist   []string `yaml:"c2_blocklist"`
 	BackdoorPorts []int    `yaml:"backdoor_ports"`
 }
@@ -291,6 +296,10 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Performance.WPTransientCriticalMB == 0 {
 		cfg.Performance.WPTransientCriticalMB = 10
+	}
+
+	if cfg.Cloudflare.RefreshHours == 0 {
+		cfg.Cloudflare.RefreshHours = 6
 	}
 
 	return cfg, nil

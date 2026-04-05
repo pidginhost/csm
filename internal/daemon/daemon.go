@@ -1075,6 +1075,53 @@ func (d *Daemon) startFirewall() {
 		fmt.Fprintf(os.Stderr, "[%s] DynDNS resolver active for %d host(s)\n",
 			ts(), len(d.cfg.Firewall.DynDNSHosts))
 	}
+
+	// Start Cloudflare IP whitelist refresh if configured
+	if d.cfg.Cloudflare.Enabled {
+		d.wg.Add(1)
+		go d.cloudflareRefreshLoop()
+		fmt.Fprintf(os.Stderr, "[%s] Cloudflare IP whitelist enabled (refresh every %dh)\n",
+			ts(), d.cfg.Cloudflare.RefreshHours)
+	}
+}
+
+// cloudflareRefreshLoop fetches Cloudflare IPs and updates the firewall sets periodically.
+func (d *Daemon) cloudflareRefreshLoop() {
+	defer d.wg.Done()
+
+	interval := time.Duration(d.cfg.Cloudflare.RefreshHours) * time.Hour
+
+	// Fetch immediately on startup
+	d.refreshCloudflareIPs()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-d.stopCh:
+			return
+		case <-ticker.C:
+			d.refreshCloudflareIPs()
+		}
+	}
+}
+
+func (d *Daemon) refreshCloudflareIPs() {
+	ipv4, ipv6, err := firewall.FetchCloudflareIPs()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] Cloudflare IP fetch error: %v\n", ts(), err)
+		return
+	}
+
+	if d.fwEngine != nil {
+		if err := d.fwEngine.UpdateCloudflareSet(ipv4, ipv6); err != nil {
+			fmt.Fprintf(os.Stderr, "[%s] Cloudflare set update error: %v\n", ts(), err)
+			return
+		}
+	}
+
+	firewall.SaveCFState(d.cfg.StatePath, ipv4, ipv6, time.Now())
 }
 
 // signatureUpdater periodically downloads new rules and reloads scanners.

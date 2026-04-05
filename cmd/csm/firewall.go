@@ -65,6 +65,8 @@ func runFirewall() {
 		fwUpdateGeoIP()
 	case "lookup":
 		fwLookup()
+	case "cf-status":
+		fwCFStatus()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown firewall command: %s\n", os.Args[2])
 		printFirewallUsage()
@@ -102,6 +104,7 @@ Commands:
   profile restore <name>            Restore firewall config from profile
   update-geoip                      Download/update country IP block lists
   lookup <ip>                       Look up IP country and block status
+  cf-status                         Show Cloudflare IP whitelist status
 `)
 }
 
@@ -745,6 +748,17 @@ func fwLookup() {
 		}
 	}
 
+	// Check CF whitelist
+	cfIPv4, cfIPv6 := firewall.LoadCFState(cfg.StatePath)
+	parsedIP := net.ParseIP(ip)
+	for _, cidr := range append(cfIPv4, cfIPv6...) {
+		_, network, err := net.ParseCIDR(cidr)
+		if err == nil && network.Contains(parsedIP) {
+			fmt.Printf("CF_WHITELIST  %s (ports 80, 443 only)\n", cidr)
+			break
+		}
+	}
+
 	// GeoIP lookup
 	dbPath := cfg.Firewall.CountryDBPath
 	if dbPath == "" {
@@ -1049,5 +1063,46 @@ func fwAudit() {
 			reason = fmt.Sprintf("  %s", e.Reason)
 		}
 		fmt.Printf("%s  %-13s %-18s%s%s\n", ts, e.Action, e.IP, dur, reason)
+	}
+}
+
+func fwCFStatus() {
+	cfg := loadConfig()
+
+	status := "DISABLED"
+	if cfg.Cloudflare.Enabled {
+		status = "ENABLED"
+	}
+
+	fmt.Printf("Cloudflare IP Whitelist\n")
+	fmt.Printf("======================\n")
+	fmt.Printf("Status:       %s\n", status)
+	fmt.Printf("Refresh:      every %d hours\n", cfg.Cloudflare.RefreshHours)
+	fmt.Printf("Ports:        TCP 80, 443\n")
+
+	ipv4, ipv6 := firewall.LoadCFState(cfg.StatePath)
+	refreshed := firewall.LoadCFRefreshTime(cfg.StatePath)
+
+	if refreshed.IsZero() {
+		fmt.Printf("Last Refresh: never\n")
+	} else {
+		ago := time.Since(refreshed).Truncate(time.Minute)
+		fmt.Printf("Last Refresh: %s (%s ago)\n", refreshed.Format("2006-01-02 15:04:05"), ago)
+	}
+
+	fmt.Printf("IPv4 CIDRs:   %d\n", len(ipv4))
+	fmt.Printf("IPv6 CIDRs:   %d\n", len(ipv6))
+
+	if len(ipv4) > 0 {
+		fmt.Printf("\nIPv4 Ranges:\n")
+		for _, cidr := range ipv4 {
+			fmt.Printf("  %s\n", cidr)
+		}
+	}
+	if len(ipv6) > 0 {
+		fmt.Printf("\nIPv6 Ranges:\n")
+		for _, cidr := range ipv6 {
+			fmt.Printf("  %s\n", cidr)
+		}
 	}
 }

@@ -36,6 +36,10 @@ type Engine struct {
 	setInfra      *nftables.Set
 	setCountry    *nftables.Set
 
+	// Cloudflare IP whitelist sets (interval for CIDR matching)
+	setCFWhitelist  *nftables.Set // IPv4
+	setCFWhitelist6 *nftables.Set // IPv6
+
 	// IPv6 sets (nil if IPv6 disabled)
 	setBlocked6    *nftables.Set
 	setBlockedNet6 *nftables.Set
@@ -158,6 +162,14 @@ func ConnectExisting(cfg *FirewallConfig, statePath string) (*Engine, error) {
 		setAllowed:    setAllowed,
 		setInfra:      setInfra,
 		statePath:     filepath.Join(statePath, "firewall"),
+	}
+
+	// Try to find Cloudflare whitelist sets (optional)
+	if s, err := conn.GetSetByName(table, "cf_whitelist"); err == nil {
+		e.setCFWhitelist = s
+	}
+	if s, err := conn.GetSetByName(table, "cf_whitelist6"); err == nil {
+		e.setCFWhitelist6 = s
 	}
 
 	// Try to find IPv6 sets (optional — may not exist if IPv6 disabled)
@@ -316,6 +328,26 @@ func (e *Engine) createSets() error {
 
 	if err := e.conn.AddSet(e.setInfra, infraElements); err != nil {
 		return fmt.Errorf("infra set: %w", err)
+	}
+
+	// Cloudflare IP whitelist sets (interval for CIDR ranges, accept on 80/443 only)
+	e.setCFWhitelist = &nftables.Set{
+		Table:    e.table,
+		Name:     "cf_whitelist",
+		KeyType:  nftables.TypeIPAddr,
+		Interval: true,
+	}
+	if err := e.conn.AddSet(e.setCFWhitelist, nil); err != nil {
+		return fmt.Errorf("cf_whitelist set: %w", err)
+	}
+	e.setCFWhitelist6 = &nftables.Set{
+		Table:    e.table,
+		Name:     "cf_whitelist6",
+		KeyType:  nftables.TypeIP6Addr,
+		Interval: true,
+	}
+	if err := e.conn.AddSet(e.setCFWhitelist6, nil); err != nil {
+		return fmt.Errorf("cf_whitelist6 set: %w", err)
 	}
 
 	// Country-blocked IPs set (interval for CIDR ranges)
@@ -477,6 +509,11 @@ func (e *Engine) createInputChain() error {
 	// Rule 4: Allow infra IPs FIRST — infra must NEVER be blocked, even accidentally
 	e.addSetMatchRule(e.setInfra, expr.VerdictAccept)
 	e.addSetMatchRuleV6(e.setInfra6, expr.VerdictAccept)
+
+	// Rule 4b: Cloudflare IP whitelist — accept on TCP 80/443 only.
+	// CF IPs can still be blocked on other ports (unlike infra).
+	e.addCFWhitelistRule(e.setCFWhitelist, false)
+	e.addCFWhitelistRule(e.setCFWhitelist6, true)
 
 	// Rule 5: Drop blocked IPs (O(1) hash set lookup)
 	e.addSetMatchRule(e.setBlocked, expr.VerdictDrop)
@@ -1014,6 +1051,41 @@ func (e *Engine) addSetMatchRuleV6(set *nftables.Set, verdict expr.VerdictKind) 
 			&expr.Verdict{Kind: verdict},
 		},
 	})
+}
+
+// addCFWhitelistRule adds an accept rule for Cloudflare IPs on TCP ports 80 and 443.
+// Equivalent to: ip saddr @cf_whitelist tcp dport {80, 443} accept
+func (e *Engine) addCFWhitelistRule(set *nftables.Set, ipv6 bool) {
+	if set == nil {
+		return
+	}
+	for _, port := range []uint16{80, 443} {
+		var exprs []expr.Any
+		if ipv6 {
+			exprs = append(exprs,
+				&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{10}}, // NFPROTO_IPV6
+				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 8, Len: 16},
+			)
+		} else {
+			exprs = append(exprs,
+				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
+			)
+		}
+		exprs = append(exprs,
+			&expr.Lookup{SourceRegister: 1, SetName: set.Name, SetID: set.ID},
+			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{6}}, // TCP
+			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(port)},
+			&expr.Verdict{Kind: expr.VerdictAccept},
+		)
+		e.conn.AddRule(&nftables.Rule{
+			Table: e.table,
+			Chain: e.chainIn,
+			Exprs: exprs,
+		})
+	}
 }
 
 func (e *Engine) addPortAcceptRule(port int, tcp bool) {
