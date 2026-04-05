@@ -24,6 +24,7 @@ import (
 	"github.com/pidginhost/csm/internal/modsec"
 	"github.com/pidginhost/csm/internal/signatures"
 	"github.com/pidginhost/csm/internal/state"
+	"github.com/pidginhost/csm/internal/store"
 	"github.com/pidginhost/csm/internal/webui"
 	"github.com/pidginhost/csm/internal/yara"
 )
@@ -1197,30 +1198,55 @@ func (d *Daemon) refreshCloudflareIPs() {
 func (d *Daemon) signatureUpdater() {
 	defer d.wg.Done()
 
-	// Skip if no update URL configured
-	if d.cfg.Signatures.UpdateURL == "" {
+	yamlEnabled := d.cfg.Signatures.UpdateURL != ""
+	forgeEnabled := d.cfg.Signatures.YaraForge.Enabled
+
+	if !yamlEnabled && !forgeEnabled {
 		return
 	}
 
-	interval := 24 * time.Hour
-	if d.cfg.Signatures.UpdateInterval != "" {
-		if parsed, err := time.ParseDuration(d.cfg.Signatures.UpdateInterval); err == nil && parsed >= time.Hour {
-			interval = parsed
-		}
-	}
-
-	// Wait 5 minutes before first update attempt (let the daemon stabilize)
 	select {
 	case <-d.stopCh:
 		return
 	case <-time.After(5 * time.Minute):
 	}
 
-	ticker := time.NewTicker(interval)
+	yamlInterval := 24 * time.Hour
+	if d.cfg.Signatures.UpdateInterval != "" {
+		if parsed, err := time.ParseDuration(d.cfg.Signatures.UpdateInterval); err == nil && parsed >= time.Hour {
+			yamlInterval = parsed
+		}
+	}
+	forgeInterval := 168 * time.Hour
+	if d.cfg.Signatures.YaraForge.UpdateInterval != "" {
+		if parsed, err := time.ParseDuration(d.cfg.Signatures.YaraForge.UpdateInterval); err == nil && parsed >= time.Hour {
+			forgeInterval = parsed
+		}
+	}
+
+	tickInterval := yamlInterval
+	if forgeEnabled && forgeInterval < tickInterval {
+		tickInterval = forgeInterval
+	}
+	if !yamlEnabled {
+		tickInterval = forgeInterval
+	}
+
+	var lastYAML, lastForge time.Time
+
+	ticker := time.NewTicker(tickInterval)
 	defer ticker.Stop()
 
 	for {
-		d.doSignatureUpdate()
+		now := time.Now()
+		if yamlEnabled && now.Sub(lastYAML) >= yamlInterval {
+			d.doSignatureUpdate()
+			lastYAML = now
+		}
+		if forgeEnabled && now.Sub(lastForge) >= forgeInterval {
+			d.doForgeUpdate()
+			lastForge = now
+		}
 
 		select {
 		case <-d.stopCh:
@@ -1238,6 +1264,42 @@ func (d *Daemon) doSignatureUpdate() {
 	}
 	fmt.Fprintf(os.Stderr, "[%s] Signature auto-update: %d rules downloaded\n", ts(), count)
 	d.reloadSignatures()
+}
+
+func (d *Daemon) doForgeUpdate() {
+	db := store.Global()
+	currentVersion := ""
+	if db != nil {
+		currentVersion = db.GetMetaString("forge_version_" + d.cfg.Signatures.YaraForge.Tier)
+	}
+
+	newVersion, count, err := signatures.ForgeUpdate(
+		d.cfg.Signatures.RulesDir,
+		d.cfg.Signatures.YaraForge.Tier,
+		currentVersion,
+		d.cfg.Signatures.DisabledRules,
+	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] YARA Forge update failed: %v\n", ts(), err)
+		return
+	}
+	if count == 0 {
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "[%s] YARA Forge update: %d rules (version %s)\n", ts(), count, newVersion)
+
+	if yaraScanner := yara.Global(); yaraScanner != nil {
+		if err := yaraScanner.Reload(); err != nil {
+			fmt.Fprintf(os.Stderr, "[%s] YARA rule reload after Forge update error: %v\n", ts(), err)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "[%s] Reloaded %d YARA rules after Forge update\n", ts(), yaraScanner.RuleCount())
+	}
+
+	if db != nil {
+		_ = db.SetMetaString("forge_version_"+d.cfg.Signatures.YaraForge.Tier, newVersion)
+	}
 }
 
 func (d *Daemon) reloadSignatures() {
