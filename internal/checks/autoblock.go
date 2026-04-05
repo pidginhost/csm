@@ -71,13 +71,13 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	state := loadBlockState(cfg.StatePath)
 
 	// Prune IPs that the firewall engine no longer has blocked.
-	// The engine handles expiry natively via nftables timeouts —
+	// The engine handles expiry natively via nftables timeouts -
 	// we just sync our state to match.
 	var stillBlocked []blockedIP
 	for _, b := range state.IPs {
 		if fwBlocker != nil {
 			if !fwBlocker.IsBlocked(b.IP) {
-				// Engine expired this block — clean up our state
+				// Engine expired this block - clean up our state
 				fmt.Fprintf(os.Stderr, "[%s] AUTO-UNBLOCK: %s removed (engine expired)\n", time.Now().Format("2006-01-02 15:04:05"), b.IP)
 				continue
 			}
@@ -156,10 +156,15 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			continue
 		}
 
+		// Skip IPs on the challenge list (they'll be challenged, not blocked)
+		if cl := GetChallengeIPList(); cl != nil && cl.Contains(ip) {
+			continue
+		}
+
 		ipsToBlock[ip] = f.Message
 	}
 
-	// Block IPs — queue any that can't be blocked due to rate limit
+	// Block IPs - queue any that can't be blocked due to rate limit
 	expiry := parseExpiry(cfg.AutoResponse.BlockExpiry)
 	rateLimited := false
 	for ip, reason := range ipsToBlock {
@@ -286,7 +291,7 @@ func ExtractIPFromFinding(f alert.Finding) string {
 func extractIPFromFinding(f alert.Finding) string {
 	msg := f.Message
 
-	// Use LastIndex to find the rightmost separator — log-injected content
+	// Use LastIndex to find the rightmost separator - log-injected content
 	// tends to appear earlier in the message, while the structurally-parsed
 	// IP from the log parser appears at the end.
 	for _, sep := range []string{" from ", ": "} {
@@ -299,7 +304,7 @@ func extractIPFromFinding(f alert.Finding) string {
 				if ip == nil {
 					continue
 				}
-				// Reject loopback and unspecified — never block these
+				// Reject loopback and unspecified - never block these
 				if ip.IsLoopback() || ip.IsUnspecified() {
 					continue
 				}

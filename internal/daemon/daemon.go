@@ -111,6 +111,12 @@ func (d *Daemon) Run() error {
 	// Start challenge server if enabled (gray listing)
 	d.startChallengeServer()
 
+	// Start challenge escalation ticker
+	if d.ipList != nil {
+		d.wg.Add(1)
+		go d.challengeEscalator()
+	}
+
 	// Create password hijack detector
 	d.hijackDetector = NewPasswordHijackDetector(d.cfg, d.alertCh)
 
@@ -156,6 +162,9 @@ func (d *Daemon) Run() error {
 	// it's safe/idempotent and should fix baseline findings too.
 	permActions, permFixedKeys := checks.AutoFixPermissions(d.cfg, initialFindings)
 
+	// Challenge routing runs on ALL findings unconditionally when enabled.
+	challengeActions := checks.ChallengeRouteIPs(d.cfg, initialFindings)
+
 	// Other auto-response only on new findings
 	if len(newFindings) > 0 {
 		killActions := checks.AutoKillProcesses(d.cfg, newFindings)
@@ -164,6 +173,7 @@ func (d *Daemon) Run() error {
 		newFindings = append(newFindings, killActions...)
 		newFindings = append(newFindings, quarantineActions...)
 		newFindings = append(newFindings, permActions...)
+		newFindings = append(newFindings, challengeActions...)
 		newFindings = append(newFindings, blockActions...)
 		_ = alert.Dispatch(d.cfg, newFindings)
 	}
@@ -341,6 +351,10 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// These must execute BEFORE FilterNew because repeat offender IPs and
 	// recurring permission issues need to be fixed even if the alert was
 	// already sent in a previous cycle.
+
+	// Challenge routing runs FIRST - claims eligible IPs before hard-blocking.
+	challengeActions := checks.ChallengeRouteIPs(d.cfg, findings)
+
 	blockActions := checks.AutoBlockIPs(d.cfg, findings)
 	permActions, permFixedKeys := checks.AutoFixPermissions(d.cfg, findings)
 
@@ -377,6 +391,7 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 
 	// Append auto-response actions to new findings for alerting
 	newFindings = append(newFindings, blockActions...)
+	newFindings = append(newFindings, challengeActions...)
 	newFindings = append(newFindings, permActions...)
 
 	if len(newFindings) == 0 {
@@ -911,6 +926,7 @@ func (d *Daemon) startChallengeServer() {
 	}
 
 	d.ipList = challenge.NewIPList(d.cfg.StatePath)
+	checks.SetChallengeIPList(d.ipList)
 	srv := challenge.New(d.cfg, unblocker, d.ipList)
 	d.challengeServer = srv
 	d.wg.Add(1)
@@ -921,6 +937,57 @@ func (d *Daemon) startChallengeServer() {
 			fmt.Fprintf(os.Stderr, "[%s] Challenge server error: %v\n", ts(), err)
 		}
 	}()
+}
+
+func (d *Daemon) challengeEscalator() {
+	defer d.wg.Done()
+
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+
+	expiry := parseBlockExpiry(d.cfg.AutoResponse.BlockExpiry)
+
+	for {
+		select {
+		case <-d.stopCh:
+			return
+		case <-ticker.C:
+			if d.challengeServer != nil {
+				d.challengeServer.CleanExpired()
+			}
+
+			expired := d.ipList.ExpiredEntries()
+			for _, e := range expired {
+				if d.fwEngine == nil {
+					continue
+				}
+				reason := fmt.Sprintf("CSM challenge-timeout: %s", truncateStr(e.Reason, 100))
+				if err := d.fwEngine.BlockIP(e.IP, reason, expiry); err != nil {
+					fmt.Fprintf(os.Stderr, "[%s] challenge-escalate: error blocking %s: %v\n", ts(), e.IP, err)
+					continue
+				}
+				fmt.Fprintf(os.Stderr, "[%s] CHALLENGE-ESCALATE: %s timed out, hard-blocked\n", ts(), e.IP)
+			}
+		}
+	}
+}
+
+func parseBlockExpiry(s string) time.Duration {
+	if s == "" {
+		return 24 * time.Hour
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 24 * time.Hour
+	}
+	return d
+}
+
+func truncateStr(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max]
 }
 
 func (d *Daemon) initGeoIP() {
