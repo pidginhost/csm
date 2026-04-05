@@ -162,3 +162,14 @@ body.theme-dark { background-color: #1a2234; }
     opacity: 0;
     border-top: none;
 }
+
+/* --- Accessibility: focus-visible outlines -------------------------------- */
+:focus-visible {
+    outline: 2px solid var(--csm-info);
+    outline-offset: 2px;
+}
+.btn:focus-visible {
+    outline: 2px solid var(--csm-info);
+    outline-offset: 2px;
+    box-shadow: none;
+}

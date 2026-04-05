@@ -74,7 +74,7 @@
                     <div class="col-auto"><span class="text-muted font-monospace small">{{.Timestamp}}</span></div>
                     <div class="col-auto"><span class="badge badge-{{.SevClass}}">{{.Severity}}</span></div>
                     <div class="col"><span class="font-monospace small">{{.Check}}</span> - {{.Message}}</div>
-                    {{if .HasFix}}<div class="col-auto"><button class="btn btn-warning btn-sm feed-fix-btn" data-check="{{.Check}}" data-message="{{.Message}}" data-fixdesc="{{.FixDesc}}" title="{{.FixDesc}}"><i class="ti ti-tool"></i></button></div>{{end}}
+                    {{if .HasFix}}<div class="col-auto"><button class="btn btn-warning btn-sm feed-fix-btn" data-check="{{.Check}}" data-message="{{.Message}}" data-fixdesc="{{.FixDesc}}" title="{{.FixDesc}}" aria-label="Fix: {{.FixDesc}}"><i class="ti ti-tool"></i></button></div>{{end}}
                 </div>
                 {{if .Details}}<div class="detail d-none mt-2 small text-muted csm-detail">{{.Details}}</div>{{end}}
             </div>

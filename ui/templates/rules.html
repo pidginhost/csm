@@ -50,7 +50,7 @@
                     </tr>
                 </thead>
                 <tbody id="rules-tbody">
-                    <tr><td colspan="3" class="text-center text-muted">Loading...</td></tr>
+                    <tr><td colspan="3" class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -65,7 +65,7 @@
             <p class="text-muted small mb-3">CSM custom ModSecurity rules (900000-900999) can escalate to nftables firewall blocks after repeated denies. Add rule IDs here to disable escalation - the ModSecurity deny (403) still applies, but CSM won't block the IP at the firewall level.</p>
             <form id="modsec-escalation-form" class="row g-2 align-items-end mb-3">
                 <div class="col-auto">
-                    <label class="form-label">Rule ID</label>
+                    <label class="form-label" for="modsec-rule-id">Rule ID</label>
                     <input type="number" class="form-control" id="modsec-rule-id" placeholder="e.g. 900112" min="900000" max="900999" required>
                 </div>
                 <div class="col-auto">
@@ -85,16 +85,16 @@
             <p class="text-muted small mb-3">Suppression rules prevent specific findings from triggering email/webhook alerts. They are stored in state, not in rule files, so they survive rule updates.</p>
             <form id="suppression-form" class="row g-2 align-items-end">
                 <div class="col-sm-3">
-                    <label class="form-label">Check Type</label>
+                    <label class="form-label" for="suppress-check">Check Type</label>
                     <input type="text" class="form-control" id="suppress-check" placeholder="e.g. yara_match_realtime" list="check-types" required>
                     <datalist id="check-types"></datalist>
                 </div>
                 <div class="col-sm-4">
-                    <label class="form-label">Path Pattern <span class="text-muted">(optional)</span></label>
+                    <label class="form-label" for="suppress-path">Path Pattern <span class="text-muted">(optional)</span></label>
                     <input type="text" class="form-control font-monospace" id="suppress-path" placeholder="e.g. /home/user/site/crud/*">
                 </div>
                 <div class="col-sm-3">
-                    <label class="form-label">Reason <span class="text-muted">(optional)</span></label>
+                    <label class="form-label" for="suppress-reason">Reason <span class="text-muted">(optional)</span></label>
                     <input type="text" class="form-control" id="suppress-reason" placeholder="e.g. False positive - JS eval">
                 </div>
                 <div class="col-sm-2">
@@ -102,7 +102,7 @@
                 </div>
             </form>
         </div>
-        <div id="suppressions-content"><div class="card-body text-center text-muted py-4">Loading...</div></div>
+        <div id="suppressions-content"><div class="card-body text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</div></div>
     </div>
 {{end}}
 {{define "scripts"}}

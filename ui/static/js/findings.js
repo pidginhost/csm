@@ -247,6 +247,7 @@ function syncFindingsURL() {
         body.classList.add('collapsed');
         body.style.maxHeight = '0';
         icon.classList.add('collapsed');
+        header.setAttribute('aria-expanded', 'false');
         localStorage.setItem(STORAGE_KEY, '1');
     }
 
@@ -254,6 +255,7 @@ function syncFindingsURL() {
         body.classList.remove('collapsed');
         body.style.maxHeight = body.scrollHeight + 'px';
         icon.classList.remove('collapsed');
+        header.setAttribute('aria-expanded', 'true');
         localStorage.setItem(STORAGE_KEY, '0');
         var cleanup = function() {
             body.style.maxHeight = '';
@@ -275,6 +277,7 @@ function syncFindingsURL() {
         body.classList.add('collapsed');
         body.style.maxHeight = '0';
         icon.classList.add('collapsed');
+        header.setAttribute('aria-expanded', 'false');
     }
 })();
 

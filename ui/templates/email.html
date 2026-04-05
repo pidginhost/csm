@@ -59,15 +59,15 @@
         <div class="card-body py-2">
             <form id="email-filters" class="row g-2 align-items-end">
                 <div class="col-auto">
-                    <label class="form-label mb-0 small">From</label>
+                    <label class="form-label mb-0 small" for="filter-from">From</label>
                     <input type="date" id="filter-from" class="form-control form-control-sm">
                 </div>
                 <div class="col-auto">
-                    <label class="form-label mb-0 small">To</label>
+                    <label class="form-label mb-0 small" for="filter-to">To</label>
                     <input type="date" id="filter-to" class="form-control form-control-sm">
                 </div>
                 <div class="col-auto">
-                    <label class="form-label mb-0 small">Severity</label>
+                    <label class="form-label mb-0 small" for="filter-severity">Severity</label>
                     <select id="filter-severity" class="form-select form-select-sm">
                         <option value="">All</option>
                         <option value="2">Critical</option>
@@ -76,7 +76,7 @@
                     </select>
                 </div>
                 <div class="col-auto">
-                    <label class="form-label mb-0 small">Check</label>
+                    <label class="form-label mb-0 small" for="filter-check">Check</label>
                     <select id="filter-check" class="form-select form-select-sm">
                         <option value="">All</option>
                         <option value="email_phishing_content">Phishing</option>
@@ -90,7 +90,7 @@
                     </select>
                 </div>
                 <div class="col">
-                    <label class="form-label mb-0 small">Search</label>
+                    <label class="form-label mb-0 small" for="email-search">Search</label>
                     <input type="text" id="email-search" class="form-control form-control-sm" placeholder="Search findings...">
                 </div>
                 <div class="col-auto">

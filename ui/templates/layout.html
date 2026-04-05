@@ -36,7 +36,7 @@
                 <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar-menu" aria-controls="navbar-menu" aria-expanded="false" aria-label="Toggle navigation">
                     <span class="navbar-toggler-icon"></span>
                 </button>
-                <div class="collapse navbar-collapse" id="navbar-menu">
+                <nav class="collapse navbar-collapse" id="navbar-menu" aria-label="Main navigation">
                     <ul class="navbar-nav" id="csm-nav">
                         <li class="nav-item"><a class="nav-link" href="/dashboard"><i class="ti ti-dashboard"></i>&nbsp;Dashboard</a></li>
                         <li class="nav-item"><a class="nav-link" href="/findings"><i class="ti ti-alert-triangle"></i>&nbsp;Findings</a></li>
@@ -50,18 +50,18 @@
                         <li class="nav-item"><a class="nav-link" href="/audit"><i class="ti ti-clipboard-list"></i>&nbsp;Audit</a></li>
                         <li class="nav-item"><a class="nav-link" href="/performance"><i class="ti ti-activity"></i>&nbsp;Performance</a></li>
                     </ul>
-                </div>
+                </nav>
             </div>
         </header>
         <div class="page-wrapper">
             <div id="csm-connection-lost" class="alert alert-danger alert-dismissible mb-0 rounded-0 d-none" role="alert" aria-live="polite">
                 <strong>Connection lost</strong> — Unable to reach the server. Retrying automatically.
             </div>
-            <div class="page-body">
+            <main class="page-body">
                 <div class="container-xl">
                     {{template "content" .}}
                 </div>
-            </div>
+            </main>
             <footer class="footer footer-transparent d-print-none">
                 <div class="container-xl">
                     <div class="text-muted text-center">CSM - Continuous Security Monitor</div>
@@ -69,7 +69,7 @@
             </footer>
         </div>
     </div>
-    <div id="csm-toasts" class="csm-toasts"></div>
+    <div id="csm-toasts" class="csm-toasts" aria-live="polite"></div>
     <div class="modal fade" id="csm-confirm-modal" tabindex="-1" aria-hidden="true">
         <div class="modal-dialog modal-sm modal-dialog-centered">
             <div class="modal-content">
