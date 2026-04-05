@@ -42,6 +42,15 @@
             <div class="card-actions d-flex gap-2 flex-wrap">
                 <button class="btn btn-success btn-sm d-none" id="bulk-unblock-btn" title="Remove firewall block for all selected IPs" aria-label="Bulk unblock selected IPs">Unblock 0 IPs</button>
                 <input type="text" id="blocked-search" class="form-control form-control-sm csm-input-md" placeholder="Search IPs...">
+                <div class="dropdown">
+                    <button class="btn btn-ghost-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-label="Export current view">
+                        <i class="ti ti-download"></i>&nbsp;Export
+                    </button>
+                    <div class="dropdown-menu dropdown-menu-end">
+                        <a class="dropdown-item" href="#" data-export="csv"><i class="ti ti-file-spreadsheet me-2"></i>CSV</a>
+                        <a class="dropdown-item" href="#" data-export="json"><i class="ti ti-braces me-2"></i>JSON</a>
+                    </div>
+                </div>
                 <form id="block-form" class="d-flex gap-2">
                     <input type="text" id="block-ip" class="form-control form-control-sm font-monospace csm-input-sm" placeholder="IP address">
                     <input type="text" id="block-reason" class="form-control form-control-sm csm-input-md" placeholder="Reason">

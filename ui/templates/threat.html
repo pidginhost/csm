@@ -52,6 +52,15 @@
                 <button class="btn btn-danger btn-sm d-none" id="bulk-block-btn"><i class="ti ti-shield-lock"></i>&nbsp;Block Selected</button>
                 <button class="btn btn-success btn-sm d-none" id="bulk-whitelist-btn"><i class="ti ti-shield-check"></i>&nbsp;Whitelist Selected</button>
                 <input type="text" id="attackers-search" class="form-control form-control-sm csm-input-md" placeholder="Search attackers...">
+                <div class="dropdown">
+                    <button class="btn btn-ghost-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-label="Export current view">
+                        <i class="ti ti-download"></i>&nbsp;Export
+                    </button>
+                    <div class="dropdown-menu dropdown-menu-end">
+                        <a class="dropdown-item" href="#" data-export="csv"><i class="ti ti-file-spreadsheet me-2"></i>CSV</a>
+                        <a class="dropdown-item" href="#" data-export="json"><i class="ti ti-braces me-2"></i>JSON</a>
+                    </div>
+                </div>
             </div>
         </div>
         <div class="table-responsive">

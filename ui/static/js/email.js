@@ -4,6 +4,7 @@
 
     var EMAIL_CHECKS = 'mail_queue,mail_per_account,email_phishing_content,email_malware,email_av_degraded,email_av_timeout,email_av_parse_error,email_compromised_account,email_spam_outbreak,email_credential_leak,email_auth_failure_realtime,exim_frozen_realtime';
     var EMAIL_BLOCKED_KEYWORDS = ['mail', 'smtp', 'spam', 'phish', 'mailer'];
+    var _emailExportData = [];
 
     // Restore filter state from URL, falling back to today's date
     var today = new Date().toISOString().substring(0, 10);
@@ -269,7 +270,20 @@
         var tbody = document.getElementById('email-tbody');
         if (!tbody) return;
 
+        // Store for export
+        _emailExportData = findings.map(function(f) {
+            return {
+                check: f.check,
+                severity: f.severity === 2 ? 'critical' : f.severity === 1 ? 'high' : 'warning',
+                message: f.message,
+                account: extractAccountFromMsg(f.message, f.details),
+                timestamp: f.timestamp || ''
+            };
+        });
+
         if (findings.length === 0) {
+            _emailExportData = [];
+            /* static empty state - no user data in HTML */
             tbody.innerHTML = CSM.emptyState('No email findings in this period', 5);
             emailTable = null;
             return;
@@ -738,6 +752,21 @@
             }
         });
     }
+
+    // --- Export handlers ---
+    var _emailExportCols = [
+        {key:'check', label:'Check'},
+        {key:'severity', label:'Severity'},
+        {key:'message', label:'Message'},
+        {key:'account', label:'Account'},
+        {key:'timestamp', label:'Time'}
+    ];
+    document.querySelectorAll('[data-export]').forEach(function(el) {
+        el.addEventListener('click', function(e) {
+            e.preventDefault();
+            CSM.exportTable(_emailExportData, _emailExportCols, this.getAttribute('data-export'), 'csm-email-findings');
+        });
+    });
 
     loadEmailStats();
     loadFindings();

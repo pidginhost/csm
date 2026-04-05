@@ -1,5 +1,7 @@
 // CSM Firewall page
 
+var _fwBlockedData = [];
+
 function loadStatus(){
     fetch(CSM.apiUrl('/api/v1/firewall/status'),{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(d){
         document.getElementById('fw-enabled').innerHTML = d.enabled ? '<span class="text-success">ACTIVE</span>' : '<span class="text-muted">DISABLED</span>';
@@ -72,7 +74,8 @@ document.getElementById('subnet-form').addEventListener('submit',function(e){
 function loadBlocked(){
     fetch(CSM.apiUrl('/api/v1/blocked-ips'),{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(ips){
         var el=document.getElementById('blocked-content');
-        if(!ips||ips.length===0){el.innerHTML='<div class="card-body text-center text-muted py-3">No blocked IPs.</div>';return;}
+        if(!ips||ips.length===0){_fwBlockedData=[];el.innerHTML='<div class="card-body text-center text-muted py-3">No blocked IPs.</div>';return;}
+        _fwBlockedData = ips.map(function(b) { return { ip: b.ip, reason: b.reason || '', expires: b.expires_in || '' }; });
         var h='<div class="table-responsive"><table class="table table-vcenter card-table table-sm" id="blocked-table"><thead><tr>';
         h+='<th><input type="checkbox" class="form-check-input" id="blocked-select-all"></th>';
         h+='<th>IP</th><th>Location</th><th>Reason</th><th>Expires</th><th>Action</th></tr></thead><tbody>';
@@ -272,5 +275,20 @@ function enrichBlockedGeoIPFallback(cells) {
 // Bind bulk unblock button (replaces inline onclick for CSP compliance)
 var bulkUnblockBtn = document.getElementById('bulk-unblock-btn');
 if (bulkUnblockBtn) bulkUnblockBtn.addEventListener('click', bulkUnblock);
+
+// --- Export handlers ---
+(function() {
+    var cols = [
+        {key:'ip', label:'IP'},
+        {key:'reason', label:'Reason'},
+        {key:'expires', label:'Expires'}
+    ];
+    document.querySelectorAll('[data-export]').forEach(function(el) {
+        el.addEventListener('click', function(e) {
+            e.preventDefault();
+            CSM.exportTable(_fwBlockedData, cols, this.getAttribute('data-export'), 'csm-firewall-blocked');
+        });
+    });
+})();
 
 loadStatus();loadSubnets();loadBlocked();loadWhitelist();

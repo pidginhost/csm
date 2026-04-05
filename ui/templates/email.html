@@ -104,8 +104,17 @@
     <div class="card mb-3">
         <div class="card-header">
             <h3 class="card-title"><i class="ti ti-mail-exclamation"></i>&nbsp;Email Findings</h3>
-            <div class="card-actions">
+            <div class="card-actions d-flex gap-2 align-items-center">
                 <span class="text-muted small" id="email-total-label"></span>
+                <div class="dropdown">
+                    <button class="btn btn-ghost-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-label="Export current view">
+                        <i class="ti ti-download"></i>&nbsp;Export
+                    </button>
+                    <div class="dropdown-menu dropdown-menu-end">
+                        <a class="dropdown-item" href="#" data-export="csv"><i class="ti ti-file-spreadsheet me-2"></i>CSV</a>
+                        <a class="dropdown-item" href="#" data-export="json"><i class="ti ti-braces me-2"></i>JSON</a>
+                    </div>
+                </div>
             </div>
         </div>
         <div class="table-responsive">

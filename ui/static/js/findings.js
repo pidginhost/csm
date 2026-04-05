@@ -777,7 +777,16 @@ function toggleFindingDetail(row) {
         .catch(function(err) { console.error('findingDetail:', err); td.innerHTML = '<div class="p-2 text-danger small">Failed to load details.</div>'; });
 }
 
-// --- Export findings (CSV / JSON) ---
+// --- Export findings (CSV / JSON) via CSM.exportTable ---
+var _findingsExportCols = [
+    {key:'severity', label:'Severity'},
+    {key:'check', label:'Check'},
+    {key:'account', label:'Account'},
+    {key:'message', label:'Message'},
+    {key:'first_seen', label:'First Seen'},
+    {key:'last_seen', label:'Last Seen'}
+];
+
 function getExportData() {
     var rows = getVisibleRows();
     return rows.map(function(r) {
@@ -792,48 +801,10 @@ function getExportData() {
     });
 }
 
-function downloadFile(content, filename, mimeType) {
-    var blob = new Blob([content], { type: mimeType });
-    var url = URL.createObjectURL(blob);
-    var a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-}
-
-function exportCSV() {
-    var data = getExportData();
-    if (!data.length) { CSM.toast('No findings to export.', 'warning'); return; }
-    var headers = ['Severity', 'Check', 'Account', 'Message', 'First Seen', 'Last Seen'];
-    var lines = [headers.join(',')];
-    data.forEach(function(row) {
-        lines.push([
-            row.severity,
-            row.check,
-            row.account,
-            '"' + row.message.replace(/"/g, '""') + '"',
-            row.first_seen,
-            row.last_seen
-        ].join(','));
-    });
-    var timestamp = new Date().toISOString().slice(0, 10);
-    downloadFile(lines.join('\n'), 'csm-findings-' + timestamp + '.csv', 'text/csv');
-}
-
-function exportJSON() {
-    var data = getExportData();
-    if (!data.length) { CSM.toast('No findings to export.', 'warning'); return; }
-    var timestamp = new Date().toISOString().slice(0, 10);
-    downloadFile(JSON.stringify(data, null, 2), 'csm-findings-' + timestamp + '.json', 'application/json');
-}
-
 var csvBtn = document.getElementById('export-csv');
-if (csvBtn) csvBtn.addEventListener('click', function(e) { e.preventDefault(); exportCSV(); });
+if (csvBtn) csvBtn.addEventListener('click', function(e) { e.preventDefault(); CSM.exportTable(getExportData(), _findingsExportCols, 'csv', 'csm-findings'); });
 var jsonBtn = document.getElementById('export-json');
-if (jsonBtn) jsonBtn.addEventListener('click', function(e) { e.preventDefault(); exportJSON(); });
+if (jsonBtn) jsonBtn.addEventListener('click', function(e) { e.preventDefault(); CSM.exportTable(getExportData(), _findingsExportCols, 'json', 'csm-findings'); });
 
 // --- Auto-refresh: poll for new findings every 15 seconds ---
 var _findingsPoller = null;

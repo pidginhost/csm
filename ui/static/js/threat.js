@@ -2,6 +2,8 @@
 
 var fmtDate = CSM.fmtDate;
 
+var _threatAttackerData = [];
+
 var countryFlag = CSM.countryFlag;
 
 function verdictBadge(v,score){
@@ -114,6 +116,9 @@ fetch(CSM.apiUrl('/api/v1/threat/stats'),{credentials:'same-origin'}).then(check
 fetch(CSM.apiUrl('/api/v1/threat/top-attackers?limit=50'),{credentials:'same-origin'}).then(checkResp).then(function(data){
     var tbody=document.getElementById('attackers-tbody');
     if(!data||data.length===0){tbody.innerHTML='<tr><td colspan="11" class="text-center text-muted">No attack data recorded yet</td></tr>';return;}
+    _threatAttackerData = data.map(function(r) {
+        return { ip: r.ip, hits: r.event_count, score: r.unified_score, country: r.country || '', blocked: r.currently_blocked ? 'Yes' : 'No' };
+    });
     var html='';
     for(var i=0;i<data.length;i++){
         var r=data[i];
@@ -405,6 +410,23 @@ document.getElementById('bulk-whitelist-btn').addEventListener('click', function
         }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 });
+
+// --- Export handlers ---
+(function() {
+    var cols = [
+        {key:'ip', label:'IP'},
+        {key:'hits', label:'Hits'},
+        {key:'score', label:'Score'},
+        {key:'country', label:'Country'},
+        {key:'blocked', label:'Blocked'}
+    ];
+    document.querySelectorAll('[data-export]').forEach(function(el) {
+        el.addEventListener('click', function(e) {
+            e.preventDefault();
+            CSM.exportTable(_threatAttackerData, cols, this.getAttribute('data-export'), 'csm-threat-attackers');
+        });
+    });
+})();
 
 // --- Theme reactivity: update chart colors when dark/light mode toggles ---
 function updateChartTheme() {
