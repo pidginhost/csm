@@ -655,8 +655,24 @@ func (d *Daemon) startLogWatchers() {
 		}()
 	}
 
+	// Real-time access log watcher for wp-login/xmlrpc brute force detection.
+	// Auto-discover path (same candidates as CheckWPBruteForce in bruteforce.go).
+	if accessLogPath := discoverAccessLogPath(); accessLogPath != "" {
+		logFiles = append(logFiles, struct {
+			path    string
+			handler func(string, *config.Config) []alert.Finding
+		}{accessLogPath, parseAccessLogBruteForce})
+	} else {
+		fmt.Fprintf(os.Stderr, "[%s] Access log not found (checked %v), will retry every 60s\n", ts(), accessLogPaths)
+		d.wg.Add(1)
+		go d.retryLogWatcher(accessLogPaths[0], parseAccessLogBruteForce)
+	}
+
 	// Start background eviction for modsec dedup/escalation state
 	StartModSecEviction(d.stopCh)
+
+	// Start background eviction for access log brute force state
+	StartAccessLogEviction(d.stopCh)
 
 	// Start background eviction for email rate limiting state
 	StartEmailRateEviction(d.stopCh)

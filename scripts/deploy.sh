@@ -237,6 +237,11 @@ do_upgrade() {
     old_version=$("$BINARY_PATH" version 2>/dev/null || echo "unknown")
     echo "Current: ${old_version}"
 
+    # Stop daemon early to release bbolt lock before download
+    stop_services
+
+    save_token
+
     local tmpdir
     tmpdir=$(download_package "latest")
 
@@ -245,14 +250,10 @@ do_upgrade() {
 
     if [ "$old_version" = "$new_version" ]; then
         rm -rf "$tmpdir"
-        echo "Already running the latest version."
+        echo "Already running the latest version. Restarting..."
+        start_services
         exit 0
     fi
-
-    save_token
-
-    # Stop daemon and timers
-    stop_services
 
     # Backup current binary
     cp "$BINARY_PATH" "${BINARY_PATH}.bak" 2>/dev/null || true
