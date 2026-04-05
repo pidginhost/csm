@@ -148,6 +148,57 @@
         }).catch(function() { /* cancelled */ });
     }
 
+    // --- Needs Attention panel ---
+    // Note: innerHTML below only renders CSM.esc()-escaped server data and
+    // CSM.severityBadge() static markup - no raw user input is injected.
+    function updateAttention(findings) {
+        var urgent = findings.filter(function(f) { return f.severity >= 1; });
+        var container = document.getElementById('needs-attention');
+        var list = document.getElementById('attention-list');
+        if (!container || !list) return;
+        if (!urgent.length) { container.classList.add('d-none'); return; }
+        container.classList.remove('d-none');
+
+        var html = '';
+        urgent.slice(0, 10).forEach(function(f) {
+            html += '<div class="list-group-item d-flex align-items-center">';
+            html += CSM.severityBadge(f.severity);
+            html += '<span class="ms-2">' + CSM.esc(f.message) + '</span>';
+            if (f.has_fix) {
+                html += '<button class="btn btn-sm btn-warning ms-auto attention-fix-btn" data-check="' + CSM.esc(f.check) + '" data-account="' + CSM.esc(f.account || '') + '" data-message="' + CSM.esc(f.message) + '" data-fixdesc="' + CSM.esc(f.fix_desc || 'Fix') + '" aria-label="Fix">' + CSM.esc(f.fix_desc || 'Fix') + '</button>';
+            }
+            html += '</div>';
+        });
+        list.innerHTML = html; // safe: all values escaped via CSM.esc()
+
+        // Attach fix handlers to attention buttons
+        var fixBtns = list.querySelectorAll('.attention-fix-btn');
+        for (var i = 0; i < fixBtns.length; i++) {
+            fixBtns[i].addEventListener('click', function(e) {
+                e.stopPropagation();
+                fixFromFeed(this);
+            });
+        }
+    }
+
+    // --- System Overview collapse toggle ---
+    var overviewEl = document.getElementById('system-overview');
+    var toggleBtn = document.getElementById('toggle-overview-btn');
+    if (overviewEl && toggleBtn) {
+        var collapsed = localStorage.getItem('csm-overview-collapsed') === '1';
+
+        function setOverviewCollapsed(val) {
+            collapsed = val;
+            overviewEl.style.display = val ? 'none' : '';
+            toggleBtn.querySelector('i').className = val ? 'ti ti-chevron-down' : 'ti ti-chevron-up';
+            toggleBtn.setAttribute('aria-expanded', String(!val));
+            localStorage.setItem('csm-overview-collapsed', val ? '1' : '0');
+        }
+
+        setOverviewCollapsed(collapsed);
+        toggleBtn.addEventListener('click', function() { setOverviewCollapsed(!collapsed); });
+    }
+
     // Initial pass: enhance server-rendered feed items
     document.querySelectorAll('.feed-item').forEach(function(item) {
         addRelativeTime(item);
@@ -190,6 +241,7 @@
                     }
                 }
                 lastPollTimestamp = maxTs;
+                updateAttention(findings);
                 _setPollStatus(true);
             })
             .catch(function(err) {

@@ -1,6 +1,25 @@
 {{define "title"}}Dashboard{{end}}
 {{define "page"}}dashboard{{end}}
 {{define "content"}}
+    <!-- Needs Attention -->
+    <div id="needs-attention" class="card mb-3 d-none">
+        <div class="card-header">
+            <h3 class="card-title text-danger"><i class="ti ti-alert-triangle"></i> Needs Attention</h3>
+        </div>
+        <div class="card-body p-0">
+            <div class="list-group list-group-flush" id="attention-list"></div>
+        </div>
+    </div>
+
+    <!-- System Overview (collapsible) -->
+    <div class="d-flex align-items-center mb-3">
+        <h3 class="mb-0">System Overview</h3>
+        <button class="btn btn-ghost-secondary btn-sm ms-2" id="toggle-overview-btn" aria-label="Toggle system overview" aria-expanded="true">
+            <i class="ti ti-chevron-up"></i>
+        </button>
+    </div>
+    <div id="system-overview">
+
     <!-- Stat Cards -->
     <div class="row row-deck row-cards mb-3">
         <div class="col-6 col-lg">
@@ -143,6 +162,8 @@
             <canvas id="trend-chart"></canvas>
         </div>
     </div>
+
+    </div><!-- /system-overview -->
 {{end}}
 {{define "scripts"}}
 <script src="/static/js/chart.min.js"></script>
