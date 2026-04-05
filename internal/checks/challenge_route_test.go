@@ -27,11 +27,21 @@ func TestIsHardBlockCheck(t *testing.T) {
 		}
 	}
 
+	// modsec checks are now hard-blocked (modsec already handles the request)
+	modsecChecks := []string{
+		"modsec_csm_block_escalation",
+		"modsec_attack_detected",
+	}
+	for _, check := range modsecChecks {
+		if !isHardBlockCheck(check) {
+			t.Errorf("isHardBlockCheck(%q) = false, want true (modsec should be hard-blocked)", check)
+		}
+	}
+
 	challengeChecks := []string{
 		"wp_login_bruteforce",
 		"xmlrpc_abuse",
 		"ftp_bruteforce",
-		"modsec_csm_block_escalation",
 		"cpanel_login_realtime",
 		"ip_reputation",
 		"webmail_bruteforce",

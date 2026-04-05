@@ -71,13 +71,15 @@ var hardBlockChecks = map[string]bool{
 	"uid0_account":              true,
 	"suid_binary":               true,
 	"rpm_integrity":             true,
-	"email_spam_outbreak":       true,
+	"email_spam_outbreak":            true,
+	"modsec_csm_block_escalation":   true,
 }
 
 // hardBlockPrefixes match any check name starting with these strings.
 var hardBlockPrefixes = []string{
 	"outgoing_mail_",
 	"spam_",
+	"modsec_",
 }
 
 // isHardBlockCheck returns true if the check should be hard-blocked (never challenged).
