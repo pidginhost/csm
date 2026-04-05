@@ -282,3 +282,18 @@ CSM.debounce = function(fn, delay) {
         timer = setTimeout(function() { fn.apply(ctx, args); }, delay);
     };
 };
+
+// URL state helper: read/write filter state to URL query parameters for deep linking
+CSM.urlState = {
+    get: function(key) {
+        return new URLSearchParams(window.location.search).get(key) || '';
+    },
+    set: function(params) {
+        var url = new URL(window.location);
+        Object.keys(params).forEach(function(k) {
+            if (params[k]) url.searchParams.set(k, params[k]);
+            else url.searchParams.delete(k);
+        });
+        history.replaceState(null, '', url);
+    }
+};

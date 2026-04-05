@@ -189,6 +189,8 @@ function restoreURLParams() {
     var checkParam = params.get('check');
     var searchParam = params.get('search');
     var accountParam = params.get('account');
+    var groupParam = params.get('group');
+    var perPageParam = params.get('perPage');
     if (checkParam) {
         var filter = document.getElementById('check-filter');
         if (filter) { filter.value = checkParam; filter.dispatchEvent(new Event('change')); }
@@ -201,6 +203,33 @@ function restoreURLParams() {
         var search = document.getElementById('findings-search');
         if (search) { search.value = searchParam; search.dispatchEvent(new Event('input')); }
     }
+    if (groupParam) {
+        var groupEl = document.getElementById('group-by');
+        if (groupEl) { groupEl.value = groupParam; groupEl.dispatchEvent(new Event('change')); }
+    }
+    if (perPageParam) {
+        var ppEl = document.getElementById('per-page');
+        if (ppEl) { ppEl.value = perPageParam; ppEl.dispatchEvent(new Event('change')); }
+    }
+}
+
+// --- Sync active-tab filter state to URL ---
+function syncFindingsURL() {
+    // Only sync when active tab is shown (don't overwrite history tab params)
+    var activeTab = document.querySelector('#tab-active.active');
+    if (!activeTab) return;
+    var checkVal = (document.getElementById('check-filter') || {}).value || '';
+    var searchVal = (document.getElementById('findings-search') || {}).value || '';
+    var accountVal = (document.getElementById('account-filter') || {}).value || '';
+    var groupVal = (document.getElementById('group-by') || {}).value || '';
+    var perPageVal = (document.getElementById('per-page') || {}).value || '';
+    CSM.urlState.set({
+        check: checkVal !== 'all' ? checkVal : '',
+        search: searchVal,
+        account: accountVal,
+        group: groupVal !== 'none' ? groupVal : '',
+        perPage: perPageVal !== '25' ? perPageVal : ''
+    });
 }
 
 // --- Collapsible scan section ---
@@ -291,6 +320,7 @@ if (perPageEl) perPageEl.addEventListener('change', function() {
         findingsTable.render();
         findingsTable._saveState();
     }
+    syncFindingsURL();
 });
 
 // --- Selection management ---
@@ -344,6 +374,7 @@ if (checkFilterEl) checkFilterEl.addEventListener('change', function() {
     if (selectAll) selectAll.checked = false;
     document.querySelectorAll('.row-checkbox').forEach(function(cb) { cb.checked = false; });
     updateSelection();
+    syncFindingsURL();
 });
 
 // Account filter - bind 'input' to trigger table filtering
@@ -358,6 +389,7 @@ if (accountFilterEl) accountFilterEl.addEventListener('input', function() {
     if (selectAll) selectAll.checked = false;
     document.querySelectorAll('.row-checkbox').forEach(function(cb) { cb.checked = false; });
     updateSelection();
+    syncFindingsURL();
 });
 
 // Clear selections before reload so beforeunload guard does not block
@@ -527,6 +559,12 @@ if (_bulkFixBtn) _bulkFixBtn.addEventListener('click', function() { bulkAction('
 var _bulkDismissBtn = document.getElementById('bulk-dismiss-btn');
 if (_bulkDismissBtn) _bulkDismissBtn.addEventListener('click', function() { bulkAction('dismiss'); });
 
+// Sync search input to URL (debounced to avoid excessive URL updates while typing)
+var _findingsSearchEl = document.getElementById('findings-search');
+if (_findingsSearchEl) _findingsSearchEl.addEventListener('input', CSM.debounce(function() {
+    syncFindingsURL();
+}, 300));
+
 // --- Findings grouping ---
 (function() {
     var groupByEl = document.getElementById('group-by');
@@ -653,7 +691,10 @@ if (_bulkDismissBtn) _bulkDismissBtn.addEventListener('click', function() { bulk
         });
     }
 
-    groupByEl.addEventListener('change', applyGrouping);
+    groupByEl.addEventListener('change', function() {
+        applyGrouping();
+        syncFindingsURL();
+    });
 
     // Re-apply grouping when table filters change
     var checkFilter = document.getElementById('check-filter');

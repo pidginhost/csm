@@ -5,12 +5,18 @@
     var EMAIL_CHECKS = 'mail_queue,mail_per_account,email_phishing_content,email_malware,email_av_degraded,email_av_timeout,email_av_parse_error,email_compromised_account,email_spam_outbreak,email_credential_leak,email_auth_failure_realtime,exim_frozen_realtime';
     var EMAIL_BLOCKED_KEYWORDS = ['mail', 'smtp', 'spam', 'phish', 'mailer'];
 
-    // Set default date filter to today
+    // Restore filter state from URL, falling back to today's date
     var today = new Date().toISOString().substring(0, 10);
     var fromEl = document.getElementById('filter-from');
     var toEl = document.getElementById('filter-to');
-    if (fromEl) fromEl.value = today;
-    if (toEl) toEl.value = today;
+    var sevEl = document.getElementById('filter-severity');
+    var checkEl = document.getElementById('filter-check');
+    var searchEl = document.getElementById('email-search');
+    if (fromEl) fromEl.value = CSM.urlState.get('from') || today;
+    if (toEl) toEl.value = CSM.urlState.get('to') || today;
+    if (sevEl && CSM.urlState.get('severity')) sevEl.value = CSM.urlState.get('severity');
+    if (checkEl && CSM.urlState.get('check')) checkEl.value = CSM.urlState.get('check');
+    if (searchEl && CSM.urlState.get('search')) searchEl.value = CSM.urlState.get('search');
 
     // --- Right column: email stats ---
 
@@ -659,10 +665,28 @@
 
     // --- Filter form ---
 
+    function syncEmailURL() {
+        var fromVal = (document.getElementById('filter-from') || {}).value || '';
+        var toVal = (document.getElementById('filter-to') || {}).value || '';
+        var sevVal = (document.getElementById('filter-severity') || {}).value || '';
+        var checkVal = (document.getElementById('filter-check') || {}).value || '';
+        var searchVal = (document.getElementById('email-search') || {}).value || '';
+        // Don't sync dates that match today (default)
+        var todayStr = new Date().toISOString().substring(0, 10);
+        CSM.urlState.set({
+            from: fromVal !== todayStr ? fromVal : '',
+            to: toVal !== todayStr ? toVal : '',
+            severity: sevVal,
+            check: checkVal,
+            search: searchVal
+        });
+    }
+
     var filterForm = document.getElementById('email-filters');
     if (filterForm) {
         filterForm.addEventListener('submit', function(e) {
             e.preventDefault();
+            syncEmailURL();
             loadFindings();
         });
     }
