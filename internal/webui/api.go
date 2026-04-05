@@ -1056,6 +1056,43 @@ func (s *Server) apiQuarantinePreview(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// apiQuarantineBulkDelete permanently removes quarantined files and their metadata.
+func (s *Server) apiQuarantineBulkDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	if len(req.IDs) == 0 || len(req.IDs) > 100 {
+		writeJSONError(w, "IDs must be 1-100 items", http.StatusBadRequest)
+		return
+	}
+
+	count := 0
+	for _, id := range req.IDs {
+		safe := filepath.Base(id)
+		qPath := filepath.Join(quarantineDir, safe)
+		mPath := qPath + ".meta"
+		if !isPathUnder(qPath, quarantineDir) {
+			continue
+		}
+		if err := os.Remove(qPath); err == nil {
+			count++
+		}
+		if err := os.Remove(mPath); err != nil && !os.IsNotExist(err) {
+			log.Printf("webui: failed to remove quarantine meta %s: %v", mPath, err)
+		}
+	}
+	s.auditLog(r, "quarantine_bulk_delete", fmt.Sprintf("%d files", count), "")
+	writeJSON(w, map[string]interface{}{"ok": true, "count": count})
+}
+
 // apiTestAlert sends a test finding through all configured alert channels.
 func (s *Server) apiTestAlert(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

@@ -121,6 +121,11 @@ function updateBulkRestore() {
         btn.classList.toggle('d-none', checked.length === 0);
         btn.textContent = 'Restore ' + checked.length + ' file(s)';
     }
+    var delBtn = document.getElementById('bulk-delete-btn');
+    if (delBtn) {
+        delBtn.classList.toggle('d-none', checked.length === 0);
+        delBtn.textContent = 'Delete ' + checked.length + ' file(s)';
+    }
 }
 
 var bulkRestoreBtn = document.getElementById('bulk-restore-btn');
@@ -145,6 +150,24 @@ if (bulkRestoreBtn) {
                 loadQuarantine();
             });
         }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
+    });
+}
+
+var bulkDeleteBtn = document.getElementById('bulk-delete-btn');
+if (bulkDeleteBtn) {
+    bulkDeleteBtn.addEventListener('click', function() {
+        var checked = document.querySelectorAll('.q-cb:checked');
+        if (checked.length === 0) return;
+        var ids = [];
+        checked.forEach(function(cb) { ids.push(cb.dataset.id); });
+        CSM.confirm('Permanently delete ' + ids.length + ' quarantined file(s)?').then(function() {
+            CSM.post('/api/v1/quarantine/bulk-delete', { ids: ids }).then(function(r) {
+                return r.json();
+            }).then(function(data) {
+                CSM.toast('Deleted ' + data.count + ' file(s)', 'success');
+                loadQuarantine();
+            }).catch(function(err) { CSM.toast(err.message || 'Delete failed', 'error'); });
+        }).catch(function() { /* cancelled */ });
     });
 }
 
