@@ -46,6 +46,7 @@ type Daemon struct {
 	emailQuarantine  *emailav.Quarantine
 	webServer        *webui.Server
 	challengeServer  *challenge.Server
+	ipList           *challenge.IPList
 	fwEngine         *firewall.Engine
 	geoipDB          *geoip.DB
 	geoipMu          sync.Mutex // protects geoipDB for publishGeoIP
@@ -128,7 +129,7 @@ func (d *Daemon) Run() error {
 	// Start forwarder watcher for real-time valiases change detection
 	d.startForwarderWatcher()
 
-	// Start Web UI server — available immediately, before initial scan
+	// Start Web UI server - available immediately, before initial scan
 	d.startWebUI()
 
 	// Wire email quarantine to web server (after both start)
@@ -187,11 +188,11 @@ func (d *Daemon) Run() error {
 	// Merge initial scan findings into the existing set. Previous deep scan
 	// results (outdated_plugins, wp_core, etc.) persist across restarts until
 	// the next deep scan replaces them. ClearLatestFindings is NOT called
-	// here — it would wipe deep scan findings that haven't re-run yet.
+	// here - it would wipe deep scan findings that haven't re-run yet.
 	d.store.SetLatestFindings(initialFindings)
 	fmt.Fprintf(os.Stderr, "[%s] Initial scan complete: %d findings (%d new)\n", ts(), len(initialFindings), len(newFindings))
 
-	// NOW start the alert dispatcher — no more race with initial scan
+	// NOW start the alert dispatcher - no more race with initial scan
 	d.wg.Add(1)
 	go d.alertDispatcher()
 
@@ -221,7 +222,7 @@ func (d *Daemon) Run() error {
 
 	for sig := range sigCh {
 		if sig == syscall.SIGHUP {
-			fmt.Fprintf(os.Stderr, "[%s] SIGHUP received — reloading rules\n", ts())
+			fmt.Fprintf(os.Stderr, "[%s] SIGHUP received - reloading rules\n", ts())
 			d.reloadSignatures()
 			d.publishGeoIP()
 			if d.fwEngine != nil {
@@ -327,7 +328,7 @@ func (d *Daemon) alertDispatcher() {
 func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	findings = alert.Deduplicate(findings)
 
-	// Record ALL findings in attack database (before filtering —
+	// Record ALL findings in attack database (before filtering -
 	// repeated attacks from the same IP must still be counted even if
 	// the alert is suppressed by FilterNew).
 	if adb := attackdb.Global(); adb != nil {
@@ -357,10 +358,10 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 		d.store.DismissLatestFinding(key)
 	}
 
-	// Filter through state — only new findings get alerted and logged
+	// Filter through state - only new findings get alerted and logged
 	newFindings := d.store.FilterNew(findings)
 
-	// Filter out suppressed findings — prevents email/webhook alerts for
+	// Filter out suppressed findings - prevents email/webhook alerts for
 	// paths the admin has explicitly suppressed (e.g. false positives).
 	// Suppressions are stored in state/suppressions.json, not in rule files.
 	suppressions := d.store.LoadSuppressions()
@@ -407,7 +408,7 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 		d.webServer.Broadcast(newFindings)
 	}
 
-	// Dispatch via email/webhook — filter out findings that are
+	// Dispatch via email/webhook - filter out findings that are
 	// informational or fully automated (no human action needed).
 	// These are all visible in the web UI for forensics.
 	var alertable []alert.Finding
@@ -418,9 +419,9 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 		case "outdated_plugins":
 			continue // informational, visible on findings page
 		case "email_dkim_failure", "email_spf_rejection":
-			continue // operational email auth issues — visible on findings page
+			continue // operational email auth issues - visible on findings page
 		case "email_auth_failure_realtime", "pam_bruteforce", "exim_frozen_realtime":
-			continue // failed logins and frozen bounces — informational, no action needed
+			continue // failed logins and frozen bounces - informational, no action needed
 		}
 		alertable = append(alertable, f)
 	}
@@ -566,7 +567,7 @@ func (d *Daemon) heartbeat() {
 }
 
 func (d *Daemon) startLogWatchers() {
-	// Session log handler wrapper — feeds events to both the alert handler and hijack detector
+	// Session log handler wrapper - feeds events to both the alert handler and hijack detector
 	sessionHandler := func(line string, cfg *config.Config) []alert.Finding {
 		// Feed to hijack detector (tracks password changes + correlates with logins)
 		ParseSessionLineForHijack(line, d.hijackDetector)
@@ -594,7 +595,7 @@ func (d *Daemon) startLogWatchers() {
 		}{phpEventsLogPath, parsePHPShieldLogLine})
 	}
 
-	// ModSecurity error log — auto-discover path across cPanel variants.
+	// ModSecurity error log - auto-discover path across cPanel variants.
 	if modsecPath := discoverModSecLogPath(d.cfg); modsecPath != "" {
 		logFiles = append(logFiles, struct {
 			path    string
@@ -648,7 +649,7 @@ func (d *Daemon) startLogWatchers() {
 		w, err := NewLogWatcher(lf.path, d.cfg, lf.handler, d.alertCh)
 		if err != nil {
 			if os.IsNotExist(err) {
-				// File doesn't exist yet — retry periodically until it appears
+				// File doesn't exist yet - retry periodically until it appears
 				d.wg.Add(1)
 				go d.retryLogWatcher(lf.path, lf.handler)
 			} else {
@@ -767,7 +768,7 @@ func (d *Daemon) startSpoolWatcher() {
 	// Create ClamAV scanner
 	clamScanner := emailav.NewClamdScanner(d.cfg.EmailAV.ClamdSocket)
 
-	// Create YARA-X scanner — share compiled rules from the global YARA scanner
+	// Create YARA-X scanner - share compiled rules from the global YARA scanner
 	var yaraScanner *emailav.YaraXScanner
 	if gs := yara.Global(); gs != nil {
 		yaraScanner = emailav.NewYaraXScanner(gs)
@@ -909,7 +910,8 @@ func (d *Daemon) startChallengeServer() {
 		unblocker = d.fwEngine
 	}
 
-	srv := challenge.New(d.cfg, unblocker)
+	d.ipList = challenge.NewIPList(d.cfg.StatePath)
+	srv := challenge.New(d.cfg, unblocker, d.ipList)
 	d.challengeServer = srv
 	d.wg.Add(1)
 	go func() {
@@ -1194,7 +1196,7 @@ func (d *Daemon) reloadSignatures() {
 // deployConfigs writes embedded config files to their system locations on startup.
 // Ensures WHM plugin CGI and ModSec rules stay current after binary upgrades.
 func deployConfigs() {
-	// WHM plugin CGI — embedded in binary
+	// WHM plugin CGI - embedded in binary
 	if _, err := os.Stat("/usr/local/cpanel"); err == nil {
 		dst := "/usr/local/cpanel/whostmgr/docroot/cgi/addon_csm.cgi"
 		if err := os.WriteFile(dst, embeddedWHMCGI, 0755); err == nil {

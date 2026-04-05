@@ -27,6 +27,7 @@ type Server struct {
 	cfg       *config.Config
 	secret    []byte
 	unblocker IPUnblocker
+	ipList    *IPList
 	srv       *http.Server
 
 	// Track recently verified IPs to prevent replay
@@ -35,7 +36,7 @@ type Server struct {
 }
 
 // New creates a challenge server.
-func New(cfg *config.Config, unblocker IPUnblocker) *Server {
+func New(cfg *config.Config, unblocker IPUnblocker, ipList *IPList) *Server {
 	secret := []byte(cfg.Challenge.Secret)
 	if len(secret) == 0 {
 		secret = make([]byte, 32)
@@ -46,6 +47,7 @@ func New(cfg *config.Config, unblocker IPUnblocker) *Server {
 		cfg:       cfg,
 		secret:    secret,
 		unblocker: unblocker,
+		ipList:    ipList,
 		verified:  make(map[string]time.Time),
 	}
 
@@ -130,6 +132,11 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Remove from challenge list so Apache stops redirecting
+	if s.ipList != nil {
+		s.ipList.Remove(ip)
+	}
+
 	// Set verification cookie
 	cookie := &http.Cookie{
 		Name:     "csm_verified",
@@ -150,7 +157,7 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, `<!DOCTYPE html><html><head><meta http-equiv="refresh" content="2;url=%s">
 <style>body{font-family:system-ui;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#1a2234;color:#c8d3e0}
 .ok{text-align:center}.ok h1{color:#2fb344;font-size:3em}p{font-size:1.2em}</style>
-</head><body><div class="ok"><h1>&#10003;</h1><p>Verified — redirecting...</p></div></body></html>`, dest)
+</head><body><div class="ok"><h1>&#10003;</h1><p>Verified - redirecting...</p></div></body></html>`, dest)
 }
 
 func (s *Server) makeToken(ip, nonce string) string {
