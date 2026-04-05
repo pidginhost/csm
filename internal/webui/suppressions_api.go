@@ -2,7 +2,6 @@ package webui
 
 import (
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -21,12 +20,6 @@ func (s *Server) apiSuppressions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, rules)
 
 	case http.MethodPost:
-		// Validate CSRF for mutating requests
-		if !s.isBearerAuth(r) && !s.validateCSRF(r) {
-			http.Error(w, "Invalid CSRF token", http.StatusForbidden)
-			return
-		}
-
 		var req struct {
 			Check       string `json:"check"`
 			PathPattern string `json:"path_pattern"`
@@ -58,17 +51,6 @@ func (s *Server) apiSuppressions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]string{"status": "created", "id": id})
 
 	case http.MethodDelete:
-		// Validate CSRF for mutating requests (validateCSRF only checks POST,
-		// so we check the token header directly for DELETE)
-		if !s.isBearerAuth(r) {
-			expected := s.csrfToken()
-			token := r.Header.Get("X-CSRF-Token")
-			if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(expected)) != 1 {
-				http.Error(w, "Invalid CSRF token", http.StatusForbidden)
-				return
-			}
-		}
-
 		var req struct {
 			ID string `json:"id"`
 		}

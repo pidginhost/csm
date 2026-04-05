@@ -122,13 +122,13 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		s.hasUI = true
 		fmt.Fprintf(os.Stderr, "WebUI: loaded templates from %s\n", templateDir)
 	} else {
-		fmt.Fprintf(os.Stderr, "WebUI: UI directory not found at %s — running in API-only mode\n", s.uiDir)
+		fmt.Fprintf(os.Stderr, "WebUI: UI directory not found at %s - running in API-only mode\n", s.uiDir)
 	}
 
 	// Set up routes
 	mux := http.NewServeMux()
 
-	// Static files and HTML pages — only if UI directory exists
+	// Static files and HTML pages - only if UI directory exists
 	if s.hasUI {
 		mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir(staticDir))))
 		mux.HandleFunc("/login", s.handleLogin)
@@ -150,7 +150,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		mux.Handle("/modsec/rules", s.requireAuth(http.HandlerFunc(s.handleModSecRules)))
 	}
 
-	// Auth-protected API — read
+	// Auth-protected API - read
 	mux.Handle("/api/v1/status", s.requireAuth(http.HandlerFunc(s.apiStatus)))
 	mux.Handle("/api/v1/findings", s.requireAuth(http.HandlerFunc(s.apiFindings)))
 	mux.Handle("/api/v1/findings/enriched", s.requireAuth(http.HandlerFunc(s.apiFindingsEnriched)))
@@ -200,8 +200,8 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/rules/reload", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiRulesReload))))
 	mux.Handle("/api/v1/rules/modsec-escalation", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiModSecEscalation))))
 
-	// Suppressions API (CSRF validated inside handler for POST/DELETE)
-	mux.Handle("/api/v1/suppressions", s.requireAuth(http.HandlerFunc(s.apiSuppressions)))
+	// Suppressions API
+	mux.Handle("/api/v1/suppressions", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiSuppressions))))
 
 	// Firewall API
 	mux.Handle("/api/v1/firewall/status", s.requireAuth(http.HandlerFunc(s.apiFirewallStatus)))
@@ -213,7 +213,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/geoip", s.requireAuth(http.HandlerFunc(s.apiGeoIPLookup)))
 	mux.Handle("/api/v1/geoip/batch", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiGeoIPBatch))))
 
-	// Auth-protected API — actions (with CSRF validation)
+	// Auth-protected API - actions (with CSRF validation)
 	mux.Handle("/api/v1/fix", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiFix))))
 	mux.Handle("/api/v1/fix-bulk", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiBulkFix))))
 	mux.Handle("/api/v1/scan-account", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiScanAccount))))
@@ -567,7 +567,7 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			origin := r.Header.Get("Origin")
 			if origin != "" {
-				// Only allow same-origin — use r.Host which includes port
+				// Only allow same-origin - use r.Host which includes port
 				host := r.Host
 				if host == "" {
 					// Fallback: build from config (hostname + listen port)
@@ -628,7 +628,7 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 
 // csrfToken generates a deterministic CSRF token from the auth token.
 // This is safe because the auth token is secret and the CSRF token is
-// derived via HMAC — knowing the CSRF token doesn't reveal the auth token.
+// derived via HMAC - knowing the CSRF token doesn't reveal the auth token.
 func (s *Server) csrfToken() string {
 	mac := hmac.New(sha256.New, []byte(s.cfg.WebUI.AuthToken))
 	// Include start time so token rotates on each daemon restart
@@ -639,11 +639,11 @@ func (s *Server) csrfToken() string {
 // validateCSRF checks the CSRF token on POST requests.
 // Checks X-CSRF-Token header (for API calls) or csrf_token form field (for form posts).
 func (s *Server) validateCSRF(r *http.Request) bool {
-	if r.Method != http.MethodPost {
-		return true // only validate POST
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
+		return true // only validate POST and DELETE
 	}
 
-	// Skip CSRF for Bearer token auth — the token itself proves identity.
+	// Skip CSRF for Bearer token auth - the token itself proves identity.
 	// CSRF protection is only needed for cookie-based browser sessions.
 	if auth := r.Header.Get("Authorization"); auth != "" {
 		if len(auth) > 7 && auth[:7] == "Bearer " {
@@ -673,7 +673,7 @@ func (s *Server) validateCSRF(r *http.Request) bool {
 func (s *Server) requireCSRF(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Skip CSRF for Bearer token auth (API-to-API calls don't need CSRF protection)
-		if r.Method == http.MethodPost && !s.isBearerAuth(r) && !s.validateCSRF(r) {
+		if (r.Method == http.MethodPost || r.Method == http.MethodDelete) && !s.isBearerAuth(r) && !s.validateCSRF(r) {
 			http.Error(w, "Invalid CSRF token", http.StatusForbidden)
 			return
 		}
