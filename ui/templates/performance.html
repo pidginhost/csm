@@ -3,52 +3,52 @@
 {{define "content"}}
     <!-- Stat Cards -->
     <div class="row row-deck row-cards mb-3">
-        <div class="col-6 col-lg">
+        <div class="col-sm-6 col-lg-3">
             <div class="card">
                 <div class="card-body">
-                    <div class="subheader">Load Average</div>
+                    <div class="subheader" title="1/5/15 minute system load averages">Load Average</div>
                     <div class="h1 mb-0" id="stat-load">&mdash;</div>
                     <div class="small text-muted mt-1" id="stat-load-detail"></div>
                 </div>
             </div>
         </div>
-        <div class="col-6 col-lg">
+        <div class="col-sm-6 col-lg-3">
             <div class="card">
                 <div class="card-body">
-                    <div class="subheader">CPU Cores</div>
+                    <div class="subheader" title="Number of available CPU cores">CPU Cores</div>
                     <div class="h1 mb-0" id="stat-cores">&mdash;</div>
                 </div>
             </div>
         </div>
-        <div class="col-6 col-lg">
+        <div class="col-sm-6 col-lg-3">
             <div class="card">
                 <div class="card-body">
-                    <div class="subheader">RAM</div>
+                    <div class="subheader" title="Memory usage (used / total)">RAM</div>
                     <div class="h1 mb-0" id="stat-ram">&mdash;</div>
                     <div class="progress progress-sm mt-2"><div class="progress-bar" id="stat-ram-bar" style="width:0%"></div></div>
                 </div>
             </div>
         </div>
-        <div class="col-6 col-lg">
+        <div class="col-sm-6 col-lg-3">
             <div class="card">
                 <div class="card-body">
-                    <div class="subheader">PHP Processes</div>
+                    <div class="subheader" title="Total running PHP-FPM/lsphp worker processes">PHP Processes</div>
                     <div class="h1 mb-0" id="stat-php">&mdash;</div>
                 </div>
             </div>
         </div>
-        <div class="col-6 col-lg">
+        <div class="col-sm-6 col-lg-3">
             <div class="card">
                 <div class="card-body">
-                    <div class="subheader">MySQL</div>
+                    <div class="subheader" title="MySQL/MariaDB server status">MySQL</div>
                     <div class="h1 mb-0" id="stat-mysql">&mdash;</div>
                 </div>
             </div>
         </div>
-        <div class="col-6 col-lg">
+        <div class="col-sm-6 col-lg-3">
             <div class="card">
                 <div class="card-body">
-                    <div class="subheader">Redis</div>
+                    <div class="subheader" title="Redis server status and memory usage">Redis</div>
                     <div class="h1 mb-0" id="stat-redis">&mdash;</div>
                 </div>
             </div>

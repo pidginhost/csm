@@ -1,6 +1,12 @@
 {{define "title"}}Dashboard{{end}}
 {{define "page"}}dashboard{{end}}
 {{define "content"}}
+    <div class="page-header mb-3">
+        <div class="row align-items-center">
+            <div class="col-auto"><h2 class="page-title">Dashboard</h2></div>
+        </div>
+    </div>
+
     <!-- Needs Attention -->
     <div id="needs-attention" class="card mb-3 d-none">
         <div class="card-header">
@@ -22,7 +28,7 @@
 
     <!-- Stat Cards -->
     <div class="row row-deck row-cards mb-3">
-        <div class="col-6 col-lg">
+        <div class="col-sm-6 col-lg-3">
             <div class="card" title="Critical severity findings in the last 24 hours">
                 <div class="card-body">
                     <div class="subheader">Critical (24h)</div>
@@ -30,7 +36,7 @@
                 </div>
             </div>
         </div>
-        <div class="col-6 col-lg">
+        <div class="col-sm-6 col-lg-3">
             <div class="card" title="High severity findings in the last 24 hours">
                 <div class="card-body">
                     <div class="subheader">High (24h)</div>
@@ -38,7 +44,7 @@
                 </div>
             </div>
         </div>
-        <div class="col-6 col-lg">
+        <div class="col-sm-6 col-lg-3">
             <div class="card" title="Warning severity findings in the last 24 hours">
                 <div class="card-body">
                     <div class="subheader">Warning (24h)</div>
@@ -46,7 +52,7 @@
                 </div>
             </div>
         </div>
-        <div class="col-6 col-lg">
+        <div class="col-sm-6 col-lg-3">
             <div class="card" title="Time since the most recent critical severity finding">
                 <div class="card-body">
                     <div class="subheader">Last Critical</div>
@@ -54,7 +60,7 @@
                 </div>
             </div>
         </div>
-        <div class="col-6 col-lg">
+        <div class="col-sm-6 col-lg-3">
             <div class="card" title="Daemon uptime and monitoring status">
                 <div class="card-body">
                     <div class="d-flex align-items-center justify-content-between">

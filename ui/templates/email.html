@@ -3,51 +3,51 @@
 {{define "content"}}
     <!-- Stat Cards -->
     <div class="row row-deck row-cards mb-3">
-        <div class="col-6 col-lg">
+        <div class="col-sm-6 col-lg-3">
             <div class="card">
                 <div class="card-body">
-                    <div class="subheader">Mail Queue</div>
+                    <div class="subheader" title="Current number of messages in the Exim mail queue">Mail Queue</div>
                     <div class="h1 mb-0" id="stat-queue">&mdash;</div>
                 </div>
             </div>
         </div>
-        <div class="col-6 col-lg">
+        <div class="col-sm-6 col-lg-3">
             <div class="card">
                 <div class="card-body">
-                    <div class="subheader">Phishing Detected</div>
+                    <div class="subheader" title="Phishing emails detected by content analysis">Phishing Detected</div>
                     <div class="h1 mb-0 text-critical" id="stat-phishing">0</div>
                 </div>
             </div>
         </div>
-        <div class="col-6 col-lg">
+        <div class="col-sm-6 col-lg-3">
             <div class="card">
                 <div class="card-body">
-                    <div class="subheader">Accounts Flagged</div>
+                    <div class="subheader" title="Email accounts flagged for suspicious activity">Accounts Flagged</div>
                     <div class="h1 mb-0 text-warning" id="stat-accounts">0</div>
                 </div>
             </div>
         </div>
-        <div class="col-6 col-lg">
+        <div class="col-sm-6 col-lg-3">
             <div class="card">
                 <div class="card-body">
-                    <div class="subheader">Malware Blocked</div>
+                    <div class="subheader" title="Malware attachments blocked by ClamAV/YARA-X scanning">Malware Blocked</div>
                     <div class="h1 mb-0" id="stat-malware-blocked">0</div>
                 </div>
             </div>
         </div>
-        <div class="col-6 col-lg">
+        <div class="col-sm-6 col-lg-3">
             <div class="card">
                 <div class="card-body">
-                    <div class="subheader">Compromised</div>
+                    <div class="subheader" title="Email accounts confirmed as compromised">Compromised</div>
                     <div class="h1 mb-0 text-critical" id="stat-compromised">0</div>
                     <div class="small text-muted mt-1" id="stat-compromised-detail"></div>
                 </div>
             </div>
         </div>
-        <div class="col-6 col-lg">
+        <div class="col-sm-6 col-lg-3">
             <div class="card">
                 <div class="card-body">
-                    <div class="subheader">Queue Alerts</div>
+                    <div class="subheader" title="Alerts triggered by mail queue size thresholds">Queue Alerts</div>
                     <div class="h1 mb-0 text-info" id="stat-queue-alerts">0</div>
                 </div>
             </div>
