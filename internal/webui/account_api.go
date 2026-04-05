@@ -10,8 +10,15 @@ import (
 )
 
 func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if err := validateAccountName(name); err != nil {
+		http.Redirect(w, r, "/findings", http.StatusFound)
+		return
+	}
 	s.renderTemplate(w, "account.html", map[string]string{
-		"Hostname": s.cfg.Hostname,
+		"Hostname":    s.cfg.Hostname,
+		"AccountName": name,
+		"HomeDir":     filepath.Join("/home", name),
 	})
 }
 

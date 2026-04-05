@@ -1,36 +1,64 @@
-// CSM Account detail page
+// CSM Account detail page — tab-based loading
 (function() {
     'use strict';
     var params = new URLSearchParams(window.location.search);
     var name = params.get('name');
-    if (!name) {
-        document.getElementById('account-page').innerHTML = '<div class="alert alert-warning">No account specified. Use ?name=username</div>';
-        return;
+    if (!name) return;
+
+    var tabs = document.querySelectorAll('#account-tabs [data-tab]');
+    var content = document.getElementById('account-tab-content');
+    var cachedData = null;
+
+    var sevLabels = { 2: 'CRITICAL', 1: 'HIGH', 0: 'WARNING' };
+    var sevClasses = { 2: 'critical', 1: 'high', 0: 'warning' };
+
+    function showSpinner() {
+        content.innerHTML = '<div class="card-body text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</div>';
     }
 
-    fetch(CSM.apiUrl('/api/v1/account?name=' + encodeURIComponent(name)), { credentials: 'same-origin' })
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-            if (data.error) { document.getElementById('account-page').innerHTML = '<div class="alert alert-danger">' + CSM.esc(data.error) + '</div>'; return; }
-            renderAccount(data);
-        })
-        .catch(function() { CSM.loadError(document.getElementById('account-page'), function() { location.reload(); }); });
+    function setActiveTab(tab) {
+        tabs.forEach(function(t) {
+            t.classList.toggle('active', t.dataset.tab === tab);
+            t.setAttribute('aria-selected', t.dataset.tab === tab ? 'true' : 'false');
+        });
+    }
 
-    function renderAccount(data) {
-        var container = document.getElementById('account-page');
-        var sevLabels = { 2: 'CRITICAL', 1: 'HIGH', 0: 'WARNING' };
-        var sevClasses = { 2: 'critical', 1: 'high', 0: 'warning' };
+    function loadTab(tab) {
+        setActiveTab(tab);
 
-        var html = '';
-        // Header
-        html += '<div class="page-header mb-3"><div class="row align-items-center">';
-        html += '<div class="col"><h2 class="page-title">Account: <code>' + CSM.esc(data.account) + '</code></h2></div>';
-        html += '<div class="col-auto"><a href="' + CSM.esc(data.whm_url) + '" target="_blank" class="btn btn-outline-primary btn-sm"><i class="ti ti-external-link"></i>&nbsp;View in WHM</a></div>';
-        html += '</div></div>';
+        if (cachedData) {
+            renderTabContent(tab, cachedData);
+            return;
+        }
 
-        // Findings
-        var findings = data.findings || [];
-        html += '<div class="card mb-3"><div class="card-header"><h3 class="card-title">Active Findings (' + findings.length + ')</h3></div>';
+        showSpinner();
+        CSM.fetch(CSM.apiUrl('/api/v1/account?name=' + encodeURIComponent(name)))
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.error) {
+                    content.innerHTML = '<div class="alert alert-danger">' + CSM.esc(data.error) + '</div>';
+                    return;
+                }
+                cachedData = data;
+                renderTabContent(tab, data);
+            })
+            .catch(function(err) {
+                content.innerHTML = '<div class="card-body text-center text-danger py-4">Failed to load: ' + CSM.esc(err.message || 'Unknown error') + '</div>';
+            });
+    }
+
+    function renderTabContent(tab, data) {
+        if (tab === 'findings') {
+            renderFindings(data.findings || []);
+        } else if (tab === 'quarantine') {
+            renderQuarantine(data.quarantined || []);
+        } else if (tab === 'history') {
+            renderHistory(data.history || []);
+        }
+    }
+
+    function renderFindings(findings) {
+        var html = '<div class="card mb-3"><div class="card-header"><h3 class="card-title">Active Findings (' + findings.length + ')</h3></div>';
         if (findings.length > 0) {
             html += '<div class="table-responsive"><table class="table table-vcenter card-table table-sm"><thead><tr><th>Severity</th><th>Check</th><th>Message</th></tr></thead><tbody>';
             for (var i = 0; i < findings.length; i++) {
@@ -43,10 +71,11 @@
             html += '<div class="card-body text-center text-muted py-3">No active findings for this account.</div>';
         }
         html += '</div>';
+        content.innerHTML = html;
+    }
 
-        // Quarantined files
-        var quarantined = data.quarantined || [];
-        html += '<div class="card mb-3"><div class="card-header"><h3 class="card-title">Quarantined Files (' + quarantined.length + ')</h3></div>';
+    function renderQuarantine(quarantined) {
+        var html = '<div class="card mb-3"><div class="card-header"><h3 class="card-title">Quarantined Files (' + quarantined.length + ')</h3></div>';
         if (quarantined.length > 0) {
             html += '<div class="table-responsive"><table class="table table-vcenter card-table table-sm"><thead><tr><th>Path</th><th>Size</th><th>Reason</th></tr></thead><tbody>';
             for (var q = 0; q < quarantined.length; q++) {
@@ -59,10 +88,11 @@
             html += '<div class="card-body text-center text-muted py-3">No quarantined files.</div>';
         }
         html += '</div>';
+        content.innerHTML = html;
+    }
 
-        // History
-        var history = data.history || [];
-        html += '<div class="card mb-3"><div class="card-header"><h3 class="card-title">Recent History (' + history.length + ')</h3></div>';
+    function renderHistory(history) {
+        var html = '<div class="card mb-3"><div class="card-header"><h3 class="card-title">Recent History (' + history.length + ')</h3></div>';
         if (history.length > 0) {
             html += '<div class="table-responsive"><table class="table table-vcenter card-table table-sm"><thead><tr><th>Severity</th><th>Check</th><th>Message</th><th>Time</th></tr></thead><tbody>';
             for (var h = 0; h < history.length; h++) {
@@ -76,7 +106,12 @@
             html += '<div class="card-body text-center text-muted py-3">No history entries.</div>';
         }
         html += '</div>';
-
-        container.innerHTML = html;
+        content.innerHTML = html;
     }
+
+    tabs.forEach(function(t) {
+        t.addEventListener('click', function() { loadTab(t.dataset.tab); });
+    });
+
+    loadTab('findings');
 })();
