@@ -632,20 +632,22 @@
     }
 
     function releaseMessage(msgID) {
-        if (!confirm('Release this message back to the mail queue? Only do this for confirmed false positives.')) return;
-        CSM.post(CSM.apiUrl('/api/v1/email/quarantine/' + encodeURIComponent(msgID) + '/release'), {})
-            .then(function() { loadQuarantine(); loadAVStatus(); })
-            .catch(function(err) { CSM.toast('Release failed: ' + err.message, 'danger'); });
+        CSM.confirm('Release this message back to the mail queue? Only do this for confirmed false positives.').then(function() {
+            CSM.post(CSM.apiUrl('/api/v1/email/quarantine/' + encodeURIComponent(msgID) + '/release'), {})
+                .then(function() { loadQuarantine(); loadAVStatus(); })
+                .catch(function(err) { CSM.toast('Release failed: ' + err.message, 'danger'); });
+        }).catch(function() { /* cancelled */ });
     }
 
     function deleteMessage(msgID) {
-        if (!confirm('Permanently delete this quarantined message?')) return;
-        fetch(CSM.apiUrl('/api/v1/email/quarantine/' + encodeURIComponent(msgID)), {
-            method: 'DELETE',
-            credentials: 'same-origin',
-            headers: { 'X-CSRF-Token': CSM.csrfToken }
-        }).then(function() { loadQuarantine(); loadAVStatus(); })
-          .catch(function(err) { CSM.toast('Delete failed: ' + err.message, 'danger'); });
+        CSM.confirm('Permanently delete this quarantined message?').then(function() {
+            fetch(CSM.apiUrl('/api/v1/email/quarantine/' + encodeURIComponent(msgID)), {
+                method: 'DELETE',
+                credentials: 'same-origin',
+                headers: { 'X-CSRF-Token': CSM.csrfToken }
+            }).then(function() { loadQuarantine(); loadAVStatus(); })
+              .catch(function(err) { CSM.toast('Delete failed: ' + err.message, 'danger'); });
+        }).catch(function() { /* cancelled */ });
     }
 
     // --- Utilities ---

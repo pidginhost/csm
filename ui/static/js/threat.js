@@ -340,3 +340,25 @@ function whitelistIP(ip) {
         }).catch(function(e){CSM.toast('Error: '+e,'error')});
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
+
+// --- Theme reactivity: update chart colors when dark/light mode toggles ---
+function updateChartTheme() {
+    var isDark = document.documentElement.classList.contains('theme-dark');
+    var gridColor = isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)';
+    var textColor = isDark ? '#94a3b8' : '#64748b';
+    Chart.defaults.color = textColor;
+    Chart.defaults.borderColor = gridColor;
+    Object.values(Chart.instances).forEach(function(chart) {
+        if (chart.options.scales) {
+            Object.keys(chart.options.scales).forEach(function(axis) {
+                if (chart.options.scales[axis].grid) chart.options.scales[axis].grid.color = gridColor;
+                if (chart.options.scales[axis].ticks) chart.options.scales[axis].ticks.color = textColor;
+            });
+        }
+        chart.update('none');
+    });
+}
+
+new MutationObserver(function(mutations) {
+    mutations.forEach(function(m) { if (m.attributeName === 'class') updateChartTheme(); });
+}).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });

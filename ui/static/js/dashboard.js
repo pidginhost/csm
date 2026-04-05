@@ -957,5 +957,27 @@
         }
     });
 
+    // --- Theme reactivity: update chart colors when dark/light mode toggles ---
+    function updateChartTheme() {
+        var dark = document.documentElement.classList.contains('theme-dark');
+        var newGridColor = dark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)';
+        var newTextColor = dark ? '#94a3b8' : '#64748b';
+        Chart.defaults.color = newTextColor;
+        Chart.defaults.borderColor = newGridColor;
+        Object.values(Chart.instances).forEach(function(chart) {
+            if (chart.options.scales) {
+                Object.keys(chart.options.scales).forEach(function(axis) {
+                    if (chart.options.scales[axis].grid) chart.options.scales[axis].grid.color = newGridColor;
+                    if (chart.options.scales[axis].ticks) chart.options.scales[axis].ticks.color = newTextColor;
+                });
+            }
+            chart.update('none');
+        });
+    }
+
+    new MutationObserver(function(mutations) {
+        mutations.forEach(function(m) { if (m.attributeName === 'class') updateChartTheme(); });
+    }).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+
     _startChartPolling();
 })();
