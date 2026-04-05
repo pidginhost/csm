@@ -1,4 +1,4 @@
-// CSM.ui — Shared rendering primitives (no modal/confirm logic — that stays in toast.js)
+// CSM.ui - Shared rendering primitives (no modal/confirm logic - that stays in toast.js)
 var CSM = CSM || {};
 
 // Severity badge HTML
@@ -54,12 +54,4 @@ CSM.makeClickable = function(el) {
     });
 };
 
-// Format ISO timestamp as "YYYY-MM-DD HH:MM" in local time
-CSM.fmtDateTime = function(iso) {
-    if (!iso) return '\u2014';
-    var d = new Date(iso);
-    if (isNaN(d.getTime())) return '\u2014';
-    var pad = function(n) { return n < 10 ? '0' + n : '' + n; };
-    return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()) +
-           ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
-};
+// fmtDateTime removed - use CSM.fmtDate(ts) instead (defined in csrf.js)

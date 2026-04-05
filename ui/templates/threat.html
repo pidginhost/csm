@@ -62,10 +62,10 @@
         <div class="card-header">
             <h3 class="card-title"><i class="ti ti-search"></i>&nbsp;IP Lookup</h3>
             <div class="card-actions">
-                <form id="lookup-form" class="d-flex gap-2 align-items-center">
-                    <input type="text" id="lookup-ip" class="form-control form-control-sm font-monospace csm-input-lg" placeholder="1.2.3.4">
-                    <button type="submit" class="btn btn-primary btn-sm text-nowrap" title="Look up threat intelligence data for this IP"><i class="ti ti-search"></i>&nbsp;Lookup</button>
-                    <span id="lookup-status" class="text-muted small text-nowrap"></span>
+                <form id="lookup-form" class="row g-2 align-items-end">
+                    <div class="col-auto"><input type="text" id="lookup-ip" class="form-control form-control-sm font-monospace csm-input-lg" placeholder="1.2.3.4"></div>
+                    <div class="col-auto"><button type="submit" class="btn btn-primary btn-sm text-nowrap" title="Look up threat intelligence data for this IP"><i class="ti ti-search"></i>&nbsp;Lookup</button></div>
+                    <div class="col-auto"><span id="lookup-status" class="text-muted small text-nowrap"></span></div>
                 </form>
             </div>
         </div>
@@ -118,9 +118,9 @@
         <div class="card-header">
             <h3 class="card-title"><i class="ti ti-shield-check"></i>&nbsp;Whitelisted IPs (Customer IPs)</h3>
             <div class="card-actions">
-                <form id="add-wl-form" class="d-flex gap-2">
-                    <input type="text" id="add-wl-ip" class="form-control form-control-sm font-monospace csm-input-sm" placeholder="1.2.3.4">
-                    <button type="submit" class="btn btn-success btn-sm" title="Permanently whitelist this IP - never block or flag it"><i class="ti ti-plus"></i>&nbsp;Add</button>
+                <form id="add-wl-form" class="row g-2 align-items-end">
+                    <div class="col-auto"><input type="text" id="add-wl-ip" class="form-control form-control-sm font-monospace csm-input-sm" placeholder="1.2.3.4"></div>
+                    <div class="col-auto"><button type="submit" class="btn btn-success btn-sm" title="Permanently whitelist this IP - never block or flag it"><i class="ti ti-plus"></i>&nbsp;Add</button></div>
                 </form>
             </div>
         </div>

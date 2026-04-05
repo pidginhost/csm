@@ -105,18 +105,23 @@ CSM.formatSize = function(bytes) {
     return (bytes / 1048576).toFixed(1) + ' MB';
 };
 
-// Format ISO timestamp to "YYYY-MM-DD HH:MM TZ" in browser-local timezone
-CSM.fmtDate = function(s) {
-    if (!s) return '\u2014';
-    var d = new Date(s);
-    if (isNaN(d.getTime())) return s;
-    var pad = function(n) { return n < 10 ? '0' + n : n; };
-    var tz = '';
-    try {
-        tz = ' ' + d.toLocaleTimeString('en-US', { timeZoneName: 'short' }).split(' ').pop();
-    } catch(e) {}
-    return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()) +
-           ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + tz;
+// Format ISO timestamp to "YYYY-MM-DD HH:MM" in browser-local timezone.
+// Pass { tz: true } as opts to append timezone abbreviation.
+CSM.fmtDate = function(ts, opts) {
+    if (!ts) return '\u2014';
+    var d = new Date(ts);
+    if (isNaN(d.getTime())) return '\u2014';
+    var y = d.getFullYear();
+    var m = String(d.getMonth() + 1).padStart(2, '0');
+    var day = String(d.getDate()).padStart(2, '0');
+    var h = String(d.getHours()).padStart(2, '0');
+    var min = String(d.getMinutes()).padStart(2, '0');
+    var result = y + '-' + m + '-' + day + ' ' + h + ':' + min;
+    if (opts && opts.tz) {
+        var tz = d.toLocaleTimeString('en-us', { timeZoneName: 'short' }).split(' ').pop();
+        result += ' ' + tz;
+    }
+    return result;
 };
 
 // Render a loading skeleton placeholder

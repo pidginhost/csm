@@ -11,6 +11,8 @@ function verdictBadge(v,score){
     return '<span class="badge '+cls+'">'+score+'/100</span>';
 }
 
+var _checkNames = (typeof CSM_CONFIG !== 'undefined' && CSM_CONFIG.checkNames) || {};
+
 function typeBadges(counts){
     if(!counts)return '-';
     var html='';
@@ -19,7 +21,8 @@ function typeBadges(counts){
     for(var i=0;i<order.length;i++){
         var t=order[i];
         if(counts[t]&&counts[t]>0){
-            html+='<span class="badge bg-'+( colors[t]||'secondary')+'-lt me-1">'+t.replace('_',' ')+': '+counts[t]+'</span>';
+            var label = _checkNames[t] || t.replace('_',' ');
+            html+='<span class="badge bg-'+( colors[t]||'secondary')+'-lt me-1">'+label+': '+counts[t]+'</span>';
         }
     }
     return html||'-';

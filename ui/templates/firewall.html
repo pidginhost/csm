@@ -59,10 +59,10 @@
         <div class="card-header">
             <h3 class="card-title"><i class="ti ti-network"></i>&nbsp;Blocked Subnets</h3>
             <div class="card-actions">
-                <form id="subnet-form" class="d-flex gap-2">
-                    <input type="text" id="subnet-cidr" class="form-control form-control-sm font-monospace csm-input-md" placeholder="1.2.3.0/24">
-                    <input type="text" id="subnet-reason" class="form-control form-control-sm csm-input-md" placeholder="Reason">
-                    <button type="submit" class="btn btn-danger btn-sm text-nowrap" title="Block this subnet in the firewall"><i class="ti ti-shield-off"></i>&nbsp;Block</button>
+                <form id="subnet-form" class="row g-2 align-items-end">
+                    <div class="col-auto"><input type="text" id="subnet-cidr" class="form-control form-control-sm font-monospace csm-input-md" placeholder="1.2.3.0/24"></div>
+                    <div class="col-auto"><input type="text" id="subnet-reason" class="form-control form-control-sm csm-input-md" placeholder="Reason"></div>
+                    <div class="col-auto"><button type="submit" class="btn btn-danger btn-sm text-nowrap" title="Block this subnet in the firewall"><i class="ti ti-shield-off"></i>&nbsp;Block</button></div>
                 </form>
             </div>
         </div>
@@ -85,10 +85,10 @@
                         <a class="dropdown-item" href="#" data-export="json"><i class="ti ti-braces me-2"></i>JSON</a>
                     </div>
                 </div>
-                <form id="block-form" class="d-flex gap-2">
-                    <input type="text" id="block-ip" class="form-control form-control-sm font-monospace csm-input-sm" placeholder="IP address">
-                    <input type="text" id="block-reason" class="form-control form-control-sm csm-input-md" placeholder="Reason">
-                    <button type="submit" class="btn btn-danger btn-sm text-nowrap" title="Block this IP address in the firewall"><i class="ti ti-shield-off"></i>&nbsp;Block</button>
+                <form id="block-form" class="row g-2 align-items-end">
+                    <div class="col-auto"><input type="text" id="block-ip" class="form-control form-control-sm font-monospace csm-input-sm" placeholder="IP address"></div>
+                    <div class="col-auto"><input type="text" id="block-reason" class="form-control form-control-sm csm-input-md" placeholder="Reason"></div>
+                    <div class="col-auto"><button type="submit" class="btn btn-danger btn-sm text-nowrap" title="Block this IP address in the firewall"><i class="ti ti-shield-off"></i>&nbsp;Block</button></div>
                 </form>
             </div>
         </div>
@@ -100,9 +100,9 @@
         <div class="card-header">
             <h3 class="card-title"><i class="ti ti-shield-check"></i>&nbsp;Whitelisted IPs</h3>
             <div class="card-actions">
-                <form id="whitelist-form" class="d-flex gap-2">
-                    <input type="text" id="whitelist-ip" class="form-control form-control-sm font-monospace csm-input-sm" placeholder="IP address">
-                    <button type="submit" class="btn btn-success btn-sm text-nowrap" title="Allow this IP and prevent future auto-blocking"><i class="ti ti-shield-check"></i>&nbsp;Whitelist</button>
+                <form id="whitelist-form" class="row g-2 align-items-end">
+                    <div class="col-auto"><input type="text" id="whitelist-ip" class="form-control form-control-sm font-monospace csm-input-sm" placeholder="IP address"></div>
+                    <div class="col-auto"><button type="submit" class="btn btn-success btn-sm text-nowrap" title="Allow this IP and prevent future auto-blocking"><i class="ti ti-shield-check"></i>&nbsp;Whitelist</button></div>
                 </form>
             </div>
         </div>

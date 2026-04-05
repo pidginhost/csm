@@ -2,7 +2,7 @@
 (function() {
     'use strict';
 
-    var CHECK_NAMES = {
+    var _fallbackNames = {
         'perf_load': 'Load',
         'perf_php_processes': 'PHP Processes',
         'perf_memory': 'Memory',
@@ -14,6 +14,7 @@
         'perf_wp_transients': 'WP Transients',
         'perf_wp_cron': 'WP Cron'
     };
+    var CHECK_NAMES = (typeof CSM_CONFIG !== 'undefined' && CSM_CONFIG.checkNames) || _fallbackNames;
 
     function sevClass(sev) {
         if (sev >= 2) return 'danger';
@@ -214,5 +215,13 @@
     }
 
     update();
-    setInterval(update, 10000);
+    var _perfInterval = setInterval(update, 10000);
+    document.addEventListener('visibilitychange', function() {
+        if (document.hidden) {
+            clearInterval(_perfInterval);
+        } else {
+            update();
+            _perfInterval = setInterval(update, 10000);
+        }
+    });
 })();
