@@ -34,3 +34,8 @@ func (s *Scanner) GlobalRules() interface{} { return nil }
 func Available() bool {
 	return false
 }
+
+// TestCompile is a no-op when YARA-X is not compiled in.
+func TestCompile(source string) error {
+	return nil
+}

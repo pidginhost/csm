@@ -31,7 +31,7 @@ func NewScanner(rulesDir string) (*Scanner, error) {
 }
 
 // Reload recompiles all YARA rules from the rules directory.
-// Thread-safe — can be called on SIGHUP.
+// Thread-safe - can be called on SIGHUP.
 func (s *Scanner) Reload() error {
 	if s.rulesDir == "" {
 		return nil
@@ -148,4 +148,22 @@ func (s *Scanner) GlobalRules() *yara_x.Rules {
 // Available returns true (YARA-X is compiled in).
 func Available() bool {
 	return true
+}
+
+// TestCompile attempts to compile a YARA rule source string.
+// Returns nil if compilation succeeds, error otherwise.
+// Used by the Forge fetcher to validate downloaded rules before installing.
+func TestCompile(source string) error {
+	compiler, err := yara_x.NewCompiler()
+	if err != nil {
+		return fmt.Errorf("creating YARA compiler: %w", err)
+	}
+	if err := compiler.AddSource(source); err != nil {
+		return fmt.Errorf("compiling rules: %w", err)
+	}
+	rules := compiler.Build()
+	if rules.Count() == 0 {
+		return fmt.Errorf("no rules compiled from source")
+	}
+	return nil
 }
