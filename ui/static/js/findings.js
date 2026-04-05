@@ -1,4 +1,4 @@
-// CSM Findings page — Client-side rendered via /api/v1/findings/enriched
+// CSM Findings page - Client-side rendered via /api/v1/findings/enriched
 
 (function() {
 'use strict';
@@ -22,7 +22,7 @@ function loadFindings() {
             if (loading) loading.classList.add('d-none');
             var card = document.getElementById('findings-card');
             if (!card) return;
-            // Show error with retry — insert into card rather than replacing it
+            // Show error with retry - insert into card rather than replacing it
             var errDiv = document.getElementById('findings-error');
             if (!errDiv) {
                 errDiv = document.createElement('div');
@@ -242,7 +242,7 @@ function restoreURLParams() {
         }
     });
 
-    // Restore state — default collapsed
+    // Restore state - default collapsed
     if (localStorage.getItem(STORAGE_KEY) !== '0') {
         body.classList.add('collapsed');
         body.style.maxHeight = '0';
@@ -347,7 +347,7 @@ if (checkFilterEl) checkFilterEl.addEventListener('change', function() {
     updateSelection();
 });
 
-// Account filter — bind 'input' to trigger table filtering
+// Account filter - bind 'input' to trigger table filtering
 var accountFilterEl = document.getElementById('account-filter');
 if (accountFilterEl) accountFilterEl.addEventListener('input', function() {
     if (findingsTable) {
@@ -826,6 +826,10 @@ function initAutoRefresh(initialFindings) {
 window.addEventListener('beforeunload', function() {
     if (_findingsPoller) { _findingsPoller.stop(); _findingsPoller = null; }
 });
+
+// Bind refresh button (replaces inline onclick for CSP compliance)
+var refreshBtn = document.getElementById('refresh-page-btn');
+if (refreshBtn) refreshBtn.addEventListener('click', function(e) { e.preventDefault(); location.reload(); });
 
 // --- Kick off ---
 loadFindings();

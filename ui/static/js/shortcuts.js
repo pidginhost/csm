@@ -1,4 +1,4 @@
-// CSM.shortcuts — Global keyboard shortcuts
+// CSM.shortcuts - Global keyboard shortcuts
 var CSM = CSM || {};
 
 CSM.shortcuts = (function() {
@@ -237,6 +237,10 @@ CSM.shortcuts = (function() {
             }
         }
     });
+
+    // Bind shortcuts help button (replaces inline onclick for CSP compliance)
+    var helpBtn = document.getElementById('shortcuts-help-btn');
+    if (helpBtn) helpBtn.addEventListener('click', function() { CSM.shortcuts.showHelp(); });
 
     return {
         showHelp: _showHelp,

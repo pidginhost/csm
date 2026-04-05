@@ -261,4 +261,8 @@ function enrichBlockedGeoIPFallback(cells) {
     for (var c = 0; c < 3 && c < cells.length; c++) { next(); }
 }
 
+// Bind bulk unblock button (replaces inline onclick for CSP compliance)
+var bulkUnblockBtn = document.getElementById('bulk-unblock-btn');
+if (bulkUnblockBtn) bulkUnblockBtn.addEventListener('click', bulkUnblock);
+
 loadStatus();loadSubnets();loadBlocked();loadWhitelist();

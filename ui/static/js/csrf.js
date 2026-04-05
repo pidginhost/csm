@@ -1,4 +1,7 @@
-// CSRF helper — reads token from <meta name="csrf-token"> and provides fetch wrapper
+// Parse CSM_CONFIG from JSON data block (avoids inline script for CSP compliance)
+var CSM_CONFIG = JSON.parse(document.getElementById('csm-config').textContent);
+
+// CSRF helper - reads token from <meta name="csrf-token"> and provides fetch wrapper
 var CSM = CSM || {};
 CSM.csrfToken = (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
 
@@ -154,7 +157,7 @@ CSM.copyText = function(text, el) {
     }).catch(function() {});
 };
 
-// Resolve API URLs — use CGI proxy path if in WHM context
+// Resolve API URLs - use CGI proxy path if in WHM context
 CSM.apiUrl = function(path) {
     if (window.location.pathname.indexOf('addon_csm.cgi') >= 0) {
         return 'addon_csm.cgi?path=' + path;

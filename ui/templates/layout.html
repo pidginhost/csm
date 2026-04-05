@@ -4,12 +4,12 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>CSM — {{template "title" .}}</title>
+    <title>CSM - {{template "title" .}}</title>
     <link rel="stylesheet" href="/static/css/tabler.min.css">
     <link rel="stylesheet" href="/static/css/tabler-icons.min.css">
     <link rel="stylesheet" href="/static/css/csm.css">
     <meta name="csrf-token" content="{{csrfToken}}">
-    <script>var CSM_CONFIG = {{csmConfig}};</script>
+    <script id="csm-config" type="application/json">{{csmConfig}}</script>
     <script src="/static/js/theme-init.js"></script>
 </head>
 <body class="layout-fluid">
@@ -23,7 +23,7 @@
                     <button id="notif-toggle" class="btn btn-ghost-secondary btn-sm d-none" title="Enable desktop alerts" aria-label="Enable desktop alerts">
                         <i class="ti ti-bell"></i>
                     </button>
-                    <button class="btn btn-ghost-secondary btn-sm d-none d-md-inline-flex" onclick="CSM.shortcuts.showHelp()" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
+                    <button id="shortcuts-help-btn" class="btn btn-ghost-secondary btn-sm d-none d-md-inline-flex" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
                         <i class="ti ti-keyboard"></i>
                     </button>
                     <button id="theme-toggle" class="btn btn-ghost-secondary btn-sm" title="Toggle dark/light mode" aria-label="Toggle dark/light mode">
@@ -61,7 +61,7 @@
             </div>
             <footer class="footer footer-transparent d-print-none">
                 <div class="container-xl">
-                    <div class="text-muted text-center">CSM — Continuous Security Monitor</div>
+                    <div class="text-muted text-center">CSM - Continuous Security Monitor</div>
                 </div>
             </footer>
         </div>
