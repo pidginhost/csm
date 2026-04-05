@@ -13,7 +13,7 @@ import (
 
 // CheckWHMAccess parses the cPanel access log for WHM (port 2087) logins
 // and password change API calls from non-infra IPs.
-// Only reads the tail of the log — lightweight.
+// Only reads the tail of the log - lightweight.
 func CheckWHMAccess(cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
@@ -86,7 +86,7 @@ func CheckSSHLogins(cfg *config.Config, _ *state.Store) []alert.Finding {
 			continue
 		}
 
-		// Extract IP — format: "Accepted publickey for root from 1.2.3.4 port 12345"
+		// Extract IP - format: "Accepted publickey for root from 1.2.3.4 port 12345"
 		parts := strings.Fields(line)
 		ipIdx := -1
 		for i, p := range parts {

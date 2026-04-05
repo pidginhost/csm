@@ -90,7 +90,7 @@ func ParseRulesFile(path string) ([]Rule, error) {
 		if block.Len() > 0 || strings.HasPrefix(line, "SecRule ") {
 			block.WriteString(line)
 			block.WriteString("\n")
-			// Only update chainPending for SecRule lines — non-SecRule
+			// Only update chainPending for SecRule lines - non-SecRule
 			// directives between chained rules must not reset the flag.
 			if strings.HasPrefix(line, "SecRule ") {
 				chainPending = hasChainAction(line)

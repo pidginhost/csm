@@ -121,14 +121,14 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleFindings(w http.ResponseWriter, _ *http.Request) {
-	// Findings page is now JS-driven — enriched API provides data
+	// Findings page is now JS-driven - enriched API provides data
 	s.renderTemplate(w, "findings.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
 	})
 }
 
 func (s *Server) handleHistoryRedirect(w http.ResponseWriter, r *http.Request) {
-	// History is now a tab on the findings page — redirect for backward compat
+	// History is now a tab on the findings page - redirect for backward compat
 	target := "/findings?tab=history"
 	if qs := r.URL.RawQuery; qs != "" {
 		target = "/findings?tab=history&" + qs

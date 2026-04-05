@@ -132,7 +132,7 @@ func parseDovecotLogLine(line string, cfg *config.Config) []alert.Finding {
 	return []alert.Finding{{
 		Severity: alert.High,
 		Check:    "email_suspicious_geo",
-		Message: fmt.Sprintf("Suspicious email login for %s from %s (%s) — previously seen: %s",
+		Message: fmt.Sprintf("Suspicious email login for %s from %s (%s) - previously seen: %s",
 			user, countryName, ip, previousList),
 		Details: fmt.Sprintf("Country: %s (%s)\nIP: %s\nLogin count: %d\nPreviously seen countries: %s",
 			country, countryName, ip, history.LoginCount, previousList),

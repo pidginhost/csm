@@ -27,8 +27,8 @@ POST /api/v1/email/quarantine/   Release or delete quarantined email
 
 ## Related Checks
 
-- `email_content` — scans outbound email body for credentials and suspicious URLs
-- `email_weak_password` — detects email accounts with weak passwords
-- `email_forwarder_audit` — audits forwarders for exfiltration redirects
-- `mail_queue` — alerts on queue buildup (spam outbreak indicator)
-- `mail_per_account` — per-account sending volume spikes
+- `email_content` - scans outbound email body for credentials and suspicious URLs
+- `email_weak_password` - detects email accounts with weak passwords
+- `email_forwarder_audit` - audits forwarders for exfiltration redirects
+- `mail_queue` - alerts on queue buildup (spam outbreak indicator)
+- `mail_per_account` - per-account sending volume spikes

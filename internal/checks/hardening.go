@@ -33,7 +33,7 @@ func CheckOpenBasedir(_ *config.Config, _ *state.Store) []alert.Finding {
 			continue
 		}
 
-		// CageFS is disabled for this user — check open_basedir
+		// CageFS is disabled for this user - check open_basedir
 		if !hasOpenBasedir(user) {
 			findings = append(findings, alert.Finding{
 				Severity: alert.High,
@@ -158,7 +158,7 @@ func scanForMaliciousSymlinks(dir, user, homeDir string, maxDepth int, findings 
 			continue
 		}
 
-		// It's a symlink — read the target
+		// It's a symlink - read the target
 		target, err := os.Readlink(fullPath)
 		if err != nil {
 			continue

@@ -143,7 +143,7 @@ func (s *Server) apiRulesReload(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, result)
 }
 
-// GET/POST /api/v1/rules/modsec-escalation — manage rules excluded from auto-block
+// GET/POST /api/v1/rules/modsec-escalation - manage rules excluded from auto-block
 func (s *Server) apiModSecEscalation(w http.ResponseWriter, r *http.Request) {
 	db := store.Global()
 

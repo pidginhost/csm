@@ -85,7 +85,7 @@ func parseLoadAvg() ([3]float64, error) {
 }
 
 // parseMemInfo reads /proc/meminfo and returns total memory, available memory,
-// swap total, and swap free — all in kilobytes.
+// swap total, and swap free - all in kilobytes.
 func parseMemInfo() (total, available, swapTotal, swapFree uint64) {
 	f, err := os.Open("/proc/meminfo")
 	if err != nil {
@@ -1252,7 +1252,7 @@ func scanWPCron(dir, account string, depth int, findings *[]alert.Finding) {
 				Check:    "perf_wp_cron",
 				Message:  fmt.Sprintf("WP-Cron not disabled for %s", account),
 				Details: fmt.Sprintf(
-					"File: %s — add define('DISABLE_WP_CRON', true); and use a real cron job instead",
+					"File: %s - add define('DISABLE_WP_CRON', true); and use a real cron job instead",
 					fullPath,
 				),
 				Timestamp: time.Now(),

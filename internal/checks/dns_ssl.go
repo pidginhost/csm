@@ -13,7 +13,7 @@ import (
 
 // maxBulkDNSChanges is the threshold above which zone changes are considered
 // a cPanel bulk operation (AutoSSL, serial bump, DNSSEC rotation) and suppressed.
-// Only 1-5 zone changes at once are reported — likely targeted modifications.
+// Only 1-5 zone changes at once are reported - likely targeted modifications.
 const maxBulkDNSChanges = 5
 
 // CheckDNSZoneChanges monitors named zone files for modifications.
@@ -53,7 +53,7 @@ func CheckDNSZoneChanges(_ *config.Config, store *state.Store) []alert.Finding {
 		}
 	}
 
-	// If many zones changed at once, it's cPanel maintenance — suppress
+	// If many zones changed at once, it's cPanel maintenance - suppress
 	if len(changedZones) > maxBulkDNSChanges {
 		return nil
 	}
@@ -98,7 +98,7 @@ func CheckSSLCertIssuance(_ *config.Config, store *state.Store) []alert.Finding 
 	fmt.Sscanf(prev, "%d", &prevCount)
 
 	if currentCount > prevCount {
-		// New AutoSSL activity — check the latest log
+		// New AutoSSL activity - check the latest log
 		var latestLog string
 		var latestTime int64
 		for _, entry := range entries {

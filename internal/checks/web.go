@@ -152,7 +152,7 @@ func checkHtaccessFile(path string, suspicious, safe []string, findings *[]alert
 		trimmed := strings.TrimSpace(line)
 		lineLower := strings.ToLower(trimmed)
 
-		// Skip comments entirely — commented-out directives are not active
+		// Skip comments entirely - commented-out directives are not active
 		if strings.HasPrefix(trimmed, "#") {
 			continue
 		}
@@ -249,7 +249,7 @@ func checkHtaccessFile(path string, suspicious, safe []string, findings *[]alert
 	}
 
 	// Special check: AddHandler mapping non-standard extensions WITHOUT -ExecCGI
-	// (actual attack pattern — e.g., AddHandler cgi-script .haxor)
+	// (actual attack pattern - e.g., AddHandler cgi-script .haxor)
 	if !hasExecCGIBlock && strings.Contains(fullContentLower, "addhandler") {
 		for lineNum, line := range lines {
 			lineLower := strings.ToLower(line)
@@ -304,7 +304,7 @@ func CheckWPCore(_ *config.Config, _ *state.Store) []alert.Finding {
 					"--path="+wpPath, "--allow-root")
 
 				if err == nil {
-					// Verification passed — cache all core files
+					// Verification passed - cache all core files
 					cacheWPCoreFiles(cache, wpPath)
 					continue
 				}

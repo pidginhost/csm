@@ -120,7 +120,7 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 			continue
 		}
 
-		// Extract file path — prefer structured field, fallback to message parsing
+		// Extract file path - prefer structured field, fallback to message parsing
 		path := f.FilePath
 		if path == "" {
 			path = extractFilePath(f.Message) // fallback for legacy findings
@@ -143,7 +143,7 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 			continue
 		}
 
-		// Realtime high-confidence matches are fully obfuscated malware —
+		// Realtime high-confidence matches are fully obfuscated malware -
 		// there is no legitimate code to preserve, skip cleaning and go
 		// straight to quarantine.
 		if isRealtimeMatch {
@@ -165,7 +165,7 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 				})
 				continue // successfully cleaned, skip quarantine
 			case result.Error != "":
-				// Cleaning failed — fall through to quarantine
+				// Cleaning failed - fall through to quarantine
 				actions = append(actions, alert.Finding{
 					Severity:  alert.Warning,
 					Check:     "auto_response",
@@ -173,7 +173,7 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 					Details:   result.Error,
 					Timestamp: time.Now(),
 				})
-				// Don't continue — fall through to quarantine below
+				// Don't continue - fall through to quarantine below
 			default:
 				continue // no changes needed
 			}
@@ -213,7 +213,7 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 					continue
 				}
 				if rmErr := os.Remove(path); rmErr != nil {
-					// Remove failed — delete the copy to avoid duplication
+					// Remove failed - delete the copy to avoid duplication
 					os.Remove(qPath)
 					fmt.Fprintf(os.Stderr, "autoresponse: cross-device quarantine failed, cannot remove original %s: %v\n", path, rmErr)
 					continue
@@ -375,7 +375,7 @@ func isSafeProcess(exe string) bool {
 //  2. File must not be in a known library path
 //  3. File must be >= 512 bytes (entropy unreliable below this)
 //  4. Content must show obfuscation indicators (category-dependent):
-//     - "dropper": auto-quarantine — signature rules (e.g. 10+ goto statements)
+//     - "dropper": auto-quarantine - signature rules (e.g. 10+ goto statements)
 //     are already highly specific. No legitimate PHP has that.
 //     - "webshell": requires Shannon entropy >= 4.8 OR hex density > 20%
 func isHighConfidenceRealtimeMatch(f alert.Finding, path string, data []byte) bool {
@@ -405,7 +405,7 @@ func isHighConfidenceRealtimeMatch(f alert.Finding, path string, data []byte) bo
 		return false
 	}
 
-	// Dropper rules (goto obfuscation, etc.) are inherently high-confidence —
+	// Dropper rules (goto obfuscation, etc.) are inherently high-confidence -
 	// the signature already validated a very specific pattern. No need for
 	// additional content analysis.
 	if cat == "dropper" {
@@ -420,7 +420,7 @@ func isHighConfidenceRealtimeMatch(f alert.Finding, path string, data []byte) bo
 
 // hexEncodingDensity returns the fraction of a string's bytes that are part
 // of PHP hex escape sequences (\xNN). LEVIATHAN AES-encrypted webshells
-// encode their payload as long hex strings — the \x prefix repeats so
+// encode their payload as long hex strings - the \x prefix repeats so
 // frequently that Shannon entropy drops to ~3.5 (below normal PHP), but
 // the hex density reaches 40-60%.
 func hexEncodingDensity(s string) float64 {

@@ -94,7 +94,7 @@ func CheckIPReputation(cfg *config.Config, _ *state.Store) []alert.Finding {
 			}
 		}
 
-		// Tier 4: Query AbuseIPDB — skip if no key, quota exhausted, or limit reached
+		// Tier 4: Query AbuseIPDB - skip if no key, quota exhausted, or limit reached
 		if cfg.Reputation.AbuseIPDBKey == "" || quotaExhausted || checked >= maxQueriesPerCycle {
 			continue
 		}
@@ -182,7 +182,7 @@ func collectRecentIPs(cfg *config.Config) map[string]string {
 		break
 	}
 
-	// Exim log — SMTP auth failures
+	// Exim log - SMTP auth failures
 	for _, line := range tailFile("/var/log/exim_mainlog", 50) {
 		if strings.Contains(line, "authenticator failed") || strings.Contains(line, "rejected RCPT") {
 			if ip := extractBracketedIP(line); ip != "" {
@@ -191,7 +191,7 @@ func collectRecentIPs(cfg *config.Config) map[string]string {
 		}
 	}
 
-	// Dovecot — IMAP/POP3 auth failures
+	// Dovecot - IMAP/POP3 auth failures
 	for _, line := range tailFile("/var/log/maillog", 50) {
 		if strings.Contains(line, "auth failed") || strings.Contains(line, "Aborted login") {
 			if ip := extractIPAfterKeyword(line, "rip="); ip != "" {
@@ -390,14 +390,14 @@ func cleanCache(cache *reputationCache) {
 	// Fallback: in-memory cache cleanup.
 	now := time.Now()
 
-	// Remove expired entries — use same expiry as cache freshness check
+	// Remove expired entries - use same expiry as cache freshness check
 	for ip, entry := range cache.Entries {
 		if now.Sub(entry.CheckedAt) > cacheExpiry {
 			delete(cache.Entries, ip)
 		}
 	}
 
-	// Cap at max entries — remove oldest if over limit
+	// Cap at max entries - remove oldest if over limit
 	if len(cache.Entries) > maxCacheEntries {
 		type aged struct {
 			ip  string
@@ -421,7 +421,7 @@ func cleanCache(cache *reputationCache) {
 func loadReputationCache(statePath string) *reputationCache {
 	cache := &reputationCache{Entries: make(map[string]*reputationEntry)}
 
-	// Try bbolt store first — after migration the flat file is renamed to .bak.
+	// Try bbolt store first - after migration the flat file is renamed to .bak.
 	if sdb := store.Global(); sdb != nil {
 		for ip, entry := range sdb.AllReputation() {
 			cache.Entries[ip] = &reputationEntry{

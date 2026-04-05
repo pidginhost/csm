@@ -12,7 +12,7 @@ import (
 	"github.com/pidginhost/csm/internal/state"
 )
 
-const phishingReadSize = 16384 // Read first 16KB — phishing pages are self-contained
+const phishingReadSize = 16384 // Read first 16KB - phishing pages are self-contained
 
 // ---------------------------------------------------------------------------
 // Brand impersonation patterns
@@ -67,7 +67,7 @@ var phishingBrands = []struct {
 		name:          "Webmail/Roundcube",
 		titlePatterns: []string{"roundcube", "horde", "webmail login", "webmail ::", "squirrelmail", "zimbra"},
 		bodyPatterns:  []string{"roundcube webmail", "horde login", "zimbra web client", "webmail login"},
-		// Note: bare "squirrelmail"/"roundcube" removed from body — sites legitimately
+		// Note: bare "squirrelmail"/"roundcube" removed from body - sites legitimately
 		// link to their server's webmail (e.g. href="squirrelmail/index.php").
 	},
 	{
@@ -110,7 +110,7 @@ var harvestIndicators = []string{
 	"secured by apple",
 	"256-bit encrypted",
 	"256‑bit encrypted",
-	// fetch/XHR exfiltration — silent credential POST without redirect
+	// fetch/XHR exfiltration - silent credential POST without redirect
 	"fetch(",
 	"xmlhttprequest",
 	"$.ajax(",
@@ -134,7 +134,7 @@ var exfilPatterns = []string{
 	"/servlet/effi.redir",
 }
 
-// Fake trust badge patterns — security claims in pages not on the brand's domain.
+// Fake trust badge patterns - security claims in pages not on the brand's domain.
 var trustBadgePatterns = []string{
 	"secured by microsoft",
 	"secured by google",
@@ -165,7 +165,7 @@ var urgencyPatterns = []string{
 	"access will be revoked",
 }
 
-// Embedded asset indicators — phishing kits embed logos to avoid external loading.
+// Embedded asset indicators - phishing kits embed logos to avoid external loading.
 var embeddedAssetPatterns = []string{
 	"data:image/png;base64,",
 	"data:image/svg+xml;base64,",
@@ -178,9 +178,9 @@ var embeddedAssetPatterns = []string{
 
 // CheckPhishing scans HTML files in user document roots for phishing pages.
 // Uses three detection layers:
-//  1. Content analysis — brand impersonation + credential harvesting patterns
-//  2. Structural analysis — self-contained HTML with embedded assets
-//  3. Directory anomaly — lone HTML files in otherwise empty directories
+//  1. Content analysis - brand impersonation + credential harvesting patterns
+//  2. Structural analysis - self-contained HTML with embedded assets
+//  3. Directory anomaly - lone HTML files in otherwise empty directories
 func CheckPhishing(cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
@@ -305,7 +305,7 @@ func scanForPhishing(dir string, maxDepth int, user string, cfg *config.Config, 
 			if isKnownCMSFile(nameLower) {
 				continue
 			}
-			// PHP phishing (3KB-100KB) — same brand/content analysis as HTML
+			// PHP phishing (3KB-100KB) - same brand/content analysis as HTML
 			if size >= 3000 && size <= 100000 {
 				result := analyzePHPForPhishing(fullPath)
 				if result != nil {
@@ -572,12 +572,12 @@ func hasExternalFormAction(content string) bool {
 }
 
 // isSelfContainedHTML checks if a page has all its CSS inline (embedded <style> tags)
-// with no or minimal external stylesheet references — typical of phishing kits.
+// with no or minimal external stylesheet references - typical of phishing kits.
 func isSelfContainedHTML(contentLower string) bool {
 	hasInlineStyle := strings.Contains(contentLower, "<style")
 	externalCSS := countOccurrences(contentLower, "rel=\"stylesheet\"") +
 		countOccurrences(contentLower, "rel='stylesheet'")
-	// Allow 1 external CSS (e.g., Font Awesome CDN) — phishing kits often use one
+	// Allow 1 external CSS (e.g., Font Awesome CDN) - phishing kits often use one
 	return hasInlineStyle && externalCSS <= 1
 }
 
@@ -647,7 +647,7 @@ func analyzeDirectoryStructure(dir string, user string) *alert.Finding {
 
 	for _, entry := range entries {
 		if entry.IsDir() {
-			return nil // Has subdirectories — likely not a simple phishing drop
+			return nil // Has subdirectories - likely not a simple phishing drop
 		}
 		name := entry.Name()
 		if strings.HasPrefix(name, ".") {
@@ -717,7 +717,7 @@ func looksLikeBusinessName(name string) bool {
 
 	nameLower := strings.ToLower(name)
 
-	// Skip names that start with tech/dev terms — these are tutorial
+	// Skip names that start with tech/dev terms - these are tutorial
 	// or test directories, not business names (e.g. "php-email-form",
 	// "PHP-Login", "JavaScript Login")
 	techPrefixes := []string{
@@ -780,7 +780,7 @@ func looksLikeBusinessName(name string) bool {
 }
 
 // quickPhishingCheck does a fast read of an HTML file to check for credential
-// input fields without full analysis — used for directory structure checks.
+// input fields without full analysis - used for directory structure checks.
 func quickPhishingCheck(path string) bool {
 	f, err := os.Open(path)
 	if err != nil {
@@ -822,7 +822,7 @@ func analyzePHPForPhishing(path string) *phishingResult {
 	contentLower := strings.ToLower(content)
 
 	// PHP phishing indicators: credential handling code.
-	// Only truly specific patterns belong here — generic functions like
+	// Only truly specific patterns belong here - generic functions like
 	// mail() and fwrite() are handled separately with context checks below.
 	phpPhishingPatterns := []string{
 		"$_post['email']",
@@ -961,7 +961,7 @@ func isKnownCMSFile(nameLower string) bool {
 // ---------------------------------------------------------------------------
 
 // checkPHPRedirector reads a small PHP file and checks if it's an open
-// redirector — a file that redirects the visitor to a URL from a parameter.
+// redirector - a file that redirects the visitor to a URL from a parameter.
 func checkPHPRedirector(path string) string {
 	f, err := os.Open(path)
 	if err != nil {
@@ -983,7 +983,7 @@ func checkPHPRedirector(path string) string {
 		return ""
 	}
 
-	// Pattern 1: user-controlled redirect target — the URL in header() must
+	// Pattern 1: user-controlled redirect target - the URL in header() must
 	// come from user input. Just having $_GET anywhere + header() is too broad;
 	// normal form handlers use $_POST for data then header() for redirect.
 	// Only flag when the redirect URL itself is parameterized.
@@ -1107,7 +1107,7 @@ func checkCredentialLog(path string) string {
 
 	// High density of emails alone (10+) in a non-.csv file is suspicious
 	if emailCount >= 10 && !strings.HasSuffix(strings.ToLower(path), ".csv") {
-		return fmt.Sprintf("File contains %d email addresses — possible harvested email list", emailCount)
+		return fmt.Sprintf("File contains %d email addresses - possible harvested email list", emailCount)
 	}
 
 	return ""
@@ -1117,7 +1117,7 @@ func checkCredentialLog(path string) string {
 // Layer 7: Iframe phishing
 // ---------------------------------------------------------------------------
 
-// checkIframePhishing checks small HTML files for iframe-based phishing —
+// checkIframePhishing checks small HTML files for iframe-based phishing -
 // a minimal HTML page that just loads an external phishing page in a full-screen iframe.
 func checkIframePhishing(path string) string {
 	f, err := os.Open(path)
@@ -1219,7 +1219,7 @@ func isPhishingKitZip(nameLower string) bool {
 		}
 	}
 
-	// Lower-confidence keywords — require 2+ matches to flag.
+	// Lower-confidence keywords - require 2+ matches to flag.
 	// Words like "login", "verify", "secure", "google", "apple", "bank"
 	// appear in legitimate archives too.
 	multiMatch := []string{

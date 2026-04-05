@@ -98,7 +98,7 @@ func CheckFileIndex(cfg *config.Config, _ *state.Store) []alert.Finding {
 	// Write current index (atomic)
 	writeIndex(currentPath, currentEntries)
 
-	// First run — save baseline
+	// First run - save baseline
 	if _, err := os.Stat(previousPath); os.IsNotExist(err) {
 		copyFile(currentPath, previousPath)
 		return nil
@@ -127,7 +127,7 @@ func CheckFileIndex(cfg *config.Config, _ *state.Store) []alert.Finding {
 		}
 	}
 
-	// Analyze new files — lazy stat only for alerting
+	// Analyze new files - lazy stat only for alerting
 	for _, path := range newFiles {
 		name := filepath.Base(path)
 		nameLower := strings.ToLower(name)
@@ -156,7 +156,7 @@ func CheckFileIndex(cfg *config.Config, _ *state.Store) []alert.Finding {
 			message = fmt.Sprintf("New PHP file in uploads: %s", path)
 		}
 
-		// PHP files in wp-content/languages — should only contain .mo/.po/.l10n.php
+		// PHP files in wp-content/languages - should only contain .mo/.po/.l10n.php
 		if strings.Contains(path, "/wp-content/languages/") && strings.HasSuffix(nameLower, ".php") {
 			if !strings.HasSuffix(nameLower, ".l10n.php") && nameLower != "index.php" {
 				severity = alert.Critical
@@ -165,7 +165,7 @@ func CheckFileIndex(cfg *config.Config, _ *state.Store) []alert.Finding {
 			}
 		}
 
-		// PHP files in wp-content/upgrade — should be empty except index.php
+		// PHP files in wp-content/upgrade - should be empty except index.php
 		if strings.Contains(path, "/wp-content/upgrade/") && strings.HasSuffix(nameLower, ".php") {
 			if nameLower != "index.php" {
 				severity = alert.Critical
@@ -226,7 +226,7 @@ func groupEntriesByUploadDir(entries []string) map[string][]string {
 }
 
 // buildFileIndex scans targeted directory subtrees using ReadDir.
-// Skips directories whose mtime hasn't changed — carries forward
+// Skips directories whose mtime hasn't changed - carries forward
 // their entries from the previous index instead.
 // If forceFullScan is true, all directories are re-scanned regardless of mtime.
 func buildFileIndex(dirCache dirMtimeCache, prevByDir map[string][]string, forceFullScan bool) []string {

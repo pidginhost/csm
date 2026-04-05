@@ -22,7 +22,7 @@ type Store struct {
 	savedHash string // hash of last saved state
 
 	// LatestFindings holds the full output of the most recent scan cycle.
-	// This is what the Findings page shows — "what's wrong right now" —
+	// This is what the Findings page shows - "what's wrong right now" -
 	// separate from the alert dedup state above which controls "what to email."
 	latestMu       sync.RWMutex
 	latestFindings []alert.Finding
@@ -466,7 +466,7 @@ func splitLines(data []byte) [][]byte {
 
 // SetLatestFindings merges scan results into the current findings set.
 // Called by the daemon after each periodic scan completes. Merges rather
-// than replaces — critical scan results coexist with deep scan results.
+// than replaces - critical scan results coexist with deep scan results.
 // Use ClearLatestFindings() + SetLatestFindings() for a full replace.
 func (s *Store) SetLatestFindings(findings []alert.Finding) {
 	s.latestMu.Lock()
@@ -592,7 +592,7 @@ func (s *Store) ClearLatestFindings() {
 }
 
 // LatestFindings returns the full results of the most recent scan.
-// This is what the Findings page shows — "what's wrong right now."
+// This is what the Findings page shows - "what's wrong right now."
 func (s *Store) LatestFindings() []alert.Finding {
 	s.latestMu.RLock()
 	defer s.latestMu.RUnlock()

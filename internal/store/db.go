@@ -10,7 +10,7 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
-// Bucket names — all buckets are created on Open().
+// Bucket names - all buckets are created on Open().
 var bucketNames = []string{
 	"history",
 	"attacks:records",
@@ -117,7 +117,7 @@ func Open(statePath string) (*DB, error) {
 	})
 	if !seeded {
 		_ = db.SetModSecNoEscalateRules(map[int]bool{
-			900112: true, // WordPress user enumeration — blocks at HTTP level only
+			900112: true, // WordPress user enumeration - blocks at HTTP level only
 		})
 		_ = db.bolt.Update(func(tx *bolt.Tx) error {
 			return tx.Bucket([]byte("meta")).Put([]byte("modsec:no_escalate_seeded"), []byte("1"))

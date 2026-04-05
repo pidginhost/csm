@@ -22,7 +22,7 @@ func TestExtractAuthUser(t *testing.T) {
 		},
 		{
 			`2026-04-04 10:15:23 1abc23-000456-AB <= bounce@example.com H=host [1.2.3.4] P=esmtps S=1024`,
-			"", // no A=dovecot_ — not authenticated
+			"", // no A=dovecot_ - not authenticated
 		},
 		{
 			`2026-04-04 10:15:23 1abc23-000456-AB => user@example.com R=lookuphost T=remote_smtp`,
@@ -169,7 +169,7 @@ func TestEmailRateThresholds(t *testing.T) {
 	user := "rate-threshold-test@threshold.test"
 	defer emailRateWindows.Delete(user)
 
-	// Send 4 emails — no alert
+	// Send 4 emails - no alert
 	for i := 0; i < 4; i++ {
 		findings := checkEmailRate(user, cfg)
 		if len(findings) != 0 {
@@ -177,7 +177,7 @@ func TestEmailRateThresholds(t *testing.T) {
 		}
 	}
 
-	// 5th email — warn threshold
+	// 5th email - warn threshold
 	findings := checkEmailRate(user, cfg)
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding at warn threshold, got %d", len(findings))
@@ -186,7 +186,7 @@ func TestEmailRateThresholds(t *testing.T) {
 		t.Errorf("expected check email_rate_warning, got %s", findings[0].Check)
 	}
 
-	// 6th-9th — no new alert (already alerted for warn)
+	// 6th-9th - no new alert (already alerted for warn)
 	for i := 6; i <= 9; i++ {
 		dedupFindings := checkEmailRate(user, cfg)
 		if len(dedupFindings) != 0 {
@@ -194,7 +194,7 @@ func TestEmailRateThresholds(t *testing.T) {
 		}
 	}
 
-	// 10th email — critical threshold
+	// 10th email - critical threshold
 	findings = checkEmailRate(user, cfg)
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding at crit threshold, got %d", len(findings))
@@ -203,7 +203,7 @@ func TestEmailRateThresholds(t *testing.T) {
 		t.Errorf("expected check email_rate_critical, got %s", findings[0].Check)
 	}
 
-	// 11th email — no new alert (already alerted for crit)
+	// 11th email - no new alert (already alerted for crit)
 	findings = checkEmailRate(user, cfg)
 	if len(findings) != 0 {
 		t.Fatalf("expected no findings after crit dedup, got %d", len(findings))

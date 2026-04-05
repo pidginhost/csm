@@ -15,7 +15,7 @@ import (
 )
 
 // ScanAccount restricts filesystem-based checks to a single account.
-// Protected by scanMu — concurrent scans are serialized to prevent scope bleed.
+// Protected by scanMu - concurrent scans are serialized to prevent scope bleed.
 var (
 	ScanAccount string
 	scanMu      sync.Mutex
@@ -35,7 +35,7 @@ func RunAccountScan(cfg *config.Config, store *state.Store, account string) []al
 		}}
 	}
 
-	// Acquire scan lock — only one account scan at a time to prevent scope bleed
+	// Acquire scan lock - only one account scan at a time to prevent scope bleed
 	scanMu.Lock()
 	ScanAccount = account
 	defer func() {
@@ -66,7 +66,7 @@ func RunAccountScan(cfg *config.Config, store *state.Store, account string) []al
 		namedCheck{"backdoor_binaries", makeAccountBackdoorCheck(account)},
 	)
 
-	// Run with bounded parallelism — filesystem checks all walk the same
+	// Run with bounded parallelism - filesystem checks all walk the same
 	// directory tree, so too many concurrent checks starve each other on
 	// loaded servers with slow I/O.
 	var mu sync.Mutex

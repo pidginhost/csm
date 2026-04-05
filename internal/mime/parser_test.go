@@ -24,7 +24,7 @@ func TestParseSinglePart(t *testing.T) {
 	if len(result.To) != 1 || result.To[0] != "user@domain.com" {
 		t.Errorf("To = %v, want [user@domain.com]", result.To)
 	}
-	// Single text/plain body — no extractable attachments
+	// Single text/plain body - no extractable attachments
 	if len(result.Parts) != 0 {
 		t.Errorf("Parts = %d, want 0 for text-only email", len(result.Parts))
 	}
@@ -80,7 +80,7 @@ func TestParseLimitEnforcement(t *testing.T) {
 	dPath := filepath.Join("testdata", "multipart-D")
 
 	tiny := Limits{
-		MaxAttachmentSize: 5, // 5 bytes — the base64-decoded exe will exceed this
+		MaxAttachmentSize: 5, // 5 bytes - the base64-decoded exe will exceed this
 		MaxArchiveDepth:   1,
 		MaxArchiveFiles:   50,
 		MaxExtractionSize: 100 * 1024 * 1024,
@@ -128,7 +128,7 @@ func TestParseSinglePartAttachment(t *testing.T) {
 		t.Fatalf("ParseSpoolMessage failed: %v", err)
 	}
 
-	// Single application/pdf — should be extracted as an attachment
+	// Single application/pdf - should be extracted as an attachment
 	if len(result.Parts) != 1 {
 		t.Fatalf("Parts = %d, want 1 for single-part PDF", len(result.Parts))
 	}

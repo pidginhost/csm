@@ -88,7 +88,7 @@ func ParseSpoolMessage(headerPath, bodyPath string, limits Limits) (*ExtractionR
 
 	mediaType, params, parseErr := mime.ParseMediaType(ct)
 	if parseErr != nil {
-		// Unparseable content type — treat as plain text, no attachments
+		// Unparseable content type - treat as plain text, no attachments
 		return result, nil //nolint:nilerr // fail-open by design
 	}
 
@@ -138,7 +138,7 @@ func ParseSpoolMessage(headerPath, bodyPath string, limits Limits) (*ExtractionR
 			result.PartialReason = "single-part attachment exceeds max size"
 		}
 	}
-	// text/* bodies are not attachments — skip
+	// text/* bodies are not attachments - skip
 
 	return result, nil
 }
@@ -160,7 +160,7 @@ func parseEximHeader(path string) (*envelope, textproto.MIMEHeader, error) {
 
 	env := &envelope{}
 
-	// Parse as mail message to extract headers — find the header block
+	// Parse as mail message to extract headers - find the header block
 	// Exim -H files contain envelope info then headers separated by a blank line pattern.
 	// We look for standard RFC headers.
 	reader := bufio.NewReader(bytes.NewReader(data))
@@ -266,7 +266,7 @@ func extractMultipart(r io.Reader, boundary string, limits Limits, result *Extra
 			continue
 		}
 
-		// Skip inline text bodies — only extract attachments
+		// Skip inline text bodies - only extract attachments
 		disp := part.Header.Get("Content-Disposition")
 		filename := part.FileName()
 		if filename == "" {
@@ -277,11 +277,11 @@ func extractMultipart(r io.Reader, boundary string, limits Limits, result *Extra
 			}
 		}
 		if filename == "" {
-			// No filename and text/* content — this is a body part, skip
+			// No filename and text/* content - this is a body part, skip
 			if strings.HasPrefix(mediaType, "text/") {
 				continue
 			}
-			// Non-text without filename — use generic name
+			// Non-text without filename - use generic name
 			filename = "unnamed_attachment"
 		}
 
@@ -433,7 +433,7 @@ func extractTarGz(tgzPath, archiveName string, limits Limits, result *Extraction
 	for {
 		hdr, err := tr.Next()
 		if err != nil {
-			return // EOF or error — done
+			return // EOF or error - done
 		}
 		if hdr.Typeflag != tar.TypeReg {
 			continue

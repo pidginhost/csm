@@ -203,7 +203,7 @@ func validateWarnings(cfg *Config) []ValidationResult {
 
 	// Firewall enabled but no infra IPs (lockout risk)
 	if cfg.Firewall != nil && cfg.Firewall.Enabled && !topInfra && !fwInfra {
-		results = append(results, ValidationResult{"warn", "firewall", "firewall enabled but no infra_ips configured — risk of lockout"})
+		results = append(results, ValidationResult{"warn", "firewall", "firewall enabled but no infra_ips configured - risk of lockout"})
 	}
 
 	// Netblock threshold too low

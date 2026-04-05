@@ -42,7 +42,7 @@ var (
 	threatDBOnce   sync.Once
 )
 
-// Minimum expected entries per feed — alerts if feed returns less (corrupted/down)
+// Minimum expected entries per feed - alerts if feed returns less (corrupted/down)
 var feedMinEntries = map[string]int{
 	"spamhaus-drop":  50,
 	"spamhaus-edrop": 10,
@@ -119,7 +119,7 @@ func (db *ThreatDB) Lookup(ip string) (string, bool) {
 }
 
 // AddPermanent adds an IP to the permanent local blocklist.
-// Called when CSM auto-blocks an IP — persists across restarts.
+// Called when CSM auto-blocks an IP - persists across restarts.
 func (db *ThreatDB) AddPermanent(ip, reason string) {
 	db.mu.Lock()
 	_, exists := db.badIPs[ip]
@@ -438,7 +438,7 @@ func (db *ThreatDB) UpdateFeeds() error {
 			continue
 		}
 
-		// Validate feed — reject partial downloads to avoid losing good data
+		// Validate feed - reject partial downloads to avoid losing good data
 		minExpected := feedMinEntries[feed.name]
 		if minExpected > 0 && len(ips)+len(nets) < minExpected {
 			fmt.Fprintf(os.Stderr, "threatdb: WARNING %s returned only %d entries (expected >%d), keeping cached version\n",
@@ -458,7 +458,7 @@ func (db *ThreatDB) UpdateFeeds() error {
 		saveLines(cachePath, ips)
 	}
 
-	// Swap data UNDER the lock — fast operation
+	// Swap data UNDER the lock - fast operation
 	db.mu.Lock()
 	// Clear old feed data but keep permanent entries
 	for ip, source := range db.badIPs {
@@ -548,7 +548,7 @@ func compactPermanentFile(path string, uniqueIPs map[string]bool) {
 	}
 	lines := strings.Split(string(data), "\n")
 	if len(lines) <= len(uniqueIPs)+5 {
-		return // not worth compacting — minimal duplicates
+		return // not worth compacting - minimal duplicates
 	}
 
 	// Rewrite with deduplication

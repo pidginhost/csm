@@ -25,10 +25,10 @@ type CleanResult struct {
 // while preserving the legitimate content. Always creates a backup first.
 //
 // Cleaning strategies (tried in order):
-// 1. @include injection — remove @include lines pointing to /tmp, eval, base64, or via variables
-// 2. Prepend injection — remove malicious code blocks at start of file (entropy-validated)
-// 3. Append injection — remove malicious code after closing ?> or end of PSR-12 file
-// 4. Inline eval injection — remove eval(base64_decode(...)) single-line injections
+// 1. @include injection - remove @include lines pointing to /tmp, eval, base64, or via variables
+// 2. Prepend injection - remove malicious code blocks at start of file (entropy-validated)
+// 3. Append injection - remove malicious code after closing ?> or end of PSR-12 file
+// 4. Inline eval injection - remove eval(base64_decode(...)) single-line injections
 func CleanInfectedFile(path string) CleanResult {
 	result := CleanResult{Path: path}
 
@@ -110,7 +110,7 @@ func CleanInfectedFile(path string) CleanResult {
 
 	// If nothing was removed, file couldn't be cleaned
 	if len(removals) == 0 || len(content) == originalLen {
-		result.Error = "no known injection patterns found — file may need manual review"
+		result.Error = "no known injection patterns found - file may need manual review"
 		return result
 	}
 
@@ -132,30 +132,30 @@ func CleanInfectedFile(path string) CleanResult {
 
 // ShouldCleanInsteadOfQuarantine returns true if the file should be cleaned
 // (surgical removal) instead of quarantined (full removal).
-// WP core files and plugin files are better cleaned — removing them breaks the site.
+// WP core files and plugin files are better cleaned - removing them breaks the site.
 // Unknown standalone files (droppers, webshells) should be quarantined.
 func ShouldCleanInsteadOfQuarantine(path string) bool {
-	// WP core files — always clean, never quarantine
+	// WP core files - always clean, never quarantine
 	if strings.Contains(path, "/wp-includes/") || strings.Contains(path, "/wp-admin/") {
 		return true
 	}
-	// Plugin/theme main files — clean to preserve functionality
+	// Plugin/theme main files - clean to preserve functionality
 	if strings.Contains(path, "/wp-content/plugins/") || strings.Contains(path, "/wp-content/themes/") {
 		// But not if the file itself is the malware (h4x0r.php inside a theme)
 		name := strings.ToLower(filepath.Base(path))
 		if isWebshellName(name) {
-			return false // quarantine this — it's a standalone webshell
+			return false // quarantine this - it's a standalone webshell
 		}
 		return true
 	}
-	// Everything else — quarantine
+	// Everything else - quarantine
 	return false
 }
 
 // removeIncludeInjections removes @include lines that load malicious files.
 // Catches:
-// - @include("/tmp/...") — literal paths to temp dirs
-// - @include(base64_decode("...")) — encoded includes
+// - @include("/tmp/...") - literal paths to temp dirs
+// - @include(base64_decode("...")) - encoded includes
 // - @include($var) where $var is built from obfuscated strings nearby
 func removeIncludeInjections(content string) (string, []string) {
 	var removals []string
@@ -171,7 +171,7 @@ func removeIncludeInjections(content string) (string, []string) {
 			`|gzinflate\s*\(` + // include with gzip
 			`)`)
 
-	// Pattern 2: @include($variable) — suspicious variable-based include
+	// Pattern 2: @include($variable) - suspicious variable-based include
 	// Only flag if the variable is defined nearby with concatenation/obfuscation
 	varInclude := regexp.MustCompile(`(?i)^\s*@include\s*\(\s*\$[a-zA-Z_]+\s*\)`)
 
@@ -181,7 +181,7 @@ func removeIncludeInjections(content string) (string, []string) {
 			continue
 		}
 
-		// Variable-based @include — check surrounding context for obfuscation
+		// Variable-based @include - check surrounding context for obfuscation
 		if varInclude.MatchString(line) {
 			context := getLineContext(lines, i, 3)
 			contextLower := strings.ToLower(context)
@@ -241,7 +241,7 @@ func removePrependInjection(content string) (string, []string) {
 	hasLongStrings := containsLongEncodedString(prefix, 100)
 
 	if entropy < 4.5 && !hasLongStrings {
-		// Low entropy and no long encoded strings — likely legitimate code
+		// Low entropy and no long encoded strings - likely legitimate code
 		return content, nil
 	}
 
@@ -281,7 +281,7 @@ func removeAppendInjection(content string) (string, []string) {
 		}
 	}
 
-	// Case 2: PSR-12 style file (no closing ?>) — check if there's a malicious
+	// Case 2: PSR-12 style file (no closing ?>) - check if there's a malicious
 	// block appended at the very end, separated by multiple newlines
 	lines := strings.Split(content, "\n")
 	if len(lines) < 5 {
@@ -329,7 +329,7 @@ func removeInlineEvalInjections(content string) (string, []string) {
 		trimmedLine := strings.TrimSpace(line)
 		if evalInject.MatchString(trimmedLine) {
 			// Verify it's a standalone injection (not part of legitimate code)
-			// Standalone injections are long (encoded payload) — short eval() is likely legitimate
+			// Standalone injections are long (encoded payload) - short eval() is likely legitimate
 			if len(trimmedLine) > 50 {
 				removals = append(removals, fmt.Sprintf("removed inline eval injection (%d chars)", len(trimmedLine)))
 				continue
@@ -442,9 +442,9 @@ func removeChrPackInjections(content string) (string, []string) {
 	lines := strings.Split(content, "\n")
 	var clean []string
 
-	// 5+ chr() calls concatenated — building function names from char codes
+	// 5+ chr() calls concatenated - building function names from char codes
 	chrChain := regexp.MustCompile(`(?i)(?:chr\s*\(\s*\d+\s*\)\s*\.?\s*){5,}`)
-	// pack("H*", ...) — hex string to function name construction
+	// pack("H*", ...) - hex string to function name construction
 	packHex := regexp.MustCompile(`(?i)pack\s*\(\s*["']H\*["']\s*,`)
 
 	for i, line := range lines {

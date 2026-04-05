@@ -4,17 +4,17 @@ CSM manages ModSecurity (WAF) configuration, deploys custom rules, and provides 
 
 ## Features
 
-- **Custom CSM rules** — IDs 900000-900999 in `configs/csm_modsec_custom.conf`
-- **Rule override management** — `SecRuleRemoveById` directives for false positive suppression
-- **Escalation control** — change rule severity or action per-rule
-- **WAF event log parsing** — correlates events by IP, URI, and rule ID
-- **Hot-reload** — apply changes without Apache restart
+- **Custom CSM rules** - IDs 900000-900999 in `configs/csm_modsec_custom.conf`
+- **Rule override management** - `SecRuleRemoveById` directives for false positive suppression
+- **Escalation control** - change rule severity or action per-rule
+- **WAF event log parsing** - correlates events by IP, URI, and rule ID
+- **Hot-reload** - apply changes without Apache restart
 
 ## Web UI Pages
 
-**ModSecurity** (`/modsec`) — WAF status overview, event log, active block list
+**ModSecurity** (`/modsec`) - WAF status overview, event log, active block list
 
-**ModSec Rules** (`/modsec/rules`) — per-rule management:
+**ModSec Rules** (`/modsec/rules`) - per-rule management:
 - View loaded rules with descriptions
 - Enable/disable individual rules
 - Override rule severity or action

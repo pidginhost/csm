@@ -5,7 +5,7 @@
 | Version | Supported |
 |---------|-----------|
 | Latest release | Yes |
-| Older releases | No — please upgrade |
+| Older releases | No - please upgrade |
 
 CSM is designed to run on production servers. We treat security bugs with high priority and aim to ship fixes quickly.
 

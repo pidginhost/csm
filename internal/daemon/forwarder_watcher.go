@@ -68,7 +68,7 @@ func (fw *ForwarderWatcher) readEvents(buf []byte) {
 	for {
 		n, err := unix.Read(fw.inotifyFd, buf)
 		if err != nil || n <= 0 {
-			return // EAGAIN or error — no more events
+			return // EAGAIN or error - no more events
 		}
 
 		offset := 0

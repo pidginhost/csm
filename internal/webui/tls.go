@@ -86,7 +86,7 @@ func EnsureTLSCert(certPath, keyPath string, extraNames ...string) error {
 func buildDNSNames(extra []string) []string {
 	names := []string{"localhost"}
 	for _, n := range extra {
-		if net.ParseIP(n) == nil { // not an IP — it's a hostname
+		if net.ParseIP(n) == nil { // not an IP - it's a hostname
 			names = append(names, n)
 		}
 	}

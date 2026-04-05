@@ -11,7 +11,7 @@ import (
 // CMSHashCache stores SHA256 hashes of verified-clean CMS core files.
 // After wp core verify-checksums confirms an installation is clean,
 // all its core files are hashed and cached. The real-time scanner
-// checks this cache before reporting signature matches — if a file's
+// checks this cache before reporting signature matches - if a file's
 // hash is in the cache, it's a known-clean CMS file and signature
 // matches on it are false positives.
 type CMSHashCache struct {
@@ -82,7 +82,7 @@ func HashFile(path string) string {
 // IsVerifiedCMSFile checks if a file at the given path matches a
 // known-clean CMS core file by comparing its SHA256 hash against the cache.
 //
-// The cache is keyed by SHA256 hash alone (not path+hash) — this is correct:
+// The cache is keyed by SHA256 hash alone (not path+hash) - this is correct:
 //   - SHA256 preimage resistance makes it computationally infeasible for an
 //     attacker to craft a file that produces the same hash as a legitimate
 //     WP core file. Birthday attacks do not apply here because the attacker

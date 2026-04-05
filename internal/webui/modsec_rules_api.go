@@ -16,7 +16,7 @@ func (s *Server) handleModSecRules(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-// GET /api/v1/modsec/rules — list all CSM rules with status
+// GET /api/v1/modsec/rules - list all CSM rules with status
 func (s *Server) apiModSecRules(w http.ResponseWriter, _ *http.Request) {
 	cfg := s.cfg.ModSec
 
@@ -62,7 +62,7 @@ func (s *Server) apiModSecRules(w http.ResponseWriter, _ *http.Request) {
 		hits = db.GetModSecRuleHits()
 	}
 
-	// Build response — filter out counter rules
+	// Build response - filter out counter rules
 	type ruleView struct {
 		ID          int    `json:"id"`
 		Description string `json:"description"`
@@ -114,14 +114,14 @@ func (s *Server) apiModSecRules(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-// POST /api/v1/modsec/rules/apply — write overrides and reload
+// POST /api/v1/modsec/rules/apply - write overrides and reload
 func (s *Server) apiModSecRulesApply(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Serialize apply operations — the write+reload+rollback sequence
+	// Serialize apply operations - the write+reload+rollback sequence
 	// must not interleave with concurrent applies.
 	s.modSecApplyMu.Lock()
 	defer s.modSecApplyMu.Unlock()
@@ -175,7 +175,7 @@ func (s *Server) apiModSecRulesApply(w http.ResponseWriter, r *http.Request) {
 		// Rollback on failure
 		_ = modsec.RestoreOverrides(cfg.OverridesFile, previousContent)
 		fmt.Fprintf(os.Stderr, "modsec: reload failed (rolled back): %v\noutput: %s\n", reloadErr, output)
-		// Truncate output for client — may contain sensitive system paths
+		// Truncate output for client - may contain sensitive system paths
 		clientOutput := output
 		if len(clientOutput) > 500 {
 			clientOutput = clientOutput[:500] + "... (truncated)"
@@ -195,7 +195,7 @@ func (s *Server) apiModSecRulesApply(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// POST /api/v1/modsec/rules/escalation — toggle escalation for a single rule
+// POST /api/v1/modsec/rules/escalation - toggle escalation for a single rule
 func (s *Server) apiModSecRulesEscalation(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -212,7 +212,7 @@ func (s *Server) apiModSecRulesEscalation(w http.ResponseWriter, r *http.Request
 		RuleID   int  `json:"rule_id"`
 		Escalate bool `json:"escalate"`
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 4*1024) // 4KB — single rule ID
+	r.Body = http.MaxBytesReader(w, r.Body, 4*1024) // 4KB - single rule ID
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, "Invalid request body", http.StatusBadRequest)
 		return

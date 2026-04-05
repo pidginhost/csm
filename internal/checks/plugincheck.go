@@ -148,7 +148,7 @@ func pluginAlertSeverity(installed, available string) string {
 			return "warning" // available is newer at this component
 		}
 		if a > b {
-			return "" // installed is ahead — not outdated
+			return "" // installed is ahead - not outdated
 		}
 	}
 	return "" // identical
@@ -336,7 +336,7 @@ func refreshPluginCache(db *store.DB) {
 	// Only mark refresh as complete if the majority of sites refreshed
 	// successfully. A partial failure (e.g. one wp-cli timeout on a 100-site
 	// server) should not freeze ALL stale data for 24 hours. But if most
-	// sites failed (e.g. transient PHP issue), don't mark as fresh — allow
+	// sites failed (e.g. transient PHP issue), don't mark as fresh - allow
 	// retry next cycle.
 	mu.Lock()
 	sc := successCount
@@ -377,13 +377,7 @@ func evaluatePluginCache(db *store.DB) []alert.Finding {
 			}
 
 			if available == "" {
-				// No update source at all — flag as untracked.
-				findings = append(findings, alert.Finding{
-					Severity: alert.Warning,
-					Check:    "outdated_plugins",
-					Message:  fmt.Sprintf("Untracked plugin %q on %s (%s)", p.Name, site.Domain, site.Account),
-					Details:  fmt.Sprintf("Path: %s\nInstalled: %s\nNo update source available", wpPath, p.InstalledVersion),
-				})
+				// No update source - skip silently (custom/private plugins).
 				continue
 			}
 

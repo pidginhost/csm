@@ -38,7 +38,7 @@ func TestSetGetPluginInfo(t *testing.T) {
 		t.Fatalf("LastChecked = %d, want %d", got.LastChecked, info.LastChecked)
 	}
 
-	// Get nonexistent slug — not found.
+	// Get nonexistent slug - not found.
 	_, found = db.GetPluginInfo("nonexistent-plugin")
 	if found {
 		t.Fatal("GetPluginInfo(nonexistent-plugin) should not be found")
@@ -101,7 +101,7 @@ func TestSetGetSitePlugins(t *testing.T) {
 		t.Fatalf("Plugins[1].Status = %q, want %q", got.Plugins[1].Status, "inactive")
 	}
 
-	// Get nonexistent path — not found.
+	// Get nonexistent path - not found.
 	_, found = db.GetSitePlugins("/nonexistent/path")
 	if found {
 		t.Fatal("GetSitePlugins(/nonexistent/path) should not be found")

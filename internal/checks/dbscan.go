@@ -249,7 +249,7 @@ func isKnownSafeDBOption(name string) bool {
 		return true
 	}
 
-	// Prefix matches — security plugins, caching, core transients
+	// Prefix matches - security plugins, caching, core transients
 	safePrefixes := []string{
 		// Security plugins (store rules/signatures with eval/script patterns)
 		"wordfence", "wf_",
@@ -476,7 +476,7 @@ func CleanDatabaseSpam(account string) []alert.Finding {
 			findings = append(findings, alert.Finding{
 				Severity: alert.High,
 				Check:    "db_spam_found",
-				Message:  fmt.Sprintf("Found spam keyword '%s' in %s published posts in %s (account: %s) — manual review recommended", spam, countLines[0], creds.dbName, account),
+				Message:  fmt.Sprintf("Found spam keyword '%s' in %s published posts in %s (account: %s) - manual review recommended", spam, countLines[0], creds.dbName, account),
 			})
 		}
 	}

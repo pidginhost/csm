@@ -75,7 +75,7 @@ func runFirewall() {
 }
 
 func printFirewallUsage() {
-	fmt.Fprintf(os.Stderr, `csm firewall — nftables firewall management
+	fmt.Fprintf(os.Stderr, `csm firewall - nftables firewall management
 
 Usage: csm firewall <command> [args]
 
@@ -212,7 +212,7 @@ func fwDeny() {
 		fmt.Fprintf(os.Stderr, "Error blocking %s: %v\n", ip, err)
 		os.Exit(1)
 	}
-	fmt.Printf("Blocked %s — %s\n", ip, reason)
+	fmt.Printf("Blocked %s - %s\n", ip, reason)
 }
 
 func fwAllow() {
@@ -244,7 +244,7 @@ func fwAllow() {
 		fmt.Fprintf(os.Stderr, "Error allowing %s: %v\n", ip, err)
 		os.Exit(1)
 	}
-	fmt.Printf("Allowed %s — %s\n", ip, reason)
+	fmt.Printf("Allowed %s - %s\n", ip, reason)
 }
 
 func fwAllowPort() {
@@ -283,7 +283,7 @@ func fwAllowPort() {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("Allowed %s on port %d/tcp — %s\n", ip, port, reason)
+	fmt.Printf("Allowed %s on port %d/tcp - %s\n", ip, port, reason)
 	fmt.Println("Run 'csm firewall restart' to apply the rule.")
 }
 
@@ -336,7 +336,7 @@ func fwRemove() {
 		os.Exit(1)
 	}
 
-	// Try both lists — report what was removed
+	// Try both lists - report what was removed
 	errBlock := engine.UnblockIP(ip)
 	errAllow := engine.RemoveAllowIP(ip)
 
@@ -452,7 +452,7 @@ func fwTempban() {
 		fmt.Fprintf(os.Stderr, "Error blocking %s: %v\n", ip, err)
 		os.Exit(1)
 	}
-	fmt.Printf("Blocked %s for %s — %s\n", ip, duration, reason)
+	fmt.Printf("Blocked %s for %s - %s\n", ip, duration, reason)
 }
 
 func fwTempAllow() {
@@ -491,7 +491,7 @@ func fwTempAllow() {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("Allowed %s for %s — %s\n", ip, duration, reason)
+	fmt.Printf("Allowed %s for %s - %s\n", ip, duration, reason)
 }
 
 func fwPorts() {
@@ -618,7 +618,7 @@ func fwProfile() {
 			fmt.Fprintf(os.Stderr, "Usage: csm firewall profile save <name>\n")
 			os.Exit(1)
 		}
-		name := filepath.Base(args[1]) // sanitize — prevent path traversal
+		name := filepath.Base(args[1]) // sanitize - prevent path traversal
 		src := cfg.ConfigFile
 		data, err := os.ReadFile(src)
 		if err != nil {
@@ -655,7 +655,7 @@ func fwProfile() {
 			fmt.Fprintf(os.Stderr, "Usage: csm firewall profile restore <name>\n")
 			os.Exit(1)
 		}
-		name := filepath.Base(args[1]) // sanitize — prevent path traversal
+		name := filepath.Base(args[1]) // sanitize - prevent path traversal
 		src := filepath.Join(profileDir, name+".yaml")
 		data, err := os.ReadFile(src)
 		if err != nil {
@@ -775,7 +775,7 @@ func fwLookup() {
 			}
 		}
 	} else {
-		fmt.Printf("COUNTRY  unknown (no GeoIP data — run 'csm firewall update-geoip')\n")
+		fmt.Printf("COUNTRY  unknown (no GeoIP data - run 'csm firewall update-geoip')\n")
 	}
 }
 
@@ -845,7 +845,7 @@ func fwApplyConfirmed() {
 	go func() {
 		time.Sleep(time.Duration(minutes) * time.Minute)
 		if _, err := os.Stat(confirmFile); err != nil {
-			return // confirm file removed — user confirmed, skip rollback
+			return // confirm file removed - user confirmed, skip rollback
 		}
 		if _, err := os.Stat(rollbackFile); err != nil {
 			return // rollback script missing
@@ -873,7 +873,7 @@ func fwConfirm() {
 		return
 	}
 
-	// Remove the marker — the background sleep process will see it's gone and skip rollback
+	// Remove the marker - the background sleep process will see it's gone and skip rollback
 	os.Remove(confirmFile)
 	os.Remove(rollbackFile)
 	fmt.Println("Firewall confirmed. Rollback timer cancelled.")
@@ -909,7 +909,7 @@ func fwDenySubnet() {
 		fmt.Fprintf(os.Stderr, "Error blocking subnet: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("Blocked subnet %s — %s\n", cidr, reason)
+	fmt.Printf("Blocked subnet %s - %s\n", cidr, reason)
 }
 
 func fwRemoveSubnet() {

@@ -12,7 +12,7 @@ const purgeSuppressionWindow = 60 * time.Second
 //
 // When a cPanel user changes their password, all existing sessions are
 // invalidated. Any in-flight browser requests (AJAX polls, notifications,
-// etc.) will return 401 — these are expected side effects, not attacks.
+// etc.) will return 401 - these are expected side effects, not attacks.
 //
 // Flow: login (NEW) records IP→account, PURGE records account→time,
 // 401 handler checks IP→account→purgeTime to decide suppression.

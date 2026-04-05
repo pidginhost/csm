@@ -27,7 +27,7 @@ func CheckKernelModules(_ *config.Config, store *state.Store) []alert.Finding {
 	_, baselineExists := store.GetRaw("_kmod_baseline_set")
 
 	if !baselineExists {
-		// First run — store all current modules as baseline
+		// First run - store all current modules as baseline
 		for _, mod := range modules {
 			store.SetRaw("_kmod:"+mod, "baseline")
 		}

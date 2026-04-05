@@ -18,7 +18,7 @@ func TestOpenClose(t *testing.T) {
 		t.Fatalf("Close: %v", cerr)
 	}
 
-	// Reopen — should succeed without re-creating buckets
+	// Reopen - should succeed without re-creating buckets
 	db2, err := Open(dir)
 	if err != nil {
 		t.Fatalf("Reopen: %v", err)
@@ -118,5 +118,5 @@ func TestEnsureOpen(t *testing.T) {
 	// Clean up
 	_ = g.Close()
 	SetGlobal(nil)
-	// Reset ensureOnce for other tests — we can't easily, so this test should be last
+	// Reset ensureOnce for other tests - we can't easily, so this test should be last
 }

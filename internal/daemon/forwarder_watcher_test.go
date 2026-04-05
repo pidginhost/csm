@@ -29,7 +29,7 @@ blackhole: /dev/null
 
 	// Should detect:
 	// 1. info -> admin@gmail.com (external)
-	// 2. deploy -> |/usr/bin/deploy.sh (pipe) — CRITICAL
+	// 2. deploy -> |/usr/bin/deploy.sh (pipe) - CRITICAL
 	// 3. blackhole -> /dev/null
 	// 4. * -> catchall@external.io (wildcard external)
 	// Should NOT detect:

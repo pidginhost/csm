@@ -17,7 +17,7 @@ type Rule struct {
 	Description     string   `yaml:"description"`
 	Severity        string   `yaml:"severity"`         // "critical", "high", "warning"
 	Category        string   `yaml:"category"`         // "webshell", "backdoor", "phishing", "dropper", "exploit"
-	FileTypes       []string `yaml:"file_types"`       // [".php", ".html", "*"] — which extensions to scan
+	FileTypes       []string `yaml:"file_types"`       // [".php", ".html", "*"] - which extensions to scan
 	Patterns        []string `yaml:"patterns"`         // literal string patterns (case-insensitive match)
 	Regexes         []string `yaml:"regexes"`          // regex patterns (for complex matching)
 	ExcludePatterns []string `yaml:"exclude_patterns"` // if any match, rule is skipped (false positive reduction)
@@ -174,7 +174,7 @@ func (s *Scanner) ScanContent(content []byte, fileExt string) []Match {
 			continue
 		}
 
-		// Check exclusions first — if any exclude pattern matches, skip this rule
+		// Check exclusions first - if any exclude pattern matches, skip this rule
 		excluded := false
 		for _, pattern := range rule.ExcludePatterns {
 			if strings.Contains(contentLower, strings.ToLower(pattern)) {

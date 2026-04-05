@@ -12,7 +12,7 @@ import (
 )
 
 // CheckDatabaseDumps detects mysqldump/pg_dump processes running under
-// non-root users — potential data exfiltration.
+// non-root users - potential data exfiltration.
 func CheckDatabaseDumps(_ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
@@ -33,7 +33,7 @@ func CheckDatabaseDumps(_ *config.Config, _ *state.Store) []alert.Finding {
 				}
 			}
 		}
-		// Skip root — root may run legitimate backups
+		// Skip root - root may run legitimate backups
 		if uid == "0" || uid == "" {
 			continue
 		}

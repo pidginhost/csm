@@ -90,7 +90,7 @@ func parseLocalDomainsContent(content string) map[string]bool {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		// virtualdomains format: "domain: user" — take domain part
+		// virtualdomains format: "domain: user" - take domain part
 		if idx := strings.IndexByte(line, ':'); idx > 0 {
 			line = strings.TrimSpace(line[:idx])
 		}
@@ -144,7 +144,7 @@ func CheckForwarders(cfg *config.Config, _ *state.Store) []alert.Finding {
 		return nil
 	}
 
-	// Internal throttle (24h) — reuse PasswordCheckIntervalMin
+	// Internal throttle (24h) - reuse PasswordCheckIntervalMin
 	if !ForceAll {
 		lastRefreshStr := db.GetMetaString("email:fwd_last_refresh")
 		if lastRefreshStr != "" {
@@ -303,7 +303,7 @@ func auditVfilterFile(path, domain string, localDomains map[string]bool, cfg *co
 	var findings []alert.Finding
 
 	for _, dest := range externalDests {
-		// Suppression check — use "*" as localPart for vfilter entries
+		// Suppression check - use "*" as localPart for vfilter entries
 		if isKnownForwarder("*", domain, dest, cfg.EmailProtection.KnownForwarders) {
 			continue
 		}

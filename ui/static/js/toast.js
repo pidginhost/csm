@@ -1,5 +1,5 @@
 /**
- * CSM Toast & Confirm — lightweight notification system.
+ * CSM Toast & Confirm - lightweight notification system.
  * No external dependencies. ES5 compatible.
  */
 (function() {

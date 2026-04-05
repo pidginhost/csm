@@ -34,7 +34,7 @@ func FilterBlockedAlerts(cfg *config.Config, findings []Finding) []Finding {
 	}
 
 	// Also suppress alerts for IPs queued for blocking (rate-limited).
-	// These will be blocked once the rate limit resets — no need to alert.
+	// These will be blocked once the rate limit resets - no need to alert.
 	for ip := range loadPendingIPs(cfg.StatePath) {
 		blockedIPs[ip] = true
 	}
@@ -45,13 +45,13 @@ func FilterBlockedAlerts(cfg *config.Config, findings []Finding) []Finding {
 
 	// Filter out alerts for IPs that are handled automatically.
 	// When suppress_blocked_alerts is on, the operator doesn't want to be
-	// notified about IPs that are already dealt with — they only want alerts
+	// notified about IPs that are already dealt with - they only want alerts
 	// that require human action.
 	var filtered []Finding
 	for _, f := range findings {
 		if f.Check == "ip_reputation" || f.Check == "local_threat_score" {
 			// If auto-blocking is enabled, these IPs are handled automatically.
-			// Skip the alert — there's nothing for the operator to do.
+			// Skip the alert - there's nothing for the operator to do.
 			if cfg.AutoResponse.Enabled && cfg.AutoResponse.BlockIPs {
 				continue
 			}

@@ -26,7 +26,7 @@ func CheckOutboundUserConnections(cfg *config.Config, _ *state.Store) []alert.Fi
 		993: true, 995: true, 110: true, 143: true,
 	}
 
-	// Known safe service users — system daemons that make outbound connections
+	// Known safe service users - system daemons that make outbound connections
 	safeUsers := map[string]bool{
 		"imunify360-webshield": true,
 		"named":                true,
@@ -98,7 +98,7 @@ func CheckOutboundUserConnections(cfg *config.Config, _ *state.Store) []alert.Fi
 		}
 
 		// This is a non-root user process connecting to a non-standard
-		// port on a non-infra IP — suspicious
+		// port on a non-infra IP - suspicious
 		findings = append(findings, alert.Finding{
 			Severity: alert.High,
 			Check:    "user_outbound_connection",
@@ -231,7 +231,7 @@ func CheckSSHDConfig(_ *config.Config, store *state.Store) []alert.Finding {
 	key := "_sshd_config_hash"
 	prev, exists := store.GetRaw(key)
 	if exists && prev != hash {
-		// Config changed — check for dangerous settings
+		// Config changed - check for dangerous settings
 		data, err := os.ReadFile("/etc/ssh/sshd_config")
 		if err != nil {
 			return nil
@@ -243,7 +243,7 @@ func CheckSSHDConfig(_ *config.Config, store *state.Store) []alert.Finding {
 				Severity: alert.Critical,
 				Check:    "sshd_config_change",
 				Message:  "PasswordAuthentication changed to 'yes' in sshd_config",
-				Details:  "This allows password-based SSH login — high risk if passwords are compromised",
+				Details:  "This allows password-based SSH login - high risk if passwords are compromised",
 			})
 		}
 		if strings.Contains(content, "permitrootlogin yes") {

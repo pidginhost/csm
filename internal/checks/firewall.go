@@ -15,7 +15,7 @@ func CheckFirewall(cfg *config.Config, store *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	if !cfg.Firewall.Enabled {
-		// Firewall not managed by CSM — skip nftables checks
+		// Firewall not managed by CSM - skip nftables checks
 		return findings
 	}
 
@@ -25,7 +25,7 @@ func CheckFirewall(cfg *config.Config, store *state.Store) []alert.Finding {
 		findings = append(findings, alert.Finding{
 			Severity:  alert.Critical,
 			Check:     "firewall",
-			Message:   "CSM firewall table not found in nftables — rules may not be active",
+			Message:   "CSM firewall table not found in nftables - rules may not be active",
 			Timestamp: time.Now(),
 		})
 		return findings
@@ -104,7 +104,7 @@ func checkDangerousPorts(cfg *config.Config) []alert.Finding {
 			findings = append(findings, alert.Finding{
 				Severity:  alert.High,
 				Check:     "firewall_ports",
-				Message:   fmt.Sprintf("Restricted port %d found in public TCP_IN — should be infra-only", port),
+				Message:   fmt.Sprintf("Restricted port %d found in public TCP_IN - should be infra-only", port),
 				Timestamp: time.Now(),
 			})
 		}

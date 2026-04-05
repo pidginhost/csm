@@ -26,7 +26,7 @@ func TestAddRemovePermanent(t *testing.T) {
 		t.Fatalf("threats:count = %d, want 2", count)
 	}
 
-	// Lookup one — found with correct reason.
+	// Lookup one - found with correct reason.
 	entry, found := db.GetPermanentBlock("10.0.0.1")
 	if !found {
 		t.Fatal("GetPermanentBlock(10.0.0.1): not found")
@@ -46,7 +46,7 @@ func TestAddRemovePermanent(t *testing.T) {
 		t.Fatalf("threats:count = %d, want 1", count)
 	}
 
-	// Lookup removed IP — not found.
+	// Lookup removed IP - not found.
 	_, found = db.GetPermanentBlock("10.0.0.1")
 	if found {
 		t.Fatal("GetPermanentBlock(10.0.0.1) should not be found after removal")
@@ -103,7 +103,7 @@ func TestWhitelistWithExpiry(t *testing.T) {
 		t.Fatal("expired entry should not be whitelisted")
 	}
 
-	// Prune — should remove 1 expired entry.
+	// Prune - should remove 1 expired entry.
 	removed := db.PruneExpiredWhitelist()
 	if removed != 1 {
 		t.Fatalf("PruneExpiredWhitelist = %d, want 1", removed)

@@ -10,7 +10,7 @@ type FirewallConfig struct {
 	UDPIn  []int `yaml:"udp_in"`
 	UDPOut []int `yaml:"udp_out"`
 
-	// IPv6 — enable dual-stack filtering
+	// IPv6 - enable dual-stack filtering
 	IPv6    bool  `yaml:"ipv6"`
 	TCP6In  []int `yaml:"tcp6_in"`  // if empty, uses tcp_in
 	TCP6Out []int `yaml:"tcp6_out"` // if empty, uses tcp_out
@@ -32,10 +32,10 @@ type FirewallConfig struct {
 	SYNFloodProtection bool `yaml:"syn_flood_protection"`
 	ConnLimit          int  `yaml:"conn_limit"` // max concurrent connections per IP (0 = disabled)
 
-	// Per-port flood protection — per-source rate limit per port
+	// Per-port flood protection - per-source rate limit per port
 	PortFlood []PortFloodRule `yaml:"port_flood"`
 
-	// UDP flood protection — per-source rate limit on UDP packets
+	// UDP flood protection - per-source rate limit on UDP packets
 	UDPFlood      bool `yaml:"udp_flood"`
 	UDPFloodRate  int  `yaml:"udp_flood_rate"`  // packets per second
 	UDPFloodBurst int  `yaml:"udp_flood_burst"` // burst allowance
@@ -51,12 +51,12 @@ type FirewallConfig struct {
 	DenyIPLimit     int `yaml:"deny_ip_limit"`
 	DenyTempIPLimit int `yaml:"deny_temp_ip_limit"`
 
-	// Outbound SMTP restriction — block outgoing mail except from allowed users
+	// Outbound SMTP restriction - block outgoing mail except from allowed users
 	SMTPBlock      bool     `yaml:"smtp_block"`
 	SMTPAllowUsers []string `yaml:"smtp_allow_users"` // usernames allowed to send
 	SMTPPorts      []int    `yaml:"smtp_ports"`
 
-	// Dynamic DNS — resolve hostnames to IPs, update allowed set periodically
+	// Dynamic DNS - resolve hostnames to IPs, update allowed set periodically
 	DynDNSHosts []string `yaml:"dyndns_hosts"`
 
 	// Logging

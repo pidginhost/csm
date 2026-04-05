@@ -47,7 +47,7 @@ func (o *Orchestrator) ScanParts(messageID string, parts []emime.ExtractedPart, 
 	}
 
 	if len(available) == 0 {
-		// fail-open: no engines available — rate-limit the warning
+		// fail-open: no engines available - rate-limit the warning
 		result.AllEnginesDown = true
 		return result
 	}

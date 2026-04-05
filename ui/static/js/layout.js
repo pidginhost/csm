@@ -1,4 +1,4 @@
-// CSM Layout — nav active state and theme toggle
+// CSM Layout - nav active state and theme toggle
 document.querySelectorAll('#csm-nav a.nav-link').forEach(function(a){
     var href = a.getAttribute('href');
     if (href && href !== '/' && window.location.pathname.indexOf(href) === 0) a.classList.add('active');

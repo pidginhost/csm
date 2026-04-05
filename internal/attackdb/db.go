@@ -93,9 +93,9 @@ var checkToAttack = map[string]AttackType{
 	// File upload
 	"cpanel_file_upload_realtime": AttackFileUpload,
 
-	// Reputation — known malicious IPs from threat database
+	// Reputation - known malicious IPs from threat database
 	"ip_reputation": AttackReputation,
-	// NOTE: "local_threat_score" is intentionally excluded — it is a derived
+	// NOTE: "local_threat_score" is intentionally excluded - it is a derived
 	// finding, not a raw attack. Recording it would create a feedback loop
 	// that inflates EventCount by +1 every 10-minute cycle.
 }
@@ -153,7 +153,7 @@ func Init(statePath string) *DB {
 		db.load()
 		db.pruneExpired()
 
-		// Background saver — flush dirty records every 30 seconds
+		// Background saver - flush dirty records every 30 seconds
 		db.wg.Add(1)
 		go db.backgroundSaver()
 

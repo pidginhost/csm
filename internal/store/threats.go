@@ -153,7 +153,7 @@ func (db *DB) IsWhitelisted(ip string) bool {
 	return whitelisted
 }
 
-// ListWhitelist returns all whitelist entries (including expired — caller filters).
+// ListWhitelist returns all whitelist entries (including expired - caller filters).
 func (db *DB) ListWhitelist() []WhitelistEntry {
 	var entries []WhitelistEntry
 

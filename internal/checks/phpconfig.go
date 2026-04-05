@@ -55,7 +55,7 @@ func CheckPHPConfigChanges(_ *config.Config, store *state.Store) []alert.Finding
 				continue
 			}
 
-			// File changed — analyze content for dangerous settings
+			// File changed - analyze content for dangerous settings
 			data, err := os.ReadFile(iniPath)
 			if err != nil {
 				continue

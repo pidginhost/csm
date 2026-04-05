@@ -9,7 +9,7 @@ import (
 )
 
 // wpRootLevelFiles are filenames that only exist at the WP installation root.
-// index.php is excluded — it requires a secondary check (version.php must exist).
+// index.php is excluded - it requires a secondary check (version.php must exist).
 var wpRootLevelFiles = map[string]bool{
 	"wp-activate.php":      true,
 	"wp-blog-header.php":   true,

@@ -127,7 +127,7 @@ func (db *DB) ReadHistoryFiltered(limit, offset int, from, to string, severity i
 				continue
 			}
 
-			// Time-range: if key is below fromPrefix, all remaining are older — stop.
+			// Time-range: if key is below fromPrefix, all remaining are older - stop.
 			if fromPrefix != "" && key < fromPrefix {
 				break
 			}

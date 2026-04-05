@@ -16,7 +16,7 @@ import (
 func CheckFilesystem(_ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	// GSocket / backdoor binaries in .config dirs — glob (instant)
+	// GSocket / backdoor binaries in .config dirs - glob (instant)
 	backdoorNames := map[string]bool{
 		"defunct": true, "defunct.dat": true, "gs-netcat": true,
 		"gs-sftp": true, "gs-mount": true, "gsocket": true,
@@ -45,7 +45,7 @@ func CheckFilesystem(_ *config.Config, _ *state.Store) []alert.Finding {
 		}
 	}
 
-	// Hidden files in /tmp, /dev/shm, /var/tmp — glob (instant)
+	// Hidden files in /tmp, /dev/shm, /var/tmp - glob (instant)
 	safeHiddenPrefixes := []string{
 		".s.PGSQL", ".font-unix", ".ICE-unix", ".X11-unix",
 		".XIM-unix", ".crontab.", ".Test-unix",
@@ -78,12 +78,12 @@ func CheckFilesystem(_ *config.Config, _ *state.Store) []alert.Finding {
 		}
 	}
 
-	// SUID binaries in tmp dirs — ReadDir + stat (small dirs, fast)
+	// SUID binaries in tmp dirs - ReadDir + stat (small dirs, fast)
 	for _, dir := range []string{"/tmp", "/var/tmp", "/dev/shm"} {
 		scanForSUID(dir, 3, &findings)
 	}
 
-	// SUID in /home — shallow scan only
+	// SUID in /home - shallow scan only
 	homeDirs, _ := GetScanHomeDirs()
 	for _, entry := range homeDirs {
 		if !entry.IsDir() {
@@ -172,7 +172,7 @@ func CheckWebshells(cfg *config.Config, _ *state.Store) []alert.Finding {
 }
 
 // scanForWebshells recursively reads directories looking for known webshell
-// files and directories. Uses ReadDir (getdents) — no stat unless matched.
+// files and directories. Uses ReadDir (getdents) - no stat unless matched.
 func scanForWebshells(dir string, maxDepth int, names map[string]bool, dirs map[string]bool, cfg *config.Config, findings *[]alert.Finding) {
 	if maxDepth <= 0 {
 		return
@@ -237,7 +237,7 @@ func scanForWebshells(dir string, maxDepth int, names map[string]bool, dirs map[
 			})
 		}
 
-		// File permission anomalies — only check PHP files to keep it fast
+		// File permission anomalies - only check PHP files to keep it fast
 		if strings.HasSuffix(nameLower, ".php") {
 			info, err := entry.Info()
 			if err == nil {
@@ -252,7 +252,7 @@ func scanForWebshells(dir string, maxDepth int, names map[string]bool, dirs map[
 						FilePath: fullPath,
 					})
 				}
-				// Note: executable PHP check removed — most PHP files on cPanel
+				// Note: executable PHP check removed - most PHP files on cPanel
 				// have +x due to suPHP/lsapi, making this too noisy.
 			}
 		}

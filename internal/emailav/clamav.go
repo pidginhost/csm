@@ -116,6 +116,6 @@ func parseClamdResponse(resp string) Verdict {
 			Severity:  "critical",
 		}
 	}
-	// Unknown response — treat as error, fail-open
+	// Unknown response - treat as error, fail-open
 	return Verdict{Infected: false}
 }

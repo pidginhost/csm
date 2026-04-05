@@ -55,7 +55,7 @@ func TestFilterNew(t *testing.T) {
 		{Check: "b", Message: "msg2", Timestamp: now},
 	}
 
-	// First time — all should be new
+	// First time - all should be new
 	newF := s.FilterNew(findings)
 	if len(newF) != 2 {
 		t.Errorf("first FilterNew: got %d, want 2", len(newF))
@@ -64,7 +64,7 @@ func TestFilterNew(t *testing.T) {
 	// Update state
 	s.Update(findings)
 
-	// Second time — none should be new
+	// Second time - none should be new
 	newF = s.FilterNew(findings)
 	if len(newF) != 0 {
 		t.Errorf("second FilterNew: got %d, want 0", len(newF))
@@ -129,7 +129,7 @@ func TestDirtyTracking(t *testing.T) {
 
 	_ = s.Close()
 
-	// Reopen — setting same value should not dirty
+	// Reopen - setting same value should not dirty
 	s2, _ := Open(dir)
 	s2.SetRaw("k", "v") // same value
 	if s2.dirty {

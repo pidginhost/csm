@@ -36,7 +36,7 @@ func CheckShadowChanges(cfg *config.Config, store *state.Store) []alert.Finding 
 		var lastMtime time.Time
 		if err := json.Unmarshal([]byte(prevMtimeRaw), &lastMtime); err == nil {
 			if mtime.After(lastMtime) {
-				// Shadow file was modified — find what changed
+				// Shadow file was modified - find what changed
 				var details string
 				if hashExists && prevHash != currentHash {
 					changed := diffShadowChanges(store, currentEntries)
@@ -332,7 +332,7 @@ func CheckAPITokens(cfg *config.Config, store *state.Store) []alert.Finding {
 		store.SetRaw(key, hash)
 	}
 
-	// User API tokens — read directly from disk instead of spawning uapi per user
+	// User API tokens - read directly from disk instead of spawning uapi per user
 	// Token files are JSON at /home/<user>/.cpanel/api_tokens/<token_name>
 	tokenDirs, _ := filepath.Glob("/home/*/.cpanel/api_tokens")
 	for _, tokenDir := range tokenDirs {
@@ -421,7 +421,7 @@ func isInfraShadowChange(cfg *config.Config) bool {
 
 		if !isInfraIP(ip, cfg.InfraIPs) && ip != "127.0.0.1" {
 			allInfra = false
-			break // found a non-infra password change — don't suppress
+			break // found a non-infra password change - don't suppress
 		}
 	}
 

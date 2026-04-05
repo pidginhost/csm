@@ -8,7 +8,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
-// Enhanced access_log handler — catches File Manager, API failures,
+// Enhanced access_log handler - catches File Manager, API failures,
 // webmail logins, wp-login brute force, and xmlrpc abuse.
 func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding {
 	var findings []alert.Finding
@@ -26,8 +26,8 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 	lineLower := strings.ToLower(line)
 
 	// File Manager write operations (port 2083)
-	// Only match actual write actions — not read-only calls like get_homedir.
-	// Skip 401/403 responses — the server rejected the request, no write occurred.
+	// Only match actual write actions - not read-only calls like get_homedir.
+	// Skip 401/403 responses - the server rejected the request, no write occurred.
 	// Match against the request URI only (between first pair of quotes), not the
 	// full line which includes the referer URL that can contain "upload" in paths.
 	if strings.Contains(line, "2083") && !strings.Contains(line, "\" 401 ") && !strings.Contains(line, "\" 403 ") {
@@ -52,7 +52,7 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 	// API authentication failures (401/403)
 	// Suppress 401s that are stale-session artifacts from a recent password change.
 	// When a user changes their password, in-flight browser AJAX requests (notification
-	// polls, etc.) will 401 against the now-invalidated session — that's expected, not
+	// polls, etc.) will 401 against the now-invalidated session - that's expected, not
 	// an attack. Real API abuse won't correlate with a recent purge for the same account.
 	if strings.Contains(line, "\" 401 ") || strings.Contains(line, "\" 403 ") {
 		if strings.Contains(lineLower, "json-api") || strings.Contains(lineLower, "/execute/") {

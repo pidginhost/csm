@@ -116,7 +116,7 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Fprintf(os.Stderr, `csm — Continuous Security Monitor
+	fmt.Fprintf(os.Stderr, `csm - Continuous Security Monitor
 
 Usage: csm <command>
 
@@ -131,7 +131,7 @@ Commands:
   check-critical  Test critical checks only
   check-deep      Test deep checks only
   status        Show current state, last run, active findings
-  baseline      Reset state — mark current state as "known good"
+  baseline      Reset state - mark current state as "known good"
   validate      Validate config (--deep for connectivity probes)
   config        Config display (config show [--no-redact] [--json])
   verify        Verify binary + config integrity
@@ -152,7 +152,7 @@ Options:
 func loadConfig() *config.Config {
 	cfg := loadConfigLite()
 
-	// Initialize bbolt store (idempotent — uses sync.Once).
+	// Initialize bbolt store (idempotent - uses sync.Once).
 	if err := store.EnsureOpen(cfg.StatePath); err != nil {
 		fmt.Fprintf(os.Stderr, "store: %v\n", err)
 		os.Exit(1)
@@ -482,7 +482,7 @@ func runBaseline() {
 }
 
 // runRehash updates only the binary and config hashes without running a full
-// scan. Use this after upgrading the binary or editing csm.yaml — it's instant
+// scan. Use this after upgrading the binary or editing csm.yaml - it's instant
 // compared to baseline which re-scans the entire server.
 func runRehash() {
 	cfg := loadConfig()

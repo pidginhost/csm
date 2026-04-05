@@ -57,7 +57,7 @@ type SpoolWatcher struct {
 	wg        sync.WaitGroup
 
 	pipeClosed     int32 // atomic
-	fdClosed       int32 // atomic — guards sw.fd against double-close
+	fdClosed       int32 // atomic - guards sw.fd against double-close
 	degradedMu     sync.Mutex
 	lastDegradedAt time.Time
 }
@@ -96,7 +96,7 @@ func NewSpoolWatcher(cfg *config.Config, alertCh chan<- alert.Finding, orch *ema
 		}
 		sw.fd = fd
 		sw.permissionMode = false
-		fmt.Fprintf(os.Stderr, "[%s] spool watcher: WARNING — permission events unavailable, using notification mode (small delivery race window possible)\n", ts())
+		fmt.Fprintf(os.Stderr, "[%s] spool watcher: WARNING - permission events unavailable, using notification mode (small delivery race window possible)\n", ts())
 	}
 
 	// Mark spool directories
@@ -239,7 +239,7 @@ func (sw *SpoolWatcher) readEvents(buf []byte) {
 				continue
 			}
 
-			// Send to scan workers — blocks if pool is full.
+			// Send to scan workers - blocks if pool is full.
 			// This is intentional: backpressure on Exim's delivery runner
 			// is the correct behavior per the spec. Exim is designed to
 			// handle delivery delays; unscanned delivery is not acceptable.
@@ -253,7 +253,7 @@ func (sw *SpoolWatcher) readEvents(buf []byte) {
 			case sw.scanCh <- evt:
 				// Worker will handle response and fd close
 			case <-sw.stopCh:
-				// Shutting down — allow and close
+				// Shutting down - allow and close
 				if sw.permissionMode {
 					sw.writeResponse(meta.Fd, FAN_ALLOW)
 				}
@@ -283,7 +283,7 @@ func (sw *SpoolWatcher) scanWorker() {
 }
 
 func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
-	// CRITICAL: deferred FAN_ALLOW — every code path must allow by default.
+	// CRITICAL: deferred FAN_ALLOW - every code path must allow by default.
 	// Only overridden to FAN_DENY on confirmed infection + successful quarantine.
 	response := uint32(FAN_ALLOW)
 	defer func() {
@@ -301,7 +301,7 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 	headerPath := filepath.Join(spoolDir, msgID+"-H")
 	bodyPath := evt.path
 
-	// MIME parse — fail-open on error
+	// MIME parse - fail-open on error
 	limits := emime.Limits{
 		MaxAttachmentSize: sw.cfg.EmailAV.MaxAttachmentSize,
 		MaxArchiveDepth:   sw.cfg.EmailAV.MaxArchiveDepth,
@@ -324,7 +324,7 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 	}()
 
 	if len(extraction.Parts) == 0 {
-		return // No attachments to scan — allow
+		return // No attachments to scan - allow
 	}
 
 	// Scan
@@ -332,7 +332,7 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 
 	// Emit degraded/timeout findings for operator visibility
 	if result.AllEnginesDown {
-		sw.emitDegradedWarning(fmt.Sprintf("All AV engines unavailable — message %s delivered unscanned", msgID))
+		sw.emitDegradedWarning(fmt.Sprintf("All AV engines unavailable - message %s delivered unscanned", msgID))
 	}
 	if len(result.TimedOutEngines) > 0 {
 		sw.emitFinding("email_av_timeout", alert.Warning,
@@ -340,10 +340,10 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 	}
 
 	if !result.Infected {
-		return // Clean — allow
+		return // Clean - allow
 	}
 
-	// Infected — attempt quarantine
+	// Infected - attempt quarantine
 	env := emailav.QuarantineEnvelope{
 		From:      extraction.From,
 		To:        extraction.To,
@@ -356,7 +356,7 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 			fmt.Fprintf(os.Stderr, "[%s] spool watcher: quarantine failed for %s: %v\n", ts(), msgID, err)
 			// fail-open: allow delivery if quarantine fails
 		} else {
-			// Quarantine succeeded — deny the open so Exim can't deliver
+			// Quarantine succeeded - deny the open so Exim can't deliver
 			response = FAN_DENY
 		}
 	}
@@ -379,10 +379,10 @@ func (sw *SpoolWatcher) writeResponse(fd int32, response uint32) {
 	_, err := unix.Write(sw.fd, respBytes)
 	if err != nil {
 		// The kernel holds blocked processes until a response is written or
-		// the fanotify fd is closed. A failed write means the fd is broken —
+		// the fanotify fd is closed. A failed write means the fd is broken -
 		// close it to release ALL pending permission events (fail-open),
 		// then signal the event loop to exit so the daemon can restart us.
-		fmt.Fprintf(os.Stderr, "[%s] spool watcher: FATAL — fanotify response write failed: %v — closing fd to release pending events\n", ts(), err)
+		fmt.Fprintf(os.Stderr, "[%s] spool watcher: FATAL - fanotify response write failed: %v - closing fd to release pending events\n", ts(), err)
 		sw.closeFd()
 		sw.Stop()
 	}
@@ -403,7 +403,7 @@ func (sw *SpoolWatcher) emitFinding(check string, severity alert.Severity, messa
 		Message:  message,
 	}:
 	default:
-		// Alert channel full — drop
+		// Alert channel full - drop
 	}
 }
 

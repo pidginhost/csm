@@ -183,7 +183,7 @@ func loadFullAbuseCache(statePath string) map[string]*abuseEntry {
 	result := make(map[string]*abuseEntry)
 	sixHoursAgo := time.Now().Add(-6 * time.Hour)
 
-	// Try bbolt store first — after migration the flat file is renamed to .bak.
+	// Try bbolt store first - after migration the flat file is renamed to .bak.
 	if sdb := store.Global(); sdb != nil {
 		for ip, entry := range sdb.AllReputation() {
 			if entry.CheckedAt.Before(sixHoursAgo) || entry.Score < 0 {

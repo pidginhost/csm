@@ -84,7 +84,7 @@ func TestExtractMMDB_NoMMDB(t *testing.T) {
 }
 
 // minimalMMDB is a valid MaxMind DB v2 file (204 bytes, ipv4, 1 node, record_size=24).
-// Generated programmatically — opens successfully with maxminddb.Open().
+// Generated programmatically - opens successfully with maxminddb.Open().
 var minimalMMDB = []byte{
 	0x00, 0x00, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xe0, 0xab,
@@ -155,7 +155,7 @@ func TestReload_PreservesReadersOnFailure(t *testing.T) {
 
 	// Old readers must still be functional
 	if db.cityDB == nil || db.asnDB == nil {
-		t.Fatal("readers were nilled out after failed reload — safety guarantee violated")
+		t.Fatal("readers were nilled out after failed reload - safety guarantee violated")
 	}
 
 	// Lookups must still work with old readers
@@ -180,7 +180,7 @@ func TestReload_PartialSuccess(t *testing.T) {
 	// Remove only the ASN file
 	os.Remove(filepath.Join(tmpDir, "GeoLite2-ASN.mmdb"))
 
-	// Reload should succeed (partial) — city reloaded, ASN preserved
+	// Reload should succeed (partial) - city reloaded, ASN preserved
 	err := db.Reload()
 	if err != nil {
 		t.Fatalf("partial reload should succeed, got: %v", err)
@@ -191,7 +191,7 @@ func TestReload_PartialSuccess(t *testing.T) {
 		t.Fatal("cityDB is nil after partial reload")
 	}
 	if db.asnDB == nil {
-		t.Fatal("asnDB was nilled out — old reader should be preserved")
+		t.Fatal("asnDB was nilled out - old reader should be preserved")
 	}
 }
 

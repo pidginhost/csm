@@ -48,7 +48,7 @@ func NewPasswordHijackDetector(cfg *config.Config, alertCh chan<- alert.Finding)
 // HandlePasswordChange records a WHM password change from a non-infra IP.
 func (d *PasswordHijackDetector) HandlePasswordChange(account, ip string) {
 	if isInfraIPDaemon(ip, d.cfg.InfraIPs) || ip == "127.0.0.1" || ip == "internal" {
-		return // legitimate — portal or admin action
+		return // legitimate - portal or admin action
 	}
 
 	d.mu.Lock()
@@ -60,7 +60,7 @@ func (d *PasswordHijackDetector) HandlePasswordChange(account, ip string) {
 		timestamp: time.Now(),
 	}
 
-	// Alert on the password change itself — non-infra WHM password change is always suspicious
+	// Alert on the password change itself - non-infra WHM password change is always suspicious
 	d.alertCh <- alert.Finding{
 		Severity:  alert.Critical,
 		Check:     "whm_password_change_noninfra",
@@ -96,7 +96,7 @@ func (d *PasswordHijackDetector) HandleLogin(account, loginIP string) {
 	d.alertCh <- alert.Finding{
 		Severity:  alert.Critical,
 		Check:     "password_hijack_confirmed",
-		Message:   fmt.Sprintf("CONFIRMED ACCOUNT HIJACK: %s — password changed from %s, login from %s within %ds", account, change.ip, loginIP, int(time.Since(change.timestamp).Seconds())),
+		Message:   fmt.Sprintf("CONFIRMED ACCOUNT HIJACK: %s - password changed from %s, login from %s within %ds", account, change.ip, loginIP, int(time.Since(change.timestamp).Seconds())),
 		Details:   fmt.Sprintf("Attack pattern: WHM password change from non-infra IP followed by immediate cPanel login.\nPassword change IP: %s\nLogin IP: %s\nTime between: %ds\n\nBoth IPs should be permanently blocked.", change.ip, loginIP, int(time.Since(change.timestamp).Seconds())),
 		Timestamp: time.Now(),
 	}

@@ -133,7 +133,7 @@ func ConnectExisting(cfg *FirewallConfig, statePath string) (*Engine, error) {
 		}
 	}
 	if table == nil {
-		return nil, fmt.Errorf("CSM firewall not running (table 'csm' not found) — run 'csm firewall restart' first")
+		return nil, fmt.Errorf("CSM firewall not running (table 'csm' not found) - run 'csm firewall restart' first")
 	}
 
 	setBlocked, err := conn.GetSetByName(table, "blocked_ips")
@@ -172,7 +172,7 @@ func ConnectExisting(cfg *FirewallConfig, statePath string) (*Engine, error) {
 		e.setCFWhitelist6 = s
 	}
 
-	// Try to find IPv6 sets (optional — may not exist if IPv6 disabled)
+	// Try to find IPv6 sets (optional - may not exist if IPv6 disabled)
 	if s, err := conn.GetSetByName(table, "blocked_ips6"); err == nil {
 		e.setBlocked6 = s
 	}
@@ -192,7 +192,7 @@ func ConnectExisting(cfg *FirewallConfig, statePath string) (*Engine, error) {
 // Apply builds and atomically applies the complete nftables ruleset.
 // All operations (delete old table + create new table/rules) are batched
 // into a single netlink transaction. If the flush fails, the kernel keeps
-// whatever ruleset was running before — the server is never left without a firewall.
+// whatever ruleset was running before - the server is never left without a firewall.
 func (e *Engine) Apply() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -207,7 +207,7 @@ func (e *Engine) Apply() error {
 		}
 	}
 
-	// Create table — all operations below are batched, nothing is sent until Flush()
+	// Create table - all operations below are batched, nothing is sent until Flush()
 	e.table = e.conn.AddTable(&nftables.Table{
 		Name:   "csm",
 		Family: nftables.TableFamilyINet,
@@ -226,7 +226,7 @@ func (e *Engine) Apply() error {
 		return fmt.Errorf("creating output chain: %w", err)
 	}
 
-	// Apply atomically — if this fails, nftables keeps whatever was running before
+	// Apply atomically - if this fails, nftables keeps whatever was running before
 	if err := e.conn.Flush(); err != nil {
 		return fmt.Errorf("applying ruleset: %w", err)
 	}
@@ -274,7 +274,7 @@ func (e *Engine) createSets() error {
 		return fmt.Errorf("allowed set: %w", err)
 	}
 
-	// Infra IPs set (interval for CIDR support) — split IPv4 and IPv6
+	// Infra IPs set (interval for CIDR support) - split IPv4 and IPv6
 	e.setInfra = &nftables.Set{
 		Table:    e.table,
 		Name:     "infra_ips",
@@ -506,11 +506,11 @@ func (e *Engine) createInputChain() error {
 		},
 	})
 
-	// Rule 4: Allow infra IPs FIRST — infra must NEVER be blocked, even accidentally
+	// Rule 4: Allow infra IPs FIRST - infra must NEVER be blocked, even accidentally
 	e.addSetMatchRule(e.setInfra, expr.VerdictAccept)
 	e.addSetMatchRuleV6(e.setInfra6, expr.VerdictAccept)
 
-	// Rule 4b: Cloudflare IP whitelist — accept on TCP 80/443 only.
+	// Rule 4b: Cloudflare IP whitelist - accept on TCP 80/443 only.
 	// CF IPs can still be blocked on other ports (unlike infra).
 	e.addCFWhitelistRule(e.setCFWhitelist, false)
 	e.addCFWhitelistRule(e.setCFWhitelist6, true)
@@ -690,12 +690,12 @@ func (e *Engine) createInputChain() error {
 		})
 	}
 
-	// Rule 9: Country block — drop traffic from blocked countries
+	// Rule 9: Country block - drop traffic from blocked countries
 	if e.setCountry != nil {
 		e.addSetMatchRule(e.setCountry, expr.VerdictDrop)
 	}
 
-	// Per-port flood protection — rate limit new connections per port
+	// Per-port flood protection - rate limit new connections per port
 	for _, pf := range e.cfg.PortFlood {
 		if pf.Hits <= 0 || pf.Seconds <= 0 {
 			continue
@@ -761,13 +761,13 @@ func (e *Engine) createInputChain() error {
 		})
 	}
 
-	// Build restricted port set — these are only reachable via infra IPs (rule 4)
+	// Build restricted port set - these are only reachable via infra IPs (rule 4)
 	restricted := make(map[int]bool)
 	for _, p := range e.cfg.RestrictedTCP {
 		restricted[p] = true
 	}
 
-	// Open TCP ports (public) — restricted ports excluded
+	// Open TCP ports (public) - restricted ports excluded
 	for _, port := range e.cfg.TCPIn {
 		if restricted[port] {
 			continue
@@ -828,7 +828,7 @@ func (e *Engine) createInputChain() error {
 		})
 	}
 
-	// Default policy is DROP — anything not matched above is dropped
+	// Default policy is DROP - anything not matched above is dropped
 
 	return nil
 }
@@ -837,7 +837,7 @@ func (e *Engine) createInputChain() error {
 // Restricts outbound to configured ports only (prevents C2 on non-standard ports).
 func (e *Engine) createOutputChain() error {
 	if len(e.cfg.TCPOut) == 0 && len(e.cfg.UDPOut) == 0 {
-		// No outbound restrictions configured — accept all
+		// No outbound restrictions configured - accept all
 		policy := nftables.ChainPolicyAccept
 		e.chainOut = e.conn.AddChain(&nftables.Chain{
 			Name:     "output",
@@ -890,7 +890,7 @@ func (e *Engine) createOutputChain() error {
 		},
 	})
 
-	// SMTP block — restrict outbound mail to allowed users only
+	// SMTP block - restrict outbound mail to allowed users only
 	smtpBlocked := make(map[int]bool)
 	if e.cfg.SMTPBlock && len(e.cfg.SMTPPorts) > 0 {
 		// Resolve usernames to UIDs
@@ -944,7 +944,7 @@ func (e *Engine) createOutputChain() error {
 		}
 	}
 
-	// Allow configured outbound TCP ports (skip SMTP-blocked ports — handled above)
+	// Allow configured outbound TCP ports (skip SMTP-blocked ports - handled above)
 	for _, port := range e.cfg.TCPOut {
 		if smtpBlocked[port] {
 			continue
@@ -972,7 +972,7 @@ func (e *Engine) createOutputChain() error {
 			},
 		})
 	}
-	// ICMPv6 outbound — allow echo-reply (129) + echo-request (128) + ND (133-137)
+	// ICMPv6 outbound - allow echo-reply (129) + echo-request (128) + ND (133-137)
 	if e.cfg.IPv6 {
 		for _, icmp6Type := range []byte{128, 129, 133, 134, 135, 136, 137} {
 			e.conn.AddRule(&nftables.Rule{
@@ -1157,7 +1157,7 @@ func (e *Engine) BlockIP(ip string, reason string, timeout time.Duration) error 
 		return err
 	}
 
-	// SAFETY: never block infra IPs — prevents admin lockout
+	// SAFETY: never block infra IPs - prevents admin lockout
 	for _, cidr := range e.cfg.InfraIPs {
 		_, network, cidrErr := net.ParseCIDR(cidr)
 		if cidrErr != nil {
@@ -1198,7 +1198,7 @@ func (e *Engine) BlockIP(ip string, reason string, timeout time.Duration) error 
 		return fmt.Errorf("flushing: %w", err)
 	}
 
-	// Persist — zero ExpiresAt means permanent
+	// Persist - zero ExpiresAt means permanent
 	entry := BlockedEntry{
 		IP:        ip,
 		Reason:    reason,
@@ -1283,7 +1283,7 @@ func (e *Engine) AllowIP(ip string, reason string) error {
 }
 
 // TempAllowIP adds a temporary allow with expiry. Uses the same allowed set
-// but tracks expiry in state — CleanExpiredAllows removes them periodically.
+// but tracks expiry in state - CleanExpiredAllows removes them periodically.
 func (e *Engine) TempAllowIP(ip string, reason string, timeout time.Duration) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()

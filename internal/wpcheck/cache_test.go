@@ -212,14 +212,14 @@ func TestVersionInvalidationOnMismatch(t *testing.T) {
 	stateDir := filepath.Join(dir, "state")
 	c := NewCache(stateDir)
 
-	// Old version — different checksum for this file
+	// Old version - different checksum for this file
 	oldChecksums := map[string]string{"wp-includes/class-wp.php": "old_hash_wont_match"}
 	oldJSON, _ := json.Marshal(map[string]interface{}{"checksums": oldChecksums})
 	if err := c.PersistChecksums("6.8.0", "en_US", oldJSON, oldChecksums); err != nil {
 		t.Fatal(err)
 	}
 
-	// New version — correct checksum
+	// New version - correct checksum
 	newChecksums := map[string]string{"wp-includes/class-wp.php": expectedMD5}
 	newJSON, _ := json.Marshal(map[string]interface{}{"checksums": newChecksums})
 	if err := c.PersistChecksums("6.9.4", "en_US", newJSON, newChecksums); err != nil {
@@ -264,7 +264,7 @@ func TestVersionPhpInvalidation(t *testing.T) {
 		t.Fatal("expected root cache to have 6.8.0")
 	}
 
-	// Call IsVerifiedCoreFile on version.php itself — should invalidate root cache
+	// Call IsVerifiedCoreFile on version.php itself - should invalidate root cache
 	f, _ := os.Open(versionPath)
 	defer f.Close()
 	c.IsVerifiedCoreFile(int(f.Fd()), versionPath)

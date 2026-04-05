@@ -47,7 +47,7 @@ type Finding struct {
 
 func (f Finding) String() string {
 	ts := f.Timestamp.Format("2006-01-02 15:04:05")
-	s := fmt.Sprintf("[%s] %s — %s", f.Severity, f.Check, f.Message)
+	s := fmt.Sprintf("[%s] %s - %s", f.Severity, f.Check, f.Message)
 	if f.Details != "" {
 		s += "\n  " + strings.ReplaceAll(f.Details, "\n", "\n  ")
 	}
@@ -96,7 +96,7 @@ func FormatAlert(hostname string, findings []Finding) string {
 		}
 	}
 
-	fmt.Fprintf(&b, "SECURITY ALERT — %s\n", hostname)
+	fmt.Fprintf(&b, "SECURITY ALERT - %s\n", hostname)
 	fmt.Fprintf(&b, "Timestamp: %s\n", time.Now().Format("2006-01-02 15:04:05 MST"))
 	fmt.Fprintf(&b, "Findings: %d critical, %d high, %d warning\n", critCount, highCount, warnCount)
 	b.WriteString(strings.Repeat("─", 60) + "\n\n")
@@ -111,7 +111,7 @@ func FormatAlert(hostname string, findings []Finding) string {
 	}
 
 	b.WriteString(strings.Repeat("─", 60) + "\n")
-	b.WriteString("CSM — Continuous Security Monitor\n")
+	b.WriteString("CSM - Continuous Security Monitor\n")
 
 	return b.String()
 }
@@ -236,10 +236,10 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 
 	body := FormatAlert(cfg.Hostname, findings)
 
-	subject := fmt.Sprintf("[CSM] %s — %d security finding(s)", cfg.Hostname, len(findings))
+	subject := fmt.Sprintf("[CSM] %s - %d security finding(s)", cfg.Hostname, len(findings))
 	for _, f := range findings {
 		if f.Severity == Critical {
-			subject = fmt.Sprintf("[CSM] CRITICAL — %s — %d finding(s)", cfg.Hostname, len(findings))
+			subject = fmt.Sprintf("[CSM] CRITICAL - %s - %d finding(s)", cfg.Hostname, len(findings))
 			break
 		}
 	}

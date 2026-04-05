@@ -45,12 +45,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `.gitignore` hardened with IDE, env, cert, and OS file patterns
 
 ### Fixed
-- **Security:** Command injection in firewall rollback — replaced `bash -c` with pure Go
-- **Security:** TOCTOU race in file remediation — added `filepath.EvalSymlinks()` + path validation
-- **Security:** PID extraction from free text — uses structured `Finding.PID` field first
-- **Security:** Silent JSON unmarshal failures — errors logged, `.bak` backups created
-- Goroutine leak in alert dispatcher shutdown — added 30s context timeout
-- Auto-quarantine cross-device file duplication — check remove error, delete copy on failure
+- **Security:** Command injection in firewall rollback - replaced `bash -c` with pure Go
+- **Security:** TOCTOU race in file remediation - added `filepath.EvalSymlinks()` + path validation
+- **Security:** PID extraction from free text - uses structured `Finding.PID` field first
+- **Security:** Silent JSON unmarshal failures - errors logged, `.bak` backups created
+- Goroutine leak in alert dispatcher shutdown - added 30s context timeout
+- Auto-quarantine cross-device file duplication - check remove error, delete copy on failure
 - Silent error suppression on critical paths (state save, remediate writes, store close)
 - ModSecurity: deduplicate Apache and LiteSpeed events; filter server IPs from domain lists
 - ModSecurity: fallback field extraction for old raw-format findings

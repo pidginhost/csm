@@ -17,7 +17,7 @@ import (
 type modsecIPCounter struct {
 	mu        sync.Mutex
 	times     []time.Time
-	escalated bool // set once escalation fires — prevents repeated findings per window
+	escalated bool // set once escalation fires - prevents repeated findings per window
 }
 
 var (
@@ -67,7 +67,7 @@ func parseModSecLogLine(line string, cfg *config.Config) []alert.Finding {
 		uri = extractModSecField(line, `[uri "`, `"]`)
 	}
 
-	// Skip infra and loopback IPs — consistent with other realtime handlers
+	// Skip infra and loopback IPs - consistent with other realtime handlers
 	// (handlers.go:22, autoblock.go:149). Prevents noisy findings and
 	// false escalation from proxied or locally forwarded Apache traffic.
 	if ip != "" && (isInfraIPDaemon(ip, cfg.InfraIPs) || ip == "127.0.0.1" || ip == "::1") {
@@ -83,14 +83,14 @@ func parseModSecLogLine(line string, cfg *config.Config) []alert.Finding {
 	}
 
 	// Determine severity from rule ID.
-	// Individual blocks are informational — ModSecurity already denied the
+	// Individual blocks are informational - ModSecurity already denied the
 	// request. Only the escalation finding (3+ from same IP) is CRITICAL
 	// because it triggers auto-block at the firewall level.
 	severity := alert.Warning
 	if ruleNum, err := strconv.Atoi(ruleID); err == nil {
 		switch {
 		case ruleNum >= 900000 && ruleNum <= 900999:
-			severity = alert.High // CSM custom rules — attack blocked, informational
+			severity = alert.High // CSM custom rules - attack blocked, informational
 		case ruleNum >= 910000:
 			severity = alert.High // OWASP CRS
 		}
@@ -111,7 +111,7 @@ func parseModSecLogLine(line string, cfg *config.Config) []alert.Finding {
 		message += fmt.Sprintf(" uri=%s", uri)
 	}
 	if msg != "" {
-		message += fmt.Sprintf(" — %s", msg)
+		message += fmt.Sprintf(" - %s", msg)
 	}
 
 	// Store structured details so the web UI can extract fields consistently
@@ -184,7 +184,7 @@ func extractLiteSpeedIP(line string) string {
 // Order of operations (critical for correctness):
 //  1. Parse the raw line.
 //  2. ALWAYS increment the CSM escalation counter (even if dedup will suppress).
-//  3. Then check dedup — suppress the base finding if a duplicate, but still
+//  3. Then check dedup - suppress the base finding if a duplicate, but still
 //     return any escalation finding from step 2.
 func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding {
 	raw := parseModSecLogLine(line, cfg)
@@ -197,7 +197,7 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 	var results []alert.Finding
 
 	// --- Step 1: CSM escalation (before dedup) ---
-	// Extract IP and rule ID directly from the raw log line — NOT from the
+	// Extract IP and rule ID directly from the raw log line - NOT from the
 	// finding message, which could be manipulated via log injection.
 	ip := extractModSecField(line, "[client ", "]")
 	if ip == "" {

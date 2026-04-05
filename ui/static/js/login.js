@@ -1,4 +1,4 @@
-// CSM Login page — apply saved theme
+// CSM Login page - apply saved theme
 var saved = localStorage.getItem('csm-theme');
 var theme = saved || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
 document.documentElement.setAttribute('data-bs-theme', theme);

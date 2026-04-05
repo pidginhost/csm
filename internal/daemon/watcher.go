@@ -37,7 +37,7 @@ func NewLogWatcher(path string, cfg *config.Config, handler LogLineHandler, aler
 		return nil, err
 	}
 
-	// Seek to end — only process new lines
+	// Seek to end - only process new lines
 	offset, err := f.Seek(0, io.SeekEnd)
 	if err != nil {
 		_ = f.Close()
@@ -124,7 +124,7 @@ func (w *LogWatcher) readNewLines() {
 			select {
 			case w.alertCh <- f:
 			default:
-				// Channel full — drop (backpressure)
+				// Channel full - drop (backpressure)
 				fmt.Fprintf(os.Stderr, "[%s] Warning: alert channel full, dropping finding from %s\n", ts(), w.path)
 			}
 		}
@@ -156,10 +156,10 @@ func (w *LogWatcher) reopen() {
 
 	w.file = f
 	if info.Size() < w.offset {
-		// File was rotated — read from start
+		// File was rotated - read from start
 		w.offset = 0
 	} else {
-		// Same file or larger — seek to where we were
+		// Same file or larger - seek to where we were
 		w.offset, _ = f.Seek(0, io.SeekEnd)
 	}
 }
@@ -169,7 +169,7 @@ func (w *LogWatcher) reopen() {
 func parseSessionLogLine(line string, cfg *config.Config) []alert.Finding {
 	var findings []alert.Finding
 
-	// cPanel login from non-infra IP — only alert on direct form login,
+	// cPanel login from non-infra IP - only alert on direct form login,
 	// not API-created sessions (from portal create_user_session)
 	if strings.Contains(line, "[cpaneld]") && strings.Contains(line, " NEW ") {
 		// Track IP→account for purge correlation (before any filtering)
@@ -183,12 +183,12 @@ func parseSessionLogLine(line string, cfg *config.Config) []alert.Finding {
 		case strings.Contains(line, "method=create_user_session") ||
 			strings.Contains(line, "method=create_session") ||
 			strings.Contains(line, "create_user_session"):
-			// Portal-created session — no alert
+			// Portal-created session - no alert
 		default:
 			ip, account := parseCpanelSessionLogin(line)
 			if ip != "" && account != "" && !isInfraIPDaemon(ip, cfg.InfraIPs) &&
 				!isTrustedCountry(ip, cfg.Suppressions.TrustedCountries) {
-				// WARNING severity — logins are useful for audit trail but
+				// WARNING severity - logins are useful for audit trail but
 				// not paging-level. Multi-IP correlation and brute-force
 				// stay at CRITICAL/HIGH via their own checks.
 				method := "unknown"
@@ -266,7 +266,7 @@ func parseSecureLogLine(line string, cfg *config.Config) []alert.Finding {
 func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 	var findings []alert.Finding
 
-	// 1. Frozen bounces — spam indicator
+	// 1. Frozen bounces - spam indicator
 	if strings.Contains(line, "frozen") {
 		findings = append(findings, alert.Finding{
 			Severity: alert.Warning,
@@ -276,7 +276,7 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 		})
 	}
 
-	// 2. Outgoing mail hold — account suspended for spam
+	// 2. Outgoing mail hold - account suspended for spam
 	// Format: "Sender office@nordkey.ro has an outgoing mail hold"
 	// or: "Domain membranaepdm.ro has an outgoing mail hold"
 	// Dedup: only alert once per domain per hour (exim retries held messages
@@ -291,7 +291,7 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 			domain = sender // may already be a bare domain
 		}
 
-		// Auto-suspend regardless of dedup — idempotent, ensures hold stays on
+		// Auto-suspend regardless of dedup - idempotent, ensures hold stays on
 		if sender != "" {
 			autoSuspendOutgoingMail(sender)
 		}
@@ -304,20 +304,20 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 		if db := store.Global(); db != nil {
 			lastAlert := db.GetMetaString(dedupKey)
 			if lastAlert != "" && !isDedupExpired(lastAlert, 1*time.Hour) {
-				// Already alerted for this domain recently — skip finding
+				// Already alerted for this domain recently - skip finding
 			} else {
 				_ = db.SetMetaString(dedupKey, time.Now().Format(time.RFC3339))
 				findings = append(findings, alert.Finding{
 					Severity: alert.Critical,
 					Check:    "email_compromised_account",
-					Message:  fmt.Sprintf("Account %s has outgoing mail hold — outgoing mail auto-suspended", sender),
+					Message:  fmt.Sprintf("Account %s has outgoing mail hold - outgoing mail auto-suspended", sender),
 					Details:  truncateDaemon(line, 300),
 				})
 			}
 		}
 	}
 
-	// 3. Max defers/failures exceeded — active spam outbreak
+	// 3. Max defers/failures exceeded - active spam outbreak
 	if strings.Contains(line, "max defers and failures per hour") {
 		domain := extractEximDomain(line)
 		// Auto-suspend: confirmed spam outbreak
@@ -325,7 +325,7 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 		findings = append(findings, alert.Finding{
 			Severity: alert.Critical,
 			Check:    "email_spam_outbreak",
-			Message:  fmt.Sprintf("Spam outbreak: %s exceeded max defers/failures — outgoing mail auto-suspended", domain),
+			Message:  fmt.Sprintf("Spam outbreak: %s exceeded max defers/failures - outgoing mail auto-suspended", domain),
 			Details:  truncateDaemon(line, 300),
 		})
 		if domain != "" {
@@ -333,7 +333,7 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 		}
 	}
 
-	// 4. SMTP credentials leaked in subject — compromised account
+	// 4. SMTP credentials leaked in subject - compromised account
 	// Pattern: T="...host:port,user@domain,PASSWORD..." in the subject field
 	if strings.Contains(line, " <= ") && strings.Contains(line, "T=\"") {
 		subject := extractEximSubject(line)
@@ -384,7 +384,7 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 		}
 	}
 
-	// 6. Dovecot auth failure — brute force indicator
+	// 6. Dovecot auth failure - brute force indicator
 	// Format: "dovecot_login authenticator failed for H=(hostname) [IP]:port: 535 ... (set_id=user@domain)"
 	if strings.Contains(line, "authenticator failed") && strings.Contains(line, "dovecot") {
 		ip := extractBracketedIP(line)
@@ -414,7 +414,7 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 				findings = append(findings, alert.Finding{
 					Severity:  alert.Warning,
 					Check:     "email_dkim_failure",
-					Message:   fmt.Sprintf("DKIM signing failed for %s — check key file and DNS TXT record", dkimDomain),
+					Message:   fmt.Sprintf("DKIM signing failed for %s - check key file and DNS TXT record", dkimDomain),
 					Details:   truncateDaemon(line, 300),
 					Timestamp: time.Now(),
 				})
@@ -724,7 +724,7 @@ func parseSPFDMARCRejection(line string) (senderDomain, reason string) {
 	if starIdx < 0 {
 		return "", ""
 	}
-	// Extract envelope sender from <sender@domain> — search AFTER the **
+	// Extract envelope sender from <sender@domain> - search AFTER the **
 	// marker to avoid matching earlier <> fields (e.g. H=<hostname>).
 	rest := line[starIdx:]
 	ltIdx := strings.Index(rest, "<")
@@ -755,7 +755,7 @@ func parseSPFDMARCRejection(line string) (senderDomain, reason string) {
 }
 
 // isSPFDMARCRelated checks if a rejection reason is SPF/DMARC related.
-// Generic 5.7.1 alone is NOT sufficient — requires explicit auth keywords.
+// Generic 5.7.1 alone is NOT sufficient - requires explicit auth keywords.
 func isSPFDMARCRelated(reason string) bool {
 	if reason == "" {
 		return false
@@ -795,7 +795,7 @@ func isDedupExpired(stored string, window time.Duration) bool {
 type rateWindow struct {
 	mu      sync.Mutex
 	times   []time.Time
-	alerted string // last threshold level alerted ("warn" or "crit") — prevents repeated alerts per window
+	alerted string // last threshold level alerted ("warn" or "crit") - prevents repeated alerts per window
 }
 
 // add appends a timestamp to the window.
@@ -924,7 +924,7 @@ func checkEmailRate(user string, cfg *config.Config) []alert.Finding {
 	rw.mu.Lock()
 	defer rw.mu.Unlock()
 
-	// Check domain suppression BEFORE adding to window — prevents
+	// Check domain suppression BEFORE adding to window - prevents
 	// phantom rate inflation for suppressed domains.
 	domain := extractDomainFromEmail(user)
 	if domain != "" && hasRecentCompromisedFinding(domain) {
@@ -934,7 +934,7 @@ func checkEmailRate(user string, cfg *config.Config) []alert.Finding {
 	rw.add(now)
 	count := rw.countInWindow(now, windowDur)
 
-	// Reset alerted state when count drops below warn threshold —
+	// Reset alerted state when count drops below warn threshold -
 	// allows re-alerting on the next burst after the window slides.
 	if count < cfg.EmailProtection.RateWarnThreshold {
 		rw.alerted = ""

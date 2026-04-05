@@ -4,8 +4,8 @@ MaxMind GeoLite2 integration for IP geolocation and ASN enrichment.
 
 ## Features
 
-- **City database** — country, city, latitude/longitude
-- **ASN database** — ISP, organization, autonomous system number
+- **City database** - country, city, latitude/longitude
+- **ASN database** - ISP, organization, autonomous system number
 - **Auto-download** on first use
 - **Auto-update** every 24 hours (configurable)
 - **RDAP fallback** for detailed ISP/org info (cached 24h)

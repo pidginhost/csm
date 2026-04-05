@@ -1,9 +1,9 @@
 # Installation
 
-## Interactive Installer
+## Quick Install
 
 ```bash
-curl -sSL https://get.example.com/csm | bash
+curl -sSL https://raw.githubusercontent.com/pidginhost/csm/main/install.sh | bash
 ```
 
 Auto-detects hostname, email, and generates a WebUI auth token. Prompts for confirmation before applying.
@@ -11,7 +11,7 @@ Auto-detects hostname, email, and generates a WebUI auth token. Prompts for conf
 Non-interactive mode:
 
 ```bash
-bash install.sh --email admin@example.com --non-interactive
+curl -sSL https://raw.githubusercontent.com/pidginhost/csm/main/install.sh | bash -s -- --email admin@example.com --non-interactive
 ```
 
 ## RPM (CentOS/AlmaLinux/CloudLinux)
@@ -44,7 +44,7 @@ systemctl enable --now csm.service
 
 ## Post-Install
 
-1. Edit `/opt/csm/csm.yaml` — set hostname, alert email, infrastructure IPs
+1. Edit `/opt/csm/csm.yaml` - set hostname, alert email, infrastructure IPs
 2. Run `csm validate` to check config syntax (add `--deep` for connectivity probes)
 3. Run `csm baseline` to record current state as known-good
 4. Start the daemon: `systemctl enable --now csm.service`

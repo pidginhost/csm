@@ -48,7 +48,7 @@ func TestParseModSecLogLine_CSMCustomRule(t *testing.T) {
 		t.Errorf("check = %q, want modsec_block_realtime", f.Check)
 	}
 	if f.Severity != alert.High {
-		t.Errorf("severity = %v, want High (CSM custom rule — block is informational)", f.Severity)
+		t.Errorf("severity = %v, want High (CSM custom rule - block is informational)", f.Severity)
 	}
 	if !strings.Contains(f.Message, "900115") {
 		t.Errorf("message should contain rule ID 900115, got %q", f.Message)
@@ -127,7 +127,7 @@ func TestModSecDedup(t *testing.T) {
 	line := `[Wed Apr 01 15:15:05.234401 2026] [error] [client 173.244.42.164] ModSecurity: Access denied with code 403, [Rule: 'TX:content_type' '!@within %{tx.allowed_request_content_type}'] [id "920420"] [msg "Request content type is not allowed by policy"] [logdata "|text/html|"] [severity "CRITICAL"] [hostname "www.filmetari.com"] [uri "/xmlrpc.php"]`
 	cfg := &config.Config{}
 
-	// First call — should return the base finding.
+	// First call - should return the base finding.
 	f1 := parseModSecLogLineDeduped(line, cfg)
 	if len(f1) != 1 {
 		t.Fatalf("first call: expected 1 finding, got %d", len(f1))
@@ -136,7 +136,7 @@ func TestModSecDedup(t *testing.T) {
 		t.Errorf("first call: check = %q, want modsec_block_realtime", f1[0].Check)
 	}
 
-	// Second call (within 60s) — should be suppressed.
+	// Second call (within 60s) - should be suppressed.
 	f2 := parseModSecLogLineDeduped(line, cfg)
 	if len(f2) != 0 {
 		t.Errorf("second call: expected 0 findings (deduped), got %d: %v", len(f2), f2)
@@ -150,7 +150,7 @@ func TestModSecCSMRuleEscalation(t *testing.T) {
 	line := `[Wed Apr 01 17:13:54.047783 2026] [error] [client 185.177.72.61] ModSecurity: Access denied with code 403, [Rule: 'REQUEST_URI' '/\.env'] [id "900115"] [msg "CSM VP: Blocked .env file access"] [hostname "176.124.111.228"] [uri "/.env_sample"]`
 	cfg := &config.Config{}
 
-	// Call 1 — base finding, no escalation yet.
+	// Call 1 - base finding, no escalation yet.
 	f1 := parseModSecLogLineDeduped(line, cfg)
 	hasEscalation := false
 	for _, f := range f1 {
@@ -162,7 +162,7 @@ func TestModSecCSMRuleEscalation(t *testing.T) {
 		t.Error("call 1: should NOT have escalation finding yet")
 	}
 
-	// Call 2 — dedup suppresses base, no escalation yet.
+	// Call 2 - dedup suppresses base, no escalation yet.
 	f2 := parseModSecLogLineDeduped(line, cfg)
 	for _, f := range f2 {
 		if f.Check == "modsec_csm_block_escalation" {
@@ -170,7 +170,7 @@ func TestModSecCSMRuleEscalation(t *testing.T) {
 		}
 	}
 
-	// Call 3 — escalation threshold reached; escalation finding emitted
+	// Call 3 - escalation threshold reached; escalation finding emitted
 	// even though base finding is deduped.
 	f3 := parseModSecLogLineDeduped(line, cfg)
 	hasEscalation = false
@@ -195,7 +195,7 @@ func TestModSecCRSNoEscalation(t *testing.T) {
 
 	cfg := &config.Config{}
 
-	// 5 different CRS rule IDs from the same IP — none in the CSM 900000-900999 range.
+	// 5 different CRS rule IDs from the same IP - none in the CSM 900000-900999 range.
 	rules := []string{"920420", "920421", "920422", "920423", "920424"}
 	for _, ruleID := range rules {
 		line := `[Wed Apr 01 15:15:05 2026] [error] [client 10.20.30.40] ModSecurity: Access denied with code 403, [id "` + ruleID + `"] [msg "CRS rule hit"] [hostname "example.com"] [uri "/test"]`

@@ -66,7 +66,7 @@ func CheckWAFStatus(_ *config.Config, _ *state.Store) []alert.Finding {
 		findings = append(findings, alert.Finding{
 			Severity: alert.High,
 			Check:    "waf_detection_only",
-			Message:  "ModSecurity is in DetectionOnly mode — attacks are logged but NOT blocked",
+			Message:  "ModSecurity is in DetectionOnly mode - attacks are logged but NOT blocked",
 			Details:  "SecRuleEngine is set to DetectionOnly. Change to 'On' for enforcement:\nWHM > Security Center > ModSecurity > Edit Global Directive",
 		})
 	}
@@ -116,7 +116,7 @@ func CheckWAFStatus(_ *config.Config, _ *state.Store) []alert.Finding {
 				findings = append(findings, alert.Finding{
 					Severity: alert.Warning,
 					Check:    "waf_rules_stale",
-					Message:  fmt.Sprintf("ModSecurity rules are %d days old — update recommended", staleAge),
+					Message:  fmt.Sprintf("ModSecurity rules are %d days old - update recommended", staleAge),
 					Details:  "Vendor rules should be updated at least monthly. Check: WHM > Security Center > ModSecurity Vendors > Update",
 				})
 			}
@@ -277,7 +277,7 @@ func deployVirtualPatches() {
 		// Check if CSM rules are already included
 		existing, err := os.ReadFile(dest)
 		if err == nil && strings.Contains(string(existing), "CSM Custom ModSecurity Rules") {
-			// Already deployed — check if rules need updating
+			// Already deployed - check if rules need updating
 			if string(existing) == string(srcData) {
 				return // up to date
 			}

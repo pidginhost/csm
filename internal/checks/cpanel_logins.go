@@ -33,7 +33,7 @@ func CheckCpanelLogins(cfg *config.Config, store *state.Store) []alert.Finding {
 	accountIPs := make(map[string]map[string]bool)
 	var passwordChanges []string
 
-	// Determine cutoff — only alert on events within the scan window
+	// Determine cutoff - only alert on events within the scan window
 	cutoff := time.Now().Add(-time.Duration(multiIPWindowMin(cfg)) * time.Minute)
 
 	for _, line := range lines {
@@ -48,7 +48,7 @@ func CheckCpanelLogins(cfg *config.Config, store *state.Store) []alert.Finding {
 		}
 
 		// Detect cPanel logins from non-infra IPs
-		// Skip API/portal sessions (create_user_session) — only alert on direct form login
+		// Skip API/portal sessions (create_user_session) - only alert on direct form login
 		if strings.Contains(line, "[cpaneld]") && strings.Contains(line, " NEW ") {
 			if cfg.Suppressions.SuppressCpanelLogin {
 				// Still track IPs for multi-IP correlation even when suppressed
@@ -73,7 +73,7 @@ func CheckCpanelLogins(cfg *config.Config, store *state.Store) []alert.Finding {
 			}
 			accountIPs[account][ip] = true
 
-			// WARNING severity — logins are audit trail, not paging-level.
+			// WARNING severity - logins are audit trail, not paging-level.
 			// Multi-IP correlation stays CRITICAL via its own check below.
 			if !cfg.Suppressions.SuppressCpanelLogin {
 				findings = append(findings, alert.Finding{
@@ -111,7 +111,7 @@ func CheckCpanelLogins(cfg *config.Config, store *state.Store) []alert.Finding {
 		}
 	}
 
-	// Password change events — deduplicate by account
+	// Password change events - deduplicate by account
 	seen := make(map[string]bool)
 	for _, account := range passwordChanges {
 		if seen[account] {
@@ -138,8 +138,8 @@ func CheckCpanelFileManager(cfg *config.Config, _ *state.Store) []alert.Finding 
 
 	lines := tailFile("/usr/local/cpanel/logs/access_log", 300)
 
-	// Only match actual write actions — not read-only calls like get_homedir.
-	// Skip 401/403 responses — the server rejected the request, no write occurred.
+	// Only match actual write actions - not read-only calls like get_homedir.
+	// Skip 401/403 responses - the server rejected the request, no write occurred.
 	// Match against request URI only, not the full line (referer can contain "upload").
 	filemanWriteActions := []string{
 		"fileman/save_file_content",
@@ -156,7 +156,7 @@ func CheckCpanelFileManager(cfg *config.Config, _ *state.Store) []alert.Finding 
 			continue
 		}
 
-		// Skip rejected requests — no write occurred
+		// Skip rejected requests - no write occurred
 		if strings.Contains(line, "\" 401 ") || strings.Contains(line, "\" 403 ") {
 			continue
 		}

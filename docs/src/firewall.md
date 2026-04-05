@@ -1,22 +1,22 @@
 # Firewall (nftables)
 
-CSM includes a native nftables firewall engine that replaces LFD and fail2ban. It uses the kernel netlink API directly via `google/nftables` — no iptables, no Perl, no shell commands.
+CSM includes a native nftables firewall engine that replaces LFD and fail2ban. It uses the kernel netlink API directly via `google/nftables` - no iptables, no Perl, no shell commands.
 
 ## Features
 
-- **Atomic ruleset** — single netlink transaction, no partial application
+- **Atomic ruleset** - single netlink transaction, no partial application
 - **Named IP sets** with per-element timeouts (blocked, allowed, infra, country)
-- **Rate limiting** — SYN flood, UDP flood, per-IP connection rate, per-port flood
+- **Rate limiting** - SYN flood, UDP flood, per-IP connection rate, per-port flood
 - **Country blocking** via MaxMind GeoIP CIDR ranges
 - **Outbound SMTP restriction** by UID (prevent spam from compromised accounts)
 - **Subnet/CIDR blocking** with auto-escalation from individual IPs
 - **Permanent block escalation** after repeated temp blocks
 - **Dynamic DNS** hostname resolution (updated every 5 min)
 - **IPv6 dual-stack** with separate sets
-- **Commit-confirmed safety** — Juniper-style auto-rollback timer
-- **Infra IP protection** — refuses to block infrastructure IPs
-- **cphulk integration** — unblock flushes cphulk too
-- **Audit trail** — JSONL log with 10MB rotation
+- **Commit-confirmed safety** - Juniper-style auto-rollback timer
+- **Infra IP protection** - refuses to block infrastructure IPs
+- **cphulk integration** - unblock flushes cphulk too
+- **Audit trail** - JSONL log with 10MB rotation
 - **State persistence** with atomic writes
 
 ## CLI Commands

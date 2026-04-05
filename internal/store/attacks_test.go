@@ -30,7 +30,7 @@ func TestRecordAndQueryEvents(t *testing.T) {
 		}
 	}
 
-	// Query "1.2.3.4" — expect 3 events, newest-first.
+	// Query "1.2.3.4" - expect 3 events, newest-first.
 	results := db.QueryAttackEvents("1.2.3.4", 10)
 	if len(results) != 3 {
 		t.Fatalf("QueryAttackEvents(1.2.3.4) len = %d, want 3", len(results))
@@ -42,13 +42,13 @@ func TestRecordAndQueryEvents(t *testing.T) {
 		}
 	}
 
-	// Query "5.6.7.8" — expect 1 event.
+	// Query "5.6.7.8" - expect 1 event.
 	results = db.QueryAttackEvents("5.6.7.8", 10)
 	if len(results) != 1 {
 		t.Errorf("QueryAttackEvents(5.6.7.8) len = %d, want 1", len(results))
 	}
 
-	// Query unknown IP — expect 0 events.
+	// Query unknown IP - expect 0 events.
 	results = db.QueryAttackEvents("9.9.9.9", 10)
 	if len(results) != 0 {
 		t.Errorf("QueryAttackEvents(9.9.9.9) len = %d, want 0", len(results))
@@ -120,7 +120,7 @@ func TestSaveLoadIPRecord(t *testing.T) {
 		t.Errorf("FirstSeen = %v, want %v", loaded.FirstSeen, now.Add(-24*time.Hour))
 	}
 
-	// Load unknown IP — not found.
+	// Load unknown IP - not found.
 	_, found = db.LoadIPRecord("99.99.99.99")
 	if found {
 		t.Error("LoadIPRecord(99.99.99.99) should not be found")

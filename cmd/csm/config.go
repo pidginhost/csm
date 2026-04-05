@@ -26,7 +26,7 @@ func runConfig() {
 }
 
 func printConfigUsage() {
-	fmt.Fprintf(os.Stderr, `csm config — configuration display
+	fmt.Fprintf(os.Stderr, `csm config - configuration display
 
 Usage: csm config <command>
 

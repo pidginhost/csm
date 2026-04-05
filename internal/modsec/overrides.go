@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-const overridesHeader = "# CSM ModSecurity Rule Overrides\n# Managed by CSM — do not edit manually.\n"
+const overridesHeader = "# CSM ModSecurity Rule Overrides\n# Managed by CSM - do not edit manually.\n"
 
 // WriteOverrides writes the overrides file with SecRuleRemoveById directives.
 // Atomic write (tmp + rename). Sorts IDs for deterministic output.
@@ -74,7 +74,7 @@ func ReadOverridesRaw(path string) []byte {
 // Uses atomic tmp+rename to prevent partial writes on crash.
 func RestoreOverrides(path string, content []byte) error {
 	if content == nil {
-		// File didn't exist before — remove it
+		// File didn't exist before - remove it
 		os.Remove(path)
 		return nil
 	}
@@ -106,7 +106,7 @@ func EnsureOverridesInclude(rulesFile, overridesFile string) {
 		return
 	}
 	if !strings.Contains(string(data), overridesFile) {
-		fmt.Fprintf(f, "\n# CSM overrides — managed by CSM rule management\nInclude %s\n", overridesFile)
+		fmt.Fprintf(f, "\n# CSM overrides - managed by CSM rule management\nInclude %s\n", overridesFile)
 	}
 
 	// Create empty overrides file if it doesn't exist

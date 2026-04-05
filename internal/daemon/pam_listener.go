@@ -141,7 +141,7 @@ func (p *PAMListener) processEvent(line string) {
 	case "FAIL":
 		p.recordFailure(ip, user, service)
 	case "OK":
-		// Successful login from non-infra IP — informational alert
+		// Successful login from non-infra IP - informational alert
 		p.alertCh <- alert.Finding{
 			Severity:  alert.High,
 			Check:     "pam_login",
@@ -179,7 +179,7 @@ func (p *PAMListener) recordFailure(ip, user, service string) {
 
 	// Only block if within the time window
 	if time.Since(tracker.firstSeen) > time.Duration(windowMin)*time.Minute {
-		// Window expired — reset tracker
+		// Window expired - reset tracker
 		tracker.count = 1
 		tracker.firstSeen = time.Now()
 		tracker.users = map[string]bool{user: true}

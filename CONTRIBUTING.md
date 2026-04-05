@@ -6,7 +6,7 @@
 - Go 1.26+
 - `make`
 - `golangci-lint` (`go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`)
-- YARA-X (optional, for YARA rule support — build with `-tags yara`)
+- YARA-X (optional, for YARA rule support - build with `-tags yara`)
 - Linux host or VM (fanotify and nftables are Linux-only)
 
 **Clone and build:**

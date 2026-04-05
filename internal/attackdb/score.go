@@ -13,7 +13,7 @@ import "sort"
 func ComputeScore(r *IPRecord) int {
 	score := 0
 
-	// Volume component — caps at 30
+	// Volume component - caps at 30
 	vol := r.EventCount * 2
 	if vol > 30 {
 		vol = 30

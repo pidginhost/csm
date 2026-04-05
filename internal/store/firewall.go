@@ -209,7 +209,7 @@ func (db *DB) LoadFirewallState() FirewallState {
 	now := time.Now()
 
 	_ = db.bolt.View(func(tx *bolt.Tx) error {
-		// fw:blocked — filter expired
+		// fw:blocked - filter expired
 		blocked := tx.Bucket([]byte("fw:blocked"))
 		_ = blocked.ForEach(func(k, v []byte) error {
 			var entry FWBlockedEntry

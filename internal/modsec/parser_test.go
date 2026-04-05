@@ -14,7 +14,7 @@ SecRule REQUEST_URI "\.haxor$|\.cgix$" \
 SecRule REQUEST_URI "/wp-content/uploads/.*\.php" \
     "id:900003,phase:1,deny,status:403,log,msg:'CSM: Blocked PHP execution in uploads directory'"
 
-# Rate limiter — counter rule (pass,nolog)
+# Rate limiter - counter rule (pass,nolog)
 SecRule REQUEST_URI "/xmlrpc\.php$" \
     "id:900006,phase:1,pass,nolog,\
     setvar:ip.xmlrpc_count=+1,\
@@ -47,7 +47,7 @@ func TestParseRulesFile(t *testing.T) {
 		t.Fatalf("expected 5 rules, got %d", len(rules))
 	}
 
-	// Verify 900001 — simple deny
+	// Verify 900001 - simple deny
 	r1 := findRule(rules, 900001)
 	if r1 == nil {
 		t.Fatal("rule 900001 not found")
@@ -62,7 +62,7 @@ func TestParseRulesFile(t *testing.T) {
 		t.Error("900001 should not be a counter rule")
 	}
 
-	// Verify 900006 — counter rule (pass,nolog)
+	// Verify 900006 - counter rule (pass,nolog)
 	r6 := findRule(rules, 900006)
 	if r6 == nil {
 		t.Fatal("rule 900006 not found")
@@ -74,7 +74,7 @@ func TestParseRulesFile(t *testing.T) {
 		t.Errorf("900006: action=%s, want pass", r6.Action)
 	}
 
-	// Verify 900112 — chained deny
+	// Verify 900112 - chained deny
 	r112 := findRule(rules, 900112)
 	if r112 == nil {
 		t.Fatal("rule 900112 not found")
@@ -127,7 +127,7 @@ func TestParseRealConfig(t *testing.T) {
 
 	t.Logf("Parsed %d total rules: %d visible, %d counter", len(rules), visible, counters)
 
-	// The real config has known rules — verify minimum counts
+	// The real config has known rules - verify minimum counts
 	if len(rules) < 20 {
 		t.Errorf("expected at least 20 rules, got %d", len(rules))
 	}

@@ -147,7 +147,7 @@ func (db *DB) GetModSecRuleHits() map[int]RuleHitStats {
 	cutoffBucket := hourBucket(cutoff)
 	prefix := []byte("modsec:hits:")
 
-	// Track which keys need pruning — read first with View (no write lock),
+	// Track which keys need pruning - read first with View (no write lock),
 	// then prune in a separate Update only if needed.
 	type pruneItem struct {
 		key  []byte

@@ -123,7 +123,7 @@ rules:
 	content := []byte(`<?php eval(base64_decode($x)); ?>`)
 	matches := scanner.ScanContent(content, ".php")
 
-	// require_regex is true but no regexes defined — rule should never match
+	// require_regex is true but no regexes defined - rule should never match
 	// This is a misconfigured rule, but we don't want it silently matching everything
 	for _, m := range matches {
 		if m.RuleName == "test_patterns_only" {

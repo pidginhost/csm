@@ -1,6 +1,6 @@
-# CSM — Continuous Security Monitor
+# CSM - Continuous Security Monitor
 
-Real-time security monitoring for cPanel/WHM servers. Single Go binary that detects compromises, backdoors, phishing, and suspicious activity — then auto-responds and alerts within seconds.
+Real-time security monitoring for cPanel/WHM servers. Single Go binary that detects compromises, backdoors, phishing, and suspicious activity - then auto-responds and alerts within seconds.
 
 Designed as a full **Imunify360 replacement**. Includes nftables firewall (replaces LFD/fail2ban), ModSecurity management, email AV, threat intelligence, and a web dashboard.
 
@@ -34,8 +34,8 @@ Benchmarked on production (168 accounts, 275 WordPress sites, 28M files):
 | Log watchers | ~2 seconds | ~1 MB |
 | Critical checks (34) | < 1 sec | ~35 MB peak |
 | Deep checks (28) | ~40 sec | ~100 MB peak |
-| Daemon idle | — | 45 MB resident |
-| Binary | — | ~8 MB static |
+| Daemon idle | - | 45 MB resident |
+| Binary | - | ~8 MB static |
 
 ## Built From Real Incidents
 

@@ -23,11 +23,11 @@ HTTPS dashboard with polling-based live updates (10s feed, 30s stats). Dark/ligh
 
 ## Security
 
-- **Authentication** — Bearer token (header or HttpOnly/Secure/SameSite=Strict cookie)
-- **CSRF** — HMAC-derived token on all POST mutations
-- **Headers** — X-Frame-Options DENY, Content-Security-Policy, HSTS, nosniff
-- **TLS** — Auto-generated self-signed certificate
-- **Rate limiting** — 5 login attempts/min, 600 API requests/min per IP
+- **Authentication** - Bearer token (header or HttpOnly/Secure/SameSite=Strict cookie)
+- **CSRF** - HMAC-derived token on all POST mutations
+- **Headers** - X-Frame-Options DENY, Content-Security-Policy, HSTS, nosniff
+- **TLS** - Auto-generated self-signed certificate
+- **Rate limiting** - 5 login attempts/min, 600 API requests/min per IP
 - **Bearer auth** skips CSRF (for API-to-API calls)
 
 ## Keyboard Shortcuts

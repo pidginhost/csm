@@ -1,5 +1,5 @@
 /**
- * CSM.Table — Reusable table component with search, filter, sort, pagination.
+ * CSM.Table - Reusable table component with search, filter, sort, pagination.
  *
  * Usage:
  *   new CSM.Table({
@@ -188,7 +188,7 @@ CSM.Table.prototype.applySort = function() {
 
         var valA = cellA.textContent.trim().toLowerCase();
         var valB = cellB.textContent.trim().toLowerCase();
-        // Try numeric sort — only if the entire value is a number
+        // Try numeric sort - only if the entire value is a number
         var numA = parseFloat(valA), numB = parseFloat(valB);
         if (!isNaN(numA) && !isNaN(numB) && String(numA) === valA && String(numB) === valB) {
             return asc ? numA - numB : numB - numA;
@@ -283,7 +283,7 @@ CSM.Table.prototype.toggleDetail = function(row) {
     }
 };
 
-// Persistent table state — save to localStorage
+// Persistent table state - save to localStorage
 CSM.Table.prototype._saveState = function() {
     if (!this.stateKey) return;
     try {
@@ -298,7 +298,7 @@ CSM.Table.prototype._saveState = function() {
     } catch (e) { /* localStorage may be unavailable */ }
 };
 
-// Persistent table state — restore from localStorage
+// Persistent table state - restore from localStorage
 CSM.Table.prototype._restoreState = function(opts) {
     if (!this.stateKey) return;
     try {

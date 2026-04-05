@@ -40,7 +40,7 @@ func TestReputationGetSet(t *testing.T) {
 		t.Fatalf("CheckedAt = %v, want %v", got.CheckedAt, now)
 	}
 
-	// Get unknown IP — not found.
+	// Get unknown IP - not found.
 	_, found = db.GetReputation("10.0.0.99")
 	if found {
 		t.Fatal("GetReputation(10.0.0.99) should not be found")
@@ -83,7 +83,7 @@ func TestReputationCleanExpired(t *testing.T) {
 		t.Fatalf("SetReputation(10.0.0.3): %v", err)
 	}
 
-	// Clean with 6h maxAge — should remove 1 (the 7h-old entry).
+	// Clean with 6h maxAge - should remove 1 (the 7h-old entry).
 	removed := db.CleanExpiredReputation(6 * time.Hour)
 	if removed != 1 {
 		t.Fatalf("CleanExpiredReputation = %d, want 1", removed)
@@ -125,7 +125,7 @@ func TestReputationMaxCap(t *testing.T) {
 		}
 	}
 
-	// Enforce cap of 10 — should remove 10 oldest.
+	// Enforce cap of 10 - should remove 10 oldest.
 	removed := db.EnforceReputationCap(10)
 	if removed != 10 {
 		t.Fatalf("EnforceReputationCap = %d, want 10", removed)

@@ -33,7 +33,7 @@ func TestWPCheckSuppressesWebshellFP(t *testing.T) {
 	}
 
 	// Write a file named shell.php with known content
-	shellContent := []byte("<?php\n// Text_Diff_Engine_shell — legitimate WP core\nclass Text_Diff_Engine_shell {}\n")
+	shellContent := []byte("<?php\n// Text_Diff_Engine_shell - legitimate WP core\nclass Text_Diff_Engine_shell {}\n")
 	shellPath := filepath.Join(diffEngine, "shell.php")
 	if err := os.WriteFile(shellPath, shellContent, 0644); err != nil {
 		t.Fatal(err)
@@ -68,14 +68,14 @@ func TestWPCheckSuppressesWebshellFP(t *testing.T) {
 	}
 	defer f.Close()
 
-	// Call analyzeFile — should NOT produce an alert (WP checksum matches)
+	// Call analyzeFile - should NOT produce an alert (WP checksum matches)
 	fm.analyzeFile(fileEvent{path: shellPath, fd: int(f.Fd()), pid: 0})
 
 	select {
 	case finding := <-alertCh:
-		t.Errorf("expected no alert for verified WP core shell.php, got: %s — %s", finding.Check, finding.Message)
+		t.Errorf("expected no alert for verified WP core shell.php, got: %s - %s", finding.Check, finding.Message)
 	case <-time.After(50 * time.Millisecond):
-		// Good — no alert produced
+		// Good - no alert produced
 	}
 }
 
@@ -125,7 +125,7 @@ func TestWPCheckAllowsModifiedFile(t *testing.T) {
 	}
 	defer f.Close()
 
-	// Call analyzeFile — SHOULD produce a webshell_realtime alert (MD5 mismatch)
+	// Call analyzeFile - SHOULD produce a webshell_realtime alert (MD5 mismatch)
 	fm.analyzeFile(fileEvent{path: shellPath, fd: int(f.Fd()), pid: 0})
 
 	select {

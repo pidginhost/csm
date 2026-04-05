@@ -207,23 +207,23 @@ func analyzePHPContent(path string) phpAnalysisResult {
 	// --- High: Goto obfuscation (LEVIATHAN signature) ---
 	gotoCount := countOccurrences(contentLower, "goto ")
 	if gotoCount > 10 {
-		indicators = append(indicators, fmt.Sprintf("excessive goto statements (%d found — obfuscation pattern)", gotoCount))
+		indicators = append(indicators, fmt.Sprintf("excessive goto statements (%d found - obfuscation pattern)", gotoCount))
 	}
 
 	// --- High: Hex-encoded string construction ---
-	// Only flag hex strings when accompanied by concatenation — real obfuscation
+	// Only flag hex strings when accompanied by concatenation - real obfuscation
 	// builds function names like "\x63" . "\x75" . "\x72" . "\x6c" (= "curl").
 	// Standalone hex arrays (Wordfence IPv6 subnet masks, binary data) are benign.
 	hexStringCount := countOccurrences(content, `"\x`)
 	dotConcatCount := countOccurrences(content, `" . "`)
 	if hexStringCount > 20 && dotConcatCount > 10 {
-		indicators = append(indicators, fmt.Sprintf("heavy hex-encoded strings with concatenation (%d hex, %d concat — obfuscation pattern)", hexStringCount, dotConcatCount))
+		indicators = append(indicators, fmt.Sprintf("heavy hex-encoded strings with concatenation (%d hex, %d concat - obfuscation pattern)", hexStringCount, dotConcatCount))
 	} else if dotConcatCount > 30 {
-		indicators = append(indicators, fmt.Sprintf("excessive string concatenation (%d — function name obfuscation)", dotConcatCount))
+		indicators = append(indicators, fmt.Sprintf("excessive string concatenation (%d - function name obfuscation)", dotConcatCount))
 	}
 
 	// --- High: Variable function calls with obfuscated names ---
-	// call_user_func + decoder alone is too broad — Elementor, WooCommerce, and
+	// call_user_func + decoder alone is too broad - Elementor, WooCommerce, and
 	// dozens of plugins use call_user_func_array with base64_decode legitimately.
 	// Only flag when combined with actual obfuscation (hex strings, heavy concat).
 	if strings.Contains(contentLower, "call_user_func") && hasDecoder {
@@ -312,7 +312,7 @@ func isSafePHPInWPDir(path, name string) bool {
 		}
 	}
 
-	// Known safe in mu-plugins — common hosting provider mu-plugins
+	// Known safe in mu-plugins - common hosting provider mu-plugins
 	if strings.Contains(path, "/mu-plugins/") {
 		safeMuPlugins := []string{
 			"endurance", "starter", "imunify", "wp-toolkit",

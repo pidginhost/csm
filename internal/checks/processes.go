@@ -43,7 +43,7 @@ func CheckFakeKernelThreads(_ *config.Config, _ *state.Store) []alert.Finding {
 			continue
 		}
 
-		// Read cmdline — real kernel threads have empty cmdline
+		// Read cmdline - real kernel threads have empty cmdline
 		cmdline, _ := os.ReadFile(filepath.Join("/proc", pid, "cmdline"))
 		cmdStr := strings.TrimRight(strings.ReplaceAll(string(cmdline), "\x00", " "), " ")
 
@@ -150,7 +150,7 @@ func CheckSuspiciousProcesses(_ *config.Config, _ *state.Store) []alert.Finding 
 }
 
 // CheckPHPProcesses inspects running lsphp processes to detect active
-// webshell execution. Only reads /proc cmdline — zero disk I/O.
+// webshell execution. Only reads /proc cmdline - zero disk I/O.
 func CheckPHPProcesses(_ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 

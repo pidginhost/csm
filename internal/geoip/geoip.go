@@ -109,7 +109,7 @@ func (db *DB) Close() {
 }
 
 // Reload opens new database readers and swaps them in atomically.
-// Opens replacement readers first — if both fail, the old readers stay in place.
+// Opens replacement readers first - if both fail, the old readers stay in place.
 // If one succeeds and the other fails, only the successful one is swapped.
 func (db *DB) Reload() error {
 	if db == nil {
@@ -124,7 +124,7 @@ func (db *DB) Reload() error {
 	newASN, asnErr := maxminddb.Open(asnPath)
 
 	if cityErr != nil && asnErr != nil {
-		return fmt.Errorf("geoip: reload failed — city: %v, asn: %v", cityErr, asnErr)
+		return fmt.Errorf("geoip: reload failed - city: %v, asn: %v", cityErr, asnErr)
 	}
 
 	db.mu.Lock()
@@ -143,10 +143,10 @@ func (db *DB) Reload() error {
 	db.mu.Unlock()
 
 	if cityErr != nil {
-		fmt.Fprintf(os.Stderr, "geoip: reload warning — city DB failed: %v\n", cityErr)
+		fmt.Fprintf(os.Stderr, "geoip: reload warning - city DB failed: %v\n", cityErr)
 	}
 	if asnErr != nil {
-		fmt.Fprintf(os.Stderr, "geoip: reload warning — ASN DB failed: %v\n", asnErr)
+		fmt.Fprintf(os.Stderr, "geoip: reload warning - ASN DB failed: %v\n", asnErr)
 	}
 
 	return nil
@@ -238,7 +238,7 @@ func (db *DB) LookupWithRDAP(ip string) Info {
 	return info
 }
 
-// RDAP lookup — fetches from the appropriate RIR
+// RDAP lookup - fetches from the appropriate RIR
 func fetchRDAP(ip string) Info {
 	var info Info
 	url := fmt.Sprintf("https://rdap.org/ip/%s", ip)

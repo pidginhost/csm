@@ -12,7 +12,7 @@ func TestFirewallBlockUnblock(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 
-	// Block an IP (permanent — zero expiry).
+	// Block an IP (permanent - zero expiry).
 	if err := db.BlockIP("10.0.0.1", "brute-force", time.Time{}); err != nil {
 		t.Fatalf("BlockIP: %v", err)
 	}

@@ -236,7 +236,7 @@ func TestInlineQuarantine_QuarantinesHighConfidence(t *testing.T) {
 
 	qPath, ok := InlineQuarantine(f, malware, nil)
 	if !ok {
-		// The quarantine dir is /opt/csm/quarantine — may not be writable in test.
+		// The quarantine dir is /opt/csm/quarantine - may not be writable in test.
 		// Verify it's not a validation failure by checking the gate directly.
 		if !isHighConfidenceRealtimeMatch(f, malware, nil) {
 			t.Fatal("validation gate should pass for high-entropy dropper")
@@ -277,7 +277,7 @@ class PHPMailer {
 }
 
 // generateHexEncodedPHP creates PHP content that mimics the LEVIATHAN
-// AES-encrypted webshell — heavy hex encoding with goto obfuscation.
+// AES-encrypted webshell - heavy hex encoding with goto obfuscation.
 // This has LOW Shannon entropy (~3.5) but HIGH hex density (>30%).
 func generateHexEncodedPHP(size int) string {
 	var b strings.Builder

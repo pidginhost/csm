@@ -31,8 +31,8 @@ var DryRun bool
 type Tier string
 
 const (
-	TierCritical Tier = "critical" // Fast checks — processes, auth, network (~5 seconds)
-	TierDeep     Tier = "deep"     // Filesystem scans — webshells, htaccess, WP core (~90 seconds)
+	TierCritical Tier = "critical" // Fast checks - processes, auth, network (~5 seconds)
+	TierDeep     Tier = "deep"     // Filesystem scans - webshells, htaccess, WP core (~90 seconds)
 	TierAll      Tier = "all"      // Both tiers
 )
 

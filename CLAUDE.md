@@ -1,12 +1,12 @@
-# CSM — Continuous Security Monitor
+# CSM - Continuous Security Monitor
 
 ## Project Overview
 
-CSM is a real-time security monitoring daemon for cPanel/WHM servers. It watches log files, filesystem events (fanotify), and system state to detect attacks, webshells, brute force, phishing kits, and malware — then auto-responds (block IPs, quarantine files, kill processes) and alerts operators via email, webhooks, and a web dashboard.
+CSM is a real-time security monitoring daemon for cPanel/WHM servers. It watches log files, filesystem events (fanotify), and system state to detect attacks, webshells, brute force, phishing kits, and malware - then auto-responds (block IPs, quarantine files, kill processes) and alerts operators via email, webhooks, and a web dashboard.
 
 **Module:** `github.com/pidginhost/csm`
 **Language:** Go 1.26+ (single binary, CGO optional for YARA-X)
-**Target OS:** Linux (cPanel/WHM servers — CentOS, AlmaLinux, CloudLinux)
+**Target OS:** Linux (cPanel/WHM servers - CentOS, AlmaLinux, CloudLinux)
 **Binary name:** `csm`
 **Config:** `/opt/csm/csm.yaml`
 **State:** bbolt DB at `/opt/csm/state/`
@@ -14,33 +14,33 @@ CSM is a real-time security monitoring daemon for cPanel/WHM servers. It watches
 ## Architecture
 
 ```
-cmd/csm/           — CLI entrypoint (daemon, install, uninstall, scan)
+cmd/csm/           - CLI entrypoint (daemon, install, uninstall, scan)
 internal/
-  daemon/           — Main daemon loop, log watchers, check orchestration
-  checks/           — Security check implementations (waf, webshell, permissions, etc.)
-  config/           — YAML config parsing
-  store/            — bbolt persistent storage (findings, threat DB, hit counters)
-  state/            — Finding dedup, alert throttling, baseline tracking, latest findings persistence
-  mime/             — MIME email parsing, attachment extraction (used by emailav)
-  webui/            — HTTPS web UI server (Go templates + vanilla JS)
-  firewall/         — nftables firewall management
-  modsec/           — ModSecurity config parser, overrides, reload
-  alert/            — Email/webhook alert dispatch
-  geoip/            — MaxMind GeoIP lookups
-  signatures/       — YAML signature scanner
-  yara/             — YARA-X scanner (build tag: yara)
-  emailav/          — Email attachment AV scanning
-  attackdb/         — Attack database (IP reputation tracking)
-  threat/           — Threat intelligence aggregation
-  challenge/        — JavaScript challenge pages (CAPTCHA alternative)
-  integrity/        — Binary/config integrity verification
-  wpcheck/          — WordPress core file checksum verification
-  auditd/           — Audit log for admin actions
+  daemon/           - Main daemon loop, log watchers, check orchestration
+  checks/           - Security check implementations (waf, webshell, permissions, etc.)
+  config/           - YAML config parsing
+  store/            - bbolt persistent storage (findings, threat DB, hit counters)
+  state/            - Finding dedup, alert throttling, baseline tracking, latest findings persistence
+  mime/             - MIME email parsing, attachment extraction (used by emailav)
+  webui/            - HTTPS web UI server (Go templates + vanilla JS)
+  firewall/         - nftables firewall management
+  modsec/           - ModSecurity config parser, overrides, reload
+  alert/            - Email/webhook alert dispatch
+  geoip/            - MaxMind GeoIP lookups
+  signatures/       - YAML signature scanner
+  yara/             - YARA-X scanner (build tag: yara)
+  emailav/          - Email attachment AV scanning
+  attackdb/         - Attack database (IP reputation tracking)
+  threat/           - Threat intelligence aggregation
+  challenge/        - JavaScript challenge pages (CAPTCHA alternative)
+  integrity/        - Binary/config integrity verification
+  wpcheck/          - WordPress core file checksum verification
+  auditd/           - Audit log for admin actions
 ui/
-  templates/        — Go HTML templates (Tabler CSS framework)
-  static/js/        — Vanilla JavaScript (no build step, no framework)
-  static/css/       — CSS (Tabler + csm.css custom styles)
-configs/            — Embedded configs (modsec rules, malware sigs, WHM plugin)
+  templates/        - Go HTML templates (Tabler CSS framework)
+  static/js/        - Vanilla JavaScript (no build step, no framework)
+  static/css/       - CSS (Tabler + csm.css custom styles)
+configs/            - Embedded configs (modsec rules, malware sigs, WHM plugin)
 ```
 
 ## Build & Test
@@ -86,16 +86,16 @@ The CI pipeline builds, tests, lints, packages, and publishes. Production server
 ## Code Conventions
 
 ### Go
-- **Linter config:** `.golangci.yml` — errcheck, govet, staticcheck, unused, ineffassign, gocritic, misspell, bodyclose, nilerr
+- **Linter config:** `.golangci.yml` - errcheck, govet, staticcheck, unused, ineffassign, gocritic, misspell, bodyclose, nilerr
 - **Imports:** stdlib → blank line → third-party → blank line → internal packages. Use `goimports` with `-local github.com/pidginhost/csm`
 - **Error handling:** Return errors up the call stack. Use `fmt.Errorf("context: %w", err)` for wrapping
-- **Store pattern:** `store.Global()` returns the singleton bbolt DB. Nil-safe — always check `if db := store.Global(); db != nil`
+- **Store pattern:** `store.Global()` returns the singleton bbolt DB. Nil-safe - always check `if db := store.Global(); db != nil`
 - **State pattern:** `state.Store` handles finding dedup (SHA256 hashing), alert throttling, baseline tracking, and latest findings persistence. Passed to subsystems at init
 - **Config:** Single `config.Config` struct parsed from YAML, passed by pointer
-- **No generics abuse** — keep it simple, idiomatic Go
+- **No generics abuse** - keep it simple, idiomatic Go
 
 ### Web UI (JavaScript)
-- **Vanilla JS** — no framework, no build step, no npm
+- **Vanilla JS** - no framework, no build step, no npm
 - **CSS framework:** Tabler (Bootstrap-based), loaded from `/static/css/`
 - **Charts:** Chart.js loaded from `/static/js/chart.min.js`
 - **CSM namespace:** All shared helpers live on the global `CSM` object (defined in `csrf.js`)
@@ -115,7 +115,7 @@ The CI pipeline builds, tests, lints, packages, and publishes. Production server
 
 ### Adding a new API endpoint
 1. Create handler in `internal/webui/` (or add to existing file)
-2. Register route in `server.go` `New()` — GET: `s.requireAuth(http.HandlerFunc(...))`, POST: add `s.requireCSRF(...)`
+2. Register route in `server.go` `New()` - GET: `s.requireAuth(http.HandlerFunc(...))`, POST: add `s.requireCSRF(...)`
 3. Use `writeJSON(w, data)` and `writeJSONError(w, msg, code)` helpers
 
 ### Adding a new page
@@ -132,5 +132,9 @@ The CI pipeline builds, tests, lints, packages, and publishes. Production server
 
 ### YARA-X
 - Use VirusTotal's `github.com/VirusTotal/yara-x/go` (NOT hillu/go-yara)
-- Build tag: `yara` — code behind `//go:build yara` constraints
+- Build tag: `yara` - code behind `//go:build yara` constraints
 - Scanner init: `yara.Init(rulesDir)` returns nil if build tag absent
+
+## Documentation
+
+When changing source code, always update the corresponding documentation in `docs/src/` if the change affects user-facing behavior, configuration, CLI commands, API endpoints, or architecture. Keep docs and code in sync.
