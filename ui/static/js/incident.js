@@ -11,7 +11,7 @@
         var hours = document.getElementById('incident-hours').value;
 
         // Detect if query is an IP or account
-        var isIP = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(query) || query.indexOf(':') >= 0;
+        var isIP = CSM.validateIP(query) || query.indexOf(':') >= 0;
         var url = '/api/v1/incident?hours=' + hours;
         if (isIP) { url += '&ip=' + encodeURIComponent(query); }
         else { url += '&account=' + encodeURIComponent(query); }

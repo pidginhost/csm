@@ -186,6 +186,29 @@ CSM.fetch = function(url, options) {
     });
 };
 
+// Connection-lost banner: tracks consecutive fetch failures
+(function() {
+    var failCount = 0;
+    var origFetch = CSM.fetch;
+    CSM.fetch = function(url, opts) {
+        return origFetch(url, opts).then(function(resp) {
+            if (failCount > 0) {
+                failCount = 0;
+                var banner = document.getElementById('csm-connection-lost');
+                if (banner) banner.classList.add('d-none');
+            }
+            return resp;
+        }).catch(function(err) {
+            failCount++;
+            if (failCount >= 3) {
+                var banner = document.getElementById('csm-connection-lost');
+                if (banner) banner.classList.remove('d-none');
+            }
+            throw err;
+        });
+    };
+})();
+
 // Polling utility with visibility-pause and exponential backoff
 CSM.poll = function(url, interval, callback) {
     var baseInterval = interval;
@@ -211,7 +234,8 @@ CSM.poll = function(url, interval, callback) {
             })
             .finally(function() {
                 if (!stopped && !document.hidden) {
-                    timerId = setTimeout(run, currentInterval);
+                    var jitter = Math.random() * currentInterval * 0.3;
+                    timerId = setTimeout(run, currentInterval + jitter);
                 }
             });
     }
@@ -235,6 +259,18 @@ CSM.poll = function(url, interval, callback) {
             document.removeEventListener('visibilitychange', onVisibility);
         }
     };
+};
+
+// Client-side IPv4 format validator (rejects leading zeros like "01.02.03.04")
+CSM.validateIP = function(s) {
+    if (!s) return false;
+    var parts = s.split('.');
+    if (parts.length !== 4) return false;
+    for (var i = 0; i < 4; i++) {
+        var n = parseInt(parts[i], 10);
+        if (isNaN(n) || n < 0 || n > 255 || parts[i] !== String(n)) return false;
+    }
+    return true;
 };
 
 // Debounce utility

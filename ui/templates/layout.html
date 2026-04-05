@@ -54,6 +54,9 @@
             </div>
         </header>
         <div class="page-wrapper">
+            <div id="csm-connection-lost" class="alert alert-danger alert-dismissible mb-0 rounded-0 d-none" role="alert" aria-live="polite">
+                <strong>Connection lost</strong> — Unable to reach the server. Retrying automatically.
+            </div>
             <div class="page-body">
                 <div class="container-xl">
                     {{template "content" .}}

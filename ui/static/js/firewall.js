@@ -145,6 +145,10 @@ document.getElementById('block-form').addEventListener('submit',function(e){
     var ip=document.getElementById('block-ip').value.trim();
     var reason=document.getElementById('block-reason').value.trim()||'Blocked via CSM Web UI';
     if(!ip)return;
+    if(!CSM.validateIP(ip)){
+        CSM.toast('Invalid IP address format','error');
+        return;
+    }
     CSM.confirm('Block IP '+ip+'?').then(function(){
         CSM.post('/api/v1/block-ip',{ip:ip,reason:reason}).then(function(){
             document.getElementById('block-ip').value='';
@@ -190,6 +194,10 @@ document.getElementById('whitelist-form').addEventListener('submit',function(e){
     e.preventDefault();
     var ip=document.getElementById('whitelist-ip').value.trim();
     if(!ip)return;
+    if(!CSM.validateIP(ip)){
+        CSM.toast('Invalid IP address format','error');
+        return;
+    }
     CSM.confirm('Whitelist '+ip+'?\n\nThis will unblock the IP and prevent future auto-blocking.').then(function(){
         CSM.post('/api/v1/threat/whitelist-ip',{ip:ip}).then(function(){
             document.getElementById('whitelist-ip').value='';

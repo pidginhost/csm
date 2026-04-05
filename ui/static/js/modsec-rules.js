@@ -87,28 +87,33 @@ function renderTable() {
         });
     });
 
-    // Bind escalation toggles (immediate save)
+    // Bind escalation toggles (immediate save with confirmation)
     document.querySelectorAll('.escalate-toggle').forEach(function(toggle) {
         toggle.addEventListener('change', function() {
             var id = parseInt(this.getAttribute('data-id'), 10);
             var escalate = this.checked;
             var self = this;
 
-            CSM.post('/api/v1/modsec/rules/escalation', {rule_id: id, escalate: escalate})
-                .then(function(data) {
-                    if (data.ok) {
-                        CSM.toast('Escalation updated for rule ' + id, 'success');
-                        // Update local state
-                        for (var i = 0; i < _rules.length; i++) {
-                            if (_rules[i].id === id) _rules[i].escalate = escalate;
+            var action = escalate ? 'Enable' : 'Disable';
+            CSM.confirm(action + ' escalation for rule ' + id + '?').then(function() {
+                CSM.post('/api/v1/modsec/rules/escalation', {rule_id: id, escalate: escalate})
+                    .then(function(data) {
+                        if (data.ok) {
+                            CSM.toast('Escalation updated for rule ' + id, 'success');
+                            // Update local state
+                            for (var i = 0; i < _rules.length; i++) {
+                                if (_rules[i].id === id) _rules[i].escalate = escalate;
+                            }
+                            renderStats({total: _rules.length, active: countActive()});
                         }
-                        renderStats({total: _rules.length, active: countActive()});
-                    }
-                })
-                .catch(function(e) {
-                    CSM.toast('Error: ' + e, 'error');
-                    self.checked = !escalate; // revert toggle
-                });
+                    })
+                    .catch(function(e) {
+                        CSM.toast('Error: ' + e, 'error');
+                        self.checked = !escalate; // revert toggle
+                    });
+            }).catch(function() {
+                self.checked = !escalate; // revert toggle on cancel
+            });
         });
     });
 }
@@ -139,6 +144,9 @@ function updateApplyBar() {
 // Apply Changes
 document.getElementById('btn-apply').addEventListener('click', function() {
     var btn = this;
+    var changeCount = Object.keys(_pendingChanges).length;
+
+    CSM.confirm('Apply ' + changeCount + ' rule change' + (changeCount !== 1 ? 's' : '') + '? ModSecurity will be reloaded.').then(function() {
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Applying...';
 
@@ -191,6 +199,7 @@ document.getElementById('btn-apply').addEventListener('click', function() {
             btn.innerHTML = '<i class="ti ti-check"></i>&nbsp;Apply Changes';
             CSM.toast('Error: ' + e, 'error');
         });
+    }).catch(function() { /* cancelled */ });
 });
 
 // Discard
