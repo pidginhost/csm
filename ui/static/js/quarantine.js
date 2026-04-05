@@ -161,9 +161,7 @@ if (bulkDeleteBtn) {
         var ids = [];
         checked.forEach(function(cb) { ids.push(cb.dataset.id); });
         CSM.confirm('Permanently delete ' + ids.length + ' quarantined file(s)?').then(function() {
-            CSM.post('/api/v1/quarantine/bulk-delete', { ids: ids }).then(function(r) {
-                return r.json();
-            }).then(function(data) {
+            CSM.post('/api/v1/quarantine/bulk-delete', { ids: ids }).then(function(data) {
                 CSM.toast('Deleted ' + data.count + ' file(s)', 'success');
                 loadQuarantine();
             }).catch(function(err) { CSM.toast(err.message || 'Delete failed', 'error'); });

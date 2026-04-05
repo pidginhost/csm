@@ -455,7 +455,7 @@ func (s *Server) apiThreatBulkAction(w http.ResponseWriter, r *http.Request) {
 
 	count := 0
 	for _, ipStr := range req.IPs {
-		if net.ParseIP(ipStr) == nil {
+		if _, err := parseAndValidateIP(ipStr); err != nil {
 			continue
 		}
 		switch req.Action {

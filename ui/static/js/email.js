@@ -389,7 +389,7 @@
             modal.hide();
             btn.disabled = true;
             btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
-            CSM.post(CSM.apiUrl('/api/v1/fix'), { check: check, message: message, details: details })
+            CSM.post('/api/v1/fix', { check: check, message: message, details: details })
                 .then(function(r) {
                     CSM.toast(r.action || 'Message quarantined', 'success');
                     loadFindings();
@@ -653,7 +653,7 @@
 
     function releaseMessage(msgID) {
         CSM.confirm('Release this message back to the mail queue? Only do this for confirmed false positives.').then(function() {
-            CSM.post(CSM.apiUrl('/api/v1/email/quarantine/' + encodeURIComponent(msgID) + '/release'), {})
+            CSM.post('/api/v1/email/quarantine/' + encodeURIComponent(msgID) + '/release', {})
                 .then(function() { loadQuarantine(); loadAVStatus(); })
                 .catch(function(err) { CSM.toast('Release failed: ' + err.message, 'danger'); });
         }).catch(function() { /* cancelled */ });

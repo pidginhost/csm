@@ -32,8 +32,7 @@
         }
 
         showSpinner();
-        CSM.fetch(CSM.apiUrl('/api/v1/account?name=' + encodeURIComponent(name)))
-            .then(function(r) { return r.json(); })
+        CSM.fetch('/api/v1/account?name=' + encodeURIComponent(name))
             .then(function(data) {
                 if (data.error) {
                     content.innerHTML = '<div class="alert alert-danger">' + CSM.esc(data.error) + '</div>';

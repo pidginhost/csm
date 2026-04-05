@@ -227,7 +227,7 @@ function enrichBlockedGeoIP(container) {
     }
     if (ips.length === 0) return;
 
-    CSM.post(CSM.apiUrl('/api/v1/geoip/batch'), { ips: ips })
+    CSM.post('/api/v1/geoip/batch', { ips: ips })
         .then(function(data) {
             var results = data.results || {};
             for (var ip in results) {

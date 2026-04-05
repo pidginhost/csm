@@ -93,7 +93,7 @@ function enrichGeoIP(container){
     if(cells.length===0) return;
     var ips=[];
     for(var i=0;i<cells.length;i++) ips.push(cells[i].dataset.ip);
-    CSM.post(CSM.apiUrl('/api/v1/geoip/batch'),{ips:ips})
+    CSM.post('/api/v1/geoip/batch',{ips:ips})
         .then(function(data){
             var results=data.results||{};
             for(var j=0;j<cells.length;j++){
