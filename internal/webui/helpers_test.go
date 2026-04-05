@@ -464,8 +464,12 @@ func TestListMetaFiles(t *testing.T) {
 	}
 	// Create a subdirectory with .meta files (should NOT be included - non-recursive)
 	subdir := filepath.Join(dir, "subdir")
-	os.Mkdir(subdir, 0755)
-	os.WriteFile(filepath.Join(subdir, "g.meta"), []byte("{}"), 0644)
+	if err := os.Mkdir(subdir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subdir, "g.meta"), []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	got := listMetaFiles(dir)
 	if len(got) != 3 {
