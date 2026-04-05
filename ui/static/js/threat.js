@@ -10,7 +10,7 @@ function verdictBadge(v,score){
 }
 
 function typeBadges(counts){
-    if(!counts)return '—';
+    if(!counts)return '-';
     var html='';
     var order=['brute_force','webshell','phishing','c2','waf_block','spam','cpanel_login','file_upload','recon','other'];
     var colors={brute_force:'blue',webshell:'red',phishing:'orange',c2:'purple',waf_block:'cyan',spam:'yellow',cpanel_login:'teal',file_upload:'pink',recon:'lime',other:'secondary'};
@@ -20,7 +20,7 @@ function typeBadges(counts){
             html+='<span class="badge bg-'+( colors[t]||'secondary')+'-lt me-1">'+t.replace('_',' ')+': '+counts[t]+'</span>';
         }
     }
-    return html||'—';
+    return html||'-';
 }
 
 function checkResp(r){if(!r.ok)throw new Error(r.status+' '+r.statusText);return r.json();}
@@ -191,7 +191,7 @@ document.getElementById('lookup-form').addEventListener('submit',function(e){
         // Details
         html+='<div class="col-md-9"><div class="card"><div class="card-body"><table class="table table-sm mb-0">';
         html+='<tr><td class="text-muted" style="width:160px">Local Score</td><td>'+intel.local_score+'/100</td></tr>';
-        if(intel.country)html+='<tr><td class="text-muted">Country</td><td>'+countryFlag(intel.country)+' <strong>'+CSM.esc(intel.country)+'</strong>'+(intel.country_name?' — '+CSM.esc(intel.country_name):'')+(intel.city?', '+CSM.esc(intel.city):'')+'</td></tr>';
+        if(intel.country)html+='<tr><td class="text-muted">Country</td><td>'+countryFlag(intel.country)+' <strong>'+CSM.esc(intel.country)+'</strong>'+(intel.country_name?' - '+CSM.esc(intel.country_name):'')+(intel.city?', '+CSM.esc(intel.city):'')+'</td></tr>';
         if(intel.as_org)html+='<tr><td class="text-muted">ISP / ASN</td><td>'+CSM.esc(intel.as_org)+(intel.asn?' <span class="text-muted">(AS'+intel.asn+')</span>':'')+'</td></tr>';
         if(intel.network)html+='<tr><td class="text-muted">Network</td><td><code>'+CSM.esc(intel.network)+'</code></td></tr>';
         html+='<tr><td class="text-muted">AbuseIPDB Score</td><td>'+(intel.abuse_score>=0?intel.abuse_score+'/100':'Not cached')+'</td></tr>';
@@ -210,7 +210,7 @@ document.getElementById('lookup-form').addEventListener('submit',function(e){
             var rec=intel.attack_record;
             html+='<tr><td class="text-muted">Events</td><td>'+rec.event_count+'</td></tr>';
             html+='<tr><td class="text-muted">Attack Types</td><td>'+typeBadges(rec.attack_counts)+'</td></tr>';
-            html+='<tr><td class="text-muted">Accounts Targeted</td><td>'+(rec.accounts?Object.keys(rec.accounts).join(', '):'—')+'</td></tr>';
+            html+='<tr><td class="text-muted">Accounts Targeted</td><td>'+(rec.accounts?Object.keys(rec.accounts).join(', '):'-')+'</td></tr>';
             html+='<tr><td class="text-muted">First Seen</td><td>'+fmtDate(rec.first_seen)+'</td></tr>';
             html+='<tr><td class="text-muted">Last Seen</td><td>'+fmtDate(rec.last_seen)+'</td></tr>';
         }
@@ -221,7 +221,7 @@ document.getElementById('lookup-form').addEventListener('submit',function(e){
         }
         html+='<button class="btn btn-outline-primary btn-sm clear-ip-btn" data-ip="'+CSM.esc(intel.ip)+'" title="Unblock IP and remove from all threat databases"><i class="ti ti-eraser"></i>&nbsp;Unblock &amp; Clear</button>';
         html+='<button class="btn btn-outline-warning btn-sm temp-wl-btn" data-ip="'+CSM.esc(intel.ip)+'" title="Temporarily allow this IP for a set number of hours"><i class="ti ti-clock"></i>&nbsp;Temp Whitelist (24h)</button>';
-        html+='<button class="btn btn-success btn-sm perm-wl-btn" data-ip="'+CSM.esc(intel.ip)+'" title="Permanently allow this IP — never block or flag it again"><i class="ti ti-shield-check"></i>&nbsp;Permanent Whitelist</button>';
+        html+='<button class="btn btn-success btn-sm perm-wl-btn" data-ip="'+CSM.esc(intel.ip)+'" title="Permanently allow this IP - never block or flag it again"><i class="ti ti-shield-check"></i>&nbsp;Permanent Whitelist</button>';
         html+='</div>';
         html+='</div></div></div>';
         html+='</div>';
@@ -236,7 +236,7 @@ document.getElementById('lookup-form').addEventListener('submit',function(e){
                 html+='<tr><td class="text-nowrap small">'+fmtDate(ev.ts)+'</td>';
                 html+='<td><span class="badge bg-azure-lt">'+CSM.esc((ev.type||'').replace(/_/g,' '))+'</span></td>';
                 html+='<td><code class="small">'+CSM.esc(ev.check)+'</code></td>';
-                html+='<td>'+CSM.esc(ev.account||'—')+'</td>';
+                html+='<td>'+CSM.esc(ev.account||'-')+'</td>';
                 html+='<td class="small">'+CSM.esc(ev.msg||'')+'</td></tr>';
             }
             html+='</tbody></table></div></div>';
@@ -270,7 +270,7 @@ function loadWhitelist() {
                 '<span class="badge bg-warning-lt">Expires '+fmtDate(e.expires_at)+'</span>';
             html+='<tr><td><code class="font-monospace">'+CSM.esc(e.ip)+'</code></td>';
             html+='<td>'+typeBadge+'</td>';
-            html+='<td><button class="btn btn-ghost-danger btn-sm remove-wl-btn" data-ip="'+CSM.esc(e.ip)+'" title="Remove IP from whitelist — it may be blocked again if it triggers detections"><i class="ti ti-x"></i>&nbsp;Remove</button></td></tr>';
+            html+='<td><button class="btn btn-ghost-danger btn-sm remove-wl-btn" data-ip="'+CSM.esc(e.ip)+'" title="Remove IP from whitelist - it may be blocked again if it triggers detections"><i class="ti ti-x"></i>&nbsp;Remove</button></td></tr>';
         }
         tbody.innerHTML=html;
         // Bind remove buttons after DOM insertion
@@ -294,7 +294,7 @@ function removeWhitelist(ip) {
             if(data.error){CSM.toast('Error: '+data.error,'error');return;}
             loadWhitelist();
         }).catch(function(e){CSM.toast('Error: '+e,'error')});
-    }).catch(function() {});
+    }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 
 function blockIP(ip) {
@@ -304,7 +304,7 @@ function blockIP(ip) {
             CSM.toast('IP '+ip+' blocked for 24h.\n\nActions: '+(data.actions||[]).join(', '),'success');
             document.getElementById('lookup-form').dispatchEvent(new Event('submit'));
         }).catch(function(e){CSM.toast('Error: '+e,'error')});
-    }).catch(function() {});
+    }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 
 function clearIP(ip) {
@@ -314,7 +314,7 @@ function clearIP(ip) {
             CSM.toast('IP '+ip+' cleared.\n\nActions: '+(data.actions||[]).join(', '),'success');
             document.getElementById('lookup-form').dispatchEvent(new Event('submit'));
         }).catch(function(e){CSM.toast('Error: '+e,'error')});
-    }).catch(function() {});
+    }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 
 function tempWhitelistIP(ip) {
@@ -327,7 +327,7 @@ function tempWhitelistIP(ip) {
             loadWhitelist();
             document.getElementById('lookup-form').dispatchEvent(new Event('submit'));
         }).catch(function(e){CSM.toast('Error: '+e,'error')});
-    }).catch(function() {});
+    }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 
 function whitelistIP(ip) {
@@ -338,5 +338,5 @@ function whitelistIP(ip) {
             loadWhitelist();
             document.getElementById('lookup-form').dispatchEvent(new Event('submit'));
         }).catch(function(e){CSM.toast('Error: '+e,'error')});
-    }).catch(function() {});
+    }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }

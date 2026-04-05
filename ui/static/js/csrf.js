@@ -154,7 +154,7 @@ CSM.copyText = function(text, el) {
         } else {
             CSM.toast('Copied to clipboard', 'success');
         }
-    }).catch(function() {});
+    }).catch(function() { /* clipboard API unavailable — intentionally silent */ });
 };
 
 // Resolve API URLs - use CGI proxy path if in WHM context

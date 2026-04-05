@@ -52,7 +52,7 @@ function loadSubnets(){
 function removeSubnet(cidr){
     CSM.confirm('Remove subnet block '+cidr+'?').then(function(){
         CSM.post('/api/v1/firewall/remove-subnet',{cidr:cidr}).then(function(){loadSubnets();loadStatus();}).catch(function(e){ CSM.toast('Error: ' + e, 'error'); });
-    }).catch(function(){});
+    }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 
 document.getElementById('subnet-form').addEventListener('submit',function(e){
@@ -66,7 +66,7 @@ document.getElementById('subnet-form').addEventListener('submit',function(e){
             document.getElementById('subnet-reason').value='';
             loadSubnets();loadStatus();
         }).catch(function(e){ CSM.toast('Error: ' + e, 'error'); });
-    }).catch(function(){});
+    }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 });
 
 function loadBlocked(){
@@ -131,13 +131,13 @@ function bulkUnblock() {
             CSM.toast('Unblocked ' + (data.succeeded || 0) + ' of ' + (data.total || 0) + ' IPs', 'success');
             loadBlocked(); loadStatus();
         }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
-    }).catch(function() {});
+    }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 
 function unblockIP(ip){
     CSM.confirm('Unblock '+ip+'?').then(function(){
         CSM.post('/api/v1/unblock-ip',{ip:ip}).then(function(){loadBlocked();loadStatus();}).catch(function(e){ CSM.toast('Error: ' + e, 'error'); });
-    }).catch(function(){});
+    }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 
 document.getElementById('block-form').addEventListener('submit',function(e){
@@ -151,7 +151,7 @@ document.getElementById('block-form').addEventListener('submit',function(e){
             document.getElementById('block-reason').value='';
             loadBlocked();loadStatus();
         }).catch(function(e){ CSM.toast('Error: ' + e, 'error'); });
-    }).catch(function(){});
+    }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 });
 
 // --- Whitelist management ---
@@ -183,7 +183,7 @@ function removeWhitelist(ip){
             CSM.toast('Removed from whitelist','success');
             loadWhitelist();loadStatus();
         }).catch(function(e){ CSM.toast('Error: '+e,'error'); });
-    }).catch(function(){});
+    }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 
 document.getElementById('whitelist-form').addEventListener('submit',function(e){
@@ -196,7 +196,7 @@ document.getElementById('whitelist-form').addEventListener('submit',function(e){
             CSM.toast('IP whitelisted','success');
             loadWhitelist();loadBlocked();loadStatus();
         }).catch(function(e){ CSM.toast('Error: '+e,'error'); });
-    }).catch(function(){});
+    }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 });
 
 // --- GeoIP enrichment (batch) ---

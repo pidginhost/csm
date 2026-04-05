@@ -391,13 +391,13 @@ function fixOne(btn) {
                 btn.innerHTML = '<i class="ti ti-tool"></i>';
             }
         }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); btn.disabled = false; btn.innerHTML = '<i class="ti ti-tool"></i>'; });
-    }).catch(function() {});
+    }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 
 function dismissOne(key) {
     CSM.confirm('Dismiss this finding?').then(function() {
         CSM.post('/api/v1/dismiss', {key: key}).then(function() { clearAndReload(); }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
-    }).catch(function() {});
+    }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 
 function suppressFinding(check, message, filePath) {
@@ -450,7 +450,7 @@ function bulkAction(action) {
                 CSM.toast('Fixed ' + data.succeeded + ' of ' + data.total + (data.failed > 0 ? ' (' + data.failed + ' failed)' : ''), 'success');
                 clearAndReload();
             }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
-        }).catch(function() {});
+        }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 
     } else if (action === 'dismiss') {
         CSM.confirm('Dismiss ' + items.length + ' finding(s)?').then(function() {
@@ -469,7 +469,7 @@ function bulkAction(action) {
                 }
                 clearAndReload();
             });
-        }).catch(function() {});
+        }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 
     } else if (action === 'quarantine') {
         CSM.confirm('Quarantine ' + items.length + ' file(s)?\n\nFiles will be moved to /opt/csm/quarantine/').then(function() {
@@ -478,7 +478,7 @@ function bulkAction(action) {
                 CSM.toast('Quarantined ' + data.succeeded + ' of ' + data.total, 'success');
                 clearAndReload();
             }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
-        }).catch(function() {});
+        }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
     }
 }
 

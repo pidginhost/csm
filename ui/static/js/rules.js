@@ -9,7 +9,7 @@ function loadStatus() {
         if (!data.yara_available) {
             document.getElementById('stat-yara').title = 'Binary compiled without YARA-X support (build tag: yara)';
         }
-        document.getElementById('stat-version').textContent = data.yaml_version || '—';
+        document.getElementById('stat-version').textContent = data.yaml_version || '-';
         document.getElementById('stat-autoupdate').textContent = data.auto_update ? 'Enabled' : 'Disabled';
         if (data.rules_dir) {
             document.getElementById('rules-dir').textContent = 'Rules directory: ' + data.rules_dir;
@@ -61,7 +61,7 @@ document.getElementById('btn-reload').addEventListener('click', function() {
             btn.innerHTML = '<i class="ti ti-refresh"></i>&nbsp;Reload Rules';
             CSM.toast('Reload failed: ' + e, 'error');
         });
-    }).catch(function() {});
+    }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 });
 
 document.getElementById('btn-test-alert').addEventListener('click', function() {
@@ -94,7 +94,7 @@ function loadSuppressions() {
         html += '<thead><tr><th>Check</th><th>Path Pattern</th><th>Reason</th><th>Created</th><th>Actions</th></tr></thead><tbody>';
         for (var i = 0; i < data.length; i++) {
             var s = data[i];
-            var created = s.created_at ? new Date(s.created_at).toLocaleString() : '—';
+            var created = s.created_at ? new Date(s.created_at).toLocaleString() : '-';
             html += '<tr>';
             html += '<td><code>' + CSM.esc(s.check) + '</code></td>';
             html += '<td class="font-monospace small">' + CSM.esc(s.path_pattern || '(all)') + '</td>';
@@ -119,7 +119,7 @@ function loadSuppressions() {
                             CSM.toast('Failed: ' + (data.error || 'unknown'), 'error');
                         }
                     }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
-                }).catch(function() {});
+                }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
             });
         });
     }).catch(function(e) { console.error('suppressions:', e); });
@@ -206,7 +206,7 @@ function renderModSecEscalation() {
     var container = document.getElementById('modsec-escalation-list');
     if (!container) return;
     if (_modsecRules.length === 0) {
-        container.innerHTML = '<div class="text-muted small">No rules excluded — all CSM rules (900000-900999) will escalate to firewall blocks.</div>';
+        container.innerHTML = '<div class="text-muted small">No rules excluded - all CSM rules (900000-900999) will escalate to firewall blocks.</div>';
         return;
     }
     var html = '<table class="table table-sm table-vcenter"><thead><tr><th>Rule ID</th><th>Action</th></tr></thead><tbody>';

@@ -43,7 +43,7 @@ function restoreFile(id) {
             else { CSM.toast('Restored: ' + data.path, 'success'); }
             loadQuarantine();
         }).catch(function(e){ CSM.toast('Error: ' + e, 'error'); });
-    }).catch(function(){});
+    }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 function viewFile(id, path) {
     fetch(CSM.apiUrl('/api/v1/quarantine-preview?id=' + encodeURIComponent(id)), { credentials: 'same-origin' })
@@ -144,7 +144,7 @@ if (bulkRestoreBtn) {
                 CSM.toast('Restored ' + succeeded + ' of ' + (succeeded + failed) + ' file(s)', failed > 0 ? 'warning' : 'success');
                 loadQuarantine();
             });
-        }).catch(function() {});
+        }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
     });
 }
 
