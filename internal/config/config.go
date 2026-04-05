@@ -65,7 +65,7 @@ type Config struct {
 		SuppressWebmail       bool     `yaml:"suppress_webmail_alerts"`      // don't alert on webmail logins
 		SuppressCpanelLogin   bool     `yaml:"suppress_cpanel_login_alerts"` // don't alert on cPanel direct logins
 		SuppressBlockedAlerts bool     `yaml:"suppress_blocked_alerts"`      // don't alert on IPs that were auto-blocked
-		TrustedCountries      []string `yaml:"trusted_countries"`            // ISO 3166-1 alpha-2 codes — suppress cPanel login alerts from these countries
+		TrustedCountries      []string `yaml:"trusted_countries"`            // ISO 3166-1 alpha-2 codes - suppress cPanel login alerts from these countries
 	} `yaml:"suppressions"`
 
 	AutoResponse struct {
@@ -104,6 +104,12 @@ type Config struct {
 		UpdateURL      string `yaml:"update_url"`
 		AutoUpdate     bool   `yaml:"auto_update"`     // auto-download rules daily (default: true if update_url set)
 		UpdateInterval string `yaml:"update_interval"` // how often to check (default: "24h")
+		YaraForge      struct {
+			Enabled        bool   `yaml:"enabled"`
+			Tier           string `yaml:"tier"`            // "core", "extended", "full" (default: "core")
+			UpdateInterval string `yaml:"update_interval"` // default: "168h" (weekly)
+		} `yaml:"yara_forge"`
+		DisabledRules []string `yaml:"disabled_rules"` // YARA rule names to exclude from Forge downloads
 	} `yaml:"signatures"`
 
 	WebUI struct {
@@ -189,6 +195,12 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Signatures.RulesDir == "" {
 		cfg.Signatures.RulesDir = "/opt/csm/rules"
+	}
+	if cfg.Signatures.YaraForge.Tier == "" {
+		cfg.Signatures.YaraForge.Tier = "core"
+	}
+	if cfg.Signatures.YaraForge.UpdateInterval == "" {
+		cfg.Signatures.YaraForge.UpdateInterval = "168h"
 	}
 	if cfg.WebUI.Listen == "" {
 		cfg.WebUI.Listen = "0.0.0.0:9443"
