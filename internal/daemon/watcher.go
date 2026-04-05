@@ -278,24 +278,42 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 
 	// 2. Outgoing mail hold — account suspended for spam
 	// Format: "Sender office@nordkey.ro has an outgoing mail hold"
+	// or: "Domain membranaepdm.ro has an outgoing mail hold"
+	// Dedup: only alert once per domain per hour (exim retries held messages
+	// every few minutes, generating the same log line each time)
 	if strings.Contains(line, "outgoing mail hold") {
 		sender := extractMailHoldSender(line)
 		if sender == "" {
-			sender = extractEximSender(line) // fallback
+			sender = extractEximSender(line)
 		}
-		// Auto-suspend: confirmed spam — hold outgoing mail for the cPanel account
+		domain := extractDomainFromEmail(sender)
+		if domain == "" {
+			domain = sender // may already be a bare domain
+		}
+
+		// Auto-suspend regardless of dedup — idempotent, ensures hold stays on
 		if sender != "" {
 			autoSuspendOutgoingMail(sender)
 		}
-		findings = append(findings, alert.Finding{
-			Severity: alert.Critical,
-			Check:    "email_compromised_account",
-			Message:  fmt.Sprintf("Account %s has outgoing mail hold — outgoing mail auto-suspended", sender),
-			Details:  truncateDaemon(line, 300),
-		})
-		domain := extractDomainFromEmail(sender)
 		if domain != "" {
 			RecordCompromisedDomain(domain)
+		}
+
+		// Alert only once per domain per hour
+		dedupKey := "email_hold:" + domain
+		if db := store.Global(); db != nil {
+			lastAlert := db.GetMetaString(dedupKey)
+			if lastAlert != "" && !isDedupExpired(lastAlert, 1*time.Hour) {
+				// Already alerted for this domain recently — skip finding
+			} else {
+				_ = db.SetMetaString(dedupKey, time.Now().Format(time.RFC3339))
+				findings = append(findings, alert.Finding{
+					Severity: alert.Critical,
+					Check:    "email_compromised_account",
+					Message:  fmt.Sprintf("Account %s has outgoing mail hold — outgoing mail auto-suspended", sender),
+					Details:  truncateDaemon(line, 300),
+				})
+			}
 		}
 	}
 
