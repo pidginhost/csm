@@ -921,10 +921,12 @@ func (d *Daemon) startChallengeServer() {
 		return
 	}
 
-	var unblocker challenge.IPUnblocker
-	if d.fwEngine != nil {
-		unblocker = d.fwEngine
+	if d.fwEngine == nil {
+		fmt.Fprintf(os.Stderr, "[%s] Challenge server requires firewall to be enabled (for escalation and allow). Skipping.\n", ts())
+		return
 	}
+
+	unblocker := challenge.IPUnblocker(d.fwEngine)
 
 	d.ipList = challenge.NewIPList(d.cfg.StatePath)
 	checks.SetChallengeIPList(d.ipList)
@@ -1199,7 +1201,7 @@ func (d *Daemon) signatureUpdater() {
 	defer d.wg.Done()
 
 	yamlEnabled := d.cfg.Signatures.UpdateURL != ""
-	forgeEnabled := d.cfg.Signatures.YaraForge.Enabled
+	forgeEnabled := d.cfg.Signatures.YaraForge.Enabled && yara.Available()
 
 	if !yamlEnabled && !forgeEnabled {
 		return
@@ -1267,6 +1269,13 @@ func (d *Daemon) doSignatureUpdate() {
 }
 
 func (d *Daemon) doForgeUpdate() {
+	yaraScanner := yara.Global()
+	if yaraScanner == nil {
+		// No YARA scanner active (build without yara tag or no rules dir).
+		// Skip Forge update - rules can't be loaded anyway.
+		return
+	}
+
 	db := store.Global()
 	currentVersion := ""
 	if db != nil {
@@ -1289,13 +1298,28 @@ func (d *Daemon) doForgeUpdate() {
 
 	fmt.Fprintf(os.Stderr, "[%s] YARA Forge update: %d rules (version %s)\n", ts(), count, newVersion)
 
-	if yaraScanner := yara.Global(); yaraScanner != nil {
-		if err := yaraScanner.Reload(); err != nil {
-			fmt.Fprintf(os.Stderr, "[%s] YARA rule reload after Forge update error: %v\n", ts(), err)
-			return
-		}
-		fmt.Fprintf(os.Stderr, "[%s] Reloaded %d YARA rules after Forge update\n", ts(), yaraScanner.RuleCount())
+	// Record rule count before reload to detect conflicts with existing .yar files.
+	prevCount := yaraScanner.RuleCount()
+
+	if err := yaraScanner.Reload(); err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] YARA rule reload after Forge update error: %v\n", ts(), err)
+		return // don't store version - retry next cycle
 	}
+
+	newCount := yaraScanner.RuleCount()
+
+	// If rule count dropped, the Forge file likely conflicts with existing rules.
+	// Roll back: remove the Forge file, reload again, don't store version.
+	if newCount < prevCount {
+		forgeFile := filepath.Join(d.cfg.Signatures.RulesDir, fmt.Sprintf("yara-forge-%s.yar", d.cfg.Signatures.YaraForge.Tier))
+		fmt.Fprintf(os.Stderr, "[%s] YARA Forge rollback: rule count dropped %d -> %d (conflict with existing rules), removing %s\n",
+			ts(), prevCount, newCount, forgeFile)
+		_ = os.Remove(forgeFile)
+		_ = yaraScanner.Reload()
+		return // don't store version
+	}
+
+	fmt.Fprintf(os.Stderr, "[%s] Reloaded %d YARA rules after Forge update\n", ts(), newCount)
 
 	if db != nil {
 		_ = db.SetMetaString("forge_version_"+d.cfg.Signatures.YaraForge.Tier, newVersion)
