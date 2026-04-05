@@ -1,6 +1,6 @@
 # Deep Checks
 
-25 checks, run every 60 minutes. Thorough filesystem and database scans.
+28 checks, run every 60 minutes. Thorough filesystem and database scans.
 
 ## Filesystem
 

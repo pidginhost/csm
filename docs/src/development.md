@@ -28,15 +28,17 @@ Linter config in `.golangci.yml`: errcheck, govet, staticcheck, unused, ineffass
 
 ## CI/CD
 
-GitLab CI (`.gitlab-ci.yml`). Stages: lint, test, build, package, publish, cleanup.
+GitLab CI (`.gitlab-ci.yml`). Stages: lint, test, build-image, build, package, publish, cleanup, release.
 
 | Stage | What it does |
 |-------|-------------|
 | **lint** | golangci-lint + gofmt check |
 | **test** | `go test -v -race -short ./...` |
+| **build-image** | Build CSM builder Docker image with YARA-X (manual trigger) |
 | **build** | Two architectures (amd64 with YARA-X CGO, arm64 pure Go) |
 | **package** | RPM + DEB via nFPM |
 | **publish** | GitLab Generic Package Registry (versioned + `latest`) |
+| **cleanup** | Clean old package versions |
 | **release** | On tags matching `v*` |
 
 ## Deployment
@@ -52,7 +54,7 @@ GitLab CI (`.gitlab-ci.yml`). Stages: lint, test, build, package, publish, clean
 - **Imports:** stdlib, blank line, third-party, blank line, internal. Use `goimports -local github.com/pidginhost/csm`
 - **Errors:** Return up the call stack. Wrap with `fmt.Errorf("context: %w", err)`
 - **Store:** `store.Global()` singleton bbolt DB. Always nil-check.
-- **State:** `state.Store` in-memory findings/stats, passed to subsystems at init
+- **State:** `state.Store` handles finding dedup, alert throttling, baseline tracking, latest findings persistence. Passed to subsystems at init
 - **Web UI:** Vanilla JS, no framework, no build step. Tabler CSS framework. All API calls via `CSM.apiUrl()` / `CSM.post()`. Escape with `CSM.esc()`.
 
 ## Building the Documentation

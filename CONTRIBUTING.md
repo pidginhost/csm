@@ -3,7 +3,7 @@
 ## Development Environment
 
 **Requirements:**
-- Go 1.23+
+- Go 1.26+
 - `make`
 - `golangci-lint` (`go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`)
 - YARA-X (optional, for YARA rule support — build with `-tags yara`)

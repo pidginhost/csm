@@ -1,6 +1,6 @@
 # API Reference
 
-55+ REST endpoints. All require token authentication. POST mutations require CSRF token.
+65+ REST endpoints. All require token authentication. POST mutations require CSRF token.
 
 ## Authentication
 

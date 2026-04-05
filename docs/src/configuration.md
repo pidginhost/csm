@@ -92,6 +92,58 @@ suppressions:
 # --- Signatures ---
 signatures:
   rules_dir: "/opt/csm/rules"
+
+# --- State ---
+state_path: "/opt/csm/state"       # bbolt DB and state files
+
+# --- Integrity ---
+integrity:
+  binary_hash: ""                   # auto-populated by install/rehash
+  config_hash: ""
+
+# --- Thresholds ---
+thresholds:
+  mail_queue_warn: 100
+  mail_queue_crit: 500
+  deep_scan_interval_min: 60       # minutes between deep scans
+
+# --- ModSecurity ---
+modsec_error_log: "/usr/local/apache/logs/error_log"
+modsec:
+  rules_file: "/etc/apache2/conf.d/modsec/csm_modsec_custom.conf"
+  overrides_file: "/etc/apache2/conf.d/modsec/csm_overrides.conf"
+  reload_cmd: "/scripts/restartsrv_httpd"
+
+# --- Email AV ---
+email_av:
+  enabled: false
+  clamav_socket: "/var/run/clamd.scan/clamd.sock"
+
+# --- Email Protection ---
+email_protection:
+  rate_limit:
+    enabled: false
+
+# --- Reputation ---
+reputation:
+  abuseipdb_key: ""
+  whitelist: []
+
+# --- Challenge Pages ---
+challenge:
+  enabled: false
+  difficulty: 4                    # SHA-256 proof-of-work difficulty
+
+# --- PHP Shield ---
+php_shield: false
+
+# --- Performance ---
+performance:
+  load_warn: 10.0
+  load_crit: 20.0
+  php_processes_warn: 50
+  php_processes_crit: 100
+  swap_warn_pct: 50
 ```
 
 ## Validation

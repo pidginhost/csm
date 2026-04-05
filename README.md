@@ -25,13 +25,13 @@ csm daemon
  +-- inotify log watchers          ~2s login/auth anomaly detection
  +-- PAM brute-force listener      Real-time login failure blocking
  +-- critical scanner (10 min)     34 checks: processes, network, auth, reputation
- +-- deep scanner (60 min)         25 checks: filesystem, WP integrity, phishing, DB
+ +-- deep scanner (60 min)         28 checks: filesystem, WP integrity, phishing, DB
  +-- nftables firewall             Kernel netlink API, IP sets, rate limiting
  +-- ModSecurity manager           Rule deployment, overrides, escalation
  +-- threat intelligence           IP scoring, GeoIP, attack correlation
  +-- email AV                      ClamAV + YARA-X on Exim spool
  +-- performance monitor           PHP, MySQL, Redis, WordPress metrics
- +-- web UI                        12-page HTTPS dashboard
+ +-- web UI                        13-page HTTPS dashboard
  +-- alert dispatcher              Email, Slack, Discord, webhooks
 ```
 
@@ -65,7 +65,7 @@ csm daemon
 |-----------|-------|--------|
 | fanotify | < 1 second | ~5 MB |
 | Critical checks (34) | < 1 sec | ~35 MB peak |
-| Deep checks (25) | ~40 sec | ~100 MB peak |
+| Deep checks (28) | ~40 sec | ~100 MB peak |
 | Daemon idle | — | 45 MB resident |
 
 ## Documentation

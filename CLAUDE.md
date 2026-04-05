@@ -20,7 +20,8 @@ internal/
   checks/           — Security check implementations (waf, webshell, permissions, etc.)
   config/           — YAML config parsing
   store/            — bbolt persistent storage (findings, threat DB, hit counters)
-  state/            — In-memory state (findings, stats, history ring buffer)
+  state/            — Finding dedup, alert throttling, baseline tracking, latest findings persistence
+  mime/             — MIME email parsing, attachment extraction (used by emailav)
   webui/            — HTTPS web UI server (Go templates + vanilla JS)
   firewall/         — nftables firewall management
   modsec/           — ModSecurity config parser, overrides, reload
@@ -62,13 +63,15 @@ gofmt -l .                    # must produce no output
 
 ## CI/CD Pipeline
 
-**GitLab CI** at `.gitlab-ci.yml`. Stages: lint → test → build → package → publish → cleanup.
+**GitLab CI** at `.gitlab-ci.yml`. Stages: lint → test → build-image → build → package → publish → cleanup → release.
 
 - **lint:** golangci-lint + gofmt check
 - **test:** `go test -v -race -short ./...`
+- **build-image:** Build CSM builder Docker image with YARA-X (manual trigger, on YARA upgrade)
 - **build:** Two architectures (amd64 with YARA-X CGO, arm64 pure Go)
 - **package:** RPM + DEB via nFPM
 - **publish:** GitLab Generic Package Registry (versioned + `latest`)
+- **cleanup:** Clean old package versions
 - **release:** On tags matching `v*`
 
 ## Deployment
@@ -87,7 +90,7 @@ The CI pipeline builds, tests, lints, packages, and publishes. Production server
 - **Imports:** stdlib → blank line → third-party → blank line → internal packages. Use `goimports` with `-local github.com/pidginhost/csm`
 - **Error handling:** Return errors up the call stack. Use `fmt.Errorf("context: %w", err)` for wrapping
 - **Store pattern:** `store.Global()` returns the singleton bbolt DB. Nil-safe — always check `if db := store.Global(); db != nil`
-- **State pattern:** `state.Store` is the in-memory findings/stats store, passed to subsystems at init
+- **State pattern:** `state.Store` handles finding dedup (SHA256 hashing), alert throttling, baseline tracking, and latest findings persistence. Passed to subsystems at init
 - **Config:** Single `config.Config` struct parsed from YAML, passed by pointer
 - **No generics abuse** — keep it simple, idiomatic Go
 

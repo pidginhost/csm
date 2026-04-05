@@ -17,6 +17,7 @@ HTTPS dashboard with polling-based live updates (10s feed, 30s stats). Dark/ligh
 | **Threat Intel** | `/threat` | IP lookup with scoring/GeoIP/ASN, top attackers, attack type charts, trends |
 | **Incidents** | `/incident` | Forensic timeline correlating events by IP or account |
 | **Rules** | `/rules` | YAML/YARA rule management, suppressions, state export/import, test alerts |
+| **Account** | `/account` | Per-account analysis: findings, quarantine, history, on-demand scan |
 | **Audit** | `/audit` | System-wide action log (block, fix, dismiss, whitelist, restore) |
 | **Performance** | `/performance` | Server load, PHP processes, MySQL, Redis, WordPress metrics |
 
