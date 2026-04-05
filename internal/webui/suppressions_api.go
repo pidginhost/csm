@@ -74,6 +74,6 @@ func (s *Server) apiSuppressions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]string{"status": "deleted"})
 
 	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }

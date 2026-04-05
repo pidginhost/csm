@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/pidginhost/csm/internal/attackdb"
@@ -37,11 +36,9 @@ func (s *Server) apiThreatTopAttackers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit := 25
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 200 {
-			limit = n
-		}
+	limit := queryInt(r, "limit", 25)
+	if limit > 200 {
+		limit = 200
 	}
 
 	recs := adb.TopAttackers(limit)
@@ -88,8 +85,7 @@ func (s *Server) apiThreatTopAttackers(w http.ResponseWriter, r *http.Request) {
 func (s *Server) apiThreatIP(w http.ResponseWriter, r *http.Request) {
 	ip := r.URL.Query().Get("ip")
 	if ip == "" || net.ParseIP(ip) == nil {
-		w.WriteHeader(http.StatusBadRequest)
-		writeJSON(w, map[string]string{"error": "invalid or missing ip parameter"})
+		writeJSONError(w, "invalid or missing ip parameter", http.StatusBadRequest)
 		return
 	}
 
@@ -113,16 +109,13 @@ func (s *Server) apiThreatIP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) apiThreatEvents(w http.ResponseWriter, r *http.Request) {
 	ip := r.URL.Query().Get("ip")
 	if ip == "" || net.ParseIP(ip) == nil {
-		w.WriteHeader(http.StatusBadRequest)
-		writeJSON(w, map[string]string{"error": "invalid or missing ip parameter"})
+		writeJSONError(w, "invalid or missing ip parameter", http.StatusBadRequest)
 		return
 	}
 
-	limit := 50
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 500 {
-			limit = n
-		}
+	limit := queryInt(r, "limit", 50)
+	if limit > 500 {
+		limit = 500
 	}
 
 	adb := attackdb.Global()
@@ -159,7 +152,7 @@ func (s *Server) apiThreatDBStats(w http.ResponseWriter, r *http.Request) {
 // Unblocks, removes from threat DB + attack DB, adds to whitelist.
 func (s *Server) apiThreatWhitelistIP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -167,13 +160,11 @@ func (s *Server) apiThreatWhitelistIP(w http.ResponseWriter, r *http.Request) {
 		IP string `json:"ip"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IP == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		writeJSON(w, map[string]string{"error": "IP is required"})
+		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
 	if net.ParseIP(req.IP) == nil {
-		w.WriteHeader(http.StatusBadRequest)
-		writeJSON(w, map[string]string{"error": "invalid IP address"})
+		writeJSONError(w, "invalid IP address", http.StatusBadRequest)
 		return
 	}
 
@@ -231,7 +222,7 @@ func (s *Server) apiThreatWhitelist(w http.ResponseWriter, r *http.Request) {
 // POST /api/v1/threat/unwhitelist-ip - remove an IP from the whitelist
 func (s *Server) apiThreatUnwhitelistIP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -239,13 +230,11 @@ func (s *Server) apiThreatUnwhitelistIP(w http.ResponseWriter, r *http.Request) 
 		IP string `json:"ip"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IP == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		writeJSON(w, map[string]string{"error": "IP is required"})
+		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
 	if net.ParseIP(req.IP) == nil {
-		w.WriteHeader(http.StatusBadRequest)
-		writeJSON(w, map[string]string{"error": "invalid IP address"})
+		writeJSONError(w, "invalid IP address", http.StatusBadRequest)
 		return
 	}
 
@@ -268,7 +257,7 @@ func (s *Server) apiThreatUnwhitelistIP(w http.ResponseWriter, r *http.Request) 
 // POST /api/v1/threat/block-ip - manually block an IP for 24 hours.
 func (s *Server) apiThreatBlockIP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -276,8 +265,7 @@ func (s *Server) apiThreatBlockIP(w http.ResponseWriter, r *http.Request) {
 		IP string `json:"ip"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IP == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		writeJSON(w, map[string]string{"error": "IP is required"})
+		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
 	if _, err := parseAndValidateIP(req.IP); err != nil {
@@ -290,14 +278,12 @@ func (s *Server) apiThreatBlockIP(w http.ResponseWriter, r *http.Request) {
 	// 1. Block in firewall with 24h expiry
 	if s.blocker != nil {
 		if err := s.blocker.BlockIP(req.IP, "Manually blocked via CSM Web UI", 24*time.Hour); err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			writeJSON(w, map[string]string{"error": fmt.Sprintf("block failed: %v", err)})
+			writeJSONError(w, fmt.Sprintf("block failed: %v", err), http.StatusInternalServerError)
 			return
 		}
 		actions = append(actions, "blocked in firewall for 24h")
 	} else {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		writeJSON(w, map[string]string{"error": "firewall engine not available"})
+		writeJSONError(w, "firewall engine not available", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -325,7 +311,7 @@ func (s *Server) apiThreatBlockIP(w http.ResponseWriter, r *http.Request) {
 // For dynamic IP customers: one-time cleanup, IP can be re-blocked later.
 func (s *Server) apiThreatClearIP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -333,13 +319,11 @@ func (s *Server) apiThreatClearIP(w http.ResponseWriter, r *http.Request) {
 		IP string `json:"ip"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IP == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		writeJSON(w, map[string]string{"error": "IP is required"})
+		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
 	if net.ParseIP(req.IP) == nil {
-		w.WriteHeader(http.StatusBadRequest)
-		writeJSON(w, map[string]string{"error": "invalid IP address"})
+		writeJSONError(w, "invalid IP address", http.StatusBadRequest)
 		return
 	}
 
@@ -379,7 +363,7 @@ func (s *Server) apiThreatClearIP(w http.ResponseWriter, r *http.Request) {
 // POST /api/v1/threat/temp-whitelist-ip - whitelist for a specified duration.
 func (s *Server) apiThreatTempWhitelistIP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -388,13 +372,11 @@ func (s *Server) apiThreatTempWhitelistIP(w http.ResponseWriter, r *http.Request
 		Hours int    `json:"hours"` // default 24
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IP == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		writeJSON(w, map[string]string{"error": "IP is required"})
+		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
 	if net.ParseIP(req.IP) == nil {
-		w.WriteHeader(http.StatusBadRequest)
-		writeJSON(w, map[string]string{"error": "invalid IP address"})
+		writeJSONError(w, "invalid IP address", http.StatusBadRequest)
 		return
 	}
 	if req.Hours <= 0 {

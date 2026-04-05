@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -545,7 +546,7 @@ func csvEscape(s string) string {
 // POST /api/v1/fix  body: {"check": "check_type", "message": "...", "details": "..."}
 func (s *Server) apiFix(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -581,7 +582,7 @@ func (s *Server) apiFix(w http.ResponseWriter, r *http.Request) {
 // POST /api/v1/fix-bulk  body: [{"check":"...", "message":"...", "details":"..."}, ...]
 func (s *Server) apiBulkFix(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -665,7 +666,7 @@ func (s *Server) apiAccounts(w http.ResponseWriter, _ *http.Request) {
 // POST /api/v1/block-ip  body: {"ip": "1.2.3.4", "reason": "..."}
 func (s *Server) apiBlockIP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -706,7 +707,7 @@ func (s *Server) apiBlockIP(w http.ResponseWriter, r *http.Request) {
 // POST /api/v1/unblock-ip  body: {"ip": "1.2.3.4"}
 func (s *Server) apiUnblockIP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -742,7 +743,7 @@ func (s *Server) apiUnblockIP(w http.ResponseWriter, r *http.Request) {
 // apiUnblockBulk unblocks multiple IPs at once.
 func (s *Server) apiUnblockBulk(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -882,7 +883,7 @@ func (s *Server) apiBlockedIPs(w http.ResponseWriter, _ *http.Request) {
 // POST /api/v1/dismiss  body: {"key": "check:message"}
 func (s *Server) apiDismissFinding(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -904,7 +905,7 @@ func (s *Server) apiDismissFinding(w http.ResponseWriter, r *http.Request) {
 // POST /api/v1/quarantine-restore  body: {"id": "filename"}
 func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -986,11 +987,15 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 		_ = src.Close()
 		_ = dst.Close()
 		if copyErr != nil {
-			os.Remove(meta.OriginalPath)
+			if err := os.Remove(meta.OriginalPath); err != nil && !os.IsNotExist(err) {
+				log.Printf("webui: failed to remove %s: %v", meta.OriginalPath, err)
+			}
 			writeJSONError(w, fmt.Sprintf("Cannot write restored file: %v", copyErr), http.StatusInternalServerError)
 			return
 		}
-		os.Remove(quarFile)
+		if err := os.Remove(quarFile); err != nil && !os.IsNotExist(err) {
+			log.Printf("webui: failed to remove %s: %v", quarFile, err)
+		}
 	}
 
 	// Restore ownership
@@ -999,7 +1004,9 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 	_ = os.Chmod(meta.OriginalPath, restoredMode)
 
 	// Remove metadata sidecar
-	os.Remove(metaFile)
+	if err := os.Remove(metaFile); err != nil && !os.IsNotExist(err) {
+		log.Printf("webui: failed to remove %s: %v", metaFile, err)
+	}
 
 	s.auditLog(r, "restore", meta.OriginalPath, "quarantine restore")
 	writeJSON(w, map[string]string{
@@ -1052,7 +1059,7 @@ func (s *Server) apiQuarantinePreview(w http.ResponseWriter, r *http.Request) {
 // apiTestAlert sends a test finding through all configured alert channels.
 func (s *Server) apiTestAlert(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	testFinding := []alert.Finding{{
@@ -1075,7 +1082,7 @@ func (s *Server) apiTestAlert(w http.ResponseWriter, r *http.Request) {
 // POST /api/v1/scan-account  body: {"account": "username"}
 func (s *Server) apiScanAccount(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -1176,7 +1183,7 @@ func (s *Server) apiExport(w http.ResponseWriter, _ *http.Request) {
 // apiImport merges an exported state bundle into the current state.
 func (s *Server) apiImport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
