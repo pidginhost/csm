@@ -98,14 +98,13 @@ function renderFindings(data) {
     var html = '';
     for (var k = 0; k < findings.length; k++) {
         var f = findings[k];
-        html += '<tr class="finding-row"' +
+        html += '<tr class="finding-row feed-item"' +
             ' data-check="' + CSM.esc(f.check) + '"' +
             ' data-message="' + CSM.esc(f.message) + '"' +
             ' data-filepath="' + CSM.esc(f.file_path || '') + '"' +
             ' data-account="' + CSM.esc(f.account || '') + '"' +
             ' data-hasFix="' + (f.has_fix ? 'true' : 'false') + '"' +
-            ' data-fixdesc="' + CSM.esc(f.fix_desc || '') + '"' +
-            ' style="cursor:pointer">' +
+            ' data-fixdesc="' + CSM.esc(f.fix_desc || '') + '">' +
             '<td><input type="checkbox" class="form-check-input row-checkbox"></td>' +
             '<td><span class="badge badge-' + CSM.esc(f.sev_class) + '">' + CSM.esc(f.severity) + '</span></td>' +
             '<td><code>' + CSM.esc(f.check) + '</code></td>' +

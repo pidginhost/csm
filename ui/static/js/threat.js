@@ -120,7 +120,7 @@ fetch(CSM.apiUrl('/api/v1/threat/top-attackers?limit=50'),{credentials:'same-ori
         var statusBadge=r.currently_blocked?'<span class="badge bg-dark">Blocked</span>':
                         r.in_threat_db?'<span class="badge bg-danger-lt">Threat DB</span>':
                         '<span class="text-muted">\u2014</span>';
-        html+='<tr class="ip-row" style="cursor:pointer" data-ip="'+CSM.esc(r.ip)+'">';
+        html+='<tr class="ip-row feed-item" data-ip="'+CSM.esc(r.ip)+'">';
         html+='<td><code class="font-monospace csm-copy" title="Click to copy">'+CSM.esc(r.ip)+'</code></td>';
         html+='<td class="text-nowrap">'+(r.country?countryFlag(r.country)+' '+CSM.esc(r.country):'')+(r.as_org?' <span class="text-muted small">'+CSM.esc(r.as_org)+'</span>':'')+'</td>';
         html+='<td>'+verdictBadge(r.verdict,r.unified_score)+'</td>';

@@ -58,25 +58,25 @@
     <div class="card mb-3">
         <div class="card-header">
             <h3 class="card-title">
-                <span class="status-dot bg-yellow" id="poll-status-dot" style="margin-right:6px" title="Polling active"></span>
+                <span class="status-dot bg-yellow me-1" id="poll-status-dot" title="Polling active"></span>
                 Live Feed
-                <span class="text-muted ms-2" style="font-size:.75rem">Polling (10s)</span>
+                <span class="text-muted ms-2 small">Polling (10s)</span>
             </h3>
             <div class="card-actions">
                 <span class="text-muted small" id="scan-status"></span>
                 <span class="text-muted small ms-2" id="scan-detail"></span>
             </div>
         </div>
-        <div class="list-group list-group-flush overflow-auto" style="max-height:340px" id="live-feed-entries">
+        <div class="list-group list-group-flush overflow-auto csm-feed-scroll" id="live-feed-entries">
             {{range .RecentFindings}}
-            <div class="list-group-item feed-item" data-ts="{{.TimestampISO}}" style="cursor:pointer">
+            <div class="list-group-item feed-item" data-ts="{{.TimestampISO}}">
                 <div class="row align-items-center">
                     <div class="col-auto"><span class="text-muted font-monospace small">{{.Timestamp}}</span></div>
                     <div class="col-auto"><span class="badge badge-{{.SevClass}}">{{.Severity}}</span></div>
-                    <div class="col"><span class="font-monospace small">{{.Check}}</span> — {{.Message}}</div>
+                    <div class="col"><span class="font-monospace small">{{.Check}}</span> - {{.Message}}</div>
                     {{if .HasFix}}<div class="col-auto"><button class="btn btn-warning btn-sm feed-fix-btn" data-check="{{.Check}}" data-message="{{.Message}}" data-fixdesc="{{.FixDesc}}" title="{{.FixDesc}}"><i class="ti ti-tool"></i></button></div>{{end}}
                 </div>
-                {{if .Details}}<div class="detail d-none mt-2 small text-muted" style="white-space:pre-wrap">{{.Details}}</div>{{end}}
+                {{if .Details}}<div class="detail d-none mt-2 small text-muted csm-detail">{{.Details}}</div>{{end}}
             </div>
             {{else}}
             <div class="list-group-item text-center text-muted py-4">No recent findings. Waiting for events...</div>
@@ -91,7 +91,7 @@
                 <div class="card-header">
                     <h3 class="card-title"><i class="ti ti-chart-area-line"></i>&nbsp;Findings Timeline (24h)</h3>
                 </div>
-                <div class="card-body py-3" style="position:relative;height:220px">
+                <div class="card-body py-3 csm-chart-lg">
                     <canvas id="timeline-chart"></canvas>
                 </div>
             </div>
@@ -101,7 +101,7 @@
                 <div class="card-header">
                     <h3 class="card-title"><i class="ti ti-chart-bar-popular"></i>&nbsp;Top Attack Types</h3>
                 </div>
-                <div class="card-body" style="position:relative;height:220px">
+                <div class="card-body csm-chart-lg">
                     <canvas id="attack-types-chart"></canvas>
                 </div>
             </div>
@@ -113,7 +113,7 @@
         <div class="col-lg-4">
             <div class="card">
                 <div class="card-header"><h3 class="card-title"><i class="ti ti-alert-triangle"></i>&nbsp;Accounts at Risk</h3></div>
-                <div class="card-body p-0 overflow-auto" style="max-height:300px" id="accounts-at-risk">
+                <div class="card-body p-0 overflow-auto csm-list-scroll" id="accounts-at-risk">
                     <div class="text-muted text-center py-3">Loading...</div>
                 </div>
             </div>
@@ -139,7 +139,7 @@
     <!-- 30-Day Trend -->
     <div class="card mb-3">
         <div class="card-header"><h3 class="card-title"><i class="ti ti-chart-line"></i>&nbsp;30-Day Trend</h3></div>
-        <div class="card-body py-3" style="position:relative;height:180px">
+        <div class="card-body py-3 csm-chart-sm">
             <canvas id="trend-chart"></canvas>
         </div>
     </div>

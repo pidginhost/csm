@@ -94,6 +94,36 @@ body.theme-dark { background-color: #1a2234; }
     .csm-input-sm, .csm-input-md, .csm-input-lg { width: 100%; }
 }
 
+/* Container heights */
+.csm-chart-sm { position: relative; height: 180px; }
+.csm-chart-md { position: relative; height: 200px; }
+.csm-chart-lg { position: relative; height: 220px; }
+.csm-feed-scroll { max-height: 340px; overflow-y: auto; }
+.csm-list-scroll { max-height: 300px; overflow-y: auto; }
+.csm-list-scroll-sm { max-height: 250px; overflow-y: auto; }
+
+/* Inline style replacements */
+.csm-toasts { position: fixed; top: 16px; right: 16px; z-index: 9999; max-width: 400px; }
+.csm-apply-bar {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    background: var(--tblr-bg-surface);
+    border-top: 2px solid var(--tblr-primary);
+    padding: 12px 24px; z-index: 1000;
+    display: flex; align-items: center; justify-content: space-between;
+}
+.csm-detail { white-space: pre-wrap; }
+.csm-pre-line { white-space: pre-line; }
+.feed-item { cursor: pointer; }
+
+/* Responsive chart heights */
+@media (max-width: 1024px) {
+    .csm-chart-lg { height: 180px; }
+}
+@media (max-width: 768px) {
+    .csm-chart-sm, .csm-chart-md, .csm-chart-lg { height: 150px; }
+    .csm-feed-scroll, .csm-list-scroll { max-height: 250px; }
+}
+
 /* --- findings.html: sticky filter header -------------------------------- */
 #findings-card > .card-header {
     position: sticky;

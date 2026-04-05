@@ -51,7 +51,7 @@
             html += '<div class="me-2"><span class="badge bg-azure-lt">' + CSM.esc(typeLabel) + '</span></div>';
             html += '<div style="word-break:break-all">' + CSM.esc(e.summary);
             if (e.details) {
-                html += '<div class="text-muted small mt-1" style="white-space:pre-wrap">' + CSM.esc(e.details) + '</div>';
+                html += '<div class="text-muted small mt-1 csm-detail">' + CSM.esc(e.details) + '</div>';
             }
             html += '</div></div>';
         }

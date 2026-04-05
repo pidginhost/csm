@@ -1,4 +1,4 @@
-// CSM Dashboard — polling-based live feed + auto-refresh + Chart.js charts
+// CSM Dashboard - polling-based live feed + auto-refresh + Chart.js charts
 (function() {
     'use strict';
 
@@ -38,7 +38,7 @@
 
     var feed = document.getElementById('live-feed-entries');
 
-    // Notification toggle — gated on BOTH browser permission AND user preference
+    // Notification toggle - gated on BOTH browser permission AND user preference
     // localStorage 'csm-notif' stores the user's opt-in choice ('on' or 'off')
     var notifBtn = document.getElementById('notif-toggle');
     if (notifBtn && 'Notification' in window) {
@@ -77,7 +77,7 @@
 
     // --- Feed enhancement helpers ---
     // Note: innerHTML usage below only renders CSM.esc()-escaped server data and
-    // static markup — no raw user input is injected without escaping.
+    // static markup - no raw user input is injected without escaping.
 
     function addRelativeTime(item) {
         var row = item.querySelector('.row');
@@ -96,7 +96,6 @@
 
     function attachFeedItemListeners(item) {
         CSM.makeClickable(item);
-        item.style.cursor = 'pointer';
         item.addEventListener('click', function(e) {
             if (e.target.closest('button')) return;
             var d = this.querySelector('.detail');
@@ -158,7 +157,7 @@
     // Periodically update relative times
     _trackInterval(setInterval(CSM.initTimeAgo, 5000));
 
-    // Polling — fetch recent history every 10 seconds
+    // Polling - fetch recent history every 10 seconds
     var lastPollTimestamp = '';
     var serverItems = feed ? feed.querySelectorAll('.feed-item[data-ts]') : [];
     if (serverItems.length > 0) {
@@ -461,7 +460,7 @@
         if (el) el.textContent = val;
     }
 
-    // Initialize — two cadences with failure isolation
+    // Initialize - two cadences with failure isolation
     function _startPolling() {
         if (!feed) return;
         // Fast cadence (10s): findings + scan status
@@ -482,7 +481,7 @@
 })();
 
 // ============================================================================
-// Chart.js charts — 24h Timeline, Attack Types, 30-Day Trend
+// Chart.js charts - 24h Timeline, Attack Types, 30-Day Trend
 // ============================================================================
 (function() {
     'use strict';

@@ -1,4 +1,4 @@
-// CSM History tab — API-driven with server-side pagination
+// CSM History tab - API-driven with server-side pagination
 // Loaded inside the Findings page as the "History" tab
 (function() {
     'use strict';
@@ -59,7 +59,7 @@
             return;
         }
 
-        // Build table via DOM methods — all user data escaped via CSM.esc()
+        // Build table via DOM methods - all user data escaped via CSM.esc()
         var wrap = document.createElement('div');
         wrap.className = 'table-responsive';
         var table = document.createElement('table');
@@ -137,11 +137,9 @@
             if (f.details) {
                 var detailTr = document.createElement('tr');
                 detailTr.className = 'details-row';
-                detailTr.style.display = 'none';
                 var detailTd = document.createElement('td');
                 detailTd.colSpan = 5;
-                detailTd.style.cssText = 'white-space:pre-wrap;font-size:0.8rem';
-                detailTd.className = 'text-muted bg-dark-lt';
+                detailTd.className = 'text-muted bg-dark-lt csm-detail small';
                 detailTd.textContent = f.details;
                 detailTr.appendChild(detailTd);
                 tbody.appendChild(detailTr);

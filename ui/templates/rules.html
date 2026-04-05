@@ -3,10 +3,10 @@
 {{define "content"}}
     <!-- Stats Cards -->
     <div class="row row-deck row-cards mb-3">
-        <div class="col-sm-6 col-lg-3"><div class="card"><div class="card-body"><div class="subheader">YAML Rules</div><div class="h1 mb-0" id="stat-yaml">—</div></div></div></div>
-        <div class="col-sm-6 col-lg-3"><div class="card"><div class="card-body"><div class="subheader">YARA Rules</div><div class="h1 mb-0" id="stat-yara">—</div></div></div></div>
-        <div class="col-sm-6 col-lg-3"><div class="card"><div class="card-body"><div class="subheader">Rules Version</div><div class="h1 mb-0" id="stat-version">—</div></div></div></div>
-        <div class="col-sm-6 col-lg-3"><div class="card"><div class="card-body"><div class="subheader">Auto-update</div><div class="h1 mb-0" id="stat-autoupdate">—</div></div></div></div>
+        <div class="col-sm-6 col-lg-3"><div class="card"><div class="card-body"><div class="subheader">YAML Rules</div><div class="h1 mb-0" id="stat-yaml">-</div></div></div></div>
+        <div class="col-sm-6 col-lg-3"><div class="card"><div class="card-body"><div class="subheader">YARA Rules</div><div class="h1 mb-0" id="stat-yara">-</div></div></div></div>
+        <div class="col-sm-6 col-lg-3"><div class="card"><div class="card-body"><div class="subheader">Rules Version</div><div class="h1 mb-0" id="stat-version">-</div></div></div></div>
+        <div class="col-sm-6 col-lg-3"><div class="card"><div class="card-body"><div class="subheader">Auto-update</div><div class="h1 mb-0" id="stat-autoupdate">-</div></div></div></div>
     </div>
 
     <!-- Actions -->
@@ -26,7 +26,7 @@
                     <a href="/api/v1/export" class="btn btn-outline-secondary ms-2"><i class="ti ti-download"></i>&nbsp;Export State</a>
                     <label class="btn btn-outline-secondary ms-2 mb-0">
                         <i class="ti ti-upload"></i>&nbsp;Import State
-                        <input type="file" accept=".json" style="display:none" id="import-file">
+                        <input type="file" accept=".json" class="d-none" id="import-file">
                     </label>
                 </div>
                 <div class="col">
@@ -62,7 +62,7 @@
             <h3 class="card-title"><i class="ti ti-shield-off"></i>&nbsp;ModSecurity Escalation</h3>
         </div>
         <div class="card-body">
-            <p class="text-muted small mb-3">CSM custom ModSecurity rules (900000-900999) can escalate to nftables firewall blocks after repeated denies. Add rule IDs here to disable escalation — the ModSecurity deny (403) still applies, but CSM won't block the IP at the firewall level.</p>
+            <p class="text-muted small mb-3">CSM custom ModSecurity rules (900000-900999) can escalate to nftables firewall blocks after repeated denies. Add rule IDs here to disable escalation - the ModSecurity deny (403) still applies, but CSM won't block the IP at the firewall level.</p>
             <form id="modsec-escalation-form" class="row g-2 align-items-end mb-3">
                 <div class="col-auto">
                     <label class="form-label">Rule ID</label>
@@ -95,7 +95,7 @@
                 </div>
                 <div class="col-sm-3">
                     <label class="form-label">Reason <span class="text-muted">(optional)</span></label>
-                    <input type="text" class="form-control" id="suppress-reason" placeholder="e.g. False positive — JS eval">
+                    <input type="text" class="form-control" id="suppress-reason" placeholder="e.g. False positive - JS eval">
                 </div>
                 <div class="col-sm-2">
                     <button type="submit" class="btn btn-primary w-100"><i class="ti ti-plus"></i>&nbsp;Add Rule</button>

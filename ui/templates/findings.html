@@ -3,7 +3,7 @@
 {{define "content"}}
     <!-- Scan Account -->
     <div class="card mb-3" id="scan-card">
-        <div class="card-header" id="scan-header" style="cursor:pointer">
+        <div class="card-header feed-item" id="scan-header">
             <h3 class="card-title">
                 <i class="ti ti-chevron-down csm-collapse-icon" id="scan-collapse-icon"></i>&nbsp;Scan Account
             </h3>
@@ -11,7 +11,7 @@
         <div class="card-body" id="scan-body">
             <form id="scan-form" class="row g-2 align-items-end">
                 <div class="col-auto">
-                    <input type="text" id="scan-account" list="account-list" class="form-control form-control-sm font-monospace" placeholder="Search accounts..." style="width:250px" autocomplete="off">
+                    <input type="text" id="scan-account" list="account-list" class="form-control form-control-sm font-monospace csm-input-lg" placeholder="Search accounts..." autocomplete="off">
                     <datalist id="account-list"></datalist>
                 </div>
                 <div class="col-auto">
@@ -36,7 +36,7 @@
                 <li class="nav-item">
                     <a class="nav-link active" href="#tab-active" data-bs-toggle="tab">
                         <i class="ti ti-alert-triangle"></i>&nbsp;Active <span id="findings-count"></span>
-                        <span id="severity-badges" class="ms-2 fw-normal" style="font-size:0.8rem"></span>
+                        <span id="severity-badges" class="ms-2 fw-normal small"></span>
                     </a>
                 </li>
                 <li class="nav-item">
@@ -52,17 +52,17 @@
                 <div class="card-body border-bottom py-2">
                     <div class="d-flex gap-2 flex-wrap align-items-center">
                         <input type="text" id="findings-search" class="form-control form-control-sm csm-input-sm" placeholder="Search...">
-                        <select id="check-filter" class="form-select form-select-sm" style="width:auto">
+                        <select id="check-filter" class="form-select form-select-sm">
                             <option value="all">All Types</option>
                         </select>
-                        <input type="search" id="account-filter" list="account-filter-list" class="form-control form-control-sm" placeholder="All Accounts" style="width:140px" autocomplete="off">
+                        <input type="search" id="account-filter" list="account-filter-list" class="form-control form-control-sm csm-input-sm" placeholder="All Accounts" autocomplete="off">
                         <datalist id="account-filter-list"></datalist>
-                        <select id="group-by" class="form-select form-select-sm" style="width:auto" title="Group findings by account or check type">
+                        <select id="group-by" class="form-select form-select-sm" title="Group findings by account or check type">
                             <option value="none">No Grouping</option>
                             <option value="account">Group by Account</option>
                             <option value="check">Group by Check Type</option>
                         </select>
-                        <select id="per-page" class="form-select form-select-sm" style="width:auto">
+                        <select id="per-page" class="form-select form-select-sm">
                             <option value="25">25/page</option>
                             <option value="50">50/page</option>
                             <option value="100">100/page</option>
@@ -115,8 +115,8 @@
             <div class="tab-pane" id="tab-history">
                 <div class="card-body border-bottom py-2">
                     <div class="d-flex gap-2 flex-wrap align-items-center">
-                        <input type="text" id="history-search" class="form-control form-control-sm" placeholder="Search..." style="width:160px">
-                        <select id="sev-filter" class="form-select form-select-sm" style="width:auto">
+                        <input type="text" id="history-search" class="form-control form-control-sm csm-input-sm" placeholder="Search...">
+                        <select id="sev-filter" class="form-select form-select-sm">
                             <option value="all">All Severities</option>
                             <option value="2">Critical</option>
                             <option value="1">High</option>

@@ -41,10 +41,10 @@
             <h3 class="card-title"><i class="ti ti-shield-off"></i>&nbsp;Blocked IPs</h3>
             <div class="card-actions d-flex gap-2 flex-wrap">
                 <button class="btn btn-success btn-sm d-none" id="bulk-unblock-btn" title="Remove firewall block for all selected IPs" aria-label="Bulk unblock selected IPs">Unblock 0 IPs</button>
-                <input type="text" id="blocked-search" class="form-control form-control-sm" placeholder="Search IPs..." style="width:180px">
+                <input type="text" id="blocked-search" class="form-control form-control-sm csm-input-md" placeholder="Search IPs...">
                 <form id="block-form" class="d-flex gap-2">
-                    <input type="text" id="block-ip" class="form-control form-control-sm font-monospace" placeholder="IP address" style="width:160px">
-                    <input type="text" id="block-reason" class="form-control form-control-sm" placeholder="Reason" style="width:180px">
+                    <input type="text" id="block-ip" class="form-control form-control-sm font-monospace csm-input-sm" placeholder="IP address">
+                    <input type="text" id="block-reason" class="form-control form-control-sm csm-input-md" placeholder="Reason">
                     <button type="submit" class="btn btn-danger btn-sm text-nowrap" title="Block this IP address in the firewall"><i class="ti ti-shield-off"></i>&nbsp;Block</button>
                 </form>
             </div>
@@ -58,7 +58,7 @@
             <h3 class="card-title"><i class="ti ti-shield-check"></i>&nbsp;Whitelisted IPs</h3>
             <div class="card-actions">
                 <form id="whitelist-form" class="d-flex gap-2">
-                    <input type="text" id="whitelist-ip" class="form-control form-control-sm font-monospace" placeholder="IP address" style="width:160px">
+                    <input type="text" id="whitelist-ip" class="form-control form-control-sm font-monospace csm-input-sm" placeholder="IP address">
                     <button type="submit" class="btn btn-success btn-sm text-nowrap" title="Allow this IP and prevent future auto-blocking"><i class="ti ti-shield-check"></i>&nbsp;Whitelist</button>
                 </form>
             </div>

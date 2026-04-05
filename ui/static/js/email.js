@@ -138,7 +138,7 @@
             var s = senders[i];
             var pct = Math.round(s.count / maxCount * 100);
             var countClass = s.count >= 100 ? 'text-danger fw-bold' : 'text-muted';
-            html += '<div class="list-group-item" style="cursor:pointer" data-sender-domain="' + CSM.esc(s.domain) + '">';
+            html += '<div class="list-group-item feed-item" data-sender-domain="' + CSM.esc(s.domain) + '">';
             html += '<div class="d-flex align-items-center mb-1">';
             html += '<span class="font-monospace small">' + CSM.esc(s.domain) + '</span>';
             html += '<span class="ms-auto small ' + countClass + '">' + s.count + '</span></div>';
@@ -190,10 +190,10 @@
             html += '</div>';
         }
 
-        // Blocked IPs count — loaded separately
+        // Blocked IPs count - loaded separately
         html += '<div class="d-flex align-items-center">';
         html += '<span class="text-muted small">Email-related Blocked IPs</span>';
-        html += '<span class="ms-auto fw-bold" id="smtp-blocked-count">—</span></div>';
+        html += '<span class="ms-auto fw-bold" id="smtp-blocked-count">-</span></div>';
 
         el.innerHTML = html;
 
@@ -227,7 +227,7 @@
     var emailTable = null;
 
     function loadFindings() {
-        // Always fetch all email checks for the date range — stat cards need the full set
+        // Always fetch all email checks for the date range - stat cards need the full set
         var from = (document.getElementById('filter-from') || {}).value || '';
         var to = (document.getElementById('filter-to') || {}).value || '';
         var params = 'checks=' + EMAIL_CHECKS + '&limit=5000';
@@ -293,7 +293,7 @@
 
             // Detail row (hidden, toggled by clicking the row)
             if (f.details) {
-                html += '<tr class="details-row" style="display:none"><td colspan="6"><div class="small text-muted" style="white-space:pre-wrap">' + CSM.esc(f.details) + '</div></td></tr>';
+                html += '<tr class="details-row"><td colspan="6"><div class="small text-muted csm-detail">' + CSM.esc(f.details) + '</div></td></tr>';
             }
         }
 
@@ -478,7 +478,7 @@
 
             var sep = document.createElement('span');
             sep.className = 'text-muted mx-1';
-            sep.textContent = '—';
+            sep.textContent = '-';
             row.appendChild(sep);
 
             var typeSpan = document.createElement('span');
@@ -496,7 +496,7 @@
             // Show a useful description, not the generic message
             var description = t.message;
             if (!account && description.indexOf('Account has') === 0) {
-                // Old finding without account in message — try to show something useful from details
+                // Old finding without account in message - try to show something useful from details
                 description = 'Spam detected by cPanel';
             }
 
