@@ -136,7 +136,7 @@ func (s *Server) apiModSecBlocks(w http.ResponseWriter, _ *http.Request) {
 				agg.description = desc
 			}
 		}
-		// Skip server IPs and empty hostnames — only show actual domain names.
+		// Skip server IPs and empty hostnames - only show actual domain names.
 		// ModSecurity logs the server IP as hostname when the request doesn't
 		// match a specific vhost (e.g. direct IP access, SNI mismatch).
 		if domain != "" && !looksLikeIP(domain) {
@@ -194,13 +194,14 @@ func (s *Server) apiModSecEvents(w http.ResponseWriter, r *http.Request) {
 
 	findings := deduplicateModSecFindings(s.modsecFindings24h())
 
-	// Reverse to newest first
-	for i, j := 0, len(findings)-1; i < j; i, j = i+1, j-1 {
-		findings[i], findings[j] = findings[j], findings[i]
+	// Collect from the tail (newest entries) to avoid reversing the entire slice
+	start := len(findings) - limit
+	if start < 0 {
+		start = 0
 	}
-
-	var result []modsecEventView
-	for _, f := range findings {
+	result := make([]modsecEventView, 0, limit)
+	for i := len(findings) - 1; i >= start; i-- {
+		f := findings[i]
 		if f.Check == "modsec_csm_block_escalation" {
 			continue
 		}
@@ -221,7 +222,7 @@ func (s *Server) apiModSecEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 // deduplicateModSecFindings merges Apache + LiteSpeed duplicate events.
-// Both log the same block within the same second — keep one with merged fields.
+// Both log the same block within the same second - keep one with merged fields.
 func deduplicateModSecFindings(findings []alert.Finding) []alert.Finding {
 	type dedupKey struct {
 		second string
@@ -298,7 +299,7 @@ func extractModSecIP(f alert.Finding) string {
 		}
 		return ip
 	}
-	// Fallback: LiteSpeed format — IP in [IP:PORT-CONN#VHOST]
+	// Fallback: LiteSpeed format - IP in [IP:PORT-CONN#VHOST]
 	for _, field := range strings.Fields(f.Details) {
 		if strings.HasPrefix(field, "[") && strings.Contains(field, "#") {
 			inner := strings.TrimPrefix(field, "[")

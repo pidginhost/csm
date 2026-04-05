@@ -354,7 +354,12 @@ func (s *Server) sampleMetricsLoop(ctx context.Context) {
 }
 
 // apiPerformance returns the latest performance snapshot plus perf_ findings.
-func (s *Server) apiPerformance(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) apiPerformance(w http.ResponseWriter, r *http.Request) {
+	limit := queryInt(r, "limit", 100)
+	if limit > 500 {
+		limit = 500
+	}
+
 	metrics := s.perfSnapshot.Load()
 
 	latest := s.store.LatestFindings()
@@ -389,6 +394,10 @@ func (s *Server) apiPerformance(w http.ResponseWriter, _ *http.Request) {
 	sort.Slice(views, func(i, j int) bool {
 		return views[i].Severity > views[j].Severity
 	})
+
+	if len(views) > limit {
+		views = views[:limit]
+	}
 
 	writeJSON(w, perfResponse{
 		Metrics:  metrics,

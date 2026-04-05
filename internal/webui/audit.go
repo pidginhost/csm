@@ -3,6 +3,7 @@ package webui
 import (
 	"bufio"
 	"encoding/json"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -51,11 +52,13 @@ func (s *Server) auditLog(r *http.Request, action, target, details string) {
 		return
 	}
 	defer func() { _ = f.Close() }()
-	_, _ = f.Write(data)
+	if _, err := f.Write(data); err != nil {
+		log.Printf("webui: failed to write audit log: %v", err)
+	}
 }
 
 func extractClientIP(r *http.Request) string {
-	// Use RemoteAddr directly — XFF is trivially spoofable and this is
+	// Use RemoteAddr directly - XFF is trivially spoofable and this is
 	// a security audit log, so we only trust the TCP connection source.
 	host := r.RemoteAddr
 	// Strip port from "ip:port" or "[ipv6]:port"
@@ -106,7 +109,11 @@ func (s *Server) searchAuditEntries(search string, limit int) []UIAuditEntry {
 	if search == "" || limit <= 0 {
 		return nil
 	}
-	all := readUIAuditLog(s.cfg.StatePath, 0) // 0 = no limit, get all entries (already newest-first)
+	readLimit := limit * 10
+	if readLimit > 5000 {
+		readLimit = 5000
+	}
+	all := readUIAuditLog(s.cfg.StatePath, readLimit)
 	searchLower := strings.ToLower(search)
 	var matched []UIAuditEntry
 	for _, e := range all {
@@ -128,7 +135,7 @@ func (s *Server) handleAudit(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-// GET /api/v1/audit — return UI audit log
+// GET /api/v1/audit - return UI audit log
 func (s *Server) apiUIAudit(w http.ResponseWriter, r *http.Request) {
 	entries := readUIAuditLog(s.cfg.StatePath, 200)
 	if entries == nil {
