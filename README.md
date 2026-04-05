@@ -1,13 +1,13 @@
-# CSM — Continuous Security Monitor
+# CSM - Continuous Security Monitor
 
-Real-time security monitoring for cPanel/WHM servers. Single Go binary that detects compromises, backdoors, phishing, and suspicious activity — then auto-responds and alerts within seconds.
+Real-time security monitoring for cPanel/WHM servers. Single Go binary that detects compromises, backdoors, phishing, and suspicious activity - then auto-responds and alerts within seconds.
 
 Designed as a full **Imunify360 replacement**. Includes nftables firewall (replaces LFD/fail2ban), ModSecurity management, email AV, threat intelligence, and a web dashboard.
 
 ## Quick Start
 
 ```bash
-curl -sSL https://get.example.com/csm | bash
+curl -sSL https://raw.githubusercontent.com/pidginhost/csm/main/install.sh | bash
 # Or: rpm -i csm-VERSION.x86_64.rpm / dpkg -i csm_VERSION.deb
 
 vi /opt/csm/csm.yaml
@@ -66,11 +66,13 @@ csm daemon
 | fanotify | < 1 second | ~5 MB |
 | Critical checks (34) | < 1 sec | ~35 MB peak |
 | Deep checks (28) | ~40 sec | ~100 MB peak |
-| Daemon idle | — | 45 MB resident |
+| Daemon idle | - | 45 MB resident |
 
 ## Documentation
 
-Full documentation is in the [`docs/`](docs/src/SUMMARY.md) directory, built with [mdBook](https://rust-lang.github.io/mdBook/):
+**[Read the docs online](https://pidginhost.pages.git.pidginhost.net/pidginhost/csm/)**
+
+Full documentation is also in the [`docs/`](docs/src/SUMMARY.md) directory, built with [mdBook](https://rust-lang.github.io/mdBook/):
 
 ```bash
 cd docs && mdbook serve    # local preview at http://localhost:3000
