@@ -163,8 +163,8 @@ func (s *Server) apiThreatWhitelistIP(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
-	if net.ParseIP(req.IP) == nil {
-		writeJSONError(w, "invalid IP address", http.StatusBadRequest)
+	if _, err := parseAndValidateIP(req.IP); err != nil {
+		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -233,8 +233,8 @@ func (s *Server) apiThreatUnwhitelistIP(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
-	if net.ParseIP(req.IP) == nil {
-		writeJSONError(w, "invalid IP address", http.StatusBadRequest)
+	if _, err := parseAndValidateIP(req.IP); err != nil {
+		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -322,8 +322,8 @@ func (s *Server) apiThreatClearIP(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
-	if net.ParseIP(req.IP) == nil {
-		writeJSONError(w, "invalid IP address", http.StatusBadRequest)
+	if _, err := parseAndValidateIP(req.IP); err != nil {
+		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -375,8 +375,8 @@ func (s *Server) apiThreatTempWhitelistIP(w http.ResponseWriter, r *http.Request
 		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
-	if net.ParseIP(req.IP) == nil {
-		writeJSONError(w, "invalid IP address", http.StatusBadRequest)
+	if _, err := parseAndValidateIP(req.IP); err != nil {
+		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if req.Hours <= 0 {
