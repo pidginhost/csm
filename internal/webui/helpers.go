@@ -92,6 +92,30 @@ func validateCIDR(s string) (*net.IPNet, error) {
 	return ipNet, nil
 }
 
+// parseDuration parses a human-friendly duration string from the web UI.
+// Supported formats: "24h", "7d", "30d", "0" (permanent), "" (permanent).
+func parseDuration(s string) time.Duration {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "0" {
+		return 0
+	}
+	if strings.HasSuffix(s, "d") {
+		s = strings.TrimSuffix(s, "d")
+		days := 0
+		for _, c := range s {
+			if c < '0' || c > '9' {
+				return 0
+			}
+			days = days*10 + int(c-'0')
+		}
+		return time.Duration(days) * 24 * time.Hour
+	}
+	if d, err := time.ParseDuration(s); err == nil {
+		return d
+	}
+	return 0
+}
+
 // isPathUnder returns true if the cleaned path is strictly under the base
 // directory. It prevents path traversal via ".." and prefix tricks
 // (e.g., /home/username is not under /home/user).

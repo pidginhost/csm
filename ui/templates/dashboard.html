@@ -59,9 +59,9 @@
                             <div class="h3 mb-0">{{.Uptime}}</div>
                         </div>
                         <div class="text-end">
-                            {{if .FanotifyActive}}<span class="badge bg-green-lt" title="fanotify real-time file monitoring active"><i class="ti ti-eye"></i> fanotify</span>
-                            {{else}}<span class="badge bg-yellow-lt" title="fanotify fallback mode"><i class="ti ti-eye-off"></i> fallback</span>{{end}}
-                            {{if .LogWatchers}}<span class="badge bg-blue-lt ms-1" title="{{.LogWatchers}} log watchers active"><i class="ti ti-file-text"></i> {{.LogWatchers}}</span>{{end}}
+                            {{if .FanotifyActive}}<span class="badge bg-green-lt" title="Real-time filesystem monitoring via fanotify"><i class="ti ti-eye"></i> fanotify</span>
+                            {{else}}<span class="badge bg-yellow-lt" title="Fanotify unavailable, using polling fallback"><i class="ti ti-eye-off"></i> fallback</span>{{end}}
+                            {{if .LogWatchers}}<span class="badge bg-blue-lt ms-1" title="Log files being watched"><i class="ti ti-file-text"></i> {{.LogWatchers}}</span>{{end}}
                         </div>
                     </div>
                 </div>

@@ -260,10 +260,10 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			if count >= threshold && !subnetBlocked[prefix] {
 				cidr := prefix + ".0/24"
 				if sb, ok := fwBlocker.(interface {
-					BlockSubnet(string, string) error
+					BlockSubnet(string, string, time.Duration) error
 				}); ok {
 					reason := fmt.Sprintf("Auto-netblock: %d IPs from %s", count, cidr)
-					if err := sb.BlockSubnet(cidr, reason); err == nil {
+					if err := sb.BlockSubnet(cidr, reason, 0); err == nil {
 						subnetBlocked[prefix] = true
 						actions = append(actions, alert.Finding{
 							Severity:  alert.Critical,

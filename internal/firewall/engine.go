@@ -76,6 +76,7 @@ type SubnetEntry struct {
 	CIDR      string    `json:"cidr"`
 	Reason    string    `json:"reason"`
 	BlockedAt time.Time `json:"blocked_at"`
+	ExpiresAt time.Time `json:"expires_at,omitempty"`
 }
 
 // PortAllowEntry represents a port-specific IP allow (e.g. tcp|in|d=PORT|s=IP).
@@ -1447,7 +1448,8 @@ func (e *Engine) FlushBlocked() error {
 }
 
 // BlockSubnet adds a CIDR range to the blocked subnets set (IPv4 or IPv6).
-func (e *Engine) BlockSubnet(cidr string, reason string) error {
+// timeout 0 = permanent block.
+func (e *Engine) BlockSubnet(cidr string, reason string, timeout time.Duration) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -1472,8 +1474,12 @@ func (e *Engine) BlockSubnet(cidr string, reason string) error {
 		return fmt.Errorf("flushing: %w", err)
 	}
 
-	e.saveSubnetEntry(SubnetEntry{CIDR: network.String(), Reason: reason, BlockedAt: time.Now()})
-	AppendAudit(e.statePath, "block_subnet", network.String(), reason, 0)
+	entry := SubnetEntry{CIDR: network.String(), Reason: reason, BlockedAt: time.Now()}
+	if timeout > 0 {
+		entry.ExpiresAt = time.Now().Add(timeout)
+	}
+	e.saveSubnetEntry(entry)
+	AppendAudit(e.statePath, "block_subnet", network.String(), reason, timeout)
 	return nil
 }
 

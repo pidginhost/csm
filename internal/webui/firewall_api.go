@@ -93,16 +93,24 @@ func (s *Server) apiFirewallSubnets(w http.ResponseWriter, _ *http.Request) {
 		Reason    string `json:"reason"`
 		BlockedAt string `json:"blocked_at"`
 		TimeAgo   string `json:"time_ago"`
+		ExpiresIn string `json:"expires_in"`
 	}
 
 	var result []subnetView
 	for _, sn := range state.BlockedNet {
-		result = append(result, subnetView{
+		v := subnetView{
 			CIDR:      sn.CIDR,
 			Reason:    sn.Reason,
 			BlockedAt: sn.BlockedAt.Format(time.RFC3339),
 			TimeAgo:   timeAgo(sn.BlockedAt),
-		})
+		}
+		if !sn.ExpiresAt.IsZero() {
+			remaining := time.Until(sn.ExpiresAt)
+			v.ExpiresIn = fmt.Sprintf("%dh%dm", int(remaining.Hours()), int(remaining.Minutes())%60)
+		} else {
+			v.ExpiresIn = "permanent"
+		}
+		result = append(result, v)
 	}
 	if result == nil {
 		writeJSON(w, []interface{}{})
@@ -119,8 +127,9 @@ func (s *Server) apiFirewallDenySubnet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		CIDR   string `json:"cidr"`
-		Reason string `json:"reason"`
+		CIDR     string `json:"cidr"`
+		Reason   string `json:"reason"`
+		Duration string `json:"duration"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.CIDR == "" {
 		writeJSONError(w, "CIDR is required", http.StatusBadRequest)
@@ -134,15 +143,17 @@ func (s *Server) apiFirewallDenySubnet(w http.ResponseWriter, r *http.Request) {
 		req.Reason = "Blocked via CSM Web UI"
 	}
 
+	dur := parseDuration(req.Duration)
+
 	sb, ok := s.blocker.(interface {
-		BlockSubnet(string, string) error
+		BlockSubnet(string, string, time.Duration) error
 	})
 	if !ok || sb == nil {
 		writeJSONError(w, "Firewall engine not available", http.StatusServiceUnavailable)
 		return
 	}
 
-	if err := sb.BlockSubnet(req.CIDR, req.Reason); err != nil {
+	if err := sb.BlockSubnet(req.CIDR, req.Reason, dur); err != nil {
 		writeJSONError(w, fmt.Sprintf("Block failed: %v", err), http.StatusInternalServerError)
 		return
 	}

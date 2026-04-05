@@ -28,6 +28,7 @@ type SubnetEntry struct {
 	CIDR      string    `json:"cidr"`
 	Reason    string    `json:"reason"`
 	BlockedAt time.Time `json:"blocked_at"`
+	ExpiresAt time.Time `json:"expires_at,omitempty"`
 }
 
 type PortAllowEntry struct {
@@ -58,7 +59,7 @@ func (e *Engine) UnblockIP(_ string) error                              { return
 func (e *Engine) IsBlocked(_ string) bool                               { return false }
 func (e *Engine) AllowIP(_ string, _ string) error                      { return nil }
 func (e *Engine) RemoveAllowIP(_ string) error                          { return nil }
-func (e *Engine) BlockSubnet(_ string, _ string) error                  { return nil }
+func (e *Engine) BlockSubnet(_ string, _ string, _ time.Duration) error { return nil }
 func (e *Engine) UnblockSubnet(_ string) error                          { return nil }
 func (e *Engine) TempAllowIP(_ string, _ string, _ time.Duration) error { return nil }
 func (e *Engine) AllowIPPort(_ string, _ int, _ string, _ string) error { return nil }

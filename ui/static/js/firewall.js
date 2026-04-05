@@ -35,11 +35,11 @@ function loadSubnets(){
     fetch(CSM.apiUrl('/api/v1/firewall/subnets'),{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(subs){
         var el = document.getElementById('subnet-content');
         if(!subs||subs.length===0){el.innerHTML='<div class="card-body text-center text-muted py-3">No blocked subnets.</div>';return;}
-        var h='<div class="table-responsive"><table class="table table-vcenter card-table" id="subnets-table"><thead><tr><th>CIDR</th><th>Location</th><th>Reason</th><th>Blocked</th><th>Action</th></tr></thead><tbody>';
+        var h='<div class="table-responsive"><table class="table table-vcenter card-table" id="subnets-table"><thead><tr><th>CIDR</th><th>Location</th><th>Reason</th><th>Blocked</th><th>Expires</th><th>Action</th></tr></thead><tbody>';
         for(var i=0;i<subs.length;i++){
             // Use the network base address (strip /mask) for GeoIP lookup
             var baseIP = subs[i].cidr.replace(/\/.*/, '');
-            h+='<tr><td><code class="csm-copy" title="Click to copy">'+CSM.esc(subs[i].cidr)+'</code></td><td class="small text-muted text-nowrap geo-cell" data-ip="'+CSM.esc(baseIP)+'"></td><td class="small">'+CSM.esc(subs[i].reason)+'</td><td class="small text-muted">'+CSM.esc(subs[i].time_ago)+'</td><td><button class="btn btn-sm btn-ghost-secondary remove-subnet-btn" data-cidr="'+CSM.esc(subs[i].cidr)+'" title="Remove subnet block from firewall">Remove</button></td></tr>';
+            h+='<tr><td><code class="csm-copy" title="Click to copy">'+CSM.esc(subs[i].cidr)+'</code></td><td class="small text-muted text-nowrap geo-cell" data-ip="'+CSM.esc(baseIP)+'"></td><td class="small">'+CSM.esc(subs[i].reason)+'</td><td class="small text-muted">'+CSM.esc(subs[i].time_ago)+'</td><td class="small text-muted">'+CSM.esc(subs[i].expires_in)+'</td><td><button class="btn btn-sm btn-ghost-secondary remove-subnet-btn" data-cidr="'+CSM.esc(subs[i].cidr)+'" title="Remove subnet block from firewall">Remove</button></td></tr>';
         }
         h+='</tbody></table></div>';
         el.innerHTML=h;
@@ -61,9 +61,10 @@ document.getElementById('subnet-form').addEventListener('submit',function(e){
     e.preventDefault();
     var cidr=document.getElementById('subnet-cidr').value.trim();
     var reason=document.getElementById('subnet-reason').value.trim()||'Blocked via CSM Web UI';
+    var duration=document.getElementById('subnet-duration').value;
     if(!cidr)return;
     CSM.confirm('Block subnet '+cidr+'?').then(function(){
-        CSM.post('/api/v1/firewall/deny-subnet',{cidr:cidr,reason:reason}).then(function(){
+        CSM.post('/api/v1/firewall/deny-subnet',{cidr:cidr,reason:reason,duration:duration}).then(function(){
             document.getElementById('subnet-cidr').value='';
             document.getElementById('subnet-reason').value='';
             loadSubnets();loadStatus();
@@ -75,13 +76,14 @@ function loadBlocked(){
     fetch(CSM.apiUrl('/api/v1/blocked-ips'),{credentials:'same-origin'}).then(function(r){return r.json()}).then(function(ips){
         var el=document.getElementById('blocked-content');
         if(!ips||ips.length===0){_fwBlockedData=[];el.innerHTML='<div class="card-body text-center text-muted py-3">No blocked IPs.</div>';return;}
-        _fwBlockedData = ips.map(function(b) { return { ip: b.ip, reason: b.reason || '', expires: b.expires_in || '' }; });
+        _fwBlockedData = ips.map(function(b) { return { ip: b.ip, reason: b.reason || '', blocked_at: b.blocked_at || '', expires: b.expires_in || '' }; });
         var h='<div class="table-responsive"><table class="table table-vcenter card-table table-sm" id="blocked-table"><thead><tr>';
         h+='<th><input type="checkbox" class="form-check-input" id="blocked-select-all"></th>';
-        h+='<th>IP</th><th>Location</th><th>Reason</th><th>Expires</th><th>Action</th></tr></thead><tbody>';
+        h+='<th>IP</th><th>Location</th><th>Reason</th><th>Blocked At</th><th>Expires</th><th>Action</th></tr></thead><tbody>';
         for(var i=0;i<ips.length;i++){
+            var blockedAt = ips[i].blocked_at ? CSM.fmtDate(ips[i].blocked_at) : '-';
             h+='<tr><td><input type="checkbox" class="form-check-input blocked-cb" data-ip="'+CSM.esc(ips[i].ip)+'"></td>';
-            h+='<td><code class="csm-copy" title="Click to copy">'+CSM.esc(ips[i].ip)+'</code></td><td class="small text-muted text-nowrap geo-cell" data-ip="'+CSM.esc(ips[i].ip)+'"></td><td class="small">'+CSM.esc(ips[i].reason)+'</td><td class="small text-muted">'+CSM.esc(ips[i].expires_in)+'</td><td><button class="btn btn-sm btn-ghost-secondary fw-unblock-btn" data-ip="'+CSM.esc(ips[i].ip)+'" title="Remove firewall block for this IP">Unblock</button></td></tr>';
+            h+='<td><code class="csm-copy" title="Click to copy">'+CSM.esc(ips[i].ip)+'</code></td><td class="small text-muted text-nowrap geo-cell" data-ip="'+CSM.esc(ips[i].ip)+'"></td><td class="small">'+CSM.esc(ips[i].reason)+'</td><td class="small text-muted">'+blockedAt+'</td><td class="small text-muted">'+CSM.esc(ips[i].expires_in)+'</td><td><button class="btn btn-sm btn-ghost-secondary fw-unblock-btn" data-ip="'+CSM.esc(ips[i].ip)+'" title="Remove firewall block for this IP">Unblock</button></td></tr>';
         }
         h+='</tbody></table></div>';
         el.innerHTML=h;
@@ -147,13 +149,14 @@ document.getElementById('block-form').addEventListener('submit',function(e){
     e.preventDefault();
     var ip=document.getElementById('block-ip').value.trim();
     var reason=document.getElementById('block-reason').value.trim()||'Blocked via CSM Web UI';
+    var duration=document.getElementById('block-duration').value;
     if(!ip)return;
     if(!CSM.validateIP(ip)){
         CSM.toast('Invalid IP address format','error');
         return;
     }
     CSM.confirm('Block IP '+ip+'?').then(function(){
-        CSM.post('/api/v1/block-ip',{ip:ip,reason:reason}).then(function(){
+        CSM.post('/api/v1/block-ip',{ip:ip,reason:reason,duration:duration}).then(function(){
             document.getElementById('block-ip').value='';
             document.getElementById('block-reason').value='';
             loadBlocked();loadStatus();
@@ -281,6 +284,7 @@ if (bulkUnblockBtn) bulkUnblockBtn.addEventListener('click', bulkUnblock);
     var cols = [
         {key:'ip', label:'IP'},
         {key:'reason', label:'Reason'},
+        {key:'blocked_at', label:'Blocked At'},
         {key:'expires', label:'Expires'}
     ];
     document.querySelectorAll('[data-export]').forEach(function(el) {

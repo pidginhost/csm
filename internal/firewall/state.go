@@ -36,5 +36,13 @@ func LoadState(statePath string) (*FirewallState, error) {
 	}
 	state.Blocked = active
 
+	var activeNets []SubnetEntry
+	for _, entry := range state.BlockedNet {
+		if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
+			activeNets = append(activeNets, entry)
+		}
+	}
+	state.BlockedNet = activeNets
+
 	return &state, nil
 }

@@ -905,7 +905,7 @@ func fwDenySubnet() {
 		os.Exit(1)
 	}
 
-	if err := engine.BlockSubnet(cidr, reason); err != nil {
+	if err := engine.BlockSubnet(cidr, reason, 0); err != nil {
 		fmt.Fprintf(os.Stderr, "Error blocking subnet: %v\n", err)
 		os.Exit(1)
 	}

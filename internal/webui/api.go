@@ -670,8 +670,9 @@ func (s *Server) apiBlockIP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		IP     string `json:"ip"`
-		Reason string `json:"reason"`
+		IP       string `json:"ip"`
+		Reason   string `json:"reason"`
+		Duration string `json:"duration"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, "Invalid request body", http.StatusBadRequest)
@@ -689,11 +690,13 @@ func (s *Server) apiBlockIP(w http.ResponseWriter, r *http.Request) {
 		req.Reason = "Blocked via CSM Web UI"
 	}
 
+	dur := parseDuration(req.Duration)
+
 	if s.blocker == nil {
 		writeJSONError(w, "Firewall engine not available", http.StatusServiceUnavailable)
 		return
 	}
-	if err := s.blocker.BlockIP(req.IP, req.Reason, 0); err != nil {
+	if err := s.blocker.BlockIP(req.IP, req.Reason, dur); err != nil {
 		writeJSONError(w, fmt.Sprintf("Block failed: %v", err), http.StatusInternalServerError)
 		return
 	}
