@@ -126,8 +126,8 @@ func (s *Server) apiFirewallDenySubnet(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "CIDR is required", http.StatusBadRequest)
 		return
 	}
-	if _, _, err := net.ParseCIDR(req.CIDR); err != nil {
-		writeJSONError(w, "Invalid CIDR notation", http.StatusBadRequest)
+	if _, err := validateCIDR(req.CIDR); err != nil {
+		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if req.Reason == "" {
@@ -242,11 +242,11 @@ func (s *Server) apiFirewallCheck(w http.ResponseWriter, r *http.Request) {
 	for _, sn := range state.BlockedNet {
 		_, network, err := net.ParseCIDR(sn.CIDR)
 		if err == nil && network.Contains(parsedIP) {
-			result["permanent"] = fmt.Sprintf("Subnet block: %s — %s", sn.CIDR, sn.Reason)
+			result["permanent"] = fmt.Sprintf("Subnet block: %s - %s", sn.CIDR, sn.Reason)
 		}
 	}
 
-	// Check cphulk (cPanel brute force detector) — read-only check
+	// Check cphulk (cPanel brute force detector) - read-only check
 	cphulkOut, cphulkErr := exec.Command("whmapi1", "read_cphulk_records",
 		"list_name=black", "--output=json").Output()
 	if cphulkErr == nil {

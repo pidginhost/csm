@@ -155,7 +155,7 @@ func (s *Server) apiThreatDBStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, result)
 }
 
-// POST /api/v1/threat/whitelist-ip — mark an IP as a known customer
+// POST /api/v1/threat/whitelist-ip - mark an IP as a known customer
 // Unblocks, removes from threat DB + attack DB, adds to whitelist.
 func (s *Server) apiThreatWhitelistIP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
@@ -218,7 +218,7 @@ func (s *Server) apiThreatWhitelistIP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// GET /api/v1/threat/whitelist — list all whitelisted IPs
+// GET /api/v1/threat/whitelist - list all whitelisted IPs
 func (s *Server) apiThreatWhitelist(w http.ResponseWriter, r *http.Request) {
 	tdb := checks.GetThreatDB()
 	if tdb == nil {
@@ -228,7 +228,7 @@ func (s *Server) apiThreatWhitelist(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, tdb.WhitelistedIPs())
 }
 
-// POST /api/v1/threat/unwhitelist-ip — remove an IP from the whitelist
+// POST /api/v1/threat/unwhitelist-ip - remove an IP from the whitelist
 func (s *Server) apiThreatUnwhitelistIP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -265,7 +265,7 @@ func (s *Server) apiThreatUnwhitelistIP(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, map[string]string{"status": "removed", "ip": req.IP})
 }
 
-// POST /api/v1/threat/block-ip — manually block an IP for 24 hours.
+// POST /api/v1/threat/block-ip - manually block an IP for 24 hours.
 func (s *Server) apiThreatBlockIP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -280,9 +280,8 @@ func (s *Server) apiThreatBlockIP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]string{"error": "IP is required"})
 		return
 	}
-	if net.ParseIP(req.IP) == nil {
-		w.WriteHeader(http.StatusBadRequest)
-		writeJSON(w, map[string]string{"error": "invalid IP address"})
+	if _, err := parseAndValidateIP(req.IP); err != nil {
+		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -322,7 +321,7 @@ func (s *Server) apiThreatBlockIP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// POST /api/v1/threat/clear-ip — unblock + clear from all DBs without whitelisting.
+// POST /api/v1/threat/clear-ip - unblock + clear from all DBs without whitelisting.
 // For dynamic IP customers: one-time cleanup, IP can be re-blocked later.
 func (s *Server) apiThreatClearIP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
@@ -377,7 +376,7 @@ func (s *Server) apiThreatClearIP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// POST /api/v1/threat/temp-whitelist-ip — whitelist for a specified duration.
+// POST /api/v1/threat/temp-whitelist-ip - whitelist for a specified duration.
 func (s *Server) apiThreatTempWhitelistIP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)

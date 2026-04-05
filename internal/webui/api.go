@@ -41,7 +41,7 @@ func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, status)
 }
 
-// apiFindings returns current scan results — "what's wrong right now."
+// apiFindings returns current scan results - "what's wrong right now."
 func (s *Server) apiFindings(w http.ResponseWriter, _ *http.Request) {
 	latest := s.store.LatestFindings()
 
@@ -341,23 +341,13 @@ func (s *Server) apiQuarantine(w http.ResponseWriter, _ *http.Request) {
 	var entries []quarantineEntry
 
 	// Scan both root quarantine dir and pre_clean subdirectory
-	rootMetas, _ := filepath.Glob(filepath.Join(quarantineDir, "*.meta"))
-	preCleanMetas, _ := filepath.Glob(filepath.Join(quarantineDir, "pre_clean", "*.meta"))
+	rootMetas := listMetaFiles(quarantineDir)
+	preCleanMetas := listMetaFiles(filepath.Join(quarantineDir, "pre_clean"))
 	metaFiles := rootMetas
 	metaFiles = append(metaFiles, preCleanMetas...)
 	for _, metaFile := range metaFiles {
-		data, err := os.ReadFile(metaFile)
+		meta, err := readQuarantineMeta(metaFile)
 		if err != nil {
-			continue
-		}
-
-		var meta struct {
-			OriginalPath string    `json:"original_path"`
-			Size         int64     `json:"size"`
-			QuarantineAt time.Time `json:"quarantined_at"`
-			Reason       string    `json:"reason"`
-		}
-		if err := json.Unmarshal(data, &meta); err != nil {
 			continue
 		}
 
@@ -931,6 +921,11 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 	metaFile := filepath.Join(quarantineDir, id+".meta")
 	quarFile := filepath.Join(quarantineDir, id)
 
+	if !isPathUnder(quarFile, quarantineDir) {
+		writeJSONError(w, "invalid quarantine ID", http.StatusBadRequest)
+		return
+	}
+
 	metaData, err := os.ReadFile(metaFile)
 	if err != nil {
 		writeJSONError(w, "Quarantine entry not found", http.StatusNotFound)
@@ -984,7 +979,7 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 		dst, createErr := os.OpenFile(meta.OriginalPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, restoredMode)
 		if createErr != nil {
 			_ = src.Close()
-			writeJSONError(w, fmt.Sprintf("Cannot restore — file already exists at original path: %v", createErr), http.StatusConflict)
+			writeJSONError(w, fmt.Sprintf("Cannot restore - file already exists at original path: %v", createErr), http.StatusConflict)
 			return
 		}
 		_, copyErr := io.Copy(dst, src)
@@ -1022,6 +1017,10 @@ func (s *Server) apiQuarantinePreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	qPath := filepath.Join(quarantineDir, id)
+	if !isPathUnder(qPath, quarantineDir) {
+		writeJSONError(w, "invalid quarantine ID", http.StatusBadRequest)
+		return
+	}
 	info, err := os.Stat(qPath)
 	if err != nil {
 		writeJSONError(w, "not found", http.StatusNotFound)
@@ -1030,7 +1029,7 @@ func (s *Server) apiQuarantinePreview(w http.ResponseWriter, r *http.Request) {
 	if info.IsDir() {
 		writeJSON(w, map[string]interface{}{
 			"id": id, "is_dir": true,
-			"preview": "[directory — content preview not available]",
+			"preview": "[directory - content preview not available]",
 		})
 		return
 	}
@@ -1088,12 +1087,9 @@ func (s *Server) apiScanAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Sanitize — only allow alphanumeric + underscore (cPanel usernames)
-	for _, c := range req.Account {
-		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '_' {
-			writeJSONError(w, "Invalid account name", http.StatusBadRequest)
-			return
-		}
+	if err := validateAccountName(req.Account); err != nil {
+		writeJSONError(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 
 	// Rate limit: only one scan at a time

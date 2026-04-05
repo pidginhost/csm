@@ -1,9 +1,7 @@
 package webui
 
 import (
-	"encoding/json"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -19,16 +17,9 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) apiAccountDetail(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
-	if name == "" {
-		writeJSONError(w, "name is required", http.StatusBadRequest)
+	if err := validateAccountName(name); err != nil {
+		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
-	}
-	// Sanitize: only allow alphanumeric + underscore
-	for _, c := range name {
-		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '_' {
-			writeJSONError(w, "invalid account name", http.StatusBadRequest)
-			return
-		}
 	}
 
 	homePrefix := "/home/" + name + "/"
@@ -64,21 +55,13 @@ func (s *Server) apiAccountDetail(w http.ResponseWriter, r *http.Request) {
 		Reason       string `json:"reason"`
 	}
 	var quarantined []qEntry
-	rootMetas, _ := filepath.Glob(filepath.Join("/opt/csm/quarantine", "*.meta"))
-	preCleanMetas, _ := filepath.Glob(filepath.Join("/opt/csm/quarantine", "pre_clean", "*.meta"))
+	rootMetas := listMetaFiles("/opt/csm/quarantine")
+	preCleanMetas := listMetaFiles(filepath.Join("/opt/csm/quarantine", "pre_clean"))
 	metas := rootMetas
 	metas = append(metas, preCleanMetas...)
 	for _, metaPath := range metas {
-		data, err := os.ReadFile(metaPath)
+		meta, err := readQuarantineMeta(metaPath)
 		if err != nil {
-			continue
-		}
-		var meta struct {
-			OriginalPath string `json:"original_path"`
-			Size         int64  `json:"size"`
-			Reason       string `json:"reason"`
-		}
-		if json.Unmarshal(data, &meta) != nil {
 			continue
 		}
 		if strings.HasPrefix(meta.OriginalPath, homePrefix) {

@@ -14,8 +14,8 @@ func (s *Server) SetGeoIPDB(db *geoip.DB) {
 }
 
 // apiGeoIPLookup returns geolocation info for an IP.
-// GET /api/v1/geoip?ip=1.2.3.4          — fast local lookup (country + ASN)
-// GET /api/v1/geoip?ip=1.2.3.4&detail=1 — includes RDAP org/ISP (may take 1-3s)
+// GET /api/v1/geoip?ip=1.2.3.4          - fast local lookup (country + ASN)
+// GET /api/v1/geoip?ip=1.2.3.4&detail=1 - includes RDAP org/ISP (may take 1-3s)
 func (s *Server) apiGeoIPLookup(w http.ResponseWriter, r *http.Request) {
 	ip := r.URL.Query().Get("ip")
 	if ip == "" {
@@ -29,7 +29,7 @@ func (s *Server) apiGeoIPLookup(w http.ResponseWriter, r *http.Request) {
 
 	db := s.geoIPDB.Load()
 	if db == nil {
-		writeJSONError(w, "GeoIP databases not loaded (place GeoLite2-City.mmdb and GeoLite2-ASN.mmdb in /opt/csm/geoip/)", http.StatusServiceUnavailable)
+		writeJSONError(w, "GeoIP databases not loaded", http.StatusServiceUnavailable)
 		return
 	}
 
