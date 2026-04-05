@@ -429,4 +429,75 @@ func (s *Server) apiThreatTempWhitelistIP(w http.ResponseWriter, r *http.Request
 	})
 }
 
+// POST /api/v1/threat/bulk-action - block or whitelist multiple IPs at once.
+func (s *Server) apiThreatBulkAction(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		IPs    []string `json:"ips"`
+		Action string   `json:"action"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	if len(req.IPs) == 0 || len(req.IPs) > 100 {
+		writeJSONError(w, "IPs must be 1-100 items", http.StatusBadRequest)
+		return
+	}
+	if req.Action != "block" && req.Action != "whitelist" {
+		writeJSONError(w, "Action must be 'block' or 'whitelist'", http.StatusBadRequest)
+		return
+	}
+
+	count := 0
+	for _, ipStr := range req.IPs {
+		if net.ParseIP(ipStr) == nil {
+			continue
+		}
+		switch req.Action {
+		case "block":
+			// Mirror apiThreatBlockIP flow
+			if s.blocker != nil {
+				if err := s.blocker.BlockIP(ipStr, "Bulk blocked via CSM Web UI", 24*time.Hour); err != nil {
+					continue
+				}
+			}
+			if tdb := checks.GetThreatDB(); tdb != nil {
+				tdb.AddPermanent(ipStr, "Bulk blocked via CSM Web UI")
+			}
+			if adb := attackdb.Global(); adb != nil {
+				adb.MarkBlocked(ipStr)
+			}
+			count++
+
+		case "whitelist":
+			// Mirror apiThreatWhitelistIP flow
+			if s.blocker != nil {
+				_ = s.blocker.UnblockIP(ipStr)
+				if allower, ok := s.blocker.(interface {
+					AllowIP(string, string) error
+				}); ok {
+					_ = allower.AllowIP(ipStr, "CSM bulk whitelist")
+				}
+			}
+			if tdb := checks.GetThreatDB(); tdb != nil {
+				tdb.RemovePermanent(ipStr)
+				tdb.AddWhitelist(ipStr)
+			}
+			if adb := attackdb.Global(); adb != nil {
+				adb.RemoveIP(ipStr)
+			}
+			flushCphulk(ipStr)
+			count++
+		}
+	}
+
+	s.auditLog(r, "threat_bulk_"+req.Action, fmt.Sprintf("%d IPs", count), "")
+	writeJSON(w, map[string]interface{}{"ok": true, "count": count})
+}
+
 // writeJSON is defined in api.go

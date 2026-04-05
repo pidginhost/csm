@@ -113,7 +113,7 @@ fetch(CSM.apiUrl('/api/v1/threat/stats'),{credentials:'same-origin'}).then(check
 // Load top attackers
 fetch(CSM.apiUrl('/api/v1/threat/top-attackers?limit=50'),{credentials:'same-origin'}).then(checkResp).then(function(data){
     var tbody=document.getElementById('attackers-tbody');
-    if(!data||data.length===0){tbody.innerHTML='<tr><td colspan="9" class="text-center text-muted">No attack data recorded yet</td></tr>';return;}
+    if(!data||data.length===0){tbody.innerHTML='<tr><td colspan="11" class="text-center text-muted">No attack data recorded yet</td></tr>';return;}
     var html='';
     for(var i=0;i<data.length;i++){
         var r=data[i];
@@ -121,6 +121,7 @@ fetch(CSM.apiUrl('/api/v1/threat/top-attackers?limit=50'),{credentials:'same-ori
                         r.in_threat_db?'<span class="badge bg-danger-lt">Threat DB</span>':
                         '<span class="text-muted">\u2014</span>';
         html+='<tr class="ip-row feed-item" data-ip="'+CSM.esc(r.ip)+'">';
+        html+='<td><input type="checkbox" class="form-check-input bulk-ip-cb" data-ip="'+CSM.esc(r.ip)+'" onclick="event.stopPropagation()"></td>';
         html+='<td><code class="font-monospace csm-copy" title="Click to copy">'+CSM.esc(r.ip)+'</code></td>';
         html+='<td class="text-nowrap">'+(r.country?countryFlag(r.country)+' '+CSM.esc(r.country):'')+(r.as_org?' <span class="text-muted small">'+CSM.esc(r.as_org)+'</span>':'')+'</td>';
         html+='<td>'+verdictBadge(r.verdict,r.unified_score)+'</td>';
@@ -159,6 +160,11 @@ fetch(CSM.apiUrl('/api/v1/threat/top-attackers?limit=50'),{credentials:'same-ori
             e.stopPropagation();
             whitelistIP(this.getAttribute('data-ip'));
         });
+    });
+    // Bulk selection: show/hide buttons on checkbox change
+    updateBulkButtons();
+    document.querySelectorAll('.bulk-ip-cb').forEach(function(cb){
+        cb.addEventListener('change', updateBulkButtons);
     });
 }).catch(function(err){ console.error('top-attackers:', err); CSM.loadError(document.getElementById('attackers-tbody').parentElement.parentElement.parentElement, function(){ location.reload(); }); });
 
@@ -340,6 +346,65 @@ function whitelistIP(ip) {
         }).catch(function(e){CSM.toast('Error: '+e,'error')});
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
+
+// --- Bulk operations ---
+function getSelectedIPs() {
+    var ips = [];
+    document.querySelectorAll('.bulk-ip-cb:checked').forEach(function(cb) {
+        ips.push(cb.getAttribute('data-ip'));
+    });
+    return ips;
+}
+
+function updateBulkButtons() {
+    var count = document.querySelectorAll('.bulk-ip-cb:checked').length;
+    var blockBtn = document.getElementById('bulk-block-btn');
+    var wlBtn = document.getElementById('bulk-whitelist-btn');
+    if (count > 0) {
+        blockBtn.classList.remove('d-none');
+        wlBtn.classList.remove('d-none');
+        blockBtn.textContent = 'Block Selected (' + count + ')';
+        wlBtn.textContent = 'Whitelist Selected (' + count + ')';
+    } else {
+        blockBtn.classList.add('d-none');
+        wlBtn.classList.add('d-none');
+    }
+}
+
+// Select-all checkbox
+document.getElementById('select-all-attackers').addEventListener('change', function() {
+    var checked = this.checked;
+    document.querySelectorAll('.bulk-ip-cb').forEach(function(cb) {
+        cb.checked = checked;
+    });
+    updateBulkButtons();
+});
+
+// Bulk block
+document.getElementById('bulk-block-btn').addEventListener('click', function() {
+    var ips = getSelectedIPs();
+    if (ips.length === 0) return;
+    CSM.confirm('Block ' + ips.length + ' IP(s) for 24 hours?\n\nThis will block them in the firewall and add to the threat database.').then(function() {
+        CSM.post('/api/v1/threat/bulk-action', { ips: ips, action: 'block' }).then(function(data) {
+            if (data.error) { CSM.toast('Error: ' + data.error, 'error'); return; }
+            CSM.toast(data.count + ' IP(s) blocked successfully', 'success');
+            location.reload();
+        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+    }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
+});
+
+// Bulk whitelist
+document.getElementById('bulk-whitelist-btn').addEventListener('click', function() {
+    var ips = getSelectedIPs();
+    if (ips.length === 0) return;
+    CSM.confirm('Permanently whitelist ' + ips.length + ' IP(s)?\n\nThis will unblock from firewall, add to allow list, and remove from all threat databases.').then(function() {
+        CSM.post('/api/v1/threat/bulk-action', { ips: ips, action: 'whitelist' }).then(function(data) {
+            if (data.error) { CSM.toast('Error: ' + data.error, 'error'); return; }
+            CSM.toast(data.count + ' IP(s) whitelisted successfully', 'success');
+            location.reload();
+        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+    }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
+});
 
 // --- Theme reactivity: update chart colors when dark/light mode toggles ---
 function updateChartTheme() {

@@ -48,7 +48,9 @@
     <div class="card">
         <div class="card-header">
             <h3 class="card-title"><i class="ti ti-skull"></i>&nbsp;Top Attackers</h3>
-            <div class="card-actions">
+            <div class="card-actions d-flex gap-2 align-items-center">
+                <button class="btn btn-danger btn-sm d-none" id="bulk-block-btn"><i class="ti ti-shield-lock"></i>&nbsp;Block Selected</button>
+                <button class="btn btn-success btn-sm d-none" id="bulk-whitelist-btn"><i class="ti ti-shield-check"></i>&nbsp;Whitelist Selected</button>
                 <input type="text" id="attackers-search" class="form-control form-control-sm csm-input-md" placeholder="Search attackers...">
             </div>
         </div>
@@ -56,6 +58,7 @@
             <table class="table table-vcenter card-table table-sm" id="attackers-table">
                 <thead>
                     <tr>
+                        <th style="width:1%"><input type="checkbox" class="form-check-input" id="select-all-attackers"></th>
                         <th>IP</th>
                         <th>Location / ISP</th>
                         <th>Score</th>
