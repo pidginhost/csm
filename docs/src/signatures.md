@@ -23,13 +23,13 @@ rules:
 ```
 
 **Fields:**
-- `name` — unique rule identifier
-- `severity` — critical, high, or warning
-- `category` — webshell, backdoor, phishing, dropper, exploit
-- `file_types` — file extensions to match (or `["*"]` for all)
-- `patterns` — literal strings or regex patterns
-- `exclude` — patterns that prevent a match (false positive reduction)
-- `min_match` — minimum patterns that must match
+- `name` - unique rule identifier
+- `severity` - critical, high, or warning
+- `category` - webshell, backdoor, phishing, dropper, exploit
+- `file_types` - file extensions to match (or `["*"]` for all)
+- `patterns` - literal strings or regex patterns
+- `exclude` - patterns that prevent a match (false positive reduction)
+- `min_match` - minimum patterns that must match
 
 ## YARA-X Rules (Optional)
 
@@ -54,6 +54,54 @@ kill -HUP $(pidof csm)    # reload without restart
 ```
 
 Or from the web UI: **Rules** page > **Reload Rules** button.
+
+## YARA Forge Integration
+
+CSM can automatically fetch curated YARA rules from [YARA Forge](https://github.com/YARAHQ/yara-forge), which aggregates and quality-tests rules from 40+ public sources including signature-base, Elastic, Malpedia, and ESET.
+
+### Configuration
+
+```yaml
+signatures:
+  yara_forge:
+    enabled: true
+    tier: "core"              # core (5K rules, low FP), extended (10K), full (12K)
+    update_interval: "168h"   # weekly
+  disabled_rules:             # rule names to exclude from Forge downloads
+    - SUSP_Example_Rule
+```
+
+### Tiers
+
+| Tier | Rules | Size | False Positive Risk |
+|------|-------|------|-------------------|
+| core | ~5,000 | 1.6 MB | Low (quality >= 70, score >= 65) |
+| extended | ~10,500 | 3.3 MB | Medium |
+| full | ~11,600 | 3.7 MB | Higher (includes score >= 40) |
+
+### Update Flow
+
+1. CSM checks the latest YARA Forge release tag on GitHub
+2. If newer than the installed version, downloads the ZIP for the configured tier
+3. Filters out any rules listed in `disabled_rules`
+4. Compile-tests the rules with YARA-X before installing
+5. Atomically replaces the previous Forge rules file
+6. Reloads the YARA scanner
+
+Custom rules in `malware.yar` are never overwritten by the Forge fetcher.
+
+### Disabling Rules
+
+If a Forge rule produces false positives, add its name to `disabled_rules` in the config and reload:
+
+```yaml
+signatures:
+  disabled_rules:
+    - SUSP_XOR_Encoded_URL
+    - HKTL_Mimikatz_Strings
+```
+
+After editing, send SIGHUP or restart the daemon to apply.
 
 ## Suppressions
 
