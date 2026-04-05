@@ -273,8 +273,8 @@ func (s *Server) apiFirewallUnban(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]interface{}{"success": false, "error_msg": "The ip is not valid or it was not set."})
 		return
 	}
-	if net.ParseIP(req.IP) == nil {
-		writeJSON(w, map[string]interface{}{"success": false, "error_msg": "The ip is not valid or it was not set."})
+	if _, err := parseAndValidateIP(req.IP); err != nil {
+		writeJSON(w, map[string]interface{}{"success": false, "error_msg": err.Error()})
 		return
 	}
 

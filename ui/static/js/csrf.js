@@ -266,9 +266,12 @@ CSM.poll = function(url, interval, callback) {
     };
 };
 
-// Client-side IPv4 format validator (rejects leading zeros like "01.02.03.04")
+// Client-side IP format validator (IPv4 and IPv6)
 CSM.validateIP = function(s) {
     if (!s) return false;
+    // IPv6: contains colons
+    if (s.indexOf(':') >= 0) return /^[0-9a-fA-F:]+$/.test(s) && s.length <= 45;
+    // IPv4: reject leading zeros like "01.02.03.04"
     var parts = s.split('.');
     if (parts.length !== 4) return false;
     for (var i = 0; i < 4; i++) {

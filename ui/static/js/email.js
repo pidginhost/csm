@@ -661,12 +661,9 @@
 
     function deleteMessage(msgID) {
         CSM.confirm('Permanently delete this quarantined message?').then(function() {
-            fetch(CSM.apiUrl('/api/v1/email/quarantine/' + encodeURIComponent(msgID)), {
-                method: 'DELETE',
-                credentials: 'same-origin',
-                headers: { 'X-CSRF-Token': CSM.csrfToken }
-            }).then(function() { loadQuarantine(); loadAVStatus(); })
-              .catch(function(err) { CSM.toast('Delete failed: ' + err.message, 'danger'); });
+            CSM.delete('/api/v1/email/quarantine/' + encodeURIComponent(msgID))
+                .then(function() { loadQuarantine(); loadAVStatus(); })
+                .catch(function(err) { CSM.toast('Delete failed: ' + (err.message || 'Unknown error'), 'danger'); });
         }).catch(function() { /* cancelled */ });
     }
 

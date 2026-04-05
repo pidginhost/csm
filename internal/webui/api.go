@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -682,8 +681,8 @@ func (s *Server) apiBlockIP(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
-	if net.ParseIP(req.IP) == nil {
-		writeJSONError(w, "Invalid IP address format", http.StatusBadRequest)
+	if _, err := parseAndValidateIP(req.IP); err != nil {
+		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	if req.Reason == "" {
@@ -719,8 +718,8 @@ func (s *Server) apiUnblockIP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if net.ParseIP(req.IP) == nil {
-		writeJSONError(w, "Invalid IP address", http.StatusBadRequest)
+	if _, err := parseAndValidateIP(req.IP); err != nil {
+		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -754,6 +753,10 @@ func (s *Server) apiUnblockBulk(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "IPs array is required", http.StatusBadRequest)
 		return
 	}
+	if len(req.IPs) > 100 {
+		writeJSONError(w, "IPs must be 1-100 items", http.StatusBadRequest)
+		return
+	}
 	if s.blocker == nil {
 		writeJSONError(w, "Firewall engine not available", http.StatusServiceUnavailable)
 		return
@@ -761,15 +764,14 @@ func (s *Server) apiUnblockBulk(w http.ResponseWriter, r *http.Request) {
 
 	succeeded := 0
 	for _, ip := range req.IPs {
-		parsed := net.ParseIP(ip)
-		if parsed == nil {
+		if _, err := parseAndValidateIP(ip); err != nil {
 			continue
 		}
-		if err := s.blocker.UnblockIP(parsed.String()); err != nil {
+		if err := s.blocker.UnblockIP(ip); err != nil {
 			continue
 		}
-		flushCphulk(parsed.String())
-		s.auditLog(r, "unblock_ip", parsed.String(), "bulk unblock via UI")
+		flushCphulk(ip)
+		s.auditLog(r, "unblock_ip", ip, "bulk unblock via UI")
 		succeeded++
 	}
 
