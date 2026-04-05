@@ -125,8 +125,8 @@ fetch(CSM.apiUrl('/api/v1/threat/top-attackers?limit=50'),{credentials:'same-ori
     var html='';
     for(var i=0;i<data.length;i++){
         var r=data[i];
-        var statusBadge=r.currently_blocked?'<span class="badge bg-dark">Blocked</span>':
-                        r.in_threat_db?'<span class="badge bg-danger-lt">Threat DB</span>':
+        var statusBadge=r.currently_blocked?'<span class="badge bg-danger text-white">Blocked</span>':
+                        r.in_threat_db?'<span class="badge bg-warning text-dark">Threat DB</span>':
                         '<span class="text-muted">\u2014</span>';
         html+='<tr class="ip-row feed-item" data-ip="'+CSM.esc(r.ip)+'">';
         html+='<td><input type="checkbox" class="form-check-input bulk-ip-cb" data-ip="'+CSM.esc(r.ip)+'" onclick="event.stopPropagation()"></td>';
