@@ -491,6 +491,26 @@ func readFromFd(fd int, maxBytes int) []byte {
 	return buf[:n]
 }
 
+// readTailFromFd reads the last maxBytes of a file via its fd using pread.
+// Returns nil if the file is smaller than maxBytes (head scan already covers it).
+func readTailFromFd(fd int, maxBytes int) []byte {
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		return nil
+	}
+	size := stat.Size
+	if size <= int64(maxBytes) {
+		return nil // head read already covers the entire file
+	}
+	offset := size - int64(maxBytes)
+	buf := make([]byte, maxBytes)
+	n, err := unix.Pread(fd, buf, offset)
+	if n <= 0 || (err != nil && n == 0) {
+		return nil
+	}
+	return buf[:n]
+}
+
 // resolveProcessInfo reads /proc/<pid>/comm and /proc/<pid>/status
 // to build a "pid=N cmd=name uid=N" string for alert enrichment.
 // Returns empty string on any error (process may have exited).
@@ -903,6 +923,49 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) {
 					return
 				}
 			}
+		}
+	}
+
+	// Tail scan: for large files, also check the last 32KB.
+	// Attackers append payloads (eval+base64) at the end of legitimate PHP files,
+	// beyond the head scan window. Only do the cheap heuristic checks, not full
+	// signature scanning (which would be too slow on every large PHP file).
+	if tailData := readTailFromFd(fd, 32768); tailData != nil {
+		tail := strings.ToLower(string(tailData))
+
+		// Check for eval+decoder on same line in tail
+		for _, line := range strings.Split(tail, "\n") {
+			lineHasEval := strings.Contains(line, evalStr) || strings.Contains(line, assertStr)
+			if !lineHasEval {
+				continue
+			}
+			for _, dec := range decoders {
+				if strings.Contains(line, dec) {
+					fm.sendAlertWithPath(alert.Critical, "obfuscated_php_realtime",
+						fmt.Sprintf("Obfuscated PHP appended to file tail: %s", path),
+						fmt.Sprintf("PHP code execution with %s found at end of file", dec), path, procInfo)
+					return
+				}
+			}
+		}
+
+		// Fragmented base64 in tail
+		if strings.Contains(tail, "\"base\"") || strings.Contains(tail, "'base'") {
+			if strings.Contains(tail, "64_dec") && strings.Contains(tail, evalStr) {
+				fm.sendAlertWithPath(alert.Critical, "obfuscated_php_realtime",
+					fmt.Sprintf("Fragmented base64_decode evasion in file tail: %s", path),
+					"Payload appended at end of legitimate PHP file", path, procInfo)
+				return
+			}
+		}
+
+		// Concat payload with eval in tail
+		tailConcatCount := strings.Count(tail, ".= \"")
+		if tailConcatCount > 50 && strings.Contains(tail, evalStr) {
+			fm.sendAlertWithPath(alert.Critical, "obfuscated_php_realtime",
+				fmt.Sprintf("Concatenation payload in file tail: %s (%d concat ops)", path, tailConcatCount),
+				"Payload appended at end of legitimate PHP file", path, procInfo)
+			return
 		}
 	}
 
