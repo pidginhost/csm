@@ -80,6 +80,9 @@ var hardBlockPrefixes = []string{
 	"outgoing_mail_",
 	"spam_",
 	"modsec_",
+	"email_auth_failure", // email brute force - SMTP/IMAP, can't challenge via HTTP
+	"email_compromised",  // confirmed compromised email account
+	"email_credential",   // credential leak
 }
 
 // isHardBlockCheck returns true if the check should be hard-blocked (never challenged).
