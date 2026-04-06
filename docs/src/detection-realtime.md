@@ -14,6 +14,11 @@ Monitors `/home`, `/tmp`, `/dev/shm` for filesystem events.
 - `.htaccess` injection (auto_prepend, eval, base64 handlers)
 - `.user.ini` tampering
 - Obfuscated PHP (encoded, packed, concatenated)
+- Fragmented base64 evasion (`$a="base"; $b="64_decode"` — function name split across variables)
+- Concatenation payloads (hundreds of `$z .= "xxxx"` lines with eval at end)
+- Tail scanning: payloads appended to the end of large legitimate PHP files (beyond the 32KB head window)
+- CGI backdoors: Perl, Python, Bash, Ruby scripts in web directories (e.g., LEVIATHAN toolkit)
+- SEO spam: gambling/togel dofollow link injection in PHP/HTML files
 - Phishing pages and credential harvest logs
 - Phishing kit ZIP archives
 - YAML signature matches (PHP, HTML, .htaccess, .user.ini)
@@ -36,7 +41,7 @@ Tails auth, access, and mail logs in real-time.
 | auth/secure log | SSH logins and failures |
 | FTP log | FTP logins and failures |
 | Exim mainlog | Mail anomalies, queue issues |
-| Apache access log | WordPress brute force, backdoor probing |
+| Apache/LiteSpeed access log | WordPress brute force (wp-login.php, xmlrpc.php) — real-time, not just periodic |
 | Dovecot log | IMAP/POP3 account compromise |
 | Roundcube log | Webmail access anomalies |
 | ModSecurity audit log | WAF blocks and attacks |

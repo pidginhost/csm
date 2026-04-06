@@ -35,5 +35,17 @@ auto_response:
 - Never kills root processes, system daemons, or cPanel services
 - Infrastructure IPs (`infra_ips` in config) are never blocked
 - Quarantined files preserve full metadata for restoration
-- Auto-quarantine requires high confidence (category match + entropy validation)
-- Block rate limited to prevent runaway blocking
+- Auto-quarantine requires high confidence: category match (webshell/backdoor/dropper) + entropy >= 4.8 or hex density > 20%. This prevents legitimate WordPress plugins from being quarantined.
+- IP block rate limited to 50/hour to prevent runaway blocking
+- CRITICAL alerts always bypass the email rate limit (default 30/hour)
+- Trusted countries (`trusted_countries`) suppress login alerts from expected geolocations
+
+## What CSM Detects in Real-Time
+
+Beyond standard malware patterns, CSM detects advanced evasion techniques:
+
+- **Fragmented function names**: attackers split `base64_decode` across variables (`$a="base"; $b="64_decode"`) to evade simple string matching
+- **Appended payloads**: malicious code added to the end of large legitimate files, beyond typical scan windows. CSM scans both the first and last 32KB of every PHP file.
+- **Non-PHP backdoors**: Perl, Python, Bash CGI scripts in web directories (detects toolkits like LEVIATHAN)
+- **SEO spam injection**: gambling/togel dofollow link injection into theme files
+- **WordPress brute force**: real-time access log monitoring for wp-login.php and xmlrpc.php floods (blocks within seconds, not the 10-minute periodic scan)

@@ -103,6 +103,16 @@ signatures:
 
 After editing, send SIGHUP or restart the daemon to apply.
 
+## How Rules Avoid False Positives
+
+Signature rules require **structural nesting**, not co-presence of strings. Two dangerous function calls appearing in the same file but in unrelated code paths won't trigger a rule. The call must directly wrap or chain with the other for a match.
+
+**Auto-quarantine** adds a safety gate: files need Shannon entropy >= 4.8 or hex density > 20% before automatic quarantine. Legitimate plugin code (~4.2 entropy) passes through; obfuscated malware (~5.5+) is caught.
+
+## Alert Rate Limiting
+
+Default: 30 emails/hour (configurable via `max_per_hour`). **CRITICAL findings always get through** regardless of rate limit. Only lower-severity alerts are rate-limited.
+
 ## Suppressions
 
 Create suppression rules to silence known false positives:
@@ -110,3 +120,13 @@ Create suppression rules to silence known false positives:
 - From the **Findings** page: click the suppress button on any finding
 - From the **Rules** page: manage suppression rules directly
 - Via API: `POST /api/v1/suppressions`
+
+To suppress email alerts for specific checks while keeping them visible in the web UI, use `disabled_checks` in your config:
+
+```yaml
+alerts:
+  email:
+    disabled_checks:
+      - "email_spam_outbreak"
+      - "perf_memory"
+```

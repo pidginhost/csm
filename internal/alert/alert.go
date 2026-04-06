@@ -277,10 +277,22 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 		return nil
 	}
 
-	// Rate limit check
-	if !checkRateLimit(cfg.StatePath, cfg.Alerts.MaxPerHour) {
-		fmt.Fprintf(os.Stderr, "Alert rate limit reached (%d/hour), skipping alert dispatch\n", cfg.Alerts.MaxPerHour)
+	// Rate limit check — CRITICAL realtime findings (malware, webshells,
+	// backdoors) always get through. Only non-critical alerts are rate-limited.
+	hasCritical := false
+	for _, f := range findings {
+		if f.Severity == Critical {
+			hasCritical = true
+			break
+		}
+	}
+	if !hasCritical && !checkRateLimit(cfg.StatePath, cfg.Alerts.MaxPerHour) {
+		fmt.Fprintf(os.Stderr, "Alert rate limit reached (%d/hour), skipping non-critical alert dispatch\n", cfg.Alerts.MaxPerHour)
 		return nil
+	}
+	// Still count critical dispatches toward the rate limit budget
+	if hasCritical {
+		checkRateLimit(cfg.StatePath, cfg.Alerts.MaxPerHour)
 	}
 
 	var errs []error

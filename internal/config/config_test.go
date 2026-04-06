@@ -32,8 +32,8 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Thresholds.DeepScanIntervalMin != 60 {
 		t.Errorf("deep_scan_interval = %d, want 60", cfg.Thresholds.DeepScanIntervalMin)
 	}
-	if cfg.Alerts.MaxPerHour != 10 {
-		t.Errorf("max_per_hour = %d, want 10", cfg.Alerts.MaxPerHour)
+	if cfg.Alerts.MaxPerHour != 30 {
+		t.Errorf("max_per_hour = %d, want 30", cfg.Alerts.MaxPerHour)
 	}
 	if cfg.StatePath != "/opt/csm/state" {
 		t.Errorf("state_path = %q, want '/opt/csm/state'", cfg.StatePath)

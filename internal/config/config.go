@@ -234,7 +234,7 @@ func Load(path string) (*Config, error) {
 		cfg.Thresholds.BruteForceWindow = 5000
 	}
 	if cfg.Alerts.MaxPerHour == 0 {
-		cfg.Alerts.MaxPerHour = 10
+		cfg.Alerts.MaxPerHour = 30
 	}
 	if cfg.Challenge.ListenPort == 0 {
 		cfg.Challenge.ListenPort = 8439
