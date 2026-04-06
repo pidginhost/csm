@@ -168,31 +168,41 @@ func analyzePHPContent(path string) phpAnalysisResult {
 	}
 
 	// --- Critical: eval() chains with decoding ---
-	evalPatterns := []struct {
-		pattern string
-		desc    string
-	}{
-		{"eval(", "eval() call"},
-		{"assert(", "assert() call (code execution)"},
-	}
+	// Only flag when eval directly wraps a decoder (structural nesting),
+	// not when they merely co-exist in the same file (which causes false
+	// positives on legitimate plugins that use eval for templates and
+	// base64_decode for unrelated data processing).
 	decoders := []string{
 		"base64_decode", "gzinflate", "gzuncompress", "str_rot13",
 		"rawurldecode", "gzdecode", "bzdecompress",
 	}
-	hasEval := false
 	hasDecoder := false
-	for _, ep := range evalPatterns {
-		if containsStandaloneFunc(contentLower, ep.pattern) {
-			hasEval = true
-		}
-	}
+	hasNestedEvalDecode := false
 	for _, d := range decoders {
 		if strings.Contains(contentLower, d) {
 			hasDecoder = true
 		}
 	}
-	if hasEval && hasDecoder {
-		indicators = append(indicators, "eval() combined with encoding/compression function")
+	// Check for structural nesting: eval(base64_decode(...)), eval(gzinflate(...)), etc.
+	// Scan individual lines for the nesting pattern to avoid flagging unrelated
+	// occurrences on distant lines.
+	for _, line := range strings.Split(contentLower, "\n") {
+		for _, d := range decoders {
+			if strings.Contains(line, "eval(") && strings.Contains(line, d+"(") {
+				hasNestedEvalDecode = true
+				break
+			}
+			if strings.Contains(line, "assert(") && strings.Contains(line, d+"(") {
+				hasNestedEvalDecode = true
+				break
+			}
+		}
+		if hasNestedEvalDecode {
+			break
+		}
+	}
+	if hasNestedEvalDecode {
+		indicators = append(indicators, "eval() directly wrapping encoding/compression function")
 	}
 
 	// --- Critical: call_user_func with string-built function names ---

@@ -405,6 +405,15 @@ func (fm *FileMonitor) isInteresting(path string) bool {
 		return true
 	}
 
+	// CGI scripts in web-accessible directories — detect Perl/Python/Bash backdoors
+	if strings.HasPrefix(path, "/home/") {
+		if strings.HasSuffix(lower, ".pl") || strings.HasSuffix(lower, ".cgi") ||
+			strings.HasSuffix(lower, ".py") || strings.HasSuffix(lower, ".sh") ||
+			strings.HasSuffix(lower, ".rb") {
+			return true
+		}
+	}
+
 	// .htaccess and .user.ini files
 	if strings.HasSuffix(lower, ".htaccess") || strings.HasSuffix(lower, ".user.ini") {
 		return true
@@ -674,6 +683,13 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 		fm.checkPhishingZip(path, nameLower, procInfo)
 		return
 	}
+
+	// CGI scripts in web-accessible directories (Perl, Python, Bash, Ruby)
+	// Detect backdoor toolkits like LEVIATHAN that use non-PHP scripts.
+	if strings.HasPrefix(path, "/home/") && isCGIExtension(nameLower) {
+		fm.checkCGIBackdoor(event.fd, path, procInfo)
+		return
+	}
 }
 
 // checkHtaccess reads .htaccess content from the event fd and checks for injection.
@@ -801,13 +817,42 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) {
 		}
 	}
 
-	// eval + decoder combo
-	hasEval := strings.Contains(content, "eval(") || strings.Contains(content, "assert(")
-	hasDecoder := strings.Contains(content, "base64_decode") || strings.Contains(content, "gzinflate") || strings.Contains(content, "gzuncompress")
-	if hasEval && hasDecoder {
+	// eval + decoder combo — require same-line nesting to avoid FPs on
+	// legitimate plugins that use these functions in unrelated contexts.
+	evalStr := "eval("     // search target for PHP eval function calls
+	assertStr := "assert(" // search target for PHP assert function calls
+	decoders := []string{"base64_decode", "gzinflate", "gzuncompress", "str_rot13", "gzdecode"}
+	for _, line := range strings.Split(content, "\n") {
+		lineHasEval := strings.Contains(line, evalStr) || strings.Contains(line, assertStr)
+		if !lineHasEval {
+			continue
+		}
+		for _, dec := range decoders {
+			if strings.Contains(line, dec) {
+				fm.sendAlertWithPath(alert.Critical, "obfuscated_php_realtime",
+					fmt.Sprintf("Obfuscated PHP detected: %s", path),
+					fmt.Sprintf("PHP code execution with %s on same line", dec), path, procInfo)
+				return
+			}
+		}
+	}
+
+	// Fragmented base64 evasion: $a="base"; $b="64_decode"; $c=$a.$b;
+	if strings.Contains(content, "\"base\"") || strings.Contains(content, "'base'") {
+		if strings.Contains(content, "64_dec") && strings.Contains(content, evalStr) {
+			fm.sendAlertWithPath(alert.Critical, "obfuscated_php_realtime",
+				fmt.Sprintf("Fragmented base64_decode evasion detected: %s", path),
+				"base64_decode function name split across string variables", path, procInfo)
+			return
+		}
+	}
+
+	// Massive variable concatenation payload ($z .= "xxxx"; repeated thousands of times)
+	concatCount := strings.Count(content, ".= \"")
+	if concatCount > 50 && strings.Contains(content, evalStr) {
 		fm.sendAlertWithPath(alert.Critical, "obfuscated_php_realtime",
-			fmt.Sprintf("Obfuscated PHP detected: %s", path),
-			"eval() combined with encoding/compression function", path, procInfo)
+			fmt.Sprintf("Concatenation payload detected: %s (%d concat ops)", path, concatCount),
+			"Variable built from hundreds of string concatenations then executed", path, procInfo)
 		return
 	}
 
@@ -1260,6 +1305,71 @@ func isPHPExtension(nameLower string) bool {
 		strings.HasSuffix(nameLower, ".phtml") ||
 		strings.HasSuffix(nameLower, ".pht") ||
 		strings.HasSuffix(nameLower, ".php5")
+}
+
+func isCGIExtension(nameLower string) bool {
+	return strings.HasSuffix(nameLower, ".pl") ||
+		strings.HasSuffix(nameLower, ".cgi") ||
+		strings.HasSuffix(nameLower, ".py") ||
+		strings.HasSuffix(nameLower, ".sh") ||
+		strings.HasSuffix(nameLower, ".rb")
+}
+
+// checkCGIBackdoor reads a CGI script and checks for backdoor patterns.
+// Detects Perl/Python/Bash backdoors like the LEVIATHAN toolkit.
+func (fm *FileMonitor) checkCGIBackdoor(fd int, path, procInfo string) {
+	data := readFromFd(fd, 32768)
+	if data == nil {
+		return
+	}
+	content := strings.ToLower(string(data))
+
+	// Backdoor indicators in CGI scripts
+	indicators := 0
+	var matched []string
+
+	// Shell execution via request input
+	shellPatterns := []struct {
+		pattern string
+		desc    string
+	}{
+		{"system(", "system() call"},
+		{"os.popen", "os.popen() call"},
+		{"subprocess", "subprocess module"},
+		{"`$", "backtick execution with variable"},
+		{"request_method", "checks HTTP request method"},
+		{"content_length", "reads POST body"},
+		{"base64", "base64 encoding/decoding"},
+		{"cmd", "command parameter"},
+	}
+
+	for _, sp := range shellPatterns {
+		if strings.Contains(content, sp.pattern) {
+			indicators++
+			matched = append(matched, sp.desc)
+		}
+	}
+
+	// 3+ indicators = likely backdoor (e.g. reads POST + decodes base64 + runs system())
+	if indicators >= 3 {
+		fm.sendAlertWithPath(alert.Critical, "cgi_backdoor_realtime",
+			fmt.Sprintf("CGI backdoor detected: %s", path),
+			fmt.Sprintf("Indicators (%d): %s", indicators, strings.Join(matched, ", ")), path, procInfo)
+		return
+	}
+
+	// CGI scripts in unusual locations (images, css, js directories)
+	if strings.Contains(path, "/img/") || strings.Contains(path, "/images/") ||
+		strings.Contains(path, "/css/") || strings.Contains(path, "/js/") ||
+		strings.Contains(path, "/fonts/") || strings.Contains(path, "/icons/") {
+		fm.sendAlertWithPath(alert.High, "cgi_suspicious_location_realtime",
+			fmt.Sprintf("CGI script in non-CGI directory: %s", path),
+			"Scripts should not exist in image/css/js directories", path, procInfo)
+		return
+	}
+
+	// Run signature scan on the content
+	fm.runSignatureScan(data, path, filepath.Ext(path), procInfo)
 }
 
 // matchSuppression checks if a file path matches a suppression glob pattern.

@@ -374,10 +374,11 @@ func isSafeProcess(exe string) bool {
 //  1. Category must be "dropper" or "webshell"
 //  2. File must not be in a known library path
 //  3. File must be >= 512 bytes (entropy unreliable below this)
-//  4. Content must show obfuscation indicators (category-dependent):
-//     - "dropper": auto-quarantine - signature rules (e.g. 10+ goto statements)
-//     are already highly specific. No legitimate PHP has that.
-//     - "webshell": requires Shannon entropy >= 4.8 OR hex density > 20%
+//  4. Content must show obfuscation indicators:
+//     Shannon entropy >= 4.8 OR hex density > 20%.
+//     This applies to BOTH dropper and webshell categories to avoid
+//     false-positive quarantine of legitimate plugins that happen to
+//     match a dropper rule (e.g. curl_exec + eval on distant lines).
 func isHighConfidenceRealtimeMatch(f alert.Finding, path string, data []byte) bool {
 	cat := extractCategory(f.Details)
 	switch cat {
@@ -405,15 +406,10 @@ func isHighConfidenceRealtimeMatch(f alert.Finding, path string, data []byte) bo
 		return false
 	}
 
-	// Dropper rules (goto obfuscation, etc.) are inherently high-confidence -
-	// the signature already validated a very specific pattern. No need for
-	// additional content analysis.
-	if cat == "dropper" {
-		return true
-	}
-
-	// Webshell category needs extra validation to avoid FPs on legitimate
-	// libraries that happen to contain "passthru", "fsockopen", etc.
+	// Both dropper and webshell categories go through the same entropy/encoding
+	// checks to avoid false positives. Legitimate plugins (low entropy ~4.2)
+	// pass through, while real obfuscated malware (high entropy ~5.5+) or
+	// hex-heavy payloads still get quarantined.
 	content := string(data)
 	return shannonEntropy(content) >= 4.8 || hexEncodingDensity(content) > 0.20
 }
