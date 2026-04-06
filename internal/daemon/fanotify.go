@@ -217,6 +217,10 @@ func (fm *FileMonitor) Run(stopCh <-chan struct{}) {
 	buf := make([]byte, 4096*24) // Large buffer for event batches
 	events := make([]unix.EpollEvent, 4)
 
+	// Log epoll loop start with fd details for diagnostics
+	fmt.Fprintf(os.Stderr, "[%s] fanotify: epoll loop started (fanotify_fd=%d pipe_fd=%d epoll_fd=%d)\n", ts(), fm.fd, fm.pipeFds[0], epfd)
+
+	var totalEvents int64
 	for {
 		n, err := unix.EpollWait(epfd, events, 500) // 500ms timeout
 		if err != nil {
@@ -263,6 +267,11 @@ func (fm *FileMonitor) Run(stopCh <-chan struct{}) {
 					}
 					if nr < metadataSize {
 						break
+					}
+					totalEvents++
+					// Log first event and then every 1000th for diagnostics
+					if totalEvents == 1 || totalEvents%1000 == 0 {
+						fmt.Fprintf(os.Stderr, "[%s] fanotify: processed %d events (batch=%d bytes)\n", ts(), totalEvents, nr)
 					}
 					fm.processEvents(buf[:nr])
 				}
