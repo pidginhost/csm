@@ -177,6 +177,41 @@ func redactSensitive(s string) string {
 	return s
 }
 
+func filterChecks(findings []Finding, disabledChecks []string) []Finding {
+	if len(findings) == 0 || len(disabledChecks) == 0 {
+		return findings
+	}
+
+	disabled := make(map[string]bool, len(disabledChecks))
+	for _, check := range disabledChecks {
+		check = strings.TrimSpace(check)
+		if check != "" {
+			disabled[check] = true
+		}
+	}
+	if len(disabled) == 0 {
+		return findings
+	}
+
+	filtered := make([]Finding, 0, len(findings))
+	for _, f := range findings {
+		if !disabled[f.Check] {
+			filtered = append(filtered, f)
+		}
+	}
+	return filtered
+}
+
+func buildSubject(hostname string, findings []Finding) string {
+	subject := fmt.Sprintf("[CSM] %s - %d security finding(s)", hostname, len(findings))
+	for _, f := range findings {
+		if f.Severity == Critical {
+			return fmt.Sprintf("[CSM] CRITICAL - %s - %d finding(s)", hostname, len(findings))
+		}
+	}
+	return subject
+}
+
 // rateLimitState tracks alerts sent per hour.
 type rateLimitState struct {
 	Hour  string `json:"hour"`
@@ -228,31 +263,39 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 		return nil
 	}
 
+	emailFindings := []Finding(nil)
+	if cfg.Alerts.Email.Enabled {
+		emailFindings = filterChecks(findings, cfg.Alerts.Email.DisabledChecks)
+	}
+
+	webhookFindings := []Finding(nil)
+	if cfg.Alerts.Webhook.Enabled {
+		webhookFindings = findings
+	}
+
+	if len(emailFindings) == 0 && len(webhookFindings) == 0 {
+		return nil
+	}
+
 	// Rate limit check
 	if !checkRateLimit(cfg.StatePath, cfg.Alerts.MaxPerHour) {
 		fmt.Fprintf(os.Stderr, "Alert rate limit reached (%d/hour), skipping alert dispatch\n", cfg.Alerts.MaxPerHour)
 		return nil
 	}
 
-	body := FormatAlert(cfg.Hostname, findings)
-
-	subject := fmt.Sprintf("[CSM] %s - %d security finding(s)", cfg.Hostname, len(findings))
-	for _, f := range findings {
-		if f.Severity == Critical {
-			subject = fmt.Sprintf("[CSM] CRITICAL - %s - %d finding(s)", cfg.Hostname, len(findings))
-			break
-		}
-	}
-
 	var errs []error
 
-	if cfg.Alerts.Email.Enabled {
+	if len(emailFindings) > 0 {
+		subject := buildSubject(cfg.Hostname, emailFindings)
+		body := FormatAlert(cfg.Hostname, emailFindings)
 		if err := SendEmail(cfg, subject, body); err != nil {
 			errs = append(errs, fmt.Errorf("email: %w", err))
 		}
 	}
 
-	if cfg.Alerts.Webhook.Enabled {
+	if len(webhookFindings) > 0 {
+		subject := buildSubject(cfg.Hostname, webhookFindings)
+		body := FormatAlert(cfg.Hostname, webhookFindings)
 		if err := SendWebhook(cfg, subject, body); err != nil {
 			errs = append(errs, fmt.Errorf("webhook: %w", err))
 		}

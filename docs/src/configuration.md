@@ -11,6 +11,7 @@ alerts:
   email:
     enabled: true
     to: ["admin@example.com"]
+    disabled_checks: []                   # optional: suppress these checks from email only
     smtp: "localhost:25"
 
 webui:
@@ -33,6 +34,7 @@ alerts:
     to: ["admin@example.com"]
     from: "csm@cluster6.example.com"
     smtp: "localhost:25"
+    disabled_checks: []                 # check names to keep in web/history but exclude from email
   webhook:
     enabled: false
     url: ""

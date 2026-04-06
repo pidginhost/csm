@@ -333,11 +333,6 @@ func isSafePHPInWPDir(path, name string) bool {
 		if strings.Contains(path, "/vendor/") || strings.Contains(path, "/node_modules/") {
 			return true
 		}
-		// Standard WordPress plugin/theme files with known safe names
-		// (e.g. uninstall.php, functions.php, class-*.php, etc.)
-		// The indicator-based scoring already prevents false positives
-		// for normal PHP, but we skip files with a standard WP plugin header
-		// to avoid unnecessary content reads.
 	}
 
 	return false

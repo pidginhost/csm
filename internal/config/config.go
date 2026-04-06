@@ -16,10 +16,11 @@ type Config struct {
 
 	Alerts struct {
 		Email struct {
-			Enabled bool     `yaml:"enabled"`
-			To      []string `yaml:"to"`
-			From    string   `yaml:"from"`
-			SMTP    string   `yaml:"smtp"`
+			Enabled        bool     `yaml:"enabled"`
+			To             []string `yaml:"to"`
+			From           string   `yaml:"from"`
+			SMTP           string   `yaml:"smtp"`
+			DisabledChecks []string `yaml:"disabled_checks"`
 		} `yaml:"email"`
 		Webhook struct {
 			Enabled bool   `yaml:"enabled"`

@@ -67,6 +67,31 @@ func TestFormatAlert(t *testing.T) {
 	}
 }
 
+func TestFilterChecks(t *testing.T) {
+	findings := []Finding{
+		{Check: "email_spam_outbreak", Message: "a"},
+		{Check: "perf_memory", Message: "b"},
+		{Check: "malware", Message: "c"},
+	}
+
+	got := filterChecks(findings, []string{"email_spam_outbreak", " perf_memory ", ""})
+	if len(got) != 1 {
+		t.Fatalf("expected 1 finding after filtering, got %d", len(got))
+	}
+	if got[0].Check != "malware" {
+		t.Fatalf("expected malware to remain, got %s", got[0].Check)
+	}
+}
+
+func TestBuildSubject(t *testing.T) {
+	if got := buildSubject("host1", []Finding{{Severity: High}, {Severity: Warning}}); got != "[CSM] host1 - 2 security finding(s)" {
+		t.Fatalf("unexpected non-critical subject: %s", got)
+	}
+	if got := buildSubject("host1", []Finding{{Severity: High}, {Severity: Critical}}); got != "[CSM] CRITICAL - host1 - 2 finding(s)" {
+		t.Fatalf("unexpected critical subject: %s", got)
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)
 }

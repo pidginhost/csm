@@ -10,6 +10,7 @@ alerts:
       - "SET_EMAIL_HERE"
     from: "csm@SET_HOSTNAME_HERE"
     smtp: "localhost:25"
+    disabled_checks: []
   webhook:
     enabled: false
     url: ""

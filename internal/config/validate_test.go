@@ -124,6 +124,7 @@ func TestValidateEmailAlerts(t *testing.T) {
 		cfg.Alerts.Email.To = []string{"admin@test.com"}
 		cfg.Alerts.Email.SMTP = "localhost:25"
 		cfg.Alerts.Email.From = "csm@test.com"
+		cfg.Alerts.Email.DisabledChecks = []string{"email_spam_outbreak", "perf_memory"}
 		cfg.Alerts.MaxPerHour = 10
 		results := Validate(cfg)
 		if countLevel(results, "error") != 0 {
