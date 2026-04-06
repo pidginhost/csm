@@ -1,0 +1,39 @@
+{{define "title"}}Server Hardening{{end}}
+{{define "page"}}hardening{{end}}
+{{define "content"}}
+    <div class="page-header d-print-none mb-3">
+        <div class="row align-items-center">
+            <div class="col-auto">
+                <h2 class="page-title">Server Hardening Audit</h2>
+                <div class="text-muted mt-1" id="audit-timestamp"></div>
+            </div>
+            <div class="col-auto ms-auto">
+                <button class="btn btn-primary" id="btn-run-audit">
+                    <i class="ti ti-player-play"></i>&nbsp;Run Audit
+                </button>
+            </div>
+        </div>
+    </div>
+    <div class="card mb-3" id="score-card" style="display:none">
+        <div class="card-body">
+            <div class="d-flex align-items-center mb-2">
+                <h3 class="mb-0" id="score-text"></h3>
+                <span class="ms-2 text-muted" id="score-server-type"></span>
+            </div>
+            <div class="progress progress-lg">
+                <div class="progress-bar" id="score-bar" role="progressbar" style="width:0%"></div>
+            </div>
+        </div>
+    </div>
+    <div class="card" id="empty-state">
+        <div class="card-body text-center py-5">
+            <div class="mb-3"><i class="ti ti-shield-lock" style="font-size:3rem;opacity:0.3"></i></div>
+            <h3>No audit results yet</h3>
+            <p class="text-muted">Click "Run Audit" to scan your server's security configuration.</p>
+        </div>
+    </div>
+    <div id="categories-container"></div>
+{{end}}
+{{define "scripts"}}
+    <script src="/static/js/hardening.js"></script>
+{{end}}
