@@ -256,22 +256,15 @@ func (fm *FileMonitor) Run(stopCh <-chan struct{}) {
 
 			if events[i].Fd == int32(fm.fd) {
 				// fanotify events ready
-				for {
-					nr, err := unix.Read(fm.fd, buf)
-					if err != nil {
-						if err == unix.EAGAIN || err == unix.EINTR {
-							break
-						}
-						fmt.Fprintf(os.Stderr, "[%s] fanotify read error: %v\n", ts(), err)
-						break
+				nr, readErr := unix.Read(fm.fd, buf)
+				if readErr != nil {
+					if readErr != unix.EAGAIN && readErr != unix.EINTR {
+						fmt.Fprintf(os.Stderr, "[%s] fanotify read error: %v\n", ts(), readErr)
 					}
-					if nr < metadataSize {
-						break
-					}
+				} else if nr >= metadataSize {
 					totalEvents++
-					// Log first event and then every 1000th for diagnostics
-					if totalEvents == 1 || totalEvents%1000 == 0 {
-						fmt.Fprintf(os.Stderr, "[%s] fanotify: processed %d events (batch=%d bytes)\n", ts(), totalEvents, nr)
+					if totalEvents <= 3 || totalEvents%1000 == 0 {
+						fmt.Fprintf(os.Stderr, "[%s] fanotify: event #%d (%d bytes)\n", ts(), totalEvents, nr)
 					}
 					fm.processEvents(buf[:nr])
 				}
