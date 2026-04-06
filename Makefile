@@ -1,4 +1,4 @@
-.PHONY: build build-linux build-all clean test lint fmt fmt-check vet ci tools deploy install-remote
+.PHONY: build build-linux build-all clean test lint fmt fmt-check vet ci tools
 
 BINARY_NAME := csm
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -53,37 +53,3 @@ clean:
 	rm -rf dist/
 	go clean
 
-# Deploy binary to server (local build, scp): make deploy SERVER=cluster6
-deploy: build-linux
-	@if [ -z "$(SERVER)" ]; then echo "Usage: make deploy SERVER=hostname"; exit 1; fi
-	scp dist/$(BINARY_NAME)-linux-amd64 $(SERVER):/tmp/$(BINARY_NAME)
-	ssh $(SERVER) "chmod +x /tmp/$(BINARY_NAME) && /tmp/$(BINARY_NAME) version"
-	@echo ""
-	@echo "Binary deployed to $(SERVER):/tmp/$(BINARY_NAME)"
-	@echo "To install: ssh $(SERVER) '/tmp/$(BINARY_NAME) install'"
-
-# Deploy + install (local build, scp): make install-remote SERVER=cluster6
-install-remote: build-linux
-	@if [ -z "$(SERVER)" ]; then echo "Usage: make install-remote SERVER=hostname"; exit 1; fi
-	scp dist/$(BINARY_NAME)-linux-amd64 $(SERVER):/tmp/$(BINARY_NAME)
-	ssh $(SERVER) "chmod +x /tmp/$(BINARY_NAME) && chattr -i /opt/csm/csm 2>/dev/null; /tmp/$(BINARY_NAME) install"
-
-# Upgrade existing (local build, scp): make upgrade SERVER=cluster6
-upgrade: build-linux
-	@if [ -z "$(SERVER)" ]; then echo "Usage: make upgrade SERVER=hostname"; exit 1; fi
-	scp dist/$(BINARY_NAME)-linux-amd64 $(SERVER):/tmp/$(BINARY_NAME)
-	ssh $(SERVER) "chmod +x /tmp/$(BINARY_NAME) && chattr -i /opt/csm/csm 2>/dev/null; cp /tmp/$(BINARY_NAME) /opt/csm/csm && chattr +i /opt/csm/csm && /opt/csm/csm version && /opt/csm/csm baseline"
-	@echo "Upgrade complete on $(SERVER)"
-
-# Deploy from GitLab CI artifacts: make gitlab-deploy SERVER=cluster6 GITLAB_TOKEN=xxx
-gitlab-deploy:
-	@if [ -z "$(SERVER)" ]; then echo "Usage: make gitlab-deploy SERVER=cluster6 GITLAB_TOKEN=xxx [REF=main]"; exit 1; fi
-	@if [ -z "$(GITLAB_TOKEN)" ]; then echo "GITLAB_TOKEN required"; exit 1; fi
-	scp scripts/deploy.sh $(SERVER):/tmp/csm-deploy.sh
-	ssh $(SERVER) "chmod +x /tmp/csm-deploy.sh && GITLAB_TOKEN=$(GITLAB_TOKEN) /tmp/csm-deploy.sh install $(or $(REF),main)"
-
-# Upgrade from GitLab CI artifacts: make gitlab-upgrade SERVER=cluster6
-gitlab-upgrade:
-	@if [ -z "$(SERVER)" ]; then echo "Usage: make gitlab-upgrade SERVER=cluster6 [REF=main]"; exit 1; fi
-	scp scripts/deploy.sh $(SERVER):/tmp/csm-deploy.sh
-	ssh $(SERVER) "chmod +x /tmp/csm-deploy.sh && /tmp/csm-deploy.sh upgrade $(or $(REF),main)"

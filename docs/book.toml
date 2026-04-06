@@ -8,8 +8,8 @@ src = "src"
 build-dir = "book"
 
 [output.html]
-git-repository-url = "https://git.pidginhost.net/pidginhost/csm"
-edit-url-template = "https://git.pidginhost.net/pidginhost/csm/-/edit/main/docs/src/{path}"
+git-repository-url = "https://github.com/pidginhost/csm"
+edit-url-template = "https://github.com/pidginhost/csm/edit/main/docs/src/{path}"
 default-theme = "navy"
 preferred-dark-theme = "navy"
 no-section-label = false

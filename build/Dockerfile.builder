@@ -2,10 +2,8 @@
 # Rebuild only when upgrading YARA-X version.
 #
 # Build:
-#   docker build -f build/Dockerfile.builder -t registry.pidginhost.cloud/csm/builder:yara-1.14.0 .
-#   docker push registry.pidginhost.cloud/csm/builder:yara-1.14.0
-#   docker tag registry.pidginhost.cloud/csm/builder:yara-1.14.0 registry.pidginhost.cloud/csm/builder:latest
-#   docker push registry.pidginhost.cloud/csm/builder:latest
+#   docker build -f build/Dockerfile.builder -t csm/builder:yara-1.14.0 .
+#   docker tag csm/builder:yara-1.14.0 csm/builder:latest
 
 FROM golang:1.26-alpine
 

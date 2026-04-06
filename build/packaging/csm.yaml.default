@@ -1,5 +1,5 @@
 # Continuous Security Monitor configuration
-# Full documentation: https://git.pidginhost.net/pidginhost/csm
+# Full documentation: https://github.com/pidginhost/csm
 
 hostname: "SET_HOSTNAME_HERE"
 

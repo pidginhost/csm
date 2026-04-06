@@ -4,7 +4,7 @@ Real-time security monitoring for cPanel/WHM servers. Single Go binary that dete
 
 Full **Imunify360 replacement**. Includes nftables firewall, ModSecurity management, email AV, YARA-X scanning, threat intelligence, and a web dashboard.
 
-**[Documentation](https://pidginhost.pages.git.pidginhost.net/csm/)** | **[Installation](docs/src/installation.md)** | **[Configuration](docs/src/configuration.md)**
+**[Documentation](https://pidginhost.github.io/csm/)** | **[Installation](docs/src/installation.md)** | **[Configuration](docs/src/configuration.md)**
 
 ## Quick Start
 

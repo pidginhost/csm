@@ -36,8 +36,8 @@ func TestHardeningReportRoundTrip(t *testing.T) {
 		Score: 1,
 		Total: 2,
 	}
-	if err := db.SaveHardeningReport(saved); err != nil {
-		t.Fatal(err)
+	if saveErr := db.SaveHardeningReport(saved); saveErr != nil {
+		t.Fatal(saveErr)
 	}
 
 	// Load it back

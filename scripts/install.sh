@@ -2,26 +2,23 @@
 # Continuous Security Monitor — Standalone Installer
 #
 # Quick install:
-#   curl -sSL https://get.pidginhost.com/csm | bash -s -- --token YOUR_TOKEN
+#   curl -sSL https://raw.githubusercontent.com/pidginhost/csm/main/scripts/install.sh | bash
 #
 # Non-interactive:
-#   bash install.sh --token TOKEN --email admin@example.com --non-interactive
+#   bash install.sh --email admin@example.com --non-interactive
 set -euo pipefail
 
 # --- Defaults ---
-GITLAB_HOST="git.pidginhost.net"
-PROJECT_ENCODED="pidginhost%2Fcsm"
-PKG_BASE="https://${GITLAB_HOST}/api/v4/projects/${PROJECT_ENCODED}/packages/generic/csm"
+GITHUB_REPO="pidginhost/csm"
+GITHUB_API="https://api.github.com/repos/${GITHUB_REPO}"
 INSTALL_DIR="/opt/csm"
 BINARY_PATH="${INSTALL_DIR}/csm"
 CONFIG_PATH="${INSTALL_DIR}/csm.yaml"
-TOKEN_FILE="${INSTALL_DIR}/.deploy-token"
 
-ARG_TOKEN=""
 ARG_EMAIL=""
 ARG_HOSTNAME=""
+ARG_VERSION=""
 ARG_NON_INTERACTIVE=0
-AUTH_HEADER=""
 
 # --- Helpers ---
 die() { echo "ERROR: $1" >&2; exit 1; }
@@ -38,17 +35,17 @@ detect_arch() {
 parse_args() {
     while [ $# -gt 0 ]; do
         case "$1" in
-            --token)     ARG_TOKEN="$2"; shift 2 ;;
             --email)     ARG_EMAIL="$2"; shift 2 ;;
             --hostname)  ARG_HOSTNAME="$2"; shift 2 ;;
+            --version)   ARG_VERSION="$2"; shift 2 ;;
             --non-interactive) ARG_NON_INTERACTIVE=1; shift ;;
             -h|--help)
                 echo "Usage: install.sh [OPTIONS]"
                 echo ""
                 echo "Options:"
-                echo "  --token TOKEN       GitLab deploy token (or set GITLAB_TOKEN env)"
                 echo "  --email EMAIL       Admin alert email"
                 echo "  --hostname HOST     Server hostname (auto-detected if omitted)"
+                echo "  --version TAG       Install specific version (default: latest)"
                 echo "  --non-interactive   Skip all prompts, use defaults"
                 exit 0
                 ;;
@@ -73,73 +70,13 @@ prompt() {
     fi
 }
 
-get_token() {
-    if [ -n "$ARG_TOKEN" ]; then echo "$ARG_TOKEN"; return; fi
-    if [ -n "${GITLAB_TOKEN:-}" ]; then echo "$GITLAB_TOKEN"; return; fi
-    if [ -f "$TOKEN_FILE" ]; then cat "$TOKEN_FILE"; return; fi
-
-    if [ "$ARG_NON_INTERACTIVE" = "1" ]; then
-        die "No token provided. Use --token or set GITLAB_TOKEN env."
+get_download_url() {
+    local arch="$1" asset="csm-linux-${arch}"
+    if [ -n "$ARG_VERSION" ]; then
+        echo "https://github.com/${GITHUB_REPO}/releases/download/${ARG_VERSION}/${asset}"
+    else
+        echo "https://github.com/${GITHUB_REPO}/releases/latest/download/${asset}"
     fi
-
-    echo ""
-    echo "  A GitLab deploy token is needed to download CSM."
-    echo "  Create one at:"
-    echo "    https://${GITLAB_HOST}/pidginhost/csm/-/settings/repository"
-    echo "    -> Deploy tokens -> Scopes: read_package_registry"
-    echo ""
-    local token=""
-    read -rp "  Enter token: " token
-    [ -z "$token" ] && die "No token provided."
-    echo "$token"
-}
-
-detect_auth_header() {
-    local token
-    token=$(get_token)
-
-    # Try cached type
-    if [ -f "${INSTALL_DIR}/.token-type" ]; then
-        local cached
-        cached=$(cat "${INSTALL_DIR}/.token-type")
-        local code
-        code=$(curl -sS -w '%{http_code}' -o /dev/null \
-            --header "${cached}: ${token}" \
-            "${PKG_BASE}/latest/csm-linux-${ARCH}.sha256" 2>/dev/null)
-        if [ "$code" = "200" ]; then
-            AUTH_HEADER="${cached}: ${token}"
-            return
-        fi
-    fi
-
-    local code
-    code=$(curl -sS -w '%{http_code}' -o /dev/null \
-        --header "Deploy-Token: ${token}" \
-        "${PKG_BASE}/latest/csm-linux-${ARCH}.sha256" 2>/dev/null)
-    if [ "$code" = "200" ]; then
-        AUTH_HEADER="Deploy-Token: ${token}"
-        mkdir -p "$INSTALL_DIR"
-        echo "Deploy-Token" > "${INSTALL_DIR}/.token-type" 2>/dev/null || true
-        echo "$token" > "$TOKEN_FILE" && chmod 600 "$TOKEN_FILE" 2>/dev/null || true
-        return
-    fi
-
-    code=$(curl -sS -w '%{http_code}' -o /dev/null \
-        --header "PRIVATE-TOKEN: ${token}" \
-        "${PKG_BASE}/latest/csm-linux-${ARCH}.sha256" 2>/dev/null)
-    if [ "$code" = "200" ]; then
-        AUTH_HEADER="PRIVATE-TOKEN: ${token}"
-        mkdir -p "$INSTALL_DIR"
-        echo "PRIVATE-TOKEN" > "${INSTALL_DIR}/.token-type" 2>/dev/null || true
-        echo "$token" > "$TOKEN_FILE" && chmod 600 "$TOKEN_FILE" 2>/dev/null || true
-        return
-    fi
-
-    die "Token authentication failed (HTTP ${code}). Check token scope: read_package_registry"
-}
-
-pkg_download() {
-    curl -sS -w '%{http_code}' --header "${AUTH_HEADER}" -o "$2" "$1"
 }
 
 # --- Main ---
@@ -165,11 +102,6 @@ fi
 ARCH=$(detect_arch)
 info "Platform: linux-${ARCH}"
 
-# Authenticate
-info "Authenticating..."
-detect_auth_header
-info "OK"
-
 # Download binary
 echo ""
 info "Downloading binary..."
@@ -177,10 +109,13 @@ mkdir -p "$INSTALL_DIR"
 TMPDIR=$(mktemp -d -p "$INSTALL_DIR")
 trap "rm -rf '$TMPDIR'" EXIT
 
-HTTP_CODE=$(pkg_download "${PKG_BASE}/latest/csm-linux-${ARCH}" "${TMPDIR}/csm")
-[ "$HTTP_CODE" != "200" ] && die "Binary download failed (HTTP ${HTTP_CODE})"
+BINARY_URL=$(get_download_url "$ARCH")
+CHECKSUM_URL="${BINARY_URL}.sha256"
 
-HTTP_CODE=$(pkg_download "${PKG_BASE}/latest/csm-linux-${ARCH}.sha256" "${TMPDIR}/csm.sha256")
+HTTP_CODE=$(curl -sS -w '%{http_code}' -L -o "${TMPDIR}/csm" "$BINARY_URL")
+[ "$HTTP_CODE" != "200" ] && die "Binary download failed (HTTP ${HTTP_CODE}). Check https://github.com/${GITHUB_REPO}/releases"
+
+HTTP_CODE=$(curl -sS -w '%{http_code}' -L -o "${TMPDIR}/csm.sha256" "$CHECKSUM_URL")
 [ "$HTTP_CODE" != "200" ] && die "Checksum download failed (HTTP ${HTTP_CODE})"
 
 info "Verifying checksum..."
@@ -194,7 +129,8 @@ info "Version: ${VERSION}"
 
 # Download assets
 info "Downloading UI assets and rules..."
-HTTP_CODE=$(pkg_download "${PKG_BASE}/latest/csm-assets.tar.gz" "${TMPDIR}/assets.tar.gz")
+ASSETS_URL=$(get_download_url "$ARCH" | sed "s/csm-linux-${ARCH}/csm-assets.tar.gz/")
+HTTP_CODE=$(curl -sS -w '%{http_code}' -L -o "${TMPDIR}/assets.tar.gz" "$ASSETS_URL")
 if [ "$HTTP_CODE" = "200" ]; then
     tar xzf "${TMPDIR}/assets.tar.gz" -C "$INSTALL_DIR" 2>/dev/null || true
     mkdir -p "${INSTALL_DIR}/rules"

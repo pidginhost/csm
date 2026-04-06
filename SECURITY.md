@@ -15,7 +15,7 @@ CSM is designed to run on production servers. We treat security bugs with high p
 
 Report security issues by one of these methods:
 
-1. **Email:** Send details to the maintainer email listed on the repository. Use the subject line `[CSM SECURITY]`.
+1. **Email:** Send details to `support@pidginhost.com` with the subject line `[CSM SECURITY]`.
 2. **GitHub private advisory:** Use the "Report a vulnerability" button on the Security tab of this repository.
 
 Please include:

@@ -1,32 +1,21 @@
 #!/bin/bash
-# Continuous Security Monitor — Secure deploy from GitLab Package Registry
+# Continuous Security Monitor — Deploy from GitHub Releases
 #
 # Downloads the latest binary + SHA256 checksum, verifies integrity,
 # and installs or upgrades.
-#
-# The server token only needs read_package_registry scope — NO access to
-# source code, issues, pipelines, or anything else.
 #
 # Usage:
 #   deploy.sh install        Install latest
 #   deploy.sh upgrade        Upgrade to latest
 #   deploy.sh check          Check if update available
-#
-# First run requires: GITLAB_TOKEN env var
-# Token is saved at /opt/csm/.deploy-token for future use.
 set -euo pipefail
 
-GITLAB_HOST="git.pidginhost.net"
-PROJECT_ENCODED="pidginhost%2Fcsm"
-API_BASE="https://${GITLAB_HOST}/api/v4/projects/${PROJECT_ENCODED}"
-PKG_BASE="${API_BASE}/packages/generic/csm"
+GITHUB_REPO="pidginhost/csm"
 BINARY_NAME="csm"
 INSTALL_DIR="/opt/csm"
 BINARY_PATH="${INSTALL_DIR}/${BINARY_NAME}"
-TOKEN_FILE="${INSTALL_DIR}/.deploy-token"
 SERVICE_NAME="csm"
 ARCH=$(uname -m)
-AUTH_HEADER=""
 
 case "$ARCH" in
     x86_64)  ARCH="amd64" ;;
@@ -40,84 +29,13 @@ ARTIFACT_NAME="${BINARY_NAME}-linux-${ARCH}"
 
 die() { echo "ERROR: $1" >&2; exit 1; }
 
-get_token() {
-    if [ -n "${GITLAB_TOKEN:-}" ]; then
-        echo "$GITLAB_TOKEN"
-        return
+get_download_url() {
+    local asset="$1" version="${2:-latest}"
+    if [ "$version" = "latest" ]; then
+        echo "https://github.com/${GITHUB_REPO}/releases/latest/download/${asset}"
+    else
+        echo "https://github.com/${GITHUB_REPO}/releases/download/${version}/${asset}"
     fi
-    if [ -f "$TOKEN_FILE" ]; then
-        cat "$TOKEN_FILE"
-        return
-    fi
-    die "No GitLab token found. Set GITLAB_TOKEN env var or create ${TOKEN_FILE}
-
-Create a PROJECT DEPLOY TOKEN at:
-  https://${GITLAB_HOST}/pidginhost/csm/-/settings/repository
-  -> Deploy tokens
-  -> Name: csm-deploy-\$(hostname)
-  -> Scopes: read_package_registry ONLY"
-}
-
-# Detect whether this is a personal token or deploy token and cache result
-detect_auth_header() {
-    local token
-    token=$(get_token)
-
-    # Check cached header type
-    local type_file="${INSTALL_DIR}/.token-type"
-    if [ -f "$type_file" ]; then
-        local cached_type
-        cached_type=$(cat "$type_file")
-        local code
-        code=$(curl -sS -w '%{http_code}' -o /dev/null \
-            --header "${cached_type}: ${token}" \
-            "${PKG_BASE}/latest/${ARTIFACT_NAME}.sha256" 2>/dev/null)
-        if [ "$code" = "200" ]; then
-            AUTH_HEADER="${cached_type}: ${token}"
-            return
-        fi
-    fi
-
-    # Try Deploy-Token first (project deploy tokens)
-    local code
-    code=$(curl -sS -w '%{http_code}' -o /dev/null \
-        --header "Deploy-Token: ${token}" \
-        "${PKG_BASE}/latest/${ARTIFACT_NAME}.sha256" 2>/dev/null)
-
-    if [ "$code" = "200" ]; then
-        AUTH_HEADER="Deploy-Token: ${token}"
-        echo "Deploy-Token" > "$type_file" 2>/dev/null || true
-        return
-    fi
-
-    # Try PRIVATE-TOKEN (personal access tokens)
-    code=$(curl -sS -w '%{http_code}' -o /dev/null \
-        --header "PRIVATE-TOKEN: ${token}" \
-        "${PKG_BASE}/latest/${ARTIFACT_NAME}.sha256" 2>/dev/null)
-
-    if [ "$code" = "200" ]; then
-        AUTH_HEADER="PRIVATE-TOKEN: ${token}"
-        echo "PRIVATE-TOKEN" > "$type_file" 2>/dev/null || true
-        return
-    fi
-
-    die "Token authentication failed (HTTP ${code}). Check token has read_package_registry scope."
-}
-
-save_token() {
-    if [ -n "${GITLAB_TOKEN:-}" ]; then
-        mkdir -p "$INSTALL_DIR"
-        echo "$GITLAB_TOKEN" > "$TOKEN_FILE"
-        chmod 600 "$TOKEN_FILE"
-        chown root:root "$TOKEN_FILE"
-    fi
-}
-
-# Download a file from package registry using detected auth
-pkg_download() {
-    local url="$1"
-    local output="$2"
-    curl -sS -w '%{http_code}' --header "${AUTH_HEADER}" -o "$output" "$url"
 }
 
 download_package() {
@@ -129,13 +47,13 @@ download_package() {
     echo "Downloading ${ARTIFACT_NAME} (version: ${version})..." >&2
 
     local http_code
-    http_code=$(pkg_download "${PKG_BASE}/${version}/${ARTIFACT_NAME}" "${tmpdir}/${ARTIFACT_NAME}")
+    http_code=$(curl -sS -w '%{http_code}' -L -o "${tmpdir}/${ARTIFACT_NAME}" "$(get_download_url "$ARTIFACT_NAME" "$version")")
     if [ "$http_code" != "200" ]; then
         rm -rf "$tmpdir"
-        die "Binary download failed (HTTP ${http_code})."
+        die "Binary download failed (HTTP ${http_code}). Check https://github.com/${GITHUB_REPO}/releases"
     fi
 
-    http_code=$(pkg_download "${PKG_BASE}/${version}/${ARTIFACT_NAME}.sha256" "${tmpdir}/${ARTIFACT_NAME}.sha256")
+    http_code=$(curl -sS -w '%{http_code}' -L -o "${tmpdir}/${ARTIFACT_NAME}.sha256" "$(get_download_url "${ARTIFACT_NAME}.sha256" "$version")")
     if [ "$http_code" != "200" ]; then
         rm -rf "$tmpdir"
         die "Checksum download failed (HTTP ${http_code})."
@@ -162,7 +80,6 @@ download_package() {
     fi
 
     echo "Downloaded: $("${tmpdir}/${ARTIFACT_NAME}" version)" >&2
-    # Only output the tmpdir path to stdout (for capture)
     echo "$tmpdir"
 }
 
@@ -171,7 +88,6 @@ stop_services() {
     echo "Stopping ${SERVICE_NAME}..."
     systemctl stop "${SERVICE_NAME}" 2>/dev/null || true
     systemctl stop csm-critical.timer csm-deep.timer 2>/dev/null || true
-    # Wait for process to exit (up to 10s)
     local i=0
     while pgrep -f "${BINARY_PATH} daemon" > /dev/null 2>&1 && [ $i -lt 10 ]; do
         sleep 1
@@ -182,17 +98,14 @@ stop_services() {
         pkill -9 -f "${BINARY_PATH} daemon" 2>/dev/null || true
         sleep 1
     fi
-    # Clear stale lock/pid and reset systemd failure state to prevent auto-restart
     rm -f "${INSTALL_DIR}/state/csm.lock" "${INSTALL_DIR}/state/csm.pid" 2>/dev/null || true
     systemctl reset-failed "${SERVICE_NAME}" 2>/dev/null || true
 }
 
-# Start daemon and timers
 start_services() {
     echo "Starting ${SERVICE_NAME}..."
     systemctl start "${SERVICE_NAME}"
     systemctl start csm-critical.timer csm-deep.timer 2>/dev/null || true
-    # Verify it's running
     sleep 2
     if ! systemctl is-active --quiet "${SERVICE_NAME}"; then
         echo "WARNING: ${SERVICE_NAME} failed to start. Check: journalctl -u ${SERVICE_NAME} -n 20"
@@ -206,7 +119,6 @@ do_install() {
 
     echo "=== Continuous Security Monitor — Install ==="
     echo ""
-    detect_auth_header
 
     local tmpdir
     tmpdir=$(download_package "latest")
@@ -215,7 +127,6 @@ do_install() {
     cp "${tmpdir}/${ARTIFACT_NAME}" "$BINARY_PATH"
     rm -rf "$tmpdir"
 
-    save_token
     "$BINARY_PATH" install
 
     echo ""
@@ -231,16 +142,12 @@ do_upgrade() {
 
     echo "=== Continuous Security Monitor — Upgrade ==="
     echo ""
-    detect_auth_header
 
     local old_version
     old_version=$("$BINARY_PATH" version 2>/dev/null || echo "unknown")
     echo "Current: ${old_version}"
 
-    # Stop daemon early to release bbolt lock before download
     stop_services
-
-    save_token
 
     local tmpdir
     tmpdir=$(download_package "latest")
@@ -255,19 +162,17 @@ do_upgrade() {
         exit 0
     fi
 
-    # Backup current binary
     cp "$BINARY_PATH" "${BINARY_PATH}.bak" 2>/dev/null || true
 
-    # Swap binary (remove immutable flag first)
     chattr -i "$BINARY_PATH" 2>/dev/null || true
     cp "${tmpdir}/${ARTIFACT_NAME}" "$BINARY_PATH"
 
     # Download and extract UI + config assets
     local assets_code
-    assets_code=$(pkg_download "${PKG_BASE}/latest/csm-assets.tar.gz" "${tmpdir}/csm-assets.tar.gz")
+    assets_code=$(curl -sS -w '%{http_code}' -L -o "${tmpdir}/csm-assets.tar.gz" \
+        "$(get_download_url "csm-assets.tar.gz" "latest")")
     if [ "$assets_code" = "200" ]; then
         tar xzf "${tmpdir}/csm-assets.tar.gz" -C "$INSTALL_DIR" 2>/dev/null || true
-        # Sync signature rules from shipped configs/ to active rules/ directory
         mkdir -p "${INSTALL_DIR}/rules"
         for f in "${INSTALL_DIR}/configs/malware.yml" "${INSTALL_DIR}/configs/malware.yar"; do
             [ -f "$f" ] && cp "$f" "${INSTALL_DIR}/rules/" || echo "WARNING: rule file not found: $f"
@@ -278,15 +183,11 @@ do_upgrade() {
 
     rm -rf "$tmpdir"
 
-    # Redeploy PHP Shield if it was previously installed
     if [ -f "${INSTALL_DIR}/php_shield.php" ]; then
         echo "Updating PHP Shield..."
         "$BINARY_PATH" install --php-shield-only 2>/dev/null || true
     fi
 
-    # Rehash — update binary/config hashes without full re-scan
-    # Run twice: first pass writes new hashes into csm.yaml, second pass
-    # stabilizes the config hash (which includes the hash fields themselves)
     "$BINARY_PATH" rehash 2>&1 || true
     if ! "$BINARY_PATH" rehash 2>&1; then
         echo "WARNING: Rehash failed, rolling back..."
@@ -299,7 +200,6 @@ do_upgrade() {
     chattr +i "$BINARY_PATH" 2>/dev/null || true
     rm -f "${BINARY_PATH}.bak"
 
-    # Start services with new binary
     start_services
 
     echo ""
@@ -308,19 +208,18 @@ do_upgrade() {
 
 do_check() {
     if [ ! -f "$BINARY_PATH" ]; then echo "CSM not installed."; exit 1; fi
-    detect_auth_header
 
     local current
     current=$("$BINARY_PATH" version 2>/dev/null || echo "unknown")
     echo "Installed: ${current}"
 
-    # Compare checksums instead of downloading the full binary
     local tmpdir
     mkdir -p "$INSTALL_DIR"
     tmpdir=$(mktemp -d -p "$INSTALL_DIR")
 
     local http_code
-    http_code=$(pkg_download "${PKG_BASE}/latest/${ARTIFACT_NAME}.sha256" "${tmpdir}/latest.sha256")
+    http_code=$(curl -sS -w '%{http_code}' -L -o "${tmpdir}/latest.sha256" \
+        "$(get_download_url "${ARTIFACT_NAME}.sha256" "latest")")
 
     if [ "$http_code" = "200" ]; then
         local remote_hash local_hash
@@ -329,14 +228,6 @@ do_check() {
         if [ "$remote_hash" = "$local_hash" ]; then
             echo "Up to date."
         else
-            # Download to get version string
-            http_code=$(pkg_download "${PKG_BASE}/latest/${ARTIFACT_NAME}" "${tmpdir}/${ARTIFACT_NAME}")
-            if [ "$http_code" = "200" ]; then
-                chmod +x "${tmpdir}/${ARTIFACT_NAME}"
-                local latest
-                latest=$("${tmpdir}/${ARTIFACT_NAME}" version 2>/dev/null || echo "unknown")
-                echo "Latest:    ${latest}"
-            fi
             echo "Update available. Run: $0 upgrade"
         fi
     else
@@ -359,9 +250,6 @@ case "${1:-}" in
         echo "  $0 install     Install latest"
         echo "  $0 upgrade     Upgrade to latest"
         echo "  $0 check       Check if update available"
-        echo ""
-        echo "Requires GITLAB_TOKEN env var on first run (saved for future use)."
-        echo "Token scope: read_package_registry ONLY"
         exit 1
         ;;
 esac

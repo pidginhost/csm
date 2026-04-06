@@ -143,7 +143,7 @@ func extractModSecField(line, start, end string) string {
 }
 
 // extractLiteSpeedIP extracts the client IP from a LiteSpeed log line.
-// Format: [IP:PORT-CONN#VHOST] e.g. [122.9.114.57:41920-13#APVH_*_cluster6.pidginhost.net]
+// Format: [IP:PORT-CONN#VHOST] e.g. [122.9.114.57:41920-13#APVH_*_server.example.com]
 func extractLiteSpeedIP(line string) string {
 	// Find the field that looks like [IP:PORT-CONN#VHOST]
 	// It appears as a bracketed field containing # and a port separator.

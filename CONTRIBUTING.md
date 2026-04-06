@@ -11,7 +11,7 @@
 
 **Clone and build:**
 ```bash
-git clone <repo>
+git clone https://github.com/pidginhost/csm.git
 cd csm
 make build-linux        # cross-compile for Linux amd64
 ```

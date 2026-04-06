@@ -1062,17 +1062,18 @@ func auditCloudLinux() []store.AuditResult {
 
 	// cl_cagefs
 	out, err := auditRunCmd("cagefsctl", "--cagefs-status")
-	if err != nil {
+	switch {
+	case err != nil:
 		results = append(results, store.AuditResult{
 			Category: "cpanel", Name: "cl_cagefs", Title: "CageFS Enabled",
 			Status: "warn", Message: "Cannot check CageFS status",
 		})
-	} else if strings.Contains(string(out), "Enabled") {
+	case strings.Contains(string(out), "Enabled"):
 		results = append(results, store.AuditResult{
 			Category: "cpanel", Name: "cl_cagefs", Title: "CageFS Enabled",
 			Status: "pass", Message: "CageFS is enabled",
 		})
-	} else {
+	default:
 		results = append(results, store.AuditResult{
 			Category: "cpanel", Name: "cl_cagefs", Title: "CageFS Enabled",
 			Status: "fail", Message: "CageFS is not enabled",

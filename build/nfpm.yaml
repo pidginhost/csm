@@ -3,8 +3,8 @@ arch: "${ARCH}"
 version: "${VERSION}"
 maintainer: "PidginHost <support@pidginhost.com>"
 description: "Continuous Security Monitor - real-time server security for cPanel/WHM"
-homepage: "https://git.pidginhost.net/pidginhost/csm"
-license: "Proprietary"
+homepage: "https://github.com/pidginhost/csm"
+license: "MIT"
 vendor: "PidginHost"
 
 depends:
