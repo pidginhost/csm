@@ -153,17 +153,37 @@ func analyzePHPContent(path string) phpAnalysisResult {
 	var indicators []string
 
 	// --- Critical: Remote payload fetching ---
-	payloadHosts := []string{
-		"gist.githubusercontent.com",
-		"raw.githubusercontent.com",
+	// Paste sites are always suspicious in PHP files.
+	// GitHub raw URLs are common in legitimate plugin update checkers,
+	// so only count them as indicators when they appear on the same line
+	// as a dangerous PHP function call.
+	pasteHosts := []string{
 		"pastebin.com/raw",
 		"paste.ee/r/",
 		"ghostbin.co/paste/",
 		"hastebin.com/raw/",
 	}
-	for _, host := range payloadHosts {
+	for _, host := range pasteHosts {
 		if strings.Contains(contentLower, host) {
 			indicators = append(indicators, fmt.Sprintf("remote payload URL: %s", host))
+		}
+	}
+	githubHosts := []string{"gist.githubusercontent.com", "raw.githubusercontent.com"}
+	dangerousCalls := []string{"file_put_contents(", "fwrite(", "shell_", "passthru(", "popen("}
+	for _, host := range githubHosts {
+		if !strings.Contains(contentLower, host) {
+			continue
+		}
+		for _, line := range strings.Split(contentLower, "\n") {
+			if !strings.Contains(line, host) {
+				continue
+			}
+			for _, fn := range dangerousCalls {
+				if strings.Contains(line, fn) {
+					indicators = append(indicators, fmt.Sprintf("remote payload URL with dangerous call: %s", host))
+					break
+				}
+			}
 		}
 	}
 
@@ -247,26 +267,48 @@ func analyzePHPContent(path string) phpAnalysisResult {
 	// (e.g. "WP_Filesystem(" matching "exec(", "preg_match(" matching "exec(")
 	shellFuncs := []string{"system(", "passthru(", "exec(", "shell_exec(", "popen(", "proc_open(", "pcntl_exec("}
 	requestVars := []string{"$_request", "$_post", "$_get", "$_cookie", "$_server"}
-	hasShell := false
-	hasInput := false
-	for _, sf := range shellFuncs {
-		if containsStandaloneFunc(contentLower, sf) {
-			hasShell = true
+	// Require shell function + request variable on the SAME LINE to avoid
+	// false positives on plugins that use exec() for system info and $_SERVER
+	// for IP detection in completely unrelated code paths.
+	for _, line := range strings.Split(contentLower, "\n") {
+		lineHasShell := false
+		lineHasInput := false
+		for _, sf := range shellFuncs {
+			if containsStandaloneFunc(line, sf) {
+				lineHasShell = true
+				break
+			}
 		}
-	}
-	for _, rv := range requestVars {
-		if strings.Contains(contentLower, rv) {
-			hasInput = true
+		if !lineHasShell {
+			continue
 		}
-	}
-	if hasShell && hasInput {
-		indicators = append(indicators, "shell execution function with request input (webshell pattern)")
+		for _, rv := range requestVars {
+			if strings.Contains(line, rv) {
+				lineHasInput = true
+				break
+			}
+		}
+		if lineHasInput {
+			indicators = append(indicators, "shell function with request input on same line (webshell pattern)")
+			break
+		}
 	}
 
-	// --- High: base64 encoding/decoding of commands (CGI shell pattern) ---
+	// --- High: base64 encoding/decoding with execution on same line ---
 	if strings.Contains(contentLower, "base64_decode") && strings.Contains(contentLower, "base64_encode") {
-		if hasShell || containsStandaloneFunc(contentLower, "eval(") {
-			indicators = append(indicators, "base64 encode+decode with execution (command relay pattern)")
+		for _, line := range strings.Split(contentLower, "\n") {
+			hasBoth := strings.Contains(line, "base64_decode") && strings.Contains(line, "base64_encode")
+			hasExec := false
+			for _, sf := range shellFuncs {
+				if containsStandaloneFunc(line, sf) {
+					hasExec = true
+					break
+				}
+			}
+			if hasBoth && hasExec {
+				indicators = append(indicators, "base64 encode+decode with execution on same line (command relay)")
+				break
+			}
 		}
 	}
 

@@ -820,14 +820,36 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) {
 	}
 	content := strings.ToLower(string(data))
 
-	// Remote payload fetching
-	payloads := []string{"gist.githubusercontent.com", "raw.githubusercontent.com", "pastebin.com/raw"}
-	for _, p := range payloads {
+	// Remote payload fetching — paste sites are always suspicious.
+	// GitHub raw URLs only flag when combined with a dangerous call on
+	// the same line (legitimate plugins use GitHub for update checks).
+	pasteURLs := []string{"pastebin.com/raw", "paste.ee/r/", "ghostbin.co/paste/", "hastebin.com/raw/"}
+	for _, p := range pasteURLs {
 		if strings.Contains(content, p) {
 			fm.sendAlertWithPath(alert.Critical, "php_dropper_realtime",
-				fmt.Sprintf("PHP dropper with remote payload URL: %s", path),
+				fmt.Sprintf("PHP dropper with paste site URL: %s", path),
 				fmt.Sprintf("Fetches from: %s", p), path, procInfo)
 			return
+		}
+	}
+	githubURLs := []string{"gist.githubusercontent.com", "raw.githubusercontent.com"}
+	dangerousFns := []string{"file_put_contents(", "fwrite(", "shell_", "passthru(", "popen("}
+	for _, gh := range githubURLs {
+		if !strings.Contains(content, gh) {
+			continue
+		}
+		for _, line := range strings.Split(content, "\n") {
+			if !strings.Contains(line, gh) {
+				continue
+			}
+			for _, fn := range dangerousFns {
+				if strings.Contains(line, fn) {
+					fm.sendAlertWithPath(alert.Critical, "php_dropper_realtime",
+						fmt.Sprintf("PHP dropper fetching from GitHub with dangerous call: %s", path),
+						fmt.Sprintf("URL: %s, Function: %s", gh, fn), path, procInfo)
+					return
+				}
+			}
 		}
 	}
 

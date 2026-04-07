@@ -31,9 +31,23 @@ func parseValiasLine(line string) (localPart, dest string) {
 	return localPart, dest
 }
 
-// isPipeForwarder returns true if the destination is a pipe forwarder.
+// isPipeForwarder returns true if the destination is a pipe forwarder,
+// excluding known-safe cPanel built-in pipes (autoresponder, BoxTrapper).
 func isPipeForwarder(dest string) bool {
-	return strings.HasPrefix(dest, "|")
+	if !strings.HasPrefix(dest, "|") {
+		return false
+	}
+	safe := []string{
+		"/usr/local/cpanel/bin/autorespond",
+		"/usr/local/cpanel/bin/boxtrapper",
+		"/usr/local/cpanel/bin/mailman",
+	}
+	for _, s := range safe {
+		if strings.Contains(dest, s) {
+			return false
+		}
+	}
+	return true
 }
 
 // isDevNullForwarder returns true if the destination is /dev/null.
@@ -203,15 +217,20 @@ func auditValiasFile(path, domain string, localDomains map[string]bool, cfg *con
 	db := store.Global()
 	var findings []alert.Finding
 
-	// Check if file hash changed (for "newly added" context)
+	// Check if file hash changed (for "newly added" context).
+	// On first scan (no prior hash), store baseline but don't mark as new —
+	// only flag as "newly added" when the hash actually changed from a
+	// previously known value. This prevents flooding on fresh installs.
 	isNew := false
 	if db != nil {
 		currentHash, hashErr := fileContentHash(path)
 		if hashErr == nil {
 			oldHash, found := db.GetForwarderHash("valiases:" + domain)
-			if !found || oldHash != currentHash {
-				isNew = true
+			if found && oldHash != currentHash {
+				isNew = true // hash changed — genuinely new forwarder
 			}
+			// Always store current hash (establishes baseline on first run)
+			db.SetForwarderHash("valiases:"+domain, currentHash)
 		}
 	}
 
@@ -289,14 +308,15 @@ func auditVfilterFile(path, domain string, localDomains map[string]bool, cfg *co
 	db := store.Global()
 	content := string(data)
 
-	// Check if file hash changed
+	// Check if file hash changed — same first-run logic as valiases above.
 	isNew := false
 	if db != nil {
 		currentHash := fmt.Sprintf("%x", sha256.Sum256(data))
 		oldHash, found := db.GetForwarderHash("vfilters:" + domain)
-		if !found || oldHash != currentHash {
+		if found && oldHash != currentHash {
 			isNew = true
 		}
+		db.SetForwarderHash("vfilters:"+domain, currentHash)
 	}
 
 	externalDests := parseVfilterExternalDests(content, localDomains)
