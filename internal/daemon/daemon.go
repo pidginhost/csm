@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -230,6 +231,11 @@ func (d *Daemon) Run() error {
 	// Start heartbeat
 	d.wg.Add(1)
 	go d.heartbeat()
+
+	// Start systemd watchdog notifier — independent goroutine with its own
+	// ticker so long-running scans don't block the heartbeat.
+	d.wg.Add(1)
+	go d.watchdogNotifier()
 
 	fmt.Fprintf(os.Stderr, "[%s] CSM daemon running\n", ts())
 
@@ -467,8 +473,6 @@ func (d *Daemon) criticalScanner() {
 			return
 		case <-ticker.C:
 			d.runPeriodicChecks(checks.TierCritical)
-			// Notify systemd watchdog
-			notifyWatchdog()
 		}
 	}
 }
@@ -1406,20 +1410,55 @@ func deployConfigs() {
 	}
 }
 
-func notifyWatchdog() {
-	// systemd watchdog notification
-	if os.Getenv("WATCHDOG_USEC") != "" {
-		// Write to the notify socket
-		addr := os.Getenv("NOTIFY_SOCKET")
-		if addr != "" {
-			conn, err := syscall.Socket(syscall.AF_UNIX, syscall.SOCK_DGRAM, 0)
-			if err == nil {
-				sa := &syscall.SockaddrUnix{Name: addr}
-				_ = syscall.Sendmsg(conn, []byte("WATCHDOG=1"), nil, sa, 0)
-				_ = syscall.Close(conn)
-			}
+// watchdogNotifier sends systemd watchdog keepalives on its own ticker.
+// Runs at half the WatchdogSec interval so there's always margin.
+// Completely independent of scan goroutines — never blocks.
+func (d *Daemon) watchdogNotifier() {
+	defer d.wg.Done()
+
+	usecStr := os.Getenv("WATCHDOG_USEC")
+	if usecStr == "" {
+		return // watchdog not configured
+	}
+	addr := os.Getenv("NOTIFY_SOCKET")
+	if addr == "" {
+		return
+	}
+
+	usec, err := strconv.ParseInt(usecStr, 10, 64)
+	if err != nil || usec <= 0 {
+		return
+	}
+
+	// Notify at half the watchdog interval for safety margin
+	interval := time.Duration(usec) * time.Microsecond / 2
+	if interval < 10*time.Second {
+		interval = 10 * time.Second
+	}
+
+	fmt.Fprintf(os.Stderr, "[%s] systemd watchdog active (interval=%s)\n", ts(), interval)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-d.stopCh:
+			return
+		case <-ticker.C:
+			sdNotify(addr, "WATCHDOG=1")
 		}
 	}
+}
+
+func sdNotify(addr, msg string) {
+	conn, err := syscall.Socket(syscall.AF_UNIX, syscall.SOCK_DGRAM, 0)
+	if err != nil {
+		return
+	}
+	defer func() { _ = syscall.Close(conn) }()
+	sa := &syscall.SockaddrUnix{Name: addr}
+	_ = syscall.Sendmsg(conn, []byte(msg), nil, sa, 0)
 }
 
 func ts() string {
