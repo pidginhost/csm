@@ -300,7 +300,13 @@ func auditOS() []store.AuditResult {
 			})
 			continue
 		}
-		mode := info.Mode().Perm() | (info.Mode() & os.ModeSticky)
+		// Check only the lower 12 permission bits (rwx + sticky).
+		// On CloudLinux/CageFS, /tmp may have extra bits (setuid from virtmp
+		// mount) that don't affect security — the noexec mount option provides
+		// protection. Only check perm bits + sticky + ownership.
+		perm := info.Mode().Perm()
+		sticky := info.Mode() & os.ModeSticky
+		mode := perm | sticky
 		stat, ok := info.Sys().(*syscall.Stat_t)
 		if !ok {
 			results = append(results, store.AuditResult{
@@ -326,9 +332,12 @@ func auditOS() []store.AuditResult {
 	}
 
 	// /etc/shadow permissions
+	// Accept 0000, 0600 (RHEL/CentOS default), and 0640 (Debian default).
+	// All three restrict access to root only. 0600 is the standard on
+	// CentOS/CloudLinux — changing it can break passwd/chage.
 	if info, err := os.Stat("/etc/shadow"); err == nil {
 		perm := info.Mode().Perm()
-		if perm == 0 || perm == 0o640 {
+		if perm == 0 || perm == 0o600 || perm == 0o640 {
 			results = append(results, store.AuditResult{
 				Category: "os", Name: "os_shadow_permissions", Title: "/etc/shadow Permissions",
 				Status: "pass", Message: fmt.Sprintf("/etc/shadow has mode %04o", perm),
@@ -336,8 +345,8 @@ func auditOS() []store.AuditResult {
 		} else {
 			results = append(results, store.AuditResult{
 				Category: "os", Name: "os_shadow_permissions", Title: "/etc/shadow Permissions",
-				Status: "fail", Message: fmt.Sprintf("/etc/shadow has mode %04o (expected 0000 or 0640)", perm),
-				Fix: "chmod 0640 /etc/shadow",
+				Status: "fail", Message: fmt.Sprintf("/etc/shadow has mode %04o (expected 0000, 0600, or 0640)", perm),
+				Fix: "chmod 0600 /etc/shadow",
 			})
 		}
 	} else {
@@ -1550,18 +1559,22 @@ func auditMail() []store.AuditResult {
 	}
 
 	// mail_exim_tls: check for SSLv2 in tls_require_ciphers
+	// +no_sslv2 in openssl_options means SSLv2 is DISABLED (good).
+	// Only flag if SSLv2 is referenced WITHOUT +no_ prefix.
 	if eximConfig != "" {
 		lower := strings.ToLower(eximConfig)
-		if strings.Contains(lower, "sslv2") {
+		hasSslv2 := strings.Contains(lower, "sslv2")
+		isDisabled := strings.Contains(lower, "+no_sslv2") || strings.Contains(lower, "no_sslv2")
+		if hasSslv2 && !isDisabled {
 			results = append(results, store.AuditResult{
 				Category: "mail", Name: "mail_exim_tls", Title: "Exim TLS Ciphers",
-				Status: "fail", Message: "Exim tls_require_ciphers references SSLv2",
-				Fix: "Remove SSLv2 from tls_require_ciphers in exim configuration.",
+				Status: "fail", Message: "Exim allows SSLv2 connections",
+				Fix: "Add '+no_sslv2' to openssl_options in exim configuration.",
 			})
 		} else {
 			results = append(results, store.AuditResult{
 				Category: "mail", Name: "mail_exim_tls", Title: "Exim TLS Ciphers",
-				Status: "pass", Message: "No SSLv2 references in exim TLS configuration",
+				Status: "pass", Message: "SSLv2 is disabled in exim TLS configuration",
 			})
 		}
 	}
@@ -1589,22 +1602,38 @@ func auditMail() []store.AuditResult {
 	}
 
 	// mail_dovecot_tls: check ssl_min_protocol
+	// Use 'doveconf -a' for the effective config — cPanel manages Dovecot
+	// settings outside the standard config files, so file parsing misses them.
 	dovecotTLS := false
-	for _, path := range []string{"/etc/dovecot/conf.d/10-ssl.conf", "/etc/dovecot/dovecot.conf"} {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		for _, line := range strings.Split(string(data), "\n") {
+	if out, err := exec.Command("doveconf", "-a").Output(); err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
 			trimmed := strings.TrimSpace(line)
-			if strings.HasPrefix(trimmed, "#") {
-				continue
-			}
 			if strings.HasPrefix(trimmed, "ssl_min_protocol") {
 				val := strings.TrimSpace(strings.TrimPrefix(trimmed, "ssl_min_protocol"))
 				val = strings.TrimLeft(val, "= ")
 				if strings.Contains(val, "TLSv1.2") || strings.Contains(val, "TLSv1.3") {
 					dovecotTLS = true
+				}
+			}
+		}
+	} else {
+		// Fallback: try config files
+		for _, path := range []string{"/etc/dovecot/conf.d/10-ssl.conf", "/etc/dovecot/dovecot.conf"} {
+			data, readErr := os.ReadFile(path)
+			if readErr != nil {
+				continue
+			}
+			for _, line := range strings.Split(string(data), "\n") {
+				trimmed := strings.TrimSpace(line)
+				if strings.HasPrefix(trimmed, "#") {
+					continue
+				}
+				if strings.HasPrefix(trimmed, "ssl_min_protocol") {
+					val := strings.TrimSpace(strings.TrimPrefix(trimmed, "ssl_min_protocol"))
+					val = strings.TrimLeft(val, "= ")
+					if strings.Contains(val, "TLSv1.2") || strings.Contains(val, "TLSv1.3") {
+						dovecotTLS = true
+					}
 				}
 			}
 		}
@@ -1615,7 +1644,6 @@ func auditMail() []store.AuditResult {
 			Status: "pass", Message: "Dovecot ssl_min_protocol is TLSv1.2 or higher",
 		})
 	} else {
-		// Check if dovecot is even installed
 		if _, err := os.Stat("/etc/dovecot/dovecot.conf"); err != nil {
 			results = append(results, store.AuditResult{
 				Category: "mail", Name: "mail_dovecot_tls", Title: "Dovecot TLS Minimum",
