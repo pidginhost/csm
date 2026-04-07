@@ -1180,12 +1180,15 @@ func auditPHP(serverType string) []store.AuditResult {
 		}
 	}
 
-	// CloudLinux alt-php installs
+	// CloudLinux alt-php installs (skip Imunify360's internal PHP builds)
 	if serverType == "cloudlinux" {
 		altInis, _ := filepath.Glob("/opt/alt/php*/etc/php.ini")
 		for _, ini := range altInis {
 			dir := filepath.Dir(filepath.Dir(ini)) // /opt/alt/php81
 			base := filepath.Base(dir)             // php81
+			if strings.Contains(base, "-") {
+				continue // skip php74-imunify, php81-hardened, etc.
+			}
 			shortID := strings.TrimPrefix(base, "php")
 			if len(shortID) >= 2 {
 				ver := shortID[:len(shortID)-1] + "." + shortID[len(shortID)-1:]
