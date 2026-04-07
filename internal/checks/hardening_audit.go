@@ -913,23 +913,32 @@ func auditCPanel(serverType string) []store.AuditResult {
 
 	cpConf := parseCpanelConfig("/var/cpanel/cpanel.config")
 
-	// Table-driven boolean checks on cpanel.config
+	// Table-driven boolean checks on cpanel.config.
+	// fix is the human-readable remediation shown in the UI.
 	type cpCheck struct {
 		id, title, key, wantVal string
 		invert                  bool // true = fail when value matches wantVal
+		fix                     string
 	}
 	checks := []cpCheck{
-		{"cp_ssl_only", "Always Redirect to SSL", "alwaysredirecttossl", "1", false},
-		{"cp_boxtrapper", "BoxTrapper Disabled", "skipboxtrapper", "1", false},
-		{"cp_password_reset", "Password Reset Disabled", "resetpass", "1", true},
-		{"cp_password_reset_sub", "Subaccount Password Reset Disabled", "resetpass_sub", "1", true},
-		{"cp_email_passwords", "Email Passwords Disabled", "emailpasswords", "1", true},
-		{"cp_cookie_validation", "Cookie IP Validation", "cookieipvalidation", "strict", false},
-		{"cp_remote_domains", "Remote Domains Disabled", "allowremotedomains", "1", true},
-		{"cp_proxy_subdomains", "Service Subdomains Disabled", "proxysubdomains", "1", true},
-		{"cp_core_dumps", "Core Dumps Disabled", "coredump", "1", true},
-		{"cp_nobodyspam", "Nobody Spam Prevention", "nobodyspam", "1", false},
-		{"cp_security_tokens", "Security Tokens Enabled", "xsrftokens", "1", false},
+		{"cp_ssl_only", "Always Redirect to SSL", "alwaysredirecttossl", "1", false,
+			"In WHM > Tweak Settings > Redirection, set 'Always redirect to SSL/TLS' to On."},
+		{"cp_boxtrapper", "BoxTrapper Disabled", "skipboxtrapper", "1", false,
+			"In WHM > Tweak Settings > Mail, set 'Enable BoxTrapper spam trap' to Off."},
+		{"cp_password_reset", "Password Reset Disabled", "resetpass", "1", true,
+			"In WHM > Tweak Settings > System, set 'Reset Password for cPanel accounts' to Off."},
+		{"cp_password_reset_sub", "Subaccount Password Reset Disabled", "resetpass_sub", "1", true,
+			"In WHM > Tweak Settings > System, set 'Reset Password for Subaccounts' to Off."},
+		{"cp_email_passwords", "Email Passwords Disabled", "emailpasswords", "1", true,
+			"In WHM > Tweak Settings > Security, set 'Send passwords when creating a new account' to Off."},
+		{"cp_cookie_validation", "Cookie IP Validation", "cookieipvalidation", "strict", false,
+			"In WHM > Tweak Settings > Security, set 'Cookie IP validation' to strict."},
+		{"cp_remote_domains", "Remote Domains Disabled", "allowremotedomains", "1", true,
+			"In WHM > Tweak Settings > Domains, set 'Allow Remote Domains' to Off."},
+		{"cp_core_dumps", "Core Dumps Disabled", "coredump", "1", true,
+			"In WHM > Tweak Settings > Security, set 'Generate core dumps' to Off."},
+		{"cp_nobodyspam", "Nobody Spam Prevention", "nobodyspam", "1", false,
+			"In WHM > Tweak Settings > Mail, set 'Prevent nobody from sending mail' to On."},
 	}
 
 	for _, c := range checks {
@@ -946,16 +955,10 @@ func auditCPanel(serverType string) []store.AuditResult {
 				Status: "pass", Message: fmt.Sprintf("%s = %s", c.key, val),
 			})
 		} else {
-			var fix string
-			if c.invert {
-				fix = fmt.Sprintf("In WHM > Tweak Settings, ensure %s is not set to %s.", c.key, c.wantVal)
-			} else {
-				fix = fmt.Sprintf("In WHM > Tweak Settings, set %s to %s.", c.key, c.wantVal)
-			}
 			results = append(results, store.AuditResult{
 				Category: "cpanel", Name: c.id, Title: c.title,
 				Status: "fail", Message: fmt.Sprintf("%s = %s", c.key, val),
-				Fix: fix,
+				Fix: c.fix,
 			})
 		}
 	}
