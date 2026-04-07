@@ -38,7 +38,7 @@ func CheckCpanelLogins(cfg *config.Config, store *state.Store) []alert.Finding {
 
 	for _, line := range lines {
 		// Session log format:
-		// [2026-03-25 07:19:47 +0200] info [cpaneld] 103.132.9.133 NEW user:token address=IP,...
+		// [2026-03-25 07:19:47 +0200] info [cpaneld] 203.0.113.133 NEW user:token address=IP,...
 		// [2026-03-25 07:38:18 +0200] info [security] internal PURGE user:token password_change
 
 		// Parse timestamp
@@ -212,7 +212,7 @@ func parseSessionTimestamp(line string) time.Time {
 }
 
 // parseCpanelLogin extracts IP and account from a session NEW line.
-// Format: [timestamp] info [cpaneld] 103.132.9.133 NEW user:token address=IP,...
+// Format: [timestamp] info [cpaneld] 203.0.113.133 NEW user:token address=IP,...
 func parseCpanelLogin(line string) (ip, account string) {
 	// Find IP after [cpaneld]
 	idx := strings.Index(line, "[cpaneld]")

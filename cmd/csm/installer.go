@@ -228,10 +228,8 @@ thresholds:
   filesystem_scan_interval_min: 30
 
 infra_ips:
-  - "176.124.104.0/24"
-  - "176.124.105.0/24"
-  - "176.124.110.0/24"
-  - "176.124.111.0/24"
+  # Add your infrastructure IPs or CIDRs here.
+  # - "203.0.113.0/24"
 
 suppressions:
   upcp_window_start: "00:30"
@@ -371,7 +369,8 @@ firewall:
   log_rate: 5                   # dropped packet log entries per minute
 
 c2_blocklist:
-  - "152.53.173.29"
+  # Add any locally maintained blocklist IPs here.
+  # - "203.0.113.53"
 
 backdoor_ports:
   - 4444

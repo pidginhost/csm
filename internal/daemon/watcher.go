@@ -277,8 +277,8 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 	}
 
 	// 2. Outgoing mail hold - account suspended for spam
-	// Format: "Sender office@nordkey.ro has an outgoing mail hold"
-	// or: "Domain membranaepdm.ro has an outgoing mail hold"
+	// Format: "Sender office@example.com has an outgoing mail hold"
+	// or: "Domain example.org has an outgoing mail hold"
 	// Dedup: only alert once per domain per hour (exim retries held messages
 	// every few minutes, generating the same log line each time)
 	if strings.Contains(line, "outgoing mail hold") {

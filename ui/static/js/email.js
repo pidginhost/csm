@@ -318,10 +318,10 @@
         }
 
         function extractAccountFromMessage(msg, details) {
-            // "Email authentication failure for admin@arvamet.ro from 73.85.44.247"
+            // "Email authentication failure for admin@example.com from 203.0.113.44"
             var m = msg.match(/for (\S+@\S+)/);
             if (m) return m[1];
-            // "Account office@nordkey.ro has outgoing mail hold"
+            // "Account office@example.org has outgoing mail hold"
             m = msg.match(/Account (\S+@\S+)/);
             if (m) return m[1];
             // "Compromised email account user@domain"

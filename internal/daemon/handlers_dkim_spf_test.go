@@ -32,8 +32,8 @@ func TestParseSPFDMARCRejection(t *testing.T) {
 	}{
 		{
 			"SPF PTR record failure",
-			`2026-03-29 09:44:28 1w6jso-0000000G1zB-1Jus ** dfactorys@gmail.com (info@demolitions.cy) <info@demolitions.cy> R=dkim_lookuphost T=dkim_remote_smtp H=gmail-smtp-in.l.google.com [142.250.110.26] : SMTP error from remote mail server after end of data: 550-5.7.25 [176.124.111.193] The IP address sending this message does not have a PTR record`,
-			"demolitions.cy",
+			`2026-03-29 09:44:28 1w6jso-0000000G1zB-1Jus ** sender@gmail.com (info@example.org) <info@example.org> R=dkim_lookuphost T=dkim_remote_smtp H=gmail-smtp-in.l.google.com [142.250.110.26] : SMTP error from remote mail server after end of data: 550-5.7.25 [203.0.113.193] The IP address sending this message does not have a PTR record`,
+			"example.org",
 			"SMTP error from remote mail server",
 		},
 		{
@@ -44,8 +44,8 @@ func TestParseSPFDMARCRejection(t *testing.T) {
 		},
 		{
 			"Gmail spam with SPF keyword",
-			`2026-03-29 08:22:58 1w6ibx ** robert@gmail.com (contact@spatii.ro) <contact@spatii.ro> R=dkim_lookuphost : 550-5.7.1 Gmail has detected this message is spam. SPF check failed.`,
-			"spatii.ro",
+			`2026-03-29 08:22:58 1w6ibx ** robert@gmail.com (contact@example.net) <contact@example.net> R=dkim_lookuphost : 550-5.7.1 Gmail has detected this message is spam. SPF check failed.`,
+			"example.net",
 			"550-5.7.1",
 		},
 		{
@@ -60,7 +60,7 @@ func TestParseSPFDMARCRejection(t *testing.T) {
 		},
 		{
 			"No envelope sender",
-			`2026-04-04 10:15:23 1abc23 ** admin@unitedcontainer.ro R=virtual_aliases :`,
+			`2026-04-04 10:15:23 1abc23 ** admin@example.net R=virtual_aliases :`,
 			"", "",
 		},
 		{

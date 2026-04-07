@@ -139,7 +139,7 @@ func ParseSessionLineForHijack(line string, detector *PasswordHijackDetector) {
 }
 
 func parseWHMPurge(line string) (ip, account string) {
-	// Format: [timestamp] info [whostmgr] 86.62.29.50 PURGE account:token password_change
+	// Format: [timestamp] info [whostmgr] 198.51.100.50 PURGE account:token password_change
 	idx := strings.Index(line, "[whostmgr]")
 	if idx < 0 {
 		return "", ""

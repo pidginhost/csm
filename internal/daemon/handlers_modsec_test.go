@@ -11,7 +11,7 @@ import (
 )
 
 func TestParseModSecLogLine_ApacheDeny(t *testing.T) {
-	line := `[Wed Apr 01 15:15:05.234401 2026] [error] [client 173.244.42.164] ModSecurity: Access denied with code 403, [Rule: 'TX:content_type' '!@within %{tx.allowed_request_content_type}'] [id "920420"] [msg "Request content type is not allowed by policy"] [logdata "|text/html|"] [severity "CRITICAL"] [hostname "www.filmetari.com"] [uri "/xmlrpc.php"]`
+	line := `[Wed Apr 01 15:15:05.234401 2026] [error] [client 198.51.100.164] ModSecurity: Access denied with code 403, [Rule: 'TX:content_type' '!@within %{tx.allowed_request_content_type}'] [id "920420"] [msg "Request content type is not allowed by policy"] [logdata "|text/html|"] [severity "CRITICAL"] [hostname "www.example.com"] [uri "/xmlrpc.php"]`
 	cfg := &config.Config{}
 
 	findings := parseModSecLogLine(line, cfg)
@@ -26,7 +26,7 @@ func TestParseModSecLogLine_ApacheDeny(t *testing.T) {
 	if f.Severity != alert.High {
 		t.Errorf("severity = %v, want High", f.Severity)
 	}
-	if !strings.Contains(f.Message, "173.244.42.164") {
+	if !strings.Contains(f.Message, "198.51.100.164") {
 		t.Errorf("message should contain IP, got %q", f.Message)
 	}
 	if !strings.Contains(f.Message, "920420") {
@@ -35,7 +35,7 @@ func TestParseModSecLogLine_ApacheDeny(t *testing.T) {
 }
 
 func TestParseModSecLogLine_CSMCustomRule(t *testing.T) {
-	line := `[Wed Apr 01 17:13:54.047783 2026] [error] [client 185.177.72.61] ModSecurity: Access denied with code 403, [Rule: 'REQUEST_URI' '/\.env'] [id "900115"] [msg "CSM VP: Blocked .env file access"] [hostname "176.124.111.228"] [uri "/.env_sample"]`
+	line := `[Wed Apr 01 17:13:54.047783 2026] [error] [client 203.0.113.61] ModSecurity: Access denied with code 403, [Rule: 'REQUEST_URI' '/\.env'] [id "900115"] [msg "CSM VP: Blocked .env file access"] [hostname "edge.example.net"] [uri "/.env_sample"]`
 	cfg := &config.Config{}
 
 	findings := parseModSecLogLine(line, cfg)
@@ -102,9 +102,9 @@ func TestParseModSecLogLine_NonModSecLine(t *testing.T) {
 }
 
 func TestParseModSecLogLine_InfraIPSkipped(t *testing.T) {
-	line := `[Wed Apr 01 15:15:05 2026] [error] [client 176.124.104.234] ModSecurity: Access denied with code 403, [id "900001"] [msg "test"] [hostname "test.com"] [uri "/test"]`
+	line := `[Wed Apr 01 15:15:05 2026] [error] [client 203.0.113.234] ModSecurity: Access denied with code 403, [id "900001"] [msg "test"] [hostname "test.example"] [uri "/test"]`
 	cfg := &config.Config{}
-	cfg.InfraIPs = []string{"176.124.104.234/32"}
+	cfg.InfraIPs = []string{"203.0.113.234/32"}
 
 	findings := parseModSecLogLine(line, cfg)
 	if findings != nil {
@@ -124,7 +124,7 @@ func resetModSecState() {
 func TestModSecDedup(t *testing.T) {
 	resetModSecState()
 
-	line := `[Wed Apr 01 15:15:05.234401 2026] [error] [client 173.244.42.164] ModSecurity: Access denied with code 403, [Rule: 'TX:content_type' '!@within %{tx.allowed_request_content_type}'] [id "920420"] [msg "Request content type is not allowed by policy"] [logdata "|text/html|"] [severity "CRITICAL"] [hostname "www.filmetari.com"] [uri "/xmlrpc.php"]`
+	line := `[Wed Apr 01 15:15:05.234401 2026] [error] [client 198.51.100.164] ModSecurity: Access denied with code 403, [Rule: 'TX:content_type' '!@within %{tx.allowed_request_content_type}'] [id "920420"] [msg "Request content type is not allowed by policy"] [logdata "|text/html|"] [severity "CRITICAL"] [hostname "www.example.com"] [uri "/xmlrpc.php"]`
 	cfg := &config.Config{}
 
 	// First call - should return the base finding.
@@ -147,7 +147,7 @@ func TestModSecCSMRuleEscalation(t *testing.T) {
 	resetModSecState()
 
 	// Same CSM rule line fired 3 times from the same IP.
-	line := `[Wed Apr 01 17:13:54.047783 2026] [error] [client 185.177.72.61] ModSecurity: Access denied with code 403, [Rule: 'REQUEST_URI' '/\.env'] [id "900115"] [msg "CSM VP: Blocked .env file access"] [hostname "176.124.111.228"] [uri "/.env_sample"]`
+	line := `[Wed Apr 01 17:13:54.047783 2026] [error] [client 203.0.113.61] ModSecurity: Access denied with code 403, [Rule: 'REQUEST_URI' '/\.env'] [id "900115"] [msg "CSM VP: Blocked .env file access"] [hostname "edge.example.net"] [uri "/.env_sample"]`
 	cfg := &config.Config{}
 
 	// Call 1 - base finding, no escalation yet.
@@ -180,7 +180,7 @@ func TestModSecCSMRuleEscalation(t *testing.T) {
 			if f.Severity != alert.Critical {
 				t.Errorf("escalation severity = %v, want Critical", f.Severity)
 			}
-			if !strings.Contains(f.Message, "185.177.72.61") {
+			if !strings.Contains(f.Message, "203.0.113.61") {
 				t.Errorf("escalation message should contain IP, got %q", f.Message)
 			}
 		}

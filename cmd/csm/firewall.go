@@ -251,7 +251,7 @@ func fwAllowPort() {
 	args := fwArgs()
 	if len(args) < 2 {
 		fmt.Fprintf(os.Stderr, "Usage: csm firewall allow-port <ip> <port> [reason]\n")
-		fmt.Fprintf(os.Stderr, "  Example: csm firewall allow-port 176.124.106.76 3306 tgvmedia MySQL\n")
+		fmt.Fprintf(os.Stderr, "  Example: csm firewall allow-port 203.0.113.10 3306 example-admin MySQL\n")
 		os.Exit(1)
 	}
 

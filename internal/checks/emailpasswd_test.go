@@ -30,15 +30,15 @@ func TestGenerateCandidates_BasicPatterns(t *testing.T) {
 	}
 }
 
-func TestGenerateCandidates_AdminNordkey(t *testing.T) {
-	candidates := generateCandidates("admin", "nordkey.ro")
+func TestGenerateCandidates_AdminExampleCorp(t *testing.T) {
+	candidates := generateCandidates("admin", "examplecorp.test")
 
 	assertContains(t, candidates, "admin2026")
 	assertContains(t, candidates, "Admin2026")
-	assertContains(t, candidates, "nordkey")
-	assertContains(t, candidates, "Nordkey")
-	assertContains(t, candidates, "Nordkey2026")
-	assertContains(t, candidates, "nordkey2026")
+	assertContains(t, candidates, "examplecorp")
+	assertContains(t, candidates, "Examplecorp")
+	assertContains(t, candidates, "Examplecorp2026")
+	assertContains(t, candidates, "examplecorp2026")
 
 	// Two-digit suffixes
 	assertContains(t, candidates, "admin00")
@@ -175,7 +175,7 @@ func TestCapitalizeFirst(t *testing.T) {
 		in, want string
 	}{
 		{"admin", "Admin"},
-		{"nordkey", "Nordkey"},
+		{"examplecorp", "Examplecorp"},
 		{"", ""},
 		{"A", "A"},
 		{"my-company", "My-company"},
