@@ -24,8 +24,8 @@
 |---------|-------------|
 | `csm install` | Deploy config, systemd, auditd rules, logrotate, WHM plugin |
 | `csm uninstall` | Clean removal |
-| `csm baseline` | Record current state as known-good |
-| `csm rehash` | Update binary/config hashes without scanning |
+| `csm baseline` | Full server scan, records current state as known-good. Takes 5-10 min on large servers. Required on first install. |
+| `csm rehash` | Update binary/config hashes without scanning. Use after config edits. Run twice (circular hash). |
 | `csm status` | Show current state, last run, active findings |
 | `csm validate` | Validate config (`--deep` for connectivity probes) |
 | `csm config show` | Display config with secrets redacted |
