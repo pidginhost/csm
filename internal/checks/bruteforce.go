@@ -2,6 +2,7 @@ package checks
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -17,67 +18,54 @@ const (
 	apiFailThreshold = 10
 )
 
-// CheckWPBruteForce parses the LiteSpeed/Apache access log for brute force
-// attacks against wp-login.php and xmlrpc.php.
+// CheckWPBruteForce parses access logs for brute force attacks against
+// wp-login.php and xmlrpc.php. Scans both the central access log AND
+// per-domain domlogs (/home/*/access-logs/*ssl_log) — on LiteSpeed with
+// cPanel, virtual host traffic only appears in domlogs, not in the
+// central access log.
 func CheckWPBruteForce(cfg *config.Config, _ *state.Store) []alert.Finding {
-	var findings []alert.Finding
-
-	// Check LiteSpeed access log (most common on cPanel)
-	logPaths := []string{
-		"/usr/local/apache/logs/access_log",
-		"/var/log/apache2/access_log",
-		"/etc/apache2/logs/access_log",
-	}
-
 	window := cfg.Thresholds.BruteForceWindow
 	if window <= 0 {
 		window = 5000
 	}
 
-	var lines []string
-	for _, path := range logPaths {
-		lines = tailFile(path, window)
-		if len(lines) > 0 {
-			break
-		}
-	}
-	if len(lines) == 0 {
-		return nil
-	}
-
-	// Count POST requests to wp-login.php and xmlrpc.php per IP
 	wpLoginAttempts := make(map[string]int)
 	xmlrpcAttempts := make(map[string]int)
 	userEnumAttempts := make(map[string]int)
 
-	for _, line := range lines {
-		fields := strings.Fields(line)
-		if len(fields) < 7 {
-			continue
-		}
-		ip := fields[0]
-		method := strings.Trim(fields[5], "\"")
-		path := fields[6]
-
-		if method == "POST" && strings.Contains(path, "wp-login.php") {
-			wpLoginAttempts[ip]++
-		}
-		if method == "POST" && strings.Contains(path, "xmlrpc.php") {
-			xmlrpcAttempts[ip]++
-		}
-		// WordPress REST API user enumeration
-		if strings.Contains(path, "/wp-json/wp/v2/users") || strings.Contains(path, "?author=") {
-			userEnumAttempts[ip]++
+	// 1. Central access log (works on Apache, empty on LiteSpeed)
+	centralPaths := []string{
+		"/usr/local/apache/logs/access_log",
+		"/var/log/apache2/access_log",
+		"/etc/apache2/logs/access_log",
+	}
+	for _, p := range centralPaths {
+		lines := tailFile(p, window)
+		if len(lines) > 0 {
+			countBruteForce(lines, wpLoginAttempts, xmlrpcAttempts, userEnumAttempts)
+			break
 		}
 	}
+
+	// 2. Per-domain domlogs (LiteSpeed writes here for each vhost)
+	// Tail the last 200 lines from each SSL log — enough to catch brute
+	// force bursts without reading entire multi-GB log files.
+	domlogPattern := "/home/*/access-logs/*-ssl_log"
+	domlogs, _ := filepath.Glob(domlogPattern)
+	for _, dl := range domlogs {
+		lines := tailFile(dl, 200)
+		countBruteForce(lines, wpLoginAttempts, xmlrpcAttempts, userEnumAttempts)
+	}
+
+	var findings []alert.Finding
 
 	for ip, count := range wpLoginAttempts {
 		if count >= wpLoginThreshold {
 			findings = append(findings, alert.Finding{
-				Severity: alert.High,
+				Severity: alert.Critical,
 				Check:    "wp_login_bruteforce",
 				Message:  fmt.Sprintf("WordPress login brute force from %s: %d attempts", ip, count),
-				Details:  "High rate of POST requests to wp-login.php",
+				Details:  "High rate of POST requests to wp-login.php across server domlogs",
 			})
 		}
 	}
@@ -85,7 +73,7 @@ func CheckWPBruteForce(cfg *config.Config, _ *state.Store) []alert.Finding {
 	for ip, count := range xmlrpcAttempts {
 		if count >= xmlrpcThreshold {
 			findings = append(findings, alert.Finding{
-				Severity: alert.High,
+				Severity: alert.Critical,
 				Check:    "xmlrpc_abuse",
 				Message:  fmt.Sprintf("XML-RPC abuse from %s: %d requests", ip, count),
 				Details:  "High rate of POST requests to xmlrpc.php (brute force or amplification)",
@@ -105,6 +93,30 @@ func CheckWPBruteForce(cfg *config.Config, _ *state.Store) []alert.Finding {
 	}
 
 	return findings
+}
+
+// countBruteForce parses Combined Log Format lines and increments per-IP
+// counters for wp-login.php, xmlrpc.php, and user enumeration attacks.
+func countBruteForce(lines []string, wpLogin, xmlrpc, userEnum map[string]int) {
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) < 7 {
+			continue
+		}
+		ip := fields[0]
+		method := strings.Trim(fields[5], "\"")
+		uri := fields[6]
+
+		if method == "POST" && strings.Contains(uri, "wp-login.php") {
+			wpLogin[ip]++
+		}
+		if method == "POST" && strings.Contains(uri, "xmlrpc.php") {
+			xmlrpc[ip]++
+		}
+		if strings.Contains(uri, "/wp-json/wp/v2/users") || strings.Contains(uri, "?author=") {
+			userEnum[ip]++
+		}
+	}
 }
 
 // CheckFTPLogins parses /var/log/messages or pure-ftpd log for FTP brute force.
