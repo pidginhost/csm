@@ -2,8 +2,10 @@ package checks
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -11,87 +13,93 @@ import (
 )
 
 const (
-	wpLoginThreshold = 20 // failed attempts in log window
+	wpLoginThreshold = 20 // attempts per IP across all logs
 	xmlrpcThreshold  = 30
 	ftpFailThreshold = 10
 	webmailThreshold = 10
 	apiFailThreshold = 10
+
+	// domlogTailLines is how many lines to read from each domlog.
+	// 500 lines covers ~10 minutes of traffic on a busy site.
+	domlogTailLines = 500
+
+	// domlogMaxAge skips domlogs not modified recently (inactive sites).
+	domlogMaxAge = 30 * time.Minute
+
+	// domlogMaxFiles caps the number of domlogs scanned per cycle
+	// to prevent unbounded I/O on servers with thousands of domains.
+	domlogMaxFiles = 500
 )
 
-// CheckWPBruteForce parses access logs for brute force attacks against
-// wp-login.php and xmlrpc.php. Scans both the central access log AND
-// per-domain domlogs (/home/*/access-logs/*ssl_log) — on LiteSpeed with
-// cPanel, virtual host traffic only appears in domlogs, not in the
-// central access log.
+// CheckWPBruteForce detects brute force attacks against wp-login.php and
+// xmlrpc.php by scanning access logs. Always scans per-domain domlogs
+// because on LiteSpeed+cPanel, virtual host traffic only appears there.
+// The central access log is scanned as a supplement.
+//
+// Aggregates per-IP counts across ALL domains — catches attackers who
+// distribute requests across many sites to stay under per-site thresholds.
 func CheckWPBruteForce(cfg *config.Config, _ *state.Store) []alert.Finding {
 	window := cfg.Thresholds.BruteForceWindow
 	if window <= 0 {
 		window = 5000
 	}
 
-	wpLoginAttempts := make(map[string]int)
-	xmlrpcAttempts := make(map[string]int)
-	userEnumAttempts := make(map[string]int)
+	wpLogin := make(map[string]int)
+	xmlrpc := make(map[string]int)
+	userEnum := make(map[string]int)
 
-	// 1. Central access log (works on Apache, empty on LiteSpeed)
-	centralFound := false
-	centralPaths := []string{
+	// 1. Per-domain domlogs — primary source on LiteSpeed.
+	// Glob both SSL and non-SSL logs: attackers may use HTTP.
+	scanned := scanDomlogs(cfg.InfraIPs, wpLogin, xmlrpc, userEnum)
+
+	// 2. Central access log — supplement for non-vhost traffic.
+	// On LiteSpeed this mostly has WHM/server-level requests.
+	// On Apache it duplicates domlog data — minor double-counting is
+	// acceptable since thresholds are high enough.
+	for _, p := range []string{
 		"/usr/local/apache/logs/access_log",
 		"/var/log/apache2/access_log",
 		"/etc/apache2/logs/access_log",
-	}
-	for _, p := range centralPaths {
+	} {
 		lines := tailFile(p, window)
 		if len(lines) > 0 {
-			countBruteForce(lines, cfg.InfraIPs, wpLoginAttempts, xmlrpcAttempts, userEnumAttempts)
-			centralFound = true
+			countBruteForce(lines, cfg.InfraIPs, wpLogin, xmlrpc, userEnum)
 			break
 		}
 	}
 
-	// 2. Per-domain domlogs (LiteSpeed writes here for each vhost).
-	// Only scan domlogs if the central log was empty — avoids double-counting
-	// on Apache where both logs contain the same requests.
-	if !centralFound {
-		domlogPattern := "/home/*/access-logs/*-ssl_log"
-		domlogs, _ := filepath.Glob(domlogPattern)
-		for _, dl := range domlogs {
-			lines := tailFile(dl, 200)
-			countBruteForce(lines, cfg.InfraIPs, wpLoginAttempts, xmlrpcAttempts, userEnumAttempts)
-		}
-	}
-
+	// 3. Build findings from aggregated counters.
 	var findings []alert.Finding
 
-	for ip, count := range wpLoginAttempts {
+	for ip, count := range wpLogin {
 		if count >= wpLoginThreshold {
 			findings = append(findings, alert.Finding{
 				Severity: alert.Critical,
 				Check:    "wp_login_bruteforce",
 				Message:  fmt.Sprintf("WordPress login brute force from %s: %d attempts", ip, count),
-				Details:  "High rate of POST requests to wp-login.php across server domlogs",
+				Details:  fmt.Sprintf("Aggregated across %d domlog files", scanned),
 			})
 		}
 	}
 
-	for ip, count := range xmlrpcAttempts {
+	for ip, count := range xmlrpc {
 		if count >= xmlrpcThreshold {
 			findings = append(findings, alert.Finding{
 				Severity: alert.Critical,
 				Check:    "xmlrpc_abuse",
 				Message:  fmt.Sprintf("XML-RPC abuse from %s: %d requests", ip, count),
-				Details:  "High rate of POST requests to xmlrpc.php (brute force or amplification)",
+				Details:  fmt.Sprintf("Aggregated across %d domlog files", scanned),
 			})
 		}
 	}
 
-	for ip, count := range userEnumAttempts {
+	for ip, count := range userEnum {
 		if count >= 5 {
 			findings = append(findings, alert.Finding{
 				Severity: alert.High,
 				Check:    "wp_user_enumeration",
 				Message:  fmt.Sprintf("WordPress user enumeration from %s: %d requests", ip, count),
-				Details:  "Requests to /wp-json/wp/v2/users or ?author= (attacker mapping admin usernames)",
+				Details:  "Requests to /wp-json/wp/v2/users or ?author=",
 			})
 		}
 	}
@@ -99,9 +107,55 @@ func CheckWPBruteForce(cfg *config.Config, _ *state.Store) []alert.Finding {
 	return findings
 }
 
+// scanDomlogs globs per-domain access logs, deduplicates symlinks,
+// skips stale files, and aggregates brute force counts.
+// Returns the number of files actually scanned.
+func scanDomlogs(infraIPs []string, wpLogin, xmlrpc, userEnum map[string]int) int {
+	var domlogs []string
+	for _, pattern := range []string{
+		"/home/*/access-logs/*-ssl_log",
+		"/home/*/access-logs/*_log",
+	} {
+		matches, _ := filepath.Glob(pattern)
+		domlogs = append(domlogs, matches...)
+	}
+
+	// Deduplicate via resolved symlinks and skip stale logs.
+	seen := make(map[string]bool)
+	cutoff := time.Now().Add(-domlogMaxAge)
+	scanned := 0
+
+	for _, dl := range domlogs {
+		if scanned >= domlogMaxFiles {
+			break
+		}
+
+		// Resolve symlinks — cPanel often symlinks SSL and non-SSL logs.
+		real, err := filepath.EvalSymlinks(dl)
+		if err != nil {
+			continue
+		}
+		if seen[real] {
+			continue
+		}
+		seen[real] = true
+
+		// Skip logs not modified recently — inactive sites add no value.
+		info, err := os.Stat(real)
+		if err != nil || info.ModTime().Before(cutoff) {
+			continue
+		}
+
+		lines := tailFile(real, domlogTailLines)
+		countBruteForce(lines, infraIPs, wpLogin, xmlrpc, userEnum)
+		scanned++
+	}
+
+	return scanned
+}
+
 // countBruteForce parses Combined Log Format lines and increments per-IP
 // counters for wp-login.php, xmlrpc.php, and user enumeration attacks.
-// Skips infra IPs, localhost, and IPv6 loopback.
 func countBruteForce(lines []string, infraIPs []string, wpLogin, xmlrpc, userEnum map[string]int) {
 	for _, line := range lines {
 		fields := strings.Fields(line)
@@ -110,19 +164,24 @@ func countBruteForce(lines []string, infraIPs []string, wpLogin, xmlrpc, userEnu
 		}
 		ip := fields[0]
 
-		// Skip localhost (wp-cron self-requests) and infra IPs
-		if ip == "127.0.0.1" || ip == "::1" || isInfraIP(ip, infraIPs) {
+		// Skip localhost (wp-cron self-requests), placeholder, and infra IPs.
+		if ip == "127.0.0.1" || ip == "::1" || ip == "-" {
+			continue
+		}
+		if isInfraIP(ip, infraIPs) {
 			continue
 		}
 
 		method := strings.Trim(fields[5], "\"")
 		uri := fields[6]
 
-		if method == "POST" && strings.Contains(uri, "wp-login.php") {
-			wpLogin[ip]++
-		}
-		if method == "POST" && strings.Contains(uri, "xmlrpc.php") {
-			xmlrpc[ip]++
+		if method == "POST" {
+			if strings.Contains(uri, "wp-login.php") {
+				wpLogin[ip]++
+			}
+			if strings.Contains(uri, "xmlrpc.php") {
+				xmlrpc[ip]++
+			}
 		}
 		if strings.Contains(uri, "/wp-json/wp/v2/users") || strings.Contains(uri, "?author=") {
 			userEnum[ip]++
