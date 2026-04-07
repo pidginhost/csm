@@ -279,7 +279,7 @@ func auditValiasFile(path, domain string, localDomains map[string]bool, cfg *con
 				continue
 			}
 
-			if isExternalDest(d, localDomains) {
+			if isExternalDest(d, localDomains) && isNew {
 				severity := alert.High
 				msg := fmt.Sprintf("External forwarder: %s@%s -> %s%s", localPart, domain, d, newContext)
 				if localPart == "*" {
@@ -328,15 +328,16 @@ func auditVfilterFile(path, domain string, localDomains map[string]bool, cfg *co
 			continue
 		}
 
-		newContext := ""
-		if isNew {
-			newContext = " (newly added)"
+		// Only alert when the vfilter file actually changed — existing forwarders
+		// are normal customer configuration, not an attack indicator.
+		if !isNew {
+			continue
 		}
 
 		findings = append(findings, alert.Finding{
 			Severity: alert.High,
 			Check:    "email_suspicious_forwarder",
-			Message:  fmt.Sprintf("External destination in vfilter: %s -> %s%s", domain, dest, newContext),
+			Message:  fmt.Sprintf("External destination in vfilter: %s -> %s (newly added)", domain, dest),
 			Details:  fmt.Sprintf("Domain: %s\nDestination: %s\nFile: %s\nA mail filter rule forwards messages to an external address.", domain, dest, path),
 		})
 	}
