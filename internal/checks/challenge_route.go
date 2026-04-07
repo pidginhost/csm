@@ -73,6 +73,9 @@ var hardBlockChecks = map[string]bool{
 	"rpm_integrity":               true,
 	"email_spam_outbreak":         true,
 	"modsec_csm_block_escalation": true,
+	"api_auth_failure_realtime":   true, // cPanel API brute force — challenge is useless, hard-block
+	"ftp_auth_failure_realtime":   true, // FTP brute force — can't challenge non-HTTP
+	"pam_bruteforce":              true, // PAM brute force — can't challenge non-HTTP
 }
 
 // hardBlockPrefixes match any check name starting with these strings.
