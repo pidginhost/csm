@@ -317,13 +317,12 @@ func auditOS() []store.AuditResult {
 			})
 			continue
 		}
-		// Check only the lower 12 permission bits (rwx + sticky).
-		// On CloudLinux/CageFS, /tmp may have extra bits (setuid from virtmp
-		// mount) that don't affect security — the noexec mount option provides
-		// protection. Only check perm bits + sticky + ownership.
-		perm := info.Mode().Perm()
-		sticky := info.Mode() & os.ModeSticky
-		mode := perm | sticky
+		// Use the raw Unix mode bits from syscall to get the traditional
+		// permission representation (sticky=01000, setuid=04000, etc.).
+		// Go's os.ModeSticky uses high bits that don't map to Unix octal,
+		// so os.FileMode math produces wrong values for comparison.
+		// Only check the lower 12 bits (sticky + rwx) — ignore setuid/setgid
+		// which CloudLinux/CageFS may set on virtmp mounts.
 		stat, ok := info.Sys().(*syscall.Stat_t)
 		if !ok {
 			results = append(results, store.AuditResult{
@@ -332,8 +331,8 @@ func auditOS() []store.AuditResult {
 			})
 			continue
 		}
-		wantMode := os.FileMode(01777)
-		if mode != wantMode || stat.Uid != 0 || stat.Gid != 0 {
+		mode := stat.Mode & 01777 // sticky + rwxrwxrwx, ignore setuid/setgid
+		if mode != 01777 || stat.Uid != 0 || stat.Gid != 0 {
 			results = append(results, store.AuditResult{
 				Category: "os", Name: dir.id, Title: dir.title,
 				Status:  "fail",
