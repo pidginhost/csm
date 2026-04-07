@@ -230,7 +230,7 @@ func auditValiasFile(path, domain string, localDomains map[string]bool, cfg *con
 				isNew = true // hash changed — genuinely new forwarder
 			}
 			// Always store current hash (establishes baseline on first run)
-			db.SetForwarderHash("valiases:"+domain, currentHash)
+			_ = db.SetForwarderHash("valiases:"+domain, currentHash)
 		}
 	}
 
@@ -316,7 +316,7 @@ func auditVfilterFile(path, domain string, localDomains map[string]bool, cfg *co
 		if found && oldHash != currentHash {
 			isNew = true
 		}
-		db.SetForwarderHash("vfilters:"+domain, currentHash)
+		_ = db.SetForwarderHash("vfilters:"+domain, currentHash)
 	}
 
 	externalDests := parseVfilterExternalDests(content, localDomains)
