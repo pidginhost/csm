@@ -223,22 +223,24 @@ func parseHex6Addr(s string) (net.IP, int) {
 func CheckSSHDConfig(_ *config.Config, store *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	hash, err := hashFileContent("/etc/ssh/sshd_config")
+	hash, err := hashFileContent(sshdConfigPath)
 	if err != nil {
 		return nil
 	}
 
-	key := "_sshd_config_hash"
-	prev, exists := store.GetRaw(key)
-	if exists && prev != hash {
-		// Config changed - check for dangerous settings
-		data, err := os.ReadFile("/etc/ssh/sshd_config")
-		if err != nil {
-			return nil
-		}
-		content := strings.ToLower(string(data))
+	current := currentSSHDSettings()
 
-		if strings.Contains(content, "passwordauthentication yes") {
+	hashKey := "_sshd_config_hash"
+	passKey := "_sshd_passwordauthentication"
+	rootKey := "_sshd_permitrootlogin"
+
+	prevHash, exists := store.GetRaw(hashKey)
+	prevPass, _ := store.GetRaw(passKey)
+	prevRoot, _ := store.GetRaw(rootKey)
+	if exists && prevHash != hash {
+		// Only alert when the effective setting changed into a dangerous value.
+		// This avoids false positives from commented defaults or Match blocks.
+		if current.PasswordAuthentication == "yes" && prevPass != "yes" {
 			findings = append(findings, alert.Finding{
 				Severity: alert.Critical,
 				Check:    "sshd_config_change",
@@ -246,7 +248,7 @@ func CheckSSHDConfig(_ *config.Config, store *state.Store) []alert.Finding {
 				Details:  "This allows password-based SSH login - high risk if passwords are compromised",
 			})
 		}
-		if strings.Contains(content, "permitrootlogin yes") {
+		if current.PermitRootLogin == "yes" && prevRoot != "yes" {
 			findings = append(findings, alert.Finding{
 				Severity: alert.Critical,
 				Check:    "sshd_config_change",
@@ -263,7 +265,9 @@ func CheckSSHDConfig(_ *config.Config, store *state.Store) []alert.Finding {
 			})
 		}
 	}
-	store.SetRaw(key, hash)
+	store.SetRaw(hashKey, hash)
+	store.SetRaw(passKey, current.PasswordAuthentication)
+	store.SetRaw(rootKey, current.PermitRootLogin)
 
 	return findings
 }

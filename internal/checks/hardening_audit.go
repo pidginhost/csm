@@ -90,11 +90,19 @@ var sshdDefaults = map[string]string{
 	"usedns":                 "no",
 }
 
+var sshdConfigPath = "/etc/ssh/sshd_config"
+
+type sshdSettings struct {
+	PasswordAuthentication string
+	PermitRootLogin        string
+	X11Forwarding          string
+}
+
 // parseSSHDConfig reads sshd_config + Include drop-ins with first-match-wins.
 // Match blocks are skipped entirely (audit evaluates global config only).
 func parseSSHDConfig() map[string]string {
 	effective := make(map[string]string)
-	parseSSHDFile("/etc/ssh/sshd_config", effective)
+	parseSSHDFile(sshdConfigPath, effective)
 	return effective
 }
 
@@ -130,7 +138,7 @@ func parseSSHDFile(path string, effective map[string]string) {
 		if strings.HasPrefix(lower, "include ") {
 			pattern := strings.TrimSpace(line[8:])
 			if !filepath.IsAbs(pattern) {
-				pattern = filepath.Join("/etc/ssh", pattern)
+				pattern = filepath.Join(filepath.Dir(path), pattern)
 			}
 			matches, _ := filepath.Glob(pattern)
 			for _, m := range matches {
@@ -162,6 +170,15 @@ func sshdEffective(parsed map[string]string, key string) string {
 		return strings.ToLower(v)
 	}
 	return sshdDefaults[key]
+}
+
+func currentSSHDSettings() sshdSettings {
+	parsed := parseSSHDConfig()
+	return sshdSettings{
+		PasswordAuthentication: sshdEffective(parsed, "passwordauthentication"),
+		PermitRootLogin:        sshdEffective(parsed, "permitrootlogin"),
+		X11Forwarding:          sshdEffective(parsed, "x11forwarding"),
+	}
 }
 
 func auditSSH() []store.AuditResult {
@@ -909,10 +926,10 @@ func auditCPanel(serverType string) []store.AuditResult {
 		{"cp_email_passwords", "Email Passwords Disabled", "emailpasswords", "1", true},
 		{"cp_cookie_validation", "Cookie IP Validation", "cookieipvalidation", "strict", false},
 		{"cp_remote_domains", "Remote Domains Disabled", "allowremotedomains", "1", true},
-		{"cp_proxy_subdomains", "Proxy Subdomains Disabled", "proxysubdomains", "1", true},
+		{"cp_proxy_subdomains", "Service Subdomains Disabled", "proxysubdomains", "1", true},
 		{"cp_core_dumps", "Core Dumps Disabled", "coredump", "1", true},
 		{"cp_nobodyspam", "Nobody Spam Prevention", "nobodyspam", "1", false},
-		{"cp_security_tokens", "Security Tokens Enabled", "disable-security-tokens", "1", true},
+		{"cp_security_tokens", "Security Tokens Enabled", "xsrftokens", "1", false},
 	}
 
 	for _, c := range checks {
