@@ -363,6 +363,11 @@ func (s *Server) apiQuarantine(w http.ResponseWriter, _ *http.Request) {
 		})
 	}
 
+	// Sort newest first
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].QuarantineAt > entries[j].QuarantineAt
+	})
+
 	writeJSON(w, entries)
 }
 
