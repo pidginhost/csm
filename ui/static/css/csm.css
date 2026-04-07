@@ -55,6 +55,25 @@
 .text-high { color: var(--csm-high); }
 .text-warning { color: var(--csm-warning); }
 
+/* --- Readable text on solid-color Tabler badges -------------------------- */
+.badge.bg-red,
+.badge.bg-orange,
+.badge.bg-green,
+.badge.bg-blue,
+.badge.bg-teal,
+.badge.bg-cyan,
+.badge.bg-purple,
+.badge.bg-dark,
+.badge.bg-secondary,
+.badge.bg-danger,
+.badge.bg-success {
+    color: #fff !important;
+}
+.badge.bg-yellow,
+.badge.bg-warning {
+    color: #1a1a1a !important;
+}
+
 /* --- layout.html: finding details rows ----------------------------------- */
 .details-row { display: none; }
 .details-row.show { display: table-row; }

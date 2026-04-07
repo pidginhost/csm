@@ -51,6 +51,7 @@ type Daemon struct {
 	fwEngine         *firewall.Engine
 	geoipDB          *geoip.DB
 	geoipMu          sync.Mutex // protects geoipDB for publishGeoIP
+	version          string
 	alertCh          chan alert.Finding
 	droppedAlerts    int64 // atomic counter for alert channel backpressure drops
 	stopCh           chan struct{}
@@ -67,6 +68,11 @@ func New(cfg *config.Config, store *state.Store, lock *state.LockFile, binaryPat
 		alertCh:    make(chan alert.Finding, 500),
 		stopCh:     make(chan struct{}),
 	}
+}
+
+// SetVersion sets the application version for display in the web UI.
+func (d *Daemon) SetVersion(v string) {
+	d.version = v
 }
 
 // Run starts the daemon and blocks until stopped.
@@ -740,7 +746,8 @@ func (d *Daemon) startWebUI() {
 		return
 	}
 
-	// Set signature count for status API
+	// Set version and signature count for status API
+	srv.SetVersion(d.version)
 	if scanner := signatures.Global(); scanner != nil {
 		srv.SetSigCount(scanner.RuleCount())
 	}

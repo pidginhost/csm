@@ -19,3 +19,9 @@ function toggleTheme() {
 applyTheme(__theme);
 var _themeBtn = document.getElementById('theme-toggle');
 if (_themeBtn) _themeBtn.addEventListener('click', toggleTheme);
+// Display version in footer
+(function() {
+    var v = (typeof CSM_CONFIG !== 'undefined' && CSM_CONFIG.version) ? CSM_CONFIG.version : '';
+    var el = document.getElementById('csm-version');
+    if (el && v) el.textContent = 'v' + v;
+})();

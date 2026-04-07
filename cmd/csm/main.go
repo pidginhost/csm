@@ -231,6 +231,7 @@ func runDaemon() {
 	}
 
 	d := daemon.New(cfg, store, lock, binaryPath)
+	d.SetVersion(Version)
 	if err := d.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Daemon error: %v\n", err)
 		os.Exit(1)

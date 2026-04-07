@@ -49,6 +49,7 @@ type Server struct {
 	geoIPDB            atomic.Pointer[geoip.DB]
 	emailQuarantine    *emailav.Quarantine
 	emailAVWatcherMode string
+	version            string
 	perfSnapshot       atomic.Pointer[perfMetrics]
 	perfCancel         context.CancelFunc
 
@@ -381,9 +382,15 @@ func (s *Server) SetEmailAVWatcherMode(mode string) {
 	s.emailAVWatcherMode = mode
 }
 
+// SetVersion sets the application version for display in the UI.
+func (s *Server) SetVersion(v string) {
+	s.version = v
+}
+
 // csmConfigJSON returns a JSON string of feature flags for the frontend.
 func (s *Server) csmConfigJSON() string {
 	flags := map[string]interface{}{
+		"version":      s.version,
 		"emailAV":      s.cfg.EmailAV.Enabled,
 		"firewall":     s.cfg.Firewall != nil && s.cfg.Firewall.Enabled,
 		"autoResponse": s.cfg.AutoResponse.Enabled,
