@@ -34,6 +34,7 @@ func CheckWPBruteForce(cfg *config.Config, _ *state.Store) []alert.Finding {
 	userEnumAttempts := make(map[string]int)
 
 	// 1. Central access log (works on Apache, empty on LiteSpeed)
+	centralFound := false
 	centralPaths := []string{
 		"/usr/local/apache/logs/access_log",
 		"/var/log/apache2/access_log",
@@ -42,19 +43,22 @@ func CheckWPBruteForce(cfg *config.Config, _ *state.Store) []alert.Finding {
 	for _, p := range centralPaths {
 		lines := tailFile(p, window)
 		if len(lines) > 0 {
-			countBruteForce(lines, wpLoginAttempts, xmlrpcAttempts, userEnumAttempts)
+			countBruteForce(lines, cfg.InfraIPs, wpLoginAttempts, xmlrpcAttempts, userEnumAttempts)
+			centralFound = true
 			break
 		}
 	}
 
-	// 2. Per-domain domlogs (LiteSpeed writes here for each vhost)
-	// Tail the last 200 lines from each SSL log — enough to catch brute
-	// force bursts without reading entire multi-GB log files.
-	domlogPattern := "/home/*/access-logs/*-ssl_log"
-	domlogs, _ := filepath.Glob(domlogPattern)
-	for _, dl := range domlogs {
-		lines := tailFile(dl, 200)
-		countBruteForce(lines, wpLoginAttempts, xmlrpcAttempts, userEnumAttempts)
+	// 2. Per-domain domlogs (LiteSpeed writes here for each vhost).
+	// Only scan domlogs if the central log was empty — avoids double-counting
+	// on Apache where both logs contain the same requests.
+	if !centralFound {
+		domlogPattern := "/home/*/access-logs/*-ssl_log"
+		domlogs, _ := filepath.Glob(domlogPattern)
+		for _, dl := range domlogs {
+			lines := tailFile(dl, 200)
+			countBruteForce(lines, cfg.InfraIPs, wpLoginAttempts, xmlrpcAttempts, userEnumAttempts)
+		}
 	}
 
 	var findings []alert.Finding
@@ -97,13 +101,20 @@ func CheckWPBruteForce(cfg *config.Config, _ *state.Store) []alert.Finding {
 
 // countBruteForce parses Combined Log Format lines and increments per-IP
 // counters for wp-login.php, xmlrpc.php, and user enumeration attacks.
-func countBruteForce(lines []string, wpLogin, xmlrpc, userEnum map[string]int) {
+// Skips infra IPs, localhost, and IPv6 loopback.
+func countBruteForce(lines []string, infraIPs []string, wpLogin, xmlrpc, userEnum map[string]int) {
 	for _, line := range lines {
 		fields := strings.Fields(line)
 		if len(fields) < 7 {
 			continue
 		}
 		ip := fields[0]
+
+		// Skip localhost (wp-cron self-requests) and infra IPs
+		if ip == "127.0.0.1" || ip == "::1" || isInfraIP(ip, infraIPs) {
+			continue
+		}
+
 		method := strings.Trim(fields[5], "\"")
 		uri := fields[6]
 
