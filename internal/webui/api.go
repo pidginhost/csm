@@ -407,6 +407,9 @@ func (s *Server) apiStats(w http.ResponseWriter, _ *http.Request) {
 	autoBlocked, autoQuarantined, autoKilled := 0, 0, 0
 	// Top targeted accounts
 	accountHits := make(map[string]int)
+	// Brute force summary
+	bruteForceIPs := make(map[string]int)   // IP -> total attempts
+	bruteForceTypes := make(map[string]int) // "wp-login" / "xmlrpc" -> count
 
 	for _, f := range findings {
 		// Extract account from finding path/message
@@ -427,6 +430,20 @@ func (s *Server) apiStats(w http.ResponseWriter, _ *http.Request) {
 				autoQuarantined++
 			} else if strings.Contains(f.Message, "kill") || strings.Contains(f.Message, "Kill") {
 				autoKilled++
+			}
+		case "wp_login_bruteforce":
+			bruteForceTypes["wp-login"]++
+			if ip := checks.ExtractIPFromFinding(f); ip != "" {
+				bruteForceIPs[ip]++
+			}
+		case "xmlrpc_abuse":
+			bruteForceTypes["xmlrpc"]++
+			if ip := checks.ExtractIPFromFinding(f); ip != "" {
+				bruteForceIPs[ip]++
+			}
+		case "modsec_csm_block_escalation":
+			if strings.Contains(f.Message, "xmlrpc") || strings.Contains(f.Message, "900006") || strings.Contains(f.Message, "900007") {
+				bruteForceTypes["xmlrpc-modsec"]++
 			}
 		}
 	}
@@ -485,8 +502,40 @@ func (s *Server) apiStats(w http.ResponseWriter, _ *http.Request) {
 			"killed":      autoKilled,
 		},
 		"top_accounts": topAccounts,
+		"brute_force":  buildBruteForceSummary(bruteForceIPs, bruteForceTypes),
 	}
 	writeJSON(w, result)
+}
+
+func buildBruteForceSummary(ips map[string]int, types map[string]int) map[string]interface{} {
+	// Top attacker IPs
+	type ipCount struct {
+		IP    string `json:"ip"`
+		Count int    `json:"count"`
+	}
+	var topIPs []ipCount
+	for ip, count := range ips {
+		topIPs = append(topIPs, ipCount{ip, count})
+	}
+	sort.Slice(topIPs, func(i, j int) bool {
+		return topIPs[i].Count > topIPs[j].Count
+	})
+	if len(topIPs) > 10 {
+		topIPs = topIPs[:10]
+	}
+
+	total := 0
+	for _, v := range types {
+		total += v
+	}
+
+	return map[string]interface{}{
+		"total_attacks":  total,
+		"unique_ips":     len(ips),
+		"wp_login_count": types["wp-login"],
+		"xmlrpc_count":   types["xmlrpc"] + types["xmlrpc-modsec"],
+		"top_ips":        topIPs,
+	}
 }
 
 // apiStatsTrend returns 30-day daily finding counts by severity.

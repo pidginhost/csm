@@ -304,7 +304,7 @@
                 }
                 renderAccountsAtRisk(data.accounts_at_risk || []);
                 renderAutoResponse(data.auto_response || {}, data.by_check || {});
-                renderTopTargeted(data.top_accounts || []);
+                renderBruteForce(data.brute_force || {});
             })
             .catch(function(err) { console.error('refreshStats:', err); });
     }
@@ -430,47 +430,76 @@
         el.appendChild(container);
     }
 
-    function renderTopTargeted(accounts) {
-        var el = document.getElementById('top-targeted-accounts');
+    function renderBruteForce(bf) {
+        var el = document.getElementById('brute-force-summary');
         if (!el) return;
         el.textContent = '';
-        if (!accounts || accounts.length === 0) {
+
+        if (!bf || bf.total_attacks === 0) {
             var empty = document.createElement('div');
             empty.className = 'text-muted text-center py-3';
-            empty.textContent = 'No targeted accounts';
+            empty.textContent = 'No brute force attacks detected';
             el.appendChild(empty);
             return;
         }
-        var maxCount = accounts[0].count || 1;
-        var list = document.createElement('div');
-        list.className = 'list-group list-group-flush';
-        for (var i = 0; i < accounts.length; i++) {
-            var a = accounts[i];
-            var pct = Math.round(a.count / maxCount * 100);
-            var item = document.createElement('div');
-            item.className = 'list-group-item';
-            var header = document.createElement('div');
-            header.className = 'd-flex align-items-center mb-1';
-            var link = document.createElement('a');
-            link.href = '/account?name=' + encodeURIComponent(a.account);
-            link.className = 'font-monospace';
-            link.textContent = a.account;
-            var countSpan = document.createElement('span');
-            countSpan.className = 'ms-auto text-muted small';
-            countSpan.textContent = a.count;
-            header.appendChild(link);
-            header.appendChild(countSpan);
-            var progress = document.createElement('div');
-            progress.className = 'progress progress-sm';
-            var bar = document.createElement('div');
-            bar.className = 'progress-bar bg-primary';
-            bar.style.width = pct + '%';
-            progress.appendChild(bar);
-            item.appendChild(header);
-            item.appendChild(progress);
-            list.appendChild(item);
+
+        // Stats row — built with DOM methods (no innerHTML)
+        var stats = document.createElement('div');
+        stats.className = 'px-3 pt-3 pb-2';
+        var row = document.createElement('div');
+        row.className = 'row text-center';
+        function addStat(value, label, cls) {
+            var col = document.createElement('div');
+            col.className = 'col-4';
+            var h = document.createElement('div');
+            h.className = 'h3 mb-0' + (cls ? ' ' + cls : '');
+            h.textContent = String(value || 0);
+            var sub = document.createElement('div');
+            sub.className = 'text-muted small';
+            sub.textContent = label;
+            col.appendChild(h);
+            col.appendChild(sub);
+            row.appendChild(col);
         }
-        el.appendChild(list);
+        addStat(bf.total_attacks, 'Attacks');
+        addStat(bf.unique_ips, 'Unique IPs');
+        addStat(bf.wp_login_count, 'wp-login', 'text-danger');
+        stats.appendChild(row);
+        el.appendChild(stats);
+
+        // Top attacker IPs
+        var ips = bf.top_ips || [];
+        if (ips.length > 0) {
+            var maxCount = ips[0].count || 1;
+            var list = document.createElement('div');
+            list.className = 'list-group list-group-flush border-top';
+            for (var i = 0; i < ips.length && i < 5; i++) {
+                var ip = ips[i];
+                var pct = Math.round(ip.count / maxCount * 100);
+                var item = document.createElement('div');
+                item.className = 'list-group-item py-2';
+                var header = document.createElement('div');
+                header.className = 'd-flex align-items-center mb-1';
+                var ipSpan = document.createElement('span');
+                ipSpan.className = 'font-monospace small';
+                ipSpan.textContent = ip.ip;
+                var countSpan = document.createElement('span');
+                countSpan.className = 'ms-auto badge bg-red-lt';
+                countSpan.textContent = ip.count;
+                header.appendChild(ipSpan);
+                header.appendChild(countSpan);
+                var progress = document.createElement('div');
+                progress.className = 'progress progress-sm';
+                var bar = document.createElement('div');
+                bar.className = 'progress-bar bg-danger';
+                bar.style.width = pct + '%';
+                progress.appendChild(bar);
+                item.appendChild(header);
+                item.appendChild(progress);
+                list.appendChild(item);
+            }
+            el.appendChild(list);
+        }
     }
 
     function setText(id, val) {
