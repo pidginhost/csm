@@ -1,0 +1,197 @@
+/* ==========================================================================
+   CSM — Continuous Security Monitor  –  extracted inline styles
+   ========================================================================== */
+
+/* --- CSS custom properties (light theme defaults) ------------------------ */
+:root {
+  --csm-critical: #d63939;
+  --csm-high: #f76707;
+  --csm-warning: #f59f00;
+  --csm-info: #4299e1;
+  --csm-low: #2fb344;
+  --csm-text: #1e293b;
+  --csm-text-muted: #64748b;
+  --csm-bg-card: #ffffff;
+  --csm-border: #e2e8f0;
+}
+
+.theme-dark {
+  --csm-critical: #ff6b6b;
+  --csm-high: #ff922b;
+  --csm-warning: #ffd43b;
+  --csm-info: #74c0fc;
+  --csm-low: #51cf66;
+  --csm-text: #e2e8f0;
+  --csm-text-muted: #94a3b8;
+  --csm-bg-card: #1e293b;
+  --csm-border: #334155;
+}
+
+/* --- click-to-copy cursor ------------------------------------------------ */
+.csm-copy { cursor: pointer; }
+.csm-copy:hover { text-decoration: underline dotted; }
+
+/* --- layout.html: dark theme overrides ----------------------------------- */
+.theme-dark, .theme-dark body { background-color: #1a2234; color: #c8d3e0; }
+.theme-dark .card { background-color: #1e293b; border-color: #2d3a4e; color: #c8d3e0; }
+.theme-dark .card-header { border-color: #2d3a4e; }
+.theme-dark .card-footer { border-color: #2d3a4e; }
+.theme-dark .table { color: #c8d3e0; }
+.theme-dark .table thead th { background-color: #1a2234; border-color: #2d3a4e; }
+.theme-dark .table td { border-color: #2d3a4e; }
+.theme-dark .navbar { background-color: #1a2234 !important; border-color: #2d3a4e; }
+.theme-dark .footer { border-color: #2d3a4e; }
+.theme-dark .form-control, .theme-dark .form-select { background-color: #1a2234; border-color: #2d3a4e; color: #c8d3e0; }
+.theme-dark .list-group-item { background-color: #1e293b; border-color: #2d3a4e; color: #c8d3e0; }
+.theme-dark .text-muted { color: #6b7a8d !important; }
+.theme-dark .subheader { color: #6b7a8d; }
+.theme-dark code { color: #7ec8e3; }
+
+/* --- layout.html: severity badges & text --------------------------------- */
+.badge-critical { background: var(--csm-critical); color: #fff; }
+.badge-high { background: var(--csm-high); color: #fff; }
+.badge-warning { background: var(--csm-warning); color: #fff; }
+.text-critical { color: var(--csm-critical); }
+.text-high { color: var(--csm-high); }
+.text-warning { color: var(--csm-warning); }
+
+/* --- Readable text on solid-color Tabler badges -------------------------- */
+.badge.bg-red,
+.badge.bg-orange,
+.badge.bg-green,
+.badge.bg-blue,
+.badge.bg-teal,
+.badge.bg-cyan,
+.badge.bg-purple,
+.badge.bg-dark,
+.badge.bg-secondary,
+.badge.bg-danger,
+.badge.bg-success {
+    color: #fff !important;
+}
+.badge.bg-yellow,
+.badge.bg-warning {
+    color: #1a1a1a !important;
+}
+
+/* --- layout.html: finding details rows ----------------------------------- */
+.details-row { display: none; }
+.details-row.show { display: table-row; }
+
+/* --- layout.html: sortable table headers --------------------------------- */
+th.sort-asc::after { content: ' ▲'; opacity: 0.5; }
+th.sort-desc::after { content: ' ▼'; opacity: 0.5; }
+th[style*="cursor"] { user-select: none; }
+
+/* --- layout.html: prevent horizontal overflow ---------------------------- */
+html, body, .page { overflow-x: hidden; max-width: 100vw; }
+
+/* --- dashboard.html: live-feed highlight animation ----------------------- */
+@keyframes csm-feed-highlight {
+    from { background-color: rgba(32, 107, 196, 0.15); }
+    to   { background-color: transparent; }
+}
+.feed-highlight {
+    animation: csm-feed-highlight 1.5s ease-out;
+}
+
+/* --- dashboard.html: live-feed relative timestamps ----------------------- */
+.feed-relative-time { min-width: 56px; text-align: right; }
+
+/* --- expandable rows: animated chevron ------------------------------------ */
+.expand-btn .ti { transition: transform 0.2s; }
+.expand-btn.expanded .ti { transform: rotate(180deg); }
+
+/* --- login.html: dark-theme body ----------------------------------------- */
+body.theme-dark { background-color: #1a2234; }
+
+/* Prevent selects from stretching in flex/grid containers */
+.csm-auto-width { width: auto; }
+
+/* Responsive input widths — replaces inline style="width:Xpx" */
+.csm-input-sm { width: 140px; }
+.csm-input-md { width: 180px; }
+.csm-input-lg { width: 240px; }
+@media (max-width: 768px) {
+    .csm-input-sm, .csm-input-md, .csm-input-lg { width: 100%; }
+}
+
+/* Container heights */
+.csm-chart-sm { position: relative; height: 180px; }
+.csm-chart-md { position: relative; height: 200px; }
+.csm-chart-lg { position: relative; height: 220px; }
+.csm-feed-scroll { max-height: 340px; overflow-y: auto; }
+.csm-list-scroll { max-height: 300px; overflow-y: auto; }
+.csm-list-scroll-sm { max-height: 250px; overflow-y: auto; }
+
+/* Inline style replacements */
+.csm-toasts { position: fixed; top: 16px; right: 16px; z-index: 9999; max-width: 400px; }
+.csm-apply-bar {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    background: var(--tblr-bg-surface);
+    border-top: 2px solid var(--tblr-primary);
+    padding: 12px 24px; z-index: 1000;
+    display: flex; align-items: center; justify-content: space-between;
+}
+.csm-detail { white-space: pre-wrap; }
+.csm-pre-line { white-space: pre-line; }
+.feed-item { cursor: pointer; }
+
+/* Responsive chart heights */
+@media (max-width: 1024px) {
+    .csm-chart-lg { height: 180px; }
+}
+@media (max-width: 768px) {
+    .csm-chart-sm, .csm-chart-md, .csm-chart-lg { height: 150px; }
+    .csm-feed-scroll, .csm-list-scroll { max-height: 250px; }
+}
+
+/* --- findings.html: sticky filter header -------------------------------- */
+#findings-card > .card-header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: var(--tblr-bg-surface, #fff);
+    transition: box-shadow 0.2s;
+}
+.theme-dark #findings-card > .card-header {
+    background: #1e293b;
+}
+#findings-card > .card-header.csm-stuck {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+.theme-dark #findings-card > .card-header.csm-stuck {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+/* --- findings.html: collapsible scan section ---------------------------- */
+.csm-collapse-icon {
+    display: inline-block;
+    transition: transform 0.2s ease;
+    font-size: 1rem;
+}
+.csm-collapse-icon.collapsed {
+    transform: rotate(-90deg);
+}
+#scan-body {
+    overflow: hidden;
+    transition: max-height 0.25s ease, padding 0.25s ease, opacity 0.2s ease;
+}
+#scan-body.collapsed {
+    max-height: 0 !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+    opacity: 0;
+    border-top: none;
+}
+
+/* --- Accessibility: focus-visible outlines -------------------------------- */
+:focus-visible {
+    outline: 2px solid var(--csm-info);
+    outline-offset: 2px;
+}
+.btn:focus-visible {
+    outline: 2px solid var(--csm-info);
+    outline-offset: 2px;
+    box-shadow: none;
+}

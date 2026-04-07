@@ -1,0 +1,100 @@
+{{define "title"}}Performance Monitor{{end}}
+{{define "page"}}performance{{end}}
+{{define "content"}}
+    <!-- Stat Cards -->
+    <div class="row row-deck row-cards mb-3">
+        <div class="col-6 col-lg">
+            <div class="card">
+                <div class="card-body">
+                    <div class="subheader" title="1/5/15 minute system load averages">Load Average</div>
+                    <div class="h1 mb-0" id="stat-load">&mdash;</div>
+                    <div class="small text-muted mt-1" id="stat-load-detail"></div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-lg">
+            <div class="card">
+                <div class="card-body">
+                    <div class="subheader" title="Number of available CPU cores">CPU Cores</div>
+                    <div class="h1 mb-0" id="stat-cores">&mdash;</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-lg">
+            <div class="card">
+                <div class="card-body">
+                    <div class="subheader" title="Memory usage (used / total)">RAM</div>
+                    <div class="h1 mb-0" id="stat-ram">&mdash;</div>
+                    <div class="progress progress-sm mt-2"><div class="progress-bar" id="stat-ram-bar" style="width:0%"></div></div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-lg">
+            <div class="card">
+                <div class="card-body">
+                    <div class="subheader" title="Total running PHP-FPM/lsphp worker processes">PHP Processes</div>
+                    <div class="h1 mb-0" id="stat-php">&mdash;</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-lg">
+            <div class="card">
+                <div class="card-body">
+                    <div class="subheader" title="MySQL/MariaDB server status">MySQL</div>
+                    <div class="h1 mb-0" id="stat-mysql">&mdash;</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-lg">
+            <div class="card">
+                <div class="card-body">
+                    <div class="subheader" title="Redis server status and memory usage">Redis</div>
+                    <div class="h1 mb-0" id="stat-redis">&mdash;</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Second Row -->
+    <div class="row row-deck row-cards mb-3">
+        <!-- Left: Top PHP Consumers -->
+        <div class="col-lg-5">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title"><i class="ti ti-brand-php"></i>&nbsp;Top PHP Consumers</h3>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-vcenter card-table table-sm">
+                        <thead>
+                            <tr>
+                                <th>User</th>
+                                <th>Processes</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody id="php-consumers">
+                            <tr><td colspan="3" class="text-center text-muted py-3"><span class="spinner-border spinner-border-sm"></span> Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        <!-- Right: Performance Findings -->
+        <div class="col-lg-7">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title"><i class="ti ti-activity"></i>&nbsp;Performance Findings</h3>
+                </div>
+                <div class="card-body p-0">
+                    <div class="list-group list-group-flush" id="perf-findings">
+                        <div class="list-group-item text-muted"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+{{end}}
+{{define "scripts"}}
+<script src="/static/js/performance.js"></script>
+{{end}}
+{{template "layout" .}}

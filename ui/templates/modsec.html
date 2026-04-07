@@ -1,0 +1,81 @@
+{{define "title"}}ModSecurity{{end}}
+{{define "page"}}modsec{{end}}
+{{define "content"}}
+<div class="page-header mb-3">
+    <div class="row align-items-center">
+        <div class="col-auto"><h2 class="page-title">ModSecurity Blocks</h2></div>
+        <div class="col-auto ms-auto">
+            <a href="/modsec/rules" class="btn btn-outline-primary btn-sm"><i class="ti ti-settings"></i>&nbsp;Manage Rules</a>
+        </div>
+    </div>
+</div>
+
+<div class="row row-deck row-cards mb-3" id="modsec-stats">
+    <div class="col-sm-6 col-lg-3">
+        <div class="card">
+            <div class="card-body">
+                <div class="subheader">Blocks (24h)</div>
+                <div class="h1 mb-0" id="stat-total">--</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-sm-6 col-lg-3">
+        <div class="card">
+            <div class="card-body">
+                <div class="subheader">Unique IPs</div>
+                <div class="h1 mb-0" id="stat-ips">--</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-sm-6 col-lg-3">
+        <div class="card">
+            <div class="card-body">
+                <div class="subheader">Escalated to Firewall</div>
+                <div class="h1 mb-0" id="stat-escalated">--</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-sm-6 col-lg-3">
+        <div class="card">
+            <div class="card-body">
+                <div class="subheader">Top Rule</div>
+                <div class="h3 mb-0" id="stat-top-rule">--</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card mb-3">
+    <div class="card-header">
+        <h3 class="card-title"><i class="ti ti-shield-lock"></i>&nbsp;Blocked IPs by Rule</h3>
+        <div class="card-actions">
+            <input type="text" class="form-control form-control-sm csm-input-lg" id="modsec-search" placeholder="Search IP, rule, domain...">
+        </div>
+    </div>
+    <div id="modsec-content">
+        <div class="card-body text-center text-muted py-3">
+            <span class="spinner-border spinner-border-sm"></span> Loading...
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h3 class="card-title"><i class="ti ti-list"></i>&nbsp;Recent Events</h3>
+        <div class="card-actions">
+            <input type="text" class="form-control form-control-sm csm-input-lg" id="events-search" placeholder="Search events...">
+        </div>
+    </div>
+    <div id="modsec-events">
+        <div class="card-body text-center text-muted py-3">
+            <span class="spinner-border spinner-border-sm"></span> Loading...
+        </div>
+    </div>
+</div>
+{{end}}
+
+{{define "scripts"}}
+<script src="/static/js/modsec.js"></script>
+{{end}}
+
+{{template "layout" .}}

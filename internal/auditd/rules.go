@@ -1,0 +1,57 @@
+package auditd
+
+import (
+	"os"
+	"os/exec"
+)
+
+const rulesPath = "/etc/audit/rules.d/csm.rules"
+
+const rules = `## Continuous Security Monitor - auditd rules
+
+# Password/auth file changes
+-w /etc/shadow -p wa -k csm_shadow_change
+-w /etc/passwd -p wa -k csm_passwd_change
+-w /etc/group -p wa -k csm_group_change
+
+# SSH config and keys
+-w /etc/ssh/sshd_config -p wa -k csm_sshd_change
+-w /root/.ssh/authorized_keys -p wa -k csm_root_ssh_keys
+
+# WHM API tokens
+-w /var/cpanel/authn/api_tokens_v2/ -p wa -k csm_whm_api_tokens
+
+# Crontab modifications
+-w /var/spool/cron/ -p wa -k csm_crontab_change
+-w /etc/cron.d/ -p wa -k csm_crond_change
+
+# Password change commands
+-w /usr/bin/passwd -p x -k csm_passwd_exec
+-w /usr/sbin/chpasswd -p x -k csm_chpasswd_exec
+
+# CSM binary self-protection
+-w /opt/csm/csm -p wa -k csm_binary_tamper
+-w /opt/csm/csm.yaml -p wa -k csm_config_tamper
+
+# Execution from suspicious locations
+-a always,exit -F arch=b64 -S execve -F dir=/tmp -k csm_exec_tmp
+-a always,exit -F arch=b64 -S execve -F dir=/dev/shm -k csm_exec_shm
+
+# User account modifications
+-w /usr/sbin/useradd -p x -k csm_useradd
+-w /usr/sbin/usermod -p x -k csm_usermod
+-w /usr/sbin/userdel -p x -k csm_userdel
+`
+
+func Deploy() error {
+	if err := os.WriteFile(rulesPath, []byte(rules), 0640); err != nil {
+		return err
+	}
+	// Reload auditd rules
+	return exec.Command("augenrules", "--load").Run()
+}
+
+func Remove() {
+	_ = os.Remove(rulesPath)
+	_ = exec.Command("augenrules", "--load").Run()
+}

@@ -1,0 +1,207 @@
+{{define "title"}}Email Security{{end}}
+{{define "page"}}email{{end}}
+{{define "content"}}
+    <!-- Stat Cards -->
+    <div class="row row-deck row-cards mb-3">
+        <div class="col-6 col-lg">
+            <div class="card">
+                <div class="card-body">
+                    <div class="subheader" title="Current number of messages in the Exim mail queue">Mail Queue</div>
+                    <div class="h1 mb-0" id="stat-queue">&mdash;</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-lg">
+            <div class="card">
+                <div class="card-body">
+                    <div class="subheader" title="Phishing emails detected by content analysis">Phishing Detected</div>
+                    <div class="h1 mb-0 text-critical" id="stat-phishing">0</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-lg">
+            <div class="card">
+                <div class="card-body">
+                    <div class="subheader" title="Email accounts flagged for suspicious activity">Accounts Flagged</div>
+                    <div class="h1 mb-0 text-warning" id="stat-accounts">0</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-lg">
+            <div class="card">
+                <div class="card-body">
+                    <div class="subheader" title="Malware attachments blocked by ClamAV/YARA-X scanning">Malware Blocked</div>
+                    <div class="h1 mb-0" id="stat-malware-blocked">0</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-lg">
+            <div class="card">
+                <div class="card-body">
+                    <div class="subheader" title="Email accounts confirmed as compromised">Compromised</div>
+                    <div class="h1 mb-0 text-critical" id="stat-compromised">0</div>
+                    <div class="small text-muted mt-1" id="stat-compromised-detail"></div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-lg">
+            <div class="card">
+                <div class="card-body">
+                    <div class="subheader" title="Alerts triggered by mail queue size thresholds">Queue Alerts</div>
+                    <div class="h1 mb-0 text-info" id="stat-queue-alerts">0</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Filter Row -->
+    <div class="card mb-3">
+        <div class="card-body py-2">
+            <form id="email-filters" class="row g-2 align-items-end">
+                <div class="col-auto">
+                    <label class="form-label mb-0 small" for="filter-from">From</label>
+                    <input type="date" id="filter-from" class="form-control form-control-sm">
+                </div>
+                <div class="col-auto">
+                    <label class="form-label mb-0 small" for="filter-to">To</label>
+                    <input type="date" id="filter-to" class="form-control form-control-sm">
+                </div>
+                <div class="col-auto">
+                    <label class="form-label mb-0 small" for="filter-severity">Severity</label>
+                    <select id="filter-severity" class="form-select form-select-sm">
+                        <option value="">All</option>
+                        <option value="2">Critical</option>
+                        <option value="1">High</option>
+                        <option value="0">Warning</option>
+                    </select>
+                </div>
+                <div class="col-auto">
+                    <label class="form-label mb-0 small" for="filter-check">Check</label>
+                    <select id="filter-check" class="form-select form-select-sm">
+                        <option value="">All</option>
+                        <option value="email_phishing_content">Phishing</option>
+                        <option value="email_malware">Malware</option>
+                        <option value="email_compromised_account">Compromised Account</option>
+                        <option value="email_spam_outbreak">Spam Outbreak</option>
+                        <option value="email_credential_leak">Credential Leak</option>
+                        <option value="email_auth_failure_realtime">Auth Failure</option>
+                        <option value="mail_per_account">Volume</option>
+                        <option value="mail_queue">Queue</option>
+                    </select>
+                </div>
+                <div class="col">
+                    <label class="form-label mb-0 small" for="email-search">Search</label>
+                    <input type="text" id="email-search" class="form-control form-control-sm" placeholder="Search findings...">
+                </div>
+                <div class="col-auto">
+                    <button type="submit" class="btn btn-primary btn-sm"><i class="ti ti-filter"></i>&nbsp;Apply</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Email Findings Table (full width) -->
+    <div class="card mb-3">
+        <div class="card-header">
+            <h3 class="card-title"><i class="ti ti-mail-exclamation"></i>&nbsp;Email Findings</h3>
+            <div class="card-actions d-flex gap-2 align-items-center">
+                <span class="text-muted small" id="email-total-label"></span>
+                <div class="dropdown">
+                    <button class="btn btn-ghost-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-label="Export current view">
+                        <i class="ti ti-download"></i>&nbsp;Export
+                    </button>
+                    <div class="dropdown-menu dropdown-menu-end">
+                        <a class="dropdown-item" href="#" data-export="csv"><i class="ti ti-file-spreadsheet me-2"></i>CSV</a>
+                        <a class="dropdown-item" href="#" data-export="json"><i class="ti ti-braces me-2"></i>JSON</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-vcenter card-table table-sm" id="email-table">
+                <thead>
+                    <tr>
+                        <th>Severity</th>
+                        <th>Type</th>
+                        <th>Account</th>
+                        <th>IP</th>
+                        <th>Details</th>
+                        <th>Time</th>
+                    </tr>
+                </thead>
+                <tbody id="email-tbody">
+                    <tr><td colspan="6" class="text-center text-muted py-4">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Secondary cards: 2 rows of 3 -->
+    <div class="row row-deck row-cards mb-3">
+        <div class="col-lg-4">
+            <div class="card">
+                <div class="card-header"><h3 class="card-title"><i class="ti ti-alert-triangle"></i>&nbsp;Recent Threats</h3></div>
+                <div class="card-body p-0 csm-list-scroll-sm" id="recent-threats">
+                    <div class="text-muted text-center py-3">Loading...</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-4">
+            <div class="card h-100">
+                <div class="card-header"><h3 class="card-title"><i class="ti ti-mailbox"></i>&nbsp;Queue &amp; Protection</h3></div>
+                <div class="card-body" id="queue-health">
+                    <div class="text-muted text-center py-3">Loading...</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-4">
+            <div class="card">
+                <div class="card-header"><h3 class="card-title"><i class="ti ti-send"></i>&nbsp;Top Senders</h3></div>
+                <div class="card-body p-0 csm-list-scroll-sm" id="top-senders">
+                    <div class="text-muted text-center py-3">Loading...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="row row-deck row-cards mb-3">
+        <div class="col-lg-4">
+            <div class="card">
+                <div class="card-header"><h3 class="card-title">Quarantined Messages</h3></div>
+                <div class="card-body">
+                    <div id="quarantine-table"></div>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-4">
+            <div class="card">
+                <div class="card-header"><h3 class="card-title"><i class="ti ti-firewall"></i>&nbsp;SMTP Firewall</h3></div>
+                <div class="card-body" id="smtp-firewall">
+                    <div class="text-muted text-center py-3">Loading...</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-4">
+            <div class="card">
+                <div class="card-header"><h3 class="card-title">AV Engine Status</h3></div>
+                <div class="card-body">
+                    <div class="mb-2">
+                        <span class="status-dot" id="clamd-dot"></span>
+                        ClamAV: <span id="clamd-status">--</span>
+                    </div>
+                    <div class="mb-2">
+                        <span class="status-dot" id="yarax-dot"></span>
+                        YARA-X: <span id="yarax-status">--</span>
+                        (<span id="yarax-rules">0</span> rules)
+                    </div>
+                    <div class="mb-2">
+                        Watcher: <span id="watcher-mode">--</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+{{end}}
+{{define "scripts"}}
+<script src="/static/js/email.js"></script>
+{{end}}
+{{template "layout" .}}

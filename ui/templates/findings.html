@@ -1,0 +1,153 @@
+{{define "title"}}Findings{{end}}
+{{define "page"}}findings{{end}}
+{{define "content"}}
+    <div class="page-header mb-3">
+        <div class="row align-items-center">
+            <div class="col-auto"><h2 class="page-title">Security Findings</h2></div>
+        </div>
+    </div>
+
+    <!-- Scan Account -->
+    <div class="card mb-3" id="scan-card">
+        <div class="card-header feed-item" id="scan-header" role="button" aria-expanded="true" aria-controls="scan-body">
+            <h3 class="card-title">
+                <i class="ti ti-chevron-down csm-collapse-icon" id="scan-collapse-icon"></i>&nbsp;Scan Account
+            </h3>
+        </div>
+        <div class="card-body" id="scan-body">
+            <form id="scan-form" class="row g-2 align-items-end">
+                <div class="col-auto">
+                    <input type="text" id="scan-account" list="account-list" class="form-control form-control-sm font-monospace csm-input-lg" placeholder="Search accounts..." autocomplete="off">
+                    <datalist id="account-list"></datalist>
+                </div>
+                <div class="col-auto">
+                    <button type="submit" id="scan-btn" class="btn btn-primary btn-sm" title="Run all security checks on this cPanel account"><i class="ti ti-radar-2"></i>&nbsp;Scan</button>
+                </div>
+                <div class="col-auto" id="scan-status"><span class="text-muted small"></span></div>
+            </form>
+        </div>
+    </div>
+
+    <div id="refresh-banner" class="alert alert-info d-none mb-3" role="alert">
+        <div class="d-flex align-items-center">
+            <div>New findings detected since this page loaded.</div>
+            <a href="#" id="refresh-page-btn" class="btn btn-sm btn-info ms-auto">Refresh</a>
+        </div>
+    </div>
+
+    <!-- Tabbed card: Active Findings + History -->
+    <div class="card" id="findings-card">
+        <div class="card-header">
+            <ul class="nav nav-tabs card-header-tabs" data-bs-toggle="tabs">
+                <li class="nav-item">
+                    <a class="nav-link active" href="#tab-active" data-bs-toggle="tab">
+                        <i class="ti ti-alert-triangle"></i>&nbsp;Active <span id="findings-count"></span>
+                        <span id="severity-badges" class="ms-2 fw-normal small"></span>
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" href="#tab-history" data-bs-toggle="tab">
+                        <i class="ti ti-history"></i>&nbsp;History <span class="text-muted" id="history-count"></span>
+                    </a>
+                </li>
+            </ul>
+        </div>
+        <div class="tab-content">
+            <!-- Active Findings Tab -->
+            <div class="tab-pane active show" id="tab-active">
+                <div class="card-body border-bottom py-2">
+                    <div class="d-flex gap-2 flex-wrap align-items-center">
+                        <input type="text" id="findings-search" class="form-control form-control-sm csm-input-sm" placeholder="Search...">
+                        <select id="check-filter" class="form-select form-select-sm csm-auto-width">
+                            <option value="all">All Types</option>
+                        </select>
+                        <input type="search" id="account-filter" list="account-filter-list" class="form-control form-control-sm csm-input-sm" placeholder="All Accounts" autocomplete="off">
+                        <datalist id="account-filter-list"></datalist>
+                        <select id="group-by" class="form-select form-select-sm csm-auto-width" title="Group findings by account or check type">
+                            <option value="none">No Grouping</option>
+                            <option value="account">Group by Account</option>
+                            <option value="check">Group by Check Type</option>
+                        </select>
+                        <select id="per-page" class="form-select form-select-sm csm-auto-width">
+                            <option value="25">25/page</option>
+                            <option value="50">50/page</option>
+                            <option value="100">100/page</option>
+                            <option value="250">250/page</option>
+                            <option value="0">All</option>
+                        </select>
+                        <div class="dropdown">
+                            <button class="btn btn-ghost-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="Export visible findings">
+                                <i class="ti ti-download"></i>&nbsp;Export
+                            </button>
+                            <div class="dropdown-menu dropdown-menu-end">
+                                <a class="dropdown-item" href="#" id="export-csv" title="Download findings as CSV spreadsheet"><i class="ti ti-file-spreadsheet me-2"></i>CSV</a>
+                                <a class="dropdown-item" href="#" id="export-json" title="Download findings as JSON data file"><i class="ti ti-braces me-2"></i>JSON</a>
+                            </div>
+                        </div>
+                        <div id="bulk-actions" class="d-none d-flex gap-1 align-items-center">
+                            <span class="text-muted small me-1"><strong id="selected-count">0</strong> selected</span>
+                            <div class="btn-group btn-group-sm">
+                                <button id="bulk-fix-btn" class="btn btn-warning d-none" data-action="fix" title="Apply automated fixes to all selected findings"><i class="ti ti-tool"></i>&nbsp;Fix</button>
+                                <button id="bulk-dismiss-btn" class="btn btn-ghost-secondary" data-action="dismiss" title="Dismiss all selected findings"><i class="ti ti-x"></i>&nbsp;Dismiss</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div id="findings-loading" class="card-body text-center text-muted py-4">
+                    <span class="spinner-border spinner-border-sm"></span> Loading findings...
+                </div>
+                <div id="findings-empty" class="card-body text-center text-muted py-4 d-none">
+                    <i class="ti ti-circle-check"></i> No active findings. All clear.
+                </div>
+                <div class="table-responsive d-none" id="findings-table-wrap">
+                    <table class="table table-vcenter card-table w-100" id="findings-table">
+                        <thead>
+                            <tr>
+                                <th><input type="checkbox" id="select-all" class="form-check-input"></th>
+                                <th>Severity</th>
+                                <th>Check</th>
+                                <th>Message</th>
+                                <th>First Seen</th>
+                                <th>Last Seen</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="findings-tbody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- History Tab -->
+            <div class="tab-pane" id="tab-history">
+                <div class="card-body border-bottom py-2">
+                    <div class="d-flex gap-2 flex-wrap align-items-center">
+                        <input type="text" id="history-search" class="form-control form-control-sm csm-input-sm" placeholder="Search...">
+                        <select id="sev-filter" class="form-select form-select-sm csm-auto-width">
+                            <option value="all">All Severities</option>
+                            <option value="2">Critical</option>
+                            <option value="1">High</option>
+                            <option value="0">Warning</option>
+                        </select>
+                        <div class="d-flex gap-1 align-items-center">
+                            <input type="date" id="date-from" class="form-control form-control-sm csm-input-sm" title="Show findings from this date">
+                            <span class="text-muted small">to</span>
+                            <input type="date" id="date-to" class="form-control form-control-sm csm-input-sm" title="Show findings up to this date">
+                            <button type="button" class="btn btn-primary btn-sm" id="date-filter-btn" title="Apply date range filter" aria-label="Apply date filter"><i class="ti ti-filter"></i></button>
+                            <button type="button" class="btn btn-ghost-secondary btn-sm d-none" id="date-clear-btn" title="Clear date filter" aria-label="Clear date filter"><i class="ti ti-x"></i></button>
+                        </div>
+                        <a href="/api/v1/history/csv" class="btn btn-ghost-secondary btn-sm" title="Download full history as CSV"><i class="ti ti-download"></i>&nbsp;CSV</a>
+                    </div>
+                </div>
+                <div id="history-content">
+                    <div class="card-body text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
+                </div>
+                <div class="card-footer d-flex justify-content-between align-items-center" id="history-pager"></div>
+            </div>
+        </div>
+    </div>
+{{end}}
+{{define "scripts"}}
+<script src="/static/js/findings.js"></script>
+<script src="/static/js/history.js"></script>
+{{end}}
+{{template "layout" .}}

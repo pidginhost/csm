@@ -1,0 +1,10 @@
+[Unit]
+Description=Continuous Security Monitor — Deep Scan
+After=network.target
+
+[Service]
+Type=oneshot
+Nice=10
+ExecStart=/opt/csm/csm run-deep
+StandardOutput=append:/var/log/csm/monitor.log
+StandardError=append:/var/log/csm/monitor.log

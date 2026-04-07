@@ -1,0 +1,43 @@
+dist/
+*.exe
+state/state.json
+.claude/
+.remember/
+.superpowers/
+/csm
+.cache/
+
+# Internal planning / local-only files
+CLAUDE.md
+docs/IMPROVEMENT_PLAN.md
+docs/superpowers/
+scripts/deploy-gitlab.sh
+
+# Environment / secrets
+.env
+.env.local
+.env*.local
+
+# TLS certificates and keys
+*.key
+*.pem
+*.crt
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.o
+*.a
+*.so
+
+# mdBook output
+docs/book/

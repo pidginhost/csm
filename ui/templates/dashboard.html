@@ -1,0 +1,168 @@
+{{define "title"}}Dashboard{{end}}
+{{define "page"}}dashboard{{end}}
+{{define "content"}}
+    <div class="page-header mb-3">
+        <div class="row align-items-center">
+            <div class="col-auto"><h2 class="page-title">Dashboard</h2></div>
+        </div>
+    </div>
+
+    <!-- System Overview (collapsible) -->
+    <div class="d-flex align-items-center mb-3">
+        <h3 class="mb-0">System Overview</h3>
+        <button class="btn btn-ghost-secondary btn-sm ms-2" id="toggle-overview-btn" aria-label="Toggle system overview" aria-expanded="true">
+            <i class="ti ti-chevron-up"></i>
+        </button>
+    </div>
+    <div id="system-overview">
+
+    <!-- Stat Cards -->
+    <div class="row row-deck row-cards mb-3">
+        <div class="col-6 col-lg">
+            <div class="card" title="Critical severity findings in the last 24 hours">
+                <div class="card-body">
+                    <div class="subheader">Critical (24h)</div>
+                    <div class="h1 mb-0 text-critical" id="stat-critical">{{.Critical}}</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-lg">
+            <div class="card" title="High severity findings in the last 24 hours">
+                <div class="card-body">
+                    <div class="subheader">High (24h)</div>
+                    <div class="h1 mb-0 text-high" id="stat-high">{{.High}}</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-lg">
+            <div class="card" title="Warning severity findings in the last 24 hours">
+                <div class="card-body">
+                    <div class="subheader">Warning (24h)</div>
+                    <div class="h1 mb-0 text-warning" id="stat-warning">{{.Warning}}</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-lg">
+            <div class="card" title="Time since the most recent critical severity finding">
+                <div class="card-body">
+                    <div class="subheader">Last Critical</div>
+                    <div class="h3 mb-0" id="stat-last-critical">{{.LastCriticalAgo}}</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-lg">
+            <div class="card" title="Daemon uptime and monitoring status">
+                <div class="card-body">
+                    <div class="d-flex align-items-center justify-content-between">
+                        <div>
+                            <div class="subheader">Uptime</div>
+                            <div class="h3 mb-0">{{.Uptime}}</div>
+                        </div>
+                        <div class="text-end">
+                            {{if .FanotifyActive}}<span class="badge bg-green-lt" title="Real-time filesystem monitoring via fanotify"><i class="ti ti-eye"></i> fanotify</span>
+                            {{else}}<span class="badge bg-yellow-lt" title="Fanotify unavailable, using polling fallback"><i class="ti ti-eye-off"></i> fallback</span>{{end}}
+                            {{if .LogWatchers}}<span class="badge bg-blue-lt ms-1" title="Log files being watched"><i class="ti ti-file-text"></i> {{.LogWatchers}}</span>{{end}}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Live Feed (full width, prominent) -->
+    <div class="card mb-3">
+        <div class="card-header">
+            <h3 class="card-title">
+                <span class="status-dot bg-yellow me-1" id="poll-status-dot" title="Polling active"></span>
+                Live Feed
+                <span class="text-muted ms-2 small">Polling (10s)</span>
+            </h3>
+            <div class="card-actions">
+                <span class="text-muted small" id="scan-status"></span>
+                <span class="text-muted small ms-2" id="scan-detail"></span>
+            </div>
+        </div>
+        <div class="list-group list-group-flush overflow-auto csm-feed-scroll" id="live-feed-entries">
+            {{range .RecentFindings}}
+            <div class="list-group-item feed-item" data-ts="{{.TimestampISO}}">
+                <div class="row align-items-center">
+                    <div class="col-auto"><span class="text-muted font-monospace small">{{.Timestamp}}</span></div>
+                    <div class="col-auto"><span class="badge badge-{{.SevClass}}">{{.Severity}}</span></div>
+                    <div class="col"><span class="font-monospace small">{{.Check}}</span> - {{.Message}}</div>
+                    {{if .HasFix}}<div class="col-auto"><button class="btn btn-warning btn-sm feed-fix-btn" data-check="{{.Check}}" data-message="{{.Message}}" data-fixdesc="{{.FixDesc}}" title="{{.FixDesc}}" aria-label="Fix: {{.FixDesc}}"><i class="ti ti-tool"></i></button></div>{{end}}
+                </div>
+                {{if .Details}}<div class="detail d-none mt-2 small text-muted csm-detail">{{.Details}}</div>{{end}}
+            </div>
+            {{else}}
+            <div class="list-group-item text-center text-muted py-4">No recent findings. Waiting for events...</div>
+            {{end}}
+        </div>
+    </div>
+
+    <!-- Timeline + Attack Types side by side -->
+    <div class="row row-deck row-cards mb-3">
+        <div class="col-lg-8">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title"><i class="ti ti-chart-area-line"></i>&nbsp;Findings Timeline (24h)</h3>
+                </div>
+                <div class="card-body py-3 csm-chart-lg">
+                    <canvas id="timeline-chart"></canvas>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-4">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title"><i class="ti ti-chart-bar-popular"></i>&nbsp;Top Attack Types</h3>
+                </div>
+                <div class="card-body csm-chart-lg">
+                    <canvas id="attack-types-chart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Accounts at Risk + Auto-Response + Top Targeted -->
+    <div class="row row-deck row-cards mb-3">
+        <div class="col-lg-4">
+            <div class="card">
+                <div class="card-header"><h3 class="card-title"><i class="ti ti-alert-triangle"></i>&nbsp;Accounts at Risk</h3></div>
+                <div class="card-body p-0 overflow-auto csm-list-scroll" id="accounts-at-risk">
+                    <div class="text-muted text-center py-3">Loading...</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-4">
+            <div class="card">
+                <div class="card-header"><h3 class="card-title"><i class="ti ti-robot"></i>&nbsp;Auto-Response (24h)</h3></div>
+                <div class="card-body" id="auto-response-summary">
+                    <div class="text-muted text-center py-3">Loading...</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-4">
+            <div class="card">
+                <div class="card-header"><h3 class="card-title"><i class="ti ti-target"></i>&nbsp;Top Targeted Accounts</h3></div>
+                <div class="card-body p-0" id="top-targeted-accounts">
+                    <div class="text-muted text-center py-3">Loading...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 30-Day Trend -->
+    <div class="card mb-3">
+        <div class="card-header"><h3 class="card-title"><i class="ti ti-chart-line"></i>&nbsp;30-Day Trend</h3></div>
+        <div class="card-body py-3 csm-chart-sm">
+            <canvas id="trend-chart"></canvas>
+        </div>
+    </div>
+
+    </div><!-- /system-overview -->
+{{end}}
+{{define "scripts"}}
+<script src="/static/js/chart.min.js"></script>
+<script src="/static/js/dashboard.js"></script>
+{{end}}
+{{template "layout" .}}

@@ -1,0 +1,139 @@
+{{define "title"}}Threat Intelligence{{end}}
+{{define "page"}}threat{{end}}
+{{define "content"}}
+    <!-- Stats Cards -->
+    <div class="row row-deck row-cards mb-3">
+        <div class="col-sm-6 col-lg-3">
+            <div class="card">
+                <div class="card-body">
+                    <div class="subheader" title="Total unique IPs seen in threat events">Tracked IPs</div>
+                    <div class="h1 mb-0" id="stat-total-ips">-</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-sm-6 col-lg-3">
+            <div class="card">
+                <div class="card-body">
+                    <div class="subheader" title="Attack events recorded in the last 24 hours">Events (24h)</div>
+                    <div class="h1 mb-0" id="stat-24h">-</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-sm-6 col-lg-3">
+            <div class="card">
+                <div class="card-body">
+                    <div class="subheader" title="Attack events recorded in the last 7 days">Events (7d)</div>
+                    <div class="h1 mb-0" id="stat-7d">-</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-sm-6 col-lg-3">
+            <div class="card">
+                <div class="card-body">
+                    <div class="subheader" title="IPs automatically blocked by threat response">Auto-blocked</div>
+                    <div class="h1 mb-0" id="stat-blocked">-</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Attack Type Breakdown -->
+    <div class="row row-deck row-cards mb-3">
+        <div class="col-lg-6">
+            <div class="card">
+                <div class="card-header"><h3 class="card-title"><i class="ti ti-chart-bar"></i>&nbsp;Attack Types</h3></div>
+                <div class="card-body">
+                    <div id="chart-types" class="csm-chart-md"></div>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-6">
+            <div class="card">
+                <div class="card-header"><h3 class="card-title"><i class="ti ti-chart-line"></i>&nbsp;Attack Trend (24h)</h3></div>
+                <div class="card-body">
+                    <div id="chart-hourly" class="csm-chart-md"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- IP Lookup -->
+    <div class="card mb-3">
+        <div class="card-header">
+            <h3 class="card-title"><i class="ti ti-search"></i>&nbsp;IP Lookup</h3>
+            <div class="card-actions">
+                <form id="lookup-form" class="row g-2 align-items-end">
+                    <div class="col-auto"><input type="text" id="lookup-ip" class="form-control form-control-sm font-monospace csm-input-lg" placeholder="1.2.3.4"></div>
+                    <div class="col-auto"><button type="submit" class="btn btn-primary btn-sm text-nowrap" title="Look up threat intelligence data for this IP"><i class="ti ti-search"></i>&nbsp;Lookup</button></div>
+                    <div class="col-auto"><span id="lookup-status" class="text-muted small text-nowrap"></span></div>
+                </form>
+            </div>
+        </div>
+        <div id="lookup-result" class="d-none p-3"></div>
+    </div>
+
+    <!-- Top Attackers -->
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title"><i class="ti ti-skull"></i>&nbsp;Top Attackers</h3>
+            <div class="card-actions d-flex gap-2 align-items-center">
+                <button class="btn btn-danger btn-sm d-none" id="bulk-block-btn"><i class="ti ti-shield-lock"></i>&nbsp;Block Selected</button>
+                <button class="btn btn-success btn-sm d-none" id="bulk-whitelist-btn"><i class="ti ti-shield-check"></i>&nbsp;Whitelist Selected</button>
+                <input type="text" id="attackers-search" class="form-control form-control-sm csm-input-md" placeholder="Search attackers...">
+                <div class="dropdown">
+                    <button class="btn btn-ghost-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-label="Export current view">
+                        <i class="ti ti-download"></i>&nbsp;Export
+                    </button>
+                    <div class="dropdown-menu dropdown-menu-end">
+                        <a class="dropdown-item" href="#" data-export="csv"><i class="ti ti-file-spreadsheet me-2"></i>CSV</a>
+                        <a class="dropdown-item" href="#" data-export="json"><i class="ti ti-braces me-2"></i>JSON</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-vcenter card-table table-sm" id="attackers-table">
+                <thead>
+                    <tr>
+                        <th style="width:1%"><input type="checkbox" class="form-check-input" id="select-all-attackers"></th>
+                        <th>IP</th>
+                        <th>Location / ISP</th>
+                        <th>Score</th>
+                        <th>Events</th>
+                        <th>Attack Types</th>
+                        <th>Accounts</th>
+                        <th>First Seen</th>
+                        <th>Last Seen</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="attackers-tbody"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Whitelisted IPs -->
+    <div class="card mt-3">
+        <div class="card-header">
+            <h3 class="card-title"><i class="ti ti-shield-check"></i>&nbsp;Whitelisted IPs (Customer IPs)</h3>
+            <div class="card-actions">
+                <form id="add-wl-form" class="row g-2 align-items-end">
+                    <div class="col-auto"><input type="text" id="add-wl-ip" class="form-control form-control-sm font-monospace csm-input-sm" placeholder="1.2.3.4"></div>
+                    <div class="col-auto"><button type="submit" class="btn btn-success btn-sm" title="Permanently whitelist this IP - never block or flag it"><i class="ti ti-plus"></i>&nbsp;Add</button></div>
+                </form>
+            </div>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-vcenter card-table table-sm">
+                <thead><tr><th>IP Address</th><th>Type</th><th style="width:100px">Actions</th></tr></thead>
+                <tbody id="wl-tbody"></tbody>
+            </table>
+        </div>
+    </div>
+{{end}}
+{{define "scripts"}}
+<script src="/static/js/chart.min.js"></script>
+<script src="/static/js/threat.js"></script>
+{{end}}
+{{template "layout" .}}

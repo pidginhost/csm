@@ -1,0 +1,15 @@
+[book]
+title = "CSM — Continuous Security Monitor"
+authors = ["PidginHost"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+
+[output.html]
+git-repository-url = "https://github.com/pidginhost/csm"
+edit-url-template = "https://github.com/pidginhost/csm/edit/main/docs/src/{path}"
+default-theme = "navy"
+preferred-dark-theme = "navy"
+no-section-label = false

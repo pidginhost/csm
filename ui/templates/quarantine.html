@@ -1,0 +1,21 @@
+{{define "title"}}Quarantine{{end}}
+{{define "page"}}quarantine{{end}}
+{{define "content"}}
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title"><i class="ti ti-lock"></i>&nbsp;Quarantined Files</h3>
+            <div class="card-actions">
+                <button class="btn btn-danger btn-sm d-none" id="bulk-delete-btn">Delete Selected</button>
+                <button class="btn btn-warning btn-sm d-none" id="bulk-restore-btn">Restore Selected</button>
+                <input type="text" id="quarantine-search" class="form-control form-control-sm csm-input-md" placeholder="Search...">
+            </div>
+        </div>
+        <div id="quarantine-content">
+            <div class="card-body text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
+        </div>
+    </div>
+{{end}}
+{{define "scripts"}}
+<script src="/static/js/quarantine.js"></script>
+{{end}}
+{{template "layout" .}}

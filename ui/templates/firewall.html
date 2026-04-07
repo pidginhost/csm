@@ -1,0 +1,139 @@
+{{define "title"}}Firewall{{end}}
+{{define "page"}}firewall{{end}}
+{{define "content"}}
+    <div class="page-header mb-3">
+        <div class="row align-items-center">
+            <div class="col-auto"><h2 class="page-title">Firewall</h2></div>
+        </div>
+    </div>
+
+    <!-- Status Cards -->
+    <div class="row row-deck row-cards mb-3" id="fw-status">
+        <div class="col-sm-6 col-lg-3">
+            <div class="card">
+                <div class="card-body">
+                    <div class="subheader" title="Whether the firewall is currently active">Status</div>
+                    <div class="h1 mb-0" id="fw-enabled">-</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-sm-6 col-lg-3">
+            <div class="card">
+                <div class="card-body">
+                    <div class="subheader" title="Individual IPs currently blocked by the firewall">Blocked IPs</div>
+                    <div class="h1 mb-0" id="fw-blocked">-</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-sm-6 col-lg-3">
+            <div class="card">
+                <div class="card-body">
+                    <div class="subheader" title="CIDR subnets currently blocked by the firewall">Blocked Subnets</div>
+                    <div class="h1 mb-0" id="fw-subnets">-</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-sm-6 col-lg-3">
+            <div class="card">
+                <div class="card-body">
+                    <div class="subheader" title="IPs with explicit nftables allow rules (separate from threat whitelist)">Firewall Allow Rules</div>
+                    <div class="h1 mb-0" id="fw-allowed">-</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Config Summary -->
+    <div class="card mb-3">
+        <div class="card-header"><h3 class="card-title"><i class="ti ti-settings"></i>&nbsp;Configuration</h3></div>
+        <div class="card-body">
+            <div class="row" id="fw-config">
+                <div class="col-md-6"><table class="table table-sm" id="fw-config-table"></table></div>
+                <div class="col-md-6"><table class="table table-sm" id="fw-config-table2"></table></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Blocked Subnets -->
+    <div class="card mb-3">
+        <div class="card-header">
+            <h3 class="card-title"><i class="ti ti-network"></i>&nbsp;Blocked Subnets</h3>
+            <div class="card-actions">
+                <form id="subnet-form" class="row g-2 align-items-end">
+                    <div class="col-auto"><input type="text" id="subnet-cidr" class="form-control form-control-sm font-monospace csm-input-md" placeholder="1.2.3.0/24"></div>
+                    <div class="col-auto"><input type="text" id="subnet-reason" class="form-control form-control-sm csm-input-md" placeholder="Reason"></div>
+                    <div class="col-auto">
+                        <select id="subnet-duration" class="form-select form-select-sm csm-auto-width">
+                            <option value="24h">24 hours</option>
+                            <option value="7d">7 days</option>
+                            <option value="30d">30 days</option>
+                            <option value="0">Permanent</option>
+                        </select>
+                    </div>
+                    <div class="col-auto"><button type="submit" class="btn btn-danger btn-sm text-nowrap" title="Block this subnet in the firewall"><i class="ti ti-shield-off"></i>&nbsp;Block</button></div>
+                </form>
+            </div>
+        </div>
+        <div id="subnet-content"><div class="card-body text-center text-muted py-3"><span class="spinner-border spinner-border-sm"></span></div></div>
+    </div>
+
+    <!-- Blocked IPs -->
+    <div class="card mb-3">
+        <div class="card-header">
+            <h3 class="card-title"><i class="ti ti-shield-off"></i>&nbsp;Blocked IPs</h3>
+            <div class="card-actions d-flex gap-2 flex-wrap">
+                <button class="btn btn-success btn-sm d-none" id="bulk-unblock-btn" title="Remove firewall block for all selected IPs" aria-label="Bulk unblock selected IPs">Unblock 0 IPs</button>
+                <input type="text" id="blocked-search" class="form-control form-control-sm csm-input-md" placeholder="Search IPs...">
+                <div class="dropdown">
+                    <button class="btn btn-ghost-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-label="Export current view">
+                        <i class="ti ti-download"></i>&nbsp;Export
+                    </button>
+                    <div class="dropdown-menu dropdown-menu-end">
+                        <a class="dropdown-item" href="#" data-export="csv"><i class="ti ti-file-spreadsheet me-2"></i>CSV</a>
+                        <a class="dropdown-item" href="#" data-export="json"><i class="ti ti-braces me-2"></i>JSON</a>
+                    </div>
+                </div>
+                <form id="block-form" class="row g-2 align-items-end">
+                    <div class="col-auto"><input type="text" id="block-ip" class="form-control form-control-sm font-monospace csm-input-sm" placeholder="IP address"></div>
+                    <div class="col-auto"><input type="text" id="block-reason" class="form-control form-control-sm csm-input-md" placeholder="Reason"></div>
+                    <div class="col-auto">
+                        <select id="block-duration" class="form-select form-select-sm csm-auto-width">
+                            <option value="24h">24 hours</option>
+                            <option value="7d">7 days</option>
+                            <option value="30d">30 days</option>
+                            <option value="0">Permanent</option>
+                        </select>
+                    </div>
+                    <div class="col-auto"><button type="submit" class="btn btn-danger btn-sm text-nowrap" title="Block this IP address in the firewall"><i class="ti ti-shield-off"></i>&nbsp;Block</button></div>
+                </form>
+            </div>
+        </div>
+        <div id="blocked-content"><div class="card-body text-center text-muted py-3"><span class="spinner-border spinner-border-sm"></span></div></div>
+    </div>
+
+    <!-- Whitelisted IPs -->
+    <div class="card mb-3">
+        <div class="card-header">
+            <h3 class="card-title"><i class="ti ti-shield-check"></i>&nbsp;Whitelisted IPs</h3>
+            <div class="card-actions">
+                <form id="whitelist-form" class="row g-2 align-items-end">
+                    <div class="col-auto"><input type="text" id="whitelist-ip" class="form-control form-control-sm font-monospace csm-input-sm" placeholder="IP address"></div>
+                    <div class="col-auto"><button type="submit" class="btn btn-success btn-sm text-nowrap" title="Allow this IP and prevent future auto-blocking"><i class="ti ti-shield-check"></i>&nbsp;Whitelist</button></div>
+                </form>
+            </div>
+        </div>
+        <div class="card-body pb-0"><div class="text-muted small mb-3"><i class="ti ti-info-circle"></i> Whitelisting prevents <strong>future</strong> auto-blocking. To unblock an already-blocked IP, use the Unblock button in the Blocked IPs table above.</div></div>
+        <div id="whitelist-content"><div class="card-body text-center text-muted py-3"><span class="spinner-border spinner-border-sm"></span></div></div>
+    </div>
+
+    <!-- Audit link -->
+    <div class="card">
+        <div class="card-body text-center py-3">
+            <a href="/audit" class="btn btn-ghost-secondary"><i class="ti ti-clipboard-list"></i>&nbsp;View Full Audit Log</a>
+        </div>
+    </div>
+{{end}}
+{{define "scripts"}}
+<script src="/static/js/firewall.js"></script>
+{{end}}
+{{template "layout" .}}

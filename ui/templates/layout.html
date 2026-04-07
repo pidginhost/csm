@@ -1,0 +1,95 @@
+{{define "layout"}}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CSM - {{template "title" .}}</title>
+    <link rel="stylesheet" href="/static/css/tabler.min.css">
+    <link rel="stylesheet" href="/static/css/tabler-icons.min.css">
+    <link rel="stylesheet" href="/static/css/csm.css">
+    <meta name="csrf-token" content="{{csrfToken}}">
+    <script id="csm-config" type="application/json">{{csmConfig}}</script>
+    <script src="/static/js/theme-init.js"></script>
+</head>
+<body class="layout-fluid">
+    <div class="page">
+        <header class="navbar navbar-expand-md d-print-none" data-bs-theme="dark">
+            <div class="container-xl">
+                <h1 class="navbar-brand navbar-brand-autodark d-none-navbar-btn">
+                    <span class="text-primary">CSM</span>&nbsp;Security Monitor
+                </h1>
+                <div class="navbar-nav flex-row order-md-last gap-2">
+                    <button id="notif-toggle" class="btn btn-ghost-secondary btn-sm d-none" title="Enable desktop alerts" aria-label="Enable desktop alerts">
+                        <i class="ti ti-bell"></i>
+                    </button>
+                    <button id="shortcuts-help-btn" class="btn btn-ghost-secondary btn-sm d-none d-md-inline-flex" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
+                        <i class="ti ti-keyboard"></i>
+                    </button>
+                    <button id="theme-toggle" class="btn btn-ghost-secondary btn-sm" title="Toggle dark/light mode" aria-label="Toggle dark/light mode">
+                        <i class="ti ti-sun-moon"></i>
+                    </button>
+                    <a href="/logout" class="btn btn-ghost-secondary btn-sm">
+                        <i class="ti ti-logout"></i> Logout
+                    </a>
+                </div>
+                <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbar-menu" aria-controls="navbar-menu" aria-expanded="false" aria-label="Toggle navigation">
+                    <span class="navbar-toggler-icon"></span>
+                </button>
+                <nav class="collapse navbar-collapse" id="navbar-menu" aria-label="Main navigation">
+                    <ul class="navbar-nav" id="csm-nav">
+                        <li class="nav-item"><a class="nav-link" href="/dashboard"><i class="ti ti-dashboard"></i>&nbsp;Dashboard</a></li>
+                        <li class="nav-item"><a class="nav-link" href="/findings"><i class="ti ti-alert-triangle"></i>&nbsp;Findings</a></li>
+                        <li class="nav-item"><a class="nav-link" href="/quarantine"><i class="ti ti-lock"></i>&nbsp;Quarantine</a></li>
+                        <li class="nav-item"><a class="nav-link" href="/firewall"><i class="ti ti-firewall"></i>&nbsp;Firewall</a></li>
+                        <li class="nav-item"><a class="nav-link" href="/modsec"><i class="ti ti-shield-check"></i>&nbsp;ModSecurity</a></li>
+                        <li class="nav-item"><a class="nav-link" href="/email"><i class="ti ti-mail"></i>&nbsp;Email</a></li>
+                        <li class="nav-item"><a class="nav-link" href="/threat"><i class="ti ti-spy"></i>&nbsp;Threat Intel</a></li>
+                        <li class="nav-item"><a class="nav-link" href="/incident"><i class="ti ti-timeline-event"></i>&nbsp;Incidents</a></li>
+                        <li class="nav-item"><a class="nav-link" href="/rules"><i class="ti ti-file-code"></i>&nbsp;Rules</a></li>
+                        <li class="nav-item"><a class="nav-link" href="/audit"><i class="ti ti-clipboard-list"></i>&nbsp;Audit</a></li>
+                        <li class="nav-item"><a class="nav-link" href="/performance"><i class="ti ti-activity"></i>&nbsp;Performance</a></li>
+                        <li class="nav-item"><a class="nav-link" href="/hardening"><i class="ti ti-shield-lock"></i>&nbsp;Hardening</a></li>
+                    </ul>
+                </nav>
+            </div>
+        </header>
+        <div class="page-wrapper">
+            <div id="csm-connection-lost" class="alert alert-danger alert-dismissible mb-0 rounded-0 d-none" role="alert" aria-live="polite">
+                <strong>Connection lost</strong> — Unable to reach the server. Retrying automatically.
+            </div>
+            <main class="page-body">
+                <div class="container-xl">
+                    {{template "content" .}}
+                </div>
+            </main>
+            <footer class="footer footer-transparent d-print-none">
+                <div class="container-xl">
+                    <div class="text-muted text-center">CSM - Continuous Security Monitor <span id="csm-version"></span></div>
+                </div>
+            </footer>
+        </div>
+    </div>
+    <div id="csm-toasts" class="csm-toasts" aria-live="polite"></div>
+    <div class="modal fade" id="csm-confirm-modal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-sm modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-body csm-pre-line" id="csm-confirm-body"></div>
+                <div class="modal-footer" style="padding:.5rem .75rem">
+                    <button type="button" class="btn btn-ghost-secondary btn-sm" id="csm-confirm-cancel">Cancel</button>
+                    <button type="button" class="btn btn-primary btn-sm" id="csm-confirm-ok">OK</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script src="/static/js/tabler.min.js"></script>
+    <script src="/static/js/toast.js"></script>
+    <script src="/static/js/csrf.js"></script>
+    <script src="/static/js/table.js"></script>
+    <script src="/static/js/csm-ui.js"></script>
+    <script src="/static/js/shortcuts.js"></script>
+    <script src="/static/js/layout.js"></script>
+    {{template "scripts" .}}
+</body>
+</html>
+{{end}}

@@ -1,0 +1,183 @@
+# Continuous Security Monitor configuration
+# Full documentation: https://github.com/pidginhost/csm
+
+hostname: "SET_HOSTNAME_HERE"
+
+alerts:
+  email:
+    enabled: true
+    to:
+      - "SET_EMAIL_HERE"
+    from: "csm@SET_HOSTNAME_HERE"
+    smtp: "localhost:25"
+    disabled_checks: []
+  webhook:
+    enabled: false
+    url: ""
+    type: "slack"  # slack, discord, generic
+  heartbeat:
+    enabled: false
+    url: ""  # healthchecks.io, cronitor, or similar dead man's switch URL
+  max_per_hour: 10
+
+webui:
+  enabled: true
+  listen: "0.0.0.0:9443"
+  auth_token: ""  # auto-generated on install
+  tls_cert: ""    # auto-generated self-signed if empty
+  tls_key: ""
+  ui_dir: "/opt/csm/ui"
+
+integrity:
+  binary_hash: ""
+  config_hash: ""
+  immutable: true
+
+signatures:
+  rules_dir: "/opt/csm/rules"
+  auto_update: false
+  update_url: ""
+
+thresholds:
+  mail_queue_warn: 500
+  mail_queue_crit: 2000
+  state_expiry_hours: 24
+  deep_scan_interval_min: 60
+  wp_core_check_interval_min: 60
+  webshell_scan_interval_min: 30
+  filesystem_scan_interval_min: 30
+  multi_ip_login_threshold: 3
+  multi_ip_login_window_min: 60
+
+state_path: "/opt/csm/state"
+
+# Infrastructure IPs — traffic from these CIDRs is trusted and never blocked.
+# IMPORTANT: Set these to YOUR management/monitoring network ranges.
+infra_ips: []
+  # - "10.0.0.0/8"
+  # - "172.16.0.0/12"
+
+suppressions:
+  upcp_window_start: "00:30"   # cPanel nightly update window (suppress noise)
+  upcp_window_end: "02:00"
+  known_api_tokens: []
+  ignore_paths:
+    - "*/imunify-security/*"
+    - "*/cache/*"
+    - "*/vendor/*"
+  suppress_webmail_alerts: true
+  suppress_cpanel_login_alerts: false
+
+auto_response:
+  enabled: false              # must be explicitly enabled
+  kill_processes: false       # auto-kill fake kernel threads, reverse shells
+  quarantine_files: false     # auto-move webshells/backdoors to /opt/csm/quarantine/
+  block_ips: false            # auto-block attacker IPs via nftables
+  block_expiry: "24h"         # how long IPs stay blocked
+  block_cpanel_logins: false
+  netblock: false             # auto-block /24 subnet when threshold IPs from same range
+  netblock_threshold: 3
+  permblock: false            # auto-promote to permanent after N temp blocks
+  permblock_count: 4
+  permblock_interval: "24h"
+
+firewall:
+  enabled: false              # enable to activate nftables-based firewall engine
+  tcp_in:
+    - 20
+    - 21
+    - 25
+    - 26
+    - 53
+    - 80
+    - 110
+    - 143
+    - 443
+    - 465
+    - 587
+    - 993
+    - 995
+    - 2077
+    - 2078
+    - 2079
+    - 2080
+    - 2082
+    - 2083
+    - 2091
+    - 2095
+    - 2096
+  tcp_out:
+    - 20
+    - 21
+    - 25
+    - 26
+    - 37
+    - 43
+    - 53
+    - 80
+    - 110
+    - 113
+    - 443
+    - 465
+    - 587
+    - 873
+    - 993
+    - 995
+    - 2082
+    - 2083
+    - 2086
+    - 2087
+    - 2089
+    - 2195
+    - 2703
+  udp_in:
+    - 53
+    - 443
+  udp_out:
+    - 53
+    - 113
+    - 123
+    - 443
+    - 873
+  restricted_tcp:               # ports only accessible from infra_ips
+    - 2086
+    - 2087
+  passive_ftp_start: 49152
+  passive_ftp_end: 65534
+  conn_rate_limit: 30           # new connections per minute per IP
+  syn_flood_protection: true
+  conn_limit: 50                # max concurrent connections per IP (0 = disabled)
+  port_flood:
+    - port: 25
+      proto: tcp
+      hits: 40
+      seconds: 300
+    - port: 465
+      proto: tcp
+      hits: 40
+      seconds: 300
+    - port: 587
+      proto: tcp
+      hits: 40
+      seconds: 300
+  udp_flood: true
+  udp_flood_rate: 100
+  udp_flood_burst: 500
+  smtp_block: false
+  smtp_allow_users:
+    - cpanel
+    - mailman
+  smtp_ports:
+    - 25
+    - 465
+    - 587
+  log_dropped: true
+  log_rate: 5
+
+c2_blocklist: []
+backdoor_ports:
+  - 4444
+  - 5555
+  - 55553
+  - 55555
+  - 31337
