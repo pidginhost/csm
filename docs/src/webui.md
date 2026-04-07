@@ -15,6 +15,7 @@ HTTPS dashboard with polling-based live updates (10s feed, 30s stats). Dark/ligh
 | **ModSec Rules** | `/modsec/rules` | Per-rule management, overrides, escalation control |
 | **Email** | `/email` | Email AV status, quarantined attachments, scan statistics |
 | **Threat Intel** | `/threat` | IP lookup with scoring/GeoIP/ASN, top attackers, attack type charts, trends |
+| **Hardening** | `/hardening` | On-demand hardening audit, stored report, score, and remediation guidance |
 | **Incidents** | `/incident` | Forensic timeline correlating events by IP or account |
 | **Rules** | `/rules` | YAML/YARA rule management, suppressions, state export/import, test alerts |
 | **Account** | `/account` | Per-account analysis: findings, quarantine, history, on-demand scan |

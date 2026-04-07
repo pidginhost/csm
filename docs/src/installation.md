@@ -3,7 +3,7 @@
 ## Quick Install
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/pidginhost/csm/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/pidginhost/csm/main/scripts/install.sh | bash
 ```
 
 Auto-detects hostname, email, and generates a WebUI auth token. Prompts for confirmation before applying.
@@ -11,7 +11,7 @@ Auto-detects hostname, email, and generates a WebUI auth token. Prompts for conf
 Non-interactive mode:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/pidginhost/csm/main/install.sh | bash -s -- --email admin@example.com --non-interactive
+curl -sSL https://raw.githubusercontent.com/pidginhost/csm/main/scripts/install.sh | bash -s -- --email admin@example.com --non-interactive
 ```
 
 ## RPM (CentOS/AlmaLinux/CloudLinux)
@@ -19,6 +19,7 @@ curl -sSL https://raw.githubusercontent.com/pidginhost/csm/main/install.sh | bas
 ```bash
 rpm -i csm-VERSION-1.x86_64.rpm
 vi /opt/csm/csm.yaml
+csm validate
 csm baseline
 systemctl enable --now csm.service
 ```
@@ -28,6 +29,7 @@ systemctl enable --now csm.service
 ```bash
 dpkg -i csm_VERSION_amd64.deb
 vi /opt/csm/csm.yaml
+csm validate
 csm baseline
 systemctl enable --now csm.service
 ```

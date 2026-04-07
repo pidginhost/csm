@@ -1,8 +1,8 @@
 # CSM - Continuous Security Monitor
 
-Real-time security monitoring for cPanel/WHM servers. Single Go binary that detects compromises, backdoors, phishing, and suspicious activity - then auto-responds and alerts within seconds.
+Security monitoring and response for cPanel/WHM servers. Single Go binary that detects compromise, phishing, mail abuse, and suspicious activity - then auto-responds and alerts within seconds.
 
-Designed as a full **Imunify360 replacement**. Includes nftables firewall (replaces LFD/fail2ban), ModSecurity management, email AV, threat intelligence, and a web dashboard.
+Designed as a full **Imunify360 replacement**. Includes nftables firewall (replaces LFD/fail2ban), ModSecurity management, email security, threat intelligence, hardening audit, performance monitoring, and a web dashboard.
 
 ## What CSM Does
 
@@ -17,10 +17,11 @@ csm daemon
  +-- nftables firewall engine      Kernel netlink API, IP sets, rate limiting
  +-- threat intelligence           IP reputation, attack scoring, GeoIP
  +-- ModSecurity manager           Rule deployment, overrides, escalation
- +-- email AV                      ClamAV + YARA-X on Exim spool
+ +-- email security                AV scanning, quarantine, password/forwarder audit
  +-- challenge server              Proof-of-work pages for suspicious IPs
  +-- alert dispatcher              Email, Slack, Discord, webhooks
- +-- web UI                        HTTPS dashboard with 13 pages
+ +-- web UI                        HTTPS dashboard with 14 authenticated pages
+ +-- hardening audit               On-demand server hardening checks + scoring
  +-- performance monitor           PHP, MySQL, Redis, WordPress metrics
 ```
 

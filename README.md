@@ -1,76 +1,88 @@
 # CSM - Continuous Security Monitor
 
-Real-time security monitoring for cPanel/WHM servers. Single Go binary that detects compromises, backdoors, phishing, and suspicious activity - then auto-responds and alerts within seconds.
+A security daemon for **cPanel/WHM servers** that detects compromise in seconds, responds automatically, and gives operators one place to see what happened.
 
-Full **Imunify360 replacement**. Includes nftables firewall, ModSecurity management, email AV, YARA-X scanning, threat intelligence, and a web dashboard.
+Shared hosting servers get hit the same ways: stolen credentials, vulnerable plugins, phishing kits, hijacked mailboxes, and backdoors that sit undiscovered until abuse reports arrive. CSM watches for all of it and acts before a small incident becomes a long cleanup.
 
 **[Documentation](https://pidginhost.github.io/csm/)** | **[Installation](docs/src/installation.md)** | **[Configuration](docs/src/configuration.md)**
 
 ## Quick Start
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/pidginhost/csm/main/install.sh | bash
-```
-
-```bash
+curl -sSL https://raw.githubusercontent.com/pidginhost/csm/main/scripts/install.sh | bash
 vi /opt/csm/csm.yaml
-csm baseline
+csm validate && csm baseline
 systemctl enable --now csm.service
 ```
 
-Web UI at `https://<server>:9443/login`. Also available as RPM/DEB packages.
+Web UI at `https://<server>:9443`
 
-## Features
+## What It Does
 
-| Layer | What it does |
-|-------|-------------|
-| **Real-time file monitor** | fanotify - detects webshells and malware in < 1 second |
-| **Log watchers** | inotify on auth logs - login anomaly detection in ~2 seconds |
-| **PAM listener** | Brute-force blocking on SSH/FTP/cPanel in real time |
-| **Critical scanner** | 34 checks every 10 min: processes, network, auth, reputation |
-| **Deep scanner** | 28 checks every 60 min: filesystem, WP integrity, phishing, DB |
-| **nftables firewall** | Kernel netlink API, IP/subnet blocking, rate limiting, country blocking |
-| **ModSecurity** | Rule deployment, per-domain overrides, escalation control |
-| **Signatures** | YAML + YARA-X dual scanner, auto-fetch from YARA Forge |
-| **Email AV** | ClamAV + YARA-X on Exim spool, attachment scanning |
-| **Challenge pages** | SHA-256 proof-of-work for gray-listed IPs (CAPTCHA alternative) |
-| **Threat intelligence** | AbuseIPDB, GeoIP, attack correlation, IP scoring |
-| **Performance monitor** | PHP, MySQL, Redis, WordPress, OOM detection |
-| **Web UI** | 13-page HTTPS dashboard with audit log |
-| **Alerts** | Email, Slack, Discord, generic webhooks |
+**Watches everything in real time** -- fanotify on `/home`, `/tmp`, `/dev/shm` for malicious files; inotify on logs for auth failures, WAF blocks, mail abuse, and suspicious logins; PAM listener for brute force across all services.
 
-## Auto-Response
+**Runs 62 security checks** -- 34 critical checks every 10 minutes (processes, auth, network, integrity) and 28 deep checks every hour (filesystem, WordPress, phishing, DNS/SSL, mail, database).
 
-| Action | Description |
-|--------|-------------|
-| Block IPs | nftables with configurable expiry, subnet blocking |
-| Challenge IPs | Proof-of-work page for suspicious (not confirmed malicious) IPs |
-| Kill processes | Reverse shells, fake kernel threads, GSocket |
-| Quarantine files | Webshells, backdoors, phishing (restorable) |
-| Clean malware | 7 remediation strategies |
-| Permanent blocking | Auto-promote repeat offenders |
+**Responds automatically** -- blocks IPs, quarantines files, kills reverse shells, cleans infected PHP, promotes repeat offenders to permanent bans, and routes suspicious traffic through proof-of-work challenges.
+
+**Manages your firewall** -- nftables IP/subnet blocking, temp bans, country blocks, port allowlists, GeoIP decisions, and full audit trail.
+
+**Covers email abuse** -- Exim spool AV scanning, attachment quarantine, queue monitoring, weak password audits, external forwarder checks, and DKIM/SPF failure alerting.
+
+**Includes threat intelligence** -- AbuseIPDB lookups, GeoIP/ASN enrichment, attacker scoring, attack correlation, and bulk IP actions.
+
+Plus: ModSecurity management, YARA-X scanning, server hardening audits, performance monitoring (PHP/MySQL/Redis/WordPress), and signature-based detection.
 
 ## Web UI
 
-13 pages: Dashboard, Findings, Quarantine, Firewall, ModSecurity, Threat Intel, Email, Performance, Incidents, Rules, Audit, Account, Login.
+14 authenticated pages covering dashboard, findings, quarantine, firewall, ModSecurity, ModSec Rules, threat intel, email, performance, hardening, incidents, rules, audit, and account views. Also available as a WHM plugin.
+
+The dashboard shows 24h stats, a timeline, live event feed, at-risk accounts, and response summary. Key investigation pages support filtering, bulk actions, and drill-down workflows.
+
+## CLI
+
+```
+csm daemon              # run the daemon
+csm check               # run all checks once
+csm status              # show current findings
+csm baseline            # set clean-state baseline
+csm scan <user>         # scan a specific account
+csm firewall ...        # manage firewall rules
+csm clean <path>        # clean infected files
+csm update-rules        # update detection signatures
+csm validate            # validate config
+csm verify              # verify binary integrity
+```
 
 ## Performance
 
 | Component | Speed | Memory |
 |-----------|-------|--------|
-| fanotify scan | < 1 second | ~5 MB |
-| Critical checks (34) | < 1 second | ~35 MB peak |
-| Deep checks (28) | ~40 seconds | ~100 MB peak |
-| Daemon idle | - | 45 MB resident |
+| fanotify scan | < 1 sec | ~5 MB |
+| 34 critical checks | < 1 sec | ~35 MB peak |
+| 28 deep checks | ~40 sec | ~100 MB peak |
+| Daemon idle | -- | 45 MB resident |
+
+Single Go binary. Optional integrations include YARA-X support, email AV tooling, and MaxMind GeoIP data.
 
 ## Development
 
 ```bash
-go build ./cmd/csm/                # standard build
-go build -tags yara ./cmd/csm/     # with YARA-X
-go test ./... -count=1             # tests
-golangci-lint run --timeout 5m     # lint
+go build ./cmd/csm/                    # standard build
+go build -tags yara ./cmd/csm/         # with YARA-X support
+go test ./... -count=1                 # run tests
+golangci-lint run --timeout 5m         # lint
 ```
+
+## Docs
+
+- [Installation](docs/src/installation.md)
+- [Configuration](docs/src/configuration.md)
+- [CLI Commands](docs/src/cli.md)
+- [Real-Time Detection](docs/src/detection-realtime.md)
+- [Critical Checks](docs/src/detection-critical.md)
+- [Deep Checks](docs/src/detection-deep.md)
+- [Web UI](docs/src/webui.md)
 
 ## License
 

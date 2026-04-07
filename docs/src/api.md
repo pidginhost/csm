@@ -36,6 +36,7 @@ GET  /api/v1/audit               UI audit log
 GET  /api/v1/export              Export state (suppressions, whitelist)
 GET  /api/v1/incident            Incident timeline (?ip=&account=&hours=)
 GET  /api/v1/performance         Performance metrics snapshot
+GET  /api/v1/hardening           Last stored hardening audit report
 ```
 
 ## GeoIP
@@ -106,6 +107,13 @@ GET  /api/v1/email/stats         Email scanning statistics
 GET  /api/v1/email/quarantine    Quarantined email list
 GET  /api/v1/email/av/status     Email AV watcher status
 POST /api/v1/email/quarantine/   Release or delete quarantined email
+```
+
+## Hardening
+
+```
+GET  /api/v1/hardening           Load last hardening audit report
+POST /api/v1/hardening/run       Run hardening audit and save report
 ```
 
 ## Actions
