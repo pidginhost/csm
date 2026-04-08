@@ -75,12 +75,10 @@
                     <h3 class="card-title"><i class="ti ti-shield-off"></i>&nbsp;Block Address</h3>
                 </div>
                 <div class="card-body">
-                    <div class="text-muted small mb-3">Block a single IP or a CIDR subnet without switching forms.</div>
                     <form id="block-form" class="row g-2 align-items-end">
                         <div class="col-lg-8">
                             <label class="form-label mb-1" for="block-target">Address or CIDR</label>
                             <input type="text" id="block-target" class="form-control font-monospace" placeholder="203.0.113.10 or 203.0.113.0/24">
-                            <div class="text-muted small mt-1">Enter a single IP like <code>203.0.113.10</code> or a CIDR subnet like <code>203.0.113.0/24</code>.</div>
                         </div>
                         <div class="col-lg-4">
                             <label class="form-label mb-1" for="block-duration">Duration</label>
@@ -101,6 +99,7 @@
                             </button>
                         </div>
                     </form>
+                    <div class="text-muted small mt-3">Enter a single IP like <code>203.0.113.10</code> or a CIDR subnet like <code>203.0.113.0/24</code>.</div>
                 </div>
             </div>
         </div>
@@ -110,20 +109,19 @@
                     <h3 class="card-title"><i class="ti ti-shield-check"></i>&nbsp;Trust IP</h3>
                 </div>
                 <div class="card-body">
-                    <div class="text-muted small mb-3">Add a firewall-only allow rule or promote the IP to a trusted entry across threat workflows.</div>
                     <form id="trust-form" class="row g-2 align-items-end">
-                        <div class="col-lg-7">
+                        <div class="col-lg-8">
                             <label class="form-label mb-1" for="trust-ip">IP address</label>
                             <input type="text" id="trust-ip" class="form-control font-monospace" placeholder="198.51.100.8">
                         </div>
-                        <div class="col-lg-5">
+                        <div class="col-lg-4">
                             <label class="form-label mb-1" for="trust-mode">Mode</label>
                             <select id="trust-mode" class="form-select">
                                 <option value="firewall">Firewall allow rule only</option>
                                 <option value="trusted">Trusted IP</option>
                             </select>
                         </div>
-                        <div class="col-lg-4">
+                        <div class="col-lg-4" id="trust-duration-group">
                             <label class="form-label mb-1" for="trust-duration">Duration</label>
                             <select id="trust-duration" class="form-select">
                                 <option value="24h">24 hours</option>
@@ -142,7 +140,7 @@
                             </button>
                         </div>
                     </form>
-                    <div class="alert alert-secondary mt-3 mb-0 py-2 px-3 small" id="trust-help">
+                    <div class="text-muted small mt-3" id="trust-help">
                         Firewall allow rules bypass only the firewall. Threat systems may still flag or clear the IP separately.
                     </div>
                 </div>

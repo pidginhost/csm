@@ -787,11 +787,12 @@ function enrichGeoIPFallback(cells) {
 function updateTrustForm() {
     var modeEl = document.getElementById('trust-mode');
     var durationEl = document.getElementById('trust-duration');
+    var durationGroupEl = document.getElementById('trust-duration-group');
     var reasonEl = document.getElementById('trust-reason');
     var reasonGroupEl = document.getElementById('trust-reason-group');
     var helpEl = document.getElementById('trust-help');
     var submitEl = document.getElementById('trust-submit-btn');
-    if (!modeEl || !durationEl || !reasonEl || !reasonGroupEl || !helpEl || !submitEl) return;
+    if (!modeEl || !durationEl || !durationGroupEl || !reasonEl || !reasonGroupEl || !helpEl || !submitEl) return;
 
     var mode = modeEl.value || 'firewall';
     if (mode === 'trusted') {
@@ -800,6 +801,7 @@ function updateTrustForm() {
             '<option value="24">Temporary trusted IP: 24 hours</option>',
             '<option value="168">Temporary trusted IP: 7 days</option>'
         ].join('');
+        durationGroupEl.className = 'col-lg-8';
         reasonGroupEl.classList.add('d-none');
         reasonEl.value = '';
         submitEl.innerHTML = '<i class="ti ti-shield-check"></i>&nbsp;Trust IP';
@@ -813,6 +815,7 @@ function updateTrustForm() {
         '<option value="30d">30 days</option>',
         '<option value="0">Permanent</option>'
     ].join('');
+    durationGroupEl.className = 'col-lg-4';
     reasonGroupEl.classList.remove('d-none');
     reasonEl.placeholder = 'Reason for firewall allow rule';
     submitEl.innerHTML = '<i class="ti ti-shield-up"></i>&nbsp;Add allow rule';
