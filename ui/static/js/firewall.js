@@ -788,9 +788,10 @@ function updateTrustForm() {
     var modeEl = document.getElementById('trust-mode');
     var durationEl = document.getElementById('trust-duration');
     var reasonEl = document.getElementById('trust-reason');
+    var reasonGroupEl = document.getElementById('trust-reason-group');
     var helpEl = document.getElementById('trust-help');
     var submitEl = document.getElementById('trust-submit-btn');
-    if (!modeEl || !durationEl || !reasonEl || !helpEl || !submitEl) return;
+    if (!modeEl || !durationEl || !reasonEl || !reasonGroupEl || !helpEl || !submitEl) return;
 
     var mode = modeEl.value || 'firewall';
     if (mode === 'trusted') {
@@ -799,7 +800,7 @@ function updateTrustForm() {
             '<option value="24">Temporary trusted IP: 24 hours</option>',
             '<option value="168">Temporary trusted IP: 7 days</option>'
         ].join('');
-        reasonEl.classList.add('d-none');
+        reasonGroupEl.classList.add('d-none');
         reasonEl.value = '';
         submitEl.innerHTML = '<i class="ti ti-shield-check"></i>&nbsp;Trust IP';
         helpEl.textContent = 'Trusted IP clears current blocks, adds a firewall allow, and prevents future auto-blocking until it expires or is removed.';
@@ -812,7 +813,7 @@ function updateTrustForm() {
         '<option value="30d">30 days</option>',
         '<option value="0">Permanent</option>'
     ].join('');
-    reasonEl.classList.remove('d-none');
+    reasonGroupEl.classList.remove('d-none');
     reasonEl.placeholder = 'Reason for firewall allow rule';
     submitEl.innerHTML = '<i class="ti ti-shield-up"></i>&nbsp;Add allow rule';
     helpEl.textContent = 'Firewall allow rules bypass only the firewall. Threat systems may still flag or clear the IP separately.';
@@ -820,18 +821,33 @@ function updateTrustForm() {
 
 document.getElementById('block-form').addEventListener('submit', function(e) {
     e.preventDefault();
-    var ip = document.getElementById('block-ip').value.trim();
+    var target = document.getElementById('block-target').value.trim();
     var reason = document.getElementById('block-reason').value.trim() || 'Blocked via CSM Web UI';
     var duration = document.getElementById('block-duration').value;
-    if (!ip) return;
-    if (!CSM.validateIP(ip)) {
+    if (!target) return;
+
+    var isSubnet = target.indexOf('/') !== -1;
+    if (!isSubnet && !CSM.validateIP(target)) {
         CSM.toast('Invalid IP address format', 'error');
         return;
     }
-    CSM.confirm('Block IP ' + ip + '?').then(function() {
-        CSM.post('/api/v1/block-ip', { ip: ip, reason: reason, duration: duration }).then(function() {
-            document.getElementById('block-ip').value = '';
+
+    var confirmLabel = isSubnet ? 'subnet ' + target : 'IP ' + target;
+    var endpoint = isSubnet ? '/api/v1/firewall/deny-subnet' : '/api/v1/block-ip';
+    var payload = isSubnet
+        ? { cidr: target, reason: reason, duration: duration }
+        : { ip: target, reason: reason, duration: duration };
+
+    CSM.confirm('Block ' + confirmLabel + '?').then(function() {
+        CSM.post(endpoint, payload).then(function() {
+            document.getElementById('block-target').value = '';
             document.getElementById('block-reason').value = '';
+            if (isSubnet) {
+                loadSubnets();
+                loadStatus();
+                loadAudit();
+                return;
+            }
             refreshFirewallData();
         }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
     }).catch(function(err) {
@@ -865,25 +881,6 @@ document.getElementById('trust-form').addEventListener('submit', function(e) {
             document.getElementById('trust-reason').value = '';
             loadAllowed();
             loadBlocked();
-            loadStatus();
-            loadAudit();
-        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
-    }).catch(function(err) {
-        if (err) CSM.toast(err.message || 'Request failed', 'error');
-    });
-});
-
-document.getElementById('subnet-form').addEventListener('submit', function(e) {
-    e.preventDefault();
-    var cidr = document.getElementById('subnet-cidr').value.trim();
-    var reason = document.getElementById('subnet-reason').value.trim() || 'Blocked via CSM Web UI';
-    var duration = document.getElementById('subnet-duration').value;
-    if (!cidr) return;
-    CSM.confirm('Block subnet ' + cidr + '?').then(function() {
-        CSM.post('/api/v1/firewall/deny-subnet', { cidr: cidr, reason: reason, duration: duration }).then(function() {
-            document.getElementById('subnet-cidr').value = '';
-            document.getElementById('subnet-reason').value = '';
-            loadSubnets();
             loadStatus();
             loadAudit();
         }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
