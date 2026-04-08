@@ -11,27 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Reduced false positives across multiple detection rules affecting popular WordPress plugins and themes.
-- Improved detection accuracy to better distinguish legitimate code from malicious patterns.
-- Fixed email forwarder alert flood on first scan.
-- Fixed hardening audit checks for Exim TLS, Dovecot TLS, /tmp permissions, and /etc/shadow.
-- Fixed systemd watchdog stability issue causing unnecessary daemon restarts.
+- Corrected tagged-release versioning so published assets use the release version consistently.
+- Reduced false positives in WordPress attack and PHP-content detection.
 
 ### Added
 
-- Improved brute force detection coverage for LiteSpeed+cPanel environments.
-- Improved malware detection for large files, non-PHP backdoors, and evasion techniques.
-- Brute Force summary card on the dashboard.
-- Increased default alert capacity and improved alert prioritization.
-- Improved authentication failure response times.
-- Quarantine page sorted newest-first.
-- Server-wide xmlrpc.php protection via ModSecurity.
+- Hardened malware detection against common evasion patterns while keeping coverage for suspicious `.htaccess` prepend/append directives.
 
 ### Changed
 
-- Improved default alert rate limit configuration.
-- Reduced noise from system-generated email forwarders.
-- Improved YARA rule precision for footer injection detection.
+- Tightened release metadata and artifact naming in CI for tagged builds.
 
 ## [2.0.0] - 2026-04-08
 

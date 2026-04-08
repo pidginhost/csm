@@ -7,20 +7,71 @@ import (
 	"net"
 	"net/http"
 	"os/exec"
+	"sort"
 	"time"
 
 	"github.com/pidginhost/csm/internal/firewall"
 )
 
+type firewallAllowView struct {
+	IP        string `json:"ip"`
+	Reason    string `json:"reason"`
+	ExpiresAt string `json:"expires_at,omitempty"`
+	ExpiresIn string `json:"expires_in"`
+}
+
+type firewallPortAllowView struct {
+	IP     string `json:"ip"`
+	Port   int    `json:"port"`
+	Proto  string `json:"proto"`
+	Reason string `json:"reason"`
+}
+
+func formatRemaining(expiresAt time.Time) string {
+	if expiresAt.IsZero() {
+		return "permanent"
+	}
+	remaining := time.Until(expiresAt)
+	if remaining < 0 {
+		remaining = 0
+	}
+	return fmt.Sprintf("%dh%dm", int(remaining.Hours()), int(remaining.Minutes())%60)
+}
+
 // apiFirewallStatus returns the firewall engine configuration and state summary.
 func (s *Server) apiFirewallStatus(w http.ResponseWriter, _ *http.Request) {
 	cfg := s.cfg.Firewall
 	state, _ := firewall.LoadState(s.cfg.StatePath)
+	now := time.Now()
 
 	// Use top-level infra_ips if firewall.infra_ips is empty (daemon syncs at runtime)
 	infraIPs := cfg.InfraIPs
 	if len(infraIPs) == 0 {
 		infraIPs = s.cfg.InfraIPs
+	}
+
+	blockedPermanent := 0
+	blockedTemporary := 0
+	for _, entry := range state.Blocked {
+		if entry.ExpiresAt.IsZero() {
+			blockedPermanent++
+			continue
+		}
+		if now.Before(entry.ExpiresAt) {
+			blockedTemporary++
+		}
+	}
+
+	allowPermanent := 0
+	allowTemporary := 0
+	for _, entry := range state.Allowed {
+		if entry.ExpiresAt.IsZero() {
+			allowPermanent++
+			continue
+		}
+		if now.Before(entry.ExpiresAt) {
+			allowTemporary++
+		}
 	}
 
 	result := map[string]interface{}{
@@ -39,9 +90,14 @@ func (s *Server) apiFirewallStatus(w http.ResponseWriter, _ *http.Request) {
 		"smtp_block":           cfg.SMTPBlock,
 		"log_dropped":          cfg.LogDropped,
 		"deny_ip_limit":        cfg.DenyIPLimit,
-		"blocked_count":        len(state.Blocked),
+		"blocked_count":        blockedPermanent + blockedTemporary,
 		"blocked_net_count":    len(state.BlockedNet),
-		"allowed_count":        len(state.Allowed),
+		"blocked_permanent":    blockedPermanent,
+		"blocked_temporary":    blockedTemporary,
+		"allowed_count":        allowPermanent + allowTemporary,
+		"allow_permanent":      allowPermanent,
+		"allow_temporary":      allowTemporary,
+		"port_allow_count":     len(state.PortAllowed),
 		"infra_ips":            infraIPs,
 		"infra_count":          len(infraIPs),
 		"port_flood_rules":     len(cfg.PortFlood),
@@ -49,6 +105,143 @@ func (s *Server) apiFirewallStatus(w http.ResponseWriter, _ *http.Request) {
 		"dyndns_hosts":         cfg.DynDNSHosts,
 	}
 	writeJSON(w, result)
+}
+
+// apiFirewallAllowed returns active firewall allow rules and port exceptions.
+func (s *Server) apiFirewallAllowed(w http.ResponseWriter, _ *http.Request) {
+	state, _ := firewall.LoadState(s.cfg.StatePath)
+	now := time.Now()
+
+	var allowed []firewallAllowView
+	for _, entry := range state.Allowed {
+		if !entry.ExpiresAt.IsZero() && !now.Before(entry.ExpiresAt) {
+			continue
+		}
+		view := firewallAllowView{
+			IP:        entry.IP,
+			Reason:    entry.Reason,
+			ExpiresIn: formatRemaining(entry.ExpiresAt),
+		}
+		if !entry.ExpiresAt.IsZero() {
+			view.ExpiresAt = entry.ExpiresAt.Format(time.RFC3339)
+		}
+		allowed = append(allowed, view)
+	}
+	sort.Slice(allowed, func(i, j int) bool {
+		return allowed[i].IP < allowed[j].IP
+	})
+
+	portAllowed := make([]firewallPortAllowView, 0, len(state.PortAllowed))
+	for _, entry := range state.PortAllowed {
+		portAllowed = append(portAllowed, firewallPortAllowView{
+			IP:     entry.IP,
+			Port:   entry.Port,
+			Proto:  entry.Proto,
+			Reason: entry.Reason,
+		})
+	}
+	sort.Slice(portAllowed, func(i, j int) bool {
+		if portAllowed[i].IP != portAllowed[j].IP {
+			return portAllowed[i].IP < portAllowed[j].IP
+		}
+		if portAllowed[i].Port != portAllowed[j].Port {
+			return portAllowed[i].Port < portAllowed[j].Port
+		}
+		return portAllowed[i].Proto < portAllowed[j].Proto
+	})
+
+	writeJSON(w, map[string]interface{}{
+		"allowed":      allowed,
+		"port_allowed": portAllowed,
+	})
+}
+
+// apiFirewallAllowIP adds a firewall allow rule, temporary when duration > 0.
+func (s *Server) apiFirewallAllowIP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		IP       string `json:"ip"`
+		Reason   string `json:"reason"`
+		Duration string `json:"duration"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IP == "" {
+		writeJSONError(w, "IP is required", http.StatusBadRequest)
+		return
+	}
+	if _, err := parseAndValidateIP(req.IP); err != nil {
+		writeJSONError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Reason == "" {
+		req.Reason = "Allowed via CSM Web UI"
+	}
+
+	dur := parseDuration(req.Duration)
+	if dur > 0 {
+		allower, ok := s.blocker.(interface {
+			TempAllowIP(string, string, time.Duration) error
+		})
+		if !ok || allower == nil {
+			writeJSONError(w, "Firewall allow rules are not available", http.StatusServiceUnavailable)
+			return
+		}
+		if err := allower.TempAllowIP(req.IP, req.Reason, dur); err != nil {
+			writeJSONError(w, fmt.Sprintf("Allow failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]string{"status": "temp_allowed", "ip": req.IP})
+		return
+	}
+
+	allower, ok := s.blocker.(interface {
+		AllowIP(string, string) error
+	})
+	if !ok || allower == nil {
+		writeJSONError(w, "Firewall allow rules are not available", http.StatusServiceUnavailable)
+		return
+	}
+	if err := allower.AllowIP(req.IP, req.Reason); err != nil {
+		writeJSONError(w, fmt.Sprintf("Allow failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "allowed", "ip": req.IP})
+}
+
+// apiFirewallRemoveAllow removes a firewall allow rule.
+func (s *Server) apiFirewallRemoveAllow(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		IP string `json:"ip"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IP == "" {
+		writeJSONError(w, "IP is required", http.StatusBadRequest)
+		return
+	}
+	if net.ParseIP(req.IP) == nil {
+		writeJSONError(w, fmt.Sprintf("invalid IP address: %s", req.IP), http.StatusBadRequest)
+		return
+	}
+
+	allower, ok := s.blocker.(interface {
+		RemoveAllowIP(string) error
+	})
+	if !ok || allower == nil {
+		writeJSONError(w, "Firewall allow rules are not available", http.StatusServiceUnavailable)
+		return
+	}
+	if err := allower.RemoveAllowIP(req.IP); err != nil {
+		writeJSONError(w, fmt.Sprintf("Remove failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "removed", "ip": req.IP})
 }
 
 // apiFirewallAudit returns recent firewall audit log entries.
@@ -104,12 +297,7 @@ func (s *Server) apiFirewallSubnets(w http.ResponseWriter, _ *http.Request) {
 			BlockedAt: sn.BlockedAt.Format(time.RFC3339),
 			TimeAgo:   timeAgo(sn.BlockedAt),
 		}
-		if !sn.ExpiresAt.IsZero() {
-			remaining := time.Until(sn.ExpiresAt)
-			v.ExpiresIn = fmt.Sprintf("%dh%dm", int(remaining.Hours()), int(remaining.Minutes())%60)
-		} else {
-			v.ExpiresIn = "permanent"
-		}
+		v.ExpiresIn = formatRemaining(sn.ExpiresAt)
 		result = append(result, v)
 	}
 	if result == nil {

@@ -195,3 +195,18 @@ body.theme-dark { background-color: #1a2234; }
     outline-offset: 2px;
     box-shadow: none;
 }
+
+/* --- firewall.html -------------------------------------------------------- */
+.csm-firewall-result {
+    min-height: 140px;
+    border: 1px dashed var(--csm-border);
+    border-radius: 0.75rem;
+    padding: 1rem;
+    background: rgba(66, 153, 225, 0.03);
+}
+.theme-dark .csm-firewall-result {
+    background: rgba(116, 192, 252, 0.05);
+}
+.fw-lookup-target code {
+    font-size: 1rem;
+}

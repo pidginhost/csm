@@ -3,6 +3,7 @@ package signatures
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -201,4 +202,43 @@ rules:
 	if len(matches) != 1 {
 		t.Errorf("expected 1 match without exclusion, got %d", len(matches))
 	}
+}
+
+func TestRepoDropperPHPInputRuleRequiresPHPInputPattern(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	configsDir := filepath.Join(filepath.Dir(thisFile), "..", "..", "configs")
+	scanner := NewScanner(configsDir)
+
+	if scanner.RuleCount() == 0 {
+		t.Fatal("expected repository rules to load")
+	}
+
+	withoutInput := []byte(`<?php
+	system($_GET['cmd']);
+	`)
+	matches := scanner.ScanContent(withoutInput, ".php")
+	if hasRule(matches, "dropper_php_input_stream") {
+		t.Fatal("dropper_php_input_stream matched without php://input")
+	}
+
+	withInput := []byte(`<?php
+	$body = file_get_contents('php://input');
+	system($body);
+	`)
+	matches = scanner.ScanContent(withInput, ".php")
+	if !hasRule(matches, "dropper_php_input_stream") {
+		t.Fatal("dropper_php_input_stream did not match php://input with execution primitive")
+	}
+}
+
+func hasRule(matches []Match, ruleName string) bool {
+	for _, m := range matches {
+		if m.RuleName == ruleName {
+			return true
+		}
+	}
+	return false
 }
