@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-04-08
+
 ### Added
 
 - Firewall web UI response console with direct block, subnet, allow, trusted-IP, lookup, and cPanel lockout cleanup workflows from one page.
@@ -16,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Refined the firewall page around operator workflows: richer state summaries, allow-rule visibility, safer response actions, and clearer audit context.
 - Simplified the top-level access workflow by replacing separate "allow" and "whitelist" cards with a single trust model that distinguishes firewall-only access from fully trusted IP handling.
+- Streamlined the firewall action cards into compact, labeled operator forms with single-field IP-or-CIDR blocking and cleaner trust-mode transitions.
 
 ## [2.0.1] - 2026-04-08
 
@@ -80,5 +83,7 @@ Initial open-source release.
 - Commit-confirmed firewall apply with auto-rollback timer
 - Sanitized all test data, documentation, and code comments of internal infrastructure details
 
-[Unreleased]: https://github.com/pidginhost/csm/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/pidginhost/csm/compare/v2.0.2...HEAD
+[2.0.2]: https://github.com/pidginhost/csm/compare/v2.0.1...v2.0.2
+[2.0.1]: https://github.com/pidginhost/csm/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/pidginhost/csm/releases/tag/v2.0.0
