@@ -668,7 +668,7 @@ function flushCphulkOnly(ip) {
     });
 }
 
-function whitelistIP(ip, durationHours) {
+function whitelistIP(ip, durationHours, onSuccess) {
     var permanent = !durationHours || durationHours === 'permanent';
     var confirmMsg = permanent
         ? 'Whitelist ' + ip + ' permanently?\n\nThis will unblock the IP, add a firewall allow rule, and prevent future auto-blocking.'
@@ -679,6 +679,7 @@ function whitelistIP(ip, durationHours) {
         CSM.post(endpoint, payload).then(function() {
             CSM.toast(permanent ? 'IP whitelisted' : 'Temporary whitelist added', 'success');
             refreshFirewallData();
+            if (onSuccess) onSuccess();
         }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
     }).catch(function(err) {
         if (err) CSM.toast(err.message || 'Request failed', 'error');
@@ -783,6 +784,40 @@ function enrichGeoIPFallback(cells) {
     for (var c = 0; c < 3 && c < cells.length; c++) next();
 }
 
+function updateTrustForm() {
+    var modeEl = document.getElementById('trust-mode');
+    var durationEl = document.getElementById('trust-duration');
+    var reasonEl = document.getElementById('trust-reason');
+    var helpEl = document.getElementById('trust-help');
+    var submitEl = document.getElementById('trust-submit-btn');
+    if (!modeEl || !durationEl || !reasonEl || !helpEl || !submitEl) return;
+
+    var mode = modeEl.value || 'firewall';
+    if (mode === 'trusted') {
+        durationEl.innerHTML = [
+            '<option value="permanent">Permanent trusted IP</option>',
+            '<option value="24">Temporary trusted IP: 24 hours</option>',
+            '<option value="168">Temporary trusted IP: 7 days</option>'
+        ].join('');
+        reasonEl.classList.add('d-none');
+        reasonEl.value = '';
+        submitEl.innerHTML = '<i class="ti ti-shield-check"></i>&nbsp;Trust IP';
+        helpEl.textContent = 'Trusted IP clears current blocks, adds a firewall allow, and prevents future auto-blocking until it expires or is removed.';
+        return;
+    }
+
+    durationEl.innerHTML = [
+        '<option value="24h">24 hours</option>',
+        '<option value="7d">7 days</option>',
+        '<option value="30d">30 days</option>',
+        '<option value="0">Permanent</option>'
+    ].join('');
+    reasonEl.classList.remove('d-none');
+    reasonEl.placeholder = 'Reason for firewall allow rule';
+    submitEl.innerHTML = '<i class="ti ti-shield-up"></i>&nbsp;Add allow rule';
+    helpEl.textContent = 'Firewall allow rules bypass only the firewall. Threat systems may still flag or clear the IP separately.';
+}
+
 document.getElementById('block-form').addEventListener('submit', function(e) {
     e.preventDefault();
     var ip = document.getElementById('block-ip').value.trim();
@@ -804,20 +839,30 @@ document.getElementById('block-form').addEventListener('submit', function(e) {
     });
 });
 
-document.getElementById('allow-form').addEventListener('submit', function(e) {
+document.getElementById('trust-form').addEventListener('submit', function(e) {
     e.preventDefault();
-    var ip = document.getElementById('allow-ip').value.trim();
-    var reason = document.getElementById('allow-reason').value.trim() || 'Allowed via CSM Web UI';
-    var duration = document.getElementById('allow-duration').value;
+    var ip = document.getElementById('trust-ip').value.trim();
+    var mode = document.getElementById('trust-mode').value;
+    var duration = document.getElementById('trust-duration').value;
+    var reason = document.getElementById('trust-reason').value.trim() || 'Allowed via CSM Web UI';
     if (!ip) return;
     if (!CSM.validateIP(ip)) {
         CSM.toast('Invalid IP address format', 'error');
         return;
     }
-    CSM.confirm('Add allow rule for ' + ip + '?').then(function() {
+
+    if (mode === 'trusted') {
+        whitelistIP(ip, duration, function() {
+            document.getElementById('trust-ip').value = '';
+            updateTrustForm();
+        });
+        return;
+    }
+
+    CSM.confirm('Add firewall allow rule for ' + ip + '?').then(function() {
         CSM.post('/api/v1/firewall/allow-ip', { ip: ip, reason: reason, duration: duration }).then(function() {
-            document.getElementById('allow-ip').value = '';
-            document.getElementById('allow-reason').value = '';
+            document.getElementById('trust-ip').value = '';
+            document.getElementById('trust-reason').value = '';
             loadAllowed();
             loadBlocked();
             loadStatus();
@@ -826,18 +871,6 @@ document.getElementById('allow-form').addEventListener('submit', function(e) {
     }).catch(function(err) {
         if (err) CSM.toast(err.message || 'Request failed', 'error');
     });
-});
-
-document.getElementById('whitelist-form').addEventListener('submit', function(e) {
-    e.preventDefault();
-    var ip = document.getElementById('whitelist-ip').value.trim();
-    var duration = document.getElementById('whitelist-duration').value;
-    if (!ip) return;
-    if (!CSM.validateIP(ip)) {
-        CSM.toast('Invalid IP address format', 'error');
-        return;
-    }
-    whitelistIP(ip, duration);
 });
 
 document.getElementById('subnet-form').addEventListener('submit', function(e) {
@@ -878,6 +911,12 @@ if (flushBtn) flushBtn.addEventListener('click', flushBlocked);
 
 var refreshBtn = document.getElementById('firewall-refresh-btn');
 if (refreshBtn) refreshBtn.addEventListener('click', refreshFirewallData);
+
+var trustMode = document.getElementById('trust-mode');
+if (trustMode) {
+    trustMode.addEventListener('change', updateTrustForm);
+    updateTrustForm();
+}
 
 var auditResetBtn = document.getElementById('audit-reset-btn');
 if (auditResetBtn) {
