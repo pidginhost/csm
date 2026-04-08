@@ -896,7 +896,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) {
 	// Uses containsFunc to avoid substring false positives
 	// (e.g. "WP_Filesystem(" matching "exec(", "preg_match(" matching "exec(")
 	shellFuncs := []string{"system(", "passthru(", "exec(", "shell_exec(", "popen("}
-	requestVars := []string{"$_request", "$_post", "$_get", "$_cookie"}
+	requestVars := []string{"$_request", "$_post", "$_get", "$_cookie", "$_server"}
 	hasShell := false
 	hasInput := false
 	for _, sf := range shellFuncs {
@@ -1407,19 +1407,21 @@ func (fm *FileMonitor) checkCGIBackdoor(fd int, path, procInfo string) {
 	indicators := 0
 	var matched []string
 
-	// Shell execution via request input
+	// Indicators weighted by suspicion level. Generic patterns like
+	// "request_method" and "cmd" removed — they match every CGI script.
 	shellPatterns := []struct {
 		pattern string
 		desc    string
 	}{
 		{"system(", "system() call"},
 		{"os.popen", "os.popen() call"},
-		{"subprocess", "subprocess module"},
 		{"`$", "backtick execution with variable"},
-		{"request_method", "checks HTTP request method"},
-		{"content_length", "reads POST body"},
-		{"base64", "base64 encoding/decoding"},
-		{"cmd", "command parameter"},
+		{"content_length", "reads POST body length"},
+		{"base64_decode", "base64 decoding"},
+		{"$_post", "PHP POST input"},
+		{"$_get", "PHP GET input"},
+		{"param(", "CGI parameter read"},
+		{"qs.parse", "query string parsing"},
 	}
 
 	for _, sp := range shellPatterns {
@@ -1429,8 +1431,8 @@ func (fm *FileMonitor) checkCGIBackdoor(fd int, path, procInfo string) {
 		}
 	}
 
-	// 3+ indicators = likely backdoor (e.g. reads POST + decodes base64 + runs system())
-	if indicators >= 3 {
+	// 4+ indicators = likely backdoor
+	if indicators >= 4 {
 		fm.sendAlertWithPath(alert.Critical, "cgi_backdoor_realtime",
 			fmt.Sprintf("CGI backdoor detected: %s", path),
 			fmt.Sprintf("Indicators (%d): %s", indicators, strings.Join(matched, ", ")), path, procInfo)

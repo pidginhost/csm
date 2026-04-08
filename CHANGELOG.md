@@ -11,29 +11,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Legitimate WordPress users blocked by enumeration detection** — admin REST API calls misidentified as user enumeration attacks. Improved endpoint matching precision.
-- **Plugin files incorrectly quarantined** — reduced false positives across 15+ detection rules affecting Divi, Elementor Pro, LiteSpeed Cache, WooCommerce, WPML, and other major plugins. Rules now use two-tier detection: strong signals (structural patterns) trigger auto-quarantine, weaker signals (co-presence) trigger alerts only.
-- **WordPress core files quarantined** — improved detection rules for dropper, backdoor, and exploit categories to require stronger evidence before auto-quarantine.
-- **Excessive email forwarder alerts** — eliminated first-scan alert flood by establishing baseline on initial run.
-- **Hardening audit false positives** — improved parsing for Exim TLS, Dovecot TLS, /tmp permissions on CloudLinux, and /etc/shadow permissions on RHEL/CentOS.
-- **Systemd watchdog killing daemon** — watchdog heartbeat now runs on a dedicated goroutine independent of scan cycle timing.
+- Reduced false positives across multiple detection rules affecting popular WordPress plugins and themes.
+- Improved detection accuracy to better distinguish legitimate code from malicious patterns.
+- Fixed email forwarder alert flood on first scan.
+- Fixed hardening audit checks for Exim TLS, Dovecot TLS, /tmp permissions, and /etc/shadow.
+- Fixed systemd watchdog stability issue causing unnecessary daemon restarts.
 
 ### Added
 
-- **Per-domain access log scanning** — brute force detection now scans per-domain domlogs in addition to the central access log. Detects attacks that were previously invisible on LiteSpeed+cPanel.
-- **Tail scanning for large PHP files** — detects payloads appended beyond the initial scan window.
-- **New malware detection patterns** — fragmented encoding, CGI backdoors (Perl/Python/Bash), SEO spam injection.
-- **Brute Force dashboard card** — real-time attack summary with top attacker IPs.
-- **Critical alerts bypass rate limit** — high-confidence malware findings always dispatch. Default rate limit raised to 30/hour.
-- **Authentication failures hard-blocked** — brute force against cPanel API, FTP, and PAM bypasses PoW challenge for immediate nftables block.
-- **Quarantine sorted newest-first**.
-- **Server-wide xmlrpc.php POST protection** — ModSecurity rule with automatic nftables escalation.
+- Improved brute force detection coverage for LiteSpeed+cPanel environments.
+- Improved malware detection for large files, non-PHP backdoors, and evasion techniques.
+- Brute Force summary card on the dashboard.
+- Increased default alert capacity and improved alert prioritization.
+- Improved authentication failure response times.
+- Quarantine page sorted newest-first.
+- Server-wide xmlrpc.php protection via ModSecurity.
 
 ### Changed
 
-- Default `max_per_hour` alert limit: 10 → 30.
-- cPanel system pipe forwarders (autoresponder, BoxTrapper) excluded from alerts.
-- Improved footer spam YARA rule precision.
+- Improved default alert rate limit configuration.
+- Reduced noise from system-generated email forwarders.
+- Improved YARA rule precision for footer injection detection.
 
 ## [2.0.0] - 2026-04-08
 

@@ -183,8 +183,7 @@ func countBruteForce(lines []string, infraIPs []string, wpLogin, xmlrpc, userEnu
 				xmlrpc[ip]++
 			}
 		}
-		// User enumeration — exclude /users/me (legitimate WP admin self-check)
-		// and /users/\d+ (single user fetch by logged-in editors).
+		// User enumeration — only exclude /users/me (authenticated self-check).
 		if strings.Contains(uri, "?author=") {
 			userEnum[ip]++
 		} else if strings.Contains(uri, "/wp-json/wp/v2/users") &&
