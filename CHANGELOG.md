@@ -11,39 +11,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Legitimate WordPress users blocked** — `/wp-json/wp/v2/users/me` (admin self-check by Gutenberg/Elementor) matched user enumeration detection. Fixed with URI `$` anchor in ModSec rule 900112 and brute force scanner.
-- **28+ plugin files quarantined (GitHub URL FP)** — plugins referencing `raw.githubusercontent.com` for update checks flagged as droppers. GitHub URLs now only flag with dangerous function calls on same line.
-- **LiteSpeed Cache plugin quarantined** — `webshell_litespeed_backdoor` matched "litespeed"+"lscache" without exploit regex. Added `require_regex`.
-- **Divi theme files quarantined** — `exploit_timthumb` YARA matched "timthumb" in comments. Now requires vulnerable function signatures.
-- **Contact forms flagged** — `mailer_forged_headers` matched `mail()` + `From:` + `$_POST` co-presence. Now requires same line.
-- **WP core files quarantined** — `dropper_wp_plugin_installer`, `backdoor_wp_muplugin`, `exploit_wp_options_inject`, `exploit_wp_fake_plugin_installer` tightened with structural nesting.
-- **wp-config.php flagged** — `wp_db_credential_dump` triggered on the file itself. Added `require_regex` for file-reading functions.
-- **Wordfence WAF quarantined** — `backdoor_htaccess_auto_prepend` YARA now excludes WAF plugins.
-- **ZIP library quarantined** — `webshell_hex_function_name` matched hex ZIP magic bytes. Now requires hex variable to be called as function.
-- **xmlrpc.php quarantined** — `dropper_php_input_stream` triggered on `php://input` alone. Now requires structural nesting with code execution.
-- **218 email forwarder alerts** — all external forwarders flagged on first scan. Now only alerts on valiases file changes.
-- **178 suspicious_php_content alerts** — shell + request input co-presence. Now requires same-line proximity.
-- **Hardening audit FPs** — Exim `+no_sslv2` parsed correctly; Dovecot uses `doveconf -a`; /tmp ignores setuid from virtmp; /etc/shadow accepts 0600.
-- **Watchdog killing daemon every 5 min** — heartbeat was inside 10-min scan ticker. Dedicated goroutine now sends heartbeat independently.
+- **Legitimate WordPress users blocked by enumeration detection** — admin REST API calls misidentified as user enumeration attacks. Improved endpoint matching precision.
+- **Plugin files incorrectly quarantined** — reduced false positives across 15+ detection rules affecting Divi, Elementor Pro, LiteSpeed Cache, WooCommerce, WPML, and other major plugins. Rules now use two-tier detection: strong signals (structural patterns) trigger auto-quarantine, weaker signals (co-presence) trigger alerts only.
+- **WordPress core files quarantined** — improved detection rules for dropper, backdoor, and exploit categories to require stronger evidence before auto-quarantine.
+- **Excessive email forwarder alerts** — eliminated first-scan alert flood by establishing baseline on initial run.
+- **Hardening audit false positives** — improved parsing for Exim TLS, Dovecot TLS, /tmp permissions on CloudLinux, and /etc/shadow permissions on RHEL/CentOS.
+- **Systemd watchdog killing daemon** — watchdog heartbeat now runs on a dedicated goroutine independent of scan cycle timing.
 
 ### Added
 
-- **Per-domain domlog brute force scanning** — scans `/home/*/access-logs/*-ssl_log` every 10 min. Catches wp-login/xmlrpc attacks invisible to the central access log on LiteSpeed.
-- **Tail scanning for large PHP files** — detects payloads appended beyond 32KB head window.
-- **Fragmented base64 detection** — catches function name splitting and massive concatenation payloads.
-- **CGI backdoor detection** — fanotify watches `.pl/.cgi/.py/.sh/.rb` in `/home/` for non-PHP backdoors.
-- **SEO spam detection** — gambling/togel dofollow link injection.
-- **Brute Force dashboard card** — attack count, unique IPs, top 5 attackers with progress bars.
-- **CRITICAL alerts bypass rate limit** — malware findings always dispatch. Default raised to 30/hour.
-- **Auth failures hard-blocked** — API/FTP/PAM brute force bypasses PoW challenge, goes to nftables.
+- **Per-domain access log scanning** — brute force detection now scans per-domain domlogs in addition to the central access log. Detects attacks that were previously invisible on LiteSpeed+cPanel.
+- **Tail scanning for large PHP files** — detects payloads appended beyond the initial scan window.
+- **New malware detection patterns** — fragmented encoding, CGI backdoors (Perl/Python/Bash), SEO spam injection.
+- **Brute Force dashboard card** — real-time attack summary with top attacker IPs.
+- **Critical alerts bypass rate limit** — high-confidence malware findings always dispatch. Default rate limit raised to 30/hour.
+- **Authentication failures hard-blocked** — brute force against cPanel API, FTP, and PAM bypasses PoW challenge for immediate nftables block.
 - **Quarantine sorted newest-first**.
-- **xmlrpc.php POST blocked server-wide** — ModSec rule 900006 + auto-escalation to nftables block.
+- **Server-wide xmlrpc.php POST protection** — ModSecurity rule with automatic nftables escalation.
 
 ### Changed
 
 - Default `max_per_hour` alert limit: 10 → 30.
-- cPanel autoresponder/BoxTrapper pipes excluded from forwarder alerts.
-- `spam_wp_footer_injection` YARA requires hidden/encoded/dofollow links.
+- cPanel system pipe forwarders (autoresponder, BoxTrapper) excluded from alerts.
+- Improved footer spam YARA rule precision.
 
 ## [2.0.0] - 2026-04-08
 

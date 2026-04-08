@@ -174,6 +174,8 @@ func analyzePHPContent(path string) phpAnalysisResult {
 		if !strings.Contains(contentLower, host) {
 			continue
 		}
+		// Same-line = strong signal (critical)
+		sameLine := false
 		for _, line := range strings.Split(contentLower, "\n") {
 			if !strings.Contains(line, host) {
 				continue
@@ -181,6 +183,19 @@ func analyzePHPContent(path string) phpAnalysisResult {
 			for _, fn := range dangerousCalls {
 				if strings.Contains(line, fn) {
 					indicators = append(indicators, fmt.Sprintf("remote payload URL with dangerous call: %s", host))
+					sameLine = true
+					break
+				}
+			}
+			if sameLine {
+				break
+			}
+		}
+		// Co-presence = weaker signal (contributes to multi-indicator scoring)
+		if !sameLine {
+			for _, fn := range dangerousCalls {
+				if strings.Contains(contentLower, fn) {
+					indicators = append(indicators, fmt.Sprintf("remote URL co-present with %s: %s", fn, host))
 					break
 				}
 			}
@@ -267,30 +282,54 @@ func analyzePHPContent(path string) phpAnalysisResult {
 	// (e.g. "WP_Filesystem(" matching "exec(", "preg_match(" matching "exec(")
 	shellFuncs := []string{"system(", "passthru(", "exec(", "shell_exec(", "popen(", "proc_open(", "pcntl_exec("}
 	requestVars := []string{"$_request", "$_post", "$_get", "$_cookie", "$_server"}
-	// Require shell function + request variable on the SAME LINE to avoid
-	// false positives on plugins that use exec() for system info and $_SERVER
-	// for IP detection in completely unrelated code paths.
-	for _, line := range strings.Split(contentLower, "\n") {
-		lineHasShell := false
-		lineHasInput := false
-		for _, sf := range shellFuncs {
-			if containsStandaloneFunc(line, sf) {
-				lineHasShell = true
-				break
-			}
-		}
-		if !lineHasShell {
-			continue
-		}
-		for _, rv := range requestVars {
-			if strings.Contains(line, rv) {
-				lineHasInput = true
-				break
-			}
-		}
-		if lineHasInput {
-			indicators = append(indicators, "shell function with request input on same line (webshell pattern)")
+	// Two-tier detection:
+	// Same line = CRITICAL signal (auto-quarantine eligible)
+	// Co-presence = HIGH signal (alert only, not quarantined alone)
+	// This prevents bypass by splitting across lines while avoiding
+	// false-positive quarantine of legitimate plugins.
+	hasShellFunc := false
+	hasRequestVar := false
+	sameLineShellRequest := false
+	for _, sf := range shellFuncs {
+		if containsStandaloneFunc(contentLower, sf) {
+			hasShellFunc = true
 			break
+		}
+	}
+	for _, rv := range requestVars {
+		if strings.Contains(contentLower, rv) {
+			hasRequestVar = true
+			break
+		}
+	}
+	if hasShellFunc && hasRequestVar {
+		// Check for same-line (strong signal)
+		for _, line := range strings.Split(contentLower, "\n") {
+			lineHasShell := false
+			for _, sf := range shellFuncs {
+				if containsStandaloneFunc(line, sf) {
+					lineHasShell = true
+					break
+				}
+			}
+			if !lineHasShell {
+				continue
+			}
+			for _, rv := range requestVars {
+				if strings.Contains(line, rv) {
+					sameLineShellRequest = true
+					break
+				}
+			}
+			if sameLineShellRequest {
+				break
+			}
+		}
+		if sameLineShellRequest {
+			indicators = append(indicators, "shell function with request input on same line")
+		} else if !IsVerifiedCMSFile(path) {
+			// Co-presence in non-verified file = weaker signal
+			indicators = append(indicators, "shell function co-present with request input")
 		}
 	}
 
