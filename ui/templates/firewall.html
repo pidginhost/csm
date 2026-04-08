@@ -233,6 +233,35 @@
                 </div>
             </div>
         </div>
+        <div class="card-body border-bottom py-3">
+            <div class="row g-2 align-items-end">
+                <div class="col-md-4 col-xl-3">
+                    <label class="form-label mb-1" for="blocked-lifetime-filter">Lifetime</label>
+                    <select id="blocked-lifetime-filter" class="form-select form-select-sm">
+                        <option value="all">All entries</option>
+                        <option value="temporary">Temporary only</option>
+                        <option value="permanent">Permanent only</option>
+                    </select>
+                </div>
+                <div class="col-md-4 col-xl-3">
+                    <label class="form-label mb-1" for="blocked-source-filter">Provenance</label>
+                    <select id="blocked-source-filter" class="form-select form-select-sm">
+                        <option value="all">All sources</option>
+                        <option value="web_ui">Web UI</option>
+                        <option value="auto_response">Auto-response</option>
+                        <option value="whitelist">Whitelist workflow</option>
+                        <option value="challenge">Challenge workflow</option>
+                        <option value="cli">CLI</option>
+                        <option value="dyndns">DynDNS</option>
+                        <option value="system">System</option>
+                        <option value="unknown">Unknown / legacy</option>
+                    </select>
+                </div>
+                <div class="col-md-4 col-xl-6">
+                    <div class="text-muted small">Safer response actions are available per row: clear state without whitelisting, clear and allow for 24h, permanent whitelist, or cPHulk-only cleanup.</div>
+                </div>
+            </div>
+        </div>
         <div id="blocked-content"><div class="card-body text-center text-muted py-3"><span class="spinner-border spinner-border-sm"></span></div></div>
     </div>
 
@@ -272,6 +301,45 @@
     <div class="card">
         <div class="card-header">
             <h3 class="card-title"><i class="ti ti-history"></i>&nbsp;Recent Firewall Activity</h3>
+        </div>
+        <div class="card-body border-bottom py-3">
+            <div class="row g-2 align-items-end">
+                <div class="col-md-5">
+                    <label class="form-label mb-1" for="audit-search">Search</label>
+                    <input type="text" id="audit-search" class="form-control form-control-sm" placeholder="IP, reason, action">
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label mb-1" for="audit-action-filter">Action</label>
+                    <select id="audit-action-filter" class="form-select form-select-sm">
+                        <option value="all">All actions</option>
+                        <option value="block">Block</option>
+                        <option value="unblock">Unblock</option>
+                        <option value="allow">Allow</option>
+                        <option value="temp_allow">Temp allow</option>
+                        <option value="block_subnet">Block subnet</option>
+                        <option value="flush">Flush</option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label class="form-label mb-1" for="audit-source-filter">Provenance</label>
+                    <select id="audit-source-filter" class="form-select form-select-sm">
+                        <option value="all">All sources</option>
+                        <option value="web_ui">Web UI</option>
+                        <option value="auto_response">Auto-response</option>
+                        <option value="whitelist">Whitelist workflow</option>
+                        <option value="challenge">Challenge workflow</option>
+                        <option value="cli">CLI</option>
+                        <option value="dyndns">DynDNS</option>
+                        <option value="system">System</option>
+                        <option value="unknown">Unknown / legacy</option>
+                    </select>
+                </div>
+                <div class="col-md-1">
+                    <button class="btn btn-outline-secondary btn-sm w-100" id="audit-reset-btn" title="Clear audit filters">
+                        <i class="ti ti-x"></i>
+                    </button>
+                </div>
+            </div>
         </div>
         <div id="audit-content"><div class="card-body text-center text-muted py-3"><span class="spinner-border spinner-border-sm"></span></div></div>
     </div>

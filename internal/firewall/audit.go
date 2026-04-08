@@ -16,17 +16,22 @@ type AuditEntry struct {
 	Action    string    `json:"action"` // block, unblock, allow, remove_allow, flush, apply
 	IP        string    `json:"ip,omitempty"`
 	Reason    string    `json:"reason,omitempty"`
+	Source    string    `json:"source,omitempty"`
 	Duration  string    `json:"duration,omitempty"`
 }
 
 // AppendAudit writes an audit entry to the JSONL audit log.
 // Rotates the log when it exceeds 10 MB.
-func AppendAudit(statePath, action, ip, reason string, duration time.Duration) {
+func AppendAudit(statePath, action, ip, reason, source string, duration time.Duration) {
+	if source == "" {
+		source = InferProvenance(action, reason)
+	}
 	entry := AuditEntry{
 		Timestamp: time.Now(),
 		Action:    action,
 		IP:        ip,
 		Reason:    reason,
+		Source:    source,
 	}
 	if duration > 0 {
 		entry.Duration = duration.String()

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os/exec"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/pidginhost/csm/internal/firewall"
@@ -16,6 +17,7 @@ import (
 type firewallAllowView struct {
 	IP        string `json:"ip"`
 	Reason    string `json:"reason"`
+	Source    string `json:"source"`
 	ExpiresAt string `json:"expires_at,omitempty"`
 	ExpiresIn string `json:"expires_in"`
 }
@@ -25,6 +27,7 @@ type firewallPortAllowView struct {
 	Port   int    `json:"port"`
 	Proto  string `json:"proto"`
 	Reason string `json:"reason"`
+	Source string `json:"source"`
 }
 
 func formatRemaining(expiresAt time.Time) string {
@@ -120,7 +123,11 @@ func (s *Server) apiFirewallAllowed(w http.ResponseWriter, _ *http.Request) {
 		view := firewallAllowView{
 			IP:        entry.IP,
 			Reason:    entry.Reason,
+			Source:    entry.Source,
 			ExpiresIn: formatRemaining(entry.ExpiresAt),
+		}
+		if view.Source == "" {
+			view.Source = firewall.InferProvenance("allow", entry.Reason)
 		}
 		if !entry.ExpiresAt.IsZero() {
 			view.ExpiresAt = entry.ExpiresAt.Format(time.RFC3339)
@@ -138,7 +145,11 @@ func (s *Server) apiFirewallAllowed(w http.ResponseWriter, _ *http.Request) {
 			Port:   entry.Port,
 			Proto:  entry.Proto,
 			Reason: entry.Reason,
+			Source: entry.Source,
 		})
+		if portAllowed[len(portAllowed)-1].Source == "" {
+			portAllowed[len(portAllowed)-1].Source = firewall.InferProvenance("allow_port", entry.Reason)
+		}
 	}
 	sort.Slice(portAllowed, func(i, j int) bool {
 		if portAllowed[i].IP != portAllowed[j].IP {
@@ -259,17 +270,39 @@ func (s *Server) apiFirewallAudit(w http.ResponseWriter, r *http.Request) {
 		Action    string `json:"action"`
 		IP        string `json:"ip"`
 		Reason    string `json:"reason"`
+		Source    string `json:"source"`
 		Duration  string `json:"duration"`
 		TimeAgo   string `json:"time_ago"`
 	}
 
+	search := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("search")))
+	actionFilter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("action")))
+	sourceFilter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("source")))
+
 	var result []auditView
 	for _, e := range entries {
+		source := e.Source
+		if source == "" {
+			source = firewall.InferProvenance(e.Action, e.Reason)
+		}
+		if actionFilter != "" && strings.ToLower(e.Action) != actionFilter {
+			continue
+		}
+		if sourceFilter != "" && strings.ToLower(source) != sourceFilter {
+			continue
+		}
+		if search != "" {
+			haystack := strings.ToLower(strings.Join([]string{e.Action, e.IP, e.Reason, source}, " "))
+			if !strings.Contains(haystack, search) {
+				continue
+			}
+		}
 		result = append(result, auditView{
 			Timestamp: e.Timestamp.Format("2006-01-02 15:04:05"),
 			Action:    e.Action,
 			IP:        e.IP,
 			Reason:    e.Reason,
+			Source:    source,
 			Duration:  e.Duration,
 			TimeAgo:   timeAgo(e.Timestamp),
 		})
@@ -284,6 +317,7 @@ func (s *Server) apiFirewallSubnets(w http.ResponseWriter, _ *http.Request) {
 	type subnetView struct {
 		CIDR      string `json:"cidr"`
 		Reason    string `json:"reason"`
+		Source    string `json:"source"`
 		BlockedAt string `json:"blocked_at"`
 		TimeAgo   string `json:"time_ago"`
 		ExpiresIn string `json:"expires_in"`
@@ -294,8 +328,12 @@ func (s *Server) apiFirewallSubnets(w http.ResponseWriter, _ *http.Request) {
 		v := subnetView{
 			CIDR:      sn.CIDR,
 			Reason:    sn.Reason,
+			Source:    sn.Source,
 			BlockedAt: sn.BlockedAt.Format(time.RFC3339),
 			TimeAgo:   timeAgo(sn.BlockedAt),
+		}
+		if v.Source == "" {
+			v.Source = firewall.InferProvenance("block_subnet", sn.Reason)
 		}
 		v.ExpiresIn = formatRemaining(sn.ExpiresAt)
 		result = append(result, v)
@@ -400,6 +438,29 @@ func (s *Server) apiFirewallFlush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"status": "flushed"})
+}
+
+// apiFirewallFlushCphulk clears cPHulk login history for one IP without touching firewall state.
+func (s *Server) apiFirewallFlushCphulk(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		IP string `json:"ip"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IP == "" {
+		writeJSONError(w, "IP is required", http.StatusBadRequest)
+		return
+	}
+	if _, err := parseAndValidateIP(req.IP); err != nil {
+		writeJSONError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	flushCphulk(req.IP)
+	writeJSON(w, map[string]string{"status": "flushed", "ip": req.IP})
 }
 
 // apiFirewallCheck checks if an IP is blocked in CSM or cphulk.

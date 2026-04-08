@@ -13,6 +13,7 @@ type Engine struct{}
 type BlockedEntry struct {
 	IP        string    `json:"ip"`
 	Reason    string    `json:"reason"`
+	Source    string    `json:"source,omitempty"`
 	BlockedAt time.Time `json:"blocked_at"`
 	ExpiresAt time.Time `json:"expires_at"`
 }
@@ -20,6 +21,7 @@ type BlockedEntry struct {
 type AllowedEntry struct {
 	IP        string    `json:"ip"`
 	Reason    string    `json:"reason"`
+	Source    string    `json:"source,omitempty"`
 	Port      int       `json:"port,omitempty"`
 	ExpiresAt time.Time `json:"expires_at,omitempty"`
 }
@@ -27,6 +29,7 @@ type AllowedEntry struct {
 type SubnetEntry struct {
 	CIDR      string    `json:"cidr"`
 	Reason    string    `json:"reason"`
+	Source    string    `json:"source,omitempty"`
 	BlockedAt time.Time `json:"blocked_at"`
 	ExpiresAt time.Time `json:"expires_at,omitempty"`
 }
@@ -36,6 +39,7 @@ type PortAllowEntry struct {
 	Port   int    `json:"port"`
 	Proto  string `json:"proto"`
 	Reason string `json:"reason"`
+	Source string `json:"source,omitempty"`
 }
 
 type FirewallState struct {

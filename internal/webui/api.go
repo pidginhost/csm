@@ -18,6 +18,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -843,6 +844,7 @@ func (s *Server) apiUnblockBulk(w http.ResponseWriter, r *http.Request) {
 type blockedEntry struct {
 	IP        string    `json:"ip"`
 	Reason    string    `json:"reason"`
+	Source    string    `json:"source,omitempty"`
 	BlockedAt time.Time `json:"blocked_at"`
 	ExpiresAt time.Time `json:"expires_at"`
 }
@@ -850,6 +852,7 @@ type blockedEntry struct {
 type blockedView struct {
 	IP        string `json:"ip"`
 	Reason    string `json:"reason"`
+	Source    string `json:"source"`
 	BlockedAt string `json:"blocked_at"`
 	ExpiresAt string `json:"expires_at"`
 	ExpiresIn string `json:"expires_in"`
@@ -862,7 +865,11 @@ func formatBlockedView(b blockedEntry) (blockedView, bool) {
 	view := blockedView{
 		IP:        b.IP,
 		Reason:    b.Reason,
+		Source:    b.Source,
 		BlockedAt: b.BlockedAt.Format(time.RFC3339),
+	}
+	if view.Source == "" {
+		view.Source = firewall.InferProvenance("block", b.Reason)
 	}
 	if !b.ExpiresAt.IsZero() {
 		remaining := time.Until(b.ExpiresAt)

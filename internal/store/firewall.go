@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/pidginhost/csm/internal/firewall"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -12,6 +13,7 @@ import (
 type FWBlockedEntry struct {
 	IP        string    `json:"ip"`
 	Reason    string    `json:"reason"`
+	Source    string    `json:"source,omitempty"`
 	BlockedAt time.Time `json:"blocked_at"`
 	ExpiresAt time.Time `json:"expires_at"` // zero = permanent
 }
@@ -20,6 +22,7 @@ type FWBlockedEntry struct {
 type FWAllowedEntry struct {
 	IP        string    `json:"ip"`
 	Reason    string    `json:"reason"`
+	Source    string    `json:"source,omitempty"`
 	Port      int       `json:"port"`       // 0 = all ports
 	ExpiresAt time.Time `json:"expires_at"` // zero = permanent
 }
@@ -28,6 +31,7 @@ type FWAllowedEntry struct {
 type FWSubnetEntry struct {
 	CIDR    string    `json:"cidr"`
 	Reason  string    `json:"reason"`
+	Source  string    `json:"source,omitempty"`
 	AddedAt time.Time `json:"added_at"`
 }
 
@@ -38,6 +42,7 @@ type FWPortAllowEntry struct {
 	Port   int    `json:"port"`
 	Proto  string `json:"proto"`
 	Reason string `json:"reason"`
+	Source string `json:"source,omitempty"`
 }
 
 // FirewallState holds the full state across all 4 firewall buckets.
@@ -60,6 +65,7 @@ func (db *DB) BlockIP(ip, reason string, expiresAt time.Time) error {
 		entry := FWBlockedEntry{
 			IP:        ip,
 			Reason:    reason,
+			Source:    firewall.InferProvenance("block", reason),
 			BlockedAt: time.Now(),
 			ExpiresAt: expiresAt,
 		}
@@ -111,6 +117,7 @@ func (db *DB) AllowIP(ip, reason string, expiresAt time.Time) error {
 		entry := FWAllowedEntry{
 			IP:        ip,
 			Reason:    reason,
+			Source:    firewall.InferProvenance("allow", reason),
 			ExpiresAt: expiresAt,
 		}
 		val, err := json.Marshal(entry)
@@ -136,6 +143,7 @@ func (db *DB) AddSubnet(cidr, reason string) error {
 		entry := FWSubnetEntry{
 			CIDR:    cidr,
 			Reason:  reason,
+			Source:  firewall.InferProvenance("block_subnet", reason),
 			AddedAt: time.Now(),
 		}
 		val, err := json.Marshal(entry)
@@ -165,6 +173,7 @@ func (db *DB) AddPortAllow(ip string, port int, proto, reason string) error {
 			Port:   port,
 			Proto:  proto,
 			Reason: reason,
+			Source: firewall.InferProvenance("allow_port", reason),
 		}
 		val, err := json.Marshal(entry)
 		if err != nil {

@@ -33,6 +33,78 @@ function renderStatusBadge(enabled, onLabel, offLabel) {
     return enabled ? '<span class="badge bg-green-lt">' + onLabel + '</span>' : '<span class="badge bg-secondary-lt">' + offLabel + '</span>';
 }
 
+function sourceLabel(source) {
+    var labels = {
+        web_ui: 'Web UI',
+        cli: 'CLI',
+        auto_response: 'Auto-response',
+        challenge: 'Challenge',
+        whitelist: 'Whitelist',
+        dyndns: 'DynDNS',
+        system: 'System',
+        unknown: 'Unknown'
+    };
+    return labels[source] || 'Unknown';
+}
+
+function sourceBadge(source) {
+    var cls = {
+        web_ui: 'bg-blue-lt',
+        cli: 'bg-indigo-lt',
+        auto_response: 'bg-red-lt',
+        challenge: 'bg-yellow-lt',
+        whitelist: 'bg-green-lt',
+        dyndns: 'bg-cyan-lt',
+        system: 'bg-secondary-lt',
+        unknown: 'bg-secondary-lt'
+    };
+    return '<span class="badge ' + (cls[source] || 'bg-secondary-lt') + '">' + CSM.esc(sourceLabel(source)) + '</span>';
+}
+
+function classifyLifetime(item) {
+    return item && item.expires_at ? 'temporary' : 'permanent';
+}
+
+function extractLookupIP(target) {
+    if (!target) return '';
+    if (CSM.validateIP(target)) return target;
+    if (target.indexOf('/') > 0) {
+        var base = target.split('/')[0];
+        if (CSM.validateIP(base)) return base;
+    }
+    if (target.indexOf('.') >= 0 && target.indexOf(':') > 0) {
+        var ipv4 = target.split(':')[0];
+        if (CSM.validateIP(ipv4)) return ipv4;
+    }
+    return '';
+}
+
+function setAuditSearch(value) {
+    var el = document.getElementById('audit-search');
+    if (!el) return;
+    el.value = value || '';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+function currentAuditURL() {
+    var url = '/api/v1/firewall/audit?limit=50';
+    var params = [];
+    var search = document.getElementById('audit-search');
+    var action = document.getElementById('audit-action-filter');
+    var source = document.getElementById('audit-source-filter');
+    if (search && search.value.trim()) params.push('search=' + encodeURIComponent(search.value.trim()));
+    if (action && action.value && action.value !== 'all') params.push('action=' + encodeURIComponent(action.value));
+    if (source && source.value && source.value !== 'all') params.push('source=' + encodeURIComponent(source.value));
+    if (!params.length) return url;
+    return url + '&' + params.join('&');
+}
+
+function inspectIP(ip) {
+    if (!ip) return;
+    document.getElementById('lookup-ip').value = ip;
+    loadLookup(ip);
+}
+
 function loadStatus() {
     fetch(CSM.apiUrl('/api/v1/firewall/status'), { credentials: 'same-origin' })
         .then(function(r) { return r.json(); })
@@ -123,7 +195,7 @@ function loadSubnets() {
                 h += '<tr>';
                 h += '<td><code class="csm-copy" title="Click to copy">' + CSM.esc(subs[i].cidr) + '</code></td>';
                 h += '<td class="small text-muted text-nowrap geo-cell" data-ip="' + CSM.esc(baseIP) + '"></td>';
-                h += '<td class="small">' + formatReason(subs[i].reason, 'Blocked via CSM') + '</td>';
+                h += '<td class="small"><div>' + formatReason(subs[i].reason, 'Blocked via CSM') + '</div><div class="mt-1">' + sourceBadge(subs[i].source || 'unknown') + '</div></td>';
                 h += '<td class="small text-muted" data-timestamp="' + CSM.esc(subs[i].blocked_at || '') + '">' + CSM.esc(subs[i].time_ago || '-') + '</td>';
                 h += '<td>' + formatExpiresBadge(subs[i].expires_in) + '</td>';
                 h += '<td><button class="btn btn-sm btn-outline-secondary remove-subnet-btn" data-cidr="' + CSM.esc(subs[i].cidr) + '">Remove</button></td>';
@@ -160,8 +232,10 @@ function loadBlocked() {
                 return {
                     ip: b.ip,
                     reason: b.reason || '',
+                    source: b.source || 'unknown',
                     blocked_at: b.blocked_at || '',
-                    expires: b.expires_in || ''
+                    expires: b.expires_in || '',
+                    lifetime: classifyLifetime(b)
                 };
             });
 
@@ -171,14 +245,24 @@ function loadBlocked() {
 
             for (var i = 0; i < ips.length; i++) {
                 var blockedAt = ips[i].blocked_at ? CSM.fmtDate(ips[i].blocked_at) : '-';
-                h += '<tr>';
+                var source = ips[i].source || 'unknown';
+                var lifetime = classifyLifetime(ips[i]);
+                h += '<tr data-source="' + CSM.esc(source) + '" data-lifetime="' + lifetime + '">';
                 h += '<td><input type="checkbox" class="form-check-input blocked-cb" data-ip="' + CSM.esc(ips[i].ip) + '"></td>';
                 h += '<td><code class="csm-copy" title="Click to copy">' + CSM.esc(ips[i].ip) + '</code></td>';
                 h += '<td class="small text-muted text-nowrap geo-cell" data-ip="' + CSM.esc(ips[i].ip) + '"></td>';
-                h += '<td class="small">' + formatReason(ips[i].reason, 'Blocked via CSM') + '</td>';
+                h += '<td class="small"><div>' + formatReason(ips[i].reason, 'Blocked via CSM') + '</div><div class="mt-1">' + sourceBadge(source) + '</div></td>';
                 h += '<td class="small text-muted" data-timestamp="' + CSM.esc(ips[i].blocked_at || '') + '">' + blockedAt + '</td>';
                 h += '<td>' + formatExpiresBadge(ips[i].expires_in) + '</td>';
                 h += '<td class="text-nowrap">';
+                h += '<div class="dropdown d-inline-block me-1">';
+                h += '<button class="btn btn-sm btn-outline-primary dropdown-toggle" data-bs-toggle="dropdown">Respond</button>';
+                h += '<div class="dropdown-menu dropdown-menu-end">';
+                h += '<a class="dropdown-item fw-inspect-btn" href="#" data-ip="' + CSM.esc(ips[i].ip) + '"><i class="ti ti-search me-2"></i>Inspect</a>';
+                h += '<a class="dropdown-item fw-clear-btn" href="#" data-ip="' + CSM.esc(ips[i].ip) + '"><i class="ti ti-eraser me-2"></i>Clear only</a>';
+                h += '<a class="dropdown-item fw-temp-whitelist-btn" href="#" data-ip="' + CSM.esc(ips[i].ip) + '"><i class="ti ti-clock-check me-2"></i>Clear and allow 24h</a>';
+                h += '<a class="dropdown-item fw-cphulk-btn" href="#" data-ip="' + CSM.esc(ips[i].ip) + '"><i class="ti ti-door-exit me-2"></i>Flush cPHulk only</a>';
+                h += '</div></div>';
                 h += '<button class="btn btn-sm btn-outline-secondary fw-unblock-btn me-1" data-ip="' + CSM.esc(ips[i].ip) + '">Unblock</button>';
                 h += '<button class="btn btn-sm btn-outline-success fw-whitelist-btn" data-ip="' + CSM.esc(ips[i].ip) + '">Whitelist</button>';
                 h += '</td>';
@@ -192,8 +276,21 @@ function loadBlocked() {
                 perPage: 25,
                 searchId: 'blocked-search',
                 sortable: true,
+                filters: [
+                    { id: 'blocked-lifetime-filter', attr: 'data-lifetime' },
+                    { id: 'blocked-source-filter', attr: 'data-source' }
+                ],
                 onRender: updateBulkUnblock
             });
+            if (document.getElementById('blocked-search').value) {
+                document.getElementById('blocked-search').dispatchEvent(new Event('input', { bubbles: true }));
+            }
+            if (document.getElementById('blocked-lifetime-filter').value !== 'all') {
+                document.getElementById('blocked-lifetime-filter').dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            if (document.getElementById('blocked-source-filter').value !== 'all') {
+                document.getElementById('blocked-source-filter').dispatchEvent(new Event('change', { bubbles: true }));
+            }
             enrichGeoIP(el);
 
             el.querySelectorAll('.fw-unblock-btn').forEach(function(btn) {
@@ -201,6 +298,30 @@ function loadBlocked() {
             });
             el.querySelectorAll('.fw-whitelist-btn').forEach(function(btn) {
                 btn.addEventListener('click', function() { whitelistIP(this.getAttribute('data-ip'), 'permanent'); });
+            });
+            el.querySelectorAll('.fw-inspect-btn').forEach(function(btn) {
+                btn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    inspectIP(this.getAttribute('data-ip'));
+                });
+            });
+            el.querySelectorAll('.fw-clear-btn').forEach(function(btn) {
+                btn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    clearThreatState(this.getAttribute('data-ip'));
+                });
+            });
+            el.querySelectorAll('.fw-temp-whitelist-btn').forEach(function(btn) {
+                btn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    whitelistIP(this.getAttribute('data-ip'), '24');
+                });
+            });
+            el.querySelectorAll('.fw-cphulk-btn').forEach(function(btn) {
+                btn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    flushCphulkOnly(this.getAttribute('data-ip'));
+                });
             });
 
             var selectAll = document.getElementById('blocked-select-all');
@@ -251,7 +372,7 @@ function loadAllowed() {
                     h += '<tr>';
                     h += '<td><code class="csm-copy" title="Click to copy">' + CSM.esc(allowed[i].ip) + '</code></td>';
                     h += '<td class="small text-muted text-nowrap geo-cell" data-ip="' + CSM.esc(allowed[i].ip) + '"></td>';
-                    h += '<td class="small">' + formatReason(allowed[i].reason, 'Allowed via CSM') + '</td>';
+                    h += '<td class="small"><div>' + formatReason(allowed[i].reason, 'Allowed via CSM') + '</div><div class="mt-1">' + sourceBadge(allowed[i].source || 'unknown') + '</div></td>';
                     h += '<td data-timestamp="' + CSM.esc(allowed[i].expires_at || '') + '">' + (allowed[i].expires_at ? '<div>' + expiresText + '</div><div class="text-muted small">' + CSM.esc(allowed[i].expires_in) + '</div>' : formatExpiresBadge('permanent')) + '</td>';
                     h += '<td><button class="btn btn-sm btn-outline-secondary remove-allow-btn" data-ip="' + CSM.esc(allowed[i].ip) + '">Remove</button></td>';
                     h += '</tr>';
@@ -271,7 +392,7 @@ function loadAllowed() {
                     h += '<td><code class="csm-copy">' + CSM.esc(portAllowed[j].ip) + '</code></td>';
                     h += '<td><code>' + CSM.esc(String(portAllowed[j].port)) + '</code></td>';
                     h += '<td><span class="badge bg-blue-lt">' + CSM.esc(portAllowed[j].proto || 'tcp') + '</span></td>';
-                    h += '<td class="small">' + formatReason(portAllowed[j].reason, 'Port allow') + '</td>';
+                    h += '<td class="small"><div>' + formatReason(portAllowed[j].reason, 'Port allow') + '</div><div class="mt-1">' + sourceBadge(portAllowed[j].source || 'unknown') + '</div></td>';
                     h += '</tr>';
                 }
                 h += '</tbody></table></div></div>';
@@ -331,28 +452,57 @@ function loadWhitelist() {
 }
 
 function loadAudit() {
-    fetch(CSM.apiUrl('/api/v1/firewall/audit?limit=12'), { credentials: 'same-origin' })
+    fetch(CSM.apiUrl(currentAuditURL()), { credentials: 'same-origin' })
         .then(function(r) { return r.json(); })
         .then(function(entries) {
             var el = document.getElementById('audit-content');
+            removeTableControls('firewall-audit-table-controls');
             if (!entries || entries.length === 0) {
                 el.innerHTML = '<div class="card-body text-center text-muted py-3">No recent firewall activity.</div>';
                 return;
             }
 
-            var h = '<div class="table-responsive"><table class="table table-vcenter card-table table-sm">';
-            h += '<thead><tr><th>When</th><th>Action</th><th>Target</th><th>Reason</th><th>Duration</th></tr></thead><tbody>';
+            var h = '<div class="table-responsive"><table class="table table-vcenter card-table table-sm" id="firewall-audit-table">';
+            h += '<thead><tr><th>When</th><th>Action</th><th>Target</th><th>Reason</th><th>Duration</th><th>Inspect</th></tr></thead><tbody>';
             for (var i = 0; i < entries.length; i++) {
-                h += '<tr>';
+                var source = entries[i].source || 'unknown';
+                var inspectIPValue = extractLookupIP(entries[i].ip || '');
+                h += '<tr data-action="' + CSM.esc(entries[i].action || '') + '" data-source="' + CSM.esc(source) + '">';
                 h += '<td data-timestamp="' + CSM.esc(entries[i].timestamp || '') + '"><div>' + CSM.esc(entries[i].time_ago || '-') + '</div><div class="text-muted small">' + CSM.esc(entries[i].timestamp || '') + '</div></td>';
-                h += '<td><span class="badge bg-secondary-lt">' + humanizeAction(entries[i].action) + '</span></td>';
+                h += '<td><div><span class="badge bg-secondary-lt">' + humanizeAction(entries[i].action) + '</span></div><div class="mt-1">' + sourceBadge(source) + '</div></td>';
                 h += '<td><code>' + CSM.esc(entries[i].ip || '-') + '</code></td>';
                 h += '<td class="small">' + formatReason(entries[i].reason, '-') + '</td>';
                 h += '<td class="small text-muted">' + CSM.esc(entries[i].duration || '-') + '</td>';
+                h += '<td>' + (inspectIPValue ? '<button class="btn btn-sm btn-outline-secondary audit-inspect-btn" data-ip="' + CSM.esc(inspectIPValue) + '">Inspect</button>' : '') + '</td>';
                 h += '</tr>';
             }
             h += '</tbody></table></div>';
             el.innerHTML = h;
+            new CSM.Table({
+                tableId: 'firewall-audit-table',
+                perPage: 12,
+                searchId: 'audit-search',
+                sortable: true,
+                controlsId: 'firewall-audit-table-controls',
+                filters: [
+                    { id: 'audit-action-filter', attr: 'data-action' },
+                    { id: 'audit-source-filter', attr: 'data-source' }
+                ]
+            });
+            if (document.getElementById('audit-search').value) {
+                document.getElementById('audit-search').dispatchEvent(new Event('input', { bubbles: true }));
+            }
+            if (document.getElementById('audit-action-filter').value !== 'all') {
+                document.getElementById('audit-action-filter').dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            if (document.getElementById('audit-source-filter').value !== 'all') {
+                document.getElementById('audit-source-filter').dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            el.querySelectorAll('.audit-inspect-btn').forEach(function(btn) {
+                btn.addEventListener('click', function() {
+                    inspectIP(this.getAttribute('data-ip'));
+                });
+            });
         })
         .catch(function() {
             CSM.loadError(document.getElementById('audit-content'), loadAudit);
@@ -362,6 +512,8 @@ function loadAudit() {
 function loadLookup(ip) {
     var resultEl = document.getElementById('lookup-result');
     resultEl.innerHTML = '<div class="text-muted"><span class="spinner-border spinner-border-sm me-2"></span>Checking firewall and GeoIP status</div>';
+    setAuditSearch(ip);
+    loadAudit();
 
     Promise.all([
         fetch(CSM.apiUrl('/api/v1/firewall/check?ip=' + encodeURIComponent(ip)), { credentials: 'same-origin' }).then(function(r) { return r.json(); }),
@@ -400,7 +552,9 @@ function loadLookup(ip) {
         if (data.permanent || data.temporary || data.cphulk) {
             details += '<button class="btn btn-outline-danger btn-sm" id="lookup-unban-btn" data-ip="' + CSM.esc(ip) + '">Unban everywhere</button>';
         }
-        details += '<button class="btn btn-outline-success btn-sm" id="lookup-allow-btn" data-ip="' + CSM.esc(ip) + '">Allow for 24h</button>';
+        details += '<button class="btn btn-outline-secondary btn-sm" id="lookup-clear-btn" data-ip="' + CSM.esc(ip) + '">Clear only</button>';
+        details += '<button class="btn btn-outline-success btn-sm" id="lookup-allow-btn" data-ip="' + CSM.esc(ip) + '">Clear and allow 24h</button>';
+        details += '<button class="btn btn-outline-primary btn-sm" id="lookup-cphulk-btn" data-ip="' + CSM.esc(ip) + '">Flush cPHulk only</button>';
         details += '<button class="btn btn-success btn-sm" id="lookup-whitelist-btn" data-ip="' + CSM.esc(ip) + '">Permanent whitelist</button>';
         details += '</div>';
         resultEl.innerHTML = details;
@@ -409,8 +563,14 @@ function loadLookup(ip) {
         if (unbanBtn) {
             unbanBtn.addEventListener('click', function() { unbanEverywhere(this.getAttribute('data-ip')); });
         }
+        document.getElementById('lookup-clear-btn').addEventListener('click', function() {
+            clearThreatState(this.getAttribute('data-ip'));
+        });
         document.getElementById('lookup-allow-btn').addEventListener('click', function() {
-            quickAllowIP(this.getAttribute('data-ip'), '24h', 'Allowed from firewall lookup');
+            whitelistIP(this.getAttribute('data-ip'), '24');
+        });
+        document.getElementById('lookup-cphulk-btn').addEventListener('click', function() {
+            flushCphulkOnly(this.getAttribute('data-ip'));
         });
         document.getElementById('lookup-whitelist-btn').addEventListener('click', function() {
             whitelistIP(this.getAttribute('data-ip'), 'permanent');
@@ -484,14 +644,24 @@ function removeAllowRule(ip) {
     });
 }
 
-function quickAllowIP(ip, duration, reason) {
-    CSM.confirm('Allow ' + ip + ' for ' + duration + '?').then(function() {
-        CSM.post('/api/v1/firewall/allow-ip', { ip: ip, duration: duration, reason: reason || 'Allowed via CSM Web UI' }).then(function() {
-            CSM.toast('Allow rule added', 'success');
-            loadAllowed();
-            loadBlocked();
-            loadStatus();
+function clearThreatState(ip) {
+    CSM.confirm('Clear firewall and threat state for ' + ip + ' without whitelisting it?').then(function() {
+        CSM.post('/api/v1/threat/clear-ip', { ip: ip }).then(function() {
+            CSM.toast('Threat state cleared', 'success');
+            refreshFirewallData();
+            loadLookup(ip);
+        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
+    }).catch(function(err) {
+        if (err) CSM.toast(err.message || 'Request failed', 'error');
+    });
+}
+
+function flushCphulkOnly(ip) {
+    CSM.confirm('Flush cPHulk login history for ' + ip + ' without changing firewall state?').then(function() {
+        CSM.post('/api/v1/firewall/cphulk-clear', { ip: ip }).then(function() {
+            CSM.toast('cPHulk history cleared', 'success');
             loadAudit();
+            loadLookup(ip);
         }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
     }).catch(function(err) {
         if (err) CSM.toast(err.message || 'Request failed', 'error');
@@ -709,10 +879,23 @@ if (flushBtn) flushBtn.addEventListener('click', flushBlocked);
 var refreshBtn = document.getElementById('firewall-refresh-btn');
 if (refreshBtn) refreshBtn.addEventListener('click', refreshFirewallData);
 
+var auditResetBtn = document.getElementById('audit-reset-btn');
+if (auditResetBtn) {
+    auditResetBtn.addEventListener('click', function() {
+        document.getElementById('audit-search').value = '';
+        document.getElementById('audit-action-filter').value = 'all';
+        document.getElementById('audit-source-filter').value = 'all';
+        document.getElementById('audit-search').dispatchEvent(new Event('input', { bubbles: true }));
+        document.getElementById('audit-action-filter').dispatchEvent(new Event('change', { bubbles: true }));
+        document.getElementById('audit-source-filter').dispatchEvent(new Event('change', { bubbles: true }));
+    });
+}
+
 (function() {
     var cols = [
         { key: 'ip', label: 'IP' },
         { key: 'reason', label: 'Reason' },
+        { key: 'source', label: 'Source' },
         { key: 'blocked_at', label: 'Blocked At' },
         { key: 'expires', label: 'Expires' }
     ];
