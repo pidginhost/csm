@@ -77,7 +77,7 @@ func ParseSpoolMessage(headerPath, bodyPath string, limits Limits) (*ExtractionR
 	result.Direction = detectDirection(hdrs)
 
 	maxBodyBytes := bodyReadLimit(limits)
-	if info, err := os.Stat(bodyPath); err == nil && info.Size() > maxBodyBytes {
+	if info, statErr := os.Stat(bodyPath); statErr == nil && info.Size() > maxBodyBytes {
 		result.Partial = true
 		result.PartialReason = "message body exceeds parser memory budget"
 		return result, nil

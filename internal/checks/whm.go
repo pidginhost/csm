@@ -1,8 +1,8 @@
 package checks
 
 import (
-	"context"
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"strings"

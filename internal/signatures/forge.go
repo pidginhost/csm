@@ -35,8 +35,8 @@ func ForgeUpdate(rulesDir, tier, currentVersion, signingKey string, disabledRule
 	if _, ok := forgeTierAsset[tier]; !ok {
 		return "", 0, fmt.Errorf("unknown YARA Forge tier: %q (valid: core, extended, full)", tier)
 	}
-	if err := requireSigningKey(signingKey); err != nil {
-		return "", 0, err
+	if e := requireSigningKey(signingKey); e != nil {
+		return "", 0, e
 	}
 
 	latestTag, err := forgeLatestTag()
@@ -58,8 +58,8 @@ func ForgeUpdate(rulesDir, tier, currentVersion, signingKey string, disabledRule
 	if err != nil {
 		return "", 0, fmt.Errorf("YARA Forge signature verification required but failed: %w", err)
 	}
-	if err := VerifySignature(signingKey, zipData, sig); err != nil {
-		return "", 0, fmt.Errorf("YARA Forge signature invalid: %w", err)
+	if e := VerifySignature(signingKey, zipData, sig); e != nil {
+		return "", 0, fmt.Errorf("YARA Forge signature invalid: %w", e)
 	}
 
 	assetPath := forgeTierAsset[tier]

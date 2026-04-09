@@ -39,19 +39,6 @@ func runCmd(name string, args ...string) ([]byte, error) {
 	return out, err
 }
 
-// runCmdCombined is like runCmd but captures both stdout and stderr.
-func runCmdCombined(name string, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
-	defer cancel()
-
-	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
-	if ctx.Err() == context.DeadlineExceeded {
-		fmt.Fprintf(os.Stderr, "Command timed out: %s %v\n", name, args)
-		return nil, nil
-	}
-	return out, err
-}
-
 func runCmdCombinedContext(parent context.Context, name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(parent, cmdTimeout)
 	defer cancel()

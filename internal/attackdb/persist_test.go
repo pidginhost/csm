@@ -14,7 +14,7 @@ func TestSaveRecordsDeletesRemovedIPsFromStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
-	defer sdb.Close()
+	defer func() { _ = sdb.Close() }()
 	store.SetGlobal(sdb)
 	defer store.SetGlobal(nil)
 

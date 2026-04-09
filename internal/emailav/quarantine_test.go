@@ -271,8 +271,8 @@ func TestReleaseMessageRejectsTamperedOriginalSpoolDir(t *testing.T) {
 		t.Fatalf("reading metadata: %v", err)
 	}
 	var meta QuarantineMetadata
-	if err := json.Unmarshal(metaData, &meta); err != nil {
-		t.Fatalf("parsing metadata: %v", err)
+	if umErr := json.Unmarshal(metaData, &meta); umErr != nil {
+		t.Fatalf("parsing metadata: %v", umErr)
 	}
 	meta.OriginalSpoolDir = filepath.Join(t.TempDir(), "evil-spool")
 	updated, err := json.MarshalIndent(meta, "", "  ")

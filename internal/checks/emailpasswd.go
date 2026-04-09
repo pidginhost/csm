@@ -1,8 +1,8 @@
 package checks
 
 import (
-	"context"
 	"bufio"
+	"context"
 	"crypto/sha1"
 	"crypto/sha256"
 	"fmt"

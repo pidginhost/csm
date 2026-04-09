@@ -1155,7 +1155,7 @@ func (s *Server) apiQuarantineBulkDelete(w http.ResponseWriter, r *http.Request)
 			if err := os.RemoveAll(entry.ItemPath); err == nil {
 				count++
 			}
-		} else if statErr != nil && !os.IsNotExist(statErr) {
+		} else if !os.IsNotExist(statErr) {
 			continue
 		}
 		if err := os.Remove(entry.MetaPath); err != nil && !os.IsNotExist(err) {
