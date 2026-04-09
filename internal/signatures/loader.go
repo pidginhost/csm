@@ -55,9 +55,6 @@ func NewScanner(rulesDir string) *Scanner {
 
 // Reload loads/reloads all .yml and .yaml rule files from the rules directory.
 func (s *Scanner) Reload() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if s.rulesDir == "" {
 		return nil
 	}
@@ -72,6 +69,7 @@ func (s *Scanner) Reload() error {
 
 	var allRules []Rule
 	maxVersion := 0
+	fileCount := 0
 
 	for _, entry := range entries {
 		name := entry.Name()
@@ -82,18 +80,17 @@ func (s *Scanner) Reload() error {
 		if ext != ".yml" && ext != ".yaml" {
 			continue
 		}
+		fileCount++
 
 		path := filepath.Join(s.rulesDir, name)
 		data, err := os.ReadFile(path)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "signatures: error reading %s: %v\n", path, err)
-			continue
+			return fmt.Errorf("reading %s: %w", path, err)
 		}
 
 		var rf RuleFile
 		if err := yaml.Unmarshal(data, &rf); err != nil {
-			fmt.Fprintf(os.Stderr, "signatures: error parsing %s: %v\n", path, err)
-			continue
+			return fmt.Errorf("parsing %s: %w", path, err)
 		}
 
 		if rf.Version > maxVersion {
@@ -104,8 +101,7 @@ func (s *Scanner) Reload() error {
 		for i := range rf.Rules {
 			rule := &rf.Rules[i]
 			if err := rule.compile(); err != nil {
-				fmt.Fprintf(os.Stderr, "signatures: error compiling rule '%s' in %s: %v\n", rule.Name, path, err)
-				continue
+				return fmt.Errorf("compiling rule %q in %s: %w", rule.Name, path, err)
 			}
 			if rule.MinMatch == 0 {
 				rule.MinMatch = 1
@@ -114,8 +110,23 @@ func (s *Scanner) Reload() error {
 		}
 	}
 
+	if fileCount == 0 {
+		s.mu.RLock()
+		hadRules := len(s.rules) > 0
+		s.mu.RUnlock()
+		if hadRules {
+			return fmt.Errorf("no signature rule files found in %s", s.rulesDir)
+		}
+		return nil
+	}
+	if len(allRules) == 0 {
+		return fmt.Errorf("no signature rules loaded from %s", s.rulesDir)
+	}
+
+	s.mu.Lock()
 	s.rules = allRules
 	s.version = maxVersion
+	s.mu.Unlock()
 
 	if len(allRules) > 0 {
 		fmt.Fprintf(os.Stderr, "signatures: loaded %d rules (version %d) from %s\n", len(allRules), maxVersion, s.rulesDir)

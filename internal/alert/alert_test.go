@@ -34,6 +34,13 @@ func TestFindingKey(t *testing.T) {
 	}
 }
 
+func TestFindingKeyIncludesDetailsHash(t *testing.T) {
+	f := Finding{Check: "test", Message: "hello", Details: "detail payload"}
+	if got := f.Key(); got == "test:hello" {
+		t.Fatalf("expected details hash in key, got %q", got)
+	}
+}
+
 func TestSeverityString(t *testing.T) {
 	tests := []struct {
 		sev  Severity

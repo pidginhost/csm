@@ -89,6 +89,7 @@ func (s *Server) apiFindings(w http.ResponseWriter, _ *http.Request) {
 
 // enrichedFinding is the JSON response type for the enriched findings endpoint.
 type enrichedFinding struct {
+	Key       string `json:"key"`
 	Severity  string `json:"severity"`
 	SevClass  string `json:"sev_class"`
 	Check     string `json:"check"`
@@ -171,6 +172,7 @@ func (s *Server) apiFindingsEnriched(w http.ResponseWriter, _ *http.Request) {
 			lastSeen = entry.LastSeen
 		}
 		items = append(items, enrichedFinding{
+			Key:       f.Key(),
 			Severity:  severityLabel(f.Severity),
 			SevClass:  severityClass(f.Severity),
 			Check:     f.Check,
@@ -180,7 +182,7 @@ func (s *Server) apiFindingsEnriched(w http.ResponseWriter, _ *http.Request) {
 			FirstSeen: firstSeen.Format(time.RFC3339),
 			LastSeen:  lastSeen.Format(time.RFC3339),
 			HasFix:    checks.HasFix(f.Check),
-			FixDesc:   checks.FixDescription(f.Check, f.Message),
+			FixDesc:   checks.FixDescription(f.Check, f.Message, f.FilePath),
 		})
 	}
 
@@ -352,11 +354,8 @@ func (s *Server) apiQuarantine(w http.ResponseWriter, _ *http.Request) {
 			continue
 		}
 
-		id := filepath.Base(metaFile)
-		id = id[:len(id)-5] // remove .meta
-
 		entries = append(entries, quarantineEntry{
-			ID:           id,
+			ID:           quarantineEntryID(metaFile),
 			OriginalPath: meta.OriginalPath,
 			Size:         meta.Size,
 			QuarantineAt: meta.QuarantineAt.Format(time.RFC3339),
@@ -605,11 +604,12 @@ func (s *Server) apiFix(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Check   string `json:"check"`
-		Message string `json:"message"`
-		Details string `json:"details"`
+		Check    string `json:"check"`
+		Message  string `json:"message"`
+		Details  string `json:"details"`
+		FilePath string `json:"file_path"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Check == "" || req.Message == "" {
+	if err := decodeJSONBodyLimited(w, r, 64*1024, &req); err != nil || req.Check == "" || req.Message == "" {
 		writeJSONError(w, "check and message are required", http.StatusBadRequest)
 		return
 	}
@@ -619,7 +619,7 @@ func (s *Server) apiFix(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result := checks.ApplyFix(req.Check, req.Message, req.Details)
+	result := checks.ApplyFix(req.Check, req.Message, req.Details, req.FilePath)
 
 	// If fix succeeded, dismiss from both alert state and latest findings
 	if result.Success {
@@ -641,11 +641,12 @@ func (s *Server) apiBulkFix(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var reqs []struct {
-		Check   string `json:"check"`
-		Message string `json:"message"`
-		Details string `json:"details"`
+		Check    string `json:"check"`
+		Message  string `json:"message"`
+		Details  string `json:"details"`
+		FilePath string `json:"file_path"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&reqs); err != nil {
+	if err := decodeJSONBodyLimited(w, r, 64*1024, &reqs); err != nil {
 		writeJSONError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
@@ -658,7 +659,7 @@ func (s *Server) apiBulkFix(w http.ResponseWriter, r *http.Request) {
 			})
 			continue
 		}
-		result := checks.ApplyFix(req.Check, req.Message, req.Details)
+		result := checks.ApplyFix(req.Check, req.Message, req.Details, req.FilePath)
 		if result.Success {
 			key := req.Check + ":" + req.Message
 			s.store.DismissFinding(key)
@@ -729,7 +730,7 @@ func (s *Server) apiBlockIP(w http.ResponseWriter, r *http.Request) {
 		Reason   string `json:"reason"`
 		Duration string `json:"duration"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBodyLimited(w, r, 64*1024, &req); err != nil {
 		writeJSONError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
@@ -771,7 +772,7 @@ func (s *Server) apiUnblockIP(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		IP string `json:"ip"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IP == "" {
+	if err := decodeJSONBodyLimited(w, r, 64*1024, &req); err != nil || req.IP == "" {
 		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
@@ -807,7 +808,7 @@ func (s *Server) apiUnblockBulk(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		IPs []string `json:"ips"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.IPs) == 0 {
+	if err := decodeJSONBodyLimited(w, r, 64*1024, &req); err != nil || len(req.IPs) == 0 {
 		writeJSONError(w, "IPs array is required", http.StatusBadRequest)
 		return
 	}
@@ -956,7 +957,7 @@ func (s *Server) apiDismissFinding(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Key string `json:"key"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Key == "" {
+	if err := decodeJSONBodyLimited(w, r, 16*1024, &req); err != nil || req.Key == "" {
 		writeJSONError(w, "Key is required", http.StatusBadRequest)
 		return
 	}
@@ -978,22 +979,18 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ID string `json:"id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+	if err := decodeJSONBodyLimited(w, r, 16*1024, &req); err != nil || req.ID == "" {
 		writeJSONError(w, "ID is required", http.StatusBadRequest)
 		return
 	}
 
-	// Sanitize ID to prevent path traversal
-	id := filepath.Base(req.ID)
-	metaFile := filepath.Join(quarantineDir, id+".meta")
-	quarFile := filepath.Join(quarantineDir, id)
-
-	if !isPathUnder(quarFile, quarantineDir) {
-		writeJSONError(w, "invalid quarantine ID", http.StatusBadRequest)
+	entry, err := resolveQuarantineEntry(req.ID)
+	if err != nil {
+		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	metaData, err := os.ReadFile(metaFile)
+	metaData, err := os.ReadFile(entry.MetaPath)
 	if err != nil {
 		writeJSONError(w, "Quarantine entry not found", http.StatusNotFound)
 		return
@@ -1010,15 +1007,21 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	restorePath, err := validateQuarantineRestorePath(meta.OriginalPath)
+	if err != nil {
+		writeJSONError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	// Ensure parent directory exists
-	parentDir := filepath.Dir(meta.OriginalPath)
+	parentDir := filepath.Dir(restorePath)
 	if mkdirErr := os.MkdirAll(parentDir, 0755); mkdirErr != nil {
 		writeJSONError(w, fmt.Sprintf("Cannot create parent directory: %v", mkdirErr), http.StatusInternalServerError)
 		return
 	}
 
 	// Check if quarantined item is a directory or file
-	quarInfo, err := os.Stat(quarFile)
+	quarInfo, err := os.Stat(entry.ItemPath)
 	if err != nil {
 		writeJSONError(w, fmt.Sprintf("Cannot stat quarantined file: %v", err), http.StatusInternalServerError)
 		return
@@ -1031,19 +1034,26 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if quarInfo.IsDir() {
+		if _, statErr := os.Lstat(restorePath); statErr == nil {
+			writeJSONError(w, "Cannot restore - destination already exists", http.StatusConflict)
+			return
+		} else if !os.IsNotExist(statErr) {
+			writeJSONError(w, fmt.Sprintf("Cannot inspect restore destination: %v", statErr), http.StatusInternalServerError)
+			return
+		}
 		// Directory restore: use os.Rename (same device)
-		if err := os.Rename(quarFile, meta.OriginalPath); err != nil {
+		if err := os.Rename(entry.ItemPath, restorePath); err != nil {
 			writeJSONError(w, fmt.Sprintf("Cannot restore directory: %v", err), http.StatusInternalServerError)
 			return
 		}
 	} else {
 		// File restore: use O_EXCL to prevent overwriting an existing file
-		src, readErr := os.Open(quarFile)
+		src, readErr := os.Open(entry.ItemPath)
 		if readErr != nil {
 			writeJSONError(w, fmt.Sprintf("Cannot read quarantined file: %v", readErr), http.StatusInternalServerError)
 			return
 		}
-		dst, createErr := os.OpenFile(meta.OriginalPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, restoredMode)
+		dst, createErr := os.OpenFile(restorePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, restoredMode)
 		if createErr != nil {
 			_ = src.Close()
 			writeJSONError(w, fmt.Sprintf("Cannot restore - file already exists at original path: %v", createErr), http.StatusConflict)
@@ -1053,60 +1063,55 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 		_ = src.Close()
 		_ = dst.Close()
 		if copyErr != nil {
-			if err := os.Remove(meta.OriginalPath); err != nil && !os.IsNotExist(err) {
-				log.Printf("webui: failed to remove %s: %v", meta.OriginalPath, err)
+			if err := os.Remove(restorePath); err != nil && !os.IsNotExist(err) {
+				log.Printf("webui: failed to remove %s: %v", restorePath, err)
 			}
 			writeJSONError(w, fmt.Sprintf("Cannot write restored file: %v", copyErr), http.StatusInternalServerError)
 			return
 		}
-		if err := os.Remove(quarFile); err != nil && !os.IsNotExist(err) {
-			log.Printf("webui: failed to remove %s: %v", quarFile, err)
+		if err := os.Remove(entry.ItemPath); err != nil && !os.IsNotExist(err) {
+			log.Printf("webui: failed to remove %s: %v", entry.ItemPath, err)
 		}
 	}
 
 	// Restore ownership
-	_ = syscall.Chown(meta.OriginalPath, meta.Owner, meta.Group)
+	_ = syscall.Chown(restorePath, meta.Owner, meta.Group)
 	// Restore mode explicitly (WriteFile may be affected by umask)
-	_ = os.Chmod(meta.OriginalPath, restoredMode)
+	_ = os.Chmod(restorePath, restoredMode)
 
 	// Remove metadata sidecar
-	if err := os.Remove(metaFile); err != nil && !os.IsNotExist(err) {
-		log.Printf("webui: failed to remove %s: %v", metaFile, err)
+	if err := os.Remove(entry.MetaPath); err != nil && !os.IsNotExist(err) {
+		log.Printf("webui: failed to remove %s: %v", entry.MetaPath, err)
 	}
 
-	s.auditLog(r, "restore", meta.OriginalPath, "quarantine restore")
+	s.auditLog(r, "restore", restorePath, "quarantine restore")
 	writeJSON(w, map[string]string{
 		"status":  "restored",
-		"path":    meta.OriginalPath,
+		"path":    restorePath,
 		"warning": "File restored to original location. Re-scan recommended.",
 	})
 }
 
 // apiQuarantinePreview returns the first 8KB of a quarantined file for inspection.
 func (s *Server) apiQuarantinePreview(w http.ResponseWriter, r *http.Request) {
-	id := filepath.Base(r.URL.Query().Get("id"))
-	if id == "" || id == "." || id == ".." {
-		writeJSONError(w, "invalid id", http.StatusBadRequest)
+	entry, err := resolveQuarantineEntry(r.URL.Query().Get("id"))
+	if err != nil {
+		writeJSONError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	qPath := filepath.Join(quarantineDir, id)
-	if !isPathUnder(qPath, quarantineDir) {
-		writeJSONError(w, "invalid quarantine ID", http.StatusBadRequest)
-		return
-	}
-	info, err := os.Stat(qPath)
+	info, err := os.Stat(entry.ItemPath)
 	if err != nil {
 		writeJSONError(w, "not found", http.StatusNotFound)
 		return
 	}
 	if info.IsDir() {
 		writeJSON(w, map[string]interface{}{
-			"id": id, "is_dir": true,
+			"id": entry.ID, "is_dir": true,
 			"preview": "[directory - content preview not available]",
 		})
 		return
 	}
-	f, err := os.Open(qPath)
+	f, err := os.Open(entry.ItemPath)
 	if err != nil {
 		writeJSONError(w, "cannot read file", http.StatusInternalServerError)
 		return
@@ -1115,7 +1120,7 @@ func (s *Server) apiQuarantinePreview(w http.ResponseWriter, r *http.Request) {
 	buf := make([]byte, 8192)
 	n, _ := f.Read(buf)
 	writeJSON(w, map[string]interface{}{
-		"id":         id,
+		"id":         entry.ID,
 		"preview":    string(buf[:n]),
 		"truncated":  info.Size() > 8192,
 		"total_size": info.Size(),
@@ -1131,7 +1136,7 @@ func (s *Server) apiQuarantineBulkDelete(w http.ResponseWriter, r *http.Request)
 	var req struct {
 		IDs []string `json:"ids"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBodyLimited(w, r, 64*1024, &req); err != nil {
 		writeJSONError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
@@ -1142,17 +1147,19 @@ func (s *Server) apiQuarantineBulkDelete(w http.ResponseWriter, r *http.Request)
 
 	count := 0
 	for _, id := range req.IDs {
-		safe := filepath.Base(id)
-		qPath := filepath.Join(quarantineDir, safe)
-		mPath := qPath + ".meta"
-		if !isPathUnder(qPath, quarantineDir) {
+		entry, err := resolveQuarantineEntry(id)
+		if err != nil {
 			continue
 		}
-		if err := os.Remove(qPath); err == nil {
-			count++
+		if _, statErr := os.Lstat(entry.ItemPath); statErr == nil {
+			if err := os.RemoveAll(entry.ItemPath); err == nil {
+				count++
+			}
+		} else if statErr != nil && !os.IsNotExist(statErr) {
+			continue
 		}
-		if err := os.Remove(mPath); err != nil && !os.IsNotExist(err) {
-			log.Printf("webui: failed to remove quarantine meta %s: %v", mPath, err)
+		if err := os.Remove(entry.MetaPath); err != nil && !os.IsNotExist(err) {
+			log.Printf("webui: failed to remove quarantine meta %s: %v", entry.MetaPath, err)
 		}
 	}
 	s.auditLog(r, "quarantine_bulk_delete", fmt.Sprintf("%d files", count), "")
@@ -1192,7 +1199,7 @@ func (s *Server) apiScanAccount(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Account string `json:"account"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Account == "" {
+	if err := decodeJSONBodyLimited(w, r, 32*1024, &req); err != nil || req.Account == "" {
 		writeJSONError(w, "Account name is required", http.StatusBadRequest)
 		return
 	}
@@ -1296,7 +1303,7 @@ func (s *Server) apiImport(w http.ResponseWriter, r *http.Request) {
 			IP string `json:"ip"`
 		} `json:"whitelist"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&bundle); err != nil {
+	if err := decodeJSONBodyLimited(w, r, 512*1024, &bundle); err != nil {
 		writeJSONError(w, "invalid JSON body", http.StatusBadRequest)
 		return
 	}

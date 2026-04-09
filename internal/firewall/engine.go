@@ -1354,6 +1354,41 @@ func (e *Engine) CleanExpiredAllows() int {
 	return removed
 }
 
+// CleanExpiredSubnets removes expired temporary subnet blocks from nftables and state.
+func (e *Engine) CleanExpiredSubnets() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	state := e.loadStateFile()
+	now := time.Now()
+	var active []SubnetEntry
+	removed := 0
+
+	for _, entry := range state.BlockedNet {
+		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
+			if _, network, err := net.ParseCIDR(entry.CIDR); err == nil {
+				if set, start, end := e.resolveSubnetSet(network); set != nil {
+					_ = e.conn.SetDeleteElements(set, []nftables.SetElement{
+						{Key: start},
+						{Key: nextIP(end), IntervalEnd: true},
+					})
+				}
+			}
+			removed++
+			AppendAudit(e.statePath, "temp_subnet_expired", entry.CIDR, "", SourceSystem, 0)
+			continue
+		}
+		active = append(active, entry)
+	}
+
+	if removed > 0 {
+		_ = e.conn.Flush()
+		state.BlockedNet = active
+		e.saveState(&state)
+	}
+	return removed
+}
+
 // RemoveAllowIP removes an IP from the allowed set and state.
 func (e *Engine) RemoveAllowIP(ip string) error {
 	e.mu.Lock()
@@ -1594,6 +1629,9 @@ func (e *Engine) loadState() error {
 
 	// Restore blocked subnets (route to IPv4 or IPv6 set)
 	for _, entry := range state.BlockedNet {
+		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
+			continue
+		}
 		_, network, err := net.ParseCIDR(entry.CIDR)
 		if err != nil {
 			continue
@@ -1636,6 +1674,14 @@ func (e *Engine) loadStateFile() FirewallState {
 		}
 	}
 	state.Blocked = active
+
+	var activeNets []SubnetEntry
+	for _, entry := range state.BlockedNet {
+		if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
+			activeNets = append(activeNets, entry)
+		}
+	}
+	state.BlockedNet = activeNets
 
 	return state
 }

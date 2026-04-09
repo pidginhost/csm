@@ -10,6 +10,26 @@ import (
 	"github.com/pidginhost/csm/internal/store"
 )
 
+func validateModSecDisabledRules(allRules []modsec.Rule, disabled []int) error {
+	knownIDs := make(map[int]bool)
+	counterIDs := make(map[int]bool)
+	for _, rule := range allRules {
+		knownIDs[rule.ID] = true
+		if rule.IsCounter {
+			counterIDs[rule.ID] = true
+		}
+	}
+	for _, id := range disabled {
+		if !knownIDs[id] {
+			return fmt.Errorf("rule ID %d is not a known CSM rule", id)
+		}
+		if counterIDs[id] {
+			return fmt.Errorf("rule ID %d is a protected bookkeeping rule", id)
+		}
+	}
+	return nil
+}
+
 func (s *Server) handleModSecRules(w http.ResponseWriter, _ *http.Request) {
 	s.renderTemplate(w, "modsec-rules.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
@@ -148,15 +168,9 @@ func (s *Server) apiModSecRulesApply(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "Failed to parse rules file", http.StatusInternalServerError)
 		return
 	}
-	knownIDs := make(map[int]bool)
-	for _, rule := range allRules {
-		knownIDs[rule.ID] = true
-	}
-	for _, id := range req.Disabled {
-		if !knownIDs[id] {
-			writeJSONError(w, fmt.Sprintf("Rule ID %d is not a known CSM rule", id), http.StatusBadRequest)
-			return
-		}
+	if err := validateModSecDisabledRules(allRules, req.Disabled); err != nil {
+		writeJSONError(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 
 	// Save previous state for rollback

@@ -95,16 +95,16 @@ func (s *ClamdScanner) Scan(path string) (Verdict, error) {
 		return Verdict{}, fmt.Errorf("reading response: %w", err)
 	}
 
-	return parseClamdResponse(string(resp[:n])), nil
+	return parseClamdResponse(string(resp[:n]))
 }
 
 // parseClamdResponse parses a clamd INSTREAM response line.
 // "stream: OK\n" → clean
 // "stream: Win.Trojan.Agent-123 FOUND\n" → infected
-func parseClamdResponse(resp string) Verdict {
+func parseClamdResponse(resp string) (Verdict, error) {
 	resp = strings.TrimSpace(resp)
 	if strings.HasSuffix(resp, "OK") {
-		return Verdict{Infected: false}
+		return Verdict{Infected: false}, nil
 	}
 	if strings.HasSuffix(resp, "FOUND") {
 		// Extract signature: "stream: <sig> FOUND"
@@ -114,8 +114,7 @@ func parseClamdResponse(resp string) Verdict {
 			Infected:  true,
 			Signature: sig,
 			Severity:  "critical",
-		}
+		}, nil
 	}
-	// Unknown response - treat as error, fail-open
-	return Verdict{Infected: false}
+	return Verdict{}, fmt.Errorf("unexpected clamd response: %q", resp)
 }

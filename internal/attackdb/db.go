@@ -127,6 +127,7 @@ type IPRecord struct {
 type DB struct {
 	mu            sync.RWMutex
 	records       map[string]*IPRecord
+	deletedIPs    map[string]struct{}
 	pendingEvents []Event
 	dbPath        string
 	dirty         bool
@@ -146,9 +147,10 @@ func Init(statePath string) *DB {
 		_ = os.MkdirAll(dbPath, 0700)
 
 		db := &DB{
-			records: make(map[string]*IPRecord),
-			dbPath:  dbPath,
-			stopCh:  make(chan struct{}),
+			records:    make(map[string]*IPRecord),
+			deletedIPs: make(map[string]struct{}),
+			dbPath:     dbPath,
+			stopCh:     make(chan struct{}),
 		}
 		db.load()
 		db.pruneExpired()
@@ -438,6 +440,10 @@ func truncate(s string, n int) string {
 func (db *DB) RemoveIP(ip string) {
 	db.mu.Lock()
 	delete(db.records, ip)
+	if db.deletedIPs == nil {
+		db.deletedIPs = make(map[string]struct{})
+	}
+	db.deletedIPs[ip] = struct{}{}
 	db.dirty = true
 	db.mu.Unlock()
 }
@@ -453,6 +459,10 @@ func (db *DB) pruneExpired() {
 	for ip, rec := range db.records {
 		if rec.LastSeen.Before(cutoff) {
 			delete(db.records, ip)
+			if db.deletedIPs == nil {
+				db.deletedIPs = make(map[string]struct{})
+			}
+			db.deletedIPs[ip] = struct{}{}
 			db.dirty = true
 		}
 	}

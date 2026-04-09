@@ -37,12 +37,16 @@ type QuarantineMetadata struct {
 
 // Quarantine manages the per-message email quarantine directory.
 type Quarantine struct {
-	baseDir string // e.g. /opt/csm/quarantine/email
+	baseDir          string // e.g. /opt/csm/quarantine/email
+	allowedSpoolDirs []string
 }
 
 // NewQuarantine creates a quarantine manager for the given base directory.
 func NewQuarantine(baseDir string) *Quarantine {
-	return &Quarantine{baseDir: baseDir}
+	return &Quarantine{
+		baseDir:          baseDir,
+		allowedSpoolDirs: []string{"/var/spool/exim/input", "/var/spool/exim4/input"},
+	}
 }
 
 // QuarantineMessage moves spool files into a per-message quarantine directory
@@ -136,11 +140,15 @@ func (q *Quarantine) ReleaseMessage(msgID string) error {
 	if err != nil {
 		return fmt.Errorf("reading metadata: %w", err)
 	}
+	spoolDir, err := q.validateReleaseSpoolDir(meta.OriginalSpoolDir)
+	if err != nil {
+		return err
+	}
 
 	msgDir := filepath.Join(q.baseDir, msgID)
 	for _, suffix := range []string{"-H", "-D"} {
 		src := filepath.Join(msgDir, msgID+suffix)
-		dst := filepath.Join(meta.OriginalSpoolDir, msgID+suffix)
+		dst := filepath.Join(spoolDir, msgID+suffix)
 		if err := moveFile(src, dst); err != nil {
 			// If source doesn't exist, skip (partial quarantine)
 			if os.IsNotExist(err) {
@@ -225,4 +233,28 @@ func rollbackMovedFiles(moved []movedFile) error {
 		}
 	}
 	return nil
+}
+
+func (q *Quarantine) validateReleaseSpoolDir(spoolDir string) (string, error) {
+	cleanDir := filepath.Clean(spoolDir)
+	if cleanDir == "" || !filepath.IsAbs(cleanDir) {
+		return "", fmt.Errorf("invalid original spool directory")
+	}
+	resolvedDir := cleanDir
+	if dir, err := filepath.EvalSymlinks(cleanDir); err == nil {
+		resolvedDir = dir
+	}
+
+	for _, allowed := range q.allowedSpoolDirs {
+		cleanAllowed := filepath.Clean(allowed)
+		resolvedAllowed := cleanAllowed
+		if dir, err := filepath.EvalSymlinks(cleanAllowed); err == nil {
+			resolvedAllowed = dir
+		}
+		if resolvedDir == resolvedAllowed {
+			return resolvedDir, nil
+		}
+	}
+
+	return "", fmt.Errorf("original spool directory is not trusted: %s", cleanDir)
 }

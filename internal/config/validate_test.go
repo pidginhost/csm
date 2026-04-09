@@ -2,10 +2,22 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/firewall"
 )
+
+func TestLoadRejectsUnknownField(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "csm.yaml")
+	if err := os.WriteFile(path, []byte("hostname: test.example\nunknown_option: true\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load() = nil error, want unknown field rejection")
+	}
+}
 
 func countLevel(results []ValidationResult, level string) int {
 	n := 0

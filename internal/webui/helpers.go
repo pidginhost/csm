@@ -4,11 +4,28 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 )
+
+func decodeJSONBodyLimited(w http.ResponseWriter, r *http.Request, limit int64, dst interface{}) error {
+	if limit <= 0 {
+		limit = 64 * 1024
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	if dec.More() {
+		return fmt.Errorf("request body must contain a single JSON value")
+	}
+	return nil
+}
 
 // validateAccountName checks that name is a valid cPanel account name:
 // 1-64 characters, alphanumeric and underscore only.
@@ -128,6 +145,57 @@ func isPathUnder(path, base string) bool {
 	return strings.HasPrefix(cleanPath, prefix)
 }
 
+func isPathWithin(path, base string) bool {
+	cleanPath := filepath.Clean(path)
+	cleanBase := filepath.Clean(base)
+	return cleanPath == cleanBase || strings.HasPrefix(cleanPath, cleanBase+string(filepath.Separator))
+}
+
+const preCleanQuarantineIDPrefix = "pre_clean:"
+
+type quarantineEntryRef struct {
+	ID       string
+	ItemPath string
+	MetaPath string
+}
+
+func quarantineEntryID(metaPath string) string {
+	id := strings.TrimSuffix(filepath.Base(metaPath), ".meta")
+	if filepath.Clean(filepath.Dir(metaPath)) == filepath.Join(quarantineDir, "pre_clean") {
+		return preCleanQuarantineIDPrefix + id
+	}
+	return id
+}
+
+func resolveQuarantineEntry(id string) (quarantineEntryRef, error) {
+	rawID := strings.TrimSpace(id)
+	if rawID == "" {
+		return quarantineEntryRef{}, fmt.Errorf("quarantine ID is required")
+	}
+
+	baseDir := quarantineDir
+	name := rawID
+	if strings.HasPrefix(rawID, preCleanQuarantineIDPrefix) {
+		baseDir = filepath.Join(quarantineDir, "pre_clean")
+		name = strings.TrimPrefix(rawID, preCleanQuarantineIDPrefix)
+	}
+	name = filepath.Base(name)
+	if name == "" || name == "." || name == ".." {
+		return quarantineEntryRef{}, fmt.Errorf("invalid quarantine ID")
+	}
+
+	itemPath := filepath.Join(baseDir, name)
+	if !isPathWithin(itemPath, baseDir) {
+		return quarantineEntryRef{}, fmt.Errorf("invalid quarantine ID")
+	}
+
+	return quarantineEntryRef{
+		ID:       rawID,
+		ItemPath: itemPath,
+		MetaPath: itemPath + ".meta",
+	}, nil
+}
+
 // quarantineMeta represents the JSON sidecar metadata for a quarantined file.
 // Must match checks.QuarantineMeta on-disk format.
 type quarantineMeta struct {
@@ -173,4 +241,77 @@ func listMetaFiles(dir string) []string {
 		}
 	}
 	return metas
+}
+
+var quarantineRestoreRoots = []string{"/home", "/tmp", "/dev/shm", "/var/tmp"}
+
+func validateQuarantineRestorePath(path string) (string, error) {
+	cleanPath := filepath.Clean(strings.TrimSpace(path))
+	if cleanPath == "" {
+		return "", fmt.Errorf("restore path is required")
+	}
+	if !filepath.IsAbs(cleanPath) {
+		return "", fmt.Errorf("restore path must be absolute")
+	}
+	if !pathWithinAny(cleanPath, quarantineRestoreRoots) {
+		return "", fmt.Errorf("restore path is outside the allowed restore roots: %s", cleanPath)
+	}
+
+	ancestor, err := nearestExistingAncestor(cleanPath)
+	if err != nil {
+		return "", err
+	}
+	resolvedAncestor, err := filepath.EvalSymlinks(ancestor)
+	if err != nil {
+		return "", fmt.Errorf("cannot validate restore path: %w", err)
+	}
+	if !pathWithinAny(resolvedAncestor, quarantineRestoreRoots) {
+		return "", fmt.Errorf("restore path escapes the allowed restore roots: %s", cleanPath)
+	}
+	if accountRoot := homeAccountRoot(cleanPath); accountRoot != "" && !isPathWithin(resolvedAncestor, accountRoot) {
+		return "", fmt.Errorf("restore path escapes the account boundary: %s", cleanPath)
+	}
+
+	return cleanPath, nil
+}
+
+func pathWithinAny(path string, bases []string) bool {
+	for _, base := range bases {
+		if isPathWithin(path, base) {
+			return true
+		}
+		if resolvedBase, err := filepath.EvalSymlinks(base); err == nil && isPathWithin(path, resolvedBase) {
+			return true
+		}
+	}
+	return false
+}
+
+func nearestExistingAncestor(path string) (string, error) {
+	current := filepath.Clean(path)
+	for {
+		if _, err := os.Lstat(current); err == nil {
+			return current, nil
+		} else if !os.IsNotExist(err) {
+			return "", fmt.Errorf("cannot stat restore path: %w", err)
+		}
+
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("restore path has no existing ancestor: %s", path)
+		}
+		current = parent
+	}
+}
+
+func homeAccountRoot(path string) string {
+	cleanPath := filepath.Clean(path)
+	if !strings.HasPrefix(cleanPath, "/home/") {
+		return ""
+	}
+	parts := strings.Split(cleanPath, string(filepath.Separator))
+	if len(parts) < 4 {
+		return ""
+	}
+	return filepath.Join("/home", parts[2])
 }

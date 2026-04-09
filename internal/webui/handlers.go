@@ -90,7 +90,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 				TimestampISO: f.Timestamp.Format(time.RFC3339),
 				TimeAgo:      timeAgo(f.Timestamp),
 				HasFix:       checks.HasFix(f.Check),
-				FixDesc:      checks.FixDescription(f.Check, f.Message),
+				FixDesc:      checks.FixDescription(f.Check, f.Message, f.FilePath),
 			})
 		}
 	}

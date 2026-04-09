@@ -482,6 +482,42 @@ func TestListMetaFiles(t *testing.T) {
 	}
 }
 
+func TestQuarantineEntryID_PreClean(t *testing.T) {
+	metaPath := filepath.Join(quarantineDir, "pre_clean", "sample.meta")
+	got := quarantineEntryID(metaPath)
+	if got != preCleanQuarantineIDPrefix+"sample" {
+		t.Fatalf("quarantineEntryID() = %q", got)
+	}
+}
+
+func TestResolveQuarantineEntry_PreClean(t *testing.T) {
+	entry, err := resolveQuarantineEntry(preCleanQuarantineIDPrefix + "sample")
+	if err != nil {
+		t.Fatalf("resolveQuarantineEntry() error = %v", err)
+	}
+	wantPath := filepath.Join(quarantineDir, "pre_clean", "sample")
+	if entry.ItemPath != wantPath {
+		t.Fatalf("ItemPath = %q, want %q", entry.ItemPath, wantPath)
+	}
+}
+
+func TestValidateQuarantineRestorePath_AllowedTempPath(t *testing.T) {
+	restorePath := filepath.Join("/tmp", "csm-test", "restored.php")
+	got, err := validateQuarantineRestorePath(restorePath)
+	if err != nil {
+		t.Fatalf("validateQuarantineRestorePath() error = %v", err)
+	}
+	if got != restorePath {
+		t.Fatalf("validateQuarantineRestorePath() = %q, want %q", got, restorePath)
+	}
+}
+
+func TestValidateQuarantineRestorePath_RejectsOutsideRoots(t *testing.T) {
+	if _, err := validateQuarantineRestorePath("/etc/passwd"); err == nil {
+		t.Fatal("validateQuarantineRestorePath() = nil error, want root validation failure")
+	}
+}
+
 func TestListMetaFiles_EmptyDir(t *testing.T) {
 	dir := t.TempDir()
 	got := listMetaFiles(dir)

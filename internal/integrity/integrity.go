@@ -57,6 +57,9 @@ func HashConfigStable(path string) (string, error) {
 
 		_, _ = h.Write([]byte(line + "\n"))
 	}
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("scanning config: %w", err)
+	}
 
 	return fmt.Sprintf("sha256:%x", h.Sum(nil)), nil
 }

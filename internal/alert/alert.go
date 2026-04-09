@@ -1,6 +1,7 @@
 package alert
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -60,7 +61,11 @@ func (f Finding) String() string {
 
 // Key returns a unique key for deduplication.
 func (f Finding) Key() string {
-	return fmt.Sprintf("%s:%s", f.Check, f.Message)
+	if f.Details == "" {
+		return fmt.Sprintf("%s:%s", f.Check, f.Message)
+	}
+	h := sha256.Sum256([]byte(f.Details))
+	return fmt.Sprintf("%s:%s:%x", f.Check, f.Message, h[:4])
 }
 
 // Deduplicate removes findings with the same Check+Message, keeping the first.

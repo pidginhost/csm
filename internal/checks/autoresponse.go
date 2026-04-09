@@ -265,12 +265,7 @@ func AutoFixPermissions(cfg *config.Config, findings []alert.Finding) (actions [
 			continue
 		}
 
-		// Verify it's under /home/ (never touch system files)
-		if !strings.HasPrefix(path, "/home/") {
-			continue
-		}
-
-		info, err := os.Stat(path)
+		path, info, err := resolveExistingFixPath(path, []string{"/home"})
 		if err != nil || info.IsDir() {
 			continue
 		}

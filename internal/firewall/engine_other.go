@@ -69,6 +69,7 @@ func (e *Engine) TempAllowIP(_ string, _ string, _ time.Duration) error { return
 func (e *Engine) AllowIPPort(_ string, _ int, _ string, _ string) error { return nil }
 func (e *Engine) RemoveAllowIPPort(_ string, _ int, _ string) error     { return nil }
 func (e *Engine) CleanExpiredAllows() int                               { return 0 }
+func (e *Engine) CleanExpiredSubnets() int                              { return 0 }
 func (e *Engine) FlushBlocked() error                                   { return nil }
 func (e *Engine) Status() map[string]interface{}                        { return nil }
 

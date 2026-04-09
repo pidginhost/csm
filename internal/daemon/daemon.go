@@ -165,19 +165,25 @@ func (d *Daemon) Run() error {
 
 	d.store.AppendHistory(initialFindings)
 	newFindings := d.store.FilterNew(initialFindings)
+	suppressions := d.store.LoadSuppressions()
+	initialAutoResponseFindings := initialFindings
+	if len(suppressions) > 0 {
+		initialAutoResponseFindings = filterUnsuppressedFindings(d.store, initialFindings, suppressions)
+		newFindings = filterUnsuppressedFindings(d.store, newFindings, suppressions)
+	}
 
 	// Permission auto-fix runs on ALL findings (not just new) because
 	// it's safe/idempotent and should fix baseline findings too.
-	permActions, permFixedKeys := checks.AutoFixPermissions(d.cfg, initialFindings)
+	permActions, permFixedKeys := checks.AutoFixPermissions(d.cfg, initialAutoResponseFindings)
 
 	// Challenge routing runs on ALL findings unconditionally when enabled.
-	challengeActions := checks.ChallengeRouteIPs(d.cfg, initialFindings)
+	challengeActions := checks.ChallengeRouteIPs(d.cfg, initialAutoResponseFindings)
 
 	// Other auto-response only on new findings
 	if len(newFindings) > 0 {
 		killActions := checks.AutoKillProcesses(d.cfg, newFindings)
 		quarantineActions := checks.AutoQuarantineFiles(d.cfg, newFindings)
-		blockActions := checks.AutoBlockIPs(d.cfg, initialFindings)
+		blockActions := checks.AutoBlockIPs(d.cfg, initialAutoResponseFindings)
 		newFindings = append(newFindings, killActions...)
 		newFindings = append(newFindings, quarantineActions...)
 		newFindings = append(newFindings, permActions...)
@@ -350,12 +356,17 @@ func (d *Daemon) alertDispatcher() {
 
 func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	findings = alert.Deduplicate(findings)
+	suppressions := d.store.LoadSuppressions()
+	autoResponseFindings := findings
+	if len(suppressions) > 0 {
+		autoResponseFindings = filterUnsuppressedFindings(d.store, findings, suppressions)
+	}
 
 	// Record ALL findings in attack database (before filtering -
 	// repeated attacks from the same IP must still be counted even if
 	// the alert is suppressed by FilterNew).
 	if adb := attackdb.Global(); adb != nil {
-		for _, f := range findings {
+		for _, f := range autoResponseFindings {
 			adb.RecordFinding(f)
 		}
 	}
@@ -366,10 +377,10 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// already sent in a previous cycle.
 
 	// Challenge routing runs FIRST - claims eligible IPs before hard-blocking.
-	challengeActions := checks.ChallengeRouteIPs(d.cfg, findings)
+	challengeActions := checks.ChallengeRouteIPs(d.cfg, autoResponseFindings)
 
-	blockActions := checks.AutoBlockIPs(d.cfg, findings)
-	permActions, permFixedKeys := checks.AutoFixPermissions(d.cfg, findings)
+	blockActions := checks.AutoBlockIPs(d.cfg, autoResponseFindings)
+	permActions, permFixedKeys := checks.AutoFixPermissions(d.cfg, autoResponseFindings)
 
 	// Mark auto-blocked IPs in attack database
 	if adb := attackdb.Global(); adb != nil {
@@ -391,15 +402,8 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// Filter out suppressed findings - prevents email/webhook alerts for
 	// paths the admin has explicitly suppressed (e.g. false positives).
 	// Suppressions are stored in state/suppressions.json, not in rule files.
-	suppressions := d.store.LoadSuppressions()
 	if len(suppressions) > 0 {
-		var unsuppressed []alert.Finding
-		for _, f := range newFindings {
-			if !d.store.IsSuppressed(f, suppressions) {
-				unsuppressed = append(unsuppressed, f)
-			}
-		}
-		newFindings = unsuppressed
+		newFindings = filterUnsuppressedFindings(d.store, newFindings, suppressions)
 	}
 
 	// Append auto-response actions to new findings for alerting
@@ -458,6 +462,19 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	}
 
 	d.store.Update(findings)
+}
+
+func filterUnsuppressedFindings(store *state.Store, findings []alert.Finding, suppressions []state.SuppressionRule) []alert.Finding {
+	if len(suppressions) == 0 {
+		return findings
+	}
+	var filtered []alert.Finding
+	for _, f := range findings {
+		if !store.IsSuppressed(f, suppressions) {
+			filtered = append(filtered, f)
+		}
+	}
+	return filtered
 }
 
 // criticalScanner runs critical checks every 10 minutes.
@@ -583,6 +600,7 @@ func (d *Daemon) heartbeat() {
 			// Clean expired temporary allows
 			if d.fwEngine != nil {
 				d.fwEngine.CleanExpiredAllows()
+				d.fwEngine.CleanExpiredSubnets()
 			}
 			// Clean expired temporary whitelist entries
 			if tdb := checks.GetThreatDB(); tdb != nil {

@@ -3,7 +3,6 @@ package webui
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"net/http"
 	"time"
 
@@ -25,7 +24,7 @@ func (s *Server) apiSuppressions(w http.ResponseWriter, r *http.Request) {
 			PathPattern string `json:"path_pattern"`
 			Reason      string `json:"reason"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Check == "" {
+		if err := decodeJSONBodyLimited(w, r, 32*1024, &req); err != nil || req.Check == "" {
 			writeJSONError(w, "check field is required", http.StatusBadRequest)
 			return
 		}
@@ -54,7 +53,7 @@ func (s *Server) apiSuppressions(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			ID string `json:"id"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
+		if err := decodeJSONBodyLimited(w, r, 16*1024, &req); err != nil || req.ID == "" {
 			writeJSONError(w, "id is required", http.StatusBadRequest)
 			return
 		}

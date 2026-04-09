@@ -24,8 +24,8 @@ type RemediationResult struct {
 
 // FixDescription returns a human-readable description of what the fix will do
 // for a given check type and file path. Returns empty string if no fix is available.
-func FixDescription(checkType, message string) string {
-	path := extractFilePathFromMessage(message)
+func FixDescription(checkType, message string, filePath ...string) string {
+	path := selectFindingPath(message, filePath...)
 
 	switch checkType {
 	case "world_writable_php", "group_writable_php":
@@ -81,8 +81,8 @@ func HasFix(checkType string) bool {
 }
 
 // ApplyFix executes the remediation action for a finding.
-func ApplyFix(checkType, message, details string) RemediationResult {
-	path := extractFilePathFromMessage(message)
+func ApplyFix(checkType, message, details string, filePath ...string) RemediationResult {
+	path := selectFindingPath(message, filePath...)
 
 	switch checkType {
 	case "world_writable_php", "group_writable_php":
@@ -108,22 +108,9 @@ func fixPermissions(path string) RemediationResult {
 		return RemediationResult{Error: "could not extract file path from finding"}
 	}
 
-	// Resolve symlinks to prevent TOCTOU race via symlink substitution
-	resolved, err := filepath.EvalSymlinks(path)
+	path, info, err := resolveExistingFixPath(path, []string{"/home"})
 	if err != nil {
-		return RemediationResult{Error: fmt.Sprintf("file not found: %v", err)}
-	}
-	if resolved != path {
-		if !strings.HasPrefix(resolved, "/home/") {
-			return RemediationResult{Error: fmt.Sprintf("symlink %s points outside /home/: %s, skipping", path, resolved)}
-		}
-		fmt.Fprintf(os.Stderr, "warning: remediation path %s resolved to %s via symlink\n", path, resolved)
-	}
-	path = resolved
-
-	info, err := os.Lstat(path)
-	if err != nil {
-		return RemediationResult{Error: fmt.Sprintf("file not found: %v", err)}
+		return RemediationResult{Error: err.Error()}
 	}
 
 	oldMode := info.Mode().Perm()
@@ -144,22 +131,9 @@ func fixQuarantine(path string) RemediationResult {
 		return RemediationResult{Error: "could not extract file path from finding"}
 	}
 
-	// Resolve symlinks to prevent TOCTOU race via symlink substitution
-	resolved, err := filepath.EvalSymlinks(path)
+	path, info, err := resolveExistingFixPath(path, []string{"/home", "/tmp", "/dev/shm", "/var/tmp"})
 	if err != nil {
-		return RemediationResult{Error: fmt.Sprintf("file not found: %v", err)}
-	}
-	if resolved != path {
-		if !strings.HasPrefix(resolved, "/home/") {
-			return RemediationResult{Error: fmt.Sprintf("symlink %s points outside /home/: %s, skipping", path, resolved)}
-		}
-		fmt.Fprintf(os.Stderr, "warning: remediation path %s resolved to %s via symlink\n", path, resolved)
-	}
-	path = resolved
-
-	info, err := os.Lstat(path)
-	if err != nil {
-		return RemediationResult{Error: fmt.Sprintf("file not found: %v", err)}
+		return RemediationResult{Error: err.Error()}
 	}
 
 	_ = os.MkdirAll(quarantineDir, 0700)
@@ -244,6 +218,13 @@ func fixHtaccess(path, message string) RemediationResult {
 	if path == "" {
 		return RemediationResult{Error: "could not extract file path"}
 	}
+	if filepath.Base(path) != ".htaccess" {
+		return RemediationResult{Error: "automated .htaccess remediation only applies to .htaccess files"}
+	}
+	path, _, err := resolveExistingFixPath(path, []string{"/home"})
+	if err != nil {
+		return RemediationResult{Error: err.Error()}
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return RemediationResult{Error: fmt.Sprintf("cannot read: %v", err)}
@@ -327,6 +308,86 @@ func extractFilePathFromMessage(message string) string {
 		return rest[:endIdx]
 	}
 	return ""
+}
+
+func selectFindingPath(message string, filePath ...string) string {
+	if len(filePath) > 0 {
+		if path := strings.TrimSpace(filePath[0]); path != "" {
+			return path
+		}
+	}
+	return extractFilePathFromMessage(message)
+}
+
+func resolveExistingFixPath(path string, allowedRoots []string) (string, os.FileInfo, error) {
+	cleanPath, err := sanitizeFixPath(path, allowedRoots)
+	if err != nil {
+		return "", nil, err
+	}
+
+	info, err := os.Lstat(cleanPath)
+	if err != nil {
+		return "", nil, fmt.Errorf("file not found: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", nil, fmt.Errorf("symlinked paths are not eligible for automated remediation: %s", cleanPath)
+	}
+
+	resolved, err := filepath.EvalSymlinks(cleanPath)
+	if err != nil {
+		return "", nil, fmt.Errorf("cannot resolve path: %v", err)
+	}
+	resolved, err = sanitizeFixPath(resolved, allowedRoots)
+	if err != nil {
+		return "", nil, err
+	}
+	if accountRoot := homeAccountRoot(cleanPath); accountRoot != "" && !isPathWithinOrEqual(resolved, accountRoot) {
+		return "", nil, fmt.Errorf("resolved path escapes account boundary: %s", resolved)
+	}
+
+	resolvedInfo, err := os.Lstat(resolved)
+	if err != nil {
+		return "", nil, fmt.Errorf("file not found: %v", err)
+	}
+	if resolvedInfo.Mode()&os.ModeSymlink != 0 {
+		return "", nil, fmt.Errorf("symlinked paths are not eligible for automated remediation: %s", resolved)
+	}
+
+	return resolved, resolvedInfo, nil
+}
+
+func sanitizeFixPath(path string, allowedRoots []string) (string, error) {
+	path = filepath.Clean(strings.TrimSpace(path))
+	if path == "" {
+		return "", fmt.Errorf("file path is required")
+	}
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("file path must be absolute")
+	}
+	for _, root := range allowedRoots {
+		if isPathWithinOrEqual(path, root) {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("file path is outside the allowed remediation roots: %s", path)
+}
+
+func isPathWithinOrEqual(path, base string) bool {
+	cleanPath := filepath.Clean(path)
+	cleanBase := filepath.Clean(base)
+	return cleanPath == cleanBase || strings.HasPrefix(cleanPath, cleanBase+string(filepath.Separator))
+}
+
+func homeAccountRoot(path string) string {
+	clean := filepath.Clean(path)
+	if !strings.HasPrefix(clean, "/home/") {
+		return ""
+	}
+	parts := strings.Split(clean, string(filepath.Separator))
+	if len(parts) < 4 {
+		return ""
+	}
+	return filepath.Join("/home", parts[2])
 }
 
 // extractEximMsgID extracts an Exim message ID from a finding message.

@@ -99,6 +99,7 @@ function renderFindings(data) {
     for (var k = 0; k < findings.length; k++) {
         var f = findings[k];
         html += '<tr class="finding-row feed-item"' +
+            ' data-key="' + CSM.esc(f.key || (f.check + ':' + f.message)) + '"' +
             ' data-check="' + CSM.esc(f.check) + '"' +
             ' data-message="' + CSM.esc(f.message) + '"' +
             ' data-filepath="' + CSM.esc(f.file_path || '') + '"' +
@@ -175,7 +176,7 @@ function buildActionButtons(row) {
     if (fixBtn) fixBtn.addEventListener('click', function() { fixOne(this); });
     var dismissBtn = cell.querySelector('.dismiss-btn');
     if (dismissBtn) dismissBtn.addEventListener('click', function() {
-        dismissOne(row.getAttribute('data-check') + ':' + row.getAttribute('data-message'));
+        dismissOne(row.getAttribute('data-key') || (row.getAttribute('data-check') + ':' + row.getAttribute('data-message')));
     });
     var suppressBtn = cell.querySelector('.suppress-btn');
     if (suppressBtn) suppressBtn.addEventListener('click', function() {
@@ -412,7 +413,8 @@ function fixOne(btn) {
         btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
         CSM.post('/api/v1/fix', {
             check: row.getAttribute('data-check'),
-            message: row.getAttribute('data-message')
+            message: row.getAttribute('data-message'),
+            file_path: row.getAttribute('data-filepath') || ''
         }).then(function(data) {
             if (data.success) {
                 row.style.opacity = '0.3';
@@ -469,8 +471,10 @@ function bulkAction(action) {
 
     var items = selected.map(function(row) {
         return {
+            key: row.getAttribute('data-key') || '',
             check: row.getAttribute('data-check'),
             message: row.getAttribute('data-message'),
+            file_path: row.getAttribute('data-filepath') || '',
             fixable: row.getAttribute('data-hasFix') === 'true'
         };
     });
@@ -479,7 +483,7 @@ function bulkAction(action) {
         var fixable = items.filter(function(i) { return i.fixable; });
         if (fixable.length === 0) { CSM.toast('None of the selected findings have automated fixes.', 'warning'); return; }
         CSM.confirm('Fix ' + fixable.length + ' finding(s)?\n\nThis will apply automated fixes (chmod, quarantine, etc.) to the selected items.').then(function() {
-            var fixItems = fixable.map(function(i) { return { check: i.check, message: i.message, details: '' }; });
+            var fixItems = fixable.map(function(i) { return { check: i.check, message: i.message, details: '', file_path: i.file_path }; });
             CSM.post('/api/v1/fix-bulk', fixItems).then(function(data) {
                 CSM.toast('Fixed ' + data.succeeded + ' of ' + data.total + (data.failed > 0 ? ' (' + data.failed + ' failed)' : ''), 'success');
                 clearAndReload();
@@ -492,7 +496,7 @@ function bulkAction(action) {
             var chain = Promise.resolve();
             items.forEach(function(i) {
                 chain = chain.then(function() {
-                    return CSM.post('/api/v1/dismiss', { key: i.check + ':' + i.message })
+                    return CSM.post('/api/v1/dismiss', { key: i.key || (i.check + ':' + i.message) })
                         .then(function() { succeeded++; })
                         .catch(function() { failed++; });
                 });
@@ -507,7 +511,7 @@ function bulkAction(action) {
 
     } else if (action === 'quarantine') {
         CSM.confirm('Quarantine ' + items.length + ' file(s)?\n\nFiles will be moved to /opt/csm/quarantine/').then(function() {
-            var quarItems = items.map(function(i) { return { check: i.check, message: i.message, details: '' }; });
+            var quarItems = items.map(function(i) { return { check: i.check, message: i.message, details: '', file_path: i.file_path }; });
             CSM.post('/api/v1/fix-bulk', quarItems).then(function(data) {
                 CSM.toast('Quarantined ' + data.succeeded + ' of ' + data.total, 'success');
                 clearAndReload();

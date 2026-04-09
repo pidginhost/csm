@@ -67,11 +67,6 @@ func ParseSpoolMessage(headerPath, bodyPath string, limits Limits) (*ExtractionR
 		return nil, fmt.Errorf("parsing header file: %w", err)
 	}
 
-	bodyData, err := os.ReadFile(bodyPath)
-	if err != nil {
-		return nil, fmt.Errorf("reading body file: %w", err)
-	}
-
 	result := &ExtractionResult{
 		From:    envelope.from,
 		To:      envelope.to,
@@ -80,6 +75,18 @@ func ParseSpoolMessage(headerPath, bodyPath string, limits Limits) (*ExtractionR
 
 	// Determine direction from Received headers
 	result.Direction = detectDirection(hdrs)
+
+	maxBodyBytes := bodyReadLimit(limits)
+	if info, err := os.Stat(bodyPath); err == nil && info.Size() > maxBodyBytes {
+		result.Partial = true
+		result.PartialReason = "message body exceeds parser memory budget"
+		return result, nil
+	}
+
+	bodyData, err := readFileLimited(bodyPath, maxBodyBytes)
+	if err != nil {
+		return nil, fmt.Errorf("reading body file: %w", err)
+	}
 
 	ct := hdrs.Get("Content-Type")
 	if ct == "" {
@@ -107,17 +114,9 @@ func ParseSpoolMessage(headerPath, bodyPath string, limits Limits) (*ExtractionR
 		// application/pdf, image/*). These are attachment-like payloads
 		// that must be scanned even without a multipart wrapper.
 		cte := strings.ToLower(hdrs.Get("Content-Transfer-Encoding"))
-		var decoded []byte
-		switch cte {
-		case "base64":
-			decoded, _ = io.ReadAll(base64.NewDecoder(base64.StdEncoding, bytes.NewReader(bodyData)))
-		case "quoted-printable":
-			decoded, _ = io.ReadAll(quotedprintable.NewReader(bytes.NewReader(bodyData)))
-		default:
-			decoded = bodyData
-		}
+		decoded, truncated := decodeSinglePart(bodyData, cte, limits.MaxAttachmentSize+1)
 
-		if int64(len(decoded)) <= limits.MaxAttachmentSize {
+		if !truncated && int64(len(decoded)) <= limits.MaxAttachmentSize {
 			tmpFile, tmpErr := os.CreateTemp("", "csm-emailav-single-*")
 			if tmpErr == nil {
 				_, _ = tmpFile.Write(decoded)
@@ -141,6 +140,58 @@ func ParseSpoolMessage(headerPath, bodyPath string, limits Limits) (*ExtractionR
 	// text/* bodies are not attachments - skip
 
 	return result, nil
+}
+
+func bodyReadLimit(limits Limits) int64 {
+	limit := limits.MaxExtractionSize
+	if limit < limits.MaxAttachmentSize*2 {
+		limit = limits.MaxAttachmentSize * 2
+	}
+	if limit <= 0 {
+		limit = DefaultLimits().MaxExtractionSize
+	}
+	return limit
+}
+
+func readFileLimited(path string, limit int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("message body exceeds parser memory budget")
+	}
+	return data, nil
+}
+
+func decodeSinglePart(bodyData []byte, cte string, limit int64) ([]byte, bool) {
+	var reader io.Reader
+	switch cte {
+	case "base64":
+		reader = base64.NewDecoder(base64.StdEncoding, bytes.NewReader(bodyData))
+	case "quoted-printable":
+		reader = quotedprintable.NewReader(bytes.NewReader(bodyData))
+	default:
+		if int64(len(bodyData)) > limit {
+			return bodyData[:limit], true
+		}
+		return bodyData, false
+	}
+
+	decoded, err := io.ReadAll(io.LimitReader(reader, limit+1))
+	if err != nil {
+		return nil, true
+	}
+	if int64(len(decoded)) > limit {
+		return decoded[:limit], true
+	}
+	return decoded, false
 }
 
 type envelope struct {

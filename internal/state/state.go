@@ -475,14 +475,12 @@ func (s *Store) SetLatestFindings(findings []alert.Finding) {
 	// Build map of existing findings by key
 	existing := make(map[string]alert.Finding)
 	for _, f := range s.latestFindings {
-		key := f.Check + ":" + f.Message
-		existing[key] = f
+		existing[f.Key()] = f
 	}
 
 	// Merge new findings (update existing, add new)
 	for _, f := range findings {
-		key := f.Check + ":" + f.Message
-		existing[key] = f // newer overwrites older
+		existing[f.Key()] = f // newer overwrites older
 	}
 
 	// Flatten back to slice
@@ -554,15 +552,13 @@ func (s *Store) PurgeAndMergeFindings(purgeChecks []string, findings []alert.Fin
 	existing := make(map[string]alert.Finding)
 	for _, f := range s.latestFindings {
 		if !remove[f.Check] {
-			key := f.Check + ":" + f.Message
-			existing[key] = f
+			existing[f.Key()] = f
 		}
 	}
 
 	// Merge new findings
 	for _, f := range findings {
-		key := f.Check + ":" + f.Message
-		existing[key] = f
+		existing[f.Key()] = f
 	}
 
 	// Flatten
@@ -614,7 +610,7 @@ func (s *Store) DismissLatestFinding(key string) {
 	defer s.latestMu.Unlock()
 	var filtered []alert.Finding
 	for _, f := range s.latestFindings {
-		if f.Check+":"+f.Message != key {
+		if f.Key() != key {
 			filtered = append(filtered, f)
 		}
 	}
@@ -703,12 +699,34 @@ func (s *Store) IsSuppressed(f alert.Finding, rules []SuppressionRule) bool {
 				return true
 			}
 		}
-		// Match against paths embedded in the message
-		if strings.Contains(f.Message, "/") {
-			if matched, _ := filepath.Match(rule.PathPattern, f.Message); matched {
+		for _, candidate := range suppressionPathCandidates(f) {
+			if matched, _ := filepath.Match(rule.PathPattern, candidate); matched {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+func suppressionPathCandidates(f alert.Finding) []string {
+	if f.FilePath != "" {
+		return []string{f.FilePath}
+	}
+
+	fields := strings.Fields(f.Message)
+	seen := make(map[string]bool)
+	var paths []string
+	for _, field := range fields {
+		field = strings.Trim(field, `"'():,;[]{}<>`)
+		if !strings.HasPrefix(field, "/") {
+			continue
+		}
+		candidate := filepath.Clean(field)
+		if candidate == "." || candidate == "/" || seen[candidate] {
+			continue
+		}
+		seen[candidate] = true
+		paths = append(paths, candidate)
+	}
+	return paths
 }

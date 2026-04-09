@@ -1,8 +1,10 @@
 package mime
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -160,5 +162,43 @@ func TestParseSinglePartTextNotExtracted(t *testing.T) {
 	// text/plain body should NOT be extracted as an attachment
 	if len(result.Parts) != 0 {
 		t.Errorf("Parts = %d, want 0 for text/plain body", len(result.Parts))
+	}
+}
+
+func TestParseSpoolMessageCapsLargeBodyRead(t *testing.T) {
+	dir := t.TempDir()
+	hPath := filepath.Join(dir, "large-H")
+	dPath := filepath.Join(dir, "large-D")
+
+	header := "malware\ntest@example.com\nuser@example.com\n0\n0\n" +
+		"Content-Type: application/octet-stream; name=\"huge.bin\"\n" +
+		"Content-Transfer-Encoding: base64\n\n"
+	if err := os.WriteFile(hPath, []byte(header), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	payload := strings.Repeat("A", 1024)
+	body := base64.StdEncoding.EncodeToString([]byte(payload))
+	body = strings.Repeat(body, 4096)
+	if err := os.WriteFile(dPath, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	limits := Limits{
+		MaxAttachmentSize: 1024,
+		MaxArchiveDepth:   1,
+		MaxArchiveFiles:   10,
+		MaxExtractionSize: 2048,
+	}
+
+	result, err := ParseSpoolMessage(hPath, dPath, limits)
+	if err != nil {
+		t.Fatalf("ParseSpoolMessage failed: %v", err)
+	}
+	if !result.Partial {
+		t.Fatal("expected parser to mark oversized body as partial")
+	}
+	if len(result.Parts) != 0 {
+		t.Fatalf("Parts = %d, want 0 for oversized body budget", len(result.Parts))
 	}
 }

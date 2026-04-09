@@ -2,7 +2,6 @@ package webui
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -179,7 +178,7 @@ func (s *Server) apiFirewallAllowIP(w http.ResponseWriter, r *http.Request) {
 		Reason   string `json:"reason"`
 		Duration string `json:"duration"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IP == "" {
+	if err := decodeJSONBodyLimited(w, r, 64*1024, &req); err != nil || req.IP == "" {
 		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
@@ -232,7 +231,7 @@ func (s *Server) apiFirewallRemoveAllow(w http.ResponseWriter, r *http.Request) 
 	var req struct {
 		IP string `json:"ip"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IP == "" {
+	if err := decodeJSONBodyLimited(w, r, 64*1024, &req); err != nil || req.IP == "" {
 		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
@@ -357,7 +356,7 @@ func (s *Server) apiFirewallDenySubnet(w http.ResponseWriter, r *http.Request) {
 		Reason   string `json:"reason"`
 		Duration string `json:"duration"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.CIDR == "" {
+	if err := decodeJSONBodyLimited(w, r, 64*1024, &req); err != nil || req.CIDR == "" {
 		writeJSONError(w, "CIDR is required", http.StatusBadRequest)
 		return
 	}
@@ -396,7 +395,7 @@ func (s *Server) apiFirewallRemoveSubnet(w http.ResponseWriter, r *http.Request)
 	var req struct {
 		CIDR string `json:"cidr"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.CIDR == "" {
+	if err := decodeJSONBodyLimited(w, r, 64*1024, &req); err != nil || req.CIDR == "" {
 		writeJSONError(w, "CIDR is required", http.StatusBadRequest)
 		return
 	}
@@ -450,7 +449,7 @@ func (s *Server) apiFirewallFlushCphulk(w http.ResponseWriter, r *http.Request) 
 	var req struct {
 		IP string `json:"ip"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IP == "" {
+	if err := decodeJSONBodyLimited(w, r, 64*1024, &req); err != nil || req.IP == "" {
 		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
@@ -529,7 +528,7 @@ func (s *Server) apiFirewallUnban(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		IP string `json:"ip"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IP == "" {
+	if err := decodeJSONBodyLimited(w, r, 64*1024, &req); err != nil || req.IP == "" {
 		writeJSON(w, map[string]interface{}{"success": false, "error_msg": "The ip is not valid or it was not set."})
 		return
 	}

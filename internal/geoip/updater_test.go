@@ -83,6 +83,18 @@ func TestExtractMMDB_NoMMDB(t *testing.T) {
 	}
 }
 
+func TestValidateMMDBRejectsInvalidFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "bad.mmdb")
+	if err := os.WriteFile(path, []byte("not-a-valid-mmdb"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := validateMMDB(path); err == nil {
+		t.Fatal("expected invalid mmdb to be rejected")
+	}
+}
+
 // minimalMMDB is a valid MaxMind DB v2 file (204 bytes, ipv4, 1 node, record_size=24).
 // Generated programmatically - opens successfully with maxminddb.Open().
 var minimalMMDB = []byte{

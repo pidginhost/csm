@@ -1,7 +1,6 @@
 package webui
 
 import (
-	"encoding/json"
 	"net"
 	"net/http"
 
@@ -54,7 +53,7 @@ func (s *Server) apiGeoIPBatch(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		IPs []string `json:"ips"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBodyLimited(w, r, 32*1024, &req); err != nil {
 		writeJSONError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}

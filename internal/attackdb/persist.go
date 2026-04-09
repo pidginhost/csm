@@ -93,7 +93,28 @@ func (db *DB) saveRecords() {
 				fmt.Fprintf(os.Stderr, "attackdb: store save %s: %v\n", rec.IP, err)
 			}
 		}
+		var deleted []string
+		for ip := range db.deletedIPs {
+			deleted = append(deleted, ip)
+		}
 		db.mu.RUnlock()
+		if len(deleted) > 0 {
+			var removed []string
+			for _, ip := range deleted {
+				if err := sdb.DeleteIPRecord(ip); err != nil {
+					fmt.Fprintf(os.Stderr, "attackdb: store delete %s: %v\n", ip, err)
+					continue
+				}
+				removed = append(removed, ip)
+			}
+			if len(removed) > 0 {
+				db.mu.Lock()
+				for _, ip := range removed {
+					delete(db.deletedIPs, ip)
+				}
+				db.mu.Unlock()
+			}
+		}
 		return
 	}
 

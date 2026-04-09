@@ -49,8 +49,9 @@ func NewPAMListener(cfg *config.Config, alertCh chan<- alert.Finding) (*PAMListe
 		return nil, fmt.Errorf("listening on %s: %w", pamSocketPath, err)
 	}
 
-	// Allow the PAM module (running as various users) to connect
-	_ = os.Chmod(pamSocketPath, 0666)
+	// The PAM module runs inside privileged auth stacks, so the socket can stay
+	// root-only instead of accepting arbitrary local writers.
+	_ = os.Chmod(pamSocketPath, 0600)
 
 	return &PAMListener{
 		cfg:      cfg,
@@ -94,6 +95,9 @@ func (p *PAMListener) Stop() {
 
 func (p *PAMListener) handleConnection(conn net.Conn) {
 	defer func() { _ = conn.Close() }()
+	if !isTrustedPAMPeer(conn) {
+		return
+	}
 	_ = conn.SetDeadline(time.Now().Add(1 * time.Second))
 
 	scanner := bufio.NewScanner(conn)
@@ -141,6 +145,7 @@ func (p *PAMListener) processEvent(line string) {
 	case "FAIL":
 		p.recordFailure(ip, user, service)
 	case "OK":
+		p.clearFailures(ip)
 		// Successful login from non-infra IP - informational alert
 		p.alertCh <- alert.Finding{
 			Severity:  alert.High,
@@ -176,6 +181,9 @@ func (p *PAMListener) recordFailure(ip, user, service string) {
 	if p.cfg.Thresholds.MultiIPLoginThreshold > 0 {
 		threshold = p.cfg.Thresholds.MultiIPLoginThreshold
 	}
+	if p.cfg.Thresholds.MultiIPLoginWindowMin > 0 {
+		windowMin = p.cfg.Thresholds.MultiIPLoginWindowMin
+	}
 
 	// Only block if within the time window
 	if time.Since(tracker.firstSeen) > time.Duration(windowMin)*time.Minute {
@@ -209,6 +217,12 @@ func (p *PAMListener) recordFailure(ip, user, service string) {
 			Timestamp: time.Now(),
 		}
 	}
+}
+
+func (p *PAMListener) clearFailures(ip string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.failures, ip)
 }
 
 // cleanupLoop removes expired failure trackers every minute.

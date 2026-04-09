@@ -1,7 +1,6 @@
 package webui
 
 import (
-	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -159,7 +158,7 @@ func (s *Server) apiThreatWhitelistIP(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		IP string `json:"ip"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IP == "" {
+	if err := decodeJSONBodyLimited(w, r, 64*1024, &req); err != nil || req.IP == "" {
 		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
@@ -229,7 +228,7 @@ func (s *Server) apiThreatUnwhitelistIP(w http.ResponseWriter, r *http.Request) 
 	var req struct {
 		IP string `json:"ip"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IP == "" {
+	if err := decodeJSONBodyLimited(w, r, 64*1024, &req); err != nil || req.IP == "" {
 		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
@@ -264,7 +263,7 @@ func (s *Server) apiThreatBlockIP(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		IP string `json:"ip"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IP == "" {
+	if err := decodeJSONBodyLimited(w, r, 64*1024, &req); err != nil || req.IP == "" {
 		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
@@ -318,7 +317,7 @@ func (s *Server) apiThreatClearIP(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		IP string `json:"ip"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IP == "" {
+	if err := decodeJSONBodyLimited(w, r, 64*1024, &req); err != nil || req.IP == "" {
 		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
@@ -371,7 +370,7 @@ func (s *Server) apiThreatTempWhitelistIP(w http.ResponseWriter, r *http.Request
 		IP    string `json:"ip"`
 		Hours int    `json:"hours"` // default 24
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.IP == "" {
+	if err := decodeJSONBodyLimited(w, r, 64*1024, &req); err != nil || req.IP == "" {
 		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
@@ -440,7 +439,7 @@ func (s *Server) apiThreatBulkAction(w http.ResponseWriter, r *http.Request) {
 		IPs    []string `json:"ips"`
 		Action string   `json:"action"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBodyLimited(w, r, 64*1024, &req); err != nil {
 		writeJSONError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}

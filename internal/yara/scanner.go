@@ -50,40 +50,50 @@ func (s *Scanner) Reload() error {
 		return fmt.Errorf("creating YARA compiler: %w", err)
 	}
 
-	ruleCount := 0
+	fileCount := 0
 	for _, entry := range entries {
 		name := entry.Name()
+		if entry.IsDir() {
+			continue
+		}
 		ext := strings.ToLower(filepath.Ext(name))
 		if ext != ".yar" && ext != ".yara" {
 			continue
 		}
+		fileCount++
 
 		path := filepath.Join(s.rulesDir, name)
 		data, err := os.ReadFile(path)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "yara: error reading %s: %v\n", path, err)
-			continue
+			return fmt.Errorf("reading %s: %w", path, err)
 		}
 
 		if err := compiler.AddSource(string(data)); err != nil {
-			fmt.Fprintf(os.Stderr, "yara: error compiling %s: %v\n", path, err)
-			continue
+			return fmt.Errorf("compiling %s: %w", path, err)
 		}
-		ruleCount++
 	}
 
-	if ruleCount == 0 {
+	if fileCount == 0 {
+		s.mu.RLock()
+		hadRules := s.rules != nil || s.ruleCount > 0
+		s.mu.RUnlock()
+		if hadRules {
+			return fmt.Errorf("no YARA rule files found in %s", s.rulesDir)
+		}
 		return nil
 	}
 
 	rules := compiler.Build()
+	if rules.Count() == 0 {
+		return fmt.Errorf("no YARA rules compiled from %s", s.rulesDir)
+	}
 
 	s.mu.Lock()
 	s.rules = rules
 	s.ruleCount = rules.Count()
 	s.mu.Unlock()
 
-	fmt.Fprintf(os.Stderr, "yara: compiled %d rules from %d file(s) in %s\n", s.ruleCount, ruleCount, s.rulesDir)
+	fmt.Fprintf(os.Stderr, "yara: compiled %d rules from %d file(s) in %s\n", s.ruleCount, fileCount, s.rulesDir)
 	return nil
 }
 

@@ -21,6 +21,8 @@
  *   - Uses "optional" in PAM stack — failures in this module don't block login
  *   - Timeout on socket connect (100ms) — doesn't delay login if daemon is down
  *   - Non-blocking, fire-and-forget — sends event and closes immediately
+ *   - Emits FAIL during auth attempts; the daemon clears that state on a later OK
+ *     for the same IP when account/session success is reached
  */
 
 #include <stdio.h>
@@ -105,7 +107,28 @@ static const char *get_remote_ip(pam_handle_t *pamh) {
  */
 PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags,
                                     int argc, const char **argv) {
-    /* We don't do authentication — just return success to not interfere */
+    const char *user = NULL;
+    const char *service = NULL;
+    const char *ip;
+
+    (void)flags;
+    (void)argc;
+    (void)argv;
+
+    pam_get_item(pamh, PAM_USER, (const void **)&user);
+    pam_get_item(pamh, PAM_SERVICE, (const void **)&service);
+    ip = get_remote_ip(pamh);
+
+    if (ip != NULL) {
+        /*
+         * Report the authentication attempt as a FAIL signal up front.
+         * A later successful acct_mgmt event emits OK, which the daemon uses
+         * to clear the pending failure tracker for this IP.
+         */
+        csm_send_event("FAIL", ip, user, service);
+    }
+
+    /* We don't do authentication ourselves — never interfere with login flow. */
     return PAM_SUCCESS;
 }
 

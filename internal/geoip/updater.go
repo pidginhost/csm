@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/oschwald/maxminddb-golang/v2"
 )
 
 const (
@@ -119,6 +121,10 @@ func updateEditionWithURL(client *http.Client, dbDir, accountID, licenseKey, edi
 		os.Remove(mmdbTmpPath)
 		return EditionResult{Edition: edition, Status: "error", Err: fmt.Errorf("extract: %w", err)}
 	}
+	if err := validateMMDB(mmdbTmpPath); err != nil {
+		os.Remove(mmdbTmpPath)
+		return EditionResult{Edition: edition, Status: "error", Err: fmt.Errorf("validate: %w", err)}
+	}
 
 	// Atomic install
 	destPath := filepath.Join(dbDir, edition+".mmdb")
@@ -133,6 +139,14 @@ func updateEditionWithURL(client *http.Client, dbDir, accountID, licenseKey, edi
 	}
 
 	return EditionResult{Edition: edition, Status: "updated"}
+}
+
+func validateMMDB(path string) error {
+	db, err := maxminddb.Open(path)
+	if err != nil {
+		return err
+	}
+	return db.Close()
 }
 
 // extractMMDB reads a tar.gz stream and extracts the .mmdb file to destPath.

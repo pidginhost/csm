@@ -110,3 +110,9 @@ func TestClamdScannerUnavailable(t *testing.T) {
 		t.Error("scanner with bad socket should not be available")
 	}
 }
+
+func TestParseClamdResponseRejectsUnknownResponse(t *testing.T) {
+	if _, err := parseClamdResponse("stream: ERROR size limit exceeded\n"); err == nil {
+		t.Fatal("expected unknown clamd response to return error")
+	}
+}
