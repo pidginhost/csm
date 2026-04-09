@@ -37,6 +37,7 @@ signatures:
   rules_dir: "/opt/csm/rules"
   auto_update: false
   update_url: ""
+  signing_key: ""   # required for any remote signature update path
 
 thresholds:
   mail_queue_warn: 500

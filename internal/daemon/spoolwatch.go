@@ -340,7 +340,7 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 
 	// Emit degraded/timeout findings for operator visibility
 	if result.AllEnginesDown {
-		if tempfail {
+		if shouldTempfailEmailDelivery(tempfail, result, nil) {
 			response = FAN_DENY // tempfail: defer delivery until engines recover
 			sw.emitDegradedWarning(fmt.Sprintf("All AV engines unavailable - message %s deferred (tempfail mode)", msgID))
 			return
@@ -350,6 +350,11 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 	if len(result.TimedOutEngines) > 0 {
 		sw.emitFinding("email_av_timeout", alert.Warning,
 			fmt.Sprintf("Scan timeout for message %s on engine(s): %s", msgID, strings.Join(result.TimedOutEngines, ", ")))
+		if shouldTempfailEmailDelivery(tempfail, result, nil) {
+			sw.emitDegradedWarning(fmt.Sprintf("Incomplete AV scan - message %s deferred after engine timeout", msgID))
+			response = FAN_DENY
+			return
+		}
 	}
 
 	if !result.Infected {
@@ -367,7 +372,12 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 	if sw.cfg.EmailAV.QuarantineInfected {
 		if err := sw.quarantine.QuarantineMessage(msgID, spoolDir, result, env); err != nil {
 			fmt.Fprintf(os.Stderr, "[%s] spool watcher: quarantine failed for %s: %v\n", ts(), msgID, err)
-			// fail-open: allow delivery if quarantine fails
+			sw.emitFinding("email_av_quarantine_error", alert.Warning,
+				fmt.Sprintf("Quarantine failed for infected message %s: %v", msgID, err))
+			if shouldTempfailEmailDelivery(tempfail, result, err) {
+				sw.emitDegradedWarning(fmt.Sprintf("Quarantine failed for infected message %s - delivery deferred (tempfail mode)", msgID))
+				response = FAN_DENY
+			}
 		} else {
 			// Quarantine succeeded - deny the open so Exim can't deliver
 			response = FAN_DENY

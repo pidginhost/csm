@@ -9,6 +9,13 @@ import (
 	"time"
 )
 
+func requireSigningKey(signingKey string) error {
+	if signingKey == "" {
+		return fmt.Errorf("signatures.signing_key is required for remote rule updates")
+	}
+	return nil
+}
+
 // VerifySignature checks an ed25519 signature over data using a hex-encoded public key.
 // Returns nil if the signature is valid.
 func VerifySignature(pubKeyHex string, data, signature []byte) error {

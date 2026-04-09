@@ -50,12 +50,16 @@ func parseWPOrgPluginResponse(body []byte) (store.PluginInfo, error) {
 
 // fetchWPOrgPluginInfo queries the WordPress.org plugin information API for the
 // given slug and returns the parsed PluginInfo.
-func fetchWPOrgPluginInfo(slug string) (store.PluginInfo, error) {
+func fetchWPOrgPluginInfo(ctx context.Context, slug string) (store.PluginInfo, error) {
 	url := "https://api.wordpress.org/plugins/info/1.2/?action=plugin_information" +
 		"&request[slug]=" + neturl.QueryEscape(slug) +
 		"&request[fields][version]=1&request[fields][tested]=1"
 
-	resp, err := wpOrgHTTPClient.Get(url) //nolint:noctx // simple GET, no context needed
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return store.PluginInfo{}, fmt.Errorf("wporg: building request: %w", err)
+	}
+	resp, err := wpOrgHTTPClient.Do(req)
 	if err != nil {
 		return store.PluginInfo{}, fmt.Errorf("wporg: HTTP request failed: %w", err)
 	}
@@ -170,7 +174,7 @@ func CheckOutdatedPlugins(ctx context.Context, cfg *config.Config, _ *state.Stor
 	lastRefresh := db.GetPluginRefreshTime()
 	interval := time.Duration(cfg.Thresholds.PluginCheckIntervalMin) * time.Minute
 	if time.Since(lastRefresh) > interval {
-		refreshPluginCache(db)
+		refreshPluginCache(ctx, db)
 	}
 
 	return evaluatePluginCache(db)
@@ -225,7 +229,7 @@ type wpCLIPluginEntry struct {
 // refreshPluginCache discovers all WP installs, runs wp-cli to inventory
 // plugins for each site, enriches free plugins via the WordPress.org API,
 // and stores everything in bbolt.
-func refreshPluginCache(db *store.DB) {
+func refreshPluginCache(ctx context.Context, db *store.DB) {
 	wpConfigs := findAllWPInstalls()
 	if len(wpConfigs) == 0 {
 		return
@@ -243,9 +247,15 @@ func refreshPluginCache(db *store.DB) {
 		go func() {
 			defer wg.Done()
 			for wpConfig := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
 				wpPath := filepath.Dir(wpConfig)
 				user := extractUser(wpPath)
-				domain := extractWPDomain(wpPath, user)
+				domain := extractWPDomain(ctx, wpPath, user)
+				if ctx.Err() != nil {
+					return
+				}
 
 				mu.Lock()
 				discoveredPaths[wpPath] = true
@@ -254,10 +264,13 @@ func refreshPluginCache(db *store.DB) {
 				// Run wp plugin list as the site owner.
 				// Use --path flag instead of shell cd to avoid shell injection
 				// via crafted directory names on shared hosting.
-				out, err := exec.Command("su", "-", user, "-s", "/bin/bash", "-c",
+				out, err := exec.CommandContext(ctx, "su", "-", user, "-s", "/bin/bash", "-c",
 					"wp plugin list --fields=name,status,version,update_version --format=json --path="+shellQuote(wpPath),
 				).Output()
 				if err != nil {
+					if ctx.Err() != nil {
+						return
+					}
 					fmt.Fprintf(os.Stderr, "plugincheck: wp-cli failed for %s: %v\n", wpPath, err)
 					continue
 				}
@@ -298,10 +311,16 @@ func refreshPluginCache(db *store.DB) {
 	}
 
 	for _, wpConfig := range wpConfigs {
+		if ctx.Err() != nil {
+			break
+		}
 		jobs <- wpConfig
 	}
 	close(jobs)
 	wg.Wait()
+	if ctx.Err() != nil {
+		return
+	}
 
 	// Enrich free plugins via WordPress.org API (one lookup per unique slug).
 	mu.Lock()
@@ -312,13 +331,16 @@ func refreshPluginCache(db *store.DB) {
 	mu.Unlock()
 
 	for _, slug := range slugList {
+		if ctx.Err() != nil {
+			return
+		}
 		// Skip if we have a recent cached entry (< 24h).
 		if cached, ok := db.GetPluginInfo(slug); ok {
 			if time.Since(time.Unix(cached.LastChecked, 0)) < 24*time.Hour {
 				continue
 			}
 		}
-		info, err := fetchWPOrgPluginInfo(slug)
+		info, err := fetchWPOrgPluginInfo(ctx, slug)
 		if err != nil {
 			// Not found on .org = premium/custom plugin, skip silently.
 			continue
@@ -411,8 +433,8 @@ func evaluatePluginCache(db *store.DB) []alert.Finding {
 
 // extractWPDomain runs `wp option get siteurl` to discover the site's domain.
 // Falls back to directory name heuristics if wp-cli fails.
-func extractWPDomain(wpPath, user string) string {
-	out, err := exec.Command("su", "-", user, "-s", "/bin/bash", "-c",
+func extractWPDomain(ctx context.Context, wpPath, user string) string {
+	out, err := exec.CommandContext(ctx, "su", "-", user, "-s", "/bin/bash", "-c",
 		"wp option get siteurl --path="+shellQuote(wpPath),
 	).Output()
 	if err == nil {

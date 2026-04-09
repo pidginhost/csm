@@ -29,6 +29,12 @@ Completed on 2026-04-09 (second pass):
 - `internal/signatures`: added ed25519 signature verification for YAML and YARA Forge rule updates (`signing_key` config).
 - `scripts`: added ed25519 signature verification framework to `install.sh`, `deploy.sh`, and `deploy-gitlab.sh`.
 
+Completed on 2026-04-09 (third pass):
+
+- `internal/daemon` and `internal/emailav`: closed the remaining `tempfail` gaps so engine timeouts and quarantine failures defer delivery instead of still delivering mail.
+- `internal/signatures` and `scripts`: made authenticity enforcement mandatory instead of optional fallback by requiring signing keys for remote rule updates and refusing unsigned installer/deployer downloads.
+- `internal/checks`: extended timeout-aware cancellation into the main long-running filesystem and WordPress scan paths (`plugincheck`, phishing scans, filesystem/webshell scans, PHP content scans, `.htaccess` scans, and wp core checksum workers).
+
 Still pending:
 
 - None — all review findings addressed.

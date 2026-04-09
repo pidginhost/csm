@@ -30,13 +30,13 @@ ARTIFACT_NAME="${BINARY_NAME}-linux-${ARCH}"
 die() { echo "ERROR: $1" >&2; exit 1; }
 
 # ed25519 public key for verifying release signatures.
-# Replace with your actual key after generating with: openssl genpkey -algorithm Ed25519
-CSM_SIGNING_KEY_PEM=""
+# Must be provided via environment or embedded before use.
+: "${CSM_SIGNING_KEY_PEM:=}"
 
 verify_signature() {
     local file="$1" sig_url="$2"
     if [ -z "$CSM_SIGNING_KEY_PEM" ]; then
-        return 0
+        die "CSM_SIGNING_KEY_PEM is not set; refusing unsigned download"
     fi
     if ! command -v openssl >/dev/null 2>&1; then
         echo "  WARNING: openssl not found, skipping signature verification" >&2

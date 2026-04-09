@@ -13,12 +13,15 @@ import (
 
 // Update downloads the latest rules from the configured URL.
 // Validates the downloaded rules before installing.
-// If signingKey is non-empty, a detached ed25519 signature is fetched
-// from url+".sig" and verified before the rules are installed.
+// A detached ed25519 signature is fetched from url+".sig" and verified
+// before the rules are installed.
 // Returns the number of rules loaded, or error.
 func Update(rulesDir, url, signingKey string) (int, error) {
 	if url == "" {
 		return 0, fmt.Errorf("no update URL configured (set signatures.update_url in csm.yaml)")
+	}
+	if err := requireSigningKey(signingKey); err != nil {
+		return 0, err
 	}
 
 	// Download
@@ -38,15 +41,12 @@ func Update(rulesDir, url, signingKey string) (int, error) {
 		return 0, fmt.Errorf("reading response: %w", err)
 	}
 
-	// Verify ed25519 signature if a signing key is configured
-	if signingKey != "" {
-		sig, err := fetchSignature(url + ".sig")
-		if err != nil {
-			return 0, fmt.Errorf("signature verification required but failed: %w", err)
-		}
-		if err := VerifySignature(signingKey, data, sig); err != nil {
-			return 0, fmt.Errorf("rules signature invalid: %w", err)
-		}
+	sig, err := fetchSignature(url + ".sig")
+	if err != nil {
+		return 0, fmt.Errorf("signature verification required but failed: %w", err)
+	}
+	if err := VerifySignature(signingKey, data, sig); err != nil {
+		return 0, fmt.Errorf("rules signature invalid: %w", err)
 	}
 
 	// Validate: must parse as valid YAML rules

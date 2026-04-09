@@ -31,6 +31,9 @@ func CheckPHPContent(ctx context.Context, cfg *config.Config, _ *state.Store) []
 	}
 
 	for _, homeEntry := range homeDirs {
+		if ctx.Err() != nil {
+			return findings
+		}
 		if !homeEntry.IsDir() {
 			continue
 		}
@@ -58,7 +61,10 @@ func CheckPHPContent(ctx context.Context, cfg *config.Config, _ *state.Store) []
 			}
 
 			for _, dir := range suspiciousDirs {
-				scanDirForObfuscatedPHP(dir, 4, cfg, &findings)
+				scanDirForObfuscatedPHP(ctx, dir, 4, cfg, &findings)
+				if ctx.Err() != nil {
+					return findings
+				}
 			}
 		}
 	}
@@ -68,7 +74,10 @@ func CheckPHPContent(ctx context.Context, cfg *config.Config, _ *state.Store) []
 
 // scanDirForObfuscatedPHP recursively scans directories for PHP files with
 // malicious content patterns.
-func scanDirForObfuscatedPHP(dir string, maxDepth int, cfg *config.Config, findings *[]alert.Finding) {
+func scanDirForObfuscatedPHP(ctx context.Context, dir string, maxDepth int, cfg *config.Config, findings *[]alert.Finding) {
+	if ctx.Err() != nil {
+		return
+	}
 	if maxDepth <= 0 {
 		return
 	}
@@ -78,6 +87,9 @@ func scanDirForObfuscatedPHP(dir string, maxDepth int, cfg *config.Config, findi
 	}
 
 	for _, entry := range entries {
+		if ctx.Err() != nil {
+			return
+		}
 		name := entry.Name()
 		fullPath := filepath.Join(dir, name)
 
@@ -94,7 +106,7 @@ func scanDirForObfuscatedPHP(dir string, maxDepth int, cfg *config.Config, findi
 		}
 
 		if entry.IsDir() {
-			scanDirForObfuscatedPHP(fullPath, maxDepth-1, cfg, findings)
+			scanDirForObfuscatedPHP(ctx, fullPath, maxDepth-1, cfg, findings)
 			continue
 		}
 

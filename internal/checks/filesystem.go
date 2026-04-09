@@ -27,6 +27,9 @@ func CheckFilesystem(ctx context.Context, _ *config.Config, _ *state.Store) []al
 		"/home/*/.config/*/*",
 	}
 	for _, pattern := range configGlobs {
+		if ctx.Err() != nil {
+			return findings
+		}
 		matches, _ := filepath.Glob(pattern)
 		for _, path := range matches {
 			if backdoorNames[filepath.Base(path)] {
@@ -52,6 +55,9 @@ func CheckFilesystem(ctx context.Context, _ *config.Config, _ *state.Store) []al
 		".XIM-unix", ".crontab.", ".Test-unix",
 	}
 	for _, pattern := range []string{"/tmp/.*", "/dev/shm/.*", "/var/tmp/.*"} {
+		if ctx.Err() != nil {
+			return findings
+		}
 		matches, _ := filepath.Glob(pattern)
 		for _, match := range matches {
 			info, err := os.Stat(match)
@@ -81,23 +87,29 @@ func CheckFilesystem(ctx context.Context, _ *config.Config, _ *state.Store) []al
 
 	// SUID binaries in tmp dirs - ReadDir + stat (small dirs, fast)
 	for _, dir := range []string{"/tmp", "/var/tmp", "/dev/shm"} {
-		scanForSUID(dir, 3, &findings)
+		scanForSUID(ctx, dir, 3, &findings)
 	}
 
 	// SUID in /home - shallow scan only
 	homeDirs, _ := GetScanHomeDirs()
 	for _, entry := range homeDirs {
+		if ctx.Err() != nil {
+			return findings
+		}
 		if !entry.IsDir() {
 			continue
 		}
-		scanForSUID(filepath.Join("/home", entry.Name()), 3, &findings)
+		scanForSUID(ctx, filepath.Join("/home", entry.Name()), 3, &findings)
 	}
 
 	return findings
 }
 
 // scanForSUID checks for SUID binaries using ReadDir.
-func scanForSUID(dir string, maxDepth int, findings *[]alert.Finding) {
+func scanForSUID(ctx context.Context, dir string, maxDepth int, findings *[]alert.Finding) {
+	if ctx.Err() != nil {
+		return
+	}
 	if maxDepth <= 0 {
 		return
 	}
@@ -106,13 +118,16 @@ func scanForSUID(dir string, maxDepth int, findings *[]alert.Finding) {
 		return
 	}
 	for _, entry := range entries {
+		if ctx.Err() != nil {
+			return
+		}
 		fullPath := filepath.Join(dir, entry.Name())
 		if entry.IsDir() {
 			// Skip virtfs and known large dirs
 			if entry.Name() == "virtfs" || entry.Name() == "mail" || entry.Name() == "public_html" {
 				continue
 			}
-			scanForSUID(fullPath, maxDepth-1, findings)
+			scanForSUID(ctx, fullPath, maxDepth-1, findings)
 			continue
 		}
 		info, err := entry.Info()
@@ -148,6 +163,9 @@ func CheckWebshells(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 	// Scan each user's public_html and addon domains
 	homeDirs, _ := GetScanHomeDirs()
 	for _, homeEntry := range homeDirs {
+		if ctx.Err() != nil {
+			return findings
+		}
 		if !homeEntry.IsDir() {
 			continue
 		}
@@ -165,7 +183,10 @@ func CheckWebshells(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 		}
 
 		for _, docRoot := range docRoots {
-			scanForWebshells(docRoot, 8, webshellNames, webshellDirs, cfg, &findings)
+			scanForWebshells(ctx, docRoot, 8, webshellNames, webshellDirs, cfg, &findings)
+			if ctx.Err() != nil {
+				return findings
+			}
 		}
 	}
 
@@ -174,7 +195,10 @@ func CheckWebshells(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 
 // scanForWebshells recursively reads directories looking for known webshell
 // files and directories. Uses ReadDir (getdents) - no stat unless matched.
-func scanForWebshells(dir string, maxDepth int, names map[string]bool, dirs map[string]bool, cfg *config.Config, findings *[]alert.Finding) {
+func scanForWebshells(ctx context.Context, dir string, maxDepth int, names map[string]bool, dirs map[string]bool, cfg *config.Config, findings *[]alert.Finding) {
+	if ctx.Err() != nil {
+		return
+	}
 	if maxDepth <= 0 {
 		return
 	}
@@ -184,6 +208,9 @@ func scanForWebshells(dir string, maxDepth int, names map[string]bool, dirs map[
 	}
 
 	for _, entry := range entries {
+		if ctx.Err() != nil {
+			return
+		}
 		name := entry.Name()
 		fullPath := filepath.Join(dir, name)
 
@@ -208,7 +235,7 @@ func scanForWebshells(dir string, maxDepth int, names map[string]bool, dirs map[
 					FilePath: fullPath,
 				})
 			}
-			scanForWebshells(fullPath, maxDepth-1, names, dirs, cfg, findings)
+			scanForWebshells(ctx, fullPath, maxDepth-1, names, dirs, cfg, findings)
 			continue
 		}
 

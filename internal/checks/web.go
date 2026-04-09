@@ -1,8 +1,8 @@
 package checks
 
 import (
-	"context"
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -69,12 +69,15 @@ func CheckHtaccess(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 	// Scan each user's document roots
 	homeDirs, _ := GetScanHomeDirs()
 	for _, homeEntry := range homeDirs {
+		if ctx.Err() != nil {
+			return findings
+		}
 		if !homeEntry.IsDir() {
 			continue
 		}
 		homeDir := filepath.Join("/home", homeEntry.Name())
 		docRoot := filepath.Join(homeDir, "public_html")
-		scanHtaccess(docRoot, 5, suspiciousPatterns, safePatterns, cfg, &findings)
+		scanHtaccess(ctx, docRoot, 5, suspiciousPatterns, safePatterns, cfg, &findings)
 
 		// Also check addon domains
 		subDirs, _ := os.ReadDir(homeDir)
@@ -82,7 +85,7 @@ func CheckHtaccess(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 			if sd.IsDir() && sd.Name() != "public_html" && sd.Name() != "mail" &&
 				!strings.HasPrefix(sd.Name(), ".") && sd.Name() != "etc" &&
 				sd.Name() != "logs" && sd.Name() != "ssl" && sd.Name() != "tmp" {
-				scanHtaccess(filepath.Join(homeDir, sd.Name()), 5, suspiciousPatterns, safePatterns, cfg, &findings)
+				scanHtaccess(ctx, filepath.Join(homeDir, sd.Name()), 5, suspiciousPatterns, safePatterns, cfg, &findings)
 			}
 		}
 	}
@@ -90,7 +93,10 @@ func CheckHtaccess(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 	return findings
 }
 
-func scanHtaccess(dir string, maxDepth int, suspicious, safe []string, cfg *config.Config, findings *[]alert.Finding) {
+func scanHtaccess(ctx context.Context, dir string, maxDepth int, suspicious, safe []string, cfg *config.Config, findings *[]alert.Finding) {
+	if ctx.Err() != nil {
+		return
+	}
 	if maxDepth <= 0 {
 		return
 	}
@@ -100,11 +106,14 @@ func scanHtaccess(dir string, maxDepth int, suspicious, safe []string, cfg *conf
 	}
 
 	for _, entry := range entries {
+		if ctx.Err() != nil {
+			return
+		}
 		name := entry.Name()
 		fullPath := filepath.Join(dir, name)
 
 		if entry.IsDir() {
-			scanHtaccess(fullPath, maxDepth-1, suspicious, safe, cfg, findings)
+			scanHtaccess(ctx, fullPath, maxDepth-1, suspicious, safe, cfg, findings)
 			continue
 		}
 
@@ -298,11 +307,17 @@ func CheckWPCore(ctx context.Context, _ *config.Config, _ *state.Store) []alert.
 		go func() {
 			defer wg.Done()
 			for wpConfig := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
 				wpPath := filepath.Dir(wpConfig)
 				user := extractUser(wpPath)
 
-				out, err := runCmdCombined("wp", "core", "verify-checksums",
+				out, err := runCmdCombinedContext(ctx, "wp", "core", "verify-checksums",
 					"--path="+wpPath, "--allow-root")
+				if ctx.Err() != nil {
+					return
+				}
 
 				if err == nil {
 					// Verification passed - cache all core files
@@ -332,6 +347,9 @@ func CheckWPCore(ctx context.Context, _ *config.Config, _ *state.Store) []alert.
 	}
 
 	for _, wpConfig := range wpConfigs {
+		if ctx.Err() != nil {
+			break
+		}
 		jobs <- wpConfig
 	}
 	close(jobs)

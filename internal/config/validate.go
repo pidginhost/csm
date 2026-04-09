@@ -159,6 +159,14 @@ func Validate(cfg *Config) []ValidationResult {
 		results = append(results, ValidationResult{"error", "email_av.fail_mode",
 			fmt.Sprintf("invalid fail_mode %q: must be \"open\" or \"tempfail\"", cfg.EmailAV.FailMode)})
 	}
+	if cfg.Signatures.UpdateURL != "" && cfg.Signatures.SigningKey == "" {
+		results = append(results, ValidationResult{"error", "signatures.signing_key",
+			"signing_key is required when signatures.update_url is configured"})
+	}
+	if cfg.Signatures.YaraForge.Enabled && cfg.Signatures.SigningKey == "" {
+		results = append(results, ValidationResult{"error", "signatures.signing_key",
+			"signing_key is required when signatures.yara_forge.enabled is true"})
+	}
 
 	// --- EmailProtection ---
 	if cfg.EmailProtection.RateWarnThreshold > 0 && cfg.EmailProtection.RateWarnThreshold < 10 {

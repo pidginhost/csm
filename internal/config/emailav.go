@@ -14,8 +14,8 @@ type EmailAVConfig struct {
 	QuarantineInfected bool   `yaml:"quarantine_infected"`
 	ScanConcurrency    int    `yaml:"scan_concurrency"`
 	// FailMode controls behavior when scanning cannot complete.
-	// "open" (default): deliver mail when engines are down or scan fails.
-	// "tempfail": defer delivery (Exim retries later) when engines are unavailable.
+	// "open" (default): deliver mail when engines are down, scans time out, or quarantine fails.
+	// "tempfail": defer delivery (Exim retries later) when scanning cannot complete or infected mail cannot be quarantined.
 	FailMode string `yaml:"fail_mode"`
 }
 

@@ -354,6 +354,40 @@ func TestValidateEmailAV(t *testing.T) {
 	}
 }
 
+func TestValidateSignaturesRequireSigningKeyForRemoteUpdates(t *testing.T) {
+	cfg := &Config{Hostname: "test"}
+	cfg.Alerts.Email.Enabled = true
+	cfg.Alerts.Email.To = []string{"a@b.com"}
+	cfg.Alerts.Email.SMTP = "localhost:25"
+	cfg.Alerts.Email.From = "csm@test.com"
+
+	cfg.Signatures.UpdateURL = "https://example.com/rules.yml"
+	results := Validate(cfg)
+	if !hasResult(results, "error", "signatures.signing_key") {
+		t.Fatalf("expected signing_key error for remote yaml updates; results=%v", results)
+	}
+
+	cfg.Signatures.SigningKey = "abcd"
+	results = Validate(cfg)
+	if hasResult(results, "error", "signatures.signing_key") {
+		t.Fatalf("unexpected signing_key error when key configured; results=%v", results)
+	}
+}
+
+func TestValidateSignaturesRequireSigningKeyForForge(t *testing.T) {
+	cfg := &Config{Hostname: "test"}
+	cfg.Alerts.Email.Enabled = true
+	cfg.Alerts.Email.To = []string{"a@b.com"}
+	cfg.Alerts.Email.SMTP = "localhost:25"
+	cfg.Alerts.Email.From = "csm@test.com"
+
+	cfg.Signatures.YaraForge.Enabled = true
+	results := Validate(cfg)
+	if !hasResult(results, "error", "signatures.signing_key") {
+		t.Fatalf("expected signing_key error for forge updates; results=%v", results)
+	}
+}
+
 func TestValidateWarningGeoIP(t *testing.T) {
 	cfg := &Config{Hostname: "test"}
 	cfg.Alerts.Email.Enabled = true

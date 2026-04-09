@@ -191,6 +191,9 @@ func CheckPhishing(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 	}
 
 	for _, homeEntry := range homeDirs {
+		if ctx.Err() != nil {
+			return findings
+		}
 		if !homeEntry.IsDir() {
 			continue
 		}
@@ -211,7 +214,10 @@ func CheckPhishing(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 		}
 
 		for _, docRoot := range docRoots {
-			scanForPhishing(docRoot, 3, user, cfg, &findings)
+			scanForPhishing(ctx, docRoot, 3, user, cfg, &findings)
+			if ctx.Err() != nil {
+				return findings
+			}
 		}
 	}
 
@@ -222,7 +228,10 @@ func CheckPhishing(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 // Directory scanner
 // ---------------------------------------------------------------------------
 
-func scanForPhishing(dir string, maxDepth int, user string, cfg *config.Config, findings *[]alert.Finding) {
+func scanForPhishing(ctx context.Context, dir string, maxDepth int, user string, cfg *config.Config, findings *[]alert.Finding) {
+	if ctx.Err() != nil {
+		return
+	}
 	if maxDepth <= 0 {
 		return
 	}
@@ -232,6 +241,9 @@ func scanForPhishing(dir string, maxDepth int, user string, cfg *config.Config, 
 	}
 
 	for _, entry := range entries {
+		if ctx.Err() != nil {
+			return
+		}
 		name := entry.Name()
 		fullPath := filepath.Join(dir, name)
 
@@ -257,7 +269,7 @@ func scanForPhishing(dir string, maxDepth int, user string, cfg *config.Config, 
 				*findings = append(*findings, *dirResult)
 			}
 
-			scanForPhishing(fullPath, maxDepth-1, user, cfg, findings)
+			scanForPhishing(ctx, fullPath, maxDepth-1, user, cfg, findings)
 			continue
 		}
 

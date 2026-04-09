@@ -29,11 +29,14 @@ var forgeTierAsset = map[string]string{
 }
 
 // ForgeUpdate checks for a new YARA Forge release and downloads it if newer.
-// If signingKey is non-empty, a detached signature is fetched from the ZIP URL + ".sig"
-// and verified against the raw ZIP content before extraction.
+// A detached signature is fetched from the ZIP URL + ".sig" and verified
+// against the raw ZIP content before extraction.
 func ForgeUpdate(rulesDir, tier, currentVersion, signingKey string, disabledRules []string) (newVersion string, ruleCount int, err error) {
 	if _, ok := forgeTierAsset[tier]; !ok {
 		return "", 0, fmt.Errorf("unknown YARA Forge tier: %q (valid: core, extended, full)", tier)
+	}
+	if err := requireSigningKey(signingKey); err != nil {
+		return "", 0, err
 	}
 
 	latestTag, err := forgeLatestTag()
@@ -51,14 +54,12 @@ func ForgeUpdate(rulesDir, tier, currentVersion, signingKey string, disabledRule
 		return "", 0, fmt.Errorf("downloading YARA Forge %s: %w", tier, err)
 	}
 
-	if signingKey != "" {
-		sig, err := fetchSignature(zipURL + ".sig")
-		if err != nil {
-			return "", 0, fmt.Errorf("YARA Forge signature verification required but failed: %w", err)
-		}
-		if err := VerifySignature(signingKey, zipData, sig); err != nil {
-			return "", 0, fmt.Errorf("YARA Forge signature invalid: %w", err)
-		}
+	sig, err := fetchSignature(zipURL + ".sig")
+	if err != nil {
+		return "", 0, fmt.Errorf("YARA Forge signature verification required but failed: %w", err)
+	}
+	if err := VerifySignature(signingKey, zipData, sig); err != nil {
+		return "", 0, fmt.Errorf("YARA Forge signature invalid: %w", err)
 	}
 
 	assetPath := forgeTierAsset[tier]

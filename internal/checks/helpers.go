@@ -52,6 +52,21 @@ func runCmdCombined(name string, args ...string) ([]byte, error) {
 	return out, err
 }
 
+func runCmdCombinedContext(parent context.Context, name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(parent, cmdTimeout)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		fmt.Fprintf(os.Stderr, "Command timed out: %s %v\n", name, args)
+		return nil, nil
+	}
+	if parent.Err() != nil {
+		return nil, parent.Err()
+	}
+	return out, err
+}
+
 // runCmdWithEnv executes a command with extra environment variables.
 // Used for passing secrets (e.g., MYSQL_PWD) without exposing on command line.
 func runCmdWithEnv(name string, args []string, extraEnv ...string) ([]byte, error) {
