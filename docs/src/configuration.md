@@ -120,11 +120,18 @@ signatures:
   update_url: ""                        # remote URL to fetch rule updates
   auto_update: false                    # auto-download rules on schedule
   update_interval: ""                   # how often to check (e.g. "24h")
+  signing_key: ""                       # required for any remote rule update path; 64-char hex Ed25519 public key
   yara_forge:
     enabled: false                      # auto-fetch YARA Forge community rules
     tier: "core"                        # "core", "extended", "full" (default: "core")
     update_interval: "168h"             # how often to check for updates (default: weekly)
   disabled_rules: []                    # YARA rule names to exclude from Forge downloads
+
+`signatures.signing_key` is mandatory whenever either `signatures.update_url` is set or `signatures.yara_forge.enabled` is `true`.
+The value must be the hex-encoded Ed25519 public key used to verify detached `.sig` files for downloaded rule bundles.
+It is not a PEM block and not a filesystem path.
+
+If you are not operating a signed remote rule feed yet, leave `update_url` empty and keep `yara_forge.enabled: false`.
 
 # --- Web UI ---
 webui:

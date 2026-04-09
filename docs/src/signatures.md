@@ -55,6 +55,8 @@ kill -HUP $(pidof csm)    # reload without restart
 
 Or from the web UI: **Rules** page > **Reload Rules** button.
 
+Remote rule updates are now signature-verified. Any configuration that enables `signatures.update_url` or `signatures.yara_forge.enabled` must also set `signatures.signing_key` to the 64-character hex-encoded Ed25519 public key that verifies the downloaded `.sig` files.
+
 ## YARA Forge Integration
 
 CSM can automatically fetch curated YARA rules from [YARA Forge](https://github.com/YARAHQ/yara-forge), which aggregates and quality-tests rules from 40+ public sources including signature-base, Elastic, Malpedia, and ESET.
@@ -63,12 +65,25 @@ CSM can automatically fetch curated YARA rules from [YARA Forge](https://github.
 
 ```yaml
 signatures:
+  signing_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
   yara_forge:
     enabled: true
     tier: "core"              # core (5K rules, low FP), extended (10K), full (12K)
     update_interval: "168h"   # weekly
   disabled_rules:             # rule names to exclude from Forge downloads
     - SUSP_Example_Rule
+```
+
+`signing_key` must be a hex string for the Ed25519 public key that matches the private key used to sign the remote Forge artifact. It is not a PEM block and not a file path.
+
+If you do not have a signed update source yet, disable remote updates instead:
+
+```yaml
+signatures:
+  signing_key: ""
+  update_url: ""
+  yara_forge:
+    enabled: false
 ```
 
 ### Tiers
@@ -82,11 +97,12 @@ signatures:
 ### Update Flow
 
 1. CSM checks the latest YARA Forge release tag on GitHub
-2. If newer than the installed version, downloads the ZIP for the configured tier
-3. Filters out any rules listed in `disabled_rules`
-4. Compile-tests the rules with YARA-X before installing
-5. Atomically replaces the previous Forge rules file
-6. Reloads the YARA scanner
+2. If newer than the installed version, downloads the ZIP for the configured tier and its detached signature
+3. Verifies the download against `signatures.signing_key`
+4. Filters out any rules listed in `disabled_rules`
+5. Compile-tests the rules with YARA-X before installing
+6. Atomically replaces the previous Forge rules file
+7. Reloads the YARA scanner
 
 Custom rules in `malware.yar` are never overwritten by the Forge fetcher.
 
