@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed challenge routing extracting version numbers from informational findings as IP addresses, causing legitimate IPs to be blocked. Challenge routing now uses a closed allowlist of checks known to contain attacker IPs — unlisted checks are safely skipped.
+- Fixed legitimate WordPress admin users being blocked by user enumeration detection when using Gutenberg or Elementor.
+- Improved ModSecurity rule precision for REST API user enumeration detection.
+
 ## [2.1.0] - 2026-04-09
 
 ### Fixed
