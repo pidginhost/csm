@@ -88,6 +88,23 @@ var hardBlockPrefixes = []string{
 	"email_credential",   // credential leak
 }
 
+// isInformationalCheck returns true for checks that do not contain attacker IPs.
+// These findings report server state, not attacks — routing them to challenge or
+// block would extract version numbers, sizes, or other numeric fields as IPs.
+func isInformationalCheck(check string) bool {
+	switch check {
+	case "outdated_plugins", "perf_load", "perf_memory", "perf_php_processes",
+		"perf_wp_config", "perf_wp_cron", "perf_wp_transients", "perf_redis_config",
+		"perf_mysql_config", "perf_php_handler", "perf_error_logs",
+		"waf_rules_stale", "world_writable_php", "group_writable_php",
+		"auto_response", "check_timeout", "integrity",
+		"dns_zone_change", "crond_change", "cpanel_password_purge",
+		"cpanel_file_upload", "shadow_change":
+		return true
+	}
+	return false
+}
+
 // isHardBlockCheck returns true if the check should be hard-blocked (never challenged).
 func isHardBlockCheck(check string) bool {
 	if hardBlockChecks[check] {
@@ -116,6 +133,13 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 
 	for _, f := range findings {
 		if isHardBlockCheck(f.Check) {
+			continue
+		}
+
+		// Skip informational checks — they don't contain attacker IPs.
+		// Version numbers in these findings (e.g. "7.8.0.1") parse as
+		// valid IPs and would incorrectly block real addresses.
+		if isInformationalCheck(f.Check) {
 			continue
 		}
 
