@@ -95,23 +95,38 @@ var hardBlockPrefixes = []string{
 // (like outdated_plugins, whose version strings parse as IPs) defaults to
 // "skip" rather than "block an innocent IP".
 var challengeableChecks = map[string]bool{
-	"ip_reputation":            true,
-	"brute_force":              true,
-	"wp_login_bruteforce":      true,
-	"xmlrpc_abuse":             true,
-	"wp_user_enumeration":      true,
-	"ftp_bruteforce":           true,
-	"webmail_bruteforce":       true,
-	"api_auth_failure":         true,
-	"cpanel_login":             true,
-	"cpanel_login_realtime":    true,
-	"cpanel_multi_ip_login":    true,
-	"ftp_login":                true,
-	"ftp_login_realtime":       true,
-	"ssh_login_unknown_ip":     true,
+	// Brute force checks — all contain attacker IPs
+	"brute_force":         true,
+	"wp_login_bruteforce": true,
+	"xmlrpc_abuse":        true,
+	"wp_user_enumeration": true,
+	"ftp_bruteforce":      true,
+	"webmail_bruteforce":  true,
+	"api_auth_failure":    true,
+
+	// Login monitoring — contain source IPs
+	"cpanel_login":                true,
+	"cpanel_login_realtime":       true,
+	"cpanel_multi_ip_login":       true,
+	"cpanel_file_upload":          true,
+	"cpanel_file_upload_realtime": true,
+	"ftp_login":                   true,
+	"ftp_login_realtime":          true,
+	"ssh_login_realtime":          true,
+	"ssh_login_unknown_ip":        true,
+	"webmail_login_realtime":      true,
+	"whm_password_change":         true,
+
+	// Reputation and threat scoring — contain IPs
+	"ip_reputation":      true,
+	"local_threat_score": true,
+
+	// Network — contain IPs
 	"dns_connection":           true,
 	"user_outbound_connection": true,
-	"local_threat_score":       true,
+
+	// WAF — contain attacker IPs
+	"waf_attack_blocked": true,
 }
 
 func isChallengeableCheck(check string) bool {
