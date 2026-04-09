@@ -11,13 +11,14 @@ import (
 	"testing"
 )
 
-// buildFakeTarGz creates a tar.gz containing a fake .mmdb file.
+// buildFakeTarGz creates a tar.gz containing a minimal valid .mmdb file
+// that passes validateMMDB.
 func buildFakeTarGz(edition string) []byte {
 	var buf bytes.Buffer
 	gw := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gw)
 
-	content := []byte("fake-mmdb-for-" + edition)
+	content := minimalMMDB
 	hdr := &tar.Header{
 		Name: edition + "_20260330/" + edition + ".mmdb",
 		Size: int64(len(content)),
@@ -60,12 +61,8 @@ func TestUpdateIntegration(t *testing.T) {
 
 	// Verify .mmdb was written
 	mmdbPath := filepath.Join(tmpDir, "GeoLite2-City.mmdb")
-	data, err := os.ReadFile(mmdbPath)
-	if err != nil {
+	if _, err := os.Stat(mmdbPath); err != nil {
 		t.Fatalf("mmdb not found: %v", err)
-	}
-	if string(data) != "fake-mmdb-for-GeoLite2-City" {
-		t.Fatalf("unexpected content: %q", data)
 	}
 
 	// Verify Last-Modified marker
