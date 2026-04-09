@@ -137,9 +137,12 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 			continue
 		}
 
-		// Verify file or directory exists
-		info, err := os.Stat(path)
+		// Verify file or directory exists and reject symlinks
+		info, err := os.Lstat(path)
 		if err != nil {
+			continue
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
 			continue
 		}
 

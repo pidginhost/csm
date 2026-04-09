@@ -1,7 +1,6 @@
 package webui
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -155,8 +154,7 @@ func (s *Server) apiModSecRulesApply(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Disabled []int `json:"disabled"`
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 64*1024) // 64KB limit
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBodyLimited(w, r, 64*1024, &req); err != nil {
 		writeJSONError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
@@ -226,8 +224,7 @@ func (s *Server) apiModSecRulesEscalation(w http.ResponseWriter, r *http.Request
 		RuleID   int  `json:"rule_id"`
 		Escalate bool `json:"escalate"`
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 4*1024) // 4KB - single rule ID
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBodyLimited(w, r, 4*1024, &req); err != nil {
 		writeJSONError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}

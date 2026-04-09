@@ -235,7 +235,7 @@ func (s *Server) apiFirewallRemoveAllow(w http.ResponseWriter, r *http.Request) 
 		writeJSONError(w, "IP is required", http.StatusBadRequest)
 		return
 	}
-	if net.ParseIP(req.IP) == nil {
+	if _, err := parseAndValidateIP(req.IP); err != nil {
 		writeJSONError(w, fmt.Sprintf("invalid IP address: %s", req.IP), http.StatusBadRequest)
 		return
 	}
