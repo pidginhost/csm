@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/config"
@@ -117,7 +118,7 @@ func TestCheckLoadAverage_Disabled(t *testing.T) {
 	f := false
 	cfg.Performance.Enabled = &f
 
-	findings := CheckLoadAverage(cfg, nil)
+	findings := CheckLoadAverage(context.Background(), cfg, nil)
 	if findings != nil {
 		t.Errorf("expected nil findings when disabled, got %v", findings)
 	}
@@ -126,5 +127,5 @@ func TestCheckLoadAverage_Disabled(t *testing.T) {
 func TestCheckSwapAndOOM_NoCrash(t *testing.T) {
 	cfg := testPerfConfig()
 	// Should not panic regardless of system state; ignore returned findings.
-	_ = CheckSwapAndOOM(cfg, nil)
+	_ = CheckSwapAndOOM(context.Background(), cfg, nil)
 }

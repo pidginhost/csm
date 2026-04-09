@@ -1311,7 +1311,7 @@ func (d *Daemon) signatureUpdater() {
 }
 
 func (d *Daemon) doSignatureUpdate() {
-	count, err := signatures.Update(d.cfg.Signatures.RulesDir, d.cfg.Signatures.UpdateURL)
+	count, err := signatures.Update(d.cfg.Signatures.RulesDir, d.cfg.Signatures.UpdateURL, d.cfg.Signatures.SigningKey)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Signature auto-update failed: %v\n", ts(), err)
 		return
@@ -1338,6 +1338,7 @@ func (d *Daemon) doForgeUpdate() {
 		d.cfg.Signatures.RulesDir,
 		d.cfg.Signatures.YaraForge.Tier,
 		currentVersion,
+		d.cfg.Signatures.SigningKey,
 		d.cfg.Signatures.DisabledRules,
 	)
 	if err != nil {

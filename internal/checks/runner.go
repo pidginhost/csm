@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -12,7 +13,8 @@ import (
 )
 
 // CheckFunc is the signature for all check functions.
-type CheckFunc func(cfg *config.Config, store *state.Store) []alert.Finding
+// The context is cancelled when the check times out so goroutines can exit.
+type CheckFunc func(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding
 
 // namedCheck pairs a check function with its name for timeout reporting.
 type namedCheck struct {
@@ -205,20 +207,23 @@ func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck) []
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			// Run with timeout
+			// Run with cancellable context so timed-out checks stop
+			ctx, cancel := context.WithTimeout(context.Background(), checkTimeout)
 			done := make(chan []alert.Finding, 1)
 			go func() {
-				done <- c.fn(cfg, store)
+				done <- c.fn(ctx, cfg, store)
 			}()
 
 			select {
 			case results := <-done:
+				cancel()
 				if len(results) > 0 {
 					mu.Lock()
 					findings = append(findings, results...)
 					mu.Unlock()
 				}
-			case <-time.After(checkTimeout):
+			case <-ctx.Done():
+				cancel()
 				mu.Lock()
 				findings = append(findings, alert.Finding{
 					Severity:  alert.Warning,

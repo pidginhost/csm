@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -12,7 +13,7 @@ import (
 	"github.com/pidginhost/csm/internal/state"
 )
 
-func CheckOutboundConnections(cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckOutboundConnections(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	// Parse /proc/net/tcp for established connections

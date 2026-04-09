@@ -44,5 +44,13 @@ func LoadState(statePath string) (*FirewallState, error) {
 	}
 	state.BlockedNet = activeNets
 
+	var activeAllowed []AllowedEntry
+	for _, entry := range state.Allowed {
+		if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
+			activeAllowed = append(activeAllowed, entry)
+		}
+	}
+	state.Allowed = activeAllowed
+
 	return &state, nil
 }

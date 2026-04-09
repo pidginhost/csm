@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"bufio"
 	"fmt"
 	"os"
@@ -15,7 +16,7 @@ import (
 // CheckKernelModules compares loaded kernel modules against baseline.
 // All modules present at baseline time are considered known.
 // Only modules loaded AFTER baseline trigger alerts.
-func CheckKernelModules(_ *config.Config, store *state.Store) []alert.Finding {
+func CheckKernelModules(ctx context.Context, _ *config.Config, store *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	modules := loadModuleList()
@@ -74,7 +75,7 @@ func loadModuleList() []string {
 
 // CheckRPMIntegrity verifies critical system binaries haven't been modified.
 // Only checks a small set of security-critical packages.
-func CheckRPMIntegrity(_ *config.Config, _ *state.Store) []alert.Finding {
+func CheckRPMIntegrity(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	criticalPackages := []string{
@@ -132,7 +133,7 @@ func CheckRPMIntegrity(_ *config.Config, _ *state.Store) []alert.Finding {
 
 // CheckMySQLUsers queries for MySQL users with elevated privileges
 // that aren't standard cPanel-managed users.
-func CheckMySQLUsers(_ *config.Config, store *state.Store) []alert.Finding {
+func CheckMySQLUsers(ctx context.Context, _ *config.Config, store *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	out, err := runCmd("mysql", "-N", "-B", "-e",
@@ -166,7 +167,7 @@ func CheckMySQLUsers(_ *config.Config, store *state.Store) []alert.Finding {
 // CheckGroupWritablePHP scans for PHP files that are group-writable
 // where the group is the web server (nobody/www-data). This allows
 // webshells to persist by the web server modifying PHP files.
-func CheckGroupWritablePHP(_ *config.Config, _ *state.Store) []alert.Finding {
+func CheckGroupWritablePHP(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	// Get web server group GIDs

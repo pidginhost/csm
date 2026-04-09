@@ -42,6 +42,20 @@ Confirmed malware (webshells, YARA/signature matches), C2 connections, backdoor 
 
 If an IP doesn't solve the PoW challenge within 30 minutes, it is automatically escalated to a hard firewall block.
 
+### Trusted Proxies
+
+By default, the challenge server uses `RemoteAddr` to identify clients. If deployed behind a reverse proxy (e.g. Apache with `mod_rewrite`), configure `trusted_proxies` so X-Forwarded-For is trusted only from those IPs:
+
+```yaml
+challenge:
+  enabled: true
+  trusted_proxies:
+    - "127.0.0.1"
+    - "::1"
+```
+
+Without `trusted_proxies`, X-Forwarded-For is ignored to prevent IP spoofing.
+
 ### Successful Verification
 
 When a client passes the challenge:

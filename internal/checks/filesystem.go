@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,7 +14,7 @@ import (
 
 // CheckFilesystem uses globs and targeted ReadDir to check for backdoors,
 // hidden files, and SUID binaries. No `find` command needed.
-func CheckFilesystem(_ *config.Config, _ *state.Store) []alert.Finding {
+func CheckFilesystem(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	// GSocket / backdoor binaries in .config dirs - glob (instant)
@@ -132,7 +133,7 @@ func scanForSUID(dir string, maxDepth int, findings *[]alert.Finding) {
 
 // CheckWebshells uses pure Go ReadDir to scan for known webshell files
 // and directories. No `find` command needed.
-func CheckWebshells(cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckWebshells(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	webshellNames := map[string]bool{

@@ -13,6 +13,10 @@ type EmailAVConfig struct {
 	MaxExtractionSize  int64  `yaml:"max_extraction_size"`
 	QuarantineInfected bool   `yaml:"quarantine_infected"`
 	ScanConcurrency    int    `yaml:"scan_concurrency"`
+	// FailMode controls behavior when scanning cannot complete.
+	// "open" (default): deliver mail when engines are down or scan fails.
+	// "tempfail": defer delivery (Exim retries later) when engines are unavailable.
+	FailMode string `yaml:"fail_mode"`
 }
 
 // ScanTimeoutDuration parses the ScanTimeout string as a time.Duration.

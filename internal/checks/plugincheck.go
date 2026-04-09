@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -159,7 +160,7 @@ const pluginCheckWorkers = 5
 // CheckOutdatedPlugins scans all WordPress installations for plugins with
 // available updates and emits findings based on severity of the version gap.
 // Results are cached in bbolt with a configurable refresh interval (default 24h).
-func CheckOutdatedPlugins(cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckOutdatedPlugins(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	db := store.Global()
 	if db == nil {
 		return nil

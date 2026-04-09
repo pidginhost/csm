@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -60,7 +61,7 @@ var emailBrandNames = []string{
 // CheckOutboundEmailContent samples outbound email content from Exim spool
 // for phishing URLs, credential harvesting language, suspicious mailers,
 // and Reply-To mismatches.
-func CheckOutboundEmailContent(cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckOutboundEmailContent(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	// Read recent outbound messages from exim_mainlog

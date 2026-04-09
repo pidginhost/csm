@@ -86,10 +86,11 @@ type Config struct {
 	} `yaml:"auto_response"`
 
 	Challenge struct {
-		Enabled    bool   `yaml:"enabled"`     // enable challenge pages instead of hard block for some IPs
-		ListenPort int    `yaml:"listen_port"` // port for challenge server (default: 8439)
-		Secret     string `yaml:"secret"`      // HMAC secret for challenge tokens (auto-generated if empty)
-		Difficulty int    `yaml:"difficulty"`  // proof-of-work difficulty 0-5 (default: 2)
+		Enabled        bool     `yaml:"enabled"`         // enable challenge pages instead of hard block for some IPs
+		ListenPort     int      `yaml:"listen_port"`     // port for challenge server (default: 8439)
+		Secret         string   `yaml:"secret"`          // HMAC secret for challenge tokens (auto-generated if empty)
+		Difficulty     int      `yaml:"difficulty"`      // proof-of-work difficulty 0-5 (default: 2)
+		TrustedProxies []string `yaml:"trusted_proxies"` // IPs allowed to set X-Forwarded-For (empty = trust RemoteAddr only)
 	} `yaml:"challenge"`
 
 	PHPShield struct {
@@ -106,6 +107,7 @@ type Config struct {
 		UpdateURL      string `yaml:"update_url"`
 		AutoUpdate     bool   `yaml:"auto_update"`     // auto-download rules daily (default: true if update_url set)
 		UpdateInterval string `yaml:"update_interval"` // how often to check (default: "24h")
+		SigningKey     string `yaml:"signing_key"`     // hex-encoded ed25519 public key for verifying rule updates
 		YaraForge      struct {
 			Enabled        bool   `yaml:"enabled"`
 			Tier           string `yaml:"tier"`            // "core", "extended", "full" (default: "core")

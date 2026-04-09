@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -13,7 +14,7 @@ const perAccountMailThreshold = 100 // emails per recent log window
 
 // CheckMailPerAccount reads the tail of exim_mainlog and counts outbound
 // emails per cPanel account. Alerts if a single account exceeds the threshold.
-func CheckMailPerAccount(_ *config.Config, _ *state.Store) []alert.Finding {
+func CheckMailPerAccount(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	lines := tailFile("/var/log/exim_mainlog", 500)

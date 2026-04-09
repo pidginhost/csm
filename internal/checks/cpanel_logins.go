@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -21,7 +22,7 @@ const (
 // - cPanel (cpaneld) logins from non-infra IPs
 // - Same account logged in from multiple distinct IPs (credential compromise indicator)
 // - Password change purge events (attacker or auto-response password resets)
-func CheckCpanelLogins(cfg *config.Config, store *state.Store) []alert.Finding {
+func CheckCpanelLogins(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	lines := tailFile(sessionLogPath, sessionLogTailLines)
@@ -133,7 +134,7 @@ func CheckCpanelLogins(cfg *config.Config, store *state.Store) []alert.Finding {
 
 // CheckCpanelFileManager parses the cPanel access log for file management
 // operations from non-infra IPs (file uploads, edits via cPanel File Manager).
-func CheckCpanelFileManager(cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckCpanelFileManager(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	lines := tailFile("/usr/local/cpanel/logs/access_log", 300)

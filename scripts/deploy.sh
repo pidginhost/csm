@@ -29,6 +29,36 @@ ARTIFACT_NAME="${BINARY_NAME}-linux-${ARCH}"
 
 die() { echo "ERROR: $1" >&2; exit 1; }
 
+# ed25519 public key for verifying release signatures.
+# Replace with your actual key after generating with: openssl genpkey -algorithm Ed25519
+CSM_SIGNING_KEY_PEM=""
+
+verify_signature() {
+    local file="$1" sig_url="$2"
+    if [ -z "$CSM_SIGNING_KEY_PEM" ]; then
+        return 0
+    fi
+    if ! command -v openssl >/dev/null 2>&1; then
+        echo "  WARNING: openssl not found, skipping signature verification" >&2
+        return 0
+    fi
+    local sig_file="${file}.sig"
+    local sig_http
+    sig_http=$(curl -sS -w '%{http_code}' -L -o "$sig_file" "$sig_url")
+    if [ "$sig_http" != "200" ]; then
+        die "Signature download failed (HTTP ${sig_http}) from ${sig_url}"
+    fi
+    local key_file
+    key_file=$(mktemp)
+    trap 'rm -f "$key_file" "$sig_file"' RETURN
+    printf '%s\n' "$CSM_SIGNING_KEY_PEM" > "$key_file"
+    if openssl pkeyutl -verify -pubin -inkey "$key_file" -rawin -sigfile "$sig_file" -in "$file" >/dev/null 2>&1; then
+        echo "Signature verified OK" >&2
+    else
+        die "SIGNATURE VERIFICATION FAILED — binary may be tampered with!"
+    fi
+}
+
 get_download_url() {
     local asset="$1" version="${2:-latest}"
     if [ "$version" = "latest" ]; then
@@ -72,6 +102,8 @@ download_package() {
   The binary may have been tampered with."
     fi
     echo "Checksum OK (${actual_hash:0:16}...)" >&2
+
+    verify_signature "${tmpdir}/${ARTIFACT_NAME}" "$(get_download_url "${ARTIFACT_NAME}.sig" "$version")"
 
     chmod +x "${tmpdir}/${ARTIFACT_NAME}"
     if ! "${tmpdir}/${ARTIFACT_NAME}" version > /dev/null 2>&1; then

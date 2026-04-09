@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"bufio"
 	"fmt"
 	"os"
@@ -14,7 +15,7 @@ import (
 // CheckWHMAccess parses the cPanel access log for WHM (port 2087) logins
 // and password change API calls from non-infra IPs.
 // Only reads the tail of the log - lightweight.
-func CheckWHMAccess(cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckWHMAccess(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	lines := tailFile("/usr/local/cpanel/logs/access_log", 200)
@@ -76,7 +77,7 @@ func CheckWHMAccess(cfg *config.Config, _ *state.Store) []alert.Finding {
 }
 
 // CheckSSHLogins parses /var/log/secure for SSH logins from non-infra IPs.
-func CheckSSHLogins(cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckSSHLogins(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	lines := tailFile("/var/log/secure", 100)

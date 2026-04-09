@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"bufio"
 	"fmt"
 	"os"
@@ -16,7 +17,7 @@ import (
 // CheckWAFStatus verifies that ModSecurity is loaded, the engine is in
 // enforcement mode (not DetectionOnly), OWASP/Comodo rules are active,
 // and rules are up to date.
-func CheckWAFStatus(_ *config.Config, _ *state.Store) []alert.Finding {
+func CheckWAFStatus(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	// Check if ModSecurity module is loaded in LiteSpeed/Apache
@@ -348,7 +349,7 @@ func autoUpdateWAFRules() bool {
 
 // CheckModSecAuditLog parses the ModSecurity audit log for blocked attacks.
 // High-volume attackers are reported for potential auto-blocking.
-func CheckModSecAuditLog(cfg *config.Config, store *state.Store) []alert.Finding {
+func CheckModSecAuditLog(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	logPaths := []string{

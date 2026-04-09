@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -181,7 +182,7 @@ var embeddedAssetPatterns = []string{
 //  1. Content analysis - brand impersonation + credential harvesting patterns
 //  2. Structural analysis - self-contained HTML with embedded assets
 //  3. Directory anomaly - lone HTML files in otherwise empty directories
-func CheckPhishing(cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckPhishing(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	homeDirs, err := GetScanHomeDirs()

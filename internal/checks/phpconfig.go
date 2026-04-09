@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,7 +15,7 @@ import (
 // CheckPHPConfigChanges monitors .user.ini and .htaccess for PHP configuration
 // changes that weaken security (disabling disable_functions, enabling dangerous functions).
 // This runs as a deep check. The fanotify watcher also catches .user.ini writes in real-time.
-func CheckPHPConfigChanges(_ *config.Config, store *state.Store) []alert.Finding {
+func CheckPHPConfigChanges(ctx context.Context, _ *config.Config, store *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	homeDirs, _ := GetScanHomeDirs()

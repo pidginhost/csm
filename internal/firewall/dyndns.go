@@ -16,14 +16,14 @@ type DynDNSResolver struct {
 	resolved map[string][]string // hostname -> all resolved IPs
 	engine   interface {
 		AllowIP(ip string, reason string) error
-		RemoveAllowIP(ip string) error
+		RemoveAllowIPBySource(ip string, source string) error
 	}
 }
 
 // NewDynDNSResolver creates a resolver for the given hostnames.
 func NewDynDNSResolver(hosts []string, engine interface {
 	AllowIP(ip string, reason string) error
-	RemoveAllowIP(ip string) error
+	RemoveAllowIPBySource(ip string, source string) error
 }) *DynDNSResolver {
 	return &DynDNSResolver{
 		hosts:    hosts,
@@ -76,10 +76,10 @@ func (d *DynDNSResolver) resolveHost(host string) {
 		newSet[ip] = true
 	}
 
-	// Remove IPs no longer in DNS
+	// Remove IPs no longer in DNS (only remove the dyndns source entry)
 	for _, ip := range oldIPs {
 		if !newSet[ip] {
-			_ = d.engine.RemoveAllowIP(ip)
+			_ = d.engine.RemoveAllowIPBySource(ip, SourceDynDNS)
 			fmt.Fprintf(os.Stderr, "dyndns: %s removed %s (no longer resolves)\n", host, ip)
 		}
 	}

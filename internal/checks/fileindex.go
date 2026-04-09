@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"bufio"
 	"encoding/json"
 	"fmt"
@@ -71,7 +72,7 @@ func dirChanged(dir string, cache dirMtimeCache, forceFullScan bool) bool {
 // reads, diffs against the previous index, and alerts on new files.
 // Uses directory mtime caching: unchanged dirs carry forward previous entries
 // without calling ReadDir, while changed dirs are re-scanned.
-func CheckFileIndex(cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	scanNum := atomic.AddInt32(&fileIndexScanCount, 1)

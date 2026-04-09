@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"encoding/hex"
 	"fmt"
 	"net"
@@ -17,7 +18,7 @@ import (
 // CheckOutboundUserConnections looks for non-root user processes making
 // outbound connections to IPs that aren't infra or well-known services.
 // Catches compromised accounts phoning home.
-func CheckOutboundUserConnections(cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckOutboundUserConnections(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	// Known service ports that are always OK for outbound
@@ -220,7 +221,7 @@ func parseHex6Addr(s string) (net.IP, int) {
 }
 
 // CheckSSHDConfig monitors sshd_config for dangerous changes.
-func CheckSSHDConfig(_ *config.Config, store *state.Store) []alert.Finding {
+func CheckSSHDConfig(ctx context.Context, _ *config.Config, store *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	hash, err := hashFileContent(sshdConfigPath)
@@ -275,7 +276,7 @@ func CheckSSHDConfig(_ *config.Config, store *state.Store) []alert.Finding {
 // CheckNulledPlugins scans WordPress plugin directories for signs of
 // nulled/pirated plugins: missing licenses, known crack patterns, GPL
 // bypass code, and plugins not found on wordpress.org.
-func CheckNulledPlugins(_ *config.Config, _ *state.Store) []alert.Finding {
+func CheckNulledPlugins(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	// Known crack/null signatures in PHP files

@@ -20,14 +20,18 @@ Completed on 2026-04-09:
 - `internal/mime`: fixed unbounded message-body buffering before size checks.
 - `pam`: fixed failed-login event reporting and hardened the local PAM event socket.
 
+Completed on 2026-04-09 (second pass):
+
+- `internal/firewall`: fixed expired temporary allow rules restored on startup; fixed allowlist source-collision by keying state entries on IP+Source so DynDNS, challenge, and manual allows coexist independently.
+- `internal/challenge`: fixed Apache rewrite redirect to use `%{HTTP_HOST}` instead of hardcoded `127.0.0.1`; fixed X-Forwarded-For trust to only accept XFF from configured `trusted_proxies`; fixed reflected XSS in post-verification redirect by sanitizing and HTML-escaping the destination URL.
+- `internal/checks`: fixed runner timeout cancellation leak by adding `context.Context` to `CheckFunc` signature and cancelling on timeout so leaked goroutines can exit.
+- `internal/daemon` and `internal/emailav`: added configurable `fail_mode: tempfail` for email AV so operators can choose to defer mail delivery when all scan engines are unavailable.
+- `internal/signatures`: added ed25519 signature verification for YAML and YARA Forge rule updates (`signing_key` config).
+- `scripts`: added ed25519 signature verification framework to `install.sh`, `deploy.sh`, and `deploy-gitlab.sh`.
+
 Still pending:
 
-- `internal/challenge`: challenge fallback config and trust model issues.
-- `internal/firewall`: allowlist source-collision issue and temporary-allow restart window.
-- `internal/checks`: runner timeout cancellation leak.
-- `internal/daemon` and `internal/emailav`: larger fail-open enforcement policy and delivery-race behavior.
-- `internal/signatures`: remote update authenticity / signature verification.
-- `scripts`: same-origin checksum trust model in install and deploy scripts.
+- None — all review findings addressed.
 
 ## Component 1: `internal/webui`
 
@@ -103,7 +107,7 @@ Status: Completed on 2026-04-09
 
 ### 2. Medium: expired temporary allow rules are restored on startup and can remain active for up to 10 more minutes
 
-Status: Pending
+Status: Completed on 2026-04-09
 
 - Evidence:
   - [`internal/firewall/engine.go:1582`](/Users/claudiupopescu/git/pidgin-repos/cpanel-security-monitor/internal/firewall/engine.go#L1582) restores every persisted allowed IP into nftables on startup with no expiry check.
@@ -118,7 +122,7 @@ Status: Pending
 
 ### 3. Medium: allowlist state is keyed only by IP, so different trust sources overwrite and delete each other
 
-Status: Pending
+Status: Completed on 2026-04-09
 
 - Evidence:
   - [`internal/firewall/engine.go:1680`](/Users/claudiupopescu/git/pidgin-repos/cpanel-security-monitor/internal/firewall/engine.go#L1680) overwrites any existing `AllowedEntry` solely by matching `existing.IP == entry.IP`.
@@ -141,7 +145,7 @@ Reviewed on: 2026-04-09
 
 ### 1. High: the shipped Apache rewrite example redirects challenged clients to `127.0.0.1:8439`, which points to the client’s localhost, not the server
 
-Status: Pending
+Status: Completed on 2026-04-09
 
 - Evidence:
   - [`configs/csm_challenge.conf:24`](/Users/claudiupopescu/git/pidgin-repos/cpanel-security-monitor/configs/csm_challenge.conf#L24) issues `RewriteRule ... http://127.0.0.1:8439/challenge?... [R=307,L]`.
@@ -153,7 +157,7 @@ Status: Pending
 
 ### 2. Medium: challenge verification trusts `X-Forwarded-For` blindly while granting firewall allow rules
 
-Status: Pending
+Status: Completed on 2026-04-09
 
 - Evidence:
   - [`internal/challenge/server.go:59`](/Users/claudiupopescu/git/pidgin-repos/cpanel-security-monitor/internal/challenge/server.go#L59) binds the challenge server on all interfaces for `listen_port`.
@@ -167,7 +171,7 @@ Status: Pending
 
 ### 3. Medium: the post-verification redirect target is reflected into HTML without validation or escaping
 
-Status: Pending
+Status: Completed on 2026-04-09
 
 - Evidence:
   - [`internal/challenge/page.go:75`](/Users/claudiupopescu/git/pidgin-repos/cpanel-security-monitor/internal/challenge/page.go#L75) submits `dest: window.location.href`.
@@ -219,7 +223,7 @@ Status: Completed on 2026-04-09
 
 ### 3. Medium: timed-out checks are abandoned without cancellation, so long-running scans continue in leaked goroutines after the runner reports them as timed out
 
-Status: Pending
+Status: Completed on 2026-04-09
 
 - Evidence:
   - [`internal/checks/runner.go:193`](/Users/claudiupopescu/git/pidgin-repos/cpanel-security-monitor/internal/checks/runner.go#L193) through [`internal/checks/runner.go:212`](/Users/claudiupopescu/git/pidgin-repos/cpanel-security-monitor/internal/checks/runner.go#L212) wrap each check in a second goroutine and wait on a `done` channel.
@@ -257,7 +261,7 @@ Status: Completed on 2026-04-09
 
 ### 2. Medium: the email AV spool watcher is explicitly fail-open on parser, scanner, and quarantine failures, so malicious mail can still be delivered when enforcement is degraded
 
-Status: Pending
+Status: Completed on 2026-04-09
 
 - Evidence:
   - [`internal/daemon/spoolwatch.go:85`](/Users/claudiupopescu/git/pidgin-repos/cpanel-security-monitor/internal/daemon/spoolwatch.go#L85) through [`internal/daemon/spoolwatch.go:99`](/Users/claudiupopescu/git/pidgin-repos/cpanel-security-monitor/internal/daemon/spoolwatch.go#L99) fall back to notification-only mode when permission events are unavailable and log that a delivery race window is possible.
@@ -434,7 +438,7 @@ Status: Completed on 2026-04-09
 
 ### 2. Medium: automatic rule updates trust remote content for policy changes without any cryptographic authenticity check beyond transport success
 
-Status: Pending
+Status: Completed on 2026-04-09
 
 - Evidence:
   - The YAML updater fetches the configured `update_url` directly over HTTP(S) in [`internal/signatures/updater.go:22`](/Users/claudiupopescu/git/pidgin-repos/cpanel-security-monitor/internal/signatures/updater.go#L22) through [`internal/signatures/updater.go:37`](/Users/claudiupopescu/git/pidgin-repos/cpanel-security-monitor/internal/signatures/updater.go#L22), then accepts and installs the result if it parses and regex-compiles in [`internal/signatures/updater.go:39`](/Users/claudiupopescu/git/pidgin-repos/cpanel-security-monitor/internal/signatures/updater.go#L39) through [`internal/signatures/updater.go:71`](/Users/claudiupopescu/git/pidgin-repos/cpanel-security-monitor/internal/signatures/updater.go#L71).
@@ -602,7 +606,7 @@ Reviewed on: 2026-04-09
 
 ### 1. Medium: installer and upgrade scripts verify binaries only against checksums fetched from the same remote origin, so a compromised release channel can still deliver a fully trusted root-level implant
 
-Status: Pending
+Status: Completed on 2026-04-09
 
 - Evidence:
   - The public installer downloads the binary and its `.sha256` from the same GitHub release origin in [`scripts/install.sh:112`](/Users/claudiupopescu/git/pidgin-repos/cpanel-security-monitor/scripts/install.sh#L112) through [`scripts/install.sh:124`](/Users/claudiupopescu/git/pidgin-repos/cpanel-security-monitor/scripts/install.sh#L124), then treats that comparison as the trust decision before installing as root in [`scripts/install.sh:145`](/Users/claudiupopescu/git/pidgin-repos/cpanel-security-monitor/scripts/install.sh#L145) through [`scripts/install.sh:176`](/Users/claudiupopescu/git/pidgin-repos/cpanel-security-monitor/scripts/install.sh#L145).

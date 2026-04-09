@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"bufio"
 	"encoding/json"
 	"fmt"
@@ -141,7 +142,7 @@ func humanBytes(b int64) string {
 
 // CheckLoadAverage compares the 1-minute load average against per-core
 // thresholds from config. Reports Critical or High findings.
-func CheckLoadAverage(cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckLoadAverage(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	if !perfEnabled(cfg) {
 		return nil
 	}
@@ -187,7 +188,7 @@ func CheckLoadAverage(cfg *config.Config, _ *state.Store) []alert.Finding {
 // CheckPHPProcessLoad scans /proc for lsphp processes, groups them by user,
 // and fires Critical if total exceeds cores*multiplier, High per user if
 // individual count exceeds threshold.
-func CheckPHPProcessLoad(cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckPHPProcessLoad(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	if !perfEnabled(cfg) {
 		return nil
 	}
@@ -276,7 +277,7 @@ func CheckPHPProcessLoad(cfg *config.Config, _ *state.Store) []alert.Finding {
 
 // CheckSwapAndOOM checks for OOM killer events in dmesg and elevated swap
 // usage from /proc/meminfo. Reports Critical for OOM, High for swap > 50%.
-func CheckSwapAndOOM(cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckSwapAndOOM(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	if !perfEnabled(cfg) {
 		return nil
 	}
@@ -355,7 +356,7 @@ func CheckSwapAndOOM(cfg *config.Config, _ *state.Store) []alert.Finding {
 // CheckPHPHandler detects PHP CGI handler usage on LiteSpeed servers.
 // On LiteSpeed, CGI is significantly slower than LSAPI; this check fires
 // a Critical finding for each PHP version using the CGI handler.
-func CheckPHPHandler(cfg *config.Config, store *state.Store) []alert.Finding {
+func CheckPHPHandler(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	if !perfEnabled(cfg) {
 		return nil
 	}
@@ -430,7 +431,7 @@ func CheckPHPHandler(cfg *config.Config, store *state.Store) []alert.Finding {
 // CheckMySQLConfig inspects MySQL global variables and runtime status for
 // performance-impacting misconfigurations. Each issue emits its own finding
 // with a stable message so deduplication works correctly.
-func CheckMySQLConfig(cfg *config.Config, store *state.Store) []alert.Finding {
+func CheckMySQLConfig(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	if !perfEnabled(cfg) {
 		return nil
 	}
@@ -600,7 +601,7 @@ func CheckMySQLConfig(cfg *config.Config, store *state.Store) []alert.Finding {
 // CheckRedisConfig inspects a local Redis instance for performance-impacting
 // misconfigurations: unset maxmemory, noeviction policy, non-expiring keys,
 // and an overly aggressive bgsave schedule for the dataset size.
-func CheckRedisConfig(cfg *config.Config, store *state.Store) []alert.Finding {
+func CheckRedisConfig(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	if !perfEnabled(cfg) {
 		return nil
 	}
@@ -885,7 +886,7 @@ func scanErrorLogs(dir string, thresholdBytes int64, depth int, findings *[]aler
 // CheckErrorLogBloat walks /home/*/public_html (max depth 3) looking for
 // error_log files that exceed the configured size threshold. Throttled to
 // once every 60 minutes.
-func CheckErrorLogBloat(cfg *config.Config, store *state.Store) []alert.Finding {
+func CheckErrorLogBloat(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	if !perfEnabled(cfg) {
 		return nil
 	}
@@ -1041,7 +1042,7 @@ func scanWPConfigs(dir, account string, cfg *config.Config, depth int, findings 
 // files and reports excessive WP_MEMORY_LIMIT values, unlimited
 // max_execution_time, and display_errors enabled in production.
 // Throttled to once every 60 minutes.
-func CheckWPConfig(cfg *config.Config, store *state.Store) []alert.Finding {
+func CheckWPConfig(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	if !perfEnabled(cfg) {
 		return nil
 	}
@@ -1170,7 +1171,7 @@ func findWPTransients(dir string, cfg *config.Config, warnBytes, critBytes int64
 // from wp-config.php; the password is passed via MYSQL_PWD environment
 // variable (never on the command line).
 // Throttled to once every 60 minutes.
-func CheckWPTransientBloat(cfg *config.Config, store *state.Store) []alert.Finding {
+func CheckWPTransientBloat(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	if !perfEnabled(cfg) {
 		return nil
 	}
@@ -1265,7 +1266,7 @@ func scanWPCron(dir, account string, depth int, findings *[]alert.Finding) {
 // that have not disabled the built-in WP-Cron mechanism. Running WP-Cron via
 // HTTP is a common cause of high load on busy sites.
 // Throttled to once every 60 minutes.
-func CheckWPCron(cfg *config.Config, store *state.Store) []alert.Finding {
+func CheckWPCron(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	if !perfEnabled(cfg) {
 		return nil
 	}

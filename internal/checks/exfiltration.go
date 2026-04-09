@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,7 +14,7 @@ import (
 
 // CheckDatabaseDumps detects mysqldump/pg_dump processes running under
 // non-root users - potential data exfiltration.
-func CheckDatabaseDumps(_ *config.Config, _ *state.Store) []alert.Finding {
+func CheckDatabaseDumps(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	dumpTools := []string{"mysqldump", "pg_dump", "mongodump"}
@@ -62,7 +63,7 @@ func CheckDatabaseDumps(_ *config.Config, _ *state.Store) []alert.Finding {
 }
 
 // CheckOutboundPasteSites detects connections to known paste/exfiltration sites.
-func CheckOutboundPasteSites(cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckOutboundPasteSites(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	// Check running processes for connections to paste sites

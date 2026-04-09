@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -11,7 +12,7 @@ import (
 	"github.com/pidginhost/csm/internal/state"
 )
 
-func CheckFirewall(cfg *config.Config, store *state.Store) []alert.Finding {
+func CheckFirewall(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	if !cfg.Firewall.Enabled {

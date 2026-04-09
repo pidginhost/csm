@@ -24,6 +24,39 @@ ARG_NON_INTERACTIVE=0
 die() { echo "ERROR: $1" >&2; exit 1; }
 info() { echo "  $1"; }
 
+# ed25519 public key for verifying release signatures.
+# Replace with your actual key after generating with: openssl genpkey -algorithm Ed25519
+CSM_SIGNING_KEY_PEM=""
+# To enable: set CSM_SIGNING_KEY_PEM to the PEM-encoded ed25519 public key.
+# Signatures are published as .sig files alongside each release asset.
+
+verify_signature() {
+    local file="$1" sig_url="$2"
+    if [ -z "$CSM_SIGNING_KEY_PEM" ]; then
+        return 0  # no key configured, skip verification
+    fi
+    if ! command -v openssl >/dev/null 2>&1; then
+        echo "  WARNING: openssl not found, skipping signature verification" >&2
+        return 0
+    fi
+    local sig_file
+    sig_file="${file}.sig"
+    local sig_http
+    sig_http=$(curl -sS -w '%{http_code}' -L -o "$sig_file" "$sig_url")
+    if [ "$sig_http" != "200" ]; then
+        die "Signature download failed (HTTP ${sig_http}) from ${sig_url}"
+    fi
+    local key_file
+    key_file=$(mktemp)
+    trap 'rm -f "$key_file" "$sig_file"' RETURN
+    printf '%s\n' "$CSM_SIGNING_KEY_PEM" > "$key_file"
+    if openssl pkeyutl -verify -pubin -inkey "$key_file" -rawin -sigfile "$sig_file" -in "$file" >/dev/null 2>&1; then
+        info "Signature verified OK"
+    else
+        die "SIGNATURE VERIFICATION FAILED — binary may be tampered with!"
+    fi
+}
+
 detect_arch() {
     case "$(uname -m)" in
         x86_64)  echo "amd64" ;;
@@ -122,6 +155,8 @@ info "Verifying checksum..."
 EXPECTED=$(awk '{print $1}' "${TMPDIR}/csm.sha256")
 ACTUAL=$(sha256sum "${TMPDIR}/csm" | awk '{print $1}')
 [ "$EXPECTED" != "$ACTUAL" ] && die "CHECKSUM MISMATCH - binary may be tampered!"
+
+verify_signature "${TMPDIR}/csm" "${BINARY_URL}.sig"
 
 chmod +x "${TMPDIR}/csm"
 VERSION=$("${TMPDIR}/csm" version 2>/dev/null || die "Binary failed to execute")

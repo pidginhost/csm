@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -21,7 +22,7 @@ const phpContentReadSize = 32768 // Read first 32KB for analysis
 // This check scans PHP files in directories that shouldn't normally contain
 // user-authored PHP: wp-content/languages, wp-content/upgrade, wp-content/mu-plugins,
 // and also checks any PHP files flagged by the file index as new.
-func CheckPHPContent(cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckPHPContent(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	homeDirs, err := GetScanHomeDirs()

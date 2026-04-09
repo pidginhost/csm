@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,7 +14,7 @@ import (
 
 // CheckHealth verifies that CSM's dependencies are working.
 // Reports on missing external commands, broken auditd, etc.
-func CheckHealth(_ *config.Config, _ *state.Store) []alert.Finding {
+func CheckHealth(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	// Check required external commands exist

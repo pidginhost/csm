@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,7 +15,7 @@ import (
 // CheckOpenBasedir verifies that each cPanel account has proper PHP
 // isolation via CageFS and/or open_basedir.
 // Flags accounts where CageFS is disabled AND open_basedir is not set.
-func CheckOpenBasedir(_ *config.Config, _ *state.Store) []alert.Finding {
+func CheckOpenBasedir(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	// Check global CageFS mode
@@ -119,7 +120,7 @@ func hasOpenBasedir(user string) bool {
 // CheckSymlinkAttacks detects symbolic links inside user public_html
 // directories that point outside the account's own directory.
 // This is a classic shared hosting attack to read other users' files.
-func CheckSymlinkAttacks(_ *config.Config, _ *state.Store) []alert.Finding {
+func CheckSymlinkAttacks(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	homeDirs, _ := GetScanHomeDirs()

@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,7 +18,7 @@ PasswordAuthentication no
 X11Forwarding no
 `)
 
-	if findings := CheckSSHDConfig(nil, st); len(findings) != 0 {
+	if findings := CheckSSHDConfig(context.Background(), nil, st); len(findings) != 0 {
 		t.Fatalf("initial baseline findings = %v, want none", findings)
 	}
 
@@ -28,7 +29,7 @@ PasswordAuthentication no
 X11Forwarding yes
 `)
 
-	findings := CheckSSHDConfig(nil, st)
+	findings := CheckSSHDConfig(context.Background(), nil, st)
 	if len(findings) != 1 {
 		t.Fatalf("findings = %v, want 1 generic change alert", findings)
 	}
@@ -43,7 +44,7 @@ PasswordAuthentication no
 X11Forwarding no
 `)
 
-	if findings := CheckSSHDConfig(nil, st); len(findings) != 0 {
+	if findings := CheckSSHDConfig(context.Background(), nil, st); len(findings) != 0 {
 		t.Fatalf("initial baseline findings = %v, want none", findings)
 	}
 
@@ -52,7 +53,7 @@ PasswordAuthentication yes
 X11Forwarding no
 `)
 
-	findings := CheckSSHDConfig(nil, st)
+	findings := CheckSSHDConfig(context.Background(), nil, st)
 	if len(findings) != 1 {
 		t.Fatalf("findings = %v, want 1 critical alert", findings)
 	}
@@ -67,7 +68,7 @@ PasswordAuthentication no
 X11Forwarding no
 `)
 
-	if findings := CheckSSHDConfig(nil, st); len(findings) != 0 {
+	if findings := CheckSSHDConfig(context.Background(), nil, st); len(findings) != 0 {
 		t.Fatalf("initial baseline findings = %v, want none", findings)
 	}
 
@@ -81,7 +82,7 @@ Match User root
     X11Forwarding yes
 `)
 
-	findings := CheckSSHDConfig(nil, st)
+	findings := CheckSSHDConfig(context.Background(), nil, st)
 	if len(findings) != 1 {
 		t.Fatalf("findings = %v, want 1 generic change alert", findings)
 	}

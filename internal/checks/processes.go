@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,7 +13,7 @@ import (
 	"github.com/pidginhost/csm/internal/state"
 )
 
-func CheckFakeKernelThreads(_ *config.Config, _ *state.Store) []alert.Finding {
+func CheckFakeKernelThreads(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	procs, _ := filepath.Glob("/proc/[0-9]*/status")
@@ -68,7 +69,7 @@ func CheckFakeKernelThreads(_ *config.Config, _ *state.Store) []alert.Finding {
 	return findings
 }
 
-func CheckSuspiciousProcesses(_ *config.Config, _ *state.Store) []alert.Finding {
+func CheckSuspiciousProcesses(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	suspiciousNames := []string{"defunct", "gsocket", "gs-netcat", "gs-sftp"}
@@ -151,7 +152,7 @@ func CheckSuspiciousProcesses(_ *config.Config, _ *state.Store) []alert.Finding 
 
 // CheckPHPProcesses inspects running lsphp processes to detect active
 // webshell execution. Only reads /proc cmdline - zero disk I/O.
-func CheckPHPProcesses(_ *config.Config, _ *state.Store) []alert.Finding {
+func CheckPHPProcesses(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	suspiciousPHPPaths := []string{

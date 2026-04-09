@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/user"
@@ -81,19 +82,22 @@ func RunAccountScan(cfg *config.Config, store *state.Store, account string) []al
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
+			ctx, cancel := context.WithTimeout(context.Background(), checkTimeout)
 			done := make(chan []alert.Finding, 1)
 			go func() {
-				done <- c.fn(cfg, store)
+				done <- c.fn(ctx, cfg, store)
 			}()
 
 			select {
 			case results := <-done:
+				cancel()
 				if len(results) > 0 {
 					mu.Lock()
 					findings = append(findings, results...)
 					mu.Unlock()
 				}
-			case <-time.After(5 * time.Minute):
+			case <-ctx.Done():
+				cancel()
 				mu.Lock()
 				findings = append(findings, alert.Finding{
 					Severity:  alert.Warning,
@@ -159,7 +163,7 @@ func (f fakeDirEntry) Info() (os.FileInfo, error) { return f.fi, nil }
 
 // makeAccountSSHKeyCheck creates a check for SSH keys of a specific account.
 func makeAccountSSHKeyCheck(account string) CheckFunc {
-	return func(cfg *config.Config, store *state.Store) []alert.Finding {
+	return func(_ context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 		var findings []alert.Finding
 		keyFile := filepath.Join("/home", account, ".ssh", "authorized_keys")
 		hash, err := hashFileContent(keyFile)
@@ -181,7 +185,7 @@ func makeAccountSSHKeyCheck(account string) CheckFunc {
 
 // makeAccountCrontabCheck creates a check for a specific account's crontab.
 func makeAccountCrontabCheck(account string) CheckFunc {
-	return func(_ *config.Config, _ *state.Store) []alert.Finding {
+	return func(_ context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 		var findings []alert.Finding
 		crontabFile := filepath.Join("/var/spool/cron", account)
 		data, err := os.ReadFile(crontabFile)
@@ -213,7 +217,7 @@ func makeAccountCrontabCheck(account string) CheckFunc {
 
 // makeAccountBackdoorCheck creates a check for backdoor binaries in account's .config.
 func makeAccountBackdoorCheck(account string) CheckFunc {
-	return func(_ *config.Config, _ *state.Store) []alert.Finding {
+	return func(_ context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 		var findings []alert.Finding
 
 		backdoorNames := map[string]bool{

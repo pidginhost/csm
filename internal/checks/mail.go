@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -10,7 +11,7 @@ import (
 	"github.com/pidginhost/csm/internal/state"
 )
 
-func CheckMailQueue(cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckMailQueue(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	out, err := runCmd("exim", "-bpc")

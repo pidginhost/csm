@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -42,7 +43,7 @@ type reputationEntry struct {
 //  2. Check local threat DB (permanent blocklist + free feeds)
 //  3. Check AbuseIPDB cache
 //  4. Query AbuseIPDB for truly unknown IPs (max 5/cycle, ~720/day)
-func CheckIPReputation(cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	ips := collectRecentIPs(cfg)

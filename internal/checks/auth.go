@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -13,7 +14,7 @@ import (
 	"github.com/pidginhost/csm/internal/state"
 )
 
-func CheckShadowChanges(cfg *config.Config, store *state.Store) []alert.Finding {
+func CheckShadowChanges(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	info, err := os.Stat("/etc/shadow")
@@ -238,7 +239,7 @@ func decodeHexString(s string) string {
 	return string(result)
 }
 
-func CheckUID0Accounts(_ *config.Config, _ *state.Store) []alert.Finding {
+func CheckUID0Accounts(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	data, err := os.ReadFile("/etc/passwd")
@@ -271,7 +272,7 @@ func CheckUID0Accounts(_ *config.Config, _ *state.Store) []alert.Finding {
 	return findings
 }
 
-func CheckSSHKeys(cfg *config.Config, store *state.Store) []alert.Finding {
+func CheckSSHKeys(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	// Check root authorized_keys
@@ -312,7 +313,7 @@ func CheckSSHKeys(cfg *config.Config, store *state.Store) []alert.Finding {
 	return findings
 }
 
-func CheckAPITokens(cfg *config.Config, store *state.Store) []alert.Finding {
+func CheckAPITokens(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	// WHM root API tokens

@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"bufio"
 	"fmt"
 	"os"
@@ -23,7 +24,7 @@ var dnsServerUsers = map[string]bool{
 // DNS servers that are NOT in /etc/resolv.conf. This catches DNS
 // tunneling, GSocket relay discovery, and malware using hardcoded resolvers.
 // Connections owned by known DNS server processes (e.g. named) are skipped.
-func CheckDNSConnections(cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckDNSConnections(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	// Parse configured resolvers

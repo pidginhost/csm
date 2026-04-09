@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -38,7 +39,7 @@ const (
 //
 // Aggregates per-IP counts across ALL domains — catches attackers who
 // distribute requests across many sites to stay under per-site thresholds.
-func CheckWPBruteForce(cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckWPBruteForce(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	window := cfg.Thresholds.BruteForceWindow
 	if window <= 0 {
 		window = 5000
@@ -194,7 +195,7 @@ func countBruteForce(lines []string, infraIPs []string, wpLogin, xmlrpc, userEnu
 }
 
 // CheckFTPLogins parses /var/log/messages or pure-ftpd log for FTP brute force.
-func CheckFTPLogins(cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckFTPLogins(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	lines := tailFile("/var/log/messages", 200)
@@ -246,7 +247,7 @@ func CheckFTPLogins(cfg *config.Config, _ *state.Store) []alert.Finding {
 }
 
 // CheckWebmailLogins parses cPanel access log for webmail logins from non-infra IPs.
-func CheckWebmailLogins(cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckWebmailLogins(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	if cfg.Suppressions.SuppressWebmail {
 		return nil
 	}
@@ -293,7 +294,7 @@ func CheckWebmailLogins(cfg *config.Config, _ *state.Store) []alert.Finding {
 }
 
 // CheckAPIAuthFailures parses cPanel access log for failed API authentication.
-func CheckAPIAuthFailures(cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckAPIAuthFailures(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	lines := tailFile("/usr/local/cpanel/logs/access_log", 300)

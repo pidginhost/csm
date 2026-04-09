@@ -581,7 +581,7 @@ func runUpdateRules() {
 	cfg := loadConfig()
 
 	fmt.Fprintf(os.Stderr, "Downloading rules from %s...\n", cfg.Signatures.UpdateURL)
-	count, err := signatures.Update(cfg.Signatures.RulesDir, cfg.Signatures.UpdateURL)
+	count, err := signatures.Update(cfg.Signatures.RulesDir, cfg.Signatures.UpdateURL, cfg.Signatures.SigningKey)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Update failed: %v\n", err)
 		os.Exit(1)

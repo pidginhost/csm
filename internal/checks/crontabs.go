@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,7 +12,7 @@ import (
 	"github.com/pidginhost/csm/internal/state"
 )
 
-func CheckCrontabs(_ *config.Config, store *state.Store) []alert.Finding {
+func CheckCrontabs(ctx context.Context, _ *config.Config, store *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	suspiciousPatterns := []string{

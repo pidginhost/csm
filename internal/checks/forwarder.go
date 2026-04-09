@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"bufio"
 	"crypto/sha256"
 	"fmt"
@@ -152,7 +153,7 @@ func fileContentHash(path string) (string, error) {
 // CheckForwarders audits all valiases and vfilters files for dangerous forwarder
 // patterns. Uses internal throttle: skips if last refresh was less than
 // password_check_interval_min ago (reuses the same interval).
-func CheckForwarders(cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckForwarders(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	db := store.Global()
 	if db == nil {
 		return nil

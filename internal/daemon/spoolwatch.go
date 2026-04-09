@@ -97,6 +97,9 @@ func NewSpoolWatcher(cfg *config.Config, alertCh chan<- alert.Finding, orch *ema
 		sw.fd = fd
 		sw.permissionMode = false
 		fmt.Fprintf(os.Stderr, "[%s] spool watcher: WARNING - permission events unavailable, using notification mode (small delivery race window possible)\n", ts())
+		if sw.cfg.EmailAV.FailMode == "tempfail" {
+			fmt.Fprintf(os.Stderr, "[%s] spool watcher: WARNING - fail_mode=tempfail requested but cannot be honoured without FAN_OPEN_PERM; operating fail-open\n", ts())
+		}
 	}
 
 	// Mark spool directories
@@ -309,11 +312,16 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 		MaxExtractionSize: sw.cfg.EmailAV.MaxExtractionSize,
 	}
 
+	tempfail := sw.cfg.EmailAV.FailMode == "tempfail" && evt.needResp
+
 	extraction, err := emime.ParseSpoolMessage(headerPath, bodyPath, limits)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] spool watcher: MIME parse error for %s: %v\n", ts(), msgID, err)
 		sw.emitFinding("email_av_parse_error", alert.Warning, fmt.Sprintf("MIME parse failed for message %s: %v", msgID, err))
-		return // fail-open: FAN_ALLOW via defer
+		if tempfail {
+			response = FAN_DENY // tempfail: Exim retries later
+		}
+		return
 	}
 
 	// Clean up temp files when done
@@ -332,6 +340,11 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 
 	// Emit degraded/timeout findings for operator visibility
 	if result.AllEnginesDown {
+		if tempfail {
+			response = FAN_DENY // tempfail: defer delivery until engines recover
+			sw.emitDegradedWarning(fmt.Sprintf("All AV engines unavailable - message %s deferred (tempfail mode)", msgID))
+			return
+		}
 		sw.emitDegradedWarning(fmt.Sprintf("All AV engines unavailable - message %s delivered unscanned", msgID))
 	}
 	if len(result.TimedOutEngines) > 0 {

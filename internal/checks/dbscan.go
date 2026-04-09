@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"bufio"
 	"fmt"
 	"os"
@@ -37,7 +38,7 @@ var dbSpamDomains = []string{
 
 // CheckDatabaseContent scans WordPress databases for injected malware,
 // spam content, siteurl hijacking, and rogue admin accounts.
-func CheckDatabaseContent(_ *config.Config, _ *state.Store) []alert.Finding {
+func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	wpConfigs, _ := filepath.Glob("/home/*/public_html/wp-config.php")

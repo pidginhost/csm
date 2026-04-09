@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -13,7 +14,7 @@ import (
 // CheckLocalThreatScore generates findings for IPs that have accumulated
 // a high local threat score but have not yet been blocked.
 // Runs every 10 minutes as part of TierCritical.
-func CheckLocalThreatScore(cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckLocalThreatScore(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	adb := attackdb.Global()
 	if adb == nil {
 		return nil

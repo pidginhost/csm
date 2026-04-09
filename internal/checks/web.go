@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"bufio"
 	"fmt"
 	"os"
@@ -16,7 +17,7 @@ import (
 const wpChecksumWorkers = 5 // concurrent wp core verify-checksums
 
 // CheckHtaccess scans for malicious .htaccess directives using pure Go ReadDir.
-func CheckHtaccess(cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckHtaccess(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	suspiciousPatterns := []string{
@@ -278,7 +279,7 @@ func checkHtaccessFile(path string, suspicious, safe []string, findings *[]alert
 // Installations that pass verification have their core files cached in
 // GlobalCMSCache so the real-time scanner can skip signature matches
 // on known-clean CMS files.
-func CheckWPCore(_ *config.Config, _ *state.Store) []alert.Finding {
+func CheckWPCore(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	wpConfigs, _ := filepath.Glob("/home/*/public_html/wp-config.php")
 	if len(wpConfigs) == 0 {
 		return nil

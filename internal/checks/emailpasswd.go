@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"bufio"
 	"crypto/sha1"
 	"crypto/sha256"
@@ -275,7 +276,7 @@ func checkWordlist(hash string) string {
 // CheckEmailPasswords audits Dovecot email account passwords for weak/predictable
 // patterns. Uses internal throttle: skips if last refresh was less than
 // password_check_interval_min ago.
-func CheckEmailPasswords(cfg *config.Config, _ *state.Store) []alert.Finding {
+func CheckEmailPasswords(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	db := store.Global()
 	if db == nil {
 		return nil

@@ -1323,6 +1323,7 @@ func (e *Engine) TempAllowIP(ip string, reason string, timeout time.Duration) er
 }
 
 // CleanExpiredAllows removes expired temporary allows from the set and state.
+// An IP is only removed from nftables if no non-expired entries remain for it.
 // Called periodically by the daemon.
 func (e *Engine) CleanExpiredAllows() int {
 	e.mu.Lock()
@@ -1331,14 +1332,12 @@ func (e *Engine) CleanExpiredAllows() int {
 	state := e.loadStateFile()
 	now := time.Now()
 	var active []AllowedEntry
+	expiredIPs := make(map[string]bool)
 	removed := 0
 
 	for _, entry := range state.Allowed {
 		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
-			// Remove from nftables
-			if set, key, err := e.resolveIPSet(entry.IP, e.setAllowed, e.setAllowed6); err == nil {
-				_ = e.conn.SetDeleteElements(set, []nftables.SetElement{{Key: key}})
-			}
+			expiredIPs[entry.IP] = true
 			removed++
 			AppendAudit(e.statePath, "temp_allow_expired", entry.IP, "", SourceSystem, 0)
 		} else {
@@ -1347,7 +1346,22 @@ func (e *Engine) CleanExpiredAllows() int {
 	}
 
 	if removed > 0 {
-		_ = e.conn.Flush()
+		// Only remove from nftables if no active entries remain for the IP
+		activeIPs := make(map[string]bool)
+		for _, entry := range active {
+			activeIPs[entry.IP] = true
+		}
+		for ip := range expiredIPs {
+			if !activeIPs[ip] {
+				if set, key, err := e.resolveIPSet(ip, e.setAllowed, e.setAllowed6); err == nil {
+					_ = e.conn.SetDeleteElements(set, []nftables.SetElement{{Key: key}})
+				}
+			}
+		}
+		if err := e.conn.Flush(); err != nil {
+			fmt.Fprintf(os.Stderr, "firewall: error flushing expired allows: %v\n", err)
+			return 0 // don't update state; will retry on next tick
+		}
 		state.Allowed = active
 		e.saveState(&state)
 	}
@@ -1408,6 +1422,30 @@ func (e *Engine) RemoveAllowIP(ip string) error {
 
 	e.removeAllowedState(ip)
 	AppendAudit(e.statePath, "remove_allow", ip, "", "", 0)
+	return nil
+}
+
+// RemoveAllowIPBySource removes only allow entries from a specific source.
+// The IP is only removed from the nftables set if no other sources remain.
+func (e *Engine) RemoveAllowIPBySource(ip, source string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	ipGone := e.removeAllowedStateBySource(ip, source)
+	if ipGone {
+		targetSet, key, err := e.resolveIPSet(ip, e.setAllowed, e.setAllowed6)
+		if err != nil {
+			return err
+		}
+		if err := e.conn.SetDeleteElements(targetSet, []nftables.SetElement{{Key: key}}); err != nil {
+			return fmt.Errorf("removing from allowed set: %w", err)
+		}
+		if err := e.conn.Flush(); err != nil {
+			return fmt.Errorf("flushing: %w", err)
+		}
+	}
+
+	AppendAudit(e.statePath, "remove_allow", ip, "source: "+source, source, 0)
 	return nil
 }
 
@@ -1614,8 +1652,15 @@ func (e *Engine) loadState() error {
 		}
 	}
 
-	// Restore allowed IPs (route to IPv4 or IPv6 set)
+	// Restore allowed IPs (skip expired, deduplicate, route to IPv4 or IPv6 set)
+	restoredAllowed := make(map[string]bool)
 	for _, entry := range state.Allowed {
+		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
+			continue
+		}
+		if restoredAllowed[entry.IP] {
+			continue // already added to nftables from another source entry
+		}
 		parsed := net.ParseIP(entry.IP)
 		if parsed == nil {
 			continue
@@ -1625,6 +1670,7 @@ func (e *Engine) loadState() error {
 		} else if e.setAllowed6 != nil {
 			_ = e.conn.SetAddElements(e.setAllowed6, []nftables.SetElement{{Key: parsed.To16()}})
 		}
+		restoredAllowed[entry.IP] = true
 	}
 
 	// Restore blocked subnets (route to IPv4 or IPv6 set)
@@ -1683,6 +1729,14 @@ func (e *Engine) loadStateFile() FirewallState {
 	}
 	state.BlockedNet = activeNets
 
+	var activeAllowed []AllowedEntry
+	for _, entry := range state.Allowed {
+		if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
+			activeAllowed = append(activeAllowed, entry)
+		}
+	}
+	state.Allowed = activeAllowed
+
 	return state
 }
 
@@ -1729,8 +1783,8 @@ func (e *Engine) saveAllowedEntry(entry AllowedEntry) {
 	}
 	state := e.loadStateFile()
 	for i, existing := range state.Allowed {
-		if existing.IP == entry.IP {
-			state.Allowed[i] = entry // update reason/expiry
+		if existing.IP == entry.IP && existing.Source == entry.Source {
+			state.Allowed[i] = entry // update reason/expiry for same source
 			e.saveState(&state)
 			return
 		}
@@ -1749,6 +1803,32 @@ func (e *Engine) removeAllowedState(ip string) {
 	}
 	state.Allowed = remaining
 	e.saveState(&state)
+}
+
+// removeAllowedStateBySource removes only entries matching ip+source.
+// Returns true if no entries remain for that IP (caller should remove from nftables).
+// Returns false if the IP was not in state at all (no action needed).
+func (e *Engine) removeAllowedStateBySource(ip, source string) bool {
+	state := e.loadStateFile()
+	var remaining []AllowedEntry
+	found := false
+	ipStillPresent := false
+	for _, entry := range state.Allowed {
+		if entry.IP == ip && entry.Source == source {
+			found = true
+			continue
+		}
+		remaining = append(remaining, entry)
+		if entry.IP == ip {
+			ipStillPresent = true
+		}
+	}
+	if !found {
+		return false // IP+source not in state, nothing to do
+	}
+	state.Allowed = remaining
+	e.saveState(&state)
+	return !ipStillPresent
 }
 
 func (e *Engine) saveSubnetEntry(entry SubnetEntry) {

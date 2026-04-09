@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,7 +20,7 @@ const maxBulkDNSChanges = 5
 // CheckDNSZoneChanges monitors named zone files for modifications.
 // Suppresses bulk changes (>5 zones at once = cPanel maintenance).
 // Only alerts on targeted changes (1-5 zones) which may indicate tampering.
-func CheckDNSZoneChanges(_ *config.Config, store *state.Store) []alert.Finding {
+func CheckDNSZoneChanges(ctx context.Context, _ *config.Config, store *state.Store) []alert.Finding {
 	// cPanel stores zone files in /var/named/
 	zoneDir := "/var/named"
 	zones, err := os.ReadDir(zoneDir)
@@ -74,7 +75,7 @@ func CheckDNSZoneChanges(_ *config.Config, store *state.Store) []alert.Finding {
 
 // CheckSSLCertIssuance monitors AutoSSL logs for new certificate issuance.
 // Attackers may issue certificates for phishing domains using compromised accounts.
-func CheckSSLCertIssuance(_ *config.Config, store *state.Store) []alert.Finding {
+func CheckSSLCertIssuance(ctx context.Context, _ *config.Config, store *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	// Check AutoSSL log
