@@ -88,21 +88,34 @@ var hardBlockPrefixes = []string{
 	"email_credential",   // credential leak
 }
 
-// isInformationalCheck returns true for checks that do not contain attacker IPs.
-// These findings report server state, not attacks — routing them to challenge or
-// block would extract version numbers, sizes, or other numeric fields as IPs.
-func isInformationalCheck(check string) bool {
-	switch check {
-	case "outdated_plugins", "perf_load", "perf_memory", "perf_php_processes",
-		"perf_wp_config", "perf_wp_cron", "perf_wp_transients", "perf_redis_config",
-		"perf_mysql_config", "perf_php_handler", "perf_error_logs",
-		"waf_rules_stale", "world_writable_php", "group_writable_php",
-		"auto_response", "check_timeout", "integrity",
-		"dns_zone_change", "crond_change", "cpanel_password_purge",
-		"cpanel_file_upload", "shadow_change":
-		return true
-	}
-	return false
+// challengeableChecks lists checks whose findings contain attacker IPs and
+// are appropriate for challenge routing. This is a closed allowlist — any
+// new check that produces IP-bearing findings must be added here. This is
+// safer than a denylist because forgetting to add an informational check
+// (like outdated_plugins, whose version strings parse as IPs) defaults to
+// "skip" rather than "block an innocent IP".
+var challengeableChecks = map[string]bool{
+	"ip_reputation":            true,
+	"brute_force":              true,
+	"wp_login_bruteforce":      true,
+	"xmlrpc_abuse":             true,
+	"wp_user_enumeration":      true,
+	"ftp_bruteforce":           true,
+	"webmail_bruteforce":       true,
+	"api_auth_failure":         true,
+	"cpanel_login":             true,
+	"cpanel_login_realtime":    true,
+	"cpanel_multi_ip_login":    true,
+	"ftp_login":                true,
+	"ftp_login_realtime":       true,
+	"ssh_login_unknown_ip":     true,
+	"dns_connection":           true,
+	"user_outbound_connection": true,
+	"local_threat_score":       true,
+}
+
+func isChallengeableCheck(check string) bool {
+	return challengeableChecks[check]
 }
 
 // isHardBlockCheck returns true if the check should be hard-blocked (never challenged).
@@ -136,10 +149,11 @@ func ChallengeRouteIPs(cfg *config.Config, findings []alert.Finding) []alert.Fin
 			continue
 		}
 
-		// Skip informational checks — they don't contain attacker IPs.
-		// Version numbers in these findings (e.g. "7.8.0.1") parse as
-		// valid IPs and would incorrectly block real addresses.
-		if isInformationalCheck(f.Check) {
+		// Only route checks that are known to contain attacker IPs.
+		// This is an allowlist — new IP-bearing checks must be added to
+		// challengeableChecks. Defaulting to skip prevents version numbers,
+		// sizes, and other numeric finding fields from being blocked as IPs.
+		if !isChallengeableCheck(f.Check) {
 			continue
 		}
 
