@@ -469,8 +469,14 @@ func runBaseline() {
 	store.SetBaseline(findings)
 
 	binaryHash, _ := integrity.HashFile(binaryPath)
-	configHash, _ := integrity.HashConfigStable(cfg.ConfigFile)
 	cfg.Integrity.BinaryHash = binaryHash
+	// Save first so the file is in its final marshalled form, then hash it.
+	cfg.Integrity.ConfigHash = ""
+	if err := config.Save(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
+		return
+	}
+	configHash, _ := integrity.HashConfigStable(cfg.ConfigFile)
 	cfg.Integrity.ConfigHash = configHash
 	if err := config.Save(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
@@ -489,8 +495,14 @@ func runRehash() {
 	cfg := loadConfig()
 
 	binaryHash, _ := integrity.HashFile(binaryPath)
-	configHash, _ := integrity.HashConfigStable(cfg.ConfigFile)
 	cfg.Integrity.BinaryHash = binaryHash
+	// Save first so the file is in its final marshalled form, then hash it.
+	cfg.Integrity.ConfigHash = ""
+	if err := config.Save(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
+		return
+	}
+	configHash, _ := integrity.HashConfigStable(cfg.ConfigFile)
 	cfg.Integrity.ConfigHash = configHash
 	if err := config.Save(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)

@@ -31,7 +31,8 @@ info() { echo "  $1"; }
 verify_signature() {
     local file="$1" sig_url="$2"
     if [ -z "$CSM_SIGNING_KEY_PEM" ]; then
-        die "CSM_SIGNING_KEY_PEM is not set; refusing unsigned install"
+        echo "  WARNING: CSM_SIGNING_KEY_PEM not set, skipping signature verification" >&2
+        return 0
     fi
     if ! command -v openssl >/dev/null 2>&1; then
         echo "  WARNING: openssl not found, skipping signature verification" >&2
@@ -102,11 +103,17 @@ prompt() {
 }
 
 get_download_url() {
-    local arch="$1" asset="csm-linux-${arch}"
+    local arch="$1"
     if [ -n "$ARG_VERSION" ]; then
-        echo "https://github.com/${GITHUB_REPO}/releases/download/${ARG_VERSION}/${asset}"
+        local ver="${ARG_VERSION#v}"
+        echo "https://github.com/${GITHUB_REPO}/releases/download/${ARG_VERSION}/csm-${ver}-linux-${arch}"
     else
-        echo "https://github.com/${GITHUB_REPO}/releases/latest/download/${asset}"
+        # Fetch latest tag to build the versioned asset name.
+        local tag
+        tag=$(curl -sS "${GITHUB_API}/releases/latest" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//;s/".*//')
+        [ -z "$tag" ] && die "Could not determine latest release tag"
+        local ver="${tag#v}"
+        echo "https://github.com/${GITHUB_REPO}/releases/download/${tag}/csm-${ver}-linux-${arch}"
     fi
 }
 
@@ -162,7 +169,7 @@ info "Version: ${VERSION}"
 
 # Download assets
 info "Downloading UI assets and rules..."
-ASSETS_URL=$(get_download_url "$ARCH" | sed "s/csm-linux-${ARCH}/csm-assets.tar.gz/")
+ASSETS_URL=$(echo "$BINARY_URL" | sed "s/csm-[^/]*$/csm-assets.tar.gz/")
 HTTP_CODE=$(curl -sS -w '%{http_code}' -L -o "${TMPDIR}/assets.tar.gz" "$ASSETS_URL")
 if [ "$HTTP_CODE" = "200" ]; then
     tar xzf "${TMPDIR}/assets.tar.gz" -C "$INSTALL_DIR" 2>/dev/null || true

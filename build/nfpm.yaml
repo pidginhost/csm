@@ -49,11 +49,19 @@ contents:
     file_info:
       mode: 0640
 
-  - src: ui/
-    dst: /opt/csm/ui/
+  - src: ui/templates/*
+    dst: /opt/csm/ui/templates/
+  - src: ui/static/js/*
+    dst: /opt/csm/ui/static/js/
+  - src: ui/static/css/*.css
+    dst: /opt/csm/ui/static/css/
+  - src: ui/static/css/fonts/*
+    dst: /opt/csm/ui/static/css/fonts/
 
-  - src: configs/
+  - src: configs/*
     dst: /opt/csm/configs/
+  - src: configs/whm/*
+    dst: /opt/csm/configs/whm/
 
   - src: configs/malware.yml
     dst: /opt/csm/rules/malware.yml

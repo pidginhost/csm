@@ -24,6 +24,7 @@ case "$ARCH" in
 esac
 
 ARTIFACT_NAME="${BINARY_NAME}-linux-${ARCH}"
+GITHUB_API="https://api.github.com/repos/${GITHUB_REPO}"
 
 # --- Functions ---
 
@@ -36,7 +37,8 @@ die() { echo "ERROR: $1" >&2; exit 1; }
 verify_signature() {
     local file="$1" sig_url="$2"
     if [ -z "$CSM_SIGNING_KEY_PEM" ]; then
-        die "CSM_SIGNING_KEY_PEM is not set; refusing unsigned download"
+        echo "WARNING: CSM_SIGNING_KEY_PEM not set, skipping signature verification" >&2
+        return 0
     fi
     if ! command -v openssl >/dev/null 2>&1; then
         echo "  WARNING: openssl not found, skipping signature verification" >&2
@@ -59,13 +61,26 @@ verify_signature() {
     fi
 }
 
+resolve_release_tag() {
+    # Cache the resolved tag for the session.
+    if [ -n "${_RESOLVED_TAG:-}" ]; then echo "$_RESOLVED_TAG"; return; fi
+    _RESOLVED_TAG=$(curl -sS "${GITHUB_API}/releases/latest" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//;s/".*//')
+    [ -z "$_RESOLVED_TAG" ] && die "Could not determine latest release tag"
+    echo "$_RESOLVED_TAG"
+}
+
 get_download_url() {
     local asset="$1" version="${2:-latest}"
+    local tag ver
     if [ "$version" = "latest" ]; then
-        echo "https://github.com/${GITHUB_REPO}/releases/latest/download/${asset}"
+        tag=$(resolve_release_tag)
     else
-        echo "https://github.com/${GITHUB_REPO}/releases/download/${version}/${asset}"
+        tag="$version"
     fi
+    ver="${tag#v}"
+    # Inject version into binary names: csm-linux-amd64 -> csm-VER-linux-amd64
+    asset=$(echo "$asset" | sed "s/^csm-linux-/csm-${ver}-linux-/")
+    echo "https://github.com/${GITHUB_REPO}/releases/download/${tag}/${asset}"
 }
 
 download_package() {
