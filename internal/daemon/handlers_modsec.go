@@ -10,6 +10,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -301,19 +302,20 @@ func StartModSecEviction(stopCh <-chan struct{}) {
 	}()
 }
 
-var modsecLogPaths = []string{
-	"/var/log/apache2/error_log",       // cPanel EA4 default
-	"/usr/local/apache/logs/error_log", // older cPanel
-	"/var/log/httpd/error_log",         // CentOS/RHEL default
-	"/usr/local/lsws/logs/error.log",   // LiteSpeed default
-	"/var/log/lsws/error.log",          // LiteSpeed alternate
-}
-
+// discoverModSecLogPath returns the path to the web server error log that
+// CSM should tail for ModSecurity denies. Config override wins, then the
+// first candidate from platform detection that actually exists.
 func discoverModSecLogPath(cfg *config.Config) string {
 	if cfg.ModSecErrorLog != "" {
 		return cfg.ModSecErrorLog
 	}
-	for _, p := range modsecLogPaths {
+	return firstExistingPath(platform.Detect().ErrorLogPaths)
+}
+
+// firstExistingPath returns the first path in the list that exists on disk,
+// or "" if none do. Pure function so tests can exercise it directly.
+func firstExistingPath(candidates []string) string {
+	for _, p := range candidates {
 		if _, err := os.Stat(p); err == nil {
 			return p
 		}

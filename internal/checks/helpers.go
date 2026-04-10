@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -35,6 +36,29 @@ func runCmd(name string, args ...string) ([]byte, error) {
 	if ctx.Err() == context.DeadlineExceeded {
 		fmt.Fprintf(os.Stderr, "Command timed out: %s %v\n", name, args)
 		return nil, nil
+	}
+	return out, err
+}
+
+// runCmdAllowNonZero is like runCmd but treats a non-zero exit as a
+// normal signal carrying output (not an error). Used for tools like
+// `rpm -V`, `debsums -c`, and `dpkg --verify` which print findings to
+// stdout and exit non-zero to indicate "problems found". Actual launch
+// failures (binary missing, permission denied) still return an error.
+func runCmdAllowNonZero(name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, name, args...).Output()
+	if ctx.Err() == context.DeadlineExceeded {
+		fmt.Fprintf(os.Stderr, "Command timed out: %s %v\n", name, args)
+		return nil, nil
+	}
+	var exitErr *exec.ExitError
+	if err != nil && errors.As(err, &exitErr) {
+		// Tool ran to completion but reported findings via exit code.
+		// Preserve stdout (findings); exitErr.Stderr carries stderr.
+		return out, nil
 	}
 	return out, err
 }

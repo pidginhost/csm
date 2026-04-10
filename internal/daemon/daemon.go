@@ -23,6 +23,7 @@ import (
 	"github.com/pidginhost/csm/internal/geoip"
 	"github.com/pidginhost/csm/internal/integrity"
 	"github.com/pidginhost/csm/internal/modsec"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/signatures"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
@@ -79,6 +80,14 @@ func (d *Daemon) SetVersion(v string) {
 // Run starts the daemon and blocks until stopped.
 func (d *Daemon) Run() error {
 	fmt.Fprintf(os.Stderr, "[%s] CSM daemon starting\n", ts())
+
+	// Log detected platform so operators can verify OS/webserver detection
+	// without running a separate command. Support tickets get a consistent
+	// environment snapshot in the daemon log.
+	pi := platform.Detect()
+	fmt.Fprintf(os.Stderr, "[%s] platform: os=%s/%s panel=%s webserver=%s\n",
+		ts(), orUnknown(string(pi.OS)), orUnknown(pi.OSVersion),
+		orNone(string(pi.Panel)), orNone(string(pi.WebServer)))
 
 	// Verify integrity on startup
 	if err := integrity.Verify(d.binaryPath, d.cfg); err != nil {
@@ -137,11 +146,13 @@ func (d *Daemon) Run() error {
 	// Start fanotify file monitor (real-time detection starts immediately)
 	d.startFileMonitor()
 
-	// Start email AV spool watcher (separate fanotify for Exim spool)
-	d.startSpoolWatcher()
-
-	// Start forwarder watcher for real-time valiases change detection
-	d.startForwarderWatcher()
+	// Start email AV spool watcher (separate fanotify for Exim spool).
+	// Spool and forwarder watchers are cPanel-only; they watch paths
+	// (/var/spool/exim, /etc/valiases) that only exist on cPanel hosts.
+	if platform.Detect().IsCPanel() {
+		d.startSpoolWatcher()
+		d.startForwarderWatcher()
+	}
 
 	// Start Web UI server - available immediately, before initial scan
 	d.startWebUI()
@@ -619,37 +630,48 @@ func (d *Daemon) startLogWatchers() {
 		return parseSessionLogLine(line, cfg)
 	}
 
-	logFiles := []struct {
+	hostInfo := platform.Detect()
+
+	type logFile struct {
 		path    string
 		handler func(string, *config.Config) []alert.Finding
-	}{
-		{"/usr/local/cpanel/logs/session_log", sessionHandler},
-		{"/usr/local/cpanel/logs/access_log", parseAccessLogLineEnhanced},
-		{"/var/log/secure", parseSecureLogLine},
-		{"/var/log/exim_mainlog", parseEximLogLine},
-		{"/var/log/messages", parseFTPLogLine},
-		{"/var/log/maillog", parseDovecotLogLine},
+	}
+	var logFiles []logFile
+
+	// Generic Linux auth log. RHEL-family uses /var/log/secure, Debian
+	// family uses /var/log/auth.log. Only register the log appropriate
+	// for the detected OS so we don't spam "not found, retrying" forever.
+	if hostInfo.IsDebianFamily() {
+		logFiles = append(logFiles, logFile{"/var/log/auth.log", parseSecureLogLine})
+	} else {
+		logFiles = append(logFiles, logFile{"/var/log/secure", parseSecureLogLine})
+	}
+
+	// cPanel-specific logs — only watch these on cPanel hosts. On plain
+	// Ubuntu/AlmaLinux they do not exist and the old code spammed
+	// "not found, will retry every 60s" forever.
+	if hostInfo.IsCPanel() {
+		logFiles = append(logFiles,
+			logFile{"/usr/local/cpanel/logs/session_log", sessionHandler},
+			logFile{"/usr/local/cpanel/logs/access_log", parseAccessLogLineEnhanced},
+			logFile{"/var/log/exim_mainlog", parseEximLogLine},
+			logFile{"/var/log/messages", parseFTPLogLine},
+			logFile{"/var/log/maillog", parseDovecotLogLine},
+		)
 	}
 
 	// Only watch PHP Shield events if enabled in config
 	if d.cfg.PHPShield.Enabled {
-		logFiles = append(logFiles, struct {
-			path    string
-			handler func(string, *config.Config) []alert.Finding
-		}{phpEventsLogPath, parsePHPShieldLogLine})
+		logFiles = append(logFiles, logFile{phpEventsLogPath, parsePHPShieldLogLine})
 	}
 
-	// ModSecurity error log - auto-discover path across cPanel variants.
+	// ModSecurity error log - auto-discover path based on detected web server.
 	if modsecPath := discoverModSecLogPath(d.cfg); modsecPath != "" {
-		logFiles = append(logFiles, struct {
-			path    string
-			handler func(string, *config.Config) []alert.Finding
-		}{modsecPath, parseModSecLogLineDeduped})
-	} else {
-		// No log found at startup. Retry loop polls ALL candidate paths
-		// every 60s until one appears (handles late log creation, delayed
-		// ModSecurity enablement, or startup ordering).
-		fmt.Fprintf(os.Stderr, "[%s] ModSecurity error log not found (checked %v), will retry every 60s\n", ts(), modsecLogPaths)
+		logFiles = append(logFiles, logFile{modsecPath, parseModSecLogLineDeduped})
+	} else if hostInfo.WebServer != platform.WSNone {
+		// Only bother with the retry loop if a web server is actually
+		// present. Headless hosts don't need this.
+		fmt.Fprintf(os.Stderr, "[%s] ModSecurity error log not found (checked %v), will retry every 60s\n", ts(), hostInfo.ErrorLogPaths)
 		d.wg.Add(1)
 		go func() {
 			defer d.wg.Done()
@@ -684,16 +706,13 @@ func (d *Daemon) startLogWatchers() {
 	}
 
 	// Real-time access log watcher for wp-login/xmlrpc brute force detection.
-	// Auto-discover path (same candidates as CheckWPBruteForce in bruteforce.go).
+	// Auto-discover path from platform info (Apache/Nginx/cPanel aware).
 	if accessLogPath := discoverAccessLogPath(); accessLogPath != "" {
-		logFiles = append(logFiles, struct {
-			path    string
-			handler func(string, *config.Config) []alert.Finding
-		}{accessLogPath, parseAccessLogBruteForce})
-	} else {
-		fmt.Fprintf(os.Stderr, "[%s] Access log not found (checked %v), will retry every 60s\n", ts(), accessLogPaths)
+		logFiles = append(logFiles, logFile{accessLogPath, parseAccessLogBruteForce})
+	} else if hostInfo.WebServer != platform.WSNone && len(hostInfo.AccessLogPaths) > 0 {
+		fmt.Fprintf(os.Stderr, "[%s] Access log not found (checked %v), will retry every 60s\n", ts(), hostInfo.AccessLogPaths)
 		d.wg.Add(1)
-		go d.retryLogWatcher(accessLogPaths[0], parseAccessLogBruteForce)
+		go d.retryLogWatcher(hostInfo.AccessLogPaths[0], parseAccessLogBruteForce)
 	}
 
 	// Start background eviction for modsec dedup/escalation state
@@ -1482,4 +1501,18 @@ func sdNotify(addr, msg string) {
 
 func ts() string {
 	return time.Now().Format("2006-01-02 15:04:05")
+}
+
+func orUnknown(v string) string {
+	if v == "" {
+		return "unknown"
+	}
+	return v
+}
+
+func orNone(v string) string {
+	if v == "" {
+		return "none"
+	}
+	return v
 }

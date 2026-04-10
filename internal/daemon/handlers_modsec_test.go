@@ -221,32 +221,43 @@ func TestDiscoverModSecLogPath_ConfigOverride(t *testing.T) {
 	}
 }
 
-func TestDiscoverModSecLogPath_AutoDiscovery(t *testing.T) {
+func TestFirstExistingPath_PicksFirstExisting(t *testing.T) {
 	dir := t.TempDir()
-	fakePath := dir + "/error_log"
-	if err := os.WriteFile(fakePath, []byte("test"), 0644); err != nil {
+	real := dir + "/error_log"
+	if err := os.WriteFile(real, []byte("test"), 0644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-
-	origPaths := modsecLogPaths
-	modsecLogPaths = []string{"/nonexistent/path", fakePath, "/another/missing"}
-	defer func() { modsecLogPaths = origPaths }()
-
-	cfg := &config.Config{}
-	got := discoverModSecLogPath(cfg)
-	if got != fakePath {
-		t.Errorf("want %q, got %q", fakePath, got)
+	got := firstExistingPath([]string{"/nonexistent/path", real, "/another/missing"})
+	if got != real {
+		t.Errorf("want %q, got %q", real, got)
 	}
 }
 
-func TestDiscoverModSecLogPath_NoneFound(t *testing.T) {
-	origPaths := modsecLogPaths
-	modsecLogPaths = []string{"/nonexistent/a", "/nonexistent/b"}
-	defer func() { modsecLogPaths = origPaths }()
-
-	cfg := &config.Config{}
-	got := discoverModSecLogPath(cfg)
+func TestFirstExistingPath_NoneFound(t *testing.T) {
+	got := firstExistingPath([]string{"/nonexistent/a", "/nonexistent/b"})
 	if got != "" {
 		t.Errorf("want empty, got %q", got)
+	}
+}
+
+func TestFirstExistingPath_EmptyList(t *testing.T) {
+	if got := firstExistingPath(nil); got != "" {
+		t.Errorf("want empty, got %q", got)
+	}
+}
+
+func TestFirstExistingPath_ReturnsFirstWhenMultipleExist(t *testing.T) {
+	dir := t.TempDir()
+	first := dir + "/first"
+	second := dir + "/second"
+	if err := os.WriteFile(first, []byte("a"), 0644); err != nil {
+		t.Fatalf("WriteFile first: %v", err)
+	}
+	if err := os.WriteFile(second, []byte("b"), 0644); err != nil {
+		t.Fatalf("WriteFile second: %v", err)
+	}
+	got := firstExistingPath([]string{first, second})
+	if got != first {
+		t.Errorf("want %q (first), got %q", first, got)
 	}
 }

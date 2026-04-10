@@ -3,8 +3,92 @@ package checks
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/platform"
 )
+
+func TestEvaluateDistroEOL_SupportedUbuntu(t *testing.T) {
+	info := platform.Info{OS: platform.OSUbuntu, OSVersion: "24.04"}
+	results := evaluateDistroEOL(info, "Ubuntu 24.04 LTS")
+	if len(results) != 1 {
+		t.Fatalf("want 1 result, got %d", len(results))
+	}
+	r := results[0]
+	if r.Status != "pass" {
+		t.Errorf("Ubuntu 24.04 should pass, got %q (msg: %s)", r.Status, r.Message)
+	}
+	if r.Message != "Ubuntu 24.04 LTS" {
+		t.Errorf("message = %q, want PRETTY_NAME", r.Message)
+	}
+}
+
+func TestEvaluateDistroEOL_EOLUbuntu(t *testing.T) {
+	info := platform.Info{OS: platform.OSUbuntu, OSVersion: "18.04"}
+	results := evaluateDistroEOL(info, "Ubuntu 18.04 LTS")
+	r := results[0]
+	if r.Status != "fail" {
+		t.Errorf("Ubuntu 18.04 should fail, got %q", r.Status)
+	}
+	if !strings.Contains(r.Fix, "LTS") {
+		t.Errorf("Fix should mention LTS for Debian family: %q", r.Fix)
+	}
+	if !strings.Contains(r.Message, "18") {
+		t.Errorf("Message should contain major version, got %q", r.Message)
+	}
+}
+
+func TestEvaluateDistroEOL_SupportedAlma(t *testing.T) {
+	info := platform.Info{OS: platform.OSAlma, OSVersion: "10.0"}
+	results := evaluateDistroEOL(info, "AlmaLinux 10.0")
+	r := results[0]
+	if r.Status != "pass" {
+		t.Errorf("Alma 10 should pass, got %q", r.Status)
+	}
+}
+
+func TestEvaluateDistroEOL_EOLCentOS(t *testing.T) {
+	info := platform.Info{OS: platform.OSCentOS, OSVersion: "7"}
+	results := evaluateDistroEOL(info, "CentOS Linux 7 (Core)")
+	r := results[0]
+	if r.Status != "fail" {
+		t.Errorf("CentOS 7 should fail, got %q", r.Status)
+	}
+}
+
+func TestEvaluateDistroEOL_UnknownOS(t *testing.T) {
+	results := evaluateDistroEOL(platform.Info{}, "")
+	r := results[0]
+	if r.Status != "warn" {
+		t.Errorf("unknown OS should warn, got %q", r.Status)
+	}
+	if r.Message != "Unable to determine distribution version" {
+		t.Errorf("unexpected message: %q", r.Message)
+	}
+}
+
+func TestEvaluateDistroEOL_UnparseableVersion(t *testing.T) {
+	info := platform.Info{OS: platform.OSUbuntu, OSVersion: "jammy"}
+	results := evaluateDistroEOL(info, "Ubuntu jammy")
+	r := results[0]
+	if r.Status != "warn" {
+		t.Errorf("unparseable version should warn, got %q", r.Status)
+	}
+}
+
+func TestEvaluateDistroEOL_UnknownDistroFallback(t *testing.T) {
+	// Use an OS value not in distroEOLPolicy (e.g. an empty placeholder
+	// we can't hit without adding new OS constants, so simulate with Debian
+	// after clearing policy — instead just assert the path by using an OS
+	// we haven't added to policy).
+	info := platform.Info{OS: platform.OSFamily("openbsd"), OSVersion: "7.5"}
+	results := evaluateDistroEOL(info, "OpenBSD 7.5")
+	r := results[0]
+	if r.Status != "warn" {
+		t.Errorf("unknown distro should warn, got %q", r.Status)
+	}
+}
 
 func TestParseSSHDConfig_BasicFirstMatchWins(t *testing.T) {
 	dir := t.TempDir()

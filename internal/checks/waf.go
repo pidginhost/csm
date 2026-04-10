@@ -11,6 +11,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -20,49 +21,27 @@ import (
 func CheckWAFStatus(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	// Check if ModSecurity module is loaded in LiteSpeed/Apache
-	modsecActive := false
+	info := platform.Detect()
 
-	// Check LiteSpeed modsec
-	lsConf := "/usr/local/lsws/conf/httpd_config.xml"
-	if data, err := os.ReadFile(lsConf); err == nil {
-		if strings.Contains(string(data), "mod_security") || strings.Contains(string(data), "modsecurity") {
-			modsecActive = true
-		}
+	// If there is no web server at all, WAF concerns don't apply to this host.
+	if info.WebServer == platform.WSNone {
+		return findings
 	}
 
-	// Check Apache modsec
-	apacheConfs := []string{
-		"/etc/apache2/conf.d/modsec2.conf",
-		"/etc/apache2/conf/httpd.conf",
-		"/usr/local/apache/conf/httpd.conf",
-	}
-	for _, conf := range apacheConfs {
-		if data, err := os.ReadFile(conf); err == nil {
-			if strings.Contains(string(data), "mod_security2") || strings.Contains(string(data), "SecRuleEngine") {
-				modsecActive = true
-			}
-		}
-	}
-
-	// Check cPanel ModSecurity status
-	out, _ := runCmd("whmapi1", "modsec_is_installed")
-	if out != nil && strings.Contains(string(out), "installed: 1") {
-		modsecActive = true
-	}
+	modsecActive := modsecDetected(info)
 
 	if !modsecActive {
 		findings = append(findings, alert.Finding{
 			Severity: alert.Critical,
 			Check:    "waf_status",
 			Message:  "ModSecurity WAF is not active",
-			Details:  "No ModSecurity module detected. The server has no web application firewall protecting against SQL injection, XSS, and other web attacks.\nInstall: WHM > Security Center > ModSecurity",
+			Details:  wafInstallHint(info),
 		})
 		return findings // no point checking further
 	}
 
 	// --- Engine mode check ---
-	engineMode := checkEngineMode()
+	engineMode := checkEngineMode(info)
 	if engineMode == "detectiononly" {
 		findings = append(findings, alert.Finding{
 			Severity: alert.High,
@@ -73,21 +52,20 @@ func CheckWAFStatus(ctx context.Context, _ *config.Config, _ *state.Store) []ale
 	}
 
 	// --- Rule vendor check ---
+	// cPanel-only: whmapi1 vendors. Plain hosts rely on file-system probing.
 	hasRules := false
-	out, _ = runCmd("whmapi1", "modsec_get_vendors")
-	if out != nil {
-		outStr := string(out)
-		if strings.Contains(outStr, "comodo") || strings.Contains(outStr, "owasp") ||
-			strings.Contains(outStr, "OWASP") || strings.Contains(outStr, "Comodo") {
-			hasRules = true
+	if info.IsCPanel() {
+		out, _ := runCmd("whmapi1", "modsec_get_vendors")
+		if out != nil {
+			outStr := string(out)
+			if strings.Contains(outStr, "comodo") || strings.Contains(outStr, "owasp") ||
+				strings.Contains(outStr, "OWASP") || strings.Contains(outStr, "Comodo") {
+				hasRules = true
+			}
 		}
 	}
 
-	// Check rule files exist
-	ruleDirs := []string{
-		"/etc/apache2/conf.d/modsec_vendor_configs/",
-		"/usr/local/apache/conf/modsec_vendor_configs/",
-	}
+	ruleDirs := modsecRuleDirs(info)
 	for _, rp := range ruleDirs {
 		if entries, err := os.ReadDir(rp); err == nil && len(entries) > 0 {
 			hasRules = true
@@ -99,7 +77,7 @@ func CheckWAFStatus(ctx context.Context, _ *config.Config, _ *state.Store) []ale
 			Severity: alert.High,
 			Check:    "waf_rules",
 			Message:  "ModSecurity has no WAF rules loaded",
-			Details:  "ModSecurity is installed but has no OWASP or Comodo rules. Add rules: WHM > Security Center > ModSecurity Vendors",
+			Details:  wafRulesHint(info),
 		})
 	}
 
@@ -118,38 +96,199 @@ func CheckWAFStatus(ctx context.Context, _ *config.Config, _ *state.Store) []ale
 					Severity: alert.Warning,
 					Check:    "waf_rules_stale",
 					Message:  fmt.Sprintf("ModSecurity rules are %d days old - update recommended", staleAge),
-					Details:  "Vendor rules should be updated at least monthly. Check: WHM > Security Center > ModSecurity Vendors > Update",
+					Details:  wafRulesStaleHint(info),
 				})
 			}
 		}
 	}
 
 	// --- Virtual patch deployment ---
-	deployVirtualPatches()
+	// Only cPanel has the modsec user config dirs we write into.
+	if info.IsCPanel() {
+		deployVirtualPatches()
+	}
 
 	// --- Per-account WAF bypass check ---
-	bypassed := checkPerAccountBypass()
-	for _, domain := range bypassed {
-		findings = append(findings, alert.Finding{
-			Severity: alert.High,
-			Check:    "waf_bypass",
-			Message:  fmt.Sprintf("ModSecurity disabled for domain: %s", domain),
-			Details:  "This domain has ModSecurity bypassed. All web attacks pass through unfiltered.\nCheck: WHM > Security Center > ModSecurity > Domains",
-		})
+	// whmapi1-only, skip on non-cPanel hosts.
+	if info.IsCPanel() {
+		bypassed := checkPerAccountBypass()
+		for _, domain := range bypassed {
+			findings = append(findings, alert.Finding{
+				Severity: alert.High,
+				Check:    "waf_bypass",
+				Message:  fmt.Sprintf("ModSecurity disabled for domain: %s", domain),
+				Details:  "This domain has ModSecurity bypassed. All web attacks pass through unfiltered.\nCheck: WHM > Security Center > ModSecurity > Domains",
+			})
+		}
 	}
 
 	return findings
 }
 
+// modsecDetected returns true if a ModSecurity module is loaded for the
+// detected web server. It first consults the platform layer, then falls
+// back to scanning config files.
+func modsecDetected(info platform.Info) bool {
+	// cPanel fast path
+	if info.IsCPanel() {
+		if out, _ := runCmd("whmapi1", "modsec_is_installed"); out != nil &&
+			strings.Contains(string(out), "installed: 1") {
+			return true
+		}
+	}
+
+	// Generic file-based probes per web server
+	for _, conf := range modsecConfigCandidates(info) {
+		data, err := os.ReadFile(conf)
+		if err != nil {
+			continue
+		}
+		s := string(data)
+		switch info.WebServer {
+		case platform.WSNginx:
+			if strings.Contains(s, "modsecurity on") ||
+				strings.Contains(s, "modsecurity_rules_file") ||
+				strings.Contains(s, "load_module modules/ngx_http_modsecurity_module") {
+				return true
+			}
+		default:
+			if strings.Contains(s, "mod_security2") ||
+				strings.Contains(s, "modsecurity") ||
+				strings.Contains(s, "SecRuleEngine") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// modsecConfigCandidates returns the set of config files worth scanning
+// for ModSecurity directives on the detected web server.
+func modsecConfigCandidates(info platform.Info) []string {
+	var paths []string
+	switch info.WebServer {
+	case platform.WSApache:
+		if info.IsDebianFamily() {
+			paths = append(paths,
+				"/etc/apache2/conf.d/modsec2.conf",
+				"/etc/apache2/mods-enabled/security2.conf",
+				"/etc/apache2/conf-enabled/security2.conf",
+				"/etc/apache2/apache2.conf",
+			)
+		}
+		if info.IsRHELFamily() {
+			paths = append(paths,
+				"/etc/httpd/conf.d/mod_security.conf",
+				"/etc/httpd/conf.modules.d/10-mod_security.conf",
+				"/etc/httpd/conf/httpd.conf",
+			)
+		}
+		// cPanel overlay paths
+		paths = append(paths,
+			"/usr/local/apache/conf/httpd.conf",
+			"/usr/local/apache/conf/modsec2.conf",
+		)
+	case platform.WSNginx:
+		paths = append(paths,
+			"/etc/nginx/nginx.conf",
+			"/etc/nginx/modules-enabled/50-mod-http-modsecurity.conf",
+			"/etc/nginx/modsec/main.conf",
+		)
+	case platform.WSLiteSpeed:
+		paths = append(paths,
+			"/usr/local/lsws/conf/httpd_config.xml",
+			"/usr/local/lsws/conf/modsec2.conf",
+		)
+	}
+	return paths
+}
+
+// modsecRuleDirs returns the candidate directories where vendor rules live
+// for the detected web server/panel combination.
+func modsecRuleDirs(info platform.Info) []string {
+	var dirs []string
+	switch info.WebServer {
+	case platform.WSApache:
+		if info.IsDebianFamily() {
+			dirs = append(dirs,
+				"/etc/apache2/conf.d/modsec_vendor_configs/",
+				"/etc/modsecurity/",
+				"/usr/share/modsecurity-crs/rules/",
+			)
+		}
+		if info.IsRHELFamily() {
+			dirs = append(dirs,
+				"/etc/httpd/modsecurity.d/",
+				"/etc/httpd/modsecurity.d/activated_rules/",
+				"/usr/share/modsecurity-crs/rules/",
+			)
+		}
+		dirs = append(dirs, "/usr/local/apache/conf/modsec_vendor_configs/")
+	case platform.WSNginx:
+		dirs = append(dirs,
+			"/etc/nginx/modsec/",
+			"/etc/modsecurity/",
+			"/usr/share/modsecurity-crs/rules/",
+		)
+	}
+	return dirs
+}
+
+// wafInstallHint returns platform-specific install instructions.
+func wafInstallHint(info platform.Info) string {
+	switch {
+	case info.IsCPanel():
+		return "No ModSecurity module detected. Install: WHM > Security Center > ModSecurity"
+	case info.WebServer == platform.WSNginx && info.IsDebianFamily():
+		return "No ModSecurity module detected for Nginx.\nInstall: apt install libnginx-mod-http-modsecurity modsecurity-crs"
+	case info.WebServer == platform.WSApache && info.IsDebianFamily():
+		return "No ModSecurity module detected for Apache.\nInstall: apt install libapache2-mod-security2 modsecurity-crs && a2enmod security2"
+	case info.WebServer == platform.WSApache && info.IsRHELFamily():
+		return "No ModSecurity module detected for Apache.\nInstall (requires EPEL): dnf install -y epel-release && dnf install -y mod_security mod_security_crs && systemctl restart httpd"
+	case info.WebServer == platform.WSNginx && info.IsRHELFamily():
+		return "No ModSecurity module detected for Nginx.\nInstall (requires EPEL): dnf install -y epel-release && dnf install -y nginx-mod-http-modsecurity && systemctl restart nginx"
+	}
+	return "No ModSecurity module detected. The server has no web application firewall protecting against SQL injection, XSS, and other web attacks."
+}
+
+// wafRulesHint returns platform-specific rules-install instructions.
+func wafRulesHint(info platform.Info) string {
+	if info.IsCPanel() {
+		return "ModSecurity is installed but has no OWASP or Comodo rules. Add rules: WHM > Security Center > ModSecurity Vendors"
+	}
+	if info.IsDebianFamily() {
+		return "ModSecurity is installed but has no rules loaded. Install OWASP CRS: apt install modsecurity-crs"
+	}
+	if info.IsRHELFamily() {
+		return "ModSecurity is installed but has no rules loaded. Install OWASP CRS: dnf install --enablerepo=epel modsecurity-crs"
+	}
+	return "ModSecurity is installed but has no rules loaded."
+}
+
+// wafRulesStaleHint returns platform-specific advice for updating stale
+// ModSecurity vendor rules.
+func wafRulesStaleHint(info platform.Info) string {
+	if info.IsCPanel() {
+		return "Vendor rules should be updated at least monthly. Check: WHM > Security Center > ModSecurity Vendors > Update"
+	}
+	if info.IsDebianFamily() {
+		return "Vendor rules should be updated at least monthly. Update with: apt update && apt upgrade modsecurity-crs"
+	}
+	if info.IsRHELFamily() {
+		return "Vendor rules should be updated at least monthly. Update with: dnf upgrade modsecurity-crs"
+	}
+	return "Vendor rules should be updated at least monthly."
+}
+
 // checkEngineMode reads ModSecurity config files to determine the SecRuleEngine setting.
 // Returns "on", "detectiononly", "off", or "" if unknown.
-func checkEngineMode() string {
-	configPaths := []string{
-		"/etc/apache2/conf.d/modsec2.conf",
-		"/etc/apache2/conf.d/modsec/modsec2.cpanel.conf",
-		"/usr/local/apache/conf/modsec2.conf",
-		"/usr/local/lsws/conf/modsec2.conf",
-	}
+func checkEngineMode(info platform.Info) string {
+	configPaths := modsecConfigCandidates(info)
+	// Also include the top-level modsecurity.conf installed by distro packages.
+	configPaths = append(configPaths,
+		"/etc/modsecurity/modsecurity.conf",
+		"/etc/nginx/modsec/modsecurity.conf",
+	)
 
 	for _, path := range configPaths {
 		f, err := os.Open(path)
@@ -187,24 +326,41 @@ func checkRuleAge(ruleDirs []string) int {
 			continue
 		}
 		for _, entry := range entries {
-			if entry.IsDir() {
-				// Check files inside vendor subdirectories
-				subDir := dir + "/" + entry.Name()
-				subEntries, err := os.ReadDir(subDir)
+			if !entry.IsDir() {
+				// Rule file directly in the rule dir (distro CRS layout,
+				// e.g. /usr/share/modsecurity-crs/rules/REQUEST-*.conf).
+				info, err := entry.Info()
 				if err != nil {
 					continue
 				}
-				for _, subEntry := range subEntries {
-					if subEntry.IsDir() {
-						continue
-					}
-					info, err := subEntry.Info()
-					if err != nil {
-						continue
-					}
-					if oldestMtime.IsZero() || info.ModTime().Before(oldestMtime) {
-						oldestMtime = info.ModTime()
-					}
+				if !isRuleArtifact(entry.Name()) {
+					continue
+				}
+				if oldestMtime.IsZero() || info.ModTime().Before(oldestMtime) {
+					oldestMtime = info.ModTime()
+				}
+				continue
+			}
+			// Subdirectory: scan one level deeper for vendor-packed rules
+			// (cPanel layout, e.g. /usr/local/apache/conf/modsec_vendor_configs/OWASP/*.conf).
+			subDir := dir + "/" + entry.Name()
+			subEntries, err := os.ReadDir(subDir)
+			if err != nil {
+				continue
+			}
+			for _, subEntry := range subEntries {
+				if subEntry.IsDir() {
+					continue
+				}
+				if !isRuleArtifact(subEntry.Name()) {
+					continue
+				}
+				info, err := subEntry.Info()
+				if err != nil {
+					continue
+				}
+				if oldestMtime.IsZero() || info.ModTime().Before(oldestMtime) {
+					oldestMtime = info.ModTime()
 				}
 			}
 		}
@@ -219,6 +375,16 @@ func checkRuleAge(ruleDirs []string) int {
 		return age
 	}
 	return 0
+}
+
+// isRuleArtifact reports whether a filename looks like a ModSecurity rule
+// or data artifact (.conf, .data, .rules) so unrelated files like README
+// or LICENSE don't dominate the oldest-mtime calculation.
+func isRuleArtifact(name string) bool {
+	name = strings.ToLower(name)
+	return strings.HasSuffix(name, ".conf") ||
+		strings.HasSuffix(name, ".data") ||
+		strings.HasSuffix(name, ".rules")
 }
 
 // checkPerAccountBypass checks for domains with ModSecurity disabled.
@@ -352,10 +518,9 @@ func autoUpdateWAFRules() bool {
 func CheckModSecAuditLog(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	logPaths := []string{
-		"/var/log/apache2/modsec_audit.log",
-		"/usr/local/apache/logs/modsec_audit.log",
-		"/var/log/modsec_audit.log",
+	logPaths := platform.Detect().ModSecAuditLogPaths
+	if len(logPaths) == 0 {
+		return nil
 	}
 
 	var lines []string

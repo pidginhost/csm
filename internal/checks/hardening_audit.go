@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -55,11 +56,10 @@ func RunHardeningAudit(cfg *config.Config) *store.AuditReport {
 }
 
 func detectServerType() string {
-	if _, err := os.Stat("/usr/local/cpanel/version"); err == nil {
-		if data, err := os.ReadFile("/etc/redhat-release"); err == nil {
-			if strings.Contains(string(data), "CloudLinux") {
-				return "cloudlinux"
-			}
+	info := platform.Detect()
+	if info.IsCPanel() {
+		if info.OS == platform.OSCloudLinux {
+			return "cloudlinux"
 		}
 		return "cpanel"
 	}
@@ -456,51 +456,90 @@ func auditOS() []store.AuditResult {
 	return results
 }
 
+// distroEOLPolicy encodes the oldest supported major version per known OS.
+// Anything below the minimum is considered EOL by this check.
+var distroEOLPolicy = map[platform.OSFamily]int{
+	platform.OSAlma:       8,
+	platform.OSRocky:      8,
+	platform.OSRHEL:       8,
+	platform.OSCentOS:     8, // centos is all EOL at this point but keep the policy
+	platform.OSCloudLinux: 7,
+	platform.OSUbuntu:     20, // 20.04 is the oldest non-EOL LTS
+	platform.OSDebian:     11, // Debian 11 "bullseye"
+}
+
 func checkDistroEOL() []store.AuditResult {
-	// Try /etc/redhat-release first (CentOS, AlmaLinux, CloudLinux, RHEL)
-	if data, err := os.ReadFile("/etc/redhat-release"); err == nil {
-		release := string(data)
-		// Extract major version number
-		var major int
-		for _, field := range strings.Fields(release) {
-			if n, err := strconv.Atoi(strings.Split(field, ".")[0]); err == nil && n > 0 {
-				major = n
-				break
-			}
-		}
-		if major > 0 {
-			if major < 8 {
-				return []store.AuditResult{{
-					Category: "os", Name: "os_distro_eol", Title: "Distribution End of Life",
-					Status:  "fail",
-					Message: fmt.Sprintf("%s — version %d is EOL", strings.TrimSpace(release), major),
-					Fix:     "Upgrade to AlmaLinux 8+ or CloudLinux 8+. EOL distributions receive no security patches.",
-				}}
-			}
-			return []store.AuditResult{{
-				Category: "os", Name: "os_distro_eol", Title: "Distribution End of Life",
-				Status: "pass", Message: strings.TrimSpace(release),
-			}}
-		}
+	return evaluateDistroEOL(platform.Detect(), readOSReleasePretty())
+}
+
+// evaluateDistroEOL is the pure, testable core of checkDistroEOL. It returns
+// an AuditResult based purely on the supplied platform info and
+// PRETTY_NAME string (either may be empty).
+func evaluateDistroEOL(info platform.Info, prettyName string) []store.AuditResult {
+	if prettyName == "" && info.OSVersion != "" {
+		prettyName = fmt.Sprintf("%s %s", info.OS, info.OSVersion)
 	}
 
-	// Fallback: /etc/os-release PRETTY_NAME
-	if data, err := os.ReadFile("/etc/os-release"); err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			if strings.HasPrefix(line, "PRETTY_NAME=") {
-				name := strings.Trim(strings.TrimPrefix(line, "PRETTY_NAME="), "\"")
-				return []store.AuditResult{{
-					Category: "os", Name: "os_distro_eol", Title: "Distribution End of Life",
-					Status: "warn", Message: fmt.Sprintf("%s — unable to determine EOL status", name),
-				}}
-			}
+	if info.OS == platform.OSUnknown || info.OSVersion == "" {
+		return []store.AuditResult{{
+			Category: "os", Name: "os_distro_eol", Title: "Distribution End of Life",
+			Status: "warn", Message: "Unable to determine distribution version",
+		}}
+	}
+
+	// Extract the major version. Ubuntu/Debian use "24.04" / "12", RHEL
+	// family uses "8.6" / "10", etc. Taking the integer prefix handles both.
+	majorStr, _, _ := strings.Cut(info.OSVersion, ".")
+	major, err := strconv.Atoi(majorStr)
+	if err != nil {
+		return []store.AuditResult{{
+			Category: "os", Name: "os_distro_eol", Title: "Distribution End of Life",
+			Status: "warn", Message: fmt.Sprintf("%s — unable to parse version %q", prettyName, info.OSVersion),
+		}}
+	}
+
+	minVersion, known := distroEOLPolicy[info.OS]
+	if !known {
+		return []store.AuditResult{{
+			Category: "os", Name: "os_distro_eol", Title: "Distribution End of Life",
+			Status: "warn", Message: fmt.Sprintf("%s — no EOL policy configured for this distro", prettyName),
+		}}
+	}
+
+	if major < minVersion {
+		fix := "Upgrade to a supported release. EOL distributions receive no security patches."
+		if info.IsRHELFamily() {
+			fix = fmt.Sprintf("Upgrade to %s %d+ or newer. EOL distributions receive no security patches.", info.OS, minVersion)
 		}
+		if info.IsDebianFamily() {
+			fix = fmt.Sprintf("Upgrade to %s %d+ or newer LTS. EOL distributions receive no security patches.", info.OS, minVersion)
+		}
+		return []store.AuditResult{{
+			Category: "os", Name: "os_distro_eol", Title: "Distribution End of Life",
+			Status:  "fail",
+			Message: fmt.Sprintf("%s — major version %d is EOL", prettyName, major),
+			Fix:     fix,
+		}}
 	}
 
 	return []store.AuditResult{{
 		Category: "os", Name: "os_distro_eol", Title: "Distribution End of Life",
-		Status: "warn", Message: "Unable to determine distribution version",
+		Status: "pass", Message: prettyName,
 	}}
+}
+
+// readOSReleasePretty returns the PRETTY_NAME from /etc/os-release or "".
+func readOSReleasePretty() string {
+	data, err := os.ReadFile("/etc/os-release")
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "PRETTY_NAME=") {
+			return strings.Trim(strings.TrimPrefix(line, "PRETTY_NAME="), `"'`)
+		}
+	}
+	return ""
 }
 
 func checkUnnecessaryServices() []store.AuditResult {

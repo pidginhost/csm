@@ -9,6 +9,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 // Real-time access log handler for detecting wp-login.php brute force and
@@ -49,17 +50,11 @@ type accessLogTracker struct {
 // accessLogTrackers holds per-IP state. sync.Map for concurrent handler access.
 var accessLogTrackers sync.Map // key: IP string → value: *accessLogTracker
 
-// accessLogPaths are the candidate paths for the Combined Log Format access log
-// on cPanel servers (LiteSpeed and Apache both write here).
-var accessLogPaths = []string{
-	"/usr/local/apache/logs/access_log",
-	"/var/log/apache2/access_log",
-	"/etc/apache2/logs/access_log",
-}
-
-// discoverAccessLogPath returns the first access log path that exists.
+// discoverAccessLogPath returns the first access log path that exists,
+// consulting the platform detector for OS/web-server specific candidates.
 func discoverAccessLogPath() string {
-	for _, p := range accessLogPaths {
+	info := platform.Detect()
+	for _, p := range info.AccessLogPaths {
 		if _, err := os.Stat(p); err == nil {
 			return p
 		}

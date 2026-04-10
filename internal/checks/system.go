@@ -5,11 +5,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"syscall"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -74,21 +76,44 @@ func loadModuleList() []string {
 }
 
 // CheckRPMIntegrity verifies critical system binaries haven't been modified.
-// Only checks a small set of security-critical packages.
+// Only checks a small set of security-critical packages. Dispatches to
+// rpm -V on RHEL-family systems and debsums/dpkg --verify on Debian family.
 func CheckRPMIntegrity(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+	info := platform.Detect()
+	switch {
+	case info.IsRHELFamily():
+		return checkRPMPackageIntegrity(rpmCriticalPackages)
+	case info.IsDebianFamily():
+		return checkDebianPackageIntegrity(debianCriticalPackages)
+	}
+	return nil
+}
+
+var rpmCriticalPackages = []string{
+	"openssh-server",
+	"shadow-utils",
+	"sudo",
+	"coreutils",
+	"util-linux",
+	"passwd",
+}
+
+var debianCriticalPackages = []string{
+	"openssh-server",
+	"passwd",
+	"sudo",
+	"coreutils",
+	"util-linux",
+	"login",
+}
+
+func checkRPMPackageIntegrity(packages []string) []alert.Finding {
 	var findings []alert.Finding
 
-	criticalPackages := []string{
-		"openssh-server",
-		"shadow-utils",
-		"sudo",
-		"coreutils",
-		"util-linux",
-		"passwd",
-	}
-
-	for _, pkg := range criticalPackages {
-		out, err := runCmd("rpm", "-V", pkg)
+	for _, pkg := range packages {
+		// rpm -V exits non-zero when it finds problems; treat that as
+		// "findings present" rather than command failure.
+		out, err := runCmdAllowNonZero("rpm", "-V", pkg)
 		if err != nil || out == nil {
 			continue
 		}
@@ -129,6 +154,93 @@ func CheckRPMIntegrity(ctx context.Context, _ *config.Config, _ *state.Store) []
 	}
 
 	return findings
+}
+
+// checkDebianPackageIntegrity verifies Debian/Ubuntu packages using debsums
+// (from the debsums package) when available, falling back to dpkg --verify
+// (built into dpkg and always present).
+func checkDebianPackageIntegrity(packages []string) []alert.Finding {
+	// Prefer debsums: it's the Debian equivalent of `rpm -V` and reports
+	// changed files vs. the md5sum shipped by the package.
+	if _, err := exec.LookPath("debsums"); err == nil {
+		return checkDebsums(packages)
+	}
+	return checkDpkgVerify(packages)
+}
+
+func checkDebsums(packages []string) []alert.Finding {
+	var findings []alert.Finding
+	for _, pkg := range packages {
+		// debsums -c exits 2 when it finds mismatches; treat as findings.
+		out, err := runCmdAllowNonZero("debsums", "-c", pkg)
+		if err != nil || out == nil {
+			continue
+		}
+		for _, file := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			file = strings.TrimSpace(file)
+			if file == "" {
+				continue
+			}
+			if !isCriticalSystemPath(file) {
+				continue
+			}
+			findings = append(findings, alert.Finding{
+				Severity: alert.Critical,
+				Check:    "dpkg_integrity",
+				Message:  fmt.Sprintf("Modified system binary: %s (package: %s)", file, pkg),
+				Details:  "debsums reported md5 mismatch against the package manifest.",
+			})
+		}
+	}
+	return findings
+}
+
+func checkDpkgVerify(packages []string) []alert.Finding {
+	var findings []alert.Finding
+	for _, pkg := range packages {
+		// dpkg --verify exits 1 when it finds mismatches; treat as findings.
+		out, err := runCmdAllowNonZero("dpkg", "--verify", pkg)
+		if err != nil || out == nil {
+			continue
+		}
+		// dpkg --verify prints lines like:
+		//   ??5??????   /usr/bin/passwd
+		// where position 2 == '5' means md5 mismatch.
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			if len(line) < 10 {
+				continue
+			}
+			flags := line[:9]
+			file := strings.TrimSpace(line[9:])
+			// Skip config files (marked with 'c' after flags).
+			if strings.Contains(line, " c ") {
+				continue
+			}
+			if !strings.Contains(flags, "5") && !strings.Contains(flags, "S") {
+				continue
+			}
+			if !isCriticalSystemPath(file) {
+				continue
+			}
+			findings = append(findings, alert.Finding{
+				Severity: alert.Critical,
+				Check:    "dpkg_integrity",
+				Message:  fmt.Sprintf("Modified system binary: %s (package: %s)", file, pkg),
+				Details:  fmt.Sprintf("dpkg --verify flags: %s", flags),
+			})
+		}
+	}
+	return findings
+}
+
+// isCriticalSystemPath returns true for binaries in standard executable
+// directories. Matches the same filter used by the rpm path so the two
+// backends report the same scope of findings.
+func isCriticalSystemPath(path string) bool {
+	return strings.HasPrefix(path, "/usr/bin/") ||
+		strings.HasPrefix(path, "/usr/sbin/") ||
+		strings.HasPrefix(path, "/bin/") ||
+		strings.HasPrefix(path, "/sbin/")
 }
 
 // CheckMySQLUsers queries for MySQL users with elevated privileges

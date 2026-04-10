@@ -1,0 +1,289 @@
+// Package platform detects the host OS, control panel, and web server so
+// CSM checks can pick the right config/log paths instead of hardcoding
+// cPanel+Apache layouts.
+package platform
+
+import (
+	"bufio"
+	"os"
+	"os/exec"
+	"strings"
+	"sync"
+)
+
+type OSFamily string
+
+const (
+	OSUnknown    OSFamily = ""
+	OSUbuntu     OSFamily = "ubuntu"
+	OSDebian     OSFamily = "debian"
+	OSAlma       OSFamily = "almalinux"
+	OSRocky      OSFamily = "rocky"
+	OSCentOS     OSFamily = "centos"
+	OSRHEL       OSFamily = "rhel"
+	OSCloudLinux OSFamily = "cloudlinux"
+)
+
+type Panel string
+
+const (
+	PanelNone   Panel = ""
+	PanelCPanel Panel = "cpanel"
+	PanelPlesk  Panel = "plesk"
+	PanelDA     Panel = "directadmin"
+)
+
+type WebServer string
+
+const (
+	WSNone      WebServer = ""
+	WSApache    WebServer = "apache"
+	WSNginx     WebServer = "nginx"
+	WSLiteSpeed WebServer = "litespeed"
+)
+
+// Info holds everything a check needs to locate web server resources.
+type Info struct {
+	OS        OSFamily
+	OSVersion string
+	Panel     Panel
+	WebServer WebServer
+
+	// Config locations for the detected web server.
+	ApacheConfigDir string // e.g. /etc/apache2 or /etc/httpd
+	NginxConfigDir  string // e.g. /etc/nginx
+
+	// Candidate log files. Populated based on detected web server + OS.
+	AccessLogPaths      []string
+	ErrorLogPaths       []string
+	ModSecAuditLogPaths []string
+
+	// Binary paths useful for reload/control.
+	ApacheBinary string
+	NginxBinary  string
+}
+
+// IsCPanel is a convenience for checks that still need to gate cPanel-only
+// behavior (WHM API calls, /home/*/public_html enumeration, exim log
+// tailing, etc.) without re-detecting each time.
+func (i Info) IsCPanel() bool { return i.Panel == PanelCPanel }
+
+// IsRHELFamily reports whether the OS uses rpm/dnf and /etc/httpd style paths.
+func (i Info) IsRHELFamily() bool {
+	switch i.OS {
+	case OSAlma, OSRocky, OSCentOS, OSRHEL, OSCloudLinux:
+		return true
+	}
+	return false
+}
+
+// IsDebianFamily reports whether the OS uses dpkg/apt and /etc/apache2 style paths.
+func (i Info) IsDebianFamily() bool {
+	return i.OS == OSUbuntu || i.OS == OSDebian
+}
+
+var (
+	detected     Info
+	detectedOnce sync.Once
+)
+
+// Detect inspects the host and returns platform info. The result is cached
+// for the process lifetime — callers that need a fresh probe should use
+// DetectFresh instead.
+func Detect() Info {
+	detectedOnce.Do(func() { detected = DetectFresh() })
+	return detected
+}
+
+// DetectFresh always re-runs detection, ignoring any cached result.
+// Intended for tests and for operator-triggered rescan.
+func DetectFresh() Info {
+	i := Info{}
+	detectOS(&i)
+	detectPanel(&i)
+	detectWebServer(&i)
+	populatePaths(&i)
+	return i
+}
+
+func detectOS(i *Info) {
+	f, err := os.Open("/etc/os-release")
+	if err != nil {
+		return
+	}
+	defer func() { _ = f.Close() }()
+	scanner := bufio.NewScanner(f)
+	var id, versionID string
+	for scanner.Scan() {
+		line := scanner.Text()
+		key, val, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		val = strings.Trim(val, `"'`)
+		switch key {
+		case "ID":
+			id = strings.ToLower(val)
+		case "VERSION_ID":
+			versionID = val
+		}
+	}
+	i.OSVersion = versionID
+	switch id {
+	case "ubuntu":
+		i.OS = OSUbuntu
+	case "debian":
+		i.OS = OSDebian
+	case "almalinux":
+		i.OS = OSAlma
+	case "rocky":
+		i.OS = OSRocky
+	case "centos":
+		i.OS = OSCentOS
+	case "rhel":
+		i.OS = OSRHEL
+	case "cloudlinux":
+		i.OS = OSCloudLinux
+	}
+}
+
+func detectPanel(i *Info) {
+	if _, err := os.Stat("/usr/local/cpanel/version"); err == nil {
+		i.Panel = PanelCPanel
+		return
+	}
+	if _, err := os.Stat("/usr/local/psa/version"); err == nil {
+		i.Panel = PanelPlesk
+		return
+	}
+	if _, err := os.Stat("/usr/local/directadmin/directadmin"); err == nil {
+		i.Panel = PanelDA
+		return
+	}
+}
+
+func detectWebServer(i *Info) {
+	// Prefer the process that's actually running. Fall back to installed
+	// binaries if nothing is running yet (first boot, non-systemd env).
+	running := runningServices()
+	switch {
+	case running["nginx"]:
+		i.WebServer = WSNginx
+	case running["apache2"] || running["httpd"]:
+		i.WebServer = WSApache
+	case running["litespeed"] || running["lshttpd"] || running["lsws"]:
+		i.WebServer = WSLiteSpeed
+	}
+
+	// Always record binary paths for reload/control, even if not primary.
+	if bin, err := exec.LookPath("nginx"); err == nil {
+		i.NginxBinary = bin
+	}
+	if bin, err := exec.LookPath("apache2"); err == nil {
+		i.ApacheBinary = bin
+	} else if bin, err := exec.LookPath("httpd"); err == nil {
+		i.ApacheBinary = bin
+	}
+	// cPanel compiles its own httpd under /usr/local/apache/bin/httpd,
+	// which isn't always in PATH for root under the CSM service unit.
+	if i.ApacheBinary == "" {
+		const cpHttpd = "/usr/local/apache/bin/httpd"
+		if _, err := os.Stat(cpHttpd); err == nil {
+			i.ApacheBinary = cpHttpd
+		}
+	}
+
+	if i.WebServer != WSNone {
+		return
+	}
+
+	// Nothing running — binary fallback. Apache takes precedence over Nginx
+	// because cPanel installs Nginx as a dependency on some hosts but
+	// Apache is the primary server. A host that genuinely runs only Nginx
+	// will usually have it running by the time CSM starts and will hit the
+	// runningServices branch above.
+	switch {
+	case i.ApacheBinary != "":
+		i.WebServer = WSApache
+	case i.NginxBinary != "":
+		i.WebServer = WSNginx
+	}
+}
+
+// runningServices returns which web server process units are currently
+// active. Uses systemctl when available; falls back to checking /proc.
+func runningServices() map[string]bool {
+	active := map[string]bool{}
+	for _, unit := range []string{"nginx", "apache2", "httpd", "lshttpd", "lsws"} {
+		cmd := exec.Command("systemctl", "is-active", "--quiet", unit)
+		if err := cmd.Run(); err == nil {
+			active[unit] = true
+		}
+	}
+	return active
+}
+
+func populatePaths(i *Info) {
+	// Apache config dir. cPanel compiles Apache from source and installs
+	// under /usr/local/apache, separate from the OS package tree; that
+	// override wins over the distro default when cPanel is present.
+	switch {
+	case i.Panel == PanelCPanel && dirExists("/usr/local/apache/conf"):
+		i.ApacheConfigDir = "/usr/local/apache/conf"
+	case i.IsDebianFamily():
+		if dirExists("/etc/apache2") {
+			i.ApacheConfigDir = "/etc/apache2"
+		}
+	case i.IsRHELFamily():
+		if dirExists("/etc/httpd") {
+			i.ApacheConfigDir = "/etc/httpd"
+		}
+	}
+	if dirExists("/etc/nginx") {
+		i.NginxConfigDir = "/etc/nginx"
+	}
+
+	// Log paths: pick candidates based on detected web server and OS layout.
+	// We include ALL plausible locations so log watchers can try each;
+	// missing paths are handled upstream by the retry logic.
+	switch i.WebServer {
+	case WSApache:
+		if i.IsDebianFamily() {
+			i.AccessLogPaths = []string{"/var/log/apache2/access.log", "/var/log/apache2/other_vhosts_access.log"}
+			i.ErrorLogPaths = []string{"/var/log/apache2/error.log"}
+			i.ModSecAuditLogPaths = []string{"/var/log/apache2/modsec_audit.log"}
+		} else {
+			i.AccessLogPaths = []string{"/var/log/httpd/access_log"}
+			i.ErrorLogPaths = []string{"/var/log/httpd/error_log"}
+			i.ModSecAuditLogPaths = []string{"/var/log/httpd/modsec_audit.log"}
+		}
+	case WSNginx:
+		i.AccessLogPaths = []string{"/var/log/nginx/access.log"}
+		i.ErrorLogPaths = []string{"/var/log/nginx/error.log"}
+		i.ModSecAuditLogPaths = []string{"/var/log/nginx/modsec_audit.log"}
+	case WSLiteSpeed:
+		i.AccessLogPaths = []string{"/usr/local/lsws/logs/access.log"}
+		i.ErrorLogPaths = []string{"/usr/local/lsws/logs/error.log"}
+		i.ModSecAuditLogPaths = []string{"/usr/local/lsws/logs/auditmodsec.log"}
+	}
+
+	// cPanel overlays its own access/error logs on top of the OS defaults.
+	if i.Panel == PanelCPanel {
+		i.AccessLogPaths = append(i.AccessLogPaths,
+			"/usr/local/apache/logs/access_log",
+			"/usr/local/cpanel/logs/access_log",
+		)
+		i.ErrorLogPaths = append(i.ErrorLogPaths,
+			"/usr/local/apache/logs/error_log",
+		)
+		i.ModSecAuditLogPaths = append(i.ModSecAuditLogPaths,
+			"/usr/local/apache/logs/modsec_audit.log",
+			"/var/log/modsec_audit.log",
+		)
+	}
+}
+
+func dirExists(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.IsDir()
+}
