@@ -206,12 +206,23 @@ else
     echo "  WARNING: Assets download failed (HTTP ${HTTP_CODE}), UI may be missing"
 fi
 
-# Place binary
+## Place binary
 cp "${TMPDIR}/csm" "$BINARY_PATH"
 chmod 0700 "$BINARY_PATH"
 
-# Also place deploy.sh for future upgrades
-cp "${INSTALL_DIR}/configs/deploy.sh" "${INSTALL_DIR}/deploy.sh" 2>/dev/null || true
+# deploy.sh is shipped inside csm-assets.tar.gz and extracted to
+# ${INSTALL_DIR}/deploy.sh by the tar xzf above. Make sure it's executable.
+# Fall back to downloading it from the release if the tarball didn't
+# ship it (older assets tarballs didn't include the upgrade helper).
+if [ ! -f "${INSTALL_DIR}/deploy.sh" ]; then
+    info "Fetching deploy.sh from release..."
+    DEPLOY_URL=$(echo "$BINARY_URL" | sed "s|/csm-[^/]*$|/deploy.sh|")
+    HTTP_CODE=$(curl -sS -w '%{http_code}' -L -o "${INSTALL_DIR}/deploy.sh" "$DEPLOY_URL" || echo 000)
+    if [ "$HTTP_CODE" != "200" ]; then
+        echo "  WARNING: could not fetch deploy.sh (HTTP ${HTTP_CODE}); upgrades via /opt/csm/deploy.sh will not work until you install it manually" >&2
+        rm -f "${INSTALL_DIR}/deploy.sh"
+    fi
+fi
 chmod 755 "${INSTALL_DIR}/deploy.sh" 2>/dev/null || true
 
 # --- Configuration ---

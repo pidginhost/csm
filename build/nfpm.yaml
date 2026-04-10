@@ -21,6 +21,16 @@ contents:
       owner: root
       group: root
 
+  # Upgrade helper script. Users run /opt/csm/deploy.sh upgrade to fetch
+  # the latest release from GitHub. Shipped via the package so fresh
+  # installs always have a working upgrade path.
+  - src: scripts/deploy.sh
+    dst: /opt/csm/deploy.sh
+    file_info:
+      mode: 0755
+      owner: root
+      group: root
+
   - src: build/packaging/csm.yaml.default
     dst: /opt/csm/csm.yaml
     type: config|noreplace

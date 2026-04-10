@@ -1,9 +1,114 @@
 package log
 
 import (
+	"bytes"
+	"context"
 	"log/slog"
+	"regexp"
+	"strings"
 	"testing"
+	"time"
 )
+
+var legacyTSPattern = regexp.MustCompile(`^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] `)
+
+func TestLegacyTextHandler_InfoFormat(t *testing.T) {
+	var buf bytes.Buffer
+	h := newLegacyTextHandler(&buf, slog.LevelInfo)
+	logger := slog.New(h)
+	logger.Info("daemon starting")
+
+	out := buf.String()
+	if !legacyTSPattern.MatchString(out) {
+		t.Errorf("output should start with [YYYY-MM-DD HH:MM:SS], got %q", out)
+	}
+	if !strings.Contains(out, "daemon starting") {
+		t.Errorf("output should contain message, got %q", out)
+	}
+	// Info records should NOT have a level marker — matches legacy output.
+	if strings.Contains(out, "INFO") {
+		t.Errorf("info records should not include level marker, got %q", out)
+	}
+}
+
+func TestLegacyTextHandler_WarnErrorLevelPrefix(t *testing.T) {
+	var buf bytes.Buffer
+	h := newLegacyTextHandler(&buf, slog.LevelDebug)
+	logger := slog.New(h)
+
+	logger.Warn("log not found")
+	logger.Error("alert failed")
+
+	out := buf.String()
+	if !strings.Contains(out, "WARN: log not found") {
+		t.Errorf("warn should have WARN: prefix, got %q", out)
+	}
+	if !strings.Contains(out, "ERROR: alert failed") {
+		t.Errorf("error should have ERROR: prefix, got %q", out)
+	}
+}
+
+func TestLegacyTextHandler_AttrsAppended(t *testing.T) {
+	var buf bytes.Buffer
+	h := newLegacyTextHandler(&buf, slog.LevelInfo)
+	logger := slog.New(h)
+	logger.Info("platform detected", "os", "ubuntu", "panel", "none")
+
+	out := buf.String()
+	if !strings.Contains(out, "os=ubuntu") {
+		t.Errorf("attrs should appear as key=value, got %q", out)
+	}
+	if !strings.Contains(out, "panel=none") {
+		t.Errorf("multi-attr output missing panel, got %q", out)
+	}
+}
+
+func TestLegacyTextHandler_QuotesValuesWithSpaces(t *testing.T) {
+	var buf bytes.Buffer
+	h := newLegacyTextHandler(&buf, slog.LevelInfo)
+	logger := slog.New(h)
+	logger.Info("scan result", "message", "two words")
+
+	out := buf.String()
+	if !strings.Contains(out, `message="two words"`) {
+		t.Errorf("values with spaces should be quoted, got %q", out)
+	}
+}
+
+func TestLegacyTextHandler_DebugSuppressedAboveInfoLevel(t *testing.T) {
+	var buf bytes.Buffer
+	h := newLegacyTextHandler(&buf, slog.LevelInfo)
+	logger := slog.New(h)
+	logger.Debug("debug only")
+
+	if buf.Len() != 0 {
+		t.Errorf("debug should be suppressed at info level, got %q", buf.String())
+	}
+}
+
+func TestLegacyTextHandler_WithAttrsInherited(t *testing.T) {
+	var buf bytes.Buffer
+	h := newLegacyTextHandler(&buf, slog.LevelInfo)
+	child := h.WithAttrs([]slog.Attr{slog.String("component", "daemon")})
+	rec := slog.NewRecord(time.Now(), slog.LevelInfo, "running", 0)
+	if err := child.Handle(context.Background(), rec); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "component=daemon") {
+		t.Errorf("WithAttrs should prepend inherited attrs, got %q", out)
+	}
+}
+
+func TestLegacyTextHandler_EnabledRespectsLevel(t *testing.T) {
+	h := newLegacyTextHandler(&bytes.Buffer{}, slog.LevelWarn)
+	if h.Enabled(context.Background(), slog.LevelInfo) {
+		t.Error("info should not be enabled at warn level")
+	}
+	if !h.Enabled(context.Background(), slog.LevelError) {
+		t.Error("error should be enabled at warn level")
+	}
+}
 
 func TestParseLevel(t *testing.T) {
 	tests := []struct {
@@ -32,8 +137,8 @@ func TestParseLevel(t *testing.T) {
 
 func TestBuildHandler_TextByDefault(t *testing.T) {
 	h := buildHandler("", slog.LevelInfo)
-	if _, ok := h.(*slog.TextHandler); !ok {
-		t.Errorf("default format should yield TextHandler, got %T", h)
+	if _, ok := h.(*legacyTextHandler); !ok {
+		t.Errorf("default format should yield legacyTextHandler, got %T", h)
 	}
 }
 
@@ -46,8 +151,8 @@ func TestBuildHandler_JSON(t *testing.T) {
 
 func TestBuildHandler_UnknownFormatFallsBackToText(t *testing.T) {
 	h := buildHandler("xml", slog.LevelInfo)
-	if _, ok := h.(*slog.TextHandler); !ok {
-		t.Errorf("unknown format should fall back to TextHandler, got %T", h)
+	if _, ok := h.(*legacyTextHandler); !ok {
+		t.Errorf("unknown format should fall back to legacyTextHandler, got %T", h)
 	}
 }
 

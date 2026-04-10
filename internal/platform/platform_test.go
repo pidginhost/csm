@@ -202,6 +202,46 @@ func TestApplyOverrides_ConfigDirs(t *testing.T) {
 	}
 }
 
+func TestApplyOverrides_PanelCPanel(t *testing.T) {
+	// Override a non-cPanel host to look like cPanel. The Panel override
+	// must fire BEFORE populatePaths so the cPanel log overlay gets added.
+	base := Info{OS: OSUbuntu, WebServer: WSApache}
+	got := applyOverrides(base, Overrides{
+		Panel:     PanelCPanel,
+		WebServer: WSApache, // forces path rebuild
+	})
+	if !got.IsCPanel() {
+		t.Error("Panel override should flip IsCPanel to true")
+	}
+	// Path rebuild with Panel=cpanel should include the cPanel Apache overlay
+	found := false
+	for _, p := range got.AccessLogPaths {
+		if p == "/usr/local/apache/logs/access_log" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("Panel=cpanel + Apache rebuild should include cPanel overlay, got %v", got.AccessLogPaths)
+	}
+}
+
+func TestApplyOverrides_PanelWithoutWebServerRebuild(t *testing.T) {
+	// Panel override alone (without WebServer override) should set the
+	// Panel field but NOT rebuild paths — that's the operator's intent.
+	base := Info{OS: OSUbuntu, WebServer: WSNginx, Panel: PanelNone}
+	populatePaths(&base)
+	originalPathsLen := len(base.AccessLogPaths)
+
+	got := applyOverrides(base, Overrides{Panel: PanelCPanel})
+	if got.Panel != PanelCPanel {
+		t.Errorf("Panel = %q, want cpanel", got.Panel)
+	}
+	if len(got.AccessLogPaths) != originalPathsLen {
+		t.Errorf("Panel-only override should not change paths, len %d → %d", originalPathsLen, len(got.AccessLogPaths))
+	}
+}
+
 func TestSetOverrides_BeforeDetect(t *testing.T) {
 	ResetForTest()
 	ok := SetOverrides(Overrides{WebServer: WSNginx})

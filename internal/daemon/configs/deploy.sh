@@ -24,18 +24,82 @@ case "$ARCH" in
 esac
 
 ARTIFACT_NAME="${BINARY_NAME}-linux-${ARCH}"
+GITHUB_API="https://api.github.com/repos/${GITHUB_REPO}"
 
 # --- Functions ---
 
 die() { echo "ERROR: $1" >&2; exit 1; }
 
+# ed25519 public key for verifying release signatures.
+#
+# Priority:
+#   1. $CSM_SIGNING_KEY_PEM environment variable
+#   2. Embedded public key below
+# Set CSM_REQUIRE_SIGNATURES=1 to fail rather than warn on missing key/sig.
+: "${CSM_SIGNING_KEY_PEM:=}"
+: "${CSM_REQUIRE_SIGNATURES:=0}"
+
+EMBEDDED_SIGNING_KEY=""
+
+if [ -z "$CSM_SIGNING_KEY_PEM" ] && [ -n "$EMBEDDED_SIGNING_KEY" ]; then
+    CSM_SIGNING_KEY_PEM="$EMBEDDED_SIGNING_KEY"
+fi
+
+verify_signature() {
+    local file="$1" sig_url="$2"
+    if [ -z "$CSM_SIGNING_KEY_PEM" ]; then
+        if [ "$CSM_REQUIRE_SIGNATURES" = "1" ]; then
+            die "CSM_REQUIRE_SIGNATURES=1 but no signing key configured"
+        fi
+        echo "WARNING: no signing key configured, skipping signature verification" >&2
+        return 0
+    fi
+    if ! command -v openssl >/dev/null 2>&1; then
+        echo "  WARNING: openssl not found, skipping signature verification" >&2
+        return 0
+    fi
+    local sig_file="${file}.sig"
+    local sig_http
+    sig_http=$(curl -sS -w '%{http_code}' -L -o "$sig_file" "$sig_url")
+    if [ "$sig_http" = "404" ] && [ "$CSM_REQUIRE_SIGNATURES" != "1" ]; then
+        echo "WARNING: signature not published for this release (404), skipping verification" >&2
+        rm -f "$sig_file"
+        return 0
+    fi
+    if [ "$sig_http" != "200" ]; then
+        die "Signature download failed (HTTP ${sig_http}) from ${sig_url}"
+    fi
+    local key_file
+    key_file=$(mktemp)
+    trap 'rm -f "$key_file" "$sig_file"' RETURN
+    printf '%s\n' "$CSM_SIGNING_KEY_PEM" > "$key_file"
+    if openssl pkeyutl -verify -pubin -inkey "$key_file" -rawin -sigfile "$sig_file" -in "$file" >/dev/null 2>&1; then
+        echo "Signature verified OK" >&2
+    else
+        die "SIGNATURE VERIFICATION FAILED — binary may be tampered with!"
+    fi
+}
+
+resolve_release_tag() {
+    # Cache the resolved tag for the session.
+    if [ -n "${_RESOLVED_TAG:-}" ]; then echo "$_RESOLVED_TAG"; return; fi
+    _RESOLVED_TAG=$(curl -sS "${GITHUB_API}/releases/latest" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"//;s/".*//')
+    [ -z "$_RESOLVED_TAG" ] && die "Could not determine latest release tag"
+    echo "$_RESOLVED_TAG"
+}
+
 get_download_url() {
     local asset="$1" version="${2:-latest}"
+    local tag ver
     if [ "$version" = "latest" ]; then
-        echo "https://github.com/${GITHUB_REPO}/releases/latest/download/${asset}"
+        tag=$(resolve_release_tag)
     else
-        echo "https://github.com/${GITHUB_REPO}/releases/download/${version}/${asset}"
+        tag="$version"
     fi
+    ver="${tag#v}"
+    # Inject version into binary names: csm-linux-amd64 -> csm-VER-linux-amd64
+    asset=$(echo "$asset" | sed "s/^csm-linux-/csm-${ver}-linux-/")
+    echo "https://github.com/${GITHUB_REPO}/releases/download/${tag}/${asset}"
 }
 
 download_package() {
@@ -72,6 +136,8 @@ download_package() {
   The binary may have been tampered with."
     fi
     echo "Checksum OK (${actual_hash:0:16}...)" >&2
+
+    verify_signature "${tmpdir}/${ARTIFACT_NAME}" "$(get_download_url "${ARTIFACT_NAME}.sig" "$version")"
 
     chmod +x "${tmpdir}/${ARTIFACT_NAME}"
     if ! "${tmpdir}/${ARTIFACT_NAME}" version > /dev/null 2>&1; then

@@ -86,6 +86,7 @@ func (i Info) IsDebianFamily() bool {
 // Overrides lets the operator override auto-detected values from csm.yaml.
 // Any field left blank or nil falls back to the auto-detected value.
 type Overrides struct {
+	Panel               Panel
 	WebServer           WebServer
 	AccessLogPaths      []string
 	ErrorLogPaths       []string
@@ -161,6 +162,11 @@ func DetectFresh() Info {
 // if the operator configured an explicit access-log list, the auto-detected
 // list is discarded so operators have full control.
 func applyOverrides(info Info, o Overrides) Info {
+	// Panel override must happen before path rebuild so populatePaths
+	// picks up the cPanel overlay (or drops it) correctly.
+	if o.Panel != "" {
+		info.Panel = o.Panel
+	}
 	if o.WebServer != "" {
 		// Web server type changed → rebuild paths from scratch unless the
 		// operator also supplied path overrides below.

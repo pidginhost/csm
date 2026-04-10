@@ -81,11 +81,13 @@ func (d *Daemon) SetVersion(v string) {
 // Run starts the daemon and blocks until stopped.
 func (d *Daemon) Run() error {
 	// Initialize structured logging from environment (CSM_LOG_FORMAT,
-	// CSM_LOG_LEVEL). New code should prefer csmlog over fmt.Fprintf so
-	// operators can opt into JSON output via CSM_LOG_FORMAT=json.
+	// CSM_LOG_LEVEL). The default text handler preserves the legacy
+	// "[YYYY-MM-DD HH:MM:SS] msg" format so operators mixing csmlog
+	// with legacy fmt.Fprintf call sites see a uniform log stream.
+	// CSM_LOG_FORMAT=json switches to structured JSON for log shipping.
 	csmlog.Init()
 
-	fmt.Fprintf(os.Stderr, "[%s] CSM daemon starting\n", ts())
+	csmlog.Info("CSM daemon starting")
 
 	// Install config-supplied platform overrides BEFORE the first Detect()
 	// call so every check sees the merged view. Must happen before any
@@ -98,13 +100,10 @@ func (d *Daemon) Run() error {
 		ModSecAuditLogPaths: d.cfg.WebServer.ModSecAudits,
 	})
 
-	// Log detected platform via both the legacy format (for human operators
-	// reading journalctl) and the structured logger (for log-shipping
-	// pipelines when CSM_LOG_FORMAT=json is set).
+	// Log detected platform as a structured record. In text mode this
+	// comes out as "[ts] platform detected  os=X  panel=Y  ..."; in
+	// JSON mode as {"msg":"platform detected","os":"X","panel":"Y",...}.
 	pi := platform.Detect()
-	fmt.Fprintf(os.Stderr, "[%s] platform: os=%s/%s panel=%s webserver=%s\n",
-		ts(), orUnknown(string(pi.OS)), orUnknown(pi.OSVersion),
-		orNone(string(pi.Panel)), orNone(string(pi.WebServer)))
 	csmlog.Info("platform detected",
 		"os", orUnknown(string(pi.OS)),
 		"os_version", orUnknown(pi.OSVersion),
@@ -248,7 +247,7 @@ func (d *Daemon) Run() error {
 	// the next deep scan replaces them. ClearLatestFindings is NOT called
 	// here - it would wipe deep scan findings that haven't re-run yet.
 	d.store.SetLatestFindings(initialFindings)
-	fmt.Fprintf(os.Stderr, "[%s] Initial scan complete: %d findings (%d new)\n", ts(), len(initialFindings), len(newFindings))
+	csmlog.Info("initial scan complete", "findings", len(initialFindings), "new", len(newFindings))
 
 	// NOW start the alert dispatcher - no more race with initial scan
 	d.wg.Add(1)
@@ -277,7 +276,7 @@ func (d *Daemon) Run() error {
 	d.wg.Add(1)
 	go d.watchdogNotifier()
 
-	fmt.Fprintf(os.Stderr, "[%s] CSM daemon running\n", ts())
+	csmlog.Info("CSM daemon running")
 
 	// Wait for signals
 	sigCh := make(chan os.Signal, 1)
@@ -300,7 +299,7 @@ func (d *Daemon) Run() error {
 		break // SIGTERM or SIGINT
 	}
 
-	fmt.Fprintf(os.Stderr, "[%s] Shutting down\n", ts())
+	csmlog.Info("shutting down")
 	close(d.stopCh)
 
 	// Stop all watchers
@@ -721,7 +720,7 @@ func (d *Daemon) startLogWatchers() {
 						defer d.wg.Done()
 						w.Run(d.stopCh)
 					}(w)
-					fmt.Fprintf(os.Stderr, "[%s] Watching: %s (appeared after retry)\n", ts(), path)
+					csmlog.Info("watching log (appeared after retry)", "path", path)
 					return
 				}
 			}
@@ -733,7 +732,7 @@ func (d *Daemon) startLogWatchers() {
 	if accessLogPath := discoverAccessLogPath(); accessLogPath != "" {
 		logFiles = append(logFiles, logFile{accessLogPath, parseAccessLogBruteForce})
 	} else if hostInfo.WebServer != platform.WSNone && len(hostInfo.AccessLogPaths) > 0 {
-		fmt.Fprintf(os.Stderr, "[%s] Access log not found (checked %v), will retry every 60s\n", ts(), hostInfo.AccessLogPaths)
+		csmlog.Warn("access log not found, will retry every 60s", "candidates", fmt.Sprintf("%v", hostInfo.AccessLogPaths))
 		d.wg.Add(1)
 		go d.retryLogWatcher(hostInfo.AccessLogPaths[0], parseAccessLogBruteForce)
 	}
@@ -765,7 +764,7 @@ func (d *Daemon) startLogWatchers() {
 			defer d.wg.Done()
 			w.Run(d.stopCh)
 		}(w)
-		fmt.Fprintf(os.Stderr, "[%s] Watching: %s\n", ts(), lf.path)
+		csmlog.Info("watching log", "path", lf.path)
 	}
 }
 
@@ -773,7 +772,7 @@ func (d *Daemon) startLogWatchers() {
 // When the file appears, it starts a watcher and returns.
 func (d *Daemon) retryLogWatcher(path string, handler LogLineHandler) {
 	defer d.wg.Done()
-	fmt.Fprintf(os.Stderr, "[%s] Warning: %s not found, will retry every 60s\n", ts(), path)
+	csmlog.Warn("log not found, will retry every 60s", "path", path)
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 
@@ -794,7 +793,7 @@ func (d *Daemon) retryLogWatcher(path string, handler LogLineHandler) {
 				defer d.wg.Done()
 				w.Run(d.stopCh)
 			}(w)
-			fmt.Fprintf(os.Stderr, "[%s] Watching: %s (appeared after retry)\n", ts(), path)
+			csmlog.Info("watching log (appeared after retry)", "path", path)
 			return
 		}
 	}
@@ -806,7 +805,7 @@ func (d *Daemon) startWebUI() {
 	}
 	srv, err := webui.New(d.cfg, d.store)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[%s] WebUI init error: %v\n", ts(), err)
+		csmlog.Error("webui init error", "err", err)
 		return
 	}
 
@@ -828,7 +827,7 @@ func (d *Daemon) startWebUI() {
 	go func() {
 		defer d.wg.Done()
 		if err := srv.Start(); err != nil {
-			fmt.Fprintf(os.Stderr, "[%s] WebUI server error: %v\n", ts(), err)
+			csmlog.Error("webui server error", "err", err)
 		}
 	}()
 }
@@ -836,7 +835,7 @@ func (d *Daemon) startWebUI() {
 func (d *Daemon) startPAMListener() {
 	pl, err := NewPAMListener(d.cfg, d.alertCh)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[%s] PAM listener not available: %v\n", ts(), err)
+		csmlog.Warn("PAM listener not available", "err", err)
 		return
 	}
 	d.pamListener = pl
@@ -845,13 +844,13 @@ func (d *Daemon) startPAMListener() {
 		defer d.wg.Done()
 		pl.Run(d.stopCh)
 	}()
-	fmt.Fprintf(os.Stderr, "[%s] PAM listener active: %s\n", ts(), pamSocketPath)
+	csmlog.Info("PAM listener active", "socket", pamSocketPath)
 }
 
 func (d *Daemon) startFileMonitor() {
 	fm, err := NewFileMonitor(d.cfg, d.alertCh)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[%s] fanotify not available: %v (falling back to periodic deep scan)\n", ts(), err)
+		csmlog.Warn("fanotify not available, falling back to periodic deep scan", "err", err)
 		return
 	}
 	d.fileMonitor = fm
@@ -860,7 +859,7 @@ func (d *Daemon) startFileMonitor() {
 		defer d.wg.Done()
 		fm.Run(d.stopCh)
 	}()
-	fmt.Fprintf(os.Stderr, "[%s] fanotify file monitor active on /home, /tmp, /dev/shm\n", ts())
+	csmlog.Info("fanotify file monitor active", "paths", "/home, /tmp, /dev/shm")
 }
 
 func (d *Daemon) startSpoolWatcher() {
@@ -962,7 +961,7 @@ func (d *Daemon) startForwarderWatcher() {
 		defer d.wg.Done()
 		fw.Run(d.stopCh)
 	}()
-	fmt.Fprintf(os.Stderr, "[%s] Watching: /etc/valiases/ (inotify forwarder watcher)\n", ts())
+	csmlog.Info("watching log (inotify forwarder watcher)", "path", "/etc/valiases/")
 }
 
 func (d *Daemon) syncEmailAVWebState() {
@@ -1022,9 +1021,9 @@ func (d *Daemon) startChallengeServer() {
 	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
-		fmt.Fprintf(os.Stderr, "[%s] Challenge server active on port %d\n", ts(), d.cfg.Challenge.ListenPort)
+		csmlog.Info("challenge server active", "port", d.cfg.Challenge.ListenPort)
 		if err := srv.Start(); err != nil && err.Error() != "http: Server closed" {
-			fmt.Fprintf(os.Stderr, "[%s] Challenge server error: %v\n", ts(), err)
+			csmlog.Error("challenge server error", "err", err)
 		}
 	}()
 }
@@ -1220,8 +1219,10 @@ func (d *Daemon) startFirewall() {
 	checks.SetIPBlocker(engine)
 
 	fwState, _ := firewall.LoadState(d.cfg.StatePath)
-	fmt.Fprintf(os.Stderr, "[%s] Firewall active: %d blocked, %d allowed IPs\n",
-		ts(), len(fwState.Blocked), len(fwState.Allowed))
+	csmlog.Info("firewall active",
+		"blocked_ips", len(fwState.Blocked),
+		"allowed_ips", len(fwState.Allowed),
+	)
 
 	// Start Dynamic DNS resolver if configured
 	if len(d.cfg.Firewall.DynDNSHosts) > 0 {
@@ -1231,16 +1232,14 @@ func (d *Daemon) startFirewall() {
 			defer d.wg.Done()
 			resolver.Run(d.stopCh)
 		}()
-		fmt.Fprintf(os.Stderr, "[%s] DynDNS resolver active for %d host(s)\n",
-			ts(), len(d.cfg.Firewall.DynDNSHosts))
+		csmlog.Info("DynDNS resolver active", "hosts", len(d.cfg.Firewall.DynDNSHosts))
 	}
 
 	// Start Cloudflare IP whitelist refresh if configured
 	if d.cfg.Cloudflare.Enabled {
 		d.wg.Add(1)
 		go d.cloudflareRefreshLoop()
-		fmt.Fprintf(os.Stderr, "[%s] Cloudflare IP whitelist enabled (refresh every %dh)\n",
-			ts(), d.cfg.Cloudflare.RefreshHours)
+		csmlog.Info("cloudflare IP whitelist enabled", "refresh_hours", d.cfg.Cloudflare.RefreshHours)
 	}
 }
 
@@ -1269,7 +1268,7 @@ func (d *Daemon) cloudflareRefreshLoop() {
 func (d *Daemon) refreshCloudflareIPs() {
 	ipv4, ipv6, err := firewall.FetchCloudflareIPs()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[%s] Cloudflare IP fetch error: %v\n", ts(), err)
+		csmlog.Error("cloudflare IP fetch error", "err", err)
 		return
 	}
 
@@ -1497,7 +1496,7 @@ func (d *Daemon) watchdogNotifier() {
 		interval = 10 * time.Second
 	}
 
-	fmt.Fprintf(os.Stderr, "[%s] systemd watchdog active (interval=%s)\n", ts(), interval)
+	csmlog.Info("systemd watchdog active", "interval", interval.String())
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()

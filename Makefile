@@ -1,4 +1,4 @@
-.PHONY: build build-linux build-all clean test lint fmt fmt-check vet ci tools
+.PHONY: build build-linux build-all clean test lint fmt fmt-check vet ci tools sync-embedded check-embedded
 
 BINARY_NAME := csm
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -15,12 +15,28 @@ export GOCACHE
 export GOMODCACHE
 export GOLANGCI_LINT_CACHE
 
+# sync-embedded copies scripts/deploy.sh into the embedded-configs directory
+# so the binary ships an up-to-date copy. The daemon rewrites /opt/csm/deploy.sh
+# on every startup from this embedded copy — without this sync, operators see
+# their deploy.sh silently revert after the daemon restarts.
+sync-embedded:
+	@cp scripts/deploy.sh internal/daemon/configs/deploy.sh
+
+# check-embedded verifies the embedded deploy.sh matches scripts/deploy.sh.
+# Run in CI to catch drift.
+check-embedded:
+	@if ! cmp -s scripts/deploy.sh internal/daemon/configs/deploy.sh; then \
+		echo "ERROR: internal/daemon/configs/deploy.sh is out of sync with scripts/deploy.sh"; \
+		echo "Run 'make sync-embedded' to fix."; \
+		exit 1; \
+	fi
+
 # Build native binary
-build:
+build: sync-embedded
 	go build -tags yara -ldflags "$(LDFLAGS)" -o dist/$(BINARY_NAME) ./cmd/csm/
 
 # Build static Linux amd64 binary (production target)
-build-linux:
+build-linux: sync-embedded
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags yara -ldflags "$(LDFLAGS)" -o dist/$(BINARY_NAME)-linux-amd64 ./cmd/csm/
 
 # Build all targets
@@ -49,7 +65,7 @@ fmt-check:
 	@test -z "$$(gofmt -l .)" || (echo "Files not formatted:" && gofmt -l . && exit 1)
 
 # Run all CI checks locally
-ci: fmt-check vet lint test build-linux
+ci: check-embedded fmt-check vet lint test build-linux
 
 # Install dev tools
 tools:
