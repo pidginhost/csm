@@ -1,10 +1,24 @@
 # CSM - Continuous Security Monitor
 
-A security daemon for **cPanel/WHM servers** that detects compromise in seconds, responds automatically, and gives operators one place to see what happened.
+A security daemon for Linux web servers that detects compromise in seconds, responds automatically, and gives operators one place to see what happened.
+
+CSM was originally built for **cPanel/WHM** on CloudLinux/AlmaLinux, where the majority of its checks are tuned for shared hosting attack patterns. It also runs on plain Ubuntu/Debian with Nginx or Apache and on AlmaLinux/Rocky/RHEL with Apache or Nginx — the daemon auto-detects the OS, control panel, and web server at startup and chooses the correct log paths, config locations, and check set.
 
 Shared hosting servers get hit the same ways: stolen credentials, vulnerable plugins, phishing kits, hijacked mailboxes, and backdoors that sit undiscovered until abuse reports arrive. CSM watches for all of it and acts before a small incident becomes a long cleanup.
 
 **[Documentation](https://pidginhost.github.io/csm/)** | **[Installation](docs/src/installation.md)** | **[Configuration](docs/src/configuration.md)**
+
+## Supported Platforms
+
+| Platform | Status | Notes |
+|----------|--------|-------|
+| cPanel/WHM on AlmaLinux/CloudLinux/Rocky | Primary target | All 62 checks, WHM plugin, Exim mail stack, account enumeration from `/var/cpanel/users` |
+| Plain AlmaLinux / Rocky / RHEL 8+ | Supported | Apache or Nginx auto-detected. Generic Linux + web server checks. cPanel-specific checks are skipped cleanly (not partial failures). |
+| Plain Ubuntu 20.04+ / Debian 11+ | Supported | Apache or Nginx auto-detected. System integrity via `debsums`/`dpkg --verify` instead of `rpm -V`. |
+
+The `/home/*/public_html` account-scanning checks (WordPress integrity, htaccess tampering, PHP content analysis, phishing kit detection, per-domain brute force) assume a cPanel layout and do not run on plain Linux. Generic checks — filesystem monitoring, firewall management, ModSecurity audit, SSH/PAM brute force, system integrity, kernel module tracking, suspicious process detection, WAF enforcement — run everywhere.
+
+See [detection-critical.md](docs/src/detection-critical.md) and [detection-deep.md](docs/src/detection-deep.md) for per-check platform support.
 
 ## Quick Start
 
@@ -15,23 +29,39 @@ csm validate && csm baseline
 systemctl enable --now csm.service
 ```
 
+Or install the native package:
+
+```bash
+# Debian/Ubuntu
+curl -LO https://github.com/pidginhost/csm/releases/latest/download/csm_VERSION_amd64.deb
+sudo dpkg -i csm_VERSION_amd64.deb
+
+# AlmaLinux/Rocky/RHEL/CloudLinux
+curl -LO https://github.com/pidginhost/csm/releases/latest/download/csm-VERSION-1.x86_64.rpm
+sudo dnf install -y ./csm-VERSION-1.x86_64.rpm
+```
+
 Web UI at `https://<server>:9443`
 
 ## What It Does
 
-**Watches everything in real time** -- fanotify on `/home`, `/tmp`, `/dev/shm` for malicious files; inotify on logs for auth failures, WAF blocks, mail abuse, and suspicious logins; PAM listener for brute force across all services.
+**Watches everything in real time** -- fanotify on `/home`, `/tmp`, `/dev/shm` for malicious files; inotify on logs for auth failures, WAF blocks, mail abuse, and suspicious logins; PAM listener for brute force across all services. Log paths are auto-selected per platform (`/var/log/nginx/*`, `/var/log/httpd/*`, `/var/log/apache2/*`, `/var/log/secure` vs `/var/log/auth.log`).
 
-**Runs 62 security checks** -- 34 critical checks every 10 minutes (processes, auth, network, integrity) and 28 deep checks every hour (filesystem, WordPress, phishing, DNS/SSL, mail, database).
+**Runs up to 62 security checks** -- 34 critical checks every 10 minutes (processes, auth, network, integrity) and 28 deep checks every hour (filesystem, WordPress, phishing, DNS/SSL, mail, database). On non-cPanel hosts the account/mail/WordPress/cPanel-API checks are skipped cleanly so the check set matches the platform's actual attack surface.
 
 **Responds automatically** -- blocks IPs, quarantines files, kills reverse shells, cleans infected PHP, promotes repeat offenders to permanent bans, and routes suspicious traffic through proof-of-work challenges.
 
-**Manages your firewall** -- nftables IP/subnet blocking, temp bans, country blocks, port allowlists, GeoIP decisions, and full audit trail.
+**Manages your firewall** -- nftables IP/subnet blocking, temp bans, country blocks, port allowlists, GeoIP decisions, and full audit trail. Works on any modern Linux distro with nftables (Ubuntu 20.04+, Debian 11+, RHEL/Alma/Rocky 8+).
 
-**Covers email abuse** -- Exim spool AV scanning, attachment quarantine, queue monitoring, weak password audits, external forwarder checks, and DKIM/SPF failure alerting.
+**Covers email abuse** (cPanel only) -- Exim spool AV scanning, attachment quarantine, queue monitoring, weak password audits, external forwarder checks, and DKIM/SPF failure alerting.
+
+**Manages ModSecurity** -- detects ModSec on Apache (`/etc/apache2`, `/etc/httpd`, cPanel EA4) and Nginx (`/etc/nginx/modsec`), scans the correct rule directories, reports stale rules, and emits platform-specific install hints (`apt install libnginx-mod-http-modsecurity`, `dnf install --enablerepo=epel mod_security`, or WHM on cPanel).
+
+**Verifies system integrity** -- `rpm -V` on RHEL family, `debsums` / `dpkg --verify` on Debian/Ubuntu. Same scope of critical binaries on both.
 
 **Includes threat intelligence** -- AbuseIPDB lookups, GeoIP/ASN enrichment, attacker scoring, attack correlation, and bulk IP actions.
 
-Plus: ModSecurity management, YARA-X scanning, server hardening audits, performance monitoring (PHP/MySQL/Redis/WordPress), and signature-based detection.
+Plus: YARA-X scanning, server hardening audits, performance monitoring (PHP/MySQL/Redis/WordPress), and signature-based detection.
 
 ## Web UI
 

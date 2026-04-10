@@ -1,8 +1,12 @@
 # CSM - Continuous Security Monitor
 
-Security monitoring and response for cPanel/WHM servers. Single Go binary that detects compromise, phishing, mail abuse, and suspicious activity - then auto-responds and alerts within seconds.
+Security monitoring and response for Linux web servers. Single Go binary that detects compromise, phishing, mail abuse, and suspicious activity - then auto-responds and alerts within seconds.
 
-Designed as a full **Imunify360 replacement**. Includes nftables firewall (replaces LFD/fail2ban), ModSecurity management, email security, threat intelligence, hardening audit, performance monitoring, and a web dashboard.
+Originally designed as a full **Imunify360 replacement** for cPanel/WHM on CloudLinux/AlmaLinux. Also runs on plain Ubuntu/Debian + Nginx/Apache and on plain AlmaLinux/Rocky/RHEL + Apache/Nginx: the daemon auto-detects the OS, control panel, and web server at startup and picks the correct log paths, config candidates, and check set.
+
+Includes nftables firewall (replaces LFD/fail2ban), ModSecurity management, email security, threat intelligence, hardening audit, performance monitoring, and a web dashboard.
+
+See [installation.md](installation.md) for supported platforms and how the check set differs between cPanel and non-cPanel hosts.
 
 ## What CSM Does
 

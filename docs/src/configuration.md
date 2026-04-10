@@ -2,6 +2,28 @@
 
 CSM is configured via a single YAML file at `/opt/csm/csm.yaml`.
 
+## Platform & Web Server
+
+CSM auto-detects the host OS (Ubuntu, Debian, AlmaLinux, Rocky, RHEL, CloudLinux), control panel (cPanel, Plesk, DirectAdmin, or none), and web server (Apache, Nginx, LiteSpeed, or none) at daemon startup. The detected platform is logged as:
+
+```
+[2026-04-10 08:13:37] platform: os=ubuntu/24.04 panel=none webserver=nginx
+```
+
+The daemon then chooses the correct log paths, config candidates, and check set without any configuration from you. Verify with:
+
+```bash
+journalctl -u csm.service | grep platform:
+```
+
+The only web-server-related config key today is `modsec_error_log`, which overrides the auto-detected ModSecurity error-log path for hosts with custom layouts:
+
+```yaml
+modsec_error_log: "/opt/myapp/logs/modsec_audit.log"
+```
+
+If you need to override more paths (access log, config directories), open a GitHub issue — a `web_server:` override section is on the roadmap.
+
 ## Minimal Config
 
 ```yaml

@@ -31,20 +31,21 @@ Monitors `/home`, `/tmp`, `/dev/shm` for filesystem events.
 
 ## inotify Log Watchers (~2 seconds)
 
-Tails auth, access, and mail logs in real-time.
+Tails auth, access, and mail logs in real-time. The exact file paths are chosen per platform at daemon startup — see the `platform: ...` line in the daemon log.
 
-| Log | What it detects |
-|-----|-----------------|
-| cPanel session log | Logins from non-infra IPs (with trusted country filtering) |
-| cPanel session log | Password changes |
-| cPanel session log | File Manager uploads |
-| auth/secure log | SSH logins and failures |
-| FTP log | FTP logins and failures |
-| Exim mainlog | Mail anomalies, queue issues |
-| Apache/LiteSpeed access log | WordPress brute force (wp-login.php, xmlrpc.php) — real-time, not just periodic |
-| Dovecot log | IMAP/POP3 account compromise |
-| Roundcube log | Webmail access anomalies |
-| ModSecurity audit log | WAF blocks and attacks |
+| Log | Platforms | What it detects |
+|-----|-----------|-----------------|
+| cPanel session log (`/usr/local/cpanel/logs/session_log`) | cPanel only | Logins from non-infra IPs, password changes, File Manager uploads |
+| cPanel access log (`/usr/local/cpanel/logs/access_log`) | cPanel only | cPanel-API auth patterns |
+| Auth log | All | SSH logins and failures. `/var/log/auth.log` on Debian/Ubuntu, `/var/log/secure` on RHEL family and cPanel |
+| Exim mainlog (`/var/log/exim_mainlog`) | cPanel only | Mail anomalies, queue issues |
+| Apache/LiteSpeed/Nginx access log | All | WordPress brute force (wp-login.php, xmlrpc.php), real-time. Paths: `/var/log/apache2/access.log` (Debian), `/var/log/httpd/access_log` (RHEL), `/var/log/nginx/access.log` (Nginx), `/usr/local/apache/logs/access_log` (cPanel) |
+| Dovecot log (`/var/log/maillog`) | cPanel only | IMAP/POP3 account compromise |
+| FTP log (`/var/log/messages`) | cPanel only | FTP logins and failures |
+| ModSecurity error log | All (if ModSec installed) | WAF blocks and attacks. Auto-discovered from the detected web server |
+| Nginx error log (`/var/log/nginx/error.log`) | Nginx hosts | General web errors, ModSecurity denies |
+
+Cpanel-only log watchers are not registered on non-cPanel hosts, so you will not see "not found, retrying every 60s" warnings for them on plain Ubuntu or AlmaLinux.
 
 ## PAM Brute-Force Listener
 

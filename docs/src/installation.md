@@ -1,12 +1,28 @@
 # Installation
 
-## Quick Install
+## Supported Platforms
+
+| Platform | Web server | Package | Notes |
+|----------|-----------|---------|-------|
+| cPanel/WHM on CloudLinux / AlmaLinux / Rocky | Apache (EA4) or LiteSpeed | .rpm | Primary target. All 62 checks run. |
+| Plain AlmaLinux / Rocky / RHEL 8+ / CentOS Stream 8+ | Apache (`httpd`) or Nginx | .rpm | Generic Linux + web server checks. cPanel-specific checks are skipped cleanly. |
+| Plain Ubuntu 20.04+ / Debian 11+ | Apache (`apache2`) or Nginx | .deb | Same as above, with `debsums`/`dpkg --verify` in place of `rpm -V`. |
+
+The daemon auto-detects the OS, control panel (cPanel/Plesk/DirectAdmin/none), and web server (Apache/Nginx/LiteSpeed) at startup. The detected platform is logged at startup as:
+
+```
+[2026-04-10 08:13:37] platform: os=ubuntu/24.04 panel=none webserver=nginx
+```
+
+Check it with `journalctl -u csm.service | grep platform:` after starting the daemon.
+
+## Quick Install (all platforms)
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/pidginhost/csm/main/scripts/install.sh | bash
 ```
 
-Auto-detects hostname, email, and generates a WebUI auth token. Prompts for confirmation before applying.
+Auto-detects hostname, email, and generates a WebUI auth token. Prompts for confirmation before applying. Works on Debian/Ubuntu and RHEL-family distros.
 
 Non-interactive mode:
 
@@ -14,25 +30,81 @@ Non-interactive mode:
 curl -sSL https://raw.githubusercontent.com/pidginhost/csm/main/scripts/install.sh | bash -s -- --email admin@example.com --non-interactive
 ```
 
-## RPM (CentOS/AlmaLinux/CloudLinux)
+## RPM (AlmaLinux / Rocky / RHEL / CloudLinux / cPanel)
 
 ```bash
-rpm -i csm-VERSION-1.x86_64.rpm
+curl -LO https://github.com/pidginhost/csm/releases/latest/download/csm-VERSION-1.x86_64.rpm
+sudo dnf install -y ./csm-VERSION-1.x86_64.rpm
 vi /opt/csm/csm.yaml
 csm validate
 csm baseline
 systemctl enable --now csm.service
 ```
 
-## DEB (Ubuntu/Debian)
+On older hosts with yum: `sudo yum install -y ./csm-VERSION-1.x86_64.rpm`.
+
+## DEB (Ubuntu / Debian)
 
 ```bash
-dpkg -i csm_VERSION_amd64.deb
+curl -LO https://github.com/pidginhost/csm/releases/latest/download/csm_VERSION_amd64.deb
+sudo apt install -y ./csm_VERSION_amd64.deb
 vi /opt/csm/csm.yaml
 csm validate
 csm baseline
 systemctl enable --now csm.service
 ```
+
+Using `apt install ./file.deb` instead of `dpkg -i` pulls in recommended dependencies (`auditd`, `logrotate`) automatically.
+
+## Verifying platform auto-detection
+
+After `systemctl start csm.service`, the first line after "CSM daemon starting" reports what CSM detected:
+
+```
+[2026-04-10 08:13:37] CSM daemon starting
+[2026-04-10 08:13:37] platform: os=almalinux/10.0 panel=none webserver=apache
+[2026-04-10 08:13:37] Watching: /var/log/secure
+[2026-04-10 08:13:37] Watching: /var/log/httpd/error_log
+[2026-04-10 08:13:37] Watching: /var/log/httpd/access_log
+```
+
+If any field shows `none` or `unknown` when you expect something, the auto-detect missed it. File a bug with the output of `cat /etc/os-release`, `systemctl is-active nginx apache2 httpd`, and `which nginx apache2 httpd`.
+
+## Optional system dependencies
+
+CSM runs as a single static Go binary and has no hard dependencies beyond systemd, but a few host packages enable additional checks:
+
+| Package | Platforms | Enables |
+|---------|-----------|---------|
+| `auditd` | All | Shadow file / SSH key tamper detection via auditd |
+| `debsums` | Debian/Ubuntu | Cleaner system binary integrity output vs. `dpkg --verify` fallback |
+| `logrotate` | All | Rotation of `/var/log/csm/monitor.log` |
+| `wp-cli` | Optional | WordPress core integrity check |
+| ModSecurity | All | WAF enforcement checks (see platform-specific install below) |
+
+### Installing ModSecurity
+
+CSM detects ModSecurity but doesn't install it for you. Platform-specific commands:
+
+```bash
+# Ubuntu/Debian + Nginx
+sudo apt install libnginx-mod-http-modsecurity modsecurity-crs
+
+# Ubuntu/Debian + Apache
+sudo apt install libapache2-mod-security2 modsecurity-crs && sudo a2enmod security2
+
+# AlmaLinux/Rocky/RHEL + Apache (requires EPEL)
+sudo dnf install -y epel-release
+sudo dnf install -y mod_security
+sudo systemctl restart httpd
+
+# AlmaLinux/Rocky/RHEL + Nginx (requires EPEL)
+sudo dnf install -y epel-release
+sudo dnf install -y nginx-mod-http-modsecurity
+sudo systemctl restart nginx
+```
+
+After installing ModSecurity, run `csm check` and the `waf_status` finding should disappear.
 
 ## Manual (deploy.sh)
 
