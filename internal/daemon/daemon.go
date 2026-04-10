@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -1447,10 +1448,26 @@ func deployConfigs() {
 	if _, err := os.Stat("/usr/local/cpanel"); err == nil {
 		dst := "/usr/local/cpanel/whostmgr/docroot/cgi/addon_csm.cgi"
 		if err := os.WriteFile(dst, embeddedWHMCGI, 0755); err == nil {
-			fmt.Fprintf(os.Stderr, "[%s] WHM plugin CGI deployed\n", ts())
+			csmlog.Info("WHM plugin CGI deployed", "path", dst)
 		}
+		// Write the AppConfig file, then register it with WHM.
+		// Writing the file alone does NOT make the plugin appear in the
+		// sidebar — WHM's AppConfig system maintains a registration
+		// database that is updated via `register_appconfig`. Skipping
+		// that step was a long-standing bug; the plugin file existed on
+		// disk but never showed up in the menu.
 		_ = os.MkdirAll("/var/cpanel/apps", 0755)
-		_ = os.WriteFile("/var/cpanel/apps/csm.conf", embeddedWHMConf, 0644)
+		confPath := "/var/cpanel/apps/csm.conf"
+		if err := os.WriteFile(confPath, embeddedWHMConf, 0644); err != nil {
+			csmlog.Error("WHM AppConfig write failed", "path", confPath, "err", err)
+		} else if err := registerWHMPlugin(confPath); err != nil {
+			// Non-fatal: the conf is on disk, register_appconfig failure is
+			// logged so operators can fix it manually. Most common failure
+			// is register_appconfig not being in PATH (old cPanel versions).
+			csmlog.Warn("WHM plugin registration failed", "err", err)
+		} else {
+			csmlog.Info("WHM plugin registered with AppConfig")
+		}
 	}
 
 	// Deploy script (self-updating)
@@ -1468,6 +1485,29 @@ func deployConfigs() {
 			break
 		}
 	}
+}
+
+// registerWHMPlugin runs cPanel's register_appconfig helper to add the CSM
+// plugin to the WHM sidebar. WHM maintains a cached registration database
+// separate from the /var/cpanel/apps/ conf files; without running this
+// helper, the plugin file exists on disk but the menu never shows it.
+//
+// Idempotent: re-running against an already-registered plugin just updates
+// the entry. Non-fatal on failure — deployment continues and the operator
+// can rerun manually.
+func registerWHMPlugin(confPath string) error {
+	bin := "/usr/local/cpanel/bin/register_appconfig"
+	if _, err := os.Stat(bin); err != nil {
+		return fmt.Errorf("register_appconfig not found at %s: %w", bin, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, confPath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s %s: %w: %s", bin, confPath, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // watchdogNotifier sends systemd watchdog keepalives on its own ticker.
