@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 type OSFamily string
@@ -82,21 +83,70 @@ func (i Info) IsDebianFamily() bool {
 	return i.OS == OSUbuntu || i.OS == OSDebian
 }
 
+// Overrides lets the operator override auto-detected values from csm.yaml.
+// Any field left blank or nil falls back to the auto-detected value.
+type Overrides struct {
+	WebServer           WebServer
+	AccessLogPaths      []string
+	ErrorLogPaths       []string
+	ModSecAuditLogPaths []string
+	ApacheConfigDir     string
+	NginxConfigDir      string
+}
+
 var (
-	detected     Info
-	detectedOnce sync.Once
+	detected        Info
+	detectedOnce    sync.Once
+	overrideMu      sync.Mutex
+	pendingOverride *Overrides
 )
+
+// SetOverrides installs config-supplied overrides to be merged into the next
+// (and all subsequent) Detect() result. Call this once from daemon startup,
+// BEFORE the first Detect() call, so the merged info is what every check
+// sees. Subsequent SetOverrides calls before Detect() replace the previous
+// override; calls after Detect() are no-ops and log a warning via the
+// returned bool.
+//
+// Returns true if the override was installed, false if Detect() had already
+// cached an un-overridden result.
+func SetOverrides(o Overrides) bool {
+	overrideMu.Lock()
+	defer overrideMu.Unlock()
+	// Use a local mutex + a check on detectedOnce state. detectedOnce has
+	// no public "was it called" query, so we track it via the pending var.
+	if pendingOverride != nil && isDetected() {
+		return false
+	}
+	pendingOverride = &o
+	return !isDetected()
+}
+
+// isDetected returns true if Detect() has already cached a result.
+// Internal helper — uses a separate flag because sync.Once has no query API.
+var detectedFlag atomic.Bool
+
+func isDetected() bool { return detectedFlag.Load() }
 
 // Detect inspects the host and returns platform info. The result is cached
 // for the process lifetime — callers that need a fresh probe should use
 // DetectFresh instead.
 func Detect() Info {
-	detectedOnce.Do(func() { detected = DetectFresh() })
+	detectedOnce.Do(func() {
+		detected = DetectFresh()
+		overrideMu.Lock()
+		if pendingOverride != nil {
+			detected = applyOverrides(detected, *pendingOverride)
+		}
+		overrideMu.Unlock()
+		detectedFlag.Store(true)
+	})
 	return detected
 }
 
 // DetectFresh always re-runs detection, ignoring any cached result.
-// Intended for tests and for operator-triggered rescan.
+// Intended for tests and for operator-triggered rescan. Does not apply
+// config overrides — use Detect() for the operator-visible view.
 func DetectFresh() Info {
 	i := Info{}
 	detectOS(&i)
@@ -104,6 +154,49 @@ func DetectFresh() Info {
 	detectWebServer(&i)
 	populatePaths(&i)
 	return i
+}
+
+// applyOverrides merges non-empty override fields into info. Always returns
+// a new Info — never mutates the input. Paths are replaced, not appended:
+// if the operator configured an explicit access-log list, the auto-detected
+// list is discarded so operators have full control.
+func applyOverrides(info Info, o Overrides) Info {
+	if o.WebServer != "" {
+		// Web server type changed → rebuild paths from scratch unless the
+		// operator also supplied path overrides below.
+		info.WebServer = o.WebServer
+		info.AccessLogPaths = nil
+		info.ErrorLogPaths = nil
+		info.ModSecAuditLogPaths = nil
+		populatePaths(&info)
+	}
+	if len(o.AccessLogPaths) > 0 {
+		info.AccessLogPaths = append([]string(nil), o.AccessLogPaths...)
+	}
+	if len(o.ErrorLogPaths) > 0 {
+		info.ErrorLogPaths = append([]string(nil), o.ErrorLogPaths...)
+	}
+	if len(o.ModSecAuditLogPaths) > 0 {
+		info.ModSecAuditLogPaths = append([]string(nil), o.ModSecAuditLogPaths...)
+	}
+	if o.ApacheConfigDir != "" {
+		info.ApacheConfigDir = o.ApacheConfigDir
+	}
+	if o.NginxConfigDir != "" {
+		info.NginxConfigDir = o.NginxConfigDir
+	}
+	return info
+}
+
+// ResetForTest clears the cached Detect() result so tests can re-run with
+// different fixtures. Never call from production code.
+func ResetForTest() {
+	overrideMu.Lock()
+	defer overrideMu.Unlock()
+	detected = Info{}
+	detectedOnce = sync.Once{}
+	pendingOverride = nil
+	detectedFlag.Store(false)
 }
 
 func detectOS(i *Info) {

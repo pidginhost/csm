@@ -12,6 +12,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -149,6 +150,51 @@ func GetScanHomeDirs() ([]os.DirEntry, error) {
 		return []os.DirEntry{fakeDirEntry{info}}, nil
 	}
 	return os.ReadDir("/home")
+}
+
+// ResolveWebRoots returns the list of directory paths CSM should scan for
+// web-facing content (wp-config.php, .htaccess, public_html trees, etc.).
+//
+// Resolution order:
+//  1. If cfg.AccountRoots is set, expand each glob and return the result.
+//     Explicit config always wins.
+//  2. On cPanel hosts (detected via platform.Detect), fall back to
+//     /home/*/public_html for backward compatibility.
+//  3. On non-cPanel hosts with no config, return an empty list. Callers
+//     should treat this as "no scanning" and skip cleanly.
+//
+// Each returned path is an absolute directory that exists on disk.
+func ResolveWebRoots(cfg *config.Config) []string {
+	var patterns []string
+	switch {
+	case len(cfg.AccountRoots) > 0:
+		patterns = cfg.AccountRoots
+	case platform.Detect().IsCPanel():
+		patterns = []string{"/home/*/public_html"}
+	default:
+		return nil
+	}
+
+	var roots []string
+	seen := make(map[string]struct{})
+	for _, pattern := range patterns {
+		matches, err := filepath.Glob(pattern)
+		if err != nil || len(matches) == 0 {
+			continue
+		}
+		for _, m := range matches {
+			info, err := os.Stat(m)
+			if err != nil || !info.IsDir() {
+				continue
+			}
+			if _, ok := seen[m]; ok {
+				continue
+			}
+			seen[m] = struct{}{}
+			roots = append(roots, m)
+		}
+	}
+	return roots
 }
 
 // fakeDirEntry wraps os.FileInfo to implement os.DirEntry.

@@ -883,9 +883,9 @@ func scanErrorLogs(dir string, thresholdBytes int64, depth int, findings *[]aler
 	}
 }
 
-// CheckErrorLogBloat walks /home/*/public_html (max depth 3) looking for
-// error_log files that exceed the configured size threshold. Throttled to
-// once every 60 minutes.
+// CheckErrorLogBloat walks configured web roots (default /home/*/public_html
+// on cPanel) looking for error_log files that exceed the configured size
+// threshold. Throttled to once every 60 minutes.
 func CheckErrorLogBloat(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	if !perfEnabled(cfg) {
 		return nil
@@ -896,7 +896,7 @@ func CheckErrorLogBloat(ctx context.Context, cfg *config.Config, store *state.St
 
 	thresholdBytes := int64(cfg.Performance.ErrorLogWarnSizeMB) * 1024 * 1024
 
-	homeDirs, _ := filepath.Glob("/home/*/public_html")
+	homeDirs := ResolveWebRoots(cfg)
 
 	var findings []alert.Finding
 	for _, dir := range homeDirs {
@@ -1050,22 +1050,32 @@ func CheckWPConfig(ctx context.Context, cfg *config.Config, store *state.Store) 
 		return nil
 	}
 
-	homeDirs, _ := filepath.Glob("/home/*/public_html")
+	homeDirs := ResolveWebRoots(cfg)
 
 	var findings []alert.Finding
 	for _, dir := range homeDirs {
-		// Derive account name from path: /home/<account>/public_html
-		parts := strings.Split(dir, string(filepath.Separator))
-		account := ""
-		for i, p := range parts {
-			if p == "home" && i+1 < len(parts) {
-				account = parts[i+1]
-				break
-			}
-		}
-		scanWPConfigs(dir, account, cfg, 2, &findings)
+		scanWPConfigs(dir, accountFromPath(dir), cfg, 2, &findings)
 	}
 	return findings
+}
+
+// accountFromPath extracts a best-effort account name from a web root path.
+// On cPanel (/home/USER/public_html) it returns USER. On other layouts it
+// returns the parent directory name, or the final path component if there
+// is no parent. Used for reporting only — never for authorization.
+func accountFromPath(dir string) string {
+	parts := strings.Split(dir, string(filepath.Separator))
+	// cPanel shape: /home/<account>/public_html
+	for i, p := range parts {
+		if p == "home" && i+1 < len(parts) {
+			return parts[i+1]
+		}
+	}
+	// Generic shape: /var/www/<site>, /srv/http/<site>, etc.
+	if len(parts) >= 2 && parts[len(parts)-1] != "" {
+		return parts[len(parts)-2]
+	}
+	return filepath.Base(dir)
 }
 
 // ---------------------------------------------------------------------------
@@ -1166,10 +1176,10 @@ func findWPTransients(dir string, cfg *config.Config, warnBytes, critBytes int64
 	}
 }
 
-// CheckWPTransientBloat scans /home/*/public_html for WordPress installs and
-// queries each database for oversized transients. DB credentials are read
-// from wp-config.php; the password is passed via MYSQL_PWD environment
-// variable (never on the command line).
+// CheckWPTransientBloat scans configured web roots (default /home/*/public_html
+// on cPanel) for WordPress installs and queries each database for oversized
+// transients. DB credentials are read from wp-config.php; the password is
+// passed via MYSQL_PWD environment variable (never on the command line).
 // Throttled to once every 60 minutes.
 func CheckWPTransientBloat(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	if !perfEnabled(cfg) {
@@ -1182,7 +1192,7 @@ func CheckWPTransientBloat(ctx context.Context, cfg *config.Config, store *state
 	warnBytes := int64(cfg.Performance.WPTransientWarnMB) * 1024 * 1024
 	critBytes := int64(cfg.Performance.WPTransientCriticalMB) * 1024 * 1024
 
-	homeDirs, _ := filepath.Glob("/home/*/public_html")
+	homeDirs := ResolveWebRoots(cfg)
 
 	var findings []alert.Finding
 	for _, dir := range homeDirs {

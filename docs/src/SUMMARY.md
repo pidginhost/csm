@@ -35,3 +35,4 @@
 # Development
 
 - [Building & Testing](development.md)
+- [Release Signing](release-signing.md)

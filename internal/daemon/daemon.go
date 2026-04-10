@@ -22,6 +22,7 @@ import (
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/geoip"
 	"github.com/pidginhost/csm/internal/integrity"
+	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/modsec"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/signatures"
@@ -79,15 +80,37 @@ func (d *Daemon) SetVersion(v string) {
 
 // Run starts the daemon and blocks until stopped.
 func (d *Daemon) Run() error {
+	// Initialize structured logging from environment (CSM_LOG_FORMAT,
+	// CSM_LOG_LEVEL). New code should prefer csmlog over fmt.Fprintf so
+	// operators can opt into JSON output via CSM_LOG_FORMAT=json.
+	csmlog.Init()
+
 	fmt.Fprintf(os.Stderr, "[%s] CSM daemon starting\n", ts())
 
-	// Log detected platform so operators can verify OS/webserver detection
-	// without running a separate command. Support tickets get a consistent
-	// environment snapshot in the daemon log.
+	// Install config-supplied platform overrides BEFORE the first Detect()
+	// call so every check sees the merged view. Must happen before any
+	// other code calls platform.Detect() in this daemon run.
+	platform.SetOverrides(platform.Overrides{
+		WebServer:           platform.WebServer(d.cfg.WebServer.Type),
+		ApacheConfigDir:     d.cfg.WebServer.ConfigDir,
+		AccessLogPaths:      d.cfg.WebServer.AccessLogs,
+		ErrorLogPaths:       d.cfg.WebServer.ErrorLogs,
+		ModSecAuditLogPaths: d.cfg.WebServer.ModSecAudits,
+	})
+
+	// Log detected platform via both the legacy format (for human operators
+	// reading journalctl) and the structured logger (for log-shipping
+	// pipelines when CSM_LOG_FORMAT=json is set).
 	pi := platform.Detect()
 	fmt.Fprintf(os.Stderr, "[%s] platform: os=%s/%s panel=%s webserver=%s\n",
 		ts(), orUnknown(string(pi.OS)), orUnknown(pi.OSVersion),
 		orNone(string(pi.Panel)), orNone(string(pi.WebServer)))
+	csmlog.Info("platform detected",
+		"os", orUnknown(string(pi.OS)),
+		"os_version", orUnknown(pi.OSVersion),
+		"panel", orNone(string(pi.Panel)),
+		"webserver", orNone(string(pi.WebServer)),
+	)
 
 	// Verify integrity on startup
 	if err := integrity.Verify(d.binaryPath, d.cfg); err != nil {

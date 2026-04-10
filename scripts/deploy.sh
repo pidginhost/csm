@@ -31,13 +31,27 @@ GITHUB_API="https://api.github.com/repos/${GITHUB_REPO}"
 die() { echo "ERROR: $1" >&2; exit 1; }
 
 # ed25519 public key for verifying release signatures.
-# Must be provided via environment or embedded before use.
+#
+# Priority:
+#   1. $CSM_SIGNING_KEY_PEM environment variable
+#   2. Embedded public key below
+# Set CSM_REQUIRE_SIGNATURES=1 to fail rather than warn on missing key/sig.
 : "${CSM_SIGNING_KEY_PEM:=}"
+: "${CSM_REQUIRE_SIGNATURES:=0}"
+
+EMBEDDED_SIGNING_KEY=""
+
+if [ -z "$CSM_SIGNING_KEY_PEM" ] && [ -n "$EMBEDDED_SIGNING_KEY" ]; then
+    CSM_SIGNING_KEY_PEM="$EMBEDDED_SIGNING_KEY"
+fi
 
 verify_signature() {
     local file="$1" sig_url="$2"
     if [ -z "$CSM_SIGNING_KEY_PEM" ]; then
-        echo "WARNING: CSM_SIGNING_KEY_PEM not set, skipping signature verification" >&2
+        if [ "$CSM_REQUIRE_SIGNATURES" = "1" ]; then
+            die "CSM_REQUIRE_SIGNATURES=1 but no signing key configured"
+        fi
+        echo "WARNING: no signing key configured, skipping signature verification" >&2
         return 0
     fi
     if ! command -v openssl >/dev/null 2>&1; then
@@ -47,6 +61,11 @@ verify_signature() {
     local sig_file="${file}.sig"
     local sig_http
     sig_http=$(curl -sS -w '%{http_code}' -L -o "$sig_file" "$sig_url")
+    if [ "$sig_http" = "404" ] && [ "$CSM_REQUIRE_SIGNATURES" != "1" ]; then
+        echo "WARNING: signature not published for this release (404), skipping verification" >&2
+        rm -f "$sig_file"
+        return 0
+    fi
     if [ "$sig_http" != "200" ]; then
         die "Signature download failed (HTTP ${sig_http}) from ${sig_url}"
     fi

@@ -154,6 +154,34 @@ type Config struct {
 		ReloadCommand string `yaml:"reload_command"` // e.g. "systemctl restart lsws"
 	} `yaml:"modsec"`
 
+	// WebServer overrides the auto-detected web server paths. Every field is
+	// optional: anything left blank or empty falls back to what
+	// platform.Detect() returned at startup. Intended for hosts with a
+	// custom layout (reverse proxy in front of a second daemon, non-standard
+	// package locations, chroot, etc.).
+	WebServer struct {
+		Type         string   `yaml:"type"`              // "apache", "nginx", "litespeed" — overrides auto-detect
+		ConfigDir    string   `yaml:"config_dir"`        // e.g. /etc/apache2 or /etc/nginx
+		AccessLogs   []string `yaml:"access_logs"`       // candidate access-log paths, tried in order
+		ErrorLogs    []string `yaml:"error_logs"`        // candidate error-log paths (used for modsec denies)
+		ModSecAudits []string `yaml:"modsec_audit_logs"` // candidate ModSecurity audit-log paths
+	} `yaml:"web_server"`
+
+	// AccountRoots lets operators point the account-scan based checks at
+	// non-cPanel web root layouts. Each entry is a glob pattern expanded
+	// at check time. Examples:
+	//
+	//   account_roots:
+	//     - /var/www/*/public
+	//     - /srv/http/*
+	//     - /home/*/public_html        # cPanel default (implicit when unset on cPanel)
+	//
+	// When unset, CSM uses the cPanel default of /home/*/public_html on
+	// cPanel hosts and an empty list on non-cPanel hosts (account-scan
+	// checks skip entirely). See docs/src/configuration.md for the full
+	// list of checks that consume this.
+	AccountRoots []string `yaml:"account_roots"`
+
 	Performance struct {
 		Enabled                     *bool   `yaml:"enabled"`
 		LoadHighMultiplier          float64 `yaml:"load_high_multiplier"`

@@ -108,3 +108,133 @@ func TestPopulatePaths_LiteSpeed(t *testing.T) {
 		t.Errorf("LiteSpeed should have lsws paths, got %v", i.AccessLogPaths)
 	}
 }
+
+func TestApplyOverrides_WebServerReplacesPaths(t *testing.T) {
+	// Start with an Apache info; override to Nginx should rebuild paths.
+	base := Info{OS: OSUbuntu, WebServer: WSApache}
+	populatePaths(&base)
+	if base.AccessLogPaths[0] != "/var/log/apache2/access.log" {
+		t.Fatalf("precondition failed: %v", base.AccessLogPaths)
+	}
+
+	got := applyOverrides(base, Overrides{WebServer: WSNginx})
+	if got.WebServer != WSNginx {
+		t.Errorf("WebServer = %q, want nginx", got.WebServer)
+	}
+	if len(got.AccessLogPaths) == 0 || got.AccessLogPaths[0] != "/var/log/nginx/access.log" {
+		t.Errorf("Nginx override should produce nginx paths, got %v", got.AccessLogPaths)
+	}
+}
+
+func TestApplyOverrides_ExplicitPaths(t *testing.T) {
+	base := Info{OS: OSUbuntu, WebServer: WSNginx}
+	populatePaths(&base)
+
+	got := applyOverrides(base, Overrides{
+		AccessLogPaths: []string{"/srv/custom/access.log"},
+		ErrorLogPaths:  []string{"/srv/custom/error.log"},
+	})
+
+	if len(got.AccessLogPaths) != 1 || got.AccessLogPaths[0] != "/srv/custom/access.log" {
+		t.Errorf("AccessLogPaths = %v, want [/srv/custom/access.log]", got.AccessLogPaths)
+	}
+	if len(got.ErrorLogPaths) != 1 || got.ErrorLogPaths[0] != "/srv/custom/error.log" {
+		t.Errorf("ErrorLogPaths = %v, want [/srv/custom/error.log]", got.ErrorLogPaths)
+	}
+	// WebServer and other fields untouched
+	if got.WebServer != WSNginx {
+		t.Errorf("WebServer should be unchanged, got %q", got.WebServer)
+	}
+}
+
+func TestApplyOverrides_WebServerAndPaths(t *testing.T) {
+	// Both WebServer and explicit paths: explicit paths win (applied after
+	// populatePaths), WebServer value is what the operator asked for.
+	base := Info{OS: OSUbuntu, WebServer: WSApache}
+	populatePaths(&base)
+
+	got := applyOverrides(base, Overrides{
+		WebServer:      WSNginx,
+		AccessLogPaths: []string{"/srv/access.log"},
+	})
+
+	if got.WebServer != WSNginx {
+		t.Errorf("WebServer = %q, want nginx", got.WebServer)
+	}
+	if len(got.AccessLogPaths) != 1 || got.AccessLogPaths[0] != "/srv/access.log" {
+		t.Errorf("Explicit AccessLogPaths should win, got %v", got.AccessLogPaths)
+	}
+	// Error logs should come from populatePaths(Nginx) since no override
+	if len(got.ErrorLogPaths) == 0 || got.ErrorLogPaths[0] != "/var/log/nginx/error.log" {
+		t.Errorf("ErrorLogPaths should fall back to nginx defaults, got %v", got.ErrorLogPaths)
+	}
+}
+
+func TestApplyOverrides_EmptyLeavesOriginal(t *testing.T) {
+	base := Info{OS: OSUbuntu, WebServer: WSNginx}
+	populatePaths(&base)
+	original := Info{
+		WebServer:      base.WebServer,
+		AccessLogPaths: append([]string(nil), base.AccessLogPaths...),
+	}
+
+	got := applyOverrides(base, Overrides{})
+
+	if got.WebServer != original.WebServer {
+		t.Errorf("empty override changed WebServer: %q → %q", original.WebServer, got.WebServer)
+	}
+	if len(got.AccessLogPaths) != len(original.AccessLogPaths) || got.AccessLogPaths[0] != original.AccessLogPaths[0] {
+		t.Errorf("empty override changed AccessLogPaths: %v → %v", original.AccessLogPaths, got.AccessLogPaths)
+	}
+}
+
+func TestApplyOverrides_ConfigDirs(t *testing.T) {
+	base := Info{OS: OSUbuntu, WebServer: WSApache, ApacheConfigDir: "/etc/apache2"}
+	got := applyOverrides(base, Overrides{
+		ApacheConfigDir: "/opt/custom/apache",
+		NginxConfigDir:  "/opt/custom/nginx",
+	})
+	if got.ApacheConfigDir != "/opt/custom/apache" {
+		t.Errorf("ApacheConfigDir = %q, want /opt/custom/apache", got.ApacheConfigDir)
+	}
+	if got.NginxConfigDir != "/opt/custom/nginx" {
+		t.Errorf("NginxConfigDir = %q, want /opt/custom/nginx", got.NginxConfigDir)
+	}
+}
+
+func TestSetOverrides_BeforeDetect(t *testing.T) {
+	ResetForTest()
+	ok := SetOverrides(Overrides{WebServer: WSNginx})
+	if !ok {
+		t.Fatal("SetOverrides should succeed before Detect()")
+	}
+	info := Detect()
+	if info.WebServer != WSNginx {
+		t.Errorf("Detect after SetOverrides should return nginx, got %q", info.WebServer)
+	}
+}
+
+func TestSetOverrides_AfterDetect(t *testing.T) {
+	ResetForTest()
+	_ = Detect() // freeze the cache
+
+	ok := SetOverrides(Overrides{WebServer: WSApache})
+	if ok {
+		t.Error("SetOverrides should fail after Detect() has cached")
+	}
+}
+
+func TestResetForTest_ClearsCache(t *testing.T) {
+	ResetForTest()
+	first := Detect()
+
+	ResetForTest()
+	SetOverrides(Overrides{WebServer: WSNginx})
+	second := Detect()
+
+	if second.WebServer != WSNginx {
+		t.Errorf("after ResetForTest, Detect should return fresh+override, got %q", second.WebServer)
+	}
+	// Touch first to make linter happy
+	_ = first
+}

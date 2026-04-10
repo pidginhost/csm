@@ -16,13 +16,43 @@ The daemon then chooses the correct log paths, config candidates, and check set 
 journalctl -u csm.service | grep platform:
 ```
 
-The only web-server-related config key today is `modsec_error_log`, which overrides the auto-detected ModSecurity error-log path for hosts with custom layouts:
+### Web server overrides
+
+For hosts with a custom layout (reverse proxy, non-standard package locations, chroot), add a `web_server:` section to `csm.yaml`. Every field is optional — anything left blank falls back to auto-detection.
+
+```yaml
+web_server:
+  type: "nginx"                          # apache | nginx | litespeed — overrides auto-detect
+  config_dir: "/etc/nginx"               # for info/diagnostics only
+  access_logs:                           # tried in order until one exists
+    - "/var/log/nginx/access.log"
+    - "/srv/logs/nginx/access.log"
+  error_logs:                            # used by ModSecurity deny watcher
+    - "/var/log/nginx/error.log"
+  modsec_audit_logs:
+    - "/var/log/nginx/modsec_audit.log"
+```
+
+`modsec_error_log` (legacy single-path override) is still honored and takes precedence over `web_server.error_logs` for the ModSecurity watcher only:
 
 ```yaml
 modsec_error_log: "/opt/myapp/logs/modsec_audit.log"
 ```
 
-If you need to override more paths (access log, config directories), open a GitHub issue — a `web_server:` override section is on the roadmap.
+### Account roots (plain Linux web-scan coverage)
+
+By default, the account-scan based checks (`perf_error_logs`, `perf_wp_config`, `perf_wp_transients`, and related) iterate `/home/*/public_html` which is the cPanel layout. On plain Ubuntu / AlmaLinux with Nginx or Apache, point CSM at your actual web roots:
+
+```yaml
+account_roots:
+  - "/var/www/*/public"            # e.g. Laravel/Symfony sites
+  - "/srv/http/*"                  # Arch / generic layouts
+  - "/home/*/public_html"          # add if you also have cPanel-style accounts
+```
+
+Each entry is a glob pattern expanded at scan time. Non-existent matches are silently dropped. If `account_roots` is empty and CSM is not on a cPanel host, the account-scan checks return no findings (they run but find nothing, which is the correct behavior for a plain-Linux host with no configured web roots).
+
+Today, three checks consume this: `perf_error_logs`, `perf_wp_config`, `perf_wp_transients`. The remaining account-scan checks (WordPress core integrity, phishing kit detection, htaccess tampering, fileindex, etc.) still assume the cPanel `/home/*/public_html` layout and will be migrated in a follow-up release.
 
 ## Minimal Config
 
