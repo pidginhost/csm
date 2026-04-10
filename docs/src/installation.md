@@ -16,45 +16,99 @@ The daemon auto-detects the OS, control panel (cPanel/Plesk/DirectAdmin/none), a
 
 Check it with `journalctl -u csm.service | grep platform:` after starting the daemon.
 
-## Quick Install (all platforms)
+## APT repository (Debian / Ubuntu) — recommended
+
+The package repository at `mirrors.pidginhost.com/csm/` is the preferred install method for Debian and Ubuntu. Future updates are picked up automatically via `apt upgrade`, and package metadata is GPG-signed so the trust chain is enforced by dpkg.
+
+```bash
+# 1. Install the signing key
+curl -fsSL https://mirrors.pidginhost.com/csm/csm-signing.gpg | \
+  sudo gpg --dearmor -o /etc/apt/keyrings/csm.gpg
+
+# 2. Add the repository
+echo "deb [signed-by=/etc/apt/keyrings/csm.gpg] https://mirrors.pidginhost.com/csm/deb stable main" | \
+  sudo tee /etc/apt/sources.list.d/csm.list
+
+# 3. Install
+sudo apt update
+sudo apt install csm
+```
+
+Works on Ubuntu 20.04+, Debian 11+, and any derivative. The single `stable` suite serves all Debian/Ubuntu releases — the Go binary is statically linked and has no per-release glibc dependency.
+
+To upgrade later: `sudo apt update && sudo apt upgrade csm`.
+
+## DNF repository (AlmaLinux / Rocky / RHEL / CloudLinux / cPanel) — recommended
+
+```bash
+sudo tee /etc/yum.repos.d/csm.repo >/dev/null <<'EOF'
+[csm]
+name=CSM - Continuous Security Monitor
+baseurl=https://mirrors.pidginhost.com/csm/rpm/el$releasever/$basearch
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://mirrors.pidginhost.com/csm/csm-signing.gpg
+EOF
+sudo dnf install csm
+```
+
+The `$releasever` variable auto-selects the matching EL major (8, 9, or 10). Both `x86_64` and `aarch64` are published. Works on AlmaLinux 8+, Rocky 8+, RHEL 8+, CloudLinux 8+, and cPanel-managed hosts.
+
+To upgrade later: `sudo dnf upgrade csm`.
+
+## Quick Install (all platforms, one-shot)
+
+For situations where you can't add a package repository (disconnected hosts, air-gapped mirrors, Docker base images):
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/pidginhost/csm/main/scripts/install.sh | bash
 ```
 
-Auto-detects hostname, email, and generates a WebUI auth token. Prompts for confirmation before applying. Works on Debian/Ubuntu and RHEL-family distros.
-
-Non-interactive mode:
+Auto-detects hostname, email, and generates a WebUI auth token. Prompts for confirmation before applying. Works on Debian/Ubuntu and RHEL-family distros. Non-interactive mode:
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/pidginhost/csm/main/scripts/install.sh | bash -s -- --email admin@example.com --non-interactive
 ```
 
-## RPM (AlmaLinux / Rocky / RHEL / CloudLinux / cPanel)
+## Manual `.rpm` / `.deb` download
+
+If you need a specific version or want to install without adding the repository:
 
 ```bash
+# RHEL family
 curl -LO https://github.com/pidginhost/csm/releases/latest/download/csm-VERSION-1.x86_64.rpm
 sudo dnf install -y ./csm-VERSION-1.x86_64.rpm
-vi /opt/csm/csm.yaml
-csm validate
-csm baseline
-systemctl enable --now csm.service
-```
 
-On older hosts with yum: `sudo yum install -y ./csm-VERSION-1.x86_64.rpm`.
-
-## DEB (Ubuntu / Debian)
-
-```bash
+# Debian/Ubuntu
 curl -LO https://github.com/pidginhost/csm/releases/latest/download/csm_VERSION_amd64.deb
 sudo apt install -y ./csm_VERSION_amd64.deb
-vi /opt/csm/csm.yaml
-csm validate
-csm baseline
-systemctl enable --now csm.service
 ```
 
-Using `apt install ./file.deb` instead of `dpkg -i` pulls in recommended dependencies (`auditd`, `logrotate`) automatically.
+Replace `VERSION` with a real version (e.g. `2.2.1`). Both files are also available at `https://mirrors.pidginhost.com/csm/deb/pool/main/c/csm/` and `https://mirrors.pidginhost.com/csm/rpm/elN/ARCH/` if you prefer to pin versions from the mirror.
+
+## Post-install (all methods)
+
+```bash
+vi /opt/csm/csm.yaml                   # Set hostname, alert email, infra IPs
+csm validate                           # Check config syntax
+csm baseline                           # Record current state as known-good
+systemctl enable --now csm.service     # Start the daemon
+```
+
+## Rollback to an older version
+
+Both the APT and DNF repositories retain the **last 5 tagged releases** at any time. To downgrade:
+
+```bash
+# Debian/Ubuntu
+sudo apt-cache policy csm              # Show available versions
+sudo apt install csm=2.2.0-1
+
+# RHEL family
+sudo dnf --showduplicates list csm     # Show available versions
+sudo dnf downgrade csm
+```
 
 ## Verifying platform auto-detection
 
