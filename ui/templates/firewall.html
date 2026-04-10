@@ -294,7 +294,7 @@
         </div>
         <div class="card-body border-bottom py-3">
             <div class="row g-2 align-items-end">
-                <div class="col-md-5">
+                <div class="col-md-4">
                     <label class="form-label mb-1" for="audit-search">Search</label>
                     <input type="text" id="audit-search" class="form-control form-control-sm" placeholder="IP, reason, action">
                 </div>
@@ -324,9 +324,10 @@
                         <option value="unknown">Unknown / legacy</option>
                     </select>
                 </div>
-                <div class="col-md-1">
-                    <button class="btn btn-outline-secondary btn-sm w-100" id="audit-reset-btn" title="Clear audit filters">
-                        <i class="ti ti-x"></i>
+                <div class="col-md-2">
+                    <label class="form-label mb-1 invisible" aria-hidden="true">&nbsp;</label>
+                    <button class="btn btn-outline-secondary btn-sm w-100" id="audit-reset-btn" title="Reset search, action, and provenance filters">
+                        <i class="ti ti-x me-1"></i>Clear filters
                     </button>
                 </div>
             </div>

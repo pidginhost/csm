@@ -105,6 +105,75 @@ function inspectIP(ip) {
     loadLookup(ip);
 }
 
+// closeAuditExpansion removes any open audit inspect expansion row.
+// Called when the audit table is filtered, searched, or reloaded so the
+// expansion can't end up orphaned below a now-hidden parent row.
+function closeAuditExpansion() {
+    var el = document.getElementById('audit-content');
+    if (!el) return;
+    var rows = el.querySelectorAll('tr.audit-inspect-row');
+    for (var i = 0; i < rows.length; i++) {
+        rows[i].parentNode.removeChild(rows[i]);
+    }
+}
+
+// toggleAuditInspect opens an inline details row directly below the clicked
+// Inspect button in the "Recent Firewall Activity" table. Clicking Inspect
+// again on the same row (or clicking Inspect on a different row) collapses
+// any existing expansion first. This keeps the user anchored in place
+// instead of jumping to the top-of-page Lookup section.
+function toggleAuditInspect(btn, ip) {
+    if (!ip) return;
+    var row = btn.closest('tr');
+    if (!row) return;
+    var tbody = row.parentNode;
+    if (!tbody) return;
+
+    // Any previously-open expansion row for this table is removed first.
+    // Only one expansion may be visible at a time — matches the mental
+    // model of a master/detail pane.
+    var existing = tbody.querySelector('tr.audit-inspect-row');
+    var wasThisRow = existing && existing.previousElementSibling === row;
+    if (existing) {
+        existing.parentNode.removeChild(existing);
+    }
+    if (wasThisRow) {
+        // Second click on the same row — caller wanted to collapse, done.
+        return;
+    }
+
+    var colCount = row.children.length || 6;
+    var expansion = document.createElement('tr');
+    expansion.className = 'audit-inspect-row';
+    expansion.setAttribute('data-ip', ip);
+
+    var cell = document.createElement('td');
+    cell.colSpan = colCount;
+    cell.className = 'bg-body-tertiary border-top-0';
+
+    var body = document.createElement('div');
+    body.className = 'audit-inspect-body p-3';
+    var loading = document.createElement('div');
+    loading.className = 'text-muted';
+    var spinner = document.createElement('span');
+    spinner.className = 'spinner-border spinner-border-sm me-2';
+    loading.appendChild(spinner);
+    loading.appendChild(document.createTextNode('Checking firewall and GeoIP status for '));
+    var ipCode = document.createElement('code');
+    ipCode.textContent = ip;
+    loading.appendChild(ipCode);
+    body.appendChild(loading);
+
+    cell.appendChild(body);
+    expansion.appendChild(cell);
+    row.parentNode.insertBefore(expansion, row.nextSibling);
+
+    // Inline expansion should NOT trigger the audit filter + reload side
+    // effects the top-of-page Lookup section does — that would reshuffle
+    // the table under the user's cursor. Render details only.
+    renderIPDetails(ip, body);
+}
+
 function loadStatus() {
     fetch(CSM.apiUrl('/api/v1/firewall/status'), { credentials: 'same-origin' })
         .then(function(r) { return r.json(); })
@@ -500,7 +569,7 @@ function loadAudit() {
             }
             el.querySelectorAll('.audit-inspect-btn').forEach(function(btn) {
                 btn.addEventListener('click', function() {
-                    inspectIP(this.getAttribute('data-ip'));
+                    toggleAuditInspect(this, this.getAttribute('data-ip'));
                 });
             });
         })
@@ -509,11 +578,25 @@ function loadAudit() {
         });
 }
 
+// loadLookup is called from the top-of-page IP lookup form and from the
+// dropdowns in the blocked / allowed / whitelist tables. It updates the
+// top-of-page details panel AND filters the audit table to the target IP,
+// so the user can see the history and state together.
 function loadLookup(ip) {
-    var resultEl = document.getElementById('lookup-result');
-    resultEl.innerHTML = '<div class="text-muted"><span class="spinner-border spinner-border-sm me-2"></span>Checking firewall and GeoIP status</div>';
     setAuditSearch(ip);
     loadAudit();
+    renderIPDetails(ip, document.getElementById('lookup-result'));
+}
+
+// renderIPDetails does the pure "what do we know about this IP" rendering.
+// Callable with any target element so the same UI can be used from the
+// top-of-page Lookup panel (targetEl = #lookup-result) or from an inline
+// audit-table expansion row. Action buttons are wired per-instance via
+// scoped querySelector calls so multiple panels can coexist without
+// conflicting IDs.
+function renderIPDetails(ip, targetEl) {
+    if (!targetEl) return;
+    targetEl.innerHTML = '<div class="text-muted"><span class="spinner-border spinner-border-sm me-2"></span>Checking firewall and GeoIP status</div>';
 
     Promise.all([
         fetch(CSM.apiUrl('/api/v1/firewall/check?ip=' + encodeURIComponent(ip)), { credentials: 'same-origin' }).then(function(r) { return r.json(); }),
@@ -522,7 +605,7 @@ function loadLookup(ip) {
         var data = results[0] || {};
         var geo = results[1] || {};
         if (!data.success) {
-            resultEl.innerHTML = '<div class="text-danger">' + CSM.esc(data.error_msg || 'Lookup failed') + '</div>';
+            targetEl.innerHTML = '<div class="text-danger">' + CSM.esc(data.error_msg || 'Lookup failed') + '</div>';
             return;
         }
 
@@ -550,33 +633,39 @@ function loadLookup(ip) {
         details += '</div>';
         details += '<div class="d-flex gap-2 flex-wrap mt-3">';
         if (data.permanent || data.temporary || data.cphulk) {
-            details += '<button class="btn btn-outline-danger btn-sm" id="lookup-unban-btn" data-ip="' + CSM.esc(ip) + '">Unban everywhere</button>';
+            details += '<button class="btn btn-outline-danger btn-sm lookup-unban-btn" data-ip="' + CSM.esc(ip) + '">Unban everywhere</button>';
         }
-        details += '<button class="btn btn-outline-secondary btn-sm" id="lookup-clear-btn" data-ip="' + CSM.esc(ip) + '">Clear only</button>';
-        details += '<button class="btn btn-outline-success btn-sm" id="lookup-allow-btn" data-ip="' + CSM.esc(ip) + '">Clear and allow 24h</button>';
-        details += '<button class="btn btn-outline-primary btn-sm" id="lookup-cphulk-btn" data-ip="' + CSM.esc(ip) + '">Flush cPHulk only</button>';
-        details += '<button class="btn btn-success btn-sm" id="lookup-whitelist-btn" data-ip="' + CSM.esc(ip) + '">Permanent whitelist</button>';
+        details += '<button class="btn btn-outline-secondary btn-sm lookup-clear-btn" data-ip="' + CSM.esc(ip) + '">Clear only</button>';
+        details += '<button class="btn btn-outline-success btn-sm lookup-allow-btn" data-ip="' + CSM.esc(ip) + '">Clear and allow 24h</button>';
+        details += '<button class="btn btn-outline-primary btn-sm lookup-cphulk-btn" data-ip="' + CSM.esc(ip) + '">Flush cPHulk only</button>';
+        details += '<button class="btn btn-success btn-sm lookup-whitelist-btn" data-ip="' + CSM.esc(ip) + '">Permanent whitelist</button>';
         details += '</div>';
-        resultEl.innerHTML = details;
+        targetEl.innerHTML = details;
 
-        var unbanBtn = document.getElementById('lookup-unban-btn');
+        // Scope all action-button bindings to targetEl so inline expansion
+        // rows and the top-of-page Lookup panel don't stomp on each other.
+        var unbanBtn = targetEl.querySelector('.lookup-unban-btn');
         if (unbanBtn) {
             unbanBtn.addEventListener('click', function() { unbanEverywhere(this.getAttribute('data-ip')); });
         }
-        document.getElementById('lookup-clear-btn').addEventListener('click', function() {
-            clearThreatState(this.getAttribute('data-ip'));
-        });
-        document.getElementById('lookup-allow-btn').addEventListener('click', function() {
-            whitelistIP(this.getAttribute('data-ip'), '24');
-        });
-        document.getElementById('lookup-cphulk-btn').addEventListener('click', function() {
-            flushCphulkOnly(this.getAttribute('data-ip'));
-        });
-        document.getElementById('lookup-whitelist-btn').addEventListener('click', function() {
-            whitelistIP(this.getAttribute('data-ip'), 'permanent');
-        });
+        var clearBtn = targetEl.querySelector('.lookup-clear-btn');
+        if (clearBtn) {
+            clearBtn.addEventListener('click', function() { clearThreatState(this.getAttribute('data-ip')); });
+        }
+        var allowBtn = targetEl.querySelector('.lookup-allow-btn');
+        if (allowBtn) {
+            allowBtn.addEventListener('click', function() { whitelistIP(this.getAttribute('data-ip'), '24'); });
+        }
+        var cphulkBtn = targetEl.querySelector('.lookup-cphulk-btn');
+        if (cphulkBtn) {
+            cphulkBtn.addEventListener('click', function() { flushCphulkOnly(this.getAttribute('data-ip')); });
+        }
+        var whitelistBtn = targetEl.querySelector('.lookup-whitelist-btn');
+        if (whitelistBtn) {
+            whitelistBtn.addEventListener('click', function() { whitelistIP(this.getAttribute('data-ip'), 'permanent'); });
+        }
     }).catch(function() {
-        resultEl.innerHTML = '<div class="text-danger">Lookup failed. Try again.</div>';
+        targetEl.innerHTML = '<div class="text-danger">Lookup failed. Try again.</div>';
     });
 }
 
@@ -918,6 +1007,7 @@ if (trustMode) {
 var auditResetBtn = document.getElementById('audit-reset-btn');
 if (auditResetBtn) {
     auditResetBtn.addEventListener('click', function() {
+        closeAuditExpansion();
         document.getElementById('audit-search').value = '';
         document.getElementById('audit-action-filter').value = 'all';
         document.getElementById('audit-source-filter').value = 'all';
@@ -926,6 +1016,25 @@ if (auditResetBtn) {
         document.getElementById('audit-source-filter').dispatchEvent(new Event('change', { bubbles: true }));
     });
 }
+
+// Close any open audit expansion when the user interacts with the filters.
+// The CSM.Table module hides rows by setting style.display on parent rows,
+// which would leave the expansion row orphaned and visually inconsistent.
+// Listening on capture phase so we beat the Table module's own handler.
+(function() {
+    var searchEl = document.getElementById('audit-search');
+    if (searchEl) {
+        searchEl.addEventListener('input', closeAuditExpansion);
+    }
+    var actionFilterEl = document.getElementById('audit-action-filter');
+    if (actionFilterEl) {
+        actionFilterEl.addEventListener('change', closeAuditExpansion);
+    }
+    var sourceFilterEl = document.getElementById('audit-source-filter');
+    if (sourceFilterEl) {
+        sourceFilterEl.addEventListener('change', closeAuditExpansion);
+    }
+})();
 
 (function() {
     var cols = [
