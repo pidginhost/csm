@@ -353,11 +353,18 @@ var csmRuleDescriptions = map[string]string{
 	"900116": "Blocked scanner probe",
 	"900120": "Blocked wp-coder preview endpoint",
 	"900121": "Blocked wp-coder attributes endpoint",
-	// OWASP CRS common rules
-	"210710": "OWASP: HTTP Request Smuggling",
-	"210381": "OWASP: HTTP Request Smuggling",
-	"214930": "OWASP: Protocol enforcement",
-	"218420": "OWASP: Request content type restriction",
+	// Comodo WAF (CWAF) common rules. Rule IDs in the 21xxxx range are
+	// from the Comodo vendor ruleset (e.g. /etc/apache2/conf.d/
+	// modsec_vendor_configs/comodo_litespeed/), NOT from OWASP CRS.
+	// They were previously mislabeled as "OWASP:" here.
+	"210710": "Comodo WAF: HTTP Request Smuggling",
+	"210381": "Comodo WAF: HTTP Request Smuggling",
+	"214930": "Comodo WAF: Inbound anomaly score threshold exceeded",
+	"214940": "Comodo WAF: Outbound anomaly score threshold exceeded",
+	"218420": "Comodo WAF: Request content type restriction",
+	// OWASP CRS common rules. IDs in the 9xxxxx range are the standard
+	// OWASP CRS 3.x schema (920xxx protocol, 930xxx LFI, 941xxx XSS,
+	// 942xxx SQLi).
 	"920170": "OWASP: Validate GET/HEAD request",
 	"920420": "OWASP: Request content type is not allowed by policy",
 	"920600": "OWASP: Illegal Accept header",
