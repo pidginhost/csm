@@ -1,5 +1,7 @@
 # CSM - Continuous Security Monitor
 
+[![Coverage](https://pidginhost.github.io/csm/coverage.svg)](https://pidginhost.github.io/csm/coverage.html)
+
 A security daemon for Linux web servers that detects compromise in seconds, responds automatically, and gives operators one place to see what happened.
 
 CSM was originally built for **cPanel/WHM** on CloudLinux/AlmaLinux, where the majority of its checks are tuned for shared hosting attack patterns. It also runs on plain Ubuntu/Debian with Nginx or Apache and on AlmaLinux/Rocky/RHEL with Apache or Nginx — the daemon auto-detects the OS, control panel, and web server at startup and chooses the correct log paths, config locations, and check set.

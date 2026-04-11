@@ -1,9 +1,14 @@
-name: Deploy docs to GitHub Pages
+name: Deploy docs and coverage badge to GitHub Pages
 
 on:
   push:
     branches: [main]
-    paths: [docs/**]
+    paths:
+      - 'docs/**'
+      - '**.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/pages.yml'
   workflow_dispatch:
 
 permissions:
@@ -21,6 +26,61 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Run tests with coverage
+        run: |
+          set -e
+          go test -short -coverprofile=coverage.out ./... || true
+          go tool cover -func=coverage.out | tail -1
+
+      - name: Generate HTML coverage report
+        run: go tool cover -html=coverage.out -o coverage.html
+
+      - name: Generate coverage badge SVG
+        run: |
+          set -eu
+          COV=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub("%",""); print $3}')
+          if [ -z "$COV" ]; then COV="0.0"; fi
+          COV_INT=${COV%.*}
+          if   [ "$COV_INT" -ge 90 ]; then COLOR="#4c1"
+          elif [ "$COV_INT" -ge 80 ]; then COLOR="#97CA00"
+          elif [ "$COV_INT" -ge 70 ]; then COLOR="#a4a61d"
+          elif [ "$COV_INT" -ge 50 ]; then COLOR="#dfb317"
+          else                             COLOR="#e05d44"
+          fi
+          VALUE="${COV}%"
+          LABEL_W=63
+          VALUE_W=47
+          TOTAL_W=$((LABEL_W + VALUE_W))
+          LABEL_X=315
+          VALUE_X=865
+          cat > coverage.svg <<SVG
+          <svg xmlns="http://www.w3.org/2000/svg" width="${TOTAL_W}" height="20" role="img" aria-label="coverage: ${VALUE}">
+            <title>coverage: ${VALUE}</title>
+            <linearGradient id="s" x2="0" y2="100%">
+              <stop offset="0" stop-color="#bbb" stop-opacity=".1"/>
+              <stop offset="1" stop-opacity=".1"/>
+            </linearGradient>
+            <clipPath id="r"><rect width="${TOTAL_W}" height="20" rx="3" fill="#fff"/></clipPath>
+            <g clip-path="url(#r)">
+              <rect width="${LABEL_W}" height="20" fill="#555"/>
+              <rect x="${LABEL_W}" width="${VALUE_W}" height="20" fill="${COLOR}"/>
+              <rect width="${TOTAL_W}" height="20" fill="url(#s)"/>
+            </g>
+            <g fill="#fff" text-anchor="middle" font-family="Verdana,Geneva,DejaVu Sans,sans-serif" text-rendering="geometricPrecision" font-size="110">
+              <text transform="scale(.1)" x="${LABEL_X}" y="150" fill="#010101" fill-opacity=".3">coverage</text>
+              <text transform="scale(.1)" x="${LABEL_X}" y="140">coverage</text>
+              <text transform="scale(.1)" x="${VALUE_X}" y="150" fill="#010101" fill-opacity=".3">${VALUE}</text>
+              <text transform="scale(.1)" x="${VALUE_X}" y="140">${VALUE}</text>
+            </g>
+          </svg>
+          SVG
+          echo "Generated coverage badge: ${VALUE} (${COLOR})"
+
       - name: Install mdBook
         run: |
           MDBOOK_VERSION=v0.5.2
@@ -29,6 +89,11 @@ jobs:
 
       - name: Build docs
         run: cd docs && mdbook build
+
+      - name: Copy coverage assets into Pages artifact
+        run: |
+          cp coverage.svg docs/book/coverage.svg
+          cp coverage.html docs/book/coverage.html
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v4
