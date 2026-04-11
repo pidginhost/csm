@@ -143,6 +143,11 @@ func TestSelectWebServer_NonCPanelPrefersRunningNginx(t *testing.T) {
 	}
 }
 
+// wsPtr / panelPtr are tiny helpers so tests can write the pointer form
+// of an Override value without a local variable dance.
+func wsPtr(w WebServer) *WebServer { return &w }
+func panelPtr(p Panel) *Panel      { return &p }
+
 func TestApplyOverrides_WebServerReplacesPaths(t *testing.T) {
 	// Start with an Apache info; override to Nginx should rebuild paths.
 	base := Info{OS: OSUbuntu, WebServer: WSApache}
@@ -151,7 +156,7 @@ func TestApplyOverrides_WebServerReplacesPaths(t *testing.T) {
 		t.Fatalf("precondition failed: %v", base.AccessLogPaths)
 	}
 
-	got := applyOverrides(base, Overrides{WebServer: WSNginx})
+	got := applyOverrides(base, Overrides{WebServer: wsPtr(WSNginx)})
 	if got.WebServer != WSNginx {
 		t.Errorf("WebServer = %q, want nginx", got.WebServer)
 	}
@@ -188,7 +193,7 @@ func TestApplyOverrides_WebServerAndPaths(t *testing.T) {
 	populatePaths(&base)
 
 	got := applyOverrides(base, Overrides{
-		WebServer:      WSNginx,
+		WebServer:      wsPtr(WSNginx),
 		AccessLogPaths: []string{"/srv/access.log"},
 	})
 
@@ -241,8 +246,8 @@ func TestApplyOverrides_PanelCPanel(t *testing.T) {
 	// must fire BEFORE populatePaths so the cPanel log overlay gets added.
 	base := Info{OS: OSUbuntu, WebServer: WSApache}
 	got := applyOverrides(base, Overrides{
-		Panel:     PanelCPanel,
-		WebServer: WSApache, // forces path rebuild
+		Panel:     panelPtr(PanelCPanel),
+		WebServer: wsPtr(WSApache), // forces path rebuild
 	})
 	if !got.IsCPanel() {
 		t.Error("Panel override should flip IsCPanel to true")
@@ -267,7 +272,7 @@ func TestApplyOverrides_PanelWithoutWebServerRebuild(t *testing.T) {
 	populatePaths(&base)
 	originalPathsLen := len(base.AccessLogPaths)
 
-	got := applyOverrides(base, Overrides{Panel: PanelCPanel})
+	got := applyOverrides(base, Overrides{Panel: panelPtr(PanelCPanel)})
 	if got.Panel != PanelCPanel {
 		t.Errorf("Panel = %q, want cpanel", got.Panel)
 	}
@@ -278,7 +283,7 @@ func TestApplyOverrides_PanelWithoutWebServerRebuild(t *testing.T) {
 
 func TestSetOverrides_BeforeDetect(t *testing.T) {
 	ResetForTest()
-	ok := SetOverrides(Overrides{WebServer: WSNginx})
+	ok := SetOverrides(Overrides{WebServer: wsPtr(WSNginx)})
 	if !ok {
 		t.Fatal("SetOverrides should succeed before Detect()")
 	}
@@ -292,7 +297,7 @@ func TestSetOverrides_AfterDetect(t *testing.T) {
 	ResetForTest()
 	_ = Detect() // freeze the cache
 
-	ok := SetOverrides(Overrides{WebServer: WSApache})
+	ok := SetOverrides(Overrides{WebServer: wsPtr(WSApache)})
 	if ok {
 		t.Error("SetOverrides should fail after Detect() has cached")
 	}
@@ -303,7 +308,7 @@ func TestResetForTest_ClearsCache(t *testing.T) {
 	first := Detect()
 
 	ResetForTest()
-	SetOverrides(Overrides{WebServer: WSNginx})
+	SetOverrides(Overrides{WebServer: wsPtr(WSNginx)})
 	second := Detect()
 
 	if second.WebServer != WSNginx {

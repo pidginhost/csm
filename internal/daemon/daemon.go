@@ -93,8 +93,17 @@ func (d *Daemon) Run() error {
 	// Install config-supplied platform overrides BEFORE the first Detect()
 	// call so every check sees the merged view. Must happen before any
 	// other code calls platform.Detect() in this daemon run.
+	//
+	// WebServer is a *platform.WebServer pointer — take address only when
+	// the operator actually supplied a non-empty type, otherwise leave
+	// the auto-detected value alone.
+	var wsOverride *platform.WebServer
+	if t := d.cfg.WebServer.Type; t != "" {
+		ws := platform.WebServer(t)
+		wsOverride = &ws
+	}
 	platform.SetOverrides(platform.Overrides{
-		WebServer:           platform.WebServer(d.cfg.WebServer.Type),
+		WebServer:           wsOverride,
 		ApacheConfigDir:     d.cfg.WebServer.ConfigDir,
 		AccessLogPaths:      d.cfg.WebServer.AccessLogs,
 		ErrorLogPaths:       d.cfg.WebServer.ErrorLogs,

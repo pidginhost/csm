@@ -108,12 +108,12 @@ func TestSetOverrides_SecondCallBeforeDetectStillAccepts(t *testing.T) {
 	ResetForTest()
 	t.Cleanup(ResetForTest)
 	// First call installs an override.
-	if ok := SetOverrides(Overrides{WebServer: WSNginx}); !ok {
+	if ok := SetOverrides(Overrides{WebServer: wsPtr(WSNginx)}); !ok {
 		t.Fatal("first SetOverrides should return true")
 	}
 	// Second call before Detect() has been invoked should also succeed
 	// (it replaces the pending override) since isDetected is still false.
-	if ok := SetOverrides(Overrides{WebServer: WSApache}); !ok {
+	if ok := SetOverrides(Overrides{WebServer: wsPtr(WSApache)}); !ok {
 		t.Error("second SetOverrides before Detect should also be accepted")
 	}
 	// Detect applies the latest pending override.
@@ -123,19 +123,74 @@ func TestSetOverrides_SecondCallBeforeDetectStillAccepts(t *testing.T) {
 	}
 }
 
-// --- applyOverrides: explicit panel override from none to plesk --------
+// --- applyOverrides: Panel/WebServer pointer-vs-nil semantics ----------
+//
+// These tests verify the fix for the pointer-sentinel bug: before, the
+// Override check was `if o.Panel != "" { info.Panel = o.Panel }`, which
+// could not distinguish "not set" from "explicitly set to PanelNone"
+// because PanelNone is the empty string. Same story for WebServer/WSNone.
+//
+// After the fix, Panel and WebServer are pointer types so nil means
+// "leave auto-detected" and a pointer at PanelNone/WSNone forces the
+// host to look panel-less / server-less.
 
-func TestApplyOverrides_NoneToPleskKeepsBaseLogs(t *testing.T) {
-	// Start with a non-cPanel config, override panel to Plesk. We use
-	// Plesk (not PanelNone) because PanelNone is the empty string and
-	// the override check `if o.Panel != ""` cannot distinguish it from
-	// "no override" — see the DOCUMENTED_BUG_PLATFORM_OVERRIDE entry in
-	// the remediation plan.
-	base := Info{OS: OSUbuntu, Panel: PanelNone, WebServer: WSNginx}
+func TestApplyOverrides_ExplicitPanelNoneDropsCPanelOverlay(t *testing.T) {
+	// Start with a cPanel Apache config, then explicitly override panel
+	// to PanelNone + WebServer to Apache. The rebuild of populatePaths
+	// must see Panel=="" and therefore skip the cPanel overlay.
+	base := Info{OS: OSCloudLinux, Panel: PanelCPanel, WebServer: WSApache}
+	populatePaths(&base)
+	hadCPanelOverlay := false
+	for _, p := range base.AccessLogPaths {
+		if p == "/usr/local/apache/logs/access_log" {
+			hadCPanelOverlay = true
+			break
+		}
+	}
+	if !hadCPanelOverlay {
+		t.Fatalf("precondition: cPanel base should have overlay path, got %v", base.AccessLogPaths)
+	}
+
+	overridden := applyOverrides(base, Overrides{
+		Panel:     panelPtr(PanelNone),
+		WebServer: wsPtr(WSApache), // force path rebuild
+	})
+	if overridden.Panel != PanelNone {
+		t.Errorf("Panel override to PanelNone should stick, got %q", overridden.Panel)
+	}
+	for _, p := range overridden.AccessLogPaths {
+		if p == "/usr/local/apache/logs/access_log" {
+			t.Errorf("PanelNone override should drop cPanel overlay, still present in %v", overridden.AccessLogPaths)
+		}
+	}
+}
+
+func TestApplyOverrides_ExplicitWSNoneSticks(t *testing.T) {
+	base := Info{OS: OSUbuntu, WebServer: WSApache}
 	populatePaths(&base)
 
-	overridden := applyOverrides(base, Overrides{Panel: PanelPlesk})
-	if overridden.Panel != PanelPlesk {
-		t.Errorf("Panel override = %q, want %q", overridden.Panel, PanelPlesk)
+	overridden := applyOverrides(base, Overrides{WebServer: wsPtr(WSNone)})
+	if overridden.WebServer != WSNone {
+		t.Errorf("WebServer override to WSNone should stick, got %q", overridden.WebServer)
+	}
+}
+
+func TestApplyOverrides_NilPanelLeavesAutoDetected(t *testing.T) {
+	base := Info{OS: OSCloudLinux, Panel: PanelCPanel, WebServer: WSApache}
+	populatePaths(&base)
+
+	overridden := applyOverrides(base, Overrides{WebServer: wsPtr(WSNginx)})
+	if overridden.Panel != PanelCPanel {
+		t.Errorf("nil Panel override should preserve auto-detected cpanel, got %q", overridden.Panel)
+	}
+}
+
+func TestApplyOverrides_NilWebServerLeavesAutoDetected(t *testing.T) {
+	base := Info{OS: OSUbuntu, WebServer: WSApache}
+	populatePaths(&base)
+
+	overridden := applyOverrides(base, Overrides{Panel: panelPtr(PanelPlesk)})
+	if overridden.WebServer != WSApache {
+		t.Errorf("nil WebServer override should preserve auto-detected apache, got %q", overridden.WebServer)
 	}
 }

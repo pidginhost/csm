@@ -85,9 +85,15 @@ func (i Info) IsDebianFamily() bool {
 
 // Overrides lets the operator override auto-detected values from csm.yaml.
 // Any field left blank or nil falls back to the auto-detected value.
+//
+// Panel and WebServer use pointer types so callers can distinguish "leave
+// auto-detected" (nil) from "explicitly override to none" (pointer to
+// PanelNone / WSNone). The non-pointer string/slice fields use the
+// zero-value-means-unset convention since they have no legitimate "none"
+// value to override to.
 type Overrides struct {
-	Panel               Panel
-	WebServer           WebServer
+	Panel               *Panel
+	WebServer           *WebServer
 	AccessLogPaths      []string
 	ErrorLogPaths       []string
 	ModSecAuditLogPaths []string
@@ -163,14 +169,19 @@ func DetectFresh() Info {
 // list is discarded so operators have full control.
 func applyOverrides(info Info, o Overrides) Info {
 	// Panel override must happen before path rebuild so populatePaths
-	// picks up the cPanel overlay (or drops it) correctly.
-	if o.Panel != "" {
-		info.Panel = o.Panel
+	// picks up the cPanel overlay (or drops it) correctly. Nil means
+	// "leave auto-detected"; a non-nil pointer always wins, even when it
+	// points at PanelNone, so operators can explicitly force a host to
+	// look panel-less.
+	if o.Panel != nil {
+		info.Panel = *o.Panel
 	}
-	if o.WebServer != "" {
+	if o.WebServer != nil {
 		// Web server type changed → rebuild paths from scratch unless the
-		// operator also supplied path overrides below.
-		info.WebServer = o.WebServer
+		// operator also supplied path overrides below. Same nil-vs-pointer
+		// semantics as Panel: a pointer at WSNone forces "no web server"
+		// instead of being silently ignored.
+		info.WebServer = *o.WebServer
 		info.AccessLogPaths = nil
 		info.ErrorLogPaths = nil
 		info.ModSecAuditLogPaths = nil
