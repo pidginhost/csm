@@ -141,3 +141,57 @@ func TestAutoBlockIPs_QueuesIPsWhenRateLimited(t *testing.T) {
 		t.Fatalf("pending IP = %q, want %q", state.Pending[0].IP, "5.6.7.8")
 	}
 }
+
+func TestAutoBlockIPs_DrainsPendingQueueAfterRateLimitWindow(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.StatePath = t.TempDir()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+
+	saveBlockState(cfg.StatePath, &blockState{
+		BlocksThisHour: maxBlocksPerHour,
+		HourKey:        time.Now().Add(-2 * time.Hour).Format("2006-01-02T15"),
+		Pending: []pendingIP{
+			{IP: "9.8.7.6", Reason: "queued brute force"},
+		},
+	})
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := fwBlocker
+	SetIPBlocker(blocker)
+	t.Cleanup(func() {
+		SetIPBlocker(oldBlocker)
+	})
+
+	oldChallengeList := GetChallengeIPList()
+	SetChallengeIPList(nil)
+	t.Cleanup(func() {
+		SetChallengeIPList(oldChallengeList)
+	})
+
+	actions := AutoBlockIPs(cfg, nil)
+
+	if len(blocker.blocked) != 1 || blocker.blocked[0] != "9.8.7.6" {
+		t.Fatalf("BlockIP calls = %v, want [9.8.7.6]", blocker.blocked)
+	}
+	if len(actions) != 1 {
+		t.Fatalf("AutoBlockIPs returned %d actions, want 1 auto-block action", len(actions))
+	}
+	if actions[0].Severity != alert.Critical {
+		t.Fatalf("pending drain action severity = %v, want %v", actions[0].Severity, alert.Critical)
+	}
+	if !strings.Contains(actions[0].Message, "9.8.7.6 blocked") {
+		t.Fatalf("pending drain action message = %q, want blocked IP message", actions[0].Message)
+	}
+
+	state := loadBlockState(cfg.StatePath)
+	if len(state.Pending) != 0 {
+		t.Fatalf("saved pending IP state = %v, want none after drain", state.Pending)
+	}
+	if len(state.IPs) != 1 {
+		t.Fatalf("saved blocked IP count = %d, want 1", len(state.IPs))
+	}
+	if state.IPs[0].IP != "9.8.7.6" {
+		t.Fatalf("saved blocked IP = %q, want %q", state.IPs[0].IP, "9.8.7.6")
+	}
+}
