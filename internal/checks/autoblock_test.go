@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -81,5 +82,62 @@ func TestAutoBlockIPs_SkipsChallengeListedIPs(t *testing.T) {
 	}
 	if len(state.Pending) != 0 {
 		t.Fatalf("saved pending IP state = %v, want none", state.Pending)
+	}
+}
+
+func TestAutoBlockIPs_QueuesIPsWhenRateLimited(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.StatePath = t.TempDir()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+
+	saveBlockState(cfg.StatePath, &blockState{
+		BlocksThisHour: maxBlocksPerHour,
+		HourKey:        time.Now().Format("2006-01-02T15"),
+	})
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := fwBlocker
+	SetIPBlocker(blocker)
+	t.Cleanup(func() {
+		SetIPBlocker(oldBlocker)
+	})
+
+	oldChallengeList := GetChallengeIPList()
+	SetChallengeIPList(nil)
+	t.Cleanup(func() {
+		SetChallengeIPList(oldChallengeList)
+	})
+
+	actions := AutoBlockIPs(cfg, []alert.Finding{
+		{
+			Check:     "wp_login_bruteforce",
+			Message:   "WordPress brute force from 5.6.7.8",
+			Timestamp: time.Now(),
+		},
+	})
+
+	if len(blocker.blocked) != 0 {
+		t.Fatalf("BlockIP called despite rate limit: %v", blocker.blocked)
+	}
+	if len(actions) != 1 {
+		t.Fatalf("AutoBlockIPs returned %d actions, want 1 rate-limit warning", len(actions))
+	}
+	if actions[0].Severity != alert.Warning {
+		t.Fatalf("rate-limit action severity = %v, want %v", actions[0].Severity, alert.Warning)
+	}
+	if !strings.Contains(actions[0].Message, "queued for next cycle") {
+		t.Fatalf("rate-limit action message = %q, want queued warning", actions[0].Message)
+	}
+
+	state := loadBlockState(cfg.StatePath)
+	if len(state.IPs) != 0 {
+		t.Fatalf("saved blocked IP state = %v, want none", state.IPs)
+	}
+	if len(state.Pending) != 1 {
+		t.Fatalf("saved pending IP count = %d, want 1", len(state.Pending))
+	}
+	if state.Pending[0].IP != "5.6.7.8" {
+		t.Fatalf("pending IP = %q, want %q", state.Pending[0].IP, "5.6.7.8")
 	}
 }
