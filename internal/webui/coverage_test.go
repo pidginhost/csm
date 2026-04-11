@@ -1470,6 +1470,87 @@ func TestAPIGeoIPBatchInvalidIPs(t *testing.T) {
 	}
 }
 
+// --- apiEmailQuarantineList / apiEmailQuarantineAction ---------------
+
+func TestAPIEmailQuarantineListNoQuarantineConfigured(t *testing.T) {
+	s := newTestServer(t, "token")
+	// s.emailQuarantine is nil by default
+	req := httptest.NewRequest("GET", "/api/v1/email/quarantine", nil)
+	w := httptest.NewRecorder()
+	s.apiEmailQuarantineList(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("code = %d, want 200 (empty array)", w.Code)
+	}
+	body := strings.TrimSpace(w.Body.String())
+	if body != "[]" {
+		t.Errorf("body = %q, want []", body)
+	}
+}
+
+func TestAPIEmailQuarantineListMethodNotAllowed(t *testing.T) {
+	s := newTestServer(t, "token")
+	req := httptest.NewRequest("POST", "/api/v1/email/quarantine", nil)
+	w := httptest.NewRecorder()
+	s.apiEmailQuarantineList(w, req)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("code = %d, want 405", w.Code)
+	}
+}
+
+func TestAPIEmailQuarantineActionMissingID(t *testing.T) {
+	s := newTestServer(t, "token")
+	req := httptest.NewRequest("GET", "/api/v1/email/quarantine/", nil)
+	w := httptest.NewRecorder()
+	s.apiEmailQuarantineAction(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("code = %d, want 400", w.Code)
+	}
+}
+
+func TestAPIEmailQuarantineActionNotConfigured(t *testing.T) {
+	s := newTestServer(t, "token")
+	req := httptest.NewRequest("GET", "/api/v1/email/quarantine/abc123", nil)
+	w := httptest.NewRecorder()
+	s.apiEmailQuarantineAction(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("code = %d, want 503", w.Code)
+	}
+}
+
+func TestAPIEmailAVStatusMethodNotAllowed(t *testing.T) {
+	s := newTestServer(t, "token")
+	req := httptest.NewRequest("POST", "/api/v1/email/av/status", nil)
+	w := httptest.NewRecorder()
+	s.apiEmailAVStatus(w, req)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("code = %d, want 405", w.Code)
+	}
+}
+
+func TestAPIEmailAVStatusJSON(t *testing.T) {
+	s := newTestServer(t, "token")
+	s.cfg.EmailAV.Enabled = true
+	s.cfg.EmailAV.ClamdSocket = "/var/run/clamd.scan/clamd.sock"
+
+	req := httptest.NewRequest("GET", "/api/v1/email/av/status", nil)
+	w := httptest.NewRecorder()
+	s.apiEmailAVStatus(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d", w.Code)
+	}
+	var resp emailAVStatusResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Enabled {
+		t.Error("Enabled should be true")
+	}
+	if resp.ClamdSocket != "/var/run/clamd.scan/clamd.sock" {
+		t.Errorf("ClamdSocket = %q", resp.ClamdSocket)
+	}
+}
+
 func TestAPIFirewallAllowedReadsState(t *testing.T) {
 	s := newTestServer(t, "token")
 	// Seed a firewall state.json in {StatePath}/firewall/
