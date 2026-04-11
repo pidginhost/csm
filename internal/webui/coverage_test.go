@@ -963,3 +963,169 @@ func TestAPIHistoryCSVEmpty(t *testing.T) {
 		t.Errorf("missing CSV header: %s", w.Body.String())
 	}
 }
+
+// --- apiDismissFinding -------------------------------------------------
+
+func TestAPIDismissFindingMethodNotAllowed(t *testing.T) {
+	s := newTestServer(t, "token")
+	req := httptest.NewRequest("GET", "/api/v1/dismiss", nil)
+	w := httptest.NewRecorder()
+	s.apiDismissFinding(w, req)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("code = %d, want 405", w.Code)
+	}
+}
+
+func TestAPIDismissFindingEmptyKey(t *testing.T) {
+	s := newTestServer(t, "token")
+	req := httptest.NewRequest("POST", "/api/v1/dismiss", strings.NewReader(`{"key":""}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.apiDismissFinding(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("code = %d, want 400", w.Code)
+	}
+}
+
+func TestAPIDismissFindingSuccess(t *testing.T) {
+	s := newTestServer(t, "token")
+	// Seed a finding in the store so DismissFinding has something to mark.
+	s.store.Update([]alert.Finding{{Check: "c", Message: "m"}})
+
+	req := httptest.NewRequest("POST", "/api/v1/dismiss",
+		strings.NewReader(`{"key":"c:m"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.apiDismissFinding(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("code = %d, want 200", w.Code)
+	}
+	var got map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["status"] != "dismissed" {
+		t.Errorf("status = %q", got["status"])
+	}
+}
+
+// --- apiBlockIP / apiUnblockIP (with stub blocker) --------------------
+
+type stubBlocker struct {
+	blocked   []string
+	unblocked []string
+}
+
+func (b *stubBlocker) BlockIP(ip, reason string, timeout time.Duration) error {
+	b.blocked = append(b.blocked, ip)
+	return nil
+}
+
+func (b *stubBlocker) UnblockIP(ip string) error {
+	b.unblocked = append(b.unblocked, ip)
+	return nil
+}
+
+func TestAPIBlockIPMethodNotAllowed(t *testing.T) {
+	s := newTestServer(t, "token")
+	req := httptest.NewRequest("GET", "/api/v1/block-ip", nil)
+	w := httptest.NewRecorder()
+	s.apiBlockIP(w, req)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("code = %d", w.Code)
+	}
+}
+
+func TestAPIBlockIPMissingIP(t *testing.T) {
+	s := newTestServer(t, "token")
+	req := httptest.NewRequest("POST", "/api/v1/block-ip",
+		strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.apiBlockIP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("code = %d, want 400", w.Code)
+	}
+}
+
+func TestAPIBlockIPInvalidIP(t *testing.T) {
+	s := newTestServer(t, "token")
+	req := httptest.NewRequest("POST", "/api/v1/block-ip",
+		strings.NewReader(`{"ip":"not-an-ip"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.apiBlockIP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("code = %d, want 400", w.Code)
+	}
+}
+
+func TestAPIBlockIPPrivateIPRejected(t *testing.T) {
+	s := newTestServer(t, "token")
+	req := httptest.NewRequest("POST", "/api/v1/block-ip",
+		strings.NewReader(`{"ip":"10.0.0.1"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.apiBlockIP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("private IP should be rejected, code = %d", w.Code)
+	}
+}
+
+func TestAPIBlockIPNoBlockerReturns503(t *testing.T) {
+	s := newTestServer(t, "token")
+	// s.blocker is nil by default
+	req := httptest.NewRequest("POST", "/api/v1/block-ip",
+		strings.NewReader(`{"ip":"203.0.113.5"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.apiBlockIP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("code = %d, want 503", w.Code)
+	}
+}
+
+func TestAPIBlockIPSuccess(t *testing.T) {
+	s := newTestServer(t, "token")
+	blocker := &stubBlocker{}
+	s.SetIPBlocker(blocker)
+
+	req := httptest.NewRequest("POST", "/api/v1/block-ip",
+		strings.NewReader(`{"ip":"203.0.113.5","reason":"bruteforce"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.apiBlockIP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("code = %d, want 200", w.Code)
+	}
+	if len(blocker.blocked) != 1 || blocker.blocked[0] != "203.0.113.5" {
+		t.Errorf("blocker.blocked = %v", blocker.blocked)
+	}
+}
+
+func TestAPIUnblockIPInvalidIP(t *testing.T) {
+	s := newTestServer(t, "token")
+	s.SetIPBlocker(&stubBlocker{})
+	req := httptest.NewRequest("POST", "/api/v1/unblock-ip",
+		strings.NewReader(`{"ip":"not-valid"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.apiUnblockIP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("code = %d, want 400", w.Code)
+	}
+}
+
+func TestAPIUnblockIPNoBlocker(t *testing.T) {
+	s := newTestServer(t, "token")
+	req := httptest.NewRequest("POST", "/api/v1/unblock-ip",
+		strings.NewReader(`{"ip":"203.0.113.5"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.apiUnblockIP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("code = %d, want 503", w.Code)
+	}
+}
