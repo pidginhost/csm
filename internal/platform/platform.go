@@ -265,14 +265,6 @@ func detectWebServer(i *Info) {
 	// Prefer the process that's actually running. Fall back to installed
 	// binaries if nothing is running yet (first boot, non-systemd env).
 	running := runningServices()
-	switch {
-	case running["nginx"]:
-		i.WebServer = WSNginx
-	case running["apache2"] || running["httpd"]:
-		i.WebServer = WSApache
-	case running["litespeed"] || running["lshttpd"] || running["lsws"]:
-		i.WebServer = WSLiteSpeed
-	}
 
 	// Always record binary paths for reload/control, even if not primary.
 	if bin, err := exec.LookPath("nginx"); err == nil {
@@ -292,34 +284,61 @@ func detectWebServer(i *Info) {
 		}
 	}
 
-	if i.WebServer != WSNone {
-		return
-	}
-
-	// Nothing running — binary fallback. Apache takes precedence over Nginx
-	// because cPanel installs Nginx as a dependency on some hosts but
-	// Apache is the primary server. A host that genuinely runs only Nginx
-	// will usually have it running by the time CSM starts and will hit the
-	// runningServices branch above.
-	switch {
-	case i.ApacheBinary != "":
-		i.WebServer = WSApache
-	case i.NginxBinary != "":
-		i.WebServer = WSNginx
-	}
+	i.WebServer = selectWebServer(i.Panel, running, i.ApacheBinary != "", i.NginxBinary != "")
 }
 
 // runningServices returns which web server process units are currently
 // active. Uses systemctl when available; falls back to checking /proc.
 func runningServices() map[string]bool {
 	active := map[string]bool{}
-	for _, unit := range []string{"nginx", "apache2", "httpd", "lshttpd", "lsws"} {
+	for _, unit := range []string{"nginx", "apache2", "httpd", "litespeed", "lshttpd", "lsws"} {
 		cmd := exec.Command("systemctl", "is-active", "--quiet", unit)
 		if err := cmd.Run(); err == nil {
 			active[unit] = true
 		}
 	}
 	return active
+}
+
+func selectWebServer(panel Panel, running map[string]bool, hasApacheBinary, hasNginxBinary bool) WebServer {
+	apacheRunning := running["apache2"] || running["httpd"]
+	litespeedRunning := running["litespeed"] || running["lshttpd"] || running["lsws"]
+	nginxRunning := running["nginx"]
+
+	// cPanel commonly runs Nginx as a reverse proxy in front of Apache.
+	// Prefer the origin server logs when Apache is active so real-time
+	// access and ModSecurity watchers tail the paths cPanel actually writes.
+	if panel == PanelCPanel {
+		switch {
+		case litespeedRunning:
+			return WSLiteSpeed
+		case apacheRunning:
+			return WSApache
+		case nginxRunning:
+			return WSNginx
+		case hasApacheBinary:
+			return WSApache
+		case hasNginxBinary:
+			return WSNginx
+		default:
+			return WSNone
+		}
+	}
+
+	switch {
+	case nginxRunning:
+		return WSNginx
+	case apacheRunning:
+		return WSApache
+	case litespeedRunning:
+		return WSLiteSpeed
+	case hasApacheBinary:
+		return WSApache
+	case hasNginxBinary:
+		return WSNginx
+	default:
+		return WSNone
+	}
 }
 
 func populatePaths(i *Info) {
@@ -368,17 +387,17 @@ func populatePaths(i *Info) {
 
 	// cPanel overlays its own access/error logs on top of the OS defaults.
 	if i.Panel == PanelCPanel {
-		i.AccessLogPaths = append(i.AccessLogPaths,
+		i.AccessLogPaths = append([]string{
 			"/usr/local/apache/logs/access_log",
 			"/usr/local/cpanel/logs/access_log",
-		)
-		i.ErrorLogPaths = append(i.ErrorLogPaths,
+		}, i.AccessLogPaths...)
+		i.ErrorLogPaths = append([]string{
 			"/usr/local/apache/logs/error_log",
-		)
-		i.ModSecAuditLogPaths = append(i.ModSecAuditLogPaths,
+		}, i.ErrorLogPaths...)
+		i.ModSecAuditLogPaths = append([]string{
 			"/usr/local/apache/logs/modsec_audit.log",
 			"/var/log/modsec_audit.log",
-		)
+		}, i.ModSecAuditLogPaths...)
 	}
 }
 

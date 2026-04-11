@@ -1272,9 +1272,10 @@ func scanWPCron(dir, account string, depth int, findings *[]alert.Finding) {
 	}
 }
 
-// CheckWPCron scans /home/*/public_html (max depth 2) for WordPress installs
-// that have not disabled the built-in WP-Cron mechanism. Running WP-Cron via
-// HTTP is a common cause of high load on busy sites.
+// CheckWPCron scans configured web roots (default /home/*/public_html on
+// cPanel) for WordPress installs that have not disabled the built-in
+// WP-Cron mechanism. Running WP-Cron via HTTP is a common cause of high
+// load on busy sites.
 // Throttled to once every 60 minutes.
 func CheckWPCron(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	if !perfEnabled(cfg) {
@@ -1284,20 +1285,11 @@ func CheckWPCron(ctx context.Context, cfg *config.Config, store *state.Store) []
 		return nil
 	}
 
-	homeDirs, _ := filepath.Glob("/home/*/public_html")
+	homeDirs := ResolveWebRoots(cfg)
 
 	var findings []alert.Finding
 	for _, dir := range homeDirs {
-		// Derive account name from path.
-		parts := strings.Split(dir, string(filepath.Separator))
-		account := ""
-		for i, p := range parts {
-			if p == "home" && i+1 < len(parts) {
-				account = parts[i+1]
-				break
-			}
-		}
-		scanWPCron(dir, account, 2, &findings)
+		scanWPCron(dir, accountFromPath(dir), 2, &findings)
 		if len(findings) >= 30 {
 			break
 		}

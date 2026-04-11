@@ -75,9 +75,12 @@ func TestPopulatePaths_DebianApache(t *testing.T) {
 func TestPopulatePaths_CPanelOverlay(t *testing.T) {
 	i := Info{OS: OSCloudLinux, Panel: PanelCPanel, WebServer: WSApache}
 	populatePaths(&i)
+	if len(i.AccessLogPaths) == 0 || i.AccessLogPaths[0] != "/usr/local/apache/logs/access_log" {
+		t.Fatalf("cPanel access logs should be preferred, got %v", i.AccessLogPaths)
+	}
 	found := false
-	for _, p := range i.AccessLogPaths {
-		if p == "/usr/local/apache/logs/access_log" {
+	for _, p := range i.AccessLogPaths[1:] {
+		if p == "/var/log/httpd/access_log" {
 			found = true
 			break
 		}
@@ -106,6 +109,37 @@ func TestPopulatePaths_LiteSpeed(t *testing.T) {
 	populatePaths(&i)
 	if len(i.AccessLogPaths) == 0 || !strings.Contains(i.AccessLogPaths[0], "lsws") {
 		t.Errorf("LiteSpeed should have lsws paths, got %v", i.AccessLogPaths)
+	}
+}
+
+func TestSelectWebServer_CPanelPrefersApacheOverReverseProxyNginx(t *testing.T) {
+	got := selectWebServer(PanelCPanel, map[string]bool{
+		"nginx": true,
+		"httpd": true,
+	}, true, true)
+	if got != WSApache {
+		t.Errorf("selectWebServer() = %q, want apache", got)
+	}
+}
+
+func TestSelectWebServer_CPanelPrefersLiteSpeed(t *testing.T) {
+	got := selectWebServer(PanelCPanel, map[string]bool{
+		"nginx":   true,
+		"httpd":   true,
+		"lshttpd": true,
+	}, true, true)
+	if got != WSLiteSpeed {
+		t.Errorf("selectWebServer() = %q, want litespeed", got)
+	}
+}
+
+func TestSelectWebServer_NonCPanelPrefersRunningNginx(t *testing.T) {
+	got := selectWebServer(PanelNone, map[string]bool{
+		"nginx": true,
+		"httpd": true,
+	}, true, true)
+	if got != WSNginx {
+		t.Errorf("selectWebServer() = %q, want nginx", got)
 	}
 }
 

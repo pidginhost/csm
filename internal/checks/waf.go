@@ -66,10 +66,8 @@ func CheckWAFStatus(ctx context.Context, _ *config.Config, _ *state.Store) []ale
 	}
 
 	ruleDirs := modsecRuleDirs(info)
-	for _, rp := range ruleDirs {
-		if entries, err := os.ReadDir(rp); err == nil && len(entries) > 0 {
-			hasRules = true
-		}
+	if hasRuleArtifacts(ruleDirs) {
+		hasRules = true
 	}
 
 	if !hasRules {
@@ -86,7 +84,10 @@ func CheckWAFStatus(ctx context.Context, _ *config.Config, _ *state.Store) []ale
 		staleAge := checkRuleAge(ruleDirs)
 		if staleAge > 0 {
 			// Attempt auto-update before alerting
-			updated := autoUpdateWAFRules()
+			updated := false
+			if info.IsCPanel() {
+				updated = autoUpdateWAFRules()
+			}
 			if updated {
 				// Re-check age after update
 				staleAge = checkRuleAge(ruleDirs)
@@ -138,23 +139,102 @@ func modsecDetected(info platform.Info) bool {
 	}
 
 	// Generic file-based probes per web server
-	for _, conf := range modsecConfigCandidates(info) {
+	for _, conf := range expandPathGlobs(modsecActivationCandidates(info)) {
 		data, err := os.ReadFile(conf)
 		if err != nil {
 			continue
 		}
-		s := string(data)
+		if modsecEnabledInConfig(info, string(data)) {
+			return true
+		}
+	}
+	return false
+}
+
+// modsecActivationCandidates returns the config files that can enable the
+// ModSecurity module for the detected web server.
+func modsecActivationCandidates(info platform.Info) []string {
+	var paths []string
+	switch info.WebServer {
+	case platform.WSApache:
+		if info.ApacheConfigDir != "" {
+			paths = append(paths,
+				filepath.Join(info.ApacheConfigDir, "httpd.conf"),
+				filepath.Join(info.ApacheConfigDir, "apache2.conf"),
+				filepath.Join(info.ApacheConfigDir, "modsec2.conf"),
+				filepath.Join(info.ApacheConfigDir, "conf.d", "modsec2.conf"),
+				filepath.Join(info.ApacheConfigDir, "mods-enabled", "security2.conf"),
+				filepath.Join(info.ApacheConfigDir, "conf-enabled", "security2.conf"),
+				filepath.Join(info.ApacheConfigDir, "conf.d", "mod_security.conf"),
+				filepath.Join(info.ApacheConfigDir, "conf.modules.d", "10-mod_security.conf"),
+				filepath.Join(info.ApacheConfigDir, "conf.d", "*.conf"),
+				filepath.Join(info.ApacheConfigDir, "mods-enabled", "*.conf"),
+				filepath.Join(info.ApacheConfigDir, "conf-enabled", "*.conf"),
+			)
+		}
+	case platform.WSNginx:
+		if info.NginxConfigDir != "" {
+			paths = append(paths,
+				filepath.Join(info.NginxConfigDir, "nginx.conf"),
+				filepath.Join(info.NginxConfigDir, "conf.d", "*.conf"),
+				filepath.Join(info.NginxConfigDir, "sites-enabled", "*"),
+			)
+		}
+	case platform.WSLiteSpeed:
+		paths = append(paths,
+			"/usr/local/lsws/conf/httpd_config.xml",
+		)
+	}
+	return paths
+}
+
+// modsecConfigCandidates returns the set of config files worth scanning
+// for ModSecurity directives on the detected web server.
+func modsecConfigCandidates(info platform.Info) []string {
+	paths := append([]string(nil), modsecActivationCandidates(info)...)
+	switch info.WebServer {
+	case platform.WSNginx:
+		if info.NginxConfigDir != "" {
+			paths = append(paths,
+				filepath.Join(info.NginxConfigDir, "modules-enabled", "*.conf"),
+				filepath.Join(info.NginxConfigDir, "modsec", "main.conf"),
+			)
+		}
+	case platform.WSLiteSpeed:
+		paths = append(paths, "/usr/local/lsws/conf/modsec2.conf")
+	}
+	return paths
+}
+
+func modsecEnabledInConfig(info platform.Info, contents string) bool {
+	scanner := bufio.NewScanner(strings.NewReader(contents))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		lineLower := strings.ToLower(line)
 		switch info.WebServer {
 		case platform.WSNginx:
-			if strings.Contains(s, "modsecurity on") ||
-				strings.Contains(s, "modsecurity_rules_file") ||
-				strings.Contains(s, "load_module modules/ngx_http_modsecurity_module") {
+			if strings.HasPrefix(lineLower, "#") {
+				continue
+			}
+			if strings.HasPrefix(lineLower, "modsecurity on") ||
+				strings.HasPrefix(lineLower, "modsecurity_rules ") ||
+				strings.HasPrefix(lineLower, "modsecurity_rules_file ") {
+				return true
+			}
+		case platform.WSLiteSpeed:
+			if strings.Contains(lineLower, "mod_security") || strings.Contains(lineLower, "modsecurity") {
 				return true
 			}
 		default:
-			if strings.Contains(s, "mod_security2") ||
-				strings.Contains(s, "modsecurity") ||
-				strings.Contains(s, "SecRuleEngine") {
+			if strings.HasPrefix(lineLower, "#") {
+				continue
+			}
+			if strings.Contains(lineLower, "security2_module") ||
+				strings.HasPrefix(lineLower, "secruleengine ") ||
+				strings.Contains(lineLower, "mod_security2") {
 				return true
 			}
 		}
@@ -162,45 +242,25 @@ func modsecDetected(info platform.Info) bool {
 	return false
 }
 
-// modsecConfigCandidates returns the set of config files worth scanning
-// for ModSecurity directives on the detected web server.
-func modsecConfigCandidates(info platform.Info) []string {
-	var paths []string
-	switch info.WebServer {
-	case platform.WSApache:
-		if info.IsDebianFamily() {
-			paths = append(paths,
-				"/etc/apache2/conf.d/modsec2.conf",
-				"/etc/apache2/mods-enabled/security2.conf",
-				"/etc/apache2/conf-enabled/security2.conf",
-				"/etc/apache2/apache2.conf",
-			)
+func expandPathGlobs(paths []string) []string {
+	var expanded []string
+	seen := make(map[string]struct{})
+	for _, candidate := range paths {
+		matches := []string{candidate}
+		if strings.ContainsAny(candidate, "*?[") {
+			if globbed, err := filepath.Glob(candidate); err == nil && len(globbed) > 0 {
+				matches = globbed
+			}
 		}
-		if info.IsRHELFamily() {
-			paths = append(paths,
-				"/etc/httpd/conf.d/mod_security.conf",
-				"/etc/httpd/conf.modules.d/10-mod_security.conf",
-				"/etc/httpd/conf/httpd.conf",
-			)
+		for _, match := range matches {
+			if _, ok := seen[match]; ok {
+				continue
+			}
+			seen[match] = struct{}{}
+			expanded = append(expanded, match)
 		}
-		// cPanel overlay paths
-		paths = append(paths,
-			"/usr/local/apache/conf/httpd.conf",
-			"/usr/local/apache/conf/modsec2.conf",
-		)
-	case platform.WSNginx:
-		paths = append(paths,
-			"/etc/nginx/nginx.conf",
-			"/etc/nginx/modules-enabled/50-mod-http-modsecurity.conf",
-			"/etc/nginx/modsec/main.conf",
-		)
-	case platform.WSLiteSpeed:
-		paths = append(paths,
-			"/usr/local/lsws/conf/httpd_config.xml",
-			"/usr/local/lsws/conf/modsec2.conf",
-		)
 	}
-	return paths
+	return expanded
 }
 
 // modsecRuleDirs returns the candidate directories where vendor rules live
@@ -318,7 +378,26 @@ func checkEngineMode(info platform.Info) string {
 // checkRuleAge returns the age in days of the oldest rule file, or 0 if rules are fresh.
 // Only alerts if rules are >30 days old.
 func checkRuleAge(ruleDirs []string) int {
+	oldestMtime, found := oldestRuleArtifact(ruleDirs)
+	if !found {
+		return 0
+	}
+
+	age := int(time.Since(oldestMtime).Hours() / 24)
+	if age > 30 {
+		return age
+	}
+	return 0
+}
+
+func hasRuleArtifacts(ruleDirs []string) bool {
+	_, found := oldestRuleArtifact(ruleDirs)
+	return found
+}
+
+func oldestRuleArtifact(ruleDirs []string) (time.Time, bool) {
 	var oldestMtime time.Time
+	found := false
 
 	for _, dir := range ruleDirs {
 		entries, err := os.ReadDir(dir)
@@ -336,8 +415,9 @@ func checkRuleAge(ruleDirs []string) int {
 				if !isRuleArtifact(entry.Name()) {
 					continue
 				}
-				if oldestMtime.IsZero() || info.ModTime().Before(oldestMtime) {
+				if !found || info.ModTime().Before(oldestMtime) {
 					oldestMtime = info.ModTime()
+					found = true
 				}
 				continue
 			}
@@ -359,22 +439,15 @@ func checkRuleAge(ruleDirs []string) int {
 				if err != nil {
 					continue
 				}
-				if oldestMtime.IsZero() || info.ModTime().Before(oldestMtime) {
+				if !found || info.ModTime().Before(oldestMtime) {
 					oldestMtime = info.ModTime()
+					found = true
 				}
 			}
 		}
 	}
 
-	if oldestMtime.IsZero() {
-		return 0
-	}
-
-	age := int(time.Since(oldestMtime).Hours() / 24)
-	if age > 30 {
-		return age
-	}
-	return 0
+	return oldestMtime, found
 }
 
 // isRuleArtifact reports whether a filename looks like a ModSecurity rule

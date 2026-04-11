@@ -57,6 +57,18 @@ func TestEvaluateDistroEOL_EOLCentOS(t *testing.T) {
 	}
 }
 
+func TestEvaluateDistroEOL_CentOS8StillFails(t *testing.T) {
+	info := platform.Info{OS: platform.OSCentOS, OSVersion: "8"}
+	results := evaluateDistroEOL(info, "CentOS Linux 8")
+	r := results[0]
+	if r.Status != "fail" {
+		t.Errorf("CentOS 8 should fail, got %q", r.Status)
+	}
+	if !strings.Contains(r.Message, "CentOS") {
+		t.Errorf("expected CentOS-specific message, got %q", r.Message)
+	}
+}
+
 func TestEvaluateDistroEOL_UnknownOS(t *testing.T) {
 	results := evaluateDistroEOL(platform.Info{}, "")
 	r := results[0]

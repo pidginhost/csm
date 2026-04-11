@@ -103,32 +103,49 @@ func TestCheckRuleAge_FreshRules(t *testing.T) {
 	}
 }
 
+func TestHasRuleArtifacts_IgnoresDocsOnly(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("docs"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if hasRuleArtifacts([]string{dir}) {
+		t.Fatal("README-only directory should not count as WAF rules")
+	}
+}
+
+func TestHasRuleArtifacts_DetectsRuleFiles(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "REQUEST-901-INITIALIZATION.conf"), []byte("SecRule ..."), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !hasRuleArtifacts([]string{dir}) {
+		t.Fatal("rule directory should count as WAF rules")
+	}
+}
+
 func TestModsecConfigCandidates_ApacheDebian(t *testing.T) {
-	info := platform.Info{OS: platform.OSUbuntu, WebServer: platform.WSApache}
+	info := platform.Info{OS: platform.OSUbuntu, WebServer: platform.WSApache, ApacheConfigDir: "/etc/apache2"}
 	paths := modsecConfigCandidates(info)
 
-	wantAny := []string{
+	want := []string{
 		"/etc/apache2/mods-enabled/security2.conf",
 		"/etc/apache2/conf-enabled/security2.conf",
 		"/etc/apache2/conf.d/modsec2.conf",
+		"/etc/apache2/conf.d/*.conf",
 	}
-	if !containsAll(paths, wantAny[:1]) {
+	if !containsAll(paths, want) {
 		t.Errorf("Debian+Apache candidates missing expected paths\ngot: %v", paths)
-	}
-	// cPanel overlay should be included so hybrid hosts still work.
-	if !contains(paths, "/usr/local/apache/conf/httpd.conf") {
-		t.Error("cPanel overlay path missing")
 	}
 }
 
 func TestModsecConfigCandidates_ApacheRHEL(t *testing.T) {
-	info := platform.Info{OS: platform.OSAlma, WebServer: platform.WSApache}
+	info := platform.Info{OS: platform.OSAlma, WebServer: platform.WSApache, ApacheConfigDir: "/etc/httpd"}
 	paths := modsecConfigCandidates(info)
 
 	want := []string{
 		"/etc/httpd/conf.d/mod_security.conf",
 		"/etc/httpd/conf.modules.d/10-mod_security.conf",
-		"/etc/httpd/conf/httpd.conf",
+		"/etc/httpd/conf.d/*.conf",
 	}
 	for _, p := range want {
 		if !contains(paths, p) {
@@ -138,12 +155,13 @@ func TestModsecConfigCandidates_ApacheRHEL(t *testing.T) {
 }
 
 func TestModsecConfigCandidates_Nginx(t *testing.T) {
-	info := platform.Info{OS: platform.OSUbuntu, WebServer: platform.WSNginx}
+	info := platform.Info{OS: platform.OSUbuntu, WebServer: platform.WSNginx, NginxConfigDir: "/etc/nginx"}
 	paths := modsecConfigCandidates(info)
 
 	want := []string{
 		"/etc/nginx/nginx.conf",
-		"/etc/nginx/modules-enabled/50-mod-http-modsecurity.conf",
+		"/etc/nginx/modules-enabled/*.conf",
+		"/etc/nginx/sites-enabled/*",
 	}
 	for _, p := range want {
 		if !contains(paths, p) {
@@ -155,6 +173,34 @@ func TestModsecConfigCandidates_Nginx(t *testing.T) {
 		if strings.Contains(p, "apache2") || strings.Contains(p, "httpd") {
 			t.Errorf("Nginx candidates should not contain Apache path: %q", p)
 		}
+	}
+}
+
+func TestModsecActivationCandidates_NginxSkipsModuleLoaderOnlyPaths(t *testing.T) {
+	info := platform.Info{OS: platform.OSUbuntu, WebServer: platform.WSNginx, NginxConfigDir: "/etc/nginx"}
+	paths := modsecActivationCandidates(info)
+	if contains(paths, "/etc/nginx/modules-enabled/*.conf") {
+		t.Fatalf("activation candidates should not include module loader paths: %v", paths)
+	}
+}
+
+func TestModsecEnabledInConfig_NginxRequiresEnabledDirective(t *testing.T) {
+	info := platform.Info{OS: platform.OSUbuntu, WebServer: platform.WSNginx}
+	if modsecEnabledInConfig(info, "load_module modules/ngx_http_modsecurity_module.so;") {
+		t.Fatal("module loader alone should not count as active ModSecurity")
+	}
+	if !modsecEnabledInConfig(info, "modsecurity on;\nmodsecurity_rules_file /etc/nginx/modsec/main.conf;") {
+		t.Fatal("nginx ModSecurity directives should count as active ModSecurity")
+	}
+}
+
+func TestModsecEnabledInConfig_ApacheRecognizesLoadModuleAndEngine(t *testing.T) {
+	info := platform.Info{OS: platform.OSUbuntu, WebServer: platform.WSApache}
+	if !modsecEnabledInConfig(info, "LoadModule security2_module modules/mod_security2.so") {
+		t.Fatal("LoadModule security2_module should count as active ModSecurity")
+	}
+	if !modsecEnabledInConfig(info, "SecRuleEngine On") {
+		t.Fatal("SecRuleEngine On should count as active ModSecurity")
 	}
 }
 

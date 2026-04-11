@@ -2,9 +2,12 @@ package checks
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/state"
 )
 
 func testPerfConfig() *config.Config {
@@ -128,4 +131,35 @@ func TestCheckSwapAndOOM_NoCrash(t *testing.T) {
 	cfg := testPerfConfig()
 	// Should not panic regardless of system state; ignore returned findings.
 	_ = CheckSwapAndOOM(context.Background(), cfg, nil)
+}
+
+func TestCheckWPCron_UsesConfiguredAccountRoots(t *testing.T) {
+	cfg := testPerfConfig()
+	tmp := t.TempDir()
+	webroot := filepath.Join(tmp, "srv", "sites", "example.com", "public")
+	if err := os.MkdirAll(webroot, 0755); err != nil {
+		t.Fatal(err)
+	}
+	wpConfig := filepath.Join(webroot, "wp-config.php")
+	if err := os.WriteFile(wpConfig, []byte("<?php\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg.AccountRoots = []string{filepath.Join(tmp, "srv", "sites", "*", "public")}
+
+	store, err := state.Open(filepath.Join(tmp, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	findings := CheckWPCron(context.Background(), cfg, store)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d: %v", len(findings), findings)
+	}
+	if findings[0].Check != "perf_wp_cron" {
+		t.Fatalf("expected perf_wp_cron finding, got %q", findings[0].Check)
+	}
+	if findings[0].Message != "WP-Cron not disabled for example.com" {
+		t.Fatalf("unexpected finding message: %q", findings[0].Message)
+	}
 }

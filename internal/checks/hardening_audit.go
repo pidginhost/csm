@@ -462,7 +462,6 @@ var distroEOLPolicy = map[platform.OSFamily]int{
 	platform.OSAlma:       8,
 	platform.OSRocky:      8,
 	platform.OSRHEL:       8,
-	platform.OSCentOS:     8, // centos is all EOL at this point but keep the policy
 	platform.OSCloudLinux: 7,
 	platform.OSUbuntu:     20, // 20.04 is the oldest non-EOL LTS
 	platform.OSDebian:     11, // Debian 11 "bullseye"
@@ -484,6 +483,15 @@ func evaluateDistroEOL(info platform.Info, prettyName string) []store.AuditResul
 		return []store.AuditResult{{
 			Category: "os", Name: "os_distro_eol", Title: "Distribution End of Life",
 			Status: "warn", Message: "Unable to determine distribution version",
+		}}
+	}
+
+	if info.OS == platform.OSCentOS {
+		return []store.AuditResult{{
+			Category: "os", Name: "os_distro_eol", Title: "Distribution End of Life",
+			Status:  "fail",
+			Message: fmt.Sprintf("%s — CentOS is end-of-life", prettyName),
+			Fix:     "Migrate to a supported replacement such as AlmaLinux, Rocky Linux, or RHEL. CentOS no longer receives security patches.",
 		}}
 	}
 
