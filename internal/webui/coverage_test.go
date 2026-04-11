@@ -1206,6 +1206,270 @@ func TestAPIFirewallStatusInfraFallback(t *testing.T) {
 
 // --- apiFirewallAllowed ------------------------------------------------
 
+// --- modsec field extractors (modsec_api.go) ---------------------------
+
+func TestExtractBetween(t *testing.T) {
+	s := `[id "942100"] hello`
+	if got := extractBetween(s, `[id "`, `"]`); got != "942100" {
+		t.Errorf("got %q, want 942100", got)
+	}
+}
+
+func TestExtractBetweenStartMissing(t *testing.T) {
+	if got := extractBetween("no markers", `[id "`, `"]`); got != "" {
+		t.Errorf("got %q, want empty", got)
+	}
+}
+
+func TestExtractBetweenEndMissing(t *testing.T) {
+	if got := extractBetween(`[id "942100 oops`, `[id "`, `"]`); got != "" {
+		t.Errorf("got %q, want empty", got)
+	}
+}
+
+func TestExtractDetailField(t *testing.T) {
+	details := "Rule: 942100\nMessage: SQL injection\nHostname: example.com"
+	if got := extractDetailField(details, "Rule: "); got != "942100" {
+		t.Errorf("got %q, want 942100", got)
+	}
+	if got := extractDetailField(details, "Hostname: "); got != "example.com" {
+		t.Errorf("got %q, want example.com", got)
+	}
+	if got := extractDetailField(details, "Missing: "); got != "" {
+		t.Errorf("got %q, want empty", got)
+	}
+}
+
+func TestLooksLikeIP(t *testing.T) {
+	cases := map[string]bool{
+		"1.2.3.4":     true,
+		"192.168.0.1": true,
+		"203.0.113.5": true,
+		"":            false,
+		"1.2.3":       false,
+		"1.2.3.4.5":   false,
+		"example.com": false,
+		"1.2.3.4:80":  false, // includes colon
+	}
+	for in, want := range cases {
+		if got := looksLikeIP(in); got != want {
+			t.Errorf("looksLikeIP(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestExtractModSecIPFromMessage(t *testing.T) {
+	f := alert.Finding{Message: "ModSecurity block from 203.0.113.5 on /login"}
+	if got := extractModSecIP(f); got != "203.0.113.5" {
+		t.Errorf("got %q, want 203.0.113.5", got)
+	}
+}
+
+func TestExtractModSecIPFromClientBracket(t *testing.T) {
+	f := alert.Finding{Details: `[client 198.51.100.1] ModSecurity: denied`}
+	if got := extractModSecIP(f); got != "198.51.100.1" {
+		t.Errorf("got %q, want 198.51.100.1", got)
+	}
+}
+
+func TestExtractModSecIPApacheWithPort(t *testing.T) {
+	f := alert.Finding{Details: `[client 198.51.100.1:54321] denied`}
+	if got := extractModSecIP(f); got != "198.51.100.1" {
+		t.Errorf("got %q, want 198.51.100.1 (port stripped)", got)
+	}
+}
+
+func TestExtractModSecIPLiteSpeedFormat(t *testing.T) {
+	f := alert.Finding{Details: `[203.0.113.5:443-0#HTTPS] blocked`}
+	if got := extractModSecIP(f); got != "203.0.113.5" {
+		t.Errorf("got %q, want 203.0.113.5", got)
+	}
+}
+
+func TestExtractModSecIPNoMatch(t *testing.T) {
+	f := alert.Finding{Message: "generic block", Details: "no client info"}
+	if got := extractModSecIP(f); got != "" {
+		t.Errorf("got %q, want empty", got)
+	}
+}
+
+func TestExtractModSecRuleStructured(t *testing.T) {
+	f := alert.Finding{Details: "Rule: 942100\nMessage: SQL injection"}
+	if got := extractModSecRule(f); got != "942100" {
+		t.Errorf("got %q, want 942100", got)
+	}
+}
+
+func TestExtractModSecRuleRawLogFallback(t *testing.T) {
+	f := alert.Finding{Details: `... [id "942100"] [msg "SQLi"] ...`}
+	if got := extractModSecRule(f); got != "942100" {
+		t.Errorf("got %q, want 942100", got)
+	}
+}
+
+func TestExtractModSecDescriptionStructured(t *testing.T) {
+	f := alert.Finding{Details: "Rule: 942100\nMessage: SQL injection via libinjection"}
+	if got := extractModSecDescription(f); got != "SQL injection via libinjection" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestExtractModSecDescriptionCSMRuleFallback(t *testing.T) {
+	// LiteSpeed log format drops the [msg] field. CSM custom rules
+	// should fall back to the static description map.
+	f := alert.Finding{Details: `Rule: 900009`}
+	got := extractModSecDescription(f)
+	if got == "" {
+		t.Error("csm rule description fallback should fire")
+	}
+}
+
+func TestExtractModSecHostnameStructured(t *testing.T) {
+	f := alert.Finding{Details: "Hostname: example.com\nURI: /login"}
+	if got := extractModSecHostname(f); got != "example.com" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestExtractModSecHostnameRawLogFallback(t *testing.T) {
+	f := alert.Finding{Details: `[hostname "example.com"] ...`}
+	if got := extractModSecHostname(f); got != "example.com" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestExtractModSecURIStructured(t *testing.T) {
+	f := alert.Finding{Details: "URI: /admin/login"}
+	if got := extractModSecURI(f); got != "/admin/login" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestExtractModSecURIRawLogFallback(t *testing.T) {
+	f := alert.Finding{Details: `[uri "/admin/login"] ...`}
+	if got := extractModSecURI(f); got != "/admin/login" {
+		t.Errorf("got %q", got)
+	}
+}
+
+// --- deduplicateModSecFindings ----------------------------------------
+
+func TestDeduplicateModSecFindings(t *testing.T) {
+	base := time.Date(2026, 4, 11, 10, 0, 0, 0, time.UTC)
+	findings := []alert.Finding{
+		{
+			Timestamp: base,
+			Message:   "ModSec block from 1.2.3.4",
+			Details:   "Rule: 942100\nMessage: SQL injection",
+		},
+		{
+			Timestamp: base, // same second
+			Message:   "ModSec block from 1.2.3.4",
+			Details:   "Rule: 942100\nMessage: SQL injection\nHostname: example.com",
+		},
+		{
+			Timestamp: base.Add(time.Second), // different second
+			Message:   "ModSec block from 1.2.3.4",
+			Details:   "Rule: 942100\nMessage: SQL injection",
+		},
+	}
+
+	got := deduplicateModSecFindings(findings)
+	// Same (second, ip, rule) → deduped. Different second → separate entry.
+	if len(got) != 2 {
+		t.Errorf("got %d results, want 2", len(got))
+	}
+	// The merged entry should have picked up the Hostname-containing Details.
+	if len(got) >= 1 && !strings.Contains(got[0].Details, "Hostname: example.com") {
+		t.Errorf("merged entry missing richer details: %s", got[0].Details)
+	}
+}
+
+// --- apiGeoIPLookup ---------------------------------------------------
+
+func TestAPIGeoIPLookupMissingIP(t *testing.T) {
+	s := newTestServer(t, "token")
+	req := httptest.NewRequest("GET", "/api/v1/geoip", nil)
+	w := httptest.NewRecorder()
+	s.apiGeoIPLookup(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("code = %d, want 400", w.Code)
+	}
+}
+
+func TestAPIGeoIPLookupInvalidIP(t *testing.T) {
+	s := newTestServer(t, "token")
+	req := httptest.NewRequest("GET", "/api/v1/geoip?ip=not-an-ip", nil)
+	w := httptest.NewRecorder()
+	s.apiGeoIPLookup(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("code = %d, want 400", w.Code)
+	}
+}
+
+func TestAPIGeoIPLookupNoDB(t *testing.T) {
+	s := newTestServer(t, "token")
+	// s.geoIPDB is empty by default → nil pointer returned.
+	req := httptest.NewRequest("GET", "/api/v1/geoip?ip=203.0.113.5", nil)
+	w := httptest.NewRecorder()
+	s.apiGeoIPLookup(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("code = %d, want 503", w.Code)
+	}
+}
+
+func TestAPIGeoIPBatchMethodNotAllowed(t *testing.T) {
+	s := newTestServer(t, "token")
+	req := httptest.NewRequest("GET", "/api/v1/geoip/batch", nil)
+	w := httptest.NewRecorder()
+	s.apiGeoIPBatch(w, req)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("code = %d, want 405", w.Code)
+	}
+}
+
+func TestAPIGeoIPBatchTooManyIPs(t *testing.T) {
+	s := newTestServer(t, "token")
+	// Build a JSON array with 501 entries.
+	ips := make([]string, 501)
+	for i := range ips {
+		ips[i] = "1.2.3.4"
+	}
+	body, _ := json.Marshal(map[string][]string{"ips": ips})
+	req := httptest.NewRequest("POST", "/api/v1/geoip/batch", strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.apiGeoIPBatch(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("code = %d, want 400", w.Code)
+	}
+}
+
+func TestAPIGeoIPBatchInvalidIPs(t *testing.T) {
+	s := newTestServer(t, "token")
+	body := `{"ips":["not-an-ip","also-bad"]}`
+	req := httptest.NewRequest("POST", "/api/v1/geoip/batch", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.apiGeoIPBatch(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("code = %d, want 200", w.Code)
+	}
+	var got map[string]map[string]map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	results := got["results"]
+	if len(results) != 2 {
+		t.Errorf("got %d results, want 2", len(results))
+	}
+	for ip, r := range results {
+		if r["error"] == "" {
+			t.Errorf("%s should have error", ip)
+		}
+	}
+}
+
 func TestAPIFirewallAllowedReadsState(t *testing.T) {
 	s := newTestServer(t, "token")
 	// Seed a firewall state.json in {StatePath}/firewall/
