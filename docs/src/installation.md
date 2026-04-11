@@ -41,6 +41,10 @@ To upgrade later: `sudo apt update && sudo apt upgrade csm`.
 ## DNF repository (AlmaLinux / Rocky / RHEL / CloudLinux / cPanel) — recommended
 
 ```bash
+# 1. Import the signing key into the RPM keyring
+sudo rpm --import https://mirrors.pidginhost.com/csm/csm-signing.gpg
+
+# 2. Add the repository
 sudo tee /etc/yum.repos.d/csm.repo >/dev/null <<'EOF'
 [csm]
 name=CSM - Continuous Security Monitor
@@ -50,8 +54,12 @@ gpgcheck=1
 repo_gpgcheck=1
 gpgkey=https://mirrors.pidginhost.com/csm/csm-signing.gpg
 EOF
+
+# 3. Install
 sudo dnf install csm
 ```
+
+The explicit `rpm --import` is important: without it, the first `dnf install csm` prompts "Is this ok [y/N]:" to trust the repo key, and `dnf install -y` answers package install prompts but not the key-trust prompt. If the prompt goes unanswered on a non-interactive install, dnf fails with `repomd.xml GPG signature verification error: Signing key not found`.
 
 The `$releasever` variable auto-selects the matching EL major (8, 9, or 10). Both `x86_64` and `aarch64` are published. Works on AlmaLinux 8+, Rocky 8+, RHEL 8+, CloudLinux 8+, and cPanel-managed hosts.
 
