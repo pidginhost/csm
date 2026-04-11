@@ -25,52 +25,6 @@ func TestSeverityStringUnknown(t *testing.T) {
 }
 
 // --- redactSensitive ---------------------------------------------------
-//
-// DOCUMENTED BUG: redactSensitive contains an infinite loop.
-//
-// For each prefix in the password-like list, the function runs:
-//
-//     for {
-//         idx := strings.Index(strings.ToLower(s), prefix)
-//         if idx < 0 { break }
-//         valStart := idx + len(prefix)
-//         valEnd := valStart
-//         for valEnd < len(s) && !terminator { valEnd++ }
-//         if valEnd > valStart {
-//             s = s[:valStart] + "[REDACTED]" + s[valEnd:]
-//         } else {
-//             break
-//         }
-//     }
-//
-// The problem: after a successful replacement, the next iteration finds
-// the SAME prefix at the SAME position, and the value-end scan runs
-// past the newly-inserted [REDACTED] marker until it hits the original
-// delimiter. The replacement produces a string identical to the current
-// value of `s`, so the loop never terminates. The `valEnd > valStart`
-// guard only breaks on empty values; any non-empty password value
-// infinite-loops.
-//
-// Impact: any alert whose message or details contains a
-// `password=<value>` pair (and the many aliases — pass=, passwd=,
-// new_password=, old_password=, confirmpassword=) wedges the daemon's
-// Dispatch call. Discovered via a test that ran for 600 seconds until
-// the Go test timeout killed it.
-//
-// Remediation (NOT fixed here — tests only per user instruction):
-// advance the search base after a replacement. Either:
-//   - Restart the scan from `valStart + len("[REDACTED]")` on the next
-//     iteration by tracking an offset, or
-//   - Use strings.Replace with a limit of -1 via a pre-computed list
-//     of (start,end) spans, or
-//   - Drop the inner `for {}` loop entirely and use a regex with
-//     ReplaceAllStringFunc.
-//
-// The tests below only exercise inputs that do NOT trigger the hang:
-// empty string (strings.Index returns -1 immediately), empty-value
-// (`password=&` — the else-branch breaks), and the token_value /
-// api_token branches which use an `if` instead of `for {}` and are
-// not affected.
 
 func TestRedactSensitiveEmptyString(t *testing.T) {
 	if got := redactSensitive(""); got != "" {
@@ -79,26 +33,92 @@ func TestRedactSensitiveEmptyString(t *testing.T) {
 }
 
 func TestRedactSensitiveNoMatches(t *testing.T) {
-	// Nothing password-like → strings.Index returns -1, loop exits.
 	in := "plain log line with no secrets"
 	if got := redactSensitive(in); got != in {
 		t.Errorf("got %q, want unchanged", got)
 	}
 }
 
-func TestRedactSensitiveEmptyPasswordValueBreaksLoop(t *testing.T) {
-	// `password=&` has empty value, redactSensitive must not infinite-loop.
-	in := "password=&next=1"
+func TestRedactSensitivePassword(t *testing.T) {
+	in := "POST /login password=s3cret&user=alice"
 	got := redactSensitive(in)
-	// Should be returned unchanged (nothing to redact).
-	if got != in {
-		t.Errorf("empty-value case should return unchanged, got %q", got)
+	if strings.Contains(got, "s3cret") {
+		t.Errorf("password leaked: %q", got)
+	}
+	if !strings.Contains(got, "[REDACTED]") {
+		t.Errorf("redaction marker missing: %q", got)
+	}
+	if !strings.Contains(got, "user=alice") {
+		t.Errorf("non-secret field was corrupted: %q", got)
+	}
+}
+
+func TestRedactSensitiveMultiplePrefixes(t *testing.T) {
+	in := "pass=aaa passwd=bbb new_password=ccc"
+	got := redactSensitive(in)
+	for _, secret := range []string{"aaa", "bbb", "ccc"} {
+		if strings.Contains(got, secret) {
+			t.Errorf("leaked secret %q in %q", secret, got)
+		}
+	}
+}
+
+func TestRedactSensitivePasswordFormEncoded(t *testing.T) {
+	// The redactor is designed for URL/POST form data (`password=value`),
+	// not JSON. Form-encoded keys stop at `&` or whitespace.
+	in := `POST /login password=topsecret&other=ok`
+	got := redactSensitive(in)
+	if strings.Contains(got, "topsecret") {
+		t.Errorf("password leaked: %q", got)
+	}
+	if !strings.Contains(got, "other=ok") {
+		t.Errorf("non-secret field corrupted: %q", got)
+	}
+}
+
+func TestRedactSensitiveCaseInsensitive(t *testing.T) {
+	in := "POST Password=CaSeSeNsItIvE done"
+	got := redactSensitive(in)
+	if strings.Contains(got, "CaSeSeNsItIvE") {
+		t.Errorf("case-insensitive redaction failed: %q", got)
+	}
+}
+
+func TestRedactSensitiveMultipleOccurrencesOfSamePrefix(t *testing.T) {
+	// Regression for the infinite-loop fix: two populated password=
+	// pairs must both be redacted without hanging.
+	in := "first password=aaa& then password=bbb done"
+	got := redactSensitive(in)
+	if strings.Contains(got, "aaa") {
+		t.Errorf("first password leaked: %q", got)
+	}
+	if strings.Contains(got, "bbb") {
+		t.Errorf("second password leaked: %q", got)
+	}
+	if strings.Count(got, "[REDACTED]") != 2 {
+		t.Errorf("expected 2 [REDACTED] markers, got %q", got)
+	}
+}
+
+func TestRedactSensitiveEmptyValueThenPopulated(t *testing.T) {
+	// Regression for the empty-value search-advance fix: an empty
+	// value first, then a populated one later, should still redact the
+	// populated one instead of bailing out.
+	in := "password=& then password=real-secret done"
+	got := redactSensitive(in)
+	if strings.Contains(got, "real-secret") {
+		t.Errorf("later populated password not redacted: %q", got)
+	}
+}
+
+func TestRedactSensitiveEmptyPasswordValueUnchanged(t *testing.T) {
+	in := "password=&next=1"
+	if got := redactSensitive(in); got != in {
+		t.Errorf("empty-value-only case should return unchanged, got %q", got)
 	}
 }
 
 func TestRedactSensitiveTokenValues(t *testing.T) {
-	// token_value= uses a single `if`, not a `for {}`, so it doesn't
-	// hit the infinite-loop bug.
 	in := "token_value=abc123xyz stuff"
 	got := redactSensitive(in)
 	if strings.Contains(got, "abc123xyz") {

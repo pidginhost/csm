@@ -135,18 +135,29 @@ func redactSensitive(s string) string {
 		return s
 	}
 
-	// Redact password= values in URLs and POST data
-	// Matches: password=X, pass=X, passwd=X (up to next & or space or quote)
+	// Redact password= values in URLs and POST data.
+	// Matches: password=X, pass=X, passwd=X (up to next & or space or quote).
+	//
+	// The search base advances past each replacement (or past an
+	// empty-value occurrence) so we never re-match the same prefix
+	// position on the next iteration. An earlier version of this code
+	// restarted the search at position 0 after every replacement, which
+	// re-found the same prefix and re-wrote `[REDACTED]` -> `[REDACTED]`
+	// forever whenever the replacement was non-empty. That infinite
+	// loop would hang the daemon's alert dispatch on any log line that
+	// contained a populated password field.
 	for _, prefix := range []string{
 		"password=", "pass=", "passwd=", "new_password=",
 		"old_password=", "confirmpassword=",
 	} {
-		for {
-			lower := strings.ToLower(s)
-			idx := strings.Index(lower, prefix)
-			if idx < 0 {
+		searchFrom := 0
+		for searchFrom < len(s) {
+			lower := strings.ToLower(s[searchFrom:])
+			rel := strings.Index(lower, prefix)
+			if rel < 0 {
 				break
 			}
+			idx := searchFrom + rel
 			valStart := idx + len(prefix)
 			valEnd := valStart
 			for valEnd < len(s) {
@@ -158,8 +169,11 @@ func redactSensitive(s string) string {
 			}
 			if valEnd > valStart {
 				s = s[:valStart] + "[REDACTED]" + s[valEnd:]
+				searchFrom = valStart + len("[REDACTED]")
 			} else {
-				break
+				// Empty value (e.g. `password=&`): advance past this
+				// occurrence so a later populated field is still redacted.
+				searchFrom = valStart
 			}
 		}
 	}

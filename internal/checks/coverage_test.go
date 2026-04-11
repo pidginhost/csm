@@ -535,46 +535,6 @@ func TestIsHexDigit(t *testing.T) {
 }
 
 // --- extractDefine / extractPHPString (dbscan.go) ---------------------
-//
-// DOCUMENTED BUG (HIGH severity): extractPHPString is broken for the
-// standard PHP `define('KEY', 'value')` format. extractDefine jumps
-// past the literal key string, but the remainder starts with the
-// closing quote of the key — e.g. after `DB_NAME` in
-//
-//   define( 'DB_NAME', 'wordpress_db' );
-//
-// the remainder is `', 'wordpress_db' );`. extractPHPString then finds
-// the first quote (the closing quote of `'DB_NAME'`) and the second
-// quote (the opening quote of `'wordpress_db'`), and returns whatever
-// is between them: `, `. So parseWPConfig returns
-//
-//   creds.dbName = ", "
-//   creds.dbUser = ", "
-//   creds.dbHost = ", "
-//
-// for every real WordPress install. The daemon's WP database scan
-// check (`CheckWPDatabase` in dbscan.go) then invokes mysql CLI with
-// `, ` as the database name, user, host, and password, which obviously
-// fails. The feature has been silently non-functional since it was
-// written.
-//
-// Impact: the entire WordPress database scanning feature does nothing
-// on real cPanel hosts. No WP DB compromise is ever detected via this
-// path (fanotify / rules still catch file-system malware). Documented
-// as a feature; not actually working.
-//
-// Remediation: extractDefine must skip past the closing quote of the
-// key before calling extractPHPString. Simplest fix:
-//
-//   rest := line[strings.Index(line, key)+len(key):]
-//   if len(rest) > 0 && (rest[0] == '\'' || rest[0] == '"') {
-//       rest = rest[1:] // skip past the key's closing quote
-//   }
-//   return extractPHPString(rest)
-//
-// The tests below pin the current broken behavior so CI stays green;
-// when the code is fixed, update each assertion from the "BROKEN"
-// value to the "CORRECT" value and delete this comment.
 
 func TestExtractDefineSkipsComments(t *testing.T) {
 	if got := extractDefine(`// define('DB_NAME', 'commented')`, "DB_NAME"); got != "" {
@@ -594,18 +554,20 @@ func TestExtractDefineKeyNotPresent(t *testing.T) {
 	}
 }
 
-func TestExtractDefineCurrentBrokenBehavior(t *testing.T) {
-	// BROKEN: should return "wordpress_db". Actually returns ", "
-	// because extractPHPString grabs the substring between the
-	// closing quote of 'DB_NAME' and the opening quote of
-	// 'wordpress_db'. Flip this to "wordpress_db" once the bug is
-	// fixed.
-	got := extractDefine(`define( 'DB_NAME', 'wordpress_db' );`, "DB_NAME")
-	if got == "wordpress_db" {
-		t.Log("extractDefine bug is now FIXED — update this test to assert the correct value")
+func TestExtractDefineStandardFormat(t *testing.T) {
+	cases := []struct {
+		line string
+		want string
+	}{
+		{`define( 'DB_NAME', 'wordpress_db' );`, "wordpress_db"},
+		{`define('DB_NAME', 'single_quoted');`, "single_quoted"},
+		{`define("DB_NAME", "double_quoted");`, "double_quoted"},
+		{`define( 'DB_NAME' ,   'spacey'   );`, "spacey"},
 	}
-	if got != ", " && got != "wordpress_db" {
-		t.Errorf("unexpected value %q — neither the broken ', ' nor the fixed 'wordpress_db'", got)
+	for _, c := range cases {
+		if got := extractDefine(c.line, "DB_NAME"); got != c.want {
+			t.Errorf("extractDefine(%q) = %q, want %q", c.line, got, c.want)
+		}
 	}
 }
 
@@ -623,31 +585,52 @@ func TestParseWPConfigMissingFile(t *testing.T) {
 	}
 }
 
-func TestParseWPConfigExercisesBrokenPath(t *testing.T) {
-	// This test exists to exercise parseWPConfig's code paths for
-	// coverage. It does NOT assert correct credential extraction
-	// because the underlying extractPHPString is broken (see the
-	// DOCUMENTED BUG comment on the extractDefine test group).
+func TestParseWPConfigExtractsRealCredentials(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "wp-config.php")
 	content := `<?php
 define( 'DB_NAME', 'wordpress_db' );
 define( 'DB_USER', 'wpuser' );
 define( 'DB_PASSWORD', 'secretpass' );
+define( 'DB_HOST', 'db.example.com' );
 $table_prefix = 'wp_';
 `
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatal(err)
 	}
 	creds := parseWPConfig(path)
-	// dbHost default should still apply because parsing "succeeded"
-	// (the file was read even though the values are garbage).
-	if creds.dbHost != "localhost" {
-		t.Errorf("dbHost default = %q, want localhost", creds.dbHost)
+	if creds.dbName != "wordpress_db" {
+		t.Errorf("dbName = %q, want wordpress_db", creds.dbName)
 	}
-	// table_prefix uses extractPHPString but the $table_prefix line has
-	// no leading key-quote, so this one actually parses correctly.
+	if creds.dbUser != "wpuser" {
+		t.Errorf("dbUser = %q, want wpuser", creds.dbUser)
+	}
+	if creds.dbPass != "secretpass" {
+		t.Errorf("dbPass = %q, want secretpass", creds.dbPass)
+	}
+	if creds.dbHost != "db.example.com" {
+		t.Errorf("dbHost = %q, want db.example.com", creds.dbHost)
+	}
 	if creds.tablePrefix != "wp_" {
 		t.Errorf("tablePrefix = %q, want wp_", creds.tablePrefix)
+	}
+}
+
+func TestParseWPConfigDBHostDefault(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "wp-config.php")
+	if err := os.WriteFile(path, []byte(`<?php
+define('DB_NAME', 'wp');
+define('DB_USER', 'u');
+define('DB_PASSWORD', 'p');
+`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	creds := parseWPConfig(path)
+	if creds.dbHost != "localhost" {
+		t.Errorf("dbHost = %q, want localhost (default)", creds.dbHost)
+	}
+	if creds.dbName != "wp" {
+		t.Errorf("dbName = %q, want wp", creds.dbName)
 	}
 }

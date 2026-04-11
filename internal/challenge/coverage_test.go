@@ -134,35 +134,21 @@ func TestSanitizeRedirectDestProtocolRelativeRejected(t *testing.T) {
 	}
 }
 
-func TestSanitizeRedirectDestJavaScriptURI_KnownBug(t *testing.T) {
-	// DOCUMENTED BUG: sanitizeRedirectDest does not reject javascript:
-	// URIs. url.Parse("javascript:alert(1)") produces an opaque URL with
-	// empty Host and Scheme="javascript". The scheme-whitelist check in
-	// sanitizeRedirectDest is gated on `parsed.Host != ""`, so the
-	// scheme validation is skipped for opaque schemes. The returned
-	// string is "javascript:" (Opaque is dropped on URL.String() from a
-	// Scheme/Host/Path-only reconstruction), which is not an immediately
-	// dangerous payload but also is not "/" as the function's contract
-	// promises.
-	//
-	// Impact: a crafted redirect can smuggle a non-"/" non-same-origin
-	// response through the function. On the server side this is served
-	// as `<meta http-equiv="refresh" content="2;url=javascript:">`.
-	// Modern browsers block javascript: in meta refresh, so exploitation
-	// is limited, but the function's invariant is violated.
-	//
-	// Remediation: reject any parsed URL whose Scheme is not one of the
-	// whitelisted set (http, https, "") regardless of whether Host is
-	// populated. Test asserts current (broken) behavior so CI stays
-	// green; the assertion MUST change to `== "/"` once the code is
-	// fixed, at which point this test's name and comment should also be
-	// updated.
-	got := sanitizeRedirectDest("javascript:alert(1)", "example.com")
-	if strings.Contains(got, "alert(1)") {
-		t.Errorf("Opaque payload leaked into result: %q", got)
+func TestSanitizeRedirectDestJavaScriptURIRejected(t *testing.T) {
+	if got := sanitizeRedirectDest("javascript:alert(1)", "example.com"); got != "/" {
+		t.Errorf("javascript URI = %q, want /", got)
 	}
-	if got != "javascript:" && got != "/" {
-		t.Errorf("got %q — expected either the documented-bug value 'javascript:' or the fixed value '/'", got)
+}
+
+func TestSanitizeRedirectDestDataURIRejected(t *testing.T) {
+	if got := sanitizeRedirectDest("data:text/html,<script>alert(1)</script>", "example.com"); got != "/" {
+		t.Errorf("data URI = %q, want /", got)
+	}
+}
+
+func TestSanitizeRedirectDestFileURIRejected(t *testing.T) {
+	if got := sanitizeRedirectDest("file:///etc/passwd", "example.com"); got != "/" {
+		t.Errorf("file URI = %q, want /", got)
 	}
 }
 

@@ -234,6 +234,17 @@ func sanitizeRedirectDest(dest, requestHost string) string {
 		return "/"
 	}
 
+	// Scheme whitelist — applies even for opaque URLs with empty Host.
+	// Without this, `javascript:alert(1)` produces an opaque URL with
+	// Host="" and Scheme="javascript", which would slip past the
+	// host-equality check below and end up reconstructed as
+	// `"javascript:"`. The only acceptable schemes are the empty
+	// string (pure-path relatives) and the two HTTP variants.
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "" && scheme != "http" && scheme != "https" {
+		return "/"
+	}
+
 	// Reject anything with a host component that doesn't match the request host.
 	// This catches protocol-relative (//evil.com), backslash tricks (/\evil.com
 	// which some browsers normalize to //evil.com), and explicit cross-origin URLs.
@@ -244,10 +255,6 @@ func sanitizeRedirectDest(dest, requestHost string) string {
 			reqHost = h
 		}
 		if destHost != reqHost {
-			return "/"
-		}
-		scheme := strings.ToLower(parsed.Scheme)
-		if scheme != "http" && scheme != "https" {
 			return "/"
 		}
 	}

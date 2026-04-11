@@ -132,7 +132,20 @@ func extractDefine(line, key string) string {
 		return ""
 	}
 
-	return extractPHPString(line[strings.Index(line, key)+len(key):])
+	// After the literal key, step past the first comma so
+	// extractPHPString picks up the VALUE's opening quote rather than
+	// the KEY's trailing closing quote. Without this, on input
+	//     define( 'DB_NAME', 'wordpress_db' );
+	// extractPHPString would see `', 'wordpress_db' );` and return
+	// `, ` — the substring between the closing quote of 'DB_NAME' and
+	// the opening quote of 'wordpress_db'. Every real WordPress
+	// install's wp-config.php triggered this, which silently broke
+	// the entire WP database scan check.
+	rest := line[strings.Index(line, key)+len(key):]
+	if commaIdx := strings.Index(rest, ","); commaIdx >= 0 {
+		rest = rest[commaIdx+1:]
+	}
+	return extractPHPString(rest)
 }
 
 // extractPHPString extracts the first quoted string value from a line.
