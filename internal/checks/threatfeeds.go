@@ -376,7 +376,12 @@ func (db *ThreatDB) loadPersistedWhitelist() {
 	}
 
 	if needsRewrite {
-		go db.saveWhitelistFile() // clean up expired entries from file
+		// Synchronous: the load path runs once at startup, so the cost
+		// is negligible, and a fire-and-forget goroutine would race the
+		// daemon's shutdown (potentially leaving a `.tmp` file behind or
+		// writing a half-serialized whitelist.txt if the process is
+		// killed before the rewrite lands).
+		db.saveWhitelistFile()
 	}
 }
 
