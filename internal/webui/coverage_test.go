@@ -13,6 +13,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -1127,5 +1128,113 @@ func TestAPIUnblockIPNoBlocker(t *testing.T) {
 	s.apiUnblockIP(w, req)
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("code = %d, want 503", w.Code)
+	}
+}
+
+// --- formatRemaining (firewall_api.go) --------------------------------
+
+func TestFormatRemainingPermanent(t *testing.T) {
+	if got := formatRemaining(time.Time{}); got != "permanent" {
+		t.Errorf("got %q, want permanent", got)
+	}
+}
+
+func TestFormatRemainingExpired(t *testing.T) {
+	if got := formatRemaining(time.Now().Add(-1 * time.Hour)); got != "0h0m" {
+		t.Errorf("got %q, want 0h0m (clamped)", got)
+	}
+}
+
+func TestFormatRemainingFuture(t *testing.T) {
+	got := formatRemaining(time.Now().Add(2*time.Hour + 30*time.Minute))
+	// Should be "2h30m" or "2h29m" depending on sub-second drift.
+	if got != "2h30m" && got != "2h29m" {
+		t.Errorf("got %q, want ~2h30m", got)
+	}
+}
+
+// --- apiFirewallStatus -------------------------------------------------
+
+func TestAPIFirewallStatusJSON(t *testing.T) {
+	s := newTestServer(t, "token")
+	s.cfg.Firewall = &firewall.FirewallConfig{
+		Enabled:  true,
+		TCPIn:    []int{22, 80, 443},
+		InfraIPs: []string{"10.0.0.1"},
+	}
+
+	req := httptest.NewRequest("GET", "/api/v1/firewall/status", nil)
+	w := httptest.NewRecorder()
+	s.apiFirewallStatus(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d", w.Code)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["enabled"] != true {
+		t.Errorf("enabled = %v, want true", got["enabled"])
+	}
+	if got["blocked_count"] != float64(0) {
+		t.Errorf("blocked_count = %v, want 0", got["blocked_count"])
+	}
+	tcp, ok := got["tcp_in"].([]any)
+	if !ok || len(tcp) != 3 {
+		t.Errorf("tcp_in = %v, want 3 entries", got["tcp_in"])
+	}
+}
+
+func TestAPIFirewallStatusInfraFallback(t *testing.T) {
+	s := newTestServer(t, "token")
+	s.cfg.Firewall = &firewall.FirewallConfig{}
+	// firewall.infra_ips empty, top-level infra_ips set.
+	s.cfg.InfraIPs = []string{"10.0.0.5"}
+
+	req := httptest.NewRequest("GET", "/api/v1/firewall/status", nil)
+	w := httptest.NewRecorder()
+	s.apiFirewallStatus(w, req)
+
+	var got map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	infra, _ := got["infra_ips"].([]any)
+	if len(infra) != 1 || infra[0] != "10.0.0.5" {
+		t.Errorf("infra_ips fallback = %v", got["infra_ips"])
+	}
+}
+
+// --- apiFirewallAllowed ------------------------------------------------
+
+func TestAPIFirewallAllowedReadsState(t *testing.T) {
+	s := newTestServer(t, "token")
+	// Seed a firewall state.json in {StatePath}/firewall/
+	fwDir := filepath.Join(s.cfg.StatePath, "firewall")
+	if err := os.MkdirAll(fwDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	state := `{
+		"allowed": [
+			{"ip":"203.0.113.10","reason":"trusted","expires_at":"0001-01-01T00:00:00Z"},
+			{"ip":"198.51.100.1","reason":"temp","expires_at":"2099-01-01T00:00:00Z"}
+		]
+	}`
+	if err := os.WriteFile(filepath.Join(fwDir, "state.json"), []byte(state), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/v1/firewall/allowed", nil)
+	w := httptest.NewRecorder()
+	s.apiFirewallAllowed(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "203.0.113.10") {
+		t.Errorf("body missing 203.0.113.10: %s", body)
+	}
+	if !strings.Contains(body, "198.51.100.1") {
+		t.Errorf("body missing 198.51.100.1: %s", body)
 	}
 }
