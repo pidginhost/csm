@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"net"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -92,33 +93,72 @@ func parseFTPLogLine(line string, cfg *config.Config) []alert.Finding {
 		return nil
 	}
 
+	// Extract the client address. Pure-ftpd's standard syslog format
+	// prefixes the client as (user@addr), where addr is either an IP
+	// (DontResolve=yes) or a reverse-resolved hostname (cPanel's
+	// default with DontResolve=no). We try the pure-ftpd prefix first
+	// and fall back to the generic "whitespace field starting with a
+	// digit" scanner. If the pure-ftpd prefix contains a hostname
+	// rather than an IP, no finding is emitted — we can't hold an
+	// attacker accountable by hostname, and reverse-DNS lookups in the
+	// log hot path are not acceptable.
+	ip := extractPureFTPDClientIP(line)
+	if ip == "" {
+		ip = extractIPFromLogDaemon(line)
+	}
+	if ip == "" || isInfraIPDaemon(ip, cfg.InfraIPs) {
+		return nil
+	}
+
 	// Failed authentication
 	if strings.Contains(line, "Authentication failed") || strings.Contains(line, "auth failed") {
-		ip := extractIPFromLogDaemon(line)
-		if ip != "" && !isInfraIPDaemon(ip, cfg.InfraIPs) {
-			findings = append(findings, alert.Finding{
-				Severity: alert.High,
-				Check:    "ftp_auth_failure_realtime",
-				Message:  fmt.Sprintf("FTP authentication failed from %s", ip),
-				Details:  truncateDaemon(line, 200),
-			})
-		}
+		findings = append(findings, alert.Finding{
+			Severity: alert.High,
+			Check:    "ftp_auth_failure_realtime",
+			Message:  fmt.Sprintf("FTP authentication failed from %s", ip),
+			Details:  truncateDaemon(line, 200),
+		})
 	}
 
 	// Successful login from non-infra
 	if strings.Contains(line, "is now logged in") {
-		ip := extractIPFromLogDaemon(line)
-		if ip != "" && !isInfraIPDaemon(ip, cfg.InfraIPs) {
-			findings = append(findings, alert.Finding{
-				Severity: alert.High,
-				Check:    "ftp_login_realtime",
-				Message:  fmt.Sprintf("FTP login from non-infra IP: %s", ip),
-				Details:  truncateDaemon(line, 200),
-			})
-		}
+		findings = append(findings, alert.Finding{
+			Severity: alert.High,
+			Check:    "ftp_login_realtime",
+			Message:  fmt.Sprintf("FTP login from non-infra IP: %s", ip),
+			Details:  truncateDaemon(line, 200),
+		})
 	}
 
 	return findings
+}
+
+// extractPureFTPDClientIP parses the "(user@addr)" prefix that pure-ftpd
+// prepends to every log message and returns `addr` only if it parses as
+// an IP. Returns empty if the log line contains no prefix at all, the
+// prefix is malformed, or addr is a reverse-resolved hostname (in which
+// case the caller should not emit a finding since we can't block a
+// hostname at the firewall).
+func extractPureFTPDClientIP(line string) string {
+	open := strings.Index(line, "(")
+	if open < 0 {
+		return ""
+	}
+	rest := line[open+1:]
+	close := strings.Index(rest, ")")
+	if close < 0 {
+		return ""
+	}
+	inner := rest[:close]
+	at := strings.IndexByte(inner, '@')
+	if at < 0 {
+		return ""
+	}
+	addr := inner[at+1:]
+	if net.ParseIP(addr) == nil {
+		return "" // hostname, not an IP — nothing we can block
+	}
+	return addr
 }
 
 // extractRequestURI extracts the request URI from an access log line.

@@ -3,6 +3,7 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,28 +99,58 @@ func TestFilterUnsuppressedNilFindings(t *testing.T) {
 	}
 }
 
-// --- parseFTPLogLine additional coverage ------------------------------
-//
-// POSSIBLE PRODUCTION BUG (flagged for follow-up, not fixed here):
-//
-// parseFTPLogLine uses extractIPFromLogDaemon, which scans for a
-// whitespace-separated field that STARTS with a digit. The pure-ftpd
-// standard log format prefixes the client with "(?@IP)" — e.g.
-//
-//   pure-ftpd: (?@203.0.113.5) [WARNING] Authentication failed for user [alice]
-//
-// That field starts with '(', so extractIPFromLogDaemon returns "".
-// On a real host whose pure-ftpd writes this format, no FTP
-// brute-force or login alerts would ever fire. Unconfirmed on the
-// cPanel default pure-ftpd config — on some installs the IP may
-// appear as a bare token elsewhere in the same line, in which case
-// the parser still works. Needs verification against a live cPanel
-// pure-ftpd log before fixing.
-//
-// Tests below deliberately use lines with a bare IP so we exercise
-// the current parser behavior. A future fix should teach
-// extractIPFromLogDaemon (or a pure-ftpd-specific helper) to unwrap
-// the "(?@IP)" prefix.
+// --- extractPureFTPDClientIP ------------------------------------------
+
+func TestExtractPureFTPDClientIPStandard(t *testing.T) {
+	line := `Apr 11 10:00:00 host pure-ftpd: (?@203.0.113.5) [WARNING] Authentication failed for user [alice]`
+	if got := extractPureFTPDClientIP(line); got != "203.0.113.5" {
+		t.Errorf("got %q, want 203.0.113.5", got)
+	}
+}
+
+func TestExtractPureFTPDClientIPAuthenticatedUser(t *testing.T) {
+	line := `Apr 11 10:00:00 host pure-ftpd: (alice@198.51.100.1) [INFO] alice is now logged in`
+	if got := extractPureFTPDClientIP(line); got != "198.51.100.1" {
+		t.Errorf("got %q, want 198.51.100.1", got)
+	}
+}
+
+func TestExtractPureFTPDClientIPIPv6(t *testing.T) {
+	line := `Apr 11 10:00:00 host pure-ftpd: (?@2001:db8::1) [WARNING] Authentication failed for user [alice]`
+	if got := extractPureFTPDClientIP(line); got != "2001:db8::1" {
+		t.Errorf("got %q, want 2001:db8::1", got)
+	}
+}
+
+func TestExtractPureFTPDClientIPReverseDNSHostname(t *testing.T) {
+	// cPanel default with DontResolve=no: reverse-resolved hostname
+	// appears in the prefix instead of the IP. We can't block a
+	// hostname at the firewall, so the extractor returns empty.
+	line := `Apr 11 10:00:00 host pure-ftpd: (?@client.example.com) [WARNING] Authentication failed for user [alice]`
+	if got := extractPureFTPDClientIP(line); got != "" {
+		t.Errorf("hostname should return empty, got %q", got)
+	}
+}
+
+func TestExtractPureFTPDClientIPNoParens(t *testing.T) {
+	if got := extractPureFTPDClientIP("plain log line"); got != "" {
+		t.Errorf("no parens should return empty, got %q", got)
+	}
+}
+
+func TestExtractPureFTPDClientIPNoAtSign(t *testing.T) {
+	if got := extractPureFTPDClientIP("host pure-ftpd: (noatsign) msg"); got != "" {
+		t.Errorf("no @ should return empty, got %q", got)
+	}
+}
+
+func TestExtractPureFTPDClientIPUnclosedParen(t *testing.T) {
+	if got := extractPureFTPDClientIP("host pure-ftpd: (?@203.0.113.5 msg"); got != "" {
+		t.Errorf("unclosed paren should return empty, got %q", got)
+	}
+}
+
+// --- parseFTPLogLine with real pure-ftpd format -----------------------
 
 func TestParseFTPLogLineNonPureFTPDIgnored(t *testing.T) {
 	cfg := &config.Config{}
@@ -129,11 +160,9 @@ func TestParseFTPLogLineNonPureFTPDIgnored(t *testing.T) {
 	}
 }
 
-func TestParseFTPLogLineAuthFailure(t *testing.T) {
+func TestParseFTPLogLineAuthFailureRealFormat(t *testing.T) {
 	cfg := &config.Config{}
-	// Use bare IP format so extractIPFromLogDaemon can find it. See the
-	// POSSIBLE PRODUCTION BUG note above the test group.
-	line := `Apr 11 10:00:00 host pure-ftpd: Authentication failed from 203.0.113.5 user alice`
+	line := `Apr 11 10:00:00 host pure-ftpd: (?@203.0.113.5) [WARNING] Authentication failed for user [alice]`
 	findings := parseFTPLogLine(line, cfg)
 	if len(findings) != 1 {
 		t.Fatalf("got %d findings, want 1", len(findings))
@@ -141,21 +170,24 @@ func TestParseFTPLogLineAuthFailure(t *testing.T) {
 	if findings[0].Check != "ftp_auth_failure_realtime" {
 		t.Errorf("Check = %q", findings[0].Check)
 	}
+	if !strings.Contains(findings[0].Message, "203.0.113.5") {
+		t.Errorf("Message should contain the IP: %q", findings[0].Message)
+	}
 }
 
 func TestParseFTPLogLineInfraIPSkipped(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.InfraIPs = []string{"10.0.0.5"}
-	line := `Apr 11 10:00:00 host pure-ftpd: Authentication failed from 10.0.0.5 user alice`
+	line := `Apr 11 10:00:00 host pure-ftpd: (?@10.0.0.5) [WARNING] Authentication failed for user [alice]`
 	findings := parseFTPLogLine(line, cfg)
 	if findings != nil {
 		t.Errorf("infra IP should be skipped, got %v", findings)
 	}
 }
 
-func TestParseFTPLogLineSuccessfulLogin(t *testing.T) {
+func TestParseFTPLogLineSuccessfulLoginRealFormat(t *testing.T) {
 	cfg := &config.Config{}
-	line := `Apr 11 10:00:00 host pure-ftpd: user alice from 203.0.113.5 is now logged in`
+	line := `Apr 11 10:00:00 host pure-ftpd: (alice@203.0.113.5) [INFO] alice is now logged in`
 	findings := parseFTPLogLine(line, cfg)
 	if len(findings) != 1 {
 		t.Fatalf("got %d, want 1", len(findings))
@@ -165,11 +197,34 @@ func TestParseFTPLogLineSuccessfulLogin(t *testing.T) {
 	}
 }
 
+func TestParseFTPLogLineHostnameInsteadOfIPIsSkipped(t *testing.T) {
+	// cPanel default with DontResolve=no writes a reverse-resolved
+	// hostname instead of an IP. parseFTPLogLine should emit no finding
+	// rather than hallucinate an IP — the hostname can't be enforced
+	// at the firewall anyway.
+	cfg := &config.Config{}
+	line := `Apr 11 10:00:00 host pure-ftpd: (?@client.example.com) [WARNING] Authentication failed for user [alice]`
+	if got := parseFTPLogLine(line, cfg); got != nil {
+		t.Errorf("hostname-only log should not emit finding, got %v", got)
+	}
+}
+
 func TestParseFTPLogLineIrrelevantPureFTPDLine(t *testing.T) {
 	cfg := &config.Config{}
-	line := `Apr 11 10:00:00 host pure-ftpd: connection accepted`
+	line := `Apr 11 10:00:00 host pure-ftpd: (?@203.0.113.5) connection accepted`
 	if got := parseFTPLogLine(line, cfg); got != nil {
 		t.Errorf("non-auth line should return nil, got %v", got)
+	}
+}
+
+func TestParseFTPLogLineFallsBackToBareIPScanner(t *testing.T) {
+	// If somehow the (...@IP) prefix is missing but a bare IP is in the
+	// line, the extractIPFromLogDaemon fallback should still find it.
+	cfg := &config.Config{}
+	line := `Apr 11 10:00:00 host pure-ftpd: Authentication failed from 203.0.113.5 user alice`
+	findings := parseFTPLogLine(line, cfg)
+	if len(findings) != 1 {
+		t.Fatalf("got %d, want 1 (fallback)", len(findings))
 	}
 }
 
