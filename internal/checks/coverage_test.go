@@ -918,3 +918,333 @@ func TestParseSSHDFileKeywordEqualsValueForm(t *testing.T) {
 		t.Errorf("port = %q, want 2222", effective["port"])
 	}
 }
+
+// --- parseVersion / compareVersions / pluginAlertSeverity -------------
+
+func TestParseVersionStandard(t *testing.T) {
+	got := parseVersion("6.4.2")
+	if len(got) != 3 || got[0] != 6 || got[1] != 4 || got[2] != 2 {
+		t.Errorf("got %v, want [6 4 2]", got)
+	}
+}
+
+func TestParseVersionNonNumericSegment(t *testing.T) {
+	got := parseVersion("1.0.0-rc1")
+	if len(got) != 3 || got[0] != 1 || got[1] != 0 {
+		t.Errorf("got %v", got)
+	}
+	// Last segment "0-rc1" is not a pure int, so it's 0.
+	if got[2] != 0 {
+		t.Errorf("got[2] = %d, want 0 (non-numeric fallback)", got[2])
+	}
+}
+
+func TestParseVersionEmpty(t *testing.T) {
+	if got := parseVersion(""); got != nil {
+		t.Errorf("got %v, want nil", got)
+	}
+}
+
+func TestCompareVersionsMajorGap(t *testing.T) {
+	major, minor := compareVersions("5.9.0", "6.4.2")
+	if !major {
+		t.Error("5 -> 6 should be a major gap")
+	}
+	if minor != 0 {
+		t.Errorf("minor = %d, want 0 on major gap", minor)
+	}
+}
+
+func TestCompareVersionsMinorBehind(t *testing.T) {
+	major, minor := compareVersions("6.1.0", "6.4.2")
+	if major {
+		t.Error("same major should not be major gap")
+	}
+	if minor != 3 {
+		t.Errorf("minor = %d, want 3 (1 -> 4)", minor)
+	}
+}
+
+func TestCompareVersionsEqual(t *testing.T) {
+	major, minor := compareVersions("6.4.2", "6.4.2")
+	if major || minor != 0 {
+		t.Errorf("equal versions should not gap: major=%v minor=%d", major, minor)
+	}
+}
+
+func TestCompareVersionsAhead(t *testing.T) {
+	// Installed is ahead of available — custom/premium build.
+	major, minor := compareVersions("7.0.0", "6.4.2")
+	if major || minor != 0 {
+		t.Errorf("ahead version should not gap: major=%v minor=%d", major, minor)
+	}
+}
+
+func TestCompareVersionsShortSegments(t *testing.T) {
+	major, minor := compareVersions("6", "6.4")
+	if major || minor != 0 {
+		t.Errorf("too-short segments should not gap: major=%v minor=%d", major, minor)
+	}
+}
+
+func TestPluginAlertSeverityCritical(t *testing.T) {
+	if got := pluginAlertSeverity("5.9.0", "6.4.2"); got != "critical" {
+		t.Errorf("got %q, want critical (major gap)", got)
+	}
+}
+
+func TestPluginAlertSeverityHigh(t *testing.T) {
+	if got := pluginAlertSeverity("6.1.0", "6.4.2"); got != "high" {
+		t.Errorf("got %q, want high (3 minors behind)", got)
+	}
+}
+
+func TestPluginAlertSeverityWarning(t *testing.T) {
+	if got := pluginAlertSeverity("6.4.0", "6.4.2"); got != "warning" {
+		t.Errorf("got %q, want warning (patch behind)", got)
+	}
+}
+
+func TestPluginAlertSeverityNoneWhenEqual(t *testing.T) {
+	if got := pluginAlertSeverity("6.4.2", "6.4.2"); got != "" {
+		t.Errorf("got %q, want empty (equal)", got)
+	}
+}
+
+func TestPluginAlertSeverityNoneWhenAhead(t *testing.T) {
+	if got := pluginAlertSeverity("6.4.5", "6.4.2"); got != "" {
+		t.Errorf("got %q, want empty (ahead)", got)
+	}
+}
+
+// --- parseWPOrgPluginResponse -----------------------------------------
+
+func TestParseWPOrgPluginResponseValid(t *testing.T) {
+	body := []byte(`{"version":"1.2.3","tested":"6.4"}`)
+	info, err := parseWPOrgPluginResponse(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.LatestVersion != "1.2.3" {
+		t.Errorf("LatestVersion = %q", info.LatestVersion)
+	}
+	if info.TestedUpTo != "6.4" {
+		t.Errorf("TestedUpTo = %q", info.TestedUpTo)
+	}
+	if info.LastChecked == 0 {
+		t.Error("LastChecked should be set")
+	}
+}
+
+func TestParseWPOrgPluginResponseError(t *testing.T) {
+	body := []byte(`{"error":"plugin not found"}`)
+	_, err := parseWPOrgPluginResponse(body)
+	if err == nil {
+		t.Fatal("error response should surface")
+	}
+}
+
+func TestParseWPOrgPluginResponseMalformed(t *testing.T) {
+	_, err := parseWPOrgPluginResponse([]byte("not json"))
+	if err == nil {
+		t.Fatal("malformed JSON should error")
+	}
+}
+
+// --- parseValiasLine / isPipeForwarder / isDevNullForwarder -----------
+
+func TestParseValiasLineStandard(t *testing.T) {
+	local, dest := parseValiasLine("alice: alice@example.com")
+	if local != "alice" || dest != "alice@example.com" {
+		t.Errorf("got (%q, %q)", local, dest)
+	}
+}
+
+func TestParseValiasLineComment(t *testing.T) {
+	local, dest := parseValiasLine("# this is a comment")
+	if local != "" || dest != "" {
+		t.Errorf("comment should return empty, got (%q, %q)", local, dest)
+	}
+}
+
+func TestParseValiasLineBlank(t *testing.T) {
+	local, dest := parseValiasLine("")
+	if local != "" || dest != "" {
+		t.Errorf("blank should return empty, got (%q, %q)", local, dest)
+	}
+}
+
+func TestParseValiasLineNoColon(t *testing.T) {
+	local, dest := parseValiasLine("invalid line")
+	if local != "" || dest != "" {
+		t.Errorf("no colon should return empty, got (%q, %q)", local, dest)
+	}
+}
+
+func TestIsPipeForwarderPipe(t *testing.T) {
+	if !isPipeForwarder("|/bin/sh attacker-script.sh") {
+		t.Error("pipe forwarder should be detected")
+	}
+}
+
+func TestIsPipeForwarderSafeCpanel(t *testing.T) {
+	// Known-safe cPanel built-in pipes should NOT be flagged.
+	safe := []string{
+		"|/usr/local/cpanel/bin/autorespond /home/user/.autorespond",
+		"|/usr/local/cpanel/bin/boxtrapper /home/user/boxtrapper",
+	}
+	for _, dest := range safe {
+		if isPipeForwarder(dest) {
+			t.Errorf("%q should be safe, not flagged", dest)
+		}
+	}
+}
+
+func TestIsPipeForwarderNotPipe(t *testing.T) {
+	if isPipeForwarder("alice@example.com") {
+		t.Error("email forwarder should not be flagged as pipe")
+	}
+}
+
+func TestIsDevNullForwarder(t *testing.T) {
+	if !isDevNullForwarder("/dev/null") {
+		t.Error("/dev/null should be flagged")
+	}
+	if isDevNullForwarder("/home/alice/.forward") {
+		t.Error("regular file should not be flagged as /dev/null")
+	}
+}
+
+func TestIsExternalDestExternal(t *testing.T) {
+	local := map[string]bool{"example.com": true}
+	if !isExternalDest("alice@external.com", local) {
+		t.Error("external.com should be external")
+	}
+}
+
+func TestIsExternalDestLocal(t *testing.T) {
+	local := map[string]bool{"example.com": true}
+	if isExternalDest("alice@example.com", local) {
+		t.Error("local domain should not be external")
+	}
+}
+
+func TestIsExternalDestNoAtSign(t *testing.T) {
+	local := map[string]bool{"example.com": true}
+	if isExternalDest("not an email", local) {
+		t.Error("malformed dest should not count as external")
+	}
+}
+
+// parseVfilterExternalDests is already covered by forwarder_test.go.
+
+// --- extractIPFromLog / countBruteForce (bruteforce.go) --------------
+
+func TestExtractIPFromLogStandard(t *testing.T) {
+	line := `203.0.113.5 - - [11/Apr/2026:10:00:00 +0000] "GET /wp-login.php HTTP/1.1" 200 1234`
+	if got := extractIPFromLog(line); got != "203.0.113.5" {
+		t.Errorf("got %q, want 203.0.113.5", got)
+	}
+}
+
+func TestExtractIPFromLogNoIP(t *testing.T) {
+	if got := extractIPFromLog("no ip here"); got != "" {
+		t.Errorf("got %q, want empty", got)
+	}
+}
+
+func TestExtractIPFromLogStripsPunctuation(t *testing.T) {
+	if got := extractIPFromLog("from 198.51.100.1, banned"); got != "198.51.100.1" {
+		t.Errorf("got %q, want 198.51.100.1", got)
+	}
+}
+
+func TestCountBruteForceWPLogin(t *testing.T) {
+	lines := []string{
+		`203.0.113.5 - - [01/Jan/2026:10:00:00 +0000] "POST /wp-login.php HTTP/1.1" 200 10`,
+		`203.0.113.5 - - [01/Jan/2026:10:00:00 +0000] "POST /wp-login.php HTTP/1.1" 200 10`,
+		`203.0.113.5 - - [01/Jan/2026:10:00:00 +0000] "POST /wp-login.php HTTP/1.1" 200 10`,
+		`198.51.100.1 - - [01/Jan/2026:10:00:00 +0000] "GET /index.php HTTP/1.1" 200 10`,
+	}
+	wpLogin := map[string]int{}
+	xmlrpc := map[string]int{}
+	userEnum := map[string]int{}
+	countBruteForce(lines, nil, wpLogin, xmlrpc, userEnum)
+
+	if wpLogin["203.0.113.5"] != 3 {
+		t.Errorf("wpLogin[203.0.113.5] = %d, want 3", wpLogin["203.0.113.5"])
+	}
+	if wpLogin["198.51.100.1"] != 0 {
+		t.Error("non-wp-login GET should not count")
+	}
+}
+
+func TestCountBruteForceXMLRPC(t *testing.T) {
+	lines := []string{
+		`203.0.113.5 - - [01/Jan/2026:10:00:00 +0000] "POST /xmlrpc.php HTTP/1.1" 200 10`,
+		`203.0.113.5 - - [01/Jan/2026:10:00:00 +0000] "POST /xmlrpc.php HTTP/1.1" 200 10`,
+	}
+	xmlrpc := map[string]int{}
+	countBruteForce(lines, nil, map[string]int{}, xmlrpc, map[string]int{})
+	if xmlrpc["203.0.113.5"] != 2 {
+		t.Errorf("xmlrpc[203.0.113.5] = %d, want 2", xmlrpc["203.0.113.5"])
+	}
+}
+
+func TestCountBruteForceUserEnumAuthorQuery(t *testing.T) {
+	lines := []string{
+		`203.0.113.5 - - [01/Jan/2026:10:00:00 +0000] "GET /?author=1 HTTP/1.1" 200 10`,
+		`203.0.113.5 - - [01/Jan/2026:10:00:00 +0000] "GET /?author=2 HTTP/1.1" 200 10`,
+	}
+	ue := map[string]int{}
+	countBruteForce(lines, nil, map[string]int{}, map[string]int{}, ue)
+	if ue["203.0.113.5"] != 2 {
+		t.Errorf("got %d, want 2", ue["203.0.113.5"])
+	}
+}
+
+func TestCountBruteForceRESTAPIUserEnum(t *testing.T) {
+	lines := []string{
+		`203.0.113.5 - - [01/Jan/2026:10:00:00 +0000] "GET /wp-json/wp/v2/users HTTP/1.1" 200 10`,
+		`203.0.113.5 - - [01/Jan/2026:10:00:00 +0000] "GET /wp-json/wp/v2/users/me HTTP/1.1" 200 10`,
+	}
+	ue := map[string]int{}
+	countBruteForce(lines, nil, map[string]int{}, map[string]int{}, ue)
+	if ue["203.0.113.5"] != 1 {
+		t.Errorf("got %d, want 1 (/users/me excluded)", ue["203.0.113.5"])
+	}
+}
+
+func TestCountBruteForceSkipsLoopback(t *testing.T) {
+	lines := []string{
+		`127.0.0.1 - - [01/Jan/2026:10:00:00 +0000] "POST /wp-login.php HTTP/1.1" 200 10`,
+		`::1 - - [01/Jan/2026:10:00:00 +0000] "POST /wp-login.php HTTP/1.1" 200 10`,
+		`- - - [01/Jan/2026:10:00:00 +0000] "POST /wp-login.php HTTP/1.1" 200 10`,
+	}
+	wp := map[string]int{}
+	countBruteForce(lines, nil, wp, map[string]int{}, map[string]int{})
+	if len(wp) != 0 {
+		t.Errorf("loopback/placeholder should be skipped, got %v", wp)
+	}
+}
+
+func TestCountBruteForceSkipsInfraIPs(t *testing.T) {
+	infra := []string{"10.0.0.5"}
+	lines := []string{
+		`10.0.0.5 - - [01/Jan/2026:10:00:00 +0000] "POST /wp-login.php HTTP/1.1" 200 10`,
+	}
+	wp := map[string]int{}
+	countBruteForce(lines, infra, wp, map[string]int{}, map[string]int{})
+	if len(wp) != 0 {
+		t.Errorf("infra IP should be skipped, got %v", wp)
+	}
+}
+
+func TestCountBruteForceMalformedLines(t *testing.T) {
+	lines := []string{"", "too short", "    "}
+	wp := map[string]int{}
+	countBruteForce(lines, nil, wp, map[string]int{}, map[string]int{})
+	if len(wp) != 0 {
+		t.Errorf("malformed lines should be skipped, got %v", wp)
+	}
+}
