@@ -98,7 +98,7 @@ func TestProbeSMTPReachable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	go func() {
 		for {
 			c, err := ln.Accept()
@@ -126,7 +126,7 @@ func TestProbeSMTPUnreachable(t *testing.T) {
 		t.Fatal(err)
 	}
 	addr := ln.Addr().String()
-	ln.Close()
+	_ = ln.Close()
 
 	results := probeSMTP(addr)
 	if len(results) != 1 || results[0].Level != "error" {
@@ -141,7 +141,7 @@ func TestProbeClamdReachable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	go func() {
 		for {
 			c, err := ln.Accept()

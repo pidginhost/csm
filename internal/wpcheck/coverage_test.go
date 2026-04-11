@@ -25,8 +25,8 @@ func TestFetchChecksumsSuccess(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		payload := map[string]any{
 			"checksums": map[string]string{
-				"wp-admin/index.php":       "abcdef0123456789abcdef0123456789",
-				"wp-includes/version.php":  "1111111111111111eeeeeeeeeeeeeeee",
+				"wp-admin/index.php":      "abcdef0123456789abcdef0123456789",
+				"wp-includes/version.php": "1111111111111111eeeeeeeeeeeeeeee",
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")

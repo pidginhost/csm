@@ -364,15 +364,17 @@ func TestFetchSignatureDialFailure(t *testing.T) {
 func TestForgeExtractYarFindsAsset(t *testing.T) {
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
-	f, err := zw.Create("packages/core/yara-rules-core.yar")
-	if err != nil {
-		t.Fatal(err)
+	f, createErr := zw.Create("packages/core/yara-rules-core.yar")
+	if createErr != nil {
+		t.Fatal(createErr)
 	}
 	ruleContent := []byte("rule core_rule_1 { condition: true }\n")
-	if _, err := f.Write(ruleContent); err != nil {
-		t.Fatal(err)
+	if _, writeErr := f.Write(ruleContent); writeErr != nil {
+		t.Fatal(writeErr)
 	}
-	zw.Close()
+	if closeErr := zw.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
 
 	got, err := forgeExtractYar(buf.Bytes(), "packages/core/yara-rules-core.yar")
 	if err != nil {
@@ -388,7 +390,9 @@ func TestForgeExtractYarAssetNotFound(t *testing.T) {
 	zw := zip.NewWriter(&buf)
 	f, _ := zw.Create("other/path.yar")
 	_, _ = f.Write([]byte("x"))
-	zw.Close()
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	_, err := forgeExtractYar(buf.Bytes(), "packages/core/yara-rules-core.yar")
 	if err == nil || !strings.Contains(err.Error(), "not found") {
@@ -541,7 +545,7 @@ func TestForgeUpdateReleasesAPIError(t *testing.T) {
 }
 
 func TestForgeUpdateBadSignature(t *testing.T) {
-	pubHex, _ := genSigningKey(t)     // legit key
+	pubHex, _ := genSigningKey(t)    // legit key
 	_, otherPriv := genSigningKey(t) // unrelated priv
 	zipData := buildForgeZip(t)
 	badSig := sign(otherPriv, zipData)

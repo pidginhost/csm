@@ -138,8 +138,8 @@ func buildMMDBTarGz(t *testing.T, edition string) []byte {
 		Mode: 0600,
 	})
 	_, _ = tw.Write(content)
-	tw.Close()
-	gw.Close()
+	_ = tw.Close()
+	_ = gw.Close()
 	return buf.Bytes()
 }
 
@@ -229,10 +229,7 @@ func TestUpdateEditionWithURLExtractsThenFailsValidate(t *testing.T) {
 }
 
 func TestUpdateEditionWithURLHEADError(t *testing.T) {
-	// Server drops connection immediately.
-	srv := httptest.NewUnstartedServer(nil)
-	srv.Listener.Close()
-
+	// No real server — we point straight at an unreachable address below.
 	client := &http.Client{Timeout: 1 * time.Second}
 	res := updateEditionWithURL(
 		client, t.TempDir(),

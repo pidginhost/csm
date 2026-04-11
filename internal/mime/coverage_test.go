@@ -197,8 +197,8 @@ func buildTarGzArchive(t *testing.T, files map[string][]byte) []byte {
 			t.Fatal(err)
 		}
 	}
-	tw.Close()
-	gw.Close()
+	_ = tw.Close()
+	_ = gw.Close()
 	return buf.Bytes()
 }
 
@@ -227,7 +227,7 @@ func buildMultipartBody(boundary, filename, cType string, payload []byte) string
 
 func TestExtractZIP(t *testing.T) {
 	archive := buildZipArchive(t, map[string][]byte{
-		"inner.txt":       []byte("hello from the zip"),
+		"inner.txt":        []byte("hello from the zip"),
 		"subdir/other.bin": {0x01, 0x02, 0x03, 0x04},
 	})
 	body := buildMultipartBody("BOUND", "payload.zip", "application/zip", archive)
@@ -319,7 +319,7 @@ func TestExtractZIPExceedsMaxFiles(t *testing.T) {
 
 func TestExtractTarGz(t *testing.T) {
 	archive := buildTarGzArchive(t, map[string][]byte{
-		"inside.txt":    []byte("tgz contents here"),
+		"inside.txt":      []byte("tgz contents here"),
 		"nested/file.bin": {0xAA, 0xBB},
 	})
 	body := buildMultipartBody("BOUND", "payload.tar.gz", "application/gzip", archive)

@@ -250,8 +250,8 @@ func TestHashConfigStableTrailingSectionAfterIntegrity(t *testing.T) {
 		"alerts:\n" +
 		"  email:\n" +
 		"    enabled: false\n"
-	if err := os.WriteFile(path, []byte(modified), 0644); err != nil {
-		t.Fatal(err)
+	if writeErr := os.WriteFile(path, []byte(modified), 0644); writeErr != nil {
+		t.Fatal(writeErr)
 	}
 	hash2, err := HashConfigStable(path)
 	if err != nil {
