@@ -752,3 +752,214 @@ func TestDecodeJSONBodyLimitedMalformed(t *testing.T) {
 		t.Error("malformed JSON should error")
 	}
 }
+
+// --- API handlers ------------------------------------------------------
+//
+// Small set of handler tests for endpoints that only touch the Server's
+// cfg + store. Each exercises the handler via httptest.NewRecorder
+// without needing the full router + CSRF + auth middleware.
+
+func TestAPIStatusJSON(t *testing.T) {
+	s := newTestServer(t, "token")
+	s.SetSigCount(42)
+
+	req := httptest.NewRequest("GET", "/api/v1/status", nil)
+	w := httptest.NewRecorder()
+	s.apiStatus(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["rules_loaded"] != float64(42) {
+		t.Errorf("rules_loaded = %v, want 42", got["rules_loaded"])
+	}
+	if _, ok := got["uptime"]; !ok {
+		t.Error("uptime missing from status")
+	}
+	if _, ok := got["started_at"]; !ok {
+		t.Error("started_at missing from status")
+	}
+}
+
+func TestAPIHealthJSON(t *testing.T) {
+	s := newTestServer(t, "token")
+	s.SetHealthInfo(true, 9)
+	s.SetSigCount(100)
+
+	req := httptest.NewRequest("GET", "/api/v1/health", nil)
+	w := httptest.NewRecorder()
+	s.apiHealth(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["fanotify"] != true {
+		t.Errorf("fanotify = %v", got["fanotify"])
+	}
+	if got["log_watchers"] != float64(9) {
+		t.Errorf("log_watchers = %v, want 9", got["log_watchers"])
+	}
+	if got["rules_loaded"] != float64(100) {
+		t.Errorf("rules_loaded = %v, want 100", got["rules_loaded"])
+	}
+}
+
+func TestAPIFindingsEmpty(t *testing.T) {
+	s := newTestServer(t, "token")
+	req := httptest.NewRequest("GET", "/api/v1/findings", nil)
+	w := httptest.NewRecorder()
+	s.apiFindings(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	body := strings.TrimSpace(w.Body.String())
+	// Empty findings serializes as `null` (because result is a nil slice).
+	// Also accept "[]" if the implementation ever switches to
+	// pre-allocating an empty slice.
+	if body != "null" && body != "[]" {
+		t.Errorf("body = %q, want null or []", body)
+	}
+}
+
+func TestAPIFindingsWithStoreEntries(t *testing.T) {
+	s := newTestServer(t, "token")
+	s.store.SetLatestFindings([]alert.Finding{
+		{Check: "malware", Message: "shell found", Severity: alert.Critical, Timestamp: time.Now()},
+		{Check: "auto_block", Message: "AUTO-BLOCK: 1.2.3.4", Severity: alert.High, Timestamp: time.Now()}, // filtered
+		{Check: "waf_status", Message: "WAF not active", Severity: alert.High, Timestamp: time.Now()},
+	})
+
+	req := httptest.NewRequest("GET", "/api/v1/findings", nil)
+	w := httptest.NewRecorder()
+	s.apiFindings(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var result []map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
+	}
+	// auto_block should be filtered out; expect 2 results.
+	if len(result) != 2 {
+		t.Errorf("got %d findings, want 2 (auto_block filtered)", len(result))
+	}
+	for _, f := range result {
+		if f["check"] == "auto_block" {
+			t.Error("auto_block should have been filtered")
+		}
+	}
+}
+
+// --- queryInt ----------------------------------------------------------
+
+func TestQueryIntDefault(t *testing.T) {
+	req := httptest.NewRequest("GET", "/x", nil)
+	if got := queryInt(req, "limit", 50); got != 50 {
+		t.Errorf("got %d, want 50", got)
+	}
+}
+
+func TestQueryIntValid(t *testing.T) {
+	req := httptest.NewRequest("GET", "/x?limit=20", nil)
+	if got := queryInt(req, "limit", 50); got != 20 {
+		t.Errorf("got %d, want 20", got)
+	}
+}
+
+func TestQueryIntInvalidFallsBack(t *testing.T) {
+	req := httptest.NewRequest("GET", "/x?limit=abc", nil)
+	if got := queryInt(req, "limit", 50); got != 50 {
+		t.Errorf("got %d, want 50 (fallback)", got)
+	}
+}
+
+func TestQueryIntNegativeFallsBack(t *testing.T) {
+	req := httptest.NewRequest("GET", "/x?limit=-10", nil)
+	if got := queryInt(req, "limit", 50); got != 50 {
+		t.Errorf("got %d, want 50 (negative rejected)", got)
+	}
+}
+
+// --- csvEscape ---------------------------------------------------------
+
+func TestCsvEscapeNoQuoting(t *testing.T) {
+	if got := csvEscape("plain text"); got != "plain text" {
+		t.Errorf("got %q, want plain text", got)
+	}
+}
+
+func TestCsvEscapeComma(t *testing.T) {
+	if got := csvEscape("a,b,c"); got != `"a,b,c"` {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestCsvEscapeQuoteIsDoubled(t *testing.T) {
+	if got := csvEscape(`say "hi"`); got != `"say ""hi"""` {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestCsvEscapeNewline(t *testing.T) {
+	if got := csvEscape("line1\nline2"); got != "\"line1\nline2\"" {
+		t.Errorf("got %q", got)
+	}
+}
+
+// --- writeJSON / writeJSONError ---------------------------------------
+
+func TestWriteJSONSetsContentType(t *testing.T) {
+	w := httptest.NewRecorder()
+	writeJSON(w, map[string]string{"key": "value"})
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	if !strings.Contains(w.Body.String(), `"key"`) {
+		t.Errorf("body missing key: %s", w.Body.String())
+	}
+}
+
+func TestWriteJSONErrorStatusAndBody(t *testing.T) {
+	w := httptest.NewRecorder()
+	writeJSONError(w, "forbidden", http.StatusForbidden)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("code = %d, want 403", w.Code)
+	}
+	var got map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["error"] != "forbidden" {
+		t.Errorf("error field = %q", got["error"])
+	}
+}
+
+// --- apiHistoryCSV -----------------------------------------------------
+
+func TestAPIHistoryCSVEmpty(t *testing.T) {
+	s := newTestServer(t, "token")
+	req := httptest.NewRequest("GET", "/api/v1/history.csv", nil)
+	w := httptest.NewRecorder()
+	s.apiHistoryCSV(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("code = %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "text/csv" {
+		t.Errorf("Content-Type = %q", ct)
+	}
+	// Always has the header row.
+	if !strings.HasPrefix(w.Body.String(), "Timestamp,Severity,Check,Message,Details") {
+		t.Errorf("missing CSV header: %s", w.Body.String())
+	}
+}

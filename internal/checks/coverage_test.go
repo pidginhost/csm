@@ -634,3 +634,287 @@ define('DB_PASSWORD', 'p');
 		t.Errorf("dbName = %q, want wp", creds.dbName)
 	}
 }
+
+// --- isAlreadyBlocked / loadBlockState / PendingBlockIPs ----------------
+
+func TestIsAlreadyBlockedHit(t *testing.T) {
+	state := &blockState{
+		IPs: []blockedIP{
+			{IP: "1.1.1.1"},
+			{IP: "2.2.2.2"},
+		},
+	}
+	if !isAlreadyBlocked(state, "2.2.2.2") {
+		t.Error("2.2.2.2 should be reported as already blocked")
+	}
+}
+
+func TestIsAlreadyBlockedMiss(t *testing.T) {
+	state := &blockState{IPs: []blockedIP{{IP: "1.1.1.1"}}}
+	if isAlreadyBlocked(state, "9.9.9.9") {
+		t.Error("unknown IP should not be reported as blocked")
+	}
+}
+
+func TestIsAlreadyBlockedEmptyState(t *testing.T) {
+	state := &blockState{}
+	if isAlreadyBlocked(state, "1.1.1.1") {
+		t.Error("empty state should never report as blocked")
+	}
+}
+
+func TestLoadBlockStateMissingFileReturnsEmpty(t *testing.T) {
+	got := loadBlockState(t.TempDir())
+	if got == nil {
+		t.Fatal("loadBlockState returned nil")
+	}
+	if len(got.IPs) != 0 || len(got.Pending) != 0 {
+		t.Errorf("missing file should yield empty, got %+v", got)
+	}
+}
+
+func TestLoadBlockStateRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	state := &blockState{
+		IPs: []blockedIP{
+			{IP: "1.1.1.1", Reason: "brute force"},
+		},
+		Pending: []pendingIP{
+			{IP: "2.2.2.2", Reason: "rate limited"},
+		},
+		BlocksThisHour: 3,
+		HourKey:        "2026-04-11T10",
+	}
+	saveBlockState(dir, state)
+
+	loaded := loadBlockState(dir)
+	if len(loaded.IPs) != 1 || loaded.IPs[0].IP != "1.1.1.1" {
+		t.Errorf("IPs mismatch: %+v", loaded.IPs)
+	}
+	if len(loaded.Pending) != 1 || loaded.Pending[0].IP != "2.2.2.2" {
+		t.Errorf("Pending mismatch: %+v", loaded.Pending)
+	}
+	if loaded.BlocksThisHour != 3 {
+		t.Errorf("BlocksThisHour = %d, want 3", loaded.BlocksThisHour)
+	}
+}
+
+func TestPendingBlockIPsEmpty(t *testing.T) {
+	got := PendingBlockIPs(t.TempDir())
+	if len(got) != 0 {
+		t.Errorf("got %v, want empty map", got)
+	}
+}
+
+func TestPendingBlockIPsPopulated(t *testing.T) {
+	dir := t.TempDir()
+	saveBlockState(dir, &blockState{
+		Pending: []pendingIP{
+			{IP: "1.1.1.1", Reason: "rate limited"},
+			{IP: "2.2.2.2", Reason: "rate limited"},
+		},
+	})
+	got := PendingBlockIPs(dir)
+	if len(got) != 2 || !got["1.1.1.1"] || !got["2.2.2.2"] {
+		t.Errorf("got %v, want both pending IPs", got)
+	}
+}
+
+// --- checkPermBlockEscalation / loadPermBlockTracker -------------------
+
+func TestCheckPermBlockEscalationBelowThreshold(t *testing.T) {
+	dir := t.TempDir()
+	// First two blocks within the interval — threshold is 3, so no
+	// escalation yet.
+	for i := 0; i < 2; i++ {
+		escalate := checkPermBlockEscalation(dir, "1.2.3.4", 3, time.Hour)
+		if escalate && i < 1 {
+			t.Errorf("early call %d should not escalate", i)
+		}
+	}
+}
+
+func TestCheckPermBlockEscalationHitsThreshold(t *testing.T) {
+	dir := t.TempDir()
+	var escalated bool
+	for i := 0; i < 3; i++ {
+		escalated = checkPermBlockEscalation(dir, "5.6.7.8", 3, time.Hour)
+	}
+	if !escalated {
+		t.Error("threshold should escalate on the 3rd block")
+	}
+}
+
+func TestCheckPermBlockEscalationDifferentIPs(t *testing.T) {
+	dir := t.TempDir()
+	// Three different IPs each blocked once shouldn't escalate any of them.
+	for _, ip := range []string{"1.1.1.1", "2.2.2.2", "3.3.3.3"} {
+		if checkPermBlockEscalation(dir, ip, 3, time.Hour) {
+			t.Errorf("%s should not escalate on first block", ip)
+		}
+	}
+}
+
+func TestLoadPermBlockTrackerMissingReturnsEmpty(t *testing.T) {
+	tracker := loadPermBlockTracker(t.TempDir())
+	if tracker == nil {
+		t.Fatal("loadPermBlockTracker returned nil")
+	}
+	if tracker.IPs == nil {
+		t.Error("IPs map should be non-nil")
+	}
+}
+
+func TestLoadPermBlockTrackerCorruptJSON(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "permblock_tracker.json"), []byte("not json"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	tracker := loadPermBlockTracker(dir)
+	if tracker.IPs == nil {
+		t.Error("IPs map should be non-nil even on corrupt file")
+	}
+}
+
+// --- hexToIPv4 (hardening_audit.go) ------------------------------------
+
+func TestHexToIPv4Standard(t *testing.T) {
+	// 127.0.0.1 as little-endian 32-bit: 0100007F
+	if got := hexToIPv4("0100007F"); got != "127.0.0.1" {
+		t.Errorf("got %q, want 127.0.0.1", got)
+	}
+}
+
+func TestHexToIPv4PublicIP(t *testing.T) {
+	// 8.8.8.8 → 08080808 (all four bytes same, order doesn't matter).
+	if got := hexToIPv4("08080808"); got != "8.8.8.8" {
+		t.Errorf("got %q, want 8.8.8.8", got)
+	}
+}
+
+func TestHexToIPv4WrongLength(t *testing.T) {
+	if got := hexToIPv4("ZZ"); got != "ZZ" {
+		t.Errorf("got %q, want pass-through", got)
+	}
+}
+
+func TestHexToIPv4InvalidHex(t *testing.T) {
+	if got := hexToIPv4("GGGGGGGG"); got != "GGGGGGGG" {
+		t.Errorf("got %q, want pass-through", got)
+	}
+}
+
+// --- isPrivateOrLoopback ------------------------------------------------
+
+func TestIsPrivateOrLoopbackLoopback(t *testing.T) {
+	if !isPrivateOrLoopback("127.0.0.1") {
+		t.Error("127.0.0.1 should be loopback")
+	}
+	if !isPrivateOrLoopback("::1") {
+		t.Error("::1 should be loopback")
+	}
+}
+
+func TestIsPrivateOrLoopbackRFC1918(t *testing.T) {
+	privates := []string{"10.0.0.1", "172.20.5.5", "192.168.1.1"}
+	for _, ip := range privates {
+		if !isPrivateOrLoopback(ip) {
+			t.Errorf("%s should be private", ip)
+		}
+	}
+}
+
+func TestIsPrivateOrLoopbackPublic(t *testing.T) {
+	publics := []string{"8.8.8.8", "1.1.1.1", "203.0.113.5"}
+	for _, ip := range publics {
+		if isPrivateOrLoopback(ip) {
+			t.Errorf("%s should NOT be private/loopback", ip)
+		}
+	}
+}
+
+func TestIsPrivateOrLoopbackIPv6ULA(t *testing.T) {
+	if !isPrivateOrLoopback("fc00::1") {
+		t.Error("fc00::1 should be private (RFC 4193 ULA)")
+	}
+}
+
+func TestIsPrivateOrLoopbackInvalidIP(t *testing.T) {
+	if isPrivateOrLoopback("not-an-ip") {
+		t.Error("invalid IP should return false")
+	}
+}
+
+// --- parseSSHDFile ------------------------------------------------------
+
+func TestParseSSHDFileWithIncludeAndMatchBlock(t *testing.T) {
+	dir := t.TempDir()
+
+	mainPath := filepath.Join(dir, "sshd_config")
+	confDir := filepath.Join(dir, "conf.d")
+	if err := os.MkdirAll(confDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	mainContent := "# Main sshd config\n" +
+		"PermitRootLogin no\n" +
+		"PasswordAuthentication yes\n" +
+		"\n" +
+		"Include " + filepath.Join(confDir, "*.conf") + "\n" +
+		"\n" +
+		"Match User admin\n" +
+		"    PasswordAuthentication yes\n" +
+		"    PermitRootLogin yes\n" +
+		"\n" +
+		"# Everything after this line is still inside the Match block\n" +
+		"X11Forwarding yes\n"
+	if err := os.WriteFile(mainPath, []byte(mainContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(confDir, "override.conf"), []byte("ClientAliveInterval 300\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	effective := make(map[string]string)
+	parseSSHDFile(mainPath, effective)
+
+	if effective["permitrootlogin"] != "no" {
+		t.Errorf("permitrootlogin = %q, want no (first-match-wins)", effective["permitrootlogin"])
+	}
+	if effective["passwordauthentication"] != "yes" {
+		t.Errorf("passwordauthentication = %q, want yes", effective["passwordauthentication"])
+	}
+	// X11Forwarding is inside a Match block — must NOT be recorded.
+	if _, ok := effective["x11forwarding"]; ok {
+		t.Error("X11Forwarding inside Match block should be ignored")
+	}
+	// Include should have pulled in ClientAliveInterval.
+	if effective["clientaliveinterval"] != "300" {
+		t.Errorf("clientaliveinterval = %q, want 300 (from Include)", effective["clientaliveinterval"])
+	}
+}
+
+func TestParseSSHDFileMissingFileIsNoOp(t *testing.T) {
+	effective := make(map[string]string)
+	parseSSHDFile(filepath.Join(t.TempDir(), "never"), effective)
+	if len(effective) != 0 {
+		t.Errorf("missing file should not modify effective map, got %v", effective)
+	}
+}
+
+func TestParseSSHDFileKeywordEqualsValueForm(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sshd_config")
+	if err := os.WriteFile(path, []byte("PermitRootLogin=no\nPort=2222\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	effective := make(map[string]string)
+	parseSSHDFile(path, effective)
+	if effective["permitrootlogin"] != "no" {
+		t.Errorf("permitrootlogin = %q, want no", effective["permitrootlogin"])
+	}
+	if effective["port"] != "2222" {
+		t.Errorf("port = %q, want 2222", effective["port"])
+	}
+}
