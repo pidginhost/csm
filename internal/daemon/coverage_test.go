@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -213,3 +215,130 @@ func TestExtractIPFromLogDaemonNoIP(t *testing.T) {
 		t.Errorf("got %q, want empty", got)
 	}
 }
+
+// --- purgeTracker (purge_correlation.go) ------------------------------
+
+func TestPurgeStateNoSession(t *testing.T) {
+	ps := &purgeState{
+		purges:   make(map[string]time.Time),
+		sessions: make(map[string]string),
+	}
+	if ps.isPostPurge401("1.2.3.4") {
+		t.Error("unknown IP should not be flagged as post-purge")
+	}
+}
+
+func TestPurgeStateSessionWithoutPurge(t *testing.T) {
+	ps := &purgeState{
+		purges:   make(map[string]time.Time),
+		sessions: make(map[string]string),
+	}
+	ps.recordLogin("1.2.3.4", "alice")
+	if ps.isPostPurge401("1.2.3.4") {
+		t.Error("session without purge should not be flagged")
+	}
+}
+
+func TestPurgeStatePostPurge401(t *testing.T) {
+	ps := &purgeState{
+		purges:   make(map[string]time.Time),
+		sessions: make(map[string]string),
+	}
+	ps.recordLogin("1.2.3.4", "alice")
+	ps.recordPurge("alice")
+	if !ps.isPostPurge401("1.2.3.4") {
+		t.Error("recent purge on same account should flag 401 as stale")
+	}
+}
+
+func TestPurgeStatePurgeExpired(t *testing.T) {
+	ps := &purgeState{
+		purges:   make(map[string]time.Time),
+		sessions: make(map[string]string),
+	}
+	ps.recordLogin("1.2.3.4", "alice")
+	// Manually set a stale purge timestamp outside the window.
+	ps.mu.Lock()
+	ps.purges["alice"] = time.Now().Add(-5 * time.Minute)
+	ps.mu.Unlock()
+	if ps.isPostPurge401("1.2.3.4") {
+		t.Error("old purge outside suppression window should not flag")
+	}
+}
+
+func TestPurgeStateCleanupPrunesOldEntries(t *testing.T) {
+	ps := &purgeState{
+		purges:   make(map[string]time.Time),
+		sessions: make(map[string]string),
+	}
+	// Seed with a stale purge entry.
+	ps.mu.Lock()
+	ps.purges["old"] = time.Now().Add(-10 * time.Minute) // outside 2x window
+	ps.purges["fresh"] = time.Now()
+	ps.mu.Unlock()
+
+	ps.recordLogin("1.2.3.4", "whoever") // triggers cleanupLocked via the Lock
+	ps.mu.Lock()
+	_, oldStill := ps.purges["old"]
+	_, freshStill := ps.purges["fresh"]
+	ps.mu.Unlock()
+
+	if oldStill {
+		t.Error("stale purge entry should have been pruned")
+	}
+	if !freshStill {
+		t.Error("fresh entry should remain")
+	}
+}
+
+// --- parseValiasFileForFindings expanded ------------------------------
+
+func TestParseValiasFileMissingFileReturnsNil(t *testing.T) {
+	if got := parseValiasFileForFindings("/nonexistent/path", "example.com", nil, nil); got != nil {
+		t.Errorf("missing file should return nil, got %v", got)
+	}
+}
+
+func TestParseValiasFileSkipsCommentsAndBlankLines(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "example.com")
+	content := `# this is a comment
+
+alice: alice@example.com
+bob: # trailing comment ignored by the split
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	localDomains := map[string]bool{"example.com": true}
+	findings := parseValiasFileForFindings(path, "example.com", localDomains, nil)
+	// alice → local, bob has empty dest — neither yields findings.
+	if len(findings) != 0 {
+		t.Errorf("got %d findings, want 0", len(findings))
+	}
+}
+
+// --- shouldTempfailEmailDelivery (spoolwatch_policy.go) ---------------
+
+func TestShouldTempfailEmailDeliveryFailOpenMode(t *testing.T) {
+	// tempfail=false means fail-open: never tempfail.
+	if shouldTempfailEmailDelivery(false, nil, nil) {
+		t.Error("fail-open mode should not tempfail")
+	}
+}
+
+func TestShouldTempfailEmailDeliveryQuarantineError(t *testing.T) {
+	if !shouldTempfailEmailDelivery(true, nil, errTestSentinel{}) {
+		t.Error("quarantine error in tempfail mode should tempfail")
+	}
+}
+
+func TestShouldTempfailEmailDeliveryNilResult(t *testing.T) {
+	if shouldTempfailEmailDelivery(true, nil, nil) {
+		t.Error("nil result with no error should not tempfail")
+	}
+}
+
+type errTestSentinel struct{}
+
+func (errTestSentinel) Error() string { return "test" }
