@@ -11,10 +11,18 @@ import (
 
 type recordingIPBlocker struct {
 	blocked []string
+	calls   []blockCall
+}
+
+type blockCall struct {
+	ip      string
+	reason  string
+	timeout time.Duration
 }
 
 func (b *recordingIPBlocker) BlockIP(ip, reason string, timeout time.Duration) error {
 	b.blocked = append(b.blocked, ip)
+	b.calls = append(b.calls, blockCall{ip: ip, reason: reason, timeout: timeout})
 	return nil
 }
 
@@ -193,5 +201,64 @@ func TestAutoBlockIPs_DrainsPendingQueueAfterRateLimitWindow(t *testing.T) {
 	}
 	if state.IPs[0].IP != "9.8.7.6" {
 		t.Fatalf("saved blocked IP = %q, want %q", state.IPs[0].IP, "9.8.7.6")
+	}
+}
+
+func TestAutoBlockIPs_PromotesRepeatOffenderToPermanentBlock(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.StatePath = t.TempDir()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.AutoResponse.BlockExpiry = "1h"
+	cfg.AutoResponse.PermBlock = true
+	cfg.AutoResponse.PermBlockCount = 2
+	cfg.AutoResponse.PermBlockInterval = "24h"
+
+	tracker := &permBlockTracker{
+		IPs: map[string][]time.Time{
+			"4.3.2.1": {time.Now().Add(-1 * time.Hour)},
+		},
+	}
+	savePermBlockTracker(cfg.StatePath, tracker)
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := fwBlocker
+	SetIPBlocker(blocker)
+	t.Cleanup(func() {
+		SetIPBlocker(oldBlocker)
+	})
+
+	oldChallengeList := GetChallengeIPList()
+	SetChallengeIPList(nil)
+	t.Cleanup(func() {
+		SetChallengeIPList(oldChallengeList)
+	})
+
+	actions := AutoBlockIPs(cfg, []alert.Finding{
+		{
+			Check:     "wp_login_bruteforce",
+			Message:   "WordPress brute force from 4.3.2.1",
+			Timestamp: time.Now(),
+		},
+	})
+
+	if len(blocker.calls) != 2 {
+		t.Fatalf("BlockIP call count = %d, want 2", len(blocker.calls))
+	}
+	if blocker.calls[0].ip != "4.3.2.1" || blocker.calls[0].timeout != time.Hour {
+		t.Fatalf("temporary block call = %+v, want IP 4.3.2.1 with 1h timeout", blocker.calls[0])
+	}
+	if blocker.calls[1].ip != "4.3.2.1" || blocker.calls[1].timeout != 0 {
+		t.Fatalf("permanent block call = %+v, want IP 4.3.2.1 with zero timeout", blocker.calls[1])
+	}
+	if !strings.Contains(blocker.calls[1].reason, "PERMBLOCK") {
+		t.Fatalf("permanent block reason = %q, want PERMBLOCK marker", blocker.calls[1].reason)
+	}
+
+	if len(actions) != 2 {
+		t.Fatalf("AutoBlockIPs returned %d actions, want 2", len(actions))
+	}
+	if !strings.Contains(actions[1].Message, "AUTO-PERMBLOCK") {
+		t.Fatalf("permblock action message = %q, want AUTO-PERMBLOCK", actions[1].Message)
 	}
 }
