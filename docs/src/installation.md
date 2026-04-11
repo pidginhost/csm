@@ -93,7 +93,7 @@ curl -LO https://github.com/pidginhost/csm/releases/latest/download/csm_VERSION_
 sudo apt install -y ./csm_VERSION_amd64.deb
 ```
 
-Replace `VERSION` with a real version (e.g. `2.2.1`). Both files are also available at `https://mirrors.pidginhost.com/csm/deb/pool/main/c/csm/` and `https://mirrors.pidginhost.com/csm/rpm/elN/ARCH/` if you prefer to pin versions from the mirror.
+Replace `VERSION` with a real version (e.g. `2.2.2`). Both files are also available at `https://mirrors.pidginhost.com/csm/deb/pool/main/c/csm/` and `https://mirrors.pidginhost.com/csm/rpm/elN/ARCH/` if you prefer to pin versions from the mirror.
 
 ## Post-install (all methods)
 
