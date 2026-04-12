@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // --- computeVerdict ----------------------------------------------------
@@ -440,6 +442,70 @@ func TestLookupAppliesFlatFileBlockState(t *testing.T) {
 	}
 	if !intel.BlockPermanent {
 		t.Error("zero expires_at should be marked permanent")
+	}
+}
+
+// --- Bbolt store paths (loadFullAbuseCache + loadFullBlockState via store.Global) ---
+
+func TestLoadFullAbuseCacheViaBbolt(t *testing.T) {
+	dir := t.TempDir()
+	sdb, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sdb.Close() }()
+	store.SetGlobal(sdb)
+	defer store.SetGlobal(nil)
+
+	_ = sdb.SetReputation("203.0.113.5", store.ReputationEntry{
+		Score: 90, Category: "DC", CheckedAt: time.Now(),
+	})
+
+	cache := loadFullAbuseCache(dir)
+	if entry, ok := cache["203.0.113.5"]; !ok {
+		t.Error("expected entry from bbolt")
+	} else if entry.Score != 90 {
+		t.Errorf("score = %d, want 90", entry.Score)
+	}
+}
+
+func TestLoadFullBlockStateViaBbolt(t *testing.T) {
+	dir := t.TempDir()
+	sdb, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sdb.Close() }()
+	store.SetGlobal(sdb)
+	defer store.SetGlobal(nil)
+
+	_ = sdb.BlockIP("203.0.113.5", "test-block", time.Time{})
+
+	blocks := loadFullBlockState(dir)
+	if entry, ok := blocks["203.0.113.5"]; !ok {
+		t.Error("expected entry from bbolt")
+	} else if !entry.permanent {
+		t.Error("zero expiry should be permanent")
+	}
+}
+
+func TestLookupViaBbolt(t *testing.T) {
+	dir := t.TempDir()
+	sdb, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sdb.Close() }()
+	store.SetGlobal(sdb)
+	defer store.SetGlobal(nil)
+
+	_ = sdb.SetReputation("203.0.113.20", store.ReputationEntry{
+		Score: 75, Category: "VPN", CheckedAt: time.Now(),
+	})
+
+	intel := Lookup("203.0.113.20", dir)
+	if intel.AbuseScore != 75 {
+		t.Errorf("AbuseScore = %d, want 75", intel.AbuseScore)
 	}
 }
 
