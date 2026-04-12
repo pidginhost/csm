@@ -1,6 +1,8 @@
 package attackdb
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -107,6 +109,32 @@ func TestDBRemoveIP(t *testing.T) {
 	if _, ok := db.deletedIPs["1.1.1.1"]; !ok {
 		t.Error("RemoveIP should mark as deleted")
 	}
+}
+
+func TestRotateEventsFileKeepsHalf(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "events.jsonl")
+	// Write enough data that rotation keeps the second half.
+	line := `{"ip":"1.2.3.4","type":"brute","timestamp":"2026-04-12T10:00:00Z"}` + "\n"
+	var data []byte
+	for i := 0; i < 20; i++ {
+		data = append(data, []byte(line)...)
+	}
+	_ = os.WriteFile(path, data, 0600)
+
+	rotateEventsFile(path)
+
+	after, _ := os.ReadFile(path)
+	if len(after) >= len(data) {
+		t.Errorf("rotation should reduce size: before=%d after=%d", len(data), len(after))
+	}
+	if len(after) == 0 {
+		t.Error("rotation should keep some data")
+	}
+}
+
+func TestRotateEventsFileMissing(t *testing.T) {
+	rotateEventsFile(filepath.Join(t.TempDir(), "nope")) // should not panic
 }
 
 func TestDBPruneExpired(t *testing.T) {
