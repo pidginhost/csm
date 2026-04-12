@@ -1,6 +1,8 @@
 package checks
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -185,6 +187,41 @@ func TestCapitalizeFirst(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("capitalizeFirst(%q) = %q, want %q", tt.in, got, tt.want)
 		}
+	}
+}
+
+// --- readShadowFile ---------------------------------------------------
+
+func TestReadShadowFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "shadow")
+	content := "# comment\n" +
+		"alice:{SHA512-CRYPT}$6$salt$hash\n" +
+		"bob:!{SHA512-CRYPT}$6$salt$lockedhash\n" +
+		"carol:{BLF-CRYPT}$2y$05$active\n" +
+		"malformed\n" +
+		"\n"
+	_ = os.WriteFile(path, []byte(content), 0600)
+
+	sf := shadowFile{path: path, account: "cpuser", domain: "example.com"}
+	entries := readShadowFile(sf)
+
+	// alice = active, bob = locked (skipped), carol = active, malformed = skipped
+	if len(entries) != 2 {
+		t.Fatalf("got %d entries, want 2 (alice + carol)", len(entries))
+	}
+	if entries[0].mailbox != "alice" || entries[0].account != "cpuser" {
+		t.Errorf("first entry: %+v", entries[0])
+	}
+	if entries[1].mailbox != "carol" || entries[1].domain != "example.com" {
+		t.Errorf("second entry: %+v", entries[1])
+	}
+}
+
+func TestReadShadowFileMissing(t *testing.T) {
+	sf := shadowFile{path: filepath.Join(t.TempDir(), "nope"), account: "x", domain: "y"}
+	if got := readShadowFile(sf); got != nil {
+		t.Errorf("missing file should return nil, got %v", got)
 	}
 }
 
