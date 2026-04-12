@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Expanded test coverage from 35% to 47.5% overall. Key areas: checks package (threatfeeds, phishing, malware cleaning, file index, reputation, performance, hardening audit parsers, PHP content, connections), webui package (all API handlers, page handlers with template stubs, TLS cert, modsec endpoints), daemon (password hijack detector, watcher helpers), firewall (engine stubs, geoip lookup, DynDNS resolver), yara noop scanner, attackdb scoring, challenge IP list.
+- Expanded test coverage from 35% to 50% overall. All testable pure functions and HTTP handlers are now covered. Remaining gap is system-dependent code (Check* entry points, daemon infrastructure, CLI commands) that requires real server environments.
 
 ## [2.2.2] - 2026-04-12
 
