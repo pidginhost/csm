@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Expanded test coverage across checks (31%), webui (32%), and daemon (39%): threatfeeds ThreatDB, phishing detectors, malware cleaning, file index scanners, reputation helpers, email password parsers, cPanel login parsers, PHP content analysis, CMS hash cache, webui API handlers (status/health/stats/history/export/import/threat/firewall), daemon password hijack detector, and watcher helpers.
+- Expanded test coverage from 35% to 46% overall. Key areas: checks package (threatfeeds, phishing, malware cleaning, file index, reputation, performance, hardening audit parsers, PHP content, connections), webui package (all API handlers, page handlers with template stubs, TLS cert, modsec endpoints), daemon (password hijack detector, watcher helpers), firewall (engine stubs, geoip lookup, DynDNS resolver), yara noop scanner, attackdb scoring, challenge IP list.
 
 ## [2.2.2] - 2026-04-12
 

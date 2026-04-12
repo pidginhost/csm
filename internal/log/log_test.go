@@ -178,6 +178,21 @@ func TestInit_Idempotent(t *testing.T) {
 	}
 }
 
+func TestLegacyTextHandler_WithGroupPrefixes(t *testing.T) {
+	var buf bytes.Buffer
+	h := newLegacyTextHandler(&buf, slog.LevelInfo)
+	grouped := h.WithGroup("mygroup")
+	rec := slog.NewRecord(time.Now(), slog.LevelInfo, "test msg", 0)
+	rec.AddAttrs(slog.String("key", "val"))
+	if err := grouped.Handle(context.Background(), rec); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "test msg") {
+		t.Errorf("output missing message, got %q", out)
+	}
+}
+
 func TestHelpers_DoNotPanic(t *testing.T) {
 	// Smoke test: make sure the convenience helpers work end-to-end.
 	// Output goes to stderr which the test runner captures.
