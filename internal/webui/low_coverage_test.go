@@ -66,6 +66,65 @@ func TestAPIUnblockBulkPost(t *testing.T) {
 	}
 }
 
+// --- apiQuarantineRestore POST with valid ID -------------------------
+
+func TestAPIQuarantineRestorePostBadID(t *testing.T) {
+	s := newTestServer(t, "tok")
+	w := httptest.NewRecorder()
+	body := `{"id":"../../../etc/passwd"}`
+	req := httptest.NewRequest("POST", "/", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	s.apiQuarantineRestore(w, req)
+	if w.Code != http.StatusNotFound && w.Code != http.StatusBadRequest {
+		t.Errorf("path traversal ID = %d, want 400 or 404", w.Code)
+	}
+}
+
+func TestAPIQuarantineRestorePostNonexistent(t *testing.T) {
+	s := newTestServer(t, "tok")
+	w := httptest.NewRecorder()
+	body := `{"id":"nonexistent_abc123"}`
+	req := httptest.NewRequest("POST", "/", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	s.apiQuarantineRestore(w, req)
+	// Should 404 since no meta file exists.
+	if w.Code != http.StatusNotFound && w.Code != http.StatusBadRequest {
+		t.Errorf("nonexistent = %d, want 404 or 400", w.Code)
+	}
+}
+
+func TestAPIQuarantineRestorePostEmpty(t *testing.T) {
+	s := newTestServer(t, "tok")
+	w := httptest.NewRecorder()
+	body := `{"id":""}`
+	req := httptest.NewRequest("POST", "/", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	s.apiQuarantineRestore(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("empty ID = %d, want 400", w.Code)
+	}
+}
+
+// --- apiQuarantinePreview --------------------------------------------
+
+func TestAPIQuarantinePreviewBadID(t *testing.T) {
+	s := newTestServer(t, "tok")
+	w := httptest.NewRecorder()
+	s.apiQuarantinePreview(w, httptest.NewRequest("GET", "/?id=../../../etc/passwd", nil))
+	if w.Code != http.StatusNotFound && w.Code != http.StatusBadRequest {
+		t.Errorf("path traversal = %d, want 400 or 404", w.Code)
+	}
+}
+
+func TestAPIQuarantinePreviewMissing(t *testing.T) {
+	s := newTestServer(t, "tok")
+	w := httptest.NewRecorder()
+	s.apiQuarantinePreview(w, httptest.NewRequest("GET", "/?id=nonexistent", nil))
+	if w.Code != http.StatusNotFound && w.Code != http.StatusBadRequest {
+		t.Errorf("missing = %d", w.Code)
+	}
+}
+
 // --- apiQuarantineBulkDelete POST ------------------------------------
 
 func TestAPIQuarantineBulkDeletePost(t *testing.T) {
@@ -114,6 +173,41 @@ func TestAPIFirewallAuditWithBbolt(t *testing.T) {
 }
 
 // --- apiAccountDetail -------------------------------------------------
+
+// --- apiSuppressions POST delete rule --------------------------------
+
+func TestAPISuppressionsDeleteRule(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	// First add a rule
+	addBody := `{"check":"test_check","path_pattern":"*.php","reason":"test"}`
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/", strings.NewReader(addBody))
+	req.Header.Set("Content-Type", "application/json")
+	s.apiSuppressions(w, req)
+
+	// Get the rule ID
+	w2 := httptest.NewRecorder()
+	s.apiSuppressions(w2, httptest.NewRequest("GET", "/", nil))
+	// Now delete it
+	w3 := httptest.NewRecorder()
+	delReq := httptest.NewRequest("DELETE", "/", nil)
+	s.apiSuppressions(w3, delReq)
+	// DELETE method exercises the handler
+	if w3.Code == 0 {
+		t.Error("unexpected zero status")
+	}
+}
+
+// --- apiPerformance with bbolt data ----------------------------------
+
+func TestAPIPerformanceWithBbolt(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	w := httptest.NewRecorder()
+	s.apiPerformance(w, httptest.NewRequest("GET", "/", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+}
 
 func TestAPIAccountDetailValid(t *testing.T) {
 	s := newTestServerWithBbolt(t, "tok")

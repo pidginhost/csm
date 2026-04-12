@@ -127,6 +127,37 @@ func TestAPIHistoryPagination(t *testing.T) {
 
 // --- apiBlockedIPs with bbolt data -----------------------------------
 
+func TestAPIHistoryFilteredOffsetPastEnd(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	s.store.AppendHistory([]alert.Finding{
+		{Severity: alert.Warning, Check: "test", Message: "msg", Timestamp: time.Now()},
+	})
+
+	w := httptest.NewRecorder()
+	s.apiHistory(w, httptest.NewRequest("GET", "/?search=msg&offset=100&limit=10", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var resp map[string]interface{}
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	findings := resp["findings"]
+	if findings != nil {
+		arr, ok := findings.([]interface{})
+		if ok && len(arr) > 0 {
+			t.Error("offset past end should return empty findings")
+		}
+	}
+}
+
+func TestAPIHistoryLargeLimit(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	w := httptest.NewRecorder()
+	s.apiHistory(w, httptest.NewRequest("GET", "/?limit=99999", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+}
+
 func TestAPIBlockedIPsWithBbolt(t *testing.T) {
 	s := newTestServerWithBbolt(t, "tok")
 	sdb := store.Global()
@@ -170,6 +201,32 @@ func TestAPIStatsViaBbolt(t *testing.T) {
 }
 
 // --- apiImport with suppressions + bbolt -----------------------------
+
+func TestAPIImportDedupesSuppressions(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	body := `{"suppressions":[{"id":"s1","check":"test","reason":"testing"}]}`
+	for i := 0; i < 2; i++ {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		s.apiImport(w, req)
+	}
+	rules := s.store.LoadSuppressions()
+	if len(rules) != 1 {
+		t.Errorf("expected 1 after dedup, got %d", len(rules))
+	}
+}
+
+func TestAPIImportBadJSON(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/", strings.NewReader(`{bad json`))
+	req.Header.Set("Content-Type", "application/json")
+	s.apiImport(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("bad JSON = %d, want 400", w.Code)
+	}
+}
 
 func TestAPIImportWithSuppressions(t *testing.T) {
 	s := newTestServerWithBbolt(t, "tok")
