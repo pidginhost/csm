@@ -2,6 +2,8 @@ package webui
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/firewall"
@@ -42,6 +44,24 @@ func TestCsmConfigJSON(t *testing.T) {
 
 func TestBroadcastNoPanic(t *testing.T) {
 	s := newTestServer(t, "tok")
-	// Broadcast with no listeners should not panic.
 	s.Broadcast(nil)
+}
+
+func TestSetGeoIPDB(t *testing.T) {
+	s := newTestServer(t, "tok")
+	s.SetGeoIPDB(nil) // should not panic
+	if s.geoIPDB.Load() != nil {
+		t.Error("nil db should store nil")
+	}
+}
+
+// GeoIP lookup tests (missing/invalid/no-DB) are in coverage_test.go.
+
+func TestAPIGeoIPBatchGetIsRejected(t *testing.T) {
+	s := newTestServer(t, "tok")
+	w := httptest.NewRecorder()
+	s.apiGeoIPBatch(w, httptest.NewRequest("GET", "/", nil))
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET batch = %d, want 405", w.Code)
+	}
 }
