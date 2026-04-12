@@ -44,3 +44,16 @@ func TestTestCompileNoop(t *testing.T) {
 		t.Errorf("TestCompile: %v", err)
 	}
 }
+
+func TestInitWithoutYara(t *testing.T) {
+	s := Init("/nonexistent")
+	if s != nil {
+		t.Error("Init without YARA should return nil")
+	}
+}
+
+func TestGlobalWithoutInit(t *testing.T) {
+	if g := Global(); g != nil {
+		t.Error("Global without Init should return nil")
+	}
+}
