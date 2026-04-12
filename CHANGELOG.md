@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Expanded test coverage from 35% to 50% overall. All testable pure functions and HTTP handlers are now covered. Remaining gap is system-dependent code (Check* entry points, daemon infrastructure, CLI commands) that requires real server environments.
+- Expanded test coverage from 35% to 57% overall. Introduced OS/CmdRunner dependency injection interfaces (`provider.go`) enabling all 62 Check* functions to be unit-tested with mock filesystem and command data. All HTTP handlers, page renderers, pure helpers, platform stubs, and recursive scanners are covered.
 
 ## [2.2.2] - 2026-04-12
 
