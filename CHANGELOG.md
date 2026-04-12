@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Expanded test coverage for `internal/checks`: threatfeeds ThreatDB (91% func coverage), phishing detectors (94%), malware cleaning helpers, file index scanners, reputation IP helpers, email password parsers, and cPanel login parsers.
+
 ## [2.2.2] - 2026-04-12
 
 ### Added
