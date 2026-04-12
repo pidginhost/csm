@@ -3,7 +3,6 @@ package checks
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -23,7 +22,7 @@ const maxBulkDNSChanges = 5
 func CheckDNSZoneChanges(ctx context.Context, _ *config.Config, store *state.Store) []alert.Finding {
 	// cPanel stores zone files in /var/named/
 	zoneDir := "/var/named"
-	zones, err := os.ReadDir(zoneDir)
+	zones, err := osFS.ReadDir(zoneDir)
 	if err != nil {
 		return nil
 	}
@@ -80,7 +79,7 @@ func CheckSSLCertIssuance(ctx context.Context, _ *config.Config, store *state.St
 
 	// Check AutoSSL log
 	logPath := "/var/cpanel/logs/autossl"
-	entries, err := os.ReadDir(logPath)
+	entries, err := osFS.ReadDir(logPath)
 	if err != nil {
 		return nil
 	}

@@ -3,7 +3,6 @@ package checks
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"unicode"
@@ -204,7 +203,7 @@ func CheckPhishing(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 
 		homeDir := filepath.Join("/home", user)
 		docRoots := []string{filepath.Join(homeDir, "public_html")}
-		subDirs, _ := os.ReadDir(homeDir)
+		subDirs, _ := osFS.ReadDir(homeDir)
 		for _, sd := range subDirs {
 			if sd.IsDir() && sd.Name() != "public_html" && sd.Name() != "mail" &&
 				!strings.HasPrefix(sd.Name(), ".") && sd.Name() != "etc" &&
@@ -235,7 +234,7 @@ func scanForPhishing(ctx context.Context, dir string, maxDepth int, user string,
 	if maxDepth <= 0 {
 		return
 	}
-	entries, err := os.ReadDir(dir)
+	entries, err := osFS.ReadDir(dir)
 	if err != nil {
 		return
 	}
@@ -388,7 +387,7 @@ type phishingResult struct {
 }
 
 func analyzeHTMLForPhishing(path string) *phishingResult {
-	f, err := os.Open(path)
+	f, err := osFS.Open(path)
 	if err != nil {
 		return nil
 	}
@@ -649,7 +648,7 @@ func looksLikePersonName(name string) bool {
 // - Directory name looks like a business/organization name
 // - No CMS markers (wp-config, index.php, etc.)
 func analyzeDirectoryStructure(dir string, user string) *alert.Finding {
-	entries, err := os.ReadDir(dir)
+	entries, err := osFS.ReadDir(dir)
 	if err != nil {
 		return nil
 	}
@@ -795,7 +794,7 @@ func looksLikeBusinessName(name string) bool {
 // quickPhishingCheck does a fast read of an HTML file to check for credential
 // input fields without full analysis - used for directory structure checks.
 func quickPhishingCheck(path string) bool {
-	f, err := os.Open(path)
+	f, err := osFS.Open(path)
 	if err != nil {
 		return false
 	}
@@ -820,7 +819,7 @@ func quickPhishingCheck(path string) bool {
 // brand impersonation. PHP phishing kits often have PHP code at the top
 // (credential handling, emailing) and HTML output below.
 func analyzePHPForPhishing(path string) *phishingResult {
-	f, err := os.Open(path)
+	f, err := osFS.Open(path)
 	if err != nil {
 		return nil
 	}
@@ -976,7 +975,7 @@ func isKnownCMSFile(nameLower string) bool {
 // checkPHPRedirector reads a small PHP file and checks if it's an open
 // redirector - a file that redirects the visitor to a URL from a parameter.
 func checkPHPRedirector(path string) string {
-	f, err := os.Open(path)
+	f, err := osFS.Open(path)
 	if err != nil {
 		return ""
 	}
@@ -1070,7 +1069,7 @@ func isCredentialLogName(nameLower string) bool {
 // checkCredentialLog reads a text file and checks if it contains harvested
 // credentials (email:password pairs, one per line).
 func checkCredentialLog(path string) string {
-	f, err := os.Open(path)
+	f, err := osFS.Open(path)
 	if err != nil {
 		return ""
 	}
@@ -1133,7 +1132,7 @@ func checkCredentialLog(path string) string {
 // checkIframePhishing checks small HTML files for iframe-based phishing -
 // a minimal HTML page that just loads an external phishing page in a full-screen iframe.
 func checkIframePhishing(path string) string {
-	f, err := os.Open(path)
+	f, err := osFS.Open(path)
 	if err != nil {
 		return ""
 	}

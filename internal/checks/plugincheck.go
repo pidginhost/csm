@@ -195,7 +195,7 @@ func findAllWPInstalls() []string {
 	skipSubstrings := []string{"/cache/", "/backup", "/staging", "/.trash/"}
 
 	for _, pattern := range patterns {
-		matches, _ := filepath.Glob(pattern)
+		matches, _ := osFS.Glob(pattern)
 		for _, m := range matches {
 			skip := false
 			lower := strings.ToLower(m)

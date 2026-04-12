@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -118,7 +117,7 @@ func parseLocalDomainsContent(content string) map[string]bool {
 func loadLocalDomains() map[string]bool {
 	domains := make(map[string]bool)
 	for _, path := range []string{"/etc/localdomains", "/etc/virtualdomains"} {
-		data, err := os.ReadFile(path)
+		data, err := osFS.ReadFile(path)
 		if err != nil {
 			continue
 		}
@@ -142,7 +141,7 @@ func isKnownForwarder(localPart, domain, dest string, knownForwarders []string) 
 
 // fileContentHash returns the SHA256 hex hash of a file's content.
 func fileContentHash(path string) (string, error) {
-	data, err := os.ReadFile(path)
+	data, err := osFS.ReadFile(path)
 	if err != nil {
 		return "", err
 	}
@@ -176,7 +175,7 @@ func CheckForwarders(ctx context.Context, cfg *config.Config, _ *state.Store) []
 	var findings []alert.Finding
 
 	// Audit valiases
-	valiasFiles, _ := filepath.Glob("/etc/valiases/*")
+	valiasFiles, _ := osFS.Glob("/etc/valiases/*")
 	for _, path := range valiasFiles {
 		domain := filepath.Base(path)
 		entries := auditValiasFile(path, domain, localDomains, cfg)
@@ -190,7 +189,7 @@ func CheckForwarders(ctx context.Context, cfg *config.Config, _ *state.Store) []
 	}
 
 	// Audit vfilters
-	vfilterFiles, _ := filepath.Glob("/etc/vfilters/*")
+	vfilterFiles, _ := osFS.Glob("/etc/vfilters/*")
 	for _, path := range vfilterFiles {
 		domain := filepath.Base(path)
 		entries := auditVfilterFile(path, domain, localDomains, cfg)
@@ -209,7 +208,7 @@ func CheckForwarders(ctx context.Context, cfg *config.Config, _ *state.Store) []
 
 // auditValiasFile parses a valiases file and returns findings for dangerous entries.
 func auditValiasFile(path, domain string, localDomains map[string]bool, cfg *config.Config) []alert.Finding {
-	f, err := os.Open(path)
+	f, err := osFS.Open(path)
 	if err != nil {
 		return nil
 	}
@@ -301,7 +300,7 @@ func auditValiasFile(path, domain string, localDomains map[string]bool, cfg *con
 
 // auditVfilterFile parses a vfilters file and returns findings for external destinations.
 func auditVfilterFile(path, domain string, localDomains map[string]bool, cfg *config.Config) []alert.Finding {
-	data, err := os.ReadFile(path)
+	data, err := osFS.ReadFile(path)
 	if err != nil {
 		return nil
 	}

@@ -3,7 +3,6 @@ package checks
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -19,12 +18,12 @@ func CheckDatabaseDumps(ctx context.Context, _ *config.Config, _ *state.Store) [
 
 	dumpTools := []string{"mysqldump", "pg_dump", "mongodump"}
 
-	procs, _ := filepath.Glob("/proc/[0-9]*/cmdline")
+	procs, _ := osFS.Glob("/proc/[0-9]*/cmdline")
 	for _, cmdPath := range procs {
 		pid := filepath.Base(filepath.Dir(cmdPath))
 
 		// Read UID
-		statusData, _ := os.ReadFile(filepath.Join("/proc", pid, "status"))
+		statusData, _ := osFS.ReadFile(filepath.Join("/proc", pid, "status"))
 		var uid string
 		for _, line := range strings.Split(string(statusData), "\n") {
 			if strings.HasPrefix(line, "Uid:\t") {
@@ -39,7 +38,7 @@ func CheckDatabaseDumps(ctx context.Context, _ *config.Config, _ *state.Store) [
 			continue
 		}
 
-		cmdline, err := os.ReadFile(cmdPath)
+		cmdline, err := osFS.ReadFile(cmdPath)
 		if err != nil {
 			continue
 		}
@@ -74,11 +73,11 @@ func CheckOutboundPasteSites(ctx context.Context, cfg *config.Config, _ *state.S
 		"file.io", "0x0.st", "ix.io",
 	}
 
-	procs, _ := filepath.Glob("/proc/[0-9]*/cmdline")
+	procs, _ := osFS.Glob("/proc/[0-9]*/cmdline")
 	for _, cmdPath := range procs {
 		pid := filepath.Base(filepath.Dir(cmdPath))
 
-		statusData, _ := os.ReadFile(filepath.Join("/proc", pid, "status"))
+		statusData, _ := osFS.ReadFile(filepath.Join("/proc", pid, "status"))
 		var uid string
 		for _, line := range strings.Split(string(statusData), "\n") {
 			if strings.HasPrefix(line, "Uid:\t") {
@@ -92,7 +91,7 @@ func CheckOutboundPasteSites(ctx context.Context, cfg *config.Config, _ *state.S
 			continue
 		}
 
-		cmdline, err := os.ReadFile(cmdPath)
+		cmdline, err := osFS.ReadFile(cmdPath)
 		if err != nil {
 			continue
 		}

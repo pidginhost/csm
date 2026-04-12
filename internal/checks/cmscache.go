@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
-	"os"
 	"sync"
 )
 
@@ -66,7 +65,7 @@ func (c *CMSHashCache) Clear() {
 
 // HashFile computes the SHA256 hash of a file. Returns empty string on error.
 func HashFile(path string) string {
-	f, err := os.Open(path)
+	f, err := osFS.Open(path)
 	if err != nil {
 		return ""
 	}

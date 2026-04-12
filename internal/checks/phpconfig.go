@@ -3,7 +3,6 @@ package checks
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -29,13 +28,13 @@ func CheckPHPConfigChanges(ctx context.Context, _ *config.Config, store *state.S
 		iniPaths := []string{
 			filepath.Join("/home", user, "public_html", ".user.ini"),
 		}
-		subDirs, _ := os.ReadDir(filepath.Join("/home", user))
+		subDirs, _ := osFS.ReadDir(filepath.Join("/home", user))
 		for _, sd := range subDirs {
 			if sd.IsDir() && sd.Name() != "public_html" && sd.Name() != "mail" &&
 				!strings.HasPrefix(sd.Name(), ".") && sd.Name() != "etc" &&
 				sd.Name() != "logs" && sd.Name() != "ssl" && sd.Name() != "tmp" {
 				iniPath := filepath.Join("/home", user, sd.Name(), ".user.ini")
-				if _, err := os.Stat(iniPath); err == nil {
+				if _, err := osFS.Stat(iniPath); err == nil {
 					iniPaths = append(iniPaths, iniPath)
 				}
 			}
@@ -57,7 +56,7 @@ func CheckPHPConfigChanges(ctx context.Context, _ *config.Config, store *state.S
 			}
 
 			// File changed - analyze content for dangerous settings
-			data, err := os.ReadFile(iniPath)
+			data, err := osFS.ReadFile(iniPath)
 			if err != nil {
 				continue
 			}

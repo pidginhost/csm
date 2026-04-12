@@ -158,7 +158,7 @@ func (db *ThreatDB) RemovePermanent(ip string) {
 
 	// Fallback: rewrite permanent.txt without this IP.
 	path := filepath.Join(db.dbPath, "permanent.txt")
-	data, err := os.ReadFile(path)
+	data, err := osFS.ReadFile(path)
 	if err != nil {
 		return
 	}
@@ -331,7 +331,7 @@ func (db *ThreatDB) loadPersistedWhitelist() {
 
 	// Fallback: flat-file whitelist.txt.
 	path := filepath.Join(db.dbPath, "whitelist.txt")
-	f, err := os.Open(path)
+	f, err := osFS.Open(path)
 	if err != nil {
 		return
 	}
@@ -516,7 +516,7 @@ func (db *ThreatDB) loadPermanentBlocklist() {
 
 	// Fallback: flat-file permanent.txt.
 	path := filepath.Join(db.dbPath, "permanent.txt")
-	f, err := os.Open(path)
+	f, err := osFS.Open(path)
 	if err != nil {
 		return
 	}
@@ -547,7 +547,7 @@ func (db *ThreatDB) loadPermanentBlocklist() {
 // compactPermanentFile rewrites the permanent blocklist with unique entries only.
 func compactPermanentFile(path string, uniqueIPs map[string]bool) {
 	// Read all lines to preserve comments/reasons
-	data, err := os.ReadFile(path)
+	data, err := osFS.ReadFile(path)
 	if err != nil {
 		return
 	}
@@ -579,7 +579,7 @@ func compactPermanentFile(path string, uniqueIPs map[string]bool) {
 
 // loadFeedCache loads cached feed data from disk.
 func (db *ThreatDB) loadFeedCache() {
-	data, err := os.ReadFile(filepath.Join(db.dbPath, "last_update"))
+	data, err := osFS.ReadFile(filepath.Join(db.dbPath, "last_update"))
 	if err == nil {
 		if t, err := time.Parse(time.RFC3339, strings.TrimSpace(string(data))); err == nil {
 			db.lastUpdate = t
@@ -665,7 +665,7 @@ func saveLines(path string, lines []string) {
 }
 
 func loadLines(path string) []string {
-	f, err := os.Open(path)
+	f, err := osFS.Open(path)
 	if err != nil {
 		return nil
 	}

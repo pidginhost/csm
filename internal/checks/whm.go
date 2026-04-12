@@ -127,7 +127,7 @@ func CheckSSHLogins(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 
 // tailFile reads the last N lines of a file efficiently.
 func tailFile(path string, maxLines int) []string {
-	f, err := os.Open(path)
+	f, err := osFS.Open(path)
 	if err != nil {
 		return nil
 	}

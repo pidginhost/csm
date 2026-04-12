@@ -33,7 +33,7 @@ func CleanInfectedFile(path string) CleanResult {
 	result := CleanResult{Path: path}
 
 	// Read original file
-	data, err := os.ReadFile(path)
+	data, err := osFS.ReadFile(path)
 	if err != nil {
 		result.Error = fmt.Sprintf("cannot read file: %v", err)
 		return result
@@ -52,7 +52,7 @@ func CleanInfectedFile(path string) CleanResult {
 	result.BackupPath = backupPath
 
 	// Write metadata sidecar so the WebUI quarantine page can list pre-clean backups
-	info, _ := os.Stat(path)
+	info, _ := osFS.Stat(path)
 	var fileSize int64
 	var fileMode string
 	var uid, gid int
@@ -115,7 +115,7 @@ func CleanInfectedFile(path string) CleanResult {
 	}
 
 	// Write cleaned file
-	info, _ = os.Stat(path)
+	info, _ = osFS.Stat(path)
 	mode := os.FileMode(0644)
 	if info != nil {
 		mode = info.Mode()

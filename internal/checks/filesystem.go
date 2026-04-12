@@ -30,10 +30,10 @@ func CheckFilesystem(ctx context.Context, _ *config.Config, _ *state.Store) []al
 		if ctx.Err() != nil {
 			return findings
 		}
-		matches, _ := filepath.Glob(pattern)
+		matches, _ := osFS.Glob(pattern)
 		for _, path := range matches {
 			if backdoorNames[filepath.Base(path)] {
-				info, _ := os.Stat(path)
+				info, _ := osFS.Stat(path)
 				var details string
 				if info != nil {
 					details = fmt.Sprintf("Size: %d bytes, Mtime: %s", info.Size(), info.ModTime().Format("2006-01-02 15:04:05"))
@@ -58,9 +58,9 @@ func CheckFilesystem(ctx context.Context, _ *config.Config, _ *state.Store) []al
 		if ctx.Err() != nil {
 			return findings
 		}
-		matches, _ := filepath.Glob(pattern)
+		matches, _ := osFS.Glob(pattern)
 		for _, match := range matches {
-			info, err := os.Stat(match)
+			info, err := osFS.Stat(match)
 			if err != nil || info.IsDir() {
 				continue
 			}
@@ -113,7 +113,7 @@ func scanForSUID(ctx context.Context, dir string, maxDepth int, findings *[]aler
 	if maxDepth <= 0 {
 		return
 	}
-	entries, err := os.ReadDir(dir)
+	entries, err := osFS.ReadDir(dir)
 	if err != nil {
 		return
 	}
@@ -173,7 +173,7 @@ func CheckWebshells(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 
 		// Get all potential document roots
 		docRoots := []string{filepath.Join(homeDir, "public_html")}
-		subDirs, _ := os.ReadDir(homeDir)
+		subDirs, _ := osFS.ReadDir(homeDir)
 		for _, sd := range subDirs {
 			if sd.IsDir() && sd.Name() != "public_html" && sd.Name() != "mail" &&
 				!strings.HasPrefix(sd.Name(), ".") && sd.Name() != "etc" &&
@@ -202,7 +202,7 @@ func scanForWebshells(ctx context.Context, dir string, maxDepth int, names map[s
 	if maxDepth <= 0 {
 		return
 	}
-	entries, err := os.ReadDir(dir)
+	entries, err := osFS.ReadDir(dir)
 	if err != nil {
 		return
 	}
@@ -241,7 +241,7 @@ func scanForWebshells(ctx context.Context, dir string, maxDepth int, names map[s
 
 		nameLower := strings.ToLower(name)
 		if names[nameLower] {
-			info, _ := os.Stat(fullPath)
+			info, _ := osFS.Stat(fullPath)
 			var details string
 			if info != nil {
 				details = fmt.Sprintf("Size: %d, Mtime: %s", info.Size(), info.ModTime())

@@ -3,7 +3,6 @@ package checks
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -114,7 +113,7 @@ func scanEximMessage(msgID, sender string, cfg *config.Config) *alert.Finding {
 	for _, dir := range spoolDirs {
 		h := filepath.Join(dir, msgID+"-H")
 		b := filepath.Join(dir, msgID+"-D")
-		if _, err := os.Stat(h); err == nil {
+		if _, err := osFS.Stat(h); err == nil {
 			headerPath = h
 			bodyPath = b
 			break
@@ -128,7 +127,7 @@ func scanEximMessage(msgID, sender string, cfg *config.Config) *alert.Finding {
 	var indicators []string
 
 	// Read and analyze headers
-	headerData, err := os.ReadFile(headerPath)
+	headerData, err := osFS.ReadFile(headerPath)
 	if err != nil {
 		return nil
 	}
@@ -184,7 +183,7 @@ func scanEximMessage(msgID, sender string, cfg *config.Config) *alert.Finding {
 	}
 
 	// Read and analyze body (sample first 4KB)
-	bodyData, _ := os.ReadFile(bodyPath)
+	bodyData, _ := osFS.ReadFile(bodyPath)
 	if len(bodyData) > emailBodySampleSize {
 		bodyData = bodyData[:emailBodySampleSize]
 	}

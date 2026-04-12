@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -17,7 +16,7 @@ import (
 func CheckShadowChanges(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	info, err := os.Stat("/etc/shadow")
+	info, err := osFS.Stat("/etc/shadow")
 	if err != nil {
 		return nil
 	}
@@ -138,7 +137,7 @@ storeState:
 // parseShadowUsers reads /etc/shadow and returns a map of user -> password hash.
 // Only stores a hash of the hash, not the actual password hash.
 func parseShadowUsers() map[string]string {
-	data, err := os.ReadFile("/etc/shadow")
+	data, err := osFS.ReadFile("/etc/shadow")
 	if err != nil {
 		return nil
 	}
@@ -242,7 +241,7 @@ func decodeHexString(s string) string {
 func CheckUID0Accounts(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	data, err := os.ReadFile("/etc/passwd")
+	data, err := osFS.ReadFile("/etc/passwd")
 	if err != nil {
 		return nil
 	}
@@ -292,7 +291,7 @@ func CheckSSHKeys(ctx context.Context, cfg *config.Config, store *state.Store) [
 	}
 
 	// Check for new authorized_keys in /home
-	homes, _ := filepath.Glob("/home/*/.ssh/authorized_keys")
+	homes, _ := osFS.Glob("/home/*/.ssh/authorized_keys")
 	for _, keyFile := range homes {
 		hash, err := hashFileContent(keyFile)
 		if err != nil {
@@ -335,13 +334,13 @@ func CheckAPITokens(ctx context.Context, cfg *config.Config, store *state.Store)
 
 	// User API tokens - read directly from disk instead of spawning uapi per user
 	// Token files are JSON at /home/<user>/.cpanel/api_tokens/<token_name>
-	tokenDirs, _ := filepath.Glob("/home/*/.cpanel/api_tokens")
+	tokenDirs, _ := osFS.Glob("/home/*/.cpanel/api_tokens")
 	for _, tokenDir := range tokenDirs {
 		user := filepath.Base(filepath.Dir(filepath.Dir(tokenDir)))
-		tokenFiles, _ := filepath.Glob(filepath.Join(tokenDir, "*"))
+		tokenFiles, _ := osFS.Glob(filepath.Join(tokenDir, "*"))
 		for _, tokenFile := range tokenFiles {
 			tokenName := filepath.Base(tokenFile)
-			data, err := os.ReadFile(tokenFile)
+			data, err := osFS.ReadFile(tokenFile)
 			if err != nil {
 				continue
 			}

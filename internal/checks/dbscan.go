@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -41,7 +40,7 @@ var dbSpamDomains = []string{
 func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	wpConfigs, _ := filepath.Glob("/home/*/public_html/wp-config.php")
+	wpConfigs, _ := osFS.Glob("/home/*/public_html/wp-config.php")
 	if len(wpConfigs) == 0 {
 		return nil
 	}
@@ -81,7 +80,7 @@ type wpDBCreds struct {
 
 // parseWPConfig extracts database credentials from wp-config.php.
 func parseWPConfig(path string) wpDBCreds {
-	f, err := os.Open(path)
+	f, err := osFS.Open(path)
 	if err != nil {
 		return wpDBCreds{}
 	}
@@ -428,8 +427,8 @@ func truncateDB(s string, maxLen int) string {
 func CleanDatabaseSpam(account string) []alert.Finding {
 	var findings []alert.Finding
 
-	wpConfigs, _ := filepath.Glob(filepath.Join("/home", account, "*/wp-config.php"))
-	wpConfigs2, _ := filepath.Glob(filepath.Join("/home", account, "public_html/wp-config.php"))
+	wpConfigs, _ := osFS.Glob(filepath.Join("/home", account, "*/wp-config.php"))
+	wpConfigs2, _ := osFS.Glob(filepath.Join("/home", account, "public_html/wp-config.php"))
 	wpConfigs = append(wpConfigs, wpConfigs2...)
 
 	for _, wpConfig := range wpConfigs {

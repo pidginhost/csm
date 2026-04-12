@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -37,7 +36,7 @@ var (
 // The result is cached after the first call. Returns 1 on error.
 func getCPUCores() int {
 	cpuCoresOnce.Do(func() {
-		f, err := os.Open("/proc/cpuinfo")
+		f, err := osFS.Open("/proc/cpuinfo")
 		if err != nil {
 			cpuCoresCache = 1
 			return
@@ -64,7 +63,7 @@ func getCPUCores() int {
 func parseLoadAvg() ([3]float64, error) {
 	var result [3]float64
 
-	data, err := os.ReadFile("/proc/loadavg")
+	data, err := osFS.ReadFile("/proc/loadavg")
 	if err != nil {
 		return result, fmt.Errorf("reading /proc/loadavg: %w", err)
 	}
@@ -88,7 +87,7 @@ func parseLoadAvg() ([3]float64, error) {
 // parseMemInfo reads /proc/meminfo and returns total memory, available memory,
 // swap total, and swap free - all in kilobytes.
 func parseMemInfo() (total, available, swapTotal, swapFree uint64) {
-	f, err := os.Open("/proc/meminfo")
+	f, err := osFS.Open("/proc/meminfo")
 	if err != nil {
 		return
 	}
@@ -195,7 +194,7 @@ func CheckPHPProcessLoad(ctx context.Context, cfg *config.Config, _ *state.Store
 
 	cores := getCPUCores()
 
-	cmdlinePaths, _ := filepath.Glob("/proc/[0-9]*/cmdline")
+	cmdlinePaths, _ := osFS.Glob("/proc/[0-9]*/cmdline")
 
 	// user → list of cmdline samples
 	userProcs := make(map[string][]string)
@@ -204,7 +203,7 @@ func CheckPHPProcessLoad(ctx context.Context, cfg *config.Config, _ *state.Store
 	for _, cmdPath := range cmdlinePaths {
 		pid := filepath.Base(filepath.Dir(cmdPath))
 
-		data, err := os.ReadFile(cmdPath)
+		data, err := osFS.ReadFile(cmdPath)
 		if err != nil {
 			continue
 		}
@@ -216,7 +215,7 @@ func CheckPHPProcessLoad(ctx context.Context, cfg *config.Config, _ *state.Store
 		}
 
 		// Read UID from status
-		statusData, _ := os.ReadFile(filepath.Join("/proc", pid, "status"))
+		statusData, _ := osFS.ReadFile(filepath.Join("/proc", pid, "status"))
 		var uid string
 		for _, line := range strings.Split(string(statusData), "\n") {
 			if strings.HasPrefix(line, "Uid:\t") {
@@ -365,7 +364,7 @@ func CheckPHPHandler(ctx context.Context, cfg *config.Config, store *state.Store
 	}
 
 	// Only relevant on LiteSpeed
-	if _, err := os.Stat("/usr/local/lsws/bin/litespeed"); err != nil {
+	if _, err := osFS.Stat("/usr/local/lsws/bin/litespeed"); err != nil {
 		return nil
 	}
 
@@ -394,7 +393,7 @@ func CheckPHPHandler(ctx context.Context, cfg *config.Config, store *state.Store
 		}
 	} else {
 		// Fallback: read /etc/cpanel/ea4/ea4.conf
-		data, readErr := os.ReadFile("/etc/cpanel/ea4/ea4.conf")
+		data, readErr := osFS.ReadFile("/etc/cpanel/ea4/ea4.conf")
 		if readErr == nil {
 			for _, line := range strings.Split(string(data), "\n") {
 				line = strings.TrimSpace(line)
@@ -612,7 +611,7 @@ func CheckRedisConfig(ctx context.Context, cfg *config.Config, store *state.Stor
 	// Locate redis-cli
 	redisCLI := ""
 	for _, candidate := range []string{"/usr/bin/redis-cli", "/usr/local/bin/redis-cli"} {
-		if _, err := os.Stat(candidate); err == nil {
+		if _, err := osFS.Stat(candidate); err == nil {
 			redisCLI = candidate
 			break
 		}
@@ -844,7 +843,7 @@ func scanErrorLogs(dir string, thresholdBytes int64, depth int, findings *[]aler
 		return
 	}
 
-	entries, err := os.ReadDir(dir)
+	entries, err := osFS.ReadDir(dir)
 	if err != nil {
 		return
 	}
@@ -951,7 +950,7 @@ func scanWPConfigs(dir, account string, cfg *config.Config, depth int, findings 
 		return
 	}
 
-	entries, err := os.ReadDir(dir)
+	entries, err := osFS.ReadDir(dir)
 	if err != nil {
 		return
 	}
@@ -973,7 +972,7 @@ func scanWPConfigs(dir, account string, cfg *config.Config, depth int, findings 
 		}
 
 		// --- WP_MEMORY_LIMIT ---
-		wpData, readErr := os.ReadFile(fullPath)
+		wpData, readErr := osFS.ReadFile(fullPath)
 		if readErr == nil {
 			for _, line := range strings.Split(string(wpData), "\n") {
 				if strings.Contains(line, "WP_MEMORY_LIMIT") {
@@ -996,7 +995,7 @@ func scanWPConfigs(dir, account string, cfg *config.Config, depth int, findings 
 		wpDir := filepath.Dir(fullPath)
 		for _, cfgFile := range []string{".htaccess", "php.ini", ".user.ini"} {
 			cfgPath := filepath.Join(wpDir, cfgFile)
-			data, readErr2 := os.ReadFile(cfgPath)
+			data, readErr2 := osFS.ReadFile(cfgPath)
 			if readErr2 != nil {
 				continue
 			}
@@ -1089,7 +1088,7 @@ func findWPTransients(dir string, cfg *config.Config, warnBytes, critBytes int64
 		return
 	}
 
-	entries, err := os.ReadDir(dir)
+	entries, err := osFS.ReadDir(dir)
 	if err != nil {
 		return
 	}
@@ -1212,7 +1211,7 @@ func scanWPCron(dir, account string, depth int, findings *[]alert.Finding) {
 		return
 	}
 
-	entries, err := os.ReadDir(dir)
+	entries, err := osFS.ReadDir(dir)
 	if err != nil {
 		return
 	}
@@ -1236,7 +1235,7 @@ func scanWPCron(dir, account string, depth int, findings *[]alert.Finding) {
 			continue
 		}
 
-		data, readErr := os.ReadFile(fullPath)
+		data, readErr := osFS.ReadFile(fullPath)
 		if readErr != nil {
 			continue
 		}

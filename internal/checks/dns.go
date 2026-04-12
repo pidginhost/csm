@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -47,7 +46,7 @@ func CheckDNSConnections(ctx context.Context, cfg *config.Config, _ *state.Store
 	dnsServerUIDs := resolveDNSServerUIDs()
 
 	// Parse /proc/net/tcp for connections to port 53
-	data, err := os.ReadFile("/proc/net/tcp")
+	data, err := osFS.ReadFile("/proc/net/tcp")
 	if err != nil {
 		return nil
 	}
@@ -99,7 +98,7 @@ func CheckDNSConnections(ctx context.Context, cfg *config.Config, _ *state.Store
 // server users (named, unbound, pdns) by reading /etc/passwd once.
 func resolveDNSServerUIDs() map[string]bool {
 	uids := make(map[string]bool)
-	data, err := os.ReadFile("/etc/passwd")
+	data, err := osFS.ReadFile("/etc/passwd")
 	if err != nil {
 		return uids
 	}
@@ -113,7 +112,7 @@ func resolveDNSServerUIDs() map[string]bool {
 }
 
 func parseResolvers() []string {
-	f, err := os.Open("/etc/resolv.conf")
+	f, err := osFS.Open("/etc/resolv.conf")
 	if err != nil {
 		return nil
 	}

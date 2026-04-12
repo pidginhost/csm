@@ -25,7 +25,7 @@ func CheckOpenBasedir(ctx context.Context, _ *config.Config, _ *state.Store) []a
 	disabledUsers := getCageFSDisabledUsers(cageFSMode)
 
 	// For users without CageFS, check if open_basedir is set
-	userDirs, _ := os.ReadDir("/var/cpanel/users")
+	userDirs, _ := osFS.ReadDir("/var/cpanel/users")
 	for _, userEntry := range userDirs {
 		user := userEntry.Name()
 
@@ -50,7 +50,7 @@ func CheckOpenBasedir(ctx context.Context, _ *config.Config, _ *state.Store) []a
 
 func getCageFSMode() string {
 	// CageFS mode file
-	data, err := os.ReadFile("/etc/cagefs/cagefs.mp")
+	data, err := osFS.ReadFile("/etc/cagefs/cagefs.mp")
 	if err != nil {
 		return "unknown"
 	}
@@ -77,7 +77,7 @@ func getCageFSDisabledUsers(mode string) map[string]bool {
 
 	// If mode is unknown (no CageFS), all users are "disabled"
 	if mode == "unknown" && len(disabled) == 0 {
-		userDirs, _ := os.ReadDir("/var/cpanel/users")
+		userDirs, _ := osFS.ReadDir("/var/cpanel/users")
 		for _, u := range userDirs {
 			disabled[u.Name()] = true
 		}
@@ -89,7 +89,7 @@ func getCageFSDisabledUsers(mode string) map[string]bool {
 func hasOpenBasedir(user string) bool {
 	// Check .user.ini in public_html
 	userIni := filepath.Join("/home", user, "public_html", ".user.ini")
-	if data, err := os.ReadFile(userIni); err == nil {
+	if data, err := osFS.ReadFile(userIni); err == nil {
 		if strings.Contains(strings.ToLower(string(data)), "open_basedir") {
 			return true
 		}
@@ -97,17 +97,17 @@ func hasOpenBasedir(user string) bool {
 
 	// Check .htaccess for php_value open_basedir
 	htaccess := filepath.Join("/home", user, "public_html", ".htaccess")
-	if data, err := os.ReadFile(htaccess); err == nil {
+	if data, err := osFS.ReadFile(htaccess); err == nil {
 		if strings.Contains(strings.ToLower(string(data)), "open_basedir") {
 			return true
 		}
 	}
 
 	// Check per-user PHP config set via cPanel MultiPHP
-	phpConfDirs, _ := filepath.Glob("/opt/cpanel/ea-php*/root/etc/php.d/")
+	phpConfDirs, _ := osFS.Glob("/opt/cpanel/ea-php*/root/etc/php.d/")
 	for _, confDir := range phpConfDirs {
 		userConf := filepath.Join(confDir, "local.ini")
-		if data, err := os.ReadFile(userConf); err == nil {
+		if data, err := osFS.ReadFile(userConf); err == nil {
 			if strings.Contains(string(data), "open_basedir") {
 				return true
 			}
@@ -143,7 +143,7 @@ func scanForMaliciousSymlinks(dir, user, homeDir string, maxDepth int, findings 
 		return
 	}
 
-	entries, err := os.ReadDir(dir)
+	entries, err := osFS.ReadDir(dir)
 	if err != nil {
 		return
 	}
@@ -160,7 +160,7 @@ func scanForMaliciousSymlinks(dir, user, homeDir string, maxDepth int, findings 
 		}
 
 		// It's a symlink - read the target
-		target, err := os.Readlink(fullPath)
+		target, err := osFS.Readlink(fullPath)
 		if err != nil {
 			continue
 		}

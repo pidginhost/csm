@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -23,7 +22,7 @@ func CheckHealth(ctx context.Context, _ *config.Config, _ *state.Store) []alert.
 	// don't need Exim/cPanel-specific tooling.
 	requiredCmds := platformRequiredCommands(info)
 	for _, cmd := range requiredCmds {
-		if _, err := exec.LookPath(cmd); err != nil {
+		if _, err := cmdExec.LookPath(cmd); err != nil {
 			findings = append(findings, alert.Finding{
 				Severity: alert.Warning,
 				Check:    "csm_health",
@@ -41,7 +40,7 @@ func CheckHealth(ctx context.Context, _ *config.Config, _ *state.Store) []alert.
 		optionalCmds["whmapi1"] = "WHM API token check will be skipped"
 	}
 	for cmd, impact := range optionalCmds {
-		if _, err := exec.LookPath(cmd); err != nil {
+		if _, err := cmdExec.LookPath(cmd); err != nil {
 			findings = append(findings, alert.Finding{
 				Severity: alert.Warning,
 				Check:    "csm_health",

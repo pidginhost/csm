@@ -80,7 +80,7 @@ func CheckHtaccess(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 		scanHtaccess(ctx, docRoot, 5, suspiciousPatterns, safePatterns, cfg, &findings)
 
 		// Also check addon domains
-		subDirs, _ := os.ReadDir(homeDir)
+		subDirs, _ := osFS.ReadDir(homeDir)
 		for _, sd := range subDirs {
 			if sd.IsDir() && sd.Name() != "public_html" && sd.Name() != "mail" &&
 				!strings.HasPrefix(sd.Name(), ".") && sd.Name() != "etc" &&
@@ -100,7 +100,7 @@ func scanHtaccess(ctx context.Context, dir string, maxDepth int, suspicious, saf
 	if maxDepth <= 0 {
 		return
 	}
-	entries, err := os.ReadDir(dir)
+	entries, err := osFS.ReadDir(dir)
 	if err != nil {
 		return
 	}
@@ -138,7 +138,7 @@ func scanHtaccess(ctx context.Context, dir string, maxDepth int, suspicious, saf
 }
 
 func checkHtaccessFile(path string, suspicious, safe []string, findings *[]alert.Finding) {
-	f, err := os.Open(path)
+	f, err := osFS.Open(path)
 	if err != nil {
 		return
 	}
@@ -289,7 +289,7 @@ func checkHtaccessFile(path string, suspicious, safe []string, findings *[]alert
 // GlobalCMSCache so the real-time scanner can skip signature matches
 // on known-clean CMS files.
 func CheckWPCore(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
-	wpConfigs, _ := filepath.Glob("/home/*/public_html/wp-config.php")
+	wpConfigs, _ := osFS.Glob("/home/*/public_html/wp-config.php")
 	if len(wpConfigs) == 0 {
 		return nil
 	}

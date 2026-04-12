@@ -144,7 +144,7 @@ func fixQuarantine(path string) RemediationResult {
 	if err := os.Rename(path, qPath); err != nil {
 		// Cross-device fallback for files
 		if !info.IsDir() {
-			data, readErr := os.ReadFile(path)
+			data, readErr := osFS.ReadFile(path)
 			if readErr != nil {
 				return RemediationResult{Error: fmt.Sprintf("cannot read file: %v", readErr)}
 			}
@@ -225,7 +225,7 @@ func fixHtaccess(path, message string) RemediationResult {
 	if err != nil {
 		return RemediationResult{Error: err.Error()}
 	}
-	data, err := os.ReadFile(path)
+	data, err := osFS.ReadFile(path)
 	if err != nil {
 		return RemediationResult{Error: fmt.Sprintf("cannot read: %v", err)}
 	}
@@ -325,7 +325,7 @@ func resolveExistingFixPath(path string, allowedRoots []string) (string, os.File
 		return "", nil, err
 	}
 
-	info, err := os.Lstat(cleanPath)
+	info, err := osFS.Lstat(cleanPath)
 	if err != nil {
 		return "", nil, fmt.Errorf("file not found: %v", err)
 	}
@@ -345,7 +345,7 @@ func resolveExistingFixPath(path string, allowedRoots []string) (string, os.File
 		return "", nil, fmt.Errorf("resolved path escapes account boundary: %s", resolved)
 	}
 
-	resolvedInfo, err := os.Lstat(resolved)
+	resolvedInfo, err := osFS.Lstat(resolved)
 	if err != nil {
 		return "", nil, fmt.Errorf("file not found: %v", err)
 	}
@@ -421,7 +421,7 @@ func fixQuarantineSpoolMessage(message string) RemediationResult {
 	spoolDirs := []string{"/var/spool/exim/input", "/var/spool/exim4/input"}
 	var spoolDir string
 	for _, dir := range spoolDirs {
-		if _, err := os.Stat(filepath.Join(dir, msgID+"-H")); err == nil {
+		if _, err := osFS.Stat(filepath.Join(dir, msgID+"-H")); err == nil {
 			spoolDir = dir
 			break
 		}
@@ -436,13 +436,13 @@ func fixQuarantineSpoolMessage(message string) RemediationResult {
 
 	for _, suffix := range []string{"-H", "-D"} {
 		src := filepath.Join(spoolDir, msgID+suffix)
-		if _, err := os.Stat(src); err != nil {
+		if _, err := osFS.Stat(src); err != nil {
 			continue
 		}
 		dst := filepath.Join(quarantineDir, fmt.Sprintf("%s_exim_%s%s", ts, msgID, suffix))
 		if err := os.Rename(src, dst); err != nil {
 			// Cross-device fallback
-			data, readErr := os.ReadFile(src)
+			data, readErr := osFS.ReadFile(src)
 			if readErr != nil {
 				return RemediationResult{Error: fmt.Sprintf("cannot read %s: %v", src, readErr)}
 			}

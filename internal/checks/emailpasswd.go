@@ -8,9 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -193,7 +191,7 @@ type mailboxEntry struct {
 
 // discoverShadowFiles finds all Dovecot shadow files under /home/*/etc/*/shadow.
 func discoverShadowFiles() []shadowFile {
-	matches, _ := filepath.Glob("/home/*/etc/*/shadow")
+	matches, _ := osFS.Glob("/home/*/etc/*/shadow")
 	var results []shadowFile
 	for _, m := range matches {
 		parts := strings.Split(m, "/")
@@ -211,7 +209,7 @@ func discoverShadowFiles() []shadowFile {
 
 // readShadowFile reads all mailbox entries from a Dovecot shadow file.
 func readShadowFile(sf shadowFile) []mailboxEntry {
-	f, err := os.Open(sf.path)
+	f, err := osFS.Open(sf.path)
 	if err != nil {
 		return nil
 	}
@@ -244,7 +242,7 @@ func readShadowFile(sf shadowFile) []mailboxEntry {
 // loadWeakPasswords reads the bundled wordlist once and caches it.
 func loadWeakPasswords() []string {
 	weakPasswordOnce.Do(func() {
-		f, err := os.Open("/opt/csm/configs/weak_passwords.txt")
+		f, err := osFS.Open("/opt/csm/configs/weak_passwords.txt")
 		if err != nil {
 			return
 		}

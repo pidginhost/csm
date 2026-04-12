@@ -3,7 +3,6 @@ package checks
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -117,7 +116,7 @@ func scanDomlogs(infraIPs []string, wpLogin, xmlrpc, userEnum map[string]int) in
 		"/home/*/access-logs/*-ssl_log",
 		"/home/*/access-logs/*_log",
 	} {
-		matches, _ := filepath.Glob(pattern)
+		matches, _ := osFS.Glob(pattern)
 		domlogs = append(domlogs, matches...)
 	}
 
@@ -142,7 +141,7 @@ func scanDomlogs(infraIPs []string, wpLogin, xmlrpc, userEnum map[string]int) in
 		seen[real] = true
 
 		// Skip logs not modified recently — inactive sites add no value.
-		info, err := os.Stat(real)
+		info, err := osFS.Stat(real)
 		if err != nil || info.ModTime().Before(cutoff) {
 			continue
 		}

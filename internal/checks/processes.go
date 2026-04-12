@@ -3,7 +3,6 @@ package checks
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -16,11 +15,11 @@ import (
 func CheckFakeKernelThreads(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	procs, _ := filepath.Glob("/proc/[0-9]*/status")
+	procs, _ := osFS.Glob("/proc/[0-9]*/status")
 	for _, statusPath := range procs {
 		pid := filepath.Base(filepath.Dir(statusPath))
 
-		data, err := os.ReadFile(statusPath)
+		data, err := osFS.ReadFile(statusPath)
 		if err != nil {
 			continue
 		}
@@ -45,14 +44,14 @@ func CheckFakeKernelThreads(ctx context.Context, _ *config.Config, _ *state.Stor
 		}
 
 		// Read cmdline - real kernel threads have empty cmdline
-		cmdline, _ := os.ReadFile(filepath.Join("/proc", pid, "cmdline"))
+		cmdline, _ := osFS.ReadFile(filepath.Join("/proc", pid, "cmdline"))
 		cmdStr := strings.TrimRight(strings.ReplaceAll(string(cmdline), "\x00", " "), " ")
 
 		// Check if the process name contains brackets (faking kernel thread)
 		// or if cmdline starts with [
 		if strings.HasPrefix(cmdStr, "[") || strings.HasPrefix(name, "[") {
 			// This is a non-root process masquerading as a kernel thread
-			exe, _ := os.Readlink(filepath.Join("/proc", pid, "exe"))
+			exe, _ := osFS.Readlink(filepath.Join("/proc", pid, "exe"))
 			uidInt, _ := strconv.Atoi(uid)
 
 			pidInt, _ := strconv.Atoi(pid)
@@ -80,12 +79,12 @@ func CheckSuspiciousProcesses(ctx context.Context, _ *config.Config, _ *state.St
 	}
 	suspiciousPaths := []string{"/tmp/", "/dev/shm/", "/.config/"}
 
-	procs, _ := filepath.Glob("/proc/[0-9]*/exe")
+	procs, _ := osFS.Glob("/proc/[0-9]*/exe")
 	for _, exePath := range procs {
 		pid := filepath.Base(filepath.Dir(exePath))
 		pidInt, _ := strconv.Atoi(pid)
 
-		statusData, _ := os.ReadFile(filepath.Join("/proc", pid, "status"))
+		statusData, _ := osFS.ReadFile(filepath.Join("/proc", pid, "status"))
 		var uid string
 		for _, line := range strings.Split(string(statusData), "\n") {
 			if strings.HasPrefix(line, "Uid:\t") {
@@ -99,8 +98,8 @@ func CheckSuspiciousProcesses(ctx context.Context, _ *config.Config, _ *state.St
 			continue // Skip root processes for this check
 		}
 
-		exe, _ := os.Readlink(exePath)
-		cmdline, _ := os.ReadFile(filepath.Join("/proc", pid, "cmdline"))
+		exe, _ := osFS.Readlink(exePath)
+		cmdline, _ := osFS.ReadFile(filepath.Join("/proc", pid, "cmdline"))
 		cmdStr := strings.TrimRight(strings.ReplaceAll(string(cmdline), "\x00", " "), " ")
 
 		// Check executable name
@@ -162,12 +161,12 @@ func CheckPHPProcesses(ctx context.Context, _ *config.Config, _ *state.Store) []
 		"/.config/",
 	}
 
-	procs, _ := filepath.Glob("/proc/[0-9]*/cmdline")
+	procs, _ := osFS.Glob("/proc/[0-9]*/cmdline")
 	for _, cmdPath := range procs {
 		pid := filepath.Base(filepath.Dir(cmdPath))
 		pidInt, _ := strconv.Atoi(pid)
 
-		cmdline, err := os.ReadFile(cmdPath)
+		cmdline, err := osFS.ReadFile(cmdPath)
 		if err != nil {
 			continue
 		}
@@ -180,7 +179,7 @@ func CheckPHPProcesses(ctx context.Context, _ *config.Config, _ *state.Store) []
 
 		for _, sus := range suspiciousPHPPaths {
 			if strings.Contains(cmdStr, sus) {
-				statusData, _ := os.ReadFile(filepath.Join("/proc", pid, "status"))
+				statusData, _ := osFS.ReadFile(filepath.Join("/proc", pid, "status"))
 				var uid string
 				for _, line := range strings.Split(string(statusData), "\n") {
 					if strings.HasPrefix(line, "Uid:\t") {

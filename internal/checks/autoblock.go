@@ -337,7 +337,7 @@ func parseExpiry(s string) time.Duration {
 
 func loadBlockState(statePath string) *blockState {
 	state := &blockState{}
-	data, err := os.ReadFile(filepath.Join(statePath, blockStateFile))
+	data, err := osFS.ReadFile(filepath.Join(statePath, blockStateFile))
 	if err == nil {
 		_ = json.Unmarshal(data, state)
 	}
@@ -415,7 +415,7 @@ func checkPermBlockEscalation(statePath, ip string, count int, interval time.Dur
 
 func loadPermBlockTracker(statePath string) *permBlockTracker {
 	tracker := &permBlockTracker{IPs: make(map[string][]time.Time)}
-	data, err := os.ReadFile(filepath.Join(statePath, "permblock_tracker.json"))
+	data, err := osFS.ReadFile(filepath.Join(statePath, "permblock_tracker.json"))
 	if err == nil {
 		_ = json.Unmarshal(data, tracker)
 		if tracker.IPs == nil {

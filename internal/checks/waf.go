@@ -140,7 +140,7 @@ func modsecDetected(info platform.Info) bool {
 
 	// Generic file-based probes per web server
 	for _, conf := range expandPathGlobs(modsecActivationCandidates(info)) {
-		data, err := os.ReadFile(conf)
+		data, err := osFS.ReadFile(conf)
 		if err != nil {
 			continue
 		}
@@ -248,7 +248,7 @@ func expandPathGlobs(paths []string) []string {
 	for _, candidate := range paths {
 		matches := []string{candidate}
 		if strings.ContainsAny(candidate, "*?[") {
-			if globbed, err := filepath.Glob(candidate); err == nil && len(globbed) > 0 {
+			if globbed, err := osFS.Glob(candidate); err == nil && len(globbed) > 0 {
 				matches = globbed
 			}
 		}
@@ -351,7 +351,7 @@ func checkEngineMode(info platform.Info) string {
 	)
 
 	for _, path := range configPaths {
-		f, err := os.Open(path)
+		f, err := osFS.Open(path)
 		if err != nil {
 			continue
 		}
@@ -400,7 +400,7 @@ func oldestRuleArtifact(ruleDirs []string) (time.Time, bool) {
 	found := false
 
 	for _, dir := range ruleDirs {
-		entries, err := os.ReadDir(dir)
+		entries, err := osFS.ReadDir(dir)
 		if err != nil {
 			continue
 		}
@@ -424,7 +424,7 @@ func oldestRuleArtifact(ruleDirs []string) (time.Time, bool) {
 			// Subdirectory: scan one level deeper for vendor-packed rules
 			// (cPanel layout, e.g. /usr/local/apache/conf/modsec_vendor_configs/OWASP/*.conf).
 			subDir := dir + "/" + entry.Name()
-			subEntries, err := os.ReadDir(subDir)
+			subEntries, err := osFS.ReadDir(subDir)
 			if err != nil {
 				continue
 			}
@@ -503,19 +503,19 @@ func deployVirtualPatches() {
 	}
 
 	srcPath := "/opt/csm/configs/csm_modsec_custom.conf"
-	srcData, err := os.ReadFile(srcPath)
+	srcData, err := osFS.ReadFile(srcPath)
 	if err != nil {
 		return // no custom rules to deploy
 	}
 
 	for _, dest := range destPaths {
 		dir := filepath.Dir(dest)
-		if _, err := os.Stat(dir); os.IsNotExist(err) {
+		if _, err := osFS.Stat(dir); os.IsNotExist(err) {
 			continue
 		}
 
 		// Check if CSM rules are already included
-		existing, err := os.ReadFile(dest)
+		existing, err := osFS.ReadFile(dest)
 		if err == nil && strings.Contains(string(existing), "CSM Custom ModSecurity Rules") {
 			// Already deployed - check if rules need updating
 			if string(existing) == string(srcData) {

@@ -3,7 +3,6 @@ package checks
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -32,7 +31,7 @@ func CheckCrontabs(ctx context.Context, _ *config.Config, store *state.Store) []
 		"perl -e",
 	}
 
-	crontabs, _ := filepath.Glob("/var/spool/cron/*")
+	crontabs, _ := osFS.Glob("/var/spool/cron/*")
 	for _, path := range crontabs {
 		user := filepath.Base(path)
 		if user == "root" {
@@ -52,7 +51,7 @@ func CheckCrontabs(ctx context.Context, _ *config.Config, store *state.Store) []
 			continue
 		}
 
-		data, err := os.ReadFile(path)
+		data, err := osFS.ReadFile(path)
 		if err != nil {
 			continue
 		}
@@ -71,7 +70,7 @@ func CheckCrontabs(ctx context.Context, _ *config.Config, store *state.Store) []
 	}
 
 	// Check /etc/cron.d for new files
-	cronDFiles, _ := filepath.Glob("/etc/cron.d/*")
+	cronDFiles, _ := osFS.Glob("/etc/cron.d/*")
 	for _, path := range cronDFiles {
 		hash, _ := hashFileContent(path)
 		key := fmt.Sprintf("_crond:%s", filepath.Base(path))

@@ -277,7 +277,7 @@ func loadAllBlockedIPs(statePath string) map[string]bool {
 		}
 	} else {
 		// Fallback: read from firewall engine state (nftables) flat file.
-		if fwData, err := os.ReadFile(filepath.Join(statePath, "firewall", "state.json")); err == nil {
+		if fwData, err := osFS.ReadFile(filepath.Join(statePath, "firewall", "state.json")); err == nil {
 			var fwState struct {
 				Blocked []struct {
 					IP        string    `json:"ip"`
@@ -304,7 +304,7 @@ func loadAllBlockedIPs(statePath string) map[string]bool {
 		IPs []blockedEntry `json:"ips"`
 	}
 
-	data, err := os.ReadFile(filepath.Join(statePath, "blocked_ips.json"))
+	data, err := osFS.ReadFile(filepath.Join(statePath, "blocked_ips.json"))
 	if err == nil {
 		var bf blockFile
 		if err := json.Unmarshal(data, &bf); err == nil {
@@ -435,7 +435,7 @@ func loadReputationCache(statePath string) *reputationCache {
 	}
 
 	// Fallback: flat-file JSON (pre-migration).
-	data, err := os.ReadFile(filepath.Join(statePath, reputationCacheFile))
+	data, err := osFS.ReadFile(filepath.Join(statePath, reputationCacheFile))
 	if err == nil {
 		_ = json.Unmarshal(data, cache)
 		if cache.Entries == nil {

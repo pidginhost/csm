@@ -28,7 +28,7 @@ var (
 func RunAccountScan(cfg *config.Config, store *state.Store, account string) []alert.Finding {
 	// Verify account exists
 	homeDir := filepath.Join("/home", account)
-	if _, err := os.Stat(homeDir); os.IsNotExist(err) {
+	if _, err := osFS.Stat(homeDir); os.IsNotExist(err) {
 		return []alert.Finding{{
 			Severity:  alert.Warning,
 			Check:     "account_scan",
@@ -143,13 +143,13 @@ func GetScanHomeDirs() ([]os.DirEntry, error) {
 	scanMu.Unlock()
 	if account != "" {
 		// Return a single synthetic DirEntry for the target account
-		info, err := os.Stat(filepath.Join("/home", account))
+		info, err := osFS.Stat(filepath.Join("/home", account))
 		if err != nil {
 			return nil, err
 		}
 		return []os.DirEntry{fakeDirEntry{info}}, nil
 	}
-	return os.ReadDir("/home")
+	return osFS.ReadDir("/home")
 }
 
 // ResolveWebRoots returns the list of directory paths CSM should scan for
@@ -178,12 +178,12 @@ func ResolveWebRoots(cfg *config.Config) []string {
 	var roots []string
 	seen := make(map[string]struct{})
 	for _, pattern := range patterns {
-		matches, err := filepath.Glob(pattern)
+		matches, err := osFS.Glob(pattern)
 		if err != nil || len(matches) == 0 {
 			continue
 		}
 		for _, m := range matches {
-			info, err := os.Stat(m)
+			info, err := osFS.Stat(m)
 			if err != nil || !info.IsDir() {
 				continue
 			}
@@ -234,7 +234,7 @@ func makeAccountCrontabCheck(account string) CheckFunc {
 	return func(_ context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 		var findings []alert.Finding
 		crontabFile := filepath.Join("/var/spool/cron", account)
-		data, err := os.ReadFile(crontabFile)
+		data, err := osFS.ReadFile(crontabFile)
 		if err != nil {
 			return nil
 		}
@@ -277,10 +277,10 @@ func makeAccountBackdoorCheck(account string) CheckFunc {
 		}
 
 		for _, pattern := range patterns {
-			matches, _ := filepath.Glob(pattern)
+			matches, _ := osFS.Glob(pattern)
 			for _, path := range matches {
 				if backdoorNames[filepath.Base(path)] {
-					info, _ := os.Stat(path)
+					info, _ := osFS.Stat(path)
 					var details string
 					if info != nil {
 						details = fmt.Sprintf("Size: %d bytes, Mtime: %s", info.Size(), info.ModTime().Format("2006-01-02 15:04:05"))

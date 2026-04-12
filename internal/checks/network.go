@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"os"
 	"strings"
 	"sync"
 
@@ -20,7 +19,7 @@ func CheckOutboundConnections(ctx context.Context, cfg *config.Config, _ *state.
 	// Format: sl local_address rem_address st ...
 	// local_address = IP:port we are listening/connecting from
 	// rem_address = IP:port of the remote end
-	data, err := os.ReadFile("/proc/net/tcp")
+	data, err := osFS.ReadFile("/proc/net/tcp")
 	if err != nil {
 		return nil
 	}

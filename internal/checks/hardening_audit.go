@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -107,7 +106,7 @@ func parseSSHDConfig() map[string]string {
 }
 
 func parseSSHDFile(path string, effective map[string]string) {
-	f, err := os.Open(path)
+	f, err := osFS.Open(path)
 	if err != nil {
 		return
 	}
@@ -140,7 +139,7 @@ func parseSSHDFile(path string, effective map[string]string) {
 			if !filepath.IsAbs(pattern) {
 				pattern = filepath.Join(filepath.Dir(path), pattern)
 			}
-			matches, _ := filepath.Glob(pattern)
+			matches, _ := osFS.Glob(pattern)
 			for _, m := range matches {
 				parseSSHDFile(m, effective)
 			}
@@ -309,7 +308,7 @@ func auditOS() []store.AuditResult {
 		{"/tmp", "os_tmp_permissions", "/tmp Permissions"},
 		{"/var/tmp", "os_var_tmp_permissions", "/var/tmp Permissions"},
 	} {
-		info, err := os.Stat(dir.path)
+		info, err := osFS.Stat(dir.path)
 		if err != nil {
 			results = append(results, store.AuditResult{
 				Category: "os", Name: dir.id, Title: dir.title,
@@ -351,7 +350,7 @@ func auditOS() []store.AuditResult {
 	// Accept 0000, 0600 (RHEL/CentOS default), and 0640 (Debian default).
 	// All three restrict access to root only. 0600 is the standard on
 	// CentOS/CloudLinux — changing it can break passwd/chage.
-	if info, err := os.Stat("/etc/shadow"); err == nil {
+	if info, err := osFS.Stat("/etc/shadow"); err == nil {
 		perm := info.Mode().Perm()
 		if perm == 0 || perm == 0o600 || perm == 0o640 {
 			results = append(results, store.AuditResult{
@@ -373,7 +372,7 @@ func auditOS() []store.AuditResult {
 	}
 
 	// Swap
-	if data, err := os.ReadFile("/proc/swaps"); err == nil {
+	if data, err := osFS.ReadFile("/proc/swaps"); err == nil {
 		lines := strings.Split(strings.TrimSpace(string(data)), "\n")
 		if len(lines) > 1 {
 			results = append(results, store.AuditResult{
@@ -393,7 +392,7 @@ func auditOS() []store.AuditResult {
 	results = append(results, checkDistroEOL()...)
 
 	// nobody crontab
-	if info, err := os.Stat("/var/spool/cron/nobody"); err != nil {
+	if info, err := osFS.Stat("/var/spool/cron/nobody"); err != nil {
 		// absent is fine
 		results = append(results, store.AuditResult{
 			Category: "os", Name: "os_nobody_cron", Title: "Nobody Crontab",
@@ -427,7 +426,7 @@ func auditOS() []store.AuditResult {
 		{"os_sysctl_hardlinks", "Protected Hardlinks", "/proc/sys/fs/protected_hardlinks", "1"},
 	}
 	for _, sc := range sysctlChecks {
-		data, err := os.ReadFile(sc.path)
+		data, err := osFS.ReadFile(sc.path)
 		if err != nil {
 			results = append(results, store.AuditResult{
 				Category: "os", Name: sc.id, Title: sc.title,
@@ -538,7 +537,7 @@ func evaluateDistroEOL(info platform.Info, prettyName string) []store.AuditResul
 
 // readOSReleasePretty returns the PRETTY_NAME from /etc/os-release or "".
 func readOSReleasePretty() string {
-	data, err := os.ReadFile("/etc/os-release")
+	data, err := osFS.ReadFile("/etc/os-release")
 	if err != nil {
 		return ""
 	}
@@ -681,7 +680,7 @@ func auditFirewall() []store.AuditResult {
 func getListeningAddr(port int) string {
 	hexPort := fmt.Sprintf("%04X", port)
 	for _, path := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
-		data, err := os.ReadFile(path)
+		data, err := osFS.ReadFile(path)
 		if err != nil {
 			continue
 		}
@@ -751,7 +750,7 @@ func isPrivateOrLoopback(ipStr string) bool {
 func isPortListening(port int) bool {
 	hexPort := fmt.Sprintf("%04X", port)
 	for _, path := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
-		data, err := os.ReadFile(path)
+		data, err := osFS.ReadFile(path)
 		if err != nil {
 			continue
 		}
@@ -861,7 +860,7 @@ func checkMySQLExposed(hasNft bool, nftRules string, hasIpt bool, iptRules strin
 
 func checkIPv6Firewall() []store.AuditResult {
 	// Check if any non-loopback, non-link-local IPv6 addresses exist
-	data, err := os.ReadFile("/proc/net/if_inet6")
+	data, err := osFS.ReadFile("/proc/net/if_inet6")
 	if err != nil {
 		return []store.AuditResult{{
 			Category: "firewall", Name: "fw_ipv6", Title: "IPv6 Firewall",
@@ -1025,7 +1024,7 @@ func auditCPanel(serverType string) []store.AuditResult {
 	}
 
 	// cp_compilers: check /usr/bin/cc permissions
-	if info, err := os.Stat("/usr/bin/cc"); err == nil {
+	if info, err := osFS.Stat("/usr/bin/cc"); err == nil {
 		perm := info.Mode().Perm()
 		if perm <= 0o750 {
 			results = append(results, store.AuditResult{
@@ -1047,7 +1046,7 @@ func auditCPanel(serverType string) []store.AuditResult {
 	}
 
 	// cp_ftp_anonymous: parse /etc/pure-ftpd.conf
-	if data, err := os.ReadFile("/etc/pure-ftpd.conf"); err == nil {
+	if data, err := osFS.ReadFile("/etc/pure-ftpd.conf"); err == nil {
 		noAnon := false
 		for _, line := range strings.Split(string(data), "\n") {
 			trimmed := strings.TrimSpace(line)
@@ -1076,7 +1075,7 @@ func auditCPanel(serverType string) []store.AuditResult {
 	}
 
 	// cp_updates: parse /etc/cpupdate.conf
-	if data, err := os.ReadFile("/etc/cpupdate.conf"); err == nil {
+	if data, err := osFS.ReadFile("/etc/cpupdate.conf"); err == nil {
 		updatesDaily := false
 		for _, line := range strings.Split(string(data), "\n") {
 			trimmed := strings.TrimSpace(line)
@@ -1114,7 +1113,7 @@ func auditCPanel(serverType string) []store.AuditResult {
 
 func parseCpanelConfig(path string) map[string]string {
 	conf := make(map[string]string)
-	data, err := os.ReadFile(path)
+	data, err := osFS.ReadFile(path)
 	if err != nil {
 		return conf
 	}
@@ -1157,7 +1156,7 @@ func auditCloudLinux() []store.AuditResult {
 	}
 
 	// cl_symlink_protection
-	if data, err := os.ReadFile("/proc/sys/fs/enforce_symlinksifowner"); err == nil {
+	if data, err := osFS.ReadFile("/proc/sys/fs/enforce_symlinksifowner"); err == nil {
 		val := strings.TrimSpace(string(data))
 		n, _ := strconv.Atoi(val)
 		if n >= 1 {
@@ -1175,7 +1174,7 @@ func auditCloudLinux() []store.AuditResult {
 	}
 
 	// cl_proc_virtualization
-	if data, err := os.ReadFile("/proc/sys/fs/proc_can_see_other_uid"); err == nil {
+	if data, err := osFS.ReadFile("/proc/sys/fs/proc_can_see_other_uid"); err == nil {
 		val := strings.TrimSpace(string(data))
 		if val == "0" {
 			results = append(results, store.AuditResult{
@@ -1209,7 +1208,7 @@ func auditPHP(serverType string) []store.AuditResult {
 	var installs []phpInstall
 
 	// cPanel EA4 PHP installs
-	eaInis, _ := filepath.Glob("/opt/cpanel/ea-php*/root/etc/php.ini")
+	eaInis, _ := osFS.Glob("/opt/cpanel/ea-php*/root/etc/php.ini")
 	for _, ini := range eaInis {
 		// Extract version from path: /opt/cpanel/ea-php81/root/etc/php.ini -> "81"
 		dir := filepath.Dir(filepath.Dir(filepath.Dir(ini))) // /opt/cpanel/ea-php81/root -> /opt/cpanel/ea-php81
@@ -1229,7 +1228,7 @@ func auditPHP(serverType string) []store.AuditResult {
 
 	// CloudLinux alt-php installs (skip Imunify360's internal PHP builds)
 	if serverType == "cloudlinux" {
-		altInis, _ := filepath.Glob("/opt/alt/php*/etc/php.ini")
+		altInis, _ := osFS.Glob("/opt/alt/php*/etc/php.ini")
 		for _, ini := range altInis {
 			dir := filepath.Dir(filepath.Dir(ini)) // /opt/alt/php81
 			base := filepath.Base(dir)             // php81
@@ -1287,7 +1286,7 @@ func auditPHP(serverType string) []store.AuditResult {
 	}
 
 	for _, inst := range installs {
-		data, err := os.ReadFile(inst.iniPath)
+		data, err := osFS.ReadFile(inst.iniPath)
 		if err != nil {
 			continue
 		}
@@ -1295,9 +1294,9 @@ func auditPHP(serverType string) []store.AuditResult {
 
 		// Merge FPM pool overrides if available
 		if inst.fpmDir != "" {
-			poolConfs, _ := filepath.Glob(filepath.Join(inst.fpmDir, "*.conf"))
+			poolConfs, _ := osFS.Glob(filepath.Join(inst.fpmDir, "*.conf"))
 			for _, pc := range poolConfs {
-				pdata, perr := os.ReadFile(pc)
+				pdata, perr := osFS.ReadFile(pc)
 				if perr != nil {
 					continue
 				}
@@ -1447,14 +1446,14 @@ func auditWebServer(serverType string) []store.AuditResult {
 		"/etc/apache2/apache2.conf",             // Debian/Ubuntu bare
 	}
 	for _, p := range configPaths {
-		if _, err := os.Stat(p); err == nil {
+		if _, err := osFS.Stat(p); err == nil {
 			configPath = p
 			break
 		}
 	}
 
 	if configPath != "" {
-		configData, err := os.ReadFile(configPath)
+		configData, err := osFS.ReadFile(configPath)
 		if err == nil {
 			configContent := string(configData)
 
@@ -1579,7 +1578,7 @@ func auditMail() []store.AuditResult {
 	var results []store.AuditResult
 
 	// mail_root_forwarder
-	if info, err := os.Stat("/root/.forward"); err != nil {
+	if info, err := osFS.Stat("/root/.forward"); err != nil {
 		results = append(results, store.AuditResult{
 			Category: "mail", Name: "mail_root_forwarder", Title: "Root Mail Forwarder",
 			Status: "warn", Message: "/root/.forward does not exist — root mail may go unread",
@@ -1649,7 +1648,7 @@ func auditMail() []store.AuditResult {
 	}
 
 	// mail_secure_auth: check /etc/exim.conf.localopts
-	if data, err := os.ReadFile("/etc/exim.conf.localopts"); err == nil {
+	if data, err := osFS.ReadFile("/etc/exim.conf.localopts"); err == nil {
 		content := string(data)
 		if strings.Contains(content, "require_secure_auth=0") {
 			results = append(results, store.AuditResult{
@@ -1688,7 +1687,7 @@ func auditMail() []store.AuditResult {
 	} else {
 		// Fallback: try config files
 		for _, path := range []string{"/etc/dovecot/conf.d/10-ssl.conf", "/etc/dovecot/dovecot.conf"} {
-			data, readErr := os.ReadFile(path)
+			data, readErr := osFS.ReadFile(path)
 			if readErr != nil {
 				continue
 			}
@@ -1713,7 +1712,7 @@ func auditMail() []store.AuditResult {
 			Status: "pass", Message: "Dovecot ssl_min_protocol is TLSv1.2 or higher",
 		})
 	} else {
-		if _, err := os.Stat("/etc/dovecot/dovecot.conf"); err != nil {
+		if _, err := osFS.Stat("/etc/dovecot/dovecot.conf"); err != nil {
 			results = append(results, store.AuditResult{
 				Category: "mail", Name: "mail_dovecot_tls", Title: "Dovecot TLS Minimum",
 				Status: "warn", Message: "Dovecot configuration not found",

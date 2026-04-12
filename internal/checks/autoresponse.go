@@ -138,7 +138,7 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 		}
 
 		// Verify file or directory exists and reject symlinks
-		info, err := os.Lstat(path)
+		info, err := osFS.Lstat(path)
 		if err != nil {
 			continue
 		}
@@ -208,7 +208,7 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 			// Move file to quarantine
 			if err := os.Rename(path, qPath); err != nil {
 				// If rename fails (cross-device), copy and delete
-				data, readErr := os.ReadFile(path)
+				data, readErr := osFS.ReadFile(path)
 				if readErr != nil {
 					continue
 				}
@@ -320,7 +320,7 @@ func extractFilePath(message string) string {
 }
 
 func getProcessUID(pid string) string {
-	data, err := os.ReadFile(filepath.Join("/proc", pid, "status"))
+	data, err := osFS.ReadFile(filepath.Join("/proc", pid, "status"))
 	if err != nil {
 		return ""
 	}
@@ -336,7 +336,7 @@ func getProcessUID(pid string) string {
 }
 
 func getProcessExe(pid string) string {
-	exe, err := os.Readlink(filepath.Join("/proc", pid, "exe"))
+	exe, err := osFS.Readlink(filepath.Join("/proc", pid, "exe"))
 	if err != nil {
 		return ""
 	}
@@ -394,7 +394,7 @@ func isHighConfidenceRealtimeMatch(f alert.Finding, path string, data []byte) bo
 
 	if data == nil {
 		var err error
-		data, err = os.ReadFile(path)
+		data, err = osFS.ReadFile(path)
 		if err != nil {
 			return false
 		}
@@ -461,7 +461,7 @@ func InlineQuarantine(f alert.Finding, path string, data []byte) (string, bool) 
 		return "", false
 	}
 
-	info, err := os.Stat(path)
+	info, err := osFS.Stat(path)
 	if err != nil {
 		return "", false
 	}
@@ -475,7 +475,7 @@ func InlineQuarantine(f alert.Finding, path string, data []byte) (string, bool) 
 		if info.IsDir() {
 			return "", false
 		}
-		data, readErr := os.ReadFile(path)
+		data, readErr := osFS.ReadFile(path)
 		if readErr != nil {
 			return "", false
 		}

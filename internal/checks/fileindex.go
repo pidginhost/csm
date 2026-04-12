@@ -33,7 +33,7 @@ type dirMtimeCache map[string]int64
 
 func loadDirCache(stateDir string) dirMtimeCache {
 	cache := make(dirMtimeCache)
-	data, err := os.ReadFile(filepath.Join(stateDir, "dircache.json"))
+	data, err := osFS.ReadFile(filepath.Join(stateDir, "dircache.json"))
 	if err == nil {
 		_ = json.Unmarshal(data, &cache)
 	}
@@ -52,7 +52,7 @@ func saveDirCache(stateDir string, cache dirMtimeCache) {
 // returns true to force a ReadDir regardless of mtime (catches writes that
 // bypass parent mtime updates, e.g. hard links or mount tricks).
 func dirChanged(dir string, cache dirMtimeCache, forceFullScan bool) bool {
-	info, err := os.Stat(dir)
+	info, err := osFS.Stat(dir)
 	if err != nil {
 		return true // can't stat, scan it to be safe
 	}
@@ -100,7 +100,7 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 	writeIndex(currentPath, currentEntries)
 
 	// First run - save baseline
-	if _, err := os.Stat(previousPath); os.IsNotExist(err) {
+	if _, err := osFS.Stat(previousPath); os.IsNotExist(err) {
 		copyFile(currentPath, previousPath)
 		return nil
 	}
@@ -197,7 +197,7 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 
 		if severity >= 0 {
 			details := ""
-			if info, err := os.Stat(path); err == nil {
+			if info, err := osFS.Stat(path); err == nil {
 				details = fmt.Sprintf("Size: %d, Mtime: %s", info.Size(), info.ModTime().Format("2006-01-02 15:04:05"))
 			}
 			findings = append(findings, alert.Finding{
@@ -256,19 +256,19 @@ func buildFileIndex(dirCache dirMtimeCache, prevByDir map[string][]string, force
 			filepath.Join(homeDir, "public_html", "wp-content", "upgrade"),
 			filepath.Join(homeDir, "public_html", "wp-content", "mu-plugins"),
 		}
-		subDirs, _ := os.ReadDir(homeDir)
+		subDirs, _ := osFS.ReadDir(homeDir)
 		for _, sd := range subDirs {
 			if sd.IsDir() && sd.Name() != "public_html" && sd.Name() != "mail" &&
 				!strings.HasPrefix(sd.Name(), ".") && sd.Name() != "etc" &&
 				sd.Name() != "logs" && sd.Name() != "ssl" && sd.Name() != "tmp" {
 				uploadsPath := filepath.Join(homeDir, sd.Name(), "wp-content", "uploads")
-				if info, err := os.Stat(uploadsPath); err == nil && info.IsDir() {
+				if info, err := osFS.Stat(uploadsPath); err == nil && info.IsDir() {
 					uploadDirs = append(uploadDirs, uploadsPath)
 				}
 				// Also track sensitive dirs for addon domains
 				for _, subDir := range []string{"languages", "upgrade", "mu-plugins"} {
 					sensitiveDir := filepath.Join(homeDir, sd.Name(), "wp-content", subDir)
-					if info, err := os.Stat(sensitiveDir); err == nil && info.IsDir() {
+					if info, err := osFS.Stat(sensitiveDir); err == nil && info.IsDir() {
 						sensitiveWPDirs = append(sensitiveWPDirs, sensitiveDir)
 					}
 				}
@@ -311,7 +311,7 @@ func scanDirForPHP(dir string, maxDepth int, cache dirMtimeCache, prev map[strin
 		return
 	}
 
-	dirEntries, err := os.ReadDir(dir)
+	dirEntries, err := osFS.ReadDir(dir)
 	if err != nil {
 		return
 	}
@@ -346,7 +346,7 @@ func scanDirForExecutables(dir string, maxDepth int, cache dirMtimeCache, prev m
 		return
 	}
 
-	dirEntries, err := os.ReadDir(dir)
+	dirEntries, err := osFS.ReadDir(dir)
 	if err != nil {
 		return
 	}
@@ -377,7 +377,7 @@ func scanDirForSuspiciousExt(dir string, maxDepth int, cache dirMtimeCache, prev
 		return
 	}
 
-	dirEntries, err := os.ReadDir(dir)
+	dirEntries, err := osFS.ReadDir(dir)
 	if err != nil {
 		return
 	}
@@ -461,7 +461,7 @@ func writeIndex(path string, entries []string) {
 }
 
 func loadIndex(path string) []string {
-	f, err := os.Open(path)
+	f, err := osFS.Open(path)
 	if err != nil {
 		return nil
 	}
@@ -480,7 +480,7 @@ func loadIndex(path string) []string {
 }
 
 func copyFile(src, dst string) {
-	data, err := os.ReadFile(src)
+	data, err := osFS.ReadFile(src)
 	if err != nil {
 		return
 	}

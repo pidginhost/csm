@@ -4,8 +4,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"os"
-	"os/exec"
 	"strings"
 	"syscall"
 
@@ -58,7 +56,7 @@ func CheckKernelModules(ctx context.Context, _ *config.Config, store *state.Stor
 }
 
 func loadModuleList() []string {
-	f, err := os.Open("/proc/modules")
+	f, err := osFS.Open("/proc/modules")
 	if err != nil {
 		return nil
 	}
@@ -162,7 +160,7 @@ func checkRPMPackageIntegrity(packages []string) []alert.Finding {
 func checkDebianPackageIntegrity(packages []string) []alert.Finding {
 	// Prefer debsums: it's the Debian equivalent of `rpm -V` and reports
 	// changed files vs. the md5sum shipped by the package.
-	if _, err := exec.LookPath("debsums"); err == nil {
+	if _, err := cmdExec.LookPath("debsums"); err == nil {
 		return checkDebsums(packages)
 	}
 	return checkDpkgVerify(packages)
@@ -288,7 +286,7 @@ func CheckGroupWritablePHP(ctx context.Context, _ *config.Config, _ *state.Store
 		return nil
 	}
 
-	homeDirs, _ := os.ReadDir("/home")
+	homeDirs, _ := osFS.ReadDir("/home")
 	for _, homeEntry := range homeDirs {
 		if !homeEntry.IsDir() {
 			continue
@@ -304,7 +302,7 @@ func scanGroupWritablePHP(dir string, maxDepth int, webGIDs map[uint32]bool, fin
 	if maxDepth <= 0 {
 		return
 	}
-	entries, err := os.ReadDir(dir)
+	entries, err := osFS.ReadDir(dir)
 	if err != nil {
 		return
 	}
@@ -354,7 +352,7 @@ func scanGroupWritablePHP(dir string, maxDepth int, webGIDs map[uint32]bool, fin
 
 func getWebServerGIDs() map[uint32]bool {
 	gids := make(map[uint32]bool)
-	data, err := os.ReadFile("/etc/group")
+	data, err := osFS.ReadFile("/etc/group")
 	if err != nil {
 		return gids
 	}

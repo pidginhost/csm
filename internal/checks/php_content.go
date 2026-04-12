@@ -3,7 +3,6 @@ package checks
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -41,7 +40,7 @@ func CheckPHPContent(ctx context.Context, cfg *config.Config, _ *state.Store) []
 
 		// Get all potential document roots
 		docRoots := []string{filepath.Join(homeDir, "public_html")}
-		subDirs, _ := os.ReadDir(homeDir)
+		subDirs, _ := osFS.ReadDir(homeDir)
 		for _, sd := range subDirs {
 			if sd.IsDir() && sd.Name() != "public_html" && sd.Name() != "mail" &&
 				!strings.HasPrefix(sd.Name(), ".") && sd.Name() != "etc" &&
@@ -81,7 +80,7 @@ func scanDirForObfuscatedPHP(ctx context.Context, dir string, maxDepth int, cfg 
 	if maxDepth <= 0 {
 		return
 	}
-	entries, err := os.ReadDir(dir)
+	entries, err := osFS.ReadDir(dir)
 	if err != nil {
 		return
 	}
@@ -123,7 +122,7 @@ func scanDirForObfuscatedPHP(ctx context.Context, dir string, maxDepth int, cfg 
 		// Read and analyze content
 		result := analyzePHPContent(fullPath)
 		if result.severity >= 0 {
-			info, _ := os.Stat(fullPath)
+			info, _ := osFS.Stat(fullPath)
 			details := result.details
 			if info != nil {
 				details += fmt.Sprintf("\nSize: %d, Mtime: %s", info.Size(), info.ModTime().Format("2006-01-02 15:04:05"))
@@ -149,7 +148,7 @@ type phpAnalysisResult struct {
 // analyzePHPContent reads the first 8KB of a PHP file and checks for
 // obfuscation and malicious patterns.
 func analyzePHPContent(path string) phpAnalysisResult {
-	f, err := os.Open(path)
+	f, err := osFS.Open(path)
 	if err != nil {
 		return phpAnalysisResult{severity: -1}
 	}

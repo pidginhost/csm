@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -38,7 +37,7 @@ func CheckOutboundUserConnections(ctx context.Context, cfg *config.Config, _ *st
 		"mailman":              true,
 	}
 
-	data, err := os.ReadFile("/proc/net/tcp")
+	data, err := osFS.ReadFile("/proc/net/tcp")
 	if err != nil {
 		return nil
 	}
@@ -109,7 +108,7 @@ func CheckOutboundUserConnections(ctx context.Context, cfg *config.Config, _ *st
 	}
 
 	// Parse /proc/net/tcp6 for IPv6 connections
-	tcp6Data, err := os.ReadFile("/proc/net/tcp6")
+	tcp6Data, err := osFS.ReadFile("/proc/net/tcp6")
 	if err == nil {
 		for _, line := range strings.Split(string(tcp6Data), "\n") {
 			fields := strings.Fields(line)
@@ -175,7 +174,7 @@ func CheckOutboundUserConnections(ctx context.Context, cfg *config.Config, _ *st
 
 // uidToUser tries to resolve a UID to username from /etc/passwd.
 func uidToUser(uid string) string {
-	data, err := os.ReadFile("/etc/passwd")
+	data, err := osFS.ReadFile("/etc/passwd")
 	if err != nil {
 		return uid
 	}
@@ -287,13 +286,13 @@ func CheckNulledPlugins(ctx context.Context, _ *config.Config, _ *state.Store) [
 		"@remove_license", "null_license",
 	}
 
-	homeDirs, _ := os.ReadDir("/home")
+	homeDirs, _ := osFS.ReadDir("/home")
 	for _, homeEntry := range homeDirs {
 		if !homeEntry.IsDir() {
 			continue
 		}
 		pluginsDir := filepath.Join("/home", homeEntry.Name(), "public_html", "wp-content", "plugins")
-		plugins, err := os.ReadDir(pluginsDir)
+		plugins, err := osFS.ReadDir(pluginsDir)
 		if err != nil {
 			continue
 		}
@@ -305,7 +304,7 @@ func CheckNulledPlugins(ctx context.Context, _ *config.Config, _ *state.Store) [
 			pluginDir := filepath.Join(pluginsDir, plugin.Name())
 
 			// Check main plugin PHP file for crack signatures
-			mainFiles, _ := filepath.Glob(filepath.Join(pluginDir, "*.php"))
+			mainFiles, _ := osFS.Glob(filepath.Join(pluginDir, "*.php"))
 			for _, mainFile := range mainFiles {
 				// Only read the first 10KB of each file
 				data := readFileHead(mainFile, 10*1024)
@@ -334,7 +333,7 @@ func CheckNulledPlugins(ctx context.Context, _ *config.Config, _ *state.Store) [
 
 // readFileHead reads the first N bytes of a file.
 func readFileHead(path string, maxBytes int) []byte {
-	f, err := os.Open(path)
+	f, err := osFS.Open(path)
 	if err != nil {
 		return nil
 	}
