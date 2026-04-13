@@ -555,7 +555,7 @@ func TestSdNotify_EmptyMessage(t *testing.T) {
 func TestWatchdogNotifier_NoEnvExitsImmediately(t *testing.T) {
 	// Ensure WATCHDOG_USEC is not set.
 	prev := os.Getenv("WATCHDOG_USEC")
-	os.Unsetenv("WATCHDOG_USEC")
+	_ = os.Unsetenv("WATCHDOG_USEC")
 	defer func() {
 		if prev != "" {
 			os.Setenv("WATCHDOG_USEC", prev)
@@ -582,12 +582,12 @@ func TestWatchdogNotifier_NoNotifySocketExits(t *testing.T) {
 	prev := os.Getenv("WATCHDOG_USEC")
 	prevAddr := os.Getenv("NOTIFY_SOCKET")
 	os.Setenv("WATCHDOG_USEC", "1000000")
-	os.Unsetenv("NOTIFY_SOCKET")
+	_ = os.Unsetenv("NOTIFY_SOCKET")
 	defer func() {
 		if prev != "" {
 			os.Setenv("WATCHDOG_USEC", prev)
 		} else {
-			os.Unsetenv("WATCHDOG_USEC")
+			_ = os.Unsetenv("WATCHDOG_USEC")
 		}
 		if prevAddr != "" {
 			os.Setenv("NOTIFY_SOCKET", prevAddr)
@@ -619,12 +619,12 @@ func TestWatchdogNotifier_InvalidUsecExits(t *testing.T) {
 		if prev != "" {
 			os.Setenv("WATCHDOG_USEC", prev)
 		} else {
-			os.Unsetenv("WATCHDOG_USEC")
+			_ = os.Unsetenv("WATCHDOG_USEC")
 		}
 		if prevAddr != "" {
 			os.Setenv("NOTIFY_SOCKET", prevAddr)
 		} else {
-			os.Unsetenv("NOTIFY_SOCKET")
+			_ = os.Unsetenv("NOTIFY_SOCKET")
 		}
 	}()
 
@@ -653,12 +653,12 @@ func TestWatchdogNotifier_ZeroUsecExits(t *testing.T) {
 		if prev != "" {
 			os.Setenv("WATCHDOG_USEC", prev)
 		} else {
-			os.Unsetenv("WATCHDOG_USEC")
+			_ = os.Unsetenv("WATCHDOG_USEC")
 		}
 		if prevAddr != "" {
 			os.Setenv("NOTIFY_SOCKET", prevAddr)
 		} else {
-			os.Unsetenv("NOTIFY_SOCKET")
+			_ = os.Unsetenv("NOTIFY_SOCKET")
 		}
 	}()
 
@@ -692,12 +692,12 @@ func TestWatchdogNotifier_StopsOnSignal(t *testing.T) {
 		if prev != "" {
 			os.Setenv("WATCHDOG_USEC", prev)
 		} else {
-			os.Unsetenv("WATCHDOG_USEC")
+			_ = os.Unsetenv("WATCHDOG_USEC")
 		}
 		if prevAddr != "" {
 			os.Setenv("NOTIFY_SOCKET", prevAddr)
 		} else {
-			os.Unsetenv("NOTIFY_SOCKET")
+			_ = os.Unsetenv("NOTIFY_SOCKET")
 		}
 	}()
 

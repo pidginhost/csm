@@ -708,12 +708,12 @@ func TestWatchdogNotifier_NegativeUsecExits(t *testing.T) {
 		if prev != "" {
 			os.Setenv("WATCHDOG_USEC", prev)
 		} else {
-			os.Unsetenv("WATCHDOG_USEC")
+			_ = os.Unsetenv("WATCHDOG_USEC")
 		}
 		if prevAddr != "" {
 			os.Setenv("NOTIFY_SOCKET", prevAddr)
 		} else {
-			os.Unsetenv("NOTIFY_SOCKET")
+			_ = os.Unsetenv("NOTIFY_SOCKET")
 		}
 	}()
 
@@ -747,12 +747,12 @@ func TestWatchdogNotifier_SmallUsecUsesMinInterval(t *testing.T) {
 		if prev != "" {
 			os.Setenv("WATCHDOG_USEC", prev)
 		} else {
-			os.Unsetenv("WATCHDOG_USEC")
+			_ = os.Unsetenv("WATCHDOG_USEC")
 		}
 		if prevAddr != "" {
 			os.Setenv("NOTIFY_SOCKET", prevAddr)
 		} else {
-			os.Unsetenv("NOTIFY_SOCKET")
+			_ = os.Unsetenv("NOTIFY_SOCKET")
 		}
 	}()
 
