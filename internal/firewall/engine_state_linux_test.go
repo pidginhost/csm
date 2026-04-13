@@ -50,8 +50,8 @@ func TestEngineLoadStateFileExpiryCleanup(t *testing.T) {
 	dir := t.TempDir()
 	state := FirewallState{
 		Blocked: []BlockedEntry{
-			{IP: "203.0.113.5", Reason: "active", BlockedAt: time.Now()},                               // permanent
-			{IP: "198.51.100.1", Reason: "expired", BlockedAt: time.Now(), ExpiresAt: time.Now().Add(-1 * time.Hour)}, // expired
+			{IP: "203.0.113.5", Reason: "active", BlockedAt: time.Now()},
+			{IP: "198.51.100.1", Reason: "expired", BlockedAt: time.Now(), ExpiresAt: time.Now().Add(-1 * time.Hour)},
 		},
 	}
 	data, _ := json.MarshalIndent(state, "", "  ")
