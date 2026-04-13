@@ -848,7 +848,7 @@ func TestDispatchBatch_EmptyFindings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	d := New(&config.Config{}, st, nil, "")
 	// Should not panic with empty slice.
@@ -862,7 +862,7 @@ func TestDispatchBatch_NewFindingsAreStored(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	cfg := &config.Config{}
 	d := New(cfg, st, nil, "")
@@ -1138,7 +1138,7 @@ func TestDispatchBatch_FiltersInformationalChecks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	cfg := &config.Config{}
 	d := New(cfg, st, nil, "")

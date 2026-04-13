@@ -323,11 +323,11 @@ func TestExtractZIPSkipsDirectoryEntries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.Write([]byte("content")); err != nil {
-		t.Fatal(err)
+	if _, writeErr := f.Write([]byte("content")); writeErr != nil {
+		t.Fatal(writeErr)
 	}
-	if err := zw.Close(); err != nil {
-		t.Fatal(err)
+	if closeErr := zw.Close(); closeErr != nil {
+		t.Fatal(closeErr)
 	}
 
 	body := buildMultipartBody("BOUND", "dirs.zip", "application/zip", buf.Bytes())
