@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Expanded test coverage from 35% to 58% overall. Introduced OS/CmdRunner dependency injection interfaces (`provider.go`) enabling all 62 Check* functions to be unit-tested with mock filesystem and command data.
-- Added 200+ test functions covering all HTTP API handlers, page renderers, TLS cert generation, login/auth flow, hardening audit subsystems, recursive filesystem scanners, performance checks, and security detection functions.
+- Expanded test coverage from 35% to 59% overall. Introduced OS/CmdRunner dependency injection interfaces (`provider.go`) enabling all 62 Check* functions to be unit-tested with mock filesystem and command data.
+- Added 250+ test functions covering all HTTP API handlers, page renderers, TLS cert generation, login/auth flow, hardening audit subsystems, recursive filesystem scanners, performance checks, MySQL/Redis config checks, WAF/ModSec audit, SSH key/crontab/symlink checks, and realOS/realCmd provider implementations.
 
 ## [2.2.2] - 2026-04-12
 
