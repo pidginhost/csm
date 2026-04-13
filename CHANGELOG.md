@@ -13,7 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `csm db-clean` CLI for operator-initiated WordPress database cleanup: `--option` removes malicious scripts from wp_options (with backup), `--revoke-user` revokes sessions and optionally demotes to subscriber, `--delete-spam` removes published spam posts matching known patterns. All commands support `--preview` for dry-run.
 - Expanded test coverage from 35% to 57% (Linux CI). Introduced OS/CmdRunner dependency injection interfaces (`provider.go`) enabling all 62 Check* functions to be unit-tested with mock filesystem and command data.
 - Added 350+ test functions including Linux-specific (`//go:build linux`) tests for firewall engine state management and fanotify helpers. Extracted pure IP helpers from `engine.go` into cross-platform `ip_helpers.go`.
+- Integration test infrastructure: CI can now spin up real AlmaLinux/Ubuntu cloud servers via phctl, deploy CSM, run `//go:build integration` tests for nftables firewall and fanotify file monitoring, collect coverage, and tear down servers automatically.
+
+### Fixed
+
 - Fixed `-short` flag in both GitLab CI and GitHub Actions workflows which was skipping tests. Fixed data race in wpcheck httpClient test swap.
+- Fixed SDK `DisallowUnknownFields` bug that prevented phctl from working in CI (sdk-go v0.4.1, phctl v0.6.2).
 
 ## [2.2.2] - 2026-04-12
 
