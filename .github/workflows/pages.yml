@@ -34,7 +34,9 @@ jobs:
       - name: Run tests with coverage
         run: |
           set -e
-          go test -timeout=300s -coverprofile=coverage.out ./... || true
+          # Scope coverage to internal/ packages — cmd/csm is package main
+          # (CLI glue) and skews the percentage with untestable cobra wiring.
+          go test -timeout=300s -coverprofile=coverage.out -coverpkg=./internal/... ./... || true
           go tool cover -func=coverage.out | tail -1
 
       - name: Generate HTML coverage report
