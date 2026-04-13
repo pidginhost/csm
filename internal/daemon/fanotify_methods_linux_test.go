@@ -18,7 +18,6 @@ func newTestFileMonitor(t *testing.T) *FileMonitor {
 	return &FileMonitor{
 		cfg:     cfg,
 		alertCh: ch,
-	
 	}
 }
 
@@ -83,7 +82,6 @@ func TestSendAlert(t *testing.T) {
 	fm := &FileMonitor{
 		cfg:     &config.Config{},
 		alertCh: ch,
-	
 	}
 	fm.sendAlert(alert.Critical, "webshell_realtime", "Found webshell", "details here")
 
@@ -104,7 +102,6 @@ func TestSendAlertWithPath(t *testing.T) {
 	fm := &FileMonitor{
 		cfg:     &config.Config{},
 		alertCh: ch,
-	
 	}
 	fm.sendAlertWithPath(alert.Critical, "php_in_uploads_realtime", "PHP in uploads", "details", "/home/alice/wp-content/uploads/evil.php", "php-fpm")
 
@@ -125,7 +122,6 @@ func TestCheckCredentialLogWithData(t *testing.T) {
 	fm := &FileMonitor{
 		cfg:     &config.Config{},
 		alertCh: ch,
-	
 	}
 
 	dir := t.TempDir()
@@ -143,7 +139,6 @@ func TestCheckPhishingZipSuspiciousName(t *testing.T) {
 	fm := &FileMonitor{
 		cfg:     &config.Config{},
 		alertCh: ch,
-	
 	}
 
 	fm.checkPhishingZip("/home/alice/public_html/office365_kit.zip", "office365_kit.zip", "unknown")
