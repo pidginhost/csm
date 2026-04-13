@@ -63,14 +63,6 @@ func handleMaliciousOption(cfg *config.Config, f alert.Finding) []alert.Finding 
 		return nil
 	}
 
-	// Skip options that are known to legitimately contain script patterns.
-	// These should not have been flagged in the first place, but if they
-	// were (e.g., from a scan before the safe list was updated), the
-	// auto-response must not clean them.
-	if isKnownSafeDBOption(optionName) {
-		return nil
-	}
-
 	creds := findCredsForDB(dbName)
 	if creds.dbName == "" {
 		return nil

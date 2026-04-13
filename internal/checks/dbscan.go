@@ -221,9 +221,9 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 		}
 	}
 
-	// Check for JavaScript injection in wp_options
+	// Path 1: External script URLs in any option — only flag non-safe domains.
 	query = fmt.Sprintf(
-		"SELECT option_name, LEFT(option_value, 500) FROM %soptions WHERE option_value LIKE '%%<script%%' OR option_value LIKE '%%eval(%%' OR option_value LIKE '%%base64_decode%%' LIMIT 10",
+		"SELECT option_name, option_value FROM %soptions WHERE option_value LIKE '%%<script%%src=%%' LIMIT 20",
 		prefix)
 	lines = runMySQLQuery(creds, query)
 
@@ -232,98 +232,45 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 		if len(parts) != 2 {
 			continue
 		}
-		// Skip legitimate options that commonly contain these patterns
 		optName := parts[0]
-		if isKnownSafeDBOption(optName) {
+		optValue := parts[1]
+
+		maliciousURL := extractMaliciousScriptURL(optValue)
+		if maliciousURL == "" {
 			continue
 		}
 
 		findings = append(findings, alert.Finding{
-			Severity: alert.High,
+			Severity: alert.Critical,
 			Check:    "db_options_injection",
-			Message:  fmt.Sprintf("Suspicious content in wp_options '%s' (account: %s)", optName, user),
-			Details:  fmt.Sprintf("Database: %s\nOption: %s\nContent preview: %s", creds.dbName, optName, truncateDB(parts[1], 200)),
+			Message:  fmt.Sprintf("Malicious script injection in wp_options '%s' (account: %s)", optName, user),
+			Details:  fmt.Sprintf("Database: %s\nOption: %s\nMalicious URL: %s\nContent preview: %s", creds.dbName, optName, maliciousURL, truncateDB(optValue, 200)),
+		})
+	}
+
+	// Path 2: Inline script/code injection in core WP options that should
+	// NEVER contain JavaScript (siteurl, home, blogname, blogdescription).
+	coreOpts := "siteurl', 'home', 'blogname', 'blogdescription', 'admin_email"
+	codePatterns := "<script"
+	query = fmt.Sprintf(
+		"SELECT option_name, LEFT(option_value, 500) FROM %soptions WHERE option_name IN ('%s') AND option_value LIKE '%%%s%%'",
+		prefix, coreOpts, codePatterns)
+	lines = runMySQLQuery(creds, query)
+
+	for _, line := range lines {
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		findings = append(findings, alert.Finding{
+			Severity: alert.Critical,
+			Check:    "db_options_injection",
+			Message:  fmt.Sprintf("Malicious content in core wp_option '%s' (account: %s)", parts[0], user),
+			Details:  fmt.Sprintf("Database: %s\nOption: %s\nContent preview: %s", creds.dbName, parts[0], truncateDB(parts[1], 200)),
 		})
 	}
 
 	return findings
-}
-
-// isKnownSafeDBOption returns true for wp_options entries that legitimately
-// contain patterns like eval(), base64_decode, <script> etc.
-func isKnownSafeDBOption(name string) bool {
-	// Exact matches — options that legitimately contain script/eval patterns
-	safeOptions := map[string]bool{
-		"active_plugins":     true,
-		"widget_text":        true,
-		"widget_block":       true,
-		"widget_custom_html": true,
-		"cron":               true,
-
-		// Tracking/analytics plugins that store JavaScript snippets
-		"ihaf_insert_header": true,
-		"ihaf_insert_footer": true,
-		"hefo":               true, // Header Footer Code Manager
-		"wpcode_snippets":    true,
-
-		// Plugin/theme config that contains serialized JS/HTML
-		"plugin_maintenance-mode": true,
-		"GTranslate":              true,
-		"betheme":                 true,
-
-		// Jetpack sync error logs (contain serialized WP_Error objects)
-		"jp_sync_error_log_sync": true,
-
-		// Anti-Malware Security plugin (stores scan data)
-		"GOTMLS_get_URL_array": true,
-	}
-	if safeOptions[name] {
-		return true
-	}
-
-	// Prefix matches - security plugins, caching, analytics, themes
-	safePrefixes := []string{
-		// Security plugins (store rules/signatures with eval/script patterns)
-		"wordfence", "wf_",
-		"ithemes-security", "aio_wp_security",
-		"imunify_security", "_transient_imunify_security",
-		"csm_security", "_transient_csm_security",
-		"csm_backup_", // CSM db-clean backups
-		"sucuri_", "bulletproof_",
-
-		// WordPress core transients (RSS feeds, update checks, minified assets)
-		"_site_transient_feed_",
-		"_site_transient_update_",
-		"_site_transient_minify:", // W3 Total Cache / Hummingbird minified JS/CSS
-		"_transient_feed_",
-		"_transient_dash_",
-		"_transient_timeout_",
-
-		// Caching plugins
-		"litespeed", "_lscache_",
-		"w3tc_", "wc_",
-
-		// Analytics/tracking plugins (store GTM/GA/FB code in options)
-		"seopress_",
-		"gtm_ecommerce_",
-		"mailchimp-woocommerce-",
-		"breakdance_breakdance_settings_tracking_",
-		"options_global_header_javascript",
-		"options_global_footer_javascript",
-
-		// Theme settings (contain HTML templates with script references)
-		"theme_mods_",
-		"Newspaper_",
-		"td_",
-	}
-	nameLower := strings.ToLower(name)
-	for _, prefix := range safePrefixes {
-		if strings.HasPrefix(nameLower, prefix) {
-			return true
-		}
-	}
-
-	return false
 }
 
 // checkWPPosts checks post content for injected scripts and malware.
