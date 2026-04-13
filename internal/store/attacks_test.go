@@ -126,3 +126,118 @@ func TestSaveLoadIPRecord(t *testing.T) {
 		t.Error("LoadIPRecord(99.99.99.99) should not be found")
 	}
 }
+
+func TestRecordAttackEventPrunesExcess(t *testing.T) {
+	old := maxAttackEvents
+	maxAttackEvents = 5
+	t.Cleanup(func() { maxAttackEvents = old })
+
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	base := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
+
+	// Insert more than maxAttackEvents
+	for i := 0; i < 8; i++ {
+		ev := AttackEvent{
+			Timestamp:  base.Add(time.Duration(i) * time.Second),
+			IP:         fmt.Sprintf("10.0.0.%d", i+1),
+			AttackType: "brute_force",
+			CheckName:  "wp_login",
+			Severity:   3,
+		}
+		if err := db.RecordAttackEvent(ev, i); err != nil {
+			t.Fatalf("RecordAttackEvent[%d]: %v", i, err)
+		}
+	}
+
+	all := db.ReadAllAttackEvents()
+	if len(all) != 5 {
+		t.Errorf("expected exactly 5 events after pruning, got %d", len(all))
+	}
+
+	// Verify oldest events were pruned: 10.0.0.1, 10.0.0.2, 10.0.0.3 should be gone
+	for _, ev := range all {
+		if ev.IP == "10.0.0.1" || ev.IP == "10.0.0.2" || ev.IP == "10.0.0.3" {
+			t.Errorf("oldest event %s should have been pruned", ev.IP)
+		}
+	}
+
+	// Verify secondary index was cleaned too
+	for _, ip := range []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"} {
+		events := db.QueryAttackEvents(ip, 10)
+		if len(events) != 0 {
+			t.Errorf("secondary index for pruned IP %s should be empty, got %d", ip, len(events))
+		}
+	}
+}
+
+func TestLoadAllIPRecordsMultiple(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	for _, ip := range []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"} {
+		if err := db.SaveIPRecord(IPRecord{IP: ip, EventCount: 1, ThreatScore: 50}); err != nil {
+			t.Fatalf("SaveIPRecord: %v", err)
+		}
+	}
+
+	all := db.LoadAllIPRecords()
+	if len(all) != 3 {
+		t.Errorf("expected 3 records, got %d", len(all))
+	}
+}
+
+func TestLoadAllIPRecordsEmpty(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	all := db.LoadAllIPRecords()
+	if len(all) != 0 {
+		t.Errorf("expected 0 records, got %d", len(all))
+	}
+}
+
+func TestQueryLimitNewestFirst(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	base := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
+	for i := 0; i < 10; i++ {
+		ev := AttackEvent{
+			Timestamp:  base.Add(time.Duration(i) * time.Minute),
+			IP:         "10.0.0.1",
+			AttackType: "scan",
+			CheckName:  "test",
+			Severity:   2,
+			Message:    fmt.Sprintf("event-%d", i),
+		}
+		if err := db.RecordAttackEvent(ev, i); err != nil {
+			t.Fatalf("RecordAttackEvent: %v", err)
+		}
+	}
+
+	events := db.QueryAttackEvents("10.0.0.1", 3)
+	if len(events) != 3 {
+		t.Fatalf("expected 3, got %d", len(events))
+	}
+	// Verify newest-first ordering
+	if events[0].Message != "event-9" {
+		t.Errorf("first event should be newest, got %q", events[0].Message)
+	}
+	if events[2].Message != "event-7" {
+		t.Errorf("last event should be event-7, got %q", events[2].Message)
+	}
+}
