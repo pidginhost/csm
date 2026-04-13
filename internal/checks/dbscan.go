@@ -235,6 +235,12 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 		optName := parts[0]
 		optValue := parts[1]
 
+		// Skip CSM backup options — they preserve the original malicious
+		// content for recovery and should not be re-detected/re-cleaned.
+		if strings.HasPrefix(optName, "csm_backup_") {
+			continue
+		}
+
 		maliciousURL := extractMaliciousScriptURL(optValue)
 		if maliciousURL == "" {
 			continue

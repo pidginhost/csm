@@ -63,6 +63,12 @@ func handleMaliciousOption(cfg *config.Config, f alert.Finding) []alert.Finding 
 		return nil
 	}
 
+	// Never act on CSM backup options — they preserve original malicious
+	// content for recovery. Acting on them causes cascading backup loops.
+	if strings.HasPrefix(optionName, "csm_backup_") {
+		return nil
+	}
+
 	creds := findCredsForDB(dbName)
 	if creds.dbName == "" {
 		return nil
