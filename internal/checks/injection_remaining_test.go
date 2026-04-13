@@ -60,7 +60,7 @@ func TestExtractDomainNoAt(t *testing.T) {
 
 // --- extractUser -----------------------------------------------------
 
-func TestExtractUserFromPath(t *testing.T) {
+func TestExtractUserFromPath_Remaining(t *testing.T) {
 	// extractUser in web.go extracts from path, not email
 	got := extractUser("/home/alice/public_html/.htaccess")
 	if got != "alice" {
