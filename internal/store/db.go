@@ -154,6 +154,11 @@ func ParseTimeKeyPrefix(date string) string {
 }
 
 // getCounter reads a counter from the meta bucket. Returns 0 if not found.
+// HistoryCount returns the number of findings in the history bucket.
+func (db *DB) HistoryCount() int {
+	return db.getCounter("history:count")
+}
+
 func (db *DB) getCounter(key string) int {
 	var count int
 	_ = db.bolt.View(func(tx *bolt.Tx) error {

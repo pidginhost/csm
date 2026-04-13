@@ -133,7 +133,7 @@ Commands:
   check-critical  Test critical checks only
   check-deep      Test deep checks only
   status        Show current state, last run, active findings
-  baseline      Reset state - mark current state as "known good"
+  baseline      Reset state - mark current state as "known good" (use --confirm if history exists)
   validate      Validate config (--deep for connectivity probes)
   config        Config display (config show [--no-redact] [--json])
   verify        Verify binary + config integrity
@@ -446,6 +446,14 @@ func runStatus() {
 func runBaseline() {
 	cfg := loadConfig()
 
+	// Check for --confirm flag
+	hasConfirm := false
+	for _, arg := range os.Args[2:] {
+		if arg == "--confirm" {
+			hasConfirm = true
+		}
+	}
+
 	// Stop timers during baseline to prevent concurrent access
 	stopTimers()
 	defer startTimers()
@@ -461,15 +469,30 @@ func runBaseline() {
 	}
 	defer lock.Release()
 
-	store, err := state.Open(cfg.StatePath)
+	st, err := state.Open(cfg.StatePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening state: %v\n", err)
 		return
 	}
-	defer func() { _ = store.Close() }()
+	defer func() { _ = st.Close() }()
 
-	findings := checks.RunAll(cfg, store)
-	store.SetBaseline(findings)
+	// Warn if there's existing history data that will be lost.
+	if db := store.Global(); db != nil {
+		histCount := db.HistoryCount()
+		if histCount > 0 && !hasConfirm {
+			fmt.Fprintf(os.Stderr, "WARNING: Baseline reset will clear %d history entries.\n", histCount)
+			fmt.Fprintf(os.Stderr, "This erases the 30-day trend chart, firewall state, and per-account findings.\n")
+			fmt.Fprintf(os.Stderr, "This action is intended for fresh installs, not routine operation.\n\n")
+			fmt.Fprintf(os.Stderr, "To proceed, run: csm baseline --confirm\n")
+			return
+		}
+		if histCount > 0 {
+			fmt.Fprintf(os.Stderr, "Resetting baseline: clearing %d history entries...\n", histCount)
+		}
+	}
+
+	findings := checks.RunAll(cfg, st)
+	st.SetBaseline(findings)
 
 	binaryHash, _ := integrity.HashFile(binaryPath)
 	cfg.Integrity.BinaryHash = binaryHash

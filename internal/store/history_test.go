@@ -99,6 +99,39 @@ func TestReadHistoryPagination(t *testing.T) {
 	}
 }
 
+func TestHistoryCountEmpty(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	if got := db.HistoryCount(); got != 0 {
+		t.Errorf("HistoryCount() = %d, want 0 on fresh DB", got)
+	}
+}
+
+func TestHistoryCountAfterAppend(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	findings := []alert.Finding{
+		{Severity: alert.Warning, Check: "test", Message: "msg1", Timestamp: time.Now()},
+		{Severity: alert.High, Check: "test", Message: "msg2", Timestamp: time.Now()},
+		{Severity: alert.Critical, Check: "test", Message: "msg3", Timestamp: time.Now()},
+	}
+	if err := db.AppendHistory(findings); err != nil {
+		t.Fatalf("AppendHistory: %v", err)
+	}
+
+	if got := db.HistoryCount(); got != 3 {
+		t.Errorf("HistoryCount() = %d, want 3 after appending 3 findings", got)
+	}
+}
+
 func TestHistoryPruning(t *testing.T) {
 	// Override maxHistoryEntries for this test.
 	orig := maxHistoryEntries
