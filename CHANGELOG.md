@@ -18,7 +18,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Fixed `-short` flag in both GitLab CI and GitHub Actions workflows which was skipping tests. Fixed data race in wpcheck httpClient test swap.
-- Fixed SDK `DisallowUnknownFields` bug that prevented phctl from working in CI (sdk-go v0.4.1, phctl v0.6.2).
 
 ## [2.2.2] - 2026-04-12
 
