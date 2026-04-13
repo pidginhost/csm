@@ -34,10 +34,10 @@ func AutoRespondDBMalware(cfg *config.Config, findings []alert.Finding) []alert.
 	for _, f := range findings {
 		switch f.Check {
 		case "db_options_injection":
-			acts := handleMaliciousOption(f)
+			acts := handleMaliciousOption(cfg, f)
 			actions = append(actions, acts...)
 		case "db_siteurl_hijack":
-			acts := handleSiteurlHijack(f)
+			acts := handleSiteurlHijack(cfg, f)
 			actions = append(actions, acts...)
 		}
 	}
@@ -47,28 +47,22 @@ func AutoRespondDBMalware(cfg *config.Config, findings []alert.Finding) []alert.
 
 // handleMaliciousOption checks if a db_options_injection finding contains
 // a confirmed malicious external script URL, and if so:
-// 1. Extracts the malicious URL
-// 2. Finds active WP user sessions and blocks their IPs
-// 3. Cleans the malicious content from the option
-func handleMaliciousOption(f alert.Finding) []alert.Finding {
+// 1. Extracts attacker IPs from WP sessions and emits block findings
+// 2. Revokes sessions for users with non-infra, non-private IPs only
+// 3. Backs up and cleans the malicious content from the option
+func handleMaliciousOption(cfg *config.Config, f alert.Finding) []alert.Finding {
 	var actions []alert.Finding
 
-	// Extract database name and option name from the finding details.
 	dbName, optionName := parseDBFindingDetails(f.Details)
 	if dbName == "" || optionName == "" {
 		return nil
 	}
 
-	// Only act on options with confirmed malicious external script URLs.
-	// This extracts <script src="..."> URLs and checks them against known
-	// malicious patterns. Legitimate services (GTM, Analytics, Mailchimp)
-	// are explicitly excluded.
-	maliciousURL := extractMaliciousScriptURL(f.Details)
-	if maliciousURL == "" {
+	// Validate option name — must be a plausible WP option name.
+	if !isValidOptionName(optionName) {
 		return nil
 	}
 
-	// Resolve credentials for this database.
 	creds := findCredsForDB(dbName)
 	if creds.dbName == "" {
 		return nil
@@ -79,33 +73,50 @@ func handleMaliciousOption(f alert.Finding) []alert.Finding {
 		prefix = "wp_"
 	}
 
-	// 1. Block attacker IPs from active WP sessions.
-	sessionIPs := extractWPSessionIPs(creds, prefix)
-	for _, ip := range sessionIPs {
+	// Re-read the FULL option value from the database — the finding's
+	// Details field only has a truncated 200-char preview.
+	fullValue := readOptionValue(creds, prefix, optionName)
+	if fullValue == "" {
+		return nil
+	}
+
+	// Only act on options with confirmed malicious external script URLs.
+	maliciousURL := extractMaliciousScriptURL(fullValue)
+	if maliciousURL == "" {
+		return nil
+	}
+
+	// 1. Extract and block attacker IPs from active WP sessions.
+	suspiciousIPs := extractSuspiciousSessionIPs(creds, prefix, cfg.InfraIPs)
+	for _, ip := range suspiciousIPs {
+		// Emit as auto_block check so AutoBlockIPs processes it.
 		actions = append(actions, alert.Finding{
 			Severity:  alert.Critical,
-			Check:     "auto_response",
+			Check:     "auto_block",
 			Message:   fmt.Sprintf("AUTO-BLOCK: %s (active WP session on compromised site, DB: %s)", ip, dbName),
 			Timestamp: time.Now(),
 		})
 	}
 
-	// 2. Revoke all WP user sessions.
-	revokeAllWPSessions(creds, prefix)
-	actions = append(actions, alert.Finding{
-		Severity:  alert.Warning,
-		Check:     "auto_response",
-		Message:   fmt.Sprintf("AUTO-DB-CLEAN: Revoked all WordPress sessions (DB: %s, malicious URL: %s)", dbName, maliciousURL),
-		Timestamp: time.Now(),
-	})
+	// 2. Revoke sessions only for users with suspicious IPs.
+	// This preserves the site admin's session if they're on an infra IP.
+	revoked := revokeCompromisedSessions(creds, prefix, cfg.InfraIPs)
+	if revoked > 0 {
+		actions = append(actions, alert.Finding{
+			Severity:  alert.Warning,
+			Check:     "auto_response",
+			Message:   fmt.Sprintf("AUTO-DB-CLEAN: Revoked %d compromised WordPress sessions (DB: %s)", revoked, dbName),
+			Timestamp: time.Now(),
+		})
+	}
 
-	// 3. Clean the malicious option content.
-	cleaned := cleanMaliciousOption(creds, prefix, optionName)
+	// 3. Back up the original value, then clean the malicious content.
+	cleaned := backupAndCleanOption(creds, prefix, optionName, fullValue, maliciousURL)
 	if cleaned {
 		actions = append(actions, alert.Finding{
 			Severity:  alert.Warning,
 			Check:     "auto_response",
-			Message:   fmt.Sprintf("AUTO-DB-CLEAN: Removed malicious script from wp_options '%s' (DB: %s)", optionName, dbName),
+			Message:   fmt.Sprintf("AUTO-DB-CLEAN: Removed malicious script from wp_options '%s' (DB: %s, URL: %s)", optionName, dbName, maliciousURL),
 			Timestamp: time.Now(),
 		})
 	}
@@ -113,10 +124,9 @@ func handleMaliciousOption(f alert.Finding) []alert.Finding {
 	return actions
 }
 
-// handleSiteurlHijack handles siteurl/home hijacking by revoking sessions.
-// Does NOT modify siteurl/home values — that requires manual intervention
-// because an incorrect fix would break the site entirely.
-func handleSiteurlHijack(f alert.Finding) []alert.Finding {
+// handleSiteurlHijack handles siteurl/home hijacking by revoking sessions
+// and blocking attacker IPs. Does NOT modify siteurl/home values.
+func handleSiteurlHijack(cfg *config.Config, f alert.Finding) []alert.Finding {
 	var actions []alert.Finding
 
 	dbName, _ := parseDBFindingDetails(f.Details)
@@ -134,24 +144,25 @@ func handleSiteurlHijack(f alert.Finding) []alert.Finding {
 		prefix = "wp_"
 	}
 
-	// Block session IPs and revoke sessions.
-	sessionIPs := extractWPSessionIPs(creds, prefix)
-	for _, ip := range sessionIPs {
+	suspiciousIPs := extractSuspiciousSessionIPs(creds, prefix, cfg.InfraIPs)
+	for _, ip := range suspiciousIPs {
 		actions = append(actions, alert.Finding{
 			Severity:  alert.Critical,
-			Check:     "auto_response",
+			Check:     "auto_block",
 			Message:   fmt.Sprintf("AUTO-BLOCK: %s (active session on hijacked site, DB: %s)", ip, dbName),
 			Timestamp: time.Now(),
 		})
 	}
 
-	revokeAllWPSessions(creds, prefix)
-	actions = append(actions, alert.Finding{
-		Severity:  alert.Warning,
-		Check:     "auto_response",
-		Message:   fmt.Sprintf("AUTO-DB-CLEAN: Revoked all WordPress sessions on hijacked site (DB: %s)", dbName),
-		Timestamp: time.Now(),
-	})
+	revoked := revokeCompromisedSessions(creds, prefix, cfg.InfraIPs)
+	if revoked > 0 {
+		actions = append(actions, alert.Finding{
+			Severity:  alert.Warning,
+			Check:     "auto_response",
+			Message:   fmt.Sprintf("AUTO-DB-CLEAN: Revoked %d sessions on hijacked site (DB: %s)", revoked, dbName),
+			Timestamp: time.Now(),
+		})
+	}
 
 	return actions
 }
@@ -162,7 +173,6 @@ func handleSiteurlHijack(f alert.Finding) []alert.Finding {
 var scriptSrcRe = regexp.MustCompile(`(?i)<script[^>]+src\s*=\s*["']?(https?://[^"'\s>]+)`)
 
 // knownSafeDomains are legitimate services that embed scripts in wp_options.
-// These are checked as suffixes to handle subdomains (e.g., chimpstatic.com).
 var knownSafeDomains = []string{
 	"googletagmanager.com",
 	"google-analytics.com",
@@ -191,6 +201,7 @@ var knownSafeDomains = []string{
 	"intercom.io",
 	"zendesk.com",
 	"hubspot.com",
+	"hubspot.net",
 	"mautic.net",
 	"pinterest.com",
 	"twitter.com",
@@ -198,11 +209,13 @@ var knownSafeDomains = []string{
 	"addthis.com",
 	"sharethis.com",
 	"recaptcha.net",
+	"stripe.com",
+	"paypal.com",
+	"brevo-mail.com",
 }
 
 // extractMaliciousScriptURL finds a <script src="..."> URL in the content
-// that is NOT from a known safe domain. Returns the URL if found, empty if
-// all scripts are from safe domains or no scripts found.
+// that is NOT from a known safe domain.
 func extractMaliciousScriptURL(content string) string {
 	matches := scriptSrcRe.FindAllStringSubmatch(content, -1)
 	for _, match := range matches {
@@ -219,7 +232,6 @@ func extractMaliciousScriptURL(content string) string {
 
 // isSafeScriptDomain checks if a script URL is from a known safe domain.
 func isSafeScriptDomain(url string) bool {
-	// Extract hostname from URL.
 	urlLower := strings.ToLower(url)
 	urlLower = strings.TrimPrefix(urlLower, "https://")
 	urlLower = strings.TrimPrefix(urlLower, "http://")
@@ -239,10 +251,21 @@ func isSafeScriptDomain(url string) bool {
 	return false
 }
 
+// --- Validation ---
+
+// validOptionNameRe allows alphanumeric, underscores, hyphens, colons, and dots.
+// Rejects anything that could be SQL injection.
+var validOptionNameRe = regexp.MustCompile(`^[a-zA-Z0-9_\-:.]+$`)
+
+// isValidOptionName validates that an option name is safe for SQL interpolation.
+func isValidOptionName(name string) bool {
+	return len(name) > 0 && len(name) <= 191 && validOptionNameRe.MatchString(name)
+}
+
 // --- DB helpers ---
 
 // parseDBFindingDetails extracts the database name and option name from
-// a finding's Details field (format: "Database: X\nOption: Y\n...").
+// a finding's Details field.
 func parseDBFindingDetails(details string) (dbName, optionName string) {
 	for _, line := range strings.Split(details, "\n") {
 		line = strings.TrimSpace(line)
@@ -256,10 +279,9 @@ func parseDBFindingDetails(details string) (dbName, optionName string) {
 	return
 }
 
-// findCredsForDB finds wp-config.php credentials that match a given database name.
+// findCredsForDB finds wp-config.php credentials that match a database name.
 func findCredsForDB(dbName string) wpDBCreds {
 	wpConfigs, _ := osFS.Glob("/home/*/public_html/wp-config.php")
-	// Also check addon domains.
 	addonConfigs, _ := osFS.Glob("/home/*/*/wp-config.php")
 	wpConfigs = append(wpConfigs, addonConfigs...)
 
@@ -272,9 +294,24 @@ func findCredsForDB(dbName string) wpDBCreds {
 	return wpDBCreds{}
 }
 
-// extractWPSessionIPs reads all active WordPress user session tokens
-// and extracts the IP addresses. Returns deduplicated IPs.
-func extractWPSessionIPs(creds wpDBCreds, prefix string) []string {
+// readOptionValue reads the full value of a wp_option from the database.
+func readOptionValue(creds wpDBCreds, prefix, optionName string) string {
+	if !isValidOptionName(optionName) {
+		return ""
+	}
+	query := fmt.Sprintf(
+		"SELECT option_value FROM %soptions WHERE option_name='%s' LIMIT 1",
+		prefix, escapeSQLString(optionName))
+	lines := runMySQLQuery(creds, query)
+	if len(lines) == 0 {
+		return ""
+	}
+	return lines[0]
+}
+
+// extractSuspiciousSessionIPs reads WP session tokens and returns IPs that
+// are NOT infra IPs, not private, and not loopback.
+func extractSuspiciousSessionIPs(creds wpDBCreds, prefix string, infraIPs []string) []string {
 	query := fmt.Sprintf(
 		"SELECT meta_value FROM %susermeta WHERE meta_key='session_tokens' AND meta_value != ''",
 		prefix)
@@ -283,8 +320,6 @@ func extractWPSessionIPs(creds wpDBCreds, prefix string) []string {
 	seen := make(map[string]bool)
 	var ips []string
 
-	// WordPress stores sessions as serialized PHP arrays containing IP addresses.
-	// Extract IPs with a simple regex rather than parsing PHP serialization.
 	ipRe := regexp.MustCompile(`"ip";s:\d+:"([^"]+)"`)
 
 	for _, line := range lines {
@@ -294,9 +329,11 @@ func extractWPSessionIPs(creds wpDBCreds, prefix string) []string {
 				continue
 			}
 			ip := m[1]
-			// Validate it's a real IP and not loopback/private.
 			parsed := net.ParseIP(ip)
 			if parsed == nil || parsed.IsLoopback() || parsed.IsPrivate() {
+				continue
+			}
+			if isInfraIP(ip, infraIPs) {
 				continue
 			}
 			if !seen[ip] {
@@ -309,38 +346,76 @@ func extractWPSessionIPs(creds wpDBCreds, prefix string) []string {
 	return ips
 }
 
-// revokeAllWPSessions clears all session_tokens in wp_usermeta,
-// effectively logging out all WordPress users.
-func revokeAllWPSessions(creds wpDBCreds, prefix string) {
+// revokeCompromisedSessions clears session_tokens only for WP users whose
+// sessions contain non-infra, non-private IPs. Returns count of users revoked.
+func revokeCompromisedSessions(creds wpDBCreds, prefix string, infraIPs []string) int {
+	// Get user IDs with active sessions.
 	query := fmt.Sprintf(
-		"UPDATE %susermeta SET meta_value='' WHERE meta_key='session_tokens'",
+		"SELECT user_id, meta_value FROM %susermeta WHERE meta_key='session_tokens' AND meta_value != ''",
 		prefix)
-	runMySQLQuery(creds, query)
+	lines := runMySQLQuery(creds, query)
+
+	ipRe := regexp.MustCompile(`"ip";s:\d+:"([^"]+)"`)
+	revoked := 0
+
+	for _, line := range lines {
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		userID := strings.TrimSpace(parts[0])
+		sessionData := parts[1]
+
+		// Check if this user has any suspicious (non-infra, non-private) IPs.
+		hasSuspicious := false
+		matches := ipRe.FindAllStringSubmatch(sessionData, -1)
+		for _, m := range matches {
+			if len(m) < 2 {
+				continue
+			}
+			ip := m[1]
+			parsed := net.ParseIP(ip)
+			if parsed == nil || parsed.IsLoopback() || parsed.IsPrivate() {
+				continue
+			}
+			if isInfraIP(ip, infraIPs) {
+				continue
+			}
+			hasSuspicious = true
+			break
+		}
+
+		if hasSuspicious {
+			revokeQuery := fmt.Sprintf(
+				"UPDATE %susermeta SET meta_value='' WHERE user_id=%s AND meta_key='session_tokens'",
+				prefix, escapeSQLString(userID))
+			runMySQLQuery(creds, revokeQuery)
+			revoked++
+		}
+	}
+
+	return revoked
 }
 
-// cleanMaliciousOption removes malicious <script> injections from a
-// wp_options value. Preserves any legitimate content around the injection.
-// Returns true if the option was successfully cleaned.
-func cleanMaliciousOption(creds wpDBCreds, prefix, optionName string) bool {
-	// Read current value.
-	query := fmt.Sprintf(
-		"SELECT option_value FROM %soptions WHERE option_name='%s' LIMIT 1",
-		prefix, escapeSQLString(optionName))
-	lines := runMySQLQuery(creds, query)
-	if len(lines) == 0 {
+// backupAndCleanOption saves the original value to a backup option, then
+// removes malicious script injections from the option value.
+func backupAndCleanOption(creds wpDBCreds, prefix, optionName, originalValue, maliciousURL string) bool {
+	cleaned := removeMaliciousScripts(originalValue)
+	if cleaned == originalValue {
 		return false
 	}
 
-	original := lines[0]
-
-	// Remove malicious script tags (including the style-break pattern).
-	// Pattern: </style><script src=...></script><style>
-	cleaned := removeMaliciousScripts(original)
-	if cleaned == original {
-		return false // nothing to clean
+	// Save original value as a backup option (csm_backup_<name>_<timestamp>).
+	backupName := fmt.Sprintf("csm_backup_%s_%d", optionName, time.Now().Unix())
+	if len(backupName) > 191 {
+		backupName = backupName[:191]
 	}
+	backupQuery := fmt.Sprintf(
+		"INSERT INTO %soptions (option_name, option_value, autoload) VALUES ('%s', '%s', 'no')",
+		prefix, escapeSQLString(backupName), escapeSQLString(originalValue))
+	runMySQLQuery(creds, backupQuery)
 
-	// Write back the cleaned value.
+	// Write the cleaned value.
 	updateQuery := fmt.Sprintf(
 		"UPDATE %soptions SET option_value='%s' WHERE option_name='%s'",
 		prefix, escapeSQLString(cleaned), escapeSQLString(optionName))
@@ -349,17 +424,19 @@ func cleanMaliciousOption(creds wpDBCreds, prefix, optionName string) bool {
 	return true
 }
 
-// maliciousScriptRe matches injected script tags, including the common
-// style-break pattern: </style><script src=...></script><style>
+// --- Script removal ---
+
+// maliciousScriptRe matches the style-break injection pattern:
+// </style><script src=...></script><style>
 var maliciousScriptRe = regexp.MustCompile(
 	`(?i)</style>\s*<script[^>]*src\s*=\s*[^>]+>\s*</script>\s*<style>`)
 
-// simpleScriptRe matches standalone <script src="malicious.example.com">
+// simpleScriptRe matches standalone <script src="..."></script> tags.
 var simpleScriptRe = regexp.MustCompile(
 	`(?i)<script[^>]*src\s*=\s*["']?https?://[^"'\s>]+["']?[^>]*>\s*</script>`)
 
 // removeMaliciousScripts strips malicious <script> injections from content,
-// preserving legitimate scripts from known safe domains.
+// preserving scripts from known safe domains.
 func removeMaliciousScripts(content string) string {
 	// First pass: remove style-break pattern (always malicious).
 	content = maliciousScriptRe.ReplaceAllString(content, "")
@@ -370,17 +447,19 @@ func removeMaliciousScripts(content string) string {
 		if len(urls) >= 2 && !isSafeScriptDomain(urls[1]) {
 			return ""
 		}
-		return match // keep safe scripts
+		return match
 	})
 
 	return strings.TrimSpace(content)
 }
 
-// escapeSQLString escapes single quotes for safe SQL string interpolation.
-// This is used for UPDATE queries where parameterized queries aren't
-// available through the mysql CLI.
+// escapeSQLString escapes special characters for MySQL string interpolation.
 func escapeSQLString(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `'`, `\'`)
+	s = strings.ReplaceAll(s, "\x00", `\0`)
+	s = strings.ReplaceAll(s, "\n", `\n`)
+	s = strings.ReplaceAll(s, "\r", `\r`)
+	s = strings.ReplaceAll(s, "\x1a", `\Z`)
 	return s
 }
