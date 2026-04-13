@@ -216,8 +216,8 @@ func TestSendEmailFallbackPath(t *testing.T) {
 	go func() {
 		defer close(done)
 		// First connection: smtp.SendMail — report auth failure to force fallback
-		conn, err := ln.Accept()
-		if err != nil {
+		conn, acceptErr := ln.Accept()
+		if acceptErr != nil {
 			return
 		}
 		write := func(s string) { _, _ = conn.Write([]byte(s)) }
@@ -255,8 +255,8 @@ func TestSendEmailFallbackPath(t *testing.T) {
 
 	secondConn:
 		// Second connection: fallback Dial path
-		conn2, err := ln.Accept()
-		if err != nil {
+		conn2, acceptErr2 := ln.Accept()
+		if acceptErr2 != nil {
 			return
 		}
 		defer func() { _ = conn2.Close() }()
