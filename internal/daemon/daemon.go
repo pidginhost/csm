@@ -462,11 +462,13 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// Log to history
 	d.store.AppendHistory(newFindings)
 
-	// Kill and quarantine only run on NEW findings (don't re-kill/re-quarantine)
+	// Kill, quarantine, and DB cleanup only run on NEW findings
 	killActions := checks.AutoKillProcesses(d.cfg, newFindings)
 	quarantineActions := checks.AutoQuarantineFiles(d.cfg, newFindings)
+	dbCleanActions := checks.AutoRespondDBMalware(d.cfg, newFindings)
 	newFindings = append(newFindings, killActions...)
 	newFindings = append(newFindings, quarantineActions...)
+	newFindings = append(newFindings, dbCleanActions...)
 
 	// Correlation
 	extra := checks.CorrelateFindings(newFindings)

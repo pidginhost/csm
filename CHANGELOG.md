@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Automatic database malware response. When CSM detects a malicious external script injection in WordPress database options, it now blocks attacker IPs extracted from active WordPress sessions, revokes all sessions, and cleans the malicious content. Enabled via `auto_response.clean_database: true`. Only acts on confirmed malicious URLs — legitimate services (Google Tag Manager, Analytics, Mailchimp, etc.) are explicitly excluded.
 - Expanded test coverage from 35% to 57% (Linux CI). Introduced OS/CmdRunner dependency injection interfaces (`provider.go`) enabling all 62 Check* functions to be unit-tested with mock filesystem and command data.
 - Added 350+ test functions including Linux-specific (`//go:build linux`) tests for firewall engine state management and fanotify helpers. Extracted pure IP helpers from `engine.go` into cross-platform `ip_helpers.go`.
 - Fixed `-short` flag in both GitLab CI and GitHub Actions workflows which was skipping tests. Fixed data race in wpcheck httpClient test swap.

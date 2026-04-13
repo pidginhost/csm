@@ -83,6 +83,7 @@ type Config struct {
 		PermBlock          bool   `yaml:"permblock"`           // auto-promote to permanent after N temp blocks
 		PermBlockCount     int    `yaml:"permblock_count"`     // temp blocks before permanent (default 4)
 		PermBlockInterval  string `yaml:"permblock_interval"`  // window for counting temp blocks (default "24h")
+		CleanDatabase      bool   `yaml:"clean_database"`      // auto-clean malicious DB injections, revoke sessions, block attacker IPs (default false)
 	} `yaml:"auto_response"`
 
 	Challenge struct {
