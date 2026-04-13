@@ -75,6 +75,20 @@ func TestRealCmdRunWithEnv(t *testing.T) {
 	_ = out
 }
 
+func TestRunCmdCombinedContextWrapper(t *testing.T) {
+	// Test the wrapper function directly (not via the real implementation).
+	withMockCmd(t, &mockCmd{
+		runContext: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			return []byte("combined"), nil
+		},
+	})
+
+	out, err := runCmdCombinedContext(context.Background(), "test")
+	if err != nil || string(out) != "combined" {
+		t.Errorf("got %q, %v", out, err)
+	}
+}
+
 func TestRealCmdLookPath(t *testing.T) {
 	r := realCmd{}
 	path, err := r.LookPath("echo")
