@@ -7,8 +7,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
+
+// httpClientMu guards swaps of the global httpClient in tests to avoid
+// data races when -race is enabled with parallel test execution.
+var httpClientMu sync.Mutex
 
 // --- FetchChecksums + httpClient override ------------------------------
 
@@ -16,9 +21,13 @@ import (
 // server-backed client. Restores the default on cleanup.
 func withTestHTTPClient(t *testing.T, srv *httptest.Server) {
 	t.Helper()
+	httpClientMu.Lock()
 	orig := httpClient
 	httpClient = srv.Client()
-	t.Cleanup(func() { httpClient = orig })
+	t.Cleanup(func() {
+		httpClient = orig
+		httpClientMu.Unlock()
+	})
 }
 
 func TestFetchChecksumsSuccess(t *testing.T) {
