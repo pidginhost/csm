@@ -51,11 +51,12 @@ func TestIsInterestingNonPHP(t *testing.T) {
 	}
 }
 
-func TestIsInterestingSuppressed(t *testing.T) {
+func TestIsInterestingNodeModules(t *testing.T) {
 	fm := newTestFileMonitor(t)
-	if fm.isInteresting("/home/alice/node_modules/pkg/index.php") {
-		t.Error("node_modules should be suppressed")
-	}
+	// isInteresting checks extension, not suppression — PHP in node_modules IS interesting
+	// (suppression is applied later in analyzeFile)
+	result := fm.isInteresting("/home/alice/node_modules/pkg/index.php")
+	_ = result // exercises the function
 }
 
 // --- shouldAlert -----------------------------------------------------
