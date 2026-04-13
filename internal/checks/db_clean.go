@@ -107,7 +107,7 @@ func DBRevokeUser(account string, userID int, demote, preview bool) DBCleanResul
 	query := fmt.Sprintf(
 		"SELECT user_login, user_email FROM %susers WHERE ID=%d LIMIT 1",
 		prefix, userID)
-	lines := runMySQLQuery(creds, query)
+	lines := runMySQLQueryRoot(creds.dbName, query)
 	if len(lines) == 0 {
 		result.Message = fmt.Sprintf("User ID %d not found in %s", userID, creds.dbName)
 		return result
@@ -125,7 +125,7 @@ func DBRevokeUser(account string, userID int, demote, preview bool) DBCleanResul
 	sessQuery := fmt.Sprintf(
 		"SELECT LEFT(meta_value, 200) FROM %susermeta WHERE user_id=%d AND meta_key='session_tokens'",
 		prefix, userID)
-	sessLines := runMySQLQuery(creds, sessQuery)
+	sessLines := runMySQLQueryRoot(creds.dbName, sessQuery)
 	sessionCount := 0
 	if len(sessLines) > 0 && sessLines[0] != "" {
 		sessionCount = strings.Count(sessLines[0], `"expiration"`)
@@ -146,7 +146,7 @@ func DBRevokeUser(account string, userID int, demote, preview bool) DBCleanResul
 	revokeQuery := fmt.Sprintf(
 		"UPDATE %susermeta SET meta_value='' WHERE user_id=%d AND meta_key='session_tokens'",
 		prefix, userID)
-	runMySQLQuery(creds, revokeQuery)
+	runMySQLQueryRoot(creds.dbName, revokeQuery)
 	result.Details = append(result.Details, "Sessions revoked")
 
 	// Demote to subscriber.
@@ -155,13 +155,13 @@ func DBRevokeUser(account string, userID int, demote, preview bool) DBCleanResul
 		capQuery := fmt.Sprintf(
 			"SELECT meta_key FROM %susermeta WHERE user_id=%d AND meta_key LIKE '%%capabilities'",
 			prefix, userID)
-		capLines := runMySQLQuery(creds, capQuery)
+		capLines := runMySQLQueryRoot(creds.dbName, capQuery)
 		if len(capLines) > 0 {
 			capKey := capLines[0]
 			demoteQuery := fmt.Sprintf(
 				"UPDATE %susermeta SET meta_value='a:1:{s:10:\"subscriber\";b:1;}' WHERE user_id=%d AND meta_key='%s'",
 				prefix, userID, escapeSQLString(capKey))
-			runMySQLQuery(creds, demoteQuery)
+			runMySQLQueryRoot(creds.dbName, demoteQuery)
 			result.Details = append(result.Details, "Demoted to subscriber role")
 		}
 	}
@@ -206,7 +206,7 @@ func DBDeleteSpam(account string, preview bool) DBCleanResult {
 	totalCount := 0
 	for _, p := range patterns {
 		countQuery := "SELECT COUNT(*) FROM " + prefix + "posts WHERE post_type='post' AND post_status='publish' AND (post_content LIKE '" + p.sqlLike + "' OR post_title LIKE '" + p.sqlLike + "')"
-		lines := runMySQLQuery(creds, countQuery)
+		lines := runMySQLQueryRoot(creds.dbName, countQuery)
 		if len(lines) > 0 {
 			var count int
 			if _, err := fmt.Sscanf(lines[0], "%d", &count); err == nil && count > 0 {
@@ -233,7 +233,7 @@ func DBDeleteSpam(account string, preview bool) DBCleanResult {
 	for _, p := range patterns {
 		// Get IDs of matching posts.
 		idQuery := "SELECT ID FROM " + prefix + "posts WHERE post_type='post' AND post_status='publish' AND (post_content LIKE '" + p.sqlLike + "' OR post_title LIKE '" + p.sqlLike + "')"
-		idLines := runMySQLQuery(creds, idQuery)
+		idLines := runMySQLQueryRoot(creds.dbName, idQuery)
 		if len(idLines) == 0 {
 			continue
 		}
@@ -262,16 +262,16 @@ func DBDeleteSpam(account string, preview bool) DBCleanResult {
 			idList := strings.Join(validIDs, ",")
 
 			// Delete postmeta for these posts.
-			runMySQLQuery(creds, fmt.Sprintf(
+			runMySQLQueryRoot(creds.dbName, fmt.Sprintf(
 				"DELETE FROM %spostmeta WHERE post_id IN (%s)", prefix, idList))
 
 			// Delete revisions.
-			runMySQLQuery(creds, fmt.Sprintf(
+			runMySQLQueryRoot(creds.dbName, fmt.Sprintf(
 				"DELETE FROM %sposts WHERE post_parent IN (%s) AND post_type='revision'",
 				prefix, idList))
 
 			// Delete the posts themselves.
-			runMySQLQuery(creds, fmt.Sprintf(
+			runMySQLQueryRoot(creds.dbName, fmt.Sprintf(
 				"DELETE FROM %sposts WHERE ID IN (%s) AND post_type='post' AND post_status='publish'",
 				prefix, idList))
 
@@ -307,11 +307,12 @@ func FormatDBCleanResult(r DBCleanResult) string {
 // --- helpers ---
 
 // findCredsForAccount finds WP database credentials for a cPanel account.
+// Returns root-authenticated credentials that use /root/.my.cnf instead of
+// wp-config.php passwords (which are often stale on cPanel servers).
 func findCredsForAccount(account string) (wpDBCreds, string) {
 	patterns := []string{
 		fmt.Sprintf("/home/%s/public_html/wp-config.php", account),
 	}
-	// Also check addon domains.
 	addonConfigs, _ := osFS.Glob(fmt.Sprintf("/home/%s/*/wp-config.php", account))
 	patterns = append(patterns, addonConfigs...)
 
@@ -322,8 +323,36 @@ func findCredsForAccount(account string) (wpDBCreds, string) {
 			if prefix == "" {
 				prefix = "wp_"
 			}
+			// Use root auth — CSM runs as root with /root/.my.cnf.
+			// wp-config.php passwords are unreliable (cPanel password
+			// rotations don't always update the file).
+			creds.dbUser = ""
+			creds.dbPass = ""
+			creds.dbHost = "localhost"
 			return creds, prefix
 		}
 	}
 	return wpDBCreds{}, ""
+}
+
+// runMySQLQueryRoot runs a MySQL query using root credentials from
+// /root/.my.cnf (no explicit user/password args).
+func runMySQLQueryRoot(dbName, query string) []string {
+	args := []string{
+		"-N", "-B",
+		dbName,
+		"-e", query,
+	}
+	out, err := runCmd("mysql", args...)
+	if err != nil || out == nil {
+		return nil
+	}
+	var lines []string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
 }
