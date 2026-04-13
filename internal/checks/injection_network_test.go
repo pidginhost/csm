@@ -126,7 +126,7 @@ func TestCheckOutboundConnectionsC2Detection(t *testing.T) {
 	data := procTCPHeader +
 		tcpLine("0",
 			hexAddr(192, 168, 1, 100, 54321), // local: ephemeral port
-			hexAddr(10, 20, 30, 40, 443),      // remote: C2 IP on 443
+			hexAddr(10, 20, 30, 40, 443),     // remote: C2 IP on 443
 			"01")
 
 	withMockOS(t, &mockOS{
@@ -162,7 +162,7 @@ func TestCheckOutboundConnectionsBackdoorLocalPort(t *testing.T) {
 	data := procTCPHeader +
 		tcpLine("0",
 			hexAddr(192, 168, 1, 100, 31337), // local: backdoor port
-			hexAddr(203, 0, 113, 5, 54321),    // remote: attacker
+			hexAddr(203, 0, 113, 5, 54321),   // remote: attacker
 			"01")
 
 	withMockOS(t, &mockOS{
@@ -198,7 +198,7 @@ func TestCheckOutboundConnectionsBackdoorOutbound(t *testing.T) {
 	data := procTCPHeader +
 		tcpLine("0",
 			hexAddr(192, 168, 1, 100, 49152), // local: ephemeral
-			hexAddr(203, 0, 113, 5, 4444),     // remote: backdoor port
+			hexAddr(203, 0, 113, 5, 4444),    // remote: backdoor port
 			"01")
 
 	withMockOS(t, &mockOS{
@@ -232,8 +232,8 @@ func TestCheckOutboundConnectionsBackdoorOutboundSkippedForKnownService(t *testi
 	// Local port is known service (80) -- outbound backdoor check is skipped
 	data := procTCPHeader +
 		tcpLine("0",
-			hexAddr(192, 168, 1, 100, 80),  // local: HTTP (known service)
-			hexAddr(203, 0, 113, 5, 4444),   // remote: backdoor port
+			hexAddr(192, 168, 1, 100, 80), // local: HTTP (known service)
+			hexAddr(203, 0, 113, 5, 4444), // remote: backdoor port
 			"01")
 
 	withMockOS(t, &mockOS{
@@ -258,7 +258,7 @@ func TestCheckOutboundConnectionsBackdoorOutboundSkippedForInfraIP(t *testing.T)
 	data := procTCPHeader +
 		tcpLine("0",
 			hexAddr(192, 168, 1, 100, 49152), // local: ephemeral
-			hexAddr(10, 0, 0, 5, 4444),        // remote: infra IP on backdoor port
+			hexAddr(10, 0, 0, 5, 4444),       // remote: infra IP on backdoor port
 			"01")
 
 	withMockOS(t, &mockOS{
