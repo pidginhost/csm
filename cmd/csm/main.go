@@ -98,6 +98,8 @@ func main() {
 		runUpdateGeoIP()
 	case "clean":
 		runClean()
+	case "db-clean":
+		runDBClean()
 	case "scan":
 		runScanAccount()
 	case "firewall":
@@ -138,6 +140,7 @@ Commands:
   update-rules  Download latest malware signature rules
   update-geoip  Download latest MaxMind GeoLite2 databases
   clean <path>  Attempt to clean an infected PHP file (backup created first)
+  db-clean ...  WordPress database cleanup (see: csm db-clean --help)
   scan <user>   Scan a single cPanel account (add --alert to send alerts)
   firewall ...  Firewall management (deny, allow, status, ports, etc.)
   enable        Enable optional features (--php-shield)
@@ -650,6 +653,107 @@ func runClean() {
 	if !result.Cleaned {
 		os.Exit(1)
 	}
+}
+
+func runDBClean() {
+	if len(os.Args) < 3 {
+		printDBCleanUsage()
+		os.Exit(1)
+	}
+
+	subcmd := os.Args[2]
+	preview := false
+	for _, arg := range os.Args[3:] {
+		if arg == "--preview" || arg == "--dry-run" {
+			preview = true
+		}
+	}
+
+	switch subcmd {
+	case "--help", "help":
+		printDBCleanUsage()
+
+	case "--option":
+		if len(os.Args) < 5 {
+			fmt.Fprintf(os.Stderr, "Usage: csm db-clean --option <account> <option_name> [--preview]\n")
+			os.Exit(1)
+		}
+		account := os.Args[3]
+		optionName := os.Args[4]
+		result := checks.DBCleanOption(account, optionName, preview)
+		fmt.Fprint(os.Stderr, checks.FormatDBCleanResult(result))
+		if !result.Success {
+			os.Exit(1)
+		}
+
+	case "--revoke-user":
+		if len(os.Args) < 5 {
+			fmt.Fprintf(os.Stderr, "Usage: csm db-clean --revoke-user <account> <user_id> [--demote] [--preview]\n")
+			os.Exit(1)
+		}
+		account := os.Args[3]
+		var userID int
+		if _, err := fmt.Sscanf(os.Args[4], "%d", &userID); err != nil || userID <= 0 {
+			fmt.Fprintf(os.Stderr, "Invalid user ID: %s\n", os.Args[4])
+			os.Exit(1)
+		}
+		demote := false
+		for _, arg := range os.Args[5:] {
+			if arg == "--demote" {
+				demote = true
+			}
+		}
+		result := checks.DBRevokeUser(account, userID, demote, preview)
+		fmt.Fprint(os.Stderr, checks.FormatDBCleanResult(result))
+		if !result.Success {
+			os.Exit(1)
+		}
+
+	case "--delete-spam":
+		if len(os.Args) < 4 {
+			fmt.Fprintf(os.Stderr, "Usage: csm db-clean --delete-spam <account> [--preview]\n")
+			os.Exit(1)
+		}
+		account := os.Args[3]
+		result := checks.DBDeleteSpam(account, preview)
+		fmt.Fprint(os.Stderr, checks.FormatDBCleanResult(result))
+		if !result.Success {
+			os.Exit(1)
+		}
+
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown db-clean subcommand: %s\n", subcmd)
+		printDBCleanUsage()
+		os.Exit(1)
+	}
+}
+
+func printDBCleanUsage() {
+	fmt.Fprintf(os.Stderr, `csm db-clean - WordPress database cleanup
+
+Usage:
+  csm db-clean --option <account> <option_name> [--preview]
+      Remove malicious script injection from a wp_option.
+      Creates a backup option before modifying.
+
+  csm db-clean --revoke-user <account> <user_id> [--demote] [--preview]
+      Revoke all WordPress sessions for a user.
+      With --demote: also change role to subscriber.
+
+  csm db-clean --delete-spam <account> [--preview]
+      Delete published posts matching spam patterns (casino, viagra, etc).
+      Only deletes post_type='post', post_status='publish'.
+
+Options:
+  --preview   Show what would be done without modifying the database.
+  --demote    (revoke-user only) Also demote user to subscriber role.
+
+Examples:
+  csm db-clean --option filmetaricom td_live_css_local_storage --preview
+  csm db-clean --revoke-user filmetaricom 39 --demote
+  csm db-clean --delete-spam filmetaricom --preview
+  csm db-clean --delete-spam filmetaricom
+`)
 }
 
 func runScanAccount() {
