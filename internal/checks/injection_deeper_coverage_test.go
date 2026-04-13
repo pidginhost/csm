@@ -38,9 +38,7 @@ func TestScanDomlogsSkipsStaleFiles(t *testing.T) {
 			}
 			return nil, nil
 		},
-		stat: func(name string) (os.FileInfo, error) {
-			return os.Stat(name)
-		},
+		stat: os.Stat,
 	})
 
 	scanned := scanDomlogs(nil, wpLogin, xmlrpc, userEnum)

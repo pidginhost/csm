@@ -1213,7 +1213,7 @@ func TestAPIHistoryFilteredPaginationEmpty(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("bad JSON: %v", err)
 	}
-	if resp.Findings != nil {
-		// Should be nil/empty since offset is past end
+	if arr, ok := resp.Findings.([]interface{}); ok && len(arr) > 0 {
+		t.Errorf("expected empty findings at large offset, got %d", len(arr))
 	}
 }
