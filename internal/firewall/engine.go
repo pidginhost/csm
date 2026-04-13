@@ -1857,51 +1857,7 @@ func (e *Engine) removeSubnetState(cidr string) {
 	e.saveState(&state)
 }
 
-// --- IP helpers ---
-
-func nextIP(ip net.IP) net.IP {
-	next := make(net.IP, len(ip))
-	copy(next, ip)
-	for i := len(next) - 1; i >= 0; i-- {
-		next[i]++
-		if next[i] != 0 {
-			break
-		}
-	}
-	return next
-}
-
-func fileExistsFirewall(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
-}
-
-func lastIPInRange(network *net.IPNet) net.IP {
-	ip := network.IP.To4()
-	if ip == nil {
-		ip = network.IP.To16()
-	}
-	if ip == nil {
-		return nil
-	}
-	mask := network.Mask
-	last := make(net.IP, len(ip))
-	for i := range ip {
-		if i < len(mask) {
-			last[i] = ip[i] | ^mask[i]
-		} else {
-			last[i] = ip[i]
-		}
-	}
-	return last
-}
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
+// IP helpers (nextIP, lastIPInRange, fileExistsFirewall) moved to ip_helpers.go (no build tag).
 
 // loadCountryCIDRs reads CIDR ranges from a country file.
 // Expected format: one CIDR per line in {dbPath}/{CODE}.cidr
