@@ -205,9 +205,7 @@ func DBDeleteSpam(account string, preview bool) DBCleanResult {
 
 	totalCount := 0
 	for _, p := range patterns {
-		countQuery := fmt.Sprintf(
-			"SELECT COUNT(*) FROM %sposts WHERE post_type='post' AND post_status='publish' AND (post_content LIKE '%s' OR post_title LIKE '%s')",
-			prefix, p.sqlLike, p.sqlLike)
+		countQuery := "SELECT COUNT(*) FROM " + prefix + "posts WHERE post_type='post' AND post_status='publish' AND (post_content LIKE '" + p.sqlLike + "' OR post_title LIKE '" + p.sqlLike + "')"
 		lines := runMySQLQuery(creds, countQuery)
 		if len(lines) > 0 {
 			var count int
@@ -234,9 +232,7 @@ func DBDeleteSpam(account string, preview bool) DBCleanResult {
 	deleted := 0
 	for _, p := range patterns {
 		// Get IDs of matching posts.
-		idQuery := fmt.Sprintf(
-			"SELECT ID FROM %sposts WHERE post_type='post' AND post_status='publish' AND (post_content LIKE '%s' OR post_title LIKE '%s')",
-			prefix, p.sqlLike, p.sqlLike)
+		idQuery := "SELECT ID FROM " + prefix + "posts WHERE post_type='post' AND post_status='publish' AND (post_content LIKE '" + p.sqlLike + "' OR post_title LIKE '" + p.sqlLike + "')"
 		idLines := runMySQLQuery(creds, idQuery)
 		if len(idLines) == 0 {
 			continue
