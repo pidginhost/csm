@@ -34,7 +34,7 @@ jobs:
       - name: Run tests with coverage
         run: |
           set -e
-          go test -short -coverprofile=coverage.out ./... || true
+          go test -timeout=300s -coverprofile=coverage.out ./... || true
           go tool cover -func=coverage.out | tail -1
 
       - name: Generate HTML coverage report
