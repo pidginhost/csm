@@ -252,28 +252,49 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 // isKnownSafeDBOption returns true for wp_options entries that legitimately
 // contain patterns like eval(), base64_decode, <script> etc.
 func isKnownSafeDBOption(name string) bool {
-	// Exact matches
+	// Exact matches — options that legitimately contain script/eval patterns
 	safeOptions := map[string]bool{
-		"active_plugins": true,
-		"widget_text":    true,
-		"cron":           true,
+		"active_plugins":     true,
+		"widget_text":        true,
+		"widget_block":       true,
+		"widget_custom_html": true,
+		"cron":               true,
+
+		// Tracking/analytics plugins that store JavaScript snippets
+		"ihaf_insert_header": true,
+		"ihaf_insert_footer": true,
+		"hefo":               true, // Header Footer Code Manager
+		"wpcode_snippets":    true,
+
+		// Plugin/theme config that contains serialized JS/HTML
+		"plugin_maintenance-mode": true,
+		"GTranslate":              true,
+		"betheme":                 true,
+
+		// Jetpack sync error logs (contain serialized WP_Error objects)
+		"jp_sync_error_log_sync": true,
+
+		// Anti-Malware Security plugin (stores scan data)
+		"GOTMLS_get_URL_array": true,
 	}
 	if safeOptions[name] {
 		return true
 	}
 
-	// Prefix matches - security plugins, caching, core transients
+	// Prefix matches - security plugins, caching, analytics, themes
 	safePrefixes := []string{
 		// Security plugins (store rules/signatures with eval/script patterns)
 		"wordfence", "wf_",
 		"ithemes-security", "aio_wp_security",
 		"imunify_security", "_transient_imunify_security",
 		"csm_security", "_transient_csm_security",
+		"csm_backup_", // CSM db-clean backups
 		"sucuri_", "bulletproof_",
 
-		// WordPress core transients (RSS feeds, update checks)
+		// WordPress core transients (RSS feeds, update checks, minified assets)
 		"_site_transient_feed_",
 		"_site_transient_update_",
+		"_site_transient_minify:", // W3 Total Cache / Hummingbird minified JS/CSS
 		"_transient_feed_",
 		"_transient_dash_",
 		"_transient_timeout_",
@@ -281,6 +302,19 @@ func isKnownSafeDBOption(name string) bool {
 		// Caching plugins
 		"litespeed", "_lscache_",
 		"w3tc_", "wc_",
+
+		// Analytics/tracking plugins (store GTM/GA/FB code in options)
+		"seopress_",
+		"gtm_ecommerce_",
+		"mailchimp-woocommerce-",
+		"breakdance_breakdance_settings_tracking_",
+		"options_global_header_javascript",
+		"options_global_footer_javascript",
+
+		// Theme settings (contain HTML templates with script references)
+		"theme_mods_",
+		"Newspaper_",
+		"td_",
 	}
 	nameLower := strings.ToLower(name)
 	for _, prefix := range safePrefixes {
@@ -296,10 +330,13 @@ func isKnownSafeDBOption(name string) bool {
 func checkWPPosts(user string, creds wpDBCreds, prefix string) []alert.Finding {
 	var findings []alert.Finding
 
-	// Scan for malicious patterns in published posts
+	// Scan for malicious patterns in published posts.
+	// Exclude post types that legitimately contain JavaScript:
+	// wphb_minify_group (Hummingbird minified bundles),
+	// wpforms (contact form configs), revision (drafts).
 	for _, mp := range dbMalwarePatterns {
 		query := fmt.Sprintf(
-			"SELECT ID, post_title FROM %sposts WHERE post_status='publish' AND (post_content LIKE '%%%s%%' OR post_content_filtered LIKE '%%%s%%') LIMIT 5",
+			"SELECT ID, post_title FROM %sposts WHERE post_status='publish' AND post_type NOT IN ('wphb_minify_group','wpforms','revision','customize_changeset','oembed_cache','nav_menu_item','wp_template','wp_template_part','wp_global_styles','wp_navigation') AND (post_content LIKE '%%%s%%' OR post_content_filtered LIKE '%%%s%%') LIMIT 5",
 			prefix, mp.pattern, mp.pattern)
 		lines := runMySQLQuery(creds, query)
 
