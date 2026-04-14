@@ -61,9 +61,18 @@ jobs:
               echo "FALLBACK: unit-only" > coverage-merge-status.txt
               exit 0
             fi
-            echo "=== Integration profile head ==="
+            echo "=== Integration profile head (raw) ==="
             head -3 integration-coverage.out
-            echo "=== Integration profile lines ==="
+            echo "=== Integration profile lines (raw) ==="
+            wc -l integration-coverage.out
+
+            # Strip cmd/csm entries — they're 0% coverage CLI glue that
+            # was instrumented during the GitLab integration job's pre-merge
+            # `go test ./...` step. Including them in the merged profile
+            # adds uncovered statements to the denominator and tanks the %.
+            grep -v 'github.com/pidginhost/csm/cmd/csm/' integration-coverage.out > integration-coverage.cleaned.out
+            mv integration-coverage.cleaned.out integration-coverage.out
+            echo "=== Integration profile lines (after cmd/csm strip) ==="
             wc -l integration-coverage.out
 
             go install github.com/wadey/gocovmerge@latest 2>&1
