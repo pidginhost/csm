@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"net"
 	"strings"
 	"testing"
@@ -172,5 +173,63 @@ func TestSMTPAuthTracker_EmptyIPIgnored(t *testing.T) {
 	}
 	if tr.Size() != 0 {
 		t.Errorf("Size() = %d, want 0 for empty-IP-only input", tr.Size())
+	}
+}
+
+func TestSMTPAuthTracker_SubnetSprayThreshold(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestTracker(t, clock)
+	var fired *alert.Finding
+	// 8 unique IPs in 203.0.113.0/24, each doing 1 failure (below per-IP threshold).
+	for i := 1; i <= 8; i++ {
+		ip := fmt.Sprintf("203.0.113.%d", i)
+		for _, f := range tr.Record(ip, "") {
+			if f.Check == "smtp_subnet_spray" {
+				cp := f
+				fired = &cp
+			}
+		}
+	}
+	if fired == nil {
+		t.Fatalf("expected smtp_subnet_spray finding after 8 unique IPs in /24")
+	}
+	if fired.Severity != alert.Critical {
+		t.Errorf("severity = %v, want Critical", fired.Severity)
+	}
+	if !strings.Contains(fired.Message, "203.0.113.0/24") {
+		t.Errorf("message %q does not contain expected CIDR", fired.Message)
+	}
+	if !strings.Contains(fired.Message, " from ") {
+		t.Errorf("message %q missing ' from ' separator for extractCIDRFromFinding", fired.Message)
+	}
+}
+
+func TestSMTPAuthTracker_SubnetSpraySuppression(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestTracker(t, clock)
+	for i := 1; i <= 8; i++ {
+		tr.Record(fmt.Sprintf("203.0.113.%d", i), "")
+	}
+	// Adding more IPs inside the suppression window must not re-emit.
+	for i := 9; i <= 20; i++ {
+		out := tr.Record(fmt.Sprintf("203.0.113.%d", i), "")
+		for _, f := range out {
+			if f.Check == "smtp_subnet_spray" {
+				t.Fatalf("duplicate smtp_subnet_spray finding in suppression window at i=%d", i)
+			}
+		}
+	}
+}
+
+func TestSMTPAuthTracker_SubnetSprayIPv6Skipped(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestTracker(t, clock)
+	for i := 0; i < 20; i++ {
+		out := tr.Record(fmt.Sprintf("2001:db8::%x", i+1), "")
+		for _, f := range out {
+			if f.Check == "smtp_subnet_spray" {
+				t.Fatalf("subnet spray finding unexpectedly emitted for IPv6 at i=%d", i)
+			}
+		}
 	}
 }

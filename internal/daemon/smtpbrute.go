@@ -124,6 +124,30 @@ func (t *smtpAuthTracker) Record(ip, account string) []alert.Finding {
 		})
 	}
 
+	// --- Per-/24 subnet tracker (IPv4 only) ---
+	if prefix := extractPrefix24Daemon(ip); prefix != "" {
+		s, ok := t.subnets[prefix]
+		if !ok {
+			s = &smtpSubnetEntry{ips: make(map[string]time.Time)}
+			t.subnets[prefix] = s
+		}
+		pruneSubnetIPs(s, cutoff)
+		s.ips[ip] = now
+		s.lastSeen = now
+
+		if len(s.ips) >= t.subnetThreshold && !now.Before(s.suppressed) {
+			s.suppressed = now.Add(t.suppression)
+			findings = append(findings, alert.Finding{
+				Severity: alert.Critical,
+				Check:    "smtp_subnet_spray",
+				Message: fmt.Sprintf("SMTP password spray from %s.0/24: %d unique IPs in %v",
+					prefix, len(s.ips), t.window),
+				Details:   "Real-time detection of dovecot_login auth failures from many IPs in one /24",
+				Timestamp: now,
+			})
+		}
+	}
+
 	return findings
 }
 
@@ -136,6 +160,41 @@ func pruneTimes(times []time.Time, cutoff time.Time) []time.Time {
 		}
 	}
 	return recent
+}
+
+// extractPrefix24Daemon returns the first three octets of an IPv4 address as
+// "a.b.c", or "" if the input isn't an IPv4 address in dotted-quad form.
+func extractPrefix24Daemon(ip string) string {
+	parts := 0
+	end := 0
+	for i := 0; i < len(ip); i++ {
+		if ip[i] == '.' {
+			parts++
+			if parts == 3 {
+				end = i
+				break
+			}
+		}
+	}
+	if parts != 3 {
+		return ""
+	}
+	// Reject IPv6 mapped or containing colons.
+	for i := 0; i < end; i++ {
+		if ip[i] == ':' {
+			return ""
+		}
+	}
+	return ip[:end]
+}
+
+// pruneSubnetIPs drops per-/24 IP entries whose last-seen is older than cutoff.
+func pruneSubnetIPs(s *smtpSubnetEntry, cutoff time.Time) {
+	for ip, ts := range s.ips {
+		if ts.Before(cutoff) {
+			delete(s.ips, ip)
+		}
+	}
 }
 
 // Purge is implemented later.
