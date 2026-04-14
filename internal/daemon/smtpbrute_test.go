@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -287,4 +288,47 @@ func TestSMTPAuthTracker_AccountSpray_EmptyAccountIgnored(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestSMTPAuthTracker_PurgeRemovesExpired(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestTracker(t, clock)
+	tr.Record("203.0.113.5", "victim@example.com")
+	if tr.Size() == 0 {
+		t.Fatalf("expected non-zero size after Record")
+	}
+	clock.advance(70 * time.Minute) // past window and suppression
+	tr.Purge()
+	if got := tr.Size(); got != 0 {
+		t.Errorf("Size() after Purge = %d, want 0", got)
+	}
+}
+
+func TestSMTPAuthTracker_MaxTrackedEviction(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newSMTPAuthTracker(5, 8, 12, 10*time.Minute, 60*time.Minute, 10, clock.Now)
+	for i := 0; i < 15; i++ {
+		clock.advance(1 * time.Second)
+		tr.Record(fmt.Sprintf("203.0.%d.1", i+1), "")
+	}
+	if got := len(tr.ips); got > 10 {
+		t.Errorf("len(ips) = %d, want <= 10 (maxTracked cap)", got)
+	}
+}
+
+func TestSMTPAuthTracker_ConcurrentNoRace(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestTracker(t, clock)
+	var wg sync.WaitGroup
+	for g := 0; g < 50; g++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for i := 0; i < 20; i++ {
+				tr.Record(fmt.Sprintf("203.0.%d.%d", id%250+1, i%250+1), "")
+			}
+		}(g)
+	}
+	wg.Wait()
+	tr.Purge() // must not race
 }

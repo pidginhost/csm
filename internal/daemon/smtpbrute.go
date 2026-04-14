@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -172,6 +173,7 @@ func (t *smtpAuthTracker) Record(ip, account string) []alert.Finding {
 		}
 	}
 
+	t.enforceMaxTracked()
 	return findings
 }
 
@@ -230,5 +232,70 @@ func pruneAccountIPs(a *smtpAccountEntry, cutoff time.Time) {
 	}
 }
 
-// Purge is implemented later.
-func (t *smtpAuthTracker) Purge() {}
+// Purge removes entries with no recent activity (older than window + suppression).
+// Called from a background goroutine every minute.
+func (t *smtpAuthTracker) Purge() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := t.now()
+	activityCutoff := now.Add(-(t.window + t.suppression))
+
+	for k, e := range t.ips {
+		e.times = pruneTimes(e.times, now.Add(-t.window))
+		if len(e.times) == 0 && !e.lastSeen.After(activityCutoff) {
+			delete(t.ips, k)
+		}
+	}
+	for k, s := range t.subnets {
+		pruneSubnetIPs(s, now.Add(-t.window))
+		if len(s.ips) == 0 && !s.lastSeen.After(activityCutoff) {
+			delete(t.subnets, k)
+		}
+	}
+	for k, a := range t.accounts {
+		pruneAccountIPs(a, now.Add(-t.window))
+		if len(a.ips) == 0 && !a.lastSeen.After(activityCutoff) {
+			delete(t.accounts, k)
+		}
+	}
+}
+
+// enforceMaxTracked evicts the least-recently-seen entries until the total
+// number of tracked entities (IPs + subnets + accounts) is <= maxTracked.
+// Caller must hold t.mu.
+func (t *smtpAuthTracker) enforceMaxTracked() {
+	total := len(t.ips) + len(t.subnets) + len(t.accounts)
+	if total <= t.maxTracked {
+		return
+	}
+
+	type victim struct {
+		kind string // "ip" | "subnet" | "account"
+		key  string
+		seen time.Time
+	}
+	victims := make([]victim, 0, total)
+	for k, v := range t.ips {
+		victims = append(victims, victim{"ip", k, v.lastSeen})
+	}
+	for k, v := range t.subnets {
+		victims = append(victims, victim{"subnet", k, v.lastSeen})
+	}
+	for k, v := range t.accounts {
+		victims = append(victims, victim{"account", k, v.lastSeen})
+	}
+	sort.Slice(victims, func(i, j int) bool { return victims[i].seen.Before(victims[j].seen) })
+
+	over := total - t.maxTracked
+	for i := 0; i < over && i < len(victims); i++ {
+		v := victims[i]
+		switch v.kind {
+		case "ip":
+			delete(t.ips, v.key)
+		case "subnet":
+			delete(t.subnets, v.key)
+		case "account":
+			delete(t.accounts, v.key)
+		}
+	}
+}
