@@ -39,24 +39,24 @@ jobs:
           go test -timeout=300s -coverprofile=coverage.out -coverpkg=./internal/... ./... || true
           go tool cover -func=coverage.out | tail -1
 
-      - name: Merge integration coverage if available
+      - name: Merge integration coverage from latest GitHub release
         run: |
           set -e
-          # The GitLab integration job uploads merged unit+integration coverage
-          # (from real Linux servers running fanotify/nftables) to the generic
-          # package registry at a stable URL. Fetching it and merging with the
-          # unit-only coverage above produces a badge that reflects BOTH code
-          # paths, including Linux-specific ones that unit tests can't reach.
-          URL="https://git.pidginhost.net/api/v4/projects/pidginhost%2Fcsm/packages/generic/csm/coverage/latest/merged-coverage.out"
-          if curl -fsS -o integration-coverage.out "$URL" 2>/dev/null; then
-            echo "Fetched integration coverage from GitLab package registry"
+          # The GitLab integration job (runs on real AlmaLinux+Ubuntu servers
+          # exercising fanotify, nftables, YARA, PAM) produces a merged
+          # coverage profile. That profile is uploaded as an asset on the
+          # GitHub release so this workflow can fetch it WITHOUT needing
+          # network access to the private GitLab instance.
+          URL="https://github.com/pidginhost/csm/releases/latest/download/merged-coverage.out"
+          if curl -fsSL -o integration-coverage.out "$URL" 2>/dev/null; then
+            echo "Fetched integration coverage from latest GitHub release"
             go install github.com/wadey/gocovmerge@latest
             gocovmerge coverage.out integration-coverage.out > merged.out
             mv merged.out coverage.out
             echo "Merged coverage:"
             go tool cover -func=coverage.out | tail -1
           else
-            echo "No integration coverage available (first run or registry fetch failed) — using unit coverage only"
+            echo "No integration coverage asset in latest release — using unit coverage only"
           fi
 
       - name: Generate HTML coverage report
