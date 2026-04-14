@@ -17,12 +17,12 @@ func TestIsTrustedPAMPeerLinuxRejectsTCPConn(t *testing.T) {
 	if err != nil {
 		t.Skipf("listen tcp: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	doneCh := make(chan net.Conn, 1)
 	go func() {
-		c, err := ln.Accept()
-		if err != nil {
+		c, acceptErr := ln.Accept()
+		if acceptErr != nil {
 			doneCh <- nil
 			return
 		}
@@ -33,13 +33,13 @@ func TestIsTrustedPAMPeerLinuxRejectsTCPConn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	server := <-doneCh
 	if server == nil {
 		t.Fatal("accept failed")
 	}
-	defer server.Close()
+	defer func() { _ = server.Close() }()
 
 	if isTrustedPAMPeer(server) {
 		t.Error("TCP connection must not be trusted as PAM peer")
@@ -67,7 +67,7 @@ func TestIsTrustedPAMPeerLinuxUnixSocketPair(t *testing.T) {
 	if err != nil {
 		t.Skipf("FileConn: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	uc, ok := conn.(*net.UnixConn)
 	if !ok {

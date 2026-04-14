@@ -159,8 +159,8 @@ func TestSpoolWatcherHandleSpoolEventTempfailParseErrorDenies(t *testing.T) {
 
 	// sw.fd must be a writable fd so writeResponse succeeds.
 	var respPipe [2]int
-	if err := unix.Pipe2(respPipe[:], unix.O_CLOEXEC); err != nil {
-		t.Skipf("pipe2: %v", err)
+	if pipeErr := unix.Pipe2(respPipe[:], unix.O_CLOEXEC); pipeErr != nil {
+		t.Skipf("pipe2: %v", pipeErr)
 	}
 	defer func() {
 		_ = unix.Close(respPipe[0])
@@ -336,8 +336,8 @@ func TestSpoolWatcherHandleSpoolEventInfectedQuarantineSucceeds(t *testing.T) {
 	}
 	// Need writable sw.fd because needResp=true triggers writeResponse.
 	var respPipe [2]int
-	if err := unix.Pipe2(respPipe[:], unix.O_CLOEXEC); err != nil {
-		t.Skipf("pipe2: %v", err)
+	if pipeErr := unix.Pipe2(respPipe[:], unix.O_CLOEXEC); pipeErr != nil {
+		t.Skipf("pipe2: %v", pipeErr)
 	}
 	defer func() { _ = unix.Close(respPipe[0]) }()
 
@@ -483,8 +483,8 @@ func TestSpoolWatcherHandleSpoolEventInfectedQuarantineErrorTempfail(t *testing.
 	}
 
 	var respPipe [2]int
-	if err := unix.Pipe2(respPipe[:], unix.O_CLOEXEC); err != nil {
-		t.Skipf("pipe2: %v", err)
+	if pipeErr := unix.Pipe2(respPipe[:], unix.O_CLOEXEC); pipeErr != nil {
+		t.Skipf("pipe2: %v", pipeErr)
 	}
 	defer func() { _ = unix.Close(respPipe[0]) }()
 
@@ -571,8 +571,8 @@ func TestSpoolWatcherHandleSpoolEventAllEnginesDownTempfail(t *testing.T) {
 	}
 
 	var respPipe [2]int
-	if err := unix.Pipe2(respPipe[:], unix.O_CLOEXEC); err != nil {
-		t.Skipf("pipe2: %v", err)
+	if pipeErr := unix.Pipe2(respPipe[:], unix.O_CLOEXEC); pipeErr != nil {
+		t.Skipf("pipe2: %v", pipeErr)
 	}
 	defer func() { _ = unix.Close(respPipe[0]) }()
 
