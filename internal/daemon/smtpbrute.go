@@ -286,7 +286,9 @@ func (t *smtpAuthTracker) enforceMaxTracked() {
 	}
 	sort.Slice(victims, func(i, j int) bool { return victims[i].seen.Before(victims[j].seen) })
 
-	over := total - t.maxTracked
+	// Evict to 95% of cap so subsequent inserts don't re-trigger the sort.
+	target := t.maxTracked * 95 / 100
+	over := total - target
 	for i := 0; i < over && i < len(victims); i++ {
 		v := victims[i]
 		switch v.kind {

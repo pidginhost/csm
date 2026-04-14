@@ -316,6 +316,33 @@ func TestSMTPAuthTracker_MaxTrackedEviction(t *testing.T) {
 	}
 }
 
+func TestSMTPAuthTracker_MaxTrackedBatchEviction(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	const maxTracked = 100
+	tr := newSMTPAuthTracker(5, 8, 12, 10*time.Minute, 60*time.Minute, maxTracked, clock.Now)
+
+	// Fill 110 unique IPs, all in one /24 so subnet entry count stays at 1.
+	// Using a single /24 keeps the total close to len(ips)+1, making
+	// the math predictable.
+	for i := 0; i < 110; i++ {
+		clock.advance(1 * time.Millisecond)
+		tr.Record(fmt.Sprintf("203.0.113.%d", (i%253)+1), "")
+	}
+	// Note: with 253 slots in one /24 and only 110 unique IPs, no IP is
+	// recorded twice within the window (each advance is 1 ms, window 10 min).
+	// After 110 inserts with one eviction pass at i=100 (total=101→95),
+	// subsequent inserts should not have caused total to climb back above
+	// maxTracked by the end.
+	total := len(tr.ips) + len(tr.subnets) + len(tr.accounts)
+	if total > maxTracked {
+		t.Errorf("total tracked = %d after 110 inserts, want <= %d (maxTracked cap)", total, maxTracked)
+	}
+	// Must not have over-evicted (95%% target = 95, so expect at least 80).
+	if total < 80 {
+		t.Errorf("total tracked = %d, want >= 80 (not over-evicted)", total)
+	}
+}
+
 func TestSMTPAuthTracker_ConcurrentNoRace(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
 	tr := newTestTracker(t, clock)
