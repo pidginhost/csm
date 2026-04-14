@@ -61,6 +61,34 @@ Real-time detection of credential-stuffing and password-spray attacks against ma
 
 **Tuning:** all three signals are configurable via the `thresholds.smtp_bruteforce_*` keys in `csm.yaml`. Infrastructure IPs (from `infra_ips`) are never counted or blocked.
 
+## Mail Auth Brute-Force Tracker
+
+Real-time detection of credential-stuffing and password-spray attacks against IMAP, POP3, and ManageSieve, running as part of the Dovecot log watcher on cPanel hosts. Composes with the existing geo-based login monitor, so `email_suspicious_geo` continues to fire for successful logins from novel countries.
+
+**Detects four attack patterns:**
+
+| Signal | What triggers it | Auto-response |
+|--------|-----------------|---------------|
+| `mail_bruteforce` | A single attacker IP exceeds the per-IP failed-auth threshold within the configured window | IP blocked via nftables |
+| `mail_subnet_spray` | Multiple distinct attacker IPs from the same /24 subnet exceed the subnet threshold | Entire /24 subnet blocked via nftables |
+| `mail_account_spray` | Many distinct attacker IPs targeting the same mailbox exceed the account threshold | Visibility finding only — no auto-block, because attackers span many subnets |
+| `mail_account_compromised` | A successful login comes from an IP that just failed auth against the same account | IP blocked immediately; rotate the password and revoke sessions |
+
+**Tuning:** configurable via the `thresholds.mail_bruteforce_*` keys in `csm.yaml`, independent of the SMTP tracker so Dovecot noise floor can be tuned separately. Infrastructure IPs are never counted or blocked.
+
+## Admin-Panel Brute-Force Tracker
+
+Real-time counter of repeated POST requests to high-value non-WordPress admin login endpoints, running as part of the web access-log watcher.
+
+**Covered endpoints (tight set to avoid false positives on shared hosting):**
+
+- phpMyAdmin: `/phpmyadmin/index.php`, `/pma/index.php`, `/phpMyAdmin/index.php`
+- Joomla: `/administrator/index.php`
+
+When an IP crosses the POST-rate threshold, `admin_panel_bruteforce` fires and the attacker IP is auto-blocked.
+
+Drupal `/user/login` and Tomcat Manager `/manager/html` are deliberately not covered here — Drupal's path is too generic on shared hosting, and Tomcat Manager uses HTTP Basic auth (GET / 401), not POST forms. Both are tracked as follow-up work.
+
 ## PAM Brute-Force Listener
 
 Real-time authentication monitoring across all PAM-enabled services.
