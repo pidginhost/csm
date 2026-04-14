@@ -60,11 +60,12 @@ type Daemon struct {
 	droppedAlerts    int64 // atomic counter for alert channel backpressure drops
 	stopCh           chan struct{}
 	wg               sync.WaitGroup
+	smtpAuthTracker  *smtpAuthTracker
 }
 
 // New creates a new daemon instance.
 func New(cfg *config.Config, store *state.Store, lock *state.LockFile, binaryPath string) *Daemon {
-	return &Daemon{
+	d := &Daemon{
 		cfg:        cfg,
 		store:      store,
 		lock:       lock,
@@ -72,6 +73,16 @@ func New(cfg *config.Config, store *state.Store, lock *state.LockFile, binaryPat
 		alertCh:    make(chan alert.Finding, 500),
 		stopCh:     make(chan struct{}),
 	}
+	d.smtpAuthTracker = newSMTPAuthTracker(
+		cfg.Thresholds.SMTPBruteForceThreshold,
+		cfg.Thresholds.SMTPBruteForceSubnetThresh,
+		cfg.Thresholds.SMTPAccountSprayThreshold,
+		time.Duration(cfg.Thresholds.SMTPBruteForceWindowMin)*time.Minute,
+		time.Duration(cfg.Thresholds.SMTPBruteForceSuppressMin)*time.Minute,
+		cfg.Thresholds.SMTPBruteForceMaxTracked,
+		time.Now,
+	)
+	return d
 }
 
 // SetVersion sets the application version for display in the web UI.
@@ -681,6 +692,22 @@ func (d *Daemon) startLogWatchers() {
 		logFiles = append(logFiles, logFile{"/var/log/secure", parseSecureLogLine})
 	}
 
+	// eximHandler wraps parseEximLogLine (unchanged) and augments the result
+	// with smtpAuthTracker findings for dovecot authenticator failures.
+	eximHandler := func(line string, cfg *config.Config) []alert.Finding {
+		findings := parseEximLogLine(line, cfg)
+		if strings.Contains(line, "authenticator failed") && strings.Contains(line, "dovecot") {
+			ip := extractBracketedIP(line)
+			account := extractSetID(line)
+			if ip != "" && !isInfraIPDaemon(ip, cfg.InfraIPs) && !isPrivateOrLoopback(ip) {
+				if d.smtpAuthTracker != nil {
+					findings = append(findings, d.smtpAuthTracker.Record(ip, account)...)
+				}
+			}
+		}
+		return findings
+	}
+
 	// cPanel-specific logs — only watch these on cPanel hosts. On plain
 	// Ubuntu/AlmaLinux they do not exist and the old code spammed
 	// "not found, will retry every 60s" forever.
@@ -688,7 +715,7 @@ func (d *Daemon) startLogWatchers() {
 		logFiles = append(logFiles,
 			logFile{"/usr/local/cpanel/logs/session_log", sessionHandler},
 			logFile{"/usr/local/cpanel/logs/access_log", parseAccessLogLineEnhanced},
-			logFile{"/var/log/exim_mainlog", parseEximLogLine},
+			logFile{"/var/log/exim_mainlog", eximHandler},
 			logFile{"/var/log/messages", parseFTPLogLine},
 			logFile{"/var/log/maillog", parseDovecotLogLine},
 		)
@@ -757,6 +784,22 @@ func (d *Daemon) startLogWatchers() {
 
 	// Start background eviction for email rate limiting state
 	StartEmailRateEviction(d.stopCh)
+
+	// Start background purge for SMTP brute-force tracker
+	go func() {
+		ticker := time.NewTicker(1 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-d.stopCh:
+				return
+			case <-ticker.C:
+				if d.smtpAuthTracker != nil {
+					d.smtpAuthTracker.Purge()
+				}
+			}
+		}
+	}()
 
 	for _, lf := range logFiles {
 		w, err := NewLogWatcher(lf.path, d.cfg, lf.handler, d.alertCh)
