@@ -43,38 +43,50 @@ jobs:
 
       - name: Merge integration coverage from latest GitHub release
         run: |
-          # Don't fail the whole workflow if merge fails — fall back to
-          # unit-only coverage. Best-effort merge with integration data.
+          set -x
+          echo "=== UNIT COVERAGE (before merge) ==="
+          go tool cover -func=coverage.out | tail -1
+          echo "=== Unit profile head ==="
+          head -3 coverage.out
+          echo "=== Unit profile size ==="
+          wc -l coverage.out
+
           URL="https://github.com/pidginhost/csm/releases/latest/download/merged-coverage.out"
-          if ! curl -fsSL -o integration-coverage.out "$URL" 2>/dev/null; then
-            echo "No integration coverage asset in latest release — using unit coverage only"
+          echo "=== Fetching $URL ==="
+          if ! curl -fsSL -o integration-coverage.out "$URL"; then
+            echo ">>> FETCH FAILED — using unit-only coverage"
             exit 0
           fi
-          echo "Fetched integration coverage from latest GitHub release ($(wc -c < integration-coverage.out) bytes)"
-          if ! go install github.com/wadey/gocovmerge@latest 2>&1; then
-            echo "gocovmerge install failed — keeping unit-only coverage"
-            exit 0
-          fi
-          # Use separate redirection: stdout to merged.out, stderr to a log
-          # file so warnings don't corrupt the coverage profile.
+          echo "=== Integration profile head ==="
+          head -3 integration-coverage.out
+          echo "=== Integration profile size ==="
+          wc -l integration-coverage.out
+
+          go install github.com/wadey/gocovmerge@latest
+          export PATH="$PATH:$(go env GOPATH)/bin"
+
+          echo "=== Running gocovmerge ==="
           if ! gocovmerge coverage.out integration-coverage.out >merged.out 2>merge.err; then
-            echo "gocovmerge failed:"
+            echo ">>> gocovmerge FAILED:"
             cat merge.err
-            echo "Keeping unit-only coverage"
             exit 0
           fi
           if [ -s merge.err ]; then
-            echo "gocovmerge warnings:"
+            echo ">>> gocovmerge warnings:"
             cat merge.err
           fi
-          # Sanity check: merged file must start with "mode:" line
+          echo "=== Merged profile head ==="
+          head -3 merged.out
+          echo "=== Merged profile size ==="
+          wc -l merged.out
+
           if ! head -1 merged.out | grep -q '^mode:'; then
-            echo "merged.out does not look like a coverage profile (first line: $(head -1 merged.out))"
-            echo "Keeping unit-only coverage"
+            echo ">>> Sanity check failed"
             exit 0
           fi
+
           mv merged.out coverage.out
-          echo "Merged coverage:"
+          echo "=== MERGED COVERAGE (after merge) ==="
           go tool cover -func=coverage.out | tail -1
 
       - name: Generate HTML coverage report
