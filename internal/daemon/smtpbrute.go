@@ -85,11 +85,57 @@ func (t *smtpAuthTracker) Size() int {
 	return len(t.ips) + len(t.subnets) + len(t.accounts)
 }
 
-// Record is implemented in the next task. Stub is here so other call sites
-// can compile while TDD progresses.
+// Record processes one dovecot auth-failure observation. Returns zero or more
+// findings that callers should append to their finding slice.
+//
+// ip MUST be non-private, non-loopback, and non-infra — callers enforce this
+// before invoking Record.
 func (t *smtpAuthTracker) Record(ip, account string) []alert.Finding {
-	_ = fmt.Sprintf // silence unused import warnings until Record is filled in
-	return nil
+	if ip == "" {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	now := t.now()
+	cutoff := now.Add(-t.window)
+
+	var findings []alert.Finding
+
+	// --- Per-IP tracker ---
+	e, ok := t.ips[ip]
+	if !ok {
+		e = &smtpIPEntry{}
+		t.ips[ip] = e
+	}
+	e.times = pruneTimes(e.times, cutoff)
+	e.times = append(e.times, now)
+	e.lastSeen = now
+
+	if len(e.times) >= t.perIPThreshold && !now.Before(e.suppressed) {
+		e.suppressed = now.Add(t.suppression)
+		findings = append(findings, alert.Finding{
+			Severity: alert.Critical,
+			Check:    "smtp_bruteforce",
+			Message: fmt.Sprintf("SMTP brute force from %s: %d failed auths in %v",
+				ip, len(e.times), t.window),
+			Details:   "Real-time detection of dovecot_login auth failures",
+			Timestamp: now,
+		})
+	}
+
+	return findings
+}
+
+// pruneTimes drops timestamps older than cutoff. Reuses the backing array.
+func pruneTimes(times []time.Time, cutoff time.Time) []time.Time {
+	recent := times[:0]
+	for _, ts := range times {
+		if !ts.Before(cutoff) {
+			recent = append(recent, ts)
+		}
+	}
+	return recent
 }
 
 // Purge is implemented later.
