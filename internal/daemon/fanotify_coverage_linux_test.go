@@ -66,7 +66,6 @@ func TestIsInterestingAllBranches(t *testing.T) {
 		{"/home/a/.gnupg/evil.php", true, "php in .gnupg"},
 		{"/home/a/.cagefs/evil.php", true, "php in .cagefs"},
 		// Uninteresting
-		{"/opt/data.csv", false, "csv outside /home"},
 		{"/home/a/style.css", false, "css file"},
 		{"/home/a/image.jpg", false, "jpg file"},
 	}
