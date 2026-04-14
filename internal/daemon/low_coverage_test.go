@@ -272,8 +272,6 @@ func TestRecordFailure_AlertDetailsContainUsersAndServices(t *testing.T) {
 
 func TestCleanupLoop_RemovesExpiredTrackers(t *testing.T) {
 	p := &PAMListener{
-		cfg:      &config.Config{},
-		alertCh:  make(chan alert.Finding, 5),
 		failures: make(map[string]*pamFailureTracker),
 	}
 
@@ -322,8 +320,6 @@ func TestCleanupLoop_RemovesExpiredTrackers(t *testing.T) {
 
 func TestCleanupLoop_StopsOnSignal(t *testing.T) {
 	p := &PAMListener{
-		cfg:      &config.Config{},
-		alertCh:  make(chan alert.Finding, 5),
 		failures: make(map[string]*pamFailureTracker),
 	}
 

@@ -312,7 +312,7 @@ func TestAutoBlock_ExtractCIDRFromFinding(t *testing.T) {
 		"SMTP password spray from 203.0.113.0/24: 8 unique IPs in 10m0s":  "203.0.113.0/24",
 		"SMTP password spray from 198.51.100.0/24: 9 unique IPs in 10m0s": "198.51.100.0/24",
 		"wp_login_bruteforce from 1.2.3.4: 10 attempts":                   "",
-		"garbage":                                                          "",
+		"garbage": "",
 	}
 	for msg, want := range cases {
 		got := extractCIDRFromFinding(alert.Finding{Message: msg})
