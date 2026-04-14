@@ -43,51 +43,59 @@ jobs:
 
       - name: Merge integration coverage from latest GitHub release
         run: |
-          set -x
-          echo "=== UNIT COVERAGE (before merge) ==="
-          go tool cover -func=coverage.out | tail -1
-          echo "=== Unit profile head ==="
-          head -3 coverage.out
-          echo "=== Unit profile size ==="
-          wc -l coverage.out
+          # Write all diagnostic output to a file we can publish on Pages so
+          # we can debug from outside (we don't have admin to read Actions logs).
+          DEBUG=coverage-debug.txt
+          {
+            echo "=== UNIT COVERAGE (before merge) ==="
+            go tool cover -func=coverage.out 2>&1 | tail -1
+            echo "=== Unit profile head ==="
+            head -3 coverage.out
+            echo "=== Unit profile lines ==="
+            wc -l coverage.out
 
-          URL="https://github.com/pidginhost/csm/releases/latest/download/merged-coverage.out"
-          echo "=== Fetching $URL ==="
-          if ! curl -fsSL -o integration-coverage.out "$URL"; then
-            echo ">>> FETCH FAILED — using unit-only coverage"
-            exit 0
-          fi
-          echo "=== Integration profile head ==="
-          head -3 integration-coverage.out
-          echo "=== Integration profile size ==="
-          wc -l integration-coverage.out
+            URL="https://github.com/pidginhost/csm/releases/latest/download/merged-coverage.out"
+            echo "=== Fetching $URL ==="
+            if ! curl -fsSL -o integration-coverage.out "$URL" 2>&1; then
+              echo ">>> FETCH FAILED"
+              echo "FALLBACK: unit-only" > coverage-merge-status.txt
+              exit 0
+            fi
+            echo "=== Integration profile head ==="
+            head -3 integration-coverage.out
+            echo "=== Integration profile lines ==="
+            wc -l integration-coverage.out
 
-          go install github.com/wadey/gocovmerge@latest
-          export PATH="$PATH:$(go env GOPATH)/bin"
+            go install github.com/wadey/gocovmerge@latest 2>&1
+            export PATH="$PATH:$(go env GOPATH)/bin"
 
-          echo "=== Running gocovmerge ==="
-          if ! gocovmerge coverage.out integration-coverage.out >merged.out 2>merge.err; then
-            echo ">>> gocovmerge FAILED:"
-            cat merge.err
-            exit 0
-          fi
-          if [ -s merge.err ]; then
-            echo ">>> gocovmerge warnings:"
-            cat merge.err
-          fi
-          echo "=== Merged profile head ==="
-          head -3 merged.out
-          echo "=== Merged profile size ==="
-          wc -l merged.out
+            echo "=== Running gocovmerge ==="
+            if ! gocovmerge coverage.out integration-coverage.out >merged.out 2>merge.err; then
+              echo ">>> gocovmerge FAILED:"
+              cat merge.err
+              echo "FALLBACK: merge failed" > coverage-merge-status.txt
+              exit 0
+            fi
+            if [ -s merge.err ]; then
+              echo ">>> gocovmerge warnings:"
+              cat merge.err
+            fi
+            echo "=== Merged profile head ==="
+            head -3 merged.out
+            echo "=== Merged profile lines ==="
+            wc -l merged.out
 
-          if ! head -1 merged.out | grep -q '^mode:'; then
-            echo ">>> Sanity check failed"
-            exit 0
-          fi
+            if ! head -1 merged.out | grep -q '^mode:'; then
+              echo ">>> Sanity check failed"
+              echo "FALLBACK: sanity check failed" > coverage-merge-status.txt
+              exit 0
+            fi
 
-          mv merged.out coverage.out
-          echo "=== MERGED COVERAGE (after merge) ==="
-          go tool cover -func=coverage.out | tail -1
+            mv merged.out coverage.out
+            echo "=== MERGED COVERAGE (after merge) ==="
+            go tool cover -func=coverage.out 2>&1 | tail -1
+            echo "MERGED" > coverage-merge-status.txt
+          } 2>&1 | tee "$DEBUG"
 
       - name: Generate HTML coverage report
         run: go tool cover -html=coverage.out -o coverage.html
@@ -146,6 +154,10 @@ jobs:
         run: |
           cp coverage.svg docs/book/coverage.svg
           cp coverage.html docs/book/coverage.html
+          # Debug files so we can inspect why merge is/isn't working from
+          # the public Pages URL (no admin token needed).
+          [ -f coverage-debug.txt ] && cp coverage-debug.txt docs/book/coverage-debug.txt || true
+          [ -f coverage-merge-status.txt ] && cp coverage-merge-status.txt docs/book/coverage-merge-status.txt || true
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v4
