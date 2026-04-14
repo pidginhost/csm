@@ -62,6 +62,7 @@ type Daemon struct {
 	stopCh           chan struct{}
 	wg               sync.WaitGroup
 	smtpAuthTracker  *smtpAuthTracker
+	mailAuthTracker  *mailAuthTracker
 }
 
 // New creates a new daemon instance.
@@ -81,6 +82,15 @@ func New(cfg *config.Config, store *state.Store, lock *state.LockFile, binaryPat
 		time.Duration(cfg.Thresholds.SMTPBruteForceWindowMin)*time.Minute,
 		time.Duration(cfg.Thresholds.SMTPBruteForceSuppressMin)*time.Minute,
 		cfg.Thresholds.SMTPBruteForceMaxTracked,
+		time.Now,
+	)
+	d.mailAuthTracker = newMailAuthTracker(
+		cfg.Thresholds.MailBruteForceThreshold,
+		cfg.Thresholds.MailBruteForceSubnetThresh,
+		cfg.Thresholds.MailAccountSprayThreshold,
+		time.Duration(cfg.Thresholds.MailBruteForceWindowMin)*time.Minute,
+		time.Duration(cfg.Thresholds.MailBruteForceSuppressMin)*time.Minute,
+		cfg.Thresholds.MailBruteForceMaxTracked,
 		time.Now,
 	)
 	return d
@@ -720,6 +730,37 @@ func (d *Daemon) startLogWatchers() {
 		return findings
 	}
 
+	// mailHandler composes parseDovecotLogLine (preserving email_suspicious_geo)
+	// with mailAuthTracker augmentation for IMAP/POP3/ManageSieve brute-force,
+	// subnet spray, account spray, and compromise detection.
+	mailHandler := func(line string, cfg *config.Config) []alert.Finding {
+		findings := parseDovecotLogLine(line, cfg)
+		if !isMailAuthLine(line) {
+			return findings
+		}
+		ip, account, success := extractMailLoginEvent(line)
+		if ip == "" {
+			return findings
+		}
+		if parsed := net.ParseIP(ip); parsed != nil {
+			if v4 := parsed.To4(); v4 != nil {
+				ip = v4.String()
+			}
+		}
+		if isInfraIPDaemon(ip, cfg.InfraIPs) || isPrivateOrLoopback(ip) {
+			return findings
+		}
+		if d.mailAuthTracker == nil {
+			return findings
+		}
+		if success {
+			findings = append(findings, d.mailAuthTracker.RecordSuccess(ip, account)...)
+		} else {
+			findings = append(findings, d.mailAuthTracker.Record(ip, account)...)
+		}
+		return findings
+	}
+
 	// cPanel-specific logs — only watch these on cPanel hosts. On plain
 	// Ubuntu/AlmaLinux they do not exist and the old code spammed
 	// "not found, will retry every 60s" forever.
@@ -729,7 +770,7 @@ func (d *Daemon) startLogWatchers() {
 			logFile{"/usr/local/cpanel/logs/access_log", parseAccessLogLineEnhanced},
 			logFile{"/var/log/exim_mainlog", eximHandler},
 			logFile{"/var/log/messages", parseFTPLogLine},
-			logFile{"/var/log/maillog", parseDovecotLogLine},
+			logFile{"/var/log/maillog", mailHandler},
 		)
 	}
 
@@ -810,6 +851,24 @@ func (d *Daemon) startLogWatchers() {
 			case <-ticker.C:
 				if d.smtpAuthTracker != nil {
 					d.smtpAuthTracker.Purge()
+				}
+			}
+		}
+	}()
+
+	// Start background purge for mail (IMAP/POP3) brute-force tracker
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		ticker := time.NewTicker(1 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-d.stopCh:
+				return
+			case <-ticker.C:
+				if d.mailAuthTracker != nil {
+					d.mailAuthTracker.Purge()
 				}
 			}
 		}
