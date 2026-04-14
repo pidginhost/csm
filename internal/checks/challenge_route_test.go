@@ -129,3 +129,14 @@ func TestChallengeRoute_DoesNotRouteSMTPChecks(t *testing.T) {
 		}
 	}
 }
+
+func TestChallengeRoute_DoesNotRouteMailChecks(t *testing.T) {
+	for _, check := range []string{"mail_bruteforce", "mail_subnet_spray", "mail_account_compromised"} {
+		if isChallengeableCheck(check) {
+			t.Errorf("check %q must be hard-blocked, not challenge-routed", check)
+		}
+		if !isHardBlockCheck(check) {
+			t.Errorf("check %q must be in hardBlockChecks (defense-in-depth)", check)
+		}
+	}
+}

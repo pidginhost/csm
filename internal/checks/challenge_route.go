@@ -78,6 +78,9 @@ var hardBlockChecks = map[string]bool{
 	"pam_bruteforce":              true, // PAM brute force — can't challenge non-HTTP
 	"smtp_bruteforce":             true, // SMTP brute force — can't challenge non-HTTP
 	"smtp_subnet_spray":           true, // SMTP subnet spray — can't challenge non-HTTP
+	"mail_bruteforce":             true, // Mail brute force — can't challenge non-HTTP
+	"mail_subnet_spray":           true, // Mail subnet spray — can't challenge non-HTTP
+	"mail_account_compromised":    true, // Mail account compromise — instant block, zero-FP signal
 }
 
 // hardBlockPrefixes match any check name starting with these strings.

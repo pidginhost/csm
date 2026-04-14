@@ -44,6 +44,9 @@ var checkToAttack = map[string]AttackType{
 	"pam_bruteforce":            AttackBruteForce,
 	"smtp_bruteforce":           AttackBruteForce,
 	"smtp_subnet_spray":         AttackBruteForce,
+	"mail_bruteforce":           AttackBruteForce,
+	"mail_subnet_spray":         AttackBruteForce,
+	"mail_account_compromised":  AttackBruteForce,
 
 	// Webshells and malware
 	"webshell":                 AttackWebshell,

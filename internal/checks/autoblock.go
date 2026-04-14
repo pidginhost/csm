@@ -102,6 +102,8 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		"xmlrpc_abuse":                true,
 		"ftp_bruteforce":              true,
 		"smtp_bruteforce":             true,
+		"mail_bruteforce":             true,
+		"mail_account_compromised":    true,
 		"ssh_login_unknown_ip":        true,
 		"ssh_login_realtime":          true,
 		"c2_connection":               true,
@@ -137,7 +139,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// Independent of the per-IP rate limit, because a single subnet block
 	// replaces what would otherwise be hundreds of per-IP blocks.
 	for _, f := range findings {
-		if f.Check != "smtp_subnet_spray" {
+		if f.Check != "smtp_subnet_spray" && f.Check != "mail_subnet_spray" {
 			continue
 		}
 		cidr := extractCIDRFromFinding(f)

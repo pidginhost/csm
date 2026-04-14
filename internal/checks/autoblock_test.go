@@ -347,6 +347,75 @@ func TestAutoBlock_SMTPSubnetSprayTriggersBlockSubnet(t *testing.T) {
 	}
 }
 
+func TestAutoBlock_MailBruteForceTriggersBlockIP(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.StatePath = t.TempDir()
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := fwBlocker
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+
+	findings := []alert.Finding{{
+		Check:   "mail_bruteforce",
+		Message: "Mail auth brute force from 203.0.113.5: 5 failed auths in 10m0s",
+	}}
+	AutoBlockIPs(cfg, findings)
+
+	if len(blocker.blocked) != 1 || blocker.blocked[0] != "203.0.113.5" {
+		t.Errorf("expected BlockIP(203.0.113.5), got %v", blocker.blocked)
+	}
+}
+
+func TestAutoBlock_MailAccountCompromisedTriggersBlockIP(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.StatePath = t.TempDir()
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := fwBlocker
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+
+	findings := []alert.Finding{{
+		Check:   "mail_account_compromised",
+		Message: "Mail account compromise: successful login for alice@example.com from 203.0.113.5 after recent auth failures",
+	}}
+	AutoBlockIPs(cfg, findings)
+
+	if len(blocker.blocked) != 1 || blocker.blocked[0] != "203.0.113.5" {
+		t.Errorf("expected BlockIP(203.0.113.5), got %v", blocker.blocked)
+	}
+}
+
+func TestAutoBlock_MailSubnetSprayTriggersBlockSubnet(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.StatePath = t.TempDir()
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := fwBlocker
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+
+	findings := []alert.Finding{{
+		Check:   "mail_subnet_spray",
+		Message: "Mail password spray from 203.0.113.0/24: 8 unique IPs in 10m0s",
+	}}
+	AutoBlockIPs(cfg, findings)
+
+	if len(blocker.blockedSubnet) != 1 || blocker.blockedSubnet[0] != "203.0.113.0/24" {
+		t.Errorf("expected BlockSubnet(203.0.113.0/24), got %v", blocker.blockedSubnet)
+	}
+	if len(blocker.blocked) != 0 {
+		t.Errorf("expected no BlockIP calls; got %v", blocker.blocked)
+	}
+}
+
 func TestAutoBlock_SMTPSubnetSprayBypassesPerIPRateLimit(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.AutoResponse.Enabled = true
