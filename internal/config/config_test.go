@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -137,5 +138,38 @@ func TestLoadMissing(t *testing.T) {
 	_, err := Load("/nonexistent/path/csm.yaml")
 	if err == nil {
 		t.Error("expected error for missing file")
+	}
+}
+
+func TestConfig_SMTPBruteForceDefaultsApplied(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "csm.yaml")
+	if err := os.WriteFile(path, []byte("hostname: \"\"\n"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := map[string]int{
+		"SMTPBruteForceThreshold":    5,
+		"SMTPBruteForceWindowMin":    10,
+		"SMTPBruteForceSuppressMin":  60,
+		"SMTPBruteForceSubnetThresh": 8,
+		"SMTPAccountSprayThreshold":  12,
+		"SMTPBruteForceMaxTracked":   20000,
+	}
+	got := map[string]int{
+		"SMTPBruteForceThreshold":    cfg.Thresholds.SMTPBruteForceThreshold,
+		"SMTPBruteForceWindowMin":    cfg.Thresholds.SMTPBruteForceWindowMin,
+		"SMTPBruteForceSuppressMin":  cfg.Thresholds.SMTPBruteForceSuppressMin,
+		"SMTPBruteForceSubnetThresh": cfg.Thresholds.SMTPBruteForceSubnetThresh,
+		"SMTPAccountSprayThreshold":  cfg.Thresholds.SMTPAccountSprayThreshold,
+		"SMTPBruteForceMaxTracked":   cfg.Thresholds.SMTPBruteForceMaxTracked,
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s = %d, want %d", k, got[k], v)
+		}
 	}
 }

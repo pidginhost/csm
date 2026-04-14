@@ -53,6 +53,13 @@ type Config struct {
 		MultiIPLoginWindowMin     int `yaml:"multi_ip_login_window_min"`
 		PluginCheckIntervalMin    int `yaml:"plugin_check_interval_min"`
 		BruteForceWindow          int `yaml:"brute_force_window"`
+
+		SMTPBruteForceThreshold    int `yaml:"smtp_bruteforce_threshold"`
+		SMTPBruteForceWindowMin    int `yaml:"smtp_bruteforce_window_min"`
+		SMTPBruteForceSuppressMin  int `yaml:"smtp_bruteforce_suppress_min"`
+		SMTPBruteForceSubnetThresh int `yaml:"smtp_bruteforce_subnet_threshold"`
+		SMTPAccountSprayThreshold  int `yaml:"smtp_account_spray_threshold"`
+		SMTPBruteForceMaxTracked   int `yaml:"smtp_bruteforce_max_tracked"`
 	} `yaml:"thresholds"`
 
 	InfraIPs []string `yaml:"infra_ips"`
@@ -266,6 +273,24 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Thresholds.BruteForceWindow == 0 {
 		cfg.Thresholds.BruteForceWindow = 5000
+	}
+	if cfg.Thresholds.SMTPBruteForceThreshold == 0 {
+		cfg.Thresholds.SMTPBruteForceThreshold = 5
+	}
+	if cfg.Thresholds.SMTPBruteForceWindowMin == 0 {
+		cfg.Thresholds.SMTPBruteForceWindowMin = 10
+	}
+	if cfg.Thresholds.SMTPBruteForceSuppressMin == 0 {
+		cfg.Thresholds.SMTPBruteForceSuppressMin = 60
+	}
+	if cfg.Thresholds.SMTPBruteForceSubnetThresh == 0 {
+		cfg.Thresholds.SMTPBruteForceSubnetThresh = 8
+	}
+	if cfg.Thresholds.SMTPAccountSprayThreshold == 0 {
+		cfg.Thresholds.SMTPAccountSprayThreshold = 12
+	}
+	if cfg.Thresholds.SMTPBruteForceMaxTracked == 0 {
+		cfg.Thresholds.SMTPBruteForceMaxTracked = 20000
 	}
 	if cfg.Alerts.MaxPerHour == 0 {
 		cfg.Alerts.MaxPerHour = 30
