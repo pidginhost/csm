@@ -268,3 +268,110 @@ func TestMailAuthTracker_AccountSpray_EmptyAccountIgnored(t *testing.T) {
 		}
 	}
 }
+
+func TestMailAuthTracker_RecordSuccess_NoCompromiseIfIPWasNotFailing(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	out := tr.RecordSuccess("203.0.113.5", "alice@example.com")
+	for _, f := range out {
+		if f.Check == "mail_account_compromised" {
+			t.Fatalf("should not fire when no prior failures for account, got %v", f)
+		}
+	}
+}
+
+func TestMailAuthTracker_RecordSuccess_NoCompromiseIfAccountUnknown(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	// Record failures for a DIFFERENT account — must not trigger compromise
+	// on alice's successful login.
+	for i := 0; i < 3; i++ {
+		tr.Record("203.0.113.5", "bob@example.com")
+	}
+	out := tr.RecordSuccess("203.0.113.5", "alice@example.com")
+	for _, f := range out {
+		if f.Check == "mail_account_compromised" {
+			t.Fatalf("compromise must not fire cross-account, got %v", f)
+		}
+	}
+}
+
+func TestMailAuthTracker_RecordSuccess_NoCompromiseIfDifferentIP(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	for i := 0; i < 3; i++ {
+		tr.Record("203.0.113.5", "alice@example.com")
+	}
+	// Legitimate login from a different IP after someone else's brute force.
+	out := tr.RecordSuccess("198.51.100.99", "alice@example.com")
+	for _, f := range out {
+		if f.Check == "mail_account_compromised" {
+			t.Fatalf("compromise must not fire when success IP != failure IP, got %v", f)
+		}
+	}
+}
+
+func TestMailAuthTracker_RecordSuccess_FiresCompromiseWhenIPWasFailing(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	for i := 0; i < 3; i++ {
+		tr.Record("203.0.113.5", "alice@example.com")
+	}
+	out := tr.RecordSuccess("203.0.113.5", "alice@example.com")
+	var fired *alert.Finding
+	for i := range out {
+		if out[i].Check == "mail_account_compromised" {
+			cp := out[i]
+			fired = &cp
+		}
+	}
+	if fired == nil {
+		t.Fatalf("expected mail_account_compromised finding; out=%v", out)
+	}
+	if fired.Severity != alert.Critical {
+		t.Errorf("severity = %v, want Critical", fired.Severity)
+	}
+	if !strings.Contains(fired.Message, "203.0.113.5") || !strings.Contains(fired.Message, "alice@example.com") {
+		t.Errorf("message %q must contain both IP and account", fired.Message)
+	}
+	// Round-trip: must be compatible with extractIPFromFinding (" from " separator).
+	idx := strings.LastIndex(fired.Message, " from ")
+	if idx < 0 {
+		t.Fatalf("message %q has no ' from ' separator", fired.Message)
+	}
+	rest := fired.Message[idx+len(" from "):]
+	fields := strings.Fields(rest)
+	candidate := strings.TrimRight(fields[0], ",:;)([]")
+	if ip := net.ParseIP(candidate); ip == nil || ip.String() != "203.0.113.5" {
+		t.Errorf("round-trip IP extraction from %q yielded %q, want 203.0.113.5", fired.Message, candidate)
+	}
+}
+
+func TestMailAuthTracker_RecordSuccess_SuppressesDuplicates(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	for i := 0; i < 3; i++ {
+		tr.Record("203.0.113.5", "alice@example.com")
+	}
+	_ = tr.RecordSuccess("203.0.113.5", "alice@example.com") // first fire
+	out := tr.RecordSuccess("203.0.113.5", "alice@example.com")
+	for _, f := range out {
+		if f.Check == "mail_account_compromised" {
+			t.Fatalf("duplicate compromise finding within suppression window, got %v", f)
+		}
+	}
+}
+
+func TestMailAuthTracker_RecordSuccess_EmptyIPOrAccountIgnored(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	for _, tc := range []struct{ ip, account string }{
+		{"", "alice@example.com"},
+		{"203.0.113.5", ""},
+		{"", ""},
+	} {
+		if out := tr.RecordSuccess(tc.ip, tc.account); out != nil {
+			t.Errorf("empty IP/account must return nil; ip=%q account=%q got %v", tc.ip, tc.account, out)
+		}
+	}
+}

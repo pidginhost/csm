@@ -27,7 +27,7 @@ type mailSubnetEntry struct {
 type mailAccountEntry struct {
 	ips                  map[string]time.Time
 	suppressed           time.Time
-	compromiseSuppressed time.Time //nolint:unused
+	compromiseSuppressed time.Time
 	lastSeen             time.Time
 }
 
@@ -186,9 +186,40 @@ func (t *mailAuthTracker) Record(ip, account string) []alert.Finding {
 	return findings
 }
 
-// RecordSuccess processes a successful mail login. Implemented in Mail Task 4.
+// RecordSuccess processes a successful mail login. Emits mail_account_compromised
+// when the successful IP has recent failed auths for the same account — a
+// zero-FP compromise signal: the attacker literally failed N times from that IP
+// for that mailbox, then guessed the password.
+//
+// ip and account MUST both be non-empty. Caller filters infra/private/loopback
+// IPs before invoking.
 func (t *mailAuthTracker) RecordSuccess(ip, account string) []alert.Finding {
-	return nil
+	if ip == "" || account == "" {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	a, ok := t.accounts[account]
+	if !ok {
+		return nil
+	}
+	if _, failedRecently := a.ips[ip]; !failedRecently {
+		return nil
+	}
+	now := t.now()
+	if now.Before(a.compromiseSuppressed) {
+		return nil
+	}
+	a.compromiseSuppressed = now.Add(t.suppression)
+	return []alert.Finding{{
+		Severity: alert.Critical,
+		Check:    "mail_account_compromised",
+		Message: fmt.Sprintf("Mail account compromise: successful login for %s from %s after recent auth failures",
+			account, ip),
+		Details:   "Attacker succeeded after one or more failed attempts from the same IP for this mailbox. Rotate password and revoke sessions.",
+		Timestamp: now,
+	}}
 }
 
 // Purge removes stale entries. Implemented in Mail Task 5.
