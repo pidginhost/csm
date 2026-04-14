@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -71,8 +72,25 @@ func TestSMTPAuthTracker_EmitsSMTPBruteForceAtThreshold(t *testing.T) {
 	if !strings.Contains(f.Message, "203.0.113.5") {
 		t.Errorf("message %q does not contain IP", f.Message)
 	}
-	if !strings.Contains(f.Message, " from ") {
-		t.Errorf("message %q does not use ' from ' separator required by extractIPFromFinding", f.Message)
+	// Round-trip check: message format must be compatible with
+	// internal/checks.extractIPFromFinding, which splits on " from "
+	// then TrimRight(",:;)([]") and net.ParseIP's the first field.
+	// We replicate that logic here to pin the contract locally.
+	if !strings.HasPrefix(f.Message, "SMTP brute force from ") {
+		t.Errorf("message %q must begin with canonical prefix 'SMTP brute force from '", f.Message)
+	}
+	idx := strings.LastIndex(f.Message, " from ")
+	if idx < 0 {
+		t.Fatalf("message %q has no ' from ' separator", f.Message)
+	}
+	rest := f.Message[idx+len(" from "):]
+	fields := strings.Fields(rest)
+	if len(fields) == 0 {
+		t.Fatalf("message %q: nothing after ' from '", f.Message)
+	}
+	candidate := strings.TrimRight(fields[0], ",:;)([]")
+	if ip := net.ParseIP(candidate); ip == nil || ip.String() != "203.0.113.5" {
+		t.Errorf("round-trip IP extraction from %q yielded %q, want 203.0.113.5", f.Message, candidate)
 	}
 }
 
