@@ -39,6 +39,26 @@ jobs:
           go test -timeout=300s -coverprofile=coverage.out -coverpkg=./internal/... ./... || true
           go tool cover -func=coverage.out | tail -1
 
+      - name: Merge integration coverage if available
+        run: |
+          set -e
+          # The GitLab integration job uploads merged unit+integration coverage
+          # (from real Linux servers running fanotify/nftables) to the generic
+          # package registry at a stable URL. Fetching it and merging with the
+          # unit-only coverage above produces a badge that reflects BOTH code
+          # paths, including Linux-specific ones that unit tests can't reach.
+          URL="https://git.pidginhost.net/api/v4/projects/pidginhost%2Fcsm/packages/generic/csm/coverage/latest/merged-coverage.out"
+          if curl -fsS -o integration-coverage.out "$URL" 2>/dev/null; then
+            echo "Fetched integration coverage from GitLab package registry"
+            go install github.com/wadey/gocovmerge@latest
+            gocovmerge coverage.out integration-coverage.out > merged.out
+            mv merged.out coverage.out
+            echo "Merged coverage:"
+            go tool cover -func=coverage.out | tail -1
+          else
+            echo "No integration coverage available (first run or registry fetch failed) — using unit coverage only"
+          fi
+
       - name: Generate HTML coverage report
         run: go tool cover -html=coverage.out -o coverage.html
 
