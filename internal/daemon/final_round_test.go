@@ -78,7 +78,7 @@ func TestDoForgeUpdate_StoreConfiguredNilScanner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	store.SetGlobal(db)
 	defer store.SetGlobal(nil)
 
@@ -234,7 +234,7 @@ func TestParseDovecotLogLine_StoreOpenNoCountry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	store.SetGlobal(db)
 	defer store.SetGlobal(nil)
 
