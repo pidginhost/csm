@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"fmt"
-	"sort"
 	"sync"
 	"time"
 
@@ -11,25 +10,25 @@ import (
 
 // mailIPEntry tracks failed-auth timestamps and suppression state for one IP.
 type mailIPEntry struct {
-	times      []time.Time //nolint:unused
-	suppressed time.Time   //nolint:unused
-	lastSeen   time.Time   //nolint:unused
+	times      []time.Time
+	suppressed time.Time
+	lastSeen   time.Time
 }
 
 // mailSubnetEntry tracks unique attacker IPs within a /24.
 type mailSubnetEntry struct {
-	ips        map[string]time.Time //nolint:unused
-	suppressed time.Time            //nolint:unused
-	lastSeen   time.Time            //nolint:unused
+	ips        map[string]time.Time
+	suppressed time.Time
+	lastSeen   time.Time
 }
 
 // mailAccountEntry tracks unique attacker IPs per mailbox, plus a separate
 // suppression clock for compromise findings emitted by RecordSuccess.
 type mailAccountEntry struct {
-	ips                  map[string]time.Time //nolint:unused
-	suppressed           time.Time            //nolint:unused
-	compromiseSuppressed time.Time            //nolint:unused
-	lastSeen             time.Time            //nolint:unused
+	ips                  map[string]time.Time
+	suppressed           time.Time
+	compromiseSuppressed time.Time //nolint:unused
+	lastSeen             time.Time
 }
 
 // mailAuthTracker aggregates dovecot IMAP/POP3/ManageSieve auth events into
@@ -90,11 +89,101 @@ func (t *mailAuthTracker) Size() int {
 	return len(t.ips) + len(t.subnets) + len(t.accounts)
 }
 
-// Record processes a failed mail auth observation. Implemented in Mail Task 3.
+// Record processes one dovecot IMAP/POP3/ManageSieve auth-failure observation.
+// Returns zero or more findings that callers should append.
+//
+// ip MUST be non-private, non-loopback, and non-infra — callers enforce this
+// before invoking Record.
 func (t *mailAuthTracker) Record(ip, account string) []alert.Finding {
-	_ = fmt.Sprintf // keep fmt import alive until Record body is filled in
-	_ = sort.Slice  // keep sort import alive until enforceMaxTracked body is filled in
-	return nil
+	if ip == "" {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	now := t.now()
+	cutoff := now.Add(-t.window)
+	var findings []alert.Finding
+
+	// --- Per-IP tracker ---
+	e, ok := t.ips[ip]
+	if !ok {
+		e = &mailIPEntry{}
+		t.ips[ip] = e
+	}
+	e.times = pruneTimes(e.times, cutoff)
+	e.times = append(e.times, now)
+	e.lastSeen = now
+
+	if len(e.times) >= t.perIPThreshold && !now.Before(e.suppressed) {
+		e.suppressed = now.Add(t.suppression)
+		findings = append(findings, alert.Finding{
+			Severity: alert.Critical,
+			Check:    "mail_bruteforce",
+			Message: fmt.Sprintf("Mail auth brute force from %s: %d failed auths in %v",
+				ip, len(e.times), t.window),
+			Details:   "Real-time detection of dovecot imap/pop3/managesieve auth failures",
+			Timestamp: now,
+		})
+	}
+
+	// --- Per-/24 subnet tracker (IPv4 only) ---
+	if prefix := extractPrefix24Daemon(ip); prefix != "" {
+		s, ok := t.subnets[prefix]
+		if !ok {
+			s = &mailSubnetEntry{ips: make(map[string]time.Time)}
+			t.subnets[prefix] = s
+		}
+		for ipKey, ts := range s.ips {
+			if ts.Before(cutoff) {
+				delete(s.ips, ipKey)
+			}
+		}
+		s.ips[ip] = now
+		s.lastSeen = now
+
+		if len(s.ips) >= t.subnetThreshold && !now.Before(s.suppressed) {
+			s.suppressed = now.Add(t.suppression)
+			findings = append(findings, alert.Finding{
+				Severity: alert.Critical,
+				Check:    "mail_subnet_spray",
+				Message: fmt.Sprintf("Mail password spray from %s.0/24: %d unique IPs in %v",
+					prefix, len(s.ips), t.window),
+				Details:   "Real-time detection of mail auth failures from many IPs in one /24",
+				Timestamp: now,
+			})
+		}
+	}
+
+	// --- Per-account spray tracker ---
+	if account != "" {
+		a, ok := t.accounts[account]
+		if !ok {
+			a = &mailAccountEntry{ips: make(map[string]time.Time)}
+			t.accounts[account] = a
+		}
+		for ipKey, ts := range a.ips {
+			if ts.Before(cutoff) {
+				delete(a.ips, ipKey)
+			}
+		}
+		a.ips[ip] = now
+		a.lastSeen = now
+
+		if len(a.ips) >= t.accountSprayThreshold && !now.Before(a.suppressed) {
+			a.suppressed = now.Add(t.suppression)
+			findings = append(findings, alert.Finding{
+				Severity: alert.High,
+				Check:    "mail_account_spray",
+				Message: fmt.Sprintf("Mail password spray targeting %s: %d unique IPs in %v",
+					account, len(a.ips), t.window),
+				Details:   "Distributed login attempts across many IPs against one mailbox (visibility only — no auto-block).",
+				Timestamp: now,
+			})
+		}
+	}
+
+	return findings
 }
 
 // RecordSuccess processes a successful mail login. Implemented in Mail Task 4.
