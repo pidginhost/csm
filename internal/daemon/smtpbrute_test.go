@@ -249,3 +249,42 @@ func TestSMTPAuthTracker_SubnetSprayIPv6Skipped(t *testing.T) {
 		}
 	}
 }
+
+func TestSMTPAuthTracker_AccountSprayThreshold(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestTracker(t, clock)
+	var fired *alert.Finding
+	for i := 1; i <= 12; i++ {
+		// Spread across different /24s so the subnet detector never fires.
+		ip := fmt.Sprintf("203.0.%d.1", i)
+		for _, f := range tr.Record(ip, "victim@example.com") {
+			if f.Check == "smtp_account_spray" {
+				cp := f
+				fired = &cp
+			}
+		}
+	}
+	if fired == nil {
+		t.Fatalf("expected smtp_account_spray finding after 12 unique IPs")
+	}
+	if fired.Severity != alert.High {
+		t.Errorf("severity = %v, want High (visibility only)", fired.Severity)
+	}
+	if !strings.Contains(fired.Message, "victim@example.com") {
+		t.Errorf("message %q missing account", fired.Message)
+	}
+}
+
+func TestSMTPAuthTracker_AccountSpray_EmptyAccountIgnored(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestTracker(t, clock)
+	for i := 1; i <= 20; i++ {
+		ip := fmt.Sprintf("203.0.%d.1", i)
+		out := tr.Record(ip, "")
+		for _, f := range out {
+			if f.Check == "smtp_account_spray" {
+				t.Fatalf("account spray must not fire without account, got %v", f)
+			}
+		}
+	}
+}

@@ -148,6 +148,30 @@ func (t *smtpAuthTracker) Record(ip, account string) []alert.Finding {
 		}
 	}
 
+	// --- Per-account spray tracker ---
+	if account != "" {
+		a, ok := t.accounts[account]
+		if !ok {
+			a = &smtpAccountEntry{ips: make(map[string]time.Time)}
+			t.accounts[account] = a
+		}
+		pruneAccountIPs(a, cutoff)
+		a.ips[ip] = now
+		a.lastSeen = now
+
+		if len(a.ips) >= t.accountSprayThreshold && !now.Before(a.suppressed) {
+			a.suppressed = now.Add(t.suppression)
+			findings = append(findings, alert.Finding{
+				Severity: alert.High,
+				Check:    "smtp_account_spray",
+				Message: fmt.Sprintf("SMTP password spray targeting %s: %d unique IPs in %v",
+					account, len(a.ips), t.window),
+				Details:   "Distributed login attempts across many IPs against one mailbox (visibility only — no auto-block).",
+				Timestamp: now,
+			})
+		}
+	}
+
 	return findings
 }
 
@@ -193,6 +217,15 @@ func pruneSubnetIPs(s *smtpSubnetEntry, cutoff time.Time) {
 	for ip, ts := range s.ips {
 		if ts.Before(cutoff) {
 			delete(s.ips, ip)
+		}
+	}
+}
+
+// pruneAccountIPs drops per-account IP entries whose last-seen is older than cutoff.
+func pruneAccountIPs(a *smtpAccountEntry, cutoff time.Time) {
+	for ip, ts := range a.ips {
+		if ts.Before(cutoff) {
+			delete(a.ips, ip)
 		}
 	}
 }
