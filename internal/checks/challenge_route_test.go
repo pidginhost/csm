@@ -140,3 +140,12 @@ func TestChallengeRoute_DoesNotRouteMailChecks(t *testing.T) {
 		}
 	}
 }
+
+func TestChallengeRoute_AdminPanelIsHardBlocked(t *testing.T) {
+	if isChallengeableCheck("admin_panel_bruteforce") {
+		t.Error("admin_panel_bruteforce must not be challenge-routed (hard-block only)")
+	}
+	if !isHardBlockCheck("admin_panel_bruteforce") {
+		t.Error("admin_panel_bruteforce must be in hardBlockChecks")
+	}
+}

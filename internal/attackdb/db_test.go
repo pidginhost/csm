@@ -19,3 +19,10 @@ func TestClassify_MailChecksAsBruteForce(t *testing.T) {
 		}
 	}
 }
+
+func TestClassify_AdminPanelBruteForceAsBruteForce(t *testing.T) {
+	got := checkToAttack["admin_panel_bruteforce"]
+	if got != AttackBruteForce {
+		t.Errorf("admin_panel_bruteforce classified as %q, want %q", got, AttackBruteForce)
+	}
+}

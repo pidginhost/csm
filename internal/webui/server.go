@@ -443,6 +443,7 @@ func (s *Server) csmConfigJSON() string {
 			"smtp_account_spray":             "SMTP Account Spray",
 			"mail_bruteforce":                "Mail Brute Force",
 			"mail_subnet_spray":              "Mail Subnet Spray",
+			"admin_panel_bruteforce":         "Admin Panel Brute Force",
 			"mail_account_spray":             "Mail Account Spray",
 			"mail_account_compromised":       "Mail Account Compromised",
 			"exim_frozen_realtime":           "Frozen Message",

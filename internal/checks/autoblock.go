@@ -104,6 +104,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		"smtp_bruteforce":             true,
 		"mail_bruteforce":             true,
 		"mail_account_compromised":    true,
+		"admin_panel_bruteforce":      true,
 		"ssh_login_unknown_ip":        true,
 		"ssh_login_realtime":          true,
 		"c2_connection":               true,
