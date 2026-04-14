@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - SMTP brute-force detection: new real-time tracker aggregates `dovecot_login authenticator failed` events from `/var/log/exim_mainlog` into three signals — `smtp_bruteforce` (per-IP, auto-blocks the IP), `smtp_subnet_spray` (per-/24, auto-blocks the whole subnet), and `smtp_account_spray` (per-mailbox, visibility only). Tunable via new `thresholds.smtp_bruteforce_*` keys in `csm.yaml`.
+- Mail brute-force detection: real-time tracker for `/var/log/maillog` detects IMAP, POP3, and ManageSieve auth abuse via the existing Dovecot handler (composition preserves `email_suspicious_geo`). Emits `mail_bruteforce` (per-IP, auto-blocks), `mail_subnet_spray` (per-/24, auto-blocks the whole subnet), `mail_account_spray` (per-mailbox, visibility only), and `mail_account_compromised` (successful login from an IP that was just brute-forcing — instant block). Tunable via new `thresholds.mail_bruteforce_*` keys.
+- Admin-panel brute-force detection: real-time counter for POSTs to phpMyAdmin (`/phpmyadmin/index.php`, `/pma/index.php`, `/phpMyAdmin/index.php`) and Joomla (`/administrator/index.php`) login endpoints. Emits `admin_panel_bruteforce` at 10 POSTs/5min per IP; auto-blocks. (Drupal and Tomcat Manager are tracked as follow-up work — they need different path semantics / attack-shape detection.)
 
 ## [2.3.2] - 2026-04-14
 

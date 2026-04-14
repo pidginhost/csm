@@ -17,6 +17,24 @@ thresholds:
   # Least-recently-seen entries are evicted when the cap is reached.
   smtp_bruteforce_max_tracked: 20000
 
+  # Mail (IMAP/POP3/ManageSieve) brute-force detector (real-time, via /var/log/maillog)
+  # Per-attacker-IP failed-auth threshold that triggers an immediate IP block.
+  mail_bruteforce_threshold: 5
+  # Sliding-window minutes over which per-IP, per-/24, and per-account
+  # failures are counted.
+  mail_bruteforce_window_min: 10
+  # Minutes to suppress duplicate findings for the same key after firing.
+  mail_bruteforce_suppress_min: 60
+  # Unique attacker IPs inside a single /24 that triggers a whole-subnet block.
+  mail_bruteforce_subnet_threshold: 8
+  # Unique attacker IPs targeting one mailbox that triggers a visibility
+  # finding (mail_account_spray). Not auto-blocked because the attacker
+  # spans many subnets.
+  mail_account_spray_threshold: 12
+  # Soft cap on the number of tracked entities (IPs + subnets + accounts).
+  # Least-recently-seen entries are evicted when the cap is reached.
+  mail_bruteforce_max_tracked: 20000
+
 # Email antivirus scanning
 email_av:
   enabled: false
