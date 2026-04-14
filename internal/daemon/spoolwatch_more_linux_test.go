@@ -72,14 +72,11 @@ func TestSpoolWatcherWriteResponseEncodesStruct(t *testing.T) {
 func TestSpoolWatcherWriteResponseFailureTriggersStop(t *testing.T) {
 	// Point sw.fd at an already-closed fd: write returns EBADF and the
 	// fatal-failure branch should call closeFd() (no-op now) and Stop().
-	var fds [2]int
-	if err := unix.Pipe2(fds[:], unix.O_CLOEXEC); err != nil {
-		t.Skipf("pipe2: %v", err)
-	}
-	_ = unix.Close(fds[0])
-	_ = unix.Close(fds[1])
-
-	// Independent wakeup pipe so Stop() can write the wakeup byte.
+	// Use a guaranteed-invalid FD (-1) so unix.Write fails with EBADF.
+	// Closing a real FD then keeping its number would race with the
+	// wake-pipe creation below — Linux reuses the lowest-available FD,
+	// so the "closed" number could end up pointing at the wake pipe and
+	// the write would succeed.
 	var wake [2]int
 	if err := unix.Pipe2(wake[:], unix.O_NONBLOCK|unix.O_CLOEXEC); err != nil {
 		t.Skipf("pipe2 wake: %v", err)
@@ -90,7 +87,7 @@ func TestSpoolWatcherWriteResponseFailureTriggersStop(t *testing.T) {
 	}()
 
 	sw := &SpoolWatcher{
-		fd:      fds[1], // already closed - write will fail with EBADF
+		fd:      -1, // invalid - unix.Write returns EBADF
 		pipeFds: wake,
 		stopCh:  make(chan struct{}),
 	}
