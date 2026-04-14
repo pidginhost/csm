@@ -182,6 +182,30 @@ func Validate(cfg *Config) []ValidationResult {
 		results = append(results, ValidationResult{"warn", "email_protection.password_check_interval_min", "password_check_interval_min < 60 may cause high CPU from doveadm"})
 	}
 
+	// --- SMTP brute-force thresholds (only when configured; Load() sets defaults) ---
+	t := cfg.Thresholds
+	if t.SMTPBruteForceThreshold != 0 || t.SMTPBruteForceWindowMin != 0 || t.SMTPBruteForceSuppressMin != 0 ||
+		t.SMTPBruteForceSubnetThresh != 0 || t.SMTPAccountSprayThreshold != 0 || t.SMTPBruteForceMaxTracked != 0 {
+		if t.SMTPBruteForceThreshold < 2 || t.SMTPBruteForceThreshold > 50 {
+			results = append(results, ValidationResult{"error", "thresholds.smtp_bruteforce_threshold", "smtp_bruteforce_threshold must be between 2 and 50"})
+		}
+		if t.SMTPBruteForceWindowMin < 1 || t.SMTPBruteForceWindowMin > 60 {
+			results = append(results, ValidationResult{"error", "thresholds.smtp_bruteforce_window_min", "smtp_bruteforce_window_min must be between 1 and 60"})
+		}
+		if t.SMTPBruteForceSuppressMin < 1 || t.SMTPBruteForceSuppressMin > 1440 {
+			results = append(results, ValidationResult{"error", "thresholds.smtp_bruteforce_suppress_min", "smtp_bruteforce_suppress_min must be between 1 and 1440"})
+		}
+		if t.SMTPBruteForceSubnetThresh < 2 || t.SMTPBruteForceSubnetThresh > 64 {
+			results = append(results, ValidationResult{"error", "thresholds.smtp_bruteforce_subnet_threshold", "smtp_bruteforce_subnet_threshold must be between 2 and 64"})
+		}
+		if t.SMTPAccountSprayThreshold < 2 || t.SMTPAccountSprayThreshold > 200 {
+			results = append(results, ValidationResult{"error", "thresholds.smtp_account_spray_threshold", "smtp_account_spray_threshold must be between 2 and 200"})
+		}
+		if t.SMTPBruteForceMaxTracked < 1000 || t.SMTPBruteForceMaxTracked > 200000 {
+			results = append(results, ValidationResult{"error", "thresholds.smtp_bruteforce_max_tracked", "smtp_bruteforce_max_tracked must be between 1000 and 200000"})
+		}
+	}
+
 	// --- Warnings ---
 	results = append(results, validateWarnings(cfg)...)
 
