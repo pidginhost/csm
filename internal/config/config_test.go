@@ -173,3 +173,36 @@ func TestConfig_SMTPBruteForceDefaultsApplied(t *testing.T) {
 		}
 	}
 }
+
+func TestConfig_MailBruteForceDefaultsApplied(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "csm.yaml")
+	if err := os.WriteFile(path, []byte("hostname: \"\"\n"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := map[string]int{
+		"MailBruteForceThreshold":    5,
+		"MailBruteForceWindowMin":    10,
+		"MailBruteForceSuppressMin":  60,
+		"MailBruteForceSubnetThresh": 8,
+		"MailAccountSprayThreshold":  12,
+		"MailBruteForceMaxTracked":   20000,
+	}
+	got := map[string]int{
+		"MailBruteForceThreshold":    cfg.Thresholds.MailBruteForceThreshold,
+		"MailBruteForceWindowMin":    cfg.Thresholds.MailBruteForceWindowMin,
+		"MailBruteForceSuppressMin":  cfg.Thresholds.MailBruteForceSuppressMin,
+		"MailBruteForceSubnetThresh": cfg.Thresholds.MailBruteForceSubnetThresh,
+		"MailAccountSprayThreshold":  cfg.Thresholds.MailAccountSprayThreshold,
+		"MailBruteForceMaxTracked":   cfg.Thresholds.MailBruteForceMaxTracked,
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s = %d, want %d", k, got[k], v)
+		}
+	}
+}

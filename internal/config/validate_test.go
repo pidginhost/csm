@@ -578,6 +578,57 @@ func TestValidateDeepGeoIP(t *testing.T) {
 	}
 }
 
+func TestValidate_MailBruteForceRanges(t *testing.T) {
+	cases := []struct {
+		name    string
+		apply   func(*Config)
+		field   string
+		wantErr bool
+	}{
+		{"threshold=1 rejected", func(c *Config) { c.Thresholds.MailBruteForceThreshold = 1 }, "thresholds.mail_bruteforce_threshold", true},
+		{"threshold=2 accepted", func(c *Config) { c.Thresholds.MailBruteForceThreshold = 2 }, "thresholds.mail_bruteforce_threshold", false},
+		{"threshold=51 rejected", func(c *Config) { c.Thresholds.MailBruteForceThreshold = 51 }, "thresholds.mail_bruteforce_threshold", true},
+		{"window=0 accepted", func(c *Config) { c.Thresholds.MailBruteForceWindowMin = 0 }, "thresholds.mail_bruteforce_window_min", false},
+		{"window=1 accepted", func(c *Config) { c.Thresholds.MailBruteForceWindowMin = 1 }, "thresholds.mail_bruteforce_window_min", false},
+		{"window=61 rejected", func(c *Config) { c.Thresholds.MailBruteForceWindowMin = 61 }, "thresholds.mail_bruteforce_window_min", true},
+		{"suppress=0 accepted", func(c *Config) { c.Thresholds.MailBruteForceSuppressMin = 0 }, "thresholds.mail_bruteforce_suppress_min", false},
+		{"suppress=1 accepted", func(c *Config) { c.Thresholds.MailBruteForceSuppressMin = 1 }, "thresholds.mail_bruteforce_suppress_min", false},
+		{"suppress=1441 rejected", func(c *Config) { c.Thresholds.MailBruteForceSuppressMin = 1441 }, "thresholds.mail_bruteforce_suppress_min", true},
+		{"subnet_threshold=1 rejected", func(c *Config) { c.Thresholds.MailBruteForceSubnetThresh = 1 }, "thresholds.mail_bruteforce_subnet_threshold", true},
+		{"subnet_threshold=2 accepted", func(c *Config) { c.Thresholds.MailBruteForceSubnetThresh = 2 }, "thresholds.mail_bruteforce_subnet_threshold", false},
+		{"subnet_threshold=65 rejected", func(c *Config) { c.Thresholds.MailBruteForceSubnetThresh = 65 }, "thresholds.mail_bruteforce_subnet_threshold", true},
+		{"account_spray=1 rejected", func(c *Config) { c.Thresholds.MailAccountSprayThreshold = 1 }, "thresholds.mail_account_spray_threshold", true},
+		{"account_spray=2 accepted", func(c *Config) { c.Thresholds.MailAccountSprayThreshold = 2 }, "thresholds.mail_account_spray_threshold", false},
+		{"account_spray=201 rejected", func(c *Config) { c.Thresholds.MailAccountSprayThreshold = 201 }, "thresholds.mail_account_spray_threshold", true},
+		{"max_tracked=999 rejected", func(c *Config) { c.Thresholds.MailBruteForceMaxTracked = 999 }, "thresholds.mail_bruteforce_max_tracked", true},
+		{"max_tracked=1000 accepted", func(c *Config) { c.Thresholds.MailBruteForceMaxTracked = 1000 }, "thresholds.mail_bruteforce_max_tracked", false},
+		{"max_tracked=200001 rejected", func(c *Config) { c.Thresholds.MailBruteForceMaxTracked = 200001 }, "thresholds.mail_bruteforce_max_tracked", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{Hostname: "test"}
+			cfg.Alerts.Email.Enabled = true
+			cfg.Alerts.Email.To = []string{"admin@test.com"}
+			cfg.Alerts.Email.SMTP = "localhost:25"
+			cfg.Alerts.Email.From = "csm@test.com"
+			cfg.Alerts.MaxPerHour = 10
+			cfg.Thresholds.MailBruteForceThreshold = 5
+			cfg.Thresholds.MailBruteForceWindowMin = 10
+			cfg.Thresholds.MailBruteForceSuppressMin = 60
+			cfg.Thresholds.MailBruteForceSubnetThresh = 8
+			cfg.Thresholds.MailAccountSprayThreshold = 12
+			cfg.Thresholds.MailBruteForceMaxTracked = 20000
+			tc.apply(cfg)
+
+			results := Validate(cfg)
+			hasErr := hasResult(results, "error", tc.field)
+			if hasErr != tc.wantErr {
+				t.Errorf("hasErr = %v, want %v (results=%v)", hasErr, tc.wantErr, results)
+			}
+		})
+	}
+}
+
 func TestValidate_SMTPBruteForceRanges(t *testing.T) {
 	cases := []struct {
 		name    string
