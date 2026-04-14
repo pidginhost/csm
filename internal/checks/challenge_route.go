@@ -76,6 +76,8 @@ var hardBlockChecks = map[string]bool{
 	"api_auth_failure_realtime":   true, // cPanel API brute force — challenge is useless, hard-block
 	"ftp_auth_failure_realtime":   true, // FTP brute force — can't challenge non-HTTP
 	"pam_bruteforce":              true, // PAM brute force — can't challenge non-HTTP
+	"smtp_bruteforce":             true, // SMTP brute force — can't challenge non-HTTP
+	"smtp_subnet_spray":           true, // SMTP subnet spray — can't challenge non-HTTP
 }
 
 // hardBlockPrefixes match any check name starting with these strings.

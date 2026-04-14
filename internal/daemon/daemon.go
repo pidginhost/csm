@@ -786,7 +786,9 @@ func (d *Daemon) startLogWatchers() {
 	StartEmailRateEviction(d.stopCh)
 
 	// Start background purge for SMTP brute-force tracker
+	d.wg.Add(1)
 	go func() {
+		defer d.wg.Done()
 		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()
 		for {

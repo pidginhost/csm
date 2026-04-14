@@ -124,5 +124,8 @@ func TestChallengeRoute_DoesNotRouteSMTPChecks(t *testing.T) {
 		if isChallengeableCheck(check) {
 			t.Errorf("check %q must be hard-blocked, not challenge-routed", check)
 		}
+		if !isHardBlockCheck(check) {
+			t.Errorf("check %q must be in hardBlockChecks (defense-in-depth)", check)
+		}
 	}
 }
