@@ -3,6 +3,7 @@ package daemon
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -301,4 +302,48 @@ func (t *mailAuthTracker) enforceMaxTracked() {
 			delete(t.accounts, v.key)
 		}
 	}
+}
+
+// isMailAuthLine returns true for dovecot imap/pop3/managesieve login events.
+func isMailAuthLine(line string) bool {
+	if !strings.Contains(line, "dovecot:") {
+		return false
+	}
+	return strings.Contains(line, "imap-login:") ||
+		strings.Contains(line, "pop3-login:") ||
+		strings.Contains(line, "managesieve-login:")
+}
+
+// extractMailLoginEvent parses a dovecot login line and returns
+// (ip, account, success). Returns empty strings and false on parse failure.
+// success is true for "Login:" lines, false for "Aborted login (auth failed..."
+func extractMailLoginEvent(line string) (ip, account string, success bool) {
+	switch {
+	case strings.Contains(line, "-login: Login:"):
+		success = true
+	case strings.Contains(line, "auth failed"):
+		success = false
+	default:
+		return "", "", false
+	}
+
+	// Extract user=<...> via balanced angle brackets.
+	if i := strings.Index(line, "user=<"); i >= 0 {
+		rest := line[i+len("user=<"):]
+		if end := strings.Index(rest, ">"); end >= 0 {
+			account = rest[:end]
+		}
+	}
+
+	// Extract rip=... field. Delimited by comma or whitespace.
+	if i := strings.Index(line, "rip="); i >= 0 {
+		rest := line[i+len("rip="):]
+		end := strings.IndexAny(rest, ", \n")
+		if end < 0 {
+			end = len(rest)
+		}
+		ip = rest[:end]
+	}
+
+	return ip, account, success
 }

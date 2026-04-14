@@ -431,3 +431,66 @@ func TestMailAuthTracker_ConcurrentNoRace(t *testing.T) {
 	wg.Wait()
 	tr.Purge() // must not race
 }
+
+func TestExtractMailLoginEvent_IMAPFailure(t *testing.T) {
+	line := `Apr 14 12:00:00 host dovecot: imap-login: Aborted login (auth failed, 1 attempts in 2 secs): user=<alice@x.ro>, method=PLAIN, rip=1.2.3.4, lip=1.1.1.1, TLS`
+	ip, account, success := extractMailLoginEvent(line)
+	if ip != "1.2.3.4" || account != "alice@x.ro" || success {
+		t.Errorf("got (%q, %q, %v), want (1.2.3.4, alice@x.ro, false)", ip, account, success)
+	}
+}
+
+func TestExtractMailLoginEvent_POP3Failure(t *testing.T) {
+	line := `Apr 14 12:00:00 host dovecot: pop3-login: Aborted login (auth failed, 1 attempts): user=<bob@x.ro>, method=PLAIN, rip=5.6.7.8`
+	ip, account, success := extractMailLoginEvent(line)
+	if ip != "5.6.7.8" || account != "bob@x.ro" || success {
+		t.Errorf("got (%q, %q, %v), want (5.6.7.8, bob@x.ro, false)", ip, account, success)
+	}
+}
+
+func TestExtractMailLoginEvent_ManageSieveFailure(t *testing.T) {
+	line := `Apr 14 12:00:00 host dovecot: managesieve-login: Aborted login (auth failed): user=<c@x.ro>, method=PLAIN, rip=9.9.9.9`
+	ip, account, success := extractMailLoginEvent(line)
+	if ip != "9.9.9.9" || account != "c@x.ro" || success {
+		t.Errorf("got (%q, %q, %v), want (9.9.9.9, c@x.ro, false)", ip, account, success)
+	}
+}
+
+func TestExtractMailLoginEvent_IMAPSuccess(t *testing.T) {
+	line := `Apr 14 12:00:05 host dovecot: imap-login: Login: user=<alice@x.ro>, method=PLAIN, rip=1.2.3.4, lip=..., TLS`
+	ip, account, success := extractMailLoginEvent(line)
+	if ip != "1.2.3.4" || account != "alice@x.ro" || !success {
+		t.Errorf("got (%q, %q, %v), want (1.2.3.4, alice@x.ro, true)", ip, account, success)
+	}
+}
+
+func TestExtractMailLoginEvent_Garbage(t *testing.T) {
+	for _, line := range []string{
+		"",
+		"totally unrelated log line",
+		"Apr 14 12:00:00 dovecot: imap-login: STARTTLS", // no login event
+	} {
+		ip, account, success := extractMailLoginEvent(line)
+		if ip != "" || account != "" || success {
+			t.Errorf("line %q: got (%q, %q, %v), want empty", line, ip, account, success)
+		}
+	}
+}
+
+func TestIsMailAuthLine_Variants(t *testing.T) {
+	for _, tc := range []struct {
+		line string
+		want bool
+	}{
+		{"dovecot: imap-login: Aborted login", true},
+		{"dovecot: pop3-login: Login:", true},
+		{"dovecot: managesieve-login: Aborted login", true},
+		{"dovecot: lmtp: whatever", false},
+		{"exim: some other line", false},
+		{"", false},
+	} {
+		if got := isMailAuthLine(tc.line); got != tc.want {
+			t.Errorf("isMailAuthLine(%q) = %v, want %v", tc.line, got, tc.want)
+		}
+	}
+}
