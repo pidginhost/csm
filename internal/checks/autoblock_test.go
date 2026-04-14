@@ -10,8 +10,14 @@ import (
 )
 
 type recordingIPBlocker struct {
-	blocked []string
-	calls   []blockCall
+	blocked       []string
+	calls         []blockCall
+	blockedSubnet []string
+}
+
+func (b *recordingIPBlocker) BlockSubnet(cidr, reason string, timeout time.Duration) error {
+	b.blockedSubnet = append(b.blockedSubnet, cidr)
+	return nil
 }
 
 type blockCall struct {
@@ -298,5 +304,72 @@ func TestAutoBlockIPs_PromotesRepeatOffenderToPermanentBlock(t *testing.T) {
 	}
 	if !strings.Contains(actions[1].Message, "AUTO-PERMBLOCK") {
 		t.Fatalf("permblock action message = %q, want AUTO-PERMBLOCK", actions[1].Message)
+	}
+}
+
+func TestAutoBlock_ExtractCIDRFromFinding(t *testing.T) {
+	cases := map[string]string{
+		"SMTP password spray from 203.0.113.0/24: 8 unique IPs in 10m0s":  "203.0.113.0/24",
+		"SMTP password spray from 198.51.100.0/24: 9 unique IPs in 10m0s": "198.51.100.0/24",
+		"wp_login_bruteforce from 1.2.3.4: 10 attempts":                   "",
+		"garbage":                                                          "",
+	}
+	for msg, want := range cases {
+		got := extractCIDRFromFinding(alert.Finding{Message: msg})
+		if got != want {
+			t.Errorf("extractCIDRFromFinding(%q) = %q, want %q", msg, got, want)
+		}
+	}
+}
+
+func TestAutoBlock_SMTPSubnetSprayTriggersBlockSubnet(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.StatePath = t.TempDir()
+
+	fake := &recordingIPBlocker{}
+	prev := fwBlocker
+	fwBlocker = fake
+	defer func() { fwBlocker = prev }()
+
+	findings := []alert.Finding{{
+		Check:   "smtp_subnet_spray",
+		Message: "SMTP password spray from 203.0.113.0/24: 8 unique IPs in 10m0s",
+	}}
+	AutoBlockIPs(cfg, findings)
+
+	if len(fake.blockedSubnet) != 1 || fake.blockedSubnet[0] != "203.0.113.0/24" {
+		t.Errorf("expected BlockSubnet(203.0.113.0/24), got %v", fake.blockedSubnet)
+	}
+	if len(fake.blocked) != 0 {
+		t.Errorf("expected no BlockIP calls; got %v", fake.blocked)
+	}
+}
+
+func TestAutoBlock_SMTPSubnetSprayBypassesPerIPRateLimit(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.StatePath = t.TempDir()
+
+	fake := &recordingIPBlocker{}
+	prev := fwBlocker
+	fwBlocker = fake
+	defer func() { fwBlocker = prev }()
+
+	state := loadBlockState(cfg.StatePath)
+	state.HourKey = time.Now().Format("2006-01-02T15")
+	state.BlocksThisHour = maxBlocksPerHour
+	saveBlockState(cfg.StatePath, state)
+
+	findings := []alert.Finding{{
+		Check:   "smtp_subnet_spray",
+		Message: "SMTP password spray from 203.0.113.0/24: 8 unique IPs in 10m0s",
+	}}
+	AutoBlockIPs(cfg, findings)
+
+	if len(fake.blockedSubnet) != 1 {
+		t.Errorf("subnet spray must bypass per-IP rate limit; got %v", fake.blockedSubnet)
 	}
 }

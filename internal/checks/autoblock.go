@@ -133,6 +133,42 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	}
 	state.Pending = nil
 
+	// Subnet fast-path: checks that represent a subnet directly.
+	// Independent of the per-IP rate limit, because a single subnet block
+	// replaces what would otherwise be hundreds of per-IP blocks.
+	for _, f := range findings {
+		if f.Check != "smtp_subnet_spray" {
+			continue
+		}
+		cidr := extractCIDRFromFinding(f)
+		if cidr == "" {
+			continue
+		}
+		if fwBlocker == nil {
+			fmt.Fprintf(os.Stderr, "auto-block: firewall engine not available, skipping subnet %s\n", cidr)
+			continue
+		}
+		sb, ok := fwBlocker.(interface {
+			BlockSubnet(string, string, time.Duration) error
+		})
+		if !ok {
+			fmt.Fprintf(os.Stderr, "auto-block: firewall engine does not support subnet blocking, skipping %s\n", cidr)
+			continue
+		}
+		reason := fmt.Sprintf("CSM auto-block (subnet): %s", truncate(f.Message, 100))
+		if err := sb.BlockSubnet(cidr, reason, parseExpiry(cfg.AutoResponse.BlockExpiry)); err != nil {
+			fmt.Fprintf(os.Stderr, "auto-block: error blocking subnet %s: %v\n", cidr, err)
+			continue
+		}
+		actions = append(actions, alert.Finding{
+			Severity:  alert.Critical,
+			Check:     "auto_block",
+			Message:   fmt.Sprintf("AUTO-BLOCK-SUBNET: %s blocked", cidr),
+			Details:   fmt.Sprintf("Reason: %s", f.Message),
+			Timestamp: time.Now(),
+		})
+	}
+
 	for _, f := range findings {
 		isBlockable := alwaysBlock[f.Check]
 		if !isBlockable && cfg.AutoResponse.BlockCpanelLogins && cpanelWebmailChecks[f.Check] {
@@ -431,4 +467,26 @@ func savePermBlockTracker(statePath string, tracker *permBlockTracker) {
 	tmpPath := filepath.Join(statePath, "permblock_tracker.json.tmp")
 	_ = os.WriteFile(tmpPath, data, 0600)
 	_ = os.Rename(tmpPath, filepath.Join(statePath, "permblock_tracker.json"))
+}
+
+// extractCIDRFromFinding returns the CIDR appearing in the message after
+// the canonical " from " separator. Returns "" if the value does not parse
+// as a CIDR.
+func extractCIDRFromFinding(f alert.Finding) string {
+	msg := f.Message
+	idx := strings.LastIndex(msg, " from ")
+	if idx < 0 {
+		return ""
+	}
+	rest := msg[idx+len(" from "):]
+	fields := strings.Fields(rest)
+	if len(fields) == 0 {
+		return ""
+	}
+	candidate := strings.TrimRight(fields[0], ",:;)([]")
+	_, ipnet, err := net.ParseCIDR(candidate)
+	if err != nil {
+		return ""
+	}
+	return ipnet.String()
 }
