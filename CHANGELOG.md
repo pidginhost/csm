@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- SMTP brute-force detection: new real-time tracker aggregates `dovecot_login authenticator failed` events from `/var/log/exim_mainlog` into three signals — `smtp_bruteforce` (per-IP, auto-blocks the IP), `smtp_subnet_spray` (per-/24, auto-blocks the whole subnet), and `smtp_account_spray` (per-mailbox, visibility only). Tunable via new `thresholds.smtp_bruteforce_*` keys in `csm.yaml`.
+
 ## [2.3.2] - 2026-04-14
 
 ### Fixed

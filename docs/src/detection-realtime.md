@@ -47,6 +47,20 @@ Tails auth, access, and mail logs in real-time. The exact file paths are chosen 
 
 Cpanel-only log watchers are not registered on non-cPanel hosts, so you will not see "not found, retrying every 60s" warnings for them on plain Ubuntu or AlmaLinux.
 
+## SMTP / Dovecot Brute-Force Tracker
+
+Real-time detection of credential-stuffing and password-spray attacks against mail authentication, running as part of the Exim mainlog watcher on cPanel hosts.
+
+**Detects three attack patterns:**
+
+| Signal | What triggers it | Auto-response |
+|--------|-----------------|---------------|
+| `smtp_bruteforce` | A single attacker IP exceeds the per-IP failed-auth threshold within the configured window | IP blocked via nftables |
+| `smtp_subnet_spray` | Multiple distinct attacker IPs from the same /24 subnet exceed the subnet threshold | Entire /24 subnet blocked via nftables |
+| `smtp_account_spray` | Many distinct attacker IPs targeting the same mailbox exceed the account threshold | Visibility finding only — no auto-block, because attackers span many subnets |
+
+**Tuning:** all three signals are configurable via the `thresholds.smtp_bruteforce_*` keys in `csm.yaml`. Infrastructure IPs (from `infra_ips`) are never counted or blocked.
+
 ## PAM Brute-Force Listener
 
 Real-time authentication monitoring across all PAM-enabled services.
