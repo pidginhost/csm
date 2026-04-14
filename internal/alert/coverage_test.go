@@ -761,6 +761,49 @@ func TestFilterBlockedAlertsLearnsFromAutoBlockBatch(t *testing.T) {
 	}
 }
 
+func TestFilter_SubnetBlockSuppressesReputationInSameBatch(t *testing.T) {
+	cfg := &config.Config{StatePath: t.TempDir()}
+	cfg.Suppressions.SuppressBlockedAlerts = true
+
+	findings := []Finding{
+		{
+			Severity: Critical,
+			Check:    "auto_block",
+			Message:  "AUTO-BLOCK-SUBNET: 203.0.113.0/24 blocked",
+		},
+		{
+			Severity: Warning,
+			Check:    "ip_reputation",
+			Message:  "Known malicious IP accessing server: 203.0.113.42 (from abuseipdb)",
+		},
+		{
+			Severity: Warning,
+			Check:    "ip_reputation",
+			Message:  "Known malicious IP accessing server: 10.20.30.40 (from abuseipdb)",
+		},
+	}
+
+	got := FilterBlockedAlerts(cfg, findings)
+
+	// The ip_reputation finding for 203.0.113.42 must be suppressed because
+	// it is inside the just-blocked /24. The finding for 10.20.30.40 must
+	// pass through (different subnet).
+	for _, f := range got {
+		if f.Check == "ip_reputation" && strings.Contains(f.Message, "203.0.113.42") {
+			t.Errorf("ip_reputation for 203.0.113.42 should be suppressed by subnet block; got %v", f)
+		}
+	}
+	var kept bool
+	for _, f := range got {
+		if f.Check == "ip_reputation" && strings.Contains(f.Message, "10.20.30.40") {
+			kept = true
+		}
+	}
+	if !kept {
+		t.Errorf("ip_reputation for 10.20.30.40 must not be suppressed (outside blocked /24)")
+	}
+}
+
 // --- httpClient helper ------------------------------------------------
 
 func TestHttpClientTimeoutApplied(t *testing.T) {
