@@ -101,6 +101,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		"wp_login_bruteforce":         true,
 		"xmlrpc_abuse":                true,
 		"ftp_bruteforce":              true,
+		"smtp_bruteforce":             true,
 		"ssh_login_unknown_ip":        true,
 		"ssh_login_realtime":          true,
 		"c2_connection":               true,

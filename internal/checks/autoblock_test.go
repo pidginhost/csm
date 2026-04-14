@@ -204,6 +204,44 @@ func TestAutoBlockIPs_DrainsPendingQueueAfterRateLimitWindow(t *testing.T) {
 	}
 }
 
+func TestAutoBlock_SMTPBruteForceMessageFormatIsExtractable(t *testing.T) {
+	msg := "SMTP brute force from 203.0.113.5: 5 failed auths in 10m0s"
+	got := extractIPFromFinding(alert.Finding{Message: msg})
+	if got != "203.0.113.5" {
+		t.Errorf("extractIPFromFinding(%q) = %q, want 203.0.113.5", msg, got)
+	}
+}
+
+func TestAutoBlock_SMTPBruteForceIsInAlwaysBlock(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.StatePath = t.TempDir()
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := fwBlocker
+	SetIPBlocker(blocker)
+	t.Cleanup(func() {
+		SetIPBlocker(oldBlocker)
+	})
+
+	oldChallengeList := GetChallengeIPList()
+	SetChallengeIPList(nil)
+	t.Cleanup(func() {
+		SetChallengeIPList(oldChallengeList)
+	})
+
+	findings := []alert.Finding{{
+		Check:   "smtp_bruteforce",
+		Message: "SMTP brute force from 203.0.113.5: 5 failed auths in 10m0s",
+	}}
+	AutoBlockIPs(cfg, findings)
+
+	if len(blocker.blocked) != 1 || blocker.blocked[0] != "203.0.113.5" {
+		t.Errorf("expected BlockIP(203.0.113.5) to be called once; got %v", blocker.blocked)
+	}
+}
+
 func TestAutoBlockIPs_PromotesRepeatOffenderToPermanentBlock(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.StatePath = t.TempDir()
