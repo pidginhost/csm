@@ -55,13 +55,27 @@ jobs:
             echo "gocovmerge install failed — keeping unit-only coverage"
             exit 0
           fi
-          if ! gocovmerge coverage.out integration-coverage.out > merged.out 2>&1; then
-            echo "gocovmerge failed (likely mode mismatch or profile corruption) — keeping unit-only coverage"
+          # Use separate redirection: stdout to merged.out, stderr to a log
+          # file so warnings don't corrupt the coverage profile.
+          if ! gocovmerge coverage.out integration-coverage.out >merged.out 2>merge.err; then
+            echo "gocovmerge failed:"
+            cat merge.err
+            echo "Keeping unit-only coverage"
+            exit 0
+          fi
+          if [ -s merge.err ]; then
+            echo "gocovmerge warnings:"
+            cat merge.err
+          fi
+          # Sanity check: merged file must start with "mode:" line
+          if ! head -1 merged.out | grep -q '^mode:'; then
+            echo "merged.out does not look like a coverage profile (first line: $(head -1 merged.out))"
+            echo "Keeping unit-only coverage"
             exit 0
           fi
           mv merged.out coverage.out
           echo "Merged coverage:"
-          go tool cover -func=coverage.out | tail -1 || echo "go tool cover failed, but coverage.out was replaced"
+          go tool cover -func=coverage.out | tail -1
 
       - name: Generate HTML coverage report
         run: go tool cover -html=coverage.out -o coverage.html
