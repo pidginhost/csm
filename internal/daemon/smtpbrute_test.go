@@ -196,11 +196,27 @@ func TestSMTPAuthTracker_SubnetSprayThreshold(t *testing.T) {
 	if fired.Severity != alert.Critical {
 		t.Errorf("severity = %v, want Critical", fired.Severity)
 	}
-	if !strings.Contains(fired.Message, "203.0.113.0/24") {
-		t.Errorf("message %q does not contain expected CIDR", fired.Message)
+	// Round-trip check: message format must be compatible with
+	// internal/checks.extractCIDRFromFinding, which uses LastIndex(" from ")
+	// then TrimRight(",:;)([]") and net.ParseCIDR.
+	if !strings.HasPrefix(fired.Message, "SMTP password spray from ") {
+		t.Errorf("message %q must begin with canonical prefix 'SMTP password spray from '", fired.Message)
 	}
-	if !strings.Contains(fired.Message, " from ") {
-		t.Errorf("message %q missing ' from ' separator for extractCIDRFromFinding", fired.Message)
+	idx := strings.LastIndex(fired.Message, " from ")
+	if idx < 0 {
+		t.Fatalf("message %q has no ' from ' separator", fired.Message)
+	}
+	rest := fired.Message[idx+len(" from "):]
+	fields := strings.Fields(rest)
+	if len(fields) == 0 {
+		t.Fatalf("message %q: nothing after ' from '", fired.Message)
+	}
+	candidate := strings.TrimRight(fields[0], ",:;)([]")
+	_, ipnet, err := net.ParseCIDR(candidate)
+	if err != nil {
+		t.Errorf("round-trip CIDR extraction from %q failed on %q: %v", fired.Message, candidate, err)
+	} else if ipnet.String() != "203.0.113.0/24" {
+		t.Errorf("round-trip CIDR extraction yielded %q, want 203.0.113.0/24", ipnet.String())
 	}
 }
 
