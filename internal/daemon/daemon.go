@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -699,6 +700,17 @@ func (d *Daemon) startLogWatchers() {
 		if strings.Contains(line, "authenticator failed") && strings.Contains(line, "dovecot") {
 			ip := extractBracketedIP(line)
 			account := extractSetID(line)
+
+			// Canonicalize IPv4-mapped IPv6 (::ffff:a.b.c.d) to plain IPv4 so the
+			// tracker doesn't double-count the same attacker as two IPs.
+			if ip != "" {
+				if parsed := net.ParseIP(ip); parsed != nil {
+					if v4 := parsed.To4(); v4 != nil {
+						ip = v4.String()
+					}
+				}
+			}
+
 			if ip != "" && !isInfraIPDaemon(ip, cfg.InfraIPs) && !isPrivateOrLoopback(ip) {
 				if d.smtpAuthTracker != nil {
 					findings = append(findings, d.smtpAuthTracker.Record(ip, account)...)

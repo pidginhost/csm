@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +28,17 @@ func buildEximHandler(cfg *config.Config, tr *smtpAuthTracker) LogLineHandler {
 		if strings.Contains(line, "authenticator failed") && strings.Contains(line, "dovecot") {
 			ip := extractBracketedIP(line)
 			account := extractSetID(line)
+
+			// Canonicalize IPv4-mapped IPv6 (::ffff:a.b.c.d) to plain IPv4 so the
+			// tracker doesn't double-count the same attacker as two IPs.
+			if ip != "" {
+				if parsed := net.ParseIP(ip); parsed != nil {
+					if v4 := parsed.To4(); v4 != nil {
+						ip = v4.String()
+					}
+				}
+			}
+
 			if tr != nil && ip != "" && !isInfraIPDaemon(ip, c.InfraIPs) && !isPrivateOrLoopback(ip) {
 				findings = append(findings, tr.Record(ip, account)...)
 			}
@@ -115,5 +127,28 @@ func TestEximHandler_SMTPSubnetSpray(t *testing.T) {
 	}
 	if !fired {
 		t.Fatalf("expected smtp_subnet_spray after 8 unique IPs in /24")
+	}
+}
+
+func TestEximHandler_IPv4MappedIPv6Canonicalized(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Thresholds.SMTPBruteForceThreshold = 5
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestTracker(t, clock)
+	h := buildEximHandler(cfg, tr)
+
+	// Interleave raw IPv4 and IPv4-mapped IPv6 for the same attacker.
+	// If not canonicalized, each half-count falls below threshold.
+	variants := []string{"203.0.113.5", "::ffff:203.0.113.5", "203.0.113.5", "::ffff:203.0.113.5", "203.0.113.5"}
+	var fired bool
+	for _, ip := range variants {
+		for _, f := range h(makeEximDovecotFailLine(ip, "alice@example.com"), cfg) {
+			if f.Check == "smtp_bruteforce" {
+				fired = true
+			}
+		}
+	}
+	if !fired {
+		t.Fatalf("IPv4-mapped IPv6 must canonicalize so all five records count as one IP at threshold")
 	}
 }
