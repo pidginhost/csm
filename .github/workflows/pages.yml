@@ -36,28 +36,32 @@ jobs:
           set -e
           # Scope coverage to internal/ packages — cmd/csm is package main
           # (CLI glue) and skews the percentage with untestable cobra wiring.
-          go test -timeout=300s -coverprofile=coverage.out -coverpkg=./internal/... ./... || true
+          # Use covermode=atomic to match the integration test binary so the
+          # profiles can be merged with gocovmerge.
+          go test -timeout=300s -covermode=atomic -coverprofile=coverage.out -coverpkg=./internal/... ./... || true
           go tool cover -func=coverage.out | tail -1
 
       - name: Merge integration coverage from latest GitHub release
         run: |
-          set -e
-          # The GitLab integration job (runs on real AlmaLinux+Ubuntu servers
-          # exercising fanotify, nftables, YARA, PAM) produces a merged
-          # coverage profile. That profile is uploaded as an asset on the
-          # GitHub release so this workflow can fetch it WITHOUT needing
-          # network access to the private GitLab instance.
+          # Don't fail the whole workflow if merge fails — fall back to
+          # unit-only coverage. Best-effort merge with integration data.
           URL="https://github.com/pidginhost/csm/releases/latest/download/merged-coverage.out"
-          if curl -fsSL -o integration-coverage.out "$URL" 2>/dev/null; then
-            echo "Fetched integration coverage from latest GitHub release"
-            go install github.com/wadey/gocovmerge@latest
-            gocovmerge coverage.out integration-coverage.out > merged.out
-            mv merged.out coverage.out
-            echo "Merged coverage:"
-            go tool cover -func=coverage.out | tail -1
-          else
+          if ! curl -fsSL -o integration-coverage.out "$URL" 2>/dev/null; then
             echo "No integration coverage asset in latest release — using unit coverage only"
+            exit 0
           fi
+          echo "Fetched integration coverage from latest GitHub release ($(wc -c < integration-coverage.out) bytes)"
+          if ! go install github.com/wadey/gocovmerge@latest 2>&1; then
+            echo "gocovmerge install failed — keeping unit-only coverage"
+            exit 0
+          fi
+          if ! gocovmerge coverage.out integration-coverage.out > merged.out 2>&1; then
+            echo "gocovmerge failed (likely mode mismatch or profile corruption) — keeping unit-only coverage"
+            exit 0
+          fi
+          mv merged.out coverage.out
+          echo "Merged coverage:"
+          go tool cover -func=coverage.out | tail -1 || echo "go tool cover failed, but coverage.out was replaced"
 
       - name: Generate HTML coverage report
         run: go tool cover -html=coverage.out -o coverage.html
