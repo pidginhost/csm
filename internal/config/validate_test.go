@@ -588,9 +588,9 @@ func TestValidate_SMTPBruteForceRanges(t *testing.T) {
 		{"threshold=1 rejected", func(c *Config) { c.Thresholds.SMTPBruteForceThreshold = 1 }, "thresholds.smtp_bruteforce_threshold", true},
 		{"threshold=2 accepted", func(c *Config) { c.Thresholds.SMTPBruteForceThreshold = 2 }, "thresholds.smtp_bruteforce_threshold", false},
 		{"threshold=51 rejected", func(c *Config) { c.Thresholds.SMTPBruteForceThreshold = 51 }, "thresholds.smtp_bruteforce_threshold", true},
-		{"window=0 rejected", func(c *Config) { c.Thresholds.SMTPBruteForceWindowMin = 0 }, "thresholds.smtp_bruteforce_window_min", true},
+		{"window=0 accepted", func(c *Config) { c.Thresholds.SMTPBruteForceWindowMin = 0 }, "thresholds.smtp_bruteforce_window_min", false},
 		{"window=61 rejected", func(c *Config) { c.Thresholds.SMTPBruteForceWindowMin = 61 }, "thresholds.smtp_bruteforce_window_min", true},
-		{"suppress=0 rejected", func(c *Config) { c.Thresholds.SMTPBruteForceSuppressMin = 0 }, "thresholds.smtp_bruteforce_suppress_min", true},
+		{"suppress=0 accepted", func(c *Config) { c.Thresholds.SMTPBruteForceSuppressMin = 0 }, "thresholds.smtp_bruteforce_suppress_min", false},
 		{"suppress=1441 rejected", func(c *Config) { c.Thresholds.SMTPBruteForceSuppressMin = 1441 }, "thresholds.smtp_bruteforce_suppress_min", true},
 		{"subnet_threshold=1 rejected", func(c *Config) { c.Thresholds.SMTPBruteForceSubnetThresh = 1 }, "thresholds.smtp_bruteforce_subnet_threshold", true},
 		{"subnet_threshold=65 rejected", func(c *Config) { c.Thresholds.SMTPBruteForceSubnetThresh = 65 }, "thresholds.smtp_bruteforce_subnet_threshold", true},
@@ -598,6 +598,11 @@ func TestValidate_SMTPBruteForceRanges(t *testing.T) {
 		{"account_spray=201 rejected", func(c *Config) { c.Thresholds.SMTPAccountSprayThreshold = 201 }, "thresholds.smtp_account_spray_threshold", true},
 		{"max_tracked=999 rejected", func(c *Config) { c.Thresholds.SMTPBruteForceMaxTracked = 999 }, "thresholds.smtp_bruteforce_max_tracked", true},
 		{"max_tracked=200001 rejected", func(c *Config) { c.Thresholds.SMTPBruteForceMaxTracked = 200001 }, "thresholds.smtp_bruteforce_max_tracked", true},
+		{"window=1 accepted", func(c *Config) { c.Thresholds.SMTPBruteForceWindowMin = 1 }, "thresholds.smtp_bruteforce_window_min", false},
+		{"suppress=1 accepted", func(c *Config) { c.Thresholds.SMTPBruteForceSuppressMin = 1 }, "thresholds.smtp_bruteforce_suppress_min", false},
+		{"subnet_threshold=2 accepted", func(c *Config) { c.Thresholds.SMTPBruteForceSubnetThresh = 2 }, "thresholds.smtp_bruteforce_subnet_threshold", false},
+		{"account_spray=2 accepted", func(c *Config) { c.Thresholds.SMTPAccountSprayThreshold = 2 }, "thresholds.smtp_account_spray_threshold", false},
+		{"max_tracked=1000 accepted", func(c *Config) { c.Thresholds.SMTPBruteForceMaxTracked = 1000 }, "thresholds.smtp_bruteforce_max_tracked", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
