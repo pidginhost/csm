@@ -118,3 +118,11 @@ func TestChallengeRouteIPsRoutesEligible(t *testing.T) {
 		t.Error("1.2.3.4 should be on challenge list")
 	}
 }
+
+func TestChallengeRoute_DoesNotRouteSMTPChecks(t *testing.T) {
+	for _, check := range []string{"smtp_bruteforce", "smtp_subnet_spray"} {
+		if isChallengeableCheck(check) {
+			t.Errorf("check %q must be hard-blocked, not challenge-routed", check)
+		}
+	}
+}
