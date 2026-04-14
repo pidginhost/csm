@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -183,6 +184,7 @@ func (t *mailAuthTracker) Record(ip, account string) []alert.Finding {
 		}
 	}
 
+	t.enforceMaxTracked()
 	return findings
 }
 
@@ -222,5 +224,81 @@ func (t *mailAuthTracker) RecordSuccess(ip, account string) []alert.Finding {
 	}}
 }
 
-// Purge removes stale entries. Implemented in Mail Task 5.
-func (t *mailAuthTracker) Purge() {}
+// Purge removes stale entries older than (window + suppression).
+// Called from a background goroutine every minute.
+func (t *mailAuthTracker) Purge() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := t.now()
+	activityCutoff := now.Add(-(t.window + t.suppression))
+	windowCutoff := now.Add(-t.window)
+
+	for k, e := range t.ips {
+		e.times = pruneTimes(e.times, windowCutoff)
+		if len(e.times) == 0 && !e.lastSeen.After(activityCutoff) {
+			delete(t.ips, k)
+		}
+	}
+	for k, s := range t.subnets {
+		for ip, ts := range s.ips {
+			if ts.Before(windowCutoff) {
+				delete(s.ips, ip)
+			}
+		}
+		if len(s.ips) == 0 && !s.lastSeen.After(activityCutoff) {
+			delete(t.subnets, k)
+		}
+	}
+	for k, a := range t.accounts {
+		for ip, ts := range a.ips {
+			if ts.Before(windowCutoff) {
+				delete(a.ips, ip)
+			}
+		}
+		if len(a.ips) == 0 && !a.lastSeen.After(activityCutoff) {
+			delete(t.accounts, k)
+		}
+	}
+}
+
+// enforceMaxTracked evicts the least-recently-seen entries until the IP count
+// is <= 95% of maxTracked. Batch target avoids re-sorting on every subsequent
+// insert. Caller must hold t.mu.
+func (t *mailAuthTracker) enforceMaxTracked() {
+	total := len(t.ips) + len(t.subnets) + len(t.accounts)
+	if total <= t.maxTracked {
+		return
+	}
+
+	// Evict to 95% of cap so subsequent inserts don't re-trigger the sort.
+	target := t.maxTracked * 95 / 100
+
+	type victim struct {
+		kind string // "ip" | "subnet" | "account"
+		key  string
+		seen time.Time
+	}
+	victims := make([]victim, 0, total)
+	for k, v := range t.ips {
+		victims = append(victims, victim{"ip", k, v.lastSeen})
+	}
+	for k, v := range t.subnets {
+		victims = append(victims, victim{"subnet", k, v.lastSeen})
+	}
+	for k, v := range t.accounts {
+		victims = append(victims, victim{"account", k, v.lastSeen})
+	}
+	sort.Slice(victims, func(i, j int) bool { return victims[i].seen.Before(victims[j].seen) })
+
+	for i := 0; i < len(victims) && len(t.ips) > target; i++ {
+		v := victims[i]
+		switch v.kind {
+		case "ip":
+			delete(t.ips, v.key)
+		case "subnet":
+			delete(t.subnets, v.key)
+		case "account":
+			delete(t.accounts, v.key)
+		}
+	}
+}

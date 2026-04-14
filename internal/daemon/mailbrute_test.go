@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -374,4 +375,59 @@ func TestMailAuthTracker_RecordSuccess_EmptyIPOrAccountIgnored(t *testing.T) {
 			t.Errorf("empty IP/account must return nil; ip=%q account=%q got %v", tc.ip, tc.account, out)
 		}
 	}
+}
+
+func TestMailAuthTracker_PurgeRemovesExpired(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	tr.Record("203.0.113.5", "victim@example.com")
+	if tr.Size() == 0 {
+		t.Fatalf("expected non-zero size after Record")
+	}
+	clock.advance(70 * time.Minute) // past window and suppression
+	tr.Purge()
+	if got := tr.Size(); got != 0 {
+		t.Errorf("Size() after Purge = %d, want 0", got)
+	}
+}
+
+func TestMailAuthTracker_MaxTrackedBatchEviction(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newMailAuthTracker(5, 8, 12, 10*time.Minute, 60*time.Minute, 100, clock.Now)
+
+	// Fill 110 IPs in the same /24 so the subnet count stays predictable
+	// (one subnet entry) and doesn't inflate Size beyond control.
+	for i := 0; i < 110; i++ {
+		clock.advance(1 * time.Millisecond)
+		tr.Record(fmt.Sprintf("203.0.113.%d", (i%250)+1), "")
+	}
+
+	// After eviction, len(tr.ips) should be at or below 95% of cap (= 95).
+	tr.mu.Lock()
+	ipCount := len(tr.ips)
+	tr.mu.Unlock()
+	if ipCount > 95 {
+		t.Errorf("len(ips) = %d after batch eviction, want <= 95", ipCount)
+	}
+	// Sanity: not over-evicted either.
+	if ipCount < 80 {
+		t.Errorf("len(ips) = %d, want close to 95 (not over-evicted)", ipCount)
+	}
+}
+
+func TestMailAuthTracker_ConcurrentNoRace(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	tr := newTestMailTracker(t, clock)
+	var wg sync.WaitGroup
+	for g := 0; g < 50; g++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for i := 0; i < 20; i++ {
+				tr.Record(fmt.Sprintf("203.0.%d.%d", id%250+1, i%250+1), "")
+			}
+		}(g)
+	}
+	wg.Wait()
+	tr.Purge() // must not race
 }
