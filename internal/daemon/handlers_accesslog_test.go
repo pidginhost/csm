@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -147,5 +148,95 @@ func TestParseAccessLogBruteForce_IgnoresInfraAndLoopback(t *testing.T) {
 	}
 	if findings := parseAccessLogBruteForce(loopbackLine, cfg); len(findings) != 0 {
 		t.Fatalf("loopback IP should be ignored, got %v", findings)
+	}
+}
+
+func makeAccessLogLine(ip, method, path string) string {
+	return fmt.Sprintf(`%s - - [14/Apr/2026:12:00:00 +0300] "%s %s HTTP/1.1" 200 123 "-" "Mozilla"`, ip, method, path)
+}
+
+func TestAccessLog_AdminPanelBruteForce_PhpMyAdmin(t *testing.T) {
+	resetAccessLogTrackerState()
+	cfg := &config.Config{}
+	var fired bool
+	for i := 0; i < accessLogWPLoginThreshold; i++ {
+		line := makeAccessLogLine("203.0.113.5", "POST", "/phpmyadmin/index.php")
+		for _, f := range parseAccessLogBruteForce(line, cfg) {
+			if f.Check == "admin_panel_bruteforce" {
+				fired = true
+			}
+		}
+	}
+	if !fired {
+		t.Fatalf("expected admin_panel_bruteforce after %d POSTs to /phpmyadmin/index.php", accessLogWPLoginThreshold)
+	}
+}
+
+func TestAccessLog_AdminPanelBruteForce_Joomla(t *testing.T) {
+	resetAccessLogTrackerState()
+	cfg := &config.Config{}
+	var fired bool
+	for i := 0; i < accessLogWPLoginThreshold; i++ {
+		line := makeAccessLogLine("203.0.113.6", "POST", "/administrator/index.php")
+		for _, f := range parseAccessLogBruteForce(line, cfg) {
+			if f.Check == "admin_panel_bruteforce" {
+				fired = true
+			}
+		}
+	}
+	if !fired {
+		t.Fatalf("expected admin_panel_bruteforce for Joomla")
+	}
+}
+
+func TestAccessLog_AdminPanelBruteForce_Suppression(t *testing.T) {
+	resetAccessLogTrackerState()
+	cfg := &config.Config{}
+	for i := 0; i < accessLogWPLoginThreshold; i++ {
+		parseAccessLogBruteForce(makeAccessLogLine("203.0.113.9", "POST", "/phpmyadmin/index.php"), cfg)
+	}
+	var duplicateFired bool
+	for i := 0; i < 10; i++ {
+		for _, f := range parseAccessLogBruteForce(makeAccessLogLine("203.0.113.9", "POST", "/phpmyadmin/index.php"), cfg) {
+			if f.Check == "admin_panel_bruteforce" {
+				duplicateFired = true
+			}
+		}
+	}
+	if duplicateFired {
+		t.Fatalf("admin_panel_bruteforce must suppress duplicates within cooldown")
+	}
+}
+
+// Drupal (/user/login) and Tomcat (/manager/html) are intentionally NOT
+// covered by this detector. Drupal's path is too generic on shared hosting;
+// Tomcat's attack shape is Basic auth GET/401, not POST form submission.
+// Both are flagged as follow-up work in the spec. TestAccessLog_AdminPanel
+// BruteForce_DoesNotMatchBarePaths pins the tight scope against future drift.
+func TestAccessLog_AdminPanelBruteForce_DoesNotMatchBarePaths(t *testing.T) {
+	cfg := &config.Config{}
+	barePaths := []string{
+		"/user/login",
+		"/manager/html",
+		"/admin/login.php",
+		"/mysql/",
+		"/phpmyadmin/",        // missing index.php
+		"/phpmyadmin/foo.php", // wrong subpath
+		"/administrator/",     // missing index.php
+	}
+	for _, path := range barePaths {
+		resetAccessLogTrackerState()
+		var fired bool
+		for i := 0; i < accessLogWPLoginThreshold+5; i++ {
+			line := makeAccessLogLine("203.0.113.50", "POST", path)
+			for _, f := range parseAccessLogBruteForce(line, cfg) {
+				if f.Check == "admin_panel_bruteforce" {
+					fired = true
+				}
+			}
+		}
+		if fired {
+			t.Errorf("path %q must NOT fire admin_panel_bruteforce (too generic / wrong attack shape)", path)
+		}
 	}
 }

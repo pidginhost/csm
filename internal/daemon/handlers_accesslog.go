@@ -39,12 +39,14 @@ const (
 
 // accessLogTracker tracks POST timestamps per endpoint for a single IP.
 type accessLogTracker struct {
-	mu             sync.Mutex
-	wpLoginTimes   []time.Time
-	xmlrpcTimes    []time.Time
-	wpLoginAlerted bool
-	xmlrpcAlerted  bool
-	lastSeen       time.Time
+	mu                sync.Mutex
+	wpLoginTimes      []time.Time
+	xmlrpcTimes       []time.Time
+	adminPanelTimes   []time.Time
+	wpLoginAlerted    bool
+	xmlrpcAlerted     bool
+	adminPanelAlerted bool
+	lastSeen          time.Time
 }
 
 // accessLogTrackers holds per-IP state. sync.Map for concurrent handler access.
@@ -93,8 +95,9 @@ func parseAccessLogBruteForce(line string, cfg *config.Config) []alert.Finding {
 
 	isWPLogin := strings.Contains(path, "wp-login.php")
 	isXMLRPC := strings.Contains(path, "xmlrpc.php")
+	isAdminPanel := isAdminPanelPath(path)
 
-	if !isWPLogin && !isXMLRPC {
+	if !isWPLogin && !isXMLRPC && !isAdminPanel {
 		return nil
 	}
 
@@ -136,6 +139,20 @@ func parseAccessLogBruteForce(line string, cfg *config.Config) []alert.Finding {
 				Check:     "xmlrpc_abuse",
 				Message:   fmt.Sprintf("XML-RPC abuse from %s: %d POSTs in %v (real-time)", ip, len(tracker.xmlrpcTimes), accessLogWindow),
 				Details:   "Real-time detection: high rate of POST requests to xmlrpc.php (brute force or amplification)",
+				Timestamp: now,
+			})
+		}
+	}
+
+	if isAdminPanel {
+		tracker.adminPanelTimes = pruneAndAppend(tracker.adminPanelTimes, cutoff, now)
+		if len(tracker.adminPanelTimes) >= accessLogWPLoginThreshold && !tracker.adminPanelAlerted {
+			tracker.adminPanelAlerted = true
+			results = append(results, alert.Finding{
+				Severity:  alert.Critical,
+				Check:     "admin_panel_bruteforce",
+				Message:   fmt.Sprintf("Admin panel brute force from %s: %d POSTs in %v (real-time)", ip, len(tracker.adminPanelTimes), accessLogWindow),
+				Details:   "Real-time detection: high rate of POST requests to common admin panel login paths (phpMyAdmin / Joomla)",
 				Timestamp: now,
 			})
 		}
@@ -184,6 +201,7 @@ func evictAccessLogState(now time.Time) {
 		// Prune old timestamps.
 		tracker.wpLoginTimes = pruneSlice(tracker.wpLoginTimes, cutoff)
 		tracker.xmlrpcTimes = pruneSlice(tracker.xmlrpcTimes, cutoff)
+		tracker.adminPanelTimes = pruneSlice(tracker.adminPanelTimes, cutoff)
 
 		// Reset alerted flags after cooldown so the IP can be re-detected
 		// if it comes back after the block expires.
@@ -193,9 +211,12 @@ func evictAccessLogState(now time.Time) {
 		if tracker.xmlrpcAlerted && tracker.lastSeen.Before(cooldownCutoff) {
 			tracker.xmlrpcAlerted = false
 		}
+		if tracker.adminPanelAlerted && tracker.lastSeen.Before(cooldownCutoff) {
+			tracker.adminPanelAlerted = false
+		}
 
 		empty := len(tracker.wpLoginTimes) == 0 && len(tracker.xmlrpcTimes) == 0 &&
-			tracker.lastSeen.Before(cooldownCutoff)
+			len(tracker.adminPanelTimes) == 0 && tracker.lastSeen.Before(cooldownCutoff)
 
 		tracker.mu.Unlock()
 
@@ -204,6 +225,19 @@ func evictAccessLogState(now time.Time) {
 		}
 		return true
 	})
+}
+
+// isAdminPanelPath returns true for high-confidence non-WP admin panel login
+// paths suitable for hard-block auto-response. Drupal /user/login, Tomcat
+// /manager/html, generic /admin/login.php, /mysql/ are intentionally EXCLUDED
+// because they're either too generic (FP risk on shared hosting) or use a
+// different attack shape (Basic auth vs. POST forms). See spec Component 5
+// for the full rationale.
+func isAdminPanelPath(path string) bool {
+	return strings.Contains(path, "/phpmyadmin/index.php") ||
+		strings.Contains(path, "/pma/index.php") ||
+		strings.Contains(path, "/phpMyAdmin/index.php") ||
+		strings.Contains(path, "/administrator/index.php")
 }
 
 func pruneSlice(times []time.Time, cutoff time.Time) []time.Time {
