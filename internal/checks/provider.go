@@ -26,7 +26,7 @@ type OS interface {
 type realOS struct{}
 
 // #nosec G304 -- filesystem abstraction; check functions pass trusted paths.
-func (realOS) ReadFile(name string) ([]byte, error) { return os.ReadFile(name) }
+func (realOS) ReadFile(name string) ([]byte, error)       { return os.ReadFile(name) }
 func (realOS) ReadDir(name string) ([]os.DirEntry, error) { return os.ReadDir(name) }
 func (realOS) Stat(name string) (os.FileInfo, error)      { return os.Stat(name) }
 func (realOS) Lstat(name string) (os.FileInfo, error)     { return os.Lstat(name) }
