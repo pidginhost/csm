@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -580,6 +581,35 @@ func TestExtractIPTrustedProxyBogusXFFFallsBackToRemote(t *testing.T) {
 	req.Header.Set("X-Forwarded-For", "not-an-ip, garbage")
 	if got := s.extractIP(req); got != "10.0.0.1" {
 		t.Errorf("got %q, want 10.0.0.1 (fallback)", got)
+	}
+}
+
+func TestExtractIPNeverReturnsHTMLInjectableString(t *testing.T) {
+	// Safety-contract test: handleChallenge interpolates extractIP's return
+	// value into an HTML response via fmt.Fprintf (see the #nosec G705 on
+	// that line). The #nosec is only valid while extractIP is guaranteed
+	// to return either a net.SplitHostPort peer address or a
+	// net.ParseIP-validated XFF entry — never attacker-controlled HTML.
+	cfg := baseCfg()
+	cfg.Challenge.TrustedProxies = []string{"10.0.0.1"}
+	s := New(cfg, nil, nil)
+
+	payloads := []string{
+		"<script>alert(1)</script>",
+		`"><img src=x onerror=alert(1)>`,
+		"javascript:alert(1)",
+		"x, <svg/onload=alert(1)>",
+	}
+	for _, p := range payloads {
+		req := httptest.NewRequest("GET", "/", nil)
+		req.RemoteAddr = "10.0.0.1:1234"
+		req.Header.Set("X-Forwarded-For", p)
+		got := s.extractIP(req)
+		// Must parse as an IP (either the peer fallback or a validated
+		// XFF entry — whatever the policy returns must be an IP literal).
+		if parsed := net.ParseIP(got); parsed == nil {
+			t.Errorf("extractIP returned non-IP string %q for XFF payload %q", got, p)
+		}
 	}
 }
 

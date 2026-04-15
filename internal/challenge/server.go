@@ -96,6 +96,10 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 
+	// #nosec G705 -- All interpolated values are constrained to non-HTML
+	// character sets: ip is validated via net.ParseIP / net.SplitHostPort
+	// in extractIP (never attacker-controlled string); nonce and token
+	// are hex.EncodeToString output (0-9, a-f only); difficulty is an int.
 	fmt.Fprintf(w, challengePageHTML, ip, nonce, token, difficulty, difficulty)
 }
 
