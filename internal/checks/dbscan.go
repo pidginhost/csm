@@ -14,25 +14,33 @@ import (
 )
 
 // Malicious patterns in WordPress database content.
+//
+// requiresExternalScript: when true, a matching row is only reported if
+// its content also contains a <script src=...> pointing at a domain NOT
+// on the known-safe list. This filters out the legitimate analytics and
+// widget embeds that site owners place in page content (Google Tag
+// Manager, Google merchant badge, HubSpot, Mailchimp, etc.) without
+// weakening detection of attacker-injected external loaders.
 var dbMalwarePatterns = []struct {
-	pattern  string
-	severity alert.Severity
-	desc     string
+	pattern                string
+	severity               alert.Severity
+	desc                   string
+	requiresExternalScript bool
 }{
-	{"<script>", alert.High, "injected <script> tag"},
-	{"eval(", alert.High, "eval() in database content"},
-	{"base64_decode", alert.High, "base64_decode in database content"},
-	{"document.write(", alert.High, "document.write injection"},
-	{"String.fromCharCode", alert.High, "JavaScript obfuscation (fromCharCode)"},
-	{".workers.dev", alert.Critical, "Cloudflare Workers exfiltration URL"},
-	{"gist.githubusercontent.com", alert.Critical, "GitHub Gist payload URL"},
-	{"pastebin.com/raw", alert.Critical, "Pastebin payload URL"},
-}
-
-// Known spam/pharma domains commonly injected into WP databases.
-var dbSpamDomains = []string{
-	"viagra", "cialis", "pharma", "casino-", "betting",
-	"buy-cheap-", "free-download", "crack-serial",
+	// The script-tag entry catches BOTH inline <script> blocks and
+	// <script src=...> loaders as a fast LIKE pre-filter; the Go post-
+	// filter (hasMaliciousExternalScript) verifies the presence of a
+	// non-safe-domain external src before raising a finding. Inline
+	// obfuscation without an external src is caught by the subsequent
+	// code-pattern entries below.
+	{"<script", alert.High, "injected <script> tag with non-safe external src", true},
+	{"eval(", alert.High, "eval() in database content", false},
+	{"base64_decode", alert.High, "base64_decode in database content", false},
+	{"document.write(", alert.High, "document.write injection", false},
+	{"String.fromCharCode", alert.High, "JavaScript obfuscation (fromCharCode)", false},
+	{".workers.dev", alert.Critical, "Cloudflare Workers exfiltration URL", false},
+	{"gist.githubusercontent.com", alert.Critical, "GitHub Gist payload URL", false},
+	{"pastebin.com/raw", alert.Critical, "Pastebin payload URL", false},
 }
 
 // CheckDatabaseContent scans WordPress databases for injected malware,
@@ -280,55 +288,105 @@ func checkWPOptions(user string, creds wpDBCreds, prefix string) []alert.Finding
 }
 
 // checkWPPosts checks post content for injected scripts and malware.
+//
+// Two classes of false positive are suppressed compared to a naive LIKE-
+// based scan:
+//
+//   - post_types used for plugin-managed storage (form submissions,
+//     revisions, templates, minified bundles) are excluded via the
+//     shared nonScannablePostTypes denylist. See dbscan_filters.go for
+//     the rationale and the full list.
+//
+//   - Patterns that match too broadly at the SQL layer (the bare
+//     <script substring, and bare-word spam keywords like "cialis")
+//     are post-filtered in Go against word-boundary regexes and the
+//     known-safe-domain list. Legitimate analytics embeds and
+//     substring coincidences ("specialist" containing "cialis") no
+//     longer produce findings.
+//
+// The denylist is defense-in-depth: custom post_types created by a
+// theme or plugin remain in scope, so attackers cannot evade by
+// inventing a new post_type value.
 func checkWPPosts(user string, creds wpDBCreds, prefix string) []alert.Finding {
 	var findings []alert.Finding
 
-	// Scan for malicious patterns in published posts.
-	// Exclude post types that legitimately contain JavaScript:
-	// wphb_minify_group (Hummingbird minified bundles),
-	// wpforms (contact form configs), revision (drafts).
+	postTypeExcl := nonScannablePostTypesSQLList()
+
 	for _, mp := range dbMalwarePatterns {
+		// Select ID and content so we can post-filter in Go for the
+		// patterns that require it. ID comes first so that if the
+		// MySQL client wraps long content across lines we can still
+		// join reliably on the first tab.
 		query := fmt.Sprintf(
-			"SELECT ID, post_title FROM %sposts WHERE post_status='publish' AND post_type NOT IN ('wphb_minify_group','wpforms','revision','customize_changeset','oembed_cache','nav_menu_item','wp_template','wp_template_part','wp_global_styles','wp_navigation') AND (post_content LIKE '%%%s%%' OR post_content_filtered LIKE '%%%s%%') LIMIT 5",
-			prefix, mp.pattern, mp.pattern)
+			"SELECT ID, post_content FROM %sposts WHERE post_status='publish' AND post_type NOT IN (%s) AND (post_content LIKE '%%%s%%' OR post_content_filtered LIKE '%%%s%%') LIMIT 20",
+			prefix, postTypeExcl, mp.pattern, mp.pattern)
 		lines := runMySQLQuery(creds, query)
-
-		if len(lines) > 0 {
-			var postIDs []string
-			for _, line := range lines {
-				parts := strings.SplitN(line, "\t", 2)
-				if len(parts) >= 1 {
-					postIDs = append(postIDs, parts[0])
-				}
-			}
-
-			findings = append(findings, alert.Finding{
-				Severity: mp.severity,
-				Check:    "db_post_injection",
-				Message:  fmt.Sprintf("WordPress posts contain %s (account: %s, %d posts)", mp.desc, user, len(lines)),
-				Details: fmt.Sprintf("Database: %s\nAffected post IDs: %s\nPattern: %s",
-					creds.dbName, strings.Join(postIDs, ", "), mp.pattern),
-			})
+		if len(lines) == 0 {
+			continue
 		}
+
+		var confirmedIDs []string
+		for _, line := range lines {
+			parts := strings.SplitN(line, "\t", 2)
+			if len(parts) < 2 {
+				continue
+			}
+			postID := parts[0]
+			content := parts[1]
+
+			if mp.requiresExternalScript && !hasMaliciousExternalScript(content) {
+				// All scripts in this post are inline, or point at a
+				// known-safe widget host. Skip.
+				continue
+			}
+			confirmedIDs = append(confirmedIDs, postID)
+			if len(confirmedIDs) >= 5 {
+				break
+			}
+		}
+
+		if len(confirmedIDs) == 0 {
+			continue
+		}
+
+		findings = append(findings, alert.Finding{
+			Severity: mp.severity,
+			Check:    "db_post_injection",
+			Message:  fmt.Sprintf("WordPress posts contain %s (account: %s, %d posts)", mp.desc, user, len(confirmedIDs)),
+			Details: fmt.Sprintf("Database: %s\nAffected post IDs: %s\nPattern: %s",
+				creds.dbName, strings.Join(confirmedIDs, ", "), mp.pattern),
+		})
 	}
 
-	// Check for spam domain injection
-	for _, spam := range dbSpamDomains {
+	// Spam keyword scan. LIKE is a fast pre-filter; the Go regex then
+	// requires a word boundary so "specialist" does not match "cialis",
+	// "pharmacy" does not match "pharma", etc.
+	for _, sp := range dbSpamPatterns {
 		query := fmt.Sprintf(
-			"SELECT COUNT(*) FROM %sposts WHERE post_status='publish' AND post_content LIKE '%%%s%%'",
-			prefix, spam)
+			"SELECT ID, post_content FROM %sposts WHERE post_status='publish' AND post_type NOT IN (%s) AND post_content LIKE '%s' LIMIT 200",
+			prefix, postTypeExcl, sp.likeFragment)
 		lines := runMySQLQuery(creds, query)
-		if len(lines) > 0 {
-			count := lines[0]
-			if count != "0" {
-				findings = append(findings, alert.Finding{
-					Severity: alert.High,
-					Check:    "db_spam_injection",
-					Message:  fmt.Sprintf("WordPress posts contain spam keyword '%s' (%s posts, account: %s)", spam, count, user),
-					Details:  fmt.Sprintf("Database: %s", creds.dbName),
-				})
-			}
+		if len(lines) == 0 {
+			continue
 		}
+		contents := make([]string, 0, len(lines))
+		for _, line := range lines {
+			parts := strings.SplitN(line, "\t", 2)
+			if len(parts) < 2 {
+				continue
+			}
+			contents = append(contents, parts[1])
+		}
+		n := countSpamMatches(sp, contents)
+		if n == 0 {
+			continue
+		}
+		findings = append(findings, alert.Finding{
+			Severity: alert.High,
+			Check:    "db_spam_injection",
+			Message:  fmt.Sprintf("WordPress posts contain spam keyword '%s' (%d posts, account: %s)", sp.keyword, n, user),
+			Details:  fmt.Sprintf("Database: %s", creds.dbName),
+		})
 	}
 
 	return findings
@@ -466,20 +524,36 @@ func CleanDatabaseSpam(account string) []alert.Finding {
 			})
 		}
 
-		// Clean spam domains from wp_posts
-		for _, spam := range dbSpamDomains {
-			countQuery := fmt.Sprintf(
-				"SELECT COUNT(*) FROM %sposts WHERE post_content LIKE '%%%s%%' AND post_status='publish'",
-				prefix, spam)
-			countLines := runMySQLQuery(creds, countQuery)
-			if len(countLines) == 0 || countLines[0] == "0" {
+		// Scan for spam keywords in wp_posts. Uses the same word-boundary
+		// regex + post_type denylist as checkWPPosts so an operator-
+		// initiated cleanup surfaces the same set of findings the
+		// periodic scan does.
+		postTypeExcl := nonScannablePostTypesSQLList()
+		for _, sp := range dbSpamPatterns {
+			query := fmt.Sprintf(
+				"SELECT ID, post_content FROM %sposts WHERE post_status='publish' AND post_type NOT IN (%s) AND post_content LIKE '%s' LIMIT 200",
+				prefix, postTypeExcl, sp.likeFragment)
+			lines := runMySQLQuery(creds, query)
+			if len(lines) == 0 {
+				continue
+			}
+			contents := make([]string, 0, len(lines))
+			for _, line := range lines {
+				parts := strings.SplitN(line, "\t", 2)
+				if len(parts) < 2 {
+					continue
+				}
+				contents = append(contents, parts[1])
+			}
+			n := countSpamMatches(sp, contents)
+			if n == 0 {
 				continue
 			}
 
 			findings = append(findings, alert.Finding{
 				Severity: alert.High,
 				Check:    "db_spam_found",
-				Message:  fmt.Sprintf("Found spam keyword '%s' in %s published posts in %s (account: %s) - manual review recommended", spam, countLines[0], creds.dbName, account),
+				Message:  fmt.Sprintf("Found spam keyword '%s' in %d published posts in %s (account: %s) - manual review recommended", sp.keyword, n, creds.dbName, account),
 			})
 		}
 	}

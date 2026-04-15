@@ -1388,12 +1388,12 @@ func TestCleanDatabaseSpam_SpamDomainsFound(t *testing.T) {
 			for i, a := range args {
 				if a == "-e" && i+1 < len(args) {
 					q := args[i+1]
-					if strings.Contains(q, "COUNT(*)") && strings.Contains(q, "post_content") {
-						if strings.Contains(q, "viagra") {
-							return []byte("3\n"), nil
-						}
-						return []byte("0\n"), nil
+					// CleanDatabaseSpam runs SELECT ID, post_content FROM ...posts WHERE ... LIKE '%viagra%'
+					if strings.Contains(q, "SELECT ID, post_content") && strings.Contains(q, "viagra") {
+						return []byte("1\tbuy viagra now at cheap prices\n2\tbest viagra deals online\n3\tviagra discount\n"), nil
 					}
+					// COUNT(*) queries for other spam patterns return 0
+					return []byte("0\n"), nil
 				}
 			}
 			return nil, nil

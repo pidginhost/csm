@@ -176,7 +176,9 @@ func handleSiteurlHijack(cfg *config.Config, f alert.Finding) []alert.Finding {
 // --- URL analysis ---
 
 // scriptSrcRe matches <script src="..."> or <script src=...> patterns.
-var scriptSrcRe = regexp.MustCompile(`(?i)<script[^>]+src\s*=\s*["']?(https?://[^"'\s>]+)`)
+// Accepts https://, http://, and protocol-relative // URLs, since real
+// attackers use all three forms to load external payloads.
+var scriptSrcRe = regexp.MustCompile(`(?i)<script[^>]+src\s*=\s*["']?((?:https?:)?//[^"'\s>]+)`)
 
 // knownSafeDomains are legitimate services that embed scripts in wp_options.
 var knownSafeDomains = []string{
@@ -240,10 +242,13 @@ func extractMaliciousScriptURL(content string) string {
 }
 
 // isSafeScriptDomain checks if a script URL is from a known safe domain.
+// Handles https://host, http://host, //host (protocol-relative), and
+// host-with-port forms.
 func isSafeScriptDomain(url string) bool {
 	urlLower := strings.ToLower(url)
 	urlLower = strings.TrimPrefix(urlLower, "https://")
 	urlLower = strings.TrimPrefix(urlLower, "http://")
+	urlLower = strings.TrimPrefix(urlLower, "//")
 	host := urlLower
 	if idx := strings.IndexByte(host, '/'); idx >= 0 {
 		host = host[:idx]
