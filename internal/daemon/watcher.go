@@ -614,14 +614,19 @@ func autoSuspendOutgoingMail(domainOrEmail string) {
 		time.Now().Format("2006-01-02 15:04:05"), user, domain)
 }
 
+// userdomainsPath is the cPanel domain→user map file. var (not const)
+// so tests can point it at a fixture under t.TempDir(). Production must
+// not mutate at runtime.
+var userdomainsPath = "/etc/userdomains"
+
 // lookupCPanelUser finds the cPanel username that owns a domain.
-// Reads /etc/userdomains which maps domain → username.
+// Reads userdomainsPath which maps "domain: user" per line.
 func lookupCPanelUser(domain string) string {
-	f, err := os.Open("/etc/userdomains")
+	f, err := os.Open(userdomainsPath)
 	if err != nil {
 		return ""
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := scanner.Text()
