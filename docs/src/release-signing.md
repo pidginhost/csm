@@ -22,7 +22,7 @@ openssl pkey -in csm-signing.key -pubout -out csm-signing.pub
 
 # Store the private key
 cat csm-signing.key
-# Copy the entire output to GitLab → Settings → CI/CD → Variables:
+# Copy the entire output to GitLab > Settings > CI/CD > Variables:
 #   Key:   CSM_SIGNING_KEY
 #   Type:  Variable
 #   Flags: Protected, Masked (if length allows; ed25519 PEMs are long
@@ -46,7 +46,7 @@ The `sign:artifacts` CI job runs after `build` and `package`. It signs:
 - `csm-*-linux-*.rpm` (RPM packages)
 - `csm_*_amd64.deb`, `csm_*_arm64.deb` (Debian packages)
 
-The `publish` job signs `csm-assets.tar.gz` (because that tarball is created in the publish job, not the build stage). The `release:github` job re-signs `csm-assets.tar.gz` for the same reason — it rebuilds the tarball for the GitHub release.
+The `publish` job signs `csm-assets.tar.gz` (because that tarball is created in the publish job, not the build stage). The `release:github` job re-signs `csm-assets.tar.gz` for the same reason -- it rebuilds the tarball for the GitHub release.
 
 Each signed artifact gets a `.sig` sibling uploaded to the same location. For example:
 
@@ -74,13 +74,13 @@ Both install scripts read the public key from two sources in priority order:
 1. `CSM_SIGNING_KEY_PEM` environment variable (operator override at install time)
 2. `EMBEDDED_SIGNING_KEY` variable inside the script (set once when committing the public key)
 
-If neither is set, the installer warns and proceeds — this lets pre-signing releases install. To enforce strict verification (fail rather than warn), export `CSM_REQUIRE_SIGNATURES=1` before running the installer:
+If neither is set, the installer warns and proceeds -- this lets pre-signing releases install. To enforce strict verification (fail rather than warn), export `CSM_REQUIRE_SIGNATURES=1` before running the installer:
 
 ```bash
 CSM_REQUIRE_SIGNATURES=1 curl -sSL https://raw.githubusercontent.com/pidginhost/csm/main/scripts/install.sh | bash
 ```
 
-When a `.sig` file is published but verification fails, the installer always aborts (regardless of `CSM_REQUIRE_SIGNATURES`). A failed signature is always fatal — the installer never falls back to "trust on install".
+When a `.sig` file is published but verification fails, the installer always aborts (regardless of `CSM_REQUIRE_SIGNATURES`). A failed signature is always fatal -- the installer never falls back to "trust on install".
 
 ## Key Rotation
 

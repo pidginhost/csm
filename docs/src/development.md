@@ -96,11 +96,11 @@ csmlog.Warn("log not found, will retry", "path", path, "retry_in", "60s")
 csmlog.Error("alert dispatch failed", "err", err, "channel", "email")
 ```
 
-Keys should be snake_case. Values should be machine-parseable (numbers, strings, booleans) — avoid formatted strings when you can pass the raw value.
+Keys should be snake_case. Values should be machine-parseable (numbers, strings, booleans) -- avoid formatted strings when you can pass the raw value.
 
 ### Migrating legacy call sites
 
-Migration is incremental and optional. The legacy format stays valid. Start with the hottest subsystems (alert dispatch, firewall operations, WAF handlers) where structured fields provide the most value, then work outward. Do not batch-convert — each subsystem should get a dedicated commit with before/after log samples in the PR description.
+Migration is incremental and optional. The legacy format stays valid. Start with the hottest subsystems (alert dispatch, firewall operations, WAF handlers) where structured fields provide the most value, then work outward. Do not batch-convert -- each subsystem should get a dedicated commit with before/after log samples in the PR description.
 
 Keep the `[TIMESTAMP]` prefix of journalctl lines readable by humans: slog's text handler uses `time=... level=... msg=...` which is also human-parseable, so journalctl viewers still work.
 

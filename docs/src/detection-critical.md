@@ -87,13 +87,13 @@ Runs on every supported platform unless noted below. The daemon auto-detects OS 
 
 **cPanel-only** (skipped on plain Ubuntu/AlmaLinux):
 
-- `api_tokens`, `whm_access`, `cpanel_logins`, `cpanel_filemanager` — read WHM API and cPanel session logs
-- `wp_bruteforce` — iterates `/home/*/public_html/*/wp-login.php` and per-domain access logs
-- `webmail_logins` — parses cPanel Roundcube/Horde logs
-- `mail_queue`, `mail_per_account` — read Exim queue and `/var/log/exim_mainlog`
+- `api_tokens`, `whm_access`, `cpanel_logins`, `cpanel_filemanager` -- read WHM API and cPanel session logs
+- `wp_bruteforce` -- iterates `/home/*/public_html/*/wp-login.php` and per-domain access logs
+- `webmail_logins` -- parses cPanel Roundcube/Horde logs
+- `mail_queue`, `mail_per_account` -- read Exim queue and `/var/log/exim_mainlog`
 
 **Plain Linux equivalents** that still provide coverage:
 
-- Access log brute-force detection (`wp_login_bruteforce`, `xmlrpc_abuse`) runs against the detected web server's access log (`/var/log/nginx/access.log` or `/var/log/httpd/access_log`), so WordPress brute-force alerts still fire on non-cPanel hosts — they just rely on the live log watcher rather than per-domain domlog scanning.
+- Access log brute-force detection (`wp_login_bruteforce`, `xmlrpc_abuse`) runs against the detected web server's access log (`/var/log/nginx/access.log` or `/var/log/httpd/access_log`), so WordPress brute-force alerts still fire on non-cPanel hosts -- they just rely on the live log watcher rather than per-domain domlog scanning.
 - `modsec_audit` runs on any host with ModSecurity installed.
 - `ssh_logins`, SSH brute force, PAM listener, firewall, kernel modules, RPM/DEB integrity, and threat intelligence all run on every supported platform.

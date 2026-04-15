@@ -18,11 +18,11 @@ journalctl -u csm.service | grep platform:
 
 ### Web server overrides
 
-For hosts with a custom layout (reverse proxy, non-standard package locations, chroot), add a `web_server:` section to `csm.yaml`. Every field is optional — anything left blank falls back to auto-detection.
+For hosts with a custom layout (reverse proxy, non-standard package locations, chroot), add a `web_server:` section to `csm.yaml`. Every field is optional -- anything left blank falls back to auto-detection.
 
 ```yaml
 web_server:
-  type: "nginx"                          # apache | nginx | litespeed — overrides auto-detect
+  type: "nginx"                          # apache | nginx | litespeed -- overrides auto-detect
   config_dir: "/etc/nginx"               # for info/diagnostics only
   access_logs:                           # tried in order until one exists
     - "/var/log/nginx/access.log"

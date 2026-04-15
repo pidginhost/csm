@@ -16,7 +16,7 @@ The daemon auto-detects the OS, control panel (cPanel/Plesk/DirectAdmin/none), a
 
 Check it with `journalctl -u csm.service | grep platform:` after starting the daemon.
 
-## APT repository (Debian / Ubuntu) — recommended
+## APT repository (Debian / Ubuntu) -- recommended
 
 The package repository at `mirrors.pidginhost.com/csm/` is the preferred install method for Debian and Ubuntu. Future updates are picked up automatically via `apt upgrade`, and package metadata is GPG-signed so the trust chain is enforced by dpkg.
 
@@ -34,11 +34,11 @@ sudo apt update
 sudo apt install csm
 ```
 
-Works on Ubuntu 20.04+, Debian 11+, and any derivative. The single `stable` suite serves all Debian/Ubuntu releases — the Go binary is statically linked and has no per-release glibc dependency.
+Works on Ubuntu 20.04+, Debian 11+, and any derivative. The single `stable` suite serves all Debian/Ubuntu releases -- the Go binary is statically linked and has no per-release glibc dependency.
 
 To upgrade later: `sudo apt update && sudo apt upgrade csm`.
 
-## DNF repository (AlmaLinux / Rocky / RHEL / CloudLinux / cPanel) — recommended
+## DNF repository (AlmaLinux / Rocky / RHEL / CloudLinux / cPanel) -- recommended
 
 ```bash
 # 1. Import the signing key into the RPM keyring
@@ -180,7 +180,7 @@ systemctl enable --now csm.service
 
 ## Post-Install
 
-1. Edit `/opt/csm/csm.yaml` — set hostname, alert email, infrastructure IPs
+1. Edit `/opt/csm/csm.yaml` -- set hostname, alert email, infrastructure IPs
 2. Run `csm validate` to check config syntax (add `--deep` for connectivity probes)
 3. Run `csm baseline` to record current state as known-good (see below)
 4. Start the daemon: `systemctl enable --now csm.service`
@@ -203,6 +203,6 @@ The `csm baseline` command scans the entire server and records the current state
 - After a fresh install
 - After restoring from backup
 - If the database is lost or corrupted (delete `csm.db` and re-run)
-- You do NOT need to re-run for normal deploys/upgrades — the daemon handles incremental state
+- You do NOT need to re-run for normal deploys/upgrades -- the daemon handles incremental state
 
 **Important:** The baseline scan holds the database lock. Do not start the daemon (`systemctl start csm`) until the baseline completes. The daemon will fail with "store: opening bbolt: timeout" if the baseline is still running.

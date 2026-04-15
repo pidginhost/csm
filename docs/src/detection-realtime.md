@@ -14,7 +14,7 @@ Monitors `/home`, `/tmp`, `/dev/shm` for filesystem events.
 - `.htaccess` injection (auto_prepend, eval, base64 handlers)
 - `.user.ini` tampering
 - Obfuscated PHP (encoded, packed, concatenated)
-- Fragmented base64 evasion (`$a="base"; $b="64_decode"` — function name split across variables)
+- Fragmented base64 evasion (`$a="base"; $b="64_decode"` -- function name split across variables)
 - Concatenation payloads (hundreds of `$z .= "xxxx"` lines with eval at end)
 - Tail scanning: payloads appended to the end of large legitimate PHP files (beyond the 32KB head window)
 - CGI backdoors: Perl, Python, Bash, Ruby scripts in web directories (e.g., LEVIATHAN toolkit)
@@ -31,7 +31,7 @@ Monitors `/home`, `/tmp`, `/dev/shm` for filesystem events.
 
 ## inotify Log Watchers (~2 seconds)
 
-Tails auth, access, and mail logs in real-time. The exact file paths are chosen per platform at daemon startup — see the `platform: ...` line in the daemon log.
+Tails auth, access, and mail logs in real-time. The exact file paths are chosen per platform at daemon startup -- see the `platform: ...` line in the daemon log.
 
 | Log | Platforms | What it detects |
 |-----|-----------|-----------------|

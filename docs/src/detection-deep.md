@@ -71,19 +71,19 @@ The deep checks are the most cPanel-biased part of CSM because they iterate acco
 
 **cPanel-only** (skipped on plain Linux):
 
-- `htaccess`, `file_index`, `php_content`, `group_writable_php`, `symlink_attacks` — iterate `/home/*/public_html/**`
-- `wp_core`, `nulled_plugins`, `outdated_plugins`, `db_content` — find WordPress installs under `/home/*/public_html`
-- `phishing`, `email_content` — scan user home directories and Exim spool
-- `dns_zones`, `ssl_certs` — read cPanel's DNS zone store and SSL installation records
-- `email_weak_password`, `email_forwarder_audit` — read `/etc/valiases`, Dovecot/Courier auth databases
-- `open_basedir`, `php_config_changes` — read EA-PHP `php.ini` under `/opt/cpanel/ea-php*/`
-- `perf_wp_config`, `perf_wp_transients`, `perf_wp_cron`, `perf_php_handler` — WordPress and PHP handler introspection via cPanel's EA-PHP layout
+- `htaccess`, `file_index`, `php_content`, `group_writable_php`, `symlink_attacks` -- iterate `/home/*/public_html/**`
+- `wp_core`, `nulled_plugins`, `outdated_plugins`, `db_content` -- find WordPress installs under `/home/*/public_html`
+- `phishing`, `email_content` -- scan user home directories and Exim spool
+- `dns_zones`, `ssl_certs` -- read cPanel's DNS zone store and SSL installation records
+- `email_weak_password`, `email_forwarder_audit` -- read `/etc/valiases`, Dovecot/Courier auth databases
+- `open_basedir`, `php_config_changes` -- read EA-PHP `php.ini` under `/opt/cpanel/ea-php*/`
+- `perf_wp_config`, `perf_wp_transients`, `perf_wp_cron`, `perf_php_handler` -- WordPress and PHP handler introspection via cPanel's EA-PHP layout
 
 **Runs on every platform:**
 
-- `filesystem`, `webshells` — fanotify and file-tree scans over `/home`, `/tmp`, `/dev/shm`
-- `rpm_integrity` — dispatches to `rpm -V` on RHEL family or `debsums` / `dpkg --verify` on Debian family
-- `waf_status` — detects ModSecurity on Apache, Nginx, and LiteSpeed across all supported distros
-- `perf_mysql_config`, `perf_redis_config`, `perf_error_logs` — rely on standard service locations
+- `filesystem`, `webshells` -- fanotify and file-tree scans over `/home`, `/tmp`, `/dev/shm`
+- `rpm_integrity` -- dispatches to `rpm -V` on RHEL family or `debsums` / `dpkg --verify` on Debian family
+- `waf_status` -- detects ModSecurity on Apache, Nginx, and LiteSpeed across all supported distros
+- `perf_mysql_config`, `perf_redis_config`, `perf_error_logs` -- rely on standard service locations
 
 A future release may add a config-driven `account_roots` option so the account-scan checks can iterate generic Linux webroots (`/var/www/*`, `/srv/http/*`, etc.). See the project roadmap.
