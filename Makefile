@@ -60,7 +60,7 @@ lint:
 # already handles unhandled errors with a curated exclude-functions list
 # (see .golangci.yml); running both duplicates without coordinated filtering.
 sec:
-	$(GOBIN)/gosec -exclude=G104 -exclude-dir=e2e -exclude-dir=scripts ./...
+	$(GOBIN)/gosec -exclude=G104 -exclude-dir=e2e -exclude-dir=scripts -exclude-dir=.cache ./...
 
 # Vulnerability scan
 vuln:
