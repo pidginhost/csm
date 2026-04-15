@@ -148,5 +148,5 @@ func TestCheckWAFStatusNoRulesEmitsHigh(t *testing.T) {
 }
 
 // Helpers for taking address of constants for Overrides.
-func ptrPanel(p platform.Panel) *platform.Panel { return &p }
+func ptrPanel(p platform.Panel) *platform.Panel             { return &p }
 func ptrWebServer(w platform.WebServer) *platform.WebServer { return &w }
