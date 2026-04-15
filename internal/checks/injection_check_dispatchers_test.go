@@ -166,19 +166,15 @@ func TestCollectRecentIPsMissingSecureLog(t *testing.T) {
 // --- runParallel with synthetic checks --------------------------------
 
 func TestRunParallelCollectsFindingsFromAllChecks(t *testing.T) {
-	// Custom checks: one emits findings, one returns nil.
-	runs := make([]string, 0, 2)
-	var mu struct {
-		tickCount int
-	}
-	_ = mu
+	// Custom checks: one emits findings, one returns nil. We don't track
+	// which one ran (runParallel fans out into goroutines — shared state
+	// here would race) because the findings slice already tells us
+	// whether each check executed.
 	checks := []namedCheck{
 		{"emits", func(_ context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
-			runs = append(runs, "emits")
 			return []alert.Finding{{Check: "custom", Message: "hello"}}
 		}},
 		{"empty", func(_ context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
-			runs = append(runs, "empty")
 			return nil
 		}},
 	}
