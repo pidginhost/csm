@@ -19,7 +19,7 @@ func TestOpenCreatesStateDirWithRestrictedPerms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	info, err := os.Stat(statePath)
 	if err != nil {

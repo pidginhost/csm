@@ -619,9 +619,9 @@ func TestJSONForScript_EscapesBrowserDangerousChars(t *testing.T) {
 	// a browser's HTML or JS parser interprets specially: </script>, raw
 	// <, >, &, and the line-separator codepoints U+2028/U+2029.
 	cases := []struct {
-		name       string
-		in         interface{}
-		mustHave   []string
+		name        string
+		in          interface{}
+		mustHave    []string
 		mustNotHave []string
 	}{
 		{
