@@ -588,6 +588,34 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 		return
 	}
 
+	// .htaccess modification - check for injection (C3 - read from fd).
+	// Checked before the /tmp early-return so a malicious .htaccess anywhere
+	// (including /tmp) is still analyzed for dangerous directives.
+	if nameLower == ".htaccess" {
+		fm.checkHtaccess(event.fd, path, procInfo)
+		return
+	}
+
+	// .user.ini modification - check for dangerous PHP settings (C3 - read from fd).
+	// Also checked before /tmp so malicious .user.ini is detected anywhere.
+	if nameLower == ".user.ini" {
+		fm.checkUserINI(event.fd, path, procInfo)
+		return
+	}
+
+	// Executables in .config - checked before the /tmp block so a miner
+	// dropped at /tmp/.config/* is flagged as executable_in_config_realtime
+	// (more specific) rather than executable_in_tmp_realtime.
+	if strings.Contains(path, "/.config/") {
+		finfo, err := os.Stat(path)
+		if err == nil && finfo.Mode()&0111 != 0 {
+			fm.sendAlertWithPath(alert.Critical, "executable_in_config_realtime",
+				fmt.Sprintf("Executable created in .config: %s", path),
+				fmt.Sprintf("Size: %d", finfo.Size()), path, procInfo)
+		}
+		return
+	}
+
 	// Executables in /tmp or /dev/shm - detect dropped malware/miners
 	// Uses unix.Fstat on event fd for TOCTOU safety (attacker can't chmod -x after event)
 	if strings.HasPrefix(path, "/tmp/") || strings.HasPrefix(path, "/dev/shm/") || strings.HasPrefix(path, "/var/tmp/") {
@@ -651,30 +679,10 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 		return
 	}
 
-	// Executables in .config
-	if strings.Contains(path, "/.config/") {
-		finfo, err := os.Stat(path)
-		if err == nil && finfo.Mode()&0111 != 0 {
-			fm.sendAlertWithPath(alert.Critical, "executable_in_config_realtime",
-				fmt.Sprintf("Executable created in .config: %s", path),
-				fmt.Sprintf("Size: %d", finfo.Size()), path, procInfo)
-		}
-		return
-	}
-
-	// .htaccess modification - check for injection (C3 - read from fd)
-	if nameLower == ".htaccess" {
-		fm.checkHtaccess(event.fd, path, procInfo)
-		return
-	}
-
-	// .user.ini modification - check for dangerous PHP settings (C3 - read from fd)
-	if nameLower == ".user.ini" {
-		fm.checkUserINI(event.fd, path, procInfo)
-		return
-	}
-
-	// PHP content analysis (C3 - read from fd; M4 - 32KB scan size)
+	// PHP content analysis (C3 - read from fd; M4 - 32KB scan size).
+	// .htaccess, .user.ini, and .config executable checks are handled
+	// earlier in this function (before the /tmp early-return) so specific
+	// file types take precedence over the /tmp generic block.
 	if isPHPExtension(nameLower) {
 		fm.checkPHPContent(event.fd, path, procInfo)
 		return

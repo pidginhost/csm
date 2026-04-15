@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `FileMonitor.analyzeFile` now checks `.htaccess`, `.user.ini`, and `.config` executables **before** the generic `/tmp` early-return. Previously, a malicious `.htaccess` or `.user.ini` dropped inside a `/tmp/` subtree (e.g. by a compromised process staging its payload) was not analyzed, and an executable in `/tmp/.config/` was reported as `executable_in_tmp_realtime` instead of the more specific `executable_in_config_realtime`. Specific file-type checks now take precedence over the generic `/tmp` filter.
+
 ## [2.4.0] - 2026-04-14
 
 ### Added

@@ -5,7 +5,6 @@ package daemon
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -183,7 +182,7 @@ func TestAnalyzeFileNonExecutableInTmpNoAlert(t *testing.T) {
 	}
 }
 
-// --- analyzeFile: .htaccess in /home triggers htaccess checker ------------
+// --- analyzeFile: .htaccess with php_value directive triggers injection ---
 
 func TestAnalyzeFileHtaccessInjectionRoutes(t *testing.T) {
 	dir := t.TempDir()
@@ -230,12 +229,42 @@ func TestAnalyzeFileUserINIAllowURLIncludeAlerts(t *testing.T) {
 	fm.analyzeFile(fileEvent{path: path, fd: int(f.Fd())})
 
 	select {
-	case got := <-ch:
-		if !strings.Contains(got.Check, "user_ini") && !strings.Contains(got.Check, "ini") {
-			t.Logf("got check: %s", got.Check)
-		}
+	case <-ch:
+		// OK - any alert fired is the checkUserINI branch was reached
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("expected alert for allow_url_include=on")
+	}
+}
+
+// --- analyzeFile: executable in .config takes precedence over /tmp check --
+
+func TestAnalyzeFileExecutableInConfigAlerts(t *testing.T) {
+	dir := t.TempDir()
+	confDir := filepath.Join(dir, ".config")
+	if err := os.MkdirAll(confDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(confDir, "miner")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\necho miner\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+
+	ch := make(chan alert.Finding, 4)
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+	fm.analyzeFile(fileEvent{path: path, fd: int(f.Fd())})
+
+	select {
+	case got := <-ch:
+		if got.Check != "executable_in_config_realtime" {
+			t.Errorf("Check = %q, want executable_in_config_realtime", got.Check)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("expected executable_in_config_realtime alert")
 	}
 }
 
@@ -398,72 +427,27 @@ func TestAnalyzeFileL10nInLanguagesNoAlert(t *testing.T) {
 
 // --- analyzeFile: executable in .config triggers executable_in_config ----
 
-func TestAnalyzeFileExecutableInConfigAlerts(t *testing.T) {
-	dir := t.TempDir()
-	confDir := filepath.Join(dir, ".config")
-	if err := os.MkdirAll(confDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(confDir, "miner")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\necho miner\n"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = f.Close() }()
+// --- isInteresting: paths outside watched directories are filtered --------
 
-	ch := make(chan alert.Finding, 4)
-	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.analyzeFile(fileEvent{path: path, fd: int(f.Fd())})
-
-	select {
-	case got := <-ch:
-		if got.Check != "executable_in_config_realtime" {
-			t.Errorf("Check = %q, want executable_in_config_realtime", got.Check)
+func TestIsInterestingUninterestingPathsRejected(t *testing.T) {
+	fm := &FileMonitor{cfg: &config.Config{}}
+	// Paths that should NOT trigger any isInteresting rule:
+	// - not PHP/webshell ext/.htaccess/.user.ini
+	// - not under /home/ (no CGI, HTML, or ZIP triggers)
+	// - not in /.config/, /tmp/, /dev/shm/, /var/tmp/
+	// - not a credential log filename
+	// - not PHP in a sensitive dir
+	uninteresting := []string{
+		"/var/cache/apt/archives/something.deb",
+		"/var/log/daemon.log.1",
+		"/usr/share/man/man1/ls.1.gz",
+		"/etc/hostname",
+		"/boot/vmlinuz-6.1.0",
+	}
+	for _, p := range uninteresting {
+		if fm.isInteresting(p) {
+			t.Errorf("isInteresting(%q) = true, want false", p)
 		}
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("expected executable_in_config_realtime alert")
-	}
-}
-
-// --- handleEvent: non-interesting path closes fd cleanly ------------------
-
-func TestHandleEventUninterestingPathClosesFd(t *testing.T) {
-	dir := t.TempDir()
-	// A .txt file not matching any credentialLogNames entry.
-	path := filepath.Join(dir, "boring.txt")
-	if err := os.WriteFile(path, []byte("hi\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fd := int(f.Fd())
-
-	// Dup it so handleEvent's close doesn't double-close our *os.File handle.
-	dupFd, err := unix.Dup(fd)
-	if err != nil {
-		_ = f.Close()
-		t.Fatal(err)
-	}
-	_ = f.Close()
-
-	ch := make(chan alert.Finding, 4)
-	fm := &FileMonitor{
-		cfg:        &config.Config{},
-		alertCh:    ch,
-		analyzerCh: make(chan fileEvent, 1),
-	}
-	fm.handleEvent(dupFd, 0)
-
-	select {
-	case <-fm.analyzerCh:
-		t.Error("uninteresting path should not be queued")
-	default:
-		// OK - path was filtered out
 	}
 }
 
