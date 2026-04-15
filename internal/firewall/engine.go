@@ -99,6 +99,18 @@ type FirewallState struct {
 	PortAllowed []PortAllowEntry `json:"port_allowed"`
 }
 
+// portU16 converts an operator-configured int port to the uint16 nftables
+// expects. Returns 0 for out-of-range values; 0 is an unroutable TCP/UDP port
+// so a misconfigured rule fails closed (no traffic matches) rather than
+// wrapping silently to a valid-but-wrong port.
+func portU16(p int) uint16 {
+	if p < 0 || p > 65535 {
+		return 0
+	}
+	// #nosec G115 -- bounded above.
+	return uint16(p)
+}
+
 // NewEngine creates a new nftables firewall engine.
 func NewEngine(cfg *FirewallConfig, statePath string) (*Engine, error) {
 	conn, err := nftables.New()
@@ -553,7 +565,7 @@ func (e *Engine) createInputChain() error {
 					&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
 					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: ip4},
 					&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
-					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(uint16(pa.Port))},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(portU16(pa.Port))},
 					&expr.Verdict{Kind: expr.VerdictAccept},
 				},
 			})
@@ -570,7 +582,7 @@ func (e *Engine) createInputChain() error {
 					&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 8, Len: 16},
 					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: ip16},
 					&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
-					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(uint16(pa.Port))},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(portU16(pa.Port))},
 					&expr.Verdict{Kind: expr.VerdictAccept},
 				},
 			})
@@ -636,6 +648,8 @@ func (e *Engine) createInputChain() error {
 
 	// Per-IP new connection rate limit via meter
 	if e.cfg.ConnRateLimit > 0 && e.meterConn != nil {
+		// #nosec G115 -- ConnRateLimit is an operator-configured int (typical 10–1000);
+		// /2 is non-negative and well below uint32 max.
 		burst := uint32(e.cfg.ConnRateLimit / 2)
 		if burst < 5 {
 			burst = 5
@@ -687,6 +701,7 @@ func (e *Engine) createInputChain() error {
 					SetID:     e.meterConnlim.ID,
 					Operation: 1,
 					Exprs: []expr.Any{
+						// #nosec G115 -- ConnLimit is operator-configured non-negative int; fits in uint32.
 						&expr.Connlimit{Count: uint32(e.cfg.ConnLimit), Flags: 1}, // 1 = over
 					},
 				},
@@ -732,7 +747,7 @@ func (e *Engine) createInputChain() error {
 				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{proto}},
 				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(uint16(pf.Port))},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(portU16(pf.Port))},
 				&expr.Limit{Type: expr.LimitTypePkts, Rate: ratePerMin, Unit: expr.LimitTimeMinute, Burst: burst, Over: true},
 				&expr.Verdict{Kind: expr.VerdictDrop},
 			},
@@ -741,6 +756,7 @@ func (e *Engine) createInputChain() error {
 
 	// Per-IP UDP flood protection via meter
 	if e.cfg.UDPFlood && e.cfg.UDPFloodRate > 0 && e.meterUDP != nil {
+		// #nosec G115 -- UDPFloodBurst is operator-configured non-negative int.
 		burst := uint32(e.cfg.UDPFloodBurst)
 		if burst < 10 {
 			burst = 10
@@ -799,7 +815,7 @@ func (e *Engine) createInputChain() error {
 				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{6}}, // TCP
 				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(uint16(port))},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(portU16(port))},
 				&expr.Verdict{Kind: expr.VerdictDrop},
 			},
 		})
@@ -810,7 +826,7 @@ func (e *Engine) createInputChain() error {
 				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
 				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{17}}, // UDP
 				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(uint16(port))},
+				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(portU16(port))},
 				&expr.Verdict{Kind: expr.VerdictDrop},
 			},
 		})
@@ -927,7 +943,7 @@ func (e *Engine) createOutputChain() error {
 						&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
 						&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{6}},
 						&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
-						&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(uint16(port))},
+						&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(portU16(port))},
 						&expr.Meta{Key: expr.MetaKeySKUID, Register: 1},
 						&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(uid)},
 						&expr.Verdict{Kind: expr.VerdictAccept},
@@ -942,7 +958,7 @@ func (e *Engine) createOutputChain() error {
 					&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
 					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{6}},
 					&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
-					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(uint16(port))},
+					&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(portU16(port))},
 					&expr.Verdict{Kind: expr.VerdictDrop},
 				},
 			})
@@ -1105,7 +1121,7 @@ func (e *Engine) addPortAcceptRule(port int, tcp bool) {
 			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
 			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{proto}},
 			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(uint16(port))},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(portU16(port))},
 			&expr.Verdict{Kind: expr.VerdictAccept},
 		},
 	})
@@ -1124,8 +1140,8 @@ func (e *Engine) addPortRangeAcceptRule(startPort, endPort int, tcp bool) {
 			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{proto}},
 			// Load dest port once, check range
 			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
-			&expr.Cmp{Op: expr.CmpOpGte, Register: 1, Data: binaryutil.BigEndian.PutUint16(uint16(startPort))},
-			&expr.Cmp{Op: expr.CmpOpLte, Register: 1, Data: binaryutil.BigEndian.PutUint16(uint16(endPort))},
+			&expr.Cmp{Op: expr.CmpOpGte, Register: 1, Data: binaryutil.BigEndian.PutUint16(portU16(startPort))},
+			&expr.Cmp{Op: expr.CmpOpLte, Register: 1, Data: binaryutil.BigEndian.PutUint16(portU16(endPort))},
 			&expr.Verdict{Kind: expr.VerdictAccept},
 		},
 	})
@@ -1143,7 +1159,7 @@ func (e *Engine) addOutboundPortRule(port int, tcp bool) {
 			&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
 			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{proto}},
 			&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
-			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(uint16(port))},
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(portU16(port))},
 			&expr.Verdict{Kind: expr.VerdictAccept},
 		},
 	})
@@ -1708,6 +1724,7 @@ func (e *Engine) loadStateFile() FirewallState {
 	if !fileExistsFirewall(stateFile) {
 		return state
 	}
+	// #nosec G304 -- filepath.Join under operator-configured statePath.
 	data, _ := os.ReadFile(stateFile)
 	_ = json.Unmarshal(data, &state)
 
@@ -1863,6 +1880,7 @@ func (e *Engine) removeSubnetState(cidr string) {
 // Expected format: one CIDR per line in {dbPath}/{CODE}.cidr
 func loadCountryCIDRs(dbPath, countryCode string) []nftables.SetElement {
 	file := filepath.Join(dbPath, strings.ToUpper(countryCode)+".cidr")
+	// #nosec G304 -- filepath.Join under operator-configured GeoIP dbPath.
 	data, err := os.ReadFile(file)
 	if err != nil {
 		return nil

@@ -160,10 +160,12 @@ func (sw *SpoolWatcher) Run() {
 	}
 	defer func() { _ = unix.Close(epfd) }()
 
+	// #nosec G115 -- POSIX fd fits in int32 (rlimit ~1024). Same for all fd→int32 in this file.
 	if err := unix.EpollCtl(epfd, unix.EPOLL_CTL_ADD, sw.fd, &unix.EpollEvent{Events: unix.EPOLLIN, Fd: int32(sw.fd)}); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] spool watcher: epoll_ctl(fanotify fd): %v\n", ts(), err)
 		return
 	}
+	// #nosec G115 -- POSIX fd fits in int32.
 	if err := unix.EpollCtl(epfd, unix.EPOLL_CTL_ADD, sw.pipeFds[0], &unix.EpollEvent{Events: unix.EPOLLIN, Fd: int32(sw.pipeFds[0])}); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] spool watcher: epoll_ctl(pipe fd): %v\n", ts(), err)
 		return
@@ -195,10 +197,12 @@ func (sw *SpoolWatcher) Run() {
 		}
 
 		for i := 0; i < n; i++ {
+			// #nosec G115 -- POSIX fd fits in int32.
 			if events[i].Fd == int32(sw.pipeFds[0]) {
 				sw.drainAndClose()
 				return
 			}
+			// #nosec G115 -- POSIX fd fits in int32.
 			if events[i].Fd == int32(sw.fd) {
 				sw.readEvents(buf)
 			}
@@ -215,6 +219,8 @@ func (sw *SpoolWatcher) readEvents(buf []byte) {
 
 		offset := 0
 		for offset+metadataSize <= n {
+			// #nosec G103 -- fanotify delivers a packed binary stream;
+			// reinterpretation is required and bounded by metadataSize above.
 			meta := (*fanotifyEventMetadata)(unsafe.Pointer(&buf[offset]))
 			if meta.Fd < 0 {
 				offset += int(meta.EventLen)
@@ -291,6 +297,7 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 	response := uint32(FAN_ALLOW)
 	defer func() {
 		if evt.needResp {
+			// #nosec G115 -- evt.fd is a POSIX fd; fits in int32.
 			sw.writeResponse(int32(evt.fd), response)
 		}
 		_ = unix.Close(evt.fd)
@@ -398,6 +405,8 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 
 func (sw *SpoolWatcher) writeResponse(fd int32, response uint32) {
 	resp := fanotifyResponse{Fd: fd, Response: response}
+	// #nosec G103 -- serializing the fanotify response struct for the
+	// kernel write; unsafe cast to a byte slice of the exact struct size.
 	respBytes := (*[responseSize]byte)(unsafe.Pointer(&resp))[:]
 	_, err := unix.Write(sw.fd, respBytes)
 	if err != nil {

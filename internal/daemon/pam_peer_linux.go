@@ -21,6 +21,7 @@ func isTrustedPAMPeer(conn net.Conn) bool {
 
 	trusted := false
 	controlErr := rawConn.Control(func(fd uintptr) {
+		// #nosec G115 -- socket fd from net.Conn.SyscallConn; POSIX fd fits in int.
 		cred, err := unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
 		if err == nil && cred != nil && cred.Uid == 0 {
 			trusted = true

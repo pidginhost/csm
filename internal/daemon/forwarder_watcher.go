@@ -76,6 +76,8 @@ func (fw *ForwarderWatcher) readEvents(buf []byte) {
 			if offset+unix.SizeofInotifyEvent > n {
 				break
 			}
+			// #nosec G103 -- inotify returns a packed binary stream;
+			// reinterpretation is required and bounded by the SizeofInotifyEvent check above.
 			event := (*unix.InotifyEvent)(unsafe.Pointer(&buf[offset]))
 			nameLen := int(event.Len)
 			if nameLen > 0 && offset+unix.SizeofInotifyEvent+nameLen <= n {
@@ -116,6 +118,7 @@ func (fw *ForwarderWatcher) handleFileChange(domain string) {
 func loadLocalDomainsForWatcher() map[string]bool {
 	domains := make(map[string]bool)
 	for _, path := range []string{"/etc/localdomains", "/etc/virtualdomains"} {
+		// #nosec G304 -- path iterates a literal slice of cPanel system files.
 		data, err := os.ReadFile(path)
 		if err != nil {
 			continue

@@ -188,7 +188,8 @@ func (fm *FileMonitor) Run(stopCh <-chan struct{}) {
 	// Add fanotify fd to epoll
 	if err := unix.EpollCtl(epfd, unix.EPOLL_CTL_ADD, fm.fd, &unix.EpollEvent{
 		Events: unix.EPOLLIN,
-		Fd:     int32(fm.fd),
+		// #nosec G115 -- POSIX fd fits in int32 (rlimit caps fds at ~1024).
+		Fd: int32(fm.fd),
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] epoll_ctl(fanotify): %v\n", ts(), err)
 		fm.runPollFallback(stopCh)
@@ -198,7 +199,8 @@ func (fm *FileMonitor) Run(stopCh <-chan struct{}) {
 	// Add pipe read end to epoll (for stop signaling)
 	if err := unix.EpollCtl(epfd, unix.EPOLL_CTL_ADD, fm.pipeFds[0], &unix.EpollEvent{
 		Events: unix.EPOLLIN,
-		Fd:     int32(fm.pipeFds[0]),
+		// #nosec G115 -- POSIX fd fits in int32.
+		Fd: int32(fm.pipeFds[0]),
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] epoll_ctl(pipe): %v\n", ts(), err)
 		fm.runPollFallback(stopCh)
@@ -244,12 +246,14 @@ func (fm *FileMonitor) Run(stopCh <-chan struct{}) {
 		}
 
 		for i := 0; i < n; i++ {
+			// #nosec G115 -- POSIX fd fits in int32; comparing against epoll event fd.
 			if events[i].Fd == int32(fm.pipeFds[0]) {
 				// Stop signal received via pipe
 				fm.drainAndClose()
 				return
 			}
 
+			// #nosec G115 -- POSIX fd fits in int32.
 			if events[i].Fd == int32(fm.fd) {
 				// fanotify events ready — single read per epoll wake
 				nr, readErr := unix.Read(fm.fd, buf)
@@ -309,6 +313,10 @@ func (fm *FileMonitor) runPollFallback(stopCh <-chan struct{}) {
 func (fm *FileMonitor) processEvents(buf []byte) {
 	offset := 0
 	for offset+metadataSize <= len(buf) {
+		// #nosec G103 -- fanotify delivers a packed binary stream on the
+		// fd; we must reinterpret the byte buffer as the kernel struct.
+		// The metadataSize bounds check above guarantees we have enough
+		// bytes for the struct.
 		event := (*fanotifyEventMetadata)(unsafe.Pointer(&buf[offset]))
 		if event.EventLen < uint32(metadataSize) {
 			break
@@ -515,6 +523,7 @@ func resolveProcessInfo(pid int32) string {
 	procDir := fmt.Sprintf("/proc/%d", pid)
 
 	// Read process name
+	// #nosec G304 -- /proc/<pid>/comm; kernel pseudo-FS, pid is int32 from fanotify event.
 	comm, err := os.ReadFile(procDir + "/comm")
 	if err != nil {
 		return ""
@@ -524,6 +533,7 @@ func resolveProcessInfo(pid int32) string {
 	info := fmt.Sprintf("pid=%d cmd=%s", pid, name)
 
 	// Read UID from status to map to cPanel username
+	// #nosec G304 -- /proc/<pid>/status; kernel pseudo-FS.
 	statusData, err := os.ReadFile(procDir + "/status")
 	if err != nil {
 		return info
@@ -1520,6 +1530,8 @@ func matchSuppression(pattern, path string) bool {
 // Kept for path-based checks (HTML phishing, credential logs, ZIP checks)
 // that need os.Stat for file size anyway.
 func readHead(path string, maxBytes int) []byte {
+	// #nosec G304 -- readHead scans files surfaced by fanotify/scanner;
+	// reading user files for signature analysis is the daemon's purpose.
 	f, err := os.Open(path)
 	if err != nil {
 		return nil
