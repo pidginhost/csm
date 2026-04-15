@@ -191,8 +191,8 @@ func TestReadProfile_MissingFileReturnsError(t *testing.T) {
 func TestReadProfile_DedupesDuplicateEntries(t *testing.T) {
 	path := writeProfile(t, "atomic",
 		"github.com/pkg/file.go:1.1,2.2 1 5",
-		"github.com/pkg/file.go:1.1,2.2 1 0",  // duplicate from second binary, no hits
-		"github.com/pkg/file.go:1.1,2.2 1 7",  // duplicate from third binary, more hits
+		"github.com/pkg/file.go:1.1,2.2 1 0", // duplicate from second binary, no hits
+		"github.com/pkg/file.go:1.1,2.2 1 7", // duplicate from third binary, more hits
 		"github.com/pkg/file.go:3.3,4.4 1 0",
 	)
 	p, err := readProfile(path)
