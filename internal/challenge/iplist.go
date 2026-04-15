@@ -100,6 +100,9 @@ func (l *IPList) flush() {
 	}
 
 	tmpPath := l.path + ".tmp"
+	// #nosec G306 -- Apache uses this file as a RewriteMap source; it has
+	// to be readable by the webserver user. No sensitive data — only a
+	// list of IPs that must re-solve the PoW challenge.
 	if err := os.WriteFile(tmpPath, []byte(sb.String()), 0644); err != nil {
 		return
 	}

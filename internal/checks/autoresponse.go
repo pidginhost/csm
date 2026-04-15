@@ -275,6 +275,8 @@ func AutoFixPermissions(cfg *config.Config, findings []alert.Finding) (actions [
 		}
 
 		oldMode := info.Mode().Perm()
+		// #nosec G302 -- same as fixPermissions: restoring canonical web-content
+		// mode on a user file flagged for dangerous (e.g. world-writable) perms.
 		if err := os.Chmod(path, 0644); err != nil {
 			continue
 		}

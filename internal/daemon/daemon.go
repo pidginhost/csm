@@ -1570,10 +1570,17 @@ func (d *Daemon) reloadSignatures() {
 
 // deployConfigs writes embedded config files to their system locations on startup.
 // Ensures WHM plugin CGI and ModSec rules stay current after binary upgrades.
+//
+// Every file written here is a system integration point consumed by a
+// different process (WHM, Apache, nginx); the permissions intentionally
+// allow the right external reader. Gosec G301/G306 warnings on this
+// function are suppressed inline with the specific integration target.
 func deployConfigs() {
 	// WHM plugin CGI - embedded in binary
 	if _, err := os.Stat("/usr/local/cpanel"); err == nil {
 		dst := "/usr/local/cpanel/whostmgr/docroot/cgi/addon_csm.cgi"
+		// #nosec G306 -- WHM CGI endpoint; 0755 is required so cPanel's
+		// webserver can execute it.
 		if err := os.WriteFile(dst, embeddedWHMCGI, 0755); err == nil {
 			csmlog.Info("WHM plugin CGI deployed", "path", dst)
 		}
@@ -1583,8 +1590,10 @@ func deployConfigs() {
 		// database that is updated via `register_appconfig`. Skipping
 		// that step was a long-standing bug; the plugin file existed on
 		// disk but never showed up in the menu.
+		// #nosec G301 -- cPanel standard /var/cpanel/apps directory.
 		_ = os.MkdirAll("/var/cpanel/apps", 0755)
 		confPath := "/var/cpanel/apps/csm.conf"
+		// #nosec G306 -- WHM AppConfig; read by cPanel tooling, 0644 is convention.
 		if err := os.WriteFile(confPath, embeddedWHMConf, 0644); err != nil {
 			csmlog.Error("WHM AppConfig write failed", "path", confPath, "err", err)
 		} else if err := registerWHMPlugin(confPath); err != nil {
@@ -1598,6 +1607,8 @@ func deployConfigs() {
 	}
 
 	// Deploy script (self-updating)
+	// #nosec G306 -- Shell script executed by operators and by the CSM
+	// upgrade path; needs to be executable, not private.
 	_ = os.WriteFile("/opt/csm/deploy.sh", embeddedDeployScript, 0755)
 
 	// ModSecurity virtual patches
@@ -1606,6 +1617,8 @@ func deployConfigs() {
 		"/usr/local/apache/conf/modsec2.user.conf",
 	} {
 		if _, err := os.Stat(filepath.Dir(dst)); err == nil {
+			// #nosec G306 -- Apache reads this ModSecurity config; webserver
+			// runs as a different user.
 			_ = os.WriteFile(dst, embeddedModSec, 0644)
 			overridesFile := filepath.Join(filepath.Dir(dst), "modsec2.csm-overrides.conf")
 			modsec.EnsureOverridesInclude(dst, overridesFile)

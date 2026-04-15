@@ -1015,6 +1015,9 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 
 	// Ensure parent directory exists
 	parentDir := filepath.Dir(restorePath)
+	// #nosec G301 -- Restoring a quarantined file into a user's public_html
+	// (validated by validateQuarantineRestorePath). The webserver must be
+	// able to traverse intermediate directories to serve the file.
 	if mkdirErr := os.MkdirAll(parentDir, 0755); mkdirErr != nil {
 		writeJSONError(w, fmt.Sprintf("Cannot create parent directory: %v", mkdirErr), http.StatusInternalServerError)
 		return

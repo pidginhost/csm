@@ -820,6 +820,8 @@ func fwApplyConfirmed() {
 	if len(nftDump) > 0 {
 		rollbackScript := fmt.Sprintf("#!/bin/bash\n# Auto-rollback: restore previous nftables ruleset\nnft flush ruleset\nnft -f - <<'NFTEOF'\n%s\nNFTEOF\nrm -f %s %s\necho 'Firewall rolled back to previous state'\n",
 			string(nftDump), confirmFile, rollbackFile)
+		// #nosec G306 -- Shell script that must be executable by root. 0700
+		// is the tightest mode that still allows root to run it.
 		_ = os.WriteFile(rollbackFile, []byte(rollbackScript), 0700)
 	}
 

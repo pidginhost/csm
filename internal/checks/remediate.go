@@ -124,6 +124,10 @@ func fixPermissions(path string) RemediationResult {
 	}
 
 	oldMode := info.Mode().Perm()
+	// #nosec G302 -- Intentional: this is the remediation that sets the
+	// canonical "safe web content" mode on a user file after we flagged
+	// the file as having dangerous perms (e.g. 0777). 0644 is what the
+	// webserver needs to serve static content as the file owner.
 	if err := os.Chmod(path, 0644); err != nil {
 		return RemediationResult{Error: fmt.Sprintf("chmod failed: %v", err)}
 	}
@@ -286,6 +290,8 @@ func fixHtaccess(path, message string) RemediationResult {
 		return RemediationResult{Error: "no malicious directives found to remove"}
 	}
 
+	// #nosec G306 -- .htaccess rewritten for a user's public_html; 0644 is
+	// the mode the webserver expects for static content.
 	if err := os.WriteFile(path, []byte(strings.Join(cleaned, "\n")), 0644); err != nil {
 		return RemediationResult{Error: fmt.Sprintf("write failed: %v", err)}
 	}

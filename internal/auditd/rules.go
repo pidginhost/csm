@@ -44,6 +44,8 @@ const rules = `## Continuous Security Monitor - auditd rules
 `
 
 func Deploy() error {
+	// #nosec G306 -- /etc/audit/rules.d/csm.rules is read by the auditd
+	// tooling (augenrules) on reload; 0640 keeps world-read off.
 	if err := os.WriteFile(rulesPath, []byte(rules), 0640); err != nil {
 		return err
 	}

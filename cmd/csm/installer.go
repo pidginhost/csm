@@ -48,6 +48,8 @@ func (inst *Installer) Install() error {
 		if err != nil {
 			return fmt.Errorf("reading self: %w", err)
 		}
+		// #nosec G306 -- Installed binary; must be executable by root. 0700
+		// restricts it to the owner (root) which is the tightest mode.
 		if err := os.WriteFile(inst.BinaryPath, data, 0700); err != nil {
 			return fmt.Errorf("writing binary: %w", err)
 		}
@@ -438,6 +440,8 @@ WantedBy=timers.target
 	}
 
 	for path, content := range units {
+		// #nosec G306 -- systemd unit files under /etc/systemd/system; 0644
+		// is the standard mode so `systemctl status` works for non-root.
 		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 			return err
 		}
@@ -458,6 +462,7 @@ WatchdogSec=300
 [Install]
 WantedBy=multi-user.target
 `, "/opt/csm/csm")
+	// #nosec G306 -- systemd unit; standard 0644.
 	if err := os.WriteFile("/etc/systemd/system/csm.service", []byte(daemonService), 0644); err != nil {
 		return err
 	}
@@ -503,6 +508,7 @@ func deployLogrotate() error {
     maxsize 5M
 }
 `
+	// #nosec G306 -- /etc/logrotate.d/csm; logrotate requires 0644.
 	return os.WriteFile("/etc/logrotate.d/csm", []byte(content), 0644)
 }
 
@@ -511,6 +517,8 @@ func deployCron(binaryPath string) error {
 		"*/10 * * * * root %s run-critical >> /var/log/csm/monitor.log 2>&1\n"+
 			"5 * * * * root %s run-deep >> /var/log/csm/monitor.log 2>&1\n",
 		binaryPath, binaryPath)
+	// #nosec G306 -- /etc/cron.d/csm; cron requires 0644 and refuses to run
+	// the file otherwise.
 	return os.WriteFile("/etc/cron.d/csm", []byte(content), 0644)
 }
 
@@ -548,6 +556,8 @@ my $url = "https://${hostname}:${port}/dashboard";
 print "Status: 302 Found\r\nLocation: $url\r\nContent-Type: text/html\r\n\r\n";
 print qq{<html><body><p>Redirecting to <a href="$url">CSM Security Monitor</a>...</p></body></html>};
 `
+	// #nosec G306 -- WHM CGI endpoint executed by the cPanel webserver; 0755
+	// required for execution.
 	if err := os.WriteFile(cgiDest, []byte(cgiContent), 0755); err != nil {
 		return fmt.Errorf("deploying CGI: %w", err)
 	}
@@ -561,9 +571,11 @@ entryurl=addon_csm.cgi
 target=_self
 acls=all
 `
+	// #nosec G301 -- cPanel standard /var/cpanel/apps directory.
 	if err := os.MkdirAll("/var/cpanel/apps", 0755); err != nil {
 		return fmt.Errorf("creating apps dir: %w", err)
 	}
+	// #nosec G306 -- cPanel WHM AppConfig file; read by cPanel tooling.
 	if err := os.WriteFile(confDest, []byte(confContent), 0644); err != nil {
 		return fmt.Errorf("deploying AppConfig: %w", err)
 	}
@@ -592,6 +604,8 @@ func (inst *Installer) DeployModSecRules() {
 			continue
 		}
 		data, _ := os.ReadFile(src)
+		// #nosec G306 -- Apache reads ModSecurity configs; webserver runs as
+		// a different user.
 		if err := os.WriteFile(dest, data, 0644); err == nil {
 			fmt.Printf("  ModSecurity virtual patches deployed to %s\n", dest)
 			overridesFile := filepath.Join(filepath.Dir(dest), "modsec2.csm-overrides.conf")
@@ -614,6 +628,7 @@ func (inst *Installer) DeployChallengeConfig() {
 	}
 
 	data, _ := os.ReadFile(src)
+	// #nosec G306 -- Apache conf.d file; webserver reads it.
 	if err := os.WriteFile(dest, data, 0644); err == nil {
 		fmt.Printf("  Challenge page config deployed to %s\n", dest)
 	}
@@ -684,12 +699,21 @@ function csm_log_event($type, $script, $details) {
 
 // InstallPHPShield deploys the PHP runtime protection shield.
 // Adds auto_prepend_file to the global PHP configuration.
+//
+// All files written here are consumed by the PHP interpreter running as
+// the hosting user (cpaneluser, www-data, apache, etc.). Shield files
+// and .ini entries must be world-readable so every PHP pool can load
+// them; the gosec warnings on this function are suppressed per line
+// with reference to this constraint.
 func (inst *Installer) InstallPHPShield() error {
 	fmt.Println("\n=== PHP Shield - Runtime Protection ===")
 
+	// #nosec G301 -- /opt/csm root; other installer paths already use 0755.
 	if err := os.MkdirAll(filepath.Dir(phpShieldPath), 0755); err != nil {
 		return fmt.Errorf("creating shield directory: %w", err)
 	}
+	// #nosec G306 -- Loaded via auto_prepend_file by every PHP pool, all
+	// of which run as different users. Must be world-readable.
 	if err := os.WriteFile(phpShieldPath, []byte(shieldContent), 0644); err != nil {
 		return fmt.Errorf("writing shield file: %w", err)
 	}
@@ -719,6 +743,7 @@ func (inst *Installer) InstallPHPShield() error {
 		}
 		iniPath := filepath.Join(iniDir, "zzz_csm_shield.ini")
 		iniContent := fmt.Sprintf("; CSM PHP Shield - runtime protection\nauto_prepend_file = %s\n", phpShieldPath)
+		// #nosec G306 -- PHP .ini loaded by every PHP interpreter; world-read required.
 		if err := os.WriteFile(iniPath, []byte(iniContent), 0644); err != nil {
 			fmt.Fprintf(os.Stderr, "  Warning: could not write %s: %v\n", iniPath, err)
 			continue
@@ -748,6 +773,7 @@ func (inst *Installer) RedeployPHPShield() error {
 		return fmt.Errorf("PHP Shield not installed (missing %s)", phpShieldPath)
 	}
 
+	// #nosec G306 -- PHP Shield; see note in InstallPHPShield.
 	if err := os.WriteFile(phpShieldPath, []byte(shieldContent), 0644); err != nil {
 		return fmt.Errorf("writing shield file: %w", err)
 	}
@@ -763,9 +789,11 @@ func (inst *Installer) EnablePHPShield() error {
 
 	// Ensure shield PHP file exists
 	if _, err := os.Stat(phpShieldPath); os.IsNotExist(err) {
+		// #nosec G301 -- /opt/csm root, consistent with other install paths.
 		if err := os.MkdirAll(filepath.Dir(phpShieldPath), 0755); err != nil {
 			return fmt.Errorf("creating shield directory: %w", err)
 		}
+		// #nosec G306 -- PHP Shield; see note in InstallPHPShield.
 		if err := os.WriteFile(phpShieldPath, []byte(shieldContent), 0644); err != nil {
 			return fmt.Errorf("writing shield file: %w", err)
 		}
@@ -786,6 +814,7 @@ func (inst *Installer) EnablePHPShield() error {
 		}
 		iniPath := filepath.Join(iniDir, "zzz_csm_shield.ini")
 		iniContent := fmt.Sprintf("; CSM PHP Shield - runtime protection\nauto_prepend_file = %s\n", phpShieldPath)
+		// #nosec G306 -- PHP .ini loaded by every PHP interpreter.
 		if err := os.WriteFile(iniPath, []byte(iniContent), 0644); err != nil {
 			continue
 		}
@@ -857,6 +886,7 @@ return array(
 );
 `, ips)
 
+	// #nosec G306 -- Shield config PHP; read by every PHP pool.
 	if err := os.WriteFile(phpShieldConfPath, []byte(confContent), 0644); err != nil {
 		fmt.Fprintf(os.Stderr, "  Warning: could not write shield config: %v\n", err)
 		return

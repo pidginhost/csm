@@ -24,6 +24,9 @@ func WriteOverrides(path string, disabledIDs []int) error {
 	}
 
 	tmpPath := path + ".tmp"
+	// #nosec G306 -- ModSec config files are read by the webserver process
+	// (Apache/nginx) which runs as a different user. 0640 lets root write
+	// and the webserver group read; world-read stays off.
 	if err := os.WriteFile(tmpPath, []byte(sb.String()), 0640); err != nil {
 		return fmt.Errorf("writing overrides tmp: %w", err)
 	}
@@ -79,6 +82,7 @@ func RestoreOverrides(path string, content []byte) error {
 		return nil
 	}
 	tmpPath := path + ".tmp"
+	// #nosec G306 -- see note in WriteOverrides: webserver-readable ModSec config.
 	if err := os.WriteFile(tmpPath, content, 0640); err != nil {
 		return fmt.Errorf("writing rollback tmp: %w", err)
 	}
@@ -95,6 +99,8 @@ func RestoreOverrides(path string, content []byte) error {
 // write-open to avoid appending duplicate Include directives.
 func EnsureOverridesInclude(rulesFile, overridesFile string) {
 	// Open for read+write to check-then-append atomically (same fd).
+	// #nosec G302 -- webserver-readable ModSec rules file; 0640 means root
+	// can write and the webserver group can read. No world read.
 	f, err := os.OpenFile(rulesFile, os.O_RDWR|os.O_APPEND, 0640)
 	if err != nil {
 		return
@@ -111,6 +117,7 @@ func EnsureOverridesInclude(rulesFile, overridesFile string) {
 
 	// Create empty overrides file if it doesn't exist
 	if _, err := os.Stat(overridesFile); os.IsNotExist(err) {
+		// #nosec G306 -- see note in WriteOverrides: webserver-readable.
 		_ = os.WriteFile(overridesFile, []byte(overridesHeader), 0640)
 	}
 }
