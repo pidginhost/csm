@@ -343,6 +343,34 @@ func TestSMTPAuthTracker_MaxTrackedBatchEviction(t *testing.T) {
 	}
 }
 
+func TestSMTPAuthTracker_MaxTrackedEvictsAccountsAndSubnets(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	const maxTracked = 100
+	// Thresholds are 50 so detection signals don't fire during the 110 inserts —
+	// only eviction logic is exercised.
+	tr := newSMTPAuthTracker(50, 50, 50, 10*time.Minute, 60*time.Minute, maxTracked, clock.Now)
+
+	// Workload dominated by ACCOUNTS (one attacker IP attacking 110 mailboxes,
+	// also accidentally creates 1 subnet). This stresses the bug where the
+	// fixed-count eviction only deleted IPs while subnet/account growth blew
+	// past the cap.
+	for i := 0; i < 110; i++ {
+		clock.advance(1 * time.Millisecond)
+		tr.Record("203.0.113.5", fmt.Sprintf("victim%d@example.com", i))
+	}
+
+	tr.mu.Lock()
+	total := len(tr.ips) + len(tr.subnets) + len(tr.accounts)
+	tr.mu.Unlock()
+	// Hard invariant: total must never exceed the cap.
+	if total > maxTracked {
+		t.Errorf("total tracked = %d, want <= %d (account/subnet eviction must work)", total, maxTracked)
+	}
+	if total < 80 {
+		t.Errorf("total tracked = %d, want close to %d (not over-evicted)", total, maxTracked)
+	}
+}
+
 func TestSMTPAuthTracker_ConcurrentNoRace(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
 	tr := newTestTracker(t, clock)

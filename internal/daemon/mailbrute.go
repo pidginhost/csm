@@ -291,7 +291,10 @@ func (t *mailAuthTracker) enforceMaxTracked() {
 	}
 	sort.Slice(victims, func(i, j int) bool { return victims[i].seen.Before(victims[j].seen) })
 
-	for i := 0; i < len(victims) && len(t.ips) > target; i++ {
+	for i := 0; i < len(victims); i++ {
+		if len(t.ips)+len(t.subnets)+len(t.accounts) <= target {
+			break
+		}
 		v := victims[i]
 		switch v.kind {
 		case "ip":

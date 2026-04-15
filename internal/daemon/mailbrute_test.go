@@ -393,7 +393,8 @@ func TestMailAuthTracker_PurgeRemovesExpired(t *testing.T) {
 
 func TestMailAuthTracker_MaxTrackedBatchEviction(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
-	tr := newMailAuthTracker(5, 8, 12, 10*time.Minute, 60*time.Minute, 100, clock.Now)
+	const maxTracked = 100
+	tr := newMailAuthTracker(5, 8, 12, 10*time.Minute, 60*time.Minute, maxTracked, clock.Now)
 
 	// Fill 110 IPs in the same /24 so the subnet count stays predictable
 	// (one subnet entry) and doesn't inflate Size beyond control.
@@ -402,16 +403,47 @@ func TestMailAuthTracker_MaxTrackedBatchEviction(t *testing.T) {
 		tr.Record(fmt.Sprintf("203.0.113.%d", (i%250)+1), "")
 	}
 
-	// After eviction, len(tr.ips) should be at or below 95% of cap (= 95).
+	// The hard invariant is total <= maxTracked. The 95% eviction target is a
+	// batch-efficiency detail: after an eviction pass the total drops to ~95,
+	// but subsequent inserts can grow it back up to maxTracked before the next
+	// pass fires. Check the observable contract, not the internal watermark.
 	tr.mu.Lock()
-	ipCount := len(tr.ips)
+	total := len(tr.ips) + len(tr.subnets) + len(tr.accounts)
 	tr.mu.Unlock()
-	if ipCount > 95 {
-		t.Errorf("len(ips) = %d after batch eviction, want <= 95", ipCount)
+	if total > maxTracked {
+		t.Errorf("total tracked = %d after batch eviction, want <= %d", total, maxTracked)
 	}
-	// Sanity: not over-evicted either.
-	if ipCount < 80 {
-		t.Errorf("len(ips) = %d, want close to 95 (not over-evicted)", ipCount)
+	// Sanity: not over-evicted to nothing.
+	if total < 80 {
+		t.Errorf("total tracked = %d, want close to %d (not over-evicted)", total, maxTracked)
+	}
+}
+
+func TestMailAuthTracker_MaxTrackedEvictsAccountsAndSubnets(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)}
+	const maxTracked = 100
+	// Thresholds are 50 so detection signals don't fire during the 110 inserts —
+	// only eviction logic is exercised.
+	tr := newMailAuthTracker(50, 50, 50, 10*time.Minute, 60*time.Minute, maxTracked, clock.Now)
+
+	// Workload dominated by ACCOUNTS (one attacker IP attacking 110 mailboxes,
+	// also accidentally creates 1 subnet). This stresses the bug where the
+	// loop guard only checked len(t.ips) and never evicted accounts.
+	for i := 0; i < 110; i++ {
+		clock.advance(1 * time.Millisecond)
+		tr.Record("203.0.113.5", fmt.Sprintf("victim%d@example.com", i))
+	}
+
+	tr.mu.Lock()
+	total := len(tr.ips) + len(tr.subnets) + len(tr.accounts)
+	tr.mu.Unlock()
+	// Hard invariant: total must never exceed the cap.
+	if total > maxTracked {
+		t.Errorf("total tracked = %d, want <= %d (account/subnet eviction must work)", total, maxTracked)
+	}
+	// Sanity: not over-evicted to nothing.
+	if total < 80 {
+		t.Errorf("total tracked = %d, want close to %d (not over-evicted)", total, maxTracked)
 	}
 }
 

@@ -288,8 +288,10 @@ func (t *smtpAuthTracker) enforceMaxTracked() {
 
 	// Evict to 95% of cap so subsequent inserts don't re-trigger the sort.
 	target := t.maxTracked * 95 / 100
-	over := total - target
-	for i := 0; i < over && i < len(victims); i++ {
+	for i := 0; i < len(victims); i++ {
+		if len(t.ips)+len(t.subnets)+len(t.accounts) <= target {
+			break
+		}
 		v := victims[i]
 		switch v.kind {
 		case "ip":
