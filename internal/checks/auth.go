@@ -226,6 +226,7 @@ func decodeHexString(s string) string {
 	}
 	var result []byte
 	for i := 0; i < len(s); i += 2 {
+		// #nosec G115 -- hexVal returns 0..15; (h<<4)|h fits in a byte.
 		b := byte(hexVal(s[i])<<4 | hexVal(s[i+1]))
 		if b == 0 {
 			break

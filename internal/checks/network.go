@@ -186,6 +186,7 @@ func parseHexAddr(hexAddr string) (string, int) {
 
 	port := 0
 	for _, c := range hexPort {
+		// #nosec G115 -- hexPort is ASCII hex from /proc/net/*; rune→byte is lossless.
 		port = port*16 + hexVal(byte(c))
 	}
 
@@ -196,6 +197,7 @@ func hexToByte(s string) byte {
 	if len(s) != 2 {
 		return 0
 	}
+	// #nosec G115 -- hexVal returns 0..15; (h<<4)|h fits in a byte (0..255).
 	return byte(hexVal(s[0])<<4 | hexVal(s[1]))
 }
 

@@ -340,9 +340,11 @@ func CheckSwapAndOOM(ctx context.Context, cfg *config.Config, _ *state.Store) []
 
 		if usagePct > 50 {
 			findings = append(findings, alert.Finding{
-				Severity:  alert.High,
-				Check:     "perf_memory",
-				Message:   "High swap usage",
+				Severity: alert.High,
+				Check:    "perf_memory",
+				Message:  "High swap usage",
+				// #nosec G115 -- swap sizes from /proc/meminfo are kernel-bounded
+				// to physical memory, multiple orders below int64 max even after *1024.
 				Details:   fmt.Sprintf("Swap used: %s / %s (%.0f%%)", humanBytes(int64(swapUsed)*1024), humanBytes(int64(swapTotal)*1024), usagePct),
 				Timestamp: time.Now(),
 			})

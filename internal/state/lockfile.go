@@ -23,6 +23,8 @@ func AcquireLock(stateDir string) (*LockFile, error) {
 	}
 
 	// Try non-blocking exclusive lock
+	// #nosec G115 -- os.File.Fd returns uintptr but POSIX file descriptors
+	// are small non-negative ints (rlimit ~1024); int conversion is lossless.
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = f.Close()
 		return nil, fmt.Errorf("another CSM instance is already running")
@@ -38,6 +40,7 @@ func AcquireLock(stateDir string) (*LockFile, error) {
 // Release releases the lock.
 func (l *LockFile) Release() {
 	if l.file != nil {
+		// #nosec G115 -- see AcquireLock: POSIX fd fits in int.
 		_ = syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
 		_ = l.file.Close()
 		os.Remove(l.path)

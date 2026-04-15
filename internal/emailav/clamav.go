@@ -64,6 +64,7 @@ func (s *ClamdScanner) Scan(path string) (Verdict, error) {
 	for {
 		n, readErr := f.Read(buf)
 		if n > 0 {
+			// #nosec G115 -- n is bounded by len(buf)=8192; fits in uint32.
 			binary.BigEndian.PutUint32(lenBuf, uint32(n))
 			_, err = conn.Write(lenBuf)
 			if err != nil {
