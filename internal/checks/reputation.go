@@ -18,7 +18,6 @@ import (
 )
 
 const (
-	abuseIPDBEndpoint        = "https://api.abuseipdb.com/api/v2/check"
 	reputationCacheFile      = "reputation_cache.json"
 	cacheExpiry              = 6 * time.Hour
 	errorCacheExpiry         = 1 * time.Hour // cache transient API errors to avoid retrying same IP
@@ -26,6 +25,16 @@ const (
 	maxQueriesPerCycle       = 5    // max AbuseIPDB API calls per 10-min cycle (~720/day, fits free tier)
 	maxCacheEntries          = 5000 // cap cache size
 )
+
+// abuseIPDBEndpoint is the URL queried for IP reputation. Declared as a
+// var (not const) so tests can point it at an httptest server. Production
+// callers must not modify this.
+var abuseIPDBEndpoint = "https://api.abuseipdb.com/api/v2/check"
+
+// abuseIPDBClient is the HTTP client used for AbuseIPDB queries. Declared
+// at package scope so tests can swap in a mock client (e.g., one whose
+// transport routes all traffic to an httptest server).
+var abuseIPDBClient = &http.Client{Timeout: 10 * time.Second}
 
 type reputationCache struct {
 	Entries map[string]*reputationEntry `json:"entries"`
@@ -55,7 +64,7 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 	threatDB := GetThreatDB()
 	cache := loadReputationCache(cfg.StatePath)
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := abuseIPDBClient
 	quotaExhausted := false
 
 	checked := 0

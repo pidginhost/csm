@@ -26,6 +26,11 @@ var doveadmSemaphore = make(chan struct{}, 3)
 // hibpClient is used for HIBP API requests.
 var hibpClient = &http.Client{Timeout: 10 * time.Second}
 
+// hibpEndpoint is the base URL queried for HIBP password-range lookups.
+// Declared as a var (not const) so tests can swap in an httptest server.
+// Production callers must not modify this.
+var hibpEndpoint = "https://api.pwnedpasswords.com/range/"
+
 // currentYear returns the current year. Called each audit cycle so
 // long-running daemons don't use a stale year after Jan 1.
 func currentYear() int { return time.Now().Year() }
@@ -158,7 +163,7 @@ func checkHIBP(plaintext string) int {
 	prefix := hex[:5]
 	suffix := hex[5:]
 
-	resp, err := hibpClient.Get("https://api.pwnedpasswords.com/range/" + prefix) //nolint:noctx
+	resp, err := hibpClient.Get(hibpEndpoint + prefix) //nolint:noctx
 	if err != nil {
 		return 0
 	}
