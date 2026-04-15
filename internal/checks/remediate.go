@@ -14,6 +14,16 @@ import (
 // eximMsgIDRegex validates Exim message ID format (e.g., 2jKPFm-000abc-1X).
 var eximMsgIDRegex = regexp.MustCompile(`^[0-9A-Za-z]{6}-[0-9A-Za-z]{6}-[0-9A-Za-z]{2}$`)
 
+// Allowed roots for each fix action. Declared as vars (not consts) so tests
+// can redirect remediation under t.TempDir() without writing to real /home,
+// /tmp, or /var/spool. Production must not mutate these at runtime.
+var (
+	fixPermissionsAllowedRoots = []string{"/home"}
+	fixQuarantineAllowedRoots  = []string{"/home", "/tmp", "/dev/shm", "/var/tmp"}
+	fixHtaccessAllowedRoots    = []string{"/home"}
+	eximSpoolDirs              = []string{"/var/spool/exim/input", "/var/spool/exim4/input"}
+)
+
 // RemediationResult describes the outcome of a fix action.
 type RemediationResult struct {
 	Success     bool   `json:"success"`
@@ -108,7 +118,7 @@ func fixPermissions(path string) RemediationResult {
 		return RemediationResult{Error: "could not extract file path from finding"}
 	}
 
-	path, info, err := resolveExistingFixPath(path, []string{"/home"})
+	path, info, err := resolveExistingFixPath(path, fixPermissionsAllowedRoots)
 	if err != nil {
 		return RemediationResult{Error: err.Error()}
 	}
@@ -131,7 +141,7 @@ func fixQuarantine(path string) RemediationResult {
 		return RemediationResult{Error: "could not extract file path from finding"}
 	}
 
-	path, info, err := resolveExistingFixPath(path, []string{"/home", "/tmp", "/dev/shm", "/var/tmp"})
+	path, info, err := resolveExistingFixPath(path, fixQuarantineAllowedRoots)
 	if err != nil {
 		return RemediationResult{Error: err.Error()}
 	}
@@ -221,7 +231,7 @@ func fixHtaccess(path, message string) RemediationResult {
 	if filepath.Base(path) != ".htaccess" {
 		return RemediationResult{Error: "automated .htaccess remediation only applies to .htaccess files"}
 	}
-	path, _, err := resolveExistingFixPath(path, []string{"/home"})
+	path, _, err := resolveExistingFixPath(path, fixHtaccessAllowedRoots)
 	if err != nil {
 		return RemediationResult{Error: err.Error()}
 	}
@@ -418,9 +428,8 @@ func fixQuarantineSpoolMessage(message string) RemediationResult {
 		return RemediationResult{Error: fmt.Sprintf("invalid Exim message ID format: %s", msgID)}
 	}
 
-	spoolDirs := []string{"/var/spool/exim/input", "/var/spool/exim4/input"}
 	var spoolDir string
-	for _, dir := range spoolDirs {
+	for _, dir := range eximSpoolDirs {
 		if _, err := osFS.Stat(filepath.Join(dir, msgID+"-H")); err == nil {
 			spoolDir = dir
 			break

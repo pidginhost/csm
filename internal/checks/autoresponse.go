@@ -13,7 +13,8 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
-const quarantineDir = "/opt/csm/quarantine"
+// var (not const) so tests can redirect to t.TempDir().
+var quarantineDir = "/opt/csm/quarantine"
 
 // QuarantineMeta stores original file metadata alongside quarantined files.
 type QuarantineMeta struct {
