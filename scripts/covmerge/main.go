@@ -2,14 +2,14 @@
 // second). Unlike gocovmerge, when a single file's statement ranges
 // don't match between the two profiles (typical when the secondary
 // profile was generated against an older code revision), this tool
-// drops that file from the secondary profile and continues instead
-// of failing the whole merge.
+// keeps per-range matches from secondary and ignores the non-matching
+// ones instead of dropping the whole file.
 //
 // Usage: covmerge primary.out secondary.out > merged.out
 //
-// The primary profile's statements are authoritative. Secondary
-// statements are only included when their ranges match primary's
-// exactly (per file). Hit counts are summed for matching statements.
+// The primary profile's statements are authoritative (structure and
+// statement count). Secondary contributes hit counts only for ranges
+// whose rangeKey appears in primary. Hit counts are summed per range.
 package main
 
 import (
@@ -173,11 +173,12 @@ func main() {
 		mode = "set"
 	}
 
-	// Merge per-file.
+	// Merge per-file, per-range. Primary's statement set is authoritative;
+	// secondary contributes hit counts only for ranges that still match.
 	merged := make(map[string][]entry, len(primary.byFile))
 	order := append([]string(nil), primary.order...)
-	droppedFiles := 0
-	mergedFiles := 0
+	partialFiles := 0
+	cleanFiles := 0
 
 	for _, file := range primary.order {
 		pEntries := primary.byFile[file]
@@ -186,30 +187,33 @@ func main() {
 			merged[file] = pEntries
 			continue
 		}
-		if !rangesEqual(pEntries, sEntries) {
-			// Drift - keep primary only, drop secondary's entries for this file.
-			fmt.Fprintf(os.Stderr, "covmerge: dropping %s from secondary (statement ranges differ)\n", file)
-			merged[file] = pEntries
-			droppedFiles++
-			continue
-		}
-		// Ranges match; merge hit counts per range.
 		byRange := make(map[string]*entry, len(pEntries))
 		for i := range pEntries {
 			byRange[pEntries[i].rangeKey] = &pEntries[i]
 		}
+		matched, drifted := 0, 0
 		for i := range sEntries {
-			if e, ok := byRange[sEntries[i].rangeKey]; ok {
-				if mode == "set" {
-					if sEntries[i].hits > 0 || e.hits > 0 {
-						e.hits = 1
-					}
-				} else {
-					e.hits += sEntries[i].hits
+			e, ok := byRange[sEntries[i].rangeKey]
+			if !ok {
+				drifted++
+				continue
+			}
+			matched++
+			if mode == "set" {
+				if sEntries[i].hits > 0 || e.hits > 0 {
+					e.hits = 1
 				}
+			} else {
+				e.hits += sEntries[i].hits
 			}
 		}
-		mergedFiles++
+		if drifted > 0 || matched < len(pEntries) {
+			fmt.Fprintf(os.Stderr, "covmerge: %s: %d/%d ranges matched (%d secondary entries had no primary match)\n",
+				file, matched, len(pEntries), drifted)
+			partialFiles++
+		} else {
+			cleanFiles++
+		}
 		merged[file] = pEntries
 	}
 
@@ -224,8 +228,8 @@ func main() {
 		secondaryOnly++
 	}
 
-	fmt.Fprintf(os.Stderr, "covmerge: %d files merged, %d files dropped (drift), %d files from secondary only\n",
-		mergedFiles, droppedFiles, secondaryOnly)
+	fmt.Fprintf(os.Stderr, "covmerge: %d files merged cleanly, %d files partially merged (some drift), %d files from secondary only\n",
+		cleanFiles, partialFiles, secondaryOnly)
 
 	// Emit merged profile. Primary order first, then secondary-only files.
 	out := bufio.NewWriter(os.Stdout)

@@ -114,26 +114,43 @@ func TestMerge_MatchingFile_SumsHits(t *testing.T) {
 	}
 }
 
-func TestMerge_DriftingFile_KeepsPrimaryOnly(t *testing.T) {
+// TestMerge_DriftingFile_PerEntryFallback verifies the tolerant per-range
+// merge: when a file has some matching ranges and some drifted ones, the
+// matching ranges still get hit counts summed. The non-matching secondary
+// entry is silently discarded.
+func TestMerge_DriftingFile_PerEntryFallback(t *testing.T) {
 	primary := writeProfile(t, "atomic",
 		"github.com/drift/file.go:10.1,12.2 2 4",
 	)
 	secondary := writeProfile(t, "atomic",
+		// Same range as primary — should merge.
 		"github.com/drift/file.go:10.1,12.2 2 9",
-		// Extra range only in secondary - this constitutes drift.
+		// Range only in secondary — drift; must be silently ignored,
+		// not cause the whole file's secondary contribution to be dropped.
 		"github.com/drift/file.go:20.1,22.2 1 7",
 	)
 	p, _ := readProfile(primary)
 	s, _ := readProfile(secondary)
 
 	pEntries := p.byFile["github.com/drift/file.go"]
-	sEntries := s.byFile["github.com/drift/file.go"]
-	if rangesEqual(pEntries, sEntries) {
-		t.Fatal("test setup: ranges should differ (drift)")
+	byRange := make(map[string]*entry, len(pEntries))
+	for i := range pEntries {
+		byRange[pEntries[i].rangeKey] = &pEntries[i]
 	}
-	// Drift detected - primary's entries should be untouched.
-	if pEntries[0].hits != 4 {
-		t.Errorf("primary hits changed on drift: %d", pEntries[0].hits)
+	sEntries := s.byFile["github.com/drift/file.go"]
+	for i := range sEntries {
+		if e, ok := byRange[sEntries[i].rangeKey]; ok {
+			e.hits += sEntries[i].hits
+		}
+	}
+	// Matching range should now have summed hits (4 + 9 = 13).
+	if pEntries[0].hits != 13 {
+		t.Errorf("matching range should have hits summed, got %d want 13", pEntries[0].hits)
+	}
+	// Primary entry count is authoritative; the drifted secondary range
+	// must not have been appended.
+	if len(pEntries) != 1 {
+		t.Errorf("drifted secondary entry should be ignored, got %d entries", len(pEntries))
 	}
 }
 
