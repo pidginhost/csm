@@ -56,9 +56,11 @@ test:
 lint:
 	$(GOBIN)/golangci-lint run --timeout 5m
 
-# Static security analysis
+# Static security analysis. -exclude=G104 because golangci-lint's errcheck
+# already handles unhandled errors with a curated exclude-functions list
+# (see .golangci.yml); running both duplicates without coordinated filtering.
 sec:
-	$(GOBIN)/gosec -exclude-dir=e2e -exclude-dir=scripts ./...
+	$(GOBIN)/gosec -exclude=G104 -exclude-dir=e2e -exclude-dir=scripts ./...
 
 # Vulnerability scan
 vuln:
