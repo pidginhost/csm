@@ -12,7 +12,7 @@ import (
 
 // Helper: build a /proc/net/tcp row. Layout:
 //
-//	 sl  local_address rem_address st ... uid ...
+//	sl  local_address rem_address st ... uid ...
 //
 // We control local_address (any), remote_address (hex ip:port), st, uid.
 func tcpRow(remHex, state, uid string) string {
