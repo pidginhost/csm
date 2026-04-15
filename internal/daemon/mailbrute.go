@@ -319,12 +319,23 @@ func isMailAuthLine(line string) bool {
 
 // extractMailLoginEvent parses a dovecot login line and returns
 // (ip, account, success). Returns empty strings and false on parse failure.
-// success is true for "Login:" lines, false for "Aborted login (auth failed..."
+//
+// Real dovecot wire format (validated against production logs):
+//
+//	Success: "imap-login: Logged in: user=<alice@x.ro>, method=PLAIN, rip=..."
+//	Failure: "imap-login: Login aborted: ... (auth failed, N attempts ...): user=<...>, method=..., rip=..."
+//
+// The success marker is "Logged in" (NOT "Login:" — an earlier version of
+// this parser used the wrong marker and silently skipped every successful
+// login, which in turn broke RecordSuccess-based compromise detection).
+// The failure marker is "(auth failed" with the opening paren, which
+// distinguishes real auth failures from Login-aborted reasons like
+// "no auth attempts" or TLS handshake errors.
 func extractMailLoginEvent(line string) (ip, account string, success bool) {
 	switch {
-	case strings.Contains(line, "-login: Login:"):
+	case strings.Contains(line, "-login: Logged in"):
 		success = true
-	case strings.Contains(line, "auth failed"):
+	case strings.Contains(line, "(auth failed"):
 		success = false
 	default:
 		return "", "", false

@@ -18,10 +18,11 @@ func makeDovecotFailLine(protocol, ip, account string) string {
 	)
 }
 
-// makeDovecotSuccessLine returns a synthetic dovecot successful-login line.
+// makeDovecotSuccessLine returns a synthetic dovecot successful-login line
+// matching the real wire format (see TestExtractMailLoginEvent_RealDovecotFormat).
 func makeDovecotSuccessLine(protocol, ip, account string) string {
 	return fmt.Sprintf(
-		"Apr 14 12:00:05 host dovecot: %s-login: Login: user=<%s>, method=PLAIN, rip=%s, lip=1.1.1.1, TLS",
+		"Apr 14 12:00:05 host dovecot: %s-login: Logged in: user=<%s>, method=PLAIN, rip=%s, lip=1.1.1.1, TLS",
 		protocol, account, ip,
 	)
 }

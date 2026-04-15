@@ -489,7 +489,7 @@ func TestExtractMailLoginEvent_ManageSieveFailure(t *testing.T) {
 }
 
 func TestExtractMailLoginEvent_IMAPSuccess(t *testing.T) {
-	line := `Apr 14 12:00:05 host dovecot: imap-login: Login: user=<alice@x.ro>, method=PLAIN, rip=1.2.3.4, lip=..., TLS`
+	line := `Apr 14 12:00:05 host dovecot: imap-login: Logged in: user=<alice@x.ro>, method=PLAIN, rip=1.2.3.4, lip=..., TLS`
 	ip, account, success := extractMailLoginEvent(line)
 	if ip != "1.2.3.4" || account != "alice@x.ro" || !success {
 		t.Errorf("got (%q, %q, %v), want (1.2.3.4, alice@x.ro, true)", ip, account, success)
@@ -506,6 +506,97 @@ func TestExtractMailLoginEvent_Garbage(t *testing.T) {
 		if ip != "" || account != "" || success {
 			t.Errorf("line %q: got (%q, %q, %v), want empty", line, ip, account, success)
 		}
+	}
+}
+
+// TestExtractMailLoginEvent_RealDovecotFormat pins the parser against
+// dovecot's actual wire format as observed on production cPanel hosts.
+// IPs are RFC 5737 documentation ranges (203.0.113.0/24 = TEST-NET-3) and
+// usernames are RFC 2606 example.com — no real customer data is embedded.
+//
+// If dovecot ever changes the success/failure markers, these fixtures
+// catch the regression at the parser layer rather than waiting for
+// production to silently stop emitting findings.
+func TestExtractMailLoginEvent_RealDovecotFormat(t *testing.T) {
+	cases := []struct {
+		name        string
+		line        string
+		wantIP      string
+		wantAccount string
+		wantSuccess bool
+	}{
+		{
+			name:        "imap success — typical TLS login from external IP",
+			line:        `Apr 14 12:00:05 testhost dovecot[100]: imap-login: Logged in: user=<alice@example.com>, method=PLAIN, rip=203.0.113.5, lip=192.0.2.1, mpid=12345, TLS, session=<abc>`,
+			wantIP:      "203.0.113.5",
+			wantAccount: "alice@example.com",
+			wantSuccess: true,
+		},
+		{
+			name:        "pop3 success — typical TLS login from external IP",
+			line:        `Apr 14 12:00:06 testhost dovecot[100]: pop3-login: Logged in: user=<bob@example.com>, method=PLAIN, rip=203.0.113.6, lip=192.0.2.1, mpid=12346, TLS, session=<def>`,
+			wantIP:      "203.0.113.6",
+			wantAccount: "bob@example.com",
+			wantSuccess: true,
+		},
+		{
+			name:        "managesieve success from loopback (typical local proxy)",
+			line:        `Apr 14 12:00:07 testhost dovecot[100]: managesieve-login: Logged in: user=<carol@example.com>, method=PLAIN, rip=::1, lip=::1, mpid=12347, secured, session=<ghi>`,
+			wantIP:      "::1",
+			wantAccount: "carol@example.com",
+			wantSuccess: true,
+		},
+		{
+			name:        "imap failure — Login aborted: Logged out (auth failed)",
+			line:        `Apr 14 12:00:08 testhost dovecot[100]: imap-login: Login aborted: Logged out (auth failed, 1 attempts in 3 secs) (auth_failed): user=<dave@example.com>, method=PLAIN, rip=203.0.113.7, lip=192.0.2.1, TLS, session=<jkl>`,
+			wantIP:      "203.0.113.7",
+			wantAccount: "dave@example.com",
+			wantSuccess: false,
+		},
+		{
+			name:        "pop3 failure — Login aborted: Connection closed (auth failed)",
+			line:        `Apr 14 12:00:09 testhost dovecot[100]: pop3-login: Login aborted: Connection closed (auth failed, 1 attempts in 2 secs) (auth_failed): user=<eve@example.com>, method=PLAIN, rip=203.0.113.8, lip=192.0.2.1, session=<mno>`,
+			wantIP:      "203.0.113.8",
+			wantAccount: "eve@example.com",
+			wantSuccess: false,
+		},
+		{
+			name:        "imap failure — extra noise from Connection reset by peer in middle of message",
+			line:        `Apr 14 12:00:10 testhost dovecot[100]: imap-login: Login aborted: Connection closed: read(size=372) failed: Connection reset by peer (auth failed, 1 attempts in 0 secs) (auth_failed): user=<frank@example.com>, method=PLAIN, rip=203.0.113.9, lip=192.0.2.1, TLS, session=<pqr>`,
+			wantIP:      "203.0.113.9",
+			wantAccount: "frank@example.com",
+			wantSuccess: false,
+		},
+		{
+			name:        "non-auth Login aborted — no auth attempts (must NOT match as failure)",
+			line:        `Apr 14 12:00:11 testhost dovecot[100]: imap-login: Login aborted: Connection closed (no auth attempts in 0 secs) (no_auth_attempts): user=<>, rip=203.0.113.10, lip=192.0.2.1, session=<stu>`,
+			wantIP:      "",
+			wantAccount: "",
+			wantSuccess: false,
+		},
+		{
+			name:        "non-auth Login aborted — TLS handshake failure (must NOT match as failure)",
+			line:        `Apr 14 12:00:12 testhost dovecot[100]: pop3-login: Login aborted: Connection closed: SSL_accept() failed: error:14209102 (disconnected during TLS handshake) (tls_handshake_not_finished): user=<>, rip=203.0.113.11, lip=192.0.2.1, TLS handshaking, session=<vwx>`,
+			wantIP:      "",
+			wantAccount: "",
+			wantSuccess: false,
+		},
+		{
+			name:        "non-auth Login aborted — no_auth_attempts with idle timeout (must NOT match)",
+			line:        `Apr 14 12:00:13 testhost dovecot[100]: pop3-login: Login aborted: Connection closed (no auth attempts in 19 secs) (no_auth_attempts): user=<>, rip=203.0.113.12, lip=192.0.2.1, TLS, session=<yz>`,
+			wantIP:      "",
+			wantAccount: "",
+			wantSuccess: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ip, account, success := extractMailLoginEvent(tc.line)
+			if ip != tc.wantIP || account != tc.wantAccount || success != tc.wantSuccess {
+				t.Errorf("got (%q, %q, %v), want (%q, %q, %v)",
+					ip, account, success, tc.wantIP, tc.wantAccount, tc.wantSuccess)
+			}
+		})
 	}
 }
 
