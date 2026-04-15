@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Tightened permissions on CSM-private files: the state directory (`{statePath}`) is now `0700` instead of `0755`, the WordPress checksum cache directory and its files are `0700`/`0600`, and the YARA Forge rule tmpfile is `0600`. These paths are only read by the daemon, so restricting them prevents other local users from enumerating firewall rules, attack history, or detection signatures.
 - Web UI JSON-in-`<script>` embedding now routes through a single escaping helper (`jsonForScript`) that neutralizes `<`, `>`, `&`, U+2028 and U+2029 to their `\uXXXX` form. Closes a theoretical XSS vector where an attacker-controlled field (finding detail, hostname, etc.) containing `</script>` could break out of the surrounding `<script>` tag.
 - The PoW challenge verification cookie (`csm_verified`) now sets the `Secure` attribute, preventing the multi-hour bypass token from leaking over plaintext links. CSM is HTTPS-only.
 - GeoIP mmdb extraction now rejects tar entries larger than 500 MiB, closing a decompression-bomb vector where a compromised download source could fill disk via a crafted tar.gz.

@@ -76,7 +76,7 @@ func ForgeUpdate(rulesDir, tier, currentVersion, signingKey string, disabledRule
 
 	outFile := filepath.Join(rulesDir, fmt.Sprintf("yara-forge-%s.yar", tier))
 	tmpFile := outFile + ".tmp"
-	if err := os.WriteFile(tmpFile, yarContent, 0644); err != nil {
+	if err := os.WriteFile(tmpFile, yarContent, 0600); err != nil {
 		return "", 0, fmt.Errorf("writing temp file: %w", err)
 	}
 

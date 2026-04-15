@@ -1,9 +1,34 @@
 package store
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestOpenCreatesStateDirWithRestrictedPerms(t *testing.T) {
+	// The bbolt file holds firewall rules, attack history, threat-intel
+	// cache, and other state that's private to the CSM daemon. The
+	// containing directory must not be world-readable — other local
+	// users shouldn't be able to enumerate the database files.
+	parent := t.TempDir()
+	statePath := filepath.Join(parent, "state")
+
+	db, err := Open(statePath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	info, err := os.Stat(statePath)
+	if err != nil {
+		t.Fatalf("stat state dir: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0700 {
+		t.Errorf("state dir mode = %04o, want 0700", got)
+	}
+}
 
 func TestOpenClose(t *testing.T) {
 	dir := t.TempDir()

@@ -75,7 +75,7 @@ func EnsureOpen(statePath string) error {
 // Creates all buckets if they don't exist. Runs migration if needed.
 func Open(statePath string) (*DB, error) {
 	dbPath := filepath.Join(statePath, "csm.db")
-	if err := os.MkdirAll(statePath, 0755); err != nil {
+	if err := os.MkdirAll(statePath, 0700); err != nil {
 		return nil, fmt.Errorf("creating state dir: %w", err)
 	}
 

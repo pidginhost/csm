@@ -77,13 +77,13 @@ func (c *Cache) loadFromDisk() {
 // and populates the in-memory cache. The file is written to {statePath}/wp-checksums/.
 func (c *Cache) PersistChecksums(version, locale string, rawJSON []byte, checksums map[string]string) error {
 	dir := filepath.Join(c.statePath, "wp-checksums")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("creating wp-checksums dir: %w", err)
 	}
 	filename := diskFilename(version, locale)
 	tmpPath := filepath.Join(dir, filename+".tmp")
 	finalPath := filepath.Join(dir, filename)
-	if err := os.WriteFile(tmpPath, rawJSON, 0644); err != nil {
+	if err := os.WriteFile(tmpPath, rawJSON, 0600); err != nil {
 		return fmt.Errorf("writing temp file: %w", err)
 	}
 	if err := os.Rename(tmpPath, finalPath); err != nil {

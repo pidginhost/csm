@@ -40,6 +40,37 @@ func TestDiskCachePersistence(t *testing.T) {
 	}
 }
 
+func TestPersistChecksumsUsesRestrictedPerms(t *testing.T) {
+	// wp-checksums cache files are only consumed by CSM itself when
+	// validating WordPress installs; no other process needs to read
+	// them, so both the cache directory and its files should reject
+	// world reads.
+	dir := t.TempDir()
+	c := NewCache(dir)
+
+	rawJSON := []byte(`{"checksums":{}}`)
+	if err := c.PersistChecksums("6.9.4", "en_US", rawJSON, nil); err != nil {
+		t.Fatalf("PersistChecksums: %v", err)
+	}
+
+	cacheDir := filepath.Join(dir, "wp-checksums")
+	dirInfo, err := os.Stat(cacheDir)
+	if err != nil {
+		t.Fatalf("stat cache dir: %v", err)
+	}
+	if got := dirInfo.Mode().Perm(); got != 0700 {
+		t.Errorf("cache dir mode = %04o, want 0700", got)
+	}
+
+	fileInfo, err := os.Stat(filepath.Join(cacheDir, "6.9.4_en_US.json"))
+	if err != nil {
+		t.Fatalf("stat cache file: %v", err)
+	}
+	if got := fileInfo.Mode().Perm(); got != 0600 {
+		t.Errorf("cache file mode = %04o, want 0600", got)
+	}
+}
+
 func TestDiskCacheLocalizedVersion(t *testing.T) {
 	dir := t.TempDir()
 	c := NewCache(dir)
