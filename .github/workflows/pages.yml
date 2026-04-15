@@ -36,9 +36,12 @@ jobs:
           set -e
           # Scope coverage to internal/ packages -- cmd/csm is package main
           # (CLI glue) and skews the percentage with untestable cobra wiring.
-          # Use covermode=atomic to match the integration test binary so the
-          # profiles can be merged with gocovmerge.
-          go test -timeout=300s -covermode=atomic -coverprofile=coverage.out -coverpkg=./internal/... ./... || true
+          # -race must match the GitLab `test` job: the race-instrumented
+          # build elides some statements that the non-race build counts
+          # separately, and without it go tool cover -func reports ~15
+          # points lower on the same code. -covermode=atomic is required by
+          # -race and matches the integration profile so the two can merge.
+          go test -race -timeout=300s -covermode=atomic -coverprofile=coverage.out -coverpkg=./internal/... ./... || true
           go tool cover -func=coverage.out | tail -1
 
       - name: Merge integration coverage from latest GitHub release
