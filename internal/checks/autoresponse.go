@@ -269,7 +269,7 @@ func AutoFixPermissions(cfg *config.Config, findings []alert.Finding) (actions [
 			continue
 		}
 
-		path, info, err := resolveExistingFixPath(path, []string{"/home"})
+		path, info, err := resolveExistingFixPath(path, fixPermissionsAllowedRoots)
 		if err != nil || info.IsDir() {
 			continue
 		}
@@ -292,18 +292,28 @@ func AutoFixPermissions(cfg *config.Config, findings []alert.Finding) (actions [
 }
 
 func extractPID(details string) string {
-	// Look for "PID: 12345" pattern
-	if idx := strings.Index(details, "PID: "); idx >= 0 {
-		rest := details[idx+5:]
-		fields := strings.SplitN(rest, ",", 2)
-		return strings.TrimSpace(fields[0])
+	// Look for "PID: 12345" pattern. Stop at the first whitespace, comma,
+	// or newline so a trailing word ("PID: 42 exe=/bin/ls") doesn't get
+	// returned as part of the PID string.
+	idx := strings.Index(details, "PID: ")
+	if idx < 0 {
+		return ""
 	}
-	return ""
+	rest := details[idx+5:]
+	for i, c := range rest {
+		if c == ' ' || c == ',' || c == '\n' || c == '\t' {
+			return strings.TrimSpace(rest[:i])
+		}
+	}
+	return strings.TrimSpace(rest)
 }
 
 func extractFilePath(message string) string {
-	// Look for /home/... or /tmp/... paths in the message
-	for _, prefix := range []string{"/home/", "/tmp/", "/dev/shm/", "/var/tmp/"} {
+	// Look for /home/... or /tmp/... paths in the message. Order matters:
+	// longer/more-specific prefixes (/var/tmp/, /dev/shm/) must come BEFORE
+	// shorter ones (/tmp/) — otherwise "/tmp/" would match inside "/var/tmp/"
+	// and we'd silently misclassify the path.
+	for _, prefix := range []string{"/var/tmp/", "/dev/shm/", "/home/", "/tmp/"} {
 		if idx := strings.Index(message, prefix); idx >= 0 {
 			rest := message[idx:]
 			// Path ends at space, comma, or end of string
