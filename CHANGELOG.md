@@ -9,21 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Unit-test coverage lift across `internal/checks` and `internal/webui`: `CheckFirewall` 25% → 93%, `verifyDoveadm` 0% → 100%, `CheckEmailPasswords` 19% → 93%, `CheckIPReputation` 10% → 83%, `CheckMySQLUsers` 29% → 100%, `CheckHealth` 78% → 96%, `CleanInfectedFile` 23% → 97%, `scanForWebshells` 80% → 97%, `scanDomlogs` 78% → 96%, `countBruteForce` → 100%, `AutoRespondDBMalware` → 100%, `checkIPv6Firewall` 75% → 98%, `apiQuarantinePreview` 42% → 90%, `apiQuarantineRestore` 22% → 70%, `apiQuarantine` list → 100%, `collectRecentIPs` 74% → 100%, plus 20+ other functions with targeted branch coverage.
-- `scripts/covmerge`: tolerant Go coverage profile merger used by the GitHub Actions badge workflow. Dedupes per-file entries (so `go test ./... -coverpkg=./internal/...` doesn't inflate the denominator) and merges per range-key rather than all-or-nothing per file, keeping hit counts from matching ranges even when some ranges in the same file have drifted. The Pages workflow also walks recent releases until it finds one with `merged-coverage.out` so a freshly-cut tag whose integration run is pending doesn't drop the badge to unit-only.
-
-### Changed
-
-- `CheckFirewall`, `verifyDoveadm`, `extractWPDomain`, and `refreshPluginCache` route external commands through the package-level `cmdExec` injector instead of `exec.Command` directly. Production unchanged; tests can mock `nft` / `doveadm` / `wp-cli`.
-- `quarantineDir`, `eximSpoolDirs`, and the per-action `fix*AllowedRoots` lists in `internal/checks/remediate.go`, plus `quarantineDir` in `internal/webui`, are vars (not consts) so tests can redirect remediation and quarantine I/O under `t.TempDir()`. Production defaults unchanged.
+- More unit-test coverage for webui and checks since 2.4.1: `apiQuarantinePreview` + `apiQuarantineRestore` + `apiQuarantine` listing, `apiGeoIPLookup` / `apiGeoIPBatch` error branches, `CheckWPTransientBloat` guards, `collectRecentIPs` across all log sources, additional `queryAbuseIPDB` branches (429, API errors-in-body, transport failure), and `buildFileIndex` dispatcher branches. Plus `internal/webui/quarantineDir` converted to a `var` to unlock `t.TempDir()`-based quarantine tests (production default unchanged).
 
 ### Fixed
 
-- `extractFilePath` (auto-response path routing) iterated `/home, /tmp, /dev/shm, /var/tmp` in order and stopped at the first substring match, so `/var/tmp/x.php` was silently reclassified as `/tmp/x.php`. Reordered longest-first.
-- `extractPID` only terminated on comma, so `PID: 42 exe=/bin/ls` returned `"42 exe=/bin/ls"`. Now also stops on whitespace/newline.
-- `extractPHPDefine` only parsed quoted values, so `define('DISABLE_WP_CRON', true);` returned empty and `CheckWPCron` emitted false-positive findings on correctly configured WP installs. Now handles unquoted boolean and numeric literals.
-- Integration job on GitLab replaced the blind `sleep 45` after `phctl compute server create` with an SSH readiness poll (5 s interval, 240 s ceiling). Fixes intermittent "Connection timed out" failures on slower Ubuntu boots.
-- Pages coverage run now uses `-race` (matching the GitLab `test` job). Go's race-instrumented build elides/merges some defer/goroutine statements; without `-race` the denominator was inflated by ~1900 statements and the badge was reporting ~17 points lower than reality.
+- Integration job on GitLab replaced the blind `sleep 45` after `phctl compute server create` with an SSH readiness poll (5 s interval, 240 s ceiling). Fixes intermittent "Connection timed out" failures when the Ubuntu image takes longer than 45 s to bring sshd up.
+- Coverage badge workflow now walks the 10 most recent GitHub releases looking for `merged-coverage.out` instead of only probing `releases/latest`. A freshly-cut tag whose integration profile hasn't been uploaded yet no longer drops the badge to unit-only.
 
 ## [2.4.1] - 2026-04-15
 
