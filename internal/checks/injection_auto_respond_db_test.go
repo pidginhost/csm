@@ -92,4 +92,3 @@ func TestParseDBFindingDetailsExtractsFields(t *testing.T) {
 		}
 	}
 }
-
