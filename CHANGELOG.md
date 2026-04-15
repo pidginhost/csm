@@ -7,28 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+### Security
 
-- Security tooling in CI: `gosec` (static analysis, v2.25.0) and `govulncheck` (Go vulnerability scanner, v1.2.0) jobs run in the GitLab `lint` stage on every commit. OSSF Scorecard workflow (`.github/workflows/scorecard.yml`) runs weekly on the GitHub mirror, scoring supply-chain hygiene and publishing SARIF results to the Security tab. Dependabot (`.github/dependabot.yml`) opens weekly PRs for `gomod` and `github-actions` updates. New `make sec` and `make vuln` targets, both wired into `make ci`. README adds Go Report Card, OSSF Scorecard, pkg.go.dev, release, and license badges.
-- All CI tool versions now pinned (golangci-lint v2.11.4, gosec v2.25.0, govulncheck v1.2.0, golang 1.26.2, GitHub Actions SHA-pinned) so updates are deliberate.
-
-### Changed
-
-- Added `scripts/covmerge` — a tolerant Go coverage profile merger used by the GitHub Actions badge workflow. Unlike `gocovmerge`, it dedupes per-file entries on read (handling profiles produced by `go test ./... -coverpkg=./internal/...` which contain the same statement once per test binary) and merges per range-key rather than all-or-nothing per file, keeping hit counts from matching ranges even when other ranges in the same file have drifted. The badge now reflects the union of fresh unit coverage with the most recent tag's integration coverage even when most files have had some intermediate edits.
-- `CheckFirewall`, `verifyDoveadm`, `extractWPDomain`, and `refreshPluginCache` now route external command execution through the package-level `cmdExec` injector instead of calling `exec.Command` directly. Production behavior is unchanged (the default `cmdExec` still uses `exec.Command`), but tests can now mock `nft`, `doveadm`, and `wp-cli` invocations without a real install. This unlocks coverage on previously-untestable success paths (`verifyDoveadm` 0% → 100%, `extractWPDomain` 58% → 100%, `CheckFirewall` 25% → 93%).
-- `quarantineDir`, `eximSpoolDirs`, and the per-action `fix*AllowedRoots` lists in `internal/checks/remediate.go` are now package-level vars rather than hard-coded literals. Production behavior is unchanged (defaults still point at `/opt/csm/quarantine`, `/var/spool/exim*/input`, `/home`, etc.) but tests can now redirect remediation under `t.TempDir()` to exercise the move/clean/spool-quarantine flows without touching real system directories. Lifts `fixPermissions`/`fixQuarantine`/`fixHtaccess`/`fixQuarantineSpoolMessage` and `CleanInfectedFile` from ~20% coverage to 90%+ on Linux runners.
+- Fanotify realtime analyser no longer lets malicious `.htaccess`, `.user.ini`, or `.config` executables staged under `/tmp`, `/dev/shm`, or `/var/tmp` bypass detection. Specific file-type checks now run before the generic tmp early-return.
+- Tightened permissions on CSM-private paths: state dir 0700, WP checksum cache 0700/0600, YARA Forge tmpfile 0600.
+- Web UI JSON-in-`<script>` embedding routes through a single escape helper that neutralises `<`, `>`, `&`, U+2028, U+2029, closing an XSS vector if attacker-controlled fields contain `</script>`.
+- PoW challenge verification cookie (`csm_verified`) sets `Secure`; CSM is HTTPS-only.
+- GeoIP mmdb extraction rejects tar entries larger than 500 MiB (decompression-bomb guard).
 
 ### Fixed
 
-- Tightened permissions on CSM-private files: the state directory (`{statePath}`) is now `0700` instead of `0755`, the WordPress checksum cache directory and its files are `0700`/`0600`, and the YARA Forge rule tmpfile is `0600`. These paths are only read by the daemon, so restricting them prevents other local users from enumerating firewall rules, attack history, or detection signatures.
-- Web UI JSON-in-`<script>` embedding now routes through a single escaping helper (`jsonForScript`) that neutralizes `<`, `>`, `&`, U+2028 and U+2029 to their `\uXXXX` form. Closes a theoretical XSS vector where an attacker-controlled field (finding detail, hostname, etc.) containing `</script>` could break out of the surrounding `<script>` tag.
-- The PoW challenge verification cookie (`csm_verified`) now sets the `Secure` attribute, preventing the multi-hour bypass token from leaking over plaintext links. CSM is HTTPS-only.
-- GeoIP mmdb extraction now rejects tar entries larger than 500 MiB, closing a decompression-bomb vector where a compromised download source could fill disk via a crafted tar.gz.
-- `extractFilePath` (used by `AutoFixPermissions` and the auto-response routing) was iterating its prefix list `/home, /tmp, /dev/shm, /var/tmp` in order and stopping at the first match. Inside a message containing `/var/tmp/x.php`, the substring `/tmp/` matched first and the function silently returned `/tmp/x.php` — pointing the auto-response at a file that doesn't exist (or worse, at a different file under `/tmp`). Reordered the prefix list longest-first (`/var/tmp/`, `/dev/shm/`, `/home/`, `/tmp/`) so each path is classified correctly.
-- `extractPID` only stopped scanning at a comma, so a finding detail like `PID: 42 exe=/bin/ls` returned the string `"42 exe=/bin/ls"` and downstream `Sscanf` would silently fail or partial-parse. Now stops at any whitespace, comma, or newline, returning just `"42"`.
-- `extractPHPDefine` only parsed quoted string values, so `define('DISABLE_WP_CRON', true);` (the canonical WordPress idiom) returned `""` and `CheckWPCron` always emitted a "WP-Cron not disabled" finding even on correctly configured installs. Now also handles unquoted boolean and numeric literals (`true`, `false`, `256`, etc.).
-- **Security: realtime detection bypass for malicious `.htaccess`/`.user.ini`/`.config` executables under `/tmp`.** `FileMonitor.analyzeFile` had a control-flow bug where the generic `/tmp/`, `/dev/shm/`, and `/var/tmp/` early-return ran *before* the `.htaccess`, `.user.ini`, and `.config` executable checks. A compromised process that staged its payload as `/tmp/.../.htaccess` (e.g. `php_value auto_prepend_file /tmp/evil.php` for a redirect/include-injection attack) or `/tmp/.../.user.ini` (`allow_url_include=on`) would never trigger the `htaccess_injection_realtime` or `user_ini_*` alerts. Same for executables in `/tmp/.config/` getting flagged as the less specific `executable_in_tmp_realtime` instead of `executable_in_config_realtime`. Specific file-type checks now take precedence over the generic `/tmp` filter so these payloads are always analyzed regardless of where they're written.
-- Coverage badge pipeline is now resilient to source drift between the unit and integration coverage profiles. Added `scripts/covmerge` — a tolerant merger that drops per-file entries from the secondary profile when statement ranges don't align (instead of failing the whole merge like `gocovmerge`). The GitHub Actions workflow uses it to combine fresh unit coverage with the previous tag release's integration profile, even when some files have been modified since the tag.
+- `extractFilePath` iterated `/home, /tmp, /dev/shm, /var/tmp` in that order, so `/var/tmp/x.php` was silently classified as `/tmp/x.php` (substring match), pointing auto-response at the wrong file. Now longest-prefix-first.
+- `extractPID` only terminated on comma, returning strings like `"42 exe=/bin/ls"` instead of `"42"`. Now also stops on whitespace/newline.
+- `extractPHPDefine` only parsed quoted values, so `define('DISABLE_WP_CRON', true);` returned empty and `CheckWPCron` emitted false-positive findings on correctly configured installs. Now handles unquoted bool/number literals.
+
+### Added
+
+- CI security tooling: `gosec` and `govulncheck` jobs (GitLab), OSSF Scorecard workflow (weekly), Dependabot (weekly for `gomod` and `github-actions`), `make sec`/`make vuln` targets, and Go Report Card / Scorecard / pkg.go.dev / release / license README badges.
+- Pinned versions across CI: golangci-lint v2.11.4, gosec v2.25.0, govulncheck v1.2.0, golang 1.26.2, GitHub Actions SHA-pinned.
+- `scripts/covmerge`: tolerant Go coverage profile merger for the badge pipeline. Dedupes per-file entries on read and merges per range-key, so source drift between unit and integration profiles no longer drops whole files.
+
+### Changed
+
+- `CheckFirewall`, `verifyDoveadm`, `extractWPDomain`, and `refreshPluginCache` route external commands through the `cmdExec` injector instead of `exec.Command` directly. Production unchanged; tests can now mock `nft`/`doveadm`/`wp-cli`. Coverage on these paths 0–58% → 93–100%.
+- `quarantineDir`, `eximSpoolDirs`, and the per-action `fix*AllowedRoots` lists in `internal/checks/remediate.go` are vars (not consts) so tests can redirect remediation under `t.TempDir()`. Production defaults unchanged.
 
 ## [2.4.0] - 2026-04-14
 
