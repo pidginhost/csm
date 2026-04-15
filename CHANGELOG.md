@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Added `scripts/covmerge` — a tolerant Go coverage profile merger used by the GitHub Actions badge workflow. Unlike `gocovmerge`, it dedupes per-file entries on read (handling profiles produced by `go test ./... -coverpkg=./internal/...` which contain the same statement once per test binary) and drops drifting files from the secondary profile rather than failing the whole merge. The badge now reflects the union of fresh unit coverage with the most recent tag's integration coverage even when intermediate code changes have moved line numbers in some files.
 - `CheckFirewall`, `verifyDoveadm`, `extractWPDomain`, and `refreshPluginCache` now route external command execution through the package-level `cmdExec` injector instead of calling `exec.Command` directly. Production behavior is unchanged (the default `cmdExec` still uses `exec.Command`), but tests can now mock `nft`, `doveadm`, and `wp-cli` invocations without a real install. This unlocks coverage on previously-untestable success paths (`verifyDoveadm` 0% → 100%, `extractWPDomain` 58% → 100%, `CheckFirewall` 25% → 93%).
 
 ### Fixed
