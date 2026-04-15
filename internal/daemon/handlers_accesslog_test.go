@@ -240,3 +240,50 @@ func TestAccessLog_AdminPanelBruteForce_DoesNotMatchBarePaths(t *testing.T) {
 		}
 	}
 }
+
+// TestAccessLog_HotPathSkipsAfterAlert pins the perf optimization that
+// avoids the per-IP timestamp slice growing without bound during a sustained
+// burst once the IP has already alerted. After the threshold-fire, additional
+// POSTs from the same IP must NOT add to wpLoginTimes (the eviction loop
+// will trim it; the alerted flag prevents re-fires regardless).
+func TestAccessLog_HotPathSkipsAfterAlert(t *testing.T) {
+	resetAccessLogTrackerState()
+	cfg := &config.Config{}
+
+	ip := "203.0.113.99"
+	// Fire the alert.
+	for i := 0; i < accessLogWPLoginThreshold; i++ {
+		parseAccessLogBruteForce(makeAccessLogLine(ip, "POST", "/wp-login.php"), cfg)
+	}
+
+	val, ok := accessLogTrackers.Load(ip)
+	if !ok {
+		t.Fatalf("expected tracker for %s after threshold burst", ip)
+	}
+	tr := val.(*accessLogTracker)
+	tr.mu.Lock()
+	postAlertLen := len(tr.wpLoginTimes)
+	alerted := tr.wpLoginAlerted
+	tr.mu.Unlock()
+
+	if !alerted {
+		t.Fatalf("wpLoginAlerted should be true after threshold burst")
+	}
+	if postAlertLen < accessLogWPLoginThreshold {
+		t.Fatalf("wpLoginTimes len = %d, want at least %d after fire", postAlertLen, accessLogWPLoginThreshold)
+	}
+
+	// Sustained burst — 1000 more POSTs from the same IP. With the perf
+	// optimization, wpLoginTimes must NOT grow.
+	for i := 0; i < 1000; i++ {
+		parseAccessLogBruteForce(makeAccessLogLine(ip, "POST", "/wp-login.php"), cfg)
+	}
+
+	tr.mu.Lock()
+	finalLen := len(tr.wpLoginTimes)
+	tr.mu.Unlock()
+
+	if finalLen != postAlertLen {
+		t.Errorf("wpLoginTimes grew during alerted burst: postAlert=%d, after 1000 more POSTs=%d (want unchanged — alerted flag should short-circuit append)", postAlertLen, finalLen)
+	}
+}

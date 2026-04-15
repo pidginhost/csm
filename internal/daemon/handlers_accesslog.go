@@ -113,11 +113,22 @@ func parseAccessLogBruteForce(line string, cfg *config.Config) []alert.Finding {
 
 	var results []alert.Finding
 
-	if isWPLogin {
-		// Append and prune in one pass.
+	// Once a per-tier alert has fired, skip pruneAndAppend until cooldown
+	// clears the `alerted` flag. The slice would otherwise grow on every
+	// event during a sustained burst (potentially tens of thousands of
+	// entries for a 5-min window at 100 rps), wasting CPU on prune passes
+	// whose result is never consumed: the `alerted` flag already prevents
+	// re-alerts, and the eviction loop trims the slice on its own schedule.
+	//
+	// Safety: evictAccessLogState resets `alerted` once `lastSeen` is older
+	// than `cooldownCutoff` (30 min of silence by default). By that point
+	// the same eviction call has also pruned the slice to empty (window is
+	// 5 min, so any remaining timestamp is far past cutoff), so the next
+	// matching event correctly starts a fresh count from 1.
+	if isWPLogin && !tracker.wpLoginAlerted {
 		tracker.wpLoginTimes = pruneAndAppend(tracker.wpLoginTimes, cutoff, now)
 
-		if len(tracker.wpLoginTimes) >= accessLogWPLoginThreshold && !tracker.wpLoginAlerted {
+		if len(tracker.wpLoginTimes) >= accessLogWPLoginThreshold {
 			tracker.wpLoginAlerted = true
 			results = append(results, alert.Finding{
 				Severity:  alert.Critical,
@@ -129,10 +140,10 @@ func parseAccessLogBruteForce(line string, cfg *config.Config) []alert.Finding {
 		}
 	}
 
-	if isXMLRPC {
+	if isXMLRPC && !tracker.xmlrpcAlerted {
 		tracker.xmlrpcTimes = pruneAndAppend(tracker.xmlrpcTimes, cutoff, now)
 
-		if len(tracker.xmlrpcTimes) >= accessLogXMLRPCThreshold && !tracker.xmlrpcAlerted {
+		if len(tracker.xmlrpcTimes) >= accessLogXMLRPCThreshold {
 			tracker.xmlrpcAlerted = true
 			results = append(results, alert.Finding{
 				Severity:  alert.Critical,
@@ -144,9 +155,9 @@ func parseAccessLogBruteForce(line string, cfg *config.Config) []alert.Finding {
 		}
 	}
 
-	if isAdminPanel {
+	if isAdminPanel && !tracker.adminPanelAlerted {
 		tracker.adminPanelTimes = pruneAndAppend(tracker.adminPanelTimes, cutoff, now)
-		if len(tracker.adminPanelTimes) >= accessLogWPLoginThreshold && !tracker.adminPanelAlerted {
+		if len(tracker.adminPanelTimes) >= accessLogWPLoginThreshold {
 			tracker.adminPanelAlerted = true
 			results = append(results, alert.Finding{
 				Severity:  alert.Critical,
