@@ -328,7 +328,9 @@ func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-const quarantineDir = "/opt/csm/quarantine"
+// var (not const) so tests can redirect to t.TempDir(). Production
+// callers must not mutate at runtime.
+var quarantineDir = "/opt/csm/quarantine"
 
 // apiQuarantine lists quarantined files with metadata.
 func (s *Server) apiQuarantine(w http.ResponseWriter, _ *http.Request) {
