@@ -803,19 +803,32 @@ func extractPHPDefine(line string) string {
 		return ""
 	}
 	valuePart := strings.TrimSpace(inner[commaIdx+1:])
-	if len(valuePart) < 2 {
+	if valuePart == "" {
 		return ""
 	}
-	// Strip surrounding quotes (single or double).
+	// Strip surrounding quotes (single or double) when present.
 	q := valuePart[0]
-	if q != '\'' && q != '"' {
-		return ""
+	if q == '\'' || q == '"' {
+		if len(valuePart) < 2 {
+			return ""
+		}
+		end := strings.LastIndexByte(valuePart, q)
+		if end <= 0 {
+			return ""
+		}
+		return valuePart[1:end]
 	}
-	end := strings.LastIndexByte(valuePart, q)
-	if end <= 0 {
-		return ""
+	// Unquoted literal (boolean/number constant). Strip a trailing ); or
+	// whitespace and return the bare token. Examples wp-config.php uses:
+	//   define('DISABLE_WP_CRON', true);
+	//   define('WP_DEBUG', false);
+	//   define('WP_MEMORY_LIMIT', 256);
+	for i, c := range valuePart {
+		if c == ' ' || c == '\t' || c == ';' || c == ')' || c == ',' {
+			return strings.TrimSpace(valuePart[:i])
+		}
 	}
-	return valuePart[1:end]
+	return strings.TrimSpace(valuePart)
 }
 
 // ---------------------------------------------------------------------------
