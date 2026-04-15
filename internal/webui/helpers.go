@@ -1,8 +1,10 @@
 package webui
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"net"
 	"net/http"
 	"os"
@@ -10,6 +12,30 @@ import (
 	"strings"
 	"time"
 )
+
+// jsonForScript marshals v to JSON and returns it as template.JS suitable
+// for direct substitution into a <script> block. json.Marshal already
+// escapes < > & U+2028 U+2029 to \uXXXX form, so the output cannot break
+// out of the surrounding <script> tag or trigger JS line-terminator
+// parsing quirks. On marshal failure the fallback is the JS literal
+// "null" so the enclosing template still parses.
+func jsonForScript(v interface{}) template.JS {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return template.JS("null")
+	}
+	// Defense-in-depth: Go's json.Marshal has historically escaped these
+	// by default, but an explicit pass guarantees the contract even if
+	// that default ever changes or the input arrived pre-encoded.
+	b = bytes.ReplaceAll(b, []byte("<"), []byte(`\u003c`))
+	b = bytes.ReplaceAll(b, []byte(">"), []byte(`\u003e`))
+	b = bytes.ReplaceAll(b, []byte("&"), []byte(`\u0026`))
+	b = bytes.ReplaceAll(b, []byte("\u2028"), []byte(`\u2028`))
+	b = bytes.ReplaceAll(b, []byte("\u2029"), []byte(`\u2029`))
+	// #nosec G203 -- Output is JSON bytes with HTML/JS-dangerous codepoints
+	// escaped above; safe to hand to html/template as JS.
+	return template.JS(b)
+}
 
 func decodeJSONBodyLimited(w http.ResponseWriter, r *http.Request, limit int64, dst interface{}) error {
 	if limit <= 0 {

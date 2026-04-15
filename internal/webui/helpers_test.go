@@ -610,3 +610,69 @@ func TestParseAndValidateIP_Whitespace(t *testing.T) {
 		t.Errorf("parseAndValidateIP trimmed IP = %v; want 8.8.8.8", ip)
 	}
 }
+
+// --- jsonForScript ---
+
+func TestJSONForScript_EscapesBrowserDangerousChars(t *testing.T) {
+	// This helper is the single source of truth for JSON embedded in
+	// <script> blocks. It must neutralize every character sequence that
+	// a browser's HTML or JS parser interprets specially: </script>, raw
+	// <, >, &, and the line-separator codepoints U+2028/U+2029.
+	cases := []struct {
+		name       string
+		in         interface{}
+		mustHave   []string
+		mustNotHave []string
+	}{
+		{
+			name:        "script breakout attempt",
+			in:          map[string]string{"x": "</script><script>alert(1)</script>"},
+			mustHave:    []string{`\u003c/script\u003e`, `\u003cscript\u003e`},
+			mustNotHave: []string{`</script>`, `<script>`},
+		},
+		{
+			name:        "ampersand and brackets",
+			in:          map[string]string{"x": "<a href='x'>&</a>"},
+			mustHave:    []string{`\u003c`, `\u003e`, `\u0026`},
+			mustNotHave: []string{"<a href", "</a>"},
+		},
+		{
+			name:        "js line separators",
+			in:          map[string]string{"x": "line1\u2028line2\u2029line3"},
+			mustHave:    []string{`\u2028`, `\u2029`},
+			mustNotHave: []string{"\u2028", "\u2029"},
+		},
+		{
+			name:        "normal data survives",
+			in:          map[string]interface{}{"version": "2.4.0", "enabled": true},
+			mustHave:    []string{`"version"`, `"2.4.0"`, `"enabled"`, `true`},
+			mustNotHave: nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := string(jsonForScript(tc.in))
+			for _, s := range tc.mustHave {
+				if !strings.Contains(got, s) {
+					t.Errorf("output missing %q:\n  got: %s", s, got)
+				}
+			}
+			for _, s := range tc.mustNotHave {
+				if strings.Contains(got, s) {
+					t.Errorf("output still contains dangerous %q:\n  got: %s", s, got)
+				}
+			}
+		})
+	}
+}
+
+func TestJSONForScript_FailsSafeOnMarshalError(t *testing.T) {
+	// Channels are not JSON-serializable. The helper must not return empty
+	// bytes (would be invalid JS if substituted as an expression) — it must
+	// return a safe JS literal so the surrounding template still parses.
+	got := string(jsonForScript(make(chan int)))
+	if got != "null" {
+		t.Errorf("marshal-error fallback = %q, want %q", got, "null")
+	}
+}

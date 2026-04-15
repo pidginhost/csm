@@ -89,15 +89,12 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		"timeAgo":       timeAgo,
 		"formatTime":    formatTime,
 		"csrfToken":     s.csrfToken,
-		"csmConfig":     func() template.JS { return template.JS(s.csmConfigJSON()) },
-		"json": func(v any) template.JS {
-			b, _ := json.Marshal(v)
-			return template.JS(b)
-		},
-		"multiply":    func(a, b int) int { return a * b },
-		"add":         func(a, b int) int { return a + b },
-		"subtract":    func(a, b int) int { return a - b },
-		"divisibleBy": func(a, b int) bool { return b != 0 && a%b == 0 },
+		"csmConfig":     func() template.JS { return jsonForScript(s.csmConfig()) },
+		"json":          jsonForScript,
+		"multiply":      func(a, b int) int { return a * b },
+		"add":           func(a, b int) int { return a + b },
+		"subtract":      func(a, b int) int { return a - b },
+		"divisibleBy":   func(a, b int) bool { return b != 0 && a%b == 0 },
 	}
 
 	// Try to load templates from disk
@@ -393,7 +390,15 @@ func (s *Server) SetVersion(v string) {
 
 // csmConfigJSON returns a JSON string of feature flags for the frontend.
 func (s *Server) csmConfigJSON() string {
-	flags := map[string]interface{}{
+	b, _ := json.Marshal(s.csmConfig())
+	return string(b)
+}
+
+// csmConfig returns the feature-flag map used by the frontend. Template
+// rendering goes through jsonForScript; the csmConfigJSON wrapper exists
+// for code paths that need a pre-marshaled JSON string.
+func (s *Server) csmConfig() map[string]interface{} {
+	return map[string]interface{}{
 		"version":      s.version,
 		"emailAV":      s.cfg.EmailAV.Enabled,
 		"firewall":     s.cfg.Firewall != nil && s.cfg.Firewall.Enabled,
@@ -464,8 +469,6 @@ func (s *Server) csmConfigJSON() string {
 			"password_hijack_confirmed":      "Password Hijack",
 		},
 	}
-	b, _ := json.Marshal(flags)
-	return string(b)
 }
 
 // --- Authentication ---
