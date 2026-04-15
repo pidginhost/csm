@@ -75,20 +75,21 @@ jobs:
             echo "=== Integration profile lines (after cmd/csm strip) ==="
             wc -l integration-coverage.out
 
-            go install github.com/wadey/gocovmerge@latest 2>&1
-            export PATH="$PATH:$(go env GOPATH)/bin"
-
-            echo "=== Running gocovmerge ==="
-            if ! gocovmerge coverage.out integration-coverage.out >merged.out 2>merge.err; then
-              echo ">>> gocovmerge FAILED:"
+            # Use our own tolerant merger (scripts/covmerge). Unlike
+            # gocovmerge, it drops per-file entries from the secondary
+            # profile when statement ranges don't match (common when the
+            # integration profile is from an older tag and the file has
+            # been modified since). Primary (unit) coverage is always
+            # preserved; matching secondary entries boost hit counts.
+            echo "=== Running covmerge (tolerant) ==="
+            if ! go run ./scripts/covmerge coverage.out integration-coverage.out >merged.out 2>merge.err; then
+              echo ">>> covmerge FAILED:"
               cat merge.err
               echo "FALLBACK: merge failed" > coverage-merge-status.txt
               exit 0
             fi
-            if [ -s merge.err ]; then
-              echo ">>> gocovmerge warnings:"
-              cat merge.err
-            fi
+            echo ">>> covmerge info:"
+            cat merge.err
             echo "=== Merged profile head ==="
             head -3 merged.out
             echo "=== Merged profile lines ==="
