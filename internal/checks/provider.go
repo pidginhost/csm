@@ -25,13 +25,16 @@ type OS interface {
 
 type realOS struct{}
 
-func (realOS) ReadFile(name string) ([]byte, error)       { return os.ReadFile(name) }
+// #nosec G304 -- filesystem abstraction; check functions pass trusted paths.
+func (realOS) ReadFile(name string) ([]byte, error) { return os.ReadFile(name) }
 func (realOS) ReadDir(name string) ([]os.DirEntry, error) { return os.ReadDir(name) }
 func (realOS) Stat(name string) (os.FileInfo, error)      { return os.Stat(name) }
 func (realOS) Lstat(name string) (os.FileInfo, error)     { return os.Lstat(name) }
 func (realOS) Readlink(name string) (string, error)       { return os.Readlink(name) }
-func (realOS) Open(name string) (*os.File, error)         { return os.Open(name) }
-func (realOS) Glob(pattern string) ([]string, error)      { return filepath.Glob(pattern) }
+
+// #nosec G304 -- filesystem abstraction; check functions pass trusted paths.
+func (realOS) Open(name string) (*os.File, error)    { return os.Open(name) }
+func (realOS) Glob(pattern string) ([]string, error) { return filepath.Glob(pattern) }
 
 // osFS is the package-level filesystem provider. All check functions use
 // this instead of calling os.ReadFile / os.ReadDir / etc. directly.

@@ -199,6 +199,7 @@ func (q *Quarantine) CleanExpired(maxAge time.Duration) (int, error) {
 func (q *Quarantine) readMetadata(msgID string) (*QuarantineMetadata, error) {
 	msgID = filepath.Base(msgID) // defense in depth
 	metaPath := filepath.Join(q.baseDir, msgID, "metadata.json")
+	// #nosec G304 -- msgID sanitized with filepath.Base; filepath.Join under baseDir.
 	data, err := os.ReadFile(metaPath)
 	if err != nil {
 		return nil, err
@@ -216,6 +217,7 @@ func (q *Quarantine) readMetadata(msgID string) (*QuarantineMetadata, error) {
 func moveFile(src, dst string) error {
 	if err := os.Rename(src, dst); err != nil {
 		// Cross-device fallback
+		// #nosec G304 -- src is mail queue path from scanner walk.
 		data, readErr := os.ReadFile(src)
 		if readErr != nil {
 			return readErr

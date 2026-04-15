@@ -56,6 +56,8 @@ func (c *Cache) loadFromDisk() {
 		if entry.IsDir() || !strings.HasSuffix(name, ".json") {
 			continue
 		}
+		// #nosec G304 -- dir is {statePath}/wp-checksums; name comes from
+		// our own os.ReadDir of that same dir.
 		data, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
 			continue

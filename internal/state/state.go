@@ -48,6 +48,7 @@ func Open(path string) (*Store, error) {
 	}
 
 	stateFile := filepath.Join(path, "state.json")
+	// #nosec G304 -- operator-configured statePath + fixed filename.
 	data, err := os.ReadFile(stateFile)
 	if err == nil {
 		// Backup state file before loading in case of corruption
@@ -61,6 +62,7 @@ func Open(path string) (*Store, error) {
 
 	// Load latest findings from disk (survives restart)
 	latestFile := filepath.Join(path, "latest_findings.json")
+	// #nosec G304 -- operator-configured statePath + fixed filename.
 	if latestData, err := os.ReadFile(latestFile); err == nil {
 		// Backup latest findings before loading
 		// #nosec G703 -- latestFile derived the same way as stateFile above.
@@ -299,6 +301,8 @@ func (s *Store) appendHistoryFile(findings []alert.Finding) {
 
 	// Check size, truncate if over 10MB
 	if info, err := os.Stat(histPath); err == nil && info.Size() > 10*1024*1024 {
+		// #nosec G304 -- histPath is {s.path}/history.jsonl; s.path is the
+		// operator-configured statePath set at Store creation.
 		data, err := os.ReadFile(histPath)
 		if err == nil {
 			// Keep the second half
@@ -314,6 +318,7 @@ func (s *Store) appendHistoryFile(findings []alert.Finding) {
 		}
 	}
 
+	// #nosec G304 -- see histPath derivation above.
 	f, err := os.OpenFile(histPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		return
@@ -394,6 +399,7 @@ func (s *Store) ReadHistory(limit, offset int) ([]alert.Finding, int) {
 
 	// Fallback: flat-file JSONL.
 	historyPath := filepath.Join(s.path, "history.jsonl")
+	// #nosec G304 -- {s.path}/history.jsonl; s.path from operator config.
 	data, err := os.ReadFile(historyPath)
 	if err != nil {
 		return nil, 0

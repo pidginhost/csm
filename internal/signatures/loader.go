@@ -83,6 +83,7 @@ func (s *Scanner) Reload() error {
 		fileCount++
 
 		path := filepath.Join(s.rulesDir, name)
+		// #nosec G304 -- filepath.Join under operator-configured rulesDir.
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return fmt.Errorf("reading %s: %w", path, err)
@@ -246,6 +247,8 @@ func (s *Scanner) ScanFile(path string, maxBytes int) []Match {
 		return nil
 	}
 
+	// #nosec G304 -- ScanFile's whole purpose is to scan a file on disk;
+	// `path` comes from the daemon's file index walker or a fanotify event.
 	f, err := os.Open(path)
 	if err != nil {
 		return nil

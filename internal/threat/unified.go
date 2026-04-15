@@ -204,6 +204,7 @@ func loadFullAbuseCache(statePath string) map[string]*abuseEntry {
 		Entries map[string]*cacheEntry `json:"entries"`
 	}
 
+	// #nosec G304 -- filepath.Join under operator-configured statePath.
 	data, err := os.ReadFile(filepath.Join(statePath, "reputation_cache.json"))
 	if err != nil {
 		return result
@@ -272,6 +273,7 @@ func loadFullBlockState(statePath string) map[string]*blockEntry {
 	type csmFile struct {
 		IPs []csmEntry `json:"ips"`
 	}
+	// #nosec G304 -- filepath.Join under operator-configured statePath.
 	if data, err := os.ReadFile(filepath.Join(statePath, "blocked_ips.json")); err == nil {
 		var cf csmFile
 		if json.Unmarshal(data, &cf) == nil {

@@ -13,6 +13,7 @@ import (
 
 // HashFile returns the SHA256 hash of a file.
 func HashFile(path string) (string, error) {
+	// #nosec G304 -- integrity hashing of operator-configured binary/config paths.
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
@@ -30,6 +31,7 @@ func HashFile(path string) (string, error) {
 // HashConfigStable hashes the config file excluding the integrity section,
 // so that writing hashes back to the config doesn't change the hash.
 func HashConfigStable(path string) (string, error) {
+	// #nosec G304 -- operator-supplied config file path.
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err

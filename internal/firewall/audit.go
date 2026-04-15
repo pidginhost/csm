@@ -49,6 +49,7 @@ func AppendAudit(statePath, action, ip, reason, source string, duration time.Dur
 		_ = os.Rename(path, path+".1")
 	}
 
+	// #nosec G304 -- path is filepath.Join under operator-configured statePath.
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		return
@@ -60,6 +61,7 @@ func AppendAudit(statePath, action, ip, reason, source string, duration time.Dur
 // ReadAuditLog returns the last N audit entries from the log.
 func ReadAuditLog(statePath string, limit int) []AuditEntry {
 	path := filepath.Join(statePath, "firewall", "audit.jsonl")
+	// #nosec G304 -- filepath.Join under operator-configured statePath.
 	f, err := os.Open(path)
 	if err != nil {
 		return nil

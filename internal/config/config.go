@@ -224,6 +224,7 @@ type Config struct {
 }
 
 func Load(path string) (*Config, error) {
+	// #nosec G304 -- path is operator-supplied config file (CLI flag / env).
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading config %s: %w", path, err)

@@ -32,6 +32,7 @@ type LogWatcher struct {
 
 // NewLogWatcher creates a watcher for a log file.
 func NewLogWatcher(path string, cfg *config.Config, handler LogLineHandler, alertCh chan<- alert.Finding) (*LogWatcher, error) {
+	// #nosec G304 -- path is operator-configured log path from csm.yaml.
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err

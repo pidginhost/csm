@@ -199,6 +199,7 @@ func sampleMetrics() *perfMetrics {
 		userCounts := make(map[string]int)
 		total := 0
 		for _, cmdPath := range cmdlinePaths {
+			// #nosec G304 -- cmdPath from /proc/*/cmdline glob; kernel pseudo-FS.
 			data, err := os.ReadFile(cmdPath)
 			if err != nil {
 				continue
@@ -208,6 +209,7 @@ func sampleMetrics() *perfMetrics {
 				continue
 			}
 			pid := filepath.Base(filepath.Dir(cmdPath))
+			// #nosec G304 -- /proc/<pid>/status; kernel pseudo-FS, pid from /proc glob.
 			statusData, _ := os.ReadFile(filepath.Join("/proc", pid, "status"))
 			uid := ""
 			for _, line := range strings.Split(string(statusData), "\n") {
@@ -255,9 +257,9 @@ func sampleMetrics() *perfMetrics {
 		if err == nil {
 			mysqlPID := strings.TrimSpace(string(pidData))
 			if mysqlPID != "" {
-				// #nosec G703 -- mysqlPID is read from /var/run/mysqld/mysqld.pid
-				// (system-managed file); we trust mysqld's own pidfile and
-				// are reading from the /proc pseudo-filesystem.
+				// #nosec G304 G703 -- mysqlPID is read from mysqld's own
+				// /var/run/mysqld/mysqld.pid and we're reading the kernel
+				// /proc pseudo-filesystem.
 				statusData, _ := os.ReadFile(filepath.Join("/proc", mysqlPID, "status"))
 				for _, line := range strings.Split(string(statusData), "\n") {
 					if strings.HasPrefix(line, "VmRSS:") {

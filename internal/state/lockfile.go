@@ -16,6 +16,7 @@ type LockFile struct {
 // AcquireLock creates an exclusive lock. Returns error if already locked.
 func AcquireLock(stateDir string) (*LockFile, error) {
 	lockPath := filepath.Join(stateDir, "csm.lock")
+	// #nosec G304 -- filepath.Join under operator-configured stateDir.
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("opening lock file: %w", err)

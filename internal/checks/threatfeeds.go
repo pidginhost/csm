@@ -652,6 +652,7 @@ func downloadFeed(client *http.Client, url, name string) ([]string, []*net.IPNet
 
 func saveLines(path string, lines []string) {
 	sort.Strings(lines) // sorted for diffing
+	// #nosec G304 -- path is filepath.Join under operator-configured statePath.
 	f, err := os.Create(path)
 	if err != nil {
 		return

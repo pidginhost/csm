@@ -12,6 +12,7 @@ import (
 // parseValiasFileForFindings parses a valiases file and returns findings.
 // Used by both the realtime watcher and tests.
 func parseValiasFileForFindings(path, domain string, localDomains map[string]bool, knownForwarders []string) []alert.Finding {
+	// #nosec G304 -- path from cPanel valiases directory walk; operator-scoped.
 	f, err := os.Open(path)
 	if err != nil {
 		return nil

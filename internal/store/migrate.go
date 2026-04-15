@@ -13,6 +13,10 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
+// All os.Open / os.ReadFile calls below take paths derived from the
+// operator-configured statePath (root-owned /opt/csm or /var/lib/csm
+// by default) joined with fixed filenames. gosec G304 suppressions on
+// each line refer back to this package-level trust model.
 func (db *DB) runMigration(statePath string) error {
 	fmt.Fprintf(os.Stderr, "store: migrating flat files to bbolt...\n")
 
@@ -52,6 +56,7 @@ func (db *DB) migrateHistory(statePath string) error {
 		return nil
 	}
 
+	// #nosec G304 -- see runMigration trust note.
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -86,6 +91,7 @@ func (db *DB) migrateAttackDB(statePath string) error {
 	// records.json
 	recordsPath := filepath.Join(dbDir, "records.json")
 	if _, err := os.Stat(recordsPath); err == nil {
+		// #nosec G304 -- see runMigration trust note.
 		data, err := os.ReadFile(recordsPath)
 		if err != nil {
 			return err
@@ -106,6 +112,7 @@ func (db *DB) migrateAttackDB(statePath string) error {
 	// events.jsonl
 	eventsPath := filepath.Join(dbDir, "events.jsonl")
 	if _, err := os.Stat(eventsPath); err == nil {
+		// #nosec G304 -- see runMigration trust note.
 		f, err := os.Open(eventsPath)
 		if err != nil {
 			return err
@@ -138,6 +145,7 @@ func (db *DB) migrateThreatDB(statePath string) error {
 	// permanent.txt
 	permPath := filepath.Join(dbDir, "permanent.txt")
 	if _, err := os.Stat(permPath); err == nil {
+		// #nosec G304 -- see runMigration trust note.
 		data, err := os.ReadFile(permPath)
 		if err != nil {
 			return err
@@ -168,6 +176,7 @@ func (db *DB) migrateThreatDB(statePath string) error {
 	// whitelist.txt
 	wlPath := filepath.Join(dbDir, "whitelist.txt")
 	if _, err := os.Stat(wlPath); err == nil {
+		// #nosec G304 -- see runMigration trust note.
 		data, err := os.ReadFile(wlPath)
 		if err != nil {
 			return err
@@ -212,6 +221,7 @@ func (db *DB) migrateFirewall(statePath string) error {
 		return nil //nolint:nilerr // file does not exist, skip migration
 	}
 
+	// #nosec G304 -- see runMigration trust note.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -285,6 +295,7 @@ func (db *DB) migrateReputation(statePath string) error {
 		return nil //nolint:nilerr // file does not exist, skip migration
 	}
 
+	// #nosec G304 -- see runMigration trust note.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err

@@ -46,6 +46,7 @@ func (db *DB) load() {
 
 	// Fallback: flat-file records.json.
 	path := filepath.Join(db.dbPath, recordsFile)
+	// #nosec G304 -- filepath.Join under operator-configured db.dbPath.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return
@@ -170,6 +171,7 @@ func (db *DB) appendEvents(events []Event) {
 		rotateEventsFile(path)
 	}
 
+	// #nosec G304 -- filepath.Join under operator-configured db.dbPath.
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "attackdb: error opening %s: %v\n", path, err)
@@ -187,6 +189,7 @@ func (db *DB) appendEvents(events []Event) {
 
 // rotateEventsFile keeps the newest half of the file.
 func rotateEventsFile(path string) {
+	// #nosec G304 -- path is filepath.Join under operator-configured db.dbPath.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return
@@ -237,6 +240,7 @@ func (db *DB) QueryEvents(ip string, limit int) []Event {
 
 	// Fallback: flat-file JSONL.
 	path := filepath.Join(db.dbPath, eventsFile)
+	// #nosec G304 -- filepath.Join under operator-configured db.dbPath.
 	f, err := os.Open(path)
 	if err != nil {
 		return nil

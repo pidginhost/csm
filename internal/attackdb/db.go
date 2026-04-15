@@ -175,6 +175,7 @@ func Init(statePath string) *DB {
 // Only imports IPs not already in the attack DB.
 func (db *DB) SeedFromPermanentBlocklist(statePath string) int {
 	path := statePath + "/threat_db/permanent.txt"
+	// #nosec G304 -- fixed filename under operator-configured statePath.
 	f, err := os.Open(path)
 	if err != nil {
 		return 0

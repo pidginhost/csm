@@ -34,6 +34,7 @@ func (s *ClamdScanner) Available() bool {
 
 // Scan sends the file at path to clamd via INSTREAM and returns the verdict.
 func (s *ClamdScanner) Scan(path string) (Verdict, error) {
+	// #nosec G304 -- path is mail queue file path from mail scanner walk.
 	f, err := os.Open(path)
 	if err != nil {
 		return Verdict{}, fmt.Errorf("opening file: %w", err)

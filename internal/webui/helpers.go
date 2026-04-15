@@ -236,6 +236,8 @@ type quarantineMeta struct {
 
 // readQuarantineMeta reads and parses a quarantine .meta JSON file.
 func readQuarantineMeta(metaPath string) (*quarantineMeta, error) {
+	// #nosec G304 -- metaPath is constructed by resolveQuarantineEntry under
+	// the quarantine base dir with filepath.Base applied to the ID.
 	data, err := os.ReadFile(metaPath)
 	if err != nil {
 		return nil, fmt.Errorf("read quarantine meta: %w", err)

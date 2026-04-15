@@ -909,6 +909,7 @@ func (s *Server) apiBlockedIPs(w http.ResponseWriter, _ *http.Request) {
 
 	// Fallback: try firewall engine state.json
 	fwFile := filepath.Join(s.cfg.StatePath, "firewall", "state.json")
+	// #nosec G304 -- filepath.Join under operator-configured StatePath.
 	if fwData, err := os.ReadFile(fwFile); err == nil {
 		var fwState struct {
 			Blocked []blockedEntry `json:"blocked"`
@@ -926,6 +927,7 @@ func (s *Server) apiBlockedIPs(w http.ResponseWriter, _ *http.Request) {
 
 	// Fall back to blocked_ips.json (legacy)
 	stateFile := filepath.Join(s.cfg.StatePath, "blocked_ips.json")
+	// #nosec G304 -- filepath.Join under operator-configured StatePath.
 	data, err := os.ReadFile(stateFile)
 	if err != nil {
 		writeJSON(w, []interface{}{})
@@ -1058,6 +1060,9 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, fmt.Sprintf("Cannot read quarantined file: %v", readErr), http.StatusInternalServerError)
 			return
 		}
+		// #nosec G304 -- restorePath was validated with
+		// validateQuarantineRestorePath above (see handler); the O_EXCL|
+		// O_NOFOLLOW flags additionally block TOCTOU replacement.
 		dst, createErr := os.OpenFile(restorePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, restoredMode)
 		if createErr != nil {
 			_ = src.Close()

@@ -57,6 +57,8 @@ func EnsureTLSCert(certPath, keyPath string, extraNames ...string) error {
 	}
 
 	// Write cert
+	// #nosec G304 -- certPath is derived from config-owned statePath at the
+	// callsite; this function is the cert *generator*.
 	certFile, err := os.Create(certPath)
 	if err != nil {
 		return fmt.Errorf("creating cert file: %w", err)
@@ -71,6 +73,7 @@ func EnsureTLSCert(certPath, keyPath string, extraNames ...string) error {
 	if err != nil {
 		return fmt.Errorf("marshaling key: %w", err)
 	}
+	// #nosec G304 -- same as certPath: generator for a config-owned path.
 	keyFile, err := os.OpenFile(keyPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
 		return fmt.Errorf("creating key file: %w", err)

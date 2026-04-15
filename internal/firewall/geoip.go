@@ -45,6 +45,7 @@ func UpdateGeoIPDB(dbPath string, countryCodes []string) (int, error) {
 
 		outPath := filepath.Join(dbPath, strings.ToUpper(code)+".cidr")
 		tmpPath := outPath + ".tmp"
+		// #nosec G304 -- filepath.Join under operator-configured dbPath; code from fixed list.
 		f, err := os.Create(tmpPath)
 		if err != nil {
 			resp.Body.Close()
@@ -101,6 +102,7 @@ func LookupIP(dbPath string, ip string) []string {
 }
 
 func containsIP(cidrFile string, ip net.IP) bool {
+	// #nosec G304 -- cidrFile is filepath.Join under operator-configured dbPath.
 	f, err := os.Open(cidrFile)
 	if err != nil {
 		return false

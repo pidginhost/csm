@@ -31,6 +31,7 @@ var (
 // with IDs in the 900000-900999 range. Handles line continuations (\) and
 // chained rules (chain action keyword).
 func ParseRulesFile(path string) ([]Rule, error) {
+	// #nosec G304 -- path is operator-configured ModSec rules file.
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("opening rules file: %w", err)

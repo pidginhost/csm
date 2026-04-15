@@ -40,6 +40,7 @@ func WriteOverrides(path string, disabledIDs []int) error {
 // ReadOverrides reads the overrides file and returns disabled rule IDs.
 // Returns empty list (not error) if the file does not exist.
 func ReadOverrides(path string) ([]int, error) {
+	// #nosec G304 -- path is operator-configured ModSec overrides file.
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -66,6 +67,7 @@ func ReadOverrides(path string) ([]int, error) {
 // ReadOverridesRaw reads the overrides file content for rollback purposes.
 // Returns nil (not error) if the file does not exist.
 func ReadOverridesRaw(path string) []byte {
+	// #nosec G304 -- path is operator-configured ModSec overrides file.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
@@ -99,7 +101,7 @@ func RestoreOverrides(path string, content []byte) error {
 // write-open to avoid appending duplicate Include directives.
 func EnsureOverridesInclude(rulesFile, overridesFile string) {
 	// Open for read+write to check-then-append atomically (same fd).
-	// #nosec G302 -- webserver-readable ModSec rules file; 0640 means root
+	// #nosec G302 G304 -- webserver-readable ModSec rules file; 0640 means root
 	// can write and the webserver group can read. No world read.
 	f, err := os.OpenFile(rulesFile, os.O_RDWR|os.O_APPEND, 0640)
 	if err != nil {

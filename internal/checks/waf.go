@@ -526,7 +526,7 @@ func deployVirtualPatches() {
 		// Deploy: if file exists and has non-CSM content, append. Otherwise write.
 		if err == nil && len(existing) > 0 && !strings.Contains(string(existing), "CSM Custom ModSecurity Rules") {
 			// Append to existing user config
-			// #nosec G302 -- WAF rule file read by Apache/nginx as a different user.
+			// #nosec G302 G304 -- WAF rule file read by Apache/nginx as a different user; dest is fixed list above.
 			f, err := os.OpenFile(dest, os.O_APPEND|os.O_WRONLY, 0644)
 			if err != nil {
 				continue

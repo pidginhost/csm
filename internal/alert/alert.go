@@ -249,6 +249,7 @@ func checkRateLimit(statePath string, maxPerHour int) bool {
 	currentHour := time.Now().Format("2006-01-02T15")
 
 	var rl rateLimitState
+	// #nosec G304 -- filepath.Join(statePath, "ratelimit.json"); statePath from operator config.
 	data, err := os.ReadFile(rlPath)
 	if err == nil {
 		_ = json.Unmarshal(data, &rl)

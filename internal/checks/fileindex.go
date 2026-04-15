@@ -446,6 +446,7 @@ func isSuspiciousPHPName(name string) bool {
 
 func writeIndex(path string, entries []string) {
 	tmpPath := path + ".tmp"
+	// #nosec G304 -- path is filepath.Join under operator-configured StatePath.
 	f, err := os.Create(tmpPath)
 	if err != nil {
 		return

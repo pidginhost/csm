@@ -620,6 +620,7 @@ func fwProfile() {
 		}
 		name := filepath.Base(args[1]) // sanitize - prevent path traversal
 		src := cfg.ConfigFile
+		// #nosec G304 -- operator-configured ConfigFile from csm.yaml/CLI.
 		data, err := os.ReadFile(src)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error reading config: %v\n", err)
@@ -659,6 +660,7 @@ func fwProfile() {
 		}
 		name := filepath.Base(args[1]) // sanitize - prevent path traversal
 		src := filepath.Join(profileDir, name+".yaml")
+		// #nosec G304 -- name sanitized with filepath.Base; filepath.Join under profileDir.
 		data, err := os.ReadFile(src)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Profile not found: %s\n", name)

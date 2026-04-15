@@ -154,6 +154,7 @@ func bodyReadLimit(limits Limits) int64 {
 }
 
 func readFileLimited(path string, limit int64) ([]byte, error) {
+	// #nosec G304 -- path is mail queue file path from scanner walk.
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -204,6 +205,7 @@ type envelope struct {
 // Exim -H files have a specific format: the first lines are Exim internal metadata,
 // followed by RFC 2822 headers.
 func parseEximHeader(path string) (*envelope, textproto.MIMEHeader, error) {
+	// #nosec G304 -- path is Exim -H file path from mail queue scanner walk.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, nil, err
@@ -395,6 +397,7 @@ func extractMultipart(r io.Reader, boundary string, limits Limits, result *Extra
 }
 
 func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionResult, totalSize *int64, depth int) {
+	// #nosec G304 -- zipPath is CreateTemp-produced path from the caller.
 	f, err := os.Open(zipPath)
 	if err != nil {
 		return // fail-open: skip corrupt archives
@@ -467,6 +470,7 @@ func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionRe
 }
 
 func extractTarGz(tgzPath, archiveName string, limits Limits, result *ExtractionResult, totalSize *int64, depth int) {
+	// #nosec G304 -- tgzPath is CreateTemp-produced path from the caller.
 	f, err := os.Open(tgzPath)
 	if err != nil {
 		return

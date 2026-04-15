@@ -13,6 +13,7 @@ import (
 // first for bbolt-backed state. This function reads flat-file state.json only.
 func LoadState(statePath string) (*FirewallState, error) {
 	stateFile := filepath.Join(statePath, "firewall", "state.json")
+	// #nosec G304 -- filepath.Join under operator-configured statePath.
 	data, err := os.ReadFile(stateFile)
 	if err != nil {
 		if os.IsNotExist(err) {

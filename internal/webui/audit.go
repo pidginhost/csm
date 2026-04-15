@@ -47,6 +47,7 @@ func (s *Server) auditLog(r *http.Request, action, target, details string) {
 		_ = os.Rename(path, path+".1")
 	}
 
+	// #nosec G304 -- filepath.Join under operator-configured StatePath.
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		return
@@ -77,6 +78,7 @@ func extractClientIP(r *http.Request) string {
 // readUIAuditLog returns the last N audit entries.
 func readUIAuditLog(statePath string, limit int) []UIAuditEntry {
 	path := filepath.Join(statePath, uiAuditFile)
+	// #nosec G304 -- filepath.Join under operator-configured statePath.
 	f, err := os.Open(path)
 	if err != nil {
 		return nil

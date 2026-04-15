@@ -98,6 +98,7 @@ func LoadCFState(statePath string) (ipv4, ipv6 []string) {
 	}
 	file := path + "/cf_whitelist.txt"
 
+	// #nosec G304 -- fixed filename under operator-configured statePath.
 	f, err := os.Open(file)
 	if err != nil {
 		return nil, nil
@@ -137,6 +138,7 @@ func LoadCFRefreshTime(statePath string) time.Time {
 	}
 	file := path + "/cf_whitelist.txt"
 
+	// #nosec G304 -- fixed filename under operator-configured statePath.
 	f, err := os.Open(file)
 	if err != nil {
 		return time.Time{}

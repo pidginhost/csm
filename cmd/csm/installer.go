@@ -44,6 +44,7 @@ func (inst *Installer) Install() error {
 		return fmt.Errorf("getting executable path: %w", err)
 	}
 	if self != inst.BinaryPath {
+		// #nosec G304 -- self is path from os.Executable(); reading our own binary.
 		data, err := os.ReadFile(self)
 		if err != nil {
 			return fmt.Errorf("reading self: %w", err)

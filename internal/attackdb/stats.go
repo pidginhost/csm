@@ -121,6 +121,7 @@ func (db *DB) readAllEvents() []Event {
 
 	// Fallback: flat-file events.jsonl
 	path := filepath.Join(db.dbPath, eventsFile)
+	// #nosec G304 -- filepath.Join under operator-configured db.dbPath.
 	f, err := os.Open(path)
 	if err != nil {
 		return nil

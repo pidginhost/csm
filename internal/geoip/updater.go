@@ -66,6 +66,7 @@ func updateEditionWithURL(client *http.Client, dbDir, accountID, licenseKey, edi
 
 	// Read stored Last-Modified
 	storedLM := ""
+	// #nosec G304 -- filepath.Join under operator-configured dbDir.
 	if data, err := os.ReadFile(markerPath); err == nil {
 		storedLM = strings.TrimSpace(string(data))
 	}
@@ -186,6 +187,7 @@ func extractMMDB(r io.Reader, destPath, edition string) error {
 			return fmt.Errorf("archive entry too large: %d bytes", header.Size)
 		}
 
+		// #nosec G304 -- destPath is filepath.Join under operator-configured dbDir.
 		f, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 		if err != nil {
 			return fmt.Errorf("creating %s: %w", destPath, err)

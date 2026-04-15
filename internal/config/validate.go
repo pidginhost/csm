@@ -333,6 +333,7 @@ func probeStatePath(path string) []ValidationResult {
 	}
 
 	probe := filepath.Join(path, ".csm-validate-probe")
+	// #nosec G304 -- filepath.Join under operator-configured statePath.
 	f, err := os.Create(probe)
 	if err != nil {
 		return []ValidationResult{{"error", "state_path", fmt.Sprintf("directory not writable: %s", path)}}

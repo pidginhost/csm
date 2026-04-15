@@ -98,6 +98,8 @@ func ParseVersionContent(data []byte) (version, locale string, err error) {
 
 // ReadVersionFile reads and parses {root}/wp-includes/version.php.
 func ReadVersionFile(root string) (version, locale string, err error) {
+	// #nosec G304 -- path derived from a WordPress install root discovered
+	// by the scanner under configured /home/*/public_html paths.
 	data, err := os.ReadFile(filepath.Join(root, "wp-includes", "version.php"))
 	if err != nil {
 		return "", "", err

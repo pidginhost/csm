@@ -121,6 +121,7 @@ func loadPendingIPs(statePath string) map[string]bool {
 	type blockFile struct {
 		Pending []pending `json:"pending"`
 	}
+	// #nosec G304 -- filepath.Join under operator-configured statePath.
 	data, err := os.ReadFile(filepath.Join(statePath, "blocked_ips.json"))
 	if err == nil {
 		var bf blockFile
@@ -152,6 +153,7 @@ func loadBlockedIPs(statePath string) map[string]bool {
 		}
 	} else {
 		// Fallback: read from firewall engine state.json (nftables) flat file.
+		// #nosec G304 -- filepath.Join under operator-configured statePath.
 		if fwData, err := os.ReadFile(filepath.Join(statePath, "firewall", "state.json")); err == nil {
 			var fwState struct {
 				Blocked []struct {
@@ -177,6 +179,7 @@ func loadBlockedIPs(statePath string) map[string]bool {
 		} `json:"ips"`
 	}
 
+	// #nosec G304 -- filepath.Join under operator-configured statePath.
 	if data, err := os.ReadFile(filepath.Join(statePath, "blocked_ips.json")); err == nil {
 		var bf blockFile
 		if json.Unmarshal(data, &bf) == nil {
