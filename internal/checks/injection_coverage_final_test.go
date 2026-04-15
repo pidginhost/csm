@@ -866,10 +866,10 @@ func TestInlineQuarantine_RealFileWebshellQuarantined(t *testing.T) {
 	var sb strings.Builder
 	sb.WriteString("<?php\n")
 	for i := 0; i < 80; i++ {
-		sb.WriteString(fmt.Sprintf("$x%d='%c%c%c%c%c%c%c%c%c%c';\n",
+		fmt.Fprintf(&sb, "$x%d='%c%c%c%c%c%c%c%c%c%c';\n",
 			i, 'A'+byte(i%26), 'a'+byte(i%26), '0'+byte(i%10),
 			'!'+byte(i%15), 'M'+byte(i%13), 'Z'-byte(i%13),
-			'q'-byte(i%7), '9'-byte(i%9), '#'+byte(i%5), 'z'-byte(i%5)))
+			'q'-byte(i%7), '9'-byte(i%9), '#'+byte(i%5), 'z'-byte(i%5))
 	}
 	payload := []byte(sb.String())
 	if len(payload) < 512 {

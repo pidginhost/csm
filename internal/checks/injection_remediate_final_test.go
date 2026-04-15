@@ -226,8 +226,8 @@ func TestResolveExistingFixPath_AcceptsRegularFileInAllowedRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(base, "ok.php")
-	if err := os.WriteFile(path, []byte("<?php"), 0644); err != nil {
-		t.Fatal(err)
+	if writeErr := os.WriteFile(path, []byte("<?php"), 0644); writeErr != nil {
+		t.Fatal(writeErr)
 	}
 
 	resolved, info, err := resolveExistingFixPath(path, []string{base})
