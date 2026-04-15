@@ -8,7 +8,6 @@ import (
 	"net/http"
 	neturl "net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -264,9 +263,10 @@ func refreshPluginCache(ctx context.Context, db *store.DB) {
 				// Run wp plugin list as the site owner.
 				// Use --path flag instead of shell cd to avoid shell injection
 				// via crafted directory names on shared hosting.
-				out, err := exec.CommandContext(ctx, "su", "-", user, "-s", "/bin/bash", "-c",
+				// Routed through cmdExec so tests can mock the wp-cli output.
+				out, err := cmdExec.RunContext(ctx, "su", "-", user, "-s", "/bin/bash", "-c",
 					"wp plugin list --fields=name,status,version,update_version --format=json --path="+shellQuote(wpPath),
-				).Output()
+				)
 				if err != nil {
 					if ctx.Err() != nil {
 						return
@@ -434,9 +434,9 @@ func evaluatePluginCache(db *store.DB) []alert.Finding {
 // extractWPDomain runs `wp option get siteurl` to discover the site's domain.
 // Falls back to directory name heuristics if wp-cli fails.
 func extractWPDomain(ctx context.Context, wpPath, user string) string {
-	out, err := exec.CommandContext(ctx, "su", "-", user, "-s", "/bin/bash", "-c",
+	out, err := cmdExec.RunContext(ctx, "su", "-", user, "-s", "/bin/bash", "-c",
 		"wp option get siteurl --path="+shellQuote(wpPath),
-	).Output()
+	)
 	if err == nil {
 		url := strings.TrimSpace(string(out))
 		if url != "" {

@@ -3,7 +3,6 @@ package checks
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -20,8 +19,10 @@ func CheckFirewall(ctx context.Context, cfg *config.Config, store *state.Store) 
 		return findings
 	}
 
-	// Verify the CSM nftables table exists and has expected components
-	out, err := exec.Command("nft", "list", "table", "inet", "csm").CombinedOutput()
+	// Verify the CSM nftables table exists and has expected components.
+	// Routed through cmdExec so tests can mock the nft response without
+	// requiring a real nftables stack.
+	out, err := cmdExec.RunAllowNonZero("nft", "list", "table", "inet", "csm")
 	if err != nil {
 		findings = append(findings, alert.Finding{
 			Severity:  alert.Critical,

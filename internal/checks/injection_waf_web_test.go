@@ -2,6 +2,7 @@ package checks
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 
@@ -91,11 +92,24 @@ func TestCheckIPReputationNoData(t *testing.T) {
 
 func TestCheckFirewallWithConfig(t *testing.T) {
 	withMockOS(t, &mockOS{})
-	withMockCmd(t, &mockCmd{})
+	// Mock nft to fail (table not found) so the function early-returns
+	// with the critical "table not found" finding without touching state.
+	withMockCmd(t, &mockCmd{
+		runAllowNonZero: func(name string, args ...string) ([]byte, error) {
+			return nil, fmt.Errorf("nft: table inet csm: No such file or directory")
+		},
+	})
 	cfg := &config.Config{}
 	cfg.Firewall = &firewall.FirewallConfig{Enabled: true}
-	findings := CheckFirewall(context.Background(), cfg, nil)
-	_ = findings
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	findings := CheckFirewall(context.Background(), cfg, st)
+	if len(findings) == 0 {
+		t.Error("expected critical finding when nft table is missing")
+	}
 }
 
 // --- Hardening checks ------------------------------------------------

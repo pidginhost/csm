@@ -140,7 +140,7 @@ func TestCheckWebshellsWithFiles(t *testing.T) {
 func TestCheckFirewallEnabled(t *testing.T) {
 	withMockOS(t, &mockOS{})
 	withMockCmd(t, &mockCmd{
-		run: func(name string, args ...string) ([]byte, error) {
+		runAllowNonZero: func(name string, args ...string) ([]byte, error) {
 			if name == "nft" {
 				return []byte("table inet csm_filter {}"), nil
 			}
@@ -154,7 +154,12 @@ func TestCheckFirewallEnabled(t *testing.T) {
 		InfraIPs: []string{"10.0.0.1"},
 	}
 
-	_ = CheckFirewall(context.Background(), cfg, nil)
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	_ = CheckFirewall(context.Background(), cfg, st)
 }
 
 // --- CheckAPIAuthFailures with log data ------------------------------

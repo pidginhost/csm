@@ -191,7 +191,20 @@ func TestCheckFirewallDeep(t *testing.T) {
 
 	cfg := &config.Config{}
 	cfg.Firewall = &firewall.FirewallConfig{Enabled: true, TCPIn: []int{22, 80, 443}}
-	_ = CheckFirewall(context.Background(), cfg, nil)
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	findings := CheckFirewall(context.Background(), cfg, st)
+	// With nft mock returning a valid table, no critical "table not found"
+	// finding should appear. Other component-missing findings are expected
+	// since the mock output doesn't include all required chains.
+	for _, f := range findings {
+		if f.Check == "firewall" && strings.Contains(f.Message, "not found in nftables") {
+			t.Errorf("unexpected 'table not found' finding when nft returned a valid table")
+		}
+	}
 }
 
 // --- CheckDatabaseContent with wp-config -----------------------------

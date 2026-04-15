@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -118,8 +117,9 @@ func verifyDoveadm(hash, candidate string) bool {
 	doveadmSemaphore <- struct{}{}
 	defer func() { <-doveadmSemaphore }()
 
-	cmd := exec.Command("doveadm", "pw", "-t", hash, "-p", candidate)
-	return cmd.Run() == nil
+	// Routed through cmdExec so tests can mock doveadm without a real install.
+	_, err := cmdExec.Run("doveadm", "pw", "-t", hash, "-p", candidate)
+	return err == nil
 }
 
 // hashFingerprint returns a SHA256 hex fingerprint of a password hash

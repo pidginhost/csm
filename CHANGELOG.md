@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `CheckFirewall`, `verifyDoveadm`, `extractWPDomain`, and `refreshPluginCache` now route external command execution through the package-level `cmdExec` injector instead of calling `exec.Command` directly. Production behavior is unchanged (the default `cmdExec` still uses `exec.Command`), but tests can now mock `nft`, `doveadm`, and `wp-cli` invocations without a real install. This unlocks coverage on previously-untestable success paths (`verifyDoveadm` 0% → 100%, `extractWPDomain` 58% → 100%, `CheckFirewall` 25% → 93%).
+
 ### Fixed
 
 - `FileMonitor.analyzeFile` now checks `.htaccess`, `.user.ini`, and `.config` executables **before** the generic `/tmp` early-return. Previously, a malicious `.htaccess` or `.user.ini` dropped inside a `/tmp/` subtree (e.g. by a compromised process staging its payload) was not analyzed, and an executable in `/tmp/.config/` was reported as `executable_in_tmp_realtime` instead of the more specific `executable_in_config_realtime`. Specific file-type checks now take precedence over the generic `/tmp` filter.
