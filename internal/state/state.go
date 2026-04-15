@@ -51,6 +51,8 @@ func Open(path string) (*Store, error) {
 	data, err := os.ReadFile(stateFile)
 	if err == nil {
 		// Backup state file before loading in case of corruption
+		// #nosec G703 -- stateFile is filepath.Join(path, "state.json") where
+		// path is the operator-configured statePath from csm.yaml.
 		_ = os.WriteFile(stateFile+".bak", data, 0600)
 		if unmarshalErr := json.Unmarshal(data, &s.entries); unmarshalErr != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to parse %s: %v (backup saved to %s.bak)\n", stateFile, unmarshalErr, stateFile)
@@ -61,6 +63,7 @@ func Open(path string) (*Store, error) {
 	latestFile := filepath.Join(path, "latest_findings.json")
 	if latestData, err := os.ReadFile(latestFile); err == nil {
 		// Backup latest findings before loading
+		// #nosec G703 -- latestFile derived the same way as stateFile above.
 		_ = os.WriteFile(latestFile+".bak", latestData, 0600)
 		var findings []alert.Finding
 		if unmarshalErr := json.Unmarshal(latestData, &findings); unmarshalErr != nil {
@@ -304,6 +307,8 @@ func (s *Store) appendHistoryFile(findings []alert.Finding) {
 				half++
 			}
 			if half < len(data) {
+				// #nosec G703 -- histPath comes from state.historyPath, a
+				// filepath.Join under the operator-configured statePath.
 				_ = os.WriteFile(histPath, data[half+1:], 0600)
 			}
 		}

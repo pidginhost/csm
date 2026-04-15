@@ -210,7 +210,9 @@ func (q *Quarantine) readMetadata(msgID string) (*QuarantineMetadata, error) {
 	return &meta, nil
 }
 
-// moveFile renames src to dst, falling back to copy+delete for cross-device moves.
+// moveFile renames src to dst, falling back to copy+delete for cross-device
+// moves. Callers construct dst by filepath.Join under the quarantine base dir
+// (config-owned) plus a filepath.Base-sanitized identifier.
 func moveFile(src, dst string) error {
 	if err := os.Rename(src, dst); err != nil {
 		// Cross-device fallback
@@ -218,6 +220,9 @@ func moveFile(src, dst string) error {
 		if readErr != nil {
 			return readErr
 		}
+		// #nosec G703 -- dst is constructed by the caller under the
+		// quarantine baseDir with filepath.Base applied to any user-
+		// supplied component (see readMetadata above for the pattern).
 		if writeErr := os.WriteFile(dst, data, 0600); writeErr != nil {
 			return writeErr
 		}

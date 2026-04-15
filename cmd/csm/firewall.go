@@ -626,6 +626,8 @@ func fwProfile() {
 			os.Exit(1)
 		}
 		dst := filepath.Join(profileDir, name+".yaml")
+		// #nosec G703 -- `name` was sanitized with filepath.Base on the
+		// previous lines; dst is within the operator-owned profileDir.
 		if err := os.WriteFile(dst, data, 0600); err != nil {
 			fmt.Fprintf(os.Stderr, "Error saving profile: %v\n", err)
 			os.Exit(1)
@@ -663,6 +665,8 @@ func fwProfile() {
 			os.Exit(1)
 		}
 		dst := cfg.ConfigFile
+		// #nosec G703 -- cfg.ConfigFile is the operator-supplied config
+		// path from CLI flags / env, owned by root.
 		if err := os.WriteFile(dst, data, 0600); err != nil {
 			fmt.Fprintf(os.Stderr, "Error restoring config: %v\n", err)
 			os.Exit(1)

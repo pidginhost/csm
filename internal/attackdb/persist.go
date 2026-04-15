@@ -206,6 +206,8 @@ func rotateEventsFile(path string) {
 	}
 
 	tmpPath := path + ".tmp"
+	// #nosec G703 -- path is db.path, derived from the operator-configured
+	// statePath at DB open time (see Open / NewDB).
 	if err := os.WriteFile(tmpPath, data[mid:], 0600); err != nil {
 		return
 	}

@@ -48,8 +48,9 @@ func (inst *Installer) Install() error {
 		if err != nil {
 			return fmt.Errorf("reading self: %w", err)
 		}
-		// #nosec G306 -- Installed binary; must be executable by root. 0700
-		// restricts it to the owner (root) which is the tightest mode.
+		// #nosec G306 G703 -- Installed binary; must be executable by root.
+		// 0700 restricts it to the owner (root). inst.BinaryPath is the
+		// installer's configured destination (/opt/csm/csm by default).
 		if err := os.WriteFile(inst.BinaryPath, data, 0700); err != nil {
 			return fmt.Errorf("writing binary: %w", err)
 		}
@@ -611,8 +612,8 @@ func (inst *Installer) DeployModSecRules() {
 			continue
 		}
 		data, _ := os.ReadFile(src)
-		// #nosec G306 -- Apache reads ModSecurity configs; webserver runs as
-		// a different user.
+		// #nosec G306 G703 -- Apache reads ModSecurity configs; webserver
+		// runs as a different user. `dest` iterates a literal path slice.
 		if err := os.WriteFile(dest, data, 0644); err == nil {
 			fmt.Printf("  ModSecurity virtual patches deployed to %s\n", dest)
 			overridesFile := filepath.Join(filepath.Dir(dest), "modsec2.csm-overrides.conf")
@@ -635,7 +636,8 @@ func (inst *Installer) DeployChallengeConfig() {
 	}
 
 	data, _ := os.ReadFile(src)
-	// #nosec G306 -- Apache conf.d file; webserver reads it.
+	// #nosec G306 G703 -- Apache conf.d file; webserver reads it.
+	// `dest` is the hardcoded "/etc/apache2/conf.d/csm_challenge.conf".
 	if err := os.WriteFile(dest, data, 0644); err == nil {
 		fmt.Printf("  Challenge page config deployed to %s\n", dest)
 	}

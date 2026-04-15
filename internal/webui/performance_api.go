@@ -255,6 +255,9 @@ func sampleMetrics() *perfMetrics {
 		if err == nil {
 			mysqlPID := strings.TrimSpace(string(pidData))
 			if mysqlPID != "" {
+				// #nosec G703 -- mysqlPID is read from /var/run/mysqld/mysqld.pid
+				// (system-managed file); we trust mysqld's own pidfile and
+				// are reading from the /proc pseudo-filesystem.
 				statusData, _ := os.ReadFile(filepath.Join("/proc", mysqlPID, "status"))
 				for _, line := range strings.Split(string(statusData), "\n") {
 					if strings.HasPrefix(line, "VmRSS:") {
