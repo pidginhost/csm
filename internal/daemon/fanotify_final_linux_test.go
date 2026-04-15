@@ -123,12 +123,12 @@ func TestAnalyzeFileExecutableInTmpAlerts(t *testing.T) {
 	defer func() {
 		_ = os.Remove(path)
 	}()
-	if _, err := tmp.Write([]byte("#!/bin/sh\necho hi\n")); err != nil {
-		t.Fatal(err)
+	if _, writeErr := tmp.Write([]byte("#!/bin/sh\necho hi\n")); writeErr != nil {
+		t.Fatal(writeErr)
 	}
 	_ = tmp.Close()
-	if err := os.Chmod(path, 0755); err != nil {
-		t.Fatalf("chmod: %v", err)
+	if chmodErr := os.Chmod(path, 0755); chmodErr != nil {
+		t.Fatalf("chmod: %v", chmodErr)
 	}
 
 	f, err := os.Open(path)
@@ -162,8 +162,8 @@ func TestAnalyzeFileNonExecutableInTmpNoAlert(t *testing.T) {
 	defer func() { _ = os.Remove(path) }()
 	_, _ = tmp.WriteString("not executable\n")
 	_ = tmp.Close()
-	if err := os.Chmod(path, 0644); err != nil {
-		t.Fatalf("chmod: %v", err)
+	if chmodErr := os.Chmod(path, 0644); chmodErr != nil {
+		t.Fatalf("chmod: %v", chmodErr)
 	}
 	f, err := os.Open(path)
 	if err != nil {

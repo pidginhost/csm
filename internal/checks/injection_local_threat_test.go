@@ -29,7 +29,7 @@ func TestCheckLocalThreatScoreCanceledContextNilDB(t *testing.T) {
 // attackdb is unset - downstream callers rely on this to skip processing.
 func TestCheckLocalThreatScoreReturnsUntypedNilWithNilDB(t *testing.T) {
 	cfg := &config.Config{StatePath: t.TempDir()}
-	var got []alert.Finding = CheckLocalThreatScore(context.Background(), cfg, nil)
+	got := CheckLocalThreatScore(context.Background(), cfg, nil)
 	if got != nil {
 		t.Errorf("expected nil slice (not empty), got len=%d cap=%d", len(got), cap(got))
 	}
