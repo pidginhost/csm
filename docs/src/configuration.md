@@ -116,6 +116,22 @@ thresholds:
   plugin_check_interval_min: 1440       # WordPress plugin check interval (default: 1440)
   brute_force_window: 5000              # failed auth attempts window (default: 5000)
 
+  # SMTP brute-force tracker (Exim mainlog, dovecot SASL on submission ports)
+  smtp_bruteforce_threshold: 5            # per-IP failed auths before block (default: 5)
+  smtp_bruteforce_window_min: 10          # sliding window in minutes (default: 10)
+  smtp_bruteforce_suppress_min: 60        # cooldown between repeat findings (default: 60)
+  smtp_bruteforce_subnet_threshold: 8     # unique IPs per /24 before subnet block (default: 8)
+  smtp_account_spray_threshold: 12        # unique IPs targeting one mailbox before visibility finding (default: 12)
+  smtp_bruteforce_max_tracked: 20000      # soft cap on tracked entries; oldest evicted (default: 20000)
+
+  # Mail brute-force tracker (Dovecot direct: IMAP/POP3/ManageSieve via /var/log/maillog)
+  mail_bruteforce_threshold: 5            # per-IP failed auths before block (default: 5)
+  mail_bruteforce_window_min: 10          # sliding window in minutes (default: 10)
+  mail_bruteforce_suppress_min: 60        # cooldown between repeat findings (default: 60)
+  mail_bruteforce_subnet_threshold: 8     # unique IPs per /24 before subnet block (default: 8)
+  mail_account_spray_threshold: 12        # unique IPs targeting one mailbox before visibility finding (default: 12)
+  mail_bruteforce_max_tracked: 20000      # soft cap on tracked entries; oldest evicted (default: 20000)
+
 # --- Infrastructure ---
 infra_ips: []                           # management/monitoring CIDRs - never blocked
 

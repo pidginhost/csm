@@ -4,7 +4,7 @@
 
 A security daemon for Linux web servers that detects compromise in seconds, responds automatically, and gives operators one place to see what happened.
 
-CSM was originally built for **cPanel/WHM** on CloudLinux/AlmaLinux, where the majority of its checks are tuned for shared hosting attack patterns. It also runs on plain Ubuntu/Debian with Nginx or Apache and on AlmaLinux/Rocky/RHEL with Apache or Nginx — the daemon auto-detects the OS, control panel, and web server at startup and chooses the correct log paths, config locations, and check set.
+CSM was originally built for **cPanel/WHM** on CloudLinux/AlmaLinux, where the majority of its checks are tuned for shared hosting attack patterns. It also runs on plain Ubuntu/Debian with Nginx or Apache and on AlmaLinux/Rocky/RHEL with Apache or Nginx. The daemon auto-detects the OS, control panel, and web server at startup and chooses the correct log paths, config locations, and check set.
 
 Shared hosting servers get hit the same ways: stolen credentials, vulnerable plugins, phishing kits, hijacked mailboxes, and backdoors that sit undiscovered until abuse reports arrive. CSM watches for all of it and acts before a small incident becomes a long cleanup.
 
@@ -18,7 +18,7 @@ Shared hosting servers get hit the same ways: stolen credentials, vulnerable plu
 | Plain AlmaLinux / Rocky / RHEL 8+ | Supported | Apache or Nginx auto-detected. Generic Linux + web server checks. cPanel-specific checks are skipped cleanly (not partial failures). |
 | Plain Ubuntu 20.04+ / Debian 11+ | Supported | Apache or Nginx auto-detected. System integrity via `debsums`/`dpkg --verify` instead of `rpm -V`. |
 
-The `/home/*/public_html` account-scanning checks (WordPress integrity, htaccess tampering, PHP content analysis, phishing kit detection, per-domain brute force) assume a cPanel layout and do not run on plain Linux. Generic checks — filesystem monitoring, firewall management, ModSecurity audit, SSH/PAM brute force, system integrity, kernel module tracking, suspicious process detection, WAF enforcement — run everywhere.
+The `/home/*/public_html` account-scanning checks (WordPress integrity, htaccess tampering, PHP content analysis, phishing kit detection, per-domain brute force) assume a cPanel layout and do not run on plain Linux. Generic checks (filesystem monitoring, firewall management, ModSecurity audit, SSH/PAM brute force, system integrity, kernel module tracking, suspicious process detection, WAF enforcement) run everywhere.
 
 See [detection-critical.md](docs/src/detection-critical.md) and [detection-deep.md](docs/src/detection-deep.md) for per-check platform support.
 
@@ -48,6 +48,8 @@ Web UI at `https://<server>:9443`
 ## What It Does
 
 **Watches everything in real time** -- fanotify on `/home`, `/tmp`, `/dev/shm` for malicious files; inotify on logs for auth failures, WAF blocks, mail abuse, and suspicious logins; PAM listener for brute force across all services. Log paths are auto-selected per platform (`/var/log/nginx/*`, `/var/log/httpd/*`, `/var/log/apache2/*`, `/var/log/secure` vs `/var/log/auth.log`).
+
+**Catches mail and admin-panel brute force in seconds** -- separate trackers on Exim mainlog (SMTP submission via dovecot SASL) and Dovecot direct (IMAP, POP3, ManageSieve), each emitting per-IP, per-/24, and per-mailbox signals. The mail tracker also fires `mail_account_compromised` the moment a successful login arrives from an IP that was just failing auth against the same mailbox. Web-side, the access-log watcher counts repeated POSTs to phpMyAdmin and Joomla login endpoints and auto-blocks the source IP.
 
 **Runs up to 62 security checks** -- 34 critical checks every 10 minutes (processes, auth, network, integrity) and 28 deep checks every hour (filesystem, WordPress, phishing, DNS/SSL, mail, database). On non-cPanel hosts the account/mail/WordPress/cPanel-API checks are skipped cleanly so the check set matches the platform's actual attack surface.
 
