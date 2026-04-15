@@ -3,7 +3,7 @@ package checks
 import (
 	"bufio"
 	"context"
-	"crypto/sha1"
+	"crypto/sha1" // #nosec G505 -- SHA1 is the digest format required by the Have I Been Pwned range API (https://haveibeenpwned.com/API/v3#PwnedPasswords). We send the first 5 chars of the digest and compare remaining chars against the returned list — HIBP does not offer a stronger-hash endpoint.
 	"crypto/sha256"
 	"fmt"
 	"io"
@@ -158,7 +158,8 @@ func parseHIBPCount(body, suffix string) int {
 // checkHIBP queries the HIBP Pwned Passwords API for a plaintext password.
 // Returns the breach count (0 if not found or on error).
 func checkHIBP(plaintext string) int {
-	h := sha1.Sum([]byte(plaintext)) //nolint:gosec // SHA1 required by HIBP API
+	// #nosec G401 -- SHA1 is mandated by the HIBP Pwned Passwords range API; see import comment.
+	h := sha1.Sum([]byte(plaintext))
 	hex := fmt.Sprintf("%X", h[:])
 	prefix := hex[:5]
 	suffix := hex[5:]

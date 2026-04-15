@@ -1,7 +1,7 @@
 package wpcheck
 
 import (
-	"crypto/md5"
+	"crypto/md5" // #nosec G501 -- MD5 is the hash wordpress.org publishes for core file checksums; this is integrity verification against a published reference, not a security primitive.
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -220,6 +220,9 @@ func (c *Cache) IsVerifiedCoreFile(fd int, path string) bool {
 	}
 	data = data[:n]
 
+	// #nosec G401 -- MD5 is required here: wordpress.org ships MD5 digests
+	// as the canonical integrity reference for core files. We compare
+	// against their published values, not derive authority from the hash.
 	hash := md5.Sum(data)
 	actualMD5 := hex.EncodeToString(hash[:])
 
