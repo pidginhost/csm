@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Security tooling in CI: `gosec` (static analysis, v2.25.0) and `govulncheck` (Go vulnerability scanner, v1.2.0) jobs run in the GitLab `lint` stage on every commit. OSSF Scorecard workflow (`.github/workflows/scorecard.yml`) runs weekly on the GitHub mirror, scoring supply-chain hygiene and publishing SARIF results to the Security tab. Dependabot (`.github/dependabot.yml`) opens weekly PRs for `gomod` and `github-actions` updates. New `make sec` and `make vuln` targets, both wired into `make ci`. README adds Go Report Card, OSSF Scorecard, pkg.go.dev, release, and license badges.
+- All CI tool versions now pinned (golangci-lint v2.11.4, gosec v2.25.0, govulncheck v1.2.0, golang 1.26.2, GitHub Actions SHA-pinned) so updates are deliberate.
+
 ### Changed
 
 - Added `scripts/covmerge` — a tolerant Go coverage profile merger used by the GitHub Actions badge workflow. Unlike `gocovmerge`, it dedupes per-file entries on read (handling profiles produced by `go test ./... -coverpkg=./internal/...` which contain the same statement once per test binary) and drops drifting files from the secondary profile rather than failing the whole merge. The badge now reflects the union of fresh unit coverage with the most recent tag's integration coverage even when intermediate code changes have moved line numbers in some files.

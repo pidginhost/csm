@@ -1,4 +1,9 @@
-.PHONY: build build-linux build-all clean test lint fmt fmt-check vet ci tools sync-embedded check-embedded
+.PHONY: build build-linux build-all clean test lint sec vuln fmt fmt-check vet ci tools sync-embedded check-embedded
+
+# Pinned tool versions -- bump deliberately, keep in sync with .gitlab-ci.yml
+GOLANGCI_LINT_VERSION := v2.11.4
+GOSEC_VERSION := v2.25.0
+GOVULNCHECK_VERSION := v1.2.0
 
 BINARY_NAME := csm
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -51,6 +56,14 @@ test:
 lint:
 	$(GOBIN)/golangci-lint run --timeout 5m
 
+# Static security analysis
+sec:
+	$(GOBIN)/gosec -exclude-dir=e2e -exclude-dir=scripts ./...
+
+# Vulnerability scan
+vuln:
+	$(GOBIN)/govulncheck ./...
+
 # Run go vet
 vet:
 	go vet ./...
@@ -65,12 +78,14 @@ fmt-check:
 	@test -z "$$(gofmt -l .)" || (echo "Files not formatted:" && gofmt -l . && exit 1)
 
 # Run all CI checks locally
-ci: check-embedded fmt-check vet lint test build-linux
+ci: check-embedded fmt-check vet lint sec vuln test build-linux
 
-# Install dev tools
+# Install dev tools (versions pinned at top of Makefile)
 tools:
 	go install golang.org/x/tools/cmd/goimports@latest
-	go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	go install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
+	go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 
 # Clean build artifacts
 clean:

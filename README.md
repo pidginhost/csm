@@ -1,6 +1,11 @@
 # CSM - Continuous Security Monitor
 
 [![Coverage](https://pidginhost.github.io/csm/coverage.svg)](https://pidginhost.github.io/csm/coverage.html)
+[![Go Report Card](https://goreportcard.com/badge/github.com/pidginhost/csm)](https://goreportcard.com/report/github.com/pidginhost/csm)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/pidginhost/csm/badge)](https://scorecard.dev/viewer/?uri=github.com/pidginhost/csm)
+[![Go Reference](https://pkg.go.dev/badge/github.com/pidginhost/csm.svg)](https://pkg.go.dev/github.com/pidginhost/csm)
+[![Release](https://img.shields.io/github/v/release/pidginhost/csm?sort=semver)](https://github.com/pidginhost/csm/releases)
+[![License: MIT](https://img.shields.io/github/license/pidginhost/csm)](LICENSE)
 
 A security daemon for Linux web servers that detects compromise in seconds, responds automatically, and gives operators one place to see what happened.
 
