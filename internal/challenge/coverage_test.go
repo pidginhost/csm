@@ -430,6 +430,54 @@ func TestHandleVerifySuccessPath(t *testing.T) {
 	}
 }
 
+func TestHandleVerifyCookieHasSecurityAttributes(t *testing.T) {
+	// The verification cookie grants the client a bypass of the PoW gate
+	// for ~4 hours, so it must carry all the hardening attributes: HttpOnly
+	// (no JS access), SameSite (no cross-site attachment), and Secure (no
+	// leakage over plaintext links). CSM is designed to run behind HTTPS;
+	// plaintext deployments are not supported.
+	s, _, _ := newTestServer(t, baseCfg())
+	ip := "1.2.3.4"
+	nonce := "fresh-nonce-secure"
+	token := s.makeToken(ip, nonce)
+
+	form := url.Values{
+		"nonce":    {nonce},
+		"token":    {token},
+		"solution": {"0"},
+	}
+	req := httptest.NewRequest("POST", "/challenge/verify", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Host = "example.com"
+	req.RemoteAddr = ip + ":1"
+	w := httptest.NewRecorder()
+	s.handleVerify(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("setup: verify returned %d, want 200", w.Code)
+	}
+
+	var cookie *http.Cookie
+	for _, c := range w.Result().Cookies() {
+		if c.Name == "csm_verified" {
+			cookie = c
+			break
+		}
+	}
+	if cookie == nil {
+		t.Fatal("csm_verified cookie not set")
+	}
+	if !cookie.Secure {
+		t.Error("cookie must have Secure attribute")
+	}
+	if !cookie.HttpOnly {
+		t.Error("cookie must have HttpOnly attribute")
+	}
+	if cookie.SameSite != http.SameSiteLaxMode && cookie.SameSite != http.SameSiteStrictMode {
+		t.Errorf("cookie SameSite = %v, want Lax or Strict", cookie.SameSite)
+	}
+}
+
 func TestHandleVerifyReplayIsRejected(t *testing.T) {
 	s, _, _ := newTestServer(t, baseCfg())
 	ip := "1.2.3.4"

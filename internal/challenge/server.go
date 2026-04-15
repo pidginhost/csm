@@ -146,12 +146,15 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		s.ipList.Remove(ip)
 	}
 
-	// Set verification cookie
+	// Set verification cookie. Secure is always on: CSM is designed to run
+	// behind HTTPS and the cookie grants a multi-hour bypass of the PoW
+	// gate, so leaking it over plaintext is never acceptable.
 	cookie := &http.Cookie{
 		Name:     "csm_verified",
 		Value:    s.makeVerifyCookie(ip),
 		Path:     "/",
 		MaxAge:   int(allowDuration.Seconds()),
+		Secure:   true,
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 	}
