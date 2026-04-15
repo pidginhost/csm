@@ -113,11 +113,14 @@ func cachedUID(uid string) string {
 
 // --- Metrics sampler ---
 
-// runCmdQuick runs a command with a 5-second timeout.
+// runCmdQuick runs a command with a 5-second timeout. All call sites pass
+// constant binary names (mysql, redis-cli, etc.) and literal argument
+// lists — no HTTP-controlled input reaches this function.
 func runCmdQuick(name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	// #nosec G204 -- see function-level comment: constant names/args only.
 	out, err := exec.CommandContext(ctx, name, args...).Output()
 	if ctx.Err() == context.DeadlineExceeded {
 		return nil, fmt.Errorf("command timed out: %s", name)

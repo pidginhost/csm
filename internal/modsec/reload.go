@@ -21,6 +21,9 @@ func Reload(command string) (string, error) {
 	defer cancel()
 
 	// Run through shell to support compound commands, quoted paths, etc.
+	// #nosec G204 -- `command` is the operator-configured reload command
+	// from csm.yaml (e.g. "apachectl graceful"), loaded at daemon startup
+	// from a root-owned config. Not webui-settable.
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	out, err := cmd.CombinedOutput()
 	output := string(out)

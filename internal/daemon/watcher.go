@@ -601,6 +601,8 @@ func autoSuspendOutgoingMail(domainOrEmail string) {
 	// Hold outgoing mail
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	// #nosec G204 -- whmapi1 is the cPanel API binary; user is a cPanel
+	// account name validated upstream (cpuser regex in the caller).
 	out, err := exec.CommandContext(ctx, "whmapi1", "hold_outgoing_email", "user="+user).CombinedOutput()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] auto-suspend: whmapi1 hold_outgoing_email failed for %s: %v\n%s\n",

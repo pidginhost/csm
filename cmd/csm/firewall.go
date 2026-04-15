@@ -852,6 +852,8 @@ func fwApplyConfirmed() {
 		if _, err := os.Stat(rollbackFile); err != nil {
 			return // rollback script missing
 		}
+		// #nosec G204 -- bash is hardcoded; rollbackFile is the path we
+		// just wrote in this same function (0700 mode), not user input.
 		cmd := exec.Command("bash", rollbackFile)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			fmt.Fprintf(os.Stderr, "Rollback failed: %v\n%s\n", err, out)

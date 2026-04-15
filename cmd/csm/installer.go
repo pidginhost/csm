@@ -94,6 +94,8 @@ func (inst *Installer) Install() error {
 	}
 
 	// Set immutable attribute on binary
+	// #nosec G204 -- chattr is hardcoded; inst.BinaryPath comes from
+	// installer init (fixed /opt/csm/csm by default), not runtime input.
 	if err := exec.Command("chattr", "+i", inst.BinaryPath).Run(); err != nil {
 		fmt.Printf("  Warning: could not set immutable flag: %v\n", err)
 	} else {
@@ -128,6 +130,7 @@ func (inst *Installer) Uninstall() error {
 	}
 
 	// Remove immutable flag
+	// #nosec G204 -- chattr hardcoded; BinaryPath from installer init.
 	exec.Command("chattr", "-i", inst.BinaryPath).Run()
 
 	// Stop daemon service first
@@ -135,7 +138,9 @@ func (inst *Installer) Uninstall() error {
 
 	// Stop and remove systemd timers
 	for _, name := range []string{"csm.timer", "csm-critical.timer", "csm-deep.timer"} {
+		// #nosec G204 -- systemctl hardcoded; `name` iterates a literal slice above.
 		exec.Command("systemctl", "stop", name).Run()
+		// #nosec G204 -- same.
 		exec.Command("systemctl", "disable", name).Run()
 	}
 	for _, name := range []string{"csm.service", "csm.timer", "csm-critical.service", "csm-critical.timer", "csm-deep.service", "csm-deep.timer"} {
@@ -477,9 +482,11 @@ WantedBy=multi-user.target
 	}
 
 	for _, timer := range []string{"csm-critical.timer", "csm-deep.timer"} {
+		// #nosec G204 -- systemctl hardcoded; timer iterates literal slice.
 		if err := exec.Command("systemctl", "enable", timer).Run(); err != nil {
 			return err
 		}
+		// #nosec G204 -- same.
 		if err := exec.Command("systemctl", "start", timer).Run(); err != nil {
 			return err
 		}

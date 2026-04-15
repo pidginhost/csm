@@ -596,12 +596,14 @@ func runValidate() {
 
 func stopTimers() {
 	for _, timer := range []string{"csm-critical.timer", "csm-deep.timer"} {
+		// #nosec G204 -- systemctl hardcoded; timer iterates a literal slice.
 		_ = exec.Command("systemctl", "stop", timer).Run()
 	}
 }
 
 func startTimers() {
 	for _, timer := range []string{"csm-critical.timer", "csm-deep.timer"} {
+		// #nosec G204 -- systemctl hardcoded; timer iterates a literal slice.
 		_ = exec.Command("systemctl", "start", timer).Run()
 	}
 }

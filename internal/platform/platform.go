@@ -303,6 +303,7 @@ func detectWebServer(i *Info) {
 func runningServices() map[string]bool {
 	active := map[string]bool{}
 	for _, unit := range []string{"nginx", "apache2", "httpd", "litespeed", "lshttpd", "lsws"} {
+		// #nosec G204 -- systemctl hardcoded; unit iterates a literal slice.
 		cmd := exec.Command("systemctl", "is-active", "--quiet", unit)
 		if err := cmd.Run(); err == nil {
 			active[unit] = true

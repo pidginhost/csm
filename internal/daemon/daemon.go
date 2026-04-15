@@ -1642,6 +1642,8 @@ func registerWHMPlugin(confPath string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	// #nosec G204 -- bin is the fixed cPanel path validated by os.Stat above;
+	// confPath was just written by deployConfigs from an embedded constant.
 	cmd := exec.CommandContext(ctx, bin, confPath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

@@ -46,12 +46,19 @@ func runCmdWithEnv(name string, args []string, extraEnv ...string) ([]byte, erro
 
 // ---------------------------------------------------------------------------
 // Real implementations — used by realCmd in provider.go
+//
+// Every caller of these helpers passes a constant system command name
+// (nft, rpm, wp-cli, doveadm, systemctl, etc.) with arguments built from
+// either config, filesystem state, or CSM-generated data. Nothing here
+// reaches out to HTTP request bodies or webui form inputs. The gosec
+// G204 suppressions below are in that trust model.
 // ---------------------------------------------------------------------------
 
 func runCmdReal(name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
 	defer cancel()
 
+	// #nosec G204 -- see package-level trust note above.
 	out, err := exec.CommandContext(ctx, name, args...).Output()
 	if ctx.Err() == context.DeadlineExceeded {
 		fmt.Fprintf(os.Stderr, "Command timed out: %s %v\n", name, args)
@@ -64,6 +71,7 @@ func runCmdAllowNonZeroReal(name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
 	defer cancel()
 
+	// #nosec G204 -- see package-level trust note above.
 	out, err := exec.CommandContext(ctx, name, args...).Output()
 	if ctx.Err() == context.DeadlineExceeded {
 		fmt.Fprintf(os.Stderr, "Command timed out: %s %v\n", name, args)
@@ -80,6 +88,7 @@ func runCmdCombinedContextReal(parent context.Context, name string, args ...stri
 	ctx, cancel := context.WithTimeout(parent, cmdTimeout)
 	defer cancel()
 
+	// #nosec G204 -- see package-level trust note above.
 	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
 		fmt.Fprintf(os.Stderr, "Command timed out: %s %v\n", name, args)
@@ -95,6 +104,7 @@ func runCmdWithEnvReal(name string, args []string, extraEnv ...string) ([]byte, 
 	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
 	defer cancel()
 
+	// #nosec G204 -- see package-level trust note above.
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Env = append(os.Environ(), extraEnv...)
 	out, err := cmd.Output()
