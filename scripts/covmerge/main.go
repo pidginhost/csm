@@ -84,7 +84,47 @@ func readProfile(path string) (*profile, error) {
 	if err := s.Err(); err != nil {
 		return nil, err
 	}
+	// Dedupe per file. `go test ./... -coverpkg=./internal/...` instruments
+	// internal/* statements from every test binary, so the same statement
+	// appears N times in the profile (once per binary). Aggregate by
+	// rangeKey so subsequent merge steps work on unique statements.
+	for file, entries := range p.byFile {
+		p.byFile[file] = dedupeEntries(entries, p.mode)
+	}
 	return p, nil
+}
+
+// dedupeEntries collapses entries with the same rangeKey into one. For
+// "set" mode any non-zero hit count means covered. For "atomic"/"count"
+// modes hits are summed.
+func dedupeEntries(entries []entry, mode string) []entry {
+	if len(entries) == 0 {
+		return entries
+	}
+	byRange := make(map[string]*entry, len(entries))
+	order := make([]string, 0, len(entries))
+	for i := range entries {
+		k := entries[i].rangeKey
+		if existing, ok := byRange[k]; ok {
+			if mode == "set" {
+				if entries[i].hits > 0 {
+					existing.hits = 1
+				}
+			} else {
+				existing.hits += entries[i].hits
+			}
+			continue
+		}
+		// Copy so subsequent mutations don't alias the input slice.
+		e := entries[i]
+		byRange[k] = &e
+		order = append(order, k)
+	}
+	out := make([]entry, 0, len(order))
+	for _, k := range order {
+		out = append(out, *byRange[k])
+	}
+	return out
 }
 
 // rangesEqual returns true if two slices of entries cover exactly the

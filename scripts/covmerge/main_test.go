@@ -183,3 +183,55 @@ func TestReadProfile_MissingFileReturnsError(t *testing.T) {
 		t.Error("expected error for missing file")
 	}
 }
+
+// TestReadProfile_DedupesDuplicateEntries verifies that profiles produced
+// by `go test ./... -coverpkg=./internal/...` (which instruments internal
+// statements once per test binary, producing many duplicates) collapse
+// to one entry per range with hits summed.
+func TestReadProfile_DedupesDuplicateEntries(t *testing.T) {
+	path := writeProfile(t, "atomic",
+		"github.com/pkg/file.go:1.1,2.2 1 5",
+		"github.com/pkg/file.go:1.1,2.2 1 0",  // duplicate from second binary, no hits
+		"github.com/pkg/file.go:1.1,2.2 1 7",  // duplicate from third binary, more hits
+		"github.com/pkg/file.go:3.3,4.4 1 0",
+	)
+	p, err := readProfile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := p.byFile["github.com/pkg/file.go"]
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 unique ranges after dedup, got %d", len(entries))
+	}
+	for _, e := range entries {
+		if e.rangeKey == "1.1,2.2" && e.hits != 12 {
+			t.Errorf("atomic dedup hits = %d, want 12 (5+0+7)", e.hits)
+		}
+		if e.rangeKey == "3.3,4.4" && e.hits != 0 {
+			t.Errorf("uncovered range hits = %d, want 0", e.hits)
+		}
+	}
+}
+
+// TestReadProfile_DedupesSetMode verifies "set" mode dedup uses OR semantics.
+func TestReadProfile_DedupesSetMode(t *testing.T) {
+	path := writeProfile(t, "set",
+		"github.com/pkg/file.go:1.1,2.2 1 0",
+		"github.com/pkg/file.go:1.1,2.2 1 1", // any non-zero → covered
+		"github.com/pkg/file.go:3.3,4.4 1 0",
+		"github.com/pkg/file.go:3.3,4.4 1 0", // both zero → uncovered
+	)
+	p, err := readProfile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := p.byFile["github.com/pkg/file.go"]
+	for _, e := range entries {
+		if e.rangeKey == "1.1,2.2" && e.hits != 1 {
+			t.Errorf("set mode covered hits = %d, want 1", e.hits)
+		}
+		if e.rangeKey == "3.3,4.4" && e.hits != 0 {
+			t.Errorf("set mode uncovered hits = %d, want 0", e.hits)
+		}
+	}
+}
