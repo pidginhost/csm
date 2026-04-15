@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- GeoIP mmdb extraction now rejects tar entries larger than 500 MiB, closing a decompression-bomb vector where a compromised download source could fill disk via a crafted tar.gz.
 - `extractFilePath` (used by `AutoFixPermissions` and the auto-response routing) was iterating its prefix list `/home, /tmp, /dev/shm, /var/tmp` in order and stopping at the first match. Inside a message containing `/var/tmp/x.php`, the substring `/tmp/` matched first and the function silently returned `/tmp/x.php` — pointing the auto-response at a file that doesn't exist (or worse, at a different file under `/tmp`). Reordered the prefix list longest-first (`/var/tmp/`, `/dev/shm/`, `/home/`, `/tmp/`) so each path is classified correctly.
 - `extractPID` only stopped scanning at a comma, so a finding detail like `PID: 42 exe=/bin/ls` returned the string `"42 exe=/bin/ls"` and downstream `Sscanf` would silently fail or partial-parse. Now stops at any whitespace, comma, or newline, returning just `"42"`.
 - `extractPHPDefine` only parsed quoted string values, so `define('DISABLE_WP_CRON', true);` (the canonical WordPress idiom) returned `""` and `CheckWPCron` always emitted a "WP-Cron not disabled" finding even on correctly configured installs. Now also handles unquoted boolean and numeric literals (`true`, `false`, `256`, etc.).

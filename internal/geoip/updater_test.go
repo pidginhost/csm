@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -55,6 +56,47 @@ func TestExtractMMDB(t *testing.T) {
 	}
 	if string(got) != "fake-mmdb-content-for-testing" {
 		t.Fatalf("content mismatch: got %q", got)
+	}
+}
+
+func TestExtractMMDB_RejectsOversizeEntry(t *testing.T) {
+	// Defends against a decompression bomb: a crafted tar.gz whose inner
+	// entry declares a size far larger than any legitimate mmdb. Without
+	// the header-size guard, io.Copy would write gigabytes to disk before
+	// the caller noticed.
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+
+	hdr := &tar.Header{
+		Name:     "GeoLite2-City_20260328/GeoLite2-City.mmdb",
+		Size:     int64(maxExtractedSize) + 1,
+		Mode:     0600,
+		Typeflag: tar.TypeReg,
+	}
+	if err := tw.WriteHeader(hdr); err != nil {
+		t.Fatal(err)
+	}
+	// Intentionally write no body; tw.Close will error because the declared
+	// size wasn't honored. The bytes emitted so far are still a valid tar
+	// header stream for the reader to parse.
+	_ = tw.Close()
+	_ = gw.Close()
+
+	tmpDir := t.TempDir()
+	destPath := filepath.Join(tmpDir, "GeoLite2-City.mmdb.tmp")
+
+	err := extractMMDB(&buf, destPath, "GeoLite2-City")
+	if err == nil {
+		t.Fatal("expected error for oversized archive entry, got nil")
+	}
+	if !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("expected 'too large' error, got: %v", err)
+	}
+
+	// The oversize entry must not leave a partial file on disk.
+	if _, statErr := os.Stat(destPath); !os.IsNotExist(statErr) {
+		t.Fatalf("oversized entry left partial file on disk: %v", statErr)
 	}
 }
 

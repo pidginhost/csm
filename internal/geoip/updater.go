@@ -17,7 +17,12 @@ import (
 const (
 	maxMindBaseURL  = "https://download.maxmind.com/geoip/databases"
 	maxDownloadSize = 150 * 1024 * 1024 // 150MB
-	downloadTimeout = 120 * time.Second
+	// maxExtractedSize bounds the size of the .mmdb entry we extract from
+	// the tar.gz. Real GeoLite2 files are ~70MB; 500MiB is generous. The
+	// check sits on the tar header and prevents io.Copy from writing a
+	// bomb-compressed entry to disk.
+	maxExtractedSize = 500 * 1024 * 1024
+	downloadTimeout  = 120 * time.Second
 )
 
 // EditionResult reports the outcome of updating a single GeoLite2 edition.
@@ -177,12 +182,15 @@ func extractMMDB(r io.Reader, destPath, edition string) error {
 		if !strings.HasSuffix(header.Name, suffix) {
 			continue
 		}
+		if header.Size > maxExtractedSize {
+			return fmt.Errorf("archive entry too large: %d bytes", header.Size)
+		}
 
 		f, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 		if err != nil {
 			return fmt.Errorf("creating %s: %w", destPath, err)
 		}
-		_, copyErr := io.Copy(f, tr)
+		_, copyErr := io.Copy(f, io.LimitReader(tr, maxExtractedSize))
 		closeErr := f.Close()
 		if copyErr != nil {
 			return fmt.Errorf("writing mmdb: %w", copyErr)
