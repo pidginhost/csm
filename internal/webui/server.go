@@ -407,6 +407,9 @@ func (s *Server) csmConfig() map[string]interface{} {
 		"signatures":   s.cfg.Signatures.RulesDir != "",
 		"challenge":    s.cfg.Challenge.Difficulty > 0,
 		"hostname":     s.cfg.Hostname,
+		// #nosec G101 -- Not credentials. This is a lookup from
+		// finding-type ID (waf_block, credential_leak, etc.) to the
+		// human-readable label rendered in the UI.
 		"checkNames": map[string]string{
 			"waf_block":                      "WAF Block",
 			"brute_force":                    "Brute Force",
