@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -65,11 +64,13 @@ func detectServerType() string {
 	return "bare"
 }
 
-// auditRunCmd executes a command with the audit-specific timeout.
+// auditRunCmd executes a command with the audit-specific timeout via the
+// cmdExec injector so tests can mock systemctl/cagefsctl/etc. without
+// invoking real binaries on the host.
 func auditRunCmd(name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), auditCmdTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	out, err := cmdExec.RunContext(ctx, name, args...)
 	if ctx.Err() == context.DeadlineExceeded {
 		return nil, fmt.Errorf("command timed out: %s", name)
 	}
@@ -1671,9 +1672,10 @@ func auditMail() []store.AuditResult {
 
 	// mail_dovecot_tls: check ssl_min_protocol
 	// Use 'doveconf -a' for the effective config — cPanel manages Dovecot
-	// settings outside the standard config files, so file parsing misses them.
+	// settings outside the standard config files, so file parsing misses
+	// them. Routed through cmdExec so tests can mock the doveconf output.
 	dovecotTLS := false
-	if out, err := exec.Command("doveconf", "-a").Output(); err == nil {
+	if out, err := cmdExec.Run("doveconf", "-a"); err == nil {
 		for _, line := range strings.Split(string(out), "\n") {
 			trimmed := strings.TrimSpace(line)
 			if strings.HasPrefix(trimmed, "ssl_min_protocol") {

@@ -88,16 +88,28 @@ func (m *mockCmd) Run(name string, args ...string) ([]byte, error) {
 	return nil, nil
 }
 
-func (m *mockCmd) RunAllowNonZero(name string, args ...string) ([]byte, error) {
-	if m.runAllowNonZero != nil {
-		return m.runAllowNonZero(name, args...)
+// RunContext falls back to the simpler `run` mock when no `runContext` is
+// provided. This lets tests that don't care about the context set just
+// `mockCmd{run: ...}` and have it work for both Run() and RunContext()
+// callers (e.g., audit functions that route through auditRunCmd).
+func (m *mockCmd) RunContext(parent context.Context, name string, args ...string) ([]byte, error) {
+	if m.runContext != nil {
+		return m.runContext(parent, name, args...)
+	}
+	if m.run != nil {
+		return m.run(name, args...)
 	}
 	return nil, nil
 }
 
-func (m *mockCmd) RunContext(parent context.Context, name string, args ...string) ([]byte, error) {
-	if m.runContext != nil {
-		return m.runContext(parent, name, args...)
+// RunAllowNonZero falls back to `run` when `runAllowNonZero` is unset.
+// Same motivation as RunContext above.
+func (m *mockCmd) RunAllowNonZero(name string, args ...string) ([]byte, error) {
+	if m.runAllowNonZero != nil {
+		return m.runAllowNonZero(name, args...)
+	}
+	if m.run != nil {
+		return m.run(name, args...)
 	}
 	return nil, nil
 }
@@ -105,6 +117,9 @@ func (m *mockCmd) RunContext(parent context.Context, name string, args ...string
 func (m *mockCmd) RunWithEnv(name string, args []string, extraEnv ...string) ([]byte, error) {
 	if m.runWithEnv != nil {
 		return m.runWithEnv(name, args, extraEnv...)
+	}
+	if m.run != nil {
+		return m.run(name, args...)
 	}
 	return nil, nil
 }
