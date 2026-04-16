@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- 16 `go test -fuzz` targets for the string parsers that accept attacker-controlled input: log-line extractors (`extractIPAfterKeyword`, `extractBracketedIP`, `firstField`, `parseDovecotLoginFields`, `extractMailHoldSender`, `extractSetID`), finding-message parsers (`extractPID`, `extractFilePath`, `extractEximMsgID`, `parseDBFindingDetails`), config parsers (`extractPHPDefine`, `extractPHPString`), low-level decoders (`parseHexAddr`, `decodeHexString`), and `isPrivateOrLoopback`. Each target ships a seed corpus covering valid, malformed, empty, and path-traversal shapes; the seeds also run as regression tests under a normal `go test`. Five seconds of fuzzing per target finds no crashers.
+
+### Changed
+
+- `release:github` GitLab job is no longer gated on a manual click. It already fired only on `/^v/` tags and is `allow_failure: true`, so running it automatically is safe and removes the manual step that was stalling badge rebuilds on fresh tags.
+
 ## [2.4.2] - 2026-04-15
 
 ### Security
