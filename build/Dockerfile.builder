@@ -39,14 +39,15 @@ ENV PATH="/opt/aarch64-linux-musl-cross/bin:${PATH}"
 RUN rustup target add aarch64-unknown-linux-musl
 
 # Alpine's gcc is already a musl compiler (Alpine ships musl as libc), but
-# upstream rustup's x86_64-unknown-linux-musl target defaults to looking
-# for a binary called `musl-gcc` which Alpine doesn't provide. Tell cargo
-# to use plain `gcc` for that target. The aarch64 target is overridden
-# via env vars at the second cinstall step below.
-RUN mkdir -p /root/.cargo && cat > /root/.cargo/config.toml <<'EOF'
-[target.x86_64-unknown-linux-musl]
-linker = "gcc"
-EOF
+# upstream rustup's x86_64-unknown-linux-musl target -- and every build
+# script it runs for the host triple -- looks for a binary literally
+# called `musl-gcc` which Alpine doesn't provide. Shim it with a symlink
+# to plain gcc. This is what Alpine's `musl-dev` would install if the
+# wrapper existed on Alpine; we just wire it up ourselves.
+RUN ln -s /usr/bin/gcc /usr/local/bin/musl-gcc \
+    && ln -s /usr/bin/gcc /usr/local/bin/x86_64-linux-musl-gcc \
+    && ln -s /usr/bin/ar  /usr/local/bin/musl-ar \
+    && ln -s /usr/bin/ar  /usr/local/bin/x86_64-linux-musl-ar
 
 # cargo-c: builds Rust libraries as C-compatible .a + .h + .pc.
 RUN cargo install cargo-c@0.10.20 --locked
