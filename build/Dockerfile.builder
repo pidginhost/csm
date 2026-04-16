@@ -23,12 +23,26 @@ FROM almalinux:8
 
 # System development tooling. PowerTools (aka CRB on newer Alma)
 # exposes dev packages that are not in the base repos.
+#
+# libcurl-devel is mandatory: `cargo install cargo-c` pulls in
+# curl-sys, which tries pkg-config for system libcurl and falls
+# back to vendoring curl 8.18.0 if missing. The vendored curl
+# requires OpenSSL >= 3.0.0 but AlmaLinux 8 ships OpenSSL 1.1.1, so
+# the fallback fails to compile. Providing libcurl-devel (which
+# installs libcurl.pc pointing at the system libcurl-1.1.1 build)
+# makes curl-sys use the system library and skip the fallback.
+#
+# libxml2-devel / libssh2-devel are installed pre-emptively for the
+# same reason: other transitive Rust deps reach for them via
+# pkg-config before vendoring. Cheap insurance.
 RUN dnf -y install dnf-plugins-core epel-release \
     && dnf config-manager --set-enabled powertools \
     && dnf -y install \
         gcc gcc-c++ make git curl tar xz which \
         pkgconf pkgconf-pkg-config \
         openssl openssl-devel \
+        libcurl-devel libxml2-devel libssh2-devel \
+        zlib-devel \
         perl autoconf automake libtool \
     && dnf clean all
 
