@@ -9,6 +9,7 @@ state/state.json
 
 # Internal planning / local-only files
 CLAUDE.md
+AGENTS.md
 docs/IMPROVEMENT_PLAN.md
 docs/superpowers/
 scripts/deploy-gitlab.sh
