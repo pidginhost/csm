@@ -3,7 +3,7 @@ module github.com/pidginhost/csm
 go 1.26.2
 
 require (
-	github.com/VirusTotal/yara-x/go v1.15.0
+	github.com/VirusTotal/yara-x/go v1.14.0
 	github.com/google/nftables v0.3.0
 	github.com/oschwald/maxminddb-golang/v2 v2.1.1
 	go.etcd.io/bbolt v1.4.3

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- YARA-X native-code SIGSEGV on daemon startup. The 2.4.3 dependency bump from `VirusTotal/yara-x/go` 1.14.0 to 1.15.0 produced a binary that SEGV'd inside `yrx_compiler_build` during the first rule compile on every startup, putting the daemon into a systemd restart loop on affected servers. Reverted to YARA-X 1.14.0 (proven stable). Go 1.26.2, bbolt 1.4.3, and the other 2.4.3 dependency bumps are retained — they are not implicated. The 2.4.3 builder image changes (source-built libunwind, musl linker shims) are retained and harmless with 1.14.0; reintroducing 1.15.0 later will be done on a branch with reproduction coverage before it ships.
+
 ## [2.4.3] - 2026-04-16
 
 ### Security
