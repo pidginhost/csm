@@ -1014,6 +1014,20 @@ func scanWPConfigs(dir, account string, cfg *config.Config, depth int, findings 
 			if readErr2 != nil {
 				continue
 			}
+			// cPanel MultiPHP INI Editor writes .user.ini with a fixed
+			// header and owns the file's content. Values inside a
+			// cPanel-managed .user.ini (max_execution_time=0 for a
+			// backup importer, display_errors=On for a staging account)
+			// reflect operator choices made through the cPanel UI and
+			// are not attacker actions. Suppress findings for this
+			// file in that case — operators do not need alerts for
+			// their own configuration. The suppression is scoped
+			// strictly to .user.ini: the same signature in php.ini or
+			// .htaccess is not authoritative (cPanel does not write
+			// those files) and the scanner treats it normally.
+			if cfgFile == ".user.ini" && isCpanelManagedUserIni(data) {
+				continue
+			}
 			for _, line := range strings.Split(string(data), "\n") {
 				trimmed := strings.TrimSpace(line)
 				// Skip comment lines

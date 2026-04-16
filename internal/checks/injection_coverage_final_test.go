@@ -447,7 +447,7 @@ func TestHandleMaliciousOption_MaliciousURLCleaned(t *testing.T) {
 			switch {
 			case strings.Contains(q, "SELECT option_value"):
 				// Return the malicious option_value containing a bad script URL
-				return []byte(`hello world<script src="https://evil.example.com/pwn.js"></script>tail` + "\n"), nil
+				return []byte(`hello world<script src="https://evil.top/pwn.js"></script>tail` + "\n"), nil
 			case strings.Contains(q, "session_tokens") && strings.HasPrefix(q, "SELECT meta_value"):
 				// Single user with a suspicious public IP in sessions
 				return []byte(`a:1:{s:5:"token";a:2:{s:2:"ip";s:12:"203.0.113.77";s:2:"ua";s:7:"Firefox";}}` + "\n"), nil
@@ -476,7 +476,7 @@ func TestHandleMaliciousOption_MaliciousURLCleaned(t *testing.T) {
 		if a.Check == "auto_block" && strings.Contains(a.Message, "203.0.113.77") {
 			foundBlock = true
 		}
-		if a.Check == "auto_response" && strings.Contains(a.Message, "evil.example.com") {
+		if a.Check == "auto_response" && strings.Contains(a.Message, "evil.top") {
 			foundClean = true
 		}
 	}

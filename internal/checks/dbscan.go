@@ -358,9 +358,22 @@ func checkWPPosts(user string, creds wpDBCreds, prefix string) []alert.Finding {
 		})
 	}
 
-	// Spam keyword scan. LIKE is a fast pre-filter; the Go regex then
-	// requires a word boundary so "specialist" does not match "cialis",
-	// "pharmacy" does not match "pharma", etc.
+	// Spam keyword scan. Three-layer filter:
+	//
+	//   1. SQL LIKE as a fast server-side pre-filter (reduces rows).
+	//   2. Word-boundary regex in countCloakedSpamMatches (rejects
+	//      substring false positives like "specialist" / "cialis").
+	//   3. SEO-context requirement in contentHasSpamContext: a keyword
+	//      hit only counts when accompanied by CSS cloaking, an
+	//      injection fingerprint, or an external anchor whose URL
+	//      path contains the keyword. Bare prose mentions (industry
+	//      verticals, advisor bios, product catalogs listing a
+	//      pharmaceutical supply chain) do not fire.
+	//
+	// The context requirement catches the real attack pattern — hidden
+	// off-screen div with external commercial link — while leaving
+	// legitimate content silent. See spam_context.go for the full
+	// signal catalog.
 	for _, sp := range dbSpamPatterns {
 		query := fmt.Sprintf(
 			"SELECT ID, post_content FROM %sposts WHERE post_status='publish' AND post_type NOT IN (%s) AND post_content LIKE '%s' LIMIT 200",
@@ -377,14 +390,14 @@ func checkWPPosts(user string, creds wpDBCreds, prefix string) []alert.Finding {
 			}
 			contents = append(contents, parts[1])
 		}
-		n := countSpamMatches(sp, contents)
+		n := countCloakedSpamMatches(sp, contents)
 		if n == 0 {
 			continue
 		}
 		findings = append(findings, alert.Finding{
 			Severity: alert.High,
 			Check:    "db_spam_injection",
-			Message:  fmt.Sprintf("WordPress posts contain spam keyword '%s' (%d posts, account: %s)", sp.keyword, n, user),
+			Message:  fmt.Sprintf("WordPress posts contain cloaked spam keyword '%s' (%d posts, account: %s)", sp.keyword, n, user),
 			Details:  fmt.Sprintf("Database: %s", creds.dbName),
 		})
 	}
@@ -525,9 +538,9 @@ func CleanDatabaseSpam(account string) []alert.Finding {
 		}
 
 		// Scan for spam keywords in wp_posts. Uses the same word-boundary
-		// regex + post_type denylist as checkWPPosts so an operator-
-		// initiated cleanup surfaces the same set of findings the
-		// periodic scan does.
+		// regex + post_type denylist + SEO-context requirement as
+		// checkWPPosts so an operator-initiated cleanup surfaces the
+		// same set of findings the periodic scan does.
 		postTypeExcl := nonScannablePostTypesSQLList()
 		for _, sp := range dbSpamPatterns {
 			query := fmt.Sprintf(
@@ -545,7 +558,7 @@ func CleanDatabaseSpam(account string) []alert.Finding {
 				}
 				contents = append(contents, parts[1])
 			}
-			n := countSpamMatches(sp, contents)
+			n := countCloakedSpamMatches(sp, contents)
 			if n == 0 {
 				continue
 			}

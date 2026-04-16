@@ -226,7 +226,19 @@ var knownSafeDomains = []string{
 }
 
 // extractMaliciousScriptURL finds a <script src="..."> URL in the content
-// that is NOT from a known safe domain.
+// that is classified as an attacker script by isAttackerScriptURL.
+//
+// The classification uses an attack-indicator model (see url_reputation.go):
+// a URL flags only when it shows attacker-characteristic markers (raw IP
+// host, abused TLD, plaintext HTTP, known-bad exfil host, or no valid
+// TLD). The previous allowlist-only model produced HIGH-severity findings
+// for legitimate third-party widgets (OneTrust, Issuu, regional video
+// embeds, regional tax-form widgets) whose domains were not on the
+// allowlist; the attack-indicator model eliminates those false positives
+// while still catching the injection patterns attackers actually use.
+//
+// knownSafeDomains is retained as a fast-path optimisation and operator-
+// pre-approved list — see isAttackerScriptURL for the composition order.
 func extractMaliciousScriptURL(content string) string {
 	matches := scriptSrcRe.FindAllStringSubmatch(content, -1)
 	for _, match := range matches {
@@ -234,7 +246,7 @@ func extractMaliciousScriptURL(content string) string {
 			continue
 		}
 		url := match[1]
-		if !isSafeScriptDomain(url) {
+		if isAttackerScriptURL(url) {
 			return url
 		}
 	}

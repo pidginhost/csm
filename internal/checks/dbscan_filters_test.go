@@ -304,11 +304,17 @@ func TestHasMaliciousExternalScript_CommonWidgets(t *testing.T) {
 }
 
 func TestHasMaliciousExternalScript_AttackerExternalSrc(t *testing.T) {
+	// Each case exercises exactly one attacker indicator from the
+	// classifier (see url_reputation.go). The old .xyz fixture was
+	// removed deliberately: .xyz is a mixed-use TLD (Alphabet, many
+	// startups) and is NOT on the abused-TLD list. Fixtures must
+	// encode real attack markers, not arbitrary unknown domains.
 	cases := []string{
-		`<script src="https://evil-cdn.xyz/payload.js"></script>`,
-		`<script src='http://cryptomine.su/loader.js'></script>`,
-		`<script src="//malware.pw/skim.js" async></script>`,
-		`<script type="text/javascript" src="https://attacker.workers.dev/x.js"></script>`,
+		`<script src="https://evil-cdn.top/payload.js"></script>`,                          // abused TLD
+		`<script src='http://cryptomine.example.com/loader.js'></script>`,                  // plaintext HTTP
+		`<script src="//malware.pw/skim.js" async></script>`,                               // abused TLD (.pw)
+		`<script type="text/javascript" src="https://attacker.workers.dev/x.js"></script>`, // known-bad exfil host
+		`<script src="https://203.0.113.9/x.js"></script>`,                                 // raw IP address host
 	}
 	for _, c := range cases {
 		if !hasMaliciousExternalScript(c) {
@@ -338,10 +344,13 @@ func TestHasMaliciousExternalScript_InlineScriptsNotClassified(t *testing.T) {
 
 func TestHasMaliciousExternalScript_MixedContentFindsRealAttack(t *testing.T) {
 	// Legitimate page content plus a single attacker script mixed in.
+	// The attacker entry uses .top (Spamhaus-listed abused TLD) so it
+	// flags on the TLD indicator. The two widget embeds pass because
+	// they have zero attack indicators.
 	content := `<h1>Welcome</h1>` +
 		`<script src="https://www.googletagmanager.com/gtag/js"></script>` +
 		`<p>About our company...</p>` +
-		`<script src="https://evil.xyz/payload.js"></script>` +
+		`<script src="https://evil.top/payload.js"></script>` +
 		`<script src="https://cdn.jsdelivr.net/npm/jquery@3.6.0/dist/jquery.min.js"></script>`
 	if !hasMaliciousExternalScript(content) {
 		t.Errorf("mixed content with one attacker script must flag")

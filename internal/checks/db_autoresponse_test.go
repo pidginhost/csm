@@ -22,14 +22,20 @@ func TestExtractMaliciousScriptURL_Malicious(t *testing.T) {
 			want:    "https://staticsx.top/l.js",
 		},
 		{
-			name:    "unknown domain with quotes",
-			content: `<script src="https://evil-domain.xyz/payload.js"></script>`,
-			want:    "https://evil-domain.xyz/payload.js",
+			// .top is on the abused-TLD list (Spamhaus recurring).
+			// The classifier should flag on TLD alone regardless of
+			// whether the host happens to appear on an allowlist.
+			name:    "abused TLD with quotes",
+			content: `<script src="https://evil-domain.top/payload.js"></script>`,
+			want:    "https://evil-domain.top/payload.js",
 		},
 		{
-			name:    "unknown domain single quotes",
-			content: `<script src='https://malware.example.com/inject.js'></script>`,
-			want:    "https://malware.example.com/inject.js",
+			// Raw IP address host — attackers commonly use IPs to
+			// dodge domain reputation. Single-quote form covered as
+			// a regression against the regex's quote-style handling.
+			name:    "raw IP single quotes",
+			content: `<script src='https://192.0.2.42/inject.js'></script>`,
+			want:    "https://192.0.2.42/inject.js",
 		},
 		{
 			name:    "http not https",

@@ -111,7 +111,7 @@ $table_prefix = 'wp_';
 `
 	// Content has a script src from a non-safe domain BUT no closing </script>,
 	// so removeMaliciousScripts won't strip it.
-	contentValue := `<script src="https://evil.test/x.js" async>`
+	contentValue := `<script src="https://evil.top/x.js" async>`
 
 	withMockOS(t, wpConfigFixture(t, "unch", wpCfg))
 
@@ -145,7 +145,7 @@ define( 'DB_PASSWORD', 'p' );
 define( 'DB_HOST', 'localhost' );
 $table_prefix = 'wp_';
 `
-	maliciousContent := `<script src="https://evil.test/x.js"></script>`
+	maliciousContent := `<script src="https://evil.top/x.js"></script>`
 
 	withMockOS(t, wpConfigFixture(t, "prevuser", wpCfg))
 
@@ -179,7 +179,7 @@ define( 'DB_PASSWORD', 'p' );
 define( 'DB_HOST', 'localhost' );
 $table_prefix = 'wp_';
 `
-	maliciousContent := `stuff <script src="https://evil.test/x.js"></script> more`
+	maliciousContent := `stuff <script src="https://evil.top/x.js"></script> more`
 
 	withMockOS(t, wpConfigFixture(t, "cleanuser", wpCfg))
 
@@ -1008,8 +1008,8 @@ func TestBackupAndCleanOption_SuccessfulClean(t *testing.T) {
 		},
 	})
 	creds := wpDBCreds{dbName: "db2", dbUser: "u", dbPass: "p", dbHost: "localhost"}
-	original := `stuff <script src="https://evil.test/x.js"></script> more`
-	cleaned := backupAndCleanOption(creds, "wp_", "widget_text", original, "https://evil.test/x.js")
+	original := `stuff <script src="https://evil.top/x.js"></script> more`
+	cleaned := backupAndCleanOption(creds, "wp_", "widget_text", original, "https://evil.top/x.js")
 	if !cleaned {
 		t.Error("should return true")
 	}

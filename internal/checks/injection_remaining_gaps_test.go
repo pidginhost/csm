@@ -1388,9 +1388,18 @@ func TestCleanDatabaseSpam_SpamDomainsFound(t *testing.T) {
 			for i, a := range args {
 				if a == "-e" && i+1 < len(args) {
 					q := args[i+1]
-					// CleanDatabaseSpam runs SELECT ID, post_content FROM ...posts WHERE ... LIKE '%viagra%'
+					// CleanDatabaseSpam now requires SEO-spam context
+					// (CSS cloaking, injection fingerprint, or external
+					// anchor with keyword in URL path) in addition to
+					// the keyword itself. Fixture rows each pair the
+					// viagra keyword with one distinct cloaking signal,
+					// mirroring real cluster6 injection patterns.
 					if strings.Contains(q, "SELECT ID, post_content") && strings.Contains(q, "viagra") {
-						return []byte("1\tbuy viagra now at cheap prices\n2\tbest viagra deals online\n3\tviagra discount\n"), nil
+						return []byte(
+							"1\t<div style=\"position:absolute;left:-12623px\"><a href=\"https://pharmacy-spam.top/buy/viagra\">Viagra</a></div>\n" +
+								"2\t<span style=\"display:none\">buy viagra now at cheap prices</span>\n" +
+								"3\t<div style=\"text-indent:-9999px\">best viagra deals</div>\n",
+						), nil
 					}
 					// COUNT(*) queries for other spam patterns return 0
 					return []byte("0\n"), nil
