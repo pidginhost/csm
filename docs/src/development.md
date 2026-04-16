@@ -17,6 +17,46 @@ go test ./... -count=1           # all tests
 go test -race -short ./...       # CI mode (race detector, skip slow tests)
 ```
 
+## Fuzz
+
+CSM has a dozen parsers that read attacker-controlled input: Exim mainlog lines, Dovecot maillog lines, Apache Combined Log Format, /proc/net/tcp rows, wp-config.php bodies, /etc/shadow, auditd comm fields, and finding messages coming back from the WebUI.
+
+Each parser has a Go fuzz target (files named `fuzz_parsers_test.go` under `internal/checks/` and `internal/daemon/`). Fuzz targets do two things:
+
+1. Their seed corpus runs as part of the normal test suite. `go test ./...` executes every seed, so a known-bad input stays a regression test forever.
+2. The actual fuzzer runs with `-fuzz=FuzzFoo`.
+
+Run a target for a fixed time while investigating:
+
+```bash
+go test ./internal/checks/... -run=^$ -fuzz=^FuzzExtractPHPDefine$ -fuzztime=30s
+```
+
+Run only the seeds:
+
+```bash
+go test -run=Fuzz ./internal/checks/... ./internal/daemon/...
+```
+
+If the fuzzer finds a crasher it writes the failing input to `testdata/fuzz/FuzzFoo/<hash>`. Commit that file alongside the fix and the input becomes a permanent seed.
+
+Adding a fuzz target:
+
+```go
+func FuzzMyParser(f *testing.F) {
+    // Seeds: real-world valid shape, empty, malformed.
+    f.Add("valid input")
+    f.Add("")
+    f.Add("corrupt/truncated")
+
+    f.Fuzz(func(t *testing.T, s string) {
+        _ = myParser(s)   // must not panic on any input
+    })
+}
+```
+
+Keep the target tight: call one function, assert it returns. Output verification belongs in a regular test.
+
 ## Lint
 
 ```bash
@@ -34,24 +74,35 @@ GitLab CI (`.gitlab-ci.yml`) is the internal build pipeline. It runs lint/test/p
 
 | Stage | What it does |
 |-------|-------------|
-| **lint** | golangci-lint + gofmt check |
-| **test** | `go test -v -race -short ./...` |
+| **lint** | golangci-lint, gofmt, gosec (blocking), govulncheck |
+| **test** | `go test -v -race -timeout=300s -covermode=atomic -coverprofile -coverpkg=./internal/... ./...` |
 | **build-image** | Build CSM builder Docker image with YARA-X (manual trigger) |
-| **build** | Two architectures (amd64 with YARA-X CGO, arm64 pure Go) |
+| **build** | Two architectures: amd64 with YARA-X CGO, arm64 pure Go |
+| **integration** | Spin up AlmaLinux + Ubuntu cloud servers via phctl, install CSM from the public mirror, run the integration test binary on both hosts, collect coverage. Only runs on `main` |
 | **package** | RPM + DEB via nFPM |
+| **sign** | Detached signatures on release artifacts |
 | **publish** | Internal GitLab Generic Package Registry (versioned + `latest`) |
-| **cleanup** | Clean old package versions |
+| **repo** | Publish RPM/DEB to the public `mirrors.pidginhost.com` apt/dnf repos |
+| **pages** | Docs + coverage HTML (GitLab Pages preview) |
+| **cleanup** | Remove old package versions |
 | **release** | GitLab release on tags matching `v*` |
+| **github** | Mirror to GitHub + upload release artifacts (auto on tag push) |
 
 ## Public Releases
 
-Public installs and upgrades use GitHub Releases:
+To cut a release:
 
-1. Push changes and create a release tag.
-2. Let CI build and publish the release artifacts.
-3. Install or upgrade with `/opt/csm/deploy.sh install` or `/opt/csm/deploy.sh upgrade`.
+1. Move the `[Unreleased]` heading in `CHANGELOG.md` to the new version (e.g. `[2.4.2] - YYYY-MM-DD`), commit as `release: cut X.Y.Z`.
+2. Tag and push:
+   ```bash
+   git tag vX.Y.Z
+   git push origin main vX.Y.Z
+   ```
+3. Wait. The tag pipeline runs integration, publishes packages to the mirror, creates the GitHub release, and uploads every artifact including the fresh `merged-coverage.out`. No manual pipeline clicks needed.
 
-The GitLab package registry and any GitLab-only deploy helpers are internal operational tooling, not part of the public GitHub workflow.
+The coverage badge rebuilds automatically once the GitHub release exists, because the Pages workflow fetches `merged-coverage.out` from the latest release that carries one (it walks back through releases if the newest is missing the asset).
+
+Installs and upgrades on end-user servers come from the GitHub release artifacts or the apt/dnf mirror. The internal GitLab package registry is operational tooling only.
 
 ## Code Conventions
 
