@@ -578,7 +578,7 @@
     var COLORS = buildColors();
     var tooltipStyle = buildTooltipStyle();
 
-    // --- 24-Hour Timeline (stacked bar) ---
+    // --- 24-Hour Timeline ---
     var timelineChart = null;
     function loadTimeline() {
         var canvas = document.getElementById('timeline-chart');
@@ -619,8 +619,8 @@
                                 label: 'High',
                                 data: highData,
                                 borderColor: COLORS.high,
-                                backgroundColor: 'rgba(247,103,7,0.14)',
-                                fill: 'origin',
+                                backgroundColor: COLORS.high,
+                                fill: false,
                                 tension: 0.3,
                                 pointRadius: 2,
                                 pointHoverRadius: 5,
@@ -630,8 +630,8 @@
                                 label: 'Warning',
                                 data: warnData,
                                 borderColor: COLORS.warning,
-                                backgroundColor: 'rgba(245,159,0,0.10)',
-                                fill: 'origin',
+                                backgroundColor: COLORS.warning,
+                                fill: false,
                                 tension: 0.3,
                                 pointRadius: 2,
                                 pointHoverRadius: 5,
@@ -682,7 +682,6 @@
                                 }
                             },
                             y: {
-                                stacked: true,
                                 beginAtZero: true,
                                 grid: { color: gridColor },
                                 ticks: {
@@ -740,7 +739,10 @@
         fetch(CSM.apiUrl('/api/v1/threat/stats'), { credentials: 'same-origin' })
             .then(function(r) { return r.json(); })
             .then(function(data) {
-                var byType = data.by_type || {};
+                // Prefer the 24h-scoped map so this card matches the adjacent
+                // "Findings Timeline (24h)". Fall back to lifetime `by_type`
+                // to stay compatible with older daemons during rollout.
+                var byType = data.by_type_24h || data.by_type || {};
                 var entries = [];
                 for (var key in byType) {
                     if (byType.hasOwnProperty(key)) {
@@ -758,7 +760,7 @@
                     if (!msg) {
                         msg = document.createElement('div');
                         msg.className = 'text-muted text-center py-3 chart-empty';
-                        msg.textContent = 'No attack data yet';
+                        msg.textContent = 'No attack data in the last 24h';
                         parent.appendChild(msg);
                     }
                     return;
@@ -795,6 +797,7 @@
                         responsive: true,
                         maintainAspectRatio: false,
                         plugins: {
+                            legend: { display: false },
                             tooltip: Object.assign({}, tooltipStyle, {
                                 callbacks: {
                                     label: function(ctx) {
@@ -869,8 +872,8 @@
                                 label: 'High',
                                 data: highData,
                                 borderColor: COLORS.high,
-                                backgroundColor: 'rgba(247,103,7,0.12)',
-                                fill: 'origin',
+                                backgroundColor: COLORS.high,
+                                fill: false,
                                 tension: 0.3,
                                 pointRadius: 2,
                                 pointHoverRadius: 5,
@@ -880,8 +883,8 @@
                                 label: 'Warning',
                                 data: warnData,
                                 borderColor: COLORS.warning,
-                                backgroundColor: 'rgba(245,159,0,0.10)',
-                                fill: 'origin',
+                                backgroundColor: COLORS.warning,
+                                fill: false,
                                 tension: 0.3,
                                 pointRadius: 2,
                                 pointHoverRadius: 5,

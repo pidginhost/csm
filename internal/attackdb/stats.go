@@ -20,7 +20,8 @@ type AttackStats struct {
 	Last24hEvents int                `json:"last_24h_events"`
 	Last7dEvents  int                `json:"last_7d_events"`
 	BlockedIPs    int                `json:"blocked_ips"`
-	ByType        map[AttackType]int `json:"by_type"`
+	ByType        map[AttackType]int `json:"by_type"`      // lifetime, aggregated from IPRecord.AttackCounts
+	ByType24h     map[AttackType]int `json:"by_type_24h"`  // last 24h, aggregated from the events log
 	TopAttackers  []*IPRecord        `json:"top_attackers"`
 	HourlyBuckets [24]int            `json:"hourly_buckets"` // last 24h, index 0 = oldest hour
 	DailyBuckets  [7]int             `json:"daily_buckets"`  // last 7 days, index 0 = oldest day
@@ -60,8 +61,9 @@ func (db *DB) computeStats() AttackStats {
 
 	db.mu.RLock()
 	stats := AttackStats{
-		TotalIPs: len(db.records),
-		ByType:   make(map[AttackType]int),
+		TotalIPs:  len(db.records),
+		ByType:    make(map[AttackType]int),
+		ByType24h: make(map[AttackType]int),
 	}
 
 	for _, rec := range db.records {
@@ -80,6 +82,11 @@ func (db *DB) computeStats() AttackStats {
 	for _, ev := range events {
 		if ev.Timestamp.After(cutoff24h) {
 			stats.Last24hEvents++
+			// Skip events with no attack type — a malformed or legacy JSONL
+			// line would otherwise surface as a "" key in the JSON response.
+			if ev.AttackType != "" {
+				stats.ByType24h[ev.AttackType]++
+			}
 			hoursAgo := int(now.Sub(ev.Timestamp).Hours())
 			if hoursAgo >= 0 && hoursAgo < 24 {
 				stats.HourlyBuckets[23-hoursAgo]++

@@ -13,7 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `AttackStats.ByType24h` (JSON `by_type_24h`): per-attack-type counts restricted to the last 24 hours, aggregated from the events log. Powers the dashboard "Top Attack Types" card so it matches the adjacent 24h timeline instead of showing lifetime totals.
 - 16 `go test -fuzz` targets for the string parsers that accept attacker-controlled input: log-line extractors (`extractIPAfterKeyword`, `extractBracketedIP`, `firstField`, `parseDovecotLoginFields`, `extractMailHoldSender`, `extractSetID`), finding-message parsers (`extractPID`, `extractFilePath`, `extractEximMsgID`, `parseDBFindingDetails`), config parsers (`extractPHPDefine`, `extractPHPString`), low-level decoders (`parseHexAddr`, `decodeHexString`), and `isPrivateOrLoopback`. Each target ships a seed corpus covering valid, malformed, empty, and path-traversal shapes; the seeds also run as regression tests under a normal `go test`. Five seconds of fuzzing per target finds no crashers.
+
+### Fixed
+
+- Dashboard "Findings Timeline (24h)" was leaking a `y.stacked: true` from when it was a stacked bar, which pinned High and Warning on top of Critical. Y-axis unstacked and small-series fills removed.
+- Dashboard "Top Attack Types" card now scopes to 24h via the new `by_type_24h` field and hides the empty legend slot — previously it showed lifetime totals next to a 24h timeline.
+- Dashboard "30-Day Trend" no longer fills the High and Warning series, so Critical's area fill can't obscure them.
+- Threat Intelligence "Attack Trend (24h)" bar labels were off-by-one (oldest bar read "24h" for a bucket covering 23h ago) and the tick stride skipped the most recent hour. Labels now read "23h…1h…now" and the stride anchors on the right edge.
 
 ### Changed
 

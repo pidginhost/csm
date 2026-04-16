@@ -727,8 +727,70 @@ func TestStatsAndComputeStats(t *testing.T) {
 	if stats.ByType[AttackWebshell] != 1 {
 		t.Errorf("ByType[webshell] = %d, want 1", stats.ByType[AttackWebshell])
 	}
+	if stats.ByType24h[AttackWebshell] != 1 {
+		t.Errorf("ByType24h[webshell] = %d, want 1", stats.ByType24h[AttackWebshell])
+	}
+	if stats.ByType24h[AttackBruteForce] != 1 {
+		t.Errorf("ByType24h[brute_force] = %d, want 1", stats.ByType24h[AttackBruteForce])
+	}
 	if len(stats.TopAttackers) == 0 {
 		t.Error("TopAttackers should be populated")
+	}
+}
+
+// TestByType24hSkipsEmptyAttackType verifies that events whose AttackType
+// decodes as the empty string (malformed/legacy JSONL lines) are dropped
+// from ByType24h rather than accumulating under a "" key.
+func TestByType24hSkipsEmptyAttackType(t *testing.T) {
+	db := newTestDB(t)
+	now := time.Now()
+
+	// Append an event with an empty AttackType directly to pending — this
+	// simulates a malformed events-log line that readAllEvents will decode
+	// into a zero-value AttackType.
+	db.pendingEvents = append(db.pendingEvents, Event{
+		Timestamp: now, IP: "3.3.3.3", AttackType: "",
+	})
+	db.appendEvents(db.pendingEvents)
+
+	cachedStatsMu.Lock()
+	cachedStatsTime = time.Time{}
+	cachedStatsMu.Unlock()
+
+	stats := db.Stats()
+	if _, present := stats.ByType24h[""]; present {
+		t.Errorf("ByType24h should not contain empty-string key, got %v", stats.ByType24h)
+	}
+	if stats.Last24hEvents != 1 {
+		t.Errorf("Last24hEvents = %d, want 1 (the event still counts toward the total)", stats.Last24hEvents)
+	}
+}
+
+// TestByType24hExcludesOldEvents verifies that events outside the 24h cutoff
+// are aggregated in ByType (lifetime, from IPRecord) but not in ByType24h.
+func TestByType24hExcludesOldEvents(t *testing.T) {
+	db := newTestDB(t)
+	old := time.Now().Add(-48 * time.Hour)
+	recent := time.Now()
+
+	db.RecordFinding(alert.Finding{
+		Check: "webshell", Message: "old shell from 1.1.1.1", Timestamp: old,
+	})
+	db.RecordFinding(alert.Finding{
+		Check: "webshell", Message: "fresh shell from 2.2.2.2", Timestamp: recent,
+	})
+	db.appendEvents(db.pendingEvents)
+
+	cachedStatsMu.Lock()
+	cachedStatsTime = time.Time{}
+	cachedStatsMu.Unlock()
+
+	stats := db.Stats()
+	if stats.ByType[AttackWebshell] != 2 {
+		t.Errorf("ByType[webshell] = %d, want 2 (lifetime)", stats.ByType[AttackWebshell])
+	}
+	if stats.ByType24h[AttackWebshell] != 1 {
+		t.Errorf("ByType24h[webshell] = %d, want 1 (only recent)", stats.ByType24h[AttackWebshell])
 	}
 }
 

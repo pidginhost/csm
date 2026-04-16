@@ -65,9 +65,13 @@ fetch(CSM.apiUrl('/api/v1/threat/stats'),{credentials:'same-origin'}).then(check
         canvas=document.createElement('canvas');
         hourlyDiv.appendChild(canvas);
     }
+    // Bucket index 0 is the oldest hour, index N-1 is the current hour.
+    // Label each bar with how many hours ago it covers: "23h" at the left
+    // edge down to "now" at the right.
     var labels=[];
     for(var h=0;h<buckets.length;h++){
-        labels.push((buckets.length-h)+'h');
+        var hoursAgo=buckets.length-1-h;
+        labels.push(hoursAgo===0?'now':hoursAgo+'h');
     }
     var isDark=document.documentElement.classList.contains('theme-dark');
     var gridColor=isDark?'rgba(45,58,78,0.6)':'rgba(230,232,235,0.8)';
@@ -101,13 +105,29 @@ fetch(CSM.apiUrl('/api/v1/threat/stats'),{credentials:'same-origin'}).then(check
                         borderColor:isDark?'#2d3a4e':'#e6e8eb',
                         borderWidth:1,
                         callbacks:{
-                            title:function(items){return items[0].label+' ago';},
+                            title:function(items){
+                                var lbl=items[0].label;
+                                return lbl==='now'?'this hour':lbl+' ago';
+                            },
                             label:function(ctx){return ctx.parsed.y+' events';}
                         }
                     }
                 },
                 scales:{
-                    x:{grid:{display:false},ticks:{maxRotation:0,callback:function(v,i){return i%4===0?this.getLabelForValue(v):'';}}},
+                    x:{
+                        grid:{display:false},
+                        ticks:{
+                            maxRotation:0,
+                            // Anchor the stride on the right edge so "now" is always
+                            // labelled, then every 4th older hour walking leftward.
+                            // Using the live ticks array keeps this correct across
+                            // re-renders when the bucket count changes.
+                            callback:function(v,i,ticks){
+                                var fromEnd=(ticks.length-1)-i;
+                                return fromEnd%4===0?this.getLabelForValue(v):'';
+                            }
+                        }
+                    },
                     y:{beginAtZero:true,grid:{color:gridColor},ticks:{precision:0}}
                 }
             }
