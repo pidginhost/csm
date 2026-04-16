@@ -63,8 +63,14 @@ RUN git clone --depth 1 --branch v1.15.0 \
         https://github.com/VirusTotal/yara-x.git /tmp/yara-x
 
 # Build for the native host arch (amd64) and install to /usr/local.
+# --library-type=staticlib: the musl target drops cdylib support, so
+# rustc never produces a .so and cargo-cinstall would fail at the
+# final copy step. We only link the .a into the Go binary anyway
+# (-linkmode external -extldflags '-static'), so shared output is
+# unused noise.
 RUN cd /tmp/yara-x \
-    && cargo cinstall -p yara-x-capi --release --prefix=/usr/local
+    && cargo cinstall -p yara-x-capi --release \
+        --library-type=staticlib --prefix=/usr/local
 
 # Build for aarch64-linux-musl and install to /usr/local/aarch64. The
 # CC_aarch64_... variable is what the cc crate looks up to find a cross
@@ -74,6 +80,7 @@ RUN cd /tmp/yara-x \
        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-musl-gcc \
        AR_aarch64_unknown_linux_musl=aarch64-linux-musl-ar \
        cargo cinstall -p yara-x-capi --release \
+           --library-type=staticlib \
            --target aarch64-unknown-linux-musl \
            --prefix=/usr/local/aarch64 \
     && rm -rf /tmp/yara-x /root/.cargo/registry /root/.cargo/git
