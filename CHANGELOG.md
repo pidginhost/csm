@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Go toolchain bumped from 1.26.1 to 1.26.2, fixing 6 stdlib CVEs reported by govulncheck in reachable code paths: GO-2026-4947 / GO-2026-4946 / GO-2026-4866 (crypto/x509), GO-2026-4870 (crypto/tls), GO-2026-4869 (archive/tar), GO-2026-4865 (html/template). govulncheck now reports clean.
+
 ### Added
 
 - 16 `go test -fuzz` targets for the string parsers that accept attacker-controlled input: log-line extractors (`extractIPAfterKeyword`, `extractBracketedIP`, `firstField`, `parseDovecotLoginFields`, `extractMailHoldSender`, `extractSetID`), finding-message parsers (`extractPID`, `extractFilePath`, `extractEximMsgID`, `parseDBFindingDetails`), config parsers (`extractPHPDefine`, `extractPHPString`), low-level decoders (`parseHexAddr`, `decodeHexString`), and `isPrivateOrLoopback`. Each target ships a seed corpus covering valid, malformed, empty, and path-traversal shapes; the seeds also run as regression tests under a normal `go test`. Five seconds of fuzzing per target finds no crashers.
@@ -14,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `release:github` GitLab job is no longer gated on a manual click. It already fired only on `/^v/` tags and is `allow_failure: true`, so running it automatically is safe and removes the manual step that was stalling badge rebuilds on fresh tags.
+- Bumped Go dependencies to latest: VirusTotal/yara-x/go v1.14.0 to v1.15.0, golang.org/x/sys v0.42.0 to v0.43.0, golang.org/x/net v0.52.0 to v0.53.0, golang.org/x/crypto v0.49.0 to v0.50.0, golang.org/x/term v0.41.0 to v0.42.0, golang.org/x/text v0.35.0 to v0.36.0, go.etcd.io/bbolt v1.4.0 to v1.4.3, spf13/cobra v1.8.1 to v1.10.2, spf13/pflag v1.0.6 to v1.0.10, mdlayher/netlink v1.9.0 to v1.11.0, mdlayher/socket v0.5.1 to v0.6.0, vishvananda/netlink v1.3.0 to v1.3.1, vishvananda/netns v0.0.4 to v0.0.5. Full `go test -race` suite clean.
 
 ## [2.4.2] - 2026-04-15
 
