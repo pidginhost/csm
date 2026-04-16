@@ -7,9 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Daemon control socket at `/var/run/csm/control.sock` (0600, root-only). The CLI commands `run`, `run-critical`, `run-deep`, `status`, `update-rules`, and `update-geoip` now route through the running daemon instead of opening their own bbolt handle. This eliminates the `store: opening bbolt: timeout` error from timer-spawned scans racing the daemon for the database lock. Commands that don't need bbolt (`validate`, `verify`, `rehash`, `update-rules`, `update-geoip`) no longer open it. Remaining migrations (`baseline`, `firewall`, `check-*`) are tracked as phase 2 in `ROADMAP.md`.
+
 ### Fixed
 
 - YARA-X native-code SIGSEGV on daemon startup. The 2.4.3 dependency bump from `VirusTotal/yara-x/go` 1.14.0 to 1.15.0 produced a binary that SEGV'd inside `yrx_compiler_build` during the first rule compile on every startup, putting the daemon into a systemd restart loop on affected servers. Reverted to YARA-X 1.14.0 (proven stable). Go 1.26.2, bbolt 1.4.3, and the other 2.4.3 dependency bumps are retained — they are not implicated. The 2.4.3 builder image changes (source-built libunwind, musl linker shims) are retained and harmless with 1.14.0; reintroducing 1.15.0 later will be done on a branch with reproduction coverage before it ships.
+
+### Changed
+
+- Build toolchain moved from Alpine+musl-static to AlmaLinux 8+glibc-dynamic (phase A, amd64 only). The 2.4.3 YARA-X upgrade incident showed the musl-static configuration is not a toolchain upstream YARA-X exercises, and the eight consecutive builder-image iterations it took to link 1.15.0 were symptomatic. Binaries now target a glibc 2.28 floor — every modern cPanel host (CloudLinux/Alma/RHEL 8+, Ubuntu 22.04+) meets this. YARA-X itself stays statically linked into the binary; only glibc and a handful of standard system libraries link dynamically. A new CI check fails the build if any referenced glibc symbol exceeds `GLIBC_2.28`. Linux/arm64 cross-compilation is temporarily `allow_failure` while the glibc aarch64 cross-toolchain work lands (phase B, tracked in `ROADMAP.md`). See `ROADMAP.md` item 1 for the full decision record.
 
 ## [2.4.3] - 2026-04-16
 
