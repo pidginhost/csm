@@ -32,7 +32,16 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 # aarch64 musl cross-toolchain. musl.cc is the standard source for
 # pre-built musl cross-compilers. If availability becomes a concern,
 # mirror the tarball to our own registry and swap the URL.
-RUN curl -fsSL https://musl.cc/aarch64-linux-musl-cross.tgz | tar -xz -C /opt
+#
+# Symlink every binary into /usr/local/bin. /usr/local/bin is on every
+# sane default PATH, so the cross tools are reachable even if a CI
+# runner replaces the image's ENV PATH (which the GitLab Kubernetes
+# executor sometimes does). The symlinked wrappers follow back to
+# /opt/.../bin and pick up the right sysroot via argv[0].
+RUN curl -fsSL https://musl.cc/aarch64-linux-musl-cross.tgz | tar -xz -C /opt \
+    && for bin in /opt/aarch64-linux-musl-cross/bin/*; do \
+         ln -sf "$bin" "/usr/local/bin/$(basename "$bin")"; \
+       done
 ENV PATH="/opt/aarch64-linux-musl-cross/bin:${PATH}"
 
 # Add the Rust target so cargo can cross-compile to aarch64-linux-musl.
