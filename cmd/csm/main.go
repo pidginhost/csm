@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +15,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/daemon"
 	"github.com/pidginhost/csm/internal/geoip"
 	"github.com/pidginhost/csm/internal/integrity"
@@ -71,11 +74,11 @@ func main() {
 	case "uninstall":
 		runUninstall()
 	case "run":
-		runTieredChecks(checks.TierAll, true)
+		runTierViaSocket("all")
 	case "run-critical":
-		runTieredChecks(checks.TierCritical, true)
+		runTierViaSocket("critical")
 	case "run-deep":
-		runTieredChecks(checks.TierDeep, true)
+		runTierViaSocket("deep")
 	case "check":
 		runTieredChecks(checks.TierAll, false)
 	case "check-critical":
@@ -83,7 +86,7 @@ func main() {
 	case "check-deep":
 		runTieredChecks(checks.TierDeep, false)
 	case "status":
-		runStatus()
+		runStatusViaSocket()
 	case "baseline":
 		runBaseline()
 	case "rehash":
@@ -126,9 +129,9 @@ Commands:
   daemon        Run as persistent daemon (real-time monitoring with fanotify + inotify)
   install       Deploy to /opt/csm/, set up auditd, create systemd timers, establish baseline
   uninstall     Clean removal
-  run           Run all checks, send alerts (legacy single-timer mode)
-  run-critical  Run critical checks only (every 10min timer)
-  run-deep      Run deep filesystem scans only (every 60min timer)
+  run           Run all checks via the running daemon (all tiers, alerts on)
+  run-critical  Run critical checks via the running daemon (every 10min timer)
+  run-deep      Run deep filesystem scans via the running daemon (every 60min timer)
   check         Run all checks, print to stdout (no alerts, for testing)
   check-critical  Test critical checks only
   check-deep      Test deep checks only
@@ -359,6 +362,71 @@ func runUninstall() {
 	}
 }
 
+// runTierViaSocket asks the running daemon to execute a tier and
+// prints a one-line summary. The daemon is the sole bbolt owner, so
+// there is no lock contention with the internal scanner; they share
+// the same in-process state.
+func runTierViaSocket(tier string) {
+	result := requireDaemon(control.CmdTierRun, control.TierRunArgs{
+		Tier:   tier,
+		Alerts: true,
+	})
+	var r control.TierRunResult
+	if err := json.Unmarshal(result, &r); err != nil {
+		fmt.Fprintf(os.Stderr, "csm: decoding result: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("tier=%s findings=%d new=%d elapsed_ms=%d\n",
+		tier, r.Findings, r.NewFindings, r.ElapsedMs)
+}
+
+// runStatusViaSocket mirrors the old on-disk `csm status` but reads
+// from the live daemon instead of re-opening the store. Gracefully
+// exits non-zero if the daemon is not running.
+func runStatusViaSocket() {
+	result := requireDaemon(control.CmdStatus, nil)
+	var s control.StatusResult
+	if err := json.Unmarshal(result, &s); err != nil {
+		fmt.Fprintf(os.Stderr, "csm: decoding result: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("version:          %s\n", s.Version)
+	fmt.Printf("uptime:           %s\n", formatUptime(s.UptimeSec))
+	if s.LatestScanTime != "" {
+		fmt.Printf("last scan:        %s\n", s.LatestScanTime)
+	}
+	fmt.Printf("latest findings:  %d\n", s.LatestFindings)
+	fmt.Printf("history count:    %d\n", s.HistoryCount)
+	fmt.Printf("dropped alerts:   %d\n", s.DroppedAlerts)
+}
+
+func formatUptime(sec int64) string {
+	d := time.Duration(sec) * time.Second
+	days := int64(d / (24 * time.Hour))
+	d -= time.Duration(days) * 24 * time.Hour
+	hours := int64(d / time.Hour)
+	d -= time.Duration(hours) * time.Hour
+	mins := int64(d / time.Minute)
+	return fmt.Sprintf("%dd %dh %dm", days, hours, mins)
+}
+
+// tryReloadDaemon sends a reload command best-effort. A missing socket
+// is fine — the next daemon start will pick up new files on its own.
+// Any other error is surfaced to the operator but does not fail the
+// outer command, which has already written new files to disk.
+func tryReloadDaemon(cmd string) {
+	_, err := sendControl(cmd, nil)
+	if err == nil {
+		fmt.Fprintf(os.Stderr, "Daemon reloaded.\n")
+		return
+	}
+	if errors.Is(err, errDaemonNotRunning) {
+		fmt.Fprintf(os.Stderr, "Daemon not running; new files will load on next start.\n")
+		return
+	}
+	fmt.Fprintf(os.Stderr, "Warning: daemon reload failed: %v\n", err)
+}
+
 func runTieredChecks(tier checks.Tier, sendAlerts bool) {
 	// When not sending alerts (check mode), disable auto-response actions
 	checks.DryRun = !sendAlerts
@@ -429,18 +497,6 @@ func runTieredChecks(tier checks.Tier, sendAlerts bool) {
 	if sendAlerts {
 		alert.SendHeartbeat(cfg)
 	}
-}
-
-func runStatus() {
-	cfg := loadConfig()
-	store, err := state.Open(cfg.StatePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening state: %v\n", err)
-		os.Exit(1)
-	}
-	defer func() { _ = store.Close() }()
-
-	store.PrintStatus()
 }
 
 func runBaseline() {
@@ -518,7 +574,7 @@ func runBaseline() {
 // scan. Use this after upgrading the binary or editing csm.yaml - it's instant
 // compared to baseline which re-scans the entire server.
 func runRehash() {
-	cfg := loadConfig()
+	cfg := loadConfigLite()
 
 	binaryHash, _ := integrity.HashFile(binaryPath)
 	cfg.Integrity.BinaryHash = binaryHash
@@ -541,7 +597,7 @@ func runRehash() {
 }
 
 func runValidate() {
-	cfg := loadConfig()
+	cfg := loadConfigLite()
 
 	deep := false
 	for _, arg := range os.Args[2:] {
@@ -609,7 +665,7 @@ func startTimers() {
 }
 
 func runVerify() {
-	cfg := loadConfig()
+	cfg := loadConfigLite()
 	if err := integrity.Verify(binaryPath, cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "INTEGRITY CHECK FAILED: %v\n", err)
 		os.Exit(2)
@@ -618,7 +674,7 @@ func runVerify() {
 }
 
 func runUpdateRules() {
-	cfg := loadConfig()
+	cfg := loadConfigLite()
 
 	fmt.Fprintf(os.Stderr, "Downloading rules from %s...\n", cfg.Signatures.UpdateURL)
 	count, err := signatures.Update(cfg.Signatures.RulesDir, cfg.Signatures.UpdateURL, cfg.Signatures.SigningKey)
@@ -627,11 +683,11 @@ func runUpdateRules() {
 		os.Exit(1)
 	}
 	fmt.Fprintf(os.Stderr, "Updated: %d rules installed to %s\n", count, cfg.Signatures.RulesDir)
-	fmt.Fprintf(os.Stderr, "Reload running daemon with: kill -HUP $(pidof csm)\n")
+	tryReloadDaemon(control.CmdRulesReload)
 }
 
 func runUpdateGeoIP() {
-	cfg := loadConfig()
+	cfg := loadConfigLite()
 
 	if cfg.GeoIP.AccountID == "" || cfg.GeoIP.LicenseKey == "" {
 		fmt.Fprintf(os.Stderr, "No MaxMind credentials configured (set geoip.account_id and geoip.license_key in csm.yaml)\n")
@@ -659,7 +715,7 @@ func runUpdateGeoIP() {
 	}
 
 	if anyUpdated {
-		fmt.Fprintf(os.Stderr, "Reload running daemon with: kill -HUP $(pidof csm)\n")
+		tryReloadDaemon(control.CmdGeoIPReload)
 	}
 	if anyError {
 		os.Exit(1)

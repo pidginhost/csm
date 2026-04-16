@@ -46,6 +46,7 @@ type Daemon struct {
 	fileMonitor      *FileMonitor
 	hijackDetector   *PasswordHijackDetector
 	pamListener      *PAMListener
+	controlListener  *ControlListener
 	spoolWatcher     *SpoolWatcher
 	spoolWatcherMu   sync.Mutex
 	forwarderWatcher *ForwarderWatcher
@@ -63,6 +64,7 @@ type Daemon struct {
 	wg               sync.WaitGroup
 	smtpAuthTracker  *smtpAuthTracker
 	mailAuthTracker  *mailAuthTracker
+	startTime        time.Time
 }
 
 // New creates a new daemon instance.
@@ -103,6 +105,8 @@ func (d *Daemon) SetVersion(v string) {
 
 // Run starts the daemon and blocks until stopped.
 func (d *Daemon) Run() error {
+	d.startTime = time.Now()
+
 	// Initialize structured logging from environment (CSM_LOG_FORMAT,
 	// CSM_LOG_LEVEL). The default text handler preserves the legacy
 	// "[YYYY-MM-DD HH:MM:SS] msg" format so operators mixing csmlog
@@ -196,6 +200,11 @@ func (d *Daemon) Run() error {
 
 	// Start PAM listener for real-time brute-force detection
 	d.startPAMListener()
+
+	// Start control socket listener for the thin-client CLI. The
+	// daemon is the sole bbolt owner; CLI commands that previously
+	// raced for the lock now route through this socket.
+	d.startControlListener()
 
 	// Start fanotify file monitor (real-time detection starts immediately)
 	d.startFileMonitor()
@@ -357,6 +366,9 @@ func (d *Daemon) Run() error {
 	}
 	if d.pamListener != nil {
 		d.pamListener.Stop()
+	}
+	if d.controlListener != nil {
+		d.controlListener.Stop()
 	}
 
 	d.wg.Wait()
@@ -973,6 +985,24 @@ func (d *Daemon) startPAMListener() {
 		pl.Run(d.stopCh)
 	}()
 	csmlog.Info("PAM listener active", "socket", pamSocketPath)
+}
+
+func (d *Daemon) startControlListener() {
+	cl, err := NewControlListener(d)
+	if err != nil {
+		// The daemon can still function without the socket — periodic
+		// scans and webui keep running — but the CLI will hard-error
+		// because the socket is the expected path. Log loudly.
+		csmlog.Error("control listener not available", "err", err)
+		return
+	}
+	d.controlListener = cl
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		cl.Run(d.stopCh)
+	}()
+	csmlog.Info("control listener active", "socket", controlSocketPath)
 }
 
 func (d *Daemon) startFileMonitor() {

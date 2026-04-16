@@ -49,9 +49,10 @@ Without the `yara` build tag, YARA rules are silently ignored.
 ## Updating Rules
 
 ```bash
-csm update-rules          # download latest rules from registry
-kill -HUP $(pidof csm)    # reload without restart
+csm update-rules          # download latest rules and reload the running daemon
 ```
+
+`csm update-rules` now asks the daemon to reload through the control socket once the download completes. If the daemon is not running, the next start picks the files up automatically. `kill -HUP $(pidof csm)` still works.
 
 Or from the web UI: **Rules** page > **Reload Rules** button.
 
