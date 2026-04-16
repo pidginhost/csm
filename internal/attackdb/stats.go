@@ -20,8 +20,8 @@ type AttackStats struct {
 	Last24hEvents int                `json:"last_24h_events"`
 	Last7dEvents  int                `json:"last_7d_events"`
 	BlockedIPs    int                `json:"blocked_ips"`
-	ByType        map[AttackType]int `json:"by_type"`      // lifetime, aggregated from IPRecord.AttackCounts
-	ByType24h     map[AttackType]int `json:"by_type_24h"`  // last 24h, aggregated from the events log
+	ByType        map[AttackType]int `json:"by_type"`     // lifetime, aggregated from IPRecord.AttackCounts
+	ByType24h     map[AttackType]int `json:"by_type_24h"` // last 24h, aggregated from the events log
 	TopAttackers  []*IPRecord        `json:"top_attackers"`
 	HourlyBuckets [24]int            `json:"hourly_buckets"` // last 24h, index 0 = oldest hour
 	DailyBuckets  [7]int             `json:"daily_buckets"`  // last 7 days, index 0 = oldest day
