@@ -80,7 +80,17 @@ RUN git clone --depth 1 --branch v1.14.0 \
         --library-type=staticlib --prefix=/usr/local \
     && rm -rf /tmp/yara-x /root/.cargo/registry /root/.cargo/git
 
-# Sanity-check: yara_x_capi.pc is reachable and links cleanly.
+# pkg-config on RHEL/Alma does NOT include /usr/local/lib/pkgconfig
+# in its default search path (unlike Alpine). Export PKG_CONFIG_PATH
+# so both the sanity check below and the downstream build:linux-amd64
+# CI job find yara_x_capi.pc. Covers both common install locations
+# (lib and lib64) in case cargo-c's target choice drifts.
+ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/local/lib64/pkgconfig
+
+# Sanity-check: yara_x_capi.pc is reachable and links cleanly. If
+# this ever starts failing again, a quick `find /usr/local -name
+# 'yara_x_capi.pc'` locates the install path cargo-c chose on the
+# builder host.
 RUN pkg-config --libs --static yara_x_capi
 
 WORKDIR /workspace
