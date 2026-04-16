@@ -1,31 +1,80 @@
-# CSM Builder Image — Go 1.26 + pre-compiled YARA-X static library
-# Rebuild only when upgrading YARA-X version.
+# CSM Builder Image: Go 1.26 + pre-compiled YARA-X static library for
+# both amd64 (host) and aarch64 (cross). Rebuild when upgrading YARA-X
+# version or the cross-toolchain.
 #
 # Build:
 #   docker build -f build/Dockerfile.builder -t csm/builder:yara-1.15.0 .
 #   docker tag csm/builder:yara-1.15.0 csm/builder:latest
+#
+# What's inside:
+#   /usr/local/{lib,include}                    YARA-X built for amd64-linux-musl
+#   /usr/local/aarch64/{lib,include}            YARA-X built for aarch64-linux-musl
+#   /opt/aarch64-linux-musl-cross/bin           aarch64 musl cross-toolchain
+#   ~/.cargo/bin/rustup, cargo, rustc           full Rust toolchain with both targets
+#
+# build:linux-amd64 consumes /usr/local/*.
+# build:linux-arm64 sets PKG_CONFIG_LIBDIR=/usr/local/aarch64/lib/pkgconfig
+# and CC=aarch64-linux-musl-gcc, then Go's cgo links against /usr/local/aarch64/lib.
 
 FROM golang:1.26-alpine
 
-# Build dependencies
+# Host build tooling. We install rustup below (not apk's rust) so we can
+# add the aarch64-unknown-linux-musl target programmatically.
 RUN apk add --no-cache \
-    gcc musl-dev pkgconf openssl-dev openssl-libs-static \
-    git rust cargo make
+        gcc musl-dev pkgconf openssl-dev openssl-libs-static \
+        git make curl bash perl
 
-# Install cargo-c (builds Rust libraries as C-compatible .a/.so)
+# Rustup: canonical Rust manager, lets us add cross-targets.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --default-toolchain stable --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# aarch64 musl cross-toolchain. musl.cc is the standard source for
+# pre-built musl cross-compilers. If availability becomes a concern,
+# mirror the tarball to our own registry and swap the URL.
+RUN curl -fsSL https://musl.cc/aarch64-linux-musl-cross.tgz | tar -xz -C /opt
+ENV PATH="/opt/aarch64-linux-musl-cross/bin:${PATH}"
+
+# Add the Rust target so cargo can cross-compile to aarch64-linux-musl.
+RUN rustup target add aarch64-unknown-linux-musl
+
+# cargo-c: builds Rust libraries as C-compatible .a + .h + .pc.
 RUN cargo install cargo-c@0.10.20 --locked
 
-# Compile YARA-X v1.15.0 static library
-RUN git clone --depth 1 --branch v1.15.0 https://github.com/VirusTotal/yara-x.git /tmp/yara-x \
-    && cd /tmp/yara-x \
-    && cargo cinstall -p yara-x-capi --release --prefix=/usr/local \
+# Point openssl-sys at a vendored source build so the aarch64 cross
+# compile doesn't try to link the amd64 openssl-libs-static installed
+# above. OPENSSL_STATIC=1 forces static linkage; unset OPENSSL_DIR /
+# _LIB_DIR so cargo picks the vendored path.
+ENV OPENSSL_STATIC=1
+
+# Fetch YARA-X source once, build twice (host then cross).
+RUN git clone --depth 1 --branch v1.15.0 \
+        https://github.com/VirusTotal/yara-x.git /tmp/yara-x
+
+# Build for the native host arch (amd64) and install to /usr/local.
+RUN cd /tmp/yara-x \
+    && cargo cinstall -p yara-x-capi --release --prefix=/usr/local
+
+# Build for aarch64-linux-musl and install to /usr/local/aarch64. The
+# CC_aarch64_... variable is what the cc crate looks up to find a cross
+# compiler; CARGO_TARGET_..._LINKER is what cargo uses to link.
+RUN cd /tmp/yara-x \
+    && CC_aarch64_unknown_linux_musl=aarch64-linux-musl-gcc \
+       CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-musl-gcc \
+       AR_aarch64_unknown_linux_musl=aarch64-linux-musl-ar \
+       cargo cinstall -p yara-x-capi --release \
+           --target aarch64-unknown-linux-musl \
+           --prefix=/usr/local/aarch64 \
     && rm -rf /tmp/yara-x /root/.cargo/registry /root/.cargo/git
 
-# Create stub libgcc_s.a — YARA-X references it but musl doesn't need it
-RUN ar rcs /usr/local/lib/libgcc_s.a
+# Stub libgcc_s.a for both prefixes. YARA-X references it but musl
+# doesn't need it, so an empty archive satisfies the linker.
+RUN ar rcs /usr/local/lib/libgcc_s.a \
+    && aarch64-linux-musl-ar rcs /usr/local/aarch64/lib/libgcc_s.a
 
-# Verify YARA-X is available
-RUN pkg-config --libs --static yara_x_capi
+# Sanity-check both prefixes.
+RUN pkg-config --libs --static yara_x_capi \
+    && PKG_CONFIG_LIBDIR=/usr/local/aarch64/lib/pkgconfig \
+       pkg-config --libs --static yara_x_capi
 
-# Pre-warm Go module cache for faster builds
 WORKDIR /workspace
