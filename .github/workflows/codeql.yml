@@ -1,0 +1,48 @@
+name: CodeQL
+
+# CodeQL static analysis for Go. Runs on push to main, on pull requests
+# against main, and on a weekly schedule so newly-disclosed query rules
+# find old code. Results land in the repository's Security tab.
+#
+# Actions pinned by SHA per OpenSSF Scorecard recommendation.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Sundays 04:17 UTC. Staggered off the top of the hour.
+    - cron: '17 4 * * 0'
+
+permissions:
+  contents: read
+  security-events: write      # upload SARIF to the Security tab
+  actions: read               # read workflow metadata
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze Go
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@c10b8064de6f491fea524254123dbe5e09572f13  # v4.35.1
+        with:
+          languages: go
+          queries: security-and-quality
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@c10b8064de6f491fea524254123dbe5e09572f13  # v4.35.1
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@c10b8064de6f491fea524254123dbe5e09572f13  # v4.35.1
+        with:
+          category: "/language:go"
