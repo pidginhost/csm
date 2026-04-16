@@ -20,9 +20,15 @@ FROM golang:1.26-alpine
 
 # Host build tooling. We install rustup below (not apk's rust) so we can
 # add the aarch64-unknown-linux-musl target programmatically.
+#
+# libunwind-static: YARA-X 1.15.0 (via cargo-c's generated .pc file) adds
+# -lunwind to Libs.private. Alpine's default image has no static
+# libunwind; without this package the amd64 link fails with
+# "cannot find -lunwind".
 RUN apk add --no-cache \
-        gcc musl-dev pkgconf openssl-dev openssl-libs-static \
-        git make curl bash perl
+        gcc g++ musl-dev pkgconf openssl-dev openssl-libs-static \
+        libunwind-static \
+        git make curl bash perl autoconf automake libtool
 
 # Rustup: canonical Rust manager, lets us add cross-targets.
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
@@ -61,6 +67,31 @@ ENV PATH="/opt/aarch64-linux-musl-cross/bin:${PATH}"
 
 # Add the Rust target so cargo can cross-compile to aarch64-linux-musl.
 RUN rustup target add aarch64-unknown-linux-musl
+
+# Cross-build a static libunwind for aarch64-linux-musl. YARA-X 1.15.0
+# emits -lunwind in its generated .pc file (see note in apk add above),
+# and the musl.cc cross-toolchain doesn't ship libunwind. Source build
+# against the cross-gcc is the only portable option.
+RUN set -eu; \
+    curl -fsSL -o /tmp/libunwind.tar.gz \
+        https://github.com/libunwind/libunwind/releases/download/v1.8.1/libunwind-1.8.1.tar.gz; \
+    sz=$(stat -c %s /tmp/libunwind.tar.gz); \
+    [ "$sz" -gt 1000000 ] || { echo "FATAL: libunwind tarball too small"; exit 1; }; \
+    tar -xzf /tmp/libunwind.tar.gz -C /tmp; \
+    cd /tmp/libunwind-1.8.1; \
+    ./configure --host=aarch64-linux-musl --prefix=/usr/local/aarch64 \
+        --disable-shared --enable-static \
+        --disable-minidebuginfo --disable-documentation --disable-tests \
+        CC=aarch64-linux-musl-gcc AR=aarch64-linux-musl-ar \
+        RANLIB=aarch64-linux-musl-ranlib \
+        CFLAGS="-O2 -fPIC" >/tmp/libunwind-configure.log 2>&1 \
+        || { echo "configure failed:"; tail -40 /tmp/libunwind-configure.log; exit 1; }; \
+    make -j"$(nproc)" >/tmp/libunwind-make.log 2>&1 \
+        || { echo "make failed:"; tail -40 /tmp/libunwind-make.log; exit 1; }; \
+    make install >/dev/null; \
+    test -f /usr/local/aarch64/lib/libunwind.a; \
+    rm -rf /tmp/libunwind*; \
+    echo "Built /usr/local/aarch64/lib/libunwind.a"
 
 # Alpine's gcc is already a musl compiler (Alpine ships musl as libc), but
 # upstream rustup's x86_64-unknown-linux-musl target -- and every build
