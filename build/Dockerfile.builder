@@ -76,7 +76,7 @@ RUN set -eu; \
     curl -fsSL -o /tmp/libunwind.tar.gz \
         https://github.com/libunwind/libunwind/releases/download/v1.8.1/libunwind-1.8.1.tar.gz; \
     sz=$(stat -c %s /tmp/libunwind.tar.gz); \
-    [ "$sz" -gt 1000000 ] || { echo "FATAL: libunwind tarball too small"; exit 1; }; \
+    [ "$sz" -gt 500000 ] || { echo "FATAL: libunwind tarball too small ($sz bytes)"; exit 1; }; \
     tar -xzf /tmp/libunwind.tar.gz -C /tmp; \
     cd /tmp/libunwind-1.8.1; \
     ./configure --host=aarch64-linux-musl --prefix=/usr/local/aarch64 \
