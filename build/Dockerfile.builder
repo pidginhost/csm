@@ -21,13 +21,13 @@ FROM golang:1.26-alpine
 # Host build tooling. We install rustup below (not apk's rust) so we can
 # add the aarch64-unknown-linux-musl target programmatically.
 #
-# libunwind-static: YARA-X 1.15.0 (via cargo-c's generated .pc file) adds
-# -lunwind to Libs.private. Alpine's default image has no static
-# libunwind; without this package the amd64 link fails with
-# "cannot find -lunwind".
+# No libunwind-static from apk here: Alpine's package is built with
+# minidebuginfo enabled, which makes libunwind.a pull in liblzma symbols
+# at link time. We build libunwind from source (for both archs, further
+# down) with --disable-minidebuginfo to get a self-contained .a with
+# zero external deps.
 RUN apk add --no-cache \
         gcc g++ musl-dev pkgconf openssl-dev openssl-libs-static \
-        libunwind-static \
         git make curl bash perl autoconf automake libtool
 
 # Rustup: canonical Rust manager, lets us add cross-targets.
@@ -68,10 +68,35 @@ ENV PATH="/opt/aarch64-linux-musl-cross/bin:${PATH}"
 # Add the Rust target so cargo can cross-compile to aarch64-linux-musl.
 RUN rustup target add aarch64-unknown-linux-musl
 
-# Cross-build a static libunwind for aarch64-linux-musl. YARA-X 1.15.0
-# emits -lunwind in its generated .pc file (see note in apk add above),
-# and the musl.cc cross-toolchain doesn't ship libunwind. Source build
-# against the cross-gcc is the only portable option.
+# Build a static libunwind for amd64 host. YARA-X 1.15.0 emits -lunwind
+# in its generated .pc file, so we need a libunwind.a for the host link
+# step too. Alpine's packaged libunwind-static would be simpler but it's
+# compiled with minidebuginfo enabled, which makes libunwind.a reference
+# lzma_* symbols (lzma_stream_footer_decode etc.) and forces every
+# consumer to also link -llzma. Build from source with
+# --disable-minidebuginfo to get a clean self-contained archive.
+RUN set -eu; \
+    curl -fsSL -o /tmp/libunwind.tar.gz \
+        https://github.com/libunwind/libunwind/releases/download/v1.8.1/libunwind-1.8.1.tar.gz; \
+    sz=$(stat -c %s /tmp/libunwind.tar.gz); \
+    [ "$sz" -gt 500000 ] || { echo "FATAL: libunwind tarball too small ($sz bytes)"; exit 1; }; \
+    tar -xzf /tmp/libunwind.tar.gz -C /tmp; \
+    cd /tmp/libunwind-1.8.1; \
+    ./configure --prefix=/usr/local \
+        --disable-shared --enable-static \
+        --disable-minidebuginfo --disable-documentation --disable-tests \
+        CFLAGS="-O2 -fPIC" >/tmp/libunwind-amd64-configure.log 2>&1 \
+        || { echo "configure failed:"; tail -40 /tmp/libunwind-amd64-configure.log; exit 1; }; \
+    make -j"$(nproc)" >/tmp/libunwind-amd64-make.log 2>&1 \
+        || { echo "make failed:"; tail -40 /tmp/libunwind-amd64-make.log; exit 1; }; \
+    make install >/dev/null; \
+    test -f /usr/local/lib/libunwind.a; \
+    rm -rf /tmp/libunwind*; \
+    echo "Built /usr/local/lib/libunwind.a"
+
+# Cross-build a static libunwind for aarch64-linux-musl. Same reason as
+# the amd64 build above; the musl.cc cross-toolchain doesn't ship
+# libunwind, so source build against the cross-gcc is the only option.
 RUN set -eu; \
     curl -fsSL -o /tmp/libunwind.tar.gz \
         https://github.com/libunwind/libunwind/releases/download/v1.8.1/libunwind-1.8.1.tar.gz; \
