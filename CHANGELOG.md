@@ -7,29 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.3] - 2026-04-16
+
 ### Security
 
-- Go toolchain bumped from 1.26.1 to 1.26.2, fixing 6 stdlib CVEs reported by govulncheck in reachable code paths: GO-2026-4947 / GO-2026-4946 / GO-2026-4866 (crypto/x509), GO-2026-4870 (crypto/tls), GO-2026-4869 (archive/tar), GO-2026-4865 (html/template). govulncheck now reports clean.
+- Go toolchain 1.26.1 -> 1.26.2, clearing 6 stdlib CVEs flagged by govulncheck in reachable code paths (crypto/x509, crypto/tls, archive/tar, html/template). govulncheck now clean.
+- Added CodeQL SAST workflow (push / PR / weekly) and SHA-pinned the remaining GitHub Actions.
 
 ### Added
 
-- `AttackStats.ByType24h` (JSON `by_type_24h`): per-attack-type counts restricted to the last 24 hours, aggregated from the events log. Powers the dashboard "Top Attack Types" card so it matches the adjacent 24h timeline instead of showing lifetime totals.
-- 16 `go test -fuzz` targets for the string parsers that accept attacker-controlled input: log-line extractors (`extractIPAfterKeyword`, `extractBracketedIP`, `firstField`, `parseDovecotLoginFields`, `extractMailHoldSender`, `extractSetID`), finding-message parsers (`extractPID`, `extractFilePath`, `extractEximMsgID`, `parseDBFindingDetails`), config parsers (`extractPHPDefine`, `extractPHPString`), low-level decoders (`parseHexAddr`, `decodeHexString`), and `isPrivateOrLoopback`. Each target ships a seed corpus covering valid, malformed, empty, and path-traversal shapes; the seeds also run as regression tests under a normal `go test`. Five seconds of fuzzing per target finds no crashers.
+- Linux/arm64 binaries now ship the real YARA-X scanner. Previous arm64 builds omitted the `yara` build tag and shipped a no-op stub, silently disabling every YARA-backed check on Graviton, Ampere, Raspberry Pi, and other ARM hosts.
+- Dashboard "Top Attack Types" card scoped to 24h via a new `by_type_24h` JSON field so it matches the adjacent 24h timeline instead of showing lifetime totals.
+- 16 `go test -fuzz` targets for parsers that accept attacker-controlled input (log-line extractors, finding-message parsers, config parsers, low-level decoders). Seeds double as regression tests; five seconds of fuzzing per target finds no crashers.
 
 ### Fixed
 
-- Dashboard "Findings Timeline (24h)" was leaking a `y.stacked: true` from when it was a stacked bar, which pinned High and Warning on top of Critical. Y-axis unstacked and small-series fills removed.
-- Dashboard "Top Attack Types" card now scopes to 24h via the new `by_type_24h` field and hides the empty legend slot — previously it showed lifetime totals next to a 24h timeline.
-- Dashboard "30-Day Trend" no longer fills the High and Warning series, so Critical's area fill can't obscure them.
-- Threat Intelligence "Attack Trend (24h)" bar labels were off-by-one (oldest bar read "24h" for a bucket covering 23h ago) and the tick stride skipped the most recent hour. Labels now read "23h…1h…now" and the stride anchors on the right edge.
-- `db_post_injection` no longer flags legitimate third-party widget embeds (cookie-consent tools, document-embed services, regional video/form widgets) that happen to sit outside the built-in safe-domain list. The detector now requires concrete attacker-characteristic markers in the external script URL before firing HIGH, instead of treating every unlisted domain as suspicious. The related wp_options and autoresponse paths pick up the same classifier. Existing attack patterns (exfiltration hosts, raw-IP loaders, protocol-relative external scripts, plaintext HTTP scripts) continue to fire. The previous allowlist remains as an operator-approvable fast path.
-- `db_spam_injection` no longer flags legitimate prose mentions of pharma/gambling keywords in business content (industry-vertical listings, advisor biographies, product catalogs). Findings now require the keyword to be accompanied by an SEO-cloaking or injection signal in the same content region. Cloaked-link attacks — the real compromise pattern — continue to fire.
-- `perf_wp_config` no longer produces noise findings for operator-set PHP values inside cPanel-managed `.user.ini` files. cPanel's MultiPHP INI Editor stamps a recognisable header when it writes the file; the scanner skips that file while present. The suppression is scoped strictly to `.user.ini`: the same header appearing elsewhere is not authoritative and does not affect other checks. Files without the header keep their original severity.
+- `db_post_injection` no longer flags legitimate third-party widget embeds (cookie-consent tools, document-embed services, regional video/form widgets). Detection now requires concrete attacker markers in the script URL; exfiltration hosts, raw-IP loaders, abused-TLD hosts, and plaintext HTTP scripts continue to fire.
+- `db_spam_injection` no longer flags prose mentions of pharma/gambling keywords in legitimate business content (industry listings, advisor bios, catalogs). Findings now require an SEO-cloaking or injection signal alongside the keyword.
+- `perf_wp_config` no longer produces noise for operator-set PHP values in cPanel-managed `.user.ini` files. Suppression is scoped strictly to `.user.ini` via the cPanel MultiPHP INI Editor header.
+- Dashboard "Findings Timeline (24h)" and "30-Day Trend" no longer let Critical's stacking/fill obscure High and Warning.
+- Threat Intelligence "Attack Trend (24h)" bar labels were off-by-one; they now read "23h..1h..now" anchored on the right edge.
 
 ### Changed
 
-- `release:github` GitLab job is no longer gated on a manual click. It already fired only on `/^v/` tags and is `allow_failure: true`, so running it automatically is safe and removes the manual step that was stalling badge rebuilds on fresh tags.
-- Bumped Go dependencies to latest: VirusTotal/yara-x/go v1.14.0 to v1.15.0, golang.org/x/sys v0.42.0 to v0.43.0, golang.org/x/net v0.52.0 to v0.53.0, golang.org/x/crypto v0.49.0 to v0.50.0, golang.org/x/term v0.41.0 to v0.42.0, golang.org/x/text v0.35.0 to v0.36.0, go.etcd.io/bbolt v1.4.0 to v1.4.3, spf13/cobra v1.8.1 to v1.10.2, spf13/pflag v1.0.6 to v1.0.10, mdlayher/netlink v1.9.0 to v1.11.0, mdlayher/socket v0.5.1 to v0.6.0, vishvananda/netlink v1.3.0 to v1.3.1, vishvananda/netns v0.0.4 to v0.0.5. Full `go test -race` suite clean.
+- Bumped Go dependencies to latest: VirusTotal/yara-x/go 1.14.0 -> 1.15.0, go.etcd.io/bbolt 1.4.0 -> 1.4.3, spf13/cobra 1.8.1 -> 1.10.2, plus the x/sys, x/net, x/crypto, x/term, x/text, pflag, netlink, netns families. Full `go test -race` suite clean.
+- `release:github` GitLab job runs automatically on tag pipelines (was manual-click; already gated on `/^v/` tags and `allow_failure: true`).
 
 ## [2.4.2] - 2026-04-15
 
