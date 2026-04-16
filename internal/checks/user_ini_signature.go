@@ -40,16 +40,29 @@ import "bytes"
 // capitalizations are rejected to avoid accepting forgeries.
 const cpanelUserIniSignature = "cPanel-generated php ini directives"
 
+// cpanelUserIniMaxLeadingBlanks caps how many blank lines may precede
+// the signature. cPanel itself writes the signature as the very first
+// line, so any tolerance here is purely for admins who may have
+// round-tripped the file through a text editor that adds a trailing
+// newline or through an FTP client that accumulates CRLFs. A small cap
+// also closes a forgery route: without a bound, an attacker who wants
+// to suppress severity on their injected values could prepend a large
+// run of blank lines followed by the genuine cPanel header string, and
+// a first-non-blank-line-only check would classify the file as
+// managed despite the attacker owning all the content above the
+// header.
+const cpanelUserIniMaxLeadingBlanks = 5
+
 // isCpanelManagedUserIni reports whether data begins with the cPanel
 // MultiPHP-managed .user.ini header. Empty/whitespace-only input
-// returns false. Leading blank lines are skipped before the check.
+// returns false. A small number (cpanelUserIniMaxLeadingBlanks) of
+// leading blank lines is tolerated; beyond that, the file is not
+// considered cPanel-managed even if the signature appears later.
 func isCpanelManagedUserIni(data []byte) bool {
 	if len(data) == 0 {
 		return false
 	}
-	// Walk lines until the first non-blank one is found. Check that
-	// line for the signature and return immediately. If we never find
-	// a non-blank line, the file is considered unmanaged.
+	blanks := 0
 	start := 0
 	for i := 0; i <= len(data); i++ {
 		if i < len(data) && data[i] != '\n' {
@@ -59,10 +72,15 @@ func isCpanelManagedUserIni(data []byte) bool {
 		// Strip CR from CRLF, then whitespace on both sides.
 		line = bytes.TrimRight(line, "\r")
 		line = bytes.TrimSpace(line)
-		if len(line) > 0 {
-			return bytes.Contains(line, []byte(cpanelUserIniSignature))
+		if len(line) == 0 {
+			blanks++
+			if blanks > cpanelUserIniMaxLeadingBlanks {
+				return false
+			}
+			start = i + 1
+			continue
 		}
-		start = i + 1
+		return bytes.Contains(line, []byte(cpanelUserIniSignature))
 	}
 	return false
 }

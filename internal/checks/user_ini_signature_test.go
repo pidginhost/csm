@@ -123,6 +123,21 @@ func TestIsCpanelManagedUserIni_CaseSensitivityMatchesExact(t *testing.T) {
 	}
 }
 
+func TestIsCpanelManagedUserIni_ManyLeadingBlankLinesRejected(t *testing.T) {
+	// Defence against header forgery: an attacker prepends a large run
+	// of blank lines and then the cPanel header string. The intent of
+	// the "first non-blank line must carry the signature" rule is that
+	// the signature occupies the top of the file, not that it merely
+	// appears somewhere after arbitrary whitespace. Without a cap on
+	// leading blanks an attacker can bury their own content above the
+	// cPanel header and still get the file classified as managed
+	// (suppressing severity on their injected values below).
+	data := []byte(strings.Repeat("\n", 50) + "; cPanel-generated php ini directives, do not edit\n[PHP]\ndisplay_errors = On\n")
+	if isCpanelManagedUserIni(data) {
+		t.Fatalf("signature after a large run of leading blanks must not classify as managed")
+	}
+}
+
 func TestIsCpanelManagedUserIni_WindowsLineEndings(t *testing.T) {
 	// CRLF line endings — some admins transfer files via FTP in text
 	// mode and accumulate CRLFs. Must still classify correctly.

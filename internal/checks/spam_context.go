@@ -141,15 +141,32 @@ func hitHasSpamContext(content string, start, end int, keyword string) bool {
 	return false
 }
 
+// positionAbsoluteRe and negativeCoordRe are evaluated together in
+// windowHasCSSCloaking for the "off-screen absolute positioning"
+// signal. Keeping them as two independent regexes (rather than one
+// paired regex with [^"'}]* between them) closes an evasion where the
+// attacker splits the cloak across two CSS rules — e.g.
+// `<style>.a{position:absolute}.b{left:-9999px}</style>` — which the
+// paired form stops matching at the first `}`. Both signals must
+// appear somewhere in the proximity window; the window itself is
+// bounded (see spamContextWindow) so the association is not unbounded.
+var (
+	positionAbsoluteRe = regexp.MustCompile(`(?i)\bposition\s*:\s*absolute\b`)
+	negativeCoordRe    = regexp.MustCompile(`(?i)\b(left|top|right|bottom|margin-left|margin-top)\s*:\s*-\s*\d{2,}`)
+)
+
 // windowHasCSSCloaking returns true if the window contains any CSS
-// declaration from cssCloakPatterns. Iterating a pre-compiled list
-// avoids a single mega-regex that would be hard to read and hard to
-// maintain.
+// declaration from cssCloakPatterns, OR if it contains both
+// position:absolute and a negative coordinate somewhere in the window
+// (independent-signal form, for rule-split evasions).
 func windowHasCSSCloaking(window string) bool {
 	for _, re := range cssCloakPatterns {
 		if re.MatchString(window) {
 			return true
 		}
+	}
+	if positionAbsoluteRe.MatchString(window) && negativeCoordRe.MatchString(window) {
+		return true
 	}
 	return false
 }

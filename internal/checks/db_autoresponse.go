@@ -462,15 +462,26 @@ var simpleScriptRe = regexp.MustCompile(
 	`(?i)<script[^>]*src\s*=\s*["']?https?://[^"'\s>]+["']?[^>]*>\s*</script>`)
 
 // removeMaliciousScripts strips malicious <script> injections from content,
-// preserving scripts from known safe domains.
+// preserving scripts that are not classified as attacker scripts.
+//
+// Uses the same isAttackerScriptURL predicate as extractMaliciousScriptURL
+// so detection and removal stay semantically paired. If the detector
+// would not flag a given URL as malicious, the remover must not strip
+// it — otherwise an operator running DBCleanOption on an option that
+// contains a real injection alongside a legitimate third-party embed
+// (OneTrust, Issuu, regional widget) would silently lose the legitimate
+// embed along with the attacker's script.
 func removeMaliciousScripts(content string) string {
-	// First pass: remove style-break pattern (always malicious).
+	// First pass: remove style-break pattern (always malicious — the
+	// </style><script ...></script><style> sandwich is not a form any
+	// legitimate CMS or plugin emits).
 	content = maliciousScriptRe.ReplaceAllString(content, "")
 
-	// Second pass: remove standalone script tags with non-safe domains.
+	// Second pass: remove standalone script tags only when the URL
+	// shows attacker indicators.
 	content = simpleScriptRe.ReplaceAllStringFunc(content, func(match string) string {
 		urls := scriptSrcRe.FindStringSubmatch(match)
-		if len(urls) >= 2 && !isSafeScriptDomain(urls[1]) {
+		if len(urls) >= 2 && isAttackerScriptURL(urls[1]) {
 			return ""
 		}
 		return match

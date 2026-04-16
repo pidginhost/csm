@@ -260,6 +260,30 @@ func TestContentHasSpamContext_CaseInsensitiveCSSDetection(t *testing.T) {
 	}
 }
 
+func TestContentHasSpamContext_StyleTagRuleSplitEvasion(t *testing.T) {
+	// Evasion attempt: attacker splits position:absolute and a negative
+	// coordinate across two CSS rules inside a <style> block. A naive
+	// pair regex using `[^"'}]*` stops at the first `}` and misses the
+	// combination. Both signals still live near the keyword, so the
+	// analyser must associate them.
+	content := `<style>.a{position:absolute}.b{left:-9999px}</style>` +
+		`<div class="a b">buy cheap viagra</div>`
+	if !contentHasSpamContext(content, spamPattern(t, "viagra")) {
+		t.Fatalf("position:absolute + negative coord split across CSS rules must still fire")
+	}
+}
+
+func TestContentHasSpamContext_StyleAttrRuleSplitInSeparateAttributes(t *testing.T) {
+	// Same evasion logic but via two sibling elements each carrying one
+	// half of the cloak. Attacker hides the container, puts the link in
+	// a child — still within the proximity window.
+	content := `<div style="position:absolute"><span style="left:-12000px">` +
+		`<a href="https://spam.top/pharma">pharma</a></span></div>`
+	if !contentHasSpamContext(content, spamPattern(t, "pharma")) {
+		t.Fatalf("position:absolute + negative left split across sibling style attributes must still fire")
+	}
+}
+
 // -----------------------------------------------------------------------------
 // countCloakedSpamMatches — row aggregator used by checkWPPosts
 // -----------------------------------------------------------------------------

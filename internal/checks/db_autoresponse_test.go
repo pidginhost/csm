@@ -2,6 +2,7 @@ package checks
 
 import (
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -118,6 +119,59 @@ func TestExtractMaliciousScriptURL_Safe(t *testing.T) {
 				t.Errorf("extractMaliciousScriptURL() = %q, want empty (safe content)", got)
 			}
 		})
+	}
+}
+
+// --- removeMaliciousScripts semantic parity with extractMaliciousScriptURL ---
+
+func TestRemoveMaliciousScripts_PreservesLegitimateUnlistedDomains(t *testing.T) {
+	// Regression: the detector (extractMaliciousScriptURL) now uses the
+	// attack-indicator classifier. The removal path must use the same
+	// classifier — otherwise an operator running DBCleanOption on a
+	// compromised option that also contains a legitimate OneTrust or
+	// Issuu embed would silently lose the legitimate embed (because
+	// those hosts are not on knownSafeDomains). Parity between detection
+	// and removal is a correctness requirement.
+	attack := `<script src="https://evil.top/payload.js"></script>`
+	legitOneTrust := `<script src="https://privacyportalde-cdn.onetrust.com/privacy-notice-scripts/otnotice-1.0.min.js"></script>`
+	legitIssuu := `<script src="//e.issuu.com/embed.js"></script>`
+	input := "prefix " + legitOneTrust + " middle " + attack + " more " + legitIssuu + " suffix"
+
+	out := removeMaliciousScripts(input)
+
+	if strings.Contains(out, "evil.top") {
+		t.Errorf("attacker script must be removed; got: %s", out)
+	}
+	if !strings.Contains(out, "onetrust.com") {
+		t.Errorf("legitimate OneTrust embed must be preserved; got: %s", out)
+	}
+	if !strings.Contains(out, "e.issuu.com") {
+		t.Errorf("legitimate Issuu embed must be preserved; got: %s", out)
+	}
+}
+
+func TestRemoveMaliciousScripts_StripsAttackerIndicatorURLs(t *testing.T) {
+	// Each case contains exactly one attack-indicator URL and one
+	// unremarkable-but-unlisted URL. The removal must preserve the
+	// unlisted one and strip the attacker one.
+	cases := []struct {
+		attack, legit string
+	}{
+		{`<script src="https://192.0.2.42/loader.js"></script>`, `<script src="https://example.com/widget.js"></script>`},
+		{`<script src="http://cdn.example.com/x.js"></script>`, `<script src="https://formular230.ro/share/abc"></script>`},
+		{`<script src="https://attacker.workers.dev/x.js"></script>`, `<script src="https://www.trilulilu.ro/embed-video/x/y"></script>`},
+	}
+	for _, c := range cases {
+		out := removeMaliciousScripts(c.attack + c.legit)
+		if strings.Contains(out, "192.0.2.42") || strings.Contains(out, "cdn.example.com") || strings.Contains(out, "workers.dev") {
+			t.Errorf("attacker indicator URL was not removed; input=%q out=%q", c.attack+c.legit, out)
+		}
+		// Legit preserved
+		for _, want := range []string{"example.com/widget.js", "formular230.ro", "trilulilu.ro"} {
+			if strings.Contains(c.legit, want) && !strings.Contains(out, want) {
+				t.Errorf("legit URL %q was stripped; input=%q out=%q", want, c.attack+c.legit, out)
+			}
+		}
 	}
 }
 
@@ -260,8 +314,10 @@ func TestRemoveMaliciousScripts(t *testing.T) {
 			changed: true,
 		},
 		{
+			// Attacker indicator: abused TLD (.top on the Spamhaus
+			// recurring bad-TLD list).
 			name:    "standalone malicious script",
-			input:   `some content <script src="https://evil.com/payload.js"></script> more content`,
+			input:   `some content <script src="https://evil.top/payload.js"></script> more content`,
 			want:    `some content  more content`,
 			changed: true,
 		},
@@ -272,8 +328,14 @@ func TestRemoveMaliciousScripts(t *testing.T) {
 			changed: false,
 		},
 		{
+			// Attacker indicator: raw IPv4 host. Note the sibling URL
+			// is a legitimate unlisted CDN (cdn.jsdelivr.net is on
+			// knownSafeDomains as a fast-path). Under the new removal
+			// semantics, only the IP-host script is stripped; the
+			// jsDelivr script is preserved because it has no attack
+			// indicator.
 			name:    "mixed safe and malicious",
-			input:   `<script src="https://cdn.jsdelivr.net/npm/vue@3"></script><script src="https://evil.xyz/x.js"></script>`,
+			input:   `<script src="https://cdn.jsdelivr.net/npm/vue@3"></script><script src="https://203.0.113.9/x.js"></script>`,
 			want:    `<script src="https://cdn.jsdelivr.net/npm/vue@3"></script>`,
 			changed: true,
 		},
