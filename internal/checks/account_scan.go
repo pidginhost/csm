@@ -240,7 +240,7 @@ func makeAccountCrontabCheck(account string) CheckFunc {
 		}
 
 		content := string(data)
-		for _, pattern := range matchCrontabPatterns(content) {
+		for _, pattern := range MatchCrontabPatternsDeep(content) {
 			findings = append(findings, alert.Finding{
 				Severity: alert.Critical,
 				Check:    "suspicious_crontab",

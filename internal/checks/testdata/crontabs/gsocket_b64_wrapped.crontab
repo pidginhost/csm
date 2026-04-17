@@ -1,0 +1,3 @@
+# Surface text contains zero suspicious tokens; the markers only appear
+# after one base64 decode pass. Exercises the deep matcher code path.
+*/30 * * * * /opt/cache/refresh L29wdC9zaGFyZS9kZWZ1bmN0LWtlcm5lbC1tb2R1bGUgU0VFRCBQUk5HIDIwMjU=

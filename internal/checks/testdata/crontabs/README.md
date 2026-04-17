@@ -17,6 +17,7 @@ path, so detections firing on the decoded shape continue to match.
 | `gsocket_defunct_kernel_03.crontab` | `exec -a '[slub_flushwq]'` disguise | slub allocator workqueue lookalike |
 | `gsocket_defunct_kernel_04.crontab` | `exec -a '[raid5wq]'` disguise | md-raid workqueue lookalike |
 | `gsocket_defunct_kernel_05.crontab` | `exec -a '[card0-crtc8]'` disguise | DRM card lookalike |
+| `gsocket_b64_wrapped.crontab` | outer-base64 wrapped variant | surface text has zero markers; only `MatchCrontabPatternsDeep` finds them |
 | `benign_01.crontab` | standard cron lines | must NOT match |
 
 All malicious samples share: the `DO NOT REMOVE THIS LINE. SEED PRNG.

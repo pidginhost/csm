@@ -92,14 +92,85 @@ func TestMatchCrontabPatterns_GsocketDefunctFixtures(t *testing.T) {
 }
 
 // TestMatchCrontabPatterns_BenignNoMatch ensures a normal-looking user
-// crontab does not trip the heuristic.
+// crontab does not trip the heuristic. Both the literal and the deep
+// matchers must stay quiet on benign input.
 func TestMatchCrontabPatterns_BenignNoMatch(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("testdata", "crontabs", "benign_01.crontab"))
 	if err != nil {
 		t.Fatalf("read benign fixture: %v", err)
 	}
 	if matched := matchCrontabPatterns(string(data)); len(matched) > 0 {
-		t.Errorf("benign crontab matched patterns %v (false positive)", matched)
+		t.Errorf("benign crontab matched literal patterns %v (false positive)", matched)
+	}
+	if matched := MatchCrontabPatternsDeep(string(data)); len(matched) > 0 {
+		t.Errorf("benign crontab matched deep patterns %v (false positive)", matched)
+	}
+}
+
+// TestMatchCrontabPatternsDeep_FindsViaBase64 is the regression for the
+// base64-wrapped variant: the surface text has none of the cron markers,
+// but a single base64 decode pass exposes them. Without the deep pass
+// this fixture would slip through CheckCrontabs entirely.
+func TestMatchCrontabPatternsDeep_FindsViaBase64(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "crontabs", "gsocket_b64_wrapped.crontab"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	if literal := matchCrontabPatterns(string(data)); len(literal) > 0 {
+		t.Fatalf("literal matcher should miss this fixture (no surface markers); got %v", literal)
+	}
+	deep := MatchCrontabPatternsDeep(string(data))
+	if len(deep) == 0 {
+		t.Fatal("deep matcher should find markers in the base64 payload, got none")
+	}
+	wantAny := map[string]bool{"defunct-kernel": true, "SEED PRNG": true}
+	hit := false
+	for _, m := range deep {
+		if wantAny[m] {
+			hit = true
+		}
+	}
+	if !hit {
+		t.Errorf("deep matched %v but expected at least one of defunct-kernel / SEED PRNG", deep)
+	}
+}
+
+// TestMatchCrontabPatternsDeep_LiteralStillMatches guards against the
+// deep matcher silently dropping a literal hit during the base64 pass
+// (e.g. by a bug that overwrote the seen-set).
+func TestMatchCrontabPatternsDeep_LiteralStillMatches(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "crontabs", "gsocket_defunct_kernel_01.crontab"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	literal := matchCrontabPatterns(string(data))
+	deep := MatchCrontabPatternsDeep(string(data))
+	if len(deep) < len(literal) {
+		t.Errorf("deep returned %d patterns, literal returned %d; deep must be a superset",
+			len(deep), len(literal))
+	}
+	for _, lp := range literal {
+		found := false
+		for _, dp := range deep {
+			if lp == dp {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("literal hit %q lost in deep result %v", lp, deep)
+		}
+	}
+}
+
+// TestMatchCrontabPatternsDeep_InvalidBase64NoCrash protects the deep
+// pass against adversarial input: a crontab packed with bogus base64-ish
+// strings must not panic, leak time, or produce findings.
+func TestMatchCrontabPatternsDeep_InvalidBase64NoCrash(t *testing.T) {
+	junk := "0 * * * * /usr/bin/echo " + strings.Repeat("XYZ!!!@@@notbase64notbase64notbase64", 50)
+	matched := MatchCrontabPatternsDeep(junk)
+	if len(matched) > 0 {
+		t.Errorf("expected no matches on garbage input, got %v", matched)
 	}
 }
 

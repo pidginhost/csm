@@ -66,6 +66,11 @@ var pluginStatCache sync.Map // key: pluginDir string → value: pluginCacheEntr
 
 const pluginCacheTTL = 5 * time.Minute
 
+// cronSpoolWatchDir is the directory the realtime crontab watcher marks.
+// Declared as a var (not const) so tests can redirect it under t.TempDir()
+// without touching the real /var/spool/cron.
+var cronSpoolWatchDir = "/var/spool/cron"
+
 // alertDedupTTL is the cooldown period for duplicate alerts on the same
 // check+filepath combination. Prevents alert storms from rapid writes.
 const alertDedupTTL = 30 * time.Second
@@ -147,6 +152,19 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 	if mountOK == 0 {
 		_ = unix.Close(fd)
 		return nil, fmt.Errorf("no mount points could be watched (tried %v)", mountPaths)
+	}
+
+	// Directory-scoped watch on /var/spool/cron so any user crontab write
+	// reaches analyzeFile in real time. Best-effort: cron may live under a
+	// different path on non-cPanel hosts (the platform layer normalises),
+	// and we'd rather lose the realtime crontab signal than fail daemon
+	// startup. The polled CheckCrontabs run still covers this case via
+	// the next scheduled scan.
+	if _, statErr := os.Stat(cronSpoolWatchDir); statErr == nil {
+		if err := unix.FanotifyMark(fd, FAN_MARK_ADD,
+			FAN_CLOSE_WRITE|FAN_CREATE|FAN_EVENT_ON_CHILD, -1, cronSpoolWatchDir); err != nil {
+			fmt.Fprintf(os.Stderr, "[%s] Warning: cannot watch %s: %v\n", ts(), cronSpoolWatchDir, err)
+		}
 	}
 
 	// C4 - create pipe for epoll stop signaling
@@ -541,6 +559,13 @@ func (fm *FileMonitor) isInteresting(path string) bool {
 		return true
 	}
 
+	// User crontabs surfaced via the directory-scoped fanotify mark in
+	// NewFileMonitor. Each write to /var/spool/cron/<user> dispatches to
+	// checkCrontab in real time.
+	if strings.HasPrefix(path, cronSpoolWatchDir+"/") {
+		return true
+	}
+
 	// Executables in /tmp or /dev/shm
 	if strings.HasPrefix(path, "/tmp/") || strings.HasPrefix(path, "/dev/shm/") || strings.HasPrefix(path, "/var/tmp/") {
 		return true
@@ -675,6 +700,15 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	// on stock plugin code (Wordfence, Contact Form 7, etc.). Cache miss
 	// triggers a background fetch; misses fall through to rule evaluation.
 	if fm.wpCache != nil && fm.wpCache.IsVerifiedPluginFile(event.fd, path) {
+		return
+	}
+
+	// User crontab written under /var/spool/cron/<user>. Scan content
+	// from the event fd via the shared deep matcher and emit Critical on
+	// any hit. The polled CheckCrontabs run still tracks root crontab
+	// hash drift, so we skip root here to avoid duplicate signal.
+	if strings.HasPrefix(path, cronSpoolWatchDir+"/") {
+		fm.checkCrontab(event.fd, path, procInfo)
 		return
 	}
 
@@ -860,6 +894,30 @@ var (
 		`(?i)^\s*Rewrite(?:Cond|Rule)\s`,
 	)
 )
+
+// checkCrontab scans a freshly-written /var/spool/cron/<user> file for the
+// known persistence-marker patterns (literal + base64-decoded). Reads from
+// the event fd, not the path, so an attacker swapping the file post-event
+// cannot redirect us. Root crontab drift is tracked separately via
+// hash-baseline by the polled CheckCrontabs.
+func (fm *FileMonitor) checkCrontab(fd int, path, procInfo string) {
+	user := filepath.Base(path)
+	if user == "" || user == "root" || user == filepath.Base(cronSpoolWatchDir) {
+		return
+	}
+	data := readFromFd(fd, 65536)
+	if data == nil {
+		return
+	}
+	matched := checks.MatchCrontabPatternsDeep(string(data))
+	if len(matched) == 0 {
+		return
+	}
+	fm.sendAlertWithPath(alert.Critical, "suspicious_crontab",
+		fmt.Sprintf("Suspicious crontab written for user %s: %v", user, matched),
+		fmt.Sprintf("File: %s\nPatterns matched: %v", path, matched),
+		path, procInfo)
+}
 
 // checkHtaccess reads .htaccess content from the event fd and checks for injection.
 // C3 - reads from fd, not path.
