@@ -287,3 +287,25 @@ $table_prefix = 'wp_';
 		t.Error("exploit_wp_config_stealer must not fire on stock wp-config.php")
 	}
 }
+
+// --- backdoor_php_auto_append: php_shield is not a .htaccess context ----
+
+func TestBackdoorPhpAutoAppend_PhpShieldTargetStillFires(t *testing.T) {
+	scanner := loadRepoScanner(t)
+
+	// CSM's own PHP Shield is activated via /opt/cpanel/ea-phpXX/root/etc/php.d/
+	// .ini files, never via .htaccess auto_prepend_file. So a directive
+	// pointing at any path ending in php_shield.php is always suspicious:
+	// an attacker who drops a shell there is trying to hide behind the
+	// product name. The exclusion must not cover it.
+	cases := []string{
+		"php_value auto_prepend_file /home/victim/public_html/uploads/php_shield.php\n",
+		"php_value auto_prepend_file '/tmp/php_shield.php'\n",
+	}
+	for _, body := range cases {
+		matches := scanner.ScanContent([]byte(body), ".htaccess")
+		if !hasRule(matches, "backdoor_php_auto_append") {
+			t.Errorf("backdoor_php_auto_append must fire on php_shield.php directive target (CSM shield is ini-activated, not htaccess): %q", body)
+		}
+	}
+}
