@@ -245,3 +245,72 @@ func TestIsVerifiedPluginFile_NonPluginPathReturnsFalse(t *testing.T) {
 		t.Error("IsVerifiedPluginFile = true for non-plugin path, want false")
 	}
 }
+
+// --- Adversarial ZIP hardening -------------------------------------------
+
+func TestFetchPluginChecksums_RejectsOversizedEntry(t *testing.T) {
+	// Build a ZIP where one entry decompresses past the per-entry cap.
+	// Use a small compressed payload that expands to more than
+	// maxPluginZipBytes; the simplest way is storing (no compression) a
+	// buffer larger than the cap. The HTTP body cap will trip first if
+	// we send the whole thing, so we set Method=Deflate and provide a
+	// highly compressible payload of a size that passes the 100 MB
+	// compressed ceiling but expands past it.
+	//
+	// Simulation: directly craft a ZIP locally where we write entries of
+	// size (maxPluginZipBytes + 1) uncompressed via Deflate so the
+	// resulting ZIP is small but decompression would blow the limit.
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.CreateHeader(&zip.FileHeader{
+		Name:   "evil-plugin/huge.bin",
+		Method: zip.Deflate,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Highly compressible payload (all zeroes) of size maxPluginZipBytes+1.
+	big := make([]byte, maxPluginZipBytes+1)
+	if _, werr := w.Write(big); werr != nil {
+		t.Fatal(werr)
+	}
+	if cerr := zw.Close(); cerr != nil {
+		t.Fatal(cerr)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/zip")
+		_, _ = w.Write(buf.Bytes())
+	}))
+	defer srv.Close()
+
+	_, err = fetchPluginChecksumsFromURL(srv.URL+"/evil-plugin.0.0.1.zip", "evil-plugin")
+	if err == nil {
+		t.Fatal("expected error for decompression-bomb entry, got nil")
+	}
+}
+
+func TestFetchPluginChecksums_RejectsPathTraversalEntry(t *testing.T) {
+	// Craft a ZIP whose entry uses ../ to escape the plugin root.
+	files := map[string][]byte{
+		"evil-plugin/evil-plugin.php":     []byte("<?php // main"),
+		"evil-plugin/../../../etc/passwd": []byte("root:x:0:0"),
+	}
+	zipBytes := buildPluginZip(t, files)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/zip")
+		_, _ = w.Write(zipBytes)
+	}))
+	defer srv.Close()
+
+	got, err := fetchPluginChecksumsFromURL(srv.URL+"/evil-plugin.0.0.1.zip", "evil-plugin")
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	for k := range got {
+		if strings.HasPrefix(k, "..") || strings.Contains(k, "/..") {
+			t.Errorf("path-traversal entry leaked into checksum map: %q", k)
+		}
+	}
+}

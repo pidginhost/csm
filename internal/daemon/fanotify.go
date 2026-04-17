@@ -469,15 +469,21 @@ func (fm *FileMonitor) reconcileDrops() {
 			if !fm.isInteresting(fullPath) {
 				continue
 			}
-			// #nosec G304 -- fullPath is a directory entry under a dir the
-			// kernel already notified us about; the reconcile step owns
-			// reopening because the original fanotify fd is gone.
-			f, err := os.Open(fullPath)
-			if err != nil {
-				continue
-			}
-			fm.analyzeFile(fileEvent{path: fullPath, fd: int(f.Fd())})
-			_ = f.Close()
+			// Open+analyse+close wrapped so a panic in analyzeFile does not
+			// leak the fd; otherwise `defer f.Close()` in a loop body would
+			// defer until reconcileDrops returns, accumulating fds across
+			// every entry in every tracked dir.
+			func() {
+				// #nosec G304 -- fullPath is a directory entry under a dir
+				// the kernel already notified us about; reconcile owns
+				// reopening because the original fanotify fd is gone.
+				f, err := os.Open(fullPath)
+				if err != nil {
+					return
+				}
+				defer func() { _ = f.Close() }()
+				fm.analyzeFile(fileEvent{path: fullPath, fd: int(f.Fd())})
+			}()
 		}
 	}
 }

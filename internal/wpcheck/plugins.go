@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -114,17 +115,30 @@ func fetchPluginChecksumsFromURL(url, slug string) (map[string]string, error) {
 			// Skip; callers detect partial results by checking cache emptiness.
 			continue
 		}
-		rel := strings.TrimPrefix(name, prefix)
+		rel := filepath.Clean(strings.TrimPrefix(name, prefix))
+		// Reject path-traversal and absolute paths: a crafted ZIP entry
+		// named "<slug>/../../etc/passwd" would otherwise land in the
+		// checksum map. Defense-in-depth against a compromised CDN.
+		if rel == "." || strings.HasPrefix(rel, "..") || strings.HasPrefix(rel, "/") {
+			continue
+		}
 		rc, err := zf.Open()
 		if err != nil {
 			return nil, fmt.Errorf("opening zip entry %s: %w", name, err)
 		}
+		// Cap decompressed size per entry. Without this, a zip-bomb whose
+		// compressed body fits under maxPluginZipBytes can still exhaust
+		// memory during io.Copy. +1 lets us detect overflow.
+		limited := io.LimitReader(rc, maxPluginZipBytes+1)
 		h := sha256.New()
-		if _, err := io.Copy(h, rc); err != nil {
-			_ = rc.Close()
+		nCopied, err := io.Copy(h, limited)
+		_ = rc.Close()
+		if err != nil {
 			return nil, fmt.Errorf("hashing zip entry %s: %w", name, err)
 		}
-		_ = rc.Close()
+		if nCopied > maxPluginZipBytes {
+			return nil, fmt.Errorf("zip entry %s exceeds per-entry size cap", name)
+		}
 		out[rel] = hex.EncodeToString(h.Sum(nil))
 	}
 	if len(out) == 0 {
@@ -178,19 +192,41 @@ func (c *Cache) startBackgroundPluginFetch(slug, version string) {
 	}
 	c.fetching[key] = true
 	c.mu.Unlock()
+	go c.fetchPluginWithRetry(slug, version, 0)
+}
 
-	go func() {
-		checksums, err := FetchPluginChecksums(slug, version)
+// fetchPluginWithRetry mirrors the core-checksum fetchWithRetry: the
+// fetching flag stays set across retries so cache-miss events for the
+// same slug/version do not spawn new goroutines. On exhaustion the flag
+// is cleared so a future event can retry fresh.
+func (c *Cache) fetchPluginWithRetry(slug, version string, attempt int) {
+	backoffs := []time.Duration{1 * time.Minute, 5 * time.Minute, 15 * time.Minute, 1 * time.Hour}
+	key := pluginKey(slug, version)
+
+	checksums, err := FetchPluginChecksums(slug, version)
+	if err == nil {
+		c.setPluginChecksums(slug, version, checksums)
 		c.mu.Lock()
 		delete(c.fetching, key)
 		c.mu.Unlock()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "wpcheck: plugin fetch failed for %s %s: %v\n", slug, version, err)
-			return
-		}
-		c.setPluginChecksums(slug, version, checksums)
 		fmt.Fprintf(os.Stderr, "wpcheck: cached %d checksums for plugin %s %s\n", len(checksums), slug, version)
-	}()
+		return
+	}
+
+	if attempt >= len(backoffs) {
+		c.mu.Lock()
+		delete(c.fetching, key)
+		c.mu.Unlock()
+		fmt.Fprintf(os.Stderr, "wpcheck: plugin fetch abandoned for %s %s after %d attempts: %v\n",
+			slug, version, attempt+1, err)
+		return
+	}
+	delay := backoffs[attempt]
+	fmt.Fprintf(os.Stderr, "wpcheck: plugin fetch failed for %s %s, retry in %v: %v\n",
+		slug, version, delay, err)
+	time.AfterFunc(delay, func() {
+		c.fetchPluginWithRetry(slug, version, attempt+1)
+	})
 }
 
 // IsVerifiedPluginFile compares a file against the cached wordpress.org
