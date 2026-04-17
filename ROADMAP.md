@@ -24,8 +24,10 @@ This file is for contributors. End-user documentation lives in
 
 ## 1. Move build from musl-static to glibc-dynamic
 
-**Status:** in progress — phase A (amd64) landed; phase B (arm64
-cross-compilation) pending
+**Status:** done — phase A (amd64, glibc-dynamic) landed and verified
+on cluster6; phase B (arm64 via docker buildx + QEMU) shipped via
+`build/Dockerfile.build` and `build-builder-image-arm64`. Both arches
+now target the same `GLIBC_2.28` floor.
 **Drives / unblocks:** safe future YARA-X upgrades; any other cgo
 dependency upgrade
 

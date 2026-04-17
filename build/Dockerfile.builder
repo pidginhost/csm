@@ -19,7 +19,7 @@
 #   docker build -f build/Dockerfile.builder -t csm/builder:glibc-2.28 .
 #   docker tag csm/builder:glibc-2.28 csm/builder:latest
 
-FROM almalinux:8
+FROM almalinux:8@sha256:bc9ff06f1e0d3fa623384eb4a86cf1d5dc825cf91a31b61455139ee4ca9f47e5
 
 # System development tooling. PowerTools (aka CRB on newer Alma)
 # exposes dev packages that are not in the base repos.
@@ -48,9 +48,18 @@ RUN dnf -y install dnf-plugins-core epel-release \
 
 # Go 1.26.2 from the official tarball. Alma 8's repos track older
 # Go; we want the exact version csm is developed against.
+#
+# TARGETARCH is automatically set by docker buildx to the target
+# platform's GOARCH (amd64 on a linux/amd64 build, arm64 on a
+# linux/arm64 build). Under buildx + qemu (see the
+# build-builder-image-arm64 CI job), the arm64 build runs under
+# emulation and pulls the arm64 Go tarball. Under plain `docker
+# build` (the amd64 build-builder-image job) TARGETARCH falls back
+# to amd64 via the default below.
+ARG TARGETARCH=amd64
 ENV GO_VERSION=1.26.2
 RUN curl -fsSL -o /tmp/go.tar.gz \
-        https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz \
+        "https://go.dev/dl/go${GO_VERSION}.linux-${TARGETARCH}.tar.gz" \
     && tar -xzf /tmp/go.tar.gz -C /usr/local \
     && rm /tmp/go.tar.gz
 ENV PATH=/usr/local/go/bin:$PATH

@@ -1,0 +1,71 @@
+# syntax=docker/dockerfile:1
+#
+# Used by the arm64 build path (build:linux-arm64 CI job) via
+# `docker buildx build --platform linux/arm64 --output
+# type=local,dest=./out`.
+#
+# The amd64 build does not use this file — it uses the existing
+# pattern: `image: ${CSM_BUILDER_IMAGE}:${CSM_BUILDER_TAG}` +
+# `go build` run directly in the CI script, on a native amd64
+# Kubernetes runner.
+#
+# For arm64 we cannot do the same: our Kubernetes runners are amd64
+# only, so an arm64 container image would not schedule there. Instead
+# we use docker buildx + QEMU user-mode emulation:
+#
+#   1. tonistiigi/binfmt registers the aarch64 QEMU handler on the
+#      DinD host's kernel.
+#   2. buildx creates a docker-container driver, which can build
+#      for cross-platform via the registered emulator.
+#   3. This Dockerfile is FROM the arm64 builder image, runs
+#      go build under emulation, and emits a scratch final stage
+#      containing only the binary + sha256 + glibc-floor files.
+#   4. buildx extracts that scratch filesystem to the CI workspace
+#      with --output type=local,dest=...
+#
+# The arm64 build is slower than native amd64 (QEMU user-mode
+# emulation adds ~3-5x for Go compilation), but the binary produced
+# is genuine arm64 machine code with the same GLIBC_2.28 floor as
+# the amd64 binary — both come from the same AlmaLinux 8 sysroot.
+
+ARG BUILDER_IMAGE
+
+FROM ${BUILDER_IMAGE} AS env
+WORKDIR /workspace
+
+FROM env AS csmbuild
+ARG VERSION=dev
+ARG BUILD_HASH=unknown
+ARG BUILD_TIME=unknown
+ENV CGO_ENABLED=1
+# The source tree is copied in rather than mounted so the build is
+# reproducible from whatever buildx staged. go.mod / go.sum are
+# already in the repo.
+COPY . .
+RUN CGO_LDFLAGS="$(pkg-config --libs --static yara_x_capi)" go build -tags yara \
+        -ldflags "-s -w -linkmode external -extldflags '-L/usr/local/lib' \
+            -X main.Version=${VERSION} \
+            -X main.BuildHash=${BUILD_HASH} \
+            -X main.BuildTime=${BUILD_TIME}" \
+        -o /csm ./cmd/csm/
+
+# GLIBC floor check runs INSIDE the Dockerfile (where objdump from
+# binutils is available) because the CI docker:latest runner image
+# does not ship binutils. Emits a floor marker file that the CI
+# script surfaces via `cat`. The check fails the build if any
+# referenced GLIBC_* symbol exceeds GLIBC_2.28 — guards against a
+# runtime glibc dependency that would not satisfy on EL8 aarch64.
+RUN GLIBC_MAX=$(objdump -T /csm 2>/dev/null | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -V | tail -1 || echo "GLIBC_UNKNOWN") \
+    && echo "Highest GLIBC symbol referenced: ${GLIBC_MAX}" \
+    && echo "${GLIBC_MAX}" > /csm.glibc-floor \
+    && case "${GLIBC_MAX}" in \
+        GLIBC_2.[0-9]|GLIBC_2.1[0-9]|GLIBC_2.2[0-8]) echo "OK: floor at or below GLIBC_2.28" ;; \
+        *) echo "WARN: floor ${GLIBC_MAX} exceeds GLIBC_2.28 — binary will fail on EL8"; exit 1 ;; \
+       esac
+
+# Scratch-based final stage keeps the exported filesystem minimal:
+# just the binary and the floor marker. buildx --output type=local
+# writes these to the CI workspace directly.
+FROM scratch AS export
+COPY --from=csmbuild /csm /csm
+COPY --from=csmbuild /csm.glibc-floor /csm.glibc-floor
