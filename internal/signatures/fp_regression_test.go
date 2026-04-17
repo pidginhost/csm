@@ -209,3 +209,41 @@ class Freemius extends Freemius_Abstract {
 		t.Error("deface_owned_by regression: PHP-rendered defacement page was not detected")
 	}
 }
+
+// --- backdoor_php_auto_append: anchored exclude, not loose substring ----
+
+func TestBackdoorPhpAutoAppend_LooseTokenNoLongerBypasses(t *testing.T) {
+	scanner := loadRepoScanner(t)
+
+	// The original rule had exclude_patterns: [..., "litespeed", ...].
+	// A trailing comment containing "litespeed" silenced the rule even
+	// when the directive target was a dropped shell. Anchored exclusion
+	// must ignore arbitrary comment tokens.
+	cases := []string{
+		"php_value auto_prepend_file /tmp/evil.php # litespeed\n",
+		"php_value auto_prepend_file /tmp/evil.php # php_shield.php\n",
+		"php_value auto_prepend_file /tmp/evil.php # advanced-headers.php\n",
+	}
+	for _, body := range cases {
+		matches := scanner.ScanContent([]byte(body), ".htaccess")
+		if !hasRule(matches, "backdoor_php_auto_append") {
+			t.Errorf("backdoor_php_auto_append must fire on forged-token body: %q", body)
+		}
+	}
+}
+
+func TestBackdoorPhpAutoAppend_LegitDirectiveTargetsStillExcluded(t *testing.T) {
+	scanner := loadRepoScanner(t)
+
+	cases := []string{
+		"php_value auto_prepend_file '/home/user/public_html/wordfence-waf.php'\n",
+		"php_value auto_prepend_file /home/user/public_html/wp-content/advanced-headers.php\n",
+		"php_value auto_prepend_file /home/user/public_html/sucuri.php\n",
+	}
+	for _, body := range cases {
+		matches := scanner.ScanContent([]byte(body), ".htaccess")
+		if hasRule(matches, "backdoor_php_auto_append") {
+			t.Errorf("backdoor_php_auto_append must stay silent on legit directive target: %q", body)
+		}
+	}
+}
