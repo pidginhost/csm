@@ -482,6 +482,7 @@ func (fm *FileMonitor) reconcileDrops() {
 					return
 				}
 				defer func() { _ = f.Close() }()
+				// #nosec G115 -- POSIX fd fits in int32 (rlimit caps fds at ~1024).
 				fm.analyzeFile(fileEvent{path: fullPath, fd: int(f.Fd())})
 			}()
 		}
