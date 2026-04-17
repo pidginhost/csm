@@ -1038,34 +1038,32 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 		}
 	}
 	if hasShell && hasInput {
-		// Exclude WordPress filesystem API - themes/plugins legitimately use
-		// shell_exec for WP_Filesystem operations alongside $_POST for forms.
-		if strings.Contains(content, "$wp_filesystem") || strings.Contains(content, "wp_filesystem") {
-			// WP filesystem API - not a webshell, skip
-		} else {
-			// Require shell function + request variable on the SAME line
-			// to avoid flagging theme admin panels that have both in different contexts
-			for _, line := range strings.Split(content, "\n") {
-				lineHasShell := false
-				lineHasInput := false
-				for _, sf := range shellFuncs {
-					if containsFunc(line, sf) {
-						lineHasShell = true
-						break
-					}
+		// Require shell function + request variable on the SAME line.
+		// Same-line narrowing is the actual detection: admin panels with
+		// both tokens in unrelated contexts stay quiet because they never
+		// co-occur on one line. A file-wide allowlist (e.g. "skip when
+		// 'wp_filesystem' appears anywhere") would be forgeable by any
+		// webshell that pastes the token into a comment.
+		for _, line := range strings.Split(content, "\n") {
+			lineHasShell := false
+			lineHasInput := false
+			for _, sf := range shellFuncs {
+				if containsFunc(line, sf) {
+					lineHasShell = true
+					break
 				}
-				for _, rv := range requestVars {
-					if strings.Contains(line, rv) {
-						lineHasInput = true
-						break
-					}
+			}
+			for _, rv := range requestVars {
+				if strings.Contains(line, rv) {
+					lineHasInput = true
+					break
 				}
-				if lineHasShell && lineHasInput {
-					fm.sendAlertWithPath(alert.Critical, "webshell_content_realtime",
-						fmt.Sprintf("Webshell pattern detected: %s", path),
-						fmt.Sprintf("Shell execution with request input on same line: %s", strings.TrimSpace(line)), path, procInfo)
-					return true
-				}
+			}
+			if lineHasShell && lineHasInput {
+				fm.sendAlertWithPath(alert.Critical, "webshell_content_realtime",
+					fmt.Sprintf("Webshell pattern detected: %s", path),
+					fmt.Sprintf("Shell execution with request input on same line: %s", strings.TrimSpace(line)), path, procInfo)
+				return true
 			}
 		}
 	}
