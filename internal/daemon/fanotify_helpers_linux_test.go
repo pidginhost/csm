@@ -66,22 +66,6 @@ func TestMatchSuppression(t *testing.T) {
 	}
 }
 
-func TestIsKnownSafeUploadDaemon(t *testing.T) {
-	tests := []struct {
-		path string
-		want bool
-	}{
-		{"/home/alice/wp-content/uploads/cache/file.php", true},
-		{"/home/alice/wp-content/uploads/redux/color.php", true},
-		{"/home/alice/wp-content/uploads/evil.php", false},
-	}
-	for _, tt := range tests {
-		if got := isKnownSafeUploadDaemon(tt.path); got != tt.want {
-			t.Errorf("isKnownSafeUploadDaemon(%q) = %v, want %v", tt.path, got, tt.want)
-		}
-	}
-}
-
 func TestReadHead(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/test.txt"

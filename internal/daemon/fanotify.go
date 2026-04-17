@@ -761,9 +761,14 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 		}
 	}
 
-	// PHP in uploads directories
+	// PHP in uploads directories.
+	// Any PHP file here is anomalous: /wp-content/uploads/ is meant for
+	// media, not code. Plugin-update temp dirs are recognised structurally
+	// via looksLikePluginUpdate; everything else is Critical. Operators
+	// suppress legitimate caching daemons through the path-scoped
+	// suppressions_api, not an implicit substring allowlist in the daemon.
 	if strings.Contains(path, "/wp-content/uploads/") && isPHPExtension(nameLower) {
-		if nameLower != "index.php" && !isKnownSafeUploadDaemon(path) {
+		if nameLower != "index.php" {
 			if looksLikePluginUpdate(path) {
 				// Verified plugin update - emit one low-severity alert per temp directory.
 				// Cannot suppress entirely - attacker could create a decoy plugin dir.
@@ -1681,23 +1686,6 @@ func readHead(path string, maxBytes int) []byte {
 		return nil
 	}
 	return buf[:n]
-}
-
-func isKnownSafeUploadDaemon(path string) bool {
-	safePaths := []string{
-		"/cache/", "/imunify", "/redux/", "/mailchimp-for-wp/",
-		"/sucuri/", "/smush/", "/goldish/", "/wpallexport/",
-		"/wpallimport/", "/wph/", "/stm_fonts/", "/smile_fonts/",
-		"/bws-custom-code/", "/wp-import-export-lite/",
-		"/zn_fonts/", "/companies_documents/",
-	}
-	for _, sp := range safePaths {
-		if strings.Contains(path, sp) {
-			return true
-		}
-	}
-
-	return false
 }
 
 // looksLikePluginUpdate checks if a PHP file in uploads looks like a plugin
