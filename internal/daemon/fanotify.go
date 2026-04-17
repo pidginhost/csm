@@ -159,10 +159,15 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 	// different path on non-cPanel hosts (the platform layer normalises),
 	// and we'd rather lose the realtime crontab signal than fail daemon
 	// startup. The polled CheckCrontabs run still covers this case via
-	// the next scheduled scan.
+	// the next scheduled scan. Mask matches spoolwatch.go (the proven
+	// production pattern for directory-scoped marks): FAN_CLOSE_WRITE
+	// alone catches both new and modified crontabs, since the close
+	// after O_CREAT|O_WRONLY|... fires the close-write event. FAN_CREATE
+	// is omitted because it has stricter kernel requirements with
+	// directory-scoped (non-MOUNT) marks and adds no coverage here.
 	if _, statErr := os.Stat(cronSpoolWatchDir); statErr == nil {
 		if err := unix.FanotifyMark(fd, FAN_MARK_ADD,
-			FAN_CLOSE_WRITE|FAN_CREATE|FAN_EVENT_ON_CHILD, -1, cronSpoolWatchDir); err != nil {
+			FAN_CLOSE_WRITE|FAN_EVENT_ON_CHILD, -1, cronSpoolWatchDir); err != nil {
 			fmt.Fprintf(os.Stderr, "[%s] Warning: cannot watch %s: %v\n", ts(), cronSpoolWatchDir, err)
 		}
 	}
