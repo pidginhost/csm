@@ -49,19 +49,27 @@ RUN dnf -y install dnf-plugins-core epel-release \
 # Go 1.26.2 from the official tarball. Alma 8's repos track older
 # Go; we want the exact version csm is developed against.
 #
-# TARGETARCH is automatically set by docker buildx to the target
-# platform's GOARCH (amd64 on a linux/amd64 build, arm64 on a
-# linux/arm64 build). Under buildx + qemu (see the
-# build-builder-image-arm64 CI job), the arm64 build runs under
-# emulation and pulls the arm64 Go tarball. Under plain `docker
-# build` (the amd64 build-builder-image job) TARGETARCH falls back
-# to amd64 via the default below.
-ARG TARGETARCH=amd64
+# We derive GOARCH from `uname -m` at build time rather than relying
+# on buildx's TARGETARCH ARG. An earlier revision declared
+# `ARG TARGETARCH=amd64` so the arm64 builder image pull could
+# respect the buildx --platform flag; in practice the default
+# survived even under --platform linux/arm64 (BuildKit's auto-
+# injection for ARGs that already carry a default value is
+# inconsistent across BuildKit versions), so the arm64 builder
+# image was shipping amd64 Go. Detecting at runtime via uname is
+# robust regardless of BuildKit quirks, matches the semantics
+# whether the container runs natively or under QEMU emulation, and
+# also Just Works under plain `docker build` without buildx.
 ENV GO_VERSION=1.26.2
-RUN curl -fsSL -o /tmp/go.tar.gz \
-        "https://go.dev/dl/go${GO_VERSION}.linux-${TARGETARCH}.tar.gz" \
-    && tar -xzf /tmp/go.tar.gz -C /usr/local \
-    && rm /tmp/go.tar.gz
+RUN set -eux; \
+    case "$(uname -m)" in \
+        x86_64)  GOARCH=amd64 ;; \
+        aarch64) GOARCH=arm64 ;; \
+        *) echo "unsupported build arch: $(uname -m)" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/go.tar.gz "https://go.dev/dl/go${GO_VERSION}.linux-${GOARCH}.tar.gz"; \
+    tar -xzf /tmp/go.tar.gz -C /usr/local; \
+    rm /tmp/go.tar.gz
 ENV PATH=/usr/local/go/bin:$PATH
 
 # Rust toolchain via rustup. We install our own (not Alma's rust
