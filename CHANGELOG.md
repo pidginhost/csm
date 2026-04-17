@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added CodeQL SAST workflow (push / PR / weekly) and SHA-pinned the remaining GitHub Actions.
 - Crontab heuristic now catches the `base64 -d|bash` pipe chain (with and without spaces, and `--decode` form) used by the 2026-03-24 gsocket "defunct-kernel" persistence seen on cluster6. Single source of truth for the pattern list kills previous drift between the system and per-account scans.
 - `suspicious_crontab` findings now have a real `ApplyFix` handler: the user crontab is copied to `/opt/csm/quarantine/` with a restore-ready metadata sidecar and the live file is truncated to zero bytes. Before this change the fix button advertised a cleanup it never performed.
+- Crontab pattern check now runs a single base64 decode pass over each cron line, catching attacker variants that wrap the `base64 -d|bash` chain in an outer base64 layer so no literal markers appear in the cron file as written. Bounded: 16 candidates per file, 8 KB per blob, depth 1.
+- Real-time fanotify watch on `/var/spool/cron/` emits `suspicious_crontab` Critical the instant a user crontab is written, instead of waiting for the next 10-minute polled scan. Best-effort directory mark; root crontab drift is still tracked via the polled baseline hash.
 
 ### Added
 
@@ -22,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `phishing_office365` dropped its forgeable `namespace\s+(?:EasyWPSMTP|WPMailSMTP|FluentMail)` exclude. An attacker could silence the Critical alert by pasting `<!-- namespace EasyWPSMTP -->` into a cloned Microsoft login page. The rule now keys on DOM IDs and JS variables copied verbatim from login.microsoftonline.com (`i0116`, `i0118`, `idSIButton9`, `urlMsaSignUp`/`urlResetPasswordMsa`) with `require_regex: true`; legitimate SMTP plugin admin views (FluentSMTP, WP Mail SMTP, Easy WP SMTP) do not mimic the login DOM and no longer need an allow-list entry.
 - `backdoor_php_auto_append` `exclude_regexes` no longer lists `php_shield` as a safe directive target. CSM's own php_shield is ini-activated (in `/opt/cpanel/ea-phpXX/root/etc/php.d/`), never written to .htaccess, so an attacker who dropped `php_shield.php` and pointed `auto_prepend_file` at it was bypassing the rule. The Go heuristic in `checkHtaccess` already omitted it; this aligns the YAML rule with it.
 - `checkHTMLPhishing` dropped the early `return` on `/wp-admin/`, `/wp-includes/`, `/wp-content/themes/`, `/wp-content/plugins/`, `/node_modules/`, `/vendor/`, and `/.well-known/`. An attacker who compromised any of those directories could drop a Microsoft/Google/Dropbox credential-harvesting page and the alert never fired. The content gates (credential inputs + brand impersonation + exfil sink or trust badge) are strong enough to reject legitimate framework HTML, so the path-allowlist was pure attack surface.
 - `exploit_wp_config_stealer` dropped its `exclude_patterns: ["define('DB_PASSWORD'"]` short-circuit, which a stealer could forge with a decoy comment. The rule's `min_match: 3` already requires the `file_get_contents` regex to fire, and stock `wp-config.php` does not call `file_get_contents` on itself, so the exclusion added nothing but attack surface.
