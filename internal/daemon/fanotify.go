@@ -679,12 +679,18 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 		return
 	}
 
-	// PHP in languages/upgrade directories
+	// PHP in languages/upgrade directories.
+	// Path-only Critical buried real alerts under location noise (WPML
+	// translation queues, WP auto-update staging). Run content analysis
+	// first: if a real rule fires the Critical lives there; clean files
+	// still get a Warning so unexpected PHP in these dirs is visible.
 	if (strings.Contains(path, "/wp-content/languages/") || strings.Contains(path, "/wp-content/upgrade/")) &&
 		isPHPExtension(nameLower) {
 		if nameLower != "index.php" && !strings.HasSuffix(nameLower, ".l10n.php") {
-			fm.sendAlertWithPath(alert.Critical, "php_in_sensitive_dir_realtime",
-				fmt.Sprintf("PHP file created in sensitive WP directory: %s", path), "", path, procInfo)
+			if !fm.checkPHPContent(event.fd, path, procInfo) {
+				fm.sendAlertWithPath(alert.Warning, "php_in_sensitive_dir_realtime",
+					fmt.Sprintf("PHP file created in sensitive WP directory (content clean): %s", path), "", path, procInfo)
+			}
 		}
 		return
 	}
@@ -831,10 +837,10 @@ func (fm *FileMonitor) checkUserINI(fd int, path, procInfo string) {
 
 // checkPHPContent reads PHP content from the event fd and checks for malicious patterns.
 // C3 - reads from fd, not path. M4 - 32KB scan size.
-func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) {
+func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 	data := readFromFd(fd, 32768)
 	if data == nil {
-		return
+		return false
 	}
 	content := strings.ToLower(string(data))
 
@@ -847,7 +853,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) {
 			fm.sendAlertWithPath(alert.Critical, "php_dropper_realtime",
 				fmt.Sprintf("PHP dropper with paste site URL: %s", path),
 				fmt.Sprintf("Fetches from: %s", p), path, procInfo)
-			return
+			return true
 		}
 	}
 	githubURLs := []string{"gist.githubusercontent.com", "raw.githubusercontent.com"}
@@ -865,7 +871,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) {
 					fm.sendAlertWithPath(alert.Critical, "php_dropper_realtime",
 						fmt.Sprintf("PHP dropper fetching from GitHub with dangerous call: %s", path),
 						fmt.Sprintf("URL: %s, Function: %s", gh, fn), path, procInfo)
-					return
+					return true
 				}
 			}
 		}
@@ -886,7 +892,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) {
 				fm.sendAlertWithPath(alert.Critical, "obfuscated_php_realtime",
 					fmt.Sprintf("Obfuscated PHP detected: %s", path),
 					fmt.Sprintf("PHP code execution with %s on same line", dec), path, procInfo)
-				return
+				return true
 			}
 		}
 	}
@@ -897,7 +903,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) {
 			fm.sendAlertWithPath(alert.Critical, "obfuscated_php_realtime",
 				fmt.Sprintf("Fragmented base64_decode evasion detected: %s", path),
 				"base64_decode function name split across string variables", path, procInfo)
-			return
+			return true
 		}
 	}
 
@@ -907,7 +913,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) {
 		fm.sendAlertWithPath(alert.Critical, "obfuscated_php_realtime",
 			fmt.Sprintf("Concatenation payload detected: %s (%d concat ops)", path, concatCount),
 			"Variable built from hundreds of string concatenations then executed", path, procInfo)
-		return
+		return true
 	}
 
 	// Shell execution with request input
@@ -954,7 +960,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) {
 					fm.sendAlertWithPath(alert.Critical, "webshell_content_realtime",
 						fmt.Sprintf("Webshell pattern detected: %s", path),
 						fmt.Sprintf("Shell execution with request input on same line: %s", strings.TrimSpace(line)), path, procInfo)
-					return
+					return true
 				}
 			}
 		}
@@ -978,7 +984,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) {
 					fm.sendAlertWithPath(alert.Critical, "obfuscated_php_realtime",
 						fmt.Sprintf("Obfuscated PHP appended to file tail: %s", path),
 						fmt.Sprintf("PHP code execution with %s found at end of file", dec), path, procInfo)
-					return
+					return true
 				}
 			}
 		}
@@ -989,7 +995,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) {
 				fm.sendAlertWithPath(alert.Critical, "obfuscated_php_realtime",
 					fmt.Sprintf("Fragmented base64_decode evasion in file tail: %s", path),
 					"Payload appended at end of legitimate PHP file", path, procInfo)
-				return
+				return true
 			}
 		}
 
@@ -999,7 +1005,7 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) {
 			fm.sendAlertWithPath(alert.Critical, "obfuscated_php_realtime",
 				fmt.Sprintf("Concatenation payload in file tail: %s (%d concat ops)", path, tailConcatCount),
 				"Payload appended at end of legitimate PHP file", path, procInfo)
-			return
+			return true
 		}
 	}
 
@@ -1009,11 +1015,11 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) {
 	// on it are false positives (e.g. $_POST in wp-includes, mail() in
 	// PHPMailer, fsockopen() in POP3.php).
 	if checks.IsVerifiedCMSFile(path) {
-		return
+		return false
 	}
 
 	// External signature + YARA scanning
-	fm.runSignatureScan(data, path, filepath.Ext(path), procInfo)
+	return fm.runSignatureScan(data, path, filepath.Ext(path), procInfo)
 }
 
 // checkHTMLPhishing reads an HTML file and checks for phishing indicators:

@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Go toolchain 1.26.1 -> 1.26.2, clearing 6 stdlib CVEs flagged by govulncheck in reachable code paths (crypto/x509, crypto/tls, archive/tar, html/template). govulncheck now clean.
 - Added CodeQL SAST workflow (push / PR / weekly) and SHA-pinned the remaining GitHub Actions.
+- Crontab heuristic now catches the `base64 -d|bash` pipe chain (with and without spaces, and `--decode` form) used by the 2026-03-24 gsocket "defunct-kernel" persistence seen on cluster6. Single source of truth for the pattern list kills previous drift between the system and per-account scans.
+- `suspicious_crontab` findings now have a real `ApplyFix` handler: the user crontab is copied to `/opt/csm/quarantine/` with a restore-ready metadata sidecar and the live file is truncated to zero bytes. Before this change the fix button advertised a cleanup it never performed.
 
 ### Added
 
@@ -20,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `php_in_sensitive_dir_realtime` for `/wp-content/languages/` and `/wp-content/upgrade/` no longer fires Critical purely on path. Content analysis now runs first: if a real rule hits, that Critical is the signal; clean files still surface as a Warning so unexpected PHP in these directories stays visible. Eliminates the per-file Critical storm during WPML translation-queue writes and WordPress core auto-updates while preserving detection of actual backdoors dropped there.
 - Four YARA rules no longer fire on stock WordPress plugin code. `backdoor_htaccess_auto_prepend` now ignores PHP source files that document the directive in translated UI strings (Wordfence WAF installer views). `backdoor_iconcache_disguise` dropped the over-broad variable-variable + decoder arm that matched WPML translation packages; the suspicious-filename and `shell_exec`+decoder arms still fire. `mailer_mass_sender` (YARA) now requires the `mail(` call to sit within 500 bytes of a loop keyword and rejects substring matches inside `is_email(`/`wp_mail(`. `spam_wp_footer_injection` now requires either the `dofollow` marker or an actually echoed external link with a hide-it style, instead of `display:none` or `base64_decode` alone.
 - Five signature rules (`mailer_mass_sender`, `exfil_archive_send`, `dropper_fgc_eval`, `spam_wp_options_inject`, `deface_owned_by`) no longer fire on stock WordPress plugin code (Wordfence, WPML, Contact Form 7, Twig, Freemius). Each now requires its tightening regex to match rather than just two substring hits; `deface_owned_by` additionally requires surrounding HTML page tags so the phrase in a PHP docblock no longer trips it.
 - `db_post_injection` no longer flags legitimate third-party widget embeds (cookie-consent tools, document-embed services, regional video/form widgets). Detection now requires concrete attacker markers in the script URL; exfiltration hosts, raw-IP loaders, abused-TLD hosts, and plaintext HTTP scripts continue to fire.
