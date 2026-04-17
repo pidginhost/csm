@@ -7,20 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- Daemon control socket at `/var/run/csm/control.sock` (0600, root-only). The CLI commands `run`, `run-critical`, `run-deep`, `status`, `update-rules`, and `update-geoip` now route through the running daemon instead of opening their own bbolt handle. This eliminates the `store: opening bbolt: timeout` error from timer-spawned scans racing the daemon for the database lock. Commands that don't need bbolt (`validate`, `verify`, `rehash`, `update-rules`, `update-geoip`) no longer open it. Remaining migrations (`baseline`, `firewall`, `check-*`) are tracked as phase 2 in `ROADMAP.md`.
-
-### Fixed
-
-- YARA-X native-code SIGSEGV on daemon startup. The 2.4.3 dependency bump from `VirusTotal/yara-x/go` 1.14.0 to 1.15.0 produced a binary that SEGV'd inside `yrx_compiler_build` during the first rule compile on every startup, putting the daemon into a systemd restart loop on affected servers. Reverted to YARA-X 1.14.0 (proven stable). Go 1.26.2, bbolt 1.4.3, and the other 2.4.3 dependency bumps are retained — they are not implicated. The 2.4.3 builder image changes (source-built libunwind, musl linker shims) are retained and harmless with 1.14.0; reintroducing 1.15.0 later will be done on a branch with reproduction coverage before it ships.
-
-### Changed
-
-- Build toolchain moved from Alpine+musl-static to AlmaLinux 8+glibc-dynamic. The 2.4.3 YARA-X upgrade incident showed the musl-static configuration is not a toolchain upstream YARA-X exercises, and the eight consecutive builder-image iterations it took to link 1.15.0 were symptomatic. Binaries now target a glibc 2.28 floor — every modern cPanel host (CloudLinux/Alma/RHEL 8+, Ubuntu 22.04+) meets this. YARA-X itself stays statically linked into the binary; only glibc and a handful of standard system libraries link dynamically. A new CI check fails the build if any referenced glibc symbol exceeds `GLIBC_2.28`. Linux/arm64 now also ships via docker buildx + QEMU user-mode emulation, producing genuine arm64 machine code at the same `GLIBC_2.28` floor as amd64; the arm64 builder image is a manually-triggered one-time build per YARA-X version. See `ROADMAP.md` item 1 for the full decision record.
-
-## [2.4.3] - 2026-04-16
-
 ### Security
 
 - Go toolchain 1.26.1 -> 1.26.2, clearing 6 stdlib CVEs flagged by govulncheck in reachable code paths (crypto/x509, crypto/tls, archive/tar, html/template). govulncheck now clean.
@@ -28,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Linux/arm64 binaries now ship the real YARA-X scanner. Previous arm64 builds omitted the `yara` build tag and shipped a no-op stub, silently disabling every YARA-backed check on Graviton, Ampere, Raspberry Pi, and other ARM hosts.
+- Daemon control socket at `/var/run/csm/control.sock` (0600, root-only). The CLI commands `run`, `run-critical`, `run-deep`, `status`, `update-rules`, and `update-geoip` now route through the running daemon instead of opening their own bbolt handle. This eliminates the `store: opening bbolt: timeout` error from timer-spawned scans racing the daemon for the database lock. Commands that don't need bbolt (`validate`, `verify`, `rehash`, `update-rules`, `update-geoip`) no longer open it. Remaining migrations (`baseline`, `firewall`, `check-*`) are tracked as phase 2 in `ROADMAP.md`.
 - Dashboard "Top Attack Types" card scoped to 24h via a new `by_type_24h` JSON field so it matches the adjacent 24h timeline instead of showing lifetime totals.
 - 16 `go test -fuzz` targets for parsers that accept attacker-controlled input (log-line extractors, finding-message parsers, config parsers, low-level decoders). Seeds double as regression tests; five seconds of fuzzing per target finds no crashers.
 
@@ -42,8 +28,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Bumped Go dependencies to latest: VirusTotal/yara-x/go 1.14.0 -> 1.15.0, go.etcd.io/bbolt 1.4.0 -> 1.4.3, spf13/cobra 1.8.1 -> 1.10.2, plus the x/sys, x/net, x/crypto, x/term, x/text, pflag, netlink, netns families. Full `go test -race` suite clean.
+- Build toolchain moved from Alpine+musl-static to AlmaLinux 8+glibc-dynamic. The musl-static configuration was not a toolchain upstream YARA-X exercises, and the eight consecutive builder-image iterations it took to link YARA-X 1.15.0 were symptomatic. Binaries now target a glibc 2.28 floor — every modern cPanel host (CloudLinux/Alma/RHEL 8+, Ubuntu 22.04+) meets this. YARA-X itself stays statically linked into the binary; only glibc and a handful of standard system libraries link dynamically. A new CI check fails the build if any referenced glibc symbol exceeds `GLIBC_2.28`. Linux/arm64 ships via docker buildx + QEMU user-mode emulation, producing genuine arm64 machine code at the same `GLIBC_2.28` floor as amd64; the arm64 builder image is a manually-triggered one-time build per YARA-X version. Linux/arm64 binaries also regain the real YARA-X scanner — earlier arm64 builds silently shipped a no-op stub because the cross-toolchain omitted the `yara` build tag. See `ROADMAP.md` item 1 for the full decision record.
+- Bumped Go dependencies: `go.etcd.io/bbolt` 1.4.0 -> 1.4.3, `spf13/cobra` 1.8.1 -> 1.10.2, plus the x/sys, x/net, x/crypto, x/term, x/text, pflag, netlink, netns families. `VirusTotal/yara-x/go` stays pinned at 1.14.0 — the attempt to move to 1.15.0 was retracted (see the yanked 2.4.3 note below) and will only be re-attempted on a branch with local reproduction coverage.
 - `release:github` GitLab job runs automatically on tag pipelines (was manual-click; already gated on `/^v/` tags and `allow_failure: true`).
+
+## [2.4.3] - 2026-04-16 [YANKED 2026-04-17]
+
+**This release was yanked.** The dependency bump from
+`VirusTotal/yara-x/go` 1.14.0 to 1.15.0 produced a binary that
+crashed with SIGSEGV inside `yrx_compiler_build` on every daemon
+startup, putting affected servers into a systemd restart loop.
+The GitHub release was removed and the `v2.4.3` tag deleted.
+
+All entries that were originally listed under this version have
+been moved into `[Unreleased]` and will ship with the next
+release, minus the YARA-X 1.15.0 bump (which remains deferred).
 
 ## [2.4.2] - 2026-04-15
 
