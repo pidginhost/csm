@@ -53,7 +53,10 @@ func FixDescription(checkType, message string, filePath ...string) string {
 			return fmt.Sprintf("Kill process and quarantine %s", path)
 		}
 	case "suspicious_crontab":
-		return "Remove suspicious lines from crontab"
+		if path != "" {
+			return fmt.Sprintf("Quarantine and truncate crontab %s", path)
+		}
+		return "Quarantine and truncate crontab"
 	case "htaccess_injection", "htaccess_handler_abuse":
 		if path != "" {
 			return fmt.Sprintf("Remove malicious directives from %s", path)
@@ -86,6 +89,7 @@ func HasFix(checkType string) bool {
 		"htaccess_injection":       true,
 		"htaccess_handler_abuse":   true,
 		"email_phishing_content":   true,
+		"suspicious_crontab":       true,
 	}
 	return fixableChecks[checkType]
 }
@@ -107,6 +111,8 @@ func ApplyFix(checkType, message, details string, filePath ...string) Remediatio
 		return fixHtaccess(path, message)
 	case "email_phishing_content":
 		return fixQuarantineSpoolMessage(message)
+	case "suspicious_crontab":
+		return fixSuspiciousCrontab(path)
 	default:
 		return RemediationResult{Error: fmt.Sprintf("no automated fix available for check type '%s'", checkType)}
 	}

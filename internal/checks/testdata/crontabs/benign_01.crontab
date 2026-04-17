@@ -1,0 +1,4 @@
+# m h  dom mon dow   command
+*/5 * * * * /usr/local/bin/maintenance.sh >/var/log/maintenance.log 2>&1
+0 3 * * * find /home/victim1/tmp -type f -mtime +7 -delete
+15 */6 * * * curl -sS https://status.example.org/ping?host=$HOSTNAME >/dev/null

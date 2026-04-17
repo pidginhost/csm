@@ -14,23 +14,6 @@ import (
 func CheckCrontabs(ctx context.Context, _ *config.Config, store *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	suspiciousPatterns := []string{
-		"defunct-kernel",
-		"SEED PRNG",
-		"base64_decode",
-		"eval(",
-		"/dev/tcp/",
-		"gsocket",
-		"gs-netcat",
-		"reverse",
-		"bash -i",
-		"/bin/sh -i",
-		"nc -e",
-		"ncat -e",
-		"python -c",
-		"perl -e",
-	}
-
 	crontabs, _ := osFS.Glob("/var/spool/cron/*")
 	for _, path := range crontabs {
 		user := filepath.Base(path)
@@ -56,16 +39,13 @@ func CheckCrontabs(ctx context.Context, _ *config.Config, store *state.Store) []
 			continue
 		}
 		content := string(data)
-
-		for _, pattern := range suspiciousPatterns {
-			if strings.Contains(strings.ToLower(content), strings.ToLower(pattern)) {
-				findings = append(findings, alert.Finding{
-					Severity: alert.Critical,
-					Check:    "suspicious_crontab",
-					Message:  fmt.Sprintf("Suspicious pattern in crontab for user %s: %s", user, pattern),
-					Details:  fmt.Sprintf("File: %s\nContent:\n%s", path, truncate(content, 500)),
-				})
-			}
+		for _, pattern := range matchCrontabPatterns(content) {
+			findings = append(findings, alert.Finding{
+				Severity: alert.Critical,
+				Check:    "suspicious_crontab",
+				Message:  fmt.Sprintf("Suspicious pattern in crontab for user %s: %s", user, pattern),
+				Details:  fmt.Sprintf("File: %s\nContent:\n%s", path, truncate(content, 500)),
+			})
 		}
 	}
 
@@ -93,4 +73,41 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// crontabSuspiciousPatterns is the shared allowlist of case-insensitive
+// substrings that mark a crontab line as likely malicious. Single source of
+// truth for CheckCrontabs (system scan) and makeAccountCrontabCheck
+// (per-account scan) so the two cannot drift apart.
+var crontabSuspiciousPatterns = []string{
+	"defunct-kernel",
+	"SEED PRNG",
+	"base64_decode",
+	"base64 -d|bash",
+	"base64 -d | bash",
+	"base64 --decode|bash",
+	"eval(",
+	"/dev/tcp/",
+	"gsocket",
+	"gs-netcat",
+	"reverse",
+	"bash -i",
+	"/bin/sh -i",
+	"nc -e",
+	"ncat -e",
+	"python -c",
+	"perl -e",
+}
+
+// matchCrontabPatterns returns patterns from crontabSuspiciousPatterns that
+// appear as case-insensitive substrings of content, preserving list order.
+func matchCrontabPatterns(content string) []string {
+	lower := strings.ToLower(content)
+	var matched []string
+	for _, pattern := range crontabSuspiciousPatterns {
+		if strings.Contains(lower, strings.ToLower(pattern)) {
+			matched = append(matched, pattern)
+		}
+	}
+	return matched
 }

@@ -239,23 +239,14 @@ func makeAccountCrontabCheck(account string) CheckFunc {
 			return nil
 		}
 
-		suspiciousPatterns := []string{
-			"defunct-kernel", "base64_decode", "eval(",
-			"/dev/tcp/", "gsocket", "gs-netcat",
-			"reverse", "bash -i", "nc -e", "ncat -e",
-			"python -c", "perl -e", "SEED PRNG",
-		}
-
 		content := string(data)
-		for _, pattern := range suspiciousPatterns {
-			if strings.Contains(strings.ToLower(content), strings.ToLower(pattern)) {
-				findings = append(findings, alert.Finding{
-					Severity: alert.Critical,
-					Check:    "suspicious_crontab",
-					Message:  fmt.Sprintf("Suspicious pattern in crontab for %s: %s", account, pattern),
-					Details:  fmt.Sprintf("File: /var/spool/cron/%s\nContent:\n%s", account, content),
-				})
-			}
+		for _, pattern := range matchCrontabPatterns(content) {
+			findings = append(findings, alert.Finding{
+				Severity: alert.Critical,
+				Check:    "suspicious_crontab",
+				Message:  fmt.Sprintf("Suspicious pattern in crontab for %s: %s", account, pattern),
+				Details:  fmt.Sprintf("File: /var/spool/cron/%s\nContent:\n%s", account, content),
+			})
 		}
 		return findings
 	}
