@@ -14,11 +14,12 @@ import (
 )
 
 type Cache struct {
-	mu        sync.RWMutex
-	statePath string
-	checksums map[string]map[string]string
-	roots     map[string]rootEntry
-	fetching  map[string]bool
+	mu              sync.RWMutex
+	statePath       string
+	checksums       map[string]map[string]string // core: "<version>:<locale>" -> relPath -> MD5
+	pluginChecksums map[string]map[string]string // plugins: "<slug>:<version>" -> relPath -> SHA256
+	roots           map[string]rootEntry
+	fetching        map[string]bool
 }
 
 type rootEntry struct {
@@ -28,10 +29,11 @@ type rootEntry struct {
 
 func NewCache(statePath string) *Cache {
 	c := &Cache{
-		statePath: statePath,
-		checksums: make(map[string]map[string]string),
-		roots:     make(map[string]rootEntry),
-		fetching:  make(map[string]bool),
+		statePath:       statePath,
+		checksums:       make(map[string]map[string]string),
+		pluginChecksums: make(map[string]map[string]string),
+		roots:           make(map[string]rootEntry),
+		fetching:        make(map[string]bool),
 	}
 	c.loadFromDisk()
 	return c

@@ -662,6 +662,14 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 		return
 	}
 
+	// Verified WordPress plugin files: hash matches the plugin's official
+	// wordpress.org ZIP for its declared version. Stops signature/YARA FPs
+	// on stock plugin code (Wordfence, Contact Form 7, etc.). Cache miss
+	// triggers a background fetch; misses fall through to rule evaluation.
+	if fm.wpCache != nil && fm.wpCache.IsVerifiedPluginFile(event.fd, path) {
+		return
+	}
+
 	// Location-based severity escalation: PHP in dirs that should NEVER have PHP
 	if isPHPExtension(nameLower) {
 		for _, sensitive := range []string{"/.ssh/", "/.cpanel/", "/mail/", "/.gnupg/", "/.cagefs/"} {
