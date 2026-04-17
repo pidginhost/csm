@@ -95,7 +95,20 @@ type FileMonitor struct {
 
 	// WordPress core checksum verifier - skips detection on unmodified WP core files
 	wpCache *wpcheck.Cache
+
+	// Drop-recovery reconcile: directories that had fanotify events dropped
+	// because the analyzer queue was full. The overflow reporter walks this
+	// set once a minute and scans any interesting file modified within
+	// reconcileWindow so bulk filesystem operations (unzip, backup restore)
+	// do not blind detection to actual threats landing in the storm.
+	reconcileMu   sync.Mutex
+	reconcileDirs map[string]time.Time
 }
+
+const (
+	reconcileDirCap = 64
+	reconcileWindow = 70 * time.Second
+)
 
 type fileEvent struct {
 	path string
@@ -143,12 +156,13 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 	}
 
 	fm := &FileMonitor{
-		fd:         fd,
-		cfg:        cfg,
-		alertCh:    alertCh,
-		analyzerCh: make(chan fileEvent, 1000),
-		pipeFds:    pipeFds,
-		stopCh:     make(chan struct{}),
+		fd:            fd,
+		cfg:           cfg,
+		alertCh:       alertCh,
+		analyzerCh:    make(chan fileEvent, 4000),
+		pipeFds:       pipeFds,
+		stopCh:        make(chan struct{}),
+		reconcileDirs: make(map[string]time.Time),
 	}
 
 	fm.wpCache = wpcheck.NewCache(cfg.StatePath)
@@ -383,12 +397,88 @@ func (fm *FileMonitor) handleEvent(fd int, pid int32) {
 	select {
 	case fm.analyzerCh <- fileEvent{path: path, fd: fd, pid: pid}:
 	default:
-		// Queue full - drop event and count
+		// Queue full - drop event, count, and record the parent dir so the
+		// reconcile pass in overflowReporter can rescan it. Without this
+		// every file in a bulk burst past buffer capacity is invisible to
+		// detection forever.
 		n := atomic.AddInt64(&fm.droppedEvents, 1)
 		if n%100 == 0 {
 			fmt.Fprintf(os.Stderr, "[%s] fanotify: %d events dropped (analyzer queue full)\n", ts(), n)
 		}
+		fm.recordDroppedDir(path)
 		_ = unix.Close(fd)
+	}
+}
+
+// recordDroppedDir registers a directory whose file had its fanotify event
+// dropped, capped at reconcileDirCap entries (oldest evicted).
+func (fm *FileMonitor) recordDroppedDir(path string) {
+	dir := filepath.Dir(path)
+	fm.reconcileMu.Lock()
+	defer fm.reconcileMu.Unlock()
+	if fm.reconcileDirs == nil {
+		fm.reconcileDirs = make(map[string]time.Time)
+	}
+	fm.reconcileDirs[dir] = time.Now()
+	if len(fm.reconcileDirs) <= reconcileDirCap {
+		return
+	}
+	var oldestKey string
+	var oldestTime time.Time
+	first := true
+	for k, t := range fm.reconcileDirs {
+		if first || t.Before(oldestTime) {
+			oldestKey, oldestTime, first = k, t, false
+		}
+	}
+	delete(fm.reconcileDirs, oldestKey)
+}
+
+// reconcileDrops walks every directory with a recent dropped event and
+// analyses any interesting file modified within reconcileWindow. Converts
+// lost events into delayed events rather than invisible ones. Called from
+// overflowReporter after the minute-granularity overflow alert.
+func (fm *FileMonitor) reconcileDrops() {
+	fm.reconcileMu.Lock()
+	dirs := fm.reconcileDirs
+	fm.reconcileDirs = make(map[string]time.Time)
+	fm.reconcileMu.Unlock()
+
+	if len(dirs) == 0 {
+		return
+	}
+
+	cutoff := time.Now().Add(-reconcileWindow)
+	for dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			info, err := e.Info()
+			if err != nil {
+				continue
+			}
+			if info.ModTime().Before(cutoff) {
+				continue
+			}
+			fullPath := filepath.Join(dir, e.Name())
+			if !fm.isInteresting(fullPath) {
+				continue
+			}
+			// #nosec G304 -- fullPath is a directory entry under a dir the
+			// kernel already notified us about; the reconcile step owns
+			// reopening because the original fanotify fd is gone.
+			f, err := os.Open(fullPath)
+			if err != nil {
+				continue
+			}
+			fm.analyzeFile(fileEvent{path: fullPath, fd: int(f.Fd())})
+			_ = f.Close()
+		}
 	}
 }
 
@@ -1359,6 +1449,9 @@ func (fm *FileMonitor) overflowReporter() {
 				fm.sendAlert(alert.Warning, "fanotify_overflow",
 					fmt.Sprintf("fanotify event queue overflowed: %d events dropped in last minute", droppedEv),
 					"Possible event storm (backup, bulk update) or high-volume attack")
+				// Recover coverage: scan files in directories that saw drops
+				// so a threat landing during the storm is still detected.
+				fm.reconcileDrops()
 			}
 			if droppedAl > 0 {
 				fmt.Fprintf(os.Stderr, "[%s] alert channel full: %d alerts dropped in last minute\n", ts(), droppedAl)
