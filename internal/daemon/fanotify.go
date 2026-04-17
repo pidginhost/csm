@@ -1160,17 +1160,16 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 // brand impersonation + credential input + redirect/exfiltration.
 // Uses event fd for content read and unix.Fstat for size (TOCTOU-safe).
 func (fm *FileMonitor) checkHTMLPhishing(fd int, path, procInfo string) {
-	// Only check files in web-accessible directories
+	// Only check files in web-accessible directories.
+	//
+	// No path-allowlist below this point: the content gates (credential
+	// inputs + brand impersonation + exfil/trust-badge) reject legitimate
+	// framework HTML on their own. A previous allowlist for /wp-admin/,
+	// /wp-content/themes/, /wp-content/plugins/, /node_modules/, /vendor/,
+	// /.well-known/ let an attacker who compromised any of those dirs drop
+	// a credential-harvesting page with full suppression.
 	if !strings.Contains(path, "/public_html/") {
 		return
-	}
-
-	// Skip known safe directories
-	for _, safe := range []string{"/wp-admin/", "/wp-includes/", "/wp-content/themes/",
-		"/wp-content/plugins/", "/node_modules/", "/vendor/", "/.well-known/"} {
-		if strings.Contains(path, safe) {
-			return
-		}
 	}
 
 	var stat unix.Stat_t
