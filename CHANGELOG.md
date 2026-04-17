@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Five signature rules (`mailer_mass_sender`, `exfil_archive_send`, `dropper_fgc_eval`, `spam_wp_options_inject`, `deface_owned_by`) no longer fire on stock WordPress plugin code (Wordfence, WPML, Contact Form 7, Twig, Freemius). Each now requires its tightening regex to match rather than just two substring hits; `deface_owned_by` additionally requires surrounding HTML page tags so the phrase in a PHP docblock no longer trips it.
 - `db_post_injection` no longer flags legitimate third-party widget embeds (cookie-consent tools, document-embed services, regional video/form widgets). Detection now requires concrete attacker markers in the script URL; exfiltration hosts, raw-IP loaders, abused-TLD hosts, and plaintext HTTP scripts continue to fire.
 - `db_spam_injection` no longer flags prose mentions of pharma/gambling keywords in legitimate business content (industry listings, advisor bios, catalogs). Findings now require an SEO-cloaking or injection signal alongside the keyword.
 - `perf_wp_config` no longer produces noise for operator-set PHP values in cPanel-managed `.user.ini` files. Suppression is scoped strictly to `.user.ini` via the cPanel MultiPHP INI Editor header.
