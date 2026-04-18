@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - ROADMAP entries 4-9: Prometheus/OpenMetrics endpoint, structured audit log export, bbolt retention policy, SIGHUP config hot-reload, baseline/state backup+restore, and challenge UX polish (CAPTCHA fallback, verified-session bypass, verified-crawler allow-pass).
+- Internal `csm yara-worker` subcommand and `internal/yaraipc` wire protocol (length-prefixed JSON frames on a Unix socket). Groundwork for moving YARA-X into a supervised child process so a cgo crash cannot take the daemon down (ROADMAP item 2). The scanner still runs in-process in this release; the daemon-side supervisor and call-site migration land in a follow-up.
 
 ### Fixed
 

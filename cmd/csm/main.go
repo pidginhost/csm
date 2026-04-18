@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 	"github.com/pidginhost/csm/internal/signatures"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
+	"github.com/pidginhost/csm/internal/yaraworker"
 )
 
 // activeStore holds a reference to the current store for signal handling.
@@ -69,6 +71,8 @@ func main() {
 		fmt.Printf("csm %s (build: %s, date: %s)\n", Version, BuildHash, BuildTime)
 	case "daemon":
 		runDaemon()
+	case "yara-worker":
+		runYaraWorker()
 	case "install":
 		runInstall()
 	case "uninstall":
@@ -240,6 +244,52 @@ func runDaemon() {
 	d.SetVersion(Version)
 	if err := d.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Daemon error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// runYaraWorker is the entry point for the supervised child process
+// that hosts YARA-X. The daemon is the only expected caller; an
+// operator invoking it by hand is supported for debugging but is not a
+// documented workflow.
+//
+// Flags:
+//
+//	--socket <path>     Unix socket to bind (default /var/run/csm/yara-worker.sock)
+//	--rules-dir <path>  YARA rules directory (default empty: no rules loaded)
+//
+// Fatal startup errors exit 1; SIGTERM from the supervisor triggers the
+// existing process-wide handler in init() and exits 0. The supervisor
+// treats non-zero exits as crash-restart candidates.
+func runYaraWorker() {
+	socketPath := "/var/run/csm/yara-worker.sock"
+	rulesDir := ""
+
+	args := os.Args[2:]
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--socket":
+			if i+1 < len(args) {
+				socketPath = args[i+1]
+				i++
+			}
+		case "--rules-dir":
+			if i+1 < len(args) {
+				rulesDir = args[i+1]
+				i++
+			}
+		}
+	}
+
+	err := yaraworker.Run(context.Background(), yaraworker.Config{
+		SocketPath: socketPath,
+		RulesDir:   rulesDir,
+		ErrorLog: func(err error) {
+			fmt.Fprintln(os.Stderr, "yara-worker:", err)
+		},
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "yara-worker:", err)
 		os.Exit(1)
 	}
 }
