@@ -57,6 +57,8 @@ func runHelper(mode string) {
 		time.Sleep(time.Hour)
 	case "crash-after-ping":
 		helperRunNormal(sock, 139)
+	case "sigkill-after-ping":
+		helperRunSignaledDeath(sock, syscall.SIGKILL)
 	default:
 		fmt.Fprintf(os.Stderr, "helper: unknown mode %q\n", mode)
 		os.Exit(2)
@@ -101,11 +103,37 @@ func helperRunNormal(sock string, exitAfterPing int) {
 	_ = yaraipc.Serve(ctx, ln, h, yaraipc.ServeOptions{})
 }
 
+// helperRunSignaledDeath serves normally until the second Ping, then
+// sends the given signal to itself. Exercises the signal-death path
+// of the supervisor (syscall.WaitStatus.Signaled() branch) rather
+// than the clean os.Exit path used by crash-after-ping. SIGKILL is
+// the reliable choice: Go's runtime catches most synchronous signals
+// (including SIGSEGV) and converts them into a stack-trace + exit 2,
+// so a "real" signal-death test needs a signal the runtime cannot
+// intercept.
+func helperRunSignaledDeath(sock string, sig syscall.Signal) {
+	if err := os.MkdirAll(filepath.Dir(sock), 0o700); err != nil {
+		os.Exit(3)
+	}
+	_ = os.Remove(sock)
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		os.Exit(4)
+	}
+	_ = os.Chmod(sock, 0o600)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h := &scriptedHandler{ruleCount: 1, signalAfterPing: sig}
+	_ = yaraipc.Serve(ctx, ln, h, yaraipc.ServeOptions{})
+}
+
 type scriptedHandler struct {
-	mu            sync.Mutex
-	ruleCount     int
-	pings         int
-	exitAfterPing int
+	mu              sync.Mutex
+	ruleCount       int
+	pings           int
+	exitAfterPing   int
+	signalAfterPing syscall.Signal
 }
 
 func (s *scriptedHandler) ScanFile(_ yaraipc.ScanFileArgs) (yaraipc.ScanResult, error) {
@@ -122,9 +150,20 @@ func (s *scriptedHandler) Ping() (yaraipc.PingResult, error) {
 	s.pings++
 	pings := s.pings
 	code := s.exitAfterPing
+	sig := s.signalAfterPing
 	s.mu.Unlock()
-	if code != 0 && pings >= 2 {
-		os.Exit(code)
+	if pings >= 2 {
+		if sig != 0 {
+			_ = syscall.Kill(syscall.Getpid(), sig)
+			// Block forever. The kernel will deliver the signal and
+			// kill us; if we fell through to a clean return the test
+			// would see an exit-status death instead of a signal-
+			// driven one, which defeats the point of the test.
+			select {}
+		}
+		if code != 0 {
+			os.Exit(code)
+		}
 	}
 	return yaraipc.PingResult{Alive: true, RuleCount: s.ruleCount}, nil
 }
@@ -223,6 +262,62 @@ func TestSupervisorRestartsOnCrash(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("supervisor did not restart after crash (OnRestart called %d times)", restarts.Load())
+}
+
+func TestSupervisorSurvivesSignaledWorker(t *testing.T) {
+	// ROADMAP item 2 acceptance: "An induced SIGSEGV in the worker
+	// leaves the daemon running and a finding is emitted identifying
+	// the worker crash." Go's runtime catches SIGSEGV for Go-origin
+	// faults, so we use SIGKILL as a proxy signal-death: the
+	// supervisor's code path that distinguishes signal-death from a
+	// clean exit is exercised the same way. A real production SIGSEGV
+	// originates in cgo and bypasses the Go runtime, landing in
+	// WaitStatus.Signaled()=true just like this test observes for
+	// SIGKILL.
+	sock := shortSockPath(t)
+	var restarts atomic.Int32
+	var signalSeen atomic.Int32
+	cfg := SupervisorConfig{
+		BinaryPath:         os.Args[0],
+		SocketPath:         sock,
+		RulesDir:           "",
+		StartTimeout:       3 * time.Second,
+		MinRestartInterval: 50 * time.Millisecond,
+		MaxRestartInterval: 200 * time.Millisecond,
+		StableDuration:     50 * time.Millisecond,
+		ClientTimeout:      2 * time.Second,
+		Env:                helperEnv("sigkill-after-ping"),
+		OnRestart: func(code int, sig syscall.Signal, _ time.Duration) {
+			restarts.Add(1)
+			if code == -1 && sig != 0 {
+				signalSeen.Add(1)
+			}
+		},
+	}
+	sup, err := NewSupervisor(cfg)
+	if err != nil {
+		t.Fatalf("NewSupervisor: %v", err)
+	}
+	if err := sup.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = sup.Stop() }()
+
+	_ = sup.RuleCount()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if restarts.Load() >= 1 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if restarts.Load() < 1 {
+		t.Fatalf("supervisor did not restart after signaled death (OnRestart called %d times)", restarts.Load())
+	}
+	if signalSeen.Load() < 1 {
+		t.Errorf("expected OnRestart to report a signal-driven death; saw %d signal events of %d restarts", signalSeen.Load(), restarts.Load())
+	}
 }
 
 func TestSupervisorStartTimeoutOnHang(t *testing.T) {
