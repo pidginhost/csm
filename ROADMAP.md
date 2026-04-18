@@ -496,6 +496,17 @@ real incident the operator either tunes live (and loses 3-5 s of
 real-time monitoring on re-mark) or leaves a noisy threshold in
 place. Both are bad.
 
+A second cost surfaced enabling `yara_worker_enabled` on cluster6
+2026-04-18: the integrity check (`integrity.Verify` in
+`cmd/csm/main.go`) refuses any config whose sha256 disagrees with
+`cfg.Integrity.ConfigHash`, so every hand-edit must be followed by
+`csm rehash` before the restart or the daemon crash-loops. The
+workflow is documented in `docs/src/configuration.md` (section
+"Editing csm.yaml by hand"); hot-reload should fold the rehash
+into reload so the whole dance collapses to
+`sudo kill -HUP $(pidof csm)` (or `systemctl reload csm` once
+`ExecReload=` is wired).
+
 ### Decision
 
 On SIGHUP, re-read `csm.yaml`, diff against the running config, and
@@ -524,6 +535,10 @@ require a restart; the reload logs a clear
   check tick without fanotify drops.
 - A deliberate bad YAML does not crash the daemon; the old config
   stays live and a finding is emitted.
+- Reload re-signs `integrity.config_hash` in place. The manual
+  `csm rehash` step for hand-edits becomes optional: a scripted
+  edit + SIGHUP sequence must leave the daemon running and the
+  on-disk file correctly signed.
 
 ### Out of scope
 

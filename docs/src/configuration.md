@@ -371,3 +371,38 @@ csm validate           # syntax check
 csm validate --deep    # syntax + connectivity probes (SMTP, webhooks)
 csm config show        # display config with secrets redacted
 ```
+
+## Editing csm.yaml by hand
+
+CSM stores a sha256 of the config in `integrity.config_hash` and
+refuses to start if the on-disk file disagrees with it. This is a
+tamper-detection feature; it also means any manual edit to
+`/opt/csm/csm.yaml` that is not followed by `csm rehash` causes
+the daemon to exit 1 on the next start with
+`config hash mismatch: expected <old> got <new>`. systemd's
+`Restart=always` will then crash-loop the daemon, not auto-recover.
+
+The correct sequence for any hand-edit is:
+
+```bash
+sudo cp /opt/csm/csm.yaml /opt/csm/csm.yaml.bak-$(date +%s)
+
+# edit /opt/csm/csm.yaml with your favourite editor
+
+sudo /opt/csm/csm rehash     # re-signs integrity.config_hash
+sudo /opt/csm/csm validate   # syntax + value sanity
+sudo systemctl restart csm
+sudo systemctl status csm    # confirm active, no crash-loop
+```
+
+If the restart fails, roll back with
+`sudo cp <backup> /opt/csm/csm.yaml && sudo systemctl restart csm`.
+The backup carries its own matching hash so no second rehash is
+needed.
+
+Config-management workflows (Ansible, Puppet, Chef) should pipe
+every edit through `csm rehash` before the `restart` notify fires.
+
+This step goes away once ROADMAP item 7 (SIGHUP config hot-reload)
+ships: reload will re-read the config and update the hash in place,
+and most threshold changes will not need a restart at all.
