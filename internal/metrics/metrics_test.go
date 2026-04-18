@@ -130,6 +130,41 @@ func TestCounterVecArityMismatchPanics(t *testing.T) {
 	cv.With("only-one")
 }
 
+func TestHistogramVecScrapeShape(t *testing.T) {
+	hv := NewHistogramVec("dur", "", []string{"check", "tier"}, []float64{0.1, 1, 10})
+	hv.With("scan_ssh", "critical").Observe(0.05)
+	hv.With("scan_ssh", "critical").Observe(0.5)
+	hv.With("scan_fs", "deep").Observe(5)
+
+	var buf bytes.Buffer
+	bw := newBufferedWriter(&buf)
+	hv.writeTo(bw)
+	out := buf.String()
+
+	for _, want := range []string{
+		`dur_bucket{check="scan_ssh",tier="critical",le="0.1"} 1`,
+		`dur_bucket{check="scan_ssh",tier="critical",le="1"} 2`,
+		`dur_bucket{check="scan_ssh",tier="critical",le="+Inf"} 2`,
+		`dur_sum{check="scan_ssh",tier="critical"} 0.55`,
+		`dur_count{check="scan_ssh",tier="critical"} 2`,
+		`dur_bucket{check="scan_fs",tier="deep",le="10"} 1`,
+		`dur_count{check="scan_fs",tier="deep"} 1`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestHistogramVecNonMonotonicPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("expected panic on non-monotonic buckets")
+		}
+	}()
+	NewHistogramVec("x", "", []string{"k"}, []float64{1, 1, 2})
+}
+
 func TestGaugeVecBasics(t *testing.T) {
 	gv := NewGaugeVec("queue", "", []string{"watcher"})
 	gv.With("fanotify").Set(7)

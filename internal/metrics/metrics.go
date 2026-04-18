@@ -369,6 +369,95 @@ func (cv *CounterVec) writeTo(w *bufferedWriter) {
 	}
 }
 
+// HistogramVec is the labelled variant of Histogram. All children
+// share the same upper-bound set.
+type HistogramVec struct {
+	name      string
+	help      string
+	labelKeys []string
+	upper     []float64
+
+	mu       sync.Mutex
+	children map[string]*Histogram
+	keys     []string
+}
+
+// NewHistogramVec constructs a vector histogram.
+func NewHistogramVec(name, help string, labelKeys []string, upperBounds []float64) *HistogramVec {
+	if len(labelKeys) == 0 {
+		panic(fmt.Sprintf("metrics: histogram vec %q needs at least one label key", name))
+	}
+	for i := 1; i < len(upperBounds); i++ {
+		if upperBounds[i] <= upperBounds[i-1] {
+			panic(fmt.Sprintf("metrics: histogram vec %q bounds must be strictly increasing", name))
+		}
+	}
+	return &HistogramVec{
+		name:      name,
+		help:      help,
+		labelKeys: append([]string{}, labelKeys...),
+		upper:     append([]float64{}, upperBounds...),
+		children:  map[string]*Histogram{},
+	}
+}
+
+// With returns the child histogram for the given label values.
+func (hv *HistogramVec) With(values ...string) *Histogram {
+	if len(values) != len(hv.labelKeys) {
+		panic(fmt.Sprintf("metrics: histogram vec %q: got %d label values, want %d", hv.name, len(values), len(hv.labelKeys)))
+	}
+	key := joinLabelValues(values)
+	hv.mu.Lock()
+	defer hv.mu.Unlock()
+	if h, ok := hv.children[key]; ok {
+		return h
+	}
+	h := &Histogram{
+		name:      hv.name,
+		help:      hv.help,
+		upper:     hv.upper,
+		bucketCnt: make([]uint64, len(hv.upper)+1),
+	}
+	hv.children[key] = h
+	hv.keys = append(hv.keys, key)
+	return h
+}
+
+func (hv *HistogramVec) writeTo(w *bufferedWriter) {
+	w.writeMeta(hv.name, hv.help, typeHistogram)
+	hv.mu.Lock()
+	keys := append([]string(nil), hv.keys...)
+	childMap := make(map[string]*Histogram, len(hv.children))
+	for k, v := range hv.children {
+		childMap[k] = v
+	}
+	hv.mu.Unlock()
+	sort.Strings(keys)
+	for _, k := range keys {
+		values := splitLabelValues(k)
+		labelPairs := make([]labelPair, len(hv.labelKeys))
+		for i, lk := range hv.labelKeys {
+			labelPairs[i] = labelPair{key: lk, value: values[i]}
+		}
+		h := childMap[k]
+		for i, up := range h.upper {
+			pairs := append([]labelPair(nil), labelPairs...)
+			pairs = append(pairs, labelPair{"le", formatFloat(up)})
+			w.writeSample(hv.name+"_bucket", pairs, float64(atomicLoad(&h.bucketCnt[i])))
+		}
+		pairsInf := append([]labelPair(nil), labelPairs...)
+		pairsInf = append(pairsInf, labelPair{"le", "+Inf"})
+		w.writeSample(hv.name+"_bucket", pairsInf, float64(atomicLoad(&h.bucketCnt[len(h.upper)])))
+		w.writeSample(hv.name+"_sum", labelPairs, math.Float64frombits(atomicLoad(&h.sum)))
+		w.writeSample(hv.name+"_count", labelPairs, float64(atomicLoad(&h.count)))
+	}
+}
+
+// atomicLoad is a small helper so the HistogramVec writeTo reads match
+// the base Histogram's atomic semantics without pulling sync/atomic
+// across every line.
+func atomicLoad(p *uint64) uint64 { return atomic.LoadUint64(p) }
+
 // GaugeVec is the labelled variant of Gauge.
 type GaugeVec struct {
 	name      string
