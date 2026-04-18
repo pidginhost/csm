@@ -44,11 +44,16 @@ func TestFanotifyRegisterMetricsExposesExpectedNames(t *testing.T) {
 	}
 }
 
-// TestFanotifyReconcileObservesHistogram exercises the reconcile path
-// (with an empty directory set so it is a no-op but still passes
-// through the timing wrapper) and verifies the histogram's _count
-// increments. Catches a regression where someone removes the
-// deferred Observe() from reconcileDrops.
+// TestFanotifyReconcileObservesHistogram exercises the timed section
+// of reconcileDrops and verifies the histogram's _count increments.
+// Catches a regression where someone removes the deferred Observe()
+// from reconcileDrops.
+//
+// The test must point reconcileDirs at an EMPTY directory. If we
+// pointed at /tmp or the cwd the reconcile loop would try to open
+// real files and call fm.analyzeFile on anything interesting, against
+// a FileMonitor constructed without wpCache and with a one-slot
+// alertCh -- guaranteed crash or deadlock.
 func TestFanotifyReconcileObservesHistogram(t *testing.T) {
 	ch := make(chan alert.Finding, 1)
 	fm := &FileMonitor{
@@ -59,10 +64,8 @@ func TestFanotifyReconcileObservesHistogram(t *testing.T) {
 	}
 	fm.registerMetrics()
 
-	// Seed a non-empty directory set so reconcileDrops enters the
-	// timed section. Using the current working directory avoids any
-	// need to populate real file data.
-	fm.reconcileDirs["/tmp"] = time.Now()
+	emptyDir := t.TempDir()
+	fm.reconcileDirs[emptyDir] = time.Now()
 
 	before := readHistogramCount(scrapeBody(t), "csm_fanotify_reconcile_latency_seconds")
 	fm.reconcileDrops()

@@ -42,24 +42,23 @@ func TestFirewallMetricsReadLiveStore(t *testing.T) {
 
 	body := scrapeBody(t)
 
-	blocked := readGauge(body, "csm_blocked_ips_total")
-	if blocked < 2 {
-		t.Errorf("csm_blocked_ips_total: got %g, want >= 2 (two BlockIPs seeded)", blocked)
+	// Fresh test-store: the three seed rows are the only entries, so
+	// assert exact counts. Tighter than >= catches regressions like
+	// "BlockIP silently double-inserts" or
+	// "LoadFirewallState reads the bucket twice".
+	if got := readGauge(body, "csm_blocked_ips_total"); got != 2 {
+		t.Errorf("csm_blocked_ips_total: got %g, want 2 (two BlockIPs seeded)", got)
 	}
-
-	total := readGauge(body, "csm_firewall_rules_total")
-	if total < 3 {
-		t.Errorf("csm_firewall_rules_total: got %g, want >= 3 (2 blocked + 1 allowed)", total)
+	if got := readGauge(body, "csm_firewall_rules_total"); got != 3 {
+		t.Errorf("csm_firewall_rules_total: got %g, want 3 (2 blocked + 1 allowed)", got)
 	}
 
 	// Mutate and re-scrape to prove the gauge is live, not cached.
 	if err := db.BlockIP("10.0.0.4", "test", time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("BlockIP: %v", err)
 	}
-	body2 := scrapeBody(t)
-	blocked2 := readGauge(body2, "csm_blocked_ips_total")
-	if blocked2 <= blocked {
-		t.Errorf("csm_blocked_ips_total did not move after second BlockIP: before=%g after=%g", blocked, blocked2)
+	if got := readGauge(scrapeBody(t), "csm_blocked_ips_total"); got != 3 {
+		t.Errorf("csm_blocked_ips_total after third BlockIP: got %g, want 3", got)
 	}
 }
 
@@ -100,8 +99,12 @@ func TestStoreSizeMetricReadsFile(t *testing.T) {
 // in internal/state but stays in the daemon package so a refactor of
 // either end-to-end path gets its own regression gate.
 func TestFindingsTotalFromAppendHistory(t *testing.T) {
-	db := openStoreForTest(t)
-	_ = db
+	// Point store.Global at a fresh bbolt so state.AppendHistory takes
+	// its bbolt branch instead of the deprecated JSONL fallback (which
+	// would still bump the metric, but also spam "DEPRECATION" on
+	// stderr every run).
+	_ = openStoreForTest(t)
+
 	st, err := state.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("state.Open: %v", err)
