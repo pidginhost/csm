@@ -4,13 +4,20 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/yara"
 	"github.com/pidginhost/csm/internal/yaraworker"
 )
+
+// yaraMetricsOnce guards registration of the yara-worker restart
+// counter hook so a baseline re-run or a second daemon instance in the
+// same test binary does not panic with "duplicate registration".
+var yaraMetricsOnce sync.Once
 
 // initYaraBackend wires up either the in-process YARA-X scanner
 // (default) or the out-of-process supervisor (when
@@ -57,6 +64,18 @@ func (d *Daemon) initYaraBackend() error {
 
 	d.yaraSup = sup
 	yara.SetActive(sup)
+
+	// Expose the supervisor's cumulative restart count to Prometheus.
+	// Registered once per process; subsequent calls re-point nothing
+	// (the closure captures `sup`, and a second daemon.Run in the
+	// same process would need to arrange for the metric to follow).
+	yaraMetricsOnce.Do(func() {
+		metrics.RegisterCounterFunc(
+			"csm_yara_worker_restarts_total",
+			"Number of times the YARA-X worker subprocess has been restarted by its supervisor.",
+			func() float64 { return float64(sup.RestartCount()) },
+		)
+	})
 
 	fmt.Fprintf(os.Stderr,
 		"[%s] YARA-X worker active: %d rule(s) compiled in child process (pid=%d)\n",

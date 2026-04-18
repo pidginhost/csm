@@ -25,6 +25,7 @@ import (
 	"github.com/pidginhost/csm/internal/geoip"
 	"github.com/pidginhost/csm/internal/integrity"
 	csmlog "github.com/pidginhost/csm/internal/log"
+	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/modsec"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/signatures"
@@ -111,6 +112,29 @@ func (d *Daemon) SetVersion(v string) {
 	d.version = v
 }
 
+// buildInfoOnce guards process-wide registration of the build_info
+// gauge so repeated daemon construction in tests does not panic.
+var buildInfoOnce sync.Once
+
+// registerBuildInfo exposes build metadata on /metrics in the
+// conventional Prometheus shape: a gauge fixed at 1, with the
+// interesting fields as labels so scrapers can join on them.
+func (d *Daemon) registerBuildInfo() {
+	buildInfoOnce.Do(func() {
+		g := metrics.NewGaugeVec(
+			"csm_build_info",
+			"CSM build metadata. Value is always 1; read version from the label.",
+			[]string{"version"},
+		)
+		version := d.version
+		if version == "" {
+			version = "unknown"
+		}
+		g.With(version).Set(1)
+		metrics.MustRegister("csm_build_info", g)
+	})
+}
+
 // Run starts the daemon and blocks until stopped.
 func (d *Daemon) Run() error {
 	d.startTime = time.Now()
@@ -171,6 +195,7 @@ func (d *Daemon) Run() error {
 	deployConfigs()
 
 	// Initialize signature scanners and threat DB (fast, no I/O scan)
+	d.registerBuildInfo()
 	if err := d.initYaraBackend(); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] YARA backend init: %v\n", ts(), err)
 	}

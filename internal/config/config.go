@@ -133,12 +133,13 @@ type Config struct {
 	} `yaml:"signatures"`
 
 	WebUI struct {
-		Enabled   bool   `yaml:"enabled"`
-		Listen    string `yaml:"listen"`
-		AuthToken string `yaml:"auth_token"`
-		TLSCert   string `yaml:"tls_cert"`
-		TLSKey    string `yaml:"tls_key"`
-		UIDir     string `yaml:"ui_dir"` // path to UI files on disk (default: /opt/csm/ui)
+		Enabled      bool   `yaml:"enabled"`
+		Listen       string `yaml:"listen"`
+		AuthToken    string `yaml:"auth_token"`
+		MetricsToken string `yaml:"metrics_token"` // optional Bearer token for /metrics; if empty /metrics accepts AuthToken
+		TLSCert      string `yaml:"tls_cert"`
+		TLSKey       string `yaml:"tls_key"`
+		UIDir        string `yaml:"ui_dir"` // path to UI files on disk (default: /opt/csm/ui)
 	} `yaml:"webui"`
 
 	EmailAV EmailAVConfig `yaml:"email_av"`

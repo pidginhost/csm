@@ -239,6 +239,13 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	// Logout (clears cookie, requires auth to prevent logout CSRF)
 	mux.Handle("/logout", s.requireAuth(http.HandlerFunc(s.handleLogout)))
 
+	// /metrics (ROADMAP item 4) has its own auth: the handler accepts
+	// cfg.WebUI.MetricsToken as a dedicated Bearer token so Prometheus
+	// scrapers get a credential that does not also unlock the UI, and
+	// falls back to the existing AuthToken/session path so the UI can
+	// self-scrape. No CSRF: read-only endpoint.
+	mux.HandleFunc("/metrics", s.handleMetrics)
+
 	s.httpSrv = &http.Server{
 		Addr:              cfg.WebUI.Listen,
 		Handler:           s.securityHeaders(mux),

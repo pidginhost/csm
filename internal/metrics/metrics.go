@@ -72,7 +72,7 @@ func NewRegistry() *Registry {
 // MustRegister panics if a metric of the same name is already
 // registered. Daemons call this once at startup; a duplicate is a
 // programming error.
-func (r *Registry) MustRegister(name string, c collectable) {
+func (r *Registry) MustRegister(name string, c Collector) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, dup := r.names[name]; dup {
@@ -545,3 +545,38 @@ func escapeLabel(s string) string {
 // name without finding it. Currently unused internally; kept for the
 // external helper surface so test doubles can standardise on it.
 var ErrNotRegistered = errors.New("metrics: not registered")
+
+// -----------------------------------------------------------------------
+// Process-wide default registry
+// -----------------------------------------------------------------------
+
+// defaultRegistry is the Registry the daemon shares across packages.
+// Tests that need isolation should construct their own NewRegistry().
+var defaultRegistry = NewRegistry()
+
+// Default returns the process-wide Registry.
+func Default() *Registry { return defaultRegistry }
+
+// MustRegister is shorthand for Default().MustRegister.
+func MustRegister(name string, c Collector) { defaultRegistry.MustRegister(name, c) }
+
+// RegisterGaugeFunc is shorthand for Default().RegisterGaugeFunc.
+func RegisterGaugeFunc(name, help string, fn func() float64) {
+	defaultRegistry.RegisterGaugeFunc(name, help, fn)
+}
+
+// RegisterCounterFunc is shorthand for Default().RegisterCounterFunc.
+func RegisterCounterFunc(name, help string, fn func() float64) {
+	defaultRegistry.RegisterCounterFunc(name, help, fn)
+}
+
+// WriteOpenMetrics is shorthand for Default().WriteOpenMetrics.
+func WriteOpenMetrics(w io.Writer) error {
+	return defaultRegistry.WriteOpenMetrics(w)
+}
+
+// Collector is the type accepted by Registry.MustRegister. Exported
+// so external packages have a name for the interface, even though the
+// useful method on it is unexported (only metrics-package types can
+// implement it, which is the intent).
+type Collector = collectable
