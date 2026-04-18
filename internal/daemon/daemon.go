@@ -32,6 +32,7 @@ import (
 	"github.com/pidginhost/csm/internal/store"
 	"github.com/pidginhost/csm/internal/webui"
 	"github.com/pidginhost/csm/internal/yara"
+	"github.com/pidginhost/csm/internal/yaraworker"
 )
 
 // Daemon is the main persistent monitoring process.
@@ -65,6 +66,13 @@ type Daemon struct {
 	smtpAuthTracker  *smtpAuthTracker
 	mailAuthTracker  *mailAuthTracker
 	startTime        time.Time
+
+	// yaraSup is the supervised YARA-X worker, wired up when
+	// config.Signatures.YaraWorkerEnabled is true. Nil when running
+	// the in-process YARA-X (default).
+	yaraSup            *yaraworker.Supervisor
+	yaraCrashMu        sync.Mutex
+	yaraLastCrashAlert time.Time
 }
 
 // New creates a new daemon instance.
@@ -163,8 +171,8 @@ func (d *Daemon) Run() error {
 	deployConfigs()
 
 	// Initialize signature scanners and threat DB (fast, no I/O scan)
-	if yaraScanner := yara.Init(d.cfg.Signatures.RulesDir); yaraScanner != nil {
-		fmt.Fprintf(os.Stderr, "[%s] YARA-X scanner active: %d rule file(s)\n", ts(), yaraScanner.RuleCount())
+	if err := d.initYaraBackend(); err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] YARA backend init: %v\n", ts(), err)
 	}
 	checks.InitThreatDB(d.cfg.StatePath, d.cfg.Reputation.Whitelist)
 	if db := checks.GetThreatDB(); db != nil {
@@ -370,6 +378,7 @@ func (d *Daemon) Run() error {
 	if d.controlListener != nil {
 		d.controlListener.Stop()
 	}
+	d.stopYaraBackend()
 
 	d.wg.Wait()
 	if adb := attackdb.Global(); adb != nil {
@@ -1589,7 +1598,7 @@ func (d *Daemon) reloadSignatures() {
 			}
 		}
 	}
-	if yaraScanner := yara.Global(); yaraScanner != nil {
+	if yaraScanner := yara.Active(); yaraScanner != nil {
 		if err := yaraScanner.Reload(); err != nil {
 			fmt.Fprintf(os.Stderr, "[%s] YARA rule reload error: %v\n", ts(), err)
 		} else {

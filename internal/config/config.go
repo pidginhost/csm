@@ -128,7 +128,8 @@ type Config struct {
 			Tier           string `yaml:"tier"`            // "core", "extended", "full" (default: "core")
 			UpdateInterval string `yaml:"update_interval"` // default: "168h" (weekly)
 		} `yaml:"yara_forge"`
-		DisabledRules []string `yaml:"disabled_rules"` // YARA rule names to exclude from Forge downloads
+		DisabledRules     []string `yaml:"disabled_rules"`      // YARA rule names to exclude from Forge downloads
+		YaraWorkerEnabled bool     `yaml:"yara_worker_enabled"` // run YARA-X in a supervised child process (ROADMAP item 2)
 	} `yaml:"signatures"`
 
 	WebUI struct {

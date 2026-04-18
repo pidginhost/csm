@@ -99,16 +99,24 @@ func TestRunRefusesEmptySocket(t *testing.T) {
 
 func waitForSocket(t *testing.T, path string, within time.Duration) {
 	t.Helper()
-	// Check the file-mode socket bit rather than existence; the
-	// stale-socket test seeds a regular file at the same path and
-	// needs to block until Run has unlinked + rebound.
+	// Poll by Ping rather than by os.Stat alone. The stale-socket
+	// test seeds a regular file at the same path, so an existence
+	// check is not enough; we need to wait until Run has unlinked +
+	// rebound + reached its Accept loop. Under heavy parallel test
+	// load the gap between Listen and the first successful Ping can
+	// be several hundred ms, which we absorb with a short retry
+	// rather than failing the test.
+	c := yaraipc.NewClient(path, 500*time.Millisecond)
+	defer func() { _ = c.Close() }()
 	deadline := time.Now().Add(within)
 	for time.Now().Before(deadline) {
 		info, err := os.Stat(path)
 		if err == nil && info.Mode()&os.ModeSocket != 0 {
-			return
+			if _, perr := c.Ping(); perr == nil {
+				return
+			}
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatalf("socket did not appear at %s within %s", path, within)
+	t.Fatalf("socket did not become pingable at %s within %s", path, within)
 }

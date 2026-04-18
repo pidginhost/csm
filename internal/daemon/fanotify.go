@@ -1465,7 +1465,7 @@ func (fm *FileMonitor) runSignatureScan(data []byte, path, ext, procInfo string)
 		}
 	}
 
-	if yaraScanner := yara.Global(); yaraScanner != nil {
+	if yaraScanner := yara.Active(); yaraScanner != nil {
 		matches := yaraScanner.ScanBytes(data)
 		if len(matches) > 0 {
 			fm.sendAlertWithPath(alert.Critical, "yara_match_realtime",

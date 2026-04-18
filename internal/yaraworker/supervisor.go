@@ -252,6 +252,17 @@ func (s *Supervisor) RestartCount() int {
 	return s.restartCount
 }
 
+// ChildPID returns the current worker's pid, or 0 when no worker is
+// running. For operator-facing log lines.
+func (s *Supervisor) ChildPID() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cmd == nil || s.cmd.Process == nil {
+		return 0
+	}
+	return s.cmd.Process.Pid
+}
+
 // supervise watches the current child and restarts it on exit until
 // ctx is cancelled.
 func (s *Supervisor) supervise() {
