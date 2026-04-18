@@ -9,8 +9,54 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/state"
 )
+
+// autoResponseActions counts every auto-response action fired, by
+// action class. Registered lazily on first observation.
+var (
+	autoResponseActions     *metrics.CounterVec
+	autoResponseActionsOnce sync.Once
+)
+
+func observeAutoResponse(action string, n int) {
+	if n <= 0 {
+		return
+	}
+	autoResponseActionsOnce.Do(func() {
+		autoResponseActions = metrics.NewCounterVec(
+			"csm_auto_response_actions_total",
+			"Auto-response actions fired, by action. Labels: action (kill|quarantine|block). Incremented once per finding the auto-response subsystem produced in each tier run; a batch of four IPs blocked in one cycle contributes 4 to action=block.",
+			[]string{"action"},
+		)
+		metrics.MustRegister("csm_auto_response_actions_total", autoResponseActions)
+	})
+	autoResponseActions.With(action).Add(float64(n))
+}
+
+// checkDuration is the per-check latency histogram for /metrics.
+// Labelled by check name and tier so scrapers can spot a single check
+// regressing without scanning logs. Buckets span the observed range
+// from ~millisecond process-list passes up to the five-minute timeout
+// ceiling.
+var (
+	checkDuration     *metrics.HistogramVec
+	checkDurationOnce sync.Once
+)
+
+func observeCheckDuration(name, tier string, d time.Duration) {
+	checkDurationOnce.Do(func() {
+		checkDuration = metrics.NewHistogramVec(
+			"csm_check_duration_seconds",
+			"Wall-clock time for each security check to complete. Label `name` is one of the 62 checks; label `tier` is critical|deep|all. Use p95 across name to spot a single check regressing, and sum across name to track per-cycle pressure.",
+			[]string{"name", "tier"},
+			[]float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300},
+		)
+		metrics.MustRegister("csm_check_duration_seconds", checkDuration)
+	})
+	checkDuration.With(name, tier).Observe(d.Seconds())
+}
 
 // CheckFunc is the signature for all check functions.
 // The context is cancelled when the check times out so goroutines can exit.
@@ -144,7 +190,7 @@ func RunTier(cfg *config.Config, store *state.Store, tier Tier) []alert.Finding 
 	case TierAll:
 		toRun = append(criticalChecks(), deepChecks()...)
 	}
-	return runParallel(cfg, store, toRun)
+	return runParallel(cfg, store, toRun, string(tier))
 }
 
 // RunReducedDeep runs only the deep checks that fanotify can't replace.
@@ -178,7 +224,7 @@ func RunReducedDeep(cfg *config.Config, store *state.Store) []alert.Finding {
 		{"perf_wp_transients", CheckWPTransientBloat},
 		{"perf_wp_cron", CheckWPCron},
 	}
-	return runParallel(cfg, store, reduced)
+	return runParallel(cfg, store, reduced, string(TierDeep))
 }
 
 // RunAll runs critical checks always. Deep checks run if throttle allows or ForceAll is set.
@@ -189,10 +235,10 @@ func RunAll(cfg *config.Config, store *state.Store) []alert.Finding {
 		toRun = append(toRun, deepChecks()...)
 	}
 
-	return runParallel(cfg, store, toRun)
+	return runParallel(cfg, store, toRun, string(TierAll))
 }
 
-func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck) []alert.Finding {
+func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck, tier string) []alert.Finding {
 	var mu sync.Mutex
 	var findings []alert.Finding
 	var wg sync.WaitGroup
@@ -210,6 +256,7 @@ func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck) []
 			// Run with cancellable context so timed-out checks stop
 			ctx, cancel := context.WithTimeout(context.Background(), checkTimeout)
 			done := make(chan []alert.Finding, 1)
+			start := time.Now()
 			go func() {
 				done <- c.fn(ctx, cfg, store)
 			}()
@@ -217,6 +264,7 @@ func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck) []
 			select {
 			case results := <-done:
 				cancel()
+				observeCheckDuration(c.name, tier, time.Since(start))
 				if len(results) > 0 {
 					mu.Lock()
 					findings = append(findings, results...)
@@ -224,6 +272,7 @@ func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck) []
 				}
 			case <-ctx.Done():
 				cancel()
+				observeCheckDuration(c.name, tier, time.Since(start))
 				mu.Lock()
 				findings = append(findings, alert.Finding{
 					Severity:  alert.Warning,
@@ -262,6 +311,7 @@ func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck) []
 				killActions[i].Timestamp = now
 			}
 		}
+		observeAutoResponse("kill", len(killActions))
 		findings = append(findings, killActions...)
 
 		quarantineActions := AutoQuarantineFiles(cfg, findings)
@@ -270,6 +320,7 @@ func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck) []
 				quarantineActions[i].Timestamp = now
 			}
 		}
+		observeAutoResponse("quarantine", len(quarantineActions))
 		findings = append(findings, quarantineActions...)
 
 		blockActions := AutoBlockIPs(cfg, findings)
@@ -278,6 +329,7 @@ func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck) []
 				blockActions[i].Timestamp = now
 			}
 		}
+		observeAutoResponse("block", len(blockActions))
 		findings = append(findings, blockActions...)
 	}
 

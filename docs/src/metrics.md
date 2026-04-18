@@ -88,6 +88,65 @@ curl -sk -H "Authorization: Bearer $METRICS_TOKEN" \
   will add a retention policy that compacts this file; for now use
   this metric to spot runaway growth.
 
+### Fanotify realtime monitor
+
+- `csm_fanotify_queue_depth` (gauge): current number of queued
+  events waiting for the analyzer pool. The queue capacity is 4000;
+  sustained values near that cap mean drops are imminent. Alert
+  target: `max_over_time(csm_fanotify_queue_depth[5m]) > 3500`.
+- `csm_fanotify_events_dropped_total` (counter): cumulative events
+  dropped because the analyzer queue was full. The reconcile pass
+  still rescans drop-affected directories 60 s later, so dropped
+  events do not disappear from detection -- they arrive delayed.
+  Alert target: `rate(csm_fanotify_events_dropped_total[5m]) > 0`
+  paired with a short for-clause.
+- `csm_fanotify_reconcile_latency_seconds` (histogram): how long
+  the post-overflow reconcile pass takes to walk drop-affected
+  directories and rescan recent files. Buckets: 0.01 s .. 60 s.
+  Watch p95: reconcile stealing tens of seconds means bulk events
+  are piling up faster than the walker can keep up.
+
+### Periodic check runner
+
+- `csm_check_duration_seconds{name,tier}` (histogram): wall-clock
+  time each check takes to complete. Label `name` is one of the 62
+  checks (`fake_kernel_threads`, `webshells`, ...); label `tier` is
+  `critical`, `deep`, or `all`. Buckets: 0.01 s .. 300 s (300 s is
+  the per-check timeout ceiling). Useful aggregations:
+
+  ```
+  # p95 of the slowest check in the critical tier:
+  histogram_quantile(0.95,
+    sum by (le, name) (
+      rate(csm_check_duration_seconds_bucket{tier="critical"}[10m])
+    )
+  )
+
+  # total time each cycle spends in deep-tier checks:
+  sum by (tier) (rate(csm_check_duration_seconds_sum{tier="deep"}[1h]))
+  ```
+
+### Firewall
+
+- `csm_blocked_ips_total` (gauge): number of IPs currently on the
+  firewall block list. Excludes expired temp bans -- the store's
+  `LoadFirewallState` filters those before the gauge reads.
+- `csm_firewall_rules_total` (gauge): total firewall rules across
+  all four categories (blocked IPs, allowed IPs, blocked subnets,
+  port-specific allows). Sudden drops are worth investigating; the
+  firewall engine does not prune rules without operator or
+  auto-response action.
+
+### Auto-response
+
+- `csm_auto_response_actions_total{action}` (counter): every
+  auto-response action fired, by class. Labels: `action` is
+  `kill`, `quarantine`, or `block`. Incremented once per finding
+  the corresponding `Auto*` helper produces, so a batch blocking
+  four IPs in one cycle adds 4 to `action=block`. Useful for
+  detecting response storms:
+  `rate(csm_auto_response_actions_total[5m])`.
+
 ## Caveats
 
 - Scrape the web UI's HTTPS port, not a separate listener.
@@ -98,21 +157,14 @@ curl -sk -H "Authorization: Bearer $METRICS_TOKEN" \
   deliberately not exposed. Shared-hosting deployments with 1000+
   cPanel users would otherwise overwhelm a Prometheus server.
 
-## Planned additions
+## Not instrumented (yet)
 
-Tracked in `CHANGELOG.md` under `## [Unreleased]`. In rough priority
-order:
-
-- `csm_fanotify_queue_depth`, `csm_fanotify_events_dropped_total`,
-  `csm_fanotify_reconcile_latency_seconds`: real-time file-monitor
-  health.
-- `csm_check_duration_seconds{name,tier}`: how long each of the 62
-  checks takes per cycle.
-- `csm_firewall_rules_total`, `csm_blocked_ips_total`: firewall
-  state gauges.
-- `csm_auto_response_actions_total{action}`: block / quarantine /
-  clean action counts.
-
-When these land, they follow the naming and label conventions
-established above (lowercase `snake_case`, `csm_` prefix, `_total`
-suffix on counters).
+- Per-account labels on any metric. Deliberately off: shared-hosting
+  deployments with 1000+ cPanel users would blow out Prometheus
+  cardinality.
+- Fanotify inline auto-response actions (the quarantine-while-
+  seeing-the-write path in `fanotify.go`). The periodic
+  `csm_auto_response_actions_total` does not count those; a follow-
+  up may split the metric or add a `source` label.
+- bbolt per-bucket size breakdown. Ships with ROADMAP item 6 (the
+  retention + compaction work).

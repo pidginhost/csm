@@ -19,6 +19,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/signatures"
 	"github.com/pidginhost/csm/internal/wpcheck"
 	"github.com/pidginhost/csm/internal/yara"
@@ -109,12 +110,59 @@ type FileMonitor struct {
 	// do not blind detection to actual threats landing in the storm.
 	reconcileMu   sync.Mutex
 	reconcileDirs map[string]time.Time
+
+	// metricsOnce guards one-time registration of the fanotify-scoped
+	// Prometheus metrics. Each FileMonitor registers its own hooks when
+	// it first starts; subsequent calls are a no-op.
+	metricsOnce sync.Once
 }
 
 const (
 	reconcileDirCap = 64
 	reconcileWindow = 70 * time.Second
 )
+
+// Package-level Prometheus metrics for fanotify. Instantiated once per
+// process; one FileMonitor per daemon instance reuses them.
+var (
+	fanotifyDroppedTotal *metrics.Counter
+	fanotifyReconcileDur *metrics.Histogram
+)
+
+// registerFanotifyMetrics is called once per FileMonitor via
+// fm.metricsOnce. Safe to call multiple times at the FileMonitor
+// layer; the package-level sync.Once guards the actual registrations.
+var fanotifyMetricsInit sync.Once
+
+func (fm *FileMonitor) registerMetrics() {
+	fm.metricsOnce.Do(func() {
+		fanotifyMetricsInit.Do(func() {
+			fanotifyDroppedTotal = metrics.NewCounter(
+				"csm_fanotify_events_dropped_total",
+				"Fanotify events dropped because the analyzer queue was full. Sustained growth indicates an event storm (bulk unzip, backup restore) or an attack producing more file activity than the scanner can analyse; the reconcile pass still rescans affected directories, so dropped events do not vanish from detection, they arrive delayed.",
+			)
+			metrics.MustRegister("csm_fanotify_events_dropped_total", fanotifyDroppedTotal)
+
+			fanotifyReconcileDur = metrics.NewHistogram(
+				"csm_fanotify_reconcile_latency_seconds",
+				"How long the post-overflow reconcile pass takes to walk drop-affected directories and rescan recent files. Buckets sized for the observed range; alert if p99 crosses tens of seconds (reconcile is stealing CPU from real-time analysis).",
+				[]float64{0.01, 0.05, 0.1, 0.5, 1, 5, 10, 30, 60},
+			)
+			metrics.MustRegister("csm_fanotify_reconcile_latency_seconds", fanotifyReconcileDur)
+
+			metrics.RegisterGaugeFunc(
+				"csm_fanotify_queue_depth",
+				"Current number of queued fanotify events waiting for the analyzer pool. Capacity is 4000; queue approaching that cap means drops are imminent.",
+				func() float64 {
+					if fm == nil || fm.analyzerCh == nil {
+						return 0
+					}
+					return float64(len(fm.analyzerCh))
+				},
+			)
+		})
+	})
+}
 
 type fileEvent struct {
 	path string
@@ -426,6 +474,9 @@ func (fm *FileMonitor) handleEvent(fd int, pid int32) {
 		// every file in a bulk burst past buffer capacity is invisible to
 		// detection forever.
 		n := atomic.AddInt64(&fm.droppedEvents, 1)
+		if fanotifyDroppedTotal != nil {
+			fanotifyDroppedTotal.Inc()
+		}
 		if n%100 == 0 {
 			fmt.Fprintf(os.Stderr, "[%s] fanotify: %d events dropped (analyzer queue full)\n", ts(), n)
 		}
@@ -470,6 +521,13 @@ func (fm *FileMonitor) reconcileDrops() {
 
 	if len(dirs) == 0 {
 		return
+	}
+
+	if fanotifyReconcileDur != nil {
+		start := time.Now()
+		defer func() {
+			fanotifyReconcileDur.Observe(time.Since(start).Seconds())
+		}()
 	}
 
 	cutoff := time.Now().Add(-reconcileWindow)

@@ -18,3 +18,4 @@ func NewFileMonitor(_ *config.Config, _ chan<- alert.Finding) (*FileMonitor, err
 
 func (fm *FileMonitor) Run(_ <-chan struct{}) {}
 func (fm *FileMonitor) Stop()                 {}
+func (fm *FileMonitor) registerMetrics()      {}

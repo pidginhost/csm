@@ -162,6 +162,45 @@ func (d *Daemon) registerStoreSizeMetric() {
 	})
 }
 
+// firewallMetricsOnce guards /metrics registration of the firewall +
+// blocked-IP gauges so repeated daemon starts in a test binary are
+// idempotent.
+var firewallMetricsOnce sync.Once
+
+// registerFirewallMetrics exposes the count of blocked IPs and the
+// total number of firewall rules (IPs + allowed + subnets + port
+// allow entries). Both are gauge hooks that read from the bbolt
+// store at scrape time, so they observe the full live state without
+// holding any cached mirror.
+func (d *Daemon) registerFirewallMetrics() {
+	firewallMetricsOnce.Do(func() {
+		metrics.RegisterGaugeFunc(
+			"csm_blocked_ips_total",
+			"Number of IPs currently on the firewall block list (excluding expired temp bans).",
+			func() float64 {
+				db := store.Global()
+				if db == nil {
+					return 0
+				}
+				st := db.LoadFirewallState()
+				return float64(len(st.Blocked))
+			},
+		)
+		metrics.RegisterGaugeFunc(
+			"csm_firewall_rules_total",
+			"Total firewall rules across all categories (blocked IPs, allowed IPs, blocked subnets, port-specific allows).",
+			func() float64 {
+				db := store.Global()
+				if db == nil {
+					return 0
+				}
+				st := db.LoadFirewallState()
+				return float64(len(st.Blocked) + len(st.Allowed) + len(st.Subnets) + len(st.PortAllowed))
+			},
+		)
+	})
+}
+
 // Run starts the daemon and blocks until stopped.
 func (d *Daemon) Run() error {
 	d.startTime = time.Now()
@@ -224,6 +263,7 @@ func (d *Daemon) Run() error {
 	// Initialize signature scanners and threat DB (fast, no I/O scan)
 	d.registerBuildInfo()
 	d.registerStoreSizeMetric()
+	d.registerFirewallMetrics()
 	if err := d.initYaraBackend(); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] YARA backend init: %v\n", ts(), err)
 	}
@@ -1073,6 +1113,7 @@ func (d *Daemon) startFileMonitor() {
 		csmlog.Warn("fanotify not available, falling back to periodic deep scan", "err", err)
 		return
 	}
+	fm.registerMetrics()
 	d.fileMonitor = fm
 	d.wg.Add(1)
 	go func() {

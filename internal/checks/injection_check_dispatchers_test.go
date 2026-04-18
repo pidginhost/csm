@@ -178,7 +178,7 @@ func TestRunParallelCollectsFindingsFromAllChecks(t *testing.T) {
 			return nil
 		}},
 	}
-	findings := runParallel(&config.Config{}, nil, checks)
+	findings := runParallel(&config.Config{}, nil, checks, "test")
 
 	hasCustom := false
 	for _, f := range findings {
