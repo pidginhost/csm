@@ -49,7 +49,10 @@ scrape_configs:
           - csm-host-2.example.internal:9443
 ```
 
-This file passes `promtool check config`.
+A complete, validated version of this snippet (with `global:` block)
+ships as `docs/src/examples/prometheus-scrape.yml`. The CI pipeline
+runs `promtool check config` against that file in the `promtool-check`
+job; if the example ever stops validating, the pipeline fails.
 
 ## Quick check
 
@@ -146,6 +149,24 @@ curl -sk -H "Authorization: Bearer $METRICS_TOKEN" \
   four IPs in one cycle adds 4 to `action=block`. Useful for
   detecting response storms:
   `rate(csm_auto_response_actions_total[5m])`.
+
+## Counter reset semantics
+
+Prometheus counters in CSM live in process memory. They reset to zero
+whenever the daemon restarts (config change, binary upgrade, crash
+recovery). This is the standard behaviour for every
+Prometheus-instrumented daemon; Prometheus's scrape pipeline detects
+counter resets on its own and `rate()`, `increase()`, and
+`rate_over_time()` all handle them correctly.
+
+Operators should not alert on "counter decreased across a scrape" as
+a failure condition. Alert on `rate()` or `increase()` of a counter
+over a window long enough to absorb expected restarts.
+
+Persisting counters across restarts would require writing to bbolt on
+every increment, which would not pay for itself. If a specific metric
+needs restart-stable behaviour later, a gauge-over-the-bbolt-counter
+pattern can be added for that one case without affecting the rest.
 
 ## Caveats
 

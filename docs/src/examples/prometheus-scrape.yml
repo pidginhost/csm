@@ -1,0 +1,26 @@
+# Minimal Prometheus server config demonstrating how to scrape CSM's
+# /metrics endpoint. Validated in CI by the `promtool-check` job in
+# .gitlab-ci.yml so the example cannot silently rot.
+#
+# See docs/src/metrics.md for per-metric docs and example PromQL.
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+
+scrape_configs:
+  - job_name: csm
+    scheme: https
+    tls_config:
+      # CSM serves a self-signed cert by default. Skip verification
+      # on trusted internal networks, or pin the CA you chose.
+      insecure_skip_verify: true
+    authorization:
+      type: Bearer
+      credentials: "replace-with-webui.metrics_token-from-csm.yaml"
+    static_configs:
+      - targets:
+          - csm-host-1.example.internal:9443
+          - csm-host-2.example.internal:9443
+        labels:
+          env: prod

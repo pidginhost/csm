@@ -340,9 +340,11 @@ than adding a new abstraction layer.
 ### Acceptance criteria
 
 - `curl -H "Authorization: Bearer $TOKEN" https://host:9443/metrics`
-  returns OpenMetrics text.
-- `findings_total` monotonically increases when findings land and
-  never decreases across daemon restarts.
+  returns Prometheus text exposition.
+- `findings_total` is monotonically non-decreasing within a daemon
+  lifetime. Counter resets on daemon restart are expected and are
+  handled by Prometheus's built-in reset detection (`rate()`,
+  `increase()`). See `docs/src/metrics.md` for the full policy.
 - No new external dependency in `go.sum`.
 
 ### Out of scope
