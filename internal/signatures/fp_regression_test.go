@@ -444,7 +444,6 @@ func TestBackdoorPhpAutoAppend_PhpShieldTargetStillFires(t *testing.T) {
 	}
 }
 
-
 // --- webshell_p0wny: structural markers, not $_POST substring ------------
 //
 // Earlier versions of the rule matched on a bare $_POST substring, which

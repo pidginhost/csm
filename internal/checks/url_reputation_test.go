@@ -276,7 +276,6 @@ func TestAbusedTLDs_NonEmpty(t *testing.T) {
 	}
 }
 
-
 // -----------------------------------------------------------------------------
 // scriptSrcStrongReason -- context-independent classifier (post content)
 // -----------------------------------------------------------------------------
@@ -313,15 +312,15 @@ func TestScriptSrcStrongReason_StructuralMarkersStillFire(t *testing.T) {
 	// otherwise-unremarkable host, must also flag under the strong-only
 	// classifier: raw IPs, abused TLDs, known-bad exfil, empty host.
 	cases := []string{
-		"https://192.0.2.42/payload.js",              // raw IP
-		"http://203.0.113.7/loader.js",               // raw IP + HTTP (IP wins)
-		"https://evil.tk/payload.js",                 // abused TLD
-		"https://spam.top/a.js",                      // abused TLD
-		"https://attacker.workers.dev/x.js",          // known-bad exfil
-		"https://pastebin.com/raw/abc",               // known-bad exfil
-		"https://localhost/x.js",                     // no valid TLD
-		"https:///payload.js",                        // empty host
-		"https://bit.ly/xyz",                         // URL shortener
+		"https://192.0.2.42/payload.js",     // raw IP
+		"http://203.0.113.7/loader.js",      // raw IP + HTTP (IP wins)
+		"https://evil.tk/payload.js",        // abused TLD
+		"https://spam.top/a.js",             // abused TLD
+		"https://attacker.workers.dev/x.js", // known-bad exfil
+		"https://pastebin.com/raw/abc",      // known-bad exfil
+		"https://localhost/x.js",            // no valid TLD
+		"https:///payload.js",               // empty host
+		"https://bit.ly/xyz",                // URL shortener
 	}
 	for _, c := range cases {
 		bad, _ := scriptSrcStrongReason(c)
@@ -374,11 +373,11 @@ func TestIsAttackerScriptURLInPost_RealInjectionCasesStillFlag(t *testing.T) {
 	// Injections found in real wp_posts rows on cluster6 and similar.
 	// Each has at least one structural marker and must still alert.
 	cases := []string{
-		"https://staticsx.top/l.js",                  // abused TLD
-		"https://192.0.2.42/inject.js",               // raw IP
-		"https://attacker.workers.dev/payload.js",    // cheap exfil
-		"https://evil.tk/loader.js",                  // abused TLD
-		"https://tinyurl.com/abc",                    // URL shortener
+		"https://staticsx.top/l.js",               // abused TLD
+		"https://192.0.2.42/inject.js",            // raw IP
+		"https://attacker.workers.dev/payload.js", // cheap exfil
+		"https://evil.tk/loader.js",               // abused TLD
+		"https://tinyurl.com/abc",                 // URL shortener
 	}
 	for _, c := range cases {
 		if !isAttackerScriptURLInPost(c) {

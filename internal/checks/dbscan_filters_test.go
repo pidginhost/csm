@@ -446,7 +446,6 @@ func TestIsScannablePostType_DocumentedBehavior(t *testing.T) {
 	}
 }
 
-
 // -----------------------------------------------------------------------------
 // hasMaliciousExternalScriptInPost -- post_content predicate
 // -----------------------------------------------------------------------------

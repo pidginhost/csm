@@ -185,7 +185,6 @@ func TestAnalyzePHPContentEmpty(t *testing.T) {
 	}
 }
 
-
 // --- containsStandaloneFunc: method/static calls must not match --------
 //
 // The earlier heuristic only required the character before the call to be
