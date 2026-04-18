@@ -496,8 +496,7 @@ real incident the operator either tunes live (and loses 3-5 s of
 real-time monitoring on re-mark) or leaves a noisy threshold in
 place. Both are bad.
 
-A second cost surfaced enabling `yara_worker_enabled` on cluster6
-2026-04-18: the integrity check (`integrity.Verify` in
+A second cost: the integrity check (`integrity.Verify` in
 `cmd/csm/main.go`) refuses any config whose sha256 disagrees with
 `cfg.Integrity.ConfigHash`, so every hand-edit must be followed by
 `csm rehash` before the restart or the daemon crash-loops. The
