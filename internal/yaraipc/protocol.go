@@ -99,6 +99,7 @@ func WriteFrame(w io.Writer, f Frame) error {
 		return fmt.Errorf("frame body %d bytes exceeds cap %d", len(body), MaxFrameBytes)
 	}
 	var hdr [4]byte
+	// #nosec G115 -- len(body) is bounded above by MaxFrameBytes (16 MiB), which fits in uint32.
 	binary.BigEndian.PutUint32(hdr[:], uint32(len(body)))
 	if _, err := w.Write(hdr[:]); err != nil {
 		return err
