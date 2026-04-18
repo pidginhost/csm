@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `csm run-deep` no longer exits with `reading response: i/o timeout` on large cPanel servers. The CLI's control-socket read ceiling was 5 minutes for every command, but a deep-tier RPC on a host with hundreds of WordPress installs legitimately takes tens of minutes (plugin-cache refresh drives a wp-cli subprocess per site). Tier-run paths now use a 60-minute ceiling; other CLI commands keep the 5-minute short-op default. The hourly `csm-deep.service` systemd timer now records a real `tier=deep findings=X new=Y elapsed_ms=Z` line in `monitor.log` instead of failing every hour.
+- `db_post_injection` stopped firing on 13-year-old author-embedded `<script src="http://...">` tags (e.g. legacy Romanian video embeds on filmetaricom). Post-content URL classification now uses a post-specific predicate that drops the plaintext-HTTP indicator but keeps every structural marker (raw IP host, abused TLD, known-bad exfil host, empty/invalid host). wp_options classification is unchanged — plaintext HTTP in a site's analytics configuration is still suspect.
+- `suspicious_php_content` no longer fires solely on "shell function co-present with request input" against legitimate WordPress file-manager plugins (FileOrganizer/elFinder). The co-presence signal is now only emitted as corroboration for another indicator; same-line shell-function-with-request-input still fires on its own (real webshell shape). `containsStandaloneFunc` additionally rejects method calls (`$this->DB->exec(...)`), static calls (`Foo::exec(...)`), and function declarations (`function exec(...)`); previously the SQLite driver's `$this->DB->exec(UPDATE ...)` line with a `$_SERVER` reference tripped the same-line rule.
+- `webshell_p0wny` dropped the bare `"p0wny"` pattern from its literal-match list. Combined with the `p0wny.?shell` regex, the pattern double-counted on a single textual occurrence of "p0wny-shell" (e.g. a docblock referencing the research project), clearing `min_match: 2` on its own. The remaining patterns (`featureShell`, `makeCommand`, `window.term`) are structural markers unique to the shell's terminal UI and do not appear in prose.
+
 ## [2.5.0] - 2026-04-17
 
 ### Security

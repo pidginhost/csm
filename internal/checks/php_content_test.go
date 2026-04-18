@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -181,5 +182,144 @@ func TestAnalyzePHPContentEmpty(t *testing.T) {
 	result := analyzePHPContent(path)
 	if result.check != "" {
 		t.Errorf("empty file should return empty, got check=%q", result.check)
+	}
+}
+
+
+// --- containsStandaloneFunc: method/static calls must not match --------
+//
+// The earlier heuristic only required the character before the call to be
+// non-alphanumeric. That matched method calls like $this->DB->exec(, where
+// the character before "exec(" is ">" (the arrow operator's second char).
+// Dropbox's elFinder volume driver hit this: a `$this->DB->exec(SQLite stmt)`
+// line that also referenced $_SERVER's REQUEST_TIME triggered the
+// "shell function with request input on same line" indicator.
+
+func TestContainsStandaloneFuncRejectsArrowMethodCall(t *testing.T) {
+	if containsStandaloneFunc("$this->DB->exec(\"update ...\");", "exec(") {
+		t.Error("method call via -> should not match shell function")
+	}
+}
+
+func TestContainsStandaloneFuncRejectsStaticCall(t *testing.T) {
+	if containsStandaloneFunc("Foo::exec($cmd);", "exec(") {
+		t.Error("static call via :: should not match shell function")
+	}
+}
+
+func TestContainsStandaloneFuncRejectsFunctionDeclaration(t *testing.T) {
+	if containsStandaloneFunc("function exec(\"cmd\") { /* ... */ }", "exec(") {
+		t.Error("function declaration should not match shell function call")
+	}
+}
+
+func TestContainsStandaloneFuncRejectsTruncatedArrowAtStart(t *testing.T) {
+	// absPos == 1 edge case: the match starts at byte 1 and only the
+	// tail byte of a possible method/static operator is visible. We
+	// cannot confirm the operator but we also cannot treat it as a
+	// real call, because in any realistic 32 KB buffer slice the byte
+	// could be the tail of "->" or "::" that got cut off at the start.
+	if containsStandaloneFunc(">exec(", "exec(") {
+		t.Error("single-byte > before exec( at absPos=1 must not match (potential truncated method call)")
+	}
+	if containsStandaloneFunc(":exec(", "exec(") {
+		t.Error("single-byte : before exec( at absPos=1 must not match (potential truncated static call)")
+	}
+}
+
+func TestContainsStandaloneFuncAcceptsBarePHPExec(t *testing.T) {
+	if !containsStandaloneFunc("$r = exec(\"ls -la\");", "exec(") {
+		t.Error("bare PHP exec() call must still match")
+	}
+	if !containsStandaloneFunc("@exec(\"ls\")", "exec(") {
+		t.Error("error-suppressed @exec() must still match")
+	}
+}
+
+// --- analyzePHPContent: co-presence needs corroboration ----------------
+//
+// Legitimate WordPress file-manager plugins (FileOrganizer/elFinder) and
+// media-processing libraries legitimately call exec()/proc_open() for
+// ImageMagick and also consume $_POST/$_GET for AJAX routing. The two
+// tokens co-exist in the same file without being on the same line. Before
+// this fix, "shell function co-present with request input" fired HIGH on
+// its own, producing multi-account noise whenever the plugin was
+// installed. Require at least one other indicator before emitting.
+
+func TestAnalyzePHPContentLoneCopresenceDoesNotFire(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "legit-library.php")
+	// Real PHP shell exec() on line 2 (image processing), bare $_POST
+	// read on line 6 (AJAX parameter). No other indicator in the file.
+	content := "<?php\n" +
+		"$r = exec(\"convert \" . escapeshellarg($src) . \" -thumbnail 128x128 \" . escapeshellarg($dst));\n" +
+		"\n" +
+		"function route() {\n" +
+		"    $cmd = isset($_POST[\"cmd\"]) ? sanitize_text_field($_POST[\"cmd\"]) : \"\";\n" +
+		"    return dispatch($cmd);\n" +
+		"}\n"
+	_ = os.WriteFile(path, []byte(content), 0644)
+
+	result := analyzePHPContent(path)
+	if result.check != "" {
+		t.Errorf("lone shell+request co-presence should not fire, got check=%q details=%q", result.check, result.details)
+	}
+}
+
+func TestAnalyzePHPContentSameLineShellRequestStillFires(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "shell-sameline.php")
+	// Classic one-line webshell: exec directly takes $_POST input. This
+	// must keep firing HIGH even when no other indicator is present.
+	content := "<?php system($_POST[\"c\"]);\n"
+	_ = os.WriteFile(path, []byte(content), 0644)
+
+	result := analyzePHPContent(path)
+	if result.check == "" {
+		t.Fatal("same-line shell+request must still fire")
+	}
+	if result.check != "suspicious_php_content" {
+		t.Errorf("single same-line indicator should be HIGH (suspicious_php_content), got %q", result.check)
+	}
+}
+
+func TestAnalyzePHPContentCopresenceWithOtherIndicatorEscalates(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "co-plus-goto.php")
+	// Co-presence alone is silent; co-presence alongside a strong obfuscation
+	// signal (15+ goto statements) should escalate to Critical as two
+	// indicators together.
+	var gotos string
+	for i := 0; i < 20; i++ {
+		gotos += fmt.Sprintf("goto lbl%d; lbl%d:\n", i, i)
+	}
+	content := "<?php\n" + gotos +
+		"$r = exec(\"somecmd\");\n" +
+		"$x = $_POST[\"p\"];\n"
+	_ = os.WriteFile(path, []byte(content), 0644)
+
+	result := analyzePHPContent(path)
+	if result.check != "obfuscated_php" {
+		t.Errorf("co-presence + goto obfuscation should escalate to Critical, got check=%q", result.check)
+	}
+}
+
+func TestAnalyzePHPContentDBMethodExecIsNotShellCall(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sqlite-driver.php")
+	// Elfinder Dropbox driver shape: $this->DB->exec(SQLite UPDATE) with
+	// $_SERVER["REQUEST_TIME"] on the same line. The arrow method call
+	// must not be counted as PHP's shell exec.
+	content := "<?php\n" +
+		"class Driver {\n" +
+		"    public function flush($cursor) {\n" +
+		"        $this->DB->exec(\"update tbl set mtime=\" . $_SERVER[\"REQUEST_TIME\"] . \" where id=1\");\n" +
+		"    }\n" +
+		"}\n"
+	_ = os.WriteFile(path, []byte(content), 0644)
+
+	result := analyzePHPContent(path)
+	if result.check != "" {
+		t.Errorf("$this->DB->exec + $_SERVER must not trigger shell+request, got check=%q details=%q", result.check, result.details)
 	}
 }

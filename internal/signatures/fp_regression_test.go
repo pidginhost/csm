@@ -443,3 +443,128 @@ func TestBackdoorPhpAutoAppend_PhpShieldTargetStillFires(t *testing.T) {
 		}
 	}
 }
+
+
+// --- webshell_p0wny: structural markers, not $_POST substring ------------
+//
+// Earlier versions of the rule matched on a bare $_POST substring, which
+// fires on any CMS/theme form handler. The 2026-03-27 tightening switched
+// the rule to require two of: "p0wny", "featureShell", "makeCommand",
+// "window.term", or the regex "p0wny.?shell". The tests below pin the
+// negative side (legitimate plugin handlers that consume $_POST) against
+// the positive side (an actual p0wny shell).
+
+func TestWebshellP0wny_GTranslateEmailHandlerDoesNotFire(t *testing.T) {
+	scanner := loadRepoScanner(t)
+
+	// Verbatim shape of wp-content/plugins/gtranslate/url_addon/
+	// gtranslate-email.php observed on a production site. Consumes
+	// $_POST and $_GET to forward an email body to gtranslate.net for
+	// translation. No p0wny terminal UI, no featureShell handler, no
+	// makeCommand dispatcher -- nothing that belongs to the real shell.
+	legit := []byte(`<?php
+header('Content-Type: application/json');
+error_reporting(0);
+
+include 'config.php';
+
+if (!isset($_GET['glang']) or !isset($_POST['body']))
+    exit;
+
+if (!preg_match('/^[a-zA-Z0-9+\/]+={0,2}$/', $_POST['body']))
+    exit;
+
+$glang = $_GET['glang'];
+$body = json_encode(array('email-body' => base64_encode(base64_decode($_POST['body']))));
+
+$wp_config_dir = dirname(__FILE__, 5) . '/wp-config.php';
+if (file_exists($wp_config_dir) and isset($_POST['access_key'])) {
+    include $wp_config_dir;
+    if (md5(substr(NONCE_SALT, 0, 10) . substr(NONCE_KEY, 0, 5)) != $_POST['access_key'])
+        exit;
+}
+
+$ch = curl_init();
+curl_setopt($ch, CURLOPT_URL, 'https://tdns.gtranslate.net/tdn-bin/email-translate?lang=' . $glang);
+curl_setopt($ch, CURLOPT_POST, 1);
+curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
+$response = curl_exec($ch);
+curl_close($ch);
+
+echo $response;
+`)
+	matches := scanner.ScanContent(legit, ".php")
+	if hasRule(matches, "webshell_p0wny") {
+		t.Error("webshell_p0wny FP: matched gTranslate email translation handler (consumes $_POST but has no p0wny-specific markers)")
+	}
+}
+
+func TestWebshellP0wny_CF7FormHandlerDoesNotFire(t *testing.T) {
+	scanner := loadRepoScanner(t)
+
+	// Contact Form 7-style submission handler: iterates $_POST fields,
+	// validates, writes to DB. This is what the original rule FP'd on.
+	legit := []byte(`<?php
+namespace Foo;
+
+function handle_submission() {
+    if (empty($_POST['wpcf7'])) {
+        return;
+    }
+    foreach ($_POST as $key => $value) {
+        if (!is_string($value)) continue;
+        $sanitised[$key] = sanitize_text_field($value);
+    }
+    return wp_mail(get_option('admin_email'), 'Submission', print_r($sanitised, true));
+}
+`)
+	matches := scanner.ScanContent(legit, ".php")
+	if hasRule(matches, "webshell_p0wny") {
+		t.Error("webshell_p0wny FP: matched generic form handler (consumes $_POST but has no p0wny markers)")
+	}
+}
+
+func TestWebshellP0wny_RealShellDetected(t *testing.T) {
+	scanner := loadRepoScanner(t)
+
+	// Minimal p0wny-shell skeleton. The real shell ships an HTML shell
+	// over a single file: a <script> that owns window.term and calls
+	// featureShell() / makeCommand() to dispatch commands. The tokens
+	// "p0wny", "featureShell", "makeCommand", "window.term" and the
+	// "p0wny-shell" regex all fire; min_match=2 is comfortably cleared.
+	malicious := []byte(`<?php
+// p0wny-shell
+function featureShell() {
+    return process_command($_POST['cmd']);
+}
+?>
+<script>
+function makeCommand(c) { window.term.write(c); }
+</script>
+`)
+	matches := scanner.ScanContent(malicious, ".php")
+	if !hasRule(matches, "webshell_p0wny") {
+		t.Error("webshell_p0wny regression: real p0wny-shell skeleton was not detected")
+	}
+}
+
+func TestWebshellP0wny_SingleTokenNotEnough(t *testing.T) {
+	scanner := loadRepoScanner(t)
+
+	// A file mentioning the literal string "p0wny" once (e.g. a blog post
+	// about webshell research) must not trip the rule. min_match=2 exists
+	// precisely to avoid word-of-mouth false positives.
+	legit := []byte(`<?php
+/**
+ * Security research notes.
+ *
+ * References: p0wny-shell is a minimalist PHP webshell. See
+ * https://github.com/flozz/p0wny-shell for context.
+ */
+function noop() {}
+`)
+	matches := scanner.ScanContent(legit, ".php")
+	if hasRule(matches, "webshell_p0wny") {
+		t.Error("webshell_p0wny FP: matched a single mention of 'p0wny' in a docblock (min_match=2 must hold)")
+	}
+}

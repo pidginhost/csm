@@ -366,11 +366,20 @@ func runUninstall() {
 // prints a one-line summary. The daemon is the sole bbolt owner, so
 // there is no lock contention with the internal scanner; they share
 // the same in-process state.
+//
+// A tier run is a synchronous RPC: the daemon drives the scanner to
+// completion and replies with counts + elapsed time. On large cPanel
+// servers the deep tier legitimately takes tens of minutes (hundreds
+// of WordPress installs run through wp-cli for plugin-cache refresh),
+// so we pass the tier-run ceiling instead of the default short-op
+// timeout. Critical and all-tier variants share this ceiling because
+// it is a backstop, not a tuned value -- a healthy critical scan
+// returns in seconds either way.
 func runTierViaSocket(tier string) {
-	result := requireDaemon(control.CmdTierRun, control.TierRunArgs{
+	result := requireDaemonWithTimeout(control.CmdTierRun, control.TierRunArgs{
 		Tier:   tier,
 		Alerts: true,
-	})
+	}, controlReadTimeoutTierRun)
 	var r control.TierRunResult
 	if err := json.Unmarshal(result, &r); err != nil {
 		fmt.Fprintf(os.Stderr, "csm: decoding result: %v\n", err)

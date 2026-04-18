@@ -314,8 +314,15 @@ func analyzePHPContent(path string) phpAnalysisResult {
 			break
 		}
 	}
+	// Same-line is a strong signal on its own: "$ret = system($_POST['cmd']);"
+	// almost never occurs in legitimate code. Co-presence is weaker: elFinder
+	// and other media-processing libraries legitimately call exec() for
+	// ImageMagick and also consume $_POST for AJAX routing, placing both
+	// tokens in the same 32 KB window. The co-presence finding is therefore
+	// only emitted as CORROBORATION after all the stronger indicators have
+	// been collected -- see the deferred append further below.
+	coPresenceCandidate := false
 	if hasShellFunc && hasRequestVar {
-		// Check for same-line (strong signal)
 		for _, line := range strings.Split(contentLower, "\n") {
 			lineHasShell := false
 			for _, sf := range shellFuncs {
@@ -340,8 +347,7 @@ func analyzePHPContent(path string) phpAnalysisResult {
 		if sameLineShellRequest {
 			indicators = append(indicators, "shell function with request input on same line")
 		} else if !IsVerifiedCMSFile(path) {
-			// Co-presence in non-verified file = weaker signal
-			indicators = append(indicators, "shell function co-present with request input")
+			coPresenceCandidate = true
 		}
 	}
 
@@ -361,6 +367,14 @@ func analyzePHPContent(path string) phpAnalysisResult {
 				break
 			}
 		}
+	}
+
+	// Deferred corroboration: a lone co-presence is not enough. If a
+	// stronger indicator was produced above, the co-presence is appended
+	// both as extra context for the operator and to nudge the severity
+	// into the >=2 Critical band for obfuscated droppers.
+	if coPresenceCandidate && len(indicators) > 0 {
+		indicators = append(indicators, "shell function co-present with request input")
 	}
 
 	// --- Determine severity based on indicators ---
@@ -455,9 +469,24 @@ func countOccurrences(s, substr string) int {
 	return count
 }
 
-// containsStandaloneFunc checks if content contains a function call like "eval("
-// without it being part of a longer function name (e.g. "doubleval(").
-// Requires the character before the match to be non-alphanumeric or start-of-string.
+// containsStandaloneFunc reports whether content contains an occurrence of
+// funcCall (e.g. "exec(") that is a real call to the named PHP function
+// rather than something that shares the same suffix.
+//
+// Four shapes must be rejected:
+//
+//   - embedded identifiers: "doubleval(" must not match "eval("; the
+//     preceding character is a letter/digit/underscore;
+//   - method invocations: "$this->DB->exec(" must not match "exec(" even
+//     though the preceding ">" is non-alphanumeric;
+//   - static invocations: "Foo::exec(" must not match for the same reason;
+//   - function declarations: "function exec(" names a local function of
+//     the same name and must not be counted as a call site.
+//
+// The earlier implementation only guarded against the first case and was
+// the source of false positives on elFinder volume drivers that call
+// "$this->DB->exec(...)" (SQLite) alongside $_SERVER references on the
+// same line.
 func containsStandaloneFunc(content, funcCall string) bool {
 	idx := 0
 	for {
@@ -466,20 +495,60 @@ func containsStandaloneFunc(content, funcCall string) bool {
 			return false
 		}
 		absPos := idx + pos
-		if absPos == 0 {
-			return true // at start of content
-		}
-		prev := content[absPos-1]
-		// Must not be preceded by a letter, digit, or underscore
-		isAlnum := (prev >= 'a' && prev <= 'z') || (prev >= 'A' && prev <= 'Z') ||
-			(prev >= '0' && prev <= '9') || prev == '_'
-		if !isAlnum {
+		nextIdx := absPos + len(funcCall)
+
+		advance := func() bool {
+			if nextIdx >= len(content) {
+				return false
+			}
+			idx = nextIdx
 			return true
 		}
-		idx = absPos + len(funcCall)
-		if idx >= len(content) {
-			return false
+
+		if absPos == 0 {
+			return true
 		}
+
+		prev := content[absPos-1]
+		isAlnum := (prev >= 'a' && prev <= 'z') || (prev >= 'A' && prev <= 'Z') ||
+			(prev >= '0' && prev <= '9') || prev == '_'
+		if isAlnum {
+			if !advance() {
+				return false
+			}
+			continue
+		}
+
+		if absPos >= 2 {
+			op := content[absPos-2 : absPos]
+			if op == "->" || op == "::" {
+				if !advance() {
+					return false
+				}
+				continue
+			}
+		} else if absPos == 1 && (prev == '>' || prev == ':') {
+			// Degenerate position: only one preceding byte, and it is
+			// the tail char of a possible method ("->") or static
+			// ("::") operator. We cannot confirm the second char
+			// because there is no second char. The conservative choice
+			// is to skip, so a truncated "->exec(" or "::exec(" at the
+			// very start of a buffer does not get flagged as a real
+			// shell-function call.
+			if !advance() {
+				return false
+			}
+			continue
+		}
+		const decl = "function "
+		if absPos >= len(decl) && content[absPos-len(decl):absPos] == decl {
+			if !advance() {
+				return false
+			}
+			continue
+		}
+
+		return true
 	}
 }
 

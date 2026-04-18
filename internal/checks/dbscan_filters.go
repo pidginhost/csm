@@ -151,6 +151,13 @@ func countSpamMatches(pattern dbSpamPattern, contents []string) int {
 // script-tag with a src attribute pointing at a domain NOT on the known-
 // safe list (see knownSafeDomains in db_autoresponse.go).
 //
+// This predicate uses the STRICT classifier (isAttackerScriptURL): it
+// flags raw-IP hosts, abused TLDs, known-bad exfil hosts, empty hosts,
+// AND plaintext HTTP external scripts. It is the right predicate for
+// wp_options and similar configuration storage where fresh-today
+// content is expected; see hasMaliciousExternalScriptInPost for the
+// looser post_content predicate.
+//
 // Inline script blocks without a src attribute are not classified by
 // this function; those are covered by the separate code-pattern entries
 // in dbMalwarePatterns which catch common inline obfuscation techniques.
@@ -166,4 +173,30 @@ func countSpamMatches(pattern dbSpamPattern, contents []string) int {
 // untrusted domain.
 func hasMaliciousExternalScript(content string) bool {
 	return extractMaliciousScriptURL(content) != ""
+}
+
+// hasMaliciousExternalScriptInPost is the post_content variant of
+// hasMaliciousExternalScript. It applies the same regex-based script-tag
+// extraction but classifies each src URL with isAttackerScriptURLInPost,
+// which drops the plaintext-HTTP indicator.
+//
+// Rationale: post_content carries author-written text that can contain
+// pre-TLS-era embeds (e.g. a 2013-era video embed on a Romanian video
+// site). Those embeds use http:// and, under the strict classifier,
+// would flag on scheme alone even though the post has not been modified
+// in a decade. Attackers in 2026 almost never land on plaintext-HTTP
+// mainstream-TLD URLs — they use raw IPs, abused TLDs, or cheap exfil
+// hosts — so dropping the HTTP signal for this context eliminates the
+// legacy-embed false positives without giving up meaningful detection.
+func hasMaliciousExternalScriptInPost(content string) bool {
+	matches := scriptSrcRe.FindAllStringSubmatch(content, -1)
+	for _, match := range matches {
+		if len(match) < 2 {
+			continue
+		}
+		if isAttackerScriptURLInPost(match[1]) {
+			return true
+		}
+	}
+	return false
 }

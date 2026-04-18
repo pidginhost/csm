@@ -334,9 +334,12 @@ func checkWPPosts(user string, creds wpDBCreds, prefix string) []alert.Finding {
 			postID := parts[0]
 			content := parts[1]
 
-			if mp.requiresExternalScript && !hasMaliciousExternalScript(content) {
+			if mp.requiresExternalScript && !hasMaliciousExternalScriptInPost(content) {
 				// All scripts in this post are inline, or point at a
-				// known-safe widget host. Skip.
+				// host that shows no structural attack marker. We use
+				// the post-specific predicate (which ignores plaintext
+				// HTTP) because legacy author embeds from the pre-TLS
+				// era are legitimate content, not injection.
 				continue
 			}
 			confirmedIDs = append(confirmedIDs, postID)

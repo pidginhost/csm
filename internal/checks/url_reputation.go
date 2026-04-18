@@ -118,18 +118,24 @@ var knownBadExfilHosts = []string{
 	"cutt.ly",
 }
 
-// scriptSrcMaliciousReason classifies a <script src> URL by attack
-// indicators. The first return value is true iff at least one indicator
-// fires; the second return value is a short tag suitable for inclusion
-// in a finding detail (e.g. "raw IP address", "abused TLD: .top",
-// "plaintext HTTP").
+// scriptSrcStrongReason classifies a <script src> URL by structural
+// attack indicators that are context-independent: a raw IP host, an
+// abused TLD, a known-bad exfil host, or an empty/unparseable/no-TLD
+// host. These markers are rare-to-nonexistent in legitimate content of
+// any age and remain valid signals whether the script appears in a
+// freshly-written wp_options value or in decade-old post_content.
+//
+// Callers that operate on storage which is expected to hold current
+// configuration (wp_options) should prefer scriptSrcMaliciousReason,
+// which layers the plaintext-HTTP indicator on top. The HTTP signal
+// catches attacker convenience ("don't bother with TLS") in fresh
+// configuration but produces false positives on legacy author content
+// where pre-TLS embeds are normal.
 //
 // The function does not consult knownSafeDomains — callers should do
 // that first as a fast path. Separating the two concerns keeps this
 // function single-purpose and trivially testable.
-func scriptSrcMaliciousReason(rawURL string) (bool, string) {
-	// Protocol-relative URLs (//host/path) have to be normalised before
-	// url.Parse can extract the host.
+func scriptSrcStrongReason(rawURL string) (bool, string) {
 	normalised := rawURL
 	if strings.HasPrefix(normalised, "//") {
 		normalised = "https:" + normalised
@@ -145,20 +151,10 @@ func scriptSrcMaliciousReason(rawURL string) (bool, string) {
 		return true, "empty host"
 	}
 
-	// Plaintext HTTP for an external script is a strong indicator.
-	// We do not flag https:// nor protocol-relative (which inherits the
-	// page's scheme — an https page yields https, an http page already
-	// has other problems).
-	if strings.EqualFold(u.Scheme, "http") && !strings.HasPrefix(rawURL, "//") {
-		return true, "plaintext HTTP external script"
-	}
-
-	// Raw IP host (v4 or v6). net.ParseIP accepts both.
 	if ip := net.ParseIP(host); ip != nil {
 		return true, "raw IP address host"
 	}
 
-	// Known bad exfil hosts. Match exact host or any subdomain.
 	for _, bad := range knownBadExfilHosts {
 		if host == strings.TrimPrefix(bad, ".") {
 			return true, "known-bad exfil host: " + bad
@@ -168,9 +164,6 @@ func scriptSrcMaliciousReason(rawURL string) (bool, string) {
 		}
 	}
 
-	// TLD analysis — require at least one dot and a recognisable TLD.
-	// Hosts without a dot (e.g. bare "localhost" or "internalhost") do
-	// not belong in external <script src>, so flag them.
 	lastDot := strings.LastIndexByte(host, '.')
 	if lastDot < 0 || lastDot == len(host)-1 {
 		return true, "host without valid TLD"
@@ -183,9 +176,46 @@ func scriptSrcMaliciousReason(rawURL string) (bool, string) {
 	return false, ""
 }
 
-// isAttackerScriptURL is the caller-facing predicate used by
-// hasMaliciousExternalScript (in dbscan_filters.go). It combines the
-// known-safe fast path with the attack-indicator classifier.
+// scriptSrcMaliciousReason classifies a <script src> URL with the full
+// indicator set: everything scriptSrcStrongReason flags, plus plaintext
+// HTTP. This is the classifier for wp_options and similar configuration
+// storage, where a plaintext HTTP external script loader is a signal on
+// its own (a site's analytics configuration should be HTTPS in 2026).
+//
+// The function does not consult knownSafeDomains — callers should do
+// that first as a fast path.
+func scriptSrcMaliciousReason(rawURL string) (bool, string) {
+	// Structural markers take precedence: a raw-IP host over HTTP should
+	// report the IP, not the scheme, because the scheme is merely the
+	// delivery method while the IP is the identity of the attacker
+	// infrastructure.
+	if bad, reason := scriptSrcStrongReason(rawURL); bad {
+		return true, reason
+	}
+
+	// Plaintext HTTP for an external script is a strong indicator in
+	// configuration storage. Protocol-relative URLs (//host/path)
+	// inherit the page's scheme and are not flagged here.
+	normalised := rawURL
+	if strings.HasPrefix(normalised, "//") {
+		normalised = "https:" + normalised
+	}
+	u, err := url.Parse(normalised)
+	if err != nil || u == nil {
+		// scriptSrcStrongReason would have caught this; defensive only.
+		return true, "unparseable URL"
+	}
+	if strings.EqualFold(u.Scheme, "http") && !strings.HasPrefix(rawURL, "//") {
+		return true, "plaintext HTTP external script"
+	}
+
+	return false, ""
+}
+
+// isAttackerScriptURL is the caller-facing predicate for contexts where
+// a plaintext-HTTP external script is a signal on its own (wp_options
+// and similar configuration storage). It combines the known-safe fast
+// path with the strict attack-indicator classifier.
 //
 // The order matters: the fast path is checked first because it lets us
 // short-circuit common legitimate widgets (Google Tag Manager,
@@ -196,5 +226,25 @@ func isAttackerScriptURL(rawURL string) bool {
 		return false
 	}
 	bad, _ := scriptSrcMaliciousReason(rawURL)
+	return bad
+}
+
+// isAttackerScriptURLInPost is the caller-facing predicate for
+// post_content classification. It uses scriptSrcStrongReason, which
+// omits the plaintext-HTTP indicator: legacy author embeds from the
+// pre-TLS era are legitimate content, not injection, and must not
+// produce db_post_injection findings.
+//
+// Fresh attacker injections still flag because they almost always point
+// at structural markers (raw IP hosts, abused TLDs, cheap exfil hosts)
+// rather than at an unremarkable mainstream-TLD host — and an attacker
+// who did somehow land on a plaintext-HTTP mainstream host URL would
+// still be caught by other checks (obfuscated_php_realtime scanning the
+// attacker's dropper, remote payload URLs in the served page, etc.).
+func isAttackerScriptURLInPost(rawURL string) bool {
+	if isSafeScriptDomain(rawURL) {
+		return false
+	}
+	bad, _ := scriptSrcStrongReason(rawURL)
 	return bad
 }

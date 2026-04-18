@@ -445,3 +445,83 @@ func TestIsScannablePostType_DocumentedBehavior(t *testing.T) {
 		}
 	}
 }
+
+
+// -----------------------------------------------------------------------------
+// hasMaliciousExternalScriptInPost -- post_content predicate
+// -----------------------------------------------------------------------------
+
+func TestHasMaliciousExternalScriptInPost_LegacyHTTPEmbedsPass(t *testing.T) {
+	// Real cluster6 FP: filmetaricom posts 275/312/316/320/323 contain
+	// pre-TLS trilulilu.ro video embeds. post_modified is 2013. The
+	// post-context predicate must NOT flag these.
+	cases := []string{
+		`<script src="http://www.trilulilu.ro/embed-video/floryanplayer/d008a97296f18e"></script>`,
+		`<script src="http://www.trilulilu.ro/embed-video/floryanplayer/e0cb1ac70a5f68"></script>`,
+		// Other legacy plaintext-HTTP widget embeds on mainstream TLDs.
+		`<script src="http://cdn.example.com/old-widget.js"></script>`,
+		`<script src="http://www.formular230.ro/share/abc"></script>`,
+	}
+	for _, c := range cases {
+		if hasMaliciousExternalScriptInPost(c) {
+			t.Errorf("legacy plaintext-HTTP embed must NOT flag in post context: %s", firstLine(c))
+		}
+	}
+}
+
+func TestHasMaliciousExternalScriptInPost_RealInjectionsFlag(t *testing.T) {
+	// Structural attack markers are valid in every context; the post
+	// predicate must still catch fresh injections.
+	cases := []string{
+		`<script src="https://staticsx.top/l.js"></script>`,
+		`<script src='https://192.0.2.42/inject.js'></script>`,
+		`<script src="//evil.tk/skim.js" async></script>`,
+		`<script src="https://attacker.workers.dev/payload.js"></script>`,
+	}
+	for _, c := range cases {
+		if !hasMaliciousExternalScriptInPost(c) {
+			t.Errorf("attacker external script must flag in post context: %s", firstLine(c))
+		}
+	}
+}
+
+func TestHasMaliciousExternalScriptInPost_DivergesFromStrictOnlyOnHTTP(t *testing.T) {
+	// Explicit regression: the only intended semantic difference between
+	// hasMaliciousExternalScript (strict, wp_options) and the post
+	// variant is plaintext HTTP on an otherwise-unremarkable host.
+	httpOnly := `<script src="http://cdn.example.com/lib.js"></script>`
+	if !hasMaliciousExternalScript(httpOnly) {
+		t.Fatal("strict predicate must still flag plaintext HTTP (wp_options invariant)")
+	}
+	if hasMaliciousExternalScriptInPost(httpOnly) {
+		t.Fatal("post predicate must NOT flag plaintext HTTP (legacy author embeds)")
+	}
+}
+
+func TestHasMaliciousExternalScriptInPost_MixedContentLegacyPlusInjection(t *testing.T) {
+	// A post that carries BOTH a legacy author embed AND a fresh
+	// attacker injection: the predicate must still return true because
+	// the attacker-injected script tag is what drives the finding.
+	content := `<p>Watch the film:</p>` +
+		`<script src="http://www.trilulilu.ro/embed-video/x/y"></script>` +
+		`<p>Attacker-injected tail:</p>` +
+		`<script src="https://staticsx.top/l.js"></script>`
+	if !hasMaliciousExternalScriptInPost(content) {
+		t.Error("mixed post with legacy embed + fresh attacker injection must still flag")
+	}
+}
+
+func TestHasMaliciousExternalScriptInPost_InlineScriptsIgnored(t *testing.T) {
+	// Inline scripts without a src attribute are not in scope for this
+	// predicate. Downstream dbMalwarePatterns entries cover inline
+	// obfuscation techniques separately.
+	cases := []string{
+		`<script>var n = 1 + 2;</script>`,
+		`<script>window.dataLayer = window.dataLayer || [];</script>`,
+	}
+	for _, c := range cases {
+		if hasMaliciousExternalScriptInPost(c) {
+			t.Errorf("inline script (no src) should not be classified: %s", firstLine(c))
+		}
+	}
+}
