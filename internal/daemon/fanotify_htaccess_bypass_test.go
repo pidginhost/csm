@@ -77,7 +77,7 @@ func TestCheckHtaccess_LooseTokenNoLongerSuppressesMaliciousAutoPrepend(t *testi
 }
 
 func TestCheckHtaccess_LegitWordfenceDirective(t *testing.T) {
-	// Production cluster6 shape: Wordfence writes the directive target
+	// Production shape: Wordfence writes the directive target
 	// under the account's public_html as wordfence-waf.php. Anchored
 	// regex must keep this silent.
 	expectNoHtaccessAlert(t, "php_value auto_prepend_file '/home/user/public_html/wordfence-waf.php'\n")
@@ -85,7 +85,7 @@ func TestCheckHtaccess_LegitWordfenceDirective(t *testing.T) {
 }
 
 func TestCheckHtaccess_LegitReallySimpleSSLDirective(t *testing.T) {
-	// Real target seen on cluster6: Really Simple SSL writes
+	// Real target seen in production: Really Simple SSL writes
 	// /home/user/public_html/wp-content/advanced-headers.php.
 	expectNoHtaccessAlert(t, "php_value auto_prepend_file /home/user/public_html/wp-content/advanced-headers.php\n")
 }

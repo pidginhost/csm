@@ -23,7 +23,7 @@ func withCronSpoolDir(t *testing.T, dir string) {
 }
 
 // TestCheckCrontab_GsocketDefunctFires is the realtime regression for the
-// 2026-03-24 cluster6 attack: a write to /var/spool/cron/<user> carrying
+// 2026-03-24 production attack: a write to /var/spool/cron/<user> carrying
 // the defunct-kernel template must surface a Critical suspicious_crontab
 // alert without any polled scan having to run.
 func TestCheckCrontab_GsocketDefunctFires(t *testing.T) {

@@ -1393,7 +1393,7 @@ func TestCleanDatabaseSpam_SpamDomainsFound(t *testing.T) {
 					// anchor with keyword in URL path) in addition to
 					// the keyword itself. Fixture rows each pair the
 					// viagra keyword with one distinct cloaking signal,
-					// mirroring real cluster6 injection patterns.
+					// mirroring real production injection patterns.
 					if strings.Contains(q, "SELECT ID, post_content") && strings.Contains(q, "viagra") {
 						return []byte(
 							"1\t<div style=\"position:absolute;left:-12623px\"><a href=\"https://pharmacy-spam.top/buy/viagra\">Viagra</a></div>\n" +

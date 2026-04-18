@@ -19,7 +19,7 @@ import (
 // default is to keep the current severity.
 //
 // isCpanelManagedUserIni must:
-//   - return true for the real cPanel header observed on cluster6
+//   - return true for the real cPanel header observed in production
 //     (captured verbatim below, including the license comment block);
 //   - return true for minor variations of the header WordPress admins
 //     routinely accumulate (trailing whitespace, extra blank lines);
@@ -32,7 +32,7 @@ import (
 
 func TestIsCpanelManagedUserIni_RealCpanelHeader(t *testing.T) {
 	// Captured verbatim from /home/hospitalitycult/public_html/research_doc/.user.ini
-	// on cluster6 during the 2026-04-16 scan cycle.
+	// in production during the 2026-04-16 scan cycle.
 	data := []byte(`; cPanel-generated php ini directives, do not edit
 ; Manual editing of this file may result in unexpected behavior.
 ; To make changes to this file, use the cPanel MultiPHP INI Editor (Home >> Software >> MultiPHP INI Editor)

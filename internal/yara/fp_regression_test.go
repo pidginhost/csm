@@ -25,7 +25,7 @@ func loadRepoYaraScanner(t *testing.T) *Scanner {
 	return scanner
 }
 
-// FP reconstructions for 2026-04-17 cluster6 unzip event.
+// FP reconstructions for the 2026-04-17 production unzip event.
 // Wordfence, WPML, and Salient are real WordPress plugins whose files
 // legitimately contain tokens the rules key on.
 

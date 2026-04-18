@@ -43,8 +43,9 @@ func mustEvalSymlinks(t *testing.T, dir string) string {
 }
 
 // TestMatchCrontabPatterns_GsocketDefunctFixtures is a regression guard: the
-// five sanitized captures of the 2026-03-24 'defunct-kernel' attack on
-// cluster6 must continue to match crontabSuspiciousPatterns. Losing a match
+// five sanitized captures of the 2026-03-24 'defunct-kernel' attack
+// on a production host must continue to match crontabSuspiciousPatterns.
+// Losing a match
 // here means an attacker variant would now slip past both CheckCrontabs
 // and makeAccountCrontabCheck.
 func TestMatchCrontabPatterns_GsocketDefunctFixtures(t *testing.T) {

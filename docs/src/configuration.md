@@ -57,7 +57,7 @@ Today, three checks consume this: `perf_error_logs`, `perf_wp_config`, `perf_wp_
 ## Minimal Config
 
 ```yaml
-hostname: "cluster6.example.com"
+hostname: "csm.example.com"
 
 alerts:
   email:
@@ -77,14 +77,14 @@ infra_ips: ["10.0.0.0/8"]
 ## Full Reference
 
 ```yaml
-hostname: "cluster6.example.com"
+hostname: "csm.example.com"
 
 # --- Alerts ---
 alerts:
   email:
     enabled: true
     to: ["admin@example.com"]
-    from: "csm@cluster6.example.com"
+    from: "csm@csm.example.com"
     smtp: "localhost:25"
     disabled_checks: []                 # check names to keep in web/history but exclude from email
   webhook:

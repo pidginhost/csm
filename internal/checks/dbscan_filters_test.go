@@ -30,7 +30,7 @@ func TestIsScannablePostType_InternalTypesSkipped(t *testing.T) {
 }
 
 func TestIsScannablePostType_FormSubmissionTypesSkipped(t *testing.T) {
-	// These are the post_types that caused the original cluster6 false
+	// These are the post_types that caused the original production false
 	// positives: contact-form plugins store spambot submissions here.
 	for _, pt := range []string{
 		"flamingo_inbound", "flamingo_outbound", "feedback",
@@ -107,7 +107,7 @@ func TestNonScannablePostTypesSQLList_EscapesSingleQuote(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// countSpamMatches — real cluster6 false-positive and true-positive samples
+// countSpamMatches — real production false-positive and true-positive samples
 // -----------------------------------------------------------------------------
 
 // pick returns the pattern entry for a given keyword.
@@ -123,7 +123,7 @@ func pickPattern(t *testing.T, keyword string) dbSpamPattern {
 }
 
 func TestCountSpamMatches_CialisNotInSpecialist(t *testing.T) {
-	// Real cluster6 false positive: Romanian business content using
+	// Real production false positive: Romanian business content using
 	// "Specialistii" / "specialists" triggered the old substring match.
 	contents := []string{
 		`Specialistii DS Solution au acumulat ani de experienta in programare.`,
@@ -150,7 +150,7 @@ func TestCountSpamMatches_CialisTruePositive(t *testing.T) {
 }
 
 func TestCountSpamMatches_PharmaNotInPharmaceutical(t *testing.T) {
-	// Real cluster6 false positive: legitimate olive-oil B2B content
+	// Real production false positive: legitimate olive-oil B2B content
 	// mentioning "pharmaceutical" industry.
 	contents := []string{
 		`supply to the nutraceutical, pharmaceutical, health & wellness industries`,
@@ -267,11 +267,11 @@ func TestCountSpamMatches_AllKeywordsHaveBoundaries(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// hasMaliciousExternalScript — real cluster6 samples
+// hasMaliciousExternalScript — real production samples
 // -----------------------------------------------------------------------------
 
 func TestHasMaliciousExternalScript_GoogleTagManager(t *testing.T) {
-	// Real cluster6 FP: lamicutu posts 17587/17588 content (sanitized).
+	// Real production FP: lamicutu posts 17587/17588 content (sanitized).
 	content := `<script async src="https://www.googletagmanager.com/gtag/js?id=G-J2F8BWG8DF"></script>` +
 		`<script>window.dataLayer = window.dataLayer || []; function gtag(){dataLayer.push(arguments);}</script>`
 	if hasMaliciousExternalScript(content) {
@@ -280,7 +280,7 @@ func TestHasMaliciousExternalScript_GoogleTagManager(t *testing.T) {
 }
 
 func TestHasMaliciousExternalScript_GoogleMerchantBadge(t *testing.T) {
-	// Real cluster6 FP: depo24ro post 12696 content (sanitized).
+	// Real production FP: depo24ro post 12696 content (sanitized).
 	content := `<script src="https://apis.google.com/js/platform.js?onload=renderBadge" async defer></script>`
 	if hasMaliciousExternalScript(content) {
 		t.Errorf("Google merchant rating badge embed must NOT flag as malicious")
@@ -451,7 +451,7 @@ func TestIsScannablePostType_DocumentedBehavior(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestHasMaliciousExternalScriptInPost_LegacyHTTPEmbedsPass(t *testing.T) {
-	// Real cluster6 FP: filmetaricom posts 275/312/316/320/323 contain
+	// Real production FP: filmetaricom posts 275/312/316/320/323 contain
 	// pre-TLS trilulilu.ro video embeds. post_modified is 2013. The
 	// post-context predicate must NOT flag these.
 	cases := []string{

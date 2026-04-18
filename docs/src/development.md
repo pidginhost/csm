@@ -159,7 +159,7 @@ Keep the `[TIMESTAMP]` prefix of journalctl lines readable by humans: slog's tex
 
 CSM can run YARA-X in a supervised child process instead of in-
 process. The goal is blast-radius control: a cgo crash inside
-yara_x_capi (the 2026-04-16 cluster6 incident) stays contained to
+yara_x_capi (the 2026-04-16 production incident) stays contained to
 the child and the daemon keeps its fanotify watchers, log watchers,
 and firewall engine alive. See `ROADMAP.md` item 2 for the decision
 record.

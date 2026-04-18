@@ -10,7 +10,7 @@ import (
 // -----------------------------------------------------------------------------
 
 func TestScriptSrcMaliciousReason_UnremarkableHostsPass(t *testing.T) {
-	// These are the real false-positive cases observed on cluster6:
+	// These are the real false-positive cases observed in production:
 	// legitimate third-party widgets on mainstream TLDs that were not
 	// on the knownSafeDomains allowlist. None has an attack indicator,
 	// so the classifier must return false for all.
@@ -200,7 +200,7 @@ func TestIsAttackerScriptURL_SafeDomainFastPath(t *testing.T) {
 }
 
 func TestIsAttackerScriptURL_ClusterRealFalsePositiveCases(t *testing.T) {
-	// The cluster6 FPs from the post-patch scan cycle that drove this
+	// The production FPs from the post-patch scan cycle that drove this
 	// rewrite. All must now pass (return false).
 	cases := []string{
 		// baxiro — OneTrust cookie consent widget.
@@ -216,7 +216,7 @@ func TestIsAttackerScriptURL_ClusterRealFalsePositiveCases(t *testing.T) {
 	}
 	for _, c := range cases {
 		if isAttackerScriptURL(c) {
-			t.Errorf("real cluster6 FP still flagging: %q", c)
+			t.Errorf("real production FP still flagging: %q", c)
 		}
 	}
 }
@@ -370,7 +370,7 @@ func TestIsAttackerScriptURLInPost_SafeDomainFastPath(t *testing.T) {
 }
 
 func TestIsAttackerScriptURLInPost_RealInjectionCasesStillFlag(t *testing.T) {
-	// Injections found in real wp_posts rows on cluster6 and similar.
+	// Injections found in real wp_posts rows in production and similar.
 	// Each has at least one structural marker and must still alert.
 	cases := []string{
 		"https://staticsx.top/l.js",               // abused TLD

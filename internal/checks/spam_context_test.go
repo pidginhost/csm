@@ -17,7 +17,7 @@ import (
 //
 // Tests pin the real-world distinction between legitimate mentions
 // (false positives under the earlier substring/word-boundary checks)
-// and actual cloaked spam (the lalimanro attack captured on cluster6).
+// and actual cloaked spam (the lalimanro attack captured in production).
 // -----------------------------------------------------------------------------
 
 // Small helper: pull the pattern entry out of dbSpamPatterns so the
@@ -34,11 +34,11 @@ func spamPattern(t *testing.T, keyword string) dbSpamPattern {
 }
 
 // -----------------------------------------------------------------------------
-// contentHasSpamContext — true positives from cluster6
+// contentHasSpamContext — true positives from production
 // -----------------------------------------------------------------------------
 
 func TestContentHasSpamContext_LalimanroCloakedLink(t *testing.T) {
-	// Real cluster6 attack captured on 2026-04-16: post 14954 "GALERIE"
+	// Real production attack captured on 2026-04-16: post 14954 "GALERIE"
 	// in the lalimanro site. Hidden off-screen div with an anchor to a
 	// Romanian pharmacy's viagra product page. Bracketed by a random
 	// hex comment the attacker uses as an injection fingerprint.
@@ -121,7 +121,7 @@ func TestContentHasSpamContext_NegativeLeftMargin(t *testing.T) {
 // -----------------------------------------------------------------------------
 
 func TestContentHasSpamContext_DssolLegitimatePharmaVertical(t *testing.T) {
-	// Real cluster6 FP from post-patch scan 2026-04-16: dssol page 3161
+	// Real production FP from post-patch scan 2026-04-16: dssol page 3161
 	// "Dispozitive de identificare si sisteme de marcare". Mentions
 	// "Pharma" as an industry vertical the company serves. Red heading
 	// style, no cloaking, no external link.
@@ -133,7 +133,7 @@ func TestContentHasSpamContext_DssolLegitimatePharmaVertical(t *testing.T) {
 }
 
 func TestContentHasSpamContext_HospitalitycultAdvisorBio(t *testing.T) {
-	// Real cluster6 FP: advisor bio listing industry verticals.
+	// Real production FP: advisor bio listing industry verticals.
 	content := `<p>He has advised clients across consumer goods, steel, energy, ` +
 		`telecommunications, oil and gas, pharma.</p>`
 	if contentHasSpamContext(content, spamPattern(t, "pharma")) {

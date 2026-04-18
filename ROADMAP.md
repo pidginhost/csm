@@ -25,7 +25,7 @@ This file is for contributors. End-user documentation lives in
 ## 1. Move build from musl-static to glibc-dynamic
 
 **Status:** done — phase A (amd64, glibc-dynamic) landed and verified
-on cluster6; phase B (arm64 via docker buildx + QEMU) shipped via
+in production; phase B (arm64 via docker buildx + QEMU) shipped via
 `build/Dockerfile.build` and `build-builder-image-arm64`. Both arches
 now target the same `GLIBC_2.28` floor.
 **Drives / unblocks:** safe future YARA-X upgrades; any other cgo
@@ -33,8 +33,9 @@ dependency upgrade
 
 ### Why
 
-The YARA-X 1.15.0 upgrade attempt on 2026-04-16 put cluster6 into a
-deterministic SIGSEGV restart loop inside `yrx_compiler_build`. The
+The YARA-X 1.15.0 upgrade attempt on 2026-04-16 put a production
+host into a deterministic SIGSEGV restart loop inside
+`yrx_compiler_build`. The
 crash was never root-caused in the production-pressure window; the
 only reliable fix was to revert to v1.14.0 (commit `a98e257`). The
 failure mode — SEGV_ACCERR in Rust-compiled-to-C-ABI code called via

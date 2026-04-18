@@ -22,7 +22,7 @@ func loadRepoScanner(t *testing.T) *Scanner {
 	return scanner
 }
 
-// FP reconstructions for 2026-04-17 cluster6 unzip event.
+// FP reconstructions for the 2026-04-17 production unzip event.
 //
 // Each rule below fired on a legitimate WordPress plugin file because the
 // rule accepted pattern-substring matches without its tightening regex.
