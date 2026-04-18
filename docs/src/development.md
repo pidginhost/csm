@@ -155,6 +155,63 @@ Migration is incremental and optional. The legacy format stays valid. Start with
 
 Keep the `[TIMESTAMP]` prefix of journalctl lines readable by humans: slog's text handler uses `time=... level=... msg=...` which is also human-parseable, so journalctl viewers still work.
 
+## YARA-X Worker Process
+
+CSM can run YARA-X in a supervised child process instead of in-
+process. The goal is blast-radius control: a cgo crash inside
+yara_x_capi (the 2026-04-16 cluster6 incident) stays contained to
+the child and the daemon keeps its fanotify watchers, log watchers,
+and firewall engine alive. See `ROADMAP.md` item 2 for the decision
+record.
+
+Enable it in `csm.yaml`:
+
+```yaml
+signatures:
+  yara_worker_enabled: true
+```
+
+When on, daemon startup:
+
+1. Does *not* call `yara.Init()` in the daemon process.
+2. Builds a `yaraworker.Supervisor` and calls `Start(ctx)`.
+3. The supervisor runs `exec.Command(/opt/csm/csm, "yara-worker",
+   "--socket", "/var/run/csm/yara-worker.sock", "--rules-dir",
+   <rulesDir>)`.
+4. Supervisor waits for the worker's first `Ping` before returning.
+5. Installs itself as `yara.SetActive(...)` so the existing
+   `yara.Active()` callers (fanotify, rule reload) route transparently
+   through the IPC.
+
+Operator view:
+
+- `ps axf` shows the daemon with one `csm yara-worker` child.
+- New socket: `/var/run/csm/yara-worker.sock` (0600, root-only).
+- Crashes produce a Critical `yara_worker_crashed` finding (rate-
+  limited to one per minute) and restart with exponential backoff
+  (1 s, 2 s, 4 s, capped at 60 s). Restarts reset to 1 s after the
+  worker stays up for 30 s.
+- A `csm update-rules` run that completes triggers the supervisor's
+  in-process `Reload` (the worker recompiles). Escalate to a full
+  worker restart from Go code via `Supervisor.RestartWorker()`.
+
+Known gap under worker mode: the emailav YARA-X adapter reaches for
+the compiled `*yara_x.Rules` through `yara.Global().GlobalRules()`,
+which cannot cross a process boundary. Emailav falls back to ClamAV
+only while worker mode is on; extending the wire protocol to carry
+per-rule severity metadata is a follow-up.
+
+Testing:
+
+- Unit-level: `internal/yaraipc` (protocol framing + round-trip) and
+  `internal/yaraworker` (handler adapter, Run, supervisor). The
+  supervisor tests re-invoke the test binary as a mock worker via the
+  standard `TestMain` + env-var helper-process pattern, including a
+  real `SIGKILL`-driven signal-death test that exercises the
+  `syscall.WaitStatus.Signaled()` branch.
+- Integration: staged in the GitLab pipeline's `integration` stage
+  against AlmaLinux + Ubuntu cloud servers.
+
 ## Building the Documentation
 
 ```bash

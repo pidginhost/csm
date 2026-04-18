@@ -320,6 +320,75 @@ func TestSupervisorSurvivesSignaledWorker(t *testing.T) {
 	}
 }
 
+func TestSupervisorRestartWorkerRespawns(t *testing.T) {
+	sock := shortSockPath(t)
+	var restarts atomic.Int32
+	cfg := SupervisorConfig{
+		BinaryPath:         os.Args[0],
+		SocketPath:         sock,
+		RulesDir:           "",
+		StartTimeout:       3 * time.Second,
+		MinRestartInterval: 50 * time.Millisecond,
+		MaxRestartInterval: 200 * time.Millisecond,
+		StableDuration:     50 * time.Millisecond,
+		ClientTimeout:      2 * time.Second,
+		Env:                helperEnv("normal"),
+		OnRestart: func(_ int, _ syscall.Signal, _ time.Duration) {
+			restarts.Add(1)
+		},
+	}
+	sup, err := NewSupervisor(cfg)
+	if err != nil {
+		t.Fatalf("NewSupervisor: %v", err)
+	}
+	if err := sup.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = sup.Stop() }()
+
+	pidBefore := sup.ChildPID()
+	if pidBefore == 0 {
+		t.Fatal("no child pid before restart")
+	}
+
+	if err := sup.RestartWorker(); err != nil {
+		t.Fatalf("RestartWorker: %v", err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if restarts.Load() >= 1 && sup.ChildPID() != pidBefore && sup.ChildPID() != 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("restart did not respawn a new child: pid_before=%d pid_now=%d restarts=%d",
+		pidBefore, sup.ChildPID(), restarts.Load())
+}
+
+func TestSupervisorRestartWorkerAfterStopErrors(t *testing.T) {
+	sock := shortSockPath(t)
+	cfg := SupervisorConfig{
+		BinaryPath:   os.Args[0],
+		SocketPath:   sock,
+		RulesDir:     "",
+		StartTimeout: 3 * time.Second,
+		Env:          helperEnv("normal"),
+	}
+	sup, err := NewSupervisor(cfg)
+	if err != nil {
+		t.Fatalf("NewSupervisor: %v", err)
+	}
+	if err := sup.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	_ = sup.Stop()
+
+	if err := sup.RestartWorker(); err == nil {
+		t.Fatal("expected error when restarting a stopped supervisor")
+	}
+}
+
 func TestSupervisorStartTimeoutOnHang(t *testing.T) {
 	sock := shortSockPath(t)
 	cfg := SupervisorConfig{

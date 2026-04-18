@@ -263,6 +263,28 @@ func (s *Supervisor) ChildPID() int {
 	return s.cmd.Process.Pid
 }
 
+// RestartWorker signals the current worker to exit so the supervise
+// loop respawns it against whatever state is now on disk (new rules
+// directory, updated binary, etc.). Callers should prefer Reload for
+// normal rule updates; RestartWorker is the escalation path for the
+// rare case where an in-process recompile cannot or must not be
+// trusted. The call returns immediately; the restart is asynchronous
+// and observable via the OnRestart callback.
+//
+// No-op when the supervisor is stopped or has no running child.
+func (s *Supervisor) RestartWorker() error {
+	if s.stopped {
+		return errors.New("yaraworker: supervisor is stopped")
+	}
+	s.mu.Lock()
+	cmd := s.cmd
+	s.mu.Unlock()
+	if cmd == nil || cmd.Process == nil {
+		return errors.New("yaraworker: no running worker")
+	}
+	return cmd.Process.Signal(syscall.SIGTERM)
+}
+
 // supervise watches the current child and restarts it on exit until
 // ctx is cancelled.
 func (s *Supervisor) supervise() {
