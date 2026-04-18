@@ -2,10 +2,18 @@ package store
 
 import (
 	"encoding/json"
+	"fmt"
 	"sort"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
+)
+
+// Meta-bucket keys for AbuseIPDB quota accounting. Persisted so enforcement
+// survives daemon restarts and spans across 10-minute scan cycles.
+const (
+	abuseQuotaExhaustedKey = "abuse:quota_exhausted_until"
+	abuseDailyCountPrefix  = "abuse:daily_count:" // + YYYY-MM-DD in UTC
 )
 
 // ReputationEntry holds the cached reputation data for an IP address.
@@ -102,6 +110,67 @@ func (db *DB) AllReputation() map[string]ReputationEntry {
 		})
 	})
 	return entries
+}
+
+// SetAbuseQuotaExhaustedUntil records the time at which the AbuseIPDB
+// quota is expected to reset. While now < t, callers should skip API
+// queries. The daemon re-reads this on every cycle so the flag survives
+// restarts and multi-hour backoffs.
+func (db *DB) SetAbuseQuotaExhaustedUntil(t time.Time) error {
+	return db.bolt.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("meta")).Put(
+			[]byte(abuseQuotaExhaustedKey),
+			[]byte(t.UTC().Format(time.RFC3339)),
+		)
+	})
+}
+
+// AbuseQuotaExhaustedUntil returns the persisted quota-reset timestamp,
+// or zero time if none is recorded (or the stored value is unparseable).
+func (db *DB) AbuseQuotaExhaustedUntil() time.Time {
+	var ts time.Time
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
+		v := tx.Bucket([]byte("meta")).Get([]byte(abuseQuotaExhaustedKey))
+		if v == nil {
+			return nil
+		}
+		parsed, err := time.Parse(time.RFC3339, string(v))
+		if err != nil {
+			return nil //nolint:nilerr // skip corrupt entry
+		}
+		ts = parsed
+		return nil
+	})
+	return ts
+}
+
+// IncrementAbuseQueryCount bumps and returns the AbuseIPDB query counter
+// for the given UTC date (YYYY-MM-DD). Used as a daily circuit breaker.
+func (db *DB) IncrementAbuseQueryCount(utcDate string) int {
+	var count int
+	_ = db.bolt.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("meta"))
+		key := []byte(abuseDailyCountPrefix + utcDate)
+		if v := b.Get(key); v != nil {
+			_, _ = fmt.Sscanf(string(v), "%d", &count)
+		}
+		count++
+		return b.Put(key, []byte(fmt.Sprintf("%d", count)))
+	})
+	return count
+}
+
+// AbuseQueryCount returns the AbuseIPDB query count for the given UTC date.
+func (db *DB) AbuseQueryCount(utcDate string) int {
+	var count int
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
+		v := tx.Bucket([]byte("meta")).Get([]byte(abuseDailyCountPrefix + utcDate))
+		if v != nil {
+			_, _ = fmt.Sscanf(string(v), "%d", &count)
+		}
+		return nil
+	})
+	return count
 }
 
 // EnforceReputationCap ensures the reputation bucket has at most max entries.

@@ -104,6 +104,57 @@ func TestReputationCleanExpired(t *testing.T) {
 	}
 }
 
+func TestAbuseQuotaExhaustedUntil(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// No value yet - zero time.
+	if got := db.AbuseQuotaExhaustedUntil(); !got.IsZero() {
+		t.Fatalf("AbuseQuotaExhaustedUntil: want zero, got %v", got)
+	}
+
+	// Persist and read back.
+	until := time.Now().UTC().Add(3 * time.Hour).Truncate(time.Second)
+	if err := db.SetAbuseQuotaExhaustedUntil(until); err != nil {
+		t.Fatalf("SetAbuseQuotaExhaustedUntil: %v", err)
+	}
+	got := db.AbuseQuotaExhaustedUntil()
+	if !got.Equal(until) {
+		t.Fatalf("AbuseQuotaExhaustedUntil = %v, want %v", got, until)
+	}
+}
+
+func TestAbuseQueryCount(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	day := "2026-04-18"
+	if got := db.AbuseQueryCount(day); got != 0 {
+		t.Fatalf("initial count = %d, want 0", got)
+	}
+
+	for i := 1; i <= 5; i++ {
+		if got := db.IncrementAbuseQueryCount(day); got != i {
+			t.Fatalf("Increment #%d = %d, want %d", i, got, i)
+		}
+	}
+
+	if got := db.AbuseQueryCount(day); got != 5 {
+		t.Fatalf("AbuseQueryCount = %d, want 5", got)
+	}
+
+	// Different day is independent.
+	if got := db.AbuseQueryCount("2026-04-19"); got != 0 {
+		t.Fatalf("next-day count = %d, want 0", got)
+	}
+}
+
 func TestReputationMaxCap(t *testing.T) {
 	db, err := Open(t.TempDir())
 	if err != nil {

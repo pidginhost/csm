@@ -26,6 +26,17 @@ const (
 	maxCacheEntries          = 5000 // cap cache size
 )
 
+// maxDailyAbuseQueries is a hard daily circuit-breaker below the 1000/day
+// free-tier ceiling. The 100-slot cushion below 1000 is intentional:
+// abuseQuotaReady reads the counter without a lock, so two concurrent
+// cycles (e.g. scheduled critical tier + an operator-triggered
+// `csm check`) can each pass the gate at count=899 and both increment,
+// overshooting by one. The cushion keeps that overshoot under the
+// real ceiling. Declared as a var (not const) so tests can lower it
+// without burning seconds on 900 bbolt transactions. Production callers
+// must not modify this.
+var maxDailyAbuseQueries = 900
+
 // abuseIPDBEndpoint is the URL queried for IP reputation. Declared as a
 // var (not const) so tests can point it at an httptest server. Production
 // callers must not modify this.
@@ -65,7 +76,10 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 	cache := loadReputationCache(cfg.StatePath)
 
 	client := abuseIPDBClient
-	quotaExhausted := false
+	sdb := store.Global()
+	now := time.Now()
+	utcDay := now.UTC().Format("2006-01-02")
+	quotaExhausted := !abuseQuotaReady(sdb, now)
 
 	checked := 0
 	for ip, source := range ips {
@@ -88,9 +102,12 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 			}
 		}
 
-		// Tier 3: Check AbuseIPDB cache
+		// Tier 3: Check AbuseIPDB cache. Treat entries with CheckedAt in
+		// the future (legacy data written by a prior buggy error-caching
+		// formula) as expired so they get re-queried or aged out.
 		if entry, ok := cache.Entries[ip]; ok {
-			if time.Since(entry.CheckedAt) < cacheExpiry {
+			age := time.Since(entry.CheckedAt)
+			if age >= 0 && age < cacheExpiry {
 				if entry.Score >= abuseConfidenceThreshold {
 					findings = append(findings, alert.Finding{
 						Severity:  alert.Critical,
@@ -109,17 +126,34 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 			continue
 		}
 
+		// Count the attempt before the call so a crash or network hang
+		// still consumes a slot against the daily cap.
+		if sdb != nil {
+			if count := sdb.IncrementAbuseQueryCount(utcDay); count >= maxDailyAbuseQueries {
+				quotaExhausted = true
+			}
+		}
+
 		score, category, err := queryAbuseIPDB(client, ip, cfg.Reputation.AbuseIPDBKey)
 		if err != nil {
 			if strings.Contains(err.Error(), "429") || strings.Contains(err.Error(), "402") {
-				fmt.Fprintf(os.Stderr, "abuseipdb: quota exhausted (%v), stopping lookups for this cycle\n", err)
+				resetAt := nextUTCMidnight(time.Now())
+				fmt.Fprintf(os.Stderr, "abuseipdb: quota exhausted (%v), pausing lookups until %s\n",
+					err, resetAt.Format(time.RFC3339))
 				quotaExhausted = true
+				if sdb != nil {
+					_ = sdb.SetAbuseQuotaExhaustedUntil(resetAt)
+				}
 				continue
 			}
 			cache.Entries[ip] = &reputationEntry{
-				Score:     -1,
-				Category:  fmt.Sprintf("error: %v", err),
-				CheckedAt: time.Now().Add(cacheExpiry - errorCacheExpiry),
+				Score:    -1,
+				Category: fmt.Sprintf("error: %v", err),
+				// CheckedAt is shifted into the past so time.Since returns
+				// ~(cacheExpiry-errorCacheExpiry) immediately; the Tier-3
+				// freshness check then flips false after a further
+				// errorCacheExpiry, giving a real ~1h TTL on error entries.
+				CheckedAt: time.Now().Add(-(cacheExpiry - errorCacheExpiry)),
 			}
 			checked++
 			continue
@@ -150,7 +184,30 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 	return findings
 }
 
-// collectRecentIPs gathers non-infra IPs from multiple log sources.
+// nextUTCMidnight returns 00:00 UTC on the day after now — the point at
+// which AbuseIPDB's daily quota resets.
+func nextUTCMidnight(now time.Time) time.Time {
+	u := now.UTC()
+	return time.Date(u.Year(), u.Month(), u.Day()+1, 0, 0, 0, 0, time.UTC)
+}
+
+// abuseQuotaReady reports whether we may call AbuseIPDB right now. It
+// combines the persisted backoff (set when the API returns 429/402) with
+// the daily query counter (stops before we approach the free-tier cap).
+// Returns true when no bbolt store is available (fallback mode).
+func abuseQuotaReady(sdb *store.DB, now time.Time) bool {
+	if sdb == nil {
+		return true
+	}
+	if until := sdb.AbuseQuotaExhaustedUntil(); !until.IsZero() && now.Before(until) {
+		return false
+	}
+	if sdb.AbuseQueryCount(now.UTC().Format("2006-01-02")) >= maxDailyAbuseQueries {
+		return false
+	}
+	return true
+}
+
 // collectRecentIPs gathers non-infra IPs from multiple log sources.
 // Returns map of IP → source description (e.g. "SSH login", "Dovecot IMAP auth failure").
 func collectRecentIPs(cfg *config.Config) map[string]string {
