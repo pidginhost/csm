@@ -11,8 +11,39 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/store"
 )
+
+// findingsTotal counts every finding CSM records, partitioned by
+// severity. Registered lazily (via sync.Once) the first time a finding
+// lands so tests that open Stores without running a full daemon do not
+// panic on duplicate registration.
+var (
+	findingsTotal     *metrics.CounterVec
+	findingsTotalOnce sync.Once
+)
+
+func ensureFindingsMetric() {
+	findingsTotalOnce.Do(func() {
+		findingsTotal = metrics.NewCounterVec(
+			"csm_findings_total",
+			"Findings recorded by CSM, partitioned by severity.",
+			[]string{"severity"},
+		)
+		metrics.MustRegister("csm_findings_total", findingsTotal)
+	})
+}
+
+func recordFindings(findings []alert.Finding) {
+	if len(findings) == 0 {
+		return
+	}
+	ensureFindingsMetric()
+	for _, f := range findings {
+		findingsTotal.With(f.Severity.String()).Inc()
+	}
+}
 
 type Store struct {
 	mu        sync.RWMutex
@@ -279,6 +310,8 @@ func (s *Store) AppendHistory(findings []alert.Finding) {
 	if len(findings) == 0 {
 		return
 	}
+
+	recordFindings(findings)
 
 	// Use bbolt store when available; skip JSONL writes entirely.
 	if db := store.Global(); db != nil {

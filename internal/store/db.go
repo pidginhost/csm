@@ -135,6 +135,11 @@ func (db *DB) Close() error {
 	return db.bolt.Close()
 }
 
+// Path returns the on-disk path of the bbolt database file.
+func (db *DB) Path() string {
+	return db.path
+}
+
 // TimeKey produces a fixed-width 28-byte key for chronological ordering.
 // Format: YYYYMMDDHHmmssNNNNNNNNN-CCCC
 // Lexicographic order equals chronological order.

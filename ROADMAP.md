@@ -287,7 +287,12 @@ version.
 
 ## 4. Prometheus/OpenMetrics endpoint
 
-**Status:** planned
+**Status:** shipped (initial) behind `webui.metrics_token`. The
+endpoint, auth, and first four metrics (`csm_build_info`,
+`csm_yara_worker_restarts_total`, `csm_findings_total{severity}`,
+`csm_store_size_bytes`) are in `[Unreleased]`. Remaining metrics
+(fanotify queue/drops/latency, per-check durations, firewall/blocked
+counts, auto-response counts) are follow-ups.
 **Drives / unblocks:** fleet observability; alerting without log
 scraping
 

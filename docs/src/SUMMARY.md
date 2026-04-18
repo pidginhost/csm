@@ -31,6 +31,7 @@
 
 - [Overview](webui.md)
 - [API Reference](api.md)
+- [Metrics (Prometheus)](metrics.md)
 
 # Development
 

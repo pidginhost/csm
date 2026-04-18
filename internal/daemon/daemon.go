@@ -116,6 +116,10 @@ func (d *Daemon) SetVersion(v string) {
 // gauge so repeated daemon construction in tests does not panic.
 var buildInfoOnce sync.Once
 
+// storeSizeOnce guards the csm_store_size_bytes gauge hook so tests
+// that create multiple daemons share a single registration.
+var storeSizeOnce sync.Once
+
 // registerBuildInfo exposes build metadata on /metrics in the
 // conventional Prometheus shape: a gauge fixed at 1, with the
 // interesting fields as labels so scrapers can join on them.
@@ -132,6 +136,29 @@ func (d *Daemon) registerBuildInfo() {
 		}
 		g.With(version).Set(1)
 		metrics.MustRegister("csm_build_info", g)
+	})
+}
+
+// registerStoreSizeMetric exposes the bbolt on-disk size as a gauge
+// that stats the file at scrape time. No caching: the expected scrape
+// interval is 15+ seconds and stat is cheap.
+func (d *Daemon) registerStoreSizeMetric() {
+	storeSizeOnce.Do(func() {
+		metrics.RegisterGaugeFunc(
+			"csm_store_size_bytes",
+			"On-disk size of the bbolt state database in bytes.",
+			func() float64 {
+				db := store.Global()
+				if db == nil {
+					return 0
+				}
+				info, err := os.Stat(db.Path())
+				if err != nil {
+					return 0
+				}
+				return float64(info.Size())
+			},
+		)
 	})
 }
 
@@ -196,6 +223,7 @@ func (d *Daemon) Run() error {
 
 	// Initialize signature scanners and threat DB (fast, no I/O scan)
 	d.registerBuildInfo()
+	d.registerStoreSizeMetric()
 	if err := d.initYaraBackend(); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] YARA backend init: %v\n", ts(), err)
 	}
