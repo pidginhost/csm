@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- ROADMAP entries 4-9: Prometheus/OpenMetrics endpoint, structured audit log export, bbolt retention policy, SIGHUP config hot-reload, baseline/state backup+restore, and challenge UX polish (CAPTCHA fallback, verified-session bypass, verified-crawler allow-pass).
+
 ### Fixed
 
 - `csm run-deep` no longer exits with `reading response: i/o timeout` on large cPanel servers. The CLI's control-socket read ceiling was 5 minutes for every command, but a deep-tier RPC on a host with hundreds of WordPress installs legitimately takes tens of minutes (plugin-cache refresh drives a wp-cli subprocess per site). Tier-run paths now use a 60-minute ceiling; other CLI commands keep the 5-minute short-op default. The hourly `csm-deep.service` systemd timer now records a real `tier=deep findings=X new=Y elapsed_ms=Z` line in `monitor.log` instead of failing every hour.

@@ -269,3 +269,382 @@ version.
 1–2 engineering days including tests and docs.
 
 ---
+
+## 4. Prometheus/OpenMetrics endpoint
+
+**Status:** planned
+**Drives / unblocks:** fleet observability; alerting without log
+scraping
+
+### Why
+
+One daemon per server and no `/metrics` handler today. The 2.5.0
+reconcile pass hides fanotify drops from humans; operators running
+CSM on 10+ hosts have no way to alert on "which server has a growing
+finding queue" or "which watcher is dropping events" without
+SSH-ing in and running `csm status`. Every production daemon of this
+shape ships metrics; not doing so makes CSM look toy next to
+competitors.
+
+### Decision
+
+Add a `/metrics` handler on the existing HTTPS web UI server (port
+9443), OpenMetrics text format, no new listener, no new dependency.
+Auth via either the UI session cookie or a static bearer token from
+`csm.yaml`. Wire gauges and counters at existing choke points rather
+than adding a new abstraction layer.
+
+### Scope sketch
+
+- Metrics: `findings_total{severity}`,
+  `fanotify_queue_depth`, `fanotify_events_dropped_total`,
+  `fanotify_reconcile_latency_seconds`,
+  `check_duration_seconds{name,tier}`, `store_size_bytes`,
+  `firewall_rules_total`, `blocked_ips_total`,
+  `yara_worker_restarts_total` (cross-references item 2),
+  `auto_response_actions_total{action}`, `build_info{version}`.
+- Histogram buckets sized for the observed 10 ms -- 60 s range of
+  check durations.
+- `metrics_token` in `csm.yaml`, sent via `Authorization: Bearer`.
+  UI session cookie also accepted so the dashboard can self-scrape.
+- Docs: new `docs/src/metrics.md` with a scrape-config snippet that
+  passes `promtool check config`.
+
+### Acceptance criteria
+
+- `curl -H "Authorization: Bearer $TOKEN" https://host:9443/metrics`
+  returns OpenMetrics text.
+- `findings_total` monotonically increases when findings land and
+  never decreases across daemon restarts.
+- No new external dependency in `go.sum`.
+
+### Out of scope
+
+- Pushgateway integration. Pull only.
+- Per-account labels. Cardinality risk on shared hosts with 1000+
+  cPanel users.
+- StatsD / InfluxDB line protocol.
+
+### Estimated size
+
+2 engineering days.
+
+### Rollback plan
+
+Revert the handler registration in `internal/webui/server.go`.
+Metrics are read-only and additive; no state to migrate.
+
+---
+
+## 5. Structured audit log export
+
+**Status:** planned
+**Drives / unblocks:** SIEM integration; retention beyond the bbolt
+window
+
+### Why
+
+Findings live in bbolt. Hosts shipping to Splunk, Loki, or Elastic
+screen-scrape the web UI today. The alert package emits email and
+webhook per-finding but does not format a stable, replayable stream.
+Bulk reconciliation ("give me everything that happened between
+yesterday 08:00 and now") is also missing.
+
+### Decision
+
+New sink types alongside the existing email and webhook sinks:
+append-only JSONL at `/var/log/csm/audit.jsonl` and syslog RFC 5424
+over UDS, TCP, or TLS. Configurable in `csm.yaml`. Stable schema
+with a `v` field so downstream parsers can pin.
+
+### Scope sketch
+
+- `internal/alert/audit_sink.go` with a `Sink` interface retrofitted
+  over the existing two sinks (no new code path for email or
+  webhook; only the file and syslog sinks add functionality).
+- Schema:
+  `{"v":1,"ts":"...","finding_id":"...","severity":"...",
+  "check":"...","details":{...}}`. Frozen on first release.
+- logrotate fragment in packaging for the JSONL target.
+- Backfill: `csm export --since <ts>` dumps historical findings
+  from bbolt in the same format for initial SIEM onboarding.
+
+### Acceptance criteria
+
+- Tailing the JSONL while running `csm run` produces one line per
+  finding with parseable JSON on every line.
+- Syslog target tested against `rsyslog` and `syslog-ng` receivers
+  in integration.
+- Backfill export of 10,000 findings is byte-identical to a fresh
+  replay.
+
+### Out of scope
+
+- CEF or LEEF formats.
+- Filtering/routing logic per finding type at the sink layer.
+  Downstream SIEM handles that.
+
+### Estimated size
+
+2-3 engineering days.
+
+---
+
+## 6. bbolt growth + retention policy
+
+**Status:** planned
+**Drives / unblocks:** predictable disk use on long-running
+daemons
+
+### Why
+
+bbolt never shrinks the on-disk file once a page is written, only
+freelists the space. `purge_correlation.go` trims one bucket; no
+documented cap exists on `findings`, `history`, `blocked_ips`, or
+the per-IP reputation buckets. Servers under sustained attack
+accumulate millions of rows; the file can exceed 1 GB over months.
+Recovery today is `systemctl stop` + `bbolt compact`. Needs to be
+a first-class feature.
+
+### Decision
+
+Per-bucket retention config with a background compactor. Defaults:
+findings 90 days, history 30 days, blocked IPs indefinite (already
+pruned on unblock), reputation 180 days. Online compaction via
+`bbolt.Tx.WriteTo` into a temp file + atomic rename during
+low-activity windows. `csm store compact` CLI command routes
+through the control socket for manual runs.
+
+### Scope sketch
+
+- New goroutine in the daemon: daily retention sweep per bucket,
+  driven by a `retention:` block in `csm.yaml`.
+- Compaction trigger: `used_bytes / file_size < 0.5` and file
+  > 128 MiB schedules a compact at the next daily window.
+- Control-socket command `store.compact` so operators can force it
+  without touching bbolt.
+- `/metrics` exposes `store_size_bytes`, `store_used_bytes`,
+  `store_last_compact_ts`.
+
+### Acceptance criteria
+
+- A synthetic 10 M-finding run followed by a compact reduces file
+  size by > 40% without restarting the daemon.
+- Retention deletions are atomic per-key (no half-deleted finding
+  visible to the UI mid-sweep).
+- Compact never runs while a critical-tier or deep-tier scan is in
+  flight.
+
+### Out of scope
+
+- Migrating off bbolt to SQLite/Badger. Separate decision; retention
+  policy stands regardless.
+- Per-account sharding.
+
+### Estimated size
+
+3 engineering days.
+
+### Rollback plan
+
+The retention goroutine and the compact command are additive.
+Disabling the `retention:` block in `csm.yaml` turns the new
+behaviour off.
+
+---
+
+## 7. Config hot-reload via SIGHUP
+
+**Status:** planned
+**Drives / unblocks:** live threshold tuning without losing fanotify
+marks
+
+### Why
+
+Editing `csm.yaml` today requires `systemctl restart csm`. The
+restart drops fanotify marks on every watched directory; during a
+real incident the operator either tunes live (and loses 3-5 s of
+real-time monitoring on re-mark) or leaves a noisy threshold in
+place. Both are bad.
+
+### Decision
+
+On SIGHUP, re-read `csm.yaml`, diff against the running config, and
+apply only keys that are safe to apply live. Unsafe keys (bbolt
+path, control-socket path, web UI port, fanotify watched roots)
+require a restart; the reload logs a clear
+"SIGHUP ignored for key X, restart required" line.
+
+### Scope sketch
+
+- Tag each config struct field with `hotreload:"safe"` or
+  `hotreload:"restart"`.
+- Single reload lock around the swap; readers use an
+  `atomic.Pointer[Config]`.
+- Applies cleanly to: thresholds, alert sinks, suppression rules,
+  retention config (item 6), metrics token (item 4), rule paths
+  for signatures and modsec.
+- Restart required for: watched roots, web UI listener, bbolt path.
+- Emit a finding on reload error (bad YAML, unsafe key touched).
+- Wire `ExecReload=` into the systemd unit.
+
+### Acceptance criteria
+
+- `kill -HUP $(pidof csm)` after a threshold change emits a
+  "reloaded" log line and the new value takes effect on the next
+  check tick without fanotify drops.
+- A deliberate bad YAML does not crash the daemon; the old config
+  stays live and a finding is emitted.
+
+### Out of scope
+
+- Reloading compiled YARA rules. `update-rules` already does that
+  through the control socket.
+- Dynamic watched-root changes. Fanotify re-marking cost is not
+  worth the complexity here.
+
+### Estimated size
+
+2 engineering days.
+
+### Rollback plan
+
+Revert the signal handler; the daemon falls back to restart-only
+reload.
+
+---
+
+## 8. Backup / restore for baseline + state
+
+**Status:** planned
+**Drives / unblocks:** re-provisioning; disaster recovery; cluster
+cloning; support-bundle artifacts
+
+### Why
+
+A fresh `csm baseline` on a 200k-file account tree takes 20+
+minutes. Operators reinstalling the OS, migrating to a new box, or
+cloning known-good state across a cluster currently pay that cost
+every time. There is also no audited answer to "what did CSM know
+at 09:00 this morning" after a later compromise -- bbolt is a black
+box with no supported export.
+
+### Decision
+
+Two CLI commands, both through the control socket. `csm store
+export <path>` writes a tagged tar+zstd archive of bbolt buckets +
+baseline hashes + firewall state + suppressions + signature-rule
+cache. `csm store import <path>` restores onto a stopped daemon
+(refuses with a live daemon, because split-brain is worse than
+downtime). Partial restore via `--only=baseline`.
+
+### Scope sketch
+
+- New `internal/store/archive.go`: read/write primitives over the
+  existing bbolt handle.
+- CLI integration in `cmd/csm/`.
+- Manifest with `schema_version`, `source_hostname`,
+  `source_platform`, `export_ts`, `bucket_list`.
+- Import refuses to load an archive whose `schema_version` is
+  newer than the running binary.
+- Same export format doubles as a snapshot the support tooling can
+  attach to a bug report.
+
+### Acceptance criteria
+
+- Export + import round-trip on a 100 MiB bbolt file produces a
+  byte-for-byte identical bucket listing.
+- A `--only=baseline` import skips findings/history and leaves the
+  target daemon's existing findings intact.
+- Archive is self-describing: `tar tf` lists the manifest and
+  bucket files without a CSM binary present.
+
+### Out of scope
+
+- Encryption of the archive at rest. Operators can pipe through
+  gpg; CSM does not manage key material.
+- Cross-platform baseline transfer. A baseline captured on Apache
+  is not meaningful on Nginx; the import refuses when
+  `source_platform` differs.
+
+### Estimated size
+
+3 engineering days.
+
+### Rollback plan
+
+Export is read-only. Import only runs on a stopped daemon; if the
+imported state is bad, the operator deletes bbolt and
+re-baselines.
+
+---
+
+## 9. Challenge UX polish
+
+**Status:** planned
+**Drives / unblocks:** fewer false-positive bans; legitimate-visitor
+experience
+
+### Why
+
+The proof-of-work challenge at `internal/challenge` is binary: the
+visitor either completes the JS-based PoW or is blocked.
+JS-disabled clients (older phones, accessibility tooling, text
+browsers, scripted legitimate integrations) are false-positives by
+construction. Authenticated WordPress admins, site owners, and
+CSM's own webhook receivers can trip the challenge during normal
+work; there is no "I am already trusted" path.
+
+### Decision
+
+Three independent improvements, all optional and configurable:
+
+1. Cloudflare Turnstile / hCaptcha fallback page presented when the
+   PoW page detects JS disabled. Operator supplies a site key; if
+   unset, the feature is off and behaviour is unchanged.
+2. Session-token bypass for authenticated WordPress admins: a
+   signed cookie the admin-ajax flow (or a tiny WP plugin) can set
+   so the challenge server sees "this visitor authenticated against
+   the account's WP admin in the last N minutes". Signing key lives
+   in bbolt, rotated on restart.
+3. Verified-crawler allow-pass (Googlebot, Bingbot) via reverse-DNS
+   + forward-confirm, opt-in in `csm.yaml`; default off.
+
+### Scope sketch
+
+- New `internal/challenge/fallback_captcha.go` with a pluggable
+  provider (Turnstile first, hCaptcha as a strategy).
+- New `internal/challenge/verified_session.go` for the signed-cookie
+  path.
+- Reverse-DNS verification integrated with the existing allow-list
+  machinery rather than a new path.
+- All three configurable independently in `csm.yaml`.
+
+### Acceptance criteria
+
+- A JS-disabled curl with a real browser User-Agent receives the
+  CAPTCHA page, not a 403, when the provider is configured.
+- A valid Turnstile token unlocks the visitor for the same
+  duration PoW would.
+- A spoofed `User-Agent: Googlebot` from a non-Google IP is still
+  challenged -- reverse-DNS verification does not trust the UA
+  alone.
+- Authenticated-admin bypass only applies to visitors with a cookie
+  signed by the current secret; an old signed cookie after a
+  daemon restart fails verification.
+
+### Out of scope
+
+- Building our own CAPTCHA. Third-party providers only.
+- Challenge for non-HTTP traffic.
+
+### Estimated size
+
+3-4 engineering days.
+
+### Rollback plan
+
+All three features are opt-in; removing their blocks from
+`csm.yaml` reverts to current PoW-only behaviour.
+
+---
