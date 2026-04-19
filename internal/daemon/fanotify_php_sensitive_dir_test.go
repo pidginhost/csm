@@ -13,12 +13,15 @@ import (
 )
 
 // Item 3 regression: PHP in /wp-content/languages/ should no longer fire
-// Critical purely on path. The content scanner runs first; clean files get
-// a Warning ("unexpected PHP in sensitive dir, content clean") while files
-// that trip a real rule fire the content-scan Critical and the path alert
-// is suppressed as redundant.
+// Critical purely on path. The content scanner runs first; clean files in
+// known-safe sublocations (WPML translation queue, locale .php, .l10n.php)
+// produce no alert at all, while clean files in unrecognised sublocations
+// of the sensitive dir still get a Warning. Files that trip a real rule
+// fire the content-scan Critical and the path alert is suppressed as
+// redundant. Coverage for the unknown-clean-PHP Warning lives in
+// TestAnalyzeFilePHPInLanguagesAlerts (fanotify_final_linux_test.go).
 
-func TestPHPInLanguagesWPMLQueueCleanContentWarningNotCritical(t *testing.T) {
+func TestPHPInLanguagesWPMLQueueCleanContentNoAlert(t *testing.T) {
 	dir := t.TempDir()
 	queueDir := filepath.Join(dir, "wp-content", "languages", "wpml", "queue")
 	if err := os.MkdirAll(queueDir, 0755); err != nil {
@@ -51,14 +54,9 @@ return array(
 
 	select {
 	case got := <-ch:
-		if got.Check != "php_in_sensitive_dir_realtime" {
-			t.Errorf("Check = %q, want php_in_sensitive_dir_realtime", got.Check)
-		}
-		if got.Severity != alert.Warning {
-			t.Errorf("Severity = %v, want Warning (clean content should not escalate to Critical)", got.Severity)
-		}
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("expected a Warning php_in_sensitive_dir_realtime alert for clean content")
+		t.Errorf("expected no alert for WPML translation queue file, got %+v", got)
+	case <-time.After(150 * time.Millisecond):
+		// OK
 	}
 }
 

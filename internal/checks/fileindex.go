@@ -208,7 +208,7 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 // classifySensitiveDirPHP returns (severity, check, message) for a PHP file
 // in /wp-content/languages/ or /wp-content/upgrade/. Returns a negative
 // severity when the path is not in a sensitive dir, when the filename is
-// already recognised as safe by isSafePHPInWPDir, or when the name is
+// already recognised as safe by IsSafePHPInWPDir, or when the name is
 // index.php / *.l10n.php -- in all those cases the caller keeps walking.
 //
 // For a file that IS in a sensitive dir and is not on the safe list, the
@@ -232,7 +232,7 @@ func classifySensitiveDirPHP(path, name string) (alert.Severity, string, string)
 	if nameLower == "index.php" || strings.HasSuffix(nameLower, ".l10n.php") {
 		return -1, "", ""
 	}
-	if isSafePHPInWPDir(path, name) {
+	if IsSafePHPInWPDir(path, name) {
 		return -1, "", ""
 	}
 	if result := analyzePHPContent(path); result.severity >= 0 {

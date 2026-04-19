@@ -8,46 +8,46 @@ import (
 	"testing"
 )
 
-// --- isSafePHPInWPDir -------------------------------------------------
+// --- IsSafePHPInWPDir -------------------------------------------------
 
 func TestIsSafePHPInWPDirTranslation(t *testing.T) {
-	if !isSafePHPInWPDir("/home/u/public_html/wp-content/languages/en_US.l10n.php", "en_US.l10n.php") {
+	if !IsSafePHPInWPDir("/home/u/public_html/wp-content/languages/en_US.l10n.php", "en_US.l10n.php") {
 		t.Error(".l10n.php should be safe")
 	}
 }
 
 func TestIsSafePHPInWPDirIndex(t *testing.T) {
-	if !isSafePHPInWPDir("/home/u/public_html/wp-content/uploads/index.php", "index.php") {
+	if !IsSafePHPInWPDir("/home/u/public_html/wp-content/uploads/index.php", "index.php") {
 		t.Error("index.php should be safe")
 	}
 }
 
 func TestIsSafePHPInWPDirLanguagesAdmin(t *testing.T) {
-	if !isSafePHPInWPDir("/home/u/public_html/wp-content/languages/admin-en_US.php", "admin-en_US.php") {
+	if !IsSafePHPInWPDir("/home/u/public_html/wp-content/languages/admin-en_US.php", "admin-en_US.php") {
 		t.Error("admin-* in languages should be safe")
 	}
 }
 
 func TestIsSafePHPInWPDirLanguagesLocale(t *testing.T) {
-	if !isSafePHPInWPDir("/home/u/public_html/wp-content/languages/fr_FR.php", "fr_FR.php") {
+	if !IsSafePHPInWPDir("/home/u/public_html/wp-content/languages/fr_FR.php", "fr_FR.php") {
 		t.Error("locale.php in languages should be safe")
 	}
 }
 
 func TestIsSafePHPInWPDirMuPlugin(t *testing.T) {
-	if !isSafePHPInWPDir("/home/u/public_html/wp-content/mu-plugins/endurance-browser-cache.php", "endurance-browser-cache.php") {
+	if !IsSafePHPInWPDir("/home/u/public_html/wp-content/mu-plugins/endurance-browser-cache.php", "endurance-browser-cache.php") {
 		t.Error("endurance mu-plugin should be safe")
 	}
 }
 
 func TestIsSafePHPInWPDirPluginVendor(t *testing.T) {
-	if !isSafePHPInWPDir("/home/u/public_html/wp-content/plugins/myplugin/vendor/autoload.php", "autoload.php") {
+	if !IsSafePHPInWPDir("/home/u/public_html/wp-content/plugins/myplugin/vendor/autoload.php", "autoload.php") {
 		t.Error("vendor/ in plugins should be safe")
 	}
 }
 
 func TestIsSafePHPInWPDirUnknown(t *testing.T) {
-	if isSafePHPInWPDir("/home/u/public_html/wp-content/uploads/evil.php", "evil.php") {
+	if IsSafePHPInWPDir("/home/u/public_html/wp-content/uploads/evil.php", "evil.php") {
 		t.Error("unknown PHP in uploads should not be safe")
 	}
 }
@@ -339,8 +339,8 @@ func TestIsSafePHPInWPDir_WPMLQueue(t *testing.T) {
 		{"/home/u/public_html/wp-content/languages/wpml/evil.php", "evil.php", false},
 	}
 	for _, tc := range cases {
-		if got := isSafePHPInWPDir(tc.path, tc.name); got != tc.want {
-			t.Errorf("isSafePHPInWPDir(%q, %q) = %v, want %v", tc.path, tc.name, got, tc.want)
+		if got := IsSafePHPInWPDir(tc.path, tc.name); got != tc.want {
+			t.Errorf("IsSafePHPInWPDir(%q, %q) = %v, want %v", tc.path, tc.name, got, tc.want)
 		}
 	}
 }

@@ -892,9 +892,12 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	// translation queues, WP auto-update staging). Run content analysis
 	// first: if a real rule fires the Critical lives there; clean files
 	// still get a Warning so unexpected PHP in these dirs is visible.
+	// Known-safe filenames (index.php, *.l10n.php, WPML queue, locale,
+	// etc.) are filtered via the shared checks.IsSafePHPInWPDir helper so
+	// the realtime path stays in lock-step with the polled fileindex scan.
 	if (strings.Contains(path, "/wp-content/languages/") || strings.Contains(path, "/wp-content/upgrade/")) &&
 		isPHPExtension(nameLower) {
-		if nameLower != "index.php" && !strings.HasSuffix(nameLower, ".l10n.php") {
+		if !checks.IsSafePHPInWPDir(path, nameLower) {
 			if !fm.checkPHPContent(event.fd, path, procInfo) {
 				fm.sendAlertWithPath(alert.Warning, "php_in_sensitive_dir_realtime",
 					fmt.Sprintf("PHP file created in sensitive WP directory (content clean): %s", path), "", path, procInfo)

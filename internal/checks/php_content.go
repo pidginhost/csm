@@ -115,7 +115,7 @@ func scanDirForObfuscatedPHP(ctx context.Context, dir string, maxDepth int, cfg 
 		}
 
 		// Skip known safe files
-		if isSafePHPInWPDir(fullPath, name) {
+		if IsSafePHPInWPDir(fullPath, name) {
 			continue
 		}
 
@@ -400,9 +400,13 @@ func analyzePHPContent(path string) phpAnalysisResult {
 	}
 }
 
-// isSafePHPInWPDir returns true for known legitimate PHP files in WP directories
-// like languages (translation files) and upgrade (empty index.php).
-func isSafePHPInWPDir(path, name string) bool {
+// IsSafePHPInWPDir returns true for known legitimate PHP files in WP directories
+// like languages (translation files) and upgrade (empty index.php). Exported so
+// the realtime fanotify path in internal/daemon shares the same allowlist as
+// the polled fileindex scan; keeping the two in lock-step avoids the class of
+// false positive where a path is recognised as safe by one path and flagged by
+// the other.
+func IsSafePHPInWPDir(path, name string) bool {
 	nameLower := strings.ToLower(name)
 
 	// WordPress translation files: *.l10n.php, *.mo, admin-*.php patterns
