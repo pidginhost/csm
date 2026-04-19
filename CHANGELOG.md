@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-04-19
+
 ### Added
 
 - Optional Sentry crash reporting via a new `internal/obs` package wrapping `sentry-go`. A `sentry:` config block (`enabled`, `dsn`, `environment`, `sample_rate`, `debug`) toggles it; disabled or empty-DSN are no-ops. Long-lived daemon goroutines run through `obs.Go`/`obs.SafeGo` so panics land in Sentry with `component`/`os`/`panel`/`webserver` tags. DSN is redacted from `csm config show`.
