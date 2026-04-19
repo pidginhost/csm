@@ -74,11 +74,12 @@ func (m *mockOS) Glob(pattern string) ([]string, error) {
 // ---------------------------------------------------------------------------
 
 type mockCmd struct {
-	run             func(string, ...string) ([]byte, error)
-	runAllowNonZero func(string, ...string) ([]byte, error)
-	runContext      func(context.Context, string, ...string) ([]byte, error)
-	runWithEnv      func(string, []string, ...string) ([]byte, error)
-	lookPath        func(string) (string, error)
+	run              func(string, ...string) ([]byte, error)
+	runAllowNonZero  func(string, ...string) ([]byte, error)
+	runContext       func(context.Context, string, ...string) ([]byte, error)
+	runContextStdout func(context.Context, string, ...string) ([]byte, error)
+	runWithEnv       func(string, []string, ...string) ([]byte, error)
+	lookPath         func(string) (string, error)
 }
 
 func (m *mockCmd) Run(name string, args ...string) ([]byte, error) {
@@ -93,6 +94,23 @@ func (m *mockCmd) Run(name string, args ...string) ([]byte, error) {
 // `mockCmd{run: ...}` and have it work for both Run() and RunContext()
 // callers (e.g., audit functions that route through auditRunCmd).
 func (m *mockCmd) RunContext(parent context.Context, name string, args ...string) ([]byte, error) {
+	if m.runContext != nil {
+		return m.runContext(parent, name, args...)
+	}
+	if m.run != nil {
+		return m.run(name, args...)
+	}
+	return nil, nil
+}
+
+// RunContextStdout falls back to `runContext`, then `run`. Tests that want to
+// distinguish stdout-only callers from combined-output callers can set
+// `runContextStdout` explicitly; otherwise the existing mock continues to
+// answer both call sites identically.
+func (m *mockCmd) RunContextStdout(parent context.Context, name string, args ...string) ([]byte, error) {
+	if m.runContextStdout != nil {
+		return m.runContextStdout(parent, name, args...)
+	}
 	if m.runContext != nil {
 		return m.runContext(parent, name, args...)
 	}

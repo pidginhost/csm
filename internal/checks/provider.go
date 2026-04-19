@@ -49,10 +49,19 @@ func SetOS(o OS) { osFS = o }
 
 // CmdRunner abstracts external command execution used by check functions.
 // Production code uses realCmd{}; tests swap in a mockCmdRunner via SetCmdRunner().
+//
+// RunContext returns stdout+stderr merged (CombinedOutput) and is fine for
+// tools that only write to stdout. RunContextStdout returns stdout only and
+// should be used when the command prints structured output (JSON, a URL, ...)
+// on stdout and chatter (warnings, PHP notices, MySQL deprecations) on stderr
+// -- mixing them there would corrupt the parse. RunContextStdout also surfaces
+// context.DeadlineExceeded on timeout so callers can distinguish "no output"
+// from "empty output".
 type CmdRunner interface {
 	Run(name string, args ...string) ([]byte, error)
 	RunAllowNonZero(name string, args ...string) ([]byte, error)
 	RunContext(parent context.Context, name string, args ...string) ([]byte, error)
+	RunContextStdout(parent context.Context, name string, args ...string) ([]byte, error)
 	RunWithEnv(name string, args []string, extraEnv ...string) ([]byte, error)
 	LookPath(file string) (string, error)
 }
@@ -69,6 +78,10 @@ func (realCmd) RunAllowNonZero(name string, args ...string) ([]byte, error) {
 
 func (realCmd) RunContext(parent context.Context, name string, args ...string) ([]byte, error) {
 	return runCmdCombinedContextReal(parent, name, args...)
+}
+
+func (realCmd) RunContextStdout(parent context.Context, name string, args ...string) ([]byte, error) {
+	return runCmdStdoutContextReal(parent, name, args...)
 }
 
 func (realCmd) RunWithEnv(name string, args []string, extraEnv ...string) ([]byte, error) {

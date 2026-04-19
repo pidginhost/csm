@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,6 +20,23 @@ import (
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
 )
+
+// wpCLIFlags are the extra flags and env CSM adds to every wp-cli invocation.
+//
+// WP_CLI_PHP_ARGS disables PHP's display_errors/error_reporting for the
+// bootstrap so stray Notices/Warnings/Deprecated messages from the site
+// don't get emitted (they'd only be a problem on stderr, which we already
+// discard, but suppressing them also avoids exit-255 on strict hosts that
+// promote warnings to errors).
+//
+// --skip-plugins and --skip-themes make wp-cli enumerate plugins from the
+// filesystem without loading them. That removes the biggest source of log
+// noise: one broken plugin (e.g. a PHP Parse error in litespeed-cache on a
+// site nobody updated for years) would otherwise crash the whole `wp plugin
+// list` call with exit 255, or spew backtraces from plugins that call
+// wp_redirect() during admin bootstrap. Skipping loads gives us the list
+// plus update_version unchanged.
+const wpCLIFlags = `WP_CLI_PHP_ARGS='-d display_errors=0 -d error_reporting=0' wp --skip-plugins --skip-themes `
 
 var wpOrgHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
@@ -237,6 +255,7 @@ func refreshPluginCache(ctx context.Context, db *store.DB) {
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	successCount := 0
+	var timeoutCount, execFailCount, parseFailCount int
 	slugsSeen := make(map[string]bool)
 	discoveredPaths := make(map[string]bool)
 
@@ -260,24 +279,32 @@ func refreshPluginCache(ctx context.Context, db *store.DB) {
 				discoveredPaths[wpPath] = true
 				mu.Unlock()
 
-				// Run wp plugin list as the site owner.
-				// Use --path flag instead of shell cd to avoid shell injection
-				// via crafted directory names on shared hosting.
-				// Routed through cmdExec so tests can mock the wp-cli output.
-				out, err := cmdExec.RunContext(ctx, "su", "-", user, "-s", "/bin/bash", "-c",
-					"wp plugin list --fields=name,status,version,update_version --format=json --path="+shellQuote(wpPath),
+				// Run wp plugin list as the site owner on stdout-only so PHP
+				// notices/warnings on stderr can't corrupt the JSON we parse.
+				// Use --path instead of shell cd to avoid shell injection via
+				// crafted directory names on shared hosting.
+				out, err := cmdExec.RunContextStdout(ctx, "su", "-", user, "-s", "/bin/bash", "-c",
+					wpCLIFlags+"plugin list --fields=name,status,version,update_version --format=json --path="+shellQuote(wpPath),
 				)
 				if err != nil {
 					if ctx.Err() != nil {
 						return
 					}
-					fmt.Fprintf(os.Stderr, "plugincheck: wp-cli failed for %s: %v\n", wpPath, err)
+					mu.Lock()
+					if errors.Is(err, context.DeadlineExceeded) {
+						timeoutCount++
+					} else {
+						execFailCount++
+					}
+					mu.Unlock()
 					continue
 				}
 
 				var entries []wpCLIPluginEntry
 				if err := json.Unmarshal(out, &entries); err != nil {
-					fmt.Fprintf(os.Stderr, "plugincheck: JSON parse failed for %s: %v\n", wpPath, err)
+					mu.Lock()
+					parseFailCount++
+					mu.Unlock()
 					continue
 				}
 
@@ -363,19 +390,35 @@ func refreshPluginCache(ctx context.Context, db *store.DB) {
 	// retry next cycle.
 	mu.Lock()
 	sc := successCount
+	to, exf, pf := timeoutCount, execFailCount, parseFailCount
 	mu.Unlock()
 	failCount := len(wpConfigs) - sc
+	ts := time.Now().Format("2006-01-02 15:04:05")
 	if sc == 0 {
-		fmt.Fprintf(os.Stderr, "[%s] Plugin cache refresh FAILED: 0/%d sites succeeded, not updating timestamp\n",
-			time.Now().Format("2006-01-02 15:04:05"), len(wpConfigs))
+		fmt.Fprintf(os.Stderr, "[%s] plugincheck: refresh failed, 0/%d sites succeeded%s, not updating timestamp\n",
+			ts, len(wpConfigs), failureBreakdown(to, exf, pf))
 		return
 	}
 	if failCount > sc {
-		fmt.Fprintf(os.Stderr, "[%s] Plugin cache refresh PARTIAL: %d/%d sites failed (majority), not updating timestamp\n",
-			time.Now().Format("2006-01-02 15:04:05"), failCount, len(wpConfigs))
+		fmt.Fprintf(os.Stderr, "[%s] plugincheck: refresh partial, %d/%d sites failed%s, not updating timestamp\n",
+			ts, failCount, len(wpConfigs), failureBreakdown(to, exf, pf))
 		return
 	}
+	if failCount > 0 {
+		fmt.Fprintf(os.Stderr, "[%s] plugincheck: refreshed %d/%d sites%s\n",
+			ts, sc, len(wpConfigs), failureBreakdown(to, exf, pf))
+	}
 	_ = db.SetPluginRefreshTime(time.Now())
+}
+
+// failureBreakdown formats " (timeout=N exec_fail=N json_fail=N)" when any
+// category is non-zero, or "" otherwise. Keeps the refresh log to one line
+// instead of one line per broken site.
+func failureBreakdown(timeout, execFail, parseFail int) string {
+	if timeout == 0 && execFail == 0 && parseFail == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (timeout=%d exec_fail=%d json_fail=%d)", timeout, execFail, parseFail)
 }
 
 // evaluatePluginCache reads the cached plugin inventory and emits findings
@@ -434,8 +477,11 @@ func evaluatePluginCache(db *store.DB) []alert.Finding {
 // extractWPDomain runs `wp option get siteurl` to discover the site's domain.
 // Falls back to directory name heuristics if wp-cli fails.
 func extractWPDomain(ctx context.Context, wpPath, user string) string {
-	out, err := cmdExec.RunContext(ctx, "su", "-", user, "-s", "/bin/bash", "-c",
-		"wp option get siteurl --path="+shellQuote(wpPath),
+	// Stdout-only: some sites print "WARNING: MYSQL_OPT_RECONNECT deprecated"
+	// or similar on stderr during wp-cli boot. Mixing that into the value
+	// would produce a poisoned domain like "Warning: ... https://site.com".
+	out, err := cmdExec.RunContextStdout(ctx, "su", "-", user, "-s", "/bin/bash", "-c",
+		wpCLIFlags+"option get siteurl --path="+shellQuote(wpPath),
 	)
 	if err == nil {
 		url := strings.TrimSpace(string(out))

@@ -2,8 +2,10 @@ package checks
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // These tests exercise the *Real implementations directly with real
@@ -91,5 +93,57 @@ func TestRunCmdWithEnvRealCommandNotFoundErrors(t *testing.T) {
 	_, err := runCmdWithEnvReal("/nonexistent-xyz", []string{"a"}, "X=1")
 	if err == nil {
 		t.Error("missing binary should error")
+	}
+}
+
+// runCmdStdoutContextReal: stdout-only variant used by plugincheck so wp-cli
+// chatter on stderr (PHP warnings, MYSQL_OPT_RECONNECT deprecations, plugin
+// backtraces) can't pollute the JSON on stdout.
+
+func TestRunCmdStdoutContextSuccess(t *testing.T) {
+	out, err := runCmdStdoutContextReal(context.Background(), "/bin/echo", "stdout-only")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(string(out), "stdout-only") {
+		t.Errorf("expected 'stdout-only' in output, got %q", out)
+	}
+}
+
+func TestRunCmdStdoutContextDropsStderr(t *testing.T) {
+	// This is the regression guard for the "invalid character 'W' looking
+	// for beginning of value" class: a child that prints junk on stderr
+	// and JSON on stdout must yield *only* the JSON.
+	out, err := runCmdStdoutContextReal(context.Background(), "/bin/sh", "-c",
+		`echo "WARNING: MYSQL_OPT_RECONNECT" >&2; echo '[{"name":"x"}]'`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := strings.TrimSpace(string(out))
+	if got != `[{"name":"x"}]` {
+		t.Errorf("stdout-only runner leaked stderr: got %q", got)
+	}
+}
+
+func TestRunCmdStdoutContextTimeoutReturnsDeadlineExceeded(t *testing.T) {
+	// Parent with a short deadline. /bin/sleep 5 is guaranteed to outlive it.
+	// Helper must surface context.DeadlineExceeded so the caller can tell a
+	// hung command apart from a legitimately-empty result (the old code
+	// returned (nil, nil) and parsers downstream misreported the cause as
+	// "unexpected end of JSON input").
+	parent, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err := runCmdStdoutContextReal(parent, "/bin/sleep", "5")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected DeadlineExceeded, got %v", err)
+	}
+}
+
+func TestRunCmdStdoutContextParentCancelledReturnsCtxErr(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := runCmdStdoutContextReal(ctx, "/bin/echo", "x")
+	if err == nil {
+		t.Error("expected error from cancelled parent context")
 	}
 }

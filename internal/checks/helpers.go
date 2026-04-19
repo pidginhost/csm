@@ -100,6 +100,27 @@ func runCmdCombinedContextReal(parent context.Context, name string, args ...stri
 	return out, err
 }
 
+// runCmdStdoutContextReal runs a command with a per-call timeout and returns
+// stdout only. Stderr is discarded so chatter from the child process (PHP
+// warnings, MySQL deprecation notices, wp-cli plugin backtraces, ...) cannot
+// poison parsers that expect JSON/URL bytes on stdout. On timeout the caller
+// receives context.DeadlineExceeded rather than a silent (nil, nil), so it
+// can distinguish a hung command from a legitimately empty result.
+func runCmdStdoutContextReal(parent context.Context, name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(parent, cmdTimeout)
+	defer cancel()
+
+	// #nosec G204 -- see package-level trust note above.
+	out, err := exec.CommandContext(ctx, name, args...).Output()
+	if ctx.Err() == context.DeadlineExceeded {
+		return nil, context.DeadlineExceeded
+	}
+	if parent.Err() != nil {
+		return nil, parent.Err()
+	}
+	return out, err
+}
+
 func runCmdWithEnvReal(name string, args []string, extraEnv ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
 	defer cancel()
