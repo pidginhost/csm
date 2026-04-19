@@ -45,6 +45,8 @@ jobs:
           go tool cover -func=coverage.out | tail -1
 
       - name: Merge integration coverage from latest GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Write all diagnostic output to a file we can publish on Pages so
           # we can debug from outside (we don't have admin to read Actions logs).
@@ -63,10 +65,14 @@ jobs:
             # back to the most recent release that does carry the profile.
             echo "=== Looking for merged-coverage.out in recent releases ==="
             FOUND=""
-            for TAG in $(curl -fsSL "https://api.github.com/repos/pidginhost/csm/releases?per_page=10" \
+            for TAG in $(curl -fsSL \
+                           -H "Authorization: Bearer $GH_TOKEN" \
+                           -H "Accept: application/vnd.github+json" \
+                           "https://api.github.com/repos/pidginhost/csm/releases?per_page=10" \
                            | python3 -c "import json,sys; [print(r['tag_name']) for r in json.load(sys.stdin)]"); do
               URL="https://github.com/pidginhost/csm/releases/download/${TAG}/merged-coverage.out"
-              if curl -fsSL -o integration-coverage.out "$URL" 2>/dev/null; then
+              if curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+                     -o integration-coverage.out "$URL" 2>/dev/null; then
                 FOUND="$TAG"
                 echo "  found merged-coverage.out in $TAG"
                 break
