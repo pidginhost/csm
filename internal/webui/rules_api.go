@@ -28,8 +28,8 @@ func (s *Server) apiRulesStatus(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	yaraCount := 0
-	if yaraScanner := yara.Global(); yaraScanner != nil {
-		yaraCount = yaraScanner.RuleCount()
+	if b := yara.Active(); b != nil {
+		yaraCount = b.RuleCount()
 	}
 
 	result := map[string]interface{}{
@@ -117,9 +117,9 @@ func (s *Server) apiRulesReload(w http.ResponseWriter, r *http.Request) {
 		s.SetSigCount(yamlCount)
 	}
 
-	if yaraScanner := yara.Global(); yaraScanner != nil {
-		yaraErr = yaraScanner.Reload()
-		yaraCount = yaraScanner.RuleCount()
+	if b := yara.Active(); b != nil {
+		yaraErr = b.Reload()
+		yaraCount = b.RuleCount()
 	}
 
 	var errors []string

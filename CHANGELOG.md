@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- WebUI "YARA RULES" card and "Reload Rules" button now work under worker mode. The rules API was reading `yara.Global()`, which stays nil when `signatures.yara_worker_enabled` is on (rules compile in the child process), so the dashboard reported 0 and the reload button silently did nothing for YARA even while the worker had thousands of rules loaded. Routes through `yara.Active()` now, covering both in-process and worker backends.
 - `runPeriodicChecks` no longer fires a spurious Critical `integrity` tamper alert on every tier tick after a successful SIGHUP reload. `integrity.Verify` was passed the startup `d.cfg` whose `Integrity.ConfigHash` went stale the moment reload re-signed the on-disk file; it now runs against `d.currentCfg()` which returns `config.Active()`. Regression guarded by `TestReloadConfigIntegrityVerifyPassesAfterReload` which asserts Verify passes post-reload via `d.currentCfg()` and (as a sanity check) that the stale `d.cfg` path still fails so future changes keep the fix honest.
 
 ### Changed

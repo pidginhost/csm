@@ -13,7 +13,26 @@ import (
 
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/store"
+	"github.com/pidginhost/csm/internal/yara"
 )
+
+// fakeYaraBackend satisfies yara.Backend for webui tests that need to
+// exercise the apiRules* handlers against a non-nil backend without
+// pulling in the real YARA-X scanner (which requires cgo + a rules
+// directory). The reloadErr field lets a test drive the error branch.
+type fakeYaraBackend struct {
+	rules     int
+	reloaded  int
+	reloadErr error
+}
+
+func (f *fakeYaraBackend) ScanFile(string, int) []yara.Match { return nil }
+func (f *fakeYaraBackend) ScanBytes([]byte) []yara.Match     { return nil }
+func (f *fakeYaraBackend) RuleCount() int                    { return f.rules }
+func (f *fakeYaraBackend) Reload() error {
+	f.reloaded++
+	return f.reloadErr
+}
 
 // ---------------------------------------------------------------------------
 // rules_api.go — apiRulesStatus / apiRulesList / apiRulesReload
@@ -110,6 +129,56 @@ func TestAPIRulesListFiltersByExtension(t *testing.T) {
 		if fileType != "yaml" && fileType != "yara" {
 			t.Errorf("bad type %q for %q", fileType, name)
 		}
+	}
+}
+
+// Under worker mode initYaraBackend skips yara.Init (rules live in the
+// child process), so yara.Global() is nil. The handler must route
+// through yara.Active() to see the supervisor-reported rule count;
+// otherwise the "YARA RULES" card reads 0 while the daemon is
+// scanning with thousands of compiled rules in the worker.
+func TestAPIRulesStatusReadsActiveBackend(t *testing.T) {
+	t.Cleanup(func() { yara.SetActive(nil) })
+	yara.SetActive(&fakeYaraBackend{rules: 5092})
+
+	s := newTestServer(t, "tok")
+	w := httptest.NewRecorder()
+	s.apiRulesStatus(w, httptest.NewRequest("GET", "/", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	if got["yara_rules"] != float64(5092) {
+		t.Errorf("yara_rules = %v, want 5092", got["yara_rules"])
+	}
+}
+
+func TestAPIRulesReloadHitsActiveBackend(t *testing.T) {
+	t.Cleanup(func() { yara.SetActive(nil) })
+	fb := &fakeYaraBackend{rules: 5092}
+	yara.SetActive(fb)
+
+	s := newTestServer(t, "tok")
+	w := httptest.NewRecorder()
+	s.apiRulesReload(w, httptest.NewRequest("POST", "/", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if fb.reloaded != 1 {
+		t.Errorf("Reload() call count = %d, want 1", fb.reloaded)
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	if resp["yara_rules"] != float64(5092) {
+		t.Errorf("yara_rules = %v, want 5092", resp["yara_rules"])
+	}
+	if resp["ok"] != true {
+		t.Errorf("ok = %v, want true", resp["ok"])
 	}
 }
 
