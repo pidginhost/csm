@@ -213,9 +213,12 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 //
 // For a file that IS in a sensitive dir and is not on the safe list, the
 // helper runs analyzePHPContent first: a real indicator keeps Critical
-// severity and the content-based check name. A clean file is demoted to
-// Warning so the unexpected-location signal is not lost. Mirrors the
-// realtime path at fanotify.go:890.
+// severity and the content-based check name (obfuscated_php /
+// suspicious_php_content, both already wired into autoresponse, remediate,
+// correlation, and attackdb). A clean file is demoted to Warning with
+// check new_php_in_sensitive_dir_clean, which is intentionally NOT in any
+// of those maps -- a clean file is a visibility signal, not an attack.
+// Mirrors the realtime path at fanotify.go:890.
 func classifySensitiveDirPHP(path, name string) (alert.Severity, string, string) {
 	nameLower := strings.ToLower(name)
 	if !strings.HasSuffix(nameLower, ".php") {
