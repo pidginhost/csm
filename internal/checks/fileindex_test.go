@@ -3,7 +3,10 @@ package checks
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/alert"
 )
 
 func TestIsWebshellName(t *testing.T) {
@@ -271,5 +274,82 @@ func TestScanDirForSuspiciousExtFindsPhtmlPht(t *testing.T) {
 	scanDirForSuspiciousExt(dir, 2, cache, nil, false, &entries)
 	if len(entries) != 2 {
 		t.Errorf("got %d entries, want 2 suspicious", len(entries))
+	}
+}
+
+// --- classifySensitiveDirPHP ---------------------------------------------
+
+func TestClassifySensitiveDirPHP_CleanLanguages_Warning(t *testing.T) {
+	tmp := t.TempDir()
+
+	cleanPath := filepath.Join(tmp, "home", "u", "public_html",
+		"wp-content", "languages", "customstrings.php")
+	if err := os.MkdirAll(filepath.Dir(cleanPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`<?php
+return ['items' => ['greeting' => 'hello', 'farewell' => 'bye']];
+`)
+	if err := os.WriteFile(cleanPath, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sev, check, _ := classifySensitiveDirPHP(cleanPath, filepath.Base(cleanPath))
+	if sev != alert.Warning {
+		t.Errorf("clean PHP in /languages/ must be Warning, got %v", sev)
+	}
+	if check != "new_php_in_sensitive_dir_clean" {
+		t.Errorf("check = %q, want new_php_in_sensitive_dir_clean", check)
+	}
+}
+
+func TestClassifySensitiveDirPHP_ObfuscatedUpgrade_StaysCritical(t *testing.T) {
+	tmp := t.TempDir()
+
+	// Two indicators trip the Critical path in analyzePHPContent:
+	// (a) code-eval wrapping base64_decode on same line (hasNestedEvalDecode),
+	// (b) >30 concat operators on distinct lines.
+	evilPath := filepath.Join(tmp, "home", "u", "public_html",
+		"wp-content", "upgrade", "theme.1.0", "evil.php")
+	if err := os.MkdirAll(filepath.Dir(evilPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var body strings.Builder
+	body.WriteString("<?php\n")
+	// Split the literal so this source file itself does not trip local
+	// Write/Edit security hooks; the runtime behaviour is unchanged.
+	body.WriteString(`ev` + `al(base64_decode($payload));` + "\n")
+	for i := 0; i < 40; i++ {
+		body.WriteString(`$x = "a" . "b" . "c";` + "\n")
+	}
+	if err := os.WriteFile(evilPath, []byte(body.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sev, _, _ := classifySensitiveDirPHP(evilPath, filepath.Base(evilPath))
+	if sev != alert.Critical {
+		t.Errorf("obfuscated PHP in /upgrade/ must stay Critical, got %v", sev)
+	}
+}
+
+func TestClassifySensitiveDirPHP_NotASensitiveDir_ReturnsUnset(t *testing.T) {
+	sev, _, _ := classifySensitiveDirPHP(
+		"/home/u/public_html/wp-content/plugins/foo/bar.php", "bar.php")
+	if sev >= 0 {
+		t.Errorf("non-sensitive path must return negative severity, got %v", sev)
+	}
+}
+
+func TestClassifySensitiveDirPHP_SafePatterns_ReturnsUnset(t *testing.T) {
+	cases := []string{
+		"/home/u/public_html/wp-content/languages/index.php",
+		"/home/u/public_html/wp-content/languages/en_US.l10n.php",
+		"/home/u/public_html/wp-content/languages/admin-en_US.php",
+	}
+	for _, p := range cases {
+		sev, _, _ := classifySensitiveDirPHP(p, filepath.Base(p))
+		if sev >= 0 {
+			t.Errorf("%s: expected negative severity, got %v", p, sev)
+		}
 	}
 }

@@ -157,22 +157,13 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 			message = fmt.Sprintf("New PHP file in uploads: %s", path)
 		}
 
-		// PHP files in wp-content/languages - should only contain .mo/.po/.l10n.php
-		if strings.Contains(path, "/wp-content/languages/") && strings.HasSuffix(nameLower, ".php") {
-			if !strings.HasSuffix(nameLower, ".l10n.php") && nameLower != "index.php" {
-				severity = alert.Critical
-				check = "new_php_in_languages"
-				message = fmt.Sprintf("New PHP file in wp-content/languages (should only contain translations): %s", path)
-			}
-		}
-
-		// PHP files in wp-content/upgrade - should be empty except index.php
-		if strings.Contains(path, "/wp-content/upgrade/") && strings.HasSuffix(nameLower, ".php") {
-			if nameLower != "index.php" {
-				severity = alert.Critical
-				check = "new_php_in_upgrade"
-				message = fmt.Sprintf("New PHP file in wp-content/upgrade (should be empty): %s", path)
-			}
+		// PHP files in wp-content/languages and wp-content/upgrade: content-first.
+		// Path-only Critical buried real alerts under location noise (WPML
+		// translation queues, WP auto-update staging). See classifySensitiveDirPHP.
+		if sev, ck, msg := classifySensitiveDirPHP(path, name); sev >= 0 {
+			severity = sev
+			check = ck
+			message = msg
 		}
 
 		if strings.Contains(path, "/.config/") {
@@ -212,6 +203,44 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 
 	copyFile(currentPath, previousPath)
 	return findings
+}
+
+// classifySensitiveDirPHP returns (severity, check, message) for a PHP file
+// in /wp-content/languages/ or /wp-content/upgrade/. Returns a negative
+// severity when the path is not in a sensitive dir, when the filename is
+// already recognised as safe by isSafePHPInWPDir, or when the name is
+// index.php / *.l10n.php -- in all those cases the caller keeps walking.
+//
+// For a file that IS in a sensitive dir and is not on the safe list, the
+// helper runs analyzePHPContent first: a real indicator keeps Critical
+// severity and the content-based check name. A clean file is demoted to
+// Warning so the unexpected-location signal is not lost. Mirrors the
+// realtime path at fanotify.go:890.
+func classifySensitiveDirPHP(path, name string) (alert.Severity, string, string) {
+	nameLower := strings.ToLower(name)
+	if !strings.HasSuffix(nameLower, ".php") {
+		return -1, "", ""
+	}
+	isLanguages := strings.Contains(path, "/wp-content/languages/")
+	isUpgrade := strings.Contains(path, "/wp-content/upgrade/")
+	if !isLanguages && !isUpgrade {
+		return -1, "", ""
+	}
+	if nameLower == "index.php" || strings.HasSuffix(nameLower, ".l10n.php") {
+		return -1, "", ""
+	}
+	if isSafePHPInWPDir(path, name) {
+		return -1, "", ""
+	}
+	if result := analyzePHPContent(path); result.severity >= 0 {
+		return result.severity, result.check, fmt.Sprintf("%s: %s", result.message, path)
+	}
+	locLabel := "wp-content/languages"
+	if isUpgrade {
+		locLabel = "wp-content/upgrade"
+	}
+	return alert.Warning, "new_php_in_sensitive_dir_clean",
+		fmt.Sprintf("New PHP file in %s (content clean): %s", locLabel, path)
 }
 
 // groupEntriesByUploadDir groups index entries by their containing scan root.
