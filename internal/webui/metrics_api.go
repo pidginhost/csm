@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/metrics"
 )
 
@@ -47,7 +48,17 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) isMetricsAuthenticated(r *http.Request) bool {
-	if tok := s.cfg.WebUI.MetricsToken; tok != "" {
+	// Read the metrics token from config.Active() when available so a
+	// SIGHUP-driven rotation of webui.metrics_token takes effect on
+	// the next request. MetricsToken is tagged `hotreload:"safe"` for
+	// this reason, even though its WebUI parent is restart-required
+	// for the listener/TLS/auth-token fields. Fall back to s.cfg on
+	// the cold-start window before SetActive is called.
+	tok := s.cfg.WebUI.MetricsToken
+	if live := config.Active(); live != nil {
+		tok = live.WebUI.MetricsToken
+	}
+	if tok != "" {
 		if auth := r.Header.Get("Authorization"); len(auth) > 7 && auth[:7] == "Bearer " {
 			if subtle.ConstantTimeCompare([]byte(auth[7:]), []byte(tok)) == 1 {
 				return true

@@ -56,25 +56,46 @@ type Change struct {
 	Tag string
 }
 
-// Diff reports which top-level Config fields differ between old and
-// new, classified by hotreload tag.
+// Diff reports which Config fields differ between old and new,
+// classified by hotreload tag.
 //
-// Nested struct changes bubble up to the parent field: the parent is
-// reported once with its own tag. Treating an entire top-level
-// struct as a single unit keeps the SIGHUP decision logic simple and
-// matches the granularity operators naturally think in ("I changed
-// thresholds" / "I changed the webui listener").
+// The walk is recursive: if a top-level field is tagged, its tag
+// applies to any change inside. If a nested field has its own tag,
+// that tag wins over the parent (field-level overrides let a single
+// safe field sit inside an otherwise restart-required parent, which
+// is how webui.metrics_token can hot-reload even though the rest of
+// WebUI needs a restart).
 //
-// Fields with no `hotreload` tag are reported with Tag="" and the
-// caller should treat that as TagRestart.
+// Each Change carries the YAML path from root (e.g. "thresholds" for
+// the top-level struct, "webui.metrics_token" for a nested leaf).
+// The tag is the nearest tagged ancestor on that path; if nothing on
+// the path is tagged, the Change's Tag is "" and the caller should
+// treat that as TagRestart.
+//
+// Granularity rule: if a tagged ancestor classifies the whole
+// subtree uniformly (parent tag applies, no nested overrides on
+// changed leaves), the Change is reported at the parent level. That
+// keeps the common case ("I changed three thresholds") as one
+// "thresholds" Change. When a subtree contains a differently-tagged
+// leaf, that leaf is reported separately with its own tag, and the
+// parent (minus that leaf) is reported with the inherited tag.
 func Diff(oldCfg, newCfg *Config) []Change {
 	if oldCfg == nil || newCfg == nil {
 		return nil
 	}
-	var changes []Change
 
 	oldV := reflect.ValueOf(*oldCfg)
 	newV := reflect.ValueOf(*newCfg)
+	return diffStruct(oldV, newV, "", "")
+}
+
+// diffStruct walks two reflect.Values of the same struct type and
+// returns Changes for every differing field. parentPath is the
+// already-composed YAML dotted path down to this struct (empty at
+// the root). parentTag is the effective hotreload tag inherited
+// from the nearest tagged ancestor.
+func diffStruct(oldV, newV reflect.Value, parentPath, parentTag string) []Change {
+	var changes []Change
 	t := oldV.Type()
 
 	for i := 0; i < t.NumField(); i++ {
@@ -82,15 +103,8 @@ func Diff(oldCfg, newCfg *Config) []Change {
 		if !field.IsExported() {
 			continue
 		}
-
-		// ConfigFile is the in-memory path of the loaded file. It
-		// is not serialised and has no semantic meaning for reload.
-		//
-		// Integrity is daemon-managed: every successful reload
-		// re-signs integrity.config_hash on the fresh file, so the
-		// hash always differs from the prior config's stored value.
-		// Treating that as a real diff would reject every reload.
-		if field.Name == "ConfigFile" || field.Name == "Integrity" {
+		// ConfigFile / Integrity are daemon-managed. See Diff's docstring.
+		if parentPath == "" && (field.Name == "ConfigFile" || field.Name == "Integrity") {
 			continue
 		}
 
@@ -100,11 +114,58 @@ func Diff(oldCfg, newCfg *Config) []Change {
 			continue
 		}
 
+		// Effective tag for this field: its own explicit tag wins;
+		// otherwise inherit from the parent path.
 		tag := field.Tag.Get("hotreload")
+		if tag != TagSafe && tag != TagRestart {
+			tag = parentTag
+		}
+
 		name := yamlFieldName(field)
-		changes = append(changes, Change{Field: name, Tag: tag})
+		path := name
+		if parentPath != "" {
+			path = parentPath + "." + name
+		}
+
+		// If the field is itself a struct (not a pointer, slice,
+		// map), recurse so nested overrides can surface separately.
+		// Pointer-to-struct is treated as a leaf because the
+		// reflect.DeepEqual already told us the pointer target
+		// changed; re-walking it would produce duplicate noise.
+		if field.Type.Kind() == reflect.Struct {
+			nested := diffStruct(oldV.Field(i), newV.Field(i), path, tag)
+			// If every nested Change carries the same tag and there
+			// is no mixed classification, collapse to a single
+			// Change at this level. Operators rarely need the
+			// granularity "I changed thresholds.mail_queue_warn";
+			// the collapse keeps the common case clean.
+			if collapsed, ok := collapseIfUniform(nested, path, tag); ok {
+				changes = append(changes, collapsed)
+			} else {
+				changes = append(changes, nested...)
+			}
+			continue
+		}
+		changes = append(changes, Change{Field: path, Tag: tag})
 	}
 	return changes
+}
+
+// collapseIfUniform returns (Change{Field:path, Tag:parentTag}, true)
+// when every nested change inherits parentTag (i.e. nothing nested
+// overrode it). Returns (_, false) when the subtree contains a
+// differently-tagged leaf, which means the caller must keep the
+// granular changes.
+func collapseIfUniform(nested []Change, path, parentTag string) (Change, bool) {
+	if len(nested) == 0 {
+		return Change{}, false
+	}
+	for _, c := range nested {
+		if c.Tag != parentTag {
+			return Change{}, false
+		}
+	}
+	return Change{Field: path, Tag: parentTag}, true
 }
 
 // RestartRequired returns true if any change in the diff carries a

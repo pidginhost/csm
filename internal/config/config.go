@@ -136,7 +136,7 @@ type Config struct {
 		Enabled      bool   `yaml:"enabled"`
 		Listen       string `yaml:"listen"`
 		AuthToken    string `yaml:"auth_token"`
-		MetricsToken string `yaml:"metrics_token"` // optional Bearer token for /metrics; if empty /metrics accepts AuthToken
+		MetricsToken string `yaml:"metrics_token" hotreload:"safe"` // optional Bearer token for /metrics; rotate via SIGHUP without restart
 		TLSCert      string `yaml:"tls_cert"`
 		TLSKey       string `yaml:"tls_key"`
 		UIDir        string `yaml:"ui_dir"` // path to UI files on disk (default: /opt/csm/ui)

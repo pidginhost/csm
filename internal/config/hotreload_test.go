@@ -130,6 +130,65 @@ func TestDiffAllSafeFieldsClassifiedSafe(t *testing.T) {
 	}
 }
 
+// TestDiffFieldTagOverridesParent covers the "field-level override"
+// rule the recursive Diff honours: WebUI is tagged restart, but
+// MetricsToken inside has an explicit `hotreload:"safe"` tag, so a
+// change to MetricsToken alone is reported as safe (webui.metrics_token)
+// and does NOT require a restart.
+func TestDiffFieldTagOverridesParent(t *testing.T) {
+	a := &Config{}
+	a.WebUI.MetricsToken = "old"
+	b := &Config{}
+	b.WebUI.MetricsToken = "new"
+
+	changes := Diff(a, b)
+	if len(changes) != 1 {
+		t.Fatalf("want 1 change, got %+v", changes)
+	}
+	if changes[0].Field != "webui.metrics_token" {
+		t.Errorf("field path: got %q want webui.metrics_token", changes[0].Field)
+	}
+	if changes[0].Tag != TagSafe {
+		t.Errorf("tag: got %q want %q (field-level safe must override parent restart)",
+			changes[0].Tag, TagSafe)
+	}
+	if RestartRequired(changes) {
+		t.Error("RestartRequired should be false when only a safe-tagged leaf changed")
+	}
+}
+
+// TestDiffFieldOverrideSplitsClassification covers the mixed case:
+// an edit touches BOTH webui.metrics_token (safe) and webui.listen
+// (inherits parent restart). The recursive Diff reports them as two
+// separate Changes with different tags, and RestartRequired is true
+// because one of them is not safe.
+func TestDiffFieldOverrideSplitsClassification(t *testing.T) {
+	a := &Config{}
+	a.WebUI.Listen = "0.0.0.0:9443"
+	a.WebUI.MetricsToken = "old"
+	b := &Config{}
+	b.WebUI.Listen = "0.0.0.0:9444"
+	b.WebUI.MetricsToken = "new"
+
+	changes := Diff(a, b)
+	if len(changes) != 2 {
+		t.Fatalf("want 2 changes (mixed classification), got %+v", changes)
+	}
+	byField := map[string]string{}
+	for _, c := range changes {
+		byField[c.Field] = c.Tag
+	}
+	if byField["webui.metrics_token"] != TagSafe {
+		t.Errorf("webui.metrics_token tag: got %q want %q", byField["webui.metrics_token"], TagSafe)
+	}
+	if byField["webui.listen"] != TagRestart {
+		t.Errorf("webui.listen tag: got %q want %q", byField["webui.listen"], TagRestart)
+	}
+	if !RestartRequired(changes) {
+		t.Error("RestartRequired should be true when any change is not safe")
+	}
+}
+
 func TestDiffMixedTouchesRestart(t *testing.T) {
 	a := &Config{Hostname: "h1"}
 	a.Thresholds.MailQueueWarn = 100
