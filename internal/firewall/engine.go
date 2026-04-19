@@ -1645,10 +1645,22 @@ func (e *Engine) Status() map[string]interface{} {
 // --- State persistence ---
 
 func (e *Engine) loadState() error {
+	// Each SetAddElements call queues a separate netlink message whose ack
+	// the kernel streams back at Flush time. Previously this function
+	// issued one call per entry, so a host with a few hundred persisted
+	// blocks overflowed the netlink socket's SO_RCVBUF and recvmsg
+	// returned ENOBUFS ("no buffer space available"). Accumulating into
+	// one slice per target set collapses the batch into at most six
+	// netlink messages regardless of how many entries are persisted.
 	state := e.loadStateFile()
 	now := time.Now()
 
-	// Restore blocked IPs (skip expired, route to IPv4 or IPv6 set)
+	var (
+		blocked4, blocked6       []nftables.SetElement
+		allowed4, allowed6       []nftables.SetElement
+		blockedNet4, blockedNet6 []nftables.SetElement
+	)
+
 	for _, entry := range state.Blocked {
 		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
 			continue
@@ -1662,34 +1674,32 @@ func (e *Engine) loadState() error {
 			timeout = time.Until(entry.ExpiresAt)
 		}
 		if ip4 := parsed.To4(); ip4 != nil {
-			_ = e.conn.SetAddElements(e.setBlocked, []nftables.SetElement{{Key: ip4, Timeout: timeout}})
+			blocked4 = append(blocked4, nftables.SetElement{Key: ip4, Timeout: timeout})
 		} else if e.setBlocked6 != nil {
-			_ = e.conn.SetAddElements(e.setBlocked6, []nftables.SetElement{{Key: parsed.To16(), Timeout: timeout}})
+			blocked6 = append(blocked6, nftables.SetElement{Key: parsed.To16(), Timeout: timeout})
 		}
 	}
 
-	// Restore allowed IPs (skip expired, deduplicate, route to IPv4 or IPv6 set)
 	restoredAllowed := make(map[string]bool)
 	for _, entry := range state.Allowed {
 		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
 			continue
 		}
 		if restoredAllowed[entry.IP] {
-			continue // already added to nftables from another source entry
+			continue // already added from another source entry
 		}
 		parsed := net.ParseIP(entry.IP)
 		if parsed == nil {
 			continue
 		}
 		if ip4 := parsed.To4(); ip4 != nil {
-			_ = e.conn.SetAddElements(e.setAllowed, []nftables.SetElement{{Key: ip4}})
+			allowed4 = append(allowed4, nftables.SetElement{Key: ip4})
 		} else if e.setAllowed6 != nil {
-			_ = e.conn.SetAddElements(e.setAllowed6, []nftables.SetElement{{Key: parsed.To16()}})
+			allowed6 = append(allowed6, nftables.SetElement{Key: parsed.To16()})
 		}
 		restoredAllowed[entry.IP] = true
 	}
 
-	// Restore blocked subnets (route to IPv4 or IPv6 set)
 	for _, entry := range state.BlockedNet {
 		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
 			continue
@@ -1701,18 +1711,35 @@ func (e *Engine) loadState() error {
 		start := network.IP.To4()
 		end := lastIPInRange(network)
 		if start != nil && end != nil {
-			_ = e.conn.SetAddElements(e.setBlockedNet, []nftables.SetElement{
-				{Key: start},
-				{Key: nextIP(end), IntervalEnd: true},
-			})
+			blockedNet4 = append(blockedNet4,
+				nftables.SetElement{Key: start},
+				nftables.SetElement{Key: nextIP(end), IntervalEnd: true},
+			)
 		} else if e.setBlockedNet6 != nil {
-			start6 := network.IP.To16()
-			end6 := lastIPInRange(network)
-			_ = e.conn.SetAddElements(e.setBlockedNet6, []nftables.SetElement{
-				{Key: start6},
-				{Key: nextIP(end6), IntervalEnd: true},
-			})
+			blockedNet6 = append(blockedNet6,
+				nftables.SetElement{Key: network.IP.To16()},
+				nftables.SetElement{Key: nextIP(lastIPInRange(network)), IntervalEnd: true},
+			)
 		}
+	}
+
+	if len(blocked4) > 0 {
+		_ = e.conn.SetAddElements(e.setBlocked, blocked4)
+	}
+	if len(blocked6) > 0 && e.setBlocked6 != nil {
+		_ = e.conn.SetAddElements(e.setBlocked6, blocked6)
+	}
+	if len(allowed4) > 0 {
+		_ = e.conn.SetAddElements(e.setAllowed, allowed4)
+	}
+	if len(allowed6) > 0 && e.setAllowed6 != nil {
+		_ = e.conn.SetAddElements(e.setAllowed6, allowed6)
+	}
+	if len(blockedNet4) > 0 {
+		_ = e.conn.SetAddElements(e.setBlockedNet, blockedNet4)
+	}
+	if len(blockedNet6) > 0 && e.setBlockedNet6 != nil {
+		_ = e.conn.SetAddElements(e.setBlockedNet6, blockedNet6)
 	}
 
 	return e.conn.Flush()
