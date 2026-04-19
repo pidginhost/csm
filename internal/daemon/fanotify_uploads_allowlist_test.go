@@ -40,15 +40,11 @@ func TestAnalyzeFile_PHPInUploadsSubdirNamedAfterSafeToken_FiresCritical(t *test
 			if err := os.WriteFile(path, []byte("<?php // dropper"), 0644); err != nil {
 				t.Fatal(err)
 			}
-			f, err := os.Open(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer func() { _ = f.Close() }()
+			fd := openRawFd(t, path)
 
 			ch := make(chan alert.Finding, 8)
 			fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-			fm.analyzeFile(fileEvent{path: path, fd: int(f.Fd())})
+			fm.analyzeFile(fileEvent{path: path, fd: fd})
 
 			select {
 			case a := <-ch:

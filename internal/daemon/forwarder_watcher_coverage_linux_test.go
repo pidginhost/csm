@@ -52,17 +52,12 @@ func TestNewForwarderWatcherMissingValiasesDir(t *testing.T) {
 }
 
 // TestForwarderWatcherReadEventsEmptyBuffer exercises readEvents path
-// with no data available (non-blocking fd returning EAGAIN).
+// with no data available (non-blocking fd returning EOF).
 func TestForwarderWatcherReadEventsEmptyBuffer(t *testing.T) {
-	// Use /dev/null as a dummy fd that returns EOF.
-	f, err := os.Open("/dev/null")
-	if err != nil {
-		t.Skipf("cannot open /dev/null: %v", err)
-	}
-	defer f.Close()
-
+	// /dev/null gives an EOF-on-read fd. Open via unix.Open so the runtime
+	// poller cannot close the fd asynchronously while readEvents runs.
 	fw := &ForwarderWatcher{
-		inotifyFd: int(f.Fd()),
+		inotifyFd: openRawFd(t, "/dev/null"),
 	}
 	buf := make([]byte, 4096)
 	// readEvents should return immediately when no events available.

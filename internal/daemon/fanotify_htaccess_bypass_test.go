@@ -19,24 +19,19 @@ import (
 // to the directive target (the filename the directive points at), and the
 // RewriteCond defensive context is recognised structurally.
 
-func writeHtaccess(t *testing.T, body string) (fd int, path string, cleanup func()) {
+func writeHtaccess(t *testing.T, body string) (fd int, path string) {
 	t.Helper()
 	dir := t.TempDir()
 	path = filepath.Join(dir, ".htaccess")
 	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return int(f.Fd()), path, func() { _ = f.Close() }
+	return openRawFd(t, path), path
 }
 
 func expectHtaccessAlert(t *testing.T, body, wantCheck string) {
 	t.Helper()
-	fd, path, cleanup := writeHtaccess(t, body)
-	defer cleanup()
+	fd, path := writeHtaccess(t, body)
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
 	fm.checkHtaccess(fd, path, "pi")
@@ -52,8 +47,7 @@ func expectHtaccessAlert(t *testing.T, body, wantCheck string) {
 
 func expectNoHtaccessAlert(t *testing.T, body string) {
 	t.Helper()
-	fd, path, cleanup := writeHtaccess(t, body)
-	defer cleanup()
+	fd, path := writeHtaccess(t, body)
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
 	fm.checkHtaccess(fd, path, "pi")

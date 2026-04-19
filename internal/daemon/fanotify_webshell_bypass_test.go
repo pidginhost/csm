@@ -33,15 +33,11 @@ func TestCheckPHPContent_WebshellWithWPFilesystemCommentStillFires(t *testing.T)
 	if err := os.WriteFile(path, body, 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = f.Close() }()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkPHPContent(int(f.Fd()), path, "pi")
+	fm.checkPHPContent(fd, path, "pi")
 
 	select {
 	case a := <-ch:
@@ -69,15 +65,11 @@ $wp_filesystem->put_contents( $_POST['target'], $_POST['body'], FS_CHMOD_FILE );
 	if err := os.WriteFile(path, body, 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = f.Close() }()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkPHPContent(int(f.Fd()), path, "pi")
+	fm.checkPHPContent(fd, path, "pi")
 
 	select {
 	case a := <-ch:

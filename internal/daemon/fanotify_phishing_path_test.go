@@ -46,14 +46,10 @@ func runPhishingCheck(t *testing.T, relPath string) (got alert.Finding, fired bo
 	if err := os.WriteFile(path, []byte(phishingBody), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = f.Close() }()
+	fd := openRawFd(t, path)
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkHTMLPhishing(int(f.Fd()), path, "pi")
+	fm.checkHTMLPhishing(fd, path, "pi")
 	select {
 	case got = <-ch:
 		return got, true
@@ -109,14 +105,10 @@ func TestCheckHTMLPhishing_LegitPluginReadmeHTMLStaysQuiet(t *testing.T) {
 	if err := os.WriteFile(path, legit, 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = f.Close() }()
+	fd := openRawFd(t, path)
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkHTMLPhishing(int(f.Fd()), path, "pi")
+	fm.checkHTMLPhishing(fd, path, "pi")
 	select {
 	case a := <-ch:
 		if a.Check == "phishing_realtime" {

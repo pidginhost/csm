@@ -192,13 +192,9 @@ func TestReadFromFdBasic(t *testing.T) {
 	if err := os.WriteFile(path, []byte("hello world"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	fd := openRawFd(t, path)
 
-	got := readFromFd(int(f.Fd()), 1024)
+	got := readFromFd(fd, 1024)
 	if string(got) != "hello world" {
 		t.Errorf("readFromFd = %q, want %q", got, "hello world")
 	}
@@ -210,13 +206,9 @@ func TestReadFromFdEmpty(t *testing.T) {
 	if err := os.WriteFile(path, []byte{}, 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	fd := openRawFd(t, path)
 
-	if got := readFromFd(int(f.Fd()), 1024); got != nil {
+	if got := readFromFd(fd, 1024); got != nil {
 		t.Errorf("empty file should return nil, got %v", got)
 	}
 }
@@ -233,13 +225,9 @@ func TestReadTailFromFdSmallFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte("tiny"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	fd := openRawFd(t, path)
 
-	if got := readTailFromFd(int(f.Fd()), 1024); got != nil {
+	if got := readTailFromFd(fd, 1024); got != nil {
 		t.Errorf("tail of small file should return nil, got %v", got)
 	}
 }
@@ -255,13 +243,9 @@ func TestReadTailFromFdLargeFile(t *testing.T) {
 	if err := os.WriteFile(path, payload, 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	fd := openRawFd(t, path)
 
-	tail := readTailFromFd(int(f.Fd()), 20)
+	tail := readTailFromFd(fd, 20)
 	if string(tail) != "BBBBBBBBBBBBBBBBBBBB" {
 		t.Errorf("tail = %q, want 20 Bs", tail)
 	}
@@ -478,15 +462,11 @@ func TestCheckHtaccessDangerous(t *testing.T) {
 	if err := os.WriteFile(path, []byte("php_value auto_prepend_file /tmp/x.php\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 10)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkHtaccess(int(f.Fd()), path, "pi")
+	fm.checkHtaccess(fd, path, "pi")
 
 	select {
 	case a := <-ch:
@@ -504,15 +484,11 @@ func TestCheckHtaccessSafePlugin(t *testing.T) {
 	if err := os.WriteFile(path, []byte("php_value auto_prepend_file /wordfence-waf.php\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 10)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkHtaccess(int(f.Fd()), path, "pi")
+	fm.checkHtaccess(fd, path, "pi")
 
 	select {
 	case a := <-ch:
@@ -529,15 +505,11 @@ func TestCheckHtaccessCommentLine(t *testing.T) {
 	if err := os.WriteFile(path, []byte("# auto_prepend_file /tmp/x.php\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 10)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkHtaccess(int(f.Fd()), path, "pi")
+	fm.checkHtaccess(fd, path, "pi")
 
 	select {
 	case a := <-ch:
@@ -556,15 +528,11 @@ func TestCheckUserINIAllowURLInclude(t *testing.T) {
 	if err := os.WriteFile(path, []byte("allow_url_include = On\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 10)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkUserINI(int(f.Fd()), path, "pi")
+	fm.checkUserINI(fd, path, "pi")
 
 	select {
 	case a := <-ch:
@@ -582,15 +550,11 @@ func TestCheckUserINIDisableFunctionsCleared(t *testing.T) {
 	if err := os.WriteFile(path, []byte("disable_functions = \n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 10)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkUserINI(int(f.Fd()), path, "pi")
+	fm.checkUserINI(fd, path, "pi")
 
 	select {
 	case a := <-ch:
@@ -608,15 +572,11 @@ func TestCheckUserINISafe(t *testing.T) {
 	if err := os.WriteFile(path, []byte("memory_limit = 128M\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 10)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkUserINI(int(f.Fd()), path, "pi")
+	fm.checkUserINI(fd, path, "pi")
 
 	select {
 	case a := <-ch:
@@ -635,15 +595,11 @@ func TestCheckPHPContentPasteSite(t *testing.T) {
 	if err := os.WriteFile(path, []byte("<?php $x = 'https://pastebin.com/raw/abc'; ?>"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 10)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkPHPContent(int(f.Fd()), path, "pi")
+	fm.checkPHPContent(fd, path, "pi")
 
 	select {
 	case a := <-ch:
@@ -661,15 +617,11 @@ func TestCheckPHPContentEvalBase64(t *testing.T) {
 	if err := os.WriteFile(path, []byte("<?php eval(base64_decode('ZWNobyAxOw==')); ?>"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 10)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkPHPContent(int(f.Fd()), path, "pi")
+	fm.checkPHPContent(fd, path, "pi")
 
 	select {
 	case a := <-ch:
@@ -687,15 +639,11 @@ func TestCheckPHPContentEmpty(t *testing.T) {
 	if err := os.WriteFile(path, []byte{}, 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 10)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkPHPContent(int(f.Fd()), path, "pi")
+	fm.checkPHPContent(fd, path, "pi")
 	select {
 	case a := <-ch:
 		t.Errorf("no alert expected for empty file, got %v", a)
@@ -709,15 +657,11 @@ func TestCheckPHPContentBenign(t *testing.T) {
 	if err := os.WriteFile(path, []byte("<?php echo 'hello world'; ?>"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 10)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkPHPContent(int(f.Fd()), path, "pi")
+	fm.checkPHPContent(fd, path, "pi")
 	// A signature rule may still match; this test only exercises the path.
 	select {
 	case <-ch:
@@ -733,15 +677,11 @@ func TestCheckHTMLPhishingNotInPublicHTML(t *testing.T) {
 	if err := os.WriteFile(path, []byte("<html></html>"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 10)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkHTMLPhishing(int(f.Fd()), "/home/a/x.html", "pi")
+	fm.checkHTMLPhishing(fd, "/home/a/x.html", "pi")
 	select {
 	case a := <-ch:
 		t.Errorf("no alert expected, got %v", a)
@@ -755,15 +695,11 @@ func TestCheckHTMLPhishingSafeDir(t *testing.T) {
 	if err := os.WriteFile(path, []byte("<html></html>"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 10)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkHTMLPhishing(int(f.Fd()), "/home/a/public_html/vendor/pkg/doc.html", "pi")
+	fm.checkHTMLPhishing(fd, "/home/a/public_html/vendor/pkg/doc.html", "pi")
 	select {
 	case a := <-ch:
 		t.Errorf("no alert expected for safe dir, got %v", a)
@@ -777,15 +713,11 @@ func TestCheckHTMLPhishingTooSmall(t *testing.T) {
 	if err := os.WriteFile(path, []byte("<html></html>"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 10)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkHTMLPhishing(int(f.Fd()), "/home/a/public_html/x.html", "pi")
+	fm.checkHTMLPhishing(fd, "/home/a/public_html/x.html", "pi")
 	select {
 	case a := <-ch:
 		t.Errorf("no alert expected for tiny file, got %v", a)
@@ -809,15 +741,11 @@ func TestCheckHTMLPhishingBrandImpersonation(t *testing.T) {
 	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 10)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkHTMLPhishing(int(f.Fd()), "/home/a/public_html/verify.html", "pi")
+	fm.checkHTMLPhishing(fd, "/home/a/public_html/verify.html", "pi")
 
 	select {
 	case a := <-ch:
@@ -844,15 +772,11 @@ $len = $ENV{CONTENT_LENGTH};
 	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 10)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkCGIBackdoor(int(f.Fd()), path, "pi")
+	fm.checkCGIBackdoor(fd, path, "pi")
 
 	select {
 	case a := <-ch:
@@ -870,15 +794,11 @@ func TestCheckCGIBackdoorInImagesDir(t *testing.T) {
 	if err := os.WriteFile(path, []byte("#!/bin/sh\necho hello\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 10)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkCGIBackdoor(int(f.Fd()), "/home/a/public_html/images/evil.cgi", "pi")
+	fm.checkCGIBackdoor(fd, "/home/a/public_html/images/evil.cgi", "pi")
 
 	select {
 	case a := <-ch:
@@ -896,15 +816,11 @@ func TestCheckCGIBackdoorEmpty(t *testing.T) {
 	if err := os.WriteFile(path, []byte{}, 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 10)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkCGIBackdoor(int(f.Fd()), "/home/a/public_html/x.cgi", "pi")
+	fm.checkCGIBackdoor(fd, "/home/a/public_html/x.cgi", "pi")
 	select {
 	case a := <-ch:
 		t.Errorf("no alert expected, got %v", a)
@@ -919,19 +835,13 @@ func TestStopIsIdempotent(t *testing.T) {
 	if err := unix.Pipe2(pipeFds[:], unix.O_NONBLOCK|unix.O_CLOEXEC); err != nil {
 		t.Skipf("pipe2 not available: %v", err)
 	}
-	devNull, err := os.OpenFile("/dev/null", os.O_RDONLY, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	fm := &FileMonitor{
-		fd:      int(devNull.Fd()),
+		fd:      openRawFd(t, "/dev/null"),
 		cfg:     &config.Config{},
 		alertCh: make(chan alert.Finding, 10),
 		pipeFds: pipeFds,
 		stopCh:  make(chan struct{}),
 	}
-	_ = devNull
 
 	fm.Stop()
 	fm.Stop() // must be safe to call twice

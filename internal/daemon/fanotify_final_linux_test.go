@@ -32,16 +32,12 @@ func TestAnalyzeFilePHPInSSHDirAlerts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = f.Close() }()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
 
-	fm.analyzeFile(fileEvent{path: path, fd: int(f.Fd())})
+	fm.analyzeFile(fileEvent{path: path, fd: fd})
 
 	select {
 	case got := <-ch:
@@ -61,16 +57,12 @@ func TestAnalyzeFileKnownWebshellNameAlerts(t *testing.T) {
 	if err := os.WriteFile(path, []byte("<?php // c99 ?>"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = f.Close() }()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
 
-	fm.analyzeFile(fileEvent{path: path, fd: int(f.Fd())})
+	fm.analyzeFile(fileEvent{path: path, fd: fd})
 
 	select {
 	case got := <-ch:
@@ -90,15 +82,11 @@ func TestAnalyzeFileHaxorExtensionAlerts(t *testing.T) {
 	if err := os.WriteFile(path, []byte("# backdoor"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = f.Close() }()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.analyzeFile(fileEvent{path: path, fd: int(f.Fd())})
+	fm.analyzeFile(fileEvent{path: path, fd: fd})
 
 	select {
 	case got := <-ch:
@@ -130,15 +118,11 @@ func TestAnalyzeFileExecutableInTmpAlerts(t *testing.T) {
 		t.Fatalf("chmod: %v", chmodErr)
 	}
 
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer func() { _ = f.Close() }()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.analyzeFile(fileEvent{path: path, fd: int(f.Fd())})
+	fm.analyzeFile(fileEvent{path: path, fd: fd})
 
 	select {
 	case got := <-ch:
@@ -164,15 +148,11 @@ func TestAnalyzeFileNonExecutableInTmpNoAlert(t *testing.T) {
 	if chmodErr := os.Chmod(path, 0644); chmodErr != nil {
 		t.Fatalf("chmod: %v", chmodErr)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer func() { _ = f.Close() }()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.analyzeFile(fileEvent{path: path, fd: int(f.Fd())})
+	fm.analyzeFile(fileEvent{path: path, fd: fd})
 
 	select {
 	case got := <-ch:
@@ -190,15 +170,11 @@ func TestAnalyzeFileHtaccessInjectionRoutes(t *testing.T) {
 	if err := os.WriteFile(path, []byte("php_value auto_prepend_file /tmp/evil.php\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = f.Close() }()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.analyzeFile(fileEvent{path: path, fd: int(f.Fd())})
+	fm.analyzeFile(fileEvent{path: path, fd: fd})
 
 	select {
 	case got := <-ch:
@@ -218,15 +194,11 @@ func TestAnalyzeFileUserINIAllowURLIncludeAlerts(t *testing.T) {
 	if err := os.WriteFile(path, []byte("allow_url_include=on\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = f.Close() }()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.analyzeFile(fileEvent{path: path, fd: int(f.Fd())})
+	fm.analyzeFile(fileEvent{path: path, fd: fd})
 
 	select {
 	case <-ch:
@@ -248,15 +220,11 @@ func TestAnalyzeFileExecutableInConfigAlerts(t *testing.T) {
 	if err := os.WriteFile(path, []byte("#!/bin/sh\necho miner\n"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = f.Close() }()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.analyzeFile(fileEvent{path: path, fd: int(f.Fd())})
+	fm.analyzeFile(fileEvent{path: path, fd: fd})
 
 	select {
 	case got := <-ch:
@@ -280,18 +248,14 @@ func TestAnalyzeFileSuppressedPathSkips(t *testing.T) {
 	if err := os.WriteFile(path, []byte("<?php ?>"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = f.Close() }()
+	fd := openRawFd(t, path)
 
 	cfg := &config.Config{}
 	cfg.Suppressions.IgnorePaths = []string{"*/cache/*"}
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: cfg, alertCh: ch}
-	fm.analyzeFile(fileEvent{path: path, fd: int(f.Fd())})
+	fm.analyzeFile(fileEvent{path: path, fd: fd})
 
 	select {
 	case got := <-ch:
@@ -313,15 +277,11 @@ func TestAnalyzeFilePHPInUploadsAlerts(t *testing.T) {
 	if err := os.WriteFile(path, []byte("<?php echo 'evil'; ?>"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = f.Close() }()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.analyzeFile(fileEvent{path: path, fd: int(f.Fd())})
+	fm.analyzeFile(fileEvent{path: path, fd: fd})
 
 	select {
 	case got := <-ch:
@@ -345,15 +305,11 @@ func TestAnalyzeFileIndexPhpInUploadsNoAlert(t *testing.T) {
 	if err := os.WriteFile(path, []byte("<?php // Silence is golden\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = f.Close() }()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.analyzeFile(fileEvent{path: path, fd: int(f.Fd())})
+	fm.analyzeFile(fileEvent{path: path, fd: fd})
 
 	select {
 	case got := <-ch:
@@ -375,15 +331,11 @@ func TestAnalyzeFilePHPInLanguagesAlerts(t *testing.T) {
 	if err := os.WriteFile(path, []byte("<?php // evil ?>"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = f.Close() }()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.analyzeFile(fileEvent{path: path, fd: int(f.Fd())})
+	fm.analyzeFile(fileEvent{path: path, fd: fd})
 
 	select {
 	case got := <-ch:
@@ -407,15 +359,11 @@ func TestAnalyzeFileL10nInLanguagesNoAlert(t *testing.T) {
 	if err := os.WriteFile(path, []byte("<?php // compiled translations\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = f.Close() }()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.analyzeFile(fileEvent{path: path, fd: int(f.Fd())})
+	fm.analyzeFile(fileEvent{path: path, fd: fd})
 
 	select {
 	case got := <-ch:
@@ -459,11 +407,7 @@ func TestHandleEventQueueFullDropsAndCounts(t *testing.T) {
 	if err := os.WriteFile(path, []byte("<?php ?>"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = f.Close() }()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{
@@ -475,7 +419,7 @@ func TestHandleEventQueueFullDropsAndCounts(t *testing.T) {
 	fm.analyzerCh <- fileEvent{path: "dummy"}
 
 	// Dup fd so handleEvent can close it safely.
-	dupFd, err := unix.Dup(int(f.Fd()))
+	dupFd, err := unix.Dup(fd)
 	if err != nil {
 		t.Fatal(err)
 	}

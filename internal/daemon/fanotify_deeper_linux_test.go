@@ -202,16 +202,12 @@ func TestCheckHTMLPhishingOversizedSkipped(t *testing.T) {
 	if err := os.WriteFile(path, big, 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
 	// Path inside public_html to get past the prefix guard.
-	fm.checkHTMLPhishing(int(f.Fd()), "/home/a/public_html/big.html", "pi")
+	fm.checkHTMLPhishing(fd, "/home/a/public_html/big.html", "pi")
 
 	select {
 	case a := <-ch:
@@ -234,15 +230,11 @@ func TestCheckHTMLPhishingNoBrand(t *testing.T) {
 	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkHTMLPhishing(int(f.Fd()), "/home/a/public_html/login.html", "pi")
+	fm.checkHTMLPhishing(fd, "/home/a/public_html/login.html", "pi")
 
 	select {
 	case a := <-ch:
@@ -267,15 +259,11 @@ func TestCheckHTMLPhishingBrandNoExfil(t *testing.T) {
 	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkHTMLPhishing(int(f.Fd()), "/home/a/public_html/login.html", "pi")
+	fm.checkHTMLPhishing(fd, "/home/a/public_html/login.html", "pi")
 
 	select {
 	case a := <-ch:
@@ -295,15 +283,11 @@ func TestCheckPHPContentGithubDropper(t *testing.T) {
 	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkPHPContent(int(f.Fd()), path, "pi")
+	fm.checkPHPContent(fd, path, "pi")
 
 	select {
 	case a := <-ch:
@@ -324,15 +308,11 @@ func TestCheckPHPContentFragmentedBase64(t *testing.T) {
 	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkPHPContent(int(f.Fd()), path, "pi")
+	fm.checkPHPContent(fd, path, "pi")
 
 	select {
 	case a := <-ch:
@@ -353,15 +333,11 @@ func TestCheckPHPContentWebshellSameLine(t *testing.T) {
 	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkPHPContent(int(f.Fd()), path, "pi")
+	fm.checkPHPContent(fd, path, "pi")
 
 	select {
 	case a := <-ch:
@@ -388,15 +364,11 @@ echo $_POST['foo'];
 	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkPHPContent(int(f.Fd()), path, "pi")
+	fm.checkPHPContent(fd, path, "pi")
 
 	select {
 	case a := <-ch:
@@ -415,15 +387,11 @@ func TestCheckUserINIAllowURLIncludeOff(t *testing.T) {
 	if err := os.WriteFile(path, []byte("allow_url_include = Off\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkUserINI(int(f.Fd()), path, "pi")
+	fm.checkUserINI(fd, path, "pi")
 
 	select {
 	case a := <-ch:
@@ -442,15 +410,11 @@ func TestCheckUserINIAllowURLIncludeOne(t *testing.T) {
 	if err := os.WriteFile(path, []byte("allow_url_include = 1\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkUserINI(int(f.Fd()), path, "pi")
+	fm.checkUserINI(fd, path, "pi")
 
 	select {
 	case a := <-ch:
@@ -470,15 +434,11 @@ func TestCheckUserINIDisableFunctionsPopulated(t *testing.T) {
 	if err := os.WriteFile(path, []byte("disable_functions = exec,system,passthru\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkUserINI(int(f.Fd()), path, "pi")
+	fm.checkUserINI(fd, path, "pi")
 
 	select {
 	case a := <-ch:

@@ -61,15 +61,13 @@ func TestWPCheckSuppressesWebshellFP(t *testing.T) {
 		wpCache: wpCache,
 	}
 
-	// Open the file to get an fd (simulating fanotify event fd)
-	f, err := os.Open(shellPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	// Open the file via raw unix.Open to mirror production fanotify event fd
+	// ownership and avoid the os.File runtime poller closing the fd at an
+	// unspecified time during t.TempDir cleanup (see openRawFd godoc).
+	fd := openRawFd(t, shellPath)
 
 	// Call analyzeFile - should NOT produce an alert (WP checksum matches)
-	fm.analyzeFile(fileEvent{path: shellPath, fd: int(f.Fd()), pid: 0})
+	fm.analyzeFile(fileEvent{path: shellPath, fd: fd, pid: 0})
 
 	select {
 	case finding := <-alertCh:
@@ -119,14 +117,10 @@ func TestWPCheckAllowsModifiedFile(t *testing.T) {
 		wpCache: wpCache,
 	}
 
-	f, err := os.Open(shellPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
+	fd := openRawFd(t, shellPath)
 
 	// Call analyzeFile - SHOULD produce a webshell_realtime alert (MD5 mismatch)
-	fm.analyzeFile(fileEvent{path: shellPath, fd: int(f.Fd()), pid: 0})
+	fm.analyzeFile(fileEvent{path: shellPath, fd: fd, pid: 0})
 
 	select {
 	case finding := <-alertCh:
