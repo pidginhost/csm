@@ -93,9 +93,32 @@ func (d *Daemon) reloadConfig() {
 				offenders = append(offenders, c.Field)
 			}
 		}
+
+		// The edit passed Validate, so the file on disk is
+		// loadable. Re-sign integrity.config_hash to match the
+		// edited content -- otherwise the next daemon restart
+		// (systemd, manual, crash recovery) trips the startup
+		// integrity check and crash-loops. Update the live cfg's
+		// stored ConfigHash in lock-step so the periodic
+		// integrity.Verify(currentCfg()) does not see a disk /
+		// memory divergence and fire spurious tamper alerts.
+		//
+		// Any error re-signing degrades to "live config unchanged,
+		// file unchanged, operator must rehash manually"; we still
+		// emit the warning so they know to act.
+		if err := d.signAndSaveReloadedConfig(oldCfg, newCfg); err == nil {
+			resynced := *oldCfg
+			resynced.Integrity.ConfigHash = newCfg.Integrity.ConfigHash
+			resynced.ConfigFile = cfgPath
+			config.SetActive(&resynced)
+		} else {
+			fmt.Fprintf(os.Stderr, "[%s] config_reload_restart_required: re-sign failed (%v); file and live hash remain mismatched until operator runs `csm rehash`\n",
+				ts(), err)
+		}
+
 		recordReloadResult(reloadResultRestartRequired)
 		d.emitReloadFinding(alert.Warning, "config_reload_restart_required",
-			fmt.Sprintf("SIGHUP reload: restart-required fields changed: %v; live config unchanged",
+			fmt.Sprintf("SIGHUP reload: restart-required fields changed: %v; live config unchanged, on-disk file re-signed for next restart",
 				offenders))
 		return
 	}

@@ -1495,9 +1495,18 @@ func (d *Daemon) startFirewall() {
 	// alert suppression (tight: only admin IPs), firewall may include
 	// additional CIDRs (e.g. server's own range) that need port access
 	// but should still be tracked for security alerts.
-	d.cfg.Firewall.InfraIPs = mergeInfraIPs(d.cfg.InfraIPs, d.cfg.Firewall.InfraIPs)
+	//
+	// Use a shallow copy rather than mutating d.cfg.Firewall in place.
+	// Mutating the live config poisons config.Diff during a SIGHUP
+	// reload: reload loads a fresh Config whose firewall.infra_ips has
+	// NOT been merged, and reflect.DeepEqual then reports the firewall
+	// subtree as changed even when nothing in csm.yaml was edited. The
+	// reload is classified restart_required and every operator reload
+	// turns into a spurious warning.
+	mergedFirewall := *d.cfg.Firewall
+	mergedFirewall.InfraIPs = mergeInfraIPs(d.cfg.InfraIPs, d.cfg.Firewall.InfraIPs)
 
-	engine, err := firewall.NewEngine(d.cfg.Firewall, d.cfg.StatePath)
+	engine, err := firewall.NewEngine(&mergedFirewall, d.cfg.StatePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Firewall engine init error: %v\n", ts(), err)
 		return

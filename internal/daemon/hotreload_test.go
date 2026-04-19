@@ -264,6 +264,104 @@ func TestReloadConfigIntegrityVerifyPassesAfterReload(t *testing.T) {
 	}
 }
 
+// TestReloadConfigRestartRequiredKeepsIntegrityConsistent is a
+// regression guard for the cluster6 smoke test finding on
+// 2026-04-19: when reload classified the edit as restart_required
+// (a restart-tagged field changed), the on-disk file was left with
+// the edited content but the stored integrity.config_hash still
+// referred to the pre-edit content. Any daemon restart after that
+// would crash-loop on integrity check failure.
+//
+// The fix re-signs the on-disk file (atomic temp + rename) AND
+// updates the live cfg's ConfigHash in memory so periodic
+// integrity.Verify(currentCfg) does not see a disk/memory
+// divergence. The live policy fields stay on the old values --
+// that's the "restart required" part -- but the hash tracks the
+// on-disk content.
+func TestReloadConfigRestartRequiredKeepsIntegrityConsistent(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "csm.yaml")
+	binPath := filepath.Join(dir, "bin")
+	if err := os.WriteFile(binPath, []byte("stand-in"), 0o600); err != nil {
+		t.Fatalf("write bin: %v", err)
+	}
+	bh, err := integrity.HashFile(binPath)
+	if err != nil {
+		t.Fatalf("hash bin: %v", err)
+	}
+
+	orig := &config.Config{}
+	orig.Hostname = "before.example.com"
+	orig.Integrity.BinaryHash = bh
+	seedConfigAtPath(t, cfgPath, orig)
+
+	loaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	d := newDaemonForReloadTest(t, loaded)
+	d.binaryPath = binPath
+
+	// Baseline: Verify passes (seeded hash matches).
+	if verr := integrity.Verify(d.binaryPath, d.currentCfg()); verr != nil {
+		t.Fatalf("baseline Verify: %v", verr)
+	}
+
+	// Edit a RESTART-tagged field on disk (Hostname). The reload
+	// must reject the live swap but re-sign the on-disk file so the
+	// operator's eventual `systemctl restart` can start cleanly.
+	edited := &config.Config{}
+	edited.Hostname = "after.example.com"
+	edited.Integrity = loaded.Integrity
+	seedConfigAtPath(t, cfgPath, edited)
+	d.reloadConfig()
+
+	// The live cfg's Hostname must still be "before" (restart_required).
+	if got := config.Active(); got == nil || got.Hostname != "before.example.com" {
+		t.Errorf("live Hostname should stay on old value, got %q", hostnameOf(got))
+	}
+
+	// Verify against the live config must still pass -- the stored
+	// ConfigHash in memory was updated to match the new on-disk
+	// content. Without this fix, the integrity check would fire a
+	// spurious tamper alert every periodic tick.
+	if verr := integrity.Verify(d.binaryPath, d.currentCfg()); verr != nil {
+		t.Errorf("post-restart-required Verify failed: %v", verr)
+	}
+
+	// A direct load-and-verify must also pass -- the on-disk file is
+	// internally consistent for the next startup.
+	reloaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("reload from disk: %v", err)
+	}
+	if err := integrity.Verify(d.binaryPath, reloaded); err != nil {
+		t.Errorf("on-disk integrity Verify failed: %v", err)
+	}
+
+	// And the reloaded cfg should carry the EDITED hostname
+	// (because the file on disk has it), not the pre-edit value.
+	// The reload rejected the live swap, but the edit still sits on
+	// disk for the next restart.
+	if reloaded.Hostname != "after.example.com" {
+		t.Errorf("on-disk hostname: got %q want after.example.com", reloaded.Hostname)
+	}
+
+	// Drain the restart_required finding.
+	select {
+	case <-d.alertCh:
+	default:
+		t.Error("expected a restart_required finding on the alert channel")
+	}
+}
+
+func hostnameOf(c *config.Config) string {
+	if c == nil {
+		return "<nil>"
+	}
+	return c.Hostname
+}
+
 // TestReloadConfigMetricCountsOutcomes exercises every reloadConfig
 // outcome and asserts the csm_config_reloads_total{result=X} counter
 // increments accordingly. A later refactor that silently drops one of

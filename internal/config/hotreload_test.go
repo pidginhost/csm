@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"sync"
 	"testing"
@@ -213,6 +215,55 @@ func TestDiffNilReturnsNothing(t *testing.T) {
 	}
 	if got := Diff(nil, nil); got != nil {
 		t.Errorf("both nil: got %+v", got)
+	}
+}
+
+// TestDiffLoadLoadIsEmpty is a regression guard for "daemon startup
+// mutates d.cfg and reload Diff then reports a false-positive
+// change". Two Load() calls on the identical file must produce
+// configs that Diff classifies as noop. If a future change makes
+// Load non-deterministic (e.g. injects a timestamp, randomises a
+// slice, applies defaults differently), this test fails immediately.
+//
+// Caught 2026-04-19: the daemon merged top-level infra_ips into
+// d.cfg.Firewall.InfraIPs at startFirewall, which made every SIGHUP
+// reload classify as restart_required (firewall changed) even on
+// an unedited file.
+func TestDiffLoadLoadIsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "csm.yaml")
+	// Minimal-but-valid config so both loads succeed.
+	body := []byte(`hostname: test.example.com
+alerts:
+  email:
+    enabled: true
+    to: ["ops@example.com"]
+    from: "csm@example.com"
+    smtp: "localhost:25"
+firewall:
+  enabled: true
+infra_ips:
+  - "10.0.0.0/8"
+integrity:
+  binary_hash: ""
+  config_hash: ""
+  immutable: false
+`)
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	a, err := Load(path)
+	if err != nil {
+		t.Fatalf("load a: %v", err)
+	}
+	b, err := Load(path)
+	if err != nil {
+		t.Fatalf("load b: %v", err)
+	}
+
+	if got := Diff(a, b); len(got) != 0 {
+		t.Errorf("Load+Load Diff must be empty, got %+v", got)
 	}
 }
 
