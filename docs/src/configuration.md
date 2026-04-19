@@ -408,27 +408,28 @@ next tick by the periodic scanners, the auto-response helpers
 (block/kill/quarantine/challenge/permission-fix), alert dispatch,
 and the heartbeat.
 
-A few sub-keys are exceptions -- they live under a safe-tagged
-parent but feed a long-lived goroutine that reads the value once
-at daemon startup. The reload accepts the edit and re-signs the
-hash, but the running goroutine keeps the old value until the next
-restart:
+Two sub-keys are exceptions. They live under a safe-tagged parent
+but seed a long-lived in-memory structure at daemon startup; the
+reload accepts the edit and re-signs the hash, but the running
+structure keeps the old value until the next restart:
 
-- `thresholds.deep_scan_interval_min`,
-  `thresholds.wp_core_check_interval_min`,
-  `thresholds.webshell_scan_interval_min`,
-  `thresholds.filesystem_scan_interval_min` -- tick intervals
-  passed to `time.NewTicker` at startup.
 - `reputation.whitelist` -- seeded into the threat database at
-  startup; runtime additions do not propagate until restart.
+  startup. The threat database exposes its own runtime API for
+  adding and removing whitelist entries (via the Threat
+  Intelligence page in the Web UI or the `/api/v1/threat/*`
+  endpoints); those paths survive restarts because the threat
+  database persists the runtime list to disk. Reloading
+  `reputation.whitelist` from csm.yaml does not automatically
+  propagate to the running threat database.
 - `email_protection.known_forwarders` -- captured by the forwarder
-  watcher at startup.
-- `auto_response.block_expiry` -- captured by the challenge
-  escalator at startup.
+  watcher at startup. No runtime API yet; send a restart if you
+  edit this list.
 
-If you change any of the above, send a real restart instead of a
-reload. Every other sub-key in those sections is read per-call and
-hot-reloads cleanly.
+If you change either of the above, send `systemctl restart csm`
+instead of a reload. The rest of the sub-keys in every safe-tagged
+section are read per-call (inside check functions, auto-response
+helpers, alert dispatchers) and hot-reload cleanly on the next
+tick.
 
 Look for one of three log shapes in the journal:
 

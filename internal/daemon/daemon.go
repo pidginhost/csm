@@ -700,15 +700,23 @@ func (d *Daemon) criticalScanner() {
 func (d *Daemon) deepScanner() {
 	defer d.wg.Done()
 
-	interval := time.Duration(d.cfg.Thresholds.DeepScanIntervalMin) * time.Minute
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
+	// Re-read the interval on each iteration so a SIGHUP that changes
+	// thresholds.deep_scan_interval_min takes effect on the next scan.
+	// A ticker captured at startup can't be re-sized cleanly without
+	// a reset path; time.After recomputes.
 	for {
+		interval := time.Duration(d.currentCfg().Thresholds.DeepScanIntervalMin) * time.Minute
+		if interval <= 0 {
+			// Defensive: an operator who zeroes the threshold would
+			// otherwise get a tight spin loop. 60 minutes matches the
+			// default from config.Load.
+			interval = 60 * time.Minute
+		}
+
 		select {
 		case <-d.stopCh:
 			return
-		case <-ticker.C:
+		case <-time.After(interval):
 			// Update threat intelligence feeds (once per day)
 			if db := checks.GetThreatDB(); db != nil {
 				_ = db.UpdateFeeds()
@@ -1318,13 +1326,16 @@ func (d *Daemon) challengeEscalator() {
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 
-	expiry := parseBlockExpiry(d.cfg.AutoResponse.BlockExpiry)
-
 	for {
 		select {
 		case <-d.stopCh:
 			return
 		case <-ticker.C:
+			// Re-read the block expiry each tick so a SIGHUP that
+			// changes auto_response.block_expiry takes effect on the
+			// next escalation without requiring a restart.
+			expiry := parseBlockExpiry(d.currentCfg().AutoResponse.BlockExpiry)
+
 			if d.challengeServer != nil {
 				d.challengeServer.CleanExpired()
 			}
