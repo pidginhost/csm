@@ -1614,9 +1614,17 @@ func (e *Engine) UnblockSubnet(cidr string) error {
 	return nil
 }
 
-// resolveSubnetSet returns the correct blocked_nets set and start/end keys for a CIDR.
+// resolveSubnetSet returns the correct blocked_nets set and start/end keys
+// for a CIDR. Returns (nil, nil, nil) when IPv6 is disabled for a v6 CIDR,
+// or when lastIPInRange cannot produce an interval end (malformed
+// net.IPNet whose IP is neither 4 nor 16 bytes) -- callers already check
+// for a nil set, so this also short-circuits the degenerate case where
+// nextIP(nil) would feed an empty Key to the kernel.
 func (e *Engine) resolveSubnetSet(network *net.IPNet) (*nftables.Set, net.IP, net.IP) {
 	end := lastIPInRange(network)
+	if end == nil {
+		return nil, nil, nil
+	}
 	if start := network.IP.To4(); start != nil {
 		return e.setBlockedNet, start, end
 	}
@@ -1708,9 +1716,11 @@ func (e *Engine) loadState() error {
 		if err != nil {
 			continue
 		}
-		start := network.IP.To4()
 		end := lastIPInRange(network)
-		if start != nil && end != nil {
+		if end == nil {
+			continue // malformed net.IPNet — neither v4 nor v6 byte length
+		}
+		if start := network.IP.To4(); start != nil {
 			blockedNet4 = append(blockedNet4,
 				nftables.SetElement{Key: start},
 				nftables.SetElement{Key: nextIP(end), IntervalEnd: true},
@@ -1718,7 +1728,7 @@ func (e *Engine) loadState() error {
 		} else if e.setBlockedNet6 != nil {
 			blockedNet6 = append(blockedNet6,
 				nftables.SetElement{Key: network.IP.To16()},
-				nftables.SetElement{Key: nextIP(lastIPInRange(network)), IntervalEnd: true},
+				nftables.SetElement{Key: nextIP(end), IntervalEnd: true},
 			)
 		}
 	}

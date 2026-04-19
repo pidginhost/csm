@@ -4,10 +4,13 @@ package firewall
 
 import (
 	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/google/nftables"
 )
 
 // These tests run only on Linux where engine.go compiles.
@@ -182,5 +185,29 @@ func TestEngineStatus(t *testing.T) {
 	status := e.Status()
 	if status == nil {
 		t.Fatal("status should not be nil")
+	}
+}
+
+// TestResolveSubnetSetMalformedIPReturnsNil guards a defensive nil-end
+// branch. A well-formed ParseCIDR result always yields a 4- or 16-byte
+// IP, so lastIPInRange returns non-nil in normal operation. But a
+// handcrafted net.IPNet with an 8-byte IP makes lastIPInRange return
+// nil; without the guard, the caller would receive the broken end and
+// nextIP(nil) would feed an empty Key to the kernel. The test populates
+// both setBlockedNet and setBlockedNet6 with non-nil sentinels so the
+// only path producing a nil return is the end-nil guard itself --
+// removing that guard makes this test fail loudly.
+func TestResolveSubnetSetMalformedIPReturnsNil(t *testing.T) {
+	e := &Engine{
+		setBlockedNet:  &nftables.Set{Name: "blocked_nets"},
+		setBlockedNet6: &nftables.Set{Name: "blocked_nets6"},
+	}
+	broken := &net.IPNet{
+		IP:   net.IP{1, 2, 3, 4, 5, 6, 7, 8}, // 8 bytes -> neither v4 nor v6
+		Mask: net.CIDRMask(64, 128),
+	}
+	set, start, end := e.resolveSubnetSet(broken)
+	if set != nil || start != nil || end != nil {
+		t.Errorf("malformed net.IPNet should yield (nil, nil, nil), got (%v, %v, %v)", set, start, end)
 	}
 }
