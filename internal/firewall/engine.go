@@ -1723,26 +1723,41 @@ func (e *Engine) loadState() error {
 		}
 	}
 
-	if len(blocked4) > 0 {
-		_ = e.conn.SetAddElements(e.setBlocked, blocked4)
+	e.addElementsChunked(e.setBlocked, blocked4)
+	if e.setBlocked6 != nil {
+		e.addElementsChunked(e.setBlocked6, blocked6)
 	}
-	if len(blocked6) > 0 && e.setBlocked6 != nil {
-		_ = e.conn.SetAddElements(e.setBlocked6, blocked6)
+	e.addElementsChunked(e.setAllowed, allowed4)
+	if e.setAllowed6 != nil {
+		e.addElementsChunked(e.setAllowed6, allowed6)
 	}
-	if len(allowed4) > 0 {
-		_ = e.conn.SetAddElements(e.setAllowed, allowed4)
-	}
-	if len(allowed6) > 0 && e.setAllowed6 != nil {
-		_ = e.conn.SetAddElements(e.setAllowed6, allowed6)
-	}
-	if len(blockedNet4) > 0 {
-		_ = e.conn.SetAddElements(e.setBlockedNet, blockedNet4)
-	}
-	if len(blockedNet6) > 0 && e.setBlockedNet6 != nil {
-		_ = e.conn.SetAddElements(e.setBlockedNet6, blockedNet6)
+	e.addElementsChunked(e.setBlockedNet, blockedNet4)
+	if e.setBlockedNet6 != nil {
+		e.addElementsChunked(e.setBlockedNet6, blockedNet6)
 	}
 
 	return e.conn.Flush()
+}
+
+// addElementsChunked issues SetAddElements in fixed-size chunks. A single
+// SetAddElements call encodes all elements into one netlink message whose
+// size scales linearly with len(elems); the kernel's netlink socket rmem
+// (typically 208 KB, tunable via net.core.rmem_max) caps how big that
+// message can be before the receive path refuses it with ENOBUFS. At
+// ~28 bytes per element worst-case a 1000-element chunk is ~28 KB, well
+// under the default rmem and comfortably below any realistic rmem_max.
+// The batch size must stay even so interval sets (blocked_net, where each
+// CIDR expands to a consecutive {start, IntervalEnd} pair) never split a
+// pair across chunks.
+func (e *Engine) addElementsChunked(s *nftables.Set, elems []nftables.SetElement) {
+	const chunk = 1000
+	for i := 0; i < len(elems); i += chunk {
+		end := i + chunk
+		if end > len(elems) {
+			end = len(elems)
+		}
+		_ = e.conn.SetAddElements(s, elems[i:end])
+	}
 }
 
 func (e *Engine) loadStateFile() FirewallState {
