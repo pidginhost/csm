@@ -18,6 +18,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/emailav"
 	emime "github.com/pidginhost/csm/internal/mime"
+	"github.com/pidginhost/csm/internal/obs"
 )
 
 // fanotify constants for permission events (not in Go stdlib).
@@ -149,7 +150,7 @@ func (sw *SpoolWatcher) Run() {
 	}
 	for i := 0; i < concurrency; i++ {
 		sw.wg.Add(1)
-		go sw.scanWorker()
+		obs.Go("spool-scanner", sw.scanWorker)
 	}
 
 	// Event loop

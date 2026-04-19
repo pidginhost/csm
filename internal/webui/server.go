@@ -23,6 +23,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/emailav"
 	"github.com/pidginhost/csm/internal/geoip"
+	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -337,11 +338,11 @@ func (s *Server) Start() error {
 		return fmt.Errorf("TLS cert setup: %w", err)
 	}
 
-	go s.pruneLoginAttempts()
+	obs.Go("webui-prune-logins", s.pruneLoginAttempts)
 
 	perfCtx, perfCancel := context.WithCancel(context.Background())
 	s.perfCancel = perfCancel
-	go s.sampleMetricsLoop(perfCtx)
+	obs.Go("webui-metrics-sample", func() { s.sampleMetricsLoop(perfCtx) })
 
 	fmt.Fprintf(os.Stderr, "WebUI listening on https://%s\n", s.cfg.WebUI.Listen)
 	return s.httpSrv.ListenAndServeTLS(certPath, keyPath)

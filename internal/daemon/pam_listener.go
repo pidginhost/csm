@@ -11,6 +11,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/obs"
 )
 
 const pamSocketPath = "/var/run/csm/pam.sock"
@@ -64,10 +65,10 @@ func NewPAMListener(cfg *config.Config, alertCh chan<- alert.Finding) (*PAMListe
 // Run accepts connections and processes PAM events.
 func (p *PAMListener) Run(stopCh <-chan struct{}) {
 	// Start cleanup goroutine to expire old failure records
-	go p.cleanupLoop(stopCh)
+	obs.Go("pam-cleanup", func() { p.cleanupLoop(stopCh) })
 
 	// Accept connections
-	go func() {
+	obs.Go("pam-accept", func() {
 		for {
 			conn, err := p.listener.Accept()
 			if err != nil {
@@ -80,9 +81,9 @@ func (p *PAMListener) Run(stopCh <-chan struct{}) {
 					continue
 				}
 			}
-			go p.handleConnection(conn)
+			obs.SafeGo("pam-conn", func() { p.handleConnection(conn) })
 		}
-	}()
+	})
 
 	<-stopCh
 }

@@ -46,3 +46,14 @@ email_av:
   max_extraction_size: 104857600  # 100 MB
   quarantine_infected: true
   scan_concurrency: 4
+
+# Optional Sentry integration. Captures goroutine panics with a stack
+# trace + host/component tags, and forwards selected errors for cross-
+# host aggregation. Disabled and empty-DSN are no-ops. Requires daemon
+# restart after changes (Sentry init is one-shot).
+sentry:
+  enabled: false
+  dsn: ""
+  environment: "production"
+  sample_rate: 1.0
+  debug: false

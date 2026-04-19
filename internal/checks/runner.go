@@ -10,6 +10,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/metrics"
+	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -248,7 +249,13 @@ func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck, ti
 
 	for _, nc := range checks {
 		wg.Add(1)
-		go func(c namedCheck) {
+		c := nc
+		// Check functions run against user filesystem content (unparsed
+		// PHP, crafted archives, foreign encodings) so a panic here is
+		// plausible. SafeGo captures it and surfaces as a check_timeout
+		// finding on the outer select, keeping the scan and the daemon
+		// alive.
+		obs.SafeGo("check-runner", func() {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
@@ -257,9 +264,9 @@ func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck, ti
 			ctx, cancel := context.WithTimeout(context.Background(), checkTimeout)
 			done := make(chan []alert.Finding, 1)
 			start := time.Now()
-			go func() {
+			obs.SafeGo("check-exec", func() {
 				done <- c.fn(ctx, cfg, store)
-			}()
+			})
 
 			select {
 			case results := <-done:
@@ -282,7 +289,7 @@ func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck, ti
 				})
 				mu.Unlock()
 			}
-		}(nc)
+		})
 	}
 
 	wg.Wait()

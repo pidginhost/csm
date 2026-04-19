@@ -20,6 +20,7 @@ import (
 	"github.com/pidginhost/csm/internal/daemon"
 	"github.com/pidginhost/csm/internal/geoip"
 	"github.com/pidginhost/csm/internal/integrity"
+	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/signatures"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
@@ -30,7 +31,10 @@ import (
 var activeStore *state.Store
 
 func init() {
-	// Trap SIGTERM/SIGINT to flush state before exit
+	// Trap SIGTERM/SIGINT to flush state before exit.
+	// This runs before obs.Init (obs.Init is called from runDaemon after
+	// config load), so a panic here could not reach Sentry anyway — a
+	// plain goroutine is correct.
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
@@ -204,6 +208,20 @@ func loadConfigLite() *config.Config {
 func runDaemon() {
 	cfg := loadConfig()
 
+	// Initialize Sentry before any goroutines spawn. No-op if disabled.
+	if err := obs.Init(cfg, Version, BuildHash); err != nil {
+		fmt.Fprintf(os.Stderr, "sentry: %v (continuing without telemetry)\n", err)
+	}
+
+	// fatal flushes Sentry before exit. os.Exit bypasses defers, so any
+	// panic report queued by obs needs an explicit flush.
+	fatal := func(code int, format string, args ...any) {
+		fmt.Fprintf(os.Stderr, format, args...)
+		obs.Flush()
+		os.Exit(code)
+	}
+	defer obs.Flush()
+
 	// Validate config on startup
 	results := config.Validate(cfg)
 	hasErrors := false
@@ -217,8 +235,7 @@ func runDaemon() {
 		}
 	}
 	if hasErrors {
-		fmt.Fprintf(os.Stderr, "Daemon startup aborted due to config errors\n")
-		os.Exit(1)
+		fatal(1, "Daemon startup aborted due to config errors\n")
 	}
 
 	// Initialize signature scanner
@@ -229,22 +246,19 @@ func runDaemon() {
 
 	lock, err := state.AcquireLock(cfg.StatePath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Cannot start daemon: %v\n", err)
-		os.Exit(1)
+		fatal(1, "Cannot start daemon: %v\n", err)
 	}
 
 	store, err := state.Open(cfg.StatePath)
 	if err != nil {
 		lock.Release()
-		fmt.Fprintf(os.Stderr, "Error opening state: %v\n", err)
-		os.Exit(1)
+		fatal(1, "Error opening state: %v\n", err)
 	}
 
 	d := daemon.New(cfg, store, lock, binaryPath)
 	d.SetVersion(Version)
 	if err := d.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Daemon error: %v\n", err)
-		os.Exit(1)
+		fatal(1, "Daemon error: %v\n", err)
 	}
 }
 
@@ -262,6 +276,14 @@ func runDaemon() {
 // existing process-wide handler in init() and exits 0. The supervisor
 // treats non-zero exits as crash-restart candidates.
 func runYaraWorker() {
+	// The worker is a separate process that hosts YARA-X for the
+	// supervisor. Use the supervisor's config so both agree on the
+	// Sentry DSN and tags; failures to init are non-fatal.
+	cfg := loadConfigLite()
+	if err := obs.Init(cfg, Version, BuildHash); err != nil {
+		fmt.Fprintf(os.Stderr, "sentry: %v (continuing without telemetry)\n", err)
+	}
+
 	socketPath := "/var/run/csm/yara-worker.sock"
 	rulesDir := ""
 
@@ -288,6 +310,7 @@ func runYaraWorker() {
 			fmt.Fprintln(os.Stderr, "yara-worker:", err)
 		},
 	})
+	obs.Flush()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "yara-worker:", err)
 		os.Exit(1)

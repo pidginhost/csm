@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/yara"
 	"github.com/pidginhost/csm/internal/yaraipc"
 )
@@ -133,7 +134,7 @@ func (s *Supervisor) Start(ctx context.Context) error {
 	}
 
 	s.running.Store(true)
-	go s.supervise()
+	obs.Go("yara-supervisor", s.supervise)
 	return nil
 }
 

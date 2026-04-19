@@ -10,6 +10,7 @@ import (
 	"time"
 
 	csmlog "github.com/pidginhost/csm/internal/log"
+	"github.com/pidginhost/csm/internal/obs"
 )
 
 // controlSocketPath is the Unix socket the daemon binds for
@@ -76,7 +77,7 @@ func (c *ControlListener) Run(stopCh <-chan struct{}) {
 				continue
 			}
 		}
-		go c.handleConnection(conn)
+		obs.SafeGo("control-conn", func() { c.handleConnection(conn) })
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	emime "github.com/pidginhost/csm/internal/mime"
+	"github.com/pidginhost/csm/internal/obs"
 )
 
 // Orchestrator runs multiple scanners in parallel against extracted email parts.
@@ -81,27 +82,28 @@ func (o *Orchestrator) scanPart(part emime.ExtractedPart, scanners []Scanner) ([
 
 	for _, s := range scanners {
 		wg.Add(1)
-		go func(scanner Scanner) {
+		scanner := s
+		obs.SafeGo("emailav-scan", func() {
 			defer wg.Done()
 			done := make(chan scanResult, 1)
-			go func() {
+			obs.SafeGo("emailav-engine", func() {
 				v, err := scanner.Scan(part.TempPath)
 				done <- scanResult{engine: scanner.Name(), verdict: v, err: err}
-			}()
+			})
 			select {
 			case r := <-done:
 				results <- r
 			case <-ctx.Done():
 				results <- scanResult{engine: scanner.Name(), err: fmt.Errorf("scan timeout"), timedOut: true}
 			}
-		}(s)
+		})
 	}
 
 	// Close results channel when all scans complete
-	go func() {
+	obs.SafeGo("emailav-drain", func() {
 		wg.Wait()
 		close(results)
-	}()
+	})
 
 	var findings []Finding
 	var timedOut []string

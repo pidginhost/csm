@@ -27,6 +27,7 @@ import (
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/modsec"
+	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/signatures"
 	"github.com/pidginhost/csm/internal/state"
@@ -296,7 +297,7 @@ func (d *Daemon) Run() error {
 	// Start challenge escalation ticker
 	if d.ipList != nil {
 		d.wg.Add(1)
-		go d.challengeEscalator()
+		obs.Go("challenge-escalator", d.challengeEscalator)
 	}
 
 	// Create password hijack detector
@@ -404,30 +405,30 @@ func (d *Daemon) Run() error {
 
 	// NOW start the alert dispatcher - no more race with initial scan
 	d.wg.Add(1)
-	go d.alertDispatcher()
+	obs.Go("alert-dispatcher", d.alertDispatcher)
 
 	// Start periodic scanners
 	d.wg.Add(1)
-	go d.criticalScanner()
+	obs.Go("critical-scanner", d.criticalScanner)
 
 	d.wg.Add(1)
-	go d.deepScanner()
+	obs.Go("deep-scanner", d.deepScanner)
 
 	// Start automatic signature updates
 	d.wg.Add(1)
-	go d.signatureUpdater()
+	obs.Go("signature-updater", d.signatureUpdater)
 
 	d.wg.Add(1)
-	go d.geoipUpdater()
+	obs.Go("geoip-updater", d.geoipUpdater)
 
 	// Start heartbeat
 	d.wg.Add(1)
-	go d.heartbeat()
+	obs.Go("heartbeat", d.heartbeat)
 
 	// Start systemd watchdog notifier — independent goroutine with its own
 	// ticker so long-running scans don't block the heartbeat.
 	d.wg.Add(1)
-	go d.watchdogNotifier()
+	obs.Go("watchdog-notifier", d.watchdogNotifier)
 
 	csmlog.Info("CSM daemon running")
 
@@ -520,10 +521,10 @@ func (d *Daemon) alertDispatcher() {
 			if len(batch) > 0 {
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				done := make(chan struct{})
-				go func() {
+				obs.SafeGo("shutdown-flush", func() {
 					d.dispatchBatch(batch)
 					close(done)
-				}()
+				})
 				select {
 				case <-done:
 				case <-ctx.Done():
@@ -932,7 +933,7 @@ func (d *Daemon) startLogWatchers() {
 		// present. Headless hosts don't need this.
 		fmt.Fprintf(os.Stderr, "[%s] ModSecurity error log not found (checked %v), will retry every 60s\n", ts(), hostInfo.ErrorLogPaths)
 		d.wg.Add(1)
-		go func() {
+		obs.Go("logwatch-modsec-retry", func() {
 			defer d.wg.Done()
 			ticker := time.NewTicker(60 * time.Second)
 			defer ticker.Stop()
@@ -953,15 +954,15 @@ func (d *Daemon) startLogWatchers() {
 					d.logWatchers = append(d.logWatchers, w)
 					d.logWatchersMu.Unlock()
 					d.wg.Add(1)
-					go func(w *LogWatcher) {
+					obs.Go("logwatch-modsec", func() {
 						defer d.wg.Done()
 						w.Run(d.stopCh)
-					}(w)
+					})
 					csmlog.Info("watching log (appeared after retry)", "path", path)
 					return
 				}
 			}
-		}()
+		})
 	}
 
 	// Real-time access log watcher for wp-login/xmlrpc brute force detection.
@@ -971,7 +972,8 @@ func (d *Daemon) startLogWatchers() {
 	} else if hostInfo.WebServer != platform.WSNone && len(hostInfo.AccessLogPaths) > 0 {
 		csmlog.Warn("access log not found, will retry every 60s", "candidates", fmt.Sprintf("%v", hostInfo.AccessLogPaths))
 		d.wg.Add(1)
-		go d.retryLogWatcher(hostInfo.AccessLogPaths[0], parseAccessLogBruteForce)
+		accessPath := hostInfo.AccessLogPaths[0]
+		obs.Go("logwatch-access-retry", func() { d.retryLogWatcher(accessPath, parseAccessLogBruteForce) })
 	}
 
 	// Start background eviction for modsec dedup/escalation state
@@ -985,7 +987,7 @@ func (d *Daemon) startLogWatchers() {
 
 	// Start background purge for SMTP brute-force tracker
 	d.wg.Add(1)
-	go func() {
+	obs.Go("smtp-tracker-purge", func() {
 		defer d.wg.Done()
 		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()
@@ -999,11 +1001,11 @@ func (d *Daemon) startLogWatchers() {
 				}
 			}
 		}
-	}()
+	})
 
 	// Start background purge for mail (IMAP/POP3) brute-force tracker
 	d.wg.Add(1)
-	go func() {
+	obs.Go("mail-tracker-purge", func() {
 		defer d.wg.Done()
 		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()
@@ -1017,7 +1019,7 @@ func (d *Daemon) startLogWatchers() {
 				}
 			}
 		}
-	}()
+	})
 
 	for _, lf := range logFiles {
 		w, err := NewLogWatcher(lf.path, d.cfg, lf.handler, d.alertCh)
@@ -1025,7 +1027,8 @@ func (d *Daemon) startLogWatchers() {
 			if os.IsNotExist(err) {
 				// File doesn't exist yet - retry periodically until it appears
 				d.wg.Add(1)
-				go d.retryLogWatcher(lf.path, lf.handler)
+				path, handler := lf.path, lf.handler
+				obs.Go("logwatch-retry", func() { d.retryLogWatcher(path, handler) })
 			} else {
 				fmt.Fprintf(os.Stderr, "[%s] Warning: could not watch %s: %v\n", ts(), lf.path, err)
 			}
@@ -1033,10 +1036,11 @@ func (d *Daemon) startLogWatchers() {
 		}
 		d.logWatchers = append(d.logWatchers, w)
 		d.wg.Add(1)
-		go func(w *LogWatcher) {
+		watcher := w
+		obs.Go("logwatch", func() {
 			defer d.wg.Done()
-			w.Run(d.stopCh)
-		}(w)
+			watcher.Run(d.stopCh)
+		})
 		csmlog.Info("watching log", "path", lf.path)
 	}
 }
@@ -1062,10 +1066,11 @@ func (d *Daemon) retryLogWatcher(path string, handler LogLineHandler) {
 			d.logWatchers = append(d.logWatchers, w)
 			d.logWatchersMu.Unlock()
 			d.wg.Add(1)
-			go func(w *LogWatcher) {
+			watcher := w
+			obs.Go("logwatch-late", func() {
 				defer d.wg.Done()
-				w.Run(d.stopCh)
-			}(w)
+				watcher.Run(d.stopCh)
+			})
 			csmlog.Info("watching log (appeared after retry)", "path", path)
 			return
 		}
@@ -1097,12 +1102,12 @@ func (d *Daemon) startWebUI() {
 		srv.SetIPBlocker(d.fwEngine)
 	}
 	d.wg.Add(1)
-	go func() {
+	obs.Go("webui", func() {
 		defer d.wg.Done()
 		if err := srv.Start(); err != nil {
 			csmlog.Error("webui server error", "err", err)
 		}
-	}()
+	})
 }
 
 func (d *Daemon) startPAMListener() {
@@ -1113,10 +1118,10 @@ func (d *Daemon) startPAMListener() {
 	}
 	d.pamListener = pl
 	d.wg.Add(1)
-	go func() {
+	obs.Go("pam-listener", func() {
 		defer d.wg.Done()
 		pl.Run(d.stopCh)
-	}()
+	})
 	csmlog.Info("PAM listener active", "socket", pamSocketPath)
 }
 
@@ -1131,10 +1136,10 @@ func (d *Daemon) startControlListener() {
 	}
 	d.controlListener = cl
 	d.wg.Add(1)
-	go func() {
+	obs.Go("control-listener", func() {
 		defer d.wg.Done()
 		cl.Run(d.stopCh)
-	}()
+	})
 	csmlog.Info("control listener active", "socket", controlSocketPath)
 }
 
@@ -1147,10 +1152,10 @@ func (d *Daemon) startFileMonitor() {
 	fm.registerMetrics()
 	d.fileMonitor = fm
 	d.wg.Add(1)
-	go func() {
+	obs.Go("fanotify", func() {
 		defer d.wg.Done()
 		fm.Run(d.stopCh)
-	}()
+	})
 	csmlog.Info("fanotify file monitor active", "paths", "/home, /tmp, /dev/shm")
 }
 
@@ -1186,14 +1191,14 @@ func (d *Daemon) startSpoolWatcher() {
 	d.setSpoolWatcher(sw)
 
 	d.wg.Add(1)
-	go func() {
+	obs.Go("spool-watcher", func() {
 		defer d.wg.Done()
 		d.runSpoolWatcherLoop(sw, orch, quar)
-	}()
+	})
 
 	// Start quarantine cleanup goroutine
 	d.wg.Add(1)
-	go d.emailQuarantineCleanup()
+	obs.Go("email-quarantine-cleanup", d.emailQuarantineCleanup)
 
 	fmt.Fprintf(os.Stderr, "[%s] Email AV spool watcher active\n", ts())
 }
@@ -1248,10 +1253,10 @@ func (d *Daemon) startForwarderWatcher() {
 	}
 	d.forwarderWatcher = fw
 	d.wg.Add(1)
-	go func() {
+	obs.Go("forwarder-watcher", func() {
 		defer d.wg.Done()
 		fw.Run(d.stopCh)
-	}()
+	})
 	csmlog.Info("watching log (inotify forwarder watcher)", "path", "/etc/valiases/")
 }
 
@@ -1310,13 +1315,13 @@ func (d *Daemon) startChallengeServer() {
 	srv := challenge.New(d.cfg, unblocker, d.ipList)
 	d.challengeServer = srv
 	d.wg.Add(1)
-	go func() {
+	obs.Go("challenge-server", func() {
 		defer d.wg.Done()
 		csmlog.Info("challenge server active", "port", d.cfg.Challenge.ListenPort)
 		if err := srv.Start(); err != nil && err.Error() != "http: Server closed" {
 			csmlog.Error("challenge server error", "err", err)
 		}
-	}()
+	})
 }
 
 func (d *Daemon) challengeEscalator() {
@@ -1531,17 +1536,17 @@ func (d *Daemon) startFirewall() {
 	if len(d.cfg.Firewall.DynDNSHosts) > 0 {
 		resolver := firewall.NewDynDNSResolver(d.cfg.Firewall.DynDNSHosts, engine)
 		d.wg.Add(1)
-		go func() {
+		obs.Go("dyndns-resolver", func() {
 			defer d.wg.Done()
 			resolver.Run(d.stopCh)
-		}()
+		})
 		csmlog.Info("DynDNS resolver active", "hosts", len(d.cfg.Firewall.DynDNSHosts))
 	}
 
 	// Start Cloudflare IP whitelist refresh if configured
 	if d.cfg.Cloudflare.Enabled {
 		d.wg.Add(1)
-		go d.cloudflareRefreshLoop()
+		obs.Go("cloudflare-refresh", d.cloudflareRefreshLoop)
 		csmlog.Info("cloudflare IP whitelist enabled", "refresh_hours", d.cfg.Cloudflare.RefreshHours)
 	}
 }

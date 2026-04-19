@@ -11,6 +11,7 @@ func TestRedact(t *testing.T) {
 	cfg.Challenge.Secret = "challenge-secret"
 	cfg.Integrity.BinaryHash = "abc123"
 	cfg.Integrity.ConfigHash = "def456"
+	cfg.Sentry.DSN = "https://token@sentry.example.com/1"
 	cfg.Alerts.Email.SMTP = "localhost:25"
 
 	redacted := Redact(cfg)
@@ -33,6 +34,9 @@ func TestRedact(t *testing.T) {
 	}
 	if redacted.Integrity.ConfigHash != "***REDACTED***" {
 		t.Errorf("config_hash not redacted: %q", redacted.Integrity.ConfigHash)
+	}
+	if redacted.Sentry.DSN != "***REDACTED***" {
+		t.Errorf("sentry.dsn not redacted: %q", redacted.Sentry.DSN)
 	}
 
 	// Not redacted

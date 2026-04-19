@@ -14,6 +14,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -978,7 +979,7 @@ func checkEmailRate(user string, cfg *config.Config) []alert.Finding {
 // StartEmailRateEviction starts a background goroutine that prunes expired
 // rate windows every 10 minutes. Same pattern as StartModSecEviction.
 func StartEmailRateEviction(stopCh <-chan struct{}) {
-	go func() {
+	obs.Go("email-rate-eviction", func() {
 		ticker := time.NewTicker(10 * time.Minute)
 		defer ticker.Stop()
 		for {
@@ -989,7 +990,7 @@ func StartEmailRateEviction(stopCh <-chan struct{}) {
 				evictEmailRateWindows(now)
 			}
 		}
-	}()
+	})
 }
 
 // evictEmailRateWindows prunes all per-user rate windows and deletes empty entries.

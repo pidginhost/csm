@@ -9,6 +9,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/platform"
 )
 
@@ -187,7 +188,7 @@ func pruneAndAppend(times []time.Time, cutoff, now time.Time) []time.Time {
 // tracker entries to prevent unbounded memory growth. Same pattern as
 // StartModSecEviction.
 func StartAccessLogEviction(stopCh <-chan struct{}) {
-	go func() {
+	obs.Go("accesslog-eviction", func() {
 		ticker := time.NewTicker(accessLogEvictInterval)
 		defer ticker.Stop()
 		for {
@@ -198,7 +199,7 @@ func StartAccessLogEviction(stopCh <-chan struct{}) {
 				evictAccessLogState(now)
 			}
 		}
-	}()
+	})
 }
 
 func evictAccessLogState(now time.Time) {

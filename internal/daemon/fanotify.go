@@ -20,6 +20,7 @@ import (
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/metrics"
+	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/signatures"
 	"github.com/pidginhost/csm/internal/wpcheck"
 	"github.com/pidginhost/csm/internal/yara"
@@ -255,12 +256,12 @@ func (fm *FileMonitor) Run(stopCh <-chan struct{}) {
 
 	for i := 0; i < numWorkers; i++ {
 		fm.wg.Add(1)
-		go fm.analyzerWorker()
+		obs.Go("fanotify-analyzer", fm.analyzerWorker)
 	}
 
 	// Start overflow reporter
 	fm.wg.Add(1)
-	go fm.overflowReporter()
+	obs.Go("fanotify-overflow", fm.overflowReporter)
 
 	// C4 - create epoll instance, watch fanotify fd + pipe read end
 	epfd, err := unix.EpollCreate1(unix.EPOLL_CLOEXEC)
@@ -294,13 +295,13 @@ func (fm *FileMonitor) Run(stopCh <-chan struct{}) {
 	}
 
 	// Forward external stopCh to our internal mechanism
-	go func() {
+	obs.SafeGo("fanotify-stop-forward", func() {
 		select {
 		case <-stopCh:
 			fm.Stop()
 		case <-fm.stopCh:
 		}
-	}()
+	})
 
 	buf := make([]byte, 4096*24) // Large buffer for event batches
 	events := make([]unix.EpollEvent, 4)
@@ -358,13 +359,13 @@ func (fm *FileMonitor) Run(stopCh <-chan struct{}) {
 // runPollFallback is used when epoll setup fails; falls back to sleep-based polling.
 func (fm *FileMonitor) runPollFallback(stopCh <-chan struct{}) {
 	// Forward external stopCh to our internal mechanism
-	go func() {
+	obs.SafeGo("fanotify-stop-forward", func() {
 		select {
 		case <-stopCh:
 			fm.Stop()
 		case <-fm.stopCh:
 		}
-	}()
+	})
 
 	buf := make([]byte, 4096*24)
 

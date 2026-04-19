@@ -7,6 +7,8 @@ import (
 	"io"
 	"net"
 	"sync"
+
+	"github.com/pidginhost/csm/internal/obs"
 )
 
 // Handler is the worker-side interface. The production implementation
@@ -62,11 +64,11 @@ func Serve(ctx context.Context, ln net.Listener, h Handler, opts ServeOptions) e
 		}
 	}
 
-	go func() {
+	obs.SafeGo("yaraipc-ctx", func() {
 		<-ctx.Done()
 		_ = ln.Close()
 		closeAll()
-	}()
+	})
 
 	for {
 		conn, err := ln.Accept()
@@ -92,13 +94,14 @@ func Serve(ctx context.Context, ln net.Listener, h Handler, opts ServeOptions) e
 		active[conn] = struct{}{}
 		mu.Unlock()
 		servers.Add(1)
-		go func(c net.Conn) {
+		c := conn
+		obs.SafeGo("yaraipc-conn", func() {
 			defer servers.Done()
 			serveConn(c, h, opts)
 			mu.Lock()
 			delete(active, c)
 			mu.Unlock()
-		}(conn)
+		})
 	}
 }
 

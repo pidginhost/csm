@@ -223,6 +223,18 @@ type Config struct {
 
 	C2Blocklist   []string `yaml:"c2_blocklist" hotreload:"restart"`
 	BackdoorPorts []int    `yaml:"backdoor_ports" hotreload:"restart"`
+
+	// Sentry ships panics and selected errors to a Sentry server for
+	// aggregation across hosts. Disabled by default; set enabled=true and
+	// provide a DSN from the Sentry project. Init is one-shot: changes
+	// require a daemon restart.
+	Sentry struct {
+		Enabled     bool    `yaml:"enabled"`
+		DSN         string  `yaml:"dsn"`
+		Environment string  `yaml:"environment"` // e.g. "production", "staging"
+		SampleRate  float64 `yaml:"sample_rate"` // 0 -> 1.0 (capture all errors)
+		Debug       bool    `yaml:"debug"`       // SDK debug logs to stderr
+	} `yaml:"sentry" hotreload:"restart"`
 }
 
 func Load(path string) (*Config, error) {

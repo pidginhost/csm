@@ -10,6 +10,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -288,7 +289,7 @@ func recordCSMDeny(ip string, now time.Time) bool {
 // and counter entries every modsecEvictInterval to prevent unbounded memory
 // growth. It returns when stopCh is closed.
 func StartModSecEviction(stopCh <-chan struct{}) {
-	go func() {
+	obs.Go("modsec-eviction", func() {
 		ticker := time.NewTicker(modsecEvictInterval)
 		defer ticker.Stop()
 		for {
@@ -299,7 +300,7 @@ func StartModSecEviction(stopCh <-chan struct{}) {
 				evictModSecState(now)
 			}
 		}
-	}()
+	})
 }
 
 // discoverModSecLogPath returns the path to the web server error log that

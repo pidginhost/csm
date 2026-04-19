@@ -28,6 +28,9 @@ func Redact(cfg *Config) *Config {
 	if c.Integrity.ConfigHash != "" {
 		c.Integrity.ConfigHash = redactedValue
 	}
+	if c.Sentry.DSN != "" {
+		c.Sentry.DSN = redactedValue
+	}
 
 	// Deep-copy Firewall pointer so we don't share it with the original
 	if cfg.Firewall != nil {
