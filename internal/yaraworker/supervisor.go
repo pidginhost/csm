@@ -446,7 +446,10 @@ func toYaraMatches(in []yaraipc.Match) []yara.Match {
 	}
 	out := make([]yara.Match, len(in))
 	for i := range in {
-		out[i] = yara.Match{RuleName: in[i].RuleName}
+		out[i] = yara.Match{
+			RuleName: in[i].RuleName,
+			Meta:     in[i].Meta,
+		}
 	}
 	return out
 }

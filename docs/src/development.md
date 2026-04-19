@@ -195,11 +195,13 @@ Operator view:
   in-process `Reload` (the worker recompiles). Escalate to a full
   worker restart from Go code via `Supervisor.RestartWorker()`.
 
-Known gap under worker mode: the emailav YARA-X adapter reaches for
-the compiled `*yara_x.Rules` through `yara.Global().GlobalRules()`,
-which cannot cross a process boundary. Emailav falls back to ClamAV
-only while worker mode is on; extending the wire protocol to carry
-per-rule severity metadata is a follow-up.
+Emailav under worker mode: the IPC wire format carries string-valued
+rule metadata on every match (`yaraipc.Match.Meta` /
+`yara.Match.Meta`). The emailav adapter consumes
+`Meta["severity"]` via `yara.Active()`, so both in-process and worker
+backends produce the same verdict shape. Non-string metadata (ints,
+floats, bytes) is deliberately dropped at the worker boundary; add a
+typed value struct here only if a future consumer actually needs one.
 
 Testing:
 

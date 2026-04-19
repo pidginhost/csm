@@ -1162,13 +1162,12 @@ func (d *Daemon) startSpoolWatcher() {
 	// Create ClamAV scanner
 	clamScanner := emailav.NewClamdScanner(d.cfg.EmailAV.ClamdSocket)
 
-	// Create YARA-X scanner - share compiled rules from the global YARA scanner
-	var yaraScanner *emailav.YaraXScanner
-	if gs := yara.Global(); gs != nil {
-		yaraScanner = emailav.NewYaraXScanner(gs)
-	} else {
-		yaraScanner = emailav.NewYaraXScanner(nil)
-	}
+	// YARA-X scanner over whichever backend initYaraBackend installed.
+	// Active() transparently resolves to the in-process *yara.Scanner
+	// or to the out-of-process supervisor depending on
+	// signatures.yara_worker_enabled; severity metadata now travels on
+	// matches so either backend yields the same verdict shape.
+	yaraScanner := emailav.NewYaraXScanner(yara.Active())
 
 	// Create orchestrator with both engines
 	scanners := []emailav.Scanner{clamScanner, yaraScanner}
@@ -1666,10 +1665,14 @@ func (d *Daemon) doSignatureUpdate() {
 }
 
 func (d *Daemon) doForgeUpdate() {
-	yaraScanner := yara.Global()
+	// yara.Active() resolves to the in-process scanner or the worker
+	// supervisor depending on signatures.yara_worker_enabled; both
+	// satisfy the Reload/RuleCount calls this routine makes, so the
+	// forge update path is backend-agnostic.
+	yaraScanner := yara.Active()
 	if yaraScanner == nil {
-		// No YARA scanner active (build without yara tag or no rules dir).
-		// Skip Forge update - rules can't be loaded anyway.
+		// No YARA backend active (build without yara tag or no rules
+		// dir). Skip Forge update - rules can't be loaded anyway.
 		return
 	}
 

@@ -199,10 +199,12 @@ func (s *Server) apiEmailAVStatus(w http.ResponseWriter, r *http.Request) {
 	resp.ClamdSocket = clamdSocket
 	resp.ClamdAvailable = emailav.NewClamdScanner(clamdSocket).Available()
 
-	// YARA-X availability and rule count.
+	// YARA-X availability and rule count. Active() covers both the
+	// in-process scanner and the out-of-process worker so this card
+	// reports the real rule count under either backend.
 	resp.YaraXAvailable = yara.Available()
-	if gs := yara.Global(); gs != nil {
-		resp.YaraXRuleCount = gs.RuleCount()
+	if b := yara.Active(); b != nil {
+		resp.YaraXRuleCount = b.RuleCount()
 	}
 
 	// Watcher mode (set by daemon on startup).

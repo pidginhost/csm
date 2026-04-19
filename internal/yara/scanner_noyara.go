@@ -5,9 +5,12 @@ package yara
 // Scanner is a no-op stub when YARA-X is not compiled in.
 type Scanner struct{}
 
-// Match represents a YARA rule that matched.
+// Match represents a YARA rule that matched. Meta carries string-valued
+// rule metadata pulled from `rule.Metadata()` (see yarax build); under
+// this stub no rule ever matches, so Meta is never populated.
 type Match struct {
 	RuleName string
+	Meta     map[string]string
 }
 
 // NewScanner returns nil when YARA-X is not available.

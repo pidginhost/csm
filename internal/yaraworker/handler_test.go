@@ -57,6 +57,32 @@ func TestHandlerScanFileConvertsMatches(t *testing.T) {
 	}
 }
 
+func TestHandlerForwardsMatchMetadata(t *testing.T) {
+	// The emailav adapter reads match metadata (e.g. "severity") from
+	// the IPC match. If the handler ever drops the field during the
+	// yara.Match -> yaraipc.Match conversion, emailav silently falls
+	// back to its default severity for every rule — this guards that.
+	s := &fakeScanner{bytesMatches: []yara.Match{{
+		RuleName: "mal_doc",
+		Meta:     map[string]string{"severity": "critical", "author": "forge"},
+	}}}
+	h := NewHandler(s)
+
+	res, err := h.ScanBytes(yaraipc.ScanBytesArgs{Data: []byte("x")})
+	if err != nil {
+		t.Fatalf("ScanBytes: %v", err)
+	}
+	if len(res.Matches) != 1 {
+		t.Fatalf("matches = %d, want 1", len(res.Matches))
+	}
+	if res.Matches[0].Meta["severity"] != "critical" {
+		t.Errorf(`Meta["severity"] = %q`, res.Matches[0].Meta["severity"])
+	}
+	if res.Matches[0].Meta["author"] != "forge" {
+		t.Errorf(`Meta["author"] = %q`, res.Matches[0].Meta["author"])
+	}
+}
+
 func TestHandlerScanBytesPassesThrough(t *testing.T) {
 	s := &fakeScanner{bytesMatches: []yara.Match{{RuleName: "webshell"}}}
 	h := NewHandler(s)

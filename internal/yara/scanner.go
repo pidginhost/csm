@@ -97,9 +97,16 @@ func (s *Scanner) Reload() error {
 	return nil
 }
 
-// Match represents a YARA rule that matched a file.
+// Match represents a YARA rule that matched a file. Meta carries
+// string-valued rule metadata pulled from YARA-X `rule.Metadata()` at
+// scan time: severity, description, author, and anything else the rule
+// author wrote as a string. Non-string metadata (int / float / bool /
+// bytes) is dropped — wiring only strings is a deliberate policy, not a
+// fidelity claim. Consumers (e.g. emailav) own their own defaults for
+// missing keys.
 type Match struct {
 	RuleName string
+	Meta     map[string]string
 }
 
 // ScanBytes scans raw bytes against compiled YARA rules.
@@ -119,9 +126,36 @@ func (s *Scanner) ScanBytes(data []byte) []Match {
 
 	var matches []Match
 	for _, r := range results.MatchingRules() {
-		matches = append(matches, Match{RuleName: r.Identifier()})
+		matches = append(matches, Match{
+			RuleName: r.Identifier(),
+			Meta:     extractStringMeta(r.Metadata()),
+		})
 	}
 	return matches
+}
+
+// extractStringMeta projects YARA-X metadata entries whose Value() is a
+// string into a map[string]string. Non-string entries are dropped: the
+// IPC wire format and all current consumers deal in strings, and
+// promoting numbers/bools/bytes through that boundary would expand the
+// surface without a concrete reader. Returns nil when no string
+// metadata is present so clean scans do not allocate.
+func extractStringMeta(entries []yara_x.Metadata) map[string]string {
+	if len(entries) == 0 {
+		return nil
+	}
+	var out map[string]string
+	for _, m := range entries {
+		v, ok := m.Value().(string)
+		if !ok {
+			continue
+		}
+		if out == nil {
+			out = make(map[string]string, len(entries))
+		}
+		out[m.Identifier()] = v
+	}
+	return out
 }
 
 // ScanFile reads a file (up to maxBytes) and scans it against YARA rules.

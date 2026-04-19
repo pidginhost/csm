@@ -65,8 +65,18 @@ type ReloadArgs struct {
 // Match mirrors yara.Match but is part of this package's public wire
 // contract so the daemon does not need to import the yara package just to
 // speak to its worker.
+//
+// Meta carries string-valued rule metadata (identifier -> value) pulled
+// from yara_x `rule.Metadata()` inside the worker, where the compiled
+// rules live. Non-string metadata (int / float / bool / bytes) is
+// dropped: wiring only string values is a deliberate policy, not a
+// fidelity claim. Consumers that need a specific key document their own
+// default; e.g. emailav maps a missing "severity" entry to "high".
+// Omitted from the wire when empty so the per-scan payload cost is zero
+// for the common clean-file case.
 type Match struct {
-	RuleName string `json:"rule"`
+	RuleName string            `json:"rule"`
+	Meta     map[string]string `json:"meta,omitempty"`
 }
 
 // ScanResult is returned for OpScanFile and OpScanBytes.

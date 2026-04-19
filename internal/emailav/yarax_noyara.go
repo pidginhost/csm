@@ -2,11 +2,15 @@
 
 package emailav
 
-// YaraXScanner is a no-op stub when YARA-X is not compiled in.
+import "github.com/pidginhost/csm/internal/yara"
+
+// YaraXScanner is a no-op stub when YARA-X is not compiled in. The
+// constructor still accepts a yara.Backend so callers can pass
+// yara.Active() uniformly across build tags.
 type YaraXScanner struct{}
 
 // NewYaraXScanner returns a scanner that is never available.
-func NewYaraXScanner(_ interface{}) *YaraXScanner {
+func NewYaraXScanner(_ yara.Backend) *YaraXScanner {
 	return &YaraXScanner{}
 }
 

@@ -73,7 +73,10 @@ func convertMatches(in []yara.Match) []yaraipc.Match {
 	}
 	out := make([]yaraipc.Match, len(in))
 	for i := range in {
-		out[i] = yaraipc.Match{RuleName: in[i].RuleName}
+		out[i] = yaraipc.Match{
+			RuleName: in[i].RuleName,
+			Meta:     in[i].Meta,
+		}
 	}
 	return out
 }

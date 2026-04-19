@@ -28,11 +28,10 @@ var yaraMetricsOnce sync.Once
 // In worker mode, yara.Init is deliberately NOT called: the rule
 // compile happens inside the child process, not the daemon. This is
 // the point of the feature (ROADMAP item 2) — a cgo crash while
-// compiling or scanning stays contained to the child. The known
-// regression is that the emailav YARA-X adapter cannot reach
-// *yara_x.Rules across a process boundary yet, so emailav falls back
-// to ClamAV-only when worker mode is on. Extending the wire protocol
-// to carry severity metadata for emailav is tracked separately.
+// compiling or scanning stays contained to the child. Matches carry
+// string-valued rule metadata (see yara.Match.Meta / yaraipc.Match.Meta)
+// so the emailav YARA-X adapter works identically under both backends
+// — severity no longer needs the in-process *yara_x.Rules object.
 func (d *Daemon) initYaraBackend() error {
 	if !d.cfg.Signatures.YaraWorkerEnabled {
 		if yaraScanner := yara.Init(d.cfg.Signatures.RulesDir); yaraScanner != nil {
@@ -80,8 +79,6 @@ func (d *Daemon) initYaraBackend() error {
 	fmt.Fprintf(os.Stderr,
 		"[%s] YARA-X worker active: %d rule(s) compiled in child process (pid=%d)\n",
 		ts(), sup.RuleCount(), sup.ChildPID())
-	fmt.Fprintf(os.Stderr,
-		"[%s] yara-worker: emailav YARA-X disabled under worker mode; ClamAV unchanged\n", ts())
 	return nil
 }
 

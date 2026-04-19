@@ -7,163 +7,164 @@ import (
 	"path/filepath"
 	"testing"
 
-	yara_x "github.com/VirusTotal/yara-x/go"
+	"github.com/pidginhost/csm/internal/yara"
 )
 
-func compileTestRules(t *testing.T, source string) *yara_x.Rules {
-	t.Helper()
-	compiler, err := yara_x.NewCompiler()
-	if err != nil {
-		t.Fatalf("creating compiler: %v", err)
-	}
-	if err := compiler.AddSource(source); err != nil {
-		t.Fatalf("adding source: %v", err)
-	}
-	return compiler.Build()
+// fakeBackend is a yara.Backend stand-in. The adapter under test is
+// thin: all the YARA-X semantics live in internal/yara and are
+// exercised by scanner_meta_test.go against real compiled rules.
+// These tests therefore cover the adapter's own policy — severity
+// default, file-read error handling, unavailable-backend handling —
+// without re-verifying the YARA engine itself.
+type fakeBackend struct {
+	matches   []yara.Match
+	ruleCount int
+	scanned   [][]byte
 }
 
-func TestYaraXScannerClean(t *testing.T) {
-	rules := compileTestRules(t, `
-rule test_malware {
-    meta:
-        severity = "critical"
-    strings:
-        $s1 = "MALWARE_SIGNATURE_XYZ"
-    condition:
-        $s1
-}`)
+func (f *fakeBackend) ScanFile(string, int) []yara.Match { return nil }
+func (f *fakeBackend) ScanBytes(data []byte) []yara.Match {
+	f.scanned = append(f.scanned, append([]byte(nil), data...))
+	return f.matches
+}
+func (f *fakeBackend) Reload() error  { return nil }
+func (f *fakeBackend) RuleCount() int { return f.ruleCount }
 
-	scanner := NewYaraXScanner(rules)
-	if scanner.Name() != "yara-x" {
-		t.Errorf("Name() = %q, want %q", scanner.Name(), "yara-x")
+func TestYaraXScannerNameAndAvailability(t *testing.T) {
+	tests := []struct {
+		name      string
+		backend   yara.Backend
+		wantName  string
+		wantAvail bool
+	}{
+		{"nil backend", nil, "yara-x", false},
+		{"zero rules", &fakeBackend{ruleCount: 0}, "yara-x", false},
+		{"with rules", &fakeBackend{ruleCount: 42}, "yara-x", true},
 	}
-	if !scanner.Available() {
-		t.Error("scanner with compiled rules should be available")
-	}
-
-	tmpFile := filepath.Join(t.TempDir(), "clean.txt")
-	os.WriteFile(tmpFile, []byte("this is clean content"), 0644)
-
-	verdict, err := scanner.Scan(tmpFile)
-	if err != nil {
-		t.Fatalf("Scan: %v", err)
-	}
-	if verdict.Infected {
-		t.Error("clean file should not be infected")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := NewYaraXScanner(tt.backend)
+			if got := s.Name(); got != tt.wantName {
+				t.Errorf("Name() = %q, want %q", got, tt.wantName)
+			}
+			if got := s.Available(); got != tt.wantAvail {
+				t.Errorf("Available() = %v, want %v", got, tt.wantAvail)
+			}
+		})
 	}
 }
 
-func TestYaraXScannerInfectedWithSeverity(t *testing.T) {
-	rules := compileTestRules(t, `
-rule test_malware {
-    meta:
-        severity = "critical"
-    strings:
-        $s1 = "MALWARE_SIGNATURE_XYZ"
-    condition:
-        $s1
-}`)
-
-	scanner := NewYaraXScanner(rules)
-
-	tmpFile := filepath.Join(t.TempDir(), "malware.bin")
-	os.WriteFile(tmpFile, []byte("contains MALWARE_SIGNATURE_XYZ here"), 0644)
-
-	verdict, err := scanner.Scan(tmpFile)
+func TestYaraXScannerScanCleanFileReturnsNoMatch(t *testing.T) {
+	b := &fakeBackend{ruleCount: 1, matches: nil}
+	s := NewYaraXScanner(b)
+	tmp := filepath.Join(t.TempDir(), "clean.bin")
+	if err := os.WriteFile(tmp, []byte("benign content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	v, err := s.Scan(tmp)
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
-	if !verdict.Infected {
-		t.Error("file matching rule should be infected")
+	if v.Infected {
+		t.Errorf("Infected = true for clean file, want false")
 	}
-	if verdict.Signature != "test_malware" {
-		t.Errorf("Signature = %q, want %q", verdict.Signature, "test_malware")
-	}
-	if verdict.Severity != "critical" {
-		t.Errorf("Severity = %q, want %q", verdict.Severity, "critical")
+	if len(b.scanned) != 1 {
+		t.Errorf("backend ScanBytes calls = %d, want 1", len(b.scanned))
 	}
 }
 
-func TestYaraXScannerDefaultSeverity(t *testing.T) {
-	rules := compileTestRules(t, `
-rule test_noseverity {
-    strings:
-        $s1 = "NOSEV_MARKER"
-    condition:
-        $s1
-}`)
-
-	scanner := NewYaraXScanner(rules)
-
-	tmpFile := filepath.Join(t.TempDir(), "nosev.bin")
-	os.WriteFile(tmpFile, []byte("contains NOSEV_MARKER here"), 0644)
-
-	verdict, err := scanner.Scan(tmpFile)
+func TestYaraXScannerReadsSeverityFromMetadata(t *testing.T) {
+	b := &fakeBackend{
+		ruleCount: 1,
+		matches: []yara.Match{{
+			RuleName: "webshell_p0wny",
+			Meta:     map[string]string{"severity": "critical", "description": "ignored here"},
+		}},
+	}
+	s := NewYaraXScanner(b)
+	tmp := filepath.Join(t.TempDir(), "sus.bin")
+	if err := os.WriteFile(tmp, []byte("payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	v, err := s.Scan(tmp)
 	if err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
-	if !verdict.Infected {
-		t.Error("file should match rule")
+	if !v.Infected {
+		t.Error("Infected = false, want true")
 	}
-	if verdict.Severity != "high" {
-		t.Errorf("Severity = %q, want %q (default)", verdict.Severity, "high")
+	if v.Signature != "webshell_p0wny" {
+		t.Errorf("Signature = %q, want %q", v.Signature, "webshell_p0wny")
 	}
-}
-
-func TestYaraXScannerNilRules(t *testing.T) {
-	scanner := NewYaraXScanner(nil)
-	if scanner.Available() {
-		t.Error("scanner with nil rules should not be available")
+	if v.Severity != "critical" {
+		t.Errorf("Severity = %q, want %q (from metadata)", v.Severity, "critical")
 	}
 }
 
-type reloadingRulesSupplier struct {
-	rules *yara_x.Rules
-}
-
-func (s *reloadingRulesSupplier) GlobalRules() *yara_x.Rules {
-	return s.rules
-}
-
-func TestYaraXScannerUsesReloadedRules(t *testing.T) {
-	supplier := &reloadingRulesSupplier{
-		rules: compileTestRules(t, `
-rule original_rule {
-    strings:
-        $s1 = "FIRST_SIGNATURE"
-    condition:
-        $s1
-}`),
+func TestYaraXScannerDefaultsSeverityWhenMetadataAbsent(t *testing.T) {
+	// Rule authors sometimes ship rules without a severity key. The
+	// adapter's fallback must be "high" so an unlabelled match never
+	// disappears into the "warning" bucket that some alert routes
+	// suppress. Kept as an explicit assertion so a future refactor
+	// that changes the default surfaces here instead of in prod.
+	b := &fakeBackend{
+		ruleCount: 1,
+		matches:   []yara.Match{{RuleName: "rule_without_severity"}},
 	}
-	scanner := NewYaraXScanner(supplier)
-
-	tmpFile := filepath.Join(t.TempDir(), "reload.bin")
-	os.WriteFile(tmpFile, []byte("contains FIRST_SIGNATURE here"), 0644)
-
-	verdict, err := scanner.Scan(tmpFile)
+	s := NewYaraXScanner(b)
+	tmp := filepath.Join(t.TempDir(), "match.bin")
+	if err := os.WriteFile(tmp, []byte("anything"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	v, err := s.Scan(tmp)
 	if err != nil {
-		t.Fatalf("Scan before reload: %v", err)
+		t.Fatalf("Scan: %v", err)
 	}
-	if verdict.Signature != "original_rule" {
-		t.Fatalf("Signature before reload = %q, want %q", verdict.Signature, "original_rule")
+	if v.Severity != defaultSeverity {
+		t.Errorf("Severity = %q, want %q (default when metadata absent)", v.Severity, defaultSeverity)
 	}
+}
 
-	supplier.rules = compileTestRules(t, `
-rule reloaded_rule {
-    strings:
-        $s1 = "SECOND_SIGNATURE"
-    condition:
-        $s1
-}`)
-	if err := os.WriteFile(tmpFile, []byte("contains SECOND_SIGNATURE here"), 0644); err != nil {
-		t.Fatalf("updating test file: %v", err)
+func TestYaraXScannerEmptySeverityStringFallsBackToDefault(t *testing.T) {
+	// An explicit empty "severity" string is treated the same as missing
+	// — defensively, since a rule author writing severity="" almost
+	// certainly did not mean "this match has no priority at all".
+	b := &fakeBackend{
+		ruleCount: 1,
+		matches: []yara.Match{{
+			RuleName: "test_rule",
+			Meta:     map[string]string{"severity": ""},
+		}},
 	}
-
-	verdict, err = scanner.Scan(tmpFile)
+	s := NewYaraXScanner(b)
+	tmp := filepath.Join(t.TempDir(), "match.bin")
+	if err := os.WriteFile(tmp, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	v, err := s.Scan(tmp)
 	if err != nil {
-		t.Fatalf("Scan after reload: %v", err)
+		t.Fatalf("Scan: %v", err)
 	}
-	if verdict.Signature != "reloaded_rule" {
-		t.Errorf("Signature after reload = %q, want %q", verdict.Signature, "reloaded_rule")
+	if v.Severity != defaultSeverity {
+		t.Errorf("Severity = %q, want %q", v.Severity, defaultSeverity)
+	}
+}
+
+func TestYaraXScannerScanErrorsOnUnreadableFile(t *testing.T) {
+	s := NewYaraXScanner(&fakeBackend{ruleCount: 1})
+	_, err := s.Scan(filepath.Join(t.TempDir(), "does-not-exist.bin"))
+	if err == nil {
+		t.Fatal("expected error reading nonexistent file")
+	}
+}
+
+func TestYaraXScannerNilBackendReturnsError(t *testing.T) {
+	s := NewYaraXScanner(nil)
+	tmp := filepath.Join(t.TempDir(), "x.bin")
+	if err := os.WriteFile(tmp, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Scan(tmp); err == nil {
+		t.Fatal("expected error when backend is nil")
 	}
 }

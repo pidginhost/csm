@@ -147,6 +147,46 @@ func TestClientServerScanBytes(t *testing.T) {
 	}
 }
 
+func TestClientServerScanMetadataRoundTrips(t *testing.T) {
+	// Match metadata travels end-to-end via JSON; this asserts the wire
+	// shape does not silently drop Meta on either encode or decode, and
+	// that a match without metadata round-trips as nil (not an empty
+	// map promoted by the JSON layer).
+	h := &fakeHandler{
+		scanBytesRes: ScanResult{Matches: []Match{
+			{
+				RuleName: "webshell_p0wny",
+				Meta:     map[string]string{"severity": "critical", "description": "p0wny shell"},
+			},
+			{
+				RuleName: "rule_without_meta",
+			},
+		}},
+	}
+	socketPath, stop := startServer(t, h)
+	defer stop()
+
+	c := NewClient(socketPath, 2*time.Second)
+	defer func() { _ = c.Close() }()
+
+	res, err := c.ScanBytes(ScanBytesArgs{Data: []byte("doesnt matter, fake handler")})
+	if err != nil {
+		t.Fatalf("ScanBytes: %v", err)
+	}
+	if len(res.Matches) != 2 {
+		t.Fatalf("matches = %d, want 2", len(res.Matches))
+	}
+	if res.Matches[0].Meta["severity"] != "critical" {
+		t.Errorf(`Meta["severity"] = %q, want "critical"`, res.Matches[0].Meta["severity"])
+	}
+	if res.Matches[0].Meta["description"] != "p0wny shell" {
+		t.Errorf(`Meta["description"] = %q`, res.Matches[0].Meta["description"])
+	}
+	if res.Matches[1].Meta != nil {
+		t.Errorf("Meta for meta-less rule = %v, want nil", res.Matches[1].Meta)
+	}
+}
+
 func TestClientServerReload(t *testing.T) {
 	h := &fakeHandler{reloadRes: ReloadResult{RuleCount: 42}}
 	socketPath, stop := startServer(t, h)

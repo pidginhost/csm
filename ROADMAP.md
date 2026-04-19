@@ -118,8 +118,8 @@ commits and the next CI run produces the old binary.
 ## 2. Process-isolate YARA-X (and other cgo dependencies)
 
 **Status:** done for YARA-X (opt-in behind
-`signatures.yara_worker_enabled`). Emailav adapter migration and
-default-on flip remain; tracked as follow-ups below.
+`signatures.yara_worker_enabled`). Default-on flip remains; tracked
+as a follow-up below.
 **Drives / unblocks:** resilience against any future cgo
 dependency bug
 
@@ -188,14 +188,8 @@ moved behind the same supervisor wrapper.
 
 ### Follow-ups (not yet shipped)
 
-- Extend the `yaraipc` protocol so the worker returns per-rule
-  severity metadata (currently the emailav adapter reaches for the
-  compiled `*yara_x.Rules` directly through
-  `yara.Global().GlobalRules()`, which cannot cross a process
-  boundary). Until this lands, enabling worker mode disables emailav
-  YARA-X; ClamAV continues to scan.
-- Flip the default once the emailav migration ships and the opt-in
-  window has been stable for one release cycle.
+- Flip `signatures.yara_worker_enabled` default to true once the
+  opt-in window has been stable for one release cycle.
 - Apply the same supervisor pattern to any future cgo dependency
   whose crash would otherwise take the daemon down.
 
