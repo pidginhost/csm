@@ -561,31 +561,42 @@ require a restart; the reload logs a clear
 
 ### Follow-ups (not yet shipped)
 
-- `webui.metrics_token` hot-reload. The `/metrics` handler reads
-  the token from the webui Server's captured `cfg`, so rotating
-  the token today still needs a restart. Fix requires the server
-  to check `config.Active()` on each request; the WebUI parent
-  struct can't be tagged safe wholesale because `listen`,
-  `tls_cert`, `tls_key`, `ui_dir`, and `enabled` all require a
-  restart. A field-level hotreload tag (rather than the current
-  top-level-only model) is the clean fix.
-- `signatures.rules_dir` hot-reload: requires the signatures and
-  YARA backends to re-initialise against the new directory.
-  The existing `update-rules` machinery already does this for the
-  signatures path; the YARA worker has `RestartWorker()` which
-  would spawn a fresh child against the new dir. Wiring a
-  reload-time call to both is low-risk but needs integration
-  tests covering the "mid-scan rules change" window.
 - Dashboard surface for "what would a reload change?" -- a dry-run
   diff endpoint on the control socket that returns the classified
   field list without actually swapping. Useful for
-  config-management tools.
-- Close the startup-capture gap inside the currently-safe fields:
-  `thresholds` tick intervals, `reputation.whitelist` (threat DB
-  seed), `email_protection.known_forwarders` (forwarder watcher),
-  `auto_response.block_expiry` (challenge escalator). Each reads
-  once at daemon startup; making them re-read on reload requires
-  per-consumer wiring, not a bulk change.
+  config-management tools. Tracked separately; not required to
+  close item 7.
+- `reputation.whitelist` runtime propagation. Today the initial
+  whitelist is seeded into the threat DB at startup; runtime
+  whitelist edits go through the Threat Intelligence UI/API and
+  persist to disk. Editing `reputation.whitelist` in `csm.yaml`
+  and reloading does not push additions into the running threat
+  DB. An `UpdateConfigWhitelist([]string)` method on the threat
+  DB wired into the reload path is the natural fix; skipped here
+  because the operator path for adding whitelist entries already
+  exists and works.
+- `email_protection.known_forwarders` runtime propagation. Same
+  shape as the whitelist case: the forwarder watcher captures the
+  list at startup. Fix is an `UpdateForwarders([]string)` on the
+  watcher. Low-value until anyone asks -- operators rarely edit
+  this after install.
+
+### Deliberately restart-required
+
+- Every `signatures.*` field (including `rules_dir`,
+  `auto_update`, `yara_forge.*`, `yara_worker_enabled`). Changing
+  `rules_dir` is rare operator maintenance; for rule CONTENT
+  updates in the SAME directory, use `csm update-rules` which
+  already reloads without a daemon restart. YARA-X worker mode
+  toggles need the full supervisor lifecycle.
+- `webui` (except `metrics_token` which is field-level safe).
+  Listener, TLS cert/key, auth token all need the HTTP server to
+  restart.
+- `firewall.*`, `geoip.*`, `email_av.*`, `challenge.*` -- each
+  owns a long-lived goroutine / subsystem whose init consumes
+  these fields; a mid-life swap would require careful restart
+  machinery that is not worth the complexity for typical
+  operator cadence.
 
 ### Estimated size
 
