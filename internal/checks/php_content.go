@@ -405,7 +405,8 @@ func analyzePHPContent(path string) phpAnalysisResult {
 // the realtime fanotify path in internal/daemon shares the same allowlist as
 // the polled fileindex scan; keeping the two in lock-step avoids the class of
 // false positive where a path is recognised as safe by one path and flagged by
-// the other.
+// the other. The name argument may be passed in any case; the function
+// lower-cases it internally.
 func IsSafePHPInWPDir(path, name string) bool {
 	nameLower := strings.ToLower(name)
 
