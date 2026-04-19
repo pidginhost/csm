@@ -42,15 +42,11 @@ return array(
 	if err := os.WriteFile(path, legit, 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = f.Close() }()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 8)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.analyzeFile(fileEvent{path: path, fd: int(f.Fd())})
+	fm.analyzeFile(fileEvent{path: path, fd: fd})
 
 	select {
 	case got := <-ch:
@@ -72,15 +68,11 @@ func TestPHPInLanguagesWebshellFiresCriticalContentScan(t *testing.T) {
 	if err := os.WriteFile(path, webshell, 0644); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = f.Close() }()
+	fd := openRawFd(t, path)
 
 	ch := make(chan alert.Finding, 8)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.analyzeFile(fileEvent{path: path, fd: int(f.Fd())})
+	fm.analyzeFile(fileEvent{path: path, fd: fd})
 
 	// Collect all alerts fired within a short window.
 	var got []alert.Finding

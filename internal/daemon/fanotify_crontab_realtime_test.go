@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 )
@@ -20,6 +22,24 @@ func withCronSpoolDir(t *testing.T, dir string) {
 	old := cronSpoolWatchDir
 	cronSpoolWatchDir = dir
 	t.Cleanup(func() { cronSpoolWatchDir = old })
+}
+
+// openRawFd opens path read-only and returns a raw fd plus a cleanup
+// closure. Uses unix.Open directly to avoid the os.File runtime poller
+// integration: os.File.Fd documents that "the runtime poller may close
+// the file descriptor at unspecified times", which under -race + coverage
+// instrumentation can land between t.TempDir's RemoveAll openat() and its
+// readdir() and turn the dir fd into EBADF (observed flake on CI job
+// 93822). Production code paths receive fanotify event fds and call
+// unix.Close explicitly; the tests now mirror that ownership.
+func openRawFd(t *testing.T, path string) int {
+	t.Helper()
+	fd, err := unix.Open(path, unix.O_RDONLY, 0)
+	if err != nil {
+		t.Fatalf("unix.Open(%s): %v", path, err)
+	}
+	t.Cleanup(func() { _ = unix.Close(fd) })
+	return fd
 }
 
 // TestCheckCrontab_GsocketDefunctFires is the realtime regression for the
@@ -39,16 +59,11 @@ func TestCheckCrontab_GsocketDefunctFires(t *testing.T) {
 	if writeErr := os.WriteFile(target, payload, 0600); writeErr != nil {
 		t.Fatalf("stage crontab: %v", writeErr)
 	}
-	f, err := os.Open(target)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer func() { _ = f.Close() }()
+	fd := openRawFd(t, target)
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	// #nosec G115 -- POSIX fd fits in int32 (rlimit caps fds at ~1024).
-	fm.checkCrontab(int(f.Fd()), target, "test")
+	fm.checkCrontab(fd, target, "test")
 
 	select {
 	case got := <-ch:
@@ -79,16 +94,11 @@ func TestCheckCrontab_Base64WrappedFires(t *testing.T) {
 	if writeErr := os.WriteFile(target, payload, 0600); writeErr != nil {
 		t.Fatalf("stage: %v", writeErr)
 	}
-	f, err := os.Open(target)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer func() { _ = f.Close() }()
+	fd := openRawFd(t, target)
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	// #nosec G115 -- POSIX fd fits in int32.
-	fm.checkCrontab(int(f.Fd()), target, "test")
+	fm.checkCrontab(fd, target, "test")
 
 	select {
 	case got := <-ch:
@@ -112,16 +122,11 @@ func TestCheckCrontab_BenignSilent(t *testing.T) {
 	if err := os.WriteFile(target, benign, 0600); err != nil {
 		t.Fatalf("stage: %v", err)
 	}
-	f, err := os.Open(target)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer func() { _ = f.Close() }()
+	fd := openRawFd(t, target)
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	// #nosec G115 -- POSIX fd fits in int32.
-	fm.checkCrontab(int(f.Fd()), target, "test")
+	fm.checkCrontab(fd, target, "test")
 
 	select {
 	case got := <-ch:
@@ -144,16 +149,11 @@ func TestCheckCrontab_RootSkipped(t *testing.T) {
 	if err := os.WriteFile(target, bad, 0600); err != nil {
 		t.Fatalf("stage: %v", err)
 	}
-	f, err := os.Open(target)
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer func() { _ = f.Close() }()
+	fd := openRawFd(t, target)
 
 	ch := make(chan alert.Finding, 4)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	// #nosec G115 -- POSIX fd fits in int32.
-	fm.checkCrontab(int(f.Fd()), target, "test")
+	fm.checkCrontab(fd, target, "test")
 
 	select {
 	case got := <-ch:
