@@ -1,6 +1,7 @@
 package config
 
 import (
+	"reflect"
 	"sync"
 	"testing"
 )
@@ -100,7 +101,7 @@ func TestDiffSafeField(t *testing.T) {
 // safe field.
 func TestDiffAllSafeFieldsClassifiedSafe(t *testing.T) {
 	cases := []struct {
-		name  string
+		name   string
 		mutate func(*Config)
 	}{
 		{"thresholds", func(c *Config) { c.Thresholds.MailQueueWarn++ }},
@@ -164,6 +165,44 @@ func TestDiffIgnoresConfigFile(t *testing.T) {
 	b := &Config{ConfigFile: "/tmp/csm.yaml"}
 	if got := Diff(a, b); len(got) != 0 {
 		t.Errorf("ConfigFile change must be ignored: got %+v", got)
+	}
+}
+
+// TestEveryTopLevelFieldIsTagged enforces the explicit-tag policy
+// on Config. Any top-level field added in the future must carry a
+// `hotreload:"safe"` or `hotreload:"restart"` struct tag, unless it
+// is one of the two grandfathered internal fields
+// (ConfigFile, Integrity) that Diff ignores.
+//
+// The default for untagged fields in Diff is restart-required, so a
+// new field would still be treated correctly at runtime -- but
+// relying on the default means "I thought this field hot-reloaded"
+// versus "it never could" arguments can happen at incident time.
+// The explicit tag closes that conversation.
+func TestEveryTopLevelFieldIsTagged(t *testing.T) {
+	t.Parallel()
+
+	typ := reflect.TypeOf(Config{})
+	for i := 0; i < typ.NumField(); i++ {
+		f := typ.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		switch f.Name {
+		case "ConfigFile", "Integrity":
+			continue
+		}
+		tag := f.Tag.Get("hotreload")
+		switch tag {
+		case TagSafe, TagRestart:
+			// explicit classification, good
+		case "":
+			t.Errorf("Config.%s has no hotreload tag -- add `hotreload:%q` or `hotreload:%q`",
+				f.Name, TagSafe, TagRestart)
+		default:
+			t.Errorf("Config.%s has unknown hotreload tag %q -- expected %q or %q",
+				f.Name, tag, TagSafe, TagRestart)
+		}
 	}
 }
 

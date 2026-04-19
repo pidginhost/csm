@@ -13,7 +13,7 @@ import (
 type Config struct {
 	ConfigFile string `yaml:"-"`
 
-	Hostname string `yaml:"hostname"`
+	Hostname string `yaml:"hostname" hotreload:"restart"`
 
 	Alerts struct {
 		Email struct {
@@ -69,9 +69,9 @@ type Config struct {
 		MailBruteForceMaxTracked   int `yaml:"mail_bruteforce_max_tracked"`
 	} `yaml:"thresholds" hotreload:"safe"`
 
-	InfraIPs []string `yaml:"infra_ips"`
+	InfraIPs []string `yaml:"infra_ips" hotreload:"restart"`
 
-	StatePath string `yaml:"state_path"`
+	StatePath string `yaml:"state_path" hotreload:"restart"`
 
 	Suppressions struct {
 		UPCPWindowStart       string   `yaml:"upcp_window_start"`
@@ -106,11 +106,11 @@ type Config struct {
 		Secret         string   `yaml:"secret"`          // HMAC secret for challenge tokens (auto-generated if empty)
 		Difficulty     int      `yaml:"difficulty"`      // proof-of-work difficulty 0-5 (default: 2)
 		TrustedProxies []string `yaml:"trusted_proxies"` // IPs allowed to set X-Forwarded-For (empty = trust RemoteAddr only)
-	} `yaml:"challenge"`
+	} `yaml:"challenge" hotreload:"restart"`
 
 	PHPShield struct {
 		Enabled bool `yaml:"enabled"` // watch php_events.log for PHP Shield alerts (default: false)
-	} `yaml:"php_shield"`
+	} `yaml:"php_shield" hotreload:"restart"`
 
 	Reputation struct {
 		AbuseIPDBKey string   `yaml:"abuseipdb_key"`
@@ -130,7 +130,7 @@ type Config struct {
 		} `yaml:"yara_forge"`
 		DisabledRules     []string `yaml:"disabled_rules"`      // YARA rule names to exclude from Forge downloads
 		YaraWorkerEnabled bool     `yaml:"yara_worker_enabled"` // run YARA-X in a supervised child process (ROADMAP item 2)
-	} `yaml:"signatures"`
+	} `yaml:"signatures" hotreload:"restart"`
 
 	WebUI struct {
 		Enabled      bool   `yaml:"enabled"`
@@ -140,9 +140,9 @@ type Config struct {
 		TLSCert      string `yaml:"tls_cert"`
 		TLSKey       string `yaml:"tls_key"`
 		UIDir        string `yaml:"ui_dir"` // path to UI files on disk (default: /opt/csm/ui)
-	} `yaml:"webui"`
+	} `yaml:"webui" hotreload:"restart"`
 
-	EmailAV EmailAVConfig `yaml:"email_av"`
+	EmailAV EmailAVConfig `yaml:"email_av" hotreload:"restart"`
 
 	EmailProtection struct {
 		PasswordCheckIntervalMin int      `yaml:"password_check_interval_min"`
@@ -153,7 +153,7 @@ type Config struct {
 		KnownForwarders          []string `yaml:"known_forwarders"`
 	} `yaml:"email_protection" hotreload:"safe"`
 
-	Firewall *firewall.FirewallConfig `yaml:"firewall"`
+	Firewall *firewall.FirewallConfig `yaml:"firewall" hotreload:"restart"`
 
 	GeoIP struct {
 		AccountID      string   `yaml:"account_id"`
@@ -161,15 +161,15 @@ type Config struct {
 		Editions       []string `yaml:"editions"`
 		AutoUpdate     *bool    `yaml:"auto_update"`     // nil = true when credentials set
 		UpdateInterval string   `yaml:"update_interval"` // default "24h"
-	} `yaml:"geoip"`
+	} `yaml:"geoip" hotreload:"restart"`
 
-	ModSecErrorLog string `yaml:"modsec_error_log"`
+	ModSecErrorLog string `yaml:"modsec_error_log" hotreload:"restart"`
 
 	ModSec struct {
 		RulesFile     string `yaml:"rules_file"`     // path to modsec2.user.conf
 		OverridesFile string `yaml:"overrides_file"` // path to csm-overrides.conf
 		ReloadCommand string `yaml:"reload_command"` // e.g. "systemctl restart lsws"
-	} `yaml:"modsec"`
+	} `yaml:"modsec" hotreload:"restart"`
 
 	// WebServer overrides the auto-detected web server paths. Every field is
 	// optional: anything left blank or empty falls back to what
@@ -182,7 +182,7 @@ type Config struct {
 		AccessLogs   []string `yaml:"access_logs"`       // candidate access-log paths, tried in order
 		ErrorLogs    []string `yaml:"error_logs"`        // candidate error-log paths (used for modsec denies)
 		ModSecAudits []string `yaml:"modsec_audit_logs"` // candidate ModSecurity audit-log paths
-	} `yaml:"web_server"`
+	} `yaml:"web_server" hotreload:"restart"`
 
 	// AccountRoots lets operators point the account-scan based checks at
 	// non-cPanel web root layouts. Each entry is a glob pattern expanded
@@ -197,7 +197,7 @@ type Config struct {
 	// cPanel hosts and an empty list on non-cPanel hosts (account-scan
 	// checks skip entirely). See docs/src/configuration.md for the full
 	// list of checks that consume this.
-	AccountRoots []string `yaml:"account_roots"`
+	AccountRoots []string `yaml:"account_roots" hotreload:"restart"`
 
 	Performance struct {
 		Enabled                     *bool   `yaml:"enabled"`
@@ -214,15 +214,15 @@ type Config struct {
 		WPMemoryLimitMaxMB          int     `yaml:"wp_memory_limit_max_mb"`
 		WPTransientWarnMB           int     `yaml:"wp_transient_warn_mb"`
 		WPTransientCriticalMB       int     `yaml:"wp_transient_critical_mb"`
-	} `yaml:"performance"`
+	} `yaml:"performance" hotreload:"restart"`
 
 	Cloudflare struct {
 		Enabled      bool `yaml:"enabled"`
 		RefreshHours int  `yaml:"refresh_hours"`
-	} `yaml:"cloudflare"`
+	} `yaml:"cloudflare" hotreload:"restart"`
 
-	C2Blocklist   []string `yaml:"c2_blocklist"`
-	BackdoorPorts []int    `yaml:"backdoor_ports"`
+	C2Blocklist   []string `yaml:"c2_blocklist" hotreload:"restart"`
+	BackdoorPorts []int    `yaml:"backdoor_ports" hotreload:"restart"`
 }
 
 func Load(path string) (*Config, error) {
