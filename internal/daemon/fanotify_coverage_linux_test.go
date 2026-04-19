@@ -835,8 +835,15 @@ func TestStopIsIdempotent(t *testing.T) {
 	if err := unix.Pipe2(pipeFds[:], unix.O_NONBLOCK|unix.O_CLOEXEC); err != nil {
 		t.Skipf("pipe2 not available: %v", err)
 	}
+	// Open the fd inline without t.Cleanup: Stop() closes fm.fd itself, so
+	// registering a cleanup unix.Close on the same number would be a
+	// double-close that could land on a recycled fd in another goroutine.
+	stopOwnedFd, err := unix.Open("/dev/null", unix.O_RDONLY, 0)
+	if err != nil {
+		t.Fatalf("unix.Open(/dev/null): %v", err)
+	}
 	fm := &FileMonitor{
-		fd:      openRawFd(t, "/dev/null"),
+		fd:      stopOwnedFd,
 		cfg:     &config.Config{},
 		alertCh: make(chan alert.Finding, 10),
 		pipeFds: pipeFds,

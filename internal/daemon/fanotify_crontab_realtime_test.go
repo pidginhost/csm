@@ -24,14 +24,16 @@ func withCronSpoolDir(t *testing.T, dir string) {
 	t.Cleanup(func() { cronSpoolWatchDir = old })
 }
 
-// openRawFd opens path read-only and returns a raw fd plus a cleanup
-// closure. Uses unix.Open directly to avoid the os.File runtime poller
-// integration: os.File.Fd documents that "the runtime poller may close
-// the file descriptor at unspecified times", which under -race + coverage
-// instrumentation can land between t.TempDir's RemoveAll openat() and its
-// readdir() and turn the dir fd into EBADF (observed flake on CI job
-// 93822). Production code paths receive fanotify event fds and call
-// unix.Close explicitly; the tests now mirror that ownership.
+// openRawFd opens path read-only and returns a raw fd, registering an
+// explicit unix.Close via t.Cleanup so the test owns the lifetime
+// end-to-end. Mirrors how production fanotify event fds are owned: the
+// kernel hands the daemon a raw fd and the daemon calls unix.Close
+// itself. Skips the os.File path, which (a) registers the fd with the
+// runtime poller and (b) installs a GC finalizer that may close the
+// underlying fd if the *os.File is found unreachable. Adopted after an
+// intermittent EBADF in t.TempDir cleanup on CI job 93822 under -race +
+// coverage; the os.File ownership story added moving parts that are
+// unnecessary for tests handing fds to syscalling code.
 func openRawFd(t *testing.T, path string) int {
 	t.Helper()
 	fd, err := unix.Open(path, unix.O_RDONLY, 0)
