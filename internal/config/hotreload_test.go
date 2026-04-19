@@ -51,7 +51,7 @@ func TestDiffNoChange(t *testing.T) {
 }
 
 func TestDiffRestartField(t *testing.T) {
-	// Hostname has no hotreload tag -> treated as restart.
+	// Hostname is tagged hotreload:"restart" explicitly.
 	a := &Config{Hostname: "h1"}
 	b := &Config{Hostname: "h2"}
 	changes := Diff(a, b)
@@ -61,11 +61,11 @@ func TestDiffRestartField(t *testing.T) {
 	if changes[0].Field != "hostname" {
 		t.Errorf("yaml name: got %q want hostname", changes[0].Field)
 	}
-	if changes[0].Tag == TagSafe {
-		t.Errorf("untagged field must not be classified safe")
+	if changes[0].Tag != TagRestart {
+		t.Errorf("tag: got %q want %q", changes[0].Tag, TagRestart)
 	}
 	if !RestartRequired(changes) {
-		t.Error("RestartRequired should be true for an untagged change")
+		t.Error("RestartRequired should be true for a restart-tagged change")
 	}
 }
 

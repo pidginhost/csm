@@ -13,12 +13,13 @@ import (
 // handleMetrics serves Prometheus text exposition from the process
 // default metrics registry. ROADMAP item 4.
 //
-// Auth policy:
+// Auth policy (checked in isMetricsAuthenticated):
 //
-//   - If cfg.WebUI.MetricsToken is set, a matching `Authorization:
-//     Bearer` header unlocks the endpoint. Operators should use this
-//     for Prometheus scrapers so rotating the UI AuthToken does not
-//     break scraping.
+//   - If `webui.metrics_token` is set in the live config, a matching
+//     `Authorization: Bearer` header unlocks the endpoint. The token
+//     is read from config.Active() per request so a SIGHUP rotation
+//     (the field is tagged `hotreload:"safe"`) takes effect without
+//     a restart.
 //   - As a fallback, a valid UI session cookie or the UI AuthToken
 //     Bearer is accepted so the dashboard can self-scrape without a
 //     second credential.

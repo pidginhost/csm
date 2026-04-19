@@ -177,5 +177,4 @@ func TestReloadConfigRaceDuringDispatchBatch(t *testing.T) {
 	if got := config.Active(); got == nil {
 		t.Fatal("Active is nil after race loop")
 	}
-	_ = cfgPath
 }

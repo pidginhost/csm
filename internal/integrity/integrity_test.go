@@ -9,16 +9,58 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
-func TestHashConfigStable_ReturnsScannerError(t *testing.T) {
+func TestHashConfigStable_ToleratesLongLines(t *testing.T) {
+	// The scanner is sized at 1 MiB. A 70 KiB line must produce a
+	// real digest rather than an error; callers can compare the
+	// digest against the stored ConfigHash and fail Verify there if
+	// the content drifted. Erroring inside HashConfigStable would
+	// mean the daemon can't even START against a corrupted file to
+	// tell the operator what is wrong.
 	path := filepath.Join(t.TempDir(), "csm.yaml")
-	oversizedLine := strings.Repeat("a", 70*1024)
-	data := "hostname: test.example\n" + oversizedLine + "\n"
-	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+	longLine := strings.Repeat("a", 70*1024)
+	data := "hostname: test.example\n" + longLine + "\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := HashConfigStable(path); err == nil {
-		t.Fatal("HashConfigStable() = nil error, want scanner failure")
+	h, err := HashConfigStable(path)
+	if err != nil {
+		t.Fatalf("HashConfigStable: got error %v, want success", err)
+	}
+	if !strings.HasPrefix(h, "sha256:") {
+		t.Errorf("digest shape: got %q want sha256:...", h)
+	}
+}
+
+func TestHashConfigStable_TruncatesOversizedLinesDeterministically(t *testing.T) {
+	// Beyond the 1 MiB cap the scanner silently truncates the line.
+	// Two files differing only past the truncation point must still
+	// produce the same digest (the trailing content is invisible).
+	// Verify can still catch drift vs a stored hash because any
+	// operator edit that adds or removes non-oversized content
+	// changes the digest.
+	dir := t.TempDir()
+	huge := strings.Repeat("b", 2*1024*1024) // 2 MiB, past the 1 MiB cap
+	base := "hostname: test.example\n"
+
+	pathA := filepath.Join(dir, "a.yaml")
+	pathB := filepath.Join(dir, "b.yaml")
+	if err := os.WriteFile(pathA, []byte(base+huge+"DIFFERENT_TAIL_A\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pathB, []byte(base+huge+"DIFFERENT_TAIL_B\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ha, err := HashConfigStable(pathA)
+	if err != nil {
+		t.Fatalf("HashConfigStable a: %v", err)
+	}
+	hb, err := HashConfigStable(pathB)
+	if err != nil {
+		t.Fatalf("HashConfigStable b: %v", err)
+	}
+	if ha != hb {
+		t.Errorf("truncation should hide tail differences: a=%s b=%s", ha, hb)
 	}
 }
 

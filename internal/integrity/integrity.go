@@ -34,38 +34,18 @@ func HashFile(path string) (string, error) {
 
 // HashConfigStable hashes the config file excluding the integrity section,
 // so that writing hashes back to the config doesn't change the hash.
+//
+// Line length is capped at 1 MiB; anything longer is treated as a
+// corrupted config and the digest reflects whatever was scanned up to
+// the truncation point. A corruption-driven hash will trip
+// integrity.Verify on the next start, which is the intended response.
 func HashConfigStable(path string) (string, error) {
 	// #nosec G304 -- operator-supplied config file path.
-	f, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("reading config: %w", err)
 	}
-	defer func() { _ = f.Close() }()
-
-	h := sha256.New()
-	scanner := bufio.NewScanner(f)
-	inIntegrity := false
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		if strings.HasPrefix(line, "integrity:") {
-			inIntegrity = true
-			continue
-		}
-		if inIntegrity {
-			if strings.HasPrefix(line, "  ") || strings.HasPrefix(line, "\t") || line == "" {
-				continue
-			}
-			inIntegrity = false
-		}
-
-		_, _ = h.Write([]byte(line + "\n"))
-	}
-	if err := scanner.Err(); err != nil {
-		return "", fmt.Errorf("scanning config: %w", err)
-	}
-
-	return fmt.Sprintf("sha256:%x", h.Sum(nil)), nil
+	return HashConfigStableBytes(data), nil
 }
 
 // HashConfigStableBytes is the in-memory counterpart to
