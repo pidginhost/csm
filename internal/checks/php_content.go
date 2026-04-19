@@ -427,6 +427,14 @@ func isSafePHPInWPDir(path, name string) bool {
 		if strings.Contains(noExt, "_") && len(noExt) <= 10 && !strings.ContainsAny(noExt, " /.\\") {
 			return true
 		}
+		// WPML translation queue: /wp-content/languages/wpml/queue/*.php
+		// stores pure <?php return [...] arrays of translation strings.
+		// Narrow match on the queue/ subdir, not on "wpml" anywhere in the
+		// path, so a backdoor in /wp-content/languages/wpml/evil.php is
+		// still caught.
+		if strings.Contains(path, "/wp-content/languages/wpml/queue/") {
+			return true
+		}
 	}
 
 	// Known safe in mu-plugins - common hosting provider mu-plugins

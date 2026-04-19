@@ -322,3 +322,25 @@ func TestAnalyzePHPContentDBMethodExecIsNotShellCall(t *testing.T) {
 		t.Errorf("$this->DB->exec + $_SERVER must not trigger shell+request, got check=%q details=%q", result.check, result.details)
 	}
 }
+
+func TestIsSafePHPInWPDir_WPMLQueue(t *testing.T) {
+	cases := []struct {
+		path string
+		name string
+		want bool
+	}{
+		{"/home/u/public_html/wp-content/languages/wpml/queue/sitepress_pending.php", "sitepress_pending.php", true},
+		{"/home/u/public_html/wp-content/languages/wpml/queue/WPML.php", "WPML.php", true},
+		{"/home/u/public_html/wp-content/languages/wpml/queue/js_composer_pending.php", "js_composer_pending.php", true},
+		{"/home/u/public_html/wp-content/languages/wpml/queue/salient-core.php", "salient-core.php", true},
+		// Control: a random PHP dropped in /languages/ (not inside wpml/queue) must NOT be allowlisted
+		{"/home/u/public_html/wp-content/languages/shell.php", "shell.php", false},
+		// Control: wpml outside the queue/ subdir is also NOT safe (defense-in-depth)
+		{"/home/u/public_html/wp-content/languages/wpml/evil.php", "evil.php", false},
+	}
+	for _, tc := range cases {
+		if got := isSafePHPInWPDir(tc.path, tc.name); got != tc.want {
+			t.Errorf("isSafePHPInWPDir(%q, %q) = %v, want %v", tc.path, tc.name, got, tc.want)
+		}
+	}
+}
