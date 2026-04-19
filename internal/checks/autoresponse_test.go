@@ -329,3 +329,112 @@ func generateHighEntropyPHP(size int) string {
 	}
 	return b.String()
 }
+
+// Regression: WPML wpml_zip.php has measured entropy 5.25 (a handful of
+// ZIP magic-byte constants raise per-byte entropy above the old 4.8 gate)
+// but is clearly legitimate PHPZip library code. The 4.8 threshold was too
+// permissive. Breakdance google-fonts.php measures 4.90 -- this fixture
+// mimics that shape: a commented PHP class with mixed identifiers, a
+// few \xNN binary constants, and natural-language docstrings. Lands near
+// entropy 5.0 with hex density ~3% (well under the 20% hex arm).
+func TestIsHighConfidenceRealtimeMatch_EntropyBand_4_8_to_5_5(t *testing.T) {
+	dir := t.TempDir()
+	dropper := alert.Finding{Details: "Category: dropper\nDescription: test"}
+
+	borderline := filepath.Join(dir, "libcode.php")
+	writeTestFile(t, borderline, []byte(libLikePHPFixture()))
+
+	if isHighConfidenceRealtimeMatch(dropper, borderline, nil) {
+		t.Error("entropy ~5.0 library code must NOT pass the high-confidence gate after tightening to >=5.5")
+	}
+}
+
+func libLikePHPFixture() string {
+	return `<?php
+/**
+ * Class to manage a Zip archive.
+ *
+ * This implementation follows the PKWARE ZIP specification.
+ * Provides methods for adding files, setting metadata, and finalising
+ * the archive into a single byte stream or temporary file.
+ *
+ * @author A. Grandt
+ * @license LGPL
+ */
+class Zip {
+    const ZIP_LOCAL_FILE_HEADER = "\x50\x4b\x03\x04";
+    const ZIP_CENTRAL_FILE_HEADER = "\x50\x4b\x01\x02";
+    const ZIP_END_OF_CENTRAL_DIRECTORY = "\x50\x4b\x05\x06";
+    const ATTR_VERSION_TO_EXTRACT = "\x14\x00";
+
+    private $zipMemoryThreshold = 1048576;
+    private $zipData = null;
+    private $zipFile = null;
+    private $centralDirectory = array();
+    private $endOfCentralDirectory = "";
+
+    public function __construct() {
+        // Default constructor: initialise the in-memory ZIP buffer.
+        $this->zipData = "";
+    }
+
+    public function addFile($data, $filePath, $timestamp = 0, $fileComment = null) {
+        // Compress with deflate and append a local file header plus
+        // the compressed payload to the in-memory buffer. This mirrors
+        // the behaviour described in APPNOTE.TXT section 4.3.
+        if (is_resource($data)) {
+            rewind($data);
+            $data = stream_get_contents($data);
+        }
+        $compressed = gzdeflate($data, 9);
+        $crc32 = crc32($data);
+        $size = strlen($data);
+        $compSize = strlen($compressed);
+        // Emit the header record and payload.
+        $header = self::ZIP_LOCAL_FILE_HEADER;
+        $header .= self::ATTR_VERSION_TO_EXTRACT;
+        $header .= pack("v", 0);
+        $header .= pack("v", 8);
+        $header .= pack("V", $crc32);
+        $this->zipData .= $header;
+        $this->zipData .= $compressed;
+    }
+
+    public function setZipFile($fileName) {
+        // Switch from memory storage to temp-file storage once the
+        // buffered payload exceeds zipMemoryThreshold.
+        $this->zipFile = fopen($fileName, "wb");
+        fwrite($this->zipFile, $this->zipData);
+        $this->zipData = null;
+    }
+}
+`
+}
+
+func TestIsHighConfidenceRealtimeMatch_KnownLibraryPaths_WPMLAndBreakdance(t *testing.T) {
+	dir := t.TempDir()
+	highEntropy := []byte(generateHighEntropyPHP(8000))
+
+	cases := []struct {
+		name    string
+		relPath string
+	}{
+		{"wpml-sitepress", "wp-content/plugins/sitepress-multilingual-cms/inc/wpml_zip.php"},
+		{"wpml-tm", "wp-content/plugins/wpml-translation-management/inc/wpml_zip.php"},
+		{"wpml-string-translation", "wp-content/plugins/wpml-string-translation/inc/foo.php"},
+		{"breakdance", "wp-content/plugins/breakdance/plugin/fonts/integrations/google-fonts/google-fonts.php"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			full := filepath.Join(dir, tc.relPath)
+			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeTestFile(t, full, highEntropy)
+			f := alert.Finding{Details: "Category: webshell\nDescription: test"}
+			if isHighConfidenceRealtimeMatch(f, full, nil) {
+				t.Errorf("path %q must be treated as known-library", tc.relPath)
+			}
+		})
+	}
+}

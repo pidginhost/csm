@@ -418,11 +418,14 @@ func isHighConfidenceRealtimeMatch(f alert.Finding, path string, data []byte) bo
 	}
 
 	// Both dropper and webshell categories go through the same entropy/encoding
-	// checks to avoid false positives. Legitimate plugins (low entropy ~4.2)
-	// pass through, while real obfuscated malware (high entropy ~5.5+) or
-	// hex-heavy payloads still get quarantined.
+	// checks to avoid false positives. Normal PHP with heavy class constants
+	// (binary literals, many named constants) lands in the 4.5-5.3 range --
+	// measured: WPML wpml_zip.php = 5.25, Breakdance google-fonts.php = 4.90.
+	// The 5.5 floor leaves that headroom. Obfuscated packers land at 5.8+.
+	// Files that use long hex-string payloads (LEVIATHAN signature) are
+	// caught by the hex-density arm instead, which stays at 20%.
 	content := string(data)
-	return shannonEntropy(content) >= 4.8 || hexEncodingDensity(content) > 0.20
+	return shannonEntropy(content) >= 5.5 || hexEncodingDensity(content) > 0.20
 }
 
 // hexEncodingDensity returns the fraction of a string's bytes that are part
@@ -461,6 +464,17 @@ var knownLibraryPaths = []string{
 	"/guzzlehttp/",
 	"/symfony/",
 	"/monolog/",
+	// WPML ships a bundled PHPZip class whose ZIP magic-byte constants
+	// ("\x50\x4b\x03\x04" etc.) raise entropy above legitimate-code gates.
+	// The three WPML plugin slugs below cover the family. The sitepress
+	// slug is deliberately written without a trailing slash so it matches
+	// both /sitepress-multilingual-cms/ and /sitepress-multilingual-cms-o/.
+	"/sitepress-multilingual-cms",
+	"/wpml-translation-management/",
+	"/wpml-string-translation/",
+	// Breakdance page builder ships namespaced library helpers that match
+	// dropper heuristics by co-occurrence (file_get_contents + namespace).
+	"/breakdance/",
 }
 
 // InlineQuarantine moves a file to quarantine immediately if it passes the
