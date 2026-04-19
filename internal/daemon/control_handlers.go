@@ -104,7 +104,7 @@ func (c *ControlListener) handleTierRun(argsRaw json.RawMessage) (any, error) {
 	}
 
 	start := time.Now()
-	findings := checks.RunTier(c.d.cfg, c.d.store, tier)
+	findings := checks.RunTier(c.d.currentCfg(), c.d.store, tier)
 
 	if len(findings) > 0 {
 		c.d.store.PurgeAndMergeFindings(checks.PerfCheckNamesForTier(tier), findings)

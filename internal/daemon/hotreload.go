@@ -1,0 +1,147 @@
+package daemon
+
+import (
+	"fmt"
+	"os"
+	"time"
+
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/integrity"
+)
+
+// reloadConfig re-reads the on-disk csm.yaml, validates it, diffs
+// against the current live config, and — if every change is marked
+// safe for live reload — installs the new config via
+// config.SetActive and re-signs integrity.config_hash so the file
+// stays consistent for the next startup's integrity check.
+//
+// Failure modes all leave the live config untouched:
+//
+//   - YAML parse error: Critical `config_reload_error` finding.
+//   - Validation error: Critical `config_reload_error` finding.
+//   - Restart-required fields changed: Warning
+//     `config_reload_restart_required` finding, listing the offending
+//     field names.
+//   - Re-signing failure: Critical `config_reload_error` finding.
+//
+// ROADMAP item 7.
+func (d *Daemon) reloadConfig() {
+	oldCfg := d.activeOrStartupCfg()
+	cfgPath := oldCfg.ConfigFile
+	fmt.Fprintf(os.Stderr, "[%s] SIGHUP: reloading config from %s\n", ts(), cfgPath)
+
+	newCfg, err := config.Load(cfgPath)
+	if err != nil {
+		d.emitReloadFinding(alert.Critical, "config_reload_error",
+			fmt.Sprintf("SIGHUP reload: parse failed (%v); keeping old config", err))
+		return
+	}
+
+	for _, r := range config.Validate(newCfg) {
+		if r.Level == "error" {
+			d.emitReloadFinding(alert.Critical, "config_reload_error",
+				fmt.Sprintf("SIGHUP reload: validation error on %q: %s; keeping old config",
+					r.Field, r.Message))
+			return
+		}
+	}
+
+	changes := config.Diff(oldCfg, newCfg)
+	if len(changes) == 0 {
+		fmt.Fprintf(os.Stderr, "[%s] SIGHUP: no config changes detected\n", ts())
+		return
+	}
+
+	if config.RestartRequired(changes) {
+		var offenders []string
+		for _, c := range changes {
+			if c.Tag != config.TagSafe {
+				offenders = append(offenders, c.Field)
+			}
+		}
+		d.emitReloadFinding(alert.Warning, "config_reload_restart_required",
+			fmt.Sprintf("SIGHUP reload: restart-required fields changed: %v; live config unchanged",
+				offenders))
+		return
+	}
+
+	if err := d.signAndSaveReloadedConfig(oldCfg, newCfg); err != nil {
+		d.emitReloadFinding(alert.Critical, "config_reload_error",
+			fmt.Sprintf("SIGHUP reload: re-signing config failed: %v; live config unchanged", err))
+		return
+	}
+
+	newCfg.ConfigFile = cfgPath
+	config.SetActive(newCfg)
+
+	var names []string
+	for _, c := range changes {
+		names = append(names, c.Field)
+	}
+	fmt.Fprintf(os.Stderr, "[%s] SIGHUP: config reloaded; safe fields updated: %v\n", ts(), names)
+}
+
+// activeOrStartupCfg returns the current live config, falling back
+// to d.cfg (the startup snapshot) if SetActive has not yet been
+// called. Reload paths use this so the first reload diffs against
+// the startup config, and every subsequent reload diffs against
+// whatever the last successful reload installed.
+//
+// Also used by the tier-run hot paths (via currentCfg below) so a
+// SIGHUP-driven threshold change reaches the next tick without a
+// restart.
+func (d *Daemon) activeOrStartupCfg() *config.Config {
+	if c := config.Active(); c != nil {
+		return c
+	}
+	return d.cfg
+}
+
+// currentCfg is the per-tick config accessor for hot paths. See
+// ROADMAP item 7 for the threshold-tuning motivation.
+func (d *Daemon) currentCfg() *config.Config {
+	return d.activeOrStartupCfg()
+}
+
+// signAndSaveReloadedConfig re-computes integrity.config_hash for
+// the new config and saves it to disk. Mirrors the two-pass dance
+// in `csm rehash`: blank the hash field, save, hash the stable form
+// of the saved file, set the hash, save again.
+//
+// The binary hash is preserved from the prior live config — operator
+// did not upgrade the binary as part of a SIGHUP reload, so the
+// value must not drift.
+func (d *Daemon) signAndSaveReloadedConfig(oldCfg, newCfg *config.Config) error {
+	newCfg.Integrity.BinaryHash = oldCfg.Integrity.BinaryHash
+	newCfg.Integrity.ConfigHash = ""
+	if err := config.Save(newCfg); err != nil {
+		return fmt.Errorf("save (pre-hash): %w", err)
+	}
+	configHash, err := integrity.HashConfigStable(newCfg.ConfigFile)
+	if err != nil {
+		return fmt.Errorf("hash stable: %w", err)
+	}
+	newCfg.Integrity.ConfigHash = configHash
+	if err := config.Save(newCfg); err != nil {
+		return fmt.Errorf("save (post-hash): %w", err)
+	}
+	return nil
+}
+
+// emitReloadFinding logs to stderr and pushes a Finding into the
+// daemon's alert channel. Non-blocking on channel saturation; the
+// daemon's existing drop counter tracks those.
+func (d *Daemon) emitReloadFinding(sev alert.Severity, check, msg string) {
+	fmt.Fprintf(os.Stderr, "[%s] %s: %s\n", ts(), check, msg)
+	finding := alert.Finding{
+		Severity:  sev,
+		Check:     check,
+		Message:   msg,
+		Timestamp: time.Now(),
+	}
+	select {
+	case d.alertCh <- finding:
+	default:
+	}
+}

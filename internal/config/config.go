@@ -67,7 +67,7 @@ type Config struct {
 		MailBruteForceSubnetThresh int `yaml:"mail_bruteforce_subnet_threshold"`
 		MailAccountSprayThreshold  int `yaml:"mail_account_spray_threshold"`
 		MailBruteForceMaxTracked   int `yaml:"mail_bruteforce_max_tracked"`
-	} `yaml:"thresholds"`
+	} `yaml:"thresholds" hotreload:"safe"`
 
 	InfraIPs []string `yaml:"infra_ips"`
 

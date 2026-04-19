@@ -257,6 +257,12 @@ func (d *Daemon) Run() error {
 		return fmt.Errorf("integrity check failed: %w", err)
 	}
 
+	// Publish the verified config as the process-wide live pointer.
+	// Hot paths (check ticks, alert dispatch, etc.) call
+	// config.Active() to pick up the current snapshot so a SIGHUP
+	// reload is visible on the next call without restart.
+	config.SetActive(d.cfg)
+
 	// Deploy WHM plugin and configs if cPanel is present
 	deployConfigs()
 
@@ -329,7 +335,7 @@ func (d *Daemon) Run() error {
 
 	// Run initial scan synchronously (before dispatcher starts)
 	fmt.Fprintf(os.Stderr, "[%s] Running initial baseline scan...\n", ts())
-	initialFindings := checks.RunTier(d.cfg, d.store, checks.TierCritical)
+	initialFindings := checks.RunTier(d.currentCfg(), d.store, checks.TierCritical)
 
 	// Seed the attack database with initial scan findings
 	if adb := attackdb.Global(); adb != nil {
@@ -426,7 +432,8 @@ func (d *Daemon) Run() error {
 
 	for sig := range sigCh {
 		if sig == syscall.SIGHUP {
-			fmt.Fprintf(os.Stderr, "[%s] SIGHUP received - reloading rules\n", ts())
+			fmt.Fprintf(os.Stderr, "[%s] SIGHUP received - reloading config and rules\n", ts())
+			d.reloadConfig()
 			d.reloadSignatures()
 			d.publishGeoIP()
 			if d.fwEngine != nil {
@@ -704,11 +711,11 @@ func (d *Daemon) deepScanner() {
 			var findings []alert.Finding
 			var deepTier checks.Tier
 			if d.fileMonitor != nil {
-				findings = checks.RunReducedDeep(d.cfg, d.store)
+				findings = checks.RunReducedDeep(d.currentCfg(), d.store)
 				deepTier = checks.TierDeep
 			} else {
 				deepTier = checks.TierDeep
-				findings = checks.RunTier(d.cfg, d.store, deepTier)
+				findings = checks.RunTier(d.currentCfg(), d.store, deepTier)
 			}
 			if len(findings) > 0 {
 				// Atomically purge stale perf findings and merge new ones.
@@ -746,7 +753,7 @@ func (d *Daemon) runPeriodicChecks(tier checks.Tier) {
 		return
 	}
 
-	findings := checks.RunTier(d.cfg, d.store, tier)
+	findings := checks.RunTier(d.currentCfg(), d.store, tier)
 	if len(findings) > 0 {
 		// Atomically purge stale perf findings and merge new ones.
 		d.store.PurgeAndMergeFindings(checks.PerfCheckNamesForTier(tier), findings)
