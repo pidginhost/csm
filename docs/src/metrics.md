@@ -140,6 +140,21 @@ curl -sk -H "Authorization: Bearer $METRICS_TOKEN" \
   firewall engine does not prune rules without operator or
   auto-response action.
 
+### Config reloads
+
+- `csm_config_reloads_total{result}` (counter): SIGHUP reload
+  attempts, by outcome. Labels: `result` is one of:
+  - `success` -- safe fields swapped in place, integrity hash
+    re-signed, live config updated.
+  - `restart_required` -- one or more fields that need a full
+    restart changed; live config unchanged.
+  - `error` -- YAML parse failure, validation failure, or re-sign
+    failure; live config unchanged.
+  - `noop` -- file edit produced no semantic change (identical
+    values, whitespace edit, etc.).
+  Alert target: `rate(csm_config_reloads_total{result="error"}[5m]) > 0`
+  paired with a short for-clause.
+
 ### Auto-response
 
 - `csm_auto_response_actions_total{action}` (counter): every

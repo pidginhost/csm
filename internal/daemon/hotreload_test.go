@@ -1,8 +1,10 @@
 package daemon
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +12,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/integrity"
+	"github.com/pidginhost/csm/internal/metrics"
 )
 
 // seedConfigAtPath writes cfg to path and re-signs integrity.config_hash
@@ -259,6 +262,117 @@ func TestReloadConfigIntegrityVerifyPassesAfterReload(t *testing.T) {
 		t.Error("Verify against stale d.cfg should fail after reload; " +
 			"fix may have regressed or d.cfg is now being kept in sync")
 	}
+}
+
+// TestReloadConfigMetricCountsOutcomes exercises every reloadConfig
+// outcome and asserts the csm_config_reloads_total{result=X} counter
+// increments accordingly. A later refactor that silently drops one of
+// the recordReloadResult calls fails this test instead of leaving
+// operators without metrics on a single outcome class.
+func TestReloadConfigMetricCountsOutcomes(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "csm.yaml")
+
+	orig := &config.Config{}
+	orig.Thresholds.MailQueueWarn = 100
+	seedConfigAtPath(t, cfgPath, orig)
+
+	loaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	d := newDaemonForReloadTest(t, loaded)
+
+	before := scrapeReloadResults(t)
+
+	// 1. noop: reload without editing the file.
+	d.reloadConfig()
+
+	// 2. success: safe threshold edit.
+	edited := &config.Config{}
+	edited.Thresholds.MailQueueWarn = 200
+	edited.Integrity = loaded.Integrity
+	seedConfigAtPath(t, cfgPath, edited)
+	d.reloadConfig()
+	// drain any state-changes from the alert channel
+	select {
+	case <-d.alertCh:
+	default:
+	}
+
+	// 3. restart_required: edit a restart-tagged field (hostname).
+	reloaded := config.Active()
+	edited2 := &config.Config{}
+	edited2.Hostname = "different.example.com"
+	edited2.Thresholds.MailQueueWarn = 200
+	edited2.Integrity = reloaded.Integrity
+	seedConfigAtPath(t, cfgPath, edited2)
+	d.reloadConfig()
+	// drain the restart_required finding
+	select {
+	case <-d.alertCh:
+	default:
+	}
+
+	// 4. error: corrupt the file.
+	if err := os.WriteFile(cfgPath, []byte("bad: :\n  : yaml\n"), 0o600); err != nil {
+		t.Fatalf("corrupt: %v", err)
+	}
+	d.reloadConfig()
+	select {
+	case <-d.alertCh:
+	default:
+	}
+
+	after := scrapeReloadResults(t)
+	for _, want := range []struct {
+		result string
+		delta  float64
+	}{
+		{"noop", 1},
+		{"success", 1},
+		{"restart_required", 1},
+		{"error", 1},
+	} {
+		got := after[want.result] - before[want.result]
+		if got != want.delta {
+			t.Errorf("result=%s delta: got %g want %g", want.result, got, want.delta)
+		}
+	}
+}
+
+func scrapeReloadResults(t *testing.T) map[string]float64 {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := metrics.WriteOpenMetrics(&buf); err != nil {
+		t.Fatalf("scrape: %v", err)
+	}
+	out := map[string]float64{"success": 0, "error": 0, "restart_required": 0, "noop": 0}
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if !strings.HasPrefix(line, `csm_config_reloads_total{result=`) {
+			continue
+		}
+		open := strings.Index(line, `"`)
+		if open < 0 {
+			continue
+		}
+		rest := line[open+1:]
+		end := strings.Index(rest, `"`)
+		if end < 0 {
+			continue
+		}
+		result := rest[:end]
+		after := strings.TrimSpace(strings.TrimPrefix(rest[end+1:], "}"))
+		if after == "" {
+			continue
+		}
+		v, err := strconv.ParseFloat(after, 64)
+		if err != nil {
+			continue
+		}
+		out[result] = v
+	}
+	return out
 }
 
 func TestReloadConfigNoChangeIsSilent(t *testing.T) {
