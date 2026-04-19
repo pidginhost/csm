@@ -91,6 +91,44 @@ func TestDiffSafeField(t *testing.T) {
 	}
 }
 
+// TestDiffAllSafeFieldsClassifiedSafe nails down which top-level
+// fields are hot-reloadable today. If a future refactor accidentally
+// drops a `hotreload:"safe"` tag, this test fails immediately rather
+// than the field silently regressing to restart-required and
+// operators discovering it only when their next SIGHUP throws a
+// warning. Update the expected list when intentionally adding a new
+// safe field.
+func TestDiffAllSafeFieldsClassifiedSafe(t *testing.T) {
+	cases := []struct {
+		name  string
+		mutate func(*Config)
+	}{
+		{"thresholds", func(c *Config) { c.Thresholds.MailQueueWarn++ }},
+		{"alerts", func(c *Config) { c.Alerts.MaxPerHour++ }},
+		{"suppressions", func(c *Config) { c.Suppressions.TrustedCountries = append(c.Suppressions.TrustedCountries, "RO") }},
+		{"auto_response", func(c *Config) { c.AutoResponse.NetBlockThreshold++ }},
+		{"reputation", func(c *Config) { c.Reputation.Whitelist = append(c.Reputation.Whitelist, "10.0.0.1") }},
+		{"email_protection", func(c *Config) { c.EmailProtection.RateWindowMin++ }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &Config{}
+			b := &Config{}
+			tc.mutate(b)
+			changes := Diff(a, b)
+			if len(changes) != 1 {
+				t.Fatalf("want 1 change, got %+v", changes)
+			}
+			if changes[0].Tag != TagSafe {
+				t.Errorf("%s should be classified safe, got tag %q", tc.name, changes[0].Tag)
+			}
+			if RestartRequired(changes) {
+				t.Errorf("%s should not require restart", tc.name)
+			}
+		})
+	}
+}
+
 func TestDiffMixedTouchesRestart(t *testing.T) {
 	a := &Config{Hostname: "h1"}
 	a.Thresholds.MailQueueWarn = 100

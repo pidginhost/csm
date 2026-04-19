@@ -33,7 +33,7 @@ type Config struct {
 			URL     string `yaml:"url"`
 		} `yaml:"heartbeat"`
 		MaxPerHour int `yaml:"max_per_hour"`
-	} `yaml:"alerts"`
+	} `yaml:"alerts" hotreload:"safe"`
 
 	Integrity struct {
 		BinaryHash string `yaml:"binary_hash"`
@@ -82,7 +82,7 @@ type Config struct {
 		SuppressCpanelLogin   bool     `yaml:"suppress_cpanel_login_alerts"` // don't alert on cPanel direct logins
 		SuppressBlockedAlerts bool     `yaml:"suppress_blocked_alerts"`      // don't alert on IPs that were auto-blocked
 		TrustedCountries      []string `yaml:"trusted_countries"`            // ISO 3166-1 alpha-2 codes - suppress cPanel login alerts from these countries
-	} `yaml:"suppressions"`
+	} `yaml:"suppressions" hotreload:"safe"`
 
 	AutoResponse struct {
 		Enabled            bool   `yaml:"enabled"`
@@ -98,7 +98,7 @@ type Config struct {
 		PermBlockCount     int    `yaml:"permblock_count"`     // temp blocks before permanent (default 4)
 		PermBlockInterval  string `yaml:"permblock_interval"`  // window for counting temp blocks (default "24h")
 		CleanDatabase      bool   `yaml:"clean_database"`      // auto-clean malicious DB injections, revoke sessions, block attacker IPs (default false)
-	} `yaml:"auto_response"`
+	} `yaml:"auto_response" hotreload:"safe"`
 
 	Challenge struct {
 		Enabled        bool     `yaml:"enabled"`         // enable challenge pages instead of hard block for some IPs
@@ -115,7 +115,7 @@ type Config struct {
 	Reputation struct {
 		AbuseIPDBKey string   `yaml:"abuseipdb_key"`
 		Whitelist    []string `yaml:"whitelist"` // IPs to never flag as malicious
-	} `yaml:"reputation"`
+	} `yaml:"reputation" hotreload:"safe"`
 
 	Signatures struct {
 		RulesDir       string `yaml:"rules_dir"`
@@ -151,7 +151,7 @@ type Config struct {
 		RateCritThreshold        int      `yaml:"rate_crit_threshold"`
 		RateWindowMin            int      `yaml:"rate_window_min"`
 		KnownForwarders          []string `yaml:"known_forwarders"`
-	} `yaml:"email_protection"`
+	} `yaml:"email_protection" hotreload:"safe"`
 
 	Firewall *firewall.FirewallConfig `yaml:"firewall"`
 

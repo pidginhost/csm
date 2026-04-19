@@ -353,24 +353,29 @@ func (d *Daemon) Run() error {
 		newFindings = filterUnsuppressedFindings(d.store, newFindings, suppressions)
 	}
 
+	// Snapshot the live config for the initial-scan batch. Same reasoning
+	// as dispatchBatch: a SIGHUP mid-initial-scan must not split the
+	// auto-response between old and new policy.
+	initialCfg := d.currentCfg()
+
 	// Permission auto-fix runs on ALL findings (not just new) because
 	// it's safe/idempotent and should fix baseline findings too.
-	permActions, permFixedKeys := checks.AutoFixPermissions(d.cfg, initialAutoResponseFindings)
+	permActions, permFixedKeys := checks.AutoFixPermissions(initialCfg, initialAutoResponseFindings)
 
 	// Challenge routing runs on ALL findings unconditionally when enabled.
-	challengeActions := checks.ChallengeRouteIPs(d.cfg, initialAutoResponseFindings)
+	challengeActions := checks.ChallengeRouteIPs(initialCfg, initialAutoResponseFindings)
 
 	// Other auto-response only on new findings
 	if len(newFindings) > 0 {
-		killActions := checks.AutoKillProcesses(d.cfg, newFindings)
-		quarantineActions := checks.AutoQuarantineFiles(d.cfg, newFindings)
-		blockActions := checks.AutoBlockIPs(d.cfg, initialAutoResponseFindings)
+		killActions := checks.AutoKillProcesses(initialCfg, newFindings)
+		quarantineActions := checks.AutoQuarantineFiles(initialCfg, newFindings)
+		blockActions := checks.AutoBlockIPs(initialCfg, initialAutoResponseFindings)
 		newFindings = append(newFindings, killActions...)
 		newFindings = append(newFindings, quarantineActions...)
 		newFindings = append(newFindings, permActions...)
 		newFindings = append(newFindings, challengeActions...)
 		newFindings = append(newFindings, blockActions...)
-		_ = alert.Dispatch(d.cfg, newFindings)
+		_ = alert.Dispatch(initialCfg, newFindings)
 	}
 
 	// Remove auto-fixed findings before storing to UI
@@ -541,6 +546,13 @@ func (d *Daemon) alertDispatcher() {
 }
 
 func (d *Daemon) dispatchBatch(findings []alert.Finding) {
+	// Snapshot the live config once at the top of the batch. Every
+	// cfg.X read below picks up the last-reloaded value (ROADMAP
+	// item 7); taking one snapshot avoids the weirder case of a
+	// SIGHUP landing mid-batch and splitting some auto-response
+	// actions between old and new policy.
+	cfg := d.currentCfg()
+
 	findings = alert.Deduplicate(findings)
 	suppressions := d.store.LoadSuppressions()
 	autoResponseFindings := findings
@@ -563,10 +575,10 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	// already sent in a previous cycle.
 
 	// Challenge routing runs FIRST - claims eligible IPs before hard-blocking.
-	challengeActions := checks.ChallengeRouteIPs(d.cfg, autoResponseFindings)
+	challengeActions := checks.ChallengeRouteIPs(cfg, autoResponseFindings)
 
-	blockActions := checks.AutoBlockIPs(d.cfg, autoResponseFindings)
-	permActions, permFixedKeys := checks.AutoFixPermissions(d.cfg, autoResponseFindings)
+	blockActions := checks.AutoBlockIPs(cfg, autoResponseFindings)
+	permActions, permFixedKeys := checks.AutoFixPermissions(cfg, autoResponseFindings)
 
 	// Mark auto-blocked IPs in attack database
 	if adb := attackdb.Global(); adb != nil {
@@ -606,9 +618,9 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	d.store.AppendHistory(newFindings)
 
 	// Kill, quarantine, and DB cleanup only run on NEW findings
-	killActions := checks.AutoKillProcesses(d.cfg, newFindings)
-	quarantineActions := checks.AutoQuarantineFiles(d.cfg, newFindings)
-	dbCleanActions := checks.AutoRespondDBMalware(d.cfg, newFindings)
+	killActions := checks.AutoKillProcesses(cfg, newFindings)
+	quarantineActions := checks.AutoQuarantineFiles(cfg, newFindings)
+	dbCleanActions := checks.AutoRespondDBMalware(cfg, newFindings)
 	newFindings = append(newFindings, killActions...)
 	newFindings = append(newFindings, quarantineActions...)
 	newFindings = append(newFindings, dbCleanActions...)
@@ -645,7 +657,7 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 		}
 		alertable = append(alertable, f)
 	}
-	if err := alert.Dispatch(d.cfg, alertable); err != nil {
+	if err := alert.Dispatch(cfg, alertable); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Alert dispatch error: %v\n", ts(), err)
 	}
 
@@ -787,7 +799,7 @@ func (d *Daemon) heartbeat() {
 		case <-d.stopCh:
 			return
 		case <-ticker.C:
-			alert.SendHeartbeat(d.cfg)
+			alert.SendHeartbeat(d.currentCfg())
 			d.hijackDetector.Cleanup()
 			// Clean expired temporary allows
 			if d.fwEngine != nil {
