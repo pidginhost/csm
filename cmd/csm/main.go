@@ -610,23 +610,14 @@ func runBaseline() {
 	st.SetBaseline(findings)
 
 	binaryHash, _ := integrity.HashFile(binaryPath)
-	cfg.Integrity.BinaryHash = binaryHash
-	// Save first so the file is in its final marshalled form, then hash it.
-	cfg.Integrity.ConfigHash = ""
-	if err := config.Save(cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
-		return
-	}
-	configHash, _ := integrity.HashConfigStable(cfg.ConfigFile)
-	cfg.Integrity.ConfigHash = configHash
-	if err := config.Save(cfg); err != nil {
+	if err := integrity.SignAndSaveAtomic(cfg, binaryHash); err != nil {
 		fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
 		return
 	}
 
 	fmt.Printf("Baseline established with %d findings recorded as known state\n", len(findings))
 	fmt.Printf("Binary hash: %s\n", binaryHash)
-	fmt.Printf("Config hash: %s\n", configHash)
+	fmt.Printf("Config hash: %s\n", cfg.Integrity.ConfigHash)
 }
 
 // runRehash updates only the binary and config hashes without running a full
@@ -636,23 +627,14 @@ func runRehash() {
 	cfg := loadConfigLite()
 
 	binaryHash, _ := integrity.HashFile(binaryPath)
-	cfg.Integrity.BinaryHash = binaryHash
-	// Save first so the file is in its final marshalled form, then hash it.
-	cfg.Integrity.ConfigHash = ""
-	if err := config.Save(cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
-		return
-	}
-	configHash, _ := integrity.HashConfigStable(cfg.ConfigFile)
-	cfg.Integrity.ConfigHash = configHash
-	if err := config.Save(cfg); err != nil {
+	if err := integrity.SignAndSaveAtomic(cfg, binaryHash); err != nil {
 		fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
 		return
 	}
 
 	fmt.Printf("Hashes updated (no scan performed)\n")
 	fmt.Printf("Binary hash: %s\n", binaryHash)
-	fmt.Printf("Config hash: %s\n", configHash)
+	fmt.Printf("Config hash: %s\n", cfg.Integrity.ConfigHash)
 }
 
 func runValidate() {

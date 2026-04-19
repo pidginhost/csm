@@ -141,28 +141,17 @@ func (d *Daemon) currentCfg() *config.Config {
 }
 
 // signAndSaveReloadedConfig re-computes integrity.config_hash for
-// the new config and saves it to disk. Mirrors the two-pass dance
-// in `csm rehash`: blank the hash field, save, hash the stable form
-// of the saved file, set the hash, save again.
+// the new config and writes the result to disk atomically (temp file
+// + rename). The binary hash is preserved from the prior live config;
+// a SIGHUP reload cannot upgrade the binary, so that value must not
+// drift.
 //
-// The binary hash is preserved from the prior live config — operator
-// did not upgrade the binary as part of a SIGHUP reload, so the
-// value must not drift.
+// Atomicity means the on-disk file either still carries the prior
+// content (we failed somewhere) or carries the fully-signed new
+// content. There is no intermediate state with a blank config_hash
+// that could crash-loop the daemon on the next start.
 func (d *Daemon) signAndSaveReloadedConfig(oldCfg, newCfg *config.Config) error {
-	newCfg.Integrity.BinaryHash = oldCfg.Integrity.BinaryHash
-	newCfg.Integrity.ConfigHash = ""
-	if err := config.Save(newCfg); err != nil {
-		return fmt.Errorf("save (pre-hash): %w", err)
-	}
-	configHash, err := integrity.HashConfigStable(newCfg.ConfigFile)
-	if err != nil {
-		return fmt.Errorf("hash stable: %w", err)
-	}
-	newCfg.Integrity.ConfigHash = configHash
-	if err := config.Save(newCfg); err != nil {
-		return fmt.Errorf("save (post-hash): %w", err)
-	}
-	return nil
+	return integrity.SignAndSaveAtomic(newCfg, oldCfg.Integrity.BinaryHash)
 }
 
 // emitReloadFinding logs to stderr and pushes a Finding into the
