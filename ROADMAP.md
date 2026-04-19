@@ -485,17 +485,21 @@ behaviour off.
 
 ## 7. Config hot-reload via SIGHUP
 
-**Status:** shipped (initial, thresholds only).
-`systemctl reload csm` (or `kill -HUP $MAINPID`) now re-reads
-`csm.yaml`, validates it, diffs against the running config, and
-swaps in fields tagged `hotreload:"safe"` without a restart. The
-first safe field is `thresholds`; fanotify marks survive the
-reload. Reload re-signs `integrity.config_hash` on disk so scripted
-edits no longer need a manual `csm rehash`. `ExecReload=` is wired
-into the systemd unit. See "Follow-ups" below for the fields still
-on restart.
-**Drives / unblocks:** live threshold tuning without losing fanotify
-marks
+**Status:** shipped. `systemctl reload csm` (or `kill -HUP
+$MAINPID`) re-reads `csm.yaml`, validates it, diffs against the
+running config, and swaps in fields tagged `hotreload:"safe"`
+without a restart. Tagged safe today: `thresholds`, `alerts`,
+`suppressions`, `auto_response`, `reputation`,
+`email_protection`. Fanotify marks survive the reload. Reload
+re-signs `integrity.config_hash` on disk so scripted edits no
+longer need a manual `csm rehash`. `ExecReload=` is wired into the
+systemd unit. See "Follow-ups" below for the remaining top-level
+fields (webui.metrics_token, signatures.rules_dir) and the four
+startup-capture sub-keys that stay on restart within the
+safe-tagged parents.
+**Drives / unblocks:** live threshold tuning, live alert-sink
+tuning, live suppression edits during an incident; all without
+losing fanotify marks
 
 ### Why
 
@@ -557,20 +561,31 @@ require a restart; the reload logs a clear
 
 ### Follow-ups (not yet shipped)
 
-- Tag `alerts`, `suppressions`, `reputation`, `email_protection`,
-  `webui.metrics_token` as `hotreload:"safe"` once each field's
-  readers migrate from a captured `cfg` pointer to
-  `config.Active()` on each call. `alerts` and `suppressions` are
-  the highest-value targets (live alert-sink tuning, live
-  suppression edits during an incident).
-- Tag `signatures.rules_dir` as safe: requires the signatures and
-  YARA backends to re-initialise against the new directory,
-  which the existing `update-rules` machinery already does on the
-  signatures side.
+- `webui.metrics_token` hot-reload. The `/metrics` handler reads
+  the token from the webui Server's captured `cfg`, so rotating
+  the token today still needs a restart. Fix requires the server
+  to check `config.Active()` on each request; the WebUI parent
+  struct can't be tagged safe wholesale because `listen`,
+  `tls_cert`, `tls_key`, `ui_dir`, and `enabled` all require a
+  restart. A field-level hotreload tag (rather than the current
+  top-level-only model) is the clean fix.
+- `signatures.rules_dir` hot-reload: requires the signatures and
+  YARA backends to re-initialise against the new directory.
+  The existing `update-rules` machinery already does this for the
+  signatures path; the YARA worker has `RestartWorker()` which
+  would spawn a fresh child against the new dir. Wiring a
+  reload-time call to both is low-risk but needs integration
+  tests covering the "mid-scan rules change" window.
 - Dashboard surface for "what would a reload change?" -- a dry-run
   diff endpoint on the control socket that returns the classified
   field list without actually swapping. Useful for
   config-management tools.
+- Close the startup-capture gap inside the currently-safe fields:
+  `thresholds` tick intervals, `reputation.whitelist` (threat DB
+  seed), `email_protection.known_forwarders` (forwarder watcher),
+  `auto_response.block_expiry` (challenge escalator). Each reads
+  once at daemon startup; making them re-read on reload requires
+  per-consumer wiring, not a bulk change.
 
 ### Estimated size
 

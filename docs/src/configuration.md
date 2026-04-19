@@ -401,15 +401,34 @@ the live config and re-signs `integrity.config_hash` on disk. The
 next check tick sees the new thresholds; fanotify marks are not
 dropped.
 
-One caveat: a handful of thresholds configure long-lived tickers
-set once at daemon startup (`deep_scan_interval_min`,
-`wp_core_check_interval_min`, `webshell_scan_interval_min`,
-`filesystem_scan_interval_min`). Editing those via SIGHUP updates
-the stored value (and the next reload diff is clean) but the
-ticker keeps firing at the old interval until the next restart.
-All other threshold values -- rates, counts, windows, severity
-thresholds -- are read per-tick inside the check functions and
-take effect on the next tick.
+The tagged-safe top-level fields are `thresholds`, `alerts`,
+`suppressions`, `auto_response`, `reputation`, and
+`email_protection`. Changes to their sub-keys are picked up on the
+next tick by the periodic scanners, the auto-response helpers
+(block/kill/quarantine/challenge/permission-fix), alert dispatch,
+and the heartbeat.
+
+A few sub-keys are exceptions -- they live under a safe-tagged
+parent but feed a long-lived goroutine that reads the value once
+at daemon startup. The reload accepts the edit and re-signs the
+hash, but the running goroutine keeps the old value until the next
+restart:
+
+- `thresholds.deep_scan_interval_min`,
+  `thresholds.wp_core_check_interval_min`,
+  `thresholds.webshell_scan_interval_min`,
+  `thresholds.filesystem_scan_interval_min` -- tick intervals
+  passed to `time.NewTicker` at startup.
+- `reputation.whitelist` -- seeded into the threat database at
+  startup; runtime additions do not propagate until restart.
+- `email_protection.known_forwarders` -- captured by the forwarder
+  watcher at startup.
+- `auto_response.block_expiry` -- captured by the challenge
+  escalator at startup.
+
+If you change any of the above, send a real restart instead of a
+reload. Every other sub-key in those sections is read per-call and
+hot-reloads cleanly.
 
 Look for one of three log shapes in the journal:
 
