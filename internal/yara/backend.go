@@ -3,15 +3,12 @@ package yara
 import "sync/atomic"
 
 // Backend is the consumable scanning surface shared by the in-process
-// *Scanner and out-of-process process supervisor. Callers that only
-// need to scan bytes/files and query state should depend on this
-// interface (via Active()) so they keep working when the daemon
-// switches backends at startup.
-//
-// Callers that need YARA-X internals (e.g. the emailav adapter that
-// reaches for the compiled *yara_x.Rules to read per-rule severity
-// metadata) must keep using Global(); the worker-mode backend cannot
-// provide that object because the rules live in another process.
+// *Scanner and out-of-process process supervisor. Callers should depend
+// on this interface (via Active()) so they keep working when the daemon
+// switches backends at startup. String-valued rule metadata travels on
+// Match.Meta, so adapters that historically reached for the compiled
+// *yara_x.Rules object (e.g. emailav) now work uniformly under both
+// backends -- see internal/emailav/yarax.go.
 type Backend interface {
 	ScanFile(path string, maxBytes int) []Match
 	ScanBytes(data []byte) []Match
