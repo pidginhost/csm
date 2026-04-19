@@ -401,6 +401,16 @@ the live config and re-signs `integrity.config_hash` on disk. The
 next check tick sees the new thresholds; fanotify marks are not
 dropped.
 
+One caveat: a handful of thresholds configure long-lived tickers
+set once at daemon startup (`deep_scan_interval_min`,
+`wp_core_check_interval_min`, `webshell_scan_interval_min`,
+`filesystem_scan_interval_min`). Editing those via SIGHUP updates
+the stored value (and the next reload diff is clean) but the
+ticker keeps firing at the old interval until the next restart.
+All other threshold values -- rates, counts, windows, severity
+thresholds -- are read per-tick inside the check functions and
+take effect on the next tick.
+
 Look for one of three log shapes in the journal:
 
 - `SIGHUP: config reloaded; safe fields updated: [thresholds]` --

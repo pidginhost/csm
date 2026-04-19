@@ -20,6 +20,9 @@ import (
 // logic itself and do not trip the validator on a skeleton config.
 func seedConfigAtPath(t *testing.T, path string, cfg *config.Config) {
 	t.Helper()
+	if cfg.Hostname == "" {
+		cfg.Hostname = "test.example.com"
+	}
 	if !cfg.Alerts.Email.Enabled && !cfg.Alerts.Webhook.Enabled {
 		cfg.Alerts.Email.Enabled = true
 		cfg.Alerts.Email.To = []string{"ops@example.com"}
@@ -190,6 +193,71 @@ func TestReloadConfigBadYAMLEmitsCritical(t *testing.T) {
 	}
 	if f.Check != "config_reload_error" {
 		t.Errorf("check: got %q want config_reload_error", f.Check)
+	}
+}
+
+// TestReloadConfigIntegrityVerifyPassesAfterReload is a regression
+// guard. Pre-fix, runPeriodicChecks called
+// integrity.Verify(d.binaryPath, d.cfg) against the startup config,
+// whose stored ConfigHash went stale the moment a SIGHUP reload
+// re-signed the on-disk file. Every periodic tick then fired a
+// spurious Critical tamper alert. Verify now runs against
+// d.currentCfg(), so the stored hash stays in sync with whatever
+// the last successful reload wrote to disk.
+func TestReloadConfigIntegrityVerifyPassesAfterReload(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "csm.yaml")
+
+	// Stand-in binary: any stable file Verify can hash. Keep it
+	// separate from cfgPath so rewrites to the config do not change
+	// the binary hash mid-test.
+	binPath := filepath.Join(dir, "bin")
+	if err := os.WriteFile(binPath, []byte("stand-in"), 0o600); err != nil {
+		t.Fatalf("write bin: %v", err)
+	}
+	bh, err := integrity.HashFile(binPath)
+	if err != nil {
+		t.Fatalf("hash bin: %v", err)
+	}
+
+	orig := &config.Config{}
+	orig.Thresholds.MailQueueWarn = 100
+	orig.Integrity.BinaryHash = bh
+	seedConfigAtPath(t, cfgPath, orig)
+
+	loaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	d := newDaemonForReloadTest(t, loaded)
+	d.binaryPath = binPath
+
+	// Baseline: Verify passes against the freshly-seeded config.
+	if err := integrity.Verify(d.binaryPath, d.currentCfg()); err != nil {
+		t.Fatalf("baseline Verify: %v", err)
+	}
+
+	// Edit a safe field on disk and reload.
+	edited := &config.Config{}
+	edited.Thresholds.MailQueueWarn = 777
+	edited.Integrity = loaded.Integrity
+	seedConfigAtPath(t, cfgPath, edited)
+	d.reloadConfig()
+
+	// Post-reload: Verify must still pass. Using d.cfg here would
+	// fail (stale ConfigHash); the fix routes through
+	// d.currentCfg().
+	if err := integrity.Verify(d.binaryPath, d.currentCfg()); err != nil {
+		t.Errorf("post-reload Verify via d.currentCfg failed: %v", err)
+	}
+
+	// Nail down the bug the fix was made for: Verify against the
+	// startup d.cfg MUST fail post-reload, because its stored hash
+	// is stale. If that starts passing, something shifted; the
+	// regression guard on d.currentCfg loses its meaning.
+	if err := integrity.Verify(d.binaryPath, d.cfg); err == nil {
+		t.Error("Verify against stale d.cfg should fail after reload; " +
+			"fix may have regressed or d.cfg is now being kept in sync")
 	}
 }
 

@@ -737,8 +737,12 @@ func (d *Daemon) deepScanner() {
 }
 
 func (d *Daemon) runPeriodicChecks(tier checks.Tier) {
-	// Verify integrity
-	if err := integrity.Verify(d.binaryPath, d.cfg); err != nil {
+	// Verify integrity against the CURRENT live config. A SIGHUP
+	// reload re-signs integrity.config_hash on disk and updates
+	// config.Active; using d.cfg (the startup snapshot) here would
+	// fire a Critical tamper alert on every tick after a successful
+	// reload because the stored hash in d.cfg is stale.
+	if err := integrity.Verify(d.binaryPath, d.currentCfg()); err != nil {
 		select {
 		case d.alertCh <- alert.Finding{
 			Severity:  alert.Critical,
