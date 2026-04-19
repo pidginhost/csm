@@ -84,13 +84,13 @@ RUN curl -fsSL https://sh.rustup.rs | \
 # cargo-c: builds Rust libraries as C-compatible .a + .h + .pc.
 RUN cargo install cargo-c@0.10.20 --locked
 
-# Compile YARA-X v1.14.0 static library, install to /usr/local. The
+# Compile YARA-X v1.15.0 static library, install to /usr/local. The
 # --library-type=staticlib flag ensures cargo-c emits only the .a
 # (not a .so) — we link YARA-X statically into the csm binary so
 # there is no external YARA-X dependency at deploy time. The csm
 # binary itself still links glibc dynamically (see the build job
 # ldflags: -linkmode external without -extldflags '-static').
-RUN git clone --depth 1 --branch v1.14.0 \
+RUN git clone --depth 1 --branch v1.15.0 \
         https://github.com/VirusTotal/yara-x.git /tmp/yara-x \
     && cd /tmp/yara-x \
     && cargo cinstall -p yara-x-capi --release \

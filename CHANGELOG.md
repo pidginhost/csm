@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- YARA-X bumped from v1.14.0 to v1.15.0 on the glibc-2.28 builder. Go binding API is unchanged; the C static library is rebuilt from the matching tag. `CSM_BUILDER_TAG` stepped to `glibc-2.28-r2`. Previous 1.15.0 attempt on the Alpine+musl-static builder crashed in `yrx_compiler_build`; the move to glibc-dynamic removed that class of issues, so 1.15.0 is being retried on the supported toolchain.
+
 ### Added
 
 - ROADMAP entries 4-9: Prometheus/OpenMetrics endpoint, structured audit log export, bbolt retention policy, SIGHUP config hot-reload, baseline/state backup+restore, and challenge UX polish (CAPTCHA fallback, verified-session bypass, verified-crawler allow-pass).
