@@ -376,13 +376,52 @@ csm config show        # display config with secrets redacted
 
 CSM stores a sha256 of the config in `integrity.config_hash` and
 refuses to start if the on-disk file disagrees with it. This is a
-tamper-detection feature; it also means any manual edit to
-`/opt/csm/csm.yaml` that is not followed by `csm rehash` causes
-the daemon to exit 1 on the next start with
-`config hash mismatch: expected <old> got <new>`. systemd's
-`Restart=always` will then crash-loop the daemon, not auto-recover.
+tamper-detection feature. There are two supported edit workflows
+depending on which fields you touch.
 
-The correct sequence for any hand-edit is:
+### Fast path: SIGHUP reload (safe fields only)
+
+For fields tagged as hot-reload-safe (currently `thresholds`), the
+daemon can accept the change without a restart:
+
+```bash
+sudo cp /opt/csm/csm.yaml /opt/csm/csm.yaml.bak-$(date +%s)
+
+# edit /opt/csm/csm.yaml with your favourite editor
+
+sudo systemctl reload csm
+sudo journalctl -u csm -n 20 --no-pager
+```
+
+`systemctl reload` sends SIGHUP (wired via `ExecReload=` in the unit
+file). The daemon re-reads the file, validates it, diffs it against
+the running config, and if every change is on a field tagged
+`hotreload:"safe"` it swaps the new values into
+the live config and re-signs `integrity.config_hash` on disk. The
+next check tick sees the new thresholds; fanotify marks are not
+dropped.
+
+Look for one of three log shapes in the journal:
+
+- `SIGHUP: config reloaded; safe fields updated: [thresholds]` --
+  success. The new values are live.
+- `config_reload_restart_required: SIGHUP reload: restart-required
+  fields changed: [hostname ...]; live config unchanged` -- the
+  edit touched a field that cannot be hot-swapped. A Warning
+  `config_reload_restart_required` finding is also emitted. Fall
+  back to the restart path below.
+- `config_reload_error: SIGHUP reload: parse failed ...` or
+  `... validation error ...` -- the file on disk is not loadable
+  or fails `csm validate`. A Critical `config_reload_error`
+  finding is emitted. The live config is unchanged; fix the file
+  and repeat.
+
+### Restart path: unsafe fields
+
+Fields not tagged `hotreload:"safe"` (the majority, including
+`hostname`, `state_path`, `webui.listen`, `firewall.*`, `email_av.*`
+and anything that survives only one re-init per daemon lifetime)
+require a full restart. The integrity check must be re-signed first:
 
 ```bash
 sudo cp /opt/csm/csm.yaml /opt/csm/csm.yaml.bak-$(date +%s)
@@ -395,14 +434,20 @@ sudo systemctl restart csm
 sudo systemctl status csm    # confirm active, no crash-loop
 ```
 
-If the restart fails, roll back with
+If the restart fails (most commonly because `rehash` was skipped),
+roll back with
 `sudo cp <backup> /opt/csm/csm.yaml && sudo systemctl restart csm`.
 The backup carries its own matching hash so no second rehash is
 needed.
 
-Config-management workflows (Ansible, Puppet, Chef) should pipe
-every edit through `csm rehash` before the `restart` notify fires.
+### Config-management tools
 
-This step goes away once ROADMAP item 7 (SIGHUP config hot-reload)
-ships: reload will re-read the config and update the hash in place,
-and most threshold changes will not need a restart at all.
+Config-management workflows (Ansible, Puppet, Chef) should:
+
+- For safe changes, notify `systemctl reload csm` instead of
+  `restart`. The daemon re-signs the hash itself; no separate
+  `csm rehash` step is required.
+- For any change that may touch a restart-required field, run
+  `csm rehash` before the restart notify fires. Or always send
+  `reload` first, read the journal, and promote to `restart` only
+  when the reload logs `restart-required`.

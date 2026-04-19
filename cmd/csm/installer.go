@@ -462,6 +462,7 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=%s daemon
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=10
 WatchdogSec=300

@@ -485,7 +485,15 @@ behaviour off.
 
 ## 7. Config hot-reload via SIGHUP
 
-**Status:** planned
+**Status:** shipped (initial, thresholds only).
+`systemctl reload csm` (or `kill -HUP $MAINPID`) now re-reads
+`csm.yaml`, validates it, diffs against the running config, and
+swaps in fields tagged `hotreload:"safe"` without a restart. The
+first safe field is `thresholds`; fanotify marks survive the
+reload. Reload re-signs `integrity.config_hash` on disk so scripted
+edits no longer need a manual `csm rehash`. `ExecReload=` is wired
+into the systemd unit. See "Follow-ups" below for the fields still
+on restart.
 **Drives / unblocks:** live threshold tuning without losing fanotify
 marks
 
@@ -546,6 +554,23 @@ require a restart; the reload logs a clear
   through the control socket.
 - Dynamic watched-root changes. Fanotify re-marking cost is not
   worth the complexity here.
+
+### Follow-ups (not yet shipped)
+
+- Tag `alerts`, `suppressions`, `reputation`, `email_protection`,
+  `webui.metrics_token` as `hotreload:"safe"` once each field's
+  readers migrate from a captured `cfg` pointer to
+  `config.Active()` on each call. `alerts` and `suppressions` are
+  the highest-value targets (live alert-sink tuning, live
+  suppression edits during an incident).
+- Tag `signatures.rules_dir` as safe: requires the signatures and
+  YARA backends to re-initialise against the new directory,
+  which the existing `update-rules` machinery already does on the
+  signatures side.
+- Dashboard surface for "what would a reload change?" -- a dry-run
+  diff endpoint on the control socket that returns the classified
+  field list without actually swapping. Useful for
+  config-management tools.
 
 ### Estimated size
 
