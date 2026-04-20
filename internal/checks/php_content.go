@@ -398,8 +398,16 @@ func analyzePHPContent(path string) phpAnalysisResult {
 		return phpAnalysisResult{severity: -1}
 	}
 
-	// Multiple indicators or remote payloads = critical
-	if len(indicators) >= 2 || containsAny(indicators, "remote payload", "call_user_func with obfuscated") {
+	// Auto-quarantine in autoresponse.AutoQuarantineFiles acts only on
+	// Critical findings. A single heuristic indicator has false-positive
+	// classes severe enough to rm live production files (WPML's PHPZip
+	// tripped the former "call_user_func with obfuscated" bypass on hex
+	// constants that build ZIP magic bytes; legitimate plugins embed
+	// pastebin URLs in support docstrings and release notes). Require
+	// two converging indicators before the severity crosses the
+	// destructive-action threshold; single hits surface as High and stay
+	// in the operator queue.
+	if len(indicators) >= 2 {
 		return phpAnalysisResult{
 			severity: alert.Critical,
 			check:    "obfuscated_php",

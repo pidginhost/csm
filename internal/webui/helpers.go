@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/pidginhost/csm/internal/integrity"
 )
 
 // jsonForScript marshals v to JSON and returns it as template.JS suitable
@@ -175,6 +177,36 @@ func isPathWithin(path, base string) bool {
 	cleanPath := filepath.Clean(path)
 	cleanBase := filepath.Clean(base)
 	return cleanPath == cleanBase || strings.HasPrefix(cleanPath, cleanBase+string(filepath.Separator))
+}
+
+// archiveMatchesOriginal reports whether the archived file and the original
+// path hold byte-identical contents. Used by the quarantine listing to hide
+// entries whose original has been restored (the archive is a redundant
+// duplicate). Any I/O failure, size mismatch, non-regular target, or hash
+// divergence returns false so the UI keeps showing the entry for operator
+// review. Size check short-circuits before hashing so the listing stays
+// cheap when a site is reattacked with a larger payload.
+func archiveMatchesOriginal(archivePath, originalPath string) bool {
+	origInfo, err := os.Stat(originalPath)
+	if err != nil || !origInfo.Mode().IsRegular() {
+		return false
+	}
+	archInfo, err := os.Stat(archivePath)
+	if err != nil || !archInfo.Mode().IsRegular() {
+		return false
+	}
+	if origInfo.Size() != archInfo.Size() {
+		return false
+	}
+	origHash, err := integrity.HashFile(originalPath)
+	if err != nil {
+		return false
+	}
+	archHash, err := integrity.HashFile(archivePath)
+	if err != nil {
+		return false
+	}
+	return origHash == archHash
 }
 
 const preCleanQuarantineIDPrefix = "pre_clean:"

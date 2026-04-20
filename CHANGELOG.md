@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Unit-test coverage for the plugin-checksum cache paths in `internal/wpcheck/plugins.go` (`pluginZipURL`, `FetchPluginChecksums`, `hasPluginChecksums`, `startBackgroundPluginFetch` dedupe, `fetchPluginWithRetry` success + exhaustion). HTTP routed via the existing `rewriteTransport`/`withTestHTTPClient` harness so no network is touched.
 - Unit-test coverage for pure helpers in `internal/checks` (`countOccurrences`, `containsAny`, `isURLWordChar`) previously at 0%. All three are shared building blocks in higher-level checks; standalone tests pin their behaviour so a refactor cannot silently change the semantics.
 
+### Changed
+
+- `analyzePHPContent` requires two converging indicators before returning Critical severity; the former single-indicator bypass for "remote payload" and "call_user_func with obfuscated" matches is gone. Heuristic hits still fire as High (`suspicious_php_content`) and reach the operator queue, but auto-quarantine in `AutoQuarantineFiles` no longer acts on a lone heuristic signal. YARA rule matches and realtime signature hits route through their own gates and are unchanged.
+- Quarantine listing (`/api/v1/quarantine`) now hides entries whose archived content is byte-identical to the original path. Restoring a file (UI, CLI, or `cp`) removes the archive from the listing on next load without a separate cleanup step; divergent or missing originals remain visible.
+
 ### Fixed
 
 - Auto-quarantine false positive on WPML's bundled PHPZip library (`inc/wpml_zip.php`). The "call_user_func with obfuscated function names" indicator fired on any file with file-wide hex literals plus a call_user_func anywhere; WPML's ZIP-format constants (`"\x50\x4b\x03\x04"`) + benign `call_user_func(self::$temp)` tripped it, hard-breaking wp-login on sites that `require_once` it at bootstrap. The check now requires hex escapes + concatenation on the call_user_func line itself, matching the LEVIATHAN pattern (`call_user_func("\x63"."\x75"."\x72"."\x6c", ...)`).

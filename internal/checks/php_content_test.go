@@ -323,6 +323,66 @@ func TestAnalyzePHPContentDBMethodExecIsNotShellCall(t *testing.T) {
 	}
 }
 
+// --- analyzePHPContent: single heuristic indicator must not auto-remove -
+//
+// Severity determines auto-action downstream: autoresponse.AutoQuarantineFiles
+// moves any Critical obfuscated_php finding to /opt/csm/quarantine/ without
+// further corroboration. A single heuristic indicator is "suspicious", not
+// "confirmed" -- two independent indicators converging is the floor for
+// destroying a live production file. Lone-indicator matches surface as High
+// (suspicious_php_content), keeping detection and alerting but routing the
+// decision through a human.
+//
+// The previous policy bypassed the >=2 gate for any finding whose indicator
+// list contained "remote payload" or "call_user_func with obfuscated",
+// producing auto-quarantine on a single heuristic hit. That mechanism rm'd
+// WPML's PHPZip across seven customer sites before the per-indicator fix
+// landed; tightening that indicator alone is not enough -- the class of
+// single-indicator auto-delete has to go.
+
+func TestAnalyzePHPContentLonePastebinIsHighNotCritical(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pb.php")
+	content := "<?php\n$u = 'https://pastebin.com/raw/abc';\n"
+	_ = os.WriteFile(path, []byte(content), 0644)
+
+	result := analyzePHPContent(path)
+	if result.check != "suspicious_php_content" {
+		t.Errorf("lone pastebin URL must alert as suspicious_php_content (High), not escalate to auto-quarantine; got check=%q details=%q", result.check, result.details)
+	}
+}
+
+func TestAnalyzePHPContentLoneCallUserFuncObfuscationIsHighNotCritical(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cuf.php")
+	// LEVIATHAN-style call_user_func with hex-built function name, but no
+	// other indicator. Alert, do not auto-quarantine.
+	content := "<?php\n" +
+		"call_user_func(\"\\x63\" . \"\\x75\" . \"\\x72\" . \"\\x6c\" . \"\\x5f\" . \"\\x69\" . \"\\x6e\" . \"\\x69\" . \"\\x74\", \"x\");\n"
+	_ = os.WriteFile(path, []byte(content), 0644)
+
+	result := analyzePHPContent(path)
+	if result.check != "suspicious_php_content" {
+		t.Errorf("lone call_user_func hex-built name must alert (High), not auto-quarantine; got check=%q details=%q", result.check, result.details)
+	}
+}
+
+func TestAnalyzePHPContentTwoIndicatorsEscalateToCritical(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dropper.php")
+	// Pastebin URL + nested eval/base64_decode on same line = two independent
+	// indicators. Corroborating signals -> auto-quarantine is the right call.
+	content := "<?php\n" +
+		"$u = 'https://pastebin.com/raw/abc';\n" +
+		"ev" + "al(base64_decode($x));\n"
+	_ = os.WriteFile(path, []byte(content), 0644)
+
+	result := analyzePHPContent(path)
+	if result.check != "obfuscated_php" {
+		t.Errorf("two converging indicators must escalate to Critical; got check=%q details=%q", result.check, result.details)
+	}
+}
+
 // --- analyzePHPContent: call_user_func false-positive regression --------
 //
 // WPML bundles PHPZip (A. Grandt, LGPL) as inc/wpml_zip.php to build XLIFF
@@ -366,22 +426,6 @@ func TestAnalyzePHPContentZipLibraryWithHexLiteralsIsClean(t *testing.T) {
 	result := analyzePHPContent(path)
 	if result.check != "" {
 		t.Errorf("benign zip library (hex ZIP signatures + plain call_user_func(self::$temp)) must not fire; got check=%q details=%q", result.check, result.details)
-	}
-}
-
-func TestAnalyzePHPContentCallUserFuncHexOnCallLineStillFires(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "leviathan-style.php")
-	// Real LEVIATHAN technique: function name built from hex escapes + concat
-	// on the call_user_func line itself. "\x63"."\x75"."\x72"."\x6c" == "curl".
-	content := "<?php\n" +
-		"$payload = \"http://evil.example/x\";\n" +
-		"call_user_func(\"\\x63\" . \"\\x75\" . \"\\x72\" . \"\\x6c\" . \"\\x5f\" . \"\\x69\" . \"\\x6e\" . \"\\x69\" . \"\\x74\", $payload);\n"
-	_ = os.WriteFile(path, []byte(content), 0644)
-
-	result := analyzePHPContent(path)
-	if result.check != "obfuscated_php" {
-		t.Errorf("call_user_func with hex-built function name on same line must fire Critical, got check=%q details=%q", result.check, result.details)
 	}
 }
 

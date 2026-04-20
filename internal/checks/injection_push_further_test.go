@@ -550,19 +550,6 @@ func TestAnalyzePHPContent_CallUserFuncWithObfuscation(t *testing.T) {
 	}
 }
 
-// analyzePHPContent: pastebin raw URL triggers remote-payload indicator.
-func TestAnalyzePHPContent_PasteBinRaw(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "pb.php")
-	content := "<?php\n$u = 'https://pastebin.com/raw/abc';\n"
-	_ = os.WriteFile(path, []byte(content), 0644)
-
-	result := analyzePHPContent(path)
-	if result.check != "obfuscated_php" {
-		t.Errorf("pastebin URL should be critical, got %+v", result)
-	}
-}
-
 // analyzePHPContent: github raw co-present with dangerous call.
 func TestAnalyzePHPContent_GithubCoPresence(t *testing.T) {
 	dir := t.TempDir()

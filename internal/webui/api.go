@@ -356,6 +356,15 @@ func (s *Server) apiQuarantine(w http.ResponseWriter, _ *http.Request) {
 			continue
 		}
 
+		// Hide entries whose original has been restored byte-identical to
+		// the archive: the archive is redundant and the UI should reflect
+		// the live filesystem, not the quarantine history. Divergence
+		// (missing, different size, different content) keeps the entry
+		// visible -- the operator still has to reconcile it.
+		if archivePath := strings.TrimSuffix(metaFile, ".meta"); archiveMatchesOriginal(archivePath, meta.OriginalPath) {
+			continue
+		}
+
 		entries = append(entries, quarantineEntry{
 			ID:           quarantineEntryID(metaFile),
 			OriginalPath: meta.OriginalPath,
