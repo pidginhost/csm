@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -120,24 +121,34 @@ func TestDispatchStatusHappyPath(t *testing.T) {
 func TestHandleHistoryReadClampsLimit(t *testing.T) {
 	c := newListenerForTest(t)
 
+	// Seed 150 findings so the default-of-100 clamp and the
+	// under/over-range branches produce observably different page
+	// sizes. An empty store would mask every branch.
+	seed := make([]alert.Finding, 150)
+	for i := range seed {
+		seed[i] = alert.Finding{
+			Severity: alert.Warning,
+			Check:    "seed",
+			Message:  fmt.Sprintf("finding-%d", i),
+		}
+	}
+	c.d.store.AppendHistory(seed)
+
 	cases := []struct {
-		name   string
-		args   control.HistoryReadArgs
-		expect int
+		name      string
+		args      control.HistoryReadArgs
+		wantPage  int // len(Findings) after clamping
+		wantTotal int
 	}{
-		{"zero limit defaults to 100", control.HistoryReadArgs{Limit: 0, Offset: 0}, 100},
-		{"negative limit defaults to 100", control.HistoryReadArgs{Limit: -5}, 100},
-		{"over-1000 limit defaults to 100", control.HistoryReadArgs{Limit: 9999}, 100},
-		{"valid limit preserved", control.HistoryReadArgs{Limit: 50}, 50},
-		{"boundary 1000 preserved", control.HistoryReadArgs{Limit: 1000}, 1000},
+		{"zero limit clamps to default 100", control.HistoryReadArgs{Limit: 0}, 100, 150},
+		{"negative limit clamps to default 100", control.HistoryReadArgs{Limit: -5}, 100, 150},
+		{"over-1000 limit clamps to default 100", control.HistoryReadArgs{Limit: 9999}, 100, 150},
+		{"valid limit preserved", control.HistoryReadArgs{Limit: 50}, 50, 150},
+		{"boundary limit 1000 preserved (returns all 150)", control.HistoryReadArgs{Limit: 1000}, 150, 150},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			raw, _ := json.Marshal(tc.args)
-			// Intercept the limit by calling the handler directly and
-			// re-parsing the args mutation via a second decode. Since
-			// ReadHistory is unobservable from out here (empty store),
-			// we assert through the empty-result shape instead.
 			res, err := c.handleHistoryRead(raw)
 			if err != nil {
 				t.Fatalf("handleHistoryRead: %v", err)
@@ -146,10 +157,11 @@ func TestHandleHistoryReadClampsLimit(t *testing.T) {
 			if !ok {
 				t.Fatalf("result type: got %T", res)
 			}
-			// An empty store returns (nil, 0) regardless of limit; the
-			// branch we care about is that clamping did not error.
-			if len(r.Findings) != 0 || r.Total != 0 {
-				t.Errorf("empty store unexpected result: %+v", r)
+			if got := len(r.Findings); got != tc.wantPage {
+				t.Errorf("page size: got %d, want %d", got, tc.wantPage)
+			}
+			if r.Total != tc.wantTotal {
+				t.Errorf("total: got %d, want %d", r.Total, tc.wantTotal)
 			}
 		})
 	}
