@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.1] - 2026-04-20
+
 ### Added
 
 - Unit-test coverage for the daemon control socket (`control_handlers.go`, `control_listener.go`) and YARA backend selector (`yara_backend.go`), all added in 2.5.0/2.6.0 with no tests. Covers dispatch routing (including a fuzz seed), every handler's argument clamping and error branches, end-to-end Unix-socket roundtrips with a `/tmp`-prefixed short path to avoid the macOS `sun_path` limit, the YARA worker restart rate-limiter, and the in-process backend init path. `controlSocketPath` became a `var` for test redirection; production default unchanged.
