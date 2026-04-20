@@ -253,11 +253,27 @@ func analyzePHPContent(path string) phpAnalysisResult {
 	}
 
 	// --- Critical: call_user_func with string-built function names ---
-	// This is the exact technique used in the LEVIATHAN droppers
+	// LEVIATHAN droppers build the target function name on the call itself:
+	//   call_user_func("\x63"."\x75"."\x72"."\x6c", $payload)  ==  call_user_func("curl", ...)
+	// File-wide hex/concat counts are unsafe here: WPML bundles PHPZip
+	// (inc/wpml_zip.php) which declares 20+ ZIP-format signature constants
+	// as hex literals ("\x50\x4b\x03\x04" etc.) and makes a single benign
+	// call_user_func(self::$temp) call to invoke a temp-file factory.
+	// Match the obfuscation on the call_user_func line itself.
 	if strings.Contains(contentLower, "call_user_func") {
-		// Check if function names are built from string concatenation
-		if countOccurrences(content, `"\x`) > 5 || countOccurrences(content, "\" . \"") > 10 {
-			indicators = append(indicators, "call_user_func with obfuscated function names")
+		for _, line := range strings.Split(content, "\n") {
+			if !strings.Contains(strings.ToLower(line), "call_user_func") {
+				continue
+			}
+			lineHex := countOccurrences(line, `"\x`)
+			lineConcat := countOccurrences(line, `" . "`) + countOccurrences(line, `"."`)
+			// Typical shortest obfuscated name is 3-4 bytes ("exec", "curl",
+			// "eval"); require >=3 hex escapes AND >=2 concatenations on the
+			// same call_user_func line.
+			if lineHex >= 3 && lineConcat >= 2 {
+				indicators = append(indicators, "call_user_func with obfuscated function names")
+				break
+			}
 		}
 	}
 

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Auto-quarantine false positive on WPML's bundled PHPZip library (`inc/wpml_zip.php`). The "call_user_func with obfuscated function names" indicator fired on any file with file-wide hex literals plus a call_user_func anywhere; WPML's ZIP-format constants (`"\x50\x4b\x03\x04"`) + benign `call_user_func(self::$temp)` tripped it, hard-breaking wp-login on sites that `require_once` it at bootstrap. The check now requires hex escapes + concatenation on the call_user_func line itself, matching the LEVIATHAN pattern (`call_user_func("\x63"."\x75"."\x72"."\x6c", ...)`).
 - Coverage badge workflow now authenticates the GitHub releases API and asset downloads with `GITHUB_TOKEN`. Anonymous calls from shared Actions runner IPs were hitting the 60 req/hour rate limit and returning 403, collapsing the 10-release walk to zero hits so the badge fell back to unit-only (52.2%) instead of merged (84.7%).
 
 ## [2.6.0] - 2026-04-19

