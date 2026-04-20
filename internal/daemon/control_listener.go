@@ -14,9 +14,9 @@ import (
 )
 
 // controlSocketPath is the Unix socket the daemon binds for
-// CLI-to-daemon IPC. Kept in sync with internal/control.DefaultSocketPath
-// via a compile-time reference in NewControlListener.
-const controlSocketPath = "/var/run/csm/control.sock"
+// CLI-to-daemon IPC. A var (not const) so tests can redirect under
+// t.TempDir(); production default matches internal/control.DefaultSocketPath.
+var controlSocketPath = "/var/run/csm/control.sock"
 
 // controlRequestTimeout caps how long a single client request can block
 // the listener. Handlers that legitimately take longer (tier.run on a

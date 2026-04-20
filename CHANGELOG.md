@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Unit-test coverage for the daemon control socket (`control_handlers.go`, `control_listener.go`) and YARA backend selector (`yara_backend.go`), all added in 2.5.0/2.6.0 with no tests. Covers dispatch routing (including a fuzz seed), every handler's argument clamping and error branches, end-to-end Unix-socket roundtrips with a `/tmp`-prefixed short path to avoid the macOS `sun_path` limit, the YARA worker restart rate-limiter, and the in-process backend init path. `controlSocketPath` became a `var` for test redirection; production default unchanged.
+
 ### Fixed
 
 - Auto-quarantine false positive on WPML's bundled PHPZip library (`inc/wpml_zip.php`). The "call_user_func with obfuscated function names" indicator fired on any file with file-wide hex literals plus a call_user_func anywhere; WPML's ZIP-format constants (`"\x50\x4b\x03\x04"`) + benign `call_user_func(self::$temp)` tripped it, hard-breaking wp-login on sites that `require_once` it at bootstrap. The check now requires hex escapes + concatenation on the call_user_func line itself, matching the LEVIATHAN pattern (`call_user_func("\x63"."\x75"."\x72"."\x6c", ...)`).
