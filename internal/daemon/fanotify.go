@@ -574,6 +574,21 @@ func (fm *FileMonitor) reconcileDrops() {
 
 // isInteresting is the fast filter - zero I/O, pure string matching.
 func (fm *FileMonitor) isInteresting(path string) bool {
+	// Atomic-write staging files. cPanel's fileTransfer and any restore
+	// tool using write-then-rename stages content as
+	// `.temp.<nanoseconds>.<name>.<ext>` before rename(2) to the final
+	// path. CSM's fanotify mask is CLOSE_WRITE + CREATE only; it does not
+	// subscribe to FAN_MOVED_TO, so the post-rename file is never
+	// rescanned in real time. Scanning the transient staging path
+	// produces a false-positive storm on legitimate WordPress restores
+	// because the staged content IS genuine WP core. The periodic deep
+	// scan catches any file that lingers at a staging name (attacker
+	// hiding under `.temp.` would leave a permanent .temp.* file on disk
+	// for the next hourly deep pass to pick up).
+	if looksLikeAtomicWriteStage(filepath.Base(path)) {
+		return false
+	}
+
 	lower := strings.ToLower(path)
 
 	// PHP files
