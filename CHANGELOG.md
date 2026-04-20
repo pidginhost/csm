@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Unit-test coverage for the daemon control socket (`control_handlers.go`, `control_listener.go`) and YARA backend selector (`yara_backend.go`), all added in 2.5.0/2.6.0 with no tests. Covers dispatch routing (including a fuzz seed), every handler's argument clamping and error branches, end-to-end Unix-socket roundtrips with a `/tmp`-prefixed short path to avoid the macOS `sun_path` limit, the YARA worker restart rate-limiter, and the in-process backend init path. `controlSocketPath` became a `var` for test redirection; production default unchanged.
 - Unit-test coverage for `internal/obs` (57% -> 93%) and the nil-client / pure-function paths of `internal/yaraworker/supervisor.go` (`RestartCount`, `ChildPID`, `toYaraMatches`, `DefaultSocketPath`, `Reload`/`RestartWorker` before-start error branches).
+- Unit-test coverage for the plugin-checksum cache paths in `internal/wpcheck/plugins.go` (`pluginZipURL`, `FetchPluginChecksums`, `hasPluginChecksums`, `startBackgroundPluginFetch` dedupe, `fetchPluginWithRetry` success + exhaustion). HTTP routed via the existing `rewriteTransport`/`withTestHTTPClient` harness so no network is touched.
 
 ### Fixed
 
