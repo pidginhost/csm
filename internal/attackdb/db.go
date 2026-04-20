@@ -143,6 +143,7 @@ type DB struct {
 
 var (
 	globalDB   *DB
+	globalMu   sync.Mutex
 	dbInitOnce sync.Once
 )
 
@@ -236,7 +237,46 @@ func (db *DB) SeedFromPermanentBlocklist(statePath string) int {
 
 // Global returns the global attack database instance.
 func Global() *DB {
+	globalMu.Lock()
+	defer globalMu.Unlock()
 	return globalDB
+}
+
+// SetGlobal overrides the global attack database. Mirrors
+// store.SetGlobal: production wires globalDB exactly once via Init;
+// tests use this to install a pre-seeded DB without touching the
+// sync.Once-guarded Init path.
+func SetGlobal(db *DB) {
+	globalMu.Lock()
+	globalDB = db
+	globalMu.Unlock()
+}
+
+// NewForTest builds a bare in-memory DB pre-populated with the given
+// records. No backgroundSaver is started (no goroutines to clean up),
+// no disk path is configured. Reserved for unit tests; production
+// wiring stays on Init. Records are deep-copied so a later mutation
+// to the caller's map (including its nested AttackCounts / Accounts
+// maps) cannot bleed into the DB.
+func NewForTest(records map[string]*IPRecord) *DB {
+	db := &DB{
+		records:    make(map[string]*IPRecord, len(records)),
+		deletedIPs: make(map[string]struct{}),
+		stopCh:     make(chan struct{}),
+	}
+	for k, v := range records {
+		cp := *v
+		cp.AttackCounts = make(map[AttackType]int, len(v.AttackCounts))
+		for ak, av := range v.AttackCounts {
+			cp.AttackCounts[ak] = av
+		}
+		cp.Accounts = make(map[string]int, len(v.Accounts))
+		for ak, av := range v.Accounts {
+			cp.Accounts[ak] = av
+		}
+		db.records[k] = &cp
+	}
+	return db
 }
 
 // RecordFinding records an attack event from a finding.
