@@ -414,8 +414,12 @@ func FuzzDispatch(f *testing.F) {
 }
 
 // newListenerForFuzz is the f.Fuzz-compatible twin of
-// newListenerForTest. testing.TB accepts both *testing.T and
-// *testing.F, so the body is identical except for the Helper() target.
+// newListenerForTest. Unlike the direct handler tests, the fuzzer
+// cannot pin which handler a seed reaches — so BinaryHash is set to a
+// value that deliberately fails integrity.Verify, short-circuiting any
+// `tier.run` seed before it touches checks.RunTier. Without this, a
+// valid `tier.run` seed with BinaryHash="" would pass integrity and
+// spin up the full critical tier, hanging CI for 5+ minutes.
 func newListenerForFuzz(f *testing.F) *ControlListener {
 	f.Helper()
 	st, err := state.Open(f.TempDir())
@@ -423,13 +427,16 @@ func newListenerForFuzz(f *testing.F) *ControlListener {
 		f.Fatalf("state.Open: %v", err)
 	}
 	f.Cleanup(func() { _ = st.Close() })
+	cfg := &config.Config{StatePath: f.TempDir()}
+	cfg.Integrity.BinaryHash = "sha256:fuzz-force-integrity-fail"
 	d := &Daemon{
-		cfg:     &config.Config{StatePath: f.TempDir()},
-		store:   st,
-		alertCh: make(chan alert.Finding, 8),
-		version: "fuzz",
+		cfg:        cfg,
+		binaryPath: "/nonexistent-fuzz-binary",
+		store:      st,
+		alertCh:    make(chan alert.Finding, 8),
+		version:    "fuzz",
 	}
-	config.SetActive(d.cfg)
+	config.SetActive(cfg)
 	f.Cleanup(func() { config.SetActive(nil) })
 	return &ControlListener{d: d}
 }
