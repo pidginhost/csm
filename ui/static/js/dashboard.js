@@ -111,6 +111,7 @@
     }
 
     function fixFromFeed(btn) {
+        var key = btn.getAttribute('data-key') || '';
         var check = btn.getAttribute('data-check');
         var message = btn.getAttribute('data-message');
         var desc = btn.getAttribute('data-fixdesc');
@@ -120,7 +121,7 @@
             var spinner = document.createElement('span');
             spinner.className = 'spinner-border spinner-border-sm';
             btn.appendChild(spinner);
-            CSM.post('/api/v1/fix', {check: check, message: message}).then(function(data) {
+            CSM.post('/api/v1/fix', {key: key, check: check, message: message}).then(function(data) {
                 if (data.success) {
                     btn.textContent = '';
                     var icon = document.createElement('i');

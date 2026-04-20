@@ -41,6 +41,7 @@ type historyEntry struct {
 	TimeAgo      string
 	HasFix       bool
 	FixDesc      string
+	Key          string // canonical dedup key (matches alert.Finding.Key())
 }
 
 type quarantineData struct {
@@ -91,6 +92,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 				TimeAgo:      timeAgo(f.Timestamp),
 				HasFix:       checks.HasFix(f.Check),
 				FixDesc:      checks.FixDescription(f.Check, f.Message, f.FilePath),
+				Key:          f.Key(),
 			})
 		}
 	}

@@ -412,6 +412,7 @@ function fixOne(btn) {
         btn.disabled = true;
         btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
         CSM.post('/api/v1/fix', {
+            key: row.getAttribute('data-key') || '',
             check: row.getAttribute('data-check'),
             message: row.getAttribute('data-message'),
             file_path: row.getAttribute('data-filepath') || ''
@@ -483,7 +484,7 @@ function bulkAction(action) {
         var fixable = items.filter(function(i) { return i.fixable; });
         if (fixable.length === 0) { CSM.toast('None of the selected findings have automated fixes.', 'warning'); return; }
         CSM.confirm('Fix ' + fixable.length + ' finding(s)?\n\nThis will apply automated fixes (chmod, quarantine, etc.) to the selected items.').then(function() {
-            var fixItems = fixable.map(function(i) { return { check: i.check, message: i.message, details: '', file_path: i.file_path }; });
+            var fixItems = fixable.map(function(i) { return { key: i.key, check: i.check, message: i.message, details: '', file_path: i.file_path }; });
             CSM.post('/api/v1/fix-bulk', fixItems).then(function(data) {
                 CSM.toast('Fixed ' + data.succeeded + ' of ' + data.total + (data.failed > 0 ? ' (' + data.failed + ' failed)' : ''), 'success');
                 clearAndReload();
@@ -511,7 +512,7 @@ function bulkAction(action) {
 
     } else if (action === 'quarantine') {
         CSM.confirm('Quarantine ' + items.length + ' file(s)?\n\nFiles will be moved to /opt/csm/quarantine/').then(function() {
-            var quarItems = items.map(function(i) { return { check: i.check, message: i.message, details: '', file_path: i.file_path }; });
+            var quarItems = items.map(function(i) { return { key: i.key, check: i.check, message: i.message, details: '', file_path: i.file_path }; });
             CSM.post('/api/v1/fix-bulk', quarItems).then(function(data) {
                 CSM.toast('Quarantined ' + data.succeeded + ' of ' + data.total, 'success');
                 clearAndReload();

@@ -619,6 +619,7 @@ func (s *Server) apiFix(w http.ResponseWriter, r *http.Request) {
 		Message  string `json:"message"`
 		Details  string `json:"details"`
 		FilePath string `json:"file_path"`
+		Key      string `json:"key"`
 	}
 	if err := decodeJSONBodyLimited(w, r, 64*1024, &req); err != nil || req.Check == "" || req.Message == "" {
 		writeJSONError(w, "check and message are required", http.StatusBadRequest)
@@ -632,9 +633,15 @@ func (s *Server) apiFix(w http.ResponseWriter, r *http.Request) {
 
 	result := checks.ApplyFix(req.Check, req.Message, req.Details, req.FilePath)
 
-	// If fix succeeded, dismiss from both alert state and latest findings
+	// If fix succeeded, dismiss from both alert state and latest findings.
+	// Prefer the canonical key sent by the client (matches Finding.Key(), which
+	// includes a hash of Details when present); fall back to check:message for
+	// older clients and findings with empty Details.
 	if result.Success {
-		key := req.Check + ":" + req.Message
+		key := req.Key
+		if key == "" {
+			key = req.Check + ":" + req.Message
+		}
 		s.store.DismissFinding(key)
 		s.store.DismissLatestFinding(key)
 		s.auditLog(r, "fix", req.Check, result.Action)
@@ -656,6 +663,7 @@ func (s *Server) apiBulkFix(w http.ResponseWriter, r *http.Request) {
 		Message  string `json:"message"`
 		Details  string `json:"details"`
 		FilePath string `json:"file_path"`
+		Key      string `json:"key"`
 	}
 	if err := decodeJSONBodyLimited(w, r, 64*1024, &reqs); err != nil {
 		writeJSONError(w, "invalid request body", http.StatusBadRequest)
@@ -672,7 +680,10 @@ func (s *Server) apiBulkFix(w http.ResponseWriter, r *http.Request) {
 		}
 		result := checks.ApplyFix(req.Check, req.Message, req.Details, req.FilePath)
 		if result.Success {
-			key := req.Check + ":" + req.Message
+			key := req.Key
+			if key == "" {
+				key = req.Check + ":" + req.Message
+			}
 			s.store.DismissFinding(key)
 			s.store.DismissLatestFinding(key)
 		}
