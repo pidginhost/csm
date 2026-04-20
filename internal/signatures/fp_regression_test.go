@@ -618,3 +618,139 @@ func TestPhishingPaypal_RealCredentialHarvester(t *testing.T) {
 		t.Error("phishing_paypal regression: credential-capture PayPal phishing page (brand + password field + form) was not detected")
 	}
 }
+
+// obfuscation_assert_string fired on any PHP file containing the
+// substring `assert(` because the YAML rule had `min_match: 1` and
+// two items (pattern + regex) where either alone would match. League's
+// HTMLToMarkdown bundles `\assert(\is_array($lines));` for parameter
+// validation and several PHPUnit-style dev tools use `assert(boolean)`.
+// The regex was meant to be the discriminator (assert wrapping request
+// input or base64 decode) but was optional. Require the regex so only
+// the dangerous shapes fire.
+func TestObfuscationAssertString_LegitParameterValidation(t *testing.T) {
+	scanner := loadRepoScanner(t)
+
+	legit := []byte(`<?php
+namespace League\HTMLToMarkdown\Converter;
+class BlockquoteConverter {
+    public function convert($lines) {
+        \assert(\is_array($lines));
+        return implode("\n", $lines);
+    }
+}
+`)
+	matches := scanner.ScanContent(legit, ".php")
+	if hasRule(matches, "obfuscation_assert_string") {
+		t.Error("obfuscation_assert_string FP: matched plain \\assert(\\is_array($lines)) parameter validation (no dynamic input, not an eval alternative)")
+	}
+}
+
+func TestObfuscationAssertString_DynamicRequestInput(t *testing.T) {
+	scanner := loadRepoScanner(t)
+
+	// assert() historically evaluates string arguments as PHP code. The
+	// canonical webshell shape inlines a request superglobal or a base64
+	// decode call directly into the assert() argument. Must keep firing.
+	malicious := []byte(`<?php
+assert($_POST['cmd']);
+assert(base64_decode($_REQUEST['x']));
+`)
+	matches := scanner.ScanContent(malicious, ".php")
+	if !hasRule(matches, "obfuscation_assert_string") {
+		t.Error("obfuscation_assert_string regression: assert() wrapping request input or base64_decode must keep firing")
+	}
+}
+
+// webshell_adminer_abuse had two case-insensitive patterns for the same
+// brand word ("adminer", "Adminer") which both matched any occurrence,
+// counting as two hits against min_match=2 and firing on files that
+// merely mentioned the word. Hide My WP is a WordPress security plugin
+// that BLOCKS adminer abuse in URL firewall rules -- it contains the
+// word many times in detection patterns but isn't the tool itself.
+// Require the `adminer.org` upstream URL regex as a positive signal;
+// real Adminer source always ships with the project URL in headers.
+func TestWebshellAdminerAbuse_SecurityPluginFirewallRules(t *testing.T) {
+	scanner := loadRepoScanner(t)
+
+	legit := []byte(`<?php
+// Hide My WP Ghost: firewall rule shape
+class Rules {
+    public static $block = [
+        'FW_URI_ADMINER' => '/(\/)((boot)?_?admin(er|istrator|s)(_events)?)(\.php)/i',
+        'FW_URI_MARKERS' => '/(adminer|wso|shell|backdoor)/i',
+    ];
+}
+`)
+	matches := scanner.ScanContent(legit, ".php")
+	if hasRule(matches, "webshell_adminer_abuse") {
+		t.Error("webshell_adminer_abuse FP: matched security plugin's URL firewall blocking adminer (the word appears as a detection target, not a deployment)")
+	}
+}
+
+func TestWebshellAdminerAbuse_RealAdminerDeployment(t *testing.T) {
+	scanner := loadRepoScanner(t)
+
+	// Real Adminer (adminer.org project) ships its source with a project
+	// URL in the header docblock. That's the distinguishing mark the rule
+	// should key on.
+	malicious := []byte(`<?php
+/** Adminer - Compact database management
+ * @link https://www.adminer.org/
+ * @author Jakub Vrana, https://www.vrana.cz/
+ */
+class Adminer {
+    function __construct() { session_start(); }
+}
+`)
+	matches := scanner.ScanContent(malicious, ".php")
+	if !hasRule(matches, "webshell_adminer_abuse") {
+		t.Error("webshell_adminer_abuse regression: real Adminer source with adminer.org URL must fire")
+	}
+}
+
+// spam_sitemap_hijack fired on any file containing "sitemap" + "<urlset"
+// because the regex (hardcoded spam-TLD <loc> entries) was optional --
+// min_match=2 was met by the two substring patterns alone. Real
+// sitemap-generator plugins (Rank Math, Yoast) emit <urlset> XML as
+// part of their legitimate core behaviour; they don't hardcode spam
+// TLDs. Require the spam-TLD regex so the rule fires only on the
+// injection shape.
+func TestSpamSitemapHijack_RankMathLegitGenerator(t *testing.T) {
+	scanner := loadRepoScanner(t)
+
+	legit := []byte(`<?php
+// Rank Math Local SEO sitemap generator
+class KML_File {
+    public function emit_sitemap($locations) {
+        $output  = $this->newline('<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">', 1);
+        foreach ($locations as $loc) {
+            $output .= $this->newline('<url><loc>' . esc_url($loc['url']) . '</loc></url>', 2);
+        }
+        $output .= $this->newline('</urlset>', 1);
+        return $output;
+    }
+}
+`)
+	matches := scanner.ScanContent(legit, ".php")
+	if hasRule(matches, "spam_sitemap_hijack") {
+		t.Error("spam_sitemap_hijack FP: matched Rank Math sitemap generator (emits <urlset> XML legitimately; no hardcoded spam TLD <loc> entries)")
+	}
+}
+
+func TestSpamSitemapHijack_HardcodedSpamTLDLocEntries(t *testing.T) {
+	scanner := loadRepoScanner(t)
+
+	malicious := []byte(`<?php
+// sitemap hijack shape: inline PHP that prints a sitemap containing
+// hardcoded spam-TLD URLs
+echo '<?xml version="1.0" encoding="UTF-8"?>';
+echo '<urlset>';
+echo '<url><loc>https://cheapviagra.xyz/buy</loc></url>';
+echo '<url><loc>https://casino-bonus.top/signup</loc></url>';
+echo '</urlset>';
+`)
+	matches := scanner.ScanContent(malicious, ".php")
+	if !hasRule(matches, "spam_sitemap_hijack") {
+		t.Error("spam_sitemap_hijack regression: hardcoded spam-TLD <loc> entries inside <urlset> must keep firing")
+	}
+}
