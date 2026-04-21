@@ -350,11 +350,12 @@ func applyDefaults(cfg *Config) {
 		cfg.EmailProtection.RateWindowMin = 10
 	}
 
-	// Performance defaults
-	if cfg.Performance.Enabled == nil {
-		t := true
-		cfg.Performance.Enabled = &t
-	}
+	// Performance defaults.
+	// Enabled is a tri-state *bool: nil means "use system default (on)", true means
+	// explicitly enabled, false means explicitly disabled. We do NOT apply a default
+	// here so that callers can distinguish "operator left it unset" (nil) from
+	// "operator set it to true" (&true). All callers must nil-check before dereferencing;
+	// perfEnabled() in checks/performance.go treats nil as true.
 	if cfg.Performance.LoadHighMultiplier == 0 {
 		cfg.Performance.LoadHighMultiplier = 1.0
 	}

@@ -128,8 +128,10 @@ func TestYAMLEditNullValueRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Performance.Enabled == nil || !*cfg.Performance.Enabled {
-		t.Errorf("expected default true, got %v", cfg.Performance.Enabled)
+	// Performance.Enabled is a tri-state *bool with no default applied by LoadBytes;
+	// null in YAML → nil in the struct so the UI can distinguish "unset" from "true".
+	if cfg.Performance.Enabled != nil {
+		t.Errorf("expected nil (unset) for explicit null, got %v", *cfg.Performance.Enabled)
 	}
 }
 
