@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Dashboard now shows a single system health pill at the top, 24h stat cards carry day-over-day deltas and link into a pre-filtered history, and the trend chart has a 7d / 30d / 90d period selector.
 - Live Feed on the dashboard has severity chips and a quick filter so busy hosts stay triageable during bursts.
+- Web UI settings page: edit operator-facing csm.yaml sections from the browser. Safe-reload sections apply live; restart-required sections save to disk and prompt for a one-click daemon restart.
 
 ### Changed
 
