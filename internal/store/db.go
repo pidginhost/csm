@@ -28,6 +28,7 @@ var bucketNames = []string{
 	"meta",
 	"email:geo",
 	"email:fwd",
+	bucketStatsDaily,
 }
 
 // DB wraps a bbolt database.
@@ -103,6 +104,13 @@ func Open(statePath string) (*DB, error) {
 	// Run migration if needed
 	if err := db.migrateIfNeeded(statePath); err != nil {
 		fmt.Fprintf(os.Stderr, "store: migration warning: %v\n", err)
+	}
+
+	// One-time backfill of stats:daily from existing history. Runs on
+	// hosts upgrading from a build that pre-dates the stats:daily bucket;
+	// no-op afterwards thanks to a meta sentinel.
+	if err := db.BackfillStatsDaily(); err != nil {
+		fmt.Fprintf(os.Stderr, "store: stats:daily backfill warning: %v\n", err)
 	}
 
 	// Seed default ModSecurity no-escalate rules (one-time only).

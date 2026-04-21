@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	bolt "go.etcd.io/bbolt"
@@ -29,10 +30,24 @@ func (db *DB) AppendHistory(findings []alert.Finding) error {
 			if err := b.Put([]byte(key), val); err != nil {
 				return err
 			}
+			// Same transaction as the history insert: either both land or
+			// neither does, so the daily aggregate can never drift.
+			if err := incrStatsDaily(tx, f.Timestamp, f.Severity); err != nil {
+				return err
+			}
 		}
 
 		if err := incrCounter(tx, "history:count", len(findings)); err != nil {
 			return err
+		}
+
+		// Cheap sweep against the bounded stats:daily bucket. Done here
+		// (rather than on a timer) so the daily-aggregate path has a
+		// single owner.
+		if len(findings) > 0 {
+			if err := pruneStatsDaily(tx, time.Now()); err != nil {
+				return err
+			}
 		}
 
 		// Prune oldest entries if count exceeds maxHistoryEntries.

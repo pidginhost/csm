@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Dashboard "30-Day Trend" chart no longer flatlines on older days once history pruning kicks in. `AggregateByDay` now reads from a new pre-aggregated `stats:daily` bbolt bucket (one row per day, severity counters) updated atomically with each `AppendHistory`, so the chart is decoupled from the 100k-entry history cap. A one-time backfill seeds `stats:daily` from existing history on first start; the daily bucket is itself capped at 365 days.
+
 ## [2.6.1] - 2026-04-20
 
 ### Added

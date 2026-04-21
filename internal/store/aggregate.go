@@ -131,56 +131,34 @@ func (db *DB) ReadHistorySince(since time.Time) []alert.Finding {
 }
 
 // AggregateByDay returns 30 daily buckets (oldest first) for the last 30 days.
-// It seeks directly to the start key in bbolt, scanning only the relevant range.
+// Reads from the pre-aggregated stats:daily bucket so the trend chart is
+// not affected by history pruning.
 func (db *DB) AggregateByDay() []DayBucket {
 	now := time.Now()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 	cutoff := today.AddDate(0, 0, -29)
 
-	// Map: date string → bucket index
-	dateIndex := make(map[string]int, 30)
 	buckets := make([]DayBucket, 30)
 	for i := 0; i < 30; i++ {
 		d := cutoff.AddDate(0, 0, i)
-		key := d.Format("2006-01-02")
-		buckets[i] = DayBucket{Date: key}
-		dateIndex[key] = i
+		buckets[i] = DayBucket{Date: d.Format("2006-01-02")}
 	}
 
-	seekPrefix := fmt.Sprintf("%04d%02d%02d",
-		cutoff.Year(), cutoff.Month(), cutoff.Day())
-
 	_ = db.bolt.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket([]byte("history"))
+		b := tx.Bucket([]byte(bucketStatsDaily))
 		if b == nil {
 			return nil
 		}
-		c := b.Cursor()
-
-		for k, v := c.Seek([]byte(seekPrefix)); k != nil; k, v = c.Next() {
-			var f alert.Finding
-			if err := json.Unmarshal(v, &f); err != nil {
+		for i := range buckets {
+			v := b.Get([]byte(buckets[i].Date))
+			if v == nil {
 				continue
 			}
-			if f.Timestamp.Before(cutoff) {
+			var sb SeverityBucket
+			if err := json.Unmarshal(v, &sb); err != nil {
 				continue
 			}
-
-			key := f.Timestamp.Format("2006-01-02")
-			idx, ok := dateIndex[key]
-			if !ok {
-				continue
-			}
-
-			buckets[idx].Total++
-			switch f.Severity {
-			case alert.Critical:
-				buckets[idx].Critical++
-			case alert.High:
-				buckets[idx].High++
-			case alert.Warning:
-				buckets[idx].Warning++
-			}
+			buckets[i].SeverityBucket = sb
 		}
 		return nil
 	})
