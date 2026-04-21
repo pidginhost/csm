@@ -237,22 +237,7 @@ type Config struct {
 	} `yaml:"sentry" hotreload:"restart"`
 }
 
-func Load(path string) (*Config, error) {
-	// #nosec G304 -- path is operator-supplied config file (CLI flag / env).
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("reading config %s: %w", path, err)
-	}
-
-	cfg := &Config{}
-	dec := yaml.NewDecoder(bytes.NewReader(data))
-	dec.KnownFields(true)
-	if err := dec.Decode(cfg); err != nil {
-		return nil, fmt.Errorf("parsing config: %w", err)
-	}
-
-	cfg.ConfigFile = path
-
+func applyDefaults(cfg *Config) {
 	// Defaults
 	if cfg.StatePath == "" {
 		cfg.StatePath = "/opt/csm/state"
@@ -365,11 +350,12 @@ func Load(path string) (*Config, error) {
 		cfg.EmailProtection.RateWindowMin = 10
 	}
 
-	// Performance defaults
-	if cfg.Performance.Enabled == nil {
-		t := true
-		cfg.Performance.Enabled = &t
-	}
+	// Performance defaults.
+	// Enabled is a tri-state *bool: nil means "use system default (on)", true means
+	// explicitly enabled, false means explicitly disabled. We do NOT apply a default
+	// here so that callers can distinguish "operator left it unset" (nil) from
+	// "operator set it to true" (&true). All callers must nil-check before dereferencing;
+	// perfEnabled() in checks/performance.go treats nil as true.
 	if cfg.Performance.LoadHighMultiplier == 0 {
 		cfg.Performance.LoadHighMultiplier = 1.0
 	}
@@ -413,7 +399,32 @@ func Load(path string) (*Config, error) {
 	if cfg.Cloudflare.RefreshHours == 0 {
 		cfg.Cloudflare.RefreshHours = 6
 	}
+}
 
+// LoadBytes decodes a YAML config body and applies all defaults,
+// matching Load. ConfigFile is left empty; the caller sets it.
+func LoadBytes(data []byte) (*Config, error) {
+	cfg := &Config{}
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(cfg); err != nil {
+		return nil, fmt.Errorf("parsing config: %w", err)
+	}
+	applyDefaults(cfg)
+	return cfg, nil
+}
+
+func Load(path string) (*Config, error) {
+	// #nosec G304 -- path is operator-supplied config file (CLI flag / env).
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading config %s: %w", path, err)
+	}
+	cfg, err := LoadBytes(data)
+	if err != nil {
+		return nil, err
+	}
+	cfg.ConfigFile = path
 	return cfg, nil
 }
 

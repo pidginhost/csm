@@ -1,0 +1,25 @@
+hostname: fixture.example.com
+
+# Alerts delivery
+alerts:
+  email:
+    enabled: true
+    # Operator set this to ops@ after the 2026-03 incident
+    to:
+      - ops@example.com
+    from: csm@example.com
+  max_per_hour: 30
+
+thresholds:
+  # Raise this if scanner starts hitting it under load
+  mail_queue_warn: 500
+  mail_queue_crit: 2000
+
+auto_response:
+  enabled: true
+  block_ips: true
+  netblock_threshold: 3
+
+integrity:
+  binary_hash: "sha256:old"
+  config_hash: "sha256:old"

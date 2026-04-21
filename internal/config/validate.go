@@ -322,6 +322,38 @@ func ValidateDeep(cfg *Config) []ValidationResult {
 	return results
 }
 
+// ValidateDeepSection runs only the deep probes relevant to the named
+// section, so a save to section X does not fail on an unrelated probe
+// for section Y. Section names match the webui settings schema IDs.
+//
+// For any section without deep probes, returns nil.
+func ValidateDeepSection(cfg *Config, section string) []ValidationResult {
+	switch section {
+	case "alerts":
+		var results []ValidationResult
+		if cfg.Alerts.Email.Enabled && cfg.Alerts.Email.SMTP != "" {
+			results = append(results, probeSMTP(cfg.Alerts.Email.SMTP)...)
+		}
+		if cfg.Alerts.Webhook.Enabled && cfg.Alerts.Webhook.URL != "" {
+			results = append(results, probeWebhook(cfg.Alerts.Webhook.URL)...)
+		}
+		return results
+	case "email_av":
+		if cfg.EmailAV.Enabled && cfg.EmailAV.ClamdSocket != "" {
+			return probeClamd(cfg.EmailAV.ClamdSocket)
+		}
+	case "geoip":
+		if cfg.GeoIP.AccountID != "" && cfg.GeoIP.LicenseKey != "" && len(cfg.GeoIP.Editions) > 0 {
+			return probeGeoIPDBs(cfg.StatePath, cfg.GeoIP.Editions)
+		}
+	case "challenge":
+		// probeListenPortAvailable is not yet implemented in this codebase.
+		// When added, invoke it here: return probeListenPortAvailable(cfg.Challenge.ListenPort).
+		return nil
+	}
+	return nil
+}
+
 // probeStatePath checks that the state directory exists and is writable.
 func probeStatePath(path string) []ValidationResult {
 	info, err := os.Stat(path)
