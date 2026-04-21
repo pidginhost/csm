@@ -72,7 +72,13 @@
         loading.appendChild(muted);
         panel.appendChild(loading);
 
-        const resp = await fetch("/api/v1/settings/" + encodeURIComponent(id), {headers: {Accept: "application/json"}});
+        let resp;
+        try {
+            resp = await fetch("/api/v1/settings/" + encodeURIComponent(id), {headers: {Accept: "application/json"}});
+        } catch (e) {
+            renderError("Network error: " + (e && e.message ? e.message : "request failed"));
+            return;
+        }
         if (!resp.ok) {
             renderError("Failed to load: " + resp.status);
             return;
@@ -183,6 +189,13 @@
                 inp.value = (value === undefined || value === null) ? "" : value;
                 if (field.min !== undefined && field.min !== null) inp.min = field.min;
                 if (field.max !== undefined && field.max !== null) inp.max = field.max;
+            } else if (field.type === "float") {
+                inp = document.createElement("input");
+                inp.className = "form-control";
+                inp.type = "number";
+                inp.step = "any";
+                inp.id = id;
+                inp.value = (value === undefined || value === null) ? "" : value;
             } else if (field.type === "[]string") {
                 inp = document.createElement("textarea");
                 inp.className = "form-control";
@@ -252,6 +265,11 @@
             if (el.value === "") return null;
             return parseInt(el.value, 10);
         }
+        if (field.type === "float") {
+            if (el.value === "") return null;
+            const f = parseFloat(el.value);
+            return isNaN(f) ? null : f;
+        }
         if (field.type === "[]string") {
             return el.value.split("\n").map(function (s) { return s.trim(); }).filter(function (s) { return s !== ""; });
         }
@@ -279,15 +297,21 @@
             status.textContent = "No changes.";
             return;
         }
-        const resp = await fetch("/api/v1/settings/" + encodeURIComponent(currentSection), {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "If-Match": currentETag,
-                "X-CSRF-Token": csrfToken()
-            },
-            body: JSON.stringify({changes: changes})
-        });
+        let resp;
+        try {
+            resp = await fetch("/api/v1/settings/" + encodeURIComponent(currentSection), {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "If-Match": currentETag,
+                    "X-CSRF-Token": csrfToken()
+                },
+                body: JSON.stringify({changes: changes})
+            });
+        } catch (e) {
+            status.textContent = "Network error: " + (e && e.message ? e.message : "request failed");
+            return;
+        }
         if (resp.status === 412) {
             status.textContent = "Config changed externally; reloading...";
             loadSection(currentSection);

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -305,6 +306,17 @@ func buildChangeSet(section SettingsSection, clone *config.Config, changes map[s
 			}
 		}
 
+		// For float fields, coerce JSON string -> JSON number so the downstream
+		// json.Unmarshal into *float64 (in applyToClone) succeeds.
+		if field.Type == "float" {
+			if normalised, ok := coerceFloatRaw(raw); ok {
+				raw = normalised
+			} else {
+				errs = append(errs, fieldError{Field: key, Message: "decode: expected float"})
+				continue
+			}
+		}
+
 		fullPath := section.YAMLPath
 		if key != "" {
 			fullPath = section.YAMLPath + "." + key
@@ -322,6 +334,27 @@ func buildChangeSet(section SettingsSection, clone *config.Config, changes map[s
 	return out, errs
 }
 
+// coerceFloatRaw returns a JSON-number representation of raw if raw is either
+// a JSON number already or a JSON string that parses to float64. The second
+// return is false if neither form is valid.
+func coerceFloatRaw(raw json.RawMessage) (json.RawMessage, bool) {
+	var asNum float64
+	if err := json.Unmarshal(raw, &asNum); err == nil {
+		b, _ := json.Marshal(asNum)
+		return b, true
+	}
+	var asStr string
+	if err := json.Unmarshal(raw, &asStr); err == nil {
+		f, err := strconv.ParseFloat(asStr, 64)
+		if err != nil {
+			return nil, false
+		}
+		b, _ := json.Marshal(f)
+		return b, true
+	}
+	return nil, false
+}
+
 func lookupSchemaField(section SettingsSection, key string) *SettingsField {
 	for i := range section.Fields {
 		if section.Fields[i].YAMLPath == key {
@@ -337,6 +370,22 @@ func decodeJSONForYAML(raw json.RawMessage, field *SettingsField) (interface{}, 
 			return nil, fmt.Errorf("null is only allowed for nullable fields")
 		}
 		return nil, nil
+	}
+	if field.Type == "float" {
+		// Accept either a JSON number or a JSON string containing a number.
+		var asNum float64
+		if err := json.Unmarshal(raw, &asNum); err == nil {
+			return asNum, nil
+		}
+		var asStr string
+		if err := json.Unmarshal(raw, &asStr); err == nil {
+			f, perr := strconv.ParseFloat(asStr, 64)
+			if perr != nil {
+				return nil, fmt.Errorf("not a float: %q", asStr)
+			}
+			return f, nil
+		}
+		return nil, fmt.Errorf("expected float, got %s", string(raw))
 	}
 	var v interface{}
 	if err := json.Unmarshal(raw, &v); err != nil {

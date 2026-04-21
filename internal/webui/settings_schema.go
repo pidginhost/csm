@@ -218,11 +218,11 @@ var settingsSections = []SettingsSection{
 		Fields: []SettingsField{
 			{YAMLPath: "enabled", Type: "bool", Label: "Performance checks", Nullable: true, Help: "Leave unset to inherit default (on)"},
 			// load_high_multiplier / load_critical_multiplier are float64 in
-			// Config; surfaced as string in v1 because the schema type vocabulary
-			// has no "float" entry. Frontend uses free-text numeric input; POST
-			// handler coerces string to float64 via yaml.Unmarshal on the clone.
-			{YAMLPath: "load_high_multiplier", Type: "string", Label: "Load high multiplier"},
-			{YAMLPath: "load_critical_multiplier", Type: "string", Label: "Load critical multiplier"},
+			// Config. The schema uses the "float" type; the JS renders a
+			// <input type="number" step="any"> and the POST handler decodes the
+			// JSON number directly into float64.
+			{YAMLPath: "load_high_multiplier", Type: "float", Label: "Load high multiplier"},
+			{YAMLPath: "load_critical_multiplier", Type: "float", Label: "Load critical multiplier"},
 			{YAMLPath: "php_process_warn_per_user", Type: "int", Label: "PHP process warn per user", Min: int64p(1)},
 			{YAMLPath: "php_process_critical_total_multiplier", Type: "int", Label: "PHP process crit multiplier", Min: int64p(1)},
 			{YAMLPath: "error_log_warn_size_mb", Type: "int", Label: "Error log warn size (MB)", Min: int64p(1)},
@@ -279,7 +279,7 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "enabled", Type: "bool", Label: "Sentry enabled"},
 			{YAMLPath: "dsn", Type: "string", Label: "Sentry DSN", Secret: true},
 			{YAMLPath: "environment", Type: "string", Label: "Environment", Placeholder: "production"},
-			{YAMLPath: "sample_rate", Type: "string", Label: "Sample rate (0 to 1.0)"},
+			{YAMLPath: "sample_rate", Type: "float", Label: "Sample rate (0 to 1.0)"},
 			{YAMLPath: "debug", Type: "bool", Label: "Debug logging"},
 		},
 	},

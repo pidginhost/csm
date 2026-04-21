@@ -579,6 +579,99 @@ func TestSettingsRestartEndpointSurfacesFailure(t *testing.T) {
 	}
 }
 
+func TestSettingsPOSTInfraIPsUpdates(t *testing.T) {
+	body := `hostname: t.example.com
+alerts:
+  email:
+    enabled: true
+    to: ["ops@t.example.com"]
+    from: csm@t.example.com
+    smtp: "127.0.0.1:1"
+  max_per_hour: 20
+infra_ips:
+  - "10.0.0.1"
+`
+	s, cfgPath := newSettingsTestServer(t, "tok", body)
+
+	getReq := settingsAuthedReq("GET", "/api/v1/settings/infra_ips", "tok", "")
+	getW := httptest.NewRecorder()
+	s.apiSettingsGet(getW, getReq)
+	etag := getW.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("missing ETag")
+	}
+
+	// infra_ips schema field has YAMLPath "" -- the POST body uses "" as the key.
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/infra_ips", "tok", `{"changes":{"":["10.0.0.1","10.0.0.2","2001:db8::/64"]}}`)
+	postReq.Header.Set("If-Match", etag)
+	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	postW := httptest.NewRecorder()
+	s.apiSettingsPost(postW, postReq)
+
+	if postW.Code != 200 {
+		t.Fatalf("code = %d, body = %s", postW.Code, postW.Body.String())
+	}
+	loaded, _ := config.Load(cfgPath)
+	if len(loaded.InfraIPs) != 3 {
+		t.Errorf("InfraIPs length = %d, want 3; got %v", len(loaded.InfraIPs), loaded.InfraIPs)
+	}
+}
+
+func TestSettingsPOSTFloatFieldRoundTrips(t *testing.T) {
+	body := `hostname: t.example.com
+alerts:
+  email:
+    enabled: true
+    to: ["ops@t.example.com"]
+    from: csm@t.example.com
+    smtp: "127.0.0.1:1"
+  max_per_hour: 20
+performance:
+  enabled: true
+  load_high_multiplier: 1.0
+  load_critical_multiplier: 2.0
+`
+	s, cfgPath := newSettingsTestServer(t, "tok", body)
+
+	getReq := settingsAuthedReq("GET", "/api/v1/settings/performance", "tok", "")
+	getW := httptest.NewRecorder()
+	s.apiSettingsGet(getW, getReq)
+	etag := getW.Header().Get("ETag")
+
+	// Send as JSON number
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/performance", "tok", `{"changes":{"load_high_multiplier":1.75}}`)
+	postReq.Header.Set("If-Match", etag)
+	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	postW := httptest.NewRecorder()
+	s.apiSettingsPost(postW, postReq)
+	if postW.Code != 200 {
+		t.Fatalf("code = %d, body = %s", postW.Code, postW.Body.String())
+	}
+	loaded, _ := config.Load(cfgPath)
+	if loaded.Performance.LoadHighMultiplier != 1.75 {
+		t.Errorf("LoadHighMultiplier = %v, want 1.75", loaded.Performance.LoadHighMultiplier)
+	}
+
+	// And as JSON string (defensive handling)
+	var resp struct {
+		NewETag string `json:"new_etag"`
+	}
+	_ = json.Unmarshal(postW.Body.Bytes(), &resp)
+
+	postReq2 := settingsAuthedReq("POST", "/api/v1/settings/performance", "tok", `{"changes":{"load_critical_multiplier":"3.25"}}`)
+	postReq2.Header.Set("If-Match", resp.NewETag)
+	postReq2.Header.Set("X-CSRF-Token", s.csrfToken())
+	postW2 := httptest.NewRecorder()
+	s.apiSettingsPost(postW2, postReq2)
+	if postW2.Code != 200 {
+		t.Fatalf("string-form code = %d, body = %s", postW2.Code, postW2.Body.String())
+	}
+	loaded2, _ := config.Load(cfgPath)
+	if loaded2.Performance.LoadCriticalMultiplier != 3.25 {
+		t.Errorf("LoadCriticalMultiplier = %v, want 3.25", loaded2.Performance.LoadCriticalMultiplier)
+	}
+}
+
 func TestSettingsRestartEndpointRequiresPOST(t *testing.T) {
 	s, _ := newSettingsTestServer(t, "tok", "hostname: t\nalerts:\n  email:\n    enabled: true\n    to: [\"ops@t.example.com\"]\n    from: csm@t.example.com\n    smtp: \"127.0.0.1:1\"\n  max_per_hour: 20\n")
 	s.restartDaemon = func() ([]byte, error) { return nil, nil }
