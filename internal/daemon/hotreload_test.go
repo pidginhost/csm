@@ -264,13 +264,13 @@ func TestReloadConfigIntegrityVerifyPassesAfterReload(t *testing.T) {
 	}
 }
 
-// TestReloadConfigRestartRequiredKeepsIntegrityConsistent is a
-// regression guard for the cluster6 smoke test finding on
-// 2026-04-19: when reload classified the edit as restart_required
-// (a restart-tagged field changed), the on-disk file was left with
-// the edited content but the stored integrity.config_hash still
-// referred to the pre-edit content. Any daemon restart after that
-// would crash-loop on integrity check failure.
+// TestReloadConfigRestartRequiredKeepsIntegrityConsistent guards
+// against a regression where, when reload classified the edit as
+// restart_required (a restart-tagged field changed), the on-disk
+// file was left with the edited content but the stored
+// integrity.config_hash still referred to the pre-edit content.
+// Any daemon restart after that would crash-loop on integrity
+// check failure.
 //
 // The fix re-signs the on-disk file (atomic temp + rename) AND
 // updates the live cfg's ConfigHash in memory so periodic
