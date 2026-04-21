@@ -135,6 +135,9 @@ func renderValueInline(v interface{}) (string, error) {
 	// b looks like "v: VALUE\n"
 	s := strings.TrimPrefix(string(b), "v: ")
 	s = strings.TrimSuffix(s, "\n")
+	if strings.ContainsAny(s, "\n\r") {
+		return "", fmt.Errorf("value of type %T cannot be rendered inline", v)
+	}
 	return s, nil
 }
 
@@ -225,6 +228,15 @@ func YAMLEdit(data []byte, changes []YAMLChange) ([]byte, error) {
 		return data, nil
 	}
 
+	seen := make(map[string]struct{}, len(changes))
+	for _, ch := range changes {
+		key := strings.Join(ch.Path, "\x00")
+		if _, dup := seen[key]; dup {
+			return nil, fmt.Errorf("yamledit: duplicate path %v", ch.Path)
+		}
+		seen[key] = struct{}{}
+	}
+
 	var root yaml.Node
 	if err := yaml.Unmarshal(data, &root); err != nil {
 		return nil, fmt.Errorf("yamledit: parse: %w", err)
@@ -296,7 +308,7 @@ func buildReplaceEdit(data []byte, li lineIndex, keyN, valN *yaml.Node, value in
 		}
 		rendered, err := renderValueBlock(value, valN.Column)
 		if err != nil {
-			return edit{}, err
+			return edit{}, fmt.Errorf("path %v: %w", keyN.Value, err)
 		}
 		return edit{start: start, end: end, replacement: []byte(rendered)}, nil
 	}
@@ -307,7 +319,7 @@ func buildReplaceEdit(data []byte, li lineIndex, keyN, valN *yaml.Node, value in
 	end := li.lineEnd(valN.Line, data)
 	rendered, err := renderValueInline(value)
 	if err != nil {
-		return edit{}, err
+		return edit{}, fmt.Errorf("path %v: %w", keyN.Value, err)
 	}
 	return edit{start: start, end: end, replacement: []byte(rendered)}, nil
 }
@@ -332,15 +344,10 @@ func buildInsertEdit(data []byte, li lineIndex, parentMap *yaml.Node, key string
 		needsNewline = true
 	}
 
-	// Determine indent from the parent's column (1-based -> spaces).
-	indent := parentMap.Column // column where parent mapping starts
-	// For a top-level mapping, Column is typically 1.
-	// Child keys should be indented by 2 relative to the parent.
-	// But actually, parentMap.Column already tells us where this mapping starts.
-	// We want to match the indent of sibling keys inside the mapping.
-	// Sibling keys are at parentMap.Column (for top-level) or parentMap.Column+2 for nested.
-	// Actually, look at first sibling key's column:
-	siblingCol := indent
+	// Match the indent of existing siblings rather than inferring from the
+	// parent node's own column, which in a nested mapping does not reflect
+	// child indentation.
+	siblingCol := parentMap.Column
 	if len(parentMap.Content) >= 1 {
 		siblingCol = parentMap.Content[0].Column
 	}
@@ -358,13 +365,13 @@ func buildInsertEdit(data []byte, li lineIndex, parentMap *yaml.Node, key string
 	case []string, []interface{}:
 		block, err := renderValueBlock(value, siblingCol+2)
 		if err != nil {
-			return edit{}, err
+			return edit{}, fmt.Errorf("path %v: %w", key, err)
 		}
 		rendered = prefix + renderedKey + ":\n" + block
 	default:
 		inline, err := renderValueInline(value)
 		if err != nil {
-			return edit{}, err
+			return edit{}, fmt.Errorf("path %v: %w", key, err)
 		}
 		rendered = prefix + renderedKey + ": " + inline + "\n"
 	}

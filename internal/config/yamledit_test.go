@@ -58,6 +58,13 @@ func TestYAMLEditReplacesListValue(t *testing.T) {
 	if !reflect.DeepEqual(decoded.Alerts.Email.To, want) {
 		t.Errorf("To = %v, want %v", decoded.Alerts.Email.To, want)
 	}
+	if !strings.Contains(string(out), "# Operator set this to ops@ after the 2026-03 incident") {
+		t.Errorf("adjacent comment lost after list replace: %s", out)
+	}
+	untouchedEnvelope := "alerts:\n  email:\n    enabled: true\n    # Operator set this to ops@ after the 2026-03 incident\n    to:\n"
+	if !strings.Contains(string(out), untouchedEnvelope) {
+		t.Errorf("comment and key-prefix bytes drifted: %s", out)
+	}
 }
 
 func TestYAMLEditRoundTripsNewKey(t *testing.T) {
@@ -123,6 +130,20 @@ func TestYAMLEditNullValueRoundTrip(t *testing.T) {
 	}
 	if cfg.Performance.Enabled == nil || !*cfg.Performance.Enabled {
 		t.Errorf("expected default true, got %v", cfg.Performance.Enabled)
+	}
+}
+
+func TestYAMLEditRejectsDuplicatePath(t *testing.T) {
+	in := readFixture(t)
+	_, err := YAMLEdit(in, []YAMLChange{
+		{Path: []string{"thresholds", "mail_queue_warn"}, Value: 10},
+		{Path: []string{"thresholds", "mail_queue_warn"}, Value: 20},
+	})
+	if err == nil {
+		t.Fatal("expected error for duplicate path, got nil")
+	}
+	if !strings.Contains(err.Error(), "duplicate") {
+		t.Errorf("error does not mention duplicate: %v", err)
 	}
 }
 
