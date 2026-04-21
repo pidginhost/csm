@@ -196,6 +196,46 @@ body.theme-dark { background-color: #1a2234; }
     box-shadow: none;
 }
 
+/* --- dashboard.html: clickable stat cards -------------------------------- */
+.stat-card {
+    text-decoration: none;
+    color: inherit;
+    display: block;
+    transition: transform 0.1s ease, box-shadow 0.1s ease;
+}
+.stat-card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+    color: inherit;
+    text-decoration: none;
+}
+.theme-dark .stat-card:hover {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+.stat-delta { font-weight: 500; opacity: 0.85; white-space: nowrap; }
+.stat-delta.up   { color: var(--csm-critical); }
+.stat-delta.down { color: var(--csm-low); }
+.stat-delta.flat { color: var(--csm-text-muted); }
+
+/* --- dashboard.html: severity-colored outline buttons for feed chips ---- */
+.btn-outline-critical { color: var(--csm-critical); border-color: var(--csm-critical); background: transparent; }
+.btn-outline-high     { color: var(--csm-high);     border-color: var(--csm-high);     background: transparent; }
+.btn-outline-warning  { color: var(--csm-warning);  border-color: var(--csm-warning);  background: transparent; }
+.btn-outline-critical:hover, .btn-outline-critical.active { background: var(--csm-critical); color: #fff; }
+.btn-outline-high:hover,     .btn-outline-high.active     { background: var(--csm-high);     color: #fff; }
+.btn-outline-warning:hover,  .btn-outline-warning.active  { background: var(--csm-warning);  color: #1a1a1a; }
+.feed-sev-chip:not(.active) { opacity: 0.45; }
+
+/* --- dashboard.html: system health pill ---------------------------------- */
+#system-health-pill { padding: 0.35rem 0.6rem; font-size: 0.8125rem; }
+#system-health-pill .status-dot { vertical-align: middle; }
+#system-health-pill.health-ok   { background: rgba(47, 179, 68, 0.12); color: var(--csm-low); }
+#system-health-pill.health-warn { background: rgba(245, 159, 0, 0.14); color: var(--csm-warning); }
+#system-health-pill.health-crit { background: rgba(214, 57, 57, 0.15); color: var(--csm-critical); }
+
+/* --- dashboard.html: hidden feed items (filter chips) ------------------- */
+.feed-item.feed-hidden { display: none !important; }
+
 /* --- firewall.html -------------------------------------------------------- */
 .csm-firewall-result {
     min-height: 140px;

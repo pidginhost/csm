@@ -491,6 +491,15 @@ func (s *Store) AggregateByDay() []store.DayBucket {
 	return nil
 }
 
+// AggregateByDayN returns `days` daily severity buckets (oldest first),
+// clamped by the underlying store's retention window.
+func (s *Store) AggregateByDayN(days int) []store.DayBucket {
+	if db := store.Global(); db != nil {
+		return db.AggregateByDayN(days)
+	}
+	return nil
+}
+
 func splitLines(data []byte) [][]byte {
 	var lines [][]byte
 	start := 0

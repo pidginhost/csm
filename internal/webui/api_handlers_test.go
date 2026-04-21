@@ -85,6 +85,35 @@ func TestAPIStatsTrendReturnsJSON(t *testing.T) {
 	}
 }
 
+func TestAPIStatsTrendHonoursDaysParam(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	for _, tc := range []struct {
+		query   string
+		wantLen int
+	}{
+		{"/?days=7", 7},
+		{"/?days=30", 30},
+		{"/?days=90", 90},
+		{"/", 30},         // default
+		{"/?days=0", 30},  // invalid falls back to default
+		{"/?days=-5", 30}, // negative falls back to default
+		{"/?days=abc", 30},
+	} {
+		w := httptest.NewRecorder()
+		s.apiStatsTrend(w, httptest.NewRequest("GET", tc.query, nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d", tc.query, w.Code)
+		}
+		var got []map[string]interface{}
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+			t.Fatalf("%s: bad JSON: %v", tc.query, err)
+		}
+		if len(got) != tc.wantLen {
+			t.Errorf("%s: len = %d, want %d", tc.query, len(got), tc.wantLen)
+		}
+	}
+}
+
 func TestAPIStatsTimelineReturnsJSON(t *testing.T) {
 	s := newTestServer(t, "tok")
 	w := httptest.NewRecorder()

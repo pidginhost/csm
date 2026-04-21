@@ -549,10 +549,17 @@ func buildBruteForceSummary(ips map[string]int, types map[string]int) map[string
 	}
 }
 
-// apiStatsTrend returns 30-day daily finding counts by severity.
-// Uses efficient bbolt cursor seeking instead of loading all findings into memory.
-func (s *Server) apiStatsTrend(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, s.store.AggregateByDay())
+// apiStatsTrend returns daily finding counts by severity for the trend
+// chart. Accepts optional ?days=N (default 30, clamped to the store's
+// retention window).
+func (s *Server) apiStatsTrend(w http.ResponseWriter, r *http.Request) {
+	days := 30
+	if v := r.URL.Query().Get("days"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			days = n
+		}
+	}
+	writeJSON(w, s.store.AggregateByDayN(days))
 }
 
 // apiStatsTimeline returns 24 hourly buckets for the findings timeline chart.

@@ -134,12 +134,26 @@ func (db *DB) ReadHistorySince(since time.Time) []alert.Finding {
 // Reads from the pre-aggregated stats:daily bucket so the trend chart is
 // not affected by history pruning.
 func (db *DB) AggregateByDay() []DayBucket {
+	return db.AggregateByDayN(30)
+}
+
+// AggregateByDayN returns `days` daily buckets (oldest first) ending today.
+// Days outside [1, dailyRetentionDays] are clamped to that range. Days with
+// no recorded findings are returned as zero-value buckets.
+func (db *DB) AggregateByDayN(days int) []DayBucket {
+	if days < 1 {
+		days = 1
+	}
+	if days > dailyRetentionDays {
+		days = dailyRetentionDays
+	}
+
 	now := time.Now()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
-	cutoff := today.AddDate(0, 0, -29)
+	cutoff := today.AddDate(0, 0, -(days - 1))
 
-	buckets := make([]DayBucket, 30)
-	for i := 0; i < 30; i++ {
+	buckets := make([]DayBucket, days)
+	for i := 0; i < days; i++ {
 		d := cutoff.AddDate(0, 0, i)
 		buckets[i] = DayBucket{Date: d.Format("2006-01-02")}
 	}

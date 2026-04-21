@@ -27,6 +27,7 @@ type dashboardData struct {
 	FanotifyActive  bool
 	LogWatchers     int
 	LastCriticalAgo string
+	LastCriticalISO string // RFC3339 of most recent critical, "" if none (so relative time can tick client-side)
 	RecentFindings  []historyEntry
 }
 
@@ -99,9 +100,11 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 
 	// Find most recent critical finding (findings are newest-first)
 	lastCriticalAgo := "None"
+	lastCriticalISO := ""
 	for _, f := range findings {
 		if f.Severity == alert.Critical {
 			lastCriticalAgo = timeAgo(f.Timestamp)
+			lastCriticalISO = f.Timestamp.Format(time.RFC3339)
 			break
 		}
 	}
@@ -117,6 +120,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, _ *http.Request) {
 		FanotifyActive:  s.fanotifyActive,
 		LogWatchers:     s.logWatcherCount,
 		LastCriticalAgo: lastCriticalAgo,
+		LastCriticalISO: lastCriticalISO,
 		RecentFindings:  recent,
 	}
 	s.renderTemplate(w, "dashboard.html", data)

@@ -4,49 +4,54 @@
     <div class="page-header mb-3">
         <div class="row align-items-center">
             <div class="col-auto"><h2 class="page-title">Dashboard</h2></div>
+            <div class="col-auto">
+                <span id="system-health-pill" class="badge bg-secondary-lt" title="System health">
+                    <span class="status-dot me-1"></span><span class="health-label">Checking...</span>
+                </span>
+            </div>
         </div>
     </div>
-
-    <!-- System Overview (collapsible) -->
-    <div class="d-flex align-items-center mb-3">
-        <h3 class="mb-0">System Overview</h3>
-        <button class="btn btn-ghost-secondary btn-sm ms-2" id="toggle-overview-btn" aria-label="Toggle system overview" aria-expanded="true">
-            <i class="ti ti-chevron-up"></i>
-        </button>
-    </div>
-    <div id="system-overview">
 
     <!-- Stat Cards -->
     <div class="row row-deck row-cards mb-3">
         <div class="col-6 col-lg">
-            <div class="card" title="Critical severity findings in the last 24 hours">
+            <a href="/findings?tab=history&severity=2" class="card card-link stat-card" title="Critical severity findings in the last 24 hours -- click to view history" data-sev="2">
                 <div class="card-body">
                     <div class="subheader">Critical (24h)</div>
-                    <div class="h1 mb-0 text-critical" id="stat-critical">{{.Critical}}</div>
+                    <div class="d-flex align-items-baseline">
+                        <div class="h1 mb-0 text-critical me-2" id="stat-critical">{{.Critical}}</div>
+                        <div class="small stat-delta" id="stat-critical-delta"></div>
+                    </div>
                 </div>
-            </div>
+            </a>
         </div>
         <div class="col-6 col-lg">
-            <div class="card" title="High severity findings in the last 24 hours">
+            <a href="/findings?tab=history&severity=1" class="card card-link stat-card" title="High severity findings in the last 24 hours -- click to view history" data-sev="1">
                 <div class="card-body">
                     <div class="subheader">High (24h)</div>
-                    <div class="h1 mb-0 text-high" id="stat-high">{{.High}}</div>
+                    <div class="d-flex align-items-baseline">
+                        <div class="h1 mb-0 text-high me-2" id="stat-high">{{.High}}</div>
+                        <div class="small stat-delta" id="stat-high-delta"></div>
+                    </div>
                 </div>
-            </div>
+            </a>
         </div>
         <div class="col-6 col-lg">
-            <div class="card" title="Warning severity findings in the last 24 hours">
+            <a href="/findings?tab=history&severity=0" class="card card-link stat-card" title="Warning severity findings in the last 24 hours -- click to view history" data-sev="0">
                 <div class="card-body">
                     <div class="subheader">Warning (24h)</div>
-                    <div class="h1 mb-0 text-warning" id="stat-warning">{{.Warning}}</div>
+                    <div class="d-flex align-items-baseline">
+                        <div class="h1 mb-0 text-warning me-2" id="stat-warning">{{.Warning}}</div>
+                        <div class="small stat-delta" id="stat-warning-delta"></div>
+                    </div>
                 </div>
-            </div>
+            </a>
         </div>
         <div class="col-6 col-lg">
             <div class="card" title="Time since the most recent critical severity finding">
                 <div class="card-body">
                     <div class="subheader">Last Critical</div>
-                    <div class="h3 mb-0" id="stat-last-critical">{{.LastCriticalAgo}}</div>
+                    <div class="h3 mb-0" id="stat-last-critical"{{if .LastCriticalISO}} data-timestamp="{{.LastCriticalISO}}"{{end}}>{{.LastCriticalAgo}}</div>
                 </div>
             </div>
         </div>
@@ -77,14 +82,20 @@
                 Live Feed
                 <span class="text-muted ms-2 small">Polling (10s)</span>
             </h3>
-            <div class="card-actions">
+            <div class="card-actions d-flex gap-2 align-items-center flex-wrap">
+                <div class="btn-group btn-group-sm" role="group" aria-label="Severity filter">
+                    <button type="button" class="btn btn-outline-critical feed-sev-chip active" data-sev="2" title="Show Critical findings"><i class="ti ti-alert-octagon"></i></button>
+                    <button type="button" class="btn btn-outline-high feed-sev-chip active" data-sev="1" title="Show High findings"><i class="ti ti-alert-triangle"></i></button>
+                    <button type="button" class="btn btn-outline-warning feed-sev-chip active" data-sev="0" title="Show Warning findings"><i class="ti ti-alert-circle"></i></button>
+                </div>
+                <input type="search" id="feed-search" class="form-control form-control-sm csm-input-sm" placeholder="Filter feed..." aria-label="Filter live feed">
                 <span class="text-muted small" id="scan-status"></span>
-                <span class="text-muted small ms-2" id="scan-detail"></span>
+                <span class="text-muted small" id="scan-detail"></span>
             </div>
         </div>
         <div class="list-group list-group-flush overflow-auto csm-feed-scroll" id="live-feed-entries">
             {{range .RecentFindings}}
-            <div class="list-group-item feed-item" data-ts="{{.TimestampISO}}">
+            <div class="list-group-item feed-item" data-ts="{{.TimestampISO}}" data-sev="{{.SevClass}}" data-check="{{.Check}}">
                 <div class="row align-items-center">
                     <div class="col-auto"><span class="text-muted font-monospace small">{{.Timestamp}}</span></div>
                     <div class="col-auto"><span class="badge badge-{{.SevClass}}">{{.Severity}}</span></div>
@@ -123,7 +134,7 @@
         </div>
     </div>
 
-    <!-- Accounts at Risk + Auto-Response + Top Targeted -->
+    <!-- Accounts at Risk + Auto-Response + Brute Force -->
     <div class="row row-deck row-cards mb-3">
         <div class="col-lg-4">
             <div class="card">
@@ -151,15 +162,22 @@
         </div>
     </div>
 
-    <!-- 30-Day Trend -->
+    <!-- Trend (period selectable) -->
     <div class="card mb-3">
-        <div class="card-header"><h3 class="card-title"><i class="ti ti-chart-line"></i>&nbsp;30-Day Trend</h3></div>
+        <div class="card-header">
+            <h3 class="card-title"><i class="ti ti-chart-line"></i>&nbsp;<span id="trend-title">30-Day Trend</span></h3>
+            <div class="card-actions">
+                <div class="btn-group btn-group-sm" role="group" aria-label="Trend period">
+                    <button type="button" class="btn btn-outline-secondary trend-period-btn" data-days="7">7d</button>
+                    <button type="button" class="btn btn-outline-secondary trend-period-btn active" data-days="30">30d</button>
+                    <button type="button" class="btn btn-outline-secondary trend-period-btn" data-days="90">90d</button>
+                </div>
+            </div>
+        </div>
         <div class="card-body py-3 csm-chart-sm">
             <canvas id="trend-chart"></canvas>
         </div>
     </div>
-
-    </div><!-- /system-overview -->
 {{end}}
 {{define "scripts"}}
 <script src="/static/js/chart.min.js"></script>

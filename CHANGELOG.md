@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Dashboard now shows a single system health pill at the top, 24h stat cards carry day-over-day deltas and link into a pre-filtered history, and the trend chart has a 7d / 30d / 90d period selector.
+- Live Feed on the dashboard has severity chips and a quick filter so busy hosts stay triageable during bursts.
+
+### Changed
+
+- Dashboard cards show a visible error state on API failure instead of a permanent "Loading...". "Last Critical" now ticks its relative time alongside the live feed.
+- Removed the whole-page "System Overview" collapse toggle; it hid every card and had no useful scope.
+
 ### Fixed
 
 - Dashboard "30-Day Trend" no longer flatlines on older days once the history bucket fills up. The chart now reads a pre-aggregated daily counter that survives history pruning, with a one-time backfill on first start.

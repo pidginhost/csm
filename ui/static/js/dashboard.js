@@ -149,22 +149,47 @@
         }).catch(function() { /* cancelled */ });
     }
 
-    // --- System Overview collapse toggle ---
-    var overviewEl = document.getElementById('system-overview');
-    var toggleBtn = document.getElementById('toggle-overview-btn');
-    if (overviewEl && toggleBtn) {
-        var collapsed = localStorage.getItem('csm-overview-collapsed') === '1';
+    // Clean up the old overview-collapsed flag; the toggle was removed.
+    try { localStorage.removeItem('csm-overview-collapsed'); } catch (_) {}
 
-        function setOverviewCollapsed(val) {
-            collapsed = val;
-            overviewEl.style.display = val ? 'none' : '';
-            toggleBtn.querySelector('i').className = val ? 'ti ti-chevron-down' : 'ti ti-chevron-up';
-            toggleBtn.setAttribute('aria-expanded', String(!val));
-            localStorage.setItem('csm-overview-collapsed', val ? '1' : '0');
+    // --- Live Feed: severity chip + search filter ---
+    var feedFilterSeverities = { critical: true, high: true, warning: true };
+    var feedFilterSearch = '';
+
+    function applyFeedFilters() {
+        if (!feed) return;
+        var needle = feedFilterSearch.toLowerCase();
+        var items = feed.querySelectorAll('.feed-item');
+        for (var i = 0; i < items.length; i++) {
+            var item = items[i];
+            var sev = item.getAttribute('data-sev') || 'warning';
+            var passSev = !!feedFilterSeverities[sev];
+            var text = item.textContent.toLowerCase();
+            var passSearch = needle === '' || text.indexOf(needle) !== -1;
+            item.classList.toggle('feed-hidden', !(passSev && passSearch));
         }
+    }
 
-        setOverviewCollapsed(collapsed);
-        toggleBtn.addEventListener('click', function() { setOverviewCollapsed(!collapsed); });
+    document.querySelectorAll('.feed-sev-chip').forEach(function(chip) {
+        chip.addEventListener('click', function() {
+            var sevNum = this.getAttribute('data-sev');
+            var key = sevNum === '2' ? 'critical' : sevNum === '1' ? 'high' : 'warning';
+            feedFilterSeverities[key] = !feedFilterSeverities[key];
+            this.classList.toggle('active', feedFilterSeverities[key]);
+            applyFeedFilters();
+        });
+    });
+    var feedSearchEl = document.getElementById('feed-search');
+    if (feedSearchEl) {
+        var feedSearchTimer;
+        feedSearchEl.addEventListener('input', function() {
+            clearTimeout(feedSearchTimer);
+            var val = this.value;
+            feedSearchTimer = setTimeout(function() {
+                feedFilterSearch = val;
+                applyFeedFilters();
+            }, 150);
+        });
     }
 
     // Initial pass: enhance server-rendered feed items
@@ -236,6 +261,9 @@
         }
 
         div.setAttribute('data-ts', ts);
+        div.setAttribute('data-sev', sevClass);
+        div.setAttribute('data-check', f.check || '');
+        div.classList.add('feed-item');
 
         // Build entry DOM safely
         var row = document.createElement('div');
@@ -273,6 +301,7 @@
         div.classList.add('feed-highlight');
         addRelativeTime(div);
         attachFeedItemListeners(div);
+        applyFeedFilters();
 
         // Browser notification for critical findings
         if (f.severity === 2 && 'Notification' in window && Notification.permission === 'granted' && localStorage.getItem('csm-notif') === 'on') {
@@ -290,10 +319,77 @@
         if (empty) empty.remove();
     }
 
+    // Centralised empty/error-state renderer for the three summary cards.
+    // Cards that fail to load get a visible error instead of a permanent
+    // "Loading..." spinner.
+    function renderCardError(id, msg) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        el.textContent = '';
+        var box = document.createElement('div');
+        box.className = 'text-center text-muted py-3';
+        var ic = document.createElement('i');
+        ic.className = 'ti ti-alert-circle me-1 text-warning';
+        box.appendChild(ic);
+        box.appendChild(document.createTextNode(msg));
+        el.appendChild(box);
+    }
+
+    // --- System health pill (top of page) ---
+    function renderHealthPill(cls, dotCls, label, title) {
+        var pill = document.getElementById('system-health-pill');
+        if (!pill) return;
+        pill.className = 'badge ' + cls;
+        var dot = pill.querySelector('.status-dot');
+        if (dot) dot.className = 'status-dot me-1 ' + dotCls;
+        var lbl = pill.querySelector('.health-label');
+        if (lbl) lbl.textContent = label;
+        if (title) pill.title = title;
+    }
+    function loadHealthPill() {
+        Promise.all([
+            fetch(CSM.apiUrl('/api/v1/health'), { credentials: 'same-origin' }).then(function(r) { return r.json(); }),
+            fetch(CSM.apiUrl('/api/v1/status'), { credentials: 'same-origin' }).then(function(r) { return r.json(); })
+        ]).then(function(res) {
+            var health = res[0] || {};
+            var status = res[1] || {};
+            var problems = [];
+            if (!health.daemon_mode) problems.push('daemon not in service mode');
+            if (!health.fanotify) problems.push('fanotify unavailable (fallback)');
+            if (!health.log_watchers) problems.push('no log watchers active');
+            if (!health.rules_loaded) problems.push('no YARA rules loaded');
+
+            var label = 'Healthy';
+            var cls = 'health-ok';
+            var dotCls = 'bg-green';
+            if (problems.length >= 2) {
+                label = 'Degraded';
+                cls = 'health-crit';
+                dotCls = 'bg-red';
+            } else if (problems.length === 1) {
+                label = 'Warning';
+                cls = 'health-warn';
+                dotCls = 'bg-yellow';
+            }
+            var title = 'Uptime: ' + (status.uptime || health.uptime || '?') +
+                '\nRules: ' + (health.rules_loaded || 0) +
+                '\nWatchers: ' + (health.log_watchers || 0) +
+                (status.scan_running ? '\nScan: in progress' : '') +
+                (problems.length ? '\nIssues: ' + problems.join(', ') : '');
+            renderHealthPill(cls, dotCls, label, title);
+        }).catch(function(err) {
+            console.error('loadHealthPill:', err);
+            renderHealthPill('health-crit', 'bg-red', 'Unreachable', 'Dashboard cannot reach the daemon API');
+        });
+    }
+
     // Auto-refresh stats every 60 seconds
     function refreshStats() {
         fetch(CSM.apiUrl('/api/v1/stats'), { credentials: 'same-origin' })
-            .then(function(r) { return r.json(); })
+            .then(function(r) {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
+            })
             .then(function(data) {
                 if (!data.last_24h) return;
                 var s = data.last_24h;
@@ -307,7 +403,12 @@
                 renderAutoResponse(data.auto_response || {}, data.by_check || {});
                 renderBruteForce(data.brute_force || {});
             })
-            .catch(function(err) { console.error('refreshStats:', err); });
+            .catch(function(err) {
+                console.error('refreshStats:', err);
+                renderCardError('accounts-at-risk', 'Failed to load');
+                renderCardError('auto-response-summary', 'Failed to load');
+                renderCardError('brute-force-summary', 'Failed to load');
+            });
     }
 
     function refreshScanStatus() {
@@ -508,7 +609,7 @@
         if (el) el.textContent = val;
     }
 
-    // Initialize - two cadences with failure isolation
+    // Initialize - three cadences with failure isolation
     function _startPolling() {
         if (!feed) return;
         // Fast cadence (10s): findings + scan status
@@ -519,10 +620,12 @@
         fastPoll();
         _trackInterval(setInterval(fastPoll, 10000));
 
-        // Slow cadence (60s): stats
+        // Slow cadence (60s): stats + health pill
         refreshStats();
+        loadHealthPill();
         _trackInterval(setInterval(function() {
             try { refreshStats(); } catch(e) { console.error('refreshStats:', e); }
+            try { loadHealthPill(); } catch(e) { console.error('loadHealthPill:', e); }
         }, 60000));
     }
     _startPolling();
@@ -586,9 +689,14 @@
         if (!canvas) return;
 
         fetch(CSM.apiUrl('/api/v1/stats/timeline'), { credentials: 'same-origin' })
-            .then(function(r) { return r.json(); })
+            .then(function(r) {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
+            })
             .then(function(hours) {
                 if (!hours || !hours.length) return;
+                var prevErr = canvas.parentElement && canvas.parentElement.querySelector('.chart-error');
+                if (prevErr) { prevErr.remove(); canvas.style.display = ''; }
 
                 var labels = [];
                 var critData = [], highData = [], warnData = [];
@@ -700,7 +808,17 @@
                     timelineChart = new Chart(canvas, config);
                 }
             })
-            .catch(function(err) { console.error('loadTimeline:', err); });
+            .catch(function(err) {
+                console.error('loadTimeline:', err);
+                var parent = canvas.parentElement;
+                if (parent && !parent.querySelector('.chart-error')) {
+                    var msg = document.createElement('div');
+                    msg.className = 'text-muted text-center py-3 chart-error';
+                    msg.textContent = 'Failed to load timeline data';
+                    parent.appendChild(msg);
+                    canvas.style.display = 'none';
+                }
+            });
     }
 
     // --- Top Attack Types (horizontal bar) ---
@@ -738,8 +856,13 @@
         if (!canvas) return;
 
         fetch(CSM.apiUrl('/api/v1/threat/stats'), { credentials: 'same-origin' })
-            .then(function(r) { return r.json(); })
+            .then(function(r) {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
+            })
             .then(function(data) {
+                var prevErr = canvas.parentElement && canvas.parentElement.querySelector('.chart-error');
+                if (prevErr) { prevErr.remove(); canvas.style.display = ''; }
                 // Prefer the 24h-scoped map so this card matches the adjacent
                 // "Findings Timeline (24h)". Fall back to lifetime `by_type`
                 // to stay compatible with older daemons during rollout.
@@ -830,28 +953,85 @@
                     attackChart = new Chart(canvas, config);
                 }
             })
-            .catch(function(err) { console.error('loadAttackTypes:', err); });
+            .catch(function(err) {
+                console.error('loadAttackTypes:', err);
+                var parent = canvas.parentElement;
+                if (parent && !parent.querySelector('.chart-error')) {
+                    var msg = document.createElement('div');
+                    msg.className = 'text-muted text-center py-3 chart-error';
+                    msg.textContent = 'Failed to load attack-type data';
+                    parent.appendChild(msg);
+                    canvas.style.display = 'none';
+                }
+            });
     }
 
-    // --- 30-Day Trend (line chart with filled area) ---
+    // --- Trend (period-selectable line chart with filled area) ---
     var trendChart = null;
+    var VALID_TREND_DAYS = { 7: 1, 30: 1, 90: 1 };
+    function currentTrendDays() {
+        var stored = parseInt(localStorage.getItem('csm-trend-days') || '30', 10);
+        return VALID_TREND_DAYS[stored] ? stored : 30;
+    }
+
+    // Compute yesterday-vs-today delta from the last two daily buckets and
+    // render it alongside the 24h stat cards.
+    function renderStatDeltas(days) {
+        if (!days || days.length < 2) return;
+        var today = days[days.length - 1];
+        var yesterday = days[days.length - 2];
+        var pairs = [
+            ['stat-critical-delta', today.critical - yesterday.critical],
+            ['stat-high-delta',     today.high     - yesterday.high],
+            ['stat-warning-delta',  today.warning  - yesterday.warning]
+        ];
+        for (var i = 0; i < pairs.length; i++) {
+            var el = document.getElementById(pairs[i][0]);
+            if (!el) continue;
+            var d = pairs[i][1];
+            el.classList.remove('up', 'down', 'flat');
+            if (d > 0) {
+                el.classList.add('up');
+                el.textContent = '+' + d + ' vs yesterday';
+            } else if (d < 0) {
+                el.classList.add('down');
+                el.textContent = d + ' vs yesterday';
+            } else {
+                el.classList.add('flat');
+                el.textContent = 'flat vs yesterday';
+            }
+        }
+    }
+
     function loadTrend() {
         var canvas = document.getElementById('trend-chart');
         if (!canvas) return;
 
-        fetch(CSM.apiUrl('/api/v1/stats/trend'), { credentials: 'same-origin' })
-            .then(function(r) { return r.json(); })
-            .then(function(days) {
-                if (!days || !days.length) return;
+        var days = currentTrendDays();
+        var title = document.getElementById('trend-title');
+        if (title) title.textContent = days + '-Day Trend';
+
+        fetch(CSM.apiUrl('/api/v1/stats/trend?days=' + days), { credentials: 'same-origin' })
+            .then(function(r) {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
+            })
+            .then(function(rows) {
+                if (!rows || !rows.length) return;
+                var prevErr = canvas.parentElement && canvas.parentElement.querySelector('.chart-error');
+                if (prevErr) { prevErr.remove(); canvas.style.display = ''; }
+                renderStatDeltas(rows);
 
                 var labels = [], critData = [], highData = [], warnData = [];
-                for (var i = 0; i < days.length; i++) {
+                for (var i = 0; i < rows.length; i++) {
                     // Show short date labels: "03/15"
-                    labels.push(days[i].date.slice(5));
-                    critData.push(days[i].critical);
-                    highData.push(days[i].high);
-                    warnData.push(days[i].warning);
+                    labels.push(rows[i].date.slice(5));
+                    critData.push(rows[i].critical);
+                    highData.push(rows[i].high);
+                    warnData.push(rows[i].warning);
                 }
+                // Pick a tick-skip that keeps at most ~8 labels on screen.
+                var tickSkip = Math.max(1, Math.ceil(rows.length / 8));
 
                 var config = {
                     type: 'line',
@@ -931,7 +1111,7 @@
                                 ticks: {
                                     maxRotation: 0,
                                     callback: function(val, idx) {
-                                        return idx % 5 === 0 ? this.getLabelForValue(val) : '';
+                                        return idx % tickSkip === 0 ? this.getLabelForValue(val) : '';
                                     }
                                 }
                             },
@@ -951,11 +1131,43 @@
                     trendChart = new Chart(canvas, config);
                 }
             })
-            .catch(function(err) { console.error('loadTrend:', err); });
+            .catch(function(err) {
+                console.error('loadTrend:', err);
+                var parent = canvas.parentElement;
+                if (parent && !parent.querySelector('.chart-error')) {
+                    var msg = document.createElement('div');
+                    msg.className = 'text-muted text-center py-3 chart-error';
+                    msg.textContent = 'Failed to load trend data';
+                    parent.appendChild(msg);
+                    canvas.style.display = 'none';
+                }
+            });
     }
 
     // --- Load all charts and set up auto-refresh ---
     var _chartIntervals = [];
+
+    // Restore saved trend period and wire the 7/30/90 selector.
+    (function wireTrendPeriod() {
+        var current = currentTrendDays();
+        var btns = document.querySelectorAll('.trend-period-btn');
+        btns.forEach(function(b) {
+            var d = parseInt(b.getAttribute('data-days'), 10);
+            b.classList.toggle('active', d === current);
+            b.addEventListener('click', function() {
+                var picked = parseInt(this.getAttribute('data-days'), 10);
+                if (!VALID_TREND_DAYS[picked]) return;
+                localStorage.setItem('csm-trend-days', String(picked));
+                btns.forEach(function(x) {
+                    x.classList.toggle('active', parseInt(x.getAttribute('data-days'), 10) === picked);
+                });
+                // Tick-skip is baked into the chart's x-axis callback closure,
+                // so recreate the chart to pick up the new density.
+                if (trendChart) { trendChart.destroy(); trendChart = null; }
+                loadTrend();
+            });
+        });
+    })();
 
     function _startChartPolling() {
         // Refresh theme-derived values in case theme changed since page load
