@@ -65,6 +65,9 @@ type Server struct {
 
 	// Graceful shutdown signal for background goroutines
 	pruneDone chan struct{}
+
+	// restartDaemon is called by apiSettingsRestart. Tests override this.
+	restartDaemon func() (output []byte, err error)
 }
 
 // New creates a new web UI server.
@@ -104,7 +107,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	if _, err := os.Stat(templateDir); err == nil {
 		s.templates = make(map[string]*template.Template)
 		layoutPath := filepath.Join(templateDir, "layout.html")
-		for _, page := range []string{"dashboard", "findings", "quarantine", "firewall", "modsec", "modsec-rules", "threat", "rules", "audit", "account", "incident", "email", "performance", "hardening"} {
+		for _, page := range []string{"dashboard", "findings", "quarantine", "firewall", "modsec", "modsec-rules", "threat", "rules", "audit", "account", "incident", "email", "performance", "hardening", "settings"} {
 			pagePath := filepath.Join(templateDir, page+".html")
 			t, err := template.New(page+".html").Funcs(funcMap).ParseFiles(layoutPath, pagePath)
 			if err != nil {
@@ -146,6 +149,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		mux.Handle("/email", s.requireAuth(http.HandlerFunc(s.handleEmail)))
 		mux.Handle("/performance", s.requireAuth(http.HandlerFunc(s.handlePerformance)))
 		mux.Handle("/hardening", s.requireAuth(http.HandlerFunc(s.handleHardening)))
+		mux.Handle("/settings", s.requireAuth(http.HandlerFunc(s.handleSettings)))
 		mux.Handle("/modsec", s.requireAuth(http.HandlerFunc(s.handleModSec)))
 		mux.Handle("/modsec/rules", s.requireAuth(http.HandlerFunc(s.handleModSecRules)))
 	}
@@ -213,6 +217,10 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/firewall/subnets", s.requireAuth(http.HandlerFunc(s.apiFirewallSubnets)))
 	mux.Handle("/api/v1/firewall/check", s.requireAuth(http.HandlerFunc(s.apiFirewallCheck)))
 
+	// Settings API
+	mux.Handle("/api/v1/settings/restart", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiSettingsRestart))))
+	mux.Handle("/api/v1/settings/", s.requireAuth(http.HandlerFunc(s.apiSettings)))
+
 	// GeoIP API
 	mux.Handle("/api/v1/geoip", s.requireAuth(http.HandlerFunc(s.apiGeoIPLookup)))
 	mux.Handle("/api/v1/geoip/batch", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiGeoIPBatch))))
@@ -273,6 +281,8 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 			},
 		},
 	}
+
+	s.restartDaemon = defaultRestartDaemon
 
 	return s, nil
 }

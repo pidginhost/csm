@@ -159,3 +159,9 @@ func (s *Server) handleEmail(w http.ResponseWriter, _ *http.Request) {
 		"Hostname": s.cfg.Hostname,
 	})
 }
+
+func (s *Server) handleSettings(w http.ResponseWriter, _ *http.Request) {
+	s.renderTemplate(w, "settings.html", map[string]string{
+		"Hostname": s.cfg.Hostname,
+	})
+}
