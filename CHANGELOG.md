@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Dashboard cards show a visible error state on API failure instead of a permanent "Loading...". "Last Critical" now ticks its relative time alongside the live feed.
 - Removed the whole-page "System Overview" collapse toggle; it hid every card and had no useful scope.
-- All web UI pages now carry a consistent page header with title, so deep-linked tabs and narrow viewports always show where the user is. Incident timeline period picker switched from a dropdown to a button group matching the dashboard. Loading placeholders and missing card-title icons aligned across pages; Threat "Auto-blocked" stat links to the firewall.
+- Every web UI page now carries a consistent page title; incident time-range picker matches the dashboard's button-group pattern.
+- Loading placeholders and card-title icons aligned across pages; Threat "Auto-blocked" stat now links to the firewall.
 
 ### Fixed
 
