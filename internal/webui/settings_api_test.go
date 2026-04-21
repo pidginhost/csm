@@ -3,6 +3,7 @@ package webui
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -535,5 +536,56 @@ reputation:
 	}
 	if !found {
 		t.Error("no settings-save audit entry")
+	}
+}
+
+func TestSettingsRestartEndpointInvokesSystemctl(t *testing.T) {
+	s, _ := newSettingsTestServer(t, "tok", "hostname: t\nalerts:\n  email:\n    enabled: true\n    to: [\"ops@t.example.com\"]\n    from: csm@t.example.com\n    smtp: \"127.0.0.1:1\"\n  max_per_hour: 20\n")
+	calls := 0
+	s.restartDaemon = func() ([]byte, error) {
+		calls++
+		return []byte("ok"), nil
+	}
+
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/restart", "tok", "")
+	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	postW := httptest.NewRecorder()
+	s.apiSettingsRestart(postW, postReq)
+
+	if postW.Code != 202 {
+		t.Errorf("code = %d, want 202", postW.Code)
+	}
+	if calls != 1 {
+		t.Errorf("restartDaemon called %d times, want 1", calls)
+	}
+}
+
+func TestSettingsRestartEndpointSurfacesFailure(t *testing.T) {
+	s, _ := newSettingsTestServer(t, "tok", "hostname: t\nalerts:\n  email:\n    enabled: true\n    to: [\"ops@t.example.com\"]\n    from: csm@t.example.com\n    smtp: \"127.0.0.1:1\"\n  max_per_hour: 20\n")
+	s.restartDaemon = func() ([]byte, error) {
+		return []byte("Failed to restart csm.service: Unit not found."), fmt.Errorf("exit status 5")
+	}
+
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/restart", "tok", "")
+	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	postW := httptest.NewRecorder()
+	s.apiSettingsRestart(postW, postReq)
+
+	if postW.Code != 500 {
+		t.Errorf("code = %d, want 500", postW.Code)
+	}
+	if !strings.Contains(postW.Body.String(), "Unit not found") {
+		t.Errorf("body missing stderr: %s", postW.Body.String())
+	}
+}
+
+func TestSettingsRestartEndpointRequiresPOST(t *testing.T) {
+	s, _ := newSettingsTestServer(t, "tok", "hostname: t\nalerts:\n  email:\n    enabled: true\n    to: [\"ops@t.example.com\"]\n    from: csm@t.example.com\n    smtp: \"127.0.0.1:1\"\n  max_per_hour: 20\n")
+	s.restartDaemon = func() ([]byte, error) { return nil, nil }
+	req := settingsAuthedReq("GET", "/api/v1/settings/restart", "tok", "")
+	w := httptest.NewRecorder()
+	s.apiSettingsRestart(w, req)
+	if w.Code != 405 {
+		t.Errorf("code = %d, want 405", w.Code)
 	}
 }

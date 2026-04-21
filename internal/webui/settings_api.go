@@ -1,12 +1,15 @@
 package webui
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/integrity"
@@ -399,4 +402,45 @@ func auditDetailsFor(section SettingsSection, changes map[string]json.RawMessage
 	}
 	b, _ := json.Marshal(redacted)
 	return string(b)
+}
+
+// defaultRestartDaemon is the production implementation. Tests override
+// s.restartDaemon with a fake.
+func defaultRestartDaemon() ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	// #nosec G204 -- fixed argv, no operator input interpolated.
+	cmd := exec.CommandContext(ctx, "systemctl", "restart", "csm")
+	return cmd.CombinedOutput()
+}
+
+// apiSettingsRestart handles POST /api/v1/settings/restart. Returns 202
+// on successful systemctl invocation (the server process may die
+// mid-response, so the frontend treats a connection reset as expected).
+// Returns 500 + stderr truncated to 4 KiB on failure before teardown.
+func (s *Server) apiSettingsRestart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	s.auditLog(r, "settings-restart", "daemon", "")
+
+	output, err := s.restartDaemon()
+	if err != nil {
+		truncated := output
+		if len(truncated) > 4096 {
+			truncated = truncated[:4096]
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"error":  err.Error(),
+			"stderr": string(truncated),
+		})
+		return
+	}
+
+	w.WriteHeader(http.StatusAccepted)
+	_, _ = w.Write([]byte(`{"status":"restart issued"}`))
 }

@@ -65,6 +65,9 @@ type Server struct {
 
 	// Graceful shutdown signal for background goroutines
 	pruneDone chan struct{}
+
+	// restartDaemon is called by apiSettingsRestart. Tests override this.
+	restartDaemon func() (output []byte, err error)
 }
 
 // New creates a new web UI server.
@@ -273,6 +276,8 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 			},
 		},
 	}
+
+	s.restartDaemon = defaultRestartDaemon
 
 	return s, nil
 }
