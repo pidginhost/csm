@@ -1,0 +1,36 @@
+{{define "title"}}Settings{{end}}
+{{define "content"}}
+<div class="page-header d-print-none">
+  <div class="container-xl">
+    <div class="row g-2 align-items-center">
+      <div class="col">
+        <h2 class="page-title"><i class="ti ti-settings"></i>&nbsp;Settings</h2>
+        <div class="text-muted mt-1">Edit CSM configuration. Safe-reload sections apply live; restart-required sections save to disk and prompt for a daemon restart.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="settings-banner" class="alert alert-warning d-none" role="alert"></div>
+
+<div class="container-xl mt-3">
+  <div class="row">
+    <div class="col-md-3">
+      <div class="card">
+        <div class="card-body p-0">
+          <ul class="nav nav-pills flex-column" id="settings-nav" aria-label="Settings sections"></ul>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-9">
+      <div id="settings-panel" class="card">
+        <div class="card-body"><div class="text-muted">Select a section.</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/static/js/settings.js"></script>
+{{end}}
+
+{{template "layout" .}}

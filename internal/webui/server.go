@@ -107,7 +107,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	if _, err := os.Stat(templateDir); err == nil {
 		s.templates = make(map[string]*template.Template)
 		layoutPath := filepath.Join(templateDir, "layout.html")
-		for _, page := range []string{"dashboard", "findings", "quarantine", "firewall", "modsec", "modsec-rules", "threat", "rules", "audit", "account", "incident", "email", "performance", "hardening"} {
+		for _, page := range []string{"dashboard", "findings", "quarantine", "firewall", "modsec", "modsec-rules", "threat", "rules", "audit", "account", "incident", "email", "performance", "hardening", "settings"} {
 			pagePath := filepath.Join(templateDir, page+".html")
 			t, err := template.New(page+".html").Funcs(funcMap).ParseFiles(layoutPath, pagePath)
 			if err != nil {
@@ -149,6 +149,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		mux.Handle("/email", s.requireAuth(http.HandlerFunc(s.handleEmail)))
 		mux.Handle("/performance", s.requireAuth(http.HandlerFunc(s.handlePerformance)))
 		mux.Handle("/hardening", s.requireAuth(http.HandlerFunc(s.handleHardening)))
+		mux.Handle("/settings", s.requireAuth(http.HandlerFunc(s.handleSettings)))
 		mux.Handle("/modsec", s.requireAuth(http.HandlerFunc(s.handleModSec)))
 		mux.Handle("/modsec/rules", s.requireAuth(http.HandlerFunc(s.handleModSecRules)))
 	}
