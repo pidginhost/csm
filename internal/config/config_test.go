@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -171,6 +172,34 @@ func TestConfig_SMTPBruteForceDefaultsApplied(t *testing.T) {
 		if got[k] != v {
 			t.Errorf("%s = %d, want %d", k, got[k], v)
 		}
+	}
+}
+
+func TestLoadBytesAppliesSameDefaultsAsLoad(t *testing.T) {
+	yamlBody := []byte("hostname: example.com\n")
+
+	tmp := filepath.Join(t.TempDir(), "csm.yaml")
+	if err := os.WriteFile(tmp, yamlBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fromDisk, err := Load(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fromBytes, err := LoadBytes(yamlBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fromDisk.ConfigFile = ""
+	fromBytes.ConfigFile = ""
+
+	if !reflect.DeepEqual(fromDisk, fromBytes) {
+		t.Fatalf("LoadBytes drifted from Load:\n  disk  = %#v\n  bytes = %#v", fromDisk, fromBytes)
+	}
+	if fromBytes.StatePath != "/opt/csm/state" {
+		t.Errorf("default StatePath not applied: %q", fromBytes.StatePath)
 	}
 }
 
