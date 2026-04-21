@@ -19,7 +19,9 @@ import (
 // normalised). Mismatch aborts the write.
 //
 // Atomic write semantics match SignAndSaveAtomic: same-directory
-// tempfile, fsync, rename. intendedClone.ConfigFile must equal path.
+// tempfile, fsync, rename. On success, intendedClone.Integrity.BinaryHash
+// and .ConfigHash are updated in place to reflect the hashes written to
+// disk. intendedClone.ConfigFile must equal path.
 func SignAndSavePreserving(path string, editedBytes []byte, intendedClone *config.Config, binaryHash string) error {
 	if intendedClone == nil {
 		return fmt.Errorf("intendedClone is nil")
@@ -80,7 +82,7 @@ func stripIntegrityBlock(s string) string {
 			continue
 		}
 		if inIntegrity {
-			if strings.HasPrefix(line, "  ") || line == "" {
+			if strings.HasPrefix(line, "  ") || strings.HasPrefix(line, "\t") || line == "" {
 				continue
 			}
 			inIntegrity = false
