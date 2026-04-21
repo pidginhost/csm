@@ -405,9 +405,11 @@ func (s *Server) apiStats(w http.ResponseWriter, _ *http.Request) {
 	// Find most recent critical finding for "time since last critical"
 	// (findings are newest-first from ReadHistorySince)
 	lastCriticalAgo := "None"
+	lastCriticalISO := ""
 	for _, f := range findings {
 		if f.Severity == alert.Critical {
 			lastCriticalAgo = timeAgo(f.Timestamp)
+			lastCriticalISO = f.Timestamp.Format(time.RFC3339)
 			break
 		}
 	}
@@ -506,6 +508,7 @@ func (s *Server) apiStats(w http.ResponseWriter, _ *http.Request) {
 		},
 		"by_check":          byCheck,
 		"last_critical_ago": lastCriticalAgo,
+		"last_critical_iso": lastCriticalISO,
 		"accounts_at_risk":  atRisk,
 		"auto_response": map[string]int{
 			"blocked":     autoBlocked,

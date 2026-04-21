@@ -353,9 +353,11 @@
         ]).then(function(res) {
             var health = res[0] || {};
             var status = res[1] || {};
+            // Fanotify fallback is normal on platforms where fanotify isn't
+            // available (e.g. some Ubuntu/Nginx setups), so it is not a
+            // problem -- the uptime card already surfaces the fallback badge.
             var problems = [];
             if (!health.daemon_mode) problems.push('daemon not in service mode');
-            if (!health.fanotify) problems.push('fanotify unavailable (fallback)');
             if (!health.log_watchers) problems.push('no log watchers active');
             if (!health.rules_loaded) problems.push('no YARA rules loaded');
 
@@ -396,8 +398,18 @@
                 setText('stat-critical', s.critical);
                 setText('stat-high', s.high);
                 setText('stat-warning', s.warning);
-                if (data.last_critical_ago) {
-                    setText('stat-last-critical', data.last_critical_ago);
+                // Keep text and data-timestamp aligned so CSM.initTimeAgo ticks
+                // against the correct baseline when a fresh critical arrives.
+                var lastCritEl = document.getElementById('stat-last-critical');
+                if (lastCritEl) {
+                    if (data.last_critical_iso) {
+                        lastCritEl.setAttribute('data-timestamp', data.last_critical_iso);
+                    } else {
+                        lastCritEl.removeAttribute('data-timestamp');
+                    }
+                    if (data.last_critical_ago) {
+                        lastCritEl.textContent = data.last_critical_ago;
+                    }
                 }
                 renderAccountsAtRisk(data.accounts_at_risk || []);
                 renderAutoResponse(data.auto_response || {}, data.by_check || {});
