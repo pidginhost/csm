@@ -117,8 +117,8 @@ func TestYAMLEditNullValueRoundTrip(t *testing.T) {
 		t.Errorf("enabled still true in output: %s", out)
 	}
 	var raw map[string]interface{}
-	if err := yaml.Unmarshal(out, &raw); err != nil {
-		t.Fatalf("raw yaml decode: %v", err)
+	if uerr := yaml.Unmarshal(out, &raw); uerr != nil {
+		t.Fatalf("raw yaml decode: %v", uerr)
 	}
 	performance, _ := raw["performance"].(map[string]interface{})
 	if v, ok := performance["enabled"]; !ok || v != nil {

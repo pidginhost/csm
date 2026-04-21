@@ -258,7 +258,8 @@ func YAMLEdit(data []byte, changes []YAMLChange) ([]byte, error) {
 
 		if valN == nil {
 			// Key does not exist -- insert into parentMap.
-			ed, err := buildInsertEdit(data, li, parentMap, ch.Path[len(ch.Path)-1], ch.Value)
+			var ed edit
+			ed, err = buildInsertEdit(data, li, parentMap, ch.Path[len(ch.Path)-1], ch.Value)
 			if err != nil {
 				return nil, fmt.Errorf("yamledit: insert %v: %w", ch.Path, err)
 			}
@@ -267,7 +268,8 @@ func YAMLEdit(data []byte, changes []YAMLChange) ([]byte, error) {
 		}
 
 		// Key exists -- replace value span.
-		ed, err := buildReplaceEdit(data, li, keyN, valN, ch.Value)
+		var ed edit
+		ed, err = buildReplaceEdit(data, li, keyN, valN, ch.Value)
 		if err != nil {
 			return nil, fmt.Errorf("yamledit: replace %v: %w", ch.Path, err)
 		}

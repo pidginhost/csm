@@ -40,8 +40,8 @@ integrity:
 	}
 	clone.ConfigFile = path
 
-	if err := SignAndSavePreserving(path, edited, clone, "sha256:newbinary"); err != nil {
-		t.Fatalf("save: %v", err)
+	if serr := SignAndSavePreserving(path, edited, clone, "sha256:newbinary"); serr != nil {
+		t.Fatalf("save: %v", serr)
 	}
 
 	final, err := os.ReadFile(path)

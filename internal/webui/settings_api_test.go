@@ -30,8 +30,8 @@ func newSettingsTestServer(t *testing.T, token, yamlBody string) (*Server, strin
 	cfg.StatePath = dir
 	cfg.WebUI.AuthToken = token
 	cfg.WebUI.UIDir = filepath.Join(dir, "ui-missing")
-	if err := integrity.SignAndSaveAtomic(cfg, "sha256:testbinary"); err != nil {
-		t.Fatal(err)
+	if serr := integrity.SignAndSaveAtomic(cfg, "sha256:testbinary"); serr != nil {
+		t.Fatal(serr)
 	}
 	cfg, err = config.Load(cfgPath)
 	if err != nil {
