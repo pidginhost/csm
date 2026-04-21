@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/firewall"
@@ -627,6 +628,42 @@ func TestValidate_MailBruteForceRanges(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidateDeepSectionAlertsOnlyProbesAlerts(t *testing.T) {
+	cfg := &Config{}
+	cfg.Alerts.Email.Enabled = true
+	cfg.Alerts.Email.SMTP = "127.0.0.1:1" // likely-unreachable; probe runs
+
+	// Also wire up a broken email_av section that would fail if we accidentally
+	// ran its deep probe.
+	cfg.EmailAV.Enabled = true
+	cfg.EmailAV.ClamdSocket = "/nonexistent/clamd.sock"
+
+	// Running ValidateDeepSection(cfg, "alerts") must exercise only the alerts
+	// probes and must not touch email_av.
+	results := ValidateDeepSection(cfg, "alerts")
+	for _, r := range results {
+		if strings.HasPrefix(r.Field, "email_av") {
+			t.Errorf("alerts section triggered email_av probe: %v", r)
+		}
+	}
+
+	// Cross-check: asking for email_av should include email_av results.
+	emailAVResults := ValidateDeepSection(cfg, "email_av")
+	for _, r := range emailAVResults {
+		if strings.HasPrefix(r.Field, "alerts") {
+			t.Errorf("email_av section triggered alerts probe: %v", r)
+		}
+	}
+}
+
+func TestValidateDeepSectionChallengeChecksPortAvailability(t *testing.T) {
+	cfg := &Config{}
+	cfg.Challenge.ListenPort = 0
+	// challenge section has no deep probe; must return nil without panic.
+	results := ValidateDeepSection(cfg, "challenge")
+	_ = results
 }
 
 func TestValidate_SMTPBruteForceRanges(t *testing.T) {

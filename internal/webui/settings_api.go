@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/integrity"
 	"gopkg.in/yaml.v3"
 )
 
@@ -149,12 +150,268 @@ func overlayNullableState(section SettingsSection, values, raw map[string]interf
 	}
 }
 
-// apiSettingsPost is a placeholder until Task 6 lands.
-func (s *Server) apiSettingsPost(w http.ResponseWriter, _ *http.Request) {
-	writeJSONError(w, "not implemented", http.StatusNotImplemented)
+func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	sectionID := strings.TrimPrefix(r.URL.Path, settingsURLPrefix)
+	if sectionID == "" || strings.Contains(sectionID, "/") {
+		writeJSONError(w, "section required", http.StatusBadRequest)
+		return
+	}
+	section, ok := LookupSettingsSection(sectionID)
+	if !ok {
+		writeJSONError(w, "unknown section", http.StatusNotFound)
+		return
+	}
+
+	ifMatch := r.Header.Get("If-Match")
+	if ifMatch == "" {
+		writeJSONError(w, "If-Match header required", http.StatusBadRequest)
+		return
+	}
+
+	var body struct {
+		Changes map[string]json.RawMessage `json:"changes"`
+	}
+	if err := decodeJSONBodyLimited(w, r, 256*1024, &body); err != nil {
+		writeJSONError(w, "invalid body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	diskBytes, err := os.ReadFile(s.cfg.ConfigFile) // #nosec G304 -- operator-supplied config path
+	if err != nil {
+		writeJSONError(w, "read config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	disk, err := config.LoadBytes(diskBytes)
+	if err != nil {
+		writeJSONError(w, "parse config: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	disk.ConfigFile = s.cfg.ConfigFile
+	if disk.Integrity.ConfigHash != ifMatch {
+		writeJSONError(w, "config changed on disk, reload", http.StatusPreconditionFailed)
+		return
+	}
+
+	clone := *disk
+	if disk.Firewall != nil {
+		fw := *disk.Firewall
+		clone.Firewall = &fw
+	}
+
+	yamlChanges, errs := buildChangeSet(section, &clone, body.Changes)
+	if len(errs) > 0 {
+		writeValidationErrors(w, errs)
+		return
+	}
+
+	allValidation := append(config.Validate(&clone), config.ValidateDeepSection(&clone, section.ID)...)
+	sectionResults := filterValidationToSection(allValidation, section.YAMLPath)
+	fieldErrors, warnings := splitValidationResults(sectionResults)
+	if len(fieldErrors) > 0 {
+		writeValidationErrors(w, fieldErrors)
+		return
+	}
+
+	diff := config.Diff(disk, &clone)
+	var restartFields []string
+	for _, c := range diff {
+		if c.Tag != config.TagSafe {
+			restartFields = append(restartFields, c.Field)
+		}
+	}
+
+	edited, err := config.YAMLEdit(diskBytes, yamlChanges)
+	if err != nil {
+		writeJSONError(w, "yaml edit: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if err := integrity.SignAndSavePreserving(s.cfg.ConfigFile, edited, &clone, disk.Integrity.BinaryHash); err != nil {
+		writeJSONError(w, "save: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	newETag := clone.Integrity.ConfigHash
+
+	if len(restartFields) == 0 {
+		config.SetActive(&clone)
+	} else if live := config.Active(); live != nil {
+		livePatched := *live
+		livePatched.Integrity.ConfigHash = newETag
+		config.SetActive(&livePatched)
+	}
+
+	var applied []string
+	for _, c := range diff {
+		applied = append(applied, c.Field)
+	}
+
+	s.auditLog(r, "settings-save", sectionID, auditDetailsFor(section, body.Changes))
+
+	writeJSON(w, map[string]interface{}{
+		"applied":          applied,
+		"requires_restart": restartFields,
+		"pending_restart":  len(restartFields) > 0,
+		"warnings":         warnings,
+		"new_etag":         newETag,
+	})
 }
 
-// placeholder to satisfy imports until Task 6 lands.
-var _ = reflect.TypeOf(0)
-var _ = fmt.Sprintf
-var _ = json.Marshal
+type fieldError struct {
+	Field   string `json:"field"`
+	Message string `json:"message"`
+}
+
+// filterValidationToSection returns only the results whose Field path
+// falls within the given section YAML path (exact match or nested
+// under it). This prevents errors in unedited sections from blocking
+// a save to a different section.
+func filterValidationToSection(results []config.ValidationResult, sectionPath string) []config.ValidationResult {
+	var out []config.ValidationResult
+	for _, r := range results {
+		if r.Field == sectionPath || strings.HasPrefix(r.Field, sectionPath+".") {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func splitValidationResults(results []config.ValidationResult) (errs []fieldError, warnings []fieldError) {
+	for _, v := range results {
+		if v.Level == "error" {
+			errs = append(errs, fieldError{Field: v.Field, Message: v.Message})
+			continue
+		}
+		if v.Level == "warn" {
+			warnings = append(warnings, fieldError{Field: v.Field, Message: v.Message})
+		}
+	}
+	return errs, warnings
+}
+
+func writeValidationErrors(w http.ResponseWriter, errs []fieldError) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnprocessableEntity)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"errors": errs})
+}
+
+func buildChangeSet(section SettingsSection, clone *config.Config, changes map[string]json.RawMessage) ([]config.YAMLChange, []fieldError) {
+	var out []config.YAMLChange
+	var errs []fieldError
+
+	for key, raw := range changes {
+		field := lookupSchemaField(section, key)
+		if field == nil {
+			errs = append(errs, fieldError{Field: key, Message: "unknown field"})
+			continue
+		}
+		if field.Secret {
+			var sv string
+			if err := json.Unmarshal(raw, &sv); err == nil && sv == "***REDACTED***" {
+				continue
+			}
+		}
+
+		fullPath := section.YAMLPath
+		if key != "" {
+			fullPath = section.YAMLPath + "." + key
+		}
+		decoded, err := decodeJSONForYAML(raw, field)
+		if err != nil {
+			errs = append(errs, fieldError{Field: key, Message: err.Error()})
+			continue
+		}
+		out = append(out, config.YAMLChange{Path: strings.Split(fullPath, "."), Value: decoded})
+		if err := applyToClone(clone, strings.Split(fullPath, "."), raw); err != nil {
+			errs = append(errs, fieldError{Field: key, Message: err.Error()})
+		}
+	}
+	return out, errs
+}
+
+func lookupSchemaField(section SettingsSection, key string) *SettingsField {
+	for i := range section.Fields {
+		if section.Fields[i].YAMLPath == key {
+			return &section.Fields[i]
+		}
+	}
+	return nil
+}
+
+func decodeJSONForYAML(raw json.RawMessage, field *SettingsField) (interface{}, error) {
+	if string(raw) == "null" {
+		if !field.Nullable {
+			return nil, fmt.Errorf("null is only allowed for nullable fields")
+		}
+		return nil, nil
+	}
+	var v interface{}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return nil, err
+	}
+	return v, nil
+}
+
+func applyToClone(cfg *config.Config, path []string, raw json.RawMessage) error {
+	v := reflect.ValueOf(cfg).Elem()
+	for i, key := range path {
+		if v.Kind() == reflect.Ptr {
+			if v.IsNil() {
+				v.Set(reflect.New(v.Type().Elem()))
+			}
+			v = v.Elem()
+		}
+		if v.Kind() != reflect.Struct {
+			return fmt.Errorf("path %v: element %d is not a struct", path, i)
+		}
+		field, ok := fieldByYAMLTag(v.Type(), key)
+		if !ok {
+			return fmt.Errorf("no yaml field %q under %s", key, strings.Join(path[:i], "."))
+		}
+		v = v.FieldByIndex(field.Index)
+	}
+	ptr := reflect.New(v.Type())
+	if err := json.Unmarshal(raw, ptr.Interface()); err != nil {
+		return fmt.Errorf("unmarshal into %s: %w", v.Type(), err)
+	}
+	v.Set(ptr.Elem())
+	return nil
+}
+
+func fieldByYAMLTag(t reflect.Type, yamlName string) (reflect.StructField, bool) {
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		tag := f.Tag.Get("yaml")
+		if tag == "" {
+			continue
+		}
+		name := tag
+		if idx := strings.IndexByte(tag, ','); idx >= 0 {
+			name = tag[:idx]
+		}
+		if name == yamlName {
+			return f, true
+		}
+	}
+	return reflect.StructField{}, false
+}
+
+func auditDetailsFor(section SettingsSection, changes map[string]json.RawMessage) string {
+	redacted := make(map[string]interface{}, len(changes))
+	for k, raw := range changes {
+		if field := lookupSchemaField(section, k); field != nil && field.Secret {
+			redacted[k] = "***"
+			continue
+		}
+		var v interface{}
+		_ = json.Unmarshal(raw, &v)
+		redacted[k] = v
+	}
+	b, _ := json.Marshal(redacted)
+	return string(b)
+}
