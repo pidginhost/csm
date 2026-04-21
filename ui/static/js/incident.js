@@ -5,10 +5,15 @@
     var sevLabels = {}; for (var sk in CSM.sevMap) sevLabels[sk] = CSM.sevMap[sk].label;
     var sevClasses = {}; for (var sk2 in CSM.sevMap) sevClasses[sk2] = CSM.sevMap[sk2].cls;
 
+    function currentHours() {
+        var active = document.querySelector('.incident-hours-btn.active');
+        return active ? active.getAttribute('data-hours') : '72';
+    }
+
     function loadIncident() {
         var query = document.getElementById('incident-query').value.trim();
         if (!query) return;
-        var hours = document.getElementById('incident-hours').value;
+        var hours = currentHours();
 
         // Detect if query is an IP or account
         var isIP = CSM.validateIP(query) || query.indexOf(':') >= 0;
@@ -87,9 +92,14 @@
     document.getElementById('incident-query').addEventListener('keydown', function(e) {
         if (e.key === 'Enter') loadIncident();
     });
-    document.getElementById('incident-hours').addEventListener('change', function() {
-        var query = document.getElementById('incident-query').value.trim();
-        if (query) loadIncident();
+    var hoursBtns = document.querySelectorAll('.incident-hours-btn');
+    hoursBtns.forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            hoursBtns.forEach(function(b) { b.classList.remove('active'); });
+            this.classList.add('active');
+            var query = document.getElementById('incident-query').value.trim();
+            if (query) loadIncident();
+        });
     });
 
     // Check URL params for pre-populated search

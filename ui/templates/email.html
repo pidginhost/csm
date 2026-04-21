@@ -1,6 +1,12 @@
 {{define "title"}}Email Security{{end}}
 {{define "page"}}email{{end}}
 {{define "content"}}
+    <div class="page-header mb-3">
+        <div class="row align-items-center">
+            <div class="col-auto"><h2 class="page-title">Email Security</h2></div>
+        </div>
+    </div>
+
     <!-- Stat Cards -->
     <div class="row row-deck row-cards mb-3">
         <div class="col-6 col-lg">
@@ -130,7 +136,7 @@
                     </tr>
                 </thead>
                 <tbody id="email-tbody">
-                    <tr><td colspan="6" class="text-center text-muted py-4">Loading...</td></tr>
+                    <tr><td colspan="6" class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -142,7 +148,7 @@
             <div class="card">
                 <div class="card-header"><h3 class="card-title"><i class="ti ti-alert-triangle"></i>&nbsp;Recent Threats</h3></div>
                 <div class="card-body p-0 csm-list-scroll-sm" id="recent-threats">
-                    <div class="text-muted text-center py-3">Loading...</div>
+                    <div class="text-muted text-center py-3"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
                 </div>
             </div>
         </div>
@@ -150,7 +156,7 @@
             <div class="card h-100">
                 <div class="card-header"><h3 class="card-title"><i class="ti ti-mailbox"></i>&nbsp;Queue &amp; Protection</h3></div>
                 <div class="card-body" id="queue-health">
-                    <div class="text-muted text-center py-3">Loading...</div>
+                    <div class="text-muted text-center py-3"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
                 </div>
             </div>
         </div>
@@ -158,7 +164,7 @@
             <div class="card">
                 <div class="card-header"><h3 class="card-title"><i class="ti ti-send"></i>&nbsp;Top Senders</h3></div>
                 <div class="card-body p-0 csm-list-scroll-sm" id="top-senders">
-                    <div class="text-muted text-center py-3">Loading...</div>
+                    <div class="text-muted text-center py-3"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
                 </div>
             </div>
         </div>
@@ -166,7 +172,7 @@
     <div class="row row-deck row-cards mb-3">
         <div class="col-lg-4">
             <div class="card">
-                <div class="card-header"><h3 class="card-title">Quarantined Messages</h3></div>
+                <div class="card-header"><h3 class="card-title"><i class="ti ti-lock"></i>&nbsp;Quarantined Messages</h3></div>
                 <div class="card-body">
                     <div id="quarantine-table"></div>
                 </div>
@@ -176,13 +182,13 @@
             <div class="card">
                 <div class="card-header"><h3 class="card-title"><i class="ti ti-firewall"></i>&nbsp;SMTP Firewall</h3></div>
                 <div class="card-body" id="smtp-firewall">
-                    <div class="text-muted text-center py-3">Loading...</div>
+                    <div class="text-muted text-center py-3"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
                 </div>
             </div>
         </div>
         <div class="col-lg-4">
             <div class="card">
-                <div class="card-header"><h3 class="card-title">AV Engine Status</h3></div>
+                <div class="card-header"><h3 class="card-title"><i class="ti ti-virus-search"></i>&nbsp;AV Engine Status</h3></div>
                 <div class="card-body">
                     <div class="mb-2">
                         <span class="status-dot" id="clamd-dot"></span>
