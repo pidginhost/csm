@@ -216,6 +216,10 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/firewall/subnets", s.requireAuth(http.HandlerFunc(s.apiFirewallSubnets)))
 	mux.Handle("/api/v1/firewall/check", s.requireAuth(http.HandlerFunc(s.apiFirewallCheck)))
 
+	// Settings API
+	mux.Handle("/api/v1/settings/restart", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiSettingsRestart))))
+	mux.Handle("/api/v1/settings/", s.requireAuth(http.HandlerFunc(s.apiSettings)))
+
 	// GeoIP API
 	mux.Handle("/api/v1/geoip", s.requireAuth(http.HandlerFunc(s.apiGeoIPLookup)))
 	mux.Handle("/api/v1/geoip/batch", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiGeoIPBatch))))
