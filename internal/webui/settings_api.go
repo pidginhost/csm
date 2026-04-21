@@ -308,7 +308,7 @@ func buildChangeSet(section SettingsSection, clone *config.Config, changes map[s
 		}
 		decoded, err := decodeJSONForYAML(raw, field)
 		if err != nil {
-			errs = append(errs, fieldError{Field: key, Message: err.Error()})
+			errs = append(errs, fieldError{Field: key, Message: "decode: " + err.Error()})
 			continue
 		}
 		out = append(out, config.YAMLChange{Path: strings.Split(fullPath, "."), Value: decoded})

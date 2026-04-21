@@ -660,10 +660,14 @@ func TestValidateDeepSectionAlertsOnlyProbesAlerts(t *testing.T) {
 
 func TestValidateDeepSectionChallengeChecksPortAvailability(t *testing.T) {
 	cfg := &Config{}
-	cfg.Challenge.ListenPort = 0
-	// challenge section has no deep probe; must return nil without panic.
+	cfg.Challenge.ListenPort = 8439
+	// The challenge case has no deep probe in v1 (probeListenPortAvailable
+	// is not yet implemented). ValidateDeepSection must return nil without
+	// panic, not leak probes from other sections.
 	results := ValidateDeepSection(cfg, "challenge")
-	_ = results
+	if len(results) != 0 {
+		t.Errorf("challenge deep section expected 0 results (no probe implemented), got %d: %v", len(results), results)
+	}
 }
 
 func TestValidate_SMTPBruteForceRanges(t *testing.T) {

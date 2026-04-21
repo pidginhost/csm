@@ -346,6 +346,10 @@ func ValidateDeepSection(cfg *Config, section string) []ValidationResult {
 		if cfg.GeoIP.AccountID != "" && cfg.GeoIP.LicenseKey != "" && len(cfg.GeoIP.Editions) > 0 {
 			return probeGeoIPDBs(cfg.StatePath, cfg.GeoIP.Editions)
 		}
+	case "challenge":
+		// probeListenPortAvailable is not yet implemented in this codebase.
+		// When added, invoke it here: return probeListenPortAvailable(cfg.Challenge.ListenPort).
+		return nil
 	}
 	return nil
 }
