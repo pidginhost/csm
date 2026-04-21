@@ -154,6 +154,13 @@ performance:
 
 func TestSettingsPOSTAppliesSafeFieldLive(t *testing.T) {
 	body := `hostname: t.example.com
+alerts:
+  email:
+    enabled: true
+    to: ["ops@t.example.com"]
+    from: csm@t.example.com
+    smtp: "127.0.0.1:1"
+  max_per_hour: 20
 auto_response:
   enabled: true
   block_ips: false
@@ -208,6 +215,13 @@ auto_response:
 
 func TestSettingsPOSTRestartFieldSavesDiskKeepsLive(t *testing.T) {
 	body := `hostname: t.example.com
+alerts:
+  email:
+    enabled: true
+    to: ["ops@t.example.com"]
+    from: csm@t.example.com
+    smtp: "127.0.0.1:1"
+  max_per_hour: 20
 challenge:
   enabled: false
   listen_port: 8439
@@ -257,6 +271,11 @@ challenge:
 func TestSettingsPOSTIfMatchMismatch412(t *testing.T) {
 	body := `hostname: t.example.com
 alerts:
+  email:
+    enabled: true
+    to: ["ops@t.example.com"]
+    from: csm@t.example.com
+    smtp: "127.0.0.1:1"
   max_per_hour: 30
 `
 	s, _ := newSettingsTestServer(t, "tok", body)
@@ -273,7 +292,16 @@ alerts:
 }
 
 func TestSettingsPOSTMissingIfMatch400(t *testing.T) {
-	s, _ := newSettingsTestServer(t, "tok", "hostname: t\n")
+	body := `hostname: t
+alerts:
+  email:
+    enabled: true
+    to: ["ops@t.example.com"]
+    from: csm@t.example.com
+    smtp: "127.0.0.1:1"
+  max_per_hour: 20
+`
+	s, _ := newSettingsTestServer(t, "tok", body)
 	postReq := settingsAuthedReq("POST", "/api/v1/settings/alerts", "tok", `{"changes":{}}`)
 	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
 	postW := httptest.NewRecorder()
@@ -322,6 +350,13 @@ alerts:
 
 func TestSettingsPOSTNullForNonNullableField422(t *testing.T) {
 	body := `hostname: t.example.com
+alerts:
+  email:
+    enabled: true
+    to: ["ops@t.example.com"]
+    from: csm@t.example.com
+    smtp: "127.0.0.1:1"
+  max_per_hour: 20
 auto_response:
   enabled: true
   block_ips: false
@@ -379,6 +414,13 @@ auto_response:
 
 func TestSettingsPOSTRedactedSecretDropped(t *testing.T) {
 	body := `hostname: t
+alerts:
+  email:
+    enabled: true
+    to: ["ops@t.example.com"]
+    from: csm@t.example.com
+    smtp: "127.0.0.1:1"
+  max_per_hour: 20
 reputation:
   abuseipdb_key: "live-key-value"
   whitelist:
@@ -411,6 +453,13 @@ reputation:
 
 func TestSettingsPOSTEmptyStringClearsSecret(t *testing.T) {
 	body := `hostname: t
+alerts:
+  email:
+    enabled: true
+    to: ["ops@t.example.com"]
+    from: csm@t.example.com
+    smtp: "127.0.0.1:1"
+  max_per_hour: 20
 sentry:
   enabled: true
   dsn: "https://existing@example.com/1"
@@ -441,6 +490,13 @@ sentry:
 
 func TestSettingsPOSTAuditRecordWrittenWithMaskedSecret(t *testing.T) {
 	body := `hostname: t
+alerts:
+  email:
+    enabled: true
+    to: ["ops@t.example.com"]
+    from: csm@t.example.com
+    smtp: "127.0.0.1:1"
+  max_per_hour: 20
 reputation:
   abuseipdb_key: "old"
 `

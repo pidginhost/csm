@@ -209,9 +209,8 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	allValidation := append(config.Validate(&clone), config.ValidateDeepSection(&clone, section.ID)...)
-	sectionResults := filterValidationToSection(allValidation, section.YAMLPath)
-	fieldErrors, warnings := splitValidationResults(sectionResults)
+	validationResults := append(config.Validate(&clone), config.ValidateDeepSection(&clone, section.ID)...)
+	fieldErrors, warnings := splitValidationResults(validationResults)
 	if len(fieldErrors) > 0 {
 		writeValidationErrors(w, fieldErrors)
 		return
@@ -265,20 +264,6 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 type fieldError struct {
 	Field   string `json:"field"`
 	Message string `json:"message"`
-}
-
-// filterValidationToSection returns only the results whose Field path
-// falls within the given section YAML path (exact match or nested
-// under it). This prevents errors in unedited sections from blocking
-// a save to a different section.
-func filterValidationToSection(results []config.ValidationResult, sectionPath string) []config.ValidationResult {
-	var out []config.ValidationResult
-	for _, r := range results {
-		if r.Field == sectionPath || strings.HasPrefix(r.Field, sectionPath+".") {
-			out = append(out, r)
-		}
-	}
-	return out
 }
 
 func splitValidationResults(results []config.ValidationResult) (errs []fieldError, warnings []fieldError) {
