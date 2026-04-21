@@ -14,7 +14,7 @@ import (
 // so the 30-day trend chart is decoupled from history pruning. The
 // bucket has at most dailyRetentionDays rows and grows by ~50 bytes/day.
 const (
-	bucketStatsDaily        = "stats:daily"
+	bucketStatsDaily         = "stats:daily"
 	metaStatsDailyBackfilled = "stats:daily:backfilled"
 )
 
