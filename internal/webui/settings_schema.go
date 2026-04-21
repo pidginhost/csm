@@ -154,6 +154,8 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "listen_port", Type: "int", Label: "Listen port", Min: int64p(1), Max: int64p(65535)},
 			{YAMLPath: "difficulty", Type: "int", Label: "PoW difficulty (0-5)", Min: int64p(0), Max: int64p(5)},
 			{YAMLPath: "trusted_proxies", Type: "[]string", Label: "Trusted proxy IPs"},
+			// challenge.secret is auto-generated at daemon startup; intentionally
+			// omitted so the UI cannot overwrite or leak the HMAC key.
 		},
 	},
 	{
@@ -215,6 +217,10 @@ var settingsSections = []SettingsSection{
 		Restart:  true,
 		Fields: []SettingsField{
 			{YAMLPath: "enabled", Type: "bool", Label: "Performance checks", Nullable: true, Help: "Leave unset to inherit default (on)"},
+			// load_high_multiplier / load_critical_multiplier are float64 in
+			// Config; surfaced as string in v1 because the schema type vocabulary
+			// has no "float" entry. Frontend uses free-text numeric input; POST
+			// handler coerces string to float64 via yaml.Unmarshal on the clone.
 			{YAMLPath: "load_high_multiplier", Type: "string", Label: "Load high multiplier"},
 			{YAMLPath: "load_critical_multiplier", Type: "string", Label: "Load critical multiplier"},
 			{YAMLPath: "php_process_warn_per_user", Type: "int", Label: "PHP process warn per user", Min: int64p(1)},
