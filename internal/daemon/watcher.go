@@ -453,10 +453,14 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 
 	// 10. Cloud-relay credential abuse (multiple authenticated sends from
 	// distinct cloud-provider IPs for the same mailbox).
+	// Use the AUTH identity (A=dovecot_*:<user>), not the envelope-from:
+	// the envelope-from can be forged by the attacker, while the AUTH
+	// identity is the credential actually being abused and the one we
+	// must lock out.
 	for _, f := range parseCloudRelayFinding(line, cfg) {
-		sender := extractEximSender(line)
-		if domain := extractDomainFromEmail(sender); domain != "" {
-			autoSuspendOutgoingMail(sender)
+		authUser := extractAuthUser(line)
+		if domain := extractDomainFromEmail(authUser); domain != "" {
+			autoSuspendOutgoingMail(authUser)
 			RecordCompromisedDomain(domain)
 		}
 		findings = append(findings, f)

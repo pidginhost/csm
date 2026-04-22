@@ -36,10 +36,13 @@ var cloudProviderPTRSuffixes = []string{
 	// Google Cloud Platform
 	".googleusercontent.com",
 	".gce.internal",
-	// AWS EC2
+	// AWS EC2 — public PTRs only. `.compute.internal` is intentionally
+	// excluded: it is an AWS VPC-internal PTR but also appears on
+	// corporate VPN and self-hosted lab networks that have nothing to
+	// do with AWS, so matching it would risk suspending mailboxes
+	// that just happen to have an internal-looking reverse DNS.
 	".compute.amazonaws.com",
 	".compute-1.amazonaws.com",
-	".compute.internal",
 	// Microsoft Azure
 	".cloudapp.net",
 	".cloudapp.azure.com",

@@ -2,7 +2,9 @@ package daemon
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -26,17 +28,8 @@ import (
 // because it is purely an event-log replay; the realtime watcher owns
 // live state thereafter.
 
-const (
-	// eximLogPath is where cPanel exim writes its mainlog. Var so tests
-	// can point it at a fixture.
-	cloudRelayScanPathDefault = "/var/log/exim_mainlog"
-
-	// cloudRelayScanLookback is how far back we replay the log on startup.
-	// 24h is long enough to catch any compromise that is still active and
-	// short enough that IPs in the findings are likely still attacker-
-	// controlled (so the nftables autoblock is still useful).
-	cloudRelayScanLookback = 24 * time.Hour
-)
+// cloudRelayScanPathDefault is where cPanel exim writes its mainlog.
+const cloudRelayScanPathDefault = "/var/log/exim_mainlog"
 
 // CloudRelayScanPath is the log file path scanned at startup. Exported
 // via var (not const) for tests.
@@ -62,50 +55,54 @@ func ScanEximHistoryForCloudRelay(cfg *config.Config, logPath string, now time.T
 	defer func() { _ = f.Close() }()
 
 	since := now.Add(-lookback)
-
-	// Per-user event log (timestamped cloud-PTR AUTH sends).
 	byUser := make(map[string][]cloudRelayScanEvent)
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		line := scanner.Text()
-		// Fast-reject lines that cannot contain an authenticated
-		// acceptance before spending CPU on extractors.
-		if !strings.Contains(line, " <= ") || !strings.Contains(line, "A=dovecot_") {
+	// Use bufio.Reader rather than bufio.Scanner: an exim line can
+	// occasionally exceed whatever fixed Scanner buffer we set (e.g.
+	// a spam run with a huge Base64 subject). Scanner returns an
+	// ErrTooLong which aborts the whole loop — missing every later
+	// compromise event. Reader.ReadString lets us skip oversized
+	// lines and keep going.
+	reader := bufio.NewReaderSize(f, 256*1024)
+	for {
+		line, rerr := reader.ReadString('\n')
+		if len(line) > 0 {
+			if line[len(line)-1] == '\n' {
+				line = line[:len(line)-1]
+			}
+			processCloudRelayScanLine(line, cfg, since, byUser)
+		}
+		if rerr == nil {
 			continue
 		}
-		ts, ok := parseEximTimestamp(line)
-		if !ok || ts.Before(since) {
+		if errors.Is(rerr, io.EOF) {
+			break
+		}
+		if errors.Is(rerr, bufio.ErrBufferFull) {
+			// Line longer than 256 KB — drain it and move on.
+			// Real exim acceptance lines are well under 10 KB;
+			// anything longer is almost certainly a pathological
+			// subject we can't usefully parse anyway.
+			if drainErr := drainUntilNewline(reader); drainErr != nil {
+				break
+			}
 			continue
 		}
-		user := extractAuthUser(line)
-		if user == "" || isHighVolumeSender(user, cfg.EmailProtection.HighVolumeSenders) {
-			continue
-		}
-		ptr := extractEximHostname(line)
-		if !isCloudProviderPTR(ptr) {
-			continue
-		}
-		ip := extractBracketedIP(line)
-		if ip == "" {
-			continue
-		}
-		byUser[user] = append(byUser[user], cloudRelayScanEvent{at: ts, ip: ip, ptr: ptr})
+		// Any other I/O error: stop cleanly, don't panic.
+		break
 	}
 
-	var findings []alert.Finding
 	users := make([]string, 0, len(byUser))
 	for u := range byUser {
 		users = append(users, u)
 	}
 	sort.Strings(users) // stable finding order
 
+	var findings []alert.Finding
 	for _, user := range users {
 		events := byUser[user]
 		sort.Slice(events, func(i, j int) bool { return events[i].at.Before(events[j].at) })
 
-		// Sliding-window max-burst: find the strongest 60-min slice.
 		maxSends, maxDistinctIPs, fireAt, peakPTR := maxCloudRelayBurst(events)
 		multiIP := maxSends >= cloudRelayMinEvents && maxDistinctIPs >= cloudRelayMinDistinctIP
 		volume := maxSends >= cloudRelayHighVolumeEvents
@@ -116,7 +113,7 @@ func ScanEximHistoryForCloudRelay(cfg *config.Config, logPath string, now time.T
 		// Persistent dedup: skip if we've already fired for this user
 		// and no new event has landed since then.
 		latestEvent := events[len(events)-1].at
-		if skip := alreadyReportedRetro(user, latestEvent); skip {
+		if alreadyReportedRetro(user, latestEvent) {
 			continue
 		}
 
@@ -131,10 +128,6 @@ func ScanEximHistoryForCloudRelay(cfg *config.Config, logPath string, now time.T
 			seen[ip] = struct{}{}
 			ips = append(ips, ip)
 		}
-
-		// Pick the IP that goes on the autoblock-facing `from <ip>` suffix.
-		// Most recent IP is the best candidate — oldest IPs in a 24h
-		// window are the most likely to have been recycled to a new user.
 		recentIP := ips[0]
 
 		msg := fmt.Sprintf(
@@ -144,8 +137,8 @@ func ScanEximHistoryForCloudRelay(cfg *config.Config, logPath string, now time.T
 		details := fmt.Sprintf(
 			"Retrospective exim_mainlog scan at %s found a cloud-relay pattern:\n"+
 				"  user: %s\n"+
-				"  total cloud-PTR sends (24h): %d\n"+
-				"  peak 60-min window: %d sends / %d distinct IPs at %s\n"+
+				"  total cloud-PTR sends (%dh): %d\n"+
+				"  peak 60-min window: %d sends / %d distinct IPs ending at %s\n"+
 				"  peak PTR: %s\n"+
 				"  distinct source IPs observed: %s\n\n"+
 				"Outgoing mail has been auto-suspended. The most recent source IP "+
@@ -153,6 +146,7 @@ func ScanEximHistoryForCloudRelay(cfg *config.Config, logPath string, now time.T
 				"rented-fleet addresses tend to be recycled outside a 2-hour window.",
 			now.Format("2006-01-02 15:04:05"),
 			user,
+			int(lookback.Hours()),
 			len(events),
 			maxSends, maxDistinctIPs, fireAt.Format("2006-01-02 15:04:05"),
 			peakPTR,
@@ -173,6 +167,48 @@ func ScanEximHistoryForCloudRelay(cfg *config.Config, logPath string, now time.T
 	return findings
 }
 
+// processCloudRelayScanLine parses a single exim log line and, if it is
+// an authenticated cloud-PTR acceptance within the lookback window,
+// records it under the AUTH user in `byUser`.
+func processCloudRelayScanLine(line string, cfg *config.Config, since time.Time, byUser map[string][]cloudRelayScanEvent) {
+	if !strings.Contains(line, " <= ") || !strings.Contains(line, "A=dovecot_") {
+		return
+	}
+	ts, ok := parseEximTimestamp(line)
+	if !ok || ts.Before(since) {
+		return
+	}
+	user := extractAuthUser(line)
+	if user == "" || isHighVolumeSender(user, cfg.EmailProtection.HighVolumeSenders) {
+		return
+	}
+	ptr := extractEximHostname(line)
+	if !isCloudProviderPTR(ptr) {
+		return
+	}
+	ip := extractBracketedIP(line)
+	if ip == "" {
+		return
+	}
+	byUser[user] = append(byUser[user], cloudRelayScanEvent{at: ts, ip: ip, ptr: ptr})
+}
+
+// drainUntilNewline reads from reader and discards bytes until a newline
+// is consumed or EOF is hit. Returns io.EOF if the reader is exhausted.
+func drainUntilNewline(reader *bufio.Reader) error {
+	for {
+		_, err := reader.ReadSlice('\n')
+		if err == nil {
+			return nil
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			// Still inside the oversized line — keep draining.
+			continue
+		}
+		return err
+	}
+}
+
 // cloudRelayScanEvent is a single timestamped cloud-PTR AUTH send
 // replayed from the log.
 type cloudRelayScanEvent struct {
@@ -182,7 +218,9 @@ type cloudRelayScanEvent struct {
 }
 
 // maxCloudRelayBurst finds the strongest 60-min window in a sorted event
-// list. Returns (sends, distinctIPs, windowEnd, peakPTR).
+// list. Returns (sends, distinctIPs, peakEnd, peakPTR), where peakEnd is
+// the timestamp of the LAST event in the best window so operators see
+// when the burst peaked, not when it started.
 func maxCloudRelayBurst(events []cloudRelayScanEvent) (int, int, time.Time, string) {
 	if len(events) == 0 {
 		return 0, 0, time.Time{}, ""
@@ -193,19 +231,21 @@ func maxCloudRelayBurst(events []cloudRelayScanEvent) (int, int, time.Time, stri
 	for i := range events {
 		ips := make(map[string]struct{})
 		sends := 0
+		lastIdx := i
 		for j := i; j < len(events); j++ {
 			if events[j].at.Sub(events[i].at) > cloudRelayWindow_ {
 				break
 			}
 			ips[events[j].ip] = struct{}{}
 			sends++
+			lastIdx = j
 		}
 		// "Best" = highest send count; tie-break by distinct IPs.
 		if sends > bestSends || (sends == bestSends && len(ips) > bestDistinct) {
 			bestSends = sends
 			bestDistinct = len(ips)
-			bestAt = events[i].at
-			bestPTR = events[i].ptr
+			bestAt = events[lastIdx].at
+			bestPTR = events[lastIdx].ptr
 		}
 	}
 	return bestSends, bestDistinct, bestAt, bestPTR

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -209,6 +210,70 @@ func TestScanRetro_SkipsLinesOutsideLookback(t *testing.T) {
 		findings := ScanEximHistoryForCloudRelay(cfg, path, time.Now(), 24*time.Hour)
 		if len(findings) != 0 {
 			t.Fatalf("lines outside lookback must be ignored, got %d: %+v", len(findings), findings)
+		}
+	})
+}
+
+func TestMaxCloudRelayBurst_ReturnsWindowEndNotStart(t *testing.T) {
+	// Seven events spaced 2 min apart. The strongest 60-min window
+	// covers events 0..6 — operators reading the log want the peak
+	// *end* time (last event) so they know when the attack was still
+	// active, not when it began.
+	base := time.Date(2026, 4, 22, 14, 0, 0, 0, time.UTC)
+	events := make([]cloudRelayScanEvent, 7)
+	for i := range events {
+		events[i] = cloudRelayScanEvent{
+			at:  base.Add(time.Duration(i) * 2 * time.Minute),
+			ip:  fmt.Sprintf("1.2.3.%d", i),
+			ptr: "ec2-x.compute-1.amazonaws.com",
+		}
+	}
+	_, _, bestAt, _ := maxCloudRelayBurst(events)
+	want := events[len(events)-1].at
+	if !bestAt.Equal(want) {
+		t.Fatalf("bestAt = %v, want last-event time %v", bestAt, want)
+	}
+}
+
+func TestScanRetro_OversizedLineDoesNotAbortScan(t *testing.T) {
+	// Put a 500 KB garbage line in the middle of real compromise events.
+	// With bufio.Scanner + 256 KB buffer we would hit ErrTooLong and
+	// stop the whole scan, missing the events after the garbage line.
+	// With the bufio.Reader approach we drain the oversized line and
+	// keep going.
+	base := time.Now().Add(-2 * time.Hour)
+	var lines []string
+
+	// Before: 10 sends from one cloud IP (insufficient on its own).
+	for i := 0; i < 10; i++ {
+		lines = append(lines, eximLine(
+			base.Add(time.Duration(i)*time.Minute),
+			"info@victim.example",
+			"ec2-1-2-3-4.compute-1.amazonaws.com",
+			"1.2.3.4",
+			"before-garbage",
+		))
+	}
+	// The pathological line — 500 KB, no newline until the end.
+	lines = append(lines, strings.Repeat("X", 500*1024))
+	// After: another 10 sends, pushing total to 20 (above volume
+	// threshold). If the scanner aborts, these are missed.
+	for i := 0; i < 10; i++ {
+		lines = append(lines, eximLine(
+			base.Add(time.Duration(30+i)*time.Minute),
+			"info@victim.example",
+			"ec2-1-2-3-4.compute-1.amazonaws.com",
+			"1.2.3.4",
+			"after-garbage",
+		))
+	}
+	path := writeEximFixture(t, lines)
+
+	withGlobalStore(t, func(*store.DB) {
+		cfg := &config.Config{}
+		findings := ScanEximHistoryForCloudRelay(cfg, path, time.Now(), 24*time.Hour)
+		if len(findings) != 1 {
+			t.Fatalf("oversized line must not abort scan — expected 1 finding, got %d", len(findings))
 		}
 	})
 }

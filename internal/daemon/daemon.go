@@ -419,21 +419,23 @@ func (d *Daemon) Run() error {
 			defer d.wg.Done()
 			retro := ScanEximHistoryForCloudRelay(d.currentCfg(), "", time.Now(), 24*time.Hour)
 			for _, f := range retro {
-				// Mirror the realtime detector's side-effects: hold
-				// outgoing mail for the owning cPanel account and
-				// record the compromise so mail_per_account doesn't
-				// also fire on the same burst.
-				sender := extractSenderFromCloudRelayMessage(f.Message)
-				if sender != "" {
-					if domain := extractDomainFromEmail(sender); domain != "" {
-						autoSuspendOutgoingMail(sender)
-						RecordCompromisedDomain(domain)
-					}
-				}
+				// Enqueue the finding FIRST; only after it is
+				// accepted by the dispatcher do we trigger the
+				// account-suspend side-effect. This prevents a
+				// silent mailbox suspension if the daemon begins
+				// shutting down between these two operations.
 				select {
 				case d.alertCh <- f:
 				case <-d.stopCh:
 					return
+				}
+				sender := extractSenderFromCloudRelayMessage(f.Message)
+				if sender == "" {
+					continue
+				}
+				if domain := extractDomainFromEmail(sender); domain != "" {
+					autoSuspendOutgoingMail(sender)
+					RecordCompromisedDomain(domain)
 				}
 			}
 		})

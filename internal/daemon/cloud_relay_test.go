@@ -238,6 +238,46 @@ func TestCloudRelay_LegitSaaSIntegrationStaysSilent(t *testing.T) {
 	}
 }
 
+func TestCloudRelay_SuspendsAUTHUserNotEnvelopeFrom(t *testing.T) {
+	// Attacker uses stolen credentials for real@victim.example but
+	// forges the envelope-from as innocent@bystander.example. The
+	// suspension side-effect must target the AUTH identity (the
+	// credential being abused), not the forged sender.
+	resetCloudRelayState()
+	resetEmailRateState()
+
+	cfg := cloudRelayTestConfig()
+
+	lineTemplate := func(ptr, ip string) string {
+		return "2026-04-22 14:00:00 1abc-0000-AB <= innocent@bystander.example" +
+			" H=" + ptr + " (helo) [" + ip + "]:1234 P=esmtpsa" +
+			" X=TLS1.3:TLS_AES_256_GCM_SHA384:256" +
+			" A=dovecot_plain:real@victim.example" +
+			" S=1 id=1@local" +
+			` T="forged" for target@example.com`
+	}
+	lines := []string{
+		lineTemplate("ec2-1-2-3-4.compute-1.amazonaws.com", "1.2.3.4"),
+		lineTemplate("ec2-5-6-7-8.compute-1.amazonaws.com", "5.6.7.8"),
+		lineTemplate("ec2-9-10-11-12.compute-1.amazonaws.com", "9.10.11.12"),
+	}
+	for _, line := range lines {
+		parseEximLogLine(line, cfg)
+	}
+
+	emailRateSuppressed.mu.Lock()
+	_, gotVictim := emailRateSuppressed.domains["victim.example"]
+	_, gotBystander := emailRateSuppressed.domains["bystander.example"]
+	emailRateSuppressed.mu.Unlock()
+
+	if !gotVictim {
+		t.Fatal("AUTH user's domain (victim.example) must be marked compromised")
+	}
+	if gotBystander {
+		t.Fatal("forged envelope-from domain (bystander.example) must NOT be marked compromised")
+	}
+}
+
 func TestCloudRelay_PerUserIsolation(t *testing.T) {
 	resetCloudRelayState()
 	cfg := cloudRelayTestConfig()
@@ -267,7 +307,6 @@ func TestCloudRelay_CoversMajorProviders(t *testing.T) {
 	}{
 		{"GCP", "204.118.26.34.bc.googleusercontent.com"},
 		{"AWS", "ec2-52-1-2-3.compute-1.amazonaws.com"},
-		{"AWS-internal", "ip-10-0-0-5.compute.internal"},
 		{"Azure", "vm123.cloudapp.net"},
 		{"Oracle", "host123.oraclevcn.com"},
 		{"DigitalOcean", "host.digitaloceanspaces.com"},
@@ -282,15 +321,20 @@ func TestCloudRelay_CoversMajorProviders(t *testing.T) {
 			t.Errorf("%s: isCloudProviderPTR(%q) = false, want true", tc.name, tc.ptr)
 		}
 	}
-	// Known-legit residential / transit:
+	// Known-legit residential / transit / internal:
 	for _, ptr := range []string{
 		"pool-123.rcn.example.net",
 		"87-175-241.netrunf.cytanet.com.cy",
 		"mail5.am0.yahoodns.net",
 		"smtp.office365.com",
+		// `.compute.internal` is intentionally not a match — it is
+		// both the AWS VPC-internal PTR and a generic suffix used by
+		// corporate VPN / self-hosted networks. Would false-positive.
+		"ip-10-0-0-5.compute.internal",
+		"nfs.compute.internal",
 	} {
 		if isCloudProviderPTR(ptr) {
-			t.Errorf("isCloudProviderPTR(%q) = true, want false (residential/transit)", ptr)
+			t.Errorf("isCloudProviderPTR(%q) = true, want false (residential/transit/internal)", ptr)
 		}
 	}
 }
