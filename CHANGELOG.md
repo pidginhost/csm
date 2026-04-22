@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Dashboard "30-Day Trend" no longer flatlines on older days once the history bucket fills up. The chart now reads a pre-aggregated daily counter that survives history pruning, with a one-time backfill on first start.
+- WAF rule check no longer false-alarms on cPanel + LiteSpeed hosts when cPanel is mid-rebuild of its vendor rule set. The filesystem probe now also covers LiteSpeed, so a transient empty response from whmapi1 is backstopped by the rules on disk.
 
 ## [2.6.1] - 2026-04-20
 

@@ -242,6 +242,45 @@ func TestModsecRuleDirs_UnknownWebServer(t *testing.T) {
 	}
 }
 
+func TestModsecRuleDirs_CPanelLiteSpeed(t *testing.T) {
+	// cPanel's modsec_assemble job writes vendor rules to the apache2
+	// tree even when the front-end web server is LiteSpeed. Without this
+	// branch, waf_status has no filesystem evidence of rules on
+	// cPanel+LiteSpeed hosts and must rely entirely on a single whmapi1
+	// call, which false-alarms during nightly vendor reassembly.
+	info := platform.Info{
+		OS:        platform.OSCloudLinux,
+		Panel:     platform.PanelCPanel,
+		WebServer: platform.WSLiteSpeed,
+	}
+	dirs := modsecRuleDirs(info)
+	want := []string{
+		"/etc/apache2/conf.d/modsec_vendor_configs/",
+		"/usr/local/apache/conf/modsec_vendor_configs/",
+	}
+	for _, d := range want {
+		if !contains(dirs, d) {
+			t.Errorf("cPanel+LiteSpeed rule dirs missing %q; got %v", d, dirs)
+		}
+	}
+}
+
+func TestModsecRuleDirs_PlainLiteSpeed(t *testing.T) {
+	// Plain LiteSpeed without cPanel has no conventional vendor dir.
+	// We return an empty slice rather than guess a path that could
+	// produce false negatives; operators will either install the cPanel
+	// layout or configure their own scanner elsewhere.
+	info := platform.Info{
+		OS:        platform.OSUbuntu,
+		Panel:     platform.PanelNone,
+		WebServer: platform.WSLiteSpeed,
+	}
+	dirs := modsecRuleDirs(info)
+	if len(dirs) != 0 {
+		t.Errorf("plain LiteSpeed should yield empty dirs, got %v", dirs)
+	}
+}
+
 func TestWafInstallHint_Differentiates(t *testing.T) {
 	tests := []struct {
 		name     string

@@ -291,6 +291,17 @@ func modsecRuleDirs(info platform.Info) []string {
 			"/usr/share/modsecurity-crs/rules/",
 		)
 	}
+	// cPanel+LiteSpeed: cPanel's modsec_assemble job writes vendor rules
+	// into the apache2 tree even when the front-end is LiteSpeed. Without
+	// this, the rule check has no filesystem evidence to fall back on
+	// when whmapi1 returns an empty vendor list (the window in which
+	// modsec_assemble itself is rewriting the same tree).
+	if info.IsCPanel() && info.WebServer == platform.WSLiteSpeed {
+		dirs = append(dirs,
+			"/etc/apache2/conf.d/modsec_vendor_configs/",
+			"/usr/local/apache/conf/modsec_vendor_configs/",
+		)
+	}
 	return dirs
 }
 

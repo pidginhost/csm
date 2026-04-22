@@ -147,6 +147,63 @@ func TestCheckWAFStatusNoRulesEmitsHigh(t *testing.T) {
 	t.Logf("cPanel no-rules findings: %d", len(findings))
 }
 
+// Regression for the cPanel+LiteSpeed false positive seen at 01:00:55 when
+// cPanel's nightly modsec_assemble job was mid-rebuild. whmapi1
+// modsec_get_vendors transiently returns empty, and before this fix
+// modsecRuleDirs had no WSLiteSpeed case, so the filesystem probe could
+// not backstop the whmapi1 result and the "no WAF rules loaded" alert
+// fired even though the vendor rules were physically present on disk.
+func TestCheckWAFStatusCPanelLiteSpeedVendorDirBackstopsEmptyWhmapi1(t *testing.T) {
+	platform.ResetForTest()
+	t.Cleanup(platform.ResetForTest)
+	platform.SetOverrides(platform.Overrides{
+		Panel:     ptrPanel(platform.PanelCPanel),
+		WebServer: ptrWebServer(platform.WSLiteSpeed),
+	})
+
+	withMockCmd(t, &mockCmd{
+		run: func(name string, args ...string) ([]byte, error) {
+			if name != "whmapi1" || len(args) == 0 {
+				return nil, nil
+			}
+			switch args[0] {
+			case "modsec_is_installed":
+				return []byte("installed: 1\n"), nil
+			case "modsec_get_vendors":
+				// Reassembly window: cPanel hasn't re-populated the
+				// vendor list yet. Treat as "no data", not "no rules".
+				return []byte(""), nil
+			}
+			return nil, nil
+		},
+	})
+
+	withMockOS(t, &mockOS{
+		readDir: func(name string) ([]os.DirEntry, error) {
+			// oldestRuleArtifact joins dir + "/" + entry.Name(), which
+			// can produce a "//" when the parent already ends in "/".
+			// Match both shapes.
+			clean := strings.ReplaceAll(name, "//", "/")
+			switch clean {
+			case "/etc/apache2/conf.d/modsec_vendor_configs/":
+				return []os.DirEntry{testDirEntry{name: "comodo_litespeed", isDir: true}}, nil
+			case "/etc/apache2/conf.d/modsec_vendor_configs/comodo_litespeed":
+				return []os.DirEntry{
+					testDirEntry{name: "10_HTTP_HTTP.conf", isDir: false},
+				}, nil
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	findings := CheckWAFStatus(context.Background(), &config.Config{}, nil)
+	for _, f := range findings {
+		if f.Check == "waf_rules" {
+			t.Errorf("waf_rules should not fire when vendor rules exist on disk even if whmapi1 returns empty; got %+v", f)
+		}
+	}
+}
+
 // Helpers for taking address of constants for Overrides.
 func ptrPanel(p platform.Panel) *platform.Panel             { return &p }
 func ptrWebServer(w platform.WebServer) *platform.WebServer { return &w }
