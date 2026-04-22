@@ -125,15 +125,15 @@ var cloudRelayWindows sync.Map // map[string]*cloudRelayWindow
 // Detection thresholds. Two OR-combined signals within the same 60-min
 // sliding window:
 //
-//   A. Multi-IP burst: ≥ cloudRelayMinEvents sends from ≥ cloudRelayMinDistinctIP
-//      distinct cloud IPs. Catches rented-fleet abuse rotating IPs per-send
-//      (the typical credential-stuffing spam pattern).
+//	A. Multi-IP burst: ≥ cloudRelayMinEvents sends from ≥ cloudRelayMinDistinctIP
+//	   distinct cloud IPs. Catches rented-fleet abuse rotating IPs per-send
+//	   (the typical credential-stuffing spam pattern).
 //
-//   B. Volume burst:   ≥ cloudRelayHighVolumeEvents sends regardless of
-//      distinct-IP count. Catches paced attacks that deliberately use one
-//      cloud IP per day to evade signal A. Threshold sits well above any
-//      legitimate SaaS integration seen on production (SmartBill ~2/hr,
-//      Nylas ~2/hr, WP transactional ≤3/hr).
+//	B. Volume burst:   ≥ cloudRelayHighVolumeEvents sends regardless of
+//	   distinct-IP count. Catches paced attacks that deliberately use one
+//	   cloud IP per day to evade signal A. Threshold sits well above any
+//	   legitimate SaaS integration seen on production (SmartBill ~2/hr,
+//	   Nylas ~2/hr, WP transactional ≤3/hr).
 //
 // Tuning rationale: these values were chosen from the Apr 2026 incident
 // analysis. A single-mailbox user with a legit single-VPS cron averaging

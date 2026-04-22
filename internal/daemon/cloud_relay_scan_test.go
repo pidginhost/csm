@@ -216,9 +216,9 @@ func TestScanRetro_SkipsLinesOutsideLookback(t *testing.T) {
 func TestExtractSenderFromCloudRelayMessage(t *testing.T) {
 	cases := map[string]string{
 		"RETRO: account info@example.com sent 42 authenticated messages from 5 cloud-provider IPs (peak 60-min burst) in the last 24 hours - credentials compromised - from 1.2.3.4": "info@example.com",
-		"Email account user@site.org sent 15 authenticated messages from 1 cloud-provider IPs in 60 minutes - credentials compromised - from 5.6.7.8":                                  "user@site.org",
-		"totally unrelated message without the marker":                                                                                                                                 "",
-		"account missing-at-sign sent 99 messages":                                                                                                                                     "",
+		"Email account user@site.org sent 15 authenticated messages from 1 cloud-provider IPs in 60 minutes - credentials compromised - from 5.6.7.8":                                "user@site.org",
+		"totally unrelated message without the marker": "",
+		"account missing-at-sign sent 99 messages":     "",
 	}
 	for in, want := range cases {
 		got := extractSenderFromCloudRelayMessage(in)
