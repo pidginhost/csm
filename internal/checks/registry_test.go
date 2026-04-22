@@ -57,10 +57,10 @@ func TestPublicCheckInfosExcludesInternal(t *testing.T) {
 //   - namedCheck literal:   `check: "name"` (lowercase unexported field)
 //   - Local assignment:     `check = "name"` or `check := "name"`
 //   - Helper calls that take the check name as a bare string argument:
-//       sendAlert(sev, "name", ...)
-//       sendAlertWithPath(sev, "name", ...)
-//       emitFinding("name", ...)            // first arg
-//       emitReloadFinding(sev, "name", ...)
+//     sendAlert(sev, "name", ...)
+//     sendAlertWithPath(sev, "name", ...)
+//     emitFinding("name", ...)            // first arg
+//     emitReloadFinding(sev, "name", ...)
 //
 // Add a new pattern here if a new emission helper is introduced — the
 // test failure message points at the callsite so it is obvious what to

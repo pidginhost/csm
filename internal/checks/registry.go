@@ -16,18 +16,18 @@ type CheckInfo struct {
 // order below in sync with checkCategoryOrder so categories render in a sane
 // order rather than alphabetically (Auth first, Internal last).
 const (
-	CategoryAuth         = "Authentication & Login"
-	CategoryBruteForce   = "Brute Force"
-	CategoryMalware      = "Malware & Webshells"
-	CategoryWeb          = "Web & Application"
-	CategoryDatabase     = "Database Content"
-	CategoryEmail        = "Email & Phishing"
-	CategoryPerformance  = "Performance"
-	CategoryNetwork      = "Network & Firewall"
-	CategorySystem       = "System Integrity"
-	CategoryWAF          = "WAF & ModSecurity"
-	CategoryCorrelation  = "Correlation & Health"
-	CategoryInternal     = "Internal"
+	CategoryAuth        = "Authentication & Login"
+	CategoryBruteForce  = "Brute Force"
+	CategoryMalware     = "Malware & Webshells"
+	CategoryWeb         = "Web & Application"
+	CategoryDatabase    = "Database Content"
+	CategoryEmail       = "Email & Phishing"
+	CategoryPerformance = "Performance"
+	CategoryNetwork     = "Network & Firewall"
+	CategorySystem      = "System Integrity"
+	CategoryWAF         = "WAF & ModSecurity"
+	CategoryCorrelation = "Correlation & Health"
+	CategoryInternal    = "Internal"
 )
 
 var checkCategoryOrder = []string{
