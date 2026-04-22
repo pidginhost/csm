@@ -461,6 +461,7 @@ func (s *Server) csmConfig() map[string]interface{} {
 			"email_phishing_content":         "Email Phishing",
 			"email_malware":                  "Email Malware",
 			"email_compromised_account":      "Compromised Account",
+			"email_cloud_relay_abuse":        "Cloud-Relay Credential Abuse",
 			"email_spam_outbreak":            "Spam Outbreak",
 			"email_credential_leak":          "Credential Leak",
 			"email_auth_failure_realtime":    "Auth Failure",

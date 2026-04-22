@@ -451,6 +451,17 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 		}
 	}
 
+	// 10. Cloud-relay credential abuse (multiple authenticated sends from
+	// distinct cloud-provider IPs for the same mailbox).
+	for _, f := range parseCloudRelayFinding(line, cfg) {
+		sender := extractEximSender(line)
+		if domain := extractDomainFromEmail(sender); domain != "" {
+			autoSuspendOutgoingMail(sender)
+			RecordCompromisedDomain(domain)
+		}
+		findings = append(findings, f)
+	}
+
 	return findings
 }
 

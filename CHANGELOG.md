@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- New email check `email_cloud_relay_abuse`: fires when a mailbox sends authenticated outbound mail from several distinct public-cloud IPs (GCP, AWS, Azure, DigitalOcean, Linode, Vultr, Oracle, Hetzner, OVH, Contabo) within the same hour. Catches credential-abuse spam runs that stay under cPanel's per-hour hold threshold, which had left `email_compromised_account` silent. Auto-suspends outgoing mail and auto-blocks the source IP via the existing nftables set; honors `high_volume_senders` allowlist and requires ≥3 sends from ≥2 distinct cloud IPs, so false positives stay negligible.
+
 ## [2.7.0] - 2026-04-22
 
 ### Added

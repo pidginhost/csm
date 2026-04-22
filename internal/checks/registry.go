@@ -155,6 +155,7 @@ var checkRegistry = []CheckInfo{
 	// --- Email & Phishing -----------------------------------------------
 	{Name: "credential_log_realtime", Category: CategoryEmail},
 	{Name: "email_auth_failure_realtime", Category: CategoryEmail},
+	{Name: "email_cloud_relay_abuse", Category: CategoryEmail},
 	{Name: "email_av_degraded", Category: CategoryEmail},
 	{Name: "email_av_parse_error", Category: CategoryEmail},
 	{Name: "email_av_quarantine_error", Category: CategoryEmail},
