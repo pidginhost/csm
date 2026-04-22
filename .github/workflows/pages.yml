@@ -5,9 +5,7 @@ on:
     branches: [main]
     paths:
       - 'docs/**'
-      - '**.go'
-      - 'go.mod'
-      - 'go.sum'
+      - 'README.md'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -31,38 +29,18 @@ jobs:
         with:
           go-version: '1.26'
 
-      - name: Run tests with coverage
-        run: |
-          set -e
-          # Scope coverage to internal/ packages -- cmd/csm is package main
-          # (CLI glue) and skews the percentage with untestable cobra wiring.
-          # -race must match the GitLab `test` job: the race-instrumented
-          # build elides some statements that the non-race build counts
-          # separately, and without it go tool cover -func reports ~15
-          # points lower on the same code. -covermode=atomic is required by
-          # -race and matches the integration profile so the two can merge.
-          go test -race -timeout=300s -covermode=atomic -coverprofile=coverage.out -coverpkg=./internal/... ./... || true
-          go tool cover -func=coverage.out | tail -1
-
-      - name: Merge integration coverage from latest GitHub release
+      - name: Download coverage profile from latest release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Write all diagnostic output to a file we can publish on Pages so
-          # we can debug from outside (we don't have admin to read Actions logs).
+          # Coverage is produced by GitLab CI (private), not re-derived on
+          # GitHub Actions. The `release:github` stage uploads the GitLab
+          # integration stage's merged-coverage.out (unit + Linux integration)
+          # as a release asset. We just fetch that artifact; it is already
+          # authoritative. Walk recent releases in case the latest one was
+          # cut without the integration job completing.
           DEBUG=coverage-debug.txt
           {
-            echo "=== UNIT COVERAGE (before merge) ==="
-            go tool cover -func=coverage.out 2>&1 | tail -1
-            echo "=== Unit profile head ==="
-            head -3 coverage.out
-            echo "=== Unit profile lines ==="
-            wc -l coverage.out
-
-            # Walk recent releases until we find one that has
-            # merged-coverage.out. The latest release may be a freshly-cut
-            # tag whose integration run is still pending or failed; fall
-            # back to the most recent release that does carry the profile.
             echo "=== Looking for merged-coverage.out in recent releases ==="
             FOUND=""
             for TAG in $(curl -fsSL \
@@ -72,7 +50,7 @@ jobs:
                            | python3 -c "import json,sys; [print(r['tag_name']) for r in json.load(sys.stdin)]"); do
               URL="https://github.com/pidginhost/csm/releases/download/${TAG}/merged-coverage.out"
               if curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
-                     -o integration-coverage.out "$URL" 2>/dev/null; then
+                     -o coverage.out "$URL" 2>/dev/null; then
                 FOUND="$TAG"
                 echo "  found merged-coverage.out in $TAG"
                 break
@@ -81,53 +59,20 @@ jobs:
             done
             if [ -z "$FOUND" ]; then
               echo ">>> No release carries merged-coverage.out"
-              echo "FALLBACK: unit-only" > coverage-merge-status.txt
-              exit 0
+              echo "FALLBACK: no coverage" > coverage-source.txt
+              exit 1
             fi
-            echo "=== Integration profile head (raw) ==="
-            head -3 integration-coverage.out
-            echo "=== Integration profile lines (raw) ==="
-            wc -l integration-coverage.out
-
-            # Strip cmd/csm entries -- they're 0% coverage CLI glue that
-            # was instrumented during the GitLab integration job's pre-merge
-            # `go test ./...` step. Including them in the merged profile
-            # adds uncovered statements to the denominator and tanks the %.
-            grep -v 'github.com/pidginhost/csm/cmd/csm/' integration-coverage.out > integration-coverage.cleaned.out
-            mv integration-coverage.cleaned.out integration-coverage.out
-            echo "=== Integration profile lines (after cmd/csm strip) ==="
-            wc -l integration-coverage.out
-
-            # Use our own tolerant merger (scripts/covmerge). Unlike
-            # gocovmerge, it drops per-file entries from the secondary
-            # profile when statement ranges don't match (common when the
-            # integration profile is from an older tag and the file has
-            # been modified since). Primary (unit) coverage is always
-            # preserved; matching secondary entries boost hit counts.
-            echo "=== Running covmerge (tolerant) ==="
-            if ! go run ./scripts/covmerge coverage.out integration-coverage.out >merged.out 2>merge.err; then
-              echo ">>> covmerge FAILED:"
-              cat merge.err
-              echo "FALLBACK: merge failed" > coverage-merge-status.txt
-              exit 0
+            if ! head -1 coverage.out | grep -q '^mode:'; then
+              echo ">>> Downloaded profile has no mode header"
+              exit 1
             fi
-            echo ">>> covmerge info:"
-            cat merge.err
-            echo "=== Merged profile head ==="
-            head -3 merged.out
-            echo "=== Merged profile lines ==="
-            wc -l merged.out
-
-            if ! head -1 merged.out | grep -q '^mode:'; then
-              echo ">>> Sanity check failed"
-              echo "FALLBACK: sanity check failed" > coverage-merge-status.txt
-              exit 0
-            fi
-
-            mv merged.out coverage.out
-            echo "=== MERGED COVERAGE (after merge) ==="
+            echo "=== Coverage profile head ==="
+            head -3 coverage.out
+            echo "=== Coverage profile lines ==="
+            wc -l coverage.out
+            echo "=== Total ==="
             go tool cover -func=coverage.out 2>&1 | tail -1
-            echo "MERGED" > coverage-merge-status.txt
+            echo "FROM_RELEASE $FOUND" > coverage-source.txt
           } 2>&1 | tee "$DEBUG"
 
       - name: Generate HTML coverage report
@@ -192,10 +137,10 @@ jobs:
         run: |
           cp coverage.svg docs/book/coverage.svg
           cp coverage.html docs/book/coverage.html
-          # Debug files so we can inspect why merge is/isn't working from
-          # the public Pages URL (no admin token needed).
+          # Debug file so we can inspect the badge source from the public
+          # Pages URL (no admin token needed).
           [ -f coverage-debug.txt ] && cp coverage-debug.txt docs/book/coverage-debug.txt || true
-          [ -f coverage-merge-status.txt ] && cp coverage-merge-status.txt docs/book/coverage-merge-status.txt || true
+          [ -f coverage-source.txt ] && cp coverage-source.txt docs/book/coverage-source.txt || true
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5.0.0
