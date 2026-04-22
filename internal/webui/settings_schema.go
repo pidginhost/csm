@@ -1,33 +1,67 @@
 package webui
 
+// OptionGroup is an ordered label + values pair used to render grouped
+// multi-select options (e.g. "Authentication & Login" → [cpanel_login, ...]).
+type OptionGroup struct {
+	Label  string   `json:"label"`
+	Values []string `json:"values"`
+}
+
 // SettingsField describes a single editable leaf within a settings
 // section. YAMLPath is the dotted key path relative to the section's
 // YAMLPath. For example inside the Alerts section, the field with
 // YAMLPath "email.enabled" has full path "alerts.email.enabled".
+//
+// For Type "[]enum" fields, Options and/or OptionGroups are resolved at
+// request time. A field may either declare a static Options list or set
+// OptionsSource to have the handler populate Options/OptionGroups from a
+// registry ("check_names", "geoip_editions").
 type SettingsField struct {
-	YAMLPath    string   `json:"yaml_path"`
-	Type        string   `json:"type"`
-	Label       string   `json:"label"`
-	Help        string   `json:"help,omitempty"`
-	Secret      bool     `json:"secret,omitempty"`
-	Nullable    bool     `json:"nullable,omitempty"`
-	Min         *int64   `json:"min,omitempty"`
-	Max         *int64   `json:"max,omitempty"`
-	Options     []string `json:"options,omitempty"`
-	Placeholder string   `json:"placeholder,omitempty"`
+	YAMLPath      string        `json:"yaml_path"`
+	Type          string        `json:"type"`
+	Label         string        `json:"label"`
+	Help          string        `json:"help,omitempty"`
+	Secret        bool          `json:"secret,omitempty"`
+	Nullable      bool          `json:"nullable,omitempty"`
+	Min           *int64        `json:"min,omitempty"`
+	Max           *int64        `json:"max,omitempty"`
+	Options       []string      `json:"options,omitempty"`
+	OptionGroups  []OptionGroup `json:"option_groups,omitempty"`
+	OptionsSource string        `json:"options_source,omitempty"`
+	Placeholder   string        `json:"placeholder,omitempty"`
 }
 
 // SettingsSection groups the fields of one top-level Config sub-tree.
 // YAMLPath is the root key in csm.yaml (e.g. "auto_response"). ID is
 // the URL-path identifier used by the API. Restart is a UI hint based
 // on the current hotreload struct tag; final safe-vs-restart authority
-// comes from config.Diff at runtime.
+// comes from config.Diff at runtime. Icon is a Tabler icon suffix (e.g.
+// "bell" for "ti ti-bell"); Group is the nav category the section lives
+// in ("Alerting", "Detection", "Integrations", "Ops").
 type SettingsSection struct {
 	ID       string          `json:"id"`
 	Title    string          `json:"title"`
 	YAMLPath string          `json:"yaml_path"`
 	Restart  bool            `json:"restart_hint"`
+	Icon     string          `json:"icon,omitempty"`
+	Group    string          `json:"group,omitempty"`
 	Fields   []SettingsField `json:"fields"`
+}
+
+// Section groups for the sidebar. Order here defines order in the UI.
+const (
+	SectionGroupAlerting     = "Alerting"
+	SectionGroupDetection    = "Detection"
+	SectionGroupIntegrations = "Integrations"
+	SectionGroupOps          = "Operations"
+)
+
+// SectionGroupOrder is the display order of sidebar group headers.
+var SectionGroupOrder = []string{
+	SectionGroupAlerting,
+	SectionGroupDetection,
+	SectionGroupIntegrations,
+	SectionGroupOps,
 }
 
 func int64p(v int64) *int64 { return &v }
@@ -37,13 +71,15 @@ var settingsSections = []SettingsSection{
 		ID:       "alerts",
 		Title:    "Alerts",
 		YAMLPath: "alerts",
+		Icon:     "bell",
+		Group:    SectionGroupAlerting,
 		Restart:  false,
 		Fields: []SettingsField{
 			{YAMLPath: "email.enabled", Type: "bool", Label: "Email alerts enabled"},
 			{YAMLPath: "email.to", Type: "[]string", Label: "Recipients", Help: "One email address per line"},
 			{YAMLPath: "email.from", Type: "string", Label: "From address"},
 			{YAMLPath: "email.smtp", Type: "string", Label: "SMTP server", Placeholder: "smtp.example.com:587"},
-			{YAMLPath: "email.disabled_checks", Type: "[]string", Label: "Disabled check names"},
+			{YAMLPath: "email.disabled_checks", Type: "[]enum", Label: "Disabled check names", OptionsSource: "check_names", Help: "Findings with these check names never trigger email alerts."},
 			{YAMLPath: "webhook.enabled", Type: "bool", Label: "Webhook alerts enabled"},
 			{YAMLPath: "webhook.url", Type: "string", Label: "Webhook URL"},
 			{YAMLPath: "webhook.type", Type: "enum", Label: "Webhook type", Options: []string{"slack", "discord", "generic"}},
@@ -56,6 +92,8 @@ var settingsSections = []SettingsSection{
 		ID:       "thresholds",
 		Title:    "Thresholds",
 		YAMLPath: "thresholds",
+		Icon:     "adjustments",
+		Group:    SectionGroupAlerting,
 		Restart:  false,
 		Fields: []SettingsField{
 			{YAMLPath: "mail_queue_warn", Type: "int", Label: "Mail queue warn", Min: int64p(0)},
@@ -87,6 +125,8 @@ var settingsSections = []SettingsSection{
 		ID:       "suppressions",
 		Title:    "Suppressions",
 		YAMLPath: "suppressions",
+		Icon:     "volume-off",
+		Group:    SectionGroupAlerting,
 		Restart:  false,
 		Fields: []SettingsField{
 			{YAMLPath: "upcp_window_start", Type: "string", Label: "UPCP window start (HH:MM)"},
@@ -103,6 +143,8 @@ var settingsSections = []SettingsSection{
 		ID:       "auto_response",
 		Title:    "Auto-Response",
 		YAMLPath: "auto_response",
+		Icon:     "bolt",
+		Group:    SectionGroupDetection,
 		Restart:  false,
 		Fields: []SettingsField{
 			{YAMLPath: "enabled", Type: "bool", Label: "Auto-response enabled"},
@@ -124,6 +166,8 @@ var settingsSections = []SettingsSection{
 		ID:       "reputation",
 		Title:    "Reputation",
 		YAMLPath: "reputation",
+		Icon:     "shield-check",
+		Group:    SectionGroupIntegrations,
 		Restart:  false,
 		Fields: []SettingsField{
 			{YAMLPath: "abuseipdb_key", Type: "string", Label: "AbuseIPDB API key", Secret: true},
@@ -134,6 +178,8 @@ var settingsSections = []SettingsSection{
 		ID:       "email_protection",
 		Title:    "Email Protection",
 		YAMLPath: "email_protection",
+		Icon:     "mail-shield",
+		Group:    SectionGroupDetection,
 		Restart:  false,
 		Fields: []SettingsField{
 			{YAMLPath: "password_check_interval_min", Type: "int", Label: "Password check interval (min)", Min: int64p(1)},
@@ -148,6 +194,8 @@ var settingsSections = []SettingsSection{
 		ID:       "challenge",
 		Title:    "Challenge",
 		YAMLPath: "challenge",
+		Icon:     "user-question",
+		Group:    SectionGroupDetection,
 		Restart:  true,
 		Fields: []SettingsField{
 			{YAMLPath: "enabled", Type: "bool", Label: "Challenge pages enabled"},
@@ -162,6 +210,8 @@ var settingsSections = []SettingsSection{
 		ID:       "php_shield",
 		Title:    "PHP Shield",
 		YAMLPath: "php_shield",
+		Icon:     "brand-php",
+		Group:    SectionGroupDetection,
 		Restart:  true,
 		Fields: []SettingsField{
 			{YAMLPath: "enabled", Type: "bool", Label: "PHP Shield enabled"},
@@ -171,6 +221,8 @@ var settingsSections = []SettingsSection{
 		ID:       "signatures",
 		Title:    "Signatures",
 		YAMLPath: "signatures",
+		Icon:     "scan",
+		Group:    SectionGroupDetection,
 		Restart:  true,
 		Fields: []SettingsField{
 			{YAMLPath: "auto_update", Type: "bool", Label: "Auto-update rules"},
@@ -186,6 +238,8 @@ var settingsSections = []SettingsSection{
 		ID:       "email_av",
 		Title:    "Email AV",
 		YAMLPath: "email_av",
+		Icon:     "virus",
+		Group:    SectionGroupDetection,
 		Restart:  true,
 		Fields: []SettingsField{
 			{YAMLPath: "enabled", Type: "bool", Label: "Email AV enabled"},
@@ -203,6 +257,8 @@ var settingsSections = []SettingsSection{
 		ID:       "modsec",
 		Title:    "ModSecurity",
 		YAMLPath: "modsec",
+		Icon:     "shield-lock",
+		Group:    SectionGroupDetection,
 		Restart:  true,
 		Fields: []SettingsField{
 			{YAMLPath: "rules_file", Type: "string", Label: "Rules file path"},
@@ -214,13 +270,11 @@ var settingsSections = []SettingsSection{
 		ID:       "performance",
 		Title:    "Performance",
 		YAMLPath: "performance",
+		Icon:     "activity",
+		Group:    SectionGroupOps,
 		Restart:  true,
 		Fields: []SettingsField{
 			{YAMLPath: "enabled", Type: "bool", Label: "Performance checks", Nullable: true, Help: "Leave unset to inherit default (on)"},
-			// load_high_multiplier / load_critical_multiplier are float64 in
-			// Config. The schema uses the "float" type; the JS renders a
-			// <input type="number" step="any"> and the POST handler decodes the
-			// JSON number directly into float64.
 			{YAMLPath: "load_high_multiplier", Type: "float", Label: "Load high multiplier"},
 			{YAMLPath: "load_critical_multiplier", Type: "float", Label: "Load critical multiplier"},
 			{YAMLPath: "php_process_warn_per_user", Type: "int", Label: "PHP process warn per user", Min: int64p(1)},
@@ -240,6 +294,8 @@ var settingsSections = []SettingsSection{
 		ID:       "cloudflare",
 		Title:    "Cloudflare",
 		YAMLPath: "cloudflare",
+		Icon:     "cloud",
+		Group:    SectionGroupIntegrations,
 		Restart:  true,
 		Fields: []SettingsField{
 			{YAMLPath: "enabled", Type: "bool", Label: "Cloudflare integration"},
@@ -250,11 +306,13 @@ var settingsSections = []SettingsSection{
 		ID:       "geoip",
 		Title:    "GeoIP",
 		YAMLPath: "geoip",
+		Icon:     "world",
+		Group:    SectionGroupIntegrations,
 		Restart:  true,
 		Fields: []SettingsField{
 			{YAMLPath: "account_id", Type: "string", Label: "MaxMind account ID"},
 			{YAMLPath: "license_key", Type: "string", Label: "MaxMind license key", Secret: true},
-			{YAMLPath: "editions", Type: "[]string", Label: "Database editions"},
+			{YAMLPath: "editions", Type: "[]enum", Label: "Database editions", OptionsSource: "geoip_editions", Help: "Which MaxMind databases to download. GeoLite2-* are free; GeoIP2-* require a paid subscription."},
 			{YAMLPath: "auto_update", Type: "bool", Label: "Auto-update databases", Nullable: true},
 			{YAMLPath: "update_interval", Type: "string", Label: "Update interval", Placeholder: "24h"},
 		},
@@ -263,10 +321,10 @@ var settingsSections = []SettingsSection{
 		ID:       "infra_ips",
 		Title:    "Infra IPs",
 		YAMLPath: "infra_ips",
+		Icon:     "server",
+		Group:    SectionGroupOps,
 		Restart:  true,
 		Fields: []SettingsField{
-			// This section is a top-level list, not a mapping. The POST body
-			// uses a single key "infra_ips" mapped to a []string.
 			{YAMLPath: "", Type: "[]string", Label: "Trusted infra IPs and CIDRs"},
 		},
 	},
@@ -274,6 +332,8 @@ var settingsSections = []SettingsSection{
 		ID:       "sentry",
 		Title:    "Sentry",
 		YAMLPath: "sentry",
+		Icon:     "bug",
+		Group:    SectionGroupIntegrations,
 		Restart:  true,
 		Fields: []SettingsField{
 			{YAMLPath: "enabled", Type: "bool", Label: "Sentry enabled"},

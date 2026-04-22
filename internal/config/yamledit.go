@@ -315,15 +315,93 @@ func buildReplaceEdit(data []byte, li lineIndex, keyN, valN *yaml.Node, value in
 		return edit{start: start, end: end, replacement: []byte(rendered)}, nil
 	}
 
-	// Inline / scalar: replace from the value node's column to end of that line.
-	// Leave the '\n' in place.
+	// Flow / scalar: try inline first. If the new value is a sequence or
+	// mapping that cannot fit on one line (e.g. replacing `foo: []` with a
+	// multi-item list) fall back to block rendering and expand the span to
+	// cover the whole line, so the result is `foo:\n  - a\n  - b\n`.
 	start := li.offset(valN.Line, valN.Column)
 	end := li.lineEnd(valN.Line, data)
 	rendered, err := renderValueInline(value)
-	if err != nil {
+	if err == nil {
+		return edit{start: start, end: end, replacement: []byte(rendered)}, nil
+	}
+	if !needsBlockFallback(value) {
 		return edit{}, fmt.Errorf("path %v: %w", keyN.Value, err)
 	}
-	return edit{start: start, end: end, replacement: []byte(rendered)}, nil
+	// Replace from the key's column (beginning of `key:`) to end of the key's
+	// line, emitting `key:\n<block>`. Using keyN.Column keeps the existing
+	// indent. A trailing `# comment` on the original line is kept attached
+	// to the key line so operator annotations survive a multi-select save.
+	keyStart := li.offset(keyN.Line, keyN.Column)
+	keyEnd := li.lineEnd(keyN.Line, data)
+	renderedKey, kerr := renderKeyInline(keyN.Value)
+	if kerr != nil {
+		return edit{}, fmt.Errorf("path %v: render key: %w", keyN.Value, kerr)
+	}
+	block, berr := renderValueBlock(value, keyN.Column+2)
+	if berr != nil {
+		return edit{}, fmt.Errorf("path %v: %w", keyN.Value, berr)
+	}
+	trailingComment := extractInlineComment(data[keyStart:keyEnd])
+	return edit{start: keyStart, end: keyEnd, replacement: []byte(renderedKey + ":" + trailingComment + "\n" + strings.TrimRight(block, "\n"))}, nil
+}
+
+// extractInlineComment scans a single YAML line for a trailing `#` comment
+// (one preceded by whitespace, outside string/rune literals) and returns it
+// with its leading whitespace, e.g. "  # keep empty". Returns "" if there
+// is no comment. The scanner is deliberately simple — it handles the common
+// case of a flow value followed by whitespace + `#`; it does not attempt to
+// parse every YAML quoting variant (block scalars etc. do not reach this
+// path).
+func extractInlineComment(line []byte) string {
+	inDQ := false
+	inSQ := false
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		if c == '"' && !inSQ {
+			// Count backslashes before this quote to detect escapes.
+			bs := 0
+			for j := i - 1; j >= 0 && line[j] == '\\'; j-- {
+				bs++
+			}
+			if bs%2 == 0 {
+				inDQ = !inDQ
+			}
+			continue
+		}
+		if c == '\'' && !inDQ {
+			inSQ = !inSQ
+			continue
+		}
+		if inDQ || inSQ {
+			continue
+		}
+		if c != '#' {
+			continue
+		}
+		// A `#` only starts a comment when preceded by whitespace (or at the
+		// start of the line). Otherwise it is a legal scalar character.
+		if i == 0 || line[i-1] == ' ' || line[i-1] == '\t' {
+			// Include the whitespace run before `#` so output keeps spacing.
+			start := i
+			for start > 0 && (line[start-1] == ' ' || line[start-1] == '\t') {
+				start--
+			}
+			return string(line[start:])
+		}
+	}
+	return ""
+}
+
+// needsBlockFallback reports whether value is a sequence or mapping type
+// that may exceed one line and therefore warrants switching the replacement
+// from inline to block rendering.
+func needsBlockFallback(value interface{}) bool {
+	switch value.(type) {
+	case []string, []interface{}, map[string]interface{}, map[interface{}]interface{}:
+		return true
+	}
+	return false
 }
 
 // buildInsertEdit computes the splice for appending a new key to a mapping node.

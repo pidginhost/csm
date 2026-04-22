@@ -672,6 +672,128 @@ performance:
 	}
 }
 
+func TestSettingsGETResolvesEnumArrayOptions(t *testing.T) {
+	body := `hostname: t.example.com
+alerts:
+  email:
+    enabled: true
+    to: ["ops@t.example.com"]
+    from: csm@t.example.com
+    smtp: "127.0.0.1:1"
+    disabled_checks: ["webshell"]
+  max_per_hour: 20
+`
+	s, _ := newSettingsTestServer(t, "tok", body)
+
+	req := settingsAuthedReq("GET", "/api/v1/settings/alerts", "tok", "")
+	w := httptest.NewRecorder()
+	s.apiSettingsGet(w, req)
+	if w.Code != 200 {
+		t.Fatalf("code = %d, body = %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Section SettingsSection `json:"section"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	var f *SettingsField
+	for i := range resp.Section.Fields {
+		if resp.Section.Fields[i].YAMLPath == "email.disabled_checks" {
+			f = &resp.Section.Fields[i]
+		}
+	}
+	if f == nil {
+		t.Fatal("email.disabled_checks field missing")
+	}
+	if f.Type != "[]enum" {
+		t.Errorf("type = %q, want []enum", f.Type)
+	}
+	if len(f.Options) == 0 {
+		t.Error("Options empty in GET response — resolveFieldOptions not wired")
+	}
+	if len(f.OptionGroups) == 0 {
+		t.Error("OptionGroups empty in GET response")
+	}
+}
+
+func TestSettingsPOSTRejectsUnknownEnumValue(t *testing.T) {
+	hookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	t.Cleanup(hookSrv.Close)
+
+	body := `hostname: t.example.com
+alerts:
+  email:
+    enabled: false
+    to: ["ops@t.example.com"]
+    from: csm@t.example.com
+  webhook:
+    enabled: true
+    url: "` + hookSrv.URL + `"
+    type: "slack"
+  max_per_hour: 20
+`
+	s, _ := newSettingsTestServer(t, "tok", body)
+
+	getReq := settingsAuthedReq("GET", "/api/v1/settings/alerts", "tok", "")
+	getW := httptest.NewRecorder()
+	s.apiSettingsGet(getW, getReq)
+	etag := getW.Header().Get("ETag")
+
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/alerts", "tok",
+		`{"changes":{"email.disabled_checks":["webshell","nonexistent_check"]}}`)
+	postReq.Header.Set("If-Match", etag)
+	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	postW := httptest.NewRecorder()
+	s.apiSettingsPost(postW, postReq)
+
+	if postW.Code != 422 {
+		t.Fatalf("code = %d, want 422, body = %s", postW.Code, postW.Body.String())
+	}
+	if !strings.Contains(postW.Body.String(), "nonexistent_check") {
+		t.Errorf("body should name the bad value, got %s", postW.Body.String())
+	}
+}
+
+func TestSettingsPOSTAcceptsKnownEnumValues(t *testing.T) {
+	hookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	t.Cleanup(hookSrv.Close)
+
+	body := `hostname: t.example.com
+alerts:
+  email:
+    enabled: false
+    to: ["ops@t.example.com"]
+    from: csm@t.example.com
+  webhook:
+    enabled: true
+    url: "` + hookSrv.URL + `"
+    type: "slack"
+  max_per_hour: 20
+`
+	s, _ := newSettingsTestServer(t, "tok", body)
+
+	getReq := settingsAuthedReq("GET", "/api/v1/settings/alerts", "tok", "")
+	getW := httptest.NewRecorder()
+	s.apiSettingsGet(getW, getReq)
+	etag := getW.Header().Get("ETag")
+
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/alerts", "tok",
+		`{"changes":{"email.disabled_checks":["webshell","perf_memory"]}}`)
+	postReq.Header.Set("If-Match", etag)
+	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	postW := httptest.NewRecorder()
+	s.apiSettingsPost(postW, postReq)
+
+	if postW.Code != 200 {
+		t.Fatalf("code = %d, body = %s", postW.Code, postW.Body.String())
+	}
+	live := config.Active()
+	if len(live.Alerts.Email.DisabledChecks) != 2 {
+		t.Fatalf("DisabledChecks = %v, want 2 entries", live.Alerts.Email.DisabledChecks)
+	}
+}
+
 func TestSettingsRestartEndpointRequiresPOST(t *testing.T) {
 	s, _ := newSettingsTestServer(t, "tok", "hostname: t\nalerts:\n  email:\n    enabled: true\n    to: [\"ops@t.example.com\"]\n    from: csm@t.example.com\n    smtp: \"127.0.0.1:1\"\n  max_per_hour: 20\n")
 	s.restartDaemon = func() ([]byte, error) { return nil, nil }

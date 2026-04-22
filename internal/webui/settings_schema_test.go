@@ -99,6 +99,84 @@ func TestSecretFieldsAreMarkedSecret(t *testing.T) {
 	}
 }
 
+func TestEnumArrayFieldsCarryOptionsSource(t *testing.T) {
+	cases := []struct {
+		section, field, source string
+	}{
+		{"alerts", "email.disabled_checks", "check_names"},
+		{"geoip", "editions", "geoip_editions"},
+	}
+	for _, c := range cases {
+		s, _ := LookupSettingsSection(c.section)
+		f := findSchemaField(s, c.field)
+		if f == nil {
+			t.Errorf("field %s.%s missing", c.section, c.field)
+			continue
+		}
+		if f.Type != "[]enum" {
+			t.Errorf("field %s.%s type = %q, want []enum", c.section, c.field, f.Type)
+		}
+		if f.OptionsSource != c.source {
+			t.Errorf("field %s.%s options_source = %q, want %q", c.section, c.field, f.OptionsSource, c.source)
+		}
+	}
+}
+
+func TestResolveFieldOptionsFillsCheckNames(t *testing.T) {
+	s, _ := LookupSettingsSection("alerts")
+	resolveFieldOptions(&s)
+	f := findSchemaField(s, "email.disabled_checks")
+	if f == nil {
+		t.Fatal("email.disabled_checks missing")
+	}
+	if len(f.Options) == 0 {
+		t.Fatal("Options not populated")
+	}
+	if len(f.OptionGroups) == 0 {
+		t.Fatal("OptionGroups not populated")
+	}
+	// The registry has test_alert as Internal — it must not leak into options.
+	for _, o := range f.Options {
+		if o == "test_alert" {
+			t.Errorf("internal check %q leaked into public options", o)
+		}
+	}
+	// Spot-check a known public entry.
+	found := false
+	for _, o := range f.Options {
+		if o == "webshell" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error(`"webshell" missing from resolved disabled_checks options`)
+	}
+}
+
+func TestResolveFieldOptionsFillsGeoIPEditions(t *testing.T) {
+	s, _ := LookupSettingsSection("geoip")
+	resolveFieldOptions(&s)
+	f := findSchemaField(s, "editions")
+	if f == nil {
+		t.Fatal("editions missing")
+	}
+	if len(f.OptionGroups) != 2 {
+		t.Fatalf("want 2 option groups (free, paid), got %d", len(f.OptionGroups))
+	}
+	// First group should contain GeoLite2-City (free).
+	foundCity := false
+	for _, v := range f.OptionGroups[0].Values {
+		if v == "GeoLite2-City" {
+			foundCity = true
+			break
+		}
+	}
+	if !foundCity {
+		t.Error("GeoLite2-City not in free group")
+	}
+}
+
 func TestNullablePointerFieldsFlagged(t *testing.T) {
 	cases := []struct{ section, field string }{
 		{"performance", "enabled"},

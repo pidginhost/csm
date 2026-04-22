@@ -6,28 +6,29 @@
     <div class="row g-2 align-items-center">
       <div class="col">
         <h2 class="page-title"><i class="ti ti-settings"></i>&nbsp;Settings</h2>
-        <div class="text-muted mt-1">Edit CSM configuration. Safe-reload sections apply live; restart-required sections save to disk and prompt for a daemon restart.</div>
+        <div class="text-muted mt-1">Edit CSM configuration. Sections marked <span class="badge bg-green-lt">Applies live</span> reload without a restart; <span class="badge bg-orange-lt">Restart required</span> sections save to disk and prompt you.</div>
       </div>
     </div>
   </div>
 </div>
 
-<div id="settings-banner" class="alert alert-warning d-none" role="alert"></div>
+<div id="settings-banner" class="alert alert-warning mx-3 mt-3 d-none d-print-none" role="alert"></div>
 
-<div class="container-xl mt-3">
-  <div class="row">
-    <div class="col-md-3">
-      <div class="card">
-        <div class="card-body p-0">
-          <ul class="nav nav-pills flex-column" id="settings-nav" aria-label="Settings sections"></ul>
+<div class="container-xl mt-3 settings-page">
+  <div class="row g-3">
+    <aside class="col-12 col-md-4 col-lg-3 col-xxl-2">
+      <div class="card settings-nav-card">
+        <nav id="settings-nav" class="settings-nav" aria-label="Settings sections"></nav>
+      </div>
+    </aside>
+    <section class="col-12 col-md-8 col-lg-9 col-xxl-10">
+      <div id="settings-panel" class="card settings-panel">
+        <div class="settings-loading">
+          <div class="spinner-border spinner-border-sm text-muted me-2" role="status"></div>
+          Loading…
         </div>
       </div>
-    </div>
-    <div class="col-md-9">
-      <div id="settings-panel" class="card">
-        <div class="card-body"><div class="text-muted">Select a section.</div></div>
-      </div>
-    </div>
+    </section>
   </div>
 </div>
 {{end}}

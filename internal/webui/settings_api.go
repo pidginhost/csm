@@ -46,6 +46,7 @@ func (s *Server) apiSettingsGet(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "unknown section", http.StatusNotFound)
 		return
 	}
+	resolveFieldOptions(&section)
 
 	diskBytes, err := os.ReadFile(s.cfg.ConfigFile) // #nosec G304 -- operator-configured config path
 	if err != nil {
@@ -306,6 +307,15 @@ func buildChangeSet(section SettingsSection, clone *config.Config, changes map[s
 			}
 		}
 
+		if field.Type == "[]enum" {
+			if badValues, ok := validateEnumArray(field, raw); !ok {
+				for _, bv := range badValues {
+					errs = append(errs, fieldError{Field: key, Message: "unknown value: " + bv})
+				}
+				continue
+			}
+		}
+
 		// For float fields, coerce JSON string -> JSON number so the downstream
 		// json.Unmarshal into *float64 (in applyToClone) succeeds.
 		if field.Type == "float" {
@@ -332,6 +342,55 @@ func buildChangeSet(section SettingsSection, clone *config.Config, changes map[s
 		}
 	}
 	return out, errs
+}
+
+// validateEnumArray checks that raw is a JSON array of strings, each of
+// which appears in the field's resolved Options. Returns the slice of
+// unknown values and ok=false when any value is out-of-set. An empty
+// array is allowed (clears the list). Calls resolveFieldOptions-style
+// logic by inspecting OptionsSource + Options directly so validation
+// doesn't depend on GET ordering.
+func validateEnumArray(field *SettingsField, raw json.RawMessage) (bad []string, ok bool) {
+	var values []string
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return []string{"(not a string array)"}, false
+	}
+	resolved := resolvedOptionsForField(field)
+	if len(resolved) == 0 {
+		return nil, true
+	}
+	allowed := make(map[string]struct{}, len(resolved))
+	for _, v := range resolved {
+		allowed[v] = struct{}{}
+	}
+	seen := map[string]struct{}{}
+	for _, v := range values {
+		if _, dup := seen[v]; dup {
+			continue
+		}
+		seen[v] = struct{}{}
+		if _, okk := allowed[v]; !okk {
+			bad = append(bad, v)
+		}
+	}
+	return bad, len(bad) == 0
+}
+
+// resolvedOptionsForField returns the flat list of allowed values for a
+// []enum field, whether it uses static Options or an OptionsSource. Keeps
+// POST-side validation independent of the GET-time mutation.
+func resolvedOptionsForField(field *SettingsField) []string {
+	if len(field.Options) > 0 {
+		return field.Options
+	}
+	tmp := &SettingsField{Type: field.Type, OptionsSource: field.OptionsSource}
+	switch field.OptionsSource {
+	case "check_names":
+		applyCheckNameOptions(tmp)
+	case "geoip_editions":
+		applyGeoIPEditionOptions(tmp)
+	}
+	return tmp.Options
 }
 
 // coerceFloatRaw returns a JSON-number representation of raw if raw is either

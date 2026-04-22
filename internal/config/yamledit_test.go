@@ -67,6 +67,68 @@ func TestYAMLEditReplacesListValue(t *testing.T) {
 	}
 }
 
+// Regression: an existing empty flow-style list (`foo: []`) must be
+// replaceable with a multi-element list. Before the fix, buildReplaceEdit
+// forced inline rendering and failed with "cannot be rendered inline" —
+// breaking any multi-select field whose default is an empty slice.
+func TestYAMLEditReplacesEmptyFlowListWithMultiElementBlock(t *testing.T) {
+	in := []byte("alerts:\n  email:\n    disabled_checks: []\n")
+	out, err := YAMLEdit(in, []YAMLChange{
+		{Path: []string{"alerts", "email", "disabled_checks"}, Value: []string{"webshell", "perf_memory"}},
+	})
+	if err != nil {
+		t.Fatalf("YAMLEdit: %v", err)
+	}
+	var wrapper struct {
+		Alerts struct {
+			Email struct {
+				DisabledChecks []string `yaml:"disabled_checks"`
+			} `yaml:"email"`
+		} `yaml:"alerts"`
+	}
+	if err := yaml.Unmarshal(out, &wrapper); err != nil {
+		t.Fatalf("output does not decode: %v", err)
+	}
+	got := wrapper.Alerts.Email.DisabledChecks
+	want := []string{"webshell", "perf_memory"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("DisabledChecks = %v, want %v", got, want)
+	}
+	if !strings.Contains(string(out), "- webshell") || !strings.Contains(string(out), "- perf_memory") {
+		t.Errorf("expected block list in output, got:\n%s", out)
+	}
+}
+
+// The block-fallback path must preserve a trailing `#` comment on the
+// replaced line. Prior to the fix the whole line — comment and all — was
+// replaced, silently losing operator annotations.
+func TestYAMLEditBlockFallbackPreservesTrailingComment(t *testing.T) {
+	in := []byte("alerts:\n  email:\n    disabled_checks: []  # operator note: do not enable\n")
+	out, err := YAMLEdit(in, []YAMLChange{
+		{Path: []string{"alerts", "email", "disabled_checks"}, Value: []string{"webshell", "perf_memory"}},
+	})
+	if err != nil {
+		t.Fatalf("YAMLEdit: %v", err)
+	}
+	if !strings.Contains(string(out), "# operator note: do not enable") {
+		t.Errorf("trailing comment lost:\n%s", out)
+	}
+	var wrapper struct {
+		Alerts struct {
+			Email struct {
+				DisabledChecks []string `yaml:"disabled_checks"`
+			} `yaml:"email"`
+		} `yaml:"alerts"`
+	}
+	if err := yaml.Unmarshal(out, &wrapper); err != nil {
+		t.Fatalf("output not valid YAML: %v\n%s", err, out)
+	}
+	want := []string{"webshell", "perf_memory"}
+	if !reflect.DeepEqual(wrapper.Alerts.Email.DisabledChecks, want) {
+		t.Errorf("DisabledChecks = %v, want %v", wrapper.Alerts.Email.DisabledChecks, want)
+	}
+}
+
 func TestYAMLEditRoundTripsNewKey(t *testing.T) {
 	in := readFixture(t)
 	out, err := YAMLEdit(in, []YAMLChange{
