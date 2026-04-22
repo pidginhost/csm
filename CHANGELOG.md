@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-04-22
+
 ### Added
 
 - Dashboard now shows a single system health pill at the top, 24h stat cards carry day-over-day deltas and link into a pre-filtered history, and the trend chart has a 7d / 30d / 90d period selector.
