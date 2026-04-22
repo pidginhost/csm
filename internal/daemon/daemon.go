@@ -407,6 +407,38 @@ func (d *Daemon) Run() error {
 	d.wg.Add(1)
 	obs.Go("alert-dispatcher", d.alertDispatcher)
 
+	// Retrospective cloud-relay scan: replay the last 24h of exim_mainlog
+	// through the compromise-detection rule so any in-progress credential
+	// abuse is surfaced within seconds of daemon start, not after the
+	// realtime watcher sees a new line. Gated on cPanel because
+	// exim_mainlog is cPanel-specific; safe to run in a goroutine so
+	// startup isn't delayed by parsing a large log.
+	if platform.Detect().IsCPanel() {
+		d.wg.Add(1)
+		obs.Go("cloud-relay-retro-scan", func() {
+			defer d.wg.Done()
+			retro := ScanEximHistoryForCloudRelay(d.currentCfg(), "", time.Now(), 24*time.Hour)
+			for _, f := range retro {
+				// Mirror the realtime detector's side-effects: hold
+				// outgoing mail for the owning cPanel account and
+				// record the compromise so mail_per_account doesn't
+				// also fire on the same burst.
+				sender := extractSenderFromCloudRelayMessage(f.Message)
+				if sender != "" {
+					if domain := extractDomainFromEmail(sender); domain != "" {
+						autoSuspendOutgoingMail(sender)
+						RecordCompromisedDomain(domain)
+					}
+				}
+				select {
+				case d.alertCh <- f:
+				case <-d.stopCh:
+					return
+				}
+			}
+		})
+	}
+
 	// Start periodic scanners
 	d.wg.Add(1)
 	obs.Go("critical-scanner", d.criticalScanner)
