@@ -72,17 +72,18 @@ func TestCloudRelay_SingleCloudSendDoesNotAlert(t *testing.T) {
 	}
 }
 
-func TestCloudRelay_SingleIPRepeatedlyDoesNotAlert(t *testing.T) {
+func TestCloudRelay_SingleIPLowVolumeStaysSilent(t *testing.T) {
 	resetCloudRelayState()
 	cfg := cloudRelayTestConfig()
 
-	// Same IP + same PTR sending 20 times = likely a legit self-hosted script.
-	line := gceSendLine("info@occonsultingcy.com", "204.118.26.34.bc.googleusercontent.com", "34.26.118.204")
-	for i := 0; i < 20; i++ {
-		findings := parseEximLogLine(line, cfg)
-		for _, f := range findings {
+	// A self-hosted VPS script sending a handful of mails/hr (well under
+	// the volume-burst threshold) must not trigger. Simulates a legit
+	// cron job emailing daily reports through the user's cpanel mailbox.
+	line := gceSendLine("user@example.com", "ec2-1-2-3-4.compute-1.amazonaws.com", "1.2.3.4")
+	for i := 0; i < 10; i++ {
+		for _, f := range parseEximLogLine(line, cfg) {
 			if f.Check == "email_cloud_relay_abuse" {
-				t.Fatalf("iteration %d: single-IP traffic must not fire cloud-relay: %+v", i, f)
+				t.Fatalf("iteration %d: 10 sends from one VPS IP must not fire: %+v", i, f)
 			}
 		}
 	}
@@ -167,6 +168,73 @@ func TestCloudRelay_AllowlistSkips(t *testing.T) {
 				t.Fatalf("allowlisted user must not trigger cloud-relay: %+v", f)
 			}
 		}
+	}
+}
+
+func TestCloudRelay_VolumeBurstSingleIPTriggersCritical(t *testing.T) {
+	resetCloudRelayState()
+	cfg := cloudRelayTestConfig()
+
+	// Slow-burn attack pattern: attacker uses ONE AWS IP at a time and
+	// bursts 18 sends in an hour to evade the multi-IP signal. Must still
+	// trigger via the high-volume threshold.
+	line := gceSendLine(
+		"info@wizard-design.com",
+		"ec2-13-38-71-129.eu-west-3.compute.amazonaws.com",
+		"13.38.71.129",
+	)
+	var fired bool
+	for i := 0; i < 20; i++ {
+		for _, f := range parseEximLogLine(line, cfg) {
+			if f.Check == "email_cloud_relay_abuse" {
+				fired = true
+			}
+		}
+	}
+	if !fired {
+		t.Fatal("high-volume single-IP pattern must trigger email_cloud_relay_abuse")
+	}
+}
+
+func TestCloudRelay_LegitSaaSIntegrationStaysSilent(t *testing.T) {
+	// Nylas / SmartBill patterns observed in production: one or two
+	// authenticated sends per hour from a stable cloud IP (or two IPs
+	// across the day for Nylas). Must never false-fire.
+	cases := []struct {
+		name  string
+		lines []string
+	}{
+		{
+			name: "SmartBill single stable AWS IP",
+			lines: []string{
+				gceSendLine("contact@saas-user.example",
+					"ec2-34-250-125-227.eu-west-1.compute.amazonaws.com", "34.250.125.227"),
+				gceSendLine("contact@saas-user.example",
+					"ec2-34-250-125-227.eu-west-1.compute.amazonaws.com", "34.250.125.227"),
+			},
+		},
+		{
+			name: "Nylas: 2 GCP IPs across 8 sends in a day — but only 2/hr max",
+			lines: []string{
+				gceSendLine("info@nylas-user.example",
+					"13.166.122.34.bc.googleusercontent.com", "34.122.166.13"),
+				gceSendLine("info@nylas-user.example",
+					"88.89.133.34.bc.googleusercontent.com", "34.133.89.88"),
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetCloudRelayState()
+			cfg := cloudRelayTestConfig()
+			for _, line := range tc.lines {
+				for _, f := range parseEximLogLine(line, cfg) {
+					if f.Check == "email_cloud_relay_abuse" {
+						t.Fatalf("legit SaaS pattern must not fire: %+v", f)
+					}
+				}
+			}
+		})
 	}
 }
 

@@ -122,16 +122,31 @@ type cloudRelayEvent struct {
 // cloudRelayWindows tracks per-user cloud-relay activity.
 var cloudRelayWindows sync.Map // map[string]*cloudRelayWindow
 
-// Detection thresholds. Deliberately hard-coded for now: making them
-// configurable would invite accidental FP-inducing tweaks. These values
-// match the Apr 2026 incident analysis (3 sends / 2 distinct IPs / 1h
-// window would have fired within ~30 seconds of the first probe).
+// Detection thresholds. Two OR-combined signals within the same 60-min
+// sliding window:
+//
+//   A. Multi-IP burst: ≥ cloudRelayMinEvents sends from ≥ cloudRelayMinDistinctIP
+//      distinct cloud IPs. Catches rented-fleet abuse rotating IPs per-send
+//      (the typical credential-stuffing spam pattern).
+//
+//   B. Volume burst:   ≥ cloudRelayHighVolumeEvents sends regardless of
+//      distinct-IP count. Catches paced attacks that deliberately use one
+//      cloud IP per day to evade signal A. Threshold sits well above any
+//      legitimate SaaS integration seen on production (SmartBill ~2/hr,
+//      Nylas ~2/hr, WP transactional ≤3/hr).
+//
+// Tuning rationale: these values were chosen from the Apr 2026 incident
+// analysis. A single-mailbox user with a legit single-VPS cron averaging
+// ≤14 mails/hr stays silent; anything above that is either a compromised
+// relay or a SaaS integration that should be added to
+// `email_protection.high_volume_senders`.
 const (
-	cloudRelayWindow_       = 60 * time.Minute
-	cloudRelayMinEvents     = 3
-	cloudRelayMinDistinctIP = 2
-	cloudRelayDedupCooldown = 60 * time.Minute
-	cloudRelayMaxEvents     = 256 // per-user cap; prevents unbounded growth
+	cloudRelayWindow_          = 60 * time.Minute
+	cloudRelayMinEvents        = 3
+	cloudRelayMinDistinctIP    = 2
+	cloudRelayHighVolumeEvents = 15
+	cloudRelayDedupCooldown    = 60 * time.Minute
+	cloudRelayMaxEvents        = 256 // per-user cap; prevents unbounded growth
 )
 
 // parseCloudRelayFinding evaluates an exim acceptance line for the
@@ -195,7 +210,9 @@ func parseCloudRelayFinding(line string, cfg *config.Config) []alert.Finding {
 	for _, e := range w.events {
 		distinctIPs[e.ip] = struct{}{}
 	}
-	if len(w.events) < cloudRelayMinEvents || len(distinctIPs) < cloudRelayMinDistinctIP {
+	multiIPBurst := len(w.events) >= cloudRelayMinEvents && len(distinctIPs) >= cloudRelayMinDistinctIP
+	volumeBurst := len(w.events) >= cloudRelayHighVolumeEvents
+	if !multiIPBurst && !volumeBurst {
 		return nil
 	}
 
