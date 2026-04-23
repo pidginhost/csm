@@ -464,6 +464,13 @@ func (d *Daemon) Run() error {
 	d.wg.Add(1)
 	obs.Go("watchdog-notifier", d.watchdogNotifier)
 
+	// Start the retention sweep only when opted in. Compaction is NOT
+	// run from this goroutine — see internal/daemon/retention.go for why.
+	if d.cfg != nil && d.cfg.Retention.Enabled {
+		d.wg.Add(1)
+		obs.Go("retention-scanner", d.retentionScanner)
+	}
+
 	csmlog.Info("CSM daemon running")
 
 	// Wait for signals
