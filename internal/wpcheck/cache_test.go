@@ -295,6 +295,13 @@ func TestVersionPhpInvalidation(t *testing.T) {
 		t.Fatal("expected root cache to have 6.8.0")
 	}
 
+	// Pre-mark the post-invalidation key as in-flight so startBackgroundFetch
+	// short-circuits via the dedup branch and never spawns a goroutine that
+	// would outlive this test and race against other tests' httpClient swaps.
+	c.mu.Lock()
+	c.fetching[cacheKey("6.9.4", "en_US")] = true
+	c.mu.Unlock()
+
 	// Call IsVerifiedCoreFile on version.php itself - should invalidate root cache
 	f, _ := os.Open(versionPath)
 	defer f.Close()
