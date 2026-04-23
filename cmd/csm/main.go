@@ -121,6 +121,8 @@ func main() {
 		runDisable()
 	case "config":
 		runConfig()
+	case "store":
+		runStoreCLI()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
 		printUsage()
@@ -152,6 +154,7 @@ Commands:
   update-geoip  Download latest MaxMind GeoLite2 databases
   clean <path>  Attempt to clean an infected PHP file (backup created first)
   db-clean ...  WordPress database cleanup (see: csm db-clean --help)
+  store compact Reclaim unused space in the bbolt state database (daemon must be stopped; add --preview for a dry run)
   scan <user>   Scan a single cPanel account (add --alert to send alerts)
   firewall ...  Firewall management (deny, allow, status, ports, etc.)
   enable        Enable optional features (--php-shield)

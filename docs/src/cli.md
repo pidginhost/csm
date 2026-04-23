@@ -43,6 +43,13 @@
 | `csm enable --php-shield` | Enable PHP runtime protection |
 | `csm disable --php-shield` | Disable PHP runtime protection |
 
+## State database
+
+| Command | Description |
+|---------|-------------|
+| `csm store compact` | Reclaim unused space in the bbolt state file (atomic rename over the live DB). Requires the daemon to be stopped (`systemctl stop csm`) because bbolt holds an exclusive file lock while running. |
+| `csm store compact --preview` | Snapshot into a temp file next to the live DB and print src/dst sizes without replacing anything. Use to estimate reclaim before scheduling a maintenance window. |
+
 ## Updates
 
 | Command | Description |
