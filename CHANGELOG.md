@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Coverage badge pipeline no longer re-runs tests on GitHub Actions. The badge now reads the GitLab-produced `merged-coverage.out` from the latest release directly, so the public badge matches what CI measured instead of a drift-mangled re-merge. Removed `scripts/covmerge/`, which existed only to paper over that mismatch.
+- Docs: sync reference pages against shipped code — Settings page + `/api/v1/settings/*`, `csm db-clean` subcommands, `signatures.yara_worker_enabled`, `sentry` config block, `firewall cf-status`; corrected the authenticated-page count to 15 and dropped a stale "future release" note about `account_roots`.
 
 ## [2.7.0] - 2026-04-22
 

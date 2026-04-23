@@ -194,6 +194,7 @@ signatures:
     tier: "core"                        # "core", "extended", "full" (default: "core")
     update_interval: "168h"             # how often to check for updates (default: weekly)
   disabled_rules: []                    # YARA rule names to exclude from Forge downloads
+  yara_worker_enabled: false            # run YARA-X in a supervised child process (survives cgo crashes)
 
 `signatures.signing_key` is mandatory whenever either `signatures.update_url` is set or `signatures.yara_forge.enabled` is `true`.
 The value must be the hex-encoded Ed25519 public key used to verify detached `.sig` files for downloaded rule bundles.
@@ -348,6 +349,14 @@ cloudflare:
 # --- Threat Intel ---
 c2_blocklist: []                        # known C2 server IPs to block permanently
 backdoor_ports: [4444,5555,55553,55555,31337]  # ports indicating backdoor activity
+
+# --- Sentry (error reporting) ---
+sentry:
+  enabled: false                        # ship panics and selected errors to a Sentry server
+  dsn: ""                               # Sentry project DSN
+  environment: "production"             # e.g. "production", "staging"
+  sample_rate: 1.0                      # 0.0 -> 1.0 (capture all errors)
+  debug: false                          # SDK debug logs to stderr
 ```
 
 ## TLS Certificates
@@ -381,8 +390,9 @@ depending on which fields you touch.
 
 ### Fast path: SIGHUP reload (safe fields only)
 
-For fields tagged as hot-reload-safe (currently `thresholds`), the
-daemon can accept the change without a restart:
+For fields tagged as hot-reload-safe (`thresholds`, `alerts`,
+`suppressions`, `auto_response`, `reputation`, `email_protection`),
+the daemon can accept the change without a restart:
 
 ```bash
 sudo cp /opt/csm/csm.yaml /opt/csm/csm.yaml.bak-$(date +%s)

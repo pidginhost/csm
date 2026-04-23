@@ -37,6 +37,9 @@
 | Command | Description |
 |---------|-------------|
 | `csm clean <path>` | Clean infected PHP file (backs up original) |
+| `csm db-clean --option <account> <option_name> [--preview]` | Sanitize malicious WordPress option values (e.g. injected `siteurl` / `home`) |
+| `csm db-clean --revoke-user <account> <user_id> [--demote] [--preview]` | Revoke or demote a compromised WordPress admin and invalidate their sessions |
+| `csm db-clean --delete-spam <account> [--preview]` | Purge spam comments and trackbacks from a WordPress account |
 | `csm enable --php-shield` | Enable PHP runtime protection |
 | `csm disable --php-shield` | Disable PHP runtime protection |
 

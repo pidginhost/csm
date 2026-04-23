@@ -60,22 +60,27 @@ POST /api/v1/threat/whitelist-ip       Permanent whitelist
 POST /api/v1/threat/temp-whitelist-ip  Temporary whitelist (with expiry)
 POST /api/v1/threat/clear-ip           Clear IP from attack database
 POST /api/v1/threat/unwhitelist-ip     Remove from whitelist
+POST /api/v1/threat/bulk-action        Bulk block/clear/whitelist across many IPs
 ```
 
 ## Firewall
 
 ```
-GET  /api/v1/firewall/status     Config, blocked/allowed counts
-GET  /api/v1/firewall/subnets    Blocked subnets
-GET  /api/v1/firewall/audit      Firewall audit log
-GET  /api/v1/firewall/check      Check if IP is blocked (?ip=)
-POST /api/v1/block-ip            Block an IP
-POST /api/v1/unblock-ip          Unblock an IP
-POST /api/v1/unblock-bulk        Bulk unblock IPs
-POST /api/v1/firewall/deny-subnet      Block subnet
-POST /api/v1/firewall/remove-subnet   Remove subnet block
-POST /api/v1/firewall/flush            Clear all blocks
-POST /api/v1/firewall/unban            Unblock IP + flush cphulk
+GET  /api/v1/firewall/status         Config, blocked/allowed counts
+GET  /api/v1/firewall/allowed        Whitelisted IPs
+GET  /api/v1/firewall/subnets        Blocked subnets
+GET  /api/v1/firewall/audit          Firewall audit log
+GET  /api/v1/firewall/check          Check if IP is blocked (?ip=)
+POST /api/v1/block-ip                Block an IP
+POST /api/v1/unblock-ip              Unblock an IP
+POST /api/v1/unblock-bulk            Bulk unblock IPs
+POST /api/v1/firewall/allow-ip       Allow an IP
+POST /api/v1/firewall/remove-allow   Remove IP from allow list
+POST /api/v1/firewall/deny-subnet    Block subnet
+POST /api/v1/firewall/remove-subnet  Remove subnet block
+POST /api/v1/firewall/flush          Clear all blocks
+POST /api/v1/firewall/unban          Unblock IP + flush cphulk
+POST /api/v1/firewall/cphulk-clear   Flush cphulk bans only
 ```
 
 ## ModSecurity
@@ -119,11 +124,22 @@ POST /api/v1/hardening/run       Run hardening audit and save report
 ## Actions
 
 ```
-POST /api/v1/fix                 Apply fix for a finding
-POST /api/v1/fix-bulk            Bulk fix multiple findings
-POST /api/v1/dismiss             Dismiss a finding
-POST /api/v1/scan-account        On-demand account scan
-POST /api/v1/quarantine-restore  Restore quarantined file
-POST /api/v1/test-alert          Send test alert through all channels
-POST /api/v1/import              Import state bundle (suppressions, whitelist)
+POST /api/v1/fix                      Apply fix for a finding
+POST /api/v1/fix-bulk                 Bulk fix multiple findings
+POST /api/v1/dismiss                  Dismiss a finding
+POST /api/v1/scan-account             On-demand account scan
+POST /api/v1/quarantine-restore       Restore quarantined file
+POST /api/v1/quarantine/bulk-delete   Bulk-delete quarantined files
+POST /api/v1/test-alert               Send test alert through all channels
+POST /api/v1/import                   Import state bundle (suppressions, whitelist)
 ```
+
+## Settings
+
+```
+GET  /api/v1/settings/<section>   Read a config section (secrets redacted)
+POST /api/v1/settings/<section>   Update a config section (hot-reload-safe sections only)
+POST /api/v1/settings/restart     Request a daemon restart (after editing restart-required fields)
+```
+
+Sections map to top-level config keys: `alerts`, `auto_response`, `challenge`, `reputation`, `performance`, `infra_ips`, `sentry`, etc. Writes persist to `csm.yaml`, re-sign the integrity hash, and hot-reload where possible; restart-required changes are queued for `/api/v1/settings/restart`.

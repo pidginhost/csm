@@ -63,6 +63,9 @@ csm firewall audit [limit]                       # View audit log
 
 # GeoIP
 csm firewall update-geoip                        # Download country IP blocks
+
+# Cloudflare
+csm firewall cf-status                           # Show Cloudflare IP whitelist status
 ```
 
 ## Configuration

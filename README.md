@@ -89,7 +89,7 @@ AbuseIPDB lookups, GeoIP/ASN enrichment, attacker scoring, cross-signal correlat
 
 ### Web UI & CLI
 
-- **14 authenticated pages** — dashboard, findings, quarantine, firewall, ModSecurity, ModSec Rules, threat intel, email, performance, hardening, incidents, rules, audit, accounts. Also shipped as a **WHM plugin**.
+- **15 authenticated pages** — dashboard, findings, quarantine, firewall, ModSecurity, ModSec Rules, threat intel, email, performance, hardening, incidents, rules, audit, accounts, settings. Also shipped as a **WHM plugin**.
 - **Dashboard at a glance** — 24 h stats, timeline, live event feed, at-risk accounts, response summary.
 - **Full-featured CLI** — daemon, one-shot check, baseline, per-account scan, firewall, clean, signature update, validate, verify.
 
