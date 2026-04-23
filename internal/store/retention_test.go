@@ -43,7 +43,7 @@ func TestSweepHistoryOlderThan_DeletesOnlyOldEntries(t *testing.T) {
 		{Severity: alert.Warning, Check: "c1", Message: "old-2", Timestamp: old.Add(time.Hour)},
 		{Severity: alert.Warning, Check: "c1", Message: "fresh-1", Timestamp: fresh},
 	}
-	if err := db.AppendHistory(findings); err != nil {
+	if err = db.AppendHistory(findings); err != nil {
 		t.Fatalf("AppendHistory: %v", err)
 	}
 
@@ -84,7 +84,7 @@ func TestSweepHistoryOlderThan_AllOlderWipesBucket(t *testing.T) {
 			Severity: alert.Warning, Check: "c", Message: "m", Timestamp: base.Add(time.Duration(i) * time.Minute),
 		})
 	}
-	if err := db.AppendHistory(findings); err != nil {
+	if err = db.AppendHistory(findings); err != nil {
 		t.Fatalf("AppendHistory: %v", err)
 	}
 
@@ -108,7 +108,7 @@ func TestSweepHistoryOlderThan_CutoffInPastKeepsAll(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	base := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
-	if err := db.AppendHistory([]alert.Finding{
+	if err = db.AppendHistory([]alert.Finding{
 		{Severity: alert.Warning, Check: "c", Message: "m", Timestamp: base},
 	}); err != nil {
 		t.Fatalf("AppendHistory: %v", err)
@@ -140,7 +140,7 @@ func TestSweepAttackEventsOlderThan_DeletesPrimaryAndSecondary(t *testing.T) {
 	// Record two events at `old` and one at `fresh` for the same IP so
 	// the secondary index has a 3-entry prefix to prune.
 	for i, ts := range []time.Time{old, old.Add(time.Second), fresh} {
-		if err := db.RecordAttackEvent(AttackEvent{
+		if err = db.RecordAttackEvent(AttackEvent{
 			IP:         "1.2.3.4",
 			Timestamp:  ts,
 			AttackType: "t",
@@ -174,13 +174,13 @@ func TestSweepReputationOlderThan_UsesCheckedAt(t *testing.T) {
 	fresh := time.Date(2026, 4, 20, 0, 0, 0, 0, time.UTC)
 	cutoff := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	if err := db.SetReputation("1.1.1.1", ReputationEntry{Score: 10, CheckedAt: old}); err != nil {
+	if err = db.SetReputation("1.1.1.1", ReputationEntry{Score: 10, CheckedAt: old}); err != nil {
 		t.Fatalf("SetReputation old: %v", err)
 	}
-	if err := db.SetReputation("2.2.2.2", ReputationEntry{Score: 20, CheckedAt: old.Add(time.Hour)}); err != nil {
+	if err = db.SetReputation("2.2.2.2", ReputationEntry{Score: 20, CheckedAt: old.Add(time.Hour)}); err != nil {
 		t.Fatalf("SetReputation old2: %v", err)
 	}
-	if err := db.SetReputation("3.3.3.3", ReputationEntry{Score: 30, CheckedAt: fresh}); err != nil {
+	if err = db.SetReputation("3.3.3.3", ReputationEntry{Score: 30, CheckedAt: fresh}); err != nil {
 		t.Fatalf("SetReputation fresh: %v", err)
 	}
 
@@ -233,7 +233,7 @@ func TestCompactInto_ProducesDstFile(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	// Put something in so the snapshot is non-trivial.
-	if err := db.AppendHistory([]alert.Finding{
+	if err = db.AppendHistory([]alert.Finding{
 		{Severity: alert.Warning, Check: "c", Message: "m", Timestamp: time.Now()},
 	}); err != nil {
 		t.Fatalf("AppendHistory: %v", err)
@@ -294,13 +294,13 @@ func TestCompactInto_ShrinksFileAfterHeavyDelete(t *testing.T) {
 			Timestamp: base.Add(time.Duration(i) * time.Second),
 		})
 	}
-	if err := db.AppendHistory(findings); err != nil {
+	if err = db.AppendHistory(findings); err != nil {
 		t.Fatalf("AppendHistory: %v", err)
 	}
 
 	// Delete everything; the source file's logical size drops but its
 	// on-disk size does not.
-	if _, err := db.SweepHistoryOlderThan(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)); err != nil {
+	if _, err = db.SweepHistoryOlderThan(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("SweepHistoryOlderThan: %v", err)
 	}
 	srcSize, err := db.Size()
@@ -362,14 +362,14 @@ func TestSweepReputationOlderThan_SkipsMalformedEntries(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	// Valid fresh entry.
-	if err := db.SetReputation("9.9.9.9", ReputationEntry{
+	if err = db.SetReputation("9.9.9.9", ReputationEntry{
 		Score: 1, CheckedAt: time.Now(),
 	}); err != nil {
 		t.Fatalf("SetReputation: %v", err)
 	}
 
 	// Inject a malformed row directly via bbolt.
-	if err := db.bolt.Update(func(tx *bolt.Tx) error {
+	if err = db.bolt.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket([]byte("reputation")).Put([]byte("bogus"), []byte("this is not json"))
 	}); err != nil {
 		t.Fatalf("direct put: %v", err)

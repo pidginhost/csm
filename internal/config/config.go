@@ -128,7 +128,7 @@ type Config struct {
 			Tier           string `yaml:"tier"`            // "core", "extended", "full" (default: "core")
 			UpdateInterval string `yaml:"update_interval"` // default: "168h" (weekly)
 		} `yaml:"yara_forge"`
-		DisabledRules     []string `yaml:"disabled_rules"`      // YARA rule names to exclude from Forge downloads
+		DisabledRules []string `yaml:"disabled_rules"` // YARA rule names to exclude from Forge downloads
 		// YaraWorkerEnabled is a tri-state: nil means "use system default"
 		// (default-on, per ROADMAP item 2 follow-up), *true means explicit on,
 		// *false means explicit off. Callers must nil-check before dereferencing;

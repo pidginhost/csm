@@ -31,10 +31,10 @@ func populateStore(t *testing.T, statePath string) int64 {
 			Timestamp: base.Add(time.Duration(i) * time.Second),
 		})
 	}
-	if err := db.AppendHistory(findings); err != nil {
+	if err = db.AppendHistory(findings); err != nil {
 		t.Fatalf("AppendHistory: %v", err)
 	}
-	if _, err := db.SweepHistoryOlderThan(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)); err != nil {
+	if _, err = db.SweepHistoryOlderThan(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("SweepHistoryOlderThan: %v", err)
 	}
 	sz, err := db.Size()

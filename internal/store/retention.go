@@ -177,10 +177,11 @@ func (db *DB) SweepReputationOlderThan(cutoff time.Time) (int, error) {
 		var stale [][]byte
 		if err := b.ForEach(func(k, v []byte) error {
 			var e ReputationEntry
-			if err := json.Unmarshal(v, &e); err != nil {
-				return nil
-			}
-			if e.CheckedAt.Before(cutoff) {
+			// Malformed rows are skipped: a bad Unmarshal here must not
+			// abort the sweep for the rest of the bucket. Expressed as
+			// "proceed only when the row parses and is stale" so the
+			// happy path stays on the left of the guard.
+			if err := json.Unmarshal(v, &e); err == nil && e.CheckedAt.Before(cutoff) {
 				// Copy k because the slice is only valid for the
 				// duration of the callback.
 				stale = append(stale, append([]byte(nil), k...))
