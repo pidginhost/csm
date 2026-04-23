@@ -224,6 +224,22 @@ type Config struct {
 	C2Blocklist   []string `yaml:"c2_blocklist" hotreload:"restart"`
 	BackdoorPorts []int    `yaml:"backdoor_ports" hotreload:"restart"`
 
+	// Retention bounds bbolt growth. When enabled, a daily sweep prunes
+	// per-bucket entries older than the configured TTL and an online
+	// compaction pass shrinks the on-disk file once the fill ratio drops
+	// below CompactFillRatio (and the file exceeds CompactMinSizeMB).
+	// All fields are hot-reload:"restart" because the retention goroutine
+	// captures these on daemon start.
+	Retention struct {
+		Enabled          bool    `yaml:"enabled"`             // opt-in
+		FindingsDays     int     `yaml:"findings_days"`       // default 90
+		HistoryDays      int     `yaml:"history_days"`        // default 30
+		ReputationDays   int     `yaml:"reputation_days"`     // default 180
+		SweepInterval    string  `yaml:"sweep_interval"`      // default "24h"
+		CompactMinSizeMB int     `yaml:"compact_min_size_mb"` // default 128
+		CompactFillRatio float64 `yaml:"compact_fill_ratio"`  // default 0.5
+	} `yaml:"retention" hotreload:"restart"`
+
 	// Sentry ships panics and selected errors to a Sentry server for
 	// aggregation across hosts. Disabled by default; set enabled=true and
 	// provide a DSN from the Sentry project. Init is one-shot: changes
@@ -398,6 +414,28 @@ func applyDefaults(cfg *Config) {
 
 	if cfg.Cloudflare.RefreshHours == 0 {
 		cfg.Cloudflare.RefreshHours = 6
+	}
+
+	// Retention: defaults apply whether or not the feature is enabled, so
+	// that flipping `enabled: true` without further tuning gives the
+	// documented behaviour.
+	if cfg.Retention.FindingsDays == 0 {
+		cfg.Retention.FindingsDays = 90
+	}
+	if cfg.Retention.HistoryDays == 0 {
+		cfg.Retention.HistoryDays = 30
+	}
+	if cfg.Retention.ReputationDays == 0 {
+		cfg.Retention.ReputationDays = 180
+	}
+	if cfg.Retention.SweepInterval == "" {
+		cfg.Retention.SweepInterval = "24h"
+	}
+	if cfg.Retention.CompactMinSizeMB == 0 {
+		cfg.Retention.CompactMinSizeMB = 128
+	}
+	if cfg.Retention.CompactFillRatio == 0 {
+		cfg.Retention.CompactFillRatio = 0.5
 	}
 }
 

@@ -350,6 +350,16 @@ cloudflare:
 c2_blocklist: []                        # known C2 server IPs to block permanently
 backdoor_ports: [4444,5555,55553,55555,31337]  # ports indicating backdoor activity
 
+# --- Retention (bbolt growth control) ---
+retention:
+  enabled: false                        # opt-in; when true, a daily sweep prunes old entries and compacts bbolt
+  findings_days: 90                     # keep active findings this long (0 disables the findings sweep)
+  history_days: 30                      # keep findings-history entries this long
+  reputation_days: 180                  # keep IP reputation/attack entries this long
+  sweep_interval: "24h"                 # how often the retention goroutine runs
+  compact_min_size_mb: 128              # don't consider compaction below this file size
+  compact_fill_ratio: 0.5               # compact when used_bytes / file_size drops below this
+
 # --- Sentry (error reporting) ---
 sentry:
   enabled: false                        # ship panics and selected errors to a Sentry server
