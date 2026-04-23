@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-04-23
+
 ### Added
 
 - `retention:` config block (opt-in): per-bucket TTLs for `findings` / `history` / `reputation`, a `sweep_interval`, plus `compact_min_size_mb` and `compact_fill_ratio` knobs for the online bbolt compaction trigger. Schema, defaults, and validation only in this commit; the sweep goroutine and compaction primitive land in follow-up commits (ROADMAP item 6).
