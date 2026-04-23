@@ -69,7 +69,7 @@ curl -sk -H "Authorization: Bearer $METRICS_TOKEN" \
   Scrape once to discover the running version. Join on it in
   queries via `group_left(version)`.
 
-### YARA-X worker (when `signatures.yara_worker_enabled: true`)
+### YARA-X worker (default-on; off only if `signatures.yara_worker_enabled: false`)
 
 - `csm_yara_worker_restarts_total` (counter): cumulative number of
   times the supervisor has restarted the `csm yara-worker` child.

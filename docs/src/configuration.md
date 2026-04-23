@@ -194,7 +194,8 @@ signatures:
     tier: "core"                        # "core", "extended", "full" (default: "core")
     update_interval: "168h"             # how often to check for updates (default: weekly)
   disabled_rules: []                    # YARA rule names to exclude from Forge downloads
-  yara_worker_enabled: false            # run YARA-X in a supervised child process (survives cgo crashes)
+  # yara_worker_enabled: true           # tri-state: omit for the default (on), `false` to explicitly disable
+
 
 `signatures.signing_key` is mandatory whenever either `signatures.update_url` is set or `signatures.yara_forge.enabled` is `true`.
 The value must be the hex-encoded Ed25519 public key used to verify detached `.sig` files for downloaded rule bundles.

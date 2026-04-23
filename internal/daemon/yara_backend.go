@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/yara"
 	"github.com/pidginhost/csm/internal/yaraworker"
@@ -19,11 +20,28 @@ import (
 // same test binary does not panic with "duplicate registration".
 var yaraMetricsOnce sync.Once
 
-// initYaraBackend wires up either the in-process YARA-X scanner
-// (default) or the out-of-process supervisor (when
-// config.Signatures.YaraWorkerEnabled is true). Both paths register
-// themselves as the yara package's active backend so existing callers
-// work unchanged.
+// yaraWorkerOn reports whether the daemon should run YARA-X in a
+// supervised child process. The field is a *bool tri-state: nil means
+// "use system default" (true, per ROADMAP item 2 follow-up), *true is
+// explicit opt-in, *false is explicit opt-out.
+//
+// A nil cfg falls back to false so a pathological caller does not
+// accidentally spin up a worker; production never passes nil.
+func yaraWorkerOn(cfg *config.Config) bool {
+	if cfg == nil {
+		return false
+	}
+	if cfg.Signatures.YaraWorkerEnabled == nil {
+		return true
+	}
+	return *cfg.Signatures.YaraWorkerEnabled
+}
+
+// initYaraBackend wires up either the out-of-process YARA-X supervisor
+// (default, per ROADMAP item 2 follow-up) or the in-process scanner
+// (when config.Signatures.YaraWorkerEnabled is explicitly *false).
+// Both paths register themselves as the yara package's active backend
+// so existing callers work unchanged.
 //
 // In worker mode, yara.Init is deliberately NOT called: the rule
 // compile happens inside the child process, not the daemon. This is
@@ -33,7 +51,7 @@ var yaraMetricsOnce sync.Once
 // so the emailav YARA-X adapter works identically under both backends
 // — severity no longer needs the in-process *yara_x.Rules object.
 func (d *Daemon) initYaraBackend() error {
-	if !d.cfg.Signatures.YaraWorkerEnabled {
+	if !yaraWorkerOn(d.cfg) {
 		if yaraScanner := yara.Init(d.cfg.Signatures.RulesDir); yaraScanner != nil {
 			fmt.Fprintf(os.Stderr, "[%s] YARA-X scanner active: %d rule file(s)\n", ts(), yaraScanner.RuleCount())
 		}

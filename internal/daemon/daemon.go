@@ -70,8 +70,9 @@ type Daemon struct {
 	startTime        time.Time
 
 	// yaraSup is the supervised YARA-X worker, wired up when
-	// config.Signatures.YaraWorkerEnabled is true. Nil when running
-	// the in-process YARA-X (default).
+	// yaraWorkerOn(cfg) is true (the default; see ROADMAP item 2).
+	// Nil when the in-process scanner is in use
+	// (cfg.Signatures.YaraWorkerEnabled explicitly set to false).
 	yaraSup            *yaraworker.Supervisor
 	yaraCrashMu        sync.Mutex
 	yaraLastCrashAlert time.Time

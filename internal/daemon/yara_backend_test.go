@@ -29,7 +29,8 @@ func newDaemonForYaraBackendTest(t *testing.T) *Daemon {
 // worker supervisor.
 func TestInitYaraBackendInProcessPath(t *testing.T) {
 	d := newDaemonForYaraBackendTest(t)
-	d.cfg.Signatures.YaraWorkerEnabled = false
+	f := false
+	d.cfg.Signatures.YaraWorkerEnabled = &f
 	d.cfg.Signatures.RulesDir = t.TempDir()
 
 	if err := d.initYaraBackend(); err != nil {

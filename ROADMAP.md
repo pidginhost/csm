@@ -124,9 +124,10 @@ commits and the next CI run produces the old binary.
 
 ## 2. Process-isolate YARA-X (and other cgo dependencies)
 
-**Status:** done for YARA-X (opt-in behind
-`signatures.yara_worker_enabled`). Default-on flip remains; tracked
-as a follow-up below.
+**Status:** done for YARA-X. Default flipped to on via a *bool
+tri-state: omitting `signatures.yara_worker_enabled` (or setting it
+to `true`) runs the supervised child; explicit `false` keeps the
+in-process path for operators who want to roll back.
 **Drives / unblocks:** resilience against any future cgo
 dependency bug
 
@@ -193,12 +194,14 @@ moved behind the same supervisor wrapper.
 
 3–5 engineering days including integration tests.
 
-### Follow-ups (not yet shipped)
+### Follow-ups
 
-- Flip `signatures.yara_worker_enabled` default to true once the
-  opt-in window has been stable for one release cycle.
+- ~~Flip `signatures.yara_worker_enabled` default to true once the
+  opt-in window has been stable for one release cycle.~~ **Done.**
+  Field is now `*bool` so nil means default-on; explicit `false`
+  rolls back to the in-process scanner.
 - Apply the same supervisor pattern to any future cgo dependency
-  whose crash would otherwise take the daemon down.
+  whose crash would otherwise take the daemon down. (Still open.)
 
 ---
 
