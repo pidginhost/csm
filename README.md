@@ -25,7 +25,7 @@ A security daemon for Linux web servers that detects compromise in seconds, resp
 
 ### Malware Scanning & Cleanup
 
-- **YARA-X engine** — modern rust-based YARA replacement (VirusTotal yara-x) built in with `-tags yara`.
+- **YARA-X engine** — modern rust-based YARA replacement (VirusTotal yara-x), compiled in with `-tags yara`. Runs in a supervised child process by default so a cgo-layer crash in the engine never takes the daemon down (`csm_yara_worker_restarts_total` tracks the backoff).
 - **Signature rules** — curated YAML signatures for PHP, HTML, `.htaccess`, `.user.ini`, phishing kits, SEO spam.
 - **7 cleaning strategies** — `@include` removal, prepend/append stripping, inline-eval removal, base64 chain decode, chr/pack cleanup, hex injection removal, DB spam cleanup.
 - **WordPress integrity** — official checksum verification against `api.wordpress.org`; flags tampered core files.
@@ -78,6 +78,12 @@ A security daemon for Linux web servers that detects compromise in seconds, resp
 - **Hardening audits** — SSH config, sysctl, kernel modules, world-writable paths, SUID inventory, outdated packages.
 - **Kernel module tracking** — flags new or unexpected modules.
 - **Performance checks** — PHP/MySQL/Redis/WordPress health signals that often indicate compromise.
+
+### Storage & Retention
+
+- **Opt-in `retention:` block** — daily sweep over `history`, `attacks:events`, and `reputation` with per-bucket TTLs. `csm_retention_sweeps_total` and `csm_retention_deleted_total` track activity.
+- **`csm store compact [--preview]`** — reclaim bbolt free pages via snapshot-and-atomic-rename when the daemon is stopped. `--preview` reports the reclaim delta without touching the live DB.
+- **Hot-reload safe fields** — `thresholds`, `alerts`, `suppressions`, `auto_response`, `reputation`, and `email_protection` apply via `systemctl reload csm` without restarting the daemon (no fanotify drop). Unsafe edits abort the reload with a `config_reload_restart_required` finding naming the offending fields.
 
 ### Automated Response
 
@@ -146,6 +152,8 @@ csm baseline            set clean-state baseline
 csm scan <user>         scan a specific account
 csm firewall ...        manage firewall rules
 csm clean <path>        clean infected files
+csm db-clean ...        sanitise malicious WordPress DB state
+csm store compact       reclaim bbolt free pages (daemon stopped)
 csm update-rules        update detection signatures
 csm validate            validate config
 csm verify              verify binary integrity

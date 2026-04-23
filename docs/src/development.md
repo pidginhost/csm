@@ -157,18 +157,22 @@ Keep the `[TIMESTAMP]` prefix of journalctl lines readable by humans: slog's tex
 
 ## YARA-X Worker Process
 
-CSM can run YARA-X in a supervised child process instead of in-
-process. The goal is blast-radius control: a cgo crash inside
-yara_x_capi (the 2026-04-16 production incident) stays contained to
-the child and the daemon keeps its fanotify watchers, log watchers,
-and firewall engine alive. See `ROADMAP.md` item 2 for the decision
+CSM runs YARA-X in a supervised child process by default (since the
+2026-04-23 default-flip). The goal is blast-radius control: a cgo
+crash inside yara_x_capi (the 2026-04-16 production incident) stays
+contained to the child and the daemon keeps its fanotify watchers,
+log watchers, and firewall engine alive. See `ROADMAP.md` (Related
+work already landed → "YARA-X process isolation") for the decision
 record.
 
-Enable it in `csm.yaml`:
+The knob is a tri-state `*bool`: omit it (or set `true`) for the
+default-on child process; set `false` to fall back to the in-process
+scanner.
 
 ```yaml
 signatures:
-  yara_worker_enabled: true
+  # yara_worker_enabled: true    # default; omit for default-on
+  # yara_worker_enabled: false   # explicit opt-out → in-process
 ```
 
 When on, daemon startup:

@@ -5,10 +5,9 @@ CSM exposes a `/metrics` endpoint on its HTTPS web UI port
 format (`Content-Type: text/plain; version=0.0.4`) and is safe to
 scrape every 15 seconds.
 
-This is ROADMAP item 4. The initial release covers the metrics
-listed under "Available metrics" below. More call sites are
-instrumented in ongoing releases; track progress in
-`CHANGELOG.md` under `## [Unreleased]`.
+"Available metrics" below is the shipped set. New call sites are
+instrumented in ongoing releases; check `CHANGELOG.md` under
+`## [Unreleased]` for the latest additions.
 
 ## Enabling
 
@@ -87,9 +86,10 @@ curl -sk -H "Authorization: Bearer $METRICS_TOKEN" \
 ### State
 
 - `csm_store_size_bytes` (gauge): on-disk size of the bbolt state
-  database (`/opt/csm/state/csm.db` by default). ROADMAP item 6
-  will add a retention policy that compacts this file; for now use
-  this metric to spot runaway growth.
+  database (`/opt/csm/state/csm.db` by default). Enable the
+  `retention:` block to bound logical growth and run `csm store
+  compact` during maintenance to reclaim freelisted pages; without
+  either, this gauge only climbs.
 
 ### Fanotify realtime monitor
 
@@ -165,6 +165,19 @@ curl -sk -H "Authorization: Bearer $METRICS_TOKEN" \
   detecting response storms:
   `rate(csm_auto_response_actions_total[5m])`.
 
+### Retention (when `retention.enabled: true`)
+
+- `csm_retention_sweeps_total` (counter): number of retention
+  sweep cycles completed since daemon start. A flatline after a
+  restart means the sweep goroutine is not scheduling; a healthy
+  daemon increments this on every `sweep_interval` tick.
+- `csm_retention_deleted_total` (counter): cumulative entries
+  deleted across the `history`, `attacks:events`, and `reputation`
+  buckets. Spikes on the first sweep after enabling retention
+  (initial backlog), then settles to the steady-state churn. Useful
+  for estimating when the file might benefit from a
+  `csm store compact` maintenance window.
+
 ## Counter reset semantics
 
 Prometheus counters in CSM live in process memory. They reset to zero
@@ -202,5 +215,6 @@ pattern can be added for that one case without affecting the rest.
   seeing-the-write path in `fanotify.go`). The periodic
   `csm_auto_response_actions_total` does not count those; a follow-
   up may split the metric or add a `source` label.
-- bbolt per-bucket size breakdown. Ships with ROADMAP item 6 (the
-  retention + compaction work).
+- bbolt per-bucket size breakdown, `csm_store_used_bytes`, and
+  `csm_store_last_compact_ts`. Deferred to the online-compaction
+  follow-up of the retention work (see `ROADMAP.md`).
