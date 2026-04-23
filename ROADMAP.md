@@ -11,14 +11,21 @@ This file is for contributors. End-user documentation lives in
 
 - **Daemon control socket + thin-client CLI (phase 1).** The daemon
   now serves a Unix socket at `/var/run/csm/control.sock` (0600,
-  root-only). CLI commands `run`, `run-critical`, `run-deep`, `status`,
-  `update-rules`, and `update-geoip` route through it instead of
-  opening their own bbolt handle. Shared wire protocol lives in
-  `internal/control`. Any new IPC work (see item 2) should reuse the
-  `/var/run/csm/` path convention, permission model, and line-framed
-  JSON request/response pattern rather than inventing a parallel
-  stack. Phase 2 (remaining CLI migrations) is tracked as item 3
-  below.
+  root-only). CLI commands `run`, `run-critical`, `run-deep`, and
+  `status` route through it instead of opening their own bbolt handle;
+  `update-rules` and `update-geoip` still run locally (they only touch
+  files on disk, not bbolt) and emit a best-effort reload ping to the
+  daemon afterward. Shared wire protocol lives in `internal/control`.
+  Any new IPC work (see item 2) should reuse the `/var/run/csm/`
+  path convention, permission model, and line-framed JSON
+  request/response pattern rather than inventing a parallel stack.
+  Phase 2 (remaining CLI migrations) is tracked as item 3 below.
+- **bbolt retention + manual compaction (item 6 below, shipped).**
+  Opt-in `retention:` block drives a daily sweep over `history`,
+  `attacks:events`, and `reputation`; `csm store compact [--preview]`
+  reclaims on-disk space when the daemon is stopped. The "compact
+  without restarting the daemon" acceptance criterion is deferred
+  (see the follow-ups under item 6).
 
 ---
 
@@ -416,7 +423,13 @@ with a `v` field so downstream parsers can pin.
 
 ## 6. bbolt growth + retention policy
 
-**Status:** planned
+**Status:** done — opt-in `retention:` block drives the daily sweep
+(`history` by `history_days`, `attacks:events` by `findings_days`,
+`reputation` by `reputation_days`); `csm_retention_sweeps_total` and
+`csm_retention_deleted_total` track activity; `csm store compact
+[--preview]` reclaims space when the daemon is stopped. The "compact
+without restarting the daemon" acceptance criterion is **deferred**
+and tracked in the follow-ups below.
 **Drives / unblocks:** predictable disk use on long-running
 daemons
 
@@ -474,6 +487,31 @@ through the control socket for manual runs.
 The retention goroutine and the compact command are additive.
 Disabling the `retention:` block in `csm.yaml` turns the new
 behaviour off.
+
+### Follow-ups (not yet shipped)
+
+- **Online compaction (the daemon-never-stops acceptance criterion).**
+  The sweep runs fully online, but `csm store compact` requires the
+  daemon to be stopped because bbolt holds an exclusive file lock
+  while the daemon runs. In-process compaction would need a
+  coordinated quiescence phase where every subsystem that writes
+  through `store.Global()` pauses briefly so the daemon can close
+  the old bolt handle, rename the compacted copy into place, and
+  reopen. That quiescence machinery is bigger than this ticket and
+  is not currently blocking any operator — the daily sweep plus a
+  scheduled maintenance-window compact is enough to keep the file
+  bounded. Revisit when the first real-world box reports
+  end-user-visible pressure from the stopped-daemon constraint.
+- **Compaction metrics.** `csm_store_last_compact_ts` (gauge) and
+  `csm_store_used_bytes` (gauge) are listed in the original scope
+  but not yet emitted. `csm_store_size_bytes` is live. Add when the
+  online-compaction follow-up lands; until then the data point is
+  a log line, not a metric.
+- **Acceptance-criterion test harness.** The ROADMAP called for a
+  synthetic 10 M-finding compaction integration test. Shipped is a
+  unit-level shrink test at 5,000 entries. Tolerate the gap or
+  promote the test when the next bbolt upgrade touches the compaction
+  path.
 
 ---
 
