@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.1] - 2026-04-23
+
+### Fixed
+
+- Lint cleanup on top of 2.8.0 (gofmt realignment after the `YaraWorkerEnabled` type switch, govet-shadow `err` in the new retention tests, restructured `SweepReputationOlderThan`'s malformed-row skip so nilerr is satisfied). No runtime behaviour change; 2.8.0 and 2.8.1 are the same code path once compiled.
+
 ## [2.8.0] - 2026-04-23
 
 ### Added
