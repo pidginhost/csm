@@ -1,6 +1,9 @@
 package store
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -197,6 +200,157 @@ func TestSweepReputationOlderThan_UsesCheckedAt(t *testing.T) {
 	}
 	if _, ok := db.GetReputation("3.3.3.3"); !ok {
 		t.Error("3.3.3.3 should have been kept")
+	}
+}
+
+func TestDBSizeAndPath(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	want := filepath.Join(dir, "csm.db")
+	if got := db.Path(); got != want {
+		t.Errorf("Path() = %q, want %q", got, want)
+	}
+
+	sz, err := db.Size()
+	if err != nil {
+		t.Fatalf("Size: %v", err)
+	}
+	if sz <= 0 {
+		t.Errorf("Size() = %d, want > 0 for fresh DB", sz)
+	}
+}
+
+func TestCompactInto_ProducesDstFile(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// Put something in so the snapshot is non-trivial.
+	if err := db.AppendHistory([]alert.Finding{
+		{Severity: alert.Warning, Check: "c", Message: "m", Timestamp: time.Now()},
+	}); err != nil {
+		t.Fatalf("AppendHistory: %v", err)
+	}
+
+	dst := filepath.Join(t.TempDir(), "compacted.db")
+	srcSize, dstSize, err := db.CompactInto(dst, 0)
+	if err != nil {
+		t.Fatalf("CompactInto: %v", err)
+	}
+	if srcSize <= 0 {
+		t.Errorf("srcSize = %d, want > 0", srcSize)
+	}
+	if dstSize <= 0 {
+		t.Errorf("dstSize = %d, want > 0", dstSize)
+	}
+	if _, statErr := os.Stat(dst); statErr != nil {
+		t.Errorf("compacted file not created: %v", statErr)
+	}
+
+	// The compacted file must itself be a valid bbolt DB that readers can
+	// open with the expected buckets.
+	readDB, err := bolt.Open(dst, 0600, &bolt.Options{Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("re-opening compacted DB: %v", err)
+	}
+	defer func() { _ = readDB.Close() }()
+	if err := readDB.View(func(tx *bolt.Tx) error {
+		if tx.Bucket([]byte("history")) == nil {
+			t.Error("compacted DB missing history bucket")
+		}
+		if tx.Bucket([]byte("meta")) == nil {
+			t.Error("compacted DB missing meta bucket")
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("View: %v", err)
+	}
+}
+
+func TestCompactInto_ShrinksFileAfterHeavyDelete(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// Stretch the file with 5,000 history entries. bbolt won't free the
+	// pages on delete, so the post-sweep size stays ~large; compaction
+	// reclaims the free pages.
+	base := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	var findings []alert.Finding
+	for i := 0; i < 5000; i++ {
+		findings = append(findings, alert.Finding{
+			Severity:  alert.Warning,
+			Check:     "c",
+			Message:   strings.Repeat("x", 256), // ~256 bytes each
+			Timestamp: base.Add(time.Duration(i) * time.Second),
+		})
+	}
+	if err := db.AppendHistory(findings); err != nil {
+		t.Fatalf("AppendHistory: %v", err)
+	}
+
+	// Delete everything; the source file's logical size drops but its
+	// on-disk size does not.
+	if _, err := db.SweepHistoryOlderThan(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("SweepHistoryOlderThan: %v", err)
+	}
+	srcSize, err := db.Size()
+	if err != nil {
+		t.Fatalf("Size before compact: %v", err)
+	}
+
+	dst := filepath.Join(t.TempDir(), "compacted.db")
+	_, dstSize, err := db.CompactInto(dst, 0)
+	if err != nil {
+		t.Fatalf("CompactInto: %v", err)
+	}
+
+	// Expect the compacted copy to be meaningfully smaller. ROADMAP target
+	// is > 40% reduction on the synthetic stress-test; unit test uses a
+	// softer floor (> 25%) so it stays green on tiny test datasets where
+	// bbolt's page granularity dominates.
+	if float64(dstSize) >= float64(srcSize)*0.75 {
+		t.Errorf("compact did not shrink the file enough: src=%d dst=%d (ratio %.2f, want < 0.75)",
+			srcSize, dstSize, float64(dstSize)/float64(srcSize))
+	}
+}
+
+func TestCompactInto_RejectsEmptyDstPath(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	if _, _, err := db.CompactInto("", 0); err == nil {
+		t.Error("CompactInto with empty dst should error")
+	}
+}
+
+func TestCompactInto_RemovesPartialDstOnOpenError(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// Point dst at a path whose parent directory doesn't exist — bolt.Open
+	// fails, and we expect no straggler file.
+	dst := filepath.Join(t.TempDir(), "no-such-subdir", "compacted.db")
+	if _, _, err := db.CompactInto(dst, 0); err == nil {
+		t.Error("CompactInto to missing parent dir should error")
+	}
+	if _, statErr := os.Stat(dst); !os.IsNotExist(statErr) {
+		t.Errorf("expected dst not to exist, stat err = %v", statErr)
 	}
 }
 
