@@ -25,26 +25,26 @@ const (
 	CmdGeoIPReload = "geoip.reload"
 
 	// Phase 2 additions.
-	CmdBaseline           = "baseline"
-	CmdFirewallStatus     = "firewall.status"
-	CmdFirewallPorts      = "firewall.ports"
-	CmdFirewallGrep       = "firewall.grep"
-	CmdFirewallAudit      = "firewall.audit"
-	CmdFirewallBlock      = "firewall.block"
-	CmdFirewallUnblock    = "firewall.unblock"
-	CmdFirewallAllow      = "firewall.allow"
-	CmdFirewallAllowPort  = "firewall.allow_port"
-	CmdFirewallRemovePort = "firewall.remove_port"
-	CmdFirewallTempBan    = "firewall.tempban"
-	CmdFirewallTempAllow  = "firewall.tempallow"
-	CmdFirewallDenySubnet = "firewall.deny_subnet"
-	CmdFirewallRemSubnet  = "firewall.remove_subnet"
-	CmdFirewallDenyFile   = "firewall.deny_file"
-	CmdFirewallAllowFile  = "firewall.allow_file"
-	CmdFirewallFlush      = "firewall.flush"
-	CmdFirewallRestart    = "firewall.restart"
-	CmdFirewallApplyConf  = "firewall.apply_confirmed"
-	CmdFirewallConfirm    = "firewall.confirm"
+	CmdBaseline               = "baseline"
+	CmdFirewallStatus         = "firewall.status"
+	CmdFirewallPorts          = "firewall.ports"
+	CmdFirewallGrep           = "firewall.grep"
+	CmdFirewallAudit          = "firewall.audit"
+	CmdFirewallBlock          = "firewall.block"
+	CmdFirewallUnblock        = "firewall.unblock"
+	CmdFirewallAllow          = "firewall.allow"
+	CmdFirewallAllowPort      = "firewall.allow_port"
+	CmdFirewallRemovePort     = "firewall.remove_port"
+	CmdFirewallTempBan        = "firewall.tempban"
+	CmdFirewallTempAllow      = "firewall.tempallow"
+	CmdFirewallDenySubnet     = "firewall.deny_subnet"
+	CmdFirewallRemoveSubnet   = "firewall.remove_subnet"
+	CmdFirewallDenyFile       = "firewall.deny_file"
+	CmdFirewallAllowFile      = "firewall.allow_file"
+	CmdFirewallFlush          = "firewall.flush"
+	CmdFirewallRestart        = "firewall.restart"
+	CmdFirewallApplyConfirmed = "firewall.apply_confirmed"
+	CmdFirewallConfirm        = "firewall.confirm"
 )
 
 // Request is the single JSON object the client sends per connection.
@@ -127,11 +127,14 @@ type BaselineResult struct {
 }
 
 // FirewallIPArgs is shared by block / unblock / allow / remove-style
-// commands that take a single IP and an optional reason.
+// commands that take a single IP and an optional reason. Timeout is
+// consumed by tempban/tempallow and MUST parse via time.ParseDuration
+// (e.g. "24h", "1h30m", "5m"); empty means permanent. Invalid strings
+// are rejected by the handler with a parse error.
 type FirewallIPArgs struct {
 	IP      string `json:"ip"`
 	Reason  string `json:"reason,omitempty"`
-	Timeout string `json:"timeout,omitempty"` // duration string for tempban/tempallow; empty = permanent
+	Timeout string `json:"timeout,omitempty"`
 }
 
 // FirewallPortArgs covers allow-port / remove-port.
@@ -161,7 +164,8 @@ type FirewallGrepArgs struct {
 	Pattern string `json:"pattern"`
 }
 
-// FirewallAuditArgs matches the CLI's optional limit.
+// FirewallAuditArgs matches the CLI's optional limit. Limit=0 means
+// "use the handler default" (currently 50 lines, matching the old CLI).
 type FirewallAuditArgs struct {
 	Limit int `json:"limit"`
 }
