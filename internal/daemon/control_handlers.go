@@ -126,6 +126,12 @@ func (c *ControlListener) handleTierRun(argsRaw json.RawMessage) (any, error) {
 		return nil, err
 	}
 
+	// dryRun ties together the three Alerts=false side effects: the
+	// checks.DryRun toggle, the post-run history append, and the
+	// FindingList in the response. Hoisting it makes the invariant
+	// "these three happen together" visually obvious.
+	dryRun := !args.Alerts
+
 	if vErr := integrity.Verify(c.d.binaryPath, c.d.cfg); vErr != nil {
 		// Integrity failures are escalated through the normal alert
 		// pipeline so the on-call path sees them regardless of who
@@ -147,11 +153,14 @@ func (c *ControlListener) handleTierRun(argsRaw json.RawMessage) (any, error) {
 	}
 
 	// Dry-run mode: suppress auto-response globally for the duration
-	// of this call. This mirrors the pre-phase-2 behaviour of
-	// `csm check*` which set checks.DryRun=true before running. The
-	// toggle races with the daemon's periodic scanners; see the
-	// "Decisions" block in the plan for scope.
-	if !args.Alerts {
+	// of this call. Mirrors the pre-phase-2 behaviour of `csm check*`
+	// which set checks.DryRun=true before running. The toggle races
+	// with the daemon's periodic scanners; during a long `csm check-deep`
+	// a concurrent critical tick briefly sees DryRun=true and may
+	// suppress auto-response for that tick.
+	// TODO(phase-3): thread dry-run through checks.RunTier as a
+	// parameter so concurrent scans don't clobber each other.
+	if dryRun {
 		prev := checks.DryRun
 		checks.DryRun = true
 		defer func() { checks.DryRun = prev }()
@@ -176,12 +185,11 @@ func (c *ControlListener) handleTierRun(argsRaw json.RawMessage) (any, error) {
 		}
 	}
 
-	// Append to history when dry-running. The live tier-run path's
-	// history is written by the daemon's own runPeriodicChecks when
-	// the internal scanners fire; the dry-run path previously wrote
-	// via store.AppendHistory directly in cmd/csm/main.go:runTieredChecks.
-	// Keep the quirk by appending here when Alerts=false.
-	if !args.Alerts {
+	// Dry-run history + FindingList: the live path writes history via
+	// Daemon.runPeriodicChecks when the internal scanners fire; the
+	// pre-phase-2 `csm check*` wrote it via store.AppendHistory in
+	// cmd/csm/main.go. Preserve that quirk on the socket path.
+	if dryRun {
 		c.d.store.AppendHistory(findings)
 	}
 
@@ -191,7 +199,7 @@ func (c *ControlListener) handleTierRun(argsRaw json.RawMessage) (any, error) {
 		NewFindings: newCount,
 		ElapsedMs:   time.Since(start).Milliseconds(),
 	}
-	if !args.Alerts {
+	if dryRun {
 		if findings == nil {
 			result.FindingList = []alert.Finding{}
 		} else {

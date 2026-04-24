@@ -419,8 +419,7 @@ func TestDispatchUnknownPhase2Commands(t *testing.T) {
 	// Every new phase 2 command must be wired; a stub handler that
 	// returns "not implemented" is fine, but the dispatcher must not
 	// return "unknown command".
-	sockPath := redirectControlSocket(t)
-	_ = sockPath
+	redirectControlSocket(t)
 	d := newDaemonForListener(t)
 	listener, err := NewControlListener(d)
 	if err != nil {
