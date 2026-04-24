@@ -33,6 +33,7 @@ const (
 	CmdFirewallBlock          = "firewall.block"
 	CmdFirewallUnblock        = "firewall.unblock"
 	CmdFirewallAllow          = "firewall.allow"
+	CmdFirewallRemoveAllow    = "firewall.remove_allow"
 	CmdFirewallAllowPort      = "firewall.allow_port"
 	CmdFirewallRemovePort     = "firewall.remove_port"
 	CmdFirewallTempBan        = "firewall.tempban"

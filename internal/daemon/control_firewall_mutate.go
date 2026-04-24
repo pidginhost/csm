@@ -78,6 +78,25 @@ func (c *ControlListener) handleFirewallAllow(argsRaw json.RawMessage) (any, err
 	return control.FirewallAckResult{Message: fmt.Sprintf("Allowed %s - %s", args.IP, reason)}, nil
 }
 
+func (c *ControlListener) handleFirewallRemoveAllow(argsRaw json.RawMessage) (any, error) {
+	var args control.FirewallIPArgs
+	if len(argsRaw) > 0 {
+		if err := json.Unmarshal(argsRaw, &args); err != nil {
+			return nil, fmt.Errorf("parsing args: %w", err)
+		}
+	}
+	if net.ParseIP(args.IP) == nil {
+		return nil, fmt.Errorf("invalid ip: %q", args.IP)
+	}
+	if c.d.fwEngine == nil {
+		return nil, fmt.Errorf("firewall disabled in csm.yaml")
+	}
+	if err := c.d.fwEngine.RemoveAllowIP(args.IP); err != nil {
+		return nil, fmt.Errorf("remove-allow %s: %w", args.IP, err)
+	}
+	return control.FirewallAckResult{Message: fmt.Sprintf("Removed %s from allow list", args.IP)}, nil
+}
+
 func (c *ControlListener) handleFirewallAllowPort(argsRaw json.RawMessage) (any, error) {
 	var args control.FirewallPortArgs
 	if len(argsRaw) > 0 {

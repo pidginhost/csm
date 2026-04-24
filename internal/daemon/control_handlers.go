@@ -54,6 +54,8 @@ func (c *ControlListener) dispatch(line []byte) control.Response {
 		result, err = c.handleFirewallUnblock(req.Args)
 	case control.CmdFirewallAllow:
 		result, err = c.handleFirewallAllow(req.Args)
+	case control.CmdFirewallRemoveAllow:
+		result, err = c.handleFirewallRemoveAllow(req.Args)
 	case control.CmdFirewallAllowPort:
 		result, err = c.handleFirewallAllowPort(req.Args)
 	case control.CmdFirewallRemovePort:

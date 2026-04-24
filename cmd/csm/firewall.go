@@ -2,15 +2,16 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/firewall"
 )
 
@@ -129,56 +130,79 @@ func fwArgs() []string {
 	return args
 }
 
+// decodeFirewallAck decodes an Ack result from a raw daemon reply. Used by
+// every mutating firewall subcommand since they all share the same envelope.
+func decodeFirewallAck(raw json.RawMessage) control.FirewallAckResult {
+	var r control.FirewallAckResult
+	if err := json.Unmarshal(raw, &r); err != nil {
+		fmt.Fprintf(os.Stderr, "csm: decoding result: %v\n", err)
+		os.Exit(1)
+	}
+	return r
+}
+
+// decodeFirewallList decodes a list result from a raw daemon reply.
+func decodeFirewallList(raw json.RawMessage) control.FirewallListResult {
+	var r control.FirewallListResult
+	if err := json.Unmarshal(raw, &r); err != nil {
+		fmt.Fprintf(os.Stderr, "csm: decoding result: %v\n", err)
+		os.Exit(1)
+	}
+	return r
+}
+
 func fwStatus() {
-	cfg := loadConfig()
-	state, err := firewall.LoadState(cfg.StatePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading state: %v\n", err)
+	raw := requireDaemon(control.CmdFirewallStatus, nil)
+	var s control.FirewallStatusResult
+	if err := json.Unmarshal(raw, &s); err != nil {
+		fmt.Fprintf(os.Stderr, "csm: decoding result: %v\n", err)
 		os.Exit(1)
 	}
 
-	fwCfg := cfg.Firewall
 	status := "DISABLED"
-	if fwCfg.Enabled {
+	if s.Enabled {
 		status = "ACTIVE"
 	}
 
 	fmt.Printf("CSM Firewall Status\n")
 	fmt.Printf("===================\n")
 	fmt.Printf("Status:      %s\n", status)
-	fmt.Printf("TCP In:      %s\n", fmtPorts(fwCfg.TCPIn))
-	fmt.Printf("TCP Out:     %s\n", fmtPorts(fwCfg.TCPOut))
-	fmt.Printf("UDP In:      %s\n", fmtPorts(fwCfg.UDPIn))
-	fmt.Printf("UDP Out:     %s\n", fmtPorts(fwCfg.UDPOut))
-	fmt.Printf("Restricted:  %s\n", fmtPorts(fwCfg.RestrictedTCP))
-	fmt.Printf("Passive FTP: %d-%d\n", fwCfg.PassiveFTPStart, fwCfg.PassiveFTPEnd)
-	fmt.Printf("Infra IPs:   %d entries\n", len(fwCfg.InfraIPs))
-	fmt.Printf("Blocked:     %d IPs, %d subnets\n", len(state.Blocked), len(state.BlockedNet))
-	fmt.Printf("Allowed:     %d IPs\n", len(state.Allowed))
-	fmt.Printf("SYN Flood:   %v\n", fwCfg.SYNFloodProtection)
-	fmt.Printf("Rate Limit:  %d conn/min\n", fwCfg.ConnRateLimit)
-	fmt.Printf("Drop Log:    %v", fwCfg.LogDropped)
-	if fwCfg.LogDropped {
-		fmt.Printf(" (%d/min)", fwCfg.LogRate)
+	fmt.Printf("TCP In:      %s\n", fmtPortsStr(s.TCPIn))
+	fmt.Printf("TCP Out:     %s\n", fmtPortsStr(s.TCPOut))
+	fmt.Printf("UDP In:      %s\n", fmtPortsStr(s.UDPIn))
+	fmt.Printf("UDP Out:     %s\n", fmtPortsStr(s.UDPOut))
+	fmt.Printf("Restricted:  %s\n", fmtPortsStr(s.Restricted))
+	fmt.Printf("Passive FTP: %d-%d\n", s.PassiveFTPStart, s.PassiveFTPEnd)
+	fmt.Printf("Infra IPs:   %d entries\n", s.InfraIPCount)
+	fmt.Printf("Blocked:     %d IPs, %d subnets\n", s.BlockedCount, s.BlockedNetCount)
+	fmt.Printf("Allowed:     %d IPs\n", s.AllowedCount)
+	fmt.Printf("SYN Flood:   %v\n", s.SYNFlood)
+	fmt.Printf("Rate Limit:  %d conn/min\n", s.ConnRateLimit)
+	fmt.Printf("Drop Log:    %v", s.LogDropped)
+	if s.LogDropped {
+		fmt.Printf(" (%d/min)", s.LogRate)
 	}
 	fmt.Println()
 
-	if len(state.Blocked) > 0 {
+	if len(s.RecentBlocked) > 0 {
 		fmt.Printf("\nRecently Blocked:\n")
-		shown := 0
-		for i := len(state.Blocked) - 1; i >= 0 && shown < 10; i-- {
-			b := state.Blocked[i]
-			ago := time.Since(b.BlockedAt).Truncate(time.Minute)
-			expires := "permanent"
-			if !b.ExpiresAt.IsZero() {
-				remaining := time.Until(b.ExpiresAt).Truncate(time.Minute)
-				expires = fmt.Sprintf("%s remaining", remaining)
+		for _, b := range s.RecentBlocked {
+			ts := b.BlockedAt
+			if t, err := time.Parse(time.RFC3339, b.BlockedAt); err == nil {
+				ts = fmt.Sprintf("%s ago", time.Since(t).Truncate(time.Minute))
 			}
-			fmt.Printf("  %-18s %s ago  (%s)  %s\n", b.IP, ago, expires, b.Reason)
-			shown++
+			expires := "permanent"
+			if b.ExpiresAt != "" {
+				if t, err := time.Parse(time.RFC3339, b.ExpiresAt); err == nil {
+					expires = fmt.Sprintf("%s remaining", time.Until(t).Truncate(time.Minute))
+				} else {
+					expires = b.ExpiresAt
+				}
+			}
+			fmt.Printf("  %-18s %s  (%s)  %s\n", b.IP, ts, expires, b.Reason)
 		}
-		if len(state.Blocked) > 10 {
-			fmt.Printf("  ... and %d more\n", len(state.Blocked)-10)
+		if s.BlockedCount > len(s.RecentBlocked) {
+			fmt.Printf("  ... and %d more\n", s.BlockedCount-len(s.RecentBlocked))
 		}
 	}
 }
@@ -201,18 +225,11 @@ func fwDeny() {
 		reason = strings.Join(args[1:], " ")
 	}
 
-	cfg := loadConfig()
-	engine, err := firewall.ConnectExisting(cfg.Firewall, cfg.StatePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	if err := engine.BlockIP(ip, reason, 0); err != nil {
-		fmt.Fprintf(os.Stderr, "Error blocking %s: %v\n", ip, err)
-		os.Exit(1)
-	}
-	fmt.Printf("Blocked %s - %s\n", ip, reason)
+	raw := requireDaemon(control.CmdFirewallBlock, control.FirewallIPArgs{
+		IP:     ip,
+		Reason: reason,
+	})
+	fmt.Println(decodeFirewallAck(raw).Message)
 }
 
 func fwAllow() {
@@ -233,18 +250,11 @@ func fwAllow() {
 		reason = strings.Join(args[1:], " ")
 	}
 
-	cfg := loadConfig()
-	engine, err := firewall.ConnectExisting(cfg.Firewall, cfg.StatePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	if err := engine.AllowIP(ip, reason); err != nil {
-		fmt.Fprintf(os.Stderr, "Error allowing %s: %v\n", ip, err)
-		os.Exit(1)
-	}
-	fmt.Printf("Allowed %s - %s\n", ip, reason)
+	raw := requireDaemon(control.CmdFirewallAllow, control.FirewallIPArgs{
+		IP:     ip,
+		Reason: reason,
+	})
+	fmt.Println(decodeFirewallAck(raw).Message)
 }
 
 func fwAllowPort() {
@@ -272,18 +282,13 @@ func fwAllowPort() {
 		reason = strings.Join(args[2:], " ")
 	}
 
-	cfg := loadConfig()
-	engine, err := firewall.ConnectExisting(cfg.Firewall, cfg.StatePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	if err := engine.AllowIPPort(ip, port, "tcp", reason); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Printf("Allowed %s on port %d/tcp - %s\n", ip, port, reason)
+	raw := requireDaemon(control.CmdFirewallAllowPort, control.FirewallPortArgs{
+		IP:     ip,
+		Port:   port,
+		Proto:  "tcp",
+		Reason: reason,
+	})
+	fmt.Println(decodeFirewallAck(raw).Message)
 	fmt.Println("Run 'csm firewall restart' to apply the rule.")
 }
 
@@ -295,27 +300,29 @@ func fwRemovePort() {
 	}
 
 	ip := args[0]
+	if net.ParseIP(ip) == nil {
+		fmt.Fprintf(os.Stderr, "Invalid IP: %s\n", ip)
+		os.Exit(1)
+	}
 	port, err := strconv.Atoi(args[1])
 	if err != nil || port < 1 || port > 65535 {
 		fmt.Fprintf(os.Stderr, "Invalid port: %s\n", args[1])
 		os.Exit(1)
 	}
 
-	cfg := loadConfig()
-	engine, err := firewall.ConnectExisting(cfg.Firewall, cfg.StatePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	if err := engine.RemoveAllowIPPort(ip, port, "tcp"); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Printf("Removed port allow %s:%d/tcp\n", ip, port)
+	raw := requireDaemon(control.CmdFirewallRemovePort, control.FirewallPortArgs{
+		IP:    ip,
+		Port:  port,
+		Proto: "tcp",
+	})
+	fmt.Println(decodeFirewallAck(raw).Message)
 	fmt.Println("Run 'csm firewall restart' to apply the change.")
 }
 
+// fwRemove dispatches both Unblock and RemoveAllow and combines the output.
+// Preserves the old behaviour of "remove IP from both blocked and allow
+// lists" without a protocol-level combined op. Either side may legitimately
+// fail (IP not in that list); failure is only surfaced if BOTH fail.
 func fwRemove() {
 	args := fwArgs()
 	if len(args) < 1 {
@@ -329,26 +336,23 @@ func fwRemove() {
 		os.Exit(1)
 	}
 
-	cfg := loadConfig()
-	engine, err := firewall.ConnectExisting(cfg.Firewall, cfg.StatePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+	rawUnblock, errUnblock := sendControl(control.CmdFirewallUnblock, control.FirewallIPArgs{IP: ip})
+	rawAllow, errAllow := sendControl(control.CmdFirewallRemoveAllow, control.FirewallIPArgs{IP: ip})
+
+	// "daemon not running" collapses both calls; surface it once.
+	if errUnblock != nil && errAllow != nil {
+		// Both errored — most likely "IP not in list" from the engine.
+		// Report both reasons so the operator can tell if the daemon is
+		// reachable at all.
+		fmt.Fprintf(os.Stderr, "csm: unblock: %v\n", errUnblock)
+		fmt.Fprintf(os.Stderr, "csm: remove-allow: %v\n", errAllow)
 		os.Exit(1)
 	}
-
-	// Try both lists - report what was removed
-	errBlock := engine.UnblockIP(ip)
-	errAllow := engine.RemoveAllowIP(ip)
-
-	if errBlock != nil && errAllow != nil {
-		fmt.Fprintf(os.Stderr, "IP %s not found in blocked or allowed lists\n", ip)
-		os.Exit(1)
-	}
-	if errBlock == nil {
-		fmt.Printf("Removed %s from blocked list\n", ip)
+	if errUnblock == nil {
+		fmt.Println(decodeFirewallAck(rawUnblock).Message)
 	}
 	if errAllow == nil {
-		fmt.Printf("Removed %s from allowed list\n", ip)
+		fmt.Println(decodeFirewallAck(rawAllow).Message)
 	}
 }
 
@@ -359,60 +363,14 @@ func fwGrep() {
 		os.Exit(1)
 	}
 
-	pattern := strings.ToLower(args[0])
-	cfg := loadConfig()
-	state, err := firewall.LoadState(cfg.StatePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading state: %v\n", err)
-		os.Exit(1)
+	raw := requireDaemon(control.CmdFirewallGrep, control.FirewallGrepArgs{Pattern: args[0]})
+	list := decodeFirewallList(raw)
+	if len(list.Lines) == 0 {
+		fmt.Printf("No matches for '%s'\n", args[0])
+		return
 	}
-
-	found := 0
-
-	for _, b := range state.Blocked {
-		if strings.Contains(strings.ToLower(b.IP), pattern) ||
-			strings.Contains(strings.ToLower(b.Reason), pattern) {
-			ago := time.Since(b.BlockedAt).Truncate(time.Minute)
-			expires := "permanent"
-			if !b.ExpiresAt.IsZero() {
-				remaining := time.Until(b.ExpiresAt).Truncate(time.Minute)
-				expires = fmt.Sprintf("%s left", remaining)
-			}
-			fmt.Printf("BLOCKED  %-18s (%s ago, %s)  %s\n", b.IP, ago, expires, b.Reason)
-			found++
-		}
-	}
-
-	for _, a := range state.Allowed {
-		if strings.Contains(strings.ToLower(a.IP), pattern) ||
-			strings.Contains(strings.ToLower(a.Reason), pattern) {
-			port := ""
-			if a.Port > 0 {
-				port = fmt.Sprintf(" port:%d", a.Port)
-			}
-			fmt.Printf("ALLOWED  %-18s%s  %s\n", a.IP, port, a.Reason)
-			found++
-		}
-	}
-
-	for _, s := range state.BlockedNet {
-		if strings.Contains(strings.ToLower(s.CIDR), pattern) ||
-			strings.Contains(strings.ToLower(s.Reason), pattern) {
-			ago := time.Since(s.BlockedAt).Truncate(time.Minute)
-			fmt.Printf("SUBNET   %-18s (%s ago)  %s\n", s.CIDR, ago, s.Reason)
-			found++
-		}
-	}
-
-	for _, ip := range cfg.Firewall.InfraIPs {
-		if strings.Contains(strings.ToLower(ip), pattern) {
-			fmt.Printf("INFRA    %s\n", ip)
-			found++
-		}
-	}
-
-	if found == 0 {
-		fmt.Printf("No matches for '%s'\n", pattern)
+	for _, line := range list.Lines {
+		fmt.Println(line)
 	}
 }
 
@@ -441,18 +399,12 @@ func fwTempban() {
 		reason = strings.Join(args[2:], " ")
 	}
 
-	cfg := loadConfig()
-	engine, err := firewall.ConnectExisting(cfg.Firewall, cfg.StatePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	if err := engine.BlockIP(ip, reason, duration); err != nil {
-		fmt.Fprintf(os.Stderr, "Error blocking %s: %v\n", ip, err)
-		os.Exit(1)
-	}
-	fmt.Printf("Blocked %s for %s - %s\n", ip, duration, reason)
+	raw := requireDaemon(control.CmdFirewallTempBan, control.FirewallIPArgs{
+		IP:      ip,
+		Reason:  reason,
+		Timeout: duration.String(),
+	})
+	fmt.Println(decodeFirewallAck(raw).Message)
 }
 
 func fwTempAllow() {
@@ -480,125 +432,46 @@ func fwTempAllow() {
 		reason = strings.Join(args[2:], " ")
 	}
 
-	cfg := loadConfig()
-	engine, err := firewall.ConnectExisting(cfg.Firewall, cfg.StatePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	if err := engine.TempAllowIP(ip, reason, duration); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Printf("Allowed %s for %s - %s\n", ip, duration, reason)
+	raw := requireDaemon(control.CmdFirewallTempAllow, control.FirewallIPArgs{
+		IP:      ip,
+		Reason:  reason,
+		Timeout: duration.String(),
+	})
+	fmt.Println(decodeFirewallAck(raw).Message)
 }
 
 func fwPorts() {
-	cfg := loadConfig()
-	fwCfg := cfg.Firewall
-
-	fmt.Printf("TCP Inbound (public):\n  %s\n\n", fmtPortsWrap(fwCfg.TCPIn, 70))
-
-	if len(fwCfg.RestrictedTCP) > 0 {
-		fmt.Printf("TCP Restricted (infra only):\n  %s\n\n", fmtPortsWrap(fwCfg.RestrictedTCP, 70))
-	}
-
-	fmt.Printf("TCP Outbound:\n  %s\n\n", fmtPortsWrap(fwCfg.TCPOut, 70))
-	fmt.Printf("UDP Inbound:\n  %s\n\n", fmtPortsWrap(fwCfg.UDPIn, 70))
-	fmt.Printf("UDP Outbound:\n  %s\n\n", fmtPortsWrap(fwCfg.UDPOut, 70))
-
-	if fwCfg.PassiveFTPStart > 0 {
-		fmt.Printf("Passive FTP:\n  %d-%d\n", fwCfg.PassiveFTPStart, fwCfg.PassiveFTPEnd)
+	raw := requireDaemon(control.CmdFirewallPorts, nil)
+	list := decodeFirewallList(raw)
+	for _, line := range list.Lines {
+		fmt.Println(line)
 	}
 }
 
 func fwFlush() {
-	cfg := loadConfig()
-	state, _ := firewall.LoadState(cfg.StatePath)
-	count := len(state.Blocked)
-
-	engine, err := firewall.ConnectExisting(cfg.Firewall, cfg.StatePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	if err := engine.FlushBlocked(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error flushing: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Printf("Flushed %d blocked IPs\n", count)
+	raw := requireDaemon(control.CmdFirewallFlush, nil)
+	fmt.Println(decodeFirewallAck(raw).Message)
 }
 
 func fwRestart() {
-	cfg := loadConfig()
-	if !cfg.Firewall.Enabled {
-		fmt.Fprintf(os.Stderr, "Firewall is disabled in config. Set firewall.enabled: true first.\n")
-		os.Exit(1)
-	}
-
-	// Sync infra IPs from main config (same as daemon startup)
-	if len(cfg.Firewall.InfraIPs) == 0 {
-		cfg.Firewall.InfraIPs = cfg.InfraIPs
-	}
-
-	engine, err := firewall.NewEngine(cfg.Firewall, cfg.StatePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating engine: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Fprintf(os.Stderr, "Applying firewall ruleset...\n")
-	if err := engine.Apply(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error applying rules: %v\n", err)
-		os.Exit(1)
-	}
-
-	state, _ := firewall.LoadState(cfg.StatePath)
-	fmt.Printf("Firewall restarted. %d blocked, %d allowed IPs restored.\n",
-		len(state.Blocked), len(state.Allowed))
+	raw := requireDaemon(control.CmdFirewallRestart, nil)
+	fmt.Println(decodeFirewallAck(raw).Message)
 }
 
 // --- Helpers ---
 
-func fmtPorts(ports []int) string {
+// fmtPortsStr renders a slice of port strings as a comma-joined list, or
+// "(none)" if empty. Matches the wire schema emitted by the daemon's
+// handleFirewallStatus (FirewallStatusResult carries []string port lists).
+func fmtPortsStr(ports []string) string {
 	if len(ports) == 0 {
 		return "(none)"
 	}
-	strs := make([]string, len(ports))
-	for i, p := range ports {
-		strs[i] = strconv.Itoa(p)
-	}
-	s := strings.Join(strs, ",")
+	s := strings.Join(ports, ",")
 	if len(s) > 60 {
 		return fmt.Sprintf("%d ports", len(ports))
 	}
 	return s
-}
-
-func fmtPortsWrap(ports []int, width int) string {
-	if len(ports) == 0 {
-		return "(none)"
-	}
-	var lines []string
-	var current string
-	for i, p := range ports {
-		s := strconv.Itoa(p)
-		if i > 0 {
-			s = ", " + s
-		}
-		if len(current)+len(s) > width {
-			lines = append(lines, current)
-			current = strconv.Itoa(p)
-		} else {
-			current += s
-		}
-	}
-	if current != "" {
-		lines = append(lines, current)
-	}
-	return strings.Join(lines, "\n  ")
 }
 
 func fwProfile() {
@@ -608,7 +481,7 @@ func fwProfile() {
 		os.Exit(1)
 	}
 
-	cfg := loadConfig()
+	cfg := loadConfigLite()
 	profileDir := cfg.StatePath + "/firewall/profiles"
 	_ = os.MkdirAll(profileDir, 0700)
 
@@ -683,7 +556,7 @@ func fwProfile() {
 }
 
 func fwUpdateGeoIP() {
-	cfg := loadConfig()
+	cfg := loadConfigLite()
 	fwCfg := cfg.Firewall
 
 	codes := fwCfg.CountryBlock
@@ -724,7 +597,7 @@ func fwLookup() {
 		os.Exit(1)
 	}
 
-	cfg := loadConfig()
+	cfg := loadConfigLite()
 
 	// Check block status
 	state, _ := firewall.LoadState(cfg.StatePath)
@@ -805,88 +678,17 @@ func fwApplyConfirmed() {
 		}
 	}
 
-	cfg := loadConfig()
-	if !cfg.Firewall.Enabled {
-		fmt.Fprintf(os.Stderr, "Firewall is disabled in config. Set firewall.enabled: true first.\n")
-		os.Exit(1)
-	}
-	if len(cfg.Firewall.InfraIPs) == 0 {
-		cfg.Firewall.InfraIPs = cfg.InfraIPs
-	}
-
-	// Save rollback snapshot: current iptables/nftables state
-	confirmFile := filepath.Join(cfg.StatePath, "firewall", "confirm_pending")
-	rollbackFile := filepath.Join(cfg.StatePath, "firewall", "rollback.sh")
-
-	// Capture current nftables ruleset for rollback
-	nftDump, err := exec.Command("nft", "list", "ruleset").Output()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not capture current ruleset for rollback: %v\n", err)
-	}
-	if len(nftDump) > 0 {
-		rollbackScript := fmt.Sprintf("#!/bin/bash\n# Auto-rollback: restore previous nftables ruleset\nnft flush ruleset\nnft -f - <<'NFTEOF'\n%s\nNFTEOF\nrm -f %s %s\necho 'Firewall rolled back to previous state'\n",
-			string(nftDump), confirmFile, rollbackFile)
-		// #nosec G306 -- Shell script that must be executable by root. 0700
-		// is the tightest mode that still allows root to run it.
-		_ = os.WriteFile(rollbackFile, []byte(rollbackScript), 0700)
-	}
-
-	// Apply new ruleset
-	engine, err := firewall.NewEngine(cfg.Firewall, cfg.StatePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating engine: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Fprintf(os.Stderr, "Applying firewall ruleset with %d-minute confirmation timer...\n", minutes)
-	if err := engine.Apply(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error applying rules: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Write confirm-pending marker with deadline
-	deadline := time.Now().Add(time.Duration(minutes) * time.Minute)
-	_ = os.WriteFile(confirmFile, []byte(deadline.Format(time.RFC3339)), 0600)
-
-	// Start a background goroutine that will rollback if not confirmed.
-	// Uses pure Go instead of shell interpolation to avoid command injection.
-	go func() {
-		time.Sleep(time.Duration(minutes) * time.Minute)
-		if _, err := os.Stat(confirmFile); err != nil {
-			return // confirm file removed - user confirmed, skip rollback
-		}
-		if _, err := os.Stat(rollbackFile); err != nil {
-			return // rollback script missing
-		}
-		// #nosec G204 -- bash is hardcoded; rollbackFile is the path we
-		// just wrote in this same function (0700 mode), not user input.
-		cmd := exec.Command("bash", rollbackFile)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			fmt.Fprintf(os.Stderr, "Rollback failed: %v\n%s\n", err, out)
-		}
-	}()
-
-	state, _ := firewall.LoadState(cfg.StatePath)
-	fmt.Printf("Firewall applied. %d blocked, %d allowed IPs restored.\n",
-		len(state.Blocked), len(state.Allowed))
+	raw := requireDaemon(control.CmdFirewallApplyConfirmed, control.FirewallApplyConfirmedArgs{
+		Minutes: minutes,
+	})
+	fmt.Println(decodeFirewallAck(raw).Message)
 	fmt.Printf("\n*** CONFIRM within %d minutes or rules will be rolled back ***\n", minutes)
 	fmt.Printf("Run: csm firewall confirm\n")
 }
 
 func fwConfirm() {
-	cfg := loadConfig()
-	confirmFile := filepath.Join(cfg.StatePath, "firewall", "confirm_pending")
-	rollbackFile := filepath.Join(cfg.StatePath, "firewall", "rollback.sh")
-
-	if _, err := os.Stat(confirmFile); os.IsNotExist(err) {
-		fmt.Println("No pending confirmation. Firewall is already confirmed.")
-		return
-	}
-
-	// Remove the marker - the background sleep process will see it's gone and skip rollback
-	os.Remove(confirmFile)
-	os.Remove(rollbackFile)
-	fmt.Println("Firewall confirmed. Rollback timer cancelled.")
+	raw := requireDaemon(control.CmdFirewallConfirm, nil)
+	fmt.Println(decodeFirewallAck(raw).Message)
 }
 
 func fwDenySubnet() {
@@ -908,18 +710,11 @@ func fwDenySubnet() {
 		reason = strings.Join(args[1:], " ")
 	}
 
-	cfg := loadConfig()
-	engine, err := firewall.ConnectExisting(cfg.Firewall, cfg.StatePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	if err := engine.BlockSubnet(cidr, reason, 0); err != nil {
-		fmt.Fprintf(os.Stderr, "Error blocking subnet: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Printf("Blocked subnet %s - %s\n", cidr, reason)
+	raw := requireDaemon(control.CmdFirewallDenySubnet, control.FirewallSubnetArgs{
+		CIDR:   cidr,
+		Reason: reason,
+	})
+	fmt.Println(decodeFirewallAck(raw).Message)
 }
 
 func fwRemoveSubnet() {
@@ -929,18 +724,73 @@ func fwRemoveSubnet() {
 		os.Exit(1)
 	}
 
-	cfg := loadConfig()
-	engine, err := firewall.ConnectExisting(cfg.Firewall, cfg.StatePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
+	raw := requireDaemon(control.CmdFirewallRemoveSubnet, control.FirewallSubnetArgs{
+		CIDR: args[0],
+	})
+	fmt.Println(decodeFirewallAck(raw).Message)
+}
 
-	if err := engine.UnblockSubnet(args[0]); err != nil {
-		fmt.Fprintf(os.Stderr, "Error removing subnet: %v\n", err)
-		os.Exit(1)
+// readIPList parses a file of one-IP-per-line entries (optional `# reason`
+// suffix or full-line `#` comments). Invalid IPs are kept in the slice;
+// the daemon reports them as "skipped" in its reply so the aggregate
+// counts match the old single-engine code path.
+func readIPList(path string) ([]string, error) {
+	// #nosec G304 -- operator-supplied path from CLI arg.
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("opening file: %w", err)
 	}
-	fmt.Printf("Removed subnet block %s\n", args[0])
+	defer func() { _ = f.Close() }()
+
+	var ips []string
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// Format: "IP" or "IP # reason". Take the first field as the IP.
+		if idx := strings.Index(line, "#"); idx > 0 {
+			line = strings.TrimSpace(line[:idx])
+		}
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		ips = append(ips, fields[0])
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("reading file: %w", err)
+	}
+	return ips, nil
+}
+
+// parseAckCounts pulls Blocked/Allowed, failed, and skipped counts out of
+// the daemon's ack message. Returns (succeeded, failed, skipped). The
+// daemon formats the line as either:
+//
+//	"<verb> N, failed F, skipped S invalid"
+//	"<verb> N, skipped S invalid"
+//
+// so we try both forms.
+func parseAckCounts(msg string) (int, int, int) {
+	var n, f, s int
+	if _, err := fmt.Sscanf(msg, "Blocked %d, failed %d, skipped %d invalid", &n, &f, &s); err == nil {
+		return n, f, s
+	}
+	if _, err := fmt.Sscanf(msg, "Blocked %d, skipped %d invalid", &n, &s); err == nil {
+		return n, 0, s
+	}
+	if _, err := fmt.Sscanf(msg, "Allowed %d, failed %d, skipped %d invalid", &n, &f, &s); err == nil {
+		return n, f, s
+	}
+	if _, err := fmt.Sscanf(msg, "Allowed %d, skipped %d invalid", &n, &s); err == nil {
+		return n, 0, s
+	}
+	return 0, 0, 0
 }
 
 func fwDenyFile() {
@@ -951,48 +801,33 @@ func fwDenyFile() {
 		os.Exit(1)
 	}
 
-	cfg := loadConfig()
-	engine, err := firewall.ConnectExisting(cfg.Firewall, cfg.StatePath)
+	ips, err := readIPList(args[0])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
 
-	f, err := os.Open(args[0])
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening file: %v\n", err)
-		os.Exit(1)
+	const batchSize = 1000
+	var blocked, failed, skipped int
+	for i := 0; i < len(ips); i += batchSize {
+		end := i + batchSize
+		if end > len(ips) {
+			end = len(ips)
+		}
+		raw := requireDaemon(control.CmdFirewallDenyFile, control.FirewallFileArgs{
+			IPs:    ips[i:end],
+			Reason: "Bulk block via CLI",
+		})
+		b, f, s := parseAckCounts(decodeFirewallAck(raw).Message)
+		blocked += b
+		failed += f
+		skipped += s
 	}
-	defer f.Close()
-
-	blocked, skipped := 0, 0
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		// Format: IP [# reason]
-		var ip, reason string
-		if idx := strings.Index(line, "#"); idx > 0 {
-			reason = strings.TrimSpace(line[idx+1:])
-			ip = strings.TrimSpace(line[:idx])
-		} else {
-			ip = strings.Fields(line)[0]
-			reason = "Blocked via deny-file"
-		}
-		if net.ParseIP(ip) == nil {
-			skipped++
-			continue
-		}
-		if err := engine.BlockIP(ip, reason, 0); err != nil {
-			fmt.Fprintf(os.Stderr, "  skip %s: %v\n", ip, err)
-			skipped++
-			continue
-		}
-		blocked++
+	if failed > 0 {
+		fmt.Printf("Blocked %d, failed %d, skipped %d invalid\n", blocked, failed, skipped)
+	} else {
+		fmt.Printf("Blocked %d, skipped %d invalid\n", blocked, skipped)
 	}
-	fmt.Printf("Blocked %d IPs (%d skipped)\n", blocked, skipped)
 }
 
 func fwAllowFile() {
@@ -1003,47 +838,33 @@ func fwAllowFile() {
 		os.Exit(1)
 	}
 
-	cfg := loadConfig()
-	engine, err := firewall.ConnectExisting(cfg.Firewall, cfg.StatePath)
+	ips, err := readIPList(args[0])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
 
-	f, err := os.Open(args[0])
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening file: %v\n", err)
-		os.Exit(1)
+	const batchSize = 1000
+	var allowed, failed, skipped int
+	for i := 0; i < len(ips); i += batchSize {
+		end := i + batchSize
+		if end > len(ips) {
+			end = len(ips)
+		}
+		raw := requireDaemon(control.CmdFirewallAllowFile, control.FirewallFileArgs{
+			IPs:    ips[i:end],
+			Reason: "Bulk allow via CLI",
+		})
+		a, f, s := parseAckCounts(decodeFirewallAck(raw).Message)
+		allowed += a
+		failed += f
+		skipped += s
 	}
-	defer f.Close()
-
-	allowed, skipped := 0, 0
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		var ip, reason string
-		if idx := strings.Index(line, "#"); idx > 0 {
-			reason = strings.TrimSpace(line[idx+1:])
-			ip = strings.TrimSpace(line[:idx])
-		} else {
-			ip = strings.Fields(line)[0]
-			reason = "Allowed via allow-file"
-		}
-		if net.ParseIP(ip) == nil {
-			skipped++
-			continue
-		}
-		if err := engine.AllowIP(ip, reason); err != nil {
-			fmt.Fprintf(os.Stderr, "  skip %s: %v\n", ip, err)
-			skipped++
-			continue
-		}
-		allowed++
+	if failed > 0 {
+		fmt.Printf("Allowed %d, failed %d, skipped %d invalid\n", allowed, failed, skipped)
+	} else {
+		fmt.Printf("Allowed %d, skipped %d invalid\n", allowed, skipped)
 	}
-	fmt.Printf("Allowed %d IPs (%d skipped)\n", allowed, skipped)
 }
 
 func fwAudit() {
@@ -1055,29 +876,19 @@ func fwAudit() {
 		}
 	}
 
-	cfg := loadConfig()
-	entries := firewall.ReadAuditLog(cfg.StatePath, limit)
-	if len(entries) == 0 {
+	raw := requireDaemon(control.CmdFirewallAudit, control.FirewallAuditArgs{Limit: limit})
+	list := decodeFirewallList(raw)
+	if len(list.Lines) == 0 {
 		fmt.Println("No audit entries.")
 		return
 	}
-
-	for _, e := range entries {
-		ts := e.Timestamp.Format("2006-01-02 15:04:05")
-		dur := ""
-		if e.Duration != "" {
-			dur = fmt.Sprintf(" (%s)", e.Duration)
-		}
-		reason := ""
-		if e.Reason != "" {
-			reason = fmt.Sprintf("  %s", e.Reason)
-		}
-		fmt.Printf("%s  %-13s %-18s%s%s\n", ts, e.Action, e.IP, dur, reason)
+	for _, line := range list.Lines {
+		fmt.Println(line)
 	}
 }
 
 func fwCFStatus() {
-	cfg := loadConfig()
+	cfg := loadConfigLite()
 
 	status := "DISABLED"
 	if cfg.Cloudflare.Enabled {

@@ -440,6 +440,7 @@ func TestDispatchUnknownPhase2Commands(t *testing.T) {
 		control.CmdFirewallBlock,
 		control.CmdFirewallUnblock,
 		control.CmdFirewallAllow,
+		control.CmdFirewallRemoveAllow,
 		control.CmdFirewallAllowPort,
 		control.CmdFirewallRemovePort,
 		control.CmdFirewallTempBan,
