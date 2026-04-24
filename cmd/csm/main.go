@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -27,9 +26,6 @@ import (
 	"github.com/pidginhost/csm/internal/yaraworker"
 )
 
-// activeStore holds a reference to the current store for signal handling.
-var activeStore *state.Store
-
 func init() {
 	// Trap SIGTERM/SIGINT to flush state before exit.
 	// This runs before obs.Init (obs.Init is called from runDaemon after
@@ -39,9 +35,6 @@ func init() {
 	signal.Notify(c, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
 		<-c
-		if activeStore != nil {
-			_ = activeStore.Close()
-		}
 		if db := store.Global(); db != nil {
 			_ = db.Close()
 		}
@@ -513,137 +506,50 @@ func tryReloadDaemon(cmd string) {
 }
 
 func runTieredChecks(tier checks.Tier, sendAlerts bool) {
-	// When not sending alerts (check mode), disable auto-response actions
-	checks.DryRun = !sendAlerts
-	cfg := loadConfig()
-
-	if err := integrity.Verify(binaryPath, cfg); err != nil {
-		tamperAlert := alert.Finding{
-			Severity: alert.Critical,
-			Check:    "integrity",
-			Message:  fmt.Sprintf("BINARY/CONFIG TAMPER DETECTED: %v", err),
-		}
-		if sendAlerts {
-			_ = alert.Dispatch(cfg, []alert.Finding{tamperAlert})
-		} else {
-			fmt.Println(tamperAlert)
-		}
-		os.Exit(2)
+	tierStr := string(tier) // TierCritical="critical", TierDeep="deep", TierAll="all"
+	result := requireDaemonWithTimeout(control.CmdTierRun, control.TierRunArgs{
+		Tier:   tierStr,
+		Alerts: sendAlerts,
+	}, controlReadTimeoutTierRun)
+	var r control.TierRunResult
+	if err := json.Unmarshal(result, &r); err != nil {
+		fmt.Fprintf(os.Stderr, "csm: decoding result: %v\n", err)
+		os.Exit(1)
 	}
-
-	// Acquire lock to prevent concurrent runs
-	lock, err := state.AcquireLock(cfg.StatePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Skipping: %v\n", err)
-		return
-	}
-	defer lock.Release()
-
-	store, err := state.Open(cfg.StatePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening state: %v\n", err)
-		return
-	}
-	activeStore = store
-	defer func() { _ = store.Close() }()
-
-	// Initialize threat DB for timer mode
-	checks.InitThreatDB(cfg.StatePath, cfg.Reputation.Whitelist)
-
-	findings := checks.RunTier(cfg, store, tier)
-
-	// Log all findings to history
-	store.AppendHistory(findings)
-
-	newFindings := store.FilterNew(findings)
-
-	if sendAlerts && len(newFindings) > 0 {
-		var alertFindings []alert.Finding
-		for _, f := range newFindings {
-			if strings.HasPrefix(f.Check, "perf_") && f.Severity == alert.Warning {
-				continue
-			}
-			alertFindings = append(alertFindings, f)
-		}
-		if err := alert.Dispatch(cfg, alertFindings); err != nil {
-			fmt.Fprintf(os.Stderr, "Error sending alert: %v\n", err)
-		}
-	}
-
 	if !sendAlerts {
-		for _, f := range findings {
-			fmt.Println(f)
+		for _, f := range r.FindingList {
+			fmt.Println(f.String())
 		}
 	}
-
-	store.Update(findings)
-
-	// Send heartbeat after successful run
-	if sendAlerts {
-		alert.SendHeartbeat(cfg)
-	}
+	fmt.Printf("tier=%s findings=%d new=%d elapsed_ms=%d\n",
+		tierStr, r.Findings, r.NewFindings, r.ElapsedMs)
 }
 
 func runBaseline() {
-	cfg := loadConfig()
-
-	// Check for --confirm flag
 	hasConfirm := false
 	for _, arg := range os.Args[2:] {
 		if arg == "--confirm" {
 			hasConfirm = true
 		}
 	}
-
-	// Stop timers during baseline to prevent concurrent access
-	stopTimers()
-	defer startTimers()
-
-	// Force all checks to run regardless of throttle, but don't trigger auto-response
-	checks.ForceAll = true
-	checks.DryRun = true
-
-	lock, err := state.AcquireLock(cfg.StatePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Cannot acquire lock: %v\n", err)
+	result := requireDaemonWithTimeout(control.CmdBaseline, control.BaselineArgs{
+		Confirm: hasConfirm,
+	}, controlReadTimeoutTierRun)
+	var r control.BaselineResult
+	if err := json.Unmarshal(result, &r); err != nil {
+		fmt.Fprintf(os.Stderr, "csm: decoding result: %v\n", err)
+		os.Exit(1)
+	}
+	if r.NeedsConfirm {
+		fmt.Fprintf(os.Stderr, "WARNING: Baseline reset will clear %d history entries.\n", r.HistoryCleared)
+		fmt.Fprintf(os.Stderr, "This erases the 30-day trend chart, firewall state, and per-account findings.\n")
+		fmt.Fprintf(os.Stderr, "This action is intended for fresh installs, not routine operation.\n\n")
+		fmt.Fprintf(os.Stderr, "To proceed, run: csm baseline --confirm\n")
 		return
 	}
-	defer lock.Release()
-
-	st, err := state.Open(cfg.StatePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening state: %v\n", err)
-		return
-	}
-	defer func() { _ = st.Close() }()
-
-	// Warn if there's existing history data that will be lost.
-	if db := store.Global(); db != nil {
-		histCount := db.HistoryCount()
-		if histCount > 0 && !hasConfirm {
-			fmt.Fprintf(os.Stderr, "WARNING: Baseline reset will clear %d history entries.\n", histCount)
-			fmt.Fprintf(os.Stderr, "This erases the 30-day trend chart, firewall state, and per-account findings.\n")
-			fmt.Fprintf(os.Stderr, "This action is intended for fresh installs, not routine operation.\n\n")
-			fmt.Fprintf(os.Stderr, "To proceed, run: csm baseline --confirm\n")
-			return
-		}
-		if histCount > 0 {
-			fmt.Fprintf(os.Stderr, "Resetting baseline: clearing %d history entries...\n", histCount)
-		}
-	}
-
-	findings := checks.RunAll(cfg, st)
-	st.SetBaseline(findings)
-
-	binaryHash, _ := integrity.HashFile(binaryPath)
-	if err := integrity.SignAndSaveAtomic(cfg, binaryHash); err != nil {
-		fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
-		return
-	}
-
-	fmt.Printf("Baseline established with %d findings recorded as known state\n", len(findings))
-	fmt.Printf("Binary hash: %s\n", binaryHash)
-	fmt.Printf("Config hash: %s\n", cfg.Integrity.ConfigHash)
+	fmt.Printf("Baseline established with %d findings recorded as known state\n", r.Findings)
+	fmt.Printf("Binary hash: %s\n", r.BinaryHash)
+	fmt.Printf("Config hash: %s\n", r.ConfigHash)
 }
 
 // runRehash updates only the binary and config hashes without running a full
@@ -714,20 +620,6 @@ func runValidate() {
 
 	if errors > 0 {
 		os.Exit(1)
-	}
-}
-
-func stopTimers() {
-	for _, timer := range []string{"csm-critical.timer", "csm-deep.timer"} {
-		// #nosec G204 -- systemctl hardcoded; timer iterates a literal slice.
-		_ = exec.Command("systemctl", "stop", timer).Run()
-	}
-}
-
-func startTimers() {
-	for _, timer := range []string{"csm-critical.timer", "csm-deep.timer"} {
-		// #nosec G204 -- systemctl hardcoded; timer iterates a literal slice.
-		_ = exec.Command("systemctl", "start", timer).Run()
 	}
 }
 
