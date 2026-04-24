@@ -37,3 +37,36 @@ func TestHandleFirewallGrepDoesNotMatchNonexistent(t *testing.T) {
 		}
 	}
 }
+
+func TestHandleFirewallBlockRejectsInvalidIP(t *testing.T) {
+	// Validation runs before the engine check, so nil fwEngine is fine.
+	c := newListenerForTest(t)
+	argsJSON, _ := json.Marshal(control.FirewallIPArgs{IP: "not-an-ip"})
+	_, err := c.handleFirewallBlock(argsJSON)
+	if err == nil || !strings.Contains(err.Error(), "invalid ip") {
+		t.Errorf("want invalid-ip error, got %v", err)
+	}
+}
+
+func TestHandleFirewallBlockErrorsWhenEngineNil(t *testing.T) {
+	c := newListenerForTest(t) // fwEngine is nil
+	argsJSON, _ := json.Marshal(control.FirewallIPArgs{IP: "1.2.3.4"})
+	_, err := c.handleFirewallBlock(argsJSON)
+	if err == nil || !strings.Contains(err.Error(), "firewall disabled") {
+		t.Errorf("want 'firewall disabled' error, got %v", err)
+	}
+}
+
+func TestHandleFirewallTempBanParsesTimeout(t *testing.T) {
+	c := newListenerForTest(t)
+	// Engine is nil, so we expect the "firewall disabled" error — but
+	// only after the timeout string parses. An invalid duration should
+	// error before we reach the engine check.
+	argsJSON, _ := json.Marshal(control.FirewallIPArgs{
+		IP: "1.2.3.4", Timeout: "garbage",
+	})
+	_, err := c.handleFirewallTempBan(argsJSON)
+	if err == nil || !strings.Contains(err.Error(), "duration") {
+		t.Errorf("want duration-parse error, got %v", err)
+	}
+}
