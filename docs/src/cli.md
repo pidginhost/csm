@@ -10,12 +10,12 @@
 
 | Command | Description |
 |---------|-------------|
-| `csm run` | Run all checks once, send alerts |
-| `csm run-critical` | Critical checks only (used by systemd timer) |
-| `csm run-deep` | Deep checks only (used by systemd timer) |
-| `csm check` | Run all checks, print to stdout (no alerts) |
-| `csm check-critical` | Test critical checks only |
-| `csm check-deep` | Test deep checks only |
+| `csm run` | Run all checks now via the daemon, send alerts |
+| `csm run-critical` | Critical checks now via the daemon (the daemon also schedules critical checks internally every 10 min) |
+| `csm run-deep` | Deep checks now via the daemon (the daemon also schedules deep checks internally every 60 min) |
+| `csm check` | Run all checks via the daemon, print findings to stdout, no alerts / auto-response |
+| `csm check-critical` | Test critical checks only (dry-run via daemon) |
+| `csm check-deep` | Test deep checks only (dry-run via daemon) |
 | `csm scan <user>` | Scan single cPanel account |
 
 ## Management
@@ -24,7 +24,7 @@
 |---------|-------------|
 | `csm install` | Deploy config, systemd, auditd rules, logrotate, WHM plugin |
 | `csm uninstall` | Clean removal |
-| `csm baseline` | Full server scan, records current state as known-good. Takes 5-10 min on large servers. Required on first install. |
+| `csm baseline` | Full server scan via the daemon, records current state as known-good. Takes 5-10 min on large servers. Required on first install. Add `--confirm` when existing history would be cleared. The daemon must be running (phase 2: baseline is coordinated inside the daemon, no longer needs systemd timers stopped first). |
 | `csm rehash` | Update binary/config hashes without scanning. Use after config edits. Run twice (circular hash). |
 | `csm status` | Show current state, last run, active findings |
 | `csm validate` | Validate config (`--deep` for connectivity probes) |

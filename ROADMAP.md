@@ -70,94 +70,24 @@ N` mention in git history maps to the matching bullet there.
   bigger than the rest of this work. `csm_store_last_compact_ts` and
   `csm_store_used_bytes` metrics are likewise deferred to that pass.
 
----
-
-## 1. Daemon control socket phase 2 — remaining CLI migrations
-
-**Status:** planned, after phase 1 has been stable for one release
-**Drives / unblocks:** eliminates the last bbolt-contention paths;
-lets the admin run any CLI command while the daemon is live.
-
-### Why
-
-Phase 1 covered the commands that routinely raced for the bbolt lock
-from systemd timers (`run-critical`, `run-deep`, `status`, the
-rule/GeoIP reload pings). A smaller set of commands still opens bbolt
-directly and therefore still fails with `store: opening bbolt: timeout`
-when the daemon holds the lock:
-
-- `csm baseline` — currently works around the lock by calling
-  `systemctl stop csm-critical.timer` + `csm-deep.timer` before
-  touching state. The stop/start dance is fragile and does nothing
-  about the daemon itself; `baseline` has historically required the
-  operator to stop the daemon first. Move into the socket via a
-  `baseline` command so the daemon coordinates the wipe + rescan.
-- `csm firewall ...` — the whole firewall subcommand surface (allow,
-  deny, status, ports, subnets) reads and mutates firewall state that
-  the daemon also manages. Route through the socket with a
-  `firewall.<action>` command family so the daemon's in-memory engine
-  is the single writer.
-- `csm check`, `csm check-critical`, `csm check-deep` — dry-run
-  variants of the tier runners. Phase 1 left them on the in-process
-  path. Either migrate them to the socket with `alerts=false` (and
-  stream findings back), or formalise them as "offline detection test"
-  tools that require the daemon to be stopped.
-
-### Decision
-
-Migrate `baseline`, `firewall`, and the `check*` dry-run commands to
-the existing control socket. Reuse the `internal/control` wire format
-and `cmd/csm/client.go` helpers. No new socket, no new protocol
-version.
-
-### Scope sketch
-
-- New command names on the protocol: `baseline`, `firewall.list`,
-  `firewall.block`, `firewall.unblock`, `firewall.allow`,
-  `firewall.ports`, `firewall.status`, and either `check.run`
-  (returns the full finding list) or `tier.run` with `alerts=false`
-  plus a follow-up `findings.latest` to stream results back.
-- Client-side: replace the remaining `loadConfig` calls in
-  `cmd/csm/main.go` and `cmd/csm/firewall.go` with `sendControl`
-  calls. Delete the `stopTimers` / `startTimers` helpers once
-  `baseline` moves inside the daemon.
-- Decide whether the systemd timers and the daemon's internal
-  `criticalScanner` / `deepScanner` goroutines should continue
-  coexisting. Phase 1 left both alive; with the socket in place they
-  now run the same code path twice per interval. Options are:
-  1. Delete the systemd timers — the daemon already schedules the
-     same work from its internal tickers.
-  2. Keep timers but turn them into nudges that the daemon can
-     coalesce (if another tier run is in progress, no-op).
-  3. Keep both, accept the double-run. Least code change but wastes
-     CPU.
-
-### Acceptance criteria
-
-- `csm baseline` works while the daemon is running, with no
-  `stopTimers` / `startTimers` shell-out in the CLI.
-- `csm firewall status` and all mutating firewall commands succeed
-  against a live daemon, no state-file parsing in the CLI.
-- The `store: opening bbolt: timeout` error is unreachable from any
-  shipped CLI command.
-- CHANGELOG entry and docs update ship in the same commit.
-
-### Out of scope
-
-- Changing the `check*` semantics (they currently write to history
-  even in "dry-run" mode — a pre-existing quirk; fix in a separate
-  commit if at all).
-- Removing the `loadConfig` vs `loadConfigLite` split. Bootstrap
-  commands (`install`, `validate`, `verify`, `rehash`) legitimately
-  run before the daemon exists and stay on the in-process path.
-
-### Estimated size
-
-1–2 engineering days including tests and docs.
+- **Daemon control socket phase 2** (historical item 1). `csm baseline`,
+  `csm firewall *`, and `csm check*` migrated off direct bbolt onto the
+  existing control socket. New wire commands: `baseline`, the
+  `firewall.*` family (block/unblock/allow/allow_port/remove_port/
+  tempban/tempallow/deny_subnet/remove_subnet/remove_allow/deny_file/
+  allow_file/flush/restart/apply_confirmed/confirm/status/ports/grep/
+  audit), and `tier.run` with `Alerts=false` + inline `FindingList` for
+  `csm check*`. Socket I/O buffer raised to 16 MiB (root-only 0600).
+  `csm-critical.timer` and `csm-deep.timer` systemd units deleted in
+  favour of the daemon's internal scanners, eliminating the
+  per-interval double-run. `stopTimers` / `startTimers` shell-outs
+  removed from the CLI. Known corner: `csm firewall restart` and
+  `csm firewall apply-confirmed` now require a live engine; a dead
+  engine means `systemctl restart csm` rather than CLI-side recovery.
 
 ---
 
-## 2. Structured audit log export
+## 1. Structured audit log export
 
 **Status:** planned
 **Drives / unblocks:** SIEM integration; retention beyond the bbolt
@@ -211,7 +141,7 @@ with a `v` field so downstream parsers can pin.
 
 ---
 
-## 3. Backup / restore for baseline + state
+## 2. Backup / restore for baseline + state
 
 **Status:** planned
 **Drives / unblocks:** re-provisioning; disaster recovery; cluster
@@ -276,7 +206,7 @@ re-baselines.
 
 ---
 
-## 4. Challenge UX polish
+## 3. Challenge UX polish
 
 **Status:** planned
 **Drives / unblocks:** fewer false-positive bans; legitimate-visitor

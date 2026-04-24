@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `csm baseline`, `csm firewall *`, and `csm check*` now route through the daemon control socket instead of opening bbolt directly. Operational CLI commands no longer race the daemon for the bbolt lock. `csm store compact` still opens bbolt directly by design — it is documented as "daemon must be stopped."
+- Control socket I/O buffer bumped from 1 MiB to 16 MiB on both endpoints so tier-run responses carrying full finding lists no longer risk hitting the scanner cap on servers with thousands of findings. The socket is root-only 0600, so the original DoS guard no longer applies.
+- `csm firewall restart` and `csm firewall apply-confirmed` now require a live firewall engine; when the engine failed at daemon startup, recovery is via `systemctl restart csm` rather than the CLI re-connecting to nftables itself.
+- `csm firewall deny-file` / `allow-file` chunk IPs on the client side (1000 per request) before dispatching to the daemon, so arbitrarily large blocklists round-trip without hitting any wire cap.
+
+### Removed
+
+- `csm-critical.timer` and `csm-deep.timer` systemd units. The daemon's internal scanners (10-min critical, 60-min deep) now own tier scheduling; prior timers duplicated the same work per interval. Upgrade postinstall stops/disables/removes the old units on existing 2.8.x hosts; fresh installs never see them.
+
 ## [2.8.1] - 2026-04-23
 
 ### Fixed
