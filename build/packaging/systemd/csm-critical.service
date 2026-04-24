@@ -1,9 +1,0 @@
-[Unit]
-Description=Continuous Security Monitor — Critical Checks
-After=network.target
-
-[Service]
-Type=oneshot
-ExecStart=/opt/csm/csm run-critical
-StandardOutput=append:/var/log/csm/monitor.log
-StandardError=append:/var/log/csm/monitor.log

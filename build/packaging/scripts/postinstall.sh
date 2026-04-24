@@ -47,16 +47,20 @@ if grep -q 'auth_token: ""' "$CONFIG" 2>/dev/null; then
     echo "Generated WebUI auth token (saved in csm.yaml)"
 fi
 
+# Upgrade from 2.8.x: remove obsolete tier timers (daemon now schedules internally).
+# Must run before daemon-reload / restart so the new csm.service comes up clean.
+for unit in csm-critical.timer csm-critical.service csm-deep.timer csm-deep.service; do
+    systemctl stop "$unit" 2>/dev/null || true
+    systemctl disable "$unit" 2>/dev/null || true
+    rm -f "/etc/systemd/system/$unit"
+done
+
 # Reload systemd
 systemctl daemon-reload 2>/dev/null || true
 
 if [ "$IS_UPGRADE" = "0" ]; then
     # Fresh install: run cPanel-specific integration (WHM plugin, ModSecurity, etc.)
     /opt/csm/csm install --package-mode 2>/dev/null || true
-
-    # Enable timers
-    systemctl enable csm-critical.timer csm-deep.timer 2>/dev/null || true
-    systemctl start csm-critical.timer csm-deep.timer 2>/dev/null || true
 
     # Load auditd rules
     if command -v augenrules >/dev/null 2>&1; then

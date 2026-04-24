@@ -149,11 +149,10 @@ download_package() {
     echo "$tmpdir"
 }
 
-# Stop daemon and timers, wait for clean shutdown
+# Stop daemon, wait for clean shutdown
 stop_services() {
     echo "Stopping ${SERVICE_NAME}..."
     systemctl stop "${SERVICE_NAME}" 2>/dev/null || true
-    systemctl stop csm-critical.timer csm-deep.timer 2>/dev/null || true
     local i=0
     while pgrep -f "${BINARY_PATH} daemon" > /dev/null 2>&1 && [ $i -lt 10 ]; do
         sleep 1
@@ -171,7 +170,6 @@ stop_services() {
 start_services() {
     echo "Starting ${SERVICE_NAME}..."
     systemctl start "${SERVICE_NAME}"
-    systemctl start csm-critical.timer csm-deep.timer 2>/dev/null || true
     sleep 2
     if ! systemctl is-active --quiet "${SERVICE_NAME}"; then
         echo "WARNING: ${SERVICE_NAME} failed to start. Check: journalctl -u ${SERVICE_NAME} -n 20"

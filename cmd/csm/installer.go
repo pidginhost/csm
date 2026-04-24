@@ -76,16 +76,11 @@ func (inst *Installer) Install() error {
 		fmt.Println("  auditd rules deployed")
 	}
 
-	// Deploy systemd timer
+	// Deploy systemd daemon service unit
 	if err := deploySystemdTimer(); err != nil {
-		fmt.Printf("  Warning: systemd timer deploy failed: %v\n", err)
-		// Fallback to cron
-		if err := deployCron(inst.BinaryPath); err != nil {
-			return fmt.Errorf("deploying cron: %w", err)
-		}
-		fmt.Println("  Cron job deployed (systemd fallback)")
+		fmt.Printf("  Warning: systemd unit deploy failed: %v\n", err)
 	} else {
-		fmt.Println("  systemd timer deployed and started")
+		fmt.Println("  systemd daemon unit deployed")
 	}
 
 	// Deploy logrotate config
@@ -138,7 +133,8 @@ func (inst *Installer) Uninstall() error {
 	// Stop daemon service first
 	exec.Command("systemctl", "stop", "csm.service").Run()
 
-	// Stop and remove systemd timers
+	// Stop and remove systemd units (including legacy timers from older
+	// installs; the daemon now schedules tier scans internally).
 	for _, name := range []string{"csm.timer", "csm-critical.timer", "csm-deep.timer"} {
 		// #nosec G204 -- systemctl hardcoded; `name` iterates a literal slice above.
 		exec.Command("systemctl", "stop", name).Run()
@@ -149,7 +145,7 @@ func (inst *Installer) Uninstall() error {
 		os.Remove("/etc/systemd/system/" + name)
 	}
 	exec.Command("systemctl", "daemon-reload").Run()
-	fmt.Println("  systemd timers removed")
+	fmt.Println("  systemd units removed")
 
 	// Remove cron and logrotate
 	os.Remove("/etc/cron.d/csm")
@@ -392,69 +388,23 @@ backdoor_ports:
 }
 
 func deploySystemdTimer() error {
-	// Critical checks - fast, every 10 minutes
-	critService := `[Unit]
-Description=Continuous Security Monitor - Critical Checks
-After=network.target
-
-[Service]
-Type=oneshot
-ExecStart=/opt/csm/csm run-critical
-StandardOutput=append:/var/log/csm/monitor.log
-StandardError=append:/var/log/csm/monitor.log
-`
-	critTimer := `[Unit]
-Description=Run CSM critical checks every 10 minutes
-
-[Timer]
-OnBootSec=2min
-OnUnitActiveSec=10min
-AccuracySec=30s
-
-[Install]
-WantedBy=timers.target
-`
-
-	// Deep checks - filesystem scans, every 60 minutes
-	deepService := `[Unit]
-Description=Continuous Security Monitor - Deep Scan
-After=network.target
-
-[Service]
-Type=oneshot
-Nice=10
-ExecStart=/opt/csm/csm run-deep
-StandardOutput=append:/var/log/csm/monitor.log
-StandardError=append:/var/log/csm/monitor.log
-`
-	deepTimer := `[Unit]
-Description=Run CSM deep filesystem scan every 60 minutes
-
-[Timer]
-OnBootSec=5min
-OnUnitActiveSec=60min
-AccuracySec=60s
-
-[Install]
-WantedBy=timers.target
-`
-
-	units := map[string]string{
-		"/etc/systemd/system/csm-critical.service": critService,
-		"/etc/systemd/system/csm-critical.timer":   critTimer,
-		"/etc/systemd/system/csm-deep.service":     deepService,
-		"/etc/systemd/system/csm-deep.timer":       deepTimer,
+	// Clean up obsolete units from 2.8.x installs: the daemon now schedules
+	// critical/deep tier scans internally, so these timers would double-run
+	// the scanners if left enabled across an upgrade.
+	for _, name := range []string{"csm-critical.timer", "csm-critical.service", "csm-deep.timer", "csm-deep.service"} {
+		// #nosec G204 -- systemctl hardcoded; `name` iterates a literal slice.
+		exec.Command("systemctl", "stop", name).Run()
+		// #nosec G204 -- same.
+		exec.Command("systemctl", "disable", name).Run()
+		os.Remove("/etc/systemd/system/" + name)
 	}
 
-	for path, content := range units {
-		// #nosec G306 -- systemd unit files under /etc/systemd/system; 0644
-		// is the standard mode so `systemctl status` works for non-root.
-		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-			return err
-		}
-	}
+	// Remove even older single timer if it exists
+	exec.Command("systemctl", "stop", "csm.timer").Run()
+	exec.Command("systemctl", "disable", "csm.timer").Run()
+	os.Remove("/etc/systemd/system/csm.timer")
 
-	// Deploy daemon service unit (recommended mode)
+	// Deploy daemon service unit (the only unit CSM ships now)
 	daemonService := fmt.Sprintf(`[Unit]
 Description=CSM - Continuous Security Monitor Daemon
 After=network.target
@@ -475,24 +425,8 @@ WantedBy=multi-user.target
 		return err
 	}
 
-	// Remove old single timer if it exists
-	exec.Command("systemctl", "stop", "csm.timer").Run()
-	exec.Command("systemctl", "disable", "csm.timer").Run()
-	os.Remove("/etc/systemd/system/csm.timer")
-
 	if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
 		return err
-	}
-
-	for _, timer := range []string{"csm-critical.timer", "csm-deep.timer"} {
-		// #nosec G204 -- systemctl hardcoded; timer iterates literal slice.
-		if err := exec.Command("systemctl", "enable", timer).Run(); err != nil {
-			return err
-		}
-		// #nosec G204 -- same.
-		if err := exec.Command("systemctl", "start", timer).Run(); err != nil {
-			return err
-		}
 	}
 
 	return nil
@@ -520,16 +454,6 @@ func deployLogrotate() error {
 `
 	// #nosec G306 -- /etc/logrotate.d/csm; logrotate requires 0644.
 	return os.WriteFile("/etc/logrotate.d/csm", []byte(content), 0644)
-}
-
-func deployCron(binaryPath string) error {
-	content := fmt.Sprintf(
-		"*/10 * * * * root %s run-critical >> /var/log/csm/monitor.log 2>&1\n"+
-			"5 * * * * root %s run-deep >> /var/log/csm/monitor.log 2>&1\n",
-		binaryPath, binaryPath)
-	// #nosec G306 -- /etc/cron.d/csm; cron requires 0644 and refuses to run
-	// the file otherwise.
-	return os.WriteFile("/etc/cron.d/csm", []byte(content), 0644)
 }
 
 // InstallWHMPlugin deploys the CGI proxy and AppConfig registration
