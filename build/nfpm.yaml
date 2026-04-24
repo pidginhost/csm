@@ -41,14 +41,6 @@ contents:
 
   - src: build/packaging/systemd/csm.service
     dst: /etc/systemd/system/csm.service
-  - src: build/packaging/systemd/csm-critical.service
-    dst: /etc/systemd/system/csm-critical.service
-  - src: build/packaging/systemd/csm-critical.timer
-    dst: /etc/systemd/system/csm-critical.timer
-  - src: build/packaging/systemd/csm-deep.service
-    dst: /etc/systemd/system/csm-deep.service
-  - src: build/packaging/systemd/csm-deep.timer
-    dst: /etc/systemd/system/csm-deep.timer
 
   - src: configs/logrotate.conf
     dst: /etc/logrotate.d/csm
