@@ -54,7 +54,10 @@ func (c *ControlListener) handleBaseline(argsRaw json.RawMessage) (any, error) {
 	findings := checks.RunAll(cfg, c.d.store)
 	c.d.store.SetBaseline(findings)
 
-	binaryHash, _ := integrity.HashFile(c.d.binaryPath)
+	binaryHash, err := integrity.HashFile(c.d.binaryPath)
+	if err != nil {
+		return nil, fmt.Errorf("hashing binary: %w", err)
+	}
 	if err := integrity.SignAndSaveAtomic(cfg, binaryHash); err != nil {
 		return nil, fmt.Errorf("saving integrity: %w", err)
 	}
