@@ -103,9 +103,11 @@ func sendControlWithTimeout(cmd string, args any, readTimeout time.Duration) (js
 
 	_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
 	scanner := bufio.NewScanner(conn)
-	// Mirror the daemon-side buffer cap so paginated history responses
-	// fit without truncation.
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	// Mirror the daemon-side buffer cap so paginated history and
+	// dry-run tier-run findings fit without truncation. The socket is
+	// root-only 0600 so the original 1 MiB DoS guard no longer
+	// applies — cap at 16 MiB so large finding lists round-trip.
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	if !scanner.Scan() {
 		if err := scanner.Err(); err != nil {
 			return nil, fmt.Errorf("reading response: %w", err)

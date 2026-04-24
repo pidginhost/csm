@@ -38,6 +38,46 @@ func (c *ControlListener) dispatch(line []byte) control.Response {
 		result, err = c.handleRulesReload(req.Args)
 	case control.CmdGeoIPReload:
 		result, err = c.handleGeoIPReload(req.Args)
+	case control.CmdBaseline:
+		result, err = c.handleBaseline(req.Args)
+	case control.CmdFirewallStatus:
+		result, err = c.handleFirewallStatus(req.Args)
+	case control.CmdFirewallPorts:
+		result, err = c.handleFirewallPorts(req.Args)
+	case control.CmdFirewallGrep:
+		result, err = c.handleFirewallGrep(req.Args)
+	case control.CmdFirewallAudit:
+		result, err = c.handleFirewallAudit(req.Args)
+	case control.CmdFirewallBlock:
+		result, err = c.handleFirewallBlock(req.Args)
+	case control.CmdFirewallUnblock:
+		result, err = c.handleFirewallUnblock(req.Args)
+	case control.CmdFirewallAllow:
+		result, err = c.handleFirewallAllow(req.Args)
+	case control.CmdFirewallAllowPort:
+		result, err = c.handleFirewallAllowPort(req.Args)
+	case control.CmdFirewallRemovePort:
+		result, err = c.handleFirewallRemovePort(req.Args)
+	case control.CmdFirewallTempBan:
+		result, err = c.handleFirewallTempBan(req.Args)
+	case control.CmdFirewallTempAllow:
+		result, err = c.handleFirewallTempAllow(req.Args)
+	case control.CmdFirewallDenySubnet:
+		result, err = c.handleFirewallDenySubnet(req.Args)
+	case control.CmdFirewallRemoveSubnet:
+		result, err = c.handleFirewallRemoveSubnet(req.Args)
+	case control.CmdFirewallDenyFile:
+		result, err = c.handleFirewallDenyFile(req.Args)
+	case control.CmdFirewallAllowFile:
+		result, err = c.handleFirewallAllowFile(req.Args)
+	case control.CmdFirewallFlush:
+		result, err = c.handleFirewallFlush(req.Args)
+	case control.CmdFirewallRestart:
+		result, err = c.handleFirewallRestart(req.Args)
+	case control.CmdFirewallApplyConfirmed:
+		result, err = c.handleFirewallApplyConfirmed(req.Args)
+	case control.CmdFirewallConfirm:
+		result, err = c.handleFirewallConfirm(req.Args)
 	default:
 		return control.Response{OK: false, Error: fmt.Sprintf("unknown command: %q", req.Cmd)}
 	}
@@ -69,8 +109,11 @@ func parseTier(s string) (checks.Tier, error) {
 
 // handleTierRun runs a tier synchronously and reports the result. The
 // flow mirrors Daemon.runPeriodicChecks: integrity verify, RunTier,
-// purge-and-merge, then hand findings to the alert pipeline. The only
-// deviation is that we return counts to the caller instead of nothing.
+// purge-and-merge, then hand findings to the alert pipeline. When
+// Alerts=false the handler absorbs the old `csm check*` behaviour:
+// flip checks.DryRun to suppress auto-response for the duration of the
+// run, append the raw findings to history, and return them in the
+// response body so the CLI can render them verbatim.
 func (c *ControlListener) handleTierRun(argsRaw json.RawMessage) (any, error) {
 	var args control.TierRunArgs
 	if len(argsRaw) > 0 {
@@ -103,6 +146,17 @@ func (c *ControlListener) handleTierRun(argsRaw json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("integrity verify failed: %w", vErr)
 	}
 
+	// Dry-run mode: suppress auto-response globally for the duration
+	// of this call. This mirrors the pre-phase-2 behaviour of
+	// `csm check*` which set checks.DryRun=true before running. The
+	// toggle races with the daemon's periodic scanners; see the
+	// "Decisions" block in the plan for scope.
+	if !args.Alerts {
+		prev := checks.DryRun
+		checks.DryRun = true
+		defer func() { checks.DryRun = prev }()
+	}
+
 	start := time.Now()
 	findings := checks.RunTier(c.d.currentCfg(), c.d.store, tier)
 
@@ -122,15 +176,29 @@ func (c *ControlListener) handleTierRun(argsRaw json.RawMessage) (any, error) {
 		}
 	}
 
-	// FilterNew takes a snapshot under the state mutex; racing with the
-	// dispatcher that will later process the same findings is fine —
-	// both observe consistent state, we just report our view.
+	// Append to history when dry-running. The live tier-run path's
+	// history is written by the daemon's own runPeriodicChecks when
+	// the internal scanners fire; the dry-run path previously wrote
+	// via store.AppendHistory directly in cmd/csm/main.go:runTieredChecks.
+	// Keep the quirk by appending here when Alerts=false.
+	if !args.Alerts {
+		c.d.store.AppendHistory(findings)
+	}
+
 	newCount := len(c.d.store.FilterNew(findings))
-	return control.TierRunResult{
+	result := control.TierRunResult{
 		Findings:    len(findings),
 		NewFindings: newCount,
 		ElapsedMs:   time.Since(start).Milliseconds(),
-	}, nil
+	}
+	if !args.Alerts {
+		if findings == nil {
+			result.FindingList = []alert.Finding{}
+		} else {
+			result.FindingList = findings
+		}
+	}
+	return result, nil
 }
 
 // handleStatus reports what `csm status` historically printed from

@@ -99,11 +99,13 @@ func (c *ControlListener) handleConnection(conn net.Conn) {
 	_ = conn.SetReadDeadline(time.Now().Add(controlRequestTimeout))
 
 	scanner := bufio.NewScanner(conn)
-	// Requests are single-line JSON but can carry larger Args payloads
-	// once baseline/history paging enters the command set. 1 MiB is
-	// well above any request we expect and well below any DoS concern
-	// on a root-only socket.
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	// Requests and responses are single-line JSON; on a compromised
+	// server a dry-run tier scan can legitimately return a findings
+	// list that exceeds the old 1 MiB cap (think: many WordPress
+	// installs, each with multiple infected files). The socket is
+	// root-only 0600 so the original DoS guard no longer applies —
+	// cap the buffer at 16 MiB so large finding lists round-trip.
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	if !scanner.Scan() {
 		return
 	}

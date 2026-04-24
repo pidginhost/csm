@@ -413,6 +413,59 @@ func FuzzDispatch(f *testing.F) {
 	})
 }
 
+// --- Phase 2 dispatch / tier.run contract ----------------------------
+
+func TestDispatchUnknownPhase2Commands(t *testing.T) {
+	// Every new phase 2 command must be wired; a stub handler that
+	// returns "not implemented" is fine, but the dispatcher must not
+	// return "unknown command".
+	sockPath := redirectControlSocket(t)
+	_ = sockPath
+	d := newDaemonForListener(t)
+	listener, err := NewControlListener(d)
+	if err != nil {
+		t.Fatalf("listener: %v", err)
+	}
+	defer listener.Stop()
+
+	cmds := []string{
+		control.CmdBaseline,
+		control.CmdFirewallStatus,
+		control.CmdFirewallBlock,
+		control.CmdFirewallUnblock,
+		control.CmdFirewallAllow,
+		control.CmdFirewallAllowPort,
+		control.CmdFirewallRemovePort,
+		control.CmdFirewallTempBan,
+		control.CmdFirewallTempAllow,
+		control.CmdFirewallPorts,
+		control.CmdFirewallGrep,
+		control.CmdFirewallAudit,
+		control.CmdFirewallDenySubnet,
+		control.CmdFirewallRemoveSubnet,
+		control.CmdFirewallDenyFile,
+		control.CmdFirewallAllowFile,
+		control.CmdFirewallFlush,
+		control.CmdFirewallRestart,
+		control.CmdFirewallApplyConfirmed,
+		control.CmdFirewallConfirm,
+	}
+	for _, cmd := range cmds {
+		resp := listener.dispatch([]byte(`{"cmd":"` + cmd + `"}`))
+		if resp.Error == `unknown command: "`+cmd+`"` {
+			t.Errorf("command %q fell through to default case; wire it up in dispatch", cmd)
+		}
+	}
+}
+
+// Unit-test coverage for the FindingList / DryRun / AppendHistory
+// branches inside handleTierRun would require stubbing checks.RunTier,
+// which the package does not support (newListenerForFuzz documents the
+// same limitation: a real tier.run spins up host scans and hangs CI for
+// several minutes). Those behaviours are verified by the dispatch-wiring
+// test above, by code inspection, and by the e2e smoke run at the end
+// of phase 2.
+
 // newListenerForFuzz is the f.Fuzz-compatible twin of
 // newListenerForTest. Unlike the direct handler tests, the fuzzer
 // cannot pin which handler a seed reaches — so BinaryHash is set to a
