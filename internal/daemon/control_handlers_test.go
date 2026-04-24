@@ -421,6 +421,13 @@ func TestDispatchUnknownPhase2Commands(t *testing.T) {
 	// return "unknown command".
 	redirectControlSocket(t)
 	d := newDaemonForListener(t)
+	// handleBaseline is now a real handler that falls through to
+	// checks.RunAll when history is empty and Confirm=false — that
+	// spawns the full host scan and hangs this test for minutes. Seed
+	// a bbolt store.Global() with one history entry so the Confirm
+	// gate short-circuits before RunAll is reached. Same rationale as
+	// newListenerForFuzz's forced-integrity-fail trick for tier.run.
+	seedHistoryForBaselineTest(t, d, 1)
 	listener, err := NewControlListener(d)
 	if err != nil {
 		t.Fatalf("listener: %v", err)

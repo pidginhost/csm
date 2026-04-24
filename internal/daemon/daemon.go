@@ -58,6 +58,7 @@ type Daemon struct {
 	challengeServer  *challenge.Server
 	ipList           *challenge.IPList
 	fwEngine         *firewall.Engine
+	baselineMu       sync.Mutex // serialises CmdBaseline handler runs
 	geoipDB          *geoip.DB
 	geoipMu          sync.Mutex // protects geoipDB for publishGeoIP
 	version          string
