@@ -6,10 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -25,22 +23,6 @@ import (
 	"github.com/pidginhost/csm/internal/store"
 	"github.com/pidginhost/csm/internal/yaraworker"
 )
-
-func init() {
-	// Trap SIGTERM/SIGINT to flush state before exit.
-	// This runs before obs.Init (obs.Init is called from runDaemon after
-	// config load), so a panic here could not reach Sentry anyway — a
-	// plain goroutine is correct.
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, syscall.SIGTERM, syscall.SIGINT)
-	go func() {
-		<-c
-		if db := store.Global(); db != nil {
-			_ = db.Close()
-		}
-		os.Exit(0)
-	}()
-}
 
 var (
 	Version   = "dev"
@@ -268,9 +250,9 @@ func runDaemon() {
 //	--socket <path>     Unix socket to bind (default /var/run/csm/yara-worker.sock)
 //	--rules-dir <path>  YARA rules directory (default empty: no rules loaded)
 //
-// Fatal startup errors exit 1; SIGTERM from the supervisor triggers the
-// existing process-wide handler in init() and exits 0. The supervisor
-// treats non-zero exits as crash-restart candidates.
+// Fatal startup errors exit 1. During daemon shutdown, the supervisor marks
+// itself stopped before signaling the worker, so that child exit is not
+// treated as a restart candidate.
 func runYaraWorker() {
 	// The worker is a separate process that hosts YARA-X for the
 	// supervisor. Use the supervisor's config so both agree on the

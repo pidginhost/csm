@@ -134,7 +134,7 @@ func (c *ControlListener) handleTierRun(argsRaw json.RawMessage) (any, error) {
 	// "these three happen together" visually obvious.
 	dryRun := !args.Alerts
 
-	if vErr := integrity.Verify(c.d.binaryPath, c.d.cfg); vErr != nil {
+	if vErr := c.verifyTierRunIntegrity(); vErr != nil {
 		// Integrity failures are escalated through the normal alert
 		// pipeline so the on-call path sees them regardless of who
 		// kicked the tier run. The client also gets an error so the
@@ -209,6 +209,10 @@ func (c *ControlListener) handleTierRun(argsRaw json.RawMessage) (any, error) {
 		}
 	}
 	return result, nil
+}
+
+func (c *ControlListener) verifyTierRunIntegrity() error {
+	return integrity.Verify(c.d.binaryPath, c.d.currentCfg())
 }
 
 // handleStatus reports what `csm status` historically printed from

@@ -14,6 +14,13 @@ docs/IMPROVEMENT_PLAN.md
 docs/superpowers/
 scripts/deploy-gitlab.sh
 
+# Local daemon artifacts produced if dev runs point state/cert paths at source dirs
+internal/daemon/dircache.json
+internal/daemon/fileindex.current
+internal/daemon/fileindex.previous
+internal/daemon/webui.crt
+internal/daemon/webui.key
+
 # Environment / secrets
 .env
 .env.local

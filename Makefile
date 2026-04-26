@@ -1,4 +1,4 @@
-.PHONY: build build-linux build-all clean test lint sec vuln fmt fmt-check vet ci tools sync-embedded check-embedded
+.PHONY: build build-yara build-linux build-all clean test lint sec vuln fmt fmt-check vet ci tools sync-embedded check-embedded
 
 # Pinned tool versions -- bump deliberately, keep in sync with .gitlab-ci.yml
 GOLANGCI_LINT_VERSION := v2.11.4
@@ -36,17 +36,23 @@ check-embedded:
 		exit 1; \
 	fi
 
-# Build native binary
+# Build native binary with YARA stubs.
 build: sync-embedded
+	go build -ldflags "$(LDFLAGS)" -o dist/$(BINARY_NAME) ./cmd/csm/
+
+# Build native binary with YARA-X. Requires libyara_x_capi and pkg-config.
+build-yara: sync-embedded
+	CGO_LDFLAGS="$$(pkg-config --libs --static yara_x_capi)" \
 	go build -tags yara -ldflags "$(LDFLAGS)" -o dist/$(BINARY_NAME) ./cmd/csm/
 
-# Build static Linux amd64 binary (production target)
+# Build Linux amd64 binary with YARA stubs. Production YARA-X Linux
+# artifacts are built by the glibc builder image in CI.
 build-linux: sync-embedded
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags yara -ldflags "$(LDFLAGS)" -o dist/$(BINARY_NAME)-linux-amd64 ./cmd/csm/
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o dist/$(BINARY_NAME)-linux-amd64 ./cmd/csm/
 
-# Build all targets
+# Build all local stub targets.
 build-all: build-linux
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags yara -ldflags "$(LDFLAGS)" -o dist/$(BINARY_NAME)-linux-arm64 ./cmd/csm/
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o dist/$(BINARY_NAME)-linux-arm64 ./cmd/csm/
 
 # Run tests with race detector
 test:

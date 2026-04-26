@@ -13,6 +13,7 @@ import (
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/control"
+	"github.com/pidginhost/csm/internal/integrity"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -347,6 +348,46 @@ func TestHandleTierRunIntegrityFailChannelSaturatedDropsTracked(t *testing.T) {
 	if after != before+1 {
 		t.Errorf("droppedAlerts must increment when channel is full: before=%d after=%d",
 			before, after)
+	}
+}
+
+func TestVerifyTierRunIntegrityUsesActiveConfigAfterReload(t *testing.T) {
+	c := newListenerForTest(t)
+	c.d.binaryPath = writeFakeBinary(t)
+	binaryHash, err := integrity.HashFile(c.d.binaryPath)
+	if err != nil {
+		t.Fatalf("HashFile: %v", err)
+	}
+
+	cfgPath := filepath.Join(t.TempDir(), "csm.yaml")
+	oldCfg := &config.Config{ConfigFile: cfgPath}
+	oldCfg.Thresholds.MailQueueWarn = 100
+	if signErr := integrity.SignAndSaveAtomic(oldCfg, binaryHash); signErr != nil {
+		t.Fatalf("sign old config: %v", signErr)
+	}
+	staleCfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load old config: %v", err)
+	}
+
+	newCfg := &config.Config{ConfigFile: cfgPath}
+	newCfg.Thresholds.MailQueueWarn = 250
+	if signErr := integrity.SignAndSaveAtomic(newCfg, binaryHash); signErr != nil {
+		t.Fatalf("sign new config: %v", signErr)
+	}
+	activeCfg, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load new config: %v", err)
+	}
+
+	c.d.cfg = staleCfg
+	config.SetActive(activeCfg)
+
+	if err := integrity.Verify(c.d.binaryPath, c.d.cfg); err == nil {
+		t.Fatal("precondition failed: startup config should be stale after reload")
+	}
+	if err := c.verifyTierRunIntegrity(); err != nil {
+		t.Fatalf("tier-run integrity should use active config: %v", err)
 	}
 }
 
