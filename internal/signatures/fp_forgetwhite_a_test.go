@@ -12,10 +12,8 @@ import (
 // String-token helpers split malicious tokens across Go string concat so
 // the source file never contains contiguous webshell substrings (avoids
 // host-side AV deletion of these test files).
-func evalCallToken() string     { return "ev" + "al(" }
-func systemCallToken() string   { return "sys" + "tem(" }
-func passthruCallToken() string { return "passt" + "hru(" }
-func popenCallToken() string    { return "po" + "pen(" }
+func evalCallToken() string  { return "ev" + "al(" }
+func popenCallToken() string { return "po" + "pen(" }
 func TestDefaceOwnedBy_WPAdminUsersPhpIsNotDefaced(t *testing.T) {
 	scanner := loadRepoScanner(t)
 
@@ -73,6 +71,20 @@ $user->set_role('administrator');
 	}
 }
 
+func TestExploitWpAdminCreation_HardcodedAdminBackdoor(t *testing.T) {
+	scanner := loadRepoScanner(t)
+
+	malicious := []byte(`<?php
+$uid = wp_create_user('cacheadmin', 'p@ssw0rd!', 'cache@example.test');
+$user = new WP_User($uid);
+$user->set_role('administrator');
+`)
+	matches := scanner.ScanContent(malicious, ".php")
+	if !hasRule(matches, "exploit_wp_admin_creation") {
+		t.Error("exploit_wp_admin_creation regression: hardcoded wp_create_user + WP_User->set_role('administrator') chain was not detected")
+	}
+}
+
 func TestWpCronBackdoor_YoastBackgroundIndexingIsLegit(t *testing.T) {
 	scanner := loadRepoScanner(t)
 
@@ -111,4 +123,3 @@ add_action('wp_cron_x', function() {
 		t.Error("wp_cron_backdoor regression: wp_schedule_event with adjacent payload-fetch + eval chain was not detected")
 	}
 }
-

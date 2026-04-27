@@ -161,5 +161,3 @@ $code = pack("H*", $payload[1]);
 		t.Error("obfuscation_compact_unpack regression: unpack(\"H*\", ...) followed by eval was not detected")
 	}
 }
-
-// Silence unused-helper warnings when only a subset of tests are run.var _ = passthruCallToken

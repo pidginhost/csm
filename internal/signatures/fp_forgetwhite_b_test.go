@@ -155,4 +155,3 @@ $payload = base64_decode('aWYoaXNzZXQoJF9HRVRbJ2MnXSkpe3N5c3RlbSgkX0dFVFsnYyddKT
 		t.Error("webshell_wp_fake_plugin regression: Plugin Name header followed by eval(base64_decode(...)) was not detected")
 	}
 }
-

