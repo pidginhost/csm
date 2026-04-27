@@ -104,10 +104,12 @@ func (fw *ForwarderWatcher) handleFileChange(domain string) {
 	// 2026-04-27: suppress alerts on the first observation of a valiases file.
 	// Account transfers via WHM rsync write the entire file fresh; alerting
 	// on every pre-existing forwarder buries operators in noise. Hash the
-	// file: store-baseline-and-skip on first sight, alert only when the hash
-	// changes (genuinely new/edited entries). Mirrors auditValiasFile's
-	// behaviour in internal/checks/forwarder.go.
+	// file: baseline external destinations on first sight, alert on external
+	// destinations only when the hash changes, and keep pipe/dev-null checks
+	// active because they are dangerous even on a first observation. Mirrors
+	// auditValiasFile's behaviour in internal/checks/forwarder.go.
 	db := store.Global()
+	includeExternal := true
 	if db != nil {
 		// #nosec G304 -- path is filepath.Join(valiasesDir, domain) where the
 		// inotify event already restricted domain to a single path component.
@@ -116,9 +118,13 @@ func (fw *ForwarderWatcher) handleFileChange(domain string) {
 			currentHash := fmt.Sprintf("%x", sha256.Sum256(data))
 			oldHash, found := db.GetForwarderHash("valiases:" + domain)
 			_ = db.SetForwarderHash("valiases:"+domain, currentHash)
-			if !found || oldHash == currentHash {
-				// First sight, or unchanged content -- silently baseline.
+			switch {
+			case !found:
+				includeExternal = false
+			case oldHash == currentHash:
 				return
+			default:
+				includeExternal = true
 			}
 		}
 	}
@@ -126,7 +132,7 @@ func (fw *ForwarderWatcher) handleFileChange(domain string) {
 	// Load local domains for external detection
 	localDomains := loadLocalDomainsForWatcher()
 
-	findings := parseValiasFileForFindings(path, domain, localDomains, fw.knownForwarders)
+	findings := parseValiasFileForFindingsFiltered(path, domain, localDomains, fw.knownForwarders, includeExternal)
 
 	for _, f := range findings {
 		f.Timestamp = time.Now()

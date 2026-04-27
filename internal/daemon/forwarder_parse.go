@@ -12,6 +12,10 @@ import (
 // parseValiasFileForFindings parses a valiases file and returns findings.
 // Used by both the realtime watcher and tests.
 func parseValiasFileForFindings(path, domain string, localDomains map[string]bool, knownForwarders []string) []alert.Finding {
+	return parseValiasFileForFindingsFiltered(path, domain, localDomains, knownForwarders, true)
+}
+
+func parseValiasFileForFindingsFiltered(path, domain string, localDomains map[string]bool, knownForwarders []string, includeExternal bool) []alert.Finding {
 	// #nosec G304 -- path from cPanel valiases directory walk; operator-scoped.
 	f, err := os.Open(path)
 	if err != nil {
@@ -71,7 +75,7 @@ func parseValiasFileForFindings(path, domain string, localDomains map[string]boo
 
 			// Check if external
 			atIdx := strings.LastIndexByte(d, '@')
-			if atIdx >= 0 && atIdx < len(d)-1 {
+			if includeExternal && atIdx >= 0 && atIdx < len(d)-1 {
 				destDomain := strings.ToLower(d[atIdx+1:])
 				if !localDomains[destDomain] {
 					msg := fmt.Sprintf("External forwarder: %s@%s -> %s", localPart, domain, d)

@@ -60,6 +60,85 @@ func TestForwarderWatcher_FirstRunBaselineSilent(t *testing.T) {
 	}
 }
 
+func TestForwarderWatcher_FirstRunBaselineStillReportsPipe(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "csm.db")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	prev := store.Global()
+	store.SetGlobal(db)
+	t.Cleanup(func() { store.SetGlobal(prev) })
+
+	valiases := filepath.Join(tmpDir, "valiases")
+	if err := os.MkdirAll(valiases, 0755); err != nil {
+		t.Fatal(err)
+	}
+	domain := "example.com"
+	path := filepath.Join(valiases, domain)
+	if err := os.WriteFile(path, []byte("deploy: |/home/example/bin/hook.sh\ninfo: dest1@gmail.com\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ch := make(chan alert.Finding, 16)
+	fw := &ForwarderWatcher{alertCh: ch}
+	withValiasesDir(t, valiases)
+
+	fw.handleFileChange(domain)
+
+	got, ok := waitFinding(ch, 200*time.Millisecond)
+	if !ok {
+		t.Fatal("expected pipe forwarder alert on first observation")
+	}
+	if got.Check != "email_pipe_forwarder" {
+		t.Errorf("Check = %q, want email_pipe_forwarder", got.Check)
+	}
+	select {
+	case extra := <-ch:
+		t.Fatalf("first-run external forwarder should remain baselined; extra alert: %s %s", extra.Check, extra.Message)
+	default:
+	}
+}
+
+func TestForwarderWatcher_UnchangedBaselineSilent(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "csm.db")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	prev := store.Global()
+	store.SetGlobal(db)
+	t.Cleanup(func() { store.SetGlobal(prev) })
+
+	valiases := filepath.Join(tmpDir, "valiases")
+	if err := os.MkdirAll(valiases, 0755); err != nil {
+		t.Fatal(err)
+	}
+	domain := "example.com"
+	path := filepath.Join(valiases, domain)
+	if err := os.WriteFile(path, []byte("deploy: |/home/example/bin/hook.sh\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ch := make(chan alert.Finding, 16)
+	fw := &ForwarderWatcher{alertCh: ch}
+	withValiasesDir(t, valiases)
+
+	fw.handleFileChange(domain)
+	drainChannel(ch, 50*time.Millisecond)
+	fw.handleFileChange(domain)
+
+	select {
+	case got := <-ch:
+		t.Fatalf("unchanged baseline should be silent; got %s %s", got.Check, got.Message)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 func TestForwarderWatcher_NewExternalDestinationFires(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "csm.db")
