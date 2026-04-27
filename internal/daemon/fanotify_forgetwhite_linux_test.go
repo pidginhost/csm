@@ -95,7 +95,9 @@ func TestWebshellRealtime_ShellPhpWithRequestEvalIsWebshell(t *testing.T) {
 
 func TestPhpInUploadsRealtime_TinyMCESmileFontsCharmapIsLegit(t *testing.T) {
 	dir, err := os.MkdirTemp("/home", "csm-test-fwfp-")
-	if err != nil { t.Skipf("MkdirTemp /home (need root or /home writable): %v", err) }
+	if err != nil {
+		t.Skipf("MkdirTemp /home (need root or /home writable): %v", err)
+	}
 	defer os.RemoveAll(dir)
 	uploadsDir := filepath.Join(dir, "wp-content", "uploads", "smile_fonts", "Defaults")
 	if err := os.MkdirAll(uploadsDir, 0755); err != nil {
@@ -136,7 +138,9 @@ return array(
 
 func TestPhpInUploadsRealtime_PHPWithEvalSuperglobalIsCritical(t *testing.T) {
 	dir, err := os.MkdirTemp("/home", "csm-test-fwfp-")
-	if err != nil { t.Skipf("MkdirTemp /home (need root or /home writable): %v", err) }
+	if err != nil {
+		t.Skipf("MkdirTemp /home (need root or /home writable): %v", err)
+	}
 	defer os.RemoveAll(dir)
 	uploadsDir := filepath.Join(dir, "wp-content", "uploads", "2026", "04")
 	if err := os.MkdirAll(uploadsDir, 0755); err != nil {
@@ -162,6 +166,36 @@ func TestPhpInUploadsRealtime_PHPWithEvalSuperglobalIsCritical(t *testing.T) {
 	}
 }
 
+func TestPhpInUploadsRealtime_AssignedRequestShellIsCritical(t *testing.T) {
+	dir, err := os.MkdirTemp("/home", "csm-test-fwfp-")
+	if err != nil {
+		t.Skipf("MkdirTemp /home (need root or /home writable): %v", err)
+	}
+	defer os.RemoveAll(dir)
+	uploadsDir := filepath.Join(dir, "wp-content", "uploads", "2026", "04")
+	if err := os.MkdirAll(uploadsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(uploadsDir, "tool.php")
+	body := "<?php $cmd = $_GET['cmd'];\n" + "sys" + "tem($cmd);"
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	fd := openRawFd(t, path)
+	ch := make(chan alert.Finding, 4)
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+	fm.analyzeFile(fileEvent{path: path, fd: fd})
+
+	select {
+	case got := <-ch:
+		if got.Severity != alert.Critical {
+			t.Errorf("severity = %v, want Critical for assigned request shell in uploads", got.Severity)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("expected Critical alert on assigned request shell in uploads")
+	}
+}
+
 // phishing_kit_realtime previously fired on any zip whose filename
 // contained ANY of the kit-name substrings -- including "google" and
 // "kit". google-site-kit.zip (an official WP plugin distribution backup
@@ -171,7 +205,9 @@ func TestPhpInUploadsRealtime_PHPWithEvalSuperglobalIsCritical(t *testing.T) {
 
 func TestPhishingKitRealtime_GoogleSiteKitBackupIsLegit(t *testing.T) {
 	dir, err := os.MkdirTemp("/home", "csm-test-fwfp-")
-	if err != nil { t.Skipf("MkdirTemp /home (need root or /home writable): %v", err) }
+	if err != nil {
+		t.Skipf("MkdirTemp /home (need root or /home writable): %v", err)
+	}
 	defer os.RemoveAll(dir)
 	publicHTML := filepath.Join(dir, "public_html", "wpvividbackups", "rollback", "plugins", "google-site-kit", "1.139.0")
 	if err := os.MkdirAll(publicHTML, 0755); err != nil {
@@ -198,7 +234,9 @@ func TestPhishingKitRealtime_GoogleSiteKitBackupIsLegit(t *testing.T) {
 
 func TestPhishingKitRealtime_RealKitNameStillFires(t *testing.T) {
 	dir, err := os.MkdirTemp("/home", "csm-test-fwfp-")
-	if err != nil { t.Skipf("MkdirTemp /home (need root or /home writable): %v", err) }
+	if err != nil {
+		t.Skipf("MkdirTemp /home (need root or /home writable): %v", err)
+	}
 	defer os.RemoveAll(dir)
 	publicHTML := filepath.Join(dir, "public_html")
 	if err := os.MkdirAll(publicHTML, 0755); err != nil {

@@ -905,10 +905,10 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 			} else {
 				// Content-aware severity: PHP in uploads is anomalous but not
 				// always malicious (TinyMCE smile_fonts/charmap.php is glyph
-				// data shipped by WP's bundled editor). Emit Critical only when
-				// the file content also exhibits webshell markers; clean PHP
-				// in uploads gets a Warning so operators still see the
-				// anomalous location without burying real Critical alerts.
+				// data shipped by WP's bundled editor). Emit Critical for
+				// direct webshell markers, otherwise run the broader PHP
+				// content/signature/YARA path before downgrading clean PHP to
+				// a Warning.
 				data := readFromFd(event.fd, 65536)
 				if looksLikePHPWebshell(data) {
 					fm.sendAlertWithPath(alert.Critical, "php_in_uploads_realtime",
@@ -916,6 +916,9 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 						"Webshell markers in content (request superglobal -> dangerous function, or eval/assert + decoder chain)",
 						path, procInfo)
 				} else {
+					if fm.checkPHPContent(event.fd, path, procInfo) {
+						return
+					}
 					fm.sendAlertWithPath(alert.Warning, "php_in_uploads_realtime",
 						fmt.Sprintf("PHP file in uploads (no webshell markers): %s", path),
 						"Anomalous location for PHP, but content is clean",
@@ -1142,6 +1145,13 @@ func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
 		return false
 	}
 	content := strings.ToLower(string(data))
+
+	if looksLikePHPWebshell(data) {
+		fm.sendAlertWithPath(alert.Critical, "webshell_content_realtime",
+			fmt.Sprintf("Webshell pattern detected: %s", path),
+			"Request input reaches a dangerous PHP execution primitive", path, procInfo)
+		return true
+	}
 
 	// Remote payload fetching — paste sites are always suspicious.
 	// GitHub raw URLs only flag when combined with a dangerous call on

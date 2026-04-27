@@ -53,6 +53,8 @@ func TestLooksLikePHPWebshell_RealWebshells(t *testing.T) {
 		"EvalGzinflateBase64":   []byte("<?php " + evalToken + "gzinflate(base64_decode('aWYoaXNzZXQoJF9HRVRbJ2MnXSkpe3N5c3RlbSgkX0dFVFsnYyddKTt9aaaaaaaaaaaaaaaaaaaa')));"),
 		"EvalPhpInputStream":    []byte("<?php @" + evalToken + "file_get_contents('php://input'));"),
 		"AssertPostSuperglobal": []byte("<?php assert($_POST['cmd']);"),
+		"SystemAssignedGetVar":  []byte("<?php $cmd = $_GET['cmd'];\nsystem($cmd);"),
+		"EvalAssignedInput":     []byte("<?php $payload = file_get_contents('php://input');\n@" + evalToken + "$payload);"),
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
