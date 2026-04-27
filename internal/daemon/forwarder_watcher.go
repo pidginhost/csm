@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,9 +14,13 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/store"
 )
 
-const valiasesDir = "/etc/valiases"
+// valiasesDir is the inotify watch root. It is a var (not const) so
+// tests can redirect it under t.TempDir() without touching the real
+// /etc/valiases directory; mirrors cronSpoolWatchDir in fanotify.go.
+var valiasesDir = "/etc/valiases"
 
 // ForwarderWatcher watches /etc/valiases/ for changes using inotify.
 type ForwarderWatcher struct {
@@ -95,6 +100,28 @@ func (fw *ForwarderWatcher) readEvents(buf []byte) {
 
 func (fw *ForwarderWatcher) handleFileChange(domain string) {
 	path := filepath.Join(valiasesDir, domain)
+
+	// 2026-04-27: suppress alerts on the first observation of a valiases file.
+	// Account transfers via WHM rsync write the entire file fresh; alerting
+	// on every pre-existing forwarder buries operators in noise. Hash the
+	// file: store-baseline-and-skip on first sight, alert only when the hash
+	// changes (genuinely new/edited entries). Mirrors auditValiasFile's
+	// behaviour in internal/checks/forwarder.go.
+	db := store.Global()
+	if db != nil {
+		// #nosec G304 -- path is filepath.Join(valiasesDir, domain) where the
+		// inotify event already restricted domain to a single path component.
+		data, err := os.ReadFile(path)
+		if err == nil {
+			currentHash := fmt.Sprintf("%x", sha256.Sum256(data))
+			oldHash, found := db.GetForwarderHash("valiases:" + domain)
+			_ = db.SetForwarderHash("valiases:"+domain, currentHash)
+			if !found || oldHash == currentHash {
+				// First sight, or unchanged content -- silently baseline.
+				return
+			}
+		}
+	}
 
 	// Load local domains for external detection
 	localDomains := loadLocalDomainsForWatcher()
