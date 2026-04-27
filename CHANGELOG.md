@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Tightened 10 YAML detection rules to require their discriminator regex (proximity / co-occurrence in the same expression) instead of letting loose substring tokens accumulate to `min_match`. Affected: `webshell_wp_fake_plugin`, `exploit_wp_admin_creation`, `wp_cron_backdoor`, `network_port_scanner`, `spam_conditional_googlebot`, `backdoor_ssh_key_injection`, `dropper_telegram_exfil`, `dropper_php_input_stream`, `obfuscation_compact_unpack`, `deface_owned_by`. Stops FPs on Yoast SEO, Elementor importer, Monolog handlers, Jetpack/Mobile_Detect UA libs, phpseclib RSA/Blowfish, WPML translation API, and SmartBill REST client.
+
 ### Changed
 
 - `csm baseline`, `csm firewall *`, and `csm check*` now route through the daemon control socket instead of opening bbolt directly. Operational CLI commands no longer race the daemon for the bbolt lock. `csm store compact` still opens bbolt directly by design — it is documented as "daemon must be stopped."
