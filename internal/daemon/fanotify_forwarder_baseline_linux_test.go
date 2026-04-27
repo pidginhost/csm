@@ -29,7 +29,7 @@ func TestForwarderWatcher_FirstRunBaselineSilent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	prev := store.Global()
 	store.SetGlobal(db)
 	t.Cleanup(func() { store.SetGlobal(prev) })
@@ -67,7 +67,7 @@ func TestForwarderWatcher_FirstRunBaselineStillReportsPipe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	prev := store.Global()
 	store.SetGlobal(db)
 	t.Cleanup(func() { store.SetGlobal(prev) })
@@ -109,7 +109,7 @@ func TestForwarderWatcher_UnchangedBaselineSilent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	prev := store.Global()
 	store.SetGlobal(db)
 	t.Cleanup(func() { store.SetGlobal(prev) })
@@ -146,7 +146,7 @@ func TestForwarderWatcher_NewExternalDestinationFires(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	prev := store.Global()
 	store.SetGlobal(db)
 	t.Cleanup(func() { store.SetGlobal(prev) })
