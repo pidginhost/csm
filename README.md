@@ -4,7 +4,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/pidginhost/csm)](https://goreportcard.com/report/github.com/pidginhost/csm)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/pidginhost/csm/badge)](https://scorecard.dev/viewer/?uri=github.com/pidginhost/csm)
 [![Go Reference](https://pkg.go.dev/badge/github.com/pidginhost/csm.svg)](https://pkg.go.dev/github.com/pidginhost/csm)
-[![Release](https://img.shields.io/github/v/release/pidginhost/csm?sort=semver)](https://github.com/pidginhost/csm/releases)
+[![Release](https://img.shields.io/github/v/release/pidginhost/csm?display_name=tag)](https://github.com/pidginhost/csm/releases)
 [![License: MIT](https://img.shields.io/github/license/pidginhost/csm)](LICENSE)
 
 A security daemon for Linux web servers that detects compromise in seconds, responds automatically, and gives operators one place to see what happened. Purpose-built for shared hosting attack patterns — stolen credentials, vulnerable plugins, phishing kits, hijacked mailboxes, backdoors — with first-class support for **cPanel/WHM** and clean fallback on plain Ubuntu/Debian and AlmaLinux/Rocky/RHEL with Apache or Nginx.
