@@ -43,7 +43,7 @@ func TestAnalyzeFile_PHPInUploadsSubdirNamedAfterSafeToken_FiresCritical(t *test
 			// the file under a formerly-allowlisted token (sucuri/smush/
 			// imunify/cache) and verify a Critical fires when the content
 			// is malicious. Path-tokens cannot bypass content detection.
-			body := "<?php @" + "ev" + "al(\\$_REQUEST['x']); // dropper"
+			body := "<?php @" + "ev" + "al($_REQUEST['x']); // dropper"
 			if err := os.WriteFile(path, []byte(body), 0644); err != nil {
 				t.Fatal(err)
 			}

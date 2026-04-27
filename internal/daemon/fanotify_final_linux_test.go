@@ -58,7 +58,7 @@ func TestAnalyzeFileKnownWebshellNameAlerts(t *testing.T) {
 	// dangerous function. The 2026-04-27 fix makes the knownWebshells
 	// filename map content-corroborated (Pear Text_Diff/Engine/shell.php
 	// was the FP class), so the content must exhibit webshell markers.
-	body := "<?php @" + "ev" + "al(\\$_POST['c']); ?>"
+	body := "<?php @" + "ev" + "al($_POST['c']); ?>"
 	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
 		t.Fatal(err)
 	}
