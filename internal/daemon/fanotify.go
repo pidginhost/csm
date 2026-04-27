@@ -803,11 +803,18 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 		}
 	}
 
-	// Immediate CRITICAL: known webshell filenames (M1 - package-level var)
+	// Known webshell filenames (M1 - package-level var). Filename alone is
+	// too weak: WordPress core ships wp-includes/Text/Diff/Engine/shell.php
+	// (the Pear Text_Diff library using shell_exec to call Unix `diff`).
+	// Confirm with content: the file must also exhibit webshell markers
+	// (request superglobal flowing into a dangerous function, or an
+	// eval/assert wrapping a base64/gzinflate decoder).
 	if knownWebshells[nameLower] {
-		fm.sendAlertWithPath(alert.Critical, "webshell_realtime",
-			fmt.Sprintf("Webshell file created: %s", path), "", path, procInfo)
-		return
+		if data := readFromFd(event.fd, 65536); looksLikePHPWebshell(data) {
+			fm.sendAlertWithPath(alert.Critical, "webshell_realtime",
+				fmt.Sprintf("Webshell file created: %s", path), "", path, procInfo)
+			return
+		}
 	}
 
 	// Webshell extensions
@@ -896,8 +903,24 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 					fmt.Sprintf("Plugin update in uploads: %s", updateDir),
 					"Verified: matching plugin exists in plugins/", updateDir, procInfo)
 			} else {
-				fm.sendAlertWithPath(alert.Critical, "php_in_uploads_realtime",
-					fmt.Sprintf("PHP file created in uploads: %s", path), "", path, procInfo)
+				// Content-aware severity: PHP in uploads is anomalous but not
+				// always malicious (TinyMCE smile_fonts/charmap.php is glyph
+				// data shipped by WP's bundled editor). Emit Critical only when
+				// the file content also exhibits webshell markers; clean PHP
+				// in uploads gets a Warning so operators still see the
+				// anomalous location without burying real Critical alerts.
+				data := readFromFd(event.fd, 65536)
+				if looksLikePHPWebshell(data) {
+					fm.sendAlertWithPath(alert.Critical, "php_in_uploads_realtime",
+						fmt.Sprintf("PHP file created in uploads: %s", path),
+						"Webshell markers in content (request superglobal -> dangerous function, or eval/assert + decoder chain)",
+						path, procInfo)
+				} else {
+					fm.sendAlertWithPath(alert.Warning, "php_in_uploads_realtime",
+						fmt.Sprintf("PHP file in uploads (no webshell markers): %s", path),
+						"Anomalous location for PHP, but content is clean",
+						path, procInfo)
+				}
 			}
 		}
 		return
@@ -1463,33 +1486,63 @@ func (fm *FileMonitor) checkCredentialLog(path, procInfo string) {
 	}
 }
 
-// checkPhishingZip checks if a newly created ZIP file matches known phishing
-// kit archive names.
-// Uses path-based approach since it only checks the filename.
+// checkPhishingZip checks if a newly created ZIP file matches known
+// phishing-kit archive name patterns. The signal is the COMBINATION of a
+// brand name and a phishing-suggestive token in the same filename --
+// "office365-login.zip", "paypal-verify.zip", "microsoft-secure.zip".
+// Plain plugin distribution backups (google-site-kit.zip, mailchimp.zip)
+// have a brand without an action verb and don't fire.
 func (fm *FileMonitor) checkPhishingZip(path, nameLower, procInfo string) {
 	if !strings.Contains(path, "/public_html/") {
 		return
 	}
 
-	kitNames := []string{
+	// Brand impersonation targets: filenames mimicking a service users log in to.
+	brands := []string{
 		"office365", "office 365", "sharepoint", "onedrive",
 		"microsoft", "outlook", "google", "gmail",
 		"dropbox", "docusign", "adobe", "wetransfer",
 		"paypal", "apple", "icloud", "netflix",
 		"facebook", "instagram", "linkedin",
-		"login", "phish", "scam", "kit",
 		"webmail", "roundcube", "cpanel",
-		"bank", "verify", "secure",
+	}
+	// Phishing-suggestive verbs/nouns. These must co-occur with a brand
+	// for the rule to fire. "kit" is intentionally NOT here -- many
+	// official WordPress plugin slugs end in -kit (google-site-kit,
+	// mailchimp-for-wp-kit) and were the dominant FP source.
+	phishingIndicators := []string{
+		"login", "signin", "sign-in", "sign_in",
+		"verify", "verification",
+		"secure", "security",
+		"phish", "scam",
+		"bank", "account",
+		"capture", "harvest", "steal",
 	}
 
-	for _, kit := range kitNames {
-		if strings.Contains(nameLower, kit) {
-			fm.sendAlertWithPath(alert.High, "phishing_kit_realtime",
-				fmt.Sprintf("Suspected phishing kit archive uploaded: %s", path),
-				fmt.Sprintf("Filename matches phishing kit pattern: '%s'", kit), path, procInfo)
-			return
+	var matchedBrand string
+	for _, b := range brands {
+		if strings.Contains(nameLower, b) {
+			matchedBrand = b
+			break
 		}
 	}
+	if matchedBrand == "" {
+		return
+	}
+	var matchedIndicator string
+	for _, p := range phishingIndicators {
+		if strings.Contains(nameLower, p) {
+			matchedIndicator = p
+			break
+		}
+	}
+	if matchedIndicator == "" {
+		return
+	}
+	fm.sendAlertWithPath(alert.High, "phishing_kit_realtime",
+		fmt.Sprintf("Suspected phishing kit archive uploaded: %s", path),
+		fmt.Sprintf("Filename combines brand '%s' with phishing indicator '%s'", matchedBrand, matchedIndicator),
+		path, procInfo)
 }
 
 // runSignatureScan runs YAML and YARA signature scanning on file content.

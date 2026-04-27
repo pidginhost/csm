@@ -310,7 +310,12 @@ func TestCheckPhishingZipInnocentName(t *testing.T) {
 
 func TestCheckPhishingZipRealFileSuspicious(t *testing.T) {
 	dir := t.TempDir()
-	zipPath := filepath.Join(dir, "office365_kit.zip")
+	// 2026-04-27 fix: filename must combine a brand AND a phishing
+	// indicator (login/verify/secure/etc). \"kit\" was dropped from the
+	// signal set because google-site-kit, mailchimp-for-wp-kit, and many
+	// other legitimate plugin slugs end in -kit. Real phishing kits
+	// combine the brand with an action verb.
+	zipPath := filepath.Join(dir, "office365_login.zip")
 	f, err := os.Create(zipPath)
 	if err != nil {
 		t.Fatal(err)
@@ -323,7 +328,7 @@ func TestCheckPhishingZipRealFileSuspicious(t *testing.T) {
 
 	ch := make(chan alert.Finding, 10)
 	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
-	fm.checkPhishingZip("/home/a/public_html/office365_kit.zip", "office365_kit.zip", "pi")
+	fm.checkPhishingZip("/home/a/public_html/office365_login.zip", "office365_login.zip", "pi")
 	select {
 	case f := <-ch:
 		if f.Check != "phishing_kit_realtime" {

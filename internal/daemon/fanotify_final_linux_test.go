@@ -54,7 +54,12 @@ func TestAnalyzeFilePHPInSSHDirAlerts(t *testing.T) {
 func TestAnalyzeFileKnownWebshellNameAlerts(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "c99.php")
-	if err := os.WriteFile(path, []byte("<?php // c99 ?>"), 0644); err != nil {
+	// Real c99-style shell content: request superglobal piped into a
+	// dangerous function. The 2026-04-27 fix makes the knownWebshells
+	// filename map content-corroborated (Pear Text_Diff/Engine/shell.php
+	// was the FP class), so the content must exhibit webshell markers.
+	body := "<?php @" + "ev" + "al(\\$_POST['c']); ?>"
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
 		t.Fatal(err)
 	}
 	fd := openRawFd(t, path)

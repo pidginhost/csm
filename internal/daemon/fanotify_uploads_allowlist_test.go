@@ -37,7 +37,14 @@ func TestAnalyzeFile_PHPInUploadsSubdirNamedAfterSafeToken_FiresCritical(t *test
 				t.Fatal(err)
 			}
 			path := filepath.Join(uploadsDir, "evil.php")
-			if err := os.WriteFile(path, []byte("<?php // dropper"), 0644); err != nil {
+			// 2026-04-27: php_in_uploads_realtime is now content-aware --
+			// clean PHP gets Warning, webshell content gets Critical. The
+			// "no path allowlist" intent of this test still holds: we drop
+			// the file under a formerly-allowlisted token (sucuri/smush/
+			// imunify/cache) and verify a Critical fires when the content
+			// is malicious. Path-tokens cannot bypass content detection.
+			body := "<?php @" + "ev" + "al(\\$_REQUEST['x']); // dropper"
+			if err := os.WriteFile(path, []byte(body), 0644); err != nil {
 				t.Fatal(err)
 			}
 			fd := openRawFd(t, path)
