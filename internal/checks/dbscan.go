@@ -229,14 +229,18 @@ func extractDefine(line, key string) string {
 // CSM cares about. Whitespace is permissive, case-insensitive on
 // the literal `true`, trailing PHP/inline comments tolerated.
 //
+// The key must appear inside its enclosing PHP quotes (single or
+// double). This avoids a substring-match collision: a WordPress
+// wp-config.php commonly carries `define('WP_ALLOW_MULTISITE',
+// true)` to enable the admin network creator on single-site
+// installs; matching MULTISITE as a bare substring would falsely
+// detect those as multisite hosts.
+//
 // Operators using anything other than the canonical `true` literal
 // (e.g., `!false`, `1`, `defined('FOO')`) won't get multisite
 // scanning. That's preferable to running an arbitrary PHP expression
 // evaluator over wp-config.php.
 func extractDefineBool(line, key string) bool {
-	if !strings.Contains(line, key) {
-		return false
-	}
 	trimmed := strings.TrimSpace(line)
 	if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "/*") {
 		return false
@@ -244,7 +248,21 @@ func extractDefineBool(line, key string) bool {
 	if !strings.Contains(trimmed, "define") {
 		return false
 	}
-	rest := trimmed[strings.Index(trimmed, key)+len(key):]
+
+	// Find the key's quoted form and seek past the closing quote.
+	// Two acceptable openings: 'KEY' and "KEY". The key never
+	// appears unquoted inside a define() literal in valid PHP.
+	var keyEnd int
+	switch {
+	case strings.Contains(trimmed, "'"+key+"'"):
+		keyEnd = strings.Index(trimmed, "'"+key+"'") + len(key) + 2
+	case strings.Contains(trimmed, `"`+key+`"`):
+		keyEnd = strings.Index(trimmed, `"`+key+`"`) + len(key) + 2
+	default:
+		return false
+	}
+
+	rest := trimmed[keyEnd:]
 	commaIdx := strings.Index(rest, ",")
 	if commaIdx < 0 {
 		return false

@@ -327,3 +327,54 @@ func TestCheckDatabaseContentMultisiteScansMainAndSecondary(t *testing.T) {
 		}
 	}
 }
+
+// Regression: extractDefineBool used to match the key as a bare
+// substring, so `WP_ALLOW_MULTISITE` (the admin-network-creator flag,
+// commonly true on single-site installs) was misread as `MULTISITE`.
+// This test fails the original buggy implementation and passes the
+// fixed quote-bounded match.
+func TestParseWPConfigWPAllowMultisiteAloneIsNotMultisite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "wp-config.php")
+	body := "<?php\n" +
+		"define( 'DB_NAME', 'wp_main' );\n" +
+		"define( 'DB_USER', 'wpuser' );\n" +
+		"define( 'DB_PASSWORD', 'pw' );\n" +
+		// Only the network-CREATOR is enabled. Multisite itself is
+		// NOT declared. A scanner that treats this as multisite
+		// would query wp_blogs on a single-site install, which
+		// errors out (table does not exist).
+		"define( 'WP_ALLOW_MULTISITE', true );\n" +
+		"$table_prefix = 'wp_';\n"
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	creds := parseWPConfig(path)
+	if creds.multisite {
+		t.Error("WP_ALLOW_MULTISITE alone should NOT mark the install as multisite")
+	}
+}
+
+func TestExtractDefineBoolRejectsKeySubstring(t *testing.T) {
+	// Direct unit test for the boundary: keys are matched only
+	// when wrapped in their enclosing quotes.
+	cases := []struct {
+		line string
+		key  string
+		want bool
+	}{
+		{`define( 'MULTISITE', true );`, "MULTISITE", true},
+		{`define( 'WP_ALLOW_MULTISITE', true );`, "MULTISITE", false},
+		{`define( "MULTISITE", true );`, "MULTISITE", true},
+		{`define( "WP_ALLOW_MULTISITE", true );`, "MULTISITE", false},
+		// Mixed quotes still work for either canonical form.
+		{`define('MULTISITE',true);`, "MULTISITE", true},
+		{`define("MULTISITE",true);`, "MULTISITE", true},
+	}
+	for _, c := range cases {
+		got := extractDefineBool(c.line, c.key)
+		if got != c.want {
+			t.Errorf("extractDefineBool(%q, %q) = %v, want %v", c.line, c.key, got, c.want)
+		}
+	}
+}
