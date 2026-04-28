@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `csm store export <path>` writes a tar+zstd backup of the bbolt store, state files, and the signature-rules cache; a sibling `.sha256` companion lets operators verify the archive before use.
 - `csm store import <path>` restores a backup onto a stopped daemon, with `--only=baseline` for state JSON only and `--only=firewall` for firewall buckets only. Refuses cross-platform restores unless `--force-platform-mismatch` is set.
+- Challenge page can fall back to Cloudflare Turnstile or hCaptcha when the visitor has JavaScript disabled, accept a signed-cookie bypass for authenticated operators, and let verified search crawlers through after a reverse-DNS forward-confirm. All three are opt-in and default off.
 
 ## [2.9.0] - 2026-04-27
 

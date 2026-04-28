@@ -47,7 +47,7 @@ A security daemon for Linux web servers that detects compromise in seconds, resp
 - **WordPress brute force** — real-time access log monitoring for `wp-login.php` and `xmlrpc.php` floods; blocks within seconds.
 - **Admin-panel brute force** — tight path matcher for phpMyAdmin and Joomla `/administrator/index.php` to avoid false positives on shared hosting.
 - **SSH/PAM, FTP, cPanel login** — tracked through the same scoring and auto-block pipeline.
-- **Proof-of-work challenge** — SHA-256 JS challenge with HMAC-verified tokens for suspicious-but-not-confirmed traffic; confirmed malware is always hard-blocked.
+- **Proof-of-work challenge** — SHA-256 JS challenge with HMAC-verified tokens for suspicious-but-not-confirmed traffic; confirmed malware is always hard-blocked. Optional bypass paths: Cloudflare Turnstile / hCaptcha for JS-disabled visitors, signed-cookie operator sessions, and verified search crawlers via reverse-DNS forward-confirm.
 
 ### Firewall & Network Protection
 

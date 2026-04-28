@@ -97,6 +97,17 @@ N` mention in git history maps to the matching bullet there.
   restores. Manifest carries a `schema_version` int; imports refuse
   archives newer than the running binary.
 
+- **Challenge UX polish** (historical item 3). Three opt-in bypass
+  paths replace the binary "solve PoW or 403" gate. CAPTCHA fallback
+  embeds a Cloudflare Turnstile or hCaptcha widget for JS-disabled
+  visitors (`POST /challenge/captcha-verify`). Verified-session bypass
+  lets operators mint a signed cookie via `POST /challenge/admin-token`
+  with a shared secret; the signing key is regenerated at every daemon
+  start, so old cookies stop working after a restart. Verified-crawler
+  allow-pass does reverse-DNS + forward-confirm for Googlebot and
+  Bingbot, with positive/negative caching to keep DNS load bounded.
+  All three default off.
+
 ---
 
 ## 1. Structured audit log export

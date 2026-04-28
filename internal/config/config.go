@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -106,6 +107,35 @@ type Config struct {
 		Secret         string   `yaml:"secret"`          // HMAC secret for challenge tokens (auto-generated if empty)
 		Difficulty     int      `yaml:"difficulty"`      // proof-of-work difficulty 0-5 (default: 2)
 		TrustedProxies []string `yaml:"trusted_proxies"` // IPs allowed to set X-Forwarded-For (empty = trust RemoteAddr only)
+
+		// CaptchaFallback shows a third-party CAPTCHA widget when JS is
+		// disabled. All fields default empty; the feature is off until
+		// the operator supplies provider + keys.
+		CaptchaFallback struct {
+			Provider  string        `yaml:"provider"`   // "turnstile" | "hcaptcha" | "" (off)
+			SiteKey   string        `yaml:"site_key"`   // public key embedded in the HTML widget
+			SecretKey string        `yaml:"secret_key"` // verified server-side against the provider
+			Timeout   time.Duration `yaml:"timeout"`    // HTTP timeout for siteverify (default 10s)
+		} `yaml:"captcha_fallback"`
+
+		// VerifiedSession lets operators mint a signed cookie that
+		// bypasses the PoW for the cookie's TTL. The signing key is
+		// generated at daemon startup and rotates on restart.
+		VerifiedSession struct {
+			Enabled     bool          `yaml:"enabled"`
+			CookieName  string        `yaml:"cookie_name"`  // default: csm_admin_session
+			TTL         time.Duration `yaml:"ttl"`          // default: 4h
+			AdminSecret string        `yaml:"admin_secret"` // shared secret POST'd to /challenge/admin-token
+		} `yaml:"verified_session"`
+
+		// VerifiedCrawlers allows-passes traffic from search crawlers
+		// whose IP forward-confirms a reverse-DNS PTR matching one of
+		// the configured providers.
+		VerifiedCrawlers struct {
+			Enabled   bool          `yaml:"enabled"`
+			Providers []string      `yaml:"providers"` // names: googlebot | bingbot
+			CacheTTL  time.Duration `yaml:"cache_ttl"` // default: 15m
+		} `yaml:"verified_crawlers"`
 	} `yaml:"challenge" hotreload:"restart"`
 
 	PHPShield struct {

@@ -2,7 +2,9 @@ package challenge
 
 // challengePageHTML is the challenge page served to gray-listed IPs.
 // It uses a JavaScript proof-of-work that runs in the browser.
-// Template args: %s=IP, %s=nonce, %s=token, %d=difficulty, %d=difficulty
+// Template args (in order): %s=IP, %s=captchaNoscriptBlock (empty when
+// no provider configured), %s=nonce, %s=token, %d=difficulty,
+// %d=difficulty.
 const challengePageHTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -32,8 +34,8 @@ noscript .warn{background:#d63939;color:#fff;padding:16px;border-radius:8px;marg
   <p class="subtitle">This is an automated security check. Please wait.</p>
   <div class="progress-wrap"><div class="progress-bar" id="bar"></div></div>
   <p class="status" id="status">Verifying...</p>
-  <noscript><div class="warn">JavaScript is required to complete this security check.</div></noscript>
   <p class="ip">Your IP: %s</p>
+  <noscript><div class="warn">JavaScript is required to complete this security check.</div>%s</noscript>
 </div>
 <script>
 (function(){

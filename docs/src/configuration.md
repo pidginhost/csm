@@ -172,6 +172,20 @@ challenge:
   listen_port: 8439                     # port for challenge server (default: 8439)
   secret: ""                            # HMAC secret for tokens (auto-generated if empty)
   difficulty: 2                         # SHA-256 proof-of-work difficulty 0-5 (default: 2)
+  captcha_fallback:                     # widget for JS-disabled visitors (default off)
+    provider: ""                        # "turnstile" | "hcaptcha" | "" (off)
+    site_key: ""                        # public key embedded in the widget
+    secret_key: ""                      # verified server-side
+    timeout: 10s
+  verified_session:                     # signed-cookie bypass for authenticated operators
+    enabled: false
+    cookie_name: csm_admin_session
+    ttl: 4h
+    admin_secret: ""                    # POST'd to /challenge/admin-token to mint cookie
+  verified_crawlers:                    # reverse-DNS forward-confirm for search crawlers
+    enabled: false
+    providers: []                       # names: googlebot | bingbot
+    cache_ttl: 15m
 
 # --- PHP Shield ---
 php_shield:
