@@ -51,6 +51,12 @@ const (
 	// bbolt). Import does not -- it requires a stopped daemon, so the
 	// CLI opens the archive and target paths directly.
 	CmdStoreExport = "store.export"
+
+	// Audit-log backfill. Streams every finding from the history
+	// bucket newer than the supplied cutoff so SIEM operators can
+	// seed their pipeline with prior findings the first time they
+	// enable audit_log:.
+	CmdHistorySince = "history.since"
 )
 
 // Request is the single JSON object the client sends per connection.
@@ -230,6 +236,20 @@ type FirewallListResult struct {
 // it.
 type StoreExportArgs struct {
 	DstPath string `json:"dst_path"`
+}
+
+// HistorySinceArgs configures CmdHistorySince. Since is RFC 3339; an
+// empty value yields nothing (caller mistake, not "everything", to
+// avoid accidental whole-DB dumps over the socket).
+type HistorySinceArgs struct {
+	Since string `json:"since"`
+}
+
+// HistorySinceResult holds every finding newer than Since, oldest
+// first so a downstream JSONL writer produces chronologically-sorted
+// lines.
+type HistorySinceResult struct {
+	Findings []alert.Finding `json:"findings"`
 }
 
 // StoreExportResult summarises a successful export.

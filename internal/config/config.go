@@ -34,6 +34,25 @@ type Config struct {
 			URL     string `yaml:"url"`
 		} `yaml:"heartbeat"`
 		MaxPerHour int `yaml:"max_per_hour"`
+
+		// AuditLog ships every (deduplicated) finding to one or more
+		// SIEM-friendly destinations. Schema is stable: parsers can
+		// pin on the v=1 contract. Both sub-blocks default off; the
+		// alert pipeline behaves identically to before when neither
+		// is enabled.
+		AuditLog struct {
+			File struct {
+				Enabled bool   `yaml:"enabled"`
+				Path    string `yaml:"path"` // default: /var/log/csm/audit.jsonl
+			} `yaml:"file"`
+			Syslog struct {
+				Enabled   bool   `yaml:"enabled"`
+				Network   string `yaml:"network"`  // udp | tcp | unix | unixgram | tls
+				Address   string `yaml:"address"`  // host:port or filesystem path
+				Facility  string `yaml:"facility"` // default: local0
+				TLSCAFile string `yaml:"tls_ca"`   // optional CA cert for tls
+			} `yaml:"syslog"`
+		} `yaml:"audit_log"`
 	} `yaml:"alerts" hotreload:"safe"`
 
 	Integrity struct {
@@ -291,6 +310,17 @@ func applyDefaults(cfg *Config) {
 	// Defaults
 	if cfg.StatePath == "" {
 		cfg.StatePath = "/opt/csm/state"
+	}
+	if cfg.Alerts.AuditLog.File.Enabled && cfg.Alerts.AuditLog.File.Path == "" {
+		cfg.Alerts.AuditLog.File.Path = "/var/log/csm/audit.jsonl"
+	}
+	if cfg.Alerts.AuditLog.Syslog.Enabled {
+		if cfg.Alerts.AuditLog.Syslog.Network == "" {
+			cfg.Alerts.AuditLog.Syslog.Network = "udp"
+		}
+		if cfg.Alerts.AuditLog.Syslog.Facility == "" {
+			cfg.Alerts.AuditLog.Syslog.Facility = "local0"
+		}
 	}
 	if cfg.Signatures.RulesDir == "" {
 		cfg.Signatures.RulesDir = "/opt/csm/rules"

@@ -84,6 +84,8 @@ func (c *ControlListener) dispatch(line []byte) control.Response {
 		result, err = c.handleFirewallConfirm(req.Args)
 	case control.CmdStoreExport:
 		result, err = c.handleStoreExport(req.Args)
+	case control.CmdHistorySince:
+		result, err = c.handleHistorySince(req.Args)
 	default:
 		return control.Response{OK: false, Error: fmt.Sprintf("unknown command: %q", req.Cmd)}
 	}
@@ -280,6 +282,38 @@ func (c *ControlListener) handleRulesReload(_ json.RawMessage) (any, error) {
 func (c *ControlListener) handleGeoIPReload(_ json.RawMessage) (any, error) {
 	c.d.publishGeoIP()
 	return map[string]string{"status": "reloaded"}, nil
+}
+
+// handleHistorySince streams every history-bucket finding newer than
+// the supplied cutoff. Used by `csm export --since` for SIEM backfill;
+// the daemon-side bbolt cursor seek is materially faster than
+// pagination + client-side filtering for hosts with large histories.
+func (c *ControlListener) handleHistorySince(argsRaw json.RawMessage) (any, error) {
+	var args control.HistorySinceArgs
+	if len(argsRaw) > 0 {
+		if err := json.Unmarshal(argsRaw, &args); err != nil {
+			return nil, fmt.Errorf("parsing args: %w", err)
+		}
+	}
+	if args.Since == "" {
+		return nil, fmt.Errorf("since is required (RFC 3339)")
+	}
+	since, err := time.Parse(time.RFC3339, args.Since)
+	if err != nil {
+		return nil, fmt.Errorf("parsing since: %w", err)
+	}
+	sdb := store.Global()
+	if sdb == nil {
+		return nil, fmt.Errorf("bbolt store not available")
+	}
+	findings := sdb.ReadHistorySince(since)
+	// ReadHistorySince returns newest-first; reverse for chronological
+	// output so JSONL consumers see the same order they would from a
+	// live tail.
+	for i, j := 0, len(findings)-1; i < j; i, j = i+1, j-1 {
+		findings[i], findings[j] = findings[j], findings[i]
+	}
+	return control.HistorySinceResult{Findings: findings}, nil
 }
 
 // handleStoreExport writes a tar+zstd backup containing the live bbolt

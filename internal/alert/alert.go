@@ -276,6 +276,13 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 	// Deduplicate
 	findings = Deduplicate(findings)
 
+	// Audit log captures every (deduplicated) finding before
+	// FilterBlockedAlerts and the rate limiter, so SIEMs see the
+	// complete picture even when email/webhook are throttled or
+	// when "this IP is already blocked" suppression hides a finding
+	// from the operator-facing channels.
+	emitAudit(cfg, findings)
+
 	// Filter out blocked IP alerts if configured
 	findings = FilterBlockedAlerts(cfg, findings)
 

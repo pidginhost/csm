@@ -95,6 +95,16 @@ alerts:
     enabled: false
     url: ""                             # healthchecks.io, cronitor, dead man's switch
   max_per_hour: 10                      # default: 10
+  audit_log:                            # SIEM-friendly per-finding stream
+    file:
+      enabled: false
+      path: /var/log/csm/audit.jsonl    # default; logrotate fragment ships with the package
+    syslog:
+      enabled: false
+      network: udp                      # udp | tcp | unix | unixgram | tls
+      address: 127.0.0.1:514            # host:port, or filesystem path for unix variants
+      facility: local0                  # default: local0
+      tls_ca: ""                        # optional CA cert for tls transport
 
 # --- Integrity ---
 integrity:

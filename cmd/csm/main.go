@@ -98,6 +98,8 @@ func main() {
 		runConfig()
 	case "store":
 		runStoreCLI()
+	case "export":
+		runExportCLI()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
 		printUsage()
@@ -130,6 +132,9 @@ Commands:
   clean <path>  Attempt to clean an infected PHP file (backup created first)
   db-clean ...  WordPress database cleanup (see: csm db-clean --help)
   store compact Reclaim unused space in the bbolt state database (daemon must be stopped; add --preview for a dry run)
+  store export <path>   Back up bbolt + state + signatures to a tar+zstd archive
+  store import <path>   Restore from a backup archive (daemon must be stopped)
+  export --since <when> Dump audit-log events for SIEM backfill (RFC 3339 ts or duration)
   scan <user>   Scan a single cPanel account (add --alert to send alerts)
   firewall ...  Firewall management (deny, allow, status, ports, etc.)
   enable        Enable optional features (--php-shield)

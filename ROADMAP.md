@@ -108,57 +108,14 @@ N` mention in git history maps to the matching bullet there.
   Bingbot, with positive/negative caching to keep DNS load bounded.
   All three default off.
 
+- **Structured audit log export** (historical item 1). Every
+  deduplicated finding routes through configurable audit sinks
+  before the email/webhook rate limiter, so SIEMs see the complete
+  picture even when operator-facing alerts are throttled. JSONL
+  file at `/var/log/csm/audit.jsonl` with logrotate's
+  `copytruncate` mode and RFC 5424 syslog over UDP, TCP, unix-stream,
+  unix-datagram, or TLS. Schema frozen at `v=1`. `csm export --since
+  <when>` backfills historical findings via a new `history.since`
+  control-socket command for first-time SIEM onboarding.
+
 ---
-
-## 1. Structured audit log export
-
-**Status:** planned
-**Drives / unblocks:** SIEM integration; retention beyond the bbolt
-window
-
-### Why
-
-Findings live in bbolt. Hosts shipping to Splunk, Loki, or Elastic
-screen-scrape the web UI today. The alert package emits email and
-webhook per-finding but does not format a stable, replayable stream.
-Bulk reconciliation ("give me everything that happened between
-yesterday 08:00 and now") is also missing.
-
-### Decision
-
-New sink types alongside the existing email and webhook sinks:
-append-only JSONL at `/var/log/csm/audit.jsonl` and syslog RFC 5424
-over UDS, TCP, or TLS. Configurable in `csm.yaml`. Stable schema
-with a `v` field so downstream parsers can pin.
-
-### Scope sketch
-
-- `internal/alert/audit_sink.go` with a `Sink` interface retrofitted
-  over the existing two sinks (no new code path for email or
-  webhook; only the file and syslog sinks add functionality).
-- Schema:
-  `{"v":1,"ts":"...","finding_id":"...","severity":"...",
-  "check":"...","details":{...}}`. Frozen on first release.
-- logrotate fragment in packaging for the JSONL target.
-- Backfill: `csm export --since <ts>` dumps historical findings
-  from bbolt in the same format for initial SIEM onboarding.
-
-### Acceptance criteria
-
-- Tailing the JSONL while running `csm run` produces one line per
-  finding with parseable JSON on every line.
-- Syslog target tested against `rsyslog` and `syslog-ng` receivers
-  in integration.
-- Backfill export of 10,000 findings is byte-identical to a fresh
-  replay.
-
-### Out of scope
-
-- CEF or LEEF formats.
-- Filtering/routing logic per finding type at the sink layer.
-  Downstream SIEM handles that.
-
-### Estimated size
-
-2-3 engineering days.
-

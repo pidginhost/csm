@@ -32,6 +32,7 @@
 - [Overview](webui.md)
 - [API Reference](api.md)
 - [Metrics (Prometheus)](metrics.md)
+- [Audit Log (SIEM)](audit-log.md)
 
 # Development
 
