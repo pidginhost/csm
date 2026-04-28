@@ -74,6 +74,58 @@ func (db *DB) ListDBObjectBackups(account string) ([]DBObjectBackup, error) {
 	return out, err
 }
 
+// GetDBObjectBackupByKey fetches a single record by its exact bbolt
+// key. Returns ok=false (not an error) when the key is missing,
+// matching the lookup-then-act flow callers use.
+func (db *DB) GetDBObjectBackupByKey(key string) (DBObjectBackup, bool, error) {
+	var rec DBObjectBackup
+	var found bool
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte("db_object_backups"))
+		if bucket == nil {
+			return nil
+		}
+		raw := bucket.Get([]byte(key))
+		if raw == nil {
+			return nil
+		}
+		if err := json.Unmarshal(raw, &rec); err != nil {
+			return err
+		}
+		found = true
+		return nil
+	})
+	return rec, found, err
+}
+
+// ListDBObjectBackupsAll returns every record in the bucket,
+// regardless of account, in insertion order. Used by the webui
+// cleanup-history listing where the operator browses across all
+// accounts at once.
+func (db *DB) ListDBObjectBackupsAll() ([]DBObjectBackup, []string, error) {
+	var records []DBObjectBackup
+	var keys []string
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte("db_object_backups"))
+		if bucket == nil {
+			return nil
+		}
+		return bucket.ForEach(func(k, v []byte) error {
+			var b DBObjectBackup
+			// Skip malformed rows silently; returning the unmarshal
+			// error from ForEach would abort the entire iteration,
+			// which is the wrong choice when one bad row shouldn't
+			// hide every other operator's history.
+			if json.Unmarshal(v, &b) == nil {
+				records = append(records, b)
+				keys = append(keys, string(k))
+			}
+			return nil
+		})
+	})
+	return records, keys, err
+}
+
 func hasPrefix(b, prefix []byte) bool {
 	if len(b) < len(prefix) {
 		return false

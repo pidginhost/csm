@@ -27,8 +27,9 @@ GET  /api/v1/history/csv         CSV export (up to 5,000 entries)
 GET  /api/v1/stats               24h severity counts, accounts at risk, auto-response summary
 GET  /api/v1/stats/trend         30-day daily severity counts
 GET  /api/v1/stats/timeline      Event timeline
-GET  /api/v1/quarantine          Quarantined files with metadata
+GET  /api/v1/quarantine          Quarantined files with metadata (incl. htaccess pre_clean backups)
 GET  /api/v1/quarantine-preview  Preview quarantined file content (?id=)
+GET  /api/v1/db-object-backups   db_object_backups bucket (MySQL trigger/event/procedure/function drops)
 GET  /api/v1/blocked-ips         Blocked IPs with reason and expiry
 GET  /api/v1/accounts            cPanel account list
 GET  /api/v1/account             Per-account findings, quarantine, history (?name=)
@@ -130,6 +131,7 @@ POST /api/v1/dismiss                  Dismiss a finding
 POST /api/v1/scan-account             On-demand account scan
 POST /api/v1/quarantine-restore       Restore quarantined file
 POST /api/v1/quarantine/bulk-delete   Bulk-delete quarantined files
+POST /api/v1/db-object-backup-restore Restore a dropped MySQL object from its db_object_backups record
 POST /api/v1/test-alert               Send test alert through all channels
 POST /api/v1/import                   Import state bundle (suppressions, whitelist)
 ```

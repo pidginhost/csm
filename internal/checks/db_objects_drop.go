@@ -182,3 +182,53 @@ func containsString(haystack []string, needle string) bool {
 	}
 	return false
 }
+
+// RestoreDBObjectBackup re-executes the captured CREATE SQL for a
+// previously-dropped MySQL trigger / event / procedure / function.
+// Looks up the row in the db_object_backups bbolt bucket by exact
+// key; the caller (typically the web UI's cleanup-history page)
+// supplies the key it got from the listing endpoint.
+//
+// Returns the restored DBCleanResult on success. On failure the
+// Error field carries a sanitised message; the underlying mysql
+// error (which may include schema names) is logged but not
+// returned to avoid leaking internal detail through the API.
+//
+// Per spec the operation is operator-driven: there is no auto-
+// restore. The webui handler enforces the same.
+func RestoreDBObjectBackup(backupKey string) DBCleanResult {
+	result := DBCleanResult{Action: "restore-object"}
+
+	sdb := store.Global()
+	if sdb == nil {
+		result.Message = "bbolt store not available"
+		return result
+	}
+	rec, ok, err := sdb.GetDBObjectBackupByKey(backupKey)
+	if err != nil {
+		result.Message = fmt.Sprintf("looking up backup: %v", err)
+		return result
+	}
+	if !ok {
+		result.Message = "backup not found (may have been pruned)"
+		return result
+	}
+
+	result.Account = rec.Account
+	result.Database = rec.Schema
+	if rec.CreateSQL == "" {
+		result.Message = "backup record has no CREATE SQL"
+		return result
+	}
+	if err := runMySQLExecRoot(rec.Schema, rec.CreateSQL); err != nil {
+		result.Message = fmt.Sprintf("re-executing CREATE failed: %v", err)
+		return result
+	}
+	result.Details = []string{
+		fmt.Sprintf("Restored %s %s.%s", rec.Kind, rec.Schema, rec.Name),
+		fmt.Sprintf("Original drop: %s by %s", rec.DroppedAt.Format(time.RFC3339), rec.DroppedBy),
+	}
+	result.Message = fmt.Sprintf("Restored %s %s.%s from backup", rec.Kind, rec.Schema, rec.Name)
+	result.Success = true
+	return result
+}

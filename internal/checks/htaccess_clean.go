@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -218,20 +219,33 @@ func CleanHtaccessFile(path string) RemediationResult {
 	}
 
 	backupDir := htaccessBackupDirRoot
-	if err := os.MkdirAll(backupDir, 0750); err != nil {
+	if err = os.MkdirAll(backupDir, 0750); err != nil {
 		return RemediationResult{Error: fmt.Sprintf("creating backup dir: %v", err)}
 	}
 	stamp := time.Now().UTC().Format("20060102T150405Z")
 	backupPath := filepath.Join(backupDir, fmt.Sprintf("%s_%s", stamp, sanitizePathForBackup(resolved)))
 	// #nosec G306 -- backup of an .htaccess; 0640 is the same group-readable mode used elsewhere in pre_clean/.
-	if err := os.WriteFile(backupPath, original, 0640); err != nil {
+	if err = os.WriteFile(backupPath, original, 0640); err != nil {
 		return RemediationResult{Error: fmt.Sprintf("writing backup: %v", err)}
 	}
+	// .meta written as JSON in the same shape as autoresponse.go's
+	// QuarantineMeta so the existing /api/v1/quarantine listing and
+	// /api/v1/quarantine-restore handlers pick up htaccess pre_clean
+	// backups without a parallel codepath. The early implementation
+	// used a plain key=value sidecar; nothing in the pipeline read
+	// that, which made htaccess backups invisible in the UI.
 	metaPath := backupPath + ".meta"
-	meta := fmt.Sprintf("path=%s\noriginal_size=%d\ncleaned_size=%d\ncleaned_at=%s\n",
-		resolved, len(original), len(cleaned), time.Now().UTC().Format(time.RFC3339))
+	metaJSON, err := json.Marshal(QuarantineMeta{
+		OriginalPath: resolved,
+		Size:         int64(len(original)),
+		QuarantineAt: time.Now().UTC(),
+		Reason:       fmt.Sprintf("htaccess clean: %d ranges removed (%d -> %d bytes)", len(ranges), len(original), len(cleaned)),
+	})
+	if err != nil {
+		return RemediationResult{Error: fmt.Sprintf("encoding backup meta: %v", err)}
+	}
 	// #nosec G306 -- sidecar meta; 0640 matches the backup file mode.
-	if err := os.WriteFile(metaPath, []byte(meta), 0640); err != nil {
+	if err := os.WriteFile(metaPath, metaJSON, 0640); err != nil {
 		return RemediationResult{Error: fmt.Sprintf("writing backup meta: %v", err)}
 	}
 
