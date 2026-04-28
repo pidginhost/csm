@@ -46,6 +46,11 @@ const (
 	CmdFirewallRestart        = "firewall.restart"
 	CmdFirewallApplyConfirmed = "firewall.apply_confirmed"
 	CmdFirewallConfirm        = "firewall.confirm"
+
+	// Backup / restore. Export runs through the daemon (live read of
+	// bbolt). Import does not -- it requires a stopped daemon, so the
+	// CLI opens the archive and target paths directly.
+	CmdStoreExport = "store.export"
 )
 
 // Request is the single JSON object the client sends per connection.
@@ -218,4 +223,19 @@ type FirewallBlockedEntry struct {
 // line-based payload the CLI prints verbatim.
 type FirewallListResult struct {
 	Lines []string `json:"lines"`
+}
+
+// StoreExportArgs configures CmdStoreExport. DstPath must be an
+// absolute path the daemon can write to; the CLI does not pre-create
+// it.
+type StoreExportArgs struct {
+	DstPath string `json:"dst_path"`
+}
+
+// StoreExportResult summarises a successful export.
+type StoreExportResult struct {
+	Path          string `json:"path"`
+	Bytes         int64  `json:"bytes"`
+	ArchiveSHA256 string `json:"archive_sha256"`
+	BboltSHA256   string `json:"bbolt_sha256"`
 }

@@ -83,6 +83,7 @@ A security daemon for Linux web servers that detects compromise in seconds, resp
 
 - **Opt-in `retention:` block** — daily sweep over `history`, `attacks:events`, and `reputation` with per-bucket TTLs. `csm_retention_sweeps_total` and `csm_retention_deleted_total` track activity.
 - **`csm store compact [--preview]`** — reclaim bbolt free pages via snapshot-and-atomic-rename when the daemon is stopped. `--preview` reports the reclaim delta without touching the live DB.
+- **`csm store export|import`** — full daemon-state backup as a tar+zstd archive (bbolt + state JSON + signature cache) with a `.sha256` companion. `--only=baseline` and `--only=firewall` for partial restores; cross-platform restore refused unless `--force-platform-mismatch`.
 - **Hot-reload safe fields** — `thresholds`, `alerts`, `suppressions`, `auto_response`, `reputation`, and `email_protection` apply via `systemctl reload csm` without restarting the daemon (no fanotify drop). Unsafe edits abort the reload with a `config_reload_restart_required` finding naming the offending fields.
 
 ### Automated Response
@@ -154,6 +155,8 @@ csm firewall ...        manage firewall rules
 csm clean <path>        clean infected files
 csm db-clean ...        sanitise malicious WordPress DB state
 csm store compact       reclaim bbolt free pages (daemon stopped)
+csm store export <path>  back up bbolt + state + signatures to tar.zst
+csm store import <path>  restore from a backup archive (daemon stopped)
 csm update-rules        update detection signatures
 csm validate            validate config
 csm verify              verify binary integrity

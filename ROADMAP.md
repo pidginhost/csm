@@ -85,6 +85,18 @@ N` mention in git history maps to the matching bullet there.
   `csm firewall apply-confirmed` now require a live engine; a dead
   engine means `systemctl restart csm` rather than CLI-side recovery.
 
+- **Backup / restore for state** (historical item 2). `csm store export
+  <path>` writes a tar+zstd archive containing a bbolt snapshot, the
+  state directory, and the signature-rules cache, plus a sibling
+  `<path>.sha256` companion file. Export routes through the control
+  socket; the daemon owns the source of truth for paths. `csm store
+  import <path>` is direct-to-disk and refuses with a live daemon.
+  `--only=baseline` restores only state JSON files (file hashes);
+  `--only=firewall` merges only the `fw:*` buckets into an existing
+  bbolt; `--force-platform-mismatch` is required for cross-platform
+  restores. Manifest carries a `schema_version` int; imports refuse
+  archives newer than the running binary.
+
 ---
 
 ## 1. Structured audit log export
@@ -139,137 +151,3 @@ with a `v` field so downstream parsers can pin.
 
 2-3 engineering days.
 
----
-
-## 2. Backup / restore for baseline + state
-
-**Status:** planned
-**Drives / unblocks:** re-provisioning; disaster recovery; cluster
-cloning; support-bundle artifacts
-
-### Why
-
-A fresh `csm baseline` on a 200k-file account tree takes 20+
-minutes. Operators reinstalling the OS, migrating to a new box, or
-cloning known-good state across a cluster currently pay that cost
-every time. There is also no audited answer to "what did CSM know
-at 09:00 this morning" after a later compromise — bbolt is a black
-box with no supported export.
-
-### Decision
-
-Two CLI commands, both through the control socket. `csm store
-export <path>` writes a tagged tar+zstd archive of bbolt buckets +
-baseline hashes + firewall state + suppressions + signature-rule
-cache. `csm store import <path>` restores onto a stopped daemon
-(refuses with a live daemon, because split-brain is worse than
-downtime). Partial restore via `--only=baseline`.
-
-### Scope sketch
-
-- New `internal/store/archive.go`: read/write primitives over the
-  existing bbolt handle.
-- CLI integration in `cmd/csm/`.
-- Manifest with `schema_version`, `source_hostname`,
-  `source_platform`, `export_ts`, `bucket_list`.
-- Import refuses to load an archive whose `schema_version` is
-  newer than the running binary.
-- Same export format doubles as a snapshot the support tooling can
-  attach to a bug report.
-
-### Acceptance criteria
-
-- Export + import round-trip on a 100 MiB bbolt file produces a
-  byte-for-byte identical bucket listing.
-- A `--only=baseline` import skips findings/history and leaves the
-  target daemon's existing findings intact.
-- Archive is self-describing: `tar tf` lists the manifest and
-  bucket files without a CSM binary present.
-
-### Out of scope
-
-- Encryption of the archive at rest. Operators can pipe through
-  gpg; CSM does not manage key material.
-- Cross-platform baseline transfer. A baseline captured on Apache
-  is not meaningful on Nginx; the import refuses when
-  `source_platform` differs.
-
-### Estimated size
-
-3 engineering days.
-
-### Rollback plan
-
-Export is read-only. Import only runs on a stopped daemon; if the
-imported state is bad, the operator deletes bbolt and
-re-baselines.
-
----
-
-## 3. Challenge UX polish
-
-**Status:** planned
-**Drives / unblocks:** fewer false-positive bans; legitimate-visitor
-experience
-
-### Why
-
-The proof-of-work challenge at `internal/challenge` is binary: the
-visitor either completes the JS-based PoW or is blocked.
-JS-disabled clients (older phones, accessibility tooling, text
-browsers, scripted legitimate integrations) are false-positives by
-construction. Authenticated WordPress admins, site owners, and
-CSM's own webhook receivers can trip the challenge during normal
-work; there is no "I am already trusted" path.
-
-### Decision
-
-Three independent improvements, all optional and configurable:
-
-1. Cloudflare Turnstile / hCaptcha fallback page presented when the
-   PoW page detects JS disabled. Operator supplies a site key; if
-   unset, the feature is off and behaviour is unchanged.
-2. Session-token bypass for authenticated WordPress admins: a
-   signed cookie the admin-ajax flow (or a tiny WP plugin) can set
-   so the challenge server sees "this visitor authenticated against
-   the account's WP admin in the last N minutes". Signing key lives
-   in bbolt, rotated on restart.
-3. Verified-crawler allow-pass (Googlebot, Bingbot) via reverse-DNS
-   + forward-confirm, opt-in in `csm.yaml`; default off.
-
-### Scope sketch
-
-- New `internal/challenge/fallback_captcha.go` with a pluggable
-  provider (Turnstile first, hCaptcha as a strategy).
-- New `internal/challenge/verified_session.go` for the signed-cookie
-  path.
-- Reverse-DNS verification integrated with the existing allow-list
-  machinery rather than a new path.
-- All three configurable independently in `csm.yaml`.
-
-### Acceptance criteria
-
-- A JS-disabled curl with a real browser User-Agent receives the
-  CAPTCHA page, not a 403, when the provider is configured.
-- A valid Turnstile token unlocks the visitor for the same
-  duration PoW would.
-- A spoofed `User-Agent: Googlebot` from a non-Google IP is still
-  challenged — reverse-DNS verification does not trust the UA
-  alone.
-- Authenticated-admin bypass only applies to visitors with a cookie
-  signed by the current secret; an old signed cookie after a
-  daemon restart fails verification.
-
-### Out of scope
-
-- Building our own CAPTCHA. Third-party providers only.
-- Challenge for non-HTTP traffic.
-
-### Estimated size
-
-3-4 engineering days.
-
-### Rollback plan
-
-All three features are opt-in; removing their blocks from
-`csm.yaml` reverts to current PoW-only behaviour.

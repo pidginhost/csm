@@ -1,11 +1,16 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strings"
+	"time"
 
+	"github.com/pidginhost/csm/internal/control"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -160,16 +165,189 @@ holds an exclusive file lock while the daemon runs.`)
 // runStoreCLI dispatches `csm store <subcommand>`.
 func runStoreCLI() {
 	if len(os.Args) < 3 {
-		fmt.Fprintln(os.Stderr, "csm store: missing subcommand (try `csm store compact`)")
+		fmt.Fprintln(os.Stderr, "csm store: missing subcommand (try `csm store compact|export|import`)")
 		os.Exit(2)
 	}
 	switch os.Args[2] {
 	case "compact":
 		runStoreCompactCLI()
+	case "export":
+		runStoreExportCLI()
+	case "import":
+		runStoreImportCLI()
 	case "--help", "-h", "help":
-		printStoreCompactUsage()
+		printStoreUsage()
 	default:
 		fmt.Fprintf(os.Stderr, "csm store: unknown subcommand %q\n", os.Args[2])
 		os.Exit(2)
 	}
+}
+
+func printStoreUsage() {
+	fmt.Fprintln(os.Stderr, `csm store - manage the bbolt state database
+
+Subcommands:
+  compact            Reclaim unused space (daemon must be stopped)
+  export <path>      Write a backup archive (daemon must be running)
+  import <path>      Restore from a backup archive (daemon must be stopped)
+
+Run "csm store <subcommand> --help" for details.`)
+}
+
+// runStoreExportCLI sends CmdStoreExport to the running daemon. The
+// daemon owns the source of truth for state and rules paths; the CLI
+// only supplies the destination archive path.
+func runStoreExportCLI() {
+	args := os.Args[3:]
+	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
+		printStoreExportUsage()
+		if len(args) == 0 {
+			os.Exit(2)
+		}
+		return
+	}
+	dstPath := args[0]
+	for _, a := range args[1:] {
+		switch a {
+		case "--help", "-h":
+			printStoreExportUsage()
+			return
+		default:
+			fmt.Fprintf(os.Stderr, "csm store export: unknown flag %q\n", a)
+			printStoreExportUsage()
+			os.Exit(2)
+		}
+	}
+
+	if !strings.HasPrefix(dstPath, "/") {
+		// The daemon writes the file; relative paths land in the daemon's
+		// CWD which is rarely what the operator meant. Force absolute.
+		fmt.Fprintln(os.Stderr, "csm store export: path must be absolute (daemon writes the file)")
+		os.Exit(2)
+	}
+
+	raw, err := sendControlWithTimeout(control.CmdStoreExport, control.StoreExportArgs{DstPath: dstPath}, 30*time.Minute)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "csm store export: %v\n", err)
+		os.Exit(1)
+	}
+	var res control.StoreExportResult
+	if err := json.Unmarshal(raw, &res); err != nil {
+		fmt.Fprintf(os.Stderr, "csm store export: decoding response: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("export: %s (%d bytes)\n", res.Path, res.Bytes)
+	fmt.Printf("  archive sha256: %s\n", res.ArchiveSHA256)
+	fmt.Printf("  bbolt   sha256: %s\n", res.BboltSHA256)
+	fmt.Printf("  companion file: %s.sha256\n", res.Path)
+}
+
+func printStoreExportUsage() {
+	fmt.Fprintln(os.Stderr, `csm store export - back up the bbolt store, state files, and signature cache
+
+Usage:
+  csm store export <absolute-path>
+
+Writes a tar+zstd archive at the given path plus a sibling .sha256 file
+containing the archive hash. Requires a running daemon.`)
+}
+
+// runStoreImportCLI is direct-to-disk: import requires a stopped daemon
+// because split-brain (live writes mixing with restored state) is worse
+// than the downtime of a `systemctl stop csm`.
+func runStoreImportCLI() {
+	args := os.Args[3:]
+	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
+		printStoreImportUsage()
+		if len(args) == 0 {
+			os.Exit(2)
+		}
+		return
+	}
+	srcPath := args[0]
+	only := "all"
+	forcePlatform := false
+	for _, a := range args[1:] {
+		switch {
+		case a == "--help" || a == "-h":
+			printStoreImportUsage()
+			return
+		case a == "--force-platform-mismatch":
+			forcePlatform = true
+		case strings.HasPrefix(a, "--only="):
+			only = strings.TrimPrefix(a, "--only=")
+		default:
+			fmt.Fprintf(os.Stderr, "csm store import: unknown flag %q\n", a)
+			printStoreImportUsage()
+			os.Exit(2)
+		}
+	}
+
+	// Refuse with a live daemon. Connecting to the socket is the
+	// authoritative check: if it accepts our connection, the daemon is
+	// up regardless of pid files.
+	if isDaemonLive() {
+		fmt.Fprintln(os.Stderr, "csm store import: daemon is running; stop it first (systemctl stop csm)")
+		os.Exit(1)
+	}
+
+	cfg := loadConfigLite()
+	pi := platform.Detect()
+	currentPlatform := map[string]string{
+		"os":         string(pi.OS),
+		"os_version": pi.OSVersion,
+		"panel":      string(pi.Panel),
+		"webserver":  string(pi.WebServer),
+	}
+
+	res, err := store.Import(store.ImportOptions{
+		SrcPath:               srcPath,
+		StatePath:             cfg.StatePath,
+		RulesPath:             cfg.Signatures.RulesDir,
+		Only:                  only,
+		ForcePlatformMismatch: forcePlatform,
+		CurrentPlatform:       currentPlatform,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "csm store import: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("import: archive from %s (csm %s on %s)\n",
+		res.Manifest.SourceHostname, res.Manifest.CSMVersion, res.Manifest.SourcePlatform["os"])
+	fmt.Printf("  buckets restored: %d\n", len(res.BucketsRestored))
+	fmt.Printf("  state files restored: %d\n", res.StateFiles)
+	fmt.Printf("  rules files restored: %d\n", res.RulesFiles)
+	fmt.Printf("  start the daemon to resume: systemctl start csm\n")
+}
+
+func printStoreImportUsage() {
+	fmt.Fprintln(os.Stderr, `csm store import - restore from a backup archive
+
+Usage:
+  csm store import <path> [--only=all|baseline|firewall] [--force-platform-mismatch]
+
+Requires the daemon to be stopped (systemctl stop csm). The default
+"--only=all" restores bbolt, state files, and the signature cache.
+
+  --only=baseline   Restore only the state JSON files (baseline file
+                    hashes). Skips bbolt and signature cache.
+  --only=firewall   Restore only the firewall buckets (fw:*) into the
+                    target bbolt; leaves history, attacks, reputation,
+                    and other buckets intact.
+
+  --force-platform-mismatch  Allow restore when the archive's source OS,
+                             panel, or web server differs from the host.
+                             A baseline captured on Apache is rarely
+                             meaningful on Nginx -- use with caution.`)
+}
+
+// isDaemonLive returns true if the control socket accepts a connection
+// right now. Used by import to refuse split-brain restores.
+func isDaemonLive() bool {
+	conn, err := net.DialTimeout("unix", controlSocketPath, 500*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }

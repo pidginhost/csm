@@ -49,6 +49,8 @@
 |---------|-------------|
 | `csm store compact` | Reclaim unused space in the bbolt state file (atomic rename over the live DB). Requires the daemon to be stopped (`systemctl stop csm`) because bbolt holds an exclusive file lock while running. |
 | `csm store compact --preview` | Snapshot into a temp file next to the live DB and print src/dst sizes without replacing anything. Use to estimate reclaim before scheduling a maintenance window. |
+| `csm store export <path>` | Write a tar+zstd backup containing the bbolt store, the state directory, and the signature-rules cache. A sibling `<path>.sha256` companion file holds the archive hash for verification. Daemon must be running. |
+| `csm store import <path>` | Restore from a backup archive. Daemon must be stopped. Default restores everything; `--only=baseline` restores only state JSON files (file hashes); `--only=firewall` merges only firewall buckets into the existing bbolt; `--force-platform-mismatch` allows restoring an archive captured on a different OS / panel / web server. |
 
 ## Updates
 

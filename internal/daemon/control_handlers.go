@@ -3,6 +3,7 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/integrity"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/store"
 )
 
@@ -80,6 +82,8 @@ func (c *ControlListener) dispatch(line []byte) control.Response {
 		result, err = c.handleFirewallApplyConfirmed(req.Args)
 	case control.CmdFirewallConfirm:
 		result, err = c.handleFirewallConfirm(req.Args)
+	case control.CmdStoreExport:
+		result, err = c.handleStoreExport(req.Args)
 	default:
 		return control.Response{OK: false, Error: fmt.Sprintf("unknown command: %q", req.Cmd)}
 	}
@@ -276,4 +280,53 @@ func (c *ControlListener) handleRulesReload(_ json.RawMessage) (any, error) {
 func (c *ControlListener) handleGeoIPReload(_ json.RawMessage) (any, error) {
 	c.d.publishGeoIP()
 	return map[string]string{"status": "reloaded"}, nil
+}
+
+// handleStoreExport writes a tar+zstd backup containing the live bbolt
+// snapshot, the state directory, and the signature-rules cache. The
+// daemon is the single source of truth for paths; the CLI only supplies
+// where to write the archive. Import deliberately does NOT route through
+// the socket -- it requires a stopped daemon.
+func (c *ControlListener) handleStoreExport(argsRaw json.RawMessage) (any, error) {
+	var args control.StoreExportArgs
+	if len(argsRaw) > 0 {
+		if err := json.Unmarshal(argsRaw, &args); err != nil {
+			return nil, fmt.Errorf("parsing args: %w", err)
+		}
+	}
+	if args.DstPath == "" {
+		return nil, fmt.Errorf("dst_path is required")
+	}
+	sdb := store.Global()
+	if sdb == nil {
+		return nil, fmt.Errorf("bbolt store not available")
+	}
+	cfg := c.d.currentCfg()
+	hostname, _ := os.Hostname()
+	pi := platform.Detect()
+
+	res, err := sdb.Export(store.ExportOptions{
+		StatePath: cfg.StatePath,
+		RulesPath: cfg.Signatures.RulesDir,
+		DstPath:   args.DstPath,
+		Manifest: store.Manifest{
+			CSMVersion:     c.d.version,
+			SourceHostname: hostname,
+			SourcePlatform: map[string]string{
+				"os":         string(pi.OS),
+				"os_version": pi.OSVersion,
+				"panel":      string(pi.Panel),
+				"webserver":  string(pi.WebServer),
+			},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return control.StoreExportResult{
+		Path:          res.Path,
+		Bytes:         res.Bytes,
+		ArchiveSHA256: res.ArchiveSHA256,
+		BboltSHA256:   res.BboltSHA256,
+	}, nil
 }

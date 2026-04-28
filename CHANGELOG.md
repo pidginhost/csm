@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `csm store export <path>` writes a tar+zstd backup of the bbolt store, state files, and the signature-rules cache; a sibling `.sha256` companion lets operators verify the archive before use.
+- `csm store import <path>` restores a backup onto a stopped daemon, with `--only=baseline` for state JSON only and `--only=firewall` for firewall buckets only. Refuses cross-platform restores unless `--force-platform-mismatch` is set.
+
 ## [2.9.0] - 2026-04-27
 
 ### Fixed
