@@ -112,38 +112,47 @@ func CheckDatabaseObjects(ctx context.Context, cfg *config.Config, _ *state.Stor
 // classifies every row. Pure function over the cmdExec injector --
 // tests provide canned MySQL CLI output and assert on the structured
 // findings without touching a real database.
+//
+// Connections use root credentials via /root/.my.cnf. WP-config
+// passwords are unreliable on cPanel hosts (password rotations
+// don't update the file), so a WP-creds path here would silently
+// miss persistence objects on the very platform we care most about.
+// The existing db-clean code (db_clean.go: findCredsForAccount)
+// hits the same constraint and reaches the same conclusion.
 func scanDBObjects(account string, creds wpDBCreds) []dbObjectFinding {
 	if creds.dbName == "" {
 		return nil
 	}
+	schema := creds.dbName
+	schemaLit := mysqlSchemaLiteral(schema)
 	var hits []dbObjectFinding
 
 	// TRIGGERS
-	for _, row := range runMySQLQuery(creds, fmt.Sprintf(
+	for _, row := range runMySQLQueryRoot(schema, fmt.Sprintf(
 		`SELECT TRIGGER_NAME, ACTION_STATEMENT FROM INFORMATION_SCHEMA.TRIGGERS WHERE TRIGGER_SCHEMA = %s`,
-		mysqlSchemaLiteral(creds.dbName))) {
+		schemaLit)) {
 		name, body := splitTabRow(row)
 		if name == "" {
 			continue
 		}
-		hits = append(hits, classifyDBObject(account, creds.dbName, dbObjectTrigger, name, body))
+		hits = append(hits, classifyDBObject(account, schema, dbObjectTrigger, name, body))
 	}
 
 	// EVENTS
-	for _, row := range runMySQLQuery(creds, fmt.Sprintf(
+	for _, row := range runMySQLQueryRoot(schema, fmt.Sprintf(
 		`SELECT EVENT_NAME, EVENT_DEFINITION FROM INFORMATION_SCHEMA.EVENTS WHERE EVENT_SCHEMA = %s`,
-		mysqlSchemaLiteral(creds.dbName))) {
+		schemaLit)) {
 		name, body := splitTabRow(row)
 		if name == "" {
 			continue
 		}
-		hits = append(hits, classifyDBObject(account, creds.dbName, dbObjectEvent, name, body))
+		hits = append(hits, classifyDBObject(account, schema, dbObjectEvent, name, body))
 	}
 
 	// ROUTINES (procedures + functions)
-	for _, row := range runMySQLQuery(creds, fmt.Sprintf(
+	for _, row := range runMySQLQueryRoot(schema, fmt.Sprintf(
 		`SELECT ROUTINE_NAME, ROUTINE_TYPE, ROUTINE_DEFINITION FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUTINE_SCHEMA = %s`,
-		mysqlSchemaLiteral(creds.dbName))) {
+		schemaLit)) {
 		name, rtype, body := splitTabRow3(row)
 		if name == "" {
 			continue
@@ -152,7 +161,7 @@ func scanDBObjects(account string, creds wpDBCreds) []dbObjectFinding {
 		if strings.EqualFold(rtype, "FUNCTION") {
 			kind = dbObjectFunction
 		}
-		hits = append(hits, classifyDBObject(account, creds.dbName, kind, name, body))
+		hits = append(hits, classifyDBObject(account, schema, kind, name, body))
 	}
 
 	return hits

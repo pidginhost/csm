@@ -335,6 +335,21 @@ func findCredsForAccount(account string) (wpDBCreds, string) {
 	return wpDBCreds{}, ""
 }
 
+// runMySQLExecRoot runs a non-SELECT MySQL statement under root
+// credentials and returns the underlying exec error verbatim. Used
+// by the persistence-mechanism cleaner where success is signalled by
+// a zero exit + empty stdout, which runMySQLQueryRoot misclassifies
+// as "no output, treat as failure".
+func runMySQLExecRoot(dbName, stmt string) error {
+	args := []string{
+		"-N", "-B",
+		dbName,
+		"-e", stmt,
+	}
+	_, err := runCmd("mysql", args...)
+	return err
+}
+
 // runMySQLQueryRoot runs a MySQL query using root credentials from
 // /root/.my.cnf (no explicit user/password args).
 func runMySQLQueryRoot(dbName, query string) []string {

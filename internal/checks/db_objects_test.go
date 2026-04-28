@@ -238,8 +238,8 @@ func TestDBObjectAllowlistMapTrimsAndIndexes(t *testing.T) {
 
 // --- scanDBObjects + integration via mockCmd -----------------------------
 
-func fakeMySQL(responses map[string][]byte) func(string, []string, ...string) ([]byte, error) {
-	return func(name string, args []string, _ ...string) ([]byte, error) {
+func fakeMySQL(responses map[string][]byte) func(string, ...string) ([]byte, error) {
+	return func(name string, args ...string) ([]byte, error) {
 		joined := strings.Join(args, " ")
 		for substr, resp := range responses {
 			if strings.Contains(joined, substr) {
@@ -252,7 +252,7 @@ func fakeMySQL(responses map[string][]byte) func(string, []string, ...string) ([
 
 func TestScanDBObjectsClassifiesEachKind(t *testing.T) {
 	withMockCmd(t, &mockCmd{
-		runWithEnv: fakeMySQL(map[string][]byte{
+		run: fakeMySQL(map[string][]byte{
 			"TRIGGERS": []byte(
 				"trg_audit\tBEGIN; INSERT INTO audit_log VALUES (NEW.id); END\n" +
 					"trg_inject\tBEGIN; SELECT " + sysExecLiteral + "('rm'); END\n",

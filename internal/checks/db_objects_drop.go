@@ -1,12 +1,26 @@
 package checks
 
 import (
+	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/pidginhost/csm/internal/store"
 )
+
+// reAccountName matches the cPanel-username shape we accept from
+// operator CLI input. Constrained on purpose: anything outside this
+// charset would either fail later validation (QuoteIdent on schema)
+// or escape /home via the path interpolation in findAccountSchemas
+// when an unwary glob expanded a `*`.
+var reAccountName = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]{0,31}$`)
+
+// errInvalidAccountName flags an account string that fails the
+// allowed-charset check. Surfaced through the CLI so the operator
+// sees a clear error before any filesystem or SQL lookup.
+var errInvalidAccountName = errors.New("invalid account name (want [a-zA-Z][a-zA-Z0-9_-]{0,31})")
 
 // DBDropObject drops a single trigger / event / stored procedure /
 // stored function from the operator-supplied account+schema, after:
@@ -34,6 +48,10 @@ func DBDropObject(account, schema, kind, name string, preview bool) DBCleanResul
 		Action:  "drop-object",
 	}
 
+	if !reAccountName.MatchString(account) {
+		result.Message = fmt.Sprintf("%v: %q", errInvalidAccountName, account)
+		return result
+	}
 	if !IsDBObjectKind(kind) {
 		result.Message = fmt.Sprintf("Invalid object kind %q (want trigger|event|procedure|function)", kind)
 		return result
@@ -103,8 +121,12 @@ func DBDropObject(account, schema, kind, name string, preview bool) DBCleanResul
 
 	dropSQL := fmt.Sprintf("DROP %s IF EXISTS %s.%s",
 		strings.ToUpper(kind), quotedSchema, quotedName)
-	if out := runMySQLQueryRoot(schema, dropSQL); out == nil {
-		result.Message = fmt.Sprintf("DROP %s %s.%s failed (mysql client returned no output)", kind, schema, name)
+	// runMySQLExecRoot reports the mysql client's exec error
+	// directly. The previous use of runMySQLQueryRoot misread a
+	// zero-exit + empty-stdout (the success signature for DROP) as
+	// failure.
+	if err := runMySQLExecRoot(schema, dropSQL); err != nil {
+		result.Message = fmt.Sprintf("DROP %s %s.%s failed: %v", kind, schema, name, err)
 		return result
 	}
 

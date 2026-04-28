@@ -208,3 +208,64 @@ func (m *mockOSWPConfig) Open(name string) (*os.File, error) {
 	}
 	return tmp, nil
 }
+
+func TestDBDropObjectRejectsInvalidAccountName(t *testing.T) {
+	bad := []string{
+		"",
+		"*",
+		"../etc",
+		"a b",
+		"name;DROP TABLE x",
+		"alice/../bob",
+		strings.Repeat("a", 33),
+	}
+	for _, account := range bad {
+		res := DBDropObject(account, "alice_wp", "trigger", "trg", true)
+		if res.Success {
+			t.Errorf("DBDropObject(account=%q) reported success on invalid input", account)
+		}
+		if !strings.Contains(strings.ToLower(res.Message), "invalid account") {
+			t.Errorf("account %q -> message %q, want Invalid account", account, res.Message)
+		}
+	}
+}
+
+func TestDBDropObjectAcceptsValidAccountName(t *testing.T) {
+	// Charset acceptance: every name in this list must pass the
+	// reAccountName guard. We stop short of the schema lookup by
+	// supplying a schema name that fails the "known database for
+	// this account" check; that check returns its own error message
+	// distinct from "invalid account".
+	good := []string{"alice", "alice123", "user-name", "user_name", "A1"}
+	withMockOS(t, &mockOS{glob: func(string) ([]string, error) { return nil, nil }})
+	for _, account := range good {
+		res := DBDropObject(account, "alice_wp", "trigger", "trg", true)
+		if strings.Contains(strings.ToLower(res.Message), "invalid account") {
+			t.Errorf("good account %q rejected as invalid: %q", account, res.Message)
+		}
+	}
+}
+
+func TestDBDropObjectDropEmptyMySQLOutputStillSucceeds(t *testing.T) {
+	withDBObjectsTempStore(t)
+	withMockOS(t, &mockOSWPConfig{schema: "alice_wp"})
+	withMockCmd(t, &mockCmd{
+		run: func(name string, args ...string) ([]byte, error) {
+			joined := strings.Join(args, " ")
+			switch {
+			case strings.Contains(joined, "SHOW CREATE"):
+				return []byte("CREATE TRIGGER `trg_audit` BEFORE INSERT ON x FOR EACH ROW BEGIN END\n"), nil
+			case strings.Contains(joined, "DROP "):
+				// MySQL's DROP IF EXISTS prints nothing on success.
+				// The previous bug treated this as failure; we now
+				// trust the exec error directly.
+				return []byte{}, nil
+			}
+			return nil, nil
+		},
+	})
+	res := DBDropObject("alice", "alice_wp", "trigger", "trg_audit", false)
+	if !res.Success {
+		t.Errorf("DROP with empty stdout reported failure: %+v", res)
+	}
+}
