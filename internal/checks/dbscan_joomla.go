@@ -182,7 +182,7 @@ func parseJConfig(path string) jConfigCreds {
 //     plugin-heavy install can exceed 200, and we don't want to
 //     pull every params blob into the daemon.
 //
-//  2. Go classifyJoomlaRow re-checks each pattern individually
+//  2. Go classifyMalwareRow re-checks each pattern individually
 //     against the full body, applying the same requiresExternalScript
 //     filter the WP scanner uses for wp_options. Strict predicate
 //     here (hasMaliciousExternalScript) because params is config
@@ -198,7 +198,7 @@ func scanJoomlaExtensions(account string, creds jConfigCreds, prefix string) []a
 		if name == "" {
 			continue
 		}
-		sev, desc, ok := classifyJoomlaRow(body, false)
+		sev, desc, ok := classifyMalwareRow(body, false)
 		if !ok {
 			continue
 		}
@@ -235,7 +235,7 @@ func scanJoomlaContent(account string, creds jConfigCreds, prefix string) []aler
 			continue
 		}
 		id, title, body := fields[0], fields[1], fields[2]
-		sev, desc, ok := classifyJoomlaRow(body, true)
+		sev, desc, ok := classifyMalwareRow(body, true)
 		if !ok {
 			continue
 		}
@@ -249,7 +249,7 @@ func scanJoomlaContent(account string, creds jConfigCreds, prefix string) []aler
 	return findings
 }
 
-// classifyJoomlaRow walks dbMalwarePatterns against body and
+// classifyMalwareRow walks dbMalwarePatterns against body and
 // returns the strongest pattern match that survives the
 // requiresExternalScript filter. Returns ok=false when nothing
 // genuine matched -- the caller skips that row entirely.
@@ -258,7 +258,7 @@ func scanJoomlaContent(account string, creds jConfigCreds, prefix string) []aler
 // hasMaliciousExternalScript (config-storage like extension params)
 // and the looser hasMaliciousExternalScriptInPost (article body).
 // Mirrors how the WP scanner picks its predicate per table.
-func classifyJoomlaRow(body string, inPostContext bool) (alert.Severity, string, bool) {
+func classifyMalwareRow(body string, inPostContext bool) (alert.Severity, string, bool) {
 	if body == "" {
 		return 0, "", false
 	}

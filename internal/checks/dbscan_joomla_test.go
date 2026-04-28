@@ -227,7 +227,7 @@ func TestCheckJoomlaContentEmitsExtensionsAndContentFindings(t *testing.T) {
 			case strings.Contains(joined, "FROM jos_extensions"):
 				// Body contains an inline-decoded payload --
 				// matches eval+base64_decode patterns that do NOT
-				// require external script. classifyJoomlaRow
+				// require external script. classifyMalwareRow
 				// reports it as malicious.
 				return []byte(extBody), nil
 			case strings.Contains(joined, "FROM jos_content"):
@@ -266,7 +266,7 @@ func TestClassifyJoomlaRowSuppressesScriptOnlyFalsePositive(t *testing.T) {
 	body := `<!-- Google Tag Manager -->
 <script>(function(w,d,s,l,i){})(window,document,'script','dataLayer','GTM-XXXXX');</script>
 <!-- End Google Tag Manager -->`
-	_, _, ok := classifyJoomlaRow(body, true)
+	_, _, ok := classifyMalwareRow(body, true)
 	if ok {
 		t.Error("script-tag-only row with no external src was classified as malicious (FP)")
 	}
@@ -278,14 +278,14 @@ func TestClassifyJoomlaRowFiresOnInlineEvalEvenWithoutScript(t *testing.T) {
 	// over-suppress: patterns that aren't requiresExternalScript
 	// fire regardless of the script-tag predicate.
 	body := "BEGIN; " + evalToken + "(base64_decode('aGVsbG8=')); END;"
-	_, _, ok := classifyJoomlaRow(body, true)
+	_, _, ok := classifyMalwareRow(body, true)
 	if !ok {
 		t.Error("inline decoder pattern was suppressed; should always fire")
 	}
 }
 
 func TestClassifyJoomlaRowEmptyBodyIsNoMatch(t *testing.T) {
-	if _, _, ok := classifyJoomlaRow("", true); ok {
+	if _, _, ok := classifyMalwareRow("", true); ok {
 		t.Error("empty body classified as malicious")
 	}
 }
