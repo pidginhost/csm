@@ -155,7 +155,7 @@ func TestAnalyzeFile_WPOptimizeProbe_FallsThroughWhenPluginMissing(t *testing.T)
 	if err := os.MkdirAll(uploadsDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(uploadsDir, "anything.php")
+	path := filepath.Join(uploadsDir, "test.php")
 	if err := os.WriteFile(path, []byte(`<?php header("X: y"); ?>`), 0644); err != nil {
 		t.Fatal(err)
 	}

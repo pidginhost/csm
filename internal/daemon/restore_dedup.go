@@ -2,8 +2,8 @@ package daemon
 
 import (
 	"bytes"
-	"os"
-	"strings"
+
+	"github.com/pidginhost/csm/internal/checks"
 )
 
 // signalEagerReconcile fires a non-blocking notification on sig the first
@@ -50,58 +50,12 @@ func signalEagerReconcile(sig chan struct{}, count, threshold int64) {
 //     anomalous-location warning is noise on every site running this
 //     plugin. As above, the signature/YARA scanners still run.
 
-// looksLikeCpanelRestoreStaging recognises files under cPanel's restore
-// staging tree. Returns true only when the marker sits directly beneath
-// /home (the only place cPanel ever creates it) and is followed by a
-// non-empty alphanumeric id of at least two characters.
-//
-// Path-based recognisers usually invite directory-spoofing attacks, but
-// the parent here is /home itself: only root can create directories at
-// that level on a cPanel server, and a root-owning attacker is already
-// past every detection layer. A user account at /home/<user>/ cannot
-// create siblings of itself.
+// looksLikeCpanelRestoreStaging delegates to the shared recogniser in
+// internal/checks/sitedetect.go. The deep-scan path uses the same
+// helper so realtime and scheduled scans agree on which files are
+// duplicates of the user-context extraction.
 func looksLikeCpanelRestoreStaging(path string) bool {
-	const homeRoot = "/home"
-	const marker = "/cpanelpkgrestore.TMP.work."
-
-	idx := strings.Index(path, marker)
-	if idx < 0 {
-		return false
-	}
-	// Marker must sit directly under /home, not nested inside any
-	// user-controllable subtree.
-	if idx != len(homeRoot) {
-		return false
-	}
-	if !strings.HasPrefix(path, homeRoot) {
-		return false
-	}
-
-	rest := path[idx+len(marker):]
-	if rest == "" {
-		return false
-	}
-	end := strings.IndexByte(rest, '/')
-	var token string
-	if end < 0 {
-		token = rest
-	} else {
-		token = rest[:end]
-	}
-	if len(token) < 2 {
-		return false
-	}
-	for i := 0; i < len(token); i++ {
-		c := token[i]
-		switch {
-		case c >= '0' && c <= '9':
-		case c >= 'a' && c <= 'z':
-		case c >= 'A' && c <= 'Z':
-		default:
-			return false
-		}
-	}
-	return true
+	return checks.LooksLikeCpanelRestoreStaging(path)
 }
 
 // wpOptimizeProbeMaxSize bounds the size of files the recogniser will
@@ -141,36 +95,26 @@ var wpOptimizeProbeDangerous = [][]byte{
 	[]byte("`"), // backtick command substitution
 }
 
-// looksLikeWPOptimizeProbe returns true only when ALL of these hold:
+// looksLikeWPOptimizeProbe is the realtime, content-aware check.
+// It applies the shared path-only gate from internal/checks/sitedetect.go
+// (path under /uploads/wpo/, basename test.php, plugin installed) and
+// then adds two content-shape gates the deep-scan path cannot apply:
 //
-//  1. Path lies under /wp-content/uploads/wpo/.
-//  2. The wp-optimize plugin directory is actually present in this
-//     site's wp-content/plugins/ tree (filesystem stat).
-//  3. File body fits in wpOptimizeProbeMaxSize bytes.
-//  4. File body contains none of wpOptimizeProbeDangerous.
+//   - File body fits in wpOptimizeProbeMaxSize bytes.
+//   - File body contains none of wpOptimizeProbeDangerous.
 //
-// All four together prevent a webshell hidden under /uploads/wpo/ from
-// silencing the warning: any payload large or interesting enough to be
-// useful trips one of the gates. The signature/YARA scanners run before
-// this recogniser, so any existing rule still fires on its own pipeline.
+// All gates together prevent a webshell hidden under /uploads/wpo/test.php
+// from silencing the realtime warning: any payload large or interesting
+// enough to be useful trips one of the content gates. The
+// signature/YARA scanners run before this recogniser, so any existing
+// rule still fires on its own pipeline regardless of suppression here.
 func looksLikeWPOptimizeProbe(path string, content []byte) bool {
-	const marker = "/wp-content/uploads/wpo/"
-	if !strings.Contains(path, marker) {
+	if !checks.LooksLikeWPOptimizeProbeByPath(path) {
 		return false
 	}
 	if len(content) > wpOptimizeProbeMaxSize {
 		return false
 	}
-
-	uploadsIdx := strings.Index(path, "/wp-content/uploads/")
-	if uploadsIdx < 0 {
-		return false
-	}
-	pluginDir := path[:uploadsIdx] + "/wp-content/plugins/wp-optimize"
-	if st, err := os.Stat(pluginDir); err != nil || !st.IsDir() {
-		return false
-	}
-
 	lower := bytes.ToLower(content)
 	for _, danger := range wpOptimizeProbeDangerous {
 		if bytes.Contains(lower, danger) {

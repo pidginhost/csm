@@ -152,6 +152,21 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 			if isKnownSafeUpload(path, name) {
 				continue
 			}
+			// Structural recognisers for two duplicate/legitimate
+			// shapes the deep-scan path also encounters: cPanel
+			// pkgrestore staging (the user-context extraction emits
+			// its own event) and WP-Optimize per-server probe files
+			// (test.php under /uploads/wpo/ on a site running the
+			// plugin). Both checks are path-only and verified by a
+			// filesystem stat or path component anchor; an attacker
+			// dropping a webshell in one of these locations is
+			// caught by other detectors that run on the same file.
+			if LooksLikeCpanelRestoreStaging(path) {
+				continue
+			}
+			if LooksLikeWPOptimizeProbeByPath(path) {
+				continue
+			}
 			severity = alert.High
 			check = "new_php_in_uploads"
 			message = fmt.Sprintf("New PHP file in uploads: %s", path)

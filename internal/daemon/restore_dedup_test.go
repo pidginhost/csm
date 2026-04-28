@@ -108,10 +108,14 @@ func TestLooksLikeWPOptimizeProbe_RejectsWhenPluginNotInstalled(t *testing.T) {
 	// the suppression.
 	wpRoot := t.TempDir()
 	mustMkdirAll(t, filepath.Join(wpRoot, "wp-content", "uploads", "wpo"))
-	probe := filepath.Join(wpRoot, "wp-content", "uploads", "wpo", "anything.php")
+	probe := filepath.Join(wpRoot, "wp-content", "uploads", "wpo", "test.php")
 	content := []byte(`<?php header("X: y"); ?>`)
 	mustWriteFile(t, probe, content)
 
+	// Filename matches; plugin is the missing gate. The recogniser
+	// must NOT trust path + filename alone: if the wp-optimize plugin
+	// isn't installed, the file is not a WP-Optimize probe and the
+	// suppression must not apply.
 	if looksLikeWPOptimizeProbe(probe, content) {
 		t.Error("WP-Optimize recogniser must require the plugin to actually be installed")
 	}
@@ -121,7 +125,7 @@ func TestLooksLikeWPOptimizeProbe_RejectsLargeFiles(t *testing.T) {
 	wpRoot := t.TempDir()
 	mustMkdirAll(t, filepath.Join(wpRoot, "wp-content", "plugins", "wp-optimize"))
 	mustMkdirAll(t, filepath.Join(wpRoot, "wp-content", "uploads", "wpo"))
-	probe := filepath.Join(wpRoot, "wp-content", "uploads", "wpo", "fat.php")
+	probe := filepath.Join(wpRoot, "wp-content", "uploads", "wpo", "test.php")
 	mustWriteFile(t, probe, []byte("<?php\n"))
 
 	// Anything over the 512-byte size cap fails the shape gate, even on a
@@ -137,7 +141,7 @@ func TestLooksLikeWPOptimizeProbe_RejectsExecutionPrimitives(t *testing.T) {
 	wpRoot := t.TempDir()
 	mustMkdirAll(t, filepath.Join(wpRoot, "wp-content", "plugins", "wp-optimize"))
 	mustMkdirAll(t, filepath.Join(wpRoot, "wp-content", "uploads", "wpo"))
-	probe := filepath.Join(wpRoot, "wp-content", "uploads", "wpo", "x.php")
+	probe := filepath.Join(wpRoot, "wp-content", "uploads", "wpo", "test.php")
 	mustWriteFile(t, probe, []byte("<?php\n"))
 
 	// A short file in the wpo directory that happens to use any PHP
