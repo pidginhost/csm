@@ -434,3 +434,380 @@ func TestCleanHtaccessFileMetaIsValidQuarantineJSON(t *testing.T) {
 		t.Errorf("Reason should mention htaccess, got %q", meta.Reason)
 	}
 }
+
+// 2026-04-28 production FPs: htaccess_filesmatch_shield fired on stock
+// plugin .htaccess files that grant execution to a specific PHP file
+// (or a small allowlist of named files). Stock plugins ship these to
+// allow their own dispatcher under hosts where directory-level Require
+// all denied is the default.
+//
+// The malicious shape is a bare \.php$ wildcard dropped into a
+// directory where PHP should not run. The legitimate shape names a
+// specific filename or short allowlist.
+
+func TestDetectorFilesMatchShield_WebPExpressSpecificFilename(t *testing.T) {
+	dir := t.TempDir()
+	body := `<FilesMatch "wpc\.php$">
+  <IfModule !mod_authz_core.c>
+    Order deny,allow
+    Allow from all
+  </IfModule>
+  <IfModule mod_authz_core.c>
+    Require all granted
+  </IfModule>
+</FilesMatch>
+`
+	path := writeHtaccess(t, dir, "wp-content/plugins/webp-express/web-service", body)
+	findings, _ := AuditHtaccessFile(path)
+	if countByCheck(findings, "htaccess_filesmatch_shield") != 0 {
+		t.Errorf("filesmatch_shield FP: matched WebP Express specific-filename allowlist")
+	}
+}
+
+func TestDetectorFilesMatchShield_WebPExpressNamedAllowlist(t *testing.T) {
+	dir := t.TempDir()
+	body := `<FilesMatch "(webp-on-demand\.php|webp-realizer\.php|ping\.php|ping\.txt)$">
+  <IfModule mod_authz_core.c>
+    Require all granted
+  </IfModule>
+</FilesMatch>
+`
+	path := writeHtaccess(t, dir, "wp-content/plugins/webp-express/wod", body)
+	findings, _ := AuditHtaccessFile(path)
+	if countByCheck(findings, "htaccess_filesmatch_shield") != 0 {
+		t.Errorf("filesmatch_shield FP: matched WebP Express named-file allowlist")
+	}
+}
+
+func TestDetectorFilesMatchShield_PrestaShopFacetedSearchPrefix(t *testing.T) {
+	dir := t.TempDir()
+	body := `<FilesMatch "ps_facetedsearch-.+\.php$">
+    <IfModule !mod_authz_core.c>
+        Order Allow,Deny
+        Allow from all
+    </IfModule>
+    <IfModule mod_authz_core.c>
+        Require all granted
+    </IfModule>
+</FilesMatch>
+`
+	path := writeHtaccess(t, dir, "modules/ps_facetedsearch", body)
+	findings, _ := AuditHtaccessFile(path)
+	if countByCheck(findings, "htaccess_filesmatch_shield") != 0 {
+		t.Errorf("filesmatch_shield FP: matched PrestaShop ps_facetedsearch prefix-pattern allowlist")
+	}
+}
+
+func TestDetectorFilesMatchShield_KCFinderWildcardWithSiblingPHP(t *testing.T) {
+	// KCFinder ships a bare \.php$ wildcard in its own plugin directory
+	// that contains many legitimate PHP dispatchers (browse.php,
+	// upload.php, index.php, js_localize.php, etc.). The bare wildcard
+	// matches the malicious shape exactly, so the discriminator is
+	// "the directory contains multiple sibling PHP files that this
+	// FilesMatch grants access to" - i.e., the shield protects an
+	// existing legitimate PHP layout, not a freshly-dropped dropper.
+	dir := t.TempDir()
+	pluginDir := "admin/plugins/CKEditorPlugin/kcfinder"
+	full := filepath.Join(dir, pluginDir)
+	if err := os.MkdirAll(full, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"browse.php", "upload.php", "index.php", "js_localize.php"} {
+		if err := os.WriteFile(filepath.Join(full, name), []byte("<?php // legit\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	body := `<FilesMatch "\.php$">
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Allow from all
+        Satisfy All
+    </IfModule>
+    <IfModule mod_authz_core.c>
+        Require all granted
+    </IfModule>
+</FilesMatch>
+`
+	path := writeHtaccess(t, dir, pluginDir, body)
+	findings, _ := AuditHtaccessFile(path)
+	if countByCheck(findings, "htaccess_filesmatch_shield") != 0 {
+		t.Errorf("filesmatch_shield FP: matched KCFinder bare-wildcard shield in a directory with %d sibling PHP files", 4)
+	}
+}
+
+func TestDetectorFilesMatchShield_WildcardInEmptyUploadsDir(t *testing.T) {
+	// The malicious shape: bare \.php$ wildcard dropped into a directory
+	// without any legitimate PHP dispatchers. An attacker who can write
+	// the .htaccess but only one (or zero) PHP files alongside it. The
+	// shield must keep firing on this shape.
+	dir := t.TempDir()
+	body := `<FilesMatch "\.php$">
+    Order allow,deny
+    Allow from all
+</FilesMatch>
+`
+	path := writeHtaccess(t, dir, "wp-content/uploads/2026/04", body)
+	findings, _ := AuditHtaccessFile(path)
+	if countByCheck(findings, "htaccess_filesmatch_shield") != 1 {
+		t.Errorf("filesmatch_shield regression: bare-wildcard shield in empty uploads dir was not detected (count=%d)", countByCheck(findings, "htaccess_filesmatch_shield"))
+	}
+}
+
+func TestDetectorFilesMatchShield_WildcardInDirWithSingleAttackerDropper(t *testing.T) {
+	// Edge case: attacker drops .htaccess + one webshell.php. The
+	// wildcard shield + a single sibling PHP must keep firing. The
+	// discriminator threshold is "multiple sibling PHP files"; a single
+	// file alongside a fresh shield is the canonical drop pattern.
+	dir := t.TempDir()
+	full := filepath.Join(dir, "wp-content/uploads/2026")
+	if err := os.MkdirAll(full, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(full, "x.php"), []byte("<?php"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	body := `<FilesMatch "\.php$">
+    Require all granted
+</FilesMatch>
+`
+	path := writeHtaccess(t, dir, "wp-content/uploads/2026", body)
+	findings, _ := AuditHtaccessFile(path)
+	if countByCheck(findings, "htaccess_filesmatch_shield") != 1 {
+		t.Errorf("filesmatch_shield regression: wildcard shield + single dropper was not detected (count=%d)", countByCheck(findings, "htaccess_filesmatch_shield"))
+	}
+}
+
+// 2026-04-28 production FPs: htaccess_user_agent_cloak fired on three
+// distinct legitimate shapes. The detector emitted High alerts on
+// every one of them for ~30 production sites, burying real signal
+// under cache-plugin and bot-blocklist noise.
+//
+// Discriminators added:
+//   1. Negated UA cond ("RewriteCond %{HTTP_USER_AGENT} !..."): the
+//      rule applies WHEN the UA is NOT one of these names - i.e.,
+//      excluding crawlers from a cache-serving rule. The cloaking
+//      shape is the inverse (apply when UA IS this).
+//   2. Long alternation (4+ entries): operator-installed bot
+//      blocklists ship a long OR-list of audit/scraper UAs, paired
+//      with a [F]-forbid or sinkhole rewrite. Cloakers use one or
+//      two crawler names.
+//   3. Paired RewriteRule: when the next RewriteRule after the cond
+//      block has [F] / [F,L] / [G] flags or a "-" substitution, the
+//      cond is part of a defensive block, not a cloak.
+
+func TestDetectorUserAgentCloak_NegatedCacheExclusion(t *testing.T) {
+	// WP Fastest Cache pattern: negative match excludes social
+	// crawlers from the cached-content rewrite so they always get
+	// fresh OG meta tags.
+	dir := t.TempDir()
+	body := `RewriteCond %{HTTP_USER_AGENT} !(facebookexternalhit|WP_FASTEST_CACHE_CSS_VALIDATOR|Twitterbot|LinkedInBot|WhatsApp|Mediatoolkitbot)
+RewriteRule ^(.*) "/wp-content/cache/all/$1/index.html" [L]
+`
+	path := writeHtaccess(t, dir, "site", body)
+	findings, _ := AuditHtaccessFile(path)
+	if countByCheck(findings, "htaccess_user_agent_cloak") != 0 {
+		t.Errorf("ua_cloak FP: matched negative-UA cache exclusion (count=%d)", countByCheck(findings, "htaccess_user_agent_cloak"))
+	}
+}
+
+func TestDetectorUserAgentCloak_NegatedShortList(t *testing.T) {
+	dir := t.TempDir()
+	body := `RewriteCond %{HTTP_USER_AGENT} !(Mediatoolkitbot|facebookexternalhit|SpeedyCacheCCSS)
+RewriteRule ^(.*) "/wp-content/cache/all/$1/index.html" [L]
+`
+	path := writeHtaccess(t, dir, "site", body)
+	findings, _ := AuditHtaccessFile(path)
+	if countByCheck(findings, "htaccess_user_agent_cloak") != 0 {
+		t.Errorf("ua_cloak FP: matched 3-item negative-UA list")
+	}
+}
+
+func TestDetectorUserAgentCloak_NegatedAnchoredRegex(t *testing.T) {
+	dir := t.TempDir()
+	body := `RewriteCond %{HTTP_USER_AGENT} !^(facebookexternalhit|WhatsApp).* [NC]
+RewriteRule ^(.*) "/cache/$1.html" [L]
+`
+	path := writeHtaccess(t, dir, "site", body)
+	findings, _ := AuditHtaccessFile(path)
+	if countByCheck(findings, "htaccess_user_agent_cloak") != 0 {
+		t.Errorf("ua_cloak FP: matched negative-UA anchored regex")
+	}
+}
+
+func TestDetectorUserAgentCloak_LongBotBlocklist(t *testing.T) {
+	// Operator-installed defensive blocklist: 20+ scraper / audit
+	// tool UAs OR'd together, paired with a sinkhole rewrite.
+	dir := t.TempDir()
+	body := `RewriteEngine on
+RewriteCond %{HTTP_USER_AGENT} (?:virusbot|spambot|evilbot|acunetix|BLEXBot|domaincrawler\.com|LinkpadBot|MJ12bot/v|majestic12\.co\.uk|AhrefsBot|TwengaBot|SemrushBot|nikto|winhttp|Xenu\s+Link\s+Sleuth|Baiduspider|HTTrack|clshttp|harvest|extract|grab|miner|python-requests) [NC]
+RewriteRule ^(.*)$ http://no.access/
+`
+	path := writeHtaccess(t, dir, "site", body)
+	findings, _ := AuditHtaccessFile(path)
+	if countByCheck(findings, "htaccess_user_agent_cloak") != 0 {
+		t.Errorf("ua_cloak FP: matched 20+ entry defensive blocklist (count=%d)", countByCheck(findings, "htaccess_user_agent_cloak"))
+	}
+}
+
+func TestDetectorUserAgentCloak_PairedForbidRule(t *testing.T) {
+	// Single crawler UA paired with [F] forbid: a defensive block
+	// targeting a specific abusive crawler. The malicious shape
+	// rewrites somewhere; the defensive shape forbids.
+	dir := t.TempDir()
+	body := `RewriteCond %{HTTP_USER_AGENT} AhrefsBot [NC]
+RewriteRule ^(.*)$ - [F,L]
+`
+	path := writeHtaccess(t, dir, "site", body)
+	findings, _ := AuditHtaccessFile(path)
+	if countByCheck(findings, "htaccess_user_agent_cloak") != 0 {
+		t.Errorf("ua_cloak FP: matched UA cond paired with [F,L] forbid rule")
+	}
+}
+
+func TestDetectorUserAgentCloak_PairedNoOpDash(t *testing.T) {
+	// Single crawler UA paired with "-" substitution: a no-op (used
+	// to set environment variables or pass through to the next
+	// directive without rewriting).
+	dir := t.TempDir()
+	body := `RewriteCond %{HTTP_USER_AGENT} Googlebot [NC]
+RewriteRule .* - [E=cache_skip:1]
+`
+	path := writeHtaccess(t, dir, "site", body)
+	findings, _ := AuditHtaccessFile(path)
+	if countByCheck(findings, "htaccess_user_agent_cloak") != 0 {
+		t.Errorf("ua_cloak FP: matched UA cond paired with no-op '-' substitution")
+	}
+}
+
+func TestDetectorUserAgentCloak_RealCloakRedirect(t *testing.T) {
+	// The malicious shape: positive crawler match paired with a
+	// rewrite to a different file (serving SEO-clean content to
+	// search bots while humans get spam). Must keep firing.
+	dir := t.TempDir()
+	body := `RewriteCond %{HTTP_USER_AGENT} (Googlebot|Bingbot) [NC]
+RewriteRule ^(.*)$ http://spam.example.xyz/$1 [L,R=302]
+`
+	path := writeHtaccess(t, dir, "site", body)
+	findings, _ := AuditHtaccessFile(path)
+	if countByCheck(findings, "htaccess_user_agent_cloak") != 1 {
+		t.Errorf("ua_cloak regression: spam-redirect cloak missed (count=%d)", countByCheck(findings, "htaccess_user_agent_cloak"))
+	}
+}
+
+func TestDetectorUserAgentCloak_RealCloakSeoFile(t *testing.T) {
+	// Cloak that serves a clean dispatcher file to crawlers.
+	dir := t.TempDir()
+	body := `RewriteCond %{HTTP_USER_AGENT} googlebot [NC]
+RewriteRule ^(.*)$ /seo-clean.php?orig=$1 [L]
+`
+	path := writeHtaccess(t, dir, "site", body)
+	findings, _ := AuditHtaccessFile(path)
+	if countByCheck(findings, "htaccess_user_agent_cloak") != 1 {
+		t.Errorf("ua_cloak regression: clean-dispatcher cloak missed (count=%d)", countByCheck(findings, "htaccess_user_agent_cloak"))
+	}
+}
+
+// 2026-04-28 production FP: htaccess_errordocument_hijack fired on a
+// same-brand redirect ("ErrorDocument 404 https://floresgrup.ro" from
+// /home/flores/public_html/.htaccess). Custom 404 redirects to the
+// site's own homepage are extremely common and not malicious; the
+// detector previously flagged any external-URL ErrorDocument target
+// regardless of host.
+//
+// The malicious shape: redirect to a different domain (typically on
+// a spam TLD or an unrelated common TLD), often paired with a
+// hardcoded phishing page path.
+//
+// Discriminator: extract the URL host's "registrable label" (the part
+// before the public TLD), compare against the .htaccess path
+// components. If the label appears in the path (account name or
+// domain dir), treat as same-brand and skip. Spam TLD targets always
+// fire regardless of name match.
+
+func TestDetectorErrorDocumentHijack_SameBrandSubstring(t *testing.T) {
+	dir := t.TempDir()
+	body := "ErrorDocument 404 https://floresgrup.ro\n"
+	full := filepath.Join(dir, "home", "flores", "public_html", ".htaccess")
+	if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	findings, _ := AuditHtaccessFile(full)
+	if countByCheck(findings, "htaccess_errordocument_hijack") != 0 {
+		t.Errorf("errordocument_hijack FP: matched same-brand redirect (account 'flores' substring of 'floresgrup.ro')")
+	}
+}
+
+func TestDetectorErrorDocumentHijack_SameBrandWithSubdomain(t *testing.T) {
+	dir := t.TempDir()
+	body := "ErrorDocument 404 https://www.example-shop.com/404\n"
+	full := filepath.Join(dir, "home", "shop", "example-shop.com", ".htaccess")
+	if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	findings, _ := AuditHtaccessFile(full)
+	if countByCheck(findings, "htaccess_errordocument_hijack") != 0 {
+		t.Errorf("errordocument_hijack FP: matched same-brand redirect (domain dir 'example-shop.com' contains URL host)")
+	}
+}
+
+func TestDetectorErrorDocumentHijack_DifferentBrandNonSpamTLD(t *testing.T) {
+	// A redirect to an unrelated .com domain - could be legit (host
+	// outsourcing 404s to a marketing site) or malicious (phishing
+	// hijack). We err on the side of detection: fire the alert,
+	// operator can suppress per-path if it is intentional.
+	dir := t.TempDir()
+	body := "ErrorDocument 404 https://attacker.com/landing\n"
+	full := filepath.Join(dir, "home", "victim", "public_html", ".htaccess")
+	if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	findings, _ := AuditHtaccessFile(full)
+	if countByCheck(findings, "htaccess_errordocument_hijack") != 1 {
+		t.Errorf("errordocument_hijack regression: cross-brand redirect missed (count=%d)", countByCheck(findings, "htaccess_errordocument_hijack"))
+	}
+}
+
+func TestDetectorErrorDocumentHijack_SpamTLDAlwaysFires(t *testing.T) {
+	// Spam TLDs always fire even if the brand somehow matches: the
+	// TLD itself is the signal of compromise.
+	dir := t.TempDir()
+	body := "ErrorDocument 404 https://floresgrup.tk/landing\n"
+	full := filepath.Join(dir, "home", "flores", "public_html", ".htaccess")
+	if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	findings, _ := AuditHtaccessFile(full)
+	if countByCheck(findings, "htaccess_errordocument_hijack") != 1 {
+		t.Errorf("errordocument_hijack regression: spam-TLD target missed even with same-brand label")
+	}
+}
+
+func TestDetectorErrorDocumentHijack_IPAddressTarget(t *testing.T) {
+	// Numeric IP target is suspicious by definition - legit ErrorDocument
+	// redirects use a hostname.
+	dir := t.TempDir()
+	body := "ErrorDocument 404 http://192.0.2.42/dropper\n"
+	full := filepath.Join(dir, "home", "victim", "public_html", ".htaccess")
+	if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	findings, _ := AuditHtaccessFile(full)
+	if countByCheck(findings, "htaccess_errordocument_hijack") != 1 {
+		t.Errorf("errordocument_hijack regression: IP-address target missed")
+	}
+}
