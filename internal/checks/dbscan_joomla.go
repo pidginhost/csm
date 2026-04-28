@@ -255,9 +255,13 @@ func scanJoomlaContent(account string, creds jConfigCreds, prefix string) []aler
 // genuine matched -- the caller skips that row entirely.
 //
 // inPostContext switches between the strict
-// hasMaliciousExternalScript (config-storage like extension params)
-// and the looser hasMaliciousExternalScriptInPost (article body).
-// Mirrors how the WP scanner picks its predicate per table.
+// hasMaliciousExternalScript (for config-storage rows like Joomla
+// extension params or Drupal config) and the looser
+// hasMaliciousExternalScriptInPost (for author-written article
+// content). Mirrors how the WP scanner picks its predicate per
+// table. Shared by the Joomla and Drupal scanners; the function
+// lives in dbscan_joomla.go for historical reasons (added with
+// the Joomla scanner; renamed when Drupal also needed it).
 func classifyMalwareRow(body string, inPostContext bool) (alert.Severity, string, bool) {
 	if body == "" {
 		return 0, "", false

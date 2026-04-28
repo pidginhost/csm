@@ -239,3 +239,30 @@ func TestCheckDrupalContentSuppressesScriptOnlyConfigFP(t *testing.T) {
 		}
 	}
 }
+
+// TestScanDrupalAdminsFiltersDefaultLangcode is a regression for
+// the multilingual D8+ duplicate-row issue: users_field_data has
+// one row per language code per uid, so an admin on a translated
+// site appeared once per language. The default_langcode = 1
+// filter restores 1 finding per admin.
+func TestScanDrupalAdminsFiltersDefaultLangcode(t *testing.T) {
+	withMockOS(t, &fakeDrupalOS{settingsBody: canonicalDrupalSettings(), hasDrupalPHP: true})
+
+	var seenQuery string
+	withMockCmd(t, &mockCmd{
+		runWithEnv: func(name string, args []string, _ ...string) ([]byte, error) {
+			joined := strings.Join(args, " ")
+			if strings.Contains(joined, "users_field_data") {
+				seenQuery = joined
+				return []byte("1\tadmin\tadmin@example.com\n"), nil
+			}
+			return nil, nil
+		},
+	})
+
+	_ = CheckDrupalContent(context.Background(), &config.Config{}, &state.Store{})
+
+	if !strings.Contains(seenQuery, "default_langcode = 1") {
+		t.Errorf("admin query missing default_langcode filter (multilingual sites would emit duplicates):\n%s", seenQuery)
+	}
+}

@@ -223,9 +223,14 @@ func scanDrupalContent(account string, creds drupalCreds) []alert.Finding {
 // severity / per-row emission as the Joomla equivalent --
 // legitimate site admin shows up here too, so this is operator
 // review territory rather than auto-actionable.
+//
+// users_field_data is multilingual in D8+: a single uid can appear
+// once per language code on translated sites. The default_langcode
+// = 1 filter keeps each admin to exactly one finding regardless of
+// how many translations the site has.
 func scanDrupalAdmins(account string, creds drupalCreds) []alert.Finding {
 	query := fmt.Sprintf(
-		"SELECT u.uid, u.name, u.mail FROM users_field_data u JOIN user__roles r ON u.uid = r.entity_id WHERE r.roles_target_id = '%s'",
+		"SELECT u.uid, u.name, u.mail FROM users_field_data u JOIN user__roles r ON u.uid = r.entity_id WHERE r.roles_target_id = '%s' AND u.default_langcode = 1",
 		drupalAdminRoleID)
 	rows := runMySQLQuery(creds.asWPDBCreds(), query)
 	if len(rows) == 0 {
