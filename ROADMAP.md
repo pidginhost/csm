@@ -119,3 +119,202 @@ N` mention in git history maps to the matching bullet there.
   control-socket command for first-time SIEM onboarding.
 
 ---
+
+## 1. Detection-cleaning rounding for non-WordPress workloads
+
+**Status:** planned
+**Drives / unblocks:** Imunify360 feature parity for hosts running
+multi-CMS workloads
+**Design:** `docs/superpowers/specs/2026-04-26-detection-cleaning-rounding-design.md`
+
+### Why
+
+CSM's database scanning and surgical cleaning are WordPress-only
+today. `internal/checks/dbscan.go` is hardcoded to `wp-config.php`,
+so Joomla / Drupal / Magento / OpenCart accounts get no DB-content
+visibility. WordPress multisite (`wp_N_options`) is also invisible.
+MySQL persistence vectors -- triggers, events, stored procedures,
+stored functions -- are never inspected. `.htaccess` cleaning is
+shallow. A signature update only catches files that change after
+the update, not the existing fleet. And there is no operator-facing
+cleanup history or one-click rollback even though backups are
+already being written.
+
+### Decision
+
+Six gaps closed in one release:
+
+1. Multi-CMS database scanning (Joomla, Drupal 7+8/9/10, Magento 1+2,
+   OpenCart) via per-CMS adapters under `internal/checks/cms/`.
+2. WordPress multisite (`wp_N_options`, `wp_N_posts` patterns).
+3. MySQL persistence-mechanism scanning via INFORMATION_SCHEMA
+   queries -- triggers, events, stored procedures, functions.
+4. `.htaccess` hardened cleaning: registry of seven malicious
+   directive patterns with surgical removal.
+5. Signature-update-driven retroactive sweep -- when YAML or YARA
+   rules update, sweep `/home/*/public_html` against the new rules.
+6. Cleanup history UI and rollback in the web UI, backed by the
+   existing per-action backup files.
+
+### Out of scope
+
+- JavaScript file cleaning (covered by detection but cleaning is
+  a follow-up release).
+- PostgreSQL / SQLite database support.
+- Automatic dropping of malicious DB objects.
+
+### Estimated size
+
+5-7 engineering days (impl plan ready in the design doc).
+
+---
+
+## 2. `csm support-bundle` command
+
+**Status:** planned
+**Drives / unblocks:** support workflow for operators reporting bugs
+
+### Why
+
+Operators reporting issues currently grep journal logs, copy
+`/opt/csm/state/state.json`, and try to reconstruct the daemon's
+view by hand. The new `csm store export` covers the bbolt + state
+side; this wraps that plus the rest of what a triage engineer
+needs into a single artifact.
+
+### Decision
+
+New CLI command `csm support-bundle <path>` produces a tar+zstd
+archive (same format as `store export`) containing:
+
+- The output of `csm store export` (manifest, bbolt snapshot,
+  state, signature cache).
+- The last N journalctl lines for the `csm.service` unit (default
+  N=2000), captured via `journalctl -u csm --no-pager`.
+- The current `/etc/csm/csm.yaml` with secrets redacted (`smtp`,
+  `webhook.url`, `abuseipdb_key`, `webui.auth_token`,
+  `verified_session.admin_secret`, `captcha_fallback.secret_key`).
+- A `system.txt` file with `uname -a`, `csm version`, distro info,
+  and the daemon's startup integrity hashes.
+
+Live daemon required (mirrors `store export`).
+
+### Acceptance criteria
+
+- `tar tf <bundle>` lists the manifest, bbolt snapshot, state,
+  rules, journal log, redacted config, and system.txt.
+- Redaction is whitelist-style: any unknown `*_key` / `*_token` /
+  `*_secret` field is also blanked.
+
+### Out of scope
+
+- Automatic upload to a support endpoint.
+- Encryption at rest -- operators pipe through gpg as today.
+
+### Estimated size
+
+1 engineering day. Most plumbing exists.
+
+---
+
+## 3. Scheduled backup exports
+
+**Status:** planned
+**Drives / unblocks:** out-of-the-box DR for operators who do not
+want to manage cron jobs
+
+### Why
+
+`csm store export` requires a cron entry today. Operators forget,
+or write the cron with an absolute path that drifts when the disk
+layout changes. A daemon-side schedule keeps backups colocated with
+the rest of CSM's hot-reloadable config.
+
+### Decision
+
+New top-level config block:
+
+```yaml
+backup:
+  enabled: true
+  schedule: "@daily"            # cron spec or @hourly | @daily | @weekly
+  destination_dir: /var/backups/csm
+  filename: "csm-{date}.csmbak"
+  retention_days: 14            # delete older archives
+```
+
+Daemon ticks the schedule, calls the existing `store.Export` path,
+and prunes archives older than `retention_days` from
+`destination_dir`. Failures emit a `backup_export_failed` Warning
+finding routed through the normal alert pipeline.
+
+### Acceptance criteria
+
+- A `@daily` schedule produces one archive per day at the
+  configured time, retains the last 14, and removes older ones.
+- Manual `csm store export <path>` continues to work alongside
+  the scheduled exports.
+- Disabling the block stops scheduled exports without restart
+  (hotreload-safe).
+
+### Out of scope
+
+- Off-host destinations (S3, SFTP). Operators rsync the
+  `destination_dir` themselves.
+- Encryption.
+
+### Estimated size
+
+1-2 engineering days.
+
+---
+
+## 4. WordPress companion plugin for signed-cookie operator bypass
+
+**Status:** planned
+**Drives / unblocks:** real-world adoption of the
+`/challenge/admin-token` endpoint
+
+### Why
+
+The signed-cookie bypass landed in roadmap item 3 (challenge UX
+polish) requires the operator to POST `admin_secret` to
+`/challenge/admin-token`. That works for CSM-aware tooling and
+manual curls but not for a WordPress admin who just wants to log
+into wp-admin without solving PoW. A companion plugin closes the
+gap: a logged-in WP admin gets the cookie automatically.
+
+### Decision
+
+Lives in a separate repository (`pidginhost/csm-wp-bypass`), not
+this one. CSM exposes the contract; the plugin consumes it.
+
+The plugin:
+
+- Reads the operator-provided `admin_secret` from a constant
+  defined in `wp-config.php` (`CSM_ADMIN_SECRET`).
+- On `wp_login` for users with `manage_options`, POSTs to
+  `https://<host>:<challenge_port>/challenge/admin-token` with
+  the secret.
+- Stores the returned cookie via PHP `setcookie()` with the same
+  Domain / Path / Secure / HttpOnly / SameSite attributes CSM
+  uses.
+
+### Acceptance criteria (this repo)
+
+- The `/challenge/admin-token` endpoint is documented as a stable
+  contract; breaking changes require a roadmap item.
+- A short integration note in `docs/src/challenge.md` points
+  operators at the plugin repo.
+
+### Out of scope
+
+- The plugin code itself (separate repo, separate release cycle).
+- Joomla / Drupal / Magento equivalents (parallel work, not blocked
+  by this).
+
+### Estimated size
+
+0.5 engineering days for the contract documentation in this repo;
+the plugin itself is ~2 days in the separate repo.
+
