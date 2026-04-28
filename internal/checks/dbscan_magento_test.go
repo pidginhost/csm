@@ -299,3 +299,40 @@ func TestCheckMagentoContentSuppressesScriptOnlyConfigFP(t *testing.T) {
 		}
 	}
 }
+
+// Regression: the previous dedup scanned prior findings for an
+// "Account: <name>" marker, which only appeared after a finding
+// fired. A clean M2 install (env.php parses, scans complete, zero
+// findings) would still let the M1 fallback re-scan the same
+// host with stale local.xml credentials. The seenAccounts map
+// prevents that.
+func TestCheckMagentoContentDedupSurvivesZeroFindingM2(t *testing.T) {
+	withMockOS(t, &fakeMagentoOS{
+		m1Body: canonicalM1XML(),
+		m2Body: canonicalM2EnvPHP(),
+	})
+
+	prefixCounts := map[string]int{}
+	withMockCmd(t, &mockCmd{
+		runWithEnv: func(name string, args []string, _ ...string) ([]byte, error) {
+			joined := strings.Join(args, " ")
+			switch {
+			case strings.Contains(joined, "m1_"):
+				prefixCounts["m1"]++
+			case strings.Contains(joined, "m2_"):
+				prefixCounts["m2"]++
+				// Return nothing -- M2 path produces zero findings.
+			}
+			return nil, nil
+		},
+	})
+
+	_ = CheckMagentoContent(context.Background(), &config.Config{}, &state.Store{})
+
+	if prefixCounts["m2"] == 0 {
+		t.Error("M2 path not queried despite env.php presence")
+	}
+	if prefixCounts["m1"] > 0 {
+		t.Errorf("M1 fallback re-scanned a host already covered by M2 (count=%d)", prefixCounts["m1"])
+	}
+}

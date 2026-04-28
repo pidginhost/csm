@@ -107,8 +107,16 @@ var (
 // scans the four canonical tables. Mirrors CheckJoomlaContent and
 // CheckDrupalContent without sharing code -- the version-branching
 // is local to this scanner.
+//
+// Accounts that produced creds via the M2 (env.php) path are
+// tracked in seenAccounts so the M1 fallback doesn't re-scan a
+// host that's already been processed -- including the common case
+// where M2 found zero malware findings (a clean install). Without
+// this, a half-migrated host with both env.php and stale local.xml
+// would scan the database twice with different credential sets.
 func CheckMagentoContent(_ context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
+	seenAccounts := map[string]bool{}
 
 	// M2 discovery first (active version).
 	m2Files, _ := osFS.Glob("/home/*/public_html/app/etc/env.php")
@@ -118,19 +126,15 @@ func CheckMagentoContent(_ context.Context, _ *config.Config, _ *state.Store) []
 		if creds.dbName == "" {
 			continue
 		}
+		seenAccounts[account] = true
 		findings = append(findings, scanMagentoAll(account, creds)...)
 	}
 
-	// M1 fallback. A host with both files is unusual (would need
-	// to have been migrated and the old XML left in place); we
-	// still scan with M1 creds when only local.xml is present.
+	// M1 fallback for hosts where env.php is absent or unparseable.
 	m1Files, _ := osFS.Glob("/home/*/public_html/app/etc/local.xml")
 	for _, path := range m1Files {
-		// If the same account already got M2 creds, skip the M1
-		// duplicate scan -- env.php is the authoritative file
-		// after migration.
 		account := magentoAccountFromPath(path)
-		if alreadyScanned(findings, account) {
+		if seenAccounts[account] {
 			continue
 		}
 		creds := parseMagentoM1(path)
@@ -146,26 +150,12 @@ func CheckMagentoContent(_ context.Context, _ *config.Config, _ *state.Store) []
 // (/home/<account>/public_html/app/etc/...) down to the account
 // component.
 func magentoAccountFromPath(path string) string {
-	// /home/<account>/public_html/app/etc/<file> -- five Dirs up.
+	// /home/<account>/public_html/app/etc/<file> -- four Dirs up.
 	cur := path
 	for i := 0; i < 4; i++ {
 		cur = filepath.Dir(cur)
 	}
 	return extractUser(cur)
-}
-
-// alreadyScanned reports whether any prior finding's Details
-// column references the supplied account. Used to deduplicate
-// when a host has both env.php and local.xml present (rare but
-// possible after a half-completed M1 to M2 migration).
-func alreadyScanned(findings []alert.Finding, account string) bool {
-	needle := "Account: " + account + "\n"
-	for _, f := range findings {
-		if strings.Contains(f.Details, needle) {
-			return true
-		}
-	}
-	return false
 }
 
 // parseMagentoM1 reads local.xml and extracts the connection block.
