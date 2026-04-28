@@ -20,6 +20,14 @@ type Cache struct {
 	pluginChecksums map[string]map[string]string // plugins: "<slug>:<version>" -> relPath -> SHA256
 	roots           map[string]rootEntry
 	fetching        map[string]bool
+
+	// pluginNotFoundUntil records slug+version pairs that wordpress.org
+	// returned 404 for, paired with the absolute time at which the
+	// suppression expires. Plugins hosted outside wp.org (paid forks,
+	// custom internal plugins) would otherwise re-arm the 4-attempt
+	// retry cycle on every cache miss. The TTL ensures wp.org adding
+	// a plugin later still gets picked up.
+	pluginNotFoundUntil map[string]time.Time
 }
 
 type rootEntry struct {
@@ -29,11 +37,12 @@ type rootEntry struct {
 
 func NewCache(statePath string) *Cache {
 	c := &Cache{
-		statePath:       statePath,
-		checksums:       make(map[string]map[string]string),
-		pluginChecksums: make(map[string]map[string]string),
-		roots:           make(map[string]rootEntry),
-		fetching:        make(map[string]bool),
+		statePath:           statePath,
+		checksums:           make(map[string]map[string]string),
+		pluginChecksums:     make(map[string]map[string]string),
+		roots:               make(map[string]rootEntry),
+		fetching:            make(map[string]bool),
+		pluginNotFoundUntil: make(map[string]time.Time),
 	}
 	c.loadFromDisk()
 	return c
