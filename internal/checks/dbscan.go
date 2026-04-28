@@ -65,17 +65,72 @@ func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store)
 			prefix = "wp_"
 		}
 
-		// 1. Check wp_options for siteurl/home hijacking
+		// Always scan the main-site (or single-site) tables. In
+		// multisite, blog ID 1 keeps the unprefixed names; in a
+		// single-site install these are the only tables.
 		findings = append(findings, checkWPOptions(user, creds, prefix)...)
-
-		// 2. Check wp_posts for injected scripts/malware
 		findings = append(findings, checkWPPosts(user, creds, prefix)...)
 
-		// 3. Check wp_users for rogue admin accounts
+		// wp_users / wp_usermeta are network-wide in multisite, so
+		// the user-table scan runs once regardless of the layout.
 		findings = append(findings, checkWPUsers(user, creds, prefix)...)
+
+		// Multisite: enumerate active secondary blog IDs and scan
+		// each one's wp_<N>_options / wp_<N>_posts. Spam, archived,
+		// and deleted blogs are excluded -- their content is
+		// already operator-suppressed at the WP level, and most
+		// hosts have stale ones we'd otherwise alert on
+		// indefinitely.
+		if creds.multisite {
+			findings = append(findings, scanMultisiteSecondaryBlogs(user, creds, prefix)...)
+		}
 	}
 
 	return findings
+}
+
+// scanMultisiteSecondaryBlogs queries wp_blogs for active blog IDs
+// other than 1 and runs the standard options + posts scan against
+// each. The user-table scan does NOT iterate -- WP shares
+// wp_users / wp_usermeta across the entire network by default; a
+// site-specific user table only exists on configurations that
+// override that, which we ignore here for v1.
+//
+// blog_id=1 is excluded because its tables are unprefixed and were
+// already scanned by the caller.
+func scanMultisiteSecondaryBlogs(user string, creds wpDBCreds, prefix string) []alert.Finding {
+	query := fmt.Sprintf(
+		"SELECT blog_id FROM %sblogs WHERE archived = 0 AND deleted = 0 AND spam = 0 AND blog_id != 1",
+		prefix,
+	)
+	rows := runMySQLQuery(creds, query)
+	var findings []alert.Finding
+	for _, row := range rows {
+		blogID := strings.TrimSpace(row)
+		if blogID == "" || blogID == "1" {
+			continue
+		}
+		// Guard against any garbage in the row -- only digits.
+		if !isAllDigits(blogID) {
+			continue
+		}
+		sitePrefix := fmt.Sprintf("%s%s_", prefix, blogID)
+		findings = append(findings, checkWPOptions(user, creds, sitePrefix)...)
+		findings = append(findings, checkWPPosts(user, creds, sitePrefix)...)
+	}
+	return findings
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 type wpDBCreds struct {
@@ -84,6 +139,14 @@ type wpDBCreds struct {
 	dbPass      string
 	dbHost      string
 	tablePrefix string
+	// multisite is set when wp-config.php declares
+	// `define('MULTISITE', true)`. In multisite, the main blog
+	// (ID 1) keeps the unprefixed table names and secondary blogs
+	// live under `wp_<N>_options` / `wp_<N>_posts`. CheckDatabaseContent
+	// scans both layouts when this is set; a single-site install
+	// (multisite=false) skips the wp_blogs lookup and per-site
+	// iteration entirely.
+	multisite bool
 }
 
 // parseWPConfig extracts database credentials from wp-config.php.
@@ -119,6 +182,11 @@ func parseWPConfig(path string) wpDBCreds {
 				creds.tablePrefix = val
 			}
 		}
+
+		// Match: define( 'MULTISITE', true );
+		if extractDefineBool(line, "MULTISITE") {
+			creds.multisite = true
+		}
 	}
 
 	if creds.dbHost == "" {
@@ -153,6 +221,41 @@ func extractDefine(line, key string) string {
 		rest = rest[commaIdx+1:]
 	}
 	return extractPHPString(rest)
+}
+
+// extractDefineBool returns true when line is a non-comment
+// define('<key>', true) -- i.e., a bare boolean value rather than a
+// quoted string. Used for `MULTISITE` and any future bool defines
+// CSM cares about. Whitespace is permissive, case-insensitive on
+// the literal `true`, trailing PHP/inline comments tolerated.
+//
+// Operators using anything other than the canonical `true` literal
+// (e.g., `!false`, `1`, `defined('FOO')`) won't get multisite
+// scanning. That's preferable to running an arbitrary PHP expression
+// evaluator over wp-config.php.
+func extractDefineBool(line, key string) bool {
+	if !strings.Contains(line, key) {
+		return false
+	}
+	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "/*") {
+		return false
+	}
+	if !strings.Contains(trimmed, "define") {
+		return false
+	}
+	rest := trimmed[strings.Index(trimmed, key)+len(key):]
+	commaIdx := strings.Index(rest, ",")
+	if commaIdx < 0 {
+		return false
+	}
+	value := rest[commaIdx+1:]
+	// The value runs until the closing paren; everything after it
+	// is the statement terminator and any trailing comment.
+	if closeIdx := strings.Index(value, ")"); closeIdx >= 0 {
+		value = value[:closeIdx]
+	}
+	return strings.EqualFold(strings.TrimSpace(value), "true")
 }
 
 // extractPHPString extracts the first quoted string value from a line.
