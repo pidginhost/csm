@@ -216,3 +216,42 @@ func TestEvaluatePluginCache_EmitsNoFindingWhenAllUpToDate(t *testing.T) {
 		}
 	}
 }
+
+// Latent bug surfaced during review: alert.Severity's zero value is
+// Warning. When EVERY outdated plugin on a site is Warning-severity the
+// previous worstSevLabel comparison (severityRank > severityRank) never
+// updated, leaving the label empty and the message malformed
+// ("worst severity " with trailing nothing). This test pins the label
+// to a non-empty value for the all-Warning case.
+
+func TestEvaluatePluginCache_AllWarningSeverityProducesNonEmptyLabel(t *testing.T) {
+	db := newAggregationStore(t)
+
+	site := store.SitePlugins{
+		Account: "alice",
+		Domain:  "alice.example",
+		Plugins: []store.SitePluginEntry{
+			{Slug: "p1", Name: "P1", Status: "active", InstalledVersion: "1.0.0", UpdateVersion: "1.0.1"},
+			{Slug: "p2", Name: "P2", Status: "active", InstalledVersion: "1.0.0", UpdateVersion: "1.0.1"},
+		},
+	}
+	if err := db.SetSitePlugins("/home/alice/public_html", site); err != nil {
+		t.Fatal(err)
+	}
+
+	findings := evaluatePluginCache(db)
+	var f alert.Finding
+	for _, ff := range findings {
+		if ff.Check == "outdated_plugins" {
+			f = ff
+			break
+		}
+	}
+
+	if !strings.Contains(f.Message, "warning") {
+		t.Errorf("aggregate message must include the severity label even when all constituents are Warning; got: %q", f.Message)
+	}
+	if strings.HasSuffix(f.Message, "worst severity ") {
+		t.Errorf("aggregate message has empty severity label (trailing space); got: %q", f.Message)
+	}
+}

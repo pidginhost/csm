@@ -448,6 +448,11 @@ func evaluatePluginCache(db *store.DB) []alert.Finding {
 			worstSevLabel string
 			outdatedTotal int
 		)
+		// Track whether worstSeverity has been set at all: alert.Severity's
+		// zero value is Warning, so a strict "newer rank > current rank"
+		// comparison would never overwrite the initial state on a site
+		// whose constituents are all Warning, leaving worstSevLabel empty.
+		worstSet := false
 		for _, p := range site.Plugins {
 			if p.Status != "active" && p.Status != "active-network" {
 				continue
@@ -486,9 +491,10 @@ func evaluatePluginCache(db *store.DB) []alert.Finding {
 			detailLines = append(detailLines, fmt.Sprintf("- %s (%s): %s -> %s [%s]",
 				p.Slug, p.Name, p.InstalledVersion, available, sev))
 
-			if severityRank(severity) > severityRank(worstSeverity) {
+			if !worstSet || severityRank(severity) > severityRank(worstSeverity) {
 				worstSeverity = severity
 				worstSevLabel = sev
+				worstSet = true
 			}
 		}
 
