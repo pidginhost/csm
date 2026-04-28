@@ -132,6 +132,7 @@ func encodeSessionPayload(ip string, exp time.Time) []byte {
 	out := make([]byte, 0, 9+len(ip))
 	out = append(out, 1)
 	var ts [8]byte
+	// #nosec G115 -- exp is always future-dated (now + positive TTL via NewAdminSessionSigner / Issue), so Unix() is positive and the int64->uint64 cast cannot overflow.
 	binary.BigEndian.PutUint64(ts[:], uint64(exp.Unix()))
 	out = append(out, ts[:]...)
 	out = append(out, []byte(ip)...)

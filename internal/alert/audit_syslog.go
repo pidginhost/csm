@@ -160,6 +160,7 @@ func (s *SyslogSink) tlsConfig() (*tls.Config, error) {
 	if s.cfg.TLSCAFile == "" {
 		return cfg, nil
 	}
+	// #nosec G304 -- TLSCAFile is operator-supplied via cfg.Alerts.AuditLog.Syslog.TLSCAFile; the operator owns the daemon config. Not attacker-controlled.
 	pem, err := os.ReadFile(s.cfg.TLSCAFile)
 	if err != nil {
 		return nil, fmt.Errorf("syslog sink: reading TLS CA: %w", err)

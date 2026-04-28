@@ -319,6 +319,7 @@ func Import(opts ImportOptions) (*ImportResult, error) {
 		if mkErr := os.MkdirAll(filepath.Dir(dst), 0700); mkErr != nil {
 			return nil, fmt.Errorf("staging dir: %w", mkErr)
 		}
+		// #nosec G304 -- dst is filepath.Join(stage, clean) where stage is a freshly created MkdirTemp under StatePath's parent and clean has been validated three lines above (no ".." prefix, not absolute). Cannot escape the staging dir.
 		f, openErr := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 		if openErr != nil {
 			return nil, fmt.Errorf("staging file: %w", openErr)
@@ -461,6 +462,7 @@ func writeTarFile(tw *tar.Writer, name string, data []byte, modTime time.Time) e
 // and the bbolt snapshot (already a frozen copy on disk). The risk
 // is bounded enough to live with for v1.
 func streamFileToTar(tw *tar.Writer, name, srcPath string, modTime time.Time) error {
+	// #nosec G304 -- srcPath is supplied by Export's caller (the daemon's control handler, sourced from cfg.StatePath / cfg.Signatures.RulesDir) or is the bbolt snapshot path created via os.CreateTemp earlier in Export. Both are root-controlled; csm runs as root via systemd. Not attacker-controlled.
 	f, err := os.Open(srcPath)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", srcPath, err)

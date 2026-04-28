@@ -34,6 +34,7 @@ func NewJSONLSink(path string) (*JSONLSink, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
 		return nil, fmt.Errorf("jsonl sink: creating dir: %w", err)
 	}
+	// #nosec G304 -- path is operator-supplied via cfg.Alerts.AuditLog.File.Path; csm runs as root via systemd, the operator owns the daemon config. Not attacker-controlled.
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0640)
 	if err != nil {
 		return nil, fmt.Errorf("jsonl sink: opening %s: %w", path, err)

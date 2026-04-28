@@ -81,12 +81,14 @@ func (p *captchaProvider) Verify(ctx context.Context, token, remoteIP string) (b
 		form.Set("remoteip", remoteIP)
 	}
 
+	// #nosec G704 -- p.endpoint is set from the providerEndpoint package-level map (turnstile / hcaptcha) by NewCaptchaProvider, which rejects unknown names. Not attacker-controlled; SSRF is not possible.
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return false, fmt.Errorf("building siteverify request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
+	// #nosec G704 -- same as above: the request URL is hardcoded to a known siteverify endpoint, never operator or attacker input.
 	resp, err := p.client.Do(req)
 	if err != nil {
 		return false, fmt.Errorf("siteverify call: %w", err)
