@@ -56,8 +56,11 @@ func TestEvaluatePluginCache_WarningSeverity(t *testing.T) {
 	if findings[0].Check != "outdated_plugins" {
 		t.Errorf("check = %q", findings[0].Check)
 	}
-	if !strings.Contains(findings[0].Message, "6.4.0") || !strings.Contains(findings[0].Message, "6.5.1") {
-		t.Errorf("message missing versions: %s", findings[0].Message)
+	// Per-plugin version info now lives in Details after the per-site
+	// aggregation: Message reports the count + worst severity, Details
+	// lists each outdated plugin's installed/available pair.
+	if !strings.Contains(findings[0].Details, "6.4.0") || !strings.Contains(findings[0].Details, "6.5.1") {
+		t.Errorf("details missing versions: %s", findings[0].Details)
 	}
 }
 

@@ -421,13 +421,33 @@ func failureBreakdown(timeout, execFail, parseFail int) string {
 	return fmt.Sprintf(" (timeout=%d exec_fail=%d json_fail=%d)", timeout, execFail, parseFail)
 }
 
-// evaluatePluginCache reads the cached plugin inventory and emits findings
-// for outdated or untracked active plugins.
+// evaluatePluginCache reads the cached plugin inventory and emits one
+// aggregated finding per site listing every outdated active plugin. The
+// per-site rollup keeps the alert channel under control during a deep
+// scan tier on hosts with many sites: the previous one-finding-per-
+// outdated-plugin shape produced ~1000 findings on a 200-account host
+// and saturated the 500-deep alert channel buffer, dropping real
+// signal under "alert channel full, dropping deep finding:
+// outdated_plugins".
+//
+// Aggregation rules:
+//   - Severity = max of constituents (critical > high > warning).
+//   - Message = "<count> outdated plugins on <domain> (<account>):
+//     <severity-label>" - searchable and self-describing.
+//   - Details lists each plugin slug, installed version, available
+//     version, and per-plugin severity, one per line, so an operator
+//     triaging the alert sees the same per-plugin breakdown as before.
 func evaluatePluginCache(db *store.DB) []alert.Finding {
 	var findings []alert.Finding
 	allSites := db.AllSitePlugins()
 
 	for wpPath, site := range allSites {
+		var (
+			detailLines   []string
+			worstSeverity alert.Severity
+			worstSevLabel string
+			outdatedTotal int
+		)
 		for _, p := range site.Plugins {
 			if p.Status != "active" && p.Status != "active-network" {
 				continue
@@ -462,16 +482,53 @@ func evaluatePluginCache(db *store.DB) []alert.Finding {
 				severity = alert.Warning
 			}
 
-			findings = append(findings, alert.Finding{
-				Severity: severity,
-				Check:    "outdated_plugins",
-				Message:  fmt.Sprintf("Outdated plugin %q on %s (%s): %s -> %s", p.Name, site.Domain, site.Account, p.InstalledVersion, available),
-				Details:  fmt.Sprintf("Path: %s\nInstalled: %s\nAvailable: %s\nSeverity: %s", wpPath, p.InstalledVersion, available, sev),
-			})
+			outdatedTotal++
+			detailLines = append(detailLines, fmt.Sprintf("- %s (%s): %s -> %s [%s]",
+				p.Slug, p.Name, p.InstalledVersion, available, sev))
+
+			if severityRank(severity) > severityRank(worstSeverity) {
+				worstSeverity = severity
+				worstSevLabel = sev
+			}
 		}
+
+		if outdatedTotal == 0 {
+			continue
+		}
+
+		findings = append(findings, alert.Finding{
+			Severity: worstSeverity,
+			Check:    "outdated_plugins",
+			Message: fmt.Sprintf("%d outdated plugin%s on %s (%s): worst severity %s",
+				outdatedTotal, plural(outdatedTotal), site.Domain, site.Account, worstSevLabel),
+			Details: fmt.Sprintf("Path: %s\nOutdated plugins (%d):\n%s",
+				wpPath, outdatedTotal, strings.Join(detailLines, "\n")),
+		})
 	}
 
 	return findings
+}
+
+// severityRank orders severities so an aggregate can pick the worst.
+// Higher returned value means more severe.
+func severityRank(s alert.Severity) int {
+	switch s {
+	case alert.Critical:
+		return 3
+	case alert.High:
+		return 2
+	case alert.Warning:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 // extractWPDomain runs `wp option get siteurl` to discover the site's domain.
