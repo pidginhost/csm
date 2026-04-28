@@ -919,6 +919,18 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 					if fm.checkPHPContent(event.fd, path, procInfo) {
 						return
 					}
+					// Suppress the path-only "anomalous location" warning
+					// when the file is structurally a duplicate (cPanel
+					// restore staging) or a known plugin probe shape that
+					// never carries executable input. Signature/YARA scans
+					// already ran above, so any real malicious content is
+					// reported through its own pipeline.
+					if looksLikeCpanelRestoreStaging(path) {
+						return
+					}
+					if looksLikeWPOptimizeProbe(path, data) {
+						return
+					}
 					fm.sendAlertWithPath(alert.Warning, "php_in_uploads_realtime",
 						fmt.Sprintf("PHP file in uploads (no webshell markers): %s", path),
 						"Anomalous location for PHP, but content is clean",

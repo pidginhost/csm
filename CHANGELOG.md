@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Tightened five YAML detection rules and one YARA rule that fired on legitimate WordPress plugin code during a cPanel package restore. Each now requires its discriminator regex (or unique shell-name marker) to match instead of letting two generic substrings clear `min_match` alone. Stops FPs on PHPMailer (`mailPassthru` + `safe_mode-aware` docblock), UpdraftPlus (`mysqldump` binary path + `wp-config.php` header reference; `popen` AJAX handlers), Elementor Pro Discord form action (`wp_remote_post` of user-configured fields), Pro Elements GitHub-updater config string, and Advanced Custom Fields REST API docblock examples.
+- `php_in_uploads_realtime` no longer emits its lowest-tier "anomalous location" warning twice per file during a cPanel package restore, nor on WP-Optimize's per-server probe files. Both shapes are recognised structurally (cPanel staging requires the marker directly under `/home`; WP-Optimize requires the plugin to actually be installed, the file to be small, and the body to contain no PHP execution primitives) so a webshell hidden in either path still trips signature/YARA scans and the warning above the recogniser.
 
 ### Added
 
