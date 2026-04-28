@@ -93,6 +93,28 @@ type Config struct {
 
 	StatePath string `yaml:"state_path" hotreload:"restart"`
 
+	// Detection groups operator-facing knobs that gate detection
+	// scanners. Today this is just the DB persistence-mechanism
+	// scanner; future detection toggles land here.
+	Detection struct {
+		// DBObjectScanning toggles the MySQL persistence scanner
+		// (triggers/events/procedures/functions). Tri-state *bool
+		// matching the existing yara_worker_enabled pattern: nil =
+		// default-on, *true = explicit on, *false = explicit off.
+		// When off both the Critical (db_malicious_*) and Warning
+		// (db_unexpected_*) emit paths fall silent; the manual
+		// `csm db-clean drop-object` CLI keeps working so operators
+		// can act on objects discovered by other means.
+		DBObjectScanning *bool `yaml:"db_object_scanning"`
+
+		// DBObjectAllowlist suppresses the Warning tier
+		// (db_unexpected_*) for objects an operator has reviewed and
+		// accepted. Entries shaped <account>:<schema>:<type>:<name>.
+		// The Critical tier (db_malicious_*) ignores this list --
+		// pattern hits always fire.
+		DBObjectAllowlist []string `yaml:"db_object_allowlist"`
+	} `yaml:"detection" hotreload:"safe"`
+
 	Suppressions struct {
 		UPCPWindowStart       string   `yaml:"upcp_window_start"`
 		UPCPWindowEnd         string   `yaml:"upcp_window_end"`

@@ -1,0 +1,162 @@
+package checks
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/pidginhost/csm/internal/store"
+)
+
+// DBDropObject drops a single trigger / event / stored procedure /
+// stored function from the operator-supplied account+schema, after:
+//
+//  1. Validating the kind ("trigger" | "event" | "procedure" | "function").
+//  2. Validating that <schema> is one of the databases this account
+//     hosts. The account is taken from /home/<account>/* wp-config.php
+//     files; an attacker who can pass an arbitrary <schema> here gets
+//     no further than DROP'ping their own database.
+//  3. QuoteIdent on both <schema> and <name>, so identifier strings
+//     never participate in SQL string concatenation.
+//  4. SHOW CREATE the object and persist the result to the
+//     db_object_backups bbolt bucket as the backup -- replaying the
+//     CREATE SQL restores the object byte-for-byte.
+//  5. DROP the object.
+//
+// preview=true short-circuits before step 4: the function reports
+// what it would do (kind, schema, name, captured CREATE SQL) without
+// touching the database.
+//
+// Per spec: detection is always-on; drop is operator-driven.
+func DBDropObject(account, schema, kind, name string, preview bool) DBCleanResult {
+	result := DBCleanResult{
+		Account: account,
+		Action:  "drop-object",
+	}
+
+	if !IsDBObjectKind(kind) {
+		result.Message = fmt.Sprintf("Invalid object kind %q (want trigger|event|procedure|function)", kind)
+		return result
+	}
+	quotedSchema, err := QuoteIdent(schema)
+	if err != nil {
+		result.Message = fmt.Sprintf("Invalid schema name: %v", err)
+		return result
+	}
+	quotedName, err := QuoteIdent(name)
+	if err != nil {
+		result.Message = fmt.Sprintf("Invalid object name: %v", err)
+		return result
+	}
+
+	knownSchemas := findAccountSchemas(account)
+	if !containsString(knownSchemas, schema) {
+		result.Message = fmt.Sprintf("Schema %q is not one of the databases discovered for account %q (known: %v)",
+			schema, account, knownSchemas)
+		return result
+	}
+	result.Database = schema
+
+	// SHOW CREATE captures the backup. Different MySQL grammars per
+	// kind: TRIGGER and EVENT use the schema-qualified name in
+	// `<schema>.<name>` form; PROCEDURE and FUNCTION accept the same
+	// shape under modern MySQL. Use the unified form for consistency.
+	showCreateSQL := fmt.Sprintf("SHOW CREATE %s %s.%s",
+		strings.ToUpper(kind), quotedSchema, quotedName)
+	createOutput := runMySQLQueryRoot(schema, showCreateSQL)
+	if len(createOutput) == 0 {
+		result.Message = fmt.Sprintf("SHOW CREATE returned no rows for %s %s.%s -- object missing or permission denied",
+			kind, schema, name)
+		return result
+	}
+	createSQL := strings.Join(createOutput, "\n")
+
+	if preview {
+		result.Message = fmt.Sprintf("PREVIEW: would drop %s %s.%s", kind, schema, name)
+		result.Details = []string{
+			fmt.Sprintf("Captured CREATE SQL (%d bytes)", len(createSQL)),
+			"No backup written and no DROP executed in preview mode.",
+		}
+		result.Success = true
+		return result
+	}
+
+	// Persist backup BEFORE the drop so a SQL failure on DROP still
+	// leaves the operator with a record of what existed.
+	sdb := store.Global()
+	if sdb == nil {
+		result.Message = "bbolt store not available; refusing to drop without a recorded backup"
+		return result
+	}
+	if err := sdb.PutDBObjectBackup(store.DBObjectBackup{
+		Account:   account,
+		Schema:    schema,
+		Kind:      kind,
+		Name:      name,
+		CreateSQL: createSQL,
+		DroppedAt: time.Now().UTC(),
+		DroppedBy: "csm-cli",
+	}); err != nil {
+		result.Message = fmt.Sprintf("recording backup failed (refusing to drop): %v", err)
+		return result
+	}
+
+	dropSQL := fmt.Sprintf("DROP %s IF EXISTS %s.%s",
+		strings.ToUpper(kind), quotedSchema, quotedName)
+	if out := runMySQLQueryRoot(schema, dropSQL); out == nil {
+		result.Message = fmt.Sprintf("DROP %s %s.%s failed (mysql client returned no output)", kind, schema, name)
+		return result
+	}
+
+	result.Details = []string{
+		fmt.Sprintf("Dropped %s %s.%s", kind, schema, name),
+		fmt.Sprintf("Backup recorded in bbolt: %d bytes", len(createSQL)),
+	}
+	result.Message = fmt.Sprintf("Dropped %s %s.%s (backup retained)", kind, schema, name)
+	result.Success = true
+	return result
+}
+
+// findAccountSchemas returns every distinct database name discovered
+// across the account's wp-config.php files. Multiple WordPress
+// installations under the same account commonly reuse one database
+// but can use several; the CLI relies on this list to validate
+// operator input before opening any connection.
+func findAccountSchemas(account string) []string {
+	patterns := []string{
+		fmt.Sprintf("/home/%s/public_html/wp-config.php", account),
+	}
+	addonConfigs, _ := osFS.Glob(fmt.Sprintf("/home/%s/*/wp-config.php", account))
+	patterns = append(patterns, addonConfigs...)
+
+	seen := map[string]struct{}{}
+	var out []string
+	for _, path := range patterns {
+		// parseWPConfig handles missing files silently, so the bare
+		// non-glob first-entry path is harmless when the account has
+		// no public_html/wp-config.php.
+		creds := parseWPConfig(path)
+		if creds.dbName == "" {
+			continue
+		}
+		if _, ok := seen[creds.dbName]; ok {
+			continue
+		}
+		seen[creds.dbName] = struct{}{}
+		out = append(out, creds.dbName)
+	}
+	return out
+}
+
+// containsString reports whether haystack contains needle. Local
+// because the package's other helper of the same name lives in a
+// _test.go file (waf_test.go) and is not visible to production
+// builds.
+func containsString(haystack []string, needle string) bool {
+	for _, h := range haystack {
+		if h == needle {
+			return true
+		}
+	}
+	return false
+}

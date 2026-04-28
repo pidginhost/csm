@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- MySQL persistence-mechanism scanner audits triggers, events, stored procedures, and stored functions for known-malware patterns (`db_malicious_*`, Critical) and unexpected presence (`db_unexpected_*`, Warning) on every WordPress installation found under `/home/*/public_html`. New `csm db-clean --drop-object <account> <schema> <type> <name> [--preview]` issues a manual drop after persisting the SHOW CREATE into a `db_object_backups` bbolt bucket. New `detection.db_object_scanning` (default on) and `detection.db_object_allowlist` knobs; the allowlist suppresses the Warning tier only.
 - Hardened `.htaccess` audit emits seven per-pattern findings (PHP-in-uploads handler maps, malicious `auto_prepend_file` targets, search-crawler UA cloaks, spam-TLD redirects, `<FilesMatch>` Allow-from-all shields, tracking-header injection, external `ErrorDocument` hijacks). New `auto_response.clean_htaccess` flag (default off) auto-cleans flagged files, with backups under `/opt/csm/quarantine/pre_clean/`.
 - `csm store export <path>` writes a tar+zstd backup of the bbolt store, state files, and the signature-rules cache; a sibling `.sha256` companion lets operators verify the archive before use.
 - `csm store import <path>` restores a backup onto a stopped daemon, with `--only=baseline` for state JSON only and `--only=firewall` for firewall buckets only. Refuses cross-platform restores unless `--force-platform-mismatch` is set.

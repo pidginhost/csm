@@ -28,6 +28,7 @@ var bucketNames = []string{
 	"meta",
 	"email:geo",
 	"email:fwd",
+	"db_object_backups",
 	bucketStatsDaily,
 }
 

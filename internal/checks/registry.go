@@ -150,8 +150,16 @@ var checkRegistry = []CheckInfo{
 
 	// --- Database Content -----------------------------------------------
 	{Name: "database_dump", Category: CategoryDatabase},
+	{Name: "db_malicious_event", Category: CategoryDatabase},
+	{Name: "db_malicious_function", Category: CategoryDatabase},
+	{Name: "db_malicious_procedure", Category: CategoryDatabase},
+	{Name: "db_malicious_trigger", Category: CategoryDatabase},
 	{Name: "db_options_injection", Category: CategoryDatabase},
 	{Name: "db_post_injection", Category: CategoryDatabase},
+	{Name: "db_unexpected_event", Category: CategoryDatabase},
+	{Name: "db_unexpected_function", Category: CategoryDatabase},
+	{Name: "db_unexpected_procedure", Category: CategoryDatabase},
+	{Name: "db_unexpected_trigger", Category: CategoryDatabase},
 	{Name: "db_rogue_admin", Category: CategoryDatabase},
 	{Name: "db_siteurl_hijack", Category: CategoryDatabase},
 	{Name: "db_spam_cleaned", Category: CategoryDatabase},

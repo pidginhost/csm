@@ -22,6 +22,7 @@
 | `nulled_plugins` | Cracked/nulled plugin detection |
 | `outdated_plugins` | Plugins with known CVEs |
 | `db_content` | Database injection, siteurl hijacking, rogue admins, spam |
+| `db_objects` | MySQL persistence mechanisms: triggers, events, stored procedures, stored functions. Critical when the body matches known-malware patterns (`sys_`+`exec`, `INTO OUTFILE`, `LOAD_FILE`, etc.); Warning when an object exists at all (vanilla CMSes ship none). Toggle with `detection.db_object_scanning`; suppress Warnings via `detection.db_object_allowlist`. Manual drop via `csm db-clean --drop-object`. |
 
 ## Phishing & Malware
 

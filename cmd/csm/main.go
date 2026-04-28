@@ -748,6 +748,33 @@ func runDBClean() {
 			os.Exit(1)
 		}
 
+	case "--drop-object":
+		if len(os.Args) < 7 {
+			fmt.Fprintf(os.Stderr, "Usage: csm db-clean --drop-object <account> <schema> <type> <name> [--preview]\n")
+			fmt.Fprintf(os.Stderr, "  <type> in {trigger, event, procedure, function}\n")
+			os.Exit(1)
+		}
+		// The CLI keeps bbolt access through store.EnsureOpen because
+		// DBDropObject persists a backup record before issuing DROP.
+		// The daemon must be stopped while the operator runs this --
+		// bbolt's exclusive file lock is the same constraint as
+		// `csm store compact`.
+		cfg := loadConfigLite()
+		if err := store.EnsureOpen(cfg.StatePath); err != nil {
+			fmt.Fprintf(os.Stderr, "csm db-clean --drop-object: opening state DB: %v\n", err)
+			fmt.Fprintln(os.Stderr, "Stop the daemon first: systemctl stop csm")
+			os.Exit(1)
+		}
+		account := os.Args[3]
+		schema := os.Args[4]
+		kind := os.Args[5]
+		name := os.Args[6]
+		result := checks.DBDropObject(account, schema, kind, name, preview)
+		fmt.Fprint(os.Stderr, checks.FormatDBCleanResult(result))
+		if !result.Success {
+			os.Exit(1)
+		}
+
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown db-clean subcommand: %s\n", subcmd)
 		printDBCleanUsage()
@@ -770,6 +797,13 @@ Usage:
   csm db-clean --delete-spam <account> [--preview]
       Delete published posts matching spam patterns (casino, viagra, etc).
       Only deletes post_type='post', post_status='publish'.
+
+  csm db-clean --drop-object <account> <schema> <type> <name> [--preview]
+      Drop a single trigger / event / stored procedure / stored function
+      after capturing its CREATE SQL into the db_object_backups bbolt
+      bucket. <type> must be one of trigger, event, procedure, function.
+      <schema> must be one of the databases discovered for <account>.
+      Daemon must be stopped (bbolt file lock).
 
 Options:
   --preview   Show what would be done without modifying the database.

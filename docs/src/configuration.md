@@ -177,6 +177,15 @@ auto_response:
   permblock_interval: "24h"             # window for counting temp blocks
   clean_htaccess: false                 # auto-clean .htaccess directives flagged by hardened detectors (backups under /opt/csm/quarantine/pre_clean/)
 
+# --- Detection ---
+detection:
+  # db_object_scanning is tri-state: omit for the default (on),
+  # `false` to explicitly disable. When off, the MySQL persistence
+  # scanner emits no findings; the manual `csm db-clean --drop-object`
+  # CLI keeps working for operator-driven cleanup.
+  # db_object_scanning: true
+  db_object_allowlist: []               # entries: <account>:<schema>:<type>:<name> -- suppresses db_unexpected_* warnings only
+
 # --- Challenge Pages ---
 challenge:
   enabled: false                        # enable PoW challenge pages instead of hard block
