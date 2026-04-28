@@ -22,6 +22,7 @@
 | `nulled_plugins` | Cracked/nulled plugin detection |
 | `outdated_plugins` | Plugins with known CVEs |
 | `db_content` | Database injection, siteurl hijacking, rogue admins, spam. Multisite-aware: when `wp-config.php` declares `define('MULTISITE', true)`, secondary blogs (`wp_<N>_options` / `wp_<N>_posts` for active blog IDs from `wp_blogs`) are scanned alongside the unprefixed main-site tables. |
+| `db_content_joomla` | Joomla database content scanning. Discovers installs via `configuration.php` containing `class JConfig`, parses credentials from `public $...;` assignments. Scans `<prefix>extensions` params, `<prefix>content` article bodies, and joins `<prefix>users` with `<prefix>user_usergroup_map` for Super User detection (group_id=8). Findings: `joomla_extensions_injection`, `joomla_content_injection`, `joomla_admin_injection`. |
 | `db_objects` | MySQL persistence mechanisms: triggers, events, stored procedures, stored functions. Critical when the body matches known-malware patterns (`sys_`+`exec`, `INTO OUTFILE`, `LOAD_FILE`, etc.); Warning when an object exists at all (vanilla CMSes ship none). Toggle with `detection.db_object_scanning`; suppress Warnings via `detection.db_object_allowlist`. Manual drop via `csm db-clean --drop-object`. |
 
 ## Phishing & Malware
