@@ -160,6 +160,7 @@ add_action('wp_footer', function() {
 		t.Error("spam_wp_footer_injection regression: real footer link injection was not detected")
 	}
 }
+
 // FP reconstruction for the 2026-04-28 cPanel package-restore event.
 //
 // UpdraftPlus (popular WP backup plugin) ships class-updraftplus.php that
@@ -233,7 +234,6 @@ class UpdraftPlus {
 		t.Error("webshell_generic_passthru regression: base64_decode-wrapped superglobal feed was not detected")
 	}
 }
-
 
 // FP reconstruction: Elementor Pro's pro-elements/modules/forms/actions/
 // discord.php embeds the Discord webhook URL twice (once as a placeholder
