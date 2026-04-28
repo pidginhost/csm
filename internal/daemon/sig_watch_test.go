@@ -12,30 +12,37 @@ import (
 	"github.com/pidginhost/csm/internal/store"
 )
 
-// newWatcherForTest constructs a sigWatcher backed by a real bbolt
-// store under t.TempDir(), watching a fresh rules directory. The
-// returned function writes a signature file with optional content
-// and a specific mtime so tests can drive changes deterministically.
-func newWatcherForTest(t *testing.T) (*sigWatcher, string, chan alert.Finding, *atomic.Bool) {
+// newWatcherForTest constructs a sigWatcher whose cfgFunc and
+// storeFunc resolve to fresh per-test instances. Returns the cfg by
+// value so tests can mutate Detection.RescanOnSignatureUpdate to
+// exercise the kill switch; the watcher reads it through the
+// closure on every tick.
+func newWatcherForTest(t *testing.T) (w *sigWatcher, rulesDir string, alertCh chan alert.Finding, flag *atomic.Bool, cfg *config.Config, sdb *store.DB) {
 	t.Helper()
 
-	rulesDir := t.TempDir()
+	rulesDir = t.TempDir()
 	stateDir := t.TempDir()
 
-	sdb, err := store.Open(stateDir)
+	var err error
+	sdb, err = store.Open(stateDir)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = sdb.Close() })
 
-	cfg := &config.Config{}
+	cfg = &config.Config{}
 	cfg.Signatures.RulesDir = rulesDir
 
-	flag := &atomic.Bool{}
-	alertCh := make(chan alert.Finding, 16)
+	flag = &atomic.Bool{}
+	alertCh = make(chan alert.Finding, 16)
 
-	w := newSigWatcher(cfg, flag, alertCh, sdb)
-	return w, rulesDir, alertCh, flag
+	w = newSigWatcher(
+		func() *config.Config { return cfg },
+		func() *store.DB { return sdb },
+		flag,
+		alertCh,
+	)
+	return
 }
 
 // writeRule creates rulesDir/<name> with content and the supplied
@@ -67,7 +74,7 @@ func drainAlerts(ch chan alert.Finding) []alert.Finding {
 // --- First-tick baseline ---------------------------------------------------
 
 func TestSigWatchFirstTickIsBaselineOnly(t *testing.T) {
-	w, rulesDir, alertCh, flag := newWatcherForTest(t)
+	w, rulesDir, alertCh, flag, _, sdb := newWatcherForTest(t)
 
 	writeRule(t, rulesDir, "malware.yml", "rules: []", time.Now().Add(-time.Hour))
 	writeRule(t, rulesDir, "phish.yara", "rule a {}", time.Now().Add(-time.Hour))
@@ -81,8 +88,9 @@ func TestSigWatchFirstTickIsBaselineOnly(t *testing.T) {
 		t.Errorf("first tick emitted %d alerts; should be silent", len(got))
 	}
 
+	_ = w
 	// The persisted map should now have both files.
-	persisted, err := w.store.GetSignatureMtimes()
+	persisted, err := sdb.GetSignatureMtimes()
 	if err != nil {
 		t.Fatalf("GetSignatureMtimes: %v", err)
 	}
@@ -94,7 +102,7 @@ func TestSigWatchFirstTickIsBaselineOnly(t *testing.T) {
 // --- mtime advance arms the flag ------------------------------------------
 
 func TestSigWatchMtimeAdvanceArmsRescan(t *testing.T) {
-	w, rulesDir, alertCh, flag := newWatcherForTest(t)
+	w, rulesDir, alertCh, flag, _, _ := newWatcherForTest(t)
 
 	path := writeRule(t, rulesDir, "malware.yml", "v1", time.Now().Add(-2*time.Hour))
 	w.tick() // baseline
@@ -124,7 +132,7 @@ func TestSigWatchMtimeAdvanceArmsRescan(t *testing.T) {
 // --- Backwards mtime motion is also a change ------------------------------
 
 func TestSigWatchBackwardsMtimeArmsRescan(t *testing.T) {
-	w, rulesDir, _, flag := newWatcherForTest(t)
+	w, rulesDir, _, flag, _, _ := newWatcherForTest(t)
 
 	path := writeRule(t, rulesDir, "malware.yml", "v1", time.Now().Add(-time.Hour))
 	w.tick()
@@ -144,7 +152,7 @@ func TestSigWatchBackwardsMtimeArmsRescan(t *testing.T) {
 // --- Removed files don't trigger rescan -----------------------------------
 
 func TestSigWatchRemovedFileDoesNotArmRescan(t *testing.T) {
-	w, rulesDir, _, flag := newWatcherForTest(t)
+	w, rulesDir, _, flag, _, sdb := newWatcherForTest(t)
 
 	path := writeRule(t, rulesDir, "malware.yml", "v1", time.Now().Add(-time.Hour))
 	writeRule(t, rulesDir, "phish.yml", "v1", time.Now().Add(-time.Hour))
@@ -159,7 +167,7 @@ func TestSigWatchRemovedFileDoesNotArmRescan(t *testing.T) {
 	if flag.Load() {
 		t.Error("removing a file armed rescan; should be silent per spec")
 	}
-	persisted, _ := w.store.GetSignatureMtimes()
+	persisted, _ := sdb.GetSignatureMtimes()
 	if _, still := persisted[path]; still {
 		t.Errorf("removed file still in persisted mtime map")
 	}
@@ -175,7 +183,7 @@ func TestSigWatchNewFilePostBaselineIsSilent(t *testing.T) {
 	// This avoids a fresh `update-rules` install causing a rescan
 	// when the daemon also starts cold and the rules dir is brand
 	// new.
-	w, rulesDir, _, flag := newWatcherForTest(t)
+	w, rulesDir, _, flag, _, _ := newWatcherForTest(t)
 
 	writeRule(t, rulesDir, "malware.yml", "v1", time.Now().Add(-time.Hour))
 	w.tick()
@@ -192,7 +200,7 @@ func TestSigWatchNewFilePostBaselineIsSilent(t *testing.T) {
 // --- Sub-directory walk ---------------------------------------------------
 
 func TestSigWatchTracksSubdirectories(t *testing.T) {
-	w, rulesDir, _, flag := newWatcherForTest(t)
+	w, rulesDir, _, flag, _, _ := newWatcherForTest(t)
 
 	sub := filepath.Join(rulesDir, "yara-forge", "core")
 	if err := os.MkdirAll(sub, 0755); err != nil {
@@ -220,7 +228,7 @@ func TestSigWatchTracksSubdirectories(t *testing.T) {
 // --- Restart persistence ---------------------------------------------------
 
 func TestSigWatchRestartDoesNotPhantomRescan(t *testing.T) {
-	w, rulesDir, alertCh, _ := newWatcherForTest(t)
+	w, rulesDir, alertCh, _, _, sdb := newWatcherForTest(t)
 
 	writeRule(t, rulesDir, "malware.yml", "v1", time.Now().Add(-time.Hour))
 	w.tick() // baseline persists mtimes to bbolt
@@ -230,7 +238,12 @@ func TestSigWatchRestartDoesNotPhantomRescan(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Signatures.RulesDir = rulesDir
 	flag := &atomic.Bool{}
-	w2 := newSigWatcher(cfg, flag, alertCh, w.store)
+	w2 := newSigWatcher(
+		func() *config.Config { return cfg },
+		func() *store.DB { return sdb },
+		flag,
+		alertCh,
+	)
 	w2.tick()
 
 	if flag.Load() {
@@ -241,7 +254,7 @@ func TestSigWatchRestartDoesNotPhantomRescan(t *testing.T) {
 // --- Extension filter ------------------------------------------------------
 
 func TestSigWatchIgnoresUntrackedExtensions(t *testing.T) {
-	w, rulesDir, _, flag := newWatcherForTest(t)
+	w, rulesDir, _, flag, _, _ := newWatcherForTest(t)
 
 	// Create files with extensions outside the tracked set; mtime
 	// changes on these should never arm the flag.
@@ -295,9 +308,9 @@ func TestSigWatchEnabledTriState(t *testing.T) {
 }
 
 func TestSigWatchKillSwitchSilencesTick(t *testing.T) {
-	w, rulesDir, alertCh, flag := newWatcherForTest(t)
+	w, rulesDir, alertCh, flag, cfg, sdb := newWatcherForTest(t)
 	off := false
-	w.cfg.Detection.RescanOnSignatureUpdate = &off
+	cfg.Detection.RescanOnSignatureUpdate = &off
 
 	writeRule(t, rulesDir, "malware.yml", "v1", time.Now().Add(-2*time.Hour))
 	w.tick()
@@ -309,16 +322,103 @@ func TestSigWatchKillSwitchSilencesTick(t *testing.T) {
 	if got := drainAlerts(alertCh); len(got) > 0 {
 		t.Errorf("disabled watcher emitted alerts: %v", got)
 	}
-	persisted, _ := w.store.GetSignatureMtimes()
+	persisted, _ := sdb.GetSignatureMtimes()
 	if len(persisted) != 0 {
 		t.Errorf("disabled watcher persisted %d entries, want 0", len(persisted))
+	}
+}
+
+// TestSigWatchHotReloadOfRulesDirIsHonored guards against a regression
+// where the watcher captured cfg.Signatures.RulesDir at construction
+// instead of reading it per tick. After a config swap, the next tick
+// must walk the new dir.
+func TestSigWatchHotReloadOfRulesDirIsHonored(t *testing.T) {
+	w, oldDir, _, flag, cfg, _ := newWatcherForTest(t)
+	newDir := t.TempDir()
+
+	// Baseline against oldDir.
+	writeRule(t, oldDir, "v1.yml", "v1", time.Now().Add(-time.Hour))
+	w.tick()
+	flag.Store(false)
+
+	// Hot-reload: cfg now points at newDir. Drop a fresh file there
+	// older than its first observation -- since "first observation
+	// is silent", this should NOT arm the rescan; the test confirms
+	// the watcher is now reading newDir not oldDir by checking that
+	// touching oldDir is a no-op.
+	cfg.Signatures.RulesDir = newDir
+	w.tick() // baseline against newDir
+
+	// Touch a file under oldDir; the watcher should not see it.
+	old := writeRule(t, oldDir, "v1.yml", "v2", time.Now())
+	_ = os.Chtimes(old, time.Now().Add(time.Minute), time.Now().Add(time.Minute))
+	w.tick()
+
+	if flag.Load() {
+		t.Error("watcher still walking the OLD rulesDir after hot-reload")
+	}
+
+	// Now touch a file under newDir; the watcher should arm.
+	newFile := writeRule(t, newDir, "v2.yml", "v1", time.Now().Add(-2*time.Hour))
+	w.tick() // observe newFile (silent: first observation)
+	if flag.Load() {
+		t.Fatal("first observation of new file under newDir armed rescan")
+	}
+	_ = os.Chtimes(newFile, time.Now().Add(time.Minute), time.Now().Add(time.Minute))
+	w.tick()
+	if !flag.Load() {
+		t.Error("mtime advance under newDir did not arm rescan after hot-reload")
+	}
+}
+
+// TestSigWatchLazyStoreRecoversOnceAvailable guards against a
+// regression where store.Global() returning nil at goroutine spawn
+// would leave the watcher persistence-blind for its lifetime.
+func TestSigWatchLazyStoreRecoversOnceAvailable(t *testing.T) {
+	rulesDir := t.TempDir()
+	stateDir := t.TempDir()
+	cfg := &config.Config{}
+	cfg.Signatures.RulesDir = rulesDir
+	flag := &atomic.Bool{}
+	alertCh := make(chan alert.Finding, 16)
+
+	var sdb *store.DB // initially nil
+	w := newSigWatcher(
+		func() *config.Config { return cfg },
+		func() *store.DB { return sdb },
+		flag,
+		alertCh,
+	)
+
+	writeRule(t, rulesDir, "v1.yml", "v1", time.Now().Add(-time.Hour))
+	w.tick() // store nil: in-memory only
+	if flag.Load() {
+		t.Fatal("nil-store first tick armed rescan")
+	}
+
+	// Bring up the store and re-tick. The persisted map should now
+	// be populated even though it was nil at construction.
+	var err error
+	sdb, err = store.Open(stateDir)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer func() { _ = sdb.Close() }()
+
+	w.tick()
+	persisted, err := sdb.GetSignatureMtimes()
+	if err != nil {
+		t.Fatalf("GetSignatureMtimes: %v", err)
+	}
+	if len(persisted) == 0 {
+		t.Error("store became available but watcher never persisted mtimes")
 	}
 }
 
 // --- Coalescing multiple changes ------------------------------------------
 
 func TestSigWatchCoalescesMultipleChangesIntoOneFlagOnePerFile(t *testing.T) {
-	w, rulesDir, alertCh, flag := newWatcherForTest(t)
+	w, rulesDir, alertCh, flag, _, _ := newWatcherForTest(t)
 
 	a := writeRule(t, rulesDir, "a.yml", "v1", time.Now().Add(-2*time.Hour))
 	b := writeRule(t, rulesDir, "b.yar", "v1", time.Now().Add(-2*time.Hour))

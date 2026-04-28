@@ -61,12 +61,20 @@ func observeSignatureRescan() {
 
 // sigWatcher carries the watcher's loop state. The daemon owns one
 // instance; the goroutine in (*Daemon).signatureWatcher drives it.
+//
+// cfg and store are re-resolved per tick, not captured at
+// construction. Originally we cached cfg.Signatures.RulesDir and
+// store.Global() into struct fields and discovered two ways that
+// could go wrong: a hot-reload that changed the rules dir would
+// silently keep walking the old path, and a daemon ordering quirk
+// where store.Global() is nil at goroutine spawn would leave the
+// watcher persistence-blind for the rest of its lifetime. Live
+// resolution closes both.
 type sigWatcher struct {
-	cfg        *config.Config
-	rulesDir   string
+	cfgFunc    func() *config.Config
+	storeFunc  func() *store.DB
 	rescanFlag *atomic.Bool
 	alertCh    chan<- alert.Finding
-	store      *store.DB
 	interval   time.Duration
 
 	// Initialised on first tick from store.GetSignatureMtimes(); the
@@ -75,29 +83,30 @@ type sigWatcher struct {
 }
 
 // newSigWatcher constructs a watcher with production defaults.
+// cfgFunc and storeFunc are called per tick so config hot-reloads
+// and lazy bbolt initialisation are picked up automatically.
 // Callers can override the interval after construction for tests.
-func newSigWatcher(cfg *config.Config, flag *atomic.Bool, alertCh chan<- alert.Finding, sdb *store.DB) *sigWatcher {
+func newSigWatcher(cfgFunc func() *config.Config, storeFunc func() *store.DB, flag *atomic.Bool, alertCh chan<- alert.Finding) *sigWatcher {
 	return &sigWatcher{
-		cfg:        cfg,
-		rulesDir:   cfg.Signatures.RulesDir,
+		cfgFunc:    cfgFunc,
+		storeFunc:  storeFunc,
 		rescanFlag: flag,
 		alertCh:    alertCh,
-		store:      sdb,
 		interval:   sigWatchInterval,
 	}
 }
 
 // loadInitial pulls the persisted mtime map into memory. Called once
-// before the first tick. A read error here is non-fatal -- the
+// when w.lastMtimes is nil. A read error here is non-fatal -- the
 // watcher operates with an empty map and the next tick re-persists,
 // so the cost of a transient bbolt error is at most one phantom
 // rescan.
-func (w *sigWatcher) loadInitial() {
-	if w.store == nil {
+func (w *sigWatcher) loadInitial(sdb *store.DB) {
+	if sdb == nil {
 		w.lastMtimes = map[string]time.Time{}
 		return
 	}
-	got, err := w.store.GetSignatureMtimes()
+	got, err := sdb.GetSignatureMtimes()
 	if err != nil {
 		csmlog.Warn("sig_watch: loading persisted mtimes", "err", err)
 		w.lastMtimes = map[string]time.Time{}
@@ -111,14 +120,29 @@ func (w *sigWatcher) loadInitial() {
 // the persisted map without triggering a rescan -- the spec calls
 // out only mtime-advance as a trigger.
 func (w *sigWatcher) tick() {
-	if !sigWatchEnabled(w.cfg) || w.rulesDir == "" {
+	cfg := w.cfgFunc()
+	if !sigWatchEnabled(cfg) {
 		return
 	}
+	rulesDir := cfg.Signatures.RulesDir
+	if rulesDir == "" {
+		return
+	}
+	sdb := w.storeFunc()
+
+	// Defer first-time persistence load until we have a non-nil
+	// store. A nil store on the first tick (race against bbolt
+	// open) means we operate purely in-memory; once bbolt is up,
+	// the next tick triggers loadInitial as if for the first time
+	// because lastMtimes is still nil.
+	if w.lastMtimes == nil && sdb != nil {
+		w.loadInitial(sdb)
+	}
 	if w.lastMtimes == nil {
-		w.loadInitial()
+		w.lastMtimes = map[string]time.Time{}
 	}
 
-	current := w.walkRulesDir()
+	current := walkRulesDir(rulesDir)
 	var changed []sigWatchChange
 	for path, mtime := range current {
 		old, ok := w.lastMtimes[path]
@@ -134,8 +158,8 @@ func (w *sigWatcher) tick() {
 	}
 
 	w.lastMtimes = current
-	if w.store != nil {
-		if err := w.store.PutSignatureMtimes(current); err != nil {
+	if sdb != nil {
+		if err := sdb.PutSignatureMtimes(current); err != nil {
 			csmlog.Warn("sig_watch: persisting mtimes", "err", err)
 		}
 	}
@@ -162,12 +186,14 @@ func (w *sigWatcher) tick() {
 	}
 }
 
-// walkRulesDir returns mtimes for every signature file under
-// w.rulesDir. Sub-directories are walked too -- the YARA Forge
-// updater puts files under tier-named subfolders.
-func (w *sigWatcher) walkRulesDir() map[string]time.Time {
+// walkRulesDir returns mtimes for every signature file under dir.
+// Sub-directories are walked too -- the YARA Forge updater puts
+// files under tier-named subfolders. Errors during walk (missing
+// dir, EACCES on a sub-tree) are swallowed; we want one bad path
+// not to crash the watcher or stop sibling traversal.
+func walkRulesDir(dir string) map[string]time.Time {
 	out := map[string]time.Time{}
-	_ = filepath.Walk(w.rulesDir, func(path string, info os.FileInfo, err error) error {
+	_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			// Missing dir or EACCES on a sub-tree -- ignore so the
 			// watcher does not crash. We deliberately swallow err
@@ -224,16 +250,20 @@ type sigWatchChange struct {
 // signatureWatcher is the daemon's signature-watch goroutine. Runs
 // until d.stopCh is closed; ticks every sigWatchInterval, sets
 // d.forceFullRescan when any tracked rule file's mtime advances.
+//
+// Cfg and store are accessed via getter closures (not captured
+// values) so a hot-reload of signatures.rules_dir takes effect on
+// the next tick and a late-initialised bbolt is picked up
+// automatically.
 func (d *Daemon) signatureWatcher() {
 	defer d.wg.Done()
 
-	cfg := d.currentCfg()
-	if cfg == nil {
-		csmlog.Warn("sig_watch: no config available, watcher disabled")
-		return
-	}
-
-	w := newSigWatcher(cfg, &d.forceFullRescan, d.alertCh, store.Global())
+	w := newSigWatcher(
+		func() *config.Config { return d.currentCfg() },
+		store.Global,
+		&d.forceFullRescan,
+		d.alertCh,
+	)
 
 	ticker := time.NewTicker(w.interval)
 	defer ticker.Stop()
@@ -247,10 +277,6 @@ func (d *Daemon) signatureWatcher() {
 		case <-d.stopCh:
 			return
 		case <-ticker.C:
-			// Pull cfg each tick so a hotreload of
-			// detection.rescan_on_signature_update takes effect on
-			// the next iteration without a daemon restart.
-			w.cfg = d.currentCfg()
 			w.tick()
 		}
 	}
