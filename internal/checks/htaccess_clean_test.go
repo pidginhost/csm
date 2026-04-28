@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -368,5 +369,68 @@ func TestAutoCleanHtaccessRespectsAutoResponseDisabled(t *testing.T) {
 	}})
 	if len(got) != 0 {
 		t.Errorf("AutoCleanHtaccess ran with AutoResponse.Enabled=false: %+v", got)
+	}
+}
+
+// Regression: the htaccess cleaner used to write a key=value
+// .meta sidecar that no consumer in the pipeline parsed,
+// rendering pre_clean entries invisible in the existing
+// /api/v1/quarantine listing. Switching to the JSON
+// QuarantineMeta shape lets the existing webui handlers pick
+// them up. This test asserts the format on disk.
+func TestCleanHtaccessFileMetaIsValidQuarantineJSON(t *testing.T) {
+	prevRoots := fixHtaccessAllowedRoots
+	prevBackup := htaccessBackupDirRoot
+	defer func() {
+		fixHtaccessAllowedRoots = prevRoots
+		htaccessBackupDirRoot = prevBackup
+	}()
+	dir := t.TempDir()
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	dir = resolved
+	fixHtaccessAllowedRoots = []string{dir}
+	htaccessBackupDirRoot = filepath.Join(t.TempDir(), "pre_clean")
+
+	body := "ErrorDocument 404 https://attacker.tk/oops.html\n"
+	path := writeHtaccess(t, dir, "site", body)
+
+	res := CleanHtaccessFile(path)
+	if !res.Success {
+		t.Fatalf("Clean: %v", res.Error)
+	}
+
+	entries, err := os.ReadDir(htaccessBackupDirRoot)
+	if err != nil {
+		t.Fatalf("backup dir: %v", err)
+	}
+	var metaPath string
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".meta") {
+			metaPath = filepath.Join(htaccessBackupDirRoot, e.Name())
+			break
+		}
+	}
+	if metaPath == "" {
+		t.Fatal(".meta file not produced")
+	}
+	raw, err := os.ReadFile(metaPath) // #nosec G304 -- t.TempDir() path
+	if err != nil {
+		t.Fatalf("read meta: %v", err)
+	}
+	var meta QuarantineMeta
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		t.Fatalf("meta is not valid JSON QuarantineMeta: %v\nbody=%s", err, raw)
+	}
+	if meta.OriginalPath == "" {
+		t.Errorf("OriginalPath empty in %+v", meta)
+	}
+	if meta.QuarantineAt.IsZero() {
+		t.Errorf("QuarantineAt zero in %+v", meta)
+	}
+	if !strings.Contains(meta.Reason, "htaccess") {
+		t.Errorf("Reason should mention htaccess, got %q", meta.Reason)
 	}
 }

@@ -189,11 +189,6 @@ func containsString(haystack []string, needle string) bool {
 // key; the caller (typically the web UI's cleanup-history page)
 // supplies the key it got from the listing endpoint.
 //
-// Returns the restored DBCleanResult on success. On failure the
-// Error field carries a sanitised message; the underlying mysql
-// error (which may include schema names) is logged but not
-// returned to avoid leaking internal detail through the API.
-//
 // Per spec the operation is operator-driven: there is no auto-
 // restore. The webui handler enforces the same.
 func RestoreDBObjectBackup(backupKey string) DBCleanResult {
