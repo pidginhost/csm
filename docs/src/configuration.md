@@ -185,6 +185,7 @@ detection:
   # CLI keeps working for operator-driven cleanup.
   # db_object_scanning: true
   db_object_allowlist: []               # entries: <account>:<schema>:<type>:<name> -- suppresses db_unexpected_* warnings only
+  # rescan_on_signature_update: true    # tri-state; omit for default-on, false to disable retroactive sweeps
 
 # --- Challenge Pages ---
 challenge:

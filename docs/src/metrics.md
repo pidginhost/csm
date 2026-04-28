@@ -178,6 +178,13 @@ curl -sk -H "Authorization: Bearer $METRICS_TOKEN" \
   for estimating when the file might benefit from a
   `csm store compact` maintenance window.
 
+### Signature retroactive rescans
+
+- `csm_signature_rescans_total` (counter): full deep-tier sweeps
+  completed because a signature file's mtime advanced. Steady-state
+  zero on hosts that don't auto-update rules; ticks once per
+  `update-rules` invocation otherwise.
+
 ## Counter reset semantics
 
 Prometheus counters in CSM live in process memory. They reset to zero

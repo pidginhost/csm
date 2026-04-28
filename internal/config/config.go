@@ -113,6 +113,15 @@ type Config struct {
 		// The Critical tier (db_malicious_*) ignores this list --
 		// pattern hits always fire.
 		DBObjectAllowlist []string `yaml:"db_object_allowlist"`
+
+		// RescanOnSignatureUpdate fires a forced full-tree deep
+		// scan the next time any file under cfg.Signatures.RulesDir
+		// has its mtime advance. Tri-state *bool: nil = default-on,
+		// *true = explicit on, *false = explicit off. Off means the
+		// existing behaviour (deep-tier runs against the fanotify
+		// short-list when fanotify is active) is unchanged; new
+		// rules only catch files that change after the update.
+		RescanOnSignatureUpdate *bool `yaml:"rescan_on_signature_update"`
 	} `yaml:"detection" hotreload:"safe"`
 
 	Suppressions struct {

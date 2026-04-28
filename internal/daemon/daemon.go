@@ -77,6 +77,14 @@ type Daemon struct {
 	yaraSup            *yaraworker.Supervisor
 	yaraCrashMu        sync.Mutex
 	yaraLastCrashAlert time.Time
+
+	// forceFullRescan is armed by the signature watcher
+	// (sig_watch.go) when any tracked rule file's mtime advances.
+	// The deep-tier scheduler reads + clears the flag at the start
+	// of each tick; when set, the tick bypasses the fanotify
+	// short-list and runs the full account tree against the new
+	// ruleset.
+	forceFullRescan atomic.Bool
 }
 
 // New creates a new daemon instance.
@@ -454,6 +462,12 @@ func (d *Daemon) Run() error {
 	d.wg.Add(1)
 	obs.Go("signature-updater", d.signatureUpdater)
 
+	// Start signature mtime watcher: arms forceFullRescan when any
+	// rule file's mtime advances. Disabled wholesale via
+	// detection.rescan_on_signature_update: false.
+	d.wg.Add(1)
+	obs.Go("signature-watcher", d.signatureWatcher)
+
 	d.wg.Add(1)
 	obs.Go("geoip-updater", d.geoipUpdater)
 
@@ -772,12 +786,25 @@ func (d *Daemon) deepScanner() {
 
 			// If fanotify is active, only run checks it can't replace.
 			// If fanotify is NOT active, run the full deep tier.
+			//
+			// One exception: forceFullRescan is armed by the
+			// signature watcher when any rule file's mtime advances.
+			// In that case we bypass the fanotify short-list so the
+			// new ruleset gets a full sweep against existing files;
+			// without this, only files that change AFTER the rule
+			// update would catch the new patterns.
+			rescan := d.forceFullRescan.CompareAndSwap(true, false)
 			var findings []alert.Finding
 			var deepTier checks.Tier
-			if d.fileMonitor != nil {
+			switch {
+			case rescan:
+				deepTier = checks.TierDeep
+				findings = checks.RunTier(d.currentCfg(), d.store, deepTier)
+				observeSignatureRescan()
+			case d.fileMonitor != nil:
 				findings = checks.RunReducedDeep(d.currentCfg(), d.store)
 				deepTier = checks.TierDeep
-			} else {
+			default:
 				deepTier = checks.TierDeep
 				findings = checks.RunTier(d.currentCfg(), d.store, deepTier)
 			}
