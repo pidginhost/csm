@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Tightened five YAML detection rules and one YARA rule that fired on legitimate WordPress plugin code during a cPanel package restore. Each now requires its discriminator regex (or unique shell-name marker) to match instead of letting two generic substrings clear `min_match` alone. Stops FPs on PHPMailer (`mailPassthru` + `safe_mode-aware` docblock), UpdraftPlus (`mysqldump` binary path + `wp-config.php` header reference; `popen` AJAX handlers), Elementor Pro Discord form action (`wp_remote_post` of user-configured fields), Pro Elements GitHub-updater config string, and Advanced Custom Fields REST API docblock examples.
+
 ### Added
 
 - Cleanup-history API: list and rollback endpoints for MySQL persistence drops (`/api/v1/db-object-backups`, `/api/v1/db-object-backup-restore`). Browser-side tab to follow.

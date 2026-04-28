@@ -160,3 +160,76 @@ add_action('wp_footer', function() {
 		t.Error("spam_wp_footer_injection regression: real footer link injection was not detected")
 	}
 }
+// FP reconstruction for the 2026-04-28 cPanel package-restore event.
+//
+// UpdraftPlus (popular WP backup plugin) ships class-updraftplus.php that
+// uses popen() and proc_open() to invoke mysqldump with escapeshellarg-built
+// arguments. The plugin also handles AJAX requests, so it references
+// $_POST/$_REQUEST. The old YARA rule fired "any of dangerous_function and
+// any of superglobal" anywhere in the file - never requiring proximity. The
+// fix: require the dangerous function to take a superglobal directly (or
+// through a thin decoder wrapper), which is the actual webshell shape.
+
+func TestWebshellGenericPassthru_UpdraftPlusBackupClass(t *testing.T) {
+	scanner := loadRepoYaraScanner(t)
+
+	// UpdraftPlus class-updraftplus.php: popen on a constructed mysqldump
+	// command (escapeshellarg) plus AJAX handlers that read $_POST. The
+	// dangerous function and the superglobal never meet as caller/callee.
+	legit := []byte(`<?php
+class UpdraftPlus {
+    public function ajax_action() {
+        if (isset($_POST['subaction'])) {
+            $sub = sanitize_text_field($_POST['subaction']);
+            return $this->dispatch($sub);
+        }
+    }
+
+    private function find_working_sqldump() {
+        $cmd = escapeshellarg('/usr/bin/mysqldump') . ' --version';
+        $handle = popen($cmd, "r");
+        if (!$handle) return false;
+        $out = stream_get_contents($handle);
+        pclose($handle);
+        return $out;
+    }
+
+    private function backup_db_tables($host, $user, $pass, $db, $outfile) {
+        $args = " --user=" . escapeshellarg($user) .
+                " --password=" . escapeshellarg($pass) .
+                " --host=" . escapeshellarg($host) .
+                " " . escapeshellarg($db);
+        $exec = escapeshellarg('/usr/bin/mysqldump') . $args . " > " . escapeshellarg($outfile);
+        $descriptors = [0=>['pipe','r'], 1=>['pipe','w'], 2=>['pipe','w']];
+        $proc = proc_open($exec, $descriptors, $pipes);
+        proc_close($proc);
+    }
+}
+`)
+	if hasYaraRule(scanner.ScanBytes(legit), "webshell_generic_passthru") {
+		t.Error("webshell_generic_passthru FP: matched UpdraftPlus class-updraftplus.php (popen/proc_open with escapeshellarg-built command, AJAX handlers using sanitize_text_field; superglobal never reaches dangerous function)")
+	}
+
+	// Real webshell: direct superglobal as argument to dangerous function.
+	malicious := []byte(`<?php
+@passthru($_REQUEST['c']);
+`)
+	if !hasYaraRule(scanner.ScanBytes(malicious), "webshell_generic_passthru") {
+		t.Error("webshell_generic_passthru regression: direct passthru($_REQUEST) shell was not detected")
+	}
+
+	// Real webshell with decoder wrapper: still direct superglobal feed.
+	maliciousWrapped := []byte(`<?php
+@system(stripslashes($_POST['cmd']));
+`)
+	if !hasYaraRule(scanner.ScanBytes(maliciousWrapped), "webshell_generic_passthru") {
+		t.Error("webshell_generic_passthru regression: stripslashes-wrapped superglobal feed was not detected")
+	}
+
+	maliciousBase64 := []byte(`<?php
+@shell_exec(base64_decode($_POST['x']));
+`)
+	if !hasYaraRule(scanner.ScanBytes(maliciousBase64), "webshell_generic_passthru") {
+		t.Error("webshell_generic_passthru regression: base64_decode-wrapped superglobal feed was not detected")
+	}
+}
