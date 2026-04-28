@@ -171,31 +171,122 @@ func parseJConfig(path string) jConfigCreds {
 }
 
 // scanJoomlaExtensions queries the extensions table for params
-// blobs containing any malware pattern. The params column carries
-// JSON-serialized configuration; attackers commonly inject script
-// tags or external loader URLs into the system extensions.
+// blobs that match the malware-pattern pre-filter, then applies a
+// Go-side post-filter to drop rows whose only match was <script>
+// LIKE noise (legitimate analytics embeds in extension params).
+//
+// Two-phase classifier:
+//
+//  1. SQL pre-filter via LIKE keeps the result set bounded -- a
+//     vanilla Joomla #__extensions table has ~50 rows, but a
+//     plugin-heavy install can exceed 200, and we don't want to
+//     pull every params blob into the daemon.
+//
+//  2. Go classifyJoomlaRow re-checks each pattern individually
+//     against the full body, applying the same requiresExternalScript
+//     filter the WP scanner uses for wp_options. Strict predicate
+//     here (hasMaliciousExternalScript) because params is config
+//     storage.
 func scanJoomlaExtensions(account string, creds jConfigCreds, prefix string) []alert.Finding {
 	query := fmt.Sprintf(
 		"SELECT name, params FROM %sextensions WHERE %s",
 		prefix, paramsLikeClause("params"))
-	return runJoomlaScan(creds.asWPDBCreds(), query,
-		"joomla_extensions_injection",
-		fmt.Sprintf("Joomla extension params injection on %s", account))
+	rows := runMySQLQuery(creds.asWPDBCreds(), query)
+	var findings []alert.Finding
+	for _, row := range rows {
+		name, body := splitTabRow(row)
+		if name == "" {
+			continue
+		}
+		sev, desc, ok := classifyJoomlaRow(body, false)
+		if !ok {
+			continue
+		}
+		findings = append(findings, alert.Finding{
+			Severity: sev,
+			Check:    "joomla_extensions_injection",
+			Message:  fmt.Sprintf("Joomla extension params injection on %s: %s (%s)", account, name, desc),
+			Details:  fmt.Sprintf("Account: %s\nExtension: %s\nMatch: %s", account, name, desc),
+		})
+	}
+	return findings
 }
 
-// scanJoomlaContent queries article bodies (introtext + fulltext)
-// for malware patterns. Attackers use article injection both for
-// SEO spam and as a delivery vector for second-stage browser
-// exploits.
+// scanJoomlaContent queries article bodies (introtext) for malware
+// patterns. Same two-phase classifier as scanJoomlaExtensions but
+// uses the looser post-filter (hasMaliciousExternalScriptInPost)
+// because articles are author-written and may carry pre-TLS-era
+// embeds the strict predicate would flag on scheme alone.
+//
+// fulltext_ is not scanned in v1: it's almost never populated on
+// modern Joomla installs (the read-more split is a layout choice
+// most templates don't bother with), and adding it doubles the
+// query cost for marginal coverage. Follow-up if operators see
+// missed detections.
 func scanJoomlaContent(account string, creds jConfigCreds, prefix string) []alert.Finding {
 	query := fmt.Sprintf(
-		"SELECT id, title FROM %scontent WHERE %s",
-		prefix, paramsLikeClause("introtext", "fulltext_"))
-	// MySQL reserved words: `fulltext` is reserved, the column is
-	// `fulltext_`. Both Joomla 3 and 4 use the underscored form.
-	return runJoomlaScan(creds.asWPDBCreds(), query,
-		"joomla_content_injection",
-		fmt.Sprintf("Joomla article content injection on %s", account))
+		"SELECT id, title, introtext FROM %scontent WHERE %s",
+		prefix, paramsLikeClause("introtext"))
+	rows := runMySQLQuery(creds.asWPDBCreds(), query)
+	var findings []alert.Finding
+	for _, row := range rows {
+		fields := strings.SplitN(row, "\t", 3)
+		if len(fields) < 3 {
+			continue
+		}
+		id, title, body := fields[0], fields[1], fields[2]
+		sev, desc, ok := classifyJoomlaRow(body, true)
+		if !ok {
+			continue
+		}
+		findings = append(findings, alert.Finding{
+			Severity: sev,
+			Check:    "joomla_content_injection",
+			Message:  fmt.Sprintf("Joomla article content injection on %s: id=%s title=%q (%s)", account, id, title, desc),
+			Details:  fmt.Sprintf("Account: %s\nArticle ID: %s\nTitle: %s\nMatch: %s", account, id, title, desc),
+		})
+	}
+	return findings
+}
+
+// classifyJoomlaRow walks dbMalwarePatterns against body and
+// returns the strongest pattern match that survives the
+// requiresExternalScript filter. Returns ok=false when nothing
+// genuine matched -- the caller skips that row entirely.
+//
+// inPostContext switches between the strict
+// hasMaliciousExternalScript (config-storage like extension params)
+// and the looser hasMaliciousExternalScriptInPost (article body).
+// Mirrors how the WP scanner picks its predicate per table.
+func classifyJoomlaRow(body string, inPostContext bool) (alert.Severity, string, bool) {
+	if body == "" {
+		return 0, "", false
+	}
+	lower := strings.ToLower(body)
+
+	var bestSev alert.Severity
+	var bestDesc string
+	matched := false
+	for _, p := range dbMalwarePatterns {
+		if !strings.Contains(lower, strings.ToLower(p.pattern)) {
+			continue
+		}
+		if p.requiresExternalScript {
+			ok := hasMaliciousExternalScript(body)
+			if inPostContext {
+				ok = hasMaliciousExternalScriptInPost(body)
+			}
+			if !ok {
+				continue
+			}
+		}
+		if !matched || p.severity > bestSev {
+			bestSev = p.severity
+			bestDesc = p.desc
+		}
+		matched = true
+	}
+	return bestSev, bestDesc, matched
 }
 
 // scanJoomlaSuperUsers detects rogue accounts in the Super Users
@@ -225,27 +316,6 @@ func scanJoomlaSuperUsers(account string, creds jConfigCreds, prefix string) []a
 			Check:    "joomla_admin_injection",
 			Message:  fmt.Sprintf("Joomla Super User account on %s: %s", account, fields[0]),
 			Details:  fmt.Sprintf("Account: %s\nRow: %s\nReview: confirm this is the legitimate site administrator.", account, row),
-		})
-	}
-	return findings
-}
-
-// runJoomlaScan executes the supplied query (which already filters
-// for malware patterns) and emits one finding per row. The query
-// is expected to return identifying columns -- name, id, etc. --
-// not the full payload, since we already know the row matched.
-func runJoomlaScan(creds wpDBCreds, query, checkName, messagePrefix string) []alert.Finding {
-	rows := runMySQLQuery(creds, query)
-	if len(rows) == 0 {
-		return nil
-	}
-	var findings []alert.Finding
-	for _, row := range rows {
-		findings = append(findings, alert.Finding{
-			Severity: alert.Critical,
-			Check:    checkName,
-			Message:  fmt.Sprintf("%s: %s", messagePrefix, row),
-			Details:  fmt.Sprintf("Row: %s\nMatch: malware pattern in tracked column", row),
 		})
 	}
 	return findings
