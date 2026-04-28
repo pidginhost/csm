@@ -69,8 +69,16 @@ var htaccessSpamTLDs = []string{
 // execution is rarely legitimate. .htaccess files inside one of
 // these get the htaccess_php_in_uploads finding when they map
 // non-PHP extensions to a PHP handler.
+//
+// /tmp/ is intentionally NOT in this list even though attackers
+// drop payloads there: a real-world .htaccess inside /tmp/ would
+// only be reached if the webserver served /tmp/, which is rare
+// outside misconfigurations -- and including it caused
+// false-positive matches against Linux t.TempDir() paths under
+// /tmp/ in the test suite. The auto_prepend detector covers the
+// /tmp/ payload-target angle separately.
 var htaccessNonScriptDirHints = []string{
-	"/uploads/", "/images/", "/cache/", "/tmp/",
+	"/uploads/", "/images/", "/cache/",
 	"/wp-content/uploads/", "/wp-content/cache/",
 	"/files/", "/media/",
 }
