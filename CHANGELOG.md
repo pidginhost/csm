@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Hardened `.htaccess` audit emits seven per-pattern findings (PHP-in-uploads handler maps, malicious `auto_prepend_file` targets, search-crawler UA cloaks, spam-TLD redirects, `<FilesMatch>` Allow-from-all shields, tracking-header injection, external `ErrorDocument` hijacks). New `auto_response.clean_htaccess` flag (default off) auto-cleans flagged files, with backups under `/opt/csm/quarantine/pre_clean/`.
 - `csm store export <path>` writes a tar+zstd backup of the bbolt store, state files, and the signature-rules cache; a sibling `.sha256` companion lets operators verify the archive before use.
 - `csm store import <path>` restores a backup onto a stopped daemon, with `--only=baseline` for state JSON only and `--only=firewall` for firewall buckets only. Refuses cross-platform restores unless `--force-platform-mismatch` is set.
 - Challenge page can fall back to Cloudflare Turnstile or hCaptcha when the visitor has JavaScript disabled, accept a signed-cookie bypass for authenticated operators, and let verified search crawlers through after a reverse-DNS forward-confirm. All three are opt-in and default off.

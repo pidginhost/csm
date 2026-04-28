@@ -8,7 +8,7 @@
 |-------|-------------|
 | `filesystem` | Backdoors, hidden executables, suspicious SUID binaries |
 | `webshells` | Known webshell patterns (c99, r57, b374k, etc.) |
-| `htaccess` | .htaccess injection (auto_prepend_file, eval, base64 handlers) |
+| `htaccess` | .htaccess injection (auto_prepend_file, eval, base64 handlers) plus seven hardened per-pattern detectors -- `htaccess_php_in_uploads`, `htaccess_auto_prepend`, `htaccess_user_agent_cloak`, `htaccess_spam_redirect`, `htaccess_filesmatch_shield`, `htaccess_header_injection`, `htaccess_errordocument_hijack`. Auto-cleaning gated by `auto_response.clean_htaccess`. |
 | `file_index` | Indexed file listing to detect new/unauthorized files |
 | `php_content` | Suspicious PHP functions (exec, eval, system, passthru) |
 | `group_writable_php` | World/group-writable PHP files (privilege escalation) |

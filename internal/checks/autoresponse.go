@@ -542,3 +542,72 @@ func extractCategory(details string) string {
 	}
 	return ""
 }
+
+// AutoCleanHtaccess runs the hardened .htaccess cleaner against
+// every finding emitted by the new detector registry, gated by
+// AutoResponse.CleanHtaccess. Skipped when the daemon's auto-response
+// pipeline is disabled overall.
+//
+// Unlike AutoQuarantineFiles, this routes around the
+// quarantine/clean fork (.htaccess files are infrastructure -- moving
+// them to /opt/csm/quarantine breaks the site). Each invocation
+// backs up the original to /opt/csm/quarantine/pre_clean/<ts>_*
+// inside CleanHtaccessFile before atomic-replacing.
+func AutoCleanHtaccess(cfg *config.Config, findings []alert.Finding) []alert.Finding {
+	if !cfg.AutoResponse.Enabled || !cfg.AutoResponse.CleanHtaccess {
+		return nil
+	}
+
+	var actions []alert.Finding
+	seen := make(map[string]struct{})
+	for _, f := range findings {
+		if !isHtaccessHardenedFinding(f.Check) {
+			continue
+		}
+		path := f.FilePath
+		if path == "" {
+			path = extractFilePath(f.Message)
+		}
+		if path == "" {
+			continue
+		}
+		// One Clean per file per autoresponse pass: multiple
+		// detector findings on the same file converge on a single
+		// cleaning call (CleanHtaccessFile re-runs every detector).
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+
+		result := CleanHtaccessFile(path)
+		if result.Success {
+			actions = append(actions, alert.Finding{
+				Severity:  alert.Critical,
+				Check:     "auto_response",
+				Message:   fmt.Sprintf("AUTO-CLEAN: %s hardened directives removed", path),
+				Details:   result.Description,
+				Timestamp: time.Now(),
+			})
+		} else if result.Error != "" && !strings.Contains(result.Error, "no malicious directives") {
+			actions = append(actions, alert.Finding{
+				Severity:  alert.Warning,
+				Check:     "auto_response",
+				Message:   fmt.Sprintf("AUTO-CLEAN failed: %s", path),
+				Details:   result.Error,
+				Timestamp: time.Now(),
+			})
+		}
+	}
+	return actions
+}
+
+func isHtaccessHardenedFinding(check string) bool {
+	switch check {
+	case "htaccess_auto_prepend", "htaccess_errordocument_hijack",
+		"htaccess_filesmatch_shield", "htaccess_header_injection",
+		"htaccess_php_in_uploads", "htaccess_spam_redirect",
+		"htaccess_user_agent_cloak":
+		return true
+	}
+	return false
+}

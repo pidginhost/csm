@@ -131,9 +131,16 @@ var checkRegistry = []CheckInfo{
 	{Name: "yara_worker_crashed", Category: CategoryMalware},
 
 	// --- Web & Application ----------------------------------------------
+	{Name: "htaccess_auto_prepend", Category: CategoryWeb},
+	{Name: "htaccess_errordocument_hijack", Category: CategoryWeb},
+	{Name: "htaccess_filesmatch_shield", Category: CategoryWeb},
 	{Name: "htaccess_handler_abuse", Category: CategoryWeb},
+	{Name: "htaccess_header_injection", Category: CategoryWeb},
 	{Name: "htaccess_injection", Category: CategoryWeb},
 	{Name: "htaccess_injection_realtime", Category: CategoryWeb},
+	{Name: "htaccess_php_in_uploads", Category: CategoryWeb},
+	{Name: "htaccess_spam_redirect", Category: CategoryWeb},
+	{Name: "htaccess_user_agent_cloak", Category: CategoryWeb},
 	{Name: "open_basedir", Category: CategoryWeb},
 	{Name: "outdated_plugins", Category: CategoryWeb},
 	{Name: "php_config_change", Category: CategoryWeb},

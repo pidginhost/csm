@@ -134,6 +134,14 @@ func scanHtaccess(ctx context.Context, dir string, maxDepth int, suspicious, saf
 		}
 
 		checkHtaccessFile(fullPath, suspicious, safe, findings)
+		// Run the hardened detector registry alongside the generic
+		// token scanner so per-pattern findings emit with their own
+		// names (htaccess_php_in_uploads, htaccess_filesmatch_shield,
+		// etc.) rather than collapsing into the catch-all categories.
+		// The two scans can both fire on the same line; downstream
+		// dedup at alert.Dispatch handles same-key dups.
+		hardenedFindings, _ := AuditHtaccessFile(fullPath)
+		*findings = append(*findings, hardenedFindings...)
 	}
 }
 

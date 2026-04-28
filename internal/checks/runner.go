@@ -330,6 +330,15 @@ func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck, ti
 		observeAutoResponse("quarantine", len(quarantineActions))
 		findings = append(findings, quarantineActions...)
 
+		htaccessActions := AutoCleanHtaccess(cfg, findings)
+		for i := range htaccessActions {
+			if htaccessActions[i].Timestamp.IsZero() {
+				htaccessActions[i].Timestamp = now
+			}
+		}
+		observeAutoResponse("htaccess_clean", len(htaccessActions))
+		findings = append(findings, htaccessActions...)
+
 		blockActions := AutoBlockIPs(cfg, findings)
 		for i := range blockActions {
 			if blockActions[i].Timestamp.IsZero() {

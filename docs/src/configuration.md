@@ -175,6 +175,7 @@ auto_response:
   permblock: false                      # promote temp blocks to permanent
   permblock_count: 4                    # temp blocks before promotion
   permblock_interval: "24h"             # window for counting temp blocks
+  clean_htaccess: false                 # auto-clean .htaccess directives flagged by hardened detectors (backups under /opt/csm/quarantine/pre_clean/)
 
 # --- Challenge Pages ---
 challenge:
