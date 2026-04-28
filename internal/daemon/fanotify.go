@@ -112,6 +112,13 @@ type FileMonitor struct {
 	reconcileMu   sync.Mutex
 	reconcileDirs map[string]time.Time
 
+	// reconcileSig is a buffered cap-1 channel that lets sendEvent's drop
+	// branch nudge overflowReporter to run reconcileDrops out of cycle
+	// when sustained drops cross eagerReconcileDropThreshold. The cap-1
+	// shape collapses multiple triggers in the same window into one and
+	// keeps sendEvent non-blocking on the event-loop hot path.
+	reconcileSig chan struct{}
+
 	// metricsOnce guards one-time registration of the fanotify-scoped
 	// Prometheus metrics. Each FileMonitor registers its own hooks when
 	// it first starts; subsequent calls are a no-op.
@@ -119,8 +126,34 @@ type FileMonitor struct {
 }
 
 const (
-	reconcileDirCap = 64
+	// reconcileDirCap bounds the dirty-region tracker fed by sendEvent's
+	// drop branch. A 2026-04-28 cpanel package restore overflowed the
+	// previous 64-entry cap inside seconds (every wp-content subdir was
+	// a distinct parent), evicting older dirs before reconcileDrops ran.
+	// 1024 entries fits typical cpanel restore bursts comfortably while
+	// staying tiny in memory (each entry is a string-pointer + time, so
+	// the whole map peaks under ~100 KiB even at full cap).
+	reconcileDirCap = 1024
+
+	// reconcileWindow scopes which files reconcileDrops will rescan: only
+	// files whose mtime is within this window of "now". Sized just over
+	// the minute tick so a drop near the start of a tick is still picked
+	// up by the reconcile that runs at tick end.
 	reconcileWindow = 70 * time.Second
+
+	// analyzerChBufferSize sizes the channel feeding the analyzer pool.
+	// A cpanel package restore in production observed ~4189 events in a
+	// few seconds; a 16 KiB buffer absorbs that burst plus headroom
+	// without ever overflowing. Memory cost is bounded (fileEvent is a
+	// path string + fd + pid, ~40 bytes each, so <1 MiB at full buffer).
+	analyzerChBufferSize = 16384
+
+	// eagerReconcileDropThreshold triggers an out-of-cycle reconcile
+	// when sustained drops cross this count within a single minute tick.
+	// Without this, drops happening just after a tick wait the full
+	// interval before reconcileDrops walks them - long enough for the
+	// reconcileWindow to expire on the earliest dropped files.
+	eagerReconcileDropThreshold = 500
 )
 
 // Package-level Prometheus metrics for fanotify. Instantiated once per
@@ -232,10 +265,11 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 		fd:            fd,
 		cfg:           cfg,
 		alertCh:       alertCh,
-		analyzerCh:    make(chan fileEvent, 4000),
+		analyzerCh:    make(chan fileEvent, analyzerChBufferSize),
 		pipeFds:       pipeFds,
 		stopCh:        make(chan struct{}),
 		reconcileDirs: make(map[string]time.Time),
+		reconcileSig:  make(chan struct{}, 1),
 	}
 
 	fm.wpCache = wpcheck.NewCache(cfg.StatePath)
@@ -482,8 +516,17 @@ func (fm *FileMonitor) handleEvent(fd int, pid int32) {
 			fmt.Fprintf(os.Stderr, "[%s] fanotify: %d events dropped (analyzer queue full)\n", ts(), n)
 		}
 		fm.recordDroppedDir(path)
+		fm.maybeTriggerEagerReconcile(n)
 		_ = unix.Close(fd)
 	}
+}
+
+// maybeTriggerEagerReconcile nudges overflowReporter to run reconcileDrops
+// immediately when sustained drops cross eagerReconcileDropThreshold within
+// a single minute window. Delegates to the free function so the trigger
+// logic stays testable from a cross-platform test file.
+func (fm *FileMonitor) maybeTriggerEagerReconcile(droppedSoFar int64) {
+	signalEagerReconcile(fm.reconcileSig, droppedSoFar, eagerReconcileDropThreshold)
 }
 
 // recordDroppedDir registers a directory whose file had its fanotify event
@@ -1691,6 +1734,15 @@ func (fm *FileMonitor) shouldAlert(check, filePath string) bool {
 }
 
 // M7 - overflowReporter reports dropped events and alerts separately.
+//
+// Two timers feed this loop:
+//   - 1-minute ticker: emits the periodic fanotify_overflow alert,
+//     resets drop counters, runs reconcileDrops, and evicts stale alert
+//     dedup entries.
+//   - reconcileSig: out-of-cycle reconcile triggered by sendEvent when
+//     sustained drops cross eagerReconcileDropThreshold within the
+//     current tick. Closes the latency gap between a drop and its
+//     reconcile read so the file's mtime is still inside reconcileWindow.
 func (fm *FileMonitor) overflowReporter() {
 	defer fm.wg.Done()
 	ticker := time.NewTicker(1 * time.Minute)
@@ -1700,6 +1752,13 @@ func (fm *FileMonitor) overflowReporter() {
 		select {
 		case <-fm.stopCh:
 			return
+		case <-fm.reconcileSig:
+			// Eager reconcile: do not reset counters, do not emit the
+			// minute-tick alert. Just walk the tracked dirs and surface
+			// any interesting file inside reconcileWindow. The minute
+			// tick will still fire its alert + drain the counters when
+			// it arrives.
+			fm.reconcileDrops()
 		case <-ticker.C:
 			droppedEv := atomic.SwapInt64(&fm.droppedEvents, 0)
 			droppedAl := atomic.SwapInt64(&fm.droppedAlerts, 0)

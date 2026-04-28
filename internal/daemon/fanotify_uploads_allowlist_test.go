@@ -68,7 +68,6 @@ func TestAnalyzeFile_PHPInUploadsSubdirNamedAfterSafeToken_FiresCritical(t *test
 	}
 }
 
-
 // 2026-04-28: php_in_uploads_realtime now suppresses two structural
 // duplicates without skipping content scan:
 //   - cPanel restore staging (/home/cpanelpkgrestore.TMP.work.<id>/...).

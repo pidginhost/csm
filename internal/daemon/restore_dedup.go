@@ -6,6 +6,31 @@ import (
 	"strings"
 )
 
+// signalEagerReconcile fires a non-blocking notification on sig the first
+// time count reaches threshold. Cross-platform helper extracted so the
+// trigger can be unit-tested from a non-linux test file.
+//
+//   - sig is a buffered cap-1 channel. The send is non-blocking (default
+//     branch) so a stalled receiver never wedges the caller.
+//   - The trigger fires only on the exact threshold (not >=). A long
+//     burst above threshold within the same window must not refire
+//     after the signal has been drained; the next window's first count
+//     reaching threshold rearms it once the receiver has reset counters.
+//   - A nil sig is a no-op (some unit tests construct partial structs
+//     that omit it).
+func signalEagerReconcile(sig chan struct{}, count, threshold int64) {
+	if sig == nil {
+		return
+	}
+	if count != threshold {
+		return
+	}
+	select {
+	case sig <- struct{}{}:
+	default:
+	}
+}
+
 // Recognisers that suppress the lowest-tier "anomalous PHP location"
 // warning for two specific shapes, without skipping content scanning:
 //

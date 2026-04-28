@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLooksLikeCpanelRestoreStaging_RecognisesProductionPath(t *testing.T) {
@@ -189,5 +190,76 @@ func mustWriteFile(t *testing.T, path string, data []byte) {
 	t.Helper()
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+func TestSignalEagerReconcile_FiresOnceAtThresholdCrossing(t *testing.T) {
+	// signalEagerReconcile is the cross-platform helper that
+	// maybeTriggerEagerReconcile delegates to. We test it directly so
+	// the trigger logic is validated regardless of which build tags
+	// are active. Channel is the same shape as the production one:
+	// buffered cap-1, non-blocking send.
+	sig := make(chan struct{}, 1)
+
+	// Counts strictly below threshold must not fire.
+	for i := int64(1); i < 500; i++ {
+		signalEagerReconcile(sig, i, 500)
+	}
+	select {
+	case <-sig:
+		t.Error("eager reconcile must not fire before threshold")
+	default:
+	}
+
+	// Hitting the threshold fires exactly once.
+	signalEagerReconcile(sig, 500, 500)
+	select {
+	case <-sig:
+		// OK
+	default:
+		t.Error("eager reconcile must fire when count reaches threshold")
+	}
+
+	// Counts above threshold within the same window must not refire
+	// (the channel cap-1 keeps the send non-blocking even if not
+	// drained, but the count != threshold guard short-circuits early
+	// so we never even attempt the send). The next reconcile is armed
+	// only when the receiver resets its counter and a fresh burst
+	// reaches the threshold again.
+	for i := int64(501); i < 600; i++ {
+		signalEagerReconcile(sig, i, 500)
+	}
+	select {
+	case <-sig:
+		t.Error("eager reconcile must not refire above threshold without draining")
+	default:
+	}
+}
+
+func TestSignalEagerReconcile_TolerantOfNilChannel(t *testing.T) {
+	// Helper must be a no-op when the signal channel is nil so partial
+	// FileMonitor structs constructed in unit tests do not panic.
+	signalEagerReconcile(nil, 500, 500)
+	// no panic = pass
+}
+
+func TestSignalEagerReconcile_NonBlockingWhenChannelFull(t *testing.T) {
+	// Pre-fill the channel to cap so the next send must hit the default
+	// branch. signalEagerReconcile must return without blocking even
+	// though the receive side is stalled.
+	sig := make(chan struct{}, 1)
+	sig <- struct{}{}
+
+	done := make(chan struct{})
+	go func() {
+		signalEagerReconcile(sig, 500, 500)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// OK
+	case <-time.After(50 * time.Millisecond):
+		t.Error("signalEagerReconcile blocked on a full channel; the send must be non-blocking")
 	}
 }
