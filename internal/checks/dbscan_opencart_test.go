@@ -242,3 +242,42 @@ func TestCheckOpenCartContentSuppressesScriptOnlySettingsFP(t *testing.T) {
 		}
 	}
 }
+
+// TestCheckOpenCartContentFiltersLanguageID guards against the
+// multilingual duplicate-row issue: oc_product_description and
+// oc_information_description carry one row per language per
+// product/page, so a multilingual storefront would emit N
+// opencart_content_injection findings for the same row without
+// the language_id = 1 filter.
+func TestCheckOpenCartContentFiltersLanguageID(t *testing.T) {
+	withMockOS(t, &fakeOpenCartOS{
+		rootBody:  canonicalOpenCartConfig(),
+		adminBody: canonicalOpenCartConfig(),
+	})
+
+	var seenProduct, seenInformation string
+	withMockCmd(t, &mockCmd{
+		runWithEnv: func(name string, args []string, _ ...string) ([]byte, error) {
+			joined := strings.Join(args, " ")
+			switch {
+			case strings.Contains(joined, "FROM oc_product_description"):
+				seenProduct = joined
+			case strings.Contains(joined, "FROM oc_information_description"):
+				seenInformation = joined
+			}
+			return nil, nil
+		},
+	})
+
+	_ = CheckOpenCartContent(context.Background(), &config.Config{}, &state.Store{})
+
+	for label, q := range map[string]string{"product": seenProduct, "information": seenInformation} {
+		if q == "" {
+			t.Errorf("%s description query never executed", label)
+			continue
+		}
+		if !strings.Contains(q, "language_id = 1") {
+			t.Errorf("%s description query missing language_id filter (multilingual sites would emit duplicates):\n%s", label, q)
+		}
+	}
+}

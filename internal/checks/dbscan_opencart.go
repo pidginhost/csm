@@ -191,13 +191,20 @@ func scanOpenCartSettings(account string, creds opencartCreds) []alert.Finding {
 //
 // Looser post-filter (hasMaliciousExternalScriptInPost) because
 // these tables carry author-written content.
+//
+// Both description tables carry one row per language per product
+// or page. Without filtering, a multilingual storefront emits N
+// findings per malware-injected row (one per installed language).
+// language_id = 1 is English / the vanilla default; non-English
+// monolingual sites and genuine multilingual coverage need a
+// follow-up that reads config_language_id from oc_setting first.
 func scanOpenCartContentTable(account string, creds opencartCreds, table, valueCol string) []alert.Finding {
 	idCol := "product_id"
 	if table == "information_description" {
 		idCol = "information_id"
 	}
 	query := fmt.Sprintf(
-		"SELECT %s, %s FROM %s%s WHERE %s",
+		"SELECT %s, %s FROM %s%s WHERE language_id = 1 AND %s",
 		idCol, valueCol, creds.dbPrefix, table, paramsLikeClause(valueCol))
 	rows := runMySQLQuery(creds.asWPDBCreds(), query)
 	var findings []alert.Finding
