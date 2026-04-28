@@ -34,7 +34,7 @@ func NewJSONLSink(path string) (*JSONLSink, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
 		return nil, fmt.Errorf("jsonl sink: creating dir: %w", err)
 	}
-	// #nosec G304 -- path is operator-supplied via cfg.Alerts.AuditLog.File.Path; csm runs as root via systemd, the operator owns the daemon config. Not attacker-controlled.
+	// #nosec G304 G302 -- G304: path comes from cfg.Alerts.AuditLog.File.Path, which is operator-controlled (root-owned daemon config), not attacker input. G302: 0640 is intentional; SIEM log shippers (Vector, Filebeat, Fluentbit) commonly run as a non-root user that needs group-read access. 0600 would force the shipper to run as root.
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0640)
 	if err != nil {
 		return nil, fmt.Errorf("jsonl sink: opening %s: %w", path, err)

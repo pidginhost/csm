@@ -224,7 +224,7 @@ func CleanHtaccessFile(path string) RemediationResult {
 	}
 	stamp := time.Now().UTC().Format("20060102T150405Z")
 	backupPath := filepath.Join(backupDir, fmt.Sprintf("%s_%s", stamp, sanitizePathForBackup(resolved)))
-	// #nosec G306 -- backup of an .htaccess; 0640 is the same group-readable mode used elsewhere in pre_clean/.
+	// #nosec G306 G703 -- 0640 matches the rest of pre_clean/. backupPath is filepath.Join(backupDir, <ts>_<sanitizePathForBackup>) where sanitizePathForBackup strips every / and .. so the result cannot escape backupDir; resolved itself was validated by resolveExistingFixPath (fixHtaccessAllowedRoots).
 	if err = os.WriteFile(backupPath, original, 0640); err != nil {
 		return RemediationResult{Error: fmt.Sprintf("writing backup: %v", err)}
 	}
@@ -250,7 +250,7 @@ func CleanHtaccessFile(path string) RemediationResult {
 	}
 
 	tmp := resolved + ".csm-clean.tmp"
-	// #nosec G306 -- .htaccess rewritten for a user's web root; 0644 is the mode the webserver expects.
+	// #nosec G306 G703 -- 0644 is what the webserver expects for static content. tmp = resolved + ".csm-clean.tmp"; resolved was validated by resolveExistingFixPath against fixHtaccessAllowedRoots so path traversal is impossible.
 	if err := os.WriteFile(tmp, cleaned, 0644); err != nil {
 		return RemediationResult{Error: fmt.Sprintf("writing cleaned tmp: %v", err)}
 	}
