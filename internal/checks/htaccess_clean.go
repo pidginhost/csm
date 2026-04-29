@@ -474,7 +474,7 @@ func uaCloakPairedRuleIsDefensive(content []byte, condEnd int) bool {
 
 // detectUserAgentCloak flags RewriteCond %{HTTP_USER_AGENT}
 // directives that match a known crawler UA AND are part of an active
-// content-cloaking rule. Three suppression gates filter legitimate
+// content-cloaking rule. Four suppression gates filter legitimate
 // shapes before emitting the High alert:
 //
 //  1. Negated cond ("RewriteCond %{HTTP_USER_AGENT} !..."): the rule
@@ -487,16 +487,22 @@ func uaCloakPairedRuleIsDefensive(content []byte, condEnd int) bool {
 //     a single OR chain paired with a [F] forbid or sinkhole rewrite.
 //     Cloakers use one or two crawler names.
 //
-//  3. Paired RewriteRule is defensive ("-" substitution, [F]/[G]
+//  3. Long multi-line chain: the canonical Apache "Bad Bots" snippet
+//     puts each scraper UA on its own RewriteCond line, terminated
+//     by one RewriteRule. The chain length is the blocklist signal;
+//     per-cond alternation is always 1.
+//
+//  4. Paired RewriteRule is defensive ("-" substitution, [F]/[G]
 //     flag, or absent): the cond is part of a forbid / env-var-set
 //     block, not a content swap.
 //
-// All three gates fail-closed: any uncertainty (no paired rule
-// found, parse failure) keeps the original alert firing.
+// All gates fail-closed: any uncertainty (no paired rule found,
+// parse failure) keeps the original alert firing.
 func detectUserAgentCloak(content []byte, _ string) []htaccessMatch {
 	idxs := reUACloakCond.FindAllSubmatchIndex(content, -1)
+	chainSize := uaCloakChainSizes(content, idxs)
 	var out []htaccessMatch
-	for _, idx := range idxs {
+	for i, idx := range idxs {
 		if len(idx) < 4 {
 			continue
 		}
@@ -513,7 +519,11 @@ func detectUserAgentCloak(content []byte, _ string) []htaccessMatch {
 		if uaCloakAlternationCount(uaPattern) >= uaCloakBlocklistThreshold {
 			continue
 		}
-		// Gate 3: paired RewriteRule is defensive.
+		// Gate 3: long multi-line chain = bot blocklist.
+		if chainSize[i] >= uaCloakBlocklistThreshold {
+			continue
+		}
+		// Gate 4: paired RewriteRule is defensive.
 		if uaCloakPairedRuleIsDefensive(content, idx[1]) {
 			continue
 		}
@@ -523,6 +533,60 @@ func detectUserAgentCloak(content []byte, _ string) []htaccessMatch {
 		})
 	}
 	return out
+}
+
+// uaCloakChainSizes returns, for each UA cond match, the number of
+// UA conds in its chain. Two UA conds belong to the same chain iff
+// they sit on adjacent lines with nothing but optional indentation
+// between them. A blank line, a RewriteRule, or any other directive
+// breaks the chain - that mirrors how Apache groups conds onto the
+// next RewriteRule.
+func uaCloakChainSizes(content []byte, idxs [][]int) []int {
+	sizes := make([]int, len(idxs))
+	if len(idxs) == 0 {
+		return sizes
+	}
+	runStart := 0
+	for i := 1; i < len(idxs); i++ {
+		if uaCondsAreAdjacent(content, idxs[i-1][1], idxs[i][0]) {
+			continue
+		}
+		runLen := i - runStart
+		for j := runStart; j < i; j++ {
+			sizes[j] = runLen
+		}
+		runStart = i
+	}
+	runLen := len(idxs) - runStart
+	for j := runStart; j < len(idxs); j++ {
+		sizes[j] = runLen
+	}
+	return sizes
+}
+
+// uaCondsAreAdjacent reports whether the gap between two UA cond
+// matches is a single line break plus optional indentation. Any
+// non-whitespace byte (a different directive sneaking in), or a
+// second newline (blank line), means the chain ends.
+func uaCondsAreAdjacent(content []byte, prevEnd, nextStart int) bool {
+	if prevEnd > nextStart || nextStart > len(content) {
+		return false
+	}
+	seenNewline := false
+	for _, b := range content[prevEnd:nextStart] {
+		switch b {
+		case '\n':
+			if seenNewline {
+				return false
+			}
+			seenNewline = true
+		case ' ', '\t', '\r':
+			// allowed
+		default:
+			return false
+		}
+	}
+	return seenNewline
 }
 
 // detectSpamRedirect flags RewriteRule directives whose target host

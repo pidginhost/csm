@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `.htaccess` user-agent cloak detector stops firing on the canonical multi-line "bad bots" snippet, where each scraper UA sits on its own RewriteCond paired with one terminal redirect. Targeted one- or two-cond cloaks still fire.
+- Shell dropper detector ignores `curl ... | sh` patterns that sit inside a `#` comment, so distribution installer headers (rustup-style usage banners) no longer trip it. Real droppers on actual code lines still match.
+
 ## [2.10.0] - 2026-04-28
 
 ### Fixed
