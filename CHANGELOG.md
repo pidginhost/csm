@@ -9,10 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Hardening audit flags hosts where `algif_aead` is loaded or has no modprobe.d blacklist (CVE-2026-31431 "Copy Fail" mitigation).
-- Critical check `af_alg_socket_use` emits one finding per `socket(AF_ALG, ...)` call from a non-system UID; treats every hit as an exploit signature.
-- `csm harden --copy-fail` subcommand applies the CVE-2026-31431 mitigation by writing `/etc/modprobe.d/csm-copy-fail-mitigation.conf` and unloading `algif_aead` + `af_alg`.
-- Critical-tier `af_alg_enforcement` check re-asserts the policy on every tick when the marker file is present; emits a Warning finding when it corrects drift. Suspend via `auto_response.disable_enforce_af_alg: true`.
+- Copy Fail (CVE-2026-31431) detection: auditd rule + critical-tier `af_alg_socket_use` check + live audit-log inotify listener fire a Critical finding within ~500 ms of any `socket(AF_ALG, …)` call from a non-system UID. Auto-skipped on hosts where the kernel isn't exploitable (KernelCare livepatch covers the CVE, or AF_ALG aead isn't built at all).
+- `csm harden --copy-fail` writes a modprobe blacklist for `algif_aead` + `af_alg` and unloads them. Effective only on kernels where AF_ALG aead is a loadable module (`=m`); refuses with exit 2 on built-in (`=y`) kernels rather than claim a protection it can't deliver.
+- `csm harden --copy-fail-seccomp` is the built-in-kernel path: writes systemd `RestrictAddressFamilies=~AF_ALG` drop-ins for the units that spawn untrusted code (LiteSpeed, Apache, Nginx, every EA-PHP / generic PHP-FPM pool, cron, exim, dovecot) and `try-restart`s each so the filter takes effect. Workers spawned by those units cannot open AF_ALG. Rollback with `--remove`.
+- `auto_response.copy_fail_kill_process: true` SIGKILLs the offending process when the live listener catches an AF_ALG attempt. Default off (alert-only).
+- `auto_response.disable_enforce_af_alg: true` suspends the periodic `af_alg_enforcement` re-assertion of the modprobe blacklist without removing the marker file.
+- Hardening audit reads the kernel config and `kcarectl --patch-info`, reports `pass` only when the host is actually mitigated (loadable-module + blacklisted, OR built-in + seccomp drop-ins covering the listed units, OR KernelCare livepatch). Built-in kernels with none of those get `fail` with a Fix string pointing at the two real options.
+- Daemon self-heals `/etc/audit/rules.d/csm.rules` on startup if it has drifted from the embedded constant. Closes the upgrade gap where a new binary shipped without re-running the postinstall, leaving `csm_af_alg_socket` detection silently inactive.
 
 ### Changed
 
@@ -22,10 +25,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.htaccess` user-agent cloak detector stops firing on the canonical multi-line "bad bots" snippet, where each scraper UA sits on its own RewriteCond paired with one terminal redirect. Targeted one- or two-cond cloaks still fire.
 - Shell dropper detector ignores `curl ... | sh` patterns that sit inside a `#` comment, so distribution installer headers (rustup-style usage banners) no longer trip it. Real droppers on actual code lines still match.
-- Hardening audit no longer reports "pass" on kernels with `CONFIG_CRYPTO_USER_API_AEAD=y` (built-in AF_ALG). The modprobe blacklist is ineffective on those kernels and the previous behavior was a false negative; the audit now reads `/boot/config-$(uname -r)` (or `/proc/config.gz`) and reports `fail` with a Fix string pointing to KernelCare or seccomp.
-- `csm harden --copy-fail` refuses to write the marker on built-in kernels and exits 2 with an actionable error, instead of silently reporting success.
-- Hardening audit recognizes KernelCare CVE-2026-31431 livepatches via `kcarectl --patch-info` and reports `pass` even on built-in kernels once the patch is applied.
-- Daemon startup re-runs `auditd.Deploy()` if the on-disk `csm.rules` has drifted from the embedded constant. Closes a real-world gap where a package upgrade installed the new binary but did not redeploy the auditd rules, leaving detection layers like `csm_af_alg_socket` silently inactive.
 
 ## [2.10.0] - 2026-04-28
 
