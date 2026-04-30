@@ -1073,54 +1073,41 @@ func TestCheckWPCoreVerificationFailure(t *testing.T) {
 }
 
 // ===========================================================================
-// emailscan.go -- extractEmailHeader and extractDomain
-// ===========================================================================
-
-func TestExtractEmailHeaderVariousFormats(t *testing.T) {
-	headers := "From: alice@example.com\nReply-To: bob@other.com\nX-Mailer: PHPMailer\nSubject: Test\n"
-
-	from := extractEmailHeader(headers, "From:")
-	if from != "alice@example.com" {
-		t.Errorf("From = %q", from)
-	}
-	replyTo := extractEmailHeader(headers, "Reply-To:")
-	if replyTo != "bob@other.com" {
-		t.Errorf("Reply-To = %q", replyTo)
-	}
-	mailer := extractEmailHeader(headers, "X-Mailer:")
-	if mailer != "PHPMailer" {
-		t.Errorf("X-Mailer = %q", mailer)
-	}
-	missing := extractEmailHeader(headers, "X-Missing:")
-	if missing != "" {
-		t.Errorf("missing header = %q", missing)
-	}
-}
-
-func TestExtractDomainFormats(t *testing.T) {
-	cases := []struct {
-		input string
-		want  string
-	}{
-		{"alice@example.com", "example.com"},
-		{"Alice <alice@example.com>", "example.com"},
-		{"no-at-sign", ""},
-		{"<user@domain.org>", "domain.org"},
-	}
-	for _, tc := range cases {
-		got := extractDomain(tc.input)
-		if got != tc.want {
-			t.Errorf("extractDomain(%q) = %q, want %q", tc.input, got, tc.want)
-		}
-	}
-}
-
-// ===========================================================================
 // emailscan.go -- scanEximMessage all indicator branches
+//
+// Each fixture below is a real cPanel-Exim -H spool blob: line 1 message-id,
+// line 2 "<user> <uid> <gid>", line 3 envelope sender, line 4 "<seconds>
+// <usec>", optional "-flag" lines, recipient count, recipient(s), blank line
+// separator, then RFC 5322 headers prefixed with "NNNX " (3 digits + flag
+// or space + space). The earlier inline "From: ...\n" mocks were aspirational;
+// the real spool format is what production scanEximMessage now consumes via
+// internal/emailspool.
 // ===========================================================================
+
+// eximSpool builds a minimal but parseable cPanel-Exim -H blob with the given
+// RFC 5322 header lines (each line MUST be in NNNX form already, e.g.
+// "048F From: alice@example.com"). Used by the TestScanEximMessage* fixtures
+// below.
+func eximSpool(headerLines ...string) string {
+	body := "msg-H\n" +
+		"alice 1000 1000\n" +
+		"<alice@example.com>\n" +
+		"1700000000 0\n" +
+		"-local\n" +
+		"1\n" +
+		"recipient@example.com\n" +
+		"\n"
+	for _, ln := range headerLines {
+		body += ln + "\n"
+	}
+	return body
+}
 
 func TestScanEximMessageReplyToMismatch(t *testing.T) {
-	headers := "From: alice@example.com\nReply-To: attacker@evil.com\n"
+	headers := eximSpool(
+		"048F From: alice@example.com",
+		"039R Reply-To: attacker@evil.com",
+	)
 
 	withMockOS(t, &mockOS{
 		stat: func(name string) (os.FileInfo, error) {
@@ -1150,7 +1137,10 @@ func TestScanEximMessageReplyToMismatch(t *testing.T) {
 }
 
 func TestScanEximMessageSuspiciousMailer(t *testing.T) {
-	headers := "From: sender@example.com\nX-Mailer: PHPMailer 6.0\n"
+	headers := eximSpool(
+		"049F From: sender@example.com",
+		"030  X-Mailer: PHPMailer 6.0",
+	)
 
 	withMockOS(t, &mockOS{
 		stat: func(name string) (os.FileInfo, error) {
@@ -1180,7 +1170,9 @@ func TestScanEximMessageSuspiciousMailer(t *testing.T) {
 }
 
 func TestScanEximMessageSpoofedBrand(t *testing.T) {
-	headers := "From: PayPal Security <noreply@randomsite.com>\n"
+	headers := eximSpool(
+		"055F From: PayPal Security <noreply@randomsite.com>",
+	)
 
 	withMockOS(t, &mockOS{
 		stat: func(name string) (os.FileInfo, error) {
@@ -1210,7 +1202,9 @@ func TestScanEximMessageSpoofedBrand(t *testing.T) {
 }
 
 func TestScanEximMessagePhishingURLsAndLanguage(t *testing.T) {
-	headers := "From: sender@example.com\n"
+	headers := eximSpool(
+		"049F From: sender@example.com",
+	)
 	body := "Please verify your account at https://evil.workers.dev/login " +
 		"confirm your identity or your account will be suspended unless you act now " +
 		"click here to verify"
@@ -1246,7 +1240,11 @@ func TestScanEximMessagePhishingURLsAndLanguage(t *testing.T) {
 }
 
 func TestScanEximMessageBase64HTML(t *testing.T) {
-	headers := "From: sender@example.com\nContent-Transfer-Encoding: base64\nContent-Type: text/html\n"
+	headers := eximSpool(
+		"049F From: sender@example.com",
+		"048  Content-Transfer-Encoding: base64",
+		"030  Content-Type: text/html",
+	)
 
 	withMockOS(t, &mockOS{
 		stat: func(name string) (os.FileInfo, error) {
@@ -1276,7 +1274,11 @@ func TestScanEximMessageBase64HTML(t *testing.T) {
 }
 
 func TestScanEximMessageCriticalSeverity(t *testing.T) {
-	headers := "From: PayPal Security <noreply@randomsite.com>\nReply-To: hacker@evil.com\nX-Mailer: PHPMailer\n"
+	headers := eximSpool(
+		"055F From: PayPal Security <noreply@randomsite.com>",
+		"036R Reply-To: hacker@evil.com",
+		"025  X-Mailer: PHPMailer",
+	)
 	body := "verify your account at https://evil.workers.dev confirm your identity your account will be suspended unless"
 
 	withMockOS(t, &mockOS{
@@ -1330,7 +1332,10 @@ func TestCheckOutboundEmailContentParsesLog(t *testing.T) {
 		"1681234568 ABC123 => victim@target.com R=remote\n" +
 		"1681234569 DEF456 <= <> H=bounce\n"
 
-	headers := "From: PayPal <sender@example.com>\nReply-To: hacker@evil.com\n"
+	headers := eximSpool(
+		"048F From: PayPal <sender@example.com>",
+		"036R Reply-To: hacker@evil.com",
+	)
 
 	withMockOS(t, &mockOS{
 		open: func(name string) (*os.File, error) {

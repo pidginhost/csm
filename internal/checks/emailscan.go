@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/emailspool"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -126,29 +128,39 @@ func scanEximMessage(msgID, sender string, cfg *config.Config) *alert.Finding {
 
 	var indicators []string
 
-	// Read and analyze headers
+	// Read and parse headers via the emailspool Exim -H parser. We go through
+	// osFS.ReadFile + bytes.NewReader rather than emailspool.ParseHeaders(path)
+	// so check tests can inject mock spool contents through the existing
+	// osFS seam.
 	headerData, err := osFS.ReadFile(headerPath)
 	if err != nil {
 		return nil
 	}
-	headers := string(headerData)
-	headersLower := strings.ToLower(headers)
+	parsed, err := emailspool.ParseHeadersReader(bytes.NewReader(headerData))
+	if err != nil {
+		// Malformed or truncated -H file: nothing to check, skip silently as
+		// the previous loose parse would have done.
+		return nil
+	}
+	// Lower-cased raw bytes are still required for two heuristics that the
+	// emailspool Headers struct does not surface: User-Agent (X-Mailer
+	// fallback) and the base64-text/html combination.
+	headersLower := strings.ToLower(string(headerData))
 
 	// Check 1: Reply-To mismatch
-	from := extractEmailHeader(headers, "From:")
-	replyTo := extractEmailHeader(headers, "Reply-To:")
-	if from != "" && replyTo != "" {
-		fromDomain := extractDomain(from)
-		replyDomain := extractDomain(replyTo)
+	if parsed.From != "" && parsed.ReplyTo != "" {
+		fromDomain := emailspool.ExtractDomain(parsed.From)
+		replyDomain := emailspool.ExtractDomain(parsed.ReplyTo)
 		if fromDomain != "" && replyDomain != "" && fromDomain != replyDomain {
 			indicators = append(indicators, fmt.Sprintf("Reply-To mismatch: From=%s, Reply-To=%s", fromDomain, replyDomain))
 		}
 	}
 
-	// Check 2: Suspicious X-Mailer
-	mailer := extractEmailHeader(headers, "X-Mailer:")
+	// Check 2: Suspicious X-Mailer (fall back to User-Agent header captured
+	// in the raw bytes -- emailspool.Headers does not surface User-Agent).
+	mailer := parsed.XMailer
 	if mailer == "" {
-		mailer = extractEmailHeader(headers, "User-Agent:")
+		mailer = scanRawHeader(headerData, "User-Agent")
 	}
 	if mailer != "" {
 		mailerLower := strings.ToLower(mailer)
@@ -170,13 +182,12 @@ func scanEximMessage(msgID, sender string, cfg *config.Config) *alert.Finding {
 	}
 
 	// Check 3: Spoofed display name (brand name in From: but sender is not that brand)
-	fromHeader := extractEmailHeader(headers, "From:")
-	if fromHeader != "" {
-		fromLower := strings.ToLower(fromHeader)
-		senderDomain := extractDomain(sender)
+	if parsed.From != "" {
+		fromLower := strings.ToLower(parsed.From)
+		senderDomain := emailspool.ExtractDomain(sender)
 		for _, brand := range emailBrandNames {
 			if strings.Contains(fromLower, brand) && !strings.Contains(strings.ToLower(senderDomain), brand) {
-				indicators = append(indicators, fmt.Sprintf("spoofed brand in From: '%s' (actual sender: %s)", strings.TrimSpace(fromHeader), sender))
+				indicators = append(indicators, fmt.Sprintf("spoofed brand in From: '%s' (actual sender: %s)", strings.TrimSpace(parsed.From), sender))
 				break
 			}
 		}
@@ -234,32 +245,33 @@ func scanEximMessage(msgID, sender string, cfg *config.Config) *alert.Finding {
 	}
 }
 
-// extractEmailHeader extracts a header value from raw email headers.
-func extractEmailHeader(headers, name string) string {
-	nameLower := strings.ToLower(name)
-	for _, line := range strings.Split(headers, "\n") {
-		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), nameLower) {
-			parts := strings.SplitN(line, ":", 2)
+// scanRawHeader looks up a single RFC 5322 header value by name in raw Exim -H
+// bytes. Used for headers that emailspool.Headers does not surface
+// (e.g. User-Agent) on the cold path where we already have the buffer.
+// Returns "" when the header is absent or malformed.
+//
+// The lookup is line-oriented and tolerates either bare RFC 5322
+// ("Name: value") or Exim -H prefixed ("NNNX Name: value") shapes; the colon
+// is required, and the name match is case-insensitive.
+func scanRawHeader(data []byte, name string) string {
+	target := strings.ToLower(name) + ":"
+	for _, line := range strings.Split(string(data), "\n") {
+		// Strip the optional 5-byte Exim -H prefix ("NNNX ") if present so
+		// we can match either the bare RFC 5322 form or the spool form.
+		stripped := line
+		if len(line) >= 5 &&
+			line[0] >= '0' && line[0] <= '9' &&
+			line[1] >= '0' && line[1] <= '9' &&
+			line[2] >= '0' && line[2] <= '9' &&
+			line[4] == ' ' {
+			stripped = line[5:]
+		}
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(stripped)), target) {
+			parts := strings.SplitN(stripped, ":", 2)
 			if len(parts) == 2 {
 				return strings.TrimSpace(parts[1])
 			}
 		}
-	}
-	return ""
-}
-
-// extractDomain extracts the domain part from an email address or header value.
-func extractDomain(s string) string {
-	// Handle "Display Name <email@domain>" format
-	if idx := strings.Index(s, "<"); idx >= 0 {
-		end := strings.Index(s[idx:], ">")
-		if end > 0 {
-			s = s[idx+1 : idx+end]
-		}
-	}
-	// Extract domain from email
-	if idx := strings.LastIndex(s, "@"); idx >= 0 {
-		return strings.TrimSpace(s[idx+1:])
 	}
 	return ""
 }

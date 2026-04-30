@@ -181,20 +181,6 @@ func TestAuditValiasFilePipeForwarder(t *testing.T) {
 	}
 }
 
-// --- extractDomain edge cases ----------------------------------------
-
-func TestExtractDomainWithSubdomain(t *testing.T) {
-	if got := extractDomain("user@sub.example.com"); got != "sub.example.com" {
-		t.Errorf("got %q", got)
-	}
-}
-
-func TestExtractDomainBounce(t *testing.T) {
-	if got := extractDomain("<>"); got != "" {
-		t.Errorf("bounce should return empty, got %q", got)
-	}
-}
-
 // --- truncate edge cases ---------------------------------------------
 
 func TestTruncateExact(t *testing.T) {

@@ -105,14 +105,20 @@ func ParseHeaders(path string) (Headers, error) {
 		return Headers{}, err
 	}
 	defer f.Close()
-	h, err := parseHeadersReader(f)
+	h, err := ParseHeadersReader(f)
 	if err != nil {
 		return Headers{}, fmt.Errorf("parse %s: %w", path, err)
 	}
 	return h, nil
 }
 
-func parseHeadersReader(r io.Reader) (Headers, error) {
+// ParseHeadersReader is the io.Reader form of ParseHeaders for callers that
+// already have the spool bytes in memory or behind a custom seam (e.g. the
+// checks package's osFS abstraction). It applies the same Exim -H parsing
+// rules as ParseHeaders -- envelope preamble, blank-line separator,
+// "NNNX " prefixed RFC 5322 headers -- and is bounded by MaxSpoolHeaderBytes
+// per token; oversize input returns bufio.ErrTooLong.
+func ParseHeadersReader(r io.Reader) (Headers, error) {
 	var h Headers
 	// Per-line memory is bounded by the scanner's max buffer
 	// (MaxSpoolHeaderBytes); a token larger than that returns

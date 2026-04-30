@@ -44,20 +44,6 @@ func TestShellQuoteWithQuote(t *testing.T) {
 	}
 }
 
-// --- extractDomain ---------------------------------------------------
-
-func TestExtractDomainFromEmail(t *testing.T) {
-	if got := extractDomain("alice@example.com"); got != "example.com" {
-		t.Errorf("got %q", got)
-	}
-}
-
-func TestExtractDomainNoAt(t *testing.T) {
-	if got := extractDomain("nodomain"); got != "" {
-		t.Errorf("got %q", got)
-	}
-}
-
 // --- extractUser -----------------------------------------------------
 
 func TestExtractUserFromPath_Remaining(t *testing.T) {

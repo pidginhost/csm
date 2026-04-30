@@ -2,6 +2,7 @@ package checks
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/config"
@@ -28,33 +29,45 @@ func TestCheckDpkgVerifyModified(t *testing.T) {
 
 // --- scanEximMessage with mock header --------------------------------
 
+// TestScanEximMessageWithMock exercises scanEximMessage against a minimal but
+// valid cPanel-Exim -H spool blob (envelope preamble + blank-line separator +
+// NNNX-prefixed RFC 5322 header lines). The result is intentionally
+// discarded; this is a smoke test for the seam, not an indicator-shape
+// assertion -- those live in TestScanEximMessage{ReplyToMismatch,...}.
 func TestScanEximMessageWithMock(t *testing.T) {
+	const spool = "ABC123-DEF456-GH-H\n" +
+		"alice 1000 1000\n" +
+		"<alice@example.com>\n" +
+		"1700000000 0\n" +
+		"-local\n" +
+		"1\n" +
+		"bob@example.com\n" +
+		"\n" +
+		"048F From: <alice@example.com>\n" +
+		"037T To: bob@example.com\n" +
+		"021  Subject: Test\n"
+
 	withMockOS(t, &mockOS{
+		stat: func(name string) (os.FileInfo, error) {
+			if strings.HasSuffix(name, "-H") {
+				return fakeFileInfo{name: "msg-H"}, nil
+			}
+			return nil, os.ErrNotExist
+		},
 		readFile: func(name string) ([]byte, error) {
-			return []byte("From: alice@example.com\nSubject: Test\nTo: bob@example.com\n\nBody content here.\n"), nil
+			if strings.HasSuffix(name, "-H") {
+				return []byte(spool), nil
+			}
+			if strings.HasSuffix(name, "-D") {
+				return []byte("Body content here."), nil
+			}
+			return nil, os.ErrNotExist
 		},
 	})
 
 	cfg := &config.Config{}
 	result := scanEximMessage("ABC123-DEF456-GH", "alice@example.com", cfg)
 	_ = result
-}
-
-// --- extractEmailHeader with raw header data -------------------------
-
-func TestExtractEmailHeader(t *testing.T) {
-	data := "From: alice@example.com\r\nSubject: Test Email\r\nTo: bob@example.com\r\n\r\nBody.\r\n"
-	got := extractEmailHeader(data, "Subject")
-	if got != "Test Email" {
-		t.Errorf("got %q, want Test Email", got)
-	}
-}
-
-func TestExtractEmailHeaderMissing(t *testing.T) {
-	data := "From: alice@example.com\r\n\r\nBody.\r\n"
-	if got := extractEmailHeader(data, "X-Custom"); got != "" {
-		t.Errorf("missing header should return empty, got %q", got)
-	}
 }
 
 // --- fixQuarantineSpoolMessage with mock exim -------------------------

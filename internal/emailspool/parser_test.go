@@ -35,6 +35,34 @@ func TestExtractDomain_Empty(t *testing.T) {
 	}
 }
 
+func TestExtractDomain_NoAtSign(t *testing.T) {
+	// Input with no '@' anywhere (raw token) must return empty rather than
+	// the input itself. Previously protected by the local extractDomain
+	// shadow tests (TestExtractDomainNoAt, TestExtractDomainFormats).
+	if got := ExtractDomain("nodomain"); got != "" {
+		t.Errorf("ExtractDomain(\"nodomain\") = %q, want empty", got)
+	}
+	if got := ExtractDomain("no-at-sign"); got != "" {
+		t.Errorf("ExtractDomain(\"no-at-sign\") = %q, want empty", got)
+	}
+}
+
+func TestExtractDomain_Subdomain(t *testing.T) {
+	// Multi-label domain on the right side of '@' must be preserved verbatim
+	// (lowercased). Previously protected by TestExtractDomainWithSubdomain.
+	if got := ExtractDomain("user@sub.example.com"); got != "sub.example.com" {
+		t.Errorf("ExtractDomain subdomain = %q", got)
+	}
+}
+
+func TestExtractDomain_EmptyAngleBrackets(t *testing.T) {
+	// Bounce-style "<>" envelope marker has no address; must return empty.
+	// Previously protected by TestExtractDomainBounce.
+	if got := ExtractDomain("<>"); got != "" {
+		t.Errorf("ExtractDomain(\"<>\") = %q, want empty", got)
+	}
+}
+
 func TestIsSubdomainOrEqual(t *testing.T) {
 	cases := []struct {
 		candidate, base string
@@ -78,6 +106,12 @@ func TestParseHeaders_PHPMailerFixture(t *testing.T) {
 	}
 	if h.XMailer != "PHPMailer 7.0.0 (https://github.com/PHPMailer/PHPMailer)" {
 		t.Errorf("XMailer = %q", h.XMailer)
+	}
+	// Subject is also extracted via the same NNNX-prefixed parse path; assert
+	// it explicitly so the contract previously protected by the deleted
+	// extractEmailHeader shadow tests stays covered here.
+	if h.Subject != "Hello" {
+		t.Errorf("Subject = %q, want Hello", h.Subject)
 	}
 }
 
