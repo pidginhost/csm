@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Hardening audit flags hosts where `algif_aead` is loaded or has no modprobe.d blacklist (CVE-2026-31431 "Copy Fail" mitigation).
+- Critical check `af_alg_socket_use` emits one finding per `socket(AF_ALG, ...)` call from a non-system UID; treats every hit as an exploit signature.
+
 ### Fixed
 
 - `.htaccess` user-agent cloak detector stops firing on the canonical multi-line "bad bots" snippet, where each scraper UA sits on its own RewriteCond paired with one terminal redirect. Targeted one- or two-cond cloaks still fire.
