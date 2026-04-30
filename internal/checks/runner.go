@@ -110,6 +110,7 @@ func criticalChecks() []namedCheck {
 		{"mail_per_account", CheckMailPerAccount},
 		{"kernel_modules", CheckKernelModules},
 		{"af_alg_socket_use", CheckAFAlgSocketUsage},
+		{"af_alg_enforcement", CheckAFAlgEnforcement},
 		{"mysql_users", CheckMySQLUsers},
 		{"database_dumps", CheckDatabaseDumps},
 		{"exfiltration_paste", CheckOutboundPasteSites},

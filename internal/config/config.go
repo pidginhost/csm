@@ -136,20 +136,21 @@ type Config struct {
 	} `yaml:"suppressions" hotreload:"safe"`
 
 	AutoResponse struct {
-		Enabled            bool   `yaml:"enabled"`
-		KillProcesses      bool   `yaml:"kill_processes"`
-		QuarantineFiles    bool   `yaml:"quarantine_files"`
-		BlockIPs           bool   `yaml:"block_ips"`
-		BlockExpiry        string `yaml:"block_expiry"`        // e.g. "24h", "12h"
-		EnforcePermissions bool   `yaml:"enforce_permissions"` // auto-chmod 644 world/group-writable PHP files (default false)
-		BlockCpanelLogins  bool   `yaml:"block_cpanel_logins"` // block IPs on cPanel/webmail login alerts (default false)
-		NetBlock           bool   `yaml:"netblock"`            // auto-block /24 when threshold IPs from same subnet
-		NetBlockThreshold  int    `yaml:"netblock_threshold"`  // IPs from same /24 before subnet block (default 3)
-		PermBlock          bool   `yaml:"permblock"`           // auto-promote to permanent after N temp blocks
-		PermBlockCount     int    `yaml:"permblock_count"`     // temp blocks before permanent (default 4)
-		PermBlockInterval  string `yaml:"permblock_interval"`  // window for counting temp blocks (default "24h")
-		CleanDatabase      bool   `yaml:"clean_database"`      // auto-clean malicious DB injections, revoke sessions, block attacker IPs (default false)
-		CleanHtaccess      bool   `yaml:"clean_htaccess"`      // auto-clean .htaccess directives flagged by the hardened detectors (default false)
+		Enabled             bool   `yaml:"enabled"`
+		KillProcesses       bool   `yaml:"kill_processes"`
+		QuarantineFiles     bool   `yaml:"quarantine_files"`
+		BlockIPs            bool   `yaml:"block_ips"`
+		BlockExpiry         string `yaml:"block_expiry"`           // e.g. "24h", "12h"
+		EnforcePermissions  bool   `yaml:"enforce_permissions"`    // auto-chmod 644 world/group-writable PHP files (default false)
+		BlockCpanelLogins   bool   `yaml:"block_cpanel_logins"`    // block IPs on cPanel/webmail login alerts (default false)
+		NetBlock            bool   `yaml:"netblock"`               // auto-block /24 when threshold IPs from same subnet
+		NetBlockThreshold   int    `yaml:"netblock_threshold"`     // IPs from same /24 before subnet block (default 3)
+		PermBlock           bool   `yaml:"permblock"`              // auto-promote to permanent after N temp blocks
+		PermBlockCount      int    `yaml:"permblock_count"`        // temp blocks before permanent (default 4)
+		PermBlockInterval   string `yaml:"permblock_interval"`     // window for counting temp blocks (default "24h")
+		CleanDatabase       bool   `yaml:"clean_database"`         // auto-clean malicious DB injections, revoke sessions, block attacker IPs (default false)
+		CleanHtaccess       bool   `yaml:"clean_htaccess"`         // auto-clean .htaccess directives flagged by the hardened detectors (default false)
+		DisableEnforceAFAlg bool   `yaml:"disable_enforce_af_alg"` // suspend periodic AF_ALG enforcement; marker file + detection remain active (default false = enforce when marker present)
 	} `yaml:"auto_response" hotreload:"safe"`
 
 	Challenge struct {

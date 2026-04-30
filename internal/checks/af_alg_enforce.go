@@ -1,9 +1,14 @@
 package checks
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
+
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/state"
 )
 
 // EnforceAction is the discrete outcome of the pure enforcement decision.
@@ -175,3 +180,57 @@ func WriteAFAlgMarker() error {
 // by cmd/csm. The unexported form stays internal to the package so the
 // periodic Check (Task 6) can call it without going through the export.
 func EnforceAFAlgBlocked() (EnforceResult, error) { return enforceAFAlgBlocked() }
+
+// CheckAFAlgEnforcement is the periodic critical-tier check that enforces
+// the AF_ALG mitigation policy. When the operator has opted in (via
+// `csm harden --copy-fail`, which writes the marker file), this check
+// reverts any drift on each tick. It is a no-op in advisory mode.
+//
+// Emits a Warning finding (one per tick that took action) so the operator
+// has an alert-pipeline record that system state was modified. Steady-state
+// ticks emit no findings. Warning is the lowest severity available in the
+// alert.Severity enum (Warning < High < Critical, no Info level).
+func CheckAFAlgEnforcement(_ context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
+	if cfg != nil && cfg.AutoResponse.DisableEnforceAFAlg {
+		return nil
+	}
+
+	res, err := enforceAFAlgBlocked()
+	if err != nil {
+		return []alert.Finding{{
+			Severity: alert.Warning,
+			Check:    "af_alg_enforcement_corrected",
+			Message:  "AF_ALG enforcement encountered an error",
+			Details:  fmt.Sprintf("error: %v\nresult: %+v", err, res),
+		}}
+	}
+
+	if res.Action == EnforceActionNoop {
+		return nil
+	}
+
+	return []alert.Finding{{
+		Severity: alert.Warning,
+		Check:    "af_alg_enforcement_corrected",
+		Message:  fmt.Sprintf("AF_ALG enforcement re-applied (%s)", actionName(res.Action)),
+		Details: fmt.Sprintf(
+			"Action: %s\nMarker present: %v\nMarker valid: %v\nModules loaded: %v\nMarker written: %v\nModule unload succeeded: %v\nNotes: %v",
+			actionName(res.Action), res.MarkerPresent, res.MarkerValid, res.ModulesLoaded,
+			res.MarkerWritten, res.ModuleUnloaded, res.Notes,
+		),
+	}}
+}
+
+func actionName(a EnforceAction) string {
+	switch a {
+	case EnforceActionNoop:
+		return "Noop"
+	case EnforceActionRestoreMarker:
+		return "RestoreMarker"
+	case EnforceActionUnloadModules:
+		return "UnloadModules"
+	case EnforceActionRestoreAndUnload:
+		return "RestoreAndUnload"
+	}
+	return fmt.Sprintf("Unknown(%d)", int(a))
+}

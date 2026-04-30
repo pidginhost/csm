@@ -1,10 +1,15 @@
 package checks
 
 import (
+	"context"
 	"errors"
 	"os"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 )
 
 func TestDecideAFAlgEnforcement_AdvisoryModeWhenMarkerAbsent(t *testing.T) {
@@ -290,3 +295,124 @@ func TestCanonicalMarkerContentDoesNotMatchHandEdit(t *testing.T) {
 		t.Error("canonicalAFAlgMarker constant should validate")
 	}
 }
+
+func TestCheckAFAlgEnforcement_NoopWhenAdvisoryMode(t *testing.T) {
+	withMockOS(t, &mockOS{
+		stat: func(string) (os.FileInfo, error) { return nil, os.ErrNotExist },
+	})
+	withMockCmd(t, &mockCmd{})
+	got := CheckAFAlgEnforcement(context.Background(), &config.Config{}, nil)
+	if len(got) != 0 {
+		t.Errorf("advisory mode should produce no findings; got %d", len(got))
+	}
+}
+
+func TestCheckAFAlgEnforcement_FiresWarningOnDriftCorrection(t *testing.T) {
+	// Marker exists with bad content + modules unloaded → wrapper rewrites
+	// the marker → action is RestoreMarker → check emits one Warning finding.
+	withMockOS(t, &mockOS{
+		stat: func(name string) (os.FileInfo, error) {
+			if name == afAlgMarkerPath {
+				return fakeFileInfo{name: name, size: 1}, nil
+			}
+			return nil, os.ErrNotExist
+		},
+		readFile: func(name string) ([]byte, error) {
+			return []byte("hand-edited junk\n"), nil
+		},
+		open: func(name string) (*os.File, error) {
+			if name == "/proc/modules" {
+				f, _ := os.CreateTemp(t.TempDir(), "modules")
+				_, _ = f.WriteString("bridge 200704 0 - Live 0x0\n")
+				_, _ = f.Seek(0, 0)
+				return f, nil
+			}
+			return nil, os.ErrNotExist
+		},
+		writeFile: func(string, []byte, os.FileMode) error { return nil },
+	})
+	withMockCmd(t, &mockCmd{})
+	got := CheckAFAlgEnforcement(context.Background(), &config.Config{}, nil)
+	if len(got) != 1 {
+		t.Fatalf("drift correction should emit 1 finding; got %d", len(got))
+	}
+	if got[0].Check != "af_alg_enforcement_corrected" {
+		t.Errorf("Check = %q, want af_alg_enforcement_corrected", got[0].Check)
+	}
+	if got[0].Severity != alert.Warning {
+		t.Errorf("severity = %v, want Warning", got[0].Severity)
+	}
+	if !strings.Contains(got[0].Details, "RestoreMarker") {
+		t.Errorf("Details should describe the action taken; got %q", got[0].Details)
+	}
+}
+
+func TestCheckAFAlgEnforcement_NoFindingWhenAlreadyEnforced(t *testing.T) {
+	// Marker present and valid + no modules loaded = steady state = noop = no findings.
+	withMockOS(t, &mockOS{
+		stat: func(name string) (os.FileInfo, error) {
+			if name == afAlgMarkerPath {
+				return fakeFileInfo{name: name, size: int64(len(canonicalAFAlgMarker))}, nil
+			}
+			return nil, os.ErrNotExist
+		},
+		readFile: func(string) ([]byte, error) { return []byte(canonicalAFAlgMarker), nil },
+		open: func(name string) (*os.File, error) {
+			if name == "/proc/modules" {
+				f, _ := os.CreateTemp(t.TempDir(), "modules")
+				_, _ = f.WriteString("bridge 200704 0 - Live 0x0\n")
+				_, _ = f.Seek(0, 0)
+				return f, nil
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+	withMockCmd(t, &mockCmd{})
+	got := CheckAFAlgEnforcement(context.Background(), &config.Config{}, nil)
+	if len(got) != 0 {
+		t.Errorf("steady state should produce no findings; got %d", len(got))
+	}
+}
+
+func TestCheckAFAlgEnforcement_RespectsDisableFlag(t *testing.T) {
+	// Even with drift, if the operator has flipped the disable flag, the
+	// check must not call enforceAFAlgBlocked at all (so no WriteFile, no
+	// modprobe, no findings).
+	withMockOS(t, &mockOS{
+		stat: func(name string) (os.FileInfo, error) {
+			if name == afAlgMarkerPath {
+				return fakeFileInfo{name: name, size: 1}, nil
+			}
+			return nil, os.ErrNotExist
+		},
+		readFile: func(string) ([]byte, error) { return []byte("drifted\n"), nil },
+		open: func(name string) (*os.File, error) {
+			if name == "/proc/modules" {
+				f, _ := os.CreateTemp(t.TempDir(), "modules")
+				_, _ = f.Seek(0, 0)
+				return f, nil
+			}
+			return nil, os.ErrNotExist
+		},
+		writeFile: func(string, []byte, os.FileMode) error {
+			t.Error("WriteFile must not be called when enforcement is disabled by config")
+			return nil
+		},
+	})
+	withMockCmd(t, &mockCmd{})
+
+	cfg := &config.Config{}
+	cfg.AutoResponse.DisableEnforceAFAlg = true
+	got := CheckAFAlgEnforcement(context.Background(), cfg, nil)
+	if len(got) != 0 {
+		t.Errorf("disabled enforcement should produce no findings; got %d", len(got))
+	}
+}
+
+// silence unused-import warnings for "errors" / "time" if the rest of this
+// file ever loses references to them; both ARE used elsewhere in the file
+// (errors in TestEnforceAFAlgBlocked_ReturnsErrorWhenStatFailsUnexpectedly,
+// time in fakeFileInfo.ModTime) so this block exists only to make the
+// dependency explicit for future readers.
+var _ = errors.New
+var _ time.Time
