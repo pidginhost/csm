@@ -61,6 +61,19 @@
 | `csm update-rules` | Download latest signature rules |
 | `csm update-geoip` | Update MaxMind GeoLite2 databases |
 
+## PHP-relay (mail abuse, cPanel only)
+
+Operator controls for the email PHP-relay detector. Talks to the daemon's control socket; the daemon must be running. See [Real-time detection](detection-realtime.md#php-relay-mail-abuse-cpanel-only) for what the detector fires on, and [Auto-response](auto-response.md#auto-freeze-php-relay) for the freeze action.
+
+| Command | Description |
+|---------|-------------|
+| `csm phprelay status` | Print the detector's current state as JSON: enabled, platform, effective dry-run + source (runtime/bbolt/csm.yaml), Path 2b effective account limit, scripts/IPs/accounts tracked, msgID-index size, active ignores. Use to confirm the watcher is wired on a fresh install. |
+| `csm phprelay ignore-script <scriptKey> [--for-hours N] [--persist] [--reason ...]` | Suppress all 4 paths for a `host:/path` scriptKey. Default TTL 168h (7d). `--persist` writes to the bbolt `phprelay:ignore` bucket so the suppression survives daemon restarts; without it the entry is in-memory only. `<scriptKey>` is the value the daemon prints in `email_php_relay_abuse` findings (e.g. `shop.example.com:/wp-admin/admin-ajax.php`). |
+| `csm phprelay unignore <scriptKey> [--persist]` | Remove an active ignore. `--persist` also deletes the bbolt row. |
+| `csm phprelay ignore-list` | List all active ignores as JSON: scriptKey, expiresAt, addedBy, reason. |
+| `csm phprelay dry-run on\|off\|reset [--persist]` | Override the auto-freeze dry-run state at runtime. `on` = freeze findings emitted but no `exim -Mf` runs; `off` = live freezes; `reset` clears the runtime override and falls back to bbolt or `csm.yaml`. Precedence: runtime > bbolt > yaml. `--persist` writes the `on`/`off` choice to the bbolt `phprelay:settings` bucket so it survives restarts; on `reset --persist` the bbolt row is also deleted. |
+| `csm phprelay thaw <msgID>` | Manually thaw a frozen Exim message. Wraps `exim -Mt` with msgID validation (rejects anything that isn't `[A-Za-z0-9-]{16,32}`) and writes a `thaw` entry to the auto-freeze JSONL audit at `/var/log/csm/php_relay_audit.jsonl`. |
+
 ## Firewall
 
 23 subcommands. See [Firewall](firewall.md) for the full reference.

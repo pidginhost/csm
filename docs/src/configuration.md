@@ -177,6 +177,16 @@ auto_response:
   permblock_interval: "24h"             # window for counting temp blocks
   clean_htaccess: false                 # auto-clean .htaccess directives flagged by hardened detectors (backups under /opt/csm/quarantine/pre_clean/)
 
+  # PHP-relay auto-freeze. Off by default; only kicks in on cPanel hosts
+  # where email_protection.php_relay.enabled is true. dry_run defaults to
+  # true even when freeze is true, so an operator who enables freeze
+  # without thinking gets a dry-run rather than a live exim -Mf storm.
+  # Override at runtime with `csm phprelay dry-run on|off|reset`.
+  php_relay:
+    freeze: false                       # opt in to wire the exim -Mf hook into the alert pipeline
+    dry_run: true                       # safe default; flip with `csm phprelay dry-run off [--persist]`
+    max_actions_per_minute: 60          # rolling 60s cap on exim -Mf invocations
+
 # --- Detection ---
 detection:
   # db_object_scanning is tri-state: omit for the default (on),
@@ -267,6 +277,24 @@ email_protection:
   rate_crit_threshold: 100              # emails per window before critical (default: 100)
   rate_window_min: 10                   # rate check window in minutes (default: 10)
   known_forwarders: []                  # accounts that forward mail (skip rate alerts)
+
+  # PHP-relay detector (cPanel only; gated by platform.IsCPanel at startup).
+  # Off by default. When enabled, the daemon spawns the inotify spool
+  # watcher, runs a startup spool walk, and starts the Path 2b retro scan
+  # on /var/log/exim_mainlog. See docs/src/detection-realtime.md#php-relay
+  # for what each path actually triggers on.
+  php_relay:
+    enabled: false                      # opt in to start the watcher
+    rate_window_min: 5                  # Path 1 rolling window
+    header_score_volume_min: 5          # Path 1: don't score until script has emitted N msgs
+    absolute_volume_per_hour: 30        # Path 2 threshold per script
+    account_volume_per_hour: 0          # Path 2b operator override; 0 = auto-derive from cpanel.config maxemailsperhour
+    reputation_failures_per_24h: 3      # Path 3 threshold (Stage 2)
+    fanout_distinct_scripts: 3          # Path 4 threshold
+    fanout_window_min: 5                # Path 4 window
+    baseline_sigma: 3.0                 # Path 5 (Stage 3)
+    baseline_observation_days: 7        # Path 5 (Stage 3)
+    policies_dir: "/opt/csm/policies/email"  # mailer_classes.yaml + http_proxy_ranges.yaml; SIGHUP-reloadable
 
 # --- Firewall ---
 firewall:

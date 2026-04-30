@@ -25,6 +25,8 @@ The detection set is targeted at real attacker behaviour on shared hosting:
 
 - **Mailbox takeover (cPanel).** Fires the moment a successful login arrives from an IP that was just failing auth against the same mailbox. Plus Exim spool AV, mail-queue spam detection, weak-password audits, DKIM/SPF alerts, and outbound cloud-relay (GCP/AWS/Azure) abuse blocking with a retro-scan on startup.
 
+- **PHP-relay abuse (cPanel).** Real-time inotify watcher on `/var/spool/exim/input` catches WordPress contact-form spam relays where the attacker uses PHPMailer with a spoofed `From`, external `Reply-To`, and a script URL that doesn't belong to the account. Four detection paths (per-script header score, per-script absolute volume, per-account log-tail volume, HTTP-IP fanout) feed an optional auto-freeze that runs `exim -Mf` on the live spool. Operator controls via `csm phprelay`: status, ignore-script, dry-run toggle, thaw.
+
 - **CVE mitigations.** Operator-driven via `csm harden`, then continuously enforced by the daemon. Currently shipped:
    - **CVE-2026-31431 ("Copy Fail").** Run `csm harden --copy-fail` once. CSM blacklists `algif_aead` and `af_alg`, unloads them, and from then on the daemon checks every ten minutes that the policy is still in place. If anything drifts (kernel update, manual edit, rogue script) it puts it back. Auditd rules separately log every `socket(AF_ALG, ...)` attempt by a non-system uid as a Critical finding. Set `auto_response.disable_enforce_af_alg: true` to pause enforcement without removing the marker.
 
@@ -107,6 +109,7 @@ csm firewall ...              IP/subnet bans, port allows, GeoIP
 csm clean <path>              clean an infected PHP file
 csm db-clean ...              remove WordPress DB injections
 csm harden --copy-fail        apply CVE-2026-31431 mitigation
+csm phprelay status           PHP-relay detector state (cPanel only)
 csm store compact             reclaim bbolt free pages
 csm store export <path>       back up daemon state to tar.zst
 csm export --since <when>     SIEM backfill in JSONL

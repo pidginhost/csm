@@ -89,6 +89,25 @@ When an IP crosses the POST-rate threshold, `admin_panel_bruteforce` fires and t
 
 Drupal `/user/login` and Tomcat Manager `/manager/html` are intentionally out of scope here. Drupal's path is too generic on shared hosting, and Tomcat Manager uses HTTP Basic auth (repeated GET requests with 401 responses), not POST form submissions. Both need different detectors and are tracked as follow-up work.
 
+## PHP-Relay (Mail Abuse, cPanel Only)
+
+Real-time inotify watcher on `/var/spool/exim/input` catches WordPress contact-form spam relays where an attacker uses PHPMailer (or similar) with a spoofed `From`, an external `Reply-To`, and a script URL that doesn't belong to the cPanel account. The `occonsultingcy` incident (2026-04) drove the design: a legitimate site running a vulnerable contact-form plugin became a per-message spam relay through the operator's own mail account.
+
+The detector runs four paths and only fires `email_php_relay_abuse` (Critical) when one of them crosses threshold. All four are scoped per-script — the `host:/path` from the `X-PHP-Script` Exim header — so a single noisy plugin doesn't tar the whole account.
+
+| Path | What triggers it | Why it exists |
+|------|------------------|---------------|
+| **Path 1: header score** | Per-script: `From` domain not in the account's authorised domains AND additional signal (PHPMailer / suspicious Reply-To / suspicious User-Agent), evaluated over a rolling 5-min window once the script has emitted at least `header_score_volume_min` messages | The shape that matched the original incident: spoofed sender, contact-form-style. `FromMismatch` is a HARD precondition — the score never accumulates without it |
+| **Path 2: absolute volume per script** | A single script emits more than `absolute_volume_per_hour` messages in the last hour | Catches a compromised script even if the headers themselves are legit-shaped |
+| **Path 2b: account log-tail volume** | Per cPanel user: more than `effective_account_limit` outbound messages through the redirect_resolver router in the last hour. The effective limit is auto-derived from `/var/cpanel/cpanel.config`'s `maxemailsperhour` (60% of it, clamped to 20-60), capped at 95% of the cPanel limit when an operator override is set | Backstop for when Path 2 misses the window. Reads `/var/log/exim_mainlog` directly; only fires on lines tagged `B=redirect_resolver` so forwarders don't trip it |
+| **Path 4: HTTP-IP fanout** | Per-script: more than `fanout_distinct_scripts` distinct attacker IPs hitting the same script in `fanout_window_min` minutes, after subtracting any IP that matches the loaded HTTP-proxy ranges (Cloudflare etc.) | Distinguishes one bad script behind a CDN (legit traffic, even if buggy) from a coordinated attack across many real source IPs |
+
+Path 5 (behavioural baseline) is deferred to Stage 2.
+
+The detector starts a one-shot retrospective scan of `exim_mainlog` at daemon startup so Path 2b can fire on history already on disk. `IN_Q_OVERFLOW` triggers a bounded recovery walk of the spool (capped at 1000 files; if more were skipped, a `email_php_relay_overflow_scan_truncated` Critical fires too — Path 2b backstops the missed messages).
+
+Operator suppressions (`csm phprelay ignore-script <host:/path>`) short-circuit the pipeline before any path scoring runs, so a known-noisy contact form can be opted out individually without disabling the detector. See [PHP-relay CLI](cli.md#php-relay-mail-abuse-cpanel-only) for the full operator surface.
+
 ## PAM Brute-Force Listener
 
 Real-time authentication monitoring across all PAM-enabled services.

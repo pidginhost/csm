@@ -178,6 +178,24 @@ curl -sk -H "Authorization: Bearer $METRICS_TOKEN" \
   for estimating when the file might benefit from a
   `csm store compact` maintenance window.
 
+### PHP-relay (email abuse, cPanel only)
+
+All series are prefixed `csm_php_relay_`. Registered when `email_protection.php_relay.enabled: true` and the host is cPanel; otherwise zero across the board. See [Real-time detection](detection-realtime.md#php-relay-mail-abuse-cpanel-only).
+
+- `csm_php_relay_findings_total{path}` (counter): findings emitted per detection path. Labels: `path` is one of `header`, `volume`, `volume_account`, `fanout` (and later `baseline`, `reputation` for Stages 2-3). Use `rate(...)` to spot detection storms; a sudden rate jump on `header` typically means a contact-form vulnerability is being exploited, on `volume_account` typically means an account password was leaked.
+- `csm_php_relay_actions_total{action,result}` (counter): auto-freeze invocations attempted. Labels: `action` is currently `freeze`; `result` is `ok` or `fail`. Pair with `csm_php_relay_findings_total` to confirm freeze keeps up with detection.
+- `csm_php_relay_action_gone_total` (counter): messages already absent from the spool by the time `exim -Mf` ran. Normal queue churn; not a failure. Sustained growth means the spool is moving fast and the freezer is racing the queue runner.
+- `csm_php_relay_path_skipped_total{path,reason}` (counter): path evaluation that bailed before producing a finding. Labels: `path` matches the finding labels above; `reason` enumerates the gate that fired (e.g. ignore-list match, missing scriptKey).
+- `csm_php_relay_spool_scan_fallbacks_total{reason}` (counter): AutoFreeze fell back to a full spool walk to find msgIDs. Labels: `reason` is `capped` (the in-memory `activeMsgs` per script hit its cap, so a fresh disk walk was needed) or `reputation` (a late reputation finding arrived for a script with no live `activeMsgs`). Sustained growth on `capped` means a single script is firing faster than the in-memory window keeps state for; consider raising `header_score_volume_min` or adding an ignore.
+- `csm_php_relay_active_msgs_capped_total` (counter): per-script `activeMsgs` set hit its cap and dropped the oldest entry. Counts the eviction event itself; the next freeze for that script will land in `csm_php_relay_spool_scan_fallbacks_total{reason="capped"}`.
+- `csm_php_relay_windows_active{kind}` (gauge): retained per-script / per-IP / per-account window state. Labels: `kind` is `script`, `ip`, or `account`. Sized by Flow E sweep cadence (5 min for windows, 24 h retention for accounts); flat values across hours are normal.
+- `csm_php_relay_msgid_index_size{layer}` (gauge): msgID dedup index size by storage layer. Labels: `layer` is `memory` (in-process map) or `bbolt` (persisted batch writer). Memory ceiling is 200k entries; bbolt grows freely until the 25 h Flow E sweep prunes it.
+- `csm_php_relay_msgindex_persist_dropped_total` (counter): bbolt persist queue overflow drops (the 4096-deep buffered channel was full when the watcher tried to enqueue). Should be zero in steady state; a non-zero value means the bbolt writer is blocked on disk and the in-memory dedup is the only thing protecting against double-fire on a queue-runner re-write.
+- `csm_php_relay_msgindex_persist_errors_total` (counter): bbolt commit failures from the async batch writer. Each bump also emits a Critical `email_php_relay_msgindex_persist_failed` finding. Disk-full or permissions issue on `/opt/csm/state/csm.db`.
+- `csm_php_relay_inotify_overflows_total` (counter): kernel `IN_Q_OVERFLOW` events on the spool watcher. Each one triggers a bounded recovery scan (default cap 1000 files); if the cap fires, also emits `email_php_relay_overflow_scan_truncated` Critical. Sustained growth means the spool is churning faster than inotify can keep up — usually a backup restore or a real attack.
+- `csm_php_relay_spool_read_errors_total` (counter): `emailspool.ParseHeaders` errors on `-H` files the watcher tried to consume. Usually transient (file disappeared between inotify event and open) and self-correcting; sustained growth points at a permissions or filesystem problem.
+- `csm_php_relay_userdata_errors_total` (counter): `cpanelUserDomains` resolver errors reading `/var/cpanel/userdata/`. Used by the Path 1 `From` mismatch check; errors here mean Path 1 is potentially undercounting until the read recovers.
+
 ### Signature retroactive rescans
 
 - `csm_signature_rescans_total` (counter): full deep-tier sweeps

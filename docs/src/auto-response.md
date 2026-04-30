@@ -14,6 +14,7 @@ When enabled, CSM automatically responds to detected threats. All actions are lo
 | **PAM blocking** | Instant IP block on brute force threshold breach. |
 | **Subnet blocking** | Auto-blocks /24 when 3+ IPs from the same range attack. |
 | **Permblock escalation** | Promotes temporary blocks to permanent after N repeated offenses. |
+| **Auto-freeze (PHP relay)** | When the email PHP-relay detector fires (Path 1 / 2 / 4), runs `exim -Mf` against the message IDs the offending script is currently sending. Snapshots `activeMsgs` from the per-script window first, falls back to a spool walk if the snapshot was capped or if the finding is a late reputation event. Default dry-run; flip to live with `csm phprelay dry-run off`. Skips `volume_account` (per-cpuser, no scriptKey). Rate-limited to `auto_response.php_relay.max_actions_per_minute` (default 60). cPanel only. See [PHP-relay CLI](cli.md#php-relay-mail-abuse-cpanel-only). |
 
 ## Configuration
 
@@ -28,6 +29,14 @@ auto_response:
   netblock_threshold: 3       # IPs from same /24 before subnet block
   permblock: true             # promote temp blocks to permanent
   permblock_count: 4          # temp blocks before promotion
+
+  # PHP-relay auto-freeze (cPanel only). Off by default; opt in
+  # explicitly. dry_run defaults to true even when freeze=true so an
+  # operator who enables freeze without thinking gets a dry-run.
+  php_relay:
+    freeze: true                       # enable the exim -Mf hook
+    dry_run: true                      # safe default; flip with `csm phprelay dry-run off`
+    max_actions_per_minute: 60         # rolling 60s window cap on exim -Mf invocations
 ```
 
 ## Safety Guards
