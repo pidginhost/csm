@@ -130,6 +130,48 @@ info@example.com
 	}
 }
 
+func TestStartupSpoolWalker_DefersFindings(t *testing.T) {
+	spoolRoot := t.TempDir()
+	sub := filepath.Join(spoolRoot, "k")
+	_ = os.MkdirAll(sub, 0o755)
+
+	cfg := defaultPHPRelayCfg()
+	cfg.EmailProtection.PHPRelay.HeaderScoreVolumeMin = 1
+	psw := newPerScriptWindow()
+	pip := newPerIPWindow(64)
+	pacct := newPerAccountWindow(5000)
+	eng := newEvaluator(psw, pip, pacct, cfg, nil)
+
+	udir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(udir, "u"), 0o755)
+	_ = os.WriteFile(filepath.Join(udir, "u", "main"), []byte("main_domain: example.com\n"), 0o644)
+	domains := newUserDomainsResolverWithRoot(udir, time.Minute)
+	pol := newTestPolicies(t)
+
+	var findings []alert.Finding
+	var fmu sync.Mutex
+	pipeline := newSpoolPipeline(eng, domains, pol, nil, func(f alert.Finding) {
+		fmu.Lock()
+		findings = append(findings, f)
+		fmu.Unlock()
+	})
+
+	// Write attack-shape -H file BEFORE the walker runs.
+	body := "id-H\nu 1 1\n<u@example.com>\n0 0\n-local\n1\nrcpt@example.com\n\n037T To: rcpt@example.com\n132  X-PHP-Script: bad.example.com/x.php for 192.0.2.10\n048F From: <attacker@spoofed.example>\n031R Reply-To: attacker@gmail.example\n067  X-Mailer: PHPMailer 7.0.0\n"
+	_ = os.WriteFile(filepath.Join(sub, "1zzz-H"), []byte(body), 0o644)
+
+	runStartupSpoolWalker(spoolRoot, pipeline)
+
+	fmu.Lock()
+	defer fmu.Unlock()
+	if len(findings) == 0 {
+		t.Fatal("expected re-evaluation pass to fire after rebuild")
+	}
+	if pipeline.rebuilding.Load() {
+		t.Error("rebuilding flag must be cleared after walker returns")
+	}
+}
+
 func TestRecoveryScan_BoundedAndDedupes(t *testing.T) {
 	spoolRoot := t.TempDir()
 	sub := filepath.Join(spoolRoot, "k")

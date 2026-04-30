@@ -196,8 +196,6 @@ func newSpoolPipeline(eng *evaluator, domains *userDomainsResolver, pol *emailsp
 
 // SetRebuilding gates finding emission during the startup spool-walker
 // rebuild pass. When true: state is updated, findings are NOT emitted.
-//
-//nolint:unused // consumed by startup walker (Task I4)
 func (p *spoolPipeline) SetRebuilding(v bool) { p.rebuilding.Store(v) }
 
 // OnFile is the inotify callback. Parses, signals, updates state, evaluates.
@@ -310,4 +308,57 @@ func runRecoveryScan(spoolRoot string, maxFiles int, onFile func(string)) (int, 
 		onFile(e.path)
 	}
 	return len(entries), truncated
+}
+
+// runStartupSpoolWalker walks every currently-queued -H file through the
+// pipeline in REBUILD mode, then performs one re-evaluation pass over the
+// reconstructed scriptStates. Findings are emitted ONLY in the re-evaluation
+// pass, so the rebuild itself never produces duplicate findings for the
+// same in-queue mail.
+func runStartupSpoolWalker(spoolRoot string, p *spoolPipeline) {
+	p.SetRebuilding(true)
+	subs, err := os.ReadDir(spoolRoot)
+	if err == nil {
+		for _, sub := range subs {
+			if !sub.IsDir() {
+				continue
+			}
+			subPath := filepath.Join(spoolRoot, sub.Name())
+			files, err := os.ReadDir(subPath)
+			if err != nil {
+				continue
+			}
+			for _, f := range files {
+				if !strings.HasSuffix(f.Name(), "-H") {
+					continue
+				}
+				p.OnFile(filepath.Join(subPath, f.Name()))
+			}
+		}
+	}
+	p.SetRebuilding(false)
+
+	// Re-evaluation pass.
+	snap := p.eng.scripts.Snapshot()
+	now := time.Now()
+	for k, s := range snap {
+		// We don't have per-script source IP in the snapshot; pass empty
+		// sourceIP. Path 4 (HTTP-IP fanout) is keyed off perIPWindow which
+		// was already populated in OnFile, so an empty SourceIP here just
+		// means the per-script Path 4 finding doesn't carry an IP -- the
+		// window itself still triggers correctly via direct OnFile calls
+		// during normal operation.
+		cpuser := ""
+		// Best-effort cpuser: read it from any active msgID's index entry.
+		if p.msgIndex != nil {
+			if ids, _ := s.snapshotActiveMsgs(); len(ids) > 0 {
+				if e, ok := p.msgIndex.Get(ids[0]); ok {
+					cpuser = e.CPUser
+				}
+			}
+		}
+		for _, f := range p.eng.evaluatePaths(k, "", cpuser, now) {
+			p.alerter(f)
+		}
+	}
 }
