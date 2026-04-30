@@ -6,8 +6,11 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/pidginhost/csm/internal/alert"
 )
 
 func TestSpoolWatcher_DetectsNewHFile(t *testing.T) {
@@ -44,5 +47,84 @@ func TestSpoolWatcher_DetectsNewHFile(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for inotify event")
+	}
+}
+
+func TestSpoolPipeline_FlowAOnRealFixture(t *testing.T) {
+	spoolRoot := t.TempDir()
+	sub := filepath.Join(spoolRoot, "k")
+	_ = os.MkdirAll(sub, 0o755)
+
+	cfg := defaultPHPRelayCfg()
+	cfg.EmailProtection.PHPRelay.HeaderScoreVolumeMin = 2 // tight for test
+	psw := newPerScriptWindow()
+	pip := newPerIPWindow(64)
+	pacct := newPerAccountWindow(5000)
+	eng := newEvaluator(psw, pip, pacct, cfg, nil)
+
+	udir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(udir, "exampleuser"), 0o755)
+	_ = os.WriteFile(filepath.Join(udir, "exampleuser", "main"),
+		[]byte("main_domain: example.com\n"), 0o644)
+	domains := newUserDomainsResolverWithRoot(udir, time.Minute)
+
+	pol := newTestPolicies(t)
+
+	var findings []alert.Finding
+	var fmu sync.Mutex
+	pipeline := newSpoolPipeline(eng, domains, pol, nil, func(f alert.Finding) {
+		fmu.Lock()
+		findings = append(findings, f)
+		fmu.Unlock()
+	})
+
+	w, err := newSpoolWatcher(spoolRoot, pipeline.OnFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Run(ctx)
+	time.Sleep(50 * time.Millisecond)
+
+	// Write two attack-shape -H files.
+	for i, mid := range []string{"1aaa-H", "1bbb-H"} {
+		body := `id-H
+exampleuser 1168 982
+<exampleuser@cpanel.example.test>
+1777409086 0
+-local
+1
+info@example.com
+
+233P Received: from exampleuser by cpanel.example.test
+037  Subject: x` + string(rune('0'+i)) + `
+132  X-PHP-Script: spoof.example.com/wp-admin/admin-ajax.php for 192.0.2.10
+048F From: Spoof <attacker@spoofed.example>
+031R Reply-To: attacker@gmail.example
+067  X-Mailer: PHPMailer 7.0.0
+`
+		if err := os.WriteFile(filepath.Join(sub, mid), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		fmu.Lock()
+		n := len(findings)
+		fmu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	fmu.Lock()
+	defer fmu.Unlock()
+	if len(findings) == 0 {
+		t.Fatal("expected Path 1 finding from two attack -H files")
+	}
+	if findings[0].Path != "header" {
+		t.Errorf("Path = %q, want header", findings[0].Path)
 	}
 }

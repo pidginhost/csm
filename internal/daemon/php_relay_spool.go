@@ -10,10 +10,15 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/emailspool"
 )
 
 // spoolWatcher watches /var/spool/exim/input for new -H files. cPanel hashes
@@ -168,4 +173,92 @@ func (w *spoolWatcher) Run(ctx context.Context) {
 //nolint:unused // consumed by daemon wiring (Task O2)
 func (w *spoolWatcher) OverflowCount() uint64 {
 	return w.overflowCount
+}
+
+// spoolPipeline ties together: parse headers -> compute signals -> update
+// windows -> evaluate paths -> emit findings via alerter callback.
+type spoolPipeline struct {
+	eng        *evaluator
+	domains    *userDomainsResolver
+	policies   *emailspool.Policies
+	msgIndex   *msgIDIndex
+	alerter    func(alert.Finding)
+	rebuilding atomic.Bool
+}
+
+func newSpoolPipeline(eng *evaluator, domains *userDomainsResolver, pol *emailspool.Policies, idx *msgIDIndex, alerter func(alert.Finding)) *spoolPipeline {
+	eng.SetPolicies(pol)
+	return &spoolPipeline{
+		eng: eng, domains: domains, policies: pol, msgIndex: idx, alerter: alerter,
+	}
+}
+
+// SetRebuilding gates finding emission during the startup spool-walker
+// rebuild pass. When true: state is updated, findings are NOT emitted.
+//
+//nolint:unused // consumed by startup walker (Task I4)
+func (p *spoolPipeline) SetRebuilding(v bool) { p.rebuilding.Store(v) }
+
+// OnFile is the inotify callback. Parses, signals, updates state, evaluates.
+func (p *spoolPipeline) OnFile(path string) {
+	h, err := emailspool.ParseHeaders(path)
+	if err != nil {
+		return
+	}
+	if h.XPHPScript == "" {
+		return
+	}
+	msgID := msgIDFromPath(path)
+	if msgID == "" {
+		return
+	}
+	if p.msgIndex != nil && p.msgIndex.Has(msgID) {
+		return // queue-runner re-write dedup
+	}
+
+	auth, _ := p.domains.Domains(h.EnvelopeUser)
+	sig := computeSignals(h, auth, p.policies)
+	if sig.ScriptKey == "" {
+		return
+	}
+
+	if p.msgIndex != nil {
+		p.msgIndex.Put(msgID, indexEntry{
+			ScriptKey: string(sig.ScriptKey),
+			SourceIP:  sig.SourceIP,
+			CPUser:    h.EnvelopeUser,
+			At:        time.Now(),
+		})
+	}
+
+	state := p.eng.scripts.getOrCreate(sig.ScriptKey)
+	state.append(scriptEvent{
+		At:               time.Now(),
+		MsgID:            msgID,
+		FromMismatch:     sig.FromMismatch,
+		AdditionalSignal: sig.AdditionalSignal,
+		SourceIP:         sig.SourceIP,
+	})
+	state.recordActive(msgID, time.Now())
+
+	if p.policies == nil || !p.policies.IsProxyIP(sig.SourceIP) {
+		p.eng.ips.append(sig.SourceIP, sig.ScriptKey, time.Now())
+	}
+
+	if p.rebuilding.Load() {
+		return
+	}
+	findings := p.eng.evaluatePaths(sig.ScriptKey, sig.SourceIP, h.EnvelopeUser, time.Now())
+	for _, f := range findings {
+		p.alerter(f)
+	}
+}
+
+// msgIDFromPath returns the msgID portion of a /path/<msgID>-H file.
+func msgIDFromPath(path string) string {
+	base := filepath.Base(path)
+	if !strings.HasSuffix(base, "-H") {
+		return ""
+	}
+	return strings.TrimSuffix(base, "-H")
 }
