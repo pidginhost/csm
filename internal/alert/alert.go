@@ -36,14 +36,23 @@ func (s Severity) String() string {
 
 // Finding represents a single security check result.
 type Finding struct {
-	Severity    Severity  `json:"severity"`
-	Check       string    `json:"check"`
-	Message     string    `json:"message"`
-	Details     string    `json:"details,omitempty"`
-	FilePath    string    `json:"file_path,omitempty"`
-	ProcessInfo string    `json:"process_info,omitempty"` // "pid=N cmd=name uid=N" from fanotify
-	PID         int       `json:"pid,omitempty"`          // structured PID for auto-response
-	Timestamp   time.Time `json:"timestamp"`
+	Severity    Severity `json:"severity"`
+	Check       string   `json:"check"`
+	Message     string   `json:"message"`
+	Details     string   `json:"details,omitempty"`
+	FilePath    string   `json:"file_path,omitempty"`
+	ProcessInfo string   `json:"process_info,omitempty"` // "pid=N cmd=name uid=N" from fanotify
+	PID         int      `json:"pid,omitempty"`          // structured PID for auto-response
+
+	// PHP-relay structured fields (Stage 1 email_php_relay_abuse). All optional;
+	// zero values mean "this finding does not carry that dimension".
+	Path      string   `json:"path,omitempty"`       // path1 trigger label: "header" | "volume" | "volume_account" | "fanout" | "baseline" | "reputation"
+	MsgIDs    []string `json:"msg_ids,omitempty"`    // sample of in-flight msgIDs (auto-action acts on the live snapshot, not this list)
+	ScriptKey string   `json:"script_key,omitempty"` // host:path from X-PHP-Script
+	SourceIP  string   `json:"source_ip,omitempty"`  // IP after "for " in X-PHP-Script
+	CPUser    string   `json:"cp_user,omitempty"`    // cPanel user from spool -H line 2
+
+	Timestamp time.Time `json:"timestamp"`
 }
 
 func (f Finding) String() string {

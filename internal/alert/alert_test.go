@@ -111,3 +111,27 @@ func searchString(s, substr string) bool {
 	}
 	return false
 }
+
+func TestFinding_PHPRelayFields(t *testing.T) {
+	f := Finding{
+		Severity:  Critical,
+		Check:     "email_php_relay_abuse",
+		Path:      "header",
+		ScriptKey: "rentvsloan.example.com:/wp-admin/admin-ajax.php",
+		SourceIP:  "192.0.2.10",
+		CPUser:    "exampleuser",
+		MsgIDs:    []string{"1wHpIU-0000000G8Fo-1FA1"},
+	}
+	if f.Path != "header" || f.ScriptKey == "" || f.SourceIP == "" || f.CPUser == "" || len(f.MsgIDs) != 1 {
+		t.Fatalf("structured fields not retained: %+v", f)
+	}
+}
+
+func TestFinding_BackwardCompat_ZeroValues(t *testing.T) {
+	// Existing callers that don't set these fields must still produce a
+	// valid Finding (zero values, no panics).
+	f := Finding{Severity: Warning, Check: "x", Message: "y"}
+	if f.Path != "" || f.ScriptKey != "" || f.SourceIP != "" || f.CPUser != "" || f.MsgIDs != nil {
+		t.Fatalf("zero-value Finding must keep php_relay fields empty: %+v", f)
+	}
+}
