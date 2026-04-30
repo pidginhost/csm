@@ -560,12 +560,41 @@ func evaluateAlgifAEAD(loaded bool, confs map[string]string) store.AuditResult {
 	}
 }
 
-// auditAlgifAEAD is the impure wrapper: it reads /proc/modules and
-// /etc/modprobe.d/*.conf via osFS, then delegates to evaluateAlgifAEAD.
-// If any modprobe.d file is unreadable we cannot definitively answer
-// "blacklisted" — return a "warn" AuditResult naming the offending file
-// rather than silently classifying the host as fail.
+// auditAlgifAEAD is the impure wrapper: it reads the running kernel's
+// build configuration, KernelCare/livepatch state, /proc/modules, and
+// /etc/modprobe.d/*.conf via osFS/cmdExec, then produces an AuditResult.
+//
+// Decision order:
+//  1. KernelCare has applied a Copy Fail livepatch  -> pass.
+//  2. Kernel has CONFIG_CRYPTO_USER_API_AEAD=y      -> fail with a
+//     truthful message; the modprobe blacklist is ineffective on this
+//     kernel because the AEAD code is statically linked.
+//  3. Otherwise, fall through to the modprobe-state evaluator (the
+//     existing logic for hosts where AF_ALG is a loadable module).
+//
+// If any modprobe.d file is unreadable, return a "warn" AuditResult
+// naming the offending file rather than silently misreporting.
 func auditAlgifAEAD() store.AuditResult {
+	kernelState := observeAFAlgKernelState()
+	if kernelState.LivepatchActive {
+		return store.AuditResult{
+			Category: "os", Name: algifAEADAuditID, Title: algifAEADAuditTitle,
+			Status:  "pass",
+			Message: kernelState.String(),
+		}
+	}
+	if kernelState.BuiltIn {
+		return store.AuditResult{
+			Category: "os", Name: algifAEADAuditID, Title: algifAEADAuditTitle,
+			Status: "fail",
+			Message: "AF_ALG aead is built into the kernel (CONFIG_CRYPTO_USER_API_AEAD=y); " +
+				"modprobe blacklist is ineffective on this kernel and Copy Fail (CVE-2026-31431) is exploitable",
+			Fix: "Apply KernelCare/kpatch when the CVE-2026-31431 patch ships (kcarectl --update); " +
+				"as an interim, seccomp-filter unprivileged service workers (PHP-FPM, suexec) " +
+				"to deny socket(AF_ALG, ...). The modprobe blacklist file is harmless but does not protect this kernel.",
+		}
+	}
+
 	loaded := false
 	for _, mod := range loadModuleList() {
 		if mod == "algif_aead" {

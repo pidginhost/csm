@@ -557,3 +557,105 @@ func TestEvaluateAlgifAEAD_RecognisesCSMManagedMarker(t *testing.T) {
 		t.Errorf("message should mention CSM-managed enforcement; got %q", r.Message)
 	}
 }
+
+func TestAuditAlgifAEAD_FailsOnBuiltInKernelEvenWithMarker(t *testing.T) {
+	// This is the cluster6 scenario: CONFIG_CRYPTO_USER_API_AEAD=y, the
+	// CSM marker is in place, modules show as not loaded, KernelCare has
+	// no Copy Fail patch yet. The audit MUST report fail because the
+	// modprobe blacklist is ineffective on a built-in kernel — the
+	// previous behavior of returning pass was a false negative that
+	// actively hid an exploitable host.
+	confPath := "/etc/modprobe.d/csm-copy-fail-mitigation.conf"
+	withMockOS(t, &mockOS{
+		readFile: func(name string) ([]byte, error) {
+			switch name {
+			case "/proc/sys/kernel/osrelease":
+				return []byte("4.18.0-553.44.1.lve.el8.x86_64\n"), nil
+			case "/boot/config-4.18.0-553.44.1.lve.el8.x86_64":
+				return []byte("CONFIG_CRYPTO_USER_API_AEAD=y\n"), nil
+			case confPath:
+				return []byte(canonicalAFAlgMarker), nil
+			}
+			return nil, os.ErrNotExist
+		},
+		open: func(name string) (*os.File, error) {
+			if name == "/proc/modules" {
+				f, err := os.CreateTemp(t.TempDir(), "modules")
+				if err != nil {
+					return nil, err
+				}
+				_, _ = f.WriteString("bridge 200704 0 - Live 0x0\n")
+				_, _ = f.Seek(0, 0)
+				return f, nil
+			}
+			return nil, os.ErrNotExist
+		},
+		glob: func(pattern string) ([]string, error) {
+			if pattern == "/etc/modprobe.d/*.conf" {
+				return []string{confPath}, nil
+			}
+			return nil, nil
+		},
+	})
+	withMockCmd(t, &mockCmd{
+		runAllowNonZero: func(name string, args ...string) ([]byte, error) {
+			// kcarectl absent or no Copy Fail patch.
+			return nil, nil
+		},
+	})
+
+	got := auditAlgifAEAD()
+	if got.Status != "fail" {
+		t.Fatalf("status = %q, want fail (built-in kernel without livepatch is exploitable)", got.Status)
+	}
+	if !strings.Contains(got.Message, "built into the kernel") {
+		t.Errorf("Message must explain the built-in case so the operator understands; got %q", got.Message)
+	}
+	if !strings.Contains(got.Fix, "KernelCare") || !strings.Contains(got.Fix, "seccomp") {
+		t.Errorf("Fix must point at the actual remediations (KernelCare livepatch + seccomp); got %q", got.Fix)
+	}
+}
+
+func TestAuditAlgifAEAD_PassesWhenLivepatchCoversCopyFail(t *testing.T) {
+	// Same built-in kernel, but kcarectl reports a CVE-2026-31431
+	// patch — the kernel is now actually safe. The audit must reflect
+	// that and not keep nagging.
+	withMockOS(t, &mockOS{
+		readFile: func(name string) ([]byte, error) {
+			switch name {
+			case "/proc/sys/kernel/osrelease":
+				return []byte("4.18.0-553.44.1.lve.el8.x86_64\n"), nil
+			case "/boot/config-4.18.0-553.44.1.lve.el8.x86_64":
+				return []byte("CONFIG_CRYPTO_USER_API_AEAD=y\n"), nil
+			}
+			return nil, os.ErrNotExist
+		},
+		open: func(name string) (*os.File, error) {
+			if name == "/proc/modules" {
+				f, err := os.CreateTemp(t.TempDir(), "modules")
+				if err != nil {
+					return nil, err
+				}
+				_, _ = f.Seek(0, 0)
+				return f, nil
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+	withMockCmd(t, &mockCmd{
+		runAllowNonZero: func(name string, args ...string) ([]byte, error) {
+			if name == "kcarectl" {
+				return []byte("kpatch-cve: CVE-2026-31431\n"), nil
+			}
+			return nil, nil
+		},
+	})
+
+	got := auditAlgifAEAD()
+	if got.Status != "pass" {
+		t.Errorf("livepatch-protected host should pass; got %q (%s)", got.Status, got.Message)
+	}
+	if !strings.Contains(got.Message, "KernelCare") {
+		t.Errorf("Message should attribute the protection to KernelCare; got %q", got.Message)
+	}
+}
