@@ -7,6 +7,7 @@ package control
 
 import (
 	"encoding/json"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 )
@@ -58,7 +59,10 @@ const (
 	// enable audit_log:.
 	CmdHistorySince = "history.since"
 
-	CmdPHPRelayStatus = "phprelay.status"
+	CmdPHPRelayStatus       = "phprelay.status"
+	CmdPHPRelayIgnoreScript = "phprelay.ignore_script"
+	CmdPHPRelayUnignore     = "phprelay.unignore"
+	CmdPHPRelayIgnoreList   = "phprelay.ignore_list"
 )
 
 // Request is the single JSON object the client sends per connection.
@@ -277,4 +281,32 @@ type PHPRelayStatusResponse struct {
 	MsgIDIndexSize        int            `json:"msgid_index_size"`
 	IgnoresActive         int            `json:"ignores_active"`
 	RecentFindings        map[string]int `json:"recent_findings"` // path -> count last 1h
+}
+
+type PHPRelayIgnoreScriptRequest struct {
+	ScriptKey string `json:"script_key"`
+	ForHours  int    `json:"for_hours"` // 0 -> default 7d (168h)
+	Persist   bool   `json:"persist"`
+	Reason    string `json:"reason"`
+	AddedBy   string `json:"added_by"`
+}
+
+type PHPRelayIgnoreScriptResponse struct {
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+type PHPRelayUnignoreRequest struct {
+	ScriptKey string `json:"script_key"`
+	Persist   bool   `json:"persist"`
+}
+
+type PHPRelayIgnoreEntry struct {
+	ScriptKey string    `json:"script_key"`
+	ExpiresAt time.Time `json:"expires_at"`
+	AddedBy   string    `json:"added_by"`
+	Reason    string    `json:"reason"`
+}
+
+type PHPRelayIgnoreListResponse struct {
+	Entries []PHPRelayIgnoreEntry `json:"entries"`
 }

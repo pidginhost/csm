@@ -88,6 +88,12 @@ func (c *ControlListener) dispatch(line []byte) control.Response {
 		result, err = c.handleHistorySince(req.Args)
 	case control.CmdPHPRelayStatus:
 		result, err = c.handlePHPRelayStatus(req.Args)
+	case control.CmdPHPRelayIgnoreScript:
+		result, err = c.handlePHPRelayIgnoreScript(req.Args)
+	case control.CmdPHPRelayUnignore:
+		result, err = c.handlePHPRelayUnignore(req.Args)
+	case control.CmdPHPRelayIgnoreList:
+		result, err = c.handlePHPRelayIgnoreList(req.Args)
 	default:
 		return control.Response{OK: false, Error: fmt.Sprintf("unknown command: %q", req.Cmd)}
 	}

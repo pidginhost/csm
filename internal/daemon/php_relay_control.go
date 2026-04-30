@@ -3,8 +3,10 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/pidginhost/csm/internal/control"
 )
@@ -92,4 +94,87 @@ func (c *ControlListener) handlePHPRelayStatus(argsRaw json.RawMessage) (any, er
 		}
 	}
 	return c.phprelay.Status(context.Background(), req)
+}
+
+func (c *PHPRelayController) IgnoreScript(_ context.Context, req control.PHPRelayIgnoreScriptRequest) (control.PHPRelayIgnoreScriptResponse, error) {
+	if req.ScriptKey == "" {
+		return control.PHPRelayIgnoreScriptResponse{}, errors.New("script_key required")
+	}
+	hours := req.ForHours
+	if hours == 0 {
+		hours = 24 * 7
+	}
+	expires := time.Now().Add(time.Duration(hours) * time.Hour)
+	by := req.AddedBy
+	if by == "" {
+		by = "operator"
+	}
+	if req.Persist {
+		if err := c.ignores.AddPersist(scriptKey(req.ScriptKey), expires, by, req.Reason); err != nil {
+			return control.PHPRelayIgnoreScriptResponse{}, err
+		}
+	} else {
+		c.ignores.Add(scriptKey(req.ScriptKey), expires, by, req.Reason)
+	}
+	return control.PHPRelayIgnoreScriptResponse{ExpiresAt: expires}, nil
+}
+
+func (c *PHPRelayController) Unignore(_ context.Context, req control.PHPRelayUnignoreRequest) (struct{}, error) {
+	if req.ScriptKey == "" {
+		return struct{}{}, errors.New("script_key required")
+	}
+	if req.Persist {
+		if err := c.ignores.RemovePersist(scriptKey(req.ScriptKey)); err != nil {
+			return struct{}{}, err
+		}
+	} else {
+		c.ignores.Remove(scriptKey(req.ScriptKey))
+	}
+	return struct{}{}, nil
+}
+
+func (c *PHPRelayController) IgnoreList(_ context.Context, _ struct{}) (control.PHPRelayIgnoreListResponse, error) {
+	raw := c.ignores.List()
+	out := make([]control.PHPRelayIgnoreEntry, 0, len(raw))
+	for _, e := range raw {
+		out = append(out, control.PHPRelayIgnoreEntry{
+			ScriptKey: e.ScriptKey, ExpiresAt: e.ExpiresAt,
+			AddedBy: e.AddedBy, Reason: e.Reason,
+		})
+	}
+	return control.PHPRelayIgnoreListResponse{Entries: out}, nil
+}
+
+func (c *ControlListener) handlePHPRelayIgnoreScript(argsRaw json.RawMessage) (any, error) {
+	if c.phprelay == nil {
+		return nil, fmt.Errorf("phprelay controller not wired (Phase O2)")
+	}
+	var req control.PHPRelayIgnoreScriptRequest
+	if len(argsRaw) > 0 {
+		if err := json.Unmarshal(argsRaw, &req); err != nil {
+			return nil, fmt.Errorf("bad args: %w", err)
+		}
+	}
+	return c.phprelay.IgnoreScript(context.Background(), req)
+}
+
+func (c *ControlListener) handlePHPRelayUnignore(argsRaw json.RawMessage) (any, error) {
+	if c.phprelay == nil {
+		return nil, fmt.Errorf("phprelay controller not wired (Phase O2)")
+	}
+	var req control.PHPRelayUnignoreRequest
+	if len(argsRaw) > 0 {
+		if err := json.Unmarshal(argsRaw, &req); err != nil {
+			return nil, fmt.Errorf("bad args: %w", err)
+		}
+	}
+	return c.phprelay.Unignore(context.Background(), req)
+}
+
+func (c *ControlListener) handlePHPRelayIgnoreList(argsRaw json.RawMessage) (any, error) {
+	if c.phprelay == nil {
+		return nil, fmt.Errorf("phprelay controller not wired (Phase O2)")
+	}
+	_ = argsRaw // no args expected
+	return c.phprelay.IgnoreList(context.Background(), struct{}{})
 }
