@@ -21,13 +21,16 @@ type afAlgEvent struct {
 // (Timestamp, Serial) lexicographic with numeric semantics.
 func (e afAlgEvent) after(other afAlgEvent) bool {
 	if e.Timestamp != other.Timestamp {
-		ea, _ := strconv.ParseFloat(e.Timestamp, 64)
-		ob, _ := strconv.ParseFloat(other.Timestamp, 64)
-		return ea > ob
+		eFloat, _ := strconv.ParseFloat(e.Timestamp, 64)
+		otherFloat, _ := strconv.ParseFloat(other.Timestamp, 64)
+		return eFloat > otherFloat
 	}
-	es, _ := strconv.Atoi(e.Serial)
-	os, _ := strconv.Atoi(other.Serial)
-	return es > os
+	// Avoid the local name `os` here — it shadows the stdlib package
+	// of the same name and would silently break a future edit that
+	// adds an `os` import to this file.
+	eSerial, _ := strconv.Atoi(e.Serial)
+	otherSerial, _ := strconv.Atoi(other.Serial)
+	return eSerial > otherSerial
 }
 
 // parseAFAlgEvent extracts the relevant fields from a single audit log line.
