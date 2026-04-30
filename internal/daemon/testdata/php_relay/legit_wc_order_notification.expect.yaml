@@ -1,0 +1,7 @@
+fixture: legit_wc_order_notification.H
+must_fire:     []
+must_not_fire: [path1, path2, path4]
+notes: |
+  Legit WooCommerce order notification. From=shop@example.com matches
+  the account domain (FromMismatch=false), X-Mailer=WooCommerce is in
+  the safe-mailer list. No path should fire.

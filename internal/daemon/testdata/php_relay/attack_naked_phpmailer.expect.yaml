@@ -1,0 +1,7 @@
+fixture: attack_naked_phpmailer.H
+must_fire:     [path1]
+must_not_fire: []
+notes: |
+  Naked attacker pattern -- spoofed From, no Reply-To, but X-Mailer=PHPMailer
+  is the AdditionalSignal that pushes the score over the Path 1 threshold
+  once volume kicks in.

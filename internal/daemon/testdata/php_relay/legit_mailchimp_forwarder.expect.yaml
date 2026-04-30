@@ -1,0 +1,7 @@
+fixture: legit_mailchimp_forwarder.H
+must_fire:     []
+must_not_fire: [path1, path2, path4]
+notes: |
+  Legit MailChimp forwarder -- NO X-PHP-Script header so the pipeline
+  short-circuits before any path scoring runs. Verifies the early
+  filter handles forwarded mail correctly.

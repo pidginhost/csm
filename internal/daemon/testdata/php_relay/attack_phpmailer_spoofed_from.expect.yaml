@@ -1,0 +1,7 @@
+fixture: attack_phpmailer_spoofed_from.H
+must_fire:     [path1]
+must_not_fire: []
+notes: |
+  occonsultingcy regression. From=spoofed.example NOT in account
+  (account = example.com). Reply-To external + X-Mailer PHPMailer
+  triggers AdditionalSignal. Path 1 fires once volume threshold met.

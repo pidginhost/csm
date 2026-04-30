@@ -1,0 +1,7 @@
+fixture: legit_phpmailer_account_domain.H
+must_fire:     []
+must_not_fire: [path1]
+notes: |
+  Legit PHPMailer from addon domain. From=mail@addon.example.com is in
+  the account's authorised domains (see userdata_account_with_domains.yaml),
+  so FromMismatch=false. Verifies addon-domain handling.

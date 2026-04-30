@@ -1,0 +1,6 @@
+fixture: legit_cpanel_system_mail.H
+must_fire:     []
+must_not_fire: [path1, path2, path4]
+notes: |
+  Legit cPanel system mail. From=cPanel@example.com matches account,
+  X-Mailer=cPanel is safe.

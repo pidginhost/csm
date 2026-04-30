@@ -1,0 +1,7 @@
+fixture: legit_busy_contact_form.H
+must_fire:     []
+must_not_fire: [path1]
+notes: |
+  Legit busy contact form. From=site@example.com matches the account
+  (FromMismatch=false), so even with PHPMailer + external Reply-To
+  Path 1 must not fire. Verifies the FromMismatch hard-precondition.

@@ -1,0 +1,6 @@
+main_domain: example.com
+addon_domains:
+  addon.example.com: addon.example.com
+parked_domains: []
+sub_domains:
+  - sub.example.com
