@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Hardening audit flags hosts where `algif_aead` is loaded or has no modprobe.d blacklist (CVE-2026-31431 "Copy Fail" mitigation).
 - Critical check `af_alg_socket_use` emits one finding per `socket(AF_ALG, ...)` call from a non-system UID; treats every hit as an exploit signature.
+- `csm harden --copy-fail` subcommand applies the CVE-2026-31431 mitigation by writing `/etc/modprobe.d/csm-copy-fail-mitigation.conf` and unloading `algif_aead` + `af_alg`.
+- Critical-tier `af_alg_enforcement` check re-asserts the policy on every tick when the marker file is present; emits a Warning finding when it corrects drift. Suspend via `auto_response.disable_enforce_af_alg: true`.
 
 ### Fixed
 
