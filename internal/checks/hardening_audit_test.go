@@ -456,3 +456,45 @@ func TestAuditAlgifAEAD_AppearsInOSAuditResults(t *testing.T) {
 		t.Error("auditOS() did not include the algif_aead check")
 	}
 }
+
+func TestAuditAlgifAEAD_WarnsWhenModprobeConfUnreadable(t *testing.T) {
+	// On a host with a permission-hardened /etc/modprobe.d, glob may list a
+	// file that ReadFile cannot open. Returning "fail" in that case would
+	// claim "no blacklist exists" while in fact one might be present and
+	// just unreadable. The wrapper must emit "warn" instead so the operator
+	// notices the ambiguity.
+	withMockOS(t, &mockOS{
+		open: func(name string) (*os.File, error) {
+			if name == "/proc/modules" {
+				f, err := os.CreateTemp(t.TempDir(), "modules")
+				if err != nil {
+					return nil, err
+				}
+				_, _ = f.WriteString("bridge 200704 0 - Live 0x0\n")
+				_, _ = f.Seek(0, 0)
+				return f, nil
+			}
+			return nil, os.ErrNotExist
+		},
+		glob: func(pattern string) ([]string, error) {
+			if pattern == "/etc/modprobe.d/*.conf" {
+				return []string{"/etc/modprobe.d/locked.conf"}, nil
+			}
+			return nil, nil
+		},
+		readFile: func(name string) ([]byte, error) {
+			return nil, os.ErrPermission
+		},
+	})
+
+	got := auditAlgifAEAD()
+	if got.Status != "warn" {
+		t.Errorf("status = %q, want warn (msg: %s)", got.Status, got.Message)
+	}
+	if !strings.Contains(got.Message, "/etc/modprobe.d/locked.conf") {
+		t.Errorf("message should name the unreadable file, got %q", got.Message)
+	}
+	if !strings.Contains(got.Message, "undetermined") {
+		t.Errorf("message should signal the determination is undetermined, got %q", got.Message)
+	}
+}

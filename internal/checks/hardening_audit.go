@@ -542,7 +542,15 @@ func evaluateAlgifAEAD(loaded bool, confs map[string]string) store.AuditResult {
 
 // auditAlgifAEAD is the impure wrapper: it reads /proc/modules and
 // /etc/modprobe.d/*.conf via osFS, then delegates to evaluateAlgifAEAD.
+// If any modprobe.d file is unreadable we cannot definitively answer
+// "blacklisted" — return a "warn" AuditResult naming the offending file
+// rather than silently classifying the host as fail.
 func auditAlgifAEAD() store.AuditResult {
+	const (
+		id    = "os_algif_aead_blocked"
+		title = "AF_ALG (algif_aead) Blocked — CVE-2026-31431"
+	)
+
 	loaded := false
 	for _, mod := range loadModuleList() {
 		if mod == "algif_aead" {
@@ -557,7 +565,11 @@ func auditAlgifAEAD() store.AuditResult {
 		for _, p := range matches {
 			data, err := osFS.ReadFile(p)
 			if err != nil {
-				continue
+				return store.AuditResult{
+					Category: "os", Name: id, Title: title,
+					Status:  "warn",
+					Message: fmt.Sprintf("Cannot read %s: %v — blacklist state undetermined", p, err),
+				}
 			}
 			confs[p] = string(data)
 		}
