@@ -139,10 +139,13 @@ func (l *AFAlgAuditListener) Run(ctx context.Context) {
 
 	inotifyBuf := make([]byte, 4096)
 	readBuf := make([]byte, 16*1024)
-	// Belt-and-braces: re-poll the file every 5s even without inotify
-	// notifications. Catches events on hosts where the watch happens
-	// to drop (extremely rare; defense in depth costs nothing).
-	ticker := time.NewTicker(5 * time.Second)
+	// 500 ms tick gives sub-second average detection latency. The cost
+	// is ~2 cheap syscalls/sec (inotify Read returns EAGAIN immediately
+	// when nothing's queued, file Seek+Read returns EOF cheaply when
+	// no new bytes). Cheap enough to not bother with epoll/select for
+	// a v1 — we can refactor to true event-driven if we ever need
+	// hundred-microsecond latency.
+	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
 	// Start by draining anything the kernel may have queued during
