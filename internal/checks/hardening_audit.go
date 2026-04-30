@@ -524,9 +524,13 @@ func evaluateAlgifAEAD(loaded bool, confs map[string]string) store.AuditResult {
 	blocked := algifAEADBlacklisted(confs)
 	switch {
 	case !loaded && blocked:
+		msg := "algif_aead is blacklisted and not loaded"
+		if content, ok := confs[afAlgMarkerPath]; ok && validateMarkerContent([]byte(content)) {
+			msg = "algif_aead is blocked by CSM-managed enforcement (csm harden --copy-fail)"
+		}
 		return store.AuditResult{
 			Category: "os", Name: algifAEADAuditID, Title: algifAEADAuditTitle,
-			Status: "pass", Message: "algif_aead is blacklisted and not loaded",
+			Status: "pass", Message: msg,
 		}
 	case loaded:
 		return store.AuditResult{

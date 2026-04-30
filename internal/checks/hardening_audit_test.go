@@ -498,3 +498,20 @@ func TestAuditAlgifAEAD_WarnsWhenModprobeConfUnreadable(t *testing.T) {
 		t.Errorf("message should signal the determination is undetermined, got %q", got.Message)
 	}
 }
+
+func TestEvaluateAlgifAEAD_RecognisesCSMManagedMarker(t *testing.T) {
+	// When the canonical CSM-managed marker file is present (the operator
+	// ran `csm harden --copy-fail`), the audit message should call that out
+	// explicitly so the operator can distinguish CSM-managed enforcement
+	// from a hand-edited blacklist directive in some other modprobe.d file.
+	confs := map[string]string{
+		afAlgMarkerPath: canonicalAFAlgMarker,
+	}
+	r := evaluateAlgifAEAD(false, confs)
+	if r.Status != "pass" {
+		t.Fatalf("status = %q, want pass", r.Status)
+	}
+	if !strings.Contains(r.Message, "CSM-managed") {
+		t.Errorf("message should mention CSM-managed enforcement; got %q", r.Message)
+	}
+}
