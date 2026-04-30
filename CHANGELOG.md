@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `internal/checks/emailscan.go` now parses cPanel-Exim spool `-H` files through `internal/emailspool` (`ParseHeadersReader` + `ExtractDomain`). The package-local `extractEmailHeader` and `extractDomain` helpers are gone, eliminating the loose RFC 5322 fallback that never matched real Exim spool output.
+- Outbound-email content scanning now uses the shared cPanel-Exim spool parser, replacing a loose RFC 5322 fallback that never matched real Exim spool output.
 
 ### Fixed
 
