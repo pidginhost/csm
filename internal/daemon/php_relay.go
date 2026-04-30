@@ -522,6 +522,16 @@ func (e *evaluator) evaluatePaths(k scriptKey, sourceIP, cpuser string, now time
 		}
 	}
 
+	// Path 2: absolute volume per script in the last 60 min.
+	absVol := s.volumeCount(now.Add(-60 * time.Minute))
+	if absVol >= e.cfg.EmailProtection.PHPRelay.AbsoluteVolumePerHour {
+		if s.shouldFire("volume", now, phpRelayPathCooldown) {
+			f := e.makeFinding(k, "volume", sourceIP, cpuser, s,
+				fmt.Sprintf("Path 2: %d outbound mails from one script in last 60 min", absVol))
+			findings = append(findings, f)
+		}
+	}
+
 	return findings
 }
 

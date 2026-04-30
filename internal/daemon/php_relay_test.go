@@ -291,6 +291,38 @@ func TestEvaluatePaths_Path1_Cooldown(t *testing.T) {
 	}
 }
 
+func TestEvaluatePaths_Path2_FiresOnAbsoluteVolume(t *testing.T) {
+	cfg := defaultPHPRelayCfg()
+	cfg.EmailProtection.PHPRelay.AbsoluteVolumePerHour = 5 // tight for test
+	psw := newPerScriptWindow()
+	pip := newPerIPWindow(64)
+	eng := newEvaluator(psw, pip, nil, cfg, nil)
+
+	k := scriptKey("k:/p")
+	now := time.Now()
+	// 6 events in last hour, but NONE qualify Path 1 (no FromMismatch).
+	for i := 0; i < 6; i++ {
+		psw.getOrCreate(k).append(scriptEvent{
+			At:               now.Add(time.Duration(-i*10) * time.Minute),
+			FromMismatch:     false,
+			AdditionalSignal: false,
+		})
+	}
+	findings := eng.evaluatePaths(k, "", "u", now)
+	foundVolume := false
+	for _, f := range findings {
+		if f.Path == "volume" {
+			foundVolume = true
+		}
+		if f.Path == "header" {
+			t.Errorf("Path 1 must not fire here: %+v", f)
+		}
+	}
+	if !foundVolume {
+		t.Errorf("Path 2 expected, got %+v", findings)
+	}
+}
+
 // newTestPolicies returns a Policies with PHPMailer suspicious + WordPress safe.
 func newTestPolicies(t *testing.T) *emailspool.Policies {
 	t.Helper()
