@@ -114,3 +114,24 @@ func TestPerIPWindow_SweepIdle(t *testing.T) {
 		t.Errorf("SweepIdle dropped = %d, want 1", n)
 	}
 }
+
+func TestPerAccountWindow_VolumeCountAndCooldown(t *testing.T) {
+	w := newPerAccountWindow(5000)
+	now := time.Now()
+	for i := 0; i < 10; i++ {
+		w.append("u", now.Add(-time.Duration(i)*time.Minute))
+	}
+	if got := w.volumeSince("u", now.Add(-time.Hour)); got != 10 {
+		t.Errorf("volumeSince = %d, want 10", got)
+	}
+
+	if !w.shouldFire("u", now, 30*time.Minute) {
+		t.Fatal("first call must fire")
+	}
+	if w.shouldFire("u", now.Add(time.Minute), 30*time.Minute) {
+		t.Fatal("cooldown must suppress immediate re-fire")
+	}
+	if !w.shouldFire("u", now.Add(31*time.Minute), 30*time.Minute) {
+		t.Fatal("after cooldown must fire again")
+	}
+}

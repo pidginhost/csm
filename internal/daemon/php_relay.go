@@ -312,3 +312,88 @@ func (w *perIPWindow) SweepIdle(cutoff time.Time) int {
 	})
 	return n
 }
+
+type accountState struct {
+	mu        sync.Mutex
+	events    []time.Time
+	firedAt   time.Time
+	lastEvent time.Time
+	maxEvents int
+}
+
+type perAccountWindow struct {
+	states sync.Map
+	cap    int
+}
+
+func newPerAccountWindow(capPerAccount int) *perAccountWindow {
+	if capPerAccount <= 0 {
+		capPerAccount = 5000
+	}
+	return &perAccountWindow{cap: capPerAccount}
+}
+
+func (w *perAccountWindow) append(user string, at time.Time) {
+	if user == "" {
+		return
+	}
+	v, _ := w.states.LoadOrStore(user, &accountState{maxEvents: w.cap})
+	s := v.(*accountState)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.events) >= s.maxEvents {
+		s.events = s.events[1:]
+	}
+	s.events = append(s.events, at)
+	if at.After(s.lastEvent) {
+		s.lastEvent = at
+	}
+}
+
+func (w *perAccountWindow) volumeSince(user string, since time.Time) int {
+	v, ok := w.states.Load(user)
+	if !ok {
+		return 0
+	}
+	s := v.(*accountState)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, t := range s.events {
+		if !t.Before(since) {
+			n++
+		}
+	}
+	return n
+}
+
+func (w *perAccountWindow) shouldFire(user string, now time.Time, cooldown time.Duration) bool {
+	v, ok := w.states.Load(user)
+	if !ok {
+		return false
+	}
+	s := v.(*accountState)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.firedAt.IsZero() && now.Sub(s.firedAt) < cooldown {
+		return false
+	}
+	s.firedAt = now
+	return true
+}
+
+func (w *perAccountWindow) SweepIdle(cutoff time.Time) int {
+	n := 0
+	w.states.Range(func(k, v any) bool {
+		s := v.(*accountState)
+		s.mu.Lock()
+		idle := s.lastEvent.Before(cutoff)
+		s.mu.Unlock()
+		if idle {
+			w.states.Delete(k)
+			n++
+		}
+		return true
+	})
+	return n
+}
