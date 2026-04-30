@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -65,5 +67,24 @@ func TestFreezeErrIsAlreadyGone(t *testing.T) {
 		if got := freezeErrIsAlreadyGone(c.stderr); got != c.want {
 			t.Errorf("freezeErrIsAlreadyGone(%q) = %v, want %v", c.stderr, got, c.want)
 		}
+	}
+}
+
+func TestSpoolScanMatchingScript_ReturnsMatchingMsgIDs(t *testing.T) {
+	spoolRoot := t.TempDir()
+	sub := filepath.Join(spoolRoot, "k")
+	_ = os.MkdirAll(sub, 0o755)
+
+	// Match.
+	body := func(script string) string {
+		return "id-H\nu 1 1\n<u@example.com>\n0 0\n-local\n1\nrcpt@example.com\n\n037T To: rcpt@example.com\n132  X-PHP-Script: " + script + " for 192.0.2.1\n"
+	}
+	_ = os.WriteFile(filepath.Join(sub, "11abcdefghij1234-H"), []byte(body("attacker.example.com/x.php")), 0o644)
+	_ = os.WriteFile(filepath.Join(sub, "21bbcdefghij1234-H"), []byte(body("attacker.example.com/x.php")), 0o644)
+	_ = os.WriteFile(filepath.Join(sub, "31ccdefghij1234XX-H"), []byte(body("other.example.com/y.php")), 0o644)
+
+	got := spoolScanMatchingScript(spoolRoot, scriptKey("attacker.example.com:/x.php"))
+	if len(got) != 2 {
+		t.Fatalf("matched = %v, want 2 entries", got)
 	}
 }

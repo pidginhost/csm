@@ -1,10 +1,14 @@
 package daemon
 
 import (
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/pidginhost/csm/internal/emailspool"
 )
 
 // msgIDPattern guards exim -Mf invocations against header-injected garbage
@@ -64,4 +68,68 @@ func freezeErrIsAlreadyGone(stderr string) bool {
 	return strings.Contains(s, "message not found") ||
 		strings.Contains(s, "spool file not found") ||
 		strings.Contains(s, "no such message")
+}
+
+// spoolScanMatchingScript walks every -H file under spoolRoot, parses
+// headers, and returns msgIDs whose X-PHP-Script host:path matches
+// scriptKey. Used by AutoFreezePHPRelayQueue when activeMsgs was capped
+// or when a late reputation finding has no in-memory activeMsgs left.
+//
+// Handles BOTH spool layouts:
+//
+//  1. Split (cPanel default + Exim's split_spool_directory=true): each
+//     msgID-H lives under spoolRoot/<hash-char>/. We must descend one
+//     level into each subdir.
+//  2. Unsplit (some self-hosted Exim builds, smaller cPanel installs
+//     where the operator has disabled split_spool_directory): -H files
+//     live directly in spoolRoot.
+//
+// The spec section 5.8 explicitly requires both layouts. We probe each
+// entry: if it's a regular -H file at the root, scan it; if it's a
+// directory, descend. No probing of /etc/exim or spool config -- the
+// filesystem layout is the source of truth.
+//
+//nolint:unused // wired in K5 by AutoFreezePHPRelayQueue
+func spoolScanMatchingScript(spoolRoot string, k scriptKey) []string {
+	var out []string
+	// #nosec G304 -- spoolRoot is operator-configured / hardcoded to cPanel default.
+	entries, err := os.ReadDir(spoolRoot)
+	if err != nil {
+		return nil
+	}
+	inspect := func(full string, name string) {
+		if !strings.HasSuffix(name, "-H") {
+			return
+		}
+		h, err := emailspool.ParseHeaders(full)
+		if err != nil || h.XPHPScript == "" {
+			return
+		}
+		sk, _ := parseXPHPScript(h.XPHPScript)
+		if sk != k {
+			return
+		}
+		id := strings.TrimSuffix(name, "-H")
+		if msgIDPattern.MatchString(id) {
+			out = append(out, id)
+		}
+	}
+	for _, e := range entries {
+		full := filepath.Join(spoolRoot, e.Name())
+		if e.IsDir() {
+			// Split layout: descend one level.
+			// #nosec G304 -- spoolRoot is operator-configured / hardcoded to cPanel default.
+			files, err := os.ReadDir(full)
+			if err != nil {
+				continue
+			}
+			for _, f := range files {
+				inspect(filepath.Join(full, f.Name()), f.Name())
+			}
+			continue
+		}
+		// Unsplit layout: -H files at the root of spoolRoot.
+		inspect(full, e.Name())
+	}
+	return out
 }
