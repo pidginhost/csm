@@ -1,4 +1,4 @@
-# CSM — Continuous Security Monitor
+# CSM (Continuous Security Monitor)
 
 [![Coverage](https://pidginhost.github.io/csm/coverage.svg)](https://pidginhost.github.io/csm/coverage.html)
 [![Go Report Card](https://goreportcard.com/badge/github.com/pidginhost/csm)](https://goreportcard.com/report/github.com/pidginhost/csm)
@@ -7,127 +7,103 @@
 [![Release](https://img.shields.io/github/v/release/pidginhost/csm?display_name=tag)](https://github.com/pidginhost/csm/releases)
 [![License: MIT](https://img.shields.io/github/license/pidginhost/csm)](LICENSE)
 
-> **Catch compromise in seconds. Block the next attempt automatically. Never wonder what happened.**
+CSM is a security daemon for Linux web servers. It catches the kinds of attacks that actually hit shared hosting (stolen logins, vulnerable WordPress plugins, hijacked mailboxes, phishing kits, the occasional kernel CVE), and it can block, quarantine, or clean up on its own. Everything ends up in one web UI.
 
-A Linux security daemon purpose-built for shared web hosting. Real-time detection, automatic response, and a single dashboard — designed for the attack patterns that actually hit cPanel and LAMP servers: stolen credentials, vulnerable WordPress plugins, hijacked mailboxes, phishing kits, kernel CVEs.
+It runs first class on cPanel/WHM and works cleanly on plain AlmaLinux, Rocky, RHEL, Ubuntu, and Debian with Apache or Nginx.
 
-**[Documentation](https://pidginhost.github.io/csm/)** · **[Install](docs/src/installation.md)** · **[CLI](docs/src/cli.md)** · **[Web UI](docs/src/webui.md)**
+[Documentation](https://pidginhost.github.io/csm/) · [Install](docs/src/installation.md) · [CLI](docs/src/cli.md) · [Web UI](docs/src/webui.md)
 
----
+## What it does
 
-## Why CSM
+CSM watches the syscall layer (fanotify) and tails auth, mail, WAF, and panel logs. When something looks wrong it raises a finding and, if you let it, takes an action: block the IP, quarantine the file, kill the process, clean the infected PHP. It never touches root processes or your infrastructure IPs.
 
-- **Catches what generic tools miss.** Purpose-built for shared-hosting attacks — WordPress brute force, mailbox takeover, PHP webshells, `.htaccess` tampering, cloud-relay abuse, the LEVIATHAN toolkit.
-- **Stops the attack, not just alerts on it.** Auto-blocks IPs, quarantines files, kills reverse shells, cleans infected PHP. Never touches root or system processes; infrastructure IPs are safelisted.
-- **One pane of glass.** Every signal in one web UI: findings, attackers, quarantine, firewall, ModSecurity, email, performance, hardening.
-- **Zero-day kernel hardening.** Operator-driven CVE mitigations with continuous enforcement. Keep your hosts protected while you wait for distro patches.
-- **Works out of the box.** Auto-detects cPanel/AlmaLinux/Ubuntu/Apache/Nginx. One install command per OS, no path tweaking.
+The detection set is targeted at real attacker behaviour on shared hosting:
 
----
+- **WordPress and PHP.** Verifies WP core integrity against api.wordpress.org. Catches obfuscated PHP, fragmented eval chains, multi-line concat payloads, tail-appended code, and DB-injected admin users. Seven cleaning strategies for infected files. Quarantine keeps owner, perms, and mtime so files restore cleanly.
 
-## What you get
+- **Brute force, every protocol.** SSH, FTP, IMAP/POP3/SMTP, WordPress, cPanel, phpMyAdmin, Joomla admin. Per-IP, per /24 subnet, and per-account scoring. Optional proof-of-work challenge with Cloudflare Turnstile or hCaptcha fallbacks for grey traffic. Confirmed malware always gets a hard block.
 
-### Real-time detection
-Webshells, PHP drops in upload directories, `.htaccess` tampering, brute-force floods, and outbound abuse — flagged within a second of the syscall via kernel-level file watchers (fanotify) and log tailers across auth, mail, WAF, and panel sessions.
+- **Mailbox takeover (cPanel).** Fires the moment a successful login arrives from an IP that was just failing auth against the same mailbox. Plus Exim spool AV, mail-queue spam detection, weak-password audits, DKIM/SPF alerts, and outbound cloud-relay (GCP/AWS/Azure) abuse blocking with a retro-scan on startup.
 
-### WordPress & PHP shield
-Verifies core file integrity against `api.wordpress.org`. Detects obfuscated PHP, fragmented `eval` chains, hundreds-of-line concat payloads, tail-appended code, phishing kits, and database-injected admin users. Seven cleaning strategies for infected files; quarantine preserves owner/perm/mtime and is restoreable from the UI.
+- **CVE mitigations.** Operator-driven via `csm harden`, then continuously enforced by the daemon. Currently shipped:
+   - **CVE-2026-31431 ("Copy Fail").** Run `csm harden --copy-fail` once. CSM blacklists `algif_aead` and `af_alg`, unloads them, and from then on the daemon checks every ten minutes that the policy is still in place. If anything drifts (kernel update, manual edit, rogue script) it puts it back. Auditd rules separately log every `socket(AF_ALG, ...)` attempt by a non-system uid as a Critical finding. Set `auto_response.disable_enforce_af_alg: true` to pause enforcement without removing the marker.
 
-### Brute-force & bot protection
-SSH, FTP, IMAP/POP3/SMTP, WordPress, cPanel, phpMyAdmin, Joomla admin — all tracked through one scoring pipeline. Per-IP, per-/24 subnet, and per-account auto-blocks. Optional proof-of-work challenge (with Cloudflare Turnstile / hCaptcha fallback) for grey-listed traffic; confirmed malware is always hard-blocked.
+- **Firewall and threat intel.** nftables-managed IPs and subnets with TTLs, escalation to permanent after repeated offenses, port allowlists, MaxMind GeoIP and country blocking, AbuseIPDB lookups, attacker scoring across signals. Bulk operations from the web UI and a full audit trail.
 
-### Mailbox compromise & email security *(cPanel)*
-Fires the instant a successful login arrives from an IP that was just failing auth against the same mailbox. Plus: Exim spool AV, mail-queue monitoring, spamming-script detection, weak-password audits, DKIM/SPF failure alerts, and cloud-relay (GCP/AWS/Azure) outbound abuse blocking with retro-scan on startup.
+- **WAF management.** ModSecurity rule discovery on Apache (cPanel EA4 included) and Nginx. Enable, disable, edit, and reload rules from the UI. WAF blocks feed the attacker scoring pipeline.
 
-### CVE mitigations
-Kernel-level CVE mitigations applied without a kernel patch. Operator-driven via `csm harden`, then continuously enforced by the daemon — drift gets reverted within minutes.
+- **System hardening.** Package integrity via `rpm -V` or `debsums`, SSH and sysctl audits, kernel module tracking, world-writable and SUID inventory, outdated-package detection, suspicious processes (fake kernel threads, reverse shells), and performance health signals that often correlate with compromise.
 
-- **CVE-2026-31431 "Copy Fail"** — `csm harden --copy-fail` blacklists `algif_aead` + `af_alg` and unloads them. Detection layer fires Critical alerts on any `socket(AF_ALG, …)` attempt by a non-system UID. Periodic enforcement re-asserts the policy on every tick. Suspend with `auto_response.disable_enforce_af_alg: true`.
+## Built for ops
 
-### Firewall & threat intel
-nftables-managed IP and subnet bans with TTLs, escalation to permanent after repeated offenses, port allowlists, GeoIP and country blocks (MaxMind), AbuseIPDB lookups, attacker scoring, cross-signal correlation. Bulk operations from the web UI; full audit trail.
-
-### Web Application Firewall management
-ModSecurity rule discovery on Apache (cPanel EA4 included) and Nginx. Enable, disable, edit, and reload rules from the web UI. Repeated WAF blocks feed the attacker scoring pipeline.
-
-### System hardening & integrity
-Package integrity verification (`rpm -V` on RHEL family, `debsums` / `dpkg --verify` on Debian/Ubuntu). SSH/sysctl/kernel-module audits, world-writable and SUID inventory, outdated-package detection, suspicious process detection (fake kernel threads, reverse shells), performance health signals.
-
-### Production-ready ops
-- Single static Go binary; signed `.deb` and `.rpm` packages; reproducible builds.
-- Hot-reload safe config — `systemctl reload csm` applies thresholds/alerts/auto-response/email tweaks with no fanotify drop.
-- bbolt-backed state with TTL retention sweeps and on-demand `csm store compact`.
-- JSONL + RFC 5424 syslog audit log for SIEM ingest; `csm export --since` backfills history.
-- Backup/restore via `csm store export|import` (tar+zstd, sha256-verified).
+- Single static Go binary. Signed `.deb` and `.rpm` packages. Reproducible builds.
+- Hot-reload safe config. `systemctl reload csm` applies threshold and alert tweaks without dropping fanotify.
+- bbolt-backed state with TTL retention sweeps. `csm store compact` reclaims free pages on demand.
+- JSONL plus RFC 5424 syslog audit log for SIEM ingest. `csm export --since` backfills history.
+- Backup and restore via `csm store export` and `csm store import` (tar+zstd, sha256-verified).
 - Prometheus metrics built in.
 
----
-
-## Quick start
+## Install
 
 ```bash
-# Auto-installer (any supported distro)
 curl -sSL https://raw.githubusercontent.com/pidginhost/csm/main/scripts/install.sh | bash
-
-# Tune config, set baseline, start the daemon
 vi /opt/csm/csm.yaml
 csm validate && csm baseline
 systemctl enable --now csm.service
+```
 
-# Optional: apply the Copy Fail (CVE-2026-31431) mitigation right now
+If you want the Copy Fail mitigation right away:
+
+```bash
 sudo csm harden --copy-fail
 ```
 
-Web UI at `https://<server>:9443`.
+The web UI is at `https://<server>:9443`.
 
 ### Native packages
 
 ```bash
-# Debian / Ubuntu
+# Debian or Ubuntu
 curl -LO https://github.com/pidginhost/csm/releases/latest/download/csm_VERSION_amd64.deb
 sudo dpkg -i csm_VERSION_amd64.deb
 
-# AlmaLinux / Rocky / RHEL / CloudLinux
+# AlmaLinux, Rocky, RHEL, CloudLinux
 curl -LO https://github.com/pidginhost/csm/releases/latest/download/csm-VERSION-1.x86_64.rpm
 sudo dnf install -y ./csm-VERSION-1.x86_64.rpm
 ```
 
----
-
-## Supported platforms
+## Platforms
 
 | Platform | Support |
 |---|---|
-| **cPanel/WHM** on AlmaLinux / CloudLinux / Rocky | First-class — all 69 checks, WHM plugin, full Exim integration |
-| **AlmaLinux / Rocky / RHEL 8+** with Apache or Nginx | Supported — generic checks; cPanel-specific ones skipped cleanly |
-| **Ubuntu 20.04+ / Debian 11+** with Apache or Nginx | Supported — same coverage with `debsums`-based integrity |
+| cPanel/WHM on AlmaLinux, CloudLinux, Rocky | First class. All 69 checks, WHM plugin, full Exim integration. |
+| AlmaLinux, Rocky, RHEL 8+ on Apache or Nginx | Supported. Generic checks run, cPanel-specific ones skip cleanly. |
+| Ubuntu 20.04+, Debian 11+ on Apache or Nginx | Supported. Same coverage with `debsums`-based integrity. |
 
-x86_64 and ARM64. cPanel itself is x86_64 only. Account-scanning checks (per-domain WordPress integrity, `.htaccess`, PHP content, phishing kits) assume a cPanel layout; everything else runs everywhere. See [detection-critical.md](docs/src/detection-critical.md) and [detection-deep.md](docs/src/detection-deep.md) for per-check coverage.
+x86_64 and ARM64. cPanel itself is x86_64 only.
 
----
+Account-scanning checks (per-domain WordPress integrity, .htaccess, PHP content, phishing kits) assume a cPanel layout. Everything else runs anywhere. Per-check coverage is in [detection-critical.md](docs/src/detection-critical.md) and [detection-deep.md](docs/src/detection-deep.md).
 
 ## Performance
 
 | Workload | Speed | Memory |
 |---|---|---|
-| Real-time fanotify event | < 1 s | ~5 MB |
-| 36 critical checks | < 1 s | ~35 MB peak |
+| Real-time fanotify event | under 1 s | ~5 MB |
+| 36 critical checks | under 1 s | ~35 MB peak |
 | 33 deep checks | ~40 s | ~100 MB peak |
-| Daemon idle | — | 45 MB resident |
+| Daemon idle | n/a | 45 MB resident |
 
 Optional add-ons: YARA-X (`-tags yara`), email AV tooling, MaxMind GeoIP data.
 
----
-
-## CLI cheat-sheet
+## CLI
 
 ```
 csm daemon                    run the daemon
-csm check                     one-shot scan (no auto-response)
-csm status                    current findings + activity
+csm check                     one-shot scan, no auto-response
+csm status                    current findings and activity
 csm baseline                  mark current state as known-good
 csm scan <user>               scan a single cPanel account
-csm firewall ...              manage IP/subnet bans, port allows, GeoIP
+csm firewall ...              IP/subnet bans, port allows, GeoIP
 csm clean <path>              clean an infected PHP file
 csm db-clean ...              remove WordPress DB injections
 csm harden --copy-fail        apply CVE-2026-31431 mitigation
@@ -139,8 +115,6 @@ csm validate                  dry-run config
 
 Full reference: [CLI docs](docs/src/cli.md).
 
----
-
 ## Development
 
 ```bash
@@ -151,17 +125,15 @@ go test -race -short ./...             # CI-style
 make lint
 ```
 
-Public releases on GitHub. Internal builds and packaging via the GitLab pipeline.
-
----
+Public releases land on GitHub. Internal builds and packaging go through the GitLab pipeline.
 
 ## Documentation
 
-- [Installation](docs/src/installation.md) · [Configuration](docs/src/configuration.md) · [CLI](docs/src/cli.md) · [Web UI](docs/src/webui.md)
-- [Real-time detection](docs/src/detection-realtime.md) · [Critical checks](docs/src/detection-critical.md) · [Deep checks](docs/src/detection-deep.md)
-- [Auto-response](docs/src/auto-response.md) · [Challenge pages](docs/src/challenge.md)
-- [ModSecurity](docs/src/modsecurity.md) · [Firewall](docs/src/firewall.md) · [Email AV](docs/src/email-av.md) · [Threat intel](docs/src/threat-intel.md)
+- [Installation](docs/src/installation.md), [Configuration](docs/src/configuration.md), [CLI](docs/src/cli.md), [Web UI](docs/src/webui.md)
+- [Real-time detection](docs/src/detection-realtime.md), [Critical checks](docs/src/detection-critical.md), [Deep checks](docs/src/detection-deep.md)
+- [Auto-response](docs/src/auto-response.md), [Challenge pages](docs/src/challenge.md)
+- [ModSecurity](docs/src/modsecurity.md), [Firewall](docs/src/firewall.md), [Email AV](docs/src/email-av.md), [Threat intel](docs/src/threat-intel.md)
 
 ## License
 
-MIT — see [LICENSE](LICENSE). · [CONTRIBUTING](CONTRIBUTING.md) · [SECURITY](SECURITY.md) · [CHANGELOG](CHANGELOG.md)
+MIT. See [LICENSE](LICENSE), [CONTRIBUTING](CONTRIBUTING.md), [SECURITY](SECURITY.md), [CHANGELOG](CHANGELOG.md).
