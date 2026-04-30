@@ -120,7 +120,7 @@ func enforceAFAlgBlocked() (EnforceResult, error) {
 	switch _, err := osFS.Stat(afAlgMarkerPath); {
 	case err == nil:
 		res.MarkerPresent = true
-		if data, err := osFS.ReadFile(afAlgMarkerPath); err == nil {
+		if data, readErr := osFS.ReadFile(afAlgMarkerPath); readErr == nil {
 			res.MarkerValid = validateMarkerContent(data)
 		}
 	case errors.Is(err, os.ErrNotExist):
