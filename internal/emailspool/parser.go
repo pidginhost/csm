@@ -105,13 +105,22 @@ func ParseHeaders(path string) (Headers, error) {
 		return Headers{}, err
 	}
 	defer f.Close()
-	return parseHeadersReader(f)
+	h, err := parseHeadersReader(f)
+	if err != nil {
+		return Headers{}, fmt.Errorf("parse %s: %w", path, err)
+	}
+	return h, nil
 }
 
 func parseHeadersReader(r io.Reader) (Headers, error) {
 	var h Headers
-	lr := io.LimitReader(r, MaxSpoolHeaderBytes)
-	sc := bufio.NewScanner(lr)
+	// Per-line memory is bounded by the scanner's max buffer
+	// (MaxSpoolHeaderBytes); a token larger than that returns
+	// bufio.ErrTooLong. We deliberately do NOT wrap r in an io.LimitReader:
+	// when LimitReader returns EOF mid-token, bufio.Scanner emits the
+	// partial token without error and oversize spool files are silently
+	// truncated. That hides the failure from operators.
+	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 8192), MaxSpoolHeaderBytes)
 
 	// Line 1: msgID-H (we ignore the value; presence is enough)
@@ -166,7 +175,10 @@ func parseHeadersReader(r io.Reader) (Headers, error) {
 		}
 	}
 	if err := sc.Err(); err != nil {
-		return Headers{}, err
+		return Headers{}, fmt.Errorf("scan spool: %w", err)
+	}
+	if !inHeaders {
+		return Headers{}, errors.New("missing header section separator")
 	}
 	return h, nil
 }
@@ -181,8 +193,9 @@ func parseEximHeaderLine(line string) (string, string) {
 	if len(line) < 5 {
 		return "", ""
 	}
-	// First three bytes must be digits, fourth a single letter or space,
-	// fifth a space.
+	// Position 3 is space for unflagged Exim headers (e.g. X-PHP-Script
+	// in real cPanel-Exim spool output) and a flag letter (T/F/R/I/...)
+	// for flagged headers. Both shapes appear; the parser captures both.
 	if !isDigit(line[0]) || !isDigit(line[1]) || !isDigit(line[2]) {
 		return "", ""
 	}

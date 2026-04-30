@@ -1,7 +1,10 @@
 package emailspool
 
 import (
+	"bufio"
+	"errors"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -96,5 +99,48 @@ func TestParseHeaders_NoXPHPScript(t *testing.T) {
 	}
 	if h.EnvelopeUser != "user" {
 		t.Errorf("EnvelopeUser = %q", h.EnvelopeUser)
+	}
+}
+
+func TestParseHeaders_TooLargeReturnsErrTooLong(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/huge.H"
+	var sb strings.Builder
+	sb.WriteString("id-H\nuser 1 1\n<u@example.com>\n0 0\n-local\n1\nrcpt@example.com\n\n")
+	// One header line longer than MaxSpoolHeaderBytes triggers ErrTooLong.
+	sb.WriteString("999X X-Big: ")
+	for i := 0; i < MaxSpoolHeaderBytes+1024; i++ {
+		sb.WriteByte('a')
+	}
+	sb.WriteByte('\n')
+	if err := os.WriteFile(path, []byte(sb.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := ParseHeaders(path)
+	if err == nil {
+		t.Fatal("expected error on oversize header")
+	}
+	if !errors.Is(err, bufio.ErrTooLong) {
+		t.Errorf("err = %v, want errors.Is(..., bufio.ErrTooLong)", err)
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Errorf("err = %q, want path in message", err.Error())
+	}
+}
+
+func TestParseHeaders_TruncatedNoSeparatorReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/truncated.H"
+	// Has line 1, line 2, some envelope metadata, but no blank line separator.
+	content := "id-H\nuser 1 1\n<u@example.com>\n0 0\n-local\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := ParseHeaders(path)
+	if err == nil {
+		t.Fatal("expected error on truncated file")
+	}
+	if !strings.Contains(err.Error(), "missing header section separator") {
+		t.Errorf("err = %q, want path/missing header section separator wording", err.Error())
 	}
 }
