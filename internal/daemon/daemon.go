@@ -22,6 +22,7 @@ import (
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/emailav"
+	"github.com/pidginhost/csm/internal/emailspool"
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/geoip"
 	"github.com/pidginhost/csm/internal/integrity"
@@ -86,6 +87,14 @@ type Daemon struct {
 	// short-list and runs the full account tree against the new
 	// ruleset.
 	forceFullRescan atomic.Bool
+
+	// policies holds the email PHP-relay pattern policies
+	// (suspicious/safe x-mailer classes, HTTP proxy ranges) loaded
+	// from EmailProtection.PHPRelay.PoliciesDir. Initialised in O2
+	// (daemon wiring); stays nil until then. The SIGHUP path
+	// nil-guards the Reload call so this commit is a no-op at
+	// runtime until O2 lands.
+	policies *emailspool.Policies
 }
 
 // New creates a new daemon instance.
@@ -513,6 +522,14 @@ func (d *Daemon) Run() error {
 			fmt.Fprintf(os.Stderr, "[%s] SIGHUP received - reloading config and rules\n", ts())
 			d.reloadConfig()
 			d.reloadSignatures()
+			if d.policies != nil {
+				if err := d.policies.Reload(d.cfg.EmailProtection.PHPRelay.PoliciesDir); err != nil {
+					// Previous valid version stays in effect; surface the failure
+					// via the existing alert pipeline so operators see partial reload.
+					d.emitReloadFinding(alert.Warning, "email_php_relay_policies_reload",
+						fmt.Sprintf("policies/email reload encountered errors: %v", err))
+				}
+			}
 			d.publishGeoIP()
 			if d.fwEngine != nil {
 				if err := d.fwEngine.Apply(); err != nil {
