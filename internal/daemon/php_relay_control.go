@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/control"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // PHPRelayController aggregates the phprelay-state references the
@@ -23,6 +24,7 @@ type PHPRelayController struct {
 	msgIndex     *msgIDIndex
 	ignores      *ignoreList
 	actionDryRun *runtimeBool
+	db           *store.DB
 	enabled      bool
 	platform     string
 }
@@ -35,10 +37,8 @@ type runtimeBool struct {
 	value bool
 }
 
-//nolint:unused // wired in M3 by phprelay.dry_run handler
 func (r *runtimeBool) Set(v bool) { r.mu.Lock(); r.set = true; r.value = v; r.mu.Unlock() }
 
-//nolint:unused // wired in M3 by phprelay.dry_run handler
 func (r *runtimeBool) Reset() { r.mu.Lock(); r.set = false; r.mu.Unlock() }
 
 func (r *runtimeBool) Get() (value, set bool) {
@@ -47,16 +47,19 @@ func (r *runtimeBool) Get() (value, set bool) {
 	return r.value, r.set
 }
 
-// effectiveDryRun resolves the CLI > bbolt > csm.yaml precedence chain.
-// For M1 the CLI override is the only source; bbolt + yaml join in M3.
+// effectiveDryRun resolves precedence: runtime > bbolt > csm.yaml.
 // Returns (effective, source) where source identifies the winning input.
 func (c *PHPRelayController) effectiveDryRun() (bool, string) {
-	if v, ok := c.actionDryRun.Get(); ok {
+	if v, set := c.actionDryRun.Get(); set {
 		return v, "runtime"
 	}
-	// Fallback: yaml-level (M3 will add bbolt between).
+	if c.db != nil {
+		if v, ok, err := readDryRunOverride(c.db); err == nil && ok {
+			return v, "bbolt"
+		}
+	}
 	if c.eng != nil && c.eng.cfg != nil {
-		return c.eng.cfg.PHPRelayDryRunEnabled(), "yaml"
+		return c.eng.cfg.PHPRelayDryRunEnabled(), "csm.yaml"
 	}
 	return true, "default"
 }
@@ -177,4 +180,58 @@ func (c *ControlListener) handlePHPRelayIgnoreList(argsRaw json.RawMessage) (any
 	}
 	_ = argsRaw // no args expected
 	return c.phprelay.IgnoreList(context.Background(), struct{}{})
+}
+
+func (c *PHPRelayController) DryRun(_ context.Context, req control.PHPRelayDryRunRequest) (control.PHPRelayDryRunResponse, error) {
+	switch req.Mode {
+	case "on":
+		c.actionDryRun.Set(true)
+		if req.Persist {
+			if err := writeDryRunOverride(c.db, true, "operator"); err != nil {
+				return control.PHPRelayDryRunResponse{}, err
+			}
+		}
+	case "off":
+		c.actionDryRun.Set(false)
+		if req.Persist {
+			if err := writeDryRunOverride(c.db, false, "operator"); err != nil {
+				return control.PHPRelayDryRunResponse{}, err
+			}
+		}
+	case "reset":
+		c.actionDryRun.Reset()
+		if req.Persist {
+			if err := deleteDryRunOverride(c.db); err != nil {
+				return control.PHPRelayDryRunResponse{}, err
+			}
+		}
+	default:
+		return control.PHPRelayDryRunResponse{}, errors.New("mode must be on|off|reset")
+	}
+	eff, src := c.effectiveDryRun()
+	return control.PHPRelayDryRunResponse{Effective: eff, Source: src}, nil
+}
+
+// DryRunFn returns a closure that evaluates the precedence chain on
+// every call. Daemon wiring passes this to newAutoFreezer so that
+// `csm phprelay dry-run` actually changes freeze behaviour without
+// rebuilding the freezer.
+func (c *PHPRelayController) DryRunFn() func() bool {
+	return func() bool {
+		v, _ := c.effectiveDryRun()
+		return v
+	}
+}
+
+func (c *ControlListener) handlePHPRelayDryRun(argsRaw json.RawMessage) (any, error) {
+	if c.phprelay == nil {
+		return nil, fmt.Errorf("phprelay controller not wired (Phase O2)")
+	}
+	var req control.PHPRelayDryRunRequest
+	if len(argsRaw) > 0 {
+		if err := json.Unmarshal(argsRaw, &req); err != nil {
+			return nil, fmt.Errorf("bad args: %w", err)
+		}
+	}
+	return c.phprelay.DryRun(context.Background(), req)
 }
