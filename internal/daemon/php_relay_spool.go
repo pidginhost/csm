@@ -183,14 +183,15 @@ type spoolPipeline struct {
 	domains    *userDomainsResolver
 	policies   *emailspool.Policies
 	msgIndex   *msgIDIndex
+	ignores    *ignoreList
 	alerter    func(alert.Finding)
 	rebuilding atomic.Bool
 }
 
-func newSpoolPipeline(eng *evaluator, domains *userDomainsResolver, pol *emailspool.Policies, idx *msgIDIndex, alerter func(alert.Finding)) *spoolPipeline {
+func newSpoolPipeline(eng *evaluator, domains *userDomainsResolver, pol *emailspool.Policies, idx *msgIDIndex, ignores *ignoreList, alerter func(alert.Finding)) *spoolPipeline {
 	eng.SetPolicies(pol)
 	return &spoolPipeline{
-		eng: eng, domains: domains, policies: pol, msgIndex: idx, alerter: alerter,
+		eng: eng, domains: domains, policies: pol, msgIndex: idx, ignores: ignores, alerter: alerter,
 	}
 }
 
@@ -218,6 +219,9 @@ func (p *spoolPipeline) OnFile(path string) {
 	auth, _ := p.domains.Domains(h.EnvelopeUser)
 	sig := computeSignals(h, auth, p.policies)
 	if sig.ScriptKey == "" {
+		return
+	}
+	if p.ignores != nil && p.ignores.Has(sig.ScriptKey) {
 		return
 	}
 

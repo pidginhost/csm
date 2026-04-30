@@ -74,7 +74,7 @@ func TestSpoolPipeline_FlowAOnRealFixture(t *testing.T) {
 
 	var findings []alert.Finding
 	var fmu sync.Mutex
-	pipeline := newSpoolPipeline(eng, domains, pol, nil, func(f alert.Finding) {
+	pipeline := newSpoolPipeline(eng, domains, pol, nil, nil, func(f alert.Finding) {
 		fmu.Lock()
 		findings = append(findings, f)
 		fmu.Unlock()
@@ -151,7 +151,7 @@ func TestStartupSpoolWalker_DefersFindings(t *testing.T) {
 
 	var findings []alert.Finding
 	var fmu sync.Mutex
-	pipeline := newSpoolPipeline(eng, domains, pol, nil, func(f alert.Finding) {
+	pipeline := newSpoolPipeline(eng, domains, pol, nil, nil, func(f alert.Finding) {
 		fmu.Lock()
 		findings = append(findings, f)
 		fmu.Unlock()

@@ -768,3 +768,89 @@ func extractUField(line string) string {
 	}
 	return rest[:end]
 }
+
+// ignoreEntry records an operator-issued ignore on a script. A zero
+// ExpiresAt means "never expires"; otherwise Has/List/SweepExpired drop
+// the entry once now > ExpiresAt.
+type ignoreEntry struct {
+	ScriptKey string
+	AddedAt   time.Time
+	ExpiresAt time.Time
+	AddedBy   string
+	Reason    string
+}
+
+// ignoreList is the in-memory operator allowlist for php_relay scripts.
+// L2 (bbolt persistence) wraps this with --persist semantics; Flow E
+// (O2) calls SweepExpired periodically.
+type ignoreList struct {
+	mu      sync.Mutex
+	entries map[string]ignoreEntry
+}
+
+func newIgnoreList() *ignoreList {
+	return &ignoreList{entries: make(map[string]ignoreEntry)}
+}
+
+func (il *ignoreList) Add(k scriptKey, expiresAt time.Time, by, reason string) {
+	il.mu.Lock()
+	defer il.mu.Unlock()
+	il.entries[string(k)] = ignoreEntry{
+		ScriptKey: string(k),
+		AddedAt:   time.Now(),
+		ExpiresAt: expiresAt,
+		AddedBy:   by,
+		Reason:    reason,
+	}
+}
+
+func (il *ignoreList) Remove(k scriptKey) {
+	il.mu.Lock()
+	delete(il.entries, string(k))
+	il.mu.Unlock()
+}
+
+func (il *ignoreList) Has(k scriptKey) bool {
+	il.mu.Lock()
+	defer il.mu.Unlock()
+	e, ok := il.entries[string(k)]
+	if !ok {
+		return false
+	}
+	if !e.ExpiresAt.IsZero() && time.Now().After(e.ExpiresAt) {
+		delete(il.entries, string(k))
+		return false
+	}
+	return true
+}
+
+func (il *ignoreList) List() []ignoreEntry {
+	il.mu.Lock()
+	defer il.mu.Unlock()
+	out := make([]ignoreEntry, 0, len(il.entries))
+	now := time.Now()
+	for k, e := range il.entries {
+		if !e.ExpiresAt.IsZero() && now.After(e.ExpiresAt) {
+			delete(il.entries, k)
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// SweepExpired drops expired entries. Called by Flow E ticker.
+//
+//nolint:unused // wired in O2 Flow E ticker
+func (il *ignoreList) SweepExpired(now time.Time) int {
+	il.mu.Lock()
+	defer il.mu.Unlock()
+	n := 0
+	for k, e := range il.entries {
+		if !e.ExpiresAt.IsZero() && now.After(e.ExpiresAt) {
+			delete(il.entries, k)
+			n++
+		}
+	}
+	return n
+}

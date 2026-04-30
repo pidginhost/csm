@@ -443,3 +443,34 @@ func TestReadCpanelHourlyLimit_Unparsable(t *testing.T) {
 		t.Errorf("status = %v, want unparsable", status)
 	}
 }
+
+func TestIgnoreList_HasAndExpire(t *testing.T) {
+	il := newIgnoreList()
+	il.Add("k:/p", time.Now().Add(50*time.Millisecond), "tester", "test reason")
+	if !il.Has("k:/p") {
+		t.Fatal("Has should be true immediately after Add")
+	}
+	time.Sleep(80 * time.Millisecond)
+	if il.Has("k:/p") {
+		t.Errorf("Has should be false after expiry")
+	}
+}
+
+func TestIgnoreList_Remove(t *testing.T) {
+	il := newIgnoreList()
+	il.Add("k:/p", time.Now().Add(time.Hour), "u", "")
+	il.Remove("k:/p")
+	if il.Has("k:/p") {
+		t.Error("Remove should drop the entry")
+	}
+}
+
+func TestIgnoreList_ListReturnsActiveOnly(t *testing.T) {
+	il := newIgnoreList()
+	il.Add("a:/p", time.Now().Add(time.Hour), "u", "active")
+	il.Add("b:/p", time.Now().Add(-time.Hour), "u", "expired")
+	list := il.List()
+	if len(list) != 1 || list[0].ScriptKey != "a:/p" {
+		t.Errorf("List = %+v, want only a:/p", list)
+	}
+}
