@@ -28,3 +28,24 @@ func TestExtractDomain_Empty(t *testing.T) {
 		t.Fatal("empty input must return empty domain")
 	}
 }
+
+func TestIsSubdomainOrEqual(t *testing.T) {
+	cases := []struct {
+		candidate, base string
+		want            bool
+	}{
+		{"foo.com", "foo.com", true},
+		{"FOO.com", "foo.com", true},
+		{"mail.foo.com", "foo.com", true},
+		{"deep.mail.foo.com", "foo.com", true},
+		{"foo.com", "mail.foo.com", false},
+		{"barfoo.com", "foo.com", false},
+		{"", "foo.com", false},
+		{"foo.com", "", false},
+	}
+	for _, c := range cases {
+		if got := IsSubdomainOrEqual(c.candidate, c.base); got != c.want {
+			t.Errorf("IsSubdomainOrEqual(%q,%q)=%v, want %v", c.candidate, c.base, got, c.want)
+		}
+	}
+}

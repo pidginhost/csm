@@ -53,3 +53,17 @@ func lastUnquotedAt(s string) int {
 	}
 	return last
 }
+
+// IsSubdomainOrEqual reports whether candidate is base or a subdomain of base.
+// Both inputs are case-insensitive. Empty inputs return false.
+func IsSubdomainOrEqual(candidate, base string) bool {
+	if candidate == "" || base == "" {
+		return false
+	}
+	c := strings.ToLower(strings.TrimSuffix(candidate, "."))
+	b := strings.ToLower(strings.TrimSuffix(base, "."))
+	if c == b {
+		return true
+	}
+	return strings.HasSuffix(c, "."+b)
+}
