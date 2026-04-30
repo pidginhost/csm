@@ -32,6 +32,7 @@ const controlRequestTimeout = 2 * time.Second
 type ControlListener struct {
 	d        *Daemon
 	listener net.Listener
+	phprelay *PHPRelayController // wired by Phase O2; may be nil in tests / pre-wiring
 }
 
 // NewControlListener creates the socket, enforces 0600 perms, and

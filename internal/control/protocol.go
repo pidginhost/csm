@@ -57,6 +57,8 @@ const (
 	// seed their pipeline with prior findings the first time they
 	// enable audit_log:.
 	CmdHistorySince = "history.since"
+
+	CmdPHPRelayStatus = "phprelay.status"
 )
 
 // Request is the single JSON object the client sends per connection.
@@ -258,4 +260,21 @@ type StoreExportResult struct {
 	Bytes         int64  `json:"bytes"`
 	ArchiveSHA256 string `json:"archive_sha256"`
 	BboltSHA256   string `json:"bbolt_sha256"`
+}
+
+// PHPRelayStatusRequest carries no parameters.
+type PHPRelayStatusRequest struct{}
+
+// PHPRelayStatusResponse summarises the running detector state.
+type PHPRelayStatusResponse struct {
+	Enabled               bool           `json:"enabled"`
+	Platform              string         `json:"platform"`
+	DryRun                bool           `json:"dry_run"`
+	EffectiveAccountLimit int            `json:"effective_account_limit"`
+	ScriptsTracked        int            `json:"scripts_tracked"`
+	IPsTracked            int            `json:"ips_tracked"`
+	AccountsTracked       int            `json:"accounts_tracked"`
+	MsgIDIndexSize        int            `json:"msgid_index_size"`
+	IgnoresActive         int            `json:"ignores_active"`
+	RecentFindings        map[string]int `json:"recent_findings"` // path -> count last 1h
 }

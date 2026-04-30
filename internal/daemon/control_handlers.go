@@ -86,6 +86,8 @@ func (c *ControlListener) dispatch(line []byte) control.Response {
 		result, err = c.handleStoreExport(req.Args)
 	case control.CmdHistorySince:
 		result, err = c.handleHistorySince(req.Args)
+	case control.CmdPHPRelayStatus:
+		result, err = c.handlePHPRelayStatus(req.Args)
 	default:
 		return control.Response{OK: false, Error: fmt.Sprintf("unknown command: %q", req.Cmd)}
 	}
