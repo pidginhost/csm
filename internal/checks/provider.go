@@ -21,6 +21,8 @@ type OS interface {
 	Readlink(name string) (string, error)
 	Open(name string) (*os.File, error)
 	WriteFile(name string, data []byte, perm os.FileMode) error
+	MkdirAll(path string, perm os.FileMode) error
+	Remove(name string) error
 	Glob(pattern string) ([]string, error)
 }
 
@@ -40,6 +42,9 @@ func (realOS) Open(name string) (*os.File, error) { return os.Open(name) }
 func (realOS) WriteFile(name string, data []byte, perm os.FileMode) error {
 	return os.WriteFile(name, data, perm)
 }
+
+func (realOS) MkdirAll(path string, perm os.FileMode) error { return os.MkdirAll(path, perm) }
+func (realOS) Remove(name string) error                     { return os.Remove(name) }
 
 func (realOS) Glob(pattern string) ([]string, error) { return filepath.Glob(pattern) }
 

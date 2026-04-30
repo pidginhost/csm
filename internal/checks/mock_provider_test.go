@@ -18,6 +18,8 @@ type mockOS struct {
 	readlink  func(string) (string, error)
 	open      func(string) (*os.File, error)
 	writeFile func(string, []byte, os.FileMode) error
+	mkdirAll  func(string, os.FileMode) error
+	remove    func(string) error
 	glob      func(string) ([]string, error)
 }
 
@@ -71,6 +73,20 @@ func (m *mockOS) WriteFile(name string, data []byte, perm os.FileMode) error {
 	// when its function field is unset. The "loud failure" intent (an
 	// unconfigured WriteFile mock surfaces as a real test error rather than
 	// a silent nil) is preserved by any non-nil error.
+	return os.ErrNotExist
+}
+
+func (m *mockOS) MkdirAll(path string, perm os.FileMode) error {
+	if m.mkdirAll != nil {
+		return m.mkdirAll(path, perm)
+	}
+	return os.ErrNotExist
+}
+
+func (m *mockOS) Remove(name string) error {
+	if m.remove != nil {
+		return m.remove(name)
+	}
 	return os.ErrNotExist
 }
 

@@ -17,11 +17,68 @@ func runHarden() {
 	switch os.Args[2] {
 	case "--copy-fail", "copy-fail":
 		runHardenCopyFail()
+	case "--copy-fail-seccomp", "copy-fail-seccomp":
+		runHardenCopyFailSeccomp()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown harden subcommand: %s\n", os.Args[2])
 		fmt.Fprint(os.Stderr, hardenUsageString())
 		os.Exit(1)
 	}
+}
+
+func runHardenCopyFailSeccomp() {
+	// `--remove` rolls back: deletes the drop-ins CSM wrote and runs
+	// daemon-reload + per-unit reload-or-restart. Idempotent.
+	remove := false
+	for _, a := range os.Args[3:] {
+		if a == "--remove" || a == "remove" {
+			remove = true
+		}
+	}
+
+	if remove {
+		removed, err := checks.RemoveAFAlgSeccompDropIns()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "csm: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("csm harden --copy-fail-seccomp --remove")
+		fmt.Println("---------------------------------------")
+		if len(removed) == 0 {
+			fmt.Println("No CSM-managed seccomp drop-ins were present.")
+			return
+		}
+		fmt.Printf("Removed drop-ins from %d units: %s\n", len(removed), strings.Join(removed, ", "))
+		fmt.Println("AF_ALG access is no longer restricted by CSM. Confirm KernelCare or another mitigation is in place.")
+		return
+	}
+
+	written, err := checks.ApplyAFAlgSeccompDropIns()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "csm: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("csm harden --copy-fail-seccomp")
+	fmt.Println("------------------------------")
+	if len(written) == 0 {
+		fmt.Println("All candidate units already have the seccomp drop-in. Nothing changed.")
+		summary := checks.SummarizeAFAlgSeccompCoverage()
+		fmt.Printf("Coverage: %d covered, %d uncovered, %d not installed\n",
+			len(summary.Covered), len(summary.Uncovered), len(summary.NotInstalled))
+		return
+	}
+
+	fmt.Printf("Wrote drop-in to %d units and reloaded them:\n", len(written))
+	for _, u := range written {
+		fmt.Printf("  - %s\n", u)
+	}
+	fmt.Println()
+	fmt.Println("Each unit now refuses socket(AF_ALG, ...) for itself and every")
+	fmt.Println("process it spawns. Copy Fail (CVE-2026-31431) is unreachable")
+	fmt.Println("through these services.")
+	fmt.Println()
+	fmt.Println("Roll back with: csm harden --copy-fail-seccomp --remove")
 }
 
 func runHardenCopyFail() {
@@ -99,13 +156,20 @@ func hardenUsageString() string {
 Usage: csm harden <policy>
 
 Policies:
-  --copy-fail    Mitigate CVE-2026-31431 ("Copy Fail") by blacklisting
-                 algif_aead and af_alg in /etc/modprobe.d/ and unloading
-                 the modules. Idempotent. The CSM daemon then enforces
-                 this policy on every critical-tier tick.
+  --copy-fail            Mitigate CVE-2026-31431 ("Copy Fail") via the
+                         modprobe blacklist. Works only on kernels where
+                         algif_aead is a loadable module. Refuses on
+                         kernels with CONFIG_CRYPTO_USER_API_AEAD=y.
 
-This command is operator-driven: it modifies system state. Run it once
-per host (or include it in your provisioning playbook). After it runs,
-the daemon's periodic enforcement keeps the policy active.
+  --copy-fail-seccomp    Interim Copy Fail mitigation for kernels where
+                         AF_ALG aead is built in. Writes systemd drop-ins
+                         that apply RestrictAddressFamilies=~AF_ALG to the
+                         web/PHP-FPM/cron/mail units that spawn untrusted
+                         user code, then reload-or-restarts each. Roll back
+                         with --remove.
+
+These commands are operator-driven: they modify system state. Run once
+per host (or include in your provisioning playbook). After it runs, the
+hardening audit recognizes the mitigation and reports pass.
 `
 }

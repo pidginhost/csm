@@ -584,14 +584,39 @@ func auditAlgifAEAD() store.AuditResult {
 		}
 	}
 	if kernelState.BuiltIn {
+		// On built-in kernels the modprobe blacklist is ineffective. Two
+		// interim options exist: KernelCare livepatch (handled above) or
+		// per-service seccomp drop-ins. Recognize the seccomp coverage
+		// here so an operator who ran `csm harden --copy-fail-seccomp`
+		// gets a truthful pass.
+		seccomp := SummarizeAFAlgSeccompCoverage()
+		if len(seccomp.Covered) > 0 && len(seccomp.Uncovered) == 0 {
+			return store.AuditResult{
+				Category: "os", Name: algifAEADAuditID, Title: algifAEADAuditTitle,
+				Status: "pass",
+				Message: fmt.Sprintf(
+					"kernel built-in but Copy Fail blocked by seccomp drop-ins on %d units (%s)",
+					len(seccomp.Covered), strings.Join(seccomp.Covered, ", "),
+				),
+			}
+		}
+
+		fixMsg := "Apply KernelCare/kpatch when the CVE-2026-31431 patch ships (kcarectl --update); " +
+			"or run `csm harden --copy-fail-seccomp` to apply per-service seccomp drop-ins now. " +
+			"The modprobe blacklist file is harmless but does not protect this kernel."
+		messageDetail := "modprobe blacklist is ineffective on this kernel and Copy Fail (CVE-2026-31431) is exploitable"
+		if len(seccomp.Covered) > 0 {
+			messageDetail = fmt.Sprintf(
+				"seccomp drop-ins present on %d units but %d candidate units still uncovered (%s)",
+				len(seccomp.Covered), len(seccomp.Uncovered), strings.Join(seccomp.Uncovered, ", "),
+			)
+		}
 		return store.AuditResult{
 			Category: "os", Name: algifAEADAuditID, Title: algifAEADAuditTitle,
 			Status: "fail",
 			Message: "AF_ALG aead is built into the kernel (CONFIG_CRYPTO_USER_API_AEAD=y); " +
-				"modprobe blacklist is ineffective on this kernel and Copy Fail (CVE-2026-31431) is exploitable",
-			Fix: "Apply KernelCare/kpatch when the CVE-2026-31431 patch ships (kcarectl --update); " +
-				"as an interim, seccomp-filter unprivileged service workers (PHP-FPM, suexec) " +
-				"to deny socket(AF_ALG, ...). The modprobe blacklist file is harmless but does not protect this kernel.",
+				messageDetail,
+			Fix: fixMsg,
 		}
 	}
 
