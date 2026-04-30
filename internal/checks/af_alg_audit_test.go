@@ -197,7 +197,8 @@ func TestCheckAFAlgSocketUsage_NoMatchesIsBenign(t *testing.T) {
 
 func TestCheckAFAlgSocketUsage_GarbledLineDoesNotPanic(t *testing.T) {
 	// Real audit logs occasionally contain truncated lines after a hard
-	// reboot. The check must tolerate them silently.
+	// reboot. The check must tolerate them silently AND must still advance
+	// the cursor past the valid event so a re-run does not double-alert.
 	body := []byte(
 		`garbage with key="csm_af_alg_socket" but no msg=audit block
 type=SYSCALL msg=audit(3.0:3): a0=38 auid=1001 uid=1001 comm="x" exe="/x" key="csm_af_alg_socket"`)
@@ -206,6 +207,9 @@ type=SYSCALL msg=audit(3.0:3): a0=38 auid=1001 uid=1001 comm="x" exe="/x" key="c
 	got := CheckAFAlgSocketUsage(context.Background(), &config.Config{}, st)
 	if len(got) != 1 {
 		t.Errorf("garbled line should be skipped, valid one alerted; got %d findings", len(got))
+	}
+	if v, ok := st.GetRaw("_af_alg_last_seen"); !ok || v != "3.0:3" {
+		t.Errorf("cursor should advance to the valid event past the garbled line; got %q (set=%v)", v, ok)
 	}
 }
 
