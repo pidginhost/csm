@@ -31,6 +31,10 @@ var bucketNames = []string{
 	"db_object_backups",
 	"sig_watch",
 	bucketStatsDaily,
+	"phprelay:meta",
+	"phprelay:msgindex",
+	"phprelay:ignore",
+	"phprelay:settings",
 }
 
 // DB wraps a bbolt database.
@@ -94,6 +98,15 @@ func Open(statePath string) (*DB, error) {
 				return fmt.Errorf("creating bucket %s: %w", name, berr)
 			}
 		}
+		// Initialise phprelay schema_version on first open. Stored as
+		// 8-byte big-endian uint64 so future migrations can read/compare
+		// it consistently.
+		meta := tx.Bucket([]byte("phprelay:meta"))
+		if meta.Get([]byte("schema_version")) == nil {
+			if perr := meta.Put([]byte("schema_version"), []byte{0, 0, 0, 0, 0, 0, 0, 1}); perr != nil {
+				return fmt.Errorf("init phprelay schema_version: %w", perr)
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -148,6 +161,18 @@ func (db *DB) Close() error {
 // Path returns the on-disk path of the bbolt database file.
 func (db *DB) Path() string {
 	return db.path
+}
+
+// HasBucket reports whether a top-level bucket named name exists in db.
+func (db *DB) HasBucket(name string) bool {
+	found := false
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
+		if tx.Bucket([]byte(name)) != nil {
+			found = true
+		}
+		return nil
+	})
+	return found
 }
 
 // TimeKey produces a fixed-width 28-byte key for chronological ordering.

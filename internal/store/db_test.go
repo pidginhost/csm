@@ -145,3 +145,23 @@ func TestEnsureOpen(t *testing.T) {
 	SetGlobal(nil)
 	// Reset ensureOnce for other tests - we can't easily, so this test should be last
 }
+
+func TestOpen_PHPRelayBuckets(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	for _, name := range []string{
+		"phprelay:meta",
+		"phprelay:msgindex",
+		"phprelay:ignore",
+		"phprelay:settings",
+	} {
+		if !db.HasBucket(name) {
+			t.Errorf("missing bucket %q", name)
+		}
+	}
+}
