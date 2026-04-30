@@ -362,3 +362,51 @@ func runStartupSpoolWalker(spoolRoot string, p *spoolPipeline) {
 		}
 	}
 }
+
+// spoolSupervisor wraps a goroutine that may panic. After maxRestarts
+// consecutive panics, it stops trying and invokes OnFailed (used to emit
+// a Critical finding email_php_relay_watcher_failed).
+type spoolSupervisor struct {
+	fn          func(ctx context.Context)
+	maxRestarts int
+	OnFailed    func()
+}
+
+//nolint:unused // consumed by daemon wiring (Task O2)
+func newSpoolSupervisor(fn func(ctx context.Context), maxRestarts int) *spoolSupervisor {
+	return &spoolSupervisor{fn: fn, maxRestarts: maxRestarts, OnFailed: func() {}}
+}
+
+func (s *spoolSupervisor) Run(ctx context.Context) {
+	backoff := 100 * time.Millisecond
+	for attempt := 0; attempt <= s.maxRestarts; attempt++ {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					_ = r // Panic recovered; loop will sleep + retry.
+				}
+			}()
+			s.fn(ctx)
+		}()
+		if ctx.Err() != nil {
+			return
+		}
+		if attempt == s.maxRestarts {
+			s.OnFailed()
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		if backoff < 5*time.Second {
+			backoff *= 2
+		}
+	}
+}

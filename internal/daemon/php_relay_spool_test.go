@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -196,5 +197,47 @@ func TestRecoveryScan_BoundedAndDedupes(t *testing.T) {
 	}
 	if len(seen) != 3 {
 		t.Errorf("callbacks = %d, want 3", len(seen))
+	}
+}
+
+func TestSupervisor_RestartsOnPanic(t *testing.T) {
+	var attempts atomic.Int32
+	sup := newSpoolSupervisor(func(ctx context.Context) {
+		attempts.Add(1)
+		if attempts.Load() < 3 {
+			panic("simulated")
+		}
+	}, 5)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go sup.Run(ctx)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if attempts.Load() >= 3 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("supervisor did not restart enough times: %d", attempts.Load())
+}
+
+func TestSupervisor_StopsAfterMaxRestarts(t *testing.T) {
+	var attempts atomic.Int32
+	var failed atomic.Bool
+	sup := newSpoolSupervisor(func(ctx context.Context) {
+		attempts.Add(1)
+		panic("always fails")
+	}, 3)
+	sup.OnFailed = func() { failed.Store(true) }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sup.Run(ctx)
+
+	if attempts.Load() > 4 {
+		t.Errorf("attempts = %d, want <= 4 (3 restarts + 1 initial)", attempts.Load())
+	}
+	if !failed.Load() {
+		t.Error("OnFailed callback should have fired")
 	}
 }
