@@ -1,8 +1,14 @@
 package checks
 
 import (
+	"context"
+	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/state"
 )
 
 // afAlgEvent is the parsed view of a single SYSCALL record tagged with the
@@ -114,4 +120,86 @@ func extractAuditField(line, key string) string {
 		}
 		return rest[:end]
 	}
+}
+
+const (
+	afAlgLogPath   = "/var/log/audit/audit.log"
+	afAlgCursorKey = "_af_alg_last_seen"
+)
+
+// CheckAFAlgSocketUsage scans the audit log for csm_af_alg_socket events
+// and emits one Critical finding per strictly-newer event. The first run
+// alerts on every event found — AF_ALG-from-userland is an exploit signature
+// for CVE-2026-31431 ("Copy Fail"), not a baseline metric, so silent seeding
+// would hide pre-existing compromise. The cursor in state.Store prevents
+// duplicates on subsequent sweeps and survives daemon restarts.
+//
+// Filtering is delegated to grep so we don't load the whole multi-hundred-MB
+// audit log into memory each tick (same precedent as getAuditShadowInfo in
+// auth.go). RunAllowNonZero is required because grep returns exit 1 on
+// "no match" — the healthy default — and that must not surface as an error.
+func CheckAFAlgSocketUsage(_ context.Context, _ *config.Config, st *state.Store) []alert.Finding {
+	// RunAllowNonZero swallows every non-zero exit (see runCmdAllowNonZeroReal
+	// in helpers.go) — including exit 1 (no match) and exit 2 (audit log not
+	// installed). The non-error path is therefore the only one we need to
+	// reason about here: empty output means "nothing to do".
+	out, err := cmdExec.RunAllowNonZero("grep", "-a", "csm_af_alg_socket", afAlgLogPath)
+	if err != nil {
+		return nil
+	}
+	if len(out) == 0 {
+		return nil
+	}
+
+	cursorRaw, hasCursor := st.GetRaw(afAlgCursorKey)
+	cursor := decodeCursor(cursorRaw)
+
+	var findings []alert.Finding
+	highest := cursor
+	highestSet := hasCursor
+
+	for _, line := range strings.Split(string(out), "\n") {
+		ev, ok := parseAFAlgEvent(line)
+		if !ok {
+			continue
+		}
+		if hasCursor && !ev.after(cursor) {
+			continue
+		}
+		findings = append(findings, alert.Finding{
+			Severity: alert.Critical,
+			Check:    "af_alg_socket_use",
+			Message:  fmt.Sprintf("AF_ALG socket opened by uid=%s exe=%s", ev.UID, ev.Exe),
+			Details: fmt.Sprintf(
+				"Audit event: timestamp=%s serial=%s\nauid=%s uid=%s comm=%q exe=%q\n"+
+					"AF_ALG is essentially never used by cPanel/PHP workloads. This is\n"+
+					"the kernel-level exploit signature for CVE-2026-31431 (\"Copy Fail\").\n"+
+					"Investigate this process immediately and consider unloading algif_aead\n"+
+					"(modprobe -r algif_aead af_alg) and adding a modprobe.d blacklist.",
+				ev.Timestamp, ev.Serial, ev.AUID, ev.UID, ev.Comm, ev.Exe,
+			),
+		})
+		if !highestSet || ev.after(highest) {
+			highest = ev
+			highestSet = true
+		}
+	}
+
+	if highestSet {
+		st.SetRaw(afAlgCursorKey, encodeCursor(highest))
+	}
+	return findings
+}
+
+func encodeCursor(ev afAlgEvent) string { return ev.Timestamp + ":" + ev.Serial }
+
+func decodeCursor(s string) afAlgEvent {
+	if s == "" {
+		return afAlgEvent{}
+	}
+	colon := strings.Index(s, ":")
+	if colon < 0 {
+		return afAlgEvent{}
+	}
+	return afAlgEvent{Timestamp: s[:colon], Serial: s[colon+1:]}
 }
