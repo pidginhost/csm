@@ -102,6 +102,8 @@ func main() {
 		runStoreCLI()
 	case "export":
 		runExportCLI()
+	case "phprelay":
+		runPHPRelay()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
 		printUsage()
