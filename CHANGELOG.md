@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.11.0] - 2026-05-01
+
 ### Added
 
 - Email PHP-relay protection: real-time inotify watcher on the cPanel-Exim spool fires a Critical `email_php_relay_abuse` finding when a script's outbound mail mix matches the WordPress contact-form spam relay pattern (spoofed `From`, external `Reply-To`, suspicious `X-Mailer`). Backed by 4 detection paths (per-script header score, per-script absolute volume, per-account log-tail volume, HTTP-IP fanout), a per-script auto-freeze of the live spool via `exim -Mf` with operator-controllable dry-run + persisted ignore list, hot-reloadable mailer/proxy policy YAML, structured JSONL audit log, and a `csm phprelay` CLI subcommand family (status / ignore-script / unignore / ignore-list / dry-run / thaw). Disabled on non-cPanel hosts.

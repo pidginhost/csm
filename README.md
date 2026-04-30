@@ -28,7 +28,7 @@ The detection set is targeted at real attacker behaviour on shared hosting:
 - **PHP-relay abuse (cPanel).** Real-time inotify watcher on `/var/spool/exim/input` catches WordPress contact-form spam relays where the attacker uses PHPMailer with a spoofed `From`, external `Reply-To`, and a script URL that doesn't belong to the account. Four detection paths (per-script header score, per-script absolute volume, per-account log-tail volume, HTTP-IP fanout) feed an optional auto-freeze that runs `exim -Mf` on the live spool. Operator controls via `csm phprelay`: status, ignore-script, dry-run toggle, thaw.
 
 - **CVE mitigations.** Operator-driven via `csm harden`, then continuously enforced by the daemon. Currently shipped:
-   - **CVE-2026-31431 ("Copy Fail").** Run `csm harden --copy-fail` once. CSM blacklists `algif_aead` and `af_alg`, unloads them, and from then on the daemon checks every ten minutes that the policy is still in place. If anything drifts (kernel update, manual edit, rogue script) it puts it back. Auditd rules separately log every `socket(AF_ALG, ...)` attempt by a non-system uid as a Critical finding. Set `auto_response.disable_enforce_af_alg: true` to pause enforcement without removing the marker.
+   - **CVE-2026-31431 ("Copy Fail").** Two paths depending on your kernel. `csm harden --copy-fail` blacklists `algif_aead` + `af_alg` and unloads them; only effective on kernels where AF_ALG is a loadable module. `csm harden --copy-fail-seccomp` writes systemd `RestrictAddressFamilies=~AF_ALG` drop-ins for the units that spawn untrusted code (LiteSpeed, Apache/Nginx, every PHP-FPM pool, cron, mail) — the right path on cPanel/CloudLinux 8 hosts where AF_ALG is built into the kernel. The hardening audit detects your kernel, recognises KernelCare CVE-2026-31431 livepatches via `kcarectl --patch-info`, and refuses to claim protection it can't deliver. A live audit-log listener catches any `socket(AF_ALG, ...)` attempt within ~500 ms; auto-skipped on hosts that aren't actually exploitable.
 
 - **Firewall and threat intel.** nftables-managed IPs and subnets with TTLs, escalation to permanent after repeated offenses, port allowlists, MaxMind GeoIP and country blocking, AbuseIPDB lookups, attacker scoring across signals. Bulk operations from the web UI and a full audit trail.
 
@@ -58,6 +58,8 @@ If you want the Copy Fail mitigation right away:
 
 ```bash
 sudo csm harden --copy-fail
+# On built-in-AF_ALG kernels (typical cPanel/CloudLinux 8) the command
+# exits with the right next step: csm harden --copy-fail-seccomp.
 ```
 
 The web UI is at `https://<server>:9443`.
@@ -108,7 +110,8 @@ csm scan <user>               scan a single cPanel account
 csm firewall ...              IP/subnet bans, port allows, GeoIP
 csm clean <path>              clean an infected PHP file
 csm db-clean ...              remove WordPress DB injections
-csm harden --copy-fail        apply CVE-2026-31431 mitigation
+csm harden --copy-fail        apply CVE-2026-31431 modprobe mitigation
+csm harden --copy-fail-seccomp apply CVE-2026-31431 seccomp mitigation (built-in kernels)
 csm phprelay status           PHP-relay detector state (cPanel only)
 csm store compact             reclaim bbolt free pages
 csm store export <path>       back up daemon state to tar.zst
