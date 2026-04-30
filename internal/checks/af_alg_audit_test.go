@@ -227,3 +227,65 @@ func TestCheckAFAlgSocketUsage_UnsetAUIDStillAlertsOnAccountUID(t *testing.T) {
 		t.Errorf("Details should preserve unset auid for investigation, got %q", got[0].Details)
 	}
 }
+
+func TestEncodeDecodeCursor_RoundTrip(t *testing.T) {
+	in := afAlgEvent{Timestamp: "1761826283.452", Serial: "91234"}
+	round := decodeCursor(encodeCursor(in))
+	if round.Timestamp != in.Timestamp || round.Serial != in.Serial {
+		t.Errorf("round-trip drift: in=%+v out=%+v", in, round)
+	}
+}
+
+func TestDecodeCursor_HandlesEmptyAndMalformed(t *testing.T) {
+	cases := []struct {
+		in           string
+		wantTS, wSer string
+	}{
+		{"", "", ""},
+		{"missing-colon", "", ""}, // no separator → zero value
+		{":7", "", "7"},           // empty timestamp half is preserved
+		{"1.0:", "1.0", ""},       // empty serial half is preserved
+		{"1.0:2:3", "1.0", "2:3"}, // split on FIRST colon only — preserves embedded colons in serial half
+	}
+	for _, c := range cases {
+		got := decodeCursor(c.in)
+		if got.Timestamp != c.wantTS || got.Serial != c.wSer {
+			t.Errorf("decodeCursor(%q) = %+v; want Timestamp=%q Serial=%q", c.in, got, c.wantTS, c.wSer)
+		}
+	}
+}
+
+func TestCheckAFAlgSocketUsage_RepeatedExploitCallsDoNotDeduplicate(t *testing.T) {
+	// The Copy Fail exploit issues many AF_ALG socket() calls in a tight
+	// loop from the same process to land its 4-byte page-cache write.
+	// alert.Deduplicate keys on (Check, Message, sha256(Details)[:4]); each
+	// finding's Details carries the audit event's timestamp+serial, so
+	// repeated calls from the same uid/exe must produce DISTINCT keys and
+	// therefore N alerts, not one. A regression that drops timestamp+serial
+	// from Details would silently collapse a multi-syscall exploit into a
+	// single alert and the cursor would then suppress the rest forever.
+	body := []byte(
+		`type=SYSCALL msg=audit(5.0:10): a0=38 auid=4294967295 uid=1001 comm="exploit" exe="/tmp/x" key="csm_af_alg_socket"
+type=SYSCALL msg=audit(5.1:11): a0=38 auid=4294967295 uid=1001 comm="exploit" exe="/tmp/x" key="csm_af_alg_socket"
+type=SYSCALL msg=audit(5.2:12): a0=38 auid=4294967295 uid=1001 comm="exploit" exe="/tmp/x" key="csm_af_alg_socket"`)
+	withMockCmd(t, grepStubReturning(body))
+
+	st := newTestStore(t)
+	got := CheckAFAlgSocketUsage(context.Background(), &config.Config{}, st)
+	if len(got) != 3 {
+		t.Fatalf("three repeated AF_ALG calls from one process should produce 3 findings, got %d", len(got))
+	}
+
+	keys := make(map[string]struct{}, 3)
+	for _, f := range got {
+		keys[f.Key()] = struct{}{}
+	}
+	if len(keys) != 3 {
+		t.Errorf("Finding.Key() must differ per audit event so Deduplicate cannot merge them; got %d unique keys for 3 events", len(keys))
+	}
+
+	deduped := alert.Deduplicate(got)
+	if len(deduped) != 3 {
+		t.Errorf("alert.Deduplicate must preserve all 3 distinct events, got %d", len(deduped))
+	}
+}

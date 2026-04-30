@@ -508,31 +508,36 @@ func algifAEADBlacklisted(confs map[string]string) bool {
 	return false
 }
 
+// algifAEAD identifiers shared by the pure helper and the impure wrapper —
+// hoisted to package scope so a future edit cannot drift the two copies out
+// of sync (which would silently mismatch Name fields between the pass/fail
+// path and the warn path).
+const (
+	algifAEADAuditID    = "os_algif_aead_blocked"
+	algifAEADAuditTitle = "AF_ALG (algif_aead) Blocked — CVE-2026-31431"
+)
+
 // evaluateAlgifAEAD is the pure, testable core of the algif_aead hardening
 // check. `loaded` reports whether algif_aead currently shows up in
 // /proc/modules; `confs` is a map of modprobe.d file path → contents.
 func evaluateAlgifAEAD(loaded bool, confs map[string]string) store.AuditResult {
-	const (
-		id    = "os_algif_aead_blocked"
-		title = "AF_ALG (algif_aead) Blocked — CVE-2026-31431"
-	)
 	blocked := algifAEADBlacklisted(confs)
 	switch {
 	case !loaded && blocked:
 		return store.AuditResult{
-			Category: "os", Name: id, Title: title,
+			Category: "os", Name: algifAEADAuditID, Title: algifAEADAuditTitle,
 			Status: "pass", Message: "algif_aead is blacklisted and not loaded",
 		}
 	case loaded:
 		return store.AuditResult{
-			Category: "os", Name: id, Title: title,
+			Category: "os", Name: algifAEADAuditID, Title: algifAEADAuditTitle,
 			Status:  "fail",
 			Message: "algif_aead is currently loaded — Copy Fail (CVE-2026-31431) exploitable",
 			Fix:     "echo 'install algif_aead /bin/false' > /etc/modprobe.d/csm-disable-algif.conf && modprobe -r algif_aead af_alg",
 		}
 	default:
 		return store.AuditResult{
-			Category: "os", Name: id, Title: title,
+			Category: "os", Name: algifAEADAuditID, Title: algifAEADAuditTitle,
 			Status:  "fail",
 			Message: "algif_aead is not loaded but no modprobe.d blacklist exists — module can be loaded on demand",
 			Fix:     "echo 'install algif_aead /bin/false' > /etc/modprobe.d/csm-disable-algif.conf",
@@ -546,11 +551,6 @@ func evaluateAlgifAEAD(loaded bool, confs map[string]string) store.AuditResult {
 // "blacklisted" — return a "warn" AuditResult naming the offending file
 // rather than silently classifying the host as fail.
 func auditAlgifAEAD() store.AuditResult {
-	const (
-		id    = "os_algif_aead_blocked"
-		title = "AF_ALG (algif_aead) Blocked — CVE-2026-31431"
-	)
-
 	loaded := false
 	for _, mod := range loadModuleList() {
 		if mod == "algif_aead" {
@@ -566,7 +566,7 @@ func auditAlgifAEAD() store.AuditResult {
 			data, err := osFS.ReadFile(p)
 			if err != nil {
 				return store.AuditResult{
-					Category: "os", Name: id, Title: title,
+					Category: "os", Name: algifAEADAuditID, Title: algifAEADAuditTitle,
 					Status:  "warn",
 					Message: fmt.Sprintf("Cannot read %s: %v — blacklist state undetermined", p, err),
 				}
