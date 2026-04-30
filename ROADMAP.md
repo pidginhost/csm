@@ -318,3 +318,67 @@ The plugin:
 0.5 engineering days for the contract documentation in this repo;
 the plugin itself is ~2 days in the separate repo.
 
+
+## 5. Copy Fail BPF LSM in-kernel block
+
+### Why
+
+The Copy Fail (CVE-2026-31431) mitigations that already shipped give us
+two layers: a per-systemd-unit seccomp drop-in (`csm harden
+--copy-fail-seccomp`) that blocks `socket(AF_ALG, …)` before the kernel
+sees it, and a live audit-log listener (`af-alg-listener`) that catches
+attempts within ~500 ms and can SIGKILL the offender. Both have gaps:
+
+- **Seccomp drop-ins** only protect processes spawned by the enumerated
+  systemd units (PHP-FPM, LiteSpeed, cron, mail). Anything spawned
+  outside those units (interactive SSH, manual cron, suexec children of
+  non-listed parents) bypasses them.
+- **Audit-log listener** is detection + best-effort kill, not
+  prevention. The exploit's syscall succeeds; we race to kill before the
+  page-cache write completes its second-stage exec.
+
+A BPF LSM hook on `security_socket_create` returning `-EAFNOSUPPORT`
+when an unprivileged user opens AF_ALG is the missing third layer:
+host-wide, in-kernel block, no race window, catches everything.
+
+### Decision
+
+Add `internal/daemon/af_alg_bpf.go` (build tag `linux,bpf`) using
+`cilium/ebpf` to construct the LSM program in pure Go BPF asm — no
+clang dependency at build time. Auto-detect at daemon startup whether
+the kernel supports BPF LSM (load + attach a tiny probe program); if
+yes, use BPF; if no, fall back to the audit listener already in
+production.
+
+The full implementation plan is committed to
+`docs/superpowers/plans/2026-04-30-copy-fail-bpf-lsm.md` (8 tasks,
+~600 LoC + tests, integration test on phctl alma9).
+
+### Acceptance criteria
+
+- `go build -tags bpf ./...` clean; default build unchanged.
+- On Alma 9 / RHEL 9 / mainline ≥ 5.7: the BPF LSM hook is loaded at
+  daemon startup, blocks AF_ALG syscalls from uid≥1000 with
+  `EAFNOSUPPORT`, and emits a Critical Finding via the existing alert
+  pipeline.
+- On RHEL 8 / 4.18 (cluster6): the BPF probe fails cleanly, the audit
+  listener takes over, and the daemon logs `backend=auditd-tail`.
+- Integration test on a phctl alma9 VM verifies probe + load + block +
+  perf-event consumer end-to-end.
+
+### Out of scope
+
+- Quarantine of the offending exe (separate, additive enhancement).
+- Source-IP correlation back to a web request (requires HTTP-log
+  correlation that's its own design exercise).
+- ARM64 BPF LSM (the cilium/ebpf path is arch-portable; ARM64
+  validation just needs an arm64 phctl image when one is available).
+- BPF LSM for OTHER LSM hooks (file open, exec, etc.). This roadmap
+  item is specifically Copy Fail.
+
+### Estimated size
+
+3 engineering days. Most of the work is the BPF program itself
+(~30 instructions in cilium/ebpf asm) and the perf-event consumer
+that matches the audit-listener finding shape. Coordinator and
+fallback wiring are mechanical.

@@ -489,24 +489,41 @@ func (d *Daemon) Run() error {
 	d.wg.Add(1)
 	obs.Go("deep-scanner", d.deepScanner)
 
-	// Start the live AF_ALG audit-log listener (Copy Fail / CVE-2026-31431).
-	// Sub-second detection of socket(AF_ALG, ...) attempts; complements the
-	// 10-minute critical-tier check. Falls back silently if /var/log/audit
-	// is unavailable (no auditd installed) — the periodic check still runs.
-	if l, err := NewAFAlgAuditListener(d.alertCh, d.cfg); err != nil {
-		csmlog.Warn("af_alg live listener not started", "err", err)
-	} else {
-		d.wg.Add(1)
-		obs.Go("af-alg-listener", func() {
-			defer d.wg.Done()
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			go func() {
-				<-d.stopCh
-				cancel()
-			}()
-			l.Run(ctx)
-		})
+	// Live AF_ALG listener (Copy Fail / CVE-2026-31431) — only started
+	// when the kernel is actually exploitable. Hosts with a KernelCare
+	// livepatch covering CVE-2026-31431, OR built without the AF_ALG
+	// aead interface entirely, skip the listener: there's nothing to
+	// detect, and the inotify watch + 500ms tick would just burn cycles.
+	// The hardening audit + periodic critical-tier check stay active
+	// either way, so re-introduction of the vulnerability (e.g., a
+	// kernel rollback) is still surfaced via the slower path.
+	kstate := checks.ObserveAFAlgKernelState()
+	switch {
+	case !kstate.IsCopyFailExploitable():
+		csmlog.Info("af_alg live listener: skipped",
+			"reason", "kernel not exploitable",
+			"state", kstate.String(),
+		)
+	default:
+		if l, err := NewAFAlgAuditListener(d.alertCh, d.cfg); err != nil {
+			csmlog.Warn("af_alg live listener: not started",
+				"reason", "audit log unavailable",
+				"err", err,
+			)
+		} else {
+			csmlog.Info("af_alg live listener: started",
+				"backend", l.Mode(),
+				"state", kstate.String(),
+			)
+			d.wg.Add(1)
+			obs.Go("af-alg-listener", func() {
+				defer d.wg.Done()
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				go func() { <-d.stopCh; cancel() }()
+				l.Run(ctx)
+			})
+		}
 	}
 
 	d.startPHPRelay()

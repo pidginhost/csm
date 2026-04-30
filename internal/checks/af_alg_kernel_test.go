@@ -188,12 +188,87 @@ func TestAFAlgKernelState_StringIsOperatorReadable(t *testing.T) {
 	}{
 		{AFAlgKernelState{LivepatchActive: true}, "KernelCare"},
 		{AFAlgKernelState{BuiltIn: true}, "built into the kernel"},
-		{AFAlgKernelState{}, "loadable module"},
+		{AFAlgKernelState{Modular: true, ConfigReadable: true}, "loadable module"},
+		{AFAlgKernelState{ConfigReadable: true}, "not present"},
+		{AFAlgKernelState{}, "config unreadable"},
 	}
 	for _, c := range cases {
 		got := c.state.String()
 		if !strings.Contains(got, c.mustHave) {
 			t.Errorf("state %+v string %q should contain %q", c.state, got, c.mustHave)
 		}
+	}
+}
+
+func TestConfigHasModularAFAlgAEAD(t *testing.T) {
+	cases := []struct {
+		desc string
+		cfg  string
+		want bool
+	}{
+		{"=m present", "CONFIG_CRYPTO_USER_API_AEAD=m\n", true},
+		{"=y present (built-in, NOT modular)", "CONFIG_CRYPTO_USER_API_AEAD=y\n", false},
+		{"`is not set` form", "# CONFIG_CRYPTO_USER_API_AEAD is not set\n", false},
+		{"absent", "CONFIG_KVM=y\n", false},
+		{"whitespace tolerant", "  CONFIG_CRYPTO_USER_API_AEAD=m  \n", true},
+	}
+	for _, c := range cases {
+		t.Run(c.desc, func(t *testing.T) {
+			if got := configHasModularAFAlgAEAD(c.cfg); got != c.want {
+				t.Errorf("configHasModularAFAlgAEAD(%q) = %v, want %v", c.cfg, got, c.want)
+			}
+		})
+	}
+}
+
+func TestAFAlgKernelState_IsCopyFailExploitable(t *testing.T) {
+	cases := []struct {
+		desc  string
+		state AFAlgKernelState
+		want  bool
+	}{
+		{
+			desc:  "livepatch alone wins (kernel patched)",
+			state: AFAlgKernelState{BuiltIn: true, LivepatchActive: true, ConfigReadable: true},
+			want:  false,
+		},
+		{
+			desc:  "livepatch with modular kernel",
+			state: AFAlgKernelState{Modular: true, LivepatchActive: true, ConfigReadable: true},
+			want:  false,
+		},
+		{
+			desc:  "built-in, no livepatch (cluster6 case)",
+			state: AFAlgKernelState{BuiltIn: true, ConfigReadable: true},
+			want:  true,
+		},
+		{
+			desc:  "modular, no livepatch (loadable module)",
+			state: AFAlgKernelState{Modular: true, ConfigReadable: true},
+			want:  true,
+		},
+		{
+			desc:  "config readable AND no AF_ALG aead in build (hardened kernel)",
+			state: AFAlgKernelState{ConfigReadable: true},
+			want:  false,
+		},
+		{
+			desc:  "config unreadable, no livepatch (conservative: assume vulnerable)",
+			state: AFAlgKernelState{},
+			want:  true,
+		},
+		{
+			desc:  "config unreadable but livepatch covers it",
+			state: AFAlgKernelState{LivepatchActive: true},
+			want:  false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.desc, func(t *testing.T) {
+			if got := c.state.IsCopyFailExploitable(); got != c.want {
+				t.Errorf("IsCopyFailExploitable() = %v, want %v\n  state: %+v\n  string: %s",
+					got, c.want, c.state, c.state.String())
+			}
+		})
 	}
 }
