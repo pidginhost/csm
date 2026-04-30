@@ -95,6 +95,13 @@ type Daemon struct {
 	// nil-guards the Reload call so this commit is a no-op at
 	// runtime until O2 lands.
 	policies *emailspool.Policies
+
+	// PHP-relay components wired by startPHPRelay (Linux only). The
+	// fields are declared cross-platform but stay nil on non-cPanel
+	// or non-Linux hosts; dispatchBatch / shutdown nil-guard them.
+	phpRelayController *PHPRelayController
+	autoFreezer        *autoFreezer
+	phpRelayShutdown   []func() // ordered shutdown hooks
 }
 
 // New creates a new daemon instance.
@@ -721,6 +728,16 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	newFindings = append(newFindings, challengeActions...)
 	newFindings = append(newFindings, permActions...)
 
+	// PHP-relay AutoFreeze: emit any new findings produced by post-emit
+	// freeze decisions back into the dispatched batch so operators see
+	// the action outcome alongside the original finding. Nil-guard for
+	// non-cPanel / non-linux hosts where wiring is skipped.
+	if d.autoFreezer != nil {
+		if freezeFindings := d.autoFreezer.Apply(autoResponseFindings); len(freezeFindings) > 0 {
+			newFindings = append(newFindings, freezeFindings...)
+		}
+	}
+
 	if len(newFindings) == 0 {
 		d.store.Update(findings)
 		return
@@ -981,9 +998,9 @@ func (d *Daemon) startPHPRelay() {
 		default:
 		}
 	}
-	// O2 will: construct evaluator + windows + ignoreList + msgIDIndex,
-	// wire SetMetrics() on persister/watcher, register PHPRelayController
-	// with ControlListener, start the Flow E ticker.
+	// Bridge to the linux-only wiring (Phase O2). On non-linux GOOS
+	// the stub in php_relay_wiring_other.go is a no-op.
+	startPHPRelayLinux(d)
 }
 
 func (d *Daemon) startLogWatchers() {
