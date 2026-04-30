@@ -140,6 +140,10 @@ func (s AFAlgKernelState) String() string {
 	}
 }
 
+// ObserveAFAlgKernelState is the exported alias for cmd/csm. Production
+// code inside this package uses the unexported form directly.
+func ObserveAFAlgKernelState() AFAlgKernelState { return observeAFAlgKernelState() }
+
 // EnsureFile is a sentinel return value: callers can use os.IsNotExist
 // to test for the "kernel-config file absent" case explicitly.
 var ErrKernelConfigUnreadable = os.ErrNotExist
