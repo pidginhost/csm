@@ -238,7 +238,7 @@ func TestAFAlgKernelState_IsCopyFailExploitable(t *testing.T) {
 			want:  false,
 		},
 		{
-			desc:  "built-in, no livepatch (cluster6 case)",
+			desc:  "built-in, no livepatch (typical RHEL 8 family case)",
 			state: AFAlgKernelState{BuiltIn: true, ConfigReadable: true},
 			want:  true,
 		},

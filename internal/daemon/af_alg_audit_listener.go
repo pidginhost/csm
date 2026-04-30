@@ -5,9 +5,11 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync/atomic"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -174,17 +176,28 @@ func (l *AFAlgAuditListener) Run(ctx context.Context) {
 
 // drainInotify reads any queued inotify events. Returns:
 //
-//	ok=false  on read errors that aren't EAGAIN (don't process the file).
+//	ok=false  on read errors that aren't EAGAIN/EINTR (the listener
+//	          should skip this tick entirely; the next tick re-tries).
 //	rotated=true if any IN_MOVE_SELF or IN_DELETE_SELF event was seen.
 //
 // IN_MODIFY events implicitly trigger a tail() in the caller because we
-// always read at the end of each tick.
+// always read at the end of each tick on success.
 func (l *AFAlgAuditListener) drainInotify(buf []byte) (rotated, ok bool) {
 	for {
 		n, err := unix.Read(l.inotifyFd, buf)
 		if err != nil {
-			// EAGAIN = no more events queued; that's the normal exit.
-			return rotated, true
+			// EAGAIN: no more events queued — the normal terminator.
+			// EINTR: interrupted by signal, also benign — retry next tick.
+			if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EINTR) {
+				return rotated, true
+			}
+			// Anything else (EBADF after a stray Close, EIO, EFAULT)
+			// signals the inotify fd is no longer healthy. Surface it
+			// so the operator notices, and tell the caller to skip the
+			// tail() this tick — we'll re-evaluate next tick when the
+			// 5s safety-net runs.
+			csmlog.Warn("af_alg audit listener: inotify read error", "err", err)
+			return rotated, false
 		}
 		if n <= 0 {
 			return rotated, true

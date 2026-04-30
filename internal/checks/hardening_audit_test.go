@@ -559,9 +559,9 @@ func TestEvaluateAlgifAEAD_RecognisesCSMManagedMarker(t *testing.T) {
 }
 
 func TestAuditAlgifAEAD_FailsOnBuiltInKernelEvenWithMarker(t *testing.T) {
-	// This is the cluster6 scenario: CONFIG_CRYPTO_USER_API_AEAD=y, the
-	// CSM marker is in place, modules show as not loaded, KernelCare has
-	// no Copy Fail patch yet. The audit MUST report fail because the
+	// Typical RHEL 8 / CloudLinux 8 case: CONFIG_CRYPTO_USER_API_AEAD=y,
+	// the CSM marker is in place, modules show as not loaded, KernelCare
+	// has no Copy Fail patch yet. The audit MUST report fail because the
 	// modprobe blacklist is ineffective on a built-in kernel — the
 	// previous behavior of returning pass was a false negative that
 	// actively hid an exploitable host.
