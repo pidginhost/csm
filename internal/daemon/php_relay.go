@@ -234,3 +234,81 @@ func (w *perScriptWindow) Snapshot() map[scriptKey]*scriptState {
 	})
 	return out
 }
+
+type ipState struct {
+	mu        sync.Mutex
+	scripts   map[scriptKey]time.Time
+	lastEvent time.Time
+}
+
+type perIPWindow struct {
+	states   sync.Map // map[string]*ipState
+	capPerIP int
+}
+
+func newPerIPWindow(capPerIP int) *perIPWindow {
+	if capPerIP <= 0 {
+		capPerIP = 64
+	}
+	return &perIPWindow{capPerIP: capPerIP}
+}
+
+func (w *perIPWindow) append(ip string, k scriptKey, at time.Time) {
+	if ip == "" {
+		return
+	}
+	v, _ := w.states.LoadOrStore(ip, &ipState{scripts: make(map[scriptKey]time.Time, 8)})
+	s := v.(*ipState)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.scripts[k]; !exists && len(s.scripts) >= w.capPerIP {
+		var oldestK scriptKey
+		var oldest time.Time
+		first := true
+		for kk, tt := range s.scripts {
+			if first || tt.Before(oldest) {
+				oldestK = kk
+				oldest = tt
+				first = false
+			}
+		}
+		delete(s.scripts, oldestK)
+	}
+	s.scripts[k] = at
+	if at.After(s.lastEvent) {
+		s.lastEvent = at
+	}
+}
+
+func (w *perIPWindow) distinctScriptsSince(ip string, since time.Time) int {
+	v, ok := w.states.Load(ip)
+	if !ok {
+		return 0
+	}
+	s := v.(*ipState)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, t := range s.scripts {
+		if !t.Before(since) {
+			n++
+		}
+	}
+	return n
+}
+
+func (w *perIPWindow) SweepIdle(cutoff time.Time) int {
+	n := 0
+	w.states.Range(func(k, v any) bool {
+		s := v.(*ipState)
+		s.mu.Lock()
+		idle := s.lastEvent.Before(cutoff)
+		s.mu.Unlock()
+		if idle {
+			w.states.Delete(k)
+			n++
+		}
+		return true
+	})
+	return n
+}

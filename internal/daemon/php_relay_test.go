@@ -90,3 +90,27 @@ func TestPerScriptWindow_PruneActiveMsgs(t *testing.T) {
 		t.Errorf("old2 should be pruned")
 	}
 }
+
+func TestPerIPWindow_DistinctScriptCount(t *testing.T) {
+	w := newPerIPWindow(64)
+	now := time.Now()
+	w.append("192.0.2.1", "scriptA", now)
+	w.append("192.0.2.1", "scriptB", now)
+	w.append("192.0.2.1", "scriptA", now) // duplicate; still 2 distinct
+	w.append("192.0.2.2", "scriptC", now)
+
+	n := w.distinctScriptsSince("192.0.2.1", now.Add(-time.Hour))
+	if n != 2 {
+		t.Errorf("distinctScriptsSince = %d, want 2", n)
+	}
+}
+
+func TestPerIPWindow_SweepIdle(t *testing.T) {
+	w := newPerIPWindow(64)
+	w.append("192.0.2.1", "s", time.Now().Add(-2*time.Hour))
+	w.append("192.0.2.2", "s", time.Now())
+	n := w.SweepIdle(time.Now().Add(-time.Hour))
+	if n != 1 {
+		t.Errorf("SweepIdle dropped = %d, want 1", n)
+	}
+}
