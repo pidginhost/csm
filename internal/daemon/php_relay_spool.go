@@ -39,12 +39,18 @@ type spoolWatcher struct {
 
 	overflowCount uint64
 	onOverflow    func() // invoked from Run() the moment IN_Q_OVERFLOW arrives
+	metrics       *phpRelayMetrics
 }
 
 // SetOverflowHandler wires the recovery scan + Critical finding emission
 // into the watcher. Caller passes a closure that calls runRecoveryScan
 // against the spool root and emits findings via the daemon alerter.
 func (w *spoolWatcher) SetOverflowHandler(fn func()) { w.onOverflow = fn }
+
+// SetMetrics wires the phpRelayMetrics sink. Optional -- nil disables
+// observation (used by tests). Must be called before Run; concurrent
+// invocation after Run is not safe.
+func (w *spoolWatcher) SetMetrics(m *phpRelayMetrics) { w.metrics = m }
 
 func newSpoolWatcher(root string, onFile func(path string)) (*spoolWatcher, error) {
 	fd, err := unix.InotifyInit1(unix.IN_CLOEXEC | unix.IN_NONBLOCK)
@@ -140,6 +146,9 @@ func (w *spoolWatcher) Run(ctx context.Context) {
 
 			if ev.Mask&unix.IN_Q_OVERFLOW != 0 {
 				w.overflowCount++
+				if w.metrics != nil {
+					w.metrics.InotifyOverflows.Inc()
+				}
 				if w.onOverflow != nil {
 					w.onOverflow()
 				}
@@ -203,6 +212,9 @@ func (p *spoolPipeline) SetRebuilding(v bool) { p.rebuilding.Store(v) }
 func (p *spoolPipeline) OnFile(path string) {
 	h, err := emailspool.ParseHeaders(path)
 	if err != nil {
+		if p.eng != nil && p.eng.metrics != nil {
+			p.eng.metrics.SpoolReadErrors.Inc()
+		}
 		return
 	}
 	if h.XPHPScript == "" {

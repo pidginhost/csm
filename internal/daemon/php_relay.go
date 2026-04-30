@@ -543,6 +543,9 @@ func (e *evaluator) evaluatePaths(k scriptKey, sourceIP, cpuser string, now time
 	if qualifying >= e.cfg.EmailProtection.PHPRelay.HeaderScoreVolumeMin {
 		if s.shouldFire("header", now, phpRelayPathCooldown) {
 			f := e.makeFinding(k, "header", sourceIP, cpuser, s, fmtHeaderMessage(qualifying, win))
+			if e.metrics != nil {
+				e.metrics.Findings.With("header").Inc()
+			}
 			findings = append(findings, f)
 		}
 	}
@@ -553,6 +556,9 @@ func (e *evaluator) evaluatePaths(k scriptKey, sourceIP, cpuser string, now time
 		if s.shouldFire("volume", now, phpRelayPathCooldown) {
 			f := e.makeFinding(k, "volume", sourceIP, cpuser, s,
 				fmt.Sprintf("Path 2: %d outbound mails from one script in last 60 min", absVol))
+			if e.metrics != nil {
+				e.metrics.Findings.With("volume").Inc()
+			}
 			findings = append(findings, f)
 		}
 	}
@@ -566,6 +572,9 @@ func (e *evaluator) evaluatePaths(k scriptKey, sourceIP, cpuser string, now time
 				if s.shouldFire("fanout", now, phpRelayPathCooldown) {
 					f := e.makeFinding(k, "fanout", sourceIP, cpuser, s,
 						fmt.Sprintf("Path 4: HTTP source IP %s triggered %d distinct scripts in last %s", sourceIP, distinct, fwin))
+					if e.metrics != nil {
+						e.metrics.Findings.With("fanout").Inc()
+					}
 					findings = append(findings, f)
 				}
 			}
@@ -599,9 +608,6 @@ func (e *evaluator) makeFinding(k scriptKey, path, sourceIP, cpuser string, s *s
 func fmtHeaderMessage(qualifying int, win time.Duration) string {
 	return fmt.Sprintf("Path 1: %d qualifying outbound mails (From-mismatch AND suspicious header) in last %s", qualifying, win)
 }
-
-// phpRelayMetrics is implemented in Phase N. Unit tests pass nil.
-type phpRelayMetrics struct{}
 
 type cpanelLimitStatus int
 
@@ -742,6 +748,9 @@ func (e *evaluator) parsePHPRelayAccountVolume(line string, now time.Time) []ale
 	}
 	if !e.accounts.shouldFire(user, now, phpRelayAccountFireCooldown) {
 		return nil
+	}
+	if e.metrics != nil {
+		e.metrics.Findings.With("volume_account").Inc()
 	}
 	return []alert.Finding{{
 		Severity:  alert.Critical,

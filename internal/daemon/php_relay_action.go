@@ -246,6 +246,13 @@ func (a *autoFreezer) Apply(findings []alert.Finding) []alert.Finding {
 		s := a.scripts.getOrCreate(scriptKey(f.ScriptKey))
 		ids, capped := s.snapshotActiveMsgs()
 		if capped || (len(ids) == 0 && f.Path == "reputation") {
+			if a.metrics != nil {
+				if capped {
+					a.metrics.SpoolScanFallbacks.With("capped").Inc()
+				} else {
+					a.metrics.SpoolScanFallbacks.With("reputation").Inc()
+				}
+			}
 			extra := spoolScanMatchingScript(a.spoolRoot, scriptKey(f.ScriptKey))
 			ids = unionStrings(ids, extra)
 		}
@@ -294,16 +301,25 @@ func (a *autoFreezer) Apply(findings []alert.Finding) []alert.Finding {
 			}
 			if err != nil {
 				if freezeErrIsAlreadyGone(stderr) {
+					if a.metrics != nil {
+						a.metrics.ActionGone.Inc()
+					}
 					a.auditor.Write(entry)
 					continue
 				}
 				entry.Exit = 1
 				failed = append(failed, id)
+				if a.metrics != nil {
+					a.metrics.Actions.With("freeze", "fail").Inc()
+				}
 			}
 			a.auditor.Write(entry)
 			// On successful freeze, drop the id from activeMsgs so we
 			// don't re-freeze it on the next finding emission.
 			if err == nil {
+				if a.metrics != nil {
+					a.metrics.Actions.With("freeze", "ok").Inc()
+				}
 				s.removeActive(id)
 			}
 		}

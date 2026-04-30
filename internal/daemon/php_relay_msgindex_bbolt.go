@@ -38,6 +38,7 @@ type msgIndexPersister struct {
 	errorsTotal  uint64
 
 	onError func(alert.Finding)
+	metrics *phpRelayMetrics
 }
 
 type persistOp struct {
@@ -73,6 +74,13 @@ func (p *msgIndexPersister) SetErrorCallback(fn func(alert.Finding)) {
 	}
 }
 
+// SetMetrics wires the phpRelayMetrics sink. Optional -- nil disables
+// observation (used by tests). Must be called before Start; concurrent
+// invocation after Start is not safe.
+func (p *msgIndexPersister) SetMetrics(m *phpRelayMetrics) {
+	p.metrics = m
+}
+
 func (p *msgIndexPersister) Start() {
 	go p.run()
 }
@@ -89,6 +97,9 @@ func (p *msgIndexPersister) Enqueue(msgID string, e indexEntry) {
 	case p.queue <- persistOp{msgID: msgID, entry: e}:
 	default:
 		atomic.AddUint64(&p.droppedTotal, 1)
+		if p.metrics != nil {
+			p.metrics.MsgindexPersistDropped.Inc()
+		}
 	}
 }
 
@@ -189,6 +200,9 @@ func (p *msgIndexPersister) commitBatch(ops []persistOp) {
 			// Encoding failure is a code bug, not a transient I/O issue.
 			// Skip the offending op and continue with the rest of the batch.
 			atomic.AddUint64(&p.errorsTotal, 1)
+			if p.metrics != nil {
+				p.metrics.MsgindexPersistErrors.Inc()
+			}
 			p.onError(alert.Finding{
 				Severity: alert.Critical,
 				Check:    "email_php_relay_msgindex_persist_failed",
@@ -203,6 +217,9 @@ func (p *msgIndexPersister) commitBatch(ops []persistOp) {
 	}
 	if err := p.db.PHPRelayPutBatch(msgIndexBucket, kvs); err != nil {
 		atomic.AddUint64(&p.errorsTotal, 1)
+		if p.metrics != nil {
+			p.metrics.MsgindexPersistErrors.Inc()
+		}
 		p.onError(alert.Finding{
 			Severity: alert.Critical,
 			Check:    "email_php_relay_msgindex_persist_failed",
