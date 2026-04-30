@@ -356,3 +356,18 @@ func TestEvaluateAlgifAEAD_InstallWithoutReplacementIsIgnored(t *testing.T) {
 		t.Errorf("malformed install directive should not count as blocked, got %q", r.Status)
 	}
 }
+
+func TestEvaluateAlgifAEAD_InstallViaWrapperWithModprobeInPathStillBlocks(t *testing.T) {
+	// A wrapper binary whose path *contains* the substring "modprobe" but is
+	// not /sbin/modprobe (or /usr/sbin/modprobe) does NOT re-load the module —
+	// it just runs the wrapper. The check must classify this as a block, not
+	// a re-load. Substring-style matching on the whole replacement line would
+	// produce a false-negative here; basename matching does not.
+	confs := map[string]string{
+		"/etc/modprobe.d/local.conf": "install algif_aead /usr/local/bin/my-modprobe-wrapper /bin/false\n",
+	}
+	r := evaluateAlgifAEAD(false, confs)
+	if r.Status != "pass" {
+		t.Errorf("install via non-modprobe wrapper should count as blocked, got %q (msg: %s)", r.Status, r.Message)
+	}
+}

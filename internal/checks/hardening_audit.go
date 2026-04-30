@@ -486,11 +486,14 @@ func algifAEADBlacklisted(confs map[string]string) bool {
 					// pass on a half-written directive.
 					continue
 				}
-				replacement := strings.Join(fields[2:], " ")
-				// Any replacement that re-invokes modprobe is a re-load,
-				// not a block. /bin/false, /bin/true, /dev/null, or
-				// anything that does not call modprobe is a block.
-				if strings.Contains(replacement, "modprobe") {
+				// Match on the basename of the first token, not a substring
+				// anywhere in the line. That correctly classifies
+				//   /sbin/modprobe --ignore-install algif_aead   → re-load
+				//   /bin/false                                   → block
+				//   /usr/local/bin/my-modprobe-wrapper           → block (wrapper, not modprobe itself)
+				// Substring matching would have lumped the wrapper case in
+				// with the re-load case, producing a false-fail alert.
+				if filepath.Base(fields[2]) == "modprobe" {
 					continue
 				}
 				return true
