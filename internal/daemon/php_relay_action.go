@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 )
@@ -53,4 +54,14 @@ func (rl *actionRateLimiter) consumeN(n int) bool {
 	}
 	rl.bucket -= n
 	return true
+}
+
+// freezeErrIsAlreadyGone matches the Exim stderr fragments emitted when
+// the message has already left the queue between snapshot and freeze.
+// Those are not action failures -- they are normal queue churn.
+func freezeErrIsAlreadyGone(stderr string) bool {
+	s := strings.ToLower(stderr)
+	return strings.Contains(s, "message not found") ||
+		strings.Contains(s, "spool file not found") ||
+		strings.Contains(s, "no such message")
 }

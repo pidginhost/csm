@@ -49,3 +49,21 @@ func TestActionRateLimiter_RefillsAfterMinute(t *testing.T) {
 		t.Fatal("after 61s the bucket should refill")
 	}
 }
+
+func TestFreezeErrIsAlreadyGone(t *testing.T) {
+	cases := []struct {
+		stderr string
+		want   bool
+	}{
+		{"exim: message not found", true},
+		{"spool file not found for 1abc-DEF", true},
+		{"no such message", true},
+		{"could not read spool: permission denied", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := freezeErrIsAlreadyGone(c.stderr); got != c.want {
+			t.Errorf("freezeErrIsAlreadyGone(%q) = %v, want %v", c.stderr, got, c.want)
+		}
+	}
+}
