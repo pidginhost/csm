@@ -463,14 +463,22 @@ func auditOS() []store.AuditResult {
 
 // algifAEADBlacklisted reports whether any of the supplied modprobe.d files
 // contain a non-comment directive that prevents algif_aead from loading.
-// The two recognised forms are:
+// Either of the following blocks is sufficient:
 //
 //	blacklist algif_aead
-//	install algif_aead /bin/false   (or any non-loading replacement)
+//	install algif_aead /bin/false
+//	blacklist af_alg                 (parent — algif_aead depends on it)
+//	install af_alg /bin/false        (parent — same reason)
 //
-// `install algif_aead /sbin/modprobe --ignore-install algif_aead` is the
+// The dependency relationship matters for hand-hardened images: a sysadmin
+// who blocked only the parent `af_alg` has correctly mitigated Copy Fail
+// without needing to also block the AEAD submodule. Reporting "no blacklist
+// exists" on such hosts would be a false-fail alert.
+//
+// `install <module> /sbin/modprobe --ignore-install <module>` is the
 // idiomatic re-load form and explicitly does NOT block the module — we
-// detect that by skipping any install replacement that calls modprobe.
+// detect that by skipping any install replacement whose first token's
+// basename is "modprobe".
 func algifAEADBlacklisted(confs map[string]string) bool {
 	for _, body := range confs {
 		for _, line := range strings.Split(body, "\n") {
@@ -479,7 +487,10 @@ func algifAEADBlacklisted(confs map[string]string) bool {
 				continue
 			}
 			fields := strings.Fields(line)
-			if len(fields) < 2 || fields[1] != "algif_aead" {
+			if len(fields) < 2 {
+				continue
+			}
+			if fields[1] != "algif_aead" && fields[1] != "af_alg" {
 				continue
 			}
 			switch fields[0] {
@@ -493,9 +504,9 @@ func algifAEADBlacklisted(confs map[string]string) bool {
 				}
 				// Match on the basename of the first token, not a substring
 				// anywhere in the line. That correctly classifies
-				//   /sbin/modprobe --ignore-install algif_aead   → re-load
-				//   /bin/false                                   → block
-				//   /usr/local/bin/my-modprobe-wrapper           → block (wrapper, not modprobe itself)
+				//   /sbin/modprobe --ignore-install <module>   → re-load
+				//   /bin/false                                 → block
+				//   /usr/local/bin/my-modprobe-wrapper         → block (wrapper, not modprobe itself)
 				// Substring matching would have lumped the wrapper case in
 				// with the re-load case, producing a false-fail alert.
 				if filepath.Base(fields[2]) == "modprobe" {

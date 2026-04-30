@@ -372,6 +372,48 @@ func TestEvaluateAlgifAEAD_InstallViaWrapperWithModprobeInPathStillBlocks(t *tes
 	}
 }
 
+func TestEvaluateAlgifAEAD_BlockingParentAFAlgAlsoCounts(t *testing.T) {
+	// algif_aead depends on af_alg. Blocking the parent module (af_alg)
+	// is a sufficient mitigation — the AEAD submodule cannot load if its
+	// parent cannot. Hardened CIS / hand-rolled images sometimes block
+	// only the parent. The audit must recognise this state as protected.
+	cases := []struct {
+		desc string
+		conf string
+	}{
+		{
+			desc: "install af_alg /bin/false",
+			conf: "install af_alg /bin/false\n",
+		},
+		{
+			desc: "blacklist af_alg",
+			conf: "blacklist af_alg\n",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.desc, func(t *testing.T) {
+			confs := map[string]string{"/etc/modprobe.d/parent.conf": c.conf}
+			r := evaluateAlgifAEAD(false, confs)
+			if r.Status != "pass" {
+				t.Errorf("%s should mark host as protected; got %q (msg: %s)", c.desc, r.Status, r.Message)
+			}
+		})
+	}
+}
+
+func TestEvaluateAlgifAEAD_AFAlgInstallViaModprobeIsReloadNotBlock(t *testing.T) {
+	// Same re-load discipline as for algif_aead: an `install af_alg`
+	// directive that re-invokes /sbin/modprobe is loading the module
+	// through an alternate path, not blocking it.
+	confs := map[string]string{
+		"/etc/modprobe.d/local.conf": "install af_alg /sbin/modprobe --ignore-install af_alg\n",
+	}
+	r := evaluateAlgifAEAD(false, confs)
+	if r.Status != "fail" {
+		t.Errorf("install-via-modprobe re-load of af_alg should NOT count as blocked; got %q", r.Status)
+	}
+}
+
 func TestAuditAlgifAEAD_FailsWhenLoadedNoBlacklist(t *testing.T) {
 	withMockOS(t, &mockOS{
 		open: func(name string) (*os.File, error) {
