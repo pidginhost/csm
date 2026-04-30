@@ -492,12 +492,13 @@ const (
 // detector code path is callable from inotify watcher, retro scan, and
 // startup spool walker without rebuilding the dependency graph each time.
 type evaluator struct {
-	scripts  *perScriptWindow
-	ips      *perIPWindow
-	accounts *perAccountWindow
-	cfg      *config.Config
-	metrics  *phpRelayMetrics // optional; nil in unit tests
-	policies *emailspool.Policies
+	scripts               *perScriptWindow
+	ips                   *perIPWindow
+	accounts              *perAccountWindow
+	cfg                   *config.Config
+	metrics               *phpRelayMetrics // optional; nil in unit tests
+	policies              *emailspool.Policies
+	effectiveAccountLimit int
 }
 
 func newEvaluator(s *perScriptWindow, i *perIPWindow, a *perAccountWindow, cfg *config.Config, m *phpRelayMetrics) *evaluator {
@@ -689,4 +690,67 @@ func deriveEffectiveAccountLimit(cfg *config.Config, cpanelLimit int, status cpa
 		return op, true, false
 	}
 	return 0, false, false
+}
+
+const (
+	phpRelayAccountWindowDur    = 60 * time.Minute
+	phpRelayAccountFireCooldown = 30 * time.Minute
+)
+
+// SetEffectiveAccountLimit is called by daemon wiring after derivation.
+// Tests may also call it directly. A non-positive value disables Path 2b.
+func (e *evaluator) SetEffectiveAccountLimit(n int) {
+	e.effectiveAccountLimit = n
+}
+
+// parsePHPRelayAccountVolume processes one outbound `<= ` exim_mainlog line.
+// Returns zero or one finding (per cooldown).
+func (e *evaluator) parsePHPRelayAccountVolume(line string, now time.Time) []alert.Finding {
+	if e.effectiveAccountLimit <= 0 || e.accounts == nil {
+		return nil
+	}
+	if !strings.Contains(line, " <= ") {
+		return nil
+	}
+	if !strings.Contains(line, " B=redirect_resolver") {
+		return nil
+	}
+	user := extractUField(line)
+	if user == "" {
+		return nil
+	}
+	e.accounts.append(user, now)
+	if e.accounts.volumeSince(user, now.Add(-phpRelayAccountWindowDur)) < e.effectiveAccountLimit {
+		return nil
+	}
+	if !e.accounts.shouldFire(user, now, phpRelayAccountFireCooldown) {
+		return nil
+	}
+	return []alert.Finding{{
+		Severity:  alert.Critical,
+		Check:     "email_php_relay_abuse",
+		Path:      "volume_account",
+		Message:   fmt.Sprintf("Path 2b: account %s sent >= %d outbound mails in last hour", user, e.effectiveAccountLimit),
+		CPUser:    user,
+		Timestamp: now,
+	}}
+}
+
+// extractUField returns the cpuser from "U=<name>" in an exim log line.
+// Returns "" if absent.
+func extractUField(line string) string {
+	idx := strings.Index(line, " U=")
+	if idx < 0 {
+		return ""
+	}
+	rest := line[idx+3:]
+	end := len(rest)
+	for i := 0; i < len(rest); i++ {
+		c := rest[i]
+		if c == ' ' || c == '\t' {
+			end = i
+			break
+		}
+	}
+	return rest[:end]
 }
