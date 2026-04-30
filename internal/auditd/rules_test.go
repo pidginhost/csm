@@ -52,6 +52,9 @@ func TestRemoveDoesNotPanic(t *testing.T) {
 }
 
 func TestRulesContainsAFAlgSocketWatch(t *testing.T) {
+	if !strings.Contains(rules, "-S socket") {
+		t.Error("rules should watch the socket() syscall by name; a regression to a different -S would silently disable detection")
+	}
 	if !strings.Contains(rules, "csm_af_alg_socket") {
 		t.Error("rules should watch AF_ALG socket creation (CVE-2026-31431)")
 	}
@@ -70,5 +73,14 @@ func TestRulesContainsAFAlgSocketWatch(t *testing.T) {
 	// rule set should NOT include one.
 	if strings.Contains(rules, "-S socketpair") {
 		t.Error("rules should not waste an audit slot on socketpair (AF_ALG does not support it)")
+	}
+}
+
+func TestAFAlgSocketWatchCoversBothArches(t *testing.T) {
+	if !strings.Contains(rules, "-F arch=b64 -S socket -F a0=38 -F uid>=1000 -k csm_af_alg_socket") {
+		t.Error("rules should include the b64 AF_ALG socket watch line verbatim")
+	}
+	if !strings.Contains(rules, "-F arch=b32 -S socket -F a0=38 -F uid>=1000 -k csm_af_alg_socket") {
+		t.Error("rules should include the b32 AF_ALG socket watch line verbatim — guards against 32-bit ABI exploit evasion")
 	}
 }

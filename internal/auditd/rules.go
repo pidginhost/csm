@@ -47,7 +47,10 @@ const rules = `## Continuous Security Monitor - auditd rules
 # workloads, so any non-system UID hitting socket(AF_ALG, ...) is suspicious.
 # Filter on uid, not auid: service-launched PHP/cPanel workers commonly have
 # unset audit login UID while still running as the account user.
+# Two rules — b64 covers native 64-bit binaries, b32 closes the i386
+# emulation evasion path on x86_64 hosts with 32-bit compat enabled.
 -a always,exit -F arch=b64 -S socket -F a0=38 -F uid>=1000 -k csm_af_alg_socket
+-a always,exit -F arch=b32 -S socket -F a0=38 -F uid>=1000 -k csm_af_alg_socket
 `
 
 func Deploy() error {
