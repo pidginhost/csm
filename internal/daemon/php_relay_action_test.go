@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -213,3 +214,19 @@ func (r *fakeRunner) Run(_ context.Context, _ string, args []string) (string, er
 type fakeAuditor struct{ entries []auditEntry }
 
 func (a *fakeAuditor) Write(e auditEntry) { a.entries = append(a.entries, e) }
+
+func TestStructuredAuditor_WritesJSONLines(t *testing.T) {
+	var buf bytes.Buffer
+	a := newStructuredAuditor(&buf)
+	a.Write(auditEntry{
+		Ts: time.Unix(1000, 0).UTC(), MsgID: "id1", ScriptKey: "k:/p",
+		Path: "header", Action: "freeze",
+	})
+	out := buf.String()
+	if !strings.Contains(out, `"action":"freeze"`) {
+		t.Errorf("missing action field: %q", out)
+	}
+	if !strings.Contains(out, `"msg_id":"id1"`) {
+		t.Errorf("missing msg_id field: %q", out)
+	}
+}

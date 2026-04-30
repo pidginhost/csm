@@ -2,7 +2,9 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -345,4 +347,36 @@ func unionStrings(a, b []string) []string {
 		out = append(out, s)
 	}
 	return out
+}
+
+type structuredAuditor struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func newStructuredAuditor(w io.Writer) *structuredAuditor { return &structuredAuditor{w: w} }
+
+func (a *structuredAuditor) Write(e auditEntry) {
+	payload := struct {
+		Ts        time.Time `json:"ts"`
+		MsgID     string    `json:"msg_id"`
+		ScriptKey string    `json:"script_key"`
+		Path      string    `json:"path"`
+		Action    string    `json:"action"`
+		DryRun    bool      `json:"dry_run"`
+		Exit      int       `json:"exit"`
+		Stderr    string    `json:"stderr,omitempty"`
+	}{
+		Ts: e.Ts.UTC(), MsgID: e.MsgID, ScriptKey: e.ScriptKey,
+		Path: e.Path, Action: e.Action, DryRun: e.DryRun,
+		Exit: e.Exit, Stderr: e.Stderr,
+	}
+	line, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	_, _ = a.w.Write(line)
+	_, _ = a.w.Write([]byte("\n"))
 }
