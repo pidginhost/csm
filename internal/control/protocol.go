@@ -64,6 +64,7 @@ const (
 	CmdPHPRelayUnignore     = "phprelay.unignore"
 	CmdPHPRelayIgnoreList   = "phprelay.ignore_list"
 	CmdPHPRelayDryRun       = "phprelay.dry_run"
+	CmdPHPRelayThaw         = "phprelay.thaw"
 )
 
 // Request is the single JSON object the client sends per connection.
@@ -320,4 +321,13 @@ type PHPRelayDryRunRequest struct {
 type PHPRelayDryRunResponse struct {
 	Effective bool   `json:"effective"`
 	Source    string `json:"source"` // "runtime" | "bbolt" | "csm.yaml"
+}
+
+type PHPRelayThawRequest struct {
+	MsgID string `json:"msg_id"`
+	By    string `json:"by"`
+}
+
+type PHPRelayThawResponse struct {
+	Stderr string `json:"stderr,omitempty"`
 }

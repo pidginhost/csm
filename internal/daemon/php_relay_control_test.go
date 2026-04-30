@@ -54,3 +54,15 @@ func TestPHPRelayController_IgnoreFlow(t *testing.T) {
 		t.Error("ignore should be cleared after Unignore")
 	}
 }
+
+func TestPHPRelayController_Thaw_RejectsInvalidMsgID(t *testing.T) {
+	c := &PHPRelayController{
+		runner:  &fakeRunner{onRun: func() {}},
+		eximBin: "/usr/sbin/exim",
+		auditor: &fakeAuditor{},
+	}
+	_, err := c.Thaw(context.Background(), control.PHPRelayThawRequest{MsgID: "bad"})
+	if err == nil {
+		t.Fatal("expected validation error for short msg_id")
+	}
+}

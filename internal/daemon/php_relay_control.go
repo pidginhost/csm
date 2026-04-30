@@ -25,6 +25,9 @@ type PHPRelayController struct {
 	ignores      *ignoreList
 	actionDryRun *runtimeBool
 	db           *store.DB
+	runner       runner
+	eximBin      string
+	auditor      auditor
 	enabled      bool
 	platform     string
 }
@@ -234,4 +237,42 @@ func (c *ControlListener) handlePHPRelayDryRun(argsRaw json.RawMessage) (any, er
 		}
 	}
 	return c.phprelay.DryRun(context.Background(), req)
+}
+
+// Thaw runs `exim -Mt <msg_id>` to release a frozen message back to the
+// queue. msgIDPattern validation guards against header-injected garbage
+// even though only operators can hit this endpoint. The audit entry is
+// written for both success and failure so an operator can later prove
+// what was thawed.
+//
+// req.By is accepted on the wire for forward compatibility (future
+// auditEntry.By field) but is not used by the M4 handler.
+func (c *PHPRelayController) Thaw(ctx context.Context, req control.PHPRelayThawRequest) (control.PHPRelayThawResponse, error) {
+	if !msgIDPattern.MatchString(req.MsgID) {
+		return control.PHPRelayThawResponse{}, errors.New("invalid msg_id")
+	}
+	sub, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	stderr, err := c.runner.Run(sub, c.eximBin, []string{"-Mt", req.MsgID})
+	c.auditor.Write(auditEntry{
+		Ts: time.Now(), MsgID: req.MsgID, Action: "thaw",
+		Stderr: stderr,
+	})
+	if err != nil {
+		return control.PHPRelayThawResponse{Stderr: stderr}, err
+	}
+	return control.PHPRelayThawResponse{Stderr: stderr}, nil
+}
+
+func (c *ControlListener) handlePHPRelayThaw(argsRaw json.RawMessage) (any, error) {
+	if c.phprelay == nil {
+		return nil, fmt.Errorf("phprelay controller not wired (Phase O2)")
+	}
+	var req control.PHPRelayThawRequest
+	if len(argsRaw) > 0 {
+		if err := json.Unmarshal(argsRaw, &req); err != nil {
+			return nil, fmt.Errorf("bad args: %w", err)
+		}
+	}
+	return c.phprelay.Thaw(context.Background(), req)
 }

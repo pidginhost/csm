@@ -96,6 +96,8 @@ func (c *ControlListener) dispatch(line []byte) control.Response {
 		result, err = c.handlePHPRelayIgnoreList(req.Args)
 	case control.CmdPHPRelayDryRun:
 		result, err = c.handlePHPRelayDryRun(req.Args)
+	case control.CmdPHPRelayThaw:
+		result, err = c.handlePHPRelayThaw(req.Args)
 	default:
 		return control.Response{OK: false, Error: fmt.Sprintf("unknown command: %q", req.Cmd)}
 	}
