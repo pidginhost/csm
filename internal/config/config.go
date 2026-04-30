@@ -151,6 +151,7 @@ type Config struct {
 		CleanDatabase       bool   `yaml:"clean_database"`         // auto-clean malicious DB injections, revoke sessions, block attacker IPs (default false)
 		CleanHtaccess       bool   `yaml:"clean_htaccess"`         // auto-clean .htaccess directives flagged by the hardened detectors (default false)
 		DisableEnforceAFAlg bool   `yaml:"disable_enforce_af_alg"` // suspend periodic AF_ALG enforcement; marker file + detection remain active (default false = enforce when marker present)
+		CopyFailKillProcess bool   `yaml:"copy_fail_kill_process"` // SIGKILL processes caught opening AF_ALG sockets via the live listener (default false; alert-only)
 
 		// PHPRelay controls the auto-freeze behaviour that companion
 		// email PHP-relay detectors emit findings for. Freeze and DryRun

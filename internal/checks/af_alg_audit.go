@@ -19,8 +19,21 @@ type afAlgEvent struct {
 	Serial    string // e.g. "91234"
 	UID       string
 	AUID      string
+	PID       string // process id from the SYSCALL record; needed for live kill reaction
 	Comm      string
 	Exe       string
+}
+
+// AFAlgEvent is the package-public view of afAlgEvent used by callers
+// outside internal/checks (the daemon's live audit-log listener emits
+// findings derived from this shape).
+type AFAlgEvent = afAlgEvent
+
+// ParseAFAlgEventLine is the exported alias of parseAFAlgEvent for the
+// daemon's live listener. The unexported form stays internal so the
+// rest of this package can refer to the type by its short name.
+func ParseAFAlgEventLine(line string) (AFAlgEvent, bool) {
+	return parseAFAlgEvent(line)
 }
 
 // after reports whether e is strictly newer than other. Comparison is
@@ -55,6 +68,7 @@ func parseAFAlgEvent(line string) (afAlgEvent, bool) {
 	ev := afAlgEvent{Timestamp: ts, Serial: serial}
 	ev.UID = extractAuditField(line, "uid")
 	ev.AUID = extractAuditField(line, "auid")
+	ev.PID = extractAuditField(line, "pid")
 	ev.Comm = extractAuditField(line, "comm")
 	ev.Exe = extractAuditField(line, "exe")
 	return ev, true
