@@ -51,6 +51,17 @@ func TestRemoveDoesNotPanic(t *testing.T) {
 	Remove()
 }
 
+func TestEnsureDeployedDoesNotPanic(t *testing.T) {
+	// On the dev machine /etc/audit/rules.d/csm.rules is unwritable, so
+	// EnsureDeployed returns an error rather than panicking. The test
+	// just exercises the entry point without requiring root or auditd.
+	_, err := EnsureDeployed()
+	if err == nil {
+		// Running as root on Linux with auditd installed: clean up.
+		Remove()
+	}
+}
+
 func TestRulesContainsAFAlgSocketWatch(t *testing.T) {
 	if !strings.Contains(rules, "-S socket") {
 		t.Error("rules should watch the socket() syscall by name; a regression to a different -S would silently disable detection")

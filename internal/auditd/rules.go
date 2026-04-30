@@ -63,6 +63,29 @@ func Deploy() error {
 	return exec.Command("augenrules", "--load").Run()
 }
 
+// EnsureDeployed compares the on-disk rules file to the embedded rules
+// constant and re-runs Deploy if they differ. Used by the daemon at
+// startup so a CSM upgrade that ships new auditd rules does not silently
+// remain inactive when the package postinstall did not invoke Deploy.
+//
+// Returns (redeployed, err): redeployed=true when the file was updated,
+// false when it already matched. err is non-nil only when an unexpected
+// I/O failure occurred; a missing rules file is treated as "drift" and
+// triggers Deploy.
+func EnsureDeployed() (bool, error) {
+	current, err := os.ReadFile(rulesPath)
+	if err == nil && string(current) == rules {
+		return false, nil
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return false, err
+	}
+	if err := Deploy(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func Remove() {
 	_ = os.Remove(rulesPath)
 	_ = exec.Command("augenrules", "--load").Run()

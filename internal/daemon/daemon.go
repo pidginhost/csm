@@ -17,6 +17,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/attackdb"
+	"github.com/pidginhost/csm/internal/auditd"
 	"github.com/pidginhost/csm/internal/challenge"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
@@ -273,6 +274,20 @@ func (d *Daemon) Run() error {
 	// config.Active() to pick up the current snapshot so a SIGHUP
 	// reload is visible on the next call without restart.
 	config.SetActive(d.cfg)
+
+	// Self-heal the auditd rules file. Package upgrades sometimes ship
+	// a new csm binary without re-running auditd.Deploy() (postinstall
+	// hooks differ across apt/dnf and across operator deploy automation),
+	// which leaves new rules — including detection layers like
+	// csm_af_alg_socket — silently inactive on the upgraded host. The
+	// startup compare-and-redeploy here closes that gap. Errors are
+	// non-fatal: if auditd is absent or augenrules fails, the rest of
+	// CSM still runs.
+	if redeployed, err := auditd.EnsureDeployed(); err != nil {
+		csmlog.Warn("auditd rules ensure failed", "err", err)
+	} else if redeployed {
+		csmlog.Info("auditd rules redeployed (drift from embedded constant)")
+	}
 
 	// Deploy WHM plugin and configs if cPanel is present
 	deployConfigs()
