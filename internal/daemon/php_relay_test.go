@@ -474,3 +474,22 @@ func TestIgnoreList_ListReturnsActiveOnly(t *testing.T) {
 		t.Errorf("List = %+v, want only a:/p", list)
 	}
 }
+
+func TestIgnoreList_PersistRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+	il := newIgnoreList()
+	il.SetStore(db)
+	if err := il.AddPersist("k:/p", time.Now().Add(time.Hour), "tester", "for testing"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fresh list, restore from bbolt.
+	il2 := newIgnoreList()
+	il2.SetStore(db)
+	if err := il2.Restore(); err != nil {
+		t.Fatal(err)
+	}
+	if !il2.Has("k:/p") {
+		t.Errorf("expected persisted entry to be restored")
+	}
+}

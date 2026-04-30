@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/gob"
 	"fmt"
 	"os"
 	"strconv"
@@ -13,6 +15,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/emailspool"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 var phpRelayEvaluatorRef atomic.Pointer[evaluator]
@@ -786,6 +789,7 @@ type ignoreEntry struct {
 type ignoreList struct {
 	mu      sync.Mutex
 	entries map[string]ignoreEntry
+	db      *store.DB
 }
 
 func newIgnoreList() *ignoreList {
@@ -853,4 +857,74 @@ func (il *ignoreList) SweepExpired(now time.Time) int {
 		}
 	}
 	return n
+}
+
+const ignoreBucket = "phprelay:ignore"
+
+func (il *ignoreList) SetStore(db *store.DB) { il.db = db }
+
+func (il *ignoreList) AddPersist(k scriptKey, expiresAt time.Time, by, reason string) error {
+	il.Add(k, expiresAt, by, reason)
+	if il.db == nil {
+		return nil
+	}
+	var buf bytes.Buffer
+	if err := gob.NewEncoder(&buf).Encode(ignoreEntry{
+		ScriptKey: string(k), AddedAt: time.Now(),
+		ExpiresAt: expiresAt, AddedBy: by, Reason: reason,
+	}); err != nil {
+		return err
+	}
+	return il.db.PHPRelayPut(ignoreBucket, string(k), buf.Bytes())
+}
+
+//nolint:unused // wired in M2/O2
+func (il *ignoreList) RemovePersist(k scriptKey) error {
+	il.Remove(k)
+	if il.db == nil {
+		return nil
+	}
+	return il.db.PHPRelayDelete(ignoreBucket, string(k))
+}
+
+// Restore re-populates the in-memory list from bbolt at daemon start.
+// Corrupt rows are skipped silently; expired rows are skipped (the bbolt
+// row stays put until SweepBolt prunes it on the next Flow E tick).
+func (il *ignoreList) Restore() error {
+	if il.db == nil {
+		return nil
+	}
+	rows, err := il.db.PHPRelayList(ignoreBucket)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	for _, raw := range rows {
+		var e ignoreEntry
+		if err := gob.NewDecoder(bytes.NewReader(raw)).Decode(&e); err != nil {
+			continue
+		}
+		if !e.ExpiresAt.IsZero() && now.After(e.ExpiresAt) {
+			continue
+		}
+		il.Add(scriptKey(e.ScriptKey), e.ExpiresAt, e.AddedBy, e.Reason)
+	}
+	return nil
+}
+
+// SweepBolt drops expired bbolt entries on the Flow E ticker. Corrupt
+// rows are also dropped so the bucket stays healthy.
+//
+//nolint:unused // wired in M2/O2
+func (il *ignoreList) SweepBolt(now time.Time) (int, error) {
+	if il.db == nil {
+		return 0, nil
+	}
+	return il.db.PHPRelaySweep(ignoreBucket, func(_, value []byte) bool {
+		var e ignoreEntry
+		if err := gob.NewDecoder(bytes.NewReader(value)).Decode(&e); err != nil {
+			return true // drop corrupt rows
+		}
+		return !e.ExpiresAt.IsZero() && now.After(e.ExpiresAt)
+	})
 }
