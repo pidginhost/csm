@@ -50,3 +50,25 @@ func TestRemoveDoesNotPanic(t *testing.T) {
 	// Remove should not panic even when the file doesn't exist.
 	Remove()
 }
+
+func TestRulesContainsAFAlgSocketWatch(t *testing.T) {
+	if !strings.Contains(rules, "csm_af_alg_socket") {
+		t.Error("rules should watch AF_ALG socket creation (CVE-2026-31431)")
+	}
+	if !strings.Contains(rules, "a0=38") {
+		t.Error("rules should filter on a0=38 (AF_ALG family number)")
+	}
+	if !strings.Contains(rules, "uid>=1000") {
+		t.Error("rules should filter on uid>=1000 so service-launched account workloads are covered")
+	}
+	if strings.Contains(rules, "auid>=") {
+		t.Error("rules should not filter on auid; daemon-launched PHP/cPanel workloads often have unset auid")
+	}
+	// AF_ALG explicitly does not support socketpair() — the kernel returns
+	// ESOCKTNOSUPPORT. Adding a socketpair rule would just produce noise
+	// from probing tools without ever firing on the actual exploit, so the
+	// rule set should NOT include one.
+	if strings.Contains(rules, "-S socketpair") {
+		t.Error("rules should not waste an audit slot on socketpair (AF_ALG does not support it)")
+	}
+}

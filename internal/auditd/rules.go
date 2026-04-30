@@ -41,6 +41,13 @@ const rules = `## Continuous Security Monitor - auditd rules
 -w /usr/sbin/useradd -p x -k csm_useradd
 -w /usr/sbin/usermod -p x -k csm_usermod
 -w /usr/sbin/userdel -p x -k csm_userdel
+
+# AF_ALG socket creation — CVE-2026-31431 "Copy Fail" exploit signature.
+# AF_ALG (numeric family 38) is essentially never used by cPanel/PHP
+# workloads, so any non-system UID hitting socket(AF_ALG, ...) is suspicious.
+# Filter on uid, not auid: service-launched PHP/cPanel workers commonly have
+# unset audit login UID while still running as the account user.
+-a always,exit -F arch=b64 -S socket -F a0=38 -F uid>=1000 -k csm_af_alg_socket
 `
 
 func Deploy() error {
