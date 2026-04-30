@@ -206,6 +206,47 @@ func Validate(cfg *Config) []ValidationResult {
 		results = append(results, ValidationResult{"warn", "email_protection.password_check_interval_min", "password_check_interval_min < 60 may cause high CPU from doveadm"})
 	}
 
+	// --- EmailProtection.PHPRelay bounds ---
+	// Bounds checks fire only when the operator has supplied a value
+	// (zero means "use the applyDefaults value" or, for AccountVolumePerHour,
+	// "auto-derive from cPanel maxemailsperhour"). PoliciesDir is NOT
+	// validated here -- filesystem state probes belong in ValidateDeep.
+	pr := cfg.EmailProtection.PHPRelay
+	if pr.RateWindowMin != 0 && (pr.RateWindowMin < 1 || pr.RateWindowMin > 60) {
+		results = append(results, ValidationResult{"error", "email_protection.php_relay.rate_window_min", fmt.Sprintf("rate_window_min must be between 1 and 60, got %d", pr.RateWindowMin)})
+	}
+	if pr.HeaderScoreVolumeMin != 0 && (pr.HeaderScoreVolumeMin < 1 || pr.HeaderScoreVolumeMin > 1000) {
+		results = append(results, ValidationResult{"error", "email_protection.php_relay.header_score_volume_min", fmt.Sprintf("header_score_volume_min must be between 1 and 1000, got %d", pr.HeaderScoreVolumeMin)})
+	}
+	if pr.AbsoluteVolumePerHour != 0 && (pr.AbsoluteVolumePerHour < 1 || pr.AbsoluteVolumePerHour > 100000) {
+		results = append(results, ValidationResult{"error", "email_protection.php_relay.absolute_volume_per_hour", fmt.Sprintf("absolute_volume_per_hour must be between 1 and 100000, got %d", pr.AbsoluteVolumePerHour)})
+	}
+	// AccountVolumePerHour: 0 is the documented "auto-derive" sentinel;
+	// only reject explicitly out-of-range positive values.
+	if pr.AccountVolumePerHour < 0 || pr.AccountVolumePerHour > 100000 {
+		results = append(results, ValidationResult{"error", "email_protection.php_relay.account_volume_per_hour", fmt.Sprintf("account_volume_per_hour must be between 0 (auto-derive) and 100000, got %d", pr.AccountVolumePerHour)})
+	}
+	if pr.ReputationFailuresPer24h != 0 && (pr.ReputationFailuresPer24h < 1 || pr.ReputationFailuresPer24h > 1000) {
+		results = append(results, ValidationResult{"error", "email_protection.php_relay.reputation_failures_per_24h", fmt.Sprintf("reputation_failures_per_24h must be between 1 and 1000, got %d", pr.ReputationFailuresPer24h)})
+	}
+	if pr.FanoutDistinctScripts != 0 && (pr.FanoutDistinctScripts < 2 || pr.FanoutDistinctScripts > 1000) {
+		results = append(results, ValidationResult{"error", "email_protection.php_relay.fanout_distinct_scripts", fmt.Sprintf("fanout_distinct_scripts must be between 2 and 1000, got %d", pr.FanoutDistinctScripts)})
+	}
+	if pr.FanoutWindowMin != 0 && (pr.FanoutWindowMin < 1 || pr.FanoutWindowMin > 60) {
+		results = append(results, ValidationResult{"error", "email_protection.php_relay.fanout_window_min", fmt.Sprintf("fanout_window_min must be between 1 and 60, got %d", pr.FanoutWindowMin)})
+	}
+	if pr.BaselineSigma != 0 && (pr.BaselineSigma < 1.0 || pr.BaselineSigma > 10.0) {
+		results = append(results, ValidationResult{"error", "email_protection.php_relay.baseline_sigma", fmt.Sprintf("baseline_sigma must be between 1.0 and 10.0, got %v", pr.BaselineSigma)})
+	}
+	if pr.BaselineObservationDays != 0 && (pr.BaselineObservationDays < 1 || pr.BaselineObservationDays > 90) {
+		results = append(results, ValidationResult{"error", "email_protection.php_relay.baseline_observation_days", fmt.Sprintf("baseline_observation_days must be between 1 and 90, got %d", pr.BaselineObservationDays)})
+	}
+
+	// --- AutoResponse.PHPRelay bounds ---
+	if cfg.AutoResponse.PHPRelay.MaxActionsPerMinute != 0 && (cfg.AutoResponse.PHPRelay.MaxActionsPerMinute < 1 || cfg.AutoResponse.PHPRelay.MaxActionsPerMinute > 10000) {
+		results = append(results, ValidationResult{"error", "auto_response.php_relay.max_actions_per_minute", fmt.Sprintf("max_actions_per_minute must be between 1 and 10000, got %d", cfg.AutoResponse.PHPRelay.MaxActionsPerMinute)})
+	}
+
 	// --- SMTP brute-force thresholds ---
 	t := cfg.Thresholds
 	if t.SMTPBruteForceThreshold != 0 && (t.SMTPBruteForceThreshold < 2 || t.SMTPBruteForceThreshold > 50) {

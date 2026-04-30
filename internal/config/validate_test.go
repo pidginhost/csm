@@ -670,6 +670,46 @@ func TestValidateDeepSectionChallengeChecksPortAvailability(t *testing.T) {
 	}
 }
 
+func TestValidate_PHPRelayBounds(t *testing.T) {
+	cfg := &Config{}
+	cfg.EmailProtection.PHPRelay.Enabled = true
+	cfg.EmailProtection.PHPRelay.RateWindowMin = 5
+	cfg.EmailProtection.PHPRelay.HeaderScoreVolumeMin = 5
+	cfg.EmailProtection.PHPRelay.AbsoluteVolumePerHour = 30
+	cfg.EmailProtection.PHPRelay.AccountVolumePerHour = 0 // auto-derive
+	cfg.EmailProtection.PHPRelay.ReputationFailuresPer24h = 3
+	cfg.EmailProtection.PHPRelay.FanoutDistinctScripts = 3
+	cfg.EmailProtection.PHPRelay.FanoutWindowMin = 5
+	cfg.EmailProtection.PHPRelay.BaselineSigma = 3.0
+	cfg.EmailProtection.PHPRelay.BaselineObservationDays = 7
+	cfg.EmailProtection.PHPRelay.PoliciesDir = t.TempDir()
+
+	res := Validate(cfg)
+	for _, r := range res {
+		if r.Level == "error" && strings.HasPrefix(r.Field, "email_protection.php_relay") {
+			t.Errorf("unexpected php_relay error: %+v", r)
+		}
+	}
+
+	// Invalid: rate_window_min out of range
+	cfg.EmailProtection.PHPRelay.RateWindowMin = 999
+	res = Validate(cfg)
+	if !hasErrorOnField(res, "email_protection.php_relay.rate_window_min") {
+		t.Errorf("expected error for out-of-range rate_window_min, got %+v", res)
+	}
+}
+
+// ValidationResult exposes a Field, not a Key. Match the existing struct
+// shape in internal/config/validate.go.
+func hasErrorOnField(rs []ValidationResult, field string) bool {
+	for _, r := range rs {
+		if r.Level == "error" && r.Field == field {
+			return true
+		}
+	}
+	return false
+}
+
 func TestValidate_SMTPBruteForceRanges(t *testing.T) {
 	cases := []struct {
 		name    string

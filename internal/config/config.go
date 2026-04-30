@@ -151,6 +151,21 @@ type Config struct {
 		CleanDatabase       bool   `yaml:"clean_database"`         // auto-clean malicious DB injections, revoke sessions, block attacker IPs (default false)
 		CleanHtaccess       bool   `yaml:"clean_htaccess"`         // auto-clean .htaccess directives flagged by the hardened detectors (default false)
 		DisableEnforceAFAlg bool   `yaml:"disable_enforce_af_alg"` // suspend periodic AF_ALG enforcement; marker file + detection remain active (default false = enforce when marker present)
+
+		// PHPRelay controls the auto-freeze behaviour that companion
+		// email PHP-relay detectors emit findings for. Freeze and DryRun
+		// are *bool so we can distinguish OMITTED from EXPLICIT FALSE in
+		// YAML. A plain bool zero-value is false, which would let an
+		// operator write `freeze: true` and (by forgetting `dry_run`)
+		// get LIVE freezes against their will. Pointer values: nil =
+		// "not set in YAML"; *true / *false = explicit. Use the
+		// FreezeEnabled() / DryRunEnabled() accessors on *Config to
+		// resolve the safe defaults rather than dereferencing directly.
+		PHPRelay struct {
+			Freeze              *bool `yaml:"freeze"`
+			DryRun              *bool `yaml:"dry_run"`
+			MaxActionsPerMinute int   `yaml:"max_actions_per_minute"`
+		} `yaml:"php_relay"`
 	} `yaml:"auto_response" hotreload:"safe"`
 
 	Challenge struct {
@@ -237,6 +252,24 @@ type Config struct {
 		RateCritThreshold        int      `yaml:"rate_crit_threshold"`
 		RateWindowMin            int      `yaml:"rate_window_min"`
 		KnownForwarders          []string `yaml:"known_forwarders"`
+
+		// PHPRelay is the operator-tunable knob block for the email
+		// PHP-relay protection feature (Stage 1). All thresholds default
+		// to the values set in applyDefaults(); leaving any field at its
+		// zero value triggers the documented default at load time.
+		PHPRelay struct {
+			Enabled                  bool    `yaml:"enabled"`
+			RateWindowMin            int     `yaml:"rate_window_min"`
+			HeaderScoreVolumeMin     int     `yaml:"header_score_volume_min"`
+			AbsoluteVolumePerHour    int     `yaml:"absolute_volume_per_hour"`
+			AccountVolumePerHour     int     `yaml:"account_volume_per_hour"`
+			ReputationFailuresPer24h int     `yaml:"reputation_failures_per_24h"`
+			FanoutDistinctScripts    int     `yaml:"fanout_distinct_scripts"`
+			FanoutWindowMin          int     `yaml:"fanout_window_min"`
+			BaselineSigma            float64 `yaml:"baseline_sigma"`
+			BaselineObservationDays  int     `yaml:"baseline_observation_days"`
+			PoliciesDir              string  `yaml:"policies_dir"`
+		} `yaml:"php_relay"`
 	} `yaml:"email_protection" hotreload:"safe"`
 
 	Firewall *firewall.FirewallConfig `yaml:"firewall" hotreload:"restart"`
@@ -337,6 +370,22 @@ type Config struct {
 		SampleRate  float64 `yaml:"sample_rate"` // 0 -> 1.0 (capture all errors)
 		Debug       bool    `yaml:"debug"`       // SDK debug logs to stderr
 	} `yaml:"sentry" hotreload:"restart"`
+}
+
+// PHPRelayFreezeEnabled reports whether auto-freeze should run for the
+// email PHP-relay detectors. Defaults to false when freeze was not set
+// in YAML — the operator must opt in explicitly.
+func (cfg *Config) PHPRelayFreezeEnabled() bool {
+	return cfg.AutoResponse.PHPRelay.Freeze != nil && *cfg.AutoResponse.PHPRelay.Freeze
+}
+
+// PHPRelayDryRunEnabled reports the YAML-level dry-run state for the
+// email PHP-relay auto-freeze. Defaults to TRUE when dry_run was not
+// set, which is the safe shipped behaviour: an operator who enables
+// freeze without thinking about dry-run gets a dry-run, not a live
+// freeze. nil-or-explicit-true => true; explicit-false => false.
+func (cfg *Config) PHPRelayDryRunEnabled() bool {
+	return cfg.AutoResponse.PHPRelay.DryRun == nil || *cfg.AutoResponse.PHPRelay.DryRun
 }
 
 func applyDefaults(cfg *Config) {
@@ -461,6 +510,42 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.EmailProtection.RateWindowMin == 0 {
 		cfg.EmailProtection.RateWindowMin = 10
+	}
+
+	// EmailProtection.PHPRelay defaults. Freeze/DryRun are *bool and
+	// remain nil here -- accessors resolve the safe defaults
+	// (PHPRelayFreezeEnabled / PHPRelayDryRunEnabled) so we do NOT
+	// mutate them. AccountVolumePerHour stays at 0 by default to mark
+	// "auto-derive from cPanel maxemailsperhour" downstream.
+	if cfg.EmailProtection.PHPRelay.RateWindowMin == 0 {
+		cfg.EmailProtection.PHPRelay.RateWindowMin = 5
+	}
+	if cfg.EmailProtection.PHPRelay.HeaderScoreVolumeMin == 0 {
+		cfg.EmailProtection.PHPRelay.HeaderScoreVolumeMin = 5
+	}
+	if cfg.EmailProtection.PHPRelay.AbsoluteVolumePerHour == 0 {
+		cfg.EmailProtection.PHPRelay.AbsoluteVolumePerHour = 30
+	}
+	if cfg.EmailProtection.PHPRelay.ReputationFailuresPer24h == 0 {
+		cfg.EmailProtection.PHPRelay.ReputationFailuresPer24h = 3
+	}
+	if cfg.EmailProtection.PHPRelay.FanoutDistinctScripts == 0 {
+		cfg.EmailProtection.PHPRelay.FanoutDistinctScripts = 3
+	}
+	if cfg.EmailProtection.PHPRelay.FanoutWindowMin == 0 {
+		cfg.EmailProtection.PHPRelay.FanoutWindowMin = 5
+	}
+	if cfg.EmailProtection.PHPRelay.BaselineSigma == 0 {
+		cfg.EmailProtection.PHPRelay.BaselineSigma = 3.0
+	}
+	if cfg.EmailProtection.PHPRelay.BaselineObservationDays == 0 {
+		cfg.EmailProtection.PHPRelay.BaselineObservationDays = 7
+	}
+	if cfg.EmailProtection.PHPRelay.PoliciesDir == "" {
+		cfg.EmailProtection.PHPRelay.PoliciesDir = "/opt/csm/policies/php_relay"
+	}
+	if cfg.AutoResponse.PHPRelay.MaxActionsPerMinute == 0 {
+		cfg.AutoResponse.PHPRelay.MaxActionsPerMinute = 60
 	}
 
 	// Performance defaults.
