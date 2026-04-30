@@ -456,6 +456,82 @@ func auditOS() []store.AuditResult {
 	return results
 }
 
+// algifAEADBlacklisted reports whether any of the supplied modprobe.d files
+// contain a non-comment directive that prevents algif_aead from loading.
+// The two recognised forms are:
+//
+//	blacklist algif_aead
+//	install algif_aead /bin/false   (or any non-loading replacement)
+//
+// `install algif_aead /sbin/modprobe --ignore-install algif_aead` is the
+// idiomatic re-load form and explicitly does NOT block the module — we
+// detect that by skipping any install replacement that calls modprobe.
+func algifAEADBlacklisted(confs map[string]string) bool {
+	for _, body := range confs {
+		for _, line := range strings.Split(body, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			fields := strings.Fields(line)
+			if len(fields) < 2 || fields[1] != "algif_aead" {
+				continue
+			}
+			switch fields[0] {
+			case "blacklist":
+				return true
+			case "install":
+				if len(fields) < 3 {
+					// Malformed (no replacement command). Don't claim a
+					// pass on a half-written directive.
+					continue
+				}
+				replacement := strings.Join(fields[2:], " ")
+				// Any replacement that re-invokes modprobe is a re-load,
+				// not a block. /bin/false, /bin/true, /dev/null, or
+				// anything that does not call modprobe is a block.
+				if strings.Contains(replacement, "modprobe") {
+					continue
+				}
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// evaluateAlgifAEAD is the pure, testable core of the algif_aead hardening
+// check. `loaded` reports whether algif_aead currently shows up in
+// /proc/modules; `confs` is a map of modprobe.d file path → contents.
+func evaluateAlgifAEAD(loaded bool, confs map[string]string) store.AuditResult {
+	const (
+		id    = "os_algif_aead_blocked"
+		title = "AF_ALG (algif_aead) Blocked — CVE-2026-31431"
+	)
+	blocked := algifAEADBlacklisted(confs)
+	switch {
+	case !loaded && blocked:
+		return store.AuditResult{
+			Category: "os", Name: id, Title: title,
+			Status: "pass", Message: "algif_aead is blacklisted and not loaded",
+		}
+	case loaded:
+		return store.AuditResult{
+			Category: "os", Name: id, Title: title,
+			Status:  "fail",
+			Message: "algif_aead is currently loaded — Copy Fail (CVE-2026-31431) exploitable",
+			Fix:     "echo 'install algif_aead /bin/false' > /etc/modprobe.d/csm-disable-algif.conf && modprobe -r algif_aead af_alg",
+		}
+	default:
+		return store.AuditResult{
+			Category: "os", Name: id, Title: title,
+			Status:  "fail",
+			Message: "algif_aead is not loaded but no modprobe.d blacklist exists — module can be loaded on demand",
+			Fix:     "echo 'install algif_aead /bin/false' > /etc/modprobe.d/csm-disable-algif.conf",
+		}
+	}
+}
+
 // distroEOLPolicy encodes the oldest supported major version per known OS.
 // Anything below the minimum is considered EOL by this check.
 var distroEOLPolicy = map[platform.OSFamily]int{

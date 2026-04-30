@@ -270,3 +270,89 @@ func TestIsPrivateOrLoopback(t *testing.T) {
 		}
 	}
 }
+
+func TestEvaluateAlgifAEAD_BlockedAndNotLoaded(t *testing.T) {
+	confs := map[string]string{
+		"/etc/modprobe.d/csm-disable-algif.conf": "install algif_aead /bin/false\n",
+	}
+	r := evaluateAlgifAEAD(false, confs)
+	if r.Status != "pass" {
+		t.Errorf("status = %q, want pass (msg: %s)", r.Status, r.Message)
+	}
+	if r.Name != "os_algif_aead_blocked" {
+		t.Errorf("name = %q, want os_algif_aead_blocked", r.Name)
+	}
+}
+
+func TestEvaluateAlgifAEAD_BlacklistDirectiveAlsoCounts(t *testing.T) {
+	confs := map[string]string{
+		"/etc/modprobe.d/local.conf": "blacklist algif_aead\n",
+	}
+	r := evaluateAlgifAEAD(false, confs)
+	if r.Status != "pass" {
+		t.Errorf("blacklist directive should pass, got %q", r.Status)
+	}
+}
+
+func TestEvaluateAlgifAEAD_NotBlockedAndNotLoaded(t *testing.T) {
+	r := evaluateAlgifAEAD(false, nil)
+	if r.Status != "fail" {
+		t.Errorf("status = %q, want fail", r.Status)
+	}
+	if !strings.Contains(r.Fix, "modprobe.d") {
+		t.Errorf("fix should mention modprobe.d, got %q", r.Fix)
+	}
+	if !strings.Contains(r.Fix, "algif_aead") {
+		t.Errorf("fix should name the module, got %q", r.Fix)
+	}
+}
+
+func TestEvaluateAlgifAEAD_LoadedIsAlwaysFail(t *testing.T) {
+	// Even if a blacklist file is present, a currently-loaded module is a fail —
+	// the operator must unload it for the mitigation to take effect this boot.
+	confs := map[string]string{
+		"/etc/modprobe.d/csm-disable-algif.conf": "install algif_aead /bin/false\n",
+	}
+	r := evaluateAlgifAEAD(true, confs)
+	if r.Status != "fail" {
+		t.Errorf("loaded module should fail regardless of blacklist, got %q", r.Status)
+	}
+	if !strings.Contains(r.Fix, "modprobe -r") {
+		t.Errorf("fix should include modprobe -r, got %q", r.Fix)
+	}
+}
+
+func TestEvaluateAlgifAEAD_CommentedDirectiveDoesNotCount(t *testing.T) {
+	confs := map[string]string{
+		"/etc/modprobe.d/local.conf": "# blacklist algif_aead\n",
+	}
+	r := evaluateAlgifAEAD(false, confs)
+	if r.Status != "fail" {
+		t.Errorf("commented directive should not count as blacklisted, got %q", r.Status)
+	}
+}
+
+func TestEvaluateAlgifAEAD_InstallReloadDirectiveDoesNotCount(t *testing.T) {
+	// `install algif_aead /sbin/modprobe --ignore-install algif_aead` is the
+	// idiomatic re-load form: it overrides the default load path but still
+	// loads the module. It must NOT be treated as blocking.
+	confs := map[string]string{
+		"/etc/modprobe.d/local.conf": "install algif_aead /sbin/modprobe --ignore-install algif_aead\n",
+	}
+	r := evaluateAlgifAEAD(false, confs)
+	if r.Status != "fail" {
+		t.Errorf("install-via-modprobe re-load should NOT count as blocked, got %q", r.Status)
+	}
+}
+
+func TestEvaluateAlgifAEAD_InstallWithoutReplacementIsIgnored(t *testing.T) {
+	// Half-written `install algif_aead` (no replacement command) is malformed
+	// and must not be claimed as a pass.
+	confs := map[string]string{
+		"/etc/modprobe.d/local.conf": "install algif_aead\n",
+	}
+	r := evaluateAlgifAEAD(false, confs)
+	if r.Status != "fail" {
+		t.Errorf("malformed install directive should not count as blocked, got %q", r.Status)
+	}
+}
