@@ -11,7 +11,7 @@ import (
 // OS abstraction — filesystem read operations
 // ---------------------------------------------------------------------------
 
-// OS abstracts filesystem read operations used by check functions.
+// OS abstracts filesystem operations (read and write) used by check functions.
 // Production code uses realOS{}; tests swap in a mockOS via SetOS().
 type OS interface {
 	ReadFile(name string) ([]byte, error)
@@ -20,6 +20,7 @@ type OS interface {
 	Lstat(name string) (os.FileInfo, error)
 	Readlink(name string) (string, error)
 	Open(name string) (*os.File, error)
+	WriteFile(name string, data []byte, perm os.FileMode) error
 	Glob(pattern string) ([]string, error)
 }
 
@@ -33,7 +34,13 @@ func (realOS) Lstat(name string) (os.FileInfo, error)     { return os.Lstat(name
 func (realOS) Readlink(name string) (string, error)       { return os.Readlink(name) }
 
 // #nosec G304 -- filesystem abstraction; check functions pass trusted paths.
-func (realOS) Open(name string) (*os.File, error)    { return os.Open(name) }
+func (realOS) Open(name string) (*os.File, error) { return os.Open(name) }
+
+// #nosec G306 -- callers pass explicit perm; intent is operator-readable mode.
+func (realOS) WriteFile(name string, data []byte, perm os.FileMode) error {
+	return os.WriteFile(name, data, perm)
+}
+
 func (realOS) Glob(pattern string) ([]string, error) { return filepath.Glob(pattern) }
 
 // osFS is the package-level filesystem provider. All check functions use

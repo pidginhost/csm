@@ -11,13 +11,14 @@ import (
 // ---------------------------------------------------------------------------
 
 type mockOS struct {
-	readFile func(string) ([]byte, error)
-	readDir  func(string) ([]os.DirEntry, error)
-	stat     func(string) (os.FileInfo, error)
-	lstat    func(string) (os.FileInfo, error)
-	readlink func(string) (string, error)
-	open     func(string) (*os.File, error)
-	glob     func(string) ([]string, error)
+	readFile  func(string) ([]byte, error)
+	readDir   func(string) ([]os.DirEntry, error)
+	stat      func(string) (os.FileInfo, error)
+	lstat     func(string) (os.FileInfo, error)
+	readlink  func(string) (string, error)
+	open      func(string) (*os.File, error)
+	writeFile func(string, []byte, os.FileMode) error
+	glob      func(string) ([]string, error)
 }
 
 func (m *mockOS) ReadFile(name string) ([]byte, error) {
@@ -60,6 +61,13 @@ func (m *mockOS) Open(name string) (*os.File, error) {
 		return m.open(name)
 	}
 	return nil, os.ErrNotExist
+}
+
+func (m *mockOS) WriteFile(name string, data []byte, perm os.FileMode) error {
+	if m.writeFile != nil {
+		return m.writeFile(name, data, perm)
+	}
+	return os.ErrPermission
 }
 
 func (m *mockOS) Glob(pattern string) ([]string, error) {
@@ -210,6 +218,29 @@ func TestProviderInjectionCmd(t *testing.T) {
 	}
 	if !called {
 		t.Error("mock was not called")
+	}
+}
+
+func TestProviderInjectionOSWrite(t *testing.T) {
+	var captured struct {
+		path string
+		data []byte
+		perm os.FileMode
+	}
+	withMockOS(t, &mockOS{
+		writeFile: func(name string, data []byte, perm os.FileMode) error {
+			captured.path = name
+			captured.data = data
+			captured.perm = perm
+			return nil
+		},
+	})
+
+	if err := osFS.WriteFile("/etc/test.conf", []byte("hello"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if captured.path != "/etc/test.conf" || string(captured.data) != "hello" || captured.perm != 0o644 {
+		t.Errorf("captured = %+v", captured)
 	}
 }
 
