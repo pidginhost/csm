@@ -415,6 +415,11 @@ func auditOS() []store.AuditResult {
 	// Unnecessary services
 	results = append(results, checkUnnecessaryServices()...)
 
+	// CVE-2026-31431 "Copy Fail" — algif_aead is the AF_ALG submodule the
+	// exploit chains through. Blacklisting it neutralises the attack on
+	// unpatched kernels.
+	results = append(results, auditAlgifAEAD())
+
 	// Sysctl checks (table-driven)
 	sysctlChecks := []struct {
 		id, title, path, expected string
@@ -533,6 +538,32 @@ func evaluateAlgifAEAD(loaded bool, confs map[string]string) store.AuditResult {
 			Fix:     "echo 'install algif_aead /bin/false' > /etc/modprobe.d/csm-disable-algif.conf",
 		}
 	}
+}
+
+// auditAlgifAEAD is the impure wrapper: it reads /proc/modules and
+// /etc/modprobe.d/*.conf via osFS, then delegates to evaluateAlgifAEAD.
+func auditAlgifAEAD() store.AuditResult {
+	loaded := false
+	for _, mod := range loadModuleList() {
+		if mod == "algif_aead" {
+			loaded = true
+			break
+		}
+	}
+
+	confs := make(map[string]string)
+	matches, err := osFS.Glob("/etc/modprobe.d/*.conf")
+	if err == nil {
+		for _, p := range matches {
+			data, err := osFS.ReadFile(p)
+			if err != nil {
+				continue
+			}
+			confs[p] = string(data)
+		}
+	}
+
+	return evaluateAlgifAEAD(loaded, confs)
 }
 
 // distroEOLPolicy encodes the oldest supported major version per known OS.

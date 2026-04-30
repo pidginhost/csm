@@ -371,3 +371,88 @@ func TestEvaluateAlgifAEAD_InstallViaWrapperWithModprobeInPathStillBlocks(t *tes
 		t.Errorf("install via non-modprobe wrapper should count as blocked, got %q (msg: %s)", r.Status, r.Message)
 	}
 }
+
+func TestAuditAlgifAEAD_FailsWhenLoadedNoBlacklist(t *testing.T) {
+	withMockOS(t, &mockOS{
+		open: func(name string) (*os.File, error) {
+			if name == "/proc/modules" {
+				f, err := os.CreateTemp(t.TempDir(), "modules")
+				if err != nil {
+					return nil, err
+				}
+				_, _ = f.WriteString("algif_aead 16384 0 - Live 0x0\nbridge 200704 0 - Live 0x0\n")
+				_, _ = f.Seek(0, 0)
+				return f, nil
+			}
+			return nil, os.ErrNotExist
+		},
+		glob: func(pattern string) ([]string, error) {
+			if pattern == "/etc/modprobe.d/*.conf" {
+				return nil, nil
+			}
+			return nil, nil
+		},
+	})
+
+	got := auditAlgifAEAD()
+	if got.Status != "fail" {
+		t.Errorf("status = %q, want fail (msg: %s)", got.Status, got.Message)
+	}
+	if !strings.Contains(got.Message, "loaded") {
+		t.Errorf("message should mention loaded state, got %q", got.Message)
+	}
+}
+
+func TestAuditAlgifAEAD_PassesWhenBlacklistedAndUnloaded(t *testing.T) {
+	tmpDir := t.TempDir()
+	confPath := filepath.Join(tmpDir, "csm-disable-algif.conf")
+	if err := os.WriteFile(confPath, []byte("install algif_aead /bin/false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	withMockOS(t, &mockOS{
+		open: func(name string) (*os.File, error) {
+			if name == "/proc/modules" {
+				f, err := os.CreateTemp(t.TempDir(), "modules")
+				if err != nil {
+					return nil, err
+				}
+				_, _ = f.WriteString("bridge 200704 0 - Live 0x0\n")
+				_, _ = f.Seek(0, 0)
+				return f, nil
+			}
+			return nil, os.ErrNotExist
+		},
+		glob: func(pattern string) ([]string, error) {
+			if pattern == "/etc/modprobe.d/*.conf" {
+				return []string{confPath}, nil
+			}
+			return nil, nil
+		},
+		readFile: func(name string) ([]byte, error) {
+			if name == confPath {
+				return os.ReadFile(name)
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	got := auditAlgifAEAD()
+	if got.Status != "pass" {
+		t.Errorf("status = %q, want pass (msg: %s)", got.Status, got.Message)
+	}
+}
+
+func TestAuditAlgifAEAD_AppearsInOSAuditResults(t *testing.T) {
+	results := auditOS()
+	found := false
+	for _, r := range results {
+		if r.Name == "os_algif_aead_blocked" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("auditOS() did not include the algif_aead check")
+	}
+}
