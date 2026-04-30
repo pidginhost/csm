@@ -215,36 +215,36 @@ func Validate(cfg *Config) []ValidationResult {
 	if pr.RateWindowMin != 0 && (pr.RateWindowMin < 1 || pr.RateWindowMin > 60) {
 		results = append(results, ValidationResult{"error", "email_protection.php_relay.rate_window_min", fmt.Sprintf("rate_window_min must be between 1 and 60, got %d", pr.RateWindowMin)})
 	}
-	if pr.HeaderScoreVolumeMin != 0 && (pr.HeaderScoreVolumeMin < 1 || pr.HeaderScoreVolumeMin > 1000) {
-		results = append(results, ValidationResult{"error", "email_protection.php_relay.header_score_volume_min", fmt.Sprintf("header_score_volume_min must be between 1 and 1000, got %d", pr.HeaderScoreVolumeMin)})
+	if pr.HeaderScoreVolumeMin != 0 && (pr.HeaderScoreVolumeMin < 2 || pr.HeaderScoreVolumeMin > 100) {
+		results = append(results, ValidationResult{"error", "email_protection.php_relay.header_score_volume_min", fmt.Sprintf("header_score_volume_min must be between 2 and 100, got %d", pr.HeaderScoreVolumeMin)})
 	}
-	if pr.AbsoluteVolumePerHour != 0 && (pr.AbsoluteVolumePerHour < 1 || pr.AbsoluteVolumePerHour > 100000) {
-		results = append(results, ValidationResult{"error", "email_protection.php_relay.absolute_volume_per_hour", fmt.Sprintf("absolute_volume_per_hour must be between 1 and 100000, got %d", pr.AbsoluteVolumePerHour)})
+	if pr.AbsoluteVolumePerHour != 0 && (pr.AbsoluteVolumePerHour < 10 || pr.AbsoluteVolumePerHour > 1000) {
+		results = append(results, ValidationResult{"error", "email_protection.php_relay.absolute_volume_per_hour", fmt.Sprintf("absolute_volume_per_hour must be between 10 and 1000, got %d", pr.AbsoluteVolumePerHour)})
 	}
 	// AccountVolumePerHour: 0 is the documented "auto-derive" sentinel;
 	// only reject explicitly out-of-range positive values.
-	if pr.AccountVolumePerHour < 0 || pr.AccountVolumePerHour > 100000 {
-		results = append(results, ValidationResult{"error", "email_protection.php_relay.account_volume_per_hour", fmt.Sprintf("account_volume_per_hour must be between 0 (auto-derive) and 100000, got %d", pr.AccountVolumePerHour)})
+	if pr.AccountVolumePerHour < 0 || pr.AccountVolumePerHour > 5000 {
+		results = append(results, ValidationResult{"error", "email_protection.php_relay.account_volume_per_hour", fmt.Sprintf("account_volume_per_hour must be between 0 (auto-derive) and 5000, got %d", pr.AccountVolumePerHour)})
 	}
-	if pr.ReputationFailuresPer24h != 0 && (pr.ReputationFailuresPer24h < 1 || pr.ReputationFailuresPer24h > 1000) {
-		results = append(results, ValidationResult{"error", "email_protection.php_relay.reputation_failures_per_24h", fmt.Sprintf("reputation_failures_per_24h must be between 1 and 1000, got %d", pr.ReputationFailuresPer24h)})
+	if pr.ReputationFailuresPer24h != 0 && (pr.ReputationFailuresPer24h < 1 || pr.ReputationFailuresPer24h > 50) {
+		results = append(results, ValidationResult{"error", "email_protection.php_relay.reputation_failures_per_24h", fmt.Sprintf("reputation_failures_per_24h must be between 1 and 50, got %d", pr.ReputationFailuresPer24h)})
 	}
-	if pr.FanoutDistinctScripts != 0 && (pr.FanoutDistinctScripts < 2 || pr.FanoutDistinctScripts > 1000) {
-		results = append(results, ValidationResult{"error", "email_protection.php_relay.fanout_distinct_scripts", fmt.Sprintf("fanout_distinct_scripts must be between 2 and 1000, got %d", pr.FanoutDistinctScripts)})
+	if pr.FanoutDistinctScripts != 0 && (pr.FanoutDistinctScripts < 2 || pr.FanoutDistinctScripts > 20) {
+		results = append(results, ValidationResult{"error", "email_protection.php_relay.fanout_distinct_scripts", fmt.Sprintf("fanout_distinct_scripts must be between 2 and 20, got %d", pr.FanoutDistinctScripts)})
 	}
 	if pr.FanoutWindowMin != 0 && (pr.FanoutWindowMin < 1 || pr.FanoutWindowMin > 60) {
 		results = append(results, ValidationResult{"error", "email_protection.php_relay.fanout_window_min", fmt.Sprintf("fanout_window_min must be between 1 and 60, got %d", pr.FanoutWindowMin)})
 	}
-	if pr.BaselineSigma != 0 && (pr.BaselineSigma < 1.0 || pr.BaselineSigma > 10.0) {
-		results = append(results, ValidationResult{"error", "email_protection.php_relay.baseline_sigma", fmt.Sprintf("baseline_sigma must be between 1.0 and 10.0, got %v", pr.BaselineSigma)})
+	if pr.BaselineSigma != 0 && (pr.BaselineSigma < 2.0 || pr.BaselineSigma > 6.0) {
+		results = append(results, ValidationResult{"error", "email_protection.php_relay.baseline_sigma", fmt.Sprintf("baseline_sigma must be between 2.0 and 6.0, got %v", pr.BaselineSigma)})
 	}
-	if pr.BaselineObservationDays != 0 && (pr.BaselineObservationDays < 1 || pr.BaselineObservationDays > 90) {
-		results = append(results, ValidationResult{"error", "email_protection.php_relay.baseline_observation_days", fmt.Sprintf("baseline_observation_days must be between 1 and 90, got %d", pr.BaselineObservationDays)})
+	if pr.BaselineObservationDays != 0 && (pr.BaselineObservationDays < 1 || pr.BaselineObservationDays > 30) {
+		results = append(results, ValidationResult{"error", "email_protection.php_relay.baseline_observation_days", fmt.Sprintf("baseline_observation_days must be between 1 and 30, got %d", pr.BaselineObservationDays)})
 	}
 
 	// --- AutoResponse.PHPRelay bounds ---
-	if cfg.AutoResponse.PHPRelay.MaxActionsPerMinute != 0 && (cfg.AutoResponse.PHPRelay.MaxActionsPerMinute < 1 || cfg.AutoResponse.PHPRelay.MaxActionsPerMinute > 10000) {
-		results = append(results, ValidationResult{"error", "auto_response.php_relay.max_actions_per_minute", fmt.Sprintf("max_actions_per_minute must be between 1 and 10000, got %d", cfg.AutoResponse.PHPRelay.MaxActionsPerMinute)})
+	if cfg.AutoResponse.PHPRelay.MaxActionsPerMinute != 0 && (cfg.AutoResponse.PHPRelay.MaxActionsPerMinute < 1 || cfg.AutoResponse.PHPRelay.MaxActionsPerMinute > 600) {
+		results = append(results, ValidationResult{"error", "auto_response.php_relay.max_actions_per_minute", fmt.Sprintf("max_actions_per_minute must be between 1 and 600, got %d", cfg.AutoResponse.PHPRelay.MaxActionsPerMinute)})
 	}
 
 	// --- SMTP brute-force thresholds ---

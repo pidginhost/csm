@@ -697,6 +697,73 @@ func TestValidate_PHPRelayBounds(t *testing.T) {
 	if !hasErrorOnField(res, "email_protection.php_relay.rate_window_min") {
 		t.Errorf("expected error for out-of-range rate_window_min, got %+v", res)
 	}
+
+	// Tighter bounds drop edge values that the laxer initial draft accepted.
+	cfg.EmailProtection.PHPRelay.RateWindowMin = 5 // reset to valid
+	cfg.EmailProtection.PHPRelay.HeaderScoreVolumeMin = 200
+	res = Validate(cfg)
+	if !hasErrorOnField(res, "email_protection.php_relay.header_score_volume_min") {
+		t.Errorf("header_score_volume_min=200 must be invalid (>100), got %+v", res)
+	}
+	cfg.EmailProtection.PHPRelay.HeaderScoreVolumeMin = 1
+	res = Validate(cfg)
+	if !hasErrorOnField(res, "email_protection.php_relay.header_score_volume_min") {
+		t.Errorf("header_score_volume_min=1 must be invalid (<2), got %+v", res)
+	}
+	cfg.EmailProtection.PHPRelay.HeaderScoreVolumeMin = 5 // reset to valid
+
+	cfg.EmailProtection.PHPRelay.AbsoluteVolumePerHour = 5000
+	res = Validate(cfg)
+	if !hasErrorOnField(res, "email_protection.php_relay.absolute_volume_per_hour") {
+		t.Errorf("absolute_volume_per_hour=5000 must be invalid (>1000), got %+v", res)
+	}
+	cfg.EmailProtection.PHPRelay.AbsoluteVolumePerHour = 30 // reset to valid
+
+	cfg.EmailProtection.PHPRelay.AccountVolumePerHour = 9000
+	res = Validate(cfg)
+	if !hasErrorOnField(res, "email_protection.php_relay.account_volume_per_hour") {
+		t.Errorf("account_volume_per_hour=9000 must be invalid (>5000), got %+v", res)
+	}
+	cfg.EmailProtection.PHPRelay.AccountVolumePerHour = 0 // reset to valid (auto-derive)
+
+	cfg.EmailProtection.PHPRelay.ReputationFailuresPer24h = 100
+	res = Validate(cfg)
+	if !hasErrorOnField(res, "email_protection.php_relay.reputation_failures_per_24h") {
+		t.Errorf("reputation_failures_per_24h=100 must be invalid (>50), got %+v", res)
+	}
+	cfg.EmailProtection.PHPRelay.ReputationFailuresPer24h = 3 // reset to valid
+
+	cfg.EmailProtection.PHPRelay.FanoutDistinctScripts = 50
+	res = Validate(cfg)
+	if !hasErrorOnField(res, "email_protection.php_relay.fanout_distinct_scripts") {
+		t.Errorf("fanout_distinct_scripts=50 must be invalid (>20), got %+v", res)
+	}
+	cfg.EmailProtection.PHPRelay.FanoutDistinctScripts = 3 // reset to valid
+
+	cfg.EmailProtection.PHPRelay.BaselineSigma = 1.5
+	res = Validate(cfg)
+	if !hasErrorOnField(res, "email_protection.php_relay.baseline_sigma") {
+		t.Errorf("baseline_sigma=1.5 must be invalid (<2.0), got %+v", res)
+	}
+	cfg.EmailProtection.PHPRelay.BaselineSigma = 8.0
+	res = Validate(cfg)
+	if !hasErrorOnField(res, "email_protection.php_relay.baseline_sigma") {
+		t.Errorf("baseline_sigma=8.0 must be invalid (>6.0), got %+v", res)
+	}
+	cfg.EmailProtection.PHPRelay.BaselineSigma = 3.0 // reset to valid
+
+	cfg.EmailProtection.PHPRelay.BaselineObservationDays = 60
+	res = Validate(cfg)
+	if !hasErrorOnField(res, "email_protection.php_relay.baseline_observation_days") {
+		t.Errorf("baseline_observation_days=60 must be invalid (>30), got %+v", res)
+	}
+	cfg.EmailProtection.PHPRelay.BaselineObservationDays = 7 // reset to valid
+
+	cfg.AutoResponse.PHPRelay.MaxActionsPerMinute = 5000
+	res = Validate(cfg)
+	if !hasErrorOnField(res, "auto_response.php_relay.max_actions_per_minute") {
+		t.Errorf("max_actions_per_minute=5000 must be invalid (>600), got %+v", res)
+	}
 }
 
 // ValidationResult exposes a Field, not a Key. Match the existing struct
