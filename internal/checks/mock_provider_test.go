@@ -67,7 +67,11 @@ func (m *mockOS) WriteFile(name string, data []byte, perm os.FileMode) error {
 	if m.writeFile != nil {
 		return m.writeFile(name, data, perm)
 	}
-	return os.ErrPermission
+	// Match the os.ErrNotExist default that every other mock method returns
+	// when its function field is unset. The "loud failure" intent (an
+	// unconfigured WriteFile mock surfaces as a real test error rather than
+	// a silent nil) is preserved by any non-nil error.
+	return os.ErrNotExist
 }
 
 func (m *mockOS) Glob(pattern string) ([]string, error) {
