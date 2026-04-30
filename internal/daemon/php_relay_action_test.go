@@ -1,11 +1,14 @@
 package daemon
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pidginhost/csm/internal/alert"
 )
 
 func TestMsgIDPattern_AcceptsValid(t *testing.T) {
@@ -88,3 +91,125 @@ func TestSpoolScanMatchingScript_ReturnsMatchingMsgIDs(t *testing.T) {
 		t.Fatalf("matched = %v, want 2 entries", got)
 	}
 }
+
+// alwaysDryRun / neverDryRun are the dry-run resolver closures tests pass
+// to newAutoFreezer. They short-circuit the runtime/bbolt/yaml precedence
+// chain because that's the controller's job, not the freezer's.
+// (boolPtr is shared across daemon tests via yara_worker_default_test.go.)
+func alwaysDryRun() bool { return true }
+func neverDryRun() bool  { return false }
+
+func TestAutoFreeze_DryRunDoesNotInvokeExim(t *testing.T) {
+	cfg := defaultPHPRelayCfg()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.PHPRelay.Freeze = boolPtr(true)
+	psw := newPerScriptWindow()
+	psw.getOrCreate("k:/p").recordActive("11abcdefghij1234", time.Now())
+
+	var execCalls int
+	auditor := &fakeAuditor{}
+	af := newAutoFreezer(psw, cfg, "/nonexistent-spool", "echo", &fakeRunner{onRun: func() { execCalls++ }}, auditor, nil, alwaysDryRun)
+
+	findings := []alert.Finding{{
+		Check: "email_php_relay_abuse", Path: "header",
+		ScriptKey: "k:/p", Severity: alert.Critical,
+	}}
+	out := af.Apply(findings)
+	if execCalls != 0 {
+		t.Errorf("dry-run must NOT invoke exec, calls = %d", execCalls)
+	}
+	if len(out) == 0 {
+		t.Error("dry-run should emit a Warning info finding")
+	}
+}
+
+func TestAutoFreeze_RealRunInvokesEximPerMsgID(t *testing.T) {
+	cfg := defaultPHPRelayCfg()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.PHPRelay.Freeze = boolPtr(true)
+	cfg.AutoResponse.PHPRelay.MaxActionsPerMinute = 60
+	psw := newPerScriptWindow()
+	s := psw.getOrCreate("k:/p")
+	s.recordActive("11abcdefghij1234", time.Now())
+	s.recordActive("21bbcdefghij1234", time.Now())
+
+	var args [][]string
+	runner := &fakeRunner{onRun: func() {}, recordArgs: &args}
+	auditor := &fakeAuditor{}
+	af := newAutoFreezer(psw, cfg, "/nonexistent-spool", "/usr/sbin/exim", runner, auditor, nil, neverDryRun)
+
+	af.Apply([]alert.Finding{{Check: "email_php_relay_abuse", Path: "header", ScriptKey: "k:/p", Severity: alert.Critical}})
+	if len(args) != 2 {
+		t.Errorf("expected 2 exim invocations, got %d", len(args))
+	}
+	for _, a := range args {
+		if len(a) < 2 || a[0] != "-Mf" {
+			t.Errorf("unexpected exim args %v", a)
+		}
+	}
+}
+
+func TestAutoFreeze_HonoursRuntimeDryRunOverride(t *testing.T) {
+	cfg := defaultPHPRelayCfg()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.PHPRelay.Freeze = boolPtr(true)
+	cfg.AutoResponse.PHPRelay.DryRun = boolPtr(false) // yaml says LIVE
+	psw := newPerScriptWindow()
+	psw.getOrCreate("k:/p").recordActive("11abcdefghij1234", time.Now())
+
+	// Runtime override flips it back to dry-run; freezer must honour it.
+	var execCalls int
+	runner := &fakeRunner{onRun: func() { execCalls++ }}
+	af := newAutoFreezer(psw, cfg, "", "/usr/sbin/exim", runner, &fakeAuditor{}, nil, alwaysDryRun)
+
+	af.Apply([]alert.Finding{{Check: "email_php_relay_abuse", Path: "header", ScriptKey: "k:/p", Severity: alert.Critical}})
+	if execCalls != 0 {
+		t.Errorf("runtime dry-run override must suppress live exec; got %d calls", execCalls)
+	}
+}
+
+func TestAutoFreeze_SkipsVolumeAccount(t *testing.T) {
+	cfg := defaultPHPRelayCfg()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.PHPRelay.Freeze = boolPtr(true)
+	psw := newPerScriptWindow()
+	var execCalls int
+	runner := &fakeRunner{onRun: func() { execCalls++ }}
+	af := newAutoFreezer(psw, cfg, "", "/usr/sbin/exim", runner, &fakeAuditor{}, nil, neverDryRun)
+
+	findings := []alert.Finding{{
+		Check: "email_php_relay_abuse", Path: "volume_account",
+		Severity: alert.Critical, CPUser: "u",
+	}}
+	out := af.Apply(findings)
+	if execCalls != 0 {
+		t.Errorf("volume_account has no scriptKey -- AutoFreeze must skip")
+	}
+	sawWarning := false
+	for _, f := range out {
+		if f.Severity == alert.Warning {
+			sawWarning = true
+		}
+	}
+	if !sawWarning {
+		t.Error("expected a Warning finding explaining the skip")
+	}
+}
+
+// Minimal stubs.
+type fakeRunner struct {
+	onRun      func()
+	recordArgs *[][]string
+}
+
+func (r *fakeRunner) Run(_ context.Context, _ string, args []string) (string, error) {
+	if r.recordArgs != nil {
+		*r.recordArgs = append(*r.recordArgs, args)
+	}
+	r.onRun()
+	return "", nil
+}
+
+type fakeAuditor struct{ entries []auditEntry }
+
+func (a *fakeAuditor) Write(e auditEntry) { a.entries = append(a.entries, e) }
