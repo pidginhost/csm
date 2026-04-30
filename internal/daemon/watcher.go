@@ -466,6 +466,10 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 		findings = append(findings, f)
 	}
 
+	if eng := PHPRelayEvaluator(); eng != nil {
+		findings = append(findings, eng.parsePHPRelayAccountVolume(line, time.Now())...)
+	}
+
 	return findings
 }
 

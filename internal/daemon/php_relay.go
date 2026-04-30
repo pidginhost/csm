@@ -7,12 +7,26 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/emailspool"
 )
+
+var phpRelayEvaluatorRef atomic.Pointer[evaluator]
+
+// SetPHPRelayEvaluator is called by daemon wiring once everything is up.
+// nil disables php_relay path dispatch from parseEximLogLine.
+func SetPHPRelayEvaluator(e *evaluator) {
+	phpRelayEvaluatorRef.Store(e)
+}
+
+// PHPRelayEvaluator returns the registered evaluator, or nil if none.
+func PHPRelayEvaluator() *evaluator {
+	return phpRelayEvaluatorRef.Load()
+}
 
 // scriptKey = host(X-PHP-Script) + ":" + path(X-PHP-Script)
 type scriptKey = string
