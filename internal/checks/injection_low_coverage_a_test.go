@@ -1169,6 +1169,42 @@ func TestScanEximMessageSuspiciousMailer(t *testing.T) {
 	}
 }
 
+// TestScanEximMessageUserAgentFallback confirms emailscan reads User-Agent
+// through emailspool.Headers when X-Mailer is absent. Mirrors
+// TestScanEximMessageSuspiciousMailer with X-Mailer replaced by User-Agent.
+func TestScanEximMessageUserAgentFallback(t *testing.T) {
+	headers := eximSpool(
+		"049F From: sender@example.com",
+		"030  User-Agent: PHPMailer 6.0",
+	)
+
+	withMockOS(t, &mockOS{
+		stat: func(name string) (os.FileInfo, error) {
+			if strings.HasSuffix(name, "-H") {
+				return fakeFileInfo{name: "msg-H"}, nil
+			}
+			return nil, os.ErrNotExist
+		},
+		readFile: func(name string) ([]byte, error) {
+			if strings.HasSuffix(name, "-H") {
+				return []byte(headers), nil
+			}
+			if strings.HasSuffix(name, "-D") {
+				return []byte("Normal body"), nil
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	result := scanEximMessage("ABC123", "sender@example.com", &config.Config{})
+	if result == nil {
+		t.Fatal("expected finding for suspicious mailer via User-Agent fallback")
+	}
+	if !strings.Contains(result.Details, "suspicious mailer") {
+		t.Errorf("expected suspicious mailer indicator, got: %s", result.Details)
+	}
+}
+
 func TestScanEximMessageSpoofedBrand(t *testing.T) {
 	headers := eximSpool(
 		"055F From: PayPal Security <noreply@randomsite.com>",

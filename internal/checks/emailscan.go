@@ -142,9 +142,9 @@ func scanEximMessage(msgID, sender string, cfg *config.Config) *alert.Finding {
 		// the previous loose parse would have done.
 		return nil
 	}
-	// Lower-cased raw bytes are still required for two heuristics that the
-	// emailspool Headers struct does not surface: User-Agent (X-Mailer
-	// fallback) and the base64-text/html combination.
+	// Lower-cased raw bytes are still required for the base64-text/html
+	// combination heuristic, which inspects MIME framing the emailspool
+	// Headers struct does not surface.
 	headersLower := strings.ToLower(string(headerData))
 
 	// Check 1: Reply-To mismatch
@@ -156,11 +156,11 @@ func scanEximMessage(msgID, sender string, cfg *config.Config) *alert.Finding {
 		}
 	}
 
-	// Check 2: Suspicious X-Mailer (fall back to User-Agent header captured
-	// in the raw bytes -- emailspool.Headers does not surface User-Agent).
+	// Check 2: Suspicious X-Mailer (fall back to User-Agent, which the
+	// emailspool parser surfaces alongside the other RFC 5322 fields).
 	mailer := parsed.XMailer
 	if mailer == "" {
-		mailer = scanRawHeader(headerData, "User-Agent")
+		mailer = parsed.UserAgent
 	}
 	if mailer != "" {
 		mailerLower := strings.ToLower(mailer)
@@ -243,35 +243,4 @@ func scanEximMessage(msgID, sender string, cfg *config.Config) *alert.Finding {
 		Message:  fmt.Sprintf("Suspicious outbound email from %s (message: %s)", sender, msgID),
 		Details:  fmt.Sprintf("Indicators:\n- %s", strings.Join(indicators, "\n- ")),
 	}
-}
-
-// scanRawHeader looks up a single RFC 5322 header value by name in raw Exim -H
-// bytes. Used for headers that emailspool.Headers does not surface
-// (e.g. User-Agent) on the cold path where we already have the buffer.
-// Returns "" when the header is absent or malformed.
-//
-// The lookup is line-oriented and tolerates either bare RFC 5322
-// ("Name: value") or Exim -H prefixed ("NNNX Name: value") shapes; the colon
-// is required, and the name match is case-insensitive.
-func scanRawHeader(data []byte, name string) string {
-	target := strings.ToLower(name) + ":"
-	for _, line := range strings.Split(string(data), "\n") {
-		// Strip the optional 5-byte Exim -H prefix ("NNNX ") if present so
-		// we can match either the bare RFC 5322 form or the spool form.
-		stripped := line
-		if len(line) >= 5 &&
-			line[0] >= '0' && line[0] <= '9' &&
-			line[1] >= '0' && line[1] <= '9' &&
-			line[2] >= '0' && line[2] <= '9' &&
-			line[4] == ' ' {
-			stripped = line[5:]
-		}
-		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(stripped)), target) {
-			parts := strings.SplitN(stripped, ":", 2)
-			if len(parts) == 2 {
-				return strings.TrimSpace(parts[1])
-			}
-		}
-	}
-	return ""
 }

@@ -92,6 +92,7 @@ type Headers struct {
 	Subject      string
 	XPHPScript   string
 	XMailer      string
+	UserAgent    string
 	MessageID    string
 }
 
@@ -176,6 +177,8 @@ func ParseHeadersReader(r io.Reader) (Headers, error) {
 			h.XPHPScript = value
 		case "X-Mailer":
 			h.XMailer = value
+		case "User-Agent":
+			h.UserAgent = value
 		case "Message-ID":
 			h.MessageID = value
 		}

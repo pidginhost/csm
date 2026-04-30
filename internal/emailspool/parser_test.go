@@ -136,6 +136,22 @@ func TestParseHeaders_NoXPHPScript(t *testing.T) {
 	}
 }
 
+func TestParseHeaders_CapturesUserAgent(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/ua.H"
+	content := "id-H\nuser 100 100\n<user@example.com>\n0 0\n-local\n1\nrcpt@example.com\n\n037T To: rcpt@example.com\n025  User-Agent: MailTool/1.0\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h, err := ParseHeaders(path)
+	if err != nil {
+		t.Fatalf("ParseHeaders error: %v", err)
+	}
+	if h.UserAgent != "MailTool/1.0" {
+		t.Errorf("UserAgent = %q, want MailTool/1.0", h.UserAgent)
+	}
+}
+
 func TestParseHeaders_TooLargeReturnsErrTooLong(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/huge.H"
