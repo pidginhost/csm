@@ -502,6 +502,8 @@ func (d *Daemon) Run() error {
 		})
 	}
 
+	d.startPHPRelay()
+
 	// Start automatic signature updates
 	d.wg.Add(1)
 	obs.Go("signature-updater", d.signatureUpdater)
@@ -943,6 +945,45 @@ func (d *Daemon) heartbeat() {
 			}
 		}
 	}
+}
+
+// startPHPRelay implements the platform gate from Stage 1 spec section
+// 9 (O1). Emits a Warning if the host is not cPanel; otherwise locates
+// the exim binary for AutoFreeze and (in O2) wires the spool watcher,
+// pipeline, and Flow E ticker.
+func (d *Daemon) startPHPRelay() {
+	info := platform.Detect()
+	if !info.IsCPanel() {
+		select {
+		case d.alertCh <- alert.Finding{
+			Severity:  alert.Warning,
+			Check:     "email_php_relay_disabled",
+			Message:   "php_relay disabled: not a cPanel host",
+			Timestamp: time.Now(),
+		}:
+		default:
+		}
+		return
+	}
+	if !d.cfg.EmailProtection.PHPRelay.Enabled {
+		return
+	}
+	if path, err := exec.LookPath("exim"); err == nil {
+		eximBinary = path
+	} else {
+		select {
+		case d.alertCh <- alert.Finding{
+			Severity:  alert.Warning,
+			Check:     "email_php_relay_no_exim",
+			Message:   "php_relay auto-action disabled: exim binary not in PATH",
+			Timestamp: time.Now(),
+		}:
+		default:
+		}
+	}
+	// O2 will: construct evaluator + windows + ignoreList + msgIDIndex,
+	// wire SetMetrics() on persister/watcher, register PHPRelayController
+	// with ControlListener, start the Flow E ticker.
 }
 
 func (d *Daemon) startLogWatchers() {
