@@ -50,3 +50,23 @@ func TestMsgIDIndex_Cap(t *testing.T) {
 		t.Errorf("len = %d, expected <= 3", got)
 	}
 }
+
+func TestMsgIDIndex_PutAlsoPersists(t *testing.T) {
+	db := openTestDB(t)
+	p := newMsgIndexPersister(db, 256, 30*time.Millisecond)
+	p.Start()
+	defer p.Stop()
+
+	idx := newMsgIDIndex(p, 1024)
+	idx.Put("id1", indexEntry{ScriptKey: "s:p", At: time.Now()})
+
+	p.Flush()
+
+	got, ok, err := p.Lookup("id1")
+	if err != nil {
+		t.Fatalf("Lookup err: %v", err)
+	}
+	if !ok || got.ScriptKey != "s:p" {
+		t.Fatalf("Lookup = (%+v, %v)", got, ok)
+	}
+}
