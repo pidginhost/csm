@@ -630,3 +630,63 @@ func readCpanelHourlyLimit(path string) (int, cpanelLimitStatus) {
 	}
 	return 0, cpanelLimitMissing
 }
+
+// deriveEffectiveAccountLimit implements spec section 6.1's three-step
+// derivation. Returns (effective, enabled, cappedFromOperator).
+//   - cpanelLimit/status come from readCpanelHourlyLimit.
+//   - missing/unparsable callers should also emit a Warning startup finding.
+//   - returned enabled=false means Path 2b should not run this session.
+func deriveEffectiveAccountLimit(cfg *config.Config, cpanelLimit int, status cpanelLimitStatus) (effective int, enabled bool, capped bool) {
+	op := cfg.EmailProtection.PHPRelay.AccountVolumePerHour
+
+	// Step 1: classify the cPanel limit.
+	var assumed int
+	var known bool
+	switch status {
+	case cpanelLimitOK:
+		assumed = cpanelLimit
+		known = true
+	case cpanelLimitMissing, cpanelLimitUnparsable:
+		// Caller emits Warning; we use the cPanel default 100.
+		assumed = 100
+		known = true
+	case cpanelLimitDisabled:
+		known = false
+	}
+
+	// Step 2: derive effective.
+	if known {
+		cap := assumed * 95 / 100
+		if cap < 1 {
+			cap = 1
+		}
+		if op == 0 {
+			target := assumed * 60 / 100
+			if target < 20 {
+				target = 20
+			}
+			if target > 60 {
+				target = 60
+			}
+			effective = target
+			if effective > cap {
+				effective = cap
+			}
+		} else {
+			effective = op
+			if effective > cap {
+				effective = cap
+				capped = true
+			}
+		}
+		if effective <= 0 {
+			return 0, false, false
+		}
+		return effective, true, capped
+	}
+	// Cpanel limit explicitly disabled.
+	if op > 0 {
+		return op, true, false
+	}
+	return 0, false, false
+}
