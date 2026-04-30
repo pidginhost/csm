@@ -50,3 +50,43 @@ safe: [WordPress]
 		t.Error("case-insensitive substring match required")
 	}
 }
+
+func TestLoadHTTPProxyRanges(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "http_proxy_ranges.yaml"), `
+version: 1
+cidrs:
+  - 192.0.2.0/24
+  - 2001:db8::/32
+`)
+	pol, err := LoadPolicies(dir)
+	if err != nil {
+		t.Fatalf("LoadPolicies: %v", err)
+	}
+	if !pol.IsProxyIP("192.0.2.10") {
+		t.Errorf("192.0.2.10 should be in proxy range")
+	}
+	if pol.IsProxyIP("203.0.113.5") {
+		t.Errorf("203.0.113.5 should NOT be in proxy range")
+	}
+	if !pol.IsProxyIP("2001:db8::1") {
+		t.Errorf("v6 in proxy range expected")
+	}
+}
+
+func TestLoadHTTPProxyRanges_InvalidCIDR(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "http_proxy_ranges.yaml"), `
+version: 1
+cidrs:
+  - not-a-cidr
+  - 192.0.2.0/24
+`)
+	pol, err := LoadPolicies(dir)
+	if err == nil {
+		t.Fatal("expected error for invalid CIDR")
+	}
+	if !pol.IsProxyIP("192.0.2.10") {
+		t.Error("valid CIDR should still be loaded despite invalid sibling")
+	}
+}

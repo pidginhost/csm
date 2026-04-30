@@ -136,8 +136,6 @@ func (p *Policies) MailerSafe(xMailer string) bool {
 
 // IsProxyIP reports whether ip falls within any configured CDN/proxy CIDR.
 // Used by Path 4 to skip fanout counting for IPs that are CDN front IPs.
-//
-//nolint:unused // consumed by E2/H1
 func (p *Policies) IsProxyIP(ip string) bool {
 	if ip == "" {
 		return false
