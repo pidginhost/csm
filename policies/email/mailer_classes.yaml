@@ -1,0 +1,23 @@
+# Stage 1 X-Mailer classification used by Path 1's "additional signal".
+# An X-Mailer that matches `suspicious` AND not `safe` contributes to the
+# qualifying-event count. Substrings are matched case-insensitively.
+
+version: 1
+suspicious:
+  - phpmailer
+  - swiftmailer
+  - mass mailer
+  - bulk mailer
+  - leaf phpmailer
+  - phpmail
+  - mail.php
+safe:
+  - wordpress
+  - woocommerce
+  - cpanel
+  - dovecot
+  - postfix
+  - roundcube
+  - thunderbird
+  - apple mail
+  - outlook
