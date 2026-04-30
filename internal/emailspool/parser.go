@@ -101,6 +101,9 @@ type Headers struct {
 // invalid; otherwise missing individual headers leave the corresponding
 // Headers field empty.
 func ParseHeaders(path string) (Headers, error) {
+	// #nosec G304 -- path is supplied by the daemon's Exim spool
+	// watcher and resolved from /var/spool/exim/input/, an
+	// operator-trusted directory enumerated by the spool walker.
 	f, err := os.Open(path)
 	if err != nil {
 		return Headers{}, err

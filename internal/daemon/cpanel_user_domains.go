@@ -77,6 +77,9 @@ func (r *userDomainsResolver) Invalidate(user string) {
 
 func (r *userDomainsResolver) read(user string) (map[string]struct{}, error) {
 	path := filepath.Join(r.root, user, "main")
+	// #nosec G304 -- r.root is fixed at /var/cpanel/userdata/, user is a
+	// cPanel-managed account name validated by the resolver's caller; the
+	// resulting path is constrained to the cpanel userdata tree.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return map[string]struct{}{}, fmt.Errorf("read %s: %w", path, err)

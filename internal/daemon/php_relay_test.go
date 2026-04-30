@@ -1,8 +1,11 @@
 package daemon
 
 import (
+	"os"
 	"testing"
 	"time"
+
+	"github.com/pidginhost/csm/internal/emailspool"
 )
 
 func TestScriptState_AppendAndPrune(t *testing.T) {
@@ -134,4 +137,79 @@ func TestPerAccountWindow_VolumeCountAndCooldown(t *testing.T) {
 	if !w.shouldFire("u", now.Add(31*time.Minute), 30*time.Minute) {
 		t.Fatal("after cooldown must fire again")
 	}
+}
+
+func TestComputeSignals_FromMismatchAndPHPMailer(t *testing.T) {
+	pol := newTestPolicies(t)
+	auth := map[string]struct{}{"example.com": {}}
+	h := emailspool.Headers{
+		From:         "Spoof <attacker@spoofed.example>",
+		ReplyTo:      "attacker@gmail.example",
+		XPHPScript:   "rentvsloan.example.com/wp-admin/admin-ajax.php for 192.0.2.10",
+		XMailer:      "PHPMailer 7.0.0",
+		EnvelopeUser: "exampleuser",
+	}
+	sig := computeSignals(h, auth, pol)
+	if !sig.FromMismatch {
+		t.Error("FromMismatch expected")
+	}
+	if !sig.AdditionalSignal {
+		t.Error("AdditionalSignal expected (Reply-To external + PHPMailer)")
+	}
+	if sig.SourceIP != "192.0.2.10" {
+		t.Errorf("SourceIP = %q", sig.SourceIP)
+	}
+	if sig.ScriptKey != "rentvsloan.example.com:/wp-admin/admin-ajax.php" {
+		t.Errorf("ScriptKey = %q", sig.ScriptKey)
+	}
+}
+
+func TestComputeSignals_LegitContactForm_NoFromMismatch(t *testing.T) {
+	pol := newTestPolicies(t)
+	auth := map[string]struct{}{"example.com": {}}
+	h := emailspool.Headers{
+		From:       "Site <site@example.com>",
+		ReplyTo:    "visitor@gmail.example",
+		XPHPScript: "example.com/wp-admin/admin-ajax.php for 192.0.2.20",
+		XMailer:    "PHPMailer 6.0",
+	}
+	sig := computeSignals(h, auth, pol)
+	if sig.FromMismatch {
+		t.Error("legit contact form must not set FromMismatch")
+	}
+	// Path 1 requires fromMismatch as a HARD precondition; AdditionalSignal
+	// alone must not fire it.
+	if sig.AdditionalSignal && sig.FromMismatch {
+		t.Error("Path 1 trigger requires both")
+	}
+}
+
+func TestComputeSignals_SubdomainOfAccountIsAuthorised(t *testing.T) {
+	pol := newTestPolicies(t)
+	auth := map[string]struct{}{"example.com": {}}
+	h := emailspool.Headers{
+		From:       "Mail <mail@sub.example.com>",
+		XPHPScript: "sub.example.com/notify.php for 192.0.2.30",
+	}
+	sig := computeSignals(h, auth, pol)
+	if sig.FromMismatch {
+		t.Error("sub.example.com From must be authorised when example.com is in account")
+	}
+}
+
+// newTestPolicies returns a Policies with PHPMailer suspicious + WordPress safe.
+func newTestPolicies(t *testing.T) *emailspool.Policies {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/mailer_classes.yaml", []byte(`version: 1
+suspicious: [phpmailer]
+safe: [wordpress, cpanel]
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pol, err := emailspool.LoadPolicies(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pol
 }
