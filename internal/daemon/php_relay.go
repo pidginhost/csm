@@ -1,7 +1,10 @@
 package daemon
 
 import (
+	"bufio"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -581,3 +584,49 @@ func fmtHeaderMessage(qualifying int, win time.Duration) string {
 
 // phpRelayMetrics is implemented in Phase N. Unit tests pass nil.
 type phpRelayMetrics struct{}
+
+type cpanelLimitStatus int
+
+const (
+	cpanelLimitOK cpanelLimitStatus = iota
+	cpanelLimitMissing
+	cpanelLimitUnparsable
+	cpanelLimitDisabled
+)
+
+// readCpanelHourlyLimit returns (parsed-value, status). The key in
+// /var/cpanel/cpanel.config is `maxemailsperhour` (no underscores, matches
+// internal/checks/hardening_audit.go usage).
+//
+//	OK         -> integer > 0; the cap is in force.
+//	Missing    -> file or key absent; caller assumes default 100 + Warning.
+//	Unparsable -> key present but not a number; caller assumes default 100 + Warning.
+//	Disabled   -> key present and == 0; cpanel hourly limit explicitly off.
+func readCpanelHourlyLimit(path string) (int, cpanelLimitStatus) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, cpanelLimitMissing
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := sc.Text()
+		eq := strings.IndexByte(line, '=')
+		if eq < 0 {
+			continue
+		}
+		if strings.TrimSpace(line[:eq]) != "maxemailsperhour" {
+			continue
+		}
+		val := strings.TrimSpace(line[eq+1:])
+		n, err := strconv.Atoi(val)
+		if err != nil {
+			return 0, cpanelLimitUnparsable
+		}
+		if n == 0 {
+			return 0, cpanelLimitDisabled
+		}
+		return n, cpanelLimitOK
+	}
+	return 0, cpanelLimitMissing
+}

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -400,4 +401,45 @@ func newTestPoliciesWithProxy(t *testing.T, cidr string) *emailspool.Policies {
 		t.Fatal(err)
 	}
 	return pol
+}
+
+func TestReadCpanelHourlyLimit_Parses(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "cpanel.config")
+	_ = os.WriteFile(cfgPath, []byte("foo=bar\nmaxemailsperhour=200\nbaz=qux\n"), 0o644)
+
+	got, status := readCpanelHourlyLimit(cfgPath)
+	if got != 200 || status != cpanelLimitOK {
+		t.Errorf("readCpanelHourlyLimit = (%d, %v), want (200, OK)", got, status)
+	}
+}
+
+func TestReadCpanelHourlyLimit_Missing(t *testing.T) {
+	got, status := readCpanelHourlyLimit("/nonexistent/path")
+	if status != cpanelLimitMissing {
+		t.Errorf("status = %v, want missing", status)
+	}
+	if got != 0 {
+		t.Errorf("missing must return 0 hint, got %d", got)
+	}
+}
+
+func TestReadCpanelHourlyLimit_Zero_DisabledByOperator(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "cpanel.config")
+	_ = os.WriteFile(cfgPath, []byte("maxemailsperhour=0\n"), 0o644)
+	got, status := readCpanelHourlyLimit(cfgPath)
+	if status != cpanelLimitDisabled || got != 0 {
+		t.Errorf("readCpanelHourlyLimit = (%d, %v), want (0, disabled)", got, status)
+	}
+}
+
+func TestReadCpanelHourlyLimit_Unparsable(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "cpanel.config")
+	_ = os.WriteFile(cfgPath, []byte("maxemailsperhour=banana\n"), 0o644)
+	_, status := readCpanelHourlyLimit(cfgPath)
+	if status != cpanelLimitUnparsable {
+		t.Errorf("status = %v, want unparsable", status)
+	}
 }
