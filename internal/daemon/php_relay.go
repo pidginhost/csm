@@ -494,11 +494,15 @@ type evaluator struct {
 	accounts *perAccountWindow
 	cfg      *config.Config
 	metrics  *phpRelayMetrics // optional; nil in unit tests
+	policies *emailspool.Policies
 }
 
 func newEvaluator(s *perScriptWindow, i *perIPWindow, a *perAccountWindow, cfg *config.Config, m *phpRelayMetrics) *evaluator {
 	return &evaluator{scripts: s, ips: i, accounts: a, cfg: cfg, metrics: m}
 }
+
+// SetPolicies is called by daemon wiring once the policies file has loaded.
+func (e *evaluator) SetPolicies(p *emailspool.Policies) { e.policies = p }
 
 // evaluatePaths inspects the script's window state (and IP window) and
 // returns the set of findings that fire at this moment. Cooldowns prevent
@@ -529,6 +533,21 @@ func (e *evaluator) evaluatePaths(k scriptKey, sourceIP, cpuser string, now time
 			f := e.makeFinding(k, "volume", sourceIP, cpuser, s,
 				fmt.Sprintf("Path 2: %d outbound mails from one script in last 60 min", absVol))
 			findings = append(findings, f)
+		}
+	}
+
+	// Path 4: HTTP-IP fanout. Skipped silently for proxy IPs.
+	if sourceIP != "" {
+		if e.policies == nil || !e.policies.IsProxyIP(sourceIP) {
+			fwin := time.Duration(e.cfg.EmailProtection.PHPRelay.FanoutWindowMin) * time.Minute
+			distinct := e.ips.distinctScriptsSince(sourceIP, now.Add(-fwin))
+			if distinct >= e.cfg.EmailProtection.PHPRelay.FanoutDistinctScripts {
+				if s.shouldFire("fanout", now, phpRelayPathCooldown) {
+					f := e.makeFinding(k, "fanout", sourceIP, cpuser, s,
+						fmt.Sprintf("Path 4: HTTP source IP %s triggered %d distinct scripts in last %s", sourceIP, distinct, fwin))
+					findings = append(findings, f)
+				}
+			}
 		}
 	}
 

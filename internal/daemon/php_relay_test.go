@@ -339,3 +339,65 @@ safe: [wordpress, cpanel]
 	}
 	return pol
 }
+
+func TestEvaluatePaths_Path4_FiresOnFanout(t *testing.T) {
+	cfg := defaultPHPRelayCfg()
+	cfg.EmailProtection.PHPRelay.FanoutDistinctScripts = 3
+	cfg.EmailProtection.PHPRelay.FanoutWindowMin = 5
+	psw := newPerScriptWindow()
+	pip := newPerIPWindow(64)
+	eng := newEvaluator(psw, pip, nil, cfg, nil)
+
+	now := time.Now()
+	pip.append("192.0.2.99", "kA:/", now)
+	pip.append("192.0.2.99", "kB:/", now)
+	pip.append("192.0.2.99", "kC:/", now)
+
+	findings := eng.evaluatePaths("kC:/", "192.0.2.99", "u", now)
+	foundFanout := false
+	for _, f := range findings {
+		if f.Path == "fanout" {
+			foundFanout = true
+			if f.SourceIP != "192.0.2.99" {
+				t.Errorf("SourceIP = %q", f.SourceIP)
+			}
+		}
+	}
+	if !foundFanout {
+		t.Errorf("Path 4 expected, got %+v", findings)
+	}
+}
+
+func TestEvaluatePaths_Path4_SkipsProxyIPs(t *testing.T) {
+	cfg := defaultPHPRelayCfg()
+	psw := newPerScriptWindow()
+	pip := newPerIPWindow(64)
+	pol := newTestPoliciesWithProxy(t, "192.0.2.0/24")
+	eng := newEvaluator(psw, pip, nil, cfg, nil)
+	eng.policies = pol
+
+	now := time.Now()
+	pip.append("192.0.2.99", "kA:/", now)
+	pip.append("192.0.2.99", "kB:/", now)
+	pip.append("192.0.2.99", "kC:/", now)
+
+	findings := eng.evaluatePaths("kC:/", "192.0.2.99", "u", now)
+	for _, f := range findings {
+		if f.Path == "fanout" {
+			t.Errorf("Path 4 must skip proxy IPs: %+v", f)
+		}
+	}
+}
+
+func newTestPoliciesWithProxy(t *testing.T, cidr string) *emailspool.Policies {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/http_proxy_ranges.yaml", []byte("version: 1\ncidrs: [\""+cidr+"\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pol, err := emailspool.LoadPolicies(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pol
+}
