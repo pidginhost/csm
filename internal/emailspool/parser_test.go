@@ -1,6 +1,9 @@
 package emailspool
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 func TestExtractDomain_BareAddress(t *testing.T) {
 	got := ExtractDomain("user@Example.COM")
@@ -47,5 +50,51 @@ func TestIsSubdomainOrEqual(t *testing.T) {
 		if got := IsSubdomainOrEqual(c.candidate, c.base); got != c.want {
 			t.Errorf("IsSubdomainOrEqual(%q,%q)=%v, want %v", c.candidate, c.base, got, c.want)
 		}
+	}
+}
+
+func TestParseHeaders_PHPMailerFixture(t *testing.T) {
+	h, err := ParseHeaders("testdata/sample_phpmailer.H")
+	if err != nil {
+		t.Fatalf("ParseHeaders error: %v", err)
+	}
+	if h.EnvelopeUser != "exampleuser" {
+		t.Errorf("EnvelopeUser = %q, want exampleuser", h.EnvelopeUser)
+	}
+	if h.EnvelopeUID != 1168 {
+		t.Errorf("EnvelopeUID = %d, want 1168", h.EnvelopeUID)
+	}
+	if h.From != "Spoof <attacker@spoofed.example>" {
+		t.Errorf("From = %q", h.From)
+	}
+	if h.ReplyTo != "attacker@gmail.example" {
+		t.Errorf("ReplyTo = %q", h.ReplyTo)
+	}
+	if h.XPHPScript != "rentvsloan.example.com/wp-admin/admin-ajax.php for 192.0.2.10" {
+		t.Errorf("XPHPScript = %q", h.XPHPScript)
+	}
+	if h.XMailer != "PHPMailer 7.0.0 (https://github.com/PHPMailer/PHPMailer)" {
+		t.Errorf("XMailer = %q", h.XMailer)
+	}
+}
+
+func TestParseHeaders_NoXPHPScript(t *testing.T) {
+	// Confirm a spool file without X-PHP-Script returns Headers{} with empty XPHPScript.
+	// Use a tmp file so we don't need a separate fixture.
+	dir := t.TempDir()
+	path := dir + "/no-xphp.H"
+	content := "id1-H\nuser 100 100\n<user@example.com>\n0 0\n-local\n1\nrcpt@example.com\n\n037T To: rcpt@example.com\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h, err := ParseHeaders(path)
+	if err != nil {
+		t.Fatalf("ParseHeaders error: %v", err)
+	}
+	if h.XPHPScript != "" {
+		t.Errorf("XPHPScript = %q, want empty", h.XPHPScript)
+	}
+	if h.EnvelopeUser != "user" {
+		t.Errorf("EnvelopeUser = %q", h.EnvelopeUser)
 	}
 }
