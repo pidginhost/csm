@@ -1,10 +1,13 @@
 package daemon
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/emailspool"
 )
 
@@ -477,3 +480,75 @@ func parseXPHPScript(v string) (scriptKey, string) {
 	path := url[slash:]
 	return scriptKey(host + ":" + path), ip
 }
+
+const (
+	phpRelayPathCooldown = 30 * time.Minute
+)
+
+// evaluator combines windows + config + alerter in one object so the
+// detector code path is callable from inotify watcher, retro scan, and
+// startup spool walker without rebuilding the dependency graph each time.
+type evaluator struct {
+	scripts  *perScriptWindow
+	ips      *perIPWindow
+	accounts *perAccountWindow
+	cfg      *config.Config
+	metrics  *phpRelayMetrics // optional; nil in unit tests
+}
+
+func newEvaluator(s *perScriptWindow, i *perIPWindow, a *perAccountWindow, cfg *config.Config, m *phpRelayMetrics) *evaluator {
+	return &evaluator{scripts: s, ips: i, accounts: a, cfg: cfg, metrics: m}
+}
+
+// evaluatePaths inspects the script's window state (and IP window) and
+// returns the set of findings that fire at this moment. Cooldowns prevent
+// duplicate emissions per (script, path).
+func (e *evaluator) evaluatePaths(k scriptKey, sourceIP, cpuser string, now time.Time) []alert.Finding {
+	if !e.cfg.EmailProtection.PHPRelay.Enabled {
+		return nil
+	}
+	var findings []alert.Finding
+	s := e.scripts.getOrCreate(k)
+
+	// Path 1: sustained qualifying events.
+	win := time.Duration(e.cfg.EmailProtection.PHPRelay.RateWindowMin) * time.Minute
+	qualifying := s.qualifyingCount(now.Add(-win), func(ev scriptEvent) bool {
+		return ev.FromMismatch && ev.AdditionalSignal
+	})
+	if qualifying >= e.cfg.EmailProtection.PHPRelay.HeaderScoreVolumeMin {
+		if s.shouldFire("header", now, phpRelayPathCooldown) {
+			f := e.makeFinding(k, "header", sourceIP, cpuser, s, fmtHeaderMessage(qualifying, win))
+			findings = append(findings, f)
+		}
+	}
+
+	return findings
+}
+
+// makeFinding builds a Critical Finding for the given path.
+func (e *evaluator) makeFinding(k scriptKey, path, sourceIP, cpuser string, s *scriptState, message string) alert.Finding {
+	msgIDs, _ := s.snapshotActiveMsgs()
+	// Cap the sample shown in the finding so the alert payload stays bounded;
+	// AutoFreezePHPRelayQueue takes its own complete snapshot.
+	if len(msgIDs) > 10 {
+		msgIDs = msgIDs[:10]
+	}
+	return alert.Finding{
+		Severity:  alert.Critical,
+		Check:     "email_php_relay_abuse",
+		Path:      path,
+		Message:   message,
+		ScriptKey: string(k),
+		SourceIP:  sourceIP,
+		CPUser:    cpuser,
+		MsgIDs:    msgIDs,
+		Timestamp: time.Now(),
+	}
+}
+
+func fmtHeaderMessage(qualifying int, win time.Duration) string {
+	return fmt.Sprintf("Path 1: %d qualifying outbound mails (From-mismatch AND suspicious header) in last %s", qualifying, win)
+}
+
+// phpRelayMetrics is implemented in Phase N. Unit tests pass nil.
+type phpRelayMetrics struct{}

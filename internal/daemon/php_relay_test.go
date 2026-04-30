@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/emailspool"
 )
 
@@ -194,6 +196,98 @@ func TestComputeSignals_SubdomainOfAccountIsAuthorised(t *testing.T) {
 	sig := computeSignals(h, auth, pol)
 	if sig.FromMismatch {
 		t.Error("sub.example.com From must be authorised when example.com is in account")
+	}
+}
+
+func defaultPHPRelayCfg() *config.Config {
+	cfg := &config.Config{}
+	cfg.EmailProtection.PHPRelay.Enabled = true
+	cfg.EmailProtection.PHPRelay.RateWindowMin = 5
+	cfg.EmailProtection.PHPRelay.HeaderScoreVolumeMin = 5
+	cfg.EmailProtection.PHPRelay.AbsoluteVolumePerHour = 30
+	cfg.EmailProtection.PHPRelay.FanoutDistinctScripts = 3
+	cfg.EmailProtection.PHPRelay.FanoutWindowMin = 5
+	return cfg
+}
+
+func TestEvaluatePaths_Path1_FiresOnSustainedQualifyingEvents(t *testing.T) {
+	cfg := defaultPHPRelayCfg()
+	psw := newPerScriptWindow()
+	pip := newPerIPWindow(64)
+	eng := newEvaluator(psw, pip, nil, cfg, nil)
+
+	k := scriptKey("attacker.example.com:/admin-ajax.php")
+	now := time.Now()
+	// 5 qualifying events within 5 min (FromMismatch + AdditionalSignal).
+	for i := 0; i < 5; i++ {
+		psw.getOrCreate(k).append(scriptEvent{
+			At:               now.Add(time.Duration(-i*30) * time.Second),
+			MsgID:            "id" + string(rune('0'+i)),
+			FromMismatch:     true,
+			AdditionalSignal: true,
+		})
+	}
+
+	findings := eng.evaluatePaths(k, "192.0.2.10", "exampleuser", now)
+	foundHeader := false
+	for _, f := range findings {
+		if f.Path == "header" && f.Check == "email_php_relay_abuse" && f.Severity == alert.Critical {
+			foundHeader = true
+			if f.ScriptKey != string(k) {
+				t.Errorf("ScriptKey = %q, want %q", f.ScriptKey, k)
+			}
+		}
+	}
+	if !foundHeader {
+		t.Errorf("expected Path 1 finding, got %+v", findings)
+	}
+}
+
+func TestEvaluatePaths_Path1_DoesNotFireWithoutFromMismatch(t *testing.T) {
+	cfg := defaultPHPRelayCfg()
+	psw := newPerScriptWindow()
+	pip := newPerIPWindow(64)
+	eng := newEvaluator(psw, pip, nil, cfg, nil)
+
+	k := scriptKey("contact.example.com:/admin-ajax.php")
+	now := time.Now()
+	// 10 events with AdditionalSignal but NOT FromMismatch (legit form).
+	for i := 0; i < 10; i++ {
+		psw.getOrCreate(k).append(scriptEvent{
+			At:               now.Add(time.Duration(-i*10) * time.Second),
+			MsgID:            "x",
+			FromMismatch:     false,
+			AdditionalSignal: true,
+		})
+	}
+	findings := eng.evaluatePaths(k, "192.0.2.20", "u", now)
+	for _, f := range findings {
+		if f.Path == "header" {
+			t.Errorf("Path 1 must not fire without FromMismatch: %+v", f)
+		}
+	}
+}
+
+func TestEvaluatePaths_Path1_Cooldown(t *testing.T) {
+	cfg := defaultPHPRelayCfg()
+	psw := newPerScriptWindow()
+	pip := newPerIPWindow(64)
+	eng := newEvaluator(psw, pip, nil, cfg, nil)
+
+	k := scriptKey("k:/p")
+	now := time.Now()
+	fill := func() {
+		for i := 0; i < 5; i++ {
+			psw.getOrCreate(k).append(scriptEvent{At: now, FromMismatch: true, AdditionalSignal: true})
+		}
+	}
+	fill()
+	if findings := eng.evaluatePaths(k, "", "u", now); len(findings) == 0 {
+		t.Fatal("first call must fire")
+	}
+	// Immediate re-evaluation: cooldown suppresses.
+	if findings := eng.evaluatePaths(k, "", "u", now); len(findings) != 0 {
+		t.Errorf("cooldown must suppress immediate re-fire, got %+v", findings)
 	}
 }
 
