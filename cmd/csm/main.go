@@ -90,6 +90,8 @@ func main() {
 		runScanAccount()
 	case "firewall":
 		runFirewall()
+	case "harden":
+		runHarden()
 	case "enable":
 		runEnable()
 	case "disable":
@@ -137,6 +139,7 @@ Commands:
   export --since <when> Dump audit-log events for SIEM backfill (RFC 3339 ts or duration)
   scan <user>   Scan a single cPanel account (add --alert to send alerts)
   firewall ...  Firewall management (deny, allow, status, ports, etc.)
+  harden        Apply targeted hardening policies (run csm harden for list)
   enable        Enable optional features (--php-shield)
   disable       Disable optional features (--php-shield)
   version       Version info + build hash

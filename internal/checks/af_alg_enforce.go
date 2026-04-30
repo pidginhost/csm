@@ -158,3 +158,20 @@ func enforceAFAlgBlocked() (EnforceResult, error) {
 
 	return res, nil
 }
+
+// AFAlgMarkerPath returns the canonical marker file location. Exposed for
+// the cmd/csm CLI which prints it to operators; production code in this
+// package should reference the unexported constant directly.
+func AFAlgMarkerPath() string { return afAlgMarkerPath }
+
+// WriteAFAlgMarker forces the canonical marker content to disk regardless
+// of current state. Used by `csm harden --copy-fail` to ensure subsequent
+// EnforceAFAlgBlocked() runs see a valid marker even on first install.
+func WriteAFAlgMarker() error {
+	return osFS.WriteFile(afAlgMarkerPath, []byte(canonicalAFAlgMarker), 0o644)
+}
+
+// EnforceAFAlgBlocked is the exported alias of enforceAFAlgBlocked for use
+// by cmd/csm. The unexported form stays internal to the package so the
+// periodic Check (Task 6) can call it without going through the export.
+func EnforceAFAlgBlocked() (EnforceResult, error) { return enforceAFAlgBlocked() }
