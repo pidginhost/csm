@@ -1,4 +1,4 @@
-.PHONY: build build-yara build-linux build-all clean test lint sec vuln fmt fmt-check vet ci tools sync-embedded check-embedded
+.PHONY: build build-yara build-linux build-all clean test lint sec vuln fmt fmt-check vet ci tools sync-embedded check-embedded check-fixtures
 
 # Pinned tool versions -- bump deliberately, keep in sync with .gitlab-ci.yml
 GOLANGCI_LINT_VERSION := v2.11.4
@@ -88,8 +88,14 @@ fmt:
 fmt-check:
 	@test -z "$$(gofmt -l .)" || (echo "Files not formatted:" && gofmt -l . && exit 1)
 
+# check-fixtures fails CI if any testdata fixture contains a non-RFC-5737
+# IPv4 literal. Guards against unsanitised customer data leaking into the
+# repo (see internal/daemon/testdata/php_relay/SANITISE.md).
+check-fixtures:
+	scripts/check-fixtures.sh
+
 # Run all CI checks locally
-ci: check-embedded fmt-check vet lint sec vuln test build-linux
+ci: check-embedded check-fixtures fmt-check vet lint sec vuln test build-linux
 
 # Install dev tools (versions pinned at top of Makefile)
 tools:
