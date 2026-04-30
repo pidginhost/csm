@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `.htaccess` user-agent cloak detector stops firing on the canonical multi-line "bad bots" snippet, where each scraper UA sits on its own RewriteCond paired with one terminal redirect. Targeted one- or two-cond cloaks still fire.
 - Shell dropper detector ignores `curl ... | sh` patterns that sit inside a `#` comment, so distribution installer headers (rustup-style usage banners) no longer trip it. Real droppers on actual code lines still match.
+- Hardening audit no longer reports "pass" on kernels with `CONFIG_CRYPTO_USER_API_AEAD=y` (built-in AF_ALG). The modprobe blacklist is ineffective on those kernels and the previous behavior was a false negative; the audit now reads `/boot/config-$(uname -r)` (or `/proc/config.gz`) and reports `fail` with a Fix string pointing to KernelCare or seccomp.
+- `csm harden --copy-fail` refuses to write the marker on built-in kernels and exits 2 with an actionable error, instead of silently reporting success.
+- Hardening audit recognizes KernelCare CVE-2026-31431 livepatches via `kcarectl --patch-info` and reports `pass` even on built-in kernels once the patch is applied.
+- Daemon startup re-runs `auditd.Deploy()` if the on-disk `csm.rules` has drifted from the embedded constant. Closes a real-world gap where a package upgrade installed the new binary but did not redeploy the auditd rules, leaving detection layers like `csm_af_alg_socket` silently inactive.
 
 ## [2.10.0] - 2026-04-28
 
