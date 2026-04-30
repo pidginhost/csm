@@ -107,12 +107,3 @@ func (i *msgIDIndex) evictOldestLocked() {
 		delete(i.entries, oldestID)
 	}
 }
-
-// msgIndexPersister is implemented in Task C3 (async batched bbolt writer).
-// Forward declaration here so msgIDIndex compiles; full type lives in
-// php_relay_msgindex_bbolt.go.
-type msgIndexPersister struct{}
-
-// Stub Enqueue keeps msgIDIndex tests compilable; replaced by the real
-// implementation in Task C3.
-func (p *msgIndexPersister) Enqueue(msgID string, e indexEntry) {}
