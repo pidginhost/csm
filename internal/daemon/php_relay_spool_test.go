@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -126,5 +127,32 @@ info@example.com
 	}
 	if findings[0].Path != "header" {
 		t.Errorf("Path = %q, want header", findings[0].Path)
+	}
+}
+
+func TestRecoveryScan_BoundedAndDedupes(t *testing.T) {
+	spoolRoot := t.TempDir()
+	sub := filepath.Join(spoolRoot, "k")
+	_ = os.MkdirAll(sub, 0o755)
+
+	// Write 5 -H files; cap recovery at 3.
+	for i := 0; i < 5; i++ {
+		body := "id-H\nu 1 1\n<u@example.com>\n0 0\n-local\n1\nrcpt@example.com\n\n037T To: rcpt@example.com\n132  X-PHP-Script: x.example.com/y.php for 192.0.2.1\n"
+		_ = os.WriteFile(filepath.Join(sub, fmt.Sprintf("id%d-H", i)), []byte(body), 0o644)
+		time.Sleep(5 * time.Millisecond) // ensure distinct mtimes
+	}
+
+	var seen []string
+	n, truncated := runRecoveryScan(spoolRoot, 3, func(path string) {
+		seen = append(seen, path)
+	})
+	if n != 3 {
+		t.Errorf("scanned = %d, want 3", n)
+	}
+	if !truncated {
+		t.Errorf("truncated should be true (5 files, cap 3)")
+	}
+	if len(seen) != 3 {
+		t.Errorf("callbacks = %d, want 3", len(seen))
 	}
 }

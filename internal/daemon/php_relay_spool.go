@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -261,4 +262,52 @@ func msgIDFromPath(path string) string {
 		return ""
 	}
 	return strings.TrimSuffix(base, "-H")
+}
+
+// runRecoveryScan walks every -H file under spoolRoot/*/, sorts by mtime
+// (oldest first), invokes onFile up to maxFiles. Returns the number scanned
+// and whether the cap was hit.
+//
+//nolint:unused // consumed by daemon wiring (Task O2)
+func runRecoveryScan(spoolRoot string, maxFiles int, onFile func(string)) (int, bool) {
+	type entry struct {
+		path string
+		mod  time.Time
+	}
+	var entries []entry
+	subs, err := os.ReadDir(spoolRoot)
+	if err != nil {
+		return 0, false
+	}
+	for _, sub := range subs {
+		if !sub.IsDir() {
+			continue
+		}
+		subPath := filepath.Join(spoolRoot, sub.Name())
+		files, err := os.ReadDir(subPath)
+		if err != nil {
+			continue
+		}
+		for _, f := range files {
+			if !strings.HasSuffix(f.Name(), "-H") {
+				continue
+			}
+			full := filepath.Join(subPath, f.Name())
+			fi, err := os.Stat(full)
+			if err != nil {
+				continue
+			}
+			entries = append(entries, entry{path: full, mod: fi.ModTime()})
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].mod.Before(entries[j].mod) })
+	truncated := false
+	if len(entries) > maxFiles {
+		entries = entries[:maxFiles]
+		truncated = true
+	}
+	for _, e := range entries {
+		onFile(e.path)
+	}
+	return len(entries), truncated
 }
