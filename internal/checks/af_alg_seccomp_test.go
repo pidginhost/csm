@@ -56,7 +56,7 @@ func (f *fakeFS) attachToMockOS() *mockOS {
 
 // systemctlMock returns a runAllowNonZero handler that reports unit
 // existence based on the given allowlist and counts daemon-reload /
-// reload-or-restart invocations the production code emits.
+// try-restart invocations the production code emits.
 type systemctlMock struct {
 	exists           map[string]bool
 	daemonReloads    int
@@ -65,7 +65,7 @@ type systemctlMock struct {
 
 func (s *systemctlMock) handler() func(string, ...string) ([]byte, error) {
 	// Production code routes both `list-unit-files` (existence check) and
-	// `reload-or-restart` through cmdExec.RunAllowNonZero, so this single
+	// `try-restart` through cmdExec.RunAllowNonZero, so this single
 	// handler covers both. `daemon-reload` goes through cmdExec.Run and
 	// is handled by runHandler() below.
 	return func(name string, args ...string) ([]byte, error) {
@@ -78,7 +78,7 @@ func (s *systemctlMock) handler() func(string, ...string) ([]byte, error) {
 			}
 			return nil, nil
 		}
-		if len(args) >= 2 && args[0] == "reload-or-restart" {
+		if len(args) >= 2 && args[0] == "try-restart" {
 			s.reloadOrRestarts = append(s.reloadOrRestarts, args[1])
 			return nil, nil
 		}
@@ -137,7 +137,7 @@ func TestApplyAFAlgSeccompDropIns_WritesCorrectContent(t *testing.T) {
 		t.Errorf("expected exactly one systemctl daemon-reload, got %d", sc.daemonReloads)
 	}
 	if len(sc.reloadOrRestarts) != 2 {
-		t.Errorf("expected reload-or-restart for both units, got %v", sc.reloadOrRestarts)
+		t.Errorf("expected try-restart for both units, got %v", sc.reloadOrRestarts)
 	}
 }
 

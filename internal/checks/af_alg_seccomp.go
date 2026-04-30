@@ -146,12 +146,15 @@ func ApplyAFAlgSeccompDropIns() ([]string, error) {
 		return written, fmt.Errorf("systemctl daemon-reload: %w", err)
 	}
 	for _, u := range written {
-		// reload-or-restart picks the lightest restart that activates
-		// the new seccomp filter; PHP-FPM and LiteSpeed both support
-		// graceful reload, but daemon-reload alone does NOT re-arm
-		// the seccomp filter on already-running workers.
-		if _, err := cmdExec.RunAllowNonZero("systemctl", "reload-or-restart", u); err != nil {
-			return written, fmt.Errorf("systemctl reload-or-restart %s: %w", u, err)
+		// try-restart performs a full restart (re-exec the master process)
+		// only if the unit is currently active. A reload (e.g., SIGUSR2 to
+		// PHP-FPM) is NOT enough: systemd attaches seccomp filters at
+		// process spawn time, so the existing master has to be replaced
+		// for RestrictAddressFamilies to take effect on it and its
+		// workers. try-restart skips units that were intentionally
+		// stopped, so we don't surprise-start anything.
+		if _, err := cmdExec.RunAllowNonZero("systemctl", "try-restart", u); err != nil {
+			return written, fmt.Errorf("systemctl try-restart %s: %w", u, err)
 		}
 	}
 	return written, nil
@@ -189,8 +192,10 @@ func RemoveAFAlgSeccompDropIns() ([]string, error) {
 		if !systemdUnitExists(u) {
 			continue
 		}
-		if _, err := cmdExec.RunAllowNonZero("systemctl", "reload-or-restart", u); err != nil {
-			return removed, fmt.Errorf("systemctl reload-or-restart %s: %w", u, err)
+		// Same reasoning as Apply: full re-exec is required so the
+		// seccomp filter is dropped from the running master.
+		if _, err := cmdExec.RunAllowNonZero("systemctl", "try-restart", u); err != nil {
+			return removed, fmt.Errorf("systemctl try-restart %s: %w", u, err)
 		}
 	}
 	return removed, nil
