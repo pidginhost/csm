@@ -1,8 +1,11 @@
 package daemon
 
 import (
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/pidginhost/csm/internal/emailspool"
 )
 
 // scriptKey = host(X-PHP-Script) + ":" + path(X-PHP-Script)
@@ -396,4 +399,81 @@ func (w *perAccountWindow) SweepIdle(cutoff time.Time) int {
 		return true
 	})
 	return n
+}
+
+// signals is the per-event boolean fingerprint Flow A appends to
+// scriptState. The numeric scriptKey lookup happens against the same
+// emailspool helpers used elsewhere so subdomain handling is consistent.
+type signals struct {
+	ScriptKey        scriptKey
+	SourceIP         string
+	FromMismatch     bool
+	AdditionalSignal bool
+	XMailer          string
+}
+
+// computeSignals resolves the per-event flags for an accepted message.
+// authDomains is the cPanel user's authorised domain set (empty on
+// resolver error -- caller treats that as "skip From-mismatch contribution"
+// by passing isAuthDomainsKnown=false).
+func computeSignals(h emailspool.Headers, authDomains map[string]struct{}, pol *emailspool.Policies) signals {
+	sk, sourceIP := parseXPHPScript(h.XPHPScript)
+	s := signals{
+		ScriptKey: sk,
+		SourceIP:  sourceIP,
+		XMailer:   h.XMailer,
+	}
+	if len(authDomains) > 0 {
+		fromDomain := emailspool.ExtractDomain(h.From)
+		if fromDomain != "" && !IsAuthorisedFromDomain(fromDomain, authDomains) {
+			s.FromMismatch = true
+		}
+	}
+	// Reply-To external mismatch contribution.
+	var replyToDomainMismatch bool
+	if h.ReplyTo != "" && h.From != "" {
+		rd := emailspool.ExtractDomain(h.ReplyTo)
+		fd := emailspool.ExtractDomain(h.From)
+		if rd != "" && fd != "" && rd != fd {
+			replyToDomainMismatch = true
+		}
+	}
+	// X-Mailer suspicious contribution.
+	var mailerSuspicious bool
+	if pol != nil {
+		if pol.MailerSuspicious(h.XMailer) && !pol.MailerSafe(h.XMailer) {
+			mailerSuspicious = true
+		}
+	}
+	s.AdditionalSignal = replyToDomainMismatch || mailerSuspicious
+	return s
+}
+
+// parseXPHPScript splits an X-PHP-Script header value into (scriptKey, sourceIP).
+// Format: "<host>/<path> for <ip>". Returns ("", "") on parse failure.
+func parseXPHPScript(v string) (scriptKey, string) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return "", ""
+	}
+	forIdx := strings.LastIndex(v, " for ")
+	var url, ip string
+	if forIdx > 0 {
+		url = strings.TrimSpace(v[:forIdx])
+		ip = strings.TrimSpace(v[forIdx+5:])
+	} else {
+		url = v
+	}
+	// Strip any query string.
+	if q := strings.IndexByte(url, '?'); q > 0 {
+		url = url[:q]
+	}
+	slash := strings.IndexByte(url, '/')
+	if slash < 0 {
+		// Bare host with no path.
+		return scriptKey(url + ":/"), ip
+	}
+	host := url[:slash]
+	path := url[slash:]
+	return scriptKey(host + ":" + path), ip
 }
