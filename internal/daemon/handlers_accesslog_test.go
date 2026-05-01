@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 )
 
@@ -106,6 +107,197 @@ func TestParseAccessLogLineEnhanced_WebmailLogin(t *testing.T) {
 	}
 	if findings[0].Check != "webmail_login_realtime" {
 		t.Fatalf("check = %q, want webmail_login_realtime", findings[0].Check)
+	}
+}
+
+// CVE-2026-41940 (cPanel/WHM auth-bypass) step 1: a preauth POST to
+// /login/?login_only=1 on the WHM ports (2087 SSL, 2086 plain) creates the
+// session file the attacker later mutates via CRLF injection. Surface every
+// non-infra POST so brute-force/recon shows up in alerts.
+func TestParseAccessLogLineEnhanced_WHMLogin_Port2087(t *testing.T) {
+	cfg := &config.Config{}
+	line := `198.51.100.20 - - [11/Apr/2026:12:00:00 +0000] "POST /login/?login_only=1 HTTP/1.1" 200 123 "-" "Mozilla/5.0" "host.example.com:2087"`
+
+	findings := parseAccessLogLineEnhanced(line, cfg)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d: %v", len(findings), findings)
+	}
+	if findings[0].Check != "whm_login_realtime" {
+		t.Fatalf("check = %q, want whm_login_realtime", findings[0].Check)
+	}
+	if findings[0].Severity != alert.Warning {
+		t.Fatalf("severity = %v, want Warning", findings[0].Severity)
+	}
+	if !strings.Contains(findings[0].Message, "198.51.100.20") {
+		t.Fatalf("message should contain source IP, got %q", findings[0].Message)
+	}
+}
+
+func TestParseAccessLogLineEnhanced_WHMLogin_Port2086(t *testing.T) {
+	cfg := &config.Config{}
+	line := `198.51.100.21 - - [11/Apr/2026:12:00:00 +0000] "POST /login/?login_only=1 HTTP/1.1" 200 123 "-" "Mozilla/5.0" "host.example.com:2086"`
+
+	findings := parseAccessLogLineEnhanced(line, cfg)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d: %v", len(findings), findings)
+	}
+	if findings[0].Check != "whm_login_realtime" {
+		t.Fatalf("check = %q, want whm_login_realtime", findings[0].Check)
+	}
+}
+
+func TestParseAccessLogLineEnhanced_WHMLogin_GETIgnored(t *testing.T) {
+	cfg := &config.Config{}
+	line := `198.51.100.22 - - [11/Apr/2026:12:00:00 +0000] "GET /login/?login_only=1 HTTP/1.1" 200 123 "-" "Mozilla/5.0" "host.example.com:2087"`
+
+	findings := parseAccessLogLineEnhanced(line, cfg)
+	if len(findings) != 0 {
+		t.Fatalf("expected no finding for GET (PoC uses POST), got %v", findings)
+	}
+}
+
+func TestParseAccessLogLineEnhanced_WHMLogin_Suppression(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Suppressions.SuppressCpanelLogin = true
+	line := `198.51.100.23 - - [11/Apr/2026:12:00:00 +0000] "POST /login/?login_only=1 HTTP/1.1" 200 123 "-" "Mozilla/5.0" "host.example.com:2087"`
+
+	findings := parseAccessLogLineEnhanced(line, cfg)
+	if len(findings) != 0 {
+		t.Fatalf("expected suppression to silence WHM login alert, got %v", findings)
+	}
+}
+
+// CVE-2026-41940 step 4 (cache promotion): the watchTowr PoC fires a tokenless
+// GET against a token-required path so do_token_denied() rewrites the session
+// JSON cache from the CRLF-injected raw file. Legitimate WHM clients always
+// prefix /scripts*/* with /cpsessXXXXXX/ - the bare path is a hard signature.
+func TestParseAccessLogLineEnhanced_WHMUnauthScripts_listaccts2(t *testing.T) {
+	cfg := &config.Config{}
+	line := `203.0.113.77 - - [11/Apr/2026:12:00:00 +0000] "GET /scripts2/listaccts HTTP/1.1" 200 0 "-" "curl/8.4.0" "host.example.com:2087"`
+
+	findings := parseAccessLogLineEnhanced(line, cfg)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d: %v", len(findings), findings)
+	}
+	if findings[0].Check != "whm_unauth_scripts_realtime" {
+		t.Fatalf("check = %q, want whm_unauth_scripts_realtime", findings[0].Check)
+	}
+	if findings[0].Severity != alert.Critical {
+		t.Fatalf("severity = %v, want Critical", findings[0].Severity)
+	}
+	if !strings.Contains(findings[0].Message, "203.0.113.77") {
+		t.Fatalf("message should contain source IP, got %q", findings[0].Message)
+	}
+}
+
+func TestParseAccessLogLineEnhanced_WHMUnauthScripts_listaccts1(t *testing.T) {
+	cfg := &config.Config{}
+	line := `203.0.113.79 - - [11/Apr/2026:12:00:00 +0000] "GET /scripts/listaccts HTTP/1.1" 200 0 "-" "curl/8.4.0" "host.example.com:2087"`
+
+	findings := parseAccessLogLineEnhanced(line, cfg)
+	if len(findings) != 1 || findings[0].Check != "whm_unauth_scripts_realtime" {
+		t.Fatalf("expected whm_unauth_scripts_realtime, got %v", findings)
+	}
+}
+
+// Detector must catch step-4-equivalent tokenless requests to ANY WHM script
+// path, not just listaccts - do_token_denied() fires path-agnostically and a
+// non-naive attacker will pivot endpoints.
+func TestParseAccessLogLineEnhanced_WHMUnauthScripts_OtherEndpoint(t *testing.T) {
+	cfg := &config.Config{}
+	line := `203.0.113.80 - - [11/Apr/2026:12:00:00 +0000] "GET /scripts2/createacct HTTP/1.1" 200 0 "-" "curl/8.4.0" "host.example.com:2087"`
+
+	findings := parseAccessLogLineEnhanced(line, cfg)
+	if len(findings) != 1 || findings[0].Check != "whm_unauth_scripts_realtime" {
+		t.Fatalf("expected whm_unauth_scripts_realtime on /scripts2/createacct, got %v", findings)
+	}
+}
+
+func TestParseAccessLogLineEnhanced_WHMUnauthScripts_QueryStringStripped(t *testing.T) {
+	cfg := &config.Config{}
+	line := `203.0.113.81 - - [11/Apr/2026:12:00:00 +0000] "GET /scripts2/listaccts?api.version=1 HTTP/1.1" 200 0 "-" "curl/8.4.0" "host.example.com:2087"`
+
+	findings := parseAccessLogLineEnhanced(line, cfg)
+	if len(findings) != 1 || findings[0].Check != "whm_unauth_scripts_realtime" {
+		t.Fatalf("query string must not defeat path match, got %v", findings)
+	}
+}
+
+func TestParseAccessLogLineEnhanced_WHMUnauthScripts_Port2086(t *testing.T) {
+	cfg := &config.Config{}
+	line := `203.0.113.82 - - [11/Apr/2026:12:00:00 +0000] "GET /scripts2/listaccts HTTP/1.1" 200 0 "-" "curl/8.4.0" "host.example.com:2086"`
+
+	findings := parseAccessLogLineEnhanced(line, cfg)
+	if len(findings) != 1 || findings[0].Check != "whm_unauth_scripts_realtime" {
+		t.Fatalf("expected whm_unauth_scripts_realtime on plain WHM port, got %v", findings)
+	}
+}
+
+func TestParseAccessLogLineEnhanced_WHMScripts_WithCpsessIgnored(t *testing.T) {
+	cfg := &config.Config{}
+	line := `198.51.100.30 - - [11/Apr/2026:12:00:00 +0000] "GET /cpsess1234567/scripts2/listaccts HTTP/1.1" 200 4096 "-" "Mozilla/5.0" "host.example.com:2087"`
+
+	findings := parseAccessLogLineEnhanced(line, cfg)
+	if len(findings) != 0 {
+		t.Fatalf("legit cpsess-prefixed scripts request must not alert, got %v", findings)
+	}
+}
+
+func TestParseAccessLogLineEnhanced_WHMUnauthScripts_NotWHMPort(t *testing.T) {
+	cfg := &config.Config{}
+	line := `203.0.113.78 - - [11/Apr/2026:12:00:00 +0000] "GET /scripts2/listaccts HTTP/1.1" 404 0 "-" "curl/8.4.0" "host.example.com:2083"`
+
+	findings := parseAccessLogLineEnhanced(line, cfg)
+	for _, f := range findings {
+		if f.Check == "whm_unauth_scripts_realtime" {
+			t.Fatalf("scripts check must not fire on cPanel port 2083, got %v", findings)
+		}
+	}
+}
+
+// Anchor port detection on the served-vhost field at end of line, not any
+// occurrence of :2087 anywhere on the line. A referer URL pointing at
+// :2087/foo while the request is served on port 80 must NOT trigger the
+// Critical-tier finding.
+func TestParseAccessLogLineEnhanced_WHMUnauthScripts_RefererPortNotMatched(t *testing.T) {
+	cfg := &config.Config{}
+	line := `203.0.113.83 - - [11/Apr/2026:12:00:00 +0000] "GET /scripts2/listaccts HTTP/1.1" 200 0 "https://attacker.example.com:2087/pivot" "curl/8.4.0" "host.example.com:80"`
+
+	findings := parseAccessLogLineEnhanced(line, cfg)
+	for _, f := range findings {
+		if f.Check == "whm_unauth_scripts_realtime" {
+			t.Fatalf("must not fire when :2087 only appears in referer, got %v", findings)
+		}
+	}
+}
+
+// SuppressCpanelLogin must NOT silence whm_unauth_scripts_realtime - it is
+// an attack IOC, not a login alert.
+func TestParseAccessLogLineEnhanced_WHMUnauthScripts_SuppressionImmune(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Suppressions.SuppressCpanelLogin = true
+	line := `203.0.113.84 - - [11/Apr/2026:12:00:00 +0000] "GET /scripts2/listaccts HTTP/1.1" 200 0 "-" "curl/8.4.0" "host.example.com:2087"`
+
+	findings := parseAccessLogLineEnhanced(line, cfg)
+	if len(findings) != 1 || findings[0].Check != "whm_unauth_scripts_realtime" {
+		t.Fatalf("login suppression must not silence attack IOC, got %v", findings)
+	}
+}
+
+// Infra IP must short-circuit before either WHM detector fires. Belt-and-
+// suspenders: catches a future regression of the top-level isInfraIPDaemon
+// gate where someone reorders the function and lets WHM checks bypass it.
+func TestParseAccessLogLineEnhanced_WHM_InfraIPSkipped(t *testing.T) {
+	cfg := &config.Config{InfraIPs: []string{"10.0.0.5"}}
+
+	loginLine := `10.0.0.5 - - [11/Apr/2026:12:00:00 +0000] "POST /login/?login_only=1 HTTP/1.1" 200 123 "-" "Mozilla/5.0" "host.example.com:2087"`
+	if findings := parseAccessLogLineEnhanced(loginLine, cfg); len(findings) != 0 {
+		t.Fatalf("infra IP must skip whm_login_realtime, got %v", findings)
+	}
+
+	scriptsLine := `10.0.0.5 - - [11/Apr/2026:12:00:00 +0000] "GET /scripts2/listaccts HTTP/1.1" 200 0 "-" "curl/8.4.0" "host.example.com:2087"`
+	if findings := parseAccessLogLineEnhanced(scriptsLine, cfg); len(findings) != 0 {
+		t.Fatalf("infra IP must skip whm_unauth_scripts_realtime, got %v", findings)
 	}
 }
 

@@ -82,7 +82,87 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 		}
 	}
 
+	// WHM login attempts (port 2086/2087). CVE-2026-41940 step 1 creates the
+	// preauth session via a POST to the WHM login endpoint; the CRLF
+	// injection lands when cpsrvd writes that session file. Surfacing every
+	// non-infra POST gives ops a brute-force/recon signal even on patched
+	// hosts. Suppressed under the cPanel-login suppression flag because WHM
+	// is the admin face of cPanel and shares the same noise profile.
+	isWHMPort := isWHMLogVhost(line)
+	if isWHMPort && !cfg.Suppressions.SuppressCpanelLogin {
+		if strings.Contains(lineLower, "post /login/?login_only=1") {
+			findings = append(findings, alert.Finding{
+				Severity: alert.Warning,
+				Check:    "whm_login_realtime",
+				Message:  fmt.Sprintf("WHM login attempt from non-infra IP: %s", ip),
+				Details:  truncateDaemon(line, 200),
+			})
+		}
+	}
+
+	// CVE-2026-41940 step 4 fingerprint: a tokenless request to a
+	// token-required WHM path triggers do_token_denied(), which the watchTowr
+	// PoC abuses to promote a CRLF-injected session record into the JSON
+	// cache. Legitimate WHM clients always prefix /scripts*/* with the
+	// /cpsessXXXXXX/ security token, so the bare prefix on a WHM port is a
+	// hard signature, not a heuristic. Matches both /scripts/ and /scripts2/
+	// because the do_token_denied() trigger is path-agnostic - the watchTowr
+	// PoC happens to use listaccts but any token-required endpoint works.
+	// Fires regardless of suppression - this is an attack IOC, not a login.
+	if isWHMPort && isUnauthWHMScriptsRequest(extractRequestURI(line)) {
+		findings = append(findings, alert.Finding{
+			Severity: alert.Critical,
+			Check:    "whm_unauth_scripts_realtime",
+			Message:  fmt.Sprintf("Tokenless WHM scripts request from %s (CVE-2026-41940 IOC)", ip),
+			Details:  truncateDaemon(line, 300),
+		})
+	}
+
 	return findings
+}
+
+// isWHMLogVhost reports whether the access-log line was served by WHM (port
+// 2086 plain or 2087 SSL). cPanel's combined log format ends every line with
+// the served vhost as the final double-quoted field (e.g. "host:2087"); we
+// anchor on the suffix of that field to avoid matching a port-like substring
+// inside a referer URL or user-agent.
+func isWHMLogVhost(line string) bool {
+	vhost := lastQuotedField(line)
+	return strings.HasSuffix(vhost, ":2087") || strings.HasSuffix(vhost, ":2086")
+}
+
+// lastQuotedField returns the content of the final double-quoted field on the
+// line, or "" if there isn't a closed pair. cPanel's log writer always emits
+// the served vhost as that final field.
+func lastQuotedField(line string) string {
+	end := strings.LastIndex(line, "\"")
+	if end <= 0 {
+		return ""
+	}
+	start := strings.LastIndex(line[:end], "\"")
+	if start < 0 {
+		return ""
+	}
+	return line[start+1 : end]
+}
+
+// isUnauthWHMScriptsRequest returns true when the request URI targets a path
+// under /scripts/ or /scripts2/ without a /cpsessXXXXXX/ security-token
+// prefix - the literal step-4 fingerprint of CVE-2026-41940. Query strings
+// are stripped before comparison.
+func isUnauthWHMScriptsRequest(requestURI string) bool {
+	parts := strings.SplitN(requestURI, " ", 3)
+	if len(parts) < 2 {
+		return false
+	}
+	path := parts[1]
+	if q := strings.Index(path, "?"); q >= 0 {
+		path = path[:q]
+	}
+	if strings.Contains(path, "/cpsess") {
+		return false
+	}
+	return strings.HasPrefix(path, "/scripts/") || strings.HasPrefix(path, "/scripts2/")
 }
 
 // parseFTPLogLine handles FTP log entries from /var/log/messages.

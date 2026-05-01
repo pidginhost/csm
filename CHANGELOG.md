@@ -11,14 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Email PHP-relay protection: real-time inotify watcher on the cPanel-Exim spool fires a Critical `email_php_relay_abuse` finding when a script's outbound mail mix matches the WordPress contact-form spam relay pattern (spoofed `From`, external `Reply-To`, suspicious `X-Mailer`). Backed by 4 detection paths (per-script header score, per-script absolute volume, per-account log-tail volume, HTTP-IP fanout), a per-script auto-freeze of the live spool via `exim -Mf` with operator-controllable dry-run + persisted ignore list, hot-reloadable mailer/proxy policy YAML, structured JSONL audit log, and a `csm phprelay` CLI subcommand family (status / ignore-script / unignore / ignore-list / dry-run / thaw). Disabled on non-cPanel hosts.
-- Copy Fail (CVE-2026-31431) detection: auditd rule + critical-tier `af_alg_socket_use` check + live audit-log inotify listener fire a Critical finding within ~500 ms of any `socket(AF_ALG, …)` call from a non-system UID. Auto-skipped on hosts where the kernel isn't exploitable (KernelCare livepatch covers the CVE, or AF_ALG aead isn't built at all).
-- `csm harden --copy-fail` writes a modprobe blacklist for `algif_aead` + `af_alg` and unloads them. Effective only on kernels where AF_ALG aead is a loadable module (`=m`); refuses with exit 2 on built-in (`=y`) kernels rather than claim a protection it can't deliver.
-- `csm harden --copy-fail-seccomp` is the built-in-kernel path: writes systemd `RestrictAddressFamilies=~AF_ALG` drop-ins for the units that spawn untrusted code (LiteSpeed, Apache, Nginx, every EA-PHP / generic PHP-FPM pool, cron, exim, dovecot) and `try-restart`s each so the filter takes effect. Workers spawned by those units cannot open AF_ALG. Rollback with `--remove`.
-- `auto_response.copy_fail_kill_process: true` SIGKILLs the offending process when the live listener catches an AF_ALG attempt. Default off (alert-only).
-- `auto_response.disable_enforce_af_alg: true` suspends the periodic `af_alg_enforcement` re-assertion of the modprobe blacklist without removing the marker file.
-- Hardening audit reads the kernel config and `kcarectl --patch-info`, reports `pass` only when the host is actually mitigated (loadable-module + blacklisted, OR built-in + seccomp drop-ins covering the listed units, OR KernelCare livepatch). Built-in kernels with none of those get `fail` with a Fix string pointing at the two real options.
-- Daemon self-heals `/etc/audit/rules.d/csm.rules` on startup if it has drifted from the embedded constant. Closes the upgrade gap where a new binary shipped without re-running the postinstall, leaving `csm_af_alg_socket` detection silently inactive.
+- Email PHP-relay protection: a real-time watcher on the outbound mail spool flags WordPress contact-form spam relays and freezes the offending script's queued mail. Operator CLI to inspect, dry-run, ignore, and thaw; disabled on non-cPanel hosts.
+- Copy Fail (CVE-2026-31431) detection: live audit-log listener flags any attempt to open the vulnerable kernel crypto socket from a non-system UID at Critical. Auto-skipped on hosts where the kernel isn't exploitable.
+- `csm harden --copy-fail` blacklists the vulnerable Copy Fail kernel modules and unloads them. Refuses on kernels where those modules are built in, since the blacklist would have no effect there.
+- `csm harden --copy-fail-seccomp` is the built-in-kernel mitigation: installs systemd seccomp drop-ins for the units that spawn untrusted code so worker processes cannot reach the vulnerable syscall. Reversible via `--remove`.
+- `auto_response.copy_fail_kill_process: true` SIGKILLs the offending process when the live listener catches a Copy Fail attempt. Default off (alert-only).
+- `auto_response.disable_enforce_af_alg: true` suspends the periodic re-assertion of the Copy Fail module blacklist without removing the hardening marker.
+- Hardening audit reports `pass` for Copy Fail only when the host is genuinely mitigated (module blacklisted, built-in kernel with seccomp drop-ins, or KernelCare livepatch). Otherwise reports `fail` with a Fix string pointing at the real options.
+- Daemon self-heals its auditd rule file on startup if it has drifted from the embedded copy. Closes the upgrade gap where a new binary shipped without re-running the postinstall, leaving Copy Fail detection silently inactive.
+- CVE-2026-41940 (cPanel/WHM auth-bypass) detection in the access-log path: non-infra WHM login attempts surface at Warning (suppressible alongside other cPanel logins); the tokenless WHM-script request the published exploit uses for cache promotion surfaces at Critical, always on, and feeds auto-block.
 
 ### Changed
 
