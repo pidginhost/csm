@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- CI: annotate six gosec findings in the email PHP-relay code paths (G115/G204/G304/G302) with operator-trust justifications matching the rest of the codebase. No behaviour change.
+
 ## [2.11.0] - 2026-05-01
 
 ### Added

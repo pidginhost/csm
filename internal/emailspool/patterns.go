@@ -57,6 +57,7 @@ func (p *Policies) load(dir string) error {
 	}
 
 	// mailer_classes.yaml
+	// #nosec G304 -- dir is the operator-supplied policy directory; filename is a fixed literal under it.
 	if data, err := os.ReadFile(filepath.Join(dir, "mailer_classes.yaml")); err == nil {
 		var raw mailerClassesYAML
 		if uerr := yaml.Unmarshal(data, &raw); uerr != nil {
@@ -70,6 +71,7 @@ func (p *Policies) load(dir string) error {
 	}
 
 	// http_proxy_ranges.yaml
+	// #nosec G304 -- dir is the operator-supplied policy directory; filename is a fixed literal under it.
 	if data, err := os.ReadFile(filepath.Join(dir, "http_proxy_ranges.yaml")); err == nil {
 		var raw httpProxyRangesYAML
 		if uerr := yaml.Unmarshal(data, &raw); uerr != nil {

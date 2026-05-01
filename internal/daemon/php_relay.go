@@ -627,6 +627,7 @@ const (
 //	Unparsable -> key present but not a number; caller assumes default 100 + Warning.
 //	Disabled   -> key present and == 0; cpanel hourly limit explicitly off.
 func readCpanelHourlyLimit(path string) (int, cpanelLimitStatus) {
+	// #nosec G304 -- path is the cPanel config path (default /var/cpanel/cpanel.config); operator-controlled, root-owned.
 	f, err := os.Open(path)
 	if err != nil {
 		return 0, cpanelLimitMissing

@@ -230,6 +230,10 @@ func emitPHPRelayFinding(d *Daemon, sev alert.Severity, check, msg string) {
 // it.
 func eximAuditWriter() io.Writer {
 	const path = "/var/log/csm/php_relay_audit.jsonl"
+	// #nosec G302 -- 0640 is intentional; SIEM log shippers (Vector, Filebeat,
+	// Fluentbit) commonly run as a non-root user that needs group-read access.
+	// 0600 would force the shipper to run as root. Same rationale as
+	// internal/alert/audit_jsonl.go.
 	if f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0640); err == nil {
 		return f
 	}

@@ -145,6 +145,9 @@ type runner interface {
 type defaultRunner struct{}
 
 func (defaultRunner) Run(ctx context.Context, bin string, args []string) (string, error) {
+	// #nosec G204 -- bin is the operator-configured exim binary path
+	// (autoFreezer.eximBin, default /usr/sbin/exim); args are exim flags +
+	// validated msg-IDs from the spool. Not attacker-controlled.
 	cmd := exec.CommandContext(ctx, bin, args...)
 	var sb strings.Builder
 	cmd.Stderr = &sb

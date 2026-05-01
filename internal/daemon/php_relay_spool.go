@@ -127,6 +127,7 @@ func (w *spoolWatcher) Run(ctx context.Context) {
 				default:
 					// Use a small ppoll-equivalent: read again after the kernel buffers.
 					var fdset unix.FdSet
+					// #nosec G115 -- w.fd%64 yields 0..63; conversion to uint is lossless.
 					fdset.Bits[w.fd/64] |= 1 << uint(w.fd%64)
 					ts := unix.Timespec{Sec: 0, Nsec: 100 * 1e6}
 					_, _ = unix.Pselect(w.fd+1, &fdset, nil, nil, &ts, nil)
