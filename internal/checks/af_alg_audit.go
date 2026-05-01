@@ -56,6 +56,12 @@ func (e afAlgEvent) after(other afAlgEvent) bool {
 // It returns (event, true) only when the line is a SYSCALL record carrying
 // the csm_af_alg_socket key. Anything else returns ok=false.
 func parseAFAlgEvent(line string) (afAlgEvent, bool) {
+	// Require type=SYSCALL: auditd also writes the rule's key into
+	// CONFIG_CHANGE records on every add_rule / remove_rule (i.e. every
+	// CSM restart), and those are not exploit signatures.
+	if !strings.HasPrefix(line, "type=SYSCALL ") {
+		return afAlgEvent{}, false
+	}
 	if !strings.Contains(line, `key="csm_af_alg_socket"`) {
 		return afAlgEvent{}, false
 	}

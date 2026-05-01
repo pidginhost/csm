@@ -50,6 +50,26 @@ func TestParseAFAlgEvent_RejectsDifferentKey(t *testing.T) {
 	}
 }
 
+// auditctl emits a CONFIG_CHANGE record naming the rule's key whenever
+// rules are loaded (e.g. on every CSM daemon restart, or any
+// `auditctl -R`). The substring `key="csm_af_alg_socket"` appears in
+// that record but the line is NOT a real socket(AF_ALG) call. Treating
+// it as one fires a Critical alert on every restart — the false
+// positive observed in production on 2026-05-01.
+func TestParseAFAlgEvent_RejectsConfigChangeAddRuleRecord(t *testing.T) {
+	line := `type=CONFIG_CHANGE msg=audit(1777619736.017:60458663): auid=4294967295 ses=4294967295 op=add_rule key="csm_af_alg_socket" list=4 res=1AUID="unset"`
+	if _, ok := parseAFAlgEvent(line); ok {
+		t.Error("CONFIG_CHANGE add_rule record must NOT be parsed as an AF_ALG socket event")
+	}
+}
+
+func TestParseAFAlgEvent_RejectsConfigChangeRemoveRuleRecord(t *testing.T) {
+	line := `type=CONFIG_CHANGE msg=audit(1777619736.017:60458665): auid=4294967295 ses=4294967295 op=remove_rule key="csm_af_alg_socket" list=4 res=1AUID="unset"`
+	if _, ok := parseAFAlgEvent(line); ok {
+		t.Error("CONFIG_CHANGE remove_rule record must NOT be parsed as an AF_ALG socket event")
+	}
+}
+
 func TestParseAFAlgEvent_HandlesQuotedExeWithSpaces(t *testing.T) {
 	line := `type=SYSCALL msg=audit(1.0:1): a0=38 uid=1001 comm="my prog" exe="/path with space/x" key="csm_af_alg_socket"`
 	ev, ok := parseAFAlgEvent(line)
@@ -210,6 +230,25 @@ type=SYSCALL msg=audit(3.0:3): a0=38 auid=1001 uid=1001 comm="x" exe="/x" key="c
 	}
 	if v, ok := st.GetRaw("_af_alg_last_seen"); !ok || v != "3.0:3" {
 		t.Errorf("cursor should advance to the valid event past the garbled line; got %q (set=%v)", v, ok)
+	}
+}
+
+// CSM redeploys its auditd ruleset on every daemon start. Each rule
+// reload emits a CONFIG_CHANGE record carrying the rule's key —
+// historically tripping a Critical alert because the parser only
+// substring-matched on `key="csm_af_alg_socket"`. The check must
+// silently skip those records and produce zero findings even when the
+// log carries them mixed with real SYSCALL events.
+func TestCheckAFAlgSocketUsage_IgnoresAuditRuleLoadEvents(t *testing.T) {
+	body := []byte(
+		`type=CONFIG_CHANGE msg=audit(1777619736.017:60458663): auid=4294967295 ses=4294967295 op=add_rule key="csm_af_alg_socket" list=4 res=1AUID="unset"
+type=CONFIG_CHANGE msg=audit(1777619736.017:60458664): auid=4294967295 ses=4294967295 op=add_rule key="csm_af_alg_socket" list=4 res=1AUID="unset"`)
+	withMockCmd(t, grepStubReturning(body))
+
+	st := newTestStore(t)
+	got := CheckAFAlgSocketUsage(context.Background(), &config.Config{}, st)
+	if len(got) != 0 {
+		t.Errorf("CONFIG_CHANGE rule-load records must not produce findings; got %d", len(got))
 	}
 }
 
