@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- AF_ALG (Copy Fail) live monitor now runs through a backend coordinator that prefers BPF LSM when the kernel supports it and falls back to the existing audit-log inotify listener otherwise. Build with `make BPF=1` (or `go build -tags bpf`) to compile in the BPF path; default builds continue to ship only the audit listener. This release lands the kernel capability probe (Phase A); the in-kernel blocking program is staged behind `errBPFPhaseBPending` and will activate once Phase B + alma9 integration test land — until then `-tags bpf` builds still use the audit listener, so detection coverage is unchanged.
+
 ### Fixed
 
 - Long-lived findings (e.g. `db_rogue_admin` for a legitimate WP admin sitting in the 7-day query window) no longer re-alert on every deep tick once the 24-hour dedup window expires. `Store.MarkAlerted` now refreshes `AlertSent` for each dispatched finding, so the next tick suppresses again instead of emitting hourly until the underlying row ages out.
