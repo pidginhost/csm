@@ -247,6 +247,15 @@ func runDaemon() {
 		fmt.Fprintf(os.Stderr, "Loaded %d signature rules (version %d)\n", scanner.RuleCount(), scanner.Version())
 	}
 
+	// One-shot migration of legacy /opt/csm/state → /var/lib/csm/state for upgrades.
+	// Safe noop on fresh installs and after the first upgrade.
+	const legacyStateDir = "/opt/csm/state"
+	if migrated, err := state.MigrateStateDir(legacyStateDir, cfg.StatePath); err != nil {
+		fatal(1, "state directory migration: %v\n", err)
+	} else if migrated {
+		fmt.Fprintf(os.Stderr, "state: migrated legacy %s → %s\n", legacyStateDir, cfg.StatePath)
+	}
+
 	lock, err := state.AcquireLock(cfg.StatePath)
 	if err != nil {
 		fatal(1, "Cannot start daemon: %v\n", err)
