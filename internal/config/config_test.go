@@ -37,8 +37,8 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Alerts.MaxPerHour != 30 {
 		t.Errorf("max_per_hour = %d, want 30", cfg.Alerts.MaxPerHour)
 	}
-	if cfg.StatePath != "/opt/csm/state" {
-		t.Errorf("state_path = %q, want '/opt/csm/state'", cfg.StatePath)
+	if cfg.StatePath != "/var/lib/csm/state" {
+		t.Errorf("state_path = %q, want '/var/lib/csm/state'", cfg.StatePath)
 	}
 }
 
@@ -198,7 +198,7 @@ func TestLoadBytesAppliesSameDefaultsAsLoad(t *testing.T) {
 	if !reflect.DeepEqual(fromDisk, fromBytes) {
 		t.Fatalf("LoadBytes drifted from Load:\n  disk  = %#v\n  bytes = %#v", fromDisk, fromBytes)
 	}
-	if fromBytes.StatePath != "/opt/csm/state" {
+	if fromBytes.StatePath != "/var/lib/csm/state" {
 		t.Errorf("default StatePath not applied: %q", fromBytes.StatePath)
 	}
 }

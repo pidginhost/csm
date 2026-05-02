@@ -32,7 +32,7 @@ var (
 
 const (
 	defaultConfigPath = "/opt/csm/csm.yaml"
-	defaultStatePath  = "/opt/csm/state"
+	defaultStatePath  = "/var/lib/csm/state"
 	defaultLogPath    = "/var/log/csm/monitor.log"
 	defaultConfDir    = "/etc/csm/conf.d"
 	binaryPath        = "/opt/csm/csm"

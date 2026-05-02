@@ -405,7 +405,7 @@ func (cfg *Config) PHPRelayDryRunEnabled() bool {
 func applyDefaults(cfg *Config) {
 	// Defaults
 	if cfg.StatePath == "" {
-		cfg.StatePath = "/opt/csm/state"
+		cfg.StatePath = "/var/lib/csm/state"
 	}
 	if cfg.Alerts.AuditLog.File.Enabled && cfg.Alerts.AuditLog.File.Path == "" {
 		cfg.Alerts.AuditLog.File.Path = "/var/log/csm/audit.jsonl"
