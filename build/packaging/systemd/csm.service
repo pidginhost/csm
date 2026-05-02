@@ -10,5 +10,10 @@ Restart=always
 RestartSec=10
 WatchdogSec=300
 
+StateDirectory=csm
+StateDirectoryMode=0700
+ConfigurationDirectory=csm
+ConfigurationDirectoryMode=0750
+
 [Install]
 WantedBy=multi-user.target

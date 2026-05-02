@@ -70,10 +70,33 @@ contents:
   - src: configs/malware.yar
     dst: /opt/csm/rules/malware.yar
 
-  - dst: /opt/csm/state
+  # FHS layout: /etc/csm for config, /var/lib/csm for state, /usr/lib/csm for shipped assets.
+  - dst: /etc/csm
+    type: dir
+    file_info:
+      mode: 0750
+  - dst: /etc/csm/conf.d
+    type: dir
+    file_info:
+      mode: 0750
+  - dst: /var/lib/csm
     type: dir
     file_info:
       mode: 0700
+  - dst: /var/lib/csm/state
+    type: dir
+    file_info:
+      mode: 0700
+  - dst: /usr/lib/csm
+    type: dir
+    file_info:
+      mode: 0755
+  - dst: /usr/lib/csm/profiles
+    type: dir
+    file_info:
+      mode: 0755
+
+  # Legacy paths kept on disk; the daemon migrates contents on first boot.
   - dst: /opt/csm/quarantine
     type: dir
     file_info:
