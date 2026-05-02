@@ -10,6 +10,16 @@ VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev
 BUILD_HASH := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_TIME := $(shell date -u '+%Y-%m-%dT%H:%M:%SZ')
 LDFLAGS := -s -w -X main.Version=$(VERSION) -X main.BuildHash=$(BUILD_HASH) -X main.BuildTime=$(BUILD_TIME)
+
+# Opt-in build tags. Set BPF=1 to compile the BPF LSM live monitor for
+# AF_ALG (Copy Fail). Default builds use the audit-log listener fallback
+# instead — BPF requires Linux 5.7+ with CONFIG_BPF_LSM=y and trampoline
+# support, so the tag is opt-in to avoid breaking older targets.
+GOTAGS ?=
+ifeq ($(BPF),1)
+GOTAGS := $(strip $(GOTAGS) bpf)
+endif
+GOBUILDTAGS := $(if $(GOTAGS),-tags "$(GOTAGS)",)
 GOBIN := $(shell go env GOPATH)/bin
 CACHE_DIR ?= $(CURDIR)/.cache
 GOCACHE ?= $(CACHE_DIR)/go-build
@@ -38,21 +48,21 @@ check-embedded:
 
 # Build native binary with YARA stubs.
 build: sync-embedded
-	go build -ldflags "$(LDFLAGS)" -o dist/$(BINARY_NAME) ./cmd/csm/
+	go build $(GOBUILDTAGS) -ldflags "$(LDFLAGS)" -o dist/$(BINARY_NAME) ./cmd/csm/
 
 # Build native binary with YARA-X. Requires libyara_x_capi and pkg-config.
 build-yara: sync-embedded
 	CGO_LDFLAGS="$$(pkg-config --libs --static yara_x_capi)" \
-	go build -tags yara -ldflags "$(LDFLAGS)" -o dist/$(BINARY_NAME) ./cmd/csm/
+	go build -tags "yara $(GOTAGS)" -ldflags "$(LDFLAGS)" -o dist/$(BINARY_NAME) ./cmd/csm/
 
 # Build Linux amd64 binary with YARA stubs. Production YARA-X Linux
 # artifacts are built by the glibc builder image in CI.
 build-linux: sync-embedded
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o dist/$(BINARY_NAME)-linux-amd64 ./cmd/csm/
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(GOBUILDTAGS) -ldflags "$(LDFLAGS)" -o dist/$(BINARY_NAME)-linux-amd64 ./cmd/csm/
 
 # Build all local stub targets.
 build-all: build-linux
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o dist/$(BINARY_NAME)-linux-arm64 ./cmd/csm/
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build $(GOBUILDTAGS) -ldflags "$(LDFLAGS)" -o dist/$(BINARY_NAME)-linux-arm64 ./cmd/csm/
 
 # Run tests with race detector
 test:
