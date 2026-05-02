@@ -54,6 +54,8 @@ csm validate && csm baseline
 systemctl enable --now csm.service
 ```
 
+> Drop-in fragments under `/etc/csm/conf.d/*.yaml` are merged after `csm.yaml` (lexicographic order, later wins). Use these for automated config that should not touch the operator's main file.
+
 If you want the Copy Fail mitigation right away:
 
 ```bash
