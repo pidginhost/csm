@@ -95,6 +95,10 @@ contents:
     type: dir
     file_info:
       mode: 0755
+  - src: build/packaging/profiles/phpanel-agent.yaml
+    dst: /usr/lib/csm/profiles/phpanel-agent.yaml
+    file_info:
+      mode: 0644
 
   # Legacy paths kept on disk; the daemon migrates contents on first boot.
   - dst: /opt/csm/quarantine

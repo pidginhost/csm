@@ -1,0 +1,48 @@
+# CSM integration profile for phpanel-server-agent hosts.
+#
+# Drop a one-line file under /etc/csm/conf.d/ that includes this profile,
+# or copy this file to /etc/csm/conf.d/00-phpanel.yaml directly.
+#
+# This profile assumes:
+#   - The host is NOT running cPanel/WHM.
+#   - Web roots live under /var/www/<domain>/ (not /home/*/public_html).
+#   - Mail logs are read from systemd-journald (configured in P4).
+#   - phpanel-server-agent owns its own conf.d fragments under /etc/csm/conf.d/
+#     and never edits /opt/csm/csm.yaml directly.
+
+# Suppress cPanel-specific checks that don't apply on a phpanel host.
+checks:
+  whm_login_realtime:
+    enabled: false
+  whm_unauth_scripts_realtime:
+    enabled: false
+  cpanel_baseline:
+    enabled: false
+  modsec_escalation:
+    enabled: false
+
+# Web account roots — phpanel hosts vhosts under /var/www/<domain>/.
+# Override or extend in a higher-numbered conf.d fragment if your layout differs.
+account_roots:
+  - /var/www
+
+# Mail logs. The `source: journal` value is recognized starting with the P4
+# release; until then this key is ignored and CSM falls back to file mode.
+mail_logs:
+  source: journal              # TODO(P4): wire journald reader
+  units:
+    - postfix
+    - dovecot
+
+# phpanel-server-agent supplies these via its own fragment (10-phpanel-runtime.yaml).
+# Listed here as documentation of what the agent is expected to fill in.
+#
+# infra_ips:
+#   - <panel ip>
+#   - <agent control plane ip>
+#
+# alerts:
+#   webhooks:
+#     - type: phpanel
+#       url: https://panel.example.com/api/csm/findings
+#       hmac_secret_env: CSM_PHPANEL_HMAC
