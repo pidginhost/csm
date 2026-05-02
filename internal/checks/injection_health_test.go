@@ -41,6 +41,33 @@ func TestCheckHealthPlainLinuxAllCommandsPresent(t *testing.T) {
 	}
 }
 
+func TestCheckHealthUsesConfiguredStatePath(t *testing.T) {
+	platform.ResetForTest()
+	t.Cleanup(platform.ResetForTest)
+	platform.SetOverrides(platform.Overrides{
+		Panel: ptrPanel(platform.PanelNone),
+	})
+	withMockCmd(t, &mockCmd{
+		lookPath: func(name string) (string, error) {
+			return "/usr/bin/" + name, nil
+		},
+		run: func(name string, args ...string) ([]byte, error) {
+			if name == "auditctl" {
+				return []byte("-w /etc/shadow -p wa -k csm_shadow_change\n"), nil
+			}
+			return nil, nil
+		},
+	})
+
+	statePath := t.TempDir()
+	got := CheckHealth(context.Background(), &config.Config{StatePath: statePath}, nil)
+	for _, f := range got {
+		if strings.Contains(f.Message, "State directory not writable") {
+			t.Fatalf("configured state path should be writable, got %+v", f)
+		}
+	}
+}
+
 func TestCheckHealthPlainLinuxMissingRequiredCommand(t *testing.T) {
 	platform.ResetForTest()
 	t.Cleanup(platform.ResetForTest)

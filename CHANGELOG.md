@@ -13,15 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `detection.af_alg_backend` config knob (`auto` / `bpf` / `auditd` / `none`) overrides the live-monitor coordinator's automatic choice. `auditd` is the kill switch for a misbehaving BPF-tagged release: revert without rebuilding by editing `csm.yaml`. `bpf` enforces strict mode — no audit fallback if BPF is unavailable, useful where the operator wants kernel-side blocking or nothing.
 - `csm_af_alg_backend{kind="bpf-lsm"|"auditd-tail"|"none"}` Prometheus gauge exposes which backend the coordinator selected at startup, so dashboards can see the active live-detection path without parsing logs.
 - Config drop-ins: `/etc/csm/conf.d/*.yaml` are now merged on top of `/opt/csm/csm.yaml` in lexicographic order (`--config-dir` / `CSM_CONFIG_DIR` to override). Lets automation own its own fragment without touching the operator's main file.
-- Shipped integration profile at `/usr/lib/csm/profiles/phpanel-agent.yaml` for phpanel-server-agent hosts (suppresses cPanel-specific checks, points account roots at `/var/www`).
+- Shipped integration profile at `/usr/lib/csm/profiles/phpanel-agent.yaml` for phpanel-server-agent hosts. It sets `/var/www/*` account roots without touching the main config file.
 
 ### Changed
 
-- State directory default moves to `/var/lib/csm/state/` (FHS-correct). Existing installs are migrated on first daemon start: contents of `/opt/csm/state/` are copied if the new directory is empty. Operator overrides via `state_path:` in `csm.yaml` are unaffected.
+- State directory default and packaged config move to `/var/lib/csm/state/`. Hosts without a `state_path:` override copy legacy `/opt/csm/state/` into the new directory on first daemon start.
 - systemd unit declares `StateDirectory=csm` and `ConfigurationDirectory=csm` so systemd manages permissions and ownership.
 
 ### Fixed
 
+- PHP relay shutdown now flushes its message-index writer before closing state.
 - Long-lived findings (e.g. `db_rogue_admin` for a legitimate WP admin sitting in the 7-day query window) no longer re-alert on every deep tick once the 24-hour dedup window expires. `Store.MarkAlerted` now refreshes `AlertSent` for each dispatched finding, so the next tick suppresses again instead of emitting hourly until the underlying row ages out.
 - Copy Fail (CVE-2026-31431) live listener and periodic check no longer fire a Critical false positive on every CSM restart. The audit-log parser now requires `type=SYSCALL`; previously any line containing the rule's key string matched, including the `CONFIG_CHANGE op=add_rule` records auditd writes when CSM redeploys its ruleset.
 - CI: annotate six gosec findings in the email PHP-relay code paths (G115/G204/G304/G302) with operator-trust justifications matching the rest of the codebase. No behaviour change.

@@ -13,7 +13,7 @@ elif [ "${1:-}" = "configure" ] && { [ -f "$MARKER" ] || [ -f "$LEGACY_MARKER" ]
     IS_UPGRADE=1                         # DEB upgrade
 fi
 
-# Ensure FHS dirs exist (defense in depth — nfpm should have created them).
+# Ensure FHS dirs exist (defense in depth; nfpm should have created them).
 install -d -m 0750 /etc/csm /etc/csm/conf.d
 install -d -m 0700 /var/lib/csm /var/lib/csm/state
 install -d -m 0755 /usr/lib/csm /usr/lib/csm/profiles
@@ -81,12 +81,11 @@ else
     chattr -i /opt/csm/csm 2>/dev/null || true
     chattr +i /opt/csm/csm 2>/dev/null || true
     /opt/csm/csm rehash 2>/dev/null || true
-    /opt/csm/csm rehash 2>/dev/null || true
     if systemctl is-active --quiet csm.service 2>/dev/null; then
         systemctl restart csm.service
         echo "CSM upgraded and restarted (state will migrate on first run if needed)"
     else
-        echo "CSM upgraded (daemon not running — start with: systemctl start csm.service)"
+        echo "CSM upgraded (daemon not running; start with: systemctl start csm.service)"
     fi
 fi
 

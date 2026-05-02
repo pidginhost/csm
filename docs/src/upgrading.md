@@ -26,7 +26,7 @@ Rolls back automatically on failure.
 
 Fix: check if a CSM process is running (`pgrep csm`). If not, remove the stale lock:
 ```bash
-rm -f /opt/csm/state/csm.lock
+rm -f /var/lib/csm/state/csm.lock
 systemctl start csm
 ```
 

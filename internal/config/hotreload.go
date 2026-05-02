@@ -103,8 +103,9 @@ func diffStruct(oldV, newV reflect.Value, parentPath, parentTag string) []Change
 		if !field.IsExported() {
 			continue
 		}
-		// ConfigFile / Integrity are daemon-managed. See Diff's docstring.
-		if parentPath == "" && (field.Name == "ConfigFile" || field.Name == "Integrity") {
+		// ConfigFile / ConfigDir / Integrity are daemon-managed process
+		// metadata, not operator policy fields.
+		if parentPath == "" && (field.Name == "ConfigFile" || field.Name == "ConfigDir" || field.Name == "Integrity") {
 			continue
 		}
 

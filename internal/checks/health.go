@@ -3,7 +3,7 @@ package checks
 import (
 	"context"
 	"fmt"
-	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -14,7 +14,7 @@ import (
 
 // CheckHealth verifies that CSM's dependencies are working.
 // Reports on missing external commands, broken auditd, etc.
-func CheckHealth(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+func CheckHealth(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 	info := platform.Detect()
 
@@ -65,9 +65,12 @@ func CheckHealth(ctx context.Context, _ *config.Config, _ *state.Store) []alert.
 	}
 
 	// Check state directory is writable
-	stateDir := "/opt/csm/state"
-	testFile := stateDir + "/.health_check"
-	if err := os.WriteFile(testFile, []byte("ok"), 0600); err != nil {
+	stateDir := "/var/lib/csm/state"
+	if cfg != nil && cfg.StatePath != "" {
+		stateDir = cfg.StatePath
+	}
+	testFile := filepath.Join(stateDir, ".health_check")
+	if err := osFS.WriteFile(testFile, []byte("ok"), 0600); err != nil {
 		findings = append(findings, alert.Finding{
 			Severity: alert.High,
 			Check:    "csm_health",
@@ -75,7 +78,7 @@ func CheckHealth(ctx context.Context, _ *config.Config, _ *state.Store) []alert.
 			Details:  err.Error(),
 		})
 	} else {
-		os.Remove(testFile)
+		_ = osFS.Remove(testFile)
 	}
 
 	return findings

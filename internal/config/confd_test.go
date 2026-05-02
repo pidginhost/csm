@@ -36,6 +36,16 @@ func TestLoadConfDir_MissingDirReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestLoadConfDir_EmptyDirReturnsEmpty(t *testing.T) {
+	frags, err := LoadConfDir("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frags) != 0 {
+		t.Fatalf("expected empty slice, got %d fragments", len(frags))
+	}
+}
+
 func TestLoadConfDir_RejectsUnknownFields(t *testing.T) {
 	dir := t.TempDir()
 	must(t, os.WriteFile(filepath.Join(dir, "10.yaml"), []byte("not_a_real_field: 1\n"), 0o600))
@@ -47,6 +57,29 @@ func TestLoadConfDir_RejectsUnknownFields(t *testing.T) {
 	}
 	if len(frags) != 1 {
 		t.Fatalf("expected 1 fragment, got %d", len(frags))
+	}
+}
+
+func TestLoadWithDir_PackagedPHPPanelProfile(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "csm.yaml")
+	confd := filepath.Join(dir, "conf.d")
+	must(t, os.MkdirAll(confd, 0o700))
+	must(t, os.WriteFile(main, []byte("hostname: host.example\n"), 0o600))
+
+	profilePath := filepath.Join("..", "..", "build", "packaging", "profiles", "phpanel-agent.yaml")
+	profile, err := os.ReadFile(profilePath)
+	if err != nil {
+		t.Fatalf("read profile: %v", err)
+	}
+	must(t, os.WriteFile(filepath.Join(confd, "00-phpanel.yaml"), profile, 0o600))
+
+	cfg, err := LoadWithDir(main, confd)
+	if err != nil {
+		t.Fatalf("LoadWithDir with packaged phpanel profile: %v", err)
+	}
+	if len(cfg.AccountRoots) != 1 || cfg.AccountRoots[0] != "/var/www/*" {
+		t.Fatalf("AccountRoots = %v, want [/var/www/*]", cfg.AccountRoots)
 	}
 }
 

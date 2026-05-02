@@ -146,7 +146,7 @@ thresholds:
 infra_ips: []                           # management/monitoring CIDRs - never blocked
 
 # --- State ---
-state_path: "/opt/csm/state"            # bbolt DB and state files
+state_path: "/var/lib/csm/state"        # bbolt DB and state files
 
 # --- Suppressions ---
 suppressions:

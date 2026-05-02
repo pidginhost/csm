@@ -417,6 +417,11 @@ Restart=always
 RestartSec=10
 WatchdogSec=300
 
+StateDirectory=csm
+StateDirectoryMode=0700
+ConfigurationDirectory=csm
+ConfigurationDirectoryMode=0750
+
 [Install]
 WantedBy=multi-user.target
 `, "/opt/csm/csm")
@@ -784,7 +789,7 @@ func (inst *Installer) DisablePHPShield() error {
 // patchConfigPHPShield sets php_shield.enabled in csm.yaml using config.Load/Save
 // to avoid fragile string-based YAML manipulation.
 func (inst *Installer) patchConfigPHPShield(enabled bool) {
-	cfg, err := config.LoadWithDir(inst.ConfigPath, resolveConfDir())
+	cfg, err := config.Load(inst.ConfigPath)
 	if err != nil {
 		return
 	}

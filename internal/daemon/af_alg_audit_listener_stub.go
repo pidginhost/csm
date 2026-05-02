@@ -7,7 +7,6 @@ import (
 	"fmt"
 
 	"github.com/pidginhost/csm/internal/alert"
-	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 )
 
@@ -35,7 +34,3 @@ func (l *AFAlgAuditListener) Run(_ context.Context) {}
 func NewAFAlgAuditListener(_ chan<- alert.Finding, _ *config.Config) (*AFAlgAuditListener, error) {
 	return nil, fmt.Errorf("af_alg audit listener requires Linux (inotify)")
 }
-
-// reactToAFAlgEvent is the no-op stub. The real implementation that
-// invokes unix.Kill lives in af_alg_react.go behind //go:build linux.
-func reactToAFAlgEvent(_ *config.Config, _ checks.AFAlgEvent) {}

@@ -17,6 +17,9 @@ import (
 // an error and returns an empty slice; an unreadable file or invalid YAML
 // is fatal so operators see misconfigurations at startup.
 func LoadConfDir(dir string) ([]*yaml.Node, error) {
+	if dir == "" {
+		return nil, nil
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {

@@ -22,7 +22,8 @@ rm -f /opt/cpanel/ea-php*/root/etc/php.d/zzz_csm_shield.ini 2>/dev/null || true
 
 # Clean up runtime files
 rm -f /opt/csm/state/.pkg-installed 2>/dev/null || true
+rm -f /var/lib/csm/.pkg-installed 2>/dev/null || true
 rm -rf /var/run/csm 2>/dev/null || true
 
 echo "CSM removed. Config preserved at /opt/csm/csm.yaml (remove manually if desired)."
-echo "State data preserved at /opt/csm/state/ (remove manually if desired)."
+echo "State data preserved at /var/lib/csm/state/ (remove manually if desired)."

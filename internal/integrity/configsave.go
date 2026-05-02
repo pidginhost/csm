@@ -2,6 +2,7 @@ package integrity
 
 import (
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 
@@ -65,6 +66,26 @@ func SignAndSavePreserving(path string, editedBytes []byte, intendedClone *confi
 	intendedClone.Integrity.ConfigHash = newConfigHash
 
 	return atomicWriteFile(path, patched, 0o600)
+}
+
+// SignConfigFilePreserving signs path in place without re-marshaling the
+// config. It is for operations that must update only the operator-owned main
+// config file even when the live config also includes conf.d fragments.
+func SignConfigFilePreserving(path, binaryHash string) (string, error) {
+	// #nosec G304 -- operator-configured config path.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read config: %w", err)
+	}
+	cfg, err := config.LoadBytes(data)
+	if err != nil {
+		return "", err
+	}
+	cfg.ConfigFile = path
+	if err := SignAndSavePreserving(path, data, cfg, binaryHash); err != nil {
+		return "", err
+	}
+	return cfg.Integrity.ConfigHash, nil
 }
 
 // stripIntegrityBlock removes the top-level `integrity:` mapping and

@@ -195,7 +195,7 @@ The `csm baseline` command scans the entire server and records the current state
 **What it does:**
 - Scans all cPanel accounts for malware, permissions, and configuration issues
 - Records file hashes, email forwarder hashes, and plugin versions
-- Stores everything in the bbolt database (`/opt/csm/state/csm.db`)
+- Stores everything in the bbolt database (`/var/lib/csm/state/csm.db`)
 
 **How long it takes:** Depends on server size. A server with 100+ cPanel accounts and thousands of WordPress sites can take **5-10 minutes**. During this time, the daemon cannot start (bbolt lock).
 

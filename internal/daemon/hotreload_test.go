@@ -496,6 +496,107 @@ func TestReloadConfigNoChangeIsSilent(t *testing.T) {
 	}
 }
 
+func TestReloadConfigUsesConfDir(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "csm.yaml")
+	confDir := filepath.Join(dir, "conf.d")
+	if err := os.MkdirAll(confDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	orig := &config.Config{}
+	orig.Hostname = "host-a"
+	orig.Thresholds.MailQueueWarn = 100
+	seedConfigAtPath(t, cfgPath, orig)
+	if err := os.WriteFile(filepath.Join(confDir, "10-threshold.yaml"), []byte("thresholds:\n  mail_queue_warn: 200\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := config.LoadWithDir(cfgPath, confDir)
+	if err != nil {
+		t.Fatalf("load with conf.d: %v", err)
+	}
+	d := newDaemonForReloadTest(t, loaded)
+
+	if writeErr := os.WriteFile(filepath.Join(confDir, "10-threshold.yaml"), []byte("thresholds:\n  mail_queue_warn: 300\n"), 0o600); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	d.reloadConfig()
+
+	got := config.Active()
+	if got == nil || got.Thresholds.MailQueueWarn != 300 {
+		t.Fatalf("active threshold = %d, want 300", thresholdOf(got))
+	}
+	if got.ConfigDir != confDir {
+		t.Fatalf("ConfigDir = %q, want %q", got.ConfigDir, confDir)
+	}
+	mainBytes, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(mainBytes, []byte("300")) {
+		t.Fatalf("drop-in threshold was written back to main config:\n%s", mainBytes)
+	}
+	select {
+	case f := <-d.alertCh:
+		t.Fatalf("unexpected reload finding: %+v", f)
+	default:
+	}
+}
+
+func TestReloadConfigSignsMainWithoutWritingMergedDropIns(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "csm.yaml")
+	confDir := filepath.Join(dir, "conf.d")
+	if err := os.MkdirAll(confDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	orig := &config.Config{}
+	orig.Hostname = "host-a"
+	orig.Thresholds.MailQueueWarn = 100
+	seedConfigAtPath(t, cfgPath, orig)
+	if err := os.WriteFile(filepath.Join(confDir, "10-roots.yaml"), []byte("account_roots:\n  - /var/www/*\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := config.LoadWithDir(cfgPath, confDir)
+	if err != nil {
+		t.Fatalf("load with conf.d: %v", err)
+	}
+	d := newDaemonForReloadTest(t, loaded)
+
+	edited := &config.Config{}
+	edited.Hostname = "host-a"
+	edited.Thresholds.MailQueueWarn = 250
+	edited.Integrity = loaded.Integrity
+	seedConfigAtPath(t, cfgPath, edited)
+
+	d.reloadConfig()
+
+	got := config.Active()
+	if got == nil || got.Thresholds.MailQueueWarn != 250 {
+		t.Fatalf("active threshold = %d, want 250", thresholdOf(got))
+	}
+	if len(got.AccountRoots) != 1 || got.AccountRoots[0] != "/var/www/*" {
+		t.Fatalf("active AccountRoots = %v, want [/var/www/*]", got.AccountRoots)
+	}
+	mainBytes, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(mainBytes, []byte("/var/www")) {
+		t.Fatalf("merged drop-in content was written back to main config:\n%s", mainBytes)
+	}
+}
+
+func thresholdOf(c *config.Config) int {
+	if c == nil {
+		return 0
+	}
+	return c.Thresholds.MailQueueWarn
+}
+
 func getHostname(c *config.Config) string {
 	if c == nil {
 		return "<nil>"

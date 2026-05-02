@@ -673,8 +673,8 @@ func LoadWithDir(path, confDir string) (*Config, error) {
 	}
 
 	var merged yaml.Node
-	if err := yaml.Unmarshal(mainData, &merged); err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", path, err)
+	if unmarshalErr := yaml.Unmarshal(mainData, &merged); unmarshalErr != nil {
+		return nil, fmt.Errorf("parsing %s: %w", path, unmarshalErr)
 	}
 
 	frags, err := LoadConfDir(confDir)

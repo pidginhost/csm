@@ -96,12 +96,10 @@ type Daemon struct {
 	// runtime until O2 lands.
 	policies *emailspool.Policies
 
-	// PHP-relay components wired by startPHPRelay (Linux only). The
-	// fields are declared cross-platform but stay nil on non-cPanel
-	// or non-Linux hosts; dispatchBatch / shutdown nil-guard them.
-	phpRelayController *PHPRelayController
-	autoFreezer        *autoFreezer
-	phpRelayShutdown   []func() // ordered shutdown hooks
+	// PHP-relay components wired by startPHPRelay (Linux only). The fields are
+	// declared cross-platform but stay nil on non-cPanel or non-Linux hosts.
+	autoFreezer      *autoFreezer
+	phpRelayShutdown []func() // ordered shutdown hooks
 }
 
 // New creates a new daemon instance.
@@ -623,6 +621,10 @@ func (d *Daemon) Run() error {
 	d.stopYaraBackend()
 
 	d.wg.Wait()
+	for i := len(d.phpRelayShutdown) - 1; i >= 0; i-- {
+		d.phpRelayShutdown[i]()
+	}
+	d.phpRelayShutdown = nil
 	if adb := attackdb.Global(); adb != nil {
 		adb.Stop()
 	}

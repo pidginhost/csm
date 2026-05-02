@@ -89,7 +89,7 @@ func startPHPRelayLinux(d *Daemon) {
 	// thread the runtime/bbolt/yaml precedence into freeze decisions).
 	runner := defaultRunner{}
 	auditor := newStructuredAuditor(eximAuditWriter())
-	d.phpRelayController = &PHPRelayController{
+	controller := &PHPRelayController{
 		eng:          eng,
 		msgIndex:     idx,
 		ignores:      ignores,
@@ -102,7 +102,7 @@ func startPHPRelayLinux(d *Daemon) {
 		platform:     "cpanel",
 	}
 	if d.controlListener != nil {
-		d.controlListener.phprelay = d.phpRelayController
+		d.controlListener.phprelay = controller
 	}
 
 	// 9. Spool pipeline (Flow A) + autoFreezer (post-emit hook).
@@ -113,7 +113,7 @@ func startPHPRelayLinux(d *Daemon) {
 		}
 	})
 	freezer := newAutoFreezer(psw, d.cfg, "/var/spool/exim/input", eximBinary,
-		runner, auditor, prMetrics, d.phpRelayController.DryRunFn())
+		runner, auditor, prMetrics, controller.DryRunFn())
 	d.autoFreezer = freezer
 
 	// 10. Startup walker BEFORE the watcher to rebuild script state for

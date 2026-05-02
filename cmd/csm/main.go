@@ -164,11 +164,17 @@ Options:
 
 func loadConfig() *config.Config {
 	cfg := loadConfigLite()
-
-	// Initialize bbolt store (idempotent - uses sync.Once).
-	if err := store.EnsureOpen(cfg.StatePath); err != nil {
+	if err := ensureGlobalStore(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "store: %v\n", err)
 		os.Exit(1)
+	}
+	return cfg
+}
+
+func ensureGlobalStore(cfg *config.Config) error {
+	// Initialize bbolt store (idempotent - uses sync.Once).
+	if err := store.EnsureOpen(cfg.StatePath); err != nil {
+		return err
 	}
 
 	// Wire alert filter to read blocked IPs from bbolt when available.
@@ -182,8 +188,7 @@ func loadConfig() *config.Config {
 			return ips
 		}
 	}
-
-	return cfg
+	return nil
 }
 
 // loadConfigLite loads config without opening bbolt. Used by CLI commands
@@ -208,8 +213,19 @@ func loadConfigLite() *config.Config {
 	return cfg
 }
 
+func prepareDaemonState(cfg *config.Config, legacyStateDir string, openStore func(*config.Config) error) (bool, error) {
+	migrated, err := state.MigrateStateDir(legacyStateDir, cfg.StatePath)
+	if err != nil {
+		return false, err
+	}
+	if err := openStore(cfg); err != nil {
+		return migrated, err
+	}
+	return migrated, nil
+}
+
 func runDaemon() {
-	cfg := loadConfig()
+	cfg := loadConfigLite()
 
 	// Initialize Sentry before any goroutines spawn. No-op if disabled.
 	if err := obs.Init(cfg, Version, BuildHash); err != nil {
@@ -247,13 +263,13 @@ func runDaemon() {
 		fmt.Fprintf(os.Stderr, "Loaded %d signature rules (version %d)\n", scanner.RuleCount(), scanner.Version())
 	}
 
-	// One-shot migration of legacy /opt/csm/state → /var/lib/csm/state for upgrades.
+	// One-shot migration of legacy /opt/csm/state to /var/lib/csm/state for upgrades.
 	// Safe noop on fresh installs and after the first upgrade.
 	const legacyStateDir = "/opt/csm/state"
-	if migrated, err := state.MigrateStateDir(legacyStateDir, cfg.StatePath); err != nil {
-		fatal(1, "state directory migration: %v\n", err)
+	if migrated, err := prepareDaemonState(cfg, legacyStateDir, ensureGlobalStore); err != nil {
+		fatal(1, "state setup: %v\n", err)
 	} else if migrated {
-		fmt.Fprintf(os.Stderr, "state: migrated legacy %s → %s\n", legacyStateDir, cfg.StatePath)
+		fmt.Fprintf(os.Stderr, "state: migrated legacy %s to %s\n", legacyStateDir, cfg.StatePath)
 	}
 
 	lock, err := state.AcquireLock(cfg.StatePath)
@@ -505,7 +521,7 @@ func formatUptime(sec int64) string {
 }
 
 // tryReloadDaemon sends a reload command best-effort. A missing socket
-// is fine — the next daemon start will pick up new files on its own.
+// is fine; the next daemon start will pick up new files on its own.
 // Any other error is surfaced to the operator but does not fail the
 // outer command, which has already written new files to disk.
 func tryReloadDaemon(cmd string) {
@@ -574,11 +590,18 @@ func runBaseline() {
 func runRehash() {
 	cfg := loadConfigLite()
 
-	binaryHash, _ := integrity.HashFile(binaryPath)
-	if err := integrity.SignAndSaveAtomic(cfg, binaryHash); err != nil {
+	binaryHash, err := integrity.HashFile(binaryPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error hashing binary: %v\n", err)
+		return
+	}
+	configHash, err := integrity.SignConfigFilePreserving(cfg.ConfigFile, binaryHash)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error saving config: %v\n", err)
 		return
 	}
+	cfg.Integrity.BinaryHash = binaryHash
+	cfg.Integrity.ConfigHash = configHash
 
 	fmt.Printf("Hashes updated (no scan performed)\n")
 	fmt.Printf("Binary hash: %s\n", binaryHash)

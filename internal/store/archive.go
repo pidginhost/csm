@@ -54,7 +54,7 @@ type Manifest struct {
 
 // ExportOptions configures Export.
 type ExportOptions struct {
-	StatePath string   // /opt/csm/state, source for state JSON files
+	StatePath string   // /var/lib/csm/state, source for state JSON files
 	RulesPath string   // /opt/csm/rules, source for signature cache (empty -> skip)
 	DstPath   string   // .csmbak file to create
 	Manifest  Manifest // caller fills CSMVersion/SourceHostname/SourcePlatform; rest filled here

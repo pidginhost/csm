@@ -40,11 +40,11 @@ func recordReloadResult(result string) {
 	reloadMetric.With(result).Inc()
 }
 
-// reloadConfig re-reads the on-disk csm.yaml, validates it, diffs
-// against the current live config, and — if every change is marked
-// safe for live reload — installs the new config via
-// config.SetActive and re-signs integrity.config_hash so the file
-// stays consistent for the next startup's integrity check.
+// reloadConfig re-reads the on-disk csm.yaml plus configured drop-ins,
+// validates it, diffs against the current live config, and - if every
+// change is marked safe for live reload - installs the new config via
+// config.SetActive. Only the main config file is re-signed; drop-ins are
+// never written back into csm.yaml.
 //
 // Failure modes all leave the live config untouched:
 //
@@ -61,7 +61,7 @@ func (d *Daemon) reloadConfig() {
 	cfgPath := oldCfg.ConfigFile
 	fmt.Fprintf(os.Stderr, "[%s] SIGHUP: reloading config from %s\n", ts(), cfgPath)
 
-	newCfg, err := config.Load(cfgPath)
+	newCfg, err := config.LoadWithDir(cfgPath, oldCfg.ConfigDir)
 	if err != nil {
 		recordReloadResult(reloadResultError)
 		d.emitReloadFinding(alert.Critical, "config_reload_error",
@@ -108,8 +108,10 @@ func (d *Daemon) reloadConfig() {
 		// emit the warning so they know to act.
 		if err := d.signAndSaveReloadedConfig(oldCfg, newCfg); err == nil {
 			resynced := *oldCfg
+			resynced.Integrity.BinaryHash = newCfg.Integrity.BinaryHash
 			resynced.Integrity.ConfigHash = newCfg.Integrity.ConfigHash
 			resynced.ConfigFile = cfgPath
+			resynced.ConfigDir = oldCfg.ConfigDir
 			config.SetActive(&resynced)
 		} else {
 			fmt.Fprintf(os.Stderr, "[%s] config_reload_restart_required: re-sign failed (%v); file and live hash remain mismatched until operator runs `csm rehash`\n",
@@ -118,7 +120,7 @@ func (d *Daemon) reloadConfig() {
 
 		recordReloadResult(reloadResultRestartRequired)
 		d.emitReloadFinding(alert.Warning, "config_reload_restart_required",
-			fmt.Sprintf("SIGHUP reload: restart-required fields changed: %v; live config unchanged, on-disk file re-signed for next restart",
+			fmt.Sprintf("SIGHUP reload: restart-required fields changed: %v; live config unchanged, main config re-signed if needed for next restart",
 				offenders))
 		return
 	}
@@ -131,6 +133,7 @@ func (d *Daemon) reloadConfig() {
 	}
 
 	newCfg.ConfigFile = cfgPath
+	newCfg.ConfigDir = oldCfg.ConfigDir
 	config.SetActive(newCfg)
 	recordReloadResult(reloadResultSuccess)
 
@@ -163,18 +166,26 @@ func (d *Daemon) currentCfg() *config.Config {
 	return d.activeOrStartupCfg()
 }
 
-// signAndSaveReloadedConfig re-computes integrity.config_hash for
-// the new config and writes the result to disk atomically (temp file
-// + rename). The binary hash is preserved from the prior live config;
-// a SIGHUP reload cannot upgrade the binary, so that value must not
-// drift.
-//
-// Atomicity means the on-disk file either still carries the prior
-// content (we failed somewhere) or carries the fully-signed new
-// content. There is no intermediate state with a blank config_hash
-// that could crash-loop the daemon on the next start.
+// signAndSaveReloadedConfig re-computes integrity.config_hash for the main
+// config file when that file changed. Drop-ins are intentionally not written
+// back into csm.yaml. The binary hash is preserved from the prior live config;
+// a SIGHUP reload cannot upgrade the binary, so that value must not drift.
 func (d *Daemon) signAndSaveReloadedConfig(oldCfg, newCfg *config.Config) error {
-	return integrity.SignAndSaveAtomic(newCfg, oldCfg.Integrity.BinaryHash)
+	currentHash, err := integrity.HashConfigStable(oldCfg.ConfigFile)
+	if err != nil {
+		return err
+	}
+	if currentHash == oldCfg.Integrity.ConfigHash {
+		newCfg.Integrity = oldCfg.Integrity
+		return nil
+	}
+	configHash, err := integrity.SignConfigFilePreserving(oldCfg.ConfigFile, oldCfg.Integrity.BinaryHash)
+	if err != nil {
+		return err
+	}
+	newCfg.Integrity.BinaryHash = oldCfg.Integrity.BinaryHash
+	newCfg.Integrity.ConfigHash = configHash
+	return nil
 }
 
 // emitReloadFinding logs to stderr and pushes a Finding into the

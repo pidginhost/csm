@@ -64,16 +64,16 @@ func copyEntry(src, dst string) error {
 		return err
 	}
 	if info.IsDir() {
-		if err := os.MkdirAll(dst, info.Mode().Perm()); err != nil {
-			return err
+		if mkdirErr := os.MkdirAll(dst, info.Mode().Perm()); mkdirErr != nil {
+			return mkdirErr
 		}
-		entries, err := os.ReadDir(src)
-		if err != nil {
-			return err
+		entries, readDirErr := os.ReadDir(src)
+		if readDirErr != nil {
+			return readDirErr
 		}
 		for _, e := range entries {
-			if err := copyEntry(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil {
-				return err
+			if copyErr := copyEntry(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); copyErr != nil {
+				return copyErr
 			}
 		}
 		return nil

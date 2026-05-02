@@ -50,7 +50,7 @@ thresholds:
   multi_ip_login_threshold: 3
   multi_ip_login_window_min: 60
 
-state_path: "/opt/csm/state"
+state_path: "/var/lib/csm/state"
 
 # Infrastructure IPs — traffic from these CIDRs is trusted and never blocked.
 # IMPORTANT: Set these to YOUR management/monitoring network ranges.
