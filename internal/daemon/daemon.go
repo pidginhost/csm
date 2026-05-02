@@ -506,14 +506,14 @@ func (d *Daemon) Run() error {
 			"state", kstate.String(),
 		)
 	default:
-		if l, err := NewAFAlgAuditListener(d.alertCh, d.cfg); err != nil {
+		if mon := StartAFAlgLiveMonitor(d.alertCh, d.cfg); mon == nil {
 			csmlog.Warn("af_alg live listener: not started",
-				"reason", "audit log unavailable",
-				"err", err,
+				"reason", "no backend available",
+				"state", kstate.String(),
 			)
 		} else {
 			csmlog.Info("af_alg live listener: started",
-				"backend", l.Mode(),
+				"backend", mon.Mode(),
 				"state", kstate.String(),
 			)
 			d.wg.Add(1)
@@ -522,7 +522,7 @@ func (d *Daemon) Run() error {
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
 				go func() { <-d.stopCh; cancel() }()
-				l.Run(ctx)
+				mon.Run(ctx)
 			})
 		}
 	}

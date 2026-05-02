@@ -1,4 +1,4 @@
-//go:build linux && !bpf
+//go:build !(linux && bpf)
 
 package daemon
 
