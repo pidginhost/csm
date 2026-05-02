@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Long-lived findings (e.g. `db_rogue_admin` for a legitimate WP admin sitting in the 7-day query window) no longer re-alert on every deep tick once the 24-hour dedup window expires. `Store.MarkAlerted` now refreshes `AlertSent` for each dispatched finding, so the next tick suppresses again instead of emitting hourly until the underlying row ages out.
 - Copy Fail (CVE-2026-31431) live listener and periodic check no longer fire a Critical false positive on every CSM restart. The audit-log parser now requires `type=SYSCALL`; previously any line containing the rule's key string matched, including the `CONFIG_CHANGE op=add_rule` records auditd writes when CSM redeploys its ruleset.
 - CI: annotate six gosec findings in the email PHP-relay code paths (G115/G204/G304/G302) with operator-trust justifications matching the rest of the codebase. No behaviour change.
 

@@ -236,6 +236,35 @@ func (s *Store) Update(findings []alert.Finding) {
 	}
 }
 
+// MarkAlerted refreshes AlertSent on each finding's entry so the 24-hour
+// dedup window restarts. Call after dispatch with the slice that came back
+// from FilterNew. Without this, any finding that survives past the 24-hour
+// expiry branch in FilterNew re-emits on every subsequent tick because
+// Update only sets AlertSent when an entry is first created.
+func (s *Store) MarkAlerted(findings []alert.Finding) {
+	if len(findings) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	changed := false
+	for _, f := range findings {
+		key := findingKey(f)
+		if entry, ok := s.entries[key]; ok {
+			entry.AlertSent = now
+			changed = true
+		}
+	}
+	if !changed {
+		return
+	}
+	s.dirty = true
+	if err := s.save(); err != nil {
+		fmt.Fprintf(os.Stderr, "state: error saving after MarkAlerted: %v\n", err)
+	}
+}
+
 func (s *Store) SetBaseline(findings []alert.Finding) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

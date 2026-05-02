@@ -437,6 +437,7 @@ func (d *Daemon) Run() error {
 	}
 
 	d.store.Update(initialFindings)
+	d.store.MarkAlerted(newFindings)
 	// Merge initial scan findings into the existing set. Previous deep scan
 	// results (outdated_plugins, wp_core, etc.) persist across restarts until
 	// the next deep scan replaces them. ClearLatestFindings is NOT called
@@ -808,6 +809,7 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	}
 
 	d.store.Update(findings)
+	d.store.MarkAlerted(newFindings)
 }
 
 func filterUnsuppressedFindings(store *state.Store, findings []alert.Finding, suppressions []state.SuppressionRule) []alert.Finding {
