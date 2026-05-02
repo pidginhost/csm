@@ -4,7 +4,6 @@ package daemon
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/cilium/ebpf"
@@ -14,13 +13,6 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 )
-
-// errBPFPhaseBPending fires when the kernel can run BPF LSM programs but
-// the blocking program + perf consumer (Task 5 Phase B in the plan)
-// hasn't shipped yet. The coordinator treats this the same as "BPF
-// unavailable" and falls back to the audit-log listener, so detection is
-// never silently disabled while the BPF backend is being built out.
-var errBPFPhaseBPending = errors.New("BPF LSM kernel support detected but blocking program not yet implemented")
 
 // probeBPFLSM loads a no-op BPF LSM program attached to socket_create,
 // then immediately detaches and closes it. The conclusive runtime check

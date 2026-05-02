@@ -122,6 +122,18 @@ type Config struct {
 		// short-list when fanotify is active) is unchanged; new
 		// rules only catch files that change after the update.
 		RescanOnSignatureUpdate *bool `yaml:"rescan_on_signature_update"`
+
+		// AFAlgBackend selects the live AF_ALG (CVE-2026-31431, "Copy
+		// Fail") detection backend. Empty / "auto" picks BPF LSM if
+		// the binary was built with -tags bpf and the kernel supports
+		// it, otherwise the audit-log inotify listener. "bpf" forces
+		// BPF and disables the audit fallback (no live monitor if BPF
+		// is unavailable; the periodic critical-tier check still
+		// runs). "auditd" forces the audit listener even on BPF-
+		// capable kernels — a kill switch when a BPF-tagged release
+		// misbehaves and the operator wants to revert without
+		// rebuilding. "none" disables the live monitor entirely.
+		AFAlgBackend string `yaml:"af_alg_backend"`
 	} `yaml:"detection" hotreload:"safe"`
 
 	Suppressions struct {

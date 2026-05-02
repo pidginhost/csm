@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - AF_ALG (Copy Fail) live monitor now runs through a backend coordinator that prefers BPF LSM when the kernel supports it and falls back to the existing audit-log inotify listener otherwise. Build with `make BPF=1` (or `go build -tags bpf`) to compile in the BPF path; default builds continue to ship only the audit listener. This release lands the kernel capability probe (Phase A); the in-kernel blocking program is staged behind `errBPFPhaseBPending` and will activate once Phase B + alma9 integration test land — until then `-tags bpf` builds still use the audit listener, so detection coverage is unchanged.
+- `detection.af_alg_backend` config knob (`auto` / `bpf` / `auditd` / `none`) overrides the live-monitor coordinator's automatic choice. `auditd` is the kill switch for a misbehaving BPF-tagged release: revert without rebuilding by editing `csm.yaml`. `bpf` enforces strict mode — no audit fallback if BPF is unavailable, useful where the operator wants kernel-side blocking or nothing.
+- `csm_af_alg_backend{kind="bpf-lsm"|"auditd-tail"|"none"}` Prometheus gauge exposes which backend the coordinator selected at startup, so dashboards can see the active live-detection path without parsing logs.
 
 ### Fixed
 
