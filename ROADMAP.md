@@ -341,30 +341,58 @@ A BPF LSM hook on `security_socket_create` returning `-EAFNOSUPPORT`
 when an unprivileged user opens AF_ALG is the missing third layer:
 host-wide, in-kernel block, no race window, catches everything.
 
-### Decision
+### Status (2026-05-02)
 
-Add `internal/daemon/af_alg_bpf.go` (build tag `linux,bpf`) using
-`cilium/ebpf` to construct the LSM program in pure Go BPF asm — no
-clang dependency at build time. Auto-detect at daemon startup whether
-the kernel supports BPF LSM (load + attach a tiny probe program); if
-yes, use BPF; if no, fall back to the audit listener already in
-production.
+**Phase A — shipped.** The architecture is in place:
 
-The full implementation plan is committed to
-`docs/superpowers/plans/2026-04-30-copy-fail-bpf-lsm.md` (8 tasks,
-~600 LoC + tests, integration test on phctl alma9).
+- Backend coordinator (`StartAFAlgLiveMonitor`) prefers BPF LSM, falls
+  back to the audit listener, returns nil if neither is usable.
+- `AFAlgLiveMonitor` interface (`Mode`, `EventCount`, `Run`) so the
+  daemon doesn't care which backend is active.
+- Build-tag stub for default builds; real BPF code behind
+  `//go:build linux && bpf` (`make BPF=1` opt-in).
+- Kernel-capability probe via `cilium/ebpf`: load + attach a no-op LSM
+  program; any failure short-circuits to audit fallback.
+- Operator surfaces: `detection.af_alg_backend: auto|bpf|auditd|none`
+  config override (kill switch when a BPF-tagged release misbehaves),
+  `csm_af_alg_backend{kind=…}` Prometheus gauge, distinct startup log
+  states (`bpf-lsm-pending` vs `bpf-lsm-unsupported`).
+- Coordinator unit tests cover all override paths and the
+  probe-fail / Phase-B-pending fallbacks.
+
+**Phase B — pending.** What still needs to land:
+
+- The real BPF LSM program in `cilium/ebpf` `asm` instructions: read
+  `family` from the LSM context, gate on `family == AF_ALG (38)` AND
+  `uid > detection.af_alg_system_uid_max` (new config field, default
+  1000), emit a perf event with `(pid, uid, comm)`, return
+  `-EAFNOSUPPORT` (or 0 in alert-only mode).
+- Perf-event reader goroutine that decodes events into `AFAlgEvent` and
+  hands them to the existing `reactToAFAlgEvent` (kill / quarantine
+  shared with the audit listener).
+- New config field `detection.af_alg_bpf_mode: alert-only|block`,
+  default `alert-only` for the first Phase-B release; promote to
+  `block` after operators have observed it run cleanly.
+- Replace `errBPFPhaseBPending` in `tryStartBPFLSM` with the real
+  monitor wrapper; remove the sentinel.
+- Negative test: from a non-system UID, `socket(AF_ALG, …)` returns
+  `EAFNOSUPPORT` when the BPF backend is loaded in `block` mode.
+- Integration test on a kernel that supports BPF LSM (any modern
+  AlmaLinux/RHEL 9+ host or scratch VM works; the original plan named
+  alma9 specifically but alma10 is fine).
 
 ### Acceptance criteria
 
-- `go build -tags bpf ./...` clean; default build unchanged.
-- On Alma 9 / RHEL 9 / mainline ≥ 5.7: the BPF LSM hook is loaded at
-  daemon startup, blocks AF_ALG syscalls from uid≥1000 with
-  `EAFNOSUPPORT`, and emits a Critical Finding via the existing alert
-  pipeline.
-- On RHEL 8 / 4.18 (cluster6): the BPF probe fails cleanly, the audit
-  listener takes over, and the daemon logs `backend=auditd-tail`.
-- Integration test on a phctl alma9 VM verifies probe + load + block +
-  perf-event consumer end-to-end.
+- `go build -tags bpf ./...` clean; default build unchanged. *(Done.)*
+- On a kernel that supports BPF LSM: program loads at daemon startup,
+  blocks AF_ALG syscalls from `uid > af_alg_system_uid_max` with
+  `EAFNOSUPPORT` (when `bpf_mode=block`), and emits a Critical Finding
+  via the existing alert pipeline. *(Pending — Phase B.)*
+- On a kernel that lacks BPF LSM: the BPF probe fails cleanly, the
+  audit listener takes over, and the daemon logs
+  `backend=auditd-tail`. *(Done.)*
+- Integration test verifies probe + load + block + perf-event consumer
+  end-to-end on a real BPF LSM kernel. *(Pending — Phase B.)*
 
 ### Out of scope
 
@@ -372,13 +400,14 @@ The full implementation plan is committed to
 - Source-IP correlation back to a web request (requires HTTP-log
   correlation that's its own design exercise).
 - ARM64 BPF LSM (the cilium/ebpf path is arch-portable; ARM64
-  validation just needs an arm64 phctl image when one is available).
+  validation just needs an arm64 test host when one is available).
 - BPF LSM for OTHER LSM hooks (file open, exec, etc.). This roadmap
   item is specifically Copy Fail.
 
 ### Estimated size
 
-3 engineering days. Most of the work is the BPF program itself
-(~30 instructions in cilium/ebpf asm) and the perf-event consumer
-that matches the audit-listener finding shape. Coordinator and
-fallback wiring are mechanical.
+Phase A (shipped) was ~1 engineering day. Phase B is roughly
+half a day to a full day, mostly verifier iteration on the
+asm instructions; the perf-event consumer and the wrapper that
+matches the `AFAlgLiveMonitor` interface are mechanical now that
+Phase A's scaffolding is in place.
