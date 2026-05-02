@@ -76,3 +76,23 @@ func flatten(seq *yaml.Node) []string {
 	}
 	return out
 }
+
+func TestDeepMerge_EmptyBaseAdoptsOverlay(t *testing.T) {
+	base := unmarshalDoc(t, ``)
+	overlay := unmarshalDoc(t, "hostname: from-overlay\n")
+	got := DeepMerge(base, overlay)
+	root := got.Content[0]
+	if fieldOf(t, root, "hostname").Value != "from-overlay" {
+		t.Fatalf("expected empty base to adopt overlay content, got %q", fieldOf(t, root, "hostname").Value)
+	}
+}
+
+func TestDeepMerge_EmptyOverlayLeavesBase(t *testing.T) {
+	base := unmarshalDoc(t, "hostname: original\n")
+	overlay := unmarshalDoc(t, ``)
+	got := DeepMerge(base, overlay)
+	root := got.Content[0]
+	if fieldOf(t, root, "hostname").Value != "original" {
+		t.Fatalf("expected empty overlay to leave base unchanged, got %q", fieldOf(t, root, "hostname").Value)
+	}
+}
