@@ -235,3 +235,38 @@ func TestConfig_MailBruteForceDefaultsApplied(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadWithConfDir_Override(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "csm.yaml")
+	confd := filepath.Join(dir, "conf.d")
+	must(t, os.MkdirAll(confd, 0o700))
+	must(t, os.WriteFile(main, []byte("hostname: main-host\nstate_path: /opt/csm/state\n"), 0o600))
+	must(t, os.WriteFile(filepath.Join(confd, "10-phpanel.yaml"),
+		[]byte("hostname: phpanel-host\n"), 0o600))
+
+	cfg, err := LoadWithDir(main, confd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Hostname != "phpanel-host" {
+		t.Fatalf("expected conf.d override, got %q", cfg.Hostname)
+	}
+	if cfg.StatePath != "/opt/csm/state" {
+		t.Fatalf("expected main state_path retained, got %q", cfg.StatePath)
+	}
+}
+
+func TestLoadWithConfDir_NoDirIsLoadEquivalent(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "csm.yaml")
+	must(t, os.WriteFile(main, []byte("hostname: solo\n"), 0o600))
+
+	cfg, err := LoadWithDir(main, filepath.Join(dir, "absent"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Hostname != "solo" {
+		t.Fatalf("expected solo, got %q", cfg.Hostname)
+	}
+}

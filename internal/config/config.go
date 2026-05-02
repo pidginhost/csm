@@ -13,6 +13,7 @@ import (
 
 type Config struct {
 	ConfigFile string `yaml:"-"`
+	ConfigDir  string `yaml:"-" hotreload:"restart"` // /etc/csm/conf.d (or operator override); empty means no drop-ins loaded
 
 	Hostname string `yaml:"hostname" hotreload:"restart"`
 
@@ -658,6 +659,43 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	cfg.ConfigFile = path
+	return cfg, nil
+}
+
+// LoadWithDir loads the main config file and then merges every YAML fragment
+// from confDir on top in lexicographic order. A missing confDir is not an
+// error. Unknown fields in fragments are rejected (KnownFields=true).
+func LoadWithDir(path, confDir string) (*Config, error) {
+	// #nosec G304 -- path is operator-supplied (CLI flag).
+	mainData, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading config %s: %w", path, err)
+	}
+
+	var merged yaml.Node
+	if err := yaml.Unmarshal(mainData, &merged); err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", path, err)
+	}
+
+	frags, err := LoadConfDir(confDir)
+	if err != nil {
+		return nil, err
+	}
+	for _, frag := range frags {
+		DeepMerge(&merged, frag)
+	}
+
+	mergedBytes, err := yaml.Marshal(&merged)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling merged config: %w", err)
+	}
+
+	cfg, err := LoadBytes(mergedBytes)
+	if err != nil {
+		return nil, err
+	}
+	cfg.ConfigFile = path
+	cfg.ConfigDir = confDir
 	return cfg, nil
 }
 
