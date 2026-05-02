@@ -784,7 +784,7 @@ func (inst *Installer) DisablePHPShield() error {
 // patchConfigPHPShield sets php_shield.enabled in csm.yaml using config.Load/Save
 // to avoid fragile string-based YAML manipulation.
 func (inst *Installer) patchConfigPHPShield(enabled bool) {
-	cfg, err := config.Load(inst.ConfigPath)
+	cfg, err := config.LoadWithDir(inst.ConfigPath, resolveConfDir())
 	if err != nil {
 		return
 	}
@@ -794,7 +794,7 @@ func (inst *Installer) patchConfigPHPShield(enabled bool) {
 
 // deployShieldConfig generates /opt/csm/shield.conf.php with allowed IPs from main config.
 func (inst *Installer) deployShieldConfig() {
-	cfg, err := config.Load(inst.ConfigPath)
+	cfg, err := config.LoadWithDir(inst.ConfigPath, resolveConfDir())
 	if err != nil {
 		return
 	}

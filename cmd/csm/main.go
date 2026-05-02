@@ -34,8 +34,18 @@ const (
 	defaultConfigPath = "/opt/csm/csm.yaml"
 	defaultStatePath  = "/opt/csm/state"
 	defaultLogPath    = "/var/log/csm/monitor.log"
+	defaultConfDir    = "/etc/csm/conf.d"
 	binaryPath        = "/opt/csm/csm"
 )
+
+// resolveConfDir returns the conf.d directory honoring CSM_CONFIG_DIR env
+// override, falling back to defaultConfDir.
+func resolveConfDir() string {
+	if v := os.Getenv("CSM_CONFIG_DIR"); v != "" {
+		return v
+	}
+	return defaultConfDir
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -147,8 +157,9 @@ Commands:
   version       Version info + build hash
 
 Options:
-  --config <path>   Config file path (default: %s)
-`, defaultConfigPath)
+  --config <path>      Config file path (default: %s)
+  --config-dir <path>  conf.d override directory (default: %s; env: CSM_CONFIG_DIR)
+`, defaultConfigPath, defaultConfDir)
 }
 
 func loadConfig() *config.Config {
@@ -180,12 +191,16 @@ func loadConfig() *config.Config {
 // so they can run while the daemon holds the bbolt lock.
 func loadConfigLite() *config.Config {
 	cfgPath := defaultConfigPath
+	confDir := resolveConfDir()
 	for i, arg := range os.Args {
 		if arg == "--config" && i+1 < len(os.Args) {
 			cfgPath = os.Args[i+1]
 		}
+		if arg == "--config-dir" && i+1 < len(os.Args) {
+			confDir = os.Args[i+1]
+		}
 	}
-	cfg, err := config.Load(cfgPath)
+	cfg, err := config.LoadWithDir(cfgPath, confDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
 		os.Exit(1)
