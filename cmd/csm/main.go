@@ -16,6 +16,7 @@ import (
 	"github.com/pidginhost/csm/internal/control"
 	"github.com/pidginhost/csm/internal/daemon"
 	"github.com/pidginhost/csm/internal/geoip"
+	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/integrity"
 	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/signatures"
@@ -493,13 +494,55 @@ func runTierViaSocket(tier string) {
 // runStatusViaSocket mirrors the old on-disk `csm status` but reads
 // from the live daemon instead of re-opening the store. Gracefully
 // exits non-zero if the daemon is not running.
+// With --json the output is machine-readable JSON (health.Snapshot when
+// available, legacy StatusResult otherwise). If the daemon is not running
+// and --json was requested, an offline stub snapshot is emitted to stdout
+// and the process exits 0 so callers can distinguish "daemon stopped" from
+// "network error".
 func runStatusViaSocket() {
-	result := requireDaemon(control.CmdStatus, nil)
-	var s control.StatusResult
-	if err := json.Unmarshal(result, &s); err != nil {
+	jsonOut := false
+	for _, arg := range os.Args[2:] {
+		if arg == "--json" {
+			jsonOut = true
+		}
+	}
+
+	result, err := sendControl(control.CmdStatus, nil)
+	if err != nil {
+		if jsonOut {
+			emitOfflineSnapshot()
+			return
+		}
+		if errors.Is(err, errDaemonNotRunning) {
+			fmt.Fprintln(os.Stderr, "csm: daemon not running (start with: systemctl start csm)")
+			os.Exit(2)
+		}
+		fmt.Fprintf(os.Stderr, "csm: %v\n", err)
+		os.Exit(1)
+	}
+
+	var sr control.StatusResult
+	if err := json.Unmarshal(result, &sr); err != nil {
 		fmt.Fprintf(os.Stderr, "csm: decoding result: %v\n", err)
 		os.Exit(1)
 	}
+
+	if jsonOut {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if sr.Snapshot != nil {
+			_ = enc.Encode(sr.Snapshot)
+			return
+		}
+		// Older daemon without Snapshot: fall back to printing the legacy struct.
+		_ = enc.Encode(sr)
+		return
+	}
+
+	printStatusHuman(sr)
+}
+
+func printStatusHuman(s control.StatusResult) {
 	fmt.Printf("version:          %s\n", s.Version)
 	fmt.Printf("uptime:           %s\n", formatUptime(s.UptimeSec))
 	if s.LatestScanTime != "" {
@@ -508,6 +551,23 @@ func runStatusViaSocket() {
 	fmt.Printf("latest findings:  %d\n", s.LatestFindings)
 	fmt.Printf("history count:    %d\n", s.HistoryCount)
 	fmt.Printf("dropped alerts:   %d\n", s.DroppedAlerts)
+}
+
+func emitOfflineSnapshot() {
+	snap := health.Snapshot{
+		Version:  Version,
+		Hostname: hostnameLite(),
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(snap)
+}
+
+func hostnameLite() string {
+	if h, err := os.Hostname(); err == nil {
+		return h
+	}
+	return ""
 }
 
 func formatUptime(sec int64) string {
