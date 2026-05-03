@@ -18,6 +18,8 @@ func runConfig() {
 	switch os.Args[2] {
 	case "show":
 		configShow()
+	case "schema":
+		runConfigSchema()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown config command: %s\n", os.Args[2])
 		printConfigUsage()
@@ -32,7 +34,17 @@ Usage: csm config <command>
 
 Commands:
   show [--no-redact] [--json]   Display current config (secrets redacted by default)
+  schema                        Print JSON Schema for the config file
 `)
+}
+
+func runConfigSchema() {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(config.Schema()); err != nil {
+		fmt.Fprintf(os.Stderr, "encoding schema: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func configShow() {
