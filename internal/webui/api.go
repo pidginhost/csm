@@ -26,21 +26,62 @@ import (
 
 var reIPReputation = regexp.MustCompile(`Known malicious IP accessing server: (\S+) \((.+)\)`)
 
-// apiStatus returns daemon status and uptime.
+// apiStatus returns the daemon's full health snapshot as JSON. Backward
+// compatible with prior callers: every field they consumed (hostname,
+// uptime, started_at, rules_loaded, scan_running, last_scan_time) is
+// still present, with new fields added alongside.
 func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
+	provider := s.provider
+
 	s.scanMu.Lock()
 	scanning := s.scanRunning
 	s.scanMu.Unlock()
 
-	status := map[string]interface{}{
-		"hostname":       s.cfg.Hostname,
-		"uptime":         time.Since(s.startTime).String(),
-		"started_at":     s.startTime.Format(time.RFC3339),
+	if provider == nil {
+		// No daemon-side provider installed (test harness). Fall back to
+		// the legacy minimal payload so existing UI code keeps working.
+		writeJSON(w, map[string]interface{}{
+			"hostname":       s.cfg.Hostname,
+			"uptime":         time.Since(s.startTime).String(),
+			"started_at":     s.startTime.Format(time.RFC3339),
+			"rules_loaded":   s.sigCount,
+			"scan_running":   scanning,
+			"last_scan_time": s.store.LatestScanTime().Format(time.RFC3339),
+			"status":         "down",
+		})
+		return
+	}
+
+	snap := health.Build(provider, s.version, health.Capabilities())
+	resp := map[string]interface{}{
+		"hostname":       snap.Hostname,
+		"version":        snap.Version,
+		"uptime":         time.Duration(snap.UptimeSec * int64(time.Second)).String(),
+		"uptime_sec":     snap.UptimeSec,
+		"started_at":     snap.StartedAt.Format(time.RFC3339),
 		"rules_loaded":   s.sigCount,
 		"scan_running":   scanning,
-		"last_scan_time": s.store.LatestScanTime().Format(time.RFC3339),
+		"last_scan_time": snap.LatestScan.Format(time.RFC3339),
+		"baseline_at":    formatRFC3339OrEmpty(snap.BaselineAt),
+		"blocklist_size": snap.BlocklistSize,
+		"history_count":  snap.HistoryCount,
+		"severities":     snap.Severities,
+		"watchers":       snap.Watchers,
+		"store_healthy":  snap.StoreHealthy,
+		"store_size_mb":  snap.StoreSizeMB,
+		"config_hash":    snap.ConfigHash,
+		"binary_hash":    snap.BinaryHash,
+		"capabilities":   snap.Capabilities,
+		"status":         snap.OverallStatus(),
 	}
-	writeJSON(w, status)
+	writeJSON(w, resp)
+}
+
+func formatRFC3339OrEmpty(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format(time.RFC3339)
 }
 
 // apiCapabilities returns the static feature-flag list for this build.

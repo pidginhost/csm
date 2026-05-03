@@ -23,6 +23,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/emailav"
 	"github.com/pidginhost/csm/internal/geoip"
+	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/state"
 )
@@ -62,6 +63,8 @@ type Server struct {
 	scanMu        sync.Mutex
 	scanRunning   bool       // only one scan at a time
 	modSecApplyMu sync.Mutex // serializes modsec rules apply (write+reload+rollback)
+
+	provider health.Provider // set by Daemon when it starts the WebUI
 
 	// Graceful shutdown signal for background goroutines
 	pruneDone chan struct{}
@@ -407,6 +410,13 @@ func (s *Server) SetEmailAVWatcherMode(mode string) {
 // SetVersion sets the application version for display in the UI.
 func (s *Server) SetVersion(v string) {
 	s.version = v
+}
+
+// SetHealthProvider installs the daemon's health provider. The webui
+// constructs without one so unit tests can run without a daemon; the
+// daemon must call this before any request hits /api/v1/status.
+func (s *Server) SetHealthProvider(p health.Provider) {
+	s.provider = p
 }
 
 // csmConfigJSON returns a JSON string of feature flags for the frontend.
