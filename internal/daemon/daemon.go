@@ -331,6 +331,17 @@ func (d *Daemon) Run() error {
 	// reload is visible on the next call without restart.
 	config.SetActive(d.cfg)
 
+	// Install the mail-brute account-key extractor selected by config.
+	// Validation in config.Load() already rejected invalid specs, so
+	// the error path here is defense-in-depth only.
+	{
+		ex, err := NewAccountExtractor(d.cfg.Thresholds.MailBruteAccountKey)
+		if err != nil {
+			return fmt.Errorf("invalid mail_brute_account_key: %w", err)
+		}
+		SetAccountExtractor(ex)
+	}
+
 	// Self-heal the auditd rules file. Package upgrades sometimes ship
 	// a new csm binary without re-running auditd.Deploy() (postinstall
 	// hooks differ across apt/dnf and across operator deploy automation),

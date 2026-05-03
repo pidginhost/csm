@@ -347,13 +347,8 @@ func extractMailLoginEvent(line string) (ip, account string, success bool) {
 		return "", "", false
 	}
 
-	// Extract user=<...> via balanced angle brackets.
-	if i := strings.Index(line, "user=<"); i >= 0 {
-		rest := line[i+len("user=<"):]
-		if end := strings.Index(rest, ">"); end >= 0 {
-			account = rest[:end]
-		}
-	}
+	// Extract account key via the configured (or default) extractor.
+	account = currentAccountExtractor().Extract(line)
 
 	// Extract rip=... field. Delimited by comma or whitespace.
 	if i := strings.Index(line, "rip="); i >= 0 {
