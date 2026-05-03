@@ -64,11 +64,21 @@ thresholds:
   mail_brute_account_key: "builtin:dovecot-user"
 
 # Rspamd scoring source. Agent supplies token_env via runtime fragment / env.
+#
+# Upstream threat-intel: phpanel runs an aggregating cache that every
+# agent in the fleet queries. The agent supplies the URL via runtime
+# fragment; the token is resolved from CSM_UPSTREAM_TOKEN at query time.
 reputation:
   rspamd:
     enabled: true
     url: http://127.0.0.1:11334
     # token_env: CSM_RSPAMD_TOKEN  # operator/agent supplies
+  upstream:
+    enabled: false        # operator/agent flips on after the panel endpoint is deployed
+    # url: https://panel.example.com/api/csm/ti  # supplied by agent
+    token_env: CSM_UPSTREAM_TOKEN
+    cache_ttl_min: 15
+    timeout_sec: 5
 
 # === P5: Operational safety ===
 
@@ -79,16 +89,3 @@ auto_response:
   enabled: true
   block_ips: true
   dry_run: true
-
-# === P6: Upstream threat-intel ===
-
-# Phpanel runs an aggregating threat-intel cache that every agent in the
-# fleet queries. The agent supplies the URL via runtime fragment; the
-# token is resolved from CSM_UPSTREAM_TOKEN at query time.
-reputation:
-  upstream:
-    enabled: false        # operator/agent flips on after the panel endpoint is deployed
-    # url: https://panel.example.com/api/csm/ti  # supplied by agent
-    token_env: CSM_UPSTREAM_TOKEN
-    cache_ttl_min: 15
-    timeout_sec: 5

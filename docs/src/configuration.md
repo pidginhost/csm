@@ -241,6 +241,13 @@ reputation:
     url: "http://127.0.0.1:11334"       # rspamd controller URL
     token: ""                           # controller password, or use token_env
     token_env: ""                       # env var read at query time
+  upstream:
+    enabled: false                      # include panel-side threat-intel cache scores
+    url: ""                             # base URL; CSM appends /lookup
+    token: ""                           # bearer token, or use token_env
+    token_env: ""                       # env var read at query time
+    cache_ttl_min: 15                   # local cache TTL for upstream scores
+    timeout_sec: 5                      # upstream request timeout
 
 # --- Signatures ---
 signatures:

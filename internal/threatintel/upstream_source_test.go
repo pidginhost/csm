@@ -13,6 +13,9 @@ import (
 
 func TestUpstreamSource_QueriesAndParses(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/lookup" {
+			t.Fatalf("expected /lookup request, got %s", r.URL.Path)
+		}
 		ip := r.URL.Query().Get("ip")
 		if ip != "1.2.3.4" {
 			t.Errorf("expected ip=1.2.3.4, got %q", ip)
@@ -41,6 +44,29 @@ func TestUpstreamSource_QueriesAndParses(t *testing.T) {
 	}
 }
 
+func TestUpstreamSource_JoinsLookupPathWithTrailingSlash(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"ip": r.URL.Query().Get("ip"), "score": 25,
+		})
+	}))
+	defer srv.Close()
+
+	src := NewUpstreamSource(UpstreamConfig{
+		URL:      srv.URL + "/api/csm/ti/",
+		CacheTTL: time.Minute,
+		Timeout:  time.Second,
+	})
+	if _, err := src.Score(context.Background(), "1.2.3.4"); err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/api/csm/ti/lookup" {
+		t.Fatalf("expected clean lookup path, got %q", gotPath)
+	}
+}
+
 func TestUpstreamSource_CacheHitDoesNotHitNetwork(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -57,6 +83,31 @@ func TestUpstreamSource_CacheHitDoesNotHitNetwork(t *testing.T) {
 	}
 	if atomic.LoadInt32(&calls) != 1 {
 		t.Fatalf("expected 1 upstream call (4 cache hits), got %d", calls)
+	}
+}
+
+func TestUpstreamSource_UsesResponseTTL(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		score := 20 + int(atomic.AddInt32(&calls, 1))
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"ip": r.URL.Query().Get("ip"), "score": score, "ttl_sec": 1,
+		})
+	}))
+	defer srv.Close()
+
+	src := NewUpstreamSource(UpstreamConfig{URL: srv.URL, CacheTTL: time.Hour, Timeout: time.Second})
+	first, err := src.Score(context.Background(), "1.2.3.4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1100 * time.Millisecond)
+	second, err := src.Score(context.Background(), "1.2.3.4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second || atomic.LoadInt32(&calls) != 2 {
+		t.Fatalf("expected ttl_sec to expire cache, first=%d second=%d calls=%d", first, second, calls)
 	}
 }
 
@@ -82,6 +133,34 @@ func TestUpstreamSource_5xxReturnsError(t *testing.T) {
 	src := NewUpstreamSource(UpstreamConfig{URL: srv.URL, CacheTTL: time.Minute, Timeout: time.Second})
 	if _, err := src.Score(context.Background(), "1.2.3.4"); err == nil {
 		t.Fatal("expected error on 5xx")
+	}
+}
+
+func TestUpstreamSource_RejectsIPMismatch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"ip": "5.6.7.8", "score": 75,
+		})
+	}))
+	defer srv.Close()
+
+	src := NewUpstreamSource(UpstreamConfig{URL: srv.URL, CacheTTL: time.Minute, Timeout: time.Second})
+	if _, err := src.Score(context.Background(), "1.2.3.4"); err == nil {
+		t.Fatal("expected error on mismatched response IP")
+	}
+}
+
+func TestUpstreamSource_RejectsOutOfRangeScore(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"ip": r.URL.Query().Get("ip"), "score": 150,
+		})
+	}))
+	defer srv.Close()
+
+	src := NewUpstreamSource(UpstreamConfig{URL: srv.URL, CacheTTL: time.Minute, Timeout: time.Second})
+	if _, err := src.Score(context.Background(), "1.2.3.4"); err == nil {
+		t.Fatal("expected error on out-of-range score")
 	}
 }
 

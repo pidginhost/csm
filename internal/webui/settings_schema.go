@@ -184,8 +184,8 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "upstream.url", Type: "string", Label: "Upstream URL"},
 			{YAMLPath: "upstream.token", Type: "string", Label: "Upstream bearer token", Secret: true},
 			{YAMLPath: "upstream.token_env", Type: "string", Label: "Upstream token env var"},
-			{YAMLPath: "upstream.cache_ttl_min", Type: "int", Label: "Upstream cache TTL (min)"},
-			{YAMLPath: "upstream.timeout_sec", Type: "int", Label: "Upstream request timeout (sec)"},
+			{YAMLPath: "upstream.cache_ttl_min", Type: "int", Label: "Upstream cache TTL (min)", Min: int64p(1), Max: int64p(1440)},
+			{YAMLPath: "upstream.timeout_sec", Type: "int", Label: "Upstream request timeout (sec)", Min: int64p(1), Max: int64p(60)},
 		},
 	},
 	{

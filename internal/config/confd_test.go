@@ -87,6 +87,18 @@ func TestLoadWithDir_PackagedPHPPanelProfile(t *testing.T) {
 	if len(cfg.WebUI.Tokens) != 0 {
 		t.Fatalf("packaged phpanel profile must not ship active placeholder tokens, got %v", cfg.WebUI.Tokens)
 	}
+	if !cfg.Reputation.Rspamd.Enabled {
+		t.Fatal("packaged phpanel profile must keep rspamd threat-intel enabled")
+	}
+	if cfg.Reputation.Rspamd.URL != "http://127.0.0.1:11334" {
+		t.Fatalf("Rspamd URL = %q, want local controller", cfg.Reputation.Rspamd.URL)
+	}
+	if cfg.Reputation.Upstream.Enabled {
+		t.Fatal("packaged phpanel profile must not enable upstream without the runtime URL")
+	}
+	if cfg.Reputation.Upstream.TokenEnv != "CSM_UPSTREAM_TOKEN" {
+		t.Fatalf("Upstream TokenEnv = %q, want CSM_UPSTREAM_TOKEN", cfg.Reputation.Upstream.TokenEnv)
+	}
 }
 
 func must(t *testing.T, err error) {

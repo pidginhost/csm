@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -295,7 +296,7 @@ type Config struct {
 		Upstream struct {
 			Enabled     bool   `yaml:"enabled"`
 			URL         string `yaml:"url"`
-			Token       string `yaml:"token,omitempty"`    // discouraged - prefer TokenEnv
+			Token       string `yaml:"token,omitempty"` // discouraged - prefer TokenEnv
 			TokenEnv    string `yaml:"token_env,omitempty"`
 			CacheTTLMin int    `yaml:"cache_ttl_min"`
 			TimeoutSec  int    `yaml:"timeout_sec"`
@@ -790,8 +791,28 @@ func LoadBytes(data []byte) (*Config, error) {
 }
 
 func validateReputation(cfg *Config) error {
-	if cfg.Reputation.Upstream.Enabled && cfg.Reputation.Upstream.URL == "" {
+	up := cfg.Reputation.Upstream
+	if up.CacheTTLMin != 0 && (up.CacheTTLMin < 1 || up.CacheTTLMin > 1440) {
+		return fmt.Errorf("reputation.upstream.cache_ttl_min must be between 1 and 1440")
+	}
+	if up.TimeoutSec != 0 && (up.TimeoutSec < 1 || up.TimeoutSec > 60) {
+		return fmt.Errorf("reputation.upstream.timeout_sec must be between 1 and 60")
+	}
+	if !up.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(up.URL) == "" {
 		return fmt.Errorf("reputation.upstream.enabled=true but url is empty")
+	}
+	parsed, err := url.Parse(up.URL)
+	if err != nil {
+		return fmt.Errorf("reputation.upstream.url: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("reputation.upstream.url must use http or https")
+	}
+	if parsed.Host == "" {
+		return fmt.Errorf("reputation.upstream.url must include host")
 	}
 	return nil
 }

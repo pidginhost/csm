@@ -11,6 +11,9 @@ can implement it; phpanel's reference implementation lives in
 GET <reputation.upstream.url>/lookup?ip=<ip>
 ```
 
+`reputation.upstream.url` must be an `http://` or `https://` URL with a
+host. CSM appends `/lookup` to that base URL.
+
 ## Authentication
 
 CSM sends `Authorization: Bearer <token>` when
@@ -57,6 +60,9 @@ warning so operators see auth misconfigurations.
 
 Treated as "no signal." The aggregator continues with whatever scores
 the other sources returned.
+
+CSM rejects malformed `200` responses, including an `ip` field that
+does not match the requested IP or a `score` outside `0..100`.
 
 ## Caching
 

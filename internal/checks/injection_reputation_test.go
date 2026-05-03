@@ -186,6 +186,50 @@ func TestCheckIPReputationRspamdOnlyEmitsWithoutAbuseKey(t *testing.T) {
 	}
 }
 
+func TestCheckIPReputationUpstreamOnlyEmitsWithoutAbuseKey(t *testing.T) {
+	upstreamCalls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls++
+		if r.URL.Path != "/lookup" {
+			t.Fatalf("expected /lookup request, got %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("ip"); got != "198.51.100.79" {
+			t.Fatalf("expected ip=198.51.100.79, got %q", got)
+		}
+		if r.Header.Get("Authorization") != "Bearer upstream-token" {
+			t.Fatalf("expected upstream bearer token, got %q", r.Header.Get("Authorization"))
+		}
+		_, _ = fmt.Fprintln(w, `{"ip":"198.51.100.79","score":80,"source":"panel"}`)
+	}))
+	defer upstream.Close()
+
+	statePath := t.TempDir()
+	logContent := "Apr 14 10:00:00 host sshd[1]: Accepted publickey for root from 198.51.100.79 port 22 ssh2\n"
+	withMockOS(t, mockOSWithSecureLog(t, logContent))
+
+	cfg := &config.Config{StatePath: statePath}
+	cfg.Reputation.Upstream.Enabled = true
+	cfg.Reputation.Upstream.URL = upstream.URL
+	cfg.Reputation.Upstream.Token = "upstream-token"
+
+	findings := CheckIPReputation(context.Background(), cfg, nil)
+	hasCritical := false
+	for _, f := range findings {
+		if f.Check == "ip_reputation" && f.Severity == alert.Critical &&
+			strings.Contains(f.Message, "198.51.100.79") &&
+			strings.Contains(f.Message, "Upstream score") {
+			hasCritical = true
+			break
+		}
+	}
+	if !hasCritical {
+		t.Fatalf("expected critical upstream-backed finding, got: %+v", findings)
+	}
+	if upstreamCalls == 0 {
+		t.Fatal("expected upstream lookup")
+	}
+}
+
 func TestCheckIPReputationRspamdEmitsWhenAbuseErrors(t *testing.T) {
 	withTestAbuseIPDB(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

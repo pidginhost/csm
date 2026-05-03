@@ -568,6 +568,44 @@ reputation:
 	}
 }
 
+func TestUpstreamTI_RejectsEnabledWithInvalidURL(t *testing.T) {
+	_, err := LoadBytes([]byte(`
+reputation:
+  upstream:
+    enabled: true
+    url: panel.example.com/api/csm/ti
+`))
+	if err == nil {
+		t.Fatal("expected error: upstream URL must include scheme and host")
+	}
+}
+
+func TestUpstreamTI_RejectsInvalidCacheTTL(t *testing.T) {
+	_, err := LoadBytes([]byte(`
+reputation:
+  upstream:
+    enabled: true
+    url: https://panel.example.com/api/csm/ti
+    cache_ttl_min: -1
+`))
+	if err == nil {
+		t.Fatal("expected error for negative cache_ttl_min")
+	}
+}
+
+func TestUpstreamTI_RejectsInvalidTimeout(t *testing.T) {
+	_, err := LoadBytes([]byte(`
+reputation:
+  upstream:
+    enabled: true
+    url: https://panel.example.com/api/csm/ti
+    timeout_sec: -1
+`))
+	if err == nil {
+		t.Fatal("expected error for negative timeout_sec")
+	}
+}
+
 func TestUpstreamTI_DefaultsApply(t *testing.T) {
 	cfg, err := LoadBytes([]byte(`
 reputation:

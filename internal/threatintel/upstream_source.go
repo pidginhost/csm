@@ -4,16 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
 
+const upstreamMaxResponseBytes = 1 << 20
+
 // UpstreamConfig configures the HTTP threat-intel client. TokenEnv (if
 // set) is consulted at every Score call so operators can rotate via env
-// without restarting the daemon (P3+P4 lesson).
+// without restarting the daemon.
 type UpstreamConfig struct {
 	URL      string
 	Token    string
@@ -23,7 +27,7 @@ type UpstreamConfig struct {
 }
 
 // UpstreamSource queries a panel-side TI cache. The wire contract is
-// documented in docs/upstream-threat-intel-contract.md (added in T4).
+// documented in docs/upstream-threat-intel-contract.md.
 //
 //	GET <URL>/lookup?ip=<ip>
 //	Authorization: Bearer <token>     (omitted if no token resolved)
@@ -71,8 +75,7 @@ func NewUpstreamSource(cfg UpstreamConfig) *UpstreamSource {
 func (u *UpstreamSource) Name() string { return "upstream" }
 
 // resolveToken reads TokenEnv (if set) at query time, falling back to the
-// static token. P3+P4 pattern: lets operators rotate via env without
-// restarting the daemon.
+// static token. Lets operators rotate via env without daemon restart.
 func (u *UpstreamSource) resolveToken() string {
 	if u.cfg.TokenEnv != "" {
 		if v := os.Getenv(u.cfg.TokenEnv); v != "" {
@@ -87,16 +90,11 @@ func (u *UpstreamSource) Score(ctx context.Context, ip string) (int, error) {
 		return v, nil
 	}
 
-	endpoint, err := url.Parse(u.cfg.URL)
+	endpoint, err := u.lookupEndpoint(ip)
 	if err != nil {
-		return 0, fmt.Errorf("parsing upstream URL: %w", err)
+		return 0, err
 	}
-	endpoint.Path += "/lookup"
-	q := endpoint.Query()
-	q.Set("ip", ip)
-	endpoint.RawQuery = q.Encode()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -111,11 +109,18 @@ func (u *UpstreamSource) Score(ctx context.Context, ip string) (int, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "upstream threat-intel: HTTP %d for %s\n", resp.StatusCode, ip)
 		return 0, fmt.Errorf("upstream HTTP %d", resp.StatusCode)
 	}
 	var body upstreamResponse
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, upstreamMaxResponseBytes)).Decode(&body); err != nil {
 		return 0, fmt.Errorf("upstream decode: %w", err)
+	}
+	if normalizeIP(body.IP) != normalizeIP(ip) {
+		return 0, fmt.Errorf("upstream response ip mismatch: got %q want %q", body.IP, ip)
+	}
+	if body.Score < 0 || body.Score > 100 {
+		return 0, fmt.Errorf("upstream score out of range: %d", body.Score)
 	}
 
 	ttl := u.cfg.CacheTTL
@@ -124,6 +129,25 @@ func (u *UpstreamSource) Score(ctx context.Context, ip string) (int, error) {
 	}
 	u.cachePut(ip, body.Score, ttl)
 	return body.Score, nil
+}
+
+func (u *UpstreamSource) lookupEndpoint(ip string) (string, error) {
+	endpoint, err := url.Parse(u.cfg.URL)
+	if err != nil {
+		return "", fmt.Errorf("parsing upstream URL: %w", err)
+	}
+	if endpoint.Scheme != "http" && endpoint.Scheme != "https" {
+		return "", fmt.Errorf("upstream URL must use http or https")
+	}
+	if endpoint.Host == "" {
+		return "", fmt.Errorf("upstream URL must include host")
+	}
+	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + "/lookup"
+	endpoint.Fragment = ""
+	q := endpoint.Query()
+	q.Set("ip", normalizeIP(ip))
+	endpoint.RawQuery = q.Encode()
+	return endpoint.String(), nil
 }
 
 func (u *UpstreamSource) cacheGet(ip string) (int, bool) {
