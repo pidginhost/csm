@@ -345,3 +345,34 @@ webui:
 		t.Fatal("expected error for empty token")
 	}
 }
+
+func TestWebUITokens_RejectsEmptyName(t *testing.T) {
+	_, err := LoadBytes([]byte(`
+webui:
+  enabled: true
+  tokens:
+    - name: ""
+      token: "x"
+      scope: read
+`))
+	if err == nil {
+		t.Fatal("expected error for empty token name")
+	}
+}
+
+func TestWebUITokens_RejectsDuplicateToken(t *testing.T) {
+	_, err := LoadBytes([]byte(`
+webui:
+  enabled: true
+  tokens:
+    - name: admin
+      token: "same"
+      scope: admin
+    - name: phpanel
+      token: "same"
+      scope: read
+`))
+	if err == nil {
+		t.Fatal("expected error for duplicate token")
+	}
+}

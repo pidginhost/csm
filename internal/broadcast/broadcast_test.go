@@ -108,3 +108,18 @@ func TestBus_CloseDrainsAllSubscribers(t *testing.T) {
 		t.Fatal("expected chB closed")
 	}
 }
+
+func TestBus_SubscribeAfterCloseReturnsClosedChannel(t *testing.T) {
+	bus := NewBus(8)
+	bus.Close()
+
+	ch := bus.Subscribe()
+	select {
+	case _, ok := <-ch:
+		if ok {
+			t.Fatal("expected closed channel from closed bus")
+		}
+	case <-time.After(50 * time.Millisecond):
+		t.Fatal("expected closed channel immediately")
+	}
+}

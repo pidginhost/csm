@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/config"
 )
@@ -62,6 +63,35 @@ func TestSendPhpanelWebhook_SignsBody(t *testing.T) {
 	}
 }
 
+func TestSendPhpanelWebhook_EnvSecretOverridesInlineSecret(t *testing.T) {
+	t.Setenv("CSM_PHPANEL_HMAC_TEST", "env-secret")
+	var capturedSig, capturedBody string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedSig = r.Header.Get("X-CSM-Signature")
+		body, _ := io.ReadAll(r.Body)
+		capturedBody = string(body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{Hostname: "host"}
+	cfg.Alerts.Webhook.URL = srv.URL
+	cfg.Alerts.Webhook.HMACSecret = "inline-secret"
+	cfg.Alerts.Webhook.HMACSecretEnv = "CSM_PHPANEL_HMAC_TEST"
+
+	if err := SendPhpanelWebhookFinding(cfg, Finding{Check: "test", Severity: High}); err != nil {
+		t.Fatal(err)
+	}
+
+	mac := hmac.New(sha256.New, []byte("env-secret"))
+	mac.Write([]byte(capturedBody))
+	want := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+	if capturedSig != want {
+		t.Fatalf("expected env-secret signature %s, got %s", want, capturedSig)
+	}
+}
+
 func TestSendPhpanelWebhook_NoSecretIsError(t *testing.T) {
 	cfg := &config.Config{Hostname: "h"}
 	cfg.Alerts.Webhook.URL = "http://example.invalid"
@@ -81,5 +111,62 @@ func TestSendPhpanelWebhook_4xxReturnsError(t *testing.T) {
 	cfg.Alerts.Webhook.HMACSecret = "s"
 	if err := SendPhpanelWebhookFinding(cfg, Finding{Check: "x", Severity: High}); err == nil {
 		t.Fatal("expected error on HTTP 403")
+	}
+}
+
+func TestDispatchPhpanelWebhookAlwaysUsesSignedPerFinding(t *testing.T) {
+	var requests int32
+	var signatures []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		signatures = append(signatures, r.Header.Get("X-CSM-Signature"))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{StatePath: t.TempDir(), Hostname: "host"}
+	cfg.Alerts.MaxPerHour = 10
+	cfg.Alerts.Webhook.Enabled = true
+	cfg.Alerts.Webhook.Type = "phpanel"
+	cfg.Alerts.Webhook.URL = srv.URL
+	cfg.Alerts.Webhook.HMACSecret = "secret"
+	cfg.Alerts.Webhook.PerFinding = false
+
+	findings := []Finding{
+		{Check: "a", Message: "a", Severity: Critical, Timestamp: time.Now()},
+		{Check: "b", Message: "b", Severity: Critical, Timestamp: time.Now()},
+	}
+	if err := Dispatch(cfg, findings); err != nil {
+		t.Fatal(err)
+	}
+	if atomic.LoadInt32(&requests) != 2 {
+		t.Fatalf("requests = %d, want 2", requests)
+	}
+	for _, sig := range signatures {
+		if !strings.HasPrefix(sig, "sha256=") {
+			t.Fatalf("missing phpanel signature in %q", sig)
+		}
+	}
+}
+
+func TestDispatchPhpanelWebhookErrorIsReturned(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{StatePath: t.TempDir(), Hostname: "host"}
+	cfg.Alerts.MaxPerHour = 10
+	cfg.Alerts.Webhook.Enabled = true
+	cfg.Alerts.Webhook.Type = "phpanel"
+	cfg.Alerts.Webhook.URL = srv.URL
+	cfg.Alerts.Webhook.HMACSecret = "secret"
+
+	err := Dispatch(cfg, []Finding{{Check: "a", Message: "a", Severity: Critical, Timestamp: time.Now()}})
+	if err == nil {
+		t.Fatal("expected phpanel webhook error")
+	}
+	if !strings.Contains(err.Error(), "phpanel webhook") {
+		t.Fatalf("err = %v, want phpanel webhook context", err)
 	}
 }

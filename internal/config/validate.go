@@ -73,6 +73,26 @@ func Validate(cfg *Config) []ValidationResult {
 		} else {
 			results = append(results, ValidationResult{"ok", "alerts.webhook.url", cfg.Alerts.Webhook.URL})
 		}
+		switch cfg.Alerts.Webhook.Type {
+		case "", "slack", "discord", "generic", "phpanel":
+		default:
+			results = append(results, ValidationResult{"error", "alerts.webhook.type", fmt.Sprintf("unknown webhook type %q", cfg.Alerts.Webhook.Type)})
+		}
+		if cfg.Alerts.Webhook.Type == "phpanel" {
+			secret := cfg.Alerts.Webhook.HMACSecret
+			if cfg.Alerts.Webhook.HMACSecretEnv != "" {
+				if v := os.Getenv(cfg.Alerts.Webhook.HMACSecretEnv); v != "" {
+					secret = v
+				}
+			}
+			if secret == "" {
+				field := "alerts.webhook.hmac_secret"
+				if cfg.Alerts.Webhook.HMACSecretEnv != "" {
+					field = "alerts.webhook.hmac_secret_env"
+				}
+				results = append(results, ValidationResult{"error", field, "phpanel webhook enabled but no HMAC secret configured"})
+			}
+		}
 	}
 
 	// --- Heartbeat ---
@@ -91,12 +111,18 @@ func Validate(cfg *Config) []ValidationResult {
 
 	// --- WebUI ---
 	if cfg.WebUI.Enabled {
-		if cfg.WebUI.AuthToken == "" {
-			results = append(results, ValidationResult{"error", "webui.auth_token", "webui enabled but no auth_token configured"})
+		if err := validateWebUITokens(cfg); err != nil {
+			results = append(results, ValidationResult{"error", "webui.tokens", err.Error()})
 		}
-	}
-	if cfg.WebUI.Enabled && cfg.WebUI.AuthToken != "" {
-		results = append(results, ValidationResult{"ok", "webui", fmt.Sprintf("listening on %s", cfg.WebUI.Listen)})
+		tokenCount, adminCount := webUITokenCounts(cfg)
+		if tokenCount == 0 {
+			results = append(results, ValidationResult{"error", "webui.tokens", "webui enabled but no auth token configured"})
+		} else {
+			results = append(results, ValidationResult{"ok", "webui", fmt.Sprintf("listening on %s", cfg.WebUI.Listen)})
+			if adminCount == 0 {
+				results = append(results, ValidationResult{"warn", "webui.tokens", "no admin-scope token configured; browser login and admin API calls are disabled"})
+			}
+		}
 	}
 
 	// --- Trusted countries ---
@@ -290,6 +316,23 @@ func Validate(cfg *Config) []ValidationResult {
 	results = append(results, validateWarnings(cfg)...)
 
 	return results
+}
+
+func webUITokenCounts(cfg *Config) (tokens, admins int) {
+	if len(cfg.WebUI.Tokens) == 0 && cfg.WebUI.AuthToken != "" {
+		tokens++
+		admins++
+	}
+	for _, tok := range cfg.WebUI.Tokens {
+		if tok.Token == "" {
+			continue
+		}
+		tokens++
+		if tok.Scope == "admin" {
+			admins++
+		}
+	}
+	return tokens, admins
 }
 
 // validateWarnings checks for non-fatal configuration issues.

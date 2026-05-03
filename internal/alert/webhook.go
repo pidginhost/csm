@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/pidginhost/csm/internal/config"
@@ -66,7 +67,8 @@ func SendPhpanelWebhookFinding(cfg *config.Config, f Finding) error {
 	if cfg.Alerts.Webhook.URL == "" {
 		return fmt.Errorf("phpanel webhook URL not set")
 	}
-	if cfg.Alerts.Webhook.HMACSecret == "" {
+	secret := phpanelWebhookSecret(cfg)
+	if secret == "" {
 		return fmt.Errorf("phpanel webhook HMAC secret not configured")
 	}
 	payload := map[string]interface{}{
@@ -79,7 +81,7 @@ func SendPhpanelWebhookFinding(cfg *config.Config, f Finding) error {
 		return fmt.Errorf("marshaling phpanel payload: %w", err)
 	}
 
-	mac := hmac.New(sha256.New, []byte(cfg.Alerts.Webhook.HMACSecret))
+	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(body)
 	sig := "sha256=" + hex.EncodeToString(mac.Sum(nil))
 
@@ -102,4 +104,13 @@ func SendPhpanelWebhookFinding(cfg *config.Config, f Finding) error {
 		return fmt.Errorf("phpanel webhook HTTP %d", resp.StatusCode)
 	}
 	return nil
+}
+
+func phpanelWebhookSecret(cfg *config.Config) string {
+	if cfg.Alerts.Webhook.HMACSecretEnv != "" {
+		if v := os.Getenv(cfg.Alerts.Webhook.HMACSecretEnv); v != "" {
+			return v
+		}
+	}
+	return cfg.Alerts.Webhook.HMACSecret
 }

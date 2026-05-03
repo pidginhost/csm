@@ -5,10 +5,14 @@ import "testing"
 func TestRedact(t *testing.T) {
 	cfg := &Config{Hostname: "test"}
 	cfg.WebUI.AuthToken = "secret-token"
+	cfg.WebUI.MetricsToken = "metrics-secret"
+	cfg.WebUI.Tokens = []WebUIToken{{Name: "admin", Token: "admin-secret", Scope: "admin"}}
+	cfg.Alerts.Webhook.HMACSecret = "webhook-secret"
 	cfg.GeoIP.LicenseKey = "license-key"
 	cfg.GeoIP.AccountID = "account-123"
 	cfg.Reputation.AbuseIPDBKey = "abuse-key"
 	cfg.Challenge.Secret = "challenge-secret"
+	cfg.Challenge.VerifiedSession.AdminSecret = "verified-secret"
 	cfg.Integrity.BinaryHash = "abc123"
 	cfg.Integrity.ConfigHash = "def456"
 	cfg.Sentry.DSN = "https://token@sentry.example.com/1"
@@ -20,6 +24,15 @@ func TestRedact(t *testing.T) {
 	if redacted.WebUI.AuthToken != "***REDACTED***" {
 		t.Errorf("auth_token not redacted: %q", redacted.WebUI.AuthToken)
 	}
+	if redacted.WebUI.MetricsToken != "***REDACTED***" {
+		t.Errorf("metrics_token not redacted: %q", redacted.WebUI.MetricsToken)
+	}
+	if redacted.WebUI.Tokens[0].Token != "***REDACTED***" {
+		t.Errorf("webui token not redacted: %q", redacted.WebUI.Tokens[0].Token)
+	}
+	if redacted.Alerts.Webhook.HMACSecret != "***REDACTED***" {
+		t.Errorf("webhook hmac_secret not redacted: %q", redacted.Alerts.Webhook.HMACSecret)
+	}
 	if redacted.GeoIP.LicenseKey != "***REDACTED***" {
 		t.Errorf("license_key not redacted: %q", redacted.GeoIP.LicenseKey)
 	}
@@ -28,6 +41,9 @@ func TestRedact(t *testing.T) {
 	}
 	if redacted.Challenge.Secret != "***REDACTED***" {
 		t.Errorf("challenge.secret not redacted: %q", redacted.Challenge.Secret)
+	}
+	if redacted.Challenge.VerifiedSession.AdminSecret != "***REDACTED***" {
+		t.Errorf("challenge.verified_session.admin_secret not redacted: %q", redacted.Challenge.VerifiedSession.AdminSecret)
 	}
 	if redacted.Integrity.BinaryHash != "***REDACTED***" {
 		t.Errorf("binary_hash not redacted: %q", redacted.Integrity.BinaryHash)
@@ -50,6 +66,9 @@ func TestRedact(t *testing.T) {
 	// Original untouched
 	if cfg.WebUI.AuthToken != "secret-token" {
 		t.Error("original config was mutated")
+	}
+	if cfg.WebUI.Tokens[0].Token != "admin-secret" {
+		t.Error("original webui token was mutated")
 	}
 }
 

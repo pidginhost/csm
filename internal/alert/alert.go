@@ -378,11 +378,10 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 	}
 
 	if len(webhookFindings) > 0 {
-		if cfg.Alerts.Webhook.Type == "phpanel" && cfg.Alerts.Webhook.PerFinding {
+		if cfg.Alerts.Webhook.Type == "phpanel" {
 			for _, f := range webhookFindings {
 				if err := SendPhpanelWebhookFinding(cfg, f); err != nil {
-					fmt.Fprintf(os.Stderr, "[%s] phpanel webhook failed (check=%s): %v\n",
-						time.Now().UTC().Format(time.RFC3339), f.Check, err)
+					errs = append(errs, fmt.Errorf("phpanel webhook (check=%s): %w", f.Check, err))
 				}
 			}
 		} else {

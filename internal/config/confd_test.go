@@ -81,6 +81,12 @@ func TestLoadWithDir_PackagedPHPPanelProfile(t *testing.T) {
 	if len(cfg.AccountRoots) != 1 || cfg.AccountRoots[0] != "/var/www/*" {
 		t.Fatalf("AccountRoots = %v, want [/var/www/*]", cfg.AccountRoots)
 	}
+	if cfg.Alerts.Webhook.Enabled {
+		t.Fatal("packaged phpanel profile must not enable a placeholder webhook")
+	}
+	if len(cfg.WebUI.Tokens) != 0 {
+		t.Fatalf("packaged phpanel profile must not ship active placeholder tokens, got %v", cfg.WebUI.Tokens)
+	}
 }
 
 func must(t *testing.T, err error) {

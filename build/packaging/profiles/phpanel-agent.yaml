@@ -28,30 +28,23 @@ account_roots:
 # infra_ips:
 #   - <panel ip>
 #   - <agent control plane ip>
+
+# Webhook + token configuration belongs in the agent's runtime fragment
+# (10-phpanel-runtime.yaml). Do not put active placeholder secrets in this
+# profile: conf.d sequence merging appends token lists, so placeholders can
+# remain valid after a later fragment adds the real token.
 #
 # alerts:
-#   webhooks:
-#     - type: phpanel
-#       url: https://panel.example.com/api/csm/findings
-#       hmac_secret_env: CSM_PHPANEL_HMAC
-
-# Webhook + token configuration. The agent fills these via a runtime fragment
-# (10-phpanel-runtime.yaml) before the daemon starts; this file documents
-# the keys and their defaults.
-
-alerts:
-  webhook:
-    enabled: true
-    type: phpanel
-    per_finding: true
-    # url: https://panel.example.com/api/csm/findings   # supplied by agent
-    hmac_secret_env: CSM_PHPANEL_HMAC                   # agent exports the env
-
-webui:
-  enabled: true
-  tokens:
-    # The agent generates these and writes the secrets to a runtime fragment.
-    # Do not put secrets in this profile - operator-readable file.
-    - name: phpanel-readonly
-      token: REPLACE_AT_INSTALL  # agent overrides via 10-phpanel-runtime.yaml
-      scope: read
+#   webhook:
+#     enabled: true
+#     type: phpanel
+#     per_finding: true
+#     url: https://panel.example.com/api/csm/findings
+#     hmac_secret_env: CSM_PHPANEL_HMAC
+#
+# webui:
+#   enabled: true
+#   tokens:
+#     - name: phpanel-readonly
+#       token: <agent-generated-secret>
+#       scope: read

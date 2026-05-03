@@ -82,6 +82,7 @@ func findSchemaField(section SettingsSection, yamlName string) *SettingsField {
 
 func TestSecretFieldsAreMarkedSecret(t *testing.T) {
 	known := []struct{ section, field string }{
+		{"alerts", "webhook.hmac_secret"},
 		{"reputation", "abuseipdb_key"},
 		{"geoip", "license_key"},
 		{"sentry", "dsn"},
@@ -97,6 +98,20 @@ func TestSecretFieldsAreMarkedSecret(t *testing.T) {
 			t.Errorf("field %s.%s not marked secret", k.section, k.field)
 		}
 	}
+}
+
+func TestAlertsWebhookTypeIncludesPhpanel(t *testing.T) {
+	s, _ := LookupSettingsSection("alerts")
+	f := findSchemaField(s, "webhook.type")
+	if f == nil {
+		t.Fatal("webhook.type field missing")
+	}
+	for _, opt := range f.Options {
+		if opt == "phpanel" {
+			return
+		}
+	}
+	t.Fatalf("webhook.type options = %v, want phpanel", f.Options)
 }
 
 func TestEnumArrayFieldsCarryOptionsSource(t *testing.T) {

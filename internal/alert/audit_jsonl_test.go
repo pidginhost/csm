@@ -163,7 +163,11 @@ func TestJSONLSinkEmptyPathRejected(t *testing.T) {
 func TestAuditJSONL_IncludesTenantFields(t *testing.T) {
 	dir := t.TempDir()
 	sink := mustNewJSONLSink(t, filepath.Join(dir, "audit.jsonl"))
-	defer sink.Close()
+	defer func() {
+		if err := sink.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	}()
 
 	finding := Finding{
 		Check:    "phprelay.spam",

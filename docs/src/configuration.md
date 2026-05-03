@@ -90,7 +90,10 @@ alerts:
   webhook:
     enabled: false
     url: ""
-    type: "slack"                       # slack, discord, generic
+    type: "slack"                       # slack, discord, generic, phpanel
+    hmac_secret: ""                     # phpanel webhook signing secret
+    hmac_secret_env: ""                 # env var containing phpanel signing secret
+    per_finding: false                  # phpanel sends one signed POST per finding
   heartbeat:
     enabled: false
     url: ""                             # healthchecks.io, cronitor, dead man's switch
@@ -253,6 +256,8 @@ webui:
   enabled: true
   listen: "0.0.0.0:9443"               # address:port for HTTPS server
   auth_token: ""                        # Bearer/cookie auth token (auto-generated on install)
+  tokens: []                            # optional scoped tokens: name/token/scope (admin or read)
+  metrics_token: ""                     # optional Bearer token for /metrics only
   tls_cert: ""                          # path to TLS certificate PEM file
   tls_key: ""                           # path to TLS private key PEM file
   ui_dir: ""                            # path to UI files on disk (default: /opt/csm/ui)

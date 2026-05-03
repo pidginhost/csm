@@ -44,6 +44,53 @@ func TestRequireScope_UnknownTokenFails(t *testing.T) {
 	}
 }
 
+func TestRequireScope_EmptyConfiguredTokenDoesNotAuthenticate(t *testing.T) {
+	s := &Server{cfg: &config.Config{}}
+	s.cfg.WebUI.Tokens = []config.WebUIToken{{Name: "bad", Token: "", Scope: "admin"}}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer ")
+	if s.tokenHasScope(req, "read") {
+		t.Fatal("empty bearer must not match an empty configured token")
+	}
+	req.AddCookie(&http.Cookie{Name: "csm_auth", Value: ""})
+	if s.tokenHasScope(req, "admin") {
+		t.Fatal("empty cookie must not match an empty configured token")
+	}
+}
+
+func TestCSRFSecretUsesAdminScopedToken(t *testing.T) {
+	s := &Server{cfg: &config.Config{}}
+	s.cfg.WebUI.Tokens = []config.WebUIToken{
+		{Name: "read", Token: "read-secret", Scope: "read"},
+		{Name: "admin", Token: "admin-secret", Scope: "admin"},
+	}
+	if got := s.csrfSecret(); got != "admin-secret" {
+		t.Fatalf("csrfSecret = %q, want admin token", got)
+	}
+}
+
+func TestRequireReadRejectsWriteMethods(t *testing.T) {
+	s := &Server{cfg: &config.Config{}}
+	s.cfg.WebUI.Tokens = []config.WebUIToken{{Name: "read", Token: "read-secret", Scope: "read"}}
+	called := false
+	handler := s.requireRead(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/status", nil)
+	req.Header.Set("Authorization", "Bearer read-secret")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if called {
+		t.Fatal("write method reached read-scope handler")
+	}
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("code = %d, want 405", rec.Code)
+	}
+}
+
 func TestRequireScope_LegacyAuthTokenStillWorks(t *testing.T) {
 	// Backward compat: a config with only the legacy auth_token (migrated by
 	// applyDefaults into Tokens) must still authenticate.

@@ -13,6 +13,20 @@ func Redact(cfg *Config) *Config {
 	if c.WebUI.AuthToken != "" {
 		c.WebUI.AuthToken = redactedValue
 	}
+	if c.WebUI.MetricsToken != "" {
+		c.WebUI.MetricsToken = redactedValue
+	}
+	if len(c.WebUI.Tokens) > 0 {
+		c.WebUI.Tokens = append([]WebUIToken(nil), c.WebUI.Tokens...)
+		for i := range c.WebUI.Tokens {
+			if c.WebUI.Tokens[i].Token != "" {
+				c.WebUI.Tokens[i].Token = redactedValue
+			}
+		}
+	}
+	if c.Alerts.Webhook.HMACSecret != "" {
+		c.Alerts.Webhook.HMACSecret = redactedValue
+	}
 	if c.GeoIP.LicenseKey != "" {
 		c.GeoIP.LicenseKey = redactedValue
 	}
@@ -21,6 +35,9 @@ func Redact(cfg *Config) *Config {
 	}
 	if c.Challenge.Secret != "" {
 		c.Challenge.Secret = redactedValue
+	}
+	if c.Challenge.VerifiedSession.AdminSecret != "" {
+		c.Challenge.VerifiedSession.AdminSecret = redactedValue
 	}
 	if c.Integrity.BinaryHash != "" {
 		c.Integrity.BinaryHash = redactedValue

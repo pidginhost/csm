@@ -32,6 +32,7 @@ func (s *Server) apiEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no") // nginx won't buffer
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
 	flusher.Flush()
 
 	sub := bus.Subscribe()

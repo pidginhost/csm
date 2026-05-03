@@ -42,6 +42,10 @@ func (b *Bus) Subscribe() <-chan alert.Finding {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	ch := make(chan alert.Finding, b.buffer)
+	if b.closed {
+		close(ch)
+		return ch
+	}
 	b.subscribers[ch] = struct{}{}
 	return ch
 }

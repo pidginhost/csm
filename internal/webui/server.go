@@ -530,13 +530,10 @@ func (s *Server) csmConfig() map[string]interface{} {
 // session uses the admin login form, which only matches admin tokens).
 func (s *Server) tokenHasScope(r *http.Request, want string) bool {
 	// Browser cookie session
-	if c, err := r.Cookie("csm_auth"); err == nil {
+	if c, err := r.Cookie("csm_auth"); err == nil && c.Value != "" {
 		for _, tok := range s.cfg.WebUI.Tokens {
-			if subtle.ConstantTimeCompare([]byte(c.Value), []byte(tok.Token)) == 1 {
-				if want == "read" {
-					return true
-				}
-				return tok.Scope == "admin"
+			if webUITokenMatches(c.Value, tok) {
+				return webUITokenAllows(tok, want)
 			}
 		}
 	}
@@ -547,15 +544,32 @@ func (s *Server) tokenHasScope(r *http.Request, want string) bool {
 		return false
 	}
 	supplied := strings.TrimPrefix(auth, "Bearer ")
+	if supplied == "" {
+		return false
+	}
 	for _, tok := range s.cfg.WebUI.Tokens {
-		if subtle.ConstantTimeCompare([]byte(supplied), []byte(tok.Token)) == 1 {
-			if want == "read" {
-				return true
-			}
-			return tok.Scope == "admin"
+		if webUITokenMatches(supplied, tok) {
+			return webUITokenAllows(tok, want)
 		}
 	}
 	return false
+}
+
+func webUITokenMatches(supplied string, tok config.WebUIToken) bool {
+	return supplied != "" &&
+		tok.Token != "" &&
+		subtle.ConstantTimeCompare([]byte(supplied), []byte(tok.Token)) == 1
+}
+
+func webUITokenAllows(tok config.WebUIToken, want string) bool {
+	switch want {
+	case "read":
+		return tok.Scope == "read" || tok.Scope == "admin"
+	case "admin":
+		return tok.Scope == "admin"
+	default:
+		return false
+	}
 }
 
 func (s *Server) requireAuth(next http.Handler) http.Handler {
@@ -576,6 +590,10 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 func (s *Server) requireRead(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.tokenHasScope(r, "read") {
+			if r.Method != http.MethodGet {
+				writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -636,10 +654,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	token := r.FormValue("token")
 	// Only admin-scope tokens may log in via the browser form.
 	validLogin := false
-	for _, tok := range s.cfg.WebUI.Tokens {
-		if tok.Scope == "admin" && subtle.ConstantTimeCompare([]byte(token), []byte(tok.Token)) == 1 {
-			validLogin = true
-			break
+	if token != "" {
+		for _, tok := range s.cfg.WebUI.Tokens {
+			if tok.Scope == "admin" && webUITokenMatches(token, tok) {
+				validLogin = true
+				break
+			}
 		}
 	}
 	if !validLogin {
@@ -795,14 +815,26 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 
 // --- CSRF protection ---
 
-// csrfToken generates a deterministic CSRF token from the auth token.
+// csrfToken generates a deterministic CSRF token from the admin auth secret.
 // This is safe because the auth token is secret and the CSRF token is
 // derived via HMAC - knowing the CSRF token doesn't reveal the auth token.
 func (s *Server) csrfToken() string {
-	mac := hmac.New(sha256.New, []byte(s.cfg.WebUI.AuthToken))
+	mac := hmac.New(sha256.New, []byte(s.csrfSecret()))
 	// Include start time so token rotates on each daemon restart
 	fmt.Fprintf(mac, "csm-csrf-v1:%d", s.startTime.Unix())
 	return hex.EncodeToString(mac.Sum(nil))[:32]
+}
+
+func (s *Server) csrfSecret() string {
+	if s.cfg.WebUI.AuthToken != "" {
+		return s.cfg.WebUI.AuthToken
+	}
+	for _, tok := range s.cfg.WebUI.Tokens {
+		if tok.Scope == "admin" && tok.Token != "" {
+			return tok.Token
+		}
+	}
+	return ""
 }
 
 // validateCSRF checks the CSRF token on POST requests.
@@ -851,8 +883,11 @@ func (s *Server) isBearerAuth(r *http.Request) bool {
 		return false
 	}
 	supplied := strings.TrimPrefix(auth, "Bearer ")
+	if supplied == "" {
+		return false
+	}
 	for _, tok := range s.cfg.WebUI.Tokens {
-		if subtle.ConstantTimeCompare([]byte(supplied), []byte(tok.Token)) == 1 {
+		if webUITokenMatches(supplied, tok) {
 			return true
 		}
 	}

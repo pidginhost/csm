@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -43,8 +44,9 @@ type Config struct {
 			HMACSecret    string `yaml:"hmac_secret,omitempty"`
 			HMACSecretEnv string `yaml:"hmac_secret_env,omitempty"`
 
-			// PerFinding=true emits one webhook POST per finding (vs one POST per
-			// dispatch with all findings). Only honored by Type=="phpanel".
+			// PerFinding documents the expected phpanel delivery shape. Phpanel
+			// webhooks always emit one signed POST per finding; other webhook
+			// types keep the existing digest delivery.
 			PerFinding bool `yaml:"per_finding,omitempty"`
 		} `yaml:"webhook"`
 		Heartbeat struct {
@@ -688,13 +690,27 @@ func LoadBytes(data []byte) (*Config, error) {
 }
 
 func validateWebUITokens(cfg *Config) error {
+	seenNames := make(map[string]struct{}, len(cfg.WebUI.Tokens))
+	seenTokens := make(map[string]struct{}, len(cfg.WebUI.Tokens))
 	for i, tok := range cfg.WebUI.Tokens {
+		name := strings.TrimSpace(tok.Name)
+		if name == "" {
+			return fmt.Errorf("webui.tokens[%d]: empty name", i)
+		}
 		if tok.Scope != "admin" && tok.Scope != "read" {
 			return fmt.Errorf("webui.tokens[%d]: unknown scope %q (use admin or read)", i, tok.Scope)
 		}
 		if tok.Token == "" {
 			return fmt.Errorf("webui.tokens[%d]: empty token", i)
 		}
+		if _, ok := seenNames[name]; ok {
+			return fmt.Errorf("webui.tokens[%d]: duplicate name %q", i, tok.Name)
+		}
+		seenNames[name] = struct{}{}
+		if _, ok := seenTokens[tok.Token]; ok {
+			return fmt.Errorf("webui.tokens[%d]: duplicate token", i)
+		}
+		seenTokens[tok.Token] = struct{}{}
 	}
 	return nil
 }

@@ -155,6 +155,33 @@ func TestValidateWebhook(t *testing.T) {
 	}
 }
 
+func TestValidatePhpanelWebhookRequiresHMACSecret(t *testing.T) {
+	cfg := &Config{Hostname: "test"}
+	cfg.Alerts.Webhook.Enabled = true
+	cfg.Alerts.Webhook.URL = "https://panel.example/csm"
+	cfg.Alerts.Webhook.Type = "phpanel"
+	cfg.Alerts.MaxPerHour = 10
+	results := Validate(cfg)
+	if !hasResult(results, "error", "alerts.webhook.hmac_secret") {
+		t.Errorf("expected error for missing phpanel HMAC secret; results=%v", results)
+	}
+}
+
+func TestValidatePhpanelWebhookAcceptsHMACSecretEnv(t *testing.T) {
+	t.Setenv("CSM_PHPANEL_HMAC_TEST", "secret")
+	cfg := &Config{Hostname: "test"}
+	cfg.Alerts.Webhook.Enabled = true
+	cfg.Alerts.Webhook.URL = "https://panel.example/csm"
+	cfg.Alerts.Webhook.Type = "phpanel"
+	cfg.Alerts.Webhook.HMACSecretEnv = "CSM_PHPANEL_HMAC_TEST"
+	cfg.Alerts.MaxPerHour = 10
+	results := Validate(cfg)
+	if hasResult(results, "error", "alerts.webhook.hmac_secret_env") ||
+		hasResult(results, "error", "alerts.webhook.hmac_secret") {
+		t.Errorf("did not expect HMAC secret error; results=%v", results)
+	}
+}
+
 func TestValidateHeartbeat(t *testing.T) {
 	cfg := &Config{Hostname: "test"}
 	cfg.Alerts.Heartbeat.Enabled = true
@@ -189,8 +216,26 @@ func TestValidateWebUI(t *testing.T) {
 	cfg.Alerts.Email.SMTP = "localhost:25"
 	cfg.Alerts.Email.From = "csm@test.com"
 	results := Validate(cfg)
-	if !hasResult(results, "error", "webui.auth_token") {
-		t.Errorf("expected error for empty auth_token; results=%v", results)
+	if !hasResult(results, "error", "webui.tokens") {
+		t.Errorf("expected error for missing webui token; results=%v", results)
+	}
+}
+
+func TestValidateWebUIAcceptsReadOnlyToken(t *testing.T) {
+	cfg := &Config{Hostname: "test"}
+	cfg.WebUI.Enabled = true
+	cfg.WebUI.Tokens = []WebUIToken{{Name: "phpanel", Token: "read-secret", Scope: "read"}}
+	cfg.Alerts.Email.Enabled = true
+	cfg.Alerts.Email.To = []string{"a@b.com"}
+	cfg.Alerts.Email.SMTP = "localhost:25"
+	cfg.Alerts.Email.From = "csm@test.com"
+	cfg.Alerts.MaxPerHour = 10
+	results := Validate(cfg)
+	if hasResult(results, "error", "webui.tokens") {
+		t.Errorf("did not expect webui token error; results=%v", results)
+	}
+	if !hasResult(results, "warn", "webui.tokens") {
+		t.Errorf("expected warning for read-only webui token set; results=%v", results)
 	}
 }
 
