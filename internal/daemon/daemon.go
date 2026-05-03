@@ -100,6 +100,14 @@ type Daemon struct {
 	// declared cross-platform but stay nil on non-cPanel or non-Linux hosts.
 	autoFreezer      *autoFreezer
 	phpRelayShutdown []func() // ordered shutdown hooks
+
+	// watcherStatus tracks which top-level watchers have successfully attached.
+	// Keys are short stable names ("fanotify", "audit", "spool", "modsec",
+	// "afalg"). Values flip from false-to-true when the watcher's setup
+	// function completes without error. Used by /api/v1/status and the
+	// sd_notify gate.
+	watcherMu     sync.RWMutex
+	watcherStatus map[string]bool
 }
 
 // New creates a new daemon instance.
@@ -136,6 +144,28 @@ func New(cfg *config.Config, store *state.Store, lock *state.LockFile, binaryPat
 // SetVersion sets the application version for display in the web UI.
 func (d *Daemon) SetVersion(v string) {
 	d.version = v
+}
+
+// MarkWatcher records the attachment state of a named watcher.
+// Call from each watcher's startup path: true on success, false on failure.
+func (d *Daemon) MarkWatcher(name string, attached bool) {
+	d.watcherMu.Lock()
+	defer d.watcherMu.Unlock()
+	if d.watcherStatus == nil {
+		d.watcherStatus = make(map[string]bool)
+	}
+	d.watcherStatus[name] = attached
+}
+
+// WatcherStatuses returns a snapshot of every recorded watcher.
+func (d *Daemon) WatcherStatuses() map[string]bool {
+	d.watcherMu.RLock()
+	defer d.watcherMu.RUnlock()
+	out := make(map[string]bool, len(d.watcherStatus))
+	for k, v := range d.watcherStatus {
+		out[k] = v
+	}
+	return out
 }
 
 // buildInfoOnce guards process-wide registration of the build_info
@@ -503,12 +533,14 @@ func (d *Daemon) Run() error {
 			"reason", "kernel not exploitable",
 			"state", kstate.String(),
 		)
+		d.MarkWatcher("afalg", false)
 	default:
 		if mon := StartAFAlgLiveMonitor(d.alertCh, d.cfg); mon == nil {
 			csmlog.Warn("af_alg live listener: not started",
 				"reason", "no backend available",
 				"state", kstate.String(),
 			)
+			d.MarkWatcher("afalg", false)
 		} else {
 			csmlog.Info("af_alg live listener: started",
 				"backend", mon.Mode(),
@@ -522,6 +554,7 @@ func (d *Daemon) Run() error {
 				go func() { <-d.stopCh; cancel() }()
 				mon.Run(ctx)
 			})
+			d.MarkWatcher("afalg", true)
 		}
 	}
 
@@ -1001,9 +1034,11 @@ func (d *Daemon) startPHPRelay() {
 		}:
 		default:
 		}
+		d.MarkWatcher("spool", false)
 		return
 	}
 	if !d.cfg.EmailProtection.PHPRelay.Enabled {
+		d.MarkWatcher("spool", false)
 		return
 	}
 	if path, err := exec.LookPath("exim"); err == nil {
@@ -1022,6 +1057,7 @@ func (d *Daemon) startPHPRelay() {
 	// Bridge to the linux-only wiring (Phase O2). On non-linux GOOS
 	// the stub in php_relay_wiring_other.go is a no-op.
 	startPHPRelayLinux(d)
+	d.MarkWatcher("spool", true)
 }
 
 func (d *Daemon) startLogWatchers() {
@@ -1129,10 +1165,12 @@ func (d *Daemon) startLogWatchers() {
 	// ModSecurity error log - auto-discover path based on detected web server.
 	if modsecPath := discoverModSecLogPath(d.cfg); modsecPath != "" {
 		logFiles = append(logFiles, logFile{modsecPath, parseModSecLogLineDeduped})
+		d.MarkWatcher("modsec", true)
 	} else if hostInfo.WebServer != platform.WSNone {
 		// Only bother with the retry loop if a web server is actually
 		// present. Headless hosts don't need this.
 		fmt.Fprintf(os.Stderr, "[%s] ModSecurity error log not found (checked %v), will retry every 60s\n", ts(), hostInfo.ErrorLogPaths)
+		d.MarkWatcher("modsec", false)
 		d.wg.Add(1)
 		obs.Go("logwatch-modsec-retry", func() {
 			defer d.wg.Done()
@@ -1160,10 +1198,13 @@ func (d *Daemon) startLogWatchers() {
 						w.Run(d.stopCh)
 					})
 					csmlog.Info("watching log (appeared after retry)", "path", path)
+					d.MarkWatcher("modsec", true)
 					return
 				}
 			}
 		})
+	} else {
+		d.MarkWatcher("modsec", false)
 	}
 
 	// Real-time access log watcher for wp-login/xmlrpc brute force detection.
@@ -1348,6 +1389,7 @@ func (d *Daemon) startFileMonitor() {
 	fm, err := NewFileMonitor(d.cfg, d.alertCh)
 	if err != nil {
 		csmlog.Warn("fanotify not available, falling back to periodic deep scan", "err", err)
+		d.MarkWatcher("fanotify", false)
 		return
 	}
 	fm.registerMetrics()
@@ -1358,6 +1400,7 @@ func (d *Daemon) startFileMonitor() {
 		fm.Run(d.stopCh)
 	})
 	csmlog.Info("fanotify file monitor active", "paths", "/home, /tmp, /dev/shm")
+	d.MarkWatcher("fanotify", true)
 }
 
 func (d *Daemon) startSpoolWatcher() {
