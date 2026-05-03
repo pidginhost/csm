@@ -18,6 +18,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/attackdb"
 	"github.com/pidginhost/csm/internal/auditd"
+	"github.com/pidginhost/csm/internal/broadcast"
 	"github.com/pidginhost/csm/internal/challenge"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
@@ -109,6 +110,10 @@ type Daemon struct {
 	// sd_notify gate.
 	watcherMu     sync.RWMutex
 	watcherStatus map[string]bool
+
+	// findingBus fans out dispatched findings to passive observers like
+	// the SSE event stream. Initialized in Run(); closed on shutdown.
+	findingBus *broadcast.Bus
 }
 
 // New creates a new daemon instance.
@@ -270,6 +275,11 @@ func (d *Daemon) Run() error {
 	csmlog.Init()
 
 	csmlog.Info("CSM daemon starting")
+
+	// Initialize the findings broadcast bus so passive observers (SSE, etc.)
+	// can subscribe before any findings are dispatched.
+	d.findingBus = broadcast.NewBus(64)
+	alert.FindingBus = d.findingBus
 
 	// Install config-supplied platform overrides BEFORE the first Detect()
 	// call so every check sees the merged view. Must happen before any
@@ -664,6 +674,10 @@ func (d *Daemon) Run() error {
 	d.stopYaraBackend()
 
 	d.wg.Wait()
+	if d.findingBus != nil {
+		d.findingBus.Close()
+		alert.FindingBus = nil
+	}
 	for i := len(d.phpRelayShutdown) - 1; i >= 0; i-- {
 		d.phpRelayShutdown[i]()
 	}
@@ -683,6 +697,12 @@ func (d *Daemon) Run() error {
 // channel backpressure since the daemon started.
 func (d *Daemon) DroppedAlerts() int64 {
 	return atomic.LoadInt64(&d.droppedAlerts)
+}
+
+// FindingBus returns the per-daemon broadcast.Bus used by passive
+// observers like the SSE event stream. Returns nil before Run starts.
+func (d *Daemon) FindingBus() *broadcast.Bus {
+	return d.findingBus
 }
 
 // alertDispatcher batches and dispatches alerts.

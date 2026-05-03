@@ -264,6 +264,15 @@ type rateLimitState struct {
 	Count int    `json:"count"`
 }
 
+// FindingBus is set by the daemon at startup to the broadcast.Bus that
+// passive observers (e.g. SSE subscribers) drain. nil-safe: Dispatch
+// only publishes if non-nil. Importing the broadcast package directly
+// would create an import cycle (broadcast imports alert), so this is
+// declared as an interface satisfied by *broadcast.Bus.
+var FindingBus interface {
+	Publish(Finding)
+}
+
 var rateLimitMu sync.Mutex
 
 // checkRateLimit returns true if we can send more alerts this hour.
@@ -309,6 +318,15 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 	// when "this IP is already blocked" suppression hides a finding
 	// from the operator-facing channels.
 	emitAudit(cfg, findings)
+
+	// Publish to passive observers (e.g. SSE subscribers) immediately after
+	// auditing, before rate-limit and webhook delivery, so subscribers see
+	// the complete picture even when operator-facing channels are throttled.
+	if FindingBus != nil {
+		for _, f := range findings {
+			FindingBus.Publish(f)
+		}
+	}
 
 	// Filter out blocked IP alerts if configured
 	findings = FilterBlockedAlerts(cfg, findings)
