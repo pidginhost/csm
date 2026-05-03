@@ -217,6 +217,34 @@ func setCounter(tx *bolt.Tx, key string, count int) error {
 	return b.Put([]byte(key), []byte(fmt.Sprintf("%d", count)))
 }
 
+// IsHealthy returns true if the bbolt file is open and all required buckets exist.
+func (db *DB) IsHealthy() bool {
+	if db == nil || db.bolt == nil {
+		return false
+	}
+	err := db.bolt.View(func(tx *bolt.Tx) error {
+		for _, name := range []string{"history", "fw:blocked", "meta"} {
+			if tx.Bucket([]byte(name)) == nil {
+				return fmt.Errorf("bucket missing: %s", name)
+			}
+		}
+		return nil
+	})
+	return err == nil
+}
+
+// SizeBytes returns the on-disk size of the bbolt database file. Returns 0 if unavailable.
+func (db *DB) SizeBytes() int64 {
+	if db == nil || db.path == "" {
+		return 0
+	}
+	info, err := os.Stat(db.path)
+	if err != nil {
+		return 0
+	}
+	return info.Size()
+}
+
 // incrCounter increments a counter within an existing transaction.
 func incrCounter(tx *bolt.Tx, key string, delta int) error {
 	b := tx.Bucket([]byte("meta"))
