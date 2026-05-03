@@ -360,10 +360,19 @@ func Dispatch(cfg *config.Config, findings []Finding) error {
 	}
 
 	if len(webhookFindings) > 0 {
-		subject := buildSubject(cfg.Hostname, webhookFindings)
-		body := FormatAlert(cfg.Hostname, webhookFindings)
-		if err := SendWebhook(cfg, subject, body); err != nil {
-			errs = append(errs, fmt.Errorf("webhook: %w", err))
+		if cfg.Alerts.Webhook.Type == "phpanel" && cfg.Alerts.Webhook.PerFinding {
+			for _, f := range webhookFindings {
+				if err := SendPhpanelWebhookFinding(cfg, f); err != nil {
+					fmt.Fprintf(os.Stderr, "[%s] phpanel webhook failed (check=%s): %v\n",
+						time.Now().UTC().Format(time.RFC3339), f.Check, err)
+				}
+			}
+		} else {
+			subject := buildSubject(cfg.Hostname, webhookFindings)
+			body := FormatAlert(cfg.Hostname, webhookFindings)
+			if err := SendWebhook(cfg, subject, body); err != nil {
+				errs = append(errs, fmt.Errorf("webhook: %w", err))
+			}
 		}
 	}
 

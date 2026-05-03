@@ -35,7 +35,17 @@ type Config struct {
 		Webhook struct {
 			Enabled bool   `yaml:"enabled"`
 			URL     string `yaml:"url"`
-			Type    string `yaml:"type"` // slack, discord, generic
+			Type    string `yaml:"type"` // slack, discord, generic, phpanel
+
+			// HMACSecret is the shared secret used to sign each request when
+			// Type=="phpanel". Read from this field directly OR via HMACSecretEnv
+			// (env wins, for secret hygiene).
+			HMACSecret    string `yaml:"hmac_secret,omitempty"`
+			HMACSecretEnv string `yaml:"hmac_secret_env,omitempty"`
+
+			// PerFinding=true emits one webhook POST per finding (vs one POST per
+			// dispatch with all findings). Only honored by Type=="phpanel".
+			PerFinding bool `yaml:"per_finding,omitempty"`
 		} `yaml:"webhook"`
 		Heartbeat struct {
 			Enabled bool   `yaml:"enabled"`
@@ -433,6 +443,12 @@ func applyDefaults(cfg *Config) {
 			cfg.Alerts.AuditLog.Syslog.Facility = "local0"
 		}
 	}
+	if cfg.Alerts.Webhook.HMACSecretEnv != "" {
+		if v := os.Getenv(cfg.Alerts.Webhook.HMACSecretEnv); v != "" {
+			cfg.Alerts.Webhook.HMACSecret = v
+		}
+	}
+
 	if cfg.Signatures.RulesDir == "" {
 		cfg.Signatures.RulesDir = "/opt/csm/rules"
 	}
