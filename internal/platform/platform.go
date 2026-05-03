@@ -83,6 +83,15 @@ func (i Info) IsDebianFamily() bool {
 	return i.OS == OSUbuntu || i.OS == OSDebian
 }
 
+// MailLogPath returns the platform-default mail log file. Empty string
+// means "no file source available" (operator must use journal).
+func (i Info) MailLogPath() string {
+	if i.IsDebianFamily() {
+		return "/var/log/mail.log"
+	}
+	return "/var/log/maillog"
+}
+
 // Overrides lets the operator override auto-detected values from csm.yaml.
 // Any field left blank or nil falls back to the auto-detected value.
 //

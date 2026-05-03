@@ -23,6 +23,7 @@ import (
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/emailav"
+	"github.com/pidginhost/csm/internal/maillog"
 	"github.com/pidginhost/csm/internal/emailspool"
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/geoip"
@@ -1181,8 +1182,44 @@ func (d *Daemon) startLogWatchers() {
 			logFile{"", "/usr/local/cpanel/logs/access_log", parseAccessLogLineEnhanced},
 			logFile{"", "/var/log/exim_mainlog", eximHandler},
 			logFile{"", "/var/log/messages", parseFTPLogLine},
-			logFile{"", "/var/log/maillog", mailHandler},
 		)
+	}
+
+	// Mail-log reader: factory selects file vs journal based on cfg.MailLogs.
+	// Replaces the old cPanel-only /var/log/maillog registration; now works
+	// on all platforms using the platform-default path or journal fallback.
+	{
+		mailReader, mlErr := maillog.New(d.cfg.MailLogs, hostInfo.MailLogPath())
+		if mlErr != nil {
+			csmlog.Warn("mail log reader disabled", "err", mlErr)
+			d.MarkWatcher("maillog", false)
+		} else {
+			ctx, cancel := context.WithCancel(context.Background())
+			go func() { <-d.stopCh; cancel() }()
+			mailLines, mlErr := mailReader.Run(ctx)
+			if mlErr != nil {
+				cancel()
+				csmlog.Warn("mail log reader failed to start", "err", mlErr)
+				d.MarkWatcher("maillog", false)
+			} else {
+				d.MarkWatcher("maillog", true)
+				cfg := d.cfg
+				d.wg.Add(1)
+				obs.Go("maillog-consumer", func() {
+					defer d.wg.Done()
+					for line := range mailLines {
+						findings := mailHandler(line.Message, cfg)
+						for _, f := range findings {
+							select {
+							case d.alertCh <- f:
+							case <-d.stopCh:
+								return
+							}
+						}
+					}
+				})
+			}
+		}
 	}
 
 	// Only watch PHP Shield events if enabled in config
