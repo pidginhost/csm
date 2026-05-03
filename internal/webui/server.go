@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/broadcast"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/emailav"
 	"github.com/pidginhost/csm/internal/geoip"
@@ -65,6 +66,9 @@ type Server struct {
 	modSecApplyMu sync.Mutex // serializes modsec rules apply (write+reload+rollback)
 
 	provider health.Provider // set by Daemon when it starts the WebUI
+
+	mu         sync.RWMutex
+	findingBus *broadcast.Bus // set by Daemon via SetFindingBus
 
 	// Graceful shutdown signal for background goroutines
 	pruneDone chan struct{}
@@ -158,6 +162,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	}
 
 	// Auth-protected API - read (read-scope tokens accepted)
+	mux.Handle("/api/v1/events", s.requireRead(http.HandlerFunc(s.apiEvents)))
 	mux.Handle("/api/v1/status", s.requireRead(http.HandlerFunc(s.apiStatus)))
 	mux.Handle("/api/v1/findings", s.requireRead(http.HandlerFunc(s.apiFindings)))
 	mux.Handle("/api/v1/findings/enriched", s.requireRead(http.HandlerFunc(s.apiFindingsEnriched)))
@@ -418,6 +423,15 @@ func (s *Server) SetVersion(v string) {
 // daemon must call this before any request hits /api/v1/status.
 func (s *Server) SetHealthProvider(p health.Provider) {
 	s.provider = p
+}
+
+// SetFindingBus installs the broadcaster the SSE event stream subscribes
+// to. The webui constructs without one so unit tests work without a
+// daemon; the daemon must call this before any request hits /api/v1/events.
+func (s *Server) SetFindingBus(bus *broadcast.Bus) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.findingBus = bus
 }
 
 // csmConfigJSON returns a JSON string of feature flags for the frontend.

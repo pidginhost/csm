@@ -1378,6 +1378,7 @@ func (d *Daemon) startWebUI() {
 
 	d.webServer = srv
 	srv.SetHealthProvider(d)
+	srv.SetFindingBus(d.findingBus)
 	d.logWatchersMu.Lock()
 	numWatchers := len(d.logWatchers)
 	d.logWatchersMu.Unlock()
