@@ -11,6 +11,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/control"
+	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/integrity"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/store"
@@ -253,14 +254,17 @@ func (c *ControlListener) handleStatus(_ json.RawMessage) (any, error) {
 		uptime = int64(time.Since(c.d.startTime).Seconds())
 	}
 
-	return control.StatusResult{
+	result := control.StatusResult{
 		Version:        c.d.version,
 		UptimeSec:      uptime,
 		LatestScanTime: latestStr,
 		LatestFindings: len(latest),
 		HistoryCount:   historyCount,
 		DroppedAlerts:  c.d.DroppedAlerts(),
-	}, nil
+	}
+	snap := health.Build(c.d, c.d.version, health.Capabilities())
+	result.Snapshot = &snap
+	return result, nil
 }
 
 // handleHistoryRead paginates bbolt history. Clamps Limit so a buggy

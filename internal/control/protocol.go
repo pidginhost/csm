@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/health"
 )
 
 // DefaultSocketPath is the Unix socket the daemon binds and the client
@@ -104,7 +105,10 @@ type TierRunResult struct {
 	FindingList []alert.Finding `json:"finding_list,omitempty"`
 }
 
-// StatusResult mirrors what `csm status` historically printed.
+// StatusResult mirrors what `csm status` historically printed plus the
+// extended health.Snapshot fields used by `csm status --json`. The
+// pre-existing fields stay in place; any new client should prefer
+// reading Snapshot directly.
 type StatusResult struct {
 	Version        string `json:"version"`
 	UptimeSec      int64  `json:"uptime_sec"`
@@ -112,6 +116,10 @@ type StatusResult struct {
 	LatestFindings int    `json:"latest_findings"`
 	HistoryCount   int    `json:"history_count"`
 	DroppedAlerts  int64  `json:"dropped_alerts"`
+
+	// Snapshot is the full health view added in v2.12.0. Older clients
+	// that only knew the six legacy fields above will simply ignore it.
+	Snapshot *health.Snapshot `json:"snapshot,omitempty"`
 }
 
 // HistoryReadArgs carries parameters for CmdHistoryRead.
