@@ -119,6 +119,8 @@ func main() {
 		runDoctor()
 	case "backup":
 		runBackup()
+	case "restore":
+		runRestore()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
 		printUsage()
@@ -161,6 +163,7 @@ Commands:
   disable       Disable optional features (--php-shield)
   doctor        Run a config + daemon + watchers + store sanity check (--json for machine output)
   backup <out>  Bundle csm.yaml + /etc/csm/conf.d + state into a tar.gz archive
+  restore <archive>  Extract backup archive into csm.yaml + conf.d + state
   version       Version info + build hash
 
 Options:
