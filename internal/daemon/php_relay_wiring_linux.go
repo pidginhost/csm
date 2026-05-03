@@ -123,9 +123,11 @@ func startPHPRelayLinux(d *Daemon) {
 	watcherFn := func(ctx context.Context) {
 		w, err := newSpoolWatcher("/var/spool/exim/input", pipeline.OnFile)
 		if err != nil {
+			d.MarkWatcher("phprelay", false)
 			emitPHPRelayFinding(d, alert.Critical, "email_php_relay_watcher_failed", err.Error())
 			return
 		}
+		d.MarkWatcher("phprelay", true)
 		w.SetMetrics(prMetrics)
 		w.SetOverflowHandler(func() {
 			emitPHPRelayFinding(d, alert.Critical, "email_php_relay_inotify_overflow",
@@ -143,6 +145,7 @@ func startPHPRelayLinux(d *Daemon) {
 	}
 	sup := newSpoolSupervisor(watcherFn, 5)
 	sup.OnFailed = func() {
+		d.MarkWatcher("phprelay", false)
 		emitPHPRelayFinding(d, alert.Critical, "email_php_relay_watcher_failed", "supervisor exhausted restarts")
 	}
 	ctx := stopChContext(d)

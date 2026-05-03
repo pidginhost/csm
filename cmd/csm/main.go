@@ -199,6 +199,15 @@ func ensureGlobalStore(cfg *config.Config) error {
 // that don't need the shared database (scan, check, clean, status, etc.)
 // so they can run while the daemon holds the bbolt lock.
 func loadConfigLite() *config.Config {
+	cfg, err := tryLoadConfigLite()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+		os.Exit(1)
+	}
+	return cfg
+}
+
+func tryLoadConfigLite() (*config.Config, error) {
 	cfgPath := defaultConfigPath
 	confDir := resolveConfDir()
 	for i, arg := range os.Args {
@@ -209,12 +218,7 @@ func loadConfigLite() *config.Config {
 			confDir = os.Args[i+1]
 		}
 	}
-	cfg, err := config.LoadWithDir(cfgPath, confDir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
-		os.Exit(1)
-	}
-	return cfg
+	return config.LoadWithDir(cfgPath, confDir)
 }
 
 func prepareDaemonState(cfg *config.Config, legacyStateDir string, openStore func(*config.Config) error) (bool, error) {

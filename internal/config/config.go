@@ -384,7 +384,6 @@ type Config struct {
 		SampleRate  float64 `yaml:"sample_rate"` // 0 -> 1.0 (capture all errors)
 		Debug       bool    `yaml:"debug"`       // SDK debug logs to stderr
 	} `yaml:"sentry" hotreload:"restart"`
-
 }
 
 // PHPRelayFreezeEnabled reports whether auto-freeze should run for the

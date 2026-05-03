@@ -3,12 +3,13 @@ package config
 import (
 	"reflect"
 	"strings"
+	"time"
 )
 
 // Schema returns a JSON Schema (draft-07-style, partial) describing the
 // Config struct via reflection over yaml: tags. Used by phpanel's config
 // editor for client-side validation. Not a complete spec implementation -
-// covers types, required-ness via "yaml:..." tag, and nested objects.
+// covers YAML field names, scalar/container types, and nested objects.
 //
 // IMPORTANT: This schema is structural only. Imperative validation rules
 // enforced by Validate() (e.g., mail_logs.source must be auto/file/journal,
@@ -26,35 +27,30 @@ func reflectStruct(t reflect.Type) map[string]interface{} {
 		return map[string]interface{}{"type": "object"}
 	}
 	props := map[string]interface{}{}
-	required := []string{}
 	for i := 0; i < t.NumField(); i++ {
 		f := t.Field(i)
 		tag := f.Tag.Get("yaml")
 		if tag == "" || tag == "-" {
 			continue
 		}
-		name, opts := splitYAMLTag(tag)
+		name, _ := splitYAMLTag(tag)
 		if name == "" {
 			continue
 		}
 		props[name] = reflectField(f.Type)
-		if !schemaContains(opts, "omitempty") && f.Type.Kind() != reflect.Pointer {
-			required = append(required, name)
-		}
 	}
-	out := map[string]interface{}{
+	return map[string]interface{}{
 		"type":       "object",
 		"properties": props,
 	}
-	if len(required) > 0 {
-		out["required"] = required
-	}
-	return out
 }
 
 func reflectField(t reflect.Type) map[string]interface{} {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
+	}
+	if t == reflect.TypeOf(time.Duration(0)) {
+		return map[string]interface{}{"type": "string", "format": "duration"}
 	}
 	switch t.Kind() {
 	case reflect.String:
@@ -80,13 +76,4 @@ func reflectField(t reflect.Type) map[string]interface{} {
 func splitYAMLTag(tag string) (string, []string) {
 	parts := strings.Split(tag, ",")
 	return parts[0], parts[1:]
-}
-
-func schemaContains(xs []string, want string) bool {
-	for _, x := range xs {
-		if x == want {
-			return true
-		}
-	}
-	return false
 }

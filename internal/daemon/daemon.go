@@ -534,7 +534,6 @@ func (d *Daemon) Run() error {
 			"reason", "kernel not exploitable",
 			"state", kstate.String(),
 		)
-		d.MarkWatcher("afalg", false)
 	default:
 		if mon := StartAFAlgLiveMonitor(d.alertCh, d.cfg); mon == nil {
 			csmlog.Warn("af_alg live listener: not started",
@@ -1045,11 +1044,9 @@ func (d *Daemon) startPHPRelay() {
 		}:
 		default:
 		}
-		d.MarkWatcher("spool", false)
 		return
 	}
 	if !d.cfg.EmailProtection.PHPRelay.Enabled {
-		d.MarkWatcher("spool", false)
 		return
 	}
 	if path, err := exec.LookPath("exim"); err == nil {
@@ -1068,7 +1065,6 @@ func (d *Daemon) startPHPRelay() {
 	// Bridge to the linux-only wiring (Phase O2). On non-linux GOOS
 	// the stub in php_relay_wiring_other.go is a no-op.
 	startPHPRelayLinux(d)
-	d.MarkWatcher("spool", true)
 }
 
 func (d *Daemon) startLogWatchers() {
@@ -1083,6 +1079,7 @@ func (d *Daemon) startLogWatchers() {
 	hostInfo := platform.Detect()
 
 	type logFile struct {
+		name    string
 		path    string
 		handler func(string, *config.Config) []alert.Finding
 	}
@@ -1092,9 +1089,9 @@ func (d *Daemon) startLogWatchers() {
 	// family uses /var/log/auth.log. Only register the log appropriate
 	// for the detected OS so we don't spam "not found, retrying" forever.
 	if hostInfo.IsDebianFamily() {
-		logFiles = append(logFiles, logFile{"/var/log/auth.log", parseSecureLogLine})
+		logFiles = append(logFiles, logFile{"", "/var/log/auth.log", parseSecureLogLine})
 	} else {
-		logFiles = append(logFiles, logFile{"/var/log/secure", parseSecureLogLine})
+		logFiles = append(logFiles, logFile{"", "/var/log/secure", parseSecureLogLine})
 	}
 
 	// eximHandler wraps parseEximLogLine (unchanged) and augments the result
@@ -1160,23 +1157,22 @@ func (d *Daemon) startLogWatchers() {
 	// "not found, will retry every 60s" forever.
 	if hostInfo.IsCPanel() {
 		logFiles = append(logFiles,
-			logFile{"/usr/local/cpanel/logs/session_log", sessionHandler},
-			logFile{"/usr/local/cpanel/logs/access_log", parseAccessLogLineEnhanced},
-			logFile{"/var/log/exim_mainlog", eximHandler},
-			logFile{"/var/log/messages", parseFTPLogLine},
-			logFile{"/var/log/maillog", mailHandler},
+			logFile{"", "/usr/local/cpanel/logs/session_log", sessionHandler},
+			logFile{"", "/usr/local/cpanel/logs/access_log", parseAccessLogLineEnhanced},
+			logFile{"", "/var/log/exim_mainlog", eximHandler},
+			logFile{"", "/var/log/messages", parseFTPLogLine},
+			logFile{"", "/var/log/maillog", mailHandler},
 		)
 	}
 
 	// Only watch PHP Shield events if enabled in config
 	if d.cfg.PHPShield.Enabled {
-		logFiles = append(logFiles, logFile{phpEventsLogPath, parsePHPShieldLogLine})
+		logFiles = append(logFiles, logFile{"", phpEventsLogPath, parsePHPShieldLogLine})
 	}
 
 	// ModSecurity error log - auto-discover path based on detected web server.
 	if modsecPath := discoverModSecLogPath(d.cfg); modsecPath != "" {
-		logFiles = append(logFiles, logFile{modsecPath, parseModSecLogLineDeduped})
-		d.MarkWatcher("modsec", true)
+		logFiles = append(logFiles, logFile{"modsec", modsecPath, parseModSecLogLineDeduped})
 	} else if hostInfo.WebServer != platform.WSNone {
 		// Only bother with the retry loop if a web server is actually
 		// present. Headless hosts don't need this.
@@ -1214,14 +1210,12 @@ func (d *Daemon) startLogWatchers() {
 				}
 			}
 		})
-	} else {
-		d.MarkWatcher("modsec", false)
 	}
 
 	// Real-time access log watcher for wp-login/xmlrpc brute force detection.
 	// Auto-discover path from platform info (Apache/Nginx/cPanel aware).
 	if accessLogPath := discoverAccessLogPath(); accessLogPath != "" {
-		logFiles = append(logFiles, logFile{accessLogPath, parseAccessLogBruteForce})
+		logFiles = append(logFiles, logFile{"", accessLogPath, parseAccessLogBruteForce})
 	} else if hostInfo.WebServer != platform.WSNone && len(hostInfo.AccessLogPaths) > 0 {
 		csmlog.Warn("access log not found, will retry every 60s", "candidates", fmt.Sprintf("%v", hostInfo.AccessLogPaths))
 		d.wg.Add(1)
@@ -1279,11 +1273,17 @@ func (d *Daemon) startLogWatchers() {
 		if err != nil {
 			if os.IsNotExist(err) {
 				// File doesn't exist yet - retry periodically until it appears
+				if lf.name != "" {
+					d.MarkWatcher(lf.name, false)
+				}
 				d.wg.Add(1)
-				path, handler := lf.path, lf.handler
-				obs.Go("logwatch-retry", func() { d.retryLogWatcher(path, handler) })
+				path, handler, name := lf.path, lf.handler, lf.name
+				obs.Go("logwatch-retry", func() { d.retryLogWatcherNamed(path, handler, name) })
 			} else {
 				fmt.Fprintf(os.Stderr, "[%s] Warning: could not watch %s: %v\n", ts(), lf.path, err)
+				if lf.name != "" {
+					d.MarkWatcher(lf.name, false)
+				}
 			}
 			continue
 		}
@@ -1295,12 +1295,19 @@ func (d *Daemon) startLogWatchers() {
 			watcher.Run(d.stopCh)
 		})
 		csmlog.Info("watching log", "path", lf.path)
+		if lf.name != "" {
+			d.MarkWatcher(lf.name, true)
+		}
 	}
 }
 
 // retryLogWatcher polls for a missing log file every 60 seconds.
 // When the file appears, it starts a watcher and returns.
 func (d *Daemon) retryLogWatcher(path string, handler LogLineHandler) {
+	d.retryLogWatcherNamed(path, handler, "")
+}
+
+func (d *Daemon) retryLogWatcherNamed(path string, handler LogLineHandler, name string) {
 	defer d.wg.Done()
 	csmlog.Warn("log not found, will retry every 60s", "path", path)
 	ticker := time.NewTicker(60 * time.Second)
@@ -1325,6 +1332,9 @@ func (d *Daemon) retryLogWatcher(path string, handler LogLineHandler) {
 				watcher.Run(d.stopCh)
 			})
 			csmlog.Info("watching log (appeared after retry)", "path", path)
+			if name != "" {
+				d.MarkWatcher(name, true)
+			}
 			return
 		}
 	}
@@ -1442,9 +1452,11 @@ func (d *Daemon) startSpoolWatcher() {
 	sw, err := NewSpoolWatcher(d.cfg, d.alertCh, orch, quar)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Email AV spool watcher not available: %v\n", ts(), err)
+		d.MarkWatcher("email_av_spool", false)
 		return
 	}
 	d.setSpoolWatcher(sw)
+	d.MarkWatcher("email_av_spool", true)
 
 	d.wg.Add(1)
 	obs.Go("spool-watcher", func() {
@@ -1505,6 +1517,7 @@ func (d *Daemon) startForwarderWatcher() {
 	fw, err := NewForwarderWatcher(d.alertCh, d.cfg.EmailProtection.KnownForwarders)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Warning: forwarder watcher not started: %v\n", ts(), err)
+		d.MarkWatcher("forwarder", false)
 		return
 	}
 	d.forwarderWatcher = fw
@@ -1514,6 +1527,7 @@ func (d *Daemon) startForwarderWatcher() {
 		fw.Run(d.stopCh)
 	})
 	csmlog.Info("watching log (inotify forwarder watcher)", "path", "/etc/valiases/")
+	d.MarkWatcher("forwarder", true)
 }
 
 func (d *Daemon) syncEmailAVWebState() {
@@ -2128,7 +2142,9 @@ func (d *Daemon) watchdogNotifier() {
 		case <-d.stopCh:
 			return
 		case <-ticker.C:
-			sdNotify(addr, "WATCHDOG=1")
+			if _, err := sdnotify.Watchdog(); err != nil {
+				csmlog.Warn("systemd watchdog notify failed", "err", err)
+			}
 		}
 	}
 }

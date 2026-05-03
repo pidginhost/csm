@@ -41,6 +41,27 @@ func TestSchema_RoundTripsAsJSON(t *testing.T) {
 	}
 }
 
+func TestSchema_DoesNotMarkDefaultedFieldsRequired(t *testing.T) {
+	schema := Schema()
+	if _, ok := schema["required"]; ok {
+		t.Fatalf("schema must not mark defaulted config fields required: %v", schema["required"])
+	}
+}
+
+func TestSchema_DurationFieldsAreStrings(t *testing.T) {
+	schema := Schema()
+	props := schema["properties"].(map[string]interface{})
+	challenge := props["challenge"].(map[string]interface{})["properties"].(map[string]interface{})
+	captcha := challenge["captcha_fallback"].(map[string]interface{})["properties"].(map[string]interface{})
+	timeout := captcha["timeout"].(map[string]interface{})
+	if timeout["type"] != "string" {
+		t.Fatalf("duration field timeout.type = %v, want string", timeout["type"])
+	}
+	if timeout["format"] != "duration" {
+		t.Fatalf("duration field timeout.format = %v, want duration", timeout["format"])
+	}
+}
+
 // TestSchema_DefaultConfigValidatesAgainstSchema is a smoke test: every
 // top-level key the shipped default config sets MUST appear in the
 // generated schema's properties. Catches drift when a field is added to
