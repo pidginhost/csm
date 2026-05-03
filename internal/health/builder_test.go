@@ -14,6 +14,7 @@ type fakeProvider struct {
 	severities   map[string]int
 	blocklist    int
 	historyCount int
+	dryRunBlocks int
 }
 
 func (f *fakeProvider) Hostname() string                 { return f.hostname }
@@ -28,17 +29,18 @@ func (f *fakeProvider) LatestScan() time.Time            { return time.Time{} }
 func (f *fakeProvider) BaselineAt() time.Time            { return time.Time{} }
 func (f *fakeProvider) ConfigHash() string               { return "abc" }
 func (f *fakeProvider) BinaryHash() string               { return "def" }
-func (f *fakeProvider) DryRunBlocksCount() int           { return 0 }
+func (f *fakeProvider) DryRunBlocksCount() int           { return f.dryRunBlocks }
 
 func TestBuild_PopulatesAllFields(t *testing.T) {
 	p := &fakeProvider{
-		hostname:   "test.host",
-		started:    time.Now().Add(-30 * time.Minute),
-		watchers:   map[string]bool{"fanotify": true},
-		storeOK:    true,
-		storeMB:    12.5,
-		severities: map[string]int{"high": 3},
-		blocklist:  17,
+		hostname:     "test.host",
+		started:      time.Now().Add(-30 * time.Minute),
+		watchers:     map[string]bool{"fanotify": true},
+		storeOK:      true,
+		storeMB:      12.5,
+		severities:   map[string]int{"high": 3},
+		blocklist:    17,
+		dryRunBlocks: 4,
 	}
 	snap := Build(p, "2.12.0", []string{"webhook.phpanel"})
 	if snap.Hostname != "test.host" {
@@ -55,5 +57,8 @@ func TestBuild_PopulatesAllFields(t *testing.T) {
 	}
 	if len(snap.Capabilities) != 1 || snap.Capabilities[0] != "webhook.phpanel" {
 		t.Fatalf("capabilities not propagated")
+	}
+	if snap.DryRunBlocks != 4 {
+		t.Fatalf("dry-run block count mismatch: %d", snap.DryRunBlocks)
 	}
 }

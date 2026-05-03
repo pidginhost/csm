@@ -40,13 +40,17 @@ func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 	if provider == nil {
 		// No daemon-side provider installed (test harness). Fall back to
 		// the legacy minimal payload so existing UI code keeps working.
+		lastScan := ""
+		if s.store != nil {
+			lastScan = s.store.LatestScanTime().Format(time.RFC3339)
+		}
 		writeJSON(w, map[string]interface{}{
 			"hostname":       s.cfg.Hostname,
 			"uptime":         time.Since(s.startTime).String(),
 			"started_at":     s.startTime.Format(time.RFC3339),
 			"rules_loaded":   s.sigCount,
 			"scan_running":   scanning,
-			"last_scan_time": s.store.LatestScanTime().Format(time.RFC3339),
+			"last_scan_time": lastScan,
 			"status":         "down",
 		})
 		return
@@ -72,6 +76,7 @@ func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 		"config_hash":    snap.ConfigHash,
 		"binary_hash":    snap.BinaryHash,
 		"capabilities":   snap.Capabilities,
+		"dry_run_blocks": snap.DryRunBlocks,
 		"status":         snap.OverallStatus(),
 	}
 	writeJSON(w, resp)

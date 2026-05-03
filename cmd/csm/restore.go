@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 )
+
+const maxRestoreEntrySize = 1 << 30
 
 // RestoreBackupArchive extracts archive into the destination paths
 // supplied. Existing files are overwritten. Caller is responsible for
@@ -38,11 +41,20 @@ func RestoreBackupArchive(archive string, dst BackupSources) error {
 			return err
 		}
 
-		// Defense in depth: reject path traversal.
-		clean := filepath.ToSlash(filepath.Clean(hdr.Name))
-		if strings.HasPrefix(clean, "/") || strings.HasPrefix(clean, "../") || strings.Contains(clean, "/../") {
+		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeRegA {
+			continue
+		}
+		if hdr.Size < 0 || hdr.Size > maxRestoreEntrySize {
+			return fmt.Errorf("rejecting archive entry %q with size %d", hdr.Name, hdr.Size)
+		}
+
+		// Defense in depth: reject path traversal before cleaning so
+		// conf.d/../escaped does not collapse into a harmless-looking name.
+		rawName := filepath.ToSlash(hdr.Name)
+		if unsafeArchiveName(rawName) {
 			return fmt.Errorf("rejecting archive entry with unsafe path: %q", hdr.Name)
 		}
+		clean := path.Clean(rawName)
 
 		var target string
 		switch {
@@ -68,13 +80,26 @@ func RestoreBackupArchive(archive string, dst BackupSources) error {
 		if err != nil {
 			return err
 		}
-		// Limit copy to a sane bound to defend against tar bombs.
-		if _, err := io.CopyN(out, tr, 1<<30); err != nil && err != io.EOF {
+		if _, err := io.CopyN(out, tr, hdr.Size); err != nil {
 			out.Close()
 			return err
 		}
-		out.Close()
+		if err := out.Close(); err != nil {
+			return err
+		}
 	}
+}
+
+func unsafeArchiveName(name string) bool {
+	if name == "" || strings.HasPrefix(name, "/") {
+		return true
+	}
+	for _, part := range strings.Split(name, "/") {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 func runRestore() {

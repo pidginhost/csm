@@ -17,7 +17,6 @@ import (
 	"github.com/google/nftables"
 	"github.com/google/nftables/binaryutil"
 	"github.com/google/nftables/expr"
-	"github.com/pidginhost/csm/internal/config"
 )
 
 // Engine manages the nftables firewall ruleset.
@@ -31,6 +30,9 @@ type Engine struct {
 	// active. Set by SetDryRunRecorder after construction so the firewall
 	// package does not import internal/store (which would be a cycle).
 	dryRunRecorder func(ip, reason string, timeout time.Duration)
+	// dryRunEnabled reports whether auto_response.dry_run is active.
+	// Set by the daemon so this package does not import internal/config.
+	dryRunEnabled func() bool
 
 	table    *nftables.Table
 	chainIn  *nftables.Chain
@@ -219,6 +221,14 @@ func ConnectExisting(cfg *FirewallConfig, statePath string) (*Engine, error) {
 func (e *Engine) SetDryRunRecorder(fn func(ip, reason string, timeout time.Duration)) {
 	e.mu.Lock()
 	e.dryRunRecorder = fn
+	e.mu.Unlock()
+}
+
+// SetDryRunEnabledFunc installs the callback BlockIP uses to decide whether
+// auto_response.dry_run should intercept an automatic block. Nil means live.
+func (e *Engine) SetDryRunEnabledFunc(fn func() bool) {
+	e.mu.Lock()
+	e.dryRunEnabled = fn
 	e.mu.Unlock()
 }
 
@@ -1195,15 +1205,25 @@ func (e *Engine) addOutboundPortRule(port int, tcp bool) {
 // Operator-initiated commands (csm firewall block, Web UI manual block) must
 // call BlockIPForce instead, which skips the dry-run gate unconditionally.
 func (e *Engine) BlockIP(ip string, reason string, timeout time.Duration) error {
-	// Dry-run gate: read config.Active() at call time so a SIGHUP takes effect
-	// without a daemon restart. nil Active() (tests, early startup) means live.
-	if c := config.Active(); c != nil && c.AutoResponseDryRunEnabled() {
+	// Dry-run gate: the daemon callback reads config.Active() at call time so
+	// a SIGHUP takes effect without a daemon restart. Nil callback means live.
+	if e.autoResponseDryRunEnabled() {
+		if err := e.validateBlockIP(ip, timeout); err != nil {
+			return err
+		}
 		fmt.Fprintf(os.Stderr, "[%s] auto_response dry_run: would have blocked %s (%s)\n",
 			time.Now().Format("2006-01-02 15:04:05"), ip, reason)
 		e.recordDryRunBlock(ip, reason, timeout)
 		return nil
 	}
 	return e.blockIPLocked(ip, reason, timeout)
+}
+
+func (e *Engine) autoResponseDryRunEnabled() bool {
+	e.mu.Lock()
+	fn := e.dryRunEnabled
+	e.mu.Unlock()
+	return fn != nil && fn()
 }
 
 // BlockIPForce adds an IP to the blocked set unconditionally, bypassing the
@@ -1213,16 +1233,15 @@ func (e *Engine) BlockIPForce(ip string, reason string, timeout time.Duration) e
 	return e.blockIPLocked(ip, reason, timeout)
 }
 
-// recordDryRunBlock persists a dry-run record to the "dry_run_blocks" bbolt
-// bucket via the global store so operators can review via /api/v1/status.
-// No-op when the global store is unavailable.
+// recordDryRunBlock persists a dry-run record through the daemon-installed
+// recorder so operators can review the count via /api/v1/status.
+// No-op when no recorder is installed.
 func (e *Engine) recordDryRunBlock(ip, reason string, timeout time.Duration) {
-	// Import cycle avoided: store.Global() is a package-level accessor;
-	// we call it via a function variable set at daemon startup to avoid
-	// importing internal/store here. Instead we use a hook registered
-	// on the engine at construction, or fall back to a no-op.
-	if e.dryRunRecorder != nil {
-		e.dryRunRecorder(ip, reason, timeout)
+	e.mu.Lock()
+	recorder := e.dryRunRecorder
+	e.mu.Unlock()
+	if recorder != nil {
+		recorder(ip, reason, timeout)
 	}
 }
 
@@ -1231,42 +1250,9 @@ func (e *Engine) blockIPLocked(ip string, reason string, timeout time.Duration) 
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	targetSet, key, err := e.resolveIPSet(ip, e.setBlocked, e.setBlocked6)
+	targetSet, key, err := e.blockIPTarget(ip, timeout)
 	if err != nil {
 		return err
-	}
-
-	// SAFETY: never block infra IPs - prevents admin lockout
-	for _, cidr := range e.cfg.InfraIPs {
-		_, network, cidrErr := net.ParseCIDR(cidr)
-		if cidrErr != nil {
-			if cidr == ip {
-				return fmt.Errorf("refusing to block infra IP: %s", ip)
-			}
-			continue
-		}
-		if network.Contains(net.ParseIP(ip)) {
-			return fmt.Errorf("refusing to block infra IP: %s (in %s)", ip, cidr)
-		}
-	}
-
-	// Enforce deny IP limits
-	if e.cfg.DenyIPLimit > 0 || e.cfg.DenyTempIPLimit > 0 {
-		st := e.loadStateFile()
-		perm, temp := 0, 0
-		for _, b := range st.Blocked {
-			if b.ExpiresAt.IsZero() {
-				perm++
-			} else {
-				temp++
-			}
-		}
-		if timeout == 0 && e.cfg.DenyIPLimit > 0 && perm >= e.cfg.DenyIPLimit {
-			return fmt.Errorf("permanent deny limit reached (%d)", e.cfg.DenyIPLimit)
-		}
-		if timeout > 0 && e.cfg.DenyTempIPLimit > 0 && temp >= e.cfg.DenyTempIPLimit {
-			return fmt.Errorf("temporary deny limit reached (%d)", e.cfg.DenyTempIPLimit)
-		}
 	}
 
 	elem := []nftables.SetElement{{Key: key, Timeout: timeout}}
@@ -1291,6 +1277,56 @@ func (e *Engine) blockIPLocked(ip string, reason string, timeout time.Duration) 
 	AppendAudit(e.statePath, "block", ip, reason, entry.Source, timeout)
 
 	return nil
+}
+
+func (e *Engine) validateBlockIP(ip string, timeout time.Duration) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	_, _, err := e.blockIPTarget(ip, timeout)
+	return err
+}
+
+func (e *Engine) blockIPTarget(ip string, timeout time.Duration) (*nftables.Set, []byte, error) {
+	targetSet, key, err := e.resolveIPSet(ip, e.setBlocked, e.setBlocked6)
+	if err != nil {
+		return nil, nil, err
+	}
+	parsed := net.ParseIP(ip)
+
+	// SAFETY: never block infra IPs - prevents admin lockout
+	for _, cidr := range e.cfg.InfraIPs {
+		_, network, cidrErr := net.ParseCIDR(cidr)
+		if cidrErr != nil {
+			if cidr == ip {
+				return nil, nil, fmt.Errorf("refusing to block infra IP: %s", ip)
+			}
+			continue
+		}
+		if network.Contains(parsed) {
+			return nil, nil, fmt.Errorf("refusing to block infra IP: %s (in %s)", ip, cidr)
+		}
+	}
+
+	// Enforce deny IP limits
+	if e.cfg.DenyIPLimit > 0 || e.cfg.DenyTempIPLimit > 0 {
+		st := e.loadStateFile()
+		perm, temp := 0, 0
+		for _, b := range st.Blocked {
+			if b.ExpiresAt.IsZero() {
+				perm++
+			} else {
+				temp++
+			}
+		}
+		if timeout == 0 && e.cfg.DenyIPLimit > 0 && perm >= e.cfg.DenyIPLimit {
+			return nil, nil, fmt.Errorf("permanent deny limit reached (%d)", e.cfg.DenyIPLimit)
+		}
+		if timeout > 0 && e.cfg.DenyTempIPLimit > 0 && temp >= e.cfg.DenyTempIPLimit {
+			return nil, nil, fmt.Errorf("temporary deny limit reached (%d)", e.cfg.DenyTempIPLimit)
+		}
+	}
+
+	return targetSet, key, nil
 }
 
 // UnblockIP removes an IP from the blocked set and state.

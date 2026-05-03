@@ -1,8 +1,11 @@
 package main
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -87,15 +90,53 @@ func TestRestoreArchive_RejectsTarPathTraversal(t *testing.T) {
 	if _, statErr := os.Stat(parent); statErr == nil {
 		t.Fatalf("path traversal succeeded: %s exists (restore err=%v)", parent, err)
 	}
-	_ = err // either outcome is acceptable as long as nothing escaped
+	if err == nil {
+		t.Fatal("expected path traversal archive to be rejected")
+	}
 }
 
-func writeMaliciousArchive(t *testing.T, path string) error {
+func TestRestoreArchive_RejectsOversizedEntry(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	archive := filepath.Join(src, "huge.tar.gz")
+	if err := writeArchiveEntry(archive, "state/huge.db", maxRestoreEntrySize+1, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	err := RestoreBackupArchive(archive, BackupSources{
+		ConfigPath: dst + "/csm.yaml", ConfDir: dst + "/conf.d", StateDir: dst + "/state",
+	})
+	if err == nil || !strings.Contains(err.Error(), "size") {
+		t.Fatalf("expected oversized entry error, got %v", err)
+	}
+	if _, statErr := os.Stat(dst + "/state/huge.db"); !os.IsNotExist(statErr) {
+		t.Fatalf("oversized entry created target file: %v", statErr)
+	}
+}
+
+func writeMaliciousArchive(t *testing.T, archivePath string) error {
 	t.Helper()
-	// Build a minimal tar.gz with a "../escaped.txt" entry inside the conf.d
-	// prefix. The actual implementation details (tar header writing) belong
-	// to the test, not the production code.
-	// (If the test harness can't easily produce one, skip this test with t.Skip.)
-	t.Skip("TODO: build malicious archive fixture")
-	return nil
+	return writeArchiveEntry(archivePath, "conf.d/../escaped.txt", 3, []byte("bad"))
+}
+
+func writeArchiveEntry(archivePath, name string, size int64, body []byte) error {
+	f, err := os.Create(archivePath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	gw := gzip.NewWriter(f)
+	defer gw.Close()
+	tw := tar.NewWriter(gw)
+	defer tw.Close()
+
+	if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o600, Size: size}); err != nil {
+		return err
+	}
+	if len(body) == 0 {
+		return nil
+	}
+	_, err = tw.Write(body)
+	return err
 }

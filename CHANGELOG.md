@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `thresholds.mail_brute_account_key` - pluggable per-account extractor (builtin patterns or operator-supplied regex) for hosts with virtual mailboxes.
 - Rspamd threat-intel source: `reputation.rspamd.enabled` adds per-IP rolling-history signals to attacker scoring. Token resolves from `token_env` at query time so rotation does not require a restart.
 - `auto_response.dry_run` - when true (or unset; safety default), CSM logs every IP it would have blocked but does not touch nftables. Dry-run blocks are recorded to bbolt and the count surfaces in `/api/v1/status` so operators can verify the policy before flipping live. Manual operator commands bypass via `BlockIPForce`.
-- `infra_ips_unresolvable` finding fired when a hostname in `infra_ips` has not resolved within the grace period (default 10m). Auto-cleared when resolution recovers.
+- `infra_ips_unresolvable` finding fired when a hostname in `firewall.dyndns_hosts` has not resolved within the grace period (default 10m). Auto-cleared when resolution recovers.
 - `csm backup <archive>` and `csm restore <archive>` - tar.gz bundling of `csm.yaml`, `/etc/csm/conf.d/`, and the state directory for clean DR snapshots. Restore rejects path-traversal entries.
 
 ### Changed
@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Backup and restore now reject unsafe archives more strictly and avoid including or overwriting their own source files. Dry-run blocking keeps the same safety checks as live blocking, and the dynamic-DNS guard reports startup resolution failures as Warning findings.
 - PHP relay shutdown now flushes its message-index writer before closing state.
 - Health snapshots no longer mark disabled or not-applicable watchers as failed. `csm doctor --json` now returns JSON for config and daemon-status failures.
 - Config schema output treats defaulted fields as optional and renders duration values as strings.

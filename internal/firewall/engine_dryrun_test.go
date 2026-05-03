@@ -3,42 +3,26 @@
 package firewall
 
 import (
+	"strings"
 	"testing"
 	"time"
-
-	"github.com/pidginhost/csm/internal/config"
 )
 
-// TestBlockIP_DryRunDoesNotCallRecorder_WhenDryRunOff verifies that when
-// auto_response.dry_run is false, BlockIP does NOT invoke the recorder.
-// (It will attempt the real nftables call and panic on nil conn -- the panic
-// recovery confirms we reached the nftables path, not the dry-run path.)
 func TestBlockIP_DryRunDoesNotCallRecorder_WhenDryRunOff(t *testing.T) {
-	dr := false
-	cfg := &config.Config{}
-	cfg.AutoResponse.DryRun = &dr
-	config.SetActive(cfg)
-	defer config.SetActive(nil)
-
 	recorded := false
 	e := &Engine{
-		cfg:      &FirewallConfig{Enabled: true},
-		statePath: t.TempDir(),
+		cfg:           &FirewallConfig{Enabled: true},
+		statePath:     t.TempDir(),
+		dryRunEnabled: func() bool { return false },
 		dryRunRecorder: func(ip, reason string, timeout time.Duration) {
 			recorded = true
 		},
 	}
 
-	// BlockIP should NOT enter the dry-run branch (will panic on nil conn).
-	defer func() {
-		if r := recover(); r == nil {
-			// No panic means the call returned without hitting nftables --
-			// which would only happen if dry-run intercepted it (wrong branch).
-			t.Error("expected panic from nil conn (live path), got nil -- dry-run gate fired incorrectly")
-		}
-		// Panic is expected: we reached the nftables path, which is correct.
-	}()
-	_ = e.BlockIP("192.0.2.1", "test", 0)
+	err := e.BlockIP("not-an-ip", "test", 0)
+	if err == nil || !strings.Contains(err.Error(), "invalid IP") {
+		t.Fatalf("expected invalid IP error from live validation path, got %v", err)
+	}
 
 	if recorded {
 		t.Error("recorder was called even though dry_run=false")
@@ -51,17 +35,12 @@ func TestBlockIP_DryRunDoesNotCallRecorder_WhenDryRunOff(t *testing.T) {
 //   - returns nil (caller proceeds normally)
 //   - does NOT touch nftables (nil conn does not panic)
 func TestBlockIP_DryRunRecordsAndReturnsNil(t *testing.T) {
-	dr := true
-	cfg := &config.Config{}
-	cfg.AutoResponse.DryRun = &dr
-	config.SetActive(cfg)
-	defer config.SetActive(nil)
-
 	var gotIP, gotReason string
 	var gotTimeout time.Duration
 	e := &Engine{
-		cfg:      &FirewallConfig{Enabled: true},
-		statePath: t.TempDir(),
+		cfg:           &FirewallConfig{Enabled: true},
+		statePath:     t.TempDir(),
+		dryRunEnabled: func() bool { return true },
 		dryRunRecorder: func(ip, reason string, timeout time.Duration) {
 			gotIP = ip
 			gotReason = reason
@@ -84,52 +63,55 @@ func TestBlockIP_DryRunRecordsAndReturnsNil(t *testing.T) {
 	}
 }
 
-// TestBlockIPForce_IgnoresDryRun verifies that BlockIPForce bypasses the
-// dry_run gate and attempts the real nftables path (panics on nil conn).
 func TestBlockIPForce_IgnoresDryRun(t *testing.T) {
-	dr := true
-	cfg := &config.Config{}
-	cfg.AutoResponse.DryRun = &dr
-	config.SetActive(cfg)
-	defer config.SetActive(nil)
-
 	recorded := false
 	e := &Engine{
-		cfg:      &FirewallConfig{Enabled: true},
-		statePath: t.TempDir(),
+		cfg:           &FirewallConfig{Enabled: true},
+		statePath:     t.TempDir(),
+		dryRunEnabled: func() bool { return true },
 		dryRunRecorder: func(ip, reason string, timeout time.Duration) {
 			recorded = true
 		},
 	}
 
-	// BlockIPForce must not enter dry-run; it should panic on nil conn.
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic from nil conn in BlockIPForce (no dry-run), got nil")
-		}
-	}()
-	_ = e.BlockIPForce("192.0.2.2", "operator-block", 0)
+	err := e.BlockIPForce("not-an-ip", "operator-block", 0)
+	if err == nil || !strings.Contains(err.Error(), "invalid IP") {
+		t.Fatalf("expected invalid IP error from forced live path, got %v", err)
+	}
 
 	if recorded {
 		t.Error("recorder was called by BlockIPForce -- should bypass dry-run")
 	}
 }
 
-// TestBlockIP_DryRunDefault_NilActiveConfig verifies that when config.Active()
-// is nil (early startup, tests), BlockIP proceeds to the live nftables path.
-func TestBlockIP_DryRunDefault_NilActiveConfig(t *testing.T) {
-	config.SetActive(nil)
-
+func TestBlockIP_DryRunDefault_NoCallback(t *testing.T) {
 	e := &Engine{
-		cfg:      &FirewallConfig{Enabled: true},
+		cfg:       &FirewallConfig{Enabled: true},
 		statePath: t.TempDir(),
 	}
 
-	// Nil Active() means live path: should panic on nil conn.
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic from nil conn when Active()=nil, got nil")
-		}
-	}()
-	_ = e.BlockIP("192.0.2.3", "test", 0)
+	err := e.BlockIP("not-an-ip", "test", 0)
+	if err == nil || !strings.Contains(err.Error(), "invalid IP") {
+		t.Fatalf("expected invalid IP error when dry-run callback is nil, got %v", err)
+	}
+}
+
+func TestBlockIP_DryRunPreservesInfraSafetyCheck(t *testing.T) {
+	recorded := false
+	e := &Engine{
+		cfg:           &FirewallConfig{Enabled: true, InfraIPs: []string{"192.0.2.0/24"}},
+		statePath:     t.TempDir(),
+		dryRunEnabled: func() bool { return true },
+		dryRunRecorder: func(ip, reason string, timeout time.Duration) {
+			recorded = true
+		},
+	}
+
+	err := e.BlockIP("192.0.2.3", "test", 0)
+	if err == nil || !strings.Contains(err.Error(), "refusing to block infra IP") {
+		t.Fatalf("expected infra safety error in dry-run path, got %v", err)
+	}
+	if recorded {
+		t.Fatal("dry-run recorder was called for an IP live blocking would refuse")
+	}
 }

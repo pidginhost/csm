@@ -40,6 +40,33 @@ func TestDynDNSResolver_EmptyResolutionEmitsFinding(t *testing.T) {
 	}
 }
 
+func TestDynDNSResolver_NeverResolvedHostEmitsFindingAfterGrace(t *testing.T) {
+	r := newTestResolver(t)
+	r.gracePeriod = 5 * time.Millisecond
+
+	var emitted []string
+	var mu sync.Mutex
+	r.SetFindingSink(func(host string) {
+		mu.Lock()
+		defer mu.Unlock()
+		emitted = append(emitted, host)
+	})
+
+	r.AddHost("panel.example.com")
+	r.tickOnce(context.Background())
+	time.Sleep(10 * time.Millisecond)
+	r.tickOnce(context.Background())
+
+	if got := r.UnresolvableHosts(); len(got) != 1 || got[0] != "panel.example.com" {
+		t.Fatalf("expected never-resolved host to become unresolvable, got %v", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(emitted) != 1 || emitted[0] != "panel.example.com" {
+		t.Fatalf("expected finding sink invoked once for never-resolved host, got %v", emitted)
+	}
+}
+
 func TestDynDNSResolver_RecoversWhenResolutionReturns(t *testing.T) {
 	r := newTestResolver(t)
 	r.gracePeriod = 5 * time.Millisecond

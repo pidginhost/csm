@@ -13,6 +13,7 @@ import (
 // hostHealth tracks per-host resolution state for the re-resolve guard.
 type hostHealth struct {
 	lastSuccess    time.Time
+	firstFailure   time.Time
 	findingEmitted bool
 }
 
@@ -31,11 +32,11 @@ type DynDNSResolver struct {
 	lookupFn func(host string) ([]string, error)
 
 	// Guard fields for the DNS re-resolve guard (Task 3).
-	muGuard     sync.RWMutex
-	hostHealth  map[string]*hostHealth
-	gracePeriod time.Duration
+	muGuard      sync.RWMutex
+	hostHealth   map[string]*hostHealth
+	gracePeriod  time.Duration
 	unresolvable map[string]struct{}
-	findingSink func(name string)
+	findingSink  func(name string)
 }
 
 // NewDynDNSResolver creates a resolver for the given hostnames.
@@ -206,11 +207,12 @@ func (d *DynDNSResolver) updateGuardSuccess(host string) {
 		d.hostHealth[host] = hh
 	}
 	hh.lastSuccess = time.Now()
+	hh.firstFailure = time.Time{}
 	if _, was := d.unresolvable[host]; was {
 		delete(d.unresolvable, host)
-		hh.findingEmitted = false
 		fmt.Fprintf(os.Stderr, "dyndns: %s recovered (resolution succeeded)\n", host)
 	}
+	hh.findingEmitted = false
 	d.muGuard.Unlock()
 }
 
@@ -224,10 +226,17 @@ func (d *DynDNSResolver) updateGuardFailure(host string) {
 		hh = &hostHealth{}
 		d.hostHealth[host] = hh
 	}
+	now := time.Now()
+	if hh.firstFailure.IsZero() {
+		hh.firstFailure = now
+	}
+	since := hh.lastSuccess
+	if since.IsZero() {
+		since = hh.firstFailure
+	}
 
 	var sinkToCall func(string)
-	if !hh.lastSuccess.IsZero() &&
-		time.Since(hh.lastSuccess) > d.gracePeriod &&
+	if now.Sub(since) > d.gracePeriod &&
 		!hh.findingEmitted {
 		d.unresolvable[host] = struct{}{}
 		hh.findingEmitted = true

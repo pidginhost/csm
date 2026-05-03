@@ -24,7 +24,7 @@ func (statusFakeProvider) BlocklistSize() int               { return 9 }
 func (statusFakeProvider) HistoryCount() int                { return 100 }
 func (statusFakeProvider) ConfigHash() string               { return "cfg" }
 func (statusFakeProvider) BinaryHash() string               { return "bin" }
-func (statusFakeProvider) DryRunBlocksCount() int           { return 0 }
+func (statusFakeProvider) DryRunBlocksCount() int           { return 3 }
 
 var _ health.Provider = statusFakeProvider{}
 
@@ -51,6 +51,9 @@ func TestApiStatus_FullSnapshot(t *testing.T) {
 	if _, ok := got["watchers"]; !ok {
 		t.Fatal("expected watchers field present")
 	}
+	if got["dry_run_blocks"].(float64) != 3 {
+		t.Fatalf("expected dry_run_blocks=3, got %v", got["dry_run_blocks"])
+	}
 	// Backward-compat: all six legacy fields still present.
 	for _, k := range []string{"hostname", "uptime", "started_at", "rules_loaded", "scan_running", "last_scan_time"} {
 		if _, ok := got[k]; !ok {
@@ -64,15 +67,6 @@ func TestApiStatus_NilProviderFallsBackToLegacyShape(t *testing.T) {
 	// no SetHealthProvider call
 
 	rec := httptest.NewRecorder()
-	// Make sure the test doesn't panic from nil store/sigCount fields by giving
-	// minimal placeholder values. If your Server has unexported fields we need
-	// to set, do that here. If the existing legacy path dereferences s.store,
-	// the test may need to skip; that's an acceptable concern to flag.
-	defer func() {
-		if r := recover(); r != nil {
-			t.Skipf("nil-provider test panicked (likely needs a non-nil store mock): %v", r)
-		}
-	}()
 	s.apiStatus(rec, httptest.NewRequest(http.MethodGet, "/api/v1/status", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)

@@ -1865,6 +1865,12 @@ func (d *Daemon) startFirewall() {
 			db.RecordDryRunBlock(ip, reason, timeout)
 		}
 	})
+	engine.SetDryRunEnabledFunc(func() bool {
+		if cfg := config.Active(); cfg != nil {
+			return cfg.AutoResponseDryRunEnabled()
+		}
+		return false
+	})
 
 	// Set firewall engine for auto-blocking
 	checks.SetIPBlocker(engine)
@@ -1878,13 +1884,12 @@ func (d *Daemon) startFirewall() {
 	// Start Dynamic DNS resolver if configured
 	if len(d.cfg.Firewall.DynDNSHosts) > 0 {
 		resolver := firewall.NewDynDNSResolver(d.cfg.Firewall.DynDNSHosts, engine)
-		alertCh := d.alertCh
 		resolver.SetFindingSink(func(host string) {
-			alertCh <- alert.Finding{
-				Check:    "infra_ips_unresolvable",
-				Severity: alert.High,
-				Message:  fmt.Sprintf("infra_ips host %s has not resolved within grace period", host),
-				Details:  "Verify DNS for the host or remove it from infra_ips. While unresolvable, blocks may be incorrectly applied to its previous IP if the IP rotates.",
+			select {
+			case d.alertCh <- dynDNSUnresolvableFinding(host):
+			default:
+				atomic.AddInt64(&d.droppedAlerts, 1)
+				fmt.Fprintf(os.Stderr, "[%s] alert channel full, dropping dyndns guard finding: %s\n", ts(), host)
 			}
 		})
 		d.wg.Add(1)
@@ -1900,6 +1905,16 @@ func (d *Daemon) startFirewall() {
 		d.wg.Add(1)
 		obs.Go("cloudflare-refresh", d.cloudflareRefreshLoop)
 		csmlog.Info("cloudflare IP whitelist enabled", "refresh_hours", d.cfg.Cloudflare.RefreshHours)
+	}
+}
+
+func dynDNSUnresolvableFinding(host string) alert.Finding {
+	return alert.Finding{
+		Check:     "infra_ips_unresolvable",
+		Severity:  alert.Warning,
+		Message:   fmt.Sprintf("dynamic firewall host %s has not resolved within grace period", host),
+		Details:   "Verify DNS for the host or remove it from firewall.dyndns_hosts. While unresolvable, the previous allowed IP remains in place and a rotated IP will not be protected.",
+		Timestamp: time.Now(),
 	}
 }
 

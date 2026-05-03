@@ -3,9 +3,9 @@ package main
 import (
 	"archive/tar"
 	"compress/gzip"
+	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -36,16 +36,9 @@ func TestBackupArchive_IncludesConfigAndConfDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := listTar(t, out)
+	got := tarNames(t, out)
 	for _, want := range []string{"csm.yaml", "conf.d/10.yaml", "state/csm.db"} {
-		found := false
-		for _, n := range got {
-			if strings.HasSuffix(n, want) {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !got[want] {
 			t.Fatalf("expected %s in archive, got %v", want, got)
 		}
 	}
@@ -57,22 +50,59 @@ func TestBackupArchive_ManifestPresent(t *testing.T) {
 	if err := WriteBackupArchive(out, BackupSources{}); err != nil {
 		t.Fatal(err)
 	}
-	got := listTar(t, out)
-	hasManifest := false
-	for _, n := range got {
-		if strings.HasSuffix(n, "manifest.txt") {
-			hasManifest = true
-			break
-		}
-	}
-	if !hasManifest {
+	got := tarNames(t, out)
+	if !got["manifest.txt"] {
 		t.Fatalf("expected manifest.txt in archive, got %v", got)
 	}
 }
 
-func listTar(t *testing.T, path string) []string {
+func TestBackupArchive_DoesNotIncludeOutputInsideStateDir(t *testing.T) {
+	dir := t.TempDir()
+	state := filepath.Join(dir, "state")
+	if err := os.MkdirAll(state, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state, "csm.db"), []byte("fake-db"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out := filepath.Join(state, "backup.tar.gz")
+	if err := WriteBackupArchive(out, BackupSources{StateDir: state}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := tarNames(t, out)
+	if got["state/backup.tar.gz"] {
+		t.Fatalf("backup archive included itself: %v", got)
+	}
+	if !got["state/csm.db"] {
+		t.Fatalf("expected state/csm.db in archive, got %v", got)
+	}
+}
+
+func TestBackupArchive_RefusesToOverwriteConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "csm.yaml")
+	original := []byte("hostname: keep\n")
+	if err := os.WriteFile(cfgPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WriteBackupArchive(cfgPath, BackupSources{ConfigPath: cfgPath}); err == nil {
+		t.Fatal("expected error when output path is the config file")
+	}
+	got, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("config was overwritten: got %q", got)
+	}
+}
+
+func tarNames(t *testing.T, archivePath string) map[string]bool {
 	t.Helper()
-	f, err := os.Open(path)
+	f, err := os.Open(archivePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,14 +111,18 @@ func listTar(t *testing.T, path string) []string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer gr.Close()
 	tr := tar.NewReader(gr)
-	var names []string
+	names := make(map[string]bool)
 	for {
 		hdr, err := tr.Next()
-		if err != nil {
+		if err == io.EOF {
 			break
 		}
-		names = append(names, hdr.Name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		names[hdr.Name] = true
 	}
 	return names
 }
