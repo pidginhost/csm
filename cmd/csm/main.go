@@ -115,6 +115,8 @@ func main() {
 		runExportCLI()
 	case "phprelay":
 		runPHPRelay()
+	case "doctor":
+		runDoctor()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
 		printUsage()
@@ -155,6 +157,7 @@ Commands:
   harden        Apply targeted hardening policies (run csm harden for list)
   enable        Enable optional features (--php-shield)
   disable       Disable optional features (--php-shield)
+  doctor        Run a config + daemon + watchers + store sanity check (--json for machine output)
   version       Version info + build hash
 
 Options:
