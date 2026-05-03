@@ -13,5 +13,9 @@ func Capabilities() []string {
 		"doctor.v1",                // P2
 		"config.schema.v1",         // P2
 		"sd_notify.ready",          // P2
+		"audit.fields.tenant.v1",   // P3
+		"webhook.phpanel.v1",       // P3
+		"events.sse.v1",            // P3
+		"token.scope.readonly.v1",  // P3
 	}
 }
