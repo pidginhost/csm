@@ -163,6 +163,7 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "permblock_count", Type: "int", Label: "Temp blocks before permanent", Min: int64p(1)},
 			{YAMLPath: "permblock_interval", Type: "string", Label: "Permblock window", Placeholder: "24h"},
 			{YAMLPath: "clean_database", Type: "bool", Label: "Auto-clean DB injections"},
+			{YAMLPath: "dry_run", Type: "bool", Label: "Auto-block dry run (logs only, no nftables)"},
 		},
 	},
 	{

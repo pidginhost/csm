@@ -209,6 +209,13 @@ type Config struct {
 		DisableEnforceAFAlg bool   `yaml:"disable_enforce_af_alg"` // suspend periodic AF_ALG enforcement; marker file + detection remain active (default false = enforce when marker present)
 		CopyFailKillProcess bool   `yaml:"copy_fail_kill_process"` // SIGKILL processes caught opening AF_ALG sockets via the live listener (default false; alert-only)
 
+		// DryRun, when true (or absent - safety default), logs the intended
+		// action but does NOT touch nftables. Mirrors the PHPRelay.DryRun
+		// pattern: pointer-bool to distinguish "operator explicitly set false"
+		// from "operator omitted the key". Implicit nil means dry-run on, so
+		// flipping block_ips: true alone never causes a real block.
+		DryRun *bool `yaml:"dry_run,omitempty"`
+
 		// PHPRelay controls the auto-freeze behaviour that companion
 		// email PHP-relay detectors emit findings for. Freeze and DryRun
 		// are *bool so we can distinguish OMITTED from EXPLICIT FALSE in
@@ -467,6 +474,13 @@ func (cfg *Config) PHPRelayFreezeEnabled() bool {
 // freeze. nil-or-explicit-true => true; explicit-false => false.
 func (cfg *Config) PHPRelayDryRunEnabled() bool {
 	return cfg.AutoResponse.PHPRelay.DryRun == nil || *cfg.AutoResponse.PHPRelay.DryRun
+}
+
+// AutoResponseDryRunEnabled mirrors PHPRelayDryRunEnabled: nil-or-true means true.
+// When dry_run is absent from YAML the operator gets safe dry-run behaviour;
+// explicit false is required to enable live nftables blocking.
+func (cfg *Config) AutoResponseDryRunEnabled() bool {
+	return cfg.AutoResponse.DryRun == nil || *cfg.AutoResponse.DryRun
 }
 
 func applyDefaults(cfg *Config) {

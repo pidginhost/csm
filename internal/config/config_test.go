@@ -478,3 +478,47 @@ thresholds:
 		t.Fatal("expected error for unknown prefix")
 	}
 }
+
+func TestAutoResponse_DryRunDefaultsTrueForSafety(t *testing.T) {
+	cfg, err := LoadBytes([]byte(`
+auto_response:
+  enabled: true
+  block_ips: true
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.AutoResponseDryRunEnabled() {
+		t.Fatal("expected dry_run default=true (safety) when not specified")
+	}
+}
+
+func TestAutoResponse_ExplicitFalseAllowsLiveBlock(t *testing.T) {
+	cfg, err := LoadBytes([]byte(`
+auto_response:
+  enabled: true
+  block_ips: true
+  dry_run: false
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AutoResponseDryRunEnabled() {
+		t.Fatal("explicit false must allow live blocking")
+	}
+}
+
+func TestAutoResponse_ExplicitTrueIsDryRun(t *testing.T) {
+	cfg, err := LoadBytes([]byte(`
+auto_response:
+  enabled: true
+  block_ips: true
+  dry_run: true
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.AutoResponseDryRunEnabled() {
+		t.Fatal("explicit true must dry-run")
+	}
+}
