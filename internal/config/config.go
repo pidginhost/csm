@@ -2,7 +2,9 @@ package config
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -17,6 +19,20 @@ type WebUIToken struct {
 	Name  string `yaml:"name"`
 	Token string `yaml:"token"`
 	Scope string `yaml:"scope"`
+}
+
+// MailLogsConfig controls how postfix/dovecot logs are read.
+//
+//	source: auto    - try file first; fall back to journal if file absent.
+//	source: file    - require log file at the platform-default path.
+//	source: journal - read from systemd-journald (units must be set).
+//
+// Units is consulted only when source==journal: the daemon calls
+// sdjournal AddMatch _SYSTEMD_UNIT=<unit>.service for each entry.
+type MailLogsConfig struct {
+	Source string   `yaml:"source"`          // auto | file | journal
+	File   string   `yaml:"file,omitempty"`  // override platform default
+	Units  []string `yaml:"units,omitempty"` // for journal source
 }
 
 type Config struct {
@@ -411,6 +427,11 @@ type Config struct {
 		SampleRate  float64 `yaml:"sample_rate"` // 0 -> 1.0 (capture all errors)
 		Debug       bool    `yaml:"debug"`       // SDK debug logs to stderr
 	} `yaml:"sentry" hotreload:"restart"`
+
+	// MailLogs selects the log source for the postfix/dovecot brute-force
+	// and relay detectors. Changing the source (file vs. journal) requires
+	// the daemon to re-attach its reader, so the field is tagged restart.
+	MailLogs MailLogsConfig `yaml:"mail_logs,omitempty" hotreload:"restart"`
 }
 
 // PHPRelayFreezeEnabled reports whether auto-freeze should run for the
@@ -671,6 +692,13 @@ func applyDefaults(cfg *Config) {
 	if cfg.Retention.CompactFillRatio == 0 {
 		cfg.Retention.CompactFillRatio = 0.5
 	}
+
+	if cfg.MailLogs.Source == "" {
+		cfg.MailLogs.Source = "auto"
+	}
+	if len(cfg.MailLogs.Units) == 0 {
+		cfg.MailLogs.Units = []string{"postfix", "dovecot"}
+	}
 }
 
 // LoadBytes decodes a YAML config body and applies all defaults,
@@ -679,11 +707,14 @@ func LoadBytes(data []byte) (*Config, error) {
 	cfg := &Config{}
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
-	if err := dec.Decode(cfg); err != nil {
+	if err := dec.Decode(cfg); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 	applyDefaults(cfg)
 	if err := validateWebUITokens(cfg); err != nil {
+		return nil, err
+	}
+	if err := validateMailLogs(cfg); err != nil {
 		return nil, err
 	}
 	return cfg, nil
@@ -711,6 +742,15 @@ func validateWebUITokens(cfg *Config) error {
 			return fmt.Errorf("webui.tokens[%d]: duplicate token", i)
 		}
 		seenTokens[tok.Token] = struct{}{}
+	}
+	return nil
+}
+
+func validateMailLogs(cfg *Config) error {
+	switch cfg.MailLogs.Source {
+	case "auto", "file", "journal":
+	default:
+		return fmt.Errorf("mail_logs.source: must be auto, file, or journal (got %q)", cfg.MailLogs.Source)
 	}
 	return nil
 }

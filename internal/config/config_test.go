@@ -376,3 +376,39 @@ webui:
 		t.Fatal("expected error for duplicate token")
 	}
 }
+
+func TestMailLogs_DefaultsToAuto(t *testing.T) {
+	cfg, err := LoadBytes([]byte(``))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MailLogs.Source != "auto" {
+		t.Fatalf("expected default source=auto, got %q", cfg.MailLogs.Source)
+	}
+}
+
+func TestMailLogs_AcceptsExplicitJournal(t *testing.T) {
+	cfg, err := LoadBytes([]byte(`
+mail_logs:
+  source: journal
+  units:
+    - postfix
+    - dovecot
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MailLogs.Source != "journal" {
+		t.Fatalf("expected journal, got %q", cfg.MailLogs.Source)
+	}
+	if len(cfg.MailLogs.Units) != 2 {
+		t.Fatalf("expected 2 units, got %v", cfg.MailLogs.Units)
+	}
+}
+
+func TestMailLogs_RejectsUnknownSource(t *testing.T) {
+	_, err := LoadBytes([]byte(`mail_logs: { source: kafka }`))
+	if err == nil {
+		t.Fatal("expected error for unknown source")
+	}
+}
