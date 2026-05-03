@@ -79,3 +79,16 @@ auto_response:
   enabled: true
   block_ips: true
   dry_run: true
+
+# === P6: Upstream threat-intel ===
+
+# Phpanel runs an aggregating threat-intel cache that every agent in the
+# fleet queries. The agent supplies the URL via runtime fragment; the
+# token is resolved from CSM_UPSTREAM_TOKEN at query time.
+reputation:
+  upstream:
+    enabled: false        # operator/agent flips on after the panel endpoint is deployed
+    # url: https://panel.example.com/api/csm/ti  # supplied by agent
+    token_env: CSM_UPSTREAM_TOKEN
+    cache_ttl_min: 15
+    timeout_sec: 5
