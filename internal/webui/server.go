@@ -157,24 +157,25 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 		mux.Handle("/modsec/rules", s.requireAuth(http.HandlerFunc(s.handleModSecRules)))
 	}
 
-	// Auth-protected API - read
-	mux.Handle("/api/v1/status", s.requireAuth(http.HandlerFunc(s.apiStatus)))
-	mux.Handle("/api/v1/findings", s.requireAuth(http.HandlerFunc(s.apiFindings)))
-	mux.Handle("/api/v1/findings/enriched", s.requireAuth(http.HandlerFunc(s.apiFindingsEnriched)))
-	mux.Handle("/api/v1/history", s.requireAuth(http.HandlerFunc(s.apiHistory)))
+	// Auth-protected API - read (read-scope tokens accepted)
+	mux.Handle("/api/v1/status", s.requireRead(http.HandlerFunc(s.apiStatus)))
+	mux.Handle("/api/v1/findings", s.requireRead(http.HandlerFunc(s.apiFindings)))
+	mux.Handle("/api/v1/findings/enriched", s.requireRead(http.HandlerFunc(s.apiFindingsEnriched)))
+	mux.Handle("/api/v1/history", s.requireRead(http.HandlerFunc(s.apiHistory)))
+	mux.Handle("/api/v1/stats", s.requireRead(http.HandlerFunc(s.apiStats)))
+	mux.Handle("/api/v1/stats/trend", s.requireRead(http.HandlerFunc(s.apiStatsTrend)))
+	mux.Handle("/api/v1/stats/timeline", s.requireRead(http.HandlerFunc(s.apiStatsTimeline)))
+	mux.Handle("/api/v1/blocked-ips", s.requireRead(http.HandlerFunc(s.apiBlockedIPs)))
+	mux.Handle("/api/v1/capabilities", s.requireRead(http.HandlerFunc(s.apiCapabilities)))
+	mux.Handle("/api/v1/health", s.requireRead(http.HandlerFunc(s.apiHealth)))
+	// Auth-protected API - admin-only reads (data with write-adjacent sensitivity)
 	mux.Handle("/api/v1/quarantine", s.requireAuth(http.HandlerFunc(s.apiQuarantine)))
-	mux.Handle("/api/v1/stats", s.requireAuth(http.HandlerFunc(s.apiStats)))
-	mux.Handle("/api/v1/stats/trend", s.requireAuth(http.HandlerFunc(s.apiStatsTrend)))
-	mux.Handle("/api/v1/stats/timeline", s.requireAuth(http.HandlerFunc(s.apiStatsTimeline)))
-	mux.Handle("/api/v1/blocked-ips", s.requireAuth(http.HandlerFunc(s.apiBlockedIPs)))
 	mux.Handle("/api/v1/modsec/stats", s.requireAuth(http.HandlerFunc(s.apiModSecStats)))
 	mux.Handle("/api/v1/modsec/blocks", s.requireAuth(http.HandlerFunc(s.apiModSecBlocks)))
 	mux.Handle("/api/v1/modsec/events", s.requireAuth(http.HandlerFunc(s.apiModSecEvents)))
 	mux.Handle("/api/v1/modsec/rules", s.requireAuth(http.HandlerFunc(s.apiModSecRules)))
 	mux.Handle("/api/v1/modsec/rules/apply", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiModSecRulesApply))))
 	mux.Handle("/api/v1/modsec/rules/escalation", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiModSecRulesEscalation))))
-	mux.Handle("/api/v1/capabilities", s.requireAuth(http.HandlerFunc(s.apiCapabilities)))
-	mux.Handle("/api/v1/health", s.requireAuth(http.HandlerFunc(s.apiHealth)))
 	mux.Handle("/api/v1/accounts", s.requireAuth(http.HandlerFunc(s.apiAccounts)))
 	mux.Handle("/api/v1/account", s.requireAuth(http.HandlerFunc(s.apiAccountDetail)))
 	mux.Handle("/api/v1/history/csv", s.requireAuth(http.HandlerFunc(s.apiHistoryCSV)))
@@ -508,9 +509,44 @@ func (s *Server) csmConfig() map[string]interface{} {
 
 // --- Authentication ---
 
+// tokenHasScope reports whether the credentials in r grant at least the
+// requested scope. "read" is granted by any token; "admin" is granted only
+// by admin-scope tokens. Constant-time compare against every configured
+// token. Cookie credentials get treated as their token's scope (browser
+// session uses the admin login form, which only matches admin tokens).
+func (s *Server) tokenHasScope(r *http.Request, want string) bool {
+	// Browser cookie session
+	if c, err := r.Cookie("csm_auth"); err == nil {
+		for _, tok := range s.cfg.WebUI.Tokens {
+			if subtle.ConstantTimeCompare([]byte(c.Value), []byte(tok.Token)) == 1 {
+				if want == "read" {
+					return true
+				}
+				return tok.Scope == "admin"
+			}
+		}
+	}
+
+	// Bearer token
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return false
+	}
+	supplied := strings.TrimPrefix(auth, "Bearer ")
+	for _, tok := range s.cfg.WebUI.Tokens {
+		if subtle.ConstantTimeCompare([]byte(supplied), []byte(tok.Token)) == 1 {
+			if want == "read" {
+				return true
+			}
+			return tok.Scope == "admin"
+		}
+	}
+	return false
+}
+
 func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.isAuthenticated(r) {
+		if s.tokenHasScope(r, "admin") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -523,29 +559,25 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 	})
 }
 
+func (s *Server) requireRead(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.tokenHasScope(r, "read") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// API calls get 401 JSON; browser requests get redirect to login
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			writeJSONError(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		http.Redirect(w, r, "/login", http.StatusFound)
+	})
+}
+
+// isAuthenticated is a thin shim used by handleLogin and metrics_api.
+// New callers should prefer tokenHasScope directly.
 func (s *Server) isAuthenticated(r *http.Request) bool {
-	token := s.cfg.WebUI.AuthToken
-	if token == "" {
-		return false
-	}
-
-	// Check Authorization header
-	if auth := r.Header.Get("Authorization"); auth != "" {
-		if len(auth) > 7 && auth[:7] == "Bearer " {
-			if subtle.ConstantTimeCompare([]byte(auth[7:]), []byte(token)) == 1 {
-				return true
-			}
-		}
-	}
-
-	// Check cookie
-	if cookie, err := r.Cookie("csm_auth"); err == nil {
-		if subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(token)) == 1 {
-			return true
-		}
-	}
-
-	return false
+	return s.tokenHasScope(r, "admin")
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -588,7 +620,15 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	s.loginMu.Unlock()
 
 	token := r.FormValue("token")
-	if subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.WebUI.AuthToken)) != 1 {
+	// Only admin-scope tokens may log in via the browser form.
+	validLogin := false
+	for _, tok := range s.cfg.WebUI.Tokens {
+		if tok.Scope == "admin" && subtle.ConstantTimeCompare([]byte(token), []byte(tok.Token)) == 1 {
+			validLogin = true
+			break
+		}
+	}
+	if !validLogin {
 		s.renderTemplate(w, "login.html", map[string]string{"Error": "Invalid token"})
 		return
 	}
@@ -760,13 +800,8 @@ func (s *Server) validateCSRF(r *http.Request) bool {
 
 	// Skip CSRF for Bearer token auth - the token itself proves identity.
 	// CSRF protection is only needed for cookie-based browser sessions.
-	if auth := r.Header.Get("Authorization"); auth != "" {
-		if len(auth) > 7 && auth[:7] == "Bearer " {
-			token := s.cfg.WebUI.AuthToken
-			if subtle.ConstantTimeCompare([]byte(auth[7:]), []byte(token)) == 1 {
-				return true
-			}
-		}
+	if s.isBearerAuth(r) {
+		return true
 	}
 
 	expected := s.csrfToken()
@@ -798,8 +833,14 @@ func (s *Server) requireCSRF(next http.Handler) http.Handler {
 
 func (s *Server) isBearerAuth(r *http.Request) bool {
 	auth := r.Header.Get("Authorization")
-	if len(auth) > 7 && auth[:7] == "Bearer " {
-		return subtle.ConstantTimeCompare([]byte(auth[7:]), []byte(s.cfg.WebUI.AuthToken)) == 1
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return false
+	}
+	supplied := strings.TrimPrefix(auth, "Bearer ")
+	for _, tok := range s.cfg.WebUI.Tokens {
+		if subtle.ConstantTimeCompare([]byte(supplied), []byte(tok.Token)) == 1 {
+			return true
+		}
 	}
 	return false
 }

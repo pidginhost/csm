@@ -29,6 +29,11 @@ func seedTestMetric() {
 
 func newMetricsTestServer(t *testing.T, cfg *config.Config) *Server {
 	t.Helper()
+	// Mirror applyDefaults: migrate legacy AuthToken into Tokens so that
+	// the scope-aware auth path works in tests without a full config load.
+	if cfg.WebUI.AuthToken != "" && len(cfg.WebUI.Tokens) == 0 {
+		cfg.WebUI.Tokens = []config.WebUIToken{{Name: "legacy-auth-token", Token: cfg.WebUI.AuthToken, Scope: "admin"}}
+	}
 	st, err := state.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("state.Open: %v", err)
