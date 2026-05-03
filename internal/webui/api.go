@@ -19,6 +19,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -40,6 +41,14 @@ func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 		"last_scan_time": s.store.LatestScanTime().Format(time.RFC3339),
 	}
 	writeJSON(w, status)
+}
+
+// apiCapabilities returns the static feature-flag list for this build.
+func (s *Server) apiCapabilities(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, map[string]interface{}{
+		"capabilities": health.Capabilities(),
+		"version":      s.version,
+	})
 }
 
 // apiFindings returns current scan results - "what's wrong right now."

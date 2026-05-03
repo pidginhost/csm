@@ -170,6 +170,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/modsec/rules", s.requireAuth(http.HandlerFunc(s.apiModSecRules)))
 	mux.Handle("/api/v1/modsec/rules/apply", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiModSecRulesApply))))
 	mux.Handle("/api/v1/modsec/rules/escalation", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiModSecRulesEscalation))))
+	mux.Handle("/api/v1/capabilities", s.requireAuth(http.HandlerFunc(s.apiCapabilities)))
 	mux.Handle("/api/v1/health", s.requireAuth(http.HandlerFunc(s.apiHealth)))
 	mux.Handle("/api/v1/accounts", s.requireAuth(http.HandlerFunc(s.apiAccounts)))
 	mux.Handle("/api/v1/account", s.requireAuth(http.HandlerFunc(s.apiAccountDetail)))
