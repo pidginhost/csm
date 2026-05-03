@@ -1,6 +1,7 @@
 package firewall
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -8,6 +9,12 @@ import (
 	"sync"
 	"time"
 )
+
+// hostHealth tracks per-host resolution state for the re-resolve guard.
+type hostHealth struct {
+	lastSuccess    time.Time
+	findingEmitted bool
+}
 
 // DynDNSResolver periodically resolves hostnames and updates the firewall allowed set.
 type DynDNSResolver struct {
@@ -18,6 +25,17 @@ type DynDNSResolver struct {
 		AllowIP(ip string, reason string) error
 		RemoveAllowIPBySource(ip string, source string) error
 	}
+
+	// lookupFn is the DNS lookup function; defaults to net.LookupHost.
+	// Tests may replace this with a stub.
+	lookupFn func(host string) ([]string, error)
+
+	// Guard fields for the DNS re-resolve guard (Task 3).
+	muGuard     sync.RWMutex
+	hostHealth  map[string]*hostHealth
+	gracePeriod time.Duration
+	unresolvable map[string]struct{}
+	findingSink func(name string)
 }
 
 // NewDynDNSResolver creates a resolver for the given hostnames.
@@ -25,16 +43,73 @@ func NewDynDNSResolver(hosts []string, engine interface {
 	AllowIP(ip string, reason string) error
 	RemoveAllowIPBySource(ip string, source string) error
 }) *DynDNSResolver {
-	return &DynDNSResolver{
-		hosts:    hosts,
-		resolved: make(map[string][]string),
-		engine:   engine,
+	r := &DynDNSResolver{
+		hosts:        hosts,
+		resolved:     make(map[string][]string),
+		engine:       engine,
+		hostHealth:   make(map[string]*hostHealth),
+		unresolvable: make(map[string]struct{}),
+		gracePeriod:  10 * time.Minute,
 	}
+	r.lookupFn = net.LookupHost
+	return r
+}
+
+// AddHost appends a hostname to the resolver's host list.
+// It is safe to call concurrently. Used in tests to add hosts after construction.
+func (d *DynDNSResolver) AddHost(host string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.hosts = append(d.hosts, host)
+}
+
+// markLastSuccess seeds the lastSuccess timestamp for a host to now.
+// Used in tests to simulate a prior successful resolution without a real
+// DNS lookup.
+func (d *DynDNSResolver) markLastSuccess(host string) {
+	d.muGuard.Lock()
+	defer d.muGuard.Unlock()
+	hh := d.hostHealth[host]
+	if hh == nil {
+		hh = &hostHealth{}
+		d.hostHealth[host] = hh
+	}
+	hh.lastSuccess = time.Now()
+}
+
+// SetFindingSink installs the callback invoked when a host has been
+// unresolvable for longer than gracePeriod. Called from the daemon at
+// startup, after the alert pipeline is wired.
+func (d *DynDNSResolver) SetFindingSink(sink func(host string)) {
+	d.muGuard.Lock()
+	defer d.muGuard.Unlock()
+	d.findingSink = sink
+}
+
+// UnresolvableHosts lists infra_ips hostnames currently failing to resolve
+// beyond the grace period.
+func (d *DynDNSResolver) UnresolvableHosts() []string {
+	d.muGuard.RLock()
+	defer d.muGuard.RUnlock()
+	out := make([]string, 0, len(d.unresolvable))
+	for h := range d.unresolvable {
+		out = append(out, h)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Run starts the periodic resolver. Blocks until stopCh is closed.
 func (d *DynDNSResolver) Run(stopCh <-chan struct{}) {
-	d.resolveAll()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		<-stopCh
+		cancel()
+	}()
+
+	d.tickOnce(ctx)
 
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
@@ -44,21 +119,34 @@ func (d *DynDNSResolver) Run(stopCh <-chan struct{}) {
 		case <-stopCh:
 			return
 		case <-ticker.C:
-			d.resolveAll()
+			d.tickOnce(ctx)
 		}
 	}
 }
 
-func (d *DynDNSResolver) resolveAll() {
-	for _, host := range d.hosts {
+// tickOnce performs one resolution cycle over all registered hosts.
+// The periodic Run loop calls this; tests can call it directly.
+func (d *DynDNSResolver) tickOnce(_ context.Context) {
+	d.mu.Lock()
+	hosts := make([]string, len(d.hosts))
+	copy(hosts, d.hosts)
+	d.mu.Unlock()
+
+	for _, host := range hosts {
 		d.resolveHost(host)
 	}
 }
 
+// resolveAll is retained for backward compatibility with existing tests.
+func (d *DynDNSResolver) resolveAll() {
+	d.tickOnce(context.Background())
+}
+
 func (d *DynDNSResolver) resolveHost(host string) {
-	newIPs, err := net.LookupHost(host)
+	newIPs, err := d.lookupFn(host)
 	if err != nil || len(newIPs) == 0 {
 		fmt.Fprintf(os.Stderr, "dyndns: failed to resolve %s: %v\n", host, err)
+		d.updateGuardFailure(host)
 		return
 	}
 	sort.Strings(newIPs)
@@ -104,4 +192,51 @@ func (d *DynDNSResolver) resolveHost(host string) {
 	d.mu.Lock()
 	d.resolved[host] = successIPs
 	d.mu.Unlock()
+
+	// Successful resolution: clear any guard state.
+	d.updateGuardSuccess(host)
+}
+
+// updateGuardSuccess marks a host as successfully resolved in the guard state.
+func (d *DynDNSResolver) updateGuardSuccess(host string) {
+	d.muGuard.Lock()
+	hh := d.hostHealth[host]
+	if hh == nil {
+		hh = &hostHealth{}
+		d.hostHealth[host] = hh
+	}
+	hh.lastSuccess = time.Now()
+	if _, was := d.unresolvable[host]; was {
+		delete(d.unresolvable, host)
+		hh.findingEmitted = false
+		fmt.Fprintf(os.Stderr, "dyndns: %s recovered (resolution succeeded)\n", host)
+	}
+	d.muGuard.Unlock()
+}
+
+// updateGuardFailure updates guard state after a failed resolution for a host.
+// If the host has been unresolvable beyond gracePeriod and no finding has been
+// emitted yet, it marks the host unresolvable and invokes the finding sink.
+func (d *DynDNSResolver) updateGuardFailure(host string) {
+	d.muGuard.Lock()
+	hh := d.hostHealth[host]
+	if hh == nil {
+		hh = &hostHealth{}
+		d.hostHealth[host] = hh
+	}
+
+	var sinkToCall func(string)
+	if !hh.lastSuccess.IsZero() &&
+		time.Since(hh.lastSuccess) > d.gracePeriod &&
+		!hh.findingEmitted {
+		d.unresolvable[host] = struct{}{}
+		hh.findingEmitted = true
+		sinkToCall = d.findingSink
+	}
+	d.muGuard.Unlock()
+
+	// Invoke sink outside the lock to prevent deadlock if sink calls back in.
+	if sinkToCall != nil {
+		sinkToCall(host)
+	}
 }

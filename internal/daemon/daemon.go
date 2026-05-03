@@ -1878,6 +1878,15 @@ func (d *Daemon) startFirewall() {
 	// Start Dynamic DNS resolver if configured
 	if len(d.cfg.Firewall.DynDNSHosts) > 0 {
 		resolver := firewall.NewDynDNSResolver(d.cfg.Firewall.DynDNSHosts, engine)
+		alertCh := d.alertCh
+		resolver.SetFindingSink(func(host string) {
+			alertCh <- alert.Finding{
+				Check:    "infra_ips_unresolvable",
+				Severity: alert.High,
+				Message:  fmt.Sprintf("infra_ips host %s has not resolved within grace period", host),
+				Details:  "Verify DNS for the host or remove it from infra_ips. While unresolvable, blocks may be incorrectly applied to its previous IP if the IP rotates.",
+			}
+		})
 		d.wg.Add(1)
 		obs.Go("dyndns-resolver", func() {
 			defer d.wg.Done()
