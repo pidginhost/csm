@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `csm status --json` and `csm doctor` for machine-readable health diagnostics. Doctor emits suggested-fix strings for each failed check.
 - `csm config schema --json` prints a JSON Schema reflected from the Config struct so external tools can validate `csm.yaml` overrides.
 - sd_notify integration: daemon signals `READY=1` after startup and the existing watchdog notifier remains. systemd unit declares `Type=notify`, `NotifyAccess=main`, `TimeoutStartSec=120`.
+- Phpanel webhook type (`type: phpanel`, `per_finding: true`) signs each request with HMAC-SHA256 over the raw JSON body in `X-CSM-Signature`.
+- `/api/v1/events` Server-Sent Events stream: clients with a read-scope token receive each finding as it dispatches.
+- `webui.tokens:` multi-credential model with `scope: admin | read`. Admin tokens still work everywhere; read tokens authorize `/api/v1/*` GETs only. Legacy `webui.auth_token:` is migrated automatically.
+- `tenant_id`, `domain`, `mailbox` fields added to JSONL audit events and the `Finding` JSON for downstream correlation.
 
 ### Changed
 
