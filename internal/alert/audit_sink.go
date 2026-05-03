@@ -25,6 +25,9 @@ type AuditEvent struct {
 	Details   string    `json:"details,omitempty"`
 	FilePath  string    `json:"file_path,omitempty"`
 	Hostname  string    `json:"hostname"`
+	TenantID  string    `json:"tenant_id,omitempty"`
+	Domain    string    `json:"domain,omitempty"`
+	Mailbox   string    `json:"mailbox,omitempty"`
 }
 
 // AuditSink is what every audit-log destination implements. Emit must
@@ -56,6 +59,9 @@ func NewAuditEvent(hostname string, f Finding) AuditEvent {
 		Details:   f.Details,
 		FilePath:  f.FilePath,
 		Hostname:  hostname,
+		TenantID:  f.TenantID,
+		Domain:    f.Domain,
+		Mailbox:   f.Mailbox,
 	}
 }
 

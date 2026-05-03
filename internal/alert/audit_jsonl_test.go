@@ -160,6 +160,39 @@ func TestJSONLSinkEmptyPathRejected(t *testing.T) {
 	}
 }
 
+func TestAuditJSONL_IncludesTenantFields(t *testing.T) {
+	dir := t.TempDir()
+	sink := mustNewJSONLSink(t, filepath.Join(dir, "audit.jsonl"))
+	defer sink.Close()
+
+	finding := Finding{
+		Check:    "phprelay.spam",
+		Severity: High,
+		Message:  "fanout exceeded",
+		TenantID: "tenant-1",
+		Domain:   "example.com",
+		Mailbox:  "abuse@example.com",
+	}
+	evt := NewAuditEvent("host", finding)
+	if err := sink.Emit(evt); err != nil {
+		t.Fatal(err)
+	}
+
+	lines := readJSONLines(t, filepath.Join(dir, "audit.jsonl"))
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d", len(lines))
+	}
+	raw, err := json.Marshal(lines[0])
+	if err != nil {
+		t.Fatalf("re-marshal: %v", err)
+	}
+	for _, k := range []string{"tenant-1", "example.com", "abuse@example.com"} {
+		if !strings.Contains(string(raw), k) {
+			t.Fatalf("expected %s in audit line, got %s", k, raw)
+		}
+	}
+}
+
 func TestJSONLSinkCreatesParentDir(t *testing.T) {
 	parent := filepath.Join(t.TempDir(), "nested", "deeper")
 	path := filepath.Join(parent, "audit.jsonl")
