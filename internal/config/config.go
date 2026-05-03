@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -123,6 +124,13 @@ type Config struct {
 		MailBruteForceSubnetThresh int `yaml:"mail_bruteforce_subnet_threshold"`
 		MailAccountSprayThreshold  int `yaml:"mail_account_spray_threshold"`
 		MailBruteForceMaxTracked   int `yaml:"mail_bruteforce_max_tracked"`
+
+		// MailBruteAccountKey selects how the account is extracted from a
+		// dovecot/postfix log line for per-account brute-force scoring.
+		//   - builtin:dovecot-user (default) - match `user=<...>`
+		//   - builtin:postfix-sasl           - match `sasl_username=<...>`
+		//   - regex:<pattern>                - capture group 1 is the account
+		MailBruteAccountKey string `yaml:"mail_brute_account_key,omitempty"`
 	} `yaml:"thresholds" hotreload:"safe"`
 
 	InfraIPs []string `yaml:"infra_ips" hotreload:"restart"`
@@ -699,6 +707,10 @@ func applyDefaults(cfg *Config) {
 	if len(cfg.MailLogs.Units) == 0 {
 		cfg.MailLogs.Units = []string{"postfix", "dovecot"}
 	}
+
+	if cfg.Thresholds.MailBruteAccountKey == "" {
+		cfg.Thresholds.MailBruteAccountKey = "builtin:dovecot-user"
+	}
 }
 
 // LoadBytes decodes a YAML config body and applies all defaults,
@@ -715,6 +727,9 @@ func LoadBytes(data []byte) (*Config, error) {
 		return nil, err
 	}
 	if err := validateMailLogs(cfg); err != nil {
+		return nil, err
+	}
+	if err := validateMailBruteAccountKey(cfg); err != nil {
 		return nil, err
 	}
 	return cfg, nil
@@ -751,6 +766,21 @@ func validateMailLogs(cfg *Config) error {
 	case "auto", "file", "journal":
 	default:
 		return fmt.Errorf("mail_logs.source: must be auto, file, or journal (got %q)", cfg.MailLogs.Source)
+	}
+	return nil
+}
+
+func validateMailBruteAccountKey(cfg *Config) error {
+	key := cfg.Thresholds.MailBruteAccountKey
+	switch {
+	case key == "builtin:dovecot-user", key == "builtin:postfix-sasl":
+		// ok
+	case strings.HasPrefix(key, "regex:"):
+		if _, err := regexp.Compile(strings.TrimPrefix(key, "regex:")); err != nil {
+			return fmt.Errorf("mail_brute_account_key: invalid regex: %w", err)
+		}
+	default:
+		return fmt.Errorf("mail_brute_account_key: %q must be builtin:* or regex:*", key)
 	}
 	return nil
 }

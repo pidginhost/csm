@@ -412,3 +412,46 @@ func TestMailLogs_RejectsUnknownSource(t *testing.T) {
 		t.Fatal("expected error for unknown source")
 	}
 }
+
+func TestMailBrute_DefaultsToBuiltinDovecotUser(t *testing.T) {
+	cfg, err := LoadBytes([]byte(``))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Thresholds.MailBruteAccountKey != "builtin:dovecot-user" {
+		t.Fatalf("expected builtin:dovecot-user, got %q", cfg.Thresholds.MailBruteAccountKey)
+	}
+}
+
+func TestMailBrute_AcceptsCustomRegex(t *testing.T) {
+	cfg, err := LoadBytes([]byte(`
+thresholds:
+  mail_brute_account_key: 'regex:user=([^,\s]+)'
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Thresholds.MailBruteAccountKey == "" {
+		t.Fatal("expected regex value preserved")
+	}
+}
+
+func TestMailBrute_RejectsInvalidRegex(t *testing.T) {
+	_, err := LoadBytes([]byte(`
+thresholds:
+  mail_brute_account_key: 'regex:[unclosed'
+`))
+	if err == nil {
+		t.Fatal("expected error for unclosed regex")
+	}
+}
+
+func TestMailBrute_RejectsUnknownPrefix(t *testing.T) {
+	_, err := LoadBytes([]byte(`
+thresholds:
+  mail_brute_account_key: 'something-weird'
+`))
+	if err == nil {
+		t.Fatal("expected error for unknown prefix")
+	}
+}
