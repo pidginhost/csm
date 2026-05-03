@@ -99,6 +99,10 @@ contents:
     dst: /usr/lib/csm/profiles/phpanel-agent.yaml
     file_info:
       mode: 0644
+  - src: build/packaging/examples/csm-prestart.example.conf
+    dst: /usr/lib/csm/profiles/csm-prestart.example.conf
+    file_info:
+      mode: 0644
 
   # Legacy paths kept on disk; the daemon migrates contents on first boot.
   - dst: /opt/csm/quarantine
