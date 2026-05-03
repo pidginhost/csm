@@ -11,6 +11,13 @@ import (
 	"github.com/pidginhost/csm/internal/firewall"
 )
 
+// WebUIToken is one entry in WebUI.Tokens. Scope must be "admin" or "read".
+type WebUIToken struct {
+	Name  string `yaml:"name"`
+	Token string `yaml:"token"`
+	Scope string `yaml:"scope"`
+}
+
 type Config struct {
 	ConfigFile string `yaml:"-"`
 	ConfigDir  string `yaml:"-" hotreload:"restart"` // /etc/csm/conf.d (or operator override); empty means no drop-ins loaded
@@ -255,6 +262,14 @@ type Config struct {
 		TLSCert      string `yaml:"tls_cert"`
 		TLSKey       string `yaml:"tls_key"`
 		UIDir        string `yaml:"ui_dir"` // path to UI files on disk (default: /opt/csm/ui)
+
+		// Tokens is the multi-credential model added in v2.12.0. Each entry has
+		// a stable name (for audit), an opaque secret, and a scope that gates
+		// which endpoints accept it. Legacy AuthToken is preserved during the
+		// migration window so callers that read it directly keep working;
+		// applyDefaults populates Tokens from AuthToken when only the legacy
+		// field is set.
+		Tokens []WebUIToken `yaml:"tokens,omitempty"`
 	} `yaml:"webui" hotreload:"restart"`
 
 	EmailAV EmailAVConfig `yaml:"email_av" hotreload:"restart"`
@@ -429,6 +444,11 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.WebUI.Listen == "" {
 		cfg.WebUI.Listen = "0.0.0.0:9443"
+	}
+	if cfg.WebUI.AuthToken != "" && len(cfg.WebUI.Tokens) == 0 {
+		cfg.WebUI.Tokens = []WebUIToken{{
+			Name: "legacy-auth-token", Token: cfg.WebUI.AuthToken, Scope: "admin",
+		}}
 	}
 	if cfg.Thresholds.MailQueueWarn == 0 {
 		cfg.Thresholds.MailQueueWarn = 500
@@ -645,7 +665,22 @@ func LoadBytes(data []byte) (*Config, error) {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 	applyDefaults(cfg)
+	if err := validateWebUITokens(cfg); err != nil {
+		return nil, err
+	}
 	return cfg, nil
+}
+
+func validateWebUITokens(cfg *Config) error {
+	for i, tok := range cfg.WebUI.Tokens {
+		if tok.Scope != "admin" && tok.Scope != "read" {
+			return fmt.Errorf("webui.tokens[%d]: unknown scope %q (use admin or read)", i, tok.Scope)
+		}
+		if tok.Token == "" {
+			return fmt.Errorf("webui.tokens[%d]: empty token", i)
+		}
+	}
+	return nil
 }
 
 func Load(path string) (*Config, error) {

@@ -270,3 +270,78 @@ func TestLoadWithConfDir_NoDirIsLoadEquivalent(t *testing.T) {
 		t.Fatalf("expected solo, got %q", cfg.Hostname)
 	}
 }
+
+func TestWebUITokens_BackwardCompatLegacyAuthToken(t *testing.T) {
+	cfg, err := LoadBytes([]byte(`
+webui:
+  enabled: true
+  auth_token: "legacy-secret"
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.WebUI.Tokens) != 1 {
+		t.Fatalf("expected legacy auth_token to migrate into tokens slice, got %d entries", len(cfg.WebUI.Tokens))
+	}
+	if cfg.WebUI.Tokens[0].Scope != "admin" {
+		t.Fatalf("expected admin scope, got %q", cfg.WebUI.Tokens[0].Scope)
+	}
+	if cfg.WebUI.Tokens[0].Token != "legacy-secret" {
+		t.Fatalf("expected legacy token preserved, got %q", cfg.WebUI.Tokens[0].Token)
+	}
+	// Legacy field must still be set so callers reading it directly during the migration window see no diff.
+	if cfg.WebUI.AuthToken != "legacy-secret" {
+		t.Fatalf("expected legacy AuthToken preserved, got %q", cfg.WebUI.AuthToken)
+	}
+}
+
+func TestWebUITokens_MixedAdminAndRead(t *testing.T) {
+	cfg, err := LoadBytes([]byte(`
+webui:
+  enabled: true
+  tokens:
+    - name: admin
+      token: "admin-secret"
+      scope: admin
+    - name: phpanel
+      token: "panel-secret"
+      scope: read
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.WebUI.Tokens) != 2 {
+		t.Fatalf("expected 2 tokens, got %d", len(cfg.WebUI.Tokens))
+	}
+	if cfg.WebUI.Tokens[1].Scope != "read" {
+		t.Fatalf("expected read scope on phpanel token, got %q", cfg.WebUI.Tokens[1].Scope)
+	}
+}
+
+func TestWebUITokens_RejectsUnknownScope(t *testing.T) {
+	_, err := LoadBytes([]byte(`
+webui:
+  enabled: true
+  tokens:
+    - name: bad
+      token: "x"
+      scope: superuser
+`))
+	if err == nil {
+		t.Fatal("expected error for unknown scope")
+	}
+}
+
+func TestWebUITokens_RejectsEmptyToken(t *testing.T) {
+	_, err := LoadBytes([]byte(`
+webui:
+  enabled: true
+  tokens:
+    - name: empty
+      token: ""
+      scope: read
+`))
+	if err == nil {
+		t.Fatal("expected error for empty token")
+	}
+}
