@@ -7,10 +7,21 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
 const cmdTimeout = 2 * time.Minute
+
+var systemCommandSearchDirs = []string{
+	"/usr/local/sbin",
+	"/usr/sbin",
+	"/sbin",
+	"/usr/local/bin",
+	"/usr/bin",
+	"/bin",
+}
 
 func hashFileContent(path string) (string, error) {
 	data, err := osFS.ReadFile(path)
@@ -44,6 +55,32 @@ func runCmdWithEnv(name string, args []string, extraEnv ...string) ([]byte, erro
 	return cmdExec.RunWithEnv(name, args, extraEnv...)
 }
 
+func lookupSystemCommand(name string) (string, error) {
+	if strings.ContainsRune(name, os.PathSeparator) {
+		return exec.LookPath(name)
+	}
+	path, err := exec.LookPath(name)
+	if err == nil {
+		return path, nil
+	}
+	for _, dir := range systemCommandSearchDirs {
+		candidate := filepath.Join(dir, name)
+		info, statErr := os.Stat(candidate)
+		if statErr == nil && !info.IsDir() && info.Mode()&0111 != 0 {
+			return candidate, nil
+		}
+	}
+	return "", err
+}
+
+func resolveSystemCommand(name string) string {
+	path, err := lookupSystemCommand(name)
+	if err != nil {
+		return name
+	}
+	return path
+}
+
 // ---------------------------------------------------------------------------
 // Real implementations — used by realCmd in provider.go
 //
@@ -59,7 +96,7 @@ func runCmdReal(name string, args ...string) ([]byte, error) {
 	defer cancel()
 
 	// #nosec G204 -- see package-level trust note above.
-	out, err := exec.CommandContext(ctx, name, args...).Output()
+	out, err := exec.CommandContext(ctx, resolveSystemCommand(name), args...).Output()
 	if ctx.Err() == context.DeadlineExceeded {
 		fmt.Fprintf(os.Stderr, "Command timed out: %s %v\n", name, args)
 		return nil, nil
@@ -72,7 +109,7 @@ func runCmdAllowNonZeroReal(name string, args ...string) ([]byte, error) {
 	defer cancel()
 
 	// #nosec G204 -- see package-level trust note above.
-	out, err := exec.CommandContext(ctx, name, args...).Output()
+	out, err := exec.CommandContext(ctx, resolveSystemCommand(name), args...).Output()
 	if ctx.Err() == context.DeadlineExceeded {
 		fmt.Fprintf(os.Stderr, "Command timed out: %s %v\n", name, args)
 		return nil, nil
@@ -89,7 +126,7 @@ func runCmdCombinedContextReal(parent context.Context, name string, args ...stri
 	defer cancel()
 
 	// #nosec G204 -- see package-level trust note above.
-	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	out, err := exec.CommandContext(ctx, resolveSystemCommand(name), args...).CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
 		fmt.Fprintf(os.Stderr, "Command timed out: %s %v\n", name, args)
 		return nil, nil
@@ -111,7 +148,7 @@ func runCmdStdoutContextReal(parent context.Context, name string, args ...string
 	defer cancel()
 
 	// #nosec G204 -- see package-level trust note above.
-	out, err := exec.CommandContext(ctx, name, args...).Output()
+	out, err := exec.CommandContext(ctx, resolveSystemCommand(name), args...).Output()
 	if ctx.Err() == context.DeadlineExceeded {
 		return nil, context.DeadlineExceeded
 	}
@@ -126,7 +163,7 @@ func runCmdWithEnvReal(name string, args []string, extraEnv ...string) ([]byte, 
 	defer cancel()
 
 	// #nosec G204 -- see package-level trust note above.
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := exec.CommandContext(ctx, resolveSystemCommand(name), args...)
 	cmd.Env = append(os.Environ(), extraEnv...)
 	out, err := cmd.Output()
 	if ctx.Err() == context.DeadlineExceeded {

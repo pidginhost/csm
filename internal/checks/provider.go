@@ -3,7 +3,6 @@ package checks
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 )
 
@@ -101,7 +100,7 @@ func (realCmd) RunWithEnv(name string, args []string, extraEnv ...string) ([]byt
 }
 
 func (realCmd) LookPath(file string) (string, error) {
-	return exec.LookPath(file)
+	return lookupSystemCommand(file)
 }
 
 // cmdExec is the package-level command runner. All check functions use

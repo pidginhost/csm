@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- CSM now resolves system commands from standard sbin directories when systemd starts the daemon with a narrow PATH, preventing false missing-command health alerts for tools like auditctl.
 - Backup and restore now reject unsafe archives more strictly and avoid including or overwriting their own source files. Dry-run blocking keeps the same safety checks as live blocking, and the dynamic-DNS guard reports startup resolution failures as Warning findings.
 - PHP relay shutdown now flushes its message-index writer before closing state.
 - Health snapshots no longer mark disabled or not-applicable watchers as failed. `csm doctor --json` now returns JSON for config and daemon-status failures.

@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -97,5 +98,47 @@ func TestRealCmdLookPath(t *testing.T) {
 	}
 	if path == "" {
 		t.Error("echo should be found")
+	}
+}
+
+func TestRealCmdLookPathUsesSystemSearchDirs(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "auditctl")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0755); err != nil {
+		t.Fatalf("write fake auditctl: %v", err)
+	}
+	t.Setenv("PATH", t.TempDir())
+	oldDirs := systemCommandSearchDirs
+	systemCommandSearchDirs = []string{dir}
+	t.Cleanup(func() { systemCommandSearchDirs = oldDirs })
+
+	r := realCmd{}
+	path, err := r.LookPath("auditctl")
+	if err != nil {
+		t.Fatalf("LookPath auditctl: %v", err)
+	}
+	if path != bin {
+		t.Fatalf("LookPath auditctl = %q, want %q", path, bin)
+	}
+}
+
+func TestRealCmdRunUsesSystemSearchDirs(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "auditctl")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nprintf csm-ok\n"), 0755); err != nil {
+		t.Fatalf("write fake auditctl: %v", err)
+	}
+	t.Setenv("PATH", t.TempDir())
+	oldDirs := systemCommandSearchDirs
+	systemCommandSearchDirs = []string{dir}
+	t.Cleanup(func() { systemCommandSearchDirs = oldDirs })
+
+	r := realCmd{}
+	out, err := r.Run("auditctl")
+	if err != nil {
+		t.Fatalf("Run auditctl: %v", err)
+	}
+	if string(out) != "csm-ok" {
+		t.Fatalf("Run auditctl output = %q, want csm-ok", out)
 	}
 }
