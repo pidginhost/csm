@@ -17,6 +17,7 @@ import (
 	"github.com/google/nftables"
 	"github.com/google/nftables/binaryutil"
 	"github.com/google/nftables/expr"
+	"github.com/pidginhost/csm/internal/config"
 )
 
 // Engine manages the nftables firewall ruleset.
@@ -25,6 +26,11 @@ type Engine struct {
 	mu   sync.Mutex
 	conn *nftables.Conn
 	cfg  *FirewallConfig
+
+	// dryRunRecorder is called by BlockIP when auto_response.dry_run is
+	// active. Set by SetDryRunRecorder after construction so the firewall
+	// package does not import internal/store (which would be a cycle).
+	dryRunRecorder func(ip, reason string, timeout time.Duration)
 
 	table    *nftables.Table
 	chainIn  *nftables.Chain
@@ -204,6 +210,16 @@ func ConnectExisting(cfg *FirewallConfig, statePath string) (*Engine, error) {
 	}
 
 	return e, nil
+}
+
+// SetDryRunRecorder installs a callback that is invoked by BlockIP whenever
+// auto_response.dry_run is active. The daemon calls this after construction
+// to wire in store.RecordDryRunBlock without creating an import cycle between
+// internal/firewall and internal/store.
+func (e *Engine) SetDryRunRecorder(fn func(ip, reason string, timeout time.Duration)) {
+	e.mu.Lock()
+	e.dryRunRecorder = fn
+	e.mu.Unlock()
 }
 
 // Apply builds and atomically applies the complete nftables ruleset.
@@ -1169,7 +1185,49 @@ func (e *Engine) addOutboundPortRule(port int, tcp bool) {
 
 // BlockIP adds an IP to the blocked set with optional timeout.
 // timeout 0 = permanent block.
+//
+// This is the AUTO-RESPONSE entry point. When auto_response.dry_run is true
+// (or absent, which defaults to true for safety), the call is logged and
+// persisted to the dry_run_blocks store bucket but nftables is NOT mutated.
+// This allows operators to review "what would have been blocked" before
+// enabling live blocking.
+//
+// Operator-initiated commands (csm firewall block, Web UI manual block) must
+// call BlockIPForce instead, which skips the dry-run gate unconditionally.
 func (e *Engine) BlockIP(ip string, reason string, timeout time.Duration) error {
+	// Dry-run gate: read config.Active() at call time so a SIGHUP takes effect
+	// without a daemon restart. nil Active() (tests, early startup) means live.
+	if c := config.Active(); c != nil && c.AutoResponseDryRunEnabled() {
+		fmt.Fprintf(os.Stderr, "[%s] auto_response dry_run: would have blocked %s (%s)\n",
+			time.Now().Format("2006-01-02 15:04:05"), ip, reason)
+		e.recordDryRunBlock(ip, reason, timeout)
+		return nil
+	}
+	return e.blockIPLocked(ip, reason, timeout)
+}
+
+// BlockIPForce adds an IP to the blocked set unconditionally, bypassing the
+// auto_response.dry_run gate. Use this for operator-initiated commands (CLI,
+// Web UI manual block) where the operator has explicitly decided to block.
+func (e *Engine) BlockIPForce(ip string, reason string, timeout time.Duration) error {
+	return e.blockIPLocked(ip, reason, timeout)
+}
+
+// recordDryRunBlock persists a dry-run record to the "dry_run_blocks" bbolt
+// bucket via the global store so operators can review via /api/v1/status.
+// No-op when the global store is unavailable.
+func (e *Engine) recordDryRunBlock(ip, reason string, timeout time.Duration) {
+	// Import cycle avoided: store.Global() is a package-level accessor;
+	// we call it via a function variable set at daemon startup to avoid
+	// importing internal/store here. Instead we use a hook registered
+	// on the engine at construction, or fall back to a no-op.
+	if e.dryRunRecorder != nil {
+		e.dryRunRecorder(ip, reason, timeout)
+	}
+}
+
+// blockIPLocked is the real implementation called by both BlockIP and BlockIPForce.
+func (e *Engine) blockIPLocked(ip string, reason string, timeout time.Duration) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 

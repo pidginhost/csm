@@ -115,5 +115,15 @@ func (d *Daemon) BinaryHash() string {
 	return h
 }
 
+// DryRunBlocksCount implements health.Provider.
+// Returns the number of firewall blocks that were intercepted by dry_run.
+func (d *Daemon) DryRunBlocksCount() int {
+	s := store.Global()
+	if s == nil {
+		return 0
+	}
+	return s.DryRunBlocksCount()
+}
+
 // compile-time check: Daemon satisfies health.Provider.
 var _ health.Provider = (*Daemon)(nil)

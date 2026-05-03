@@ -834,7 +834,8 @@ func (s *Server) apiBlockIP(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "Firewall engine not available", http.StatusServiceUnavailable)
 		return
 	}
-	if err := s.blocker.BlockIP(req.IP, req.Reason, dur); err != nil {
+	// Operator-initiated: bypass auto_response.dry_run gate.
+	if err := blockIPForOperator(s.blocker, req.IP, req.Reason, dur); err != nil {
 		writeJSONError(w, fmt.Sprintf("Block failed: %v", err), http.StatusInternalServerError)
 		return
 	}

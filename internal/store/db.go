@@ -255,6 +255,40 @@ func incrCounter(tx *bolt.Tx, key string, delta int) error {
 	return b.Put([]byte(key), []byte(fmt.Sprintf("%d", current+delta)))
 }
 
+// RecordDryRunBlock appends a dry-run-block record to the "dry_run_blocks"
+// bucket. Called by the firewall engine when auto_response.dry_run is active
+// so operators can review "what would have been blocked" before going live.
+func (db *DB) RecordDryRunBlock(ip, reason string, timeout time.Duration) {
+	if db == nil || db.bolt == nil {
+		return
+	}
+	_ = db.bolt.Update(func(tx *bolt.Tx) error {
+		b, err := tx.CreateBucketIfNotExists([]byte("dry_run_blocks"))
+		if err != nil {
+			return err
+		}
+		key := []byte(time.Now().UTC().Format(time.RFC3339Nano) + ":" + ip)
+		val := []byte(fmt.Sprintf(`{"ip":%q,"reason":%q,"timeout_sec":%d}`,
+			ip, reason, int(timeout.Seconds())))
+		return b.Put(key, val)
+	})
+}
+
+// DryRunBlocksCount returns the number of recorded dry-run block entries.
+func (db *DB) DryRunBlocksCount() int {
+	if db == nil || db.bolt == nil {
+		return 0
+	}
+	count := 0
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
+		if b := tx.Bucket([]byte("dry_run_blocks")); b != nil {
+			count = b.Stats().KeyN
+		}
+		return nil
+	})
+	return count
+}
+
 // migrateIfNeeded checks for the meta:migrated key and runs migration if absent.
 func (db *DB) migrateIfNeeded(statePath string) error {
 	var migrated bool

@@ -28,6 +28,7 @@ func (f *fakeProvider) LatestScan() time.Time            { return time.Time{} }
 func (f *fakeProvider) BaselineAt() time.Time            { return time.Time{} }
 func (f *fakeProvider) ConfigHash() string               { return "abc" }
 func (f *fakeProvider) BinaryHash() string               { return "def" }
+func (f *fakeProvider) DryRunBlocksCount() int           { return 0 }
 
 func TestBuild_PopulatesAllFields(t *testing.T) {
 	p := &fakeProvider{

@@ -1858,6 +1858,14 @@ func (d *Daemon) startFirewall() {
 
 	d.fwEngine = engine
 
+	// Wire dry-run recorder so BlockIP can persist intercepted blocks to the
+	// store without creating an import cycle (firewall -> store).
+	engine.SetDryRunRecorder(func(ip, reason string, timeout time.Duration) {
+		if db := store.Global(); db != nil {
+			db.RecordDryRunBlock(ip, reason, timeout)
+		}
+	})
+
 	// Set firewall engine for auto-blocking
 	checks.SetIPBlocker(engine)
 

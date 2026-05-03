@@ -57,9 +57,11 @@ func ConnectExisting(_ *FirewallConfig, _ string) (*Engine, error) {
 	return nil, fmt.Errorf("nftables firewall not available on this platform")
 }
 
-func (e *Engine) Apply() error                                          { return nil }
-func (e *Engine) BlockIP(_ string, _ string, _ time.Duration) error     { return nil }
-func (e *Engine) UnblockIP(_ string) error                              { return nil }
+func (e *Engine) Apply() error                                              { return nil }
+func (e *Engine) BlockIP(_ string, _ string, _ time.Duration) error         { return nil }
+func (e *Engine) BlockIPForce(_ string, _ string, _ time.Duration) error    { return nil }
+func (e *Engine) SetDryRunRecorder(_ func(string, string, time.Duration))   {}
+func (e *Engine) UnblockIP(_ string) error                                  { return nil }
 func (e *Engine) IsBlocked(_ string) bool                               { return false }
 func (e *Engine) AllowIP(_ string, _ string) error                      { return nil }
 func (e *Engine) RemoveAllowIP(_ string) error                          { return nil }

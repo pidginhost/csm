@@ -35,6 +35,23 @@ type IPBlocker interface {
 	UnblockIP(ip string) error
 }
 
+// forceBlocker is an optional extension of IPBlocker for operator-initiated
+// blocks that must bypass the auto_response.dry_run gate. The firewall engine
+// implements this; test stubs need not.
+type forceBlocker interface {
+	BlockIPForce(ip string, reason string, timeout time.Duration) error
+}
+
+// blockIPForOperator calls BlockIPForce when the blocker supports it (engine
+// on live systems), otherwise falls back to BlockIP (test stubs). This ensures
+// operator-initiated blocks from the Web UI are never silenced by dry_run.
+func blockIPForOperator(b IPBlocker, ip, reason string, timeout time.Duration) error {
+	if fb, ok := b.(forceBlocker); ok {
+		return fb.BlockIPForce(ip, reason, timeout)
+	}
+	return b.BlockIP(ip, reason, timeout)
+}
+
 // Server is the web UI HTTP server. Serves API always; serves HTML pages
 // and static files only if the UI directory exists on disk.
 type Server struct {

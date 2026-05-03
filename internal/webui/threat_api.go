@@ -276,7 +276,8 @@ func (s *Server) apiThreatBlockIP(w http.ResponseWriter, r *http.Request) {
 
 	// 1. Block in firewall with 24h expiry
 	if s.blocker != nil {
-		if err := s.blocker.BlockIP(req.IP, "Manually blocked via CSM Web UI", 24*time.Hour); err != nil {
+		// Operator-initiated: bypass auto_response.dry_run gate.
+		if err := blockIPForOperator(s.blocker, req.IP, "Manually blocked via CSM Web UI", 24*time.Hour); err != nil {
 			writeJSONError(w, fmt.Sprintf("block failed: %v", err), http.StatusInternalServerError)
 			return
 		}
@@ -461,7 +462,8 @@ func (s *Server) apiThreatBulkAction(w http.ResponseWriter, r *http.Request) {
 		case "block":
 			// Mirror apiThreatBlockIP flow
 			if s.blocker != nil {
-				if err := s.blocker.BlockIP(ipStr, "Bulk blocked via CSM Web UI", 24*time.Hour); err != nil {
+				// Operator-initiated bulk block: bypass auto_response.dry_run gate.
+			if err := blockIPForOperator(s.blocker, ipStr, "Bulk blocked via CSM Web UI", 24*time.Hour); err != nil {
 					continue
 				}
 			}

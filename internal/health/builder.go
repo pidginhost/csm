@@ -17,6 +17,7 @@ type Provider interface {
 	HistoryCount() int
 	ConfigHash() string
 	BinaryHash() string
+	DryRunBlocksCount() int
 }
 
 // Build assembles a Snapshot from the provider plus the static version
@@ -45,6 +46,7 @@ func Build(p Provider, version string, capabilities []string) Snapshot {
 		ConfigHash:    p.ConfigHash(),
 		BinaryHash:    p.BinaryHash(),
 		Capabilities:  caps,
+		DryRunBlocks:  p.DryRunBlocksCount(),
 	}
 }
 

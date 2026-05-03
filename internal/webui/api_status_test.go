@@ -24,6 +24,7 @@ func (statusFakeProvider) BlocklistSize() int               { return 9 }
 func (statusFakeProvider) HistoryCount() int                { return 100 }
 func (statusFakeProvider) ConfigHash() string               { return "cfg" }
 func (statusFakeProvider) BinaryHash() string               { return "bin" }
+func (statusFakeProvider) DryRunBlocksCount() int           { return 0 }
 
 var _ health.Provider = statusFakeProvider{}
 

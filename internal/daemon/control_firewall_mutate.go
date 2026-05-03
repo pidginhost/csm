@@ -30,7 +30,8 @@ func (c *ControlListener) handleFirewallBlock(argsRaw json.RawMessage) (any, err
 	if reason == "" {
 		reason = "Blocked via CLI"
 	}
-	if err := c.d.fwEngine.BlockIP(args.IP, reason, 0); err != nil {
+	// Operator-initiated: bypass auto_response.dry_run gate.
+	if err := c.d.fwEngine.BlockIPForce(args.IP, reason, 0); err != nil {
 		return nil, fmt.Errorf("block %s: %w", args.IP, err)
 	}
 	return control.FirewallAckResult{Message: fmt.Sprintf("Blocked %s - %s", args.IP, reason)}, nil
@@ -189,7 +190,8 @@ func (c *ControlListener) handleFirewallTempBan(argsRaw json.RawMessage) (any, e
 	if reason == "" {
 		reason = "Temp-banned via CLI"
 	}
-	if err := c.d.fwEngine.BlockIP(args.IP, reason, timeout); err != nil {
+	// Operator-initiated: bypass auto_response.dry_run gate.
+	if err := c.d.fwEngine.BlockIPForce(args.IP, reason, timeout); err != nil {
 		return nil, fmt.Errorf("tempban %s: %w", args.IP, err)
 	}
 	return control.FirewallAckResult{
