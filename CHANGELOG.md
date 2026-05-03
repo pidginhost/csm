@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `csm_af_alg_backend{kind="bpf-lsm"|"auditd-tail"|"none"}` Prometheus gauge exposes which backend the coordinator selected at startup, so dashboards can see the active live-detection path without parsing logs.
 - Config drop-ins: `/etc/csm/conf.d/*.yaml` are now merged on top of `/opt/csm/csm.yaml` in lexicographic order (`--config-dir` / `CSM_CONFIG_DIR` to override). Lets automation own its own fragment without touching the operator's main file.
 - Shipped integration profile at `/usr/lib/csm/profiles/phpanel-agent.yaml` for phpanel-server-agent hosts. It sets `/var/www/*` account roots without touching the main config file.
+- `/api/v1/status` returns full health snapshot (watchers, severity counts, store health, blocklist size, capabilities, version) and `/api/v1/capabilities` lists supported features for orchestrator feature-detection.
+- `csm status --json` and `csm doctor` for machine-readable health diagnostics. Doctor emits suggested-fix strings for each failed check.
+- `csm config schema --json` prints a JSON Schema reflected from the Config struct so external tools can validate `csm.yaml` overrides.
+- sd_notify integration: daemon signals `READY=1` after startup and the existing watchdog notifier remains. systemd unit declares `Type=notify`, `NotifyAccess=main`, `TimeoutStartSec=120`.
 
 ### Changed
 
