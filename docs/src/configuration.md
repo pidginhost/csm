@@ -186,6 +186,13 @@ auto_response:
   permblock_count: 4                    # temp blocks before promotion
   permblock_interval: "24h"             # window for counting temp blocks
   clean_htaccess: false                 # auto-clean .htaccess directives flagged by hardened detectors (backups under /opt/csm/quarantine/pre_clean/)
+  dry_run: true                         # safe default; logs intended IP blocks without mutating nftables
+  verdict_callback:
+    enabled: false                      # call panel before each auto-block
+    url: ""                             # POST target for verdict requests
+    hmac_secret: ""                     # signing secret, or use hmac_secret_env
+    hmac_secret_env: ""                 # env var read at call time
+    timeout_sec: 2                      # callback request timeout
 
   # PHP-relay auto-freeze. Off by default; only kicks in on cPanel hosts
   # where email_protection.php_relay.enabled is true. dry_run defaults to

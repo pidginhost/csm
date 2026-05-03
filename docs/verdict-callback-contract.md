@@ -6,6 +6,10 @@ response. The endpoint is **not** a per-tenant nftables enforcement
 plane - it lets phpanel observe and label decisions, downgrade them to
 audit-only, and attach tenant attribution.
 
+CSM runs its local block validation before calling the endpoint.
+Malformed IPs, disabled IPv6 targets, infra IPs, and configured block
+limits are rejected locally and are not sent to the callback.
+
 ## Endpoint
 
 ```
@@ -62,7 +66,7 @@ reject unsigned or invalid requests with 401.
 
 ## Failure semantics
 
-- Network error / timeout / 5xx: CSM logs a warning and **proceeds with the default block**. The hook is fail-open.
+- Network error / timeout / non-200 HTTP response: CSM logs a warning and **proceeds with the default block**. The hook is fail-open.
 - 200 OK with `verdict: "allow"`: CSM does **not** modify nftables; logs the override to stderr.
 - 200 OK with `verdict: "block"` or omitted: standard block path runs (which still honors `auto_response.dry_run` if set).
 - 200 OK with unknown `verdict` string: rejected; treated as fail-open (default block).

@@ -234,13 +234,13 @@ type Config struct {
 
 		// VerdictCallback lets phpanel observe each block decision before it's
 		// applied. CSM POSTs the verdict to the configured URL with HMAC-SHA256
-		// signing (same scheme as the phpanel webhook in P3); the response is
-		// advisory - phpanel can attach a tenant_id, downgrade the verdict to
-		// "advisory" (CSM logs but does not block), or omit a response entirely
+		// signing (same scheme as the phpanel webhook); the response is
+		// advisory - phpanel can attach a tenant_id, return "allow" to keep
+		// the event audit-only, or omit a response entirely
 		// (CSM proceeds with its default verdict). NOT a per-tenant nftables
 		// enforcement: that's a separate, larger feature.
 		//
-		// Token resolution happens at call time (the verdict.Client reads
+		// Secret resolution happens at call time (the verdict.Client reads
 		// HMACSecretEnv per call), so operators can rotate via env without
 		// restarting the daemon.
 		VerdictCallback struct {
@@ -852,10 +852,11 @@ func validateVerdictCallback(cfg *Config) error {
 	if !vc.Enabled {
 		return nil
 	}
-	if strings.TrimSpace(vc.URL) == "" {
+	rawURL := strings.TrimSpace(vc.URL)
+	if rawURL == "" {
 		return fmt.Errorf("auto_response.verdict_callback.enabled=true but url is empty")
 	}
-	parsed, err := url.Parse(vc.URL)
+	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return fmt.Errorf("auto_response.verdict_callback.url: %w", err)
 	}

@@ -123,9 +123,9 @@ func TestBlockIP_VerdictAllowShortCircuits(t *testing.T) {
 	e := &Engine{
 		cfg:       &FirewallConfig{Enabled: true},
 		statePath: t.TempDir(),
-		verdictAsker: func(_ context.Context, ip, reason string) (string, string, error) {
+		verdictAsker: func(_ context.Context, ip, reason string) (string, string, string, error) {
 			called++
-			return "allow", "tenant-1", nil
+			return "allow", "tenant-1", "test-note", nil
 		},
 	}
 	if err := e.BlockIP("192.0.2.1", "test", 0); err != nil {
@@ -138,42 +138,93 @@ func TestBlockIP_VerdictAllowShortCircuits(t *testing.T) {
 
 func TestBlockIP_VerdictErrorProceedsToDefault(t *testing.T) {
 	called := 0
+	recorded := false
 	e := &Engine{
 		cfg:       &FirewallConfig{Enabled: true},
 		statePath: t.TempDir(),
-		verdictAsker: func(_ context.Context, ip, reason string) (string, string, error) {
+		verdictAsker: func(_ context.Context, ip, reason string) (string, string, string, error) {
 			called++
-			return "", "", errors.New("network down")
+			return "", "", "", errors.New("network down")
 		},
-		dryRunEnabled: func() bool { return false }, // live path triggers nftables which panics on nil conn
+		dryRunEnabled: func() bool { return true },
+		dryRunRecorder: func(ip, reason string, timeout time.Duration) {
+			recorded = true
+		},
 	}
-	// Use an invalid IP so validateBlockIP rejects in the live path
-	// (we can't actually call nftables in this unit test).
-	err := e.BlockIP("not-an-ip", "test", 0)
-	if err == nil || !strings.Contains(err.Error(), "invalid IP") {
-		t.Fatalf("expected invalid-IP error from live path, got %v", err)
+	err := e.BlockIP("192.0.2.1", "test", 0)
+	if err != nil {
+		t.Fatalf("expected verdict error to fail open into dry-run path, got %v", err)
 	}
 	if called != 1 {
 		t.Fatalf("expected verdict asker called once, got %d", called)
+	}
+	if !recorded {
+		t.Fatal("expected dry-run recorder after verdict error")
 	}
 }
 
 func TestBlockIP_VerdictBlockProceedsToDefault(t *testing.T) {
 	called := 0
+	recorded := false
 	e := &Engine{
 		cfg:       &FirewallConfig{Enabled: true},
 		statePath: t.TempDir(),
-		verdictAsker: func(_ context.Context, ip, reason string) (string, string, error) {
+		verdictAsker: func(_ context.Context, ip, reason string) (string, string, string, error) {
 			called++
-			return "block", "", nil
+			return "block", "tenant-1", "test-note", nil
 		},
-		dryRunEnabled: func() bool { return false },
+		dryRunEnabled: func() bool { return true },
+		dryRunRecorder: func(ip, reason string, timeout time.Duration) {
+			recorded = true
+		},
 	}
-	err := e.BlockIP("not-an-ip", "test", 0)
-	if err == nil || !strings.Contains(err.Error(), "invalid IP") {
-		t.Fatalf("expected invalid-IP error after verdict block, got %v", err)
+	err := e.BlockIP("192.0.2.1", "test", 0)
+	if err != nil {
+		t.Fatalf("expected verdict block to continue into dry-run path, got %v", err)
 	}
 	if called != 1 {
 		t.Fatalf("expected verdict asker called once, got %d", called)
+	}
+	if !recorded {
+		t.Fatal("expected dry-run recorder after verdict block")
+	}
+}
+
+func TestBlockIP_VerdictNotCalledWhenLocalValidationFails(t *testing.T) {
+	called := false
+	e := &Engine{
+		cfg:       &FirewallConfig{Enabled: true, InfraIPs: []string{"192.0.2.0/24"}},
+		statePath: t.TempDir(),
+		verdictAsker: func(_ context.Context, ip, reason string) (string, string, string, error) {
+			called = true
+			return "allow", "", "", nil
+		},
+		dryRunEnabled: func() bool { return true },
+	}
+	err := e.BlockIP("192.0.2.10", "test", 0)
+	if err == nil || !strings.Contains(err.Error(), "refusing to block infra IP") {
+		t.Fatalf("expected infra safety error before verdict callback, got %v", err)
+	}
+	if called {
+		t.Fatal("verdict callback was called for a locally refused block")
+	}
+}
+
+func TestBlockIP_VerdictAllowDoesNotHideInvalidIP(t *testing.T) {
+	called := false
+	e := &Engine{
+		cfg:       &FirewallConfig{Enabled: true},
+		statePath: t.TempDir(),
+		verdictAsker: func(_ context.Context, ip, reason string) (string, string, string, error) {
+			called = true
+			return "allow", "", "", nil
+		},
+	}
+	err := e.BlockIP("not-an-ip", "test", 0)
+	if err == nil || !strings.Contains(err.Error(), "invalid IP") {
+		t.Fatalf("expected invalid IP error before verdict callback, got %v", err)
+	}
+	if called {
+		t.Fatal("verdict callback was called for invalid IP")
 	}
 }

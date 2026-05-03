@@ -677,6 +677,18 @@ auto_response:
 	}
 }
 
+func TestVerdictCallback_RejectsURLWithoutHost(t *testing.T) {
+	_, err := LoadBytes([]byte(`
+auto_response:
+  verdict_callback:
+    enabled: true
+    url: https:///api/csm/verdict
+`))
+	if err == nil {
+		t.Fatal("expected error: URL must include host")
+	}
+}
+
 func TestVerdictCallback_RejectsInvalidTimeout(t *testing.T) {
 	_, err := LoadBytes([]byte(`
 auto_response:

@@ -63,22 +63,22 @@ func (e *Engine) BlockIP(_ string, _ string, _ time.Duration) error       { retu
 func (e *Engine) BlockIPForce(_ string, _ string, _ time.Duration) error  { return nil }
 func (e *Engine) SetDryRunRecorder(_ func(string, string, time.Duration)) {}
 func (e *Engine) SetDryRunEnabledFunc(_ func() bool)                      {}
-func (e *Engine) SetVerdictAsker(_ func(context.Context, string, string) (string, string, error)) {
+func (e *Engine) SetVerdictAsker(_ func(context.Context, string, string) (string, string, string, error)) {
 }
-func (e *Engine) UnblockIP(_ string) error                                { return nil }
-func (e *Engine) IsBlocked(_ string) bool                                 { return false }
-func (e *Engine) AllowIP(_ string, _ string) error                        { return nil }
-func (e *Engine) RemoveAllowIP(_ string) error                            { return nil }
-func (e *Engine) RemoveAllowIPBySource(_ string, _ string) error          { return nil }
-func (e *Engine) BlockSubnet(_ string, _ string, _ time.Duration) error   { return nil }
-func (e *Engine) UnblockSubnet(_ string) error                            { return nil }
-func (e *Engine) TempAllowIP(_ string, _ string, _ time.Duration) error   { return nil }
-func (e *Engine) AllowIPPort(_ string, _ int, _ string, _ string) error   { return nil }
-func (e *Engine) RemoveAllowIPPort(_ string, _ int, _ string) error       { return nil }
-func (e *Engine) CleanExpiredAllows() int                                 { return 0 }
-func (e *Engine) CleanExpiredSubnets() int                                { return 0 }
-func (e *Engine) FlushBlocked() error                                     { return nil }
-func (e *Engine) Status() map[string]interface{}                          { return nil }
+func (e *Engine) UnblockIP(_ string) error                              { return nil }
+func (e *Engine) IsBlocked(_ string) bool                               { return false }
+func (e *Engine) AllowIP(_ string, _ string) error                      { return nil }
+func (e *Engine) RemoveAllowIP(_ string) error                          { return nil }
+func (e *Engine) RemoveAllowIPBySource(_ string, _ string) error        { return nil }
+func (e *Engine) BlockSubnet(_ string, _ string, _ time.Duration) error { return nil }
+func (e *Engine) UnblockSubnet(_ string) error                          { return nil }
+func (e *Engine) TempAllowIP(_ string, _ string, _ time.Duration) error { return nil }
+func (e *Engine) AllowIPPort(_ string, _ int, _ string, _ string) error { return nil }
+func (e *Engine) RemoveAllowIPPort(_ string, _ int, _ string) error     { return nil }
+func (e *Engine) CleanExpiredAllows() int                               { return 0 }
+func (e *Engine) CleanExpiredSubnets() int                              { return 0 }
+func (e *Engine) FlushBlocked() error                                   { return nil }
+func (e *Engine) Status() map[string]interface{}                        { return nil }
 
 func (e *Engine) UpdateCloudflareSet(_, _ []string) error { return nil }
 func (e *Engine) CloudflareIPs() ([]string, []string)     { return nil, nil }

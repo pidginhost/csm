@@ -39,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Verdict callbacks now run only after local firewall safety checks, honor SIGHUP updates, and reject malformed or oversized callback responses.
 - Upstream threat-intel now validates URL and timeout settings, rejects malformed cache responses, and keeps the phpanel profile's rspamd and upstream settings in one reputation block.
 - CSM now resolves system commands from standard sbin directories when systemd starts the daemon with a narrow PATH, preventing false missing-command health alerts for tools like auditctl.
 - Backup and restore now reject unsafe archives more strictly and avoid including or overwriting their own source files. Dry-run blocking keeps the same safety checks as live blocking, and the dynamic-DNS guard reports startup resolution failures as Warning findings.

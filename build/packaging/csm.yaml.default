@@ -81,6 +81,13 @@ auto_response:
   permblock: false            # auto-promote to permanent after N temp blocks
   permblock_count: 4
   permblock_interval: "24h"
+  dry_run: true               # safe default; logs intended IP blocks only
+  verdict_callback:
+    enabled: false
+    url: ""
+    hmac_secret: ""
+    hmac_secret_env: ""
+    timeout_sec: 2
 
 firewall:
   enabled: false              # enable to activate nftables-based firewall engine

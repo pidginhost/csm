@@ -1873,26 +1873,7 @@ func (d *Daemon) startFirewall() {
 		return false
 	})
 
-	if d.cfg.AutoResponse.VerdictCallback.Enabled {
-		vc := verdict.New(verdict.Config{
-			URL:           d.cfg.AutoResponse.VerdictCallback.URL,
-			HMACSecret:    d.cfg.AutoResponse.VerdictCallback.HMACSecret,
-			HMACSecretEnv: d.cfg.AutoResponse.VerdictCallback.HMACSecretEnv,
-			Timeout:       time.Duration(d.cfg.AutoResponse.VerdictCallback.TimeoutSec) * time.Second,
-		})
-		engine.SetVerdictAsker(func(ctx context.Context, ip, reason string) (string, string, error) {
-			resp, err := vc.Ask(ctx, verdict.Request{
-				IP:       ip,
-				Reason:   reason,
-				Severity: "auto",
-				Source:   "auto_response",
-			})
-			if err != nil {
-				return "", "", err
-			}
-			return resp.Verdict, resp.TenantID, nil
-		})
-	}
+	engine.SetVerdictAsker(d.askVerdictCallback)
 
 	// Set firewall engine for auto-blocking
 	checks.SetIPBlocker(engine)
@@ -1928,6 +1909,30 @@ func (d *Daemon) startFirewall() {
 		obs.Go("cloudflare-refresh", d.cloudflareRefreshLoop)
 		csmlog.Info("cloudflare IP whitelist enabled", "refresh_hours", d.cfg.Cloudflare.RefreshHours)
 	}
+}
+
+func (d *Daemon) askVerdictCallback(ctx context.Context, ip, reason string) (string, string, string, error) {
+	cfg := d.activeOrStartupCfg()
+	if cfg == nil || !cfg.AutoResponse.VerdictCallback.Enabled {
+		return "", "", "", nil
+	}
+	vcCfg := cfg.AutoResponse.VerdictCallback
+	vc := verdict.New(verdict.Config{
+		URL:           vcCfg.URL,
+		HMACSecret:    vcCfg.HMACSecret,
+		HMACSecretEnv: vcCfg.HMACSecretEnv,
+		Timeout:       time.Duration(vcCfg.TimeoutSec) * time.Second,
+	})
+	resp, err := vc.Ask(ctx, verdict.Request{
+		IP:       ip,
+		Reason:   reason,
+		Severity: "auto",
+		Source:   "auto_response",
+	})
+	if err != nil {
+		return "", "", "", err
+	}
+	return resp.Verdict, resp.TenantID, resp.Note, nil
 }
 
 func dynDNSUnresolvableFinding(host string) alert.Finding {

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -115,6 +116,13 @@ func TestClient_RejectsInvalidURLScheme(t *testing.T) {
 	}
 }
 
+func TestClient_RejectsURLWithoutHost(t *testing.T) {
+	c := New(Config{URL: "https:///verdict", Timeout: time.Second})
+	if _, err := c.Ask(context.Background(), Request{IP: "1.2.3.4"}); err == nil {
+		t.Fatal("expected error on URL without host")
+	}
+}
+
 func TestClient_AllowVerdictParses(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(Response{Verdict: "allow", TenantID: "t-1"})
@@ -128,5 +136,45 @@ func TestClient_AllowVerdictParses(t *testing.T) {
 	}
 	if resp.Verdict != "allow" || resp.TenantID != "t-1" {
 		t.Fatalf("unexpected response %+v", resp)
+	}
+}
+
+func TestClient_Empty200MeansDefaultBlock(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := New(Config{URL: srv.URL, Timeout: time.Second})
+	resp, err := c.Ask(context.Background(), Request{IP: "1.2.3.4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp != (Response{}) {
+		t.Fatalf("expected empty response for default block, got %+v", resp)
+	}
+}
+
+func TestClient_RejectsOversizedResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(Response{Verdict: "block", Note: strings.Repeat("x", verdictMaxResponseBytes)})
+	}))
+	defer srv.Close()
+
+	c := New(Config{URL: srv.URL, Timeout: time.Second})
+	if _, err := c.Ask(context.Background(), Request{IP: "1.2.3.4"}); err == nil {
+		t.Fatal("expected oversized response error")
+	}
+}
+
+func TestClient_RejectsTrailingJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"verdict":"block"}{"verdict":"allow"}`)
+	}))
+	defer srv.Close()
+
+	c := New(Config{URL: srv.URL, Timeout: time.Second})
+	if _, err := c.Ask(context.Background(), Request{IP: "1.2.3.4"}); err == nil {
+		t.Fatal("expected trailing JSON error")
 	}
 }

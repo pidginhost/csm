@@ -84,22 +84,26 @@ func (c *Client) resolveSecret() string {
 func (c *Client) Ask(ctx context.Context, req Request) (Response, error) {
 	// Defense-in-depth URL check (config validation already ran at load,
 	// this re-check defends against misconfiguration via cfg corruption).
-	if strings.TrimSpace(c.cfg.URL) == "" {
+	rawURL := strings.TrimSpace(c.cfg.URL)
+	if rawURL == "" {
 		return Response{}, fmt.Errorf("verdict callback URL not configured")
 	}
-	parsed, err := url.Parse(c.cfg.URL)
+	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return Response{}, fmt.Errorf("verdict callback URL parse: %w", err)
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return Response{}, fmt.Errorf("verdict callback URL must use http or https")
 	}
+	if parsed.Host == "" {
+		return Response{}, fmt.Errorf("verdict callback URL must include host")
+	}
 
 	body, err := json.Marshal(req)
 	if err != nil {
 		return Response{}, err
 	}
-	r, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.URL, bytes.NewReader(body))
+	r, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, bytes.NewReader(body))
 	if err != nil {
 		return Response{}, err
 	}
@@ -120,9 +124,24 @@ func (c *Client) Ask(ctx context.Context, req Request) (Response, error) {
 		fmt.Fprintf(os.Stderr, "verdict callback: HTTP %d for %s\n", resp.StatusCode, req.IP)
 		return Response{}, fmt.Errorf("verdict callback HTTP %d", resp.StatusCode)
 	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, verdictMaxResponseBytes+1))
+	if err != nil {
+		return Response{}, fmt.Errorf("verdict callback read: %w", err)
+	}
+	if int64(len(data)) > verdictMaxResponseBytes {
+		return Response{}, fmt.Errorf("verdict callback response exceeds %d bytes", verdictMaxResponseBytes)
+	}
+	if strings.TrimSpace(string(data)) == "" {
+		return Response{}, nil
+	}
 	var out Response
-	if err := json.NewDecoder(io.LimitReader(resp.Body, verdictMaxResponseBytes)).Decode(&out); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := dec.Decode(&out); err != nil {
 		return Response{}, fmt.Errorf("verdict callback decode: %w", err)
+	}
+	var trailing struct{}
+	if err := dec.Decode(&trailing); err != io.EOF {
+		return Response{}, fmt.Errorf("verdict callback decode: trailing JSON")
 	}
 	// Validate response shape. Unknown verdict strings are rejected
 	// defensively rather than silently treated as "block".
