@@ -9,12 +9,14 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
+	"github.com/pidginhost/csm/internal/threatintel"
 )
 
 const (
@@ -46,6 +48,31 @@ var abuseIPDBEndpoint = "https://api.abuseipdb.com/api/v2/check"
 // at package scope so tests can swap in a mock client (e.g., one whose
 // transport routes all traffic to an httptest server).
 var abuseIPDBClient = &http.Client{Timeout: 10 * time.Second}
+
+var threatAgg *threatintel.Aggregator
+var threatAggOnce sync.Once
+
+func ensureAggregator(cfg *config.Config) *threatintel.Aggregator {
+	threatAggOnce.Do(func() {
+		agg := threatintel.NewAggregator()
+		// AbuseIPDB is always registered when its key is set.
+		if cfg.Reputation.AbuseIPDBKey != "" {
+			agg.Register(threatintel.NewAbuseIPDBSource(func(ctx context.Context, ip string) (int, error) {
+				score, _, err := queryAbuseIPDB(abuseIPDBClient, ip, cfg.Reputation.AbuseIPDBKey)
+				return score, err
+			}))
+		}
+		if cfg.Reputation.Rspamd.Enabled {
+			agg.Register(threatintel.NewRspamdSource(
+				cfg.Reputation.Rspamd.URL,
+				cfg.Reputation.Rspamd.Token,
+				cfg.Reputation.Rspamd.TokenEnv,
+			))
+		}
+		threatAgg = agg
+	})
+	return threatAgg
+}
 
 type reputationCache struct {
 	Entries map[string]*reputationEntry `json:"entries"`
@@ -164,6 +191,14 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 			Score:     score,
 			Category:  category,
 			CheckedAt: time.Now(),
+		}
+
+		// Augment with rspamd / other sources via the aggregator. Per-source errors
+		// are non-fatal; the aggregator returns a degraded score.
+		if cfg.Reputation.Rspamd.Enabled {
+			if res, err := ensureAggregator(cfg).Score(ctx, ip); err == nil && res.AggregatedScore > score {
+				score = res.AggregatedScore
+			}
 		}
 
 		if score >= abuseConfidenceThreshold {

@@ -312,6 +312,19 @@ func Validate(cfg *Config) []ValidationResult {
 		results = append(results, ValidationResult{"error", "thresholds.mail_bruteforce_max_tracked", "mail_bruteforce_max_tracked must be between 1000 and 200000"})
 	}
 
+	// --- Reputation.Rspamd ---
+	if cfg.Reputation.Rspamd.Enabled {
+		secret := cfg.Reputation.Rspamd.Token
+		if cfg.Reputation.Rspamd.TokenEnv != "" {
+			if v := os.Getenv(cfg.Reputation.Rspamd.TokenEnv); v != "" {
+				secret = v
+			}
+		}
+		if secret == "" {
+			results = append(results, ValidationResult{"warn", "reputation.rspamd.token", "rspamd enabled but no token configured (rspamd /stat may require auth)"})
+		}
+	}
+
 	// --- Warnings ---
 	results = append(results, validateWarnings(cfg)...)
 

@@ -33,6 +33,9 @@ func Redact(cfg *Config) *Config {
 	if c.Reputation.AbuseIPDBKey != "" {
 		c.Reputation.AbuseIPDBKey = redactedValue
 	}
+	if c.Reputation.Rspamd.Token != "" {
+		c.Reputation.Rspamd.Token = redactedValue
+	}
 	if c.Challenge.Secret != "" {
 		c.Challenge.Secret = redactedValue
 	}

@@ -269,6 +269,17 @@ type Config struct {
 	Reputation struct {
 		AbuseIPDBKey string   `yaml:"abuseipdb_key"`
 		Whitelist    []string `yaml:"whitelist"` // IPs to never flag as malicious
+		// Rspamd queries the local rspamd controller for per-IP reject/junk
+		// counts. Disabled by default. URL must reach the controller HTTP port
+		// (default 11334). Token is the controller's admin password (rspamadm
+		// pw -e), supplied via env when possible. Token resolution happens at
+		// query time so operators can rotate via env without daemon restart.
+		Rspamd struct {
+			Enabled  bool   `yaml:"enabled"`
+			URL      string `yaml:"url"`
+			Token    string `yaml:"token,omitempty"`
+			TokenEnv string `yaml:"token_env,omitempty"`
+		} `yaml:"rspamd"`
 	} `yaml:"reputation" hotreload:"safe"`
 
 	Signatures struct {
@@ -711,6 +722,11 @@ func applyDefaults(cfg *Config) {
 	if cfg.Thresholds.MailBruteAccountKey == "" {
 		cfg.Thresholds.MailBruteAccountKey = "builtin:dovecot-user"
 	}
+
+	if cfg.Reputation.Rspamd.URL == "" {
+		cfg.Reputation.Rspamd.URL = "http://127.0.0.1:11334"
+	}
+	// Token resolution happens at query time (see RspamdSource.Score).
 }
 
 // LoadBytes decodes a YAML config body and applies all defaults,

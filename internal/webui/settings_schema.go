@@ -175,6 +175,10 @@ var settingsSections = []SettingsSection{
 		Fields: []SettingsField{
 			{YAMLPath: "abuseipdb_key", Type: "string", Label: "AbuseIPDB API key", Secret: true},
 			{YAMLPath: "whitelist", Type: "[]string", Label: "Whitelisted IPs", Help: "Never flagged as malicious"},
+			{YAMLPath: "rspamd.enabled", Type: "bool", Label: "Rspamd threat-intel"},
+			{YAMLPath: "rspamd.url", Type: "string", Label: "Rspamd controller URL"},
+			{YAMLPath: "rspamd.token", Type: "string", Label: "Rspamd controller password", Secret: true},
+			{YAMLPath: "rspamd.token_env", Type: "string", Label: "Rspamd password env var"},
 		},
 	},
 	{
