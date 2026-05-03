@@ -1,0 +1,76 @@
+package maillog
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+func TestFileReader_StreamsLines(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "maillog")
+	if err := os.WriteFile(path, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewFileReader(path)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+
+	out, err := r.Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	go func() {
+		// Give the file reader time to seek and start polling.
+		time.Sleep(150 * time.Millisecond)
+		f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+		defer f.Close()
+		_, _ = f.WriteString("Jan  2 10:00:00 host postfix: hello\n")
+	}()
+
+	select {
+	case line, ok := <-out:
+		if !ok {
+			t.Fatal("channel closed before line received")
+		}
+		if line.Message == "" {
+			t.Fatalf("expected non-empty line, got %+v", line)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for line")
+	}
+}
+
+func TestFileReader_ContextCancelClosesChannel(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "maillog")
+	if err := os.WriteFile(path, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewFileReader(path)
+	ctx, cancel := context.WithCancel(context.Background())
+	out, err := r.Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cancel()
+
+	// Channel must close after cancel.
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case _, ok := <-out:
+			if !ok {
+				return // channel closed - success
+			}
+		case <-deadline:
+			t.Fatal("channel did not close after context cancel")
+		}
+	}
+}
