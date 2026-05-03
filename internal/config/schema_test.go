@@ -14,7 +14,7 @@ func TestSchema_TopLevelKeys(t *testing.T) {
 	if !ok {
 		t.Fatal("expected top-level properties map")
 	}
-	for _, want := range []string{"hostname", "state_path", "alerts", "checks"} {
+	for _, want := range []string{"hostname", "state_path", "alerts", "webui"} {
 		if _, ok := props[want]; !ok {
 			t.Fatalf("expected schema to include %q, got keys %v", want, schemaKeysOf(props))
 		}

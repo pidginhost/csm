@@ -385,15 +385,6 @@ type Config struct {
 		Debug       bool    `yaml:"debug"`       // SDK debug logs to stderr
 	} `yaml:"sentry" hotreload:"restart"`
 
-	// Checks holds per-check overrides. Disabled lists check IDs to silence
-	// daemon-wide; use alerts.email.disabled_checks to suppress only email
-	// alerts for a check. Enabled, when non-empty, restricts the active set
-	// to exactly those IDs (whitelist mode). Both lists are evaluated at
-	// check dispatch time and are hot-reload safe.
-	Checks struct {
-		Disabled []string `yaml:"disabled"` // check IDs to skip entirely
-		Enabled  []string `yaml:"enabled"`  // if non-empty, run only these IDs
-	} `yaml:"checks" hotreload:"safe"`
 }
 
 // PHPRelayFreezeEnabled reports whether auto-freeze should run for the
