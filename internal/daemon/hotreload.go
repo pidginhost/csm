@@ -134,6 +134,12 @@ func (d *Daemon) reloadConfig() {
 
 	newCfg.ConfigFile = cfgPath
 	newCfg.ConfigDir = oldCfg.ConfigDir
+	if err := installAccountExtractorFromConfig(newCfg); err != nil {
+		recordReloadResult(reloadResultError)
+		d.emitReloadFinding(alert.Critical, "config_reload_error",
+			fmt.Sprintf("SIGHUP reload: account extractor update failed: %v; live config unchanged", err))
+		return
+	}
 	config.SetActive(newCfg)
 	recordReloadResult(reloadResultSuccess)
 

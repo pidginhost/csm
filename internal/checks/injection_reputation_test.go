@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -146,6 +147,73 @@ func TestCheckIPReputationFreshLookupLowScoreNoFinding(t *testing.T) {
 			t.Errorf("low score fresh lookup should not emit: %+v", f)
 		}
 	}
+}
+
+func TestCheckIPReputationRspamdOnlyEmitsWithoutAbuseKey(t *testing.T) {
+	rspamdCalls := 0
+	rspamd := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rspamdCalls++
+		if r.URL.Path != "/history" {
+			t.Fatalf("expected /history request, got %s", r.URL.Path)
+		}
+		_, _ = fmt.Fprintln(w, `{"rows":[{"ip":"198.51.100.77","action":"reject","score":8}]}`)
+	}))
+	defer rspamd.Close()
+
+	statePath := t.TempDir()
+	logContent := "Apr 14 10:00:00 host sshd[1]: Accepted publickey for root from 198.51.100.77 port 22 ssh2\n"
+	withMockOS(t, mockOSWithSecureLog(t, logContent))
+
+	cfg := &config.Config{StatePath: statePath}
+	cfg.Reputation.Rspamd.Enabled = true
+	cfg.Reputation.Rspamd.URL = rspamd.URL
+
+	findings := CheckIPReputation(context.Background(), cfg, nil)
+	hasCritical := false
+	for _, f := range findings {
+		if f.Check == "ip_reputation" && f.Severity == alert.Critical &&
+			strings.Contains(f.Message, "198.51.100.77") &&
+			strings.Contains(f.Message, "Rspamd score") {
+			hasCritical = true
+			break
+		}
+	}
+	if !hasCritical {
+		t.Fatalf("expected critical rspamd-backed finding, got: %+v", findings)
+	}
+	if rspamdCalls == 0 {
+		t.Fatal("expected rspamd history lookup")
+	}
+}
+
+func TestCheckIPReputationRspamdEmitsWhenAbuseErrors(t *testing.T) {
+	withTestAbuseIPDB(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = fmt.Fprintln(w, `{"errors":[{"detail":"temporary failure"}]}`)
+	})
+	rspamd := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprintln(w, `{"rows":[{"ip":"198.51.100.88","action":"reject","score":8}]}`)
+	}))
+	defer rspamd.Close()
+
+	statePath := t.TempDir()
+	logContent := "Apr 14 10:00:00 host sshd[1]: Accepted publickey for root from 198.51.100.88 port 22 ssh2\n"
+	withMockOS(t, mockOSWithSecureLog(t, logContent))
+
+	cfg := &config.Config{StatePath: statePath}
+	cfg.Reputation.AbuseIPDBKey = "test-key"
+	cfg.Reputation.Rspamd.Enabled = true
+	cfg.Reputation.Rspamd.URL = rspamd.URL
+
+	findings := CheckIPReputation(context.Background(), cfg, nil)
+	for _, f := range findings {
+		if f.Check == "ip_reputation" &&
+			strings.Contains(f.Message, "198.51.100.88") &&
+			strings.Contains(f.Message, "Rspamd score") {
+			return
+		}
+	}
+	t.Fatalf("expected rspamd finding despite AbuseIPDB error, got: %+v", findings)
 }
 
 // --- CheckIPReputation: AbuseIPDB returns 429 → quota exhausted -----

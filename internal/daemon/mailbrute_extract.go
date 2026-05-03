@@ -4,11 +4,15 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync/atomic"
+
+	"github.com/pidginhost/csm/internal/config"
 )
 
 // AccountExtractor pulls the account/mailbox identifier out of a mail
 // server log line. Used by mailbrute for per-account scoring. Selected
-// by cfg.Thresholds.MailBruteAccountKey at daemon startup.
+// by cfg.Thresholds.MailBruteAccountKey at daemon startup and SIGHUP
+// reload.
 type AccountExtractor struct {
 	mode string
 	re   *regexp.Regexp
@@ -26,6 +30,9 @@ func NewAccountExtractor(spec string) (*AccountExtractor, error) {
 		re, err := regexp.Compile(strings.TrimPrefix(spec, "regex:"))
 		if err != nil {
 			return nil, fmt.Errorf("invalid regex: %w", err)
+		}
+		if re.NumSubexp() < 1 {
+			return nil, fmt.Errorf("regex must contain at least one capture group")
 		}
 		return &AccountExtractor{mode: "regex", re: re}, nil
 	default:
@@ -77,22 +84,33 @@ func extractEqualsValue(line, key string) string {
 	return rest[:end]
 }
 
-// defaultAccountExtractor is the package-level singleton set at daemon startup.
-var defaultAccountExtractor *AccountExtractor
+// defaultAccountExtractor is the package-level singleton set at daemon
+// startup and safe config reloads.
+var defaultAccountExtractor atomic.Pointer[AccountExtractor]
+
+func installAccountExtractorFromConfig(cfg *config.Config) error {
+	ex, err := NewAccountExtractor(cfg.Thresholds.MailBruteAccountKey)
+	if err != nil {
+		return fmt.Errorf("invalid mail_brute_account_key: %w", err)
+	}
+	SetAccountExtractor(ex)
+	return nil
+}
 
 // SetAccountExtractor installs the configured extractor; called from
-// Daemon.Run() after applyDefaults has set the spec.
+// Daemon.Run() and safe reload after applyDefaults has set the spec.
 func SetAccountExtractor(ex *AccountExtractor) {
-	defaultAccountExtractor = ex
+	defaultAccountExtractor.Store(ex)
 }
 
 // currentAccountExtractor returns the installed extractor, or lazily
 // initializes the default so test code that doesn't call SetAccountExtractor
 // gets the legacy dovecot-user behavior.
 func currentAccountExtractor() *AccountExtractor {
-	if defaultAccountExtractor == nil {
-		ex, _ := NewAccountExtractor("")
-		defaultAccountExtractor = ex
+	if ex := defaultAccountExtractor.Load(); ex != nil {
+		return ex
 	}
-	return defaultAccountExtractor
+	ex, _ := NewAccountExtractor("")
+	defaultAccountExtractor.Store(ex)
+	return ex
 }

@@ -321,7 +321,7 @@ func Validate(cfg *Config) []ValidationResult {
 			}
 		}
 		if secret == "" {
-			results = append(results, ValidationResult{"warn", "reputation.rspamd.token", "rspamd enabled but no token configured (rspamd /stat may require auth)"})
+			results = append(results, ValidationResult{"warn", "reputation.rspamd.token", "rspamd enabled but no token configured (rspamd controller history may require auth)"})
 		}
 	}
 

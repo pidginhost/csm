@@ -413,6 +413,19 @@ func TestMailLogs_RejectsUnknownSource(t *testing.T) {
 	}
 }
 
+func TestMailLogs_RejectsEmptyJournalUnit(t *testing.T) {
+	_, err := LoadBytes([]byte(`
+mail_logs:
+  source: journal
+  units:
+    - postfix
+    - ""
+`))
+	if err == nil {
+		t.Fatal("expected error for empty journal unit")
+	}
+}
+
 func TestMailBrute_DefaultsToBuiltinDovecotUser(t *testing.T) {
 	cfg, err := LoadBytes([]byte(``))
 	if err != nil {
@@ -443,6 +456,16 @@ thresholds:
 `))
 	if err == nil {
 		t.Fatal("expected error for unclosed regex")
+	}
+}
+
+func TestMailBrute_RejectsRegexWithoutCapture(t *testing.T) {
+	_, err := LoadBytes([]byte(`
+thresholds:
+  mail_brute_account_key: 'regex:user=[^,\s]+'
+`))
+	if err == nil {
+		t.Fatal("expected error for regex without capture group")
 	}
 }
 

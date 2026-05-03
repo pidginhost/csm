@@ -28,8 +28,8 @@ type WebUIToken struct {
 //	source: file    - require log file at the platform-default path.
 //	source: journal - read from systemd-journald (units must be set).
 //
-// Units is consulted only when source==journal: the daemon calls
-// sdjournal AddMatch _SYSTEMD_UNIT=<unit>.service for each entry.
+// Units is consulted for journal fallback: the daemon matches each
+// systemd unit by name, appending ".service" for bare service names.
 type MailLogsConfig struct {
 	Source string   `yaml:"source"`          // auto | file | journal
 	File   string   `yaml:"file,omitempty"`  // override platform default
@@ -783,6 +783,11 @@ func validateMailLogs(cfg *Config) error {
 	default:
 		return fmt.Errorf("mail_logs.source: must be auto, file, or journal (got %q)", cfg.MailLogs.Source)
 	}
+	for i, unit := range cfg.MailLogs.Units {
+		if strings.TrimSpace(unit) == "" {
+			return fmt.Errorf("mail_logs.units[%d]: empty unit", i)
+		}
+	}
 	return nil
 }
 
@@ -792,8 +797,12 @@ func validateMailBruteAccountKey(cfg *Config) error {
 	case key == "builtin:dovecot-user", key == "builtin:postfix-sasl":
 		// ok
 	case strings.HasPrefix(key, "regex:"):
-		if _, err := regexp.Compile(strings.TrimPrefix(key, "regex:")); err != nil {
+		re, err := regexp.Compile(strings.TrimPrefix(key, "regex:"))
+		if err != nil {
 			return fmt.Errorf("mail_brute_account_key: invalid regex: %w", err)
+		}
+		if re.NumSubexp() < 1 {
+			return fmt.Errorf("mail_brute_account_key: regex must contain at least one capture group")
 		}
 	default:
 		return fmt.Errorf("mail_brute_account_key: %q must be builtin:* or regex:*", key)

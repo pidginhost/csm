@@ -17,6 +17,7 @@ Combines multiple sources into a unified verdict:
 |--------|------|
 | Local attack DB | Event count, types, score |
 | AbuseIPDB | External reputation (if API key configured) |
+| Rspamd | Per-IP rolling history (if controller access configured) |
 | Permanent blocklist | Operator-managed persistent blocks |
 | Firewall state | Currently blocked/allowed status |
 | GeoIP | Country, city, ASN, ISP |

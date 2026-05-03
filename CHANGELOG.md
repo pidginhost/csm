@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tenant_id`, `domain`, `mailbox` fields added to JSONL audit events and the `Finding` JSON for downstream correlation.
 - `mail_logs.source: file|journal|auto` lets the daemon read postfix/dovecot from systemd-journald on hosts without rsyslog. Journal reader is gated by the `journal` build tag.
 - `thresholds.mail_brute_account_key` - pluggable per-account extractor (builtin patterns or operator-supplied regex) for hosts with virtual mailboxes.
-- Rspamd threat-intel source: `reputation.rspamd.enabled` adds `/stat`-derived reject counts to attacker scoring; CSM averages non-zero scores across all configured sources. Token resolves from `token_env` at query time so rotation does not require a restart.
+- Rspamd threat-intel source: `reputation.rspamd.enabled` adds per-IP rolling-history signals to attacker scoring. Token resolves from `token_env` at query time so rotation does not require a restart.
 
 ### Changed
 

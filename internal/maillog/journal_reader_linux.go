@@ -5,6 +5,7 @@ package maillog
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/coreos/go-systemd/v22/sdjournal"
@@ -18,8 +19,7 @@ type JournalReader struct {
 }
 
 // NewJournalReader constructs a JournalReader matching the given systemd
-// unit names (e.g., "postfix", "dovecot"). The reader internally appends
-// ".service" to each name when constructing the sdjournal match.
+// unit names (e.g., "postfix", "dovecot", or full "*.service" names).
 func NewJournalReader(units []string) *JournalReader {
 	return &JournalReader{units: units}
 }
@@ -32,12 +32,15 @@ func (r *JournalReader) Run(ctx context.Context) (<-chan Line, error) {
 		close(out)
 		return nil, fmt.Errorf("opening journal: %w", err)
 	}
-	for _, unit := range r.units {
-		match := fmt.Sprintf("_SYSTEMD_UNIT=%s.service", unit)
+	for i, unit := range r.units {
+		match := fmt.Sprintf("_SYSTEMD_UNIT=%s", journalUnitName(unit))
 		if err := j.AddMatch(match); err != nil {
 			j.Close()
 			close(out)
 			return nil, fmt.Errorf("AddMatch %s: %w", match, err)
+		}
+		if i == len(r.units)-1 {
+			continue
 		}
 		if err := j.AddDisjunction(); err != nil {
 			j.Close()
@@ -53,6 +56,14 @@ func (r *JournalReader) Run(ctx context.Context) (<-chan Line, error) {
 
 	go r.loop(ctx, j, out)
 	return out, nil
+}
+
+func journalUnitName(unit string) string {
+	unit = strings.TrimSpace(unit)
+	if strings.Contains(unit, ".") {
+		return unit
+	}
+	return unit + ".service"
 }
 
 func (r *JournalReader) loop(ctx context.Context, j *sdjournal.Journal, out chan<- Line) {

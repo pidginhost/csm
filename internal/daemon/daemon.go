@@ -23,12 +23,12 @@ import (
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/emailav"
-	"github.com/pidginhost/csm/internal/maillog"
 	"github.com/pidginhost/csm/internal/emailspool"
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/geoip"
 	"github.com/pidginhost/csm/internal/integrity"
 	csmlog "github.com/pidginhost/csm/internal/log"
+	"github.com/pidginhost/csm/internal/maillog"
 	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/modsec"
 	"github.com/pidginhost/csm/internal/obs"
@@ -332,14 +332,10 @@ func (d *Daemon) Run() error {
 	config.SetActive(d.cfg)
 
 	// Install the mail-brute account-key extractor selected by config.
-	// Validation in config.Load() already rejected invalid specs, so
-	// the error path here is defense-in-depth only.
-	{
-		ex, err := NewAccountExtractor(d.cfg.Thresholds.MailBruteAccountKey)
-		if err != nil {
-			return fmt.Errorf("invalid mail_brute_account_key: %w", err)
-		}
-		SetAccountExtractor(ex)
+	// Validation in config.Load() already rejected invalid specs, so the
+	// error path here is defense-in-depth only.
+	if err := installAccountExtractorFromConfig(d.cfg); err != nil {
+		return err
 	}
 
 	// Self-heal the auditd rules file. Package upgrades sometimes ship

@@ -63,7 +63,7 @@
 
 | Check | Description |
 |-------|-------------|
-| `ip_reputation` | IPs against external threat databases (AbuseIPDB) |
+| `ip_reputation` | IPs against external threat databases and optional rspamd history |
 | `local_threat_score` | Aggregated score from internal attack database |
 | `modsec_audit` | ModSecurity audit log parsing |
 

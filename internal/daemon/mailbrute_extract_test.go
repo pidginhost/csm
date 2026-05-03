@@ -35,6 +35,13 @@ func TestExtractAccountKey_RegexCustom(t *testing.T) {
 	}
 }
 
+func TestExtractAccountKey_RegexRequiresCaptureGroup(t *testing.T) {
+	_, err := NewAccountExtractor(`regex:phpanel-mailbox=[^\s,]+`)
+	if err == nil {
+		t.Fatal("expected error for regex without capture group")
+	}
+}
+
 func TestExtractAccountKey_NoMatchReturnsEmpty(t *testing.T) {
 	ex, _ := NewAccountExtractor("builtin:dovecot-user")
 	if got := ex.Extract("nothing useful here"); got != "" {

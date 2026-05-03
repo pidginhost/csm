@@ -126,6 +126,44 @@ func TestReloadConfigSafeFieldUpdatesActive(t *testing.T) {
 	}
 }
 
+func TestReloadConfigMailBruteExtractorUpdatesParser(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "csm.yaml")
+
+	orig := &config.Config{}
+	orig.Hostname = "host-a"
+	orig.Thresholds.MailBruteAccountKey = "builtin:dovecot-user"
+	seedConfigAtPath(t, cfgPath, orig)
+
+	loaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load seeded config: %v", err)
+	}
+	if err := installAccountExtractorFromConfig(loaded); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { SetAccountExtractor(nil) })
+	d := newDaemonForReloadTest(t, loaded)
+
+	edited := &config.Config{}
+	edited.Hostname = "host-a"
+	edited.Thresholds.MailBruteAccountKey = `regex:phpanel-mailbox=([^\s,]+)`
+	edited.Integrity = loaded.Integrity
+	seedConfigAtPath(t, cfgPath, edited)
+
+	d.reloadConfig()
+
+	got := currentAccountExtractor().Extract("phpanel-mailbox=tenant1!alice")
+	if got != "tenant1!alice" {
+		t.Fatalf("extractor not reloaded: got %q", got)
+	}
+	select {
+	case f := <-d.alertCh:
+		t.Errorf("unexpected finding on extractor reload: %+v", f)
+	default:
+	}
+}
+
 func TestReloadConfigRestartFieldEmitsWarning(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "csm.yaml")

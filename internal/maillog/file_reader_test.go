@@ -45,6 +45,17 @@ func TestFileReader_StreamsLines(t *testing.T) {
 	}
 }
 
+func TestFileReader_MissingFileReturnsError(t *testing.T) {
+	r := NewFileReader(filepath.Join(t.TempDir(), "missing"))
+	out, err := r.Run(context.Background())
+	if err == nil {
+		t.Fatal("expected missing file error")
+	}
+	if out != nil {
+		t.Fatalf("expected nil output channel on startup error, got %v", out)
+	}
+}
+
 func TestFileReader_ContextCancelClosesChannel(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "maillog")

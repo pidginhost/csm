@@ -25,40 +25,34 @@ func NewFileReader(path string) *FileReader { return &FileReader{path: path} }
 // error only when the path can't be opened at all; runtime errors during
 // polling are best-effort logged via stderr but do not stop the reader.
 func (r *FileReader) Run(ctx context.Context) (<-chan Line, error) {
+	f, reader, ino, err := r.open()
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", r.path, err)
+	}
 	out := make(chan Line, 64)
-	go r.loop(ctx, out)
+	go r.loop(ctx, out, f, reader, ino)
 	return out, nil
 }
 
-func (r *FileReader) loop(ctx context.Context, out chan<- Line) {
+func (r *FileReader) open() (*os.File, *bufio.Reader, uint64, error) {
+	f, err := os.Open(r.path) // #nosec G304 -- operator-supplied log path
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	if _, seekErr := f.Seek(0, io.SeekEnd); seekErr != nil {
+		_ = f.Close()
+		return nil, nil, 0, seekErr
+	}
+	st, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, nil, 0, err
+	}
+	return f, bufio.NewReader(f), inode(st), nil
+}
+
+func (r *FileReader) loop(ctx context.Context, out chan<- Line, f *os.File, reader *bufio.Reader, lastIno uint64) {
 	defer close(out)
-
-	var (
-		f       *os.File
-		reader  *bufio.Reader
-		lastIno uint64
-	)
-	open := func() error {
-		nf, err := os.Open(r.path) // #nosec G304 -- operator-supplied log path
-		if err != nil {
-			return err
-		}
-		_, _ = nf.Seek(0, io.SeekEnd)
-		if f != nil {
-			_ = f.Close()
-		}
-		f = nf
-		reader = bufio.NewReader(f)
-		if st, _ := nf.Stat(); st != nil {
-			lastIno = inode(st)
-		}
-		return nil
-	}
-
-	if err := open(); err != nil {
-		fmt.Fprintf(os.Stderr, "maillog file_reader %s: %v\n", r.path, err)
-		return
-	}
 	defer func() {
 		if f != nil {
 			_ = f.Close()
@@ -89,7 +83,15 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line) {
 		case <-rotate.C:
 			if st, err := os.Stat(r.path); err == nil {
 				if inode(st) != lastIno {
-					_ = open() // best-effort
+					nf, nr, ino, err := r.open()
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "maillog file_reader %s reopen: %v\n", r.path, err)
+						continue
+					}
+					_ = f.Close()
+					f = nf
+					reader = nr
+					lastIno = ino
 				}
 			}
 		}

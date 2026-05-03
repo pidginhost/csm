@@ -144,9 +144,16 @@ thresholds:
   mail_bruteforce_subnet_threshold: 8     # unique IPs per /24 before subnet block (default: 8)
   mail_account_spray_threshold: 12        # unique IPs targeting one mailbox before visibility finding (default: 12)
   mail_bruteforce_max_tracked: 20000      # soft cap on tracked entries; oldest evicted (default: 20000)
+  mail_brute_account_key: "builtin:dovecot-user" # builtin:dovecot-user | builtin:postfix-sasl | regex:<capture>
 
 # --- Infrastructure ---
 infra_ips: []                           # management/monitoring CIDRs - never blocked
+
+# --- Mail Logs ---
+mail_logs:
+  source: auto                          # auto | file | journal
+  file: ""                              # optional path override for file source
+  units: ["postfix", "dovecot"]         # journal units for source=journal or auto fallback
 
 # --- State ---
 state_path: "/var/lib/csm/state"        # bbolt DB and state files
@@ -229,6 +236,11 @@ php_shield:
 reputation:
   abuseipdb_key: ""                     # AbuseIPDB API key for IP reputation lookups
   whitelist: []                         # IPs to never flag as malicious
+  rspamd:
+    enabled: false                      # include rspamd rolling history in IP reputation
+    url: "http://127.0.0.1:11334"       # rspamd controller URL
+    token: ""                           # controller password, or use token_env
+    token_env: ""                       # env var read at query time
 
 # --- Signatures ---
 signatures:

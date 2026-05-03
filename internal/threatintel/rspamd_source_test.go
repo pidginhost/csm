@@ -9,7 +9,10 @@ import (
 
 func TestRspamdSource_ParsesScore(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"actions":{"reject":12},"learns":0}`))
+		if r.URL.Path != "/history" {
+			t.Fatalf("expected /history request, got %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"rows":[{"ip":"1.2.3.4","action":"reject","score":8.5},{"ip":"5.6.7.8","action":"reject","score":99}]}`))
 	}))
 	defer srv.Close()
 
@@ -20,6 +23,22 @@ func TestRspamdSource_ParsesScore(t *testing.T) {
 	}
 	if score == 0 {
 		t.Fatal("expected non-zero score for IP with rejects")
+	}
+}
+
+func TestRspamdSource_IgnoresOtherIPs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"rows":[{"ip":"5.6.7.8","action":"reject","score":99}]}`))
+	}))
+	defer srv.Close()
+
+	src := NewRspamdSource(srv.URL, "", "")
+	score, err := src.Score(context.Background(), "1.2.3.4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if score != 0 {
+		t.Fatalf("expected no signal for unrelated history rows, got %d", score)
 	}
 }
 
@@ -38,7 +57,7 @@ func TestRspamdSource_ResolvesTokenFromEnv(t *testing.T) {
 	var capturedPassword string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedPassword = r.Header.Get("Password")
-		_, _ = w.Write([]byte(`{"actions":{"reject":1}}`))
+		_, _ = w.Write([]byte(`{"rows":[{"ip":"1.2.3.4","action":"reject","score":1}]}`))
 	}))
 	defer srv.Close()
 

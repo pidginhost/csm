@@ -71,7 +71,7 @@ type stubSource struct {
 	err   error
 }
 
-func (s stubSource) Name() string                                    { return s.name }
+func (s stubSource) Name() string { return s.name }
 func (s stubSource) Score(_ context.Context, _ string) (int, error) {
 	return s.score, s.err
 }

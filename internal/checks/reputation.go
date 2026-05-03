@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -49,31 +48,6 @@ var abuseIPDBEndpoint = "https://api.abuseipdb.com/api/v2/check"
 // transport routes all traffic to an httptest server).
 var abuseIPDBClient = &http.Client{Timeout: 10 * time.Second}
 
-var threatAgg *threatintel.Aggregator
-var threatAggOnce sync.Once
-
-func ensureAggregator(cfg *config.Config) *threatintel.Aggregator {
-	threatAggOnce.Do(func() {
-		agg := threatintel.NewAggregator()
-		// AbuseIPDB is always registered when its key is set.
-		if cfg.Reputation.AbuseIPDBKey != "" {
-			agg.Register(threatintel.NewAbuseIPDBSource(func(ctx context.Context, ip string) (int, error) {
-				score, _, err := queryAbuseIPDB(abuseIPDBClient, ip, cfg.Reputation.AbuseIPDBKey)
-				return score, err
-			}))
-		}
-		if cfg.Reputation.Rspamd.Enabled {
-			agg.Register(threatintel.NewRspamdSource(
-				cfg.Reputation.Rspamd.URL,
-				cfg.Reputation.Rspamd.Token,
-				cfg.Reputation.Rspamd.TokenEnv,
-			))
-		}
-		threatAgg = agg
-	})
-	return threatAgg
-}
-
 type reputationCache struct {
 	Entries map[string]*reputationEntry `json:"entries"`
 }
@@ -101,6 +75,7 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 	alreadyBlocked := loadAllBlockedIPs(cfg.StatePath)
 	threatDB := GetThreatDB()
 	cache := loadReputationCache(cfg.StatePath)
+	supplementalAgg := newSupplementalThreatAggregator(cfg)
 
 	client := abuseIPDBClient
 	sdb := store.Global()
@@ -136,13 +111,9 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 			age := time.Since(entry.CheckedAt)
 			if age >= 0 && age < cacheExpiry {
 				if entry.Score >= abuseConfidenceThreshold {
-					findings = append(findings, alert.Finding{
-						Severity:  alert.Critical,
-						Check:     "ip_reputation",
-						Message:   fmt.Sprintf("Known malicious IP accessing server: %s (AbuseIPDB score: %d/100)", ip, entry.Score),
-						Details:   fmt.Sprintf("Detected via: %s\nCategory: %s\nThis IP is reported in threat intelligence databases", source, entry.Category),
-						Timestamp: time.Now(),
-					})
+					appendReputationFinding(&findings, ip, source, "AbuseIPDB", entry.Score, entry.Category)
+				} else if score, ok := supplementalThreatScore(ctx, supplementalAgg, ip); ok && score >= abuseConfidenceThreshold {
+					appendReputationFinding(&findings, ip, source, "Rspamd", score, "rspamd history")
 				}
 				continue
 			}
@@ -150,6 +121,9 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 
 		// Tier 4: Query AbuseIPDB - skip if no key, quota exhausted, or limit reached
 		if cfg.Reputation.AbuseIPDBKey == "" || quotaExhausted || checked >= maxQueriesPerCycle {
+			if score, ok := supplementalThreatScore(ctx, supplementalAgg, ip); ok && score >= abuseConfidenceThreshold {
+				appendReputationFinding(&findings, ip, source, "Rspamd", score, "rspamd history")
+			}
 			continue
 		}
 
@@ -171,6 +145,9 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 				if sdb != nil {
 					_ = sdb.SetAbuseQuotaExhaustedUntil(resetAt)
 				}
+				if supplemental, ok := supplementalThreatScore(ctx, supplementalAgg, ip); ok && supplemental >= abuseConfidenceThreshold {
+					appendReputationFinding(&findings, ip, source, "Rspamd", supplemental, "rspamd history")
+				}
 				continue
 			}
 			cache.Entries[ip] = &reputationEntry{
@@ -183,6 +160,9 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 				CheckedAt: time.Now().Add(-(cacheExpiry - errorCacheExpiry)),
 			}
 			checked++
+			if supplemental, ok := supplementalThreatScore(ctx, supplementalAgg, ip); ok && supplemental >= abuseConfidenceThreshold {
+				appendReputationFinding(&findings, ip, source, "Rspamd", supplemental, "rspamd history")
+			}
 			continue
 		}
 		checked++
@@ -193,22 +173,15 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 			CheckedAt: time.Now(),
 		}
 
-		// Augment with rspamd / other sources via the aggregator. Per-source errors
-		// are non-fatal; the aggregator returns a degraded score.
-		if cfg.Reputation.Rspamd.Enabled {
-			if res, err := ensureAggregator(cfg).Score(ctx, ip); err == nil && res.AggregatedScore > score {
-				score = res.AggregatedScore
-			}
+		provider := "AbuseIPDB"
+		if supplemental, ok := supplementalThreatScore(ctx, supplementalAgg, ip); ok && supplemental > score {
+			score = supplemental
+			category = "rspamd history"
+			provider = "Rspamd"
 		}
 
 		if score >= abuseConfidenceThreshold {
-			findings = append(findings, alert.Finding{
-				Severity:  alert.Critical,
-				Check:     "ip_reputation",
-				Message:   fmt.Sprintf("Known malicious IP accessing server: %s (AbuseIPDB score: %d/100)", ip, score),
-				Details:   fmt.Sprintf("Detected via: %s\nCategory: %s\nThis IP is reported in threat intelligence databases", source, category),
-				Timestamp: time.Now(),
-			})
+			appendReputationFinding(&findings, ip, source, provider, score, category)
 		}
 	}
 
@@ -217,6 +190,40 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 	saveReputationCache(cfg.StatePath, cache)
 
 	return findings
+}
+
+func newSupplementalThreatAggregator(cfg *config.Config) *threatintel.Aggregator {
+	if !cfg.Reputation.Rspamd.Enabled {
+		return nil
+	}
+	agg := threatintel.NewAggregator()
+	agg.Register(threatintel.NewRspamdSource(
+		cfg.Reputation.Rspamd.URL,
+		cfg.Reputation.Rspamd.Token,
+		cfg.Reputation.Rspamd.TokenEnv,
+	))
+	return agg
+}
+
+func supplementalThreatScore(ctx context.Context, agg *threatintel.Aggregator, ip string) (int, bool) {
+	if agg == nil {
+		return 0, false
+	}
+	res, err := agg.Score(ctx, ip)
+	if err != nil || res.AggregatedScore == 0 {
+		return 0, false
+	}
+	return res.AggregatedScore, true
+}
+
+func appendReputationFinding(findings *[]alert.Finding, ip, detectedVia, provider string, score int, category string) {
+	*findings = append(*findings, alert.Finding{
+		Severity:  alert.Critical,
+		Check:     "ip_reputation",
+		Message:   fmt.Sprintf("Known malicious IP accessing server: %s (%s score: %d/100)", ip, provider, score),
+		Details:   fmt.Sprintf("Detected via: %s\nCategory: %s\nThis IP is reported in threat intelligence databases", detectedVia, category),
+		Timestamp: time.Now(),
+	})
 }
 
 // nextUTCMidnight returns 00:00 UTC on the day after now — the point at
