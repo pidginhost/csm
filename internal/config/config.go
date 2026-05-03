@@ -287,6 +287,19 @@ type Config struct {
 			Token    string `yaml:"token,omitempty"`
 			TokenEnv string `yaml:"token_env,omitempty"`
 		} `yaml:"rspamd"`
+		// Upstream is an HTTP threat-intel source - typically a panel host that
+		// caches AbuseIPDB / proprietary scores on behalf of every agent in its
+		// fleet. Disabled by default. Token resolution happens at query time
+		// (see internal/threatintel/upstream_source.go) so operators can rotate
+		// the bearer via TokenEnv without restarting the daemon.
+		Upstream struct {
+			Enabled     bool   `yaml:"enabled"`
+			URL         string `yaml:"url"`
+			Token       string `yaml:"token,omitempty"`    // discouraged - prefer TokenEnv
+			TokenEnv    string `yaml:"token_env,omitempty"`
+			CacheTTLMin int    `yaml:"cache_ttl_min"`
+			TimeoutSec  int    `yaml:"timeout_sec"`
+		} `yaml:"upstream"`
 	} `yaml:"reputation" hotreload:"safe"`
 
 	Signatures struct {
@@ -741,6 +754,14 @@ func applyDefaults(cfg *Config) {
 		cfg.Reputation.Rspamd.URL = "http://127.0.0.1:11334"
 	}
 	// Token resolution happens at query time (see RspamdSource.Score).
+
+	if cfg.Reputation.Upstream.CacheTTLMin == 0 {
+		cfg.Reputation.Upstream.CacheTTLMin = 15
+	}
+	if cfg.Reputation.Upstream.TimeoutSec == 0 {
+		cfg.Reputation.Upstream.TimeoutSec = 5
+	}
+	// Token resolution happens at query time (UpstreamSource.resolveToken).
 }
 
 // LoadBytes decodes a YAML config body and applies all defaults,
@@ -762,7 +783,17 @@ func LoadBytes(data []byte) (*Config, error) {
 	if err := validateMailBruteAccountKey(cfg); err != nil {
 		return nil, err
 	}
+	if err := validateReputation(cfg); err != nil {
+		return nil, err
+	}
 	return cfg, nil
+}
+
+func validateReputation(cfg *Config) error {
+	if cfg.Reputation.Upstream.Enabled && cfg.Reputation.Upstream.URL == "" {
+		return fmt.Errorf("reputation.upstream.enabled=true but url is empty")
+	}
+	return nil
 }
 
 func validateWebUITokens(cfg *Config) error {

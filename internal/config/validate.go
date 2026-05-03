@@ -325,6 +325,19 @@ func Validate(cfg *Config) []ValidationResult {
 		}
 	}
 
+	// --- Reputation.Upstream ---
+	if cfg.Reputation.Upstream.Enabled {
+		secret := cfg.Reputation.Upstream.Token
+		if cfg.Reputation.Upstream.TokenEnv != "" {
+			if v := os.Getenv(cfg.Reputation.Upstream.TokenEnv); v != "" {
+				secret = v
+			}
+		}
+		if secret == "" {
+			results = append(results, ValidationResult{"warn", "reputation.upstream.token", "upstream enabled but no token configured (panel endpoint may require auth)"})
+		}
+	}
+
 	// --- Warnings ---
 	results = append(results, validateWarnings(cfg)...)
 

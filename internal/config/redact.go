@@ -36,6 +36,9 @@ func Redact(cfg *Config) *Config {
 	if c.Reputation.Rspamd.Token != "" {
 		c.Reputation.Rspamd.Token = redactedValue
 	}
+	if c.Reputation.Upstream.Token != "" {
+		c.Reputation.Upstream.Token = redactedValue
+	}
 	if c.Challenge.Secret != "" {
 		c.Challenge.Secret = redactedValue
 	}

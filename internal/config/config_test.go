@@ -522,3 +522,66 @@ auto_response:
 		t.Fatal("explicit true must dry-run")
 	}
 }
+
+func TestUpstreamTI_DisabledByDefault(t *testing.T) {
+	cfg, err := LoadBytes([]byte(``))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Reputation.Upstream.Enabled {
+		t.Fatal("expected upstream disabled by default")
+	}
+}
+
+func TestUpstreamTI_AcceptsURLAndToken(t *testing.T) {
+	cfg, err := LoadBytes([]byte(`
+reputation:
+  upstream:
+    enabled: true
+    url: https://panel.example.com/api/csm/ti
+    token_env: CSM_UPSTREAM_TOKEN
+    cache_ttl_min: 30
+    timeout_sec: 4
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Reputation.Upstream.URL != "https://panel.example.com/api/csm/ti" {
+		t.Fatalf("URL not preserved")
+	}
+	if cfg.Reputation.Upstream.CacheTTLMin != 30 {
+		t.Fatalf("cache TTL not preserved")
+	}
+	if cfg.Reputation.Upstream.TimeoutSec != 4 {
+		t.Fatalf("timeout not preserved")
+	}
+}
+
+func TestUpstreamTI_RejectsEnabledWithoutURL(t *testing.T) {
+	_, err := LoadBytes([]byte(`
+reputation:
+  upstream:
+    enabled: true
+`))
+	if err == nil {
+		t.Fatal("expected error: upstream enabled but URL missing")
+	}
+}
+
+func TestUpstreamTI_DefaultsApply(t *testing.T) {
+	cfg, err := LoadBytes([]byte(`
+reputation:
+  upstream:
+    enabled: true
+    url: http://example.com/ti
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Reputation.Upstream.CacheTTLMin != 15 {
+		t.Fatalf("expected default cache_ttl_min=15, got %d", cfg.Reputation.Upstream.CacheTTLMin)
+	}
+	if cfg.Reputation.Upstream.TimeoutSec != 5 {
+		t.Fatalf("expected default timeout_sec=5, got %d", cfg.Reputation.Upstream.TimeoutSec)
+	}
+}

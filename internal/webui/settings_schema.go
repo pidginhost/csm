@@ -180,6 +180,12 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "rspamd.url", Type: "string", Label: "Rspamd controller URL"},
 			{YAMLPath: "rspamd.token", Type: "string", Label: "Rspamd controller password", Secret: true},
 			{YAMLPath: "rspamd.token_env", Type: "string", Label: "Rspamd password env var"},
+			{YAMLPath: "upstream.enabled", Type: "bool", Label: "Upstream threat-intel cache"},
+			{YAMLPath: "upstream.url", Type: "string", Label: "Upstream URL"},
+			{YAMLPath: "upstream.token", Type: "string", Label: "Upstream bearer token", Secret: true},
+			{YAMLPath: "upstream.token_env", Type: "string", Label: "Upstream token env var"},
+			{YAMLPath: "upstream.cache_ttl_min", Type: "int", Label: "Upstream cache TTL (min)"},
+			{YAMLPath: "upstream.timeout_sec", Type: "int", Label: "Upstream request timeout (sec)"},
 		},
 	},
 	{
