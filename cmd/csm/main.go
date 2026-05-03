@@ -117,6 +117,8 @@ func main() {
 		runPHPRelay()
 	case "doctor":
 		runDoctor()
+	case "backup":
+		runBackup()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
 		printUsage()
@@ -158,6 +160,7 @@ Commands:
   enable        Enable optional features (--php-shield)
   disable       Disable optional features (--php-shield)
   doctor        Run a config + daemon + watchers + store sanity check (--json for machine output)
+  backup <out>  Bundle csm.yaml + /etc/csm/conf.d + state into a tar.gz archive
   version       Version info + build hash
 
 Options:
