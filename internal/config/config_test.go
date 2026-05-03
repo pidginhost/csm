@@ -623,3 +623,69 @@ reputation:
 		t.Fatalf("expected default timeout_sec=5, got %d", cfg.Reputation.Upstream.TimeoutSec)
 	}
 }
+
+func TestVerdictCallback_DisabledByDefault(t *testing.T) {
+	cfg, err := LoadBytes([]byte(``))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AutoResponse.VerdictCallback.Enabled {
+		t.Fatal("expected verdict_callback disabled by default")
+	}
+}
+
+func TestVerdictCallback_AcceptsURLAndSecret(t *testing.T) {
+	cfg, err := LoadBytes([]byte(`
+auto_response:
+  verdict_callback:
+    enabled: true
+    url: https://panel.example.com/api/csm/verdict
+    hmac_secret_env: CSM_VERDICT_HMAC
+    timeout_sec: 2
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AutoResponse.VerdictCallback.URL == "" {
+		t.Fatal("URL not preserved")
+	}
+	if cfg.AutoResponse.VerdictCallback.TimeoutSec != 2 {
+		t.Fatalf("timeout not preserved")
+	}
+}
+
+func TestVerdictCallback_RejectsEnabledWithoutURL(t *testing.T) {
+	_, err := LoadBytes([]byte(`
+auto_response:
+  verdict_callback:
+    enabled: true
+`))
+	if err == nil {
+		t.Fatal("expected error: enabled but URL missing")
+	}
+}
+
+func TestVerdictCallback_RejectsInvalidURL(t *testing.T) {
+	_, err := LoadBytes([]byte(`
+auto_response:
+  verdict_callback:
+    enabled: true
+    url: panel.example.com/api/csm/verdict
+`))
+	if err == nil {
+		t.Fatal("expected error: URL must include scheme")
+	}
+}
+
+func TestVerdictCallback_RejectsInvalidTimeout(t *testing.T) {
+	_, err := LoadBytes([]byte(`
+auto_response:
+  verdict_callback:
+    enabled: true
+    url: https://panel.example.com/v
+    timeout_sec: -1
+`))
+	if err == nil {
+		t.Fatal("expected error for negative timeout_sec")
+	}
+}

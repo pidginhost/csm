@@ -164,6 +164,11 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "permblock_interval", Type: "string", Label: "Permblock window", Placeholder: "24h"},
 			{YAMLPath: "clean_database", Type: "bool", Label: "Auto-clean DB injections"},
 			{YAMLPath: "dry_run", Type: "bool", Label: "Auto-block dry run (logs only, no nftables)"},
+			{YAMLPath: "verdict_callback.enabled", Type: "bool", Label: "Verdict callback hook"},
+			{YAMLPath: "verdict_callback.url", Type: "string", Label: "Verdict callback URL"},
+			{YAMLPath: "verdict_callback.hmac_secret", Type: "string", Label: "Verdict callback HMAC secret", Secret: true},
+			{YAMLPath: "verdict_callback.hmac_secret_env", Type: "string", Label: "Verdict callback HMAC secret env"},
+			{YAMLPath: "verdict_callback.timeout_sec", Type: "int", Label: "Verdict callback timeout (sec)", Min: int64p(1), Max: int64p(30)},
 		},
 	},
 	{

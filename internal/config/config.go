@@ -231,6 +231,25 @@ type Config struct {
 			DryRun              *bool `yaml:"dry_run"`
 			MaxActionsPerMinute int   `yaml:"max_actions_per_minute"`
 		} `yaml:"php_relay"`
+
+		// VerdictCallback lets phpanel observe each block decision before it's
+		// applied. CSM POSTs the verdict to the configured URL with HMAC-SHA256
+		// signing (same scheme as the phpanel webhook in P3); the response is
+		// advisory - phpanel can attach a tenant_id, downgrade the verdict to
+		// "advisory" (CSM logs but does not block), or omit a response entirely
+		// (CSM proceeds with its default verdict). NOT a per-tenant nftables
+		// enforcement: that's a separate, larger feature.
+		//
+		// Token resolution happens at call time (the verdict.Client reads
+		// HMACSecretEnv per call), so operators can rotate via env without
+		// restarting the daemon.
+		VerdictCallback struct {
+			Enabled       bool   `yaml:"enabled"`
+			URL           string `yaml:"url"`
+			HMACSecret    string `yaml:"hmac_secret,omitempty"`
+			HMACSecretEnv string `yaml:"hmac_secret_env,omitempty"`
+			TimeoutSec    int    `yaml:"timeout_sec"`
+		} `yaml:"verdict_callback"`
 	} `yaml:"auto_response" hotreload:"safe"`
 
 	Challenge struct {
@@ -763,6 +782,11 @@ func applyDefaults(cfg *Config) {
 		cfg.Reputation.Upstream.TimeoutSec = 5
 	}
 	// Token resolution happens at query time (UpstreamSource.resolveToken).
+
+	if cfg.AutoResponse.VerdictCallback.TimeoutSec == 0 {
+		cfg.AutoResponse.VerdictCallback.TimeoutSec = 2 // tight; the hook is on the block hot path
+	}
+	// Secret resolution happens at call time (verdict.Client reads env per call).
 }
 
 // LoadBytes decodes a YAML config body and applies all defaults,
@@ -785,6 +809,9 @@ func LoadBytes(data []byte) (*Config, error) {
 		return nil, err
 	}
 	if err := validateReputation(cfg); err != nil {
+		return nil, err
+	}
+	if err := validateVerdictCallback(cfg); err != nil {
 		return nil, err
 	}
 	return cfg, nil
@@ -813,6 +840,30 @@ func validateReputation(cfg *Config) error {
 	}
 	if parsed.Host == "" {
 		return fmt.Errorf("reputation.upstream.url must include host")
+	}
+	return nil
+}
+
+func validateVerdictCallback(cfg *Config) error {
+	vc := cfg.AutoResponse.VerdictCallback
+	if vc.TimeoutSec != 0 && (vc.TimeoutSec < 1 || vc.TimeoutSec > 30) {
+		return fmt.Errorf("auto_response.verdict_callback.timeout_sec must be between 1 and 30")
+	}
+	if !vc.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(vc.URL) == "" {
+		return fmt.Errorf("auto_response.verdict_callback.enabled=true but url is empty")
+	}
+	parsed, err := url.Parse(vc.URL)
+	if err != nil {
+		return fmt.Errorf("auto_response.verdict_callback.url: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("auto_response.verdict_callback.url must use http or https")
+	}
+	if parsed.Host == "" {
+		return fmt.Errorf("auto_response.verdict_callback.url must include host")
 	}
 	return nil
 }

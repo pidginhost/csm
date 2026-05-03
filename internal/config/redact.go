@@ -39,6 +39,9 @@ func Redact(cfg *Config) *Config {
 	if c.Reputation.Upstream.Token != "" {
 		c.Reputation.Upstream.Token = redactedValue
 	}
+	if c.AutoResponse.VerdictCallback.HMACSecret != "" {
+		c.AutoResponse.VerdictCallback.HMACSecret = redactedValue
+	}
 	if c.Challenge.Secret != "" {
 		c.Challenge.Secret = redactedValue
 	}
