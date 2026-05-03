@@ -34,3 +34,24 @@ account_roots:
 #     - type: phpanel
 #       url: https://panel.example.com/api/csm/findings
 #       hmac_secret_env: CSM_PHPANEL_HMAC
+
+# Webhook + token configuration. The agent fills these via a runtime fragment
+# (10-phpanel-runtime.yaml) before the daemon starts; this file documents
+# the keys and their defaults.
+
+alerts:
+  webhook:
+    enabled: true
+    type: phpanel
+    per_finding: true
+    # url: https://panel.example.com/api/csm/findings   # supplied by agent
+    hmac_secret_env: CSM_PHPANEL_HMAC                   # agent exports the env
+
+webui:
+  enabled: true
+  tokens:
+    # The agent generates these and writes the secrets to a runtime fragment.
+    # Do not put secrets in this profile - operator-readable file.
+    - name: phpanel-readonly
+      token: REPLACE_AT_INSTALL  # agent overrides via 10-phpanel-runtime.yaml
+      scope: read
