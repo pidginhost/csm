@@ -410,11 +410,13 @@ Description=CSM - Continuous Security Monitor Daemon
 After=network.target
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
 ExecStart=%s daemon
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=10
+TimeoutStartSec=120
 WatchdogSec=300
 
 StateDirectory=csm

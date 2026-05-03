@@ -31,6 +31,7 @@ import (
 	"github.com/pidginhost/csm/internal/modsec"
 	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/platform"
+	"github.com/pidginhost/csm/internal/sdnotify"
 	"github.com/pidginhost/csm/internal/signatures"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
@@ -588,6 +589,16 @@ func (d *Daemon) Run() error {
 		d.wg.Add(1)
 		obs.Go("retention-scanner", d.retentionScanner)
 	}
+
+	// Tell systemd we're up. Type=notify in the unit means the service
+	// stays "activating" until this fires; "systemctl is-active" therefore
+	// reports the truth instead of just "process is running."
+	if sent, err := sdnotify.Ready(); err != nil {
+		fmt.Fprintf(os.Stderr, "sd_notify READY failed: %v\n", err)
+	} else if sent {
+		fmt.Fprintf(os.Stderr, "sd_notify: daemon ready\n")
+	}
+	_, _ = sdnotify.Status(fmt.Sprintf("watchers attached: %d", countAttachedWatchers(d.WatcherStatuses())))
 
 	csmlog.Info("CSM daemon running")
 
@@ -2148,4 +2159,16 @@ func orNone(v string) string {
 		return "none"
 	}
 	return v
+}
+
+// countAttachedWatchers returns how many watchers are currently attached
+// (value == true). Used for the systemd one-line status string.
+func countAttachedWatchers(statuses map[string]bool) int {
+	n := 0
+	for _, attached := range statuses {
+		if attached {
+			n++
+		}
+	}
+	return n
 }
