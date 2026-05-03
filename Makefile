@@ -15,9 +15,15 @@ LDFLAGS := -s -w -X main.Version=$(VERSION) -X main.BuildHash=$(BUILD_HASH) -X m
 # AF_ALG (Copy Fail). Default builds use the audit-log listener fallback
 # instead — BPF requires Linux 5.7+ with CONFIG_BPF_LSM=y and trampoline
 # support, so the tag is opt-in to avoid breaking older targets.
+#
+# Set JOURNAL=1 to compile the systemd-journald mail-log reader. Requires
+# Linux with libsystemd-dev (CGO). Default builds use the file-tail reader.
 GOTAGS ?=
 ifeq ($(BPF),1)
 GOTAGS := $(strip $(GOTAGS) bpf)
+endif
+ifeq ($(JOURNAL),1)
+GOTAGS := $(strip $(GOTAGS) journal)
 endif
 GOBUILDTAGS := $(if $(GOTAGS),-tags "$(GOTAGS)",)
 GOBIN := $(shell go env GOPATH)/bin

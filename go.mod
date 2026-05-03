@@ -4,6 +4,7 @@ go 1.26.2
 
 require (
 	github.com/VirusTotal/yara-x/go v1.15.0
+	github.com/coreos/go-systemd/v22 v22.7.0
 	github.com/getsentry/sentry-go v0.45.1
 	github.com/google/nftables v0.3.0
 	github.com/klauspost/compress v1.18.5
@@ -16,7 +17,6 @@ require (
 
 require (
 	github.com/cilium/ebpf v0.21.0 // indirect
-	github.com/coreos/go-systemd/v22 v22.7.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
