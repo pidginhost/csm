@@ -99,6 +99,15 @@ func TestLoadWithDir_PackagedPHPPanelProfile(t *testing.T) {
 	if cfg.Reputation.Upstream.TokenEnv != "CSM_UPSTREAM_TOKEN" {
 		t.Fatalf("Upstream TokenEnv = %q, want CSM_UPSTREAM_TOKEN", cfg.Reputation.Upstream.TokenEnv)
 	}
+	if cfg.AutoResponse.VerdictCallback.Enabled {
+		t.Fatal("packaged phpanel profile must not enable verdict_callback without a runtime URL")
+	}
+	if cfg.AutoResponse.VerdictCallback.HMACSecretEnv != "CSM_VERDICT_HMAC" {
+		t.Fatalf("VerdictCallback.HMACSecretEnv = %q, want CSM_VERDICT_HMAC", cfg.AutoResponse.VerdictCallback.HMACSecretEnv)
+	}
+	if cfg.AutoResponse.VerdictCallback.TimeoutSec != 2 {
+		t.Fatalf("VerdictCallback.TimeoutSec = %d, want 2", cfg.AutoResponse.VerdictCallback.TimeoutSec)
+	}
 }
 
 func must(t *testing.T, err error) {

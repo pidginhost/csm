@@ -23,6 +23,8 @@ func Capabilities() []string {
 		"auto_response.dry_run.v1",  // P5
 		"infra_ips.guard.v1",        // P5
 		"store.backup.v1",           // P5
-		"ti.source.upstream.v1",     // P6
+		"ti.source.upstream.v1",      // P6
+		"verdict.callback.v1",        // P7
+		"systemd.dropin.example.v1",  // P7
 	}
 }
