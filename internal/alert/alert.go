@@ -52,6 +52,14 @@ type Finding struct {
 	SourceIP  string   `json:"source_ip,omitempty"`  // IP after "for " in X-PHP-Script
 	CPUser    string   `json:"cp_user,omitempty"`    // cPanel user from spool -H line 2
 
+	// Tenant context (added v2.12.0). Optional - populated when the check
+	// has enough info to attribute the finding to a specific tenant within
+	// a multi-tenant host. Empty strings render as omitted JSON keys so
+	// existing webhook consumers see no diff.
+	TenantID string `json:"tenant_id,omitempty"`
+	Domain   string `json:"domain,omitempty"`
+	Mailbox  string `json:"mailbox,omitempty"`
+
 	Timestamp time.Time `json:"timestamp"`
 }
 

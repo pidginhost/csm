@@ -812,3 +812,39 @@ func TestHttpClientTimeoutApplied(t *testing.T) {
 		t.Errorf("Timeout = %v, want 3s", c.Timeout)
 	}
 }
+
+// --- Finding tenant fields --------------------------------------------
+
+func TestFinding_TenantFieldsRoundTripJSON(t *testing.T) {
+	f := Finding{
+		Check:    "test",
+		Severity: High,
+		TenantID: "tenant-abc",
+		Domain:   "example.com",
+		Mailbox:  "alice@example.com",
+	}
+	b, err := json.Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"tenant_id":"tenant-abc"`) {
+		t.Fatalf("expected tenant_id in JSON, got %s", b)
+	}
+	var got Finding
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.TenantID != "tenant-abc" || got.Domain != "example.com" || got.Mailbox != "alice@example.com" {
+		t.Fatalf("round trip lost fields: %+v", got)
+	}
+}
+
+func TestFinding_TenantFieldsAreOmitemptyWhenZero(t *testing.T) {
+	f := Finding{Check: "test", Severity: High}
+	b, _ := json.Marshal(f)
+	for _, k := range []string{"tenant_id", "domain", "mailbox"} {
+		if strings.Contains(string(b), `"`+k+`"`) {
+			t.Fatalf("expected %s omitted when empty, got %s", k, b)
+		}
+	}
+}
