@@ -3,6 +3,7 @@
 package firewall
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -33,6 +34,13 @@ type Engine struct {
 	// dryRunEnabled reports whether auto_response.dry_run is active.
 	// Set by the daemon so this package does not import internal/config.
 	dryRunEnabled func() bool
+	// verdictAsker, when set, is consulted before the dry-run gate. The
+	// callback returns (verdict, tenantID, error). Verdict "allow" short-
+	// circuits the block; "block" or empty proceeds with the default flow.
+	// Errors are fail-open: the daemon proceeds with the default block and
+	// logs the failure. Daemon owns the underlying verdict.Client; this
+	// package stays free of the internal/verdict import.
+	verdictAsker func(ctx context.Context, ip, reason string) (verdict, tenantID string, err error)
 
 	table    *nftables.Table
 	chainIn  *nftables.Chain
@@ -230,6 +238,21 @@ func (e *Engine) SetDryRunEnabledFunc(fn func() bool) {
 	e.mu.Lock()
 	e.dryRunEnabled = fn
 	e.mu.Unlock()
+}
+
+// SetVerdictAsker installs the verdict callback the daemon constructs at
+// startup. Nil disables the verdict callback (the gate skips entirely).
+func (e *Engine) SetVerdictAsker(fn func(ctx context.Context, ip, reason string) (string, string, error)) {
+	e.mu.Lock()
+	e.verdictAsker = fn
+	e.mu.Unlock()
+}
+
+func (e *Engine) verdictAskerFn() func(ctx context.Context, ip, reason string) (string, string, error) {
+	e.mu.Lock()
+	fn := e.verdictAsker
+	e.mu.Unlock()
+	return fn
 }
 
 // Apply builds and atomically applies the complete nftables ruleset.
@@ -1205,6 +1228,25 @@ func (e *Engine) addOutboundPortRule(port int, tcp bool) {
 // Operator-initiated commands (csm firewall block, Web UI manual block) must
 // call BlockIPForce instead, which skips the dry-run gate unconditionally.
 func (e *Engine) BlockIP(ip string, reason string, timeout time.Duration) error {
+	// Verdict gate: consult the panel before the dry-run gate so that an
+	// "allow" verdict short-circuits everything. Fail-open: errors proceed
+	// with the default block. Nil callback skips the gate entirely.
+	if asker := e.verdictAskerFn(); asker != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		v, tenant, err := asker(ctx, ip, reason)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[%s] verdict callback failed for %s: %v - proceeding with default block\n",
+				time.Now().Format("2006-01-02 15:04:05"), ip, err)
+		} else if v == "allow" {
+			fmt.Fprintf(os.Stderr, "[%s] verdict callback returned allow for %s (tenant=%q) - not blocking\n",
+				time.Now().Format("2006-01-02 15:04:05"), ip, tenant)
+			return nil
+		}
+		// "block" / empty / error -> proceed with default flow.
+		_ = tenant // tenant attribution is logged but not used for routing
+	}
+
 	// Dry-run gate: the daemon callback reads config.Active() at call time so
 	// a SIGHUP takes effect without a daemon restart. Nil callback means live.
 	if e.autoResponseDryRunEnabled() {

@@ -3,6 +3,7 @@
 package firewall
 
 import (
+	"context"
 	"fmt"
 	"time"
 )
@@ -62,6 +63,8 @@ func (e *Engine) BlockIP(_ string, _ string, _ time.Duration) error       { retu
 func (e *Engine) BlockIPForce(_ string, _ string, _ time.Duration) error  { return nil }
 func (e *Engine) SetDryRunRecorder(_ func(string, string, time.Duration)) {}
 func (e *Engine) SetDryRunEnabledFunc(_ func() bool)                      {}
+func (e *Engine) SetVerdictAsker(_ func(context.Context, string, string) (string, string, error)) {
+}
 func (e *Engine) UnblockIP(_ string) error                                { return nil }
 func (e *Engine) IsBlocked(_ string) bool                                 { return false }
 func (e *Engine) AllowIP(_ string, _ string) error                        { return nil }

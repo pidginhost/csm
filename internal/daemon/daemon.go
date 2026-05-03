@@ -37,6 +37,7 @@ import (
 	"github.com/pidginhost/csm/internal/signatures"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
+	"github.com/pidginhost/csm/internal/verdict"
 	"github.com/pidginhost/csm/internal/webui"
 	"github.com/pidginhost/csm/internal/yara"
 	"github.com/pidginhost/csm/internal/yaraworker"
@@ -1871,6 +1872,27 @@ func (d *Daemon) startFirewall() {
 		}
 		return false
 	})
+
+	if d.cfg.AutoResponse.VerdictCallback.Enabled {
+		vc := verdict.New(verdict.Config{
+			URL:           d.cfg.AutoResponse.VerdictCallback.URL,
+			HMACSecret:    d.cfg.AutoResponse.VerdictCallback.HMACSecret,
+			HMACSecretEnv: d.cfg.AutoResponse.VerdictCallback.HMACSecretEnv,
+			Timeout:       time.Duration(d.cfg.AutoResponse.VerdictCallback.TimeoutSec) * time.Second,
+		})
+		engine.SetVerdictAsker(func(ctx context.Context, ip, reason string) (string, string, error) {
+			resp, err := vc.Ask(ctx, verdict.Request{
+				IP:       ip,
+				Reason:   reason,
+				Severity: "auto",
+				Source:   "auto_response",
+			})
+			if err != nil {
+				return "", "", err
+			}
+			return resp.Verdict, resp.TenantID, nil
+		})
+	}
 
 	// Set firewall engine for auto-blocking
 	checks.SetIPBlocker(engine)

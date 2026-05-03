@@ -3,6 +3,8 @@
 package firewall
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -113,5 +115,65 @@ func TestBlockIP_DryRunPreservesInfraSafetyCheck(t *testing.T) {
 	}
 	if recorded {
 		t.Fatal("dry-run recorder was called for an IP live blocking would refuse")
+	}
+}
+
+func TestBlockIP_VerdictAllowShortCircuits(t *testing.T) {
+	called := 0
+	e := &Engine{
+		cfg:       &FirewallConfig{Enabled: true},
+		statePath: t.TempDir(),
+		verdictAsker: func(_ context.Context, ip, reason string) (string, string, error) {
+			called++
+			return "allow", "tenant-1", nil
+		},
+	}
+	if err := e.BlockIP("192.0.2.1", "test", 0); err != nil {
+		t.Fatalf("expected nil error on verdict allow, got %v", err)
+	}
+	if called != 1 {
+		t.Fatalf("expected verdict asker called once, got %d", called)
+	}
+}
+
+func TestBlockIP_VerdictErrorProceedsToDefault(t *testing.T) {
+	called := 0
+	e := &Engine{
+		cfg:       &FirewallConfig{Enabled: true},
+		statePath: t.TempDir(),
+		verdictAsker: func(_ context.Context, ip, reason string) (string, string, error) {
+			called++
+			return "", "", errors.New("network down")
+		},
+		dryRunEnabled: func() bool { return false }, // live path triggers nftables which panics on nil conn
+	}
+	// Use an invalid IP so validateBlockIP rejects in the live path
+	// (we can't actually call nftables in this unit test).
+	err := e.BlockIP("not-an-ip", "test", 0)
+	if err == nil || !strings.Contains(err.Error(), "invalid IP") {
+		t.Fatalf("expected invalid-IP error from live path, got %v", err)
+	}
+	if called != 1 {
+		t.Fatalf("expected verdict asker called once, got %d", called)
+	}
+}
+
+func TestBlockIP_VerdictBlockProceedsToDefault(t *testing.T) {
+	called := 0
+	e := &Engine{
+		cfg:       &FirewallConfig{Enabled: true},
+		statePath: t.TempDir(),
+		verdictAsker: func(_ context.Context, ip, reason string) (string, string, error) {
+			called++
+			return "block", "", nil
+		},
+		dryRunEnabled: func() bool { return false },
+	}
+	err := e.BlockIP("not-an-ip", "test", 0)
+	if err == nil || !strings.Contains(err.Error(), "invalid IP") {
+		t.Fatalf("expected invalid-IP error after verdict block, got %v", err)
+	}
+	if called != 1 {
+		t.Fatalf("expected verdict asker called once, got %d", called)
 	}
 }
