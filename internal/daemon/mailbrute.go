@@ -174,6 +174,7 @@ func (t *mailAuthTracker) Record(ip, account string) []alert.Finding {
 
 		if len(a.ips) >= t.accountSprayThreshold && !now.Before(a.suppressed) {
 			a.suppressed = now.Add(t.suppression)
+			_, acctDomain := alert.SplitEmail(account)
 			findings = append(findings, alert.Finding{
 				Severity: alert.High,
 				Check:    "mail_account_spray",
@@ -181,6 +182,8 @@ func (t *mailAuthTracker) Record(ip, account string) []alert.Finding {
 					account, len(a.ips), t.window),
 				Details:   "Distributed login attempts across many IPs against one mailbox (visibility only — no auto-block).",
 				Timestamp: now,
+				Domain:    acctDomain,
+				Mailbox:   account,
 			})
 		}
 	}
@@ -215,6 +218,7 @@ func (t *mailAuthTracker) RecordSuccess(ip, account string) []alert.Finding {
 		return nil
 	}
 	a.compromiseSuppressed = now.Add(t.suppression)
+	_, compDomain := alert.SplitEmail(account)
 	return []alert.Finding{{
 		Severity: alert.Critical,
 		Check:    "mail_account_compromised",
@@ -222,6 +226,8 @@ func (t *mailAuthTracker) RecordSuccess(ip, account string) []alert.Finding {
 			account, ip),
 		Details:   "Attacker succeeded after one or more failed attempts from the same IP for this mailbox. Rotate password and revoke sessions.",
 		Timestamp: now,
+		Domain:    compDomain,
+		Mailbox:   account,
 	}}
 }
 

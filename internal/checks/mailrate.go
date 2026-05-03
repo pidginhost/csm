@@ -60,6 +60,7 @@ func CheckMailPerAccount(ctx context.Context, _ *config.Config, _ *state.Store) 
 				Check:    "mail_per_account",
 				Message:  fmt.Sprintf("High email volume from %s: %d messages in recent log", domain, count),
 				Details:  "Possible spam outbreak or compromised email account",
+				Domain:   domain,
 			})
 		}
 	}

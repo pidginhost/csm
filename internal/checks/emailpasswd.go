@@ -369,6 +369,8 @@ func CheckEmailPasswords(ctx context.Context, cfg *config.Config, _ *state.Store
 					Check:    "email_weak_password",
 					Message:  fmt.Sprintf("Weak email password for %s (account: %s)", fullMailbox, e.account),
 					Details:  details,
+					Domain:   e.domain,
+					Mailbox:  fullMailbox,
 				})
 				mu.Unlock()
 			}

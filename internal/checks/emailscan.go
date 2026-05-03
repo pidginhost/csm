@@ -237,10 +237,13 @@ func scanEximMessage(msgID, sender string, cfg *config.Config) *alert.Finding {
 		severity = alert.Critical
 	}
 
+	_, senderDomain := alert.SplitEmail(sender)
 	return &alert.Finding{
 		Severity: severity,
 		Check:    "email_phishing_content",
 		Message:  fmt.Sprintf("Suspicious outbound email from %s (message: %s)", sender, msgID),
 		Details:  fmt.Sprintf("Indicators:\n- %s", strings.Join(indicators, "\n- ")),
+		Domain:   senderDomain,
+		Mailbox:  sender,
 	}
 }

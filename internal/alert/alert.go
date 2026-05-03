@@ -85,6 +85,16 @@ func (f Finding) Key() string {
 	return fmt.Sprintf("%s:%s:%x", f.Check, f.Message, h[:4])
 }
 
+// SplitEmail returns (localpart, domain) from an email address. Returns
+// ("", "") when the input doesn't look like an email.
+func SplitEmail(addr string) (localpart, domain string) {
+	at := strings.LastIndexByte(addr, '@')
+	if at <= 0 || at == len(addr)-1 {
+		return "", ""
+	}
+	return addr[:at], addr[at+1:]
+}
+
 // Deduplicate removes findings with the same Check+Message, keeping the first.
 func Deduplicate(findings []Finding) []Finding {
 	seen := make(map[string]bool)
