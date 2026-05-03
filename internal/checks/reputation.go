@@ -112,8 +112,8 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 			if age >= 0 && age < cacheExpiry {
 				if entry.Score >= abuseConfidenceThreshold {
 					appendReputationFinding(&findings, ip, source, "AbuseIPDB", entry.Score, entry.Category)
-				} else if score, ok := supplementalThreatScore(ctx, supplementalAgg, ip); ok && score >= abuseConfidenceThreshold {
-					appendReputationFinding(&findings, ip, source, "Rspamd", score, "rspamd history")
+				} else if score, src, ok := supplementalThreatScore(ctx, supplementalAgg, ip); ok && score >= abuseConfidenceThreshold {
+					appendReputationFinding(&findings, ip, source, src, score, strings.ToLower(src)+" history")
 				}
 				continue
 			}
@@ -121,8 +121,8 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 
 		// Tier 4: Query AbuseIPDB - skip if no key, quota exhausted, or limit reached
 		if cfg.Reputation.AbuseIPDBKey == "" || quotaExhausted || checked >= maxQueriesPerCycle {
-			if score, ok := supplementalThreatScore(ctx, supplementalAgg, ip); ok && score >= abuseConfidenceThreshold {
-				appendReputationFinding(&findings, ip, source, "Rspamd", score, "rspamd history")
+			if score, src, ok := supplementalThreatScore(ctx, supplementalAgg, ip); ok && score >= abuseConfidenceThreshold {
+				appendReputationFinding(&findings, ip, source, src, score, strings.ToLower(src)+" history")
 			}
 			continue
 		}
@@ -145,8 +145,8 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 				if sdb != nil {
 					_ = sdb.SetAbuseQuotaExhaustedUntil(resetAt)
 				}
-				if supplemental, ok := supplementalThreatScore(ctx, supplementalAgg, ip); ok && supplemental >= abuseConfidenceThreshold {
-					appendReputationFinding(&findings, ip, source, "Rspamd", supplemental, "rspamd history")
+				if supplemental, src, ok := supplementalThreatScore(ctx, supplementalAgg, ip); ok && supplemental >= abuseConfidenceThreshold {
+					appendReputationFinding(&findings, ip, source, src, supplemental, strings.ToLower(src)+" history")
 				}
 				continue
 			}
@@ -160,8 +160,8 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 				CheckedAt: time.Now().Add(-(cacheExpiry - errorCacheExpiry)),
 			}
 			checked++
-			if supplemental, ok := supplementalThreatScore(ctx, supplementalAgg, ip); ok && supplemental >= abuseConfidenceThreshold {
-				appendReputationFinding(&findings, ip, source, "Rspamd", supplemental, "rspamd history")
+			if supplemental, src, ok := supplementalThreatScore(ctx, supplementalAgg, ip); ok && supplemental >= abuseConfidenceThreshold {
+				appendReputationFinding(&findings, ip, source, src, supplemental, strings.ToLower(src)+" history")
 			}
 			continue
 		}
@@ -174,10 +174,10 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 		}
 
 		provider := "AbuseIPDB"
-		if supplemental, ok := supplementalThreatScore(ctx, supplementalAgg, ip); ok && supplemental > score {
+		if supplemental, src, ok := supplementalThreatScore(ctx, supplementalAgg, ip); ok && supplemental > score {
 			score = supplemental
-			category = "rspamd history"
-			provider = "Rspamd"
+			category = strings.ToLower(src) + " history"
+			provider = src
 		}
 
 		if score >= abuseConfidenceThreshold {
@@ -193,27 +193,61 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 }
 
 func newSupplementalThreatAggregator(cfg *config.Config) *threatintel.Aggregator {
-	if !cfg.Reputation.Rspamd.Enabled {
+	if !cfg.Reputation.Rspamd.Enabled && !cfg.Reputation.Upstream.Enabled {
 		return nil
 	}
 	agg := threatintel.NewAggregator()
-	agg.Register(threatintel.NewRspamdSource(
-		cfg.Reputation.Rspamd.URL,
-		cfg.Reputation.Rspamd.Token,
-		cfg.Reputation.Rspamd.TokenEnv,
-	))
+	if cfg.Reputation.Rspamd.Enabled {
+		agg.Register(threatintel.NewRspamdSource(
+			cfg.Reputation.Rspamd.URL,
+			cfg.Reputation.Rspamd.Token,
+			cfg.Reputation.Rspamd.TokenEnv,
+		))
+	}
+	if cfg.Reputation.Upstream.Enabled {
+		agg.Register(threatintel.NewUpstreamSource(threatintel.UpstreamConfig{
+			URL:      cfg.Reputation.Upstream.URL,
+			Token:    cfg.Reputation.Upstream.Token,
+			TokenEnv: cfg.Reputation.Upstream.TokenEnv,
+			CacheTTL: time.Duration(cfg.Reputation.Upstream.CacheTTLMin) * time.Minute,
+			Timeout:  time.Duration(cfg.Reputation.Upstream.TimeoutSec) * time.Second,
+		}))
+	}
 	return agg
 }
 
-func supplementalThreatScore(ctx context.Context, agg *threatintel.Aggregator, ip string) (int, bool) {
+// supplementalThreatScore queries the aggregator for ip and returns the
+// aggregated score, the name of the highest-scoring individual source
+// (capitalised for operator-facing messages), and whether a usable score
+// was found. Returns ("", 0, false) when agg is nil or no source scored.
+func supplementalThreatScore(ctx context.Context, agg *threatintel.Aggregator, ip string) (int, string, bool) {
 	if agg == nil {
-		return 0, false
+		return 0, "", false
 	}
 	res, err := agg.Score(ctx, ip)
 	if err != nil || res.AggregatedScore == 0 {
-		return 0, false
+		return 0, "", false
 	}
-	return res.AggregatedScore, true
+	// Identify the source with the highest individual score so callers can
+	// label findings accurately (e.g. "Rspamd" vs "Upstream").
+	dominant := "supplemental"
+	max := 0
+	for name, s := range res.Sources {
+		if s > max {
+			max = s
+			dominant = name
+		}
+	}
+	return res.AggregatedScore, capitalizeProvider(dominant), true
+}
+
+// capitalizeProvider title-cases known source names for operator-facing
+// messages ("rspamd" -> "Rspamd", "upstream" -> "Upstream").
+func capitalizeProvider(name string) string {
+	if len(name) == 0 {
+		return name
+	}
+	return strings.ToUpper(name[:1]) + name[1:]
 }
 
 func appendReputationFinding(findings *[]alert.Finding, ip, detectedVia, provider string, score int, category string) {
