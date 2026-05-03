@@ -69,3 +69,13 @@ reputation:
     enabled: true
     url: http://127.0.0.1:11334
     # token_env: CSM_RSPAMD_TOKEN  # operator/agent supplies
+
+# === P5: Operational safety ===
+
+# Phpanel hosts default to auto_response dry-run for safety. Operators
+# flip dry_run to false in a higher-numbered conf.d fragment after a
+# soak period confirms the would-be blocks look right in the dry-run log.
+auto_response:
+  enabled: true
+  block_ips: true
+  dry_run: true

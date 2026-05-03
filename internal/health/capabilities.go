@@ -20,5 +20,8 @@ func Capabilities() []string {
 		"mail.source.journal.v1",    // P4
 		"mail.brute.account_key.v1", // P4
 		"ti.source.rspamd.v1",       // P4
+		"auto_response.dry_run.v1",  // P5
+		"infra_ips.guard.v1",        // P5
+		"store.backup.v1",           // P5
 	}
 }

@@ -43,6 +43,11 @@ func TestApiCapabilities_ReturnsList(t *testing.T) {
 			t.Errorf("missing %q in capabilities, got %v", want, got.Capabilities)
 		}
 	}
+	for _, want := range []string{"auto_response.dry_run.v1", "infra_ips.guard.v1", "store.backup.v1"} {
+		if !capsContains(got.Capabilities, want) {
+			t.Errorf("missing %q in capabilities, got %v", want, got.Capabilities)
+		}
+	}
 }
 
 func capsContains(haystack []string, needle string) bool {
