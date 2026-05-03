@@ -48,3 +48,24 @@ account_roots:
 #     - name: phpanel-readonly
 #       token: <agent-generated-secret>
 #       scope: read
+
+# === P4: Mail-stack adaptations ===
+
+# Mail logs read from systemd-journald (no rsyslog dependency on phpanel hosts).
+mail_logs:
+  source: journal
+  units:
+    - postfix
+    - dovecot
+
+# Per-account brute-force scoring keys on dovecot's user=<...> field by default.
+# Operators with custom log formats override this in a higher-numbered fragment.
+thresholds:
+  mail_brute_account_key: "builtin:dovecot-user"
+
+# Rspamd scoring source. Agent supplies token_env via runtime fragment / env.
+reputation:
+  rspamd:
+    enabled: true
+    url: http://127.0.0.1:11334
+    # token_env: CSM_RSPAMD_TOKEN  # operator/agent supplies

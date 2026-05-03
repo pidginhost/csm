@@ -17,5 +17,8 @@ func Capabilities() []string {
 		"webhook.phpanel.v1",       // P3
 		"events.sse.v1",            // P3
 		"token.scope.readonly.v1",  // P3
+		"mail.source.journal.v1",   // P4
+		"mail.brute.account_key.v1", // P4
+		"ti.source.rspamd.v1",      // P4
 	}
 }
