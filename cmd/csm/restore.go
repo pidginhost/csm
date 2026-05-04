@@ -20,8 +20,8 @@ const maxRestoreEntrySize = 1 << 30
 //
 // Defends against path traversal: archive entries with `../` components
 // or absolute paths are rejected.
-func RestoreBackupArchive(archive string, dst BackupSources) error {
-	f, err := os.Open(archive) // #nosec G304 -- operator-supplied archive path
+func RestoreBackupArchive(archive string, dst BackupSources) (err error) {
+	f, err := os.Open(archive) // #nosec G304 G703 -- operator-supplied archive path.
 	if err != nil {
 		return err
 	}
@@ -30,7 +30,11 @@ func RestoreBackupArchive(archive string, dst BackupSources) error {
 	if err != nil {
 		return err
 	}
-	defer gr.Close()
+	defer func() {
+		if closeErr := gr.Close(); err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}()
 	tr := tar.NewReader(gr)
 	for {
 		hdr, err := tr.Next()
@@ -41,7 +45,7 @@ func RestoreBackupArchive(archive string, dst BackupSources) error {
 			return err
 		}
 
-		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeRegA {
+		if hdr.Typeflag != tar.TypeReg {
 			continue
 		}
 		if hdr.Size < 0 || hdr.Size > maxRestoreEntrySize {
@@ -73,19 +77,19 @@ func RestoreBackupArchive(archive string, dst BackupSources) error {
 			continue // destination path not configured for this entry kind
 		}
 
-		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-			return err
+		if mkdirErr := os.MkdirAll(filepath.Dir(target), 0o700); mkdirErr != nil {
+			return mkdirErr
 		}
 		out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) // #nosec G304 -- target derived from sanitized archive entry
 		if err != nil {
 			return err
 		}
-		if _, err := io.CopyN(out, tr, hdr.Size); err != nil {
+		if _, copyErr := io.CopyN(out, tr, hdr.Size); copyErr != nil {
 			out.Close()
-			return err
+			return copyErr
 		}
-		if err := out.Close(); err != nil {
-			return err
+		if closeErr := out.Close(); closeErr != nil {
+			return closeErr
 		}
 	}
 }

@@ -463,7 +463,7 @@ func (s *Server) apiThreatBulkAction(w http.ResponseWriter, r *http.Request) {
 			// Mirror apiThreatBlockIP flow
 			if s.blocker != nil {
 				// Operator-initiated bulk block: bypass auto_response.dry_run gate.
-			if err := blockIPForOperator(s.blocker, ipStr, "Bulk blocked via CSM Web UI", 24*time.Hour); err != nil {
+				if err := blockIPForOperator(s.blocker, ipStr, "Bulk blocked via CSM Web UI", 24*time.Hour); err != nil {
 					continue
 				}
 			}

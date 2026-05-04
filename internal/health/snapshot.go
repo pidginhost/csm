@@ -25,7 +25,7 @@ type Snapshot struct {
 	// DryRunBlocks is the count of firewall blocks that were intercepted by
 	// auto_response.dry_run and logged rather than applied to nftables.
 	// Non-zero only when dry_run has been active since the last daemon start.
-	DryRunBlocks  int             `json:"dry_run_blocks,omitempty"`
+	DryRunBlocks int `json:"dry_run_blocks,omitempty"`
 }
 
 // TotalFindings returns the sum across all severity buckets.

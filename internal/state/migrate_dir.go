@@ -84,6 +84,7 @@ func copyEntry(src, dst string) error {
 		return err
 	}
 	defer in.Close()
+	// #nosec G304 -- dst is new state directory plus an entry name from os.ReadDir.
 	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode().Perm())
 	if err != nil {
 		return err

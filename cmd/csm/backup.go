@@ -28,16 +28,16 @@ func WriteBackupArchive(out string, src BackupSources) (err error) {
 		return fmt.Errorf("resolving output path: %w", err)
 	}
 	if src.ConfigPath != "" {
-		cfgAbs, err := filepath.Abs(src.ConfigPath)
-		if err != nil {
-			return fmt.Errorf("resolving config path: %w", err)
+		cfgAbs, cfgErr := filepath.Abs(src.ConfigPath)
+		if cfgErr != nil {
+			return fmt.Errorf("resolving config path: %w", cfgErr)
 		}
 		if outAbs == cfgAbs {
 			return fmt.Errorf("backup output must not overwrite config file: %s", out)
 		}
 	}
 
-	f, err := os.Create(out) // #nosec G304 -- operator-supplied destination
+	f, err := os.Create(out) // #nosec G304 G703 -- operator-supplied backup destination.
 	if err != nil {
 		return fmt.Errorf("creating backup: %w", err)
 	}
@@ -102,8 +102,8 @@ func addFile(tw *tar.Writer, path, name string) error {
 	if err != nil {
 		return err
 	}
-	if err := tw.WriteHeader(&tar.Header{Name: name, Size: st.Size(), Mode: 0o600, ModTime: st.ModTime()}); err != nil {
-		return err
+	if writeErr := tw.WriteHeader(&tar.Header{Name: name, Size: st.Size(), Mode: 0o600, ModTime: st.ModTime()}); writeErr != nil {
+		return writeErr
 	}
 	_, err = io.Copy(tw, f)
 	return err
@@ -129,9 +129,9 @@ func addDir(tw *tar.Writer, dir, prefix, excludeAbs string) error {
 			return nil
 		}
 		if excludeAbs != "" {
-			abs, err := filepath.Abs(filePath)
-			if err != nil {
-				return err
+			abs, absErr := filepath.Abs(filePath)
+			if absErr != nil {
+				return absErr
 			}
 			if abs == excludeAbs {
 				return nil
@@ -178,10 +178,11 @@ func runBackup() {
 		ConfDir:    cfg.ConfigDir,
 		StateDir:   cfg.StatePath,
 	}
-	if err := WriteBackupArchive(out, src); err != nil {
-		fmt.Fprintf(os.Stderr, "backup failed: %v\n", err)
+	if backupErr := WriteBackupArchive(out, src); backupErr != nil {
+		fmt.Fprintf(os.Stderr, "backup failed: %v\n", backupErr)
 		os.Exit(1)
 	}
+	// #nosec G703 -- operator-supplied backup destination; this stats the archive just written.
 	st, err := os.Stat(out)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "backup written but stat failed: %v\n", err)

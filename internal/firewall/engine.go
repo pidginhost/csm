@@ -1242,14 +1242,15 @@ func (e *Engine) BlockIP(ip string, reason string, timeout time.Duration) error 
 	// the gate entirely.
 	if asker := e.verdictAskerFn(); asker != nil {
 		v, tenant, note, err := asker(context.Background(), ip, reason)
-		if err != nil {
+		switch {
+		case err != nil:
 			fmt.Fprintf(os.Stderr, "[%s] verdict callback failed for %s: %v - proceeding with default block\n",
 				time.Now().Format("2006-01-02 15:04:05"), ip, err)
-		} else if v == "allow" {
+		case v == "allow":
 			fmt.Fprintf(os.Stderr, "[%s] verdict callback returned allow for %s (tenant=%q note=%q) - not blocking\n",
 				time.Now().Format("2006-01-02 15:04:05"), ip, tenant, note)
 			return nil
-		} else if tenant != "" || note != "" {
+		case tenant != "" || note != "":
 			fmt.Fprintf(os.Stderr, "[%s] verdict callback returned block for %s (tenant=%q note=%q) - proceeding with default block\n",
 				time.Now().Format("2006-01-02 15:04:05"), ip, tenant, note)
 		}

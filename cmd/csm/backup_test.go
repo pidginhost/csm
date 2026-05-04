@@ -111,7 +111,11 @@ func tarNames(t *testing.T, archivePath string) map[string]bool {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer gr.Close()
+	defer func() {
+		if closeErr := gr.Close(); closeErr != nil {
+			t.Fatal(closeErr)
+		}
+	}()
 	tr := tar.NewReader(gr)
 	names := make(map[string]bool)
 	for {

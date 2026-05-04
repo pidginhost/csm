@@ -127,16 +127,32 @@ func writeArchiveEntry(archivePath, name string, size int64, body []byte) error 
 	defer f.Close()
 
 	gw := gzip.NewWriter(f)
-	defer gw.Close()
 	tw := tar.NewWriter(gw)
-	defer tw.Close()
+	writersClosed := false
+	defer func() {
+		if !writersClosed {
+			_ = tw.Close()
+			_ = gw.Close()
+		}
+	}()
 
-	if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o600, Size: size}); err != nil {
-		return err
+	if writeErr := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o600, Size: size}); writeErr != nil {
+		return writeErr
 	}
-	if len(body) == 0 {
+	if len(body) > 0 {
+		if _, err = tw.Write(body); err != nil {
+			return err
+		}
+	}
+	if int64(len(body)) < size {
 		return nil
 	}
-	_, err = tw.Write(body)
-	return err
+	if err = tw.Close(); err != nil {
+		return err
+	}
+	if err = gw.Close(); err != nil {
+		return err
+	}
+	writersClosed = true
+	return nil
 }
