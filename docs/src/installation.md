@@ -95,13 +95,30 @@ sudo apt install -y ./csm_VERSION_amd64.deb
 
 Replace `VERSION` with a real version (e.g. `2.2.2`). Both files are also available at `https://mirrors.pidginhost.com/csm/deb/pool/main/c/csm/` and `https://mirrors.pidginhost.com/csm/rpm/elN/ARCH/` if you prefer to pin versions from the mirror.
 
+## Filesystem layout
+
+The package installs the FHS layout. Operators upgrading from older builds may still see the legacy paths until they reinstall:
+
+| Concern | FHS path | Legacy path |
+|---|---|---|
+| Main config | `/etc/csm/csm.yaml` | `/opt/csm/csm.yaml` |
+| Drop-in fragments | `/etc/csm/conf.d/*.yaml` | n/a |
+| State directory | `/var/lib/csm/state/` | `/opt/csm/state/` |
+| Shipped profiles | `/usr/lib/csm/profiles/` | n/a |
+| Audit log | `/var/log/csm/audit.jsonl` | same |
+| Binary | `/opt/csm/csm` | same |
+| Quarantine | `/opt/csm/quarantine/` | same |
+| YARA / signature rules | `/opt/csm/rules/` | same |
+
+The systemd unit declares `StateDirectory=csm` and `ConfigurationDirectory=csm` so systemd manages permissions. On first start the daemon copies a non-empty legacy `/opt/csm/state/` into `/var/lib/csm/state/` (only when the new directory is empty), then continues using the FHS path. See [Upgrading → FHS migration](upgrading.md#fhs-migration-legacy-installs-upgrading-past-v2110) for the manual-binary-swap case.
+
 ## Post-install (all methods)
 
 ```bash
-vi /opt/csm/csm.yaml                   # Set hostname, alert email, infra IPs
-csm validate                           # Check config syntax
-csm baseline                           # Record current state as known-good
-systemctl enable --now csm.service     # Start the daemon
+sudo vi /etc/csm/csm.yaml              # Set hostname, alert email, infra IPs
+sudo csm validate                      # Check config syntax (validates merged conf.d too)
+sudo csm baseline                      # Record current state as known-good
+sudo systemctl enable --now csm.service
 ```
 
 ## Rollback to an older version

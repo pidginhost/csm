@@ -44,3 +44,45 @@ dpkg -i csm_NEW.deb         # DEB
 ```
 
 Package managers handle stop/start automatically.
+
+## FHS migration (legacy installs upgrading past v2.11.0)
+
+The packaged layout has moved:
+
+| Concern | Legacy path | New (FHS) path |
+|---|---|---|
+| Main config | `/opt/csm/csm.yaml` | `/etc/csm/csm.yaml` |
+| Drop-in fragments | n/a | `/etc/csm/conf.d/*.yaml` |
+| State directory | `/opt/csm/state` | `/var/lib/csm/state` |
+| Shipped profiles | n/a | `/usr/lib/csm/profiles` |
+| Binary | `/opt/csm/csm` | `/opt/csm/csm` (unchanged) |
+
+The package postinstall creates the FHS directories with the right ownership. The daemon copies a non-empty legacy `/opt/csm/state/` into the new state directory on first start, but only when the new directory is empty (so a partial migration cannot corrupt it). The legacy directory is left in place; remove it after you have verified the new install.
+
+Operators upgrading by **manual binary swap** (without re-running the package postinstall) keep the legacy paths and the daemon will continue using them — `state_path: /opt/csm/state` in the existing `csm.yaml` pins it. To move to the FHS layout, either reinstall the package or create the directories by hand and remove the `state_path:` override.
+
+## systemd `Type=notify` drop-in
+
+The packaged unit file is `Type=notify` with `WatchdogSec=300`. The daemon signals `READY=1` after watchers attach and pings `WATCHDOG=1` on schedule, so `systemctl is-active` reflects truth and the watchdog kills a hung daemon.
+
+Older units shipped `Type=simple`. The watchdog still functions — the daemon pings regardless of unit type — but `systemctl status` only sees the process, not "watchers attached." If you need the new behavior on an older unit, drop in:
+
+```ini
+# /etc/systemd/system/csm.service.d/notify.conf
+[Service]
+Type=notify
+NotifyAccess=main
+```
+
+Then `systemctl daemon-reload && systemctl restart csm`. Verify with `systemctl show csm -p Type -p StatusText`.
+
+## Auto-response dry-run safety default
+
+`auto_response.dry_run` defaults to `true` when the key is absent. The daemon records every IP it would have blocked but does not touch nftables. If your `auto_response:` block sets `enabled: true` and `block_ips: true` but does **not** set `dry_run`, **add `dry_run: false` explicitly** before relying on auto-block. Verify with:
+
+```bash
+csm status --json | jq '.capabilities, .severities'
+csm firewall status            # check that "Recently Blocked" picks up new entries after the restart
+```
+
+Manual `csm firewall ...` operations bypass dry-run and always apply.

@@ -18,12 +18,23 @@ Combines multiple sources into a unified verdict:
 | Local attack DB | Event count, types, score |
 | AbuseIPDB | External reputation (if API key configured) |
 | Rspamd | Per-IP rolling history (if controller access configured) |
+| Upstream HTTP cache | Panel-side shared score (if `reputation.upstream` configured) |
 | Permanent blocklist | Operator-managed persistent blocks |
 | Firewall state | Currently blocked/allowed status |
 | GeoIP | Country, city, ASN, ISP |
 | RDAP | Network name, organization (cached 24h) |
 
 **Verdicts:** clean, suspicious, malicious, blocked
+
+### Pluggable sources
+
+Threat-intel sources implement a small `Source` interface (lookup-by-IP returning a score + reason). The aggregator queries every enabled source in parallel, applies per-source weighting, and produces the unified verdict above. Adding a new source means implementing the interface and registering it; no existing source code changes.
+
+Currently shipped:
+
+- **AbuseIPDB** (`reputation.abuseipdb_key`) — external IP reputation feed.
+- **Rspamd** (`reputation.rspamd.*`) — per-IP rolling-history signals from the local rspamd controller. Token resolves from `token_env` at query time so rotation does not require a daemon restart.
+- **Upstream HTTP cache** (`reputation.upstream.*`) — shared panel-side cache of AbuseIPDB or proprietary scores. Useful in fleets: agents pay a local cache hit (`cache_ttl_min`, default 15 m) instead of hammering the upstream once per agent. Wire contract: [`docs/upstream-threat-intel-contract.md`](../upstream-threat-intel-contract.md).
 
 ## Web UI
 

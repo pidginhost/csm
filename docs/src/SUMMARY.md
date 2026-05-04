@@ -16,6 +16,10 @@
 - [Deep Checks](detection-deep.md)
 - [Auto-Response](auto-response.md)
 
+# Hardening
+
+- [CVE Mitigations](cve-mitigations.md)
+
 # Components
 
 - [Firewall (nftables)](firewall.md)

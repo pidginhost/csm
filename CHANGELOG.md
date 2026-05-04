@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- New `docs/src/cve-mitigations.md` consolidates CVE coverage (CVE-2026-31431 Copy Fail paths, KernelCare detection, AF_ALG live monitor + BPF LSM Phase A; CVE-2026-41940 cPanel/WHM auth-bypass detector). README's CVE block is replaced with a short pointer to the new page so the front page reads as a problem-to-solution map instead of a CVE bulletin.
+- README rewritten around "Why CSM" + "What it solves" use-case table; install consolidated into APT/DNF one-blocks; CLI section adds `csm doctor`, `csm status --json`, `csm config schema`, `csm backup`/`restore`, `csm harden`.
+- CLI, configuration, upgrading, auto-response, API, installation, firewall, and threat-intel pages updated for the v2.11.0+ surface: conf.d drop-ins, FHS migration, `Type=notify` drop-in, dry-run safety default, verdict callback, `infra_ips_unresolvable` guard, scope-aware tokens, `/api/v1/capabilities` and SSE events, pluggable threat-intel sources, `tenant_id`/`domain`/`mailbox` finding fields.
+
 ### Added
 
 - AF_ALG (Copy Fail) live monitor now runs through a backend coordinator that prefers BPF LSM when the kernel supports it and falls back to the existing audit-log inotify listener otherwise. Build with `make BPF=1` (or `go build -tags bpf`) to compile in the BPF path; default builds continue to ship only the audit listener. This release lands the kernel capability probe (Phase A); the in-kernel blocking program is staged behind `errBPFPhaseBPending` and will activate once Phase B + alma9 integration test land — until then `-tags bpf` builds still use the audit listener, so detection coverage is unchanged.

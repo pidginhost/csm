@@ -1,10 +1,17 @@
 # CLI Commands
 
+## Global flags
+
+| Flag | Description |
+|---------|-------------|
+| `--config <path>` | Override the main config path. Default: `/etc/csm/csm.yaml` (falls back to `/opt/csm/csm.yaml` on legacy installs). |
+| `--config-dir <path>` | Override the conf.d directory. Default: `/etc/csm/conf.d`. Also `CSM_CONFIG_DIR` env var. Fragments are merged on top of the main file in lexicographic order; later fragments win. |
+
 ## Daemon
 
 | Command | Description |
 |---------|-------------|
-| `csm daemon` | Run as persistent daemon (fanotify + inotify + PAM + periodic checks) |
+| `csm daemon` | Run as persistent daemon (fanotify + inotify + PAM + periodic checks). Signals systemd `READY=1` after watchers attach and pings `WATCHDOG=1` on the configured interval. |
 
 ## Checks
 
@@ -26,11 +33,32 @@
 | `csm uninstall` | Clean removal |
 | `csm baseline` | Full server scan via the daemon, records current state as known-good. Takes 5-10 min on large servers. Required on first install. Add `--confirm` when existing history would be cleared. The daemon must be running (phase 2: baseline is coordinated inside the daemon, no longer needs systemd timers stopped first). |
 | `csm rehash` | Update binary/config hashes without scanning. Use after config edits. Run twice (circular hash). |
-| `csm status` | Show current state, last run, active findings |
+| `csm status` | Show current state, last run, active findings. Add `--json` for the full health snapshot (watchers, severity counts, store health, blocklist size, capabilities, version, hashes). |
+| `csm doctor` | Config + daemon + watchers + store sanity check. Emits suggested-fix strings for each failed step. Add `--json` for machine-readable output. |
 | `csm validate` | Validate config (`--deep` for connectivity probes) |
 | `csm config show` | Display config with secrets redacted |
+| `csm config schema --json` | Print a JSON Schema reflected from the `Config` struct. Use for CI validation of conf.d drop-ins or panel-side editor schemas. |
 | `csm verify` | Verify binary and config integrity |
 | `csm version` | Version and build info |
+
+## Backup & restore
+
+| Command | Description |
+|---------|-------------|
+| `csm backup <path>` | Bundle `csm.yaml`, `/etc/csm/conf.d/`, and the state directory into a tar.gz at `<path>`. Use for clean DR snapshots. Daemon may be running. |
+| `csm restore <archive>` | Extract a backup archive into the live `csm.yaml` + `conf.d` + state directory. Rejects path-traversal entries. Stop the daemon first. |
+
+`csm store export` / `csm store import` (below) is the lower-level alternative — tar+zstd, sha256-verified, finer-grained `--only=` flags. `csm backup`/`restore` is the convenience wrapper most operators want.
+
+## Hardening
+
+Operator-driven mitigations applied to the host. Run `csm harden` with no arguments to print the available subcommands on the current host (the audit detects kernel build, panel, and existing mitigations and only offers what's relevant). Background, full list, and live-detection details: [CVE Mitigations](cve-mitigations.md).
+
+| Command | Description |
+|---------|-------------|
+| `csm harden` | Print the hardening menu for this host. |
+| `csm harden --copy-fail` | Apply the CVE-2026-31431 (Copy Fail) modprobe mitigation: blacklist `algif_aead` + `af_alg`, unload them. Refuses on built-in-AF_ALG kernels. |
+| `csm harden --copy-fail-seccomp` | Apply the CVE-2026-31431 seccomp mitigation: write systemd `RestrictAddressFamilies=~AF_ALG` drop-ins for LiteSpeed, Apache/Nginx, every PHP-FPM pool, cron, and mail units. The right path on built-in-AF_ALG kernels (typical cPanel/CloudLinux 8). |
 
 ## Remediation
 

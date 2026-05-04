@@ -11,10 +11,12 @@ CSM includes a native nftables firewall engine that replaces LFD and fail2ban. I
 - **Outbound SMTP restriction** by UID (prevent spam from compromised accounts)
 - **Subnet/CIDR blocking** with auto-escalation from individual IPs
 - **Permanent block escalation** after repeated temp blocks
-- **Dynamic DNS** hostname resolution (updated every 5 min)
+- **Dynamic DNS** hostname resolution (updated every 5 min) with grace-period guard against transient resolver failures
 - **IPv6 dual-stack** with separate sets
 - **Commit-confirmed safety** - Juniper-style auto-rollback timer
 - **Infra IP protection** - refuses to block infrastructure IPs
+- **Auto-response dry-run** - safety default that records intended blocks without touching nftables
+- **Verdict callback** - optional advisory hook to the panel before each auto-block (allow / block / attach metadata)
 - **cphulk integration** - unblock flushes cphulk too
 - **Audit trail** - JSONL log with 10MB rotation
 - **State persistence** with atomic writes
@@ -79,4 +81,20 @@ firewall:
   conn_limit: 50               # max concurrent connections per IP
   smtp_block: false            # restrict outbound SMTP
   log_dropped: true
+  dyndns_hosts:                # resolved every 5 min into the infra set
+    - "monitoring.example.com"
 ```
+
+Full firewall reference: [Configuration → Firewall](configuration.md#full-reference).
+
+## Auto-response interaction
+
+Auto-block calls go through the firewall engine, but the engine consults two policy hooks first:
+
+1. **`auto_response.dry_run`** — when true (or absent; safety default), `BlockIP()` records the intended block to bbolt and returns success without touching nftables. Manual `csm firewall ...` operator commands bypass via `BlockIPForce` and always apply. Verify with `csm firewall status` after policy changes — "Recently Blocked" timestamps newer than the last restart confirm live mode. See [Auto-response → Dry-run safety default](auto-response.md#dry-run-safety-default).
+
+2. **`auto_response.verdict_callback`** — when enabled, the engine POSTs a signed JSON request to the panel before each auto-block. The panel can downgrade to `allow` (audit-only), attach `tenant_id` for downstream correlation, or override the block reason. CSM fails open on hook errors. Wire contract: [`docs/verdict-callback-contract.md`](../verdict-callback-contract.md).
+
+## Infrastructure IP DNS guard
+
+Hostnames listed in `firewall.dyndns_hosts` are resolved into the `infra_ips` set every 5 minutes so the addresses they currently point at are never auto-blocked. If a hostname stops resolving, the daemon emits an `infra_ips_unresolvable` Warning finding and keeps the **last known** addresses in the infra set during a grace period (default 10 min) — this prevents a transient DNS outage from deprotecting the management plane. The finding auto-clears when resolution recovers.

@@ -1,6 +1,6 @@
 # Configuration
 
-CSM is configured via a single YAML file at `/opt/csm/csm.yaml`.
+CSM is configured via a YAML file at `/etc/csm/csm.yaml` (legacy path: `/opt/csm/csm.yaml`; the daemon picks whichever exists, with `--config <path>` to override). Optional drop-in fragments under `/etc/csm/conf.d/*.yaml` are merged on top of the main file at startup — see [conf.d drop-ins](#confd-drop-ins) below.
 
 ## Platform & Web Server
 
@@ -596,3 +596,23 @@ Config-management workflows (Ansible, Puppet, Chef) should:
   `csm rehash` before the restart notify fires. Or always send
   `reload` first, read the journal, and promote to `restart` only
   when the reload logs `restart-required`.
+
+## conf.d drop-ins
+
+Files matching `/etc/csm/conf.d/*.yaml` are loaded after the main config and **deep-merged** on top of it. Override with `--config-dir <path>` or `CSM_CONFIG_DIR`.
+
+- **Order:** lexicographic by filename. `10-base.yaml` is overridden by `20-overrides.yaml`. Use a numeric prefix.
+- **Merge semantics:** maps merge recursively; scalars and lists in a fragment **replace** the value from the main file. Append-style merges are not supported by design — predictable replacement beats clever concatenation.
+- **Hash:** `integrity.config_hash` covers the **main file only**. Drop-in changes are picked up on restart (or SIGHUP, where the field is hot-reload-safe) without a `csm rehash`.
+- **Use cases:** packaged integration profiles (e.g. `/usr/lib/csm/profiles/phpanel-agent.yaml` symlinked into `conf.d/`), per-host automation that should not touch the operator's `csm.yaml`, secret material rendered from a vault.
+
+```bash
+ls /etc/csm/conf.d/
+# 10-phpanel-agent.yaml   20-tenant-overrides.yaml
+
+csm validate                # validates the merged config
+csm config show             # prints the merged, redacted config
+csm config schema --json    # JSON Schema for editor / CI validation
+```
+
+`csm validate` and `csm config show` always operate on the **merged** config so you can audit the effective state without grepping fragments.

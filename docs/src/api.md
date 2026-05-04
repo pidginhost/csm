@@ -14,10 +14,32 @@ curl -b "csm_auth=YOUR_TOKEN" https://server:9443/api/v1/status
 
 POST requests require the `X-CSRF-Token` header (obtained from the login response or page meta tag).
 
+### Token scopes
+
+Configure tokens under `webui.tokens:` with a `scope` of `admin` or `read`:
+
+```yaml
+webui:
+  tokens:
+    - name: "operator"
+      token: "..."
+      scope: admin       # full read+write
+    - name: "panel-readonly"
+      token: "..."
+      scope: read        # GET /api/v1/* only; POST returns 403
+```
+
+The legacy single-token `webui.auth_token:` is migrated automatically to a `legacy-auth-token` admin entry on first start. Read-scope tokens are intended for orchestrators and dashboards that should be able to consume findings, status, and SSE events without the ability to mutate state. `metrics_token:` is a separate, read-only credential for `/metrics` only.
+
 ## Status & Data
 
 ```
-GET  /api/v1/status              Daemon status, uptime, scan state
+GET  /api/v1/status              Full health snapshot: version, uptime, watchers, severity counts,
+                                 store health, blocklist size, capabilities[], config_hash, binary_hash
+GET  /api/v1/capabilities        Static feature list (e.g. `confd.dropins.v1`, `events.sse.v1`,
+                                 `webhook.phpanel.v1`, `sd_notify.ready`). Use for orchestrator feature-detect.
+GET  /api/v1/events              Server-Sent Events stream of findings as they dispatch.
+                                 Read-scope token sufficient. One JSON event per `data:` line.
 GET  /api/v1/health              Daemon health (fanotify, watchers, engines)
 GET  /api/v1/findings            Current active findings
 GET  /api/v1/findings/enriched   Enriched findings with GeoIP, accounts, fix info
@@ -145,3 +167,15 @@ POST /api/v1/settings/restart     Request a daemon restart (after editing restar
 ```
 
 Sections map to top-level config keys: `alerts`, `auto_response`, `challenge`, `reputation`, `performance`, `infra_ips`, `sentry`, etc. Writes persist to `csm.yaml`, re-sign the integrity hash, and hot-reload where possible; restart-required changes are queued for `/api/v1/settings/restart`.
+
+## Finding fields
+
+Every finding in `/api/v1/findings`, `/api/v1/events`, and the JSONL audit log carries optional correlation fields when CSM can attribute them:
+
+| Field | Meaning |
+|---|---|
+| `tenant_id` | Tenant attribution from the verdict callback or panel-side webhook reply |
+| `domain` | Domain associated with the event (e.g. PHP-relay scriptKey host, mailbox domain) |
+| `mailbox` | Mailbox attribution (e.g. mail brute-force target, PHP-relay envelope-from) |
+
+Fields are omitted when the daemon could not attribute them — orchestrators should treat absence as "unknown," not "global."

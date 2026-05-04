@@ -30,6 +30,25 @@ auto_response:
   permblock: true             # promote temp blocks to permanent
   permblock_count: 4          # temp blocks before promotion
 
+  # SAFETY DEFAULT: dry_run defaults to TRUE when this key is absent.
+  # In dry-run, BlockIP records the intended block to bbolt but does
+  # NOT touch nftables. Manual operator commands (`csm firewall ...`)
+  # bypass via BlockIPForce and always apply. Flip to false only after
+  # verifying the policy in dry-run.
+  dry_run: false
+
+  # Advisory verdict callback. CSM POSTs each impending auto-block
+  # to the panel before applying. The panel can downgrade to "allow"
+  # (audit-only), attach `tenant_id` for downstream correlation, or
+  # add a reason. CSM fails open on hook errors. Wire contract:
+  # docs/verdict-callback-contract.md.
+  verdict_callback:
+    enabled: false
+    url: ""                            # POST target
+    hmac_secret: ""                    # signing secret, or use hmac_secret_env
+    hmac_secret_env: ""
+    timeout_sec: 2
+
   # PHP-relay auto-freeze (cPanel only). Off by default; opt in
   # explicitly. dry_run defaults to true even when freeze=true so an
   # operator who enables freeze without thinking gets a dry-run.
@@ -38,6 +57,29 @@ auto_response:
     dry_run: true                      # safe default; flip with `csm phprelay dry-run off`
     max_actions_per_minute: 60         # rolling 60s window cap on exim -Mf invocations
 ```
+
+### Dry-run safety default
+
+`auto_response.dry_run` defaults to `true` when the key is **absent**. This is deliberate: an operator who turns on `block_ips: true` without thinking through policy gets recorded-but-not-applied blocks. The dry-run count surfaces in `csm status --json` and `/api/v1/status` so dashboards can verify the policy before flipping live.
+
+Verify dry-run state explicitly:
+
+```bash
+csm status --json | jq '.severities, .blocklist_size'
+csm firewall status   # "Recently Blocked" entries with timestamps after the restart confirm live mode
+```
+
+To go live: set `dry_run: false`, run `csm rehash` (twice — circular hash), then restart or SIGHUP-reload (the field is hot-reload-safe).
+
+### Verdict callback (advisory)
+
+When `verdict_callback.enabled: true`, every auto-block call POSTs a signed JSON request to the panel before mutating nftables. The panel can return `{"verdict": "block"}` (apply), `{"verdict": "allow"}` (audit-only — CSM logs the would-be block but skips nftables), or attach metadata (`tenant_id`, `reason`). The callback runs **after** local safety checks (infra IP, dry-run, rate limit) so the panel only sees blocks CSM is otherwise willing to apply.
+
+CSM fails open on hook errors (timeout, non-2xx, malformed body) — the block applies as if the hook were disabled, and a `verdict_callback_error` finding is emitted. Full request/response schema: [`docs/verdict-callback-contract.md`](../verdict-callback-contract.md).
+
+### Infrastructure IP DNS guard
+
+`firewall.dyndns_hosts` (resolved every 5 min into the `infra_ips` set) protects management hostnames from auto-block. If a hostname stops resolving, the daemon now emits an `infra_ips_unresolvable` Warning finding and keeps the **last known** addresses in the infra set during a grace period (default 10 min) instead of silently dropping protection. The finding auto-clears when resolution recovers.
 
 ## Safety Guards
 
