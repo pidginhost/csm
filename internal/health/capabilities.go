@@ -52,6 +52,9 @@ func appendActiveBPFFeatures(out []string) []string {
 	if bpf.ActiveKind("connection_tracker") == bpf.BackendBPF {
 		out = append(out, "bpf-connection-tracker")
 	}
+	if bpf.ActiveKind("af_alg") == bpf.BackendBPF {
+		out = append(out, "bpf-af-alg-live")
+	}
 	return out
 }
 

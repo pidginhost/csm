@@ -66,6 +66,23 @@ func TestConnectionTrackerCapabilityWhenBPFActive(t *testing.T) {
 	}
 }
 
+func TestAFAlgCapabilityWhenBPFActive(t *testing.T) {
+	bpf.SetActive("af_alg", bpf.BackendBPF)
+	if !contains(Capabilities(), "bpf-af-alg-live") {
+		t.Error("bpf-af-alg-live missing when AF_ALG backend is BPF")
+	}
+
+	bpf.SetActive("af_alg", bpf.BackendLegacy)
+	if contains(Capabilities(), "bpf-af-alg-live") {
+		t.Error("bpf-af-alg-live present when AF_ALG backend is legacy")
+	}
+
+	bpf.SetActive("af_alg", bpf.BackendNone)
+	if contains(Capabilities(), "bpf-af-alg-live") {
+		t.Error("bpf-af-alg-live present when AF_ALG backend is none")
+	}
+}
+
 func contains(haystack []string, needle string) bool {
 	for _, s := range haystack {
 		if s == needle {
