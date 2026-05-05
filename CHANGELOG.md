@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The outbound-connection check policy is now a pure function shared between the live tracker and the periodic safety-net check, so both code paths produce identical findings.
 - AF_ALG (CVE-2026-31431) live monitor now denies the syscall in the kernel itself on hosts with BPF LSM, instead of reacting after the fact via the audit log. Hosts without BPF LSM keep the audit-listener fallback unchanged.
 - Live process-exec monitor built on a sched tracepoint. Suspicious processes started from world-writable paths or with masquerading kernel-thread names are reported the moment they appear, instead of waiting for the deep periodic scan; older kernels keep using the existing scan.
+- Live sensitive-file write monitor built on BPF LSM. Writes to /etc/shadow, sshd config, sudoers, and cron drop-ins are reported the moment the kernel sees them; older kernels fall back to a periodic content-hash check covering the same paths.
 
 ### Fixed
 

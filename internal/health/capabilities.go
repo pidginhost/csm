@@ -58,6 +58,9 @@ func appendActiveBPFFeatures(out []string) []string {
 	if bpf.ActiveKind("exec_monitor") == bpf.BackendBPF {
 		out = append(out, "bpf-exec-monitor")
 	}
+	if bpf.ActiveKind("sensitive_files") == bpf.BackendBPF {
+		out = append(out, "bpf-sensitive-files")
+	}
 	return out
 }
 

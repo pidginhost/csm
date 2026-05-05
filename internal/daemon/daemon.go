@@ -603,6 +603,18 @@ func (d *Daemon) Run() error {
 		})
 	}
 
+	if mon := StartSensitiveFileMonitor(d.alertCh, d.cfg, d.store); mon != nil {
+		csmlog.Info("sensitive_files: started", "backend", mon.Mode())
+		d.wg.Add(1)
+		obs.Go("sensitive-files", func() {
+			defer d.wg.Done()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() { <-d.stopCh; cancel() }()
+			mon.Run(ctx)
+		})
+	}
+
 	// Start automatic signature updates
 	d.wg.Add(1)
 	obs.Go("signature-updater", d.signatureUpdater)

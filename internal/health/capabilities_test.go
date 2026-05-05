@@ -100,6 +100,23 @@ func TestExecMonitorCapabilityWhenBPFActive(t *testing.T) {
 	}
 }
 
+func TestSensitiveFilesCapabilityWhenBPFActive(t *testing.T) {
+	bpf.SetActive("sensitive_files", bpf.BackendBPF)
+	if !contains(Capabilities(), "bpf-sensitive-files") {
+		t.Error("bpf-sensitive-files missing when sensitive_files backend is BPF")
+	}
+
+	bpf.SetActive("sensitive_files", bpf.BackendLegacy)
+	if contains(Capabilities(), "bpf-sensitive-files") {
+		t.Error("bpf-sensitive-files present when sensitive_files backend is legacy")
+	}
+
+	bpf.SetActive("sensitive_files", bpf.BackendNone)
+	if contains(Capabilities(), "bpf-sensitive-files") {
+		t.Error("bpf-sensitive-files present when sensitive_files backend is none")
+	}
+}
+
 func contains(haystack []string, needle string) bool {
 	for _, s := range haystack {
 		if s == needle {
