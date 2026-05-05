@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Internal BPF scaffolding: shared backend coordinator, kernel capability probe, and ringbuf consumer used by upcoming kernel-side detectors. Operators see new entries in `/api/v1/capabilities` on bpf-tagged builds.
+
+### Changed
+
+- AF_ALG live-monitor backend selection is also published through the shared BPF backend telemetry while the existing AF_ALG metric remains available for current dashboards.
+
 ### Fixed
 
 - `waf_rules` no longer false-positives during cPanel's nightly `modsec_assemble` window; on cPanel+LiteSpeed the rule probe is re-tried once after a short delay before alerting, so a real "no rules" host still alerts in the same scan.
