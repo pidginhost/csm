@@ -182,9 +182,12 @@ func isPlaceholderConfig(path string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("reading %s: %w", path, err)
 	}
+	// Only the SET_*_HERE markers are reliable placeholders. The shipped
+	// default has both. `auth_token: ""` is a legitimate operator value
+	// in v2.11.0+ when the new webui.tokens block replaces the legacy
+	// single-token field, so it must not count as a placeholder.
 	return bytes.Contains(data, []byte("SET_HOSTNAME_HERE")) ||
-		bytes.Contains(data, []byte("SET_EMAIL_HERE")) ||
-		bytes.Contains(data, []byte(`auth_token: ""`)), nil
+		bytes.Contains(data, []byte("SET_EMAIL_HERE")), nil
 }
 
 func copyFilePreserveMeta(src, dst string) error {

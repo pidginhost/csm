@@ -21,7 +21,11 @@ install -d -m 0700 /var/lib/csm /var/lib/csm/state
 install -d -m 0755 /usr/lib/csm /usr/lib/csm/profiles
 
 is_placeholder_config() {
-    [ -f "$1" ] && grep -Eq 'SET_HOSTNAME_HERE|SET_EMAIL_HERE|auth_token: ""' "$1"
+    # Only the SET_*_HERE markers are reliable placeholders. The shipped
+    # default has both. `auth_token: ""` is a legitimate operator value
+    # in v2.11.0+ when the new webui.tokens block replaces the legacy
+    # single-token field, so it must not count as a placeholder.
+    [ -f "$1" ] && grep -Eq 'SET_HOSTNAME_HERE|SET_EMAIL_HERE' "$1"
 }
 
 copy_config_preserve() {
@@ -33,7 +37,11 @@ copy_config_preserve() {
 
 link_legacy_config() {
     [ -e "$PREFERRED_CONFIG" ] || return 0
-    install -d -m 0700 "$(dirname "$LEGACY_CONFIG")"
+    # /opt/csm holds the binary, ui/, rules/, quarantine/. Don't tighten
+    # its mode here - GNU `install -d -m` rewrites the mode on existing
+    # dirs, and 0700 would block non-root users from traversing /opt/csm
+    # to invoke csm CLI commands.
+    [ -d "$(dirname "$LEGACY_CONFIG")" ] || install -d -m 0755 "$(dirname "$LEGACY_CONFIG")"
 
     if [ -L "$LEGACY_CONFIG" ]; then
         target="$(readlink "$LEGACY_CONFIG" 2>/dev/null || true)"

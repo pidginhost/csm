@@ -46,6 +46,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Config-path migration no longer treats `auth_token: ""` as a placeholder marker. The empty value is legitimate in v2.11.0+ when the `webui.tokens:` block replaces the legacy single-token field, so the migration now keys only on the shipped `SET_HOSTNAME_HERE` / `SET_EMAIL_HERE` markers and will not silently overwrite a real `/etc/csm/csm.yaml` with a stale `/opt/csm/csm.yaml`.
+- Postinstall no longer tightens `/opt/csm` to mode `0700`. GNU `install -d -m` rewrites the mode of existing directories, which would have blocked non-root users from traversing `/opt/csm` to invoke `csm` CLI commands.
 - Verdict callbacks now run only after local firewall safety checks, honor SIGHUP updates, and reject malformed or oversized callback responses.
 - Upstream threat-intel now validates URL and timeout settings, rejects malformed cache responses, and keeps the phpanel profile's rspamd and upstream settings in one reputation block.
 - CSM now resolves system commands from standard sbin directories when systemd starts the daemon with a narrow PATH, preventing false missing-command health alerts for tools like auditctl.

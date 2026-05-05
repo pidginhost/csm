@@ -96,6 +96,25 @@ func TestMigrateDefaultConfigPathsPreservesPartialLegacyConfig(t *testing.T) {
 	assertSymlinkTarget(t, legacy, preferred)
 }
 
+func TestMigrateDefaultConfigPathsTreatsEmptyAuthTokenAsOperatorConfig(t *testing.T) {
+	// `auth_token: ""` is a legitimate v2.11.0+ value when the operator
+	// uses the scoped `webui.tokens:` block. It must NOT count as a
+	// placeholder, or migration would silently overwrite a real config
+	// with the legacy file.
+	preferred, legacy := testConfigPaths(t)
+	writeConfig(t, preferred, "hostname: prod\nwebui:\n  auth_token: \"\"\n  tokens:\n    - {name: ops, token: real, scope: admin}\n")
+	writeConfig(t, legacy, "hostname: legacy\nauth_token: legacy-token\n")
+
+	err := migrateDefaultConfigPaths(preferred, legacy)
+	if err == nil {
+		t.Fatal("expected migration conflict; preferred is a real operator config, not a placeholder")
+	}
+	if !strings.Contains(err.Error(), "refusing automatic config migration") {
+		t.Fatalf("error = %q, want migration refusal", err)
+	}
+	assertFileContent(t, preferred, "hostname: prod\nwebui:\n  auth_token: \"\"\n  tokens:\n    - {name: ops, token: real, scope: admin}\n")
+}
+
 func TestMigrateDefaultConfigPathsRejectsDifferentOperatorConfigs(t *testing.T) {
 	preferred, legacy := testConfigPaths(t)
 	writeConfig(t, preferred, "hostname: preferred\n")
