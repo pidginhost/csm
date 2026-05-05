@@ -55,10 +55,20 @@ func probeLSM() bool {
 }
 
 func probeCgroupSock() bool {
+	cgroupPath := firstCgroupV2Path()
+	if cgroupPath == "" {
+		return false
+	}
+
+	return probeCgroupSockAttach(cgroupPath, ebpf.AttachCGroupInet4Connect) &&
+		probeCgroupSockAttach(cgroupPath, ebpf.AttachCGroupInet6Connect)
+}
+
+func probeCgroupSockAttach(cgroupPath string, attach ebpf.AttachType) bool {
 	prog, err := ebpf.NewProgram(&ebpf.ProgramSpec{
 		Name:       "csm_cap_cgsock",
 		Type:       ebpf.CGroupSockAddr,
-		AttachType: ebpf.AttachCGroupInet4Connect,
+		AttachType: attach,
 		License:    "GPL",
 		Instructions: asm.Instructions{
 			asm.Mov.Imm(asm.R0, 1),
@@ -70,13 +80,9 @@ func probeCgroupSock() bool {
 	}
 	defer prog.Close()
 
-	cgroupPath := firstCgroupV2Path()
-	if cgroupPath == "" {
-		return false
-	}
 	l, err := link.AttachCgroup(link.CgroupOptions{
 		Path:    cgroupPath,
-		Attach:  ebpf.AttachCGroupInet4Connect,
+		Attach:  attach,
 		Program: prog,
 	})
 	if err != nil {
@@ -87,7 +93,10 @@ func probeCgroupSock() bool {
 
 func firstCgroupV2Path() string {
 	for _, p := range []string{"/sys/fs/cgroup", "/sys/fs/cgroup/unified"} {
-		if st, err := os.Stat(p); err == nil && st.IsDir() {
+		if st, err := os.Stat(p); err != nil || !st.IsDir() {
+			continue
+		}
+		if _, err := os.Stat(p + "/cgroup.controllers"); err == nil {
 			return p
 		}
 	}

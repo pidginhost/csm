@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cilium/ebpf"
+	"golang.org/x/sys/unix"
 )
 
 type tinyEvent struct {
@@ -34,6 +35,9 @@ func TestReaderDeliversEvents(t *testing.T) {
 	}
 	m, err := ebpf.NewMap(&ebpf.MapSpec{Type: ebpf.RingBuf, MaxEntries: 4096})
 	if err != nil {
+		if errors.Is(err, unix.EPERM) || errors.Is(err, unix.EACCES) || errors.Is(err, unix.EINVAL) {
+			t.Skipf("ringbuf maps are unavailable in this test environment: %v", err)
+		}
 		t.Fatalf("NewMap ringbuf: %v", err)
 	}
 	defer m.Close()
