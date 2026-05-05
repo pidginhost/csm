@@ -7,31 +7,24 @@ import (
 	"sync"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/bpf"
 	"github.com/pidginhost/csm/internal/config"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/metrics"
 )
 
-// AFAlgLiveMonitor is the common shape for the two Copy-Fail (CVE-2026-31431)
-// live-detection backends: a BPF LSM hook that blocks the AF_ALG socket call
-// in the kernel itself, and the audit-log inotify listener that reacts after
-// auditd has logged the syscall. Both feed the same alert.Finding channel and
-// share af_alg_react.go for kill/quarantine, so the daemon doesn't care which
-// backend is running.
-type AFAlgLiveMonitor interface {
-	Mode() string
-	EventCount() uint64
-	Run(ctx context.Context)
-}
+// AFAlgLiveMonitor was the local name for the live-monitor interface;
+// it is now an alias of the shared bpf.Backend. Existing call sites in
+// reactToAFAlgEvent etc. continue to compile.
+type AFAlgLiveMonitor = bpf.Backend
 
-// AFAlgBackendKind enumerates the possible operator settings for
-// Detection.AFAlgBackend. Validated at coordinator startup; unknown
-// values fall back to "auto" with a warning.
+// AFAlgBackend* are the operator-facing cfg.Detection.AFAlgBackend values.
+// Reuse bpf constants where the public value already matches.
 const (
-	AFAlgBackendAuto   = "auto"
-	AFAlgBackendBPF    = "bpf"
+	AFAlgBackendAuto   = bpf.BackendAuto
+	AFAlgBackendBPF    = bpf.BackendBPF
 	AFAlgBackendAuditd = "auditd"
-	AFAlgBackendNone   = "none"
+	AFAlgBackendNone   = bpf.BackendNone
 )
 
 // errBPFPhaseBPending fires when the kernel can run BPF LSM programs but
@@ -67,6 +60,15 @@ func setAFAlgBackendMetric(active string) {
 			v = 1.0
 		}
 		afAlgBackendMetric.With(k).Set(v)
+	}
+
+	switch active {
+	case "bpf-lsm":
+		bpf.SetActive("af_alg", bpf.BackendBPF)
+	case "auditd-tail":
+		bpf.SetActive("af_alg", bpf.BackendLegacy)
+	default:
+		bpf.SetActive("af_alg", bpf.BackendNone)
 	}
 }
 
