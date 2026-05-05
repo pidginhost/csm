@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - AF_ALG live-monitor backend selection is also published through the shared BPF backend telemetry while the existing AF_ALG metric remains available for current dashboards.
 - The outbound-connection check policy is now a pure function shared between the live tracker and the periodic safety-net check, so both code paths produce identical findings.
+- AF_ALG (CVE-2026-31431) live monitor now denies the syscall in the kernel itself on hosts with BPF LSM, instead of reacting after the fact via the audit log. Hosts without BPF LSM keep the audit-listener fallback unchanged.
 
 ### Fixed
 
