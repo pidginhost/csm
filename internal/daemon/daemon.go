@@ -579,6 +579,18 @@ func (d *Daemon) Run() error {
 
 	d.startPHPRelay()
 
+	if mon := StartConnectionTracker(d.alertCh, d.cfg); mon != nil {
+		csmlog.Info("connection_tracker: started", "backend", mon.Mode())
+		d.wg.Add(1)
+		obs.Go("connection-tracker", func() {
+			defer d.wg.Done()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			go func() { <-d.stopCh; cancel() }()
+			mon.Run(ctx)
+		})
+	}
+
 	// Start automatic signature updates
 	d.wg.Add(1)
 	obs.Go("signature-updater", d.signatureUpdater)
