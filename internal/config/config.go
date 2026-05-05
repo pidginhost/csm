@@ -191,6 +191,18 @@ type Config struct {
 		// reads /proc/net/tcp(6). Ignored when the BPF backend is active.
 		// Empty / zero defaults to 30s.
 		ConnectionPollInterval time.Duration `yaml:"connection_poll_interval"`
+
+		// ExecMonitorBackend selects the live process-exec monitor.
+		// Empty / "auto" tries the sched_process_exec BPF tracepoint and
+		// falls back to the periodic /proc walk. "bpf" requires BPF
+		// (no fallback). "legacy" pins polling. "none" disables the live
+		// monitor; the periodic deep-tier checks still run.
+		ExecMonitorBackend string `yaml:"exec_monitor_backend"`
+
+		// ExecMonitorPollInterval is how often the legacy polling backend
+		// runs CheckSuspiciousProcesses + CheckFakeKernelThreads. Ignored
+		// when the BPF backend is active. Empty / zero defaults to 30m.
+		ExecMonitorPollInterval time.Duration `yaml:"exec_monitor_poll_interval"`
 	} `yaml:"detection" hotreload:"safe"`
 
 	Suppressions struct {
