@@ -4,7 +4,7 @@
 
 | Platform | Web server | Package | Notes |
 |----------|-----------|---------|-------|
-| cPanel/WHM on CloudLinux / AlmaLinux / Rocky | Apache (EA4) or LiteSpeed | .rpm | Primary target. All 62 checks run. |
+| cPanel/WHM on CloudLinux / AlmaLinux / Rocky | Apache (EA4) or LiteSpeed | .rpm | Primary target. Full cPanel account, WordPress, Exim, and WHM plugin coverage. |
 | Plain AlmaLinux / Rocky / RHEL 8+ / CentOS Stream 8+ | Apache (`httpd`) or Nginx | .rpm | Generic Linux + web server checks. cPanel-specific checks are skipped cleanly. |
 | Plain Ubuntu 20.04+ / Debian 11+ | Apache (`apache2`) or Nginx | .deb | Same as above, with `debsums`/`dpkg --verify` in place of `rpm -V`. |
 
@@ -97,20 +97,21 @@ Replace `VERSION` with a real version (e.g. `2.2.2`). Both files are also availa
 
 ## Filesystem layout
 
-The package installs the FHS layout. Operators upgrading from older builds may still see the legacy paths until they reinstall:
+The package uses FHS paths for config, state, drop-ins, and shipped profiles. Upgrades keep `/opt/csm/csm.yaml` as a compatibility link for older scripts:
 
-| Concern | FHS path | Legacy path |
-|---|---|---|
-| Main config | `/etc/csm/csm.yaml` | `/opt/csm/csm.yaml` |
-| Drop-in fragments | `/etc/csm/conf.d/*.yaml` | n/a |
-| State directory | `/var/lib/csm/state/` | `/opt/csm/state/` |
-| Shipped profiles | `/usr/lib/csm/profiles/` | n/a |
-| Audit log | `/var/log/csm/audit.jsonl` | same |
-| Binary | `/opt/csm/csm` | same |
-| Quarantine | `/opt/csm/quarantine/` | same |
-| YARA / signature rules | `/opt/csm/rules/` | same |
+| Concern | Current path |
+|---|---|
+| Main config | `/etc/csm/csm.yaml` |
+| Legacy config link | `/opt/csm/csm.yaml` |
+| Drop-in fragments | `/etc/csm/conf.d/*.yaml` |
+| State directory | `/var/lib/csm/state/` |
+| Shipped profiles | `/usr/lib/csm/profiles/` |
+| Audit log | `/var/log/csm/audit.jsonl` |
+| Binary | `/opt/csm/csm` |
+| Quarantine | `/opt/csm/quarantine/` |
+| YARA / signature rules | `/opt/csm/rules/` |
 
-The systemd unit declares `StateDirectory=csm` and `ConfigurationDirectory=csm` so systemd manages permissions. On first start the daemon copies a non-empty legacy `/opt/csm/state/` into `/var/lib/csm/state/` (only when the new directory is empty), then continues using the FHS path. See [Upgrading → FHS migration](upgrading.md#fhs-migration-legacy-installs-upgrading-past-v2110) for the manual-binary-swap case.
+The systemd unit declares `StateDirectory=csm` and `ConfigurationDirectory=csm` so systemd manages permissions for the FHS directories. On upgrade, the package copies a real legacy main config into `/etc/csm/csm.yaml` when needed and points `/opt/csm/csm.yaml` at it. On first start the daemon copies a non-empty legacy `/opt/csm/state/` into `/var/lib/csm/state/` (only when the new directory is empty), then continues using the FHS state path. See [Upgrading - FHS migration](upgrading.md#fhs-migration-state-config-drop-ins-and-profiles) for the manual-binary-swap case.
 
 ## Post-install (all methods)
 
@@ -189,7 +190,7 @@ After installing ModSecurity, run `csm check` and the `waf_status` finding shoul
 
 ```bash
 /opt/csm/deploy.sh install
-vi /opt/csm/csm.yaml   # set hostname, alert email, infra IPs
+vi /etc/csm/csm.yaml   # set hostname, alert email, infra IPs
 csm validate
 csm baseline
 systemctl enable --now csm.service
@@ -197,7 +198,7 @@ systemctl enable --now csm.service
 
 ## Post-Install
 
-1. Edit `/opt/csm/csm.yaml` -- set hostname, alert email, infrastructure IPs
+1. Edit `/etc/csm/csm.yaml` -- set hostname, alert email, infrastructure IPs
 2. Run `csm validate` to check config syntax (add `--deep` for connectivity probes)
 3. Run `csm baseline` to record current state as known-good (see below)
 4. Start the daemon: `systemctl enable --now csm.service`

@@ -26,10 +26,10 @@ webui:
       scope: admin       # full read+write
     - name: "panel-readonly"
       token: "..."
-      scope: read        # GET /api/v1/* only; POST returns 403
+      scope: read        # status, findings, history, stats, blocked IPs, health, capabilities, SSE
 ```
 
-The legacy single-token `webui.auth_token:` is migrated automatically to a `legacy-auth-token` admin entry on first start. Read-scope tokens are intended for orchestrators and dashboards that should be able to consume findings, status, and SSE events without the ability to mutate state. `metrics_token:` is a separate, read-only credential for `/metrics` only.
+The legacy single-token `webui.auth_token:` is migrated automatically to a `legacy-auth-token` admin entry on first start. Read-scope tokens are intended for orchestrators and dashboards that consume status, findings, history, stats, blocked-IP summaries, health, capabilities, and SSE events. Admin scope is still required for write routes and for sensitive reads such as quarantine, settings, firewall internals, threat-intel detail, rules, ModSecurity, account detail, exports, incident timelines, and audit history. `metrics_token:` is a separate, read-only credential for `/metrics` only.
 
 ## Status & Data
 
@@ -178,4 +178,4 @@ Every finding in `/api/v1/findings`, `/api/v1/events`, and the JSONL audit log c
 | `domain` | Domain associated with the event (e.g. PHP-relay scriptKey host, mailbox domain) |
 | `mailbox` | Mailbox attribution (e.g. mail brute-force target, PHP-relay envelope-from) |
 
-Fields are omitted when the daemon could not attribute them — orchestrators should treat absence as "unknown," not "global."
+Fields are omitted when the daemon could not attribute them. Orchestrators should treat absence as "unknown," not "global."

@@ -31,6 +31,7 @@ const rules = `## Continuous Security Monitor - auditd rules
 
 # CSM binary self-protection
 -w /opt/csm/csm -p wa -k csm_binary_tamper
+-w /etc/csm/csm.yaml -p wa -k csm_config_tamper
 -w /opt/csm/csm.yaml -p wa -k csm_config_tamper
 
 # Execution from suspicious locations

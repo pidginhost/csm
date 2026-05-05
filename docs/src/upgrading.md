@@ -45,27 +45,30 @@ dpkg -i csm_NEW.deb         # DEB
 
 Package managers handle stop/start automatically.
 
-## FHS migration (legacy installs upgrading past v2.11.0)
+## FHS migration (state, config, drop-ins, and profiles)
 
-The packaged layout has moved:
+Current packages use FHS paths for state, config, drop-ins, and shipped profiles. Legacy main configs continue to work during the transition.
 
-| Concern | Legacy path | New (FHS) path |
+| Concern | Legacy path | Current path |
 |---|---|---|
-| Main config | `/opt/csm/csm.yaml` | `/etc/csm/csm.yaml` |
 | Drop-in fragments | n/a | `/etc/csm/conf.d/*.yaml` |
 | State directory | `/opt/csm/state` | `/var/lib/csm/state` |
 | Shipped profiles | n/a | `/usr/lib/csm/profiles` |
 | Binary | `/opt/csm/csm` | `/opt/csm/csm` (unchanged) |
+| Main config | `/opt/csm/csm.yaml` | `/etc/csm/csm.yaml` |
+| Legacy config path | n/a | `/opt/csm/csm.yaml` symlink |
 
-The package postinstall creates the FHS directories with the right ownership. The daemon copies a non-empty legacy `/opt/csm/state/` into the new state directory on first start, but only when the new directory is empty (so a partial migration cannot corrupt it). The legacy directory is left in place; remove it after you have verified the new install.
+The package postinstall creates the FHS directories with the right ownership. If `/opt/csm/csm.yaml` is a real file and `/etc/csm/csm.yaml` is absent or still the shipped placeholder, the package copies the legacy config into `/etc/csm/csm.yaml` and then replaces the old path with a symlink. If both paths are real files with different operator content, CSM refuses the implicit default path until you move one aside or pass `--config <path>`.
 
-Operators upgrading by **manual binary swap** (without re-running the package postinstall) keep the legacy paths and the daemon will continue using them — `state_path: /opt/csm/state` in the existing `csm.yaml` pins it. To move to the FHS layout, either reinstall the package or create the directories by hand and remove the `state_path:` override.
+The daemon copies a non-empty legacy `/opt/csm/state/` into the new state directory on first start, but only when the new directory is empty (so a partial migration cannot corrupt it). The legacy directory is left in place; remove it after you have verified the new install.
+
+Operators upgrading by **manual binary swap** (without re-running the package postinstall) keep the legacy state path if `state_path: /opt/csm/state` is pinned in the existing `csm.yaml`. To move state to the FHS layout, either reinstall the package or create the directories by hand and remove the `state_path:` override.
 
 ## systemd `Type=notify` drop-in
 
 The packaged unit file is `Type=notify` with `WatchdogSec=300`. The daemon signals `READY=1` after watchers attach and pings `WATCHDOG=1` on schedule, so `systemctl is-active` reflects truth and the watchdog kills a hung daemon.
 
-Older units shipped `Type=simple`. The watchdog still functions — the daemon pings regardless of unit type — but `systemctl status` only sees the process, not "watchers attached." If you need the new behavior on an older unit, drop in:
+Older units shipped `Type=simple`. The watchdog still functions because the daemon pings regardless of unit type, but `systemctl status` only sees the process, not "watchers attached." If you need the new behavior on an older unit, drop in:
 
 ```ini
 # /etc/systemd/system/csm.service.d/notify.conf

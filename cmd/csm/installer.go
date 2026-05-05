@@ -12,10 +12,11 @@ import (
 )
 
 type Installer struct {
-	BinaryPath string
-	ConfigPath string
-	StatePath  string
-	LogPath    string
+	BinaryPath     string
+	ConfigPath     string
+	StatePath      string
+	LogPath        string
+	ConfigExplicit bool
 }
 
 func (inst *Installer) Install() error {
@@ -58,6 +59,12 @@ func (inst *Installer) Install() error {
 		fmt.Printf("  Binary installed to %s\n", inst.BinaryPath)
 	}
 
+	if !inst.ConfigExplicit && inst.ConfigPath == preferredConfigPath {
+		if err := migrateDefaultConfigPaths(preferredConfigPath, legacyConfigPath); err != nil {
+			return fmt.Errorf("migrating config path: %w", err)
+		}
+	}
+
 	// Deploy config if not exists
 	if _, err := os.Stat(inst.ConfigPath); os.IsNotExist(err) {
 		if err := deployDefaultConfig(inst.ConfigPath); err != nil {
@@ -67,6 +74,11 @@ func (inst *Installer) Install() error {
 		fmt.Println("  *** EDIT THE CONFIG before running: set alert email, hostname, infra IPs ***")
 	} else {
 		fmt.Printf("  Config already exists at %s (skipped)\n", inst.ConfigPath)
+	}
+	if !inst.ConfigExplicit && inst.ConfigPath == preferredConfigPath {
+		if err := ensureLegacyConfigSymlink(preferredConfigPath, legacyConfigPath); err != nil {
+			return fmt.Errorf("linking legacy config path: %w", err)
+		}
 	}
 
 	// Deploy auditd rules
@@ -481,16 +493,18 @@ use strict;
 use warnings;
 my $hostname = '';
 my $port = '9443';
-if (open my $fh, '<', '/opt/csm/csm.yaml') {
+for my $cfg ('/etc/csm/csm.yaml', '/opt/csm/csm.yaml') {
+    next unless open my $fh, '<', $cfg;
     while (<$fh>) {
         if (/^\s*hostname:\s*["']?([^"'\s]+)/) { $hostname = $1; }
         if (/^\s*listen:\s*["']?(?:[^:]+):(\d+)/)  { $port = $1; }
     }
     close $fh;
+    last if $hostname;
 }
 if (!$hostname) {
     print "Content-Type: text/html\r\nStatus: 500\r\n\r\n";
-    print "<h1>CSM Configuration Error</h1><p>No hostname in /opt/csm/csm.yaml</p>";
+    print "<h1>CSM Configuration Error</h1><p>No hostname in /etc/csm/csm.yaml or /opt/csm/csm.yaml</p>";
     exit;
 }
 my $url = "https://${hostname}:${port}/dashboard";

@@ -32,7 +32,7 @@ contents:
       group: root
 
   - src: build/packaging/csm.yaml.default
-    dst: /opt/csm/csm.yaml
+    dst: /etc/csm/csm.yaml
     type: config|noreplace
     file_info:
       mode: 0600
@@ -104,7 +104,7 @@ contents:
     file_info:
       mode: 0644
 
-  # Legacy paths kept on disk; the daemon migrates contents on first boot.
+  # Legacy runtime paths kept on disk for old helper scripts and quarantine.
   - dst: /opt/csm/quarantine
     type: dir
     file_info:

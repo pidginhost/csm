@@ -1,6 +1,6 @@
 # Configuration
 
-CSM is configured via a YAML file at `/etc/csm/csm.yaml` (legacy path: `/opt/csm/csm.yaml`; the daemon picks whichever exists, with `--config <path>` to override). Optional drop-in fragments under `/etc/csm/conf.d/*.yaml` are merged on top of the main file at startup — see [conf.d drop-ins](#confd-drop-ins) below.
+CSM is configured via `/etc/csm/csm.yaml`, with `--config <path>` to override. Legacy installs that only have `/opt/csm/csm.yaml` keep working; packaged upgrades migrate that file into `/etc/csm/csm.yaml` and leave the old path as a compatibility link. Optional drop-in fragments under `/etc/csm/conf.d/*.yaml` are merged on top of the main file at startup; see [conf.d drop-ins](#confd-drop-ins) below.
 
 ## Platform & Web Server
 
@@ -500,9 +500,9 @@ For fields tagged as hot-reload-safe (`thresholds`, `alerts`,
 the daemon can accept the change without a restart:
 
 ```bash
-sudo cp /opt/csm/csm.yaml /opt/csm/csm.yaml.bak-$(date +%s)
+sudo cp /etc/csm/csm.yaml /etc/csm/csm.yaml.bak-$(date +%s)
 
-# edit /opt/csm/csm.yaml with your favourite editor
+# edit /etc/csm/csm.yaml with your favourite editor
 
 sudo systemctl reload csm
 sudo journalctl -u csm -n 20 --no-pager
@@ -569,9 +569,9 @@ and anything that survives only one re-init per daemon lifetime)
 require a full restart. The integrity check must be re-signed first:
 
 ```bash
-sudo cp /opt/csm/csm.yaml /opt/csm/csm.yaml.bak-$(date +%s)
+sudo cp /etc/csm/csm.yaml /etc/csm/csm.yaml.bak-$(date +%s)
 
-# edit /opt/csm/csm.yaml with your favourite editor
+# edit /etc/csm/csm.yaml with your favourite editor
 
 sudo /opt/csm/csm rehash     # re-signs integrity.config_hash
 sudo /opt/csm/csm validate   # syntax + value sanity
@@ -581,7 +581,7 @@ sudo systemctl status csm    # confirm active, no crash-loop
 
 If the restart fails (most commonly because `rehash` was skipped),
 roll back with
-`sudo cp <backup> /opt/csm/csm.yaml && sudo systemctl restart csm`.
+`sudo cp <backup> /etc/csm/csm.yaml && sudo systemctl restart csm`.
 The backup carries its own matching hash so no second rehash is
 needed.
 
@@ -601,8 +601,8 @@ Config-management workflows (Ansible, Puppet, Chef) should:
 
 Files matching `/etc/csm/conf.d/*.yaml` are loaded after the main config and **deep-merged** on top of it. Override with `--config-dir <path>` or `CSM_CONFIG_DIR`.
 
-- **Order:** lexicographic by filename. `10-base.yaml` is overridden by `20-overrides.yaml`. Use a numeric prefix.
-- **Merge semantics:** maps merge recursively; scalars and lists in a fragment **replace** the value from the main file. Append-style merges are not supported by design — predictable replacement beats clever concatenation.
+- **Order:** lexicographic by filename. Scalar keys in `20-overrides.yaml` override the same keys in `10-base.yaml`. Use a numeric prefix.
+- **Merge semantics:** maps merge recursively; scalars replace the value from the main file; lists append in fragment order.
 - **Hash:** `integrity.config_hash` covers the **main file only**. Drop-in changes are picked up on restart (or SIGHUP, where the field is hot-reload-safe) without a `csm rehash`.
 - **Use cases:** packaged integration profiles (e.g. `/usr/lib/csm/profiles/phpanel-agent.yaml` symlinked into `conf.d/`), per-host automation that should not touch the operator's `csm.yaml`, secret material rendered from a vault.
 

@@ -7,27 +7,27 @@
 [![Release](https://img.shields.io/github/v/release/pidginhost/csm?display_name=tag)](https://github.com/pidginhost/csm/releases)
 [![License: MIT](https://img.shields.io/github/license/pidginhost/csm)](LICENSE)
 
-> **Real-time security daemon for cPanel and Linux web hosts.** Detects, blocks, and cleans up the attacks that actually hit shared hosting — in seconds, from one binary. First class on cPanel/WHM. Runs cleanly on AlmaLinux, Rocky, RHEL, Ubuntu, and Debian with Apache or Nginx.
+> **Real-time security daemon for cPanel and Linux web hosts.** Detects, blocks, and cleans up shared-hosting attacks from one binary, in seconds. First class on cPanel/WHM. Runs cleanly on AlmaLinux, Rocky, RHEL, Ubuntu, and Debian with Apache or Nginx.
 
-[Documentation](https://pidginhost.github.io/csm/) · [Install](docs/src/installation.md) · [CLI](docs/src/cli.md) · [Web UI](docs/src/webui.md) · [CVE Mitigations](docs/src/cve-mitigations.md)
+[Documentation](https://pidginhost.github.io/csm/) | [Install](docs/src/installation.md) | [CLI](docs/src/cli.md) | [Web UI](docs/src/webui.md) | [CVE Mitigations](docs/src/cve-mitigations.md)
 
 ## Why CSM
 
 **Hijacked mailboxes turn into spam relays in minutes, not hours.** A weak SMTP password gets cracked, the attacker logs in once, and Exim is sending phishing through your IPs before the next periodic scan would have noticed. CSM tails maillog in real time, blocks the IP on the failure-then-success pattern, and freezes the offending Exim spool messages.
 
-**WordPress backdoors come back after cleanup.** Cleanup tools that don't detect, detection tools that don't act, and core integrity tools that don't see DB-injected admins. CSM verifies WP core against api.wordpress.org, catches obfuscated and fragmented PHP payloads, cleans seven kinds of injection, and removes rogue admin users from the DB.
+**WordPress backdoors come back after cleanup.** CSM ties detection to action: WP core integrity checks, obfuscated PHP detection, seven file-cleaning paths, and database cleanup for injected admins, options, and spam.
 
 **Brute force at /24 scale isn't fixed by per-IP rate limiting.** Attackers spray credentials from whole subnets. CSM scores per IP, per /24, and per account; escalates temp blocks to permanent after repeated offenses; and feeds WAF and login signals into one threat database with audit trail.
 
 ## What it solves
 
-| You're dealing with… | CSM does… | Where |
+| You're dealing with... | CSM does... | Where |
 |---|---|---|
-| Mailbox takeover via SASL brute → outbound spam | Tails maillog, blocks on the failure-then-success pattern, auto-freezes the Exim spool | [Real-time](docs/src/detection-realtime.md) |
+| Mailbox takeover via SASL brute -> outbound spam | Tails maillog, blocks on the failure-then-success pattern, auto-freezes the Exim spool | [Real-time](docs/src/detection-realtime.md) |
 | WordPress wp-login / xmlrpc flood | Real-time access-log monitor, blocks within seconds | [Real-time](docs/src/detection-realtime.md) |
 | Compromised WP admin / siteurl injection | `csm db-clean --revoke-user`, `--option`, `--delete-spam` | [CLI](docs/src/cli.md) |
 | Webshells, obfuscated/eval-chain PHP, tail-appended payloads | fanotify watcher + 7 cleaning strategies; quarantine preserves owner/perms/mtime | [Real-time](docs/src/detection-realtime.md), [Auto-response](docs/src/auto-response.md) |
-| PHP-relay form abuse (PHPMailer with spoofed `From`) | Inotify watcher on `/var/spool/exim/input`, 4 detection paths, optional `exim -Mf` auto-freeze | [Real-time](docs/src/detection-realtime.md#php-relay) |
+| PHP-relay form abuse (PHPMailer with spoofed `From`) | Inotify watcher on `/var/spool/exim/input`, 4 detection paths, optional `exim -Mf` auto-freeze | [Real-time](docs/src/detection-realtime.md#php-relay-mail-abuse-cpanel-only) |
 | Outbound abuse to GCP/AWS/Azure cloud relays | Realtime fanotify block + retro-scan on startup | [Real-time](docs/src/detection-realtime.md) |
 | ModSecurity rule sprawl and triage | Web UI on/off + edit, WAF blocks feed attacker scoring | [ModSecurity](docs/src/modsecurity.md) |
 | Subnet-spread brute force | Per-/24 scoring + auto-block of the whole CIDR | [Auto-response](docs/src/auto-response.md) |
@@ -36,14 +36,21 @@
 
 ## Headline features
 
-- **69 checks** — 36 critical (every 10 min) + 33 deep (every 60 min) — plus real-time fanotify, inotify, PAM, and access-log watchers.
+- **Broad host coverage**: critical and deep checks plus real-time fanotify, inotify, PAM, and access-log watchers.
 - **Sub-1-second** response on syscall events. **~45 MB** resident idle. **Single static Go binary.**
 - **One web UI** at `:9443` with admin and read-scope tokens, SSE event stream, Prometheus metrics, and 65+ REST endpoints.
 - **nftables firewall** with TTLs, subnet escalation, country blocking (MaxMind), commit-confirmed safety.
-- **Pluggable threat intel** — local attack DB + AbuseIPDB + Rspamd + optional shared upstream cache.
+- **Pluggable threat intel**: local attack DB + AbuseIPDB + Rspamd + optional shared upstream cache.
 - **Hot-reload safe config** + `/etc/csm/conf.d/*.yaml` drop-ins for automation.
 - **bbolt-backed state** with TTL retention, `csm backup`/`csm restore`, and SIEM backfill via `csm export --since`.
 - **Signed `.deb` and `.rpm` packages**, reproducible builds, OpenSSF Scorecard.
+
+## Safety defaults
+
+- Auto-response IP blocks start in dry-run unless `auto_response.dry_run: false` is explicit.
+- Infrastructure IPs are protected from auto-block.
+- Root processes and system daemons are not killed by auto-response.
+- Quarantine keeps ownership, permissions, and mtime so restores are clean.
 
 ## Quick start
 
@@ -67,15 +74,15 @@ sudo csm validate && sudo csm baseline
 sudo systemctl enable --now csm.service
 ```
 
-Web UI at `https://<server>:9443`. Drop-in fragments under `/etc/csm/conf.d/*.yaml` are merged after the main file (lex order, later wins) — use these for automation that should not touch the operator's config.
+Web UI at `https://<server>:9443`. Drop-in fragments under `/etc/csm/conf.d/*.yaml` are merged after the main config in lexicographic order. Scalars override; lists append. Use drop-ins for automation that should not touch the operator's config.
 
-Disconnected hosts: `curl -sSL https://raw.githubusercontent.com/pidginhost/csm/main/scripts/install.sh | bash`. Full install reference: [Installation](docs/src/installation.md).
+No repository setup: `curl -sSL https://raw.githubusercontent.com/pidginhost/csm/main/scripts/install.sh | bash`. Full install reference: [Installation](docs/src/installation.md).
 
 ## Platforms
 
 | Platform | Support |
 |---|---|
-| cPanel/WHM on AlmaLinux, CloudLinux, Rocky | First class. All 69 checks, WHM plugin, full Exim integration. |
+| cPanel/WHM on AlmaLinux, CloudLinux, Rocky | First class. Full cPanel account, WordPress, Exim, WHM plugin, and firewall coverage. |
 | AlmaLinux, Rocky, RHEL 8+ on Apache or Nginx | Supported. Generic checks run, cPanel-specific ones skip cleanly. |
 | Ubuntu 20.04+, Debian 11+ on Apache or Nginx | Supported. Same coverage with `debsums`-based integrity. |
 
@@ -91,6 +98,10 @@ x86_64 and ARM64. cPanel itself is x86_64 only. Per-check coverage is in [detect
 | Daemon idle | n/a | 45 MB resident |
 
 Optional add-ons: YARA-X (`-tags yara`), email AV tooling, MaxMind GeoIP data.
+
+## Best fit
+
+CSM is built for operators who run shared web hosting, especially cPanel fleets, and need real-time response without stitching together fail2ban, AV, WAF tooling, and custom scripts. It is less useful as a desktop AV, a Kubernetes runtime agent, or a replacement for patching vendor packages.
 
 ## CLI
 

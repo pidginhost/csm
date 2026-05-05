@@ -76,8 +76,11 @@ func TestCSMInstallVerification(t *testing.T) {
 		t.Skip("CSM not installed — skipping install verification")
 	}
 
-	// Verify config loads
-	cfg, err := config.Load("/opt/csm/csm.yaml")
+	cfgPath := "/etc/csm/csm.yaml"
+	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
+		cfgPath = "/opt/csm/csm.yaml"
+	}
+	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}

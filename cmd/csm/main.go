@@ -32,11 +32,12 @@ var (
 )
 
 const (
-	defaultConfigPath = "/opt/csm/csm.yaml"
-	defaultStatePath  = "/var/lib/csm/state"
-	defaultLogPath    = "/var/log/csm/monitor.log"
-	defaultConfDir    = "/etc/csm/conf.d"
-	binaryPath        = "/opt/csm/csm"
+	preferredConfigPath = "/etc/csm/csm.yaml"
+	legacyConfigPath    = "/opt/csm/csm.yaml"
+	defaultStatePath    = "/var/lib/csm/state"
+	defaultLogPath      = "/var/log/csm/monitor.log"
+	defaultConfDir      = "/etc/csm/conf.d"
+	binaryPath          = "/opt/csm/csm"
 )
 
 // resolveConfDir returns the conf.d directory honoring CSM_CONFIG_DIR env
@@ -167,9 +168,9 @@ Commands:
   version       Version info + build hash
 
 Options:
-  --config <path>      Config file path (default: %s)
+  --config <path>      Config file path (default: %s; fallback: %s)
   --config-dir <path>  conf.d override directory (default: %s; env: CSM_CONFIG_DIR)
-`, defaultConfigPath, defaultConfDir)
+	`, preferredConfigPath, legacyConfigPath, defaultConfDir)
 }
 
 func loadConfig() *config.Config {
@@ -214,12 +215,12 @@ func loadConfigLite() *config.Config {
 }
 
 func tryLoadConfigLite() (*config.Config, error) {
-	cfgPath := defaultConfigPath
+	cfgPath, _, pathErr := resolveConfigPathFromArgs(os.Args)
+	if pathErr != nil {
+		return nil, pathErr
+	}
 	confDir := resolveConfDir()
 	for i, arg := range os.Args {
-		if arg == "--config" && i+1 < len(os.Args) {
-			cfgPath = os.Args[i+1]
-		}
 		if arg == "--config-dir" && i+1 < len(os.Args) {
 			confDir = os.Args[i+1]
 		}
@@ -360,13 +361,13 @@ func runYaraWorker() {
 }
 
 func runInstall() {
-	cfgPath := defaultConfigPath
+	cfgPath, configExplicit := configPathFromArgs(os.Args)
+	if !configExplicit {
+		cfgPath = preferredConfigPath
+	}
 	phpShield := false
 	phpShieldOnly := false
-	for i, arg := range os.Args {
-		if arg == "--config" && i+1 < len(os.Args) {
-			cfgPath = os.Args[i+1]
-		}
+	for _, arg := range os.Args {
 		if arg == "--php-shield" {
 			phpShield = true
 		}
@@ -376,10 +377,11 @@ func runInstall() {
 	}
 
 	installer := &Installer{
-		BinaryPath: binaryPath,
-		ConfigPath: cfgPath,
-		StatePath:  defaultStatePath,
-		LogPath:    defaultLogPath,
+		BinaryPath:     binaryPath,
+		ConfigPath:     cfgPath,
+		StatePath:      defaultStatePath,
+		LogPath:        defaultLogPath,
+		ConfigExplicit: configExplicit,
 	}
 
 	// --php-shield-only: just redeploy the PHP file (used by deploy.sh upgrade)
@@ -405,12 +407,13 @@ func runInstall() {
 }
 
 func runEnable() {
-	cfgPath := defaultConfigPath
+	cfgPath, configExplicit, pathErr := resolveConfigPathFromArgs(os.Args)
+	if pathErr != nil {
+		fmt.Fprintf(os.Stderr, "config path: %v\n", pathErr)
+		os.Exit(1)
+	}
 	feature := ""
-	for i, arg := range os.Args {
-		if arg == "--config" && i+1 < len(os.Args) {
-			cfgPath = os.Args[i+1]
-		}
+	for _, arg := range os.Args {
 		if arg == "--php-shield" {
 			feature = "php-shield"
 		}
@@ -421,10 +424,11 @@ func runEnable() {
 	}
 
 	installer := &Installer{
-		BinaryPath: binaryPath,
-		ConfigPath: cfgPath,
-		StatePath:  defaultStatePath,
-		LogPath:    defaultLogPath,
+		BinaryPath:     binaryPath,
+		ConfigPath:     cfgPath,
+		StatePath:      defaultStatePath,
+		LogPath:        defaultLogPath,
+		ConfigExplicit: configExplicit,
 	}
 	if feature == "php-shield" {
 		if err := installer.EnablePHPShield(); err != nil {
@@ -435,12 +439,13 @@ func runEnable() {
 }
 
 func runDisable() {
-	cfgPath := defaultConfigPath
+	cfgPath, configExplicit, pathErr := resolveConfigPathFromArgs(os.Args)
+	if pathErr != nil {
+		fmt.Fprintf(os.Stderr, "config path: %v\n", pathErr)
+		os.Exit(1)
+	}
 	feature := ""
-	for i, arg := range os.Args {
-		if arg == "--config" && i+1 < len(os.Args) {
-			cfgPath = os.Args[i+1]
-		}
+	for _, arg := range os.Args {
 		if arg == "--php-shield" {
 			feature = "php-shield"
 		}
@@ -451,10 +456,11 @@ func runDisable() {
 	}
 
 	installer := &Installer{
-		BinaryPath: binaryPath,
-		ConfigPath: cfgPath,
-		StatePath:  defaultStatePath,
-		LogPath:    defaultLogPath,
+		BinaryPath:     binaryPath,
+		ConfigPath:     cfgPath,
+		StatePath:      defaultStatePath,
+		LogPath:        defaultLogPath,
+		ConfigExplicit: configExplicit,
 	}
 	if feature == "php-shield" {
 		if err := installer.DisablePHPShield(); err != nil {
@@ -465,11 +471,21 @@ func runDisable() {
 }
 
 func runUninstall() {
+	cfgPath, configExplicit := configPathFromArgs(os.Args)
+	if !configExplicit {
+		cfgPath = preferredConfigPath
+		if _, err := os.Stat(preferredConfigPath); os.IsNotExist(err) {
+			if _, legacyErr := os.Stat(legacyConfigPath); legacyErr == nil {
+				cfgPath = legacyConfigPath
+			}
+		}
+	}
 	installer := &Installer{
-		BinaryPath: binaryPath,
-		ConfigPath: defaultConfigPath,
-		StatePath:  defaultStatePath,
-		LogPath:    defaultLogPath,
+		BinaryPath:     binaryPath,
+		ConfigPath:     cfgPath,
+		StatePath:      defaultStatePath,
+		LogPath:        defaultLogPath,
+		ConfigExplicit: configExplicit,
 	}
 	if err := installer.Uninstall(); err != nil {
 		fmt.Fprintf(os.Stderr, "Uninstall failed: %v\n", err)

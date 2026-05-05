@@ -32,9 +32,9 @@ Threat-intel sources implement a small `Source` interface (lookup-by-IP returnin
 
 Currently shipped:
 
-- **AbuseIPDB** (`reputation.abuseipdb_key`) — external IP reputation feed.
-- **Rspamd** (`reputation.rspamd.*`) — per-IP rolling-history signals from the local rspamd controller. Token resolves from `token_env` at query time so rotation does not require a daemon restart.
-- **Upstream HTTP cache** (`reputation.upstream.*`) — shared panel-side cache of AbuseIPDB or proprietary scores. Useful in fleets: agents pay a local cache hit (`cache_ttl_min`, default 15 m) instead of hammering the upstream once per agent. Wire contract: [`docs/upstream-threat-intel-contract.md`](../upstream-threat-intel-contract.md).
+- **AbuseIPDB** (`reputation.abuseipdb_key`) - external IP reputation feed.
+- **Rspamd** (`reputation.rspamd.*`) - per-IP rolling-history signals from the local rspamd controller. Token resolves from `token_env` at query time so rotation does not require a daemon restart.
+- **Upstream HTTP cache** (`reputation.upstream.*`) - shared panel-side cache of AbuseIPDB or proprietary scores. Useful in fleets: agents pay a local cache hit (`cache_ttl_min`, default 15 m) instead of hammering the upstream once per agent. Wire contract: [`docs/upstream-threat-intel-contract.md`](../upstream-threat-intel-contract.md).
 
 ## Web UI
 

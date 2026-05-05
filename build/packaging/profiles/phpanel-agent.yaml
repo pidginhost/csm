@@ -7,7 +7,7 @@
 #   - Web roots live under /var/www/<domain>/ (not /home/*/public_html).
 #   - Mail logs are read from systemd-journald (configured in P4).
 #   - phpanel-server-agent owns its own conf.d fragments under /etc/csm/conf.d/
-#     and never edits /opt/csm/csm.yaml directly.
+#     and never edits the operator's main config directly.
 
 # Web account roots. phpanel hosts vhosts under /var/www/<domain>/.
 # Add more roots in a higher-numbered conf.d fragment if your layout differs.

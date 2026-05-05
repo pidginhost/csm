@@ -69,13 +69,13 @@ csm status --json | jq '.severities, .blocklist_size'
 csm firewall status   # "Recently Blocked" entries with timestamps after the restart confirm live mode
 ```
 
-To go live: set `dry_run: false`, run `csm rehash` (twice — circular hash), then restart or SIGHUP-reload (the field is hot-reload-safe).
+To go live: set `dry_run: false`, run `csm rehash` (twice, due to the circular hash), then restart or SIGHUP-reload (the field is hot-reload-safe).
 
 ### Verdict callback (advisory)
 
-When `verdict_callback.enabled: true`, every auto-block call POSTs a signed JSON request to the panel before mutating nftables. The panel can return `{"verdict": "block"}` (apply), `{"verdict": "allow"}` (audit-only — CSM logs the would-be block but skips nftables), or attach metadata (`tenant_id`, `reason`). The callback runs **after** local safety checks (infra IP, dry-run, rate limit) so the panel only sees blocks CSM is otherwise willing to apply.
+When `verdict_callback.enabled: true`, every auto-block call POSTs a signed JSON request to the panel before mutating nftables. The panel can return `{"verdict": "block"}` (apply), `{"verdict": "allow"}` (audit-only; CSM logs the decision and skips nftables), or attach metadata (`tenant_id`, `note`). The callback runs after local validation and infra-IP safety checks, and before the dry-run gate, so panels can observe dry-run decisions too.
 
-CSM fails open on hook errors (timeout, non-2xx, malformed body) — the block applies as if the hook were disabled, and a `verdict_callback_error` finding is emitted. Full request/response schema: [`docs/verdict-callback-contract.md`](../verdict-callback-contract.md).
+CSM fails open on hook errors (timeout, non-2xx, malformed body): the block continues as if the hook were disabled, or is recorded as dry-run when dry-run is active. The failure is written to the daemon log. Full request/response schema: [`docs/verdict-callback-contract.md`](../verdict-callback-contract.md).
 
 ### Infrastructure IP DNS guard
 

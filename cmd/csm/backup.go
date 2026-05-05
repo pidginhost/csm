@@ -13,7 +13,7 @@ import (
 
 // BackupSources lists the on-disk inputs csm backup includes.
 type BackupSources struct {
-	ConfigPath string // /opt/csm/csm.yaml
+	ConfigPath string // main csm.yaml path
 	ConfDir    string // /etc/csm/conf.d/
 	StateDir   string // /var/lib/csm/state/
 }

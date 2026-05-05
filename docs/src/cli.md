@@ -4,8 +4,8 @@
 
 | Flag | Description |
 |---------|-------------|
-| `--config <path>` | Override the main config path. Default: `/etc/csm/csm.yaml` (falls back to `/opt/csm/csm.yaml` on legacy installs). |
-| `--config-dir <path>` | Override the conf.d directory. Default: `/etc/csm/conf.d`. Also `CSM_CONFIG_DIR` env var. Fragments are merged on top of the main file in lexicographic order; later fragments win. |
+| `--config <path>` | Override the main config path. Default: `/etc/csm/csm.yaml`, with fallback to `/opt/csm/csm.yaml` on legacy installs. |
+| `--config-dir <path>` | Override the conf.d directory. Default: `/etc/csm/conf.d`. Also `CSM_CONFIG_DIR` env var. Fragments are merged on top of the main file in lexicographic order; scalars override and lists append. |
 
 ## Daemon
 
@@ -48,7 +48,7 @@
 | `csm backup <path>` | Bundle `csm.yaml`, `/etc/csm/conf.d/`, and the state directory into a tar.gz at `<path>`. Use for clean DR snapshots. Daemon may be running. |
 | `csm restore <archive>` | Extract a backup archive into the live `csm.yaml` + `conf.d` + state directory. Rejects path-traversal entries. Stop the daemon first. |
 
-`csm store export` / `csm store import` (below) is the lower-level alternative — tar+zstd, sha256-verified, finer-grained `--only=` flags. `csm backup`/`restore` is the convenience wrapper most operators want.
+`csm store export` / `csm store import` (below) is the lower-level alternative: tar+zstd, sha256-verified, finer-grained `--only=` flags. `csm backup`/`restore` is the convenience wrapper most operators want.
 
 ## Hardening
 

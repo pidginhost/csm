@@ -1,5 +1,5 @@
 #!/bin/bash
-# Continuous Security Monitor — Standalone Installer
+# Continuous Security Monitor - Standalone Installer
 #
 # Quick install:
 #   curl -sSL https://raw.githubusercontent.com/pidginhost/csm/main/scripts/install.sh | bash
@@ -13,7 +13,7 @@ GITHUB_REPO="pidginhost/csm"
 GITHUB_API="https://api.github.com/repos/${GITHUB_REPO}"
 INSTALL_DIR="/opt/csm"
 BINARY_PATH="${INSTALL_DIR}/csm"
-CONFIG_PATH="${INSTALL_DIR}/csm.yaml"
+CONFIG_PATH="/etc/csm/csm.yaml"
 
 ARG_EMAIL=""
 ARG_HOSTNAME=""
@@ -30,7 +30,7 @@ info() { echo "  $1"; }
 #   1. $CSM_SIGNING_KEY_PEM environment variable (operator override)
 #   2. Embedded public key below (set at release time)
 #
-# When neither is present the installer WARNS and proceeds — pre-signing
+# When neither is present the installer WARNS and proceeds - pre-signing
 # releases must still install. To enforce strict signature checking even
 # on the install path, set CSM_REQUIRE_SIGNATURES=1.
 : "${CSM_SIGNING_KEY_PEM:=}"
@@ -77,7 +77,7 @@ verify_signature() {
     if openssl pkeyutl -verify -pubin -inkey "$key_file" -rawin -sigfile "$sig_file" -in "$file" >/dev/null 2>&1; then
         info "Signature verified OK"
     else
-        die "SIGNATURE VERIFICATION FAILED — binary may be tampered with!"
+        die "SIGNATURE VERIFICATION FAILED - binary may be tampered with!"
     fi
 }
 
@@ -270,13 +270,13 @@ echo "   CSM installed successfully!"
 echo "  ====================================="
 echo ""
 echo "  Binary:  /opt/csm/csm"
-echo "  Config:  /opt/csm/csm.yaml"
+echo "  Config:  /etc/csm/csm.yaml"
 echo "  WebUI:   https://${CONF_HOST}:9443/"
 echo "  Token:   ${AUTH_TOKEN}"
 echo "  Logs:    /var/log/csm/monitor.log"
 echo ""
 echo "  Next steps:"
-echo "    1. Review config:  vi /opt/csm/csm.yaml"
+echo "    1. Review config:  vi /etc/csm/csm.yaml"
 echo "    2. Set baseline:   /opt/csm/csm baseline"
 echo "    3. Start daemon:   systemctl enable --now csm.service"
 echo ""

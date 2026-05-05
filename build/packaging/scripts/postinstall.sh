@@ -1,7 +1,9 @@
 #!/bin/bash
 set -e
 
-CONFIG="/opt/csm/csm.yaml"
+PREFERRED_CONFIG="/etc/csm/csm.yaml"
+LEGACY_CONFIG="/opt/csm/csm.yaml"
+CONFIG="$PREFERRED_CONFIG"
 LEGACY_MARKER="/opt/csm/state/.pkg-installed"
 MARKER="/var/lib/csm/.pkg-installed"
 
@@ -17,6 +19,64 @@ fi
 install -d -m 0750 /etc/csm /etc/csm/conf.d
 install -d -m 0700 /var/lib/csm /var/lib/csm/state
 install -d -m 0755 /usr/lib/csm /usr/lib/csm/profiles
+
+is_placeholder_config() {
+    [ -f "$1" ] && grep -Eq 'SET_HOSTNAME_HERE|SET_EMAIL_HERE|auth_token: ""' "$1"
+}
+
+copy_config_preserve() {
+    src="$1"
+    dst="$2"
+    install -d -m 0750 "$(dirname "$dst")"
+    cp -a "$src" "$dst"
+}
+
+link_legacy_config() {
+    [ -e "$PREFERRED_CONFIG" ] || return 0
+    install -d -m 0700 "$(dirname "$LEGACY_CONFIG")"
+
+    if [ -L "$LEGACY_CONFIG" ]; then
+        target="$(readlink "$LEGACY_CONFIG" 2>/dev/null || true)"
+        [ "$target" = "$PREFERRED_CONFIG" ] && return 0
+        rm -f "$LEGACY_CONFIG"
+        ln -s "$PREFERRED_CONFIG" "$LEGACY_CONFIG"
+        return 0
+    fi
+
+    if [ -e "$LEGACY_CONFIG" ]; then
+        if [ "$PREFERRED_CONFIG" -ef "$LEGACY_CONFIG" ]; then
+            return 0
+        fi
+        if cmp -s "$PREFERRED_CONFIG" "$LEGACY_CONFIG"; then
+            rm -f "$LEGACY_CONFIG"
+            ln -s "$PREFERRED_CONFIG" "$LEGACY_CONFIG"
+            return 0
+        fi
+        echo "WARNING: $LEGACY_CONFIG differs from $PREFERRED_CONFIG; leaving both in place." >&2
+        return 0
+    fi
+
+    ln -s "$PREFERRED_CONFIG" "$LEGACY_CONFIG"
+}
+
+migrate_main_config() {
+    if [ -e "$LEGACY_CONFIG" ] && [ ! -L "$LEGACY_CONFIG" ]; then
+        if [ ! -e "$PREFERRED_CONFIG" ]; then
+            copy_config_preserve "$LEGACY_CONFIG" "$PREFERRED_CONFIG"
+        elif ! [ "$PREFERRED_CONFIG" -ef "$LEGACY_CONFIG" ] && ! cmp -s "$PREFERRED_CONFIG" "$LEGACY_CONFIG"; then
+            if is_placeholder_config "$PREFERRED_CONFIG"; then
+                copy_config_preserve "$LEGACY_CONFIG" "$PREFERRED_CONFIG"
+            else
+                echo "WARNING: $PREFERRED_CONFIG and $LEGACY_CONFIG both exist with different content." >&2
+                echo "WARNING: Move one aside or pass --config <path> before starting CSM." >&2
+            fi
+        fi
+    fi
+
+    link_legacy_config
+}
+
+migrate_main_config
 
 # Auto-detect hostname (unchanged from prior behaviour)
 if grep -q 'SET_HOSTNAME_HERE' "$CONFIG" 2>/dev/null; then
@@ -67,14 +127,15 @@ if [ "$IS_UPGRADE" = "0" ]; then
     chattr +i /opt/csm/csm 2>/dev/null || true
     echo ""
     echo "=== CSM installed ==="
-    echo "  Config:       /opt/csm/csm.yaml"
+    echo "  Config:       /etc/csm/csm.yaml"
+    echo "  Legacy path:  /opt/csm/csm.yaml -> /etc/csm/csm.yaml"
     echo "  Drop-ins:     /etc/csm/conf.d/*.yaml"
     echo "  State:        /var/lib/csm/state/"
     echo "  Profiles:     /usr/lib/csm/profiles/"
     echo "  WebUI:        https://$(hostname -f 2>/dev/null || hostname):9443/"
     echo ""
     echo "Next steps:"
-    echo "  1. Review config:   vi /opt/csm/csm.yaml"
+    echo "  1. Review config:   vi /etc/csm/csm.yaml"
     echo "  2. Set baseline:    /opt/csm/csm baseline"
     echo "  3. Start daemon:    systemctl enable --now csm.service"
 else

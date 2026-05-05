@@ -9,16 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
-- New `docs/src/cve-mitigations.md` consolidates CVE coverage (CVE-2026-31431 Copy Fail paths, KernelCare detection, AF_ALG live monitor + BPF LSM Phase A; CVE-2026-41940 cPanel/WHM auth-bypass detector). README's CVE block is replaced with a short pointer to the new page so the front page reads as a problem-to-solution map instead of a CVE bulletin.
-- README rewritten around "Why CSM" + "What it solves" use-case table; install consolidated into APT/DNF one-blocks; CLI section adds `csm doctor`, `csm status --json`, `csm config schema`, `csm backup`/`restore`, `csm harden`.
-- CLI, configuration, upgrading, auto-response, API, installation, firewall, and threat-intel pages updated for the v2.11.0+ surface: conf.d drop-ins, FHS migration, `Type=notify` drop-in, dry-run safety default, verdict callback, `infra_ips_unresolvable` guard, scope-aware tokens, `/api/v1/capabilities` and SSE events, pluggable threat-intel sources, `tenant_id`/`domain`/`mailbox` finding fields.
+- README now leads with operator problems, quick install paths, safety defaults, and a shorter CVE pointer.
+- Docs now cover config drop-ins, FHS state migration, daemon health, dry-run blocking, verdict callbacks, scoped tokens, event streaming, and threat-intel sources.
+- A new CVE mitigations page explains current hardening coverage and live detection behavior.
 
 ### Added
 
 - AF_ALG (Copy Fail) live monitor now runs through a backend coordinator that prefers BPF LSM when the kernel supports it and falls back to the existing audit-log inotify listener otherwise. Build with `make BPF=1` (or `go build -tags bpf`) to compile in the BPF path; default builds continue to ship only the audit listener. This release lands the kernel capability probe (Phase A); the in-kernel blocking program is staged behind `errBPFPhaseBPending` and will activate once Phase B + alma9 integration test land — until then `-tags bpf` builds still use the audit listener, so detection coverage is unchanged.
 - `detection.af_alg_backend` config knob (`auto` / `bpf` / `auditd` / `none`) overrides the live-monitor coordinator's automatic choice. `auditd` is the kill switch for a misbehaving BPF-tagged release: revert without rebuilding by editing `csm.yaml`. `bpf` enforces strict mode — no audit fallback if BPF is unavailable, useful where the operator wants kernel-side blocking or nothing.
 - `csm_af_alg_backend{kind="bpf-lsm"|"auditd-tail"|"none"}` Prometheus gauge exposes which backend the coordinator selected at startup, so dashboards can see the active live-detection path without parsing logs.
-- Config drop-ins: `/etc/csm/conf.d/*.yaml` are now merged on top of `/opt/csm/csm.yaml` in lexicographic order (`--config-dir` / `CSM_CONFIG_DIR` to override). Lets automation own its own fragment without touching the operator's main file.
+- Config drop-ins are now merged on top of the active main config in lexicographic order. Automation can own its own fragment without touching the operator's main file.
 - Shipped integration profile at `/usr/lib/csm/profiles/phpanel-agent.yaml` for phpanel-server-agent hosts. It sets `/var/www/*` account roots without touching the main config file.
 - `/api/v1/status` returns full health snapshot (watchers, severity counts, store health, blocklist size, capabilities, version) and `/api/v1/capabilities` lists supported features for orchestrator feature-detection.
 - `csm status --json` and `csm doctor` for machine-readable health diagnostics. Doctor emits suggested-fix strings for each failed check.
@@ -40,7 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- State directory default and packaged config move to `/var/lib/csm/state/`. Hosts without a `state_path:` override copy legacy `/opt/csm/state/` into the new directory on first daemon start.
+- Main config now prefers the FHS config location while keeping the old path as a fallback and compatibility link during upgrades.
+- State directory default now uses the FHS state location. Hosts without an override copy legacy state on first daemon start.
 - systemd unit declares `StateDirectory=csm` and `ConfigurationDirectory=csm` so systemd manages permissions and ownership.
 
 ### Fixed
