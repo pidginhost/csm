@@ -25,11 +25,15 @@ func decodeConnectionEvent(b []byte) (ConnectionEvent, error) {
 	if len(b) < connectionEventSize {
 		return ConnectionEvent{}, errors.New("connection event short buffer")
 	}
+	// The BPF program stores dst_port as __u32 for alignment but calls
+	// bpf_ntohs() before writing, which guarantees the value fits in 16 bits.
+	// The narrowing is safe by construction.
+	dstPort := binary.LittleEndian.Uint32(b[12:16]) & 0xffff
 	ev := ConnectionEvent{
 		UID:     binary.LittleEndian.Uint32(b[0:4]),
 		PID:     binary.LittleEndian.Uint32(b[4:8]),
 		Family:  binary.LittleEndian.Uint32(b[8:12]),
-		DstPort: uint16(binary.LittleEndian.Uint32(b[12:16])),
+		DstPort: uint16(dstPort), // #nosec G115 -- masked to low 16 bits above
 	}
 	switch ev.Family {
 	case 2: // AF_INET
