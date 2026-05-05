@@ -63,6 +63,33 @@ func observeCheckDuration(name, tier string, d time.Duration) {
 // The context is cancelled when the check times out so goroutines can exit.
 type CheckFunc func(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding
 
+// filterDisabledChecks drops any check whose name appears in
+// cfg.DisabledChecks. Names are trimmed and blank entries ignored so a
+// stray space in csm.yaml does not silently un-disable a check.
+func filterDisabledChecks(cfg *config.Config, checks []namedCheck) []namedCheck {
+	if cfg == nil || len(cfg.DisabledChecks) == 0 {
+		return checks
+	}
+	disabled := make(map[string]struct{}, len(cfg.DisabledChecks))
+	for _, name := range cfg.DisabledChecks {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			disabled[name] = struct{}{}
+		}
+	}
+	if len(disabled) == 0 {
+		return checks
+	}
+	out := checks[:0:0]
+	for _, nc := range checks {
+		if _, skip := disabled[nc.name]; skip {
+			continue
+		}
+		out = append(out, nc)
+	}
+	return out
+}
+
 // namedCheck pairs a check function with its name for timeout reporting.
 type namedCheck struct {
 	name string
@@ -252,6 +279,8 @@ func RunAll(cfg *config.Config, store *state.Store) []alert.Finding {
 }
 
 func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck, tier string) []alert.Finding {
+	checks = filterDisabledChecks(cfg, checks)
+
 	var mu sync.Mutex
 	var findings []alert.Finding
 	var wg sync.WaitGroup

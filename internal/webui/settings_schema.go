@@ -348,6 +348,17 @@ var settingsSections = []SettingsSection{
 		},
 	},
 	{
+		ID:       "disabled_checks",
+		Title:    "Disabled checks",
+		YAMLPath: "disabled_checks",
+		Icon:     "x-circle",
+		Group:    SectionGroupOps,
+		Restart:  false,
+		Fields: []SettingsField{
+			{YAMLPath: "", Type: "[]enum", Label: "Skip these checks entirely", OptionsSource: "check_names", Help: "Listed checks are not executed and produce no findings on this host. Use for whole categories that don't apply (e.g. WAF on DNS-only servers). For email-only suppression, use Alerts > Disabled check names instead."},
+		},
+	},
+	{
 		ID:       "sentry",
 		Title:    "Sentry",
 		YAMLPath: "sentry",

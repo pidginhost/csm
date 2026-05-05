@@ -459,6 +459,14 @@ type Config struct {
 	C2Blocklist   []string `yaml:"c2_blocklist" hotreload:"restart"`
 	BackdoorPorts []int    `yaml:"backdoor_ports" hotreload:"restart"`
 
+	// DisabledChecks lists check names that should be skipped entirely by
+	// the runner (no execution, no finding, no email/webhook/audit). Use
+	// this when a whole category does not apply to a host (e.g. WAF/web
+	// checks on DNS-only cPanel servers). Distinct from
+	// alerts.email.disabled_checks, which only suppresses email but still
+	// runs the check and emits findings to other sinks.
+	DisabledChecks []string `yaml:"disabled_checks" hotreload:"safe"`
+
 	// Retention bounds bbolt growth. When enabled, a daily sweep prunes
 	// per-bucket entries older than the configured TTL and an online
 	// compaction pass shrinks the on-disk file once the fill ratio drops

@@ -445,6 +445,14 @@ cloudflare:
 c2_blocklist: []                        # known C2 server IPs to block permanently
 backdoor_ports: [4444,5555,55553,55555,31337]  # ports indicating backdoor activity
 
+# --- Disabled checks (skip whole categories per host) ---
+# Listed checks are not executed at all - no findings reach email, webhook,
+# audit log, WebUI, or `csm checks`. Use for whole categories that don't
+# apply to a host (e.g. WAF/web checks on DNS-only cPanel servers, where
+# httpd is installed but no virtual hosts serve traffic).
+# For email-only suppression, use `alerts.email.disabled_checks` instead.
+disabled_checks: []                     # e.g. [waf_status, waf_rules, waf_detection_only]
+
 # --- Retention (bbolt growth control) ---
 retention:
   enabled: false                        # opt-in; when true, a daily sweep prunes old entries and compacts bbolt

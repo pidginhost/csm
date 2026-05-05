@@ -14,7 +14,7 @@ func TestSettingsSectionsAreStable(t *testing.T) {
 		"alerts", "thresholds", "suppressions", "auto_response",
 		"reputation", "email_protection", "challenge", "php_shield",
 		"signatures", "email_av", "modsec", "performance", "cloudflare",
-		"geoip", "infra_ips", "sentry",
+		"geoip", "infra_ips", "disabled_checks", "sentry",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("section IDs drifted:\n  got  = %v\n  want = %v", got, want)
