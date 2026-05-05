@@ -203,6 +203,19 @@ type Config struct {
 		// runs CheckSuspiciousProcesses + CheckFakeKernelThreads. Ignored
 		// when the BPF backend is active. Empty / zero defaults to 30m.
 		ExecMonitorPollInterval time.Duration `yaml:"exec_monitor_poll_interval"`
+
+		// SensitiveFilesBackend selects the live sensitive-file write
+		// monitor. Empty / "auto" tries the BPF LSM hook on /etc/shadow
+		// and friends, falling back to a periodic content-hash check.
+		// "bpf" requires BPF (no fallback). "legacy" pins polling.
+		// "none" disables the live monitor; the periodic check still runs.
+		SensitiveFilesBackend string `yaml:"sensitive_files_backend"`
+
+		// SensitiveFilesPollInterval is how often the BPF watchset map
+		// refreshes (to pick up newly-created files in glob directories
+		// and handle inode reuse) and how often the legacy polling
+		// backend runs the content-hash check. Empty / zero defaults to 5m.
+		SensitiveFilesPollInterval time.Duration `yaml:"sensitive_files_poll_interval"`
 	} `yaml:"detection" hotreload:"safe"`
 
 	Suppressions struct {
