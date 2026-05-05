@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.12.0] - 2026-05-05
+
 ### Documentation
 
 - README now leads with operator problems, quick install paths, safety defaults, and a shorter CVE pointer.
