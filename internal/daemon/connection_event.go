@@ -1,0 +1,62 @@
+package daemon
+
+import (
+	"encoding/binary"
+	"errors"
+	"net"
+)
+
+// ConnectionEvent is the userspace shape of a struct conn_event emitted by
+// the cgroup/connect BPF program. Field layout matches connection.bpf.c
+// byte for byte: scalars are little-endian (host order on amd64/arm64),
+// dst_ip4 is network-order, dst_ip6 is the raw 16-byte address.
+type ConnectionEvent struct {
+	UID     uint32
+	PID     uint32
+	Family  uint32 // AF_INET=2, AF_INET6=10
+	DstPort uint16 // host order; BPF program calls bpf_ntohs
+	DstIP   net.IP // resolved from dst_ip4 (v4) or dst_ip6 (v6) per Family
+	Comm    string // null-terminated, up to 16 bytes
+}
+
+const connectionEventSize = 4 + 4 + 4 + 4 + 4 + 16 + 16
+
+func decodeConnectionEvent(b []byte) (ConnectionEvent, error) {
+	if len(b) < connectionEventSize {
+		return ConnectionEvent{}, errors.New("connection event short buffer")
+	}
+	ev := ConnectionEvent{
+		UID:     binary.LittleEndian.Uint32(b[0:4]),
+		PID:     binary.LittleEndian.Uint32(b[4:8]),
+		Family:  binary.LittleEndian.Uint32(b[8:12]),
+		DstPort: uint16(binary.LittleEndian.Uint32(b[12:16])),
+	}
+	switch ev.Family {
+	case 2: // AF_INET
+		ipv4 := make(net.IP, 4)
+		binary.BigEndian.PutUint32(ipv4, binary.BigEndian.Uint32(b[16:20]))
+		ev.DstIP = ipv4
+	case 10: // AF_INET6
+		v6 := make(net.IP, 16)
+		copy(v6, b[20:36])
+		ev.DstIP = v6
+	default:
+		return ConnectionEvent{}, errors.New("unknown family")
+	}
+	commEnd := 36 + 16
+	comm := b[36:commEnd]
+	if i := indexNull(comm); i >= 0 {
+		comm = comm[:i]
+	}
+	ev.Comm = string(comm)
+	return ev, nil
+}
+
+func indexNull(b []byte) int {
+	for i, c := range b {
+		if c == 0 {
+			return i
+		}
+	}
+	return -1
+}
