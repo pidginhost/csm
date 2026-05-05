@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"sync"
 
@@ -26,15 +25,6 @@ const (
 	AFAlgBackendAuditd = "auditd"
 	AFAlgBackendNone   = bpf.BackendNone
 )
-
-// errBPFPhaseBPending fires when the kernel can run BPF LSM programs but
-// the blocking program + perf consumer (Phase B in the plan) hasn't
-// shipped yet. The coordinator treats this as "BPF unavailable" so the
-// audit listener takes over, but logs it as a distinct state so operators
-// can see the kernel is ready when a Phase-B build does land. Defined
-// here (not behind the bpf tag) so the coordinator can errors.Is against
-// it on every build, including tests that fake the probe.
-var errBPFPhaseBPending = errors.New("BPF LSM kernel support detected but blocking program not yet implemented")
 
 var (
 	afAlgBackendMetricOnce sync.Once
@@ -108,16 +98,8 @@ func StartAFAlgLiveMonitor(alertCh chan<- alert.Finding, cfg *config.Config) AFA
 			setAFAlgBackendMetric("bpf-lsm")
 			return mon
 		} else if err != nil {
-			level := "bpf-lsm-unsupported"
-			if errors.Is(err, errBPFPhaseBPending) {
-				// Phase-A-only build on a BPF-capable kernel: distinct
-				// from "kernel can't run BPF LSM" so operators can tell
-				// "deploy a -tags bpf build to enable" from "kernel
-				// rebuild required".
-				level = "bpf-lsm-pending"
-			}
 			csmlog.Info("af_alg live monitor: BPF LSM unavailable",
-				"state", level,
+				"state", "bpf-lsm-unsupported",
 				"reason", err.Error(),
 				"choice", choice,
 			)
