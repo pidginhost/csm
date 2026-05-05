@@ -147,28 +147,13 @@ func scanProcNetTCP(cfg *config.Config, data []byte, ipv6 bool) []alert.Finding 
 			dstPort = remotePort
 		}
 
-		user := uidToUser(uidStr)
+		user := LookupUser(uidU32)
 		// #nosec G115 -- ports parsed from /proc/net/tcp[6] are bounded by uint16.
 		if f, ok := EvaluateConnection(cfg, uidU32, dstIP, uint16(dstPort), uint16(localPort), proto, user); ok {
 			findings = append(findings, f)
 		}
 	}
 	return findings
-}
-
-// uidToUser tries to resolve a UID to username from /etc/passwd.
-func uidToUser(uid string) string {
-	data, err := osFS.ReadFile("/etc/passwd")
-	if err != nil {
-		return uid
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Split(line, ":")
-		if len(fields) >= 3 && fields[2] == uid {
-			return fields[0]
-		}
-	}
-	return uid
 }
 
 // parseHex6Addr parses an IPv6 address:port from /proc/net/tcp6 format.
