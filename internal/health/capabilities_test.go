@@ -83,6 +83,23 @@ func TestAFAlgCapabilityWhenBPFActive(t *testing.T) {
 	}
 }
 
+func TestExecMonitorCapabilityWhenBPFActive(t *testing.T) {
+	bpf.SetActive("exec_monitor", bpf.BackendBPF)
+	if !contains(Capabilities(), "bpf-exec-monitor") {
+		t.Error("bpf-exec-monitor missing when exec backend is BPF")
+	}
+
+	bpf.SetActive("exec_monitor", bpf.BackendLegacy)
+	if contains(Capabilities(), "bpf-exec-monitor") {
+		t.Error("bpf-exec-monitor present when exec backend is legacy")
+	}
+
+	bpf.SetActive("exec_monitor", bpf.BackendNone)
+	if contains(Capabilities(), "bpf-exec-monitor") {
+		t.Error("bpf-exec-monitor present when exec backend is none")
+	}
+}
+
 func contains(haystack []string, needle string) bool {
 	for _, s := range haystack {
 		if s == needle {

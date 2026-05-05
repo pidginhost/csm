@@ -55,6 +55,9 @@ func appendActiveBPFFeatures(out []string) []string {
 	if bpf.ActiveKind("af_alg") == bpf.BackendBPF {
 		out = append(out, "bpf-af-alg-live")
 	}
+	if bpf.ActiveKind("exec_monitor") == bpf.BackendBPF {
+		out = append(out, "bpf-exec-monitor")
+	}
 	return out
 }
 
