@@ -45,3 +45,32 @@ func TestBPFCapabilityStringsAppearWhenProbed(t *testing.T) {
 	// and none of the conditional branches above reference the package.
 	_ = bpf.Capabilities{}
 }
+
+// TestConnectionTrackerCapabilityWhenBPFActive asserts the per-feature
+// "bpf-connection-tracker" string appears iff the connection_tracker
+// backend has been set to BPF.
+func TestConnectionTrackerCapabilityWhenBPFActive(t *testing.T) {
+	bpf.SetActive("connection_tracker", bpf.BackendBPF)
+	if !contains(Capabilities(), "bpf-connection-tracker") {
+		t.Error("bpf-connection-tracker missing when backend is BPF")
+	}
+
+	bpf.SetActive("connection_tracker", bpf.BackendLegacy)
+	if contains(Capabilities(), "bpf-connection-tracker") {
+		t.Error("bpf-connection-tracker present when backend is legacy")
+	}
+
+	bpf.SetActive("connection_tracker", bpf.BackendNone)
+	if contains(Capabilities(), "bpf-connection-tracker") {
+		t.Error("bpf-connection-tracker present when backend is none")
+	}
+}
+
+func contains(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
+}

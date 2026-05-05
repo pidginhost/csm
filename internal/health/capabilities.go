@@ -40,7 +40,19 @@ func Capabilities() []string {
 		caps = append(caps, "mail.source.journal.v1")
 	}
 	caps = appendBPFCaps(caps)
+	caps = appendActiveBPFFeatures(caps)
 	return caps
+}
+
+// appendActiveBPFFeatures adds one capability string per BPF-backed live
+// monitor that is currently running on the kernel-side path (as opposed to
+// its userspace fallback). Phases 2-4 extend this with their own feature
+// keys; the test for each phase asserts the expected toggling.
+func appendActiveBPFFeatures(out []string) []string {
+	if bpf.ActiveKind("connection_tracker") == bpf.BackendBPF {
+		out = append(out, "bpf-connection-tracker")
+	}
+	return out
 }
 
 // bpfCapabilities returns the cached probe result. Tests use this to assert
