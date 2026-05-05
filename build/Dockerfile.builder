@@ -42,6 +42,7 @@ RUN dnf -y install dnf-plugins-core epel-release \
         pkgconf pkgconf-pkg-config \
         openssl openssl-devel \
         libcurl-devel libxml2-devel libssh2-devel \
+        systemd-devel \
         zlib-devel \
         perl autoconf automake libtool \
     && dnf clean all

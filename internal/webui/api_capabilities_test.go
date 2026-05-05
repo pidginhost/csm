@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/maillog"
 )
 
 func TestApiCapabilities_ReturnsList(t *testing.T) {
@@ -38,7 +39,13 @@ func TestApiCapabilities_ReturnsList(t *testing.T) {
 			t.Errorf("missing %q in capabilities, got %v", want, got.Capabilities)
 		}
 	}
-	for _, want := range []string{"mail.source.journal.v1", "mail.brute.account_key.v1", "ti.source.rspamd.v1"} {
+	if maillog.JournalSupported() && !capsContains(got.Capabilities, "mail.source.journal.v1") {
+		t.Errorf("missing %q in capabilities, got %v", "mail.source.journal.v1", got.Capabilities)
+	}
+	if !maillog.JournalSupported() && capsContains(got.Capabilities, "mail.source.journal.v1") {
+		t.Errorf("journal capability advertised by a build without journal support: %v", got.Capabilities)
+	}
+	for _, want := range []string{"mail.brute.account_key.v1", "ti.source.rspamd.v1"} {
 		if !capsContains(got.Capabilities, want) {
 			t.Errorf("missing %q in capabilities, got %v", want, got.Capabilities)
 		}

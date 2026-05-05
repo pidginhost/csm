@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -63,18 +64,32 @@ func observeCheckDuration(name, tier string, d time.Duration) {
 // The context is cancelled when the check times out so goroutines can exit.
 type CheckFunc func(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding
 
-// filterDisabledChecks drops any check whose name appears in
-// cfg.DisabledChecks. Names are trimmed and blank entries ignored so a
-// stray space in csm.yaml does not silently un-disable a check.
+// filterDisabledChecks drops any check whose runner name or emitted finding
+// name appears in cfg.DisabledChecks. Finding names are the public vocabulary
+// used by the settings UI and docs; runner names remain accepted for existing
+// operator configs.
 func filterDisabledChecks(cfg *config.Config, checks []namedCheck) []namedCheck {
 	if cfg == nil || len(cfg.DisabledChecks) == 0 {
 		return checks
 	}
 	disabled := make(map[string]struct{}, len(cfg.DisabledChecks))
+	knownRunners := make(map[string]struct{}, len(checks))
+	for _, nc := range checks {
+		knownRunners[nc.name] = struct{}{}
+	}
 	for _, name := range cfg.DisabledChecks {
 		name = strings.TrimSpace(name)
-		if name != "" {
+		if name == "" {
+			continue
+		}
+		if _, ok := knownRunners[name]; ok {
 			disabled[name] = struct{}{}
+			continue
+		}
+		for _, runner := range runnerNamesForFinding(name) {
+			if _, ok := knownRunners[runner]; ok {
+				disabled[runner] = struct{}{}
+			}
 		}
 	}
 	if len(disabled) == 0 {
@@ -88,6 +103,111 @@ func filterDisabledChecks(cfg *config.Config, checks []namedCheck) []namedCheck 
 		out = append(out, nc)
 	}
 	return out
+}
+
+func runnerNamesForFinding(finding string) []string {
+	return findingNameToRunnerNames[finding]
+}
+
+// DisabledCheckNames returns the sorted public finding-name vocabulary accepted
+// by top-level disabled_checks for scheduled check execution. Runner IDs are
+// also accepted by filterDisabledChecks for existing configs, but are not
+// exposed in the UI.
+func DisabledCheckNames() []string {
+	out := make([]string, 0, len(findingNameToRunnerNames))
+	for finding := range findingNameToRunnerNames {
+		info, ok := LookupCheck(finding)
+		if !ok || info.Internal {
+			continue
+		}
+		out = append(out, finding)
+	}
+	sort.Strings(out)
+	return out
+}
+
+var findingNameToRunnerNames = buildFindingNameToRunnerNames()
+
+func buildFindingNameToRunnerNames() map[string][]string {
+	out := map[string][]string{}
+	for runner, findings := range runnerFindingNames {
+		for _, finding := range findings {
+			out[finding] = append(out[finding], runner)
+		}
+	}
+	return out
+}
+
+var runnerFindingNames = map[string][]string{
+	"af_alg_enforcement":    {"af_alg_enforcement_corrected"},
+	"af_alg_socket_use":     {"af_alg_socket_use"},
+	"api_auth_failures":     {"api_auth_failure"},
+	"api_tokens":            {"api_tokens"},
+	"cpanel_filemanager":    {"cpanel_file_upload"},
+	"cpanel_logins":         {"cpanel_login", "cpanel_multi_ip_login", "cpanel_password_purge"},
+	"crontabs":              {"crond_change", "crontab_change", "suspicious_crontab"},
+	"database_dumps":        {"database_dump"},
+	"db_content":            {"db_options_injection", "db_post_injection", "db_rogue_admin", "db_siteurl_hijack", "db_spam_cleaned", "db_spam_found", "db_spam_injection", "db_suspicious_admin_email"},
+	"db_content_drupal":     {"drupal_admin_injection", "drupal_content_injection", "drupal_settings_injection"},
+	"db_content_joomla":     {"joomla_admin_injection", "joomla_content_injection", "joomla_extensions_injection"},
+	"db_content_magento":    {"magento_admin_injection", "magento_content_injection", "magento_settings_injection"},
+	"db_content_opencart":   {"opencart_admin_injection", "opencart_content_injection", "opencart_settings_injection"},
+	"db_objects":            {"db_malicious_event", "db_malicious_function", "db_malicious_procedure", "db_malicious_trigger", "db_unexpected_event", "db_unexpected_function", "db_unexpected_procedure", "db_unexpected_trigger"},
+	"dns_connections":       {"dns_connection"},
+	"dns_zones":             {"dns_zone_change"},
+	"email_content":         {"email_phishing_content"},
+	"email_forwarder_audit": {"email_pipe_forwarder", "email_suspicious_forwarder"},
+	"email_weak_password":   {"email_weak_password"},
+	"exfiltration_paste":    {"exfiltration_paste_site"},
+	"fake_kernel_threads":   {"fake_kernel_thread"},
+	"file_index":            {"new_executable_in_config", "new_php_in_sensitive_dir_clean", "new_php_in_uploads", "new_suspicious_php", "new_webshell_file", "obfuscated_php", "suspicious_php_content"},
+	"filesystem":            {"backdoor_binary", "suid_binary", "suspicious_file"},
+	"firewall":              {"firewall", "firewall_ports"},
+	"ftp_logins":            {"ftp_bruteforce", "ftp_login"},
+	"group_writable_php":    {"group_writable_php"},
+	"health":                {"csm_health"},
+	"htaccess":              {"htaccess_handler_abuse", "htaccess_injection"},
+	"ip_reputation":         {"ip_reputation"},
+	"kernel_modules":        {"kernel_module"},
+	"local_threat_score":    {"local_threat_score"},
+	"mail_per_account":      {"mail_per_account"},
+	"mail_queue":            {"mail_queue"},
+	"modsec_audit":          {"waf_attack_blocked"},
+	"mysql_users":           {"mysql_superuser"},
+	"nulled_plugins":        {"nulled_plugin"},
+	"open_basedir":          {"open_basedir"},
+	"outbound_connections":  {"backdoor_port", "backdoor_port_outbound", "c2_connection"},
+	"outdated_plugins":      {"outdated_plugins"},
+	"perf_error_logs":       {"perf_error_logs"},
+	"perf_load":             {"perf_load"},
+	"perf_memory":           {"perf_memory"},
+	"perf_mysql_config":     {"perf_mysql_config"},
+	"perf_php_handler":      {"perf_php_handler"},
+	"perf_php_processes":    {"perf_php_processes"},
+	"perf_redis_config":     {"perf_redis_config"},
+	"perf_wp_config":        {"perf_wp_config"},
+	"perf_wp_cron":          {"perf_wp_cron"},
+	"perf_wp_transients":    {"perf_wp_transients"},
+	"phishing":              {"phishing_credential_log", "phishing_directory", "phishing_iframe", "phishing_kit_archive", "phishing_page", "phishing_php", "phishing_redirector"},
+	"php_config_changes":    {"php_config_change"},
+	"php_content":           {"obfuscated_php", "suspicious_php_content"},
+	"php_processes":         {"php_suspicious_execution"},
+	"rpm_integrity":         {"dpkg_integrity", "rpm_integrity"},
+	"shadow_changes":        {"bulk_password_change", "root_password_change", "shadow_change"},
+	"ssh_keys":              {"ssh_keys"},
+	"ssh_logins":            {"ssh_login_unknown_ip"},
+	"sshd_config":           {"sshd_config_change"},
+	"ssl_certs":             {"ssl_cert_issued"},
+	"suspicious_processes":  {"suspicious_process"},
+	"symlink_attacks":       {"symlink_attack"},
+	"uid0_accounts":         {"uid0_account"},
+	"user_outbound":         {"user_outbound_connection"},
+	"waf_status":            {"waf_bypass", "waf_detection_only", "waf_rules", "waf_rules_stale", "waf_status"},
+	"webmail_logins":        {"webmail_bruteforce"},
+	"webshells":             {"webshell", "world_writable_php"},
+	"whm_access":            {"whm_account_action", "whm_password_change"},
+	"wp_bruteforce":         {"wp_login_bruteforce", "wp_user_enumeration", "xmlrpc_abuse"},
+	"wp_core":               {"wp_core_integrity"},
 }
 
 // namedCheck pairs a check function with its name for timeout reporting.
@@ -193,6 +313,37 @@ func deepChecks() []namedCheck {
 	}
 }
 
+func reducedDeepChecks() []namedCheck {
+	return []namedCheck{
+		{"wp_core", CheckWPCore},
+		{"nulled_plugins", CheckNulledPlugins},
+		{"rpm_integrity", CheckRPMIntegrity},
+		{"group_writable_php", CheckGroupWritablePHP},
+		{"open_basedir", CheckOpenBasedir},
+		{"symlink_attacks", CheckSymlinkAttacks},
+		{"dns_zones", CheckDNSZoneChanges},
+		{"ssl_certs", CheckSSLCertIssuance},
+		{"waf_status", CheckWAFStatus},
+		{"db_content", CheckDatabaseContent},
+		{"db_content_drupal", CheckDrupalContent},
+		{"db_content_joomla", CheckJoomlaContent},
+		{"db_content_magento", CheckMagentoContent},
+		{"db_content_opencart", CheckOpenCartContent},
+		{"db_objects", CheckDatabaseObjects},
+		{"email_content", CheckOutboundEmailContent},
+		{"outdated_plugins", CheckOutdatedPlugins},
+		{"email_weak_password", CheckEmailPasswords},
+		{"email_forwarder_audit", CheckForwarders},
+		{"perf_php_handler", CheckPHPHandler},
+		{"perf_mysql_config", CheckMySQLConfig},
+		{"perf_redis_config", CheckRedisConfig},
+		{"perf_error_logs", CheckErrorLogBloat},
+		{"perf_wp_config", CheckWPConfig},
+		{"perf_wp_transients", CheckWPTransientBloat},
+		{"perf_wp_cron", CheckWPCron},
+	}
+}
+
 // PerfCheckNamesForTier returns the perf_* check names registered in the given tier.
 // Used by the daemon to perform an atomic purge-and-merge when storing findings.
 func PerfCheckNamesForTier(tier Tier) []string {
@@ -236,35 +387,7 @@ func RunTier(cfg *config.Config, store *state.Store, tier Tier) []alert.Finding 
 //	filesystem, webshells, htaccess, file_index, php_content,
 //	phishing, php_config_changes
 func RunReducedDeep(cfg *config.Config, store *state.Store) []alert.Finding {
-	reduced := []namedCheck{
-		{"wp_core", CheckWPCore},
-		{"nulled_plugins", CheckNulledPlugins},
-		{"rpm_integrity", CheckRPMIntegrity},
-		{"group_writable_php", CheckGroupWritablePHP},
-		{"open_basedir", CheckOpenBasedir},
-		{"symlink_attacks", CheckSymlinkAttacks},
-		{"dns_zones", CheckDNSZoneChanges},
-		{"ssl_certs", CheckSSLCertIssuance},
-		{"waf_status", CheckWAFStatus},
-		{"db_content", CheckDatabaseContent},
-		{"db_content_drupal", CheckDrupalContent},
-		{"db_content_joomla", CheckJoomlaContent},
-		{"db_content_magento", CheckMagentoContent},
-		{"db_content_opencart", CheckOpenCartContent},
-		{"db_objects", CheckDatabaseObjects},
-		{"email_content", CheckOutboundEmailContent},
-		{"outdated_plugins", CheckOutdatedPlugins},
-		{"email_weak_password", CheckEmailPasswords},
-		{"email_forwarder_audit", CheckForwarders},
-		{"perf_php_handler", CheckPHPHandler},
-		{"perf_mysql_config", CheckMySQLConfig},
-		{"perf_redis_config", CheckRedisConfig},
-		{"perf_error_logs", CheckErrorLogBloat},
-		{"perf_wp_config", CheckWPConfig},
-		{"perf_wp_transients", CheckWPTransientBloat},
-		{"perf_wp_cron", CheckWPCron},
-	}
-	return runParallel(cfg, store, reduced, string(TierDeep))
+	return runParallel(cfg, store, reducedDeepChecks(), string(TierDeep))
 }
 
 // RunAll runs critical checks always. Deep checks run if throttle allows or ForceAll is set.

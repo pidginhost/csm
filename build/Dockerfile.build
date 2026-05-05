@@ -42,7 +42,7 @@ ENV CGO_ENABLED=1
 # reproducible from whatever buildx staged. go.mod / go.sum are
 # already in the repo.
 COPY . .
-RUN CGO_LDFLAGS="$(pkg-config --libs --static yara_x_capi)" go build -tags yara \
+RUN CGO_LDFLAGS="$(pkg-config --libs --static yara_x_capi)" go build -tags "yara journal" \
         -ldflags "-s -w -linkmode external -extldflags '-L/usr/local/lib' \
             -X main.Version=${VERSION} \
             -X main.BuildHash=${BUILD_HASH} \

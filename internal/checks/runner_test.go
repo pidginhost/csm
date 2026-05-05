@@ -42,6 +42,39 @@ func TestDeepChecksNotEmpty(t *testing.T) {
 	}
 }
 
+func TestRunnerFindingNamesMatchesRegisteredRunnersAndChecks(t *testing.T) {
+	runners := map[string]struct{}{}
+	for _, nc := range criticalChecks() {
+		runners[nc.name] = struct{}{}
+	}
+	for _, nc := range deepChecks() {
+		runners[nc.name] = struct{}{}
+	}
+	for _, nc := range reducedDeepChecks() {
+		runners[nc.name] = struct{}{}
+	}
+
+	for runner, findings := range runnerFindingNames {
+		if _, ok := runners[runner]; !ok {
+			t.Errorf("runnerFindingNames contains unknown runner %q", runner)
+		}
+		if len(findings) == 0 {
+			t.Errorf("runnerFindingNames[%q] has no finding names", runner)
+		}
+		for _, finding := range findings {
+			if _, ok := LookupCheck(finding); !ok {
+				t.Errorf("runnerFindingNames[%q] contains unregistered finding %q", runner, finding)
+			}
+		}
+	}
+
+	for runner := range runners {
+		if _, ok := runnerFindingNames[runner]; !ok {
+			t.Errorf("scheduled runner %q is missing from runnerFindingNames", runner)
+		}
+	}
+}
+
 // --- PerfCheckNamesForTier -------------------------------------------
 
 func TestPerfCheckNamesForTierCritical(t *testing.T) {
@@ -108,6 +141,50 @@ func TestRunParallelSkipsDisabledChecks(t *testing.T) {
 		if f.Check == "check_a" || f.Check == "check_c" {
 			t.Errorf("disabled check %q produced a finding: %+v", f.Check, f)
 		}
+	}
+}
+
+func TestRunParallelSkipsDisabledFindingNameAliases(t *testing.T) {
+	tests := []struct {
+		name     string
+		disabled string
+		runner   string
+	}{
+		{name: "waf rules finding disables WAF runner", disabled: "waf_rules", runner: "waf_status"},
+		{name: "crontab finding disables crontab runner", disabled: "suspicious_crontab", runner: "crontabs"},
+		{name: "runner ID compatibility still works", disabled: "crontabs", runner: "crontabs"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var ranDisabled, ranOther atomic.Int32
+			checks := []namedCheck{
+				{tt.runner, func(_ context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+					ranDisabled.Add(1)
+					return []alert.Finding{{Check: tt.disabled, Severity: alert.Warning, Message: "disabled"}}
+				}},
+				{"other_runner", func(_ context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+					ranOther.Add(1)
+					return []alert.Finding{{Check: "other_check", Severity: alert.Warning, Message: "other"}}
+				}},
+			}
+
+			cfg := &config.Config{DisabledChecks: []string{tt.disabled}}
+
+			findings := runParallel(cfg, nil, checks, "test")
+
+			if got := ranDisabled.Load(); got != 0 {
+				t.Fatalf("%s ran %d time(s), want skipped", tt.runner, got)
+			}
+			if got := ranOther.Load(); got != 1 {
+				t.Fatalf("other_runner ran %d time(s), want 1", got)
+			}
+			for _, f := range findings {
+				if f.Check == tt.disabled {
+					t.Fatalf("disabled finding %q was returned: %+v", tt.disabled, f)
+				}
+			}
+		})
 	}
 }
 

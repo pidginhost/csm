@@ -150,6 +150,8 @@ thresholds:
 infra_ips: []                           # management/monitoring CIDRs - never blocked
 
 # --- Mail Logs ---
+# Packaged releases include journald support. Custom builds need
+# `make JOURNAL=1 build-yara` before `source: journal` can be selected.
 mail_logs:
   source: auto                          # auto | file | journal
   file: ""                              # optional path override for file source
@@ -446,10 +448,11 @@ c2_blocklist: []                        # known C2 server IPs to block permanent
 backdoor_ports: [4444,5555,55553,55555,31337]  # ports indicating backdoor activity
 
 # --- Disabled checks (skip whole categories per host) ---
-# Listed checks are not executed at all - no findings reach email, webhook,
-# audit log, WebUI, or `csm checks`. Use for whole categories that don't
-# apply to a host (e.g. WAF/web checks on DNS-only cPanel servers, where
-# httpd is installed but no virtual hosts serve traffic).
+# Listed finding names disable the scheduled check runner(s) that emit them,
+# including sibling findings from the same runner. Realtime findings are not
+# affected. Use for whole categories that don't apply to a host (e.g. WAF/web
+# checks on DNS-only cPanel servers, where httpd is installed but no virtual
+# hosts serve traffic).
 # For email-only suppression, use `alerts.email.disabled_checks` instead.
 disabled_checks: []                     # e.g. [waf_status, waf_rules, waf_detection_only]
 

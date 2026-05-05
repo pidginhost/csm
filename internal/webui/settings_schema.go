@@ -355,7 +355,7 @@ var settingsSections = []SettingsSection{
 		Group:    SectionGroupOps,
 		Restart:  false,
 		Fields: []SettingsField{
-			{YAMLPath: "", Type: "[]enum", Label: "Skip these checks entirely", OptionsSource: "check_names", Help: "Listed checks are not executed and produce no findings on this host. Use for whole categories that don't apply (e.g. WAF on DNS-only servers). For email-only suppression, use Alerts > Disabled check names instead."},
+			{YAMLPath: "", Type: "[]enum", Label: "Skip scheduled check runners", OptionsSource: "disabled_check_names", Help: "Selecting a finding name skips the scheduled check runner or runners that emit it, including sibling findings from the same runner. Realtime findings are not affected. For email-only suppression, use Alerts > Disabled check names instead."},
 		},
 	},
 	{

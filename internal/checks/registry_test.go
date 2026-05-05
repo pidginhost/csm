@@ -61,6 +61,7 @@ func TestPublicCheckInfosExcludesInternal(t *testing.T) {
 //     sendAlertWithPath(sev, "name", ...)
 //     emitFinding("name", ...)            // first arg
 //     emitReloadFinding(sev, "name", ...)
+//   - Multi-return classifiers: `return alert.Warning, "name", ...`
 //
 // Add a new pattern here if a new emission helper is introduced — the
 // test failure message points at the callsite so it is obvious what to
@@ -82,6 +83,7 @@ func TestCheckRegistryCoversProductionCode(t *testing.T) {
 		regexp.MustCompile(`\bsendAlert(?:WithPath)?\(\s*[^,]+?,\s*"([A-Za-z_][A-Za-z0-9_]*)"`),
 		regexp.MustCompile(`\bemitFinding\(\s*"([A-Za-z_][A-Za-z0-9_]*)"`),
 		regexp.MustCompile(`\bemitReloadFinding\(\s*[^,]+?,\s*"([A-Za-z_][A-Za-z0-9_]*)"`),
+		regexp.MustCompile(`\breturn\s+alert\.(?:Warning|High|Critical)\s*,\s*"([A-Za-z_][A-Za-z0-9_]*)"`),
 	}
 
 	registered := map[string]struct{}{}

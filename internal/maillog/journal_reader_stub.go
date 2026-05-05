@@ -18,6 +18,8 @@ type JournalReader struct{}
 // on default builds.
 func NewJournalReader(_ []string) *JournalReader { return &JournalReader{} }
 
+func JournalSupported() bool { return false }
+
 // ErrJournalUnsupported is returned when the build was produced without
 // the `journal` tag (default builds).
 var ErrJournalUnsupported = errors.New("journal reader not compiled in (build with JOURNAL=1)")

@@ -26,6 +26,8 @@ func resolveFieldOptions(section *SettingsSection) {
 		switch f.OptionsSource {
 		case "check_names":
 			applyCheckNameOptions(f)
+		case "disabled_check_names":
+			applyDisabledCheckNameOptions(f)
 		case "geoip_editions":
 			applyGeoIPEditionOptions(f)
 		}
@@ -44,6 +46,33 @@ func applyCheckNameOptions(f *SettingsField) {
 	}
 	groups := make([]OptionGroup, 0, len(order))
 	flat := make([]string, 0, len(infos))
+	for _, cat := range order {
+		groups = append(groups, OptionGroup{Label: cat, Values: byCategory[cat]})
+		flat = append(flat, byCategory[cat]...)
+	}
+	f.Options = flat
+	f.OptionGroups = groups
+}
+
+func applyDisabledCheckNameOptions(f *SettingsField) {
+	allowed := make(map[string]struct{})
+	for _, name := range checks.DisabledCheckNames() {
+		allowed[name] = struct{}{}
+	}
+	infos := checks.PublicCheckInfos()
+	byCategory := make(map[string][]string)
+	var order []string
+	for _, info := range infos {
+		if _, ok := allowed[info.Name]; !ok {
+			continue
+		}
+		if _, ok := byCategory[info.Category]; !ok {
+			order = append(order, info.Category)
+		}
+		byCategory[info.Category] = append(byCategory[info.Category], info.Name)
+	}
+	groups := make([]OptionGroup, 0, len(order))
+	flat := make([]string, 0, len(allowed))
 	for _, cat := range order {
 		groups = append(groups, OptionGroup{Label: cat, Values: byCategory[cat]})
 		flat = append(flat, byCategory[cat]...)

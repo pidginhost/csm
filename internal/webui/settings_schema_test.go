@@ -120,7 +120,7 @@ func TestEnumArrayFieldsCarryOptionsSource(t *testing.T) {
 		section, field, source string
 	}{
 		{"alerts", "email.disabled_checks", "check_names"},
-		{"disabled_checks", "", "check_names"},
+		{"disabled_checks", "", "disabled_check_names"},
 		{"geoip", "editions", "geoip_editions"},
 	}
 	for _, c := range cases {
@@ -171,6 +171,31 @@ func TestResolveFieldOptionsFillsCheckNames(t *testing.T) {
 	}
 }
 
+func TestResolveFieldOptionsFillsDisabledCheckNames(t *testing.T) {
+	s, _ := LookupSettingsSection("disabled_checks")
+	resolveFieldOptions(&s)
+	f := findSchemaField(s, "")
+	if f == nil {
+		t.Fatal("disabled_checks field missing")
+	}
+	if len(f.Options) == 0 {
+		t.Fatal("Options not populated")
+	}
+	if len(f.OptionGroups) == 0 {
+		t.Fatal("OptionGroups not populated")
+	}
+	for _, want := range []string{"waf_rules", "suspicious_crontab", "new_php_in_sensitive_dir_clean"} {
+		if !hasOption(f.Options, want) {
+			t.Fatalf("%q missing from top-level disabled_checks options: %v", want, f.Options)
+		}
+	}
+	for _, blocked := range []string{"crontabs", "modsec_block_realtime", "test_alert"} {
+		if hasOption(f.Options, blocked) {
+			t.Fatalf("%q should not be exposed in top-level disabled_checks options: %v", blocked, f.Options)
+		}
+	}
+}
+
 func TestResolveFieldOptionsFillsGeoIPEditions(t *testing.T) {
 	s, _ := LookupSettingsSection("geoip")
 	resolveFieldOptions(&s)
@@ -192,6 +217,15 @@ func TestResolveFieldOptionsFillsGeoIPEditions(t *testing.T) {
 	if !foundCity {
 		t.Error("GeoLite2-City not in free group")
 	}
+}
+
+func hasOption(options []string, want string) bool {
+	for _, opt := range options {
+		if opt == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestNullablePointerFieldsFlagged(t *testing.T) {

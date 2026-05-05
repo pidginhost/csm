@@ -24,6 +24,8 @@ func NewJournalReader(units []string) *JournalReader {
 	return &JournalReader{units: units}
 }
 
+func JournalSupported() bool { return true }
+
 func (r *JournalReader) Run(ctx context.Context) (<-chan Line, error) {
 	out := make(chan Line, 64)
 

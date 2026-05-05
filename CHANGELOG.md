@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `disabled_checks` now accepts finding names such as `waf_rules` and `suspicious_crontab`, so UI selections disable the matching check runners.
+- Packaged builds now include journald mail-log support used by the phpanel profile on hosts without mail log files.
 - Revolution Slider exploit detector no longer fires on premium WooCommerce themes that integrate with RevSlider; the signature now requires the actual exploit token pair, not just substring co-occurrence.
 
 ## [2.12.0] - 2026-05-05
