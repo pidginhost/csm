@@ -41,10 +41,14 @@ func TestMsgIndexPersister_OverflowDropsAndCounts(t *testing.T) {
 	db := openTestDB(t)
 	// Tiny queue so we can force overflow.
 	p := newMsgIndexPersister(db, 1, time.Hour)
-	p.Start()
-	defer p.Stop()
+	// Intentionally not Start()ed: this test exercises the Enqueue drop
+	// path (the `default:` branch when the channel is full). Starting the
+	// consumer goroutine introduces a race - on a fast scheduler it can
+	// drain "a" before "b" is enqueued, freeing the slot and turning the
+	// second Enqueue into a successful send instead of a drop. CI runners
+	// hit that race; local M-series machines do not.
 
-	// Two enqueues without draining: second one must be dropped.
+	// Two enqueues without a consumer: second one must be dropped.
 	p.Enqueue("a", indexEntry{At: time.Now()})
 	p.Enqueue("b", indexEntry{At: time.Now()})
 
