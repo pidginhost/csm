@@ -3,11 +3,18 @@
 // (EvaluateConnection in internal/checks) decides whether to raise a finding;
 // this program only filters root early so the ringbuf does not fill on
 // daemon-heavy hosts.
+//
+// Uses the stable UAPI headers (linux/bpf.h, linux/in.h) -- no vmlinux.h or
+// CO-RE relocations are needed because the only kernel struct read here is
+// bpf_sock_addr, whose layout is fixed across kernel versions. Phases 2-4
+// will need vmlinux.h once they read task_struct or inode internals.
 
-#include <vmlinux.h>
+#include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
 
+// Stable Linux socket-family constants. Hardcoded because the kernel headers
+// don't define them in BPF compilation context (no glibc).
 #define AF_INET 2
 #define AF_INET6 10
 
@@ -25,6 +32,10 @@ struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 1 << 18); // 256 KiB
 } events SEC(".maps");
+
+// Force BTF emission of conn_event so bpf2go's -type flag finds it. Marked
+// unused so the verifier doesn't complain about a dead variable.
+const struct conn_event *unused __attribute__((unused));
 
 static __always_inline int emit_event(struct bpf_sock_addr *ctx, __u32 family) {
     __u64 ug = bpf_get_current_uid_gid();
