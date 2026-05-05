@@ -86,6 +86,26 @@ class Theme_Revslider_Compat {}
 	}
 }
 
+func TestExploitRevsliderYara_AjaxHookAndUpdatePluginValuesWithoutKeysIsNotExploit(t *testing.T) {
+	scanner := loadRepoYaraScanner(t)
+
+	legit := []byte(`<?php
+class RevSlider_Updater {
+	public function hooks() {
+		$ajax_action = 'revslider_ajax_action';
+		add_action( 'wp_ajax_' . $ajax_action, array( $this, 'handle' ) );
+	}
+	public function handle() {
+		$operation = 'update_plugin';
+		return $operation;
+	}
+}
+`)
+	if hasYaraRule(scanner.ScanBytes(legit), "exploit_revslider") {
+		t.Error("exploit_revslider YARA FP: matched RevSlider AJAX hook registration near an update_plugin value without action/client_action request keys")
+	}
+}
+
 func TestExploitRevsliderYara_FileUploadExploitURLForm(t *testing.T) {
 	scanner := loadRepoYaraScanner(t)
 
@@ -96,6 +116,27 @@ $resp = $sender($url, $body);
 `)
 	if !hasYaraRule(scanner.ScanBytes(malicious), "exploit_revslider") {
 		t.Error("exploit_revslider YARA regression: CVE-2014-9735 URL-form file upload exploit was not detected")
+	}
+}
+
+func TestExploitRevsliderYara_FileUploadExploitMultipartForm(t *testing.T) {
+	scanner := loadRepoYaraScanner(t)
+
+	malicious := []byte(`<?php
+$body = '------WebKitFormBoundary
+Content-Disposition: form-data; name="action"
+
+revslider_ajax_action
+------WebKitFormBoundary
+Content-Disposition: form-data; name="client_action"
+
+update_plugin
+------WebKitFormBoundary
+Content-Disposition: form-data; name="update_file"; filename="revslider.zip"';
+$resp = $sender($url, $body);
+`)
+	if !hasYaraRule(scanner.ScanBytes(malicious), "exploit_revslider") {
+		t.Error("exploit_revslider YARA regression: multipart CVE-2014-9735 file upload exploit was not detected")
 	}
 }
 

@@ -7,14 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- Top-level `disabled_checks` lets a host skip whole categories of checks entirely (no execution, no findings on any sink). Distinct from `alerts.email.disabled_checks`, which only suppresses email.
-- Release packages now compile the journald mail-log reader used by the phpanel profile.
-
 ### Fixed
 
-- Top-level `disabled_checks` now accepts the finding names shown in settings, so WAF and crontab findings skip the correct scheduled checks.
 - Revolution Slider exploit detector no longer fires on premium WooCommerce themes that integrate with RevSlider; the signature now requires the actual exploit token pair, not just substring co-occurrence.
 
 ## [2.12.0] - 2026-05-05

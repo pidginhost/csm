@@ -102,6 +102,30 @@ class Theme_Revslider_Compat {}
 	}
 }
 
+func TestExploitRevslider_AjaxHookAndUpdatePluginValuesWithoutKeysIsNotExploit(t *testing.T) {
+	scanner := loadRepoScanner(t)
+
+	// The value strings can legitimately co-occur in compatibility code.
+	// The file-upload signature must require the action/client_action keys,
+	// not just two quoted values within a small gap.
+	legit := []byte(`<?php
+class RevSlider_Updater {
+	public function hooks() {
+		$ajax_action = 'revslider_ajax_action';
+		add_action( 'wp_ajax_' . $ajax_action, array( $this, 'handle' ) );
+	}
+	public function handle() {
+		$operation = 'update_plugin';
+		return $operation;
+	}
+}
+`)
+	matches := scanner.ScanContent(legit, ".php")
+	if hasRule(matches, "exploit_revslider") {
+		t.Error("exploit_revslider FP: matched RevSlider AJAX hook registration near an update_plugin value without action/client_action request keys")
+	}
+}
+
 func TestExploitRevslider_FileUploadExploitURLForm(t *testing.T) {
 	scanner := loadRepoScanner(t)
 
@@ -115,6 +139,31 @@ $resp = $sender($url, $body);
 	matches := scanner.ScanContent(malicious, ".php")
 	if !hasRule(matches, "exploit_revslider") {
 		t.Error("exploit_revslider regression: CVE-2014-9735 URL-form file upload exploit was not detected")
+	}
+}
+
+func TestExploitRevslider_FileUploadExploitMultipartForm(t *testing.T) {
+	scanner := loadRepoScanner(t)
+
+	// Public CVE-2014-9735 exploit bodies use multipart form-data fields:
+	// name="action" carries revslider_ajax_action, and name="client_action"
+	// carries update_plugin.
+	malicious := []byte(`<?php
+$body = '------WebKitFormBoundary
+Content-Disposition: form-data; name="action"
+
+revslider_ajax_action
+------WebKitFormBoundary
+Content-Disposition: form-data; name="client_action"
+
+update_plugin
+------WebKitFormBoundary
+Content-Disposition: form-data; name="update_file"; filename="revslider.zip"';
+$resp = $sender($url, $body);
+`)
+	matches := scanner.ScanContent(malicious, ".php")
+	if !hasRule(matches, "exploit_revslider") {
+		t.Error("exploit_revslider regression: multipart CVE-2014-9735 file upload exploit was not detected")
 	}
 }
 
