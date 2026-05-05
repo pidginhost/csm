@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Top-level `disabled_checks: [name, ...]` skips the listed checks entirely (no execution, no findings, no email/webhook/audit). Distinct from `alerts.email.disabled_checks` which only suppresses email. Use on hosts where a whole category does not apply (e.g. WAF/web checks on DNS-only cPanel servers).
+- Top-level `disabled_checks` lets a host skip whole categories of checks entirely (no execution, no findings on any sink). Distinct from `alerts.email.disabled_checks`, which only suppresses email.
 
 ## [2.12.0] - 2026-05-05
 

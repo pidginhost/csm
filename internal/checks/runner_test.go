@@ -2,6 +2,7 @@ package checks
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -111,10 +112,10 @@ func TestRunParallelSkipsDisabledChecks(t *testing.T) {
 }
 
 func TestRunParallelDisabledChecksEmptyRunsAll(t *testing.T) {
-	ran := 0
+	var ran atomic.Int32
 	mkCheck := func(name string) namedCheck {
 		return namedCheck{name, func(_ context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
-			ran++
+			ran.Add(1)
 			return nil
 		}}
 	}
@@ -123,8 +124,8 @@ func TestRunParallelDisabledChecksEmptyRunsAll(t *testing.T) {
 	cfg := &config.Config{} // DisabledChecks unset
 
 	_ = runParallel(cfg, nil, checks, "test")
-	if ran != 2 {
-		t.Errorf("with empty DisabledChecks all checks should run, got ran=%d want 2", ran)
+	if got := ran.Load(); got != 2 {
+		t.Errorf("with empty DisabledChecks all checks should run, got ran=%d want 2", got)
 	}
 }
 

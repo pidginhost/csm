@@ -46,7 +46,8 @@ func TestSchemaCoversAllInScopeConfigFields(t *testing.T) {
 		"signatures": "signatures", "email_av": "email_av",
 		"modsec": "modsec", "performance": "performance",
 		"cloudflare": "cloudflare", "geoip": "geoip",
-		"infra_ips": "infra_ips", "sentry": "sentry",
+		"infra_ips": "infra_ips", "disabled_checks": "disabled_checks",
+		"sentry": "sentry",
 	}
 
 	cfgType := reflect.TypeOf(config.Config{})
@@ -119,6 +120,7 @@ func TestEnumArrayFieldsCarryOptionsSource(t *testing.T) {
 		section, field, source string
 	}{
 		{"alerts", "email.disabled_checks", "check_names"},
+		{"disabled_checks", "", "check_names"},
 		{"geoip", "editions", "geoip_editions"},
 	}
 	for _, c := range cases {

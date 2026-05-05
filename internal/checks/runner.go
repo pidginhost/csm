@@ -80,7 +80,7 @@ func filterDisabledChecks(cfg *config.Config, checks []namedCheck) []namedCheck 
 	if len(disabled) == 0 {
 		return checks
 	}
-	out := checks[:0:0]
+	out := make([]namedCheck, 0, len(checks))
 	for _, nc := range checks {
 		if _, skip := disabled[nc.name]; skip {
 			continue

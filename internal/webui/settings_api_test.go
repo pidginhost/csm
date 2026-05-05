@@ -582,6 +582,48 @@ func TestSettingsRestartEndpointSurfacesFailure(t *testing.T) {
 	}
 }
 
+func TestSettingsPOSTDisabledChecksUpdates(t *testing.T) {
+	body := `hostname: t.example.com
+alerts:
+  email:
+    enabled: true
+    to: ["ops@t.example.com"]
+    from: csm@t.example.com
+    smtp: "127.0.0.1:1"
+  max_per_hour: 20
+disabled_checks: []
+`
+	s, cfgPath := newSettingsTestServer(t, "tok", body)
+
+	getReq := settingsAuthedReq("GET", "/api/v1/settings/disabled_checks", "tok", "")
+	getW := httptest.NewRecorder()
+	s.apiSettingsGet(getW, getReq)
+	if getW.Code != 200 {
+		t.Fatalf("GET code = %d, body = %s", getW.Code, getW.Body.String())
+	}
+	etag := getW.Header().Get("ETag")
+	if etag == "" {
+		t.Fatal("missing ETag")
+	}
+
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/disabled_checks", "tok", `{"changes":{"":["waf_status","waf_rules"]}}`)
+	postReq.Header.Set("If-Match", etag)
+	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	postW := httptest.NewRecorder()
+	s.apiSettingsPost(postW, postReq)
+
+	if postW.Code != 200 {
+		t.Fatalf("POST code = %d, body = %s", postW.Code, postW.Body.String())
+	}
+	loaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("reload after POST: %v", err)
+	}
+	if got := loaded.DisabledChecks; len(got) != 2 || got[0] != "waf_status" || got[1] != "waf_rules" {
+		t.Errorf("DisabledChecks = %v, want [waf_status waf_rules]", got)
+	}
+}
+
 func TestSettingsPOSTInfraIPsUpdates(t *testing.T) {
 	body := `hostname: t.example.com
 alerts:
