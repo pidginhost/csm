@@ -86,6 +86,17 @@ migrate_main_config() {
 
 migrate_main_config
 
+# Snapshot whether the active config is still the shipped placeholder
+# BEFORE any substitutions below mutate the SET_*_HERE markers. The
+# auth-token generator below uses this flag to gate itself: an operator
+# using webui.tokens with auth_token: "" (legitimate in v2.11.0+) must
+# NOT be mutated on every reinstall/upgrade, since that would rotate
+# the CSRF secret and change the config hash for no reason.
+WAS_PLACEHOLDER=0
+if is_placeholder_config "$CONFIG"; then
+    WAS_PLACEHOLDER=1
+fi
+
 # Auto-detect hostname (unchanged from prior behaviour)
 if grep -q 'SET_HOSTNAME_HERE' "$CONFIG" 2>/dev/null; then
     DETECTED=""
@@ -110,8 +121,11 @@ if grep -q 'SET_EMAIL_HERE' "$CONFIG" 2>/dev/null; then
     fi
 fi
 
-# Generate WebUI auth token (unchanged)
-if grep -q 'auth_token: ""' "$CONFIG" 2>/dev/null; then
+# Generate WebUI auth token only on fresh placeholder installs. On
+# upgrade/reinstall an empty auth_token is legitimate operator state
+# when scoped webui.tokens are configured; mutating it would rotate the
+# CSRF secret and re-sign the config hash for no reason.
+if [ "$WAS_PLACEHOLDER" = "1" ] && grep -q 'auth_token: ""' "$CONFIG" 2>/dev/null; then
     TOKEN=$(head -c 32 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 32)
     sed -i "s/auth_token: \"\"/auth_token: \"${TOKEN}\"/" "$CONFIG"
     echo "Generated WebUI auth token (saved in csm.yaml)"
