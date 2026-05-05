@@ -47,7 +47,7 @@ func resolveDefaultConfigPath(preferred, legacy string) (string, error) {
 		if legacyErr == nil {
 			return legacy, nil
 		}
-		if legacyErr != nil && !os.IsNotExist(legacyErr) {
+		if !os.IsNotExist(legacyErr) {
 			return "", fmt.Errorf("checking config %s: %w", legacy, legacyErr)
 		}
 		return preferred, nil
@@ -166,10 +166,12 @@ func sameLinkTarget(target, preferred, linkDir string) bool {
 }
 
 func filesEqual(a, b string) (bool, error) {
+	// #nosec G304 -- a and b are package-constant config paths or test-injected temp paths.
 	aData, err := os.ReadFile(a)
 	if err != nil {
 		return false, fmt.Errorf("reading %s: %w", a, err)
 	}
+	// #nosec G304 -- a and b are package-constant config paths or test-injected temp paths.
 	bData, err := os.ReadFile(b)
 	if err != nil {
 		return false, fmt.Errorf("reading %s: %w", b, err)
@@ -178,6 +180,7 @@ func filesEqual(a, b string) (bool, error) {
 }
 
 func isPlaceholderConfig(path string) (bool, error) {
+	// #nosec G304 -- path is a package-constant config path or test-injected temp path.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return false, fmt.Errorf("reading %s: %w", path, err)
@@ -191,6 +194,7 @@ func isPlaceholderConfig(path string) (bool, error) {
 }
 
 func copyFilePreserveMeta(src, dst string) error {
+	// #nosec G304 -- src is a package-constant config path or test-injected temp path.
 	data, err := os.ReadFile(src)
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", src, err)
@@ -203,6 +207,7 @@ func copyFilePreserveMeta(src, dst string) error {
 		return err
 	}
 	mode := info.Mode().Perm()
+	// #nosec G306 G703 -- dst is a package-constant config path; mode preserved from src.
 	if err := os.WriteFile(dst, data, mode); err != nil {
 		return fmt.Errorf("writing %s: %w", dst, err)
 	}
