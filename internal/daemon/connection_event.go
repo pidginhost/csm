@@ -64,3 +64,13 @@ func indexNull(b []byte) int {
 	}
 	return -1
 }
+
+// nullTerm returns the prefix of b up to (but not including) the first NUL,
+// or the whole slice if there is none. Helper for fixed-size character
+// fields the BPF programs emit (comm[16], filename[256], exe[256]).
+func nullTerm(b []byte) string {
+	if i := indexNull(b); i >= 0 {
+		return string(b[:i])
+	}
+	return string(b)
+}
