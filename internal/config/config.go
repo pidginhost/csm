@@ -175,10 +175,22 @@ type Config struct {
 		// BPF and disables the audit fallback (no live monitor if BPF
 		// is unavailable; the periodic critical-tier check still
 		// runs). "auditd" forces the audit listener even on BPF-
-		// capable kernels — a kill switch when a BPF-tagged release
+		// capable kernels -- a kill switch when a BPF-tagged release
 		// misbehaves and the operator wants to revert without
 		// rebuilding. "none" disables the live monitor entirely.
 		AFAlgBackend string `yaml:"af_alg_backend"`
+
+		// ConnectionTrackerBackend selects the live outbound-connection
+		// tracker. Empty / "auto" tries BPF cgroup/connect4,6 first and
+		// falls back to the existing /proc/net/tcp polling. "bpf"
+		// requires BPF (no fallback). "legacy" pins polling. "none"
+		// disables the live tracker; the periodic check still runs.
+		ConnectionTrackerBackend string `yaml:"connection_tracker_backend"`
+
+		// ConnectionPollInterval is how often the legacy polling backend
+		// reads /proc/net/tcp(6). Ignored when the BPF backend is active.
+		// Empty / zero defaults to 30s.
+		ConnectionPollInterval time.Duration `yaml:"connection_poll_interval"`
 	} `yaml:"detection" hotreload:"safe"`
 
 	Suppressions struct {

@@ -52,9 +52,10 @@ func (p *connectionPoller) Run(ctx context.Context) {
 }
 
 // pollerInterval returns the configured polling interval, falling back to a
-// 30-second default. Task 8 will add Detection.ConnectionPollInterval; until
-// then the function returns the literal default and reads no config field.
-func pollerInterval(_ *config.Config) time.Duration {
-	// TODO Task 8: read from cfg.Detection.ConnectionPollInterval.
+// 30-second default when Detection.ConnectionPollInterval is unset.
+func pollerInterval(cfg *config.Config) time.Duration {
+	if d := cfg.Detection.ConnectionPollInterval; d > 0 {
+		return d
+	}
 	return 30 * time.Second
 }
