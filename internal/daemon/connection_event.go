@@ -47,12 +47,7 @@ func decodeConnectionEvent(b []byte) (ConnectionEvent, error) {
 	default:
 		return ConnectionEvent{}, errors.New("unknown family")
 	}
-	commEnd := 36 + 16
-	comm := b[36:commEnd]
-	if i := indexNull(comm); i >= 0 {
-		comm = comm[:i]
-	}
-	ev.Comm = string(comm)
+	ev.Comm = nullTerm(b[36 : 36+16])
 	return ev, nil
 }
 
