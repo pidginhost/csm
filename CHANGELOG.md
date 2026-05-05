@@ -10,10 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Internal BPF scaffolding: shared backend coordinator, kernel capability probe, and ringbuf consumer used by upcoming kernel-side detectors. Operators see BPF capability entries in `/api/v1/capabilities` only on bpf-tagged builds whose kernel accepts the relevant probes.
+- Live outbound-connection tracker built on BPF cgroup hooks. On bpf-tagged builds with cgroup v2, suspicious user connections produce findings the moment the kernel sees them instead of on the next periodic scan; older kernels keep using the existing scan.
 
 ### Changed
 
 - AF_ALG live-monitor backend selection is also published through the shared BPF backend telemetry while the existing AF_ALG metric remains available for current dashboards.
+- The outbound-connection check policy is now a pure function shared between the live tracker and the periodic safety-net check, so both code paths produce identical findings.
 
 ### Fixed
 
