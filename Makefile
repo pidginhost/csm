@@ -1,4 +1,4 @@
-.PHONY: build build-yara build-linux build-all clean test lint sec vuln fmt fmt-check vet ci tools sync-embedded check-embedded check-fixtures
+.PHONY: build build-yara build-linux build-all clean test lint sec vuln fmt fmt-check vet ci tools sync-embedded check-embedded check-fixtures bpf-gen
 
 # Pinned tool versions -- bump deliberately, keep in sync with .gitlab-ci.yml
 GOLANGCI_LINT_VERSION := v2.11.4
@@ -38,10 +38,17 @@ export GOLANGCI_LINT_CACHE
 
 # sync-embedded copies scripts/deploy.sh into the embedded-configs directory
 # so the binary ships an up-to-date copy. The daemon rewrites /opt/csm/deploy.sh
-# on every startup from this embedded copy — without this sync, operators see
+# on every startup from this embedded copy -- without this sync, operators see
 # their deploy.sh silently revert after the daemon restarts.
 sync-embedded:
 	@cp scripts/deploy.sh internal/daemon/configs/deploy.sh
+
+# bpf-gen regenerates bpf2go-emitted Go bindings from BPF C sources.
+# Needs clang + libbpf-devel locally. The CI builder image carries both.
+# Laptops without the toolchain can run inside the builder image:
+#   docker run --rm -v $$(pwd):/src -w /src $(CSM_BUILDER_IMAGE) make bpf-gen
+bpf-gen:
+	go generate ./internal/...
 
 # check-embedded verifies the embedded deploy.sh matches scripts/deploy.sh.
 # Run in CI to catch drift.
