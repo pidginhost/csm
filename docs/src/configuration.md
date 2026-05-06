@@ -137,6 +137,13 @@ thresholds:
   smtp_account_spray_threshold: 12        # unique IPs targeting one mailbox before visibility finding (default: 12)
   smtp_bruteforce_max_tracked: 20000      # soft cap on tracked entries; oldest evicted (default: 20000)
 
+  # SMTP probe-abuse tracker (raw connect-rate per IP — catches scanners that
+  # never reach AUTH). Threshold sized well above any legitimate MUA usage.
+  smtp_probe_threshold: 100               # per-IP connects before block (default: 100; 0 disables)
+  smtp_probe_window_min: 5                # sliding window in minutes (default: 5)
+  smtp_probe_suppress_min: 60             # cooldown between repeat findings (default: 60)
+  smtp_probe_max_tracked: 20000           # soft cap on tracked entries; oldest evicted (default: 20000)
+
   # Mail brute-force tracker (Dovecot direct: IMAP/POP3/ManageSieve via /var/log/maillog)
   mail_bruteforce_threshold: 5            # per-IP failed auths before block (default: 5)
   mail_bruteforce_window_min: 10          # sliding window in minutes (default: 10)

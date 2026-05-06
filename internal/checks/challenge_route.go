@@ -77,6 +77,7 @@ var hardBlockChecks = map[string]bool{
 	"ftp_auth_failure_realtime":   true, // FTP brute force — can't challenge non-HTTP
 	"pam_bruteforce":              true, // PAM brute force — can't challenge non-HTTP
 	"smtp_bruteforce":             true, // SMTP brute force — can't challenge non-HTTP
+	"smtp_probe_abuse":            true, // SMTP probe abuse (connect-rate) — can't challenge non-HTTP
 	"smtp_subnet_spray":           true, // SMTP subnet spray — can't challenge non-HTTP
 	"mail_bruteforce":             true, // Mail brute force — can't challenge non-HTTP
 	"mail_subnet_spray":           true, // Mail subnet spray — can't challenge non-HTTP

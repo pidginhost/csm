@@ -73,6 +73,7 @@ type Daemon struct {
 	stopCh           chan struct{}
 	wg               sync.WaitGroup
 	smtpAuthTracker  *smtpAuthTracker
+	smtpProbeTracker *smtpProbeTracker
 	mailAuthTracker  *mailAuthTracker
 	startTime        time.Time
 
@@ -135,6 +136,13 @@ func New(cfg *config.Config, store *state.Store, lock *state.LockFile, binaryPat
 		time.Duration(cfg.Thresholds.SMTPBruteForceWindowMin)*time.Minute,
 		time.Duration(cfg.Thresholds.SMTPBruteForceSuppressMin)*time.Minute,
 		cfg.Thresholds.SMTPBruteForceMaxTracked,
+		time.Now,
+	)
+	d.smtpProbeTracker = newSMTPProbeTracker(
+		cfg.Thresholds.SMTPProbeThreshold,
+		time.Duration(cfg.Thresholds.SMTPProbeWindowMin)*time.Minute,
+		time.Duration(cfg.Thresholds.SMTPProbeSuppressMin)*time.Minute,
+		cfg.Thresholds.SMTPProbeMaxTracked,
 		time.Now,
 	)
 	d.mailAuthTracker = newMailAuthTracker(
@@ -1160,9 +1168,26 @@ func (d *Daemon) startLogWatchers() {
 	}
 
 	// eximHandler wraps parseEximLogLine (unchanged) and augments the result
-	// with smtpAuthTracker findings for dovecot authenticator failures.
+	// with smtpAuthTracker findings for dovecot authenticator failures and
+	// smtpProbeTracker findings for raw connect-rate abuse (scanners that
+	// probe-and-disconnect without ever reaching AUTH).
 	eximHandler := func(line string, cfg *config.Config) []alert.Finding {
 		findings := parseEximLogLine(line, cfg)
+
+		// Connect-rate signal — fires before any AUTH attempt.
+		if probeIP := parseEximSMTPConnectIP(line); probeIP != "" {
+			if parsed := net.ParseIP(probeIP); parsed != nil {
+				if v4 := parsed.To4(); v4 != nil {
+					probeIP = v4.String()
+				}
+			}
+			if !isInfraIPDaemon(probeIP, cfg.InfraIPs) && !isPrivateOrLoopback(probeIP) {
+				if d.smtpProbeTracker != nil {
+					findings = append(findings, d.smtpProbeTracker.Record(probeIP)...)
+				}
+			}
+		}
+
 		if strings.Contains(line, "authenticator failed") && strings.Contains(line, "dovecot") {
 			ip := extractBracketedIP(line)
 			account := extractSetID(line)
@@ -1346,6 +1371,9 @@ func (d *Daemon) startLogWatchers() {
 			case <-ticker.C:
 				if d.smtpAuthTracker != nil {
 					d.smtpAuthTracker.Purge()
+				}
+				if d.smtpProbeTracker != nil {
+					d.smtpProbeTracker.Purge()
 				}
 			}
 		}

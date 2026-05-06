@@ -110,6 +110,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		"xmlrpc_abuse":                true,
 		"ftp_bruteforce":              true,
 		"smtp_bruteforce":             true,
+		"smtp_probe_abuse":            true,
 		"mail_bruteforce":             true,
 		"mail_account_compromised":    true,
 		"admin_panel_bruteforce":      true,

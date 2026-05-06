@@ -119,6 +119,15 @@ type Config struct {
 		SMTPAccountSprayThreshold  int `yaml:"smtp_account_spray_threshold"`
 		SMTPBruteForceMaxTracked   int `yaml:"smtp_bruteforce_max_tracked"`
 
+		// SMTP probe abuse — counts raw inbound SMTP connect events per source
+		// IP (independent of AUTH outcome) so probe-and-disconnect scanners
+		// that never reach the AUTH stage are still caught. Threshold sized
+		// well above any legitimate MUA usage. 0 disables.
+		SMTPProbeThreshold   int `yaml:"smtp_probe_threshold"`
+		SMTPProbeWindowMin   int `yaml:"smtp_probe_window_min"`
+		SMTPProbeSuppressMin int `yaml:"smtp_probe_suppress_min"`
+		SMTPProbeMaxTracked  int `yaml:"smtp_probe_max_tracked"`
+
 		MailBruteForceThreshold    int `yaml:"mail_bruteforce_threshold"`
 		MailBruteForceWindowMin    int `yaml:"mail_bruteforce_window_min"`
 		MailBruteForceSuppressMin  int `yaml:"mail_bruteforce_suppress_min"`
@@ -644,6 +653,18 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Thresholds.SMTPBruteForceMaxTracked == 0 {
 		cfg.Thresholds.SMTPBruteForceMaxTracked = 20000
+	}
+	if cfg.Thresholds.SMTPProbeThreshold == 0 {
+		cfg.Thresholds.SMTPProbeThreshold = 100
+	}
+	if cfg.Thresholds.SMTPProbeWindowMin == 0 {
+		cfg.Thresholds.SMTPProbeWindowMin = 5
+	}
+	if cfg.Thresholds.SMTPProbeSuppressMin == 0 {
+		cfg.Thresholds.SMTPProbeSuppressMin = 60
+	}
+	if cfg.Thresholds.SMTPProbeMaxTracked == 0 {
+		cfg.Thresholds.SMTPProbeMaxTracked = 20000
 	}
 	if cfg.Thresholds.MailBruteForceThreshold == 0 {
 		cfg.Thresholds.MailBruteForceThreshold = 5

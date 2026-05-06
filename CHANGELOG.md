@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Internal BPF scaffolding: shared backend coordinator, kernel capability probe, and ringbuf consumer used by upcoming kernel-side detectors. Operators see BPF capability entries in `/api/v1/capabilities` only on bpf-tagged builds whose kernel accepts the relevant probes.
 - Live outbound-connection tracker built on BPF cgroup hooks. On bpf-tagged builds with cgroup v2, suspicious user connections produce findings the moment the kernel sees them instead of on the next periodic scan; older kernels keep using the existing scan.
 - Top-level `disabled_checks` lets a host skip whole scheduled check categories entirely; `alerts.email.disabled_checks` still only suppresses email.
+- `smtp_probe_abuse` finding tracks raw inbound SMTP connect rate per source IP from `exim_mainlog`, catching scanners that probe-and-disconnect without ever reaching AUTH (which the existing `smtp_bruteforce` tracker depends on). Default threshold 100 connects in 5 min/IP; sized well above any legitimate MUA usage. Auto-blockable.
 
 ### Changed
 

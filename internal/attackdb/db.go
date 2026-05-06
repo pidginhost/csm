@@ -43,6 +43,7 @@ var checkToAttack = map[string]AttackType{
 	"ftp_auth_failure_realtime": AttackBruteForce,
 	"pam_bruteforce":            AttackBruteForce,
 	"smtp_bruteforce":           AttackBruteForce,
+	"smtp_probe_abuse":          AttackBruteForce,
 	"smtp_subnet_spray":         AttackBruteForce,
 	"mail_bruteforce":           AttackBruteForce,
 	"mail_subnet_spray":         AttackBruteForce,

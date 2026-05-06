@@ -92,6 +92,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "mail_subnet_spray", Category: CategoryBruteForce},
 	{Name: "smtp_account_spray", Category: CategoryBruteForce},
 	{Name: "smtp_bruteforce", Category: CategoryBruteForce},
+	{Name: "smtp_probe_abuse", Category: CategoryBruteForce},
 	{Name: "smtp_subnet_spray", Category: CategoryBruteForce},
 	{Name: "wp_login_bruteforce", Category: CategoryBruteForce},
 	{Name: "wp_user_enumeration", Category: CategoryBruteForce},
