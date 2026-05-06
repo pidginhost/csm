@@ -339,18 +339,18 @@ firewall:
   conn_rate_limit: 30           # new connections per minute per IP
   syn_flood_protection: true
   conn_limit: 50                # max concurrent connections per IP (0 = disabled)
-  port_flood:                   # per-port rate limiting
-    - port: 25
+  port_flood:                   # per-source-IP new-connection rate limit
+    - port: 25                  # 600/300s = 120/min per IP, tolerates MUA bursts
       proto: tcp
-      hits: 40
+      hits: 600
       seconds: 300
     - port: 465
       proto: tcp
-      hits: 40
+      hits: 600
       seconds: 300
     - port: 587
       proto: tcp
-      hits: 40
+      hits: 600
       seconds: 300
   udp_flood: true
   udp_flood_rate: 100           # packets per second

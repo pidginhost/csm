@@ -361,19 +361,22 @@ firewall:
   syn_flood_protection: true
   conn_limit: 50                        # max concurrent connections per IP (0 = disabled)
 
-  # Per-port flood protection
+  # Per-port flood protection — rate-limit new connections per source IP.
+  # Defaults are sized for a busy mail host: 600/300s = 120 new conns/min/IP,
+  # which tolerates a Thunderbird/iPhone client opening 5–15 parallel sessions
+  # while still capping single-IP flood storms.
   port_flood:
     - port: 25
       proto: tcp
-      hits: 40
+      hits: 600
       seconds: 300
     - port: 465
       proto: tcp
-      hits: 40
+      hits: 600
       seconds: 300
     - port: 587
       proto: tcp
-      hits: 40
+      hits: 600
       seconds: 300
 
   # UDP flood protection

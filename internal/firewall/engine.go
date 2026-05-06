@@ -64,10 +64,11 @@ type Engine struct {
 	setInfra6      *nftables.Set
 
 	// Meters for per-IP rate limiting
-	meterSYN     *nftables.Set
-	meterConn    *nftables.Set
-	meterUDP     *nftables.Set
-	meterConnlim *nftables.Set
+	meterSYN       *nftables.Set
+	meterConn      *nftables.Set
+	meterUDP       *nftables.Set
+	meterConnlim   *nftables.Set
+	meterPortFlood *nftables.Set
 
 	statePath string
 }
@@ -504,8 +505,26 @@ func (e *Engine) createSets() error {
 		}
 		_ = e.conn.AddSet(e.meterConnlim, nil)
 	}
+	if portFloodNeedsMeter(e.cfg.PortFlood) {
+		e.meterPortFlood = &nftables.Set{
+			Table: e.table, Name: "meter_port_flood", KeyType: nftables.TypeIPAddr,
+			Dynamic: true, HasTimeout: true, Timeout: time.Minute,
+		}
+		_ = e.conn.AddSet(e.meterPortFlood, nil)
+	}
 
 	return nil
+}
+
+// portFloodNeedsMeter reports whether any port_flood rule has a usable rate,
+// so the meter set is only created when at least one rule will reference it.
+func portFloodNeedsMeter(rules []PortFloodRule) bool {
+	for _, pf := range rules {
+		if pf.Hits > 0 && pf.Seconds > 0 && pf.Port > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // createInputChain builds the input filter chain with proper rule ordering.
@@ -766,42 +785,18 @@ func (e *Engine) createInputChain() error {
 		e.addSetMatchRule(e.setCountry, expr.VerdictDrop)
 	}
 
-	// Per-port flood protection - rate limit new connections per port
+	// Per-port flood protection - rate-limit new connections per source IPv4
+	// address. Each PortFloodRule becomes one nft rule that updates the shared
+	// meter_port_flood set with a per-IP token bucket.
 	for _, pf := range e.cfg.PortFlood {
-		if pf.Hits <= 0 || pf.Seconds <= 0 {
+		exprs := buildPortFloodExprs(pf, e.meterPortFlood)
+		if exprs == nil {
 			continue
-		}
-		proto := byte(6) // TCP
-		if pf.Proto == "udp" {
-			proto = 17
-		}
-		// Convert hits/seconds to per-minute rate (multiply first to reduce truncation)
-		ratePerMin := uint64(pf.Hits) * 60 / uint64(pf.Seconds)
-		if ratePerMin < 1 {
-			ratePerMin = 1
-		}
-		burst := uint32(ratePerMin / 4)
-		if burst < 2 {
-			burst = 2
 		}
 		e.conn.AddRule(&nftables.Rule{
 			Table: e.table,
 			Chain: e.chainIn,
-			Exprs: []expr.Any{
-				&expr.Ct{Register: 1, SourceRegister: false, Key: expr.CtKeySTATE},
-				&expr.Bitwise{
-					SourceRegister: 1, DestRegister: 1, Len: 4,
-					Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitNEW),
-					Xor:  binaryutil.NativeEndian.PutUint32(0),
-				},
-				&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(0)},
-				&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{proto}},
-				&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
-				&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(portU16(pf.Port))},
-				&expr.Limit{Type: expr.LimitTypePkts, Rate: ratePerMin, Unit: expr.LimitTimeMinute, Burst: burst, Over: true},
-				&expr.Verdict{Kind: expr.VerdictDrop},
-			},
+			Exprs: exprs,
 		})
 	}
 

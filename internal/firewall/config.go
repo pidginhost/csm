@@ -94,10 +94,15 @@ func DefaultConfig() *FirewallConfig {
 		PassiveFTPEnd:      65534,
 		ConnRateLimit:      30,
 		SYNFloodProtection: true,
+		// 600 hits / 300 s = 120 new connections per minute per source IP.
+		// Sized to tolerate normal MUA bursts (Thunderbird/iPhone/Outlook each
+		// open 5–15 parallel sessions when sending one email or syncing IMAP
+		// after suspend) while still catching true single-IP floods. Detection
+		// of low-and-slow scanners belongs to userspace, not this rule.
 		PortFlood: []PortFloodRule{
-			{Port: 25, Proto: "tcp", Hits: 40, Seconds: 300},
-			{Port: 465, Proto: "tcp", Hits: 40, Seconds: 300},
-			{Port: 587, Proto: "tcp", Hits: 40, Seconds: 300},
+			{Port: 25, Proto: "tcp", Hits: 600, Seconds: 300},
+			{Port: 465, Proto: "tcp", Hits: 600, Seconds: 300},
+			{Port: 587, Proto: "tcp", Hits: 600, Seconds: 300},
 		},
 		UDPFlood:        true,
 		UDPFloodRate:    100,
