@@ -5,7 +5,7 @@
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/pidginhost/csm/badge)](https://scorecard.dev/viewer/?uri=github.com/pidginhost/csm)
 [![Go Reference](https://pkg.go.dev/badge/github.com/pidginhost/csm.svg)](https://pkg.go.dev/github.com/pidginhost/csm)
 [![Release](https://img.shields.io/github/v/release/pidginhost/csm?display_name=tag)](https://github.com/pidginhost/csm/releases)
-[![License: MIT](https://img.shields.io/github/license/pidginhost/csm)](LICENSE)
+[![License: AGPL-3.0-or-later](https://img.shields.io/github/license/pidginhost/csm)](LICENSE)
 
 > **Real-time security daemon for cPanel and Linux web hosts.** Detects, blocks, and cleans up shared-hosting attacks from one binary, in seconds. First class on cPanel/WHM. Runs cleanly on AlmaLinux, Rocky, RHEL, Ubuntu, and Debian with Apache or Nginx.
 
@@ -155,4 +155,8 @@ Public releases land on GitHub. Internal builds and packaging go through the Git
 
 ## License
 
-MIT. See [LICENSE](LICENSE), [CONTRIBUTING](CONTRIBUTING.md), [SECURITY](SECURITY.md), [CHANGELOG](CHANGELOG.md).
+CSM is licensed under **AGPL-3.0-or-later**. Running unmodified CSM to protect your own hosting servers — including commercially — has no source-disclosure obligation. Distributing CSM (binaries or source) or running a *modified* version that users interact with over a network triggers the AGPL's source-availability requirements.
+
+Releases up to and including v2.x remain under the MIT License; v3.0.0 onward is AGPL-3.0-or-later.
+
+See [LICENSE](LICENSE), [CONTRIBUTING](CONTRIBUTING.md), [SECURITY](SECURITY.md), [CHANGELOG](CHANGELOG.md).

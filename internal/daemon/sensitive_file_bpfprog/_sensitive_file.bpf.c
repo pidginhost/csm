@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // CSM sensitive-file write monitor. lsm/file_permission hook fires on every
 // permission check; we filter for MAY_WRITE and look up (dev, ino) in the
 // watched map populated by userspace at startup. Detection-only: returns

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // CSM outbound-connection tracker. cgroup/connect4 + cgroup/connect6 hooks
 // emit one struct conn_event per non-root connect syscall. Userspace policy
 // (EvaluateConnection in internal/checks) decides whether to raise a finding;

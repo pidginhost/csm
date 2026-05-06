@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // CSM AF_ALG (CVE-2026-31431, "Copy Fail") kernel-side deny + emit. The LSM
 // socket_create hook fires before the kernel allocates the AF_ALG socket
 // struct; returning -EPERM here refuses the syscall without giving the

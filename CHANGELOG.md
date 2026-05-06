@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (license)
+
+- Project relicensed from MIT to **AGPL-3.0-or-later** starting with the next major release; tagged v2.x releases remain MIT. Running unmodified CSM imposes no new obligations; redistribution and network-exposed *modified* versions must comply with AGPL section 13.
+
 ### Added
 
 - Internal BPF scaffolding: shared backend coordinator, kernel capability probe, and ringbuf consumer used by upcoming kernel-side detectors. Operators see BPF capability entries in `/api/v1/capabilities` only on bpf-tagged builds whose kernel accepts the relevant probes.

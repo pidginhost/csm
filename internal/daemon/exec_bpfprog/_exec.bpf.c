@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 // CSM exec monitor. Tracepoint sched/sched_process_exec emits one event per
 // userland process exec. Userspace decides which become findings; this
 // program filters root early and skips emit when the ringbuf is full.
