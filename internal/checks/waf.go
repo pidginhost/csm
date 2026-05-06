@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,7 +19,7 @@ import (
 // CheckWAFStatus verifies that ModSecurity is loaded, the engine is in
 // enforcement mode (not DetectionOnly), OWASP/Comodo rules are active,
 // and rules are up to date.
-func CheckWAFStatus(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+func CheckWAFStatus(ctx context.Context, _ *config.Config, store *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	info := platform.Detect()
@@ -70,13 +71,37 @@ func CheckWAFStatus(ctx context.Context, _ *config.Config, _ *state.Store) []ale
 		hasRules = true
 	}
 
-	if !hasRules {
-		findings = append(findings, alert.Finding{
-			Severity: alert.High,
-			Check:    "waf_rules",
-			Message:  "ModSecurity has no WAF rules loaded",
-			Details:  wafRulesHint(info),
-		})
+	// Flap suppression for the rule-vendor probe. cPanel's nightly
+	// modsec_assemble briefly returns empty from `whmapi1
+	// modsec_get_vendors` and can leave the vendor dir transiently
+	// empty while it rewrites in place. We've observed alert windows
+	// of <10s during that rebuild. Require two consecutive negative
+	// observations before firing so a single-tick flap doesn't page.
+	const wafMissCounterKey = "_waf_rules_miss_count"
+	if hasRules {
+		if store != nil {
+			store.SetRaw(wafMissCounterKey, "0")
+		}
+	} else {
+		misses := 1
+		if store != nil {
+			if prev, ok := store.GetRaw(wafMissCounterKey); ok {
+				if n, err := strconv.Atoi(prev); err == nil && n >= 0 {
+					misses = n + 1
+				}
+			}
+			store.SetRaw(wafMissCounterKey, strconv.Itoa(misses))
+		}
+		// Without a store (tests / one-shot CLI) keep the legacy
+		// behaviour: alert immediately. With a store, require two.
+		if store == nil || misses >= 2 {
+			findings = append(findings, alert.Finding{
+				Severity: alert.High,
+				Check:    "waf_rules",
+				Message:  "ModSecurity has no WAF rules loaded",
+				Details:  wafRulesHint(info),
+			})
+		}
 	}
 
 	// --- Rule age check + auto-update ---

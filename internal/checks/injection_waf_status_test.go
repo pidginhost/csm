@@ -9,6 +9,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/platform"
+	"github.com/pidginhost/csm/internal/state"
 )
 
 // Comprehensive tests for CheckWAFStatus driving every branch via
@@ -200,6 +201,115 @@ func TestCheckWAFStatusCPanelLiteSpeedVendorDirBackstopsEmptyWhmapi1(t *testing.
 	for _, f := range findings {
 		if f.Check == "waf_rules" {
 			t.Errorf("waf_rules should not fire when vendor rules exist on disk even if whmapi1 returns empty; got %+v", f)
+		}
+	}
+}
+
+// Regression for the cluster6 false positive at 01:10:27 — same race as
+// the LiteSpeed-backstop test, but the filesystem ALSO returned empty
+// during cPanel's modsec_assemble window (vendor dir was being rewritten
+// in place, no temp-rename atomicity). The single-observation check
+// can't distinguish that 6-second flap from a real "no rules" host, so
+// require two consecutive negative observations before firing.
+func TestCheckWAFStatusRulesFlapSuppression(t *testing.T) {
+	platform.ResetForTest()
+	t.Cleanup(platform.ResetForTest)
+	platform.SetOverrides(platform.Overrides{
+		Panel:     ptrPanel(platform.PanelCPanel),
+		WebServer: ptrWebServer(platform.WSLiteSpeed),
+	})
+
+	// modsec is "active" (so the rule-vendor branch is reached) but
+	// neither whmapi1 nor the filesystem returns any rule artifacts —
+	// the modsec_assemble flap window.
+	emptyWhmapi := &mockCmd{
+		run: func(name string, args ...string) ([]byte, error) {
+			if name == "whmapi1" && len(args) > 0 && args[0] == "modsec_is_installed" {
+				return []byte("installed: 1\n"), nil
+			}
+			return []byte(""), nil
+		},
+	}
+	emptyOS := &mockOS{
+		open: func(name string) (*os.File, error) {
+			if strings.Contains(name, "modsec") || strings.Contains(name, "security2") {
+				tmp, _ := os.CreateTemp(t.TempDir(), "mod")
+				_, _ = tmp.WriteString("LoadModule security2_module modules/mod_security2.so\nSecRuleEngine On\n")
+				_, _ = tmp.Seek(0, 0)
+				return tmp, nil
+			}
+			return nil, os.ErrNotExist
+		},
+		readFile: func(name string) ([]byte, error) {
+			if strings.Contains(name, "modsec") || strings.Contains(name, "security2") {
+				return []byte("LoadModule security2_module modules/mod_security2.so\nSecRuleEngine On\n"), nil
+			}
+			return nil, os.ErrNotExist
+		},
+		readDir: func(string) ([]os.DirEntry, error) { return nil, nil },
+		stat:    func(string) (os.FileInfo, error) { return nil, os.ErrNotExist },
+	}
+	withMockCmd(t, emptyWhmapi)
+	withMockOS(t, emptyOS)
+
+	store, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("state.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	// First negative observation: must NOT fire waf_rules.
+	findings := CheckWAFStatus(context.Background(), &config.Config{}, store)
+	for _, f := range findings {
+		if f.Check == "waf_rules" {
+			t.Fatalf("first miss should be suppressed, got: %+v", f)
+		}
+	}
+
+	// Second consecutive negative observation: now fire.
+	findings = CheckWAFStatus(context.Background(), &config.Config{}, store)
+	hasRulesAlert := false
+	for _, f := range findings {
+		if f.Check == "waf_rules" {
+			hasRulesAlert = true
+			break
+		}
+	}
+	if !hasRulesAlert {
+		t.Fatalf("second consecutive miss should fire waf_rules, findings=%+v", findings)
+	}
+
+	// Recovery: rules come back via filesystem. Counter must reset so a
+	// later flap doesn't re-fire on the very next miss.
+	withMockOS(t, &mockOS{
+		open:     emptyOS.open,
+		readFile: emptyOS.readFile,
+		readDir: func(name string) ([]os.DirEntry, error) {
+			clean := strings.ReplaceAll(name, "//", "/")
+			switch clean {
+			case "/etc/apache2/conf.d/modsec_vendor_configs/":
+				return []os.DirEntry{testDirEntry{name: "comodo_litespeed", isDir: true}}, nil
+			case "/etc/apache2/conf.d/modsec_vendor_configs/comodo_litespeed":
+				return []os.DirEntry{testDirEntry{name: "10_HTTP_HTTP.conf", isDir: false}}, nil
+			}
+			return nil, os.ErrNotExist
+		},
+		stat: emptyOS.stat,
+	})
+	findings = CheckWAFStatus(context.Background(), &config.Config{}, store)
+	for _, f := range findings {
+		if f.Check == "waf_rules" {
+			t.Fatalf("rules-present run must not fire waf_rules: %+v", f)
+		}
+	}
+
+	// Counter is now 0. A fresh flap must again be suppressed on the
+	// first miss, not fire immediately just because it fired earlier.
+	withMockOS(t, emptyOS)
+	findings = CheckWAFStatus(context.Background(), &config.Config{}, store)
+	for _, f := range findings {
+		if f.Check == "waf_rules" {
+			t.Fatalf("post-recovery first miss should be suppressed, got: %+v", f)
 		}
 	}
 }
