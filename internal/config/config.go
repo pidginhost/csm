@@ -898,37 +898,14 @@ func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
 		return presence, nil
 	}
 
-	var root yaml.Node
-	if err := yaml.Unmarshal(data, &root); err != nil {
+	var raw struct {
+		Thresholds map[string]yaml.Node `yaml:"thresholds"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return presence, err
 	}
-	presence.smtpProbeThreshold = yamlPathExists(&root, "thresholds", "smtp_probe_threshold")
+	_, presence.smtpProbeThreshold = raw.Thresholds["smtp_probe_threshold"]
 	return presence, nil
-}
-
-func yamlPathExists(n *yaml.Node, path ...string) bool {
-	if n == nil || len(path) == 0 {
-		return false
-	}
-	if n.Kind == yaml.DocumentNode {
-		if len(n.Content) == 0 {
-			return false
-		}
-		return yamlPathExists(n.Content[0], path...)
-	}
-	if n.Kind != yaml.MappingNode {
-		return false
-	}
-	for i := 0; i+1 < len(n.Content); i += 2 {
-		if n.Content[i].Value != path[0] {
-			continue
-		}
-		if len(path) == 1 {
-			return true
-		}
-		return yamlPathExists(n.Content[i+1], path[1:]...)
-	}
-	return false
 }
 
 func validateReputation(cfg *Config) error {
