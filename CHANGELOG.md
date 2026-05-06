@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Internal BPF scaffolding: shared backend coordinator, kernel capability probe, and ringbuf consumer used by upcoming kernel-side detectors. Operators see BPF capability entries in `/api/v1/capabilities` only on bpf-tagged builds whose kernel accepts the relevant probes.
+- Live outbound-connection tracker built on BPF cgroup hooks. On bpf-tagged builds with cgroup v2, suspicious user connections produce findings the moment the kernel sees them instead of on the next periodic scan; older kernels keep using the existing scan.
+
+### Changed
+
+- AF_ALG live-monitor backend selection is also published through the shared BPF backend telemetry while the existing AF_ALG metric remains available for current dashboards.
+- The outbound-connection check policy is now a pure function shared between the live tracker and the periodic safety-net check, so both code paths produce identical findings.
+- AF_ALG (CVE-2026-31431) live monitor now denies the syscall in the kernel itself on hosts with BPF LSM, instead of reacting after the fact via the audit log. Hosts without BPF LSM keep the audit-listener fallback unchanged.
+- Live process-exec monitor built on a sched tracepoint. Suspicious processes started from world-writable paths or with masquerading kernel-thread names are reported the moment they appear, instead of waiting for the deep periodic scan; older kernels keep using the existing scan.
+- Live sensitive-file write monitor built on BPF LSM. Writes to existing sensitive files are reported when the kernel sees them, and newly-created drop-ins are reported during watchset refresh; older kernels fall back to a periodic content-hash check covering the same paths.
+
 ### Fixed
 
 - `waf_rules` no longer false-positives during cPanel's nightly `modsec_assemble` window; on cPanel+LiteSpeed the rule probe is re-tried once after a short delay before alerting, so a real "no rules" host still alerts in the same scan.

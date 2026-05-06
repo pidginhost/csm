@@ -1,5 +1,6 @@
-# CSM Builder Image — Go 1.26 + glibc + pre-compiled YARA-X static
-# library for amd64. ARM64 is phase 2 of ROADMAP.md item 1.
+# CSM Builder Image -- Go 1.26 + glibc + pre-compiled YARA-X static
+# library + clang/libbpf for bpf2go-generated kernel programs.
+# ARM64 is phase 2 of ROADMAP.md item 1.
 #
 # Base: AlmaLinux 8 (glibc 2.28). This is the oldest modern cPanel
 # host we support — CloudLinux 8 / AlmaLinux 8 / RHEL 8 all ship
@@ -45,6 +46,8 @@ RUN dnf -y install dnf-plugins-core epel-release \
         systemd-devel \
         zlib-devel \
         perl autoconf automake libtool \
+        clang llvm libbpf libbpf-devel \
+        elfutils-libelf-devel \
     && dnf clean all
 
 # Go 1.26.2 from the official tarball. Alma 8's repos track older

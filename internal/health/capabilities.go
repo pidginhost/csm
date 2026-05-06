@@ -1,12 +1,19 @@
 package health
 
-import "github.com/pidginhost/csm/internal/maillog"
+import (
+	"github.com/pidginhost/csm/internal/bpf"
+	"github.com/pidginhost/csm/internal/maillog"
+)
 
 // Capabilities is the static list of features this build supports. Phpanel
 // reads it via /api/v1/capabilities to feature-detect without version
 // sniffing. Add a string here when shipping a feature; remove when ripping
 // one out. Keep the base order stable; build-tag gated capabilities are
 // appended only when this binary actually supports them.
+//
+// BPF capability strings (`bpf-...`) are appended dynamically based on the
+// running kernel's accepted BPF program types. Their presence depends on
+// build tag and host kernel and is therefore not stable across deployments.
 func Capabilities() []string {
 	caps := []string{
 		"confd.dropins.v1",          // P1
@@ -32,5 +39,51 @@ func Capabilities() []string {
 	if maillog.JournalSupported() {
 		caps = append(caps, "mail.source.journal.v1")
 	}
+	caps = appendBPFCaps(caps)
+	caps = appendActiveBPFFeatures(caps)
 	return caps
+}
+
+// appendActiveBPFFeatures adds one capability string per BPF-backed live
+// monitor that is currently running on the kernel-side path (as opposed to
+// its userspace fallback). Phases 2-4 extend this with their own feature
+// keys; the test for each phase asserts the expected toggling.
+func appendActiveBPFFeatures(out []string) []string {
+	if bpf.ActiveKind("connection_tracker") == bpf.BackendBPF {
+		out = append(out, "bpf-connection-tracker")
+	}
+	if bpf.ActiveKind("af_alg") == bpf.BackendBPF {
+		out = append(out, "bpf-af-alg-live")
+	}
+	if bpf.ActiveKind("exec_monitor") == bpf.BackendBPF {
+		out = append(out, "bpf-exec-monitor")
+	}
+	if bpf.ActiveKind("sensitive_files") == bpf.BackendBPF {
+		out = append(out, "bpf-sensitive-files")
+	}
+	return out
+}
+
+// bpfCapabilities returns the cached probe result. Tests use this to assert
+// that capability strings stay in sync with the shared BPF probe.
+func bpfCapabilities() bpf.Capabilities { return bpf.Probe() }
+
+// appendBPFCaps adds one capability string per BPF program type the kernel
+// accepts. Phases 1-4 add a second helper alongside this one for per-feature
+// "live monitor is currently running on BPF" strings.
+func appendBPFCaps(out []string) []string {
+	caps := bpf.Probe()
+	if caps.LSMAttach {
+		out = append(out, "bpf-lsm-attach")
+	}
+	if caps.CgroupSock {
+		out = append(out, "bpf-cgroup-sock")
+	}
+	if caps.Tracepoint {
+		out = append(out, "bpf-tracepoint")
+	}
+	if caps.Ringbuf {
+		out = append(out, "bpf-ringbuf")
+	}
+	return out
 }

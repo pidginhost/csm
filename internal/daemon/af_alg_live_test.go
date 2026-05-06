@@ -94,32 +94,6 @@ func TestStartAFAlgLiveMonitor_ProbeFailFallsBackToAudit(t *testing.T) {
 	}
 }
 
-// TestStartAFAlgLiveMonitor_PhaseBPendingFallsBack mirrors the live-
-// kernel state we ship today on -tags bpf builds: the probe succeeds but
-// the blocking program isn't implemented yet. The coordinator must still
-// route to audit so detection coverage is preserved.
-func TestStartAFAlgLiveMonitor_PhaseBPendingFallsBack(t *testing.T) {
-	original := auditLogPath
-	t.Cleanup(func() { auditLogPath = original })
-	tmp := t.TempDir() + "/audit.log"
-	auditLogPath = tmp
-	if err := os.WriteFile(tmp, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	withFakeBPFProbe(t, func(_ context.Context, _ chan<- alert.Finding, _ *config.Config) (AFAlgLiveMonitor, error) {
-		return nil, errBPFPhaseBPending
-	})
-
-	got := StartAFAlgLiveMonitor(make(chan alert.Finding, 1), &config.Config{})
-	if got == nil {
-		t.Fatal("expected audit fallback while Phase B is pending, got nil")
-	}
-	if got.Mode() != "auditd-tail" {
-		t.Fatalf("expected auditd-tail, got %s", got.Mode())
-	}
-}
-
 // TestStartAFAlgLiveMonitor_ConfigForceAuditdSkipsBPF documents the
 // kill-switch contract: af_alg_backend=auditd must NOT call into the BPF
 // probe even if the bpf tag is compiled in. That keeps a misbehaving BPF

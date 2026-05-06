@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -186,6 +187,20 @@ func withMockOS(t *testing.T, m OS) {
 	old := osFS
 	osFS = m
 	t.Cleanup(func() { osFS = old })
+}
+
+// withMockPasswd writes content to a temp passwd file and points the package's
+// defaultUIDCache at it for the duration of the test. Use this when a test
+// exercises a check that calls LookupUser and the uid -> username resolution
+// is part of the assertion (safeUsers filter, username-in-message text, etc.).
+func withMockPasswd(t *testing.T, content string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "passwd")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	restore := swapDefaultUIDCacheForTest(path)
+	t.Cleanup(restore)
 }
 
 func withMockCmd(t *testing.T, m CmdRunner) {

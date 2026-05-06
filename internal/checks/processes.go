@@ -12,6 +12,79 @@ import (
 	"github.com/pidginhost/csm/internal/state"
 )
 
+// suspiciousExeNames flags processes whose exe basename contains any of
+// these substrings. Shared between the periodic CheckSuspiciousProcesses
+// and the live BPF exec backend (which cannot see cmdline patterns and
+// relies on exe-name + exe-path matching).
+var suspiciousExeNames = []string{"defunct", "gsocket", "gs-netcat", "gs-sftp"}
+
+// suspiciousExePaths flags processes whose exe path contains any of these
+// directory prefixes. Shared with the live BPF exec backend.
+var suspiciousExePaths = []string{"/tmp/", "/dev/shm/", "/.config/"}
+
+// suspiciousCmdlinePatterns is checked only by the periodic
+// CheckSuspiciousProcesses; the BPF exec backend cannot read cmdline at
+// the moment of exec.
+var suspiciousCmdlinePatterns = []string{
+	"/bin/sh -i", "/bin/bash -i", "bash -i",
+	"/dev/tcp/", "semutmerah", "gsocket",
+	"reverse", "nc -e", "ncat -e",
+}
+
+// EvaluateExec returns findings for a single execve event observed by the
+// BPF live backend. Inputs are the (UID, PID, comm, exe, parentComm)
+// tuple the kernel hook collects. Pure function: no IO. The legacy
+// periodic checks (CheckSuspiciousProcesses, CheckFakeKernelThreads) keep
+// using cmdline-aware detection that this function cannot replicate.
+func EvaluateExec(uid uint32, pid uint32, comm, exe, parentComm string) []alert.Finding {
+	var out []alert.Finding
+	pidInt := int(pid)
+
+	if uid != 0 && len(comm) >= 2 && comm[0] == '[' && comm[len(comm)-1] == ']' {
+		out = append(out, alert.Finding{
+			Severity: alert.Critical,
+			Check:    "fake_kernel_thread",
+			Message:  fmt.Sprintf("Non-root process masquerading as kernel thread: %s", comm),
+			Details:  fmt.Sprintf("PID: %d, UID: %d, exe: %s, parent: %s", pid, uid, exe, parentComm),
+			PID:      pidInt,
+		})
+	}
+
+	if uid == 0 {
+		return out
+	}
+
+	exeName := filepath.Base(exe)
+	exeNameLower := strings.ToLower(exeName)
+	for _, s := range suspiciousExeNames {
+		if strings.Contains(exeNameLower, s) {
+			out = append(out, alert.Finding{
+				Severity: alert.Critical,
+				Check:    "suspicious_process",
+				Message:  fmt.Sprintf("Suspicious process name: %s", exeName),
+				Details:  fmt.Sprintf("PID: %d, UID: %d, exe: %s, comm: %s, parent: %s", pid, uid, exe, comm, parentComm),
+				PID:      pidInt,
+			})
+			break
+		}
+	}
+
+	for _, p := range suspiciousExePaths {
+		if strings.Contains(exe, p) {
+			out = append(out, alert.Finding{
+				Severity: alert.High,
+				Check:    "suspicious_process",
+				Message:  fmt.Sprintf("Process running from suspicious path: %s", exe),
+				Details:  fmt.Sprintf("PID: %d, UID: %d, comm: %s, parent: %s", pid, uid, comm, parentComm),
+				PID:      pidInt,
+			})
+			break
+		}
+	}
+
+	return out
+}
+
 func CheckFakeKernelThreads(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
@@ -71,13 +144,9 @@ func CheckFakeKernelThreads(ctx context.Context, _ *config.Config, _ *state.Stor
 func CheckSuspiciousProcesses(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	suspiciousNames := []string{"defunct", "gsocket", "gs-netcat", "gs-sftp"}
-	suspiciousCmdline := []string{
-		"/bin/sh -i", "/bin/bash -i", "bash -i",
-		"/dev/tcp/", "semutmerah", "gsocket",
-		"reverse", "nc -e", "ncat -e",
-	}
-	suspiciousPaths := []string{"/tmp/", "/dev/shm/", "/.config/"}
+	suspiciousNames := suspiciousExeNames
+	suspiciousCmdline := suspiciousCmdlinePatterns
+	suspiciousPaths := suspiciousExePaths
 
 	procs, _ := osFS.Glob("/proc/[0-9]*/exe")
 	for _, exePath := range procs {
