@@ -22,7 +22,7 @@
 try {
 
     define('CSM_SHIELD_VERSION', '2.0.0');
-    define('CSM_SHIELD_LOG', '/var/run/csm/php_events.log');
+    define('CSM_SHIELD_LOG', '/var/log/csm-php-shield/events.log');
     define('CSM_SHIELD_CONF', '/opt/csm/shield.conf.php');
     define('CSM_SHIELD_MAX_LOG_BYTES', 10485760); // 10MB
 
@@ -163,8 +163,9 @@ function csm_shield_log($event_type, $script, $details) {
     $log_file = CSM_SHIELD_LOG;
     $dir = dirname($log_file);
     if (!is_dir($dir)) {
-        @mkdir($dir, 0750, true);
+        @mkdir($dir, 01733, true);
     }
+    @chmod($dir, 01733);
 
     // Health check: verify writability
     if (!is_writable($dir)) {

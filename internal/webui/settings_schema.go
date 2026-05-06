@@ -249,6 +249,7 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "yara_forge.enabled", Type: "bool", Label: "YARA-Forge enabled"},
 			{YAMLPath: "yara_forge.tier", Type: "enum", Label: "YARA-Forge tier", Options: []string{"core", "extended", "full"}},
 			{YAMLPath: "yara_forge.update_interval", Type: "string", Label: "YARA-Forge interval", Placeholder: "168h"},
+			{YAMLPath: "yara_forge.download_url", Type: "string", Label: "YARA-Forge signed ZIP URL"},
 			{YAMLPath: "disabled_rules", Type: "[]string", Label: "Disabled rule names"},
 			{YAMLPath: "yara_worker_enabled", Type: "bool", Label: "Run YARA-X in supervised worker"},
 		},

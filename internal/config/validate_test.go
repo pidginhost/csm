@@ -434,6 +434,21 @@ func TestValidateSignaturesRequireSigningKeyForForge(t *testing.T) {
 	}
 }
 
+func TestValidateSignaturesRequireDownloadURLForForge(t *testing.T) {
+	cfg := &Config{Hostname: "test"}
+	cfg.Alerts.Email.Enabled = true
+	cfg.Alerts.Email.To = []string{"a@b.com"}
+	cfg.Alerts.Email.SMTP = "localhost:25"
+	cfg.Alerts.Email.From = "csm@test.com"
+
+	cfg.Signatures.SigningKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	cfg.Signatures.YaraForge.Enabled = true
+	results := Validate(cfg)
+	if !hasResult(results, "error", "signatures.yara_forge.download_url") {
+		t.Fatalf("expected download_url error for forge updates; results=%v", results)
+	}
+}
+
 func TestValidateWarningGeoIP(t *testing.T) {
 	cfg := &Config{Hostname: "test"}
 	cfg.Alerts.Email.Enabled = true

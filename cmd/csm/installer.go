@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 
 	"github.com/pidginhost/csm/internal/auditd"
 	"github.com/pidginhost/csm/internal/config"
@@ -461,13 +462,13 @@ func deployLogrotate() error {
     create 0640 root root
 }
 
-/var/run/csm/php_events.log {
+/var/log/csm-php-shield/events.log {
     daily
     rotate 7
     compress
     missingok
     notifempty
-    create 0640 root root
+    create 0622 root root
     maxsize 5M
 }
 `
@@ -593,13 +594,25 @@ func (inst *Installer) DeployChallengeConfig() {
 const phpShieldPath = "/opt/csm/php_shield.php"
 const phpShieldConfPath = "/opt/csm/shield.conf.php"
 
+var (
+	phpShieldEventDirMode = os.FileMode(0733) | os.ModeSticky
+	phpShieldEventLogMode = os.FileMode(0622)
+	phpShieldEventDir     = "/var/log/csm-php-shield"
+	phpShieldEventLogPath = filepath.Join(phpShieldEventDir, "events.log")
+	phpShieldIniDirGlobs  = []string{
+		"/opt/cpanel/ea-php*/root/etc/php.d",
+		"/opt/alt/php*/etc/php.d",
+		"/usr/local/lsws/lsphp*/etc/php.d",
+	}
+)
+
 // shieldContent is the PHP Shield deployed to servers. Kept in sync with configs/php_shield.php.
 var shieldContent = `<?php
 // CSM PHP Shield v2.0.0 - Runtime Protection (auto_prepend_file)
 // Fails open: errors don't break sites. See configs/php_shield.php for docs.
 try {
     define('CSM_SHIELD_VERSION', '2.0.0');
-    define('CSM_SHIELD_LOG', '/var/run/csm/php_events.log');
+    define('CSM_SHIELD_LOG', '/var/log/csm-php-shield/events.log');
     define('CSM_SHIELD_CONF', '/opt/csm/shield.conf.php');
     define('CSM_SHIELD_MAX_LOG_BYTES', 10485760);
     $csm_script = isset($_SERVER['SCRIPT_FILENAME']) ? $_SERVER['SCRIPT_FILENAME'] : '';
@@ -643,7 +656,8 @@ try {
 } catch (Exception $e) {}
 function csm_log_event($type, $script, $details) {
     $f = CSM_SHIELD_LOG; $dir = dirname($f);
-    if (!is_dir($dir)) @mkdir($dir, 0750, true);
+    if (!is_dir($dir)) @mkdir($dir, 01733, true);
+    @chmod($dir, 01733);
     if (!is_writable($dir)) { if (!defined('CSM_SHIELD_LOG_WARNED')) { define('CSM_SHIELD_LOG_WARNED', true); error_log('CSM PHP Shield: cannot write to ' . $dir); } return; }
     $sz = @filesize($f); if ($sz !== false && $sz > CSM_SHIELD_MAX_LOG_BYTES) return;
     $ip = isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : '-';
@@ -652,6 +666,71 @@ function csm_log_event($type, $script, $details) {
     @file_put_contents($f, sprintf("[%s] %s ip=%s script=%s uri=%s ua=%s details=%s\n", date('Y-m-d H:i:s'), $type, $ip, $script, $uri, $ua, $details), FILE_APPEND|LOCK_EX);
 }
 `
+
+func ensurePHPShieldEventLog() error {
+	// PHP runs as per-account users. Keep this separate from /var/log/csm so
+	// tenants can append Shield events without access to daemon logs.
+	// #nosec G301 -- sticky write-only event drop directory for PHP pool users.
+	if err := os.MkdirAll(phpShieldEventDir, phpShieldEventDirMode); err != nil {
+		return fmt.Errorf("creating PHP Shield event dir: %w", err)
+	}
+	// #nosec G302 -- preserve sticky write-only mode if the directory already existed.
+	if err := os.Chmod(phpShieldEventDir, phpShieldEventDirMode); err != nil {
+		return fmt.Errorf("setting PHP Shield event dir mode: %w", err)
+	}
+
+	// #nosec G304 G302 -- fixed event log path; write-only for tenant users,
+	// readable by root for the daemon and logrotate.
+	f, err := os.OpenFile(phpShieldEventLogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, phpShieldEventLogMode)
+	if err != nil {
+		return fmt.Errorf("creating PHP Shield event log: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("closing PHP Shield event log: %w", err)
+	}
+	// #nosec G302 -- PHP users must be able to append runtime events.
+	if err := os.Chmod(phpShieldEventLogPath, phpShieldEventLogMode); err != nil {
+		return fmt.Errorf("setting PHP Shield event log mode: %w", err)
+	}
+	return nil
+}
+
+func discoverPHPShieldIniDirs() []string {
+	seen := make(map[string]struct{})
+	for _, pattern := range phpShieldIniDirGlobs {
+		matches, _ := filepath.Glob(pattern)
+		for _, match := range matches {
+			info, err := os.Stat(match)
+			if err != nil || !info.IsDir() {
+				continue
+			}
+			seen[match] = struct{}{}
+		}
+	}
+
+	dirs := make([]string, 0, len(seen))
+	for dir := range seen {
+		dirs = append(dirs, dir)
+	}
+	sort.Strings(dirs)
+	return dirs
+}
+
+func writePHPShieldIniFiles() int {
+	deployed := 0
+	for _, iniDir := range discoverPHPShieldIniDirs() {
+		iniPath := filepath.Join(iniDir, "zzz_csm_shield.ini")
+		iniContent := fmt.Sprintf("; CSM PHP Shield - runtime protection\nauto_prepend_file = %s\n", phpShieldPath)
+		// #nosec G306 -- PHP .ini loaded by every PHP interpreter; world-read required.
+		if err := os.WriteFile(iniPath, []byte(iniContent), 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "  Warning: could not write %s: %v\n", iniPath, err)
+			continue
+		}
+		fmt.Printf("  Configured: %s\n", iniPath)
+		deployed++
+	}
+	return deployed
+}
 
 // InstallPHPShield deploys the PHP runtime protection shield.
 // Adds auto_prepend_file to the global PHP configuration.
@@ -678,35 +757,11 @@ func (inst *Installer) InstallPHPShield() error {
 	// Generate shield config with allowed IPs from main config
 	inst.deployShieldConfig()
 
-	// Create the events log directory
-	if err := os.MkdirAll("/var/run/csm", 0750); err != nil {
-		return fmt.Errorf("creating events dir: %w", err)
+	if err := ensurePHPShieldEventLog(); err != nil {
+		return err
 	}
 
-	// Find PHP ini directory and add auto_prepend_file
-	phpIniPaths := []string{
-		"/opt/cpanel/ea-php82/root/etc/php.d/",
-		"/opt/cpanel/ea-php83/root/etc/php.d/",
-		"/opt/cpanel/ea-php81/root/etc/php.d/",
-		"/opt/cpanel/ea-php80/root/etc/php.d/",
-		"/opt/cpanel/ea-php74/root/etc/php.d/",
-	}
-
-	deployed := 0
-	for _, iniDir := range phpIniPaths {
-		if _, err := os.Stat(iniDir); os.IsNotExist(err) {
-			continue
-		}
-		iniPath := filepath.Join(iniDir, "zzz_csm_shield.ini")
-		iniContent := fmt.Sprintf("; CSM PHP Shield - runtime protection\nauto_prepend_file = %s\n", phpShieldPath)
-		// #nosec G306 -- PHP .ini loaded by every PHP interpreter; world-read required.
-		if err := os.WriteFile(iniPath, []byte(iniContent), 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "  Warning: could not write %s: %v\n", iniPath, err)
-			continue
-		}
-		fmt.Printf("  Configured: %s\n", iniPath)
-		deployed++
-	}
+	deployed := writePHPShieldIniFiles()
 
 	if deployed == 0 {
 		fmt.Println("  Warning: no PHP versions found to configure. Deploy manually:")
@@ -733,6 +788,9 @@ func (inst *Installer) RedeployPHPShield() error {
 	if err := os.WriteFile(phpShieldPath, []byte(shieldContent), 0644); err != nil {
 		return fmt.Errorf("writing shield file: %w", err)
 	}
+	if err := ensurePHPShieldEventLog(); err != nil {
+		return err
+	}
 	fmt.Printf("PHP Shield updated: %s\n", phpShieldPath)
 	return nil
 }
@@ -755,27 +813,11 @@ func (inst *Installer) EnablePHPShield() error {
 		}
 	}
 
-	phpIniPaths := []string{
-		"/opt/cpanel/ea-php82/root/etc/php.d/",
-		"/opt/cpanel/ea-php83/root/etc/php.d/",
-		"/opt/cpanel/ea-php81/root/etc/php.d/",
-		"/opt/cpanel/ea-php80/root/etc/php.d/",
-		"/opt/cpanel/ea-php74/root/etc/php.d/",
+	inst.deployShieldConfig()
+	if err := ensurePHPShieldEventLog(); err != nil {
+		return err
 	}
-
-	deployed := 0
-	for _, iniDir := range phpIniPaths {
-		if _, err := os.Stat(iniDir); os.IsNotExist(err) {
-			continue
-		}
-		iniPath := filepath.Join(iniDir, "zzz_csm_shield.ini")
-		iniContent := fmt.Sprintf("; CSM PHP Shield - runtime protection\nauto_prepend_file = %s\n", phpShieldPath)
-		// #nosec G306 -- PHP .ini loaded by every PHP interpreter.
-		if err := os.WriteFile(iniPath, []byte(iniContent), 0644); err != nil {
-			continue
-		}
-		deployed++
-	}
+	deployed := writePHPShieldIniFiles()
 
 	inst.patchConfigPHPShield(true)
 

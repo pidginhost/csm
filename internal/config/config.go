@@ -336,7 +336,7 @@ type Config struct {
 	} `yaml:"challenge" hotreload:"restart"`
 
 	PHPShield struct {
-		Enabled bool `yaml:"enabled"` // watch php_events.log for PHP Shield alerts (default: false)
+		Enabled bool `yaml:"enabled"` // watch PHP Shield event log for alerts (default: false)
 	} `yaml:"php_shield" hotreload:"restart"`
 
 	Reputation struct {
@@ -378,6 +378,7 @@ type Config struct {
 			Enabled        bool   `yaml:"enabled"`
 			Tier           string `yaml:"tier"`            // "core", "extended", "full" (default: "core")
 			UpdateInterval string `yaml:"update_interval"` // default: "168h" (weekly)
+			DownloadURL    string `yaml:"download_url"`    // signed ZIP URL/template; supports {tier} and {version}
 		} `yaml:"yara_forge"`
 		DisabledRules []string `yaml:"disabled_rules"` // YARA rule names to exclude from Forge downloads
 		// YaraWorkerEnabled is a tri-state: nil means "use system default"

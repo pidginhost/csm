@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- YARA Forge automatic updates now require an explicit signed ZIP mirror URL, avoiding repeated verification failures against unsigned upstream GitHub assets. PHP Shield now installs across every detected cPanel EA-PHP version and writes events to a dedicated log path that PHP users can reach.
 - `port_flood` firewall rules are now rate-limited per source IP, per port, and per IP family instead of globally. SMTP defaults raised to 600 hits / 300 s (= 120 conns/min/IP) so normal MUA bursts pass without dropping legitimate sessions when one noisy source is on the network.
 - `conn_limit` default raised from 50 to 300 (matches CSF `CT_LIMIT`) so power users with multi-tab webmail, IMAP IDLE on several devices, and parallel SMTP send do not silently lose new connections when their concurrent count peaks. Existing installs keep their configured value; only fresh installs and unconfigured fields pick up the new default.
 - `user_outbound_connection` no longer false-positives on the accept side of inbound connections (e.g. pure-ftpd PASV data channels, user-owned daemons listening on high ports), and emitted findings now carry a real timestamp instead of the zero value.

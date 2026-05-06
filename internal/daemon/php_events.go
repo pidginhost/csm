@@ -8,7 +8,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
-const phpEventsLogPath = "/var/run/csm/php_events.log"
+const phpEventsLogPath = "/var/log/csm-php-shield/events.log"
 
 // parsePHPShieldLogLine wraps parsePHPShieldLine for the log watcher handler signature.
 func parsePHPShieldLogLine(line string, _ *config.Config) []alert.Finding { //nolint:unparam

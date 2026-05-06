@@ -2162,11 +2162,12 @@ func (d *Daemon) doForgeUpdate() {
 		currentVersion = db.GetMetaString("forge_version_" + d.cfg.Signatures.YaraForge.Tier)
 	}
 
-	newVersion, count, err := signatures.ForgeUpdate(
+	newVersion, count, err := signatures.ForgeUpdateFromURL(
 		d.cfg.Signatures.RulesDir,
 		d.cfg.Signatures.YaraForge.Tier,
 		currentVersion,
 		d.cfg.Signatures.SigningKey,
+		d.cfg.Signatures.YaraForge.DownloadURL,
 		d.cfg.Signatures.DisabledRules,
 	)
 	if err != nil {

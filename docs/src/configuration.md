@@ -246,7 +246,7 @@ challenge:
 
 # --- PHP Shield ---
 php_shield:
-  enabled: false                        # watch php_events.log for PHP Shield alerts
+  enabled: false                        # watch the PHP Shield event log for alerts
 
 # --- Reputation ---
 reputation:
@@ -276,6 +276,7 @@ signatures:
     enabled: false                      # auto-fetch YARA Forge community rules
     tier: "core"                        # "core", "extended", "full" (default: "core")
     update_interval: "168h"             # how often to check for updates (default: weekly)
+    download_url: ""                    # signed ZIP URL/template; supports {tier} and {version}
   disabled_rules: []                    # YARA rule names to exclude from Forge downloads
   # yara_worker_enabled: true           # tri-state: omit for the default (on), `false` to explicitly disable
 
@@ -284,7 +285,7 @@ signatures:
 The value must be the hex-encoded Ed25519 public key used to verify detached `.sig` files for downloaded rule bundles.
 It is not a PEM block and not a filesystem path.
 
-If you are not operating a signed remote rule feed yet, leave `update_url` empty and keep `yara_forge.enabled: false`.
+YARA Forge upstream GitHub releases do not publish CSM detached signatures. To enable automatic Forge updates, mirror the ZIPs, sign each ZIP, publish the signature at the ZIP URL plus `.sig`, and set `yara_forge.download_url` to that signed mirror. If you are not operating a signed remote rule feed yet, leave `update_url` empty and keep `yara_forge.enabled: false`.
 
 # --- Web UI ---
 webui:

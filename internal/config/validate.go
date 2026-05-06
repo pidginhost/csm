@@ -143,6 +143,11 @@ func Validate(cfg *Config) []ValidationResult {
 			results = append(results, ValidationResult{"error", "signatures.update_interval", fmt.Sprintf("unparseable duration: %s", cfg.Signatures.UpdateInterval)})
 		}
 	}
+	if cfg.Signatures.YaraForge.UpdateInterval != "" {
+		if _, err := time.ParseDuration(cfg.Signatures.YaraForge.UpdateInterval); err != nil {
+			results = append(results, ValidationResult{"error", "signatures.yara_forge.update_interval", fmt.Sprintf("unparseable duration: %s", cfg.Signatures.YaraForge.UpdateInterval)})
+		}
+	}
 	if cfg.EmailAV.ScanTimeout != "" {
 		if _, err := time.ParseDuration(cfg.EmailAV.ScanTimeout); err != nil {
 			results = append(results, ValidationResult{"error", "email_av.scan_timeout", fmt.Sprintf("unparseable duration: %s", cfg.EmailAV.ScanTimeout)})
@@ -216,6 +221,16 @@ func Validate(cfg *Config) []ValidationResult {
 	if cfg.Signatures.YaraForge.Enabled && cfg.Signatures.SigningKey == "" {
 		results = append(results, ValidationResult{"error", "signatures.signing_key",
 			"signing_key is required when signatures.yara_forge.enabled is true"})
+	}
+	if cfg.Signatures.YaraForge.Enabled && cfg.Signatures.YaraForge.DownloadURL == "" {
+		results = append(results, ValidationResult{"error", "signatures.yara_forge.download_url",
+			"download_url is required because upstream YARA Forge releases do not publish CSM detached signatures"})
+	}
+	if cfg.Signatures.YaraForge.DownloadURL != "" &&
+		!strings.HasPrefix(cfg.Signatures.YaraForge.DownloadURL, "https://") &&
+		!strings.HasPrefix(cfg.Signatures.YaraForge.DownloadURL, "http://") {
+		results = append(results, ValidationResult{"error", "signatures.yara_forge.download_url",
+			"download_url must be an http or https URL"})
 	}
 
 	// --- EmailProtection ---

@@ -38,6 +38,11 @@ signatures:
   auto_update: false
   update_url: ""
   signing_key: ""   # required for any remote signature update path
+  yara_forge:
+    enabled: false
+    tier: "core"
+    update_interval: "168h"
+    download_url: "" # signed ZIP URL/template; supports {tier} and {version}
 
 thresholds:
   mail_queue_warn: 500

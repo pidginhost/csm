@@ -71,11 +71,14 @@ signatures:
     enabled: true
     tier: "core"              # core (5K rules, low FP), extended (10K), full (12K)
     update_interval: "168h"   # weekly
+    download_url: "https://rules.example/csm/yara-forge/{version}/yara-forge-rules-{tier}.zip"
   disabled_rules:             # rule names to exclude from Forge downloads
     - SUSP_Example_Rule
 ```
 
 `signing_key` must be a hex string for the Ed25519 public key that matches the private key used to sign the remote Forge artifact. It is not a PEM block and not a file path.
+
+YARA Forge's upstream GitHub releases publish ZIP files, but not CSM detached signatures. CSM therefore requires `yara_forge.download_url` to point at a mirror you operate. The URL may contain `{tier}` and `{version}` placeholders. The detached signature must be available at the resolved ZIP URL plus `.sig`.
 
 If you do not have a signed update source yet, disable remote updates instead:
 
@@ -98,7 +101,7 @@ signatures:
 ### Update Flow
 
 1. CSM checks the latest YARA Forge release tag on GitHub
-2. If newer than the installed version, downloads the ZIP for the configured tier and its detached signature
+2. If newer than the installed version, downloads the ZIP for the configured tier from `yara_forge.download_url` and its detached signature
 3. Verifies the download against `signatures.signing_key`
 4. Filters out any rules listed in `disabled_rules`
 5. Compile-tests the rules with YARA-X before installing

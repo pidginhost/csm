@@ -17,7 +17,6 @@ import (
 
 const (
 	forgeReleasesURL = "https://api.github.com/repos/YARAHQ/yara-forge/releases/latest"
-	forgeDownloadFmt = "https://github.com/YARAHQ/yara-forge/releases/latest/download/yara-forge-rules-%s.zip"
 	forgeHTTPTimeout = 30 * time.Second
 	forgeMaxZIPSize  = 20 * 1024 * 1024
 )
@@ -32,11 +31,21 @@ var forgeTierAsset = map[string]string{
 // A detached signature is fetched from the ZIP URL + ".sig" and verified
 // against the raw ZIP content before extraction.
 func ForgeUpdate(rulesDir, tier, currentVersion, signingKey string, disabledRules []string) (newVersion string, ruleCount int, err error) {
+	return ForgeUpdateFromURL(rulesDir, tier, currentVersion, signingKey, "", disabledRules)
+}
+
+// ForgeUpdateFromURL is ForgeUpdate with an explicit signed ZIP source. The
+// downloadURL may contain {tier} and {version}; the signature is fetched from
+// the resolved ZIP URL plus ".sig".
+func ForgeUpdateFromURL(rulesDir, tier, currentVersion, signingKey, downloadURL string, disabledRules []string) (newVersion string, ruleCount int, err error) {
 	if _, ok := forgeTierAsset[tier]; !ok {
 		return "", 0, fmt.Errorf("unknown YARA Forge tier: %q (valid: core, extended, full)", tier)
 	}
 	if e := requireSigningKey(signingKey); e != nil {
 		return "", 0, e
+	}
+	if strings.TrimSpace(downloadURL) == "" {
+		return "", 0, fmt.Errorf("signatures.yara_forge.download_url is required: upstream YARA Forge does not publish CSM detached signatures")
 	}
 
 	latestTag, err := forgeLatestTag()
@@ -48,7 +57,7 @@ func ForgeUpdate(rulesDir, tier, currentVersion, signingKey string, disabledRule
 		return currentVersion, 0, nil
 	}
 
-	zipURL := fmt.Sprintf(forgeDownloadFmt, tier)
+	zipURL := forgeDownloadURL(downloadURL, tier, latestTag)
 	zipData, err := forgeDownload(zipURL)
 	if err != nil {
 		return "", 0, fmt.Errorf("downloading YARA Forge %s: %w", tier, err)
@@ -98,6 +107,13 @@ func ForgeUpdate(rulesDir, tier, currentVersion, signingKey string, disabledRule
 	}
 
 	return latestTag, ruleCount, nil
+}
+
+func forgeDownloadURL(tmpl, tier, version string) string {
+	url := strings.TrimSpace(tmpl)
+	url = strings.ReplaceAll(url, "{tier}", tier)
+	url = strings.ReplaceAll(url, "{version}", version)
+	return url
 }
 
 func forgeLatestTag() (string, error) {
