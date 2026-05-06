@@ -3,12 +3,13 @@ module github.com/pidginhost/csm
 go 1.26.2
 
 require (
-	github.com/VirusTotal/yara-x/go v1.15.0
+	github.com/VirusTotal/yara-x/go v1.16.0
+	github.com/cilium/ebpf v0.21.0
 	github.com/coreos/go-systemd/v22 v22.7.0
-	github.com/getsentry/sentry-go v0.45.1
+	github.com/getsentry/sentry-go v0.46.2
 	github.com/google/nftables v0.3.0
-	github.com/klauspost/compress v1.18.5
-	github.com/oschwald/maxminddb-golang/v2 v2.1.1
+	github.com/klauspost/compress v1.18.6
+	github.com/oschwald/maxminddb-golang/v2 v2.2.0
 	go.etcd.io/bbolt v1.4.3
 	golang.org/x/net v0.53.0
 	golang.org/x/sys v0.43.0
@@ -16,14 +17,9 @@ require (
 )
 
 require (
-	github.com/cilium/ebpf v0.21.0 // indirect
-	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
-	github.com/kr/pretty v0.3.1 // indirect
 	github.com/mdlayher/netlink v1.11.0 // indirect
 	github.com/mdlayher/socket v0.6.0 // indirect
-	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
-	github.com/rogpeppe/go-internal v1.12.0 // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
