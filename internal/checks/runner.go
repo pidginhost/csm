@@ -347,17 +347,8 @@ func reducedDeepChecks() []namedCheck {
 // PerfCheckNamesForTier returns the perf_* check names registered in the given tier.
 // Used by the daemon to perform an atomic purge-and-merge when storing findings.
 func PerfCheckNamesForTier(tier Tier) []string {
-	var toScan []namedCheck
-	switch tier {
-	case TierCritical:
-		toScan = criticalChecks()
-	case TierDeep:
-		toScan = deepChecks()
-	case TierAll:
-		toScan = append(criticalChecks(), deepChecks()...)
-	}
 	var names []string
-	for _, nc := range toScan {
+	for _, nc := range checksForTier(tier) {
 		if strings.HasPrefix(nc.name, "perf_") {
 			names = append(names, nc.name)
 		}
@@ -365,18 +356,54 @@ func PerfCheckNamesForTier(tier Tier) []string {
 	return names
 }
 
-// RunTier runs only the specified tier of checks.
-func RunTier(cfg *config.Config, store *state.Store, tier Tier) []alert.Finding {
-	var toRun []namedCheck
+// LatestPurgeCheckNamesForTier returns every emitted finding name owned by a
+// tier. The daemon uses this to replace a tier's current scan output without
+// retaining stale findings from prior runs.
+func LatestPurgeCheckNamesForTier(tier Tier) []string {
+	return latestPurgeCheckNamesForChecks(checksForTier(tier))
+}
+
+// LatestPurgeCheckNamesForReducedDeep returns the emitted finding names owned
+// by the reduced deep set used while fanotify covers filesystem events.
+func LatestPurgeCheckNamesForReducedDeep() []string {
+	return latestPurgeCheckNamesForChecks(reducedDeepChecks())
+}
+
+func checksForTier(tier Tier) []namedCheck {
 	switch tier {
 	case TierCritical:
-		toRun = criticalChecks()
+		return criticalChecks()
 	case TierDeep:
-		toRun = deepChecks()
+		return deepChecks()
 	case TierAll:
-		toRun = append(criticalChecks(), deepChecks()...)
+		return append(criticalChecks(), deepChecks()...)
+	default:
+		return nil
 	}
-	return runParallel(cfg, store, toRun, string(tier))
+}
+
+func latestPurgeCheckNamesForChecks(toScan []namedCheck) []string {
+	seen := make(map[string]struct{})
+	if len(toScan) > 0 {
+		seen["check_timeout"] = struct{}{}
+	}
+	for _, nc := range toScan {
+		seen[nc.name] = struct{}{}
+		for _, name := range runnerFindingNames[nc.name] {
+			seen[name] = struct{}{}
+		}
+	}
+	names := make([]string, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// RunTier runs only the specified tier of checks.
+func RunTier(cfg *config.Config, store *state.Store, tier Tier) []alert.Finding {
+	return runParallel(cfg, store, checksForTier(tier), string(tier))
 }
 
 // RunReducedDeep runs only the deep checks that fanotify can't replace.

@@ -68,6 +68,38 @@ func TestEngineBlockSubnetStateOnly(t *testing.T) {
 	}
 }
 
+func TestEngineIsSubnetBlockedUsesCanonicalCIDR(t *testing.T) {
+	e := newTestEngine(t)
+
+	e.saveSubnetEntry(SubnetEntry{
+		CIDR:      "198.51.100.0/24",
+		Reason:    "test block",
+		BlockedAt: time.Now(),
+	})
+
+	if !e.IsSubnetBlocked("198.51.100.99/24") {
+		t.Fatal("expected canonical /24 subnet to be blocked")
+	}
+	if e.IsSubnetBlocked("198.51.101.0/24") {
+		t.Fatal("unexpected blocked status for neighboring subnet")
+	}
+}
+
+func TestEngineSaveSubnetEntryDeduplicates(t *testing.T) {
+	e := newTestEngine(t)
+
+	e.saveSubnetEntry(SubnetEntry{CIDR: "203.0.113.0/24", Reason: "first", BlockedAt: time.Now()})
+	e.saveSubnetEntry(SubnetEntry{CIDR: "203.0.113.0/24", Reason: "second", BlockedAt: time.Now()})
+
+	state := e.loadStateFile()
+	if len(state.BlockedNet) != 1 {
+		t.Fatalf("blocked_net = %d, want 1", len(state.BlockedNet))
+	}
+	if state.BlockedNet[0].Reason != "first" {
+		t.Fatalf("duplicate subnet overwrote state: %+v", state.BlockedNet[0])
+	}
+}
+
 func TestEngineRemoveAllowedBySourceStateOnly(t *testing.T) {
 	e := newTestEngine(t)
 

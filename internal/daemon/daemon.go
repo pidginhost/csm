@@ -960,31 +960,33 @@ func (d *Daemon) deepScanner() {
 			rescan := d.forceFullRescan.CompareAndSwap(true, false)
 			var findings []alert.Finding
 			var deepTier checks.Tier
+			var purgeChecks []string
 			switch {
 			case rescan:
 				deepTier = checks.TierDeep
 				findings = checks.RunTier(d.currentCfg(), d.store, deepTier)
+				purgeChecks = checks.LatestPurgeCheckNamesForTier(deepTier)
 				observeSignatureRescan()
 			case d.fileMonitor != nil:
 				findings = checks.RunReducedDeep(d.currentCfg(), d.store)
 				deepTier = checks.TierDeep
+				purgeChecks = checks.LatestPurgeCheckNamesForReducedDeep()
 			default:
 				deepTier = checks.TierDeep
 				findings = checks.RunTier(d.currentCfg(), d.store, deepTier)
+				purgeChecks = checks.LatestPurgeCheckNamesForTier(deepTier)
 			}
-			if len(findings) > 0 {
-				// Atomically purge stale perf findings and merge new ones.
-				d.store.PurgeAndMergeFindings(checks.PerfCheckNamesForTier(deepTier), findings)
-				for _, f := range findings {
-					if strings.HasPrefix(f.Check, "perf_") && f.Severity == alert.Warning {
-						continue
-					}
-					select {
-					case d.alertCh <- f:
-					default:
-						atomic.AddInt64(&d.droppedAlerts, 1)
-						fmt.Fprintf(os.Stderr, "[%s] alert channel full, dropping deep finding: %s\n", ts(), f.Check)
-					}
+			// Atomically purge stale findings owned by this scan and merge new ones.
+			d.store.PurgeAndMergeFindings(purgeChecks, findings)
+			for _, f := range findings {
+				if strings.HasPrefix(f.Check, "perf_") && f.Severity == alert.Warning {
+					continue
+				}
+				select {
+				case d.alertCh <- f:
+				default:
+					atomic.AddInt64(&d.droppedAlerts, 1)
+					fmt.Fprintf(os.Stderr, "[%s] alert channel full, dropping deep finding: %s\n", ts(), f.Check)
 				}
 			}
 		}
@@ -1013,19 +1015,17 @@ func (d *Daemon) runPeriodicChecks(tier checks.Tier) {
 	}
 
 	findings := checks.RunTier(d.currentCfg(), d.store, tier)
-	if len(findings) > 0 {
-		// Atomically purge stale perf findings and merge new ones.
-		d.store.PurgeAndMergeFindings(checks.PerfCheckNamesForTier(tier), findings)
-		for _, f := range findings {
-			if strings.HasPrefix(f.Check, "perf_") && f.Severity == alert.Warning {
-				continue
-			}
-			select {
-			case d.alertCh <- f:
-			default:
-				atomic.AddInt64(&d.droppedAlerts, 1)
-				fmt.Fprintf(os.Stderr, "[%s] alert channel full, dropping periodic finding: %s\n", ts(), f.Check)
-			}
+	// Atomically purge stale findings owned by this scan and merge new ones.
+	d.store.PurgeAndMergeFindings(checks.LatestPurgeCheckNamesForTier(tier), findings)
+	for _, f := range findings {
+		if strings.HasPrefix(f.Check, "perf_") && f.Severity == alert.Warning {
+			continue
+		}
+		select {
+		case d.alertCh <- f:
+		default:
+			atomic.AddInt64(&d.droppedAlerts, 1)
+			fmt.Fprintf(os.Stderr, "[%s] alert channel full, dropping periodic finding: %s\n", ts(), f.Check)
 		}
 	}
 }

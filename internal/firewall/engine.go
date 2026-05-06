@@ -520,7 +520,40 @@ func (e *Engine) createInputChain() error {
 		Policy:   &policy,
 	})
 
-	// Rule 1: Allow established/related connections
+	// Rule 1: Allow loopback
+	e.conn.AddRule(&nftables.Rule{
+		Table: e.table,
+		Chain: e.chainIn,
+		Exprs: []expr.Any{
+			&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1},
+			&expr.Cmp{
+				Op:       expr.CmpOpEq,
+				Register: 1,
+				Data:     []byte("lo\x00"),
+			},
+			&expr.Verdict{Kind: expr.VerdictAccept},
+		},
+	})
+
+	// Rule 2: Allow infra IPs FIRST - infra must NEVER be blocked, even accidentally
+	e.addSetMatchRule(e.setInfra, expr.VerdictAccept)
+	e.addSetMatchRuleV6(e.setInfra6, expr.VerdictAccept)
+
+	// Rule 3: Cloudflare IP whitelist - accept on TCP 80/443 only.
+	// CF IPs can still be blocked on other ports (unlike infra).
+	e.addCFWhitelistRule(e.setCFWhitelist, false)
+	e.addCFWhitelistRule(e.setCFWhitelist6, true)
+
+	// Rule 4: Drop blocked IPs before established/related so active
+	// keep-alive connections do not bypass a new block.
+	e.addSetMatchRule(e.setBlocked, expr.VerdictDrop)
+	e.addSetMatchRuleV6(e.setBlocked6, expr.VerdictDrop)
+
+	// Rule 5: Drop blocked subnets (interval set for CIDR ranges)
+	e.addSetMatchRule(e.setBlockedNet, expr.VerdictDrop)
+	e.addSetMatchRuleV6(e.setBlockedNet6, expr.VerdictDrop)
+
+	// Rule 6: Allow established/related connections after block checks.
 	e.conn.AddRule(&nftables.Rule{
 		Table: e.table,
 		Chain: e.chainIn,
@@ -542,22 +575,7 @@ func (e *Engine) createInputChain() error {
 		},
 	})
 
-	// Rule 2: Allow loopback
-	e.conn.AddRule(&nftables.Rule{
-		Table: e.table,
-		Chain: e.chainIn,
-		Exprs: []expr.Any{
-			&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1},
-			&expr.Cmp{
-				Op:       expr.CmpOpEq,
-				Register: 1,
-				Data:     []byte("lo\x00"),
-			},
-			&expr.Verdict{Kind: expr.VerdictAccept},
-		},
-	})
-
-	// Rule 3: Drop INVALID conntrack state (malformed packets)
+	// Rule 7: Drop INVALID conntrack state (malformed packets)
 	e.conn.AddRule(&nftables.Rule{
 		Table: e.table,
 		Chain: e.chainIn,
@@ -573,28 +591,11 @@ func (e *Engine) createInputChain() error {
 		},
 	})
 
-	// Rule 4: Allow infra IPs FIRST - infra must NEVER be blocked, even accidentally
-	e.addSetMatchRule(e.setInfra, expr.VerdictAccept)
-	e.addSetMatchRuleV6(e.setInfra6, expr.VerdictAccept)
-
-	// Rule 4b: Cloudflare IP whitelist - accept on TCP 80/443 only.
-	// CF IPs can still be blocked on other ports (unlike infra).
-	e.addCFWhitelistRule(e.setCFWhitelist, false)
-	e.addCFWhitelistRule(e.setCFWhitelist6, true)
-
-	// Rule 5: Drop blocked IPs (O(1) hash set lookup)
-	e.addSetMatchRule(e.setBlocked, expr.VerdictDrop)
-	e.addSetMatchRuleV6(e.setBlocked6, expr.VerdictDrop)
-
-	// Rule 6: Drop blocked subnets (interval set for CIDR ranges)
-	e.addSetMatchRule(e.setBlockedNet, expr.VerdictDrop)
-	e.addSetMatchRuleV6(e.setBlockedNet6, expr.VerdictDrop)
-
-	// Rule 7: Allow explicitly allowed IPs
+	// Rule 8: Allow explicitly allowed IPs
 	e.addSetMatchRule(e.setAllowed, expr.VerdictAccept)
 	e.addSetMatchRuleV6(e.setAllowed6, expr.VerdictAccept)
 
-	// Rule 8: Port-specific allows (IP+port, e.g. MySQL access for specific IPs)
+	// Rule 9: Port-specific allows (IP+port, e.g. MySQL access for specific IPs)
 	state := e.loadStateFile()
 	for _, pa := range state.PortAllowed {
 		parsed := net.ParseIP(pa.IP)
@@ -1695,6 +1696,9 @@ func (e *Engine) BlockSubnet(cidr string, reason string, timeout time.Duration) 
 	if err != nil {
 		return fmt.Errorf("invalid CIDR: %s", cidr)
 	}
+	if e.isSubnetBlockedStateLocked(network.String()) {
+		return nil
+	}
 
 	targetSet, start, end := e.resolveSubnetSet(network)
 	if targetSet == nil {
@@ -1724,6 +1728,17 @@ func (e *Engine) BlockSubnet(cidr string, reason string, timeout time.Duration) 
 	e.saveSubnetEntry(entry)
 	AppendAudit(e.statePath, "block_subnet", network.String(), reason, entry.Source, timeout)
 	return nil
+}
+
+// IsSubnetBlocked returns true if the CIDR is present in the persisted subnet block state.
+func (e *Engine) IsSubnetBlocked(cidr string) bool {
+	_, network, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.isSubnetBlockedStateLocked(network.String())
 }
 
 // UnblockSubnet removes a CIDR range from the blocked subnets set (IPv4 or IPv6).
@@ -2055,6 +2070,16 @@ func (e *Engine) saveSubnetEntry(entry SubnetEntry) {
 	}
 	state.BlockedNet = append(state.BlockedNet, entry)
 	e.saveState(&state)
+}
+
+func (e *Engine) isSubnetBlockedStateLocked(cidr string) bool {
+	state := e.loadStateFile()
+	for _, existing := range state.BlockedNet {
+		if existing.CIDR == cidr {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Engine) removeSubnetState(cidr string) {

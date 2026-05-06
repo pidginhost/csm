@@ -136,11 +136,11 @@ Usage: csm <command>
 
 Commands:
   daemon        Run as persistent daemon (real-time monitoring with fanotify + inotify)
-  install       Deploy to /opt/csm/, set up auditd, create systemd timers, establish baseline
+  install       Deploy to /opt/csm/, set up auditd/systemd service, establish baseline
   uninstall     Clean removal
   run           Run all checks via the running daemon (all tiers, alerts on)
-  run-critical  Run critical checks via the running daemon (every 10min timer)
-  run-deep      Run deep filesystem scans via the running daemon (every 60min timer)
+  run-critical  Run critical checks via the running daemon
+  run-deep      Run deep filesystem scans via the running daemon
   check         Run all checks, print to stdout (no alerts, for testing)
   check-critical  Test critical checks only
   check-deep      Test deep checks only

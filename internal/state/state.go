@@ -146,18 +146,11 @@ func (s *Store) save() error {
 }
 
 func findingKey(f alert.Finding) string {
-	// Include a truncated hash of Details to prevent collisions when
-	// the same Check:Message pair has different Details content.
-	if f.Details == "" {
-		return fmt.Sprintf("%s:%s", f.Check, f.Message)
-	}
-	h := sha256.Sum256([]byte(f.Details))
-	return fmt.Sprintf("%s:%s:%x", f.Check, f.Message, h[:4])
+	return f.Key()
 }
 
 func findingHash(f alert.Finding) string {
-	h := sha256.Sum256([]byte(fmt.Sprintf("%s:%s:%s", f.Check, f.Message, f.Details)))
-	return fmt.Sprintf("%x", h[:8])
+	return f.Fingerprint()
 }
 
 func (s *Store) FilterNew(findings []alert.Finding) []alert.Finding {

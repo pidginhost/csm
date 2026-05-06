@@ -131,8 +131,8 @@ if [ "$WAS_PLACEHOLDER" = "1" ] && grep -q 'auth_token: ""' "$CONFIG" 2>/dev/nul
     echo "Generated WebUI auth token (saved in csm.yaml)"
 fi
 
-# Upgrade hygiene: remove obsolete tier timers (unchanged)
-for unit in csm-critical.timer csm-critical.service csm-deep.timer csm-deep.service; do
+# Upgrade hygiene: remove obsolete tier timers.
+for unit in csm.timer csm-critical.timer csm-critical.service csm-deep.timer csm-deep.service; do
     systemctl stop "$unit" 2>/dev/null || true
     systemctl disable "$unit" 2>/dev/null || true
     rm -f "/etc/systemd/system/$unit"

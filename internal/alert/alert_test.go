@@ -41,6 +41,37 @@ func TestFindingKeyIncludesDetailsHash(t *testing.T) {
 	}
 }
 
+func TestFindingKeyHTTPAbuseStableForSourceIP(t *testing.T) {
+	a := Finding{
+		Check:   "xmlrpc_abuse",
+		Message: "XML-RPC abuse from 203.0.113.9: 15 hits",
+		Details: "Aggregated across 272 domlog files",
+	}
+	b := Finding{
+		Check:   "xmlrpc_abuse",
+		Message: "XML-RPC abuse from 203.0.113.9: 42 hits",
+		Details: "Aggregated across 173 domlog files",
+	}
+
+	if a.Key() != b.Key() {
+		t.Fatalf("source-IP HTTP finding key changed: %q vs %q", a.Key(), b.Key())
+	}
+	if a.Fingerprint() != b.Fingerprint() {
+		t.Fatalf("source-IP HTTP finding fingerprint changed: %q vs %q", a.Fingerprint(), b.Fingerprint())
+	}
+}
+
+func TestFindingKeyUsesStructuredSourceIP(t *testing.T) {
+	f := Finding{
+		Check:    "wp_login_bruteforce",
+		Message:  "WordPress brute force from untrusted text",
+		SourceIP: "198.51.100.44",
+	}
+	if got := f.Key(); got != "wp_login_bruteforce:ip:198.51.100.44" {
+		t.Fatalf("key = %q, want structured source IP", got)
+	}
+}
+
 func TestSeverityString(t *testing.T) {
 	tests := []struct {
 		sev  Severity

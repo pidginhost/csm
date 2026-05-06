@@ -190,18 +190,16 @@ func (c *ControlListener) handleTierRun(argsRaw json.RawMessage) (any, error) {
 	start := time.Now()
 	findings := checks.RunTier(c.d.currentCfg(), c.d.store, tier)
 
-	if len(findings) > 0 {
-		c.d.store.PurgeAndMergeFindings(checks.PerfCheckNamesForTier(tier), findings)
-		if args.Alerts {
-			for _, f := range findings {
-				if strings.HasPrefix(f.Check, "perf_") && f.Severity == alert.Warning {
-					continue
-				}
-				select {
-				case c.d.alertCh <- f:
-				default:
-					atomic.AddInt64(&c.d.droppedAlerts, 1)
-				}
+	c.d.store.PurgeAndMergeFindings(checks.LatestPurgeCheckNamesForTier(tier), findings)
+	if args.Alerts {
+		for _, f := range findings {
+			if strings.HasPrefix(f.Check, "perf_") && f.Severity == alert.Warning {
+				continue
+			}
+			select {
+			case c.d.alertCh <- f:
+			default:
+				atomic.AddInt64(&c.d.droppedAlerts, 1)
 			}
 		}
 	}

@@ -20,6 +20,15 @@ func (b *recordingIPBlocker) BlockSubnet(cidr, reason string, timeout time.Durat
 	return nil
 }
 
+func (b *recordingIPBlocker) IsSubnetBlocked(cidr string) bool {
+	for _, blocked := range b.blockedSubnet {
+		if blocked == cidr {
+			return true
+		}
+	}
+	return false
+}
+
 type blockCall struct {
 	ip      string
 	reason  string
@@ -153,6 +162,42 @@ func TestAutoBlockIPs_QueuesIPsWhenRateLimited(t *testing.T) {
 	}
 	if state.Pending[0].IP != "5.6.7.8" {
 		t.Fatalf("pending IP = %q, want %q", state.Pending[0].IP, "5.6.7.8")
+	}
+}
+
+func TestAutoBlockIPs_SkipsAlreadyBlockedNetblock(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.StatePath = t.TempDir()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.AutoResponse.NetBlock = true
+	cfg.AutoResponse.NetBlockThreshold = 2
+
+	blocker := &recordingIPBlocker{blockedSubnet: []string{"198.51.100.0/24"}}
+	oldBlocker := fwBlocker
+	SetIPBlocker(blocker)
+	t.Cleanup(func() {
+		SetIPBlocker(oldBlocker)
+	})
+
+	oldChallengeList := GetChallengeIPList()
+	SetChallengeIPList(nil)
+	t.Cleanup(func() {
+		SetChallengeIPList(oldChallengeList)
+	})
+
+	actions := AutoBlockIPs(cfg, []alert.Finding{
+		{Check: "wp_login_bruteforce", Message: "WordPress brute force from 198.51.100.10"},
+		{Check: "wp_login_bruteforce", Message: "WordPress brute force from 198.51.100.20"},
+	})
+
+	for _, action := range actions {
+		if strings.Contains(action.Message, "AUTO-NETBLOCK") {
+			t.Fatalf("unexpected repeated netblock action: %q", action.Message)
+		}
+	}
+	if len(blocker.blockedSubnet) != 1 {
+		t.Fatalf("BlockSubnet call count changed blockedSubnet to %v", blocker.blockedSubnet)
 	}
 }
 

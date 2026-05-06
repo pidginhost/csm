@@ -476,6 +476,24 @@ func TestPurgeAndMergeFindingsAtomic(t *testing.T) {
 	}
 }
 
+func TestPurgeAndMergeFindingsPurgesWithoutNewFindings(t *testing.T) {
+	s := openTestStore(t)
+	s.SetLatestFindings([]alert.Finding{
+		{Check: "wp_login_bruteforce", Message: "stale"},
+		{Check: "malware", Message: "kept"},
+	})
+
+	s.PurgeAndMergeFindings([]string{"wp_login_bruteforce"}, nil)
+
+	got := s.LatestFindings()
+	if len(got) != 1 {
+		t.Fatalf("got %d findings, want 1", len(got))
+	}
+	if got[0].Check != "malware" {
+		t.Fatalf("remaining finding = %+v, want malware", got[0])
+	}
+}
+
 func TestClearLatestFindings(t *testing.T) {
 	s := openTestStore(t)
 	s.SetLatestFindings([]alert.Finding{{Check: "c"}})

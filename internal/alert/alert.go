@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,11 +79,76 @@ func (f Finding) String() string {
 
 // Key returns a unique key for deduplication.
 func (f Finding) Key() string {
+	if key := f.sourceIPKey(); key != "" {
+		return key
+	}
 	if f.Details == "" {
 		return fmt.Sprintf("%s:%s", f.Check, f.Message)
 	}
 	h := sha256.Sum256([]byte(f.Details))
 	return fmt.Sprintf("%s:%s:%x", f.Check, f.Message, h[:4])
+}
+
+// Fingerprint returns the content hash used by alert-state deduplication.
+func (f Finding) Fingerprint() string {
+	if key := f.sourceIPKey(); key != "" {
+		h := sha256.Sum256([]byte(key))
+		return fmt.Sprintf("%x", h[:8])
+	}
+	h := sha256.Sum256([]byte(fmt.Sprintf("%s:%s:%s", f.Check, f.Message, f.Details)))
+	return fmt.Sprintf("%x", h[:8])
+}
+
+func (f Finding) sourceIPKey() string {
+	switch f.Check {
+	case "admin_panel_bruteforce", "wp_login_bruteforce", "wp_user_enumeration", "xmlrpc_abuse":
+	default:
+		return ""
+	}
+
+	ip := normalizeFindingIP(f.SourceIP)
+	if ip == "" {
+		ip = sourceIPFromFindingMessage(f.Message)
+	}
+	if ip == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s:ip:%s", f.Check, ip)
+}
+
+func normalizeFindingIP(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(raw); err == nil {
+		raw = host
+	}
+	raw = strings.Trim(raw, "[]")
+	ip := net.ParseIP(raw)
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
+}
+
+func sourceIPFromFindingMessage(msg string) string {
+	for _, sep := range []string{" from ", ": "} {
+		idx := strings.LastIndex(msg, sep)
+		if idx < 0 {
+			continue
+		}
+		rest := msg[idx+len(sep):]
+		fields := strings.Fields(rest)
+		if len(fields) == 0 {
+			continue
+		}
+		candidate := strings.TrimRight(fields[0], ",:;)([]")
+		if ip := normalizeFindingIP(candidate); ip != "" {
+			return ip
+		}
+	}
+	return ""
 }
 
 // SplitEmail returns (localpart, domain) from an email address. Returns

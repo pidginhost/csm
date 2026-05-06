@@ -1487,6 +1487,10 @@ func (f *fakeSubnetBlocker) BlockSubnet(cidr string, reason string, timeout time
 	return nil
 }
 
+func (f *fakeSubnetBlocker) IsSubnetBlocked(cidr string) bool {
+	return f.subnets[cidr]
+}
+
 type worldWritableInfo struct {
 	name string
 	size int64

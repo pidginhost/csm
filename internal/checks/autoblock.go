@@ -28,6 +28,14 @@ type IPBlocker interface {
 	IsBlocked(ip string) bool
 }
 
+type subnetBlocker interface {
+	BlockSubnet(cidr string, reason string, timeout time.Duration) error
+}
+
+type subnetBlockStatus interface {
+	IsSubnetBlocked(cidr string) bool
+}
+
 var fwBlocker IPBlocker
 var blockStateMu sync.Mutex
 
@@ -152,11 +160,12 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			fmt.Fprintf(os.Stderr, "auto-block: firewall engine not available, skipping subnet %s\n", cidr)
 			continue
 		}
-		sb, ok := fwBlocker.(interface {
-			BlockSubnet(string, string, time.Duration) error
-		})
+		sb, ok := fwBlocker.(subnetBlocker)
 		if !ok {
 			fmt.Fprintf(os.Stderr, "auto-block: firewall engine does not support subnet blocking, skipping %s\n", cidr)
+			continue
+		}
+		if isSubnetAlreadyBlocked(cidr) {
 			continue
 		}
 		reason := fmt.Sprintf("CSM auto-block (subnet): %s", truncate(f.Message, 100))
@@ -164,6 +173,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			fmt.Fprintf(os.Stderr, "auto-block: error blocking subnet %s: %v\n", cidr, err)
 			continue
 		}
+		fmt.Fprintf(os.Stderr, "[%s] AUTO-BLOCK-SUBNET: %s blocked\n", time.Now().Format("2006-01-02 15:04:05"), cidr)
 		actions = append(actions, alert.Finding{
 			Severity:  alert.Critical,
 			Check:     "auto_block",
@@ -193,7 +203,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		}
 
 		// Don't re-block already blocked IPs
-		if isAlreadyBlocked(state, ip) {
+		if isAlreadyBlocked(state, ip) || (fwBlocker != nil && fwBlocker.IsBlocked(ip)) {
 			continue
 		}
 
@@ -225,6 +235,9 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		if err := fwBlocker.BlockIP(ip, blockReason, expiry); err != nil {
 			fmt.Fprintf(os.Stderr, "auto-block: error blocking %s: %v\n", ip, err)
 			continue
+		}
+		if fwBlocker.IsBlocked(ip) {
+			fmt.Fprintf(os.Stderr, "[%s] AUTO-BLOCK: %s blocked (expires in %s)\n", time.Now().Format("2006-01-02 15:04:05"), ip, expiry)
 		}
 
 		state.BlocksThisHour++
@@ -300,12 +313,14 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		for prefix, count := range subnetCounts {
 			if count >= threshold && !subnetBlocked[prefix] {
 				cidr := prefix + ".0/24"
-				if sb, ok := fwBlocker.(interface {
-					BlockSubnet(string, string, time.Duration) error
-				}); ok {
+				if sb, ok := fwBlocker.(subnetBlocker); ok {
+					if isSubnetAlreadyBlocked(cidr) {
+						continue
+					}
 					reason := fmt.Sprintf("Auto-netblock: %d IPs from %s", count, cidr)
 					if err := sb.BlockSubnet(cidr, reason, 0); err == nil {
 						subnetBlocked[prefix] = true
+						fmt.Fprintf(os.Stderr, "[%s] AUTO-NETBLOCK: %s blocked (%d IPs from same /24)\n", time.Now().Format("2006-01-02 15:04:05"), cidr, count)
 						actions = append(actions, alert.Finding{
 							Severity:  alert.Critical,
 							Check:     "auto_block",
@@ -322,6 +337,11 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	saveBlockState(cfg.StatePath, state)
 
 	return actions
+}
+
+func isSubnetAlreadyBlocked(cidr string) bool {
+	sb, ok := fwBlocker.(subnetBlockStatus)
+	return ok && sb.IsSubnetBlocked(cidr)
 }
 
 // ExtractIPFromFinding extracts an IP address from a finding message.

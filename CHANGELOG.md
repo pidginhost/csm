@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Auto-blocked IPs and subnets now take effect for existing keep-alive traffic, avoid repeated subnet block churn, and keep active findings from accumulating stale scan results.
 - `waf_rules` no longer false-positives during cPanel's nightly `modsec_assemble` window; on cPanel+LiteSpeed the rule probe is re-tried once after a short delay before alerting, so a real "no rules" host still alerts in the same scan.
 - `disabled_checks` now accepts finding names such as `waf_rules` and `suspicious_crontab`, so UI selections disable the matching check runners.
 - Packaged builds now include journald mail-log support used by the phpanel profile on hosts without mail log files.

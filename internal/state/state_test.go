@@ -21,6 +21,29 @@ func TestSetLatestFindingsKeepsDistinctDetailsVariants(t *testing.T) {
 	}
 }
 
+func TestHTTPAbuseFindingDoesNotRealertWhenOnlyCountsChange(t *testing.T) {
+	store := &Store{
+		path:    t.TempDir(),
+		entries: make(map[string]*Entry),
+	}
+
+	first := alert.Finding{
+		Check:   "wp_login_bruteforce",
+		Message: "WordPress brute force from 203.0.113.40: 12 attempts",
+		Details: "Aggregated across 272 domlog files",
+	}
+	store.Update([]alert.Finding{first})
+
+	changedCount := alert.Finding{
+		Check:   "wp_login_bruteforce",
+		Message: "WordPress brute force from 203.0.113.40: 31 attempts",
+		Details: "Aggregated across 120 domlog files",
+	}
+	if got := store.FilterNew([]alert.Finding{changedCount}); len(got) != 0 {
+		t.Fatalf("changed HTTP count re-alerted: %+v", got)
+	}
+}
+
 func TestIsSuppressedMatchesExtractedMessagePath(t *testing.T) {
 	store := &Store{path: t.TempDir()}
 	finding := alert.Finding{

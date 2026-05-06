@@ -2,6 +2,7 @@ package checks
 
 import (
 	"context"
+	"slices"
 	"sync/atomic"
 	"testing"
 
@@ -100,6 +101,28 @@ func TestPerfCheckNamesForTierDeep(t *testing.T) {
 		if n[:5] != "perf_" {
 			t.Errorf("non-perf check: %q", n)
 		}
+	}
+}
+
+func TestLatestPurgeCheckNamesForTierCriticalIncludesEmittedNames(t *testing.T) {
+	names := LatestPurgeCheckNamesForTier(TierCritical)
+	for _, want := range []string{"check_timeout", "wp_bruteforce", "wp_login_bruteforce", "wp_user_enumeration", "xmlrpc_abuse"} {
+		if !slices.Contains(names, want) {
+			t.Fatalf("critical purge names missing %q in %v", want, names)
+		}
+	}
+	if slices.Contains(names, "outdated_plugins") {
+		t.Fatalf("critical purge names included deep check outdated_plugins")
+	}
+}
+
+func TestLatestPurgeCheckNamesForReducedDeepSkipsFanotifyReplacedChecks(t *testing.T) {
+	names := LatestPurgeCheckNamesForReducedDeep()
+	if !slices.Contains(names, "outdated_plugins") {
+		t.Fatalf("reduced deep purge names missing outdated_plugins")
+	}
+	if slices.Contains(names, "webshell") {
+		t.Fatalf("reduced deep purge names included fanotify-replaced webshell")
 	}
 }
 
