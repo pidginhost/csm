@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-05-06
+
+### License
+
+- **CSM is now AGPL-3.0-or-later.** v2.x releases remain MIT; v3.0.0 onward is AGPL. Running unmodified CSM to protect your own hosting servers — including commercially — has no new source-disclosure obligation. Redistributing CSM (binary or source) or running a *modified* version that users interact with over a network triggers the AGPL's source-availability requirements (section 13). The license change is the reason for the major version bump; there are no breaking config or API changes in this release.
+
 ### Added
 
 - Internal BPF scaffolding: shared backend coordinator, kernel capability probe, and ringbuf consumer used by upcoming kernel-side detectors. Operators see BPF capability entries in `/api/v1/capabilities` only on bpf-tagged builds whose kernel accepts the relevant probes.
@@ -16,7 +22,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Project relicensed from MIT to **AGPL-3.0-or-later** starting with the next major release; tagged v2.x releases remain MIT. Running unmodified CSM imposes no new obligations; redistribution and network-exposed *modified* versions must comply with AGPL section 13.
 - AF_ALG live-monitor backend selection is also published through the shared BPF backend telemetry while the existing AF_ALG metric remains available for current dashboards.
 - The outbound-connection check policy is now a pure function shared between the live tracker and the periodic safety-net check, so both code paths produce identical findings.
 - AF_ALG (CVE-2026-31431) live monitor now denies the syscall in the kernel itself on hosts with BPF LSM, instead of reacting after the fact via the audit log. Hosts without BPF LSM keep the audit-listener fallback unchanged.
