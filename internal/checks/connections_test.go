@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/state"
@@ -47,6 +48,89 @@ func TestEvaluateConnection(t *testing.T) {
 				t.Fatalf("Check = %q, want user_outbound_connection", f.Check)
 			}
 		})
+	}
+}
+
+// Regression: pure-ftpd PASV data sockets look like high-port user traffic
+// in /proc/net/tcp. The ESTABLISHED row is the accepted side of an inbound
+// connection when the same local socket also has a LISTEN row.
+func TestScanProcNetTCPSkipsEstablishedOnListenerLocalPort(t *testing.T) {
+	cfg := &config.Config{}
+
+	// 203.0.113.56 little-endian = 387100CB. Listener at
+	// 0.0.0.0:49904 (0xC2F0), then ESTABLISHED on the same local port.
+	data := []byte(`  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 00000000:C2F0 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1001        0 11111 1 0000000000000000
+   1: 0A0200C0:C2F0 387100CB:115C 01 00000000:00000000 00:00000000 00000000  1001        0 22222 1 0000000000000000
+`)
+
+	findings := scanProcNetTCP(cfg, data, false)
+	for _, f := range findings {
+		if f.Check == "user_outbound_connection" {
+			t.Fatalf("listener-backed local port should suppress finding, got %+v", f)
+		}
+	}
+}
+
+// Regression: an ESTABLISHED row with no matching LISTEN row must still
+// flag. The listener cross-reference must not silence real outbound
+// connections.
+func TestScanProcNetTCPStillFlagsRealOutboundConnect(t *testing.T) {
+	cfg := &config.Config{}
+
+	// No listener; just an ESTABLISHED row to a non-infra non-safe port.
+	data := []byte(`  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0A0200C0:C350 387100CB:115C 01 00000000:00000000 00:00000000 00000000  1001        0 33333 1 0000000000000000
+`)
+
+	findings := scanProcNetTCP(cfg, data, false)
+	hasFinding := false
+	for _, f := range findings {
+		if f.Check == "user_outbound_connection" {
+			hasFinding = true
+		}
+	}
+	if !hasFinding {
+		t.Fatalf("real outbound connect must still flag; findings=%+v", findings)
+	}
+}
+
+func TestScanProcNetTCPDoesNotSuppressSamePortDifferentLocalAddress(t *testing.T) {
+	cfg := &config.Config{}
+
+	// Listener on 192.0.2.10:49904 must not suppress an ESTABLISHED
+	// outbound row from 192.0.2.11:49904.
+	data := []byte(`  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0A0200C0:C2F0 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1001        0 11111 1 0000000000000000
+   1: 0B0200C0:C2F0 387100CB:115C 01 00000000:00000000 00:00000000 00000000  1001        0 22222 1 0000000000000000
+`)
+
+	findings := scanProcNetTCP(cfg, data, false)
+	hasFinding := false
+	for _, f := range findings {
+		if f.Check == "user_outbound_connection" {
+			hasFinding = true
+		}
+	}
+	if !hasFinding {
+		t.Fatalf("different local address with same port must still flag; findings=%+v", findings)
+	}
+}
+
+// Regression: emitted findings must have a non-zero Timestamp so the
+// renderer doesn't print `Time: 0001-01-01 00:00:00`.
+func TestScanProcNetTCPStampsTimestamp(t *testing.T) {
+	cfg := &config.Config{}
+	data := []byte(`  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0A0200C0:C350 387100CB:115C 01 00000000:00000000 00:00000000 00000000  1001        0 44444 1 0000000000000000
+`)
+	before := time.Now()
+	findings := scanProcNetTCP(cfg, data, false)
+	if len(findings) == 0 {
+		t.Fatalf("expected one finding, got 0")
+	}
+	if findings[0].Timestamp.Before(before) || findings[0].Timestamp.IsZero() {
+		t.Fatalf("Timestamp = %v, want set to ~now", findings[0].Timestamp)
 	}
 }
 

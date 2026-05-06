@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"sync/atomic"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -115,6 +116,7 @@ func (c *connectionBPF) Run(ctx context.Context) {
 			if !emit {
 				continue
 			}
+			finding.Timestamp = time.Now()
 			select {
 			case c.alertCh <- finding:
 			default:

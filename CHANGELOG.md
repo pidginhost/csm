@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `user_outbound_connection` no longer false-positives on the accept side of inbound connections (e.g. pure-ftpd PASV data channels, user-owned daemons listening on high ports), and emitted findings now carry a real timestamp instead of the zero value.
 - ModSecurity deny events now escalate repeated blocked requests from the same IP into auto-block decisions, not only CSM-owned ModSecurity rules.
 - Auto-blocked IPs and subnets now take effect for existing keep-alive traffic, avoid repeated subnet block churn, and keep active findings from accumulating stale scan results.
 - `waf_rules` no longer false-positives during cPanel's nightly `modsec_assemble` window; on cPanel+LiteSpeed the rule probe is re-tried once after a short delay before alerting, so a real "no rules" host still alerts in the same scan.

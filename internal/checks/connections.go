@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -107,6 +108,12 @@ func CheckOutboundUserConnections(ctx context.Context, cfg *config.Config, _ *st
 
 // scanProcNetTCP parses one /proc/net/tcp[6] dump and returns findings for
 // every ESTABLISHED row that EvaluateConnection flags.
+//
+// A first pass collects local sockets in LISTEN state so that an ESTABLISHED
+// row whose local address and port have a listener is recognised as the
+// accept side of an inbound connection (e.g. pure-ftpd PASV data channels,
+// user-owned daemons listening on high ports) and not an outbound connect().
+// Wildcard listeners match every local address for that port.
 func scanProcNetTCP(cfg *config.Config, data []byte, ipv6 bool) []alert.Finding {
 	var findings []alert.Finding
 	proto := "tcp"
@@ -114,7 +121,10 @@ func scanProcNetTCP(cfg *config.Config, data []byte, ipv6 bool) []alert.Finding 
 		proto = "tcp6"
 	}
 
-	for _, line := range strings.Split(string(data), "\n") {
+	lines := strings.Split(string(data), "\n")
+	listeners := collectListenSockets(lines, ipv6)
+
+	for _, line := range lines {
 		fields := strings.Fields(line)
 		if len(fields) < 8 || fields[0] == "sl" {
 			continue
@@ -133,27 +143,103 @@ func scanProcNetTCP(cfg *config.Config, data []byte, ipv6 bool) []alert.Finding 
 		uidU32 := uint32(uidU64)
 
 		var (
+			localIP   net.IP
 			dstIP     net.IP
 			dstPort   int
 			localPort int
 		)
 		if ipv6 {
-			_, localPort = parseHex6Addr(fields[1])
+			localIP, localPort = parseHex6Addr(fields[1])
 			dstIP, dstPort = parseHex6Addr(fields[2])
 		} else {
-			_, localPort = parseHexAddr(fields[1])
+			localAddr, parsedLocalPort := parseHexAddr(fields[1])
+			localIP = net.ParseIP(localAddr)
+			localPort = parsedLocalPort
 			remoteIP, remotePort := parseHexAddr(fields[2])
 			dstIP = net.ParseIP(remoteIP)
 			dstPort = remotePort
 		}
 
+		if listeners.has(localIP, localPort) {
+			continue
+		}
+
 		user := LookupUser(uidU32)
 		// #nosec G115 -- ports parsed from /proc/net/tcp[6] are bounded by uint16.
 		if f, ok := EvaluateConnection(cfg, uidU32, dstIP, uint16(dstPort), uint16(localPort), proto, user); ok {
+			f.Timestamp = time.Now()
 			findings = append(findings, f)
 		}
 	}
 	return findings
+}
+
+type listenSocket struct {
+	address string
+	port    int
+}
+
+type listenSocketSet struct {
+	wildcardPorts map[int]bool
+	sockets       map[listenSocket]bool
+}
+
+func (s listenSocketSet) has(ip net.IP, port int) bool {
+	if port <= 0 {
+		return false
+	}
+	if s.wildcardPorts[port] {
+		return true
+	}
+	if ip == nil {
+		return false
+	}
+	return s.sockets[listenSocket{address: normalizeListenIP(ip), port: port}]
+}
+
+// collectListenSockets scans /proc/net/tcp[6] rows for state 0A (LISTEN) and
+// returns the set of local sockets a process is bound to.
+func collectListenSockets(lines []string, ipv6 bool) listenSocketSet {
+	listeners := listenSocketSet{
+		wildcardPorts: make(map[int]bool),
+		sockets:       make(map[listenSocket]bool),
+	}
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) < 8 || fields[0] == "sl" {
+			continue
+		}
+		if fields[3] != "0A" {
+			continue
+		}
+		var (
+			localIP   net.IP
+			localPort int
+		)
+		if ipv6 {
+			localIP, localPort = parseHex6Addr(fields[1])
+		} else {
+			localAddr, parsedLocalPort := parseHexAddr(fields[1])
+			localIP = net.ParseIP(localAddr)
+			localPort = parsedLocalPort
+		}
+		if localIP == nil || localPort <= 0 {
+			continue
+		}
+		if localIP.IsUnspecified() {
+			listeners.wildcardPorts[localPort] = true
+			continue
+		}
+		listeners.sockets[listenSocket{address: normalizeListenIP(localIP), port: localPort}] = true
+	}
+	return listeners
+}
+
+func normalizeListenIP(ip net.IP) string {
+	if v4 := ip.To4(); v4 != nil {
+		return net.IP(v4).String()
+	}
+	return ip.String()
 }
 
 // parseHex6Addr parses an IPv6 address:port from /proc/net/tcp6 format.
