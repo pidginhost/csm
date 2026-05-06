@@ -531,6 +531,7 @@ func (s *Server) csmConfig() map[string]interface{} {
 			"ssh_login_realtime":             "SSH Login",
 			"pam_login":                      "PAM Login",
 			"pam_bruteforce":                 "PAM Brute Force",
+			"modsec_block_escalation":        "ModSec Escalation",
 			"modsec_csm_block_escalation":    "ModSec Escalation",
 			"whm_password_change_noninfra":   "WHM Password Change",
 			"password_hijack_confirmed":      "Password Hijack",

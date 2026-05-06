@@ -29,6 +29,7 @@ func TestIsHardBlockCheck(t *testing.T) {
 
 	// modsec checks are now hard-blocked (modsec already handles the request)
 	modsecChecks := []string{
+		"modsec_block_escalation",
 		"modsec_csm_block_escalation",
 		"modsec_attack_detected",
 	}

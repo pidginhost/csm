@@ -1532,10 +1532,10 @@ func TestParseSPFDMARCRejection_SenderNoAt(t *testing.T) {
 
 func TestParseModSecLogLineDeduped_SuppressesDuplicates(t *testing.T) {
 	modsecDedup = sync.Map{}
-	modsecCSMCounter = sync.Map{}
+	modsecBlockCount = sync.Map{}
 	defer func() {
 		modsecDedup = sync.Map{}
-		modsecCSMCounter = sync.Map{}
+		modsecBlockCount = sync.Map{}
 	}()
 
 	cfg := &config.Config{}

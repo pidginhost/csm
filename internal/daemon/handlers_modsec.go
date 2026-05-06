@@ -24,7 +24,7 @@ type modsecIPCounter struct {
 
 var (
 	modsecDedup      sync.Map // key: "IP:ruleID" → value: time.Time
-	modsecCSMCounter sync.Map // key: IP → value: *modsecIPCounter
+	modsecBlockCount sync.Map // key: IP → value: *modsecIPCounter
 )
 
 const (
@@ -180,12 +180,12 @@ func extractLiteSpeedIP(line string) string {
 	}
 }
 
-// parseModSecLogLineDeduped wraps parseModSecLogLine with dedup and CSM-rule
+// parseModSecLogLineDeduped wraps parseModSecLogLine with dedup and block
 // threshold escalation. It is the handler registered with the log watcher.
 //
 // Order of operations (critical for correctness):
 //  1. Parse the raw line.
-//  2. ALWAYS increment the CSM escalation counter (even if dedup will suppress).
+//  2. ALWAYS increment the block escalation counter (even if dedup will suppress).
 //  3. Then check dedup - suppress the base finding if a duplicate, but still
 //     return any escalation finding from step 2.
 func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding {
@@ -198,7 +198,7 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 	now := time.Now()
 	var results []alert.Finding
 
-	// --- Step 1: CSM escalation (before dedup) ---
+	// --- Step 1: block escalation (before dedup) ---
 	// Extract IP and rule ID directly from the raw log line - NOT from the
 	// finding message, which could be manipulated via log injection.
 	ip := extractModSecField(line, "[client ", "]")
@@ -213,7 +213,8 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 	}
 	ruleID := extractModSecField(line, `[id "`, `"]`)
 	ruleNum, _ := strconv.Atoi(ruleID)
-	isCSM := f.Check == "modsec_block_realtime" && ruleNum >= 900000 && ruleNum <= 900999
+	isBlock := f.Check == "modsec_block_realtime"
+	isCSM := isBlock && ruleNum >= 900000 && ruleNum <= 900999
 
 	// Record hit for per-rule stats (24h hourly buckets)
 	if ruleNum >= 900000 && ruleNum <= 900999 {
@@ -229,12 +230,18 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 		noEscalate = db.GetModSecNoEscalateRules()[ruleNum]
 	}
 
-	if isCSM && ip != "" && !noEscalate {
-		if recordCSMDeny(ip, now) {
+	if isBlock && ip != "" && ruleID != "" && !noEscalate {
+		if recordModSecDeny(ip, now) {
+			check := "modsec_block_escalation"
+			label := "ModSecurity"
+			if isCSM {
+				check = "modsec_csm_block_escalation"
+				label = "CSM rule"
+			}
 			results = append(results, alert.Finding{
 				Severity: alert.Critical,
-				Check:    "modsec_csm_block_escalation",
-				Message:  fmt.Sprintf("CSM rule escalation: %d+ denies from %s within %v", modsecEscalationHits, ip, modsecEscalationWin),
+				Check:    check,
+				Message:  fmt.Sprintf("%s escalation: %d+ denies from %s within %v", label, modsecEscalationHits, ip, modsecEscalationWin),
 				Details:  truncateDaemon(line, 400),
 			})
 		}
@@ -257,11 +264,11 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 	return results
 }
 
-// recordCSMDeny records a deny event for the given IP and returns true if the
+// recordModSecDeny records a deny event for the given IP and returns true if the
 // escalation threshold has been reached (>= modsecEscalationHits within the
 // escalation window).
-func recordCSMDeny(ip string, now time.Time) bool {
-	val, _ := modsecCSMCounter.LoadOrStore(ip, &modsecIPCounter{})
+func recordModSecDeny(ip string, now time.Time) bool {
+	val, _ := modsecBlockCount.LoadOrStore(ip, &modsecIPCounter{})
 	ctr := val.(*modsecIPCounter)
 
 	ctr.mu.Lock()
@@ -324,7 +331,7 @@ func firstExistingPath(candidates []string) string {
 	return ""
 }
 
-// evictModSecState prunes expired entries from modsecDedup and modsecCSMCounter.
+// evictModSecState prunes expired entries from modsecDedup and modsecBlockCount.
 func evictModSecState(now time.Time) {
 	// Prune dedup entries older than modsecDedupTTL.
 	modsecDedup.Range(func(key, value any) bool {
@@ -336,7 +343,7 @@ func evictModSecState(now time.Time) {
 
 	// Prune counter entries.
 	cutoff := now.Add(-modsecEscalationWin)
-	modsecCSMCounter.Range(func(key, value any) bool {
+	modsecBlockCount.Range(func(key, value any) bool {
 		ctr := value.(*modsecIPCounter)
 		ctr.mu.Lock()
 		recent := ctr.times[:0]
@@ -353,7 +360,7 @@ func evictModSecState(now time.Time) {
 		ctr.mu.Unlock()
 
 		if empty {
-			modsecCSMCounter.Delete(key)
+			modsecBlockCount.Delete(key)
 		}
 		return true
 	})

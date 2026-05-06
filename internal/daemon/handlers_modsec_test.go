@@ -118,7 +118,7 @@ func TestParseModSecLogLine_InfraIPSkipped(t *testing.T) {
 
 func resetModSecState() {
 	modsecDedup = sync.Map{}
-	modsecCSMCounter = sync.Map{}
+	modsecBlockCount = sync.Map{}
 }
 
 func TestModSecDedup(t *testing.T) {
@@ -190,20 +190,64 @@ func TestModSecCSMRuleEscalation(t *testing.T) {
 	}
 }
 
-func TestModSecCRSNoEscalation(t *testing.T) {
+func TestModSecCRSRuleEscalation(t *testing.T) {
 	resetModSecState()
 
 	cfg := &config.Config{}
 
-	// 5 different CRS rule IDs from the same IP - none in the CSM 900000-900999 range.
-	rules := []string{"920420", "920421", "920422", "920423", "920424"}
+	rules := []string{"920420", "920421", "920422"}
+	hasEscalation := false
 	for _, ruleID := range rules {
 		line := `[Wed Apr 01 15:15:05 2026] [error] [client 10.20.30.40] ModSecurity: Access denied with code 403, [id "` + ruleID + `"] [msg "CRS rule hit"] [hostname "example.com"] [uri "/test"]`
 
 		findings := parseModSecLogLineDeduped(line, cfg)
 		for _, f := range findings {
+			if f.Check == "modsec_block_escalation" {
+				hasEscalation = true
+				if f.Severity != alert.Critical {
+					t.Errorf("CRS escalation severity = %v, want Critical", f.Severity)
+				}
+				if !strings.Contains(f.Message, "10.20.30.40") {
+					t.Errorf("CRS escalation message should contain IP, got %q", f.Message)
+				}
+			}
 			if f.Check == "modsec_csm_block_escalation" {
-				t.Fatalf("CRS rule %s should NOT trigger escalation, but got: %v", ruleID, f)
+				t.Fatalf("CRS rule %s should use generic escalation, got: %v", ruleID, f)
+			}
+		}
+	}
+	if !hasEscalation {
+		t.Fatal("expected generic ModSecurity escalation for CRS blocks")
+	}
+}
+
+func TestModSecWarningDoesNotEscalate(t *testing.T) {
+	resetModSecState()
+
+	cfg := &config.Config{}
+	line := `2026-04-01 17:13:53.887905 [NOTICE] [2288689] [T1] [122.9.114.57:41920-13#APVH_*_server.example.com] [MODSEC] mod_security rule [id "920170"] matched`
+
+	for i := 0; i < modsecEscalationHits+1; i++ {
+		findings := parseModSecLogLineDeduped(line, cfg)
+		for _, f := range findings {
+			if f.Check == "modsec_block_escalation" || f.Check == "modsec_csm_block_escalation" {
+				t.Fatalf("warning-only ModSec line escalated: %+v", f)
+			}
+		}
+	}
+}
+
+func TestModSecBlockWithoutRuleIDDoesNotEscalate(t *testing.T) {
+	resetModSecState()
+
+	cfg := &config.Config{}
+	line := `[Wed Apr 01 15:15:05 2026] [error] [client 10.20.30.41] ModSecurity: Access denied with code 403, [msg "missing rule id"] [hostname "example.com"] [uri "/test"]`
+
+	for i := 0; i < modsecEscalationHits+1; i++ {
+		findings := parseModSecLogLineDeduped(line, cfg)
+		for _, f := range findings {
+			if f.Check == "modsec_block_escalation" || f.Check == "modsec_csm_block_escalation" {
+				t.Fatalf("ModSec line without rule ID escalated: %+v", f)
 			}
 		}
 	}

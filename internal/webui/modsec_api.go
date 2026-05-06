@@ -55,7 +55,7 @@ func (s *Server) apiModSecStats(w http.ResponseWriter, _ *http.Request) {
 		if rule != "" {
 			ruleCounts[rule]++
 		}
-		if f.Check == "modsec_csm_block_escalation" {
+		if isModSecEscalation(f.Check) {
 			escalated++
 		}
 	}
@@ -94,7 +94,7 @@ func (s *Server) apiModSecBlocks(w http.ResponseWriter, _ *http.Request) {
 	byIP := make(map[string]*ipAgg)
 
 	for _, f := range findings {
-		if f.Check == "modsec_csm_block_escalation" {
+		if isModSecEscalation(f.Check) {
 			// Mark IP as escalated
 			ip := extractModSecIP(f)
 			if ip != "" {
@@ -202,7 +202,7 @@ func (s *Server) apiModSecEvents(w http.ResponseWriter, r *http.Request) {
 	result := make([]modsecEventView, 0, limit)
 	for i := len(findings) - 1; i >= start; i-- {
 		f := findings[i]
-		if f.Check == "modsec_csm_block_escalation" {
+		if isModSecEscalation(f.Check) {
 			continue
 		}
 		if len(result) >= limit {
@@ -250,6 +250,10 @@ func deduplicateModSecFindings(findings []alert.Finding) []alert.Finding {
 		}
 	}
 	return result
+}
+
+func isModSecEscalation(check string) bool {
+	return check == "modsec_block_escalation" || check == "modsec_csm_block_escalation"
 }
 
 // modsecFindings24h returns all modsec findings from the last 24 hours.

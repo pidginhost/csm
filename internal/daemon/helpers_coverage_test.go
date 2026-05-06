@@ -225,79 +225,79 @@ func TestTruncateDaemon_Empty(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// recordCSMDeny
+// recordModSecDeny
 // ---------------------------------------------------------------------------
 
-func TestRecordCSMDeny_BelowThreshold(t *testing.T) {
-	modsecCSMCounter = sync.Map{}
-	defer func() { modsecCSMCounter = sync.Map{} }()
+func TestRecordModSecDeny_BelowThreshold(t *testing.T) {
+	modsecBlockCount = sync.Map{}
+	defer func() { modsecBlockCount = sync.Map{} }()
 
 	now := time.Now()
 	// First two hits should not escalate (threshold is 3).
-	if recordCSMDeny("1.2.3.4", now) {
+	if recordModSecDeny("1.2.3.4", now) {
 		t.Error("first hit should not escalate")
 	}
-	if recordCSMDeny("1.2.3.4", now.Add(time.Second)) {
+	if recordModSecDeny("1.2.3.4", now.Add(time.Second)) {
 		t.Error("second hit should not escalate")
 	}
 }
 
-func TestRecordCSMDeny_AtThreshold(t *testing.T) {
-	modsecCSMCounter = sync.Map{}
-	defer func() { modsecCSMCounter = sync.Map{} }()
+func TestRecordModSecDeny_AtThreshold(t *testing.T) {
+	modsecBlockCount = sync.Map{}
+	defer func() { modsecBlockCount = sync.Map{} }()
 
 	now := time.Now()
-	recordCSMDeny("1.2.3.4", now)
-	recordCSMDeny("1.2.3.4", now.Add(time.Second))
-	if !recordCSMDeny("1.2.3.4", now.Add(2*time.Second)) {
+	recordModSecDeny("1.2.3.4", now)
+	recordModSecDeny("1.2.3.4", now.Add(time.Second))
+	if !recordModSecDeny("1.2.3.4", now.Add(2*time.Second)) {
 		t.Error("third hit should trigger escalation")
 	}
 }
 
-func TestRecordCSMDeny_OnlyEscalatesOnce(t *testing.T) {
-	modsecCSMCounter = sync.Map{}
-	defer func() { modsecCSMCounter = sync.Map{} }()
+func TestRecordModSecDeny_OnlyEscalatesOnce(t *testing.T) {
+	modsecBlockCount = sync.Map{}
+	defer func() { modsecBlockCount = sync.Map{} }()
 
 	now := time.Now()
-	recordCSMDeny("1.2.3.4", now)
-	recordCSMDeny("1.2.3.4", now.Add(time.Second))
-	recordCSMDeny("1.2.3.4", now.Add(2*time.Second)) // escalates
+	recordModSecDeny("1.2.3.4", now)
+	recordModSecDeny("1.2.3.4", now.Add(time.Second))
+	recordModSecDeny("1.2.3.4", now.Add(2*time.Second)) // escalates
 
 	// Fourth hit should NOT re-escalate.
-	if recordCSMDeny("1.2.3.4", now.Add(3*time.Second)) {
+	if recordModSecDeny("1.2.3.4", now.Add(3*time.Second)) {
 		t.Error("should not re-escalate after first escalation")
 	}
 }
 
-func TestRecordCSMDeny_SeparateIPs(t *testing.T) {
-	modsecCSMCounter = sync.Map{}
-	defer func() { modsecCSMCounter = sync.Map{} }()
+func TestRecordModSecDeny_SeparateIPs(t *testing.T) {
+	modsecBlockCount = sync.Map{}
+	defer func() { modsecBlockCount = sync.Map{} }()
 
 	now := time.Now()
-	recordCSMDeny("1.1.1.1", now)
-	recordCSMDeny("2.2.2.2", now)
+	recordModSecDeny("1.1.1.1", now)
+	recordModSecDeny("2.2.2.2", now)
 
 	// Each IP has only 1 hit - neither should escalate at 2.
-	if recordCSMDeny("1.1.1.1", now.Add(time.Second)) {
+	if recordModSecDeny("1.1.1.1", now.Add(time.Second)) {
 		t.Error("1.1.1.1 should not escalate with only 2 hits")
 	}
-	if recordCSMDeny("2.2.2.2", now.Add(time.Second)) {
+	if recordModSecDeny("2.2.2.2", now.Add(time.Second)) {
 		t.Error("2.2.2.2 should not escalate with only 2 hits")
 	}
 }
 
-func TestRecordCSMDeny_PrunesOldEntries(t *testing.T) {
-	modsecCSMCounter = sync.Map{}
-	defer func() { modsecCSMCounter = sync.Map{} }()
+func TestRecordModSecDeny_PrunesOldEntries(t *testing.T) {
+	modsecBlockCount = sync.Map{}
+	defer func() { modsecBlockCount = sync.Map{} }()
 
 	// Two hits happened long ago (outside the escalation window).
 	old := time.Now().Add(-modsecEscalationWin - time.Minute)
-	recordCSMDeny("1.2.3.4", old)
-	recordCSMDeny("1.2.3.4", old.Add(time.Second))
+	recordModSecDeny("1.2.3.4", old)
+	recordModSecDeny("1.2.3.4", old.Add(time.Second))
 
 	// A third hit now should NOT escalate because old hits were pruned.
 	now := time.Now()
-	if recordCSMDeny("1.2.3.4", now) {
+	if recordModSecDeny("1.2.3.4", now) {
 		t.Error("old entries should be pruned, so only 1 recent hit exists")
 	}
 }
@@ -307,53 +307,53 @@ func TestRecordCSMDeny_PrunesOldEntries(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEvictModSecState_ResetsEscalation(t *testing.T) {
-	modsecCSMCounter = sync.Map{}
+	modsecBlockCount = sync.Map{}
 	modsecDedup = sync.Map{}
 	defer func() {
-		modsecCSMCounter = sync.Map{}
+		modsecBlockCount = sync.Map{}
 		modsecDedup = sync.Map{}
 	}()
 
 	now := time.Now()
 
 	// Create a counter that has escalated.
-	recordCSMDeny("5.5.5.5", now)
-	recordCSMDeny("5.5.5.5", now.Add(time.Second))
-	recordCSMDeny("5.5.5.5", now.Add(2*time.Second))
+	recordModSecDeny("5.5.5.5", now)
+	recordModSecDeny("5.5.5.5", now.Add(time.Second))
+	recordModSecDeny("5.5.5.5", now.Add(2*time.Second))
 
 	// Run eviction far in the future so all timestamps expire.
 	evictModSecState(now.Add(modsecEscalationWin + time.Hour))
 
 	// Counter should be deleted (no recent timestamps).
-	if _, loaded := modsecCSMCounter.Load("5.5.5.5"); loaded {
+	if _, loaded := modsecBlockCount.Load("5.5.5.5"); loaded {
 		t.Error("empty counter should be evicted")
 	}
 }
 
 func TestEvictModSecState_KeepsRecentCounters(t *testing.T) {
-	modsecCSMCounter = sync.Map{}
-	defer func() { modsecCSMCounter = sync.Map{} }()
+	modsecBlockCount = sync.Map{}
+	defer func() { modsecBlockCount = sync.Map{} }()
 
 	now := time.Now()
-	recordCSMDeny("6.6.6.6", now)
+	recordModSecDeny("6.6.6.6", now)
 
 	evictModSecState(now)
 
-	if _, loaded := modsecCSMCounter.Load("6.6.6.6"); !loaded {
+	if _, loaded := modsecBlockCount.Load("6.6.6.6"); !loaded {
 		t.Error("recent counter should be kept")
 	}
 }
 
 func TestEvictModSecState_ResetsEscalatedFlagBelowThreshold(t *testing.T) {
-	modsecCSMCounter = sync.Map{}
-	defer func() { modsecCSMCounter = sync.Map{} }()
+	modsecBlockCount = sync.Map{}
+	defer func() { modsecBlockCount = sync.Map{} }()
 
 	now := time.Now()
 
 	// Trigger escalation (3 hits).
-	recordCSMDeny("7.7.7.7", now)
-	recordCSMDeny("7.7.7.7", now.Add(time.Second))
-	recordCSMDeny("7.7.7.7", now.Add(2*time.Second))
+	recordModSecDeny("7.7.7.7", now)
+	recordModSecDeny("7.7.7.7", now.Add(time.Second))
+	recordModSecDeny("7.7.7.7", now.Add(2*time.Second))
 
 	// Evict at a time when 2 of the 3 timestamps are still valid but not all 3.
 	// We need the first one to expire and the other two to remain.
@@ -361,7 +361,7 @@ func TestEvictModSecState_ResetsEscalatedFlagBelowThreshold(t *testing.T) {
 	evictModSecState(evictTime)
 
 	// Counter should still exist (2 entries remain), but escalated flag reset.
-	val, loaded := modsecCSMCounter.Load("7.7.7.7")
+	val, loaded := modsecBlockCount.Load("7.7.7.7")
 	if !loaded {
 		// It's possible all were pruned since they're close together. That's fine.
 		return

@@ -903,7 +903,7 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	var alertable []alert.Finding
 	for _, f := range newFindings {
 		switch f.Check {
-		case "modsec_block_realtime", "modsec_warning_realtime", "modsec_csm_block_escalation":
+		case "modsec_block_realtime", "modsec_warning_realtime", "modsec_block_escalation", "modsec_csm_block_escalation":
 			continue // ModSecurity: fully automated, visible on /modsec
 		case "outdated_plugins":
 			continue // informational, visible on findings page

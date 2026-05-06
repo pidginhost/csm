@@ -726,10 +726,10 @@ func TestWatchdogNotifier_StopsOnSignal(t *testing.T) {
 
 func TestParseModSecLogLineDeduped_DedupsSameKey(t *testing.T) {
 	modsecDedup = sync.Map{}
-	modsecCSMCounter = sync.Map{}
+	modsecBlockCount = sync.Map{}
 	defer func() {
 		modsecDedup = sync.Map{}
-		modsecCSMCounter = sync.Map{}
+		modsecBlockCount = sync.Map{}
 	}()
 
 	cfg := &config.Config{}
@@ -1099,10 +1099,10 @@ func TestLogWatcher_ReadNewLines_SetsZeroTimestamp(t *testing.T) {
 
 func TestParseModSecLogLineDeduped_CSMRuleEscalation(t *testing.T) {
 	modsecDedup = sync.Map{}
-	modsecCSMCounter = sync.Map{}
+	modsecBlockCount = sync.Map{}
 	defer func() {
 		modsecDedup = sync.Map{}
-		modsecCSMCounter = sync.Map{}
+		modsecBlockCount = sync.Map{}
 	}()
 
 	cfg := &config.Config{}
@@ -1147,6 +1147,7 @@ func TestDispatchBatch_FiltersInformationalChecks(t *testing.T) {
 	findings := []alert.Finding{
 		{Severity: alert.High, Check: "modsec_block_realtime", Message: "test", Timestamp: time.Now()},
 		{Severity: alert.High, Check: "modsec_warning_realtime", Message: "test", Timestamp: time.Now()},
+		{Severity: alert.High, Check: "modsec_block_escalation", Message: "test", Timestamp: time.Now()},
 		{Severity: alert.High, Check: "modsec_csm_block_escalation", Message: "test", Timestamp: time.Now()},
 		{Severity: alert.Warning, Check: "outdated_plugins", Message: "test", Timestamp: time.Now()},
 		{Severity: alert.Warning, Check: "email_dkim_failure", Message: "test", Timestamp: time.Now()},

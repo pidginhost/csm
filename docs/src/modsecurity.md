@@ -38,6 +38,7 @@ Rule-staleness alerts scan both the flat CRS layout (`/usr/share/modsecurity-crs
 - **Custom CSM rules** - IDs 900000-900999 in `configs/csm_modsec_custom.conf` (cPanel only today)
 - **Rule override management** - `SecRuleRemoveById` directives for false positive suppression
 - **Escalation control** - change rule severity or action per-rule
+- **Live deny escalation** - repeated ModSecurity deny events from one IP emit an escalation finding that feeds auto-response blocking. CSM-owned rules keep their existing per-rule escalation controls.
 - **WAF event log parsing** - correlates events by IP, URI, and rule ID
 - **Hot-reload** - apply changes without Apache restart (cPanel only)
 

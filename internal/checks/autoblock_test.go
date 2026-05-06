@@ -201,6 +201,38 @@ func TestAutoBlockIPs_SkipsAlreadyBlockedNetblock(t *testing.T) {
 	}
 }
 
+func TestAutoBlockIPs_BlocksGenericModSecEscalation(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.StatePath = t.TempDir()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := fwBlocker
+	SetIPBlocker(blocker)
+	t.Cleanup(func() {
+		SetIPBlocker(oldBlocker)
+	})
+
+	oldChallengeList := GetChallengeIPList()
+	SetChallengeIPList(nil)
+	t.Cleanup(func() {
+		SetChallengeIPList(oldChallengeList)
+	})
+
+	actions := AutoBlockIPs(cfg, []alert.Finding{{
+		Check:   "modsec_block_escalation",
+		Message: "ModSecurity escalation: 3+ denies from 203.0.113.200 within 10m0s",
+	}})
+
+	if len(blocker.blocked) != 1 || blocker.blocked[0] != "203.0.113.200" {
+		t.Fatalf("blocked IPs = %v, want 203.0.113.200", blocker.blocked)
+	}
+	if len(actions) != 1 || !strings.Contains(actions[0].Message, "203.0.113.200") {
+		t.Fatalf("actions = %+v, want one auto-block for ModSec escalation", actions)
+	}
+}
+
 func TestAutoBlockIPs_DrainsPendingQueueAfterRateLimitWindow(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.StatePath = t.TempDir()

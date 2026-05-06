@@ -118,6 +118,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		"c2_connection":               true,
 		"ip_reputation":               true,
 		"local_threat_score":          true,
+		"modsec_block_escalation":     true,
 		"modsec_csm_block_escalation": true,
 		"email_compromised_account":   true,
 		"email_cloud_relay_abuse":     true,

@@ -273,6 +273,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "suspicious_crontab", Category: CategorySystem},
 
 	// --- WAF & ModSecurity ----------------------------------------------
+	{Name: "modsec_block_escalation", Category: CategoryWAF},
 	{Name: "modsec_block_realtime", Category: CategoryWAF},
 	{Name: "modsec_csm_block_escalation", Category: CategoryWAF},
 	{Name: "modsec_warning_realtime", Category: CategoryWAF},

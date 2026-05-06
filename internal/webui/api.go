@@ -509,7 +509,7 @@ func (s *Server) apiStats(w http.ResponseWriter, _ *http.Request) {
 			if ip := checks.ExtractIPFromFinding(f); ip != "" {
 				bruteForceIPs[ip]++
 			}
-		case "modsec_csm_block_escalation":
+		case "modsec_block_escalation", "modsec_csm_block_escalation":
 			if strings.Contains(f.Message, "xmlrpc") || strings.Contains(f.Message, "900006") || strings.Contains(f.Message, "900007") {
 				bruteForceTypes["xmlrpc-modsec"]++
 			}
