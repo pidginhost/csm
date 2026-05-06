@@ -365,6 +365,21 @@ func TestDefaultConfigConnRateLimitPositive(t *testing.T) {
 	}
 }
 
+// TestDefaultConfigConnLimitTolerantOfPowerUsers asserts that the per-source
+// concurrent-connection cap is high enough not to block real users on a
+// shared mail host. A single power user typically consumes ~80–150 concurrent
+// connections (multi-tab webmail + IMAP IDLE on phone+laptop+desktop +
+// HTTPS browsing + Thunderbird parallel send), well above the original 50
+// default that locked them out.
+func TestDefaultConfigConnLimitTolerantOfPowerUsers(t *testing.T) {
+	cfg := DefaultConfig()
+	const minTolerable = 200
+	if cfg.ConnLimit > 0 && cfg.ConnLimit < minTolerable {
+		t.Errorf("ConnLimit default %d is too low for power users; want ≥ %d (or 0 to disable)",
+			cfg.ConnLimit, minTolerable)
+	}
+}
+
 func TestDefaultConfigPortFloodProtectsSMTP(t *testing.T) {
 	cfg := DefaultConfig()
 	smtpPorts := map[int]bool{25: false, 465: false, 587: false}

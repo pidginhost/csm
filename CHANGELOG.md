@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Internal BPF scaffolding: shared backend coordinator, kernel capability probe, and ringbuf consumer used by upcoming kernel-side detectors. Operators see BPF capability entries in `/api/v1/capabilities` only on bpf-tagged builds whose kernel accepts the relevant probes.
 - Live outbound-connection tracker built on BPF cgroup hooks. On bpf-tagged builds with cgroup v2, suspicious user connections produce findings the moment the kernel sees them instead of on the next periodic scan; older kernels keep using the existing scan.
+- Top-level `disabled_checks` lets a host skip whole scheduled check categories entirely; `alerts.email.disabled_checks` still only suppresses email.
 
 ### Changed
 
@@ -23,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `port_flood` firewall rule is now rate-limited per source IP via a new `meter_port_flood` set, instead of globally. SMTP defaults raised to 600 hits / 300 s (= 120 conns/min/IP) so normal MUA bursts (Thunderbird, iPhone, Outlook parallel-send) pass without dropping legitimate sessions when one noisy source is on the network.
+- `conn_limit` default raised from 50 to 300 (matches CSF `CT_LIMIT`) so power users with multi-tab webmail, IMAP IDLE on several devices, and parallel SMTP send do not silently lose new connections when their concurrent count peaks. Existing installs keep their configured value; only fresh installs and unconfigured fields pick up the new default.
 - `user_outbound_connection` no longer false-positives on the accept side of inbound connections (e.g. pure-ftpd PASV data channels, user-owned daemons listening on high ports), and emitted findings now carry a real timestamp instead of the zero value.
 - ModSecurity deny events now escalate repeated blocked requests from the same IP into auto-block decisions, not only CSM-owned ModSecurity rules.
 - Auto-blocked IPs and subnets now take effect for existing keep-alive traffic, avoid repeated subnet block churn, and keep active findings from accumulating stale scan results.

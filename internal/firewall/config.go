@@ -94,6 +94,12 @@ func DefaultConfig() *FirewallConfig {
 		PassiveFTPEnd:      65534,
 		ConnRateLimit:      30,
 		SYNFloodProtection: true,
+		// 300 concurrent connections per source IP. Sized for power users
+		// (multi-tab webmail + IMAP IDLE on multiple devices + Thunderbird
+		// parallel send + HTTPS browsing). Matches the conventional CSF
+		// CT_LIMIT default. Operators with very heavy IDLE-style workloads
+		// can raise it further.
+		ConnLimit: 300,
 		// 600 hits / 300 s = 120 new connections per minute per source IP.
 		// Sized to tolerate normal MUA bursts (Thunderbird/iPhone/Outlook each
 		// open 5–15 parallel sessions when sending one email or syncing IMAP

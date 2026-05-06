@@ -359,7 +359,7 @@ firewall:
   # Rate limiting
   conn_rate_limit: 30                   # new connections/min per IP
   syn_flood_protection: true
-  conn_limit: 50                        # max concurrent connections per IP (0 = disabled)
+  conn_limit: 300                       # max concurrent connections per IP — matches CSF CT_LIMIT default; raise for IDLE-heavy power users (0 = disabled)
 
   # Per-port flood protection — rate-limit new connections per source IP.
   # Defaults are sized for a busy mail host: 600/300s = 120 new conns/min/IP,

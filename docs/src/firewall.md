@@ -78,7 +78,7 @@ firewall:
   ipv6: false
   conn_rate_limit: 30          # new connections per minute per IP
   syn_flood_protection: true
-  conn_limit: 50               # max concurrent connections per IP
+  conn_limit: 300              # max concurrent connections per IP (matches CSF CT_LIMIT)
   smtp_block: false            # restrict outbound SMTP
   log_dropped: true
   dyndns_hosts:                # resolved every 5 min into the infra set
