@@ -268,6 +268,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "kernel_module", Category: CategorySystem},
 	{Name: "mysql_superuser", Category: CategorySystem},
 	{Name: "rpm_integrity", Category: CategorySystem},
+	{Name: "sensitive_file_modified", Category: CategorySystem},
 	{Name: "signature_update_rescan_queued", Category: CategorySystem},
 	{Name: "suspicious_crontab", Category: CategorySystem},
 

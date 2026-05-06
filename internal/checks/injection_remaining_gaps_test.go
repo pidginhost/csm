@@ -28,12 +28,11 @@ func TestCheckOutboundUserConnections_TCP4SuspiciousNonRoot(t *testing.T) {
 				return []byte(tcpData), nil
 			case "/proc/net/tcp6":
 				return nil, os.ErrNotExist
-			case "/etc/passwd":
-				return []byte("testuser:x:1000:1000::/home/testuser:/bin/bash\n"), nil
 			}
 			return nil, os.ErrNotExist
 		},
 	})
+	withMockPasswd(t, "testuser:x:1000:1000::/home/testuser:/bin/bash\n")
 
 	cfg := &config.Config{}
 	findings := CheckOutboundUserConnections(context.Background(), cfg, nil)
@@ -107,12 +106,11 @@ func TestCheckOutboundUserConnections_SafeUserSkipped(t *testing.T) {
 				return []byte(tcpData), nil
 			case "/proc/net/tcp6":
 				return nil, os.ErrNotExist
-			case "/etc/passwd":
-				return []byte("named:x:25:25:Named:/var/named:/sbin/nologin\n"), nil
 			}
 			return nil, os.ErrNotExist
 		},
 	})
+	withMockPasswd(t, "named:x:25:25:Named:/var/named:/sbin/nologin\n")
 
 	cfg := &config.Config{}
 	findings := CheckOutboundUserConnections(context.Background(), cfg, nil)
@@ -214,33 +212,6 @@ func TestCheckOutboundUserConnections_NonEstablishedSkipped(t *testing.T) {
 	findings := CheckOutboundUserConnections(context.Background(), cfg, nil)
 	if len(findings) != 0 {
 		t.Fatalf("expected 0 for non-ESTABLISHED state, got %d", len(findings))
-	}
-}
-
-func TestUidToUser_NoPasswdFile(t *testing.T) {
-	withMockOS(t, &mockOS{
-		readFile: func(name string) ([]byte, error) {
-			return nil, os.ErrNotExist
-		},
-	})
-	result := uidToUser("1000")
-	if result != "1000" {
-		t.Errorf("expected raw UID '1000', got %q", result)
-	}
-}
-
-func TestUidToUser_UIDNotFound(t *testing.T) {
-	withMockOS(t, &mockOS{
-		readFile: func(name string) ([]byte, error) {
-			if name == "/etc/passwd" {
-				return []byte("root:x:0:0:root:/root:/bin/bash\n"), nil
-			}
-			return nil, os.ErrNotExist
-		},
-	})
-	result := uidToUser("9999")
-	if result != "9999" {
-		t.Errorf("expected raw UID '9999', got %q", result)
 	}
 }
 
@@ -833,12 +804,11 @@ func TestCheckDatabaseDumps_NonRootMysqldump(t *testing.T) {
 				return []byte("Name:\tmysqldump\nUid:\t1000\t1000\t1000\t1000\n"), nil
 			case "/proc/1234/cmdline":
 				return []byte("mysqldump\x00--all-databases\x00"), nil
-			case "/etc/passwd":
-				return []byte("alice:x:1000:1000::/home/alice:/bin/bash\n"), nil
 			}
 			return nil, os.ErrNotExist
 		},
 	})
+	withMockPasswd(t, "alice:x:1000:1000::/home/alice:/bin/bash\n")
 	findings := CheckDatabaseDumps(context.Background(), nil, nil)
 	if len(findings) != 1 {
 		t.Fatalf("expected 1 finding for mysqldump, got %d", len(findings))

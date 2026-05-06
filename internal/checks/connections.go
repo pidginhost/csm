@@ -14,32 +14,104 @@ import (
 	"github.com/pidginhost/csm/internal/state"
 )
 
+// safeRemotePorts and safeUsers are package-level so both legacy polling and
+// the BPF live coordinator share one source of truth.
+var safeRemotePorts = map[uint16]bool{
+	53: true, 80: true, 443: true, 25: true, 587: true, 465: true,
+	993: true, 995: true, 110: true, 143: true,
+}
+
+var safeUsers = map[string]bool{
+	"imunify360-webshield": true,
+	"named":                true,
+	"mysql":                true,
+	"memcached":            true,
+	"icinga":               true,
+	"dovecot":              true,
+	"mailman":              true,
+}
+
+var serverLocalPorts = map[uint16]bool{
+	21: true, 25: true, 26: true, 53: true, 80: true, 110: true,
+	143: true, 443: true, 465: true, 587: true, 993: true, 995: true,
+	2082: true, 2083: true, 2086: true, 2087: true, 2095: true, 2096: true,
+	3306: true, 4190: true,
+	52223: true, 52224: true, 52227: true, 52228: true,
+	52229: true, 52230: true, 52231: true, 52232: true,
+}
+
+// EvaluateConnection returns a populated alert.Finding and true when the
+// connection should be reported, or a zero finding and false when it should
+// be ignored. Pure function: no IO, no clock. Used by the BPF live backend
+// (per-event) and the polling backend (per row of /proc/net/tcp[6]).
+func EvaluateConnection(
+	cfg *config.Config,
+	uid uint32,
+	dstIP net.IP,
+	dstPort uint16,
+	localPort uint16,
+	proto string,
+	user string,
+) (alert.Finding, bool) {
+	if uid == 0 {
+		return alert.Finding{}, false
+	}
+	if dstIP == nil || dstIP.IsLoopback() || dstIP.IsUnspecified() {
+		return alert.Finding{}, false
+	}
+	if serverLocalPorts[localPort] {
+		return alert.Finding{}, false
+	}
+	if safeRemotePorts[dstPort] {
+		return alert.Finding{}, false
+	}
+	if isInfraIP(dstIP.String(), cfg.InfraIPs) {
+		return alert.Finding{}, false
+	}
+	if safeUsers[user] {
+		return alert.Finding{}, false
+	}
+
+	dst := dstIP.String()
+	if dstIP.To4() == nil {
+		dst = "[" + dst + "]"
+	}
+	return alert.Finding{
+		Severity: alert.High,
+		Check:    "user_outbound_connection",
+		Message:  fmt.Sprintf("Non-root user connecting to unusual destination: %s:%d", dst, dstPort),
+		Details:  fmt.Sprintf("UID: %d (%s), Local port: %d, Proto: %s", uid, user, localPort, proto),
+	}, true
+}
+
 // CheckOutboundUserConnections looks for non-root user processes making
 // outbound connections to IPs that aren't infra or well-known services.
 // Catches compromised accounts phoning home.
 func CheckOutboundUserConnections(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	// Known service ports that are always OK for outbound
-	safeRemotePorts := map[int]bool{
-		53: true, 80: true, 443: true, 25: true, 587: true, 465: true,
-		993: true, 995: true, 110: true, 143: true,
-	}
-
-	// Known safe service users - system daemons that make outbound connections
-	safeUsers := map[string]bool{
-		"imunify360-webshield": true,
-		"named":                true,
-		"mysql":                true,
-		"memcached":            true,
-		"icinga":               true,
-		"dovecot":              true,
-		"mailman":              true,
-	}
-
-	data, err := osFS.ReadFile("/proc/net/tcp")
-	if err != nil {
+	if data, err := osFS.ReadFile("/proc/net/tcp"); err == nil {
+		findings = append(findings, scanProcNetTCP(cfg, data, false)...)
+	} else {
+		// Preserve historical behaviour: if /proc/net/tcp is unreadable,
+		// return nil rather than continuing to tcp6.
 		return nil
+	}
+
+	if tcp6Data, err := osFS.ReadFile("/proc/net/tcp6"); err == nil {
+		findings = append(findings, scanProcNetTCP(cfg, tcp6Data, true)...)
+	}
+
+	return findings
+}
+
+// scanProcNetTCP parses one /proc/net/tcp[6] dump and returns findings for
+// every ESTABLISHED row that EvaluateConnection flags.
+func scanProcNetTCP(cfg *config.Config, data []byte, ipv6 bool) []alert.Finding {
+	var findings []alert.Finding
+	proto := "tcp"
+	if ipv6 {
+		proto = "tcp6"
 	}
 
 	for _, line := range strings.Split(string(data), "\n") {
@@ -53,138 +125,35 @@ func CheckOutboundUserConnections(ctx context.Context, cfg *config.Config, _ *st
 			continue
 		}
 
-		// Get UID (field 7)
-		uid := fields[7]
-		if uid == "0" {
-			continue // skip root
-		}
-
-		// Parse local and remote addresses
-		_, localPort := parseHexAddr(fields[1])
-		remoteIP, remotePort := parseHexAddr(fields[2])
-
-		if remoteIP == "127.0.0.1" || remoteIP == "0.0.0.0" {
+		uidStr := fields[7]
+		uidU64, err := strconv.ParseUint(uidStr, 10, 32)
+		if err != nil || uidU64 == 0 {
 			continue
 		}
+		uidU32 := uint32(uidU64)
 
-		// Skip if local port is a known service (we're the server)
-		knownLocalPorts := map[int]bool{
-			21: true, 25: true, 26: true, 53: true, 80: true, 110: true,
-			143: true, 443: true, 465: true, 587: true, 993: true, 995: true,
-			2082: true, 2083: true, 2086: true, 2087: true, 2095: true, 2096: true,
-			3306: true, 4190: true,
-			// Imunify360 webshield ports
-			52223: true, 52224: true, 52227: true, 52228: true,
-			52229: true, 52230: true, 52231: true, 52232: true,
-		}
-		if knownLocalPorts[localPort] {
-			continue
-		}
-
-		// Skip safe remote ports
-		if safeRemotePorts[remotePort] {
-			continue
+		var (
+			dstIP     net.IP
+			dstPort   int
+			localPort int
+		)
+		if ipv6 {
+			_, localPort = parseHex6Addr(fields[1])
+			dstIP, dstPort = parseHex6Addr(fields[2])
+		} else {
+			_, localPort = parseHexAddr(fields[1])
+			remoteIP, remotePort := parseHexAddr(fields[2])
+			dstIP = net.ParseIP(remoteIP)
+			dstPort = remotePort
 		}
 
-		// Skip infra IPs
-		if isInfraIP(remoteIP, cfg.InfraIPs) {
-			continue
-		}
-
-		// Check if this is a known safe service user
-		user := uidToUser(uid)
-		if safeUsers[user] {
-			continue
-		}
-
-		// This is a non-root user process connecting to a non-standard
-		// port on a non-infra IP - suspicious
-		findings = append(findings, alert.Finding{
-			Severity: alert.High,
-			Check:    "user_outbound_connection",
-			Message:  fmt.Sprintf("Non-root user connecting to unusual destination: %s:%d", remoteIP, remotePort),
-			Details:  fmt.Sprintf("UID: %s (%s), Local port: %d", uid, user, localPort),
-		})
-	}
-
-	// Parse /proc/net/tcp6 for IPv6 connections
-	tcp6Data, err := osFS.ReadFile("/proc/net/tcp6")
-	if err == nil {
-		for _, line := range strings.Split(string(tcp6Data), "\n") {
-			fields := strings.Fields(line)
-			if len(fields) < 8 || fields[0] == "sl" {
-				continue
-			}
-
-			// State 01 = ESTABLISHED
-			if fields[3] != "01" {
-				continue
-			}
-
-			uid := fields[7]
-			if uid == "0" {
-				continue
-			}
-
-			_, localPort6 := parseHex6Addr(fields[1])
-			remoteIP6, remotePort6 := parseHex6Addr(fields[2])
-
-			if remoteIP6 == nil || remoteIP6.IsLoopback() || remoteIP6.IsUnspecified() {
-				continue
-			}
-
-			// Skip if local port is a known service (we're the server)
-			knownLocalPorts6 := map[int]bool{
-				21: true, 25: true, 26: true, 53: true, 80: true, 110: true,
-				143: true, 443: true, 465: true, 587: true, 993: true, 995: true,
-				2082: true, 2083: true, 2086: true, 2087: true, 2095: true, 2096: true,
-				3306: true, 4190: true,
-				52223: true, 52224: true, 52227: true, 52228: true,
-				52229: true, 52230: true, 52231: true, 52232: true,
-			}
-			if knownLocalPorts6[localPort6] {
-				continue
-			}
-
-			if safeRemotePorts[remotePort6] {
-				continue
-			}
-
-			remoteIPStr := remoteIP6.String()
-			if isInfraIP(remoteIPStr, cfg.InfraIPs) {
-				continue
-			}
-
-			user := uidToUser(uid)
-			if safeUsers[user] {
-				continue
-			}
-
-			findings = append(findings, alert.Finding{
-				Severity: alert.High,
-				Check:    "user_outbound_connection",
-				Message:  fmt.Sprintf("Non-root user connecting to unusual destination: [%s]:%d", remoteIPStr, remotePort6),
-				Details:  fmt.Sprintf("UID: %s (%s), Local port: %d, Proto: tcp6", uid, user, localPort6),
-			})
+		user := LookupUser(uidU32)
+		// #nosec G115 -- ports parsed from /proc/net/tcp[6] are bounded by uint16.
+		if f, ok := EvaluateConnection(cfg, uidU32, dstIP, uint16(dstPort), uint16(localPort), proto, user); ok {
+			findings = append(findings, f)
 		}
 	}
-
 	return findings
-}
-
-// uidToUser tries to resolve a UID to username from /etc/passwd.
-func uidToUser(uid string) string {
-	data, err := osFS.ReadFile("/etc/passwd")
-	if err != nil {
-		return uid
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Split(line, ":")
-		if len(fields) >= 3 && fields[2] == uid {
-			return fields[0]
-		}
-	}
-	return uid
 }
 
 // parseHex6Addr parses an IPv6 address:port from /proc/net/tcp6 format.

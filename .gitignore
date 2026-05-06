@@ -47,5 +47,9 @@ Thumbs.db
 *.a
 *.so
 
+# bpf2go-generated BPF object files are embedded into the Go bindings via
+# //go:embed and must be tracked. Re-include them despite the *.o rule above.
+!internal/daemon/*_bpfprog/*.o
+
 # mdBook output
 docs/book/

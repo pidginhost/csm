@@ -2,46 +2,29 @@ package daemon
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"sync"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/bpf"
 	"github.com/pidginhost/csm/internal/config"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/metrics"
 )
 
-// AFAlgLiveMonitor is the common shape for the two Copy-Fail (CVE-2026-31431)
-// live-detection backends: a BPF LSM hook that blocks the AF_ALG socket call
-// in the kernel itself, and the audit-log inotify listener that reacts after
-// auditd has logged the syscall. Both feed the same alert.Finding channel and
-// share af_alg_react.go for kill/quarantine, so the daemon doesn't care which
-// backend is running.
-type AFAlgLiveMonitor interface {
-	Mode() string
-	EventCount() uint64
-	Run(ctx context.Context)
-}
+// AFAlgLiveMonitor was the local name for the live-monitor interface;
+// it is now an alias of the shared bpf.Backend. Existing call sites in
+// reactToAFAlgEvent etc. continue to compile.
+type AFAlgLiveMonitor = bpf.Backend
 
-// AFAlgBackendKind enumerates the possible operator settings for
-// Detection.AFAlgBackend. Validated at coordinator startup; unknown
-// values fall back to "auto" with a warning.
+// AFAlgBackend* are the operator-facing cfg.Detection.AFAlgBackend values.
+// Reuse bpf constants where the public value already matches.
 const (
-	AFAlgBackendAuto   = "auto"
-	AFAlgBackendBPF    = "bpf"
+	AFAlgBackendAuto   = bpf.BackendAuto
+	AFAlgBackendBPF    = bpf.BackendBPF
 	AFAlgBackendAuditd = "auditd"
-	AFAlgBackendNone   = "none"
+	AFAlgBackendNone   = bpf.BackendNone
 )
-
-// errBPFPhaseBPending fires when the kernel can run BPF LSM programs but
-// the blocking program + perf consumer (Phase B in the plan) hasn't
-// shipped yet. The coordinator treats this as "BPF unavailable" so the
-// audit listener takes over, but logs it as a distinct state so operators
-// can see the kernel is ready when a Phase-B build does land. Defined
-// here (not behind the bpf tag) so the coordinator can errors.Is against
-// it on every build, including tests that fake the probe.
-var errBPFPhaseBPending = errors.New("BPF LSM kernel support detected but blocking program not yet implemented")
 
 var (
 	afAlgBackendMetricOnce sync.Once
@@ -67,6 +50,15 @@ func setAFAlgBackendMetric(active string) {
 			v = 1.0
 		}
 		afAlgBackendMetric.With(k).Set(v)
+	}
+
+	switch active {
+	case "bpf-lsm":
+		bpf.SetActive("af_alg", bpf.BackendBPF)
+	case "auditd-tail":
+		bpf.SetActive("af_alg", bpf.BackendLegacy)
+	default:
+		bpf.SetActive("af_alg", bpf.BackendNone)
 	}
 }
 
@@ -106,16 +98,8 @@ func StartAFAlgLiveMonitor(alertCh chan<- alert.Finding, cfg *config.Config) AFA
 			setAFAlgBackendMetric("bpf-lsm")
 			return mon
 		} else if err != nil {
-			level := "bpf-lsm-unsupported"
-			if errors.Is(err, errBPFPhaseBPending) {
-				// Phase-A-only build on a BPF-capable kernel: distinct
-				// from "kernel can't run BPF LSM" so operators can tell
-				// "deploy a -tags bpf build to enable" from "kernel
-				// rebuild required".
-				level = "bpf-lsm-pending"
-			}
 			csmlog.Info("af_alg live monitor: BPF LSM unavailable",
-				"state", level,
+				"state", "bpf-lsm-unsupported",
 				"reason", err.Error(),
 				"choice", choice,
 			)
