@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/firewall"
 )
 
 func TestLoadDefaults(t *testing.T) {
@@ -171,6 +173,99 @@ func TestConfig_SMTPBruteForceDefaultsApplied(t *testing.T) {
 	for k, v := range want {
 		if got[k] != v {
 			t.Errorf("%s = %d, want %d", k, got[k], v)
+		}
+	}
+}
+
+func TestConfig_SMTPProbeDefaultsAppliedWhenOmitted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "csm.yaml")
+	if err := os.WriteFile(path, []byte("hostname: \"\"\n"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.Thresholds.SMTPProbeThreshold != 100 {
+		t.Errorf("SMTPProbeThreshold = %d, want 100", cfg.Thresholds.SMTPProbeThreshold)
+	}
+	if cfg.Thresholds.SMTPProbeWindowMin != 5 {
+		t.Errorf("SMTPProbeWindowMin = %d, want 5", cfg.Thresholds.SMTPProbeWindowMin)
+	}
+	if cfg.Thresholds.SMTPProbeSuppressMin != 60 {
+		t.Errorf("SMTPProbeSuppressMin = %d, want 60", cfg.Thresholds.SMTPProbeSuppressMin)
+	}
+	if cfg.Thresholds.SMTPProbeMaxTracked != 20000 {
+		t.Errorf("SMTPProbeMaxTracked = %d, want 20000", cfg.Thresholds.SMTPProbeMaxTracked)
+	}
+}
+
+func TestConfig_SMTPProbeThresholdExplicitZeroDisables(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "csm.yaml")
+	body := []byte("thresholds:\n  smtp_probe_threshold: 0\n")
+	if err := os.WriteFile(path, body, 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.Thresholds.SMTPProbeThreshold != 0 {
+		t.Errorf("SMTPProbeThreshold = %d, want 0", cfg.Thresholds.SMTPProbeThreshold)
+	}
+	if cfg.Thresholds.SMTPProbeWindowMin != 5 {
+		t.Errorf("SMTPProbeWindowMin = %d, want 5", cfg.Thresholds.SMTPProbeWindowMin)
+	}
+}
+
+func TestConfig_SMTPProbeThresholdDropInZeroDisables(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "csm.yaml")
+	confd := filepath.Join(dir, "conf.d")
+	if err := os.Mkdir(confd, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(main, []byte("hostname: \"\"\n"), 0644); err != nil {
+		t.Fatalf("write main: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(confd, "10-disable-smtp-probe.yaml"),
+		[]byte("thresholds:\n  smtp_probe_threshold: 0\n"), 0644); err != nil {
+		t.Fatalf("write drop-in: %v", err)
+	}
+
+	cfg, err := LoadWithDir(main, confd)
+	if err != nil {
+		t.Fatalf("LoadWithDir: %v", err)
+	}
+	if cfg.Thresholds.SMTPProbeThreshold != 0 {
+		t.Errorf("SMTPProbeThreshold = %d, want 0", cfg.Thresholds.SMTPProbeThreshold)
+	}
+}
+
+func TestPackagedDefaultFirewallMatchesRuntimeDefaults(t *testing.T) {
+	data, err := os.ReadFile("../../build/packaging/csm.yaml.default")
+	if err != nil {
+		t.Skipf("packaged default config not readable from this layout: %v", err)
+	}
+	cfg, err := LoadBytes(data)
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	want := firewall.DefaultConfig()
+
+	if cfg.Firewall.ConnLimit != want.ConnLimit {
+		t.Errorf("packaged conn_limit = %d, want runtime default %d", cfg.Firewall.ConnLimit, want.ConnLimit)
+	}
+	if len(cfg.Firewall.PortFlood) != len(want.PortFlood) {
+		t.Fatalf("packaged port_flood len = %d, want %d", len(cfg.Firewall.PortFlood), len(want.PortFlood))
+	}
+	for i := range want.PortFlood {
+		if cfg.Firewall.PortFlood[i] != want.PortFlood[i] {
+			t.Errorf("packaged port_flood[%d] = %+v, want %+v", i, cfg.Firewall.PortFlood[i], want.PortFlood[i])
 		}
 	}
 }

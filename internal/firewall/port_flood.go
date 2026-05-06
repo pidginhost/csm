@@ -3,22 +3,33 @@
 package firewall
 
 import (
+	"fmt"
+
 	"github.com/google/nftables"
 	"github.com/google/nftables/binaryutil"
 	"github.com/google/nftables/expr"
 )
 
+type portFloodIPFamily struct {
+	name         string
+	nfproto      byte
+	sourceOffset uint32
+	sourceLen    uint32
+}
+
+var (
+	portFloodIPv4 = portFloodIPFamily{name: "v4", nfproto: 2, sourceOffset: 12, sourceLen: 4}
+	portFloodIPv6 = portFloodIPFamily{name: "v6", nfproto: 10, sourceOffset: 8, sourceLen: 16}
+)
+
 // buildPortFloodExprs returns the nftables expressions for one per-port
 // flood-protection rule. The rule rate-limits new TCP/UDP connections to
-// pf.Port *per source IPv4 address* by updating a dynamic meter set —
-// each source IP gets its own token bucket sized at pf.Hits per pf.Seconds.
+// pf.Port per source address by updating a dynamic meter set. The caller
+// supplies a family-specific meter, so IPv4 and IPv6 do not share buckets.
 //
 // Returning nil signals the caller to skip rule creation (zero rate, missing
 // meter, or zero-port).
-//
-// IPv6 traffic is filtered out (NFPROTO_IPV4) so v6 source addresses don't
-// pollute the v4-keyed meter set with garbage keys.
-func buildPortFloodExprs(pf PortFloodRule, meter *nftables.Set) []expr.Any {
+func buildPortFloodExprs(pf PortFloodRule, meter *nftables.Set, family portFloodIPFamily) []expr.Any {
 	if meter == nil || pf.Hits <= 0 || pf.Seconds <= 0 || pf.Port <= 0 {
 		return nil
 	}
@@ -28,7 +39,7 @@ func buildPortFloodExprs(pf PortFloodRule, meter *nftables.Set) []expr.Any {
 		proto = 17
 	}
 
-	// hits/seconds → packets per minute (multiply first to keep precision).
+	// hits/seconds -> packets per minute (multiply first to keep precision).
 	ratePerMin := uint64(pf.Hits) * 60 / uint64(pf.Seconds)
 	if ratePerMin < 1 {
 		ratePerMin = 1
@@ -39,9 +50,9 @@ func buildPortFloodExprs(pf PortFloodRule, meter *nftables.Set) []expr.Any {
 	}
 
 	return []expr.Any{
-		// Restrict to IPv4 — v6 packets must not key the v4 meter.
+		// Restrict to the family that matches the meter key type.
 		&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
-		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{2}}, // NFPROTO_IPV4
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{family.nfproto}},
 		// Match new connections only.
 		&expr.Ct{Register: 1, SourceRegister: false, Key: expr.CtKeySTATE},
 		&expr.Bitwise{
@@ -56,8 +67,8 @@ func buildPortFloodExprs(pf PortFloodRule, meter *nftables.Set) []expr.Any {
 		// Destination port.
 		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(portU16(pf.Port))},
-		// Load source IPv4 address into reg1 — this is the meter key.
-		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: 4},
+		// Load source address into reg1; this is the meter key.
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: family.sourceOffset, Len: family.sourceLen},
 		// Update meter entry for this source IP, evaluating its own token bucket.
 		&expr.Dynset{
 			SrcRegKey: 1,
@@ -70,4 +81,15 @@ func buildPortFloodExprs(pf PortFloodRule, meter *nftables.Set) []expr.Any {
 		},
 		&expr.Verdict{Kind: expr.VerdictDrop},
 	}
+}
+
+func portFloodMeterName(pf PortFloodRule, family portFloodIPFamily) string {
+	return fmt.Sprintf("meter_pf_%s_%d_%s", portFloodProto(pf), pf.Port, family.name)
+}
+
+func portFloodProto(pf PortFloodRule) string {
+	if pf.Proto == "udp" {
+		return "udp"
+	}
+	return "tcp"
 }

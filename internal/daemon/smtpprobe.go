@@ -24,7 +24,7 @@ type smtpProbeEntry struct {
 // This is the connection-rate complement to smtpAuthTracker: scanners that
 // probe-and-disconnect (no AUTH attempt) never trigger the auth tracker, so
 // they need their own signal. The thresholds are deliberately set well above
-// any legitimate MUA usage — Thunderbird/iPhone bursts of 10–15 parallel
+// any legitimate MUA usage; Thunderbird/iPhone bursts of 10-15 parallel
 // sessions per send fall comfortably under, scanner storms with hundreds of
 // connect/min are caught.
 type smtpProbeTracker struct {
@@ -61,7 +61,7 @@ func (t *smtpProbeTracker) Size() int {
 }
 
 // Record observes one SMTP connect event. ip MUST be non-private,
-// non-loopback, and non-infra — callers enforce this before invoking Record.
+// non-loopback, and non-infra. Callers enforce this before invoking Record.
 // Returns zero or one finding (no per-call multiplication).
 func (t *smtpProbeTracker) Record(ip string) []alert.Finding {
 	if ip == "" || t.threshold <= 0 {
@@ -169,7 +169,7 @@ func parseEximSMTPConnectIP(line string) string {
 		candidate := rest[open+1 : open+close]
 		afterClose := rest[open+close+1:]
 		if strings.HasPrefix(afterClose, ":") {
-			// Confirm digits follow the colon — that is the source port.
+			// Confirm digits follow the colon; that is the source port.
 			tail := afterClose[1:]
 			if len(tail) > 0 && tail[0] >= '0' && tail[0] <= '9' {
 				last = candidate

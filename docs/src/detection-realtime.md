@@ -38,7 +38,7 @@ Tails auth, access, and mail logs in real-time. The exact file paths are chosen 
 | cPanel session log (`/usr/local/cpanel/logs/session_log`) | cPanel only | Logins from non-infra IPs, password changes, File Manager uploads |
 | cPanel access log (`/usr/local/cpanel/logs/access_log`) | cPanel only | cPanel-API auth patterns |
 | Auth log | All | SSH logins and failures. `/var/log/auth.log` on Debian/Ubuntu, `/var/log/secure` on RHEL family and cPanel |
-| Exim mainlog (`/var/log/exim_mainlog`) | cPanel only | Mail anomalies, queue issues |
+| Exim mainlog (`/var/log/exim_mainlog`) | cPanel; non-cPanel when the file exists | Mail anomalies, queue issues, SMTP brute force and probe abuse |
 | Apache/LiteSpeed/Nginx access log | All | WordPress brute force (wp-login.php, xmlrpc.php), real-time. Paths: `/var/log/apache2/access.log` (Debian), `/var/log/httpd/access_log` (RHEL), `/var/log/nginx/access.log` (Nginx), `/usr/local/apache/logs/access_log` (cPanel) |
 | Dovecot log (`/var/log/maillog`) | cPanel only | IMAP/POP3 account compromise |
 | FTP log (`/var/log/messages`) | cPanel only | FTP logins and failures |
@@ -49,17 +49,18 @@ Cpanel-only log watchers are not registered on non-cPanel hosts, so you will not
 
 ## SMTP / Dovecot Brute-Force Tracker
 
-Detects credential stuffing and password spray against mail authentication. Runs as part of the Exim mainlog watcher on cPanel hosts.
+Detects credential stuffing, password spray, and raw SMTP probe storms. Runs as part of the Exim mainlog watcher on cPanel hosts and on non-cPanel Exim hosts where `/var/log/exim_mainlog` exists.
 
-Three attack patterns:
+Four attack patterns:
 
 | Signal | What triggers it | Auto-response |
 |--------|-----------------|---------------|
 | `smtp_bruteforce` | A single attacker IP exceeds the per-IP failed-auth threshold within the configured window | IP blocked via nftables |
+| `smtp_probe_abuse` | A single attacker IP exceeds the raw SMTP connect-rate threshold before AUTH | IP blocked via nftables |
 | `smtp_subnet_spray` | Multiple distinct attacker IPs from the same /24 subnet exceed the subnet threshold | Entire /24 subnet blocked via nftables |
 | `smtp_account_spray` | Many distinct attacker IPs targeting the same mailbox exceed the account threshold | Visibility finding only. No auto-block, because attackers span many subnets and no single-IP action helps |
 
-Tunable via the `thresholds.smtp_bruteforce_*` keys in `csm.yaml`. Infrastructure IPs (from `infra_ips`) are never counted or blocked.
+Tunable via the `thresholds.smtp_bruteforce_*` and `thresholds.smtp_probe_*` keys in `csm.yaml`. Infrastructure IPs (from `infra_ips`) are never counted or blocked.
 
 ## Mail Auth Brute-Force Tracker
 

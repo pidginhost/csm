@@ -64,11 +64,12 @@ type Engine struct {
 	setInfra6      *nftables.Set
 
 	// Meters for per-IP rate limiting
-	meterSYN       *nftables.Set
-	meterConn      *nftables.Set
-	meterUDP       *nftables.Set
-	meterConnlim   *nftables.Set
-	meterPortFlood *nftables.Set
+	meterSYN        *nftables.Set
+	meterConn       *nftables.Set
+	meterUDP        *nftables.Set
+	meterConnlim    *nftables.Set
+	meterPortFlood4 map[string]*nftables.Set
+	meterPortFlood6 map[string]*nftables.Set
 
 	statePath string
 }
@@ -506,11 +507,35 @@ func (e *Engine) createSets() error {
 		_ = e.conn.AddSet(e.meterConnlim, nil)
 	}
 	if portFloodNeedsMeter(e.cfg.PortFlood) {
-		e.meterPortFlood = &nftables.Set{
-			Table: e.table, Name: "meter_port_flood", KeyType: nftables.TypeIPAddr,
-			Dynamic: true, HasTimeout: true, Timeout: time.Minute,
+		e.meterPortFlood4 = make(map[string]*nftables.Set)
+		if e.cfg.IPv6 {
+			e.meterPortFlood6 = make(map[string]*nftables.Set)
 		}
-		_ = e.conn.AddSet(e.meterPortFlood, nil)
+		for _, pf := range e.cfg.PortFlood {
+			if !usablePortFloodRule(pf) {
+				continue
+			}
+			name4 := portFloodMeterName(pf, portFloodIPv4)
+			if _, ok := e.meterPortFlood4[name4]; !ok {
+				set := &nftables.Set{
+					Table: e.table, Name: name4, KeyType: nftables.TypeIPAddr,
+					Dynamic: true, HasTimeout: true, Timeout: time.Minute,
+				}
+				_ = e.conn.AddSet(set, nil)
+				e.meterPortFlood4[name4] = set
+			}
+			if e.cfg.IPv6 {
+				name6 := portFloodMeterName(pf, portFloodIPv6)
+				if _, ok := e.meterPortFlood6[name6]; !ok {
+					set := &nftables.Set{
+						Table: e.table, Name: name6, KeyType: nftables.TypeIP6Addr,
+						Dynamic: true, HasTimeout: true, Timeout: time.Minute,
+					}
+					_ = e.conn.AddSet(set, nil)
+					e.meterPortFlood6[name6] = set
+				}
+			}
+		}
 	}
 
 	return nil
@@ -520,11 +545,15 @@ func (e *Engine) createSets() error {
 // so the meter set is only created when at least one rule will reference it.
 func portFloodNeedsMeter(rules []PortFloodRule) bool {
 	for _, pf := range rules {
-		if pf.Hits > 0 && pf.Seconds > 0 && pf.Port > 0 {
+		if usablePortFloodRule(pf) {
 			return true
 		}
 	}
 	return false
+}
+
+func usablePortFloodRule(pf PortFloodRule) bool {
+	return pf.Hits > 0 && pf.Seconds > 0 && pf.Port > 0
 }
 
 // createInputChain builds the input filter chain with proper rule ordering.
@@ -785,19 +814,33 @@ func (e *Engine) createInputChain() error {
 		e.addSetMatchRule(e.setCountry, expr.VerdictDrop)
 	}
 
-	// Per-port flood protection - rate-limit new connections per source IPv4
-	// address. Each PortFloodRule becomes one nft rule that updates the shared
-	// meter_port_flood set with a per-IP token bucket.
+	// Per-port flood protection - rate-limit new connections per source IP.
+	// Each rule has separate IPv4 and IPv6 meters so ports and families do not
+	// consume each other's token buckets.
 	for _, pf := range e.cfg.PortFlood {
-		exprs := buildPortFloodExprs(pf, e.meterPortFlood)
-		if exprs == nil {
-			continue
+		items := []struct {
+			family portFloodIPFamily
+			meter  *nftables.Set
+		}{
+			{family: portFloodIPv4, meter: e.meterPortFlood4[portFloodMeterName(pf, portFloodIPv4)]},
 		}
-		e.conn.AddRule(&nftables.Rule{
-			Table: e.table,
-			Chain: e.chainIn,
-			Exprs: exprs,
-		})
+		if e.cfg.IPv6 {
+			items = append(items, struct {
+				family portFloodIPFamily
+				meter  *nftables.Set
+			}{family: portFloodIPv6, meter: e.meterPortFlood6[portFloodMeterName(pf, portFloodIPv6)]})
+		}
+		for _, item := range items {
+			exprs := buildPortFloodExprs(pf, item.meter, item.family)
+			if exprs == nil {
+				continue
+			}
+			e.conn.AddRule(&nftables.Rule{
+				Table: e.table,
+				Chain: e.chainIn,
+				Exprs: exprs,
+			})
+		}
 	}
 
 	// Per-IP UDP flood protection via meter

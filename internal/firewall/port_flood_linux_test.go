@@ -9,30 +9,27 @@ import (
 	"github.com/google/nftables/expr"
 )
 
-// TestBuildPortFloodExprs_IsPerSourceIP_NotGlobal asserts that a port_flood
-// rule meters the rate per source IP (via Dynset on a v4 meter set), not
-// globally. A purely global limit punishes every connecting client when one
-// noisy source pegs the counter — see the cluster-wide SMTP outage that
-// motivated this fix.
-func TestBuildPortFloodExprs_IsPerSourceIP_NotGlobal(t *testing.T) {
-	meter := &nftables.Set{Name: "meter_port_flood", ID: 7}
+// TestBuildPortFloodExprsIPv4IsPerSourceIP asserts that a port_flood rule
+// meters the rate per source IP (via Dynset on an IPv4 meter set), not globally.
+func TestBuildPortFloodExprsIPv4IsPerSourceIP(t *testing.T) {
+	meter := &nftables.Set{Name: "meter_pf_tcp_25_v4", ID: 7}
 	pf := PortFloodRule{Port: 25, Proto: "tcp", Hits: 600, Seconds: 300}
 
-	exprs := buildPortFloodExprs(pf, meter)
+	exprs := buildPortFloodExprs(pf, meter, portFloodIPv4)
 
 	// The rule must restrict to IPv4 (NFPROTO_IPV4 = 2) before loading saddr,
 	// otherwise IPv6 packets would key the v4 meter with junk bytes.
-	if !hasNFProtoIPv4Filter(exprs) {
+	if !hasNFProtoFilter(exprs, 2) {
 		t.Error("rule must restrict to NFPROTO_IPV4 before loading saddr")
 	}
 
 	// The rule must load source IP from the network header (offset 12, len 4).
-	if !hasSourceIPLoad(exprs) {
+	if !hasSourceIPLoad(exprs, 12, 4) {
 		t.Error("rule must load source IP (PayloadBaseNetworkHeader offset 12 len 4)")
 	}
 
 	// The rate limit must be wrapped in a Dynset that updates the meter set
-	// per source IP — i.e. each IP gets its own token bucket.
+	// per source IP, so each IP gets its own token bucket.
 	dyn := findDynset(exprs)
 	if dyn == nil {
 		t.Fatal("rule must contain expr.Dynset (per-source-IP meter)")
@@ -76,14 +73,38 @@ func TestBuildPortFloodExprs_IsPerSourceIP_NotGlobal(t *testing.T) {
 	}
 }
 
+func TestBuildPortFloodExprsIPv6IsPerSourceIP(t *testing.T) {
+	meter := &nftables.Set{Name: "meter_pf_tcp_25_v6", ID: 8}
+	pf := PortFloodRule{Port: 25, Proto: "tcp", Hits: 600, Seconds: 300}
+
+	exprs := buildPortFloodExprs(pf, meter, portFloodIPv6)
+
+	if !hasNFProtoFilter(exprs, 10) {
+		t.Error("rule must restrict to NFPROTO_IPV6 before loading saddr")
+	}
+	if !hasSourceIPLoad(exprs, 8, 16) {
+		t.Error("rule must load IPv6 source IP (PayloadBaseNetworkHeader offset 8 len 16)")
+	}
+	dyn := findDynset(exprs)
+	if dyn == nil {
+		t.Fatal("rule must contain expr.Dynset (per-source-IP meter)")
+	}
+	if dyn.SetName != meter.Name {
+		t.Errorf("Dynset.SetName = %q, want %q", dyn.SetName, meter.Name)
+	}
+	if !endsWithDrop(exprs) {
+		t.Error("rule must end with VerdictDrop")
+	}
+}
+
 // TestBuildPortFloodExprs_FiltersTargetPort verifies that the rule only fires
 // for the configured port, not all TCP traffic.
 func TestBuildPortFloodExprs_FiltersTargetPort(t *testing.T) {
-	meter := &nftables.Set{Name: "meter_port_flood", ID: 1}
+	meter := &nftables.Set{Name: "meter_pf_tcp_25_v4", ID: 1}
 
 	for _, port := range []int{25, 465, 587} {
 		pf := PortFloodRule{Port: port, Proto: "tcp", Hits: 600, Seconds: 300}
-		exprs := buildPortFloodExprs(pf, meter)
+		exprs := buildPortFloodExprs(pf, meter, portFloodIPv4)
 		if !hasDestPortFilter(exprs, port) {
 			t.Errorf("port %d: rule must filter on transport-header dport", port)
 		}
@@ -92,22 +113,40 @@ func TestBuildPortFloodExprs_FiltersTargetPort(t *testing.T) {
 
 func TestBuildPortFloodExprs_NilMeterReturnsNil(t *testing.T) {
 	pf := PortFloodRule{Port: 25, Proto: "tcp", Hits: 600, Seconds: 300}
-	if got := buildPortFloodExprs(pf, nil); got != nil {
+	if got := buildPortFloodExprs(pf, nil, portFloodIPv4); got != nil {
 		t.Errorf("buildPortFloodExprs with nil meter must return nil, got %d exprs", len(got))
 	}
 }
 
 func TestBuildPortFloodExprs_ZeroRateReturnsNil(t *testing.T) {
-	meter := &nftables.Set{Name: "meter_port_flood", ID: 1}
+	meter := &nftables.Set{Name: "meter_pf_tcp_25_v4", ID: 1}
 	pf := PortFloodRule{Port: 25, Proto: "tcp", Hits: 0, Seconds: 300}
-	if got := buildPortFloodExprs(pf, meter); got != nil {
+	if got := buildPortFloodExprs(pf, meter, portFloodIPv4); got != nil {
 		t.Errorf("buildPortFloodExprs with Hits=0 must return nil, got %d exprs", len(got))
+	}
+}
+
+func TestPortFloodMeterNameSeparatesPortProtoAndFamily(t *testing.T) {
+	cases := map[string]PortFloodRule{
+		"meter_pf_tcp_25_v4":  {Port: 25, Proto: "tcp", Hits: 600, Seconds: 300},
+		"meter_pf_tcp_465_v4": {Port: 465, Proto: "tcp", Hits: 600, Seconds: 300},
+		"meter_pf_udp_25_v4":  {Port: 25, Proto: "udp", Hits: 600, Seconds: 300},
+		"meter_pf_tcp_25_v6":  {Port: 25, Proto: "tcp", Hits: 600, Seconds: 300},
+	}
+	for want, pf := range cases {
+		family := portFloodIPv4
+		if want[len(want)-2:] == "v6" {
+			family = portFloodIPv6
+		}
+		if got := portFloodMeterName(pf, family); got != want {
+			t.Errorf("portFloodMeterName(%+v, %s) = %q, want %q", pf, family.name, got, want)
+		}
 	}
 }
 
 // TestDefaultPortFloodTolerantOfNormalMUABursts encodes the operational
 // requirement: the default per-IP rate must be high enough that a single
-// Thunderbird/iPhone client opening 10–15 parallel SMTP connections (typical
+// Thunderbird/iPhone client opening 10-15 parallel SMTP connections (typical
 // when sending one email with attachments, or batch IMAP+SMTP sync) does not
 // trip the limiter. Anything below ~60/min/IP would fail real users.
 func TestDefaultPortFloodTolerantOfNormalMUABursts(t *testing.T) {
@@ -121,7 +160,7 @@ func TestDefaultPortFloodTolerantOfNormalMUABursts(t *testing.T) {
 		}
 		ratePerMin := pf.Hits * 60 / pf.Seconds
 		if ratePerMin < minTolerableRatePerMin {
-			t.Errorf("port %d default %d/min is too low for normal MUA bursts (need ≥ %d/min)",
+			t.Errorf("port %d default %d/min is too low for normal MUA bursts (need >= %d/min)",
 				pf.Port, ratePerMin, minTolerableRatePerMin)
 		}
 	}
@@ -129,7 +168,7 @@ func TestDefaultPortFloodTolerantOfNormalMUABursts(t *testing.T) {
 
 // helpers --------------------------------------------------------------------
 
-func hasNFProtoIPv4Filter(exprs []expr.Any) bool {
+func hasNFProtoFilter(exprs []expr.Any, nfproto byte) bool {
 	for i := 0; i < len(exprs)-1; i++ {
 		m, ok := exprs[i].(*expr.Meta)
 		if !ok || m.Key != expr.MetaKeyNFPROTO {
@@ -139,20 +178,20 @@ func hasNFProtoIPv4Filter(exprs []expr.Any) bool {
 		if !ok || c.Op != expr.CmpOpEq {
 			continue
 		}
-		if len(c.Data) == 1 && c.Data[0] == 2 { // NFPROTO_IPV4
+		if len(c.Data) == 1 && c.Data[0] == nfproto {
 			return true
 		}
 	}
 	return false
 }
 
-func hasSourceIPLoad(exprs []expr.Any) bool {
+func hasSourceIPLoad(exprs []expr.Any, offset, length uint32) bool {
 	for _, e := range exprs {
 		p, ok := e.(*expr.Payload)
 		if !ok {
 			continue
 		}
-		if p.Base == expr.PayloadBaseNetworkHeader && p.Offset == 12 && p.Len == 4 {
+		if p.Base == expr.PayloadBaseNetworkHeader && p.Offset == offset && p.Len == length {
 			return true
 		}
 	}

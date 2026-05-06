@@ -339,7 +339,7 @@ firewall:
   conn_rate_limit: 30           # new connections per minute per IP
   syn_flood_protection: true
   conn_limit: 300               # max concurrent connections per IP (matches CSF CT_LIMIT; 0 = disabled)
-  port_flood:                   # per-source-IP new-connection rate limit
+  port_flood:                   # per-port, per-source-IP new-connection rate limit
     - port: 25                  # 600/300s = 120/min per IP, tolerates MUA bursts
       proto: tcp
       hits: 600

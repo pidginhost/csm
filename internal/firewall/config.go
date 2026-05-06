@@ -32,7 +32,7 @@ type FirewallConfig struct {
 	SYNFloodProtection bool `yaml:"syn_flood_protection"`
 	ConnLimit          int  `yaml:"conn_limit"` // max concurrent connections per IP (0 = disabled)
 
-	// Per-port flood protection - per-source rate limit per port
+	// Per-port flood protection - per-source rate limit per port and IP family.
 	PortFlood []PortFloodRule `yaml:"port_flood"`
 
 	// UDP flood protection - per-source rate limit on UDP packets
@@ -102,7 +102,7 @@ func DefaultConfig() *FirewallConfig {
 		ConnLimit: 300,
 		// 600 hits / 300 s = 120 new connections per minute per source IP.
 		// Sized to tolerate normal MUA bursts (Thunderbird/iPhone/Outlook each
-		// open 5–15 parallel sessions when sending one email or syncing IMAP
+		// open 5-15 parallel sessions when sending one email or syncing IMAP
 		// after suspend) while still catching true single-IP floods. Detection
 		// of low-and-slow scanners belongs to userspace, not this rule.
 		PortFlood: []PortFloodRule{

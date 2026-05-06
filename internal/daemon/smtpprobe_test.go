@@ -64,7 +64,7 @@ func TestSMTPProbeTracker_FiresAtThresholdWithExpectedShape(t *testing.T) {
 }
 
 // A scanner that keeps probing should not generate one finding per connection
-// after the threshold trips — that would alert-storm the operator. The
+// after the threshold trips; that would alert-storm the operator. The
 // tracker must suppress repeats for the configured suppression window.
 func TestSMTPProbeTracker_SuppressesRepeatsWithinWindow(t *testing.T) {
 	clock := &staticClock{t: time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)}
@@ -146,8 +146,8 @@ func TestSMTPProbeTracker_IgnoresEmptyIP(t *testing.T) {
 
 // parseEximConnectionLine should extract the source IP from log lines like
 //
-//	2026-05-06 16:44:42 SMTP connection from (localhost) [81.30.98.33]:43018 lost D=5s
-//	2026-05-06 17:05:43 SMTP connection from [85.186.181.92]:65417 (TCP/IP connection count = 7)
+//	2026-05-06 16:44:42 SMTP connection from (localhost) [203.0.113.33]:43018 lost D=5s
+//	2026-05-06 17:05:43 SMTP connection from [198.51.100.92]:65417 (TCP/IP connection count = 7)
 //
 // and ignore lines that aren't SMTP connection events (queue runs, deliveries,
 // authenticator failures, etc.) so the probe tracker only sees connect events.
@@ -159,25 +159,25 @@ func TestParseEximSMTPConnectIP(t *testing.T) {
 	}{
 		{
 			"plain connect with TCP count",
-			`2026-05-06 17:05:43 SMTP connection from [85.186.181.92]:65417 (TCP/IP connection count = 7)`,
-			"85.186.181.92",
+			`2026-05-06 17:05:43 SMTP connection from [198.51.100.92]:65417 (TCP/IP connection count = 7)`,
+			"198.51.100.92",
 		},
 		{
 			"connect with HELO and lost",
-			`2026-05-06 16:44:42 SMTP connection from (localhost) [81.30.98.33]:43018 lost D=5s`,
-			"81.30.98.33",
+			`2026-05-06 16:44:42 SMTP connection from (localhost) [203.0.113.33]:43018 lost D=5s`,
+			"203.0.113.33",
 		},
 		{
 			"connect with bracketed HELO and lost",
-			`2026-05-06 16:44:51 SMTP connection from ([68.71.247.133]) [103.103.53.44]:38294 lost D=15s`,
-			"103.103.53.44",
+			`2026-05-06 16:44:51 SMTP connection from ([198.51.100.133]) [203.0.113.44]:38294 lost D=15s`,
+			"203.0.113.44",
 		},
 		{
 			"connect closed by quit",
-			`2026-05-06 11:34:19 SMTP connection from ([192.168.0.94]) [85.186.181.92]:64547 D=5s closed by QUIT`,
-			"85.186.181.92",
+			`2026-05-06 11:34:19 SMTP connection from ([192.0.2.94]) [198.51.100.92]:64547 D=5s closed by QUIT`,
+			"198.51.100.92",
 		},
-		{"queue line", `2026-05-06 11:34:14 1wKXhu-00000001j9B-2oEv <= info@fidescentre.ro H=([192.168.0.94]) [85.186.181.92]:64547 P=esmtpsa`, ""},
+		{"queue line", `2026-05-06 11:34:14 1wKXhu-00000001j9B-2oEv <= info@example.test H=([192.0.2.94]) [198.51.100.92]:64547 P=esmtpsa`, ""},
 		{"empty", "", ""},
 		{"different log type", `2026-05-06 01:03:27 1wKNrT-0000000EfsC-45eC malware acl condition: clamd /var/clamd : unable to connect`, ""},
 	}

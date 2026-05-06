@@ -119,10 +119,10 @@ type Config struct {
 		SMTPAccountSprayThreshold  int `yaml:"smtp_account_spray_threshold"`
 		SMTPBruteForceMaxTracked   int `yaml:"smtp_bruteforce_max_tracked"`
 
-		// SMTP probe abuse — counts raw inbound SMTP connect events per source
+		// SMTP probe abuse counts raw inbound SMTP connect events per source
 		// IP (independent of AUTH outcome) so probe-and-disconnect scanners
 		// that never reach the AUTH stage are still caught. Threshold sized
-		// well above any legitimate MUA usage. 0 disables.
+		// well above any legitimate MUA usage. Explicit 0 disables.
 		SMTPProbeThreshold   int `yaml:"smtp_probe_threshold"`
 		SMTPProbeWindowMin   int `yaml:"smtp_probe_window_min"`
 		SMTPProbeSuppressMin int `yaml:"smtp_probe_suppress_min"`
@@ -570,7 +570,11 @@ func (cfg *Config) AutoResponseDryRunEnabled() bool {
 	return cfg.AutoResponse.DryRun == nil || *cfg.AutoResponse.DryRun
 }
 
-func applyDefaults(cfg *Config) {
+type defaultPresence struct {
+	smtpProbeThreshold bool
+}
+
+func applyDefaults(cfg *Config, presence defaultPresence) {
 	// Defaults
 	if cfg.StatePath == "" {
 		cfg.StatePath = "/var/lib/csm/state"
@@ -654,7 +658,7 @@ func applyDefaults(cfg *Config) {
 	if cfg.Thresholds.SMTPBruteForceMaxTracked == 0 {
 		cfg.Thresholds.SMTPBruteForceMaxTracked = 20000
 	}
-	if cfg.Thresholds.SMTPProbeThreshold == 0 {
+	if cfg.Thresholds.SMTPProbeThreshold == 0 && !presence.smtpProbeThreshold {
 		cfg.Thresholds.SMTPProbeThreshold = 100
 	}
 	if cfg.Thresholds.SMTPProbeWindowMin == 0 {
@@ -858,13 +862,18 @@ func applyDefaults(cfg *Config) {
 // LoadBytes decodes a YAML config body and applies all defaults,
 // matching Load. ConfigFile is left empty; the caller sets it.
 func LoadBytes(data []byte) (*Config, error) {
+	presence, err := defaultPresenceFromYAML(data)
+	if err != nil {
+		return nil, fmt.Errorf("parsing config: %w", err)
+	}
+
 	cfg := &Config{}
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	if err := dec.Decode(cfg); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
-	applyDefaults(cfg)
+	applyDefaults(cfg, presence)
 	if err := validateWebUITokens(cfg); err != nil {
 		return nil, err
 	}
@@ -881,6 +890,45 @@ func LoadBytes(data []byte) (*Config, error) {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+func defaultPresenceFromYAML(data []byte) (defaultPresence, error) {
+	var presence defaultPresence
+	if len(bytes.TrimSpace(data)) == 0 {
+		return presence, nil
+	}
+
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return presence, err
+	}
+	presence.smtpProbeThreshold = yamlPathExists(&root, "thresholds", "smtp_probe_threshold")
+	return presence, nil
+}
+
+func yamlPathExists(n *yaml.Node, path ...string) bool {
+	if n == nil || len(path) == 0 {
+		return false
+	}
+	if n.Kind == yaml.DocumentNode {
+		if len(n.Content) == 0 {
+			return false
+		}
+		return yamlPathExists(n.Content[0], path...)
+	}
+	if n.Kind != yaml.MappingNode {
+		return false
+	}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		if n.Content[i].Value != path[0] {
+			continue
+		}
+		if len(path) == 1 {
+			return true
+		}
+		return yamlPathExists(n.Content[i+1], path[1:]...)
+	}
+	return false
 }
 
 func validateReputation(cfg *Config) error {

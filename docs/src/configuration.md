@@ -137,9 +137,9 @@ thresholds:
   smtp_account_spray_threshold: 12        # unique IPs targeting one mailbox before visibility finding (default: 12)
   smtp_bruteforce_max_tracked: 20000      # soft cap on tracked entries; oldest evicted (default: 20000)
 
-  # SMTP probe-abuse tracker (raw connect-rate per IP — catches scanners that
+  # SMTP probe-abuse tracker (raw connect-rate per IP; catches scanners that
   # never reach AUTH). Threshold sized well above any legitimate MUA usage.
-  smtp_probe_threshold: 100               # per-IP connects before block (default: 100; 0 disables)
+  smtp_probe_threshold: 100               # per-IP connects before block (default: 100; explicit 0 disables)
   smtp_probe_window_min: 5                # sliding window in minutes (default: 5)
   smtp_probe_suppress_min: 60             # cooldown between repeat findings (default: 60)
   smtp_probe_max_tracked: 20000           # soft cap on tracked entries; oldest evicted (default: 20000)
@@ -366,11 +366,11 @@ firewall:
   # Rate limiting
   conn_rate_limit: 30                   # new connections/min per IP
   syn_flood_protection: true
-  conn_limit: 300                       # max concurrent connections per IP — matches CSF CT_LIMIT default; raise for IDLE-heavy power users (0 = disabled)
+  conn_limit: 300                       # max concurrent connections per IP; matches CSF CT_LIMIT default; raise for IDLE-heavy power users (0 = disabled)
 
-  # Per-port flood protection — rate-limit new connections per source IP.
+  # Per-port flood protection: rate-limit new connections per source IP and IP family.
   # Defaults are sized for a busy mail host: 600/300s = 120 new conns/min/IP,
-  # which tolerates a Thunderbird/iPhone client opening 5–15 parallel sessions
+  # which tolerates a Thunderbird/iPhone client opening 5-15 parallel sessions
   # while still capping single-IP flood storms.
   port_flood:
     - port: 25

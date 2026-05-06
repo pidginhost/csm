@@ -43,6 +43,8 @@ import (
 	"github.com/pidginhost/csm/internal/yaraworker"
 )
 
+const eximMainlogPath = "/var/log/exim_mainlog"
+
 // Daemon is the main persistent monitoring process.
 type Daemon struct {
 	cfg        *config.Config
@@ -1174,7 +1176,7 @@ func (d *Daemon) startLogWatchers() {
 	eximHandler := func(line string, cfg *config.Config) []alert.Finding {
 		findings := parseEximLogLine(line, cfg)
 
-		// Connect-rate signal — fires before any AUTH attempt.
+		// Connect-rate signal fires before any AUTH attempt.
 		if probeIP := parseEximSMTPConnectIP(line); probeIP != "" {
 			if parsed := net.ParseIP(probeIP); parsed != nil {
 				if v4 := parsed.To4(); v4 != nil {
@@ -1242,16 +1244,18 @@ func (d *Daemon) startLogWatchers() {
 		return findings
 	}
 
-	// cPanel-specific logs — only watch these on cPanel hosts. On plain
+	// cPanel-specific logs only watch these on cPanel hosts. On plain
 	// Ubuntu/AlmaLinux they do not exist and the old code spammed
 	// "not found, will retry every 60s" forever.
 	if hostInfo.IsCPanel() {
 		logFiles = append(logFiles,
 			logFile{"", "/usr/local/cpanel/logs/session_log", sessionHandler},
 			logFile{"", "/usr/local/cpanel/logs/access_log", parseAccessLogLineEnhanced},
-			logFile{"", "/var/log/exim_mainlog", eximHandler},
 			logFile{"", "/var/log/messages", parseFTPLogLine},
 		)
+	}
+	if shouldWatchEximMainlog(hostInfo, os.Stat) {
+		logFiles = append(logFiles, logFile{"", eximMainlogPath, eximHandler})
 	}
 
 	// Mail-log reader: factory selects file vs journal based on cfg.MailLogs.
@@ -1434,6 +1438,19 @@ func (d *Daemon) startLogWatchers() {
 // When the file appears, it starts a watcher and returns.
 func (d *Daemon) retryLogWatcher(path string, handler LogLineHandler) {
 	d.retryLogWatcherNamed(path, handler, "")
+}
+
+func shouldWatchEximMainlog(hostInfo platform.Info, stat func(string) (os.FileInfo, error)) bool {
+	if hostInfo.IsCPanel() {
+		return true
+	}
+	if stat == nil {
+		stat = os.Stat
+	}
+	if _, err := stat(eximMainlogPath); err != nil {
+		return !os.IsNotExist(err)
+	}
+	return true
 }
 
 func (d *Daemon) retryLogWatcherNamed(path string, handler LogLineHandler, name string) {
