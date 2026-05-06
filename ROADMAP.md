@@ -20,8 +20,7 @@ N` mention in git history maps to the matching bullet there.
   CLI commands `run`, `run-critical`, `run-deep`, and `status` route
   through it instead of opening their own bbolt handle; `update-rules`
   and `update-geoip` run locally and emit a best-effort reload ping
-  afterward. Shared wire protocol in `internal/control`. Phase 2
-  (remaining CLI migrations) is item 1 below.
+  afterward. Shared wire protocol in `internal/control`.
 
 - **glibc-dynamic builder** (historical item 1). Builder base moved from
   Alpine + musl-static to AlmaLinux 8 + glibc 2.28, on both amd64 and
@@ -118,9 +117,24 @@ N` mention in git history maps to the matching bullet there.
   <when>` backfills historical findings via a new `history.since`
   control-socket command for first-time SIEM onboarding.
 
+- **Detection-cleaning first pass** (historical item 1). WordPress
+  multisite scanning, Joomla, Drupal 8+, Magento 1/2, OpenCart,
+  MySQL trigger/event/procedure/function scanning, manual DB-object
+  drop with backup/restore APIs, hardened `.htaccess` detectors and
+  cleaner, and signature-update-driven retroactive rescans have
+  landed. The active roadmap now tracks only cleanup-history UI and
+  the supported-CMS policy.
+
+- **Copy Fail BPF LSM kernel block** (historical item 5). BPF-tagged
+  builds now ship the AF_ALG LSM program, ringbuf event consumer, and
+  daemon backend wrapper. On kernels with BPF LSM, the daemon can deny
+  AF_ALG socket creation in-kernel and emit the same Critical finding
+  path used by the audit fallback. The active roadmap now tracks only
+  operator-contract cleanup and real-host validation.
+
 ---
 
-## 1. Detection-cleaning rounding for non-WordPress workloads
+## 1. Detection-cleaning cleanup history and supported-CMS policy
 
 **Status:** planned
 **Drives / unblocks:** Imunify360 feature parity for hosts running
@@ -129,32 +143,32 @@ multi-CMS workloads
 
 ### Why
 
-CSM's database scanning and surgical cleaning are WordPress-only
-today. `internal/checks/dbscan.go` is hardcoded to `wp-config.php`,
-so Joomla / Drupal / Magento / OpenCart accounts get no DB-content
-visibility. WordPress multisite (`wp_N_options`) is also invisible.
-MySQL persistence vectors -- triggers, events, stored procedures,
-stored functions -- are never inspected. `.htaccess` cleaning is
-shallow. A signature update only catches files that change after
-the update, not the existing fleet. And there is no operator-facing
-cleanup history or one-click rollback even though backups are
-already being written.
+Most of the original detection-cleaning item has landed: WordPress
+multisite, Joomla, Drupal 8+, Magento, OpenCart, DB-object scanning,
+manual DB-object drop/restore APIs, hardened `.htaccess` cleaning,
+and signature-update retroactive rescans. The remaining roadmap work
+is now narrower: an operator-facing cleanup history view and a clear
+policy for which CMS versions CSM intentionally supports.
 
 ### Decision
 
-Six gaps closed in one release:
+Close the remaining gaps without reopening the shipped scanners:
 
-1. Multi-CMS database scanning (Joomla, Drupal 7+8/9/10, Magento 1+2,
-   OpenCart) via per-CMS adapters under `internal/checks/cms/`.
-2. WordPress multisite (`wp_N_options`, `wp_N_posts` patterns).
-3. MySQL persistence-mechanism scanning via INFORMATION_SCHEMA
-   queries -- triggers, events, stored procedures, functions.
-4. `.htaccess` hardened cleaning: registry of seven malicious
-   directive patterns with surgical removal.
-5. Signature-update-driven retroactive sweep -- when YAML or YARA
-   rules update, sweep `/home/*/public_html` against the new rules.
-6. Cleanup history UI and rollback in the web UI, backed by the
-   existing per-action backup files.
+1. Add a cleanup-history page in the web UI that lists `.htaccess` /
+   file pre-clean backups from the existing quarantine APIs and DB-object
+   backups from the DB-object backup APIs.
+2. Support preview and restore from that page using the existing restore
+   endpoints. The page must make it clear when a backup has already been
+   restored or when the live file differs from the backup.
+3. Document the CMS support policy: new feature work targets upstream-
+   supported CMS majors. EOL CMS versions are best-effort only when the
+   existing scanner already covers them with the same low-risk schema.
+   Adding a new EOL-only scanner needs operator fleet data and an explicit
+   security justification.
+4. Document current scanner scope: Drupal 8+; Joomla through the common
+   `configuration.php` / `JConfig` and standard content/user tables used
+   by supported Joomla releases; Magento 1/2; OpenCart; WordPress
+   multisite. Older Joomla and Drupal 7 are not planned support targets.
 
 ### Out of scope
 
@@ -163,13 +177,74 @@ Six gaps closed in one release:
 - PostgreSQL / SQLite database support.
 - Automatic dropping of malicious DB objects.
 
+### Acceptance criteria
+
+- The web UI exposes one cleanup-history view covering file pre-clean
+  backups and DB-object backups, with preview and restore controls.
+- Restored entries are hidden or clearly marked so operators do not
+  repeatedly restore the same object or file.
+- Docs state supported CMS scanner targets and make EOL coverage
+  best-effort, not a roadmap promise.
+
 ### Estimated size
 
-5-7 engineering days (impl plan ready in the design doc).
+1-2 engineering days.
 
 ---
 
-## 2. `csm support-bundle` command
+## 2. Signed YARA Forge mirror automation
+
+**Status:** planned
+**Drives / unblocks:** safe automatic YARA Forge updates without
+turning off signature verification
+
+### Why
+
+CSM now correctly refuses `signatures.yara_forge.enabled: true` unless
+`signatures.signing_key` and `signatures.yara_forge.download_url` point
+at a ZIP plus detached CSM signature. Upstream YARA Forge GitHub
+releases publish ZIPs, but not CSM `.sig` files, so operators cannot
+enable automatic Forge updates directly against GitHub without weakening
+the trust model.
+
+### Decision
+
+Build and document a small mirror job operated by us:
+
+1. Query the latest `YARAHQ/yara-forge` release.
+2. Download the selected Forge ZIP tiers (`core`, `extended`, `full`).
+3. Sign the raw ZIP bytes with the CSM Ed25519 rule-signing key.
+4. Publish each ZIP and `<zip>.sig` under a stable HTTPS path compatible
+   with `signatures.yara_forge.download_url` and the `{tier}` /
+   `{version}` placeholders.
+5. Publish checksums and retain a bounded number of older releases for
+   rollback.
+6. Add an operator example that enables Forge through `/etc/csm/conf.d/`
+   without editing the main `/opt/csm/csm.yaml`.
+
+### Acceptance criteria
+
+- A fresh mirror run publishes the latest Forge release ZIPs, `.sig`
+  files, and checksums.
+- A CSM instance configured with the mirror URL updates Forge rules
+  successfully and records the installed Forge version.
+- Missing, corrupt, or mismatched signatures fail closed.
+- Operators who do not use the mirror can keep Forge disabled without
+  disabling local YAML/YARA signatures.
+
+### Out of scope
+
+- Accepting unsigned upstream Forge ZIPs.
+- Relaxing `signatures.signing_key` validation.
+- Shipping the private signing key in this repository or in packages.
+
+### Estimated size
+
+0.5-1 engineering day.
+
+---
+
+## 3. `csm support-bundle` command
 
 **Status:** planned
 **Drives / unblocks:** support workflow for operators reporting bugs
@@ -217,7 +292,7 @@ Live daemon required (mirrors `store export`).
 
 ---
 
-## 3. Scheduled backup exports
+## 4. Scheduled backup exports
 
 **Status:** planned
 **Drives / unblocks:** out-of-the-box DR for operators who do not
@@ -269,7 +344,7 @@ finding routed through the normal alert pipeline.
 
 ---
 
-## 4. WordPress companion plugin for signed-cookie operator bypass
+## 5. WordPress companion plugin for signed-cookie operator bypass
 
 **Status:** planned
 **Drives / unblocks:** real-world adoption of the
@@ -318,96 +393,59 @@ The plugin:
 0.5 engineering days for the contract documentation in this repo;
 the plugin itself is ~2 days in the separate repo.
 
+---
 
-## 5. Copy Fail BPF LSM in-kernel block
+## 6. Copy Fail BPF operator follow-through
+
+**Status:** planned
+**Drives / unblocks:** closing the operator contract for BPF-tagged
+AF_ALG blocking builds
 
 ### Why
 
-The Copy Fail (CVE-2026-31431) mitigations that already shipped give us
-two layers: a per-systemd-unit seccomp drop-in (`csm harden
---copy-fail-seccomp`) that blocks `socket(AF_ALG, …)` before the kernel
-sees it, and a live audit-log listener (`af-alg-listener`) that catches
-attempts within ~500 ms and can SIGKILL the offender. Both have gaps:
+The real AF_ALG BPF LSM blocker has landed, so this roadmap item should
+no longer describe Phase B as pending. What remains is narrower:
+operator-facing documentation and one real-host validation pass that
+captures the exact syscall behavior operators should expect.
 
-- **Seccomp drop-ins** only protect processes spawned by the enumerated
-  systemd units (PHP-FPM, LiteSpeed, cron, mail). Anything spawned
-  outside those units (interactive SSH, manual cron, suexec children of
-  non-listed parents) bypasses them.
-- **Audit-log listener** is detection + best-effort kill, not
-  prevention. The exploit's syscall succeeds; we race to kill before the
-  page-cache write completes its second-stage exec.
+The current implementation denies AF_ALG for non-root users in BPF-tagged
+builds when the kernel supports BPF LSM, emits a ringbuf event, and feeds
+the existing Critical finding/reaction path. Hosts without BPF LSM keep
+the audit listener fallback.
 
-A BPF LSM hook on `security_socket_create` returning `-EAFNOSUPPORT`
-when an unprivileged user opens AF_ALG is the missing third layer:
-host-wide, in-kernel block, no race window, catches everything.
+### Decision
 
-### Status (2026-05-02)
+Finish the follow-through work:
 
-**Phase A — shipped.** The architecture is in place:
-
-- Backend coordinator (`StartAFAlgLiveMonitor`) prefers BPF LSM, falls
-  back to the audit listener, returns nil if neither is usable.
-- `AFAlgLiveMonitor` interface (`Mode`, `EventCount`, `Run`) so the
-  daemon doesn't care which backend is active.
-- Build-tag stub for default builds; real BPF code behind
-  `//go:build linux && bpf` (`make BPF=1` opt-in).
-- Kernel-capability probe via `cilium/ebpf`: load + attach a no-op LSM
-  program; any failure short-circuits to audit fallback.
-- Operator surfaces: `detection.af_alg_backend: auto|bpf|auditd|none`
-  config override (kill switch when a BPF-tagged release misbehaves),
-  `csm_af_alg_backend{kind=…}` Prometheus gauge, distinct startup log
-  states (`bpf-lsm-pending` vs `bpf-lsm-unsupported`).
-- Coordinator unit tests cover all override paths and the
-  probe-fail / Phase-B-pending fallbacks.
-
-**Phase B — pending.** What still needs to land:
-
-- The real BPF LSM program in `cilium/ebpf` `asm` instructions: read
-  `family` from the LSM context, gate on `family == AF_ALG (38)` AND
-  `uid > detection.af_alg_system_uid_max` (new config field, default
-  1000), emit a perf event with `(pid, uid, comm)`, return
-  `-EAFNOSUPPORT` (or 0 in alert-only mode).
-- Perf-event reader goroutine that decodes events into `AFAlgEvent` and
-  hands them to the existing `reactToAFAlgEvent` (kill / quarantine
-  shared with the audit listener).
-- New config field `detection.af_alg_bpf_mode: alert-only|block`,
-  default `alert-only` for the first Phase-B release; promote to
-  `block` after operators have observed it run cleanly.
-- Replace `errBPFPhaseBPending` in `tryStartBPFLSM` with the real
-  monitor wrapper; remove the sentinel.
-- Negative test: from a non-system UID, `socket(AF_ALG, …)` returns
-  `EAFNOSUPPORT` when the BPF backend is loaded in `block` mode.
-- Integration test on a kernel that supports BPF LSM (any modern
-  AlmaLinux/RHEL 9+ host or scratch VM works; the original plan named
-  alma9 specifically but alma10 is fine).
+1. Update `docs/src/cve-mitigations.md` so it no longer says in-kernel
+   blocking is future work.
+2. Document the current BPF semantics: build tag requirement, fallback
+   behavior, non-root deny policy, returned errno, and the
+   `detection.af_alg_backend` kill switch.
+3. Add or document a real-host validation procedure on a BPF LSM kernel
+   that proves load, deny, ringbuf event delivery, and Critical finding
+   emission end to end.
+4. Decide whether to add operator tunables for `af_alg_system_uid_max`
+   and alert-only/block mode. If the answer is no, remove those old
+   expectations from docs and history references instead of leaving
+   stale Phase A / Phase B language around.
 
 ### Acceptance criteria
 
-- `go build -tags bpf ./...` clean; default build unchanged. *(Done.)*
-- On a kernel that supports BPF LSM: program loads at daemon startup,
-  blocks AF_ALG syscalls from `uid > af_alg_system_uid_max` with
-  `EAFNOSUPPORT` (when `bpf_mode=block`), and emits a Critical Finding
-  via the existing alert pipeline. *(Pending — Phase B.)*
-- On a kernel that lacks BPF LSM: the BPF probe fails cleanly, the
-  audit listener takes over, and the daemon logs
-  `backend=auditd-tail`. *(Done.)*
-- Integration test verifies probe + load + block + perf-event consumer
-  end-to-end on a real BPF LSM kernel. *(Pending — Phase B.)*
+- Operator docs match the code that ships in BPF-tagged builds.
+- A real BPF LSM host validation captures the failed AF_ALG socket call,
+  the selected `bpf-lsm` backend, and the emitted Critical finding.
+- Stale references to Phase B, `errBPFPhaseBPending`, and unimplemented
+  BPF-mode config fields are removed or replaced by a new explicit
+  follow-up item.
 
 ### Out of scope
 
-- Quarantine of the offending exe (separate, additive enhancement).
 - Source-IP correlation back to a web request (requires HTTP-log
   correlation that's its own design exercise).
-- ARM64 BPF LSM (the cilium/ebpf path is arch-portable; ARM64
-  validation just needs an arm64 test host when one is available).
-- BPF LSM for OTHER LSM hooks (file open, exec, etc.). This roadmap
-  item is specifically Copy Fail.
+- BPF LSM hooks for other subsystems.
+- Changing default non-BPF builds.
 
 ### Estimated size
 
-Phase A (shipped) was ~1 engineering day. Phase B is roughly
-half a day to a full day, mostly verifier iteration on the
-asm instructions; the perf-event consumer and the wrapper that
-matches the `AFAlgLiveMonitor` interface are mechanical now that
-Phase A's scaffolding is in place.
+0.5 engineering days.
