@@ -369,6 +369,72 @@ func LatestPurgeCheckNamesForReducedDeep() []string {
 	return latestPurgeCheckNamesForChecks(reducedDeepChecks())
 }
 
+var latestVolatileCheckNames = []string{
+	"auto_block",
+	"auto_response",
+}
+
+var latestDerivedCheckNames = []string{
+	"coordinated_attack",
+	"cross_account_malware",
+}
+
+// StoreLatestScanFindings replaces the latest findings owned by a scan, then
+// rebuilds derived correlation findings from the merged current set. One-shot
+// auto-response actions stay in history and alerts, not the active findings
+// view.
+func StoreLatestScanFindings(st *state.Store, purgeChecks []string, findings []alert.Finding) {
+	if st == nil {
+		return
+	}
+	st.PurgeAndMergeFindings(latestPurgeWithVolatile(purgeChecks), latestPersistentFindings(findings))
+
+	now := time.Now()
+	derived := CorrelateFindings(st.LatestFindings())
+	for i := range derived {
+		if derived[i].Timestamp.IsZero() {
+			derived[i].Timestamp = now
+		}
+	}
+	st.PurgeAndMergeFindings(latestDerivedCheckNames, derived)
+}
+
+func latestPurgeWithVolatile(purgeChecks []string) []string {
+	out := make([]string, 0, len(purgeChecks)+len(latestVolatileCheckNames))
+	out = append(out, purgeChecks...)
+	out = append(out, latestVolatileCheckNames...)
+	return out
+}
+
+func latestPersistentFindings(findings []alert.Finding) []alert.Finding {
+	out := make([]alert.Finding, 0, len(findings))
+	for _, f := range findings {
+		if isLatestVolatileFinding(f.Check) || isLatestDerivedFinding(f.Check) {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+func isLatestVolatileFinding(check string) bool {
+	for _, name := range latestVolatileCheckNames {
+		if check == name {
+			return true
+		}
+	}
+	return false
+}
+
+func isLatestDerivedFinding(check string) bool {
+	for _, name := range latestDerivedCheckNames {
+		if check == name {
+			return true
+		}
+	}
+	return false
+}
+
 func checksForTier(tier Tier) []namedCheck {
 	switch tier {
 	case TierCritical:
@@ -384,9 +450,6 @@ func checksForTier(tier Tier) []namedCheck {
 
 func latestPurgeCheckNamesForChecks(toScan []namedCheck) []string {
 	seen := make(map[string]struct{})
-	if len(toScan) > 0 {
-		seen["check_timeout"] = struct{}{}
-	}
 	for _, nc := range toScan {
 		seen[nc.name] = struct{}{}
 		for _, name := range runnerFindingNames[nc.name] {

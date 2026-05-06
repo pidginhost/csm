@@ -494,6 +494,24 @@ func TestPurgeAndMergeFindingsPurgesWithoutNewFindings(t *testing.T) {
 	}
 }
 
+func TestPurgeAndMergeFindingsPurgesOwnedTimeoutOnly(t *testing.T) {
+	s := openTestStore(t)
+	s.SetLatestFindings([]alert.Finding{
+		{Check: "check_timeout", Message: "Check 'wp_bruteforce' timed out after 5m0s"},
+		{Check: "check_timeout", Message: "Check 'wp_core' timed out after 5m0s"},
+	})
+
+	s.PurgeAndMergeFindings([]string{"wp_bruteforce"}, nil)
+
+	got := s.LatestFindings()
+	if len(got) != 1 {
+		t.Fatalf("got %d findings, want 1: %+v", len(got), got)
+	}
+	if got[0].Message != "Check 'wp_core' timed out after 5m0s" {
+		t.Fatalf("remaining timeout = %+v, want wp_core timeout", got[0])
+	}
+}
+
 func TestClearLatestFindings(t *testing.T) {
 	s := openTestStore(t)
 	s.SetLatestFindings([]alert.Finding{{Check: "c"}})

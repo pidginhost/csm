@@ -583,25 +583,41 @@ func (e *Engine) createInputChain() error {
 		},
 	})
 
-	// Rule 2: Allow infra IPs FIRST - infra must NEVER be blocked, even accidentally
+	// Rule 2: Drop INVALID conntrack state (malformed packets)
+	e.conn.AddRule(&nftables.Rule{
+		Table: e.table,
+		Chain: e.chainIn,
+		Exprs: []expr.Any{
+			&expr.Ct{Register: 1, SourceRegister: false, Key: expr.CtKeySTATE},
+			&expr.Bitwise{
+				SourceRegister: 1, DestRegister: 1, Len: 4,
+				Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitINVALID),
+				Xor:  binaryutil.NativeEndian.PutUint32(0),
+			},
+			&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(0)},
+			&expr.Verdict{Kind: expr.VerdictDrop},
+		},
+	})
+
+	// Rule 3: Allow infra IPs FIRST - infra must NEVER be blocked, even accidentally
 	e.addSetMatchRule(e.setInfra, expr.VerdictAccept)
 	e.addSetMatchRuleV6(e.setInfra6, expr.VerdictAccept)
 
-	// Rule 3: Cloudflare IP whitelist - accept on TCP 80/443 only.
+	// Rule 4: Cloudflare IP whitelist - accept on TCP 80/443 only.
 	// CF IPs can still be blocked on other ports (unlike infra).
 	e.addCFWhitelistRule(e.setCFWhitelist, false)
 	e.addCFWhitelistRule(e.setCFWhitelist6, true)
 
-	// Rule 4: Drop blocked IPs before established/related so active
+	// Rule 5: Drop blocked IPs before established/related so active
 	// keep-alive connections do not bypass a new block.
 	e.addSetMatchRule(e.setBlocked, expr.VerdictDrop)
 	e.addSetMatchRuleV6(e.setBlocked6, expr.VerdictDrop)
 
-	// Rule 5: Drop blocked subnets (interval set for CIDR ranges)
+	// Rule 6: Drop blocked subnets (interval set for CIDR ranges)
 	e.addSetMatchRule(e.setBlockedNet, expr.VerdictDrop)
 	e.addSetMatchRuleV6(e.setBlockedNet6, expr.VerdictDrop)
 
-	// Rule 6: Allow established/related connections after block checks.
+	// Rule 7: Allow established/related connections after block checks.
 	e.conn.AddRule(&nftables.Rule{
 		Table: e.table,
 		Chain: e.chainIn,
@@ -620,22 +636,6 @@ func (e *Engine) createInputChain() error {
 				Data:     binaryutil.NativeEndian.PutUint32(0),
 			},
 			&expr.Verdict{Kind: expr.VerdictAccept},
-		},
-	})
-
-	// Rule 7: Drop INVALID conntrack state (malformed packets)
-	e.conn.AddRule(&nftables.Rule{
-		Table: e.table,
-		Chain: e.chainIn,
-		Exprs: []expr.Any{
-			&expr.Ct{Register: 1, SourceRegister: false, Key: expr.CtKeySTATE},
-			&expr.Bitwise{
-				SourceRegister: 1, DestRegister: 1, Len: 4,
-				Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitINVALID),
-				Xor:  binaryutil.NativeEndian.PutUint32(0),
-			},
-			&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(0)},
-			&expr.Verdict{Kind: expr.VerdictDrop},
 		},
 	})
 

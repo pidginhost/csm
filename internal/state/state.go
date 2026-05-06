@@ -626,7 +626,7 @@ func (s *Store) PurgeAndMergeFindings(purgeChecks []string, findings []alert.Fin
 	// Build map: keep existing non-purged findings
 	existing := make(map[string]alert.Finding)
 	for _, f := range s.latestFindings {
-		if !remove[f.Check] {
+		if !shouldPurgeLatestFinding(f, remove) {
 			existing[f.Key()] = f
 		}
 	}
@@ -652,6 +652,26 @@ func (s *Store) PurgeAndMergeFindings(purgeChecks []string, findings []alert.Fin
 	tmpPath := filepath.Join(s.path, "latest_findings.json.tmp")
 	_ = os.WriteFile(tmpPath, data, 0600)
 	_ = os.Rename(tmpPath, filepath.Join(s.path, "latest_findings.json"))
+}
+
+func shouldPurgeLatestFinding(f alert.Finding, remove map[string]bool) bool {
+	if remove[f.Check] {
+		return true
+	}
+	if f.Check != "check_timeout" {
+		return false
+	}
+	runner, ok := timeoutFindingRunner(f.Message)
+	return ok && remove[runner]
+}
+
+func timeoutFindingRunner(msg string) (string, bool) {
+	rest, ok := strings.CutPrefix(msg, "Check '")
+	if !ok {
+		return "", false
+	}
+	runner, _, ok := strings.Cut(rest, "'")
+	return runner, ok && runner != ""
 }
 
 // ClearLatestFindings removes all findings from the latest set.

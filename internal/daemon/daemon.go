@@ -500,7 +500,7 @@ func (d *Daemon) Run() error {
 	// results (outdated_plugins, wp_core, etc.) persist across restarts until
 	// the next deep scan replaces them. ClearLatestFindings is NOT called
 	// here - it would wipe deep scan findings that haven't re-run yet.
-	d.store.SetLatestFindings(initialFindings)
+	checks.StoreLatestScanFindings(d.store, checks.LatestPurgeCheckNamesForTier(checks.TierCritical), initialFindings)
 	csmlog.Info("initial scan complete", "findings", len(initialFindings), "new", len(newFindings))
 
 	// NOW start the alert dispatcher - no more race with initial scan
@@ -1023,7 +1023,7 @@ func (d *Daemon) deepScanner() {
 				purgeChecks = checks.LatestPurgeCheckNamesForTier(deepTier)
 			}
 			// Atomically purge stale findings owned by this scan and merge new ones.
-			d.store.PurgeAndMergeFindings(purgeChecks, findings)
+			checks.StoreLatestScanFindings(d.store, purgeChecks, findings)
 			for _, f := range findings {
 				if strings.HasPrefix(f.Check, "perf_") && f.Severity == alert.Warning {
 					continue
@@ -1062,7 +1062,7 @@ func (d *Daemon) runPeriodicChecks(tier checks.Tier) {
 
 	findings := checks.RunTier(d.currentCfg(), d.store, tier)
 	// Atomically purge stale findings owned by this scan and merge new ones.
-	d.store.PurgeAndMergeFindings(checks.LatestPurgeCheckNamesForTier(tier), findings)
+	checks.StoreLatestScanFindings(d.store, checks.LatestPurgeCheckNamesForTier(tier), findings)
 	for _, f := range findings {
 		if strings.HasPrefix(f.Check, "perf_") && f.Severity == alert.Warning {
 			continue

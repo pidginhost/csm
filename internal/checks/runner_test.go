@@ -106,10 +106,13 @@ func TestPerfCheckNamesForTierDeep(t *testing.T) {
 
 func TestLatestPurgeCheckNamesForTierCriticalIncludesEmittedNames(t *testing.T) {
 	names := LatestPurgeCheckNamesForTier(TierCritical)
-	for _, want := range []string{"check_timeout", "wp_bruteforce", "wp_login_bruteforce", "wp_user_enumeration", "xmlrpc_abuse"} {
+	for _, want := range []string{"wp_bruteforce", "wp_login_bruteforce", "wp_user_enumeration", "xmlrpc_abuse"} {
 		if !slices.Contains(names, want) {
 			t.Fatalf("critical purge names missing %q in %v", want, names)
 		}
+	}
+	if slices.Contains(names, "check_timeout") {
+		t.Fatalf("critical purge names included generic check_timeout")
 	}
 	if slices.Contains(names, "outdated_plugins") {
 		t.Fatalf("critical purge names included deep check outdated_plugins")
@@ -124,6 +127,56 @@ func TestLatestPurgeCheckNamesForReducedDeepSkipsFanotifyReplacedChecks(t *testi
 	if slices.Contains(names, "webshell") {
 		t.Fatalf("reduced deep purge names included fanotify-replaced webshell")
 	}
+}
+
+func TestStoreLatestScanFindingsFiltersActionsAndRefreshesCorrelation(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	st.SetLatestFindings([]alert.Finding{
+		{Check: "auto_block", Message: "old block"},
+		{Check: "auto_response", Message: "old action"},
+		{Check: "cross_account_malware", Message: "old correlation"},
+	})
+
+	StoreLatestScanFindings(st, []string{"webshell"}, []alert.Finding{
+		{Severity: alert.Critical, Check: "webshell", Message: "Found in /home/alice/public_html/a.php"},
+		{Severity: alert.Critical, Check: "webshell", Message: "Found in /home/bob/public_html/b.php"},
+		{Severity: alert.Critical, Check: "auto_block", Message: "new block"},
+		{Severity: alert.Critical, Check: "auto_response", Message: "new action"},
+	})
+
+	got := st.LatestFindings()
+	for _, f := range got {
+		if f.Check == "auto_block" || f.Check == "auto_response" {
+			t.Fatalf("volatile action stored in latest findings: %+v", f)
+		}
+	}
+	if !containsFindingCheck(got, "webshell") {
+		t.Fatalf("webshell finding missing from latest findings: %+v", got)
+	}
+	if !containsFindingCheck(got, "cross_account_malware") {
+		t.Fatalf("derived correlation missing from latest findings: %+v", got)
+	}
+
+	StoreLatestScanFindings(st, []string{"webshell"}, nil)
+	got = st.LatestFindings()
+	if containsFindingCheck(got, "webshell") {
+		t.Fatalf("stale webshell finding remained: %+v", got)
+	}
+	if containsFindingCheck(got, "cross_account_malware") {
+		t.Fatalf("stale derived correlation remained: %+v", got)
+	}
+}
+
+func containsFindingCheck(findings []alert.Finding, check string) bool {
+	for _, f := range findings {
+		if f.Check == check {
+			return true
+		}
+	}
+	return false
 }
 
 // --- DisabledChecks honored at runner level --------------------------
