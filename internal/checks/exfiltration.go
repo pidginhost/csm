@@ -4,12 +4,24 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/state"
 )
+
+// uidStringToUser converts a string-form uid (as read from /proc/<pid>/status)
+// to a username via the cached LookupUser. Falls back to the raw uid string
+// when it is not parseable as a uint32.
+func uidStringToUser(uid string) string {
+	u64, err := strconv.ParseUint(uid, 10, 32)
+	if err != nil {
+		return uid
+	}
+	return LookupUser(uint32(u64))
+}
 
 // CheckDatabaseDumps detects mysqldump/pg_dump processes running under
 // non-root users - potential data exfiltration.
@@ -46,7 +58,7 @@ func CheckDatabaseDumps(ctx context.Context, _ *config.Config, _ *state.Store) [
 
 		for _, tool := range dumpTools {
 			if strings.Contains(cmdStr, tool) {
-				user := uidToUser(uid)
+				user := uidStringToUser(uid)
 				findings = append(findings, alert.Finding{
 					Severity: alert.Critical,
 					Check:    "database_dump",
@@ -100,7 +112,7 @@ func CheckOutboundPasteSites(ctx context.Context, cfg *config.Config, _ *state.S
 		// Check if process is connecting to paste sites
 		for _, site := range pasteSites {
 			if strings.Contains(cmdStr, site) {
-				user := uidToUser(uid)
+				user := uidStringToUser(uid)
 				findings = append(findings, alert.Finding{
 					Severity: alert.Critical,
 					Check:    "exfiltration_paste_site",

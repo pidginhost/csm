@@ -93,6 +93,52 @@ func TestStoreSizeMetricReadsFile(t *testing.T) {
 	}
 }
 
+// TestAFAlgBackendDualMetricExport pins the dual-publication contract from
+// the BPF shared-infra plan: setAFAlgBackendMetric must populate BOTH the
+// long-standing csm_af_alg_backend gauge (documented in operator runbooks)
+// AND the new shared csm_bpf_backend{feature="af_alg",...} gauge in
+// lockstep. Removing or skipping either side is a regression that would
+// silently break dashboards or future BPF detectors that key off the
+// shared series.
+func TestAFAlgBackendDualMetricExport(t *testing.T) {
+	// Drive the coordinator-side metric writer directly. Both the old
+	// per-feature gauge and the shared bpf.SetActive call live behind
+	// this single function, so flipping it through every active value
+	// is enough to cover the lockstep contract.
+	setAFAlgBackendMetric("bpf-lsm")
+
+	body := scrapeBody(t)
+
+	// Old gauge: kind="bpf-lsm" must be 1, the other kinds must be 0.
+	assertLabelGauge(t, body, "csm_af_alg_backend", `kind="bpf-lsm"`, 1)
+	assertLabelGauge(t, body, "csm_af_alg_backend", `kind="auditd-tail"`, 0)
+	assertLabelGauge(t, body, "csm_af_alg_backend", `kind="none"`, 0)
+
+	// Shared gauge: feature="af_alg",kind="bpf" must be 1; legacy/none 0.
+	// Label order matches the GaugeVec definition in internal/bpf
+	// (NewGaugeVec(..., []string{"feature","kind"})). If that order ever
+	// flips, the scrape line changes shape and operator dashboards break,
+	// so the literal assertion is intentional.
+	assertLabelGauge(t, body, "csm_bpf_backend", `feature="af_alg",kind="bpf"`, 1)
+	assertLabelGauge(t, body, "csm_bpf_backend", `feature="af_alg",kind="legacy"`, 0)
+	assertLabelGauge(t, body, "csm_bpf_backend", `feature="af_alg",kind="none"`, 0)
+
+	// Toggle to the audit backend and prove the gauges flip in lockstep:
+	// the old gauge moves to kind="auditd-tail"=1, the shared gauge moves
+	// to kind="legacy"=1 (the AF_ALG coordinator maps "auditd-tail" to the
+	// shared BackendLegacy constant in setAFAlgBackendMetric).
+	setAFAlgBackendMetric("auditd-tail")
+	body = scrapeBody(t)
+
+	assertLabelGauge(t, body, "csm_af_alg_backend", `kind="auditd-tail"`, 1)
+	assertLabelGauge(t, body, "csm_af_alg_backend", `kind="bpf-lsm"`, 0)
+	assertLabelGauge(t, body, "csm_af_alg_backend", `kind="none"`, 0)
+
+	assertLabelGauge(t, body, "csm_bpf_backend", `feature="af_alg",kind="legacy"`, 1)
+	assertLabelGauge(t, body, "csm_bpf_backend", `feature="af_alg",kind="bpf"`, 0)
+	assertLabelGauge(t, body, "csm_bpf_backend", `feature="af_alg",kind="none"`, 0)
+}
+
 // TestFindingsTotalFromAppendHistory exercises state.AppendHistory
 // through the findings_total instrumentation and confirms the
 // severity split reaches the scrape. This mirrors the existing test
@@ -175,6 +221,33 @@ func readGauge(body, name string) float64 {
 		return v
 	}
 	return 0
+}
+
+// assertLabelGauge asserts the OpenMetrics scrape body contains a sample
+// for `name{labelExpr} want`. labelExpr is the literal label set including
+// braces' contents (e.g. `feature="af_alg",kind="bpf"`); the helper
+// reconstructs the full prefix and looks for an exact match. We do not
+// reuse readGauge because it ignores labelled samples by design (it only
+// works for unlabelled gauges).
+func assertLabelGauge(t *testing.T, body, name, labelExpr string, want float64) {
+	t.Helper()
+	prefix := name + "{" + labelExpr + "}"
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, prefix+" ") {
+			continue
+		}
+		rest := strings.TrimSpace(trimmed[len(prefix):])
+		v, err := strconv.ParseFloat(rest, 64)
+		if err != nil {
+			t.Fatalf("parse %q: %v", trimmed, err)
+		}
+		if v != want {
+			t.Errorf("%s = %g, want %g", prefix, v, want)
+		}
+		return
+	}
+	t.Errorf("scrape missing sample %s; body:\n%s", prefix, body)
 }
 
 func readSeverityCounter(t *testing.T, severity string) float64 {

@@ -230,7 +230,7 @@ func CheckPHPProcessLoad(ctx context.Context, cfg *config.Config, _ *state.Store
 			uid = "unknown"
 		}
 
-		username := uidToUser(uid)
+		username := uidStringToUser(uid)
 		userProcs[username] = append(userProcs[username], cmdStr)
 		total++
 	}
