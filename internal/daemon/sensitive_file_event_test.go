@@ -17,6 +17,9 @@ func TestDecodeSensitiveFileEvent(t *testing.T) {
 	if err := binary.Write(&buf, binary.LittleEndian, uint32(0x2)); err != nil {
 		t.Fatal(err)
 	}
+	if err := binary.Write(&buf, binary.LittleEndian, uint32(0)); err != nil {
+		t.Fatal(err)
+	}
 	if err := binary.Write(&buf, binary.LittleEndian, uint64(64768)); err != nil {
 		t.Fatal(err)
 	}

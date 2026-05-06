@@ -17,7 +17,7 @@ type SensitiveFileEvent struct {
 	Comm string
 }
 
-const sensitiveFileEventSize = 4 + 4 + 4 + 8 + 8 + 16
+const sensitiveFileEventSize = 4 + 4 + 4 + 4 + 8 + 8 + 16
 
 func decodeSensitiveFileEvent(b []byte) (SensitiveFileEvent, error) {
 	if len(b) < sensitiveFileEventSize {
@@ -27,9 +27,9 @@ func decodeSensitiveFileEvent(b []byte) (SensitiveFileEvent, error) {
 		UID:  binary.LittleEndian.Uint32(b[0:4]),
 		PID:  binary.LittleEndian.Uint32(b[4:8]),
 		Mask: binary.LittleEndian.Uint32(b[8:12]),
-		Dev:  binary.LittleEndian.Uint64(b[12:20]),
-		Ino:  binary.LittleEndian.Uint64(b[20:28]),
+		Dev:  binary.LittleEndian.Uint64(b[16:24]),
+		Ino:  binary.LittleEndian.Uint64(b[24:32]),
 	}
-	ev.Comm = nullTerm(b[28 : 28+16])
+	ev.Comm = nullTerm(b[32 : 32+16])
 	return ev, nil
 }

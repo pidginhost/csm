@@ -36,6 +36,8 @@ var sensitiveWatchset = []string{
 	"/var/spool/cron/*",
 }
 
+const sensitiveFileBaselineKey = "_sensitive_file_hash:__baseline_complete"
+
 // ExpandWatchset returns the absolute paths in the watchset, with globs
 // expanded against the given filesystem root. Non-existent paths drop
 // silently; the next refresh picks them up once they are created. root
@@ -100,6 +102,21 @@ func EvaluateSensitiveFileWrite(path string, uid, pid uint32, comm string) (aler
 	}, true
 }
 
+// EvaluateSensitiveFileAppearance returns a finding when a new file appears
+// inside a sensitive glob directory between live watchset refreshes.
+func EvaluateSensitiveFileAppearance(path string) (alert.Finding, bool) {
+	kind := classifySensitive(path)
+	if kind == "" {
+		return alert.Finding{}, false
+	}
+	return alert.Finding{
+		Severity: alert.High,
+		Check:    "sensitive_file_modified",
+		Message:  fmt.Sprintf("New sensitive system file appeared: %s", path),
+		Details:  fmt.Sprintf("Class: %s", kind),
+	}, true
+}
+
 // CheckSensitiveFiles is the periodic safety-net that runs when the BPF
 // live monitor is unavailable or disabled. It content-hashes every watchset
 // path and emits a finding when a hash differs from the previous run. The
@@ -114,6 +131,7 @@ func CheckSensitiveFiles(_ context.Context, _ *config.Config, store *state.Store
 		return nil
 	}
 	var findings []alert.Finding
+	_, baselineComplete := store.GetRaw(sensitiveFileBaselineKey)
 	for _, path := range ExpandWatchset("/") {
 		data, err := osFS.ReadFile(path)
 		if err != nil {
@@ -126,6 +144,11 @@ func CheckSensitiveFiles(_ context.Context, _ *config.Config, store *state.Store
 		prev, ok := store.GetRaw(key)
 		if !ok {
 			store.SetRaw(key, hashHex)
+			if baselineComplete {
+				if f, emit := EvaluateSensitiveFileAppearance(path); emit {
+					findings = append(findings, f)
+				}
+			}
 			continue
 		}
 		if prev == hashHex {
@@ -138,6 +161,9 @@ func CheckSensitiveFiles(_ context.Context, _ *config.Config, store *state.Store
 			Message:  fmt.Sprintf("Periodic check: content hash changed for %s", path),
 			Details:  fmt.Sprintf("Previous: %s, Current: %s", prev, hashHex),
 		})
+	}
+	if !baselineComplete {
+		store.SetRaw(sensitiveFileBaselineKey, "1")
 	}
 	return findings
 }

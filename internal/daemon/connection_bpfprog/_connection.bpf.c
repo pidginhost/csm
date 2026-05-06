@@ -17,6 +17,8 @@
 // don't define them in BPF compilation context (no glibc).
 #define AF_INET 2
 #define AF_INET6 10
+#define SOCK_STREAM 1
+#define IPPROTO_TCP 6
 
 struct conn_event {
     __u32 uid;
@@ -38,6 +40,10 @@ struct {
 const struct conn_event *unused __attribute__((unused));
 
 static __always_inline int emit_event(struct bpf_sock_addr *ctx, __u32 family) {
+    if (ctx->type != SOCK_STREAM || ctx->protocol != IPPROTO_TCP) {
+        return 1; // allow, but keep UDP and other protocols out of TCP policy
+    }
+
     __u64 ug = bpf_get_current_uid_gid();
     __u32 uid = (__u32)(ug & 0xffffffff);
     if (uid == 0) {

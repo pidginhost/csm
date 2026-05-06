@@ -24,19 +24,8 @@ struct {
 // Force BTF emission of exec_event so bpf2go's -type flag finds it.
 const struct exec_event *unused __attribute__((unused));
 
-// sched/sched_process_exec format (kernel 5.x):
-//   pid (u32) at +8
-//   old_pid (u32) at +12
-//   __data_loc filename (u32) at +16
-struct exec_tp_args {
-    __u64 pad;
-    __u32 pid;
-    __u32 old_pid;
-    __u32 dl_filename;
-};
-
 SEC("tracepoint/sched/sched_process_exec")
-int csm_on_exec(struct exec_tp_args *ctx) {
+int csm_on_exec(struct trace_event_raw_sched_process_exec *ctx) {
     __u64 ug = bpf_get_current_uid_gid();
     __u32 uid = (__u32)(ug & 0xffffffff);
     if (uid == 0) {
@@ -65,7 +54,8 @@ int csm_on_exec(struct exec_tp_args *ctx) {
     }
 
     // Resolve __data_loc filename: low 16 bits = offset from ctx start.
-    const char *fname = (const char *)((char *)ctx + (ctx->dl_filename & 0xffff));
+    __u32 dl_filename = BPF_CORE_READ(ctx, __data_loc_filename);
+    const char *fname = (const char *)((char *)ctx + (dl_filename & 0xffff));
     bpf_probe_read_kernel_str(&e->filename, sizeof(e->filename), fname);
 
     bpf_ringbuf_submit(e, 0);

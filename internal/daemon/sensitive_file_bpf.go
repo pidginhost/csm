@@ -69,7 +69,7 @@ func startSensitiveFileBPF(_ context.Context, alertCh chan<- alert.Finding, cfg 
 		cfg:     cfg,
 		paths:   map[fileid]string{},
 	}
-	if err := s.refreshWatchset(); err != nil {
+	if err := s.refreshWatchset(false); err != nil {
 		_ = s.link.Close()
 		s.objs.Close()
 		return nil, fmt.Errorf("populate watchset: %w", err)
@@ -77,7 +77,7 @@ func startSensitiveFileBPF(_ context.Context, alertCh chan<- alert.Finding, cfg 
 	return s, nil
 }
 
-func (s *sensitiveFileBPF) refreshWatchset() error {
+func (s *sensitiveFileBPF) refreshWatchset(reportNew bool) error {
 	paths := checks.ExpandWatchset("/")
 	next := make(map[fileid]string, len(paths))
 	for _, p := range paths {
@@ -96,7 +96,18 @@ func (s *sensitiveFileBPF) refreshWatchset() error {
 			return fmt.Errorf("update watched map: %w", err)
 		}
 	}
+	var newFindings []alert.Finding
 	s.mu.Lock()
+	if reportNew {
+		for id, path := range next {
+			if _, ok := s.paths[id]; ok {
+				continue
+			}
+			if f, emit := checks.EvaluateSensitiveFileAppearance(path); emit {
+				newFindings = append(newFindings, f)
+			}
+		}
+	}
 	for id := range s.paths {
 		if _, ok := next[id]; !ok {
 			key := bpfprog.SensitiveFileFileid{Dev: id.Dev, Ino: id.Ino}
@@ -105,6 +116,9 @@ func (s *sensitiveFileBPF) refreshWatchset() error {
 	}
 	s.paths = next
 	s.mu.Unlock()
+	for _, f := range newFindings {
+		s.emitFinding(f)
+	}
 	return nil
 }
 
@@ -128,7 +142,7 @@ func (s *sensitiveFileBPF) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-refresh.C:
-			if err := s.refreshWatchset(); err != nil {
+			if err := s.refreshWatchset(true); err != nil {
 				csmlog.Warn("sensitive_file bpf: watchset refresh failed", "err", err)
 			}
 		case ev, ok := <-s.reader.Events():
@@ -147,12 +161,16 @@ func (s *sensitiveFileBPF) Run(ctx context.Context) {
 			if !emit {
 				continue
 			}
-			select {
-			case s.alertCh <- finding:
-			default:
-				csmlog.Warn("sensitive_file bpf: alert channel full, dropping finding")
-			}
+			s.emitFinding(finding)
 		}
+	}
+}
+
+func (s *sensitiveFileBPF) emitFinding(f alert.Finding) {
+	select {
+	case s.alertCh <- f:
+	default:
+		csmlog.Warn("sensitive_file bpf: alert channel full, dropping finding")
 	}
 }
 

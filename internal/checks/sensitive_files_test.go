@@ -1,11 +1,14 @@
 package checks
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/state"
 )
 
 func TestSensitiveWatchsetGlobsExpand(t *testing.T) {
@@ -65,5 +68,46 @@ func TestEvaluateSensitiveFileWrite(t *testing.T) {
 				t.Fatalf("Severity = %v, want %v", f.Severity, tc.wantSev)
 			}
 		})
+	}
+}
+
+func TestEvaluateSensitiveFileAppearance(t *testing.T) {
+	f, ok := EvaluateSensitiveFileAppearance("/etc/cron.d/evil")
+	if !ok {
+		t.Fatal("expected finding for new cron drop-in")
+	}
+	if f.Check != "sensitive_file_modified" || f.Severity != alert.High {
+		t.Fatalf("unexpected finding: %+v", f)
+	}
+}
+
+func TestCheckSensitiveFilesAlertsOnNewGlobAfterBaseline(t *testing.T) {
+	root := t.TempDir()
+	oldWatchset := sensitiveWatchset
+	sensitiveWatchset = []string{filepath.Join(root, "etc/cron.d/*")}
+	t.Cleanup(func() { sensitiveWatchset = oldWatchset })
+
+	if err := os.MkdirAll(filepath.Join(root, "etc/cron.d"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := CheckSensitiveFiles(context.Background(), &config.Config{}, st); len(got) != 0 {
+		t.Fatalf("baseline run emitted findings: %+v", got)
+	}
+
+	if err := os.WriteFile(filepath.Join(root, "etc/cron.d/evil"), []byte("* * * * * root true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := CheckSensitiveFiles(context.Background(), &config.Config{}, st)
+	if len(got) != 1 {
+		t.Fatalf("new glob file should emit one finding, got %+v", got)
+	}
+	if got[0].Check != "sensitive_file_modified" {
+		t.Fatalf("Check = %q, want sensitive_file_modified", got[0].Check)
 	}
 }
