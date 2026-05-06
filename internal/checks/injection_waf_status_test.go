@@ -5,11 +5,11 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/platform"
-	"github.com/pidginhost/csm/internal/state"
 )
 
 // Comprehensive tests for CheckWAFStatus driving every branch via
@@ -205,13 +205,14 @@ func TestCheckWAFStatusCPanelLiteSpeedVendorDirBackstopsEmptyWhmapi1(t *testing.
 	}
 }
 
-// Regression for the cluster6 false positive at 01:10:27 — same race as
+// Regression for the cluster6 false positive at 01:10:27. Same race as
 // the LiteSpeed-backstop test, but the filesystem ALSO returned empty
-// during cPanel's modsec_assemble window (vendor dir was being rewritten
-// in place, no temp-rename atomicity). The single-observation check
-// can't distinguish that 6-second flap from a real "no rules" host, so
-// require two consecutive negative observations before firing.
-func TestCheckWAFStatusRulesFlapSuppression(t *testing.T) {
+// during cPanel's modsec_assemble window (vendor dir is rewritten in
+// place, no temp-rename atomicity). On cPanel+LiteSpeed the check
+// re-probes once after a short delay before alerting; if the re-probe
+// finds rules the alert is suppressed entirely, so the flap doesn't
+// page and a real "no rules" host still alerts within the same scan.
+func TestCheckWAFStatusModsecAssembleRetryRecovers(t *testing.T) {
 	platform.ResetForTest()
 	t.Cleanup(platform.ResetForTest)
 	platform.SetOverrides(platform.Overrides{
@@ -219,18 +220,93 @@ func TestCheckWAFStatusRulesFlapSuppression(t *testing.T) {
 		WebServer: ptrWebServer(platform.WSLiteSpeed),
 	})
 
-	// modsec is "active" (so the rule-vendor branch is reached) but
-	// neither whmapi1 nor the filesystem returns any rule artifacts —
-	// the modsec_assemble flap window.
-	emptyWhmapi := &mockCmd{
+	prevDelay := wafRulesAssembleRetryDelay
+	wafRulesAssembleRetryDelay = 1 * time.Millisecond
+	t.Cleanup(func() { wafRulesAssembleRetryDelay = prevDelay })
+
+	// modsec is "active" so the rule-vendor branch is reached.
+	modsecOnFile := func(name string) (*os.File, error) {
+		if strings.Contains(name, "modsec") || strings.Contains(name, "security2") {
+			tmp, _ := os.CreateTemp(t.TempDir(), "mod")
+			_, _ = tmp.WriteString("LoadModule security2_module modules/mod_security2.so\nSecRuleEngine On\n")
+			_, _ = tmp.Seek(0, 0)
+			return tmp, nil
+		}
+		return nil, os.ErrNotExist
+	}
+	modsecReadFile := func(name string) ([]byte, error) {
+		if strings.Contains(name, "modsec") || strings.Contains(name, "security2") {
+			return []byte("LoadModule security2_module modules/mod_security2.so\nSecRuleEngine On\n"), nil
+		}
+		return nil, os.ErrNotExist
+	}
+
+	// First whmapi1 modsec_get_vendors call returns empty (mid-rewrite);
+	// the second returns the populated vendor list. modsec_is_installed
+	// always returns "installed".
+	getVendorsCalls := 0
+	withMockCmd(t, &mockCmd{
+		run: func(name string, args ...string) ([]byte, error) {
+			if name != "whmapi1" || len(args) == 0 {
+				return nil, nil
+			}
+			switch args[0] {
+			case "modsec_is_installed":
+				return []byte("installed: 1\n"), nil
+			case "modsec_get_vendors":
+				getVendorsCalls++
+				if getVendorsCalls == 1 {
+					return []byte(""), nil
+				}
+				return []byte("vendor_id: comodo_litespeed\n"), nil
+			}
+			return nil, nil
+		},
+	})
+	// Filesystem stays empty across both probes — recovery comes from
+	// the second whmapi1 call alone.
+	withMockOS(t, &mockOS{
+		open:     modsecOnFile,
+		readFile: modsecReadFile,
+		readDir:  func(string) ([]os.DirEntry, error) { return nil, nil },
+		stat:     func(string) (os.FileInfo, error) { return nil, os.ErrNotExist },
+	})
+
+	findings := CheckWAFStatus(context.Background(), &config.Config{}, nil)
+	for _, f := range findings {
+		if f.Check == "waf_rules" {
+			t.Fatalf("retry recovery should suppress waf_rules; got %+v", f)
+		}
+	}
+	if getVendorsCalls != 2 {
+		t.Errorf("expected 2 whmapi1 modsec_get_vendors calls (initial + retry), got %d", getVendorsCalls)
+	}
+}
+
+// Real "no rules" cPanel+LiteSpeed host: both probes empty. The check
+// must still alert in the same scan (don't shift detection to the
+// next deep tier) — the retry is a debounce, not a defer.
+func TestCheckWAFStatusModsecAssembleRetryStillAlertsWhenTrulyEmpty(t *testing.T) {
+	platform.ResetForTest()
+	t.Cleanup(platform.ResetForTest)
+	platform.SetOverrides(platform.Overrides{
+		Panel:     ptrPanel(platform.PanelCPanel),
+		WebServer: ptrWebServer(platform.WSLiteSpeed),
+	})
+
+	prevDelay := wafRulesAssembleRetryDelay
+	wafRulesAssembleRetryDelay = 1 * time.Millisecond
+	t.Cleanup(func() { wafRulesAssembleRetryDelay = prevDelay })
+
+	withMockCmd(t, &mockCmd{
 		run: func(name string, args ...string) ([]byte, error) {
 			if name == "whmapi1" && len(args) > 0 && args[0] == "modsec_is_installed" {
 				return []byte("installed: 1\n"), nil
 			}
 			return []byte(""), nil
 		},
-	}
-	emptyOS := &mockOS{
+	})
+	withMockOS(t, &mockOS{
 		open: func(name string) (*os.File, error) {
 			if strings.Contains(name, "modsec") || strings.Contains(name, "security2") {
 				tmp, _ := os.CreateTemp(t.TempDir(), "mod")
@@ -248,26 +324,9 @@ func TestCheckWAFStatusRulesFlapSuppression(t *testing.T) {
 		},
 		readDir: func(string) ([]os.DirEntry, error) { return nil, nil },
 		stat:    func(string) (os.FileInfo, error) { return nil, os.ErrNotExist },
-	}
-	withMockCmd(t, emptyWhmapi)
-	withMockOS(t, emptyOS)
+	})
 
-	store, err := state.Open(t.TempDir())
-	if err != nil {
-		t.Fatalf("state.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-
-	// First negative observation: must NOT fire waf_rules.
-	findings := CheckWAFStatus(context.Background(), &config.Config{}, store)
-	for _, f := range findings {
-		if f.Check == "waf_rules" {
-			t.Fatalf("first miss should be suppressed, got: %+v", f)
-		}
-	}
-
-	// Second consecutive negative observation: now fire.
-	findings = CheckWAFStatus(context.Background(), &config.Config{}, store)
+	findings := CheckWAFStatus(context.Background(), &config.Config{}, nil)
 	hasRulesAlert := false
 	for _, f := range findings {
 		if f.Check == "waf_rules" {
@@ -276,41 +335,7 @@ func TestCheckWAFStatusRulesFlapSuppression(t *testing.T) {
 		}
 	}
 	if !hasRulesAlert {
-		t.Fatalf("second consecutive miss should fire waf_rules, findings=%+v", findings)
-	}
-
-	// Recovery: rules come back via filesystem. Counter must reset so a
-	// later flap doesn't re-fire on the very next miss.
-	withMockOS(t, &mockOS{
-		open:     emptyOS.open,
-		readFile: emptyOS.readFile,
-		readDir: func(name string) ([]os.DirEntry, error) {
-			clean := strings.ReplaceAll(name, "//", "/")
-			switch clean {
-			case "/etc/apache2/conf.d/modsec_vendor_configs/":
-				return []os.DirEntry{testDirEntry{name: "comodo_litespeed", isDir: true}}, nil
-			case "/etc/apache2/conf.d/modsec_vendor_configs/comodo_litespeed":
-				return []os.DirEntry{testDirEntry{name: "10_HTTP_HTTP.conf", isDir: false}}, nil
-			}
-			return nil, os.ErrNotExist
-		},
-		stat: emptyOS.stat,
-	})
-	findings = CheckWAFStatus(context.Background(), &config.Config{}, store)
-	for _, f := range findings {
-		if f.Check == "waf_rules" {
-			t.Fatalf("rules-present run must not fire waf_rules: %+v", f)
-		}
-	}
-
-	// Counter is now 0. A fresh flap must again be suppressed on the
-	// first miss, not fire immediately just because it fired earlier.
-	withMockOS(t, emptyOS)
-	findings = CheckWAFStatus(context.Background(), &config.Config{}, store)
-	for _, f := range findings {
-		if f.Check == "waf_rules" {
-			t.Fatalf("post-recovery first miss should be suppressed, got: %+v", f)
-		}
+		t.Fatalf("genuine no-rules host must alert in the same scan after retry; findings=%+v", findings)
 	}
 }
 

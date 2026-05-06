@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -16,10 +15,19 @@ import (
 	"github.com/pidginhost/csm/internal/state"
 )
 
+// wafRulesAssembleRetryDelay is the wait between the first negative
+// probe and the re-probe on cPanel+LiteSpeed hosts where cPanel's
+// nightly modsec_assemble briefly leaves both `whmapi1
+// modsec_get_vendors` and the vendor dir empty while it rewrites the
+// tree in place. Observed windows are <10s; 30s gives margin without
+// meaningfully delaying the surrounding deep-scan tier. Tests override
+// this to keep the suite fast.
+var wafRulesAssembleRetryDelay = 30 * time.Second
+
 // CheckWAFStatus verifies that ModSecurity is loaded, the engine is in
 // enforcement mode (not DetectionOnly), OWASP/Comodo rules are active,
 // and rules are up to date.
-func CheckWAFStatus(ctx context.Context, _ *config.Config, store *state.Store) []alert.Finding {
+func CheckWAFStatus(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	info := platform.Detect()
@@ -53,55 +61,32 @@ func CheckWAFStatus(ctx context.Context, _ *config.Config, store *state.Store) [
 	}
 
 	// --- Rule vendor check ---
-	// cPanel-only: whmapi1 vendors. Plain hosts rely on file-system probing.
-	hasRules := false
-	if info.IsCPanel() {
-		out, _ := runCmd("whmapi1", "modsec_get_vendors")
-		if out != nil {
-			outStr := string(out)
-			if strings.Contains(outStr, "comodo") || strings.Contains(outStr, "owasp") ||
-				strings.Contains(outStr, "OWASP") || strings.Contains(outStr, "Comodo") {
-				hasRules = true
-			}
-		}
-	}
-
 	ruleDirs := modsecRuleDirs(info)
-	if hasRuleArtifacts(ruleDirs) {
-		hasRules = true
+	hasRules := probeWAFRules(info, ruleDirs)
+
+	// cPanel+LiteSpeed: cPanel's nightly modsec_assemble rewrites the
+	// vendor tree in place, so for ~6-10s both `whmapi1
+	// modsec_get_vendors` and the vendor dir return empty. The cluster6
+	// false positive at 01:10:27 fired 6s after the rewrite. Re-probe
+	// once after a short delay before alerting; on a host that really
+	// has no rules, the re-probe is still negative and we alert in the
+	// same scan, so this doesn't shift detection to the next deep tier.
+	if !hasRules && info.IsCPanel() && info.WebServer == platform.WSLiteSpeed {
+		select {
+		case <-time.After(wafRulesAssembleRetryDelay):
+		case <-ctx.Done():
+			return findings
+		}
+		hasRules = probeWAFRules(info, ruleDirs)
 	}
 
-	// Flap suppression for the rule-vendor probe. cPanel's nightly
-	// modsec_assemble briefly returns empty from `whmapi1
-	// modsec_get_vendors` and can leave the vendor dir transiently
-	// empty while it rewrites in place. We've observed alert windows
-	// of <10s during that rebuild. Require two consecutive negative
-	// observations before firing so a single-tick flap doesn't page.
-	const wafMissCounterKey = "_waf_rules_miss_count"
-	if hasRules {
-		if store != nil {
-			store.SetRaw(wafMissCounterKey, "0")
-		}
-	} else {
-		misses := 1
-		if store != nil {
-			if prev, ok := store.GetRaw(wafMissCounterKey); ok {
-				if n, err := strconv.Atoi(prev); err == nil && n >= 0 {
-					misses = n + 1
-				}
-			}
-			store.SetRaw(wafMissCounterKey, strconv.Itoa(misses))
-		}
-		// Without a store (tests / one-shot CLI) keep the legacy
-		// behaviour: alert immediately. With a store, require two.
-		if store == nil || misses >= 2 {
-			findings = append(findings, alert.Finding{
-				Severity: alert.High,
-				Check:    "waf_rules",
-				Message:  "ModSecurity has no WAF rules loaded",
-				Details:  wafRulesHint(info),
-			})
-		}
+	if !hasRules {
+		findings = append(findings, alert.Finding{
+			Severity: alert.High,
+			Check:    "waf_rules",
+			Message:  "ModSecurity has no WAF rules loaded",
+			Details:  wafRulesHint(info),
+		})
 	}
 
 	// --- Rule age check + auto-update ---
@@ -149,6 +134,23 @@ func CheckWAFStatus(ctx context.Context, _ *config.Config, store *state.Store) [
 	}
 
 	return findings
+}
+
+// probeWAFRules checks whether any WAF rule source — cPanel's whmapi1
+// vendor list or the on-disk vendor/CRS directories — currently
+// reports rules. Used by CheckWAFStatus directly and again on retry
+// for the cPanel+LiteSpeed modsec_assemble race.
+func probeWAFRules(info platform.Info, ruleDirs []string) bool {
+	if info.IsCPanel() {
+		if out, _ := runCmd("whmapi1", "modsec_get_vendors"); out != nil {
+			outStr := string(out)
+			if strings.Contains(outStr, "comodo") || strings.Contains(outStr, "owasp") ||
+				strings.Contains(outStr, "OWASP") || strings.Contains(outStr, "Comodo") {
+				return true
+			}
+		}
+	}
+	return hasRuleArtifacts(ruleDirs)
 }
 
 // modsecDetected returns true if a ModSecurity module is loaded for the
