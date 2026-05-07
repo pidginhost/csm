@@ -72,6 +72,36 @@ var cloudProviderPTRSuffixes = []string{
 	".contaboserver.net",
 }
 
+// isCloudRelayAllowed reports whether the AUTH user is opted out of the
+// email_cloud_relay_abuse detector via the operator-managed allowlists.
+// users matches whole mailboxes; domains matches the domain part. Both
+// comparisons are case-insensitive. An empty user is never considered
+// allowed (defense against malformed log lines).
+func isCloudRelayAllowed(user string, users, domains []string) bool {
+	if user == "" {
+		return false
+	}
+	for _, u := range users {
+		if strings.EqualFold(user, u) {
+			return true
+		}
+	}
+	if len(domains) == 0 {
+		return false
+	}
+	at := strings.LastIndexByte(user, '@')
+	if at < 0 || at >= len(user)-1 {
+		return false
+	}
+	dom := user[at+1:]
+	for _, d := range domains {
+		if strings.EqualFold(dom, d) {
+			return true
+		}
+	}
+	return false
+}
+
 // isCloudProviderPTR reports whether the given PTR hostname belongs to a
 // recognized public-cloud provider. Case-insensitive suffix match.
 func isCloudProviderPTR(ptr string) bool {
@@ -167,6 +197,9 @@ func parseCloudRelayFinding(line string, cfg *config.Config) []alert.Finding {
 		return nil
 	}
 	if isHighVolumeSender(user, cfg.EmailProtection.HighVolumeSenders) {
+		return nil
+	}
+	if isCloudRelayAllowed(user, cfg.EmailProtection.CloudRelay.AllowUsers, cfg.EmailProtection.CloudRelay.AllowDomains) {
 		return nil
 	}
 	ptr := extractEximHostname(line)

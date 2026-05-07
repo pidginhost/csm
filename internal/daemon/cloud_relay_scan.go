@@ -39,10 +39,11 @@ var CloudRelayScanPath = cloudRelayScanPathDefault
 // last `lookback` duration and returns a finding per mailbox that
 // exceeds the cloud-relay thresholds. Safe to call from goroutines.
 //
-// The scanner respects the EmailProtection.HighVolumeSenders allowlist,
-// mirrors the realtime detector's thresholds exactly, and uses a
-// per-user persistent marker in the global store to avoid re-emitting
-// the same finding on successive restarts.
+// The scanner respects EmailProtection.HighVolumeSenders and the
+// detector-scoped EmailProtection.CloudRelay.AllowUsers / .AllowDomains
+// allowlists, mirrors the realtime detector's thresholds exactly, and
+// uses a per-user persistent marker in the global store to avoid
+// re-emitting the same finding on successive restarts.
 func ScanEximHistoryForCloudRelay(cfg *config.Config, logPath string, now time.Time, lookback time.Duration) []alert.Finding {
 	if logPath == "" {
 		logPath = CloudRelayScanPath
@@ -180,6 +181,9 @@ func processCloudRelayScanLine(line string, cfg *config.Config, since time.Time,
 	}
 	user := extractAuthUser(line)
 	if user == "" || isHighVolumeSender(user, cfg.EmailProtection.HighVolumeSenders) {
+		return
+	}
+	if isCloudRelayAllowed(user, cfg.EmailProtection.CloudRelay.AllowUsers, cfg.EmailProtection.CloudRelay.AllowDomains) {
 		return
 	}
 	ptr := extractEximHostname(line)

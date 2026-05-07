@@ -433,6 +433,22 @@ type Config struct {
 			BaselineObservationDays  int     `yaml:"baseline_observation_days"`
 			PoliciesDir              string  `yaml:"policies_dir"`
 		} `yaml:"php_relay"`
+
+		// CloudRelay scopes opt-out for the email_cloud_relay_abuse
+		// detector only. Use this when an operator legitimately runs a
+		// mailer on a public-cloud VM (Google Cloud, AWS, etc.) and the
+		// realtime/retro detectors keep false-firing on that mailbox.
+		// AllowUsers matches full mailboxes (case-insensitive). AllowDomains
+		// matches the domain part of the AUTH user (case-insensitive),
+		// covering every mailbox under that domain. Either match exits
+		// the detector before any window state is updated, so an
+		// allowlisted mailbox cannot prime the counter for another user.
+		// Leaving both empty preserves prior behavior. The shared
+		// EmailProtection.HighVolumeSenders list still applies as well.
+		CloudRelay struct {
+			AllowUsers   []string `yaml:"allow_users"`
+			AllowDomains []string `yaml:"allow_domains"`
+		} `yaml:"cloud_relay"`
 	} `yaml:"email_protection" hotreload:"safe"`
 
 	Firewall *firewall.FirewallConfig `yaml:"firewall" hotreload:"restart"`

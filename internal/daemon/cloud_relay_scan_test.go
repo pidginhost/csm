@@ -144,6 +144,59 @@ func TestScanRetro_RespectsAllowlist(t *testing.T) {
 	})
 }
 
+func TestScanRetro_RespectsCloudRelayAllowUsers(t *testing.T) {
+	base := time.Now().Add(-30 * time.Minute)
+	var lines []string
+	for i := 0; i < 20; i++ {
+		lines = append(lines, eximLine(
+			base.Add(time.Duration(i)*time.Minute),
+			"office@madconsulting.ro",
+			"168.135.246.35.bc.googleusercontent.com",
+			"35.246.135.168",
+			"Whatever",
+		))
+	}
+	path := writeEximFixture(t, lines)
+
+	withGlobalStore(t, func(*store.DB) {
+		cfg := &config.Config{}
+		cfg.EmailProtection.CloudRelay.AllowUsers = []string{"office@madconsulting.ro"}
+		findings := ScanEximHistoryForCloudRelay(cfg, path, time.Now(), 24*time.Hour)
+		if len(findings) != 0 {
+			t.Fatalf("allow_users mailbox must not produce retro findings: %+v", findings)
+		}
+	})
+}
+
+func TestScanRetro_RespectsCloudRelayAllowDomains(t *testing.T) {
+	base := time.Now().Add(-30 * time.Minute)
+	var lines []string
+	mailboxes := []string{
+		"office@madconsulting.ro",
+		"steluta.ghelbereu@madconsulting.ro",
+		"amelia.savu@MADCONSULTING.RO",
+	}
+	for i := 0; i < 21; i++ {
+		lines = append(lines, eximLine(
+			base.Add(time.Duration(i)*time.Minute),
+			mailboxes[i%len(mailboxes)],
+			"168.135.246.35.bc.googleusercontent.com",
+			"35.246.135.168",
+			"Whatever",
+		))
+	}
+	path := writeEximFixture(t, lines)
+
+	withGlobalStore(t, func(*store.DB) {
+		cfg := &config.Config{}
+		cfg.EmailProtection.CloudRelay.AllowDomains = []string{"madconsulting.ro"}
+		findings := ScanEximHistoryForCloudRelay(cfg, path, time.Now(), 24*time.Hour)
+		if len(findings) != 0 {
+			t.Fatalf("allow_domains must cover every mailbox under the domain: %+v", findings)
+		}
+	})
+}
+
 func TestScanRetro_DedupsAcrossReruns(t *testing.T) {
 	// First scan fires; second scan over identical data must stay silent
 	// until a newer event lands.
