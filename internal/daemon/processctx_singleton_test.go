@@ -9,12 +9,14 @@ import (
 	"github.com/pidginhost/csm/internal/processctx"
 )
 
-// TestMain pins the initial registry seam to a private registry for this
-// package. resetProcessCtxForTest also installs a fresh private registry before
-// each singleton rebuild, so repeated ProcessCtx() calls in tests never register
-// csm_process_context_* metrics on metrics.Default or on a reused registry.
+// TestMain pins both registry seams (process-context from Phase 1 +
+// incidents from Phase 2) to private registries for this package, so
+// tests never register csm_process_context_* or csm_incidents_* on
+// metrics.Default. resetProcessCtxForTest and resetIncidentForTest
+// re-pin on every reset.
 func TestMain(m *testing.M) {
 	processCtxRegistry = metrics.NewRegistry
+	incidentRegistry = metrics.NewRegistry
 	os.Exit(m.Run())
 }
 
