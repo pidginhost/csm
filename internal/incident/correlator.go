@@ -3,12 +3,17 @@ package incident
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 )
+
+// ErrIncidentNotFound is returned when SetStatus or other lookups
+// target an unknown incident id.
+var ErrIncidentNotFound = errors.New("incident: not found")
 
 // incidentMergeWindow is the time gap inside which two findings with the
 // same correlation key are considered the same incident. Named constant
@@ -151,6 +156,46 @@ func (c *Correlator) persistLocked(snap Incident) {
 	c.mu.Unlock()
 	defer c.mu.Lock()
 	c.cfg.Persist(snap)
+}
+
+// SetStatus transitions an incident's status. On Resolved/Dismissed
+// the incident is unbound from the active byKey index so future
+// findings for the same correlation key start a fresh incident.
+// Returns ErrIncidentNotFound if id is unknown.
+func (c *Correlator) SetStatus(id string, status Status, details string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	inc, ok := c.incidents[id]
+	if !ok {
+		return ErrIncidentNotFound
+	}
+	if inc.Status == status {
+		return nil
+	}
+	now := c.now()
+	from := inc.Status
+	inc.Status = status
+	inc.UpdatedAt = now
+	inc.Actions = append(inc.Actions, IncidentAction{
+		Time:    now,
+		Action:  "incident_status_changed",
+		Result:  "ok",
+		Details: string(from) + " -> " + string(status) + ": " + details,
+	})
+	// Scan-and-delete by value rather than rebuilding the key: SetStatus
+	// fires on incidents created with the broader KeyFor (UID/PID/RemoteIP)
+	// while a narrow Key{Account,Domain,Mailbox} would miss those entries.
+	// byKey only holds active incidents so the O(n) scan is bounded.
+	if status == StatusResolved || status == StatusDismissed {
+		for k, v := range c.byKey {
+			if v == id {
+				delete(c.byKey, k)
+				break
+			}
+		}
+	}
+	c.persistLocked(*inc)
+	return nil
 }
 
 // Restore re-hydrates correlator state from a list previously loaded

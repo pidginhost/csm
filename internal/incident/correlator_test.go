@@ -291,3 +291,47 @@ func TestCorrelatorRestoreSkipsClosedIncidents(t *testing.T) {
 		t.Errorf("Restore must NOT bind closed incidents to the active byKey index")
 	}
 }
+
+func TestCorrelatorSetStatusUpdatesIncidentAndAppendsAction(t *testing.T) {
+	c := newTestCorrelator()
+	id, _, _ := c.OnFinding(alert.Finding{Check: "x", Severity: alert.High, TenantID: "alice", Timestamp: time.Unix(1_700_000_000, 0)})
+
+	if err := c.SetStatus(id, StatusResolved, "operator-marked"); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+	inc, _ := c.Get(id)
+	if inc.Status != StatusResolved {
+		t.Errorf("Status: %v", inc.Status)
+	}
+	if len(inc.Actions) == 0 {
+		t.Fatal("expected status-change action")
+	}
+	last := inc.Actions[len(inc.Actions)-1]
+	if last.Action != "incident_status_changed" {
+		t.Errorf("Action: %q", last.Action)
+	}
+}
+
+func TestCorrelatorSetStatusUnbindsClosed(t *testing.T) {
+	c := newTestCorrelator()
+	id1, _, _ := c.OnFinding(alert.Finding{Check: "x", Severity: alert.High, TenantID: "alice", Timestamp: time.Unix(1_700_000_000, 0)})
+	if err := c.SetStatus(id1, StatusResolved, "done"); err != nil {
+		t.Fatal(err)
+	}
+
+	c.now = func() time.Time { return time.Unix(1_700_000_000+30, 0) }
+	id2, created, _ := c.OnFinding(alert.Finding{Check: "y", Severity: alert.High, TenantID: "alice", Timestamp: time.Unix(1_700_000_000+30, 0)})
+	if !created {
+		t.Errorf("after status=resolved, the next finding for the account must start a new incident")
+	}
+	if id1 == id2 {
+		t.Errorf("ids must differ; got %q twice", id1)
+	}
+}
+
+func TestCorrelatorSetStatusRejectsUnknownID(t *testing.T) {
+	c := newTestCorrelator()
+	if err := c.SetStatus("inc_nope", StatusResolved, ""); err == nil {
+		t.Errorf("expected error for unknown id")
+	}
+}
