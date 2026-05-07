@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Bumped Go module dependencies: `yara-x/go` 1.15.0 → 1.16.0, `sentry-go` 0.45.1 → 0.46.2, `klauspost/compress` 1.18.5 → 1.18.6, `oschwald/maxminddb-golang/v2` 2.1.1 → 2.2.0, `mdlayher/netlink` 1.11.0 → 1.11.1.
+- Bumped builder image YARA-X C library to v1.16.0 (`glibc-2.28-r5`) to match the Go binding upgrade and provide the new `yrx_compiler_max_warnings` symbol.
 - Pinned `github/codeql-action` workflows to v4.35.3.
 
 ### Fixed
