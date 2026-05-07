@@ -73,6 +73,34 @@ func settingsAuthedReq(method, path, token, body string) *http.Request {
 	return r
 }
 
+func TestSettingsSectionsGETReturnsBackendSchema(t *testing.T) {
+	s, _ := newSettingsTestServer(t, "tok", "hostname: t.example.com\n")
+
+	req := settingsAuthedReq("GET", "/api/v1/settings", "tok", "")
+	w := httptest.NewRecorder()
+	s.apiSettingsSections(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, body = %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Groups   []string          `json:"groups"`
+		Sections []SettingsSection `json:"sections"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	if len(body.Groups) != len(SectionGroupOrder) {
+		t.Fatalf("groups len = %d, want %d", len(body.Groups), len(SectionGroupOrder))
+	}
+	if len(body.Sections) != len(AllSettingsSections()) {
+		t.Fatalf("sections len = %d, want %d", len(body.Sections), len(AllSettingsSections()))
+	}
+	if body.Sections[0].ID != "alerts" {
+		t.Fatalf("first section = %q, want alerts", body.Sections[0].ID)
+	}
+}
+
 func TestSettingsGETReturnsRedactedBodyAndETag(t *testing.T) {
 	body := `hostname: t.example.com
 reputation:

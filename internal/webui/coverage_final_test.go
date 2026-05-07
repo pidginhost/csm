@@ -776,23 +776,18 @@ func TestAPIRulesReloadPOSTHandlerRunsFinalCoverage(t *testing.T) {
 }
 
 // =============================================================================
-// handlers.go — renderTemplate covers the nil-template guarded path.
-// Calling ExecuteTemplate on a nil template panics; we recover and verify.
+// handlers.go - renderTemplate covers the missing-template path.
 // =============================================================================
 
-func TestRenderTemplateNilTemplatePanicRecoveredFinalCoverage(t *testing.T) {
+func TestRenderTemplateMissingTemplateFinalCoverage(t *testing.T) {
 	s := newTestServer(t, "tok")
 	s.templates = map[string]*template.Template{}
 
 	w := httptest.NewRecorder()
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				t.Logf("renderTemplate panicked as expected on nil template: %v", r)
-			}
-		}()
-		s.renderTemplate(w, "missing.html", nil)
-	}()
+	s.renderTemplate(w, "missing.html", nil)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
 }
 
 // Render a template that exists but errors during execution (e.g. calls a

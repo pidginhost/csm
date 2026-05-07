@@ -46,12 +46,18 @@ CSM.delete = function(url, body) {
     });
 };
 
-// Shared HTML-escape helper used across all pages
+// Shared HTML-escape helper used across all pages. Safe for both text nodes
+// inserted through innerHTML and quoted HTML attribute values.
 CSM.esc = function(s) {
-    var d = document.createElement('div');
-    d.appendChild(document.createTextNode(s || ''));
-    return d.innerHTML;
+    return String(s || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 };
+
+CSM.attr = CSM.esc;
 
 // Relative timestamps: converts ISO or "YYYY-MM-DD HH:MM:SS" to "2m ago", "1h ago", etc.
 CSM.timeAgo = function(dateStr) {
@@ -162,24 +168,24 @@ CSM.copyText = function(text, el) {
     }).catch(function() { /* clipboard API unavailable — intentionally silent */ });
 };
 
-// Resolve API URLs - use CGI proxy path if in WHM context
+// Resolve API URLs. The WHM addon redirects operators to the daemon UI, so
+// browser requests stay same-origin with the daemon after login.
 CSM.apiUrl = function(path) {
-    if (window.location.pathname.indexOf('addon_csm.cgi') >= 0) {
-        return 'addon_csm.cgi?path=' + path;
-    }
     return path;
 };
 
-// Fetch wrapper with 30s timeout and error toast
-CSM.fetch = function(url, options) {
+CSM.request = function(url, options) {
     var resolvedUrl = (typeof CSM.apiUrl === 'function') ? CSM.apiUrl(url) : url;
     var controller = new AbortController();
     var timeoutId = setTimeout(function() { controller.abort(); }, 30000);
     var opts = Object.assign({}, options || {}, { signal: controller.signal, credentials: 'same-origin' });
     return fetch(resolvedUrl, opts).then(function(r) {
         clearTimeout(timeoutId);
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.json();
+        if (!r.ok) {
+            return r.json().catch(function() { throw new Error('HTTP ' + r.status); })
+                .then(function(body) { throw new Error(body.error || 'HTTP ' + r.status); });
+        }
+        return r;
     }).catch(function(err) {
         clearTimeout(timeoutId);
         if (err.name === 'AbortError') {
@@ -189,6 +195,15 @@ CSM.fetch = function(url, options) {
         }
         throw err;
     });
+};
+
+// Fetch wrapper with 30s timeout and error toast
+CSM.fetch = function(url, options) {
+    return CSM.request(url, options).then(function(r) { return r.json(); });
+};
+
+CSM.get = function(url) {
+    return CSM.fetch(url, { headers: { Accept: 'application/json' } });
 };
 
 // Connection-lost banner: tracks consecutive fetch failures

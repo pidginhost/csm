@@ -162,6 +162,7 @@ POST /api/v1/import                   Import state bundle (suppressions, whiteli
 ## Settings
 
 ```
+GET  /api/v1/settings             List editable config sections
 GET  /api/v1/settings/<section>   Read a config section (secrets redacted)
 POST /api/v1/settings/<section>   Update a config section (hot-reload-safe sections only)
 POST /api/v1/settings/restart     Request a daemon restart (after editing restart-required fields)

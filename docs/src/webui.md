@@ -1,12 +1,12 @@
 # Web UI
 
-HTTPS dashboard with polling-based live updates (10s feed, 30s stats). Dark/light theme toggle.
+HTTPS dashboard with polling-based live updates (10s feed, 60s stats). Dark/light theme toggle.
 
 ## Pages
 
 | Page | URL | Purpose |
 |------|-----|---------|
-| **Dashboard** | `/dashboard` | 24h stats, timeline chart, live feed, accounts at risk, auto-response summary, top attacked accounts |
+| **Dashboard** | `/dashboard` | 24h stats, live feed, accounts at risk, auto-response summary, brute-force summary, timeline charts |
 | **Findings** | `/findings` | Active findings with search, filter by check/account, grouping, fix/dismiss/suppress actions, bulk operations, on-demand account scan |
 | **Findings > History** | `/findings?tab=history` | Paginated archive of all findings with date range and severity filters, CSV export |
 | **Quarantine** | `/quarantine` | Quarantined files with content preview, restore capability |
@@ -51,4 +51,4 @@ HTTPS dashboard with polling-based live updates (10s feed, 30s stats). Dark/ligh
 
 ## WHM Plugin
 
-CSM installs a WHM plugin (`addon_csm.cgi`) that proxies the dashboard through WHM's interface. All API URLs are rewritten via the `CSM.apiUrl()` helper to support this proxy mode.
+CSM installs a WHM plugin (`addon_csm.cgi`) that redirects operators from WHM to the daemon Web UI. After the redirect, API calls are same-origin requests to the daemon.

@@ -39,19 +39,34 @@
                 <nav class="collapse navbar-collapse" id="navbar-menu" aria-label="Main navigation">
                     <ul class="navbar-nav" id="csm-nav">
                         <li class="nav-item"><a class="nav-link" href="/dashboard"><i class="ti ti-dashboard"></i>&nbsp;Dashboard</a></li>
-                        <li class="nav-item"><a class="nav-link" href="/findings"><i class="ti ti-alert-triangle"></i>&nbsp;Findings</a></li>
-                        <li class="nav-item"><a class="nav-link" href="/quarantine"><i class="ti ti-lock"></i>&nbsp;Quarantine</a></li>
-                        <li class="nav-item"><a class="nav-link" href="/cleanup-history"><i class="ti ti-history"></i>&nbsp;Cleanup</a></li>
-                        <li class="nav-item"><a class="nav-link" href="/firewall"><i class="ti ti-firewall"></i>&nbsp;Firewall</a></li>
-                        <li class="nav-item"><a class="nav-link" href="/modsec"><i class="ti ti-shield-check"></i>&nbsp;ModSecurity</a></li>
-                        <li class="nav-item"><a class="nav-link" href="/email"><i class="ti ti-mail"></i>&nbsp;Email</a></li>
-                        <li class="nav-item"><a class="nav-link" href="/threat"><i class="ti ti-spy"></i>&nbsp;Threat Intel</a></li>
-                        <li class="nav-item"><a class="nav-link" href="/incident"><i class="ti ti-timeline-event"></i>&nbsp;Incidents</a></li>
-                        <li class="nav-item"><a class="nav-link" href="/rules"><i class="ti ti-file-code"></i>&nbsp;Rules</a></li>
-                        <li class="nav-item"><a class="nav-link" href="/audit"><i class="ti ti-clipboard-list"></i>&nbsp;Audit</a></li>
-                        <li class="nav-item"><a class="nav-link" href="/performance"><i class="ti ti-activity"></i>&nbsp;Performance</a></li>
-                        <li class="nav-item"><a class="nav-link" href="/hardening"><i class="ti ti-shield-lock"></i>&nbsp;Hardening</a></li>
-                        <li class="nav-item"><a class="nav-link" href="/settings"><i class="ti ti-settings"></i>&nbsp;Settings</a></li>
+                        <li class="nav-item dropdown">
+                            <a class="nav-link dropdown-toggle" href="#" data-bs-toggle="dropdown" role="button" aria-expanded="false"><i class="ti ti-radar"></i>&nbsp;Monitor</a>
+                            <div class="dropdown-menu">
+                                <a class="dropdown-item" href="/findings"><i class="ti ti-alert-triangle me-2"></i>Findings</a>
+                                <a class="dropdown-item" href="/incident"><i class="ti ti-timeline-event me-2"></i>Incidents</a>
+                                <a class="dropdown-item" href="/audit"><i class="ti ti-clipboard-list me-2"></i>Audit</a>
+                                <a class="dropdown-item" href="/performance"><i class="ti ti-activity me-2"></i>Performance</a>
+                            </div>
+                        </li>
+                        <li class="nav-item dropdown">
+                            <a class="nav-link dropdown-toggle" href="#" data-bs-toggle="dropdown" role="button" aria-expanded="false"><i class="ti ti-shield-bolt"></i>&nbsp;Response</a>
+                            <div class="dropdown-menu">
+                                <a class="dropdown-item" href="/firewall"><i class="ti ti-firewall me-2"></i>Firewall</a>
+                                <a class="dropdown-item" href="/quarantine"><i class="ti ti-lock me-2"></i>Quarantine</a>
+                                <a class="dropdown-item" href="/cleanup-history"><i class="ti ti-history me-2"></i>Cleanup</a>
+                                <a class="dropdown-item" href="/threat"><i class="ti ti-spy me-2"></i>Threat Intel</a>
+                                <a class="dropdown-item" href="/email"><i class="ti ti-mail me-2"></i>Email</a>
+                                <a class="dropdown-item" href="/modsec"><i class="ti ti-shield-check me-2"></i>ModSecurity</a>
+                            </div>
+                        </li>
+                        <li class="nav-item dropdown">
+                            <a class="nav-link dropdown-toggle" href="#" data-bs-toggle="dropdown" role="button" aria-expanded="false"><i class="ti ti-tool"></i>&nbsp;Tools</a>
+                            <div class="dropdown-menu">
+                                <a class="dropdown-item" href="/rules"><i class="ti ti-file-code me-2"></i>Rules</a>
+                                <a class="dropdown-item" href="/hardening"><i class="ti ti-shield-lock me-2"></i>Hardening</a>
+                                <a class="dropdown-item" href="/settings"><i class="ti ti-settings me-2"></i>Settings</a>
+                            </div>
+                        </li>
                     </ul>
                 </nav>
             </div>

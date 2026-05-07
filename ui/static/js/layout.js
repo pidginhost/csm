@@ -1,7 +1,14 @@
 // CSM Layout - nav active state and theme toggle
-document.querySelectorAll('#csm-nav a.nav-link').forEach(function(a){
+document.querySelectorAll('#csm-nav a[href]').forEach(function(a){
     var href = a.getAttribute('href');
-    if (href && href !== '/' && window.location.pathname.indexOf(href) === 0) a.classList.add('active');
+    if (href && href !== '#' && href !== '/' && window.location.pathname.indexOf(href) === 0) {
+        a.classList.add('active');
+        var dropdown = a.closest('.dropdown');
+        if (dropdown) {
+            var toggle = dropdown.querySelector('.nav-link.dropdown-toggle');
+            if (toggle) toggle.classList.add('active');
+        }
+    }
 });
 function applyTheme(t) {
     document.documentElement.setAttribute('data-bs-theme', t);

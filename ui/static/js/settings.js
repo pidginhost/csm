@@ -2,8 +2,7 @@
     "use strict";
 
     // ---- Section group metadata ------------------------------------------
-    // Keep in sync with SectionGroupOrder in settings_schema.go.
-    const GROUP_ORDER = ["Alerting", "Detection", "Integrations", "Operations"];
+    let groupOrder = [];
     const GROUP_ICON = {
         "Alerting": "ti-bell-ringing",
         "Detection": "ti-radar",
@@ -47,33 +46,17 @@
     }
 
     // ---- Section list ----------------------------------------------------
-    function loadSections() {
-        // Keep in sync with settingsSections in internal/webui/settings_schema.go.
-        sections = [
-            {id: "alerts",           title: "Alerts",           group: "Alerting",     icon: "bell"},
-            {id: "thresholds",       title: "Thresholds",       group: "Alerting",     icon: "adjustments"},
-            {id: "suppressions",     title: "Suppressions",     group: "Alerting",     icon: "volume-off"},
-            {id: "auto_response",    title: "Auto-Response",    group: "Detection",    icon: "bolt"},
-            {id: "email_protection", title: "Email Protection", group: "Detection",    icon: "mail-shield"},
-            {id: "challenge",        title: "Challenge",        group: "Detection",    icon: "user-question"},
-            {id: "php_shield",       title: "PHP Shield",       group: "Detection",    icon: "brand-php"},
-            {id: "signatures",       title: "Signatures",       group: "Detection",    icon: "scan"},
-            {id: "email_av",         title: "Email AV",         group: "Detection",    icon: "virus"},
-            {id: "modsec",           title: "ModSecurity",      group: "Detection",    icon: "shield-lock"},
-            {id: "reputation",       title: "Reputation",       group: "Integrations", icon: "shield-check"},
-            {id: "cloudflare",       title: "Cloudflare",       group: "Integrations", icon: "cloud"},
-            {id: "geoip",            title: "GeoIP",            group: "Integrations", icon: "world"},
-            {id: "sentry",           title: "Sentry",           group: "Integrations", icon: "bug"},
-            {id: "performance",      title: "Performance",      group: "Operations",   icon: "activity"},
-            {id: "infra_ips",        title: "Infra IPs",        group: "Operations",   icon: "server"}
-        ];
+    async function loadSections() {
+        const data = await CSM.get("/api/v1/settings");
+        sections = data.sections || [];
+        groupOrder = data.groups || [];
     }
 
     // ---- Nav rendering ---------------------------------------------------
     function renderNav() {
         const nav = byId("settings-nav");
         clearNode(nav);
-        GROUP_ORDER.forEach(function (group) {
+        groupOrder.forEach(function (group) {
             const inGroup = sections.filter(function (s) { return s.group === group; });
             if (inGroup.length === 0) return;
 
@@ -142,7 +125,7 @@
 
         let resp;
         try {
-            resp = await fetch("/api/v1/settings/" + encodeURIComponent(id), {headers: {Accept: "application/json"}});
+            resp = await CSM.request("/api/v1/settings/" + encodeURIComponent(id), {headers: {Accept: "application/json"}});
         } catch (e) {
             renderError("Network error: " + (e && e.message ? e.message : "request failed"));
             return;
@@ -655,7 +638,7 @@
         }
         let resp;
         try {
-            resp = await fetch("/api/v1/settings/" + encodeURIComponent(currentSection), {
+            resp = await fetch(CSM.apiUrl("/api/v1/settings/" + encodeURIComponent(currentSection)), {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
@@ -720,7 +703,7 @@
         sp.appendChild(document.createTextNode("Restarting…"));
         banner.appendChild(sp);
         try {
-            const resp = await fetch("/api/v1/settings/restart", {
+            const resp = await fetch(CSM.apiUrl("/api/v1/settings/restart"), {
                 method: "POST",
                 headers: {"X-CSRF-Token": csrfToken()}
             });
@@ -745,7 +728,7 @@
         const deadline = Date.now() + 60000;
         while (Date.now() < deadline) {
             try {
-                const resp = await fetch("/api/v1/health", {cache: "no-store"});
+                const resp = await fetch(CSM.apiUrl("/api/v1/health"), {cache: "no-store"});
                 if (resp.ok) return;
             } catch (e) { /* keep polling */ }
             await new Promise(function (r) { setTimeout(r, 1000); });
@@ -758,9 +741,14 @@
     });
 
     document.addEventListener("DOMContentLoaded", function () {
-        loadSections();
-        renderNav();
-        const hash = window.location.hash.replace(/^#/, "");
-        loadSection(hash || "alerts");
+        loadSections().then(function () {
+            renderNav();
+            const hash = window.location.hash.replace(/^#/, "");
+            const first = sections.length > 0 ? sections[0].id : "alerts";
+            const target = sections.some(function (s) { return s.id === hash; }) ? hash : first;
+            loadSection(target);
+        }).catch(function (e) {
+            renderError("Failed to load settings metadata: " + (e && e.message ? e.message : "request failed"));
+        });
     });
 })();

@@ -179,17 +179,6 @@ func isPathWithin(path, base string) bool {
 	return cleanPath == cleanBase || strings.HasPrefix(cleanPath, cleanBase+string(filepath.Separator))
 }
 
-// archiveMatchesOriginal reports whether the archived file and the original
-// path hold byte-identical contents. Used by the quarantine listing to hide
-// entries whose original has been restored (the archive is a redundant
-// duplicate). Any I/O failure, size mismatch, non-regular target, or hash
-// divergence returns false so the UI keeps showing the entry for operator
-// review. Size check short-circuits before hashing so the listing stays
-// cheap when a site is reattacked with a larger payload.
-func archiveMatchesOriginal(archivePath, originalPath string) bool {
-	return quarantineLiveState(archivePath, originalPath) == "restored_identical"
-}
-
 func quarantineLiveState(archivePath, originalPath string) string {
 	origInfo, err := os.Stat(originalPath)
 	if os.IsNotExist(err) {

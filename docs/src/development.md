@@ -110,7 +110,7 @@ Installs and upgrades on end-user servers come from the GitHub release artifacts
 - **Errors:** Return up the call stack. Wrap with `fmt.Errorf("context: %w", err)`
 - **Store:** `store.Global()` singleton bbolt DB. Always nil-check.
 - **State:** `state.Store` handles finding dedup, alert throttling, baseline tracking, latest findings persistence. Passed to subsystems at init
-- **Web UI:** Vanilla JS, no framework, no build step. Tabler CSS framework. All API calls via `CSM.apiUrl()` / `CSM.post()`. Escape with `CSM.esc()`.
+- **Web UI:** Vanilla JS, no framework, no build step. Tabler CSS framework. Use `CSM.get()` / `CSM.post()` / `CSM.delete()` for API calls. Escape string-built markup with `CSM.esc()`; prefer DOM APIs for attacker-controlled values.
 - **Logging:** New code should use `internal/log` (wraps `log/slog`). Legacy `fmt.Fprintf(os.Stderr, "[%s] ...", ts())` call sites remain valid until migrated.
 
 ## Structured Logging (slog)

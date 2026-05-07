@@ -247,6 +247,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 
 	// Settings API
 	mux.Handle("/api/v1/settings/restart", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiSettingsRestart))))
+	mux.Handle("/api/v1/settings", s.requireAuth(http.HandlerFunc(s.apiSettingsSections)))
 	mux.Handle("/api/v1/settings/", s.requireAuth(http.HandlerFunc(s.apiSettings)))
 
 	// GeoIP API

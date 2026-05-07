@@ -11,7 +11,13 @@ import (
 )
 
 func (s *Server) renderTemplate(w http.ResponseWriter, name string, data interface{}) {
-	if err := s.templates[name].ExecuteTemplate(w, name, data); err != nil {
+	tmpl := s.templates[name]
+	if tmpl == nil {
+		fmt.Fprintf(os.Stderr, "[webui] template %s missing\n", name)
+		http.Error(w, "template not found", http.StatusInternalServerError)
+		return
+	}
+	if err := tmpl.ExecuteTemplate(w, name, data); err != nil {
 		fmt.Fprintf(os.Stderr, "[webui] template %s error: %v\n", name, err)
 	}
 }

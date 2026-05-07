@@ -467,21 +467,12 @@ func TestHandleEmailRenders(t *testing.T) {
 // where the template map lookup returns nil.
 func TestRenderTemplateMissingTemplate(t *testing.T) {
 	s := newTestServerWithTemplates(t, "tok")
-	// Attempt to render a template we never registered
 	w := httptest.NewRecorder()
-	// Should not panic; should just write an error to stderr and leave w empty.
-	defer func() {
-		if r := recover(); r != nil {
-			t.Errorf("renderTemplate panicked: %v", r)
-		}
-	}()
 	delete(s.templates, "dashboard.html")
-	// Re-attempt: map lookup returns nil template -> this will panic, catch it.
-	// (Keep the defer above in case behavior differs; if no panic, pass.)
-	func() {
-		defer func() { _ = recover() }()
-		s.renderTemplate(w, "never-existed.html", nil)
-	}()
+	s.renderTemplate(w, "never-existed.html", nil)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
 }
 
 // ---------------------------------------------------------------------------

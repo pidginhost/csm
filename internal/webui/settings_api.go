@@ -19,6 +19,18 @@ import (
 
 const settingsURLPrefix = "/api/v1/settings/"
 
+func (s *Server) apiSettingsSections(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"groups":   SectionGroupOrder,
+		"sections": AllSettingsSections(),
+	})
+}
+
 func (s *Server) apiSettings(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:

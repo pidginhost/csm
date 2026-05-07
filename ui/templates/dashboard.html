@@ -110,30 +110,6 @@
         </div>
     </div>
 
-    <!-- Timeline + Attack Types side by side -->
-    <div class="row row-deck row-cards mb-3">
-        <div class="col-lg-8">
-            <div class="card">
-                <div class="card-header">
-                    <h3 class="card-title"><i class="ti ti-chart-area-line"></i>&nbsp;Findings Timeline (24h)</h3>
-                </div>
-                <div class="card-body py-3 csm-chart-lg">
-                    <canvas id="timeline-chart"></canvas>
-                </div>
-            </div>
-        </div>
-        <div class="col-lg-4">
-            <div class="card">
-                <div class="card-header">
-                    <h3 class="card-title"><i class="ti ti-chart-bar-popular"></i>&nbsp;Top Attack Types (24h)</h3>
-                </div>
-                <div class="card-body csm-chart-lg">
-                    <canvas id="attack-types-chart"></canvas>
-                </div>
-            </div>
-        </div>
-    </div>
-
     <!-- Accounts at Risk + Auto-Response + Brute Force -->
     <div class="row row-deck row-cards mb-3">
         <div class="col-lg-4">
@@ -157,6 +133,30 @@
                 <div class="card-header"><h3 class="card-title"><i class="ti ti-shield-bolt"></i>&nbsp;Brute Force (24h)</h3></div>
                 <div class="card-body p-0" id="brute-force-summary">
                     <div class="text-muted text-center py-3"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Analysis charts -->
+    <div class="row row-deck row-cards mb-3">
+        <div class="col-lg-8">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title"><i class="ti ti-chart-area-line"></i>&nbsp;Findings Timeline (24h)</h3>
+                </div>
+                <div class="card-body py-3 csm-chart-lg">
+                    <canvas id="timeline-chart"></canvas>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-4">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title"><i class="ti ti-chart-bar-popular"></i>&nbsp;Top Attack Types (24h)</h3>
+                </div>
+                <div class="card-body csm-chart-lg">
+                    <canvas id="attack-types-chart"></canvas>
                 </div>
             </div>
         </div>

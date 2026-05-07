@@ -128,16 +128,10 @@ func TestRenderTemplate_MissingTemplate(t *testing.T) {
 	s := newTestServer(t, "tok")
 	s.templates = map[string]*template.Template{}
 	w := httptest.NewRecorder()
-	// Should not panic; the template lookup returns nil and calling
-	// ExecuteTemplate on nil returns an error which is logged.
-	defer func() {
-		if r := recover(); r != nil {
-			// nil template triggers a nil-pointer panic inside html/template.
-			// Accept this as "the code path was exercised"; log the recovery.
-			t.Logf("renderTemplate panicked on missing template (expected): %v", r)
-		}
-	}()
 	s.renderTemplate(w, "does-not-exist.html", nil)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
 }
 
 // --- performance_api.go: cachedCores / cachedUID / runCmdQuick --------
