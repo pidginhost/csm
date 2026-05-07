@@ -1,0 +1,58 @@
+{{define "title"}}Cleanup History{{end}}
+{{define "page"}}cleanup-history{{end}}
+{{define "content"}}
+    <div class="page-header mb-3">
+        <div class="row align-items-center">
+            <div class="col-auto"><h2 class="page-title">Cleanup History</h2></div>
+        </div>
+    </div>
+
+    <ul class="nav nav-tabs mb-3" role="tablist">
+        <li class="nav-item" role="presentation">
+            <button class="nav-link active" id="file-backups-tab" data-bs-toggle="tab" data-bs-target="#file-backups-pane" type="button" role="tab" aria-controls="file-backups-pane" aria-selected="true">
+                <i class="ti ti-file-zip"></i>&nbsp;File Backups
+            </button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="db-backups-tab" data-bs-toggle="tab" data-bs-target="#db-backups-pane" type="button" role="tab" aria-controls="db-backups-pane" aria-selected="false">
+                <i class="ti ti-database"></i>&nbsp;DB Objects
+            </button>
+        </li>
+    </ul>
+
+    <div class="tab-content">
+        <div class="tab-pane fade show active" id="file-backups-pane" role="tabpanel" aria-labelledby="file-backups-tab" tabindex="0">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title" id="cleanup-files-title"><i class="ti ti-file-zip"></i>&nbsp;File Backups</h3>
+                    <div class="card-actions">
+                        <button class="btn btn-warning btn-sm d-none" id="cleanup-files-restore-btn"><i class="ti ti-restore"></i>&nbsp;Restore Selected</button>
+                        <button class="btn btn-danger btn-sm d-none" id="cleanup-files-delete-btn"><i class="ti ti-trash"></i>&nbsp;Delete Selected</button>
+                        <input type="text" id="cleanup-files-search" class="form-control form-control-sm csm-input-md" placeholder="Search...">
+                    </div>
+                </div>
+                <div id="cleanup-files-content">
+                    <div class="card-body text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="tab-pane fade" id="db-backups-pane" role="tabpanel" aria-labelledby="db-backups-tab" tabindex="0">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title" id="cleanup-db-title"><i class="ti ti-database"></i>&nbsp;DB Object Backups</h3>
+                    <div class="card-actions">
+                        <input type="text" id="cleanup-db-search" class="form-control form-control-sm csm-input-md" placeholder="Search...">
+                    </div>
+                </div>
+                <div id="cleanup-db-content">
+                    <div class="card-body text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+{{end}}
+{{define "scripts"}}
+<script src="/static/js/cleanup-history.js"></script>
+{{end}}
+{{template "layout" .}}

@@ -52,6 +52,7 @@ GET  /api/v1/stats/timeline      Event timeline
 GET  /api/v1/quarantine          Quarantined files with metadata (incl. htaccess pre_clean backups)
 GET  /api/v1/quarantine-preview  Preview quarantined file content (?id=)
 GET  /api/v1/db-object-backups   db_object_backups bucket (MySQL trigger/event/procedure/function drops)
+GET  /api/v1/db-object-backup-preview Preview captured CREATE SQL (?key=)
 GET  /api/v1/blocked-ips         Blocked IPs with reason and expiry
 GET  /api/v1/accounts            cPanel account list
 GET  /api/v1/account             Per-account findings, quarantine, history (?name=)
@@ -179,3 +180,14 @@ Every finding in `/api/v1/findings`, `/api/v1/events`, and the JSONL audit log c
 | `mailbox` | Mailbox attribution (e.g. mail brute-force target, PHP-relay envelope-from) |
 
 Fields are omitted when the daemon could not attribute them. Orchestrators should treat absence as "unknown," not "global."
+
+## Cleanup fields
+
+`GET /api/v1/quarantine` also powers the Cleanup page's file-backup list. Entries include:
+
+| Field | Meaning |
+|---|---|
+| `kind` | `quarantine` or `pre_clean` |
+| `live_state` | `original_missing`, `live_differs`, `original_not_file`, `archive_missing`, `archive_not_file`, or `unknown`. Byte-identical restored entries are hidden. |
+
+`GET /api/v1/db-object-backups` returns `restored` and `restored_at` when a captured MySQL trigger/event/procedure/function backup has already been replayed.

@@ -117,82 +117,23 @@ N` mention in git history maps to the matching bullet there.
   <when>` backfills historical findings via a new `history.since`
   control-socket command for first-time SIEM onboarding.
 
-- **Detection-cleaning first pass** (historical item 1). WordPress
+- **Detection-cleaning rounding** (historical item 1). WordPress
   multisite scanning, Joomla, Drupal 8+, Magento 1/2, OpenCart,
   MySQL trigger/event/procedure/function scanning, manual DB-object
   drop with backup/restore APIs, hardened `.htaccess` detectors and
-  cleaner, and signature-update-driven retroactive rescans have
-  landed. The active roadmap now tracks only cleanup-history UI and
-  the supported-CMS policy.
+  cleaner, signature-update-driven retroactive rescans, cleanup-history
+  UI, and supported-CMS policy docs have landed.
 
 - **Copy Fail BPF LSM kernel block** (historical item 5). BPF-tagged
   builds now ship the AF_ALG LSM program, ringbuf event consumer, and
   daemon backend wrapper. On kernels with BPF LSM, the daemon can deny
   AF_ALG socket creation in-kernel and emit the same Critical finding
-  path used by the audit fallback. The active roadmap now tracks only
-  operator-contract cleanup and real-host validation.
+  path used by the audit fallback. Operator docs now describe the
+  shipped BPF semantics and real-host validation path.
 
 ---
 
-## 1. Detection-cleaning cleanup history and supported-CMS policy
-
-**Status:** planned
-**Drives / unblocks:** Imunify360 feature parity for hosts running
-multi-CMS workloads
-**Design:** `docs/superpowers/specs/2026-04-26-detection-cleaning-rounding-design.md`
-
-### Why
-
-Most of the original detection-cleaning item has landed: WordPress
-multisite, Joomla, Drupal 8+, Magento, OpenCart, DB-object scanning,
-manual DB-object drop/restore APIs, hardened `.htaccess` cleaning,
-and signature-update retroactive rescans. The remaining roadmap work
-is now narrower: an operator-facing cleanup history view and a clear
-policy for which CMS versions CSM intentionally supports.
-
-### Decision
-
-Close the remaining gaps without reopening the shipped scanners:
-
-1. Add a cleanup-history page in the web UI that lists `.htaccess` /
-   file pre-clean backups from the existing quarantine APIs and DB-object
-   backups from the DB-object backup APIs.
-2. Support preview and restore from that page using the existing restore
-   endpoints. The page must make it clear when a backup has already been
-   restored or when the live file differs from the backup.
-3. Document the CMS support policy: new feature work targets upstream-
-   supported CMS majors. EOL CMS versions are best-effort only when the
-   existing scanner already covers them with the same low-risk schema.
-   Adding a new EOL-only scanner needs operator fleet data and an explicit
-   security justification.
-4. Document current scanner scope: Drupal 8+; Joomla through the common
-   `configuration.php` / `JConfig` and standard content/user tables used
-   by supported Joomla releases; Magento 1/2; OpenCart; WordPress
-   multisite. Older Joomla and Drupal 7 are not planned support targets.
-
-### Out of scope
-
-- JavaScript file cleaning (covered by detection but cleaning is
-  a follow-up release).
-- PostgreSQL / SQLite database support.
-- Automatic dropping of malicious DB objects.
-
-### Acceptance criteria
-
-- The web UI exposes one cleanup-history view covering file pre-clean
-  backups and DB-object backups, with preview and restore controls.
-- Restored entries are hidden or clearly marked so operators do not
-  repeatedly restore the same object or file.
-- Docs state supported CMS scanner targets and make EOL coverage
-  best-effort, not a roadmap promise.
-
-### Estimated size
-
-1-2 engineering days.
-
----
-
-## 2. Signed YARA Forge mirror automation
+## 1. Signed YARA Forge mirror automation
 
 **Status:** planned
 **Drives / unblocks:** safe automatic YARA Forge updates without
@@ -244,7 +185,7 @@ Build and document a small mirror job operated by us:
 
 ---
 
-## 3. `csm support-bundle` command
+## 2. `csm support-bundle` command
 
 **Status:** planned
 **Drives / unblocks:** support workflow for operators reporting bugs
@@ -292,7 +233,7 @@ Live daemon required (mirrors `store export`).
 
 ---
 
-## 4. Scheduled backup exports
+## 3. Scheduled backup exports
 
 **Status:** planned
 **Drives / unblocks:** out-of-the-box DR for operators who do not
@@ -344,7 +285,7 @@ finding routed through the normal alert pipeline.
 
 ---
 
-## 5. WordPress companion plugin for signed-cookie operator bypass
+## 4. WordPress companion plugin for signed-cookie operator bypass
 
 **Status:** planned
 **Drives / unblocks:** real-world adoption of the
@@ -392,60 +333,3 @@ The plugin:
 
 0.5 engineering days for the contract documentation in this repo;
 the plugin itself is ~2 days in the separate repo.
-
----
-
-## 6. Copy Fail BPF operator follow-through
-
-**Status:** planned
-**Drives / unblocks:** closing the operator contract for BPF-tagged
-AF_ALG blocking builds
-
-### Why
-
-The real AF_ALG BPF LSM blocker has landed, so this roadmap item should
-no longer describe Phase B as pending. What remains is narrower:
-operator-facing documentation and one real-host validation pass that
-captures the exact syscall behavior operators should expect.
-
-The current implementation denies AF_ALG for non-root users in BPF-tagged
-builds when the kernel supports BPF LSM, emits a ringbuf event, and feeds
-the existing Critical finding/reaction path. Hosts without BPF LSM keep
-the audit listener fallback.
-
-### Decision
-
-Finish the follow-through work:
-
-1. Update `docs/src/cve-mitigations.md` so it no longer says in-kernel
-   blocking is future work.
-2. Document the current BPF semantics: build tag requirement, fallback
-   behavior, non-root deny policy, returned errno, and the
-   `detection.af_alg_backend` kill switch.
-3. Add or document a real-host validation procedure on a BPF LSM kernel
-   that proves load, deny, ringbuf event delivery, and Critical finding
-   emission end to end.
-4. Decide whether to add operator tunables for `af_alg_system_uid_max`
-   and alert-only/block mode. If the answer is no, remove those old
-   expectations from docs and history references instead of leaving
-   stale Phase A / Phase B language around.
-
-### Acceptance criteria
-
-- Operator docs match the code that ships in BPF-tagged builds.
-- A real BPF LSM host validation captures the failed AF_ALG socket call,
-  the selected `bpf-lsm` backend, and the emitted Critical finding.
-- Stale references to Phase B, `errBPFPhaseBPending`, and unimplemented
-  BPF-mode config fields are removed or replaced by a new explicit
-  follow-up item.
-
-### Out of scope
-
-- Source-IP correlation back to a web request (requires HTTP-log
-  correlation that's its own design exercise).
-- BPF LSM hooks for other subsystems.
-- Changing default non-BPF builds.
-
-### Estimated size
-
-0.5 engineering days.

@@ -22,22 +22,26 @@ import (
 // to the restore endpoint as-is so the lookup is a single bbolt
 // Get, not a multi-field reconstruction.
 type dbObjectBackupEntry struct {
-	Key       string `json:"key"`
-	Account   string `json:"account"`
-	Schema    string `json:"schema"`
-	Kind      string `json:"kind"`
-	Name      string `json:"name"`
-	DroppedAt string `json:"dropped_at"` // RFC 3339
-	DroppedBy string `json:"dropped_by"`
-	FindingID string `json:"finding_id,omitempty"`
-	BodyBytes int    `json:"body_bytes"` // length of CreateSQL; surfaced for size hint
+	Key        string `json:"key"`
+	Account    string `json:"account"`
+	Schema     string `json:"schema"`
+	Kind       string `json:"kind"`
+	Name       string `json:"name"`
+	DroppedAt  string `json:"dropped_at"` // RFC 3339
+	DroppedBy  string `json:"dropped_by"`
+	FindingID  string `json:"finding_id,omitempty"`
+	BodyBytes  int    `json:"body_bytes"` // length of CreateSQL; surfaced for size hint
+	RestoredAt string `json:"restored_at,omitempty"`
+	Restored   bool   `json:"restored"`
 }
+
+const dbObjectBackupPreviewBytes = 8 * 1024
 
 // apiDBObjectBackups returns every record in the bucket, newest
 // first by DroppedAt. The full CreateSQL is intentionally NOT
 // returned in the listing -- those payloads can be large and the
-// listing is meant for browse-and-pick. A future endpoint can
-// surface the SQL for a single record on demand if operators ask.
+// listing is meant for browse-and-pick. The preview endpoint returns
+// one bounded CREATE SQL payload on demand.
 func (s *Server) apiDBObjectBackups(w http.ResponseWriter, _ *http.Request) {
 	sdb := store.Global()
 	if sdb == nil {
@@ -52,7 +56,7 @@ func (s *Server) apiDBObjectBackups(w http.ResponseWriter, _ *http.Request) {
 
 	out := make([]dbObjectBackupEntry, 0, len(records))
 	for i, r := range records {
-		out = append(out, dbObjectBackupEntry{
+		entry := dbObjectBackupEntry{
 			Key:       keys[i],
 			Account:   r.Account,
 			Schema:    r.Schema,
@@ -62,7 +66,12 @@ func (s *Server) apiDBObjectBackups(w http.ResponseWriter, _ *http.Request) {
 			DroppedBy: r.DroppedBy,
 			FindingID: r.FindingID,
 			BodyBytes: len(r.CreateSQL),
-		})
+		}
+		if !r.RestoredAt.IsZero() {
+			entry.Restored = true
+			entry.RestoredAt = r.RestoredAt.UTC().Format("2006-01-02T15:04:05Z")
+		}
+		out = append(out, entry)
 	}
 	// Newest first -- the bbolt key embeds unix-nanos so a string
 	// sort already produces chronological-by-drop-time when
@@ -70,6 +79,50 @@ func (s *Server) apiDBObjectBackups(w http.ResponseWriter, _ *http.Request) {
 	sortDBObjectBackupsNewestFirst(out)
 
 	writeJSON(w, out)
+}
+
+// apiDBObjectBackupPreview returns a bounded CREATE SQL preview for one
+// backup. Full restore still round-trips only the opaque key.
+func (s *Server) apiDBObjectBackupPreview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	key := r.URL.Query().Get("key")
+	if key == "" {
+		writeJSONError(w, "key is required", http.StatusBadRequest)
+		return
+	}
+	sdb := store.Global()
+	if sdb == nil {
+		writeJSONError(w, "bbolt store not available", http.StatusServiceUnavailable)
+		return
+	}
+	rec, ok, err := sdb.GetDBObjectBackupByKey(key)
+	if err != nil {
+		writeJSONError(w, "failed to read backup: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		writeJSONError(w, "backup not found", http.StatusNotFound)
+		return
+	}
+	preview := rec.CreateSQL
+	truncated := false
+	if len(preview) > dbObjectBackupPreviewBytes {
+		preview = preview[:dbObjectBackupPreviewBytes]
+		truncated = true
+	}
+	writeJSON(w, map[string]any{
+		"key":        key,
+		"account":    rec.Account,
+		"schema":     rec.Schema,
+		"kind":       rec.Kind,
+		"name":       rec.Name,
+		"preview":    preview,
+		"truncated":  truncated,
+		"total_size": len(rec.CreateSQL),
+	})
 }
 
 // apiDBObjectBackupRestore re-executes the captured CREATE SQL.

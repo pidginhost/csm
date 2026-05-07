@@ -136,6 +136,31 @@ func quarantineListingPaths(t *testing.T) []string {
 	return paths
 }
 
+func quarantineListingEntries(t *testing.T) []struct {
+	ID           string `json:"id"`
+	Kind         string `json:"kind"`
+	OriginalPath string `json:"original_path"`
+	LiveState    string `json:"live_state"`
+} {
+	t.Helper()
+	s := &Server{}
+	w := httptest.NewRecorder()
+	s.apiQuarantine(w, httptest.NewRequest(http.MethodGet, "/api/v1/quarantine", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var got []struct {
+		ID           string `json:"id"`
+		Kind         string `json:"kind"`
+		OriginalPath string `json:"original_path"`
+		LiveState    string `json:"live_state"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("bad JSON: %v body=%s", err, w.Body.String())
+	}
+	return got
+}
+
 func writeArchive(t *testing.T, dir, id, originalPath, content string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, id), []byte(content), 0600); err != nil {
@@ -181,16 +206,22 @@ func TestApiQuarantineShowsEntryWhenOriginalMissing(t *testing.T) {
 	orig := filepath.Join(home, "evil.php")
 	writeArchive(t, tmp, "20260420-120000_missing.php", orig, "<?php attack(); ?>")
 
-	paths := quarantineListingPaths(t)
+	entries := quarantineListingEntries(t)
 	found := false
-	for _, p := range paths {
-		if p == orig {
+	for _, e := range entries {
+		if e.OriginalPath == orig {
 			found = true
+			if e.Kind != "quarantine" {
+				t.Fatalf("kind = %q, want quarantine", e.Kind)
+			}
+			if e.LiveState != "original_missing" {
+				t.Fatalf("live_state = %q, want original_missing", e.LiveState)
+			}
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("missing-original entry must be shown; got %v", paths)
+		t.Fatalf("missing-original entry must be shown; got %+v", entries)
 	}
 }
 
@@ -207,16 +238,43 @@ func TestApiQuarantineShowsEntryWhenOriginalDiffers(t *testing.T) {
 	}
 	writeArchive(t, tmp, "20260420-130000_differs.php", orig, "<?php /* archived */ ?>")
 
-	paths := quarantineListingPaths(t)
+	entries := quarantineListingEntries(t)
 	found := false
-	for _, p := range paths {
-		if p == orig {
+	for _, e := range entries {
+		if e.OriginalPath == orig {
 			found = true
+			if e.LiveState != "live_differs" {
+				t.Fatalf("live_state = %q, want live_differs", e.LiveState)
+			}
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("content-diverged entry must be shown; got %v", paths)
+		t.Fatalf("content-diverged entry must be shown; got %+v", entries)
+	}
+}
+
+func TestApiQuarantineMarksPreCleanEntries(t *testing.T) {
+	tmp := t.TempDir()
+	preClean := filepath.Join(tmp, "pre_clean")
+	if err := os.MkdirAll(preClean, 0700); err != nil {
+		t.Fatal(err)
+	}
+	withQuarantineDir(t, tmp)
+
+	home := t.TempDir()
+	orig := filepath.Join(home, ".htaccess")
+	writeArchive(t, preClean, "20260420-150000_htaccess", orig, "RewriteRule bad")
+
+	entries := quarantineListingEntries(t)
+	if len(entries) != 1 {
+		t.Fatalf("entry count = %d, want 1: %+v", len(entries), entries)
+	}
+	if entries[0].Kind != "pre_clean" {
+		t.Fatalf("kind = %q, want pre_clean", entries[0].Kind)
+	}
+	if entries[0].ID == "" || !strings.HasPrefix(entries[0].ID, preCleanQuarantineIDPrefix) {
+		t.Fatalf("pre_clean id prefix missing: %+v", entries[0])
 	}
 }
 

@@ -28,6 +28,18 @@
 | `db_content_opencart` | OpenCart database content scanning. Discovers installs via the `config.php` + `admin/config.php` pair both containing `define('DB_DRIVER'`. Credentials parsed from `DB_HOSTNAME` / `DB_USERNAME` / `DB_PASSWORD` / `DB_DATABASE` / `DB_PREFIX` defines. Scans `<prefix>setting` (`config_url` / `config_ssl` are canonical hijack targets), `<prefix>product_description`, `<prefix>information_description`, and `<prefix>user` (admin/staff). Findings: `opencart_settings_injection`, `opencart_content_injection`, `opencart_admin_injection`. |
 | `db_objects` | MySQL persistence mechanisms: triggers, events, stored procedures, stored functions. Critical when the body matches known-malware patterns (`sys_`+`exec`, `INTO OUTFILE`, `LOAD_FILE`, etc.); Warning when an object exists at all (vanilla CMSes ship none). Toggle with `detection.db_object_scanning`; suppress Warnings via `detection.db_object_allowlist`. Manual drop via `csm db-clean --drop-object`. |
 
+## CMS Scanner Support Policy
+
+New CMS scanner work targets upstream-supported major versions. EOL versions are best-effort when the existing scanner covers them through the same low-risk layout or schema. Adding a new EOL-only scanner needs operator fleet data and an explicit security reason.
+
+Current scanner scope:
+
+- WordPress single-site and multisite.
+- Joomla installs using the common `configuration.php` / `JConfig` layout and standard content/user tables used by supported Joomla releases.
+- Drupal 8 and newer. Drupal 7 is not a planned support target.
+- Magento 1 and 2.
+- OpenCart installs using the standard storefront and admin config pair.
+
 ## Phishing & Malware
 
 | Check | Description |

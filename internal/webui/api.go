@@ -392,10 +392,12 @@ func (s *Server) apiQuarantine(w http.ResponseWriter, _ *http.Request) {
 
 	type quarantineEntry struct {
 		ID           string `json:"id"`
+		Kind         string `json:"kind"`
 		OriginalPath string `json:"original_path"`
 		Size         int64  `json:"size"`
 		QuarantineAt string `json:"quarantined_at"`
 		Reason       string `json:"reason"`
+		LiveState    string `json:"live_state"`
 	}
 
 	var entries []quarantineEntry
@@ -416,16 +418,24 @@ func (s *Server) apiQuarantine(w http.ResponseWriter, _ *http.Request) {
 		// the live filesystem, not the quarantine history. Divergence
 		// (missing, different size, different content) keeps the entry
 		// visible -- the operator still has to reconcile it.
-		if archivePath := strings.TrimSuffix(metaFile, ".meta"); archiveMatchesOriginal(archivePath, meta.OriginalPath) {
+		archivePath := strings.TrimSuffix(metaFile, ".meta")
+		liveState := quarantineLiveState(archivePath, meta.OriginalPath)
+		if liveState == "restored_identical" {
 			continue
+		}
+		kind := "quarantine"
+		if strings.HasPrefix(quarantineEntryID(metaFile), preCleanQuarantineIDPrefix) {
+			kind = "pre_clean"
 		}
 
 		entries = append(entries, quarantineEntry{
 			ID:           quarantineEntryID(metaFile),
+			Kind:         kind,
 			OriginalPath: meta.OriginalPath,
 			Size:         meta.Size,
 			QuarantineAt: meta.QuarantineAt.Format(time.RFC3339),
 			Reason:       meta.Reason,
+			LiveState:    liveState,
 		})
 	}
 

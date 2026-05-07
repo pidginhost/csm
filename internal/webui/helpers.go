@@ -187,26 +187,45 @@ func isPathWithin(path, base string) bool {
 // review. Size check short-circuits before hashing so the listing stays
 // cheap when a site is reattacked with a larger payload.
 func archiveMatchesOriginal(archivePath, originalPath string) bool {
+	return quarantineLiveState(archivePath, originalPath) == "restored_identical"
+}
+
+func quarantineLiveState(archivePath, originalPath string) string {
 	origInfo, err := os.Stat(originalPath)
-	if err != nil || !origInfo.Mode().IsRegular() {
-		return false
+	if os.IsNotExist(err) {
+		return "original_missing"
+	}
+	if err != nil {
+		return "unknown"
+	}
+	if !origInfo.Mode().IsRegular() {
+		return "original_not_file"
 	}
 	archInfo, err := os.Stat(archivePath)
-	if err != nil || !archInfo.Mode().IsRegular() {
-		return false
+	if os.IsNotExist(err) {
+		return "archive_missing"
+	}
+	if err != nil {
+		return "unknown"
+	}
+	if !archInfo.Mode().IsRegular() {
+		return "archive_not_file"
 	}
 	if origInfo.Size() != archInfo.Size() {
-		return false
+		return "live_differs"
 	}
 	origHash, err := integrity.HashFile(originalPath)
 	if err != nil {
-		return false
+		return "unknown"
 	}
 	archHash, err := integrity.HashFile(archivePath)
 	if err != nil {
-		return false
+		return "unknown"
 	}
-	return origHash == archHash
+	if origHash == archHash {
+		return "restored_identical"
+	}
+	return "live_differs"
 }
 
 const preCleanQuarantineIDPrefix = "pre_clean:"

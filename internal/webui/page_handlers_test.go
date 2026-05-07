@@ -21,7 +21,7 @@ func newTestServerWithTemplates(t *testing.T, token string) *Server {
 	// expects a template named "page.html" in the set. Create minimal
 	// stubs that accept any data and output "OK".
 	pages := []string{
-		"dashboard", "findings", "quarantine", "firewall", "modsec",
+		"dashboard", "findings", "quarantine", "cleanup-history", "firewall", "modsec",
 		"modsec-rules", "threat", "rules", "audit", "account",
 		"incident", "email", "performance", "hardening", "login",
 	}
@@ -94,6 +94,15 @@ func TestHandleQuarantineRendersOK(t *testing.T) {
 	s := newTestServerWithTemplates(t, "tok")
 	w := httptest.NewRecorder()
 	s.handleQuarantine(w, httptest.NewRequest("GET", "/", nil))
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d", w.Code)
+	}
+}
+
+func TestHandleCleanupHistoryRendersOK(t *testing.T) {
+	s := newTestServerWithTemplates(t, "tok")
+	w := httptest.NewRecorder()
+	s.handleCleanupHistory(w, httptest.NewRequest("GET", "/", nil))
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d", w.Code)
 	}

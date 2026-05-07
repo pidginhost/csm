@@ -148,6 +148,12 @@ func (s *Server) handleQuarantine(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+func (s *Server) handleCleanupHistory(w http.ResponseWriter, _ *http.Request) {
+	s.renderTemplate(w, "cleanup-history.html", map[string]string{
+		"Hostname": s.cfg.Hostname,
+	})
+}
+
 func (s *Server) handleFirewall(w http.ResponseWriter, _ *http.Request) {
 	s.renderTemplate(w, "firewall.html", map[string]string{
 		"Hostname": s.cfg.Hostname,

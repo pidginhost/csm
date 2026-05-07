@@ -223,6 +223,9 @@ func RestoreDBObjectBackup(backupKey string) DBCleanResult {
 		fmt.Sprintf("Restored %s %s.%s", rec.Kind, rec.Schema, rec.Name),
 		fmt.Sprintf("Original drop: %s by %s", rec.DroppedAt.Format(time.RFC3339), rec.DroppedBy),
 	}
+	if err := sdb.MarkDBObjectBackupRestored(backupKey, time.Now().UTC()); err != nil {
+		result.Details = append(result.Details, fmt.Sprintf("Restore state was not recorded: %v", err))
+	}
 	result.Message = fmt.Sprintf("Restored %s %s.%s from backup", rec.Kind, rec.Schema, rec.Name)
 	result.Success = true
 	return result

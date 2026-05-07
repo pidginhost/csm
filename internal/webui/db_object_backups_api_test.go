@@ -63,9 +63,10 @@ func TestAPIDBObjectBackupsListsAllRecordsNewestFirst(t *testing.T) {
 	}
 	newer := store.DBObjectBackup{
 		Account: "alice", Schema: "alice_wp", Kind: "event", Name: "ev_new",
-		CreateSQL: "CREATE EVENT ev_new ...",
-		DroppedAt: time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC),
-		DroppedBy: "csm-cli",
+		CreateSQL:  "CREATE EVENT ev_new ...",
+		DroppedAt:  time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC),
+		DroppedBy:  "csm-cli",
+		RestoredAt: time.Date(2026, 4, 28, 11, 0, 0, 0, time.UTC),
 	}
 	if err := db.PutDBObjectBackup(older); err != nil {
 		t.Fatalf("put older: %v", err)
@@ -97,11 +98,55 @@ func TestAPIDBObjectBackupsListsAllRecordsNewestFirst(t *testing.T) {
 	if got[0].BodyBytes != len("CREATE EVENT ev_new ...") {
 		t.Errorf("BodyBytes for ev_new = %d", got[0].BodyBytes)
 	}
+	if !got[0].Restored || got[0].RestoredAt == "" {
+		t.Errorf("restored state missing from ev_new: %+v", got[0])
+	}
+	if got[1].Restored || got[1].RestoredAt != "" {
+		t.Errorf("unexpected restored state on trg_old: %+v", got[1])
+	}
 	// Each entry must carry a key for the restore round-trip.
 	for _, e := range got {
 		if e.Key == "" {
 			t.Errorf("entry %q missing key", e.Name)
 		}
+	}
+}
+
+func TestAPIDBObjectBackupPreviewReturnsBoundedCreateSQL(t *testing.T) {
+	db := withTempStoreForWebui(t)
+	if err := db.PutDBObjectBackup(store.DBObjectBackup{
+		Account: "alice", Schema: "alice_wp", Kind: "trigger", Name: "trg_old",
+		CreateSQL: strings.Repeat("A", dbObjectBackupPreviewBytes+10),
+		DroppedAt: time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC),
+		DroppedBy: "csm-cli",
+	}); err != nil {
+		t.Fatalf("put backup: %v", err)
+	}
+	_, keys, err := db.ListDBObjectBackupsAll()
+	if err != nil {
+		t.Fatalf("ListDBObjectBackupsAll: %v", err)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("key count = %d, want 1", len(keys))
+	}
+
+	srv := &Server{}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/db-object-backup-preview?key="+keys[0], nil)
+	srv.apiDBObjectBackupPreview(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got["truncated"] != true {
+		t.Fatalf("truncated = %v, want true", got["truncated"])
+	}
+	if len(got["preview"].(string)) != dbObjectBackupPreviewBytes {
+		t.Fatalf("preview length = %d", len(got["preview"].(string)))
 	}
 }
 

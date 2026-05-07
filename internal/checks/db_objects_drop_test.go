@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -153,6 +154,60 @@ func TestDBDropObjectCommitWritesBackupAndIssuesDrop(t *testing.T) {
 	}
 	if b.DroppedAt.IsZero() {
 		t.Error("backup DroppedAt is zero")
+	}
+}
+
+func TestRestoreDBObjectBackupMarksRecordRestored(t *testing.T) {
+	db := withDBObjectsTempStore(t)
+	droppedAt := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	if err := db.PutDBObjectBackup(store.DBObjectBackup{
+		Account:   "alice",
+		Schema:    "alice_wp",
+		Kind:      "trigger",
+		Name:      "trg_audit",
+		CreateSQL: "CREATE TRIGGER `trg_audit` BEFORE INSERT ON x FOR EACH ROW BEGIN END",
+		DroppedAt: droppedAt,
+		DroppedBy: "csm-cli",
+	}); err != nil {
+		t.Fatalf("PutDBObjectBackup: %v", err)
+	}
+	_, keys, err := db.ListDBObjectBackupsAll()
+	if err != nil {
+		t.Fatalf("ListDBObjectBackupsAll: %v", err)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("keys = %d, want 1", len(keys))
+	}
+
+	execCalled := false
+	withMockCmd(t, &mockCmd{
+		run: func(name string, args ...string) ([]byte, error) {
+			if name == "mysql" && strings.Contains(strings.Join(args, " "), "CREATE TRIGGER") {
+				execCalled = true
+			}
+			return []byte("OK\n"), nil
+		},
+	})
+
+	res := RestoreDBObjectBackup(keys[0])
+	if !res.Success {
+		t.Fatalf("RestoreDBObjectBackup failed: %+v", res)
+	}
+	if !execCalled {
+		t.Fatal("expected mysql restore command to run")
+	}
+	rec, ok, err := db.GetDBObjectBackupByKey(keys[0])
+	if err != nil {
+		t.Fatalf("GetDBObjectBackupByKey: %v", err)
+	}
+	if !ok {
+		t.Fatal("backup missing after restore")
+	}
+	if rec.RestoredAt.IsZero() {
+		t.Fatal("RestoredAt was not recorded")
+	}
+	if rec.RestoredAt.Before(droppedAt) {
+		t.Fatalf("RestoredAt = %s, before DroppedAt %s", rec.RestoredAt, droppedAt)
 	}
 }
 

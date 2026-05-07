@@ -6,7 +6,7 @@ import "sync"
 // actually load and attach. Populated once at daemon startup by Probe.
 //
 // Each field maps to a kernel feature, not a CSM feature: a single CSM
-// feature (e.g. AF_ALG Phase B) may need multiple capability bits
+// feature (e.g. AF_ALG kernel-side blocking) may need multiple capability bits
 // (LSMAttach + Ringbuf).
 type Capabilities struct {
 	LSMAttach  bool // BPF LSM programs can attach (kernel >= 5.7 with BPF LSM trampoline)

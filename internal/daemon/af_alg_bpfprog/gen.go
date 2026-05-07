@@ -1,5 +1,5 @@
 // Package af_alg_bpfprog hosts the BPF C source for the AF_ALG (CVE-2026-31431
-// "Copy Fail") kernel-side deny program (Phase B) and the generated Go
+// "Copy Fail") kernel-side deny program and the generated Go
 // bindings produced by bpf2go.
 //
 // To regenerate (needs clang + libbpf-devel; the CI builder image carries

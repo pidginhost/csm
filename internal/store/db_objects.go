@@ -11,17 +11,18 @@ import (
 // DBObjectBackup is the persisted record of a SHOW CREATE captured
 // before a manual `csm db-clean drop-object`. The CREATE SQL is the
 // backup -- replaying it restores the object verbatim. Fields are
-// public so the future cleanup-history UI can render them without a
+// public so the cleanup-history UI can render them without a
 // separate API.
 type DBObjectBackup struct {
-	Account   string    `json:"account"`
-	Schema    string    `json:"schema"`
-	Kind      string    `json:"kind"` // trigger | event | procedure | function
-	Name      string    `json:"name"`
-	CreateSQL string    `json:"create_sql"`
-	DroppedAt time.Time `json:"dropped_at"`
-	DroppedBy string    `json:"dropped_by"` // operator login or "csm" for daemon-driven
-	FindingID string    `json:"finding_id,omitempty"`
+	Account    string    `json:"account"`
+	Schema     string    `json:"schema"`
+	Kind       string    `json:"kind"` // trigger | event | procedure | function
+	Name       string    `json:"name"`
+	CreateSQL  string    `json:"create_sql"`
+	DroppedAt  time.Time `json:"dropped_at"`
+	DroppedBy  string    `json:"dropped_by"` // operator login or "csm" for daemon-driven
+	FindingID  string    `json:"finding_id,omitempty"`
+	RestoredAt time.Time `json:"restored_at,omitempty"`
 }
 
 // PutDBObjectBackup writes one backup record. Key shape:
@@ -51,8 +52,7 @@ func (db *DB) PutDBObjectBackup(b DBObjectBackup) error {
 }
 
 // ListDBObjectBackups returns every record for the given account, in
-// insertion order. Used by the CLI's listing path (and by the future
-// cleanup-history UI).
+// insertion order. Used by the CLI's listing path and cleanup-history UI.
 func (db *DB) ListDBObjectBackups(account string) ([]DBObjectBackup, error) {
 	var out []DBObjectBackup
 	prefix := []byte(account + ":")
@@ -96,6 +96,35 @@ func (db *DB) GetDBObjectBackupByKey(key string) (DBObjectBackup, bool, error) {
 		return nil
 	})
 	return rec, found, err
+}
+
+// MarkDBObjectBackupRestored records that a backup has been replayed. The
+// backup row stays in place for audit and future manual inspection, but the
+// WebUI can stop offering repeat restore actions for that exact archive.
+func (db *DB) MarkDBObjectBackupRestored(key string, restoredAt time.Time) error {
+	if restoredAt.IsZero() {
+		restoredAt = time.Now().UTC()
+	}
+	return db.bolt.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket([]byte("db_object_backups"))
+		if bucket == nil {
+			return fmt.Errorf("db_object_backups bucket missing (store not migrated)")
+		}
+		raw := bucket.Get([]byte(key))
+		if raw == nil {
+			return nil
+		}
+		var rec DBObjectBackup
+		if err := json.Unmarshal(raw, &rec); err != nil {
+			return err
+		}
+		rec.RestoredAt = restoredAt.UTC()
+		payload, err := json.Marshal(rec)
+		if err != nil {
+			return fmt.Errorf("marshal backup: %w", err)
+		}
+		return bucket.Put([]byte(key), payload)
+	})
 }
 
 // ListDBObjectBackupsAll returns every record in the bucket,

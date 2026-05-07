@@ -10,6 +10,7 @@ HTTPS dashboard with polling-based live updates (10s feed, 30s stats). Dark/ligh
 | **Findings** | `/findings` | Active findings with search, filter by check/account, grouping, fix/dismiss/suppress actions, bulk operations, on-demand account scan |
 | **Findings > History** | `/findings?tab=history` | Paginated archive of all findings with date range and severity filters, CSV export |
 | **Quarantine** | `/quarantine` | Quarantined files with content preview, restore capability |
+| **Cleanup** | `/cleanup-history` | File pre-clean backups and DB-object backups with preview and restore controls |
 | **Firewall** | `/firewall` | Blocked IPs/subnets with GeoIP, whitelist management, search, audit log |
 | **ModSecurity** | `/modsec` | WAF status, event log, active blocks |
 | **ModSec Rules** | `/modsec/rules` | Per-rule management, overrides, escalation control |
