@@ -118,7 +118,7 @@ Real-time authentication monitoring across all PAM-enabled services.
 - Blocks IPs within seconds of threshold breach
 - Integrates with the nftables firewall for instant blocking
 
-### Process context
+## Process Context
 
 Exec and outbound-connection findings carry an optional `process` object with
 PID, PPID, UID, user, cPanel account (when known), comm, exe, sanitized cmdline,
@@ -150,6 +150,7 @@ Caveats:
 - After daemon restart, the `csm_process_context_enrich_*` counters may show a
   small `enqueued - reads` delta. Pending requests in the enricher queue are
   dropped on shutdown by design.
-- The legacy `/proc/net/tcp[6]` polling fallback (`backend: legacy` or hosts
-  without BPF support) only has UID, not PID. Findings emitted by that path
-  do not carry a `process` field. BPF-backed hosts are unaffected.
+- Hosts without BPF support fall back to `/proc/net/tcp[6]` polling. That path
+  has no PID, so emitted findings do not carry a `process` field. A future
+  refinement could resolve the socket inode to a PID via `/proc/<pid>/fd`,
+  but that is out of scope for Phase 1.
