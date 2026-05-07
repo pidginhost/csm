@@ -13,7 +13,8 @@ import (
 
 // smtpProbeBlockExpiryString returns the configured block expiry string when
 // auto-response will actually block the source IP for an `smtp_probe_abuse`
-// finding (auto_response.enabled AND block_ips both true), or "" otherwise.
+// finding (auto_response.enabled AND block_ips true AND dry_run false), or ""
+// otherwise.
 // The returned string is what the operator put in csm.yaml ("24h", "12h"...)
 // so the alert text matches the value they configured rather than Go's
 // canonical Duration formatting.
@@ -22,7 +23,7 @@ func smtpProbeBlockExpiryString() string {
 	if cfg == nil {
 		return ""
 	}
-	if !cfg.AutoResponse.Enabled || !cfg.AutoResponse.BlockIPs {
+	if !cfg.AutoResponse.Enabled || !cfg.AutoResponse.BlockIPs || cfg.AutoResponseDryRunEnabled() {
 		return ""
 	}
 	if cfg.AutoResponse.BlockExpiry == "" {
@@ -58,9 +59,9 @@ type smtpProbeTracker struct {
 	now         func() time.Time
 
 	// expiryStrFn returns the operator-visible block expiry (e.g. "24h") when
-	// auto-response is enabled with block_ips, or "" when no auto-block will
-	// run. Read at finding time so a SIGHUP reload of auto_response.* is
-	// reflected in the next emitted finding's Details.
+	// live auto-blocking is enabled, or "" when no auto-block will run. Read
+	// at finding time so a SIGHUP reload of auto_response.* is reflected in
+	// the next emitted finding's Details.
 	expiryStrFn func() string
 
 	ips map[string]*smtpProbeEntry

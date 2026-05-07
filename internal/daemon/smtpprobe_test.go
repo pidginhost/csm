@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 )
 
 func newTestProbeTracker(t *testing.T, clock *staticClock) *smtpProbeTracker {
@@ -122,6 +123,72 @@ func TestSMTPProbeTracker_DetailsFallbackWhenAutoBlockDisabled(t *testing.T) {
 	}
 	if strings.Contains(d, "scheduled for auto-block") {
 		t.Errorf("Details = %q, must not claim auto-block scheduled when expiry function returned empty", d)
+	}
+}
+
+func TestSMTPProbeBlockExpiryStringHonorsLiveAutoBlockConfig(t *testing.T) {
+	prev := config.Active()
+	defer config.SetActive(prev)
+
+	dryRunOn := true
+	dryRunOff := false
+	autoBlockConfig := func(enabled, blockIPs bool, expiry string, dryRun *bool) *config.Config {
+		cfg := &config.Config{}
+		cfg.AutoResponse.Enabled = enabled
+		cfg.AutoResponse.BlockIPs = blockIPs
+		cfg.AutoResponse.BlockExpiry = expiry
+		cfg.AutoResponse.DryRun = dryRun
+		return cfg
+	}
+	tests := []struct {
+		name string
+		cfg  *config.Config
+		want string
+	}{
+		{
+			name: "no active config",
+			cfg:  nil,
+			want: "",
+		},
+		{
+			name: "auto response disabled",
+			cfg:  autoBlockConfig(false, true, "12h", &dryRunOff),
+			want: "",
+		},
+		{
+			name: "block ips disabled",
+			cfg:  autoBlockConfig(true, false, "12h", &dryRunOff),
+			want: "",
+		},
+		{
+			name: "dry run default",
+			cfg:  autoBlockConfig(true, true, "12h", nil),
+			want: "",
+		},
+		{
+			name: "dry run explicit true",
+			cfg:  autoBlockConfig(true, true, "12h", &dryRunOn),
+			want: "",
+		},
+		{
+			name: "live block custom expiry",
+			cfg:  autoBlockConfig(true, true, "12h", &dryRunOff),
+			want: "12h",
+		},
+		{
+			name: "live block default expiry",
+			cfg:  autoBlockConfig(true, true, "", &dryRunOff),
+			want: "24h",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			config.SetActive(tc.cfg)
+			if got := smtpProbeBlockExpiryString(); got != tc.want {
+				t.Errorf("smtpProbeBlockExpiryString() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
