@@ -72,7 +72,7 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 	id := newIncidentID()
 	inc := &Incident{
 		ID:        id,
-		Kind:      KindWebAccountCompromise, // refined in T5
+		Kind:      ClassifyKind(f),
 		Status:    StatusOpen,
 		Severity:  f.Severity,
 		Account:   key.Account,
