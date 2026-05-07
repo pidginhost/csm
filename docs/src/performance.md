@@ -30,6 +30,27 @@ The **Performance** page (`/performance`) shows real-time metrics:
 - MySQL and Redis health
 - WordPress performance indicators
 
+### MySQL telemetry auth
+
+The MySQL panel runs `mysql -e "SHOW STATUS LIKE 'Threads_connected'"` from
+the csm process. The client needs to authenticate against the local server,
+and csm supports two setups out of the box:
+
+- A `~/.my.cnf` for the csm runtime user with credentials for a MySQL
+  account that holds at least the `PROCESS` privilege. cPanel and
+  CloudLinux ship `/root/.my.cnf` for the root user; csm running as root
+  picks it up automatically.
+- A unix-socket grant for the csm OS user, e.g. on Debian/Ubuntu MariaDB:
+
+  ```sql
+  CREATE USER 'root'@'localhost' IDENTIFIED VIA unix_socket;
+  GRANT PROCESS ON *.* TO 'root'@'localhost';
+  ```
+
+If neither is configured, the MYSQL card renders `n/a / n/a` instead of a
+misleading `0 conn`. csm makes no attempt to connect over TCP or store
+credentials on its own.
+
 ## API
 
 ```

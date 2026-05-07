@@ -32,12 +32,16 @@ type perfMetrics struct {
 	SwapUsedMB  uint64      `json:"swap_used_mb"`
 	PHPProcs    int         `json:"php_procs_total"`
 	TopPHPUsers []userProcs `json:"top_php_users"`
-	MySQLMemMB  uint64      `json:"mysql_mem_mb"`
-	MySQLConns  int         `json:"mysql_conns"`
-	RedisMemMB  uint64      `json:"redis_mem_mb"`
-	RedisMaxMB  uint64      `json:"redis_maxmem_mb"`
-	RedisKeys   int64       `json:"redis_keys"`
-	Uptime      string      `json:"uptime"`
+	// MySQL telemetry is best-effort. Both fields are nil when csm could
+	// not read mysqld's pidfile or the mysql client failed (no /root/.my.cnf,
+	// no socket auth, mysqld absent). The webui renders "n/a" in that case
+	// so operators can tell "MySQL is idle" from "we couldn't ask".
+	MySQLMemMB *uint64 `json:"mysql_mem_mb"`
+	MySQLConns *int    `json:"mysql_conns"`
+	RedisMemMB uint64  `json:"redis_mem_mb"`
+	RedisMaxMB uint64  `json:"redis_maxmem_mb"`
+	RedisKeys  int64   `json:"redis_keys"`
+	Uptime     string  `json:"uptime"`
 }
 
 type userProcs struct {
@@ -251,7 +255,9 @@ func sampleMetrics() *perfMetrics {
 		}
 	}
 
-	// MySQL: PID → VmRSS, plus Threads_connected
+	// MySQL: PID -> VmRSS, plus Threads_connected. Both fields stay nil
+	// when the lookup fails so the webui can show "n/a" instead of a
+	// misleading 0.
 	{
 		pidData, err := os.ReadFile("/var/run/mysqld/mysqld.pid")
 		if err == nil {
@@ -265,21 +271,26 @@ func sampleMetrics() *perfMetrics {
 					if strings.HasPrefix(line, "VmRSS:") {
 						fields := strings.Fields(line)
 						if len(fields) >= 2 {
-							kb, _ := strconv.ParseUint(fields[1], 10, 64)
-							m.MySQLMemMB = kb / 1024
+							if kb, perr := strconv.ParseUint(fields[1], 10, 64); perr == nil {
+								mb := kb / 1024
+								m.MySQLMemMB = &mb
+							}
 						}
 						break
 					}
 				}
 			}
 		}
-		// Connection count
+		// Connection count. mysql client exits non-zero on auth failure,
+		// missing socket, or absent server -- in every such case we leave
+		// MySQLConns nil rather than reporting a fake 0.
 		out, err := runCmdQuick("mysql", "-N", "-B", "-e", "SHOW STATUS LIKE 'Threads_connected'")
 		if err == nil && len(out) > 0 {
 			fields := strings.Fields(string(out))
 			if len(fields) >= 2 {
-				n, _ := strconv.Atoi(fields[1])
-				m.MySQLConns = n
+				if n, perr := strconv.Atoi(fields[1]); perr == nil {
+					m.MySQLConns = &n
+				}
 			}
 		}
 	}

@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Settings navigation now comes from the backend schema, and missing templates return an error instead of panicking.
 - `renderTemplate` now buffers output before flushing so a template execution failure surfaces a clean 500 instead of a partial 200 body, and the settings UI drops a dead `resp.ok` branch that became unreachable after the `CSM.request` refactor.
 - The Firewall entry in the Response menu now renders an icon to match the other dropdown items.
+- The Performance dashboard MySQL card now shows `n/a` instead of `0 conn` when csm cannot query MySQL, and the daemon under systemd can finally read its local mysql credentials so connection counts and MySQL configuration findings appear instead of silently dropping.
 
 ### Documentation
 
