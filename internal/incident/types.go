@@ -6,6 +6,7 @@ package incident
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -67,6 +68,35 @@ func (i Incident) MarshalJSON() ([]byte, error) {
 		wireIncident: wireIncident(i),
 		Severity:     i.Severity.String(),
 	})
+}
+
+// UnmarshalJSON decodes the wire shape produced by MarshalJSON. Severity
+// is read from its string form ("WARNING"/"HIGH"/"CRITICAL") and converted
+// back to alert.Severity. Unknown strings return an error so SIEM-side
+// schema drift is loud, not silent.
+func (i *Incident) UnmarshalJSON(data []byte) error {
+	type wireIncident Incident
+	aux := struct {
+		*wireIncident
+		Severity string `json:"severity"`
+	}{wireIncident: (*wireIncident)(i)}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	switch aux.Severity {
+	case "":
+		// allow the zero-severity case for partial decodes (tests, partial
+		// JSON snippets in the API). Severity stays at zero value (Warning).
+	case "WARNING":
+		i.Severity = alert.Warning
+	case "HIGH":
+		i.Severity = alert.High
+	case "CRITICAL":
+		i.Severity = alert.Critical
+	default:
+		return fmt.Errorf("incident: unknown severity %q", aux.Severity)
+	}
+	return nil
 }
 
 // IncidentEvent is one entry in an incident's timeline. Built from a

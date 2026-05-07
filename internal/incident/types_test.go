@@ -81,3 +81,48 @@ func TestKindValuesUseSnakeCase(t *testing.T) {
 		}
 	}
 }
+
+func TestIncidentJSONRoundTrip(t *testing.T) {
+	want := Incident{
+		ID:        "i_abc",
+		Kind:      KindMailboxTakeover,
+		Status:    StatusContained,
+		Severity:  alert.Critical,
+		Account:   "alice",
+		Findings:  []string{"f1", "f2"},
+		CreatedAt: time.Unix(1700000000, 0).UTC(),
+		UpdatedAt: time.Unix(1700000600, 0).UTC(),
+	}
+	b, err := json.Marshal(want)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got Incident
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.ID != want.ID || got.Kind != want.Kind || got.Status != want.Status {
+		t.Errorf("identity fields lost: got=%+v want=%+v", got, want)
+	}
+	if got.Severity != want.Severity {
+		t.Errorf("Severity lost: got=%v want=%v", got.Severity, want.Severity)
+	}
+	if got.Account != want.Account {
+		t.Errorf("Account: %q vs %q", got.Account, want.Account)
+	}
+	if len(got.Findings) != 2 || got.Findings[0] != "f1" {
+		t.Errorf("Findings round-trip: %+v", got.Findings)
+	}
+	if !got.CreatedAt.Equal(want.CreatedAt) {
+		t.Errorf("CreatedAt: %v vs %v", got.CreatedAt, want.CreatedAt)
+	}
+}
+
+func TestIncidentJSONUnmarshalUnknownSeverityFails(t *testing.T) {
+	raw := []byte(`{"id":"i","kind":"web_account_compromise","status":"open","severity":"BOGUS","created_at":"2026-05-08T00:00:00Z","updated_at":"2026-05-08T00:00:00Z"}`)
+	var got Incident
+	err := json.Unmarshal(raw, &got)
+	if err == nil {
+		t.Fatal("expected error on unknown severity, got nil")
+	}
+}
