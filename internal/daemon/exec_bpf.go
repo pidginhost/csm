@@ -70,6 +70,7 @@ func (e *execBPF) Run(ctx context.Context) {
 	}()
 
 	go e.reader.Run(ctx)
+	pcCache, _ := ProcessCtx()
 	for {
 		select {
 		case <-ctx.Done():
@@ -79,7 +80,9 @@ func (e *execBPF) Run(ctx context.Context) {
 				return
 			}
 			e.count.Add(1)
+			populateProcessCtxFromExec(pcCache, ev)
 			for _, f := range checks.EvaluateExec(ev.UID, ev.PID, ev.Comm, ev.Filename, ev.ParentComm) {
+				attachProcessCtxToExecFinding(pcCache, &f, ev)
 				select {
 				case e.alertCh <- f:
 				default:
