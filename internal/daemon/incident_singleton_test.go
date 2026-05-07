@@ -40,3 +40,13 @@ func TestIncidentCorrelatorReceivesFindings(t *testing.T) {
 	}
 	t.Fatalf("incident not created within deadline")
 }
+
+func TestIncidentCorrelatorSingletonIsIdempotent(t *testing.T) {
+	resetIncidentForTest()
+	_ = IncidentCorrelator()
+	_ = IncidentCorrelator()
+	_ = IncidentCorrelator()
+	// No panic, no duplicate metric registration. The metrics seam is
+	// pinned in TestMain to a private NewRegistry; if this test ever
+	// hits metrics.Default it will panic on duplicate registration.
+}

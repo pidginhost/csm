@@ -289,6 +289,11 @@ func (d *Daemon) Run() error {
 
 	csmlog.Info("CSM daemon starting")
 
+	// Construct the incident correlator early so the alert observer is
+	// registered before any finding is dispatched. Singleton; safe to call
+	// multiple times.
+	_ = IncidentCorrelator()
+
 	// Initialize the findings broadcast bus so passive observers (SSE, etc.)
 	// can subscribe before any findings are dispatched.
 	d.findingBus = broadcast.NewBus(64)
