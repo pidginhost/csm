@@ -791,21 +791,20 @@ func TestRenderTemplateMissingTemplateFinalCoverage(t *testing.T) {
 }
 
 // Render a template that exists but errors during execution (e.g. calls a
-// non-existent function). Ensures the error-logging branch runs.
+// non-existent function). The buffer-first render must surface a 500 instead
+// of leaking a partial 200 body.
 func TestRenderTemplateExecuteErrorFinalCoverage(t *testing.T) {
 	s := newTestServer(t, "tok")
-	// Template that references a field that doesn't exist on the data type.
 	tmpl := template.Must(template.New("bad.html").Parse(`{{.MissingField.Nope}}`))
 	s.templates = map[string]*template.Template{"bad.html": tmpl}
 
 	w := httptest.NewRecorder()
-	// Passing nil data causes ExecuteTemplate to return an error which the
-	// renderTemplate helper logs but otherwise swallows.
-	s.renderTemplate(w, "bad.html", nil)
-	// The handler does not set a status, so default 200 is fine; just
-	// ensuring no panic.
-	if w.Code == 0 {
-		t.Error("expected default 200 status")
+	// Empty struct data: html/template evaluates the field selector and
+	// returns an exec error ("can't evaluate field MissingField"). Passing
+	// nil here would silently render an empty body without erroring.
+	s.renderTemplate(w, "bad.html", struct{}{})
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusInternalServerError)
 	}
 }
 

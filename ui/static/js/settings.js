@@ -123,15 +123,16 @@
         loading.appendChild(document.createTextNode("Loading..."));
         panel.appendChild(loading);
 
-        let resp;
+        // CSM.request throws for both network failures and !ok HTTP responses,
+        // so a single catch is enough — no separate resp.ok branch.
+        let data;
         try {
-            resp = await CSM.request("/api/v1/settings/" + encodeURIComponent(id), {headers: {Accept: "application/json"}});
+            const resp = await CSM.request("/api/v1/settings/" + encodeURIComponent(id), {headers: {Accept: "application/json"}});
+            data = await resp.json();
         } catch (e) {
-            renderError("Network error: " + (e && e.message ? e.message : "request failed"));
+            renderError("Failed to load: " + (e && e.message ? e.message : "request failed"));
             return;
         }
-        if (!resp.ok) { renderError("Failed to load: " + resp.status); return; }
-        const data = await resp.json();
         currentSection = id;
         currentETag = data.etag;
         currentSchema = data.section;

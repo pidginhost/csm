@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"bytes"
 	"fmt"
 	"net/http"
 	"os"
@@ -17,8 +18,17 @@ func (s *Server) renderTemplate(w http.ResponseWriter, name string, data interfa
 		http.Error(w, "template not found", http.StatusInternalServerError)
 		return
 	}
-	if err := tmpl.ExecuteTemplate(w, name, data); err != nil {
+	// Render into a buffer first so an execution error can still surface as a
+	// 500 — html/template streams directly to its writer, and once any byte
+	// has been flushed the status header is locked in.
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, name, data); err != nil {
 		fmt.Fprintf(os.Stderr, "[webui] template %s error: %v\n", name, err)
+		http.Error(w, "template render error", http.StatusInternalServerError)
+		return
+	}
+	if _, err := w.Write(buf.Bytes()); err != nil {
+		fmt.Fprintf(os.Stderr, "[webui] template %s write error: %v\n", name, err)
 	}
 }
 

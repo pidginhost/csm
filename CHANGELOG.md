@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `smtp_probe_abuse` finding details now report that auto-block is scheduled with the configured `auto_response.block_expiry` (default 24h) when live auto-blocking is enabled, instead of contradicting the runtime by saying "consider auto-block".
 - Hardened Web UI rendering for attacker-controlled fields and fixed bulk selection on the Threat Intel page.
 - Settings navigation now comes from the backend schema, and missing templates return an error instead of panicking.
+- `renderTemplate` now buffers output before flushing so a template execution failure surfaces a clean 500 instead of a partial 200 body, and the settings UI drops a dead `resp.ok` branch that became unreachable after the `CSM.request` refactor.
 
 ### Documentation
 
