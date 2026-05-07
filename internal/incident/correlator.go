@@ -3,6 +3,7 @@ package incident
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"sync"
 	"time"
 
@@ -83,13 +84,13 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	c.mergeLocked(inc, f, now)
+	// Populate maps before mergeLocked so a re-entrant Persist that
+	// calls Get(id) (or any lookup) sees the freshly-created incident.
+	// mergeLocked is the single source of truth for Persist invocations,
+	// avoiding the previous double-fire on create.
 	c.incidents[id] = inc
 	c.byKey[keyStr] = id
-
-	if c.cfg.Persist != nil {
-		c.cfg.Persist(*inc)
-	}
+	c.mergeLocked(inc, f, now)
 	return id, true, nil
 }
 
@@ -125,13 +126,29 @@ func (c *Correlator) mergeLocked(inc *Incident, f alert.Finding, now time.Time) 
 	}
 	inc.Timeline = append(inc.Timeline, ev)
 	inc.UpdatedAt = now
-	if c.cfg.Persist != nil {
-		c.cfg.Persist(*inc)
-	}
+	c.persistLocked(*inc)
 }
 
+// persistLocked invokes the Persist callback while temporarily releasing
+// the correlator mutex so a re-entrant Persist (which may call Get or
+// any other Correlator method that takes mu) does not deadlock. The
+// caller MUST already hold c.mu; the deferred re-Lock keeps the
+// "mu held on return" contract that mergeLocked's callers rely on.
+func (c *Correlator) persistLocked(snap Incident) {
+	if c.cfg.Persist == nil {
+		return
+	}
+	c.mu.Unlock()
+	defer c.mu.Lock()
+	c.cfg.Persist(snap)
+}
+
+// keyString serializes a Key into a stable string for the byKey map.
+// All identifying fields must be encoded so distinct findings (e.g.
+// different PIDs with no Account, or different remote IPs) do not
+// collapse to the same bucket and falsely merge.
 func keyString(k Key) string {
-	return k.Account + "|" + k.Mailbox + "|" + k.Domain
+	return fmt.Sprintf("%s|%s|%s|%d|%d|%s", k.Account, k.Mailbox, k.Domain, k.UID, k.PID, k.RemoteIP)
 }
 
 func newIncidentID() string {
