@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The Web UI now has a cleanup history view for file backups and dropped database-object backups.
 - Optional `process` field on findings and audit events carries PID/PPID/UID/user/account/exe/sanitized cmdline plus parent chain (depth 5). Omitted when no context is available; existing webhook consumers see no schema change.
+- Operators can now exempt specific mailboxes or whole domains from the cloud-relay credential-abuse detector only, without weakening the rate detector for the same account.
 
 ### Changed
 

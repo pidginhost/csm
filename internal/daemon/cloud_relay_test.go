@@ -171,6 +171,133 @@ func TestCloudRelay_AllowlistSkips(t *testing.T) {
 	}
 }
 
+func TestCloudRelay_AllowUsersSkipsDetectorOnly(t *testing.T) {
+	resetCloudRelayState()
+	cfg := cloudRelayTestConfig()
+	// Detector-scoped allowlist: HighVolumeSenders left empty so the rate
+	// detector (or anything else keying off it) still works for this user.
+	cfg.EmailProtection.CloudRelay.AllowUsers = []string{"office@madconsulting.ro"}
+
+	lines := []string{
+		gceSendLine("office@madconsulting.ro", "168.135.246.35.bc.googleusercontent.com", "35.246.135.168"),
+		gceSendLine("office@madconsulting.ro", "4.120.237.35.bc.googleusercontent.com", "35.237.120.4"),
+		gceSendLine("office@madconsulting.ro", "44.243.26.34.bc.googleusercontent.com", "34.26.243.44"),
+	}
+	for _, line := range lines {
+		for _, f := range parseEximLogLine(line, cfg) {
+			if f.Check == "email_cloud_relay_abuse" {
+				t.Fatalf("allow_users mailbox must not trigger cloud-relay: %+v", f)
+			}
+		}
+	}
+	// A different user from the same domain must STILL be evaluated, since
+	// AllowUsers is a per-mailbox opt-out, not a per-domain one.
+	resetCloudRelayState()
+	otherLines := []string{
+		gceSendLine("office@otherdomain.example", "204.118.26.34.bc.googleusercontent.com", "34.26.118.204"),
+		gceSendLine("office@otherdomain.example", "4.120.237.35.bc.googleusercontent.com", "35.237.120.4"),
+		gceSendLine("office@otherdomain.example", "44.243.26.34.bc.googleusercontent.com", "34.26.243.44"),
+	}
+	var fired bool
+	for _, line := range otherLines {
+		for _, f := range parseEximLogLine(line, cfg) {
+			if f.Check == "email_cloud_relay_abuse" {
+				fired = true
+			}
+		}
+	}
+	if !fired {
+		t.Fatal("non-allowlisted user must still trigger cloud-relay detection")
+	}
+}
+
+func TestCloudRelay_AllowDomainsCoversAllMailboxes(t *testing.T) {
+	resetCloudRelayState()
+	cfg := cloudRelayTestConfig()
+	cfg.EmailProtection.CloudRelay.AllowDomains = []string{"madconsulting.ro"}
+
+	// Three different mailboxes under the allowed domain — none should fire.
+	lines := []string{
+		gceSendLine("office@madconsulting.ro", "168.135.246.35.bc.googleusercontent.com", "35.246.135.168"),
+		gceSendLine("steluta.ghelbereu@MADCONSULTING.RO", "4.120.237.35.bc.googleusercontent.com", "35.237.120.4"),
+		gceSendLine("amelia.savu@madconsulting.ro", "44.243.26.34.bc.googleusercontent.com", "34.26.243.44"),
+	}
+	for _, line := range lines {
+		for _, f := range parseEximLogLine(line, cfg) {
+			if f.Check == "email_cloud_relay_abuse" {
+				t.Fatalf("allow_domains must cover every mailbox under the domain: %+v", f)
+			}
+		}
+	}
+}
+
+func TestCloudRelay_AllowedUserDoesNotPrimeOtherUsers(t *testing.T) {
+	resetCloudRelayState()
+	cfg := cloudRelayTestConfig()
+	cfg.EmailProtection.CloudRelay.AllowUsers = []string{"office@madconsulting.ro"}
+
+	// Allowed user fires twice on cloud IPs — must NOT count toward any
+	// other user's window. Then a separate user does its own 3 sends from
+	// distinct cloud IPs and that one MUST fire on the third event, not
+	// earlier (proving the allowed mailbox didn't poison shared state).
+	allowed := []string{
+		gceSendLine("office@madconsulting.ro", "168.135.246.35.bc.googleusercontent.com", "35.246.135.168"),
+		gceSendLine("office@madconsulting.ro", "168.135.246.35.bc.googleusercontent.com", "35.246.135.168"),
+	}
+	for _, line := range allowed {
+		for _, f := range parseEximLogLine(line, cfg) {
+			if f.Check == "email_cloud_relay_abuse" {
+				t.Fatalf("allowed user must never fire: %+v", f)
+			}
+		}
+	}
+
+	other := []string{
+		gceSendLine("attacker@victim.example", "204.118.26.34.bc.googleusercontent.com", "34.26.118.204"),
+		gceSendLine("attacker@victim.example", "4.120.237.35.bc.googleusercontent.com", "35.237.120.4"),
+		gceSendLine("attacker@victim.example", "44.243.26.34.bc.googleusercontent.com", "34.26.243.44"),
+	}
+	var fired bool
+	for _, line := range other {
+		for _, f := range parseEximLogLine(line, cfg) {
+			if f.Check == "email_cloud_relay_abuse" {
+				fired = true
+			}
+		}
+	}
+	if !fired {
+		t.Fatal("non-allowlisted user must trigger after 3 distinct cloud IPs")
+	}
+}
+
+func TestIsCloudRelayAllowed_Matching(t *testing.T) {
+	cases := []struct {
+		name         string
+		user         string
+		allowUsers   []string
+		allowDomains []string
+		want         bool
+	}{
+		{name: "empty user is never allowed", user: "", allowUsers: []string{"x@y.z"}, want: false},
+		{name: "no lists, no match", user: "a@b.c", want: false},
+		{name: "exact user match, mixed case", user: "Office@Madconsulting.RO", allowUsers: []string{"office@madconsulting.ro"}, want: true},
+		{name: "domain match, mixed case", user: "anyone@MadConsulting.ro", allowDomains: []string{"madconsulting.ro"}, want: true},
+		{name: "domain in users list does NOT match", user: "anyone@madconsulting.ro", allowUsers: []string{"madconsulting.ro"}, want: false},
+		{name: "user in domains list does NOT match", user: "anyone@madconsulting.ro", allowDomains: []string{"office@madconsulting.ro"}, want: false},
+		{name: "user without @ is not allowed", user: "noatsign", allowDomains: []string{"madconsulting.ro"}, want: false},
+		{name: "trailing-@ user is not allowed", user: "broken@", allowDomains: []string{""}, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isCloudRelayAllowed(tc.user, tc.allowUsers, tc.allowDomains)
+			if got != tc.want {
+				t.Fatalf("isCloudRelayAllowed(%q, %v, %v) = %v, want %v",
+					tc.user, tc.allowUsers, tc.allowDomains, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCloudRelay_VolumeBurstSingleIPTriggersCritical(t *testing.T) {
 	resetCloudRelayState()
 	cfg := cloudRelayTestConfig()
