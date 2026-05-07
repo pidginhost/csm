@@ -13,7 +13,7 @@ import (
 func TestHandleIncidentsListReturnsSnapshot(t *testing.T) {
 	resetIncidentForTest()
 	c := IncidentCorrelator()
-	c.OnFinding(alert.Finding{Check: "x", Severity: alert.High, TenantID: "alice", Timestamp: time.Now()})
+	_, _, _ = c.OnFinding(alert.Finding{Check: "x", Severity: alert.High, TenantID: "alice", Timestamp: time.Now()})
 
 	cl := &ControlListener{}
 	res, err := cl.handleIncidentsList(nil)

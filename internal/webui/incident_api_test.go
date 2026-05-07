@@ -14,7 +14,7 @@ import (
 
 func TestIncidentAPIListReturnsJSONArray(t *testing.T) {
 	c := incident.NewCorrelator(incident.CorrelatorConfig{})
-	c.OnFinding(alert.Finding{Check: "x", Severity: alert.High, TenantID: "alice", Timestamp: time.Now()})
+	_, _, _ = c.OnFinding(alert.Finding{Check: "x", Severity: alert.High, TenantID: "alice", Timestamp: time.Now()})
 
 	srv := newTestServerWithIncidentCorrelator(t, c)
 

@@ -173,12 +173,12 @@ func TestCorrelatorPersistFiresExactlyOncePerCreateAndMerge(t *testing.T) {
 	})
 	c.now = func() time.Time { return time.Unix(1_700_000_000, 0) }
 
-	c.OnFinding(alert.Finding{Check: "x", Severity: alert.High, TenantID: "alice", Timestamp: time.Unix(1_700_000_000, 0)})
+	_, _, _ = c.OnFinding(alert.Finding{Check: "x", Severity: alert.High, TenantID: "alice", Timestamp: time.Unix(1_700_000_000, 0)})
 	if calls != 1 {
 		t.Errorf("after create: want 1 Persist call, got %d", calls)
 	}
 
-	c.OnFinding(alert.Finding{Check: "y", Severity: alert.High, TenantID: "alice", Timestamp: time.Unix(1_700_000_000, 0)})
+	_, _, _ = c.OnFinding(alert.Finding{Check: "y", Severity: alert.High, TenantID: "alice", Timestamp: time.Unix(1_700_000_000, 0)})
 	if calls != 2 {
 		t.Errorf("after merge: want 2 Persist calls total, got %d", calls)
 	}
@@ -189,7 +189,7 @@ func TestCorrelatorIncidentSeverityEscalates(t *testing.T) {
 	f1 := alert.Finding{Check: "wp_login_bruteforce", Severity: alert.Warning, TenantID: "alice", Timestamp: time.Unix(1_700_000_000, 0)}
 	id, _, _ := c.OnFinding(f1)
 	f2 := alert.Finding{Check: "outbound_connection", Severity: alert.Critical, TenantID: "alice", Timestamp: time.Unix(1_700_000_000+30, 0)}
-	c.OnFinding(f2)
+	_, _, _ = c.OnFinding(f2)
 
 	inc, _ := c.Get(id)
 	if inc.Severity != alert.Critical {
@@ -202,7 +202,7 @@ func TestCorrelatorEscalationAppendsAction(t *testing.T) {
 	f1 := alert.Finding{Check: "x", Severity: alert.Warning, TenantID: "alice", Timestamp: time.Unix(1_700_000_000, 0)}
 	id, _, _ := c.OnFinding(f1)
 	f2 := alert.Finding{Check: "y", Severity: alert.High, TenantID: "alice", Timestamp: time.Unix(1_700_000_000+30, 0)}
-	c.OnFinding(f2)
+	_, _, _ = c.OnFinding(f2)
 
 	inc, _ := c.Get(id)
 	if len(inc.Actions) != 1 {
@@ -218,7 +218,7 @@ func TestCorrelatorDoesNotDowngradeSeverity(t *testing.T) {
 	f1 := alert.Finding{Check: "x", Severity: alert.Critical, TenantID: "alice", Timestamp: time.Unix(1_700_000_000, 0)}
 	id, _, _ := c.OnFinding(f1)
 	f2 := alert.Finding{Check: "y", Severity: alert.Warning, TenantID: "alice", Timestamp: time.Unix(1_700_000_000+30, 0)}
-	c.OnFinding(f2)
+	_, _, _ = c.OnFinding(f2)
 
 	inc, _ := c.Get(id)
 	if inc.Severity != alert.Critical {
@@ -242,7 +242,7 @@ func TestCorrelatorPersistRunsOutsideLock(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		c.OnFinding(alert.Finding{Check: "x", Severity: alert.High, TenantID: "alice", Timestamp: time.Unix(1_700_000_000, 0)})
+		_, _, _ = c.OnFinding(alert.Finding{Check: "x", Severity: alert.High, TenantID: "alice", Timestamp: time.Unix(1_700_000_000, 0)})
 		close(done)
 	}()
 	select {
@@ -333,5 +333,28 @@ func TestCorrelatorSetStatusRejectsUnknownID(t *testing.T) {
 	c := newTestCorrelator()
 	if err := c.SetStatus("inc_nope", StatusResolved, ""); err == nil {
 		t.Errorf("expected error for unknown id")
+	}
+}
+
+func TestCorrelatorSetStatusRejectsInvalidStatus(t *testing.T) {
+	c := newTestCorrelator()
+	id, _, _ := c.OnFinding(alert.Finding{Check: "x", Severity: alert.High, TenantID: "alice", Timestamp: time.Unix(1_700_000_000, 0)})
+	if err := c.SetStatus(id, Status("bogus"), "x"); err == nil {
+		t.Errorf("expected error for invalid status")
+	}
+}
+
+func TestIncrementCompactedTotalBumpsMetric(t *testing.T) {
+	c := newTestCorrelator()
+	if c.counters.compactedTotal.Load() != 0 {
+		t.Fatal("setup")
+	}
+	c.IncrementCompactedTotal(7)
+	if got := c.counters.compactedTotal.Load(); got != 7 {
+		t.Errorf("compactedTotal: want 7, got %d", got)
+	}
+	c.IncrementCompactedTotal(-3) // negative ignored; counter must not underflow
+	if got := c.counters.compactedTotal.Load(); got != 7 {
+		t.Errorf("negative input must be ignored; got %d", got)
 	}
 }

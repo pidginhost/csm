@@ -218,6 +218,9 @@ func (c *Correlator) persistLocked(snap Incident) {
 // findings for the same correlation key start a fresh incident.
 // Returns ErrIncidentNotFound if id is unknown.
 func (c *Correlator) SetStatus(id string, status Status, details string) error {
+	if !validStatus(status) {
+		return fmt.Errorf("incident: invalid status %q", status)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	inc, ok := c.incidents[id]
@@ -252,6 +255,29 @@ func (c *Correlator) SetStatus(id string, status Status, details string) error {
 	}
 	c.persistLocked(*inc)
 	return nil
+}
+
+// validStatus reports whether s is one of the four spec-defined values.
+// Guards SetStatus against arbitrary strings reaching the persisted
+// timeline; control-socket and webui handlers also reject early but
+// the correlator owns the type and must not trust callers.
+func validStatus(s Status) bool {
+	switch s {
+	case StatusOpen, StatusContained, StatusResolved, StatusDismissed:
+		return true
+	}
+	return false
+}
+
+// IncrementCompactedTotal bumps the compaction counter by n. Called
+// from the daemon-side retention scheduler after store.CompactIncidents
+// removes records. Negative inputs are ignored so a buggy caller cannot
+// underflow the monotonic counter.
+func (c *Correlator) IncrementCompactedTotal(n int) {
+	if n < 0 {
+		return
+	}
+	c.counters.compactedTotal.Add(uint64(n))
 }
 
 // Restore re-hydrates correlator state from a list previously loaded
