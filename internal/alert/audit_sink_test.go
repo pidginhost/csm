@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/pidginhost/csm/internal/processctx"
 )
 
 func TestNewAuditEventCarriesSchemaVersion(t *testing.T) {
@@ -73,6 +75,35 @@ func TestMakeFindingIDChangesWithEachField(t *testing.T) {
 		if got == id {
 			t.Errorf("ID unchanged after mutating %s", m.name)
 		}
+	}
+}
+
+func TestMakeFindingIDIgnoresProcessContext(t *testing.T) {
+	base := Finding{
+		Severity:  Warning,
+		Check:     "c",
+		Message:   "m",
+		FilePath:  "/p",
+		Timestamp: time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC),
+	}
+	withProcess := base
+	withProcess.Process = &processctx.ProcessContext{PID: 1234, UID: 1001, Comm: "ncat"}
+	if makeFindingID(base) != makeFindingID(withProcess) {
+		t.Fatal("dynamic process context must not change stable audit finding ID")
+	}
+}
+
+func TestNewAuditEventCarriesProcessContext(t *testing.T) {
+	f := Finding{
+		Severity:  High,
+		Check:     "outbound_connection",
+		Message:   "test",
+		Timestamp: time.Date(2026, 4, 28, 10, 0, 0, 0, time.UTC),
+		Process:   &processctx.ProcessContext{PID: 1234, UID: 1001, Comm: "ncat"},
+	}
+	ev := NewAuditEvent("host.example", f)
+	if ev.Process == nil || ev.Process.PID != 1234 || ev.Process.Comm != "ncat" {
+		t.Fatalf("Process not copied: %+v", ev.Process)
 	}
 }
 

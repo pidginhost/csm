@@ -9,6 +9,7 @@ import (
 	"github.com/pidginhost/csm/internal/bpf"
 	"github.com/pidginhost/csm/internal/config"
 	csmlog "github.com/pidginhost/csm/internal/log"
+	"github.com/pidginhost/csm/internal/processctx"
 )
 
 // StartExecMonitor selects the active exec-monitor backend based on
@@ -75,4 +76,27 @@ func tryStartExecBPF(ctx context.Context, ch chan<- alert.Finding, cfg *config.C
 		return nil, err
 	}
 	return b, nil
+}
+
+// populateProcessCtxFromExec writes the BPF exec event into the process
+// context cache without doing identity or /proc work in the event loop. Zero
+// PID is ignored (synthetic boot-time noise).
+func populateProcessCtxFromExec(cache *processctx.Cache, ev ExecEvent) {
+	if ev.PID == 0 {
+		return
+	}
+	cache.PutFromExec(int(ev.PID), int(ev.PPID), int(ev.UID), ev.Comm, ev.Filename)
+}
+
+func attachProcessCtxToExecFinding(cache *processctx.Cache, f *alert.Finding, ev ExecEvent) {
+	if pc, _ := cache.MaterializeVerified(int(ev.PID), int(ev.UID), true, ev.Comm); pc != nil {
+		f.Process = pc
+	}
+}
+
+// processctxRequestFromExec builds the EnrichRequest snapshot used by the BPF
+// exec consumer. Lives here (no build tag) so unit tests on darwin can verify
+// the field mapping without a Linux+bpf build.
+func processctxRequestFromExec(ev ExecEvent) processctx.EnrichRequest {
+	return processctx.EnrichRequest{PID: int(ev.PID), UID: int(ev.UID), UIDKnown: true, Comm: ev.Comm}
 }

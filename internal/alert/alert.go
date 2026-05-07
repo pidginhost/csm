@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/processctx"
 )
 
 // Severity levels for findings.
@@ -60,6 +61,12 @@ type Finding struct {
 	TenantID string `json:"tenant_id,omitempty"`
 	Domain   string `json:"domain,omitempty"`
 	Mailbox  string `json:"mailbox,omitempty"`
+
+	// Process context (Phase 1 process-ancestry enrichment). Optional.
+	// Populated by exec/connection live monitors when cache or enricher
+	// has data. Omitted from JSON when nil so existing webhook consumers
+	// see no diff.
+	Process *processctx.ProcessContext `json:"process,omitempty"`
 
 	Timestamp time.Time `json:"timestamp"`
 }
