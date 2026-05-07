@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"sort"
+	"time"
 
 	bolt "go.etcd.io/bbolt"
 
@@ -65,4 +66,56 @@ func (db *DB) ListIncidents() ([]incident.Incident, error) {
 		return out[i].UpdatedAt.After(out[j].UpdatedAt)
 	})
 	return out, nil
+}
+
+// ListIncidentsByStatus returns incidents matching the requested status,
+// newest UpdatedAt first.
+func (db *DB) ListIncidentsByStatus(status incident.Status) ([]incident.Incident, error) {
+	all, err := db.ListIncidents()
+	if err != nil {
+		return nil, err
+	}
+	out := all[:0]
+	for _, inc := range all {
+		if inc.Status == status {
+			out = append(out, inc)
+		}
+	}
+	return out, nil
+}
+
+// CompactIncidents removes resolved/dismissed incidents whose UpdatedAt
+// is older than now-retention. Open and Contained incidents are never
+// pruned regardless of age. Returns the number of records removed.
+func (db *DB) CompactIncidents(now time.Time, retention time.Duration) (int, error) {
+	cutoff := now.Add(-retention)
+	pruned := 0
+	err := db.bolt.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte(incidentsBucket))
+		var toDelete [][]byte
+		err := b.ForEach(func(k, v []byte) error {
+			var inc incident.Incident
+			if err := json.Unmarshal(v, &inc); err != nil {
+				return err
+			}
+			if inc.Status != incident.StatusResolved && inc.Status != incident.StatusDismissed {
+				return nil
+			}
+			if inc.UpdatedAt.Before(cutoff) {
+				toDelete = append(toDelete, append([]byte(nil), k...))
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		for _, k := range toDelete {
+			if err := b.Delete(k); err != nil {
+				return err
+			}
+			pruned++
+		}
+		return nil
+	})
+	return pruned, err
 }

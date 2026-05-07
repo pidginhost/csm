@@ -99,3 +99,66 @@ func TestSaveIncidentRoundTripsTimeline(t *testing.T) {
 		t.Errorf("Timeline lost or mangled: %+v", got.Timeline)
 	}
 }
+
+func TestListIncidentsByStatusFilters(t *testing.T) {
+	db := newTestStore(t)
+	a := sampleIncident("inc_a")
+	a.Status = incident.StatusOpen
+	b := sampleIncident("inc_b")
+	b.Status = incident.StatusResolved
+	c := sampleIncident("inc_c")
+	c.Status = incident.StatusOpen
+	for _, inc := range []incident.Incident{a, b, c} {
+		if err := db.SaveIncident(inc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	open, err := db.ListIncidentsByStatus(incident.StatusOpen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(open) != 2 {
+		t.Errorf("open count: want 2, got %d", len(open))
+	}
+}
+
+func TestCompactIncidentsPrunesOldResolved(t *testing.T) {
+	db := newTestStore(t)
+	now := time.Unix(1_700_000_000, 0).UTC()
+
+	stale := sampleIncident("inc_stale")
+	stale.Status = incident.StatusResolved
+	stale.UpdatedAt = now.Add(-31 * 24 * time.Hour)
+
+	fresh := sampleIncident("inc_fresh")
+	fresh.Status = incident.StatusResolved
+	fresh.UpdatedAt = now.Add(-29 * 24 * time.Hour)
+
+	openOld := sampleIncident("inc_open_old")
+	openOld.Status = incident.StatusOpen
+	openOld.UpdatedAt = now.Add(-90 * 24 * time.Hour)
+
+	for _, inc := range []incident.Incident{stale, fresh, openOld} {
+		if err := db.SaveIncident(inc); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	pruned, err := db.CompactIncidents(now, 30*24*time.Hour)
+	if err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+	if pruned != 1 {
+		t.Errorf("pruned: want 1 (only inc_stale), got %d", pruned)
+	}
+
+	if _, ok, _ := db.GetIncident("inc_stale"); ok {
+		t.Errorf("inc_stale should be gone")
+	}
+	if _, ok, _ := db.GetIncident("inc_fresh"); !ok {
+		t.Errorf("inc_fresh (29 days old) must survive")
+	}
+	if _, ok, _ := db.GetIncident("inc_open_old"); !ok {
+		t.Errorf("inc_open_old (open status) must survive any age")
+	}
+}
