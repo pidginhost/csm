@@ -117,3 +117,39 @@ Real-time authentication monitoring across all PAM-enabled services.
 - cPanel, FTP, and webmail authentication
 - Blocks IPs within seconds of threshold breach
 - Integrates with the nftables firewall for instant blocking
+
+### Process context
+
+Exec and outbound-connection findings carry an optional `process` object with
+PID, PPID, UID, user, cPanel account (when known), comm, exe, sanitized cmdline,
+and a parent chain up to depth 5. The chain is materialized from an in-memory
+LRU+TTL cache (cap 16384 entries, 30-minute TTL) populated from BPF exec
+events. Cache misses trigger a bounded async `/proc` read; the connection
+ring-buffer reader never blocks. When neither cache nor enricher has data
+(e.g., a process that exited before userspace reads its event), the
+`process` field is omitted entirely and the finding still emits.
+
+Counters exposed at `/metrics`:
+
+- `csm_process_context_cache_entries`
+- `csm_process_context_cache_evictions_total` (LRU)
+- `csm_process_context_cache_ttl_purges_total`
+- `csm_process_context_cache_misses_total` (includes TTL purges)
+- `csm_process_context_enrich_queue_drops_total`
+- `csm_process_context_enrich_reads_total`
+- `csm_process_context_enrich_errors_total`
+- `csm_process_context_enrich_stale_total`
+- `csm_process_context_enrich_latency_seconds`
+
+Caveats:
+
+- `started_at` is emitted only when the event source supplies a trustworthy
+  start timestamp. Phase 1 does not infer process start time from procfs
+  directory metadata. A future refinement may add `/proc/<pid>/stat` field 22
+  + `/proc/stat` btime for kernel-tick precision.
+- After daemon restart, the `csm_process_context_enrich_*` counters may show a
+  small `enqueued - reads` delta. Pending requests in the enricher queue are
+  dropped on shutdown by design.
+- The legacy `/proc/net/tcp[6]` polling fallback (`backend: legacy` or hosts
+  without BPF support) only has UID, not PID. Findings emitted by that path
+  do not carry a `process` field. BPF-backed hosts are unaffected.
