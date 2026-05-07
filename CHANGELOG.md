@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bumped Go module dependencies: `yara-x/go` 1.15.0 → 1.16.0, `sentry-go` 0.45.1 → 0.46.2, `klauspost/compress` 1.18.5 → 1.18.6, `oschwald/maxminddb-golang/v2` 2.1.1 → 2.2.0, `mdlayher/netlink` 1.11.0 → 1.11.1.
 - Pinned `github/codeql-action` workflows to v4.35.3.
 
+### Fixed
+
+- `smtp_probe_abuse` finding details now state "source IP auto-blocked for {block_expiry}" when auto-response is enabled, instead of contradicting the runtime by saying "consider auto-block".
+- Hardened Web UI rendering for attacker-controlled fields and fixed bulk selection on the Threat Intel page.
+- Settings navigation now comes from the backend schema, and missing templates return an error instead of panicking.
+
 ### Documentation
 
 - Copy Fail BPF docs now describe the shipped kernel-side blocking behavior and validation steps.

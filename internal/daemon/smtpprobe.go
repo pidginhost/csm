@@ -8,7 +8,28 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 )
+
+// smtpProbeBlockExpiryString returns the configured block expiry string when
+// auto-response will actually block the source IP for an `smtp_probe_abuse`
+// finding (auto_response.enabled AND block_ips both true), or "" otherwise.
+// The returned string is what the operator put in csm.yaml ("24h", "12h"...)
+// so the alert text matches the value they configured rather than Go's
+// canonical Duration formatting.
+func smtpProbeBlockExpiryString() string {
+	cfg := config.Active()
+	if cfg == nil {
+		return ""
+	}
+	if !cfg.AutoResponse.Enabled || !cfg.AutoResponse.BlockIPs {
+		return ""
+	}
+	if cfg.AutoResponse.BlockExpiry == "" {
+		return "24h"
+	}
+	return cfg.AutoResponse.BlockExpiry
+}
 
 // smtpProbeEntry records connect timestamps and suppression for one IP.
 type smtpProbeEntry struct {
@@ -36,10 +57,16 @@ type smtpProbeTracker struct {
 	maxTracked  int
 	now         func() time.Time
 
+	// expiryStrFn returns the operator-visible block expiry (e.g. "24h") when
+	// auto-response is enabled with block_ips, or "" when no auto-block will
+	// run. Read at finding time so a SIGHUP reload of auto_response.* is
+	// reflected in the next emitted finding's Details.
+	expiryStrFn func() string
+
 	ips map[string]*smtpProbeEntry
 }
 
-func newSMTPProbeTracker(threshold int, window, suppression time.Duration, maxTracked int, now func() time.Time) *smtpProbeTracker {
+func newSMTPProbeTracker(threshold int, window, suppression time.Duration, maxTracked int, now func() time.Time, expiryStrFn func() string) *smtpProbeTracker {
 	if now == nil {
 		now = time.Now
 	}
@@ -49,6 +76,7 @@ func newSMTPProbeTracker(threshold int, window, suppression time.Duration, maxTr
 		suppression: suppression,
 		maxTracked:  maxTracked,
 		now:         now,
+		expiryStrFn: expiryStrFn,
 		ips:         make(map[string]*smtpProbeEntry),
 	}
 }
@@ -85,12 +113,22 @@ func (t *smtpProbeTracker) Record(ip string) []alert.Finding {
 	var findings []alert.Finding
 	if len(e.times) >= t.threshold && !now.Before(e.suppressed) {
 		e.suppressed = now.Add(t.suppression)
+		details := "Sustained SMTP connect rate above the configured threshold. Likely scanner / dictionary probe;"
+		if t.expiryStrFn != nil {
+			if exp := t.expiryStrFn(); exp != "" {
+				details += fmt.Sprintf(" source IP auto-blocked for %s.", exp)
+			} else {
+				details += " consider auto-block."
+			}
+		} else {
+			details += " consider auto-block."
+		}
 		findings = append(findings, alert.Finding{
 			Severity: alert.High,
 			Check:    "smtp_probe_abuse",
 			Message: fmt.Sprintf("SMTP probe abuse from %s: %d connections in %v",
 				ip, len(e.times), t.window),
-			Details:   "Sustained SMTP connect rate above the configured threshold. Likely scanner / dictionary probe; consider auto-block.",
+			Details:   details,
 			Timestamp: now,
 		})
 	}

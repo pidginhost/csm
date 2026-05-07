@@ -16,6 +16,7 @@ func newTestProbeTracker(t *testing.T, clock *staticClock) *smtpProbeTracker {
 		60*time.Minute,
 		20000, // maxTracked
 		clock.Now,
+		nil, // expiryStrFn
 	)
 }
 
@@ -60,6 +61,67 @@ func TestSMTPProbeTracker_FiresAtThresholdWithExpectedShape(t *testing.T) {
 	}
 	if !strings.Contains(f.Message, "100") {
 		t.Errorf("Message %q must include the connection count", f.Message)
+	}
+}
+
+// When the daemon supplies a live block-expiry string (i.e. auto-response is
+// enabled with block_ips), the finding's Details must tell the operator the
+// source IP is auto-blocked and for how long, instead of advising "consider
+// auto-block" which contradicts the runtime behaviour.
+func TestSMTPProbeTracker_DetailsIncludesConfiguredExpiry(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)}
+	tr := newSMTPProbeTracker(
+		100,
+		5*time.Minute,
+		60*time.Minute,
+		20000,
+		clock.Now,
+		func() string { return "12h" },
+	)
+
+	var last []alert.Finding
+	for i := 0; i < 100; i++ {
+		last = tr.Record("203.0.113.5")
+	}
+	if len(last) == 0 {
+		t.Fatalf("expected finding at 100th record, got none")
+	}
+	d := last[0].Details
+	if !strings.Contains(d, "auto-blocked for 12h") {
+		t.Errorf("Details = %q, want phrase \"auto-blocked for 12h\"", d)
+	}
+	if strings.Contains(d, "consider auto-block") {
+		t.Errorf("Details = %q, must not still advise \"consider auto-block\" when expiry is supplied", d)
+	}
+}
+
+// When auto-response is disabled (or block_ips is off), the daemon supplies an
+// empty expiry string. The Details should fall back to advising manual review,
+// not claim a block that did not happen.
+func TestSMTPProbeTracker_DetailsFallbackWhenAutoBlockDisabled(t *testing.T) {
+	clock := &staticClock{t: time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)}
+	tr := newSMTPProbeTracker(
+		100,
+		5*time.Minute,
+		60*time.Minute,
+		20000,
+		clock.Now,
+		func() string { return "" },
+	)
+
+	var last []alert.Finding
+	for i := 0; i < 100; i++ {
+		last = tr.Record("203.0.113.5")
+	}
+	if len(last) == 0 {
+		t.Fatalf("expected finding at 100th record, got none")
+	}
+	d := last[0].Details
+	if !strings.Contains(d, "consider auto-block") {
+		t.Errorf("Details = %q, want fallback advising \"consider auto-block\"", d)
+	}
+	if strings.Contains(d, "auto-blocked for") {
+		t.Errorf("Details = %q, must not claim auto-blocked when expiry function returned empty", d)
 	}
 }
 

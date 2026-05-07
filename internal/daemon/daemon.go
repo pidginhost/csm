@@ -146,6 +146,7 @@ func New(cfg *config.Config, store *state.Store, lock *state.LockFile, binaryPat
 		time.Duration(cfg.Thresholds.SMTPProbeSuppressMin)*time.Minute,
 		cfg.Thresholds.SMTPProbeMaxTracked,
 		time.Now,
+		smtpProbeBlockExpiryString,
 	)
 	d.mailAuthTracker = newMailAuthTracker(
 		cfg.Thresholds.MailBruteForceThreshold,
