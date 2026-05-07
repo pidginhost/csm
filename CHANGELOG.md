@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Bumped Go module dependencies: `yara-x/go` 1.15.0 → 1.16.0, `sentry-go` 0.45.1 → 0.46.2, `klauspost/compress` 1.18.5 → 1.18.6, `oschwald/maxminddb-golang/v2` 2.1.1 → 2.2.0, `mdlayher/netlink` 1.11.0 → 1.11.1.
+- Pinned `github/codeql-action` workflows to v4.35.3.
+
 ## [3.0.0] - 2026-05-06
 
 ### License
