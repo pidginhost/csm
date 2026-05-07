@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -137,6 +138,22 @@ func (c *Correlator) Get(id string) (Incident, bool) {
 		return Incident{}, false
 	}
 	return *inc, true
+}
+
+// Snapshot returns every incident sorted by UpdatedAt descending. Safe
+// for concurrent callers; produces a value-copy slice so the API layer
+// can serialize it without coordinating with mutators.
+func (c *Correlator) Snapshot() []Incident {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]Incident, 0, len(c.incidents))
+	for _, inc := range c.incidents {
+		out = append(out, *inc)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].UpdatedAt.After(out[j].UpdatedAt)
+	})
+	return out
 }
 
 // mergeLocked folds f into inc. merged=true means this is a join into
