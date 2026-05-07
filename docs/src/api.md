@@ -214,4 +214,6 @@ Body:
 
 Status values: `open`, `contained`, `resolved`, `dismissed`. Closing an
 incident (resolved/dismissed) means future findings for the same
-correlation key start a fresh incident.
+correlation key start a fresh incident. Reopening an incident binds the
+same key again. Incident JSON includes `correlation_key` when CSM has a
+stored account, mailbox, domain, process, or remote-IP key.

@@ -289,9 +289,9 @@ func (d *Daemon) Run() error {
 
 	csmlog.Info("CSM daemon starting")
 
-	// Construct the incident correlator early so the alert observer is
-	// registered before any finding is dispatched. Singleton; safe to call
-	// multiple times.
+	// Construct the incident correlator early so state is restored and
+	// metrics are registered before any finding is dispatched. Singleton;
+	// safe to call multiple times.
 	_ = IncidentCorrelator()
 
 	// Initialize the findings broadcast bus so passive observers (SSE, etc.)
@@ -481,6 +481,10 @@ func (d *Daemon) Run() error {
 		newFindings = append(newFindings, permActions...)
 		newFindings = append(newFindings, challengeActions...)
 		newFindings = append(newFindings, blockActions...)
+		co := IncidentCorrelator()
+		for _, f := range newFindings {
+			_, _, _ = co.OnFinding(f)
+		}
 		_ = alert.Dispatch(initialCfg, newFindings)
 	}
 
@@ -907,6 +911,11 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 		}
 	}
 	newFindings = append(newFindings, extra...)
+
+	co := IncidentCorrelator()
+	for _, f := range newFindings {
+		_, _, _ = co.OnFinding(f)
+	}
 
 	// Broadcast findings (no-op; dashboard uses polling)
 	if d.webServer != nil {

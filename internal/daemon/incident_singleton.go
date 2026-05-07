@@ -4,7 +4,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/incident"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/metrics"
@@ -15,7 +14,6 @@ var (
 	incidentOnce            sync.Once
 	incidentCorrelator      *incident.Correlator
 	incidentRegistry        = metrics.Default
-	incidentObsCancel       func()
 	incidentRetentionCancel func()
 )
 
@@ -26,9 +24,8 @@ const incidentRetentionPeriod = 30 * 24 * time.Hour
 
 // IncidentCorrelator returns the daemon-wide incident correlator.
 // On first call: builds the correlator, restores prior state from
-// the bbolt store (when available), registers metrics, and wires
-// the alert-package observer that feeds it. Safe for concurrent
-// callers.
+// the bbolt store (when available), and registers metrics. Safe for
+// concurrent callers.
 func IncidentCorrelator() *incident.Correlator {
 	incidentOnce.Do(func() {
 		db := store.Global()
@@ -45,19 +42,9 @@ func IncidentCorrelator() *incident.Correlator {
 			}
 		}
 		incident.RegisterMetrics(incidentRegistry(), incidentCorrelator)
-		incidentObsCancel = wireIncidentObserver(incidentCorrelator)
 		incidentRetentionCancel = startIncidentRetentionLoop(incidentCorrelator)
 	})
 	return incidentCorrelator
-}
-
-// wireIncidentObserver registers the alert-package observer that feeds
-// the correlator. Exposed as a separate helper so tests can call it
-// after a reset without going through sync.Once.
-func wireIncidentObserver(c *incident.Correlator) func() {
-	return alert.RegisterFindingObserver(func(f alert.Finding) {
-		_, _, _ = c.OnFinding(f)
-	})
 }
 
 // startIncidentRetentionLoop runs a daily compaction sweep against the
@@ -94,25 +81,23 @@ func runIncidentCompaction(c *incident.Correlator) {
 	if db == nil {
 		return
 	}
-	pruned, err := db.CompactIncidents(time.Now(), incidentRetentionPeriod)
+	now := time.Now()
+	pruned, err := db.CompactIncidents(now, incidentRetentionPeriod)
 	if err != nil {
 		csmlog.Warn("incident retention compaction failed", "err", err)
 		return
 	}
+	_ = c.PruneClosedOlderThan(now, incidentRetentionPeriod)
 	if pruned > 0 {
 		c.IncrementCompactedTotal(pruned)
 		csmlog.Info("incident retention compaction", "pruned", pruned)
 	}
 }
 
-// resetIncidentForTest is a test seam. Stops any prior observer, zeros
+// resetIncidentForTest is a test seam. Stops any retention worker, zeros
 // the singleton, and pins the registry to a private one so subsequent
 // IncidentCorrelator() calls do not collide on metrics.Default.
 func resetIncidentForTest() {
-	if incidentObsCancel != nil {
-		incidentObsCancel()
-		incidentObsCancel = nil
-	}
 	if incidentRetentionCancel != nil {
 		incidentRetentionCancel()
 		incidentRetentionCancel = nil

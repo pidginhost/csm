@@ -37,20 +37,21 @@ const (
 // audit propagation) sees. omitempty fields are absent from JSON when
 // zero so consumers ignore optional context cleanly.
 type Incident struct {
-	ID         string           `json:"id"`
-	Kind       Kind             `json:"kind"`
-	Status     Status           `json:"status"`
-	Severity   alert.Severity   `json:"severity"`
-	Account    string           `json:"account,omitempty"`
-	Domain     string           `json:"domain,omitempty"`
-	Mailbox    string           `json:"mailbox,omitempty"`
-	Summary    string           `json:"summary,omitempty"`
-	Confidence int              `json:"confidence,omitempty"`
-	Findings   []string         `json:"findings,omitempty"`
-	Timeline   []IncidentEvent  `json:"timeline,omitempty"`
-	Actions    []IncidentAction `json:"actions,omitempty"`
-	CreatedAt  time.Time        `json:"created_at"`
-	UpdatedAt  time.Time        `json:"updated_at"`
+	ID             string           `json:"id"`
+	Kind           Kind             `json:"kind"`
+	Status         Status           `json:"status"`
+	Severity       alert.Severity   `json:"severity"`
+	Account        string           `json:"account,omitempty"`
+	Domain         string           `json:"domain,omitempty"`
+	Mailbox        string           `json:"mailbox,omitempty"`
+	CorrelationKey *Key             `json:"correlation_key,omitempty"`
+	Summary        string           `json:"summary,omitempty"`
+	Confidence     int              `json:"confidence,omitempty"`
+	Findings       []string         `json:"findings,omitempty"`
+	Timeline       []IncidentEvent  `json:"timeline,omitempty"`
+	Actions        []IncidentAction `json:"actions,omitempty"`
+	CreatedAt      time.Time        `json:"created_at"`
+	UpdatedAt      time.Time        `json:"updated_at"`
 }
 
 // MarshalJSON renders Severity as its uppercase string form

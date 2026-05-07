@@ -166,6 +166,14 @@ func TestCorrelatorRemoteIPOnlyFindingsDoNotCollide(t *testing.T) {
 	}
 }
 
+func TestKeyStringDoesNotCollideOnDelimiters(t *testing.T) {
+	a := Key{Account: "a|b", Mailbox: "c", Domain: "d", UID: 1, PID: 2, RemoteIP: "203.0.113.10"}
+	b := Key{Account: "a", Mailbox: "b|c", Domain: "d", UID: 1, PID: 2, RemoteIP: "203.0.113.10"}
+	if keyString(a) == keyString(b) {
+		t.Fatal("keyString collided when field values contained separators")
+	}
+}
+
 func TestCorrelatorPersistFiresExactlyOncePerCreateAndMerge(t *testing.T) {
 	var calls int
 	c := NewCorrelator(CorrelatorConfig{
@@ -252,6 +260,93 @@ func TestCorrelatorPersistRunsOutsideLock(t *testing.T) {
 	}
 }
 
+func TestCorrelatorPersistReceivesDeepCopy(t *testing.T) {
+	c := NewCorrelator(CorrelatorConfig{})
+	c.now = func() time.Time { return time.Unix(1_700_000_000, 0) }
+	c.cfg.Persist = func(inc Incident) {
+		inc.Findings[0] = "mutated-finding"
+		inc.Timeline[0].Message = "mutated-message"
+		if inc.CorrelationKey != nil {
+			inc.CorrelationKey.Account = "mallory"
+		}
+	}
+
+	id, _, _ := c.OnFinding(alert.Finding{
+		Check:     "x",
+		Message:   "original-message",
+		Severity:  alert.High,
+		TenantID:  "alice",
+		Timestamp: time.Unix(1_700_000_000, 0),
+	})
+
+	inc, ok := c.Get(id)
+	if !ok {
+		t.Fatal("incident not found")
+	}
+	if inc.Findings[0] == "mutated-finding" {
+		t.Error("Persist mutation leaked into internal Findings")
+	}
+	if inc.Timeline[0].Message != "original-message" {
+		t.Errorf("Timeline[0].Message = %q", inc.Timeline[0].Message)
+	}
+	if inc.CorrelationKey == nil || inc.CorrelationKey.Account != "alice" {
+		t.Fatalf("CorrelationKey.Account = %#v", inc.CorrelationKey)
+	}
+}
+
+func TestCorrelatorSnapshotsAreDeepCopies(t *testing.T) {
+	c := newTestCorrelator()
+	id, _, _ := c.OnFinding(alert.Finding{
+		Check:     "x",
+		Message:   "first",
+		Severity:  alert.Warning,
+		TenantID:  "alice",
+		Timestamp: time.Unix(1_700_000_000, 0),
+	})
+	_, _, _ = c.OnFinding(alert.Finding{
+		Check:     "y",
+		Message:   "second",
+		Severity:  alert.Critical,
+		TenantID:  "alice",
+		Timestamp: time.Unix(1_700_000_030, 0),
+	})
+
+	snap := c.Snapshot()
+	if len(snap) != 1 {
+		t.Fatalf("Snapshot len: want 1, got %d", len(snap))
+	}
+	snap[0].Findings[0] = "snapshot-mutated"
+	snap[0].Timeline[0].Message = "snapshot-mutated"
+	snap[0].Actions[0].Details = "snapshot-mutated"
+	snap[0].CorrelationKey.Account = "mallory"
+
+	got, ok := c.Get(id)
+	if !ok {
+		t.Fatal("incident not found")
+	}
+	got.Findings[0] = "get-mutated"
+	got.Timeline[0].Message = "get-mutated"
+	got.Actions[0].Details = "get-mutated"
+	got.CorrelationKey.Account = "eve"
+
+	again, ok := c.Get(id)
+	if !ok {
+		t.Fatal("incident not found on second get")
+	}
+	if again.Findings[0] == "snapshot-mutated" || again.Findings[0] == "get-mutated" {
+		t.Errorf("Findings mutation leaked: %q", again.Findings[0])
+	}
+	if again.Timeline[0].Message != "first" {
+		t.Errorf("Timeline[0].Message = %q", again.Timeline[0].Message)
+	}
+	if again.Actions[0].Details != "WARNING -> CRITICAL" {
+		t.Errorf("Actions[0].Details = %q", again.Actions[0].Details)
+	}
+	if again.CorrelationKey == nil || again.CorrelationKey.Account != "alice" {
+		t.Fatalf("CorrelationKey.Account = %#v", again.CorrelationKey)
+	}
+}
+
 func TestCorrelatorRestoreRehydratesFromList(t *testing.T) {
 	c := newTestCorrelator()
 	prior := Incident{
@@ -274,6 +369,75 @@ func TestCorrelatorRestoreRehydratesFromList(t *testing.T) {
 	}
 }
 
+func TestCorrelatorRestoreRehydratesFullCorrelationKey(t *testing.T) {
+	cases := []struct {
+		name   string
+		first  alert.Finding
+		second alert.Finding
+	}{
+		{
+			name: "process",
+			first: alert.Finding{
+				Check:     "outbound_connection",
+				Severity:  alert.High,
+				Process:   &processctx.ProcessContext{PID: 4242, UID: 1001},
+				Timestamp: time.Unix(1_700_000_000, 0),
+			},
+			second: alert.Finding{
+				Check:     "suspicious_process",
+				Severity:  alert.High,
+				Process:   &processctx.ProcessContext{PID: 4242, UID: 1001},
+				Timestamp: time.Unix(1_700_000_300, 0),
+			},
+		},
+		{
+			name: "remote_ip",
+			first: alert.Finding{
+				Check:     "ssh_bruteforce",
+				Severity:  alert.High,
+				SourceIP:  "203.0.113.10",
+				Timestamp: time.Unix(1_700_000_000, 0),
+			},
+			second: alert.Finding{
+				Check:     "smtp_probe_abuse",
+				Severity:  alert.High,
+				SourceIP:  "203.0.113.10",
+				Timestamp: time.Unix(1_700_000_300, 0),
+			},
+		},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			c1 := newTestCorrelator()
+			id1, created1, err := c1.OnFinding(tt.first)
+			if err != nil {
+				t.Fatalf("OnFinding first: %v", err)
+			}
+			if !created1 {
+				t.Fatal("setup did not create incident")
+			}
+			prior, ok := c1.Get(id1)
+			if !ok {
+				t.Fatal("created incident not found")
+			}
+
+			c2 := newTestCorrelator()
+			c2.Restore([]Incident{prior})
+			c2.now = func() time.Time { return time.Unix(1_700_000_300, 0) }
+			id2, created2, err := c2.OnFinding(tt.second)
+			if err != nil {
+				t.Fatalf("OnFinding second: %v", err)
+			}
+			if created2 {
+				t.Fatal("restored incident key was not rebound")
+			}
+			if id2 != id1 {
+				t.Fatalf("id after restore = %q, want %q", id2, id1)
+			}
+		})
+	}
+}
+
 func TestCorrelatorRestoreSkipsClosedIncidents(t *testing.T) {
 	c := newTestCorrelator()
 	resolved := Incident{
@@ -289,6 +453,31 @@ func TestCorrelatorRestoreSkipsClosedIncidents(t *testing.T) {
 	})
 	if !created {
 		t.Errorf("Restore must NOT bind closed incidents to the active byKey index")
+	}
+}
+
+func TestCorrelatorPruneClosedOlderThanRemovesMemoryEntries(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	old := now.Add(-(30*24*time.Hour + time.Second))
+	c := newTestCorrelator()
+	c.Restore([]Incident{
+		{ID: "inc_old_closed", Status: StatusResolved, Severity: alert.High, Account: "alice", CreatedAt: old, UpdatedAt: old},
+		{ID: "inc_old_open", Status: StatusOpen, Severity: alert.High, Account: "bob", CreatedAt: old, UpdatedAt: old},
+		{ID: "inc_fresh_closed", Status: StatusDismissed, Severity: alert.High, Account: "carol", CreatedAt: now, UpdatedAt: now},
+	})
+
+	pruned := c.PruneClosedOlderThan(now, 30*24*time.Hour)
+	if pruned != 1 {
+		t.Fatalf("PruneClosedOlderThan pruned %d, want 1", pruned)
+	}
+	if _, ok := c.Get("inc_old_closed"); ok {
+		t.Fatal("old closed incident still present")
+	}
+	if _, ok := c.Get("inc_old_open"); !ok {
+		t.Fatal("old open incident was pruned")
+	}
+	if _, ok := c.Get("inc_fresh_closed"); !ok {
+		t.Fatal("fresh closed incident was pruned")
 	}
 }
 
@@ -326,6 +515,26 @@ func TestCorrelatorSetStatusUnbindsClosed(t *testing.T) {
 	}
 	if id1 == id2 {
 		t.Errorf("ids must differ; got %q twice", id1)
+	}
+}
+
+func TestCorrelatorSetStatusReopenRebindsKey(t *testing.T) {
+	c := newTestCorrelator()
+	id1, _, _ := c.OnFinding(alert.Finding{Check: "x", Severity: alert.High, TenantID: "alice", Timestamp: time.Unix(1_700_000_000, 0)})
+	if err := c.SetStatus(id1, StatusResolved, "done"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetStatus(id1, StatusOpen, "reopened"); err != nil {
+		t.Fatal(err)
+	}
+
+	c.now = func() time.Time { return time.Unix(1_700_000_000+30, 0) }
+	id2, created, _ := c.OnFinding(alert.Finding{Check: "y", Severity: alert.High, TenantID: "alice", Timestamp: time.Unix(1_700_000_000+30, 0)})
+	if created {
+		t.Fatal("finding after reopen created a new incident")
+	}
+	if id2 != id1 {
+		t.Fatalf("id after reopen = %q, want %q", id2, id1)
 	}
 }
 

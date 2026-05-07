@@ -40,6 +40,10 @@ a higher severity. The audit trail records an
 start a new incident. The window is a named constant in code; not yet
 exposed via config.
 
+The stored incident includes the full correlation key, including process
+PID/UID and remote IP when those are the only available dimensions, so
+active incidents keep merging after daemon restart.
+
 ## API
 
 - `GET /api/v1/incidents` -- list, newest first.

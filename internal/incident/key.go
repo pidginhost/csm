@@ -9,18 +9,18 @@ import (
 // Key is the correlation key derived from a Finding. Empty fields mean
 // "not provided"; the correlator uses the most specific non-empty fields.
 type Key struct {
-	Account  string
-	Domain   string
-	Mailbox  string
-	UID      int
-	PID      int
-	RemoteIP string
+	Account  string `json:"account,omitempty"`
+	Domain   string `json:"domain,omitempty"`
+	Mailbox  string `json:"mailbox,omitempty"`
+	UID      int    `json:"uid,omitempty"`
+	PID      int    `json:"pid,omitempty"`
+	RemoteIP string `json:"remote_ip,omitempty"`
 }
 
 // IsEmpty reports whether the key has nothing to correlate on. Such
 // findings are emitted normally but do not join an incident.
 func (k Key) IsEmpty() bool {
-	return k.Account == "" && k.Mailbox == "" && k.UID == 0 && k.PID == 0 && k.RemoteIP == ""
+	return k.Account == "" && k.Domain == "" && k.Mailbox == "" && k.UID == 0 && k.PID == 0 && k.RemoteIP == ""
 }
 
 // KeyFor extracts a correlation key from a Finding. Sources, in priority

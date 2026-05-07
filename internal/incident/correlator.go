@@ -90,18 +90,19 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 
 	id := newIncidentID()
 	inc := &Incident{
-		ID:        id,
-		Kind:      ClassifyKind(f),
-		Status:    StatusOpen,
-		Severity:  f.Severity,
-		Account:   key.Account,
-		Domain:    key.Domain,
-		Mailbox:   key.Mailbox,
-		Findings:  []string{},
-		Timeline:  []IncidentEvent{},
-		Actions:   []IncidentAction{},
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:             id,
+		Kind:           ClassifyKind(f),
+		Status:         StatusOpen,
+		Severity:       f.Severity,
+		Account:        key.Account,
+		Domain:         key.Domain,
+		Mailbox:        key.Mailbox,
+		CorrelationKey: cloneKey(key),
+		Findings:       []string{},
+		Timeline:       []IncidentEvent{},
+		Actions:        []IncidentAction{},
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 	// Populate maps before mergeLocked so a re-entrant Persist that
 	// calls Get(id) (or any lookup) sees the freshly-created incident.
@@ -137,18 +138,18 @@ func (c *Correlator) Get(id string) (Incident, bool) {
 	if !ok {
 		return Incident{}, false
 	}
-	return *inc, true
+	return cloneIncident(*inc), true
 }
 
 // Snapshot returns every incident sorted by UpdatedAt descending. Safe
-// for concurrent callers; produces a value-copy slice so the API layer
+// for concurrent callers; produces a deep-copy slice so the API layer
 // can serialize it without coordinating with mutators.
 func (c *Correlator) Snapshot() []Incident {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	out := make([]Incident, 0, len(c.incidents))
 	for _, inc := range c.incidents {
-		out = append(out, *inc)
+		out = append(out, cloneIncident(*inc))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].UpdatedAt.After(out[j].UpdatedAt)
@@ -208,6 +209,7 @@ func (c *Correlator) persistLocked(snap Incident) {
 	if c.cfg.Persist == nil {
 		return
 	}
+	snap = cloneIncident(snap)
 	c.mu.Unlock()
 	defer c.mu.Lock()
 	c.cfg.Persist(snap)
@@ -241,17 +243,10 @@ func (c *Correlator) SetStatus(id string, status Status, details string) error {
 		Details: string(from) + " -> " + string(status) + ": " + details,
 	})
 	c.counters.statusChangedTotal.Add(1)
-	// Scan-and-delete by value rather than rebuilding the key: SetStatus
-	// fires on incidents created with the broader KeyFor (UID/PID/RemoteIP)
-	// while a narrow Key{Account,Domain,Mailbox} would miss those entries.
-	// byKey only holds active incidents so the O(n) scan is bounded.
 	if status == StatusResolved || status == StatusDismissed {
-		for k, v := range c.byKey {
-			if v == id {
-				delete(c.byKey, k)
-				break
-			}
-		}
+		c.unbindLocked(id)
+	} else {
+		c.bindLocked(inc)
 	}
 	c.persistLocked(*inc)
 	return nil
@@ -280,6 +275,29 @@ func (c *Correlator) IncrementCompactedTotal(n int) {
 	c.counters.compactedTotal.Add(uint64(n))
 }
 
+// PruneClosedOlderThan removes resolved/dismissed incidents older than
+// retention from the in-memory map. Store compaction removes the durable
+// records; this keeps API/control snapshots from serving stale incidents
+// until the next daemon restart.
+func (c *Correlator) PruneClosedOlderThan(now time.Time, retention time.Duration) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cutoff := now.Add(-retention)
+	pruned := 0
+	for id, inc := range c.incidents {
+		if inc.Status != StatusResolved && inc.Status != StatusDismissed {
+			continue
+		}
+		if !inc.UpdatedAt.Before(cutoff) {
+			continue
+		}
+		delete(c.incidents, id)
+		c.unbindLocked(id)
+		pruned++
+	}
+	return pruned
+}
+
 // Restore re-hydrates correlator state from a list previously loaded
 // from the store. Open and Contained incidents are bound to the
 // byKey index so a finding arriving inside the merge window joins the
@@ -293,10 +311,59 @@ func (c *Correlator) Restore(incidents []Incident) {
 		inc := incidents[i]
 		c.incidents[inc.ID] = &inc
 		if inc.Status == StatusOpen || inc.Status == StatusContained {
-			key := Key{Account: inc.Account, Domain: inc.Domain, Mailbox: inc.Mailbox}
-			c.byKey[keyString(key)] = inc.ID
+			c.bindLocked(&inc)
 		}
 	}
+}
+
+func (c *Correlator) bindLocked(inc *Incident) {
+	key, ok := incidentKey(*inc)
+	if !ok {
+		return
+	}
+	c.byKey[keyString(key)] = inc.ID
+}
+
+func (c *Correlator) unbindLocked(id string) {
+	// Scan-and-delete by value rather than rebuilding the key: incidents
+	// can be keyed by account, domain, mailbox, process, remote IP, or a
+	// combination. byKey only holds active incidents so the scan is bounded.
+	for k, v := range c.byKey {
+		if v == id {
+			delete(c.byKey, k)
+		}
+	}
+}
+
+func incidentKey(inc Incident) (Key, bool) {
+	if inc.CorrelationKey != nil && !inc.CorrelationKey.IsEmpty() {
+		return *inc.CorrelationKey, true
+	}
+	key := Key{Account: inc.Account, Domain: inc.Domain, Mailbox: inc.Mailbox}
+	if key.IsEmpty() {
+		return Key{}, false
+	}
+	return key, true
+}
+
+func cloneIncident(in Incident) Incident {
+	out := in
+	out.Findings = append([]string(nil), in.Findings...)
+	out.Timeline = append([]IncidentEvent(nil), in.Timeline...)
+	out.Actions = append([]IncidentAction(nil), in.Actions...)
+	if in.CorrelationKey != nil {
+		key := *in.CorrelationKey
+		out.CorrelationKey = &key
+	}
+	return out
+}
+
+func cloneKey(k Key) *Key {
+	if k.IsEmpty() {
+		return nil
+	}
+	key := k
+	return &key
 }
 
 // keyString serializes a Key into a stable string for the byKey map.
@@ -304,7 +371,14 @@ func (c *Correlator) Restore(incidents []Incident) {
 // different PIDs with no Account, or different remote IPs) do not
 // collapse to the same bucket and falsely merge.
 func keyString(k Key) string {
-	return fmt.Sprintf("%s|%s|%s|%d|%d|%s", k.Account, k.Mailbox, k.Domain, k.UID, k.PID, k.RemoteIP)
+	return fmt.Sprintf("%d:%s|%d:%s|%d:%s|%d|%d|%d:%s",
+		len(k.Account), k.Account,
+		len(k.Mailbox), k.Mailbox,
+		len(k.Domain), k.Domain,
+		k.UID,
+		k.PID,
+		len(k.RemoteIP), k.RemoteIP,
+	)
 }
 
 func newIncidentID() string {
