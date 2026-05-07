@@ -79,8 +79,8 @@ func TestReadProcEntryTruncatedCmdlineNoPanic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	if e.Cmdline == nil {
-		// Acceptable: empty cmdline or nil cmdline are both fine.
+	if len(e.Cmdline) != 0 {
+		t.Errorf("trailing-NUL only cmdline: want empty, got %+v", e.Cmdline)
 	}
 }
 

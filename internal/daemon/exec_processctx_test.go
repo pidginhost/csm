@@ -63,3 +63,14 @@ func TestAttachProcessCtxToExecFindingRejectsMismatchedCache(t *testing.T) {
 		t.Fatalf("expected stale cache hit to be ignored, got %+v", f.Process)
 	}
 }
+
+func TestProcessctxRequestFromExecMapsFields(t *testing.T) {
+	ev := ExecEvent{UID: 1001, PID: 4242, Comm: "php-fpm"}
+	req := processctxRequestFromExec(ev)
+	if req.PID != 4242 || req.UID != 1001 || req.Comm != "php-fpm" {
+		t.Fatalf("request: %+v", req)
+	}
+	if !req.UIDKnown {
+		t.Errorf("UIDKnown: want true (BPF event always knows UID)")
+	}
+}

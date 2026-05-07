@@ -94,6 +94,9 @@ func attachProcessCtxToExecFinding(cache *processctx.Cache, f *alert.Finding, ev
 	}
 }
 
+// processctxRequestFromExec builds the EnrichRequest snapshot used by the BPF
+// exec consumer. Lives here (no build tag) so unit tests on darwin can verify
+// the field mapping without a Linux+bpf build.
 func processctxRequestFromExec(ev ExecEvent) processctx.EnrichRequest {
 	return processctx.EnrichRequest{PID: int(ev.PID), UID: int(ev.UID), UIDKnown: true, Comm: ev.Comm}
 }

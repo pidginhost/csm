@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -47,6 +48,9 @@ func ProcessCtx() (*processctx.Cache, *processctx.Enricher) {
 type daemonProcessIdentityResolver struct{}
 
 func (daemonProcessIdentityResolver) Resolve(uid int) (string, string) {
+	if uid < 0 || uid > math.MaxUint32 {
+		return "", ""
+	}
 	user := checks.LookupUser(uint32(uid))
 	account := resolveLocalAccountForUID(uid, user)
 	return user, account

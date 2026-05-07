@@ -63,6 +63,8 @@ func (r *ProcReader) Read(pid int) (processEntry, error) {
 // general filesystem opens cannot be cancelled safely on every platform.
 func readFileWithDeadline(path string, d time.Duration) ([]byte, bool) {
 	return runBytesWithDeadline(d, func() ([]byte, error) {
+		// #nosec G304 -- path is constructed from ProcReader.root + numeric PID;
+		// callers (ProcReader.Read) only pass procfs entries under r.root.
 		data, err := os.ReadFile(path)
 		if len(data) > 4096 {
 			data = data[:4096]
