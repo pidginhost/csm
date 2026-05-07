@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -28,6 +29,17 @@ type CorrelatorConfig struct {
 	Persist func(Incident)
 }
 
+// counters holds the atomic tallies exposed via RegisterMetrics. Kept
+// on the Correlator so a single instance owns its own metric state and
+// tests can build isolated correlators without touching globals.
+type counters struct {
+	createdTotal         atomic.Uint64
+	severityChangedTotal atomic.Uint64
+	statusChangedTotal   atomic.Uint64
+	findingsMergedTotal  atomic.Uint64
+	compactedTotal       atomic.Uint64
+}
+
 // Correlator groups findings into incidents. In-memory state; the
 // daemon is responsible for wiring it to a store via CorrelatorConfig.Persist.
 type Correlator struct {
@@ -36,6 +48,7 @@ type Correlator struct {
 	incidents map[string]*Incident
 	byKey     map[string]string
 	now       func() time.Time
+	counters  counters
 }
 
 // NewCorrelator returns a ready Correlator. Nothing to start; this type
@@ -65,7 +78,7 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 
 	if id, ok := c.byKey[keyStr]; ok {
 		if inc, exists := c.incidents[id]; exists && now.Sub(inc.UpdatedAt) <= incidentMergeWindow {
-			c.mergeLocked(inc, f, now)
+			c.mergeLocked(inc, f, now, true)
 			return id, false, nil
 		}
 		// Stale binding -- the incident is older than the merge window.
@@ -95,8 +108,24 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 	// avoiding the previous double-fire on create.
 	c.incidents[id] = inc
 	c.byKey[keyStr] = id
-	c.mergeLocked(inc, f, now)
+	c.counters.createdTotal.Add(1)
+	c.mergeLocked(inc, f, now, false)
 	return id, true, nil
+}
+
+// OpenCount returns the number of incidents in Open or Contained
+// status. Used by the csm_incidents_open gauge; computed at scrape
+// time so the value never drifts from in-memory state.
+func (c *Correlator) OpenCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for _, inc := range c.incidents {
+		if inc.Status == StatusOpen || inc.Status == StatusContained {
+			n++
+		}
+	}
+	return n
 }
 
 // Get returns a snapshot of the incident by id.
@@ -110,7 +139,15 @@ func (c *Correlator) Get(id string) (Incident, bool) {
 	return *inc, true
 }
 
-func (c *Correlator) mergeLocked(inc *Incident, f alert.Finding, now time.Time) {
+// mergeLocked folds f into inc. merged=true means this is a join into
+// an existing incident (bumps findings_merged_total); merged=false means
+// the caller already created the incident and is using mergeLocked only
+// to seed the first finding -- in that case the create path owns the
+// "did a new incident appear" tally.
+func (c *Correlator) mergeLocked(inc *Incident, f alert.Finding, now time.Time, merged bool) {
+	if merged {
+		c.counters.findingsMergedTotal.Add(1)
+	}
 	inc.Findings = append(inc.Findings, f.Fingerprint())
 	ev := IncidentEvent{
 		Time:    f.Timestamp,
@@ -133,6 +170,7 @@ func (c *Correlator) mergeLocked(inc *Incident, f alert.Finding, now time.Time) 
 	if f.Severity > inc.Severity {
 		from := inc.Severity
 		inc.Severity = f.Severity
+		c.counters.severityChangedTotal.Add(1)
 		inc.Actions = append(inc.Actions, IncidentAction{
 			Time:    now,
 			Action:  "incident_severity_changed",
@@ -182,6 +220,7 @@ func (c *Correlator) SetStatus(id string, status Status, details string) error {
 		Result:  "ok",
 		Details: string(from) + " -> " + string(status) + ": " + details,
 	})
+	c.counters.statusChangedTotal.Add(1)
 	// Scan-and-delete by value rather than rebuilding the key: SetStatus
 	// fires on incidents created with the broader KeyFor (UID/PID/RemoteIP)
 	// while a narrow Key{Account,Domain,Mailbox} would miss those entries.
