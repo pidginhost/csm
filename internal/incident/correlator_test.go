@@ -184,6 +184,51 @@ func TestCorrelatorPersistFiresExactlyOncePerCreateAndMerge(t *testing.T) {
 	}
 }
 
+func TestCorrelatorIncidentSeverityEscalates(t *testing.T) {
+	c := newTestCorrelator()
+	f1 := alert.Finding{Check: "wp_login_bruteforce", Severity: alert.Warning, TenantID: "alice", Timestamp: time.Unix(1_700_000_000, 0)}
+	id, _, _ := c.OnFinding(f1)
+	f2 := alert.Finding{Check: "outbound_connection", Severity: alert.Critical, TenantID: "alice", Timestamp: time.Unix(1_700_000_000+30, 0)}
+	c.OnFinding(f2)
+
+	inc, _ := c.Get(id)
+	if inc.Severity != alert.Critical {
+		t.Errorf("Incident severity: want Critical, got %v", inc.Severity)
+	}
+}
+
+func TestCorrelatorEscalationAppendsAction(t *testing.T) {
+	c := newTestCorrelator()
+	f1 := alert.Finding{Check: "x", Severity: alert.Warning, TenantID: "alice", Timestamp: time.Unix(1_700_000_000, 0)}
+	id, _, _ := c.OnFinding(f1)
+	f2 := alert.Finding{Check: "y", Severity: alert.High, TenantID: "alice", Timestamp: time.Unix(1_700_000_000+30, 0)}
+	c.OnFinding(f2)
+
+	inc, _ := c.Get(id)
+	if len(inc.Actions) != 1 {
+		t.Fatalf("Actions len: want 1 escalation action, got %d", len(inc.Actions))
+	}
+	if inc.Actions[0].Action != "incident_severity_changed" {
+		t.Errorf("Action: %q", inc.Actions[0].Action)
+	}
+}
+
+func TestCorrelatorDoesNotDowngradeSeverity(t *testing.T) {
+	c := newTestCorrelator()
+	f1 := alert.Finding{Check: "x", Severity: alert.Critical, TenantID: "alice", Timestamp: time.Unix(1_700_000_000, 0)}
+	id, _, _ := c.OnFinding(f1)
+	f2 := alert.Finding{Check: "y", Severity: alert.Warning, TenantID: "alice", Timestamp: time.Unix(1_700_000_000+30, 0)}
+	c.OnFinding(f2)
+
+	inc, _ := c.Get(id)
+	if inc.Severity != alert.Critical {
+		t.Errorf("Severity must not downgrade: got %v", inc.Severity)
+	}
+	if len(inc.Actions) != 0 {
+		t.Errorf("No-downgrade must not append action; got %d", len(inc.Actions))
+	}
+}
+
 func TestCorrelatorPersistRunsOutsideLock(t *testing.T) {
 	// A Persist callback that re-enters Correlator must not deadlock.
 	c := NewCorrelator(CorrelatorConfig{})

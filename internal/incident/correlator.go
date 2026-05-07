@@ -125,6 +125,16 @@ func (c *Correlator) mergeLocked(inc *Incident, f alert.Finding, now time.Time) 
 		ev.RemoteIP = f.SourceIP
 	}
 	inc.Timeline = append(inc.Timeline, ev)
+	if f.Severity > inc.Severity {
+		from := inc.Severity
+		inc.Severity = f.Severity
+		inc.Actions = append(inc.Actions, IncidentAction{
+			Time:    now,
+			Action:  "incident_severity_changed",
+			Result:  "ok",
+			Details: from.String() + " -> " + f.Severity.String(),
+		})
+	}
 	inc.UpdatedAt = now
 	c.persistLocked(*inc)
 }
