@@ -124,6 +124,8 @@ func main() {
 		runFirewall()
 	case "harden":
 		runHarden()
+	case "incidents":
+		runIncidents()
 	case "enable":
 		runEnable()
 	case "disable":
@@ -180,6 +182,7 @@ Commands:
   scan <user>   Scan a single cPanel account (add --alert to send alerts)
   firewall ...  Firewall management (deny, allow, status, ports, etc.)
   harden        Apply targeted hardening policies (run csm harden for list)
+  incidents     List, show, and update correlated security incidents
   enable        Enable optional features (--php-shield)
   disable       Disable optional features (--php-shield)
   doctor        Run a config + daemon + watchers + store sanity check (--json for machine output)
