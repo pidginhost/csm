@@ -153,6 +153,25 @@ func (c *Correlator) persistLocked(snap Incident) {
 	c.cfg.Persist(snap)
 }
 
+// Restore re-hydrates correlator state from a list previously loaded
+// from the store. Open and Contained incidents are bound to the
+// byKey index so a finding arriving inside the merge window joins the
+// existing incident; Resolved/Dismissed incidents are loaded into the
+// id map only (Get still returns them) but do NOT claim their key, so
+// future findings for the same key start a fresh incident.
+func (c *Correlator) Restore(incidents []Incident) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := range incidents {
+		inc := incidents[i]
+		c.incidents[inc.ID] = &inc
+		if inc.Status == StatusOpen || inc.Status == StatusContained {
+			key := Key{Account: inc.Account, Domain: inc.Domain, Mailbox: inc.Mailbox}
+			c.byKey[keyString(key)] = inc.ID
+		}
+	}
+}
+
 // keyString serializes a Key into a stable string for the byKey map.
 // All identifying fields must be encoded so distinct findings (e.g.
 // different PIDs with no Account, or different remote IPs) do not

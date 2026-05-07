@@ -251,3 +251,43 @@ func TestCorrelatorPersistRunsOutsideLock(t *testing.T) {
 		t.Fatal("OnFinding deadlocked under reentrant Persist")
 	}
 }
+
+func TestCorrelatorRestoreRehydratesFromList(t *testing.T) {
+	c := newTestCorrelator()
+	prior := Incident{
+		ID: "inc_resumed", Kind: KindWebAccountCompromise, Status: StatusOpen,
+		Severity: alert.High, Account: "alice",
+		CreatedAt: time.Unix(1_700_000_000, 0), UpdatedAt: time.Unix(1_700_000_000, 0),
+	}
+	c.Restore([]Incident{prior})
+
+	c.now = func() time.Time { return time.Unix(1_700_000_000+5*60, 0) }
+	id, created, _ := c.OnFinding(alert.Finding{
+		Check: "x", Severity: alert.High, TenantID: "alice",
+		Timestamp: time.Unix(1_700_000_000+5*60, 0),
+	})
+	if created {
+		t.Errorf("post-restart finding for same account in window must merge, not create")
+	}
+	if id != "inc_resumed" {
+		t.Errorf("expected merge into restored incident; got %q", id)
+	}
+}
+
+func TestCorrelatorRestoreSkipsClosedIncidents(t *testing.T) {
+	c := newTestCorrelator()
+	resolved := Incident{
+		ID: "inc_closed", Status: StatusResolved, Severity: alert.High, Account: "alice",
+		CreatedAt: time.Unix(1_700_000_000, 0), UpdatedAt: time.Unix(1_700_000_000, 0),
+	}
+	c.Restore([]Incident{resolved})
+
+	c.now = func() time.Time { return time.Unix(1_700_000_000+5*60, 0) }
+	_, created, _ := c.OnFinding(alert.Finding{
+		Check: "x", Severity: alert.High, TenantID: "alice",
+		Timestamp: time.Unix(1_700_000_000+5*60, 0),
+	})
+	if !created {
+		t.Errorf("Restore must NOT bind closed incidents to the active byKey index")
+	}
+}
