@@ -113,15 +113,20 @@ func (t *smtpProbeTracker) Record(ip string) []alert.Finding {
 	var findings []alert.Finding
 	if len(e.times) >= t.threshold && !now.Before(e.suppressed) {
 		e.suppressed = now.Add(t.suppression)
+		// The Details message is computed here, before AutoBlockIPs runs in
+		// dispatchBatch. We can only report the *intent* (scheduled for
+		// auto-block) - the actual outcome (blocked / rate-limited / already
+		// blocked / challenged) is published by the companion `auto_block`
+		// finding emitted by checks.AutoBlockIPs in the same batch.
 		details := "Sustained SMTP connect rate above the configured threshold. Likely scanner / dictionary probe;"
 		if t.expiryStrFn != nil {
 			if exp := t.expiryStrFn(); exp != "" {
-				details += fmt.Sprintf(" source IP auto-blocked for %s.", exp)
+				details += fmt.Sprintf(" scheduled for auto-block (%s).", exp)
 			} else {
-				details += " consider auto-block."
+				details += " consider manual block."
 			}
 		} else {
-			details += " consider auto-block."
+			details += " consider manual block."
 		}
 		findings = append(findings, alert.Finding{
 			Severity: alert.High,

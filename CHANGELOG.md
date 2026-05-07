@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `smtp_probe_abuse` finding details now state "source IP auto-blocked for {block_expiry}" when auto-response is enabled, instead of contradicting the runtime by saying "consider auto-block".
+- `smtp_probe_abuse` finding details now report that auto-block is scheduled with the configured `auto_response.block_expiry` (default 24h) when auto-response is enabled, instead of contradicting the runtime by saying "consider auto-block".
 - Hardened Web UI rendering for attacker-controlled fields and fixed bulk selection on the Threat Intel page.
 - Settings navigation now comes from the backend schema, and missing templates return an error instead of panicking.
 

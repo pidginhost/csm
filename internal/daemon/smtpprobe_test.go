@@ -87,11 +87,11 @@ func TestSMTPProbeTracker_DetailsIncludesConfiguredExpiry(t *testing.T) {
 		t.Fatalf("expected finding at 100th record, got none")
 	}
 	d := last[0].Details
-	if !strings.Contains(d, "auto-blocked for 12h") {
-		t.Errorf("Details = %q, want phrase \"auto-blocked for 12h\"", d)
+	if !strings.Contains(d, "scheduled for auto-block (12h)") {
+		t.Errorf("Details = %q, want phrase \"scheduled for auto-block (12h)\"", d)
 	}
-	if strings.Contains(d, "consider auto-block") {
-		t.Errorf("Details = %q, must not still advise \"consider auto-block\" when expiry is supplied", d)
+	if strings.Contains(d, "consider manual block") {
+		t.Errorf("Details = %q, must not still advise \"consider manual block\" when expiry is supplied", d)
 	}
 }
 
@@ -117,11 +117,11 @@ func TestSMTPProbeTracker_DetailsFallbackWhenAutoBlockDisabled(t *testing.T) {
 		t.Fatalf("expected finding at 100th record, got none")
 	}
 	d := last[0].Details
-	if !strings.Contains(d, "consider auto-block") {
-		t.Errorf("Details = %q, want fallback advising \"consider auto-block\"", d)
+	if !strings.Contains(d, "consider manual block") {
+		t.Errorf("Details = %q, want fallback advising \"consider manual block\"", d)
 	}
-	if strings.Contains(d, "auto-blocked for") {
-		t.Errorf("Details = %q, must not claim auto-blocked when expiry function returned empty", d)
+	if strings.Contains(d, "scheduled for auto-block") {
+		t.Errorf("Details = %q, must not claim auto-block scheduled when expiry function returned empty", d)
 	}
 }
 
