@@ -35,6 +35,42 @@ can pin on `v: 1` and ignore unknown keys.
 same finding produce the same ID, so downstream dedup works across
 re-runs.
 
+### Process context
+
+Exec and outbound-connection findings on BPF-backed hosts carry an
+optional `process` object with PID, PPID, UID, user, cPanel account
+(when known), comm, exe, sanitized cmdline, and a parent chain. The
+field is omitted when no context is available, so existing parsers
+that ignore unknown keys see no schema change.
+
+```json
+{
+  "severity": "HIGH",
+  "check": "outbound_connection",
+  "message": "Suspicious outbound connection",
+  "process": {
+    "pid": 4242,
+    "ppid": 4200,
+    "uid": 1001,
+    "user": "alice",
+    "account": "alice",
+    "comm": "ncat",
+    "exe": "/usr/bin/ncat",
+    "cmdline": ["ncat", "203.0.113.10", "587"],
+    "parent": {
+      "pid": 4200,
+      "ppid": 4100,
+      "uid": 1001,
+      "comm": "sh"
+    }
+  },
+  "timestamp": "2026-05-07T12:34:56Z"
+}
+```
+
+The parent chain may be truncated at depth 5 and may stop early if
+an intermediate parent has been evicted from the cache.
+
 ### File sink (JSONL)
 
 ```yaml

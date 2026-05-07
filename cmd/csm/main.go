@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"time"
@@ -49,7 +50,26 @@ func resolveConfDir() string {
 	return defaultConfDir
 }
 
+// ensureHomeEnv sets HOME from os/user.Current().HomeDir when systemd has
+// not provided one. The mysql client looks up ~/.my.cnf via $HOME, so a
+// system service started without HOME falls back to unauthenticated
+// connections and silently fails on hosts that gate root via password
+// (e.g. cPanel /root/.my.cnf). Setting HOME also lets redis-cli, wp-cli,
+// and other subprocess clients honour their per-user config files.
+func ensureHomeEnv() {
+	if os.Getenv("HOME") != "" {
+		return
+	}
+	u, err := user.Current()
+	if err != nil || u.HomeDir == "" {
+		return
+	}
+	_ = os.Setenv("HOME", u.HomeDir)
+}
+
 func main() {
+	ensureHomeEnv()
+
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(1)

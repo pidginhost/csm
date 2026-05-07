@@ -102,6 +102,7 @@ func (c *connectionBPF) Run(ctx context.Context) {
 	}()
 
 	go c.reader.Run(ctx)
+	pcCache, pcEnr := ProcessCtx()
 	for {
 		select {
 		case <-ctx.Done():
@@ -117,6 +118,7 @@ func (c *connectionBPF) Run(ctx context.Context) {
 				continue
 			}
 			finding.Timestamp = time.Now()
+			attachProcessCtxToFinding(pcCache, pcEnr, &finding, ev)
 			select {
 			case c.alertCh <- finding:
 			default:

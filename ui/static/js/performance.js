@@ -89,11 +89,14 @@
                 }
 
                 // --- MySQL ---
+                // Both fields are null when the mysql client lookup failed
+                // (no ~/.my.cnf, no socket auth, mysqld absent). Render "n/a"
+                // for the missing piece so operators do not read it as 0.
                 var mysqlEl = document.getElementById('stat-mysql');
                 if (mysqlEl) {
-                    var mysqlMem = m.mysql_mem_mb || 0;
-                    var mysqlConns = m.mysql_conns || 0;
-                    mysqlEl.textContent = mysqlMem + ' MB / ' + mysqlConns + ' conn';
+                    var memText = (typeof m.mysql_mem_mb === 'number') ? m.mysql_mem_mb + ' MB' : 'n/a';
+                    var connText = (typeof m.mysql_conns === 'number') ? m.mysql_conns + ' conn' : 'n/a';
+                    mysqlEl.textContent = memText + ' / ' + connText;
                     mysqlEl.className = 'h1 mb-0';
                 }
 

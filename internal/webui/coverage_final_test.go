@@ -833,6 +833,39 @@ func TestSampleMetricsNoPanicFinalCoverage(t *testing.T) {
 	}
 }
 
+// MySQL telemetry uses pointer fields so the webui can tell "0 connections"
+// from "we could not ask". Verify the JSON contract: nil renders as null,
+// a populated value renders as a number.
+func TestPerfMetricsMySQLFieldsJSONContract(t *testing.T) {
+	empty := &perfMetrics{}
+	b, err := json.Marshal(empty)
+	if err != nil {
+		t.Fatalf("marshal empty: %v", err)
+	}
+	s := string(b)
+	if !strings.Contains(s, `"mysql_conns":null`) {
+		t.Errorf(`empty perfMetrics JSON missing "mysql_conns":null; got %s`, s)
+	}
+	if !strings.Contains(s, `"mysql_mem_mb":null`) {
+		t.Errorf(`empty perfMetrics JSON missing "mysql_mem_mb":null; got %s`, s)
+	}
+
+	conns := 7
+	var memMB uint64 = 1234
+	populated := &perfMetrics{MySQLConns: &conns, MySQLMemMB: &memMB}
+	b2, err := json.Marshal(populated)
+	if err != nil {
+		t.Fatalf("marshal populated: %v", err)
+	}
+	s2 := string(b2)
+	if !strings.Contains(s2, `"mysql_conns":7`) {
+		t.Errorf(`populated perfMetrics JSON missing "mysql_conns":7; got %s`, s2)
+	}
+	if !strings.Contains(s2, `"mysql_mem_mb":1234`) {
+		t.Errorf(`populated perfMetrics JSON missing "mysql_mem_mb":1234; got %s`, s2)
+	}
+}
+
 func TestSampleMetricsLoopStoresSnapshotFinalCoverage(t *testing.T) {
 	s := newTestServer(t, "tok")
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)

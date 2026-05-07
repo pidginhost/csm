@@ -9,6 +9,7 @@ import (
 	"github.com/pidginhost/csm/internal/bpf"
 	"github.com/pidginhost/csm/internal/config"
 	csmlog "github.com/pidginhost/csm/internal/log"
+	"github.com/pidginhost/csm/internal/processctx"
 )
 
 // StartConnectionTracker selects the active connection-tracker backend based
@@ -75,4 +76,27 @@ func tryStartConnectionBPF(ctx context.Context, ch chan<- alert.Finding, cfg *co
 		return nil, err
 	}
 	return b, nil
+}
+
+// attachProcessCtxToFinding sets f.Process from the cache when present, or
+// enqueues a /proc enrichment so the next finding for the same PID benefits.
+// Cache miss is the common case for short-lived processes; the finding is
+// emitted with whatever context already exists (often none).
+func attachProcessCtxToFinding(cache *processctx.Cache, enr *processctx.Enricher, f *alert.Finding, ev ConnectionEvent) {
+	if ev.PID == 0 {
+		return
+	}
+	req := processctxRequestFromConnection(ev)
+	if pc, needsEnrichment := cache.MaterializeVerified(req.PID, req.UID, req.UIDKnown, req.Comm); pc != nil {
+		f.Process = pc
+		if needsEnrichment {
+			enr.Enqueue(req)
+		}
+		return
+	}
+	enr.Enqueue(req)
+}
+
+func processctxRequestFromConnection(ev ConnectionEvent) processctx.EnrichRequest {
+	return processctx.EnrichRequest{PID: int(ev.PID), UID: int(ev.UID), UIDKnown: true, Comm: ev.Comm}
 }
