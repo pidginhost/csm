@@ -118,11 +118,10 @@ func (c *Cache) removeLocked(el *list.Element) {
 	c.ll.Remove(el)
 }
 
-// PutFromExec is a minimal constructor for callers that have only PID/UID/comm/exe
-// (e.g., tests). Production daemon code uses PutFromProc with user/account
-// resolved at insert time so cache-hit consumers see fully populated context.
+// PutFromExec is a minimal constructor for callers that have only
+// PID/UID/comm/exe from an exec event. UIDKnown is true even for UID 0.
 func (c *Cache) PutFromExec(pid, ppid, uid int, comm, exe string) {
-	c.Put(processEntry{PID: pid, PPID: ppid, UID: uid, Comm: comm, Exe: exe})
+	c.Put(processEntry{PID: pid, PPID: ppid, UID: uid, UIDKnown: true, Comm: comm, Exe: exe})
 }
 
 // PutFromProc inserts a fully populated entry from /proc-style data. The
@@ -131,8 +130,8 @@ func (c *Cache) PutFromExec(pid, ppid, uid int, comm, exe string) {
 // processEntry.
 func (c *Cache) PutFromProc(pid, ppid, uid int, user, account, comm, exe string, cmdline []string) {
 	c.Put(processEntry{
-		PID: pid, PPID: ppid, UID: uid,
+		PID: pid, PPID: ppid, UID: uid, UIDKnown: true,
 		User: user, Account: account,
-		Comm: comm, Exe: exe, Cmdline: cmdline,
+		Comm: comm, Exe: exe, Cmdline: cmdline, ProcRead: true,
 	})
 }

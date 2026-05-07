@@ -83,9 +83,20 @@ func tryStartConnectionBPF(ctx context.Context, ch chan<- alert.Finding, cfg *co
 // Cache miss is the common case for short-lived processes; the finding is
 // emitted with whatever context already exists (often none).
 func attachProcessCtxToFinding(cache *processctx.Cache, enr *processctx.Enricher, f *alert.Finding, ev ConnectionEvent) {
-	if pc := cache.Materialize(int(ev.PID)); pc != nil {
-		f.Process = pc
+	if ev.PID == 0 {
 		return
 	}
-	enr.Enqueue(processctx.EnrichRequest{PID: int(ev.PID), UID: int(ev.UID), Comm: ev.Comm})
+	req := processctxRequestFromConnection(ev)
+	if pc, needsEnrichment := cache.MaterializeVerified(req.PID, req.UID, req.UIDKnown, req.Comm); pc != nil {
+		f.Process = pc
+		if needsEnrichment {
+			enr.Enqueue(req)
+		}
+		return
+	}
+	enr.Enqueue(req)
+}
+
+func processctxRequestFromConnection(ev ConnectionEvent) processctx.EnrichRequest {
+	return processctx.EnrichRequest{PID: int(ev.PID), UID: int(ev.UID), UIDKnown: true, Comm: ev.Comm}
 }

@@ -40,11 +40,11 @@ func (r *ProcReader) Read(pid int) (processEntry, error) {
 		}
 		return processEntry{}, err
 	}
-	e := processEntry{PID: pid}
+	e := processEntry{PID: pid, ProcRead: true}
 
 	if data, ok := readFileWithDeadline(filepath.Join(dir, "status"), r.perFileDeadline); ok {
 		e.PPID = parseStatusPPID(string(data))
-		e.UID = parseStatusUID(string(data))
+		e.UID, e.UIDKnown = parseStatusUIDKnown(string(data))
 		e.Comm = parseStatusName(string(data))
 	}
 	if data, ok := readFileWithDeadline(filepath.Join(dir, "cmdline"), r.perFileDeadline); ok {
@@ -140,17 +140,22 @@ func parseStatusPPID(s string) int {
 }
 
 func parseStatusUID(s string) int {
+	uid, _ := parseStatusUIDKnown(s)
+	return uid
+}
+
+func parseStatusUIDKnown(s string) (int, bool) {
 	for _, line := range strings.Split(s, "\n") {
 		if rest, ok := strings.CutPrefix(line, "Uid:\t"); ok {
 			fields := strings.Fields(rest)
 			if len(fields) == 0 {
-				return 0
+				return 0, false
 			}
-			v, _ := strconv.Atoi(fields[0])
-			return v
+			v, err := strconv.Atoi(fields[0])
+			return v, err == nil
 		}
 	}
-	return 0
+	return 0, false
 }
 
 func parseCmdline(b []byte) []string {

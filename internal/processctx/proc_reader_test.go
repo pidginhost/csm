@@ -48,6 +48,9 @@ func TestReadProcEntryHappyPath(t *testing.T) {
 	if e.PID != 1234 || e.PPID != 1 || e.UID != 1001 {
 		t.Errorf("scalars: %+v", e)
 	}
+	if !e.UIDKnown || !e.ProcRead {
+		t.Errorf("expected confirmed UID and proc-read marker: %+v", e)
+	}
 	if e.Comm != "ncat" {
 		t.Errorf("Comm: want ncat, got %q", e.Comm)
 	}
@@ -102,6 +105,17 @@ func TestParseStatusUIDFromTabbedFormat(t *testing.T) {
 	got := parseStatusUID("Name:\tx\nUid:\t1001\t2002\t3003\t4004\n")
 	if got != 1001 {
 		t.Errorf("want 1001, got %d", got)
+	}
+}
+
+func TestParseStatusUIDKnownDistinguishesRootFromUnknown(t *testing.T) {
+	uid, ok := parseStatusUIDKnown("Name:\tx\nUid:\t0\t0\t0\t0\n")
+	if !ok || uid != 0 {
+		t.Fatalf("root UID should be known zero, got uid=%d ok=%v", uid, ok)
+	}
+	uid, ok = parseStatusUIDKnown("Name:\tx\n")
+	if ok || uid != 0 {
+		t.Fatalf("missing UID should be unknown zero, got uid=%d ok=%v", uid, ok)
 	}
 }
 

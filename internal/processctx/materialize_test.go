@@ -72,6 +72,50 @@ func TestMaterializeMissingIntermediateParent(t *testing.T) {
 	}
 }
 
+func TestMaterializeVerifiedRejectsStaleIdentity(t *testing.T) {
+	c := newTestCache(8, 0)
+	c.PutFromExec(1234, 1, 1001, "ncat", "/usr/bin/ncat")
+
+	if pc, _ := c.MaterializeVerified(1234, 1002, true, "ncat"); pc != nil {
+		t.Fatalf("expected UID mismatch to reject cached process, got %+v", pc)
+	}
+	if pc, _ := c.MaterializeVerified(1234, 1001, true, "curl"); pc != nil {
+		t.Fatalf("expected comm mismatch to reject cached process, got %+v", pc)
+	}
+}
+
+func TestMaterializeVerifiedReportsExecSnapshotNeedsEnrichment(t *testing.T) {
+	c := newTestCache(8, 0)
+	c.PutFromExec(1234, 1, 1001, "ncat", "/usr/bin/ncat")
+
+	pc, needsEnrichment := c.MaterializeVerified(1234, 1001, true, "ncat")
+	if pc == nil {
+		t.Fatal("expected verified cache hit")
+	}
+	if !needsEnrichment {
+		t.Fatal("exec-only cache entry should request async enrichment")
+	}
+
+	c.PutFromProc(1234, 1, 1001, "alice", "alice", "ncat", "/usr/bin/ncat", []string{"ncat"})
+	pc, needsEnrichment = c.MaterializeVerified(1234, 1001, true, "ncat")
+	if pc == nil {
+		t.Fatal("expected verified cache hit after proc read")
+	}
+	if needsEnrichment {
+		t.Fatal("/proc-populated cache entry should not request enrichment")
+	}
+}
+
+func TestMaterializeVerifiedAcceptsKnownRootUID(t *testing.T) {
+	c := newTestCache(8, 0)
+	c.PutFromExec(1234, 1, 0, "bash", "/usr/bin/bash")
+
+	pc, _ := c.MaterializeVerified(1234, 0, true, "bash")
+	if pc == nil || pc.UID != 0 {
+		t.Fatalf("expected verified root cache hit, got %+v", pc)
+	}
+}
+
 func TestMaterializeUnknownPIDReturnsNil(t *testing.T) {
 	c := newTestCache(8, 0)
 	if pc := c.Materialize(9999); pc != nil {

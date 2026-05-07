@@ -22,10 +22,8 @@ func TestPopulateProcessCtxFromExecEventStoresEntry(t *testing.T) {
 	if pc.Exe != "/usr/sbin/php-fpm" {
 		t.Errorf("Exe: want /usr/sbin/php-fpm, got %q", pc.Exe)
 	}
-	// Identity must be populated synchronously so a connection landing 1ms
-	// later sees a fully-formed Process on cache hit, not just UID.
-	if pc.User == "" {
-		t.Errorf("User: want non-empty (resolver lookup), got empty; pc=%+v", pc)
+	if pc.User != "" || pc.Account != "" || len(pc.Cmdline) != 0 {
+		t.Errorf("exec hot path should store only event data before async enrichment; pc=%+v", pc)
 	}
 }
 
@@ -50,5 +48,18 @@ func TestAttachProcessCtxToExecFinding(t *testing.T) {
 	}
 	if f.Process.PID != 4242 || f.Process.UID != 1001 {
 		t.Fatalf("Process = %+v", f.Process)
+	}
+}
+
+func TestAttachProcessCtxToExecFindingRejectsMismatchedCache(t *testing.T) {
+	resetProcessCtxForTest()
+	cache, _ := ProcessCtx()
+	cache.PutFromExec(4242, 1, 1002, "curl", "/usr/bin/curl")
+
+	ev := ExecEvent{UID: 1001, PID: 4242, PPID: 1, Comm: "php-fpm", Filename: "/usr/sbin/php-fpm"}
+	f := alert.Finding{Check: "suspicious_process_exec", Message: "test", Timestamp: time.Now()}
+	attachProcessCtxToExecFinding(cache, &f, ev)
+	if f.Process != nil {
+		t.Fatalf("expected stale cache hit to be ignored, got %+v", f.Process)
 	}
 }

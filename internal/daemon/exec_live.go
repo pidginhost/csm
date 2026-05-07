@@ -7,7 +7,6 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/bpf"
-	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/processctx"
@@ -80,25 +79,21 @@ func tryStartExecBPF(ctx context.Context, ch chan<- alert.Finding, cfg *config.C
 }
 
 // populateProcessCtxFromExec writes the BPF exec event into the process
-// context cache, resolving user/account on the spot so a connection landing
-// immediately after exec sees fully populated context on cache hit. Zero PID
-// is ignored (synthetic boot-time noise). checks.LookupUser is file-cached,
-// so the resolve cost is amortized.
+// context cache without doing identity or /proc work in the event loop. Zero
+// PID is ignored (synthetic boot-time noise).
 func populateProcessCtxFromExec(cache *processctx.Cache, ev ExecEvent) {
 	if ev.PID == 0 {
 		return
 	}
-	user := checks.LookupUser(ev.UID)
-	account := resolveLocalAccountForUID(int(ev.UID), user)
-	cache.PutFromProc(
-		int(ev.PID), int(ev.PPID), int(ev.UID),
-		user, account, ev.Comm, ev.Filename,
-		nil, // BPF exec event carries no cmdline; enricher fills it later
-	)
+	cache.PutFromExec(int(ev.PID), int(ev.PPID), int(ev.UID), ev.Comm, ev.Filename)
 }
 
 func attachProcessCtxToExecFinding(cache *processctx.Cache, f *alert.Finding, ev ExecEvent) {
-	if pc := cache.Materialize(int(ev.PID)); pc != nil {
+	if pc, _ := cache.MaterializeVerified(int(ev.PID), int(ev.UID), true, ev.Comm); pc != nil {
 		f.Process = pc
 	}
+}
+
+func processctxRequestFromExec(ev ExecEvent) processctx.EnrichRequest {
+	return processctx.EnrichRequest{PID: int(ev.PID), UID: int(ev.UID), UIDKnown: true, Comm: ev.Comm}
 }

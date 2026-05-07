@@ -124,10 +124,11 @@ Exec and outbound-connection findings carry an optional `process` object with
 PID, PPID, UID, user, cPanel account (when known), comm, exe, sanitized cmdline,
 and a parent chain up to depth 5. The chain is materialized from an in-memory
 LRU+TTL cache (cap 16384 entries, 30-minute TTL) populated from BPF exec
-events. Cache misses trigger a bounded async `/proc` read; the connection
-ring-buffer reader never blocks. When neither cache nor enricher has data
-(e.g., a process that exited before userspace reads its event), the
-`process` field is omitted entirely and the finding still emits.
+events. Cache misses trigger a bounded async `/proc` read, so process-context
+enrichment does not add blocking work to the connection event loop. When
+neither cache nor enricher has data (e.g., a process that exited before
+userspace reads its event), the `process` field is omitted entirely and the
+finding still emits.
 
 Counters exposed at `/metrics`:
 

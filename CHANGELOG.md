@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - The Web UI now has a cleanup history view for file backups and dropped database-object backups.
-- Optional `process` field on findings carries PID/PPID/UID/user/account/exe/sanitized cmdline plus parent chain (depth 5). Omitted when no context is available; existing webhook consumers see no schema change.
+- Optional `process` field on findings and audit events carries PID/PPID/UID/user/account/exe/sanitized cmdline plus parent chain (depth 5). Omitted when no context is available; existing webhook consumers see no schema change.
 
 ### Changed
 

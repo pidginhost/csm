@@ -13,12 +13,14 @@ type processEntry struct {
 	PID       int
 	PPID      int
 	UID       int
+	UIDKnown  bool
 	User      string
 	Account   string
 	Comm      string
 	Exe       string
 	Cmdline   []string
 	StartedAt time.Time
+	ProcRead  bool
 	lastTouch time.Time
 }
 

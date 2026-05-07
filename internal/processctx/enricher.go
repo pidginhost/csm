@@ -17,6 +17,7 @@ type procReader interface {
 type EnrichRequest struct {
 	PID       int
 	UID       int
+	UIDKnown  bool
 	Comm      string
 	StartedAt time.Time
 }
@@ -182,16 +183,24 @@ func (e *Enricher) observe(seconds float64) {
 }
 
 func (e *Enricher) shouldCache(req EnrichRequest, entry processEntry) bool {
-	if req.UID != 0 && entry.UID != 0 && req.UID != entry.UID {
+	reqUIDKnown := req.UIDKnown || req.UID != 0
+	if reqUIDKnown {
+		if !entry.UIDKnown || req.UID != entry.UID {
+			return false
+		}
+	} else if !entry.UIDKnown {
 		return false
 	}
-	if req.Comm != "" && entry.Comm != "" && req.Comm != entry.Comm {
+	if req.Comm != "" && entry.Comm != req.Comm {
 		return false
 	}
 	return true
 }
 
 func (e *Enricher) enrichIdentity(entry *processEntry) {
+	if !entry.UIDKnown {
+		return
+	}
 	user, account := e.resolver.Resolve(entry.UID)
 	entry.User = user
 	entry.Account = account

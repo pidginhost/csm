@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"time"
+
+	"github.com/pidginhost/csm/internal/processctx"
 )
 
 // AuditSchemaVersion is the value emitted in every AuditEvent's "v"
@@ -16,18 +18,19 @@ const AuditSchemaVersion = 1
 // keys match what downstream SIEMs expect; fields are added at the
 // end so older parsers ignore unknown ones.
 type AuditEvent struct {
-	V         int       `json:"v"`
-	Timestamp time.Time `json:"ts"`
-	FindingID string    `json:"finding_id"`
-	Severity  string    `json:"severity"`
-	Check     string    `json:"check"`
-	Message   string    `json:"message"`
-	Details   string    `json:"details,omitempty"`
-	FilePath  string    `json:"file_path,omitempty"`
-	Hostname  string    `json:"hostname"`
-	TenantID  string    `json:"tenant_id,omitempty"`
-	Domain    string    `json:"domain,omitempty"`
-	Mailbox   string    `json:"mailbox,omitempty"`
+	V         int                        `json:"v"`
+	Timestamp time.Time                  `json:"ts"`
+	FindingID string                     `json:"finding_id"`
+	Severity  string                     `json:"severity"`
+	Check     string                     `json:"check"`
+	Message   string                     `json:"message"`
+	Details   string                     `json:"details,omitempty"`
+	FilePath  string                     `json:"file_path,omitempty"`
+	Hostname  string                     `json:"hostname"`
+	TenantID  string                     `json:"tenant_id,omitempty"`
+	Domain    string                     `json:"domain,omitempty"`
+	Mailbox   string                     `json:"mailbox,omitempty"`
+	Process   *processctx.ProcessContext `json:"process,omitempty"`
 }
 
 // AuditSink is what every audit-log destination implements. Emit must
@@ -62,6 +65,7 @@ func NewAuditEvent(hostname string, f Finding) AuditEvent {
 		TenantID:  f.TenantID,
 		Domain:    f.Domain,
 		Mailbox:   f.Mailbox,
+		Process:   f.Process,
 	}
 }
 

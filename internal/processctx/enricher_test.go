@@ -16,6 +16,10 @@ type fakeReader struct {
 	comm  string
 }
 
+type procReaderFunc func(pid int) (processEntry, error)
+
+func (f procReaderFunc) Read(pid int) (processEntry, error) { return f(pid) }
+
 func (f *fakeReader) Read(pid int) (processEntry, error) {
 	f.calls.Add(1)
 	if f.delay > 0 {
@@ -29,7 +33,7 @@ func (f *fakeReader) Read(pid int) (processEntry, error) {
 	if comm == "" {
 		comm = "fake"
 	}
-	return processEntry{PID: pid, Comm: comm, UID: uid}, nil
+	return processEntry{PID: pid, Comm: comm, UID: uid, UIDKnown: true, ProcRead: true}, nil
 }
 
 type fakeResolver struct{}
@@ -104,6 +108,58 @@ func TestEnricherRejectsStalePIDReuse(t *testing.T) {
 	if e.Stats().Stale == 0 {
 		t.Fatalf("expected stale counter to move; stats=%+v", e.Stats())
 	}
+}
+
+func TestEnricherRejectsMissingUIDWhenRequestHasRootUID(t *testing.T) {
+	c := newTestCache(8, 0)
+	reader := procReaderFunc(func(pid int) (processEntry, error) {
+		return processEntry{PID: pid, Comm: "bash", ProcRead: true}, nil
+	})
+	e := NewEnricher(c, reader, EnricherConfig{Workers: 1, QueueCap: 4})
+	e.Start()
+	defer e.Stop()
+
+	if !e.Enqueue(EnrichRequest{PID: 1234, UID: 0, UIDKnown: true, Comm: "bash"}) {
+		t.Fatal("enqueue failed")
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if e.Stats().Stale > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, ok := c.Get(1234); ok {
+		t.Fatal("entry without confirmed UID must not be cached as root")
+	}
+	if e.Stats().Stale == 0 {
+		t.Fatalf("expected stale counter to move; stats=%+v", e.Stats())
+	}
+}
+
+func TestEnricherAcceptsConfirmedRootUID(t *testing.T) {
+	c := newTestCache(8, 0)
+	reader := procReaderFunc(func(pid int) (processEntry, error) {
+		return processEntry{PID: pid, UID: 0, UIDKnown: true, Comm: "bash", ProcRead: true}, nil
+	})
+	e := NewEnricher(c, reader, EnricherConfig{Workers: 1, QueueCap: 4})
+	e.Start()
+	defer e.Stop()
+
+	if !e.Enqueue(EnrichRequest{PID: 1234, UID: 0, UIDKnown: true, Comm: "bash"}) {
+		t.Fatal("enqueue failed")
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if pc := c.Materialize(1234); pc != nil {
+			if pc.UID != 0 {
+				t.Fatalf("Process UID: want 0, got %+v", pc)
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("confirmed root entry was not cached; stats=%+v", e.Stats())
 }
 
 func TestEnricherPopulatesUserAndAccount(t *testing.T) {
