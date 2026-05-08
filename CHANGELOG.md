@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-05-08
+
 ### Added
 
 - Web UI shows a top banner when a newer CSM release is available upstream; the daemon polls GitHub daily and falls back to the OS package manager but never applies the upgrade itself. Set `updates.check_enabled: false` to disable on air-gapped hosts.
