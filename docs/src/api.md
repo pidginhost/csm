@@ -192,3 +192,28 @@ Fields are omitted when the daemon could not attribute them. Orchestrators shoul
 | `live_state` | `original_missing`, `live_differs`, `original_not_file`, `archive_missing`, `archive_not_file`, or `unknown`. Byte-identical restored entries are hidden. |
 
 `GET /api/v1/db-object-backups` returns `restored` and `restored_at` when a captured MySQL trigger/event/procedure/function backup has already been replayed.
+
+## Incidents
+
+### `GET /api/v1/incidents`
+
+Returns every incident (open, contained, resolved, dismissed) sorted by
+`updated_at` descending.
+
+### `GET /api/v1/incidents/<id>`
+
+Returns one incident by id. 404 if not found.
+
+### `POST /api/v1/incidents/<id>/status`
+
+Body:
+
+```json
+{"status": "resolved", "details": "operator-marked"}
+```
+
+Status values: `open`, `contained`, `resolved`, `dismissed`. Closing an
+incident (resolved/dismissed) means future findings for the same
+correlation key start a fresh incident. Reopening an incident binds the
+same key again. Incident JSON includes `correlation_key` when CSM has a
+stored account, mailbox, domain, process, or remote-IP key.

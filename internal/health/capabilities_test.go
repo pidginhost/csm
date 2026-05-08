@@ -46,6 +46,12 @@ func TestBPFCapabilityStringsAppearWhenProbed(t *testing.T) {
 	_ = bpf.Capabilities{}
 }
 
+func TestIncidentCapabilityAlwaysPresent(t *testing.T) {
+	if !contains(Capabilities(), "incidents.v1") {
+		t.Error("incidents.v1 capability missing")
+	}
+}
+
 // TestConnectionTrackerCapabilityWhenBPFActive asserts the per-feature
 // "bpf-connection-tracker" string appears iff the connection_tracker
 // backend has been set to BPF.

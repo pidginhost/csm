@@ -14,6 +14,7 @@ type Snapshot struct {
 	LatestScan    time.Time       `json:"latest_scan,omitempty"`
 	BaselineAt    time.Time       `json:"baseline_at,omitempty"`
 	BlocklistSize int             `json:"blocklist_size"`
+	IncidentsOpen int             `json:"incidents_open"`
 	HistoryCount  int             `json:"history_count"`
 	Severities    map[string]int  `json:"severities"` // "critical","high","warning"
 	Watchers      map[string]bool `json:"watchers"`   // name -> attached

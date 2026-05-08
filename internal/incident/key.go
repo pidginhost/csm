@@ -1,0 +1,72 @@
+package incident
+
+import (
+	"strings"
+
+	"github.com/pidginhost/csm/internal/alert"
+)
+
+// Key is the correlation key derived from a Finding. Empty fields mean
+// "not provided"; the correlator uses the most specific non-empty fields.
+type Key struct {
+	Account  string `json:"account,omitempty"`
+	Domain   string `json:"domain,omitempty"`
+	Mailbox  string `json:"mailbox,omitempty"`
+	UID      int    `json:"uid,omitempty"`
+	PID      int    `json:"pid,omitempty"`
+	RemoteIP string `json:"remote_ip,omitempty"`
+}
+
+// IsEmpty reports whether the key has nothing to correlate on. Such
+// findings are emitted normally but do not join an incident.
+func (k Key) IsEmpty() bool {
+	return k.Account == "" && k.Domain == "" && k.Mailbox == "" && k.UID == 0 && k.PID == 0 && k.RemoteIP == ""
+}
+
+// KeyFor extracts a correlation key from a Finding. Sources, in priority
+// order: Process context (PID/UID/account), explicit mail fields, TenantID
+// for account, and a /home[N]/<account>/ heuristic for fanotify findings.
+func KeyFor(f alert.Finding) Key {
+	k := Key{
+		Account:  f.TenantID,
+		Domain:   f.Domain,
+		Mailbox:  f.Mailbox,
+		RemoteIP: f.SourceIP,
+	}
+	if f.Process != nil {
+		if f.Process.Account != "" && k.Account == "" {
+			k.Account = f.Process.Account
+		}
+		k.UID = f.Process.UID
+		k.PID = f.Process.PID
+	}
+	if k.Account == "" {
+		k.Account = accountFromHomePath(f.FilePath)
+	}
+	return k
+}
+
+// accountFromHomePath parses /home[N]/<account>/... paths. Returns the
+// account segment or "" if the path does not match the cPanel-style home
+// layout. Pure string parsing; does not walk the filesystem.
+func accountFromHomePath(p string) string {
+	if p == "" {
+		return ""
+	}
+	parts := strings.SplitN(p, "/", 4)
+	if len(parts) < 3 {
+		return ""
+	}
+	if parts[0] != "" {
+		return ""
+	}
+	if !strings.HasPrefix(parts[1], "home") {
+		return ""
+	}
+	for _, ch := range parts[1][len("home"):] {
+		if ch < '0' || ch > '9' {
+			return ""
+		}
+	}
+	return parts[2]
+}

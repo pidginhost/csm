@@ -14,6 +14,7 @@ type Provider interface {
 	StoreSizeMB() float64
 	SeverityCounts() map[string]int
 	BlocklistSize() int
+	IncidentsOpen() int
 	HistoryCount() int
 	ConfigHash() string
 	BinaryHash() string
@@ -38,6 +39,7 @@ func Build(p Provider, version string, capabilities []string) Snapshot {
 		LatestScan:    p.LatestScan(),
 		BaselineAt:    p.BaselineAt(),
 		BlocklistSize: p.BlocklistSize(),
+		IncidentsOpen: p.IncidentsOpen(),
 		HistoryCount:  p.HistoryCount(),
 		Severities:    cloneIntMap(p.SeverityCounts()),
 		Watchers:      cloneBoolMap(p.WatcherStatuses()),

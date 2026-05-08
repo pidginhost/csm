@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Web UI now has a cleanup history view for file backups and dropped database-object backups.
 - Optional `process` field on findings and audit events carries PID/PPID/UID/user/account/exe/sanitized cmdline plus parent chain (depth 5). Omitted when no context is available; existing webhook consumers see no schema change.
 - Operators can now exempt specific mailboxes or whole domains from the cloud-relay credential-abuse detector only, without weakening the rate detector for the same account.
+- Incident correlation groups related findings into one story per account, mailbox, or process. New API + CLI surface plus persistence; original findings stream is unchanged.
 
 ### Changed
 
@@ -25,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hardened Web UI rendering for attacker-controlled fields and fixed bulk selection on the Threat Intel page.
 - Settings navigation now comes from the backend schema, and missing templates return an error instead of panicking.
 - `renderTemplate` now buffers output before flushing so a template execution failure surfaces a clean 500 instead of a partial 200 body, and the settings UI drops a dead `resp.ok` branch that became unreachable after the `CSM.request` refactor.
+- Incident correlator rejects unknown status strings, the webui POST `/api/v1/incidents/{id}/status` mutator is now CSRF-protected, and a daily retention sweep prunes resolved/dismissed incidents older than 30 days and bumps `csm_incidents_compacted_total`.
+- Incident correlation now survives daemon restart for process-only and remote-IP incidents, pruned incidents disappear from live API/control results, and pre-alert filtered findings still join incidents.
 - The Firewall entry in the Response menu now renders an icon to match the other dropdown items.
 - The Performance dashboard MySQL card now shows `n/a` instead of `0 conn` when csm cannot query MySQL, and the daemon under systemd can finally read its local mysql credentials so connection counts and MySQL configuration findings appear instead of silently dropping.
 

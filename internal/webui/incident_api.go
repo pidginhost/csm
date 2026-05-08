@@ -1,10 +1,13 @@
 package webui
 
 import (
+	"encoding/json"
 	"net/http"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/pidginhost/csm/internal/incident"
 )
 
 type timelineEvent struct {
@@ -116,4 +119,66 @@ func (s *Server) apiIncident(w http.ResponseWriter, r *http.Request) {
 		"query_account": account,
 		"hours":         hours,
 	})
+}
+
+// apiIncidentList serves GET /api/v1/incidents. Returns an array of
+// incidents (open, contained, resolved, dismissed) newest first.
+func (s *Server) apiIncidentList(w http.ResponseWriter, _ *http.Request) {
+	if s.incidentCorrelator == nil {
+		writeJSON(w, []incident.Incident{})
+		return
+	}
+	writeJSON(w, s.incidentCorrelator.Snapshot())
+}
+
+// apiIncidentShow serves GET /api/v1/incidents/<id>. 404 if not found.
+func (s *Server) apiIncidentShow(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/incidents/")
+	id = strings.TrimSuffix(id, "/")
+	if id == "" || s.incidentCorrelator == nil {
+		http.NotFound(w, r)
+		return
+	}
+	inc, ok := s.incidentCorrelator.Get(id)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	writeJSON(w, inc)
+}
+
+// apiIncidentStatus serves POST /api/v1/incidents/<id>/status. Body
+// {"status": "resolved", "details": "..."}.
+func (s *Server) apiIncidentStatus(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/incidents/")
+	id = strings.TrimSuffix(id, "/status")
+	id = strings.Trim(id, "/")
+	var body struct {
+		Status  string `json:"status"`
+		Details string `json:"details"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	if s.incidentCorrelator == nil {
+		http.Error(w, "incidents not enabled", http.StatusServiceUnavailable)
+		return
+	}
+	if err := s.incidentCorrelator.SetStatus(id, incident.Status(body.Status), body.Details); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"ok":true}`))
+}
+
+// apiIncidentRouter dispatches /api/v1/incidents/<id>[...] sub-paths.
+// POST .../status -> apiIncidentStatus; GET .../<id> -> apiIncidentShow.
+func (s *Server) apiIncidentRouter(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/status") {
+		s.apiIncidentStatus(w, r)
+		return
+	}
+	s.apiIncidentShow(w, r)
 }

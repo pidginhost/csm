@@ -1,0 +1,39 @@
+package incident
+
+import "github.com/pidginhost/csm/internal/metrics"
+
+// RegisterMetrics binds the correlator's counters to reg. Production
+// callers should pass metrics.Default(); tests pass metrics.NewRegistry()
+// to keep registration isolated.
+func RegisterMetrics(reg *metrics.Registry, c *Correlator) {
+	reg.RegisterGaugeFunc(
+		"csm_incidents_open",
+		"Open and Contained incidents currently in correlator state.",
+		func() float64 { return float64(c.OpenCount()) },
+	)
+	reg.RegisterCounterFunc(
+		"csm_incidents_created_total",
+		"Total incidents created by the correlator.",
+		func() float64 { return float64(c.counters.createdTotal.Load()) },
+	)
+	reg.RegisterCounterFunc(
+		"csm_incidents_severity_changed_total",
+		"Incident severity escalations (severity does not downgrade, so this is monotonic).",
+		func() float64 { return float64(c.counters.severityChangedTotal.Load()) },
+	)
+	reg.RegisterCounterFunc(
+		"csm_incidents_status_changed_total",
+		"Incident status transitions (open/contained/resolved/dismissed).",
+		func() float64 { return float64(c.counters.statusChangedTotal.Load()) },
+	)
+	reg.RegisterCounterFunc(
+		"csm_incidents_findings_merged_total",
+		"Findings merged into an existing incident (not counted on incident create).",
+		func() float64 { return float64(c.counters.findingsMergedTotal.Load()) },
+	)
+	reg.RegisterCounterFunc(
+		"csm_incidents_compacted_total",
+		"Incidents pruned by retention compaction (resolved/dismissed beyond TTL).",
+		func() float64 { return float64(c.counters.compactedTotal.Load()) },
+	)
+}

@@ -13,6 +13,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/state"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // ---------------------------------------------------------------------------
@@ -1160,6 +1161,45 @@ func TestDispatchBatch_FiltersInformationalChecks(t *testing.T) {
 	// Should not panic; these are all informational/automated and
 	// won't reach alert.Dispatch.
 	d.dispatchBatch(findings)
+}
+
+func TestDispatchBatch_CorrelatesInformationalFindings(t *testing.T) {
+	resetIncidentForTest()
+	prev := store.Global()
+	store.SetGlobal(nil)
+	t.Cleanup(func() {
+		resetIncidentForTest()
+		store.SetGlobal(prev)
+	})
+
+	dir := t.TempDir()
+	st, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	d := New(&config.Config{}, st, nil, "")
+	d.dispatchBatch([]alert.Finding{
+		{
+			Severity:  alert.Warning,
+			Check:     "pam_bruteforce",
+			Message:   "pam auth failures",
+			TenantID:  "alice",
+			Timestamp: time.Now(),
+		},
+	})
+
+	snap := IncidentCorrelator().Snapshot()
+	if len(snap) != 1 {
+		t.Fatalf("incident snapshot len: want 1, got %d", len(snap))
+	}
+	if len(snap[0].Timeline) != 1 {
+		t.Fatalf("incident timeline len: want 1, got %d", len(snap[0].Timeline))
+	}
+	if snap[0].Timeline[0].Check != "pam_bruteforce" {
+		t.Fatalf("incident Timeline[0].Check = %q", snap[0].Timeline[0].Check)
+	}
 }
 
 // ---------------------------------------------------------------------------

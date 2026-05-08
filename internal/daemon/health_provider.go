@@ -84,6 +84,17 @@ func (d *Daemon) BlocklistSize() int {
 	return len(s.LoadFirewallState().Blocked)
 }
 
+// IncidentsOpen implements health.Provider. Returns the count of
+// open + contained incidents in the correlator. Falls back to 0 if
+// the correlator has not been constructed yet (e.g. very early
+// startup or shutdown).
+func (d *Daemon) IncidentsOpen() int {
+	if incidentCorrelator == nil {
+		return 0
+	}
+	return incidentCorrelator.OpenCount()
+}
+
 // HistoryCount implements health.Provider.
 func (d *Daemon) HistoryCount() int {
 	s := store.Global()

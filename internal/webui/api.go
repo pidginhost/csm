@@ -68,6 +68,7 @@ func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 		"last_scan_time": snap.LatestScan.Format(time.RFC3339),
 		"baseline_at":    formatRFC3339OrEmpty(snap.BaselineAt),
 		"blocklist_size": snap.BlocklistSize,
+		"incidents_open": snap.IncidentsOpen,
 		"history_count":  snap.HistoryCount,
 		"severities":     snap.Severities,
 		"watchers":       snap.Watchers,
