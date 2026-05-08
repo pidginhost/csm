@@ -638,3 +638,7 @@ csm config schema --json    # JSON Schema for editor / CI validation
 ```
 
 `csm validate` and `csm config show` always operate on the **merged** config so you can audit the effective state without grepping fragments.
+
+## detection.direct_smtp_egress
+
+Phase 3 detector. See [Direct SMTP egress](direct-smtp-egress.md).
