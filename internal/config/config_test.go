@@ -875,3 +875,27 @@ detection:
 		t.Errorf("DryRun should default to true when omitted (safety default)")
 	}
 }
+
+func TestConfig_DirectSMTPEgressRejectsInvalidPort(t *testing.T) {
+	_, err := LoadBytes([]byte(`
+detection:
+  direct_smtp_egress:
+    enabled: true
+    ports: [25, 65561]
+`))
+	if err == nil {
+		t.Fatal("expected invalid direct_smtp_egress port to fail config load")
+	}
+}
+
+func TestConfig_DirectSMTPEgressRejectsInvalidBackend(t *testing.T) {
+	_, err := LoadBytes([]byte(`
+detection:
+  direct_smtp_egress:
+    enabled: true
+    backend: sideways
+`))
+	if err == nil {
+		t.Fatal("expected invalid direct_smtp_egress backend to fail config load")
+	}
+}

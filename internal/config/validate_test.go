@@ -887,3 +887,33 @@ func TestValidate_SMTPBruteForceRanges(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateDirectSMTPEgressBounds(t *testing.T) {
+	cfg := &Config{Hostname: "test"}
+	cfg.Alerts.Email.Enabled = true
+	cfg.Alerts.Email.To = []string{"admin@test.com"}
+	cfg.Alerts.Email.SMTP = "localhost:25"
+	cfg.Alerts.Email.From = "csm@test.com"
+	cfg.Alerts.MaxPerHour = 10
+	cfg.Detection.DirectSMTPEgress.Enabled = true
+	cfg.Detection.DirectSMTPEgress.Backend = "auto"
+	cfg.Detection.DirectSMTPEgress.Ports = []int{25, 465, 587}
+
+	results := Validate(cfg)
+	if hasResult(results, "error", "detection.direct_smtp_egress") {
+		t.Fatalf("valid direct_smtp_egress config rejected: %v", results)
+	}
+
+	cfg.Detection.DirectSMTPEgress.Ports = []int{65561}
+	results = Validate(cfg)
+	if !hasResult(results, "error", "detection.direct_smtp_egress") {
+		t.Fatalf("invalid direct_smtp_egress port was not rejected: %v", results)
+	}
+
+	cfg.Detection.DirectSMTPEgress.Ports = []int{587}
+	cfg.Detection.DirectSMTPEgress.Backend = "sideways"
+	results = Validate(cfg)
+	if !hasResult(results, "error", "detection.direct_smtp_egress") {
+		t.Fatalf("invalid direct_smtp_egress backend was not rejected: %v", results)
+	}
+}

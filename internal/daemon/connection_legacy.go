@@ -38,7 +38,7 @@ func (p *connectionPoller) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			findings := checks.CheckOutboundUserConnections(ctx, p.cfg, nil)
+			findings := checks.CheckOutboundUserConnections(ctx, activeConnectionCfg(p.cfg), nil)
 			for _, f := range findings {
 				p.count.Add(1)
 				select {

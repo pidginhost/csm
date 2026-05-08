@@ -942,6 +942,9 @@ func LoadBytes(data []byte) (*Config, error) {
 	if err := validateVerdictCallback(cfg); err != nil {
 		return nil, err
 	}
+	if err := validateDirectSMTPEgress(cfg); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 
@@ -1009,6 +1012,21 @@ func validateVerdictCallback(cfg *Config) error {
 	}
 	if parsed.Host == "" {
 		return fmt.Errorf("auto_response.verdict_callback.url must include host")
+	}
+	return nil
+}
+
+func validateDirectSMTPEgress(cfg *Config) error {
+	d := cfg.Detection.DirectSMTPEgress
+	switch strings.ToLower(strings.TrimSpace(d.Backend)) {
+	case "", "auto", "bpf", "legacy", "none":
+	default:
+		return fmt.Errorf("detection.direct_smtp_egress.backend must be auto, bpf, legacy, or none")
+	}
+	for i, p := range d.Ports {
+		if p < 1 || p > 65535 {
+			return fmt.Errorf("detection.direct_smtp_egress.ports[%d] must be between 1 and 65535", i)
+		}
 	}
 	return nil
 }

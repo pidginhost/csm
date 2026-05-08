@@ -233,6 +233,10 @@ func Validate(cfg *Config) []ValidationResult {
 			"download_url must be an http or https URL"})
 	}
 
+	if err := validateDirectSMTPEgress(cfg); err != nil {
+		results = append(results, ValidationResult{"error", "detection.direct_smtp_egress", err.Error()})
+	}
+
 	// --- EmailProtection ---
 	if cfg.EmailProtection.RateWarnThreshold > 0 && cfg.EmailProtection.RateWarnThreshold < 10 {
 		results = append(results, ValidationResult{"warn", "email_protection.rate_warn_threshold", "rate_warn_threshold < 10 may cause excessive alerts"})

@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Incident correlation now survives daemon restart for process-only and remote-IP incidents, pruned incidents disappear from live API/control results, and pre-alert filtered findings still join incidents.
 - The Firewall entry in the Response menu now renders an icon to match the other dropdown items.
 - The Performance dashboard MySQL card now shows `n/a` instead of `0 conn` when csm cannot query MySQL, and the daemon under systemd can finally read its local mysql credentials so connection counts and MySQL configuration findings appear instead of silently dropping.
+- Direct SMTP egress now honors its detector backend setting, validates configured ports, and still reports hosted processes that use MTA-looking names.
 
 ### Documentation
 

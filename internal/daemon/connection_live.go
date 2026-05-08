@@ -66,6 +66,13 @@ func StartConnectionTracker(alertCh chan<- alert.Finding, cfg *config.Config) bp
 	return poller
 }
 
+func activeConnectionCfg(startup *config.Config) *config.Config {
+	if cfg := config.Active(); cfg != nil {
+		return cfg
+	}
+	return startup
+}
+
 // tryStartConnectionBPFFn is the package-level indirection so tests can
 // substitute a fake without the bpf build tag.
 var tryStartConnectionBPFFn = tryStartConnectionBPF
@@ -89,6 +96,9 @@ func attachProcessCtxToFinding(cache *processctx.Cache, enr *processctx.Enricher
 	req := processctxRequestFromConnection(ev)
 	if pc, needsEnrichment := cache.MaterializeVerified(req.PID, req.UID, req.UIDKnown, req.Comm); pc != nil {
 		f.Process = pc
+		if pc.Account != "" && (f.Check == "direct_smtp_egress" || f.TenantID == "") {
+			f.TenantID = pc.Account
+		}
 		if needsEnrichment {
 			enr.Enqueue(req)
 		}
