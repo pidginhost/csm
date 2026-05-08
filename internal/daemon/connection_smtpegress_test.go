@@ -210,3 +210,19 @@ func TestActiveConnectionCfgUsesHotReloadedConfig(t *testing.T) {
 		t.Fatalf("activeConnectionCfg returned startup config, want active hot-reload config")
 	}
 }
+
+func TestEvaluateConnectionEventIgnoresVerdictCallbackInline(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Detection.DirectSMTPEgress.Enabled = true
+	cfg.Detection.DirectSMTPEgress.Ports = []int{587}
+	cfg.BPFEnforcement.VerdictCallback = true
+	mta := platform.LocalMTAIdentities(platform.Info{OS: platform.OSUbuntu})
+	ev := ConnectionEvent{
+		UID: 1001, PID: 4242, Family: 2, DstPort: 587,
+		DstIP: net.ParseIP("203.0.113.10").To4(), Comm: "ncat",
+	}
+	got := evaluateConnectionEvent(cfg, mta, ev, "alice")
+	if len(got) == 0 {
+		t.Errorf("evaluator must emit; verdict callback gating is post-emit")
+	}
+}
