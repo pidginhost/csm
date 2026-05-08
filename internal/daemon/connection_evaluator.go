@@ -48,6 +48,10 @@ func rdnsCache() *checks.RDNSCache {
 // live BPF Run loop uses, without requiring the linux+bpf build tag.
 func evaluateConnectionEvent(cfg *config.Config, mta platform.MTAIdents, ev ConnectionEvent, user string) []alert.Finding {
 	now := time.Now()
+
+	// Phase 3 note: DryRun knobs are not consulted here. Detection runs
+	// regardless. The knobs gate the Phase 4 auto-response action that
+	// has not landed yet.
 	var out []alert.Finding
 
 	// Direct SMTP egress (Phase 3). Distinct Check value; the inbound
