@@ -7,22 +7,23 @@ import "time"
 // single source of truth for /api/v1/status, csm status --json, csm doctor,
 // and the sd_notify readiness gate.
 type Snapshot struct {
-	Version       string          `json:"version"`
-	Hostname      string          `json:"hostname"`
-	StartedAt     time.Time       `json:"started_at"`
-	UptimeSec     int64           `json:"uptime_sec"`
-	LatestScan    time.Time       `json:"latest_scan,omitempty"`
-	BaselineAt    time.Time       `json:"baseline_at,omitempty"`
-	BlocklistSize int             `json:"blocklist_size"`
-	IncidentsOpen int             `json:"incidents_open"`
-	HistoryCount  int             `json:"history_count"`
-	Severities    map[string]int  `json:"severities"` // "critical","high","warning"
-	Watchers      map[string]bool `json:"watchers"`   // name -> attached
-	StoreHealthy  bool            `json:"store_healthy"`
-	StoreSizeMB   float64         `json:"store_size_mb"`
-	ConfigHash    string          `json:"config_hash,omitempty"`
-	BinaryHash    string          `json:"binary_hash,omitempty"`
-	Capabilities  []string        `json:"capabilities,omitempty"`
+	Version              string          `json:"version"`
+	Hostname             string          `json:"hostname"`
+	StartedAt            time.Time       `json:"started_at"`
+	UptimeSec            int64           `json:"uptime_sec"`
+	LatestScan           time.Time       `json:"latest_scan,omitempty"`
+	BaselineAt           time.Time       `json:"baseline_at,omitempty"`
+	BlocklistSize        int             `json:"blocklist_size"`
+	IncidentsOpen        int             `json:"incidents_open"`
+	BPFEnforcementActive bool            `json:"bpf_enforcement_active"`
+	HistoryCount         int             `json:"history_count"`
+	Severities           map[string]int  `json:"severities"` // "critical","high","warning"
+	Watchers             map[string]bool `json:"watchers"`   // name -> attached
+	StoreHealthy         bool            `json:"store_healthy"`
+	StoreSizeMB          float64         `json:"store_size_mb"`
+	ConfigHash           string          `json:"config_hash,omitempty"`
+	BinaryHash           string          `json:"binary_hash,omitempty"`
+	Capabilities         []string        `json:"capabilities,omitempty"`
 	// DryRunBlocks is the count of firewall blocks that were intercepted by
 	// auto_response.dry_run and logged rather than applied to nftables.
 	// Non-zero only when dry_run has been active since the last daemon start.
