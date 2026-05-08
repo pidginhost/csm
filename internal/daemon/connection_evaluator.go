@@ -47,6 +47,15 @@ func rdnsCache() *checks.RDNSCache {
 // drive a synthetic ConnectionEvent through the same policy logic the
 // live BPF Run loop uses, without requiring the linux+bpf build tag.
 func evaluateConnectionEvent(cfg *config.Config, mta platform.MTAIdents, ev ConnectionEvent, user string) []alert.Finding {
+	switch ev.Decision {
+	case 0:
+		BumpBPFEnforcementDecision(BPFDecisionAllow)
+	case 1:
+		BumpBPFEnforcementDecision(BPFDecisionDryRun)
+	case 2:
+		BumpBPFEnforcementDecision(BPFDecisionDeny)
+	}
+
 	now := time.Now()
 
 	// Phase 3 note: DryRun knobs are not consulted here. Detection runs
