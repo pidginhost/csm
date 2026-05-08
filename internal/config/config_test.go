@@ -796,3 +796,82 @@ auto_response:
 		t.Fatal("expected error for negative timeout_sec")
 	}
 }
+
+func TestConfig_DirectSMTPEgressRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "csm.yaml")
+	yaml := []byte(`hostname: ""
+detection:
+  direct_smtp_egress:
+    enabled: true
+    backend: bpf
+    dry_run: false
+    ports: [25, 465, 587, 2525]
+`)
+	if err := os.WriteFile(path, yaml, 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Detection.DirectSMTPEgress.Enabled {
+		t.Errorf("Enabled: want true")
+	}
+	if cfg.Detection.DirectSMTPEgress.Backend != "bpf" {
+		t.Errorf("Backend: %q", cfg.Detection.DirectSMTPEgress.Backend)
+	}
+	if cfg.Detection.DirectSMTPEgress.DryRun == nil || *cfg.Detection.DirectSMTPEgress.DryRun {
+		t.Errorf("DryRun: want explicit false, got %v", cfg.Detection.DirectSMTPEgress.DryRun)
+	}
+	if len(cfg.Detection.DirectSMTPEgress.Ports) != 4 || cfg.Detection.DirectSMTPEgress.Ports[3] != 2525 {
+		t.Errorf("Ports: %+v", cfg.Detection.DirectSMTPEgress.Ports)
+	}
+}
+
+func TestConfig_DirectSMTPEgressDefaultPortsAreStandard(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "csm.yaml")
+	yaml := []byte(`hostname: ""
+detection:
+  direct_smtp_egress:
+    enabled: true
+`)
+	if err := os.WriteFile(path, yaml, 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []int{25, 465, 587}
+	got := cfg.Detection.DirectSMTPEgress.Ports
+	if len(got) != len(want) {
+		t.Fatalf("default ports len: want %d, got %d (%v)", len(want), len(got), got)
+	}
+	for i, p := range want {
+		if got[i] != p {
+			t.Errorf("Ports[%d]: want %d, got %d", i, p, got[i])
+		}
+	}
+	if cfg.Detection.DirectSMTPEgress.Backend != "auto" {
+		t.Errorf("default Backend: want auto, got %q", cfg.Detection.DirectSMTPEgress.Backend)
+	}
+}
+
+func TestConfig_DirectSMTPEgressDryRunDefaultsTrue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "csm.yaml")
+	yaml := []byte(`hostname: ""
+detection:
+  direct_smtp_egress:
+    enabled: true
+`)
+	if err := os.WriteFile(path, yaml, 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.DirectSMTPEgressDryRunEnabled() {
+		t.Errorf("DryRun should default to true when omitted (safety default)")
+	}
+}

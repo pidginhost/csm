@@ -12,6 +12,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -124,6 +125,10 @@ func scanProcNetTCP(cfg *config.Config, data []byte, ipv6 bool) []alert.Finding 
 	lines := strings.Split(string(data), "\n")
 	listeners := collectListenSockets(lines, ipv6)
 
+	// Resolve MTA identities once per scan; legacy poller has no per-PID context,
+	// so the EvaluateDirectSMTPEgress UID/user gate carries the load.
+	mta := platform.LocalMTAIdentities(platform.Detect())
+
 	for _, line := range lines {
 		fields := strings.Fields(line)
 		if len(fields) < 8 || fields[0] == "sl" {
@@ -167,6 +172,17 @@ func scanProcNetTCP(cfg *config.Config, data []byte, ipv6 bool) []alert.Finding 
 		user := LookupUser(uidU32)
 		// #nosec G115 -- ports parsed from /proc/net/tcp[6] are bounded by uint16.
 		if f, ok := EvaluateConnection(cfg, uidU32, dstIP, uint16(dstPort), uint16(localPort), proto, user); ok {
+			f.Timestamp = time.Now()
+			findings = append(findings, f)
+		}
+		// #nosec G115 -- ports parsed from /proc/net/tcp[6] are bounded by uint16.
+		if f, ok := EvaluateDirectSMTPEgress(cfg, DirectSMTPEgressInput{
+			UID:     uidU32,
+			User:    user,
+			DstIP:   dstIP,
+			DstPort: uint16(dstPort),
+			MTA:     mta,
+		}); ok {
 			f.Timestamp = time.Now()
 			findings = append(findings, f)
 		}
