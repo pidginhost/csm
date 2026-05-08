@@ -1,13 +1,18 @@
 package daemon
 
 import (
+	"context"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/bpf"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/integrity"
+	csmlog "github.com/pidginhost/csm/internal/log"
+	"github.com/pidginhost/csm/internal/obs"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/store"
+	"github.com/pidginhost/csm/internal/updatecheck"
 )
 
 // Hostname implements health.Provider.
@@ -149,6 +154,72 @@ func (d *Daemon) DryRunBlocksCount() int {
 		return 0
 	}
 	return s.DryRunBlocksCount()
+}
+
+// UpdateInfo implements health.Provider. Returns the latest cached
+// release-check result, or zero value if the checker was disabled
+// or has not completed its first poll yet.
+func (d *Daemon) UpdateInfo() health.UpdateInfo {
+	if d.updateChecker == nil {
+		return health.UpdateInfo{}
+	}
+	info := d.updateChecker.Latest()
+	return health.UpdateInfo{
+		LatestVersion: info.LatestVersion,
+		Available:     info.Available,
+		Source:        info.Source,
+		CheckedAt:     info.CheckedAt,
+		Err:           info.Err,
+	}
+}
+
+// startUpdateChecker wires the updatecheck.Checker. No-op when
+// updates.check_enabled is false (operator opt-out, e.g. air-gapped
+// deployments) or when the running binary is "dev" (still useful but
+// the banner will always show).
+func (d *Daemon) startUpdateChecker() {
+	cfg := d.cfg
+	if cfg == nil || !cfg.UpdatesCheckEnabled() {
+		return
+	}
+
+	interval := cfg.UpdatesInterval()
+
+	pkgProbe := selectPackageProbe(cfg.UpdatesPackageName())
+
+	d.updateChecker = updatecheck.New(updatecheck.Options{
+		CurrentVersion: d.version,
+		Interval:       interval,
+		GitHubAPIURL:   cfg.Updates.GitHubAPIURL,
+		PackageProbe:   pkgProbe,
+		LogErr: func(source string, err error) {
+			csmlog.Debug("update check probe failed", "source", source, "err", err)
+		},
+	})
+
+	d.wg.Add(1)
+	obs.Go("update-checker", func() {
+		defer d.wg.Done()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go func() { <-d.stopCh; cancel() }()
+		d.updateChecker.Run(ctx)
+	})
+}
+
+// selectPackageProbe returns an apt or dnf probe based on the
+// detected OS family, or nil when the host runs neither (binary
+// installs, source builds, etc.).
+func selectPackageProbe(packageName string) updatecheck.PackageProbe {
+	info := platform.Detect()
+	switch {
+	case info.IsDebianFamily():
+		return updatecheck.AptProbe(packageName)
+	case info.IsRHELFamily():
+		return updatecheck.DnfProbe(packageName)
+	default:
+		return nil
+	}
 }
 
 // compile-time check: Daemon satisfies health.Provider.

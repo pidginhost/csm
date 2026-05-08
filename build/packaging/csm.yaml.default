@@ -194,3 +194,8 @@ backdoor_ports:
   - 55553
   - 55555
   - 31337
+
+updates:
+  check_enabled: true
+  interval: "24h"
+  package_name: "csm"

@@ -75,6 +75,10 @@
             <div id="csm-connection-lost" class="alert alert-danger alert-dismissible mb-0 rounded-0 d-none" role="alert" aria-live="polite">
                 <strong>Connection lost</strong> — Unable to reach the server. Retrying automatically.
             </div>
+            <div id="csm-update-banner" class="alert alert-info mb-0 rounded-0 d-none" role="status" aria-live="polite">
+                <span><strong>Update available:</strong> <span id="csm-update-version"></span> &mdash; current version is <span id="csm-update-current"></span>. Run <code id="csm-update-cmd">apt upgrade csm</code> to upgrade.</span>
+                <a href="https://github.com/pidginhost/csm/releases" target="_blank" rel="noopener" class="ms-2">Release notes</a>
+            </div>
             <main class="page-body">
                 <div class="container-xl">
                     {{template "content" .}}

@@ -37,6 +37,7 @@ import (
 	"github.com/pidginhost/csm/internal/signatures"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
+	"github.com/pidginhost/csm/internal/updatecheck"
 	"github.com/pidginhost/csm/internal/verdict"
 	"github.com/pidginhost/csm/internal/webui"
 	"github.com/pidginhost/csm/internal/yara"
@@ -119,6 +120,11 @@ type Daemon struct {
 	// findingBus fans out dispatched findings to passive observers like
 	// the SSE event stream. Initialized in Run(); closed on shutdown.
 	findingBus *broadcast.Bus
+
+	// updateChecker polls upstream for new CSM releases. Wired in Run()
+	// when updates.check_enabled is true (default). Nil when disabled
+	// or before Run starts; UpdateInfo() handles that.
+	updateChecker *updatecheck.Checker
 }
 
 // New creates a new daemon instance.
@@ -431,6 +437,13 @@ func (d *Daemon) Run() error {
 		d.startSpoolWatcher()
 		d.startForwarderWatcher()
 	}
+
+	// Wire the update checker before the Web UI starts so the
+	// /api/v1/status handler always sees a non-nil checker (the
+	// goroutine that polls upstream still warms up for 5 minutes
+	// before the first poll, but UpdateInfo() returns zero values
+	// without racing on the field assignment).
+	d.startUpdateChecker()
 
 	// Start Web UI server - available immediately, before initial scan
 	d.startWebUI()

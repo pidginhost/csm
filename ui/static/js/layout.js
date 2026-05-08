@@ -32,3 +32,35 @@ if (_themeBtn) _themeBtn.addEventListener('click', toggleTheme);
     var el = document.getElementById('csm-version');
     if (el && v) el.textContent = 'v' + v;
 })();
+
+// Update-available banner. Reads /api/v1/status; renders nothing
+// when the daemon hasn't completed a poll yet, when no newer
+// release exists, or when updates.check_enabled is false (the
+// snapshot omits the update block entirely in that case).
+(function() {
+    var banner = document.getElementById('csm-update-banner');
+    if (!banner) return;
+
+    fetch('/api/v1/status', { credentials: 'same-origin' })
+        .then(function(r) { return r.ok ? r.json() : null; })
+        .then(function(snap) {
+            if (!snap || !snap.update || !snap.update.available || !snap.update.latest_version) return;
+            var verEl = document.getElementById('csm-update-version');
+            var curEl = document.getElementById('csm-update-current');
+            var cmdEl = document.getElementById('csm-update-cmd');
+            if (verEl) verEl.textContent = 'v' + snap.update.latest_version;
+            if (curEl) curEl.textContent = 'v' + (snap.version || '');
+            if (cmdEl) {
+                var src = snap.update.source || 'apt';
+                if (src === 'dnf') {
+                    cmdEl.textContent = 'dnf upgrade csm';
+                } else if (src === 'github') {
+                    cmdEl.textContent = 'apt upgrade csm  # or dnf upgrade csm';
+                } else {
+                    cmdEl.textContent = src + ' upgrade csm';
+                }
+            }
+            banner.classList.remove('d-none');
+        })
+        .catch(function() { /* network errors are handled by csm-connection-lost */ });
+})();

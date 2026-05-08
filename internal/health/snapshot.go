@@ -28,6 +28,23 @@ type Snapshot struct {
 	// auto_response.dry_run and logged rather than applied to nftables.
 	// Non-zero only when dry_run has been active since the last daemon start.
 	DryRunBlocks int `json:"dry_run_blocks,omitempty"`
+
+	// Update reports whether a newer CSM release is available upstream.
+	// Populated by internal/updatecheck. Zero value means the checker has
+	// not yet completed a poll (very early startup) or is disabled in
+	// config.
+	Update UpdateInfo `json:"update,omitempty"`
+}
+
+// UpdateInfo mirrors updatecheck.Info for the health snapshot. Kept
+// as a separate type so internal/health does not import
+// internal/updatecheck and create a cycle.
+type UpdateInfo struct {
+	LatestVersion string    `json:"latest_version,omitempty"`
+	Available     bool      `json:"available,omitempty"`
+	Source        string    `json:"source,omitempty"`
+	CheckedAt     time.Time `json:"checked_at,omitempty"`
+	Err           string    `json:"err,omitempty"`
 }
 
 // TotalFindings returns the sum across all severity buckets.

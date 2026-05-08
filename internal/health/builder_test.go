@@ -34,6 +34,7 @@ func (f *fakeProvider) BaselineAt() time.Time            { return time.Time{} }
 func (f *fakeProvider) ConfigHash() string               { return "abc" }
 func (f *fakeProvider) BinaryHash() string               { return "def" }
 func (f *fakeProvider) DryRunBlocksCount() int           { return f.dryRunBlocks }
+func (f *fakeProvider) UpdateInfo() UpdateInfo           { return UpdateInfo{} }
 
 func TestBuild_PopulatesAllFields(t *testing.T) {
 	p := &fakeProvider{

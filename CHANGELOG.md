@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Web UI shows a top banner when a newer CSM release is available upstream; the daemon polls GitHub daily and falls back to the OS package manager but never applies the upgrade itself. Set `updates.check_enabled: false` to disable on air-gapped hosts.
 - Optional in-kernel cgroup-deny enforcement for matched outbound connections, gated on Phase 3 detectors and per-host safe-UID map. Default off, dry-run on; operators flip after telemetry review.
 - The Web UI now has a cleanup history view for file backups and dropped database-object backups.
 - Optional `process` field on findings and audit events carries PID/PPID/UID/user/account/exe/sanitized cmdline plus parent chain (depth 5). Omitted when no context is available; existing webhook consumers see no schema change.

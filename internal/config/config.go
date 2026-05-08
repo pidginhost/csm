@@ -593,6 +593,59 @@ type Config struct {
 	// and relay detectors. Changing the source (file vs. journal) requires
 	// the daemon to re-attach its reader, so the field is tagged restart.
 	MailLogs MailLogsConfig `yaml:"mail_logs,omitempty" hotreload:"restart"`
+
+	// Updates controls the upstream release-availability poll surfaced
+	// in the Web UI top banner. The daemon never downloads or applies
+	// updates -- it only tells the operator that a newer version
+	// exists. Disable wholesale on air-gapped hosts.
+	Updates struct {
+		// CheckEnabled is a tri-state. nil means default-on; explicit
+		// false disables the poll entirely (no outbound HTTP, no
+		// package-manager probe). Use a pointer so the absence of the
+		// key in YAML is distinguishable from `check_enabled: false`.
+		CheckEnabled *bool `yaml:"check_enabled"`
+
+		// Interval is parsed by time.ParseDuration. Defaults to 24h;
+		// clamped to a 1h floor by updatecheck.New.
+		Interval string `yaml:"interval"`
+
+		// GitHubAPIURL overrides the default release endpoint. Tests
+		// and air-gapped mirrors use this; leave empty in production.
+		GitHubAPIURL string `yaml:"github_api_url,omitempty"`
+
+		// PackageName is the apt/dnf package name to query when the
+		// GitHub call fails. Defaults to "csm".
+		PackageName string `yaml:"package_name,omitempty"`
+	} `yaml:"updates" hotreload:"restart"`
+}
+
+// UpdatesCheckEnabled reports the YAML-level state for the upstream
+// release poll. Defaults to TRUE when omitted (most operators want
+// the banner). Set `updates.check_enabled: false` to disable.
+func (c *Config) UpdatesCheckEnabled() bool {
+	return c.Updates.CheckEnabled == nil || *c.Updates.CheckEnabled
+}
+
+// UpdatesInterval returns the parsed poll interval. Falls back to
+// 24h on parse error or when unset; updatecheck applies the floor.
+func (c *Config) UpdatesInterval() time.Duration {
+	if c.Updates.Interval == "" {
+		return 24 * time.Hour
+	}
+	d, err := time.ParseDuration(c.Updates.Interval)
+	if err != nil {
+		return 24 * time.Hour
+	}
+	return d
+}
+
+// UpdatesPackageName returns the apt/dnf package name to query.
+// Defaults to "csm".
+func (c *Config) UpdatesPackageName() string {
+	if c.Updates.PackageName == "" {
+		return "csm"
+	}
+	return c.Updates.PackageName
 }
 
 // PHPRelayFreezeEnabled reports whether auto-freeze should run for the
@@ -910,6 +963,13 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if len(cfg.MailLogs.Units) == 0 {
 		cfg.MailLogs.Units = []string{"postfix", "dovecot"}
+	}
+
+	if cfg.Updates.Interval == "" {
+		cfg.Updates.Interval = "24h"
+	}
+	if cfg.Updates.PackageName == "" {
+		cfg.Updates.PackageName = "csm"
 	}
 
 	if cfg.Thresholds.MailBruteAccountKey == "" {

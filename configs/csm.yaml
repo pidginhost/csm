@@ -57,3 +57,14 @@ sentry:
   environment: "production"
   sample_rate: 1.0
   debug: false
+
+# Upstream release-availability check. The daemon polls GitHub
+# releases (and falls back to the OS package manager when GitHub is
+# unreachable) and surfaces a banner in the Web UI when a newer CSM
+# is available. The daemon never downloads or applies binaries --
+# operators upgrade through their normal channel (apt/dnf/installer).
+# Set check_enabled: false on air-gapped hosts to disable the poll.
+updates:
+  check_enabled: true
+  interval: "24h"
+  package_name: "csm"
