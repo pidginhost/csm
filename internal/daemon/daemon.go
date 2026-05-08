@@ -377,6 +377,7 @@ func (d *Daemon) Run() error {
 	d.registerStoreSizeMetric()
 	d.registerFirewallMetrics()
 	checks.RegisterDirectSMTPEgressMetrics(metrics.Default())
+	RegisterBPFEnforcementMetrics(metrics.Default())
 	if err := d.initYaraBackend(); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] YARA backend init: %v\n", ts(), err)
 	}
