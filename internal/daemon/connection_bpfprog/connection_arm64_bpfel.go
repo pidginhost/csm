@@ -14,14 +14,22 @@ import (
 )
 
 type ConnectionConnEvent struct {
-	_       structs.HostLayout
-	Uid     uint32
-	Pid     uint32
-	Family  uint32
-	DstPort uint32
-	DstIp4  uint32
-	DstIp6  [16]uint8
-	Comm    [16]uint8
+	_        structs.HostLayout
+	Uid      uint32
+	Pid      uint32
+	Family   uint32
+	DstPort  uint32
+	DstIp4   uint32
+	DstIp6   [16]uint8
+	Comm     [16]uint8
+	Decision uint32
+}
+
+type ConnectionPolicyState struct {
+	_              structs.HostLayout
+	Enforce        uint32
+	DryRun         uint32
+	ProtectedPorts uint32
 }
 
 // LoadConnection returns the embedded CollectionSpec for Connection.
@@ -74,14 +82,18 @@ type ConnectionProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type ConnectionMapSpecs struct {
-	Events *ebpf.MapSpec `ebpf:"events"`
+	Events         *ebpf.MapSpec `ebpf:"events"`
+	Policy         *ebpf.MapSpec `ebpf:"policy"`
+	ProtectedPorts *ebpf.MapSpec `ebpf:"protected_ports"`
+	SafeUids       *ebpf.MapSpec `ebpf:"safe_uids"`
 }
 
 // ConnectionVariableSpecs contains global variables before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type ConnectionVariableSpecs struct {
-	Unused *ebpf.VariableSpec `ebpf:"unused"`
+	Unused       *ebpf.VariableSpec `ebpf:"unused"`
+	UnusedPolicy *ebpf.VariableSpec `ebpf:"unused_policy"`
 }
 
 // ConnectionObjects contains all objects after they have been loaded into the kernel.
@@ -104,12 +116,18 @@ func (o *ConnectionObjects) Close() error {
 //
 // It can be passed to LoadConnectionObjects or ebpf.CollectionSpec.LoadAndAssign.
 type ConnectionMaps struct {
-	Events *ebpf.Map `ebpf:"events"`
+	Events         *ebpf.Map `ebpf:"events"`
+	Policy         *ebpf.Map `ebpf:"policy"`
+	ProtectedPorts *ebpf.Map `ebpf:"protected_ports"`
+	SafeUids       *ebpf.Map `ebpf:"safe_uids"`
 }
 
 func (m *ConnectionMaps) Close() error {
 	return _ConnectionClose(
 		m.Events,
+		m.Policy,
+		m.ProtectedPorts,
+		m.SafeUids,
 	)
 }
 
@@ -117,7 +135,8 @@ func (m *ConnectionMaps) Close() error {
 //
 // It can be passed to LoadConnectionObjects or ebpf.CollectionSpec.LoadAndAssign.
 type ConnectionVariables struct {
-	Unused *ebpf.Variable `ebpf:"unused"`
+	Unused       *ebpf.Variable `ebpf:"unused"`
+	UnusedPolicy *ebpf.Variable `ebpf:"unused_policy"`
 }
 
 // ConnectionPrograms contains all programs after they have been loaded into the kernel.
