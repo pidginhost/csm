@@ -16,9 +16,9 @@ A finding with `check: "direct_smtp_egress"` is emitted when:
   `infra_ips` list.
 - The process user is NOT a known MTA user (mail, mailnull, postfix,
   dovecot, dovenull, mailman, plus exim on cPanel).
-- The process basename (comm or exe) is NOT a known MTA process name
-  (postfix, smtpd, smtp, qmgr, pickup, cleanup, local, dovecot,
-  imap-login, pop3-login, lmtp, plus exim/exim4 on cPanel).
+
+Process names are never a standalone allow condition. A hosted account
+renaming malware to `smtp` or `smtpd` still emits a finding.
 
 The detector is detection-only in Phase 3. The dry_run knob exists in
 config but does not gate emission today; Phase 4 introduces the
@@ -32,7 +32,7 @@ detection:
     enabled: true
     backend: auto       # auto / bpf / legacy / none
     dry_run: true       # safety default; flip to false when Phase 4 lands
-    ports:
+    ports:             # each value must be 1-65535
       - 25
       - 465
       - 587
@@ -40,14 +40,18 @@ detection:
 
 ## Backends
 
-- `auto` -- BPF when available, otherwise the `/proc/net/tcp[6]`
-  poller.
-- `bpf` -- the cgroup/connect4,6 program in
-  `internal/daemon/connection_bpfprog/_connection.bpf.c`.
-- `legacy` -- the polling path. Lacks PID/comm; MTA matching is
-  user-only on this path. Higher false-positive rate than BPF.
+- `auto` -- allow both BPF and legacy scan paths. Live backend choice
+  still follows `detection.connection_tracker_backend`.
+- `bpf` -- emit only from the cgroup/connect4,6 consumer.
+- `legacy` -- emit only from the `/proc/net/tcp[6]` polling path
+  (live poller or scheduled critical scan). This path lacks PID/comm;
+  MTA matching is user-only.
 - `none` -- detector disabled even when `enabled: true` is set
   elsewhere; useful for staged rollout.
+
+The generic outbound connection tracker is still governed by
+`detection.connection_tracker_backend`; this setting only gates
+`direct_smtp_egress` findings.
 
 ## Metric
 
@@ -60,8 +64,9 @@ backend=legacy should track findings via the audit log.
 
 When the BPF backend is active, finding details include a Domain
 field populated from a TTL-cached reverse lookup (30 min TTL, 1
-second per-lookup deadline). On resolver miss or timeout the field
-is omitted; the finding still fires.
+second per-lookup deadline). The lookup runs only after the cheap
+direct-SMTP filters match. On resolver miss or timeout the field is
+omitted; the finding still fires.
 
 ## Caveats
 

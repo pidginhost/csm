@@ -47,6 +47,20 @@ func TestAttachProcessCtxFromProcCacheHitDoesNotReenqueue(t *testing.T) {
 	}
 }
 
+func TestAttachProcessCtxOverridesDirectSMTPTenantFromProcessAccount(t *testing.T) {
+	resetProcessCtxForTest()
+	cache, enr := ProcessCtx()
+	cache.PutFromProc(4242, 1, 1001, "php-fpm", "alice", "ncat", "/usr/bin/ncat", []string{"ncat"})
+
+	f := alert.Finding{Check: "direct_smtp_egress", TenantID: "php-fpm", Message: "test", Timestamp: time.Now()}
+	ev := ConnectionEvent{UID: 1001, PID: 4242, Family: 2, DstPort: 587, DstIP: net.ParseIP("203.0.113.10").To4(), Comm: "ncat"}
+	attachProcessCtxToFinding(cache, enr, &f, ev)
+
+	if f.TenantID != "alice" {
+		t.Fatalf("TenantID = %q, want process account alice", f.TenantID)
+	}
+}
+
 func TestAttachProcessCtxRejectsStaleCacheHitAndEnqueuesRefresh(t *testing.T) {
 	resetProcessCtxForTest()
 	cache, enr := ProcessCtx()

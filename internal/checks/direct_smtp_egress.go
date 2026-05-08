@@ -3,7 +3,7 @@ package checks
 import (
 	"fmt"
 	"net"
-	"path/filepath"
+	"strings"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -17,7 +17,7 @@ import (
 //
 // Process is optional; when present the resulting finding includes the
 // full process-ancestry tree. UID/User/PID/Comm/Exe are the live event
-// fields and are used for sound classification.
+// fields used in finding details and account attribution.
 type DirectSMTPEgressInput struct {
 	UID     uint32
 	User    string
@@ -39,7 +39,7 @@ type DirectSMTPEgressInput struct {
 // Pure function: no IO, no clock. Detector-disabled config returns
 // (zero, false) without inspecting the input.
 func EvaluateDirectSMTPEgress(cfg *config.Config, in DirectSMTPEgressInput) (alert.Finding, bool) {
-	if cfg == nil || !cfg.Detection.DirectSMTPEgress.Enabled {
+	if cfg == nil || !cfg.Detection.DirectSMTPEgress.Enabled || directSMTPEgressBackend(cfg) == "none" {
 		return alert.Finding{}, false
 	}
 	if in.UID == 0 {
@@ -57,12 +57,6 @@ func EvaluateDirectSMTPEgress(cfg *config.Config, in DirectSMTPEgressInput) (ale
 	if in.MTA.IsMTAUser(in.User) {
 		return alert.Finding{}, false
 	}
-	if in.Comm != "" && in.MTA.IsMTAProcess(in.Comm) {
-		return alert.Finding{}, false
-	}
-	if in.Exe != "" && in.MTA.IsMTAProcess(filepath.Base(in.Exe)) {
-		return alert.Finding{}, false
-	}
 
 	dst := in.DstIP.String()
 	if in.DstIP.To4() == nil {
@@ -78,16 +72,47 @@ func EvaluateDirectSMTPEgress(cfg *config.Config, in DirectSMTPEgressInput) (ale
 		Check:    "direct_smtp_egress",
 		Message:  fmt.Sprintf("Non-MTA process opened outbound SMTP connection to %s:%d", dst, in.DstPort),
 		Details:  details,
+		TenantID: directSMTPTenant(in),
 		Process:  in.Process,
 	}, true
 }
 
+func DirectSMTPEgressBackendEnabled(cfg *config.Config, backend string) bool {
+	if cfg == nil || !cfg.Detection.DirectSMTPEgress.Enabled {
+		return false
+	}
+	choice := directSMTPEgressBackend(cfg)
+	switch choice {
+	case "auto":
+		return true
+	case "bpf", "legacy":
+		return backend == choice
+	default:
+		return false
+	}
+}
+
+func directSMTPEgressBackend(cfg *config.Config) string {
+	backend := strings.ToLower(strings.TrimSpace(cfg.Detection.DirectSMTPEgress.Backend))
+	if backend == "" {
+		return "auto"
+	}
+	return backend
+}
+
+func directSMTPTenant(in DirectSMTPEgressInput) string {
+	if in.Process != nil && in.Process.Account != "" {
+		return in.Process.Account
+	}
+	return in.User
+}
+
 func portInList(p uint16, list []int) bool {
 	for _, q := range list {
-		// #nosec G115 -- list values come from operator YAML and are
-		// bounded by uint16 in practice; port numbers above 65535 are
-		// invalid TCP/UDP ports and silently won't match.
-		if uint16(q) == p {
+		if q <= 0 || q > 65535 {
+			continue
+		}
+		if q == int(p) {
 			return true
 		}
 	}

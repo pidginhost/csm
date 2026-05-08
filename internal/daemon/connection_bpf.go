@@ -116,7 +116,7 @@ func (c *connectionBPF) Run(ctx context.Context) {
 			}
 			c.count.Add(1)
 			user := checks.LookupUser(ev.UID)
-			for _, finding := range evaluateConnectionEvent(c.cfg, mta, ev, user) {
+			for _, finding := range evaluateConnectionEvent(activeConnectionCfg(c.cfg), mta, ev, user) {
 				attachProcessCtxToFinding(pcCache, pcEnr, &finding, ev)
 				select {
 				case c.alertCh <- finding:
