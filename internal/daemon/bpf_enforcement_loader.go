@@ -16,6 +16,7 @@ func policyMapPayload(pol BPFEnforcementPolicy) PolicyMapPayload {
 	return PolicyMapPayload{
 		Enforce:        pol.Enforce,
 		DryRun:         pol.DryRun,
+		// #nosec G115 -- bounded by protected_ports BPF map max_entries=16
 		ProtectedPorts: uint32(len(pol.Ports)),
 	}
 }
