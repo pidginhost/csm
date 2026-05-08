@@ -1059,6 +1059,23 @@ func validateDirectSMTPEgress(cfg *Config) error {
 	return nil
 }
 
+func validateBPFEnforcement(cfg *Config) error {
+	if !cfg.BPFEnforcement.Enabled {
+		return nil
+	}
+	gates := 0
+	if cfg.BPFEnforcement.DirectSMTPEgress {
+		if !cfg.Detection.DirectSMTPEgress.Enabled {
+			return fmt.Errorf("bpf_enforcement.direct_smtp_egress requires detection.direct_smtp_egress.enabled=true")
+		}
+		gates++
+	}
+	if gates == 0 {
+		return fmt.Errorf("bpf_enforcement.enabled=true requires at least one feature gate (direct_smtp_egress)")
+	}
+	return nil
+}
+
 func validateWebUITokens(cfg *Config) error {
 	seenNames := make(map[string]struct{}, len(cfg.WebUI.Tokens))
 	seenTokens := make(map[string]struct{}, len(cfg.WebUI.Tokens))

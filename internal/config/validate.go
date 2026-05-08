@@ -237,6 +237,10 @@ func Validate(cfg *Config) []ValidationResult {
 		results = append(results, ValidationResult{"error", "detection.direct_smtp_egress", err.Error()})
 	}
 
+	if err := validateBPFEnforcement(cfg); err != nil {
+		results = append(results, ValidationResult{"error", "bpf_enforcement", err.Error()})
+	}
+
 	// --- EmailProtection ---
 	if cfg.EmailProtection.RateWarnThreshold > 0 && cfg.EmailProtection.RateWarnThreshold < 10 {
 		results = append(results, ValidationResult{"warn", "email_protection.rate_warn_threshold", "rate_warn_threshold < 10 may cause excessive alerts"})
