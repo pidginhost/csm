@@ -14,8 +14,8 @@ import (
 func installBPFEnforcementPolicy(objs *connection_bpfprog.ConnectionObjects, pol BPFEnforcementPolicy) error {
 	zero := uint32(0)
 	payload := connection_bpfprog.ConnectionPolicyState{
-		Enforce:        pol.Enforce,
-		DryRun:         pol.DryRun,
+		Enforce: pol.Enforce,
+		DryRun:  pol.DryRun,
 		// #nosec G115 -- bounded by protected_ports BPF map max_entries=16
 		ProtectedPorts: uint32(len(pol.Ports)),
 	}
