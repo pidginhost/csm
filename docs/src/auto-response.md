@@ -103,3 +103,19 @@ Beyond standard malware patterns, CSM detects advanced evasion techniques:
 - **Admin-panel brute force**: same access-log path, tracks POSTs to `/phpmyadmin/index.php`, `/pma/index.php`, `/phpMyAdmin/index.php`, and Joomla `/administrator/index.php`. Emits `admin_panel_bruteforce` and auto-blocks the IP. Path matcher is intentionally tight to avoid false positives on shared hosting; Drupal and Tomcat Manager use different attack shapes and need separate detectors.
 - **SMTP brute force and probes**: tails `/var/log/exim_mainlog` on cPanel and non-cPanel Exim hosts where the file exists. Emits `smtp_probe_abuse` and `smtp_bruteforce` (per-IP, auto-blocks), `smtp_subnet_spray` (per-/24, auto-blocks the whole subnet), and `smtp_account_spray` (per-mailbox, visibility only).
 - **Mail brute force**: tails `/var/log/maillog` for direct IMAP, POP3, and ManageSieve auth failures. Composes with the existing geo-login monitor so `email_suspicious_geo` keeps working. Emits `mail_bruteforce`, `mail_subnet_spray`, `mail_account_spray`, and `mail_account_compromised` (the last one fires when a successful login arrives from an IP that just failed auth against the same mailbox; auto-blocks with no false positives by construction).
+
+## Dry-run precedence (Phase 4)
+
+CSM has three independent dry_run knobs after Phase 4. Any dry_run
+that is true wins; live actions require all applicable knobs to be
+false.
+
+| Layer | Knob | Default | Effect when true |
+|-------|------|---------|------------------|
+| Global | `auto_response.dry_run` | true | Suppress all automatic actions |
+| Detector | `detection.direct_smtp_egress.dry_run` | true | Suppress detector-scoped action |
+| Kernel | `bpf_enforcement.dry_run` | true | BPF program emits decision but allows traffic |
+
+The kernel knob is consulted by the BPF program itself; the others
+gate userspace action paths. All three default to true on a first
+install so a configuration mistake cannot start blocking traffic.

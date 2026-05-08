@@ -13,6 +13,7 @@
 
 - [Real-Time Detection](detection-realtime.md)
 - [Direct SMTP egress](direct-smtp-egress.md)
+- [BPF enforcement](bpf-enforcement.md)
 - [Critical Checks](detection-critical.md)
 - [Deep Checks](detection-deep.md)
 - [Auto-Response](auto-response.md)

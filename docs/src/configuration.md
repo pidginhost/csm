@@ -644,3 +644,7 @@ csm config schema --json    # JSON Schema for editor / CI validation
 Phase 3 detector. `backend` accepts `auto`, `bpf`, `legacy`, or `none`;
 `ports` must contain TCP ports in the 1-65535 range. See
 [Direct SMTP egress](direct-smtp-egress.md).
+
+## bpf_enforcement
+
+Phase 4 detector. See [BPF enforcement](bpf-enforcement.md).
