@@ -899,3 +899,68 @@ detection:
 		t.Fatal("expected invalid direct_smtp_egress backend to fail config load")
 	}
 }
+
+func TestConfig_BPFEnforcementRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "csm.yaml")
+	yaml := []byte(`hostname: ""
+bpf_enforcement:
+  enabled: true
+  dry_run: false
+  direct_smtp_egress: true
+  verdict_callback: false
+`)
+	if err := os.WriteFile(path, yaml, 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.BPFEnforcement.Enabled {
+		t.Errorf("Enabled: want true")
+	}
+	if cfg.BPFEnforcement.DryRun == nil || *cfg.BPFEnforcement.DryRun {
+		t.Errorf("DryRun: want explicit false; got %v", cfg.BPFEnforcement.DryRun)
+	}
+	if !cfg.BPFEnforcement.DirectSMTPEgress {
+		t.Errorf("DirectSMTPEgress: want true")
+	}
+	if cfg.BPFEnforcement.VerdictCallback {
+		t.Errorf("VerdictCallback: want false")
+	}
+}
+
+func TestConfig_BPFEnforcementDryRunDefaultsTrue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "csm.yaml")
+	yaml := []byte(`hostname: ""
+bpf_enforcement:
+  enabled: true
+`)
+	if err := os.WriteFile(path, yaml, 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.BPFEnforcementDryRunEnabled() {
+		t.Errorf("DryRun should default true (safety) when omitted")
+	}
+}
+
+func TestConfig_BPFEnforcementDefaultsAllOff(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "csm.yaml")
+	if err := os.WriteFile(path, []byte("hostname: \"\"\n"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.BPFEnforcement.Enabled {
+		t.Errorf("default Enabled must be false")
+	}
+	if cfg.BPFEnforcement.DirectSMTPEgress {
+		t.Errorf("default DirectSMTPEgress must be false")
+	}
+}
