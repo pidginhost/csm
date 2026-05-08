@@ -6,16 +6,17 @@ import (
 )
 
 type fakeProvider struct {
-	hostname      string
-	started       time.Time
-	watchers      map[string]bool
-	storeOK       bool
-	storeMB       float64
-	severities    map[string]int
-	blocklist     int
-	incidentsOpen int
-	historyCount  int
-	dryRunBlocks  int
+	hostname             string
+	started              time.Time
+	watchers             map[string]bool
+	storeOK              bool
+	storeMB              float64
+	severities           map[string]int
+	blocklist            int
+	incidentsOpen        int
+	bpfEnforcementActive bool
+	historyCount         int
+	dryRunBlocks         int
 }
 
 func (f *fakeProvider) Hostname() string                 { return f.hostname }
@@ -26,6 +27,7 @@ func (f *fakeProvider) StoreSizeMB() float64             { return f.storeMB }
 func (f *fakeProvider) SeverityCounts() map[string]int   { return f.severities }
 func (f *fakeProvider) BlocklistSize() int               { return f.blocklist }
 func (f *fakeProvider) IncidentsOpen() int               { return f.incidentsOpen }
+func (f *fakeProvider) BPFEnforcementActive() bool       { return f.bpfEnforcementActive }
 func (f *fakeProvider) HistoryCount() int                { return f.historyCount }
 func (f *fakeProvider) LatestScan() time.Time            { return time.Time{} }
 func (f *fakeProvider) BaselineAt() time.Time            { return time.Time{} }
@@ -66,5 +68,13 @@ func TestBuild_PopulatesAllFields(t *testing.T) {
 	}
 	if snap.DryRunBlocks != 4 {
 		t.Fatalf("dry-run block count mismatch: %d", snap.DryRunBlocks)
+	}
+}
+
+func TestBuildIncludesBPFEnforcementActive(t *testing.T) {
+	p := &fakeProvider{bpfEnforcementActive: true}
+	snap := Build(p, "v1.2.3", []string{})
+	if !snap.BPFEnforcementActive {
+		t.Errorf("BPFEnforcementActive: want true")
 	}
 }

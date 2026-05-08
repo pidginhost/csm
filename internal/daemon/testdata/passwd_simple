@@ -1,0 +1,7 @@
+root:x:0:0:root:/root:/bin/bash
+daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin
+postfix:x:89:89::/var/spool/postfix:/usr/sbin/nologin
+mailnull:x:90:90::/var/spool/mail:/usr/sbin/nologin
+dovecot:x:97:97::/usr/lib/dovecot:/usr/sbin/nologin
+alice:x:1001:1001::/home/alice:/bin/bash
+bob:x:1002:1002::/home/bob:/bin/bash

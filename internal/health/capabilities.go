@@ -36,6 +36,7 @@ func Capabilities() []string {
 		"verdict.callback.v1",       // P7
 		"systemd.dropin.example.v1", // P7
 		"incidents.v1",
+		"bpf_enforcement.available.v1",
 	}
 	if maillog.JournalSupported() {
 		caps = append(caps, "mail.source.journal.v1")

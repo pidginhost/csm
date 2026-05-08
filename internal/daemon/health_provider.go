@@ -95,6 +95,18 @@ func (d *Daemon) IncidentsOpen() int {
 	return incidentCorrelator.OpenCount()
 }
 
+// BPFEnforcementActive implements health.Provider. Reports the
+// configured enforcement state. Phase 4 of the BPF Incident Response
+// Roadmap. Reads the live config via Daemon.currentCfg(); falls back
+// to false if config is nil (very early startup).
+func (d *Daemon) BPFEnforcementActive() bool {
+	cfg := d.currentCfg()
+	if cfg == nil {
+		return false
+	}
+	return cfg.BPFEnforcement.Enabled
+}
+
 // HistoryCount implements health.Provider.
 func (d *Daemon) HistoryCount() int {
 	s := store.Global()

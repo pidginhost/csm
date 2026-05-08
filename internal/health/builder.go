@@ -15,6 +15,7 @@ type Provider interface {
 	SeverityCounts() map[string]int
 	BlocklistSize() int
 	IncidentsOpen() int
+	BPFEnforcementActive() bool
 	HistoryCount() int
 	ConfigHash() string
 	BinaryHash() string
@@ -32,23 +33,24 @@ func Build(p Provider, version string, capabilities []string) Snapshot {
 	}
 	caps := append([]string(nil), capabilities...)
 	return Snapshot{
-		Version:       version,
-		Hostname:      p.Hostname(),
-		StartedAt:     started,
-		UptimeSec:     uptime,
-		LatestScan:    p.LatestScan(),
-		BaselineAt:    p.BaselineAt(),
-		BlocklistSize: p.BlocklistSize(),
-		IncidentsOpen: p.IncidentsOpen(),
-		HistoryCount:  p.HistoryCount(),
-		Severities:    cloneIntMap(p.SeverityCounts()),
-		Watchers:      cloneBoolMap(p.WatcherStatuses()),
-		StoreHealthy:  p.StoreHealthy(),
-		StoreSizeMB:   p.StoreSizeMB(),
-		ConfigHash:    p.ConfigHash(),
-		BinaryHash:    p.BinaryHash(),
-		Capabilities:  caps,
-		DryRunBlocks:  p.DryRunBlocksCount(),
+		Version:              version,
+		Hostname:             p.Hostname(),
+		StartedAt:            started,
+		UptimeSec:            uptime,
+		LatestScan:           p.LatestScan(),
+		BaselineAt:           p.BaselineAt(),
+		BlocklistSize:        p.BlocklistSize(),
+		IncidentsOpen:        p.IncidentsOpen(),
+		BPFEnforcementActive: p.BPFEnforcementActive(),
+		HistoryCount:         p.HistoryCount(),
+		Severities:           cloneIntMap(p.SeverityCounts()),
+		Watchers:             cloneBoolMap(p.WatcherStatuses()),
+		StoreHealthy:         p.StoreHealthy(),
+		StoreSizeMB:          p.StoreSizeMB(),
+		ConfigHash:           p.ConfigHash(),
+		BinaryHash:           p.BinaryHash(),
+		Capabilities:         caps,
+		DryRunBlocks:         p.DryRunBlocksCount(),
 	}
 }
 

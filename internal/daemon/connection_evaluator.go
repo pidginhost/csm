@@ -47,6 +47,23 @@ func rdnsCache() *checks.RDNSCache {
 // drive a synthetic ConnectionEvent through the same policy logic the
 // live BPF Run loop uses, without requiring the linux+bpf build tag.
 func evaluateConnectionEvent(cfg *config.Config, mta platform.MTAIdents, ev ConnectionEvent, user string) []alert.Finding {
+	switch ev.Decision {
+	case 0:
+		BumpBPFEnforcementDecision(BPFDecisionAllow)
+	case 1:
+		BumpBPFEnforcementDecision(BPFDecisionDryRun)
+	case 2:
+		BumpBPFEnforcementDecision(BPFDecisionDeny)
+	}
+
+	// Phase 4 note: when bpf_enforcement.verdict_callback=true, the
+	// userspace path consults the auto_response.verdict_callback URL
+	// AFTER the in-kernel deny path has run. The callback is advisory
+	// (it can downgrade an action; it cannot upgrade an allow to deny).
+	// The in-kernel hook NEVER waits on this callback. cgroup/connect
+	// is synchronous; a 2-second HTTP roundtrip would add latency to
+	// every connect.
+
 	now := time.Now()
 
 	// Phase 3 note: DryRun knobs are not consulted here. Detection runs

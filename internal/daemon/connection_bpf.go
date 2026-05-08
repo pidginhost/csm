@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"sync/atomic"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -22,13 +23,14 @@ import (
 )
 
 type connectionBPF struct {
-	objs    *bpfprog.ConnectionObjects
-	link4   link.Link
-	link6   link.Link
-	reader  *bpf.Reader[ConnectionEvent]
-	alertCh chan<- alert.Finding
-	cfg     *config.Config
-	count   atomic.Uint64
+	objs         *bpfprog.ConnectionObjects
+	link4        link.Link
+	link6        link.Link
+	reader       *bpf.Reader[ConnectionEvent]
+	alertCh      chan<- alert.Finding
+	cfg          *config.Config
+	count        atomic.Uint64
+	uidRefresher *UIDRefresher // Phase 4: nil when enforcement is off
 }
 
 // startConnectionBPF loads the BPF objects, attaches connect4 + connect6 to
@@ -50,6 +52,23 @@ func startConnectionBPF(_ context.Context, alertCh chan<- alert.Finding, cfg *co
 	objs := &bpfprog.ConnectionObjects{}
 	if err := bpfprog.LoadConnectionObjects(objs, nil); err != nil {
 		return nil, fmt.Errorf("load BPF objects: %w", err)
+	}
+
+	// Phase 4: install policy + initial safe-UID snapshot BEFORE
+	// attaching cgroup programs so the first connect on a hosted UID
+	// does not race the first refresh.
+	pol := BuildBPFEnforcementPolicy(cfg)
+	if err := installBPFEnforcementPolicy(objs, pol); err != nil {
+		csmlog.Warn("bpf enforcement policy install failed", "err", err)
+	}
+	if pol.Enforce == 1 {
+		if uids, err := safeUIDsFromPasswd("/etc/passwd"); err == nil {
+			if err := installSafeUIDs(objs, uids); err != nil {
+				csmlog.Warn("bpf enforcement initial safe-uid install failed", "err", err)
+			}
+		} else {
+			csmlog.Warn("bpf enforcement initial safe-uid load failed", "err", err)
+		}
 	}
 
 	l4, err := link.AttachCgroup(link.CgroupOptions{
@@ -80,14 +99,40 @@ func startConnectionBPF(_ context.Context, alertCh chan<- alert.Finding, cfg *co
 		return nil, fmt.Errorf("ringbuf reader: %w", err)
 	}
 
-	return &connectionBPF{
+	c := &connectionBPF{
 		objs:    objs,
 		link4:   l4,
 		link6:   l6,
 		reader:  reader,
 		alertCh: alertCh,
 		cfg:     cfg,
-	}, nil
+	}
+
+	// Phase 4: start the periodic safe-UID refresher only when
+	// enforcement is enabled. The refresher repopulates the safe_uids
+	// BPF map so newly-added system/MTA users get exempted on the next
+	// tick (5 min default).
+	if pol.Enforce == 1 {
+		c.uidRefresher = NewUIDRefresher(UIDRefresherConfig{
+			Interval: 5 * time.Minute,
+			Refresh: func() error {
+				uids, err := safeUIDsFromPasswd("/etc/passwd")
+				if err != nil {
+					BumpUIDRefreshFailure()
+					return err
+				}
+				if err := installSafeUIDs(objs, uids); err != nil {
+					BumpUIDRefreshFailure()
+					return err
+				}
+				BumpUIDRefresh()
+				return nil
+			},
+		})
+		c.uidRefresher.Start()
+	}
+
+	return c, nil
 }
 
 func (c *connectionBPF) Mode() string       { return "bpf" }
@@ -95,6 +140,9 @@ func (c *connectionBPF) EventCount() uint64 { return c.count.Load() }
 
 func (c *connectionBPF) Run(ctx context.Context) {
 	defer func() {
+		if c.uidRefresher != nil {
+			c.uidRefresher.Stop()
+		}
 		_ = c.reader.Close()
 		_ = c.link4.Close()
 		_ = c.link6.Close()
