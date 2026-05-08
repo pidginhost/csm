@@ -136,3 +136,29 @@ func TestEvaluateDirectSMTPEgressIncludesProcessContextWhenSupplied(t *testing.T
 		t.Errorf("Process context must propagate; got %+v", f.Process)
 	}
 }
+
+func TestEvaluateDirectSMTPEgressLegacyShapeNoCommNoExe(t *testing.T) {
+	cfg := sampleDirectSMTPCfg()
+	in := DirectSMTPEgressInput{
+		UID: 1001, User: "alice", PID: 0, Comm: "", Exe: "",
+		DstIP: net.ParseIP("203.0.113.10").To4(), DstPort: 587, MTA: sampleMTA(),
+	}
+	f, ok := EvaluateDirectSMTPEgress(cfg, in)
+	if !ok {
+		t.Fatalf("legacy-shape input must still fire (UID + dest port enough)")
+	}
+	if f.Check != "direct_smtp_egress" {
+		t.Errorf("Check: %q", f.Check)
+	}
+}
+
+func TestEvaluateDirectSMTPEgressLegacyShapeStillSkipsMTAUser(t *testing.T) {
+	cfg := sampleDirectSMTPCfg()
+	in := DirectSMTPEgressInput{
+		UID: 89, User: "postfix", PID: 0, Comm: "", Exe: "",
+		DstIP: net.ParseIP("203.0.113.10").To4(), DstPort: 587, MTA: sampleMTA(),
+	}
+	if _, ok := EvaluateDirectSMTPEgress(cfg, in); ok {
+		t.Errorf("postfix UID/user must be skipped even with empty Comm/Exe")
+	}
+}
