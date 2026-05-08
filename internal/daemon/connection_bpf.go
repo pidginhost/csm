@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"sync/atomic"
-	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -19,6 +18,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	bpfprog "github.com/pidginhost/csm/internal/daemon/connection_bpfprog"
 	csmlog "github.com/pidginhost/csm/internal/log"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 type connectionBPF struct {
@@ -103,6 +103,9 @@ func (c *connectionBPF) Run(ctx context.Context) {
 
 	go c.reader.Run(ctx)
 	pcCache, pcEnr := ProcessCtx()
+	// Resolve MTA identities once; platform.Detect() probes the FS so
+	// keep it out of the per-event hot path.
+	mta := platform.LocalMTAIdentities(platform.Detect())
 	for {
 		select {
 		case <-ctx.Done():
@@ -113,26 +116,16 @@ func (c *connectionBPF) Run(ctx context.Context) {
 			}
 			c.count.Add(1)
 			user := checks.LookupUser(ev.UID)
-			finding, emit := checks.EvaluateConnection(c.cfg, ev.UID, ev.DstIP, ev.DstPort, 0, protoFromFamily(ev.Family), user)
-			if !emit {
-				continue
-			}
-			finding.Timestamp = time.Now()
-			attachProcessCtxToFinding(pcCache, pcEnr, &finding, ev)
-			select {
-			case c.alertCh <- finding:
-			default:
-				csmlog.Warn("connection bpf: alert channel full, dropping finding")
+			for _, finding := range evaluateConnectionEvent(c.cfg, mta, ev, user) {
+				attachProcessCtxToFinding(pcCache, pcEnr, &finding, ev)
+				select {
+				case c.alertCh <- finding:
+				default:
+					csmlog.Warn("connection bpf: alert channel full, dropping finding")
+				}
 			}
 		}
 	}
-}
-
-func protoFromFamily(f uint32) string {
-	if f == 10 {
-		return "tcp6"
-	}
-	return "tcp"
 }
 
 // unifiedCgroupRoot returns the path to the cgroup v2 unified hierarchy

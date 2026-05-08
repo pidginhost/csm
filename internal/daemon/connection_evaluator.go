@@ -1,0 +1,57 @@
+package daemon
+
+import (
+	"time"
+
+	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/platform"
+)
+
+// evaluateConnectionEvent runs every per-event detector and returns the
+// findings that should be emitted. Pure-ish: no IO and no alertCh
+// access. Caller is responsible for attaching process context (which
+// MAY do IO via the enricher) and shipping to alertCh.
+//
+// The function exists in a non-build-tagged file so unit tests can
+// drive a synthetic ConnectionEvent through the same policy logic the
+// live BPF Run loop uses, without requiring the linux+bpf build tag.
+func evaluateConnectionEvent(cfg *config.Config, mta platform.MTAIdents, ev ConnectionEvent, user string) []alert.Finding {
+	now := time.Now()
+	var out []alert.Finding
+
+	// Direct SMTP egress (Phase 3). Distinct Check value; the inbound
+	// smtp_probe meters never see this traffic.
+	if f, ok := checks.EvaluateDirectSMTPEgress(cfg, checks.DirectSMTPEgressInput{
+		UID:     ev.UID,
+		User:    user,
+		PID:     ev.PID,
+		Comm:    ev.Comm,
+		DstIP:   ev.DstIP,
+		DstPort: ev.DstPort,
+		MTA:     mta,
+	}); ok {
+		f.Timestamp = now
+		out = append(out, f)
+	}
+
+	// Pre-existing user_outbound_connection detector. SMTP destinations
+	// are filtered out by checks.safeRemotePorts inside this evaluator,
+	// so it does not double-fire for a 25/465/587 connect.
+	if f, ok := checks.EvaluateConnection(cfg, ev.UID, ev.DstIP, ev.DstPort, 0, protoFromFamily(ev.Family), user); ok {
+		f.Timestamp = now
+		out = append(out, f)
+	}
+	return out
+}
+
+// protoFromFamily maps a sockaddr family int to a string label used in
+// finding details. Lives here (not in connection_bpf.go) so the
+// evaluator helper compiles on darwin without the bpf tag.
+func protoFromFamily(f uint32) string {
+	if f == 10 {
+		return "tcp6"
+	}
+	return "tcp"
+}
