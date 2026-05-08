@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional `process` field on findings and audit events carries PID/PPID/UID/user/account/exe/sanitized cmdline plus parent chain (depth 5). Omitted when no context is available; existing webhook consumers see no schema change.
 - Operators can now exempt specific mailboxes or whole domains from the cloud-relay credential-abuse detector only, without weakening the rate detector for the same account.
 - Incident correlation groups related findings into one story per account, mailbox, or process. New API + CLI surface plus persistence; original findings stream is unchanged.
+- Direct SMTP egress detector flags non-MTA local processes opening outbound mail-port connections, with a platform-resolved MTA allowlist and rDNS enrichment.
 
 ### Changed
 

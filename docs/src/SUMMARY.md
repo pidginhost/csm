@@ -12,6 +12,7 @@
 # Detection
 
 - [Real-Time Detection](detection-realtime.md)
+- [Direct SMTP egress](direct-smtp-egress.md)
 - [Critical Checks](detection-critical.md)
 - [Deep Checks](detection-deep.md)
 - [Auto-Response](auto-response.md)

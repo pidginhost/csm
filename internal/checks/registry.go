@@ -250,6 +250,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "backdoor_port", Category: CategoryNetwork},
 	{Name: "backdoor_port_outbound", Category: CategoryNetwork},
 	{Name: "c2_connection", Category: CategoryNetwork},
+	{Name: "direct_smtp_egress", Category: CategoryNetwork},
 	{Name: "dns_connection", Category: CategoryNetwork},
 	{Name: "dns_zone_change", Category: CategoryNetwork},
 	{Name: "exfiltration_paste_site", Category: CategoryNetwork},

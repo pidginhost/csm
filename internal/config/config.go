@@ -225,6 +225,20 @@ type Config struct {
 		// and handle inode reuse) and how often the legacy polling
 		// backend runs the content-hash check. Empty / zero defaults to 5m.
 		SensitiveFilesPollInterval time.Duration `yaml:"sensitive_files_poll_interval"`
+
+		// DirectSMTPEgress flags non-MTA local processes opening
+		// outbound SMTP connections. Phase 3 of the BPF Incident
+		// Response Roadmap. Detection-only this phase; Phase 4 will
+		// add the auto-response action gated by DryRun.
+		DirectSMTPEgress struct {
+			Enabled bool   `yaml:"enabled"`
+			Backend string `yaml:"backend"` // auto / bpf / legacy / none
+			// DryRun, when true (or absent for safety), reports findings
+			// but takes no detector-scoped action. Phase 3 emits findings
+			// regardless; the knob exists for the Phase 4 action.
+			DryRun *bool `yaml:"dry_run,omitempty"`
+			Ports  []int `yaml:"ports,omitempty"`
+		} `yaml:"direct_smtp_egress" hotreload:"safe"`
 	} `yaml:"detection" hotreload:"safe"`
 
 	Suppressions struct {
@@ -587,6 +601,17 @@ func (cfg *Config) AutoResponseDryRunEnabled() bool {
 	return cfg.AutoResponse.DryRun == nil || *cfg.AutoResponse.DryRun
 }
 
+// DirectSMTPEgressDryRunEnabled reports the YAML-level dry-run state
+// for the direct SMTP egress detector. Defaults to TRUE when dry_run
+// was omitted (safety default). Operators must explicitly set
+// `dry_run: false` to flip the detector to active mode.
+func (c *Config) DirectSMTPEgressDryRunEnabled() bool {
+	if c.Detection.DirectSMTPEgress.DryRun == nil {
+		return true
+	}
+	return *c.Detection.DirectSMTPEgress.DryRun
+}
+
 type defaultPresence struct {
 	smtpProbeThreshold bool
 }
@@ -874,6 +899,17 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 		cfg.AutoResponse.VerdictCallback.TimeoutSec = 2 // tight; the hook is on the block hot path
 	}
 	// Secret resolution happens at call time (verdict.Client reads env per call).
+
+	// Direct SMTP egress detector defaults. Backend "auto" lets the runtime
+	// pick BPF where available and fall back to legacy polling. Standard
+	// submission/relay ports cover the bulk of mass-mail abuse seen in the
+	// wild; operators can override via YAML to add e.g. 2525.
+	if cfg.Detection.DirectSMTPEgress.Backend == "" {
+		cfg.Detection.DirectSMTPEgress.Backend = "auto"
+	}
+	if len(cfg.Detection.DirectSMTPEgress.Ports) == 0 {
+		cfg.Detection.DirectSMTPEgress.Ports = []int{25, 465, 587}
+	}
 }
 
 // LoadBytes decodes a YAML config body and applies all defaults,

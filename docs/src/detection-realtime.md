@@ -155,3 +155,10 @@ Caveats:
   has no PID, so emitted findings do not carry a `process` field. A future
   refinement could resolve the socket inode to a PID via `/proc/<pid>/fd`,
   but that is out of scope for Phase 1.
+
+## Direct SMTP Egress
+
+Outbound connections to SMTP ports from non-MTA local processes
+emit a `direct_smtp_egress` finding. See
+[Direct SMTP egress](direct-smtp-egress.md) for the full rule set,
+config schema, and metric.
