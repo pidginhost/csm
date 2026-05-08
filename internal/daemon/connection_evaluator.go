@@ -54,22 +54,25 @@ func evaluateConnectionEvent(cfg *config.Config, mta platform.MTAIdents, ev Conn
 	// has not landed yet.
 	var out []alert.Finding
 
-	// Direct SMTP egress (Phase 3). Distinct Check value; the inbound
-	// smtp_probe meters never see this traffic.
-	domain := rdnsCache().Lookup(ev.DstIP)
-	if f, ok := checks.EvaluateDirectSMTPEgress(cfg, checks.DirectSMTPEgressInput{
-		UID:     ev.UID,
-		User:    user,
-		PID:     ev.PID,
-		Comm:    ev.Comm,
-		DstIP:   ev.DstIP,
-		DstPort: ev.DstPort,
-		MTA:     mta,
-		Domain:  domain,
-	}); ok {
-		f.Timestamp = now
-		out = append(out, f)
-		checks.BumpDirectSMTPEgressFindings()
+	if checks.DirectSMTPEgressBackendEnabled(cfg, "bpf") {
+		// Direct SMTP egress (Phase 3). Distinct Check value; the inbound
+		// smtp_probe meters never see this traffic.
+		if f, ok := checks.EvaluateDirectSMTPEgress(cfg, checks.DirectSMTPEgressInput{
+			UID:     ev.UID,
+			User:    user,
+			PID:     ev.PID,
+			Comm:    ev.Comm,
+			DstIP:   ev.DstIP,
+			DstPort: ev.DstPort,
+			MTA:     mta,
+		}); ok {
+			if domain := rdnsCache().Lookup(ev.DstIP); domain != "" {
+				f.Details += ", Domain: " + domain
+			}
+			f.Timestamp = now
+			out = append(out, f)
+			checks.BumpDirectSMTPEgressFindings()
+		}
 	}
 
 	// Pre-existing user_outbound_connection detector. SMTP destinations

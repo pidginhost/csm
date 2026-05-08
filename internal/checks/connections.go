@@ -125,9 +125,13 @@ func scanProcNetTCP(cfg *config.Config, data []byte, ipv6 bool) []alert.Finding 
 	lines := strings.Split(string(data), "\n")
 	listeners := collectListenSockets(lines, ipv6)
 
-	// Resolve MTA identities once per scan; legacy poller has no per-PID context,
-	// so the EvaluateDirectSMTPEgress UID/user gate carries the load.
-	mta := platform.LocalMTAIdentities(platform.Detect())
+	directSMTPEnabled := DirectSMTPEgressBackendEnabled(cfg, "legacy")
+	var mta platform.MTAIdents
+	if directSMTPEnabled {
+		// Resolve MTA identities once per scan; legacy poller has no per-PID context,
+		// so the EvaluateDirectSMTPEgress UID/user gate carries the load.
+		mta = platform.LocalMTAIdentities(platform.Detect())
+	}
 
 	for _, line := range lines {
 		fields := strings.Fields(line)
@@ -175,16 +179,18 @@ func scanProcNetTCP(cfg *config.Config, data []byte, ipv6 bool) []alert.Finding 
 			f.Timestamp = time.Now()
 			findings = append(findings, f)
 		}
-		// #nosec G115 -- ports parsed from /proc/net/tcp[6] are bounded by uint16.
-		if f, ok := EvaluateDirectSMTPEgress(cfg, DirectSMTPEgressInput{
-			UID:     uidU32,
-			User:    user,
-			DstIP:   dstIP,
-			DstPort: uint16(dstPort),
-			MTA:     mta,
-		}); ok {
-			f.Timestamp = time.Now()
-			findings = append(findings, f)
+		if directSMTPEnabled {
+			// #nosec G115 -- ports parsed from /proc/net/tcp[6] are bounded by uint16.
+			if f, ok := EvaluateDirectSMTPEgress(cfg, DirectSMTPEgressInput{
+				UID:     uidU32,
+				User:    user,
+				DstIP:   dstIP,
+				DstPort: uint16(dstPort),
+				MTA:     mta,
+			}); ok {
+				f.Timestamp = time.Now()
+				findings = append(findings, f)
+			}
 		}
 	}
 	return findings
