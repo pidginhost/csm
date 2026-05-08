@@ -20,9 +20,10 @@ A finding with `check: "direct_smtp_egress"` is emitted when:
 Process names are never a standalone allow condition. A hosted account
 renaming malware to `smtp` or `smtpd` still emits a finding.
 
-The detector is detection-only in Phase 3. The dry_run knob exists in
-config but does not gate emission today; Phase 4 introduces the
-auto-response action that the knob will gate.
+The detector always emits findings when enabled. The dry_run knob does
+not suppress findings; it participates in the Phase 4 BPF enforcement
+gate, where any dry_run=true layer keeps kernel denial in observe-only
+mode.
 
 ## Configuration
 
@@ -31,7 +32,7 @@ detection:
   direct_smtp_egress:
     enabled: true
     backend: auto       # auto / bpf / legacy / none
-    dry_run: true       # safety default; flip to false when Phase 4 lands
+    dry_run: true       # safety default for detector-scoped action
     ports:             # each value must be 1-65535
       - 25
       - 465
@@ -73,5 +74,6 @@ omitted; the finding still fires.
 - `2525` is intentionally NOT in the default port list. Many operators
   run unrelated services on it. Add it to `ports` if your infra uses
   it for submission.
-- The detector emits regardless of the dry_run knob in Phase 3.
-  Phase 4 will introduce an action that the knob will gate.
+- The detector emits regardless of the dry_run knob. Kernel denial
+  requires `auto_response.dry_run`, this dry_run key, and
+  `bpf_enforcement.dry_run` to all be explicitly false.

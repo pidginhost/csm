@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/platform"
 )
@@ -25,18 +26,33 @@ func BuildBPFEnforcementPolicy(cfg *config.Config) BPFEnforcementPolicy {
 	if cfg == nil || !cfg.BPFEnforcement.Enabled {
 		return BPFEnforcementPolicy{}
 	}
+	if !connectionTrackerAllowsBPF(cfg) {
+		return BPFEnforcementPolicy{}
+	}
 	p := BPFEnforcementPolicy{Enforce: 1}
 	if cfg.BPFEnforcementDryRunEnabled() {
 		p.DryRun = 1
 	}
-	if cfg.BPFEnforcement.DirectSMTPEgress {
+	if cfg.BPFEnforcement.DirectSMTPEgress && checks.DirectSMTPEgressBackendEnabled(cfg, "bpf") {
 		for _, port := range cfg.Detection.DirectSMTPEgress.Ports {
 			if port > 0 && port <= 65535 {
 				p.Ports = append(p.Ports, uint16(port))
 			}
 		}
 	}
+	if len(p.Ports) == 0 {
+		return BPFEnforcementPolicy{}
+	}
 	return p
+}
+
+func connectionTrackerAllowsBPF(cfg *config.Config) bool {
+	switch strings.ToLower(strings.TrimSpace(cfg.Detection.ConnectionTrackerBackend)) {
+	case "", "auto", "bpf":
+		return true
+	default:
+		return false
+	}
 }
 
 // safeUIDsFromPasswd returns a map of UIDs that should be exempt from

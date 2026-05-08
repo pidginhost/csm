@@ -903,6 +903,9 @@ detection:
 func TestConfig_BPFEnforcementRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "csm.yaml")
 	yaml := []byte(`hostname: ""
+detection:
+  direct_smtp_egress:
+    enabled: true
 bpf_enforcement:
   enabled: true
   dry_run: false
@@ -933,8 +936,12 @@ bpf_enforcement:
 func TestConfig_BPFEnforcementDryRunDefaultsTrue(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "csm.yaml")
 	yaml := []byte(`hostname: ""
+detection:
+  direct_smtp_egress:
+    enabled: true
 bpf_enforcement:
   enabled: true
+  direct_smtp_egress: true
 `)
 	if err := os.WriteFile(path, yaml, 0644); err != nil {
 		t.Fatalf("write: %v", err)
@@ -945,6 +952,31 @@ bpf_enforcement:
 	}
 	if !cfg.BPFEnforcementDryRunEnabled() {
 		t.Errorf("DryRun should default true (safety) when omitted")
+	}
+}
+
+func TestConfig_BPFEnforcementDryRunAnyLayerWins(t *testing.T) {
+	cfg := &Config{}
+	cfg.BPFEnforcement.Enabled = true
+	cfg.BPFEnforcement.DirectSMTPEgress = true
+	cfg.Detection.DirectSMTPEgress.Enabled = true
+	falseValue := false
+	cfg.AutoResponse.DryRun = &falseValue
+	cfg.Detection.DirectSMTPEgress.DryRun = &falseValue
+	cfg.BPFEnforcement.DryRun = &falseValue
+	if cfg.BPFEnforcementDryRunEnabled() {
+		t.Fatal("all three dry_run layers explicit false should allow live enforcement")
+	}
+
+	trueValue := true
+	cfg.Detection.DirectSMTPEgress.DryRun = &trueValue
+	if !cfg.BPFEnforcementDryRunEnabled() {
+		t.Fatal("detector dry_run=true must force BPF dry-run")
+	}
+	cfg.Detection.DirectSMTPEgress.DryRun = &falseValue
+	cfg.AutoResponse.DryRun = &trueValue
+	if !cfg.BPFEnforcementDryRunEnabled() {
+		t.Fatal("global auto_response dry_run=true must force BPF dry-run")
 	}
 }
 

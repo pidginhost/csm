@@ -949,3 +949,27 @@ func TestValidateBPFEnforcementRequiresDetectorEnabled(t *testing.T) {
 		t.Errorf("enforcement on a disabled detector must fail validation: %v", results)
 	}
 }
+
+func TestValidateBPFEnforcementRejectsLegacyConnectionTracker(t *testing.T) {
+	cfg := &Config{Hostname: "h"}
+	cfg.Detection.ConnectionTrackerBackend = "legacy"
+	cfg.Detection.DirectSMTPEgress.Enabled = true
+	cfg.BPFEnforcement.Enabled = true
+	cfg.BPFEnforcement.DirectSMTPEgress = true
+	results := Validate(cfg)
+	if !hasResult(results, "error", "bpf_enforcement") {
+		t.Fatalf("BPF enforcement with legacy connection tracker must fail: %v", results)
+	}
+}
+
+func TestValidateBPFEnforcementRejectsLegacyDirectSMTPBackend(t *testing.T) {
+	cfg := &Config{Hostname: "h"}
+	cfg.Detection.DirectSMTPEgress.Enabled = true
+	cfg.Detection.DirectSMTPEgress.Backend = "legacy"
+	cfg.BPFEnforcement.Enabled = true
+	cfg.BPFEnforcement.DirectSMTPEgress = true
+	results := Validate(cfg)
+	if !hasResult(results, "error", "bpf_enforcement") {
+		t.Fatalf("BPF enforcement with legacy direct SMTP backend must fail: %v", results)
+	}
+}

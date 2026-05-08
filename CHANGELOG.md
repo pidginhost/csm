@@ -30,9 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `renderTemplate` now buffers output before flushing so a template execution failure surfaces a clean 500 instead of a partial 200 body, and the settings UI drops a dead `resp.ok` branch that became unreachable after the `CSM.request` refactor.
 - Incident correlator rejects unknown status strings, the webui POST `/api/v1/incidents/{id}/status` mutator is now CSRF-protected, and a daily retention sweep prunes resolved/dismissed incidents older than 30 days and bumps `csm_incidents_compacted_total`.
 - Incident correlation now survives daemon restart for process-only and remote-IP incidents, pruned incidents disappear from live API/control results, and pre-alert filtered findings still join incidents.
+- The Incidents web UI now lists correlated Incident objects, opens their merged timeline, and keeps the older IP/account timeline search in a separate tab.
 - The Firewall entry in the Response menu now renders an icon to match the other dropdown items.
 - The Performance dashboard MySQL card now shows `n/a` instead of `0 conn` when csm cannot query MySQL, and the daemon under systemd can finally read its local mysql credentials so connection counts and MySQL configuration findings appear instead of silently dropping.
 - Direct SMTP egress now honors its detector backend setting, validates configured ports, and still reports hosted processes that use MTA-looking names.
+- BPF enforcement now honors global, detector, and kernel dry-run layers, rejects incompatible legacy-only backend settings, and reports active only when the connection tracker is actually running on BPF.
 
 ### Documentation
 

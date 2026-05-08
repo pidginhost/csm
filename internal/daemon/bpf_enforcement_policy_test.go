@@ -34,12 +34,74 @@ func TestBuildPolicyDryRunFalseFlipsToZero(t *testing.T) {
 	cfg.BPFEnforcement.Enabled = true
 	cfg.BPFEnforcement.DirectSMTPEgress = true
 	dr := false
+	cfg.AutoResponse.DryRun = &dr
 	cfg.BPFEnforcement.DryRun = &dr
 	cfg.Detection.DirectSMTPEgress.Enabled = true
+	cfg.Detection.DirectSMTPEgress.DryRun = &dr
 	cfg.Detection.DirectSMTPEgress.Ports = []int{587}
 	p := BuildBPFEnforcementPolicy(cfg)
 	if p.DryRun != 0 {
 		t.Errorf("DryRun: want 0, got %d", p.DryRun)
+	}
+}
+
+func TestBuildPolicyGlobalDryRunForcesDryRun(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.BPFEnforcement.Enabled = true
+	cfg.BPFEnforcement.DirectSMTPEgress = true
+	falseValue := false
+	trueValue := true
+	cfg.AutoResponse.DryRun = &trueValue
+	cfg.BPFEnforcement.DryRun = &falseValue
+	cfg.Detection.DirectSMTPEgress.Enabled = true
+	cfg.Detection.DirectSMTPEgress.DryRun = &falseValue
+	cfg.Detection.DirectSMTPEgress.Ports = []int{587}
+	p := BuildBPFEnforcementPolicy(cfg)
+	if p.DryRun != 1 {
+		t.Errorf("global dry_run must keep BPF policy in dry-run; got %d", p.DryRun)
+	}
+}
+
+func TestBuildPolicyDetectorDryRunForcesDryRun(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.BPFEnforcement.Enabled = true
+	cfg.BPFEnforcement.DirectSMTPEgress = true
+	falseValue := false
+	trueValue := true
+	cfg.AutoResponse.DryRun = &falseValue
+	cfg.BPFEnforcement.DryRun = &falseValue
+	cfg.Detection.DirectSMTPEgress.Enabled = true
+	cfg.Detection.DirectSMTPEgress.DryRun = &trueValue
+	cfg.Detection.DirectSMTPEgress.Ports = []int{587}
+	p := BuildBPFEnforcementPolicy(cfg)
+	if p.DryRun != 1 {
+		t.Errorf("direct SMTP dry_run must keep BPF policy in dry-run; got %d", p.DryRun)
+	}
+}
+
+func TestBuildPolicyDisabledWhenDirectSMTPBackendLegacy(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.BPFEnforcement.Enabled = true
+	cfg.BPFEnforcement.DirectSMTPEgress = true
+	cfg.Detection.DirectSMTPEgress.Enabled = true
+	cfg.Detection.DirectSMTPEgress.Backend = "legacy"
+	cfg.Detection.DirectSMTPEgress.Ports = []int{587}
+	p := BuildBPFEnforcementPolicy(cfg)
+	if p.Enforce != 0 {
+		t.Errorf("legacy direct SMTP backend must not produce BPF enforcement policy: %+v", p)
+	}
+}
+
+func TestBuildPolicyDisabledWhenConnectionTrackerLegacy(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Detection.ConnectionTrackerBackend = "legacy"
+	cfg.BPFEnforcement.Enabled = true
+	cfg.BPFEnforcement.DirectSMTPEgress = true
+	cfg.Detection.DirectSMTPEgress.Enabled = true
+	cfg.Detection.DirectSMTPEgress.Ports = []int{587}
+	p := BuildBPFEnforcementPolicy(cfg)
+	if p.Enforce != 0 {
+		t.Errorf("legacy connection tracker must not produce BPF enforcement policy: %+v", p)
 	}
 }
 

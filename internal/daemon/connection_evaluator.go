@@ -56,13 +56,10 @@ func evaluateConnectionEvent(cfg *config.Config, mta platform.MTAIdents, ev Conn
 		BumpBPFEnforcementDecision(BPFDecisionDeny)
 	}
 
-	// Phase 4 note: when bpf_enforcement.verdict_callback=true, the
-	// userspace path consults the auto_response.verdict_callback URL
-	// AFTER the in-kernel deny path has run. The callback is advisory
-	// (it can downgrade an action; it cannot upgrade an allow to deny).
-	// The in-kernel hook NEVER waits on this callback. cgroup/connect
-	// is synchronous; a 2-second HTTP roundtrip would add latency to
-	// every connect.
+	// Phase 4 note: bpf_enforcement.verdict_callback is applied by the
+	// BPF Run loop after this evaluator returns. The in-kernel hook
+	// NEVER waits on HTTP; cgroup/connect is synchronous and a remote
+	// callback would add latency to every connect.
 
 	now := time.Now()
 

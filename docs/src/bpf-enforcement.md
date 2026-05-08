@@ -8,7 +8,8 @@ review.
 
 ## What it does
 
-When `bpf_enforcement.enabled=true` and `dry_run=false`:
+When `bpf_enforcement.enabled=true`, `direct_smtp_egress=true`, the
+connection tracker is running on BPF, and all dry-run layers are false:
 
 - The cgroup/connect4 + cgroup/connect6 BPF program inspects each
   outbound TCP connect.
@@ -18,16 +19,17 @@ When `bpf_enforcement.enabled=true` and `dry_run=false`:
 - Userspace observes the decision via the `decision` field on the
   ringbuf event and emits an audit-log entry.
 
-When `dry_run=true` (the default), the program emits the decision
-but always returns 1 (allow). Operators can run dry-run for as long
-as they need to gather telemetry before flipping to live denial.
+When any dry-run layer is true (the default), the program emits the
+decision but always returns 1 (allow). Operators can run dry-run for
+as long as they need to gather telemetry before flipping to live
+denial.
 
 ## What it does NOT do
 
 - It does NOT wait on remote verdict callbacks in-kernel. That would
   add HTTP latency to every connect. The verdict callback (if
-  enabled) runs in userspace AFTER the BPF decision and can only
-  downgrade an action.
+  enabled) runs in userspace after the BPF decision and enriches the
+  emitted finding; it cannot undo a kernel denial.
 - It does NOT enforce on UDP, ICMP, or non-cgroup paths.
 - It does NOT replace any Phase 3 detection. Detections still run
   regardless; enforcement is a separate, layered control.
@@ -44,7 +46,9 @@ bpf_enforcement:
 
 `bpf_enforcement.enabled=true` requires at least one feature gate.
 Today the only gate is `direct_smtp_egress`, which itself requires
-`detection.direct_smtp_egress.enabled=true`.
+`detection.direct_smtp_egress.enabled=true`. The connection tracker
+backend must be `auto` or `bpf`, and the direct SMTP backend must be
+`auto` or `bpf`.
 
 ## Kernel requirements
 
@@ -54,6 +58,12 @@ Today the only gate is `direct_smtp_egress`, which itself requires
   signal that the binary supports the feature; combined with
   `bpf_enforcement_active` on the health snapshot, operators can
   detect both feature presence and runtime state.
+
+On older kernels or default builds without the BPF tag,
+`detection.connection_tracker_backend: auto` falls back to the legacy
+`/proc/net/tcp[6]` poller. In that state direct SMTP findings still
+work when `detection.direct_smtp_egress.backend` is `auto` or
+`legacy`, but BPF enforcement is inactive.
 
 ## Metrics
 
@@ -74,8 +84,8 @@ Three independent dry_run knobs interact:
 3. `bpf_enforcement.dry_run`: kernel-side denial knob.
 
 Rule: any dry_run=true wins. Live denial requires all three to be
-false at the layer they apply. Defaults are dry_run=true everywhere
-on first install.
+false at the layer they apply, plus a BPF runtime backend. Defaults
+are dry_run=true everywhere on first install.
 
 ## Rollout recipe
 

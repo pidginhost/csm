@@ -164,8 +164,10 @@ func (c *connectionBPF) Run(ctx context.Context) {
 			}
 			c.count.Add(1)
 			user := checks.LookupUser(ev.UID)
-			for _, finding := range evaluateConnectionEvent(activeConnectionCfg(c.cfg), mta, ev, user) {
+			liveCfg := activeConnectionCfg(c.cfg)
+			for _, finding := range evaluateConnectionEvent(liveCfg, mta, ev, user) {
 				attachProcessCtxToFinding(pcCache, pcEnr, &finding, ev)
+				applyBPFEnforcementVerdict(ctx, liveCfg, ev, &finding)
 				select {
 				case c.alertCh <- finding:
 				default:

@@ -7,6 +7,43 @@
         </div>
     </div>
 
+    <ul class="nav nav-tabs mb-3" role="tablist">
+        <li class="nav-item" role="presentation">
+            <button class="nav-link active" id="incidents-tab" type="button" role="tab" aria-controls="incidents-panel" aria-selected="true">
+                <i class="ti ti-list-details"></i>&nbsp;Correlated
+            </button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="timeline-tab" type="button" role="tab" aria-controls="timeline-panel" aria-selected="false">
+                <i class="ti ti-search"></i>&nbsp;Timeline Search
+            </button>
+        </li>
+    </ul>
+
+    <div id="incidents-panel" role="tabpanel" aria-labelledby="incidents-tab">
+        <div class="card mb-3">
+            <div class="card-header">
+                <h3 class="card-title"><i class="ti ti-timeline-event"></i>&nbsp;Correlated Incidents</h3>
+                <div class="card-actions d-flex gap-2 align-items-center flex-wrap">
+                    <select id="incident-status-filter" class="form-select form-select-sm" aria-label="Status filter">
+                        <option value="active">Open + contained</option>
+                        <option value="all">All statuses</option>
+                        <option value="open">Open</option>
+                        <option value="contained">Contained</option>
+                        <option value="resolved">Resolved</option>
+                        <option value="dismissed">Dismissed</option>
+                    </select>
+                    <button class="btn btn-outline-secondary btn-sm" id="incidents-refresh-btn" title="Refresh incidents" aria-label="Refresh incidents">
+                        <i class="ti ti-refresh"></i>
+                    </button>
+                </div>
+            </div>
+            <div id="incidents-content"></div>
+        </div>
+        <div id="incident-detail" class="card d-none"></div>
+    </div>
+
+    <div id="timeline-panel" class="d-none" role="tabpanel" aria-labelledby="timeline-tab">
     <div class="card mb-3">
         <div class="card-header">
             <h3 class="card-title"><i class="ti ti-timeline-event"></i>&nbsp;Incident Timeline</h3>
@@ -27,6 +64,7 @@
                 <div class="small">Examples: <code>192.168.1.1</code>, <code>2001:db8::1</code>, <code>username</code></div>
             </div>
         </div>
+    </div>
     </div>
 {{end}}
 {{define "scripts"}}

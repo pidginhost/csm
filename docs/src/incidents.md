@@ -52,6 +52,13 @@ active incidents keep merging after daemon restart.
 
 See [api.md](api.md) for endpoint detail.
 
+## Web UI
+
+Open **Monitor -> Incidents**. The default Correlated tab lists open
+and contained Incident objects, shows the merged timeline, and lets an
+admin mark an incident open, contained, resolved, or dismissed. The
+Timeline Search tab keeps the older IP/account history search.
+
 ## Control socket
 
 ```

@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/bpf"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/integrity"
 	"github.com/pidginhost/csm/internal/store"
@@ -104,7 +105,9 @@ func (d *Daemon) BPFEnforcementActive() bool {
 	if cfg == nil {
 		return false
 	}
-	return cfg.BPFEnforcement.Enabled
+	return cfg.BPFEnforcement.Enabled &&
+		cfg.BPFEnforcement.DirectSMTPEgress &&
+		bpf.ActiveKind("connection_tracker") == bpf.BackendBPF
 }
 
 // HistoryCount implements health.Provider.

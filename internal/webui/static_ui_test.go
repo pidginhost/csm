@@ -35,3 +35,23 @@ func TestThreatIntelBulkCheckboxUsesCSPCompliantListener(t *testing.T) {
 		t.Fatal("threat.js missing checkbox click stopPropagation listener")
 	}
 }
+
+func TestIncidentPageRendersCorrelatedIncidentSurface(t *testing.T) {
+	tmpl, err := os.ReadFile("../../ui/templates/incident.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js, err := os.ReadFile("../../ui/static/js/incident.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(tmpl), `id="incidents-panel"`) {
+		t.Fatal("incident page missing correlated incidents panel")
+	}
+	if !strings.Contains(string(js), `/api/v1/incidents`) {
+		t.Fatal("incident.js does not load correlated incidents API")
+	}
+	if strings.Contains(string(js), `onclick="`) {
+		t.Fatal("incident.js must not render inline onclick handlers")
+	}
+}

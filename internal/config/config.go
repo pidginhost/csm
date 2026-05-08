@@ -634,6 +634,12 @@ func (c *Config) DirectSMTPEgressDryRunEnabled() bool {
 // (safety default). Operators must explicitly set `dry_run: false` to
 // flip the in-kernel program to live denial.
 func (c *Config) BPFEnforcementDryRunEnabled() bool {
+	if c.AutoResponseDryRunEnabled() {
+		return true
+	}
+	if c.BPFEnforcement.DirectSMTPEgress && c.DirectSMTPEgressDryRunEnabled() {
+		return true
+	}
 	if c.BPFEnforcement.DryRun == nil {
 		return true
 	}
@@ -1063,10 +1069,24 @@ func validateBPFEnforcement(cfg *Config) error {
 	if !cfg.BPFEnforcement.Enabled {
 		return nil
 	}
+	switch strings.ToLower(strings.TrimSpace(cfg.Detection.ConnectionTrackerBackend)) {
+	case "", "auto", "bpf":
+	case "legacy", "none":
+		return fmt.Errorf("bpf_enforcement.enabled=true requires detection.connection_tracker_backend=auto or bpf")
+	default:
+		return fmt.Errorf("detection.connection_tracker_backend must be auto, bpf, legacy, or none")
+	}
 	gates := 0
 	if cfg.BPFEnforcement.DirectSMTPEgress {
 		if !cfg.Detection.DirectSMTPEgress.Enabled {
 			return fmt.Errorf("bpf_enforcement.direct_smtp_egress requires detection.direct_smtp_egress.enabled=true")
+		}
+		switch strings.ToLower(strings.TrimSpace(cfg.Detection.DirectSMTPEgress.Backend)) {
+		case "", "auto", "bpf":
+		case "legacy", "none":
+			return fmt.Errorf("bpf_enforcement.direct_smtp_egress requires detection.direct_smtp_egress.backend=auto or bpf")
+		default:
+			return fmt.Errorf("detection.direct_smtp_egress.backend must be auto, bpf, legacy, or none")
 		}
 		gates++
 	}

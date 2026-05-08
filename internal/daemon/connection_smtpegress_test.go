@@ -1,16 +1,22 @@
 package daemon
 
 import (
+	"context"
+	"encoding/json"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/checks"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/platform"
+	"github.com/pidginhost/csm/internal/verdict"
 )
 
 func installDirectSMTPRDNSCacheForTest(t *testing.T, cache *checks.RDNSCache) {
@@ -224,5 +230,72 @@ func TestEvaluateConnectionEventIgnoresVerdictCallbackInline(t *testing.T) {
 	got := evaluateConnectionEvent(cfg, mta, ev, "alice")
 	if len(got) == 0 {
 		t.Errorf("evaluator must emit; verdict callback gating is post-emit")
+	}
+}
+
+func TestApplyBPFEnforcementVerdictAnnotatesFinding(t *testing.T) {
+	var gotReq verdict.Request
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotReq); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(verdict.Response{
+			Verdict:  "allow",
+			TenantID: "panel-tenant",
+			Note:     "policy exception",
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := &config.Config{}
+	cfg.BPFEnforcement.VerdictCallback = true
+	cfg.AutoResponse.VerdictCallback.Enabled = true
+	cfg.AutoResponse.VerdictCallback.URL = srv.URL
+	cfg.AutoResponse.VerdictCallback.TimeoutSec = 1
+	f := alert.Finding{Check: "direct_smtp_egress", Severity: alert.High, Details: "base"}
+	ev := ConnectionEvent{
+		Decision: 1,
+		DstIP:    net.ParseIP("203.0.113.10").To4(),
+		DstPort:  587,
+	}
+
+	applyBPFEnforcementVerdict(context.Background(), cfg, ev, &f)
+
+	if gotReq.Source != "bpf_enforcement" {
+		t.Fatalf("Source = %q, want bpf_enforcement", gotReq.Source)
+	}
+	if f.TenantID != "panel-tenant" {
+		t.Fatalf("TenantID = %q, want panel-tenant", f.TenantID)
+	}
+	for _, want := range []string{"Verdict callback: allow", "Verdict tenant: panel-tenant", "Verdict note: policy exception"} {
+		if !strings.Contains(f.Details, want) {
+			t.Fatalf("finding details missing %q: %q", want, f.Details)
+		}
+	}
+}
+
+func TestApplyBPFEnforcementVerdictSkipsAllowDecision(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := &config.Config{}
+	cfg.BPFEnforcement.VerdictCallback = true
+	cfg.AutoResponse.VerdictCallback.Enabled = true
+	cfg.AutoResponse.VerdictCallback.URL = srv.URL
+	cfg.AutoResponse.VerdictCallback.TimeoutSec = 1
+	f := alert.Finding{Check: "direct_smtp_egress", Severity: alert.High}
+	ev := ConnectionEvent{
+		Decision: 0,
+		DstIP:    net.ParseIP("203.0.113.10").To4(),
+		DstPort:  587,
+	}
+
+	applyBPFEnforcementVerdict(context.Background(), cfg, ev, &f)
+	if called {
+		t.Fatal("allow decisions must not call the BPF enforcement verdict callback")
 	}
 }

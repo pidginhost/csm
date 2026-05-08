@@ -647,4 +647,6 @@ Phase 3 detector. `backend` accepts `auto`, `bpf`, `legacy`, or `none`;
 
 ## bpf_enforcement
 
-Phase 4 detector. See [BPF enforcement](bpf-enforcement.md).
+Phase 4 enforcement. Requires a BPF-capable connection tracker at
+runtime; `auto` falls back to legacy detection on older servers. See
+[BPF enforcement](bpf-enforcement.md).
