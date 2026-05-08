@@ -84,6 +84,9 @@ func EvaluateDirectSMTPEgress(cfg *config.Config, in DirectSMTPEgressInput) (ale
 
 func portInList(p uint16, list []int) bool {
 	for _, q := range list {
+		// #nosec G115 -- list values come from operator YAML and are
+		// bounded by uint16 in practice; port numbers above 65535 are
+		// invalid TCP/UDP ports and silently won't match.
 		if uint16(q) == p {
 			return true
 		}
