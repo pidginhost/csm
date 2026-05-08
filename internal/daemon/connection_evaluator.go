@@ -1,6 +1,9 @@
 package daemon
 
 import (
+	"net"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -8,6 +11,32 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/platform"
 )
+
+var (
+	directSMTPRDNSOnce  sync.Once
+	directSMTPRDNSCache *checks.RDNSCache
+)
+
+// rdnsCache is the daemon-wide rDNS cache used by direct SMTP egress
+// detection. TTL 30 min, per-lookup deadline 1 second. Resolver wraps
+// net.LookupAddr; negative results cached so a slow upstream does not
+// stall the connection consumer.
+func rdnsCache() *checks.RDNSCache {
+	directSMTPRDNSOnce.Do(func() {
+		directSMTPRDNSCache = checks.NewRDNSCache(checks.RDNSCacheConfig{
+			TTL:             30 * time.Minute,
+			ResolveDeadline: time.Second,
+			Resolve: func(ip net.IP) (string, error) {
+				names, err := net.LookupAddr(ip.String())
+				if err != nil || len(names) == 0 {
+					return "", err
+				}
+				return strings.TrimSuffix(names[0], "."), nil
+			},
+		})
+	})
+	return directSMTPRDNSCache
+}
 
 // evaluateConnectionEvent runs every per-event detector and returns the
 // findings that should be emitted. Pure-ish: no IO and no alertCh
@@ -23,6 +52,7 @@ func evaluateConnectionEvent(cfg *config.Config, mta platform.MTAIdents, ev Conn
 
 	// Direct SMTP egress (Phase 3). Distinct Check value; the inbound
 	// smtp_probe meters never see this traffic.
+	domain := rdnsCache().Lookup(ev.DstIP)
 	if f, ok := checks.EvaluateDirectSMTPEgress(cfg, checks.DirectSMTPEgressInput{
 		UID:     ev.UID,
 		User:    user,
@@ -31,6 +61,7 @@ func evaluateConnectionEvent(cfg *config.Config, mta platform.MTAIdents, ev Conn
 		DstIP:   ev.DstIP,
 		DstPort: ev.DstPort,
 		MTA:     mta,
+		Domain:  domain,
 	}); ok {
 		f.Timestamp = now
 		out = append(out, f)
