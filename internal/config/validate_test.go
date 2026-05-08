@@ -917,3 +917,35 @@ func TestValidateDirectSMTPEgressBounds(t *testing.T) {
 		t.Fatalf("invalid direct_smtp_egress backend was not rejected: %v", results)
 	}
 }
+
+func TestValidateBPFEnforcementRejectsEnableWithoutFeature(t *testing.T) {
+	cfg := &Config{Hostname: "h"}
+	cfg.BPFEnforcement.Enabled = true
+	// No DirectSMTPEgress, no other feature flag set.
+	results := Validate(cfg)
+	if !hasResult(results, "error", "bpf_enforcement") {
+		t.Errorf("enforcement enabled with no feature gate must fail validation: %v", results)
+	}
+}
+
+func TestValidateBPFEnforcementAcceptsEnableWithFeature(t *testing.T) {
+	cfg := &Config{Hostname: "h"}
+	cfg.BPFEnforcement.Enabled = true
+	cfg.BPFEnforcement.DirectSMTPEgress = true
+	cfg.Detection.DirectSMTPEgress.Enabled = true
+	results := Validate(cfg)
+	if hasResult(results, "error", "bpf_enforcement") {
+		t.Errorf("expected pass; got %v", results)
+	}
+}
+
+func TestValidateBPFEnforcementRequiresDetectorEnabled(t *testing.T) {
+	cfg := &Config{Hostname: "h"}
+	cfg.BPFEnforcement.Enabled = true
+	cfg.BPFEnforcement.DirectSMTPEgress = true
+	cfg.Detection.DirectSMTPEgress.Enabled = false
+	results := Validate(cfg)
+	if !hasResult(results, "error", "bpf_enforcement") {
+		t.Errorf("enforcement on a disabled detector must fail validation: %v", results)
+	}
+}

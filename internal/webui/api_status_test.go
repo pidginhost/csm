@@ -10,7 +10,9 @@ import (
 	"github.com/pidginhost/csm/internal/health"
 )
 
-type statusFakeProvider struct{}
+type statusFakeProvider struct {
+	bpfEnforcementActive bool
+}
 
 func (statusFakeProvider) Hostname() string                 { return "h" }
 func (statusFakeProvider) StartedAt() time.Time             { return time.Now().Add(-time.Hour) }
@@ -22,6 +24,7 @@ func (statusFakeProvider) StoreSizeMB() float64             { return 1.5 }
 func (statusFakeProvider) SeverityCounts() map[string]int   { return map[string]int{"high": 2} }
 func (statusFakeProvider) BlocklistSize() int               { return 9 }
 func (statusFakeProvider) IncidentsOpen() int               { return 2 }
+func (f statusFakeProvider) BPFEnforcementActive() bool     { return f.bpfEnforcementActive }
 func (statusFakeProvider) HistoryCount() int                { return 100 }
 func (statusFakeProvider) ConfigHash() string               { return "cfg" }
 func (statusFakeProvider) BinaryHash() string               { return "bin" }
@@ -31,7 +34,7 @@ var _ health.Provider = statusFakeProvider{}
 
 func TestApiStatus_FullSnapshot(t *testing.T) {
 	s := &Server{cfg: capsTestCfg(), startTime: time.Now().Add(-1 * time.Hour)}
-	s.SetHealthProvider(statusFakeProvider{})
+	s.SetHealthProvider(statusFakeProvider{bpfEnforcementActive: true})
 
 	rec := httptest.NewRecorder()
 	s.apiStatus(rec, httptest.NewRequest(http.MethodGet, "/api/v1/status", nil))
@@ -51,6 +54,9 @@ func TestApiStatus_FullSnapshot(t *testing.T) {
 	}
 	if got["incidents_open"].(float64) != 2 {
 		t.Fatalf("expected incidents_open=2, got %v", got["incidents_open"])
+	}
+	if active, ok := got["bpf_enforcement_active"].(bool); !ok || !active {
+		t.Fatalf("expected bpf_enforcement_active=true, got %v", got["bpf_enforcement_active"])
 	}
 	if _, ok := got["watchers"]; !ok {
 		t.Fatal("expected watchers field present")

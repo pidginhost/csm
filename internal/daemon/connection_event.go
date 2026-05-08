@@ -11,15 +11,16 @@ import (
 // byte for byte: scalars are little-endian (host order on amd64/arm64),
 // dst_ip4 is network-order, dst_ip6 is the raw 16-byte address.
 type ConnectionEvent struct {
-	UID     uint32
-	PID     uint32
-	Family  uint32 // AF_INET=2, AF_INET6=10
-	DstPort uint16 // host order; BPF program calls bpf_ntohs
-	DstIP   net.IP // resolved from dst_ip4 (v4) or dst_ip6 (v6) per Family
-	Comm    string // null-terminated, up to 16 bytes
+	UID      uint32
+	PID      uint32
+	Family   uint32 // AF_INET=2, AF_INET6=10
+	DstPort  uint16 // host order; BPF program calls bpf_ntohs
+	DstIP    net.IP // resolved from dst_ip4 (v4) or dst_ip6 (v6) per Family
+	Comm     string // null-terminated, up to 16 bytes
+	Decision uint32 // Phase 4: DECISION_* code (0=allow, 1=dry_run_deny, 2=deny)
 }
 
-const connectionEventSize = 4 + 4 + 4 + 4 + 4 + 16 + 16
+const connectionEventSize = 4 + 4 + 4 + 4 + 4 + 16 + 16 + 4
 
 func decodeConnectionEvent(b []byte) (ConnectionEvent, error) {
 	if len(b) < connectionEventSize {
@@ -48,6 +49,7 @@ func decodeConnectionEvent(b []byte) (ConnectionEvent, error) {
 		return ConnectionEvent{}, errors.New("unknown family")
 	}
 	ev.Comm = nullTerm(b[36 : 36+16])
+	ev.Decision = binary.LittleEndian.Uint32(b[52:56])
 	return ev, nil
 }
 

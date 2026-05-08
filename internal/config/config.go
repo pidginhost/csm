@@ -312,6 +312,23 @@ type Config struct {
 		} `yaml:"verdict_callback"`
 	} `yaml:"auto_response" hotreload:"safe"`
 
+	// BPFEnforcement is the optional in-kernel deny path for matched
+	// outbound connections. Phase 4 of the BPF Incident Response
+	// Roadmap. Defaults are all-safe: enforcement off, dry-run on.
+	// Operators flip live denial only after dry-run telemetry review.
+	BPFEnforcement struct {
+		Enabled bool `yaml:"enabled"`
+		// DryRun, when true (or absent for safety), logs intended
+		// denials but allows the connect. False = real deny.
+		DryRun           *bool `yaml:"dry_run,omitempty"`
+		DirectSMTPEgress bool  `yaml:"direct_smtp_egress"`
+		// VerdictCallback, when true, asks auto_response.verdict_callback
+		// for an advisory ALLOW override before recording a USERSPACE
+		// action (incident close, audit note). The in-kernel hook NEVER
+		// waits on this; it would add latency to every connect.
+		VerdictCallback bool `yaml:"verdict_callback"`
+	} `yaml:"bpf_enforcement" hotreload:"safe"`
+
 	Challenge struct {
 		Enabled        bool     `yaml:"enabled"`         // enable challenge pages instead of hard block for some IPs
 		ListenPort     int      `yaml:"listen_port"`     // port for challenge server (default: 8439)
@@ -610,6 +627,17 @@ func (c *Config) DirectSMTPEgressDryRunEnabled() bool {
 		return true
 	}
 	return *c.Detection.DirectSMTPEgress.DryRun
+}
+
+// BPFEnforcementDryRunEnabled reports the YAML-level dry-run state for
+// BPF cgroup-deny enforcement. Defaults to TRUE when dry_run is omitted
+// (safety default). Operators must explicitly set `dry_run: false` to
+// flip the in-kernel program to live denial.
+func (c *Config) BPFEnforcementDryRunEnabled() bool {
+	if c.BPFEnforcement.DryRun == nil {
+		return true
+	}
+	return *c.BPFEnforcement.DryRun
 }
 
 type defaultPresence struct {
@@ -1027,6 +1055,23 @@ func validateDirectSMTPEgress(cfg *Config) error {
 		if p < 1 || p > 65535 {
 			return fmt.Errorf("detection.direct_smtp_egress.ports[%d] must be between 1 and 65535", i)
 		}
+	}
+	return nil
+}
+
+func validateBPFEnforcement(cfg *Config) error {
+	if !cfg.BPFEnforcement.Enabled {
+		return nil
+	}
+	gates := 0
+	if cfg.BPFEnforcement.DirectSMTPEgress {
+		if !cfg.Detection.DirectSMTPEgress.Enabled {
+			return fmt.Errorf("bpf_enforcement.direct_smtp_egress requires detection.direct_smtp_egress.enabled=true")
+		}
+		gates++
+	}
+	if gates == 0 {
+		return fmt.Errorf("bpf_enforcement.enabled=true requires at least one feature gate (direct_smtp_egress)")
 	}
 	return nil
 }
