@@ -69,6 +69,7 @@ func evaluateConnectionEvent(cfg *config.Config, mta platform.MTAIdents, ev Conn
 	}); ok {
 		f.Timestamp = now
 		out = append(out, f)
+		checks.BumpDirectSMTPEgressFindings()
 	}
 
 	// Pre-existing user_outbound_connection detector. SMTP destinations

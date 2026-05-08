@@ -2,10 +2,12 @@ package checks
 
 import (
 	"net"
+	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/processctx"
 )
@@ -160,5 +162,36 @@ func TestEvaluateDirectSMTPEgressLegacyShapeStillSkipsMTAUser(t *testing.T) {
 	}
 	if _, ok := EvaluateDirectSMTPEgress(cfg, in); ok {
 		t.Errorf("postfix UID/user must be skipped even with empty Comm/Exe")
+	}
+}
+
+func TestRegisterDirectSMTPEgressMetricsExposesName(t *testing.T) {
+	resetDirectSMTPEgressMetricsForTest()
+	reg := metrics.NewRegistry()
+	RegisterDirectSMTPEgressMetrics(reg)
+
+	var sb strings.Builder
+	if err := reg.WriteOpenMetrics(&sb); err != nil {
+		t.Fatalf("WriteOpenMetrics: %v", err)
+	}
+	if !strings.Contains(sb.String(), "csm_direct_smtp_egress_findings_total") {
+		t.Errorf("expected csm_direct_smtp_egress_findings_total in output:\n%s", sb.String())
+	}
+}
+
+func TestDirectSMTPEgressFindingsTotalBumps(t *testing.T) {
+	resetDirectSMTPEgressMetricsForTest()
+	reg := metrics.NewRegistry()
+	RegisterDirectSMTPEgressMetrics(reg)
+	BumpDirectSMTPEgressFindings()
+	BumpDirectSMTPEgressFindings()
+
+	var sb strings.Builder
+	if err := reg.WriteOpenMetrics(&sb); err != nil {
+		t.Fatalf("WriteOpenMetrics: %v", err)
+	}
+	out := sb.String()
+	if !strings.Contains(out, "csm_direct_smtp_egress_findings_total 2") {
+		t.Errorf("expected counter at 2:\n%s", out)
 	}
 }
