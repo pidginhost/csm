@@ -24,6 +24,9 @@ func TestIsNewer(t *testing.T) {
 		{"2.13.0", "", true},
 		{"", "2.13.0", false},
 		{"2.13.0-rc.1", "2.13.0", false},
+		{"2.13.0", "2.13.0-12-gabcdef0", false},
+		{"2.13.1", "2.13.0-12-gabcdef0", true},
+		{"2.14.0", "2.13.0-12-gabcdef0-dirty", true},
 	}
 	for _, c := range cases {
 		got := isNewer(c.a, c.b)

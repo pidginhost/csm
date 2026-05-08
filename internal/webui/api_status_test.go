@@ -12,6 +12,7 @@ import (
 
 type statusFakeProvider struct {
 	bpfEnforcementActive bool
+	update               health.UpdateInfo
 }
 
 func (statusFakeProvider) Hostname() string                 { return "h" }
@@ -29,13 +30,22 @@ func (statusFakeProvider) HistoryCount() int                { return 100 }
 func (statusFakeProvider) ConfigHash() string               { return "cfg" }
 func (statusFakeProvider) BinaryHash() string               { return "bin" }
 func (statusFakeProvider) DryRunBlocksCount() int           { return 3 }
-func (statusFakeProvider) UpdateInfo() health.UpdateInfo    { return health.UpdateInfo{} }
+func (f statusFakeProvider) UpdateInfo() health.UpdateInfo  { return f.update }
 
 var _ health.Provider = statusFakeProvider{}
 
 func TestApiStatus_FullSnapshot(t *testing.T) {
 	s := &Server{cfg: capsTestCfg(), startTime: time.Now().Add(-1 * time.Hour)}
-	s.SetHealthProvider(statusFakeProvider{bpfEnforcementActive: true})
+	checkedAt := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
+	s.SetHealthProvider(statusFakeProvider{
+		bpfEnforcementActive: true,
+		update: health.UpdateInfo{
+			LatestVersion: "3.0.1",
+			Available:     true,
+			Source:        "github",
+			CheckedAt:     checkedAt,
+		},
+	})
 
 	rec := httptest.NewRecorder()
 	s.apiStatus(rec, httptest.NewRequest(http.MethodGet, "/api/v1/status", nil))
@@ -65,11 +75,34 @@ func TestApiStatus_FullSnapshot(t *testing.T) {
 	if got["dry_run_blocks"].(float64) != 3 {
 		t.Fatalf("expected dry_run_blocks=3, got %v", got["dry_run_blocks"])
 	}
+	update, ok := got["update"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected update field present, got %T", got["update"])
+	}
+	if update["latest_version"] != "3.0.1" || update["available"] != true {
+		t.Fatalf("unexpected update payload: %#v", update)
+	}
 	// Backward-compat: all six legacy fields still present.
 	for _, k := range []string{"hostname", "uptime", "started_at", "rules_loaded", "scan_running", "last_scan_time"} {
 		if _, ok := got[k]; !ok {
 			t.Errorf("backward-compat: legacy field %q missing", k)
 		}
+	}
+}
+
+func TestApiStatus_OmitsZeroUpdate(t *testing.T) {
+	s := &Server{cfg: capsTestCfg(), startTime: time.Now().Add(-1 * time.Hour)}
+	s.SetHealthProvider(statusFakeProvider{})
+
+	rec := httptest.NewRecorder()
+	s.apiStatus(rec, httptest.NewRequest(http.MethodGet, "/api/v1/status", nil))
+
+	var got map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["update"]; ok {
+		t.Fatalf("expected update omitted before first poll, got %#v", got["update"])
 	}
 }
 

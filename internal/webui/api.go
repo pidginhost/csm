@@ -81,6 +81,9 @@ func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 		"dry_run_blocks":         snap.DryRunBlocks,
 		"status":                 snap.OverallStatus(),
 	}
+	if !snap.Update.CheckedAt.IsZero() {
+		resp["update"] = snap.Update
+	}
 	writeJSON(w, resp)
 }
 

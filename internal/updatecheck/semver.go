@@ -7,10 +7,9 @@ import (
 
 // isNewer returns true when a is strictly greater than b under
 // dot-separated numeric ordering. "dev" or empty current always
-// loses (a real release is always newer than "dev"). Trailing
-// non-numeric segments compare lexically. The function intentionally
-// avoids pulling golang.org/x/mod/semver to keep the dependency
-// graph small.
+// loses (a real release is always newer than "dev"). Current-version
+// strings produced by git describe, such as 3.0.0-12-gabcdef0, compare
+// as newer than their base tag but older than the next tagged release.
 func isNewer(a, b string) bool {
 	a = strings.TrimPrefix(strings.TrimSpace(a), "v")
 	b = strings.TrimPrefix(strings.TrimSpace(b), "v")
@@ -19,6 +18,9 @@ func isNewer(a, b string) bool {
 	}
 	if b == "" || b == "dev" {
 		return true
+	}
+	if base, ok := gitDescribeBase(b); ok {
+		return isNewer(a, base)
 	}
 	ap := strings.Split(a, ".")
 	bp := strings.Split(b, ".")
@@ -48,4 +50,34 @@ func isNewer(a, b string) bool {
 		}
 	}
 	return false
+}
+
+func gitDescribeBase(v string) (string, bool) {
+	parts := strings.Split(v, "-")
+	if len(parts) < 3 {
+		return "", false
+	}
+	if _, err := strconv.Atoi(parts[1]); err != nil {
+		return "", false
+	}
+	if !strings.HasPrefix(parts[2], "g") || !isNumericDotted(parts[0]) {
+		return "", false
+	}
+	return parts[0], true
+}
+
+func isNumericDotted(v string) bool {
+	parts := strings.Split(v, ".")
+	if len(parts) < 2 {
+		return false
+	}
+	for _, p := range parts {
+		if p == "" {
+			return false
+		}
+		if _, err := strconv.Atoi(p); err != nil {
+			return false
+		}
+	}
+	return true
 }
