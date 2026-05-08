@@ -15,6 +15,7 @@
 - [Critical Checks](detection-critical.md)
 - [Deep Checks](detection-deep.md)
 - [Auto-Response](auto-response.md)
+- [Incidents](incidents.md)
 
 # Hardening
 

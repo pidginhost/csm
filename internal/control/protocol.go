@@ -66,6 +66,11 @@ const (
 	CmdPHPRelayIgnoreList   = "phprelay.ignore_list"
 	CmdPHPRelayDryRun       = "phprelay.dry_run"
 	CmdPHPRelayThaw         = "phprelay.thaw"
+
+	// Phase 2 incident correlation.
+	CmdIncidentsList   = "incidents.list"
+	CmdIncidentsShow   = "incidents.show"
+	CmdIncidentsStatus = "incidents.status"
 )
 
 // Request is the single JSON object the client sends per connection.
@@ -338,4 +343,16 @@ type PHPRelayThawRequest struct {
 
 type PHPRelayThawResponse struct {
 	Stderr string `json:"stderr,omitempty"`
+}
+
+// IncidentShowArgs targets a single incident by id.
+type IncidentShowArgs struct {
+	ID string `json:"id"`
+}
+
+// IncidentStatusArgs transitions an incident's status.
+type IncidentStatusArgs struct {
+	ID      string `json:"id"`
+	Status  string `json:"status"` // open / contained / resolved / dismissed
+	Details string `json:"details,omitempty"`
 }

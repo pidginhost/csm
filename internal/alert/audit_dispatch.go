@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 
 	"github.com/pidginhost/csm/internal/config"
 )
@@ -38,10 +39,13 @@ func emitAudit(cfg *config.Config, findings []Finding) {
 	sinks := append([]AuditSink(nil), auditSinks...)
 	auditMu.Unlock()
 
-	if len(sinks) == 0 {
-		return
-	}
 	for _, f := range findings {
+		// Observer fan-out runs first so the incident correlator sees
+		// every finding even when no audit sinks are configured.
+		notifyFindingObservers(f)
+		if len(sinks) == 0 {
+			continue
+		}
 		ev := NewAuditEvent(cfg.Hostname, f)
 		for _, s := range sinks {
 			if err := s.Emit(ev); err != nil {
@@ -132,4 +136,54 @@ func CloseAuditSinks() {
 // daemons run a single Dispatch path with a single config object.
 func resetAuditSinksForTest() {
 	CloseAuditSinks()
+}
+
+// findingObservers registry. Used by the daemon to feed the incident
+// correlator without making the alert package depend on internal/incident.
+var (
+	findingObserversMu sync.RWMutex
+	findingObservers   []findingObserver
+	findingObserverSeq atomic.Uint64
+)
+
+type findingObserver struct {
+	id uint64
+	fn func(Finding)
+}
+
+// RegisterFindingObserver registers fn to be called for every finding
+// dispatched through emitAudit. Returns a cancel func that removes the
+// observer. Safe for concurrent use; observer panics are recovered so
+// one bad observer cannot stop dispatch.
+func RegisterFindingObserver(fn func(Finding)) func() {
+	id := findingObserverSeq.Add(1)
+	findingObserversMu.Lock()
+	findingObservers = append(findingObservers, findingObserver{id: id, fn: fn})
+	findingObserversMu.Unlock()
+	return func() {
+		findingObserversMu.Lock()
+		defer findingObserversMu.Unlock()
+		out := findingObservers[:0]
+		for _, o := range findingObservers {
+			if o.id != id {
+				out = append(out, o)
+			}
+		}
+		findingObservers = out
+	}
+}
+
+// notifyFindingObservers fans a finding out to every registered observer.
+// Each observer runs in a recover scope so a panic in one cannot stop
+// dispatch to the rest, the audit-log sinks, or future ones.
+func notifyFindingObservers(f Finding) {
+	findingObserversMu.RLock()
+	obs := append([]findingObserver(nil), findingObservers...)
+	findingObserversMu.RUnlock()
+	for _, o := range obs {
+		func() {
+			defer func() { _ = recover() }()
+			o.fn(f)
+		}()
+	}
 }

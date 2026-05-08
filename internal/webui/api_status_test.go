@@ -21,6 +21,7 @@ func (statusFakeProvider) StoreHealthy() bool               { return true }
 func (statusFakeProvider) StoreSizeMB() float64             { return 1.5 }
 func (statusFakeProvider) SeverityCounts() map[string]int   { return map[string]int{"high": 2} }
 func (statusFakeProvider) BlocklistSize() int               { return 9 }
+func (statusFakeProvider) IncidentsOpen() int               { return 2 }
 func (statusFakeProvider) HistoryCount() int                { return 100 }
 func (statusFakeProvider) ConfigHash() string               { return "cfg" }
 func (statusFakeProvider) BinaryHash() string               { return "bin" }
@@ -47,6 +48,9 @@ func TestApiStatus_FullSnapshot(t *testing.T) {
 	}
 	if got["blocklist_size"].(float64) != 9 {
 		t.Fatalf("expected blocklist_size=9, got %v", got["blocklist_size"])
+	}
+	if got["incidents_open"].(float64) != 2 {
+		t.Fatalf("expected incidents_open=2, got %v", got["incidents_open"])
 	}
 	if _, ok := got["watchers"]; !ok {
 		t.Fatal("expected watchers field present")

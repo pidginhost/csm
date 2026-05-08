@@ -25,6 +25,7 @@ import (
 	"github.com/pidginhost/csm/internal/emailav"
 	"github.com/pidginhost/csm/internal/geoip"
 	"github.com/pidginhost/csm/internal/health"
+	"github.com/pidginhost/csm/internal/incident"
 	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/state"
 )
@@ -72,6 +73,7 @@ type Server struct {
 	version            string
 	perfSnapshot       atomic.Pointer[perfMetrics]
 	perfCancel         context.CancelFunc
+	incidentCorrelator *incident.Correlator
 
 	// Rate limiting
 	loginMu       sync.Mutex
@@ -205,6 +207,13 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/export", s.requireAuth(http.HandlerFunc(s.apiExport)))
 	mux.Handle("/api/v1/import", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiImport))))
 	mux.Handle("/api/v1/incident", s.requireAuth(http.HandlerFunc(s.apiIncident)))
+	// Admin-scope on both routes: ServeMux cannot disambiguate by HTTP method,
+	// so the POST .../status mutator forces admin; reads under the same prefix
+	// inherit it (admin is a superset of read). The sub-path also runs CSRF
+	// because the router can dispatch POST .../status; requireCSRF only acts
+	// on unsafe methods so GET .../<id> still passes through.
+	mux.Handle("/api/v1/incidents", s.requireAuth(http.HandlerFunc(s.apiIncidentList)))
+	mux.Handle("/api/v1/incidents/", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiIncidentRouter))))
 	mux.Handle("/api/v1/email/stats", s.requireAuth(http.HandlerFunc(s.apiEmailStats)))
 	mux.Handle("/api/v1/email/quarantine", s.requireAuth(http.HandlerFunc(s.apiEmailQuarantineList)))
 	mux.Handle("/api/v1/email/quarantine/", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiEmailQuarantineAction))))
@@ -452,6 +461,12 @@ func (s *Server) SetFindingBus(bus *broadcast.Bus) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.findingBus = bus
+}
+
+// SetIncidentCorrelator wires the incident correlator. Called once at
+// startup; treated as immutable after first set.
+func (s *Server) SetIncidentCorrelator(c *incident.Correlator) {
+	s.incidentCorrelator = c
 }
 
 // csmConfigJSON returns a JSON string of feature flags for the frontend.
