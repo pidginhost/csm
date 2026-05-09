@@ -207,6 +207,13 @@
             loadSection(currentSection);
         });
         footer.appendChild(btn);
+        if (currentSection === "firewall") {
+            const btnTentative = btnWithIcon("Apply with rollback timer", "shield-half-filled", "btn btn-warning ms-2");
+            btnTentative.id = "settings-tentative-apply";
+            btnTentative.title = "Save and restart, but auto-revert in 5 minutes unless you confirm. Use this when changing port lists or other lockout-prone fields.";
+            btnTentative.addEventListener("click", tentativeApplyFirewall);
+            footer.appendChild(btnTentative);
+        }
         footer.appendChild(btnReset);
         panel.appendChild(footer);
 
@@ -746,6 +753,168 @@
         }
     }
 
+    // ---- Tentative apply (firewall section) -----------------------------
+    let rollbackTimer = null;
+
+    async function tentativeApplyFirewall() {
+        const btn = byId("settings-tentative-apply");
+        const changes = computeChanges();
+        if (Object.keys(changes).length === 0) {
+            toast("No changes to apply.", "info");
+            return;
+        }
+        const minutesStr = window.prompt("Auto-revert if unconfirmed within how many minutes? (1-30)", "5");
+        if (minutesStr === null) return;
+        const minutes = parseInt(minutesStr, 10);
+        if (isNaN(minutes) || minutes < 1 || minutes > 30) {
+            toast("Timeout must be 1-30 minutes.", "error");
+            return;
+        }
+        const confirmMsg = "Apply firewall changes with a " + minutes + "-minute rollback timer?\n\n"
+            + "The daemon will restart with the new config. If you do not click Confirm before "
+            + "the timer expires, the previous config is restored automatically and the daemon "
+            + "restarts again.";
+        if (!window.confirm(confirmMsg)) return;
+        btn.disabled = true;
+        let resp;
+        try {
+            resp = await fetch(CSM.apiUrl("/api/v1/settings/firewall/tentative-apply"), {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "If-Match": currentETag,
+                    "X-CSRF-Token": csrfToken()
+                },
+                body: JSON.stringify({changes: changes, timeout_min: minutes})
+            });
+        } catch (e) {
+            toast("Network error: " + (e && e.message ? e.message : "request failed"), "error");
+            btn.disabled = false;
+            return;
+        }
+        btn.disabled = false;
+        if (resp.status === 412) { toast("Config changed externally; reloading…", "warning"); loadSection(currentSection); return; }
+        if (resp.status === 422) {
+            const data = await resp.json().catch(function () { return {}; });
+            const lines = (data.errors || []).map(function (e) { return e.field + ": " + e.message; });
+            toast("Validation errors:\n" + lines.join("\n"), "error");
+            return;
+        }
+        if (resp.status === 409) { toast("A rollback is already pending. Confirm or revert it first.", "warning"); return; }
+        if (!resp.ok) { toast("Tentative apply failed: " + resp.status, "error"); return; }
+        const data = await resp.json();
+        currentETag = data.new_etag;
+        dirty = false;
+        dirtySections.delete(currentSection);
+        refreshDirtyMarkers();
+        await pollHealth();
+        renderRollbackBanner(data.rollback);
+    }
+
+    function renderRollbackBanner(status) {
+        const banner = byId("settings-banner");
+        clearNode(banner);
+        banner.classList.remove("d-none");
+        banner.classList.remove("alert-warning");
+        banner.classList.add("alert-warning");
+        const iconWrap = iconEl("ti-shield-half-filled", "me-2");
+        banner.appendChild(iconWrap);
+        const textNode = document.createElement("strong");
+        textNode.textContent = "Firewall changes pending confirmation. ";
+        banner.appendChild(textNode);
+        const remainingSpan = document.createElement("span");
+        remainingSpan.id = "rollback-remaining";
+        banner.appendChild(remainingSpan);
+        banner.appendChild(document.createTextNode(" "));
+        const confirmBtn = btnWithIcon("Confirm", "check", "btn btn-sm btn-success ms-2");
+        confirmBtn.addEventListener("click", confirmRollback);
+        banner.appendChild(confirmBtn);
+        const revertBtn = btnWithIcon("Revert now", "rotate", "btn btn-sm btn-outline-warning ms-2");
+        revertBtn.addEventListener("click", revertRollback);
+        banner.appendChild(revertBtn);
+
+        startRollbackTimer(status);
+    }
+
+    function startRollbackTimer(status) {
+        if (rollbackTimer) { clearInterval(rollbackTimer); rollbackTimer = null; }
+        const expiresAt = new Date(status.expires_at).getTime();
+        function tick() {
+            const remaining = Math.max(0, Math.floor((expiresAt - Date.now()) / 1000));
+            const min = Math.floor(remaining / 60);
+            const sec = remaining % 60;
+            const span = byId("rollback-remaining");
+            if (span) span.textContent = "Reverts in " + min + ":" + (sec < 10 ? "0" : "") + sec + ".";
+            if (remaining <= 0) {
+                clearInterval(rollbackTimer);
+                rollbackTimer = null;
+                pollUntilRollbackGone();
+            }
+        }
+        tick();
+        rollbackTimer = setInterval(tick, 1000);
+    }
+
+    async function pollUntilRollbackGone() {
+        const deadline = Date.now() + 60000;
+        while (Date.now() < deadline) {
+            try {
+                const resp = await fetch(CSM.apiUrl("/api/v1/settings/firewall/rollback"), {cache: "no-store"});
+                if (resp.ok) {
+                    const data = await resp.json();
+                    if (!data.pending) {
+                        toast("Firewall rollback expired; previous config restored.", "warning");
+                        window.location.reload();
+                        return;
+                    }
+                }
+            } catch (e) { /* keep polling */ }
+            await new Promise(function (r) { setTimeout(r, 2000); });
+        }
+        window.location.reload();
+    }
+
+    async function confirmRollback() {
+        const resp = await fetch(CSM.apiUrl("/api/v1/settings/firewall/confirm"), {
+            method: "POST",
+            headers: {"X-CSRF-Token": csrfToken()}
+        });
+        if (resp.ok) {
+            if (rollbackTimer) { clearInterval(rollbackTimer); rollbackTimer = null; }
+            const banner = byId("settings-banner");
+            clearNode(banner);
+            banner.classList.add("d-none");
+            toast("Firewall changes confirmed.", "success");
+            loadSection(currentSection);
+        } else {
+            toast("Confirm failed: " + resp.status, "error");
+        }
+    }
+
+    async function revertRollback() {
+        if (!window.confirm("Revert firewall changes now? The daemon will restart with the previous config.")) return;
+        const resp = await fetch(CSM.apiUrl("/api/v1/settings/firewall/revert"), {
+            method: "POST",
+            headers: {"X-CSRF-Token": csrfToken()}
+        });
+        if (resp.ok) {
+            if (rollbackTimer) { clearInterval(rollbackTimer); rollbackTimer = null; }
+            await pollHealth();
+            window.location.reload();
+        } else {
+            toast("Revert failed: " + resp.status, "error");
+        }
+    }
+
+    async function checkPendingRollbackOnLoad() {
+        try {
+            const resp = await fetch(CSM.apiUrl("/api/v1/settings/firewall/rollback"), {cache: "no-store"});
+            if (!resp.ok) return;
+            const data = await resp.json();
+            if (data && data.pending) renderRollbackBanner(data);
+        } catch (e) { /* silent */ }
+    }
+
     async function pollHealth() {
         const deadline = Date.now() + 60000;
         while (Date.now() < deadline) {
@@ -769,6 +938,7 @@
             const first = sections.length > 0 ? sections[0].id : "alerts";
             const target = sections.some(function (s) { return s.id === hash; }) ? hash : first;
             loadSection(target);
+            checkPendingRollbackOnLoad();
         }).catch(function (e) {
             renderError("Failed to load settings metadata: " + (e && e.message ? e.message : "request failed"));
         });

@@ -50,6 +50,8 @@ func runFirewall() {
 		fwApplyConfirmed()
 	case "confirm":
 		fwConfirm()
+	case "rollback":
+		fwRollback()
 	case "deny-subnet":
 		fwDenySubnet()
 	case "remove-subnet":
@@ -689,6 +691,46 @@ func fwApplyConfirmed() {
 func fwConfirm() {
 	raw := requireDaemon(control.CmdFirewallConfirm, nil)
 	fmt.Println(decodeFirewallAck(raw).Message)
+}
+
+func fwRollback() {
+	args := fwArgs()
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "Usage: csm firewall rollback {status|confirm|revert}")
+		fmt.Fprintln(os.Stderr, "  status   show pending tentative apply, if any")
+		fmt.Fprintln(os.Stderr, "  confirm  drop the snapshot; pending change becomes permanent")
+		fmt.Fprintln(os.Stderr, "  revert   restore previous config and restart the daemon")
+		os.Exit(1)
+	}
+	switch args[0] {
+	case "status":
+		raw := requireDaemon(control.CmdFirewallRollbackStatus, nil)
+		var st control.FirewallRollbackStatus
+		if err := json.Unmarshal(raw, &st); err != nil {
+			fmt.Fprintf(os.Stderr, "csm: decoding result: %v\n", err)
+			os.Exit(1)
+		}
+		if !st.Pending {
+			fmt.Println("no pending firewall rollback")
+			return
+		}
+		fmt.Printf("Pending firewall rollback\n")
+		fmt.Printf("  applied at:        %s\n", st.AppliedAtRFC3339)
+		fmt.Printf("  expires at:        %s\n", st.ExpiresAtRFC3339)
+		fmt.Printf("  seconds remaining: %d\n", st.SecondsRemaining)
+		fmt.Printf("  applied by:        %s\n", st.AppliedBy)
+		fmt.Printf("  prev config hash:  %s\n", st.PrevHash)
+		fmt.Printf("  new  config hash:  %s\n", st.NewHash)
+	case "confirm":
+		raw := requireDaemon(control.CmdFirewallRollbackOK, nil)
+		fmt.Println(decodeFirewallAck(raw).Message)
+	case "revert":
+		raw := requireDaemon(control.CmdFirewallRollbackRevert, nil)
+		fmt.Println(decodeFirewallAck(raw).Message)
+	default:
+		fmt.Fprintf(os.Stderr, "unknown rollback subcommand: %s\n", args[0])
+		os.Exit(1)
+	}
 }
 
 func fwDenySubnet() {

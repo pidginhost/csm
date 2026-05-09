@@ -256,6 +256,10 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 
 	// Settings API
 	mux.Handle("/api/v1/settings/restart", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiSettingsRestart))))
+	mux.Handle("/api/v1/settings/firewall/tentative-apply", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiFirewallTentativeApply))))
+	mux.Handle("/api/v1/settings/firewall/confirm", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiFirewallRollbackConfirm))))
+	mux.Handle("/api/v1/settings/firewall/revert", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiFirewallRollbackRevert))))
+	mux.Handle("/api/v1/settings/firewall/rollback", s.requireAuth(http.HandlerFunc(s.apiFirewallRollbackStatus)))
 	mux.Handle("/api/v1/settings", s.requireAuth(http.HandlerFunc(s.apiSettingsSections)))
 	mux.Handle("/api/v1/settings/", s.requireAuth(http.HandlerFunc(s.apiSettings)))
 

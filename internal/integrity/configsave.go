@@ -9,6 +9,14 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
+// WriteConfigBytesAtomic writes data to path with the same atomic-rename
+// semantics SignAndSaveAtomic uses. Intended for paths that ship pre-signed
+// bytes (e.g. restoring a snapshot whose hash already matches its content)
+// where re-signing would mutate the integrity block we want to preserve.
+func WriteConfigBytesAtomic(path string, data []byte) error {
+	return atomicWriteFile(path, data, 0o600)
+}
+
 // SignAndSavePreserving writes editedBytes to path after patching
 // integrity.binary_hash and integrity.config_hash inside the byte
 // stream itself, not by re-marshaling the cfg. Operator comments and

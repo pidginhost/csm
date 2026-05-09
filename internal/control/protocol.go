@@ -48,6 +48,9 @@ const (
 	CmdFirewallRestart        = "firewall.restart"
 	CmdFirewallApplyConfirmed = "firewall.apply_confirmed"
 	CmdFirewallConfirm        = "firewall.confirm"
+	CmdFirewallRollbackStatus = "firewall.rollback_status"
+	CmdFirewallRollbackRevert = "firewall.rollback_revert"
+	CmdFirewallRollbackOK     = "firewall.rollback_confirm"
 
 	// Backup / restore. Export runs through the daemon (live read of
 	// bbolt). Import does not -- it requires a stopped daemon, so the
@@ -213,6 +216,19 @@ type FirewallApplyConfirmedArgs struct {
 // Message is a short human-readable string the CLI can print verbatim.
 type FirewallAckResult struct {
 	Message string `json:"message"`
+}
+
+// FirewallRollbackStatus reports the pending tentative-apply state for
+// the firewall settings section. Pending=false means nothing in flight;
+// the other fields are zero in that case.
+type FirewallRollbackStatus struct {
+	Pending          bool   `json:"pending"`
+	AppliedAtRFC3339 string `json:"applied_at,omitempty"`
+	ExpiresAtRFC3339 string `json:"expires_at,omitempty"`
+	SecondsRemaining int64  `json:"seconds_remaining,omitempty"`
+	AppliedBy        string `json:"applied_by,omitempty"`
+	PrevHash         string `json:"prev_hash,omitempty"`
+	NewHash          string `json:"new_hash,omitempty"`
 }
 
 // FirewallStatusResult mirrors what `csm firewall status` prints.

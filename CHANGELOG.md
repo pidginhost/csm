@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Web UI Settings has a new Firewall section. Saving warns when the WebUI port is about to fall outside the allowed inbound list so operators see the lockout risk before the restart applies.
+- Firewall settings can now be applied with a rollback timer. The daemon restarts with the new config and auto-reverts after 5 minutes (1-30 configurable) unless the operator confirms. New CLI command `csm firewall rollback {status|confirm|revert}` is the SSH escape hatch when the WebUI is unreachable.
 
 ### Changed
 

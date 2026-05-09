@@ -77,6 +77,30 @@ Firewall defaults can be edited in two places:
 - **Web UI**: Settings -> Firewall section. Port lists, rate limits, flood protection, deny caps, country block, and outbound SMTP restriction are all editable. Changes are restart-class. The save endpoint warns if the WebUI listen port is missing from `tcp_in`. The `port_flood` per-port rule list is YAML-only for now.
 - **YAML**: edit `/etc/csm/csm.yaml` directly. Run `csm rehash` then `systemctl restart csm`.
 
+### Tentative apply (rollback timer)
+
+The Firewall section in the Web UI offers two save buttons. **Save** writes
+the new config and prompts you to restart. **Apply with rollback timer**
+writes the new config, restarts the daemon, and starts a timer (default 5
+minutes, range 1-30). If you do not click **Confirm** before the timer
+expires, the daemon restores the previous config and restarts again. This
+protects against locking yourself out by, for example, removing the WebUI
+port from `tcp_in`.
+
+When the WebUI is unreachable (firewall mistuned, daemon broken), use the
+CLI escape hatch:
+
+```
+csm firewall rollback status
+csm firewall rollback confirm
+csm firewall rollback revert
+```
+
+Rollback state survives daemon restarts (the snapshot is persisted in
+bbolt). On startup the daemon checks for a pending rollback: if the
+deadline has already passed it restores the previous config and restarts;
+otherwise it rearms the timer for the remaining window.
+
 ```yaml
 firewall:
   enabled: true

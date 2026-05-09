@@ -36,6 +36,7 @@ var bucketNames = []string{
 	"phprelay:ignore",
 	"phprelay:settings",
 	"incidents",
+	"fw:rollback",
 }
 
 // DB wraps a bbolt database.

@@ -83,6 +83,12 @@ func (c *ControlListener) dispatch(line []byte) control.Response {
 		result, err = c.handleFirewallApplyConfirmed(req.Args)
 	case control.CmdFirewallConfirm:
 		result, err = c.handleFirewallConfirm(req.Args)
+	case control.CmdFirewallRollbackStatus:
+		result, err = c.handleFirewallRollbackStatus(req.Args)
+	case control.CmdFirewallRollbackOK:
+		result, err = c.handleFirewallRollbackConfirm(req.Args)
+	case control.CmdFirewallRollbackRevert:
+		result, err = c.handleFirewallRollbackRevert(req.Args)
 	case control.CmdStoreExport:
 		result, err = c.handleStoreExport(req.Args)
 	case control.CmdHistorySince:

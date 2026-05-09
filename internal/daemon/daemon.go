@@ -25,6 +25,7 @@ import (
 	"github.com/pidginhost/csm/internal/emailav"
 	"github.com/pidginhost/csm/internal/emailspool"
 	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/firewall/rollback"
 	"github.com/pidginhost/csm/internal/geoip"
 	"github.com/pidginhost/csm/internal/integrity"
 	csmlog "github.com/pidginhost/csm/internal/log"
@@ -340,6 +341,29 @@ func (d *Daemon) Run() error {
 	// so the LiteSpeed classifier can tell pass-action vendor rules apart
 	// from real denies on the very first parsed line.
 	d.initModSecRegistry()
+
+	// Wire the firewall tentative-apply manager. Recovery has to run
+	// before integrity.Verify because a pending rollback whose deadline
+	// passed while the daemon was down restores the previous csm.yaml
+	// (and its integrity hash) to disk; verifying first would fail
+	// against the still-on-disk new config the operator never confirmed.
+	if sdb := store.Global(); sdb != nil {
+		mgr := rollback.NewManager(sdb, d.cfg.ConfigFile, rollback.SystemctlRestart, time.Now)
+		rollback.SetGlobal(mgr)
+		recoveryCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		reverted, rerr := mgr.RecoverOnStartup(recoveryCtx)
+		cancel()
+		if rerr != nil {
+			csmlog.Error("firewall rollback recovery failed", "error", rerr)
+		}
+		if reverted {
+			csmlog.Warn("firewall rollback expired during downtime; previous config restored, restart issued")
+			// systemctl restart csm.service from the manager will tear
+			// us down momentarily; bail out cleanly so we do not race
+			// the watchers we are about to start against the restart.
+			return nil
+		}
+	}
 
 	// Verify integrity on startup
 	if err := integrity.Verify(d.binaryPath, d.cfg); err != nil {
