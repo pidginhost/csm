@@ -20,7 +20,13 @@ func ClassifyKind(f alert.Finding) Kind {
 	if f.Mailbox != "" {
 		return KindMailboxTakeover
 	}
-	if strings.HasPrefix(check, "smtp_") || strings.HasPrefix(check, "sasl_") {
+	// Mail-stack check name prefixes always classify as mailbox takeover,
+	// even when the finding has no Mailbox field (bare cPanel-local
+	// accounts route to TenantID; SourceIP-only modsec/probe findings
+	// have no mailbox at all). Without this, operators see a mail-stack
+	// brute-force labelled "web_account_compromise".
+	if strings.HasPrefix(check, "smtp_") || strings.HasPrefix(check, "sasl_") ||
+		strings.HasPrefix(check, "email_") || strings.HasPrefix(check, "mail_") {
 		return KindMailboxTakeover
 	}
 
