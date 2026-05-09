@@ -64,7 +64,14 @@ active incidents keep merging after daemon restart.
 
 ## API
 
-- `GET /api/v1/incidents` -- list, newest first.
+- `GET /api/v1/incidents` -- list, newest first. Without query
+  parameters the response is a bare JSON array (compat with the
+  existing wire shape phpanel/SIEM consumers decode against).
+  When `?limit=`, `?offset=`, or `?status=` is present the response
+  switches to an envelope: `{"items":[...], "total":N, "offset":N,
+  "limit":N, "status":"..."}`. Status accepts the four spec values
+  plus `active` (open + contained, the default web UI filter).
+  Limit is capped server-side at a safe maximum.
 - `GET /api/v1/incidents/<id>` -- one incident.
 - `POST /api/v1/incidents/<id>/status` -- transition status.
 
