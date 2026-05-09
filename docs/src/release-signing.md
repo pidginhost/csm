@@ -1,111 +1,114 @@
 # Release Signing
 
-CSM signs every release binary, tarball, and package with an ed25519 key. Installers verify signatures before touching disk, which lets operators trust the `curl | bash` install path and catches tampered mirror content.
+CSM has two separate signing paths:
+
+- **Package repository signing** for the normal APT/DNF install path.
+- **Detached Ed25519 artifact signatures** for raw binaries, tarballs, and package files downloaded outside the package manager.
+
+Do not reuse keys between these paths. The package repositories use GPG because APT and DNF verify repository metadata that way. Detached release signatures use Ed25519 because the standalone install and deploy scripts verify raw artifact bytes with OpenSSL.
 
 ## Status
 
-| Release | Signed |
-|---------|--------|
-| v2.1.1 and older | No (pre-signing era) |
-| Next release | Yes (once `CSM_SIGNING_KEY` is set in CI) |
+| Surface | Key type | CI variable | Notes |
+|---------|----------|-------------|-------|
+| APT repository metadata | GPG | `CSM_GPG_SIGNING_KEY` | Published by `repo:publish`; operators install with `signed-by=/etc/apt/keyrings/csm.gpg`. |
+| RPM packages and repository metadata | GPG | `CSM_GPG_SIGNING_KEY` | Published by `repo:publish`; operators use `gpgcheck=1` and `repo_gpgcheck=1`. |
+| Raw binaries, tarballs, `.deb`, `.rpm` siblings | Ed25519 | `CSM_SIGNING_KEY` | Optional detached `.sig` files for direct downloads and standalone scripts. |
 
-Until the key is provisioned, releases ship unsigned and install scripts skip verification with a warning. This is the current state of the pipeline: all signing infrastructure is in place, but no key is configured.
+The preferred operator path is the signed APT/DNF repository documented in [Installation](installation.md). Standalone scripts still support detached signatures, but this source tree does not currently embed an Ed25519 public key in `scripts/install.sh`, `scripts/deploy.sh`, or `scripts/deploy-gitlab.sh`. Without an embedded key or `CSM_SIGNING_KEY_PEM`, those scripts warn and continue unless `CSM_REQUIRE_SIGNATURES=1` is set.
 
-## One-Time Operator Setup
+## Package Repository Signing
 
-On a trusted workstation (NOT a CI runner):
+`repo:publish` runs on version tag pipelines and rebuilds the public package repositories from the current tag plus the retained historical releases.
+
+Required protected CI variables:
+
+| Variable | Type | Purpose |
+|----------|------|---------|
+| `CSM_GPG_SIGNING_KEY` | File | GPG private key used to sign APT metadata, RPM packages, and RPM repo metadata. |
+| `CSM_MIRROR_SSH_KEY` | File | SSH key used to publish the mirror output. |
+| `CSM_MIRROR_KNOWN_HOSTS` | Variable | SSH host keys for the mirror host. |
+
+The job exports the public key as `csm-signing.gpg` and publishes it at the mirror root so install docs can reference:
 
 ```bash
-# Generate the key pair
-openssl genpkey -algorithm ed25519 -out csm-signing.key
-openssl pkey -in csm-signing.key -pubout -out csm-signing.pub
-
-# Store the private key
-cat csm-signing.key
-# Copy the entire output to GitLab > Settings > CI/CD > Variables:
-#   Key:   CSM_SIGNING_KEY
-#   Type:  Variable
-#   Flags: Protected, Masked (if length allows; ed25519 PEMs are long
-#          enough to need "masked and hidden")
-#          Expose to protected branches/tags only
-
-# Commit the public key into the repo
-cat csm-signing.pub
-# Paste the "-----BEGIN PUBLIC KEY----- ... -----END PUBLIC KEY-----"
-# block into scripts/install.sh and scripts/deploy.sh at the
-# EMBEDDED_SIGNING_KEY variable (currently empty).
+https://mirrors.pidginhost.com/csm/csm-signing.gpg
 ```
 
-Store the private key in an offline password manager and a second hardware location. **Do not commit the private key to the repo.** Do not email it to yourself. Do not paste it into Slack.
+APT verifies signed repository metadata through the `signed-by=` keyring. DNF verifies both RPM package signatures and repository metadata via `gpgcheck=1` and `repo_gpgcheck=1`.
 
-## What Gets Signed
+## Detached Artifact Signatures
 
-The `sign:artifacts` CI job runs after `build` and `package`. It signs:
+`sign:artifacts` signs release files with the Ed25519 private key in `CSM_SIGNING_KEY` when that variable is present. Each signed file gets a `.sig` sibling uploaded with the artifact.
 
-- `csm-linux-amd64`, `csm-linux-arm64` (raw binaries)
-- `csm-*-linux-*.rpm` (RPM packages)
-- `csm_*_amd64.deb`, `csm_*_arm64.deb` (Debian packages)
+Examples:
 
-The `publish` job signs `csm-assets.tar.gz` (because that tarball is created in the publish job, not the build stage). The `release:github` job re-signs `csm-assets.tar.gz` for the same reason -- it rebuilds the tarball for the GitHub release.
-
-Each signed artifact gets a `.sig` sibling uploaded to the same location. For example:
-
-```
-csm-2.2.0-linux-amd64
-csm-2.2.0-linux-amd64.sha256
-csm-2.2.0-linux-amd64.sig    <-- new
+```text
+csm-linux-amd64
+csm-linux-amd64.sig
+csm_3.0.0_amd64.deb
+csm_3.0.0_amd64.deb.sig
+csm-3.0.0-1.x86_64.rpm
+csm-3.0.0-1.x86_64.rpm.sig
 ```
 
-## Signature Algorithm
-
-Ed25519 "raw" signatures, meaning the signature covers the raw bytes of the artifact with no prior hashing wrapper. Verification uses:
+The signature covers the raw artifact bytes with no hashing wrapper. Verification uses:
 
 ```bash
 openssl pkeyutl -verify -pubin -inkey csm-signing.pub -rawin \
   -sigfile csm-linux-amd64.sig -in csm-linux-amd64
 ```
 
-This matches what `scripts/install.sh` and `scripts/deploy.sh` do internally.
+## Detached Signature Setup
 
-## Installer Behavior
+On a trusted workstation:
 
-Both install scripts read the public key from two sources in priority order:
+```bash
+openssl genpkey -algorithm ed25519 -out csm-signing.key
+openssl pkey -in csm-signing.key -pubout -out csm-signing.pub
+```
 
-1. `CSM_SIGNING_KEY_PEM` environment variable (operator override at install time)
-2. `EMBEDDED_SIGNING_KEY` variable inside the script (set once when committing the public key)
+Store the private key in GitLab as a protected `CSM_SIGNING_KEY` variable. Keep the private key in an offline password manager and a second secure backup location. Do not commit it.
 
-If neither is set, the installer warns and proceeds -- this lets pre-signing releases install. To enforce strict verification (fail rather than warn), export `CSM_REQUIRE_SIGNATURES=1` before running the installer:
+For standalone script verification, either:
+
+- Embed the public key PEM in `EMBEDDED_SIGNING_KEY` in `scripts/install.sh`, `scripts/deploy.sh`, and `scripts/deploy-gitlab.sh`.
+- Or pass the public key at runtime with `CSM_SIGNING_KEY_PEM`.
+
+To make missing signatures or missing public keys fatal:
 
 ```bash
 CSM_REQUIRE_SIGNATURES=1 curl -sSL https://raw.githubusercontent.com/pidginhost/csm/main/scripts/install.sh | bash
 ```
 
-When a `.sig` file is published but verification fails, the installer always aborts (regardless of `CSM_REQUIRE_SIGNATURES`). A failed signature is always fatal -- the installer never falls back to "trust on install".
+If a `.sig` file exists but verification fails, the installer aborts regardless of `CSM_REQUIRE_SIGNATURES`.
 
 ## Key Rotation
 
-To rotate the signing key:
+Package repository GPG key rotation:
 
-1. Generate a new key pair as described above.
-2. Update `CSM_SIGNING_KEY` in GitLab CI variables.
-3. Update `EMBEDDED_SIGNING_KEY` in `scripts/install.sh` and `scripts/deploy.sh`.
-4. Tag a new release. The `sign:artifacts` job will use the new key automatically.
-5. Existing deployed instances that use `/opt/csm/deploy.sh upgrade` will continue to work as long as the new release uses the new key (they read the embedded public key fresh each time from the updated deploy.sh).
+1. Generate a new GPG signing key.
+2. Replace `CSM_GPG_SIGNING_KEY` in protected CI variables.
+3. Publish a tag pipeline so `repo:publish` exports the new public key to the mirror.
+4. Update install docs or automation if the key URL changes.
 
-Old releases remain verifiable with the old public key because the signatures are immutable. Archive the old public key alongside the new one so historical releases can still be validated.
+Detached Ed25519 key rotation:
 
-## Verifying a Release Manually
+1. Generate a new Ed25519 key pair.
+2. Replace `CSM_SIGNING_KEY` in protected CI variables.
+3. Update the embedded public key in standalone scripts, or rotate the `CSM_SIGNING_KEY_PEM` value used by automation.
+4. Tag a new release.
+
+Old detached signatures remain verifiable only with the old public key. Archive old public keys alongside release metadata so historical releases can still be checked.
+
+## Manual Detached Verification
 
 ```bash
-# Download artifact + sig + public key
-curl -LO https://github.com/pidginhost/csm/releases/download/v2.2.0/csm-2.2.0-linux-amd64
-curl -LO https://github.com/pidginhost/csm/releases/download/v2.2.0/csm-2.2.0-linux-amd64.sig
-curl -LO https://raw.githubusercontent.com/pidginhost/csm/main/scripts/csm-signing.pub
+curl -LO https://github.com/pidginhost/csm/releases/download/v3.0.0/csm-linux-amd64
+curl -LO https://github.com/pidginhost/csm/releases/download/v3.0.0/csm-linux-amd64.sig
 
-# Verify
 openssl pkeyutl -verify -pubin -inkey csm-signing.pub -rawin \
-  -sigfile csm-2.2.0-linux-amd64.sig -in csm-2.2.0-linux-amd64
-# Signature Verified Successfully
+  -sigfile csm-linux-amd64.sig -in csm-linux-amd64
 ```
 
-If that command fails, treat the binary as untrusted. Do not install it.
+If verification fails, treat the artifact as untrusted. Do not install it.

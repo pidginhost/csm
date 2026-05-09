@@ -51,7 +51,7 @@ func observeCheckDuration(name, tier string, d time.Duration) {
 	checkDurationOnce.Do(func() {
 		checkDuration = metrics.NewHistogramVec(
 			"csm_check_duration_seconds",
-			"Wall-clock time for each security check to complete. Label `name` is one of the 62 checks; label `tier` is critical|deep|all. Use p95 across name to spot a single check regressing, and sum across name to track per-cycle pressure.",
+			"Wall-clock time for each security check to complete. Label `name` is a check runner name; label `tier` is critical|deep|all. Use p95 across name to spot a single check regressing, and sum across name to track per-cycle pressure.",
 			[]string{"name", "tier"},
 			[]float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300},
 		)

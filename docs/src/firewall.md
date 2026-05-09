@@ -55,6 +55,7 @@ csm firewall flush                               # Clear all dynamic blocks
 # Safety
 csm firewall apply-confirmed <minutes>           # Apply with auto-rollback timer
 csm firewall confirm                             # Confirm applied changes
+csm firewall rollback status|confirm|revert      # Manage pending config rollback
 csm firewall restart                             # Reapply full ruleset
 
 # Profiles
@@ -87,7 +88,7 @@ expires, the daemon restores the previous config and restarts again. This
 protects against locking yourself out by, for example, removing the WebUI
 port from `tcp_in`.
 
-When the WebUI is unreachable (firewall mistuned, daemon broken), use the
+When the Web UI is unreachable (firewall mistuned, daemon broken), use the
 CLI escape hatch:
 
 ```

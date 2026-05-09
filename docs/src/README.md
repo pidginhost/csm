@@ -16,8 +16,8 @@ csm daemon
  +-- inotify log watchers          ~2s detection on auth, access, exim, FTP logs
  +-- PAM brute-force listener      Real-time login failure tracking
  +-- PHP runtime shield            auto_prepend_file protection
- +-- critical scanner (10 min)     34 checks: processes, network, tokens, logins, firewall
- +-- deep scanner (60 min)         28 checks: WP integrity, RPM, DB injection, phishing
+ +-- critical scanner (10 min)     36 checks: processes, network, tokens, logins, firewall
+ +-- deep scanner (60 min)         33 checks: WP/CMS integrity, package integrity, DB injection, phishing
  +-- nftables firewall engine      Kernel netlink API, IP sets, rate limiting
  +-- threat intelligence           IP reputation, attack scoring, GeoIP
  +-- ModSecurity manager           Rule deployment, overrides, escalation
@@ -37,8 +37,8 @@ Benchmarked on production (168 accounts, 275 WordPress sites, 28M files):
 |-----------|-------|--------|
 | fanotify monitor | < 1 second | ~5 MB |
 | Log watchers | ~2 seconds | ~1 MB |
-| Critical checks (34) | < 1 sec | ~35 MB peak |
-| Deep checks (28) | ~40 sec | ~100 MB peak |
+| Critical checks (36) | < 1 sec | ~35 MB peak |
+| Deep checks (33) | ~40 sec | ~100 MB peak |
 | Daemon idle | - | 45 MB resident |
 | Binary | - | ~8 MB static |
 

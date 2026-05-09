@@ -1,6 +1,6 @@
 # Critical Checks
 
-34 checks, run every 10 minutes. Complete in under 1 second.
+36 checks, run every 10 minutes. Complete in under 1 second.
 
 ## Process & System
 
@@ -12,6 +12,8 @@
 | `shadow_changes` | /etc/shadow modification outside maintenance windows |
 | `uid0_accounts` | Unauthorized root (UID 0) accounts |
 | `kernel_modules` | Kernel module loading (post-baseline) |
+| `af_alg_socket_use` | AF_ALG socket use that may indicate Copy Fail exploit activity |
+| `af_alg_enforcement` | AF_ALG hardening policy drift and correction status |
 
 ## SSH & Access
 

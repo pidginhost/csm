@@ -38,7 +38,7 @@
 
 - **Broad host coverage**: critical and deep checks plus real-time fanotify, inotify, PAM, and access-log watchers.
 - **Sub-1-second** response on syscall events. **~45 MB** resident idle. **Single static Go binary.**
-- **One web UI** at `:9443` with admin and read-scope tokens, SSE event stream, Prometheus metrics, and 65+ REST endpoints.
+- **One web UI** at `:9443` with admin and read-scope tokens, SSE event stream, Prometheus metrics, and REST API.
 - **nftables firewall** with TTLs, subnet escalation, country blocking (MaxMind), commit-confirmed safety.
 - **Pluggable threat intel**: local attack DB + AbuseIPDB + Rspamd + optional shared upstream cache.
 - **Hot-reload safe config** + `/etc/csm/conf.d/*.yaml` drop-ins for automation.
@@ -62,7 +62,15 @@ sudo apt update && sudo apt install csm
 
 # AlmaLinux / Rocky / RHEL / CloudLinux / cPanel
 sudo rpm --import https://mirrors.pidginhost.com/csm/csm-signing.gpg
-sudo dnf config-manager --add-repo https://mirrors.pidginhost.com/csm/rpm/csm.repo
+sudo tee /etc/yum.repos.d/csm.repo >/dev/null <<'EOF'
+[csm]
+name=CSM
+baseurl=https://mirrors.pidginhost.com/csm/rpm/el$releasever/$basearch
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://mirrors.pidginhost.com/csm/csm-signing.gpg
+EOF
 sudo dnf install csm
 ```
 
@@ -70,9 +78,12 @@ Then:
 
 ```bash
 sudo vi /etc/csm/csm.yaml         # set hostname, alert email, infra IPs
-sudo csm validate && sudo csm baseline
+sudo csm validate
 sudo systemctl enable --now csm.service
+sudo csm baseline
 ```
+
+`csm baseline` talks to the running daemon and records the current server state as known-good. Add `--confirm` if the command warns that existing history would be cleared.
 
 Web UI at `https://<server>:9443`. Drop-in fragments under `/etc/csm/conf.d/*.yaml` are merged after the main config in lexicographic order. Scalars override; lists append. Use drop-ins for automation that should not touch the operator's config.
 
@@ -110,7 +121,7 @@ csm daemon                    run the daemon
 csm check                     one-shot scan, no auto-response
 csm status [--json]           current state and findings
 csm doctor [--json]           config + daemon + watchers + store sanity check
-csm baseline                  mark current state as known-good
+csm baseline                  mark current state as known-good via the daemon
 csm scan <user>               scan a single cPanel account
 csm firewall ...              IP/subnet bans, port allows, GeoIP
 csm clean <path>              clean an infected PHP file
@@ -135,12 +146,13 @@ Operator-driven via `csm harden`, then continuously enforced by the daemon. Live
 ## Development
 
 ```bash
-go build ./cmd/csm/                    # standard
+go build ./...                         # standard build, YARA stubs
 go build -tags yara ./cmd/csm/         # with YARA-X
-go build -tags bpf  ./cmd/csm/         # with BPF LSM af_alg backend (Phase A)
-go test ./... -count=1                 # tests
-go test -race -short ./...             # CI-style
-make lint
+go test ./... -count=1 -race           # tests
+go test -run=Fuzz ./...                # fuzz seed corpus
+make lint                              # lint entrypoint
+make ci                                # full local CI entrypoint
+govulncheck ./...
 ```
 
 Public releases land on GitHub. Internal builds and packaging go through the GitLab pipeline.
@@ -155,7 +167,7 @@ Public releases land on GitHub. Internal builds and packaging go through the Git
 
 ## License
 
-CSM is licensed under **AGPL-3.0-or-later**. Running unmodified CSM to protect your own hosting servers — including commercially — has no source-disclosure obligation. Distributing CSM (binaries or source) or running a *modified* version that users interact with over a network triggers the AGPL's source-availability requirements.
+CSM is licensed under **AGPL-3.0-or-later**. Running unmodified CSM to protect your own hosting servers -- including commercially -- has no source-disclosure obligation. Distributing CSM (binaries or source) or running a *modified* version that users interact with over a network triggers the AGPL's source-availability requirements.
 
 Releases up to and including v2.x remain under the MIT License; v3.0.0 onward is AGPL-3.0-or-later.
 

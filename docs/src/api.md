@@ -1,6 +1,6 @@
 # API Reference
 
-65+ REST endpoints. All require token authentication. POST mutations require CSRF token.
+Machine-readable HTTPS API. All endpoints require token authentication. POST mutations require CSRF token.
 
 ## Authentication
 
@@ -166,9 +166,13 @@ GET  /api/v1/settings             List editable config sections
 GET  /api/v1/settings/<section>   Read a config section (secrets redacted)
 POST /api/v1/settings/<section>   Update a config section (hot-reload-safe sections only)
 POST /api/v1/settings/restart     Request a daemon restart (after editing restart-required fields)
+POST /api/v1/settings/firewall/tentative-apply  Save firewall config, restart, and arm rollback timer
+GET  /api/v1/settings/firewall/rollback         Read pending rollback state
+POST /api/v1/settings/firewall/confirm          Confirm tentative firewall changes
+POST /api/v1/settings/firewall/revert           Revert tentative firewall changes now
 ```
 
-Sections map to top-level config keys: `alerts`, `auto_response`, `challenge`, `reputation`, `performance`, `infra_ips`, `sentry`, etc. Writes persist to `csm.yaml`, re-sign the integrity hash, and hot-reload where possible; restart-required changes are queued for `/api/v1/settings/restart`.
+Sections map to top-level config keys: `alerts`, `auto_response`, `challenge`, `reputation`, `performance`, `infra_ips`, `sentry`, etc. Writes persist to `csm.yaml`, re-sign the integrity hash, and hot-reload where possible; restart-required changes are queued for `/api/v1/settings/restart`. Firewall tentative apply is restart-class by design: it snapshots the previous config, writes the new one, restarts the daemon, and auto-reverts unless the operator confirms before the timer expires.
 
 ## Finding fields
 

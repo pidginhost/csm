@@ -19,20 +19,20 @@ Rolls back automatically on failure.
 
 ## Troubleshooting
 
-**"store: opening bbolt: timeout"** -- Commands that need live daemon state now route through the control socket at `/var/run/csm/control.sock` and no longer open the database directly, so this error should only appear from `csm baseline`, `csm firewall ...`, or the `check-*` dry-run commands (the remaining in-process paths; see the roadmap for the phase-2 migration). If you hit it from one of those:
+**"store: opening bbolt: timeout"** -- Most operator commands that need live state now route through the control socket at `/var/run/csm/control.sock`. This error should only appear from commands that intentionally open the bbolt file directly, such as `csm store compact`, `csm store import`, `csm db-clean --drop-object`, or a second daemon start while one daemon already owns the database.
 
-- A `csm baseline`, `csm scan`, or `csm check-deep` command is still running
-- The daemon was killed uncleanly (SIGKILL, OOM) and the lock file is stale
-
-Fix: check if a CSM process is running (`pgrep csm`). If not, remove the stale lock:
+Fix: stop the daemon before direct-store maintenance commands, then retry:
 ```bash
-rm -f /var/lib/csm/state/csm.lock
+systemctl stop csm
+csm store compact
 systemctl start csm
 ```
 
-**"csm: daemon not running"** -- CLI commands that talk to the daemon (`csm run-critical`, `csm run-deep`, `csm status`) exit 2 with this message when the control socket is missing. Start the daemon with `systemctl start csm`. Bootstrap commands that run before the daemon exists (`csm install`, `csm validate`, `csm verify`, `csm rehash`) do not require it.
+If `systemctl` says CSM is stopped but bbolt still times out, find the process holding `/var/lib/csm/state/csm.db` and stop that process after review. Do not delete `csm.lock`; it is only the daemon instance guard and does not release bbolt's file lock.
 
-**Never delete `csm.db`** -- it contains all historical findings, firewall state, email forwarder baselines, and per-account data. If you delete it, the web UI will show empty data until the next full scan cycle (up to 60 minutes for deep scan findings). If you must reset, use `csm baseline` instead.
+**"csm: daemon not running"** -- CLI commands that talk to the daemon exit 2 with this message when the control socket is missing. This includes `csm run*`, `csm check*`, `csm baseline`, `csm status`, `csm firewall ...`, `csm store export`, `csm export --since`, and `csm phprelay ...`. Start the daemon with `systemctl start csm`. Bootstrap commands that run before the daemon exists (`csm install`, `csm validate`, `csm config schema`, `csm verify`, `csm rehash`) do not require it.
+
+**Never delete `csm.db`** -- it contains all historical findings, firewall state, email forwarder baselines, and per-account data. If you delete it, the web UI will show empty data until the next full scan cycle (up to 60 minutes for deep scan findings). Restore from backup when possible; for an intentional reset, run `csm baseline --confirm` rather than removing the database by hand.
 
 **Config changes require rehash** -- After editing `csm.yaml`, run `csm rehash` twice (the config hash is stored inside the config file, creating a circular dependency -- the second run stabilizes it). Or just restart via `systemctl restart csm`.
 

@@ -31,7 +31,7 @@
 |---------|-------------|
 | `csm install` | Deploy config, systemd, auditd rules, logrotate, WHM plugin |
 | `csm uninstall` | Clean removal |
-| `csm baseline` | Full server scan via the daemon, records current state as known-good. Takes 5-10 min on large servers. Required on first install. Add `--confirm` when existing history would be cleared. The daemon must be running (phase 2: baseline is coordinated inside the daemon, no longer needs systemd timers stopped first). |
+| `csm baseline` | Full server scan via the daemon, records current state as known-good. Takes 5-10 min on large servers. Required on first install. Add `--confirm` when existing history would be cleared. The daemon must be running. |
 | `csm rehash` | Update binary/config hashes without scanning. Use after config edits. Run twice (circular hash). |
 | `csm status` | Show current state, last run, active findings. Add `--json` for the full health snapshot (watchers, severity counts, store health, blocklist size, capabilities, version, hashes). |
 | `csm doctor` | Config + daemon + watchers + store sanity check. Emits suggested-fix strings for each failed step. Add `--json` for machine-readable output. |
@@ -104,7 +104,7 @@ Operator controls for the email PHP-relay detector. Talks to the daemon's contro
 
 ## Firewall
 
-23 subcommands. See [Firewall](firewall.md) for the full reference.
+See [Firewall](firewall.md) for the full reference.
 
 ```bash
 csm firewall status
@@ -114,5 +114,6 @@ csm firewall tempban <ip> <dur> [reason]
 csm firewall deny-subnet <cidr> [reason]
 csm firewall grep <pattern>
 csm firewall flush
+csm firewall rollback status|confirm|revert
 # ...
 ```

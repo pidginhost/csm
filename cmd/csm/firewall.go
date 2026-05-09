@@ -97,6 +97,7 @@ Commands:
   restart                           Reapply full firewall ruleset
   apply-confirmed <minutes>         Apply rules with auto-rollback timer (like Juniper commit confirmed)
   confirm                           Confirm applied rules (cancel rollback timer)
+  rollback {status|confirm|revert}  Manage pending config rollback timer
   deny-subnet <cidr> [reason]         Block a subnet (e.g. 1.2.3.0/24)
   remove-subnet <cidr>                Remove subnet block
   deny-file <path>                    Bulk block IPs from file (one per line)

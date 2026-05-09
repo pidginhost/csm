@@ -118,8 +118,8 @@ The systemd unit declares `StateDirectory=csm` and `ConfigurationDirectory=csm` 
 ```bash
 sudo vi /etc/csm/csm.yaml              # Set hostname, alert email, infra IPs
 sudo csm validate                      # Check config syntax (validates merged conf.d too)
-sudo csm baseline                      # Record current state as known-good
 sudo systemctl enable --now csm.service
+sudo csm baseline                      # Record current state as known-good via the daemon
 ```
 
 ## Rollback to an older version
@@ -192,16 +192,16 @@ After installing ModSecurity, run `csm check` and the `waf_status` finding shoul
 /opt/csm/deploy.sh install
 vi /etc/csm/csm.yaml   # set hostname, alert email, infra IPs
 csm validate
-csm baseline
 systemctl enable --now csm.service
+csm baseline
 ```
 
 ## Post-Install
 
 1. Edit `/etc/csm/csm.yaml` -- set hostname, alert email, infrastructure IPs
 2. Run `csm validate` to check config syntax (add `--deep` for connectivity probes)
-3. Run `csm baseline` to record current state as known-good (see below)
-4. Start the daemon: `systemctl enable --now csm.service`
+3. Start the daemon: `systemctl enable --now csm.service`
+4. Run `csm baseline` to record current state as known-good (see below)
 5. Open the Web UI: `https://<server>:9443/login`
 
 All installation methods produce the same installed state. RPM/DEB packages auto-detect hostname and email, and generate the auth token.
@@ -215,12 +215,12 @@ The `csm baseline` command scans the entire server and records the current state
 - Records file hashes, email forwarder hashes, and plugin versions
 - Stores everything in the bbolt database (`/var/lib/csm/state/csm.db`)
 
-**How long it takes:** Depends on server size. A server with 100+ cPanel accounts and thousands of WordPress sites can take **5-10 minutes**. During this time, the daemon cannot start (bbolt lock).
+**How long it takes:** Depends on server size. A server with 100+ cPanel accounts and thousands of WordPress sites can take **5-10 minutes**. The daemon must be running because the baseline is coordinated through the control socket.
 
 **When to re-run:**
 - After a fresh install
 - After restoring from backup
-- If the database is lost or corrupted (delete `csm.db` and re-run)
+- After an intentional state reset approved by the operator
 - You do NOT need to re-run for normal deploys/upgrades -- the daemon handles incremental state
 
-**Important:** The baseline scan holds the database lock. Do not start the daemon (`systemctl start csm`) until the baseline completes. The daemon will fail with "store: opening bbolt: timeout" if the baseline is still running.
+**Important:** Start `csm.service` before running `csm baseline`. If existing history would be cleared, rerun with `csm baseline --confirm` only after verifying that reset is intended.
