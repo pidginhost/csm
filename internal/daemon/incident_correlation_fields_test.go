@@ -61,6 +61,44 @@ func TestEmailAuthFailureRealtimePopulatesCorrelationFields(t *testing.T) {
 	}
 }
 
+// Bare set_id (cPanel-local mailbox without "@domain") must attribute to
+// the cPanel account, not to SourceIP. Otherwise brute-force attempts
+// against one local mailbox from many attacker IPs each open their own
+// incident keyed by the attacker IP, instead of one incident grouped by
+// the targeted account.
+func TestEmailAuthFailureBareSetIDAttributesToAccount(t *testing.T) {
+	line := `2026-05-09 19:26:23 dovecot_login authenticator failed for H=(localhost) [203.0.113.10]:55330: 535 Incorrect authentication data (set_id=maxwell)`
+	cfg := &config.Config{}
+
+	findings := parseEximLogLine(line, cfg)
+	var f alert.Finding
+	for _, x := range findings {
+		if x.Check == "email_auth_failure_realtime" {
+			f = x
+			break
+		}
+	}
+	if f.Check == "" {
+		t.Fatal("no email_auth_failure_realtime finding emitted")
+	}
+	if f.Mailbox != "" {
+		t.Errorf("Mailbox = %q, want empty for bare set_id", f.Mailbox)
+	}
+	if f.Domain != "" {
+		t.Errorf("Domain = %q, want empty for bare set_id", f.Domain)
+	}
+	if f.TenantID != "maxwell" {
+		t.Errorf("TenantID = %q, want maxwell", f.TenantID)
+	}
+	k := incident.KeyFor(f)
+	if k.Account != "maxwell" {
+		t.Errorf("KeyFor.Account = %q, want maxwell", k.Account)
+	}
+	if k.RemoteIP != "" {
+		t.Errorf("RemoteIP = %q, want empty (account beats IP fallback)", k.RemoteIP)
+	}
+}
+
 func TestSMTPProbePopulatesSourceIP(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	tracker := newSMTPProbeTracker(1, time.Minute, time.Hour, 10, func() time.Time {

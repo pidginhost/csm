@@ -416,14 +416,22 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 		if ip != "" {
 			msg += " from " + ip
 		}
+		// cPanel-local mailboxes log set_id as a bare local part with no
+		// "@domain"; treating it as a Mailbox would leave the structured
+		// field empty (mailboxOnly drops bare names) and force the
+		// correlator to fall back to SourceIP, splitting one targeted
+		// account across many attacker IPs. Route the bare form to
+		// TenantID so the incident groups by account.
+		mailbox, domain, tenant := splitMailAccount(account)
 		findings = append(findings, alert.Finding{
 			Severity: alert.High,
 			Check:    "email_auth_failure_realtime",
 			Message:  msg,
 			Details:  truncateDaemon(line, 300),
 			SourceIP: ip,
-			Mailbox:  mailboxOnly(account),
-			Domain:   extractDomainFromEmail(account),
+			Mailbox:  mailbox,
+			Domain:   domain,
+			TenantID: tenant,
 		})
 	}
 
@@ -938,6 +946,21 @@ func mailboxOnly(s string) string {
 	return s
 }
 
+// splitMailAccount classifies an authenticated mail account string into
+// the three correlation fields. A full mailbox ("user@domain") routes to
+// Mailbox + Domain. A bare local part (cPanel-style, no '@') routes to
+// TenantID so the incident correlator groups by account, not by attacker
+// SourceIP. An empty input returns three empty strings.
+func splitMailAccount(account string) (mailbox, domain, tenant string) {
+	if account == "" {
+		return "", "", ""
+	}
+	if strings.IndexByte(account, '@') < 0 {
+		return "", "", account
+	}
+	return account, extractDomainFromEmail(account), ""
+}
+
 // hasRecentCompromisedFinding checks if there's a recent email_compromised_account
 // or email_spam_outbreak finding for the given domain (suppresses rate alerts).
 func hasRecentCompromisedFinding(domain string) bool {
@@ -1005,6 +1028,7 @@ func checkEmailRate(user string, cfg *config.Config) []alert.Finding {
 
 	var findings []alert.Finding
 
+	mailbox, domain, tenant := splitMailAccount(user)
 	if count >= cfg.EmailProtection.RateCritThreshold {
 		if rw.alerted != "crit" {
 			rw.alerted = "crit"
@@ -1013,8 +1037,9 @@ func checkEmailRate(user string, cfg *config.Config) []alert.Finding {
 				Check:    "email_rate_critical",
 				Message:  fmt.Sprintf("Email rate CRITICAL: %s sent %d messages in %d minutes (threshold: %d)", user, count, cfg.EmailProtection.RateWindowMin, cfg.EmailProtection.RateCritThreshold),
 				Details:  fmt.Sprintf("User: %s\nMessages in window: %d\nWindow: %d minutes\nThreshold: %d", user, count, cfg.EmailProtection.RateWindowMin, cfg.EmailProtection.RateCritThreshold),
-				Mailbox:  mailboxOnly(user),
-				Domain:   extractDomainFromEmail(user),
+				Mailbox:  mailbox,
+				Domain:   domain,
+				TenantID: tenant,
 			})
 		}
 	} else if count >= cfg.EmailProtection.RateWarnThreshold {
@@ -1025,8 +1050,9 @@ func checkEmailRate(user string, cfg *config.Config) []alert.Finding {
 				Check:    "email_rate_warning",
 				Message:  fmt.Sprintf("Email rate WARNING: %s sent %d messages in %d minutes (threshold: %d)", user, count, cfg.EmailProtection.RateWindowMin, cfg.EmailProtection.RateWarnThreshold),
 				Details:  fmt.Sprintf("User: %s\nMessages in window: %d\nWindow: %d minutes\nThreshold: %d", user, count, cfg.EmailProtection.RateWindowMin, cfg.EmailProtection.RateWarnThreshold),
-				Mailbox:  mailboxOnly(user),
-				Domain:   extractDomainFromEmail(user),
+				Mailbox:  mailbox,
+				Domain:   domain,
+				TenantID: tenant,
 			})
 		}
 	}
