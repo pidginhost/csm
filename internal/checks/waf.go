@@ -11,6 +11,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/modsec"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/state"
 )
@@ -290,46 +291,11 @@ func expandPathGlobs(paths []string) []string {
 	return expanded
 }
 
-// modsecRuleDirs returns the candidate directories where vendor rules live
-// for the detected web server/panel combination.
+// modsecRuleDirs delegates to the canonical helper in internal/modsec.
+// Kept as a package-local thin wrapper because the existing waf check tests
+// reference this name directly.
 func modsecRuleDirs(info platform.Info) []string {
-	var dirs []string
-	switch info.WebServer {
-	case platform.WSApache:
-		if info.IsDebianFamily() {
-			dirs = append(dirs,
-				"/etc/apache2/conf.d/modsec_vendor_configs/",
-				"/etc/modsecurity/",
-				"/usr/share/modsecurity-crs/rules/",
-			)
-		}
-		if info.IsRHELFamily() {
-			dirs = append(dirs,
-				"/etc/httpd/modsecurity.d/",
-				"/etc/httpd/modsecurity.d/activated_rules/",
-				"/usr/share/modsecurity-crs/rules/",
-			)
-		}
-		dirs = append(dirs, "/usr/local/apache/conf/modsec_vendor_configs/")
-	case platform.WSNginx:
-		dirs = append(dirs,
-			"/etc/nginx/modsec/",
-			"/etc/modsecurity/",
-			"/usr/share/modsecurity-crs/rules/",
-		)
-	}
-	// cPanel+LiteSpeed: cPanel's modsec_assemble job writes vendor rules
-	// into the apache2 tree even when the front-end is LiteSpeed. Without
-	// this, the rule check has no filesystem evidence to fall back on
-	// when whmapi1 returns an empty vendor list (the window in which
-	// modsec_assemble itself is rewriting the same tree).
-	if info.IsCPanel() && info.WebServer == platform.WSLiteSpeed {
-		dirs = append(dirs,
-			"/etc/apache2/conf.d/modsec_vendor_configs/",
-			"/usr/local/apache/conf/modsec_vendor_configs/",
-		)
-	}
-	return dirs
+	return modsec.RuleDirs(info)
 }
 
 // wafInstallHint returns platform-specific install instructions.
