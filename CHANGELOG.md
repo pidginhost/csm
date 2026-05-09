@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The /incident "Correlated" tab no longer stays empty on busy hosts. Realtime detectors (dovecot/exim auth failures, ssh/ftp logins, ModSecurity, WP/XML-RPC/admin-panel brute force, cPanel File Manager, WHM, webmail, PAM, cloud-relay, rate limits) now populate `SourceIP`/`Mailbox`/`Domain`/`TenantID` on findings so the incident correlator can group them; previously these structured fields were empty and `KeyFor` silently dropped every finding. `KeyFor` also accepts `CPUser` as a fallback account so php-relay findings correlate.
 - Email auth-failure findings against cPanel-local mailboxes (no @domain) now correlate by account; previously each attacker IP opened its own incident even when targeting the same local mailbox.
 - Mail-stack incidents are labelled "mailbox takeover" instead of "web account compromise" so the kind line on the incident page matches the underlying signal.
+- ModSecurity findings no longer record the served vhost name when the vhost is a bare IP address; this prevented unrelated raw-IP-served sites from being merged into one incident.
 
 ## [3.2.0] - 2026-05-09
 

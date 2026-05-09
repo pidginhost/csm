@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -139,8 +140,25 @@ func parseModSecLogLine(line string, cfg *config.Config) []alert.Finding {
 		Message:  message,
 		Details:  details,
 		SourceIP: ip,
-		Domain:   hostname,
+		Domain:   domainOrEmpty(hostname),
 	}}
+}
+
+// domainOrEmpty returns hostname unless it parses as a bare IP address
+// (v4 or v6, with or without surrounding brackets). Vhosts served on a
+// raw IP would otherwise key the incident bucket on the IP literal,
+// causing two unrelated victim sites that happen to be reachable over
+// their public IPs to merge into a single bucket.
+func domainOrEmpty(hostname string) string {
+	if hostname == "" {
+		return ""
+	}
+	probe := strings.TrimPrefix(hostname, "[")
+	probe = strings.TrimSuffix(probe, "]")
+	if net.ParseIP(probe) != nil {
+		return ""
+	}
+	return hostname
 }
 
 // classifyLiteSpeedTrigger decides whether a LiteSpeed mod_security

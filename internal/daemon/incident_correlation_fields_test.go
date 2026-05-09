@@ -234,6 +234,35 @@ func TestSSHLoginRealtimePopulatesSourceIP(t *testing.T) {
 	}
 }
 
+// When the served vhost is a raw IP address (sites served on a bare IP
+// rather than a domain name), the ModSec emit must NOT promote that IP
+// into Domain. Two unrelated victim sites that happen to be reachable
+// over their public IP would otherwise share a Domain key and merge
+// into a single incident.
+func TestModSecRawIPVhostDoesNotPopulateDomain(t *testing.T) {
+	line := `[Wed Apr 01 15:15:05.234401 2026] [error] [client 198.51.100.10] ModSecurity: Access denied with code 403, [id "900115"] [msg "blocked"] [hostname "176.124.111.185"] [uri "/.env"]`
+	cfg := &config.Config{}
+
+	findings := parseModSecLogLine(line, cfg)
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(findings))
+	}
+	f := findings[0]
+	if f.Domain != "" {
+		t.Errorf("Domain = %q, want empty for IP-literal vhost", f.Domain)
+	}
+	if f.SourceIP != "198.51.100.10" {
+		t.Errorf("SourceIP = %q, want 198.51.100.10", f.SourceIP)
+	}
+	// IPv6-bracketed form must also be rejected, since some servers log
+	// the literal bracket form for raw v6 vhosts.
+	line6 := `[Wed Apr 01 15:15:05.234401 2026] [error] [client 198.51.100.10] ModSecurity: Access denied with code 403, [id "900115"] [msg "blocked"] [hostname "[2001:db8::1]"] [uri "/.env"]`
+	f6 := parseModSecLogLine(line6, cfg)[0]
+	if f6.Domain != "" {
+		t.Errorf("Domain = %q, want empty for IPv6 bracketed vhost", f6.Domain)
+	}
+}
+
 func TestModSecApacheDenyPopulatesCorrelationFields(t *testing.T) {
 	line := `[Wed Apr 01 15:15:05.234401 2026] [error] [client 198.51.100.164] ModSecurity: Access denied with code 403, [Rule: 'TX:content_type' '!@within %{tx.allowed_request_content_type}'] [id "920420"] [msg "Request content type is not allowed by policy"] [logdata "|text/html|"] [severity "CRITICAL"] [hostname "www.example.com"] [uri "/xmlrpc.php"]`
 	cfg := &config.Config{}
