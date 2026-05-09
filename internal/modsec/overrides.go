@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"sort"
 	"strconv"
@@ -107,14 +108,22 @@ func EnsureOverridesInclude(rulesFile, overridesFile string) {
 	if err != nil {
 		return
 	}
-	defer f.Close()
 
 	data, err := io.ReadAll(f)
 	if err != nil {
+		_ = f.Close()
 		return
 	}
 	if !strings.Contains(string(data), overridesFile) {
-		fmt.Fprintf(f, "\n# CSM overrides - managed by CSM rule management\nInclude %s\n", overridesFile)
+		if _, writeErr := fmt.Fprintf(f, "\n# CSM overrides - managed by CSM rule management\nInclude %s\n", overridesFile); writeErr != nil {
+			_ = f.Close()
+			return
+		}
+	}
+	// Close error here drops the appended Include directive, leaving the
+	// override file unreferenced -- worth surfacing instead of swallowing.
+	if closeErr := f.Close(); closeErr != nil {
+		log.Printf("modsec: overrides include close failed for %s: %v", rulesFile, closeErr)
 	}
 
 	// Create empty overrides file if it doesn't exist
