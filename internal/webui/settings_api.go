@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -232,6 +234,9 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 		writeValidationErrors(w, fieldErrors)
 		return
 	}
+	if section.ID == "firewall" {
+		warnings = append(warnings, firewallLockoutWarnings(&clone)...)
+	}
 
 	diff := config.Diff(disk, &clone)
 	var restartFields []string
@@ -328,6 +333,21 @@ func buildChangeSet(section SettingsSection, clone *config.Config, changes map[s
 			}
 		}
 
+		if field.Type == "[]int" {
+			normalised, badValues, perr := normaliseIntArray(field, raw)
+			if perr != nil {
+				errs = append(errs, fieldError{Field: key, Message: perr.Error()})
+				continue
+			}
+			if len(badValues) > 0 {
+				for _, bv := range badValues {
+					errs = append(errs, fieldError{Field: key, Message: "out-of-range value: " + bv})
+				}
+				continue
+			}
+			raw = normalised
+		}
+
 		// For float fields, coerce JSON string -> JSON number so the downstream
 		// json.Unmarshal into *float64 (in applyToClone) succeeds.
 		if field.Type == "float" {
@@ -403,6 +423,113 @@ func resolvedOptionsForField(field *SettingsField) []string {
 		applyGeoIPEditionOptions(tmp)
 	}
 	return tmp.Options
+}
+
+// firewallLockoutWarnings flags the most common ways a firewall save can lock
+// the operator out: WebUI port missing from tcp_in (or tcp6_in when IPv6 dual
+// stack is enabled), and firewall.enabled flipped on while the WebUI port is
+// not allowed inbound. Returns warnings only -- never errors -- so the UI can
+// surface a confirm modal without blocking deliberate changes.
+func firewallLockoutWarnings(cfg *config.Config) []fieldError {
+	if cfg == nil || cfg.Firewall == nil {
+		return nil
+	}
+	listen := cfg.WebUI.Listen
+	if listen == "" {
+		listen = "0.0.0.0:9443"
+	}
+	_, portStr, err := net.SplitHostPort(listen)
+	if err != nil {
+		return nil
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return nil
+	}
+	contains := func(ports []int, p int) bool {
+		for _, q := range ports {
+			if q == p {
+				return true
+			}
+		}
+		return false
+	}
+	var out []fieldError
+	if !contains(cfg.Firewall.TCPIn, port) {
+		out = append(out, fieldError{
+			Field:   "tcp_in",
+			Message: fmt.Sprintf("WebUI listens on %d but the port is not in tcp_in. Restart will lock you out of the WebUI.", port),
+		})
+	}
+	if cfg.Firewall.IPv6 && len(cfg.Firewall.TCP6In) > 0 && !contains(cfg.Firewall.TCP6In, port) {
+		out = append(out, fieldError{
+			Field:   "tcp6_in",
+			Message: fmt.Sprintf("IPv6 dual-stack is enabled and tcp6_in does not include WebUI port %d.", port),
+		})
+	}
+	return out
+}
+
+// normaliseIntArray parses raw as a JSON array of integers (or strings that
+// parse as integers), enforces field.Min/Max as the per-element bound (default
+// 1..65535 for port-list semantics when both are nil), deduplicates, and
+// returns a JSON array of distinct ascending integers. Returns the offending
+// raw values as badValues when any element is outside the allowed range; the
+// parse error path is reserved for malformed JSON.
+func normaliseIntArray(field *SettingsField, raw json.RawMessage) (json.RawMessage, []string, error) {
+	var items []json.RawMessage
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return nil, nil, fmt.Errorf("expected array of ints: %s", err.Error())
+	}
+	minV := int64(1)
+	maxV := int64(65535)
+	if field.Min != nil {
+		minV = *field.Min
+	}
+	if field.Max != nil {
+		maxV = *field.Max
+	}
+	seen := make(map[int64]struct{}, len(items))
+	out := make([]int64, 0, len(items))
+	var bad []string
+	for _, item := range items {
+		var n int64
+		if err := json.Unmarshal(item, &n); err != nil {
+			var s string
+			if serr := json.Unmarshal(item, &s); serr != nil {
+				bad = append(bad, string(item))
+				continue
+			}
+			s = strings.TrimSpace(s)
+			if s == "" {
+				continue
+			}
+			parsed, perr := strconv.ParseInt(s, 10, 64)
+			if perr != nil {
+				bad = append(bad, s)
+				continue
+			}
+			n = parsed
+		}
+		if n < minV || n > maxV {
+			bad = append(bad, strconv.FormatInt(n, 10))
+			continue
+		}
+		if _, dup := seen[n]; dup {
+			continue
+		}
+		seen[n] = struct{}{}
+		out = append(out, n)
+	}
+	if len(bad) > 0 {
+		return nil, bad, nil
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	encoded, err := json.Marshal(out)
+	if err != nil {
+		return nil, nil, err
+	}
+	return encoded, nil, nil
 }
 
 // coerceFloatRaw returns a JSON-number representation of raw if raw is either

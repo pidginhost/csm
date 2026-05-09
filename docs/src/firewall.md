@@ -72,6 +72,11 @@ csm firewall cf-status                           # Show Cloudflare IP whitelist 
 
 ## Configuration
 
+Firewall defaults can be edited in two places:
+
+- **Web UI**: Settings -> Firewall section. Port lists, rate limits, flood protection, deny caps, country block, and outbound SMTP restriction are all editable. Changes are restart-class. The save endpoint warns if the WebUI listen port is missing from `tcp_in`. The `port_flood` per-port rule list is YAML-only for now.
+- **YAML**: edit `/etc/csm/csm.yaml` directly. Run `csm rehash` then `systemctl restart csm`.
+
 ```yaml
 firewall:
   enabled: true

@@ -52,6 +52,7 @@ type SettingsSection struct {
 const (
 	SectionGroupAlerting     = "Alerting"
 	SectionGroupDetection    = "Detection"
+	SectionGroupFirewall     = "Firewall"
 	SectionGroupIntegrations = "Integrations"
 	SectionGroupOps          = "Operations"
 )
@@ -60,6 +61,7 @@ const (
 var SectionGroupOrder = []string{
 	SectionGroupAlerting,
 	SectionGroupDetection,
+	SectionGroupFirewall,
 	SectionGroupIntegrations,
 	SectionGroupOps,
 }
@@ -372,6 +374,53 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "environment", Type: "string", Label: "Environment", Placeholder: "production"},
 			{YAMLPath: "sample_rate", Type: "float", Label: "Sample rate (0 to 1.0)"},
 			{YAMLPath: "debug", Type: "bool", Label: "Debug logging"},
+		},
+	},
+	{
+		ID:       "firewall",
+		Title:    "Firewall",
+		YAMLPath: "firewall",
+		Icon:     "shield-lock",
+		Group:    SectionGroupFirewall,
+		Restart:  true,
+		Fields: []SettingsField{
+			{YAMLPath: "enabled", Type: "bool", Label: "Firewall enabled", Help: "Activates the nftables-based firewall on next daemon restart. Verify port lists below before enabling to avoid lockout."},
+			{YAMLPath: "ipv6", Type: "bool", Label: "IPv6 dual-stack"},
+
+			{YAMLPath: "tcp_in", Type: "[]int", Label: "Inbound TCP ports", Help: "SSH (22) is intentionally not in the default; add it explicitly if sshd listens on 22. WebUI port must be present or you will lose remote access on restart."},
+			{YAMLPath: "tcp_out", Type: "[]int", Label: "Outbound TCP ports"},
+			{YAMLPath: "udp_in", Type: "[]int", Label: "Inbound UDP ports"},
+			{YAMLPath: "udp_out", Type: "[]int", Label: "Outbound UDP ports", Help: "Includes 6277/24441 by default for SpamAssassin DCC/Pyzor; do not remove unless rspamd-only."},
+			{YAMLPath: "tcp6_in", Type: "[]int", Label: "Inbound TCP6 ports", Help: "Empty inherits tcp_in. Only set when IPv6 should differ from IPv4."},
+			{YAMLPath: "tcp6_out", Type: "[]int", Label: "Outbound TCP6 ports", Help: "Empty inherits tcp_out."},
+			{YAMLPath: "udp6_in", Type: "[]int", Label: "Inbound UDP6 ports", Help: "Empty inherits udp_in."},
+			{YAMLPath: "udp6_out", Type: "[]int", Label: "Outbound UDP6 ports", Help: "Empty inherits udp_out."},
+
+			{YAMLPath: "restricted_tcp", Type: "[]int", Label: "Restricted TCP (infra-only)", Help: "Reachable only from infra_ips. Manage infra_ips in its own section."},
+			{YAMLPath: "passive_ftp_start", Type: "int", Label: "Passive FTP range start", Min: int64p(1024), Max: int64p(65535)},
+			{YAMLPath: "passive_ftp_end", Type: "int", Label: "Passive FTP range end", Min: int64p(1024), Max: int64p(65535)},
+			{YAMLPath: "drop_nolog", Type: "[]int", Label: "Silent-drop ports", Help: "Dropped without logging to keep scanner noise out of the log."},
+
+			{YAMLPath: "conn_rate_limit", Type: "int", Label: "Conn rate limit (per IP/min)", Min: int64p(0), Max: int64p(100000), Help: "0 disables. 200 tolerates shared CGNAT egress."},
+			{YAMLPath: "conn_limit", Type: "int", Label: "Concurrent connections per IP", Min: int64p(0), Max: int64p(100000), Help: "0 disables."},
+			{YAMLPath: "syn_flood_protection", Type: "bool", Label: "SYN flood protection"},
+			{YAMLPath: "udp_flood", Type: "bool", Label: "UDP flood protection"},
+			{YAMLPath: "udp_flood_rate", Type: "int", Label: "UDP packets/sec", Min: int64p(1), Max: int64p(100000)},
+			{YAMLPath: "udp_flood_burst", Type: "int", Label: "UDP burst allowance", Min: int64p(1), Max: int64p(1000000)},
+
+			{YAMLPath: "deny_ip_limit", Type: "int", Label: "Permanent block cap", Min: int64p(0), Max: int64p(1000000), Help: "0 = unlimited."},
+			{YAMLPath: "deny_temp_ip_limit", Type: "int", Label: "Temporary block cap", Min: int64p(0), Max: int64p(1000000)},
+
+			{YAMLPath: "country_block", Type: "[]string", Label: "Country block (ISO-3166)", Help: "Two-letter codes, one per line."},
+			{YAMLPath: "country_db_path", Type: "string", Label: "Country DB path override", Placeholder: "(uses geoip section if empty)"},
+			{YAMLPath: "dyndns_hosts", Type: "[]string", Label: "DynDNS hosts", Help: "Resolved every 5 minutes and merged into the trusted set."},
+
+			{YAMLPath: "smtp_block", Type: "bool", Label: "Block outbound SMTP", Help: "When enabled, only smtp_allow_users may originate outbound mail. Verify allow list first."},
+			{YAMLPath: "smtp_allow_users", Type: "[]string", Label: "SMTP allow users", Help: "root is always allowed."},
+			{YAMLPath: "smtp_ports", Type: "[]int", Label: "SMTP ports"},
+
+			{YAMLPath: "log_dropped", Type: "bool", Label: "Log dropped packets"},
+			{YAMLPath: "log_rate", Type: "int", Label: "Log entries per minute", Min: int64p(0), Max: int64p(10000)},
 		},
 	},
 }

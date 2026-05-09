@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -864,6 +865,135 @@ alerts:
 	live := config.Active()
 	if len(live.Alerts.Email.DisabledChecks) != 2 {
 		t.Fatalf("DisabledChecks = %v, want 2 entries", live.Alerts.Email.DisabledChecks)
+	}
+}
+
+// firewallSettingsTestYAML returns a minimal config with the firewall section
+// populated so the settings endpoints have something to roundtrip through.
+func firewallSettingsTestYAML() string {
+	return `hostname: t.example.com
+alerts:
+  email:
+    enabled: true
+    to: ["ops@t.example.com"]
+    from: csm@t.example.com
+    smtp: "127.0.0.1:25"
+  max_per_hour: 20
+webui:
+  enabled: true
+  listen: "0.0.0.0:9443"
+firewall:
+  enabled: false
+  tcp_in: [80, 443, 9443]
+  tcp_out: [80, 443]
+  udp_in: [53]
+  udp_out: [53, 123]
+  conn_rate_limit: 200
+  conn_limit: 400
+  syn_flood_protection: true
+  udp_flood: true
+  udp_flood_rate: 100
+  udp_flood_burst: 500
+  deny_ip_limit: 3000
+  deny_temp_ip_limit: 500
+  smtp_block: false
+  smtp_ports: [25, 465, 587]
+  log_dropped: true
+  log_rate: 5
+`
+}
+
+func TestSettingsPOSTFirewallIntArrayDedupAndSorts(t *testing.T) {
+	s, cfgPath := newSettingsTestServer(t, "tok", firewallSettingsTestYAML())
+
+	getReq := settingsAuthedReq("GET", "/api/v1/settings/firewall", "tok", "")
+	getW := httptest.NewRecorder()
+	s.apiSettingsGet(getW, getReq)
+	if getW.Code != 200 {
+		t.Fatalf("GET code = %d, body = %s", getW.Code, getW.Body.String())
+	}
+	etag := getW.Header().Get("ETag")
+
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/firewall", "tok",
+		`{"changes":{"tcp_in":[443, 9443, 80, 443, 9443]}}`)
+	postReq.Header.Set("If-Match", etag)
+	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	postW := httptest.NewRecorder()
+	s.apiSettingsPost(postW, postReq)
+
+	if postW.Code != 200 {
+		t.Fatalf("POST code = %d, body = %s", postW.Code, postW.Body.String())
+	}
+
+	saved, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Firewall == nil {
+		t.Fatal("firewall section missing after save")
+	}
+	want := []int{80, 443, 9443}
+	if got := saved.Firewall.TCPIn; !reflect.DeepEqual(got, want) {
+		t.Errorf("tcp_in not deduped+sorted: got %v, want %v", got, want)
+	}
+}
+
+func TestSettingsPOSTFirewallIntArrayRejectsOutOfRange(t *testing.T) {
+	s, _ := newSettingsTestServer(t, "tok", firewallSettingsTestYAML())
+
+	getReq := settingsAuthedReq("GET", "/api/v1/settings/firewall", "tok", "")
+	getW := httptest.NewRecorder()
+	s.apiSettingsGet(getW, getReq)
+	etag := getW.Header().Get("ETag")
+
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/firewall", "tok",
+		`{"changes":{"tcp_in":[80, 443, 70000]}}`)
+	postReq.Header.Set("If-Match", etag)
+	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	postW := httptest.NewRecorder()
+	s.apiSettingsPost(postW, postReq)
+
+	if postW.Code != 422 {
+		t.Fatalf("code = %d, want 422, body = %s", postW.Code, postW.Body.String())
+	}
+	if !strings.Contains(postW.Body.String(), "70000") {
+		t.Errorf("response should name the offending value, got %s", postW.Body.String())
+	}
+}
+
+func TestSettingsPOSTFirewallLockoutWarning(t *testing.T) {
+	s, _ := newSettingsTestServer(t, "tok", firewallSettingsTestYAML())
+
+	getReq := settingsAuthedReq("GET", "/api/v1/settings/firewall", "tok", "")
+	getW := httptest.NewRecorder()
+	s.apiSettingsGet(getW, getReq)
+	etag := getW.Header().Get("ETag")
+
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/firewall", "tok",
+		`{"changes":{"tcp_in":[80, 443]}}`)
+	postReq.Header.Set("If-Match", etag)
+	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	postW := httptest.NewRecorder()
+	s.apiSettingsPost(postW, postReq)
+
+	if postW.Code != 200 {
+		t.Fatalf("save should still succeed (warning, not error): code = %d, body = %s", postW.Code, postW.Body.String())
+	}
+	var resp struct {
+		Warnings []fieldError `json:"warnings"`
+	}
+	if err := json.Unmarshal(postW.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, w := range resp.Warnings {
+		if w.Field == "tcp_in" && strings.Contains(w.Message, "9443") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected lockout warning for tcp_in mentioning WebUI port 9443, got %+v", resp.Warnings)
 	}
 }
 

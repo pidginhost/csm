@@ -14,7 +14,7 @@ func TestSettingsSectionsAreStable(t *testing.T) {
 		"alerts", "thresholds", "suppressions", "auto_response",
 		"reputation", "email_protection", "challenge", "php_shield",
 		"signatures", "email_av", "modsec", "performance", "cloudflare",
-		"geoip", "infra_ips", "disabled_checks", "sentry",
+		"geoip", "infra_ips", "disabled_checks", "sentry", "firewall",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("section IDs drifted:\n  got  = %v\n  want = %v", got, want)
@@ -47,7 +47,7 @@ func TestSchemaCoversAllInScopeConfigFields(t *testing.T) {
 		"modsec": "modsec", "performance": "performance",
 		"cloudflare": "cloudflare", "geoip": "geoip",
 		"infra_ips": "infra_ips", "disabled_checks": "disabled_checks",
-		"sentry": "sentry",
+		"sentry": "sentry", "firewall": "firewall",
 	}
 
 	cfgType := reflect.TypeOf(config.Config{})

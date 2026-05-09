@@ -221,7 +221,7 @@
     }
 
     function isWideField(field) {
-        return field.type === "[]string" || field.type === "[]enum";
+        return field.type === "[]string" || field.type === "[]enum" || field.type === "[]int";
     }
 
     function lookupValue(values, path) {
@@ -296,6 +296,13 @@
             inp.id = id;
             inp.rows = 4;
             if (field.placeholder) inp.placeholder = field.placeholder;
+            inp.value = Array.isArray(value) ? value.join("\n") : "";
+        } else if (field.type === "[]int") {
+            inp = document.createElement("textarea");
+            inp.className = "form-control";
+            inp.id = id;
+            inp.rows = 4;
+            inp.placeholder = field.placeholder || "one port per line, range 1-65535";
             inp.value = Array.isArray(value) ? value.join("\n") : "";
         } else if (field.type === "[]enum") {
             inp = buildMultiSelect(id, field, Array.isArray(value) ? value : []);
@@ -607,6 +614,20 @@
         }
         if (field.type === "[]string") {
             return el.value.split("\n").map(function (s) { return s.trim(); }).filter(function (s) { return s !== ""; });
+        }
+        if (field.type === "[]int") {
+            const tokens = el.value.split(/[\s,]+/).map(function (s) { return s.trim(); }).filter(function (s) { return s !== ""; });
+            const out = [];
+            const seen = {};
+            for (let i = 0; i < tokens.length; i++) {
+                const n = parseInt(tokens[i], 10);
+                if (!isNaN(n) && !seen[n]) {
+                    seen[n] = true;
+                    out.push(n);
+                }
+            }
+            out.sort(function (a, b) { return a - b; });
+            return out;
         }
         if (field.type === "[]enum") {
             return el.csmGetValues ? el.csmGetValues() : [];
