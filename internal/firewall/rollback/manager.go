@@ -134,10 +134,9 @@ func clampTimeout(d time.Duration) time.Duration {
 }
 
 // Apply records prevYAML as the snapshot to restore on expiry, computes
-// the expiry deadline, and persists the rollback entry. The caller is
-// responsible for writing newYAML to disk and triggering the restart;
-// this method only stages the rollback intent so it survives the
-// daemon restart that the apply requires.
+// the expiry deadline, persists the rollback entry, and arms the local
+// timer. The caller is responsible for writing newYAML to disk and
+// triggering the restart.
 //
 // applyBy is logged with the rollback record (e.g. token name or "cli")
 // so audits can trace the source.
@@ -162,6 +161,7 @@ func (m *Manager) Apply(prevYAML, newYAML []byte, timeout time.Duration, applyBy
 	if err := m.db.SaveFirewallRollback(rb); err != nil {
 		return Status{}, fmt.Errorf("persist rollback: %w", err)
 	}
+	m.armTimerLocked(timeout)
 
 	return statusFromRecord(rb, m.now()), nil
 }
@@ -214,7 +214,10 @@ func (m *Manager) RecoverOnStartup(ctx context.Context) (reverted bool, err erro
 	if !now.Before(rb.ExpiresAt) {
 		err := m.applyRevertLocked(ctx, rb)
 		m.mu.Unlock()
-		return true, err
+		if err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 	remaining := rb.ExpiresAt.Sub(now)
 	m.armTimerLocked(remaining)
@@ -245,7 +248,9 @@ func (m *Manager) armTimerLocked(d time.Duration) {
 		// would have been cancelled by the time this fires.
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_ = m.timerExpired(ctx)
+		if err := m.timerExpired(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "rollback: timer expiry failed: %v\n", err)
+		}
 	})
 }
 
@@ -260,8 +265,8 @@ func (m *Manager) timerExpired(ctx context.Context) error {
 }
 
 // applyRevertLocked restores the snapshot bytes to the config path,
-// clears the pending record, and triggers a daemon restart. Caller
-// must hold m.mu.
+// triggers a daemon restart, and clears the pending record only after
+// the restart command succeeds. Caller must hold m.mu.
 func (m *Manager) applyRevertLocked(ctx context.Context, rb store.FirewallRollback) error {
 	if m.timer != nil {
 		m.timer.Stop()
@@ -273,16 +278,13 @@ func (m *Manager) applyRevertLocked(ctx context.Context, rb store.FirewallRollba
 	if err := integrity.WriteConfigBytesAtomic(m.configPath, rb.PrevYAML); err != nil {
 		return fmt.Errorf("restore previous config: %w", err)
 	}
-	if err := m.db.ClearFirewallRollback(); err != nil {
-		// The disk file is restored; an orphan bbolt record would
-		// re-trigger revert on next startup, so log and continue
-		// rather than aborting the restart.
-		fmt.Fprintf(os.Stderr, "rollback: clear store after revert: %v\n", err)
-	}
 	if m.restart != nil {
 		if err := m.restart(ctx); err != nil {
 			return fmt.Errorf("trigger restart after revert: %w", err)
 		}
+	}
+	if err := m.db.ClearFirewallRollback(); err != nil {
+		return fmt.Errorf("clear rollback after revert: %w", err)
 	}
 	return nil
 }

@@ -21,10 +21,13 @@ func installRollbackManager(t *testing.T, statePath, configPath string) *rollbac
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
 	m := rollback.NewManager(db, configPath, func(_ context.Context) error { return nil }, time.Now)
 	rollback.SetGlobal(m)
-	t.Cleanup(func() { rollback.SetGlobal(nil) })
+	t.Cleanup(func() {
+		_ = m.Confirm()
+		rollback.SetGlobal(nil)
+		_ = db.Close()
+	})
 	return m
 }
 

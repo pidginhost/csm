@@ -626,14 +626,24 @@
             const tokens = el.value.split(/[\s,]+/).map(function (s) { return s.trim(); }).filter(function (s) { return s !== ""; });
             const out = [];
             const seen = {};
+            let hasInvalid = false;
             for (let i = 0; i < tokens.length; i++) {
-                const n = parseInt(tokens[i], 10);
-                if (!isNaN(n) && !seen[n]) {
-                    seen[n] = true;
-                    out.push(n);
+                const token = tokens[i];
+                if (/^[+-]?\d+$/.test(token)) {
+                    const n = Number(token);
+                    if (Number.isSafeInteger(n) && !seen["n:" + n]) {
+                        seen["n:" + n] = true;
+                        out.push(n);
+                        continue;
+                    }
+                }
+                hasInvalid = true;
+                if (!seen["s:" + token]) {
+                    seen["s:" + token] = true;
+                    out.push(token);
                 }
             }
-            out.sort(function (a, b) { return a - b; });
+            if (!hasInvalid) out.sort(function (a, b) { return a - b; });
             return out;
         }
         if (field.type === "[]enum") {

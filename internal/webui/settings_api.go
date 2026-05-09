@@ -341,7 +341,7 @@ func buildChangeSet(section SettingsSection, clone *config.Config, changes map[s
 			}
 			if len(badValues) > 0 {
 				for _, bv := range badValues {
-					errs = append(errs, fieldError{Field: key, Message: "out-of-range value: " + bv})
+					errs = append(errs, fieldError{Field: key, Message: "invalid value: " + bv})
 				}
 				continue
 			}

@@ -20,7 +20,6 @@ func newTestManager(t *testing.T) (*Manager, *store.DB, string, *atomic.Int32) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
 
 	cfgPath := filepath.Join(dir, "csm.yaml")
 	if err := os.WriteFile(cfgPath, []byte("hostname: original\n"), 0o600); err != nil {
@@ -33,6 +32,10 @@ func newTestManager(t *testing.T) (*Manager, *store.DB, string, *atomic.Int32) {
 		return nil
 	}
 	m := NewManager(db, cfgPath, restart, time.Now)
+	t.Cleanup(func() {
+		_ = m.Confirm()
+		_ = db.Close()
+	})
 	return m, db, cfgPath, &restartCount
 }
 
@@ -220,7 +223,6 @@ func TestRevertRestartFailureSurfaces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
 
 	cfgPath := filepath.Join(dir, "csm.yaml")
 	if werr := os.WriteFile(cfgPath, []byte("x"), 0o600); werr != nil {
@@ -229,16 +231,67 @@ func TestRevertRestartFailureSurfaces(t *testing.T) {
 
 	failingRestart := func(_ context.Context) error { return errors.New("systemctl unavailable") }
 	m := NewManager(db, cfgPath, failingRestart, time.Now)
+	t.Cleanup(func() {
+		_ = m.Confirm()
+		_ = db.Close()
+	})
 
-	if _, aerr := m.Apply([]byte("prev"), []byte("next"), time.Minute, "tok"); aerr != nil {
+	prev := []byte("hostname: prev\n")
+	if _, aerr := m.Apply(prev, []byte("hostname: next\n"), time.Minute, "tok"); aerr != nil {
 		t.Fatal(aerr)
 	}
 	if rerr := m.Revert(context.Background()); rerr == nil {
 		t.Error("Revert should bubble up restart failure")
 	}
-	// Even with failed restart the snapshot is dropped because the
-	// disk file is already restored; otherwise startup would loop.
-	if _, ok := db.GetFirewallRollback(); ok {
-		t.Error("rollback record should be cleared even when restart fails")
+	got, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, prev) {
+		t.Errorf("config not restored before restart failure: got %q want %q", got, prev)
+	}
+	if _, ok := db.GetFirewallRollback(); !ok {
+		t.Error("rollback record should remain pending when restart fails")
+	}
+}
+
+func TestRecoverOnStartupExpiredRevertFailureDoesNotClaimReverted(t *testing.T) {
+	dir := t.TempDir()
+	db, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfgPath := filepath.Join(dir, "csm.yaml")
+	if err := os.WriteFile(cfgPath, []byte("hostname: next\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(db, cfgPath, func(_ context.Context) error {
+		return errors.New("systemctl unavailable")
+	}, time.Now)
+	t.Cleanup(func() {
+		_ = m.Confirm()
+		_ = db.Close()
+	})
+
+	past := time.Now().Add(-1 * time.Minute).UTC()
+	if err := db.SaveFirewallRollback(store.FirewallRollback{
+		PrevYAML:  []byte("hostname: prev\n"),
+		AppliedAt: past.Add(-5 * time.Minute),
+		ExpiresAt: past,
+		AppliedBy: "tok",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	reverted, err := m.RecoverOnStartup(context.Background())
+	if err == nil {
+		t.Fatal("RecoverOnStartup should surface restart failure")
+	}
+	if reverted {
+		t.Error("failed recovery must not report reverted=true")
+	}
+	if _, ok := db.GetFirewallRollback(); !ok {
+		t.Error("rollback record should remain pending after failed startup recovery")
 	}
 }

@@ -55,3 +55,20 @@ func TestIncidentPageRendersCorrelatedIncidentSurface(t *testing.T) {
 		t.Fatal("incident.js must not render inline onclick handlers")
 	}
 }
+
+func TestSettingsIntArraySubmitsRawTokens(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/settings.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	if strings.Contains(text, "parseInt(tokens[i], 10)") {
+		t.Fatal("settings.js must not coerce malformed port tokens before backend validation")
+	}
+	if !strings.Contains(text, `Number.isSafeInteger(n)`) {
+		t.Fatal("settings.js should only coerce safe integer port tokens")
+	}
+	if !strings.Contains(text, `out.push(token)`) {
+		t.Fatal("settings.js should keep malformed []int tokens for backend validation")
+	}
+}

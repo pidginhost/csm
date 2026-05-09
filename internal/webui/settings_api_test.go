@@ -961,6 +961,29 @@ func TestSettingsPOSTFirewallIntArrayRejectsOutOfRange(t *testing.T) {
 	}
 }
 
+func TestSettingsPOSTFirewallIntArrayRejectsMalformedToken(t *testing.T) {
+	s, _ := newSettingsTestServer(t, "tok", firewallSettingsTestYAML())
+
+	getReq := settingsAuthedReq("GET", "/api/v1/settings/firewall", "tok", "")
+	getW := httptest.NewRecorder()
+	s.apiSettingsGet(getW, getReq)
+	etag := getW.Header().Get("ETag")
+
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/firewall", "tok",
+		`{"changes":{"tcp_in":["80", "443x"]}}`)
+	postReq.Header.Set("If-Match", etag)
+	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	postW := httptest.NewRecorder()
+	s.apiSettingsPost(postW, postReq)
+
+	if postW.Code != 422 {
+		t.Fatalf("code = %d, want 422, body = %s", postW.Code, postW.Body.String())
+	}
+	if !strings.Contains(postW.Body.String(), "443x") {
+		t.Errorf("response should name the malformed value, got %s", postW.Body.String())
+	}
+}
+
 func TestSettingsPOSTFirewallLockoutWarning(t *testing.T) {
 	s, _ := newSettingsTestServer(t, "tok", firewallSettingsTestYAML())
 

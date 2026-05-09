@@ -354,7 +354,7 @@ func (d *Daemon) Run() error {
 		reverted, rerr := mgr.RecoverOnStartup(recoveryCtx)
 		cancel()
 		if rerr != nil {
-			csmlog.Error("firewall rollback recovery failed", "error", rerr)
+			return fmt.Errorf("firewall rollback recovery failed: %w", rerr)
 		}
 		if reverted {
 			csmlog.Warn("firewall rollback expired during downtime; previous config restored, restart issued")
