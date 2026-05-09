@@ -263,8 +263,8 @@ func TestRecoverOnStartupExpiredRevertFailureDoesNotClaimReverted(t *testing.T) 
 	}
 
 	cfgPath := filepath.Join(dir, "csm.yaml")
-	if err := os.WriteFile(cfgPath, []byte("hostname: next\n"), 0o600); err != nil {
-		t.Fatal(err)
+	if werr := os.WriteFile(cfgPath, []byte("hostname: next\n"), 0o600); werr != nil {
+		t.Fatal(werr)
 	}
 	m := NewManager(db, cfgPath, func(_ context.Context) error {
 		return errors.New("systemctl unavailable")
@@ -275,13 +275,13 @@ func TestRecoverOnStartupExpiredRevertFailureDoesNotClaimReverted(t *testing.T) 
 	})
 
 	past := time.Now().Add(-1 * time.Minute).UTC()
-	if err := db.SaveFirewallRollback(store.FirewallRollback{
+	if serr := db.SaveFirewallRollback(store.FirewallRollback{
 		PrevYAML:  []byte("hostname: prev\n"),
 		AppliedAt: past.Add(-5 * time.Minute),
 		ExpiresAt: past,
 		AppliedBy: "tok",
-	}); err != nil {
-		t.Fatal(err)
+	}); serr != nil {
+		t.Fatal(serr)
 	}
 
 	reverted, err := m.RecoverOnStartup(context.Background())
