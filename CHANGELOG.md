@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Mailbox auth and abuse incidents are labelled "mailbox takeover" instead of "web account compromise"; domain-level mail checks and PHP relay keep their account-compromise kind.
 - ModSecurity findings no longer record the served vhost name when the vhost is a bare IP address; this prevented unrelated raw-IP-served sites from being merged into one incident.
 - Single-finding scanner probes and isolated mistyped passwords no longer open an incident on the first event; the correlator now requires a second correlated finding within the merge window before opening, while Critical-severity findings still page on the first hit.
+- Incident pagination now uses stable ordering, copies only the visible page, and sends the browser back to the last valid page when a filtered result set shrinks.
 
 ### Added
 

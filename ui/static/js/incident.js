@@ -70,6 +70,12 @@
                     incidents = [];
                     pageTotal = 0;
                 }
+                if (pageTotal > 0 && incidents.length === 0 && pageOffset >= pageTotal) {
+                    pageOffset = lastPageOffset();
+                    selectedID = '';
+                    loadIncidents();
+                    return;
+                }
                 renderIncidentList();
                 renderPagination();
             })

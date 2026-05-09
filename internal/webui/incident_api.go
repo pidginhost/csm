@@ -211,41 +211,11 @@ func parseIncidentStatusFilter(s string) ([]incident.Status, error) {
 	return nil, fmt.Errorf("invalid status %q", s)
 }
 
-// incidentPage executes one or more SnapshotPage calls (one per status
-// in the filter) and stitches them into a single page. The "active"
-// filter expands to two statuses; the daemon-side primitive only
-// accepts one at a time, so the handler folds them. Items are
-// re-sorted by UpdatedAt descending across the union and the page
-// bounds are applied last so offset/limit semantics match the
-// single-status case.
+// incidentPage returns a status-filtered page. The "active" filter
+// expands to open+contained and is handled by the correlator in one
+// sorted pass so pagination stays stable across statuses.
 func (s *Server) incidentPage(statuses []incident.Status, offset, limit int) ([]incident.Incident, int) {
-	if len(statuses) == 0 {
-		return s.incidentCorrelator.SnapshotPage("", offset, limit)
-	}
-	if len(statuses) == 1 {
-		return s.incidentCorrelator.SnapshotPage(statuses[0], offset, limit)
-	}
-	var merged []incident.Incident
-	total := 0
-	for _, st := range statuses {
-		// Pull every record for this status; the union is small enough
-		// that paging per-status before merging would discard records
-		// the caller's offset still wants.
-		page, n := s.incidentCorrelator.SnapshotPage(st, 0, 0)
-		merged = append(merged, page...)
-		total += n
-	}
-	sort.Slice(merged, func(i, j int) bool {
-		return merged[i].UpdatedAt.After(merged[j].UpdatedAt)
-	})
-	if offset >= len(merged) {
-		return []incident.Incident{}, total
-	}
-	end := len(merged)
-	if limit > 0 && offset+limit < end {
-		end = offset + limit
-	}
-	return merged[offset:end], total
+	return s.incidentCorrelator.SnapshotPageStatuses(statuses, offset, limit)
 }
 
 // apiIncidentShow serves GET /api/v1/incidents/<id>. 404 if not found.

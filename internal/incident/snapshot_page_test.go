@@ -62,6 +62,49 @@ func TestSnapshotPageRespectsOffsetAndLimit(t *testing.T) {
 	}
 }
 
+func TestSnapshotPageOrdersEqualTimestampsByID(t *testing.T) {
+	c := NewCorrelator(CorrelatorConfig{})
+	at := time.Unix(1_700_000_000, 0)
+	c.Restore([]Incident{
+		pageIncident("inc_a", StatusOpen, at),
+		pageIncident("inc_c", StatusOpen, at),
+		pageIncident("inc_b", StatusOpen, at),
+	})
+
+	page, total := c.SnapshotPage("", 0, 3)
+	if total != 3 || len(page) != 3 {
+		t.Fatalf("page total/len = %d/%d, want 3/3", total, len(page))
+	}
+	want := []string{"inc_c", "inc_b", "inc_a"}
+	for i, id := range want {
+		if page[i].ID != id {
+			t.Fatalf("page[%d].ID = %q, want %q", i, page[i].ID, id)
+		}
+	}
+}
+
+func TestSnapshotPageStatusesFiltersBeforePaging(t *testing.T) {
+	c := NewCorrelator(CorrelatorConfig{})
+	at := time.Unix(1_700_000_000, 0)
+	c.Restore([]Incident{
+		pageIncident("inc_a", StatusOpen, at),
+		pageIncident("inc_b", StatusOpen, at),
+		pageIncident("inc_c", StatusContained, at),
+		pageIncident("inc_d", StatusResolved, at),
+	})
+
+	page, total := c.SnapshotPageStatuses([]Status{StatusOpen, StatusContained}, 1, 1)
+	if total != 3 {
+		t.Fatalf("total = %d, want 3", total)
+	}
+	if len(page) != 1 {
+		t.Fatalf("page len = %d, want 1", len(page))
+	}
+	if page[0].ID != "inc_b" {
+		t.Fatalf("page[0].ID = %q, want inc_b", page[0].ID)
+	}
+}
+
 func TestSnapshotPageFiltersByStatus(t *testing.T) {
 	c := newPaginatedCorrelator(t, 5)
 	all := c.Snapshot()
@@ -91,6 +134,19 @@ func TestSnapshotPageFiltersByStatus(t *testing.T) {
 	}
 	if len(resolved) != 1 {
 		t.Errorf("resolved page len = %d, want 1", len(resolved))
+	}
+}
+
+func pageIncident(id string, status Status, at time.Time) Incident {
+	account := "acct-" + id
+	return Incident{
+		ID:             id,
+		Status:         status,
+		Severity:       alert.High,
+		Account:        account,
+		CorrelationKey: &Key{Account: account},
+		CreatedAt:      at,
+		UpdatedAt:      at,
 	}
 }
 

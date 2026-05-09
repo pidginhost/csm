@@ -233,19 +233,37 @@ func (c *Correlator) Get(id string) (Incident, bool) {
 // Items are deep-copied so callers may mutate the returned slice
 // without affecting subsequent calls.
 func (c *Correlator) SnapshotPage(status Status, offset, limit int) ([]Incident, int) {
+	if status == "" {
+		return c.SnapshotPageStatuses(nil, offset, limit)
+	}
+	return c.SnapshotPageStatuses([]Status{status}, offset, limit)
+}
+
+// SnapshotPageStatuses returns a page of incidents matching any status
+// in statuses. An empty status list means all statuses. Sorting and
+// slicing happen against internal pointers first; only the returned
+// page is deep-copied.
+func (c *Correlator) SnapshotPageStatuses(statuses []Status, offset, limit int) ([]Incident, int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	matched := make([]Incident, 0, len(c.incidents))
-	for _, inc := range c.incidents {
-		if status != "" && inc.Status != status {
-			continue
+	statusSet := make(map[Status]struct{}, len(statuses))
+	for _, st := range statuses {
+		if st != "" {
+			statusSet[st] = struct{}{}
 		}
-		matched = append(matched, cloneIncident(*inc))
 	}
-	sort.Slice(matched, func(i, j int) bool {
-		return matched[i].UpdatedAt.After(matched[j].UpdatedAt)
-	})
+
+	matched := make([]*Incident, 0, len(c.incidents))
+	for _, inc := range c.incidents {
+		if len(statusSet) > 0 {
+			if _, ok := statusSet[inc.Status]; !ok {
+				continue
+			}
+		}
+		matched = append(matched, inc)
+	}
+	sortIncidentRefs(matched)
 
 	total := len(matched)
 	if offset < 0 {
@@ -258,7 +276,25 @@ func (c *Correlator) SnapshotPage(status Status, offset, limit int) ([]Incident,
 	if limit > 0 && offset+limit < end {
 		end = offset + limit
 	}
-	return matched[offset:end], total
+
+	out := make([]Incident, 0, end-offset)
+	for _, inc := range matched[offset:end] {
+		out = append(out, cloneIncident(*inc))
+	}
+	return out, total
+}
+
+func sortIncidentRefs(refs []*Incident) {
+	sort.Slice(refs, func(i, j int) bool {
+		return incidentRefLess(refs[i], refs[j])
+	})
+}
+
+func incidentRefLess(a, b *Incident) bool {
+	if !a.UpdatedAt.Equal(b.UpdatedAt) {
+		return a.UpdatedAt.After(b.UpdatedAt)
+	}
+	return a.ID > b.ID
 }
 
 // Snapshot returns every incident sorted by UpdatedAt descending. Safe
@@ -267,13 +303,16 @@ func (c *Correlator) SnapshotPage(status Status, offset, limit int) ([]Incident,
 func (c *Correlator) Snapshot() []Incident {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	out := make([]Incident, 0, len(c.incidents))
+	refs := make([]*Incident, 0, len(c.incidents))
 	for _, inc := range c.incidents {
+		refs = append(refs, inc)
+	}
+	sortIncidentRefs(refs)
+
+	out := make([]Incident, 0, len(refs))
+	for _, inc := range refs {
 		out = append(out, cloneIncident(*inc))
 	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].UpdatedAt.After(out[j].UpdatedAt)
-	})
 	return out
 }
 
