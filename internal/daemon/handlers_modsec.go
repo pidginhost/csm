@@ -10,6 +10,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/modsec"
 	"github.com/pidginhost/csm/internal/obs"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/store"
@@ -77,11 +78,22 @@ func parseModSecLogLine(line string, cfg *config.Config) []alert.Finding {
 	}
 
 	// Determine check name.
+	//
+	// Apache mod_security writes the action verbatim into the message, so
+	// "Access denied" is a reliable block signal. LiteSpeed's mod_security
+	// front-end writes every match as "triggered!" with no action context,
+	// regardless of whether the rule's declared action denied the request
+	// or merely incremented a counter. Without further context every match
+	// would be counted as a deny, escalating to a 24-hour auto-block after
+	// three pass-action triggers from the same IP. Consult the rule-action
+	// registry built at daemon start: pass/log/allow rules produce a
+	// warning, deny/drop/block produce a block, and an unknown rule ID
+	// keeps the legacy default-to-block behaviour for safety.
 	check := "modsec_warning_realtime"
 	if strings.Contains(line, "Access denied") {
 		check = "modsec_block_realtime"
 	} else if isLiteSpeed && strings.Contains(line, "triggered!") {
-		check = "modsec_block_realtime"
+		check = classifyLiteSpeedTrigger(ruleID)
 	}
 
 	// Determine severity from rule ID.
@@ -127,6 +139,31 @@ func parseModSecLogLine(line string, cfg *config.Config) []alert.Finding {
 		Message:  message,
 		Details:  details,
 	}}
+}
+
+// classifyLiteSpeedTrigger decides whether a LiteSpeed mod_security
+// "triggered!" line represents a real deny (block_realtime) or merely an
+// informational pass-action match (warning_realtime), based on the rule's
+// declared action in the rule-action registry. Unknown rules default to
+// block to preserve coverage when the registry has not been populated yet
+// (very early daemon startup, or hosts without parseable rule files).
+func classifyLiteSpeedTrigger(ruleID string) string {
+	num, err := strconv.Atoi(ruleID)
+	if err != nil {
+		return "modsec_block_realtime"
+	}
+	reg := modsec.Global()
+	if reg == nil {
+		return "modsec_block_realtime"
+	}
+	action, known := reg.Action(num)
+	if !known {
+		return "modsec_block_realtime"
+	}
+	if modsec.IsBlockingAction(action) {
+		return "modsec_block_realtime"
+	}
+	return "modsec_warning_realtime"
 }
 
 // extractModSecField extracts the value between start and end delimiters.

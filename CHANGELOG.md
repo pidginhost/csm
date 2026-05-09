@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Firewall defaults: opened DNS-over-TLS (853) inbound and outbound, added razor2/pyzor outbound UDP so SpamAssassin DNSBL queries do not silently fail, and bumped `conn_rate_limit` to 200/min and `conn_limit` to 400 to tolerate shared CGNAT egress. SSH (22) stays out of the default port list; uncomment the sample line in `csm.yaml` if sshd listens on 22.
 
+### Fixed
+
+- ModSecurity escalation no longer auto-blocks IPs whose only matches are log-only WAF rules on LiteSpeed hosts. The detector now consults each rule's declared action so pass-action vendor rules stop driving false 24-hour bans.
+
 ## [3.1.0] - 2026-05-08
 
 ### Added

@@ -336,6 +336,11 @@ func (d *Daemon) Run() error {
 		"webserver", orNone(string(pi.WebServer)),
 	)
 
+	// Build the ModSec rule-action registry before any log watcher starts
+	// so the LiteSpeed classifier can tell pass-action vendor rules apart
+	// from real denies on the very first parsed line.
+	d.initModSecRegistry()
+
 	// Verify integrity on startup
 	if err := integrity.Verify(d.binaryPath, d.cfg); err != nil {
 		tamper := alert.Finding{

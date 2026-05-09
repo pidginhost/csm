@@ -65,10 +65,12 @@ func BuildRegistry(dirs []string) (*Registry, error) {
 			if !strings.HasSuffix(strings.ToLower(d.Name()), ".conf") {
 				return nil
 			}
-			rules, perr := ParseRulesFileAll(path)
-			if perr != nil {
-				return nil
-			}
+			// Per-file parse errors are intentionally discarded so one
+			// malformed vendor file (truncated mid-rule, encoding glitch,
+			// in-flight modsec_assemble overwrite) does not blank the whole
+			// registry. The cost is silent on the leaf package; daemon-side
+			// telemetry surfaces the eventual rule count via the startup log.
+			rules, _ := ParseRulesFileAll(path)
 			for _, r := range rules {
 				if r.Action != "" {
 					actions[r.ID] = r.Action
