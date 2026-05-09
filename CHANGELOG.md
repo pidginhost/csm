@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- State directory migration and firewall audit log now surface close errors instead of silently dropping the last write on disk-full or fsync failure.
+
 ## [3.2.0] - 2026-05-09
 
 ### Added

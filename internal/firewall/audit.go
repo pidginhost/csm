@@ -3,6 +3,7 @@ package firewall
 import (
 	"bufio"
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -54,8 +55,16 @@ func AppendAudit(statePath, action, ip, reason, source string, duration time.Dur
 	if err != nil {
 		return
 	}
-	defer f.Close()
-	_, _ = f.Write(data)
+	if _, writeErr := f.Write(data); writeErr != nil {
+		_ = f.Close()
+		log.Printf("firewall: audit write failed for %s: %v", path, writeErr)
+		return
+	}
+	// Close error on a writable file is the disk-full / fsync signal --
+	// without it, a dropped audit entry leaves no record anywhere.
+	if closeErr := f.Close(); closeErr != nil {
+		log.Printf("firewall: audit close failed for %s: %v", path, closeErr)
+	}
 }
 
 // ReadAuditLog returns the last N audit entries from the log.
