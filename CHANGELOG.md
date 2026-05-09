@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Firewall defaults: opened DNS-over-TLS (853) inbound and outbound, added razor2/pyzor outbound UDP so SpamAssassin DNSBL queries do not silently fail, and bumped `conn_rate_limit` to 200/min and `conn_limit` to 400 to tolerate shared CGNAT egress. SSH (22) stays out of the default port list; uncomment the sample line in `csm.yaml` if sshd listens on 22.
+
 ## [3.1.0] - 2026-05-08
 
 ### Added

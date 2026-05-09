@@ -76,9 +76,9 @@ csm firewall cf-status                           # Show Cloudflare IP whitelist 
 firewall:
   enabled: true
   ipv6: false
-  conn_rate_limit: 30          # new connections per minute per IP
+  conn_rate_limit: 200         # new connections per minute per IP (CGNAT-tolerant)
   syn_flood_protection: true
-  conn_limit: 300              # max concurrent connections per IP (matches CSF CT_LIMIT)
+  conn_limit: 400              # max concurrent connections per IP (0 = disabled)
   smtp_block: false            # restrict outbound SMTP
   log_dropped: true
   dyndns_hosts:                # resolved every 5 min into the infra set

@@ -274,9 +274,14 @@ auto_response:
 
 firewall:
   enabled: false              # enable to activate nftables-based firewall engine
+  # SSH (port 22) is intentionally absent. cPanel hosts often move sshd
+  # to 2087 or another alt port; if sshd listens on 22, uncomment the
+  # entry below before enabling the firewall to avoid locking yourself
+  # out. Port 853 is DNS-over-TLS for stub resolvers / Unbound.
   tcp_in:
     - 20
     - 21
+    # - 22                      # SSH; uncomment if sshd listens on 22
     - 25
     - 26
     - 53
@@ -286,6 +291,7 @@ firewall:
     - 443
     - 465
     - 587
+    - 853                       # DNS-over-TLS
     - 993
     - 995
     - 2077
@@ -300,6 +306,7 @@ firewall:
   tcp_out:
     - 20
     - 21
+    # - 22                      # SSH outbound; uncomment if you ssh to remote 22
     - 25
     - 26
     - 37
@@ -311,6 +318,7 @@ firewall:
     - 443
     - 465
     - 587
+    - 853                       # DNS-over-TLS
     - 873
     - 993
     - 995
@@ -325,21 +333,27 @@ firewall:
   udp_in:
     - 53
     - 443
+    - 853                       # DNS-over-TLS
+  # 6277/24441 are razor2/pyzor DNSBL queries used by SpamAssassin;
+  # without them outbound spam-scoring queries silently fail.
   udp_out:
     - 53
     - 113
     - 123
     - 443
+    - 853                       # DNS-over-TLS
     - 873
+    - 6277                      # razor2 (SpamAssassin)
+    - 24441                     # pyzor  (SpamAssassin)
   restricted_tcp:               # ports only accessible from infra_ips
     - 2086
     - 2087
     - 2325
   passive_ftp_start: 49152
   passive_ftp_end: 65534
-  conn_rate_limit: 30           # new connections per minute per IP
+  conn_rate_limit: 200          # new connections per minute per IP (CGNAT-tolerant)
   syn_flood_protection: true
-  conn_limit: 300               # max concurrent connections per IP (matches CSF CT_LIMIT; 0 = disabled)
+  conn_limit: 400               # max concurrent connections per IP (0 = disabled)
   port_flood:                   # per-port, per-source-IP new-connection rate limit
     - port: 25                  # 600/300s = 120/min per IP, tolerates MUA bursts
       proto: tcp

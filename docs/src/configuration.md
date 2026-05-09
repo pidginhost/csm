@@ -341,11 +341,13 @@ email_protection:
 firewall:
   enabled: false
 
-  # Open ports (IPv4)
-  tcp_in: [20,21,25,26,53,80,110,143,443,465,587,993,995,2077,2078,2079,2080,2082,2083,2091,2095,2096]
-  tcp_out: [20,21,25,26,37,43,53,80,110,113,443,465,587,873,993,995,2082,2083,2086,2087,2089,2195,2325,2703]
-  udp_in: [53,443]
-  udp_out: [53,113,123,443,873]
+  # Open ports (IPv4). SSH (22) is intentionally absent; uncomment in
+  # the YAML lists if sshd listens on 22. Port 853 is DNS-over-TLS;
+  # 6277/24441 are razor2/pyzor DNSBL queries used by SpamAssassin.
+  tcp_in: [20,21,25,26,53,80,110,143,443,465,587,853,993,995,2077,2078,2079,2080,2082,2083,2091,2095,2096]
+  tcp_out: [20,21,25,26,37,43,53,80,110,113,443,465,587,853,873,993,995,2082,2083,2086,2087,2089,2195,2325,2703]
+  udp_in: [53,443,853]
+  udp_out: [53,113,123,443,853,873,6277,24441]
 
   # IPv6
   ipv6: false
@@ -365,9 +367,9 @@ firewall:
   infra_ips: []
 
   # Rate limiting
-  conn_rate_limit: 30                   # new connections/min per IP
+  conn_rate_limit: 200                  # new connections/min per IP (CGNAT-tolerant)
   syn_flood_protection: true
-  conn_limit: 300                       # max concurrent connections per IP; matches CSF CT_LIMIT default; raise for IDLE-heavy power users (0 = disabled)
+  conn_limit: 400                       # max concurrent connections per IP (0 = disabled)
 
   # Per-port flood protection: rate-limit new connections per source IP and IP family.
   # Defaults are sized for a busy mail host: 600/300s = 120 new conns/min/IP,

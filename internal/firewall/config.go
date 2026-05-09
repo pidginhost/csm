@@ -77,29 +77,39 @@ type PortFloodRule struct {
 func DefaultConfig() *FirewallConfig {
 	return &FirewallConfig{
 		Enabled: false,
+		// SSH (22) is intentionally absent. Many cPanel hosts move sshd to
+		// 2087 or other alt ports; operators who keep sshd on 22 must add
+		// it explicitly. Port 853 enables DNS-over-TLS (stub resolvers,
+		// Unbound).
 		TCPIn: []int{
 			20, 21, 25, 26, 53, 80, 110, 143, 443, 465, 587,
-			993, 995, 2077, 2078, 2079, 2080, 2082, 2083,
+			853, 993, 995, 2077, 2078, 2079, 2080, 2082, 2083,
 			2091, 2095, 2096,
 		},
 		TCPOut: []int{
 			20, 21, 25, 26, 37, 43, 53, 80, 110, 113, 443,
-			465, 587, 873, 993, 995, 2082, 2083, 2086, 2087,
+			465, 587, 853, 873, 993, 995, 2082, 2083, 2086, 2087,
 			2089, 2195, 2325, 2703,
 		},
-		UDPIn:              []int{53, 443},
-		UDPOut:             []int{53, 113, 123, 443, 873},
-		RestrictedTCP:      []int{2086, 2087, 2325, 9443},
-		PassiveFTPStart:    49152,
-		PassiveFTPEnd:      65534,
-		ConnRateLimit:      30,
+		UDPIn: []int{53, 443, 853},
+		// 6277/24441 are razor2/pyzor DNSBL queries used by SpamAssassin.
+		// Without them outbound spam-scoring queries silently fail.
+		UDPOut:          []int{53, 113, 123, 443, 853, 873, 6277, 24441},
+		RestrictedTCP:   []int{2086, 2087, 2325, 9443},
+		PassiveFTPStart: 49152,
+		PassiveFTPEnd:   65534,
+		// 200 new connections per minute per source IP. Sized to tolerate
+		// shared CGNAT egress (residential ISPs / mobile carriers) where
+		// hundreds of subscribers share a single public address; the
+		// original 30/min default produced spurious drops on such ranges.
+		ConnRateLimit:      200,
 		SYNFloodProtection: true,
-		// 300 concurrent connections per source IP. Sized for power users
+		// 400 concurrent connections per source IP. Sized for power users
 		// (multi-tab webmail + IMAP IDLE on multiple devices + Thunderbird
-		// parallel send + HTTPS browsing). Matches the conventional CSF
-		// CT_LIMIT default. Operators with very heavy IDLE-style workloads
-		// can raise it further.
-		ConnLimit: 300,
+		// parallel send + HTTPS browsing) plus headroom for shared CGNAT
+		// egress IPs. Operators with very heavy IDLE-style workloads can
+		// raise it further.
+		ConnLimit: 400,
 		// 600 hits / 300 s = 120 new connections per minute per source IP.
 		// Sized to tolerate normal MUA bursts (Thunderbird/iPhone/Outlook each
 		// open 5-15 parallel sessions when sending one email or syncing IMAP
