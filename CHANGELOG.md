@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-05-09
+
 ### Added
 
 - Web UI Settings has a new Firewall section. Saving warns when the WebUI port is about to fall outside the allowed inbound list so operators see the lockout risk before the restart applies.
