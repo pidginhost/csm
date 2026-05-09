@@ -67,6 +67,8 @@ func (d *PasswordHijackDetector) HandlePasswordChange(account, ip string) {
 		Message:   fmt.Sprintf("WHM password change from non-infra IP: %s (account: %s)", ip, account),
 		Details:   "Password was changed via WHM from an IP outside your infrastructure. This is a strong indicator of account takeover.",
 		Timestamp: time.Now(),
+		SourceIP:  ip,
+		TenantID:  account,
 	}
 }
 
@@ -99,6 +101,8 @@ func (d *PasswordHijackDetector) HandleLogin(account, loginIP string) {
 		Message:   fmt.Sprintf("CONFIRMED ACCOUNT HIJACK: %s - password changed from %s, login from %s within %ds", account, change.ip, loginIP, int(time.Since(change.timestamp).Seconds())),
 		Details:   fmt.Sprintf("Attack pattern: WHM password change from non-infra IP followed by immediate cPanel login.\nPassword change IP: %s\nLogin IP: %s\nTime between: %ds\n\nBoth IPs should be permanently blocked.", change.ip, loginIP, int(time.Since(change.timestamp).Seconds())),
 		Timestamp: time.Now(),
+		SourceIP:  loginIP,
+		TenantID:  account,
 	}
 }
 

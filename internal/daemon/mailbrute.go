@@ -126,6 +126,7 @@ func (t *mailAuthTracker) Record(ip, account string) []alert.Finding {
 				ip, len(e.times), t.window),
 			Details:   "Real-time detection of dovecot imap/pop3/managesieve auth failures",
 			Timestamp: now,
+			SourceIP:  ip,
 		})
 	}
 
@@ -146,6 +147,7 @@ func (t *mailAuthTracker) Record(ip, account string) []alert.Finding {
 
 		if len(s.ips) >= t.subnetThreshold && !now.Before(s.suppressed) {
 			s.suppressed = now.Add(t.suppression)
+			cidr := prefix + ".0/24"
 			findings = append(findings, alert.Finding{
 				Severity: alert.Critical,
 				Check:    "mail_subnet_spray",
@@ -153,6 +155,7 @@ func (t *mailAuthTracker) Record(ip, account string) []alert.Finding {
 					prefix, len(s.ips), t.window),
 				Details:   "Real-time detection of mail auth failures from many IPs in one /24",
 				Timestamp: now,
+				SourceIP:  cidr,
 			})
 		}
 	}
@@ -182,6 +185,7 @@ func (t *mailAuthTracker) Record(ip, account string) []alert.Finding {
 					account, len(a.ips), t.window),
 				Details:   "Distributed login attempts across many IPs against one mailbox (visibility only — no auto-block).",
 				Timestamp: now,
+				SourceIP:  ip,
 				Domain:    acctDomain,
 				Mailbox:   account,
 			})
@@ -226,6 +230,7 @@ func (t *mailAuthTracker) RecordSuccess(ip, account string) []alert.Finding {
 			account, ip),
 		Details:   "Attacker succeeded after one or more failed attempts from the same IP for this mailbox. Rotate password and revoke sessions.",
 		Timestamp: now,
+		SourceIP:  ip,
 		Domain:    compDomain,
 		Mailbox:   account,
 	}}

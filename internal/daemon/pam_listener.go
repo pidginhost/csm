@@ -153,6 +153,7 @@ func (p *PAMListener) processEvent(line string) {
 			Check:     "pam_login",
 			Message:   fmt.Sprintf("Login success from non-infra IP: %s (user: %s, service: %s)", ip, user, service),
 			Timestamp: time.Now(),
+			SourceIP:  ip,
 		}
 	}
 }

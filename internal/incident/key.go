@@ -25,14 +25,14 @@ func (k Key) IsEmpty() bool {
 
 // KeyFor extracts a correlation key from a Finding. Sources, in priority
 // order: TenantID, Process.Account, CPUser (php-relay attribution), and a
-// /home[N]/<account>/ heuristic for fanotify findings. Domain/Mailbox/
-// RemoteIP are taken verbatim from the finding's structured fields.
+// /home[N]/<account>/ heuristic for fanotify findings. Domain and Mailbox
+// are taken verbatim from the finding. SourceIP is only a fallback identity:
+// it should not split a mailbox/account/process incident by attacker IP.
 func KeyFor(f alert.Finding) Key {
 	k := Key{
-		Account:  f.TenantID,
-		Domain:   f.Domain,
-		Mailbox:  f.Mailbox,
-		RemoteIP: f.SourceIP,
+		Account: f.TenantID,
+		Domain:  f.Domain,
+		Mailbox: f.Mailbox,
 	}
 	if f.Process != nil {
 		if f.Process.Account != "" && k.Account == "" {
@@ -46,6 +46,9 @@ func KeyFor(f alert.Finding) Key {
 	}
 	if k.Account == "" {
 		k.Account = accountFromHomePath(f.FilePath)
+	}
+	if k.Account == "" && k.Domain == "" && k.Mailbox == "" && k.UID == 0 && k.PID == 0 {
+		k.RemoteIP = f.SourceIP
 	}
 	return k
 }

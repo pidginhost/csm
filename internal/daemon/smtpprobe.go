@@ -136,6 +136,7 @@ func (t *smtpProbeTracker) Record(ip string) []alert.Finding {
 				ip, len(e.times), t.window),
 			Details:   details,
 			Timestamp: now,
+			SourceIP:  ip,
 		})
 	}
 

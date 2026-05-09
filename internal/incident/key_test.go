@@ -105,6 +105,33 @@ func TestKeyForCPUserFallback(t *testing.T) {
 	}
 }
 
+func TestKeyForSourceIPFallback(t *testing.T) {
+	f := alert.Finding{
+		Check:    "smtp_probe_abuse",
+		SourceIP: "203.0.113.44",
+	}
+	k := KeyFor(f)
+	if k.RemoteIP != "203.0.113.44" {
+		t.Errorf("RemoteIP from SourceIP: want 203.0.113.44, got %q", k.RemoteIP)
+	}
+}
+
+func TestKeyForSourceIPDoesNotSplitMailboxKey(t *testing.T) {
+	f := alert.Finding{
+		Check:    "email_auth_failure_realtime",
+		Mailbox:  "alice@example.com",
+		Domain:   "example.com",
+		SourceIP: "203.0.113.44",
+	}
+	k := KeyFor(f)
+	if k.RemoteIP != "" {
+		t.Errorf("RemoteIP should be empty when mailbox/domain identify the incident, got %q", k.RemoteIP)
+	}
+	if k.Mailbox != "alice@example.com" || k.Domain != "example.com" {
+		t.Errorf("mail key = %+v", k)
+	}
+}
+
 // TenantID must win over CPUser so explicit tenant attribution is not
 // silently overridden by the cPanel user shadow field.
 func TestKeyForTenantIDBeatsCPUser(t *testing.T) {

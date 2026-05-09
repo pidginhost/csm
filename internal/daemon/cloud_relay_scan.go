@@ -160,6 +160,9 @@ func ScanEximHistoryForCloudRelay(cfg *config.Config, logPath string, now time.T
 			Message:   msg,
 			Details:   truncateDaemon(details, 900),
 			Timestamp: now,
+			SourceIP:  recentIP,
+			Mailbox:   mailboxOnly(user),
+			Domain:    extractDomainFromEmail(user),
 		})
 
 		markReportedRetro(user, latestEvent)

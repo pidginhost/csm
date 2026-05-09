@@ -166,6 +166,62 @@ func TestCorrelatorRemoteIPOnlyFindingsDoNotCollide(t *testing.T) {
 	}
 }
 
+func TestCorrelatorMergesSameMailboxAcrossSourceIPs(t *testing.T) {
+	c := newTestCorrelator()
+	f1 := alert.Finding{
+		Check:     "email_auth_failure_realtime",
+		Severity:  alert.High,
+		Mailbox:   "alice@example.com",
+		Domain:    "example.com",
+		SourceIP:  "203.0.113.10",
+		Timestamp: time.Unix(1_700_000_000, 0),
+	}
+	id1, created1, _ := c.OnFinding(f1)
+	if !created1 {
+		t.Fatal("setup")
+	}
+
+	f2 := alert.Finding{
+		Check:     "email_auth_failure_realtime",
+		Severity:  alert.High,
+		Mailbox:   "alice@example.com",
+		Domain:    "example.com",
+		SourceIP:  "203.0.113.20",
+		Timestamp: time.Unix(1_700_000_000+60, 0),
+	}
+	id2, created2, _ := c.OnFinding(f2)
+	if created2 || id1 != id2 {
+		t.Errorf("same mailbox must merge across source IPs; id1=%s id2=%s created2=%v", id1, id2, created2)
+	}
+}
+
+func TestCorrelatorMergesCPUserAcrossSourceIPs(t *testing.T) {
+	c := newTestCorrelator()
+	f1 := alert.Finding{
+		Check:     "email_php_relay_abuse",
+		Severity:  alert.Critical,
+		CPUser:    "alice",
+		SourceIP:  "203.0.113.10",
+		Timestamp: time.Unix(1_700_000_000, 0),
+	}
+	id1, created1, _ := c.OnFinding(f1)
+	if !created1 {
+		t.Fatal("setup")
+	}
+
+	f2 := alert.Finding{
+		Check:     "email_php_relay_abuse",
+		Severity:  alert.Critical,
+		CPUser:    "alice",
+		SourceIP:  "203.0.113.20",
+		Timestamp: time.Unix(1_700_000_000+60, 0),
+	}
+	id2, created2, _ := c.OnFinding(f2)
+	if created2 || id1 != id2 {
+		t.Errorf("same CPUser must merge across source IPs; id1=%s id2=%s created2=%v", id1, id2, created2)
+	}
+}
+
 func TestKeyStringDoesNotCollideOnDelimiters(t *testing.T) {
 	a := Key{Account: "a|b", Mailbox: "c", Domain: "d", UID: 1, PID: 2, RemoteIP: "203.0.113.10"}
 	b := Key{Account: "a", Mailbox: "b|c", Domain: "d", UID: 1, PID: 2, RemoteIP: "203.0.113.10"}

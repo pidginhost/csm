@@ -122,6 +122,7 @@ func (t *smtpAuthTracker) Record(ip, account string) []alert.Finding {
 				ip, len(e.times), t.window),
 			Details:   "Real-time detection of dovecot_login auth failures",
 			Timestamp: now,
+			SourceIP:  ip,
 		})
 	}
 
@@ -138,6 +139,7 @@ func (t *smtpAuthTracker) Record(ip, account string) []alert.Finding {
 
 		if len(s.ips) >= t.subnetThreshold && !now.Before(s.suppressed) {
 			s.suppressed = now.Add(t.suppression)
+			cidr := prefix + ".0/24"
 			findings = append(findings, alert.Finding{
 				Severity: alert.Critical,
 				Check:    "smtp_subnet_spray",
@@ -145,6 +147,7 @@ func (t *smtpAuthTracker) Record(ip, account string) []alert.Finding {
 					prefix, len(s.ips), t.window),
 				Details:   "Real-time detection of dovecot_login auth failures from many IPs in one /24",
 				Timestamp: now,
+				SourceIP:  cidr,
 			})
 		}
 	}
@@ -162,6 +165,7 @@ func (t *smtpAuthTracker) Record(ip, account string) []alert.Finding {
 
 		if len(a.ips) >= t.accountSprayThreshold && !now.Before(a.suppressed) {
 			a.suppressed = now.Add(t.suppression)
+			_, acctDomain := alert.SplitEmail(account)
 			findings = append(findings, alert.Finding{
 				Severity: alert.High,
 				Check:    "smtp_account_spray",
@@ -169,6 +173,9 @@ func (t *smtpAuthTracker) Record(ip, account string) []alert.Finding {
 					account, len(a.ips), t.window),
 				Details:   "Distributed login attempts across many IPs against one mailbox (visibility only — no auto-block).",
 				Timestamp: now,
+				SourceIP:  ip,
+				Domain:    acctDomain,
+				Mailbox:   account,
 			})
 		}
 	}
