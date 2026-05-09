@@ -13,7 +13,7 @@ import (
 type Rule struct {
 	ID          int    // e.g. 900112
 	Description string // from msg:'...' field
-	Action      string // "deny", "pass", "log"
+	Action      string // "deny", "block", "drop", "pass", "log", "allow"
 	StatusCode  int    // 403, 429, 0 (for pass/log)
 	Phase       int    // 1 or 2
 	Raw         string // full rule text including chains
@@ -27,10 +27,29 @@ var (
 	reStatus = regexp.MustCompile(`status:(\d+)`)
 )
 
-// ParseRulesFile reads a ModSecurity config file and extracts all rules
-// with IDs in the 900000-900999 range. Handles line continuations (\) and
-// chained rules (chain action keyword).
+// ParseRulesFile reads a ModSecurity config file and extracts CSM-owned rules
+// (IDs in 900000-900999). Use ParseRulesFileAll for the rule-action registry,
+// which needs every rule including vendor packs.
 func ParseRulesFile(path string) ([]Rule, error) {
+	all, err := ParseRulesFileAll(path)
+	if err != nil {
+		return nil, err
+	}
+	var csm []Rule
+	for _, r := range all {
+		if r.ID >= 900000 && r.ID <= 900999 {
+			csm = append(csm, r)
+		}
+	}
+	return csm, nil
+}
+
+// ParseRulesFileAll reads a ModSecurity config file and extracts every rule,
+// regardless of ID range. Handles line continuations (\) and chained rules
+// (chain action keyword). Vendor packs (Comodo, OWASP CRS, Imunify360) all
+// use this entrypoint via the rule-action registry so the daemon can tell
+// pass-action rules apart from deny rules.
+func ParseRulesFileAll(path string) ([]Rule, error) {
 	// #nosec G304 -- path is operator-configured ModSec rules file.
 	f, err := os.Open(path)
 	if err != nil {
@@ -136,11 +155,6 @@ func parseBlock(block string) (Rule, bool) {
 	}
 	id, _ := strconv.Atoi(m[1])
 
-	// Filter to CSM range
-	if id < 900000 || id > 900999 {
-		return Rule{}, false
-	}
-
 	r := Rule{
 		ID:  id,
 		Raw: strings.TrimSpace(block),
@@ -159,12 +173,20 @@ func parseBlock(block string) (Rule, bool) {
 	// Extract action from the action string (quoted section).
 	// Use comma/quote-prefixed matching to avoid false matches
 	// in variable names or patterns (e.g. "nolog" matching "log").
+	// Order matters: deny/drop/block before pass/log/allow because some
+	// blocking rules also carry a leading "log" attribute.
 	lower := strings.ToLower(block)
 	switch {
 	case strings.Contains(lower, ",deny") || strings.Contains(lower, "\"deny"):
 		r.Action = "deny"
+	case strings.Contains(lower, ",drop") || strings.Contains(lower, "\"drop"):
+		r.Action = "drop"
+	case strings.Contains(lower, ",block") || strings.Contains(lower, "\"block"):
+		r.Action = "block"
 	case strings.Contains(lower, ",pass") || strings.Contains(lower, "\"pass"):
 		r.Action = "pass"
+	case strings.Contains(lower, ",allow") || strings.Contains(lower, "\"allow"):
+		r.Action = "allow"
 	case strings.Contains(lower, ",log,") || strings.Contains(lower, ",log\"") || strings.Contains(lower, "\"log,"):
 		r.Action = "log"
 	}
@@ -180,4 +202,16 @@ func parseBlock(block string) (Rule, bool) {
 	}
 
 	return r, true
+}
+
+// IsBlockingAction reports whether an action causes the request to be denied.
+// Used by the LiteSpeed log-line classifier - error_log records every match
+// as "triggered!" regardless of action, so the action lookup is the only way
+// to tell a real deny apart from a pass-action informational rule.
+func IsBlockingAction(action string) bool {
+	switch action {
+	case "deny", "drop", "block":
+		return true
+	}
+	return false
 }

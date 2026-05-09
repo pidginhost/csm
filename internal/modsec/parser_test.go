@@ -148,3 +148,94 @@ func findRule(rules []Rule, id int) *Rule {
 	}
 	return nil
 }
+
+// Vendor-format rules: Comodo CWAF pass-action ("triggered" but not blocking),
+// OWASP CRS deny rule, LiteSpeed-friendly chained format. These are what
+// the rule-action registry needs to classify error_log lines correctly.
+const testVendorRulesConf = `# Comodo CWAF informational rule (pass action - logs only, never denies)
+SecRule REQUEST_METHOD "!@rx ^(?:GET|HEAD|PROPFIND|OPTIONS)$" \
+    "id:210710,chain,msg:'COMODO WAF: Request content type is not allowed by policy.',phase:2,pass,logdata:'%{matched_var_name}=%{matched_var}',t:none,rev:5,severity:2,tag:'CWAF',tag:'Generic'"
+SecRule REQUEST_HEADERS:Content-Type "@rx ^([^;\s]+)" \
+    "chain,capture"
+SecRule TX:0 "!@pmFromFile userdata_wl_content_type" \
+    "setvar:'tx.points=+%{tx.points_limit4}',ctl:forceRequestBodyVariable=On,t:none"
+
+# Comodo CWAF inbound-points aggregator (pass)
+SecRule TX:INCOMING_POINTS "@ge %{tx.incoming_points_limit}" \
+    "id:214930,msg:'COMODO WAF: Inbound Points Exceeded',phase:5,pass,log,noauditlog,t:none,rev:1,severity:2,tag:'CWAF',tag:'FiltersEnd'"
+
+# OWASP CRS-style anomaly enforcement (deny)
+SecRule TX:ANOMALY_SCORE "@ge %{tx.inbound_anomaly_score_threshold}" \
+    "id:949110,phase:2,deny,t:none,log,msg:'Inbound Anomaly Score Exceeded',severity:2"
+
+# Comodo block-action variant (uses block keyword which inherits SecDefaultAction)
+SecRule REQUEST_HEADERS:'/(Content-Length|Transfer-Encoding)/' "," \
+    "id:211070,msg:'COMODO WAF: HTTP Request Smuggling Attack.',phase:2,capture,block,t:none,rev:1,severity:2,tag:'CWAF',tag:'Generic'"
+`
+
+// TestParseRulesFile_FiltersToCSMRange asserts the legacy entry point still
+// scopes results to the 900xxx range that the Web UI rule-management screen
+// expects, even though the underlying parser now sees every rule.
+func TestParseRulesFile_FiltersToCSMRange(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vendor.conf")
+	if err := os.WriteFile(path, []byte(testVendorRulesConf), 0644); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := ParseRulesFile(path)
+	if err != nil {
+		t.Fatalf("ParseRulesFile: %v", err)
+	}
+	if len(rules) != 0 {
+		t.Errorf("vendor file should yield 0 CSM-range rules, got %d", len(rules))
+	}
+}
+
+func TestParseRulesFileAll_IncludesVendorRules(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vendor.conf")
+	if err := os.WriteFile(path, []byte(testVendorRulesConf), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	rules, err := ParseRulesFileAll(path)
+	if err != nil {
+		t.Fatalf("ParseRulesFileAll: %v", err)
+	}
+
+	for _, want := range []struct {
+		id     int
+		action string
+	}{
+		{210710, "pass"},
+		{214930, "pass"},
+		{949110, "deny"},
+		{211070, "block"},
+	} {
+		r := findRule(rules, want.id)
+		if r == nil {
+			t.Errorf("rule %d not found in parsed vendor rules", want.id)
+			continue
+		}
+		if r.Action != want.action {
+			t.Errorf("rule %d: action = %q, want %q", want.id, r.Action, want.action)
+		}
+	}
+}
+
+func TestIsBlockingAction(t *testing.T) {
+	cases := map[string]bool{
+		"deny":  true,
+		"drop":  true,
+		"block": true,
+		"pass":  false,
+		"log":   false,
+		"allow": false,
+		"":      false, // unknown action - caller decides default
+	}
+	for action, want := range cases {
+		if got := IsBlockingAction(action); got != want {
+			t.Errorf("IsBlockingAction(%q) = %v, want %v", action, got, want)
+		}
+	}
+}
