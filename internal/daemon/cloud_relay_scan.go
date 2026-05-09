@@ -154,6 +154,7 @@ func ScanEximHistoryForCloudRelay(cfg *config.Config, logPath string, now time.T
 			strings.Join(truncateIPList(ips, 10), ", "),
 		)
 
+		mailbox, domain, tenant := splitMailAccount(user)
 		findings = append(findings, alert.Finding{
 			Severity:  alert.Critical,
 			Check:     "email_cloud_relay_abuse",
@@ -161,8 +162,9 @@ func ScanEximHistoryForCloudRelay(cfg *config.Config, logPath string, now time.T
 			Details:   truncateDaemon(details, 900),
 			Timestamp: now,
 			SourceIP:  recentIP,
-			Mailbox:   mailboxOnly(user),
-			Domain:    extractDomainFromEmail(user),
+			Mailbox:   mailbox,
+			Domain:    domain,
+			TenantID:  tenant,
 		})
 
 		markReportedRetro(user, latestEvent)

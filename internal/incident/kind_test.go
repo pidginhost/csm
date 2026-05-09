@@ -15,7 +15,7 @@ func TestClassifyKindMailboxTakeover(t *testing.T) {
 }
 
 func TestClassifyKindWebAccountCompromise(t *testing.T) {
-	for _, check := range []string{"webshell_detected", "wp_login_bruteforce", "exploit_revslider", "php_relay_abuse"} {
+	for _, check := range []string{"webshell_detected", "wp_login_bruteforce", "exploit_revslider", "php_relay_abuse", "email_php_relay_abuse"} {
 		got := ClassifyKind(alert.Finding{Check: check, TenantID: "alice"})
 		if got != KindWebAccountCompromise {
 			t.Errorf("check %q: got %v, want web_account_compromise", check, got)
@@ -50,21 +50,18 @@ func TestClassifyKindFallback(t *testing.T) {
 }
 
 // Mail-stack auth checks must classify as mailbox_takeover even when the
-// finding lacks a Mailbox attribute (bare cPanel-local accounts and
-// SourceIP-only modes). Otherwise the kind label "web_account_compromise"
-// misleads operators about a mail-stack incident.
+// finding lacks a Mailbox attribute. Bare cPanel-local accounts route to
+// TenantID, and source-IP-only auth probes still belong to the mail incident
+// family.
 func TestClassifyKindMailAuthChecksMapToMailboxTakeover(t *testing.T) {
 	mailChecks := []string{
 		"email_auth_failure_realtime",
 		"email_compromised_account",
 		"email_credential_leak",
-		"email_dkim_failure",
-		"email_spf_rejection",
 		"email_rate_warning",
 		"email_rate_critical",
 		"email_suspicious_geo",
 		"email_cloud_relay_abuse",
-		"email_php_relay_abuse",
 		"email_spam_outbreak",
 		"mail_bruteforce",
 		"mail_subnet_spray",
@@ -75,6 +72,15 @@ func TestClassifyKindMailAuthChecksMapToMailboxTakeover(t *testing.T) {
 		got := ClassifyKind(alert.Finding{Check: check, TenantID: "alice"})
 		if got != KindMailboxTakeover {
 			t.Errorf("check %q: got %v, want mailbox_takeover", check, got)
+		}
+	}
+}
+
+func TestClassifyKindDomainMailChecksStayWebAccountCompromise(t *testing.T) {
+	for _, check := range []string{"email_dkim_failure", "email_spf_rejection"} {
+		got := ClassifyKind(alert.Finding{Check: check, Domain: "example.com"})
+		if got != KindWebAccountCompromise {
+			t.Errorf("check %q: got %v, want web_account_compromise", check, got)
 		}
 	}
 }

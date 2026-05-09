@@ -306,6 +306,36 @@ func TestEmailRateLimitPopulatesMailboxAndDomain(t *testing.T) {
 	}
 }
 
+func TestEmailRateLimitBareUserAttributesToAccount(t *testing.T) {
+	resetEmailRateTracking()
+	cfg := &config.Config{}
+	cfg.EmailProtection.RateWindowMin = 60
+	cfg.EmailProtection.RateWarnThreshold = 1
+	cfg.EmailProtection.RateCritThreshold = 100
+
+	findings := checkEmailRate("maxwell", cfg)
+	if len(findings) == 0 {
+		t.Fatal("expected at least one rate finding at warn threshold")
+	}
+	f := findings[0]
+	if f.Mailbox != "" {
+		t.Errorf("Mailbox = %q, want empty for bare account", f.Mailbox)
+	}
+	if f.Domain != "" {
+		t.Errorf("Domain = %q, want empty for bare account", f.Domain)
+	}
+	if f.TenantID != "maxwell" {
+		t.Errorf("TenantID = %q, want maxwell", f.TenantID)
+	}
+	k := incident.KeyFor(f)
+	if k.Account != "maxwell" {
+		t.Errorf("KeyFor.Account = %q, want maxwell", k.Account)
+	}
+	if k.RemoteIP != "" {
+		t.Errorf("RemoteIP = %q, want empty (account beats IP fallback)", k.RemoteIP)
+	}
+}
+
 func TestPAMLoginPopulatesSourceIP(t *testing.T) {
 	ch := make(chan alert.Finding, 1)
 	listener := &PAMListener{
@@ -359,6 +389,18 @@ func TestMailboxOnlyDistinguishesMailboxFromBareDomain(t *testing.T) {
 	}
 	if got := mailboxOnly(""); got != "" {
 		t.Errorf("empty: got %q", got)
+	}
+}
+
+func TestSplitMailAccountRoutesBareAccountToTenant(t *testing.T) {
+	mailbox, domain, tenant := splitMailAccount("alice@example.com")
+	if mailbox != "alice@example.com" || domain != "example.com" || tenant != "" {
+		t.Fatalf("full mailbox split = (%q, %q, %q), want mailbox/domain only", mailbox, domain, tenant)
+	}
+
+	mailbox, domain, tenant = splitMailAccount("maxwell")
+	if mailbox != "" || domain != "" || tenant != "maxwell" {
+		t.Fatalf("bare account split = (%q, %q, %q), want tenant maxwell only", mailbox, domain, tenant)
 	}
 }
 

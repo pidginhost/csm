@@ -129,6 +129,7 @@ func parseDovecotLogLine(line string, cfg *config.Config) []alert.Finding {
 		countryName = country
 	}
 
+	mailbox, domain, tenant := splitMailAccount(user)
 	return []alert.Finding{{
 		Severity: alert.High,
 		Check:    "email_suspicious_geo",
@@ -137,8 +138,9 @@ func parseDovecotLogLine(line string, cfg *config.Config) []alert.Finding {
 		Details: fmt.Sprintf("Country: %s (%s)\nIP: %s\nLogin count: %d\nPreviously seen countries: %s",
 			country, countryName, ip, history.LoginCount, previousList),
 		SourceIP: ip,
-		Mailbox:  mailboxOnly(user),
-		Domain:   extractDomainFromEmail(user),
+		Mailbox:  mailbox,
+		Domain:   domain,
+		TenantID: tenant,
 	}}
 }
 

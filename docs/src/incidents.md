@@ -20,8 +20,9 @@ update. Open and contained incidents are never auto-pruned.
 ## Kinds
 
 - `web_account_compromise` -- default for findings attributable to a
-  hosted account (PHP relay, webshell, login bruteforce, etc.).
-- `mailbox_takeover` -- SMTP/SASL signals against a specific mailbox.
+  hosted account or script (PHP relay, webshell, login bruteforce, etc.).
+- `mailbox_takeover` -- SMTP/SASL, suspicious-login, credential-abuse,
+  and rate signals tied to a mailbox or cPanel-local mail account.
 - `post_exploit_process` -- process exec from `/tmp`, `/var/tmp`,
   `/dev/shm`.
 - `host_integrity_risk` -- daemon/kernel-level signals (sensitive file

@@ -124,6 +124,39 @@ func TestCloudRelay_MultipleCloudIPsTriggersCritical(t *testing.T) {
 	}
 }
 
+func TestCloudRelay_BareAuthUserAttributesToAccount(t *testing.T) {
+	resetCloudRelayState()
+	cfg := cloudRelayTestConfig()
+
+	lines := []string{
+		gceSendLine("maxwell", "204.118.26.34.bc.googleusercontent.com", "34.26.118.204"),
+		gceSendLine("maxwell", "4.120.237.35.bc.googleusercontent.com", "35.237.120.4"),
+		gceSendLine("maxwell", "44.243.26.34.bc.googleusercontent.com", "34.26.243.44"),
+	}
+
+	var got bool
+	for _, line := range lines {
+		for _, f := range parseEximLogLine(line, cfg) {
+			if f.Check != "email_cloud_relay_abuse" {
+				continue
+			}
+			got = true
+			if f.Mailbox != "" {
+				t.Errorf("Mailbox = %q, want empty for bare AUTH user", f.Mailbox)
+			}
+			if f.Domain != "" {
+				t.Errorf("Domain = %q, want empty for bare AUTH user", f.Domain)
+			}
+			if f.TenantID != "maxwell" {
+				t.Errorf("TenantID = %q, want maxwell", f.TenantID)
+			}
+		}
+	}
+	if !got {
+		t.Fatal("expected email_cloud_relay_abuse to fire")
+	}
+}
+
 func TestCloudRelay_DedupOneCriticalPerUserPerWindow(t *testing.T) {
 	resetCloudRelayState()
 	cfg := cloudRelayTestConfig()

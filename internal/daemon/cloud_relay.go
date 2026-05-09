@@ -290,14 +290,16 @@ func parseCloudRelayFinding(line string, cfg *config.Config) []alert.Finding {
 		strings.Join(truncateIPList(ips, 8), ", "),
 	)
 
+	mailbox, domain, tenant := splitMailAccount(user)
 	return []alert.Finding{{
 		Severity: alert.Critical,
 		Check:    "email_cloud_relay_abuse",
 		Message:  message,
 		Details:  truncateDaemon(details, 800),
 		SourceIP: ips[0],
-		Mailbox:  mailboxOnly(user),
-		Domain:   extractDomainFromEmail(user),
+		Mailbox:  mailbox,
+		Domain:   domain,
+		TenantID: tenant,
 	}}
 }
 

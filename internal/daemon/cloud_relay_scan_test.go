@@ -95,6 +95,39 @@ func TestScanRetro_FiresOnRotatingIPFleet(t *testing.T) {
 	})
 }
 
+func TestScanRetro_BareAuthUserAttributesToAccount(t *testing.T) {
+	base := time.Now().Add(-2 * time.Hour)
+	var lines []string
+	for i := 0; i < 18; i++ {
+		lines = append(lines, eximLine(
+			base.Add(time.Duration(i)*2*time.Minute),
+			"maxwell",
+			"ec2-13-38-71-129.eu-west-3.compute.amazonaws.com",
+			"13.38.71.129",
+			"spam",
+		))
+	}
+	path := writeEximFixture(t, lines)
+
+	withGlobalStore(t, func(*store.DB) {
+		cfg := &config.Config{}
+		findings := ScanEximHistoryForCloudRelay(cfg, path, time.Now(), 24*time.Hour)
+		if len(findings) != 1 {
+			t.Fatalf("expected 1 retro finding, got %d: %+v", len(findings), findings)
+		}
+		f := findings[0]
+		if f.Mailbox != "" {
+			t.Errorf("Mailbox = %q, want empty for bare AUTH user", f.Mailbox)
+		}
+		if f.Domain != "" {
+			t.Errorf("Domain = %q, want empty for bare AUTH user", f.Domain)
+		}
+		if f.TenantID != "maxwell" {
+			t.Errorf("TenantID = %q, want maxwell", f.TenantID)
+		}
+	})
+}
+
 func TestScanRetro_SilentOnLegitSaaS(t *testing.T) {
 	// SmartBill profile: 2 sends from the same AWS IP. Below thresholds.
 	// Nylas profile: 2 sends from 2 GCP IPs. Below thresholds.

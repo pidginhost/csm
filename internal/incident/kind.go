@@ -13,20 +13,17 @@ import (
 func ClassifyKind(f alert.Finding) Kind {
 	check := strings.ToLower(f.Check)
 
-	// Mailbox takeover -- any check with a Mailbox attribute or
-	// SMTP/SASL bruteforce check name. Mailbox attribution is the
+	// Mailbox takeover -- any check with a Mailbox attribute or a
+	// mailbox-auth check name. Mailbox attribution is the
 	// strongest single signal so it wins over generic check-name
 	// classification below.
 	if f.Mailbox != "" {
 		return KindMailboxTakeover
 	}
-	// Mail-stack check name prefixes always classify as mailbox takeover,
-	// even when the finding has no Mailbox field (bare cPanel-local
-	// accounts route to TenantID; SourceIP-only modsec/probe findings
-	// have no mailbox at all). Without this, operators see a mail-stack
-	// brute-force labelled "web_account_compromise".
-	if strings.HasPrefix(check, "smtp_") || strings.HasPrefix(check, "sasl_") ||
-		strings.HasPrefix(check, "email_") || strings.HasPrefix(check, "mail_") {
+	// Some authenticated-mail findings route bare cPanel-local accounts to
+	// TenantID instead of Mailbox. Keep those in mailbox_takeover without
+	// sweeping domain/config mail checks or PHP relay findings into it.
+	if isMailboxTakeoverCheck(check) {
 		return KindMailboxTakeover
 	}
 
@@ -52,4 +49,25 @@ func ClassifyKind(f alert.Finding) Kind {
 	// tenant-attributed web/PHP issues, so this fallback matches the
 	// modal incident shape operators see.
 	return KindWebAccountCompromise
+}
+
+func isMailboxTakeoverCheck(check string) bool {
+	if strings.HasPrefix(check, "smtp_") || strings.HasPrefix(check, "sasl_") ||
+		strings.HasPrefix(check, "mail_") {
+		return true
+	}
+
+	switch check {
+	case "email_auth_failure_realtime",
+		"email_cloud_relay_abuse",
+		"email_compromised_account",
+		"email_credential_leak",
+		"email_rate_critical",
+		"email_rate_warning",
+		"email_spam_outbreak",
+		"email_suspicious_geo":
+		return true
+	default:
+		return false
+	}
 }
