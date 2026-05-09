@@ -225,17 +225,148 @@ func TestParseRulesFileAll_IncludesVendorRules(t *testing.T) {
 
 func TestIsBlockingAction(t *testing.T) {
 	cases := map[string]bool{
-		"deny":  true,
-		"drop":  true,
-		"block": true,
-		"pass":  false,
-		"log":   false,
-		"allow": false,
-		"":      false, // unknown action - caller decides default
+		"deny":     true,
+		"drop":     true,
+		"block":    true,
+		"redirect": true, // request is diverted - never reaches the upstream app
+		"proxy":    true,
+		"pause":    true,
+		"pass":     false,
+		"allow":    false,
+		"log":      false, // metadata, not a disposition; caller treats as unknown
+		"":         false, // unknown - caller defaults to block on the LiteSpeed path
 	}
 	for action, want := range cases {
 		if got := IsBlockingAction(action); got != want {
 			t.Errorf("IsBlockingAction(%q) = %v, want %v", action, got, want)
 		}
+	}
+}
+
+// Action tokenisation: regression tests for false matches that the previous
+// substring-based detector produced.
+func TestParseAction_RejectsLookalikeTokens(t *testing.T) {
+	dir := t.TempDir()
+	conf := `# "passive" must not match "pass"; the rule has no disposition keyword
+SecRule REQUEST_URI "x" "id:800001,phase:1,passive,t:none"
+`
+	path := filepath.Join(dir, "lookalike.conf")
+	if err := os.WriteFile(path, []byte(conf), 0644); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := ParseRulesFileAll(path)
+	if err != nil {
+		t.Fatalf("ParseRulesFileAll: %v", err)
+	}
+	r := findRule(rules, 800001)
+	if r == nil {
+		t.Fatal("rule 800001 not parsed")
+	}
+	if r.Action != "" {
+		t.Errorf("Action = %q, want \"\" (passive is not a disposition)", r.Action)
+	}
+}
+
+func TestParseAction_IgnoresCommasInsideMsgLiteral(t *testing.T) {
+	dir := t.TempDir()
+	conf := `SecRule REQUEST_URI "x" "id:800002,phase:1,msg:'Request blocked, denied by policy',pass,t:none"
+`
+	path := filepath.Join(dir, "msg.conf")
+	if err := os.WriteFile(path, []byte(conf), 0644); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := ParseRulesFileAll(path)
+	if err != nil {
+		t.Fatalf("ParseRulesFileAll: %v", err)
+	}
+	r := findRule(rules, 800002)
+	if r == nil {
+		t.Fatal("rule 800002 not parsed")
+	}
+	if r.Action != "pass" {
+		t.Errorf("Action = %q, want pass (commas inside msg must not move the disposition)", r.Action)
+	}
+}
+
+func TestParseAction_LogOnlyRuleHasNoDisposition(t *testing.T) {
+	dir := t.TempDir()
+	conf := `SecRule REQUEST_URI "x" "id:800003,phase:1,log,msg:'just record',t:none"
+`
+	path := filepath.Join(dir, "logonly.conf")
+	if err := os.WriteFile(path, []byte(conf), 0644); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := ParseRulesFileAll(path)
+	if err != nil {
+		t.Fatalf("ParseRulesFileAll: %v", err)
+	}
+	r := findRule(rules, 800003)
+	if r == nil {
+		t.Fatal("rule 800003 not parsed")
+	}
+	if r.Action != "" {
+		t.Errorf("Action = %q, want \"\" (log alone inherits SecDefaultAction)", r.Action)
+	}
+}
+
+func TestParseAction_DisruptiveActionsClassifyAsBlocking(t *testing.T) {
+	dir := t.TempDir()
+	conf := `SecRule REQUEST_URI "x" "id:800010,phase:1,redirect:'/blocked',log"
+SecRule REQUEST_URI "x" "id:800011,phase:1,proxy:'http://sink/',log"
+SecRule REQUEST_URI "x" "id:800012,phase:1,pause:5000,log"
+SecRule REQUEST_URI "x" "id:800013,phase:1,drop,log"
+`
+	path := filepath.Join(dir, "disruptive.conf")
+	if err := os.WriteFile(path, []byte(conf), 0644); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := ParseRulesFileAll(path)
+	if err != nil {
+		t.Fatalf("ParseRulesFileAll: %v", err)
+	}
+	for _, c := range []struct {
+		id     int
+		action string
+	}{
+		{800010, "redirect"},
+		{800011, "proxy"},
+		{800012, "pause"},
+		{800013, "drop"},
+	} {
+		r := findRule(rules, c.id)
+		if r == nil {
+			t.Errorf("rule %d not parsed", c.id)
+			continue
+		}
+		if r.Action != c.action {
+			t.Errorf("rule %d: Action = %q, want %q", c.id, r.Action, c.action)
+		}
+		if !IsBlockingAction(r.Action) {
+			t.Errorf("rule %d: %q should be classified as blocking", c.id, r.Action)
+		}
+	}
+}
+
+func TestParseAction_DenyWinsOverStrayPass(t *testing.T) {
+	// Defensive priority: a misconfigured rule that lists both deny and
+	// pass must be treated as deny so we never accidentally let a real
+	// blocking rule slip through as a warning.
+	dir := t.TempDir()
+	conf := `SecRule REQUEST_URI "x" "id:800020,phase:1,pass,deny,status:403"
+`
+	path := filepath.Join(dir, "conflicting.conf")
+	if err := os.WriteFile(path, []byte(conf), 0644); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := ParseRulesFileAll(path)
+	if err != nil {
+		t.Fatalf("ParseRulesFileAll: %v", err)
+	}
+	r := findRule(rules, 800020)
+	if r == nil {
+		t.Fatal("rule 800020 not parsed")
+	}
+	if r.Action != "deny" {
+		t.Errorf("Action = %q, want deny (priority must favour the disruptive keyword)", r.Action)
 	}
 }

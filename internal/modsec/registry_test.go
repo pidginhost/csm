@@ -93,26 +93,30 @@ func TestBuildRegistry_MissingDirIsSoftFailure(t *testing.T) {
 	}
 }
 
-func TestBuildRegistry_MalformedFileSkipped(t *testing.T) {
+// TestBuildRegistry_BrokenSymlinkSkipped exercises the per-file I/O-error
+// swallow path: a .conf symlink whose target does not exist makes
+// ParseRulesFileAll return an open() error. BuildRegistry must keep going
+// and still load every rule from the surviving good file in the same
+// directory, with no fatal error returned to the caller.
+func TestBuildRegistry_BrokenSymlinkSkipped(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "good.conf"), []byte(testRegistryCRSConf), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "garbage.conf"), []byte("this is not a SecRule file at all\n"), 0644); err != nil {
+	if err := os.Symlink(filepath.Join(dir, "does-not-exist"), filepath.Join(dir, "broken.conf")); err != nil {
 		t.Fatal(err)
 	}
 
 	reg, err := BuildRegistry([]string{dir})
 	if err != nil {
-		t.Fatalf("BuildRegistry: %v", err)
+		t.Errorf("broken symlink should not surface a fatal error: %v", err)
 	}
-	// Good file's rule must still be there despite the garbage neighbour.
 	if action, known := reg.Action(949110); !known || action != "deny" {
-		t.Errorf("rule 949110 lost: known=%v action=%q", known, action)
+		t.Errorf("rule 949110 from good.conf lost: known=%v action=%q", known, action)
 	}
 }
 
-func TestBuildRegistry_DuplicateIDLastWriteWins(t *testing.T) {
+func TestBuildRegistry_DuplicateIDLastWriteWinsWithinDirectory(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "a_first.conf"), []byte(`SecRule REQUEST_URI "x" "id:777777,phase:1,pass"`+"\n"), 0644); err != nil {
 		t.Fatal(err)
@@ -130,7 +134,34 @@ func TestBuildRegistry_DuplicateIDLastWriteWins(t *testing.T) {
 		t.Fatal("rule 777777 not registered")
 	}
 	if action != "deny" {
-		t.Errorf("action = %q, want deny (lexicographically later file wins)", action)
+		t.Errorf("action = %q, want deny (lexicographically later file wins inside one dir)", action)
+	}
+}
+
+// TestBuildRegistry_DuplicateIDFirstDirectoryWins encodes the precedence
+// contract: dirs is most-specific-first, so an operator override in the
+// vendor-config tree must not be silently replaced by a stale rule in a
+// system fallback directory walked later.
+func TestBuildRegistry_DuplicateIDFirstDirectoryWins(t *testing.T) {
+	specific := t.TempDir()
+	fallback := t.TempDir()
+	if err := os.WriteFile(filepath.Join(specific, "override.conf"), []byte(`SecRule REQUEST_URI "x" "id:777777,phase:1,pass"`+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fallback, "stock.conf"), []byte(`SecRule REQUEST_URI "x" "id:777777,phase:1,deny,status:403"`+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	reg, err := BuildRegistry([]string{specific, fallback})
+	if err != nil {
+		t.Fatalf("BuildRegistry: %v", err)
+	}
+	action, known := reg.Action(777777)
+	if !known {
+		t.Fatal("rule 777777 not registered")
+	}
+	if action != "pass" {
+		t.Errorf("action = %q, want pass (most-specific directory must win)", action)
 	}
 }
 

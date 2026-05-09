@@ -13,8 +13,8 @@ import (
 type Rule struct {
 	ID          int    // e.g. 900112
 	Description string // from msg:'...' field
-	Action      string // "deny", "block", "drop", "pass", "log", "allow"
-	StatusCode  int    // 403, 429, 0 (for pass/log)
+	Action      string // disposition keyword: deny|drop|block|redirect|proxy|pause|allow|pass; "" if rule has only metadata (log, msg, ...) and inherits SecDefaultAction
+	StatusCode  int    // 403, 429, 0 (for pass)
 	Phase       int    // 1 or 2
 	Raw         string // full rule text including chains
 	IsCounter   bool   // true if pass,nolog (bookkeeping rule, hidden in UI)
@@ -26,6 +26,28 @@ var (
 	rePhase  = regexp.MustCompile(`phase:(\d)`)
 	reStatus = regexp.MustCompile(`status:(\d+)`)
 )
+
+// dispositionPriority lists the ModSecurity action keywords that decide
+// what happens to the request, ordered most-disruptive first. The first
+// keyword present as a standalone token in the action string wins; this
+// matches how ModSecurity itself resolves multiple disruptive directives
+// in a single rule. Metadata keywords (log, msg, severity, tag, ...) are
+// intentionally excluded - a rule that carries only metadata inherits
+// SecDefaultAction, which CSM does not parse, so the registry leaves
+// Action empty and the LiteSpeed classifier defaults that rule to block.
+var dispositionPriority = []string{
+	"deny", "drop", "block", "redirect", "proxy", "pause", "allow", "pass",
+}
+
+// dispositionSet is dispositionPriority as a lookup table. Pre-built for
+// O(1) membership checks during action-string tokenisation.
+var dispositionSet = func() map[string]struct{} {
+	m := make(map[string]struct{}, len(dispositionPriority))
+	for _, k := range dispositionPriority {
+		m[k] = struct{}{}
+	}
+	return m
+}()
 
 // ParseRulesFile reads a ModSecurity config file and extracts CSM-owned rules
 // (IDs in 900000-900999). Use ParseRulesFileAll for the rule-action registry,
@@ -170,25 +192,19 @@ func parseBlock(block string) (Rule, bool) {
 		r.Phase, _ = strconv.Atoi(pm[1])
 	}
 
-	// Extract action from the action string (quoted section).
-	// Use comma/quote-prefixed matching to avoid false matches
-	// in variable names or patterns (e.g. "nolog" matching "log").
-	// Order matters: deny/drop/block before pass/log/allow because some
-	// blocking rules also carry a leading "log" attribute.
-	lower := strings.ToLower(block)
-	switch {
-	case strings.Contains(lower, ",deny") || strings.Contains(lower, "\"deny"):
-		r.Action = "deny"
-	case strings.Contains(lower, ",drop") || strings.Contains(lower, "\"drop"):
-		r.Action = "drop"
-	case strings.Contains(lower, ",block") || strings.Contains(lower, "\"block"):
-		r.Action = "block"
-	case strings.Contains(lower, ",pass") || strings.Contains(lower, "\"pass"):
-		r.Action = "pass"
-	case strings.Contains(lower, ",allow") || strings.Contains(lower, "\"allow"):
-		r.Action = "allow"
-	case strings.Contains(lower, ",log,") || strings.Contains(lower, ",log\"") || strings.Contains(lower, "\"log,"):
-		r.Action = "log"
+	// Extract the action string (the quoted segment that carries id:N) and
+	// pull the disposition keyword from its tokens. Substring matching
+	// against the whole block would false-match on action-like text inside
+	// regex operators, msg:'...' literals, and the like (e.g. "passive"
+	// looks like "pass"). Token parsing inside the bounded action string
+	// avoids those collisions.
+	if actionStr := extractActionString(block, id); actionStr != "" {
+		r.Action = pickDisposition(actionStr)
+		// nolog/log are honoured only as flags, never as the action.
+		actionLower := strings.ToLower(actionStr)
+		if r.Action == "pass" && strings.Contains(actionLower, "nolog") {
+			r.IsCounter = true
+		}
 	}
 
 	// Extract status code
@@ -196,21 +212,105 @@ func parseBlock(block string) (Rule, bool) {
 		r.StatusCode, _ = strconv.Atoi(sm[1])
 	}
 
-	// Mark counter rules
-	if r.Action == "pass" && strings.Contains(lower, "nolog") {
-		r.IsCounter = true
-	}
-
 	return r, true
 }
 
-// IsBlockingAction reports whether an action causes the request to be denied.
-// Used by the LiteSpeed log-line classifier - error_log records every match
-// as "triggered!" regardless of action, so the action lookup is the only way
-// to tell a real deny apart from a pass-action informational rule.
+// extractActionString returns the body of the quoted segment that contains
+// "id:<ruleID>". ModSecurity rule blocks have one such segment per rule
+// (chained sub-rules carry "chain,capture"-style action lists with no id),
+// so finding the id-bearing quotes uniquely identifies the primary action
+// list. Returns "" if the segment cannot be located, in which case the
+// caller leaves Action empty and the registry treats the rule as unknown.
+func extractActionString(block string, ruleID int) string {
+	needle := "id:" + strconv.Itoa(ruleID)
+	idx := strings.Index(block, needle)
+	if idx < 0 {
+		return ""
+	}
+	open := strings.LastIndexByte(block[:idx], '"')
+	if open < 0 {
+		return ""
+	}
+	rest := block[idx:]
+	closeRel := strings.IndexByte(rest, '"')
+	if closeRel < 0 {
+		return ""
+	}
+	return block[open+1 : idx+closeRel]
+}
+
+// pickDisposition returns the ModSecurity disposition keyword present in
+// the action string, preferring more-disruptive keywords when several are
+// present (defensive: a rule labelled "deny" wins over a stray "allow").
+// Returns "" if the action string carries only metadata and the rule
+// therefore inherits SecDefaultAction.
+func pickDisposition(actionStr string) string {
+	tokens := tokenizeActionString(actionStr)
+	seen := make(map[string]struct{}, len(tokens))
+	for _, t := range tokens {
+		name := t
+		if i := strings.IndexByte(name, ':'); i >= 0 {
+			name = name[:i]
+		}
+		name = strings.ToLower(strings.TrimSpace(name))
+		if _, ok := dispositionSet[name]; ok {
+			seen[name] = struct{}{}
+		}
+	}
+	for _, kw := range dispositionPriority {
+		if _, ok := seen[kw]; ok {
+			return kw
+		}
+	}
+	return ""
+}
+
+// tokenizeActionString splits a ModSecurity action list on top-level commas
+// while respecting single-quoted string values (msg:'foo, bar', logdata:'...'),
+// where commas are part of the literal and must not be treated as token
+// separators. Backslash-escaped quotes inside the literals are preserved.
+func tokenizeActionString(s string) []string {
+	var out []string
+	var cur strings.Builder
+	inSingle := false
+	escape := false
+	for _, r := range s {
+		switch {
+		case escape:
+			cur.WriteRune(r)
+			escape = false
+		case r == '\\':
+			cur.WriteRune(r)
+			escape = true
+		case r == '\'':
+			inSingle = !inSingle
+			cur.WriteRune(r)
+		case r == ',' && !inSingle:
+			tok := strings.TrimSpace(cur.String())
+			if tok != "" {
+				out = append(out, tok)
+			}
+			cur.Reset()
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	if tok := strings.TrimSpace(cur.String()); tok != "" {
+		out = append(out, tok)
+	}
+	return out
+}
+
+// IsBlockingAction reports whether an action causes the request to be denied
+// or otherwise diverted away from normal processing. Used by the LiteSpeed
+// log-line classifier - error_log records every match as "triggered!"
+// regardless of action, so the action lookup is the only way to tell a real
+// deny apart from a pass-action informational rule. redirect, proxy and
+// pause are disruptive: the original request never reaches the upstream
+// application as intended, so they are classified the same as deny.
 func IsBlockingAction(action string) bool {
 	switch action {
-	case "deny", "drop", "block":
+	case "deny", "drop", "block", "redirect", "proxy", "pause":
 		return true
 	}
 	return false

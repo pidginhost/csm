@@ -43,15 +43,20 @@ func (r *Registry) Len() int {
 // to actions. Per-file parse errors are swallowed; a vendor pack with one
 // malformed file should not blank the whole registry.
 //
-// Duplicate IDs across files are resolved last-write-wins, mirroring the
-// behaviour of ModSecurity itself when two SecRule directives share an ID
-// (the later definition takes effect).
+// Precedence: dirs is treated as most-specific-first. Within a single
+// directory, files are walked in lexical order and a duplicate rule ID
+// uses last-write-wins, mirroring how ModSecurity itself resolves two
+// SecRule directives that share an ID. Across directories, the first
+// directory to define a rule keeps it - that way an operator override in
+// /etc/apache2/conf.d/modsec_vendor_configs/ is not silently replaced by
+// a stale system fallback in /usr/share/modsecurity-crs/rules/.
 func BuildRegistry(dirs []string) (*Registry, error) {
 	actions := make(map[int]string)
 	for _, dir := range dirs {
 		if dir == "" {
 			continue
 		}
+		perDir := make(map[int]string)
 		walkErr := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				if errors.Is(err, fs.ErrNotExist) {
@@ -73,11 +78,18 @@ func BuildRegistry(dirs []string) (*Registry, error) {
 			rules, _ := ParseRulesFileAll(path)
 			for _, r := range rules {
 				if r.Action != "" {
-					actions[r.ID] = r.Action
+					perDir[r.ID] = r.Action
 				}
 			}
 			return nil
 		})
+		// Promote the per-directory map into the global map only for IDs
+		// that no earlier (more-specific) directory has already claimed.
+		for id, action := range perDir {
+			if _, exists := actions[id]; !exists {
+				actions[id] = action
+			}
+		}
 		if walkErr != nil && !errors.Is(walkErr, fs.ErrNotExist) {
 			return &Registry{actions: actions}, walkErr
 		}

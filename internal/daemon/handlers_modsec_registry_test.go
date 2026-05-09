@@ -119,6 +119,22 @@ func TestLiteSpeedPassActionDoesNotEscalate(t *testing.T) {
 	}
 }
 
+// TestLiteSpeedTriggered_RedirectActionClassifiedAsBlock guards the wider
+// disposition set: redirect, proxy and pause divert the request away from
+// the upstream application even though they are not literally "deny", so
+// the classifier must treat them the same as a deny.
+func TestLiteSpeedTriggered_RedirectActionClassifiedAsBlock(t *testing.T) {
+	installModSecRegistryForTest(t, map[int]string{949110: "redirect"})
+
+	findings := parseModSecLogLine(liteSpeedTriggerLine949110, &config.Config{})
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(findings))
+	}
+	if findings[0].Check != "modsec_block_realtime" {
+		t.Errorf("check = %q, want modsec_block_realtime (redirect is disruptive)", findings[0].Check)
+	}
+}
+
 // TestLiteSpeedDenyActionStillEscalates ensures registry-aware classification
 // did not regress the legitimate deny-rule escalation path.
 func TestLiteSpeedDenyActionStillEscalates(t *testing.T) {
