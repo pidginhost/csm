@@ -216,6 +216,7 @@ func (p *PAMListener) recordFailure(ip, user, service string) {
 			Details: fmt.Sprintf("Users targeted: %s\nServices: %s",
 				strings.Join(users, ", "), strings.Join(services, ", ")),
 			Timestamp: time.Now(),
+			SourceIP:  ip,
 		}
 	}
 }

@@ -90,3 +90,31 @@ func TestKeyForUnattributableFindingReturnsEmpty(t *testing.T) {
 		t.Errorf("expected empty key for system finding, got %+v", k)
 	}
 }
+
+// PHP-relay findings carry the cPanel user in CPUser rather than TenantID;
+// without a fallback they would drop on the floor of the correlator. Account
+// must be populated when CPUser is the only attribution available.
+func TestKeyForCPUserFallback(t *testing.T) {
+	f := alert.Finding{
+		Check:  "email_php_relay_abuse",
+		CPUser: "alice",
+	}
+	k := KeyFor(f)
+	if k.Account != "alice" {
+		t.Errorf("Account from CPUser: want alice, got %q", k.Account)
+	}
+}
+
+// TenantID must win over CPUser so explicit tenant attribution is not
+// silently overridden by the cPanel user shadow field.
+func TestKeyForTenantIDBeatsCPUser(t *testing.T) {
+	f := alert.Finding{
+		Check:    "email_php_relay_abuse",
+		TenantID: "tenant-a",
+		CPUser:   "alice",
+	}
+	k := KeyFor(f)
+	if k.Account != "tenant-a" {
+		t.Errorf("Account: want tenant-a (TenantID wins), got %q", k.Account)
+	}
+}

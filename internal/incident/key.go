@@ -24,8 +24,9 @@ func (k Key) IsEmpty() bool {
 }
 
 // KeyFor extracts a correlation key from a Finding. Sources, in priority
-// order: Process context (PID/UID/account), explicit mail fields, TenantID
-// for account, and a /home[N]/<account>/ heuristic for fanotify findings.
+// order: TenantID, Process.Account, CPUser (php-relay attribution), and a
+// /home[N]/<account>/ heuristic for fanotify findings. Domain/Mailbox/
+// RemoteIP are taken verbatim from the finding's structured fields.
 func KeyFor(f alert.Finding) Key {
 	k := Key{
 		Account:  f.TenantID,
@@ -39,6 +40,9 @@ func KeyFor(f alert.Finding) Key {
 		}
 		k.UID = f.Process.UID
 		k.PID = f.Process.PID
+	}
+	if k.Account == "" && f.CPUser != "" {
+		k.Account = f.CPUser
 	}
 	if k.Account == "" {
 		k.Account = accountFromHomePath(f.FilePath)

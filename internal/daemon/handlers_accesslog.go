@@ -137,6 +137,7 @@ func parseAccessLogBruteForce(line string, cfg *config.Config) []alert.Finding {
 				Message:   fmt.Sprintf("WordPress login brute force from %s: %d POSTs in %v (real-time)", ip, len(tracker.wpLoginTimes), accessLogWindow),
 				Details:   "Real-time detection: high rate of POST requests to wp-login.php",
 				Timestamp: now,
+				SourceIP:  ip,
 			})
 		}
 	}
@@ -152,6 +153,7 @@ func parseAccessLogBruteForce(line string, cfg *config.Config) []alert.Finding {
 				Message:   fmt.Sprintf("XML-RPC abuse from %s: %d POSTs in %v (real-time)", ip, len(tracker.xmlrpcTimes), accessLogWindow),
 				Details:   "Real-time detection: high rate of POST requests to xmlrpc.php (brute force or amplification)",
 				Timestamp: now,
+				SourceIP:  ip,
 			})
 		}
 	}
@@ -166,6 +168,7 @@ func parseAccessLogBruteForce(line string, cfg *config.Config) []alert.Finding {
 				Message:   fmt.Sprintf("Admin panel brute force from %s: %d POSTs in %v (real-time)", ip, len(tracker.adminPanelTimes), accessLogWindow),
 				Details:   "Real-time detection: high rate of POST requests to common admin panel login paths (phpMyAdmin / Joomla)",
 				Timestamp: now,
+				SourceIP:  ip,
 			})
 		}
 	}

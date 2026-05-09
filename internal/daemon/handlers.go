@@ -44,6 +44,7 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 					Check:    "cpanel_file_upload_realtime",
 					Message:  fmt.Sprintf("cPanel File Manager write from non-infra IP: %s", ip),
 					Details:  truncateDaemon(line, 300),
+					SourceIP: ip,
 				})
 				break
 			}
@@ -63,6 +64,7 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 					Check:    "api_auth_failure_realtime",
 					Message:  fmt.Sprintf("cPanel API auth failure from %s", ip),
 					Details:  truncateDaemon(line, 300),
+					SourceIP: ip,
 				})
 			}
 		}
@@ -77,6 +79,7 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 					Check:    "webmail_login_realtime",
 					Message:  fmt.Sprintf("Webmail login attempt from non-infra IP: %s", ip),
 					Details:  truncateDaemon(line, 200),
+					SourceIP: ip,
 				})
 			}
 		}
@@ -96,6 +99,7 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 				Check:    "whm_login_realtime",
 				Message:  fmt.Sprintf("WHM login attempt from non-infra IP: %s", ip),
 				Details:  truncateDaemon(line, 200),
+				SourceIP: ip,
 			})
 		}
 	}
@@ -115,6 +119,7 @@ func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding
 			Check:    "whm_unauth_scripts_realtime",
 			Message:  fmt.Sprintf("Tokenless WHM scripts request from %s (CVE-2026-41940 IOC)", ip),
 			Details:  truncateDaemon(line, 300),
+			SourceIP: ip,
 		})
 	}
 
@@ -197,6 +202,7 @@ func parseFTPLogLine(line string, cfg *config.Config) []alert.Finding {
 			Check:    "ftp_auth_failure_realtime",
 			Message:  fmt.Sprintf("FTP authentication failed from %s", ip),
 			Details:  truncateDaemon(line, 200),
+			SourceIP: ip,
 		})
 	}
 
@@ -207,6 +213,7 @@ func parseFTPLogLine(line string, cfg *config.Config) []alert.Finding {
 			Check:    "ftp_login_realtime",
 			Message:  fmt.Sprintf("FTP login from non-infra IP: %s", ip),
 			Details:  truncateDaemon(line, 200),
+			SourceIP: ip,
 		})
 	}
 

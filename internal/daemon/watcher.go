@@ -207,6 +207,8 @@ func parseSessionLogLine(line string, cfg *config.Config) []alert.Finding {
 					Check:    "cpanel_login_realtime",
 					Message:  fmt.Sprintf("cPanel direct login from non-infra IP: %s (account: %s, method: %s)", ip, account, method),
 					Details:  truncateDaemon(line, 300),
+					SourceIP: ip,
+					TenantID: account,
 				})
 			}
 		}
@@ -221,6 +223,7 @@ func parseSessionLogLine(line string, cfg *config.Config) []alert.Finding {
 				Severity: alert.High,
 				Check:    "cpanel_password_purge_realtime",
 				Message:  fmt.Sprintf("cPanel password purge for: %s", account),
+				TenantID: account,
 			})
 		}
 	}
@@ -252,11 +255,17 @@ func parseSecureLogLine(line string, cfg *config.Config) []alert.Finding {
 				}
 			}
 
+			tenant := user
+			if tenant == "unknown" {
+				tenant = ""
+			}
 			findings = append(findings, alert.Finding{
 				Severity: alert.Critical,
 				Check:    "ssh_login_realtime",
 				Message:  fmt.Sprintf("SSH login from non-infra IP: %s (user: %s)", ip, user),
 				Details:  truncateDaemon(line, 200),
+				SourceIP: ip,
+				TenantID: tenant,
 			})
 			break
 		}
@@ -314,6 +323,8 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 					Check:    "email_compromised_account",
 					Message:  fmt.Sprintf("Account %s has outgoing mail hold - outgoing mail auto-suspended", sender),
 					Details:  truncateDaemon(line, 300),
+					Mailbox:  mailboxOnly(sender),
+					Domain:   domain,
 				})
 			}
 		}
@@ -329,6 +340,7 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 			Check:    "email_spam_outbreak",
 			Message:  fmt.Sprintf("Spam outbreak: %s exceeded max defers/failures - outgoing mail auto-suspended", domain),
 			Details:  truncateDaemon(line, 300),
+			Domain:   domain,
 		})
 		if domain != "" {
 			RecordCompromisedDomain(domain)
@@ -351,6 +363,8 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 				Check:    "email_credential_leak",
 				Message:  fmt.Sprintf("SMTP credentials leaked in email subject from %s", sender),
 				Details:  fmt.Sprintf("The email subject contains what appears to be SMTP credentials (host:port,user,password). This account is likely compromised by a bulk mail service.\nSubject: %s", truncateDaemon(subject, 100)),
+				Mailbox:  mailboxOnly(sender),
+				Domain:   extractDomainFromEmail(sender),
 			})
 		}
 		// Also detect common spam subject patterns
@@ -361,6 +375,8 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 				Check:    "email_credential_leak",
 				Message:  fmt.Sprintf("Suspicious email subject with SMTP/password keywords from %s", sender),
 				Details:  truncateDaemon(line, 300),
+				Mailbox:  mailboxOnly(sender),
+				Domain:   extractDomainFromEmail(sender),
 			})
 		}
 	}
@@ -380,6 +396,8 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 					Check:    "email_compromised_account",
 					Message:  fmt.Sprintf("Compromised email account %s authenticated from bulk mail service %s", sender, service),
 					Details:  truncateDaemon(line, 300),
+					Mailbox:  mailboxOnly(sender),
+					Domain:   extractDomainFromEmail(sender),
 				})
 				break
 			}
@@ -403,6 +421,9 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 			Check:    "email_auth_failure_realtime",
 			Message:  msg,
 			Details:  truncateDaemon(line, 300),
+			SourceIP: ip,
+			Mailbox:  mailboxOnly(account),
+			Domain:   extractDomainFromEmail(account),
 		})
 	}
 
@@ -419,6 +440,7 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 					Message:   fmt.Sprintf("DKIM signing failed for %s - check key file and DNS TXT record", dkimDomain),
 					Details:   truncateDaemon(line, 300),
 					Timestamp: time.Now(),
+					Domain:    dkimDomain,
 				})
 			}
 		}
@@ -437,6 +459,7 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 					Message:   fmt.Sprintf("Outbound mail from %s rejected due to SPF/DMARC failure", spfDomain),
 					Details:   fmt.Sprintf("Reason: %s\n%s", spfReason, truncateDaemon(line, 200)),
 					Timestamp: time.Now(),
+					Domain:    spfDomain,
 				})
 			}
 		}
@@ -903,6 +926,18 @@ func extractDomainFromEmail(email string) string {
 	return email[idx+1:]
 }
 
+// mailboxOnly returns the input only when it looks like a full mailbox
+// (contains '@'); otherwise returns "". Used by realtime emit sites that
+// receive either "user@domain" or a bare domain — the bare domain belongs
+// in the Domain field, not Mailbox, so the correlator does not collapse
+// distinct mailboxes onto a domain key.
+func mailboxOnly(s string) string {
+	if strings.IndexByte(s, '@') < 0 {
+		return ""
+	}
+	return s
+}
+
 // hasRecentCompromisedFinding checks if there's a recent email_compromised_account
 // or email_spam_outbreak finding for the given domain (suppresses rate alerts).
 func hasRecentCompromisedFinding(domain string) bool {
@@ -978,6 +1013,8 @@ func checkEmailRate(user string, cfg *config.Config) []alert.Finding {
 				Check:    "email_rate_critical",
 				Message:  fmt.Sprintf("Email rate CRITICAL: %s sent %d messages in %d minutes (threshold: %d)", user, count, cfg.EmailProtection.RateWindowMin, cfg.EmailProtection.RateCritThreshold),
 				Details:  fmt.Sprintf("User: %s\nMessages in window: %d\nWindow: %d minutes\nThreshold: %d", user, count, cfg.EmailProtection.RateWindowMin, cfg.EmailProtection.RateCritThreshold),
+				Mailbox:  mailboxOnly(user),
+				Domain:   extractDomainFromEmail(user),
 			})
 		}
 	} else if count >= cfg.EmailProtection.RateWarnThreshold {
@@ -988,6 +1025,8 @@ func checkEmailRate(user string, cfg *config.Config) []alert.Finding {
 				Check:    "email_rate_warning",
 				Message:  fmt.Sprintf("Email rate WARNING: %s sent %d messages in %d minutes (threshold: %d)", user, count, cfg.EmailProtection.RateWindowMin, cfg.EmailProtection.RateWarnThreshold),
 				Details:  fmt.Sprintf("User: %s\nMessages in window: %d\nWindow: %d minutes\nThreshold: %d", user, count, cfg.EmailProtection.RateWindowMin, cfg.EmailProtection.RateWarnThreshold),
+				Mailbox:  mailboxOnly(user),
+				Domain:   extractDomainFromEmail(user),
 			})
 		}
 	}

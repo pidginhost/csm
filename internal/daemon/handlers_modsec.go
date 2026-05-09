@@ -138,6 +138,8 @@ func parseModSecLogLine(line string, cfg *config.Config) []alert.Finding {
 		Check:    check,
 		Message:  message,
 		Details:  details,
+		SourceIP: ip,
+		Domain:   hostname,
 	}}
 }
 
@@ -280,6 +282,7 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 				Check:    check,
 				Message:  fmt.Sprintf("%s escalation: %d+ denies from %s within %v", label, modsecEscalationHits, ip, modsecEscalationWin),
 				Details:  truncateDaemon(line, 400),
+				SourceIP: ip,
 			})
 		}
 	}

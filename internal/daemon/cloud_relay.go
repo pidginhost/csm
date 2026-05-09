@@ -295,6 +295,9 @@ func parseCloudRelayFinding(line string, cfg *config.Config) []alert.Finding {
 		Check:    "email_cloud_relay_abuse",
 		Message:  message,
 		Details:  truncateDaemon(details, 800),
+		SourceIP: ips[0],
+		Mailbox:  mailboxOnly(user),
+		Domain:   extractDomainFromEmail(user),
 	}}
 }
 
