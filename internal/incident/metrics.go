@@ -36,4 +36,9 @@ func RegisterMetrics(reg *metrics.Registry, c *Correlator) {
 		"Incidents pruned by retention compaction (resolved/dismissed beyond TTL).",
 		func() float64 { return float64(c.counters.compactedTotal.Load()) },
 	)
+	reg.RegisterGaugeFunc(
+		"csm_incidents_pending",
+		"Findings held in the threshold gate, awaiting a second correlated finding before opening an incident.",
+		func() float64 { return float64(c.PendingCount()) },
+	)
 }

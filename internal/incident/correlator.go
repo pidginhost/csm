@@ -28,6 +28,15 @@ type CorrelatorConfig struct {
 	// Persist is invoked after every create/update. Implementations
 	// must be quick and idempotent. nil means "in-memory only".
 	Persist func(Incident)
+
+	// OpenThreshold is the number of correlated findings required before
+	// a non-Critical finding opens an incident. Critical-severity
+	// findings always open immediately so escalations page on first
+	// hit. Values <= 0 default to 1 (open on first finding) for
+	// backwards compatibility with callers that expect the original
+	// behavior; the daemon explicitly configures 2 to suppress
+	// one-shot scanner noise.
+	OpenThreshold int
 }
 
 // counters holds the atomic tallies exposed via RegisterMetrics. Kept
@@ -44,28 +53,47 @@ type counters struct {
 // Correlator groups findings into incidents. In-memory state; the
 // daemon is responsible for wiring it to a store via CorrelatorConfig.Persist.
 type Correlator struct {
-	mu        sync.Mutex
-	cfg       CorrelatorConfig
-	incidents map[string]*Incident
-	byKey     map[string]string
-	now       func() time.Time
-	counters  counters
+	mu            sync.Mutex
+	cfg           CorrelatorConfig
+	incidents     map[string]*Incident
+	byKey         map[string]string
+	pending       map[string]pendingFinding
+	openThreshold int
+	now           func() time.Time
+	counters      counters
+}
+
+// pendingFinding is a finding seen for a key that has not yet met the
+// open threshold. Stored only on the create path; merge into open
+// incidents stays unconditional.
+type pendingFinding struct {
+	finding alert.Finding
+	at      time.Time
 }
 
 // NewCorrelator returns a ready Correlator. Nothing to start; this type
 // is purely callback-driven.
 func NewCorrelator(cfg CorrelatorConfig) *Correlator {
+	threshold := cfg.OpenThreshold
+	if threshold < 1 {
+		threshold = 1
+	}
 	return &Correlator{
-		cfg:       cfg,
-		incidents: map[string]*Incident{},
-		byKey:     map[string]string{},
-		now:       time.Now,
+		cfg:           cfg,
+		incidents:     map[string]*Incident{},
+		byKey:         map[string]string{},
+		pending:       map[string]pendingFinding{},
+		openThreshold: threshold,
+		now:           time.Now,
 	}
 }
 
 // OnFinding ingests a Finding. Returns the incident id (if attributable)
 // and whether a new incident was created. Unattributable findings yield
-// ("", false, nil).
+// ("", false, nil). Non-Critical findings whose key has fewer than
+// OpenThreshold prior findings inside the merge window are stashed in
+// the pending map and yield ("", false, nil) too; they will only open
+// an incident if the threshold is met inside the window.
 func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 	key := KeyFor(f)
 	if key.IsEmpty() {
@@ -80,6 +108,7 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 	if id, ok := c.byKey[keyStr]; ok {
 		if inc, exists := c.incidents[id]; exists && now.Sub(inc.UpdatedAt) <= incidentMergeWindow {
 			c.mergeLocked(inc, f, now, true)
+			delete(c.pending, keyStr)
 			return id, false, nil
 		}
 		// Stale binding -- the incident is older than the merge window.
@@ -88,6 +117,33 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 		delete(c.byKey, keyStr)
 	}
 
+	// Threshold gate. Non-Critical findings need OpenThreshold sightings
+	// inside the merge window before opening an incident; Critical
+	// findings always open immediately so escalations and known-bad
+	// signals (account compromise, cloud-relay abuse, modsec
+	// escalations) page on the first hit.
+	if c.openThreshold > 1 && f.Severity < alert.Critical {
+		if pf, ok := c.pending[keyStr]; ok && now.Sub(pf.at) <= incidentMergeWindow {
+			delete(c.pending, keyStr)
+			id := c.createIncidentLocked(key, keyStr, pf.finding, pf.at)
+			inc := c.incidents[id]
+			c.mergeLocked(inc, f, now, true)
+			return id, true, nil
+		}
+		c.pending[keyStr] = pendingFinding{finding: f, at: now}
+		return "", false, nil
+	}
+
+	id := c.createIncidentLocked(key, keyStr, f, now)
+	delete(c.pending, keyStr)
+	return id, true, nil
+}
+
+// createIncidentLocked builds a new Incident, registers it in the maps,
+// and seeds it with the given finding via mergeLocked. Caller must hold
+// c.mu. mergeLocked is the single source of truth for Persist
+// invocations, avoiding double-fire on create.
+func (c *Correlator) createIncidentLocked(key Key, keyStr string, f alert.Finding, now time.Time) string {
 	id := newIncidentID()
 	inc := &Incident{
 		ID:             id,
@@ -104,15 +160,37 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
-	// Populate maps before mergeLocked so a re-entrant Persist that
-	// calls Get(id) (or any lookup) sees the freshly-created incident.
-	// mergeLocked is the single source of truth for Persist invocations,
-	// avoiding the previous double-fire on create.
 	c.incidents[id] = inc
 	c.byKey[keyStr] = id
 	c.counters.createdTotal.Add(1)
 	c.mergeLocked(inc, f, now, false)
-	return id, true, nil
+	return id
+}
+
+// PendingCount returns the number of findings currently held in the
+// threshold-gate pending map. Exposed for metrics and tests.
+func (c *Correlator) PendingCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.pending)
+}
+
+// PruneStalePending removes pending findings whose age relative to now
+// exceeds the merge window. Returns the number pruned. Called by the
+// daemon's retention loop so a host with sustained one-shot scanner
+// traffic does not grow the pending map without bound.
+func (c *Correlator) PruneStalePending(now time.Time) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cutoff := now.Add(-incidentMergeWindow)
+	pruned := 0
+	for k, pf := range c.pending {
+		if pf.at.Before(cutoff) {
+			delete(c.pending, k)
+			pruned++
+		}
+	}
+	return pruned
 }
 
 // OpenCount returns the number of incidents in Open or Contained

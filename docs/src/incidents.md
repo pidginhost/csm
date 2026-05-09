@@ -41,6 +41,23 @@ a higher severity. The audit trail records an
 start a new incident. The window is a named constant in code; not yet
 exposed via config.
 
+## Open threshold
+
+Non-Critical findings need at least two correlated sightings inside
+the merge window before an incident opens. The first sighting is held
+in a pending bucket and counted toward the threshold; the second
+promotes both into a new incident with a two-event timeline. Stale
+pending entries are pruned by the daily retention sweep.
+
+Critical-severity findings (account compromise, cloud-relay abuse,
+modsec rule escalations) bypass the threshold and open immediately
+so escalations still page on first hit.
+
+The threshold suppresses one-shot scanner noise (a single modsec
+deny from a wandering scanner, an isolated mistyped password) without
+hiding sustained activity. The current pending-bucket size is exposed
+as the `csm_incidents_pending` gauge.
+
 The stored incident includes the full correlation key, including process
 PID/UID and remote IP when those are the only available dimensions, so
 active incidents keep merging after daemon restart.
@@ -76,3 +93,4 @@ csm incidents status <id> <open|contained|resolved|dismissed> [details]
 - `csm_incidents_status_changed_total`
 - `csm_incidents_findings_merged_total`
 - `csm_incidents_compacted_total`
+- `csm_incidents_pending` -- gauge of findings held in the threshold gate, awaiting a second correlated sighting.

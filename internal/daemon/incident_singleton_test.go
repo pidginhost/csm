@@ -39,6 +39,61 @@ func TestIncidentCorrelatorIngestsDirectFindings(t *testing.T) {
 	t.Fatalf("incident not created within deadline")
 }
 
+// TestIncidentCorrelatorHonorsProductionThreshold proves the daemon
+// wires the production OpenThreshold (>= 2) through to the correlator
+// singleton, so an isolated High-severity finding does NOT open an
+// incident on the first hit. This is the wiring contract that keeps
+// scanner one-shots out of the /incident page on busy hosts.
+func TestIncidentCorrelatorHonorsProductionThreshold(t *testing.T) {
+	resetIncidentForTestWithThreshold(2)
+	c := IncidentCorrelator()
+
+	f := alert.Finding{
+		Check:     "wp_login_bruteforce",
+		Severity:  alert.High,
+		TenantID:  "alice",
+		Timestamp: time.Now(),
+	}
+	if _, created, _ := c.OnFinding(f); created {
+		t.Fatalf("first non-Critical finding opened incident under production threshold")
+	}
+	if got := c.OpenCount(); got != 0 {
+		t.Fatalf("OpenCount after first finding = %d, want 0", got)
+	}
+	if got := c.PendingCount(); got != 1 {
+		t.Fatalf("PendingCount after first finding = %d, want 1", got)
+	}
+
+	// Second correlated finding inside the merge window must promote.
+	if _, created, _ := c.OnFinding(f); !created {
+		t.Fatalf("second finding did not open incident")
+	}
+	if got := c.OpenCount(); got != 1 {
+		t.Fatalf("OpenCount after second finding = %d, want 1", got)
+	}
+}
+
+// TestIncidentCorrelatorCriticalBypassesThreshold proves Critical
+// findings page on first hit even under the production threshold.
+// Account-compromise events must not be deferred to a second event.
+func TestIncidentCorrelatorCriticalBypassesThreshold(t *testing.T) {
+	resetIncidentForTestWithThreshold(2)
+	c := IncidentCorrelator()
+
+	if _, created, _ := c.OnFinding(alert.Finding{
+		Check:     "email_compromised_account",
+		Severity:  alert.Critical,
+		Mailbox:   "alice@example.com",
+		Domain:    "example.com",
+		Timestamp: time.Now(),
+	}); !created {
+		t.Fatalf("Critical finding did not open incident on first hit")
+	}
+	if got := c.OpenCount(); got != 1 {
+		t.Fatalf("OpenCount = %d, want 1", got)
+	}
+}
+
 func TestRunIncidentCompactionPrunesStoreAndMemory(t *testing.T) {
 	resetIncidentForTest()
 	db, err := store.Open(t.TempDir())

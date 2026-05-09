@@ -25,6 +25,7 @@ func TestRegisterMetricsExposesAllExpectedNames(t *testing.T) {
 		"csm_incidents_status_changed_total",
 		"csm_incidents_findings_merged_total",
 		"csm_incidents_compacted_total",
+		"csm_incidents_pending",
 	} {
 		if !strings.Contains(out, name) {
 			t.Errorf("expected metric %q in output:\n%s", name, out)

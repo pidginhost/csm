@@ -22,6 +22,17 @@ var (
 // convention; config exposure deferred until operators ask.
 const incidentRetentionPeriod = 30 * 24 * time.Hour
 
+// incidentOpenThreshold is the number of correlated findings required
+// before a non-Critical finding opens an incident. Two means an
+// isolated probe (a single dictionary-attack guess, one modsec hit
+// from a wandering scanner) is treated as a finding only and never
+// promoted to an incident on its own; the next correlated event
+// inside the merge window does the promotion. Declared as var so
+// tests that exercise the correlator wiring (where one finding is
+// expected to land in one incident immediately) can pin it to 1
+// via resetIncidentForTest. Production code never mutates this.
+var incidentOpenThreshold = 2
+
 // IncidentCorrelator returns the daemon-wide incident correlator.
 // On first call: builds the correlator, restores prior state from
 // the bbolt store (when available), and registers metrics. Safe for
@@ -35,7 +46,10 @@ func IncidentCorrelator() *incident.Correlator {
 				_ = db.SaveIncident(inc)
 			}
 		}
-		incidentCorrelator = incident.NewCorrelator(incident.CorrelatorConfig{Persist: persist})
+		incidentCorrelator = incident.NewCorrelator(incident.CorrelatorConfig{
+			Persist:       persist,
+			OpenThreshold: incidentOpenThreshold,
+		})
 		if db != nil {
 			if list, err := db.ListIncidents(); err == nil {
 				incidentCorrelator.Restore(list)
@@ -88,6 +102,7 @@ func runIncidentCompaction(c *incident.Correlator) {
 		return
 	}
 	_ = c.PruneClosedOlderThan(now, incidentRetentionPeriod)
+	_ = c.PruneStalePending(now)
 	if pruned > 0 {
 		c.IncrementCompactedTotal(pruned)
 		csmlog.Info("incident retention compaction", "pruned", pruned)
@@ -98,6 +113,14 @@ func runIncidentCompaction(c *incident.Correlator) {
 // the singleton, and pins the registry to a private one so subsequent
 // IncidentCorrelator() calls do not collide on metrics.Default.
 func resetIncidentForTest() {
+	resetIncidentForTestWithThreshold(1)
+}
+
+// resetIncidentForTestWithThreshold is the same seam but lets a test pin
+// the open threshold to a specific value. Used by the wiring test that
+// proves the production default (2) is honored end-to-end through the
+// IncidentCorrelator() singleton constructor.
+func resetIncidentForTestWithThreshold(threshold int) {
 	if incidentRetentionCancel != nil {
 		incidentRetentionCancel()
 		incidentRetentionCancel = nil
@@ -105,4 +128,9 @@ func resetIncidentForTest() {
 	incidentCorrelator = nil
 	incidentOnce = sync.Once{}
 	incidentRegistry = metrics.NewRegistry
+	// Most tests assert that one finding lands in one incident; the
+	// production threshold of 2 would defer creation to the second
+	// correlated event and break those wiring assertions. Pin to the
+	// caller-supplied value; production callers never invoke this seam.
+	incidentOpenThreshold = threshold
 }
