@@ -277,7 +277,7 @@ firewall:
   # SSH (port 22) is intentionally absent. cPanel hosts often move sshd
   # to 2087 or another alt port; if sshd listens on 22, uncomment the
   # entry below before enabling the firewall to avoid locking yourself
-  # out. Port 853 is DNS-over-TLS for stub resolvers / Unbound.
+  # out. TCP 853 is DNS-over-TLS; UDP 853 is DNS-over-QUIC.
   tcp_in:
     - 20
     - 21
@@ -333,18 +333,18 @@ firewall:
   udp_in:
     - 53
     - 443
-    - 853                       # DNS-over-TLS
-  # 6277/24441 are razor2/pyzor DNSBL queries used by SpamAssassin;
+    - 853                       # DNS-over-QUIC
+  # 6277/24441 are DCC/Pyzor network checks used by SpamAssassin;
   # without them outbound spam-scoring queries silently fail.
   udp_out:
     - 53
     - 113
     - 123
     - 443
-    - 853                       # DNS-over-TLS
+    - 853                       # DNS-over-QUIC
     - 873
-    - 6277                      # razor2 (SpamAssassin)
-    - 24441                     # pyzor  (SpamAssassin)
+    - 6277                      # DCC   (SpamAssassin)
+    - 24441                     # Pyzor (SpamAssassin)
   restricted_tcp:               # ports only accessible from infra_ips
     - 2086
     - 2087

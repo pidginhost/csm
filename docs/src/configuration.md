@@ -342,8 +342,9 @@ firewall:
   enabled: false
 
   # Open ports (IPv4). SSH (22) is intentionally absent; uncomment in
-  # the YAML lists if sshd listens on 22. Port 853 is DNS-over-TLS;
-  # 6277/24441 are razor2/pyzor DNSBL queries used by SpamAssassin.
+  # the YAML lists if sshd listens on 22. TCP 853 is DNS-over-TLS;
+  # UDP 853 is DNS-over-QUIC.
+  # 6277/24441 are DCC/Pyzor network checks used by SpamAssassin.
   tcp_in: [20,21,25,26,53,80,110,143,443,465,587,853,993,995,2077,2078,2079,2080,2082,2083,2091,2095,2096]
   tcp_out: [20,21,25,26,37,43,53,80,110,113,443,465,587,853,873,993,995,2082,2083,2086,2087,2089,2195,2325,2703]
   udp_in: [53,443,853]
@@ -402,8 +403,8 @@ firewall:
   drop_nolog: [23,67,68,111,113,135,136,137,138,139,445,500,513,520]
 
   # IP limits
-  deny_ip_limit: 30000                  # max permanent blocked IPs
-  deny_temp_ip_limit: 5000              # max temporary blocked IPs
+  deny_ip_limit: 3000                   # max permanent blocked IPs
+  deny_temp_ip_limit: 500               # max temporary blocked IPs
 
   # Outbound SMTP restriction
   smtp_block: false                     # block outgoing mail except allowed users

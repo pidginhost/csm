@@ -79,8 +79,8 @@ func DefaultConfig() *FirewallConfig {
 		Enabled: false,
 		// SSH (22) is intentionally absent. Many cPanel hosts move sshd to
 		// 2087 or other alt ports; operators who keep sshd on 22 must add
-		// it explicitly. Port 853 enables DNS-over-TLS (stub resolvers,
-		// Unbound).
+		// it explicitly. TCP 853 enables DNS-over-TLS; UDP 853 enables
+		// DNS-over-QUIC.
 		TCPIn: []int{
 			20, 21, 25, 26, 53, 80, 110, 143, 443, 465, 587,
 			853, 993, 995, 2077, 2078, 2079, 2080, 2082, 2083,
@@ -92,7 +92,7 @@ func DefaultConfig() *FirewallConfig {
 			2089, 2195, 2325, 2703,
 		},
 		UDPIn: []int{53, 443, 853},
-		// 6277/24441 are razor2/pyzor DNSBL queries used by SpamAssassin.
+		// 6277/24441 are DCC/Pyzor network checks used by SpamAssassin.
 		// Without them outbound spam-scoring queries silently fail.
 		UDPOut:          []int{53, 113, 123, 443, 853, 873, 6277, 24441},
 		RestrictedTCP:   []int{2086, 2087, 2325, 9443},
