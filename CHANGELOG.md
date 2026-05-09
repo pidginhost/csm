@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ModSecurity findings no longer record the served vhost name when the vhost is a bare IP address; this prevented unrelated raw-IP-served sites from being merged into one incident.
 - Single-finding scanner probes and isolated mistyped passwords no longer open an incident on the first event; the correlator now requires a second correlated finding within the merge window before opening, while Critical-severity findings still page on the first hit.
 
+### Added
+
+- The incident correlator can return a paginated, status-filtered page of incidents in one call; the web UI and phpanel can now scroll through long incident lists without loading the entire set.
+
 ## [3.2.0] - 2026-05-09
 
 ### Added

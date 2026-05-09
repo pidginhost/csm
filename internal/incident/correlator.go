@@ -219,6 +219,48 @@ func (c *Correlator) Get(id string) (Incident, bool) {
 	return cloneIncident(*inc), true
 }
 
+// SnapshotPage returns a page of incidents matching status (empty
+// string means all statuses), starting at offset, with at most limit
+// items. The returned total is the number of records that match the
+// filter regardless of the page bounds, so the caller can render an
+// accurate "X of Y" header.
+//
+// limit <= 0 returns the rest of the filtered set after offset. The
+// caller (web UI / phpanel) is expected to cap the page at a sane
+// ceiling; this primitive only enforces correct slicing. Negative
+// offset is clamped to zero.
+//
+// Items are deep-copied so callers may mutate the returned slice
+// without affecting subsequent calls.
+func (c *Correlator) SnapshotPage(status Status, offset, limit int) ([]Incident, int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	matched := make([]Incident, 0, len(c.incidents))
+	for _, inc := range c.incidents {
+		if status != "" && inc.Status != status {
+			continue
+		}
+		matched = append(matched, cloneIncident(*inc))
+	}
+	sort.Slice(matched, func(i, j int) bool {
+		return matched[i].UpdatedAt.After(matched[j].UpdatedAt)
+	})
+
+	total := len(matched)
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= total {
+		return []Incident{}, total
+	}
+	end := total
+	if limit > 0 && offset+limit < end {
+		end = offset + limit
+	}
+	return matched[offset:end], total
+}
+
 // Snapshot returns every incident sorted by UpdatedAt descending. Safe
 // for concurrent callers; produces a deep-copy slice so the API layer
 // can serialize it without coordinating with mutators.
