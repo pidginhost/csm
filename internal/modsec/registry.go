@@ -8,8 +8,10 @@ import (
 	"sync/atomic"
 )
 
-// Registry maps every parsed ModSecurity rule ID to its declared action
-// (deny, drop, block, pass, log, allow). It is consulted by the LiteSpeed
+// Registry maps parsed ModSecurity rule IDs with a decisive disposition to
+// that action (deny, drop, block, redirect, proxy, pause, pass, allow).
+// Rules with only metadata actions are intentionally absent so callers use
+// the unknown-rule default. It is consulted by the LiteSpeed
 // log-line classifier - error_log records every match as "triggered!"
 // regardless of whether the rule's action denied the request, so the action
 // lookup is the only signal that distinguishes a real deny from a noisy
@@ -52,11 +54,13 @@ func (r *Registry) Len() int {
 // a stale system fallback in /usr/share/modsecurity-crs/rules/.
 func BuildRegistry(dirs []string) (*Registry, error) {
 	actions := make(map[int]string)
+	claimed := make(map[int]struct{})
 	for _, dir := range dirs {
 		if dir == "" {
 			continue
 		}
-		perDir := make(map[int]string)
+		perDirActions := make(map[int]string)
+		perDirClaimed := make(map[int]struct{})
 		walkErr := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				if errors.Is(err, fs.ErrNotExist) {
@@ -77,16 +81,24 @@ func BuildRegistry(dirs []string) (*Registry, error) {
 			// telemetry surfaces the eventual rule count via the startup log.
 			rules, _ := ParseRulesFileAll(path)
 			for _, r := range rules {
+				perDirClaimed[r.ID] = struct{}{}
 				if r.Action != "" {
-					perDir[r.ID] = r.Action
+					perDirActions[r.ID] = r.Action
+				} else {
+					delete(perDirActions, r.ID)
 				}
 			}
 			return nil
 		})
 		// Promote the per-directory map into the global map only for IDs
 		// that no earlier (more-specific) directory has already claimed.
-		for id, action := range perDir {
-			if _, exists := actions[id]; !exists {
+		for id := range perDirClaimed {
+			if _, exists := claimed[id]; !exists {
+				claimed[id] = struct{}{}
+				action, hasAction := perDirActions[id]
+				if !hasAction {
+					continue
+				}
 				actions[id] = action
 			}
 		}

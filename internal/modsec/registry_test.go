@@ -165,6 +165,43 @@ func TestBuildRegistry_DuplicateIDFirstDirectoryWins(t *testing.T) {
 	}
 }
 
+func TestBuildRegistry_LogOnlyRuleInFirstDirectoryBlocksFallbackAction(t *testing.T) {
+	specific := t.TempDir()
+	fallback := t.TempDir()
+	if err := os.WriteFile(filepath.Join(specific, "metadata.conf"), []byte(`SecRule REQUEST_URI "x" "id:777778,phase:1,log,msg:'inherits default'"`+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fallback, "stock.conf"), []byte(`SecRule REQUEST_URI "x" "id:777778,phase:1,pass"`+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	reg, err := BuildRegistry([]string{specific, fallback})
+	if err != nil {
+		t.Fatalf("BuildRegistry: %v", err)
+	}
+	if action, known := reg.Action(777778); known || action != "" {
+		t.Errorf("Action(777778) = (%q,%v), want (\"\",false); fallback pass must not override first-dir unknown", action, known)
+	}
+}
+
+func TestBuildRegistry_LogOnlyRuleWinsWithinDirectoryWhenLexicallyLater(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a_first.conf"), []byte(`SecRule REQUEST_URI "x" "id:777779,phase:1,pass"`+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "b_second.conf"), []byte(`SecRule REQUEST_URI "x" "id:777779,phase:1,log,msg:'inherits default'"`+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	reg, err := BuildRegistry([]string{dir})
+	if err != nil {
+		t.Fatalf("BuildRegistry: %v", err)
+	}
+	if action, known := reg.Action(777779); known || action != "" {
+		t.Errorf("Action(777779) = (%q,%v), want (\"\",false); later unknown rule must override earlier pass", action, known)
+	}
+}
+
 func TestBuildRegistry_NonConfFilesIgnored(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte(testRegistryCRSConf), 0644); err != nil {

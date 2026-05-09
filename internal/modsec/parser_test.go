@@ -288,6 +288,27 @@ func TestParseAction_IgnoresCommasInsideMsgLiteral(t *testing.T) {
 	}
 }
 
+func TestParseAction_IgnoresEscapedDoubleQuotesInsideMsgLiteral(t *testing.T) {
+	dir := t.TempDir()
+	conf := `SecRule REQUEST_URI "x" "id:800004,phase:1,msg:'Request \"quoted\" by policy',pass,t:none"
+`
+	path := filepath.Join(dir, "escaped-quote.conf")
+	if err := os.WriteFile(path, []byte(conf), 0644); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := ParseRulesFileAll(path)
+	if err != nil {
+		t.Fatalf("ParseRulesFileAll: %v", err)
+	}
+	r := findRule(rules, 800004)
+	if r == nil {
+		t.Fatal("rule 800004 not parsed")
+	}
+	if r.Action != "pass" {
+		t.Errorf("Action = %q, want pass (escaped double quotes inside msg must not truncate the action list)", r.Action)
+	}
+}
+
 func TestParseAction_LogOnlyRuleHasNoDisposition(t *testing.T) {
 	dir := t.TempDir()
 	conf := `SecRule REQUEST_URI "x" "id:800003,phase:1,log,msg:'just record',t:none"

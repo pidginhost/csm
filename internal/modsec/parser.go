@@ -223,20 +223,42 @@ func parseBlock(block string) (Rule, bool) {
 // caller leaves Action empty and the registry treats the rule as unknown.
 func extractActionString(block string, ruleID int) string {
 	needle := "id:" + strconv.Itoa(ruleID)
-	idx := strings.Index(block, needle)
-	if idx < 0 {
-		return ""
+	for i := 0; i < len(block); i++ {
+		if block[i] != '"' {
+			continue
+		}
+		start := i + 1
+		escaped := false
+		for j := start; j < len(block); j++ {
+			switch {
+			case escaped:
+				escaped = false
+			case block[j] == '\\':
+				escaped = true
+			case block[j] == '"':
+				segment := block[start:j]
+				if actionStringHasRuleID(segment, needle) {
+					return segment
+				}
+				i = j
+				j = len(block)
+			}
+		}
 	}
-	open := strings.LastIndexByte(block[:idx], '"')
-	if open < 0 {
-		return ""
+	return ""
+}
+
+func actionStringHasRuleID(actionStr, needle string) bool {
+	for _, tok := range tokenizeActionString(actionStr) {
+		name, value, ok := strings.Cut(tok, ":")
+		if !ok || strings.ToLower(strings.TrimSpace(name)) != "id" {
+			continue
+		}
+		if strings.Trim(strings.TrimSpace(value), `'"`) == strings.TrimPrefix(needle, "id:") {
+			return true
+		}
 	}
-	rest := block[idx:]
-	closeRel := strings.IndexByte(rest, '"')
-	if closeRel < 0 {
-		return ""
-	}
-	return block[open+1 : idx+closeRel]
+	return false
 }
 
 // pickDisposition returns the ModSecurity disposition keyword present in
