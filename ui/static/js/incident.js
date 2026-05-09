@@ -15,6 +15,8 @@
     };
     var incidents = [];
     var selectedID = '';
+    var pageOffset = 0;
+    var pageTotal = 0;
 
     function currentHours() {
         var active = document.querySelector('.incident-hours-btn.active');
@@ -36,29 +38,83 @@
         timelinePanel.classList.toggle('d-none', showIncidents);
     }
 
+    function currentPageSize() {
+        var sel = document.getElementById('incident-page-size');
+        var n = parseInt(sel ? sel.value : '50', 10);
+        return n > 0 ? n : 50;
+    }
+
+    function currentStatusParam() {
+        var status = document.getElementById('incident-status-filter').value;
+        return status === 'all' ? '' : status;
+    }
+
     function loadIncidents() {
         var container = document.getElementById('incidents-content');
         CSM.loading(container);
-        CSM.get('/api/v1/incidents')
+        var limit = currentPageSize();
+        var statusParam = currentStatusParam();
+        var params = 'limit=' + encodeURIComponent(limit) + '&offset=' + encodeURIComponent(pageOffset);
+        params += '&status=' + encodeURIComponent(statusParam);
+        CSM.get('/api/v1/incidents?' + params)
             .then(function(data) {
-                incidents = Array.isArray(data) ? data : [];
+                if (data && Array.isArray(data.items)) {
+                    incidents = data.items;
+                    pageTotal = typeof data.total === 'number' ? data.total : data.items.length;
+                    pageOffset = typeof data.offset === 'number' ? data.offset : pageOffset;
+                } else if (Array.isArray(data)) {
+                    incidents = data;
+                    pageTotal = data.length;
+                    pageOffset = 0;
+                } else {
+                    incidents = [];
+                    pageTotal = 0;
+                }
                 renderIncidentList();
+                renderPagination();
             })
             .catch(function() { CSM.loadError(container, loadIncidents); });
     }
 
-    function filteredIncidents() {
-        var status = document.getElementById('incident-status-filter').value;
-        return incidents.filter(function(inc) {
-            if (status === 'all') return true;
-            if (status === 'active') return inc.status === 'open' || inc.status === 'contained';
-            return inc.status === status;
-        });
+    function renderPagination() {
+        var footer = document.getElementById('incidents-pagination');
+        if (!footer) return;
+        var limit = currentPageSize();
+        if (pageTotal <= 0) {
+            footer.classList.add('d-none');
+            return;
+        }
+        footer.classList.remove('d-none');
+        var pageNum = Math.floor(pageOffset / limit) + 1;
+        var totalPages = Math.max(1, Math.ceil(pageTotal / limit));
+        var first = pageOffset + 1;
+        var last = Math.min(pageOffset + incidents.length, pageTotal);
+        document.getElementById('incidents-page-summary').textContent =
+            'Showing ' + first + '-' + last + ' of ' + pageTotal;
+        document.getElementById('incidents-page-indicator').textContent =
+            pageNum + ' / ' + totalPages;
+
+        document.getElementById('incidents-page-first').disabled = pageOffset === 0;
+        document.getElementById('incidents-page-prev').disabled = pageOffset === 0;
+        document.getElementById('incidents-page-next').disabled = pageOffset + limit >= pageTotal;
+        document.getElementById('incidents-page-last').disabled = pageOffset + limit >= pageTotal;
+    }
+
+    function setPageOffset(off) {
+        pageOffset = Math.max(0, off);
+        selectedID = '';
+        loadIncidents();
+    }
+
+    function lastPageOffset() {
+        var limit = currentPageSize();
+        if (pageTotal <= 0) return 0;
+        return Math.floor((pageTotal - 1) / limit) * limit;
     }
 
     function renderIncidentList() {
         var container = document.getElementById('incidents-content');
-        var rows = filteredIncidents();
+        var rows = incidents;
         if (rows.length === 0) {
             container.innerHTML = '<div class="card-body text-center text-muted py-4">No incidents match the current filter.</div>';
             document.getElementById('incident-detail').classList.add('d-none');
@@ -287,8 +343,24 @@
     document.getElementById('incidents-refresh-btn').addEventListener('click', loadIncidents);
     document.getElementById('incident-status-filter').addEventListener('change', function() {
         selectedID = '';
-        renderIncidentList();
+        pageOffset = 0;
+        loadIncidents();
     });
+    var pageSizeSel = document.getElementById('incident-page-size');
+    if (pageSizeSel) {
+        pageSizeSel.addEventListener('change', function() {
+            pageOffset = 0;
+            loadIncidents();
+        });
+    }
+    var pf = document.getElementById('incidents-page-first');
+    if (pf) pf.addEventListener('click', function() { setPageOffset(0); });
+    var pp = document.getElementById('incidents-page-prev');
+    if (pp) pp.addEventListener('click', function() { setPageOffset(pageOffset - currentPageSize()); });
+    var pn = document.getElementById('incidents-page-next');
+    if (pn) pn.addEventListener('click', function() { setPageOffset(pageOffset + currentPageSize()); });
+    var pl = document.getElementById('incidents-page-last');
+    if (pl) pl.addEventListener('click', function() { setPageOffset(lastPageOffset()); });
     document.getElementById('incident-search-btn').addEventListener('click', loadTimeline);
     document.getElementById('incident-query').addEventListener('keydown', function(e) {
         if (e.key === 'Enter') loadTimeline();

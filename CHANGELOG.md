@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The incident correlator can return a paginated, status-filtered page of incidents in one call; the web UI and phpanel can now scroll through long incident lists without loading the entire set.
 - The incident list endpoint accepts limit, offset, and status query parameters and returns an envelope with the page total when those are present; calls without query parameters keep returning the existing bare-array shape so existing webhook and SIEM consumers see no diff.
+- The incident page now paginates server-side with a configurable page size (25/50/100/200) and a footer showing the current range and total; only the visible page is fetched, so long incident lists no longer slow the table render.
 
 ## [3.2.0] - 2026-05-09
 

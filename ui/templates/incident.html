@@ -33,12 +33,30 @@
                         <option value="resolved">Resolved</option>
                         <option value="dismissed">Dismissed</option>
                     </select>
+                    <select id="incident-page-size" class="form-select form-select-sm" aria-label="Page size">
+                        <option value="25">25 / page</option>
+                        <option value="50" selected>50 / page</option>
+                        <option value="100">100 / page</option>
+                        <option value="200">200 / page</option>
+                    </select>
                     <button class="btn btn-outline-secondary btn-sm" id="incidents-refresh-btn" title="Refresh incidents" aria-label="Refresh incidents">
                         <i class="ti ti-refresh"></i>
                     </button>
                 </div>
             </div>
             <div id="incidents-content"></div>
+            <div id="incidents-pagination" class="card-footer d-none">
+                <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
+                    <div class="text-muted small" id="incidents-page-summary"></div>
+                    <ul class="pagination pagination-sm m-0">
+                        <li class="page-item"><button class="page-link" id="incidents-page-first" type="button" aria-label="First page"><i class="ti ti-chevrons-left"></i></button></li>
+                        <li class="page-item"><button class="page-link" id="incidents-page-prev" type="button" aria-label="Previous page"><i class="ti ti-chevron-left"></i></button></li>
+                        <li class="page-item active"><span class="page-link" id="incidents-page-indicator">1</span></li>
+                        <li class="page-item"><button class="page-link" id="incidents-page-next" type="button" aria-label="Next page"><i class="ti ti-chevron-right"></i></button></li>
+                        <li class="page-item"><button class="page-link" id="incidents-page-last" type="button" aria-label="Last page"><i class="ti ti-chevrons-right"></i></button></li>
+                    </ul>
+                </div>
+            </div>
         </div>
         <div id="incident-detail" class="card d-none"></div>
     </div>
