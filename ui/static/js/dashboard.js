@@ -1190,6 +1190,7 @@
         loadTimeline();
         loadAttackTypes();
         loadTrend();
+        loadPriorityQueue();
 
         // Refresh charts every 60 seconds
         _chartIntervals.push(setInterval(function() {
@@ -1201,6 +1202,14 @@
         _chartIntervals.push(setInterval(function() {
             try { loadTrend(); } catch(e) { console.error('loadTrend:', e); }
         }, 300000));
+
+        _startPriorityQueueInterval();
+    }
+
+    function _startPriorityQueueInterval() {
+        _chartIntervals.push(setInterval(function() {
+            try { loadPriorityQueue(); } catch(e) { console.error('loadPriorityQueue:', e); }
+        }, 60000));
     }
 
     function _cleanupCharts() {
@@ -1225,10 +1234,12 @@
             _chartIntervals.push(setInterval(function() {
                 try { loadTrend(); } catch(e) {}
             }, 300000));
+            _startPriorityQueueInterval();
             // Immediate refresh on return
             try { loadTimeline(); } catch(e) {}
             try { loadAttackTypes(); } catch(e) {}
             try { loadTrend(); } catch(e) {}
+            try { loadPriorityQueue(); } catch(e) {}
         }
     });
 
@@ -1266,7 +1277,7 @@
         var ageText = ageISO ? CSM.timeAgo(ageISO) : '';
         var actionHTML = '';
         if (item.action && item.href) {
-            actionHTML = '<a href="' + CSM.attr(item.href) + '" class="btn btn-sm btn-ghost-secondary csm-queue-item__action" title="' + CSM.attr(item.action) + '">' + CSM.esc(item.action) + '</a>';
+            actionHTML = '<span class="btn btn-sm btn-ghost-secondary csm-queue-item__action">' + CSM.esc(item.action) + '</span>';
         }
         var kindBadge = item.kind ? '<span class="badge bg-secondary-lt me-1">' + CSM.esc(item.kind) + '</span>' : '';
         var html = '<a class="csm-queue-item" href="' + CSM.attr(item.href || '#') + '">';
@@ -1301,6 +1312,16 @@
     function _kindLabel(kind) {
         if (!kind) return 'incident';
         return String(kind).replace(/_/g, ' ');
+    }
+
+    function _incidentOwner(inc) {
+        var key = inc.correlation_key || {};
+        if (inc.mailbox || inc.domain || inc.account) return inc.mailbox || inc.domain || inc.account;
+        if (key.mailbox || key.domain || key.account) return key.mailbox || key.domain || key.account;
+        if (key.remote_ip) return key.remote_ip;
+        if (key.pid) return 'pid=' + key.pid;
+        if (key.uid) return 'uid=' + key.uid;
+        return 'unknown';
     }
 
     function _sevForIncident(s) {
@@ -1351,7 +1372,7 @@
             for (var i = 0; i < Math.min(incidents.length, 5); i++) {
                 var inc = incidents[i];
                 var sevInfo = _sevForIncident(inc.severity);
-                var owner = inc.mailbox || inc.domain || inc.account || 'unknown';
+                var owner = _incidentOwner(inc);
                 items.push({
                     sevClass: sevInfo.sevClass,
                     sevLabel: sevInfo.sevLabel,
@@ -1421,9 +1442,7 @@
     // Wire refresh + initial load
     var _pqBtn = document.getElementById('priority-queue-refresh');
     if (_pqBtn) _pqBtn.addEventListener('click', loadPriorityQueue);
-    try { loadPriorityQueue(); } catch (e) {}
     try { renderSystemPosture(); } catch (e) {}
-    _trackInterval(setInterval(loadPriorityQueue, 60000));
 
     _startChartPolling();
 })();

@@ -24,7 +24,7 @@ admin-only navigation entries such as Configuration and ModSec Rules.
 
 | Page | URL | Purpose |
 |------|-----|---------|
-| **Dashboard** | `/dashboard` | 24h stats, live feed, accounts at risk, auto-response summary, brute-force summary, timeline charts |
+| **Dashboard** | `/dashboard` | Triage queue, daemon status strip, system posture, 24h stats, recent activity, accounts at risk, auto-response summary, brute-force summary, timeline charts |
 | **Findings** | `/findings` | Active findings with search, filter by check/account, grouping, fix/dismiss/suppress actions, bulk operations, on-demand account scan |
 | **Findings > History** | `/findings?tab=history` | Paginated archive of all findings with date range and severity filters, CSV export |
 | **Quarantine** | `/quarantine` | Quarantined files with content preview, restore capability |
@@ -35,7 +35,7 @@ admin-only navigation entries such as Configuration and ModSec Rules.
 | **Email** | `/email` | Email AV status, quarantined attachments, scan statistics |
 | **Threat Intel** | `/threat` | IP lookup with scoring/GeoIP/ASN, top attackers, attack type charts, trends |
 | **Hardening** | `/hardening` | On-demand hardening audit, stored report, score, and remediation guidance |
-| **Incidents** | `/incident` | Forensic timeline correlating events by IP or account |
+| **Incidents** | `/incident` | Correlated incident list with detail panel plus forensic timeline search by IP or account |
 | **Rules** | `/rules` | YAML/YARA rule management, suppressions, state export/import, test alerts |
 | **Account** | `/account` | Per-account analysis: findings, quarantine, history, on-demand scan |
 | **Audit** | `/audit` | System-wide action log (block, fix, dismiss, whitelist, restore) |

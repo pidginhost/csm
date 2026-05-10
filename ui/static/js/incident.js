@@ -15,6 +15,7 @@
     };
     var incidents = [];
     var selectedID = '';
+    var pendingIncidentID = '';
     var pageOffset = 0;
     var pageTotal = 0;
 
@@ -47,6 +48,29 @@
     function currentStatusParam() {
         var status = document.getElementById('incident-status-filter').value;
         return status === 'all' ? '' : status;
+    }
+
+    function incidentIDFromHash() {
+        var raw = window.location.hash || '';
+        if (raw.length <= 1) return '';
+        try {
+            return decodeURIComponent(raw.slice(1));
+        } catch (e) {
+            return raw.slice(1);
+        }
+    }
+
+    function setIncidentHash(id) {
+        if (!id || !window.history || !window.history.replaceState) return;
+        window.history.replaceState(null, '', window.location.pathname + window.location.search + '#' + encodeURIComponent(id));
+    }
+
+    function openIncident(id, updateHash) {
+        if (!id) return;
+        selectedID = id;
+        if (updateHash !== false) setIncidentHash(id);
+        renderIncidentList();
+        loadIncidentDetail(id);
     }
 
     function loadIncidents() {
@@ -123,7 +147,13 @@
         var rows = incidents;
         if (rows.length === 0) {
             container.innerHTML = '<div class="card-body text-center text-muted py-4">No incidents match the current filter.</div>';
-            document.getElementById('incident-detail').classList.add('d-none');
+            if (pendingIncidentID) {
+                var pending = pendingIncidentID;
+                pendingIncidentID = '';
+                loadIncidentDetail(pending);
+            } else {
+                CSM.detailPanel.close();
+            }
             return;
         }
 
@@ -149,39 +179,45 @@
         var trs = container.querySelectorAll('tr[data-incident-id]');
         trs.forEach(function(tr) {
             tr.addEventListener('click', function() {
-                selectedID = this.getAttribute('data-incident-id');
-                renderIncidentList();
-                loadIncidentDetail(selectedID);
+                openIncident(this.getAttribute('data-incident-id'), true);
             });
         });
 
-        if (!selectedID || !rows.some(function(inc) { return inc.id === selectedID; })) {
-            selectedID = rows[0].id;
-            loadIncidentDetail(selectedID);
+        if (pendingIncidentID) {
+            var pending = pendingIncidentID;
+            pendingIncidentID = '';
+            loadIncidentDetail(pending);
         }
     }
 
     function loadIncidentDetail(id) {
-        var detail = document.getElementById('incident-detail');
-        detail.classList.remove('d-none');
-        CSM.loading(detail);
+        selectedID = id;
+        CSM.detailPanel.open({
+            title: 'Incident',
+            bodyHTML: '<div class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</div>'
+        });
         CSM.get('/api/v1/incidents/' + encodeURIComponent(id))
             .then(function(inc) { renderIncidentDetail(inc); })
-            .catch(function() { CSM.loadError(detail, function() { loadIncidentDetail(id); }); });
+            .catch(function() {
+                CSM.detailPanel.open({
+                    title: 'Incident',
+                    bodyHTML: CSM.emptyStateBlock({
+                        icon: 'alert-circle',
+                        title: 'Incident not found',
+                        reason: 'The incident may have been compacted or the link is no longer valid.'
+                    }),
+                    footerHTML: '<button class="btn btn-outline-secondary btn-sm" type="button" data-incident-retry="' + CSM.attr(id) + '">Retry</button>'
+                });
+                var panel = CSM.detailPanel.element();
+                var retry = panel && panel.querySelector('[data-incident-retry]');
+                if (retry) retry.addEventListener('click', function() { loadIncidentDetail(this.getAttribute('data-incident-retry')); });
+            });
     }
 
     function renderIncidentDetail(inc) {
-        var detail = document.getElementById('incident-detail');
+        selectedID = inc.id || selectedID;
         var owner = inc.mailbox || inc.domain || inc.account || keySummary(inc.correlation_key) || 'unknown';
-        var html = '<div class="card-header">';
-        html += '<h3 class="card-title"><i class="ti ti-timeline-event"></i>&nbsp;' + CSM.esc(labelize(inc.kind)) + '</h3>';
-        html += '<div class="card-actions d-flex gap-2 flex-wrap">';
-        html += statusButton(inc, 'open', 'rotate-clockwise');
-        html += statusButton(inc, 'contained', 'shield-check');
-        html += statusButton(inc, 'resolved', 'circle-check');
-        html += statusButton(inc, 'dismissed', 'circle-x');
-        html += '</div></div>';
-        html += '<div class="card-body">';
+        var html = '';
         html += '<div class="row g-3 mb-3">';
         html += statBlock('Status', inc.status);
         html += statBlock('Severity', inc.severity || 'UNKNOWN');
@@ -201,10 +237,20 @@
         for (var j = 0; j < actions.length; j++) {
             html += actionHTML(actions[j]);
         }
-        html += '</div></div>';
-        detail.innerHTML = html;
+        html += '</div>';
+        var footer = '';
+        footer += statusButton(inc, 'open', 'rotate-clockwise');
+        footer += statusButton(inc, 'contained', 'shield-check');
+        footer += statusButton(inc, 'resolved', 'circle-check');
+        footer += statusButton(inc, 'dismissed', 'circle-x');
+        CSM.detailPanel.open({
+            title: labelize(inc.kind),
+            bodyHTML: html,
+            footerHTML: footer
+        });
         CSM.initTimeAgo();
-        detail.querySelectorAll('[data-status-target]').forEach(function(btn) {
+        var panel = CSM.detailPanel.element();
+        panel.querySelectorAll('[data-status-target]').forEach(function(btn) {
             btn.addEventListener('click', function() {
                 setIncidentStatus(inc.id, this.getAttribute('data-status-target'));
             });
@@ -223,6 +269,7 @@
             details: 'web-ui'
         }).then(function() {
             CSM.toast('Incident updated', 'success');
+            pendingIncidentID = id;
             loadIncidents();
             loadIncidentDetail(id);
         });
@@ -387,6 +434,20 @@
         document.getElementById('incident-query').value = preIP || preAccount;
         loadTimeline();
     } else {
+        pendingIncidentID = incidentIDFromHash();
+        selectedID = pendingIncidentID;
         loadIncidents();
     }
+
+    window.addEventListener('hashchange', function() {
+        var id = incidentIDFromHash();
+        if (!id) {
+            selectedID = '';
+            CSM.detailPanel.close();
+            renderIncidentList();
+            return;
+        }
+        switchTab('incidents');
+        openIncident(id, false);
+    });
 })();

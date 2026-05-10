@@ -351,11 +351,47 @@ func TestDashboardLeadsWithPriorityQueue(t *testing.T) {
 	jsText := string(js)
 	for _, want := range []string{
 		"loadPriorityQueue",
+		"function _startPriorityQueueInterval",
 		"renderSystemPosture",
 		"/api/v1/incidents?status=open",
+		"href: '/incident#'",
+		"_incidentOwner",
 	} {
 		if !strings.Contains(jsText, want) {
 			t.Errorf("dashboard.js missing %q", want)
+		}
+	}
+	if strings.Contains(jsText, "_trackInterval(setInterval(loadPriorityQueue") {
+		t.Fatal("dashboard.js must not register the priority queue interval through the first IIFE's private _trackInterval")
+	}
+	if !strings.Contains(jsText, `'<span class="btn btn-sm btn-ghost-secondary csm-queue-item__action">'`) {
+		t.Fatal("dashboard priority queue action affordance must not be a nested anchor")
+	}
+}
+
+func TestIncidentPageUsesDetailPanelDeepLinks(t *testing.T) {
+	tmpl, err := os.ReadFile("../../ui/templates/incident.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(tmpl)
+	if strings.Contains(text, `id="incident-detail"`) {
+		t.Fatal("incident.html should use the shared detail panel instead of an inline detail card")
+	}
+
+	js, err := os.ReadFile("../../ui/static/js/incident.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsText := string(js)
+	for _, want := range []string{
+		"incidentIDFromHash",
+		"CSM.detailPanel.open",
+		"hashchange",
+		"pendingIncidentID",
+	} {
+		if !strings.Contains(jsText, want) {
+			t.Errorf("incident.js missing detail-panel deep-link hook %q", want)
 		}
 	}
 }
