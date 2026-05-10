@@ -23,18 +23,18 @@ func (s *Server) handleModSec(w http.ResponseWriter, _ *http.Request) {
 // panel without a second round trip. All new fields are additive: existing
 // consumers see no diff because the legacy fields keep their JSON keys.
 type modsecBlockView struct {
-	IP           string             `json:"ip"`
-	RuleID       string             `json:"rule_id"`
-	Description  string             `json:"description"`
-	Domains      string             `json:"domains"`
-	DomainCount  int                `json:"domain_count"`
-	Hits         int                `json:"hits"`
-	LastSeen     string             `json:"last_seen"`
-	FirstSeen    string             `json:"first_seen"`
-	LastSeenISO  string             `json:"last_seen_iso"`
-	TopURIs      []string           `json:"top_uris"`
+	IP           string              `json:"ip"`
+	RuleID       string              `json:"rule_id"`
+	Description  string              `json:"description"`
+	Domains      string              `json:"domains"`
+	DomainCount  int                 `json:"domain_count"`
+	Hits         int                 `json:"hits"`
+	LastSeen     string              `json:"last_seen"`
+	FirstSeen    string              `json:"first_seen"`
+	LastSeenISO  string              `json:"last_seen_iso"`
+	TopURIs      []string            `json:"top_uris"`
 	SampleEvents []modsecSampleEvent `json:"sample_events"`
-	Escalated    bool               `json:"escalated"`
+	Escalated    bool                `json:"escalated"`
 }
 
 // modsecSampleEvent is a compact per-IP event included in the grouped

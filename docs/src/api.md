@@ -110,9 +110,9 @@ POST /api/v1/firewall/cphulk-clear   Flush cphulk bans only
 ## ModSecurity
 
 ```
-GET  /api/v1/modsec/stats              WAF statistics
-GET  /api/v1/modsec/blocks             Blocked requests log
-GET  /api/v1/modsec/events             WAF event details
+GET  /api/v1/modsec/stats              WAF statistics (read scope)
+GET  /api/v1/modsec/blocks             Blocked requests log, aggregated per IP (read scope)
+GET  /api/v1/modsec/events             WAF event details (read scope)
 GET  /api/v1/modsec/rules              Loaded rules list
 POST /api/v1/modsec/rules/apply        Apply custom rules
 POST /api/v1/modsec/rules/escalation   Change rule severity/action
@@ -133,6 +133,7 @@ POST /api/v1/rules/modsec-escalation   ModSec escalation override
 
 ```
 GET  /api/v1/email/stats         Email scanning statistics
+GET  /api/v1/email/groups        Server-grouped action rows (kind=compromised_account|spam_outbreak|auth_failure|queue_alert|malware) with from/to/limit (read scope)
 GET  /api/v1/email/quarantine    Quarantined email list
 GET  /api/v1/email/av/status     Email AV watcher status
 POST /api/v1/email/quarantine/   Release or delete quarantined email

@@ -160,11 +160,11 @@ func emailGroupSubject(kind string, f alert.Finding) string {
 // handler is a thin wrapper so tests can drive grouping directly.
 func buildEmailGroups(findings []alert.Finding, from, to time.Time, kindFilter string) []emailGroup {
 	type aggregator struct {
-		group       *emailGroup
-		ipCounts    map[string]int
-		domainSet   map[string]struct{}
-		msgIDSet    map[string]struct{}
-		samples     []alert.Finding // newest-first
+		group     *emailGroup
+		ipCounts  map[string]int
+		domainSet map[string]struct{}
+		msgIDSet  map[string]struct{}
+		samples   []alert.Finding // newest-first
 	}
 
 	groups := make(map[string]*aggregator)

@@ -30,9 +30,9 @@ admin-only navigation entries such as Configuration and ModSec Rules.
 | **Quarantine** | `/quarantine` | Quarantined files with content preview, restore capability |
 | **Cleanup** | `/cleanup-history` | File pre-clean backups and DB-object backups with preview and restore controls |
 | **Firewall** | `/firewall` | Subview-tabbed page (`?view=overview/lookup/blocks/allow/config/audit/danger`): blocked IPs/subnets with GeoIP, whitelist management, search, audit log; destructive actions live under the Danger tab |
-| **ModSecurity** | `/modsec` | WAF status, event log, active blocks |
+| **ModSecurity** | `/modsec` | WAF workbench: status strip, Active WAF pressure summary list (top attackers by hits), top rules / domains side panel, and Blocked IPs / Events / Rules tabs. Block detail panels show first-seen, top URIs, sample events, and direct links to Threat Intel, Firewall lookup, and rule management |
 | **ModSec Rules** | `/modsec/rules` | Per-rule management, overrides, escalation control |
-| **Email** | `/email` | Email AV status, quarantined attachments, scan statistics |
+| **Email** | `/email` | Email workbench: status strip (queue, frozen, oldest, AV, group counts), grouped action rows on the left (compromised, spam outbreak, auth failure, queue, malware), Mail protection state on the right, and Findings / Auth failures / Queue / Quarantine / Senders tabs below |
 | **Threat Intel** | `/threat` | IP lookup with scoring/GeoIP/ASN, top attackers, attack type charts, trends |
 | **Hardening** | `/hardening` | On-demand hardening audit, stored report, score, and remediation guidance |
 | **Incidents** | `/incident` | Correlated incident list with detail panel plus forensic timeline search by IP or account |
