@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- New /api/v1/email/groups endpoint returns server-side grouped action rows (compromised account, spam outbreak, auth failure, queue alert, malware) over a bounded history window so the upcoming email workbench does not fan out into thousands of in-browser pivots. Read-scope tokens may call it; the endpoint never mutates state.
 - Web UI gains three more shared layout primitives -- a richer toolbar, a grouped summary-list for high-volume action rows, and middle-truncated text -- and CSM.Table now exposes sticky headers, external page-size selects, decoupled result-count targets, and row-click hooks. Used by the upcoming Email and ModSecurity workbench redesigns; the previous filter toolbar class is renamed to csm-toolbar.
 - Web UI ships a set of shared layout primitives (page header, status strip, action queue, filter toolbar, empty state, sticky action bar, detail panel, danger zone) and small JS helpers used by upcoming page redesigns; existing pages render unchanged.
 - Web UI navigation is reorganised into a workflow-grouped sidebar (Overview, Triage, Response, Operations, Configuration); URLs are unchanged, groups remember their collapsed state, read-scope views hide admin-only entries, and the sidebar collapses into a drawer on tablet/mobile viewports.
