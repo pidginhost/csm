@@ -396,6 +396,61 @@ func TestIncidentPageUsesDetailPanelDeepLinks(t *testing.T) {
 	}
 }
 
+// TestFindingsPageUsesPhase4Primitives ensures findings.html adopted the
+// shared layout primitives in phase 4 and that findings.js routes detail
+// rendering through CSM.detailPanel rather than inserting an inline
+// `tr.finding-detail-row`.
+func TestFindingsPageUsesPhase4Primitives(t *testing.T) {
+	tmpl, err := os.ReadFile("../../ui/templates/findings.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(tmpl)
+
+	for _, want := range []string{
+		`class="csm-page-header`,
+		`id="open-scan-modal"`,
+		`id="scan-account-modal"`,
+		`class="csm-filter-toolbar"`,
+		`id="findings-bulk-bar"`,
+		`class="csm-sticky-actions"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("findings.html missing phase-4 hook %q", want)
+		}
+	}
+
+	// The legacy scan card and inline bulk-action wrapper must be gone.
+	for _, banned := range []string{
+		`id="scan-card"`,
+		`id="scan-header"`,
+		`id="scan-body"`,
+		`id="bulk-actions"`,
+	} {
+		if strings.Contains(text, banned) {
+			t.Errorf("findings.html still contains legacy element %q", banned)
+		}
+	}
+
+	js, err := os.ReadFile("../../ui/static/js/findings.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsText := string(js)
+	for _, want := range []string{
+		"CSM.detailPanel.open",
+		"findings-bulk-bar",
+		"clearAllSelections",
+	} {
+		if !strings.Contains(jsText, want) {
+			t.Errorf("findings.js missing phase-4 hook %q", want)
+		}
+	}
+	if strings.Contains(jsText, "finding-detail-row") {
+		t.Error("findings.js still inserts the legacy finding-detail-row tr; use CSM.detailPanel")
+	}
+}
+
 func TestSettingsIntArraySubmitsRawTokens(t *testing.T) {
 	src, err := os.ReadFile("../../ui/static/js/settings.js")
 	if err != nil {

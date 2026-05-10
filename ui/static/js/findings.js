@@ -53,7 +53,7 @@ function renderFindings(data) {
 
     // Update header count and severity badges
     var countEl = document.getElementById('findings-count');
-    if (countEl) countEl.textContent = '(' + total + ')';
+    if (countEl) countEl.textContent = total + ' active';
 
     var badgesEl = document.getElementById('severity-badges');
     if (badgesEl) {
@@ -233,54 +233,7 @@ function syncFindingsURL() {
     });
 }
 
-// --- Collapsible scan section ---
-(function() {
-    var header = document.getElementById('scan-header');
-    var body = document.getElementById('scan-body');
-    var icon = document.getElementById('scan-collapse-icon');
-    if (!header || !body || !icon) return;
-
-    var STORAGE_KEY = 'csm-scan-collapsed';
-
-    function collapse() {
-        body.style.maxHeight = body.scrollHeight + 'px';
-        body.offsetHeight; // force reflow
-        body.classList.add('collapsed');
-        body.style.maxHeight = '0';
-        icon.classList.add('collapsed');
-        header.setAttribute('aria-expanded', 'false');
-        localStorage.setItem(STORAGE_KEY, '1');
-    }
-
-    function expand() {
-        body.classList.remove('collapsed');
-        body.style.maxHeight = body.scrollHeight + 'px';
-        icon.classList.remove('collapsed');
-        header.setAttribute('aria-expanded', 'true');
-        localStorage.setItem(STORAGE_KEY, '0');
-        var cleanup = function() {
-            body.style.maxHeight = '';
-            body.removeEventListener('transitionend', cleanup);
-        };
-        body.addEventListener('transitionend', cleanup);
-    }
-
-    header.addEventListener('click', function() {
-        if (body.classList.contains('collapsed')) {
-            expand();
-        } else {
-            collapse();
-        }
-    });
-
-    // Restore state - default collapsed
-    if (localStorage.getItem(STORAGE_KEY) !== '0') {
-        body.classList.add('collapsed');
-        body.style.maxHeight = '0';
-        icon.classList.add('collapsed');
-        header.setAttribute('aria-expanded', 'false');
-    }
-})();
+// (Collapsible scan section removed in phase 4: scan moved to modal.)
 
 // --- Sticky header shadow on scroll ---
 (function() {
@@ -355,12 +308,19 @@ function updateSelection() {
     var count = selected.length;
     var countEl = document.getElementById('selected-count');
     if (countEl) countEl.textContent = count;
-    var bulkEl = document.getElementById('bulk-actions');
-    if (bulkEl) bulkEl.classList.toggle('d-none', count === 0);
-    // Show Fix button only if any selected row is fixable
+    var bulkBar = document.getElementById('findings-bulk-bar');
+    if (bulkBar) bulkBar.hidden = (count === 0);
+    // Show Fix button only if any selected row is fixable.
     var hasFixable = selected.some(function(r) { return r.getAttribute('data-hasFix') === 'true'; });
     var fixBtn = document.getElementById('bulk-fix-btn');
     if (fixBtn) fixBtn.classList.toggle('d-none', !hasFixable);
+}
+
+function clearAllSelections() {
+    document.querySelectorAll('.row-checkbox').forEach(function(cb) { cb.checked = false; });
+    var sa = document.getElementById('select-all');
+    if (sa) sa.checked = false;
+    updateSelection();
 }
 
 // Warn before navigating away with active selections
@@ -527,24 +487,25 @@ document.getElementById('scan-form').addEventListener('submit', function(e) {
     var account = document.getElementById('scan-account').value.trim();
     if (!account) return;
     var btn = document.getElementById('scan-btn');
-    var status = document.getElementById('scan-status').querySelector('span');
+    var status = document.getElementById('scan-status');
     btn.disabled = true; btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Scanning...';
     status.textContent = '';
+    status.className = 'mt-3 small text-muted';
     // Elapsed timer
     var scanStart = Date.now();
     var timerInterval = setInterval(function() {
         var secs = Math.floor((Date.now() - scanStart) / 1000);
         status.textContent = 'Scanning ' + account + '... ' + secs + 's';
-        status.className = 'text-muted small';
+        status.className = 'mt-3 small text-muted';
     }, 1000);
     CSM.post('/api/v1/scan-account', {account: account}).then(function(data) {
         clearInterval(timerInterval);
         btn.disabled = false; btn.innerHTML = '<i class="ti ti-radar-2"></i>&nbsp;Scan';
-        if (data.error) { status.textContent = data.error; status.className = 'text-danger small'; return; }
-        if (!data.count) { status.textContent = account + ' is clean (' + data.elapsed + ')'; status.className = 'text-success small'; return; }
+        if (data.error) { status.textContent = data.error; status.className = 'mt-3 small text-danger'; return; }
+        if (!data.count) { status.textContent = account + ' is clean (' + data.elapsed + ')'; status.className = 'mt-3 small text-success'; return; }
         // Redirect to filtered view for the scanned account
         window.location.href = '/findings?account=' + encodeURIComponent(account);
-    }).catch(function(e) { clearInterval(timerInterval); btn.disabled=false; btn.innerHTML='<i class="ti ti-radar-2"></i>&nbsp;Scan'; status.textContent='Error: '+e; status.className='text-danger small'; });
+    }).catch(function(e) { clearInterval(timerInterval); btn.disabled=false; btn.innerHTML='<i class="ti ti-radar-2"></i>&nbsp;Scan'; status.textContent='Error: '+e; status.className='mt-3 small text-danger'; });
 });
 
 // Load account list for scan autocomplete dropdown
@@ -566,6 +527,8 @@ var _bulkFixBtn = document.getElementById('bulk-fix-btn');
 if (_bulkFixBtn) _bulkFixBtn.addEventListener('click', function() { bulkAction('fix'); });
 var _bulkDismissBtn = document.getElementById('bulk-dismiss-btn');
 if (_bulkDismissBtn) _bulkDismissBtn.addEventListener('click', function() { bulkAction('dismiss'); });
+var _bulkCancelBtn = document.getElementById('bulk-cancel-btn');
+if (_bulkCancelBtn) _bulkCancelBtn.addEventListener('click', clearAllSelections);
 
 // Sync search input to URL (debounced to avoid excessive URL updates while typing)
 var _findingsSearchEl = document.getElementById('findings-search');
@@ -729,57 +692,86 @@ if (_findingsSearchEl) _findingsSearchEl.addEventListener('input', CSM.debounce(
     }
 })();
 
-// --- Click-to-expand finding detail (remediation action tracking) ---
+// --- Open finding detail in shared CSM.detailPanel (replaces inline row expansion) ---
 function toggleFindingDetail(row) {
-    var existing = row.nextElementSibling;
-    if (existing && existing.classList.contains('finding-detail-row')) {
-        existing.remove();
-        return;
-    }
-    // Remove any other open detail rows
-    document.querySelectorAll('.finding-detail-row').forEach(function(r) { r.remove(); });
-
     var check = row.dataset.check;
     var message = row.dataset.message;
-    var detailRow = document.createElement('tr');
-    detailRow.className = 'finding-detail-row';
-    var td = document.createElement('td');
-    td.colSpan = row.children.length || 7;
-    td.innerHTML = '<div class="p-2 text-muted small"><span class="spinner-border spinner-border-sm"></span> Loading...</div>';
-    detailRow.appendChild(td);
-    row.after(detailRow);
+    var hasFix = row.getAttribute('data-hasFix') === 'true';
+    var key = row.getAttribute('data-key') || (check + ':' + message);
+    var filepath = row.getAttribute('data-filepath') || '';
+    var account = row.getAttribute('data-account') || '';
 
-    fetch(CSM.apiUrl('/api/v1/finding-detail?check=' + encodeURIComponent(check) + '&message=' + encodeURIComponent(message)), { credentials: 'same-origin' })
+    CSM.detailPanel.open({
+        title: check,
+        bodyHTML: '<div class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</div>'
+    });
+
+    fetch(CSM.apiUrl('/api/v1/finding-detail?check=' + encodeURIComponent(check) + '&message=' + encodeURIComponent(message)),
+        { credentials: 'same-origin' })
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            var html = '<div class="p-3 bg-dark-lt csm-fs-sm">';
-            // Timeline info
-            if (data.first_seen) {
-                html += '<div class="mb-2"><strong>First seen:</strong> ' + CSM.fmtDate(data.first_seen) + ' &mdash; <strong>Last seen:</strong> ' + CSM.fmtDate(data.last_seen) + '</div>';
-            }
-            // Actions taken
+            var html = '<div class="csm-fs-sm">';
+            if (account) html += '<div class="mb-2"><strong>Account:</strong> <code>' + CSM.esc(account) + '</code></div>';
+            html += '<div class="mb-2"><strong>Check:</strong> <code>' + CSM.esc(check) + '</code></div>';
+            html += '<div class="mb-2"><strong>Message:</strong><br>' + CSM.esc(message) + '</div>';
+            if (filepath) html += '<div class="mb-2"><strong>File:</strong> <code class="csm-break-all">' + CSM.esc(filepath) + '</code></div>';
+            if (data.first_seen) html += '<div class="mb-2"><strong>First seen:</strong> ' + CSM.esc(CSM.fmtDate(data.first_seen)) + '</div>';
+            if (data.last_seen) html += '<div class="mb-2"><strong>Last seen:</strong> ' + CSM.esc(CSM.fmtDate(data.last_seen)) + '</div>';
             var actions = data.actions || [];
             if (actions.length > 0) {
-                html += '<div class="mb-2"><strong>Actions taken (' + actions.length + '):</strong>';
-                html += '<ul class="mb-0 mt-1">';
+                html += '<div class="mb-2"><strong>Actions taken (' + actions.length + '):</strong><ul class="mb-0 mt-1">';
                 for (var i = 0; i < Math.min(actions.length, 10); i++) {
                     var a = actions[i];
-                    html += '<li>' + CSM.esc(a.action) + ' &mdash; ' + CSM.esc(a.target || '') + ' <span class="text-muted">(' + CSM.fmtDate(a.timestamp || '') + ')</span></li>';
+                    html += '<li>' + CSM.esc(a.action) + ' -- ' + CSM.esc(a.target || '') +
+                        ' <span class="text-muted">(' + CSM.esc(CSM.fmtDate(a.timestamp || '')) + ')</span></li>';
                 }
                 if (actions.length > 10) html += '<li class="text-muted">...and ' + (actions.length - 10) + ' more</li>';
                 html += '</ul></div>';
             } else {
                 html += '<div class="mb-2 text-muted">No recorded actions for this finding.</div>';
             }
-            // Related findings count
             var related = data.related || [];
             if (related.length > 0) {
-                html += '<div><strong>Historical occurrences:</strong> ' + related.length + ' times in history</div>';
+                html += '<div><strong>Historical occurrences:</strong> ' + related.length + '</div>';
             }
             html += '</div>';
-            td.innerHTML = html;
+
+            var footer = '';
+            if (hasFix) footer += '<button type="button" class="btn btn-warning btn-sm" data-csm-finding-fix>Fix</button>';
+            footer += '<button type="button" class="btn btn-ghost-secondary btn-sm" data-csm-finding-dismiss>Dismiss</button>';
+            footer += '<button type="button" class="btn btn-ghost-secondary btn-sm" data-csm-finding-suppress>Suppress</button>';
+
+            CSM.detailPanel.open({ title: check, bodyHTML: html, footerHTML: footer });
+
+            var panel = CSM.detailPanel.element();
+            if (!panel) return;
+            var fixBtn = panel.querySelector('[data-csm-finding-fix]');
+            if (fixBtn) fixBtn.addEventListener('click', function() {
+                var rowFix = row.querySelector('.fix-btn');
+                if (rowFix) rowFix.click();
+                CSM.detailPanel.close();
+            });
+            var dismissBtn = panel.querySelector('[data-csm-finding-dismiss]');
+            if (dismissBtn) dismissBtn.addEventListener('click', function() {
+                dismissOne(key);
+                CSM.detailPanel.close();
+            });
+            var suppressBtn = panel.querySelector('[data-csm-finding-suppress]');
+            if (suppressBtn) suppressBtn.addEventListener('click', function() {
+                suppressFinding(check, message, filepath);
+            });
         })
-        .catch(function(err) { console.error('findingDetail:', err); td.innerHTML = '<div class="p-2 text-danger small">Failed to load details.</div>'; });
+        .catch(function(err) {
+            console.error('findingDetail:', err);
+            CSM.detailPanel.open({
+                title: check,
+                bodyHTML: CSM.emptyStateBlock({
+                    icon: 'alert-circle',
+                    title: 'Failed to load details',
+                    reason: 'Try again from the row buttons.'
+                })
+            });
+        });
 }
 
 // --- Export findings (CSV / JSON) via CSM.exportTable ---
