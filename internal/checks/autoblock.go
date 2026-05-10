@@ -104,25 +104,40 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// Collect IPs to block from findings
 	ipsToBlock := make(map[string]string) // ip -> reason
 
-	// Always blockable (brute force, C2, known malicious)
+	// Always blockable (brute force, C2, known malicious). Mailbox-takeover
+	// signals (`email_*`, `mail_*`, `smtp_*`, `sasl_*`) all classify as
+	// KindMailboxTakeover (see internal/incident/kind.go); the IP
+	// behind a mailbox-takeover incident is the same attacker
+	// regardless of which underlying check first surfaced it, so the
+	// full set is blockable. Without this, a pure
+	// `email_auth_failure_realtime` flood from one IP can rack up
+	// hundreds of incidents without ever tripping autoblock.
 	alwaysBlock := map[string]bool{
-		"wp_login_bruteforce":         true,
-		"xmlrpc_abuse":                true,
-		"ftp_bruteforce":              true,
-		"smtp_bruteforce":             true,
-		"smtp_probe_abuse":            true,
-		"mail_bruteforce":             true,
-		"mail_account_compromised":    true,
-		"admin_panel_bruteforce":      true,
-		"ssh_login_unknown_ip":        true,
-		"ssh_login_realtime":          true,
-		"c2_connection":               true,
-		"ip_reputation":               true,
-		"local_threat_score":          true,
-		"modsec_block_escalation":     true,
-		"modsec_csm_block_escalation": true,
-		"email_compromised_account":   true,
-		"email_cloud_relay_abuse":     true,
+		"wp_login_bruteforce":           true,
+		"xmlrpc_abuse":                  true,
+		"ftp_bruteforce":                true,
+		"smtp_bruteforce":               true,
+		"smtp_probe_abuse":              true,
+		"smtp_account_spray":            true,
+		"mail_bruteforce":               true,
+		"mail_account_compromised":      true,
+		"mail_account_spray":            true,
+		"admin_panel_bruteforce":        true,
+		"ssh_login_unknown_ip":          true,
+		"ssh_login_realtime":            true,
+		"c2_connection":                 true,
+		"ip_reputation":                 true,
+		"local_threat_score":            true,
+		"modsec_block_escalation":       true,
+		"modsec_csm_block_escalation":   true,
+		"email_compromised_account":     true,
+		"email_cloud_relay_abuse":       true,
+		"email_auth_failure_realtime":   true,
+		"email_credential_leak":         true,
+		"email_rate_critical":           true,
+		"email_spam_outbreak":           true,
+		"email_suspicious_geo":          true,
+		"credential_spray":              true,
 	}
 
 	// Only blockable when block_cpanel_logins is enabled (disabled by default)

@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -308,7 +309,7 @@ func TestClassifySensitiveDirPHP_ObfuscatedUpgrade_StaysCritical(t *testing.T) {
 
 	// Two indicators trip the Critical path in analyzePHPContent:
 	// (a) code-eval wrapping base64_decode on same line (hasNestedEvalDecode),
-	// (b) >30 concat operators on distinct lines.
+	// (b) >10 goto statements (LEVIATHAN-style spaghetti obfuscation).
 	evilPath := filepath.Join(tmp, "home", "u", "public_html",
 		"wp-content", "upgrade", "theme.1.0", "evil.php")
 	if err := os.MkdirAll(filepath.Dir(evilPath), 0o755); err != nil {
@@ -319,8 +320,8 @@ func TestClassifySensitiveDirPHP_ObfuscatedUpgrade_StaysCritical(t *testing.T) {
 	// Split the literal so this source file itself does not trip local
 	// Write/Edit security hooks; the runtime behaviour is unchanged.
 	body.WriteString(`ev` + `al(base64_decode($payload));` + "\n")
-	for i := 0; i < 40; i++ {
-		body.WriteString(`$x = "a" . "b" . "c";` + "\n")
+	for i := 0; i < 20; i++ {
+		body.WriteString(fmt.Sprintf("goto lbl%d; lbl%d:\n", i, i))
 	}
 	if err := os.WriteFile(evilPath, []byte(body.String()), 0o644); err != nil {
 		t.Fatal(err)

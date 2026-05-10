@@ -60,19 +60,6 @@
                             <span class="csm-status-strip__chip-value" id="stat-last-critical"{{if .LastCriticalISO}} data-timestamp="{{.LastCriticalISO}}"{{end}}>{{.LastCriticalAgo}}</span>
                             <span class="csm-status-strip__chip-label">since last critical</span>
                         </span>
-                        {{if .FanotifyActive}}
-                        <span class="csm-status-strip__chip csm-status-strip__chip--ok" title="Real-time filesystem monitoring via fanotify">
-                            <i class="ti ti-eye"></i>
-                            <span class="csm-status-strip__chip-value">fanotify</span>
-                            <span class="csm-status-strip__chip-label">active</span>
-                        </span>
-                        {{else}}
-                        <span class="csm-status-strip__chip csm-status-strip__chip--warn" title="Fanotify unavailable, using polling fallback">
-                            <i class="ti ti-eye-off"></i>
-                            <span class="csm-status-strip__chip-value">polling</span>
-                            <span class="csm-status-strip__chip-label">fallback</span>
-                        </span>
-                        {{end}}
                         {{if .LogWatchers}}
                         <span class="csm-status-strip__chip" title="Log files being watched in real time">
                             <i class="ti ti-file-text"></i>

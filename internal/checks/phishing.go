@@ -685,6 +685,16 @@ func analyzeDirectoryStructure(dir string, user string) *alert.Finding {
 		return nil
 	}
 
+	// Reject if any ancestor directory (between dir and /home/<user>/) is a
+	// developer scratch / tutorial / tmp folder. The folder name itself can
+	// look generic (e.g. "vers-1") yet sit inside a "JavaScript Login" or
+	// "temp" parent that clearly tags the contents as snippets, not a
+	// phishing drop. Without this check, a developer's tutorial directory
+	// fires phishing_directory on the immediate dir name only.
+	if hasTutorialAncestor(dir) {
+		return nil
+	}
+
 	// Verify at least one HTML file has credential inputs (quick check)
 	hasPhishingContent := false
 	for _, htmlFile := range htmlFiles {
@@ -718,6 +728,53 @@ func analyzeDirectoryStructure(dir string, user string) *alert.Finding {
 			user, dirName, strings.Join(htmlFiles, ", "), strings.Join(indicators, "\n- ")),
 		FilePath: dir,
 	}
+}
+
+// hasTutorialAncestor walks parents of dir up to (but not including) the
+// /home/<user>/ root looking for a folder name that marks the path as
+// developer scratch (temp/tmp/tutorial/...) or that starts with a
+// tech-stack prefix (javascript/php/...). Returns false for paths
+// outside /home/ so unit tests using t.TempDir() are unaffected. The
+// immediate dir name is intentionally not checked here -- the caller has
+// already validated it via looksLikeBusinessName.
+func hasTutorialAncestor(dir string) bool {
+	if !strings.HasPrefix(dir, "/home/") {
+		return false
+	}
+	rest := strings.TrimPrefix(dir, "/home/")
+	slash := strings.IndexByte(rest, '/')
+	if slash < 0 {
+		return false
+	}
+	userDir := "/home/" + rest[:slash]
+
+	scratchNames := map[string]bool{
+		"temp": true, "tmp": true, "tutorial": true, "tutorials": true,
+		"demo": true, "demos": true, "sample": true, "samples": true,
+		"snippet": true, "snippets": true, "playground": true,
+		"scratch": true, "examples": true, "lessons": true,
+		"sandbox": true, "drafts": true, "experiments": true,
+	}
+	techPrefixes := []string{
+		"php", "javascript", "js-", "css", "html", "python",
+		"java", "node", "react", "vue", "angular", "jquery",
+		"bootstrap", "wordpress", "wp-", "laravel",
+	}
+
+	cur := filepath.Dir(dir)
+	for cur != userDir && cur != "/" && cur != "." {
+		base := strings.ToLower(filepath.Base(cur))
+		if scratchNames[base] {
+			return true
+		}
+		for _, prefix := range techPrefixes {
+			if strings.HasPrefix(base, prefix) {
+				return true
+			}
+		}
+		cur = filepath.Dir(cur)
+	}
+	return false
 }
 
 // looksLikeBusinessName checks if a directory name looks like a business or

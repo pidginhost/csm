@@ -816,3 +816,61 @@ func TestScanForPhishingSkipsKnownSafeDir(t *testing.T) {
 		}
 	}
 }
+
+// --- hasTutorialAncestor (analyzeDirectoryStructure ancestor walk) -----
+//
+// Real cluster6 false positive: a developer's tutorial dump at
+//   /home/echipamentefrig/birou.servicefrig.ro/temp/JavaScript Login/vers-1
+// fired phishing_directory because the immediate dir name "vers-1" is
+// generic and slipped past looksLikeBusinessName, even though the parent
+// "JavaScript Login" and grandparent "temp" clearly tag the contents as
+// developer snippets. The ancestor walk catches that case without
+// allowlisting paths.
+
+func TestHasTutorialAncestor_TempDir(t *testing.T) {
+	if !hasTutorialAncestor("/home/u/birou.example.ro/temp/JavaScript Login/vers-1") {
+		t.Error("temp/JavaScript Login parent should mark dir as tutorial")
+	}
+}
+
+func TestHasTutorialAncestor_TutorialParent(t *testing.T) {
+	if !hasTutorialAncestor("/home/u/public_html/tutorial/AcmeCorp") {
+		t.Error("tutorial parent should mark dir as tutorial")
+	}
+}
+
+func TestHasTutorialAncestor_JavascriptPrefixParent(t *testing.T) {
+	if !hasTutorialAncestor("/home/u/public_html/javascript-login/vers-1") {
+		t.Error("javascript-prefixed parent should mark dir as tutorial")
+	}
+}
+
+func TestHasTutorialAncestor_LegitDocRoot(t *testing.T) {
+	if hasTutorialAncestor("/home/u/public_html/AcmeCorp") {
+		t.Error("public_html/<business> has no tutorial ancestor")
+	}
+}
+
+func TestHasTutorialAncestor_DocRootSibling(t *testing.T) {
+	if hasTutorialAncestor("/home/u/birou.example.ro/AcmeCorp") {
+		t.Error("custom doc root with no scratch parents has no tutorial ancestor")
+	}
+}
+
+func TestHasTutorialAncestor_OutsideHome(t *testing.T) {
+	// Anything not under /home/ is out of scope (unit tests use t.TempDir()
+	// which is /tmp/ on Linux and /var/folders/ on Darwin).
+	if hasTutorialAncestor("/tmp/TestSomething/temp/AcmeCorp") {
+		t.Error("paths outside /home/ should not run ancestor check")
+	}
+	if hasTutorialAncestor("/var/folders/xx/yy/T/TestPhishing/AcmeCorp") {
+		t.Error("Darwin tmp path should not run ancestor check")
+	}
+}
+
+func TestHasTutorialAncestor_AtUserRoot(t *testing.T) {
+	// /home/u/ itself has no ancestor below /home/<user>/ to check.
+	if hasTutorialAncestor("/home/u/AcmeCorp") {
+		t.Error("dir directly under /home/<user>/ has no checkable ancestors")
+	}
+}

@@ -1429,12 +1429,13 @@
         if (!el) return;
         var cfg = (typeof CSM_CONFIG !== 'undefined') ? CSM_CONFIG : {};
         var html = '<div class="d-flex flex-wrap gap-2">';
-        html += _postureChip('Firewall',     cfg.firewall      ? 'enabled' : 'off', !!cfg.firewall,      'Outbound block engine state');
-        html += _postureChip('Auto-response', cfg.autoResponse ? 'enabled' : 'off', !!cfg.autoResponse,  'Automatic block / quarantine response');
-        html += _postureChip('Email AV',     cfg.emailAV       ? 'enabled' : 'off', !!cfg.emailAV,       'ClamAV / yara scanning of outgoing mail');
-        html += _postureChip('Threat Intel', cfg.threatIntel   ? 'enabled' : 'off', !!cfg.threatIntel,   'AbuseIPDB / upstream IP reputation');
-        html += _postureChip('Signatures',   cfg.signatures    ? 'loaded'  : 'off', !!cfg.signatures,    'YARA / YAML rule loader');
-        html += _postureChip('Challenge',    cfg.challenge     ? 'on'      : 'off', !!cfg.challenge,     'Browser CAPTCHA challenge for suspicious IPs');
+        html += _postureChip('Firewall',     cfg.firewall      ? 'enabled' : 'off',      !!cfg.firewall,     'Outbound block engine state');
+        html += _postureChip('Auto-response', cfg.autoResponse ? 'enabled' : 'off',      !!cfg.autoResponse, 'Automatic block / quarantine response');
+        html += _postureChip('Email AV',     cfg.emailAV       ? 'enabled' : 'off',      !!cfg.emailAV,      'ClamAV / yara scanning of outgoing mail');
+        html += _postureChip('Threat Intel', cfg.threatIntel   ? 'enabled' : 'off',      !!cfg.threatIntel,  'AbuseIPDB / upstream IP reputation');
+        html += _postureChip('Signatures',   cfg.signatures    ? 'loaded'  : 'off',      !!cfg.signatures,   'YARA / YAML rule loader');
+        html += _postureChip('Challenge',    cfg.challenge     ? 'on'      : 'off',      !!cfg.challenge,    'Browser CAPTCHA challenge for suspicious IPs');
+        html += _postureChip('Fanotify',     cfg.fanotify      ? 'active'  : 'fallback', !!cfg.fanotify,     'Real-time filesystem monitoring via fanotify (polling fallback when off)');
         html += '</div>';
         el.innerHTML = html;
     }

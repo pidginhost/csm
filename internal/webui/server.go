@@ -494,6 +494,7 @@ func (s *Server) csmConfig() map[string]interface{} {
 		"threatIntel":  s.cfg.Reputation.AbuseIPDBKey != "",
 		"signatures":   s.cfg.Signatures.RulesDir != "",
 		"challenge":    s.cfg.Challenge.Difficulty > 0,
+		"fanotify":     s.fanotifyActive,
 		"hostname":     s.cfg.Hostname,
 		"authScope":    "admin",
 		// #nosec G101 -- Not credentials. This is a lookup from

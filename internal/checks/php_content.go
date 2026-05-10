@@ -203,15 +203,12 @@ func analyzePHPContent(path string) phpAnalysisResult {
 				break
 			}
 		}
-		// Co-presence = weaker signal (contributes to multi-indicator scoring)
-		if !sameLine {
-			for _, fn := range dangerousCalls {
-				if strings.Contains(contentLower, fn) {
-					indicators = append(indicators, fmt.Sprintf("remote URL co-present with %s: %s", fn, host))
-					break
-				}
-			}
-		}
+		// Co-presence (different lines, same 32 KB window) was previously
+		// emitted as a weaker indicator. It generated standing FPs on
+		// legit plugins that fetch upstream resources from github mirrors
+		// (wp-statistics GeoLite2 updates, unyson font fetcher, polylang
+		// language packs). Same-line is the strong signal kept above; the
+		// co-presence path is removed entirely.
 	}
 
 	// --- Critical: eval() chains with decoding ---
@@ -291,9 +288,13 @@ func analyzePHPContent(path string) phpAnalysisResult {
 	dotConcatCount := countOccurrences(content, `" . "`)
 	if hexStringCount > 20 && dotConcatCount > 10 {
 		indicators = append(indicators, fmt.Sprintf("heavy hex-encoded strings with concatenation (%d hex, %d concat - obfuscation pattern)", hexStringCount, dotConcatCount))
-	} else if dotConcatCount > 30 {
-		indicators = append(indicators, fmt.Sprintf("excessive string concatenation (%d - function name obfuscation)", dotConcatCount))
 	}
+	// The standalone "concat>30 alone" branch was removed: WordPress
+	// themes and page builders concatenate literal CSS/HTML tokens
+	// dozens of times in dynamic style/markup builders (sydney theme,
+	// elementor, beaver builder), producing FPs on every install. Real
+	// function-name obfuscation always pairs concat with hex escapes
+	// and is still caught by the combined branch above.
 
 	// --- High: Variable function calls with obfuscated names ---
 	// call_user_func + decoder alone is too broad - Elementor, WooCommerce, and

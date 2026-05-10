@@ -541,3 +541,122 @@ func TestAutoBlock_SMTPSubnetSprayBypassesPerIPRateLimit(t *testing.T) {
 		t.Errorf("subnet spray must bypass per-IP rate limit; got %v", fake.blockedSubnet)
 	}
 }
+
+// --- mailbox-takeover-class checks must trigger autoblock --------------
+//
+// cluster6 ran 979 incidents from 192.253.248.37 (mailbox_takeover kind)
+// over 24h with no FW block. Root cause: the underlying realtime checks
+// emit their own check name (e.g. email_auth_failure_realtime) that was
+// not in alwaysBlock, so AutoBlockIPs ignored them. Each of the
+// mailbox-takeover-class checks below must trigger BlockIP for the
+// attacker IP carried in the finding message.
+
+func TestAutoBlock_EmailAuthFailureRealtimeTriggersBlockIP(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.StatePath = t.TempDir()
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := fwBlocker
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+
+	findings := []alert.Finding{{
+		Check:   "email_auth_failure_realtime",
+		Message: "Repeated SMTP auth failure from 203.0.113.7 against alice@example.com",
+	}}
+	AutoBlockIPs(cfg, findings)
+
+	if len(blocker.blocked) != 1 || blocker.blocked[0] != "203.0.113.7" {
+		t.Errorf("expected BlockIP(203.0.113.7) for email_auth_failure_realtime, got %v", blocker.blocked)
+	}
+}
+
+func TestAutoBlock_EmailCredentialLeakTriggersBlockIP(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.StatePath = t.TempDir()
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := fwBlocker
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+
+	findings := []alert.Finding{{
+		Check:   "email_credential_leak",
+		Message: "Credential leak detected for bob@example.com from 198.51.100.4",
+	}}
+	AutoBlockIPs(cfg, findings)
+
+	if len(blocker.blocked) != 1 || blocker.blocked[0] != "198.51.100.4" {
+		t.Errorf("expected BlockIP for email_credential_leak, got %v", blocker.blocked)
+	}
+}
+
+func TestAutoBlock_EmailSpamOutbreakTriggersBlockIP(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.StatePath = t.TempDir()
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := fwBlocker
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+
+	findings := []alert.Finding{{
+		Check:   "email_spam_outbreak",
+		Message: "Spam outbreak from 198.51.100.42 - 200 messages in 5 minutes",
+	}}
+	AutoBlockIPs(cfg, findings)
+
+	if len(blocker.blocked) != 1 || blocker.blocked[0] != "198.51.100.42" {
+		t.Errorf("expected BlockIP for email_spam_outbreak, got %v", blocker.blocked)
+	}
+}
+
+func TestAutoBlock_MailAccountSprayTriggersBlockIP(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.StatePath = t.TempDir()
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := fwBlocker
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+
+	findings := []alert.Finding{{
+		Check:   "mail_account_spray",
+		Message: "Mail account spray from 203.0.113.99: 12 distinct mailboxes in 10m",
+	}}
+	AutoBlockIPs(cfg, findings)
+
+	if len(blocker.blocked) != 1 || blocker.blocked[0] != "203.0.113.99" {
+		t.Errorf("expected BlockIP for mail_account_spray, got %v", blocker.blocked)
+	}
+}
+
+func TestAutoBlock_CredentialSprayTriggersBlockIP(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.StatePath = t.TempDir()
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := fwBlocker
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+
+	findings := []alert.Finding{{
+		Check:   "credential_spray",
+		Message: "Credential spray super-incident: 203.0.113.50 hit 8 distinct mailboxes in 15m",
+	}}
+	AutoBlockIPs(cfg, findings)
+
+	if len(blocker.blocked) != 1 || blocker.blocked[0] != "203.0.113.50" {
+		t.Errorf("expected BlockIP for credential_spray, got %v", blocker.blocked)
+	}
+}

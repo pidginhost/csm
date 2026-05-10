@@ -139,8 +139,13 @@ func humanBytes(b int64) string {
 	}
 }
 
-// CheckLoadAverage compares the 1-minute load average against per-core
-// thresholds from config. Reports Critical or High findings.
+// CheckLoadAverage compares load averages against per-core thresholds
+// from config. The 1-minute load drives the Critical / High findings;
+// when 1-minute is below the High threshold we additionally check the
+// 5- and 15-minute averages for sustained pressure (>= 0.7 * High
+// threshold on both) and emit a Warning. The sustained variant catches
+// "constant 22%-of-cores busy for 15 minutes" which is invisible to a
+// 1-minute spike check but is what operators actually want to see.
 func CheckLoadAverage(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	if !perfEnabled(cfg) {
 		return nil
@@ -157,31 +162,43 @@ func CheckLoadAverage(ctx context.Context, cfg *config.Config, _ *state.Store) [
 	critThreshold := float64(cores) * cfg.Performance.LoadCriticalMultiplier
 	highThreshold := float64(cores) * cfg.Performance.LoadHighMultiplier
 
-	var sev alert.Severity
-	var msg string
-
 	switch {
 	case load1 > critThreshold:
-		sev = alert.Critical
-		msg = "High load average exceeds critical threshold"
+		return []alert.Finding{{
+			Severity: alert.Critical,
+			Check:    "perf_load",
+			Message:  "High load average exceeds critical threshold",
+			Details: fmt.Sprintf("Load: %.1f/%.1f/%.1f, Cores: %d, Threshold: %.1f",
+				loads[0], loads[1], loads[2], cores, critThreshold),
+			Timestamp: time.Now(),
+		}}
 	case load1 > highThreshold:
-		sev = alert.High
-		msg = "High load average exceeds high threshold"
-	default:
-		return nil
+		return []alert.Finding{{
+			Severity: alert.High,
+			Check:    "perf_load",
+			Message:  "High load average exceeds high threshold",
+			Details: fmt.Sprintf("Load: %.1f/%.1f/%.1f, Cores: %d, Threshold: %.1f",
+				loads[0], loads[1], loads[2], cores, highThreshold),
+			Timestamp: time.Now(),
+		}}
 	}
 
-	details := fmt.Sprintf("Load: %.1f/%.1f/%.1f, Cores: %d, Threshold: %.1f",
-		loads[0], loads[1], loads[2], cores,
-		map[bool]float64{true: critThreshold, false: highThreshold}[sev == alert.Critical])
-
-	return []alert.Finding{{
-		Severity:  sev,
-		Check:     "perf_load",
-		Message:   msg,
-		Details:   details,
-		Timestamp: time.Now(),
-	}}
+	// Sustained pressure: 1-minute is calm but 5- and 15-minute
+	// averages are both above 70% of the High threshold. This is the
+	// "load 9 on 40 cores for 15 minutes" shape -- below the spike
+	// threshold but a real operator concern.
+	sustainedThreshold := highThreshold * 0.7
+	if loads[1] > sustainedThreshold && loads[2] > sustainedThreshold {
+		return []alert.Finding{{
+			Severity: alert.Warning,
+			Check:    "perf_load",
+			Message:  "Sustained load (5m + 15m) above 70% of high threshold",
+			Details: fmt.Sprintf("Load: %.1f/%.1f/%.1f, Cores: %d, Sustained threshold: %.1f",
+				loads[0], loads[1], loads[2], cores, sustainedThreshold),
+			Timestamp: time.Now(),
+		}}
+	}
+	return nil
 }
 
 // CheckPHPProcessLoad scans /proc for lsphp processes, groups them by user,
@@ -750,6 +767,43 @@ func CheckRedisConfig(ctx context.Context, cfg *config.Config, _ *state.Store) [
 					humanBytes(largeDatasetBytes),
 					bgsaveMinInterval,
 				),
+				Timestamp: time.Now(),
+			})
+		}
+	}
+
+	// --- used_memory vs maxmemory headroom ---
+	// The maxmemory==0 branch above flags the unset case. When maxmemory
+	// IS set, used/max ratio is the operator-meaningful signal: at 80%
+	// the eviction policy is about to start churning hot keys; at 90%
+	// noeviction-policy instances start returning OOM errors. Reuses
+	// the maxmemory bytes already fetched at the top of the function.
+	var maxMemoryBytes int64
+	if len(maxMemOut) > 0 {
+		fields := strings.Fields(string(maxMemOut))
+		if len(fields) >= 2 {
+			if v, convErr := strconv.ParseInt(fields[1], 10, 64); convErr == nil {
+				maxMemoryBytes = v
+			}
+		}
+	}
+	if maxMemoryBytes > 0 && usedMemoryBytes > 0 {
+		pct := float64(usedMemoryBytes) / float64(maxMemoryBytes) * 100
+		switch {
+		case pct >= 90:
+			findings = append(findings, alert.Finding{
+				Severity:  alert.High,
+				Check:     "perf_redis_config",
+				Message:   "Redis used memory >= 90% of maxmemory",
+				Details:   fmt.Sprintf("Used: %s / Max: %s (%.1f%%)", humanBytes(usedMemoryBytes), humanBytes(maxMemoryBytes), pct),
+				Timestamp: time.Now(),
+			})
+		case pct >= 80:
+			findings = append(findings, alert.Finding{
+				Severity:  alert.Warning,
+				Check:     "perf_redis_config",
+				Message:   "Redis used memory >= 80% of maxmemory",
+				Details:   fmt.Sprintf("Used: %s / Max: %s (%.1f%%)", humanBytes(usedMemoryBytes), humanBytes(maxMemoryBytes), pct),
 				Timestamp: time.Now(),
 			})
 		}
