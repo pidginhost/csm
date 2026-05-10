@@ -21,48 +21,11 @@
         </div>
     </div>
 
-    <!-- Daemon status strip -->
-    <div class="csm-status-strip mb-3">
-        <span class="csm-status-strip__chip" title="Daemon uptime since last restart">
-            <i class="ti ti-clock"></i>
-            <span class="csm-status-strip__chip-value">{{.Uptime}}</span>
-            <span class="csm-status-strip__chip-label">uptime</span>
-        </span>
-        <span class="csm-status-strip__chip" title="Time since the most recent critical finding"{{if .LastCriticalISO}} data-timestamp="{{.LastCriticalISO}}"{{end}}>
-            <i class="ti ti-alert-octagon"></i>
-            <span class="csm-status-strip__chip-value" id="stat-last-critical"{{if .LastCriticalISO}} data-timestamp="{{.LastCriticalISO}}"{{end}}>{{.LastCriticalAgo}}</span>
-            <span class="csm-status-strip__chip-label">since last critical</span>
-        </span>
-        {{if .FanotifyActive}}
-        <span class="csm-status-strip__chip csm-status-strip__chip--ok" title="Real-time filesystem monitoring via fanotify">
-            <i class="ti ti-eye"></i>
-            <span class="csm-status-strip__chip-value">fanotify</span>
-            <span class="csm-status-strip__chip-label">active</span>
-        </span>
-        {{else}}
-        <span class="csm-status-strip__chip csm-status-strip__chip--warn" title="Fanotify unavailable, using polling fallback">
-            <i class="ti ti-eye-off"></i>
-            <span class="csm-status-strip__chip-value">polling</span>
-            <span class="csm-status-strip__chip-label">fallback</span>
-        </span>
-        {{end}}
-        {{if .LogWatchers}}
-        <span class="csm-status-strip__chip" title="Log files being watched in real time">
-            <i class="ti ti-file-text"></i>
-            <span class="csm-status-strip__chip-value">{{.LogWatchers}}</span>
-            <span class="csm-status-strip__chip-label">log watchers</span>
-        </span>
-        {{end}}
-        <span class="csm-status-strip__chip" title="Loaded YARA / YAML signatures">
-            <i class="ti ti-shield-check"></i>
-            <span class="csm-status-strip__chip-value">{{.SigCount}}</span>
-            <span class="csm-status-strip__chip-label">rules</span>
-        </span>
-    </div>
-
-    <!-- Priority queue + system posture. Use align-items-start so the posture
-         card hugs its content instead of stretching to match the long queue
-         column on hosts with many open incidents. -->
+    <!-- Priority queue + system posture. The posture card now also carries
+         the runtime status chips (uptime, fanotify, watchers, rules) and the
+         24h severity totals so the right rail uses the height the priority
+         queue forces; the previous standalone status-strip and stat-card row
+         were left empty next to a long queue column. -->
     <div class="row row-cards mb-3 align-items-start">
         <div class="col-lg-7">
             <div class="card">
@@ -85,47 +48,84 @@
         <div class="col-lg-5">
             <div class="card">
                 <div class="card-header"><h3 class="card-title"><i class="ti ti-shield"></i>&nbsp;System posture</h3></div>
-                <div class="card-body" id="system-posture">
-                    <div class="text-muted text-center py-3"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
+                <div class="card-body">
+                    <div class="csm-status-strip mb-3">
+                        <span class="csm-status-strip__chip" title="Daemon uptime since last restart">
+                            <i class="ti ti-clock"></i>
+                            <span class="csm-status-strip__chip-value">{{.Uptime}}</span>
+                            <span class="csm-status-strip__chip-label">uptime</span>
+                        </span>
+                        <span class="csm-status-strip__chip" title="Time since the most recent critical finding"{{if .LastCriticalISO}} data-timestamp="{{.LastCriticalISO}}"{{end}}>
+                            <i class="ti ti-alert-octagon"></i>
+                            <span class="csm-status-strip__chip-value" id="stat-last-critical"{{if .LastCriticalISO}} data-timestamp="{{.LastCriticalISO}}"{{end}}>{{.LastCriticalAgo}}</span>
+                            <span class="csm-status-strip__chip-label">since last critical</span>
+                        </span>
+                        {{if .FanotifyActive}}
+                        <span class="csm-status-strip__chip csm-status-strip__chip--ok" title="Real-time filesystem monitoring via fanotify">
+                            <i class="ti ti-eye"></i>
+                            <span class="csm-status-strip__chip-value">fanotify</span>
+                            <span class="csm-status-strip__chip-label">active</span>
+                        </span>
+                        {{else}}
+                        <span class="csm-status-strip__chip csm-status-strip__chip--warn" title="Fanotify unavailable, using polling fallback">
+                            <i class="ti ti-eye-off"></i>
+                            <span class="csm-status-strip__chip-value">polling</span>
+                            <span class="csm-status-strip__chip-label">fallback</span>
+                        </span>
+                        {{end}}
+                        {{if .LogWatchers}}
+                        <span class="csm-status-strip__chip" title="Log files being watched in real time">
+                            <i class="ti ti-file-text"></i>
+                            <span class="csm-status-strip__chip-value">{{.LogWatchers}}</span>
+                            <span class="csm-status-strip__chip-label">log watchers</span>
+                        </span>
+                        {{end}}
+                        <span class="csm-status-strip__chip" title="Loaded YARA / YAML signatures">
+                            <i class="ti ti-shield-check"></i>
+                            <span class="csm-status-strip__chip-value">{{.SigCount}}</span>
+                            <span class="csm-status-strip__chip-label">rules</span>
+                        </span>
+                    </div>
+                    <div class="row row-cards mb-3">
+                        <div class="col-4">
+                            <a href="/findings?tab=history&severity=2" class="card card-sm card-link stat-card" title="Critical findings in the last 24 hours">
+                                <div class="card-body p-2">
+                                    <div class="subheader">Critical (24h)</div>
+                                    <div class="d-flex align-items-baseline">
+                                        <div class="h2 mb-0 text-critical me-2" id="stat-critical">{{.Critical}}</div>
+                                        <div class="small stat-delta" id="stat-critical-delta"></div>
+                                    </div>
+                                </div>
+                            </a>
+                        </div>
+                        <div class="col-4">
+                            <a href="/findings?tab=history&severity=1" class="card card-sm card-link stat-card" title="High findings in the last 24 hours">
+                                <div class="card-body p-2">
+                                    <div class="subheader">High (24h)</div>
+                                    <div class="d-flex align-items-baseline">
+                                        <div class="h2 mb-0 text-high me-2" id="stat-high">{{.High}}</div>
+                                        <div class="small stat-delta" id="stat-high-delta"></div>
+                                    </div>
+                                </div>
+                            </a>
+                        </div>
+                        <div class="col-4">
+                            <a href="/findings?tab=history&severity=0" class="card card-sm card-link stat-card" title="Warning findings in the last 24 hours">
+                                <div class="card-body p-2">
+                                    <div class="subheader">Warning (24h)</div>
+                                    <div class="d-flex align-items-baseline">
+                                        <div class="h2 mb-0 text-warning me-2" id="stat-warning">{{.Warning}}</div>
+                                        <div class="small stat-delta" id="stat-warning-delta"></div>
+                                    </div>
+                                </div>
+                            </a>
+                        </div>
+                    </div>
+                    <div id="system-posture">
+                        <div class="text-muted text-center py-3"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
+                    </div>
                 </div>
             </div>
-        </div>
-    </div>
-
-    <!-- 24h severity totals (kept for reference, demoted below the priority queue) -->
-    <div class="row row-deck row-cards mb-3">
-        <div class="col-6 col-lg">
-            <a href="/findings?tab=history&severity=2" class="card card-link stat-card" title="Critical severity findings in the last 24 hours -- click to view history">
-                <div class="card-body">
-                    <div class="subheader">Critical (24h)</div>
-                    <div class="d-flex align-items-baseline">
-                        <div class="h1 mb-0 text-critical me-2" id="stat-critical">{{.Critical}}</div>
-                        <div class="small stat-delta" id="stat-critical-delta"></div>
-                    </div>
-                </div>
-            </a>
-        </div>
-        <div class="col-6 col-lg">
-            <a href="/findings?tab=history&severity=1" class="card card-link stat-card" title="High severity findings in the last 24 hours -- click to view history">
-                <div class="card-body">
-                    <div class="subheader">High (24h)</div>
-                    <div class="d-flex align-items-baseline">
-                        <div class="h1 mb-0 text-high me-2" id="stat-high">{{.High}}</div>
-                        <div class="small stat-delta" id="stat-high-delta"></div>
-                    </div>
-                </div>
-            </a>
-        </div>
-        <div class="col-6 col-lg">
-            <a href="/findings?tab=history&severity=0" class="card card-link stat-card" title="Warning severity findings in the last 24 hours -- click to view history">
-                <div class="card-body">
-                    <div class="subheader">Warning (24h)</div>
-                    <div class="d-flex align-items-baseline">
-                        <div class="h1 mb-0 text-warning me-2" id="stat-warning">{{.Warning}}</div>
-                        <div class="small stat-delta" id="stat-warning-delta"></div>
-                    </div>
-                </div>
-            </a>
         </div>
     </div>
 
