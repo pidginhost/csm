@@ -296,6 +296,12 @@ func (d *Daemon) Run() error {
 
 	csmlog.Info("CSM daemon starting")
 
+	// Wire the active config to the incident-singleton's auto-close
+	// loop BEFORE the singleton is constructed, so the loop reads the
+	// operator-supplied thresholds on its first sweep. The closure
+	// captures the Daemon to pick up reloaded configs without restart.
+	SetIncidentConfigSource(func() *config.Config { return d.currentCfg() })
+
 	// Construct the incident correlator early so state is restored and
 	// metrics are registered before any finding is dispatched. Singleton;
 	// safe to call multiple times.

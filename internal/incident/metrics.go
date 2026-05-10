@@ -41,4 +41,14 @@ func RegisterMetrics(reg *metrics.Registry, c *Correlator) {
 		"Findings held in the threshold gate, awaiting a second correlated finding before opening an incident.",
 		func() float64 { return float64(c.PendingCount()) },
 	)
+	reg.RegisterCounterFunc(
+		"csm_incidents_auto_closed_total",
+		"Open or contained incidents auto-resolved after exceeding their per-kind idle threshold.",
+		func() float64 { return float64(c.counters.autoClosedTotal.Load()) },
+	)
+	reg.RegisterCounterFunc(
+		"csm_incidents_auto_close_dry_run_total",
+		"Auto-close decisions counted while dry_run was active (state unchanged).",
+		func() float64 { return float64(c.counters.autoCloseDryRunTotal.Load()) },
+	)
 }

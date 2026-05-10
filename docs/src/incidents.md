@@ -15,7 +15,45 @@ of unrelated findings. Original findings are not mutated or suppressed
 | `dismissed` | False positive. Future findings start a new incident.                  |
 
 Resolved and dismissed incidents are pruned 30 days after their last
-update. Open and contained incidents are never auto-pruned.
+update. Open and contained incidents are never auto-pruned by the
+retention loop, but they may be auto-resolved by the per-kind idle
+threshold described under "Auto-close" below.
+
+## Auto-close
+
+To stop the open-incident backlog from growing without bound on busy
+hosts, the daemon scans Open / Contained incidents once an hour and
+auto-resolves any whose `updated_at` exceeds the per-kind idle
+threshold. Auto-resolved incidents carry `closed_by: "auto:stale"` and
+an `incident_auto_closed` action in their timeline so reporting can
+distinguish them from operator closes.
+
+Defaults (configurable in `csm.yaml`):
+
+```yaml
+incidents:
+  auto_close:
+    enabled: true            # set false to disable
+    dry_run: false           # set true to log decisions without writing back
+    by_kind:
+      mailbox_takeover: 24h
+      web_account_compromise: 168h
+      pam_failure: 24h
+      wp_login_bruteforce: 24h
+```
+
+Kinds absent from `by_kind` are never auto-closed. The default map
+omits `host_integrity_risk` and verdict-emitted kinds (sensitive file
+writes, ModSecurity escalations, cloud-relay abuse) because those
+should stay open until an operator reviews them.
+
+If a fresh finding for the same correlation key arrives after the
+auto-close, the merge-window stale-binding logic creates a new open
+incident -- nothing about auto-close blocks re-detection. History is
+preserved on the closed record.
+
+Metrics: `csm_incidents_auto_closed_total` and
+`csm_incidents_auto_close_dry_run_total`.
 
 ## Kinds
 

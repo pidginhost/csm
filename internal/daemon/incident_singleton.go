@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/incident"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/metrics"
@@ -15,7 +16,14 @@ var (
 	incidentCorrelator      *incident.Correlator
 	incidentRegistry        = metrics.Default
 	incidentRetentionCancel func()
+	incidentAutoCloseCancel func()
 )
+
+// incidentAutoCloseInterval is how often the daemon scans Open / Contained
+// incidents for staleness. One hour is fast enough that 24h-idle incidents
+// close within ~25h worst-case, but slow enough that the per-kind walk
+// stays cheap on hosts with thousands of incidents.
+const incidentAutoCloseInterval = 1 * time.Hour
 
 // incidentRetentionPeriod is how long resolved/dismissed incidents are
 // kept before compaction prunes them. Named constant per project
@@ -57,8 +65,89 @@ func IncidentCorrelator() *incident.Correlator {
 		}
 		incident.RegisterMetrics(incidentRegistry(), incidentCorrelator)
 		incidentRetentionCancel = startIncidentRetentionLoop(incidentCorrelator)
+		// Auto-close runs on its own hourly ticker so the daily retention
+		// loop is not coupled to the close cadence; a 24h-idle incident
+		// closes within at most ~25h.
+		if cfg := globalCfgForIncidents(); cfg != nil {
+			incidentAutoCloseCancel = startIncidentAutoCloseLoop(incidentCorrelator, cfg)
+		}
 	})
 	return incidentCorrelator
+}
+
+// globalCfgForIncidents is overridden in tests to plug a synthetic config
+// without touching package-level state. Production wiring sets this to a
+// closure over the daemon's loaded config; until that wiring lands the
+// auto-close loop simply does not start (no panic). The retention loop
+// keeps running unchanged.
+var globalCfgForIncidents = func() *config.Config { return nil }
+
+// SetIncidentConfigSource wires the daemon-loaded config so the
+// incident singleton can resolve auto-close thresholds at construction.
+// Called once from cmd/csm/serve before IncidentCorrelator() is first
+// invoked. Subsequent calls overwrite the source so reload paths can
+// rebind without restarting the singleton.
+func SetIncidentConfigSource(get func() *config.Config) {
+	if get == nil {
+		globalCfgForIncidents = func() *config.Config { return nil }
+		return
+	}
+	globalCfgForIncidents = get
+}
+
+// startIncidentAutoCloseLoop launches the per-kind idle scan that
+// auto-resolves stale incidents. Returns a cancel func. Logs every run
+// at info when work was done; silent when nothing closed.
+func startIncidentAutoCloseLoop(c *incident.Correlator, cfg *config.Config) func() {
+	stop := make(chan struct{})
+	go func() {
+		t := time.NewTicker(incidentAutoCloseInterval)
+		defer t.Stop()
+		// First sweep fires after a 30-min warm-up so the daemon has
+		// finished restoring incidents and processing any backlog from
+		// the journal before we start writing back.
+		first := time.NewTimer(30 * time.Minute)
+		defer first.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-first.C:
+				runIncidentAutoClose(c, cfg)
+			case <-t.C:
+				runIncidentAutoClose(c, cfg)
+			}
+		}
+	}()
+	return func() { close(stop) }
+}
+
+// runIncidentAutoClose is one tick of the auto-close loop. Gated on
+// the operator's config and on the per-kind threshold map. dry_run=true
+// only increments counters; live mode flips Status -> resolved and
+// records "auto:stale" attribution.
+func runIncidentAutoClose(c *incident.Correlator, cfg *config.Config) {
+	if cfg == nil || !cfg.IncidentsAutoCloseEnabled() {
+		return
+	}
+	rawThresholds := cfg.IncidentsAutoCloseThresholds()
+	if len(rawThresholds) == 0 {
+		return
+	}
+	thresholds := make(map[incident.Kind]time.Duration, len(rawThresholds))
+	for k, v := range rawThresholds {
+		thresholds[incident.Kind(k)] = v
+	}
+	dryRun := cfg.Incidents.AutoClose.DryRun
+	closed, dryRunCount, scanned := c.CloseStale(time.Now(), thresholds, dryRun)
+	if closed > 0 || dryRunCount > 0 {
+		csmlog.Info("incident auto-close",
+			"closed", closed,
+			"dry_run_decisions", dryRunCount,
+			"scanned", scanned,
+			"dry_run", dryRun,
+		)
+	}
 }
 
 // startIncidentRetentionLoop runs a daily compaction sweep against the
@@ -125,9 +214,14 @@ func resetIncidentForTestWithThreshold(threshold int) {
 		incidentRetentionCancel()
 		incidentRetentionCancel = nil
 	}
+	if incidentAutoCloseCancel != nil {
+		incidentAutoCloseCancel()
+		incidentAutoCloseCancel = nil
+	}
 	incidentCorrelator = nil
 	incidentOnce = sync.Once{}
 	incidentRegistry = metrics.NewRegistry
+	globalCfgForIncidents = func() *config.Config { return nil }
 	// Most tests assert that one finding lands in one incident; the
 	// production threshold of 2 would defer creation to the second
 	// correlated event and break those wiring assertions. Pin to the

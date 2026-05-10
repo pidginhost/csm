@@ -617,6 +617,32 @@ type Config struct {
 		// GitHub call fails. Defaults to "csm".
 		PackageName string `yaml:"package_name,omitempty"`
 	} `yaml:"updates" hotreload:"restart"`
+
+	// Incidents groups correlator-side knobs the operator can tune
+	// without code changes. Hot-reload "restart" because the daemon
+	// captures these on startup; flipping mid-run would race the
+	// retention loop.
+	Incidents struct {
+		// AutoClose resolves Open / Contained incidents whose UpdatedAt
+		// exceeds the per-kind idle threshold. Default-on with safe
+		// thresholds; brute-force kinds expire at 24h, account-compromise
+		// at 7d, and verdict-emitted kinds never auto-close. Operators
+		// who want to monitor decisions without writing back can flip
+		// dry_run=true.
+		AutoClose struct {
+			// Enabled is tri-state: nil (default) means default-on; an
+			// explicit false in YAML disables. Pointer so absence in YAML
+			// is distinguishable from "enabled: false".
+			Enabled *bool `yaml:"enabled"`
+			DryRun  bool  `yaml:"dry_run"`
+			// ByKind maps incident kind -> idle threshold (parsed by
+			// time.ParseDuration). Kinds absent from the map are never
+			// auto-closed. Use a string-keyed map so the operator can
+			// add custom kinds without recompiling. Empty map falls back
+			// to safe defaults (mailbox_takeover=24h, web=7d, brute=24h).
+			ByKind map[string]string `yaml:"by_kind,omitempty"`
+		} `yaml:"auto_close"`
+	} `yaml:"incidents" hotreload:"restart"`
 }
 
 // UpdatesCheckEnabled reports the YAML-level state for the upstream
@@ -653,6 +679,45 @@ func (c *Config) UpdatesPackageName() string {
 // in YAML — the operator must opt in explicitly.
 func (cfg *Config) PHPRelayFreezeEnabled() bool {
 	return cfg.AutoResponse.PHPRelay.Freeze != nil && *cfg.AutoResponse.PHPRelay.Freeze
+}
+
+// IncidentsAutoCloseEnabled reports whether the auto-close path should
+// run. Defaults to TRUE when the YAML key is absent so a fresh
+// installation drains stale incidents without explicit opt-in. An
+// explicit `incidents.auto_close.enabled: false` disables.
+func (cfg *Config) IncidentsAutoCloseEnabled() bool {
+	return cfg.Incidents.AutoClose.Enabled == nil || *cfg.Incidents.AutoClose.Enabled
+}
+
+// IncidentsAutoCloseThresholds returns the per-kind idle thresholds in
+// parsed form. Built from the operator's by_kind YAML map, falling
+// back to safe defaults (mailbox_takeover=24h, web_account_compromise=7d,
+// pam_failure=24h, wp_login_bruteforce=24h) when the operator did not
+// supply a map. Unparseable durations are skipped silently so a typo
+// in one entry does not disable the rest.
+func (cfg *Config) IncidentsAutoCloseThresholds() map[string]time.Duration {
+	out := defaultIncidentAutoCloseThresholds()
+	for kind, raw := range cfg.Incidents.AutoClose.ByKind {
+		if raw == "" {
+			delete(out, kind)
+			continue
+		}
+		d, err := time.ParseDuration(raw)
+		if err != nil || d <= 0 {
+			continue
+		}
+		out[kind] = d
+	}
+	return out
+}
+
+func defaultIncidentAutoCloseThresholds() map[string]time.Duration {
+	return map[string]time.Duration{
+		"mailbox_takeover":       24 * time.Hour,
+		"web_account_compromise": 7 * 24 * time.Hour,
+		"pam_failure":            24 * time.Hour,
+		"wp_login_bruteforce":    24 * time.Hour,
+	}
 }
 
 // PHPRelayDryRunEnabled reports the YAML-level dry-run state for the

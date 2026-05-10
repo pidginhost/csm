@@ -52,6 +52,13 @@ type Incident struct {
 	Actions        []IncidentAction `json:"actions,omitempty"`
 	CreatedAt      time.Time        `json:"created_at"`
 	UpdatedAt      time.Time        `json:"updated_at"`
+	// ClosedAt is set when an incident transitions out of Open/Contained.
+	// Populated by SetStatus and CloseStale; zero for active incidents so
+	// existing webhook/SIEM consumers see no diff (omitempty).
+	ClosedAt time.Time `json:"closed_at,omitempty"`
+	// ClosedBy attributes the close. "operator" for SetStatus calls,
+	// "auto:stale" for CloseStale. Empty for active incidents.
+	ClosedBy string `json:"closed_by,omitempty"`
 }
 
 // MarshalJSON renders Severity as its uppercase string form

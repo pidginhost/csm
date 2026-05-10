@@ -48,6 +48,8 @@ type counters struct {
 	statusChangedTotal   atomic.Uint64
 	findingsMergedTotal  atomic.Uint64
 	compactedTotal       atomic.Uint64
+	autoClosedTotal      atomic.Uint64
+	autoCloseDryRunTotal atomic.Uint64
 }
 
 // Correlator groups findings into incidents. In-memory state; the
@@ -403,12 +405,78 @@ func (c *Correlator) SetStatus(id string, status Status, details string) error {
 	})
 	c.counters.statusChangedTotal.Add(1)
 	if status == StatusResolved || status == StatusDismissed {
+		// Operator close: record provenance so reporting can distinguish
+		// from CloseStale's "auto:stale" attribution. Only set if the
+		// caller has not already assigned a closed reason (e.g. CloseStale
+		// reuses SetStatus internally and presets these fields).
+		if inc.ClosedAt.IsZero() {
+			inc.ClosedAt = now
+			inc.ClosedBy = "operator"
+		}
 		c.unbindLocked(id)
 	} else {
+		// Reverting from resolved/dismissed back to open or contained
+		// clears the close attribution so future closes attribute correctly.
+		inc.ClosedAt = time.Time{}
+		inc.ClosedBy = ""
 		c.bindLocked(inc)
 	}
 	c.persistLocked(*inc)
 	return nil
+}
+
+// CloseStale auto-resolves Open / Contained incidents whose UpdatedAt is
+// older than the per-kind threshold in `idleThresholds`. Kinds absent
+// from the map are never closed (the caller decides which kinds expire).
+// dryRun=true counts decisions without mutating state, so an operator
+// can validate thresholds before flipping the live switch. Returns
+// (closed, dryRun, total-scanned).
+//
+// The merge window's stale-binding logic (see correlator.go OnFinding)
+// already lets fresh findings open a new incident after the bound
+// incident becomes stale, so closing here does not block re-detection.
+func (c *Correlator) CloseStale(now time.Time, idleThresholds map[Kind]time.Duration, dryRun bool) (closed, dryRunCount, scanned int) {
+	if len(idleThresholds) == 0 {
+		return 0, 0, 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for id, inc := range c.incidents {
+		if inc.Status != StatusOpen && inc.Status != StatusContained {
+			continue
+		}
+		threshold, ok := idleThresholds[inc.Kind]
+		if !ok || threshold <= 0 {
+			continue
+		}
+		idle := now.Sub(inc.UpdatedAt)
+		if idle <= threshold {
+			continue
+		}
+		scanned++
+		if dryRun {
+			c.counters.autoCloseDryRunTotal.Add(1)
+			dryRunCount++
+			continue
+		}
+		from := inc.Status
+		inc.Status = StatusResolved
+		inc.UpdatedAt = now
+		inc.ClosedAt = now
+		inc.ClosedBy = "auto:stale"
+		inc.Actions = append(inc.Actions, IncidentAction{
+			Time:    now,
+			Action:  "incident_auto_closed",
+			Result:  "ok",
+			Details: string(from) + " -> resolved: stale " + idle.Truncate(time.Second).String(),
+		})
+		c.counters.statusChangedTotal.Add(1)
+		c.counters.autoClosedTotal.Add(1)
+		c.unbindLocked(id)
+		c.persistLocked(*inc)
+		closed++
+	}
+	return closed, dryRunCount, scanned
 }
 
 // validStatus reports whether s is one of the four spec-defined values.
