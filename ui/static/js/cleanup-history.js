@@ -132,7 +132,7 @@
                     '<td>' + formatSize(f.size || 0) + '</td>' +
                     '<td data-timestamp="' + CSM.esc(f.quarantined_at || '') + '" class="text-nowrap small">' + CSM.fmtDate(f.quarantined_at) + '</td>' +
                     '<td>' + stateBadge(f.live_state) + '</td>' +
-                    '<td class="small text-wrap" style="max-width:320px">' + CSM.esc(f.reason || '') + '</td>' +
+                    '<td class="small text-wrap csm-tw-320">' + CSM.esc(f.reason || '') + '</td>' +
                     '<td class="text-nowrap">' +
                     '<button class="btn btn-sm btn-ghost-secondary me-1 cleanup-file-view" data-id="' + CSM.esc(f.id) + '" data-path="' + CSM.esc(f.original_path) + '"><i class="ti ti-eye"></i>&nbsp;View</button>' +
                     '<button class="btn btn-sm btn-warning cleanup-file-restore" data-id="' + CSM.esc(f.id) + '"><i class="ti ti-restore"></i>&nbsp;Restore</button>' +

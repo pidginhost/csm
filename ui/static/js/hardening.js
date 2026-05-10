@@ -16,13 +16,13 @@
 
     function renderReport(report) {
         if (!report || !report.results || report.results.length === 0) {
-            document.getElementById('empty-state').style.display = '';
-            document.getElementById('score-card').style.display = 'none';
+            document.getElementById('empty-state').classList.remove('d-none');
+            document.getElementById('score-card').classList.add('d-none');
             document.getElementById('categories-container').textContent = '';
             return;
         }
-        document.getElementById('empty-state').style.display = 'none';
-        document.getElementById('score-card').style.display = '';
+        document.getElementById('empty-state').classList.add('d-none');
+        document.getElementById('score-card').classList.remove('d-none');
 
         var pct = Math.round((report.score / report.total) * 100);
         document.getElementById('score-text').textContent = report.score + ' / ' + report.total + ' checks passed';

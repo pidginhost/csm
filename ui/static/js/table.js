@@ -14,6 +14,15 @@
  *     detailRows: true,             // rows with class 'details-row' are expandable
  *     controlsId: 'my-controls',    // ID of div for pagination controls (auto-created)
  *     stateKey: 'my-table-state',   // localStorage key for persistent state (optional)
+ *     density: 'compact',           // 'comfortable' (default) or 'compact' (adds table-sm)
+ *     emptyState: {                 // optional: rendered when filteredRows is empty
+ *       icon: 'circle-check',
+ *       title: 'No matches',
+ *       reason: 'Try adjusting your filters.',
+ *       actionHTML: '<button class="btn btn-sm btn-ghost-secondary" data-clear-filters>Clear filters</button>',
+ *     },
+ *     clearFiltersId: 'my-clear',   // optional id of a clear-filters button
+ *     mobileRowCard: true,          // optional: stack rows as cards on narrow viewports
  *   });
  */
 var CSM = CSM || {};
@@ -35,6 +44,16 @@ CSM.Table = function(opts) {
     this.filters = opts.filters || [];
     this.stateKey = opts.stateKey || null;
     this.onRender = opts.onRender || null;
+    this.opts = opts;
+    this.emptyState = opts.emptyState || null;
+    this._searchInput = null;
+
+    if (opts.density === 'compact') {
+        this.table.classList.add('table-sm');
+    }
+    if (opts.mobileRowCard) {
+        this.table.classList.add('csm-table-rowcard');
+    }
 
     // Collect all data rows (skip detail rows)
     this.allRows = [];
@@ -58,6 +77,7 @@ CSM.Table = function(opts) {
     if (opts.search !== false) {
         var searchEl = opts.searchId ? document.getElementById(opts.searchId) : null;
         if (searchEl) {
+            this._searchInput = searchEl;
             var self = this;
             var _searchDebounce = CSM.debounce(function(val) {
                 self.searchText = val;
@@ -68,6 +88,15 @@ CSM.Table = function(opts) {
             searchEl.addEventListener('input', function() {
                 _searchDebounce(this.value.toLowerCase());
             });
+        }
+    }
+
+    // Bind explicit clear-filters button (optional)
+    if (opts.clearFiltersId) {
+        var clearEl = document.getElementById(opts.clearFiltersId);
+        if (clearEl) {
+            var clearSelf = this;
+            clearEl.addEventListener('click', function() { clearSelf.clearFilters(); });
         }
     }
 
@@ -218,6 +247,13 @@ CSM.Table.prototype.render = function() {
         this.filteredRows[j].row.style.display = '';
     }
 
+    // Empty-state placeholder when filteredRows is empty
+    if (total === 0 && this.emptyState) {
+        this._renderEmptyState();
+    } else {
+        this._removeEmptyState();
+    }
+
     // Render pagination controls
     this._renderControls(total, totalPages);
 
@@ -270,6 +306,52 @@ CSM.Table.prototype._renderControls = function(total, totalPages) {
             self._saveState();
         });
     }
+};
+
+// Clear search + all filter values, reset to page 1.
+CSM.Table.prototype.clearFilters = function() {
+    this.searchText = '';
+    this.filterValues = {};
+    if (this._searchInput) this._searchInput.value = '';
+    for (var f = 0; f < this.filters.length; f++) {
+        var el = document.getElementById(this.filters[f].id);
+        if (el) el.value = (el.options && el.options[0]) ? el.options[0].value : '';
+    }
+    this.currentPage = 1;
+    this.applyFilters();
+    this._saveState();
+};
+
+// Render empty-state placeholder inside the table when filteredRows is empty.
+// Uses one full-width row so existing colgroup / responsive wrapper stays intact.
+CSM.Table.prototype._renderEmptyState = function() {
+    if (!this.emptyState) return;
+    var headers = this.table.querySelectorAll('thead th');
+    var colspan = headers.length || 1;
+    var row = this.tbody.querySelector('tr.csm-empty-row');
+    if (!row) {
+        row = document.createElement('tr');
+        row.className = 'csm-empty-row';
+        var emptyCell = document.createElement('td');
+        emptyCell.colSpan = colspan;
+        row.appendChild(emptyCell);
+        this.tbody.appendChild(row);
+    }
+    var cell = row.firstChild;
+    cell.colSpan = colspan;
+    // CSM.emptyStateBlock returns pre-escaped HTML (csm-ui.js).
+    cell.innerHTML = CSM.emptyStateBlock(this.emptyState);
+
+    var btn = cell.querySelector('[data-clear-filters]');
+    if (btn) {
+        var self = this;
+        btn.addEventListener('click', function() { self.clearFilters(); });
+    }
+};
+
+CSM.Table.prototype._removeEmptyState = function() {
+    var row = this.tbody.querySelector('tr.csm-empty-row');
+    if (row) row.remove();
 };
 
 // Expand/collapse detail rows (for history page)

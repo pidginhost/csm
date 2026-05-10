@@ -307,7 +307,7 @@
             html += '<td><span class="small">' + CSM.esc(checkLabel) + '</span></td>';
             html += '<td>' + CSM.esc(account || '') + '</td>';
             html += '<td><code>' + CSM.esc(ip || '') + '</code></td>';
-            html += '<td class="text-wrap" style="max-width:400px">' + CSM.esc(shortMsg) + '</td>';
+            html += '<td class="text-wrap csm-tw-400">' + CSM.esc(shortMsg) + '</td>';
             html += '<td data-timestamp="' + CSM.esc(f.timestamp || '') + '">' + CSM.fmtDate(f.timestamp) + '</td>';
             html += '</tr>';
 

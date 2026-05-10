@@ -55,3 +55,112 @@ CSM.makeClickable = function(el) {
 };
 
 // fmtDateTime removed - use CSM.fmtDate(ts) instead (defined in csrf.js)
+
+// Standard empty state block (non-table). Tables still use CSM.emptyState.
+//
+//   CSM.emptyStateBlock({
+//       icon: 'circle-check',          // ti-icon name without prefix
+//       title: 'No active findings',
+//       reason: 'Last scan completed 4 min ago.',
+//       actionHTML: '<button id="run-scan" class="btn btn-primary">Run scan</button>',
+//   })
+CSM.emptyStateBlock = function(opts) {
+    opts = opts || {};
+    var html = '<div class="csm-empty">';
+    if (opts.icon) {
+        html += '<div class="csm-empty__icon"><i class="ti ti-' + CSM.esc(opts.icon) + '"></i></div>';
+    }
+    if (opts.title)  html += '<div class="csm-empty__title">' + CSM.esc(opts.title) + '</div>';
+    if (opts.reason) html += '<div class="csm-empty__reason">' + CSM.esc(opts.reason) + '</div>';
+    if (opts.actionHTML) html += '<div>' + opts.actionHTML + '</div>';
+    html += '</div>';
+    return html;
+};
+
+// Detail panel helper. Thin wrapper around the Bootstrap offcanvas that
+// ships with Tabler. Mounts a single shared offcanvas element on first use
+// so callers do not need page-specific markup.
+//
+//   CSM.detailPanel.open({
+//       title: 'Finding detail',
+//       bodyHTML: pre_escaped_html,
+//       footerHTML: pre_escaped_actions,
+//   });
+//   CSM.detailPanel.close();
+CSM.detailPanel = (function() {
+    var instance = null;
+    var panelEl  = null;
+
+    function ensureMount() {
+        if (panelEl) return panelEl;
+        panelEl = document.createElement('div');
+        panelEl.className = 'offcanvas offcanvas-end csm-detail-panel';
+        panelEl.tabIndex = -1;
+        panelEl.setAttribute('aria-labelledby', 'csm-detail-panel-title');
+        var header = document.createElement('div');
+        header.className = 'csm-detail-panel__header';
+        var title = document.createElement('h2');
+        title.className = 'csm-detail-panel__title';
+        title.id = 'csm-detail-panel-title';
+        var close = document.createElement('button');
+        close.type = 'button';
+        close.className = 'btn-close';
+        close.setAttribute('aria-label', 'Close');
+        close.setAttribute('data-bs-dismiss', 'offcanvas');
+        header.appendChild(title);
+        header.appendChild(close);
+        var body = document.createElement('div');
+        body.className = 'csm-detail-panel__body offcanvas-body';
+        var footer = document.createElement('div');
+        footer.className = 'csm-detail-panel__footer';
+        panelEl.appendChild(header);
+        panelEl.appendChild(body);
+        panelEl.appendChild(footer);
+        document.body.appendChild(panelEl);
+        return panelEl;
+    }
+
+    return {
+        open: function(opts) {
+            var el = ensureMount();
+            opts = opts || {};
+            var titleEl = el.querySelector('.csm-detail-panel__title');
+            var bodyEl  = el.querySelector('.csm-detail-panel__body');
+            var footEl  = el.querySelector('.csm-detail-panel__footer');
+
+            titleEl.textContent = opts.title || '';
+
+            // Callers must pre-escape any HTML they pass; CSM.esc / CSM.attr.
+            if (typeof opts.bodyHTML === 'string') {
+                bodyEl.innerHTML = opts.bodyHTML;
+            } else if (opts.bodyNode) {
+                bodyEl.replaceChildren(opts.bodyNode);
+            } else {
+                bodyEl.replaceChildren();
+            }
+
+            if (typeof opts.footerHTML === 'string' && opts.footerHTML.length > 0) {
+                footEl.innerHTML = opts.footerHTML;
+                footEl.hidden = false;
+            } else {
+                footEl.replaceChildren();
+                footEl.hidden = true;
+            }
+
+            if (window.bootstrap && window.bootstrap.Offcanvas) {
+                instance = window.bootstrap.Offcanvas.getOrCreateInstance(el);
+                instance.show();
+            } else {
+                el.classList.add('show');
+            }
+        },
+        close: function() {
+            if (instance) {
+                instance.hide();
+            } else if (panelEl) {
+                panelEl.classList.remove('show');
+            }
+        },
+        element: function() { return panelEl; }
+    };
+})();

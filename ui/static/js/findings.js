@@ -109,7 +109,7 @@ function renderFindings(data) {
             '<td><input type="checkbox" class="form-check-input row-checkbox"></td>' +
             '<td><span class="badge badge-' + CSM.esc(f.sev_class) + '">' + CSM.esc(f.severity) + '</span></td>' +
             '<td><code>' + CSM.esc(f.check) + '</code></td>' +
-            '<td class="text-secondary" style="word-break:break-all">' + CSM.esc(f.message) + '</td>' +
+            '<td class="text-secondary csm-break-all">' + CSM.esc(f.message) + '</td>' +
             '<td class="text-nowrap"><span class="font-monospace small" data-timestamp="' + CSM.esc(f.first_seen) + '">' + CSM.fmtDate(f.first_seen) + '</span></td>' +
             '<td class="text-nowrap"><span class="font-monospace small" data-timestamp="' + CSM.esc(f.last_seen) + '">' + CSM.fmtDate(f.last_seen) + '</span></td>' +
             '<td class="text-nowrap action-cell"></td>' +
@@ -752,7 +752,7 @@ function toggleFindingDetail(row) {
     fetch(CSM.apiUrl('/api/v1/finding-detail?check=' + encodeURIComponent(check) + '&message=' + encodeURIComponent(message)), { credentials: 'same-origin' })
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            var html = '<div class="p-3 bg-dark-lt" style="font-size:0.8rem">';
+            var html = '<div class="p-3 bg-dark-lt csm-fs-sm">';
             // Timeline info
             if (data.first_seen) {
                 html += '<div class="mb-2"><strong>First seen:</strong> ' + CSM.fmtDate(data.first_seen) + ' &mdash; <strong>Last seen:</strong> ' + CSM.fmtDate(data.last_seen) + '</div>';

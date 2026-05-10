@@ -47,9 +47,9 @@ fetch(CSM.apiUrl('/api/v1/threat/stats'),{credentials:'same-origin'}).then(check
     for(var i=0;i<types.length;i++){
         var t=types[i], v=byType[t];
         var pct=Math.round(v/maxVal*100);
-        html+='<tr><td style="width:120px" class="text-nowrap small">'+CSM.esc(t.replace(/_/g,' '))+'</td>';
+        html+='<tr><td class="csm-w-120 text-nowrap small">'+CSM.esc(t.replace(/_/g,' '))+'</td>';
         html+='<td><div class="progress progress-sm"><div class="progress-bar bg-primary" style="width:'+pct+'%"></div></div></td>';
-        html+='<td style="width:50px" class="text-end small font-monospace">'+v+'</td></tr>';
+        html+='<td class="csm-w-50 text-end small font-monospace">'+v+'</td></tr>';
     }
     html+='</table>';
     typesDiv.innerHTML=html;
@@ -225,7 +225,7 @@ document.getElementById('lookup-form').addEventListener('submit',function(e){
         html+='</div></div></div>';
         // Details
         html+='<div class="col-md-9"><div class="card"><div class="card-body"><table class="table table-sm mb-0">';
-        html+='<tr><td class="text-muted" style="width:160px">Local Score</td><td>'+intel.local_score+'/100</td></tr>';
+        html+='<tr><td class="text-muted csm-w-160">Local Score</td><td>'+intel.local_score+'/100</td></tr>';
         if(intel.country)html+='<tr><td class="text-muted">Country</td><td>'+countryFlag(intel.country)+' <strong>'+CSM.esc(intel.country)+'</strong>'+(intel.country_name?' - '+CSM.esc(intel.country_name):'')+(intel.city?', '+CSM.esc(intel.city):'')+'</td></tr>';
         if(intel.as_org)html+='<tr><td class="text-muted">ISP / ASN</td><td>'+CSM.esc(intel.as_org)+(intel.asn?' <span class="text-muted">(AS'+intel.asn+')</span>':'')+'</td></tr>';
         if(intel.network)html+='<tr><td class="text-muted">Network</td><td><code>'+CSM.esc(intel.network)+'</code></td></tr>';
