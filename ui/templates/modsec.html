@@ -4,71 +4,124 @@
 <div class="csm-page-header mb-3">
     <div class="csm-page-header__main">
         <h1 class="csm-page-header__title"><i class="ti ti-shield-check"></i>&nbsp;ModSecurity Blocks</h1>
+        <div class="csm-page-header__subtitle" id="modsec-subtitle">Loading WAF surface...</div>
     </div>
     <div class="csm-page-header__actions">
+        <button type="button" class="btn btn-ghost-secondary btn-sm" id="modsec-refresh" title="Refresh ModSecurity surface" aria-label="Refresh ModSecurity surface">
+            <i class="ti ti-refresh"></i>
+        </button>
         <a href="/modsec/rules" class="btn btn-ghost-secondary btn-sm"><i class="ti ti-settings"></i>&nbsp;Manage Rules</a>
     </div>
 </div>
 
-<div class="row row-deck row-cards mb-3" id="modsec-stats">
-    <div class="col-sm-6 col-lg-3">
+<div class="csm-status-strip mb-3" id="modsec-status-strip"></div>
+
+<!-- First viewport: WAF pressure (left) + top rules/domains (right) -->
+<div class="row row-cards mb-3">
+    <div class="col-lg-7">
         <div class="card">
-            <div class="card-body">
-                <div class="subheader">Blocks (24h)</div>
-                <div class="h1 mb-0" id="stat-total">--</div>
+            <div class="card-header">
+                <h3 class="card-title"><i class="ti ti-flame"></i>&nbsp;Active WAF pressure</h3>
+                <div class="card-actions">
+                    <span class="text-muted small" id="modsec-pressure-count"></span>
+                </div>
+            </div>
+            <div class="csm-summary-list" id="modsec-pressure" aria-live="polite">
+                <div class="csm-empty">
+                    <div class="csm-empty__icon"><i class="ti ti-loader-2"></i></div>
+                    <div class="csm-empty__reason">Loading WAF pressure...</div>
+                </div>
             </div>
         </div>
     </div>
-    <div class="col-sm-6 col-lg-3">
+    <div class="col-lg-5">
         <div class="card">
-            <div class="card-body">
-                <div class="subheader">Unique IPs</div>
-                <div class="h1 mb-0" id="stat-ips">--</div>
+            <div class="card-header">
+                <h3 class="card-title"><i class="ti ti-chart-bar"></i>&nbsp;Top rules and domains</h3>
             </div>
-        </div>
-    </div>
-    <div class="col-sm-6 col-lg-3">
-        <div class="card">
             <div class="card-body">
-                <div class="subheader">Escalated to Firewall</div>
-                <div class="h1 mb-0" id="stat-escalated">--</div>
-            </div>
-        </div>
-    </div>
-    <div class="col-sm-6 col-lg-3">
-        <div class="card">
-            <div class="card-body">
-                <div class="subheader">Top Rule</div>
-                <div class="h3 mb-0" id="stat-top-rule">--</div>
+                <div class="subheader mb-2">Top rules by hits</div>
+                <div class="mb-3" id="modsec-top-rules">
+                    <div class="text-muted small">Loading...</div>
+                </div>
+                <hr class="my-2">
+                <div class="subheader mb-2">Top affected domains</div>
+                <div class="mb-3" id="modsec-top-domains">
+                    <div class="text-muted small">Loading...</div>
+                </div>
+                <hr class="my-2">
+                <div class="d-flex justify-content-between">
+                    <span class="text-muted small">Status</span>
+                    <span class="small">
+                        <span id="modsec-escalated-pill" class="badge bg-red-lt me-1">0 escalated</span>
+                        <span id="modsec-deny-pill" class="badge bg-yellow-lt">0 WAF only</span>
+                    </span>
+                </div>
             </div>
         </div>
     </div>
 </div>
 
-<div class="card mb-3">
-    <div class="card-header">
-        <h3 class="card-title"><i class="ti ti-shield-lock"></i>&nbsp;Blocked IPs by Rule</h3>
-        <div class="card-actions">
-            <input type="text" class="form-control form-control-sm csm-input-lg" id="modsec-search" placeholder="Search IP, rule, domain...">
-        </div>
-    </div>
-    <div id="modsec-content">
-        <div class="card-body text-center text-muted py-3">
-            <span class="spinner-border spinner-border-sm"></span> Loading...
-        </div>
-    </div>
-</div>
-
+<!-- Tabs: Blocked IPs / Events / Rules -->
 <div class="card">
-    <div class="card-header">
-        <h3 class="card-title"><i class="ti ti-list"></i>&nbsp;Recent Events</h3>
-        <div class="card-actions">
-            <input type="text" class="form-control form-control-sm csm-input-lg" id="events-search" placeholder="Search events...">
+    <ul class="nav nav-tabs" role="tablist">
+        <li class="nav-item" role="presentation">
+            <button class="nav-link active" id="modsec-tab-blocked" data-bs-toggle="tab" data-bs-target="#modsec-pane-blocked" type="button" role="tab" aria-controls="modsec-pane-blocked" aria-selected="true">
+                <i class="ti ti-shield-lock"></i>&nbsp;Blocked IPs
+            </button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="modsec-tab-events" data-bs-toggle="tab" data-bs-target="#modsec-pane-events" type="button" role="tab" aria-controls="modsec-pane-events" aria-selected="false">
+                <i class="ti ti-list"></i>&nbsp;Events
+            </button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="modsec-tab-rules" data-bs-toggle="tab" data-bs-target="#modsec-pane-rules" type="button" role="tab" aria-controls="modsec-pane-rules" aria-selected="false">
+                <i class="ti ti-list-numbers"></i>&nbsp;Rules
+            </button>
+        </li>
+    </ul>
+
+    <div class="tab-content">
+        <!-- Blocked IPs tab -->
+        <div class="tab-pane fade show active" id="modsec-pane-blocked" role="tabpanel" aria-labelledby="modsec-tab-blocked" tabindex="0">
+            <div class="csm-toolbar">
+                <input type="text" id="modsec-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search IP, rule, domain..." aria-label="Search blocked IPs">
+                <select id="modsec-status-filter" class="form-select form-select-sm csm-auto-width" aria-label="Status filter">
+                    <option value="">All statuses</option>
+                    <option value="escalated">Firewall blocked</option>
+                    <option value="waf">WAF deny only</option>
+                </select>
+                <span class="csm-toolbar__spacer"></span>
+                <span class="csm-toolbar__count" id="modsec-blocked-count"></span>
+            </div>
+            <div id="modsec-content">
+                <div class="card-body text-center text-muted py-3">
+                    <span class="spinner-border spinner-border-sm"></span> Loading blocked IPs...
+                </div>
+            </div>
         </div>
-    </div>
-    <div id="modsec-events">
-        <div class="card-body text-center text-muted py-3">
-            <span class="spinner-border spinner-border-sm"></span> Loading...
+
+        <!-- Events tab -->
+        <div class="tab-pane fade" id="modsec-pane-events" role="tabpanel" aria-labelledby="modsec-tab-events" tabindex="0">
+            <div class="csm-toolbar">
+                <input type="text" id="events-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search events..." aria-label="Search events">
+                <span class="csm-toolbar__spacer"></span>
+                <span class="csm-toolbar__count" id="modsec-events-count"></span>
+            </div>
+            <div id="modsec-events">
+                <div class="card-body text-center text-muted py-3">
+                    <span class="spinner-border spinner-border-sm"></span> Loading events...
+                </div>
+            </div>
+        </div>
+
+        <!-- Rules tab (link summary) -->
+        <div class="tab-pane fade" id="modsec-pane-rules" role="tabpanel" aria-labelledby="modsec-tab-rules" tabindex="0">
+            <div class="card-body">
+                <p class="text-muted">ModSecurity rule files, suppressions, and apply actions are managed on a separate page.</p>
+                <a href="/modsec/rules" class="btn btn-primary"><i class="ti ti-settings"></i>&nbsp;Open rule manager</a>
+            </div>
         </div>
     </div>
 </div>

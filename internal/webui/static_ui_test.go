@@ -423,6 +423,64 @@ func TestIncidentPageUsesDetailPanelDeepLinks(t *testing.T) {
 	}
 }
 
+// TestModSecPageUsesPhase8Primitives asserts the modsec workbench leads
+// with the WAF pressure summary list and the side summaries, and that
+// modsec.js wires up the new shared helpers.
+func TestModSecPageUsesPhase8Primitives(t *testing.T) {
+	tmpl, err := os.ReadFile("../../ui/templates/modsec.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(tmpl)
+	for _, want := range []string{
+		`class="csm-page-header`,
+		`id="modsec-status-strip"`,
+		`id="modsec-pressure"`,
+		`csm-summary-list`,
+		`id="modsec-top-rules"`,
+		`id="modsec-top-domains"`,
+		`id="modsec-tab-blocked"`,
+		`id="modsec-tab-events"`,
+		`id="modsec-tab-rules"`,
+		`class="csm-toolbar"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("modsec.html missing phase-8 hook %q", want)
+		}
+	}
+	for _, banned := range []string{
+		`id="stat-total"`,
+		`id="stat-ips"`,
+		`id="stat-escalated"`,
+		`id="stat-top-rule"`,
+	} {
+		if strings.Contains(text, banned) {
+			t.Errorf("modsec.html still contains legacy stat element %q", banned)
+		}
+	}
+
+	js, err := os.ReadFile("../../ui/static/js/modsec.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsText := string(js)
+	for _, want := range []string{
+		`/api/v1/modsec/blocks`,
+		`/api/v1/modsec/events`,
+		`renderActiveWAFPressure`,
+		`renderSideSummaries`,
+		`CSM.summaryItem`,
+		`CSM.detailPanel.open`,
+		`CSM.applyTruncateMiddle`,
+		`stickyHeader`,
+		`onRowClick`,
+	} {
+		if !strings.Contains(jsText, want) {
+			t.Errorf("modsec.js missing phase-8 hook %q", want)
+		}
+	}
+}
+
 // TestEmailPageUsesPhase8Primitives asserts the email workbench dropped the
 // old six-card stat row in favour of a status strip + grouped action rows
 // + tabs (Findings / Auth failures / Queue / Quarantine / Senders), and
