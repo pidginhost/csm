@@ -64,15 +64,14 @@ func observeCheckDuration(name, tier string, d time.Duration) {
 // The context is cancelled when the check times out so goroutines can exit.
 type CheckFunc func(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding
 
-// filterDisabledChecks drops any check whose runner name or emitted finding
-// name appears in cfg.DisabledChecks. Finding names are the public vocabulary
-// used by the settings UI and docs; runner names remain accepted for existing
-// operator configs.
-func filterDisabledChecks(cfg *config.Config, checks []namedCheck) []namedCheck {
+// splitDisabledChecks partitions checks by cfg.DisabledChecks. Finding names
+// are the public vocabulary used by the settings UI and docs; runner names
+// remain accepted for existing operator configs.
+func splitDisabledChecks(cfg *config.Config, checks []namedCheck) (enabled, disabled []namedCheck) {
 	if cfg == nil || len(cfg.DisabledChecks) == 0 {
-		return checks
+		return checks, nil
 	}
-	disabled := make(map[string]struct{}, len(cfg.DisabledChecks))
+	disabledSet := make(map[string]struct{}, len(cfg.DisabledChecks))
 	knownRunners := make(map[string]struct{}, len(checks))
 	for _, nc := range checks {
 		knownRunners[nc.name] = struct{}{}
@@ -83,26 +82,28 @@ func filterDisabledChecks(cfg *config.Config, checks []namedCheck) []namedCheck 
 			continue
 		}
 		if _, ok := knownRunners[name]; ok {
-			disabled[name] = struct{}{}
+			disabledSet[name] = struct{}{}
 			continue
 		}
 		for _, runner := range runnerNamesForFinding(name) {
 			if _, ok := knownRunners[runner]; ok {
-				disabled[runner] = struct{}{}
+				disabledSet[runner] = struct{}{}
 			}
 		}
 	}
-	if len(disabled) == 0 {
-		return checks
+	if len(disabledSet) == 0 {
+		return checks, nil
 	}
-	out := make([]namedCheck, 0, len(checks))
+	enabled = make([]namedCheck, 0, len(checks))
+	disabledChecks := make([]namedCheck, 0, len(disabledSet))
 	for _, nc := range checks {
-		if _, skip := disabled[nc.name]; skip {
+		if _, skip := disabledSet[nc.name]; skip {
+			disabledChecks = append(disabledChecks, nc)
 			continue
 		}
-		out = append(out, nc)
+		enabled = append(enabled, nc)
 	}
-	return out
+	return enabled, disabledChecks
 }
 
 func runnerNamesForFinding(finding string) []string {
@@ -111,7 +112,7 @@ func runnerNamesForFinding(finding string) []string {
 
 // DisabledCheckNames returns the sorted public finding-name vocabulary accepted
 // by top-level disabled_checks for scheduled check execution. Runner IDs are
-// also accepted by filterDisabledChecks for existing configs, but are not
+// also accepted by splitDisabledChecks for existing configs, but are not
 // exposed in the UI.
 func DisabledCheckNames() []string {
 	out := make([]string, 0, len(findingNameToRunnerNames))
@@ -519,23 +520,26 @@ func RunAll(cfg *config.Config, store *state.Store) ([]alert.Finding, []string) 
 }
 
 // runParallel executes the supplied checks concurrently. It returns the
-// emitted findings plus the per-scan purge name list (emitted finding
-// aliases owned by checks that actually ran). Throttled checks whose
-// window has not elapsed are skipped entirely and their names stay out of
-// the purge list so the previous cycle's findings persist.
+// emitted findings plus the per-scan purge name list. Throttled checks whose
+// window has not elapsed stay out of the purge list so the previous cycle's
+// findings persist. Disabled checks do not run, but their names stay in the
+// purge list so disabling a check clears any findings it previously owned.
 func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck, tier string) ([]alert.Finding, []string) {
-	checks = filterDisabledChecks(cfg, checks)
+	enabledChecks, disabledChecks := splitDisabledChecks(cfg, checks)
 
 	var mu sync.Mutex
 	var findings []alert.Finding
 	var wg sync.WaitGroup
 
-	ranChecks := make([]namedCheck, 0, len(checks))
-	for _, nc := range checks {
+	ranChecks := make([]namedCheck, 0, len(enabledChecks))
+	purgeChecks := make([]namedCheck, 0, len(enabledChecks)+len(disabledChecks))
+	purgeChecks = append(purgeChecks, disabledChecks...)
+	for _, nc := range enabledChecks {
 		if min, ok := checkThrottleMin[nc.name]; ok && store != nil && !store.ShouldRunThrottled(nc.name, min) {
 			continue
 		}
 		ranChecks = append(ranChecks, nc)
+		purgeChecks = append(purgeChecks, nc)
 	}
 
 	// Limit concurrent checks to avoid saturating CPU (keeps WebUI responsive)
@@ -643,5 +647,5 @@ func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck, ti
 		findings = append(findings, blockActions...)
 	}
 
-	return findings, latestPurgeCheckNamesForChecks(ranChecks)
+	return findings, latestPurgeCheckNamesForChecks(purgeChecks)
 }

@@ -210,6 +210,26 @@ body.theme-dark { background-color: #1a2234; }
 .stat-delta.up   { color: var(--csm-critical); }
 .stat-delta.down { color: var(--csm-low); }
 .stat-delta.flat { color: var(--csm-text-muted); }
+.csm-posture-stat {
+    min-height: 4.35rem;
+    padding: 0.5rem 0.65rem;
+    border: 1px solid var(--csm-border);
+    border-radius: 6px;
+    background: var(--csm-bg-card);
+}
+.theme-dark .csm-posture-stat { border-color: #2d3a4e; }
+.csm-posture-stat__metric {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+}
+.csm-posture-stat .stat-delta {
+    display: block;
+    width: 100%;
+    margin-top: 0.15rem;
+    line-height: 1.2;
+    white-space: normal;
+}
 
 /* --- dashboard.html: severity-colored outline buttons for feed chips ---- */
 .btn-outline-critical { color: var(--csm-critical); border-color: var(--csm-critical); background: transparent; }

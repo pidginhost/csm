@@ -264,6 +264,51 @@ func TestRunParallelSkipsDisabledFindingNameAliases(t *testing.T) {
 	}
 }
 
+func TestRunParallelDisabledFindingAliasPurgesStoredFindings(t *testing.T) {
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	st.SetLatestFindings([]alert.Finding{
+		{Check: "waf_rules", Severity: alert.Warning, Message: "old waf finding"},
+		{Check: "other_check", Severity: alert.Warning, Message: "keep"},
+	})
+
+	var ranDisabled atomic.Int32
+	checks := []namedCheck{
+		{"waf_status", func(_ context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+			ranDisabled.Add(1)
+			return []alert.Finding{{Check: "waf_rules", Severity: alert.Warning, Message: "disabled"}}
+		}},
+		{"other_runner", func(_ context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+			return nil
+		}},
+	}
+
+	cfg := &config.Config{DisabledChecks: []string{"waf_rules"}}
+	findings, purge := runParallel(cfg, st, checks, "test")
+	if got := ranDisabled.Load(); got != 0 {
+		t.Fatalf("disabled runner executed %d time(s), want 0", got)
+	}
+	if containsFindingCheck(findings, "waf_rules") {
+		t.Fatalf("disabled runner emitted finding: %+v", findings)
+	}
+	if !slices.Contains(purge, "waf_rules") {
+		t.Fatalf("purge list missing disabled finding alias waf_rules: %v", purge)
+	}
+
+	StoreLatestScanFindings(st, purge, findings)
+	got := st.LatestFindings()
+	if containsFindingCheck(got, "waf_rules") {
+		t.Fatalf("disabled stale waf_rules finding remained: %+v", got)
+	}
+	if !containsFindingCheck(got, "other_check") {
+		t.Fatalf("unowned finding was purged unexpectedly: %+v", got)
+	}
+}
+
 func TestRunParallelDisabledChecksEmptyRunsAll(t *testing.T) {
 	var ran atomic.Int32
 	mkCheck := func(name string) namedCheck {
