@@ -1,6 +1,7 @@
 // CSM Firewall page
 
 var _fwBlockedData = [];
+var _fwSetView = function() {};
 
 function removeTableControls(id) {
     var el = document.getElementById(id);
@@ -101,8 +102,16 @@ function currentAuditURL() {
 
 function inspectIP(ip) {
     if (!ip) return;
-    document.getElementById('lookup-ip').value = ip;
+    var lookupInput = document.getElementById('lookup-ip');
+    var commandInput = document.getElementById('fw-command-ip');
+    if (lookupInput) lookupInput.value = ip;
+    if (commandInput) commandInput.value = ip;
+    switchFirewallView('lookup');
     loadLookup(ip);
+}
+
+function switchFirewallView(name) {
+    _fwSetView(name, true);
 }
 
 // closeAuditExpansion removes any open audit inspect expansion row.
@@ -710,7 +719,8 @@ function bulkUnblock() {
     if (checked.length === 0) return;
     var ips = [];
     checked.forEach(function(cb) { ips.push(cb.dataset.ip); });
-    CSM.confirm('Unblock ' + ips.length + ' visible IPs?').then(function() {
+    var msg = 'This removes dynamic firewall blocks for ' + ips.length + ' selected IPs. It does not add allow rules or whitelist entries.';
+    confirmDangerAction(msg, 'UNBLOCK').then(function() {
         CSM.post('/api/v1/unblock-bulk', { ips: ips }).then(function(data) {
             CSM.toast('Unblocked ' + (data.succeeded || 0) + ' of ' + (data.total || 0) + ' IPs', 'success');
             refreshFirewallData();
@@ -792,14 +802,22 @@ function flushBlocked() {
     var blocked = parseInt((document.getElementById('fw-blocked') || {}).textContent || '0', 10);
     var msg = 'This unblocks every dynamic IP block at once';
     if (!isNaN(blocked) && blocked > 0) msg += ' (' + blocked + ' currently blocked)';
-    msg += '. Subnet bans, allow rules, and whitelist entries are not touched. The action is recorded in the firewall audit log and cannot be undone individually.\n\nProceed?';
-    CSM.confirm(msg).then(function() {
+    msg += '. Subnet bans, allow rules, and whitelist entries are not touched. The action is recorded in the firewall audit log and cannot be undone individually.';
+    confirmDangerAction(msg, 'FLUSH').then(function() {
         CSM.post('/api/v1/firewall/flush', {}).then(function() {
             CSM.toast('Blocked IPs flushed', 'success');
             refreshFirewallData();
         }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
     }).catch(function(err) {
         if (err) CSM.toast(err.message || 'Request failed', 'error');
+    });
+}
+
+function confirmDangerAction(message, token) {
+    return CSM.prompt(message + '\n\nType ' + token + ' to continue.', '').then(function(value) {
+        if ((value || '').trim() !== token) {
+            throw new Error('Confirmation token did not match');
+        }
     });
 }
 
@@ -825,8 +843,10 @@ function updateBulkUnblock() {
     var checked = getVisibleChecked();
     var btn = document.getElementById('bulk-unblock-btn');
     if (!btn) return;
-    btn.classList.toggle('d-none', checked.length === 0);
-    btn.textContent = 'Unblock ' + checked.length + ' IPs';
+    btn.disabled = checked.length === 0;
+    btn.innerHTML = checked.length === 0
+        ? '<i class="ti ti-eraser"></i>&nbsp;Unblock selected IPs'
+        : '<i class="ti ti-eraser"></i>&nbsp;Unblock ' + checked.length + ' selected IPs';
 }
 
 function enrichGeoIP(container) {
@@ -990,8 +1010,22 @@ document.getElementById('lookup-form').addEventListener('submit', function(e) {
         CSM.toast('Invalid IP address format', 'error');
         return;
     }
-    loadLookup(ip);
+    inspectIP(ip);
 });
+
+var commandForm = document.getElementById('fw-command-form');
+if (commandForm) {
+    commandForm.addEventListener('submit', function(e) {
+        e.preventDefault();
+        var ip = document.getElementById('fw-command-ip').value.trim();
+        if (!ip) return;
+        if (!CSM.validateIP(ip)) {
+            CSM.toast('Invalid IP address format', 'error');
+            return;
+        }
+        inspectIP(ip);
+    });
+}
 
 var bulkUnblockBtn = document.getElementById('bulk-unblock-btn');
 if (bulkUnblockBtn) bulkUnblockBtn.addEventListener('click', bulkUnblock);
@@ -1081,6 +1115,11 @@ if (auditResetBtn) {
         }
     }
 
+    function setView(name, updateURL) {
+        applyView(name);
+        if (updateURL) setURLView(name);
+    }
+
     function viewFromURL() {
         var params = new URLSearchParams(window.location.search);
         return params.get('view') || 'overview';
@@ -1098,12 +1137,12 @@ if (auditResetBtn) {
     nav.querySelectorAll('[data-fw-nav]').forEach(function(btn) {
         btn.addEventListener('click', function() {
             var name = this.getAttribute('data-fw-nav');
-            applyView(name);
-            setURLView(name);
+            setView(name, true);
         });
     });
 
-    applyView(viewFromURL());
+    _fwSetView = setView;
+    setView(viewFromURL(), false);
 })();
 
 refreshFirewallData();

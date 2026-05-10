@@ -494,8 +494,9 @@ func TestFirewallPageSplitIntoSubviews(t *testing.T) {
 	for _, want := range []string{
 		`class="csm-page-header`,
 		`id="fw-subview-nav"`,
+		`id="fw-command-form"`,
 		`class="csm-danger-zone`,
-		`href="/settings#section-firewall"`,
+		`href="/settings#firewall"`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("firewall.html missing phase-5 hook %q", want)
@@ -519,6 +520,10 @@ func TestFirewallPageSplitIntoSubviews(t *testing.T) {
 	if dangerStart < 0 || flushIdx < 0 || flushIdx < dangerStart {
 		t.Fatal("flush-blocked-btn must live under the danger subview, not the overview")
 	}
+	bulkIdx := strings.Index(text, `id="bulk-unblock-btn"`)
+	if dangerStart < 0 || bulkIdx < 0 || bulkIdx < dangerStart {
+		t.Fatal("bulk-unblock-btn must live under the danger subview, not the blocks table")
+	}
 
 	js, err := os.ReadFile("../../ui/static/js/firewall.js")
 	if err != nil {
@@ -529,6 +534,9 @@ func TestFirewallPageSplitIntoSubviews(t *testing.T) {
 		`URLSearchParams(window.location.search)`,
 		`history.replaceState`,
 		`data-fw-view`,
+		`switchFirewallView('lookup')`,
+		`confirmDangerAction(msg, 'FLUSH')`,
+		`confirmDangerAction(msg, 'UNBLOCK')`,
 	} {
 		if !strings.Contains(jsText, want) {
 			t.Errorf("firewall.js missing subview switcher hook %q", want)

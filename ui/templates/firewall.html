@@ -43,6 +43,25 @@
 
     <!-- Overview --------------------------------------------------------- -->
     <section data-fw-view="overview">
+        <div class="card mb-3">
+            <div class="card-header">
+                <h3 class="card-title"><i class="ti ti-search"></i>&nbsp;Inspect IP</h3>
+            </div>
+            <div class="card-body">
+                <form id="fw-command-form" class="row g-2 align-items-end">
+                    <div class="col-lg-9">
+                        <label class="form-label mb-1" for="fw-command-ip">IP address</label>
+                        <input type="text" id="fw-command-ip" class="form-control font-monospace" placeholder="203.0.113.10">
+                    </div>
+                    <div class="col-lg-3 d-grid">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="ti ti-radar-2"></i>&nbsp;Inspect
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
         <div class="row row-deck row-cards mb-3" id="fw-status">
             <div class="col-sm-6 col-xl">
                 <div class="card">
@@ -165,7 +184,6 @@
             <div class="card-header">
                 <h3 class="card-title"><i class="ti ti-shield-off"></i>&nbsp;Blocked IPs</h3>
                 <div class="card-actions d-flex gap-2 flex-wrap">
-                    <button class="btn btn-success btn-sm d-none" id="bulk-unblock-btn" title="Remove firewall block for all selected IPs">Unblock 0 IPs</button>
                     <input type="text" id="blocked-search" class="form-control form-control-sm csm-input-md" placeholder="Search blocked IPs">
                     <div class="dropdown">
                         <button class="btn btn-ghost-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-label="Export current view">
@@ -295,13 +313,13 @@
             <div class="card-header">
                 <h3 class="card-title"><i class="ti ti-settings"></i>&nbsp;Configuration</h3>
                 <div class="card-actions">
-                    <a href="/settings#section-firewall" class="btn btn-primary btn-sm" title="Edit firewall configuration in Settings">
+                    <a href="/settings#firewall" class="btn btn-primary btn-sm" title="Edit firewall configuration in Settings">
                         <i class="ti ti-pencil"></i>&nbsp;Edit in Settings
                     </a>
                 </div>
             </div>
             <div class="card-body">
-                <p class="text-muted small">Read-only summary. Edits land through the firewall section of <a href="/settings#section-firewall">Settings</a>, which uses the tentative-apply flow with rollback timer for safety.</p>
+                <p class="text-muted small">Read-only summary. Edits land through the firewall section of <a href="/settings#firewall">Settings</a>, which uses the tentative-apply flow with rollback timer for safety.</p>
                 <div class="d-flex flex-wrap gap-2 mb-3" id="fw-config-flags"></div>
                 <div class="row" id="fw-config">
                     <div class="col-lg-6"><table class="table table-sm" id="fw-config-table"></table></div>
@@ -367,6 +385,12 @@
             <div class="csm-danger-zone__title"><i class="ti ti-alert-triangle"></i>&nbsp;Destructive actions</div>
             <p class="text-muted small mb-3">These operations affect many entries at once. Read the warning before clicking.</p>
             <div class="d-flex flex-column gap-3">
+                <div>
+                    <button class="btn btn-outline-danger" id="bulk-unblock-btn" disabled title="Remove firewall blocks for selected rows from the Blocks subview">
+                        <i class="ti ti-eraser"></i>&nbsp;Unblock selected IPs
+                    </button>
+                    <div class="text-muted small mt-2">Removes dynamic blocks for rows selected in the Blocks subview. This does not add allow rules or whitelist entries.</div>
+                </div>
                 <div>
                     <button class="btn btn-outline-danger" id="flush-blocked-btn">
                         <i class="ti ti-trash"></i>&nbsp;Flush blocked IPs
