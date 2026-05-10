@@ -51,4 +51,24 @@ func RegisterMetrics(reg *metrics.Registry, c *Correlator) {
 		"Auto-close decisions counted while dry_run was active (state unchanged).",
 		func() float64 { return float64(c.counters.autoCloseDryRunTotal.Load()) },
 	)
+	reg.RegisterCounterFunc(
+		"csm_credential_spray_opened_total",
+		"Credential-spray super-incidents opened (one source IP brute-forcing many mailboxes).",
+		func() float64 { return float64(c.counters.sprayOpenedTotal.Load()) },
+	)
+	reg.RegisterCounterFunc(
+		"csm_credential_spray_suppressed_mailbox_takeover_total",
+		"Per-mailbox incidents suppressed because a credential_spray incident already covers the source IP.",
+		func() float64 { return float64(c.counters.spraySuppressedTotal.Load()) },
+	)
+	reg.RegisterCounterFunc(
+		"csm_credential_spray_dry_run_total",
+		"Spray decisions counted while dry_run was active (routing unchanged).",
+		func() float64 { return float64(c.counters.sprayDryRunTotal.Load()) },
+	)
+	reg.RegisterGaugeFunc(
+		"csm_credential_spray_tracked_ips",
+		"Source IPs currently held in the spray detector's per-IP map.",
+		func() float64 { return float64(c.SprayTrackedIPs()) },
+	)
 }

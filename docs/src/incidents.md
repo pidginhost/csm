@@ -55,6 +55,56 @@ preserved on the closed record.
 Metrics: `csm_incidents_auto_closed_total` and
 `csm_incidents_auto_close_dry_run_total`.
 
+## Credential-spray suppression
+
+Without this path, an attacker IP that brute-forces 6500 distinct
+usernames produces 6500 `mailbox_takeover` incidents because the
+correlator keys on the mailbox, not the source IP. The
+spray-suppression detector tracks the distinct-mailbox set per source
+IP across the merge window and, once an IP exceeds `distinct_mailboxes`,
+opens a single `credential_spray` super-incident keyed on the IP.
+Subsequent findings from that IP attach to the spray incident's
+timeline instead of opening per-mailbox incidents.
+
+Defaults (configurable in `csm.yaml`):
+
+```yaml
+incidents:
+  spray_suppression:
+    enabled: false           # default OFF; opt-in
+    dry_run: true            # default ON; counters move, routing unchanged
+    distinct_mailboxes: 10   # threshold to trip
+    severity_escalate_at: 50 # bump severity to CRITICAL at this many
+    per_check:
+      - email_auth_failure_realtime
+      - pam_auth_failure
+      - ssh_bruteforce
+    max_tracked_ips: 10000
+```
+
+Whitelisted IPs (entries in `reputation.whitelist` and the live bbolt
+whitelist updated via the Web UI) are skipped from spray detection so
+internal mail relays, NAT egresses, and known-good infrastructure
+never produce a spray incident.
+
+Rollout:
+
+1. Ship the daemon with `enabled: false, dry_run: true`. The detector
+   tracks per-IP mailbox sets and increments
+   `csm_credential_spray_dry_run_total` whenever the threshold would
+   have tripped, but routing stays on the legacy per-mailbox path.
+2. Validate the counter on your own infrastructure for 24h. If a
+   trusted IP shows up in the dry-run trips, add it to
+   `reputation.whitelist`.
+3. Flip `enabled: true, dry_run: false`. New attacker IPs route
+   through the spray path; existing per-mailbox backlog drains via the
+   auto-close path.
+
+Metrics: `csm_credential_spray_opened_total`,
+`csm_credential_spray_suppressed_mailbox_takeover_total`,
+`csm_credential_spray_dry_run_total`,
+`csm_credential_spray_tracked_ips`.
+
 ## Kinds
 
 - `web_account_compromise` -- default for findings attributable to a
@@ -65,6 +115,12 @@ Metrics: `csm_incidents_auto_closed_total` and
   `/dev/shm`.
 - `host_integrity_risk` -- daemon/kernel-level signals (sensitive file
   writes, fake kernel threads, auditd disabled).
+- `credential_spray` -- one source IP brute-forcing many distinct
+  mailboxes/accounts inside the merge window. Keyed on the source IP
+  rather than per-mailbox, so a scanner spraying thousands of usernames
+  produces one super-incident instead of thousands of mailbox_takeover
+  rows. Findings from the same IP after the trip attach to this
+  incident's timeline. See "Credential-spray suppression" below.
 
 ## Severity policy
 

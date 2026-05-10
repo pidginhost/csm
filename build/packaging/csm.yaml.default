@@ -249,3 +249,20 @@ incidents:
       web_account_compromise: 168h
       pam_failure: 24h
       wp_login_bruteforce: 24h
+
+  # Credential-spray super-incident: when one source IP brute-forces
+  # many distinct mailboxes inside the merge window, collapse the
+  # per-mailbox fan-out into a single credential_spray incident keyed
+  # on the source IP. Default-OFF + dry_run=TRUE so the path ships
+  # dark and counters report what would have happened. Flip enabled
+  # to true (and dry_run to false) once you have validated counters.
+  spray_suppression:
+    enabled: false
+    dry_run: true
+    distinct_mailboxes: 10
+    severity_escalate_at: 50
+    per_check:
+      - email_auth_failure_realtime
+      - pam_auth_failure
+      - ssh_bruteforce
+    max_tracked_ips: 10000

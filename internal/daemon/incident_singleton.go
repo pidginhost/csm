@@ -54,9 +54,47 @@ func IncidentCorrelator() *incident.Correlator {
 				_ = db.SaveIncident(inc)
 			}
 		}
+		// Resolve spray-suppression knobs from the active config. nil
+		// config (early test wiring) leaves the detector disabled.
+		var spray incident.SpraySuppressionConfig
+		var whitelisted func(string) bool
+		if cfg := globalCfgForIncidents(); cfg != nil {
+			spray = incident.SpraySuppressionConfig{
+				Enabled:            cfg.Incidents.SpraySuppression.Enabled,
+				DryRun:             cfg.Incidents.SpraySuppression.DryRun,
+				DistinctMailboxes:  cfg.Incidents.SpraySuppression.DistinctMailboxes,
+				SeverityEscalateAt: cfg.Incidents.SpraySuppression.SeverityEscalateAt,
+				PerCheck:           cfg.IncidentsSpraySuppressionPerCheck(),
+				MaxTrackedIPs:      cfg.Incidents.SpraySuppression.MaxTrackedIPs,
+			}
+			// Whitelist accessor: prefer the bbolt-backed live whitelist
+			// (operators add IPs at runtime), fall back to the static
+			// reputation.whitelist list. db nil-check inside the closure
+			// so the resolution stays current across daemon restarts.
+			staticAllow := make(map[string]bool, len(cfg.Reputation.Whitelist))
+			for _, ip := range cfg.Reputation.Whitelist {
+				if ip != "" {
+					staticAllow[ip] = true
+				}
+			}
+			whitelisted = func(ip string) bool {
+				if ip == "" {
+					return false
+				}
+				if staticAllow[ip] {
+					return true
+				}
+				if d := store.Global(); d != nil {
+					return d.IsWhitelisted(ip)
+				}
+				return false
+			}
+		}
 		incidentCorrelator = incident.NewCorrelator(incident.CorrelatorConfig{
-			Persist:       persist,
-			OpenThreshold: incidentOpenThreshold,
+			Persist:          persist,
+			OpenThreshold:    incidentOpenThreshold,
+			SpraySuppression: spray,
+			IsWhitelisted:    whitelisted,
 		})
 		if db != nil {
 			if list, err := db.ListIncidents(); err == nil {
@@ -192,6 +230,7 @@ func runIncidentCompaction(c *incident.Correlator) {
 	}
 	_ = c.PruneClosedOlderThan(now, incidentRetentionPeriod)
 	_ = c.PruneStalePending(now)
+	_ = c.PruneStaleSpray(now)
 	if pruned > 0 {
 		c.IncrementCompactedTotal(pruned)
 		csmlog.Info("incident retention compaction", "pruned", pruned)

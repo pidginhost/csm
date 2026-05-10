@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -37,6 +38,16 @@ type CorrelatorConfig struct {
 	// behavior; the daemon explicitly configures 2 to suppress
 	// one-shot scanner noise.
 	OpenThreshold int
+
+	// SpraySuppression turns on the credential-spray super-incident
+	// path. When zero the detector is not constructed and OnFinding
+	// follows the legacy per-mailbox correlation path. Default-off.
+	SpraySuppression SpraySuppressionConfig
+
+	// IsWhitelisted is consulted by the spray detector to skip IPs the
+	// operator has marked as known-good (e.g. internal mail relays).
+	// nil short-circuits to "no IPs whitelisted".
+	IsWhitelisted func(ip string) bool
 }
 
 // counters holds the atomic tallies exposed via RegisterMetrics. Kept
@@ -50,6 +61,9 @@ type counters struct {
 	compactedTotal       atomic.Uint64
 	autoClosedTotal      atomic.Uint64
 	autoCloseDryRunTotal atomic.Uint64
+	sprayOpenedTotal     atomic.Uint64
+	spraySuppressedTotal atomic.Uint64
+	sprayDryRunTotal     atomic.Uint64
 }
 
 // Correlator groups findings into incidents. In-memory state; the
@@ -63,6 +77,7 @@ type Correlator struct {
 	openThreshold int
 	now           func() time.Time
 	counters      counters
+	spray         *sprayDetector
 }
 
 // pendingFinding is a finding seen for a key that has not yet met the
@@ -80,7 +95,7 @@ func NewCorrelator(cfg CorrelatorConfig) *Correlator {
 	if threshold < 1 {
 		threshold = 1
 	}
-	return &Correlator{
+	c := &Correlator{
 		cfg:           cfg,
 		incidents:     map[string]*Incident{},
 		byKey:         map[string]string{},
@@ -88,6 +103,8 @@ func NewCorrelator(cfg CorrelatorConfig) *Correlator {
 		openThreshold: threshold,
 		now:           time.Now,
 	}
+	c.spray = newSprayDetector(cfg.SpraySuppression, incidentMergeWindow, func() time.Time { return c.now() }, cfg.IsWhitelisted)
+	return c
 }
 
 // OnFinding ingests a Finding. Returns the incident id (if attributable)
@@ -106,6 +123,49 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 
 	keyStr := keyString(key)
 	now := c.now()
+
+	// Credential-spray super-incident path. When one source IP brute-forces
+	// many distinct mailboxes/accounts inside the merge window, collapse
+	// the per-mailbox fan-out into a single credential_spray incident
+	// keyed on RemoteIP. The detector returns sprayDecisionNone for
+	// non-spray traffic so the legacy correlation continues unchanged.
+	if c.spray != nil {
+		decision, hits := c.spray.Decide(f)
+		switch decision {
+		case sprayDecisionOpen:
+			sprayKey := Key{RemoteIP: f.SourceIP}
+			id := c.createSprayIncidentLocked(sprayKey, f, now, hits)
+			c.spray.BindIncident(f.SourceIP, id)
+			c.counters.sprayOpenedTotal.Add(1)
+			return id, true, nil
+		case sprayDecisionSuppress:
+			id := c.spray.IncidentForIP(f.SourceIP)
+			if inc, ok := c.incidents[id]; ok {
+				c.mergeLocked(inc, f, now, true)
+				if hits >= c.spray.cfg.SeverityEscalateAt && inc.Severity < alert.Critical {
+					from := inc.Severity
+					inc.Severity = alert.Critical
+					c.counters.severityChangedTotal.Add(1)
+					inc.Actions = append(inc.Actions, IncidentAction{
+						Time:    now,
+						Action:  "incident_severity_changed",
+						Result:  "ok",
+						Details: from.String() + " -> CRITICAL: spray sustained " + strconv.Itoa(hits) + " mailboxes",
+					})
+					c.persistLocked(*inc)
+				}
+				c.counters.spraySuppressedTotal.Add(1)
+				return id, false, nil
+			}
+			// Bound incident vanished (e.g. operator dismissed it). Fall
+			// through to legacy path so the finding still produces an
+			// incident rather than silently disappearing.
+		case sprayDecisionNone:
+			if c.spray.cfg.DryRun && hits >= c.spray.cfg.DistinctMailboxes {
+				c.counters.sprayDryRunTotal.Add(1)
+			}
+		}
+	}
 
 	if id, ok := c.byKey[keyStr]; ok {
 		if inc, exists := c.incidents[id]; exists && now.Sub(inc.UpdatedAt) <= incidentMergeWindow {
@@ -139,6 +199,41 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 	id := c.createIncidentLocked(key, keyStr, f, now)
 	delete(c.pending, keyStr)
 	return id, true, nil
+}
+
+// createSprayIncidentLocked builds a credential_spray incident keyed on
+// the source IP. Caller must hold c.mu. Severity is HIGH at trip and
+// escalates to CRITICAL once the merge path observes
+// SpraySuppressionConfig.SeverityEscalateAt distinct mailboxes.
+func (c *Correlator) createSprayIncidentLocked(key Key, f alert.Finding, now time.Time, hits int) string {
+	id := newIncidentID()
+	sev := f.Severity
+	if sev < alert.High {
+		sev = alert.High
+	}
+	inc := &Incident{
+		ID:             id,
+		Kind:           KindCredentialSpray,
+		Status:         StatusOpen,
+		Severity:       sev,
+		CorrelationKey: cloneKey(key),
+		Findings:       []string{},
+		Timeline:       []IncidentEvent{},
+		Actions: []IncidentAction{{
+			Time:    now,
+			Action:  "credential_spray_opened",
+			Result:  "ok",
+			Details: f.SourceIP + " hit " + strconv.Itoa(hits) + " distinct mailboxes inside window",
+		}},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	c.incidents[id] = inc
+	keyStr := keyString(key)
+	c.byKey[keyStr] = id
+	c.counters.createdTotal.Add(1)
+	c.mergeLocked(inc, f, now, false)
+	return id
 }
 
 // createIncidentLocked builds a new Incident, registers it in the maps,
@@ -193,6 +288,23 @@ func (c *Correlator) PruneStalePending(now time.Time) int {
 		}
 	}
 	return pruned
+}
+
+// PruneStaleSpray clears spray-detector state whose lastSeen is older
+// than the merge window. Wired into the same retention sweep as
+// PruneStalePending.
+func (c *Correlator) PruneStaleSpray(now time.Time) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.spray.PruneStale(now)
+}
+
+// SprayTrackedIPs reports the count of source IPs currently held in
+// the spray detector. Safe to call when the detector is disabled.
+func (c *Correlator) SprayTrackedIPs() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.spray.TrackedIPs()
 }
 
 // OpenCount returns the number of incidents in Open or Contained

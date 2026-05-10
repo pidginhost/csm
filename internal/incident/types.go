@@ -31,6 +31,11 @@ const (
 	KindMailboxTakeover      Kind = "mailbox_takeover"
 	KindPostExploitProcess   Kind = "post_exploit_process"
 	KindHostIntegrityRisk    Kind = "host_integrity_risk"
+	// KindCredentialSpray collapses a single source IP that is brute-forcing
+	// many distinct mailboxes/accounts inside the merge window into one
+	// super-incident keyed on the source IP. Prevents the per-mailbox fan-out
+	// that turns one attacker into thousands of mailbox_takeover incidents.
+	KindCredentialSpray Kind = "credential_spray"
 )
 
 // Incident is the wire shape every consumer (API, control socket,

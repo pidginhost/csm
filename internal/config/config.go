@@ -642,6 +642,21 @@ type Config struct {
 			// to safe defaults (mailbox_takeover=24h, web=7d, brute=24h).
 			ByKind map[string]string `yaml:"by_kind,omitempty"`
 		} `yaml:"auto_close"`
+
+		// SpraySuppression collapses one source IP brute-forcing many
+		// distinct mailboxes/accounts into a single credential_spray
+		// super-incident. Default-OFF + dry_run=TRUE so the path ships
+		// dark; counters and audit log show what would have happened.
+		// Operators flip enabled=true and dry_run=false after watching
+		// the counters on their own infra.
+		SpraySuppression struct {
+			Enabled            bool     `yaml:"enabled"`
+			DryRun             bool     `yaml:"dry_run"`
+			DistinctMailboxes  int      `yaml:"distinct_mailboxes"`
+			SeverityEscalateAt int      `yaml:"severity_escalate_at"`
+			PerCheck           []string `yaml:"per_check"`
+			MaxTrackedIPs      int      `yaml:"max_tracked_ips"`
+		} `yaml:"spray_suppression"`
 	} `yaml:"incidents" hotreload:"restart"`
 }
 
@@ -718,6 +733,28 @@ func defaultIncidentAutoCloseThresholds() map[string]time.Duration {
 		"pam_failure":            24 * time.Hour,
 		"wp_login_bruteforce":    24 * time.Hour,
 	}
+}
+
+// IncidentsSpraySuppressionPerCheck returns the configured per-check map
+// in the shape the correlator expects. Falls back to a safe default
+// when the operator did not supply a list.
+func (cfg *Config) IncidentsSpraySuppressionPerCheck() map[string]bool {
+	src := cfg.Incidents.SpraySuppression.PerCheck
+	if len(src) == 0 {
+		src = []string{
+			"email_auth_failure_realtime",
+			"pam_auth_failure",
+			"ssh_bruteforce",
+		}
+	}
+	out := make(map[string]bool, len(src))
+	for _, c := range src {
+		if c == "" {
+			continue
+		}
+		out[c] = true
+	}
+	return out
 }
 
 // PHPRelayDryRunEnabled reports the YAML-level dry-run state for the
