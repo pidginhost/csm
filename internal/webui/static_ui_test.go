@@ -140,17 +140,25 @@ func TestSharedUIPrimitivesPresent(t *testing.T) {
 		".csm-page-header",
 		".csm-status-strip",
 		".csm-queue-item",
-		".csm-filter-toolbar",
+		".csm-toolbar",
+		".csm-summary-list",
+		".csm-truncate-middle",
 		".csm-empty",
 		".csm-sticky-actions",
 		".csm-detail-panel",
 		".csm-danger-zone",
 		".csm-table-rowcard",
+		".csm-table-sticky",
 	}
 	for _, cls := range wantClasses {
 		if !strings.Contains(cssText, cls) {
 			t.Errorf("csm.css missing shared primitive %s", cls)
 		}
+	}
+	// Renamed in phase 8 -- catch any straggler that still references the old
+	// class so the design system stays canonical.
+	if strings.Contains(cssText, ".csm-filter-toolbar") {
+		t.Error("csm.css still defines .csm-filter-toolbar; renamed to .csm-toolbar")
 	}
 
 	js, err := os.ReadFile("../../ui/static/js/csm-ui.js")
@@ -162,6 +170,9 @@ func TestSharedUIPrimitivesPresent(t *testing.T) {
 		"CSM.emptyStateBlock",
 		"CSM.detailPanel",
 		"CSM.applyProgressBars",
+		"CSM.summaryItem",
+		"CSM.truncateMiddle",
+		"CSM.applyTruncateMiddle",
 	} {
 		if !strings.Contains(jsText, want) {
 			t.Errorf("csm-ui.js missing helper %s", want)
@@ -180,6 +191,10 @@ func TestSharedUIPrimitivesPresent(t *testing.T) {
 		"_applyMobileRowLabels",
 		"setAttribute('data-label'",
 		"density",
+		"countTargetId",
+		"perPageSelectId",
+		"onRowClick",
+		"stickyHeader",
 	} {
 		if !strings.Contains(tblText, want) {
 			t.Errorf("table.js missing extension hook %s", want)
@@ -425,7 +440,7 @@ func TestFindingsPageUsesPhase4Primitives(t *testing.T) {
 		`id="scan-account-modal"`,
 		`id="group-mode-toggle"`,
 		`data-group-mode="account"`,
-		`class="csm-filter-toolbar"`,
+		`class="csm-toolbar"`,
 		`id="findings-bulk-bar"`,
 		`class="csm-sticky-actions"`,
 	} {

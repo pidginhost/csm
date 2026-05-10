@@ -77,6 +77,101 @@ CSM.emptyStateBlock = function(opts) {
     return html;
 };
 
+// Build a single grouped action row for the csm-summary-list pattern.
+// Returns an HTMLElement; caller appends and may bind a click handler.
+//
+//   CSM.summaryItem({
+//       severity: 2,                      // 0=warn, 1=high, 2=crit (optional)
+//       title: 'jane@example.com',
+//       meta: '54 auth failures from 3 IPs',
+//       count: 54,                         // optional badge value
+//       age: '12m',                        // optional relative age
+//       statusHTML: '<span class="badge bg-danger-lt">Compromised</span>',
+//       actionHTML: '<button class="btn btn-sm btn-primary">Review</button>',
+//       href: '/incident?id=42',           // optional; renders <a> instead of <div>
+//       onClick: function(ev) { ... },     // optional click handler (also Enter/Space)
+//   })
+CSM.summaryItem = function(opts) {
+    opts = opts || {};
+    var tag = opts.href ? 'a' : 'div';
+    var el = document.createElement(tag);
+    el.className = 'csm-summary-list__item';
+    if (opts.severity === 2) el.classList.add('csm-summary-list__item--crit');
+    else if (opts.severity === 1) el.classList.add('csm-summary-list__item--high');
+    else if (opts.severity === 0) el.classList.add('csm-summary-list__item--warn');
+    if (opts.href) {
+        el.setAttribute('href', opts.href);
+    }
+    el.setAttribute('role', 'button');
+    el.tabIndex = 0;
+
+    var sevHTML = '';
+    if (typeof opts.severity === 'number') {
+        sevHTML = '<span class="csm-summary-list__sev">' + CSM.severityBadge(opts.severity) + '</span>';
+    }
+    var titleHTML = '<div class="csm-summary-list__title">' + (opts.titleHTML || CSM.esc(opts.title || '')) + '</div>';
+    var metaHTML = opts.meta ? '<div class="csm-summary-list__meta">' + CSM.esc(opts.meta) + '</div>' : '';
+    var mainHTML = '<div class="csm-summary-list__main">' + titleHTML + metaHTML + '</div>';
+    var countHTML = (opts.count != null) ? '<span class="csm-summary-list__count" title="Hit count">' + CSM.esc(String(opts.count)) + '</span>' : '';
+    var ageHTML = opts.age ? '<span class="csm-summary-list__age">' + CSM.esc(opts.age) + '</span>' : '';
+    var statusHTML = opts.statusHTML ? '<span class="csm-summary-list__status">' + opts.statusHTML + '</span>' : '';
+    var actionHTML = opts.actionHTML ? '<span class="csm-summary-list__action">' + opts.actionHTML + '</span>' : '';
+    el.innerHTML = sevHTML + mainHTML + countHTML + ageHTML + statusHTML + actionHTML;
+
+    if (typeof opts.onClick === 'function') {
+        el.addEventListener('click', opts.onClick);
+        el.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                opts.onClick.call(el, e);
+            }
+        });
+    }
+    return el;
+};
+
+// Middle-truncate a string. Keeps the head and tail and inserts a single
+// ellipsis in the middle. Used for paths, URIs, message IDs.
+//
+//   CSM.truncateMiddle('/very/long/path/to/file.php', 24)
+//   -> '/very/lo...o/file.php'
+CSM.truncateMiddle = function(text, max) {
+    text = text == null ? '' : String(text);
+    max = max | 0;
+    if (max <= 0 || text.length <= max) return text;
+    var keep = max - 1;
+    var head = Math.ceil(keep / 2);
+    var tail = Math.floor(keep / 2);
+    return text.slice(0, head) + '…' + text.slice(text.length - tail);
+};
+
+// Apply CSM.truncateMiddle to every element with [data-csm-truncate-middle].
+// The attribute value is the max character budget. The original text is
+// preserved on data-csm-full and surfaced via title so operators can hover
+// for the full value.
+CSM.applyTruncateMiddle = function(root) {
+    var scope = root || document;
+    var nodes = scope.querySelectorAll('[data-csm-truncate-middle]');
+    for (var i = 0; i < nodes.length; i++) {
+        var el = nodes[i];
+        var max = parseInt(el.getAttribute('data-csm-truncate-middle'), 10);
+        if (!isFinite(max) || max <= 0) continue;
+        var full = el.getAttribute('data-csm-full');
+        if (full == null) {
+            full = el.textContent;
+            el.setAttribute('data-csm-full', full);
+        }
+        var truncated = CSM.truncateMiddle(full, max);
+        if (truncated !== full) {
+            el.textContent = truncated;
+            if (!el.hasAttribute('title')) el.setAttribute('title', full);
+            el.classList.add('csm-truncate-middle');
+        } else {
+            el.textContent = full;
+        }
+    }
+};
+
 CSM.clampPercent = function(value) {
     var n = Number(value);
     if (!isFinite(n)) return 0;

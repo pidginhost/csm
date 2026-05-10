@@ -55,6 +55,11 @@ CSM.Table = function(opts) {
     if (opts.mobileRowCard) {
         this.table.classList.add('csm-table-rowcard');
     }
+    if (opts.stickyHeader) {
+        this.table.classList.add('csm-table-sticky');
+    }
+    this.countTargetEl = opts.countTargetId ? document.getElementById(opts.countTargetId) : null;
+    this.onRowClick = typeof opts.onRowClick === 'function' ? opts.onRowClick : null;
 
     // Collect all data rows (skip detail rows)
     this.allRows = [];
@@ -102,6 +107,46 @@ CSM.Table = function(opts) {
             var clearSelf = this;
             clearEl.addEventListener('click', function() { clearSelf.clearFilters(); });
         }
+    }
+
+    // Optional external page-size select (rendered into the page toolbar)
+    if (opts.perPageSelectId) {
+        var perPageEl = document.getElementById(opts.perPageSelectId);
+        if (perPageEl) {
+            var perPageSelf = this;
+            if (this.perPage) perPageEl.value = String(this.perPage);
+            perPageEl.addEventListener('change', function() {
+                var n = parseInt(this.value, 10);
+                perPageSelf.perPage = (isFinite(n) && n > 0) ? n : 0;
+                perPageSelf.currentPage = 1;
+                perPageSelf.render();
+                perPageSelf._saveState();
+            });
+        }
+    }
+
+    // Optional row-click handler -> caller opens detail panel
+    if (this.onRowClick) {
+        var rowClickSelf = this;
+        this.tbody.addEventListener('click', function(ev) {
+            // Ignore clicks that originated on interactive children (buttons,
+            // checkboxes, links, form controls) so the row hook does not
+            // hijack their default action.
+            var t = ev.target;
+            while (t && t !== rowClickSelf.tbody) {
+                var tag = t.tagName;
+                if (tag === 'BUTTON' || tag === 'A' || tag === 'INPUT' || tag === 'SELECT' || tag === 'LABEL' || tag === 'TEXTAREA') return;
+                t = t.parentNode;
+            }
+            var row = ev.target.closest('tr');
+            if (!row || !rowClickSelf.tbody.contains(row)) return;
+            if (row.classList.contains('csm-empty-row') || row.classList.contains('details-row')) return;
+            var item = null;
+            for (var i = 0; i < rowClickSelf.filteredRows.length; i++) {
+                if (rowClickSelf.filteredRows[i].row === row) { item = rowClickSelf.filteredRows[i]; break; }
+            }
+            rowClickSelf.onRowClick.call(rowClickSelf, row, item);
+        });
     }
 
     // Bind filters
@@ -272,7 +317,11 @@ CSM.Table.prototype._renderControls = function(total, totalPages) {
     var end = showAll ? total : Math.min(this.currentPage * this.perPage, total);
     var totalAll = this.allRows ? this.allRows.length : total;
     var suffix = (total < totalAll) ? ' (' + totalAll + ' total)' : '';
-    var html = '<span class="text-muted small">Showing ' + start + '\u2013' + end + ' of ' + total + suffix + '</span>';
+    var countText = 'Showing ' + start + '\u2013' + end + ' of ' + total + suffix;
+    if (this.countTargetEl) {
+        this.countTargetEl.textContent = countText;
+    }
+    var html = '<span class="text-muted small">' + countText + '</span>';
 
     if (totalPages > 1) {
         html += '<div class="d-flex gap-1">';

@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Web UI gains three more shared layout primitives -- a richer toolbar, a grouped summary-list for high-volume action rows, and middle-truncated text -- and CSM.Table now exposes sticky headers, external page-size selects, decoupled result-count targets, and row-click hooks. Used by the upcoming Email and ModSecurity workbench redesigns; the previous filter toolbar class is renamed to csm-toolbar.
 - Web UI ships a set of shared layout primitives (page header, status strip, action queue, filter toolbar, empty state, sticky action bar, detail panel, danger zone) and small JS helpers used by upcoming page redesigns; existing pages render unchanged.
 - Web UI navigation is reorganised into a workflow-grouped sidebar (Overview, Triage, Response, Operations, Configuration); URLs are unchanged, groups remember their collapsed state, read-scope views hide admin-only entries, and the sidebar collapses into a drawer on tablet/mobile viewports.
 - Web UI dashboard leads with a priority queue (open incidents plus top critical/high findings) and a system-posture chip row; the analytics charts and recent activity feed remain available below the fold.
