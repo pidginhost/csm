@@ -96,6 +96,34 @@
         });
     }
 
+    // Filter the sidebar by free-text. Matches the section title and the
+    // section ID. Group headers without a visible child are also hidden so
+    // the sidebar does not show a label with no entries beneath it.
+    function filterNav(query) {
+        const q = (query || "").trim().toLowerCase();
+        const links = document.querySelectorAll(".settings-nav-link");
+        links.forEach(function (link) {
+            if (!q) { link.hidden = false; return; }
+            const id = (link.dataset.section || "").toLowerCase();
+            const label = (link.querySelector(".settings-nav-label") || {}).textContent || "";
+            const match = id.indexOf(q) >= 0 || label.toLowerCase().indexOf(q) >= 0;
+            link.hidden = !match;
+        });
+        const headers = document.querySelectorAll(".settings-nav-group-header");
+        headers.forEach(function (header) {
+            let nextVisible = false;
+            let n = header.nextElementSibling;
+            while (n && !n.classList.contains("settings-nav-group-header")) {
+                if (n.classList.contains("settings-nav-link") && !n.hidden) {
+                    nextVisible = true;
+                    break;
+                }
+                n = n.nextElementSibling;
+            }
+            header.hidden = !nextVisible;
+        });
+    }
+
     function refreshDirtyMarkers() {
         document.querySelectorAll(".settings-nav-link").forEach(function (el) {
             el.classList.toggle("is-dirty", dirtySections.has(el.dataset.section));
@@ -180,17 +208,53 @@
             panel.appendChild(b);
         }
 
-        // Form body: scalars in a two-column grid; wide types span full row
+        // Form body: scalars in a two-column grid; wide types span full row.
+        // When any field carries a field_group, render one fieldset per group
+        // so large sections (firewall, thresholds) read by topic instead of
+        // as a flat wall of inputs. Sections without field_group fall back to
+        // the original flat grid for back-compat.
         const body = document.createElement("div");
         body.className = "settings-panel-body";
-        const grid = document.createElement("div");
-        grid.className = "settings-field-grid";
-        data.section.fields.forEach(function (field) {
-            const cell = fieldRow(field, lookupValue(data.values || {}, field.yaml_path));
-            cell.classList.add(isWideField(field) ? "settings-field-wide" : "settings-field-half");
-            grid.appendChild(cell);
-        });
-        body.appendChild(grid);
+        const fields = data.section.fields || [];
+        const hasGroups = fields.some(function (f) { return f.field_group; });
+        if (hasGroups) {
+            const groupsOrder = [];
+            const groupMap = Object.create(null);
+            fields.forEach(function (f) {
+                const key = f.field_group || "Other";
+                if (!groupMap[key]) {
+                    groupMap[key] = [];
+                    groupsOrder.push(key);
+                }
+                groupMap[key].push(f);
+            });
+            groupsOrder.forEach(function (label) {
+                const fset = document.createElement("fieldset");
+                fset.className = "settings-field-group";
+                const legend = document.createElement("legend");
+                legend.className = "settings-field-group__legend";
+                legend.textContent = label;
+                fset.appendChild(legend);
+                const grid = document.createElement("div");
+                grid.className = "settings-field-grid";
+                groupMap[label].forEach(function (field) {
+                    const cell = fieldRow(field, lookupValue(data.values || {}, field.yaml_path));
+                    cell.classList.add(isWideField(field) ? "settings-field-wide" : "settings-field-half");
+                    grid.appendChild(cell);
+                });
+                fset.appendChild(grid);
+                body.appendChild(fset);
+            });
+        } else {
+            const grid = document.createElement("div");
+            grid.className = "settings-field-grid";
+            fields.forEach(function (field) {
+                const cell = fieldRow(field, lookupValue(data.values || {}, field.yaml_path));
+                cell.classList.add(isWideField(field) ? "settings-field-wide" : "settings-field-half");
+                grid.appendChild(cell);
+            });
+            body.appendChild(grid);
+        }
         panel.appendChild(body);
 
         // Footer actions
@@ -942,6 +1006,10 @@
     });
 
     document.addEventListener("DOMContentLoaded", function () {
+        const search = byId("settings-search");
+        if (search) {
+            search.addEventListener("input", function () { filterNav(this.value); });
+        }
         loadSections().then(function () {
             renderNav();
             const hash = window.location.hash.replace(/^#/, "");

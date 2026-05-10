@@ -29,6 +29,11 @@ type SettingsField struct {
 	OptionGroups  []OptionGroup `json:"option_groups,omitempty"`
 	OptionsSource string        `json:"options_source,omitempty"`
 	Placeholder   string        `json:"placeholder,omitempty"`
+	// FieldGroup is the inner subdivider label rendered as a fieldset
+	// inside a single section (e.g. firewall fields split into Access
+	// ports / Rate limits / Logging). Empty string means the field
+	// renders ungrouped under the section's flat grid.
+	FieldGroup string `json:"field_group,omitempty"`
 }
 
 // SettingsSection groups the fields of one top-level Config sub-tree.
@@ -66,6 +71,26 @@ var SectionGroupOrder = []string{
 	SectionGroupOps,
 }
 
+// Field-group labels used to subdivide large sections. Reuse via
+// constants so Phase 6 does not scatter free strings through the
+// schema and the static test can lock them in.
+const (
+	FieldGroupAccessPorts     = "Access ports"
+	FieldGroupIPv6            = "IPv6"
+	FieldGroupRateLimits      = "Rate limits"
+	FieldGroupFloodProtection = "Flood protection"
+	FieldGroupGeoDynDNS       = "Geo and DynDNS"
+	FieldGroupSMTPControls    = "SMTP controls"
+	FieldGroupLogging         = "Logging"
+	FieldGroupLimits          = "Limits"
+
+	FieldGroupScanIntervals  = "Scan intervals"
+	FieldGroupMailBruteForce = "Mail brute force"
+	FieldGroupSMTPBruteForce = "SMTP brute force"
+	FieldGroupAccountSpray   = "Account spray"
+	FieldGroupStateRetention = "State retention"
+)
+
 func int64p(v int64) *int64 { return &v }
 
 var settingsSections = []SettingsSection{
@@ -101,29 +126,29 @@ var settingsSections = []SettingsSection{
 		Group:    SectionGroupAlerting,
 		Restart:  false,
 		Fields: []SettingsField{
-			{YAMLPath: "mail_queue_warn", Type: "int", Label: "Mail queue warn", Min: int64p(0)},
-			{YAMLPath: "mail_queue_crit", Type: "int", Label: "Mail queue critical", Min: int64p(0)},
-			{YAMLPath: "state_expiry_hours", Type: "int", Label: "State expiry (hours)", Min: int64p(1)},
-			{YAMLPath: "deep_scan_interval_min", Type: "int", Label: "Deep scan interval (min)", Min: int64p(1)},
-			{YAMLPath: "wp_core_check_interval_min", Type: "int", Label: "WP core check interval (min)", Min: int64p(1)},
-			{YAMLPath: "webshell_scan_interval_min", Type: "int", Label: "Webshell scan interval (min)", Min: int64p(1)},
-			{YAMLPath: "filesystem_scan_interval_min", Type: "int", Label: "Filesystem scan interval (min)", Min: int64p(1)},
-			{YAMLPath: "multi_ip_login_threshold", Type: "int", Label: "Multi-IP login threshold", Min: int64p(1)},
-			{YAMLPath: "multi_ip_login_window_min", Type: "int", Label: "Multi-IP login window (min)", Min: int64p(1)},
-			{YAMLPath: "plugin_check_interval_min", Type: "int", Label: "Plugin check interval (min)", Min: int64p(1)},
-			{YAMLPath: "brute_force_window", Type: "int", Label: "Brute force window", Min: int64p(1)},
-			{YAMLPath: "smtp_bruteforce_threshold", Type: "int", Label: "SMTP bruteforce threshold", Min: int64p(1)},
-			{YAMLPath: "smtp_bruteforce_window_min", Type: "int", Label: "SMTP bruteforce window (min)", Min: int64p(1)},
-			{YAMLPath: "smtp_bruteforce_suppress_min", Type: "int", Label: "SMTP bruteforce suppress (min)", Min: int64p(1)},
-			{YAMLPath: "smtp_bruteforce_subnet_threshold", Type: "int", Label: "SMTP bruteforce /24 threshold", Min: int64p(1)},
-			{YAMLPath: "smtp_account_spray_threshold", Type: "int", Label: "SMTP account spray threshold", Min: int64p(1)},
-			{YAMLPath: "smtp_bruteforce_max_tracked", Type: "int", Label: "SMTP bruteforce max tracked", Min: int64p(100)},
-			{YAMLPath: "mail_bruteforce_threshold", Type: "int", Label: "Mail bruteforce threshold", Min: int64p(1)},
-			{YAMLPath: "mail_bruteforce_window_min", Type: "int", Label: "Mail bruteforce window (min)", Min: int64p(1)},
-			{YAMLPath: "mail_bruteforce_suppress_min", Type: "int", Label: "Mail bruteforce suppress (min)", Min: int64p(1)},
-			{YAMLPath: "mail_bruteforce_subnet_threshold", Type: "int", Label: "Mail bruteforce /24 threshold", Min: int64p(1)},
-			{YAMLPath: "mail_account_spray_threshold", Type: "int", Label: "Mail account spray threshold", Min: int64p(1)},
-			{YAMLPath: "mail_bruteforce_max_tracked", Type: "int", Label: "Mail bruteforce max tracked", Min: int64p(100)},
+			{YAMLPath: "mail_queue_warn", Type: "int", Label: "Mail queue warn", Min: int64p(0), FieldGroup: FieldGroupScanIntervals},
+			{YAMLPath: "mail_queue_crit", Type: "int", Label: "Mail queue critical", Min: int64p(0), FieldGroup: FieldGroupScanIntervals},
+			{YAMLPath: "state_expiry_hours", Type: "int", Label: "State expiry (hours)", Min: int64p(1), FieldGroup: FieldGroupStateRetention},
+			{YAMLPath: "deep_scan_interval_min", Type: "int", Label: "Deep scan interval (min)", Min: int64p(1), FieldGroup: FieldGroupScanIntervals},
+			{YAMLPath: "wp_core_check_interval_min", Type: "int", Label: "WP core check interval (min)", Min: int64p(1), FieldGroup: FieldGroupScanIntervals},
+			{YAMLPath: "webshell_scan_interval_min", Type: "int", Label: "Webshell scan interval (min)", Min: int64p(1), FieldGroup: FieldGroupScanIntervals},
+			{YAMLPath: "filesystem_scan_interval_min", Type: "int", Label: "Filesystem scan interval (min)", Min: int64p(1), FieldGroup: FieldGroupScanIntervals},
+			{YAMLPath: "multi_ip_login_threshold", Type: "int", Label: "Multi-IP login threshold", Min: int64p(1), FieldGroup: FieldGroupAccountSpray},
+			{YAMLPath: "multi_ip_login_window_min", Type: "int", Label: "Multi-IP login window (min)", Min: int64p(1), FieldGroup: FieldGroupAccountSpray},
+			{YAMLPath: "plugin_check_interval_min", Type: "int", Label: "Plugin check interval (min)", Min: int64p(1), FieldGroup: FieldGroupScanIntervals},
+			{YAMLPath: "brute_force_window", Type: "int", Label: "Brute force window", Min: int64p(1), FieldGroup: FieldGroupMailBruteForce},
+			{YAMLPath: "smtp_bruteforce_threshold", Type: "int", Label: "SMTP bruteforce threshold", Min: int64p(1), FieldGroup: FieldGroupSMTPBruteForce},
+			{YAMLPath: "smtp_bruteforce_window_min", Type: "int", Label: "SMTP bruteforce window (min)", Min: int64p(1), FieldGroup: FieldGroupSMTPBruteForce},
+			{YAMLPath: "smtp_bruteforce_suppress_min", Type: "int", Label: "SMTP bruteforce suppress (min)", Min: int64p(1), FieldGroup: FieldGroupSMTPBruteForce},
+			{YAMLPath: "smtp_bruteforce_subnet_threshold", Type: "int", Label: "SMTP bruteforce /24 threshold", Min: int64p(1), FieldGroup: FieldGroupSMTPBruteForce},
+			{YAMLPath: "smtp_account_spray_threshold", Type: "int", Label: "SMTP account spray threshold", Min: int64p(1), FieldGroup: FieldGroupAccountSpray},
+			{YAMLPath: "smtp_bruteforce_max_tracked", Type: "int", Label: "SMTP bruteforce max tracked", Min: int64p(100), FieldGroup: FieldGroupStateRetention},
+			{YAMLPath: "mail_bruteforce_threshold", Type: "int", Label: "Mail bruteforce threshold", Min: int64p(1), FieldGroup: FieldGroupMailBruteForce},
+			{YAMLPath: "mail_bruteforce_window_min", Type: "int", Label: "Mail bruteforce window (min)", Min: int64p(1), FieldGroup: FieldGroupMailBruteForce},
+			{YAMLPath: "mail_bruteforce_suppress_min", Type: "int", Label: "Mail bruteforce suppress (min)", Min: int64p(1), FieldGroup: FieldGroupMailBruteForce},
+			{YAMLPath: "mail_bruteforce_subnet_threshold", Type: "int", Label: "Mail bruteforce /24 threshold", Min: int64p(1), FieldGroup: FieldGroupMailBruteForce},
+			{YAMLPath: "mail_account_spray_threshold", Type: "int", Label: "Mail account spray threshold", Min: int64p(1), FieldGroup: FieldGroupAccountSpray},
+			{YAMLPath: "mail_bruteforce_max_tracked", Type: "int", Label: "Mail bruteforce max tracked", Min: int64p(100), FieldGroup: FieldGroupStateRetention},
 		},
 	},
 	{
@@ -384,43 +409,43 @@ var settingsSections = []SettingsSection{
 		Group:    SectionGroupFirewall,
 		Restart:  true,
 		Fields: []SettingsField{
-			{YAMLPath: "enabled", Type: "bool", Label: "Firewall enabled", Help: "Activates the nftables-based firewall on next daemon restart. Verify port lists below before enabling to avoid lockout."},
-			{YAMLPath: "ipv6", Type: "bool", Label: "IPv6 dual-stack"},
+			{YAMLPath: "enabled", Type: "bool", Label: "Firewall enabled", Help: "Activates the nftables-based firewall on next daemon restart. Verify port lists below before enabling to avoid lockout.", FieldGroup: FieldGroupAccessPorts},
+			{YAMLPath: "ipv6", Type: "bool", Label: "IPv6 dual-stack", FieldGroup: FieldGroupIPv6},
 
-			{YAMLPath: "tcp_in", Type: "[]int", Label: "Inbound TCP ports", Help: "SSH (22) is intentionally not in the default; add it explicitly if sshd listens on 22. WebUI port must be present or you will lose remote access on restart."},
-			{YAMLPath: "tcp_out", Type: "[]int", Label: "Outbound TCP ports"},
-			{YAMLPath: "udp_in", Type: "[]int", Label: "Inbound UDP ports"},
-			{YAMLPath: "udp_out", Type: "[]int", Label: "Outbound UDP ports", Help: "Includes 6277/24441 by default for SpamAssassin DCC/Pyzor; do not remove unless rspamd-only."},
-			{YAMLPath: "tcp6_in", Type: "[]int", Label: "Inbound TCP6 ports", Help: "Empty inherits tcp_in. Only set when IPv6 should differ from IPv4."},
-			{YAMLPath: "tcp6_out", Type: "[]int", Label: "Outbound TCP6 ports", Help: "Empty inherits tcp_out."},
-			{YAMLPath: "udp6_in", Type: "[]int", Label: "Inbound UDP6 ports", Help: "Empty inherits udp_in."},
-			{YAMLPath: "udp6_out", Type: "[]int", Label: "Outbound UDP6 ports", Help: "Empty inherits udp_out."},
+			{YAMLPath: "tcp_in", Type: "[]int", Label: "Inbound TCP ports", Help: "SSH (22) is intentionally not in the default; add it explicitly if sshd listens on 22. WebUI port must be present or you will lose remote access on restart.", FieldGroup: FieldGroupAccessPorts},
+			{YAMLPath: "tcp_out", Type: "[]int", Label: "Outbound TCP ports", FieldGroup: FieldGroupAccessPorts},
+			{YAMLPath: "udp_in", Type: "[]int", Label: "Inbound UDP ports", FieldGroup: FieldGroupAccessPorts},
+			{YAMLPath: "udp_out", Type: "[]int", Label: "Outbound UDP ports", Help: "Includes 6277/24441 by default for SpamAssassin DCC/Pyzor; do not remove unless rspamd-only.", FieldGroup: FieldGroupAccessPorts},
+			{YAMLPath: "tcp6_in", Type: "[]int", Label: "Inbound TCP6 ports", Help: "Empty inherits tcp_in. Only set when IPv6 should differ from IPv4.", FieldGroup: FieldGroupIPv6},
+			{YAMLPath: "tcp6_out", Type: "[]int", Label: "Outbound TCP6 ports", Help: "Empty inherits tcp_out.", FieldGroup: FieldGroupIPv6},
+			{YAMLPath: "udp6_in", Type: "[]int", Label: "Inbound UDP6 ports", Help: "Empty inherits udp_in.", FieldGroup: FieldGroupIPv6},
+			{YAMLPath: "udp6_out", Type: "[]int", Label: "Outbound UDP6 ports", Help: "Empty inherits udp_out.", FieldGroup: FieldGroupIPv6},
 
-			{YAMLPath: "restricted_tcp", Type: "[]int", Label: "Restricted TCP (infra-only)", Help: "Reachable only from infra_ips. Manage infra_ips in its own section."},
-			{YAMLPath: "passive_ftp_start", Type: "int", Label: "Passive FTP range start", Min: int64p(1024), Max: int64p(65535)},
-			{YAMLPath: "passive_ftp_end", Type: "int", Label: "Passive FTP range end", Min: int64p(1024), Max: int64p(65535)},
-			{YAMLPath: "drop_nolog", Type: "[]int", Label: "Silent-drop ports", Help: "Dropped without logging to keep scanner noise out of the log."},
+			{YAMLPath: "restricted_tcp", Type: "[]int", Label: "Restricted TCP (infra-only)", Help: "Reachable only from infra_ips. Manage infra_ips in its own section.", FieldGroup: FieldGroupAccessPorts},
+			{YAMLPath: "passive_ftp_start", Type: "int", Label: "Passive FTP range start", Min: int64p(1024), Max: int64p(65535), FieldGroup: FieldGroupAccessPorts},
+			{YAMLPath: "passive_ftp_end", Type: "int", Label: "Passive FTP range end", Min: int64p(1024), Max: int64p(65535), FieldGroup: FieldGroupAccessPorts},
+			{YAMLPath: "drop_nolog", Type: "[]int", Label: "Silent-drop ports", Help: "Dropped without logging to keep scanner noise out of the log.", FieldGroup: FieldGroupLogging},
 
-			{YAMLPath: "conn_rate_limit", Type: "int", Label: "Conn rate limit (per IP/min)", Min: int64p(0), Max: int64p(100000), Help: "0 disables. 200 tolerates shared CGNAT egress."},
-			{YAMLPath: "conn_limit", Type: "int", Label: "Concurrent connections per IP", Min: int64p(0), Max: int64p(100000), Help: "0 disables."},
-			{YAMLPath: "syn_flood_protection", Type: "bool", Label: "SYN flood protection"},
-			{YAMLPath: "udp_flood", Type: "bool", Label: "UDP flood protection"},
-			{YAMLPath: "udp_flood_rate", Type: "int", Label: "UDP packets/sec", Min: int64p(1), Max: int64p(100000)},
-			{YAMLPath: "udp_flood_burst", Type: "int", Label: "UDP burst allowance", Min: int64p(1), Max: int64p(1000000)},
+			{YAMLPath: "conn_rate_limit", Type: "int", Label: "Conn rate limit (per IP/min)", Min: int64p(0), Max: int64p(100000), Help: "0 disables. 200 tolerates shared CGNAT egress.", FieldGroup: FieldGroupRateLimits},
+			{YAMLPath: "conn_limit", Type: "int", Label: "Concurrent connections per IP", Min: int64p(0), Max: int64p(100000), Help: "0 disables.", FieldGroup: FieldGroupRateLimits},
+			{YAMLPath: "syn_flood_protection", Type: "bool", Label: "SYN flood protection", FieldGroup: FieldGroupFloodProtection},
+			{YAMLPath: "udp_flood", Type: "bool", Label: "UDP flood protection", FieldGroup: FieldGroupFloodProtection},
+			{YAMLPath: "udp_flood_rate", Type: "int", Label: "UDP packets/sec", Min: int64p(1), Max: int64p(100000), FieldGroup: FieldGroupFloodProtection},
+			{YAMLPath: "udp_flood_burst", Type: "int", Label: "UDP burst allowance", Min: int64p(1), Max: int64p(1000000), FieldGroup: FieldGroupFloodProtection},
 
-			{YAMLPath: "deny_ip_limit", Type: "int", Label: "Permanent block cap", Min: int64p(0), Max: int64p(1000000), Help: "0 = unlimited."},
-			{YAMLPath: "deny_temp_ip_limit", Type: "int", Label: "Temporary block cap", Min: int64p(0), Max: int64p(1000000)},
+			{YAMLPath: "deny_ip_limit", Type: "int", Label: "Permanent block cap", Min: int64p(0), Max: int64p(1000000), Help: "0 = unlimited.", FieldGroup: FieldGroupLimits},
+			{YAMLPath: "deny_temp_ip_limit", Type: "int", Label: "Temporary block cap", Min: int64p(0), Max: int64p(1000000), FieldGroup: FieldGroupLimits},
 
-			{YAMLPath: "country_block", Type: "[]string", Label: "Country block (ISO-3166)", Help: "Two-letter codes, one per line."},
-			{YAMLPath: "country_db_path", Type: "string", Label: "Country DB path override", Placeholder: "(uses geoip section if empty)"},
-			{YAMLPath: "dyndns_hosts", Type: "[]string", Label: "DynDNS hosts", Help: "Resolved every 5 minutes and merged into the trusted set."},
+			{YAMLPath: "country_block", Type: "[]string", Label: "Country block (ISO-3166)", Help: "Two-letter codes, one per line.", FieldGroup: FieldGroupGeoDynDNS},
+			{YAMLPath: "country_db_path", Type: "string", Label: "Country DB path override", Placeholder: "(uses geoip section if empty)", FieldGroup: FieldGroupGeoDynDNS},
+			{YAMLPath: "dyndns_hosts", Type: "[]string", Label: "DynDNS hosts", Help: "Resolved every 5 minutes and merged into the trusted set.", FieldGroup: FieldGroupGeoDynDNS},
 
-			{YAMLPath: "smtp_block", Type: "bool", Label: "Block outbound SMTP", Help: "When enabled, only smtp_allow_users may originate outbound mail. Verify allow list first."},
-			{YAMLPath: "smtp_allow_users", Type: "[]string", Label: "SMTP allow users", Help: "root is always allowed."},
-			{YAMLPath: "smtp_ports", Type: "[]int", Label: "SMTP ports"},
+			{YAMLPath: "smtp_block", Type: "bool", Label: "Block outbound SMTP", Help: "When enabled, only smtp_allow_users may originate outbound mail. Verify allow list first.", FieldGroup: FieldGroupSMTPControls},
+			{YAMLPath: "smtp_allow_users", Type: "[]string", Label: "SMTP allow users", Help: "root is always allowed.", FieldGroup: FieldGroupSMTPControls},
+			{YAMLPath: "smtp_ports", Type: "[]int", Label: "SMTP ports", FieldGroup: FieldGroupSMTPControls},
 
-			{YAMLPath: "log_dropped", Type: "bool", Label: "Log dropped packets"},
-			{YAMLPath: "log_rate", Type: "int", Label: "Log entries per minute", Min: int64p(0), Max: int64p(10000)},
+			{YAMLPath: "log_dropped", Type: "bool", Label: "Log dropped packets", FieldGroup: FieldGroupLogging},
+			{YAMLPath: "log_rate", Type: "int", Label: "Log entries per minute", Min: int64p(0), Max: int64p(10000), FieldGroup: FieldGroupLogging},
 		},
 	},
 }

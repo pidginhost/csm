@@ -544,6 +544,87 @@ func TestFirewallPageSplitIntoSubviews(t *testing.T) {
 	}
 }
 
+// TestSettingsSchemaCarriesFieldGroups asserts the firewall and threshold
+// sections expose inner field-group labels so settings.js can render
+// fieldsets per topic instead of one flat grid. The test is presence-only;
+// per-field assignment lives in the schema and is reviewed there.
+func TestSettingsSchemaCarriesFieldGroups(t *testing.T) {
+	src, err := os.ReadFile("../../internal/webui/settings_schema.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, want := range []string{
+		`FieldGroup string`,
+		"FieldGroupAccessPorts",
+		"FieldGroupRateLimits",
+		"FieldGroupFloodProtection",
+		"FieldGroupGeoDynDNS",
+		"FieldGroupSMTPControls",
+		"FieldGroupLogging",
+		"FieldGroupLimits",
+		"FieldGroupScanIntervals",
+		"FieldGroupMailBruteForce",
+		"FieldGroupSMTPBruteForce",
+		"FieldGroupAccountSpray",
+		"FieldGroupStateRetention",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("settings_schema.go missing field-group constant %q", want)
+		}
+	}
+
+	// Spot-check that firewall and thresholds carry FieldGroup annotations
+	// (any occurrence beyond the type definition demonstrates application).
+	if strings.Count(text, "FieldGroup: FieldGroup") < 20 {
+		t.Errorf("settings_schema.go has too few FieldGroup annotations; firewall + thresholds were not annotated")
+	}
+}
+
+// TestSettingsPageRendersFieldsetsAndSearch asserts the Phase 6 hooks land
+// in settings.html and settings.js: a free-text section search plus the
+// field-group rendering branch.
+func TestSettingsPageRendersFieldsetsAndSearch(t *testing.T) {
+	tmpl, err := os.ReadFile("../../ui/templates/settings.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(tmpl), `id="settings-search"`) {
+		t.Fatal("settings.html missing settings-search input")
+	}
+
+	js, err := os.ReadFile("../../ui/static/js/settings.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsText := string(js)
+	for _, want := range []string{
+		"filterNav",
+		"hasGroups",
+		"settings-field-group",
+		"f.field_group",
+	} {
+		if !strings.Contains(jsText, want) {
+			t.Errorf("settings.js missing phase-6 hook %q", want)
+		}
+	}
+
+	css, err := os.ReadFile("../../ui/static/css/csm.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cssText := string(css)
+	for _, want := range []string{
+		".settings-field-group",
+		".settings-field-group__legend",
+		".settings-search",
+	} {
+		if !strings.Contains(cssText, want) {
+			t.Errorf("csm.css missing phase-6 class %q", want)
+		}
+	}
+}
+
 func TestSettingsIntArraySubmitsRawTokens(t *testing.T) {
 	src, err := os.ReadFile("../../ui/static/js/settings.js")
 	if err != nil {

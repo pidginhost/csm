@@ -340,6 +340,42 @@ body.theme-dark { background-color: #1a2234; }
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 1.1rem 1.25rem;
 }
+
+/* Inner field-group fieldset: large sections (firewall, thresholds) split
+   their fields into topic-named fieldsets so an operator can scan the
+   section by subject instead of reading every field linearly. */
+.settings-field-group {
+    border: 1px solid var(--csm-border);
+    border-radius: 0.5rem;
+    padding: 0.85rem 1rem 1rem;
+    margin-bottom: 1rem;
+    background: rgba(0, 0, 0, 0.012);
+}
+.theme-dark .settings-field-group {
+    border-color: #2d3a4e;
+    background: rgba(255, 255, 255, 0.018);
+}
+.settings-field-group:last-child { margin-bottom: 0; }
+.settings-field-group__legend {
+    width: auto;
+    padding: 0 0.4rem;
+    margin-left: -0.4rem;
+    margin-bottom: 0.6rem;
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--csm-text-muted);
+}
+
+/* Section search above the sidebar nav */
+.settings-search {
+    padding: 0.45rem 0.6rem;
+    border-bottom: 1px solid var(--csm-border);
+}
+.theme-dark .settings-search { border-bottom-color: #2d3a4e; }
+.settings-nav-link[hidden] { display: none; }
+.settings-nav-group-header[hidden] { display: none; }
 .settings-field-wide { grid-column: 1 / -1; }
 .settings-field-toggle {
     padding: 0.6rem 0.85rem;
