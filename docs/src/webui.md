@@ -13,10 +13,12 @@ groups only reorder visibility:
 - **Operations** - Performance, Hardening, Rules, ModSec Rules, Audit
 - **Configuration** - Settings
 
-On viewports under 992px the sidebar collapses into a top-bar drawer
+Sidebar group expand/collapse state is saved in the browser. On
+viewports under 992px the sidebar collapses into a top-bar drawer
 toggled from the hamburger button. Account detail (`/account`) is
 hidden from the sidebar; it is reached from finding rows, incident
-detail, and Threat Intel result panels.
+detail, and Threat Intel result panels. Read-scope sessions hide
+admin-only navigation entries such as Configuration and ModSec Rules.
 
 ## Pages
 

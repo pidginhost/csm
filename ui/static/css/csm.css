@@ -751,22 +751,41 @@ body.theme-dark { background-color: #1a2234; }
    layers CSM grouping labels and tightens spacing.
    ========================================================================== */
 
-.csm-sidebar { width: 244px; }
+.csm-sidebar { width: 100%; }
 @media (min-width: 992px) {
-    .csm-sidebar { position: fixed; top: 0; bottom: 0; left: 0; z-index: 1000; }
+    .csm-sidebar { width: 244px; position: fixed; top: 0; bottom: 0; left: 0; z-index: 1000; }
     .page-wrapper { margin-left: 244px; }
 }
 .csm-sidebar .navbar-brand a { color: inherit; }
 .csm-sidebar .navbar-brand a:hover { text-decoration: none; }
 
 .csm-nav-group { padding: 0.25rem 0 0.5rem; }
-.csm-nav-group__label {
+.csm-nav-group__toggle {
+    width: 100%;
+    border: 0;
+    background: transparent;
     padding: 0.6rem 1rem 0.3rem;
     font-size: 0.7rem;
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: rgba(255, 255, 255, 0.45);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    text-align: left;
+}
+.csm-nav-group__toggle:hover,
+.csm-nav-group__toggle:focus-visible {
+    color: rgba(255, 255, 255, 0.78);
+}
+.csm-nav-group__toggle .ti {
+    font-size: 0.85rem;
+    transition: transform 0.12s ease;
+}
+.csm-nav-group.is-collapsed > .navbar-nav { display: none; }
+.csm-nav-group.is-collapsed .csm-nav-group__toggle .ti {
+    transform: rotate(-90deg);
 }
 .csm-nav-group .navbar-nav { gap: 0.05rem; }
 .csm-nav-group .nav-link {

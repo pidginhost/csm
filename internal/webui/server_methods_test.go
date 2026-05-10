@@ -40,6 +40,9 @@ func TestCsmConfigJSON(t *testing.T) {
 	if data["firewall"] != true {
 		t.Errorf("firewall = %v", data["firewall"])
 	}
+	if data["authScope"] != "admin" {
+		t.Errorf("authScope = %v", data["authScope"])
+	}
 }
 
 func TestBroadcastNoPanic(t *testing.T) {

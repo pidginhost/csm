@@ -1,35 +1,122 @@
-// CSM Layout - sidebar active state and theme toggle.
+// CSM Layout - sidebar state and theme toggle.
 // Active link is driven by body[data-csm-page]; each nav <li> carries
 // data-csm-route, which matches the page name set by the template's
 // {{define "page"}} block. Falling back to URL prefix matching keeps
 // deep-links and history redirects highlighted correctly.
 (function() {
+    var NAV_GROUP_STATE_KEY = 'csm-nav-groups';
     var page = document.body.getAttribute('data-csm-page') || '';
     var pathname = window.location.pathname;
     var items = document.querySelectorAll('#csm-nav [data-csm-route]');
-    var matched = false;
-    for (var i = 0; i < items.length; i++) {
-        var route = items[i].getAttribute('data-csm-route');
-        var link = items[i].querySelector('a.nav-link');
-        if (!link) continue;
-        if (route && route === page) {
-            link.classList.add('active');
-            link.setAttribute('aria-current', 'page');
-            matched = true;
+
+    function navScope() {
+        if (typeof CSM_CONFIG !== 'undefined' && CSM_CONFIG.authScope) {
+            return CSM_CONFIG.authScope;
+        }
+        return 'admin';
+    }
+
+    function hideReadScopeAdminItems() {
+        if (navScope() !== 'read') return;
+        var adminOnly = document.querySelectorAll('#csm-nav [data-csm-admin-only]');
+        for (var i = 0; i < adminOnly.length; i++) {
+            adminOnly[i].hidden = true;
         }
     }
-    if (matched) return;
-    // Fallback: match by URL prefix for routes without an explicit page name.
-    for (var j = 0; j < items.length; j++) {
-        var link2 = items[j].querySelector('a.nav-link');
-        if (!link2) continue;
-        var href = link2.getAttribute('href');
-        if (href && href !== '/' && pathname.indexOf(href) === 0) {
-            link2.classList.add('active');
-            link2.setAttribute('aria-current', 'page');
-            return;
+
+    function activateCurrentItem() {
+        var activeGroup = null;
+        var matched = false;
+        var i;
+
+        for (i = 0; i < items.length; i++) {
+            if (items[i].hidden) continue;
+            var route = items[i].getAttribute('data-csm-route');
+            var link = items[i].querySelector('a.nav-link');
+            if (!link) continue;
+            if (route && route === page) {
+                link.classList.add('active');
+                link.setAttribute('aria-current', 'page');
+                activeGroup = items[i].closest('[data-csm-nav-group]');
+                matched = true;
+            }
+        }
+        if (matched) return activeGroup;
+
+        // Fallback: prefer the longest matching URL so /modsec/rules does
+        // not get swallowed by the shorter /modsec entry.
+        var best = null;
+        var bestLen = -1;
+        for (i = 0; i < items.length; i++) {
+            if (items[i].hidden) continue;
+            var link2 = items[i].querySelector('a.nav-link');
+            if (!link2) continue;
+            var href = link2.getAttribute('href');
+            if (!href || href === '/') continue;
+            if ((pathname === href || pathname.indexOf(href + '/') === 0) && href.length > bestLen) {
+                best = { item: items[i], link: link2 };
+                bestLen = href.length;
+            }
+        }
+        if (!best) return null;
+        best.link.classList.add('active');
+        best.link.setAttribute('aria-current', 'page');
+        return best.item.closest('[data-csm-nav-group]');
+    }
+
+    function readGroupState() {
+        try {
+            return JSON.parse(localStorage.getItem(NAV_GROUP_STATE_KEY) || '{}') || {};
+        } catch (e) {
+            return {};
         }
     }
+
+    function writeGroupState(state) {
+        try {
+            localStorage.setItem(NAV_GROUP_STATE_KEY, JSON.stringify(state));
+        } catch (e) { /* localStorage may be unavailable */ }
+    }
+
+    function setGroupExpanded(group, expanded) {
+        var button = group.querySelector('[data-csm-nav-toggle]');
+        var list = group.querySelector('.navbar-nav');
+        group.classList.toggle('is-collapsed', !expanded);
+        if (button) button.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        if (list) list.hidden = !expanded;
+    }
+
+    function initNavGroups(activeGroup) {
+        var state = readGroupState();
+        var groups = document.querySelectorAll('#csm-nav [data-csm-nav-group]');
+        for (var i = 0; i < groups.length; i++) {
+            if (groups[i].hidden) continue;
+            var name = groups[i].getAttribute('data-csm-nav-group');
+            var expanded = state[name] !== false;
+            if (groups[i] === activeGroup) {
+                expanded = true;
+                state[name] = true;
+            }
+            setGroupExpanded(groups[i], expanded);
+            var toggle = groups[i].querySelector('[data-csm-nav-toggle]');
+            if (toggle) {
+                toggle.addEventListener('click', function() {
+                    var group = this.closest('[data-csm-nav-group]');
+                    if (!group) return;
+                    var groupName = group.getAttribute('data-csm-nav-group');
+                    var nextExpanded = group.classList.contains('is-collapsed');
+                    setGroupExpanded(group, nextExpanded);
+                    state[groupName] = nextExpanded;
+                    writeGroupState(state);
+                });
+            }
+        }
+        writeGroupState(state);
+    }
+
+    hideReadScopeAdminItems();
+    var activeGroup = activateCurrentItem();
+    initNavGroups(activeGroup);
 })();
 
 function applyTheme(t) {

@@ -229,11 +229,63 @@ func TestSidebarNavCoversEveryVisiblePage(t *testing.T) {
 	}
 
 	// Sidebar groups must be present (workflow names visible to operators).
+	for _, group := range []string{"overview", "triage", "response", "operations", "configuration"} {
+		needle := `data-csm-nav-group="` + group + `"`
+		if !strings.Contains(text, needle) {
+			t.Errorf("layout.html sidebar missing group hook %s", group)
+		}
+		needle = `data-csm-nav-toggle="` + group + `"`
+		if !strings.Contains(text, needle) {
+			t.Errorf("layout.html sidebar missing group toggle %s", group)
+		}
+	}
 	for _, group := range []string{"Overview", "Triage", "Response", "Operations", "Configuration"} {
 		needle := `>` + group + `<`
 		if !strings.Contains(text, needle) {
 			t.Errorf("layout.html sidebar missing group label %s", group)
 		}
+	}
+}
+
+func TestSidebarNavScopeAndStateHooksPresent(t *testing.T) {
+	tmpl, err := os.ReadFile("../../ui/templates/layout.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(tmpl)
+	for _, want := range []string{
+		`data-csm-route="modsec-rules" data-csm-admin-only`,
+		`data-csm-nav-group="configuration" data-csm-admin-only`,
+		`data-csm-route="settings" data-csm-admin-only`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("layout.html missing admin-only nav hook %s", want)
+		}
+	}
+
+	js, err := os.ReadFile("../../ui/static/js/layout.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsText := string(js)
+	for _, want := range []string{
+		"csm-nav-groups",
+		"localStorage.setItem(NAV_GROUP_STATE_KEY",
+		"data-csm-admin-only",
+		"CSM_CONFIG.authScope",
+		"href + '/'",
+	} {
+		if !strings.Contains(jsText, want) {
+			t.Errorf("layout.js missing sidebar behavior hook %s", want)
+		}
+	}
+
+	modsecRules, err := os.ReadFile("../../ui/templates/modsec-rules.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(modsecRules), `{{define "page"}}modsec-rules{{end}}`) {
+		t.Fatal("modsec-rules.html must expose page modsec-rules so its sidebar item is active")
 	}
 }
 

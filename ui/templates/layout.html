@@ -26,9 +26,12 @@
                 </h1>
                 <div class="collapse navbar-collapse" id="csm-sidebar-menu">
                     <nav id="csm-nav" class="navbar-nav pt-lg-3" aria-label="Main">
-                        <div class="csm-nav-group">
-                            <div class="csm-nav-group__label">Overview</div>
-                            <ul class="navbar-nav">
+                        <div class="csm-nav-group" data-csm-nav-group="overview">
+                            <button class="csm-nav-group__toggle" type="button" data-csm-nav-toggle="overview" aria-expanded="true" aria-controls="csm-nav-overview">
+                                <span>Overview</span>
+                                <i class="ti ti-chevron-down" aria-hidden="true"></i>
+                            </button>
+                            <ul class="navbar-nav" id="csm-nav-overview">
                                 <li class="nav-item" data-csm-route="dashboard">
                                     <a class="nav-link" href="/dashboard">
                                         <span class="nav-link-icon"><i class="ti ti-dashboard"></i></span>
@@ -37,9 +40,12 @@
                                 </li>
                             </ul>
                         </div>
-                        <div class="csm-nav-group">
-                            <div class="csm-nav-group__label">Triage</div>
-                            <ul class="navbar-nav">
+                        <div class="csm-nav-group" data-csm-nav-group="triage">
+                            <button class="csm-nav-group__toggle" type="button" data-csm-nav-toggle="triage" aria-expanded="true" aria-controls="csm-nav-triage">
+                                <span>Triage</span>
+                                <i class="ti ti-chevron-down" aria-hidden="true"></i>
+                            </button>
+                            <ul class="navbar-nav" id="csm-nav-triage">
                                 <li class="nav-item" data-csm-route="incident">
                                     <a class="nav-link" href="/incident">
                                         <span class="nav-link-icon"><i class="ti ti-timeline-event"></i></span>
@@ -54,9 +60,12 @@
                                 </li>
                             </ul>
                         </div>
-                        <div class="csm-nav-group">
-                            <div class="csm-nav-group__label">Response</div>
-                            <ul class="navbar-nav">
+                        <div class="csm-nav-group" data-csm-nav-group="response">
+                            <button class="csm-nav-group__toggle" type="button" data-csm-nav-toggle="response" aria-expanded="true" aria-controls="csm-nav-response">
+                                <span>Response</span>
+                                <i class="ti ti-chevron-down" aria-hidden="true"></i>
+                            </button>
+                            <ul class="navbar-nav" id="csm-nav-response">
                                 <li class="nav-item" data-csm-route="firewall">
                                     <a class="nav-link" href="/firewall">
                                         <span class="nav-link-icon"><i class="ti ti-firewall-check"></i></span>
@@ -95,9 +104,12 @@
                                 </li>
                             </ul>
                         </div>
-                        <div class="csm-nav-group">
-                            <div class="csm-nav-group__label">Operations</div>
-                            <ul class="navbar-nav">
+                        <div class="csm-nav-group" data-csm-nav-group="operations">
+                            <button class="csm-nav-group__toggle" type="button" data-csm-nav-toggle="operations" aria-expanded="true" aria-controls="csm-nav-operations">
+                                <span>Operations</span>
+                                <i class="ti ti-chevron-down" aria-hidden="true"></i>
+                            </button>
+                            <ul class="navbar-nav" id="csm-nav-operations">
                                 <li class="nav-item" data-csm-route="performance">
                                     <a class="nav-link" href="/performance">
                                         <span class="nav-link-icon"><i class="ti ti-activity"></i></span>
@@ -116,7 +128,7 @@
                                         <span class="nav-link-title">Rules</span>
                                     </a>
                                 </li>
-                                <li class="nav-item" data-csm-route="modsec-rules">
+                                <li class="nav-item" data-csm-route="modsec-rules" data-csm-admin-only>
                                     <a class="nav-link" href="/modsec/rules">
                                         <span class="nav-link-icon"><i class="ti ti-list-check"></i></span>
                                         <span class="nav-link-title">ModSec Rules</span>
@@ -130,10 +142,13 @@
                                 </li>
                             </ul>
                         </div>
-                        <div class="csm-nav-group">
-                            <div class="csm-nav-group__label">Configuration</div>
-                            <ul class="navbar-nav">
-                                <li class="nav-item" data-csm-route="settings">
+                        <div class="csm-nav-group" data-csm-nav-group="configuration" data-csm-admin-only>
+                            <button class="csm-nav-group__toggle" type="button" data-csm-nav-toggle="configuration" aria-expanded="true" aria-controls="csm-nav-configuration">
+                                <span>Configuration</span>
+                                <i class="ti ti-chevron-down" aria-hidden="true"></i>
+                            </button>
+                            <ul class="navbar-nav" id="csm-nav-configuration">
+                                <li class="nav-item" data-csm-route="settings" data-csm-admin-only>
                                     <a class="nav-link" href="/settings">
                                         <span class="nav-link-icon"><i class="ti ti-settings"></i></span>
                                         <span class="nav-link-title">Settings</span>
