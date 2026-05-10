@@ -409,19 +409,7 @@ func analyzeHTMLForPhishing(path string) *phishingResult {
 	}
 
 	// Must contain email/password input
-	hasCredentialInput := strings.Contains(contentLower, "type=\"email\"") ||
-		strings.Contains(contentLower, "type=\"password\"") ||
-		strings.Contains(contentLower, "type='email'") ||
-		strings.Contains(contentLower, "type='password'") ||
-		strings.Contains(contentLower, "name=\"email\"") ||
-		strings.Contains(contentLower, "name=\"pass\"") ||
-		strings.Contains(contentLower, "name=\"password\"") ||
-		strings.Contains(contentLower, "name=\"login\"") ||
-		strings.Contains(contentLower, "placeholder=\"email") ||
-		strings.Contains(contentLower, "placeholder=\"you@") ||
-		strings.Contains(contentLower, "placeholder=\"your email") ||
-		strings.Contains(contentLower, "work or school email") ||
-		strings.Contains(contentLower, "corporate email")
+	hasCredentialInput := hasHTMLCredentialInput(contentLower)
 	if !hasCredentialInput {
 		return nil
 	}
@@ -557,30 +545,147 @@ func extractTitle(contentLower string) string {
 
 // hasExternalFormAction checks if a <form> action points to a different domain.
 func hasExternalFormAction(content string) bool {
-	lower := strings.ToLower(content)
-	// Find form action="..." or action='...'
-	idx := strings.Index(lower, "action=")
-	if idx < 0 {
-		return false
+	for _, url := range htmlAttrValues(strings.ToLower(content), "form", "action", false) {
+		// External if it starts with http:// or https:// (not relative)
+		if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
+			return true
+		}
 	}
-	rest := content[idx+7:]
-	if len(rest) == 0 {
-		return false
-	}
+	return false
+}
 
-	// Extract the URL value
-	quote := rest[0]
-	if quote != '"' && quote != '\'' {
-		return false
+func hasHTMLCredentialInput(contentLower string) bool {
+	for _, value := range htmlAttrValues(contentLower, "input", "type", true) {
+		switch strings.TrimSpace(value) {
+		case "email", "password":
+			return true
+		}
 	}
-	endIdx := strings.IndexByte(rest[1:], quote)
-	if endIdx < 0 {
-		return false
+	for _, value := range htmlAttrValues(contentLower, "input", "name", true) {
+		switch strings.TrimSpace(value) {
+		case "email", "pass", "password", "login":
+			return true
+		}
 	}
-	url := strings.ToLower(rest[1 : endIdx+1])
+	for _, value := range htmlAttrValues(contentLower, "input", "placeholder", true) {
+		value = strings.TrimSpace(value)
+		if strings.HasPrefix(value, "email") ||
+			strings.HasPrefix(value, "you@") ||
+			strings.HasPrefix(value, "your email") {
+			return true
+		}
+	}
+	return strings.Contains(contentLower, "work or school email") ||
+		strings.Contains(contentLower, "corporate email")
+}
 
-	// External if it starts with http:// or https:// (not relative)
-	return strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://")
+func htmlAttrValues(contentLower, tagName, attrName string, allowUnquoted bool) []string {
+	var values []string
+	needle := "<" + tagName
+	for offset := 0; offset < len(contentLower); {
+		idx := strings.Index(contentLower[offset:], needle)
+		if idx < 0 {
+			break
+		}
+		start := offset + idx
+		afterName := start + len(needle)
+		if afterName < len(contentLower) && !isTagBoundary(contentLower[afterName]) {
+			offset = afterName
+			continue
+		}
+		end := findTagEnd(contentLower, afterName)
+		if end < 0 {
+			break
+		}
+		if value, ok := tagAttrValue(contentLower[afterName:end], attrName, allowUnquoted); ok {
+			values = append(values, value)
+		}
+		offset = end + 1
+	}
+	return values
+}
+
+func isTagBoundary(c byte) bool {
+	return c == '>' || c == '/' || unicode.IsSpace(rune(c))
+}
+
+func findTagEnd(content string, start int) int {
+	var quote byte
+	for i := start; i < len(content); i++ {
+		c := content[i]
+		if quote != 0 {
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		if c == '"' || c == '\'' {
+			quote = c
+			continue
+		}
+		if c == '>' {
+			return i
+		}
+	}
+	return -1
+}
+
+func tagAttrValue(attrs, attrName string, allowUnquoted bool) (string, bool) {
+	for i := 0; i < len(attrs); {
+		for i < len(attrs) && (unicode.IsSpace(rune(attrs[i])) || attrs[i] == '/') {
+			i++
+		}
+		nameStart := i
+		for i < len(attrs) && attrs[i] != '=' && attrs[i] != '>' &&
+			attrs[i] != '/' && !unicode.IsSpace(rune(attrs[i])) {
+			i++
+		}
+		if nameStart == i {
+			i++
+			continue
+		}
+		name := attrs[nameStart:i]
+		for i < len(attrs) && unicode.IsSpace(rune(attrs[i])) {
+			i++
+		}
+		if i >= len(attrs) || attrs[i] != '=' {
+			continue
+		}
+		i++
+		for i < len(attrs) && unicode.IsSpace(rune(attrs[i])) {
+			i++
+		}
+		if i >= len(attrs) {
+			return "", false
+		}
+
+		value := ""
+		if attrs[i] == '"' || attrs[i] == '\'' {
+			quote := attrs[i]
+			i++
+			valueStart := i
+			for i < len(attrs) && attrs[i] != quote {
+				i++
+			}
+			value = attrs[valueStart:i]
+			if i < len(attrs) {
+				i++
+			}
+		} else {
+			valueStart := i
+			for i < len(attrs) && attrs[i] != '>' && !unicode.IsSpace(rune(attrs[i])) {
+				i++
+			}
+			if !allowUnquoted {
+				continue
+			}
+			value = attrs[valueStart:i]
+		}
+		if name == attrName {
+			return strings.TrimSpace(value), true
+		}
+	}
+	return "", false
 }
 
 // isSelfContainedHTML checks if a page has all its CSS inline (embedded <style> tags)
@@ -821,15 +926,7 @@ func quickPhishingCheck(path string) bool {
 	content := string(buf[:n])
 	contentLower := strings.ToLower(content)
 
-	hasCredentialInput := strings.Contains(contentLower, `type="password"`) ||
-		strings.Contains(contentLower, `type='password'`) ||
-		strings.Contains(contentLower, `type="email"`) ||
-		strings.Contains(contentLower, `type='email'`) ||
-		strings.Contains(contentLower, `name="password"`) ||
-		strings.Contains(contentLower, `name='password'`) ||
-		strings.Contains(contentLower, `name="email"`) ||
-		strings.Contains(contentLower, `name='email'`)
-	if !hasCredentialInput {
+	if !hasHTMLCredentialInput(contentLower) {
 		return false
 	}
 
@@ -908,13 +1005,7 @@ func analyzePHPForPhishing(path string) *phishingResult {
 
 	// Must have either PHP credential handling OR HTML form output
 	hasForm := strings.Contains(contentLower, "<form") || strings.Contains(contentLower, "<input")
-	hasCredentialInput := strings.Contains(contentLower, "type=\"email\"") ||
-		strings.Contains(contentLower, "type=\"password\"") ||
-		strings.Contains(contentLower, "type='email'") ||
-		strings.Contains(contentLower, "type='password'") ||
-		strings.Contains(contentLower, "name=\"email\"") ||
-		strings.Contains(contentLower, "name=\"password\"") ||
-		strings.Contains(contentLower, "name=\"pass\"")
+	hasCredentialInput := hasHTMLCredentialInput(contentLower)
 
 	if !phpCredHandling && (!hasForm || !hasCredentialInput) {
 		return nil
