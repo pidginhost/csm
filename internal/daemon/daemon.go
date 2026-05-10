@@ -1612,9 +1612,11 @@ func (d *Daemon) startPAMListener() {
 	pl, err := NewPAMListener(d.cfg, d.alertCh)
 	if err != nil {
 		csmlog.Warn("PAM listener not available", "err", err)
+		d.MarkWatcher("pamlistener", false)
 		return
 	}
 	d.pamListener = pl
+	d.MarkWatcher("pamlistener", true)
 	d.wg.Add(1)
 	obs.Go("pam-listener", func() {
 		defer d.wg.Done()

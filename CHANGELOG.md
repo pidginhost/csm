@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Dashboard Components now attributes activity only to live watcher findings, ignores stale latest findings outside the lookback window, and registers PAM listener state.
 - Disabled scheduled checks now clear their prior active findings on the next scan while throttled checks still keep their last valid findings. Dashboard posture severity tiles now wrap safely in narrow side rails.
 - Performance findings (PHP handler, MySQL/Redis config, error-log bloat, WP config / transients / cron) no longer disappear between deep scans. The 60-minute throttle is now enforced by the runner, and a throttled cycle leaves the previous findings in place instead of having the scan purge list wipe them.
 - Dashboard right rail now carries the runtime status chips and 24h severity totals inside the System posture card, so the column next to a long priority queue stops sitting empty.

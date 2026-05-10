@@ -182,8 +182,19 @@ func TestStartPAMListener_FailsGracefully(t *testing.T) {
 	d := New(cfg, nil, nil, "")
 	// On macOS, PAM listener uses unix socket which may not exist.
 	d.startPAMListener()
-	// pamListener may be nil on macOS since the socket doesn't exist.
-	// The key thing is it doesn't panic.
+	if d.pamListener != nil {
+		close(d.stopCh)
+		d.pamListener.Stop()
+		d.wg.Wait()
+	}
+
+	status, ok := d.WatcherStatuses()["pamlistener"]
+	if !ok {
+		t.Fatal("startPAMListener must register pamlistener watcher state")
+	}
+	if status != (d.pamListener != nil) {
+		t.Fatalf("pamlistener status = %v, listener present = %v", status, d.pamListener != nil)
+	}
 }
 
 // ---------------------------------------------------------------------------

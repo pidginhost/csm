@@ -37,6 +37,7 @@ var componentLabels = map[string]string{
 	"phprelay":          "PHP relay watcher",
 	"maillog":           "Mail log",
 	"email_av_spool":    "Email AV spool",
+	"forwarder":         "Forwarder watcher",
 	"pamlistener":       "PAM listener",
 	"connection":        "Connection tracker",
 	"exec":              "Exec monitor",
@@ -49,40 +50,72 @@ var componentLabels = map[string]string{
 
 // componentCheckOrigin maps a finding Check name back to the watcher that
 // emits it. Only the entries with a clear single-source origin are listed;
-// findings produced by periodic checks (filesystem scans, signature
-// scans, threat intel correlation) intentionally have no entry so they do
-// not advance a watcher's "last event" clock.
+// finding names reused by periodic or retroactive scans intentionally have
+// no entry so they do not advance a watcher's "last event" clock.
 var componentCheckOrigin = map[string]string{
-	"waf_attack_blocked":       "modsec",
-	"waf_status":               "modsec",
-	"waf_rules":                "modsec",
-	"af_alg_socket":            "afalg",
-	"af_alg_enforcement":       "afalg",
-	"php_relay_outbound":       "phprelay",
-	"php_relay_credential":     "phprelay",
-	"mail_per_account":         "maillog",
-	"mail_queue":               "maillog",
-	"mailbox_takeover":         "maillog",
-	"smtp_brute_force":         "maillog",
-	"dovecot_login_bruteforce": "maillog",
-	"webshell":                 "fanotify",
-	"new_php_in_uploads":       "fanotify",
-	"new_executable_in_config": "fanotify",
-	"new_suspicious_php":       "fanotify",
-	"new_webshell_file":        "fanotify",
-	"obfuscated_php":           "fanotify",
-	"suspicious_php_content":   "fanotify",
-	"phishing_php":             "fanotify",
-	"htaccess_handler_abuse":   "fanotify",
-	"htaccess_injection":       "fanotify",
-	"sensitive_file_modified":  "sensitive",
-	"sensitive_file_read":      "sensitive",
-	"backdoor_port_outbound":   "connection",
-	"c2_connection":            "connection",
-	"user_outbound_connection": "connection",
-	"php_suspicious_execution": "exec",
-	"pam_password_change":      "pamlistener",
-	"pam_login_failure":        "pamlistener",
+	"cgi_backdoor_realtime":                      "fanotify",
+	"cgi_suspicious_location_realtime":           "fanotify",
+	"credential_log_realtime":                    "fanotify",
+	"email_auth_failure_realtime":                "maillog",
+	"email_av_degraded":                          "email_av_spool",
+	"email_av_parse_error":                       "email_av_spool",
+	"email_av_quarantine_error":                  "email_av_spool",
+	"email_av_timeout":                           "email_av_spool",
+	"email_compromised_account":                  "maillog",
+	"email_credential_leak":                      "maillog",
+	"email_dkim_failure":                         "maillog",
+	"email_malware":                              "email_av_spool",
+	"email_php_relay_action_dry_run":             "phprelay",
+	"email_php_relay_action_failed":              "phprelay",
+	"email_php_relay_action_skipped":             "phprelay",
+	"email_php_relay_abuse":                      "phprelay",
+	"email_php_relay_account_volume_capped":      "phprelay",
+	"email_php_relay_cpanel_limit_unreadable":    "phprelay",
+	"email_php_relay_disabled":                   "phprelay",
+	"email_php_relay_inotify_overflow":           "phprelay",
+	"email_php_relay_inotify_overflow_recovered": "phprelay",
+	"email_php_relay_msgindex_persist_failed":    "phprelay",
+	"email_php_relay_no_exim":                    "phprelay",
+	"email_php_relay_overflow_scan_truncated":    "phprelay",
+	"email_php_relay_path2b_disabled":            "phprelay",
+	"email_php_relay_policies_reload":            "phprelay",
+	"email_php_relay_rate_limit_hit":             "phprelay",
+	"email_php_relay_sweep_failed":               "phprelay",
+	"email_php_relay_watcher_failed":             "phprelay",
+	"email_rate_critical":                        "maillog",
+	"email_rate_warning":                         "maillog",
+	"email_spam_outbreak":                        "maillog",
+	"email_spf_rejection":                        "maillog",
+	"executable_in_config_realtime":              "fanotify",
+	"executable_in_tmp_realtime":                 "fanotify",
+	"exim_frozen_realtime":                       "maillog",
+	"fanotify_overflow":                          "fanotify",
+	"htaccess_injection_realtime":                "fanotify",
+	"mail_account_compromised":                   "maillog",
+	"mail_account_spray":                         "maillog",
+	"mail_bruteforce":                            "maillog",
+	"mail_subnet_spray":                          "maillog",
+	"modsec_block_escalation":                    "modsec",
+	"modsec_block_realtime":                      "modsec",
+	"modsec_csm_block_escalation":                "modsec",
+	"modsec_warning_realtime":                    "modsec",
+	"obfuscated_php_realtime":                    "fanotify",
+	"pam_bruteforce":                             "pamlistener",
+	"pam_login":                                  "pamlistener",
+	"phishing_kit_realtime":                      "fanotify",
+	"phishing_realtime":                          "fanotify",
+	"php_config_realtime":                        "fanotify",
+	"php_dropper_realtime":                       "fanotify",
+	"php_in_sensitive_dir_realtime":              "fanotify",
+	"php_in_uploads_realtime":                    "fanotify",
+	"signature_match_realtime":                   "fanotify",
+	"smtp_account_spray":                         "maillog",
+	"smtp_bruteforce":                            "maillog",
+	"smtp_probe_abuse":                           "maillog",
+	"smtp_subnet_spray":                          "maillog",
+	"webshell_content_realtime":                  "fanotify",
+	"webshell_realtime":                          "fanotify",
+	"yara_match_realtime":                        "fanotify",
 }
 
 // apiComponents returns one row per registered watcher with its live
@@ -158,6 +191,9 @@ func (s *Server) lastEventByWatcher(window time.Duration) map[string]watcherEven
 	// Also fold in the latest scan set so freshly-emitted findings appear
 	// before they have rolled into history.
 	for _, f := range s.store.LatestFindings() {
+		if f.Timestamp.Before(since) {
+			continue
+		}
 		watcher, ok := componentCheckOrigin[f.Check]
 		if !ok {
 			continue
