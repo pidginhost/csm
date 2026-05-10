@@ -29,7 +29,7 @@ admin-only navigation entries such as Configuration and ModSec Rules.
 | **Findings > History** | `/findings?tab=history` | Paginated archive of all findings with date range and severity filters, CSV export |
 | **Quarantine** | `/quarantine` | Quarantined files with content preview, restore capability |
 | **Cleanup** | `/cleanup-history` | File pre-clean backups and DB-object backups with preview and restore controls |
-| **Firewall** | `/firewall` | Blocked IPs/subnets with GeoIP, whitelist management, search, audit log |
+| **Firewall** | `/firewall` | Subview-tabbed page (`?view=overview/lookup/blocks/allow/config/audit/danger`): blocked IPs/subnets with GeoIP, whitelist management, search, audit log; destructive actions live under the Danger tab |
 | **ModSecurity** | `/modsec` | WAF status, event log, active blocks |
 | **ModSec Rules** | `/modsec/rules` | Per-rule management, overrides, escalation control |
 | **Email** | `/email` | Email AV status, quarantined attachments, scan statistics |

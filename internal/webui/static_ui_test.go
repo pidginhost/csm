@@ -480,6 +480,62 @@ func TestFindingsPageUsesPhase4Primitives(t *testing.T) {
 	}
 }
 
+// TestFirewallPageSplitIntoSubviews ensures the firewall page exposes the
+// six routine subviews plus the danger zone, and that each subview is
+// addressable through ?view=<name>. Destructive actions must live under
+// the danger section so the default Overview cannot trigger them.
+func TestFirewallPageSplitIntoSubviews(t *testing.T) {
+	tmpl, err := os.ReadFile("../../ui/templates/firewall.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(tmpl)
+
+	for _, want := range []string{
+		`class="csm-page-header`,
+		`id="fw-subview-nav"`,
+		`class="csm-danger-zone`,
+		`href="/settings#section-firewall"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("firewall.html missing phase-5 hook %q", want)
+		}
+	}
+
+	for _, view := range []string{"overview", "lookup", "blocks", "allow", "config", "audit", "danger"} {
+		section := `data-fw-view="` + view + `"`
+		if !strings.Contains(text, section) {
+			t.Errorf("firewall.html missing subview section %s", section)
+		}
+		nav := `data-fw-nav="` + view + `"`
+		if !strings.Contains(text, nav) {
+			t.Errorf("firewall.html missing subview nav %s", nav)
+		}
+	}
+
+	// The destructive Flush button must live inside the danger section.
+	dangerStart := strings.Index(text, `data-fw-view="danger"`)
+	flushIdx := strings.Index(text, `id="flush-blocked-btn"`)
+	if dangerStart < 0 || flushIdx < 0 || flushIdx < dangerStart {
+		t.Fatal("flush-blocked-btn must live under the danger subview, not the overview")
+	}
+
+	js, err := os.ReadFile("../../ui/static/js/firewall.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsText := string(js)
+	for _, want := range []string{
+		`URLSearchParams(window.location.search)`,
+		`history.replaceState`,
+		`data-fw-view`,
+	} {
+		if !strings.Contains(jsText, want) {
+			t.Errorf("firewall.js missing subview switcher hook %q", want)
+		}
+	}
+}
+
 func TestSettingsIntArraySubmitsRawTokens(t *testing.T) {
 	src, err := os.ReadFile("../../ui/static/js/settings.js")
 	if err != nil {

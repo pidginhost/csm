@@ -1,339 +1,381 @@
 {{define "title"}}Firewall{{end}}
 {{define "page"}}firewall{{end}}
 {{define "content"}}
-    <div class="page-header mb-3">
-        <div class="row align-items-center g-3">
-            <div class="col">
-                <h2 class="page-title mb-1">Firewall</h2>
-                <div class="text-muted">Manage dynamic blocks, allow rules, subnet bans, and cPanel lockout cleanup from one place.</div>
+    <div class="csm-page-header mb-3">
+        <div class="csm-page-header__main">
+            <h2 class="csm-page-header__title"><i class="ti ti-firewall-check"></i>&nbsp;Firewall</h2>
+            <div class="csm-page-header__subtitle">Inspect and manage dynamic blocks, allow rules, subnet bans, and cPanel lockout cleanup.</div>
+        </div>
+        <div class="csm-page-header__actions">
+            <button class="btn btn-ghost-secondary btn-sm" id="firewall-refresh-btn" title="Re-pull firewall state from the daemon">
+                <i class="ti ti-refresh"></i>&nbsp;Refresh
+            </button>
+            <a href="/audit" class="btn btn-ghost-secondary btn-sm">
+                <i class="ti ti-clipboard-list"></i>&nbsp;UI Audit
+            </a>
+        </div>
+    </div>
+
+    <!-- Subview navigation. Phases 5+ use ?view=<name> for deep links. -->
+    <div class="btn-group mb-3 flex-wrap" role="tablist" aria-label="Firewall subviews" id="fw-subview-nav">
+        <button type="button" class="btn btn-ghost-secondary active" data-fw-nav="overview" aria-pressed="true" title="Status cards and coverage chips">
+            <i class="ti ti-layout-dashboard"></i>&nbsp;Overview
+        </button>
+        <button type="button" class="btn btn-ghost-secondary" data-fw-nav="lookup" aria-pressed="false" title="Inspect a single IP">
+            <i class="ti ti-search"></i>&nbsp;Lookup
+        </button>
+        <button type="button" class="btn btn-ghost-secondary" data-fw-nav="blocks" aria-pressed="false" title="Blocked IPs and subnets">
+            <i class="ti ti-shield-off"></i>&nbsp;Blocks
+        </button>
+        <button type="button" class="btn btn-ghost-secondary" data-fw-nav="allow" aria-pressed="false" title="Allow rules, trusted IPs, port exceptions">
+            <i class="ti ti-shield-up"></i>&nbsp;Allow Rules
+        </button>
+        <button type="button" class="btn btn-ghost-secondary" data-fw-nav="config" aria-pressed="false" title="Read-only firewall configuration summary">
+            <i class="ti ti-settings"></i>&nbsp;Configuration
+        </button>
+        <button type="button" class="btn btn-ghost-secondary" data-fw-nav="audit" aria-pressed="false" title="Recent firewall actions">
+            <i class="ti ti-history"></i>&nbsp;Audit
+        </button>
+        <button type="button" class="btn btn-ghost-secondary text-danger" data-fw-nav="danger" aria-pressed="false" title="Destructive actions">
+            <i class="ti ti-alert-triangle"></i>&nbsp;Danger
+        </button>
+    </div>
+
+    <!-- Overview --------------------------------------------------------- -->
+    <section data-fw-view="overview">
+        <div class="row row-deck row-cards mb-3" id="fw-status">
+            <div class="col-sm-6 col-xl">
+                <div class="card">
+                    <div class="card-body">
+                        <div class="subheader">Status</div>
+                        <div class="h1 mb-1" id="fw-enabled">-</div>
+                        <div class="text-muted small" id="fw-status-meta">Loading firewall state</div>
+                    </div>
+                </div>
             </div>
-            <div class="col-12 col-md-auto">
-                <div class="d-flex gap-2 flex-wrap">
-                    <button class="btn btn-outline-secondary btn-sm" id="firewall-refresh-btn">
-                        <i class="ti ti-refresh"></i>&nbsp;Refresh
-                    </button>
-                    <a href="/audit" class="btn btn-ghost-secondary btn-sm">
-                        <i class="ti ti-clipboard-list"></i>&nbsp;UI Audit
+            <div class="col-sm-6 col-xl">
+                <div class="card">
+                    <div class="card-body">
+                        <div class="subheader">Blocked IPs</div>
+                        <div class="h1 mb-1" id="fw-blocked">-</div>
+                        <div class="text-muted small" id="fw-blocked-meta">-</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-sm-6 col-xl">
+                <div class="card">
+                    <div class="card-body">
+                        <div class="subheader">Blocked Subnets</div>
+                        <div class="h1 mb-1" id="fw-subnets">-</div>
+                        <div class="text-muted small" id="fw-subnets-meta">CIDR range bans</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-sm-6 col-xl">
+                <div class="card">
+                    <div class="card-body">
+                        <div class="subheader">Allow Rules</div>
+                        <div class="h1 mb-1" id="fw-allowed">-</div>
+                        <div class="text-muted small" id="fw-allowed-meta">-</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-sm-6 col-xl">
+                <div class="card">
+                    <div class="card-body">
+                        <div class="subheader">Geo / DynDNS</div>
+                        <div class="h1 mb-1" id="fw-geo-summary">-</div>
+                        <div class="text-muted small" id="fw-geo-meta">-</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card mb-3">
+            <div class="card-header">
+                <h3 class="card-title"><i class="ti ti-layout-grid"></i>&nbsp;Coverage</h3>
+            </div>
+            <div class="card-body">
+                <div class="d-flex flex-wrap gap-2" id="fw-highlights"></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Lookup ----------------------------------------------------------- -->
+    <section data-fw-view="lookup" hidden>
+        <div class="card mb-3">
+            <div class="card-header">
+                <h3 class="card-title"><i class="ti ti-search"></i>&nbsp;Lookup &amp; Response</h3>
+            </div>
+            <div class="card-body">
+                <form id="lookup-form" class="row g-2 align-items-end mb-3">
+                    <div class="col-md-8">
+                        <label class="form-label mb-1" for="lookup-ip">IP address</label>
+                        <input type="text" id="lookup-ip" class="form-control font-monospace" placeholder="203.0.113.10">
+                    </div>
+                    <div class="col-md-4">
+                        <button type="submit" class="btn btn-primary w-100">
+                            <i class="ti ti-radar-2"></i>&nbsp;Inspect
+                        </button>
+                    </div>
+                </form>
+                <div id="lookup-result" class="csm-firewall-result text-muted">
+                    Enter an IP to check direct blocks, subnet coverage, and cPanel lockout status.
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Blocks ----------------------------------------------------------- -->
+    <section data-fw-view="blocks" hidden>
+        <div class="card mb-3">
+            <div class="card-header">
+                <h3 class="card-title"><i class="ti ti-shield-off"></i>&nbsp;Block Address</h3>
+            </div>
+            <div class="card-body">
+                <form id="block-form" class="row g-2 align-items-end">
+                    <div class="col-lg-7">
+                        <label class="form-label mb-1" for="block-target">Address or CIDR</label>
+                        <input type="text" id="block-target" class="form-control font-monospace" placeholder="203.0.113.10 or 203.0.113.0/24">
+                    </div>
+                    <div class="col-lg-3">
+                        <label class="form-label mb-1" for="block-duration">Duration</label>
+                        <select id="block-duration" class="form-select">
+                            <option value="24h">24 hours</option>
+                            <option value="7d">7 days</option>
+                            <option value="30d">30 days</option>
+                            <option value="0">Permanent</option>
+                        </select>
+                    </div>
+                    <div class="col-lg-2 d-grid">
+                        <button type="submit" class="btn btn-danger">
+                            <i class="ti ti-lock"></i>&nbsp;Apply block
+                        </button>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label mb-1" for="block-reason">Reason <span class="text-muted">(optional)</span></label>
+                        <input type="text" id="block-reason" class="form-control" placeholder="Blocked via CSM Web UI">
+                    </div>
+                </form>
+                <div class="text-muted small mt-3">Enter a single IP like <code>203.0.113.10</code> or a CIDR subnet like <code>203.0.113.0/24</code>.</div>
+            </div>
+        </div>
+
+        <div class="card mb-3">
+            <div class="card-header">
+                <h3 class="card-title"><i class="ti ti-shield-off"></i>&nbsp;Blocked IPs</h3>
+                <div class="card-actions d-flex gap-2 flex-wrap">
+                    <button class="btn btn-success btn-sm d-none" id="bulk-unblock-btn" title="Remove firewall block for all selected IPs">Unblock 0 IPs</button>
+                    <input type="text" id="blocked-search" class="form-control form-control-sm csm-input-md" placeholder="Search blocked IPs">
+                    <div class="dropdown">
+                        <button class="btn btn-ghost-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-label="Export current view">
+                            <i class="ti ti-download"></i>&nbsp;Export
+                        </button>
+                        <div class="dropdown-menu dropdown-menu-end">
+                            <a class="dropdown-item" href="#" data-export="csv"><i class="ti ti-file-spreadsheet me-2"></i>CSV</a>
+                            <a class="dropdown-item" href="#" data-export="json"><i class="ti ti-braces me-2"></i>JSON</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="card-body border-bottom py-3">
+                <div class="row g-2 align-items-end">
+                    <div class="col-md-4 col-xl-3">
+                        <label class="form-label mb-1" for="blocked-lifetime-filter">Lifetime</label>
+                        <select id="blocked-lifetime-filter" class="form-select form-select-sm">
+                            <option value="all">All entries</option>
+                            <option value="temporary">Temporary only</option>
+                            <option value="permanent">Permanent only</option>
+                        </select>
+                    </div>
+                    <div class="col-md-4 col-xl-3">
+                        <label class="form-label mb-1" for="blocked-source-filter">Provenance</label>
+                        <select id="blocked-source-filter" class="form-select form-select-sm">
+                            <option value="all">All sources</option>
+                            <option value="web_ui">Web UI</option>
+                            <option value="auto_response">Auto-response</option>
+                            <option value="whitelist">Whitelist workflow</option>
+                            <option value="challenge">Challenge workflow</option>
+                            <option value="cli">CLI</option>
+                            <option value="dyndns">DynDNS</option>
+                            <option value="system">System</option>
+                            <option value="unknown">Unknown / legacy</option>
+                        </select>
+                    </div>
+                    <div class="col-md-4 col-xl-6">
+                        <div class="text-muted small">Safer response actions are available per row: clear state without whitelisting, clear and allow for 24h, permanent whitelist, or cPHulk-only cleanup.</div>
+                    </div>
+                </div>
+            </div>
+            <div id="blocked-content"><div class="card-body text-center text-muted py-3"><span class="spinner-border spinner-border-sm"></span></div></div>
+        </div>
+
+        <div class="card mb-3">
+            <div class="card-header">
+                <h3 class="card-title"><i class="ti ti-network"></i>&nbsp;Blocked Subnets</h3>
+                <div class="card-actions">
+                    <input type="text" id="subnet-search" class="form-control form-control-sm csm-input-md" placeholder="Search blocked subnets">
+                </div>
+            </div>
+            <div id="subnet-content"><div class="card-body text-center text-muted py-3"><span class="spinner-border spinner-border-sm"></span></div></div>
+        </div>
+    </section>
+
+    <!-- Allow Rules ------------------------------------------------------ -->
+    <section data-fw-view="allow" hidden>
+        <div class="card mb-3">
+            <div class="card-header">
+                <h3 class="card-title"><i class="ti ti-shield-check"></i>&nbsp;Trust IP</h3>
+            </div>
+            <div class="card-body">
+                <form id="trust-form" class="row g-2 align-items-end">
+                    <div class="col-lg-4">
+                        <label class="form-label mb-1" for="trust-ip">IP address</label>
+                        <input type="text" id="trust-ip" class="form-control font-monospace" placeholder="198.51.100.8">
+                    </div>
+                    <div class="col-lg-3">
+                        <label class="form-label mb-1" for="trust-mode">Mode</label>
+                        <select id="trust-mode" class="form-select">
+                            <option value="firewall">Firewall allow rule only</option>
+                            <option value="trusted">Trusted IP</option>
+                        </select>
+                    </div>
+                    <div class="col-lg-3">
+                        <label class="form-label mb-1" for="trust-duration">Duration</label>
+                        <select id="trust-duration" class="form-select">
+                            <option value="24h">24 hours</option>
+                            <option value="7d">7 days</option>
+                            <option value="30d">30 days</option>
+                            <option value="0">Permanent</option>
+                        </select>
+                    </div>
+                    <div class="col-lg-2 d-grid">
+                        <button type="submit" class="btn btn-success" id="trust-submit-btn">
+                            <i class="ti ti-shield-up"></i>&nbsp;Add allow rule
+                        </button>
+                    </div>
+                    <div class="col-12" id="trust-reason-group">
+                        <label class="form-label mb-1" for="trust-reason">Reason <span class="text-muted">(optional)</span></label>
+                        <input type="text" id="trust-reason" class="form-control" placeholder="Reason for firewall allow rule">
+                    </div>
+                </form>
+                <div class="text-muted small mt-3" id="trust-help">
+                    Firewall allow rules bypass only the firewall. Threat systems may still flag or clear the IP separately.
+                </div>
+            </div>
+        </div>
+
+        <div class="card mb-3">
+            <div class="card-header">
+                <h3 class="card-title"><i class="ti ti-shield-up"></i>&nbsp;Allow Rules &amp; Port Exceptions</h3>
+                <div class="card-actions">
+                    <input type="text" id="allowed-search" class="form-control form-control-sm csm-input-md" placeholder="Search allow rules">
+                </div>
+            </div>
+            <div id="allowed-content"><div class="card-body text-center text-muted py-3"><span class="spinner-border spinner-border-sm"></span></div></div>
+        </div>
+
+        <div class="card mb-3">
+            <div class="card-header">
+                <h3 class="card-title"><i class="ti ti-user-shield"></i>&nbsp;Whitelisted IPs</h3>
+                <div class="card-actions">
+                    <input type="text" id="whitelist-search" class="form-control form-control-sm csm-input-md" placeholder="Search whitelist">
+                </div>
+            </div>
+            <div class="card-body pb-0">
+                <div class="text-muted small mb-3"><i class="ti ti-info-circle"></i> Permanent whitelist entries prevent future auto-blocking. Temporary whitelist entries act as short-lived allow rules without becoming permanent customer exceptions.</div>
+            </div>
+            <div id="whitelist-content"><div class="card-body text-center text-muted py-3"><span class="spinner-border spinner-border-sm"></span></div></div>
+        </div>
+    </section>
+
+    <!-- Configuration ---------------------------------------------------- -->
+    <section data-fw-view="config" hidden>
+        <div class="card mb-3">
+            <div class="card-header">
+                <h3 class="card-title"><i class="ti ti-settings"></i>&nbsp;Configuration</h3>
+                <div class="card-actions">
+                    <a href="/settings#section-firewall" class="btn btn-primary btn-sm" title="Edit firewall configuration in Settings">
+                        <i class="ti ti-pencil"></i>&nbsp;Edit in Settings
                     </a>
                 </div>
             </div>
+            <div class="card-body">
+                <p class="text-muted small">Read-only summary. Edits land through the firewall section of <a href="/settings#section-firewall">Settings</a>, which uses the tentative-apply flow with rollback timer for safety.</p>
+                <div class="d-flex flex-wrap gap-2 mb-3" id="fw-config-flags"></div>
+                <div class="row" id="fw-config">
+                    <div class="col-lg-6"><table class="table table-sm" id="fw-config-table"></table></div>
+                    <div class="col-lg-6"><table class="table table-sm" id="fw-config-table2"></table></div>
+                </div>
+            </div>
         </div>
-    </div>
+    </section>
 
-    <div class="row row-deck row-cards mb-3" id="fw-status">
-        <div class="col-sm-6 col-xl">
-            <div class="card">
-                <div class="card-body">
-                    <div class="subheader">Status</div>
-                    <div class="h1 mb-1" id="fw-enabled">-</div>
-                    <div class="text-muted small" id="fw-status-meta">Loading firewall state</div>
-                </div>
+    <!-- Audit ----------------------------------------------------------- -->
+    <section data-fw-view="audit" hidden>
+        <div class="card mb-3">
+            <div class="card-header">
+                <h3 class="card-title"><i class="ti ti-history"></i>&nbsp;Recent Firewall Activity</h3>
             </div>
-        </div>
-        <div class="col-sm-6 col-xl">
-            <div class="card">
-                <div class="card-body">
-                    <div class="subheader">Blocked IPs</div>
-                    <div class="h1 mb-1" id="fw-blocked">-</div>
-                    <div class="text-muted small" id="fw-blocked-meta">-</div>
-                </div>
-            </div>
-        </div>
-        <div class="col-sm-6 col-xl">
-            <div class="card">
-                <div class="card-body">
-                    <div class="subheader">Blocked Subnets</div>
-                    <div class="h1 mb-1" id="fw-subnets">-</div>
-                    <div class="text-muted small" id="fw-subnets-meta">CIDR range bans</div>
-                </div>
-            </div>
-        </div>
-        <div class="col-sm-6 col-xl">
-            <div class="card">
-                <div class="card-body">
-                    <div class="subheader">Allow Rules</div>
-                    <div class="h1 mb-1" id="fw-allowed">-</div>
-                    <div class="text-muted small" id="fw-allowed-meta">-</div>
-                </div>
-            </div>
-        </div>
-        <div class="col-sm-6 col-xl">
-            <div class="card">
-                <div class="card-body">
-                    <div class="subheader">Geo / DynDNS</div>
-                    <div class="h1 mb-1" id="fw-geo-summary">-</div>
-                    <div class="text-muted small" id="fw-geo-meta">-</div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <div class="row row-cards mb-3">
-        <div class="col-xl-6">
-            <div class="card h-100">
-                <div class="card-header">
-                    <h3 class="card-title"><i class="ti ti-shield-off"></i>&nbsp;Block Address</h3>
-                </div>
-                <div class="card-body">
-                    <form id="block-form" class="row g-2 align-items-end">
-                        <div class="col-lg-7">
-                            <label class="form-label mb-1" for="block-target">Address or CIDR</label>
-                            <input type="text" id="block-target" class="form-control font-monospace" placeholder="203.0.113.10 or 203.0.113.0/24">
-                        </div>
-                        <div class="col-lg-3">
-                            <label class="form-label mb-1" for="block-duration">Duration</label>
-                            <select id="block-duration" class="form-select">
-                                <option value="24h">24 hours</option>
-                                <option value="7d">7 days</option>
-                                <option value="30d">30 days</option>
-                                <option value="0">Permanent</option>
-                            </select>
-                        </div>
-                        <div class="col-lg-2 d-grid">
-                            <button type="submit" class="btn btn-danger">
-                                <i class="ti ti-lock"></i>&nbsp;Apply block
-                            </button>
-                        </div>
-                        <div class="col-12">
-                            <label class="form-label mb-1" for="block-reason">Reason <span class="text-muted">(optional)</span></label>
-                            <input type="text" id="block-reason" class="form-control" placeholder="Blocked via CSM Web UI">
-                        </div>
-                    </form>
-                    <div class="text-muted small mt-3">Enter a single IP like <code>203.0.113.10</code> or a CIDR subnet like <code>203.0.113.0/24</code>.</div>
-                </div>
-            </div>
-        </div>
-        <div class="col-xl-6">
-            <div class="card h-100">
-                <div class="card-header">
-                    <h3 class="card-title"><i class="ti ti-shield-check"></i>&nbsp;Trust IP</h3>
-                </div>
-                <div class="card-body">
-                    <form id="trust-form" class="row g-2 align-items-end">
-                        <div class="col-lg-4">
-                            <label class="form-label mb-1" for="trust-ip">IP address</label>
-                            <input type="text" id="trust-ip" class="form-control font-monospace" placeholder="198.51.100.8">
-                        </div>
-                        <div class="col-lg-3">
-                            <label class="form-label mb-1" for="trust-mode">Mode</label>
-                            <select id="trust-mode" class="form-select">
-                                <option value="firewall">Firewall allow rule only</option>
-                                <option value="trusted">Trusted IP</option>
-                            </select>
-                        </div>
-                        <div class="col-lg-3">
-                            <label class="form-label mb-1" for="trust-duration">Duration</label>
-                            <select id="trust-duration" class="form-select">
-                                <option value="24h">24 hours</option>
-                                <option value="7d">7 days</option>
-                                <option value="30d">30 days</option>
-                                <option value="0">Permanent</option>
-                            </select>
-                        </div>
-                        <div class="col-lg-2 d-grid">
-                            <button type="submit" class="btn btn-success" id="trust-submit-btn">
-                                <i class="ti ti-shield-up"></i>&nbsp;Add allow rule
-                            </button>
-                        </div>
-                        <div class="col-12" id="trust-reason-group">
-                            <label class="form-label mb-1" for="trust-reason">Reason <span class="text-muted">(optional)</span></label>
-                            <input type="text" id="trust-reason" class="form-control" placeholder="Reason for firewall allow rule">
-                        </div>
-                    </form>
-                    <div class="text-muted small mt-3" id="trust-help">
-                        Firewall allow rules bypass only the firewall. Threat systems may still flag or clear the IP separately.
+            <div class="card-body border-bottom py-3">
+                <div class="row g-2 align-items-end">
+                    <div class="col-md-4">
+                        <label class="form-label mb-1" for="audit-search">Search</label>
+                        <input type="text" id="audit-search" class="form-control form-control-sm" placeholder="IP, reason, action">
                     </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <div class="row row-cards mb-3">
-        <div class="col-lg-8">
-            <div class="card h-100">
-                <div class="card-header">
-                    <h3 class="card-title"><i class="ti ti-search"></i>&nbsp;Lookup & Response</h3>
-                </div>
-                <div class="card-body">
-                    <form id="lookup-form" class="row g-2 align-items-end mb-3">
-                        <div class="col-md-8">
-                            <label class="form-label mb-1" for="lookup-ip">IP address</label>
-                            <input type="text" id="lookup-ip" class="form-control font-monospace" placeholder="203.0.113.10">
-                        </div>
-                        <div class="col-md-4">
-                            <button type="submit" class="btn btn-primary w-100">
-                                <i class="ti ti-radar-2"></i>&nbsp;Inspect
-                            </button>
-                        </div>
-                    </form>
-                    <div id="lookup-result" class="csm-firewall-result text-muted">
-                        Enter an IP to check direct blocks, subnet coverage, and cPanel lockout status.
+                    <div class="col-md-3">
+                        <label class="form-label mb-1" for="audit-action-filter">Action</label>
+                        <select id="audit-action-filter" class="form-select form-select-sm">
+                            <option value="all">All actions</option>
+                            <option value="block">Block</option>
+                            <option value="unblock">Unblock</option>
+                            <option value="allow">Allow</option>
+                            <option value="temp_allow">Temp allow</option>
+                            <option value="block_subnet">Block subnet</option>
+                            <option value="flush">Flush</option>
+                        </select>
                     </div>
-                </div>
-            </div>
-        </div>
-        <div class="col-lg-4">
-            <div class="card h-100">
-                <div class="card-header">
-                    <h3 class="card-title"><i class="ti ti-bolt"></i>&nbsp;Quick Response</h3>
-                </div>
-                <div class="card-body d-flex flex-column gap-3">
-                    <div>
-                        <button class="btn btn-outline-danger w-100" id="flush-blocked-btn">
-                            <i class="ti ti-trash"></i>&nbsp;Flush blocked IPs
+                    <div class="col-md-3">
+                        <label class="form-label mb-1" for="audit-source-filter">Provenance</label>
+                        <select id="audit-source-filter" class="form-select form-select-sm">
+                            <option value="all">All sources</option>
+                            <option value="web_ui">Web UI</option>
+                            <option value="auto_response">Auto-response</option>
+                            <option value="whitelist">Whitelist workflow</option>
+                            <option value="challenge">Challenge workflow</option>
+                            <option value="cli">CLI</option>
+                            <option value="dyndns">DynDNS</option>
+                            <option value="system">System</option>
+                            <option value="unknown">Unknown / legacy</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label mb-1 invisible" aria-hidden="true">&nbsp;</label>
+                        <button class="btn btn-outline-secondary btn-sm w-100" id="audit-reset-btn" title="Reset search, action, and provenance filters">
+                            <i class="ti ti-x me-1"></i>Clear filters
                         </button>
-                        <div class="text-muted small mt-2">Clears dynamic IP blocks only. Subnet bans, allow rules, and whitelist entries stay intact.</div>
-                    </div>
-                    <div class="border rounded p-3">
-                        <div class="subheader mb-2">Coverage</div>
-                        <div class="d-flex flex-wrap gap-2" id="fw-highlights"></div>
                     </div>
                 </div>
             </div>
+            <div id="audit-content"><div class="card-body text-center text-muted py-3"><span class="spinner-border spinner-border-sm"></span></div></div>
         </div>
-    </div>
+    </section>
 
-    <div class="card mb-3">
-        <div class="card-header">
-            <h3 class="card-title"><i class="ti ti-settings"></i>&nbsp;Configuration</h3>
-        </div>
-        <div class="card-body">
-            <div class="d-flex flex-wrap gap-2 mb-3" id="fw-config-flags"></div>
-            <div class="row" id="fw-config">
-                <div class="col-lg-6"><table class="table table-sm" id="fw-config-table"></table></div>
-                <div class="col-lg-6"><table class="table table-sm" id="fw-config-table2"></table></div>
-            </div>
-        </div>
-    </div>
-
-    <div class="card mb-3">
-        <div class="card-header">
-            <h3 class="card-title"><i class="ti ti-shield-off"></i>&nbsp;Blocked IPs</h3>
-            <div class="card-actions d-flex gap-2 flex-wrap">
-                <button class="btn btn-success btn-sm d-none" id="bulk-unblock-btn" title="Remove firewall block for all selected IPs">Unblock 0 IPs</button>
-                <input type="text" id="blocked-search" class="form-control form-control-sm csm-input-md" placeholder="Search blocked IPs">
-                <div class="dropdown">
-                    <button class="btn btn-ghost-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-label="Export current view">
-                        <i class="ti ti-download"></i>&nbsp;Export
+    <!-- Danger zone ------------------------------------------------------ -->
+    <section data-fw-view="danger" hidden>
+        <div class="csm-danger-zone mb-3">
+            <div class="csm-danger-zone__title"><i class="ti ti-alert-triangle"></i>&nbsp;Destructive actions</div>
+            <p class="text-muted small mb-3">These operations affect many entries at once. Read the warning before clicking.</p>
+            <div class="d-flex flex-column gap-3">
+                <div>
+                    <button class="btn btn-outline-danger" id="flush-blocked-btn">
+                        <i class="ti ti-trash"></i>&nbsp;Flush blocked IPs
                     </button>
-                    <div class="dropdown-menu dropdown-menu-end">
-                        <a class="dropdown-item" href="#" data-export="csv"><i class="ti ti-file-spreadsheet me-2"></i>CSV</a>
-                        <a class="dropdown-item" href="#" data-export="json"><i class="ti ti-braces me-2"></i>JSON</a>
-                    </div>
+                    <div class="text-muted small mt-2">Removes every dynamic IP block at once. Subnet bans, allow rules, and whitelist entries stay intact. Use this only after confirming a previous block sweep was wrong.</div>
                 </div>
             </div>
         </div>
-        <div class="card-body border-bottom py-3">
-            <div class="row g-2 align-items-end">
-                <div class="col-md-4 col-xl-3">
-                    <label class="form-label mb-1" for="blocked-lifetime-filter">Lifetime</label>
-                    <select id="blocked-lifetime-filter" class="form-select form-select-sm">
-                        <option value="all">All entries</option>
-                        <option value="temporary">Temporary only</option>
-                        <option value="permanent">Permanent only</option>
-                    </select>
-                </div>
-                <div class="col-md-4 col-xl-3">
-                    <label class="form-label mb-1" for="blocked-source-filter">Provenance</label>
-                    <select id="blocked-source-filter" class="form-select form-select-sm">
-                        <option value="all">All sources</option>
-                        <option value="web_ui">Web UI</option>
-                        <option value="auto_response">Auto-response</option>
-                        <option value="whitelist">Whitelist workflow</option>
-                        <option value="challenge">Challenge workflow</option>
-                        <option value="cli">CLI</option>
-                        <option value="dyndns">DynDNS</option>
-                        <option value="system">System</option>
-                        <option value="unknown">Unknown / legacy</option>
-                    </select>
-                </div>
-                <div class="col-md-4 col-xl-6">
-                    <div class="text-muted small">Safer response actions are available per row: clear state without whitelisting, clear and allow for 24h, permanent whitelist, or cPHulk-only cleanup.</div>
-                </div>
-            </div>
-        </div>
-        <div id="blocked-content"><div class="card-body text-center text-muted py-3"><span class="spinner-border spinner-border-sm"></span></div></div>
-    </div>
-
-    <div class="card mb-3">
-        <div class="card-header">
-            <h3 class="card-title"><i class="ti ti-shield-up"></i>&nbsp;Allow Rules & Port Exceptions</h3>
-            <div class="card-actions">
-                <input type="text" id="allowed-search" class="form-control form-control-sm csm-input-md" placeholder="Search allow rules">
-            </div>
-        </div>
-        <div id="allowed-content"><div class="card-body text-center text-muted py-3"><span class="spinner-border spinner-border-sm"></span></div></div>
-    </div>
-
-    <div class="card mb-3">
-        <div class="card-header">
-            <h3 class="card-title"><i class="ti ti-network"></i>&nbsp;Blocked Subnets</h3>
-            <div class="card-actions">
-                <input type="text" id="subnet-search" class="form-control form-control-sm csm-input-md" placeholder="Search blocked subnets">
-            </div>
-        </div>
-        <div id="subnet-content"><div class="card-body text-center text-muted py-3"><span class="spinner-border spinner-border-sm"></span></div></div>
-    </div>
-
-    <div class="card mb-3">
-        <div class="card-header">
-            <h3 class="card-title"><i class="ti ti-user-shield"></i>&nbsp;Whitelisted IPs</h3>
-            <div class="card-actions">
-                <input type="text" id="whitelist-search" class="form-control form-control-sm csm-input-md" placeholder="Search whitelist">
-            </div>
-        </div>
-        <div class="card-body pb-0">
-            <div class="text-muted small mb-3"><i class="ti ti-info-circle"></i> Permanent whitelist entries prevent future auto-blocking. Temporary whitelist entries act as short-lived allow rules without becoming permanent customer exceptions.</div>
-        </div>
-        <div id="whitelist-content"><div class="card-body text-center text-muted py-3"><span class="spinner-border spinner-border-sm"></span></div></div>
-    </div>
-
-    <div class="card">
-        <div class="card-header">
-            <h3 class="card-title"><i class="ti ti-history"></i>&nbsp;Recent Firewall Activity</h3>
-        </div>
-        <div class="card-body border-bottom py-3">
-            <div class="row g-2 align-items-end">
-                <div class="col-md-4">
-                    <label class="form-label mb-1" for="audit-search">Search</label>
-                    <input type="text" id="audit-search" class="form-control form-control-sm" placeholder="IP, reason, action">
-                </div>
-                <div class="col-md-3">
-                    <label class="form-label mb-1" for="audit-action-filter">Action</label>
-                    <select id="audit-action-filter" class="form-select form-select-sm">
-                        <option value="all">All actions</option>
-                        <option value="block">Block</option>
-                        <option value="unblock">Unblock</option>
-                        <option value="allow">Allow</option>
-                        <option value="temp_allow">Temp allow</option>
-                        <option value="block_subnet">Block subnet</option>
-                        <option value="flush">Flush</option>
-                    </select>
-                </div>
-                <div class="col-md-3">
-                    <label class="form-label mb-1" for="audit-source-filter">Provenance</label>
-                    <select id="audit-source-filter" class="form-select form-select-sm">
-                        <option value="all">All sources</option>
-                        <option value="web_ui">Web UI</option>
-                        <option value="auto_response">Auto-response</option>
-                        <option value="whitelist">Whitelist workflow</option>
-                        <option value="challenge">Challenge workflow</option>
-                        <option value="cli">CLI</option>
-                        <option value="dyndns">DynDNS</option>
-                        <option value="system">System</option>
-                        <option value="unknown">Unknown / legacy</option>
-                    </select>
-                </div>
-                <div class="col-md-2">
-                    <label class="form-label mb-1 invisible" aria-hidden="true">&nbsp;</label>
-                    <button class="btn btn-outline-secondary btn-sm w-100" id="audit-reset-btn" title="Reset search, action, and provenance filters">
-                        <i class="ti ti-x me-1"></i>Clear filters
-                    </button>
-                </div>
-            </div>
-        </div>
-        <div id="audit-content"><div class="card-body text-center text-muted py-3"><span class="spinner-border spinner-border-sm"></span></div></div>
-    </div>
+    </section>
 {{end}}
 {{define "scripts"}}
 <script src="/static/js/firewall.js"></script>

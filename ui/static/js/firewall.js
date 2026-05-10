@@ -789,7 +789,11 @@ function removeWhitelist(ip) {
 }
 
 function flushBlocked() {
-    CSM.confirm('Flush all blocked IPs?\n\nSubnet bans and allow rules will remain in place.').then(function() {
+    var blocked = parseInt((document.getElementById('fw-blocked') || {}).textContent || '0', 10);
+    var msg = 'This unblocks every dynamic IP block at once';
+    if (!isNaN(blocked) && blocked > 0) msg += ' (' + blocked + ' currently blocked)';
+    msg += '. Subnet bans, allow rules, and whitelist entries are not touched. The action is recorded in the firewall audit log and cannot be undone individually.\n\nProceed?';
+    CSM.confirm(msg).then(function() {
         CSM.post('/api/v1/firewall/flush', {}).then(function() {
             CSM.toast('Blocked IPs flushed', 'success');
             refreshFirewallData();
@@ -1050,6 +1054,56 @@ if (auditResetBtn) {
             CSM.exportTable(_fwBlockedData, cols, this.getAttribute('data-export'), 'csm-firewall-blocked');
         });
     });
+})();
+
+// --- Firewall subview switcher: routes /firewall?view=<name> to the
+//     matching <section data-fw-view="..."> block. Default = overview. ---
+(function() {
+    var nav = document.getElementById('fw-subview-nav');
+    if (!nav) return;
+    var sections = document.querySelectorAll('[data-fw-view]');
+    if (sections.length === 0) return;
+    var validViews = {};
+    for (var i = 0; i < sections.length; i++) {
+        validViews[sections[i].getAttribute('data-fw-view')] = true;
+    }
+
+    function applyView(name) {
+        if (!validViews[name]) name = 'overview';
+        for (var i = 0; i < sections.length; i++) {
+            sections[i].hidden = (sections[i].getAttribute('data-fw-view') !== name);
+        }
+        var buttons = nav.querySelectorAll('[data-fw-nav]');
+        for (var j = 0; j < buttons.length; j++) {
+            var match = buttons[j].getAttribute('data-fw-nav') === name;
+            buttons[j].classList.toggle('active', match);
+            buttons[j].setAttribute('aria-pressed', match ? 'true' : 'false');
+        }
+    }
+
+    function viewFromURL() {
+        var params = new URLSearchParams(window.location.search);
+        return params.get('view') || 'overview';
+    }
+
+    function setURLView(name) {
+        if (!window.history || !window.history.replaceState) return;
+        var params = new URLSearchParams(window.location.search);
+        if (name === 'overview') params.delete('view');
+        else params.set('view', name);
+        var qs = params.toString();
+        window.history.replaceState(null, '', window.location.pathname + (qs ? '?' + qs : ''));
+    }
+
+    nav.querySelectorAll('[data-fw-nav]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            var name = this.getAttribute('data-fw-nav');
+            applyView(name);
+            setURLView(name);
+        });
+    });
+
+    applyView(viewFromURL());
 })();
 
 refreshFirewallData();
