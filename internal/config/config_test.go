@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/firewall"
 )
@@ -41,6 +42,24 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.StatePath != "/var/lib/csm/state" {
 		t.Errorf("state_path = %q, want '/var/lib/csm/state'", cfg.StatePath)
+	}
+}
+
+func TestIncidentAutoCloseDefaultThresholdsUseIncidentKinds(t *testing.T) {
+	got := defaultIncidentAutoCloseThresholds()
+	want := map[string]time.Duration{
+		"mailbox_takeover":       24 * time.Hour,
+		"credential_spray":       24 * time.Hour,
+		"web_account_compromise": 7 * 24 * time.Hour,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("defaultIncidentAutoCloseThresholds = %#v, want %#v", got, want)
+	}
+	if _, ok := got["pam_failure"]; ok {
+		t.Fatal("default thresholds must not include check name pam_failure")
+	}
+	if _, ok := got["wp_login_bruteforce"]; ok {
+		t.Fatal("default thresholds must not include check name wp_login_bruteforce")
 	}
 }
 

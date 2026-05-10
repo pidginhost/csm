@@ -37,15 +37,13 @@ incidents:
     dry_run: false           # set true to log decisions without writing back
     by_kind:
       mailbox_takeover: 24h
+      credential_spray: 24h
       web_account_compromise: 168h
-      pam_failure: 24h
-      wp_login_bruteforce: 24h
 ```
 
 Kinds absent from `by_kind` are never auto-closed. The default map
-omits `host_integrity_risk` and verdict-emitted kinds (sensitive file
-writes, ModSecurity escalations, cloud-relay abuse) because those
-should stay open until an operator reviews them.
+omits `host_integrity_risk` and `post_exploit_process` because those
+host-level incidents should stay open until an operator reviews them.
 
 If a fresh finding for the same correlation key arrives after the
 auto-close, the merge-window stale-binding logic creates a new open

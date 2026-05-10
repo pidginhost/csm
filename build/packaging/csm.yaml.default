@@ -236,9 +236,9 @@ updates:
 # Incident correlator knobs.
 incidents:
   # Auto-resolve Open / Contained incidents after the per-kind idle
-  # threshold elapses. Default-on with brute-force kinds expiring at
-  # 24h and account-compromise at 7d; verdict-emitted kinds (host
-  # integrity, sensitive_file_write, modsec escalations) never
+  # threshold elapses. Default-on with mailbox takeover and credential
+  # spray expiring at 24h and web-account compromise at 7d; host-level
+  # kinds (host integrity, post-exploit process) never
   # auto-close. Set enabled: false to disable, or dry_run: true to
   # log decisions without writing back.
   auto_close:
@@ -246,9 +246,8 @@ incidents:
     dry_run: false
     by_kind:
       mailbox_takeover: 24h
+      credential_spray: 24h
       web_account_compromise: 168h
-      pam_failure: 24h
-      wp_login_bruteforce: 24h
 
   # Credential-spray super-incident: when one source IP brute-forces
   # many distinct mailboxes inside the merge window, collapse the

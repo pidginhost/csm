@@ -551,8 +551,8 @@ func (c *Correlator) CloseStale(now time.Time, idleThresholds map[Kind]time.Dura
 	if len(idleThresholds) == 0 {
 		return 0, 0, 0
 	}
+	var persist []Incident
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	for id, inc := range c.incidents {
 		if inc.Status != StatusOpen && inc.Status != StatusContained {
 			continue
@@ -585,8 +585,15 @@ func (c *Correlator) CloseStale(now time.Time, idleThresholds map[Kind]time.Dura
 		c.counters.statusChangedTotal.Add(1)
 		c.counters.autoClosedTotal.Add(1)
 		c.unbindLocked(id)
-		c.persistLocked(*inc)
+		if c.cfg.Persist != nil {
+			persist = append(persist, cloneIncident(*inc))
+		}
 		closed++
+	}
+	c.mu.Unlock()
+
+	for _, snap := range persist {
+		c.cfg.Persist(snap)
 	}
 	return closed, dryRunCount, scanned
 }

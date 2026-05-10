@@ -7,9 +7,9 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 )
 
-// IncidentGroupsScanCap is the hard upper bound on incidents inspected
-// per BuildGroups call. Bounded scan keeps the grouped view cheap even
-// on hosts with tens of thousands of historical incidents.
+// IncidentGroupsScanCap is the hard upper bound on matching incidents
+// grouped per BuildGroups call. Rows excluded by status/kind filters do
+// not consume the cap.
 const IncidentGroupsScanCap = 10000
 
 // Group is one row of the grouped incident view: a (kind, source)
@@ -62,20 +62,12 @@ type GroupFilter struct {
 // drill in without a follow-up call.
 //
 // `incidents` may be the full correlator snapshot. The function caps
-// its scan at IncidentGroupsScanCap; the returned `truncated` flag
-// reports whether the cap clipped the input. Callers fed by
-// Correlator.Snapshot() get an already-newest-first slice; sort
-// stability there means the truncation drops the oldest entries
-// first, which is what an operator wants.
+// its scan at IncidentGroupsScanCap after status/kind filtering; the
+// returned `truncated` flag reports whether the cap clipped matching
+// incidents. Callers fed by Correlator.Snapshot() get an already-newest-
+// first slice; sort stability there means the truncation drops the oldest
+// matching entries first, which is what an operator wants.
 func BuildGroups(incidents []Incident, filter GroupFilter) GroupsResponse {
-	scanned := len(incidents)
-	truncated := false
-	if scanned > IncidentGroupsScanCap {
-		incidents = incidents[:IncidentGroupsScanCap]
-		scanned = IncidentGroupsScanCap
-		truncated = true
-	}
-
 	statusAllowed := func(Status) bool { return true }
 	if len(filter.StatusSet) > 0 {
 		set := make(map[Status]struct{}, len(filter.StatusSet))
@@ -103,6 +95,8 @@ func BuildGroups(incidents []Incident, filter GroupFilter) GroupsResponse {
 	}
 
 	buckets := make(map[string]*aggregator)
+	scanned := 0
+	truncated := false
 	for _, inc := range incidents {
 		if !statusAllowed(inc.Status) {
 			continue
@@ -110,6 +104,11 @@ func BuildGroups(incidents []Incident, filter GroupFilter) GroupsResponse {
 		if filter.Kind != "" && inc.Kind != filter.Kind {
 			continue
 		}
+		if scanned >= IncidentGroupsScanCap {
+			truncated = true
+			break
+		}
+		scanned++
 		sourceKind, source := groupSource(inc)
 		k := bucketKey(inc.Kind, sourceKind, source)
 		agg, ok := buckets[k]
@@ -198,6 +197,9 @@ func groupSource(inc Incident) (sourceKind, source string) {
 	if inc.CorrelationKey != nil && inc.CorrelationKey.RemoteIP != "" {
 		return "ip", inc.CorrelationKey.RemoteIP
 	}
+	if ip := timelineRemoteIP(inc); ip != "" {
+		return "ip", ip
+	}
 	if inc.Account != "" {
 		return "account", inc.Account
 	}
@@ -208,4 +210,23 @@ func groupSource(inc Incident) (sourceKind, source string) {
 		return "mailbox", inc.Mailbox
 	}
 	return "_unkeyed", ""
+}
+
+func timelineRemoteIP(inc Incident) string {
+	counts := make(map[string]int)
+	for _, ev := range inc.Timeline {
+		if ev.RemoteIP != "" {
+			counts[ev.RemoteIP]++
+		}
+	}
+
+	best := ""
+	bestCount := 0
+	for ip, count := range counts {
+		if count > bestCount || count == bestCount && (best == "" || ip < best) {
+			best = ip
+			bestCount = count
+		}
+	}
+	return best
 }

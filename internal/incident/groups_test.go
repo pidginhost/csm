@@ -40,6 +40,49 @@ func TestBuildGroupsBucketByIPWhenPresent(t *testing.T) {
 	}
 }
 
+func TestBuildGroupsBucketByTimelineRemoteIPWhenCorrelationKeyOmitsIP(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	in := []Incident{
+		{
+			ID:        "inc_a",
+			Kind:      KindMailboxTakeover,
+			Status:    StatusOpen,
+			Severity:  alert.High,
+			Mailbox:   "u1@example.com",
+			CreatedAt: now,
+			UpdatedAt: now,
+			CorrelationKey: &Key{
+				Mailbox: "u1@example.com",
+			},
+			Timeline: []IncidentEvent{{RemoteIP: "192.0.2.1"}},
+		},
+		{
+			ID:        "inc_b",
+			Kind:      KindMailboxTakeover,
+			Status:    StatusOpen,
+			Severity:  alert.High,
+			Mailbox:   "u2@example.com",
+			CreatedAt: now.Add(time.Minute),
+			UpdatedAt: now.Add(time.Minute),
+			CorrelationKey: &Key{
+				Mailbox: "u2@example.com",
+			},
+			Timeline: []IncidentEvent{{RemoteIP: "192.0.2.1"}},
+		},
+	}
+
+	resp := BuildGroups(in, GroupFilter{})
+	if resp.TotalGroups != 1 {
+		t.Fatalf("TotalGroups = %d, want 1 attacker-IP group: %+v", resp.TotalGroups, resp.Groups)
+	}
+	if resp.Groups[0].SourceKind != "ip" || resp.Groups[0].Source != "192.0.2.1" {
+		t.Fatalf("group source = (%s,%s), want (ip,192.0.2.1)", resp.Groups[0].SourceKind, resp.Groups[0].Source)
+	}
+	if resp.Groups[0].IncidentCount != 2 {
+		t.Fatalf("IncidentCount = %d, want 2", resp.Groups[0].IncidentCount)
+	}
+}
+
 func TestBuildGroupsBucketByAccountFallback(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	in := []Incident{
@@ -86,6 +129,29 @@ func TestBuildGroupsScanCapHonored(t *testing.T) {
 	}
 	if resp.ScannedIncidents != IncidentGroupsScanCap {
 		t.Errorf("scanned = %d, want cap %d", resp.ScannedIncidents, IncidentGroupsScanCap)
+	}
+}
+
+func TestBuildGroupsScanCapAppliesAfterFilters(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	in := make([]Incident, 0, IncidentGroupsScanCap+2)
+	for i := 0; i < IncidentGroupsScanCap+1; i++ {
+		in = append(in, incForGroup("done"+strconv.Itoa(i), KindMailboxTakeover, StatusResolved, alert.High, "", "u"+strconv.Itoa(i), "", "", now.Add(time.Duration(i)*time.Second)))
+	}
+	in = append(in, incForGroup("active", KindMailboxTakeover, StatusOpen, alert.High, "192.0.2.99", "", "", "active", now.Add(time.Hour)))
+
+	resp := BuildGroups(in, GroupFilter{StatusSet: []Status{StatusOpen, StatusContained}})
+	if resp.TotalGroups != 1 {
+		t.Fatalf("TotalGroups = %d, want 1 active group after skipping resolved rows: %+v", resp.TotalGroups, resp.Groups)
+	}
+	if resp.Groups[0].Source != "192.0.2.99" {
+		t.Fatalf("active group source = %q, want 192.0.2.99", resp.Groups[0].Source)
+	}
+	if resp.ScannedIncidents != 1 {
+		t.Fatalf("ScannedIncidents = %d, want 1 matching active incident", resp.ScannedIncidents)
+	}
+	if resp.Truncated {
+		t.Fatal("Truncated = true, want false because matching active set is below cap")
 	}
 }
 

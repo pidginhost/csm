@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,7 +21,7 @@ func seedSprayIncidents(t *testing.T, c *incident.Correlator, ip string, count i
 		_, _, err := c.OnFinding(alert.Finding{
 			Check:     "email_auth_failure_realtime",
 			Severity:  alert.High,
-			Mailbox:   "victim" + strconv.Itoa(i) + "@example.com",
+			Mailbox:   "victim" + strconv.Itoa(i) + "-" + strings.ReplaceAll(ip, ".", "-") + "@example.com",
 			SourceIP:  ip,
 			Timestamp: now.Add(time.Duration(i) * time.Minute),
 		})
@@ -55,10 +56,14 @@ func TestAPIIncidentGroupsBucketsByIP(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v\nbody: %s", err, w.Body.String())
 	}
-	// Two source IPs => at most two groups (mailbox-keyed buckets when
-	// the correlator stripped RemoteIP via KeyFor's account-first rule).
-	if len(resp.Groups) == 0 {
-		t.Fatalf("expected at least one group, got 0; body=%s", w.Body.String())
+	if len(resp.Groups) != 2 {
+		t.Fatalf("groups = %d, want 2 attacker-IP groups: %+v", len(resp.Groups), resp.Groups)
+	}
+	if resp.Groups[0].SourceKind != "ip" || resp.Groups[0].Source != "192.0.2.1" || resp.Groups[0].IncidentCount != 4 {
+		t.Fatalf("first group = %+v, want 192.0.2.1 with 4 incidents", resp.Groups[0])
+	}
+	if resp.Groups[1].SourceKind != "ip" || resp.Groups[1].Source != "192.0.2.2" || resp.Groups[1].IncidentCount != 1 {
+		t.Fatalf("second group = %+v, want 192.0.2.2 with 1 incident", resp.Groups[1])
 	}
 }
 
