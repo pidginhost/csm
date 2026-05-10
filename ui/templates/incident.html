@@ -14,6 +14,11 @@
             </button>
         </li>
         <li class="nav-item" role="presentation">
+            <button class="nav-link" id="grouped-tab" type="button" role="tab" aria-controls="grouped-panel" aria-selected="false">
+                <i class="ti ti-stack-2"></i>&nbsp;Grouped
+            </button>
+        </li>
+        <li class="nav-item" role="presentation">
             <button class="nav-link" id="timeline-tab" type="button" role="tab" aria-controls="timeline-panel" aria-selected="false">
                 <i class="ti ti-search"></i>&nbsp;Timeline Search
             </button>
@@ -57,6 +62,40 @@
                     </ul>
                 </div>
             </div>
+        </div>
+    </div>
+
+    <div id="grouped-panel" class="d-none" role="tabpanel" aria-labelledby="grouped-tab">
+        <div class="card mb-3">
+            <div class="card-header">
+                <h3 class="card-title"><i class="ti ti-stack-2"></i>&nbsp;Grouped Incidents</h3>
+                <div class="card-actions d-flex gap-2 align-items-center flex-wrap">
+                    <select id="grouped-status-filter" class="form-select form-select-sm" aria-label="Status filter">
+                        <option value="active">Open + contained</option>
+                        <option value="all">All statuses</option>
+                        <option value="open">Open</option>
+                        <option value="resolved">Resolved</option>
+                    </select>
+                    <select id="grouped-kind-filter" class="form-select form-select-sm" aria-label="Kind filter">
+                        <option value="">All kinds</option>
+                        <option value="mailbox_takeover">Mailbox takeover</option>
+                        <option value="web_account_compromise">Web account compromise</option>
+                        <option value="credential_spray">Credential spray</option>
+                        <option value="post_exploit_process">Post-exploit process</option>
+                        <option value="host_integrity_risk">Host integrity</option>
+                    </select>
+                    <button class="btn btn-outline-secondary btn-sm" id="grouped-refresh-btn" title="Refresh groups" aria-label="Refresh groups">
+                        <i class="ti ti-refresh"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="csm-summary-list csm-summary-list--scroll" id="grouped-content" aria-live="polite">
+                <div class="csm-empty">
+                    <div class="csm-empty__icon"><i class="ti ti-loader-2"></i></div>
+                    <div class="csm-empty__reason">Loading groups...</div>
+                </div>
+            </div>
+            <div class="card-footer text-muted small" id="grouped-footer"></div>
         </div>
     </div>
 

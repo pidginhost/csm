@@ -213,6 +213,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	// because the router can dispatch POST .../status; requireCSRF only acts
 	// on unsafe methods so GET .../<id> still passes through.
 	mux.Handle("/api/v1/incidents", s.requireAuth(http.HandlerFunc(s.apiIncidentList)))
+	mux.Handle("/api/v1/incidents/groups", s.requireRead(http.HandlerFunc(s.apiIncidentGroups)))
 	mux.Handle("/api/v1/incidents/", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiIncidentRouter))))
 	mux.Handle("/api/v1/email/stats", s.requireAuth(http.HandlerFunc(s.apiEmailStats)))
 	mux.Handle("/api/v1/email/quarantine", s.requireAuth(http.HandlerFunc(s.apiEmailQuarantineList)))

@@ -110,6 +110,8 @@ POST /api/v1/firewall/cphulk-clear   Flush cphulk bans only
 ## ModSecurity
 
 ```
+GET  /api/v1/incidents/groups          Roll up open/contained incidents by (kind, source) so credential spray collapses into one row per attacker IP. Read scope. Accepts ?status=active|all|open|contained|resolved|dismissed, ?kind=, ?limit=.
+
 GET  /api/v1/modsec/stats              WAF statistics (read scope)
 GET  /api/v1/modsec/blocks             Blocked requests log, aggregated per IP (read scope)
 GET  /api/v1/modsec/events             WAF event details (read scope)

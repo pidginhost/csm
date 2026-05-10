@@ -25,18 +25,156 @@
     }
 
     function switchTab(name) {
-        var incidentsTab = document.getElementById('incidents-tab');
-        var timelineTab = document.getElementById('timeline-tab');
-        var incidentsPanel = document.getElementById('incidents-panel');
-        var timelinePanel = document.getElementById('timeline-panel');
-        var showIncidents = name === 'incidents';
+        var tabs = [
+            { tab: 'incidents-tab', panel: 'incidents-panel', name: 'incidents' },
+            { tab: 'grouped-tab',   panel: 'grouped-panel',   name: 'grouped' },
+            { tab: 'timeline-tab',  panel: 'timeline-panel',  name: 'timeline' },
+        ];
+        for (var i = 0; i < tabs.length; i++) {
+            var entry = tabs[i];
+            var active = entry.name === name;
+            var tabEl = document.getElementById(entry.tab);
+            var panelEl = document.getElementById(entry.panel);
+            if (tabEl) {
+                tabEl.classList.toggle('active', active);
+                tabEl.setAttribute('aria-selected', active ? 'true' : 'false');
+            }
+            if (panelEl) {
+                panelEl.classList.toggle('d-none', !active);
+            }
+        }
+        if (name === 'grouped') loadGroups();
+    }
 
-        incidentsTab.classList.toggle('active', showIncidents);
-        incidentsTab.setAttribute('aria-selected', showIncidents ? 'true' : 'false');
-        timelineTab.classList.toggle('active', !showIncidents);
-        timelineTab.setAttribute('aria-selected', showIncidents ? 'false' : 'true');
-        incidentsPanel.classList.toggle('d-none', !showIncidents);
-        timelinePanel.classList.toggle('d-none', showIncidents);
+    // ---------- Grouped tab ----------
+
+    function ageLabel(iso) {
+        if (!iso) return '';
+        if (CSM.timeAgo) return CSM.timeAgo(iso);
+        return iso;
+    }
+
+    function kindLabel(k) {
+        switch (k) {
+            case 'mailbox_takeover':       return 'Mailbox takeover';
+            case 'web_account_compromise': return 'Web account compromise';
+            case 'credential_spray':       return 'Credential spray';
+            case 'post_exploit_process':   return 'Post-exploit process';
+            case 'host_integrity_risk':    return 'Host integrity';
+        }
+        return k;
+    }
+
+    function severityNumber(label) {
+        if (label === 'CRITICAL') return 2;
+        if (label === 'HIGH') return 1;
+        return 0;
+    }
+
+    function loadGroups() {
+        var content = document.getElementById('grouped-content');
+        var footer = document.getElementById('grouped-footer');
+        if (!content) return;
+        var status = (document.getElementById('grouped-status-filter') || {}).value || 'active';
+        var kind = (document.getElementById('grouped-kind-filter') || {}).value || '';
+        var qs = 'status=' + encodeURIComponent(status) + '&limit=200';
+        if (kind) qs += '&kind=' + encodeURIComponent(kind);
+        fetch(CSM.apiUrl('/api/v1/incidents/groups?' + qs), { credentials: 'same-origin' })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                renderGroups(data, content, footer);
+            })
+            .catch(function() {
+                content.replaceChildren();
+                var empty = document.createElement('div');
+                empty.className = 'csm-empty';
+                empty.innerHTML = '<div class="csm-empty__icon"><i class="ti ti-alert-circle"></i></div>'
+                    + '<div class="csm-empty__reason">Could not load groups.</div>';
+                content.appendChild(empty);
+                if (footer) footer.textContent = '';
+            });
+    }
+
+    function renderGroups(data, content, footer) {
+        content.replaceChildren();
+        var groups = (data && data.groups) || [];
+        if (groups.length === 0) {
+            var empty = document.createElement('div');
+            empty.className = 'csm-empty';
+            empty.innerHTML = '<div class="csm-empty__icon"><i class="ti ti-circle-check"></i></div>'
+                + '<div class="csm-empty__title">No groups</div>'
+                + '<div class="csm-empty__reason">No incidents match the selected filters.</div>';
+            content.appendChild(empty);
+            if (footer) footer.textContent = '';
+            return;
+        }
+        for (var i = 0; i < groups.length; i++) {
+            var g = groups[i];
+            var sourceText = g.source_kind === 'ip'
+                ? g.source
+                : g.source_kind === '_unkeyed'
+                    ? 'unkeyed'
+                    : g.source_kind + ': ' + g.source;
+            var titleHTML = '<code>' + CSM.esc(sourceText) + '</code>'
+                + ' <span class="text-muted">' + CSM.esc(kindLabel(g.kind)) + '</span>';
+            var meta = g.open_count + ' open';
+            if (g.contained_count) meta += ', ' + g.contained_count + ' contained';
+            if (g.resolved_count) meta += ', ' + g.resolved_count + ' resolved';
+            var item = CSM.summaryItem({
+                severity: severityNumber(g.severity_max),
+                titleHTML: titleHTML,
+                meta: meta,
+                count: g.incident_count,
+                age: ageLabel(g.last_seen),
+                onClick: (function(group) { return function() { openGroupDetail(group); }; })(g),
+            });
+            content.appendChild(item);
+        }
+        if (footer) {
+            var summary = data.total_groups + ' group' + (data.total_groups === 1 ? '' : 's')
+                + ' from ' + data.scanned_incidents + ' incident' + (data.scanned_incidents === 1 ? '' : 's');
+            if (data.truncated) summary += ' (scan capped)';
+            footer.textContent = summary;
+        }
+    }
+
+    function openGroupDetail(g) {
+        var bodyHTML = '<dl class="row mb-2">';
+        bodyHTML += '<dt class="col-4 text-muted">Kind</dt><dd class="col-8">' + CSM.esc(kindLabel(g.kind)) + '</dd>';
+        bodyHTML += '<dt class="col-4 text-muted">Source</dt><dd class="col-8 font-monospace">' + CSM.esc(g.source || '(unkeyed)') + '</dd>';
+        bodyHTML += '<dt class="col-4 text-muted">Incidents</dt><dd class="col-8">' + g.incident_count + '</dd>';
+        bodyHTML += '<dt class="col-4 text-muted">Open</dt><dd class="col-8">' + g.open_count + '</dd>';
+        if (g.contained_count) bodyHTML += '<dt class="col-4 text-muted">Contained</dt><dd class="col-8">' + g.contained_count + '</dd>';
+        if (g.resolved_count) bodyHTML += '<dt class="col-4 text-muted">Resolved</dt><dd class="col-8">' + g.resolved_count + '</dd>';
+        bodyHTML += '<dt class="col-4 text-muted">Severity max</dt><dd class="col-8">' + CSM.esc(g.severity_max) + '</dd>';
+        bodyHTML += '<dt class="col-4 text-muted">First seen</dt><dd class="col-8">' + CSM.fmtDate(g.first_seen) + '</dd>';
+        bodyHTML += '<dt class="col-4 text-muted">Last seen</dt><dd class="col-8">' + CSM.fmtDate(g.last_seen) + '</dd>';
+        bodyHTML += '</dl>';
+        if (g.sample_ids && g.sample_ids.length > 0) {
+            bodyHTML += '<div class="mb-2"><div class="subheader">Sample incidents</div>';
+            for (var i = 0; i < g.sample_ids.length; i++) {
+                var sid = CSM.esc(g.sample_ids[i]);
+                bodyHTML += '<div><a href="#' + sid + '" data-csm-incident-id="' + sid + '">' + sid + '</a></div>';
+            }
+            bodyHTML += '</div>';
+        }
+        CSM.detailPanel.open({
+            title: 'Group: ' + (g.source || '(unkeyed)'),
+            bodyHTML: bodyHTML,
+        });
+        var panel = CSM.detailPanel.element();
+        if (panel) {
+            var links = panel.querySelectorAll('[data-csm-incident-id]');
+            for (var l = 0; l < links.length; l++) {
+                links[l].addEventListener('click', function(ev) {
+                    ev.preventDefault();
+                    var id = this.getAttribute('data-csm-incident-id');
+                    CSM.detailPanel.close();
+                    switchTab('incidents');
+                    openIncident(id, true);
+                });
+            }
+        }
     }
 
     function currentPageSize() {
@@ -393,6 +531,14 @@
 
     document.getElementById('incidents-tab').addEventListener('click', function() { switchTab('incidents'); });
     document.getElementById('timeline-tab').addEventListener('click', function() { switchTab('timeline'); });
+    var groupedTabBtn = document.getElementById('grouped-tab');
+    if (groupedTabBtn) groupedTabBtn.addEventListener('click', function() { switchTab('grouped'); });
+    var groupedRefresh = document.getElementById('grouped-refresh-btn');
+    if (groupedRefresh) groupedRefresh.addEventListener('click', loadGroups);
+    var groupedStatus = document.getElementById('grouped-status-filter');
+    if (groupedStatus) groupedStatus.addEventListener('change', loadGroups);
+    var groupedKind = document.getElementById('grouped-kind-filter');
+    if (groupedKind) groupedKind.addEventListener('change', loadGroups);
     document.getElementById('incidents-refresh-btn').addEventListener('click', loadIncidents);
     document.getElementById('incident-status-filter').addEventListener('change', function() {
         selectedID = '';

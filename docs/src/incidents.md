@@ -173,10 +173,20 @@ See [api.md](api.md) for endpoint detail.
 
 ## Web UI
 
-Open **Monitor -> Incidents**. The default Correlated tab lists open
-and contained Incident objects, shows the merged timeline, and lets an
-admin mark an incident open, contained, resolved, or dismissed. The
-Timeline Search tab keeps the older IP/account history search.
+Open **Monitor -> Incidents**. The page has three tabs:
+
+- **Correlated** -- the default flat list of incidents with status
+  filter, page size, and detail panel.
+- **Grouped** -- rolls up incidents by `(kind, source)` so a credential
+  spray that produced thousands of mailbox_takeover incidents shows as
+  one row per attacker IP. Click a group to see member incidents in
+  the detail panel; clicking a sample id jumps back to the Correlated
+  tab focused on that incident.
+- **Timeline Search** -- the older IP/account history search across
+  the audit log.
+
+Admin tokens can transition incident status (open / contained /
+resolved / dismissed); read-scope tokens can browse all three tabs.
 
 ## Control socket
 

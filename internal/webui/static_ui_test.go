@@ -423,6 +423,45 @@ func TestIncidentPageUsesDetailPanelDeepLinks(t *testing.T) {
 	}
 }
 
+// TestIncidentPageHasGroupedTab pins that the /incident page exposes the
+// grouped view (Phase 8.10). The handler / builder are tested separately;
+// this test only verifies the template hook the JS attaches to.
+func TestIncidentPageHasGroupedTab(t *testing.T) {
+	tmpl, err := os.ReadFile("../../ui/templates/incident.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(tmpl)
+	for _, want := range []string{
+		`id="grouped-tab"`,
+		`id="grouped-panel"`,
+		`id="grouped-content"`,
+		`id="grouped-status-filter"`,
+		`id="grouped-kind-filter"`,
+		`csm-summary-list`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("incident.html missing grouped-view hook %q", want)
+		}
+	}
+	js, err := os.ReadFile("../../ui/static/js/incident.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsText := string(js)
+	for _, want := range []string{
+		`/api/v1/incidents/groups`,
+		`function loadGroups`,
+		`function renderGroups`,
+		`function openGroupDetail`,
+		`switchTab('grouped')`,
+	} {
+		if !strings.Contains(jsText, want) {
+			t.Errorf("incident.js missing grouped-view hook %q", want)
+		}
+	}
+}
+
 // TestInventoryPagesAdoptCsmToolbar asserts the secondary cleanup pass
 // migrated card-action filter rows on inventory pages onto the canonical
 // csm-toolbar primitive so toolbars look consistent across the UI.
