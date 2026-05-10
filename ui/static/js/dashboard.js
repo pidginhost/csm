@@ -1254,5 +1254,176 @@
         mutations.forEach(function(m) { if (m.attributeName === 'class') updateChartTheme(); });
     }).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
 
+
+    // --- Priority queue: open incidents + top critical/high findings ----------
+    var _statusClasses = { open: 'danger', contained: 'warning', resolved: 'success', dismissed: 'secondary' };
+
+    function _queueItemHTML(item) {
+        // item: { sevClass, sevLabel, title, summary, ageISO, action, href, kind }
+        var sev = item.sevClass || 'warning';
+        var sevLabel = item.sevLabel || 'WARN';
+        var ageISO = item.ageISO || '';
+        var ageText = ageISO ? CSM.timeAgo(ageISO) : '';
+        var actionHTML = '';
+        if (item.action && item.href) {
+            actionHTML = '<a href="' + CSM.attr(item.href) + '" class="btn btn-sm btn-ghost-secondary csm-queue-item__action" title="' + CSM.attr(item.action) + '">' + CSM.esc(item.action) + '</a>';
+        }
+        var kindBadge = item.kind ? '<span class="badge bg-secondary-lt me-1">' + CSM.esc(item.kind) + '</span>' : '';
+        var html = '<a class="csm-queue-item" href="' + CSM.attr(item.href || '#') + '">';
+        html += '<span class="csm-queue-item__sev"><span class="badge badge-' + CSM.attr(sev) + '">' + CSM.esc(sevLabel) + '</span></span>';
+        html += '<span class="csm-queue-item__main">';
+        html += '<div class="csm-queue-item__title">' + kindBadge + CSM.esc(item.title || '') + '</div>';
+        if (item.summary) html += '<div class="csm-queue-item__summary">' + CSM.esc(item.summary) + '</div>';
+        html += '</span>';
+        if (ageText) html += '<span class="csm-queue-item__age" data-timestamp="' + CSM.attr(ageISO) + '">' + CSM.esc(ageText) + '</span>';
+        html += actionHTML;
+        html += '</a>';
+        return html;
+    }
+
+    function _renderPriorityQueue(items) {
+        var el = document.getElementById('priority-queue');
+        if (!el) return;
+        if (!items || items.length === 0) {
+            el.innerHTML = CSM.emptyStateBlock({
+                icon: 'circle-check',
+                title: 'No urgent items',
+                reason: 'No open incidents and no recent critical or high findings need action.'
+            });
+            return;
+        }
+        var html = '';
+        for (var i = 0; i < items.length; i++) html += _queueItemHTML(items[i]);
+        el.innerHTML = html;
+        CSM.initTimeAgo();
+    }
+
+    function _kindLabel(kind) {
+        if (!kind) return 'incident';
+        return String(kind).replace(/_/g, ' ');
+    }
+
+    function _sevForIncident(s) {
+        if (s === 'CRITICAL') return { sevClass: 'critical', sevLabel: 'CRITICAL' };
+        if (s === 'HIGH')     return { sevClass: 'high',     sevLabel: 'HIGH' };
+        return { sevClass: 'warning', sevLabel: 'WARNING' };
+    }
+
+    function _sevForFinding(severity) {
+        var s = String(severity || '').toUpperCase();
+        if (s === 'CRITICAL') return { sevClass: 'critical', sevLabel: 'CRITICAL' };
+        if (s === 'HIGH')     return { sevClass: 'high',     sevLabel: 'HIGH' };
+        return { sevClass: 'warning', sevLabel: 'WARNING' };
+    }
+
+    function _updateSubtitle(openIncidents, critFindings, highFindings) {
+        var sub = document.getElementById('dashboard-summary');
+        if (!sub) return;
+        var parts = [];
+        parts.push(openIncidents + ' open incident' + (openIncidents === 1 ? '' : 's'));
+        parts.push(critFindings + ' critical');
+        parts.push(highFindings + ' high');
+        sub.textContent = parts.join(' · ') + ' (24h)';
+    }
+
+    function loadPriorityQueue() {
+        var incidentReq = CSM.get('/api/v1/incidents?status=open&limit=5').catch(function() { return null; });
+        var findingsReq = CSM.get('/api/v1/findings/enriched?limit=20').catch(function() { return null; });
+        Promise.all([incidentReq, findingsReq]).then(function(results) {
+            var incData = results[0];
+            var findData = results[1];
+            var incidents = [];
+            if (incData && Array.isArray(incData.items)) incidents = incData.items;
+            else if (Array.isArray(incData)) incidents = incData;
+
+            var findings = [];
+            var critCountAPI = 0, highCountAPI = 0;
+            if (findData && Array.isArray(findData.findings)) {
+                findings = findData.findings;
+                if (typeof findData.critical_count === 'number') critCountAPI = findData.critical_count;
+                if (typeof findData.high_count === 'number')     highCountAPI = findData.high_count;
+            } else if (Array.isArray(findData)) {
+                findings = findData;
+            }
+
+            // Take top 5 incidents + up to 5 critical/high findings (newest first)
+            var items = [];
+            for (var i = 0; i < Math.min(incidents.length, 5); i++) {
+                var inc = incidents[i];
+                var sevInfo = _sevForIncident(inc.severity);
+                var owner = inc.mailbox || inc.domain || inc.account || 'unknown';
+                items.push({
+                    sevClass: sevInfo.sevClass,
+                    sevLabel: sevInfo.sevLabel,
+                    kind: _kindLabel(inc.kind),
+                    title: owner,
+                    summary: (inc.findings || []).length + ' correlated finding' + (((inc.findings || []).length === 1) ? '' : 's'),
+                    ageISO: inc.updated_at || inc.created_at || '',
+                    action: 'Open incident',
+                    href: '/incident#' + encodeURIComponent(inc.id || '')
+                });
+            }
+
+            var critHighFindings = [];
+            for (var j = 0; j < findings.length; j++) {
+                var f = findings[j];
+                var sev = String(f.severity || '').toUpperCase();
+                if ((sev === 'CRITICAL' || sev === 'HIGH') && critHighFindings.length < 5) {
+                    critHighFindings.push(f);
+                }
+            }
+            for (var k = 0; k < critHighFindings.length; k++) {
+                var fi = critHighFindings[k];
+                var fSev = _sevForFinding(fi.severity);
+                items.push({
+                    sevClass: fSev.sevClass,
+                    sevLabel: fSev.sevLabel,
+                    kind: fi.check || 'finding',
+                    title: fi.account || fi.check || 'finding',
+                    summary: fi.message || '',
+                    ageISO: fi.last_seen || fi.first_seen || '',
+                    action: 'Review',
+                    href: '/findings'
+                });
+            }
+
+            _renderPriorityQueue(items);
+            _updateSubtitle(incidents.length, critCountAPI, highCountAPI);
+        });
+    }
+
+    // --- System posture chips ------------------------------------------------
+    function _postureChip(label, state, ok, tooltip) {
+        var cls = ok ? 'csm-status-strip__chip--ok' : 'csm-status-strip__chip--warn';
+        var icon = ok ? 'ti-check' : 'ti-circle-off';
+        return '<span class="csm-status-strip__chip ' + cls + '" title="' + CSM.attr(tooltip || '') + '">' +
+            '<i class="ti ' + icon + '"></i>' +
+            '<span class="csm-status-strip__chip-value">' + CSM.esc(label) + '</span>' +
+            '<span class="csm-status-strip__chip-label">' + CSM.esc(state) + '</span>' +
+        '</span>';
+    }
+
+    function renderSystemPosture() {
+        var el = document.getElementById('system-posture');
+        if (!el) return;
+        var cfg = (typeof CSM_CONFIG !== 'undefined') ? CSM_CONFIG : {};
+        var html = '<div class="d-flex flex-wrap gap-2">';
+        html += _postureChip('Firewall',     cfg.firewall      ? 'enabled' : 'off', !!cfg.firewall,      'Outbound block engine state');
+        html += _postureChip('Auto-response', cfg.autoResponse ? 'enabled' : 'off', !!cfg.autoResponse,  'Automatic block / quarantine response');
+        html += _postureChip('Email AV',     cfg.emailAV       ? 'enabled' : 'off', !!cfg.emailAV,       'ClamAV / yara scanning of outgoing mail');
+        html += _postureChip('Threat Intel', cfg.threatIntel   ? 'enabled' : 'off', !!cfg.threatIntel,   'AbuseIPDB / upstream IP reputation');
+        html += _postureChip('Signatures',   cfg.signatures    ? 'loaded'  : 'off', !!cfg.signatures,    'YARA / YAML rule loader');
+        html += _postureChip('Challenge',    cfg.challenge     ? 'on'      : 'off', !!cfg.challenge,     'Browser CAPTCHA challenge for suspicious IPs');
+        html += '</div>';
+        el.innerHTML = html;
+    }
+
+    // Wire refresh + initial load
+    var _pqBtn = document.getElementById('priority-queue-refresh');
+    if (_pqBtn) _pqBtn.addEventListener('click', loadPriorityQueue);
+    try { loadPriorityQueue(); } catch (e) {}
+    try { renderSystemPosture(); } catch (e) {}
+    _trackInterval(setInterval(loadPriorityQueue, 60000));
+
     _startChartPolling();
 })();

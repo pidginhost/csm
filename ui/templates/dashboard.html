@@ -1,18 +1,96 @@
 {{define "title"}}Dashboard{{end}}
 {{define "page"}}dashboard{{end}}
 {{define "content"}}
-    <div class="page-header mb-3">
-        <div class="row align-items-center">
-            <div class="col-auto"><h2 class="page-title">Dashboard</h2></div>
-            <div class="col-auto">
+    <div class="csm-page-header mb-3">
+        <div class="csm-page-header__main">
+            <h2 class="csm-page-header__title"><i class="ti ti-dashboard"></i>&nbsp;Dashboard</h2>
+            <div class="csm-page-header__subtitle" id="dashboard-subtitle">
                 <span id="system-health-pill" class="badge bg-secondary-lt" title="System health">
                     <span class="status-dot me-1"></span><span class="health-label">Checking...</span>
                 </span>
+                <span class="ms-2" id="dashboard-summary"></span>
+            </div>
+        </div>
+        <div class="csm-page-header__actions">
+            <a class="btn btn-primary btn-sm" href="/incident" title="Open the Incidents triage surface">
+                <i class="ti ti-timeline-event"></i>&nbsp;View Incidents
+            </a>
+            <a class="btn btn-ghost-secondary btn-sm" href="/findings" title="Open active findings">
+                <i class="ti ti-alert-triangle"></i>&nbsp;Findings
+            </a>
+        </div>
+    </div>
+
+    <!-- Daemon status strip -->
+    <div class="csm-status-strip mb-3">
+        <span class="csm-status-strip__chip" title="Daemon uptime since last restart">
+            <i class="ti ti-clock"></i>
+            <span class="csm-status-strip__chip-value">{{.Uptime}}</span>
+            <span class="csm-status-strip__chip-label">uptime</span>
+        </span>
+        <span class="csm-status-strip__chip" title="Time since the most recent critical finding"{{if .LastCriticalISO}} data-timestamp="{{.LastCriticalISO}}"{{end}}>
+            <i class="ti ti-alert-octagon"></i>
+            <span class="csm-status-strip__chip-value" id="stat-last-critical"{{if .LastCriticalISO}} data-timestamp="{{.LastCriticalISO}}"{{end}}>{{.LastCriticalAgo}}</span>
+            <span class="csm-status-strip__chip-label">since last critical</span>
+        </span>
+        {{if .FanotifyActive}}
+        <span class="csm-status-strip__chip csm-status-strip__chip--ok" title="Real-time filesystem monitoring via fanotify">
+            <i class="ti ti-eye"></i>
+            <span class="csm-status-strip__chip-value">fanotify</span>
+            <span class="csm-status-strip__chip-label">active</span>
+        </span>
+        {{else}}
+        <span class="csm-status-strip__chip csm-status-strip__chip--warn" title="Fanotify unavailable, using polling fallback">
+            <i class="ti ti-eye-off"></i>
+            <span class="csm-status-strip__chip-value">polling</span>
+            <span class="csm-status-strip__chip-label">fallback</span>
+        </span>
+        {{end}}
+        {{if .LogWatchers}}
+        <span class="csm-status-strip__chip" title="Log files being watched in real time">
+            <i class="ti ti-file-text"></i>
+            <span class="csm-status-strip__chip-value">{{.LogWatchers}}</span>
+            <span class="csm-status-strip__chip-label">log watchers</span>
+        </span>
+        {{end}}
+        <span class="csm-status-strip__chip" title="Loaded YARA / YAML signatures">
+            <i class="ti ti-shield-check"></i>
+            <span class="csm-status-strip__chip-value">{{.SigCount}}</span>
+            <span class="csm-status-strip__chip-label">rules</span>
+        </span>
+    </div>
+
+    <!-- Priority queue + system posture -->
+    <div class="row row-deck row-cards mb-3">
+        <div class="col-lg-7">
+            <div class="card h-100">
+                <div class="card-header">
+                    <h3 class="card-title"><i class="ti ti-flame"></i>&nbsp;Needs your attention</h3>
+                    <div class="card-actions">
+                        <button id="priority-queue-refresh" class="btn btn-ghost-secondary btn-sm" title="Refresh queue" aria-label="Refresh queue">
+                            <i class="ti ti-refresh"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="card-body p-0" id="priority-queue">
+                    <div class="csm-empty">
+                        <div class="csm-empty__icon"><i class="ti ti-loader-2"></i></div>
+                        <div class="csm-empty__reason">Loading...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-5">
+            <div class="card h-100">
+                <div class="card-header"><h3 class="card-title"><i class="ti ti-shield"></i>&nbsp;System posture</h3></div>
+                <div class="card-body" id="system-posture">
+                    <div class="text-muted text-center py-3"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
+                </div>
             </div>
         </div>
     </div>
 
-    <!-- Stat Cards -->
+    <!-- 24h severity totals (kept for reference, demoted below the priority queue) -->
     <div class="row row-deck row-cards mb-3">
         <div class="col-6 col-lg">
             <a href="/findings?tab=history&severity=2" class="card card-link stat-card" title="Critical severity findings in the last 24 hours -- click to view history">
@@ -47,39 +125,14 @@
                 </div>
             </a>
         </div>
-        <div class="col-6 col-lg">
-            <div class="card" title="Time since the most recent critical severity finding">
-                <div class="card-body">
-                    <div class="subheader">Last Critical</div>
-                    <div class="h3 mb-0" id="stat-last-critical"{{if .LastCriticalISO}} data-timestamp="{{.LastCriticalISO}}"{{end}}>{{.LastCriticalAgo}}</div>
-                </div>
-            </div>
-        </div>
-        <div class="col-6 col-lg">
-            <div class="card" title="Daemon uptime and monitoring status">
-                <div class="card-body">
-                    <div class="d-flex align-items-center justify-content-between">
-                        <div>
-                            <div class="subheader">Uptime</div>
-                            <div class="h3 mb-0">{{.Uptime}}</div>
-                        </div>
-                        <div class="text-end">
-                            {{if .FanotifyActive}}<span class="badge bg-green-lt" title="Real-time filesystem monitoring via fanotify"><i class="ti ti-eye"></i> fanotify</span>
-                            {{else}}<span class="badge bg-yellow-lt" title="Fanotify unavailable, using polling fallback"><i class="ti ti-eye-off"></i> fallback</span>{{end}}
-                            {{if .LogWatchers}}<span class="badge bg-blue-lt ms-1" title="Log files being watched"><i class="ti ti-file-text"></i> {{.LogWatchers}}</span>{{end}}
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
     </div>
 
-    <!-- Live Feed (full width, prominent) -->
+    <!-- Live Feed (recent activity, not the main work queue) -->
     <div class="card mb-3">
         <div class="card-header">
             <h3 class="card-title">
                 <span class="status-dot bg-yellow me-1" id="poll-status-dot" title="Polling active"></span>
-                Live Feed
+                Recent activity
                 <span class="text-muted ms-2 small">Polling (10s)</span>
             </h3>
             <div class="card-actions d-flex gap-2 align-items-center flex-wrap">
@@ -110,7 +163,7 @@
         </div>
     </div>
 
-    <!-- Accounts at Risk + Auto-Response + Brute Force -->
+    <!-- Below the fold: investigation context -->
     <div class="row row-deck row-cards mb-3">
         <div class="col-lg-4">
             <div class="card">

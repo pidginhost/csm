@@ -306,6 +306,60 @@ func TestSharedUIScriptsLoadBeforeTableExtensions(t *testing.T) {
 	}
 }
 
+// TestDashboardLeadsWithPriorityQueue ensures the dashboard surfaces the
+// triage-first layout: page header, status strip, priority queue, and
+// system posture sit above the recent activity feed and the analytics
+// charts. The legacy stat cards stay reachable but no longer dominate
+// the first screen.
+func TestDashboardLeadsWithPriorityQueue(t *testing.T) {
+	tmpl, err := os.ReadFile("../../ui/templates/dashboard.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(tmpl)
+
+	for _, want := range []string{
+		`class="csm-page-header`,
+		`class="csm-status-strip`,
+		`id="priority-queue"`,
+		`id="system-posture"`,
+		`id="dashboard-summary"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("dashboard.html missing required section %q", want)
+		}
+	}
+
+	// Priority queue must come before the live feed and the charts.
+	priority := strings.Index(text, `id="priority-queue"`)
+	feed := strings.Index(text, `id="live-feed-entries"`)
+	timeline := strings.Index(text, `id="timeline-chart"`)
+	if priority < 0 || feed < 0 || timeline < 0 {
+		t.Fatal("dashboard.html missing one of priority queue, live feed, or timeline chart")
+	}
+	if priority >= feed {
+		t.Errorf("priority queue must precede the live feed (got %d vs %d)", priority, feed)
+	}
+	if feed >= timeline {
+		t.Errorf("live feed must precede the analytics charts (got %d vs %d)", feed, timeline)
+	}
+
+	js, err := os.ReadFile("../../ui/static/js/dashboard.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsText := string(js)
+	for _, want := range []string{
+		"loadPriorityQueue",
+		"renderSystemPosture",
+		"/api/v1/incidents?status=open",
+	} {
+		if !strings.Contains(jsText, want) {
+			t.Errorf("dashboard.js missing %q", want)
+		}
+	}
+}
+
 func TestSettingsIntArraySubmitsRawTokens(t *testing.T) {
 	src, err := os.ReadFile("../../ui/static/js/settings.js")
 	if err != nil {
