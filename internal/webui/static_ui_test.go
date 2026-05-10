@@ -634,6 +634,36 @@ func TestSettingsPageRendersFieldsetsAndSearch(t *testing.T) {
 	}
 }
 
+// TestEveryOperatorPageUsesSharedHeader ensures every operator-facing page
+// adopts the .csm-page-header primitive instead of the legacy Tabler
+// page-header so the Web UI shares one skeleton. Login is excluded
+// because it has no operator chrome.
+func TestEveryOperatorPageUsesSharedHeader(t *testing.T) {
+	pages := []string{
+		"account.html", "audit.html", "cleanup-history.html",
+		"dashboard.html", "email.html", "findings.html", "firewall.html",
+		"hardening.html", "incident.html", "modsec.html",
+		"modsec-rules.html", "performance.html", "quarantine.html",
+		"rules.html", "threat.html",
+	}
+	for _, name := range pages {
+		path := "../../ui/templates/" + name
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		text := string(src)
+		if !strings.Contains(text, "csm-page-header") {
+			t.Errorf("%s missing .csm-page-header primitive", name)
+		}
+		// Block the legacy Tabler header attribute that Phase 7 removed
+		// (matches `<div class="page-header...` but not the new one).
+		if regexp.MustCompile(`class="page-header[ "]`).MatchString(text) {
+			t.Errorf("%s still uses legacy Tabler page-header; switch to csm-page-header", name)
+		}
+	}
+}
+
 func TestSettingsIntArraySubmitsRawTokens(t *testing.T) {
 	src, err := os.ReadFile("../../ui/static/js/settings.js")
 	if err != nil {

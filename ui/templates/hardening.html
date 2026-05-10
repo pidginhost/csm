@@ -1,17 +1,15 @@
 {{define "title"}}Server Hardening{{end}}
 {{define "page"}}hardening{{end}}
 {{define "content"}}
-    <div class="page-header d-print-none mb-3">
-        <div class="row align-items-center">
-            <div class="col-auto">
-                <h2 class="page-title">Server Hardening Audit</h2>
-                <div class="text-muted mt-1" id="audit-timestamp"></div>
-            </div>
-            <div class="col-auto ms-auto">
-                <button class="btn btn-primary" id="btn-run-audit">
-                    <i class="ti ti-player-play"></i>&nbsp;Run Audit
-                </button>
-            </div>
+    <div class="csm-page-header d-print-none mb-3">
+        <div class="csm-page-header__main">
+            <h2 class="csm-page-header__title"><i class="ti ti-shield-lock"></i>&nbsp;Server Hardening Audit</h2>
+            <div class="csm-page-header__subtitle" id="audit-timestamp"></div>
+        </div>
+        <div class="csm-page-header__actions">
+            <button class="btn btn-primary btn-sm" id="btn-run-audit">
+                <i class="ti ti-player-play"></i>&nbsp;Run Audit
+            </button>
         </div>
     </div>
     <div class="card mb-3 d-none" id="score-card">
@@ -26,10 +24,10 @@
         </div>
     </div>
     <div class="card" id="empty-state">
-        <div class="card-body text-center py-5">
-            <div class="mb-3"><i class="ti ti-shield-lock csm-fs-2xl csm-opacity-30"></i></div>
-            <h3>No audit results yet</h3>
-            <p class="text-muted">Click "Run Audit" to scan your server's security configuration.</p>
+        <div class="csm-empty">
+            <div class="csm-empty__icon"><i class="ti ti-shield-lock"></i></div>
+            <div class="csm-empty__title">No audit results yet</div>
+            <div class="csm-empty__reason">Click "Run Audit" to scan your server's security configuration.</div>
         </div>
     </div>
     <div id="categories-container"></div>

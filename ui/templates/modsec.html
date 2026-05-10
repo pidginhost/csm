@@ -1,14 +1,14 @@
 {{define "title"}}ModSecurity{{end}}
 {{define "page"}}modsec{{end}}
 {{define "content"}}
-<div class="page-header mb-3">
-    <div class="row align-items-center">
-        <div class="col-auto"><h2 class="page-title">ModSecurity Blocks</h2></div>
-        <div class="col-auto ms-auto">
-            <a href="/modsec/rules" class="btn btn-outline-primary btn-sm"><i class="ti ti-settings"></i>&nbsp;Manage Rules</a>
+<div class="csm-page-header mb-3">
+        <div class="csm-page-header__main">
+            <h2 class="csm-page-header__title"><i class="ti ti-shield-check"></i>&nbsp;ModSecurity Blocks</h2>
+        </div>
+        <div class="csm-page-header__actions">
+            <a href="/modsec/rules" class="btn btn-ghost-secondary btn-sm"><i class="ti ti-settings"></i>&nbsp;Manage Rules</a>
         </div>
     </div>
-</div>
 
 <div class="row row-deck row-cards mb-3" id="modsec-stats">
     <div class="col-sm-6 col-lg-3">
