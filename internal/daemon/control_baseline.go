@@ -51,7 +51,7 @@ func (c *ControlListener) handleBaseline(argsRaw json.RawMessage) (any, error) {
 	}()
 
 	cfg := c.d.currentCfg()
-	findings := checks.RunAll(cfg, c.d.store)
+	findings, _ := checks.RunAll(cfg, c.d.store)
 	c.d.store.SetBaseline(findings)
 
 	binaryHash, err := integrity.HashFile(c.d.binaryPath)

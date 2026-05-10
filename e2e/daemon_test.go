@@ -27,7 +27,7 @@ func TestCheckSuiteOnRealSystem(t *testing.T) {
 
 	// Run the critical check tier on the real system
 	checks.ForceAll = false
-	findings := checks.RunTier(cfg, store, checks.TierCritical)
+	findings, _ := checks.RunTier(cfg, store, checks.TierCritical)
 	t.Logf("Critical tier produced %d findings on this host", len(findings))
 
 	// Just verify it ran without panicking — on a fresh server
@@ -52,7 +52,7 @@ func TestRunAllChecksOnRealSystem(t *testing.T) {
 	checks.ForceAll = true
 	defer func() { checks.ForceAll = false }()
 
-	findings := checks.RunAll(cfg, store)
+	findings, _ := checks.RunAll(cfg, store)
 	t.Logf("RunAll produced %d findings on this host", len(findings))
 
 	// Categorize findings

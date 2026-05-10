@@ -200,9 +200,9 @@ func (c *ControlListener) handleTierRun(argsRaw json.RawMessage) (any, error) {
 	}
 
 	start := time.Now()
-	findings := checks.RunTier(c.d.currentCfg(), c.d.store, tier)
+	findings, purgeChecks := checks.RunTier(c.d.currentCfg(), c.d.store, tier)
 
-	checks.StoreLatestScanFindings(c.d.store, checks.LatestPurgeCheckNamesForTier(tier), findings)
+	checks.StoreLatestScanFindings(c.d.store, purgeChecks, findings)
 	if args.Alerts {
 		for _, f := range findings {
 			if strings.HasPrefix(f.Check, "perf_") && f.Severity == alert.Warning {

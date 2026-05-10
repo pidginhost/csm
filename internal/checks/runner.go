@@ -356,6 +356,24 @@ func PerfCheckNamesForTier(tier Tier) []string {
 	return names
 }
 
+// checkThrottleMin maps a check name to its minimum interval in minutes
+// between executions. The runner consults this BEFORE invoking the check
+// function. Throttled checks that get skipped in a given cycle are NOT
+// added to the per-scan purge list, so their previously-emitted findings
+// stay in the latest set instead of being wiped every cycle. Without this
+// gating in the runner, a deep scan that ran while the throttle window was
+// still open would purge stale findings and merge nothing, hiding real
+// issues until the next non-throttled cycle (or daemon restart).
+var checkThrottleMin = map[string]int{
+	"perf_php_handler":   60,
+	"perf_mysql_config":  60,
+	"perf_redis_config":  60,
+	"perf_error_logs":    60,
+	"perf_wp_config":     60,
+	"perf_wp_transients": 60,
+	"perf_wp_cron":       60,
+}
+
 // LatestPurgeCheckNamesForTier returns every emitted finding name owned by a
 // tier. The daemon uses this to replace a tier's current scan output without
 // retaining stale findings from prior runs.
@@ -464,8 +482,12 @@ func latestPurgeCheckNamesForChecks(toScan []namedCheck) []string {
 	return names
 }
 
-// RunTier runs only the specified tier of checks.
-func RunTier(cfg *config.Config, store *state.Store, tier Tier) []alert.Finding {
+// RunTier runs only the specified tier of checks. The second return value
+// is the per-scan purge name list (emitted finding aliases owned by the
+// checks that actually executed this cycle); pass it to
+// StoreLatestScanFindings so throttled-out checks keep their prior
+// findings.
+func RunTier(cfg *config.Config, store *state.Store, tier Tier) ([]alert.Finding, []string) {
 	return runParallel(cfg, store, checksForTier(tier), string(tier))
 }
 
@@ -476,12 +498,17 @@ func RunTier(cfg *config.Config, store *state.Store, tier Tier) []alert.Finding 
 //
 //	filesystem, webshells, htaccess, file_index, php_content,
 //	phishing, php_config_changes
-func RunReducedDeep(cfg *config.Config, store *state.Store) []alert.Finding {
+//
+// The second return value is the per-scan purge name list scoped to the
+// checks that actually executed this cycle.
+func RunReducedDeep(cfg *config.Config, store *state.Store) ([]alert.Finding, []string) {
 	return runParallel(cfg, store, reducedDeepChecks(), string(TierDeep))
 }
 
-// RunAll runs critical checks always. Deep checks run if throttle allows or ForceAll is set.
-func RunAll(cfg *config.Config, store *state.Store) []alert.Finding {
+// RunAll runs critical checks always. Deep checks run if throttle allows or
+// ForceAll is set. The second return value is the per-scan purge name list
+// scoped to the checks that actually executed this cycle.
+func RunAll(cfg *config.Config, store *state.Store) ([]alert.Finding, []string) {
 	toRun := criticalChecks()
 
 	if ForceAll || store.ShouldRunThrottled("deep_scan", cfg.Thresholds.DeepScanIntervalMin) {
@@ -491,17 +518,30 @@ func RunAll(cfg *config.Config, store *state.Store) []alert.Finding {
 	return runParallel(cfg, store, toRun, string(TierAll))
 }
 
-func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck, tier string) []alert.Finding {
+// runParallel executes the supplied checks concurrently. It returns the
+// emitted findings plus the per-scan purge name list (emitted finding
+// aliases owned by checks that actually ran). Throttled checks whose
+// window has not elapsed are skipped entirely and their names stay out of
+// the purge list so the previous cycle's findings persist.
+func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck, tier string) ([]alert.Finding, []string) {
 	checks = filterDisabledChecks(cfg, checks)
 
 	var mu sync.Mutex
 	var findings []alert.Finding
 	var wg sync.WaitGroup
 
+	ranChecks := make([]namedCheck, 0, len(checks))
+	for _, nc := range checks {
+		if min, ok := checkThrottleMin[nc.name]; ok && store != nil && !store.ShouldRunThrottled(nc.name, min) {
+			continue
+		}
+		ranChecks = append(ranChecks, nc)
+	}
+
 	// Limit concurrent checks to avoid saturating CPU (keeps WebUI responsive)
 	sem := make(chan struct{}, 5)
 
-	for _, nc := range checks {
+	for _, nc := range ranChecks {
 		wg.Add(1)
 		c := nc
 		// Check functions run against user filesystem content (unparsed
@@ -603,5 +643,5 @@ func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck, ti
 		findings = append(findings, blockActions...)
 	}
 
-	return findings
+	return findings, latestPurgeCheckNamesForChecks(ranChecks)
 }

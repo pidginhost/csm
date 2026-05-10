@@ -201,7 +201,7 @@ func TestRunParallelSkipsDisabledChecks(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.DisabledChecks = []string{"check_a", "check_c"}
 
-	findings := runParallel(cfg, nil, checks, "test")
+	findings, _ := runParallel(cfg, nil, checks, "test")
 
 	if ranA {
 		t.Error("check_a should have been skipped (in DisabledChecks)")
@@ -247,7 +247,7 @@ func TestRunParallelSkipsDisabledFindingNameAliases(t *testing.T) {
 
 			cfg := &config.Config{DisabledChecks: []string{tt.disabled}}
 
-			findings := runParallel(cfg, nil, checks, "test")
+			findings, _ := runParallel(cfg, nil, checks, "test")
 
 			if got := ranDisabled.Load(); got != 0 {
 				t.Fatalf("%s ran %d time(s), want skipped", tt.runner, got)
@@ -276,7 +276,7 @@ func TestRunParallelDisabledChecksEmptyRunsAll(t *testing.T) {
 
 	cfg := &config.Config{} // DisabledChecks unset
 
-	_ = runParallel(cfg, nil, checks, "test")
+	_, _ = runParallel(cfg, nil, checks, "test")
 	if got := ran.Load(); got != 2 {
 		t.Errorf("with empty DisabledChecks all checks should run, got ran=%d want 2", got)
 	}
@@ -298,12 +298,73 @@ func TestRunParallelDisabledChecksTrimsAndIgnoresBlanks(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.DisabledChecks = []string{"  check_a  ", "", "   "}
 
-	_ = runParallel(cfg, nil, checks, "test")
+	_, _ = runParallel(cfg, nil, checks, "test")
 
 	if ranA {
 		t.Error("whitespace-padded check_a should still be treated as disabled")
 	}
 	if !ranB {
 		t.Error("check_b should have run")
+	}
+}
+
+// A throttled check that gets skipped in cycle N must NOT appear in the
+// per-scan purge list, otherwise StoreLatestScanFindings wipes the
+// findings emitted during cycle N-1 (when the throttle window had not
+// elapsed). Regression guard: previously perf_* findings disappeared
+// every other deep scan when interval and throttle were both 60 minutes.
+func TestRunParallelThrottledCheckSkippedAndExcludedFromPurge(t *testing.T) {
+	prev := checkThrottleMin["test_throttled"]
+	checkThrottleMin["test_throttled"] = 60
+	defer func() {
+		if prev == 0 {
+			delete(checkThrottleMin, "test_throttled")
+		} else {
+			checkThrottleMin["test_throttled"] = prev
+		}
+	}()
+
+	store, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	var ran atomic.Int32
+	checks := []namedCheck{
+		{"test_throttled", func(_ context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+			ran.Add(1)
+			return []alert.Finding{{Check: "test_throttled", Severity: alert.Warning, Message: "fired"}}
+		}},
+		{"test_unthrottled", func(_ context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+			return nil
+		}},
+	}
+
+	cfg := &config.Config{}
+
+	// First cycle: throttle entry absent, check runs and is in purge list.
+	findings1, purge1 := runParallel(cfg, store, checks, "test")
+	if ran.Load() != 1 {
+		t.Fatalf("first cycle: throttled check should have run once, got %d", ran.Load())
+	}
+	if !slices.Contains(purge1, "test_throttled") {
+		t.Fatalf("first cycle: purge list missing test_throttled: %v", purge1)
+	}
+	if !containsFindingCheck(findings1, "test_throttled") {
+		t.Fatalf("first cycle: findings missing test_throttled: %+v", findings1)
+	}
+
+	// Second cycle within the throttle window: check skipped, purge list
+	// must exclude it so the prior finding stays in the latest set.
+	findings2, purge2 := runParallel(cfg, store, checks, "test")
+	if ran.Load() != 1 {
+		t.Fatalf("second cycle: throttled check should NOT have re-run, ran=%d", ran.Load())
+	}
+	if slices.Contains(purge2, "test_throttled") {
+		t.Fatalf("second cycle: purge list must not include throttled-out test_throttled: %v", purge2)
+	}
+	if containsFindingCheck(findings2, "test_throttled") {
+		t.Fatalf("second cycle: throttled-out check must not emit findings: %+v", findings2)
 	}
 }

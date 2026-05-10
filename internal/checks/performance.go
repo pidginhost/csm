@@ -357,11 +357,8 @@ func CheckSwapAndOOM(ctx context.Context, cfg *config.Config, _ *state.Store) []
 // CheckPHPHandler detects PHP CGI handler usage on LiteSpeed servers.
 // On LiteSpeed, CGI is significantly slower than LSAPI; this check fires
 // a Critical finding for each PHP version using the CGI handler.
-func CheckPHPHandler(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
+func CheckPHPHandler(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	if !perfEnabled(cfg) {
-		return nil
-	}
-	if !store.ShouldRunThrottled("perf_php_handler", 60) {
 		return nil
 	}
 
@@ -432,11 +429,8 @@ func CheckPHPHandler(ctx context.Context, cfg *config.Config, store *state.Store
 // CheckMySQLConfig inspects MySQL global variables and runtime status for
 // performance-impacting misconfigurations. Each issue emits its own finding
 // with a stable message so deduplication works correctly.
-func CheckMySQLConfig(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
+func CheckMySQLConfig(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	if !perfEnabled(cfg) {
-		return nil
-	}
-	if !store.ShouldRunThrottled("perf_mysql_config", 60) {
 		return nil
 	}
 
@@ -602,11 +596,8 @@ func CheckMySQLConfig(ctx context.Context, cfg *config.Config, store *state.Stor
 // CheckRedisConfig inspects a local Redis instance for performance-impacting
 // misconfigurations: unset maxmemory, noeviction policy, non-expiring keys,
 // and an overly aggressive bgsave schedule for the dataset size.
-func CheckRedisConfig(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
+func CheckRedisConfig(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	if !perfEnabled(cfg) {
-		return nil
-	}
-	if !store.ShouldRunThrottled("perf_redis_config", 60) {
 		return nil
 	}
 
@@ -899,12 +890,9 @@ func scanErrorLogs(dir string, thresholdBytes int64, depth int, findings *[]aler
 
 // CheckErrorLogBloat walks configured web roots (default /home/*/public_html
 // on cPanel) looking for error_log files that exceed the configured size
-// threshold. Throttled to once every 60 minutes.
-func CheckErrorLogBloat(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
+// threshold. The runner enforces a 60-minute throttle via checkThrottleMin.
+func CheckErrorLogBloat(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	if !perfEnabled(cfg) {
-		return nil
-	}
-	if !store.ShouldRunThrottled("perf_error_logs", 60) {
 		return nil
 	}
 
@@ -1069,12 +1057,9 @@ func scanWPConfigs(dir, account string, cfg *config.Config, depth int, findings 
 // CheckWPConfig scans /home/*/public_html (max depth 2) for wp-config.php
 // files and reports excessive WP_MEMORY_LIMIT values, unlimited
 // max_execution_time, and display_errors enabled in production.
-// Throttled to once every 60 minutes.
-func CheckWPConfig(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
+// The runner enforces a 60-minute throttle via checkThrottleMin.
+func CheckWPConfig(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	if !perfEnabled(cfg) {
-		return nil
-	}
-	if !store.ShouldRunThrottled("perf_wp_config", 60) {
 		return nil
 	}
 
@@ -1208,12 +1193,9 @@ func findWPTransients(dir string, cfg *config.Config, warnBytes, critBytes int64
 // on cPanel) for WordPress installs and queries each database for oversized
 // transients. DB credentials are read from wp-config.php; the password is
 // passed via MYSQL_PWD environment variable (never on the command line).
-// Throttled to once every 60 minutes.
-func CheckWPTransientBloat(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
+// The runner enforces a 60-minute throttle via checkThrottleMin.
+func CheckWPTransientBloat(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	if !perfEnabled(cfg) {
-		return nil
-	}
-	if !store.ShouldRunThrottled("perf_wp_transients", 60) {
 		return nil
 	}
 
@@ -1304,12 +1286,9 @@ func scanWPCron(dir, account string, depth int, findings *[]alert.Finding) {
 // cPanel) for WordPress installs that have not disabled the built-in
 // WP-Cron mechanism. Running WP-Cron via HTTP is a common cause of high
 // load on busy sites.
-// Throttled to once every 60 minutes.
-func CheckWPCron(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
+// The runner enforces a 60-minute throttle via checkThrottleMin.
+func CheckWPCron(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	if !perfEnabled(cfg) {
-		return nil
-	}
-	if !store.ShouldRunThrottled("perf_wp_cron", 60) {
 		return nil
 	}
 

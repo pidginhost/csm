@@ -491,7 +491,7 @@ func (d *Daemon) Run() error {
 
 	// Run initial scan synchronously (before dispatcher starts)
 	fmt.Fprintf(os.Stderr, "[%s] Running initial baseline scan...\n", ts())
-	initialFindings := checks.RunTier(d.currentCfg(), d.store, checks.TierCritical)
+	initialFindings, initialPurge := checks.RunTier(d.currentCfg(), d.store, checks.TierCritical)
 
 	// Seed the attack database with initial scan findings
 	if adb := attackdb.Global(); adb != nil {
@@ -560,7 +560,7 @@ func (d *Daemon) Run() error {
 	// results (outdated_plugins, wp_core, etc.) persist across restarts until
 	// the next deep scan replaces them. ClearLatestFindings is NOT called
 	// here - it would wipe deep scan findings that haven't re-run yet.
-	checks.StoreLatestScanFindings(d.store, checks.LatestPurgeCheckNamesForTier(checks.TierCritical), initialFindings)
+	checks.StoreLatestScanFindings(d.store, initialPurge, initialFindings)
 	csmlog.Info("initial scan complete", "findings", len(initialFindings), "new", len(newFindings))
 
 	// NOW start the alert dispatcher - no more race with initial scan
@@ -1070,22 +1070,15 @@ func (d *Daemon) deepScanner() {
 			// update would catch the new patterns.
 			rescan := d.forceFullRescan.CompareAndSwap(true, false)
 			var findings []alert.Finding
-			var deepTier checks.Tier
 			var purgeChecks []string
 			switch {
 			case rescan:
-				deepTier = checks.TierDeep
-				findings = checks.RunTier(d.currentCfg(), d.store, deepTier)
-				purgeChecks = checks.LatestPurgeCheckNamesForTier(deepTier)
+				findings, purgeChecks = checks.RunTier(d.currentCfg(), d.store, checks.TierDeep)
 				observeSignatureRescan()
 			case d.fileMonitor != nil:
-				findings = checks.RunReducedDeep(d.currentCfg(), d.store)
-				deepTier = checks.TierDeep
-				purgeChecks = checks.LatestPurgeCheckNamesForReducedDeep()
+				findings, purgeChecks = checks.RunReducedDeep(d.currentCfg(), d.store)
 			default:
-				deepTier = checks.TierDeep
-				findings = checks.RunTier(d.currentCfg(), d.store, deepTier)
-				purgeChecks = checks.LatestPurgeCheckNamesForTier(deepTier)
+				findings, purgeChecks = checks.RunTier(d.currentCfg(), d.store, checks.TierDeep)
 			}
 			// Atomically purge stale findings owned by this scan and merge new ones.
 			checks.StoreLatestScanFindings(d.store, purgeChecks, findings)
@@ -1125,9 +1118,9 @@ func (d *Daemon) runPeriodicChecks(tier checks.Tier) {
 		return
 	}
 
-	findings := checks.RunTier(d.currentCfg(), d.store, tier)
+	findings, purgeChecks := checks.RunTier(d.currentCfg(), d.store, tier)
 	// Atomically purge stale findings owned by this scan and merge new ones.
-	checks.StoreLatestScanFindings(d.store, checks.LatestPurgeCheckNamesForTier(tier), findings)
+	checks.StoreLatestScanFindings(d.store, purgeChecks, findings)
 	for _, f := range findings {
 		if strings.HasPrefix(f.Check, "perf_") && f.Severity == alert.Warning {
 			continue

@@ -10,9 +10,10 @@ import (
 
 // CheckWPTransientBloat behaviour:
 //   - perfEnabled=false → nil
-//   - throttled (recent run) → nil
 //   - no web roots → empty findings
 //   (success path with DB lookup is covered by e2e tests on real MySQL.)
+//   The 60-minute throttle is enforced by the runner via checkThrottleMin
+//   and is exercised by TestRunParallelThrottledCheckSkippedAndExcludedFromPurge.
 
 func TestCheckWPTransientBloatPerfDisabledReturnsNil(t *testing.T) {
 	disabled := false
@@ -26,26 +27,6 @@ func TestCheckWPTransientBloatPerfDisabledReturnsNil(t *testing.T) {
 
 	if got := CheckWPTransientBloat(context.Background(), cfg, st); got != nil {
 		t.Errorf("perf-disabled should return nil, got %d findings", len(got))
-	}
-}
-
-func TestCheckWPTransientBloatThrottledReturnsNil(t *testing.T) {
-	enabled := true
-	cfg := &config.Config{}
-	cfg.Performance.Enabled = &enabled
-	cfg.Performance.WPTransientWarnMB = 1
-	cfg.Performance.WPTransientCriticalMB = 10
-	st, err := state.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = st.Close() }()
-
-	// First run marks the throttle timestamp.
-	_ = CheckWPTransientBloat(context.Background(), cfg, st)
-	// Second immediate run must short-circuit.
-	if got := CheckWPTransientBloat(context.Background(), cfg, st); got != nil {
-		t.Errorf("throttled call should return nil, got %d findings", len(got))
 	}
 }
 

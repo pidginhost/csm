@@ -118,7 +118,7 @@ func TestRunTierCriticalWithMocks(t *testing.T) {
 	defer func() { _ = store.Close() }()
 
 	// Run critical tier — all checks should handle empty mocks gracefully.
-	findings := RunTier(cfg, store, TierCritical)
+	findings, _ := RunTier(cfg, store, TierCritical)
 	// Just verify it doesn't panic.
 	_ = findings
 }
@@ -139,7 +139,7 @@ func TestRunAllWithMocks(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 
-	findings := RunAll(cfg, store)
+	findings, _ := RunAll(cfg, store)
 	_ = findings
 }
 
@@ -157,7 +157,7 @@ func TestRunReducedDeepWithMocks(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 
-	findings := RunReducedDeep(cfg, store)
+	findings, _ := RunReducedDeep(cfg, store)
 	_ = findings
 }
 
