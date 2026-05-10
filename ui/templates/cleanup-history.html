@@ -25,10 +25,13 @@
             <div class="card">
                 <div class="card-header">
                     <h3 class="card-title" id="cleanup-files-title"><i class="ti ti-file-zip"></i>&nbsp;File Backups</h3>
-                    <div class="card-actions">
+                </div>
+                <div class="csm-toolbar">
+                    <input type="text" id="cleanup-files-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search file backups..." aria-label="Search file backups">
+                    <span class="csm-toolbar__spacer"></span>
+                    <div class="csm-toolbar__actions">
                         <button class="btn btn-warning btn-sm d-none" id="cleanup-files-restore-btn"><i class="ti ti-restore"></i>&nbsp;Restore Selected</button>
                         <button class="btn btn-danger btn-sm d-none" id="cleanup-files-delete-btn"><i class="ti ti-trash"></i>&nbsp;Delete Selected</button>
-                        <input type="text" id="cleanup-files-search" class="form-control form-control-sm csm-input-md" placeholder="Search...">
                     </div>
                 </div>
                 <div id="cleanup-files-content">
@@ -41,9 +44,9 @@
             <div class="card">
                 <div class="card-header">
                     <h3 class="card-title" id="cleanup-db-title"><i class="ti ti-database"></i>&nbsp;DB Object Backups</h3>
-                    <div class="card-actions">
-                        <input type="text" id="cleanup-db-search" class="form-control form-control-sm csm-input-md" placeholder="Search...">
-                    </div>
+                </div>
+                <div class="csm-toolbar">
+                    <input type="text" id="cleanup-db-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search DB backups..." aria-label="Search DB backups">
                 </div>
                 <div id="cleanup-db-content">
                     <div class="card-body text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</div>

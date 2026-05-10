@@ -10,10 +10,13 @@
     <div class="card">
         <div class="card-header">
             <h3 class="card-title"><i class="ti ti-lock"></i>&nbsp;Quarantined Files</h3>
-            <div class="card-actions">
-                <button class="btn btn-danger btn-sm d-none" id="bulk-delete-btn">Delete Selected</button>
-                <button class="btn btn-warning btn-sm d-none" id="bulk-restore-btn">Restore Selected</button>
-                <input type="text" id="quarantine-search" class="form-control form-control-sm csm-input-md" placeholder="Search...">
+        </div>
+        <div class="csm-toolbar">
+            <input type="text" id="quarantine-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search quarantine..." aria-label="Search quarantine">
+            <span class="csm-toolbar__spacer"></span>
+            <div class="csm-toolbar__actions">
+                <button class="btn btn-warning btn-sm d-none" id="bulk-restore-btn"><i class="ti ti-restore"></i>&nbsp;Restore Selected</button>
+                <button class="btn btn-danger btn-sm d-none" id="bulk-delete-btn"><i class="ti ti-trash"></i>&nbsp;Delete Selected</button>
             </div>
         </div>
         <div id="quarantine-content">

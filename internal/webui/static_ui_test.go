@@ -423,6 +423,28 @@ func TestIncidentPageUsesDetailPanelDeepLinks(t *testing.T) {
 	}
 }
 
+// TestInventoryPagesAdoptCsmToolbar asserts the secondary cleanup pass
+// migrated card-action filter rows on inventory pages onto the canonical
+// csm-toolbar primitive so toolbars look consistent across the UI.
+func TestInventoryPagesAdoptCsmToolbar(t *testing.T) {
+	pages := []string{
+		"audit.html",
+		"quarantine.html",
+		"cleanup-history.html",
+		"threat.html",
+	}
+	for _, name := range pages {
+		path := "../../ui/templates/" + name
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if !strings.Contains(string(src), "csm-toolbar") {
+			t.Errorf("%s does not adopt csm-toolbar", name)
+		}
+	}
+}
+
 // TestModSecPageUsesPhase8Primitives asserts the modsec workbench leads
 // with the WAF pressure summary list and the side summaries, and that
 // modsec.js wires up the new shared helpers.

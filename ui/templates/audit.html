@@ -8,11 +8,10 @@
     </div>
 
     <div class="card">
-        <div class="card-body border-bottom py-2">
-            <div class="d-flex gap-2 flex-wrap align-items-center">
-                <input type="text" id="audit-search" class="form-control form-control-sm csm-input-sm" placeholder="Search...">
-                <button class="btn btn-ghost-secondary btn-sm ms-auto" id="audit-export-csv" title="Export as CSV"><i class="ti ti-download"></i>&nbsp;CSV</button>
-            </div>
+        <div class="csm-toolbar">
+            <input type="text" id="audit-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search audit log..." aria-label="Search audit log">
+            <span class="csm-toolbar__spacer"></span>
+            <button class="btn btn-ghost-secondary btn-sm" id="audit-export-csv" title="Export as CSV"><i class="ti ti-download"></i>&nbsp;CSV</button>
         </div>
         <div id="audit-content">
             <div class="card-body text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
