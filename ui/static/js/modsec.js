@@ -413,25 +413,41 @@
         if (CSM.applyTruncateMiddle) CSM.applyTruncateMiddle(el);
     }
 
+    // /api/v1/geoip/batch caps each request at 500 IPs, so chunk the call;
+    // hosts with thousands of unique attackers otherwise see HTTP 400.
+    var GEOIP_CHUNK = 250;
+
     function enrichGeoIP(container) {
         var cells = container.querySelectorAll('.geo-cell');
         if (cells.length === 0) return;
-        var ips = [];
-        for (var i = 0; i < cells.length; i++) ips.push(cells[i].dataset.ip);
-        CSM.post('/api/v1/geoip/batch', { ips: ips })
-            .then(function(data) {
-                var results = data.results || {};
-                for (var j = 0; j < cells.length; j++) {
-                    var ip = cells[j].dataset.ip;
-                    if (results[ip]) {
-                        var g = results[ip];
-                        var html = CSM.countryFlag(g.country) + ' ' + CSM.esc(g.country);
-                        if (g.org) html += '<br><small class="text-muted">' + CSM.esc(g.org) + '</small>';
-                        cells[j].innerHTML = html;
-                    }
-                }
-            })
-            .catch(function() { /* non-fatal */ });
+        // Map IP -> [cell, ...] so chunked responses paint every matching cell.
+        var byIP = {};
+        for (var i = 0; i < cells.length; i++) {
+            var ip = cells[i].dataset.ip;
+            if (!ip) continue;
+            (byIP[ip] = byIP[ip] || []).push(cells[i]);
+        }
+        var uniqueIPs = Object.keys(byIP);
+        if (uniqueIPs.length === 0) return;
+
+        function paint(results) {
+            for (var ip in results) {
+                if (!Object.prototype.hasOwnProperty.call(results, ip)) continue;
+                var matched = byIP[ip];
+                if (!matched) continue;
+                var g = results[ip];
+                var html = CSM.countryFlag(g.country) + ' ' + CSM.esc(g.country);
+                if (g.org) html += '<br><small class="text-muted">' + CSM.esc(g.org) + '</small>';
+                for (var k = 0; k < matched.length; k++) matched[k].innerHTML = html;
+            }
+        }
+
+        for (var s = 0; s < uniqueIPs.length; s += GEOIP_CHUNK) {
+            var slice = uniqueIPs.slice(s, s + GEOIP_CHUNK);
+            CSM.post('/api/v1/geoip/batch', { ips: slice })
+                .then(function(data) { paint(data.results || {}); })
+                .catch(function() { /* non-fatal */ });
+        }
     }
 
     // ---------- Tab activation + filters ----------

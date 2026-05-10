@@ -687,6 +687,13 @@ body.theme-dark { background-color: #1a2234; }
     display: flex;
     flex-direction: column;
 }
+/* Bounded variant: cap the visible height so a long list does not push the
+   rest of the page far below the fold. Used on the Email and ModSec
+   workbenches when the grouped count exceeds the first viewport. */
+.csm-summary-list--scroll {
+    max-height: 480px;
+    overflow-y: auto;
+}
 .csm-summary-list__item {
     display: flex;
     align-items: center;

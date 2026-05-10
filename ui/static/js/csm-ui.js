@@ -229,6 +229,17 @@ CSM.detailPanel = (function() {
         close.className = 'btn-close';
         close.setAttribute('aria-label', 'Close');
         close.setAttribute('data-bs-dismiss', 'offcanvas');
+        // Bootstrap's data-bs-dismiss delegated handler does not fire on every
+        // build (Tabler bundles the JS without the offcanvas dismiss event
+        // wiring on dynamically mounted nodes). Bind explicitly so the X
+        // button always closes the panel.
+        close.addEventListener('click', function() {
+            if (instance) {
+                instance.hide();
+            } else if (panelEl) {
+                panelEl.classList.remove('show');
+            }
+        });
         header.appendChild(title);
         header.appendChild(close);
         var body = document.createElement('div');

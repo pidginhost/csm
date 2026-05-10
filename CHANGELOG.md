@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The shared detail panel close button now always closes the panel; some Tabler bundles did not wire Bootstrap's data-bs-dismiss handler on the dynamically mounted offcanvas, leaving the X button inert on the Incidents and ModSecurity pages.
+- Dashboard now lets the system-posture card hug its content instead of stretching to match the priority-queue column on hosts with many open incidents.
+- Email and ModSecurity workbenches cap the grouped action / WAF pressure list height with an internal scroll so a long list does not push the rest of the page far below the fold.
+- ModSecurity blocks page no longer drops the GeoIP enrichment with HTTP 400 on hosts with thousands of unique attackers; the request is chunked client-side to stay under the 500-IP server cap.
 - Email and ModSecurity workbench filters now keep same-day results, grouped rows, queue status, and WAF event ordering consistent with the selected window.
 - Dashboard priority queue refresh no longer stops chart startup, and incident queue links now open the targeted incident in the shared detail panel.
 - State directory migration, firewall audit log, and ModSecurity overrides include now surface close errors instead of silently dropping the last write on disk-full or fsync failure.

@@ -60,10 +60,12 @@
         </span>
     </div>
 
-    <!-- Priority queue + system posture -->
-    <div class="row row-deck row-cards mb-3">
+    <!-- Priority queue + system posture. Use align-items-start so the posture
+         card hugs its content instead of stretching to match the long queue
+         column on hosts with many open incidents. -->
+    <div class="row row-cards mb-3 align-items-start">
         <div class="col-lg-7">
-            <div class="card h-100">
+            <div class="card">
                 <div class="card-header">
                     <h3 class="card-title"><i class="ti ti-flame"></i>&nbsp;Needs your attention</h3>
                     <div class="card-actions">
@@ -81,7 +83,7 @@
             </div>
         </div>
         <div class="col-lg-5">
-            <div class="card h-100">
+            <div class="card">
                 <div class="card-header"><h3 class="card-title"><i class="ti ti-shield"></i>&nbsp;System posture</h3></div>
                 <div class="card-body" id="system-posture">
                     <div class="text-muted text-center py-3"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
