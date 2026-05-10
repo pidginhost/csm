@@ -17,15 +17,35 @@ func (s *Server) handleModSec(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-// modsecBlockView is an aggregated view of blocks per IP+rule.
+// modsecBlockView is an aggregated view of blocks per IP+rule. Phase 8.4
+// extends the response with first_seen / last_seen_iso (RFC3339), top_uris,
+// domain_count, and sample_events so the workbench can drive the detail
+// panel without a second round trip. All new fields are additive: existing
+// consumers see no diff because the legacy fields keep their JSON keys.
 type modsecBlockView struct {
-	IP          string `json:"ip"`
-	RuleID      string `json:"rule_id"`
-	Description string `json:"description"`
-	Domains     string `json:"domains"`
-	Hits        int    `json:"hits"`
-	LastSeen    string `json:"last_seen"`
-	Escalated   bool   `json:"escalated"`
+	IP           string             `json:"ip"`
+	RuleID       string             `json:"rule_id"`
+	Description  string             `json:"description"`
+	Domains      string             `json:"domains"`
+	DomainCount  int                `json:"domain_count"`
+	Hits         int                `json:"hits"`
+	LastSeen     string             `json:"last_seen"`
+	FirstSeen    string             `json:"first_seen"`
+	LastSeenISO  string             `json:"last_seen_iso"`
+	TopURIs      []string           `json:"top_uris"`
+	SampleEvents []modsecSampleEvent `json:"sample_events"`
+	Escalated    bool               `json:"escalated"`
+}
+
+// modsecSampleEvent is a compact per-IP event included in the grouped
+// blocks response so the UI can show recent activity without a second
+// call to /api/v1/modsec/events.
+type modsecSampleEvent struct {
+	Time     string `json:"time"`
+	RuleID   string `json:"rule_id"`
+	Hostname string `json:"hostname"`
+	URI      string `json:"uri"`
+	Severity string `json:"severity"`
 }
 
 // modsecEventView is a single ModSecurity event.
@@ -86,9 +106,12 @@ func (s *Server) apiModSecBlocks(w http.ResponseWriter, _ *http.Request) {
 		ruleID      string
 		description string
 		domains     map[string]bool
+		uriCounts   map[string]int
 		hits        int
+		firstSeen   time.Time
 		lastSeen    time.Time
 		escalated   bool
+		samples     []modsecSampleEvent // newest-first, capped at 3
 	}
 
 	byIP := make(map[string]*ipAgg)
@@ -101,7 +124,11 @@ func (s *Server) apiModSecBlocks(w http.ResponseWriter, _ *http.Request) {
 				if agg, ok := byIP[ip]; ok {
 					agg.escalated = true
 				} else {
-					byIP[ip] = &ipAgg{escalated: true, domains: make(map[string]bool)}
+					byIP[ip] = &ipAgg{
+						escalated: true,
+						domains:   make(map[string]bool),
+						uriCounts: make(map[string]int),
+					}
 				}
 			}
 			continue
@@ -115,6 +142,7 @@ func (s *Server) apiModSecBlocks(w http.ResponseWriter, _ *http.Request) {
 		rule := extractModSecRule(f)
 		desc := extractModSecDescription(f)
 		domain := extractModSecHostname(f)
+		uri := extractModSecURI(f)
 
 		agg, ok := byIP[ip]
 		if !ok {
@@ -122,10 +150,15 @@ func (s *Server) apiModSecBlocks(w http.ResponseWriter, _ *http.Request) {
 				ruleID:      rule,
 				description: desc,
 				domains:     make(map[string]bool),
+				uriCounts:   make(map[string]int),
+				firstSeen:   f.Timestamp,
 			}
 			byIP[ip] = agg
 		}
 		agg.hits++
+		if agg.firstSeen.IsZero() || f.Timestamp.Before(agg.firstSeen) {
+			agg.firstSeen = f.Timestamp
+		}
 		if f.Timestamp.After(agg.lastSeen) {
 			agg.lastSeen = f.Timestamp
 			// Update rule/desc to the most recent
@@ -141,6 +174,18 @@ func (s *Server) apiModSecBlocks(w http.ResponseWriter, _ *http.Request) {
 		// match a specific vhost (e.g. direct IP access, SNI mismatch).
 		if domain != "" && !looksLikeIP(domain) {
 			agg.domains[domain] = true
+		}
+		if uri != "" {
+			agg.uriCounts[uri]++
+		}
+		if len(agg.samples) < 3 {
+			agg.samples = append(agg.samples, modsecSampleEvent{
+				Time:     f.Timestamp.UTC().Format(time.RFC3339),
+				RuleID:   rule,
+				Hostname: domain,
+				URI:      uri,
+				Severity: f.Severity.String(),
+			})
 		}
 	}
 
@@ -160,18 +205,30 @@ func (s *Server) apiModSecBlocks(w http.ResponseWriter, _ *http.Request) {
 		}
 
 		lastSeen := ""
+		lastSeenISO := ""
 		if !agg.lastSeen.IsZero() {
 			lastSeen = agg.lastSeen.Format("15:04:05")
+			lastSeenISO = agg.lastSeen.UTC().Format(time.RFC3339)
 		}
+		firstSeenISO := ""
+		if !agg.firstSeen.IsZero() {
+			firstSeenISO = agg.firstSeen.UTC().Format(time.RFC3339)
+		}
+		topURIs := topKeysByCount(agg.uriCounts, 5)
 
 		result = append(result, modsecBlockView{
-			IP:          ip,
-			RuleID:      agg.ruleID,
-			Description: agg.description,
-			Domains:     domains,
-			Hits:        agg.hits,
-			LastSeen:    lastSeen,
-			Escalated:   agg.escalated,
+			IP:           ip,
+			RuleID:       agg.ruleID,
+			Description:  agg.description,
+			Domains:      domains,
+			DomainCount:  len(agg.domains),
+			Hits:         agg.hits,
+			LastSeen:     lastSeen,
+			FirstSeen:    firstSeenISO,
+			LastSeenISO:  lastSeenISO,
+			TopURIs:      topURIs,
+			SampleEvents: agg.samples,
+			Escalated:    agg.escalated,
 		})
 	}
 
