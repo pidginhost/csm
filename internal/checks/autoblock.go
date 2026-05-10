@@ -104,40 +104,29 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// Collect IPs to block from findings
 	ipsToBlock := make(map[string]string) // ip -> reason
 
-	// Always blockable (brute force, C2, known malicious). Mailbox-takeover
-	// signals (`email_*`, `mail_*`, `smtp_*`, `sasl_*`) all classify as
-	// KindMailboxTakeover (see internal/incident/kind.go); the IP
-	// behind a mailbox-takeover incident is the same attacker
-	// regardless of which underlying check first surfaced it, so the
-	// full set is blockable. Without this, a pure
-	// `email_auth_failure_realtime` flood from one IP can rack up
-	// hundreds of incidents without ever tripping autoblock.
+	// Always blockable findings carry a confirmed attacker IP: thresholded
+	// brute force, confirmed compromise, C2/reputation, or escalation.
+	// Raw mailbox auth failures and account-only mail findings feed incident
+	// grouping and thresholded trackers, but one row is not enough evidence
+	// for a firewall block.
 	alwaysBlock := map[string]bool{
-		"wp_login_bruteforce":           true,
-		"xmlrpc_abuse":                  true,
-		"ftp_bruteforce":                true,
-		"smtp_bruteforce":               true,
-		"smtp_probe_abuse":              true,
-		"smtp_account_spray":            true,
-		"mail_bruteforce":               true,
-		"mail_account_compromised":      true,
-		"mail_account_spray":            true,
-		"admin_panel_bruteforce":        true,
-		"ssh_login_unknown_ip":          true,
-		"ssh_login_realtime":            true,
-		"c2_connection":                 true,
-		"ip_reputation":                 true,
-		"local_threat_score":            true,
-		"modsec_block_escalation":       true,
-		"modsec_csm_block_escalation":   true,
-		"email_compromised_account":     true,
-		"email_cloud_relay_abuse":       true,
-		"email_auth_failure_realtime":   true,
-		"email_credential_leak":         true,
-		"email_rate_critical":           true,
-		"email_spam_outbreak":           true,
-		"email_suspicious_geo":          true,
-		"credential_spray":              true,
+		"wp_login_bruteforce":         true,
+		"xmlrpc_abuse":                true,
+		"ftp_bruteforce":              true,
+		"smtp_bruteforce":             true,
+		"smtp_probe_abuse":            true,
+		"mail_bruteforce":             true,
+		"mail_account_compromised":    true,
+		"admin_panel_bruteforce":      true,
+		"ssh_login_unknown_ip":        true,
+		"ssh_login_realtime":          true,
+		"c2_connection":               true,
+		"ip_reputation":               true,
+		"local_threat_score":          true,
+		"modsec_block_escalation":     true,
+		"modsec_csm_block_escalation": true,
+		"email_compromised_account":   true,
+		"email_cloud_relay_abuse":     true,
 	}
 
 	// Only blockable when block_cpanel_logins is enabled (disabled by default)
@@ -361,12 +350,16 @@ func isSubnetAlreadyBlocked(cidr string) bool {
 	return ok && sb.IsSubnetBlocked(cidr)
 }
 
-// ExtractIPFromFinding extracts an IP address from a finding message.
+// ExtractIPFromFinding extracts an IP address from a finding.
 func ExtractIPFromFinding(f alert.Finding) string {
 	return extractIPFromFinding(f)
 }
 
 func extractIPFromFinding(f alert.Finding) string {
+	if strings.TrimSpace(f.SourceIP) != "" {
+		return normalizeBlockIP(f.SourceIP)
+	}
+
 	msg := f.Message
 
 	// Use LastIndex to find the rightmost separator - log-injected content
@@ -378,19 +371,29 @@ func extractIPFromFinding(f alert.Finding) string {
 			fields := strings.Fields(rest)
 			if len(fields) > 0 {
 				candidate := strings.TrimRight(fields[0], ",:;)([]")
-				ip := net.ParseIP(candidate)
-				if ip == nil {
-					continue
+				if ip := normalizeBlockIP(candidate); ip != "" {
+					return ip
 				}
-				// Reject loopback and unspecified - never block these
-				if ip.IsLoopback() || ip.IsUnspecified() {
-					continue
-				}
-				return ip.String()
 			}
 		}
 	}
 	return ""
+}
+
+func normalizeBlockIP(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(raw); err == nil {
+		raw = host
+	}
+	raw = strings.Trim(raw, "[]")
+	ip := net.ParseIP(raw)
+	if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
+		return ""
+	}
+	return ip.String()
 }
 
 func isAlreadyBlocked(state *blockState, ip string) bool {

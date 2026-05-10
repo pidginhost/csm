@@ -295,6 +295,26 @@ func TestAutoBlock_SMTPBruteForceMessageFormatIsExtractable(t *testing.T) {
 	}
 }
 
+func TestAutoBlock_ExtractIPFromFindingUsesStructuredSourceIP(t *testing.T) {
+	f := alert.Finding{
+		Message:  "SMTP brute force threshold reached",
+		SourceIP: "203.0.113.5",
+	}
+	if got := extractIPFromFinding(f); got != "203.0.113.5" {
+		t.Fatalf("extractIPFromFinding() = %q, want 203.0.113.5", got)
+	}
+}
+
+func TestAutoBlock_ExtractIPFromFindingDoesNotFallBackFromUnsafeSourceIP(t *testing.T) {
+	f := alert.Finding{
+		Message:  "SMTP brute force from 203.0.113.5: 5 failed auths in 10m0s",
+		SourceIP: "127.0.0.1",
+	}
+	if got := extractIPFromFinding(f); got != "" {
+		t.Fatalf("extractIPFromFinding() = %q, want empty for unsafe structured source", got)
+	}
+}
+
 func TestAutoBlock_SMTPBruteForceIsInAlwaysBlock(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.AutoResponse.Enabled = true
@@ -322,6 +342,29 @@ func TestAutoBlock_SMTPBruteForceIsInAlwaysBlock(t *testing.T) {
 
 	if len(blocker.blocked) != 1 || blocker.blocked[0] != "203.0.113.5" {
 		t.Errorf("expected BlockIP(203.0.113.5) to be called once; got %v", blocker.blocked)
+	}
+}
+
+func TestAutoBlock_SMTPBruteForceUsesStructuredSourceIP(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.StatePath = t.TempDir()
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := fwBlocker
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+
+	findings := []alert.Finding{{
+		Check:    "smtp_bruteforce",
+		Message:  "SMTP brute force threshold reached",
+		SourceIP: "203.0.113.5",
+	}}
+	AutoBlockIPs(cfg, findings)
+
+	if len(blocker.blocked) != 1 || blocker.blocked[0] != "203.0.113.5" {
+		t.Errorf("expected BlockIP(203.0.113.5) from SourceIP, got %v", blocker.blocked)
 	}
 }
 
@@ -542,16 +585,7 @@ func TestAutoBlock_SMTPSubnetSprayBypassesPerIPRateLimit(t *testing.T) {
 	}
 }
 
-// --- mailbox-takeover-class checks must trigger autoblock --------------
-//
-// cluster6 ran 979 incidents from 192.253.248.37 (mailbox_takeover kind)
-// over 24h with no FW block. Root cause: the underlying realtime checks
-// emit their own check name (e.g. email_auth_failure_realtime) that was
-// not in alwaysBlock, so AutoBlockIPs ignored them. Each of the
-// mailbox-takeover-class checks below must trigger BlockIP for the
-// attacker IP carried in the finding message.
-
-func TestAutoBlock_EmailAuthFailureRealtimeTriggersBlockIP(t *testing.T) {
+func TestAutoBlock_EmailAuthFailureRealtimeDoesNotBlockSingleFailure(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.BlockIPs = true
@@ -563,17 +597,23 @@ func TestAutoBlock_EmailAuthFailureRealtimeTriggersBlockIP(t *testing.T) {
 	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
 
 	findings := []alert.Finding{{
-		Check:   "email_auth_failure_realtime",
-		Message: "Repeated SMTP auth failure from 203.0.113.7 against alice@example.com",
+		Check:    "email_auth_failure_realtime",
+		Message:  "Email authentication failure for alice@example.com from 203.0.113.7",
+		SourceIP: "203.0.113.7",
+		Mailbox:  "alice",
+		Domain:   "example.com",
 	}}
-	AutoBlockIPs(cfg, findings)
+	actions := AutoBlockIPs(cfg, findings)
 
-	if len(blocker.blocked) != 1 || blocker.blocked[0] != "203.0.113.7" {
-		t.Errorf("expected BlockIP(203.0.113.7) for email_auth_failure_realtime, got %v", blocker.blocked)
+	if len(blocker.blocked) != 0 {
+		t.Fatalf("email_auth_failure_realtime blocked IPs = %v, want none", blocker.blocked)
+	}
+	if len(actions) != 0 {
+		t.Fatalf("email_auth_failure_realtime actions = %+v, want none", actions)
 	}
 }
 
-func TestAutoBlock_EmailCredentialLeakTriggersBlockIP(t *testing.T) {
+func TestAutoBlock_AccountOnlyMailFindingsDoNotBlock(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.BlockIPs = true
@@ -584,18 +624,37 @@ func TestAutoBlock_EmailCredentialLeakTriggersBlockIP(t *testing.T) {
 	SetIPBlocker(blocker)
 	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
 
-	findings := []alert.Finding{{
-		Check:   "email_credential_leak",
-		Message: "Credential leak detected for bob@example.com from 198.51.100.4",
-	}}
-	AutoBlockIPs(cfg, findings)
+	findings := []alert.Finding{
+		{
+			Check:   "email_credential_leak",
+			Message: "SMTP credentials leaked in email subject from bob@example.com",
+			Mailbox: "bob",
+			Domain:  "example.com",
+		},
+		{
+			Check:   "email_spam_outbreak",
+			Message: "Spam outbreak: example.com exceeded max defers/failures - outgoing mail auto-suspended",
+			Domain:  "example.com",
+		},
+		{
+			Check:    "email_rate_critical",
+			Message:  "Email rate CRITICAL: alice@example.com sent 500 messages in 60 minutes (threshold: 500)",
+			Mailbox:  "alice",
+			Domain:   "example.com",
+			TenantID: "alice@example.com",
+		},
+	}
+	actions := AutoBlockIPs(cfg, findings)
 
-	if len(blocker.blocked) != 1 || blocker.blocked[0] != "198.51.100.4" {
-		t.Errorf("expected BlockIP for email_credential_leak, got %v", blocker.blocked)
+	if len(blocker.blocked) != 0 {
+		t.Fatalf("account-only mail findings blocked IPs = %v, want none", blocker.blocked)
+	}
+	if len(actions) != 0 {
+		t.Fatalf("account-only mail findings actions = %+v, want none", actions)
 	}
 }
 
-func TestAutoBlock_EmailSpamOutbreakTriggersBlockIP(t *testing.T) {
+func TestAutoBlock_SuspiciousGeoDoesNotHardBlockLoginIP(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.BlockIPs = true
@@ -607,17 +666,23 @@ func TestAutoBlock_EmailSpamOutbreakTriggersBlockIP(t *testing.T) {
 	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
 
 	findings := []alert.Finding{{
-		Check:   "email_spam_outbreak",
-		Message: "Spam outbreak from 198.51.100.42 - 200 messages in 5 minutes",
+		Check:    "email_suspicious_geo",
+		Message:  "Suspicious email login for alice@example.com from Romania (203.0.113.77) - previously seen: US",
+		SourceIP: "203.0.113.77",
+		Mailbox:  "alice",
+		Domain:   "example.com",
 	}}
-	AutoBlockIPs(cfg, findings)
+	actions := AutoBlockIPs(cfg, findings)
 
-	if len(blocker.blocked) != 1 || blocker.blocked[0] != "198.51.100.42" {
-		t.Errorf("expected BlockIP for email_spam_outbreak, got %v", blocker.blocked)
+	if len(blocker.blocked) != 0 {
+		t.Fatalf("email_suspicious_geo blocked IPs = %v, want none", blocker.blocked)
+	}
+	if len(actions) != 0 {
+		t.Fatalf("email_suspicious_geo actions = %+v, want none", actions)
 	}
 }
 
-func TestAutoBlock_MailAccountSprayTriggersBlockIP(t *testing.T) {
+func TestAutoBlock_AccountSprayFindingsRemainVisibilityOnly(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.BlockIPs = true
@@ -628,18 +693,33 @@ func TestAutoBlock_MailAccountSprayTriggersBlockIP(t *testing.T) {
 	SetIPBlocker(blocker)
 	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
 
-	findings := []alert.Finding{{
-		Check:   "mail_account_spray",
-		Message: "Mail account spray from 203.0.113.99: 12 distinct mailboxes in 10m",
-	}}
-	AutoBlockIPs(cfg, findings)
+	findings := []alert.Finding{
+		{
+			Check:    "smtp_account_spray",
+			Message:  "SMTP password spray targeting alice@example.com: 12 unique IPs in 10m0s",
+			SourceIP: "203.0.113.91",
+			Mailbox:  "alice@example.com",
+			Domain:   "example.com",
+		},
+		{
+			Check:    "mail_account_spray",
+			Message:  "Mail password spray targeting bob@example.com: 12 unique IPs in 10m0s",
+			SourceIP: "203.0.113.92",
+			Mailbox:  "bob@example.com",
+			Domain:   "example.com",
+		},
+	}
+	actions := AutoBlockIPs(cfg, findings)
 
-	if len(blocker.blocked) != 1 || blocker.blocked[0] != "203.0.113.99" {
-		t.Errorf("expected BlockIP for mail_account_spray, got %v", blocker.blocked)
+	if len(blocker.blocked) != 0 {
+		t.Fatalf("account-spray findings blocked IPs = %v, want none", blocker.blocked)
+	}
+	if len(actions) != 0 {
+		t.Fatalf("account-spray findings actions = %+v, want none", actions)
 	}
 }
 
-func TestAutoBlock_CredentialSprayTriggersBlockIP(t *testing.T) {
+func TestAutoBlock_CredentialSprayIncidentKindIsNotFindingCheck(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.AutoResponse.Enabled = true
 	cfg.AutoResponse.BlockIPs = true
@@ -651,12 +731,16 @@ func TestAutoBlock_CredentialSprayTriggersBlockIP(t *testing.T) {
 	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
 
 	findings := []alert.Finding{{
-		Check:   "credential_spray",
-		Message: "Credential spray super-incident: 203.0.113.50 hit 8 distinct mailboxes in 15m",
+		Check:    "credential_spray",
+		Message:  "Credential spray super-incident: 203.0.113.50 hit 8 distinct mailboxes in 15m",
+		SourceIP: "203.0.113.50",
 	}}
-	AutoBlockIPs(cfg, findings)
+	actions := AutoBlockIPs(cfg, findings)
 
-	if len(blocker.blocked) != 1 || blocker.blocked[0] != "203.0.113.50" {
-		t.Errorf("expected BlockIP for credential_spray, got %v", blocker.blocked)
+	if len(blocker.blocked) != 0 {
+		t.Fatalf("credential_spray finding blocked IPs = %v, want none", blocker.blocked)
+	}
+	if len(actions) != 0 {
+		t.Fatalf("credential_spray finding actions = %+v, want none", actions)
 	}
 }

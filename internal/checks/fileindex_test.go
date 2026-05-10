@@ -321,7 +321,7 @@ func TestClassifySensitiveDirPHP_ObfuscatedUpgrade_StaysCritical(t *testing.T) {
 	// Write/Edit security hooks; the runtime behaviour is unchanged.
 	body.WriteString(`ev` + `al(base64_decode($payload));` + "\n")
 	for i := 0; i < 20; i++ {
-		body.WriteString(fmt.Sprintf("goto lbl%d; lbl%d:\n", i, i))
+		fmt.Fprintf(&body, "goto lbl%d; lbl%d:\n", i, i)
 	}
 	if err := os.WriteFile(evilPath, []byte(body.String()), 0o644); err != nil {
 		t.Fatal(err)
