@@ -685,16 +685,6 @@ func analyzeDirectoryStructure(dir string, user string) *alert.Finding {
 		return nil
 	}
 
-	// Reject if any ancestor directory (between dir and /home/<user>/) is a
-	// developer scratch / tutorial / tmp folder. The folder name itself can
-	// look generic (e.g. "vers-1") yet sit inside a "JavaScript Login" or
-	// "temp" parent that clearly tags the contents as snippets, not a
-	// phishing drop. Without this check, a developer's tutorial directory
-	// fires phishing_directory on the immediate dir name only.
-	if hasTutorialAncestor(dir) {
-		return nil
-	}
-
 	// Verify at least one HTML file has credential inputs (quick check)
 	hasPhishingContent := false
 	for _, htmlFile := range htmlFiles {
@@ -728,53 +718,6 @@ func analyzeDirectoryStructure(dir string, user string) *alert.Finding {
 			user, dirName, strings.Join(htmlFiles, ", "), strings.Join(indicators, "\n- ")),
 		FilePath: dir,
 	}
-}
-
-// hasTutorialAncestor walks parents of dir up to (but not including) the
-// /home/<user>/ root looking for a folder name that marks the path as
-// developer scratch (temp/tmp/tutorial/...) or that starts with a
-// tech-stack prefix (javascript/php/...). Returns false for paths
-// outside /home/ so unit tests using t.TempDir() are unaffected. The
-// immediate dir name is intentionally not checked here -- the caller has
-// already validated it via looksLikeBusinessName.
-func hasTutorialAncestor(dir string) bool {
-	if !strings.HasPrefix(dir, "/home/") {
-		return false
-	}
-	rest := strings.TrimPrefix(dir, "/home/")
-	slash := strings.IndexByte(rest, '/')
-	if slash < 0 {
-		return false
-	}
-	userDir := "/home/" + rest[:slash]
-
-	scratchNames := map[string]bool{
-		"temp": true, "tmp": true, "tutorial": true, "tutorials": true,
-		"demo": true, "demos": true, "sample": true, "samples": true,
-		"snippet": true, "snippets": true, "playground": true,
-		"scratch": true, "examples": true, "lessons": true,
-		"sandbox": true, "drafts": true, "experiments": true,
-	}
-	techPrefixes := []string{
-		"php", "javascript", "js-", "css", "html", "python",
-		"java", "node", "react", "vue", "angular", "jquery",
-		"bootstrap", "wordpress", "wp-", "laravel",
-	}
-
-	cur := filepath.Dir(dir)
-	for cur != userDir && cur != "/" && cur != "." {
-		base := strings.ToLower(filepath.Base(cur))
-		if scratchNames[base] {
-			return true
-		}
-		for _, prefix := range techPrefixes {
-			if strings.HasPrefix(base, prefix) {
-				return true
-			}
-		}
-		cur = filepath.Dir(cur)
-	}
-	return false
 }
 
 // looksLikeBusinessName checks if a directory name looks like a business or
@@ -848,8 +791,21 @@ func looksLikeBusinessName(name string) bool {
 	return false
 }
 
-// quickPhishingCheck does a fast read of an HTML file to check for credential
-// input fields without full analysis - used for directory structure checks.
+// quickPhishingCheck does a fast read of an HTML file and confirms phishing
+// shape: a credential-collection form AND at least one phishing-kit signal
+// in the page body itself. Used by the directory-anomaly heuristic to
+// avoid flagging benign HTML that happens to ship an <input> tag.
+//
+// A bare "<form> + email/password keyword" gate matches developer demo
+// pages, JavaScript login tutorials, contact forms, and password-reset
+// stubs. Phishing kits add at least one of:
+//   - a form action that posts to an external host (exfiltration target),
+//   - a fully self-contained inline-styled HTML body (kits ship one file),
+//   - brand impersonation in the title or visible body (Office/PayPal/etc).
+//
+// Requiring credential intake plus one of those signals keeps real
+// phishing kits in scope while letting tutorials and trivial forms drop
+// out without consulting any path-name allowlist.
 func quickPhishingCheck(path string) bool {
 	f, err := osFS.Open(path)
 	if err != nil {
@@ -857,15 +813,47 @@ func quickPhishingCheck(path string) bool {
 	}
 	defer func() { _ = f.Close() }()
 
-	buf := make([]byte, 4096) // Only need first 4KB for quick check
+	buf := make([]byte, 4096) // first 4KB is enough for the head, form attrs, brand strings
 	n, _ := f.Read(buf)
 	if n == 0 {
 		return false
 	}
-	content := strings.ToLower(string(buf[:n]))
+	content := string(buf[:n])
+	contentLower := strings.ToLower(content)
 
-	return (strings.Contains(content, "<form") || strings.Contains(content, "<input")) &&
-		(strings.Contains(content, "email") || strings.Contains(content, "password"))
+	hasCredentialInput := strings.Contains(contentLower, `type="password"`) ||
+		strings.Contains(contentLower, `type='password'`) ||
+		strings.Contains(contentLower, `type="email"`) ||
+		strings.Contains(contentLower, `type='email'`) ||
+		strings.Contains(contentLower, `name="password"`) ||
+		strings.Contains(contentLower, `name='password'`) ||
+		strings.Contains(contentLower, `name="email"`) ||
+		strings.Contains(contentLower, `name='email'`)
+	if !hasCredentialInput {
+		return false
+	}
+
+	if hasExternalFormAction(content) {
+		return true
+	}
+	if isSelfContainedHTML(contentLower) {
+		return true
+	}
+
+	titleContent := extractTitle(contentLower)
+	for _, brand := range phishingBrands {
+		for _, tp := range brand.titlePatterns {
+			if titleContent != "" && strings.Contains(titleContent, tp) {
+				return true
+			}
+		}
+		for _, bp := range brand.bodyPatterns {
+			if strings.Contains(contentLower, bp) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------

