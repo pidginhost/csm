@@ -35,7 +35,7 @@ const (
 	// many distinct mailboxes/accounts inside the merge window into one
 	// super-incident keyed on the source IP. Prevents the per-mailbox fan-out
 	// that turns one attacker into thousands of mailbox_takeover incidents.
-	KindCredentialSpray Kind = "credential_spray"
+	KindCredentialSpray Kind = "credential_spray" // #nosec G101 -- taxonomy label, not a secret
 )
 
 // Incident is the wire shape every consumer (API, control socket,
