@@ -104,6 +104,29 @@ func TestAPIHistoryWithDateRange(t *testing.T) {
 	}
 }
 
+func TestAPIHistoryDateOnlyToIncludesLastSecondFractions(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	day := time.Now().AddDate(0, 0, -1)
+	ts := time.Date(day.Year(), day.Month(), day.Day(), 23, 59, 59, int(500*time.Millisecond), time.Local)
+	s.store.AppendHistory([]alert.Finding{
+		{Severity: alert.Critical, Check: "test", Message: "late same day", Timestamp: ts},
+	})
+
+	date := ts.Format("2006-01-02")
+	w := httptest.NewRecorder()
+	s.apiHistory(w, httptest.NewRequest("GET", "/?from="+date+"&to="+date+"&limit=10", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp["total"].(float64) != 1 {
+		t.Fatalf("total = %v, want 1", resp["total"])
+	}
+}
+
 func TestAPIHistoryPagination(t *testing.T) {
 	s := newTestServerWithBbolt(t, "tok")
 	// Seed enough for pagination

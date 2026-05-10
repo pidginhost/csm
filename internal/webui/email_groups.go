@@ -53,22 +53,39 @@ func emailKindForCheck(check string) string {
 	switch check {
 	case "email_compromised_account",
 		"email_credential_leak",
-		"email_weak_password":
+		"email_weak_password",
+		"mail_account_compromised",
+		"email_pipe_forwarder",
+		"email_suspicious_forwarder":
 		return "compromised_account"
 	case "email_spam_outbreak",
+		"email_rate_critical",
+		"email_rate_warning",
 		"email_php_relay_abuse",
 		"email_php_relay_action_failed",
 		"email_php_relay_rate_limit_hit",
 		"email_cloud_relay_abuse":
 		return "spam_outbreak"
 	case "email_auth_failure_realtime",
-		"email_suspicious_geo":
+		"email_suspicious_geo",
+		"mail_bruteforce",
+		"mail_subnet_spray",
+		"mail_account_spray",
+		"smtp_bruteforce",
+		"smtp_subnet_spray",
+		"smtp_account_spray",
+		"smtp_probe_abuse":
 		return "auth_failure"
 	case "email_malware",
-		"email_phishing_content":
+		"email_phishing_content",
+		"email_av_degraded",
+		"email_av_timeout",
+		"email_av_parse_error",
+		"email_av_quarantine_error":
 		return "malware"
 	case "mail_per_account",
-		"mail_queue":
+		"mail_queue",
+		"exim_frozen_realtime":
 		return "queue_alert"
 	}
 	return ""
@@ -121,6 +138,8 @@ func emailGroupTitle(kind string, f alert.Finding) string {
 			return "Mail queue threshold"
 		case "mail_per_account":
 			return "Per-account mail volume"
+		case "exim_frozen_realtime":
+			return "Frozen mail queue"
 		}
 	}
 	if f.Mailbox != "" {
@@ -346,10 +365,10 @@ func topKeysByCount(m map[string]int, k int) []string {
 	return out
 }
 
-// parseDateOrDefault accepts RFC3339 or YYYY-MM-DD; returns the default
-// when the input is empty or unparseable. UTC normalised so the bbolt
-// cursor seek matches.
-func parseDateOrDefault(s string, def time.Time) time.Time {
+// parseEmailGroupDate accepts RFC3339 or YYYY-MM-DD; returns the default
+// when the input is empty or unparseable. Date-only upper bounds include
+// the whole local day, matching /api/v1/history.
+func parseEmailGroupDate(s string, def time.Time, endOfDay bool) time.Time {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return def
@@ -358,6 +377,9 @@ func parseDateOrDefault(s string, def time.Time) time.Time {
 		return t
 	}
 	if t, err := time.ParseInLocation("2006-01-02", s, time.Local); err == nil {
+		if endOfDay {
+			return t.Add(24*time.Hour - time.Nanosecond)
+		}
 		return t
 	}
 	return def
@@ -379,8 +401,8 @@ func (s *Server) apiEmailGroups(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now()
-	from := parseDateOrDefault(q.Get("from"), now.Add(-24*time.Hour))
-	to := parseDateOrDefault(q.Get("to"), now)
+	from := parseEmailGroupDate(q.Get("from"), now.Add(-24*time.Hour), false)
+	to := parseEmailGroupDate(q.Get("to"), now, true)
 	if to.Before(from) {
 		from, to = to, from
 	}

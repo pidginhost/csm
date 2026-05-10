@@ -20,13 +20,14 @@ func (s *Server) handleModSec(w http.ResponseWriter, _ *http.Request) {
 // modsecBlockView is an aggregated view of blocks per IP+rule. Phase 8.4
 // extends the response with first_seen / last_seen_iso (RFC3339), top_uris,
 // domain_count, and sample_events so the workbench can drive the detail
-// panel without a second round trip. All new fields are additive: existing
-// consumers see no diff because the legacy fields keep their JSON keys.
+// panel without a second round trip. The extra fields are additive; legacy
+// field names keep their JSON keys.
 type modsecBlockView struct {
 	IP           string              `json:"ip"`
 	RuleID       string              `json:"rule_id"`
 	Description  string              `json:"description"`
 	Domains      string              `json:"domains"`
+	DomainList   []string            `json:"domain_list,omitempty"`
 	DomainCount  int                 `json:"domain_count"`
 	Hits         int                 `json:"hits"`
 	LastSeen     string              `json:"last_seen"`
@@ -101,8 +102,8 @@ func (s *Server) apiModSecStats(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) apiModSecBlocks(w http.ResponseWriter, _ *http.Request) {
 	findings := deduplicateModSecFindings(s.modsecFindings24h())
 
-	// Aggregate by IP
-	type ipAgg struct {
+	type blockAgg struct {
+		ip          string
 		ruleID      string
 		description string
 		domains     map[string]bool
@@ -114,22 +115,18 @@ func (s *Server) apiModSecBlocks(w http.ResponseWriter, _ *http.Request) {
 		samples     []modsecSampleEvent // newest-first, capped at 3
 	}
 
-	byIP := make(map[string]*ipAgg)
+	byBlock := make(map[string]*blockAgg)
+	escalatedIPs := make(map[string]bool)
+
+	blockKey := func(ip, rule string) string {
+		return ip + "\x00" + rule
+	}
 
 	for _, f := range findings {
 		if isModSecEscalation(f.Check) {
-			// Mark IP as escalated
 			ip := extractModSecIP(f)
 			if ip != "" {
-				if agg, ok := byIP[ip]; ok {
-					agg.escalated = true
-				} else {
-					byIP[ip] = &ipAgg{
-						escalated: true,
-						domains:   make(map[string]bool),
-						uriCounts: make(map[string]int),
-					}
-				}
+				escalatedIPs[ip] = true
 			}
 			continue
 		}
@@ -144,16 +141,18 @@ func (s *Server) apiModSecBlocks(w http.ResponseWriter, _ *http.Request) {
 		domain := extractModSecHostname(f)
 		uri := extractModSecURI(f)
 
-		agg, ok := byIP[ip]
+		key := blockKey(ip, rule)
+		agg, ok := byBlock[key]
 		if !ok {
-			agg = &ipAgg{
+			agg = &blockAgg{
+				ip:          ip,
 				ruleID:      rule,
 				description: desc,
 				domains:     make(map[string]bool),
 				uriCounts:   make(map[string]int),
 				firstSeen:   f.Timestamp,
 			}
-			byIP[ip] = agg
+			byBlock[key] = agg
 		}
 		agg.hits++
 		if agg.firstSeen.IsZero() || f.Timestamp.Before(agg.firstSeen) {
@@ -161,13 +160,15 @@ func (s *Server) apiModSecBlocks(w http.ResponseWriter, _ *http.Request) {
 		}
 		if f.Timestamp.After(agg.lastSeen) {
 			agg.lastSeen = f.Timestamp
-			// Update rule/desc to the most recent
 			if rule != "" {
 				agg.ruleID = rule
 			}
 			if desc != "" {
 				agg.description = desc
 			}
+		}
+		if agg.description == "" && desc != "" {
+			agg.description = desc
 		}
 		// Skip server IPs and empty hostnames - only show actual domain names.
 		// ModSecurity logs the server IP as hostname when the request doesn't
@@ -189,8 +190,26 @@ func (s *Server) apiModSecBlocks(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 
+	for ip := range escalatedIPs {
+		hasBlock := false
+		for _, agg := range byBlock {
+			if agg.ip == ip {
+				agg.escalated = true
+				hasBlock = true
+			}
+		}
+		if !hasBlock {
+			byBlock[blockKey(ip, "")] = &blockAgg{
+				ip:        ip,
+				escalated: true,
+				domains:   make(map[string]bool),
+				uriCounts: make(map[string]int),
+			}
+		}
+	}
+
 	var result []modsecBlockView
-	for ip, agg := range byIP {
+	for _, agg := range byBlock {
 		if agg.hits == 0 && !agg.escalated {
 			continue
 		}
@@ -217,10 +236,11 @@ func (s *Server) apiModSecBlocks(w http.ResponseWriter, _ *http.Request) {
 		topURIs := topKeysByCount(agg.uriCounts, 5)
 
 		result = append(result, modsecBlockView{
-			IP:           ip,
+			IP:           agg.ip,
 			RuleID:       agg.ruleID,
 			Description:  agg.description,
 			Domains:      domains,
+			DomainList:   domainList,
 			DomainCount:  len(agg.domains),
 			Hits:         agg.hits,
 			LastSeen:     lastSeen,
@@ -232,9 +252,20 @@ func (s *Server) apiModSecBlocks(w http.ResponseWriter, _ *http.Request) {
 		})
 	}
 
-	// Sort by hits descending
 	sort.Slice(result, func(i, j int) bool {
-		return result[i].Hits > result[j].Hits
+		if result[i].Hits != result[j].Hits {
+			return result[i].Hits > result[j].Hits
+		}
+		if result[i].Escalated != result[j].Escalated {
+			return result[i].Escalated
+		}
+		if result[i].LastSeenISO != result[j].LastSeenISO {
+			return result[i].LastSeenISO > result[j].LastSeenISO
+		}
+		if result[i].IP != result[j].IP {
+			return result[i].IP < result[j].IP
+		}
+		return result[i].RuleID < result[j].RuleID
 	})
 
 	writeJSON(w, result)
@@ -251,14 +282,8 @@ func (s *Server) apiModSecEvents(w http.ResponseWriter, r *http.Request) {
 
 	findings := deduplicateModSecFindings(s.modsecFindings24h())
 
-	// Collect from the tail (newest entries) to avoid reversing the entire slice
-	start := len(findings) - limit
-	if start < 0 {
-		start = 0
-	}
 	result := make([]modsecEventView, 0, limit)
-	for i := len(findings) - 1; i >= start; i-- {
-		f := findings[i]
+	for _, f := range findings {
 		if isModSecEscalation(f.Check) {
 			continue
 		}
@@ -282,7 +307,7 @@ func (s *Server) apiModSecEvents(w http.ResponseWriter, r *http.Request) {
 // Both log the same block within the same second - keep one with merged fields.
 func deduplicateModSecFindings(findings []alert.Finding) []alert.Finding {
 	type dedupKey struct {
-		second string
+		second time.Time
 		ip     string
 		rule   string
 	}
@@ -292,7 +317,7 @@ func deduplicateModSecFindings(findings []alert.Finding) []alert.Finding {
 	for _, f := range findings {
 		ip := extractModSecIP(f)
 		rule := extractModSecRule(f)
-		ts := f.Timestamp.Format("15:04:05")
+		ts := f.Timestamp.UTC().Truncate(time.Second)
 		key := dedupKey{second: ts, ip: ip, rule: rule}
 
 		if idx, ok := seen[key]; ok {

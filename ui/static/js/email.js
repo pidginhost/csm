@@ -5,13 +5,55 @@
 
     var EMAIL_BLOCKED_KEYWORDS = ['mail', 'smtp', 'spam', 'phish', 'mailer'];
     var EMAIL_FINDINGS_LIMIT = 250; // first viewport row cap from the plan
+    var EMAIL_CHECKS = [
+        'mail_queue',
+        'mail_per_account',
+        'exim_frozen_realtime',
+        'email_phishing_content',
+        'email_malware',
+        'email_av_degraded',
+        'email_av_timeout',
+        'email_av_parse_error',
+        'email_av_quarantine_error',
+        'email_compromised_account',
+        'email_credential_leak',
+        'email_weak_password',
+        'email_spam_outbreak',
+        'email_rate_critical',
+        'email_rate_warning',
+        'email_cloud_relay_abuse',
+        'email_php_relay_abuse',
+        'email_php_relay_action_failed',
+        'email_php_relay_rate_limit_hit',
+        'email_auth_failure_realtime',
+        'email_suspicious_geo',
+        'mail_bruteforce',
+        'mail_subnet_spray',
+        'mail_account_spray',
+        'mail_account_compromised',
+        'smtp_bruteforce',
+        'smtp_subnet_spray',
+        'smtp_account_spray',
+        'smtp_probe_abuse',
+        'email_dkim_failure',
+        'email_spf_rejection',
+        'email_pipe_forwarder',
+        'email_suspicious_forwarder'
+    ].join(',');
     var _emailExportData = [];
     var emailTable = null;
     var quarantineLoaded = false;
     var authGroupsLoaded = false;
 
+    function localDateInputValue(date) {
+        var d = date || new Date();
+        var m = String(d.getMonth() + 1).padStart(2, '0');
+        var day = String(d.getDate()).padStart(2, '0');
+        return d.getFullYear() + '-' + m + '-' + day;
+    }
+
     // ---------- Filter state from URL ----------
-    var today = new Date().toISOString().substring(0, 10);
+    var today = localDateInputValue();
     var fromEl = document.getElementById('filter-from');
     var toEl = document.getElementById('filter-to');
     var sevEl = document.getElementById('filter-severity');
@@ -23,12 +65,6 @@
     if (checkEl && CSM.urlState.get('check')) checkEl.value = CSM.urlState.get('check');
     if (searchEl && CSM.urlState.get('search')) searchEl.value = CSM.urlState.get('search');
     var initialTab = CSM.urlState.get('tab');
-    if (initialTab) {
-        var btn = document.getElementById('email-tab-' + initialTab);
-        if (btn && window.bootstrap && window.bootstrap.Tab) {
-            window.bootstrap.Tab.getOrCreateInstance(btn).show();
-        }
-    }
 
     // ---------- Status strip (replaces 6-card stat row) ----------
 
@@ -77,8 +113,8 @@
             var av = _strip.av;
             var avcls = 'csm-status-strip__chip--ok', avval = 'AV up';
             if (!av.enabled) { avcls = ''; avval = 'AV off'; }
-            else if (!av.clamd_available || !av.yarax_available) { avcls = 'csm-status-strip__chip--warn'; avval = 'AV degraded'; }
             else if (!av.clamd_available && !av.yarax_available) { avcls = 'csm-status-strip__chip--crit'; avval = 'AV down'; }
+            else if (!av.clamd_available || !av.yarax_available) { avcls = 'csm-status-strip__chip--warn'; avval = 'AV degraded'; }
             el.appendChild(chip({ icon: 'ti-virus-search', value: avval, label: '', cls: avcls,
                 title: 'ClamAV: ' + (av.clamd_available ? 'up' : 'down') + ' / YARA-X: ' + (av.yarax_available ? 'up' : 'down') }));
             if ((av.quarantined || 0) > 0) {
@@ -112,8 +148,10 @@
                 _strip.stats = data;
                 refreshStatusStrip();
                 renderProtectionQueue(data);
+                renderProtectionQueue(data, 'queue-health');
                 renderSMTPFirewall(data);
-                if (document.getElementById('email-pane-senders').classList.contains('active')) {
+                var sendersPane = document.getElementById('email-pane-senders');
+                if (sendersPane && sendersPane.classList.contains('active')) {
                     renderTopSenders(data.top_senders || []);
                 } else {
                     // Hold the data for first activation
@@ -122,14 +160,24 @@
             })
             .catch(function() {
                 CSM.loadError(document.getElementById('protection-queue'));
+                CSM.loadError(document.getElementById('queue-health'));
                 CSM.loadError(document.getElementById('smtp-firewall'));
             });
     }
 
     var _pendingSenders = null;
 
-    function renderProtectionQueue(data) {
-        var el = document.getElementById('protection-queue');
+    function emailDateQuery(base) {
+        var qs = base || '';
+        var from = (document.getElementById('filter-from') || {}).value || '';
+        var to = (document.getElementById('filter-to') || {}).value || '';
+        if (from) qs += (qs ? '&' : '') + 'from=' + encodeURIComponent(from);
+        if (to) qs += (qs ? '&' : '') + 'to=' + encodeURIComponent(to);
+        return qs;
+    }
+
+    function renderProtectionQueue(data, targetId) {
+        var el = document.getElementById(targetId || 'protection-queue');
         if (!el) return;
         var pct = Math.min(100, Math.round(data.queue_size / Math.max(1, data.queue_crit) * 100));
         var color = 'bg-green';
@@ -334,11 +382,7 @@
     }
 
     function loadActionGroups() {
-        var from = (document.getElementById('filter-from') || {}).value || '';
-        var to = (document.getElementById('filter-to') || {}).value || '';
-        var qs = 'limit=50';
-        if (from) qs += '&from=' + encodeURIComponent(from);
-        if (to)   qs += '&to=' + encodeURIComponent(to);
+        var qs = emailDateQuery('limit=50');
         fetch(CSM.apiUrl('/api/v1/email/groups?' + qs), { credentials: 'same-origin' })
             .then(function(r) { return r.json(); })
             .then(function(data) {
@@ -465,7 +509,7 @@
     function loadAuthGroups() {
         if (authGroupsLoaded) return;
         authGroupsLoaded = true;
-        fetch(CSM.apiUrl('/api/v1/email/groups?kind=auth_failure&limit=200'), { credentials: 'same-origin' })
+        fetch(CSM.apiUrl('/api/v1/email/groups?' + emailDateQuery('kind=auth_failure&limit=200')), { credentials: 'same-origin' })
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 var el = document.getElementById('email-auth-groups');
@@ -505,18 +549,14 @@
         var to = (document.getElementById('filter-to') || {}).value || '';
         var sev = (document.getElementById('filter-severity') || {}).value || '';
         var check = (document.getElementById('filter-check') || {}).value || '';
-        var emailChecks = 'mail_queue,mail_per_account,email_phishing_content,email_malware,email_av_degraded,email_compromised_account,email_spam_outbreak,email_credential_leak,email_auth_failure_realtime,exim_frozen_realtime';
-        var params = 'checks=' + emailChecks + '&limit=' + EMAIL_FINDINGS_LIMIT;
-        if (from) params += '&from=' + from;
-        if (to)   params += '&to=' + to;
-        if (sev)  params += '&severity=' + sev;
+        var params = 'checks=' + encodeURIComponent(check || EMAIL_CHECKS) + '&limit=' + EMAIL_FINDINGS_LIMIT;
+        if (from) params += '&from=' + encodeURIComponent(from);
+        if (to)   params += '&to=' + encodeURIComponent(to);
+        if (sev)  params += '&severity=' + encodeURIComponent(sev);
         fetch(CSM.apiUrl('/api/v1/history?' + params), { credentials: 'same-origin' })
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 var findings = data.findings || [];
-                if (check) {
-                    findings = findings.filter(function(f) { return f.check === check; });
-                }
                 renderFindingsTable(findings);
                 var label = document.getElementById('email-total-label');
                 if (label) {
@@ -656,6 +696,7 @@
                 container.innerHTML = html;
             })
             .catch(function() {
+                quarantineLoaded = false;
                 var container = document.getElementById('quarantine-table');
                 if (container) container.innerHTML = '<p class="text-danger">Failed to load quarantine.</p>';
             });
@@ -686,13 +727,39 @@
         }
     }
 
+    function activeEmailTab() {
+        var btn = document.querySelector('[id^="email-tab-"].active');
+        if (!btn || !btn.id) return 'findings';
+        return btn.id.replace('email-tab-', '');
+    }
+
+    function loadActiveEmailTab(force) {
+        var id = activeEmailTab();
+        if (id === 'auth') {
+            if (force) authGroupsLoaded = false;
+            loadAuthGroups();
+        } else if (id === 'queue') {
+            if (_strip.stats) renderProtectionQueue(_strip.stats, 'queue-health');
+        } else if (id === 'quarantine') {
+            if (force) quarantineLoaded = false;
+            if (!quarantineLoaded) loadQuarantine();
+        } else if (id === 'senders') {
+            if (_pendingSenders) {
+                renderTopSenders(_pendingSenders);
+                _pendingSenders = null;
+            } else if (force) {
+                loadEmailStats();
+            }
+        }
+    }
+
     var tabButtons = document.querySelectorAll('[data-bs-toggle="tab"]');
     for (var t = 0; t < tabButtons.length; t++) {
         tabButtons[t].addEventListener('shown.bs.tab', function(ev) {
             var id = ev.target.id.replace('email-tab-', '');
             CSM.urlState.set({ tab: id === 'findings' ? '' : id });
             if (id === 'auth')        loadAuthGroups();
-            else if (id === 'queue')  { /* queue-health populated by loadEmailStats */ if (_strip.stats) renderProtectionQueue(_strip.stats); }
+            else if (id === 'queue')  { if (_strip.stats) renderProtectionQueue(_strip.stats, 'queue-health'); }
             else if (id === 'quarantine' && !quarantineLoaded) loadQuarantine();
             else if (id === 'senders') {
                 if (_pendingSenders) {
@@ -713,7 +780,7 @@
         var sevVal = (document.getElementById('filter-severity') || {}).value || '';
         var checkVal = (document.getElementById('filter-check') || {}).value || '';
         var searchVal = (document.getElementById('email-search') || {}).value || '';
-        var todayStr = new Date().toISOString().substring(0, 10);
+        var todayStr = localDateInputValue();
         CSM.urlState.set({
             from: fromVal !== todayStr ? fromVal : '',
             to: toVal !== todayStr ? toVal : '',
@@ -731,6 +798,7 @@
             loadFindings();
             loadActionGroups();
             authGroupsLoaded = false; // re-fetch on next tab activation
+            if (activeEmailTab() === 'auth') loadAuthGroups();
         });
     });
 
@@ -756,6 +824,7 @@
             loadActionGroups();
             loadFindings();
             authGroupsLoaded = false;
+            loadActiveEmailTab(true);
         });
     }
 
@@ -777,10 +846,12 @@
 
     // ---------- Initialize ----------
 
+    if (initialTab) activateTab(initialTab);
     loadEmailStats();
     loadAVStatus();
     loadActionGroups();
     loadFindings();
+    loadActiveEmailTab(false);
 
     // Polling: refresh stats / groups / findings every 30s when tab is visible.
     var _emailIntervals = [];

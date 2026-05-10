@@ -50,16 +50,28 @@ func TestModSecBlocksExtendedFieldsPopulated(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v\nbody: %s", err, w.Body.String())
 	}
-	if len(resp) != 1 {
-		t.Fatalf("got %d block rows, want 1", len(resp))
+	if len(resp) != 2 {
+		t.Fatalf("got %d block rows, want 2 (one per IP+rule)", len(resp))
 	}
 
-	row := resp[0]
-	if row.Hits != 4 {
-		t.Errorf("Hits = %d, want 4", row.Hits)
+	var row modsecBlockView
+	for _, candidate := range resp {
+		if candidate.RuleID == "900113" {
+			row = candidate
+			break
+		}
 	}
-	if row.DomainCount != 2 {
-		t.Errorf("DomainCount = %d, want 2 (example.com + shop.example.com)", row.DomainCount)
+	if row.RuleID == "" {
+		t.Fatalf("missing row for rule 900113: %+v", resp)
+	}
+	if row.Hits != 3 {
+		t.Errorf("Hits = %d, want 3", row.Hits)
+	}
+	if row.DomainCount != 1 {
+		t.Errorf("DomainCount = %d, want 1 (example.com)", row.DomainCount)
+	}
+	if len(row.DomainList) != 1 || row.DomainList[0] != "example.com" {
+		t.Errorf("DomainList = %v, want [example.com]", row.DomainList)
 	}
 	if row.FirstSeen == "" {
 		t.Error("FirstSeen empty -- phase 8.4 must populate RFC3339 first_seen")
@@ -85,6 +97,23 @@ func TestModSecBlocksExtendedFieldsPopulated(t *testing.T) {
 		if ev.RuleID == "" || ev.Hostname == "" || ev.Time == "" {
 			t.Errorf("SampleEvent missing fields: %+v", ev)
 		}
+	}
+
+	var second modsecBlockView
+	for _, candidate := range resp {
+		if candidate.RuleID == "900116" {
+			second = candidate
+			break
+		}
+	}
+	if second.RuleID == "" {
+		t.Fatalf("missing row for rule 900116: %+v", resp)
+	}
+	if second.Hits != 1 {
+		t.Errorf("second Hits = %d, want 1", second.Hits)
+	}
+	if len(second.DomainList) != 1 || second.DomainList[0] != "shop.example.com" {
+		t.Errorf("second DomainList = %v, want [shop.example.com]", second.DomainList)
 	}
 }
 
@@ -114,6 +143,50 @@ func TestModSecBlocksLegacyFieldsUnchanged(t *testing.T) {
 		if _, ok := raw[0][key]; !ok {
 			t.Errorf("legacy key %q missing from response", key)
 		}
+	}
+}
+
+func TestDeduplicateModSecFindingsKeepsDifferentDatesSameClockSecond(t *testing.T) {
+	base := time.Date(2026, 5, 10, 15, 4, 5, 500, time.UTC)
+	findings := []alert.Finding{
+		modsecBlock("198.51.100.30", "site.test", "/today", "900113", base),
+		modsecBlock("198.51.100.30", "site.test", "/yesterday", "900113", base.Add(-23*time.Hour)),
+	}
+
+	got := deduplicateModSecFindings(findings)
+	if len(got) != 2 {
+		t.Fatalf("deduped events = %d, want 2 for different dates with same clock second: %+v", len(got), got)
+	}
+}
+
+func TestModSecEventsReturnsNewestFirst(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	sdb := store.Global()
+
+	now := time.Now()
+	if err := sdb.AppendHistory([]alert.Finding{
+		modsecBlock("198.51.100.20", "site.test", "/old", "900113", now.Add(-20*time.Minute)),
+		modsecBlock("198.51.100.21", "site.test", "/newer", "900113", now.Add(-10*time.Minute)),
+		modsecBlock("198.51.100.22", "site.test", "/newest", "900113", now.Add(-1*time.Minute)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	s.apiModSecEvents(w, httptest.NewRequest(http.MethodGet, "/api/v1/modsec/events?limit=2", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	var resp []modsecEventView
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v\nbody: %s", err, w.Body.String())
+	}
+	if len(resp) != 2 {
+		t.Fatalf("events = %d, want 2: %+v", len(resp), resp)
+	}
+	if resp[0].URI != "/newest" || resp[1].URI != "/newer" {
+		t.Fatalf("events order = [%q, %q], want newest first", resp[0].URI, resp[1].URI)
 	}
 }
 

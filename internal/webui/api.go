@@ -336,7 +336,7 @@ func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	if toStr != "" {
 		toDate, _ = time.ParseInLocation("2006-01-02", toStr, time.Local)
-		toDate = toDate.Add(24*time.Hour - time.Second)
+		toDate = toDate.Add(24*time.Hour - time.Nanosecond)
 	}
 	sevFilter := -1
 	if sevStr != "" {

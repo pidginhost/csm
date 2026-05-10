@@ -168,6 +168,43 @@ func TestEmailGroupsAggregatesQueueAlerts(t *testing.T) {
 	}
 }
 
+func TestEmailGroupsIncludesCurrentEmailDetectorChecks(t *testing.T) {
+	now := time.Now()
+	cases := []struct {
+		check string
+		kind  string
+	}{
+		{check: "exim_frozen_realtime", kind: "queue_alert"},
+		{check: "email_av_degraded", kind: "malware"},
+		{check: "email_av_timeout", kind: "malware"},
+		{check: "email_av_parse_error", kind: "malware"},
+		{check: "email_av_quarantine_error", kind: "malware"},
+		{check: "mail_bruteforce", kind: "auth_failure"},
+		{check: "smtp_bruteforce", kind: "auth_failure"},
+		{check: "smtp_probe_abuse", kind: "auth_failure"},
+		{check: "mail_account_compromised", kind: "compromised_account"},
+		{check: "email_suspicious_forwarder", kind: "compromised_account"},
+		{check: "email_rate_critical", kind: "spam_outbreak"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.check, func(t *testing.T) {
+			groups := buildEmailGroups(
+				[]alert.Finding{emailFinding(tc.check, alert.High, "user@example.com", "example.com", "192.0.2.10", now)},
+				now.Add(-1*time.Hour),
+				now,
+				"",
+			)
+			if len(groups) != 1 {
+				t.Fatalf("got %d groups, want 1 for %s", len(groups), tc.check)
+			}
+			if groups[0].Kind != tc.kind {
+				t.Fatalf("kind = %q, want %q", groups[0].Kind, tc.kind)
+			}
+		})
+	}
+}
+
 func TestEmailGroupsEmptyInput(t *testing.T) {
 	groups := buildEmailGroups(nil, time.Time{}, time.Now(), "")
 	if len(groups) != 0 {
@@ -213,6 +250,34 @@ func TestAPIEmailGroupsReturnsJSON(t *testing.T) {
 	}
 	if resp.Groups[0].Count != 2 {
 		t.Errorf("count = %d, want 2", resp.Groups[0].Count)
+	}
+}
+
+func TestAPIEmailGroupsDateOnlyToIncludesWholeDay(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	day := time.Now().AddDate(0, 0, -1)
+	ts := time.Date(day.Year(), day.Month(), day.Day(), 15, 30, 0, 0, time.Local)
+	s.store.AppendHistory([]alert.Finding{
+		emailFinding("email_auth_failure_realtime", alert.High, "same-day@example.com", "", "192.0.2.8", ts),
+	})
+
+	date := ts.Format("2006-01-02")
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/email/groups?from="+date+"&to="+date, nil)
+	s.apiEmailGroups(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	var resp emailGroupsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v\nbody: %s", err, w.Body.String())
+	}
+	if len(resp.Groups) != 1 {
+		t.Fatalf("groups = %d, want 1 for date-only same-day range: %+v", len(resp.Groups), resp.Groups)
+	}
+	if resp.Groups[0].Title != "same-day@example.com" {
+		t.Errorf("title = %q, want same-day@example.com", resp.Groups[0].Title)
 	}
 }
 

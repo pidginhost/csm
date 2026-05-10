@@ -119,6 +119,21 @@
         return fallback || '';
     }
 
+    function domainList(block) {
+        if (block.domain_list && block.domain_list.length) return block.domain_list;
+        if (!block.domains) return [];
+        return String(block.domains).split(',').map(function(d) {
+            return d.trim();
+        }).filter(function(d) {
+            return d && d !== '...';
+        });
+    }
+
+    function domainListText(block) {
+        var domains = domainList(block);
+        return domains.join(', ');
+    }
+
     function renderActiveWAFPressure(blocks) {
         var el = document.getElementById('modsec-pressure');
         if (!el) return;
@@ -132,12 +147,13 @@
             return;
         }
         var c2 = document.getElementById('modsec-pressure-count');
-        if (c2) c2.textContent = blocks.length + ' attackers tracked';
+        if (c2) c2.textContent = blocks.length + ' groups tracked';
         for (var i = 0; i < top.length; i++) {
             var b = top[i];
             var titleHTML = '<code>' + CSM.esc(b.ip) + '</code>';
             if (b.rule_id) titleHTML += ' <span class="text-muted">rule ' + CSM.esc(b.rule_id) + '</span>';
-            var meta = (b.description || '') + (b.domains ? ' (' + b.domains + ')' : '');
+            var domains = domainListText(b);
+            var meta = (b.description || '') + (domains ? ' (' + domains + ')' : '');
             var item = CSM.summaryItem({
                 severity: ruleSeverity(b),
                 titleHTML: titleHTML,
@@ -169,13 +185,10 @@
                 ruleHits[b.rule_id] = (ruleHits[b.rule_id] || 0) + b.hits;
                 if (b.description && !ruleDesc[b.rule_id]) ruleDesc[b.rule_id] = b.description;
             }
-            if (b.domains) {
-                var parts = String(b.domains).split(',');
-                for (var p = 0; p < parts.length; p++) {
-                    var d = parts[p].trim();
-                    if (!d || d === '...') continue;
-                    domainHits[d] = (domainHits[d] || 0) + b.hits;
-                }
+            var parts = domainList(b);
+            for (var p = 0; p < parts.length; p++) {
+                var d = parts[p];
+                domainHits[d] = (domainHits[d] || 0) + b.hits;
             }
         }
         if (escPill) escPill.textContent = escalated + ' escalated';
@@ -231,8 +244,9 @@
         if (b.domain_count != null) bodyHTML += '<dt class="col-4 text-muted">Domains</dt><dd class="col-8">' + b.domain_count + '</dd>';
         bodyHTML += '</dl>';
 
-        if (b.domains) {
-            bodyHTML += '<div class="mb-2"><div class="subheader">Affected domains</div><div class="font-monospace small">' + CSM.esc(b.domains) + '</div></div>';
+        var domains = domainListText(b);
+        if (domains) {
+            bodyHTML += '<div class="mb-2"><div class="subheader">Affected domains</div><div class="font-monospace small">' + CSM.esc(domains) + '</div></div>';
         }
         if (b.top_uris && b.top_uris.length > 0) {
             bodyHTML += '<div class="mb-2"><div class="subheader">Top URIs</div>';
@@ -308,12 +322,13 @@
         h += '</tr></thead><tbody>';
         for (var i = 0; i < filtered.length; i++) {
             var b = filtered[i];
-            h += '<tr data-csm-modsec-ip="' + CSM.attr(b.ip) + '">';
+            var domains = domainListText(b);
+            h += '<tr data-csm-modsec-ip="' + CSM.attr(b.ip) + '" data-csm-modsec-rule="' + CSM.attr(b.rule_id || '') + '">';
             h += '<td data-label="IP"><code>' + CSM.esc(b.ip) + '</code></td>';
             h += '<td data-label="Location" class="geo-cell" data-ip="' + CSM.attr(b.ip) + '"><span class="text-muted">--</span></td>';
             h += '<td data-label="Rule"><code>' + CSM.esc(b.rule_id || '') + '</code></td>';
             h += '<td data-label="Description">' + CSM.esc(b.description || '') + '</td>';
-            h += '<td data-label="Domains">' + CSM.esc(b.domains || '') + '</td>';
+            h += '<td data-label="Domains">' + CSM.esc(domains) + '</td>';
             h += '<td data-label="Hits"><strong>' + b.hits + '</strong></td>';
             h += '<td data-label="Last Seen">' + CSM.esc(b.last_seen || '') + '</td>';
             h += '<td data-label="Status">' + statusBadgeHTML(b) + '</td>';
@@ -333,7 +348,8 @@
             countTargetId: 'modsec-blocked-count',
             onRowClick: function(rowEl) {
                 var ip = rowEl.getAttribute('data-csm-modsec-ip');
-                var b = _modsecBlocks.find(function(x) { return x.ip === ip; });
+                var rule = rowEl.getAttribute('data-csm-modsec-rule') || '';
+                var b = _modsecBlocks.find(function(x) { return x.ip === ip && (x.rule_id || '') === rule; });
                 if (b) openBlockDetail(b);
             }
         });
