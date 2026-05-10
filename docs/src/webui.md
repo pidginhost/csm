@@ -40,7 +40,7 @@ admin-only navigation entries such as Configuration and ModSec Rules.
 | **Account** | `/account` | Per-account analysis: findings, quarantine, history, on-demand scan |
 | **Audit** | `/audit` | System-wide action log (block, fix, dismiss, whitelist, restore) |
 | **Performance** | `/performance` | Server load, PHP processes, MySQL, Redis, WordPress metrics |
-| **Settings** | `/settings` | Config editor (hot-reload-safe sections), alert thresholds, integration keys (redacted), firewall tentative apply with rollback timer |
+| **Settings** | `/settings` | Searchable config editor with grouped large sections, field-level validation errors, restart notices, redacted secret updates, and firewall tentative apply with rollback timer |
 
 ## Security
 

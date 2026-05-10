@@ -938,6 +938,81 @@ func TestSettingsPOSTFirewallIntArrayDedupAndSorts(t *testing.T) {
 	}
 }
 
+func TestSettingsPOSTRestartResponseNamesPendingSections(t *testing.T) {
+	s, _ := newSettingsTestServer(t, "tok", firewallSettingsTestYAML())
+
+	getReq := settingsAuthedReq("GET", "/api/v1/settings/firewall", "tok", "")
+	getW := httptest.NewRecorder()
+	s.apiSettingsGet(getW, getReq)
+	etag := getW.Header().Get("ETag")
+
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/firewall", "tok",
+		`{"changes":{"tcp_in":[80,443,9443,2083]}}`)
+	postReq.Header.Set("If-Match", etag)
+	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	postW := httptest.NewRecorder()
+	s.apiSettingsPost(postW, postReq)
+
+	if postW.Code != 200 {
+		t.Fatalf("POST code = %d, body = %s", postW.Code, postW.Body.String())
+	}
+	var postResp struct {
+		PendingRestart  bool                     `json:"pending_restart"`
+		PendingSections []pendingSettingsSection `json:"pending_sections"`
+	}
+	if err := json.Unmarshal(postW.Body.Bytes(), &postResp); err != nil {
+		t.Fatal(err)
+	}
+	if !postResp.PendingRestart {
+		t.Fatal("firewall port change should require restart")
+	}
+	if len(postResp.PendingSections) != 1 || postResp.PendingSections[0].ID != "firewall" {
+		t.Fatalf("pending sections = %+v, want firewall", postResp.PendingSections)
+	}
+
+	getW = httptest.NewRecorder()
+	s.apiSettingsGet(getW, getReq)
+	if getW.Code != 200 {
+		t.Fatalf("GET code = %d, body = %s", getW.Code, getW.Body.String())
+	}
+	var getResp struct {
+		PendingSections []pendingSettingsSection `json:"pending_sections"`
+	}
+	if err := json.Unmarshal(getW.Body.Bytes(), &getResp); err != nil {
+		t.Fatal(err)
+	}
+	if len(getResp.PendingSections) != 1 || getResp.PendingSections[0].Title != "Firewall" {
+		t.Fatalf("GET pending sections = %+v, want Firewall", getResp.PendingSections)
+	}
+
+	thresholdsReq := settingsAuthedReq("GET", "/api/v1/settings/thresholds", "tok", "")
+	thresholdsGetW := httptest.NewRecorder()
+	s.apiSettingsGet(thresholdsGetW, thresholdsReq)
+	thresholdsETag := thresholdsGetW.Header().Get("ETag")
+	thresholdsPostReq := settingsAuthedReq("POST", "/api/v1/settings/thresholds", "tok",
+		`{"changes":{"mail_queue_warn":42}}`)
+	thresholdsPostReq.Header.Set("If-Match", thresholdsETag)
+	thresholdsPostReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	thresholdsPostW := httptest.NewRecorder()
+	s.apiSettingsPost(thresholdsPostW, thresholdsPostReq)
+	if thresholdsPostW.Code != 200 {
+		t.Fatalf("thresholds POST code = %d, body = %s", thresholdsPostW.Code, thresholdsPostW.Body.String())
+	}
+
+	active := config.Active()
+	if active == nil {
+		t.Fatal("active config is nil")
+	}
+	if active.Thresholds.MailQueueWarn != 42 {
+		t.Fatalf("safe thresholds change was not applied live: mail_queue_warn = %d", active.Thresholds.MailQueueWarn)
+	}
+	for _, port := range active.Firewall.TCPIn {
+		if port == 2083 {
+			t.Fatal("safe alerts save promoted pending firewall restart change into active config")
+		}
+	}
+}
+
 func TestSettingsPOSTFirewallIntArrayRejectsOutOfRange(t *testing.T) {
 	s, _ := newSettingsTestServer(t, "tok", firewallSettingsTestYAML())
 

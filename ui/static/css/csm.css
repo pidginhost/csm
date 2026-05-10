@@ -318,11 +318,16 @@ body.theme-dark { background-color: #1a2234; }
 .settings-panel-title .ti { color: var(--csm-info); }
 .settings-panel-body { padding: 1.25rem; }
 .settings-panel-footer {
+    position: sticky;
+    bottom: 0;
+    z-index: 5;
     padding: 0.85rem 1.25rem;
     border-top: 1px solid var(--csm-border);
     background: rgba(0, 0, 0, 0.015);
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
 }
 .theme-dark .settings-panel-footer {
     border-top-color: #2d3a4e;
@@ -376,6 +381,7 @@ body.theme-dark { background-color: #1a2234; }
 .theme-dark .settings-search { border-bottom-color: #2d3a4e; }
 .settings-nav-link[hidden] { display: none; }
 .settings-nav-group-header[hidden] { display: none; }
+.settings-secret-set { width: fit-content; }
 .settings-field-wide { grid-column: 1 / -1; }
 .settings-field-toggle {
     padding: 0.6rem 0.85rem;

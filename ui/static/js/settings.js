@@ -135,6 +135,86 @@
         return window.confirm("You have unsaved changes in this section. Discard them?");
     }
 
+    function pendingSectionNames(sections) {
+        return (sections || []).map(function (s) {
+            return (s && (s.title || s.id)) ? (s.title || s.id) : "";
+        }).filter(function (name) { return name !== ""; });
+    }
+
+    function currentSectionSummary() {
+        const meta = sectionMeta(currentSection);
+        return currentSection ? [{id: currentSection, title: meta.title || currentSection}] : [];
+    }
+
+    function pendingSectionsSentence(sections) {
+        const names = pendingSectionNames(sections);
+        return names.length ? "Changed sections: " + names.join(", ") + ". " : "";
+    }
+
+    function normaliseErrorField(fieldName) {
+        let name = fieldName || "";
+        if (!currentSchema) return name;
+        const root = currentSchema.yaml_path || currentSchema.id || "";
+        if (root && name.indexOf(root + ".") === 0) {
+            name = name.slice(root.length + 1);
+        } else if (name === root) {
+            name = "";
+        }
+        return name;
+    }
+
+    function schemaFieldByKey(key) {
+        if (!currentSchema || !currentSchema.fields) return null;
+        for (let i = 0; i < currentSchema.fields.length; i++) {
+            if (currentSchema.fields[i].yaml_path === key) return currentSchema.fields[i];
+        }
+        return null;
+    }
+
+    function clearValidationErrors() {
+        const panel = byId("settings-panel");
+        if (!panel) return;
+        panel.querySelectorAll(".is-invalid").forEach(function (el) { el.classList.remove("is-invalid"); });
+        panel.querySelectorAll(".settings-field-error").forEach(function (el) { el.remove(); });
+        const summary = byId("settings-validation-summary");
+        if (summary) summary.remove();
+    }
+
+    function showValidationErrors(errors) {
+        clearValidationErrors();
+        const unmatched = [];
+        (errors || []).forEach(function (err) {
+            const key = normaliseErrorField(err.field);
+            const field = schemaFieldByKey(key);
+            if (!field) {
+                unmatched.push(err);
+                return;
+            }
+            const input = byId(fieldId(field));
+            const wrapper = input ? input.closest(".settings-field") : null;
+            if (!input || !wrapper) {
+                unmatched.push(err);
+                return;
+            }
+            input.classList.add("is-invalid");
+            const msg = document.createElement("div");
+            msg.className = "invalid-feedback d-block settings-field-error";
+            msg.textContent = err.message || "Invalid value";
+            wrapper.appendChild(msg);
+        });
+        if (unmatched.length > 0) {
+            const body = document.querySelector("#settings-panel .settings-panel-body");
+            if (!body) return;
+            const summary = document.createElement("div");
+            summary.id = "settings-validation-summary";
+            summary.className = "alert alert-danger mb-3";
+            summary.textContent = "Validation errors: " + unmatched.map(function (err) {
+                return (err.field ? err.field + ": " : "") + (err.message || "Invalid value");
+            }).join("; ");
+            body.insertBefore(summary, body.firstChild);
+        }
+    }
+
     // ---- Section loader --------------------------------------------------
     async function loadSection(id) {
         setActiveNav(id);
@@ -200,11 +280,23 @@
         header.appendChild(restartBadge);
         panel.appendChild(header);
 
+        const pendingSectionList = data.pending_sections || [];
+        if (!activeRollbackStatus) {
+            if (pendingSectionNames(pendingSectionList).length > 0) {
+                showRestartBanner(pendingSectionList);
+            } else {
+                hideSettingsBanner();
+            }
+        }
+
         // Pending-restart notice
         if (data.pending_restart) {
             const b = document.createElement("div");
             b.className = "alert alert-warning mx-3 mt-3 mb-0";
-            b.textContent = "Saved on disk. Running daemon still uses previous values until restart. Pending: " + ((data.pending_fields || []).join(", "));
+            const pending = (data.pending_fields || []).join(", ");
+            b.textContent = "Saved on disk. " + pendingSectionsSentence(data.pending_sections)
+                + "Running daemon still uses previous values until restart."
+                + (pending ? " Pending fields in this section: " + pending : "");
             panel.appendChild(b);
         }
 
@@ -260,6 +352,7 @@
         // Footer actions
         const footer = document.createElement("div");
         footer.className = "settings-panel-footer";
+        footer.id = "settings-panel-footer";
         const btn = btnWithIcon("Save", "device-floppy", "btn btn-primary");
         btn.id = "settings-save";
         btn.addEventListener("click", save);
@@ -280,6 +373,7 @@
         }
         footer.appendChild(btnReset);
         panel.appendChild(footer);
+        renderRollbackFooter(activeRollbackStatus);
 
         attachDirtyListeners();
     }
@@ -407,14 +501,25 @@
             inp.type = field.secret ? "password" : "text";
             inp.id = id;
             if (field.secret) {
-                inp.placeholder = "(unchanged — type to replace)";
+                inp.placeholder = "Secret unchanged";
                 inp.value = "";
+                inp.disabled = true;
             } else {
                 if (field.placeholder) inp.placeholder = field.placeholder;
                 inp.value = (value === undefined || value === null) ? "" : String(value);
             }
         }
         wrapper.appendChild(inp);
+        if (field.secret) {
+            const secretBtn = btnWithIcon("Set new value", "key", "btn btn-outline-secondary btn-sm mt-2 settings-secret-set");
+            secretBtn.addEventListener("click", function () {
+                inp.disabled = false;
+                inp.placeholder = "New secret value";
+                secretBtn.remove();
+                inp.focus();
+            });
+            wrapper.appendChild(secretBtn);
+        }
         if (field.help) appendHint(wrapper, field.help);
         return wrapper;
     }
@@ -658,6 +763,7 @@
     }
 
     function markDirty() {
+        clearValidationErrors();
         const changed = Object.keys(computeChanges()).length > 0;
         dirty = changed;
         if (changed) dirtySections.add(currentSection); else dirtySections.delete(currentSection);
@@ -734,6 +840,7 @@
         const btn = byId("settings-save");
         btn.disabled = true;
         const changes = computeChanges();
+        clearValidationErrors();
         if (Object.keys(changes).length === 0) {
             toast("No changes to save.", "info");
             btn.disabled = false;
@@ -763,8 +870,8 @@
         }
         if (resp.status === 422) {
             const data = await resp.json().catch(function () { return {}; });
-            const lines = (data.errors || []).map(function (e) { return e.field + ": " + e.message; });
-            toast("Validation errors:\n" + lines.join("\n"), "error");
+            showValidationErrors(data.errors || []);
+            toast("Validation errors. Review the highlighted fields.", "error");
             return;
         }
         if (!resp.ok) { toast("Save failed: " + resp.status, "error"); return; }
@@ -774,7 +881,8 @@
         dirtySections.delete(currentSection);
         refreshDirtyMarkers();
         if (data.pending_restart) {
-            showRestartBanner();
+            const pendingSections = pendingSectionNames(data.pending_sections).length ? data.pending_sections : currentSectionSummary();
+            showRestartBanner(pendingSections);
             toast("Saved on disk. Restart required.", "warning");
         } else {
             toast("Saved. Applied live.", "success");
@@ -783,16 +891,22 @@
     }
 
     // ---- Restart banner --------------------------------------------------
-    function showRestartBanner() {
+    function showRestartBanner(sections) {
         const banner = byId("settings-banner");
         clearNode(banner);
         banner.classList.remove("d-none");
         banner.appendChild(iconEl("ti-alert-triangle", "me-2"));
-        banner.appendChild(document.createTextNode("Restart required to apply changes. "));
+        banner.appendChild(document.createTextNode("Restart required to apply changes. " + pendingSectionsSentence(sections)));
         const btn = btnWithIcon("Restart daemon", "refresh", "btn btn-sm btn-warning ms-2");
         btn.id = "settings-restart";
         btn.addEventListener("click", restartDaemon);
         banner.appendChild(btn);
+    }
+
+    function hideSettingsBanner() {
+        const banner = byId("settings-banner");
+        clearNode(banner);
+        banner.classList.add("d-none");
     }
 
     async function restartDaemon() {
@@ -829,6 +943,7 @@
 
     // ---- Tentative apply (firewall section) -----------------------------
     let rollbackTimer = null;
+    let activeRollbackStatus = null;
 
     async function tentativeApplyFirewall() {
         const btn = byId("settings-tentative-apply");
@@ -870,8 +985,8 @@
         if (resp.status === 412) { toast("Config changed externally; reloading…", "warning"); loadSection(currentSection); return; }
         if (resp.status === 422) {
             const data = await resp.json().catch(function () { return {}; });
-            const lines = (data.errors || []).map(function (e) { return e.field + ": " + e.message; });
-            toast("Validation errors:\n" + lines.join("\n"), "error");
+            showValidationErrors(data.errors || []);
+            toast("Validation errors. Review the highlighted fields.", "error");
             return;
         }
         if (resp.status === 409) { toast("A rollback is already pending. Confirm or revert it first.", "warning"); return; }
@@ -886,6 +1001,7 @@
     }
 
     function renderRollbackBanner(status) {
+        activeRollbackStatus = status || null;
         const banner = byId("settings-banner");
         clearNode(banner);
         banner.classList.remove("d-none");
@@ -908,6 +1024,21 @@
         banner.appendChild(revertBtn);
 
         startRollbackTimer(status);
+        renderRollbackFooter(status);
+    }
+
+    function renderRollbackFooter(status) {
+        activeRollbackStatus = status || null;
+        const old = byId("settings-rollback-footer");
+        if (old) old.remove();
+        if (!activeRollbackStatus || currentSection !== "firewall") return;
+        const footer = byId("settings-panel-footer");
+        if (!footer) return;
+        const badge = document.createElement("span");
+        badge.id = "settings-rollback-footer";
+        badge.className = "badge bg-warning-lt ms-auto";
+        badge.textContent = "Rollback pending";
+        footer.appendChild(badge);
     }
 
     function startRollbackTimer(status) {
@@ -919,6 +1050,8 @@
             const sec = remaining % 60;
             const span = byId("rollback-remaining");
             if (span) span.textContent = "Reverts in " + min + ":" + (sec < 10 ? "0" : "") + sec + ".";
+            const footerSpan = byId("settings-rollback-footer");
+            if (footerSpan) footerSpan.textContent = "Rollback: " + min + ":" + (sec < 10 ? "0" : "") + sec;
             if (remaining <= 0) {
                 clearInterval(rollbackTimer);
                 rollbackTimer = null;
@@ -955,6 +1088,8 @@
         });
         if (resp.ok) {
             if (rollbackTimer) { clearInterval(rollbackTimer); rollbackTimer = null; }
+            activeRollbackStatus = null;
+            renderRollbackFooter(null);
             const banner = byId("settings-banner");
             clearNode(banner);
             banner.classList.add("d-none");
@@ -973,6 +1108,8 @@
         });
         if (resp.ok) {
             if (rollbackTimer) { clearInterval(rollbackTimer); rollbackTimer = null; }
+            activeRollbackStatus = null;
+            renderRollbackFooter(null);
             await pollHealth();
             window.location.reload();
         } else {
@@ -1012,6 +1149,8 @@
         }
         loadSections().then(function () {
             renderNav();
+            const search = byId("settings-search");
+            if (search) filterNav(search.value);
             const hash = window.location.hash.replace(/^#/, "");
             const first = sections.length > 0 ? sections[0].id : "alerts";
             const target = sections.some(function (s) { return s.id === hash; }) ? hash : first;

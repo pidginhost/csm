@@ -21,6 +21,51 @@ import (
 
 const settingsURLPrefix = "/api/v1/settings/"
 
+type pendingSettingsSection struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
+func pendingRestartSections(live, disk *config.Config) []pendingSettingsSection {
+	if live == nil || disk == nil {
+		return nil
+	}
+
+	seen := map[string]struct{}{}
+	for _, c := range config.Diff(live, disk) {
+		if c.Tag == config.TagSafe {
+			continue
+		}
+		for _, section := range settingsSections {
+			if c.Field == section.YAMLPath || strings.HasPrefix(c.Field, section.YAMLPath+".") {
+				seen[section.ID] = struct{}{}
+				break
+			}
+		}
+	}
+
+	if len(seen) == 0 {
+		return nil
+	}
+
+	out := make([]pendingSettingsSection, 0, len(seen))
+	for _, section := range settingsSections {
+		if _, ok := seen[section.ID]; ok {
+			out = append(out, pendingSettingsSection{ID: section.ID, Title: section.Title})
+		}
+	}
+	return out
+}
+
+func cloneConfigForSettingsApply(src *config.Config) config.Config {
+	clone := *src
+	if src.Firewall != nil {
+		fw := *src.Firewall
+		clone.Firewall = &fw
+	}
+	return clone
+}
+
 func (s *Server) apiSettingsSections(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -82,22 +127,25 @@ func (s *Server) apiSettingsGet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var pendingFields []string
+	var pendingSections []pendingSettingsSection
 	if live := config.Active(); live != nil {
 		diff := config.Diff(live, disk)
 		for _, c := range diff {
-			if c.Field == section.YAMLPath || strings.HasPrefix(c.Field, section.YAMLPath+".") {
+			if c.Tag != config.TagSafe && (c.Field == section.YAMLPath || strings.HasPrefix(c.Field, section.YAMLPath+".")) {
 				pendingFields = append(pendingFields, c.Field)
 			}
 		}
+		pendingSections = pendingRestartSections(live, disk)
 	}
 
 	w.Header().Set("ETag", disk.Integrity.ConfigHash)
 	writeJSON(w, map[string]interface{}{
-		"section":         section,
-		"values":          values,
-		"etag":            disk.Integrity.ConfigHash,
-		"pending_restart": len(pendingFields) > 0,
-		"pending_fields":  pendingFields,
+		"section":          section,
+		"values":           values,
+		"etag":             disk.Integrity.ConfigHash,
+		"pending_restart":  len(pendingFields) > 0,
+		"pending_fields":   pendingFields,
+		"pending_sections": pendingSections,
 	})
 }
 
@@ -216,11 +264,7 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	clone := *disk
-	if disk.Firewall != nil {
-		fw := *disk.Firewall
-		clone.Firewall = &fw
-	}
+	clone := cloneConfigForSettingsApply(disk)
 
 	yamlChanges, errs := buildChangeSet(section, &clone, body.Changes)
 	if len(errs) > 0 {
@@ -260,7 +304,19 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 	newETag := clone.Integrity.ConfigHash
 
 	if len(restartFields) == 0 {
-		config.SetActive(&clone)
+		if live := config.Active(); live != nil {
+			liveClone := cloneConfigForSettingsApply(live)
+			if _, liveErrs := buildChangeSet(section, &liveClone, body.Changes); len(liveErrs) == 0 {
+				liveClone.Integrity.ConfigHash = newETag
+				config.SetActive(&liveClone)
+			} else {
+				livePatched := *live
+				livePatched.Integrity.ConfigHash = newETag
+				config.SetActive(&livePatched)
+			}
+		} else {
+			config.SetActive(&clone)
+		}
 	} else if live := config.Active(); live != nil {
 		livePatched := *live
 		livePatched.Integrity.ConfigHash = newETag
@@ -278,6 +334,7 @@ func (s *Server) apiSettingsPost(w http.ResponseWriter, r *http.Request) {
 		"applied":          applied,
 		"requires_restart": restartFields,
 		"pending_restart":  len(restartFields) > 0,
+		"pending_sections": pendingRestartSections(config.Active(), &clone),
 		"warnings":         warnings,
 		"new_etag":         newETag,
 	})

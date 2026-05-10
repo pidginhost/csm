@@ -603,6 +603,11 @@ func TestSettingsPageRendersFieldsetsAndSearch(t *testing.T) {
 		"hasGroups",
 		"settings-field-group",
 		"f.field_group",
+		"showValidationErrors",
+		"pendingSectionsSentence",
+		"hideSettingsBanner",
+		"settings-rollback-footer",
+		"settings-secret-set",
 	} {
 		if !strings.Contains(jsText, want) {
 			t.Errorf("settings.js missing phase-6 hook %q", want)
@@ -618,10 +623,14 @@ func TestSettingsPageRendersFieldsetsAndSearch(t *testing.T) {
 		".settings-field-group",
 		".settings-field-group__legend",
 		".settings-search",
+		".settings-secret-set",
 	} {
 		if !strings.Contains(cssText, want) {
 			t.Errorf("csm.css missing phase-6 class %q", want)
 		}
+	}
+	if !regexp.MustCompile(`(?s)\.settings-panel-footer\s*\{[^}]*position:\s*sticky`).MatchString(cssText) {
+		t.Error("settings panel footer must be sticky so save controls stay visible while scrolling")
 	}
 }
 
