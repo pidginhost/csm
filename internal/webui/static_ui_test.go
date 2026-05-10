@@ -423,6 +423,78 @@ func TestIncidentPageUsesDetailPanelDeepLinks(t *testing.T) {
 	}
 }
 
+// TestEmailPageUsesPhase8Primitives asserts the email workbench dropped the
+// old six-card stat row in favour of a status strip + grouped action rows
+// + tabs (Findings / Auth failures / Queue / Quarantine / Senders), and
+// that email.js no longer touches the removed stat-card IDs.
+func TestEmailPageUsesPhase8Primitives(t *testing.T) {
+	tmpl, err := os.ReadFile("../../ui/templates/email.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(tmpl)
+
+	for _, want := range []string{
+		`class="csm-page-header`,
+		`id="email-status-strip"`,
+		`id="email-action-groups"`,
+		`csm-summary-list`,
+		`id="email-protection-state"`,
+		`id="email-tab-findings"`,
+		`id="email-tab-auth"`,
+		`id="email-tab-queue"`,
+		`id="email-tab-quarantine"`,
+		`id="email-tab-senders"`,
+		`class="csm-toolbar"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("email.html missing phase-8 hook %q", want)
+		}
+	}
+
+	// The legacy six-card stat row, single filter form, and recent-threats
+	// card must be gone -- the plan rules them out as the first viewport.
+	for _, banned := range []string{
+		`id="stat-queue"`,
+		`id="stat-phishing"`,
+		`id="stat-accounts"`,
+		`id="stat-malware-blocked"`,
+		`id="stat-compromised"`,
+		`id="stat-queue-alerts"`,
+		`id="email-filters"`,
+		`id="recent-threats"`,
+	} {
+		if strings.Contains(text, banned) {
+			t.Errorf("email.html still contains legacy element %q", banned)
+		}
+	}
+
+	js, err := os.ReadFile("../../ui/static/js/email.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsText := string(js)
+	for _, want := range []string{
+		`/api/v1/email/groups`,
+		`renderActionGroups`,
+		`refreshStatusStrip`,
+		`CSM.summaryItem`,
+		`CSM.detailPanel.open`,
+	} {
+		if !strings.Contains(jsText, want) {
+			t.Errorf("email.js missing phase-8 hook %q", want)
+		}
+	}
+	for _, banned := range []string{
+		`updateStatCards`,
+		`renderRecentThreats`,
+	} {
+		if strings.Contains(jsText, banned) {
+			t.Errorf("email.js still references removed helper %q", banned)
+		}
+	}
+}
+
 // TestFindingsPageUsesPhase4Primitives ensures findings.html adopted the
 // shared layout primitives in phase 4 and that findings.js routes detail
 // rendering through CSM.detailPanel rather than inserting an inline

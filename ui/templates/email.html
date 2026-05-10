@@ -4,204 +4,181 @@
     <div class="csm-page-header mb-3">
         <div class="csm-page-header__main">
             <h1 class="csm-page-header__title"><i class="ti ti-mail"></i>&nbsp;Email Security</h1>
+            <div class="csm-page-header__subtitle" id="email-subtitle">Loading mail surface...</div>
+        </div>
+        <div class="csm-page-header__actions">
+            <button type="button" class="btn btn-ghost-secondary btn-sm" id="email-refresh" title="Refresh email surface" aria-label="Refresh email surface">
+                <i class="ti ti-refresh"></i>
+            </button>
         </div>
     </div>
 
-    <!-- Stat Cards -->
-    <div class="row row-deck row-cards mb-3">
-        <div class="col-6 col-lg">
+    <div class="csm-status-strip mb-3" id="email-status-strip"></div>
+
+    <!-- First viewport: action groups (left) + mail protection state (right) -->
+    <div class="row row-cards mb-3">
+        <div class="col-lg-7">
             <div class="card">
-                <div class="card-body">
-                    <div class="subheader" title="Current number of messages in the Exim mail queue">Mail Queue</div>
-                    <div class="h1 mb-0" id="stat-queue">&mdash;</div>
+                <div class="card-header">
+                    <h3 class="card-title"><i class="ti ti-target"></i>&nbsp;Email action groups</h3>
+                    <div class="card-actions">
+                        <span class="text-muted small" id="email-groups-count"></span>
+                    </div>
+                </div>
+                <div class="csm-summary-list" id="email-action-groups" aria-live="polite">
+                    <div class="csm-empty">
+                        <div class="csm-empty__icon"><i class="ti ti-loader-2"></i></div>
+                        <div class="csm-empty__reason">Loading action groups...</div>
+                    </div>
                 </div>
             </div>
         </div>
-        <div class="col-6 col-lg">
+        <div class="col-lg-5">
             <div class="card">
-                <div class="card-body">
-                    <div class="subheader" title="Phishing emails detected by content analysis">Phishing Detected</div>
-                    <div class="h1 mb-0 text-critical" id="stat-phishing">0</div>
+                <div class="card-header">
+                    <h3 class="card-title"><i class="ti ti-shield-lock"></i>&nbsp;Mail protection state</h3>
                 </div>
-            </div>
-        </div>
-        <div class="col-6 col-lg">
-            <div class="card">
-                <div class="card-body">
-                    <div class="subheader" title="Email accounts flagged for suspicious activity">Accounts Flagged</div>
-                    <div class="h1 mb-0 text-warning" id="stat-accounts">0</div>
-                </div>
-            </div>
-        </div>
-        <div class="col-6 col-lg">
-            <div class="card">
-                <div class="card-body">
-                    <div class="subheader" title="Malware attachments blocked by ClamAV/YARA-X scanning">Malware Blocked</div>
-                    <div class="h1 mb-0" id="stat-malware-blocked">0</div>
-                </div>
-            </div>
-        </div>
-        <div class="col-6 col-lg">
-            <div class="card">
-                <div class="card-body">
-                    <div class="subheader" title="Email accounts confirmed as compromised">Compromised</div>
-                    <div class="h1 mb-0 text-critical" id="stat-compromised">0</div>
-                    <div class="small text-muted mt-1" id="stat-compromised-detail"></div>
-                </div>
-            </div>
-        </div>
-        <div class="col-6 col-lg">
-            <div class="card">
-                <div class="card-body">
-                    <div class="subheader" title="Alerts triggered by mail queue size thresholds">Queue Alerts</div>
-                    <div class="h1 mb-0 text-info" id="stat-queue-alerts">0</div>
+                <div class="card-body" id="email-protection-state">
+                    <div class="mb-3" id="protection-queue">
+                        <div class="text-muted text-center py-3"><span class="spinner-border spinner-border-sm"></span> Loading queue...</div>
+                    </div>
+                    <hr class="my-2">
+                    <div class="subheader mb-2">SMTP firewall</div>
+                    <div class="mb-3" id="smtp-firewall">
+                        <div class="text-muted small">Loading...</div>
+                    </div>
+                    <hr class="my-2">
+                    <div class="subheader mb-2">AV engines</div>
+                    <div class="mb-1">
+                        <span class="status-dot" id="clamd-dot"></span>
+                        ClamAV: <span id="clamd-status">--</span>
+                    </div>
+                    <div class="mb-1">
+                        <span class="status-dot" id="yarax-dot"></span>
+                        YARA-X: <span id="yarax-status">--</span>
+                        (<span id="yarax-rules">0</span> rules)
+                    </div>
+                    <div class="mb-1">
+                        Watcher: <span id="watcher-mode">--</span>
+                    </div>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- Filter Row -->
-    <div class="card mb-3">
-        <div class="card-body py-2">
-            <form id="email-filters" class="row g-2 align-items-end">
-                <div class="col-auto">
-                    <label class="form-label mb-0 small" for="filter-from">From</label>
-                    <input type="date" id="filter-from" class="form-control form-control-sm">
-                </div>
-                <div class="col-auto">
-                    <label class="form-label mb-0 small" for="filter-to">To</label>
-                    <input type="date" id="filter-to" class="form-control form-control-sm">
-                </div>
-                <div class="col-auto">
-                    <label class="form-label mb-0 small" for="filter-severity">Severity</label>
-                    <select id="filter-severity" class="form-select form-select-sm">
+    <!-- Tabs: Findings, Auth failures, Queue, Quarantine, Senders -->
+    <div class="card">
+        <ul class="nav nav-tabs" role="tablist">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="email-tab-findings" data-bs-toggle="tab" data-bs-target="#email-pane-findings" type="button" role="tab" aria-controls="email-pane-findings" aria-selected="true">
+                    <i class="ti ti-list"></i>&nbsp;Findings
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="email-tab-auth" data-bs-toggle="tab" data-bs-target="#email-pane-auth" type="button" role="tab" aria-controls="email-pane-auth" aria-selected="false">
+                    <i class="ti ti-lock-access"></i>&nbsp;Auth failures
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="email-tab-queue" data-bs-toggle="tab" data-bs-target="#email-pane-queue" type="button" role="tab" aria-controls="email-pane-queue" aria-selected="false">
+                    <i class="ti ti-mailbox"></i>&nbsp;Queue
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="email-tab-quarantine" data-bs-toggle="tab" data-bs-target="#email-pane-quarantine" type="button" role="tab" aria-controls="email-pane-quarantine" aria-selected="false">
+                    <i class="ti ti-lock"></i>&nbsp;Quarantine
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="email-tab-senders" data-bs-toggle="tab" data-bs-target="#email-pane-senders" type="button" role="tab" aria-controls="email-pane-senders" aria-selected="false">
+                    <i class="ti ti-send"></i>&nbsp;Senders
+                </button>
+            </li>
+        </ul>
+
+        <div class="tab-content">
+            <!-- Findings tab -->
+            <div class="tab-pane fade show active" id="email-pane-findings" role="tabpanel" aria-labelledby="email-tab-findings" tabindex="0">
+                <div class="csm-toolbar">
+                    <input type="text" id="email-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search findings..." aria-label="Search findings">
+                    <input type="date" id="filter-from" class="form-control form-control-sm csm-input-sm" aria-label="From date">
+                    <input type="date" id="filter-to" class="form-control form-control-sm csm-input-sm" aria-label="To date">
+                    <select id="filter-severity" class="form-select form-select-sm csm-auto-width" aria-label="Severity">
                         <option value="">All</option>
                         <option value="2">Critical</option>
                         <option value="1">High</option>
                         <option value="0">Warning</option>
                     </select>
-                </div>
-                <div class="col-auto">
-                    <label class="form-label mb-0 small" for="filter-check">Check</label>
-                    <select id="filter-check" class="form-select form-select-sm">
+                    <select id="filter-check" class="form-select form-select-sm csm-auto-width" aria-label="Check">
                         <option value="">All</option>
                         <option value="email_phishing_content">Phishing</option>
                         <option value="email_malware">Malware</option>
-                        <option value="email_compromised_account">Compromised Account</option>
+                        <option value="email_compromised_account">Compromised</option>
                         <option value="email_spam_outbreak">Spam Outbreak</option>
                         <option value="email_credential_leak">Credential Leak</option>
                         <option value="email_auth_failure_realtime">Auth Failure</option>
                         <option value="mail_per_account">Volume</option>
                         <option value="mail_queue">Queue</option>
                     </select>
+                    <span class="csm-toolbar__spacer"></span>
+                    <span class="csm-toolbar__count" id="email-total-label"></span>
+                    <div class="dropdown csm-toolbar__actions">
+                        <button class="btn btn-ghost-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-label="Export current view">
+                            <i class="ti ti-download"></i>
+                        </button>
+                        <div class="dropdown-menu dropdown-menu-end">
+                            <a class="dropdown-item" href="#" data-export="csv"><i class="ti ti-file-spreadsheet me-2"></i>CSV</a>
+                            <a class="dropdown-item" href="#" data-export="json"><i class="ti ti-braces me-2"></i>JSON</a>
+                        </div>
+                    </div>
                 </div>
-                <div class="col">
-                    <label class="form-label mb-0 small" for="email-search">Search</label>
-                    <input type="text" id="email-search" class="form-control form-control-sm" placeholder="Search findings...">
+                <div class="table-responsive">
+                    <table class="table table-vcenter card-table table-sm" id="email-table">
+                        <thead>
+                            <tr>
+                                <th>Severity</th>
+                                <th>Type</th>
+                                <th>Account</th>
+                                <th>IP</th>
+                                <th>Details</th>
+                                <th>Time</th>
+                            </tr>
+                        </thead>
+                        <tbody id="email-tbody">
+                            <tr><td colspan="6" class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</td></tr>
+                        </tbody>
+                    </table>
                 </div>
-                <div class="col-auto">
-                    <button type="submit" class="btn btn-primary btn-sm"><i class="ti ti-filter"></i>&nbsp;Apply</button>
-                </div>
-            </form>
-        </div>
-    </div>
+            </div>
 
-    <!-- Email Findings Table (full width) -->
-    <div class="card mb-3">
-        <div class="card-header">
-            <h3 class="card-title"><i class="ti ti-mail-exclamation"></i>&nbsp;Email Findings</h3>
-            <div class="card-actions d-flex gap-2 align-items-center">
-                <span class="text-muted small" id="email-total-label"></span>
-                <div class="dropdown">
-                    <button class="btn btn-ghost-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-label="Export current view">
-                        <i class="ti ti-download"></i>&nbsp;Export
-                    </button>
-                    <div class="dropdown-menu dropdown-menu-end">
-                        <a class="dropdown-item" href="#" data-export="csv"><i class="ti ti-file-spreadsheet me-2"></i>CSV</a>
-                        <a class="dropdown-item" href="#" data-export="json"><i class="ti ti-braces me-2"></i>JSON</a>
+            <!-- Auth failures tab: grouped by mailbox / IP -->
+            <div class="tab-pane fade" id="email-pane-auth" role="tabpanel" aria-labelledby="email-tab-auth" tabindex="0">
+                <div class="csm-summary-list" id="email-auth-groups" aria-live="polite">
+                    <div class="csm-empty">
+                        <div class="csm-empty__icon"><i class="ti ti-loader-2"></i></div>
+                        <div class="csm-empty__reason">Auth-failure clusters load when this tab is opened.</div>
                     </div>
                 </div>
             </div>
-        </div>
-        <div class="table-responsive">
-            <table class="table table-vcenter card-table table-sm" id="email-table">
-                <thead>
-                    <tr>
-                        <th>Severity</th>
-                        <th>Type</th>
-                        <th>Account</th>
-                        <th>IP</th>
-                        <th>Details</th>
-                        <th>Time</th>
-                    </tr>
-                </thead>
-                <tbody id="email-tbody">
-                    <tr><td colspan="6" class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</td></tr>
-                </tbody>
-            </table>
-        </div>
-    </div>
 
-    <!-- Secondary cards: 2 rows of 3 -->
-    <div class="row row-deck row-cards mb-3">
-        <div class="col-lg-4">
-            <div class="card">
-                <div class="card-header"><h3 class="card-title"><i class="ti ti-alert-triangle"></i>&nbsp;Recent Threats</h3></div>
-                <div class="card-body p-0 csm-list-scroll-sm" id="recent-threats">
-                    <div class="text-muted text-center py-3"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
-                </div>
-            </div>
-        </div>
-        <div class="col-lg-4">
-            <div class="card h-100">
-                <div class="card-header"><h3 class="card-title"><i class="ti ti-mailbox"></i>&nbsp;Queue &amp; Protection</h3></div>
+            <!-- Queue tab -->
+            <div class="tab-pane fade" id="email-pane-queue" role="tabpanel" aria-labelledby="email-tab-queue" tabindex="0">
                 <div class="card-body" id="queue-health">
                     <div class="text-muted text-center py-3"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
                 </div>
             </div>
-        </div>
-        <div class="col-lg-4">
-            <div class="card">
-                <div class="card-header"><h3 class="card-title"><i class="ti ti-send"></i>&nbsp;Top Senders</h3></div>
-                <div class="card-body p-0 csm-list-scroll-sm" id="top-senders">
-                    <div class="text-muted text-center py-3"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
-                </div>
-            </div>
-        </div>
-    </div>
-    <div class="row row-deck row-cards mb-3">
-        <div class="col-lg-4">
-            <div class="card">
-                <div class="card-header"><h3 class="card-title"><i class="ti ti-lock"></i>&nbsp;Quarantined Messages</h3></div>
+
+            <!-- Quarantine tab (full width) -->
+            <div class="tab-pane fade" id="email-pane-quarantine" role="tabpanel" aria-labelledby="email-tab-quarantine" tabindex="0">
                 <div class="card-body">
                     <div id="quarantine-table"></div>
                 </div>
             </div>
-        </div>
-        <div class="col-lg-4">
-            <div class="card">
-                <div class="card-header"><h3 class="card-title"><i class="ti ti-firewall"></i>&nbsp;SMTP Firewall</h3></div>
-                <div class="card-body" id="smtp-firewall">
+
+            <!-- Senders tab -->
+            <div class="tab-pane fade" id="email-pane-senders" role="tabpanel" aria-labelledby="email-tab-senders" tabindex="0">
+                <div class="card-body p-0 csm-list-scroll-sm" id="top-senders">
                     <div class="text-muted text-center py-3"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
-                </div>
-            </div>
-        </div>
-        <div class="col-lg-4">
-            <div class="card">
-                <div class="card-header"><h3 class="card-title"><i class="ti ti-virus-search"></i>&nbsp;AV Engine Status</h3></div>
-                <div class="card-body">
-                    <div class="mb-2">
-                        <span class="status-dot" id="clamd-dot"></span>
-                        ClamAV: <span id="clamd-status">--</span>
-                    </div>
-                    <div class="mb-2">
-                        <span class="status-dot" id="yarax-dot"></span>
-                        YARA-X: <span id="yarax-status">--</span>
-                        (<span id="yarax-rules">0</span> rules)
-                    </div>
-                    <div class="mb-2">
-                        Watcher: <span id="watcher-mode">--</span>
-                    </div>
                 </div>
             </div>
         </div>
