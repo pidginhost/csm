@@ -75,7 +75,7 @@
         progWrap.className = 'progress progress-sm mb-3';
         var progBar = document.createElement('div');
         progBar.className = 'progress-bar ' + color;
-        progBar.style.width = pct + '%';
+        CSM.setProgressBar(progBar, pct);
         progWrap.appendChild(progBar);
         el.appendChild(progWrap);
 
@@ -149,11 +149,12 @@
             html += '<div class="d-flex align-items-center mb-1">';
             html += '<span class="font-monospace small">' + CSM.esc(s.domain) + '</span>';
             html += '<span class="ms-auto small ' + countClass + '">' + s.count + '</span></div>';
-            html += '<div class="progress progress-sm"><div class="progress-bar bg-primary" style="width:' + pct + '%"></div></div>';
+            html += '<div class="progress progress-sm"><div class="progress-bar bg-primary csm-progress-zero" role="progressbar" aria-valuemin="0" aria-valuemax="100" data-csm-progress="' + CSM.attr(pct) + '"></div></div>';
             html += '</div>';
         }
         html += '</div>';
         el.innerHTML = html;
+        CSM.applyProgressBars(el);
 
         // Click sender domain to filter findings table
         var items = el.querySelectorAll('[data-sender-domain]');

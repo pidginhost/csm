@@ -299,11 +299,21 @@ CSM.validateIP = function(s) {
 // Debounce utility
 CSM.debounce = function(fn, delay) {
     var timer = null;
-    return function() {
+    var debounced = function() {
         var ctx = this, args = arguments;
         if (timer) clearTimeout(timer);
-        timer = setTimeout(function() { fn.apply(ctx, args); }, delay);
+        timer = setTimeout(function() {
+            timer = null;
+            fn.apply(ctx, args);
+        }, delay);
     };
+    debounced.cancel = function() {
+        if (timer) {
+            clearTimeout(timer);
+            timer = null;
+        }
+    };
+    return debounced;
 };
 
 // Client-side table export (CSV / JSON)

@@ -77,6 +77,31 @@ CSM.emptyStateBlock = function(opts) {
     return html;
 };
 
+CSM.clampPercent = function(value) {
+    var n = Number(value);
+    if (!isFinite(n)) return 0;
+    return Math.max(0, Math.min(100, Math.round(n)));
+};
+
+CSM.setProgressBar = function(bar, value) {
+    if (!bar) return 0;
+    var pct = CSM.clampPercent(value);
+    if (!bar.hasAttribute('role')) bar.setAttribute('role', 'progressbar');
+    if (!bar.hasAttribute('aria-valuemin')) bar.setAttribute('aria-valuemin', '0');
+    if (!bar.hasAttribute('aria-valuemax')) bar.setAttribute('aria-valuemax', '100');
+    bar.style.width = pct + '%';
+    bar.setAttribute('aria-valuenow', String(pct));
+    return pct;
+};
+
+CSM.applyProgressBars = function(root) {
+    var scope = root || document;
+    var bars = scope.querySelectorAll('[data-csm-progress]');
+    for (var i = 0; i < bars.length; i++) {
+        CSM.setProgressBar(bars[i], bars[i].getAttribute('data-csm-progress'));
+    }
+};
+
 // Detail panel helper. Thin wrapper around the Bootstrap offcanvas that
 // ships with Tabler. Mounts a single shared offcanvas element on first use
 // so callers do not need page-specific markup.
@@ -96,6 +121,8 @@ CSM.detailPanel = (function() {
         panelEl = document.createElement('div');
         panelEl.className = 'offcanvas offcanvas-end csm-detail-panel';
         panelEl.tabIndex = -1;
+        panelEl.setAttribute('role', 'dialog');
+        panelEl.setAttribute('aria-modal', 'true');
         panelEl.setAttribute('aria-labelledby', 'csm-detail-panel-title');
         var header = document.createElement('div');
         header.className = 'csm-detail-panel__header';

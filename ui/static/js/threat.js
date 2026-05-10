@@ -48,11 +48,12 @@ fetch(CSM.apiUrl('/api/v1/threat/stats'),{credentials:'same-origin'}).then(check
         var t=types[i], v=byType[t];
         var pct=Math.round(v/maxVal*100);
         html+='<tr><td class="csm-w-120 text-nowrap small">'+CSM.esc(t.replace(/_/g,' '))+'</td>';
-        html+='<td><div class="progress progress-sm"><div class="progress-bar bg-primary" style="width:'+pct+'%"></div></div></td>';
+        html+='<td><div class="progress progress-sm"><div class="progress-bar bg-primary csm-progress-zero" role="progressbar" aria-valuemin="0" aria-valuemax="100" data-csm-progress="'+CSM.attr(pct)+'"></div></div></td>';
         html+='<td class="csm-w-50 text-end small font-monospace">'+v+'</td></tr>';
     }
     html+='</table>';
     typesDiv.innerHTML=html;
+    CSM.applyProgressBars(typesDiv);
 
     // Hourly chart (Chart.js)
     var hourlyDiv=document.getElementById('chart-hourly');

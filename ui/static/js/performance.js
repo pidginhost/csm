@@ -75,7 +75,7 @@
                     ramEl.textContent = usedMB + ' / ' + totalMB + ' MB';
                     ramEl.className = 'h1 mb-0 ' + colorClass(ramPct, 70, 90);
                     if (ramBarEl) {
-                        ramBarEl.style.width = ramPct + '%';
+                        CSM.setProgressBar(ramBarEl, ramPct);
                         ramBarEl.className = 'progress-bar ' + (ramPct >= 90 ? 'bg-danger' : ramPct >= 75 ? 'bg-warning' : 'bg-success');
                     }
                 }
@@ -151,7 +151,7 @@
                             progWrap.className = 'progress progress-sm';
                             var progBar = document.createElement('div');
                             progBar.className = 'progress-bar bg-primary';
-                            progBar.style.width = pct + '%';
+                            CSM.setProgressBar(progBar, pct);
                             progWrap.appendChild(progBar);
                             tdBar.appendChild(progWrap);
                             tr.appendChild(tdBar);

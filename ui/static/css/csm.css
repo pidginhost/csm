@@ -743,3 +743,4 @@ body.theme-dark { background-color: #1a2234; }
 .csm-fs-2xl { font-size: 3rem; }
 .csm-opacity-30 { opacity: 0.3; }
 .csm-modal-footer-compact { padding: 0.5rem 0.75rem; }
+.csm-progress-zero { width: 0%; }

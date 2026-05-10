@@ -47,6 +47,7 @@ CSM.Table = function(opts) {
     this.opts = opts;
     this.emptyState = opts.emptyState || null;
     this._searchInput = null;
+    this._searchDebounce = null;
 
     if (opts.density === 'compact') {
         this.table.classList.add('table-sm');
@@ -67,6 +68,9 @@ CSM.Table = function(opts) {
             this.allRows.push({ row: rows[i], detail: detailRow, text: rows[i].textContent.toLowerCase() });
         }
     }
+    if (opts.mobileRowCard) {
+        this._applyMobileRowLabels();
+    }
 
     this.filteredRows = this.allRows.slice();
 
@@ -79,14 +83,14 @@ CSM.Table = function(opts) {
         if (searchEl) {
             this._searchInput = searchEl;
             var self = this;
-            var _searchDebounce = CSM.debounce(function(val) {
+            this._searchDebounce = CSM.debounce(function(val) {
                 self.searchText = val;
                 self.currentPage = 1;
                 self.applyFilters();
                 self._saveState();
             }, 300);
             searchEl.addEventListener('input', function() {
-                _searchDebounce(this.value.toLowerCase());
+                self._searchDebounce(this.value.toLowerCase());
             });
         }
     }
@@ -308,14 +312,34 @@ CSM.Table.prototype._renderControls = function(total, totalPages) {
     }
 };
 
+CSM.Table.prototype._applyMobileRowLabels = function() {
+    var headers = this.table.querySelectorAll('thead th');
+    if (!headers.length) return;
+    for (var i = 0; i < this.allRows.length; i++) {
+        var cells = this.allRows[i].row.cells;
+        for (var c = 0; c < cells.length; c++) {
+            if (cells[c].hasAttribute('data-label')) continue;
+            var header = headers[c];
+            if (!header) continue;
+            var label = header.getAttribute('data-label') || header.textContent.replace(/\s+/g, ' ').trim();
+            if (label) cells[c].setAttribute('data-label', label);
+        }
+    }
+};
+
 // Clear search + all filter values, reset to page 1.
 CSM.Table.prototype.clearFilters = function() {
     this.searchText = '';
     this.filterValues = {};
+    if (this._searchDebounce && this._searchDebounce.cancel) this._searchDebounce.cancel();
     if (this._searchInput) this._searchInput.value = '';
     for (var f = 0; f < this.filters.length; f++) {
         var el = document.getElementById(this.filters[f].id);
-        if (el) el.value = (el.options && el.options[0]) ? el.options[0].value : '';
+        if (el) {
+            var value = (el.options && el.options[0]) ? el.options[0].value : '';
+            el.value = value;
+            if (value && value !== 'all') this.filterValues[this.filters[f].id] = value;
+        }
     }
     this.currentPage = 1;
     this.applyFilters();

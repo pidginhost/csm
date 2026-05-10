@@ -27,7 +27,7 @@
         var pct = Math.round((report.score / report.total) * 100);
         document.getElementById('score-text').textContent = report.score + ' / ' + report.total + ' checks passed';
         var bar = document.getElementById('score-bar');
-        bar.style.width = pct + '%';
+        CSM.setProgressBar(bar, pct);
         bar.className = 'progress-bar';
         if (pct >= 80) bar.classList.add('bg-success');
         else if (pct >= 60) bar.classList.add('bg-warning');
