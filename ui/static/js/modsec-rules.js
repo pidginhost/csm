@@ -26,7 +26,11 @@ function loadRules() {
         })
         .catch(function(err) {
             document.getElementById('modsec-rules-loading').innerHTML =
-                '<div class="text-danger"><i class="ti ti-alert-triangle"></i> Failed to load rules: ' + CSM.esc(err.message || 'unknown') + '</div>';
+                CSM.emptyStateBlock({
+                    icon: 'alert-triangle',
+                    title: 'Failed to load rules',
+                    reason: err.message || 'unknown'
+                });
         });
 }
 

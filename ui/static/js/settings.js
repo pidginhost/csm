@@ -71,6 +71,7 @@
                 item.className = "settings-nav-link";
                 item.href = "#" + s.id;
                 item.dataset.section = s.id;
+                item.dataset.search = sectionSearchText(s);
                 item.appendChild(iconEl("ti-" + s.icon));
                 const label = document.createElement("span");
                 label.className = "settings-nav-label";
@@ -96,17 +97,15 @@
         });
     }
 
-    // Filter the sidebar by free-text. Matches the section title and the
-    // section ID. Group headers without a visible child are also hidden so
-    // the sidebar does not show a label with no entries beneath it.
+    // Filter the sidebar by free-text. Matches section metadata and field
+    // labels/keys so operators can search for the setting they need.
     function filterNav(query) {
         const q = (query || "").trim().toLowerCase();
         const links = document.querySelectorAll(".settings-nav-link");
         links.forEach(function (link) {
             if (!q) { link.hidden = false; return; }
-            const id = (link.dataset.section || "").toLowerCase();
-            const label = (link.querySelector(".settings-nav-label") || {}).textContent || "";
-            const match = id.indexOf(q) >= 0 || label.toLowerCase().indexOf(q) >= 0;
+            const haystack = link.dataset.search || "";
+            const match = haystack.indexOf(q) >= 0;
             link.hidden = !match;
         });
         const headers = document.querySelectorAll(".settings-nav-group-header");
@@ -122,6 +121,21 @@
             }
             header.hidden = !nextVisible;
         });
+    }
+
+    function sectionSearchText(section) {
+        const parts = [
+            section.id,
+            section.title,
+            section.yaml_path,
+            section.group
+        ];
+        (section.fields || []).forEach(function (field) {
+            parts.push(field.label, field.yaml_path, field.help, field.field_group);
+        });
+        return parts.filter(function (v) { return v !== undefined && v !== null && v !== ""; })
+            .join(" ")
+            .toLowerCase();
     }
 
     function refreshDirtyMarkers() {

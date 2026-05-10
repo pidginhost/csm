@@ -1,20 +1,16 @@
 {{define "title"}}Settings{{end}}
 {{define "page"}}settings{{end}}
 {{define "content"}}
-<div class="page-header d-print-none">
-  <div class="container-xl">
-    <div class="row g-2 align-items-center">
-      <div class="col">
-        <h2 class="page-title"><i class="ti ti-settings"></i>&nbsp;Settings</h2>
-        <div class="text-muted mt-1">Edit CSM configuration. Sections marked <span class="badge bg-green-lt">Applies live</span> reload without a restart; <span class="badge bg-orange-lt">Restart required</span> sections save to disk and prompt you.</div>
-      </div>
-    </div>
+<div class="csm-page-header d-print-none mb-3">
+  <div class="csm-page-header__main">
+    <h1 class="csm-page-header__title"><i class="ti ti-settings"></i>&nbsp;Settings</h1>
+    <div class="csm-page-header__subtitle">Edit CSM configuration. Sections marked <span class="badge bg-green-lt">Applies live</span> reload without a restart; <span class="badge bg-orange-lt">Restart required</span> sections save to disk and prompt you.</div>
   </div>
 </div>
 
-<div id="settings-banner" class="alert alert-warning mx-3 mt-3 d-none d-print-none" role="alert"></div>
+<div id="settings-banner" class="alert alert-warning mb-3 d-none d-print-none" role="alert"></div>
 
-<div class="container-xl mt-3 settings-page">
+<div class="settings-page">
   <div class="row g-3">
     <aside class="col-12 col-md-4 col-lg-3 col-xxl-2">
       <div class="card settings-nav-card">

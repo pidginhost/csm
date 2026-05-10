@@ -115,6 +115,18 @@ func webUISourceFiles(t *testing.T, patterns ...string) []string {
 	return out
 }
 
+func sourceHasClass(text, className string) bool {
+	classAttr := regexp.MustCompile(`class="([^"]*)"`)
+	for _, match := range classAttr.FindAllStringSubmatch(text, -1) {
+		for _, field := range strings.Fields(match[1]) {
+			if field == className {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // TestSharedUIPrimitivesPresent asserts the Phase 1 shared CSS classes and JS
 // helpers exist. Pages adopt them in later phases; the test stops the
 // primitives from drifting away while phases roll out.
@@ -600,6 +612,10 @@ func TestSettingsPageRendersFieldsetsAndSearch(t *testing.T) {
 	jsText := string(js)
 	for _, want := range []string{
 		"filterNav",
+		"sectionSearchText",
+		"item.dataset.search",
+		"field.label",
+		"field.yaml_path",
 		"hasGroups",
 		"settings-field-group",
 		"f.field_group",
@@ -644,7 +660,7 @@ func TestEveryOperatorPageUsesSharedHeader(t *testing.T) {
 		"dashboard.html", "email.html", "findings.html", "firewall.html",
 		"hardening.html", "incident.html", "modsec.html",
 		"modsec-rules.html", "performance.html", "quarantine.html",
-		"rules.html", "threat.html",
+		"rules.html", "settings.html", "threat.html",
 	}
 	for _, name := range pages {
 		path := "../../ui/templates/" + name
@@ -653,14 +669,42 @@ func TestEveryOperatorPageUsesSharedHeader(t *testing.T) {
 			t.Fatalf("read %s: %v", path, err)
 		}
 		text := string(src)
-		if !strings.Contains(text, "csm-page-header") {
+		if !sourceHasClass(text, "csm-page-header") {
 			t.Errorf("%s missing .csm-page-header primitive", name)
 		}
-		// Block the legacy Tabler header attribute that Phase 7 removed
-		// (matches `<div class="page-header...` but not the new one).
-		if regexp.MustCompile(`class="page-header[ "]`).MatchString(text) {
+		if sourceHasClass(text, "page-header") {
 			t.Errorf("%s still uses legacy Tabler page-header; switch to csm-page-header", name)
 		}
+		if !strings.Contains(text, `<h1 class="csm-page-header__title"`) {
+			t.Errorf("%s must expose the page title as the page-level h1", name)
+		}
+		if strings.Contains(text, `<h2 class="csm-page-header__title"`) {
+			t.Errorf("%s still renders the shared page title as h2", name)
+		}
+	}
+
+	layout, err := os.ReadFile("../../ui/templates/layout.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(layout), `<h1 class="navbar-brand`) {
+		t.Fatal("layout.html must not use the product brand as the page-level h1")
+	}
+}
+
+func TestModSecRulesPageHasNoPlaceholderCards(t *testing.T) {
+	src, err := os.ReadFile("../../ui/templates/modsec-rules.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, banned := range []string{"owasp crs rule management coming soon", "owasp crs placeholder"} {
+		if strings.Contains(strings.ToLower(text), banned) {
+			t.Fatalf("modsec-rules.html still contains placeholder copy %q", banned)
+		}
+	}
+	if !sourceHasClass(text, "csm-empty") {
+		t.Fatal("modsec-rules.html should use the shared csm-empty state for loading/unconfigured states")
 	}
 }
 
