@@ -540,16 +540,24 @@ if (_findingsSearchEl) _findingsSearchEl.addEventListener('input', CSM.debounce(
 (function() {
     var groupByEl = document.getElementById('group-by');
     if (!groupByEl) return;
+    var groupModeButtons = document.querySelectorAll('[data-group-mode]');
 
-    // Inject CSS for group headers
-    var style = document.createElement('style');
-    style.textContent =
-        '.csm-group-header { cursor: pointer; user-select: none; }' +
-        '.csm-group-header td { background-color: rgba(0,0,0,0.03); font-weight: 600; padding: 8px 12px !important; }' +
-        '.theme-dark .csm-group-header td { background-color: rgba(255,255,255,0.04); }' +
-        '.csm-group-header .csm-group-arrow { display: inline-block; transition: transform 0.2s; margin-right: 6px; }' +
-        '.csm-group-header.collapsed .csm-group-arrow { transform: rotate(-90deg); }';
-    document.head.appendChild(style);
+    function syncGroupModeButtons() {
+        var mode = groupByEl.value || 'none';
+        groupModeButtons.forEach(function(btn) {
+            var active = btn.getAttribute('data-group-mode') === mode;
+            btn.classList.toggle('active', active);
+            btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+        });
+    }
+
+    groupModeButtons.forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            groupByEl.value = this.getAttribute('data-group-mode') || 'none';
+            groupByEl.dispatchEvent(new Event('change'));
+        });
+    });
+    syncGroupModeButtons();
 
     function extractAccount(row) {
         // Prefer data-account attribute (set from API response)
@@ -663,6 +671,7 @@ if (_findingsSearchEl) _findingsSearchEl.addEventListener('input', CSM.debounce(
     }
 
     groupByEl.addEventListener('change', function() {
+        syncGroupModeButtons();
         applyGrouping();
         syncFindingsURL();
     });
@@ -690,6 +699,14 @@ if (_findingsSearchEl) _findingsSearchEl.addEventListener('input', CSM.debounce(
             }
         });
     }
+    document.querySelectorAll('#findings-table thead th').forEach(function(th) {
+        if (th.querySelector('input[type="checkbox"]')) return;
+        th.addEventListener('click', function() {
+            if (groupByEl.value !== 'none') {
+                setTimeout(applyGrouping, 50);
+            }
+        });
+    });
 })();
 
 // --- Open finding detail in shared CSM.detailPanel (replaces inline row expansion) ---

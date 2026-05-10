@@ -78,6 +78,21 @@
 .details-row { display: none; }
 .details-row.show { display: table-row; }
 
+/* --- findings.html: grouped active findings ------------------------------ */
+.csm-group-header { cursor: pointer; user-select: none; }
+.csm-group-header td {
+    background-color: rgba(0, 0, 0, 0.03);
+    font-weight: 600;
+    padding: 8px 12px !important;
+}
+.theme-dark .csm-group-header td { background-color: rgba(255, 255, 255, 0.04); }
+.csm-group-header .csm-group-arrow {
+    display: inline-block;
+    transition: transform 0.2s;
+    margin-right: 6px;
+}
+.csm-group-header.collapsed .csm-group-arrow { transform: rotate(-90deg); }
+
 /* --- layout.html: sortable table headers --------------------------------- */
 th.sort-asc::after { content: ' ▲'; opacity: 0.5; }
 th.sort-desc::after { content: ' ▼'; opacity: 0.5; }

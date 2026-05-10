@@ -411,6 +411,8 @@ func TestFindingsPageUsesPhase4Primitives(t *testing.T) {
 		`class="csm-page-header`,
 		`id="open-scan-modal"`,
 		`id="scan-account-modal"`,
+		`id="group-mode-toggle"`,
+		`data-group-mode="account"`,
 		`class="csm-filter-toolbar"`,
 		`id="findings-bulk-bar"`,
 		`class="csm-sticky-actions"`,
@@ -441,6 +443,7 @@ func TestFindingsPageUsesPhase4Primitives(t *testing.T) {
 		"CSM.detailPanel.open",
 		"findings-bulk-bar",
 		"clearAllSelections",
+		"syncGroupModeButtons",
 	} {
 		if !strings.Contains(jsText, want) {
 			t.Errorf("findings.js missing phase-4 hook %q", want)
@@ -448,6 +451,32 @@ func TestFindingsPageUsesPhase4Primitives(t *testing.T) {
 	}
 	if strings.Contains(jsText, "finding-detail-row") {
 		t.Error("findings.js still inserts the legacy finding-detail-row tr; use CSM.detailPanel")
+	}
+	if strings.Contains(jsText, "document.createElement('style')") {
+		t.Error("findings.js must keep group-row CSS in csm.css, not inject a style tag")
+	}
+
+	css, err := os.ReadFile("../../ui/static/css/csm.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(css), ".csm-group-header") {
+		t.Fatal("csm.css missing grouped findings row styles")
+	}
+
+	historyJS, err := os.ReadFile("../../ui/static/js/history.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	historyText := string(historyJS)
+	for _, want := range []string{
+		`params.get('tab') === 'history'`,
+		`params.get('severity')`,
+		`new bootstrap.Tab(historyTabLink)`,
+	} {
+		if !strings.Contains(historyText, want) {
+			t.Errorf("history.js missing history URL restore hook %q", want)
+		}
 	}
 }
 

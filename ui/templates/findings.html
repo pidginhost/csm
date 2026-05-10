@@ -13,6 +13,17 @@
             <button type="button" class="btn btn-primary btn-sm" id="open-scan-modal" data-bs-toggle="modal" data-bs-target="#scan-account-modal" title="Run all security checks on a single cPanel account">
                 <i class="ti ti-radar-2"></i>&nbsp;Scan account
             </button>
+            <div class="btn-group btn-group-sm" id="group-mode-toggle" role="group" aria-label="Findings view mode">
+                <button type="button" class="btn btn-ghost-secondary active" data-group-mode="none" aria-pressed="true" title="List findings without grouping">
+                    <i class="ti ti-list"></i>&nbsp;List
+                </button>
+                <button type="button" class="btn btn-ghost-secondary" data-group-mode="account" aria-pressed="false" title="Group findings by account">
+                    <i class="ti ti-user"></i>&nbsp;Account
+                </button>
+                <button type="button" class="btn btn-ghost-secondary" data-group-mode="check" aria-pressed="false" title="Group findings by check type">
+                    <i class="ti ti-tags"></i>&nbsp;Type
+                </button>
+            </div>
             <div class="dropdown">
                 <button class="btn btn-ghost-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="Export visible findings">
                     <i class="ti ti-download"></i>&nbsp;Export
@@ -58,17 +69,17 @@
                     </select>
                     <input type="search" id="account-filter" list="account-filter-list" class="form-control form-control-sm csm-input-sm" placeholder="All accounts" autocomplete="off" aria-label="Filter by account">
                     <datalist id="account-filter-list"></datalist>
-                    <select id="group-by" class="form-select form-select-sm csm-auto-width" title="Group findings by account or check type" aria-label="Group findings">
-                        <option value="none">No Grouping</option>
-                        <option value="account">Group by Account</option>
-                        <option value="check">Group by Check Type</option>
-                    </select>
                     <select id="per-page" class="form-select form-select-sm csm-auto-width" aria-label="Page size">
                         <option value="25">25/page</option>
                         <option value="50">50/page</option>
                         <option value="100">100/page</option>
                         <option value="250">250/page</option>
                         <option value="0">All</option>
+                    </select>
+                    <select id="group-by" class="d-none" aria-hidden="true" tabindex="-1">
+                        <option value="none">No Grouping</option>
+                        <option value="account">Group by Account</option>
+                        <option value="check">Group by Check Type</option>
                     </select>
                 </div>
                 <div id="findings-loading" class="card-body text-center text-muted py-4">
