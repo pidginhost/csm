@@ -1,15 +1,37 @@
-// CSM Layout - nav active state and theme toggle
-document.querySelectorAll('#csm-nav a[href]').forEach(function(a){
-    var href = a.getAttribute('href');
-    if (href && href !== '#' && href !== '/' && window.location.pathname.indexOf(href) === 0) {
-        a.classList.add('active');
-        var dropdown = a.closest('.dropdown');
-        if (dropdown) {
-            var toggle = dropdown.querySelector('.nav-link.dropdown-toggle');
-            if (toggle) toggle.classList.add('active');
+// CSM Layout - sidebar active state and theme toggle.
+// Active link is driven by body[data-csm-page]; each nav <li> carries
+// data-csm-route, which matches the page name set by the template's
+// {{define "page"}} block. Falling back to URL prefix matching keeps
+// deep-links and history redirects highlighted correctly.
+(function() {
+    var page = document.body.getAttribute('data-csm-page') || '';
+    var pathname = window.location.pathname;
+    var items = document.querySelectorAll('#csm-nav [data-csm-route]');
+    var matched = false;
+    for (var i = 0; i < items.length; i++) {
+        var route = items[i].getAttribute('data-csm-route');
+        var link = items[i].querySelector('a.nav-link');
+        if (!link) continue;
+        if (route && route === page) {
+            link.classList.add('active');
+            link.setAttribute('aria-current', 'page');
+            matched = true;
         }
     }
-});
+    if (matched) return;
+    // Fallback: match by URL prefix for routes without an explicit page name.
+    for (var j = 0; j < items.length; j++) {
+        var link2 = items[j].querySelector('a.nav-link');
+        if (!link2) continue;
+        var href = link2.getAttribute('href');
+        if (href && href !== '/' && pathname.indexOf(href) === 0) {
+            link2.classList.add('active');
+            link2.setAttribute('aria-current', 'page');
+            return;
+        }
+    }
+})();
+
 function applyTheme(t) {
     document.documentElement.setAttribute('data-bs-theme', t);
     document.documentElement.classList.remove('theme-dark', 'theme-light');

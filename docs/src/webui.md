@@ -2,6 +2,22 @@
 
 HTTPS dashboard with polling-based live updates (10s feed, 60s stats). Dark/light theme toggle.
 
+## Navigation
+
+The sidebar groups pages by operator workflow. URLs are stable; the
+groups only reorder visibility:
+
+- **Overview** - Dashboard
+- **Triage** - Incidents, Findings (Active and History tabs)
+- **Response** - Firewall, Quarantine, Cleanup, Email, ModSecurity, Threat Intel
+- **Operations** - Performance, Hardening, Rules, ModSec Rules, Audit
+- **Configuration** - Settings
+
+On viewports under 992px the sidebar collapses into a top-bar drawer
+toggled from the hamburger button. Account detail (`/account`) is
+hidden from the sidebar; it is reached from finding rows, incident
+detail, and Threat Intel result panels.
+
 ## Pages
 
 | Page | URL | Purpose |

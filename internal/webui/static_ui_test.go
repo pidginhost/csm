@@ -175,6 +175,68 @@ func TestSharedUIPrimitivesPresent(t *testing.T) {
 	}
 }
 
+// TestSidebarNavCoversEveryVisiblePage asserts the sidebar exposes every
+// page that is part of the operator workflow. /history and /account are
+// reached from deep links and are intentionally not in the sidebar; if
+// you remove a page from the sidebar that is not on this allow-list, add
+// it back or document the removal.
+func TestSidebarNavCoversEveryVisiblePage(t *testing.T) {
+	tmpl, err := os.ReadFile("../../ui/templates/layout.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(tmpl)
+
+	wantHrefs := []string{
+		"/dashboard",
+		"/incident",
+		"/findings",
+		"/firewall",
+		"/quarantine",
+		"/cleanup-history",
+		"/email",
+		"/modsec",
+		"/threat",
+		"/performance",
+		"/hardening",
+		"/rules",
+		"/modsec/rules",
+		"/audit",
+		"/settings",
+	}
+	for _, href := range wantHrefs {
+		needle := `href="` + href + `"`
+		if !strings.Contains(text, needle) {
+			t.Errorf("layout.html sidebar missing nav entry for %s", href)
+		}
+	}
+
+	// Each entry must carry a data-csm-route hook so layout.js can light it.
+	for _, route := range []string{
+		"dashboard", "incident", "findings", "firewall", "quarantine",
+		"cleanup-history", "email", "modsec", "threat", "performance",
+		"hardening", "rules", "modsec-rules", "audit", "settings",
+	} {
+		needle := `data-csm-route="` + route + `"`
+		if !strings.Contains(text, needle) {
+			t.Errorf("layout.html sidebar missing data-csm-route hook %s", route)
+		}
+	}
+
+	// Layout root carries the page name attribute that drives active state.
+	if !strings.Contains(text, `data-csm-page="{{template "page" .}}"`) {
+		t.Fatal("layout.html body must expose data-csm-page for sidebar active state")
+	}
+
+	// Sidebar groups must be present (workflow names visible to operators).
+	for _, group := range []string{"Overview", "Triage", "Response", "Operations", "Configuration"} {
+		needle := `>` + group + `<`
+		if !strings.Contains(text, needle) {
+			t.Errorf("layout.html sidebar missing group label %s", group)
+		}
+	}
+}
+
 func TestSharedUIScriptsLoadBeforeTableExtensions(t *testing.T) {
 	tmpl, err := os.ReadFile("../../ui/templates/layout.html")
 	if err != nil {

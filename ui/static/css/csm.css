@@ -744,3 +744,66 @@ body.theme-dark { background-color: #1a2234; }
 .csm-opacity-30 { opacity: 0.3; }
 .csm-modal-footer-compact { padding: 0.5rem 0.75rem; }
 .csm-progress-zero { width: 0%; }
+
+/* ==========================================================================
+   Phase 2: navigation shell. Sidebar groups + active state + mobile drawer
+   inherit Tabler's navbar-vertical / collapse behaviour; this block only
+   layers CSM grouping labels and tightens spacing.
+   ========================================================================== */
+
+.csm-sidebar { width: 244px; }
+@media (min-width: 992px) {
+    .csm-sidebar { position: fixed; top: 0; bottom: 0; left: 0; z-index: 1000; }
+    .page-wrapper { margin-left: 244px; }
+}
+.csm-sidebar .navbar-brand a { color: inherit; }
+.csm-sidebar .navbar-brand a:hover { text-decoration: none; }
+
+.csm-nav-group { padding: 0.25rem 0 0.5rem; }
+.csm-nav-group__label {
+    padding: 0.6rem 1rem 0.3rem;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.45);
+}
+.csm-nav-group .navbar-nav { gap: 0.05rem; }
+.csm-nav-group .nav-link {
+    padding: 0.4rem 1rem;
+    border-left: 2px solid transparent;
+    color: rgba(255, 255, 255, 0.78);
+    transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.csm-nav-group .nav-link:hover {
+    background: rgba(255, 255, 255, 0.06);
+    color: #ffffff;
+}
+.csm-nav-group .nav-link.active {
+    background: rgba(66, 153, 225, 0.18);
+    border-left-color: var(--csm-info);
+    color: #ffffff;
+    font-weight: 600;
+}
+.csm-nav-group .nav-link-icon {
+    width: 1.4rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-right: 0.55rem;
+    color: inherit;
+}
+.csm-nav-group .nav-link-title { flex: 1; }
+
+/* Top utility bar -- keep slim and aligned with content */
+.csm-topbar {
+    min-height: 2.5rem;
+    border-bottom: 1px solid var(--csm-border);
+    background: var(--csm-bg-card);
+}
+.theme-dark .csm-topbar { background: #1e293b; border-bottom-color: #2d3a4e; }
+
+/* Hide brand subtitle on tablet so the toggle + brand fit on one row */
+@media (max-width: 991.98px) {
+    .csm-sidebar-brand-rest { display: none; }
+}
