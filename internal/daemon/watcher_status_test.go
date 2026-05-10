@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/platform"
@@ -37,6 +38,41 @@ func TestWatcherStatuses_EmptyByDefault(t *testing.T) {
 	got := d.WatcherStatuses()
 	if len(got) != 0 {
 		t.Fatalf("expected empty map, got %v", got)
+	}
+}
+
+func TestMarkWatcher_StampsChangedOnTransitionsOnly(t *testing.T) {
+	d := &Daemon{}
+
+	d.MarkWatcher("modsec", true)
+	first := d.WatcherChangedAt()["modsec"]
+	if first.IsZero() {
+		t.Fatal("first MarkWatcher call should stamp ChangedAt")
+	}
+
+	// Same state: must NOT advance the timestamp.
+	time.Sleep(2 * time.Millisecond)
+	d.MarkWatcher("modsec", true)
+	if got := d.WatcherChangedAt()["modsec"]; !got.Equal(first) {
+		t.Fatalf("idempotent MarkWatcher must not stamp; got %v want %v", got, first)
+	}
+
+	// State transition: timestamp moves.
+	time.Sleep(2 * time.Millisecond)
+	d.MarkWatcher("modsec", false)
+	if got := d.WatcherChangedAt()["modsec"]; !got.After(first) {
+		t.Fatalf("state transition must advance ChangedAt; got %v not after %v", got, first)
+	}
+}
+
+func TestWatcherChangedAt_ReturnsCopy(t *testing.T) {
+	d := &Daemon{}
+	d.MarkWatcher("fanotify", true)
+	got := d.WatcherChangedAt()
+	got["fanotify"] = time.Time{}
+	again := d.WatcherChangedAt()
+	if again["fanotify"].IsZero() {
+		t.Fatal("WatcherChangedAt returned a shared map; expected a copy")
 	}
 }
 

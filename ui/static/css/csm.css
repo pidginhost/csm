@@ -230,6 +230,7 @@ body.theme-dark { background-color: #1a2234; }
     line-height: 1.2;
     white-space: normal;
 }
+.csm-component-name { max-width: 14rem; }
 
 /* --- dashboard.html: severity-colored outline buttons for feed chips ---- */
 .btn-outline-critical { color: var(--csm-critical); border-color: var(--csm-critical); background: transparent; }

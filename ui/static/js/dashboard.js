@@ -1439,10 +1439,73 @@
         el.innerHTML = html;
     }
 
+    // --- Components matrix ---------------------------------------------------
+    function _componentBadge(status) {
+        var map = {
+            ok:       { cls: 'bg-success-lt', label: 'ok' },
+            idle:     { cls: 'bg-secondary-lt', label: 'idle' },
+            degraded: { cls: 'bg-danger-lt', label: 'degraded' },
+            unknown:  { cls: 'bg-secondary-lt', label: 'unknown' }
+        };
+        var entry = map[status] || map.unknown;
+        return '<span class="badge ' + entry.cls + '">' + entry.label + '</span>';
+    }
+
+    function _componentRow(row) {
+        var since = row.changed_ago ? row.changed_ago : '-';
+        var sinceISO = row.changed_at_iso ? ' title="' + CSM.attr(row.changed_at_iso) + '"' : '';
+        var lastEvent = row.last_event_ago ? row.last_event_ago : '-';
+        var lastEventTitle = row.last_event_iso ? row.last_event_iso : '';
+        if (lastEventTitle && row.last_event_check) {
+            lastEventTitle += ' (' + row.last_event_check + ')';
+        }
+        var lastEventISO = lastEventTitle ? ' title="' + CSM.attr(lastEventTitle) + '"' : '';
+        return '<tr>' +
+            '<td class="csm-component-name text-truncate" title="' + CSM.attr(row.name) + '">' + CSM.esc(row.label || row.name) + '</td>' +
+            '<td>' + _componentBadge(row.status) + '</td>' +
+            '<td class="text-muted small"' + sinceISO + '>' + CSM.esc(since) + '</td>' +
+            '<td class="text-muted small"' + lastEventISO + '>' + CSM.esc(lastEvent) + '</td>' +
+            '</tr>';
+    }
+
+    function loadComponents() {
+        var el = document.getElementById('components-matrix');
+        if (!el) return;
+        fetch(CSM.apiUrl('/api/v1/components'), { credentials: 'same-origin' })
+            .then(function(r) {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
+            })
+            .then(function(rows) {
+                if (!rows || rows.length === 0) {
+                    el.innerHTML = '<div class="csm-empty py-3"><div class="csm-empty__reason text-muted text-center">No watchers registered</div></div>';
+                    return;
+                }
+                var html = '<div class="table-responsive"><table class="table table-sm card-table mb-0">' +
+                    '<thead><tr>' +
+                        '<th>Component</th>' +
+                        '<th>Status</th>' +
+                        '<th>Since</th>' +
+                        '<th>Last event</th>' +
+                    '</tr></thead><tbody>';
+                rows.forEach(function(row) { html += _componentRow(row); });
+                html += '</tbody></table></div>';
+                el.innerHTML = html;
+            })
+            .catch(function(err) {
+                console.error('loadComponents:', err);
+                el.innerHTML = '<div class="text-muted text-center py-3 small">Components unavailable: ' + CSM.esc(err.message || 'error') + '</div>';
+            });
+    }
+
     // Wire refresh + initial load
     var _pqBtn = document.getElementById('priority-queue-refresh');
     if (_pqBtn) _pqBtn.addEventListener('click', loadPriorityQueue);
+    var _compBtn = document.getElementById('components-refresh');
+    if (_compBtn) _compBtn.addEventListener('click', loadComponents);
     try { renderSystemPosture(); } catch (e) {}
+    try { loadComponents(); } catch (e) {}
+    setInterval(loadComponents, 30000);
 
     _startChartPolling();
 })();

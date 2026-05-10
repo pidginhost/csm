@@ -193,6 +193,7 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/blocked-ips", s.requireRead(http.HandlerFunc(s.apiBlockedIPs)))
 	mux.Handle("/api/v1/capabilities", s.requireRead(http.HandlerFunc(s.apiCapabilities)))
 	mux.Handle("/api/v1/health", s.requireRead(http.HandlerFunc(s.apiHealth)))
+	mux.Handle("/api/v1/components", s.requireRead(http.HandlerFunc(s.apiComponents)))
 	// Auth-protected API - admin-only reads (data with write-adjacent sensitivity)
 	mux.Handle("/api/v1/quarantine", s.requireAuth(http.HandlerFunc(s.apiQuarantine)))
 	mux.Handle("/api/v1/modsec/stats", s.requireRead(http.HandlerFunc(s.apiModSecStats)))

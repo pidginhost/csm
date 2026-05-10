@@ -115,8 +115,14 @@ type Daemon struct {
 	// "afalg"). Values flip from false-to-true when the watcher's setup
 	// function completes without error. Used by /api/v1/status and the
 	// sd_notify gate.
-	watcherMu     sync.RWMutex
-	watcherStatus map[string]bool
+	//
+	// watcherChangedAt records the wall-clock time of the most recent state
+	// transition for the same key. Driven from MarkWatcher; consumed by the
+	// /api/v1/components endpoint so operators can see how long a watcher
+	// has been in its current state.
+	watcherMu        sync.RWMutex
+	watcherStatus    map[string]bool
+	watcherChangedAt map[string]time.Time
 
 	// findingBus fans out dispatched findings to passive observers like
 	// the SSE event stream. Initialized in Run(); closed on shutdown.
@@ -174,11 +180,20 @@ func (d *Daemon) SetVersion(v string) {
 
 // MarkWatcher records the attachment state of a named watcher.
 // Call from each watcher's startup path: true on success, false on failure.
+// The first record and any subsequent state transition stamps
+// watcherChangedAt so the components view can show "since".
 func (d *Daemon) MarkWatcher(name string, attached bool) {
 	d.watcherMu.Lock()
 	defer d.watcherMu.Unlock()
 	if d.watcherStatus == nil {
 		d.watcherStatus = make(map[string]bool)
+	}
+	if d.watcherChangedAt == nil {
+		d.watcherChangedAt = make(map[string]time.Time)
+	}
+	prev, existed := d.watcherStatus[name]
+	if !existed || prev != attached {
+		d.watcherChangedAt[name] = time.Now()
 	}
 	d.watcherStatus[name] = attached
 }
@@ -189,6 +204,19 @@ func (d *Daemon) WatcherStatuses() map[string]bool {
 	defer d.watcherMu.RUnlock()
 	out := make(map[string]bool, len(d.watcherStatus))
 	for k, v := range d.watcherStatus {
+		out[k] = v
+	}
+	return out
+}
+
+// WatcherChangedAt returns the wall-clock time at which each watcher last
+// transitioned state. Watchers without a recorded change return the zero
+// value.
+func (d *Daemon) WatcherChangedAt() map[string]time.Time {
+	d.watcherMu.RLock()
+	defer d.watcherMu.RUnlock()
+	out := make(map[string]time.Time, len(d.watcherChangedAt))
+	for k, v := range d.watcherChangedAt {
 		out[k] = v
 	}
 	return out

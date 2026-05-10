@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Dashboard right rail gains a Components matrix listing every registered watcher with its attached state, time since last state change, and the most recent finding it produced. New /api/v1/components endpoint backs the view; read-scope tokens can call it.
+
 ### Fixed
 
 - Disabled scheduled checks now clear their prior active findings on the next scan while throttled checks still keep their last valid findings. Dashboard posture severity tiles now wrap safely in narrow side rails.
