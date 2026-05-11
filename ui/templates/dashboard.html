@@ -60,13 +60,6 @@
                             <span class="csm-status-strip__chip-value" id="stat-last-critical"{{if .LastCriticalISO}} data-timestamp="{{.LastCriticalISO}}"{{end}}>{{.LastCriticalAgo}}</span>
                             <span class="csm-status-strip__chip-label">since last critical</span>
                         </span>
-                        {{if .LogWatchers}}
-                        <span class="csm-status-strip__chip" title="Log files being watched in real time">
-                            <i class="ti ti-file-text"></i>
-                            <span class="csm-status-strip__chip-value">{{.LogWatchers}}</span>
-                            <span class="csm-status-strip__chip-label">log watchers</span>
-                        </span>
-                        {{end}}
                         <span class="csm-status-strip__chip" title="Loaded YARA / YAML signatures">
                             <i class="ti ti-shield-check"></i>
                             <span class="csm-status-strip__chip-value">{{.SigCount}}</span>
@@ -102,9 +95,6 @@
                             </a>
                         </div>
                     </div>
-                    <div id="system-posture">
-                        <div class="text-muted text-center py-3"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
-                    </div>
                 </div>
             </div>
             <div class="card mt-3">
@@ -116,46 +106,15 @@
                         </button>
                     </div>
                 </div>
-                <div class="card-body p-0" id="components-matrix">
-                    <div class="text-muted text-center py-3"><span class="spinner-border spinner-border-sm"></span> Loading...</div>
+                <div class="card-body p-0">
+                    <div class="px-3 pt-3" id="components-feature-flags">
+                        <div class="text-muted small"><span class="spinner-border spinner-border-sm"></span> Loading feature flags...</div>
+                    </div>
+                    <div id="components-matrix">
+                        <div class="text-muted text-center py-3"><span class="spinner-border spinner-border-sm"></span> Loading watchers...</div>
+                    </div>
                 </div>
             </div>
-        </div>
-    </div>
-
-    <!-- Live Feed (recent activity, not the main work queue) -->
-    <div class="card mb-3">
-        <div class="card-header">
-            <h3 class="card-title">
-                <span class="status-dot bg-yellow me-1" id="poll-status-dot" title="Polling active"></span>
-                Recent activity
-                <span class="text-muted ms-2 small">Polling (10s)</span>
-            </h3>
-            <div class="card-actions d-flex gap-2 align-items-center flex-wrap">
-                <div class="btn-group btn-group-sm" role="group" aria-label="Severity filter">
-                    <button type="button" class="btn btn-outline-critical feed-sev-chip active" data-sev="2" title="Show Critical findings"><i class="ti ti-alert-octagon"></i></button>
-                    <button type="button" class="btn btn-outline-high feed-sev-chip active" data-sev="1" title="Show High findings"><i class="ti ti-alert-triangle"></i></button>
-                    <button type="button" class="btn btn-outline-warning feed-sev-chip active" data-sev="0" title="Show Warning findings"><i class="ti ti-alert-circle"></i></button>
-                </div>
-                <input type="search" id="feed-search" class="form-control form-control-sm csm-input-sm" placeholder="Filter feed..." aria-label="Filter live feed">
-                <span class="text-muted small" id="scan-status"></span>
-                <span class="text-muted small" id="scan-detail"></span>
-            </div>
-        </div>
-        <div class="list-group list-group-flush overflow-auto csm-feed-scroll" id="live-feed-entries">
-            {{range .RecentFindings}}
-            <div class="list-group-item feed-item" data-ts="{{.TimestampISO}}" data-sev="{{.SevClass}}" data-check="{{.Check}}">
-                <div class="row align-items-center">
-                    <div class="col-auto"><span class="text-muted font-monospace small">{{.Timestamp}}</span></div>
-                    <div class="col-auto"><span class="badge badge-{{.SevClass}}">{{.Severity}}</span></div>
-                    <div class="col"><span class="font-monospace small">{{.Check}}</span> - {{.Message}}</div>
-                    {{if .HasFix}}<div class="col-auto"><button class="btn btn-warning btn-sm feed-fix-btn" data-key="{{.Key}}" data-check="{{.Check}}" data-message="{{.Message}}" data-fixdesc="{{.FixDesc}}" title="{{.FixDesc}}" aria-label="Fix: {{.FixDesc}}"><i class="ti ti-tool"></i></button></div>{{end}}
-                </div>
-                {{if .Details}}<div class="detail d-none mt-2 small text-muted csm-detail">{{.Details}}</div>{{end}}
-            </div>
-            {{else}}
-            <div class="list-group-item text-center text-muted py-4">No recent findings. Waiting for events...</div>
-            {{end}}
         </div>
     </div>
 

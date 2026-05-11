@@ -334,10 +334,10 @@ func TestSharedUIScriptsLoadBeforeTableExtensions(t *testing.T) {
 }
 
 // TestDashboardLeadsWithPriorityQueue ensures the dashboard surfaces the
-// triage-first layout: page header, status strip, priority queue, and
-// system posture sit above the recent activity feed and the analytics
-// charts. The legacy stat cards stay reachable but no longer dominate
-// the first screen.
+// triage-first layout: page header, posture card (with runtime status
+// strip), priority queue, and the Components matrix sit above the
+// analytics charts. The Recent activity feed was removed; runtime
+// watcher state lives in the Components card.
 func TestDashboardLeadsWithPriorityQueue(t *testing.T) {
 	tmpl, err := os.ReadFile("../../ui/templates/dashboard.html")
 	if err != nil {
@@ -349,7 +349,8 @@ func TestDashboardLeadsWithPriorityQueue(t *testing.T) {
 		`class="csm-page-header`,
 		`class="csm-status-strip`,
 		`id="priority-queue"`,
-		`id="system-posture"`,
+		`id="components-matrix"`,
+		`id="components-feature-flags"`,
 		`id="dashboard-summary"`,
 	} {
 		if !strings.Contains(text, want) {
@@ -357,18 +358,14 @@ func TestDashboardLeadsWithPriorityQueue(t *testing.T) {
 		}
 	}
 
-	// Priority queue must come before the live feed and the charts.
+	// Priority queue must come before the analytics charts.
 	priority := strings.Index(text, `id="priority-queue"`)
-	feed := strings.Index(text, `id="live-feed-entries"`)
 	timeline := strings.Index(text, `id="timeline-chart"`)
-	if priority < 0 || feed < 0 || timeline < 0 {
-		t.Fatal("dashboard.html missing one of priority queue, live feed, or timeline chart")
+	if priority < 0 || timeline < 0 {
+		t.Fatal("dashboard.html missing one of priority queue or timeline chart")
 	}
-	if priority >= feed {
-		t.Errorf("priority queue must precede the live feed (got %d vs %d)", priority, feed)
-	}
-	if feed >= timeline {
-		t.Errorf("live feed must precede the analytics charts (got %d vs %d)", feed, timeline)
+	if priority >= timeline {
+		t.Errorf("priority queue must precede the analytics charts (got %d vs %d)", priority, timeline)
 	}
 
 	js, err := os.ReadFile("../../ui/static/js/dashboard.js")
@@ -379,7 +376,8 @@ func TestDashboardLeadsWithPriorityQueue(t *testing.T) {
 	for _, want := range []string{
 		"loadPriorityQueue",
 		"function _startPriorityQueueInterval",
-		"renderSystemPosture",
+		"renderFeatureFlags",
+		"loadComponents",
 		"/api/v1/incidents?status=open",
 		"href: '/incident#'",
 		"_incidentOwner",

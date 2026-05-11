@@ -36,8 +36,6 @@
     Chart.defaults.plugins.legend.display = false;
     Chart.defaults.animation.duration = 600;
 
-    var feed = document.getElementById('live-feed-entries');
-
     // Notification toggle - gated on BOTH browser permission AND user preference
     // localStorage 'csm-notif' stores the user's opt-in choice ('on' or 'off')
     var notifBtn = document.getElementById('notif-toggle');
@@ -75,251 +73,43 @@
         });
     }
 
-    // --- Feed enhancement helpers ---
-    // Note: innerHTML usage below only renders CSM.esc()-escaped server data and
-    // static markup - no raw user input is injected without escaping.
+    // Desktop critical-finding notifications. Polls /api/v1/history and
+    // fires browser Notifications for new severity=2 entries; the dashboard
+    // no longer renders a live feed but the alert path stays useful.
+    var lastNotifTimestamp = '';
+    var notifInternalChecks = { auto_response: 1, auto_block: 1, check_timeout: 1, health: 1 };
 
-    function addRelativeTime(item) {
-        var row = item.querySelector('.row');
-        if (!row) return;
-        if (item.querySelector('.feed-relative-time')) return;
-        var span = document.createElement('div');
-        span.className = 'col-auto feed-relative-time';
-        var ts = item.getAttribute('data-ts') || new Date().toISOString();
-        var inner = document.createElement('span');
-        inner.className = 'text-muted small';
-        inner.setAttribute('data-timestamp', ts);
-        inner.textContent = CSM.timeAgo(ts);
-        span.appendChild(inner);
-        row.appendChild(span);
-    }
-
-    function attachFeedItemListeners(item) {
-        CSM.makeClickable(item);
-        item.addEventListener('click', function(e) {
-            if (e.target.closest('button')) return;
-            var d = this.querySelector('.detail');
-            if (d) d.classList.toggle('d-none');
-        });
-        var fixBtn = item.querySelector('.feed-fix-btn');
-        if (fixBtn) {
-            fixBtn.addEventListener('click', function(e) {
-                e.stopPropagation();
-                fixFromFeed(this);
-            });
-        }
-    }
-
-    function fixFromFeed(btn) {
-        var key = btn.getAttribute('data-key') || '';
-        var check = btn.getAttribute('data-check');
-        var message = btn.getAttribute('data-message');
-        var desc = btn.getAttribute('data-fixdesc');
-        CSM.confirm('Apply fix?\n\n' + desc).then(function() {
-            btn.disabled = true;
-            btn.textContent = '';
-            var spinner = document.createElement('span');
-            spinner.className = 'spinner-border spinner-border-sm';
-            btn.appendChild(spinner);
-            CSM.post('/api/v1/fix', {key: key, check: check, message: message}).then(function(data) {
-                if (data.success) {
-                    btn.textContent = '';
-                    var icon = document.createElement('i');
-                    icon.className = 'ti ti-check';
-                    btn.appendChild(icon);
-                    btn.className = 'btn btn-success btn-sm';
-                    btn.closest('.list-group-item').style.opacity = '0.3';
-                    CSM.toast('Fix applied successfully', 'success');
-                } else {
-                    CSM.toast('Fix failed: ' + (data.error || 'unknown'), 'error');
-                    btn.disabled = false;
-                    btn.textContent = '';
-                    var ic = document.createElement('i');
-                    ic.className = 'ti ti-tool';
-                    btn.appendChild(ic);
-                }
-            }).catch(function(e) {
-                CSM.toast('Error: ' + e, 'error');
-                btn.disabled = false;
-                btn.textContent = '';
-                var ic = document.createElement('i');
-                ic.className = 'ti ti-tool';
-                btn.appendChild(ic);
-            });
-        }).catch(function() { /* cancelled */ });
-    }
-
-    // Clean up the old overview-collapsed flag; the toggle was removed.
-    try { localStorage.removeItem('csm-overview-collapsed'); } catch (_) {}
-
-    // --- Live Feed: severity chip + search filter ---
-    var feedFilterSeverities = { critical: true, high: true, warning: true };
-    var feedFilterSearch = '';
-
-    function applyFeedFilters() {
-        if (!feed) return;
-        var needle = feedFilterSearch.toLowerCase();
-        var items = feed.querySelectorAll('.feed-item');
-        for (var i = 0; i < items.length; i++) {
-            var item = items[i];
-            var sev = item.getAttribute('data-sev') || 'warning';
-            var passSev = !!feedFilterSeverities[sev];
-            var text = item.textContent.toLowerCase();
-            var passSearch = needle === '' || text.indexOf(needle) !== -1;
-            item.classList.toggle('feed-hidden', !(passSev && passSearch));
-        }
-    }
-
-    document.querySelectorAll('.feed-sev-chip').forEach(function(chip) {
-        chip.addEventListener('click', function() {
-            var sevNum = this.getAttribute('data-sev');
-            var key = sevNum === '2' ? 'critical' : sevNum === '1' ? 'high' : 'warning';
-            feedFilterSeverities[key] = !feedFilterSeverities[key];
-            this.classList.toggle('active', feedFilterSeverities[key]);
-            applyFeedFilters();
-        });
-    });
-    var feedSearchEl = document.getElementById('feed-search');
-    if (feedSearchEl) {
-        var feedSearchTimer;
-        feedSearchEl.addEventListener('input', function() {
-            clearTimeout(feedSearchTimer);
-            var val = this.value;
-            feedSearchTimer = setTimeout(function() {
-                feedFilterSearch = val;
-                applyFeedFilters();
-            }, 150);
+    function _maybeNotify(f) {
+        if (f.severity !== 2) return;
+        if (!('Notification' in window)) return;
+        if (Notification.permission !== 'granted') return;
+        if (localStorage.getItem('csm-notif') !== 'on') return;
+        new Notification('CSM Critical Alert', {
+            body: (f.check || 'finding') + ': ' + (f.message || ''),
+            tag: (f.check || '') + ':' + (f.message || '')
         });
     }
 
-    // Initial pass: enhance server-rendered feed items
-    document.querySelectorAll('.feed-item').forEach(function(item) {
-        addRelativeTime(item);
-        attachFeedItemListeners(item);
-    });
-
-    // Periodically update relative times
-    _trackInterval(setInterval(CSM.initTimeAgo, 5000));
-
-    // Polling - fetch recent history every 10 seconds
-    var lastPollTimestamp = '';
-    var serverItems = feed ? feed.querySelectorAll('.feed-item[data-ts]') : [];
-    if (serverItems.length > 0) {
-        lastPollTimestamp = serverItems[0].getAttribute('data-ts') || '';
-    }
-    function _setPollStatus(ok, err) {
-        var dot = document.getElementById('poll-status-dot');
-        if (!dot) return;
-        if (ok) {
-            dot.className = 'status-dot bg-yellow';
-            dot.title = 'Polling active';
-        } else {
-            dot.className = 'status-dot bg-red';
-            dot.title = 'Polling failed' + (err ? ': ' + err : '');
-        }
-    }
     function pollFindings() {
         fetch(CSM.apiUrl('/api/v1/history?limit=10&offset=0'), { credentials: 'same-origin' })
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 var findings = data.findings || [];
-                var internalChecks = { auto_response: 1, auto_block: 1, check_timeout: 1, health: 1 };
-                var maxTs = lastPollTimestamp;
+                var maxTs = lastNotifTimestamp;
                 for (var i = findings.length - 1; i >= 0; i--) {
                     var f = findings[i];
                     var ts = f.timestamp || '';
                     if (ts > maxTs) maxTs = ts;
-                    if (ts > lastPollTimestamp && !internalChecks[f.check]) {
-                        addEntry(f);
+                    if (lastNotifTimestamp !== '' && ts > lastNotifTimestamp && !notifInternalChecks[f.check]) {
+                        _maybeNotify(f);
                     }
                 }
-                lastPollTimestamp = maxTs;
-                _setPollStatus(true);
+                lastNotifTimestamp = maxTs;
             })
-            .catch(function(err) {
-                console.error('pollFindings:', err);
-                _setPollStatus(false, err);
-            });
+            .catch(function(err) { console.error('pollFindings:', err); });
     }
 
-    function addEntry(f) {
-        if (!feed) return;
-        var div = document.createElement('div');
-        div.className = 'list-group-item';
-
-        var sevClass = 'warning';
-        var sevLabel = 'WARNING';
-        if (f.severity === 2) { sevClass = 'critical'; sevLabel = 'CRITICAL'; }
-        else if (f.severity === 1) { sevClass = 'high'; sevLabel = 'HIGH'; }
-
-        var ts = f.timestamp || new Date().toISOString();
-        var timeStr = CSM.fmtDate(ts).substring(11);
-        if (!timeStr || timeStr === '\u2014') {
-            var now = new Date();
-            timeStr = now.getHours().toString().padStart(2,'0') + ':' +
-                   now.getMinutes().toString().padStart(2,'0');
-        }
-
-        div.setAttribute('data-ts', ts);
-        div.setAttribute('data-sev', sevClass);
-        div.setAttribute('data-check', f.check || '');
-        div.classList.add('feed-item');
-
-        // Build entry DOM safely
-        var row = document.createElement('div');
-        row.className = 'row align-items-center';
-
-        var colTime = document.createElement('div');
-        colTime.className = 'col-auto';
-        var spanTime = document.createElement('span');
-        spanTime.className = 'text-muted font-monospace small';
-        spanTime.textContent = timeStr;
-        colTime.appendChild(spanTime);
-
-        var colBadge = document.createElement('div');
-        colBadge.className = 'col-auto';
-        var badge = document.createElement('span');
-        badge.className = 'badge badge-' + sevClass;
-        badge.textContent = sevLabel;
-        colBadge.appendChild(badge);
-
-        var colMsg = document.createElement('div');
-        colMsg.className = 'col';
-        var checkSpan = document.createElement('span');
-        checkSpan.className = 'font-monospace small';
-        checkSpan.textContent = f.check;
-        colMsg.appendChild(checkSpan);
-        colMsg.appendChild(document.createTextNode(' \u2014 ' + f.message));
-
-        row.appendChild(colTime);
-        row.appendChild(colBadge);
-        row.appendChild(colMsg);
-        div.appendChild(row);
-
-        feed.insertBefore(div, feed.firstChild);
-
-        div.classList.add('feed-highlight');
-        addRelativeTime(div);
-        attachFeedItemListeners(div);
-        applyFeedFilters();
-
-        // Browser notification for critical findings
-        if (f.severity === 2 && 'Notification' in window && Notification.permission === 'granted' && localStorage.getItem('csm-notif') === 'on') {
-            new Notification('CSM Critical Alert', {
-                body: f.check + ': ' + f.message,
-                tag: f.check + ':' + f.message
-            });
-        }
-
-        while (feed.children.length > 10) {
-            feed.removeChild(feed.lastChild);
-        }
-
-        var empty = feed.querySelector('.text-center');
-        if (empty) empty.remove();
-    }
-
-    // Centralised empty/error-state renderer for the three summary cards.
+        // Centralised empty/error-state renderer for the three summary cards.
     // Cards that fail to load get a visible error instead of a permanent
     // "Loading..." spinner.
     function renderCardError(id, msg) {
@@ -421,18 +211,6 @@
                 renderCardError('auto-response-summary', 'Failed to load');
                 renderCardError('brute-force-summary', 'Failed to load');
             });
-    }
-
-    function refreshScanStatus() {
-        fetch(CSM.apiUrl('/api/v1/status'), { credentials: 'same-origin' })
-            .then(function(r) { return r.json(); })
-            .then(function(data) {
-                setText('scan-status', data.scan_running ? 'Scanning...' : 'Idle');
-                if (data.last_scan_time) {
-                    setText('scan-detail', 'Last scan: ' + CSM.timeAgo(data.last_scan_time));
-                }
-            })
-            .catch(function(err) { console.error('refreshScanStatus:', err); });
     }
 
     var sevClasses = {}; for (var sk in CSM.sevMap) sevClasses[sk] = CSM.sevMap[sk].cls;
@@ -621,13 +399,11 @@
         if (el) el.textContent = val;
     }
 
-    // Initialize - three cadences with failure isolation
+    // Initialize - two cadences with failure isolation
     function _startPolling() {
-        if (!feed) return;
-        // Fast cadence (10s): findings + scan status
+        // Fast cadence (10s): notification poll
         function fastPoll() {
             try { pollFindings(); } catch(e) { console.error('fastPoll:', e); }
-            try { refreshScanStatus(); } catch(e) { console.error('fastPoll:', e); }
         }
         fastPoll();
         _trackInterval(setInterval(fastPoll, 10000));
@@ -1424,18 +1200,19 @@
         '</span>';
     }
 
-    function renderSystemPosture() {
-        var el = document.getElementById('system-posture');
+    function renderFeatureFlags() {
+        var el = document.getElementById('components-feature-flags');
         if (!el) return;
         var cfg = (typeof CSM_CONFIG !== 'undefined') ? CSM_CONFIG : {};
-        var html = '<div class="d-flex flex-wrap gap-2">';
-        html += _postureChip('Firewall',     cfg.firewall      ? 'enabled' : 'off',      !!cfg.firewall,     'Outbound block engine state');
-        html += _postureChip('Auto-response', cfg.autoResponse ? 'enabled' : 'off',      !!cfg.autoResponse, 'Automatic block / quarantine response');
-        html += _postureChip('Email AV',     cfg.emailAV       ? 'enabled' : 'off',      !!cfg.emailAV,      'ClamAV / yara scanning of outgoing mail');
-        html += _postureChip('Threat Intel', cfg.threatIntel   ? 'enabled' : 'off',      !!cfg.threatIntel,  'AbuseIPDB / upstream IP reputation');
-        html += _postureChip('Signatures',   cfg.signatures    ? 'loaded'  : 'off',      !!cfg.signatures,   'YARA / YAML rule loader');
-        html += _postureChip('Challenge',    cfg.challenge     ? 'on'      : 'off',      !!cfg.challenge,    'Browser CAPTCHA challenge for suspicious IPs');
-        html += _postureChip('Fanotify',     cfg.fanotify      ? 'active'  : 'fallback', !!cfg.fanotify,     'Real-time filesystem monitoring via fanotify (polling fallback when off)');
+        // Five operator-config flags. Runtime watcher state (fanotify,
+        // signature loader, log watchers) lives in the Components matrix
+        // below to avoid duplication.
+        var html = '<div class="d-flex flex-wrap gap-2 mb-3">';
+        html += _postureChip('Firewall',     cfg.firewall      ? 'enabled' : 'off', !!cfg.firewall,     'Outbound block engine state');
+        html += _postureChip('Auto-response', cfg.autoResponse ? 'enabled' : 'off', !!cfg.autoResponse, 'Automatic block / quarantine response');
+        html += _postureChip('Email AV',     cfg.emailAV       ? 'enabled' : 'off', !!cfg.emailAV,      'ClamAV / yara scanning of outgoing mail');
+        html += _postureChip('Threat Intel', cfg.threatIntel   ? 'enabled' : 'off', !!cfg.threatIntel,  'AbuseIPDB / upstream IP reputation');
+        html += _postureChip('Challenge',    cfg.challenge     ? 'on'      : 'off', !!cfg.challenge,    'Browser CAPTCHA challenge for suspicious IPs');
         html += '</div>';
         el.innerHTML = html;
     }
@@ -1504,7 +1281,7 @@
     if (_pqBtn) _pqBtn.addEventListener('click', loadPriorityQueue);
     var _compBtn = document.getElementById('components-refresh');
     if (_compBtn) _compBtn.addEventListener('click', loadComponents);
-    try { renderSystemPosture(); } catch (e) {}
+    try { renderFeatureFlags(); } catch (e) {}
     try { loadComponents(); } catch (e) {}
     setInterval(loadComponents, 30000);
 

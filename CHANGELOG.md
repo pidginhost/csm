@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Performance load check now also flags sustained pressure: when the 5-minute and 15-minute load averages both exceed 70% of the high threshold (even though the 1-minute load is calm) a Warning is emitted. Catches the "load 9 on 40 cores for 15 minutes" shape that a spike-only check misses.
 - Redis config check now reports used-memory headroom against maxmemory: Warning at >=80%, High at >=90%. Operator-meaningful signal for instances that approach eviction churn or OOM-error territory.
 
+### Changed
+
+- Dashboard drops the Recent activity feed and the duplicate Fanotify / Signatures / log-watchers chips; runtime watcher state and feature flags now live in one Components card. Desktop critical-finding notifications still fire.
+
 ### Fixed
 
 - Auto-block now hard-blocks only confirmed attacker-IP mail findings and keeps single mailbox auth failures, account-spray visibility findings, and account-only mail alerts out of firewall action. This avoids blocking a legitimate user after one failed login while preserving thresholded brute-force blocks.
