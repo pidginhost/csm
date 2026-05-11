@@ -150,3 +150,33 @@ func TestChallengeRoute_AdminPanelIsHardBlocked(t *testing.T) {
 		t.Error("admin_panel_bruteforce must be in hardBlockChecks")
 	}
 }
+
+// Regression guard: routing post-auth audit events or non-browser
+// protocols to the PoW challenge produces guaranteed timeout
+// hard-blocks because the IP has no browser session for the gate to
+// catch. Real-world fallout on cluster6 (2026-05-11): legitimate
+// customer cPanel logins from non-RO IPs and recursive DNS resolver
+// IPs both ended up in 24h temporary blocks.
+func TestChallengeRoute_AuditAndNonBrowserChecksAreNotChallengeable(t *testing.T) {
+	for _, check := range []string{
+		"cpanel_login",
+		"cpanel_login_realtime",
+		"cpanel_multi_ip_login",
+		"cpanel_file_upload",
+		"cpanel_file_upload_realtime",
+		"ftp_login",
+		"ftp_login_realtime",
+		"ssh_login_realtime",
+		"ssh_login_unknown_ip",
+		"webmail_login_realtime",
+		"whm_password_change",
+		"dns_connection",
+		"user_outbound_connection",
+		"api_auth_failure",
+		"brute_force",
+	} {
+		if isChallengeableCheck(check) {
+			t.Errorf("check %q must NOT be challenge-routed: no browser at the other end", check)
+		}
+	}
+}

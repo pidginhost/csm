@@ -96,43 +96,49 @@ var hardBlockPrefixes = []string{
 }
 
 // challengeableChecks lists checks whose findings contain attacker IPs and
-// are appropriate for challenge routing. This is a closed allowlist — any
-// new check that produces IP-bearing findings must be added here. This is
-// safer than a denylist because forgetting to add an informational check
-// (like outdated_plugins, whose version strings parse as IPs) defaults to
-// "skip" rather than "block an innocent IP".
+// are appropriate for challenge routing. Closed allowlist. Two rules for
+// inclusion:
+//
+//  1. The IP carrying the finding must be a CLIENT IP making an HTTPS/HTTP
+//     request that a browser could see. Background tasks (DNS recursion,
+//     SSH/FTP from CLI clients, internal auth daemons) have no browser to
+//     present a CAPTCHA to; routing them produces guaranteed
+//     challenge-timeout hard-blocks, not gated access.
+//
+//  2. The finding must indicate an ATTACK signal, not an audit-trail
+//     event. A single successful login is normal customer traffic;
+//     repeated failed logins (brute force) is attack signal.
+//
+// Removed from this list (do not reintroduce without revisiting the two
+// rules above):
+//
+//   - cpanel_login / cpanel_login_realtime: post-auth audit events; the
+//     user is already inside cPanel and never makes a fresh connection
+//     the gate could catch.
+//   - cpanel_file_upload / cpanel_file_upload_realtime: same; post-auth.
+//   - cpanel_multi_ip_login / whm_password_change: multi-vector audit.
+//   - ftp_login / ftp_login_realtime / ssh_login_realtime /
+//     ssh_login_unknown_ip: no browser at the other end of FTP or SSH.
+//   - webmail_login_realtime: same as cpanel_login_realtime; post-auth.
+//   - dns_connection / user_outbound_connection: recursive resolvers and
+//     egress targets have no client browser.
+//   - api_auth_failure: API clients, not browsers.
+//   - brute_force: legacy bucket; superseded by per-protocol entries.
 var challengeableChecks = map[string]bool{
-	// Brute force checks — all contain attacker IPs
-	"brute_force":         true,
+	// Pre-auth brute force on browser-facing endpoints. Attacker hits a
+	// public login page repeatedly; the next request from the same IP
+	// gets routed to the challenge.
 	"wp_login_bruteforce": true,
 	"xmlrpc_abuse":        true,
 	"wp_user_enumeration": true,
-	"ftp_bruteforce":      true,
 	"webmail_bruteforce":  true,
-	"api_auth_failure":    true,
 
-	// Login monitoring — contain source IPs
-	"cpanel_login":                true,
-	"cpanel_login_realtime":       true,
-	"cpanel_multi_ip_login":       true,
-	"cpanel_file_upload":          true,
-	"cpanel_file_upload_realtime": true,
-	"ftp_login":                   true,
-	"ftp_login_realtime":          true,
-	"ssh_login_realtime":          true,
-	"ssh_login_unknown_ip":        true,
-	"webmail_login_realtime":      true,
-	"whm_password_change":         true,
-
-	// Reputation and threat scoring — contain IPs
+	// Reputation / scoring on the HTTP path. The IP is suspect across
+	// many checks; before hard-blocking, give a browser one verifier.
 	"ip_reputation":      true,
 	"local_threat_score": true,
 
-	// Network — contain IPs
-	"dns_connection":           true,
-	"user_outbound_connection": true,
-
-	// WAF — contain attacker IPs
+	// WAF — attacker hits a public URL that ModSecurity rejected.
 	"waf_attack_blocked": true,
 }
 
