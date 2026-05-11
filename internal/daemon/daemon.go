@@ -517,6 +517,23 @@ func (d *Daemon) Run() error {
 	// Initialize GeoIP databases (after webServer so SetGeoIPDB can attach)
 	d.initGeoIP()
 
+	// Signal systemd we're up as soon as the real-time watchers and the
+	// control surfaces are attached. The initial baseline scan, the
+	// kernel-state probes, and the BPF tracker wiring below all run
+	// inline but no longer block `systemctl is-active` / `systemctl
+	// restart`. The watchdog notifier has to start in the same step so
+	// systemd's WatchdogSec doesn't trip while the baseline scan is
+	// still running on a large host.
+	d.wg.Add(1)
+	obs.Go("watchdog-notifier", d.watchdogNotifier)
+
+	if sent, err := sdnotify.Ready(); err != nil {
+		fmt.Fprintf(os.Stderr, "sd_notify READY failed: %v\n", err)
+	} else if sent {
+		fmt.Fprintf(os.Stderr, "sd_notify: daemon ready\n")
+	}
+	_, _ = sdnotify.Status(fmt.Sprintf("watchers attached: %d", countAttachedWatchers(d.WatcherStatuses())))
+
 	// Run initial scan synchronously (before dispatcher starts)
 	fmt.Fprintf(os.Stderr, "[%s] Running initial baseline scan...\n", ts())
 	initialFindings, initialPurge := checks.RunTier(d.currentCfg(), d.store, checks.TierCritical)
@@ -730,11 +747,6 @@ func (d *Daemon) Run() error {
 	d.wg.Add(1)
 	obs.Go("heartbeat", d.heartbeat)
 
-	// Start systemd watchdog notifier — independent goroutine with its own
-	// ticker so long-running scans don't block the heartbeat.
-	d.wg.Add(1)
-	obs.Go("watchdog-notifier", d.watchdogNotifier)
-
 	// Start the retention sweep only when opted in. Compaction is NOT
 	// run from this goroutine — see internal/daemon/retention.go for why.
 	if d.cfg != nil && d.cfg.Retention.Enabled {
@@ -742,14 +754,10 @@ func (d *Daemon) Run() error {
 		obs.Go("retention-scanner", d.retentionScanner)
 	}
 
-	// Tell systemd we're up. Type=notify in the unit means the service
-	// stays "activating" until this fires; "systemctl is-active" therefore
-	// reports the truth instead of just "process is running."
-	if sent, err := sdnotify.Ready(); err != nil {
-		fmt.Fprintf(os.Stderr, "sd_notify READY failed: %v\n", err)
-	} else if sent {
-		fmt.Fprintf(os.Stderr, "sd_notify: daemon ready\n")
-	}
+	// Refresh the sd_notify status line now that AF_ALG, BPF trackers,
+	// and the periodic scanners have all reported in. The initial
+	// READY=1 fired earlier so systemctl restart didn't have to wait
+	// on the baseline scan; this is the operator-visible summary.
 	_, _ = sdnotify.Status(fmt.Sprintf("watchers attached: %d", countAttachedWatchers(d.WatcherStatuses())))
 
 	csmlog.Info("CSM daemon running")

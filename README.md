@@ -86,7 +86,7 @@ Auto-response starts in dry-run by default, so you can see exactly what CSM woul
 ## Headline features
 
 - **Broad host coverage**: critical and deep checks plus real-time fanotify, inotify, PAM, and access-log watchers.
-- **Sub-1-second** response on syscall events. **~45 MB** resident idle. **Single static Go binary.**
+- **Single static Go binary**, real-time response on syscall events.
 - **One web UI** at `:9443` with admin and read-scope tokens, SSE event stream, Prometheus metrics, and REST API.
 - **nftables firewall** with TTLs, subnet escalation, country blocking (MaxMind), commit-confirmed safety.
 - **Pluggable threat intel**: local attack DB + AbuseIPDB + Rspamd + optional shared upstream cache.
@@ -111,16 +111,9 @@ Auto-response starts in dry-run by default, so you can see exactly what CSM woul
 
 x86_64 and ARM64. cPanel itself is x86_64 only. Per-check coverage is in [detection-critical.md](docs/src/detection-critical.md) and [detection-deep.md](docs/src/detection-deep.md).
 
-## Performance
+## Optional add-ons
 
-| Workload | Speed | Memory |
-|---|---|---|
-| Real-time fanotify event | under 1 s | ~5 MB |
-| 36 critical checks | under 1 s | ~35 MB peak |
-| 33 deep checks | ~40 s | ~100 MB peak |
-| Daemon idle | n/a | 45 MB resident |
-
-Optional add-ons: YARA-X (`-tags yara`), email AV tooling, MaxMind GeoIP data.
+YARA-X (`-tags yara`), email AV tooling, MaxMind GeoIP data.
 
 ## CLI
 

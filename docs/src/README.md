@@ -29,19 +29,6 @@ csm daemon
  +-- performance monitor           PHP, MySQL, Redis, WordPress metrics
 ```
 
-## Performance
-
-Benchmarked on production (168 accounts, 275 WordPress sites, 28M files):
-
-| Component | Speed | Memory |
-|-----------|-------|--------|
-| fanotify monitor | < 1 second | ~5 MB |
-| Log watchers | ~2 seconds | ~1 MB |
-| Critical checks (36) | < 1 sec | ~35 MB peak |
-| Deep checks (33) | ~40 sec | ~100 MB peak |
-| Daemon idle | - | 45 MB resident |
-| Binary | - | ~8 MB static |
-
 ## Built From Real Incidents
 
 CSM was built after real attacks where GSocket reverse shells, LEVIATHAN webshell toolkits, credential-stuffed cPanel accounts, and phishing kits were found across production servers.

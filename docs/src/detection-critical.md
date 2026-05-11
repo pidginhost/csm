@@ -1,6 +1,6 @@
 # Critical Checks
 
-36 checks, run every 10 minutes. Complete in under 1 second.
+36 checks, run every 10 minutes. Typical wall-clock cost on a busy shared host is a few seconds; the runner enforces the 10-minute cadence even when a tick takes longer.
 
 ## Process & System
 
