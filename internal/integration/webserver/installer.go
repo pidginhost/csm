@@ -443,7 +443,7 @@ func pickHandler(info platform.Info, r cmdRunner) (Handler, error) {
 	case platform.WSApache:
 		return newApacheHandler(info, r), nil
 	case platform.WSLiteSpeed:
-		return newLSWSHandler(r), nil
+		return newLSWSHandler(info, r), nil
 	case platform.WSNginx:
 		return newNginxHandler(r), nil
 	default:
