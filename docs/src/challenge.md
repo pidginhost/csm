@@ -32,7 +32,13 @@ When `challenge.enabled: true`, CSM routes eligible IPs to the challenge page in
 
 ### Challenge-Eligible Checks
 
-Login brute force (`wp_login_bruteforce`, `cpanel_login_*`), WAF triggers (`modsec_*`), XML-RPC abuse, FTP/SSH brute force, IP reputation, and other suspicious-but-not-confirmed-malicious activity.
+Pre-auth, browser-visible attack signals only: `wp_login_bruteforce`,
+`xmlrpc_abuse`, `wp_user_enumeration`, `webmail_bruteforce`, `ip_reputation`,
+`local_threat_score`, `waf_attack_blocked`. Post-auth audit events (cPanel,
+webmail, file upload, WHM logins) and non-browser protocols (SSH, FTP, DNS
+recursion, outbound traffic, API auth) are excluded - their IPs have no
+browser session to render the PoW page and every match would time out
+into a 24h hard block.
 
 ### Always Hard-Blocked
 
@@ -41,6 +47,26 @@ Confirmed malware (webshells, YARA/signature matches), C2 connections, backdoor 
 ### Timeout Escalation
 
 If an IP doesn't solve the PoW challenge within 30 minutes, it is automatically escalated to a hard firewall block.
+
+### TLS
+
+The challenge listener serves HTTPS when TLS material is configured.
+Resolution order:
+
+1. `challenge.tls_cert` + `challenge.tls_key` (explicit per-service).
+2. `webui.tls_cert` + `webui.tls_key` (shared cert; cPanel
+   `mycpanel.pem` covers both webui and the challenge port without
+   extra config).
+3. Plain HTTP with a startup warning when both pairs are empty.
+   HSTS-pinned parent domains (cPanel, phpanel, customer apex) will
+   then fail with `ERR_SSL_PROTOCOL_ERROR` because the browser auto-
+   upgrades the URL to https; ship TLS material in production.
+
+```yaml
+challenge:
+  tls_cert: /var/cpanel/ssl/cpanel/mycpanel.pem
+  tls_key:  /var/cpanel/ssl/cpanel/mycpanel.pem
+```
 
 ### Trusted Proxies
 

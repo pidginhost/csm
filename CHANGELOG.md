@@ -43,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Challenge server now serves HTTPS when `challenge.tls_cert` + `challenge.tls_key` are set, or falls back to `webui.tls_cert` / `webui.tls_key`; plain HTTP only when neither pair is configured, with a startup warning. Resolves the `ERR_SSL_PROTOCOL_ERROR` seen when HSTS-pinned parent domains force browsers to upgrade the challenge port to TLS.
 - Challenge routing no longer targets post-auth audit events (cPanel/webmail logins, file uploads, multi-IP login, WHM) or non-browser protocols (SSH, FTP, DNS recursion, outbound, API). Customers logging in from non-trusted countries no longer get hard-blocked 30 minutes after a normal cPanel login.
 - A daemon restart no longer orphans an open credential_spray incident and opens a duplicate super-incident for the same attacker IP. On startup the spray detector's in-memory binding is rehydrated from the persisted open incidents, so the suppress path keeps routing new findings into the existing incident instead of re-tripping at the distinct-mailbox threshold.
 - Credential-spray firewall hand-off now re-evaluates on every merged finding instead of only at the severity-transition moment. An operator who arms `block_at_severity` after an incident has already reached the configured severity now gets a block on the next matching finding rather than waiting for the attacker to open a fresh incident.

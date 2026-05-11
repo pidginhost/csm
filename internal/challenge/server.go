@@ -124,9 +124,41 @@ func New(cfg *config.Config, unblocker IPUnblocker, ipList *IPList) *Server {
 	return s
 }
 
-// Start begins serving challenge pages.
+// Start begins serving challenge pages. When TLS material is configured
+// the listener speaks HTTPS; otherwise it serves plain HTTP and logs a
+// startup warning, which is the right loud-fail behavior because HSTS
+// on the parent web-control-panel domain makes browsers auto-upgrade
+// any port on the same host and the plain-HTTP listener then returns
+// ERR_SSL_PROTOCOL_ERROR.
+//
+// Resolution order:
+//  1. challenge.tls_cert + challenge.tls_key      (explicit per-service)
+//  2. webui.tls_cert + webui.tls_key              (shared cert; cPanel
+//     mycpanel.pem default)
+//  3. plain HTTP + warning                        (still functional, but
+//     external browsers will
+//     fail when HSTS auto-
+//     upgrades the URL)
 func (s *Server) Start() error {
-	return s.srv.ListenAndServe()
+	cert, key := s.resolveTLSMaterial()
+	if cert == "" || key == "" {
+		fmt.Fprintf(os.Stderr,
+			"[%s] WARNING: challenge server has no TLS cert configured (challenge.tls_cert / webui.tls_cert both empty); HSTS-pinned domains will fail with ERR_SSL_PROTOCOL_ERROR\n",
+			time.Now().Format("2006-01-02 15:04:05"))
+		return s.srv.ListenAndServe()
+	}
+	return s.srv.ListenAndServeTLS(cert, key)
+}
+
+// resolveTLSMaterial picks the cert / key pair the challenge listener
+// should present, falling back to the webui pair so single-cert hosts
+// (cPanel mycpanel.pem) need zero extra config. Empty pair means the
+// caller should fall back to plain HTTP.
+func (s *Server) resolveTLSMaterial() (cert, key string) {
+	if c, k := s.cfg.Challenge.TLSCert, s.cfg.Challenge.TLSKey; c != "" && k != "" {
+		return c, k
+	}
+	return s.cfg.WebUI.TLSCert, s.cfg.WebUI.TLSKey
 }
 
 // Shutdown gracefully stops the server.

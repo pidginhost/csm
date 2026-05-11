@@ -335,6 +335,14 @@ type Config struct {
 		Secret         string   `yaml:"secret"`          // HMAC secret for challenge tokens (auto-generated if empty)
 		Difficulty     int      `yaml:"difficulty"`      // proof-of-work difficulty 0-5 (default: 2)
 		TrustedProxies []string `yaml:"trusted_proxies"` // IPs allowed to set X-Forwarded-For (empty = trust RemoteAddr only)
+		// TLSCert / TLSKey activate HTTPS on the challenge listener. Empty
+		// values fall back to webui.tls_cert / webui.tls_key so single-cert
+		// hosts (cPanel mycpanel.pem) need no extra config. When both the
+		// challenge and webui blocks are empty the server serves plain HTTP
+		// and logs a startup warning; browsers will hit ERR_SSL_PROTOCOL_ERROR
+		// if the parent domain is HSTS-pinned.
+		TLSCert string `yaml:"tls_cert"`
+		TLSKey  string `yaml:"tls_key"`
 
 		// CaptchaFallback shows a third-party CAPTCHA widget when JS is
 		// disabled. All fields default empty; the feature is off until
