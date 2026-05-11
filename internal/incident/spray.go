@@ -17,12 +17,19 @@ type SpraySuppressionConfig struct {
 	SeverityEscalateAt int
 	PerCheck           map[string]bool
 	MaxTrackedIPs      int
+	// BlockAtSeverity gates the firewall hand-off. Values:
+	//   "" / unset  - detection-only (legacy behavior).
+	//   "high"      - block on incident open (DistinctMailboxes trip).
+	//   "critical"  - block on severity escalation (SeverityEscalateAt).
+	// Comparison is case-insensitive. Any other value is ignored so an
+	// operator typo cannot accidentally engage blocking.
+	BlockAtSeverity string
 }
 
 // IsZero reports whether the config is unset; the correlator treats a
 // zero value as "spray detection disabled" without touching defaults.
 func (c SpraySuppressionConfig) IsZero() bool {
-	return !c.Enabled && !c.DryRun && c.DistinctMailboxes == 0 && c.SeverityEscalateAt == 0 && len(c.PerCheck) == 0 && c.MaxTrackedIPs == 0
+	return !c.Enabled && !c.DryRun && c.DistinctMailboxes == 0 && c.SeverityEscalateAt == 0 && len(c.PerCheck) == 0 && c.MaxTrackedIPs == 0 && c.BlockAtSeverity == ""
 }
 
 // sprayDecision is the verdict the detector returns to OnFinding for a

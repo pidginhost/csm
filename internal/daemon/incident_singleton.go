@@ -17,7 +17,24 @@ var (
 	incidentRegistry        = metrics.Default
 	incidentRetentionCancel func()
 	incidentAutoCloseCancel func()
+
+	// incidentSprayBlocker is the firewall hand-off the daemon wires in
+	// before IncidentCorrelator() is first invoked. The closure forwards
+	// to fwEngine.BlockIP, which already honors auto_response.dry_run via
+	// SetDryRunEnabledFunc, so the callback does not need to re-check it.
+	// nil means "no blocker wired" (early startup or unit tests); the
+	// singleton then skips wiring OnSprayBlock and the spray detector
+	// stays detection-only even with BlockAtSeverity set.
+	incidentSprayBlocker func(ip, reason string, timeout time.Duration) error
 )
+
+// SetIncidentSprayBlocker installs the firewall-side hand-off used by the
+// credential_spray super-incident path. Call once after the firewall
+// engine is built and before the first IncidentCorrelator() call.
+// Passing nil clears the binding.
+func SetIncidentSprayBlocker(fn func(ip, reason string, timeout time.Duration) error) {
+	incidentSprayBlocker = fn
+}
 
 // incidentAutoCloseInterval is how often the daemon scans Open / Contained
 // incidents for staleness. One hour is fast enough that 24h-idle incidents
@@ -58,6 +75,7 @@ func IncidentCorrelator() *incident.Correlator {
 		// config (early test wiring) leaves the detector disabled.
 		var spray incident.SpraySuppressionConfig
 		var whitelisted func(string) bool
+		var onSprayBlock func(ip, reason string)
 		if cfg := globalCfgForIncidents(); cfg != nil {
 			spray = incident.SpraySuppressionConfig{
 				Enabled:            cfg.Incidents.SpraySuppression.Enabled,
@@ -66,6 +84,27 @@ func IncidentCorrelator() *incident.Correlator {
 				SeverityEscalateAt: cfg.Incidents.SpraySuppression.SeverityEscalateAt,
 				PerCheck:           cfg.IncidentsSpraySuppressionPerCheck(),
 				MaxTrackedIPs:      cfg.Incidents.SpraySuppression.MaxTrackedIPs,
+				BlockAtSeverity:    cfg.Incidents.SpraySuppression.BlockAtSeverity,
+			}
+			// Only wire the firewall hand-off when block-on-spray is
+			// configured AND the operator has auto-response + block_ips
+			// engaged AND the daemon has a blocker installed. Any missing
+			// piece keeps the spray detector detection-only so a stray
+			// BlockAtSeverity setting cannot block traffic from a
+			// half-configured host.
+			if spray.BlockAtSeverity != "" && incidentSprayBlocker != nil &&
+				cfg.AutoResponse.Enabled && cfg.AutoResponse.BlockIPs {
+				blocker := incidentSprayBlocker
+				expiryStr := cfg.AutoResponse.BlockExpiry
+				onSprayBlock = func(ip, reason string) {
+					timeout, perr := time.ParseDuration(expiryStr)
+					if perr != nil || timeout <= 0 {
+						timeout = 24 * time.Hour
+					}
+					if err := blocker(ip, "CSM credential_spray: "+reason, timeout); err != nil {
+						csmlog.Warn("credential_spray block failed", "ip", ip, "err", err)
+					}
+				}
 			}
 			// Whitelist accessor: prefer the bbolt-backed live whitelist
 			// (operators add IPs at runtime), fall back to the static
@@ -95,6 +134,7 @@ func IncidentCorrelator() *incident.Correlator {
 			OpenThreshold:    incidentOpenThreshold,
 			SpraySuppression: spray,
 			IsWhitelisted:    whitelisted,
+			OnSprayBlock:     onSprayBlock,
 		})
 		if db != nil {
 			if list, err := db.ListIncidents(); err == nil {

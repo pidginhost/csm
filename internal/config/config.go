@@ -657,6 +657,14 @@ type Config struct {
 			SeverityEscalateAt int      `yaml:"severity_escalate_at"`
 			PerCheck           []string `yaml:"per_check"`
 			MaxTrackedIPs      int      `yaml:"max_tracked_ips"`
+			// BlockAtSeverity drives the firewall hand-off. Empty (default)
+			// means detection-only: the super-incident opens and counters
+			// move, but the IP is not blocked. "high" blocks as soon as the
+			// detector trips at DistinctMailboxes. "critical" waits for the
+			// severity escalation (SeverityEscalateAt distinct mailboxes)
+			// before blocking. Auto_response.dry_run and block_ips still
+			// gate the actual firewall call.
+			BlockAtSeverity string `yaml:"block_at_severity"`
 		} `yaml:"spray_suppression"`
 	} `yaml:"incidents" hotreload:"restart"`
 }

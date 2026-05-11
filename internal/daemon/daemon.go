@@ -2055,6 +2055,12 @@ func (d *Daemon) startFirewall() {
 
 	// Set firewall engine for auto-blocking
 	checks.SetIPBlocker(engine)
+	// Wire the credential_spray firewall hand-off. The engine itself
+	// honors auto_response.dry_run via SetDryRunEnabledFunc, so the
+	// callback does not need to re-check it.
+	SetIncidentSprayBlocker(func(ip, reason string, timeout time.Duration) error {
+		return engine.BlockIP(ip, reason, timeout)
+	})
 
 	fwState, _ := firewall.LoadState(d.cfg.StatePath)
 	csmlog.Info("firewall active",

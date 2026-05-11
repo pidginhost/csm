@@ -298,6 +298,159 @@ func TestPruneStaleSprayClearsExpiredEntries(t *testing.T) {
 	}
 }
 
+// blockCapture captures the (ip, reason) tuple from OnSprayBlock so a
+// test can assert the callback fired exactly when expected.
+type blockCapture struct {
+	mu    sync.Mutex
+	calls []struct{ IP, Reason string }
+}
+
+func (b *blockCapture) record(ip, reason string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.calls = append(b.calls, struct{ IP, Reason string }{ip, reason})
+}
+
+func (b *blockCapture) len() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.calls)
+}
+
+func TestSprayBlockAtHighFiresOnOpen(t *testing.T) {
+	cfg := sprayTestConfig(true, false)
+	cfg.BlockAtSeverity = "high"
+	var cap blockCapture
+	c := NewCorrelator(CorrelatorConfig{
+		SpraySuppression: cfg,
+		OnSprayBlock:     cap.record,
+	})
+	c.openThreshold = 1
+	now := time.Unix(1_700_000_000, 0)
+	c.now = func() time.Time { return now }
+	if c.spray != nil {
+		c.spray.now = c.now
+	}
+
+	for i := 0; i < 3; i++ { // threshold=3
+		mb := "user" + strconv.Itoa(i) + "@example.com"
+		_, _, _ = c.OnFinding(sprayFinding(mb, "192.0.2.10", now.Add(time.Duration(i)*time.Minute)))
+	}
+
+	if got := cap.len(); got != 1 {
+		t.Fatalf("OnSprayBlock called %d times, want 1 at open", got)
+	}
+	if cap.calls[0].IP != "192.0.2.10" {
+		t.Errorf("block IP = %q, want 192.0.2.10", cap.calls[0].IP)
+	}
+
+	// A spray incident must record the block request as an action.
+	var found bool
+	for _, inc := range c.Snapshot() {
+		if inc.Kind != KindCredentialSpray {
+			continue
+		}
+		for _, a := range inc.Actions {
+			if a.Action == "credential_spray_block_requested" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("incident missing credential_spray_block_requested action")
+	}
+}
+
+func TestSprayBlockAtCriticalSkipsOpenFiresOnEscalation(t *testing.T) {
+	cfg := sprayTestConfig(true, false)
+	cfg.BlockAtSeverity = "critical"
+	var cap blockCapture
+	c := NewCorrelator(CorrelatorConfig{
+		SpraySuppression: cfg,
+		OnSprayBlock:     cap.record,
+	})
+	c.openThreshold = 1
+	base := time.Unix(1_700_000_000, 0)
+	c.now = func() time.Time { return base }
+	if c.spray != nil {
+		c.spray.now = c.now
+	}
+
+	// Open the spray incident (3 mailboxes). BlockAtSeverity=critical must
+	// NOT fire here because escalation has not happened yet.
+	for i := 0; i < 3; i++ {
+		mb := "user" + strconv.Itoa(i) + "@example.com"
+		_, _, _ = c.OnFinding(sprayFinding(mb, "192.0.2.20", base.Add(time.Duration(i)*time.Minute)))
+	}
+	if got := cap.len(); got != 0 {
+		t.Fatalf("OnSprayBlock fired %d times before escalation; want 0", got)
+	}
+
+	// Push past SeverityEscalateAt (6) so the suppress path flips
+	// severity to CRITICAL.
+	for i := 3; i < 6; i++ {
+		mb := "user" + strconv.Itoa(i) + "@example.com"
+		_, _, _ = c.OnFinding(sprayFinding(mb, "192.0.2.20", base.Add(time.Duration(i)*time.Minute)))
+	}
+	if got := cap.len(); got != 1 {
+		t.Fatalf("OnSprayBlock fired %d times after escalation; want 1", got)
+	}
+
+	// One more finding from the same IP must NOT re-fire (idempotent).
+	_, _, _ = c.OnFinding(sprayFinding("user99@example.com", "192.0.2.20", base.Add(10*time.Minute)))
+	if got := cap.len(); got != 1 {
+		t.Errorf("OnSprayBlock fired %d times after second escalation event; want 1 (idempotent)", got)
+	}
+}
+
+func TestSprayBlockEmptyConfigStaysDetectionOnly(t *testing.T) {
+	cfg := sprayTestConfig(true, false)
+	// BlockAtSeverity intentionally left empty.
+	var cap blockCapture
+	c := NewCorrelator(CorrelatorConfig{
+		SpraySuppression: cfg,
+		OnSprayBlock:     cap.record,
+	})
+	c.openThreshold = 1
+	base := time.Unix(1_700_000_000, 0)
+	c.now = func() time.Time { return base }
+	if c.spray != nil {
+		c.spray.now = c.now
+	}
+
+	for i := 0; i < 6; i++ { // drive past both threshold and escalate
+		mb := "user" + strconv.Itoa(i) + "@example.com"
+		_, _, _ = c.OnFinding(sprayFinding(mb, "192.0.2.30", base.Add(time.Duration(i)*time.Minute)))
+	}
+	if got := cap.len(); got != 0 {
+		t.Errorf("OnSprayBlock fired %d times with BlockAtSeverity unset; want 0", got)
+	}
+}
+
+func TestSprayBlockUnknownSeverityIsNoop(t *testing.T) {
+	cfg := sprayTestConfig(true, false)
+	cfg.BlockAtSeverity = "garbage"
+	var cap blockCapture
+	c := NewCorrelator(CorrelatorConfig{
+		SpraySuppression: cfg,
+		OnSprayBlock:     cap.record,
+	})
+	c.openThreshold = 1
+	base := time.Unix(1_700_000_000, 0)
+	c.now = func() time.Time { return base }
+	if c.spray != nil {
+		c.spray.now = c.now
+	}
+
+	for i := 0; i < 6; i++ {
+		mb := "user" + strconv.Itoa(i) + "@example.com"
+		_, _, _ = c.OnFinding(sprayFinding(mb, "192.0.2.40", base.Add(time.Duration(i)*time.Minute)))
+	}
+	if got := cap.len(); got != 0 {
+		t.Errorf("OnSprayBlock fired %d times with unknown severity; want 0", got)
+	}
+}
+
 func TestSprayLRUEvictsOldestIPs(t *testing.T) {
 	cfg := sprayTestConfig(true, false)
 	cfg.MaxTrackedIPs = 3

@@ -78,7 +78,19 @@ incidents:
       - pam_auth_failure
       - ssh_bruteforce
     max_tracked_ips: 10000
+    block_at_severity: ""    # "" detection-only, "high" block on open,
+                             # "critical" block on escalation
 ```
+
+Setting `block_at_severity` hands the source IP to the firewall as soon
+as the spray detector trips at the chosen tier. The detector requires
+`auto_response.enabled` and `auto_response.block_ips`; the firewall
+still honors `auto_response.dry_run`, so a dry-run host logs the
+would-be block without applying nftables rules. Each block request is
+recorded on the incident timeline as a
+`credential_spray_block_requested` action and is idempotent per
+incident, so the open and escalation paths never produce duplicate
+firewall calls for the same source IP.
 
 Whitelisted IPs (entries in `reputation.whitelist` and the live bbolt
 whitelist updated via the Web UI) are skipped from spray detection so
