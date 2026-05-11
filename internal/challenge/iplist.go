@@ -115,11 +115,24 @@ func (l *IPList) flush() {
 		fmt.Fprintf(&sb, "%s challenge\n", ip)
 	}
 
-	// #nosec G301 -- /run/csm must be world-readable so the webserver
-	// user (www-data / nobody / lsws) can stat + read the RewriteMap
+	// /run/csm must be world-readable so the webserver user
+	// (www-data / nobody / lsws) can stat + read the RewriteMap
 	// underneath. The directory holds no sensitive data; only the
 	// CSM-owned IP file lives inside.
-	if err := os.MkdirAll(filepath.Dir(l.path), 0o755); err != nil {
+	//
+	// MkdirAll respects the process umask, so on cPanel/CloudLinux
+	// hosts where csm.service inherits umask 027 the directory ends
+	// up at 0o750 and the webserver gets EACCES on the RewriteMap.
+	// Explicit Chmod after creation forces the mode the integration
+	// requires regardless of umask.
+	mapDir := filepath.Dir(l.path)
+	// #nosec G301 -- world-readable rationale above.
+	if err := os.MkdirAll(mapDir, 0o755); err != nil {
+		return
+	}
+	// #nosec G302 -- same world-readable rationale; needed for the
+	// webserver user to stat into the directory and read the map.
+	if err := os.Chmod(mapDir, 0o755); err != nil {
 		return
 	}
 	tmpPath := l.path + ".tmp"
