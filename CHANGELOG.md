@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-05-11
+
 ### Added
 
 - New `csm webserver-integration {install|upgrade|status|validate|remove}` subcommand wires the detected webserver (Apache / LSWS / Nginx) to redirect challenge-flagged IPs to an operator-set public URL, with every change configtested before reload and rolled back on failure. The new `challenge.public_url` config field is required before install.
