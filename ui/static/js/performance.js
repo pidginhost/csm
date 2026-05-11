@@ -52,6 +52,7 @@
                 path: path,
                 key: f.key || '',
                 label: 'Empty log file',
+                bulkLabel: 'Empty all bloated logs',
                 icon: 'ti-eraser',
                 confirm: 'Truncate ' + path + ' to zero bytes? The file stays in place so PHP keeps writing to it.'
             };
@@ -67,6 +68,7 @@
                 path: p,
                 key: f.key || '',
                 label: 'Disable display_errors',
+                bulkLabel: 'Disable display_errors in all configs',
                 icon: 'ti-shield-off',
                 confirm: 'Comment the display_errors line in ' + p + ' and append an Off override at end of file?'
             };
@@ -74,35 +76,21 @@
         return null;
     }
 
-    function buildActionDropdown(action) {
-        var wrap = document.createElement('div');
-        wrap.className = 'dropdown';
-        var toggle = document.createElement('button');
-        toggle.type = 'button';
-        toggle.className = 'btn btn-sm btn-outline-secondary dropdown-toggle';
-        toggle.setAttribute('data-bs-toggle', 'dropdown');
-        toggle.setAttribute('aria-expanded', 'false');
-        var ti = document.createElement('i');
-        ti.className = 'ti ti-tools me-1';
-        toggle.appendChild(ti);
-        toggle.appendChild(document.createTextNode('Actions'));
-        var menu = document.createElement('div');
-        menu.className = 'dropdown-menu dropdown-menu-end';
-        var link = document.createElement('a');
-        link.className = 'dropdown-item';
-        link.href = '#';
+    // Per-row direct action button. Each perf finding currently has at
+    // most one supported remediation; a dropdown wrapper buys nothing
+    // here, so render a plain button labeled with the action verb.
+    function buildActionButton(action) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn btn-sm btn-outline-secondary';
         var icon = document.createElement('i');
-        icon.className = 'ti ' + action.icon + ' me-2';
-        link.appendChild(icon);
-        link.appendChild(document.createTextNode(action.label));
-        link.addEventListener('click', function(e) {
-            e.preventDefault();
-            runPerfAction(action, link);
+        icon.className = 'ti ' + action.icon + ' me-1';
+        btn.appendChild(icon);
+        btn.appendChild(document.createTextNode(action.label));
+        btn.addEventListener('click', function() {
+            runPerfAction(action, btn);
         });
-        menu.appendChild(link);
-        wrap.appendChild(toggle);
-        wrap.appendChild(menu);
-        return wrap;
+        return btn;
     }
 
     function runPerfAction(action, originBtn) {
@@ -120,6 +108,100 @@
                 CSM.toast('Error: ' + err, 'error');
                 originBtn.classList.remove('disabled');
             });
+        }).catch(function() { /* cancelled */ });
+    }
+
+    // Bulk groups: collect every remediable finding into per-endpoint
+    // buckets so the header offers one click to fix all of them. Sequential
+    // POSTs keep the firewall/audit log readable and let a partial failure
+    // report the count cleanly without rolling back applied edits.
+    function buildBulkGroups(findings) {
+        var groups = {};
+        for (var i = 0; i < findings.length; i++) {
+            var a = describePerfAction(findings[i]);
+            if (!a) continue;
+            var key = a.endpoint;
+            if (!groups[key]) {
+                groups[key] = { endpoint: a.endpoint, label: a.bulkLabel || a.label, icon: a.icon, items: [] };
+            }
+            groups[key].items.push({ path: a.path, key: a.key || '' });
+        }
+        return groups;
+    }
+
+    function renderBulkActions(findings) {
+        var holder = document.getElementById('perf-bulk-actions');
+        if (!holder) return;
+        holder.textContent = '';
+        var groups = buildBulkGroups(findings);
+        var keys = Object.keys(groups);
+        if (keys.length === 0) return;
+
+        var wrap = document.createElement('div');
+        wrap.className = 'dropdown';
+        var toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'btn btn-sm btn-outline-secondary dropdown-toggle';
+        toggle.setAttribute('data-bs-toggle', 'dropdown');
+        toggle.setAttribute('aria-expanded', 'false');
+        var ti = document.createElement('i');
+        ti.className = 'ti ti-tools me-1';
+        toggle.appendChild(ti);
+        toggle.appendChild(document.createTextNode('Bulk fix'));
+        var menu = document.createElement('div');
+        menu.className = 'dropdown-menu dropdown-menu-end';
+        for (var i = 0; i < keys.length; i++) {
+            (function(g) {
+                var link = document.createElement('a');
+                link.className = 'dropdown-item';
+                link.href = '#';
+                var ic = document.createElement('i');
+                ic.className = 'ti ' + g.icon + ' me-2';
+                link.appendChild(ic);
+                link.appendChild(document.createTextNode(g.label + ' (' + g.items.length + ')'));
+                link.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    runBulkPerfAction(g, link);
+                });
+                menu.appendChild(link);
+            })(groups[keys[i]]);
+        }
+        wrap.appendChild(toggle);
+        wrap.appendChild(menu);
+        holder.appendChild(wrap);
+    }
+
+    function runBulkPerfAction(group, originLink) {
+        var n = group.items.length;
+        var msg = 'Apply "' + group.label + '" to ' + n + ' finding' + (n === 1 ? '' : 's') + '?';
+        CSM.confirm(msg).then(function() {
+            originLink.classList.add('disabled');
+            var ok = 0, failed = 0, errs = [];
+            function next(i) {
+                if (i >= group.items.length) {
+                    if (failed === 0) {
+                        CSM.toast('Fixed ' + ok + ' of ' + group.items.length, 'success');
+                    } else if (ok === 0) {
+                        CSM.toast('All ' + failed + ' failed: ' + errs.slice(0, 2).join('; '), 'error');
+                    } else {
+                        CSM.toast('Fixed ' + ok + ', failed ' + failed + ' (' + errs.slice(0, 2).join('; ') + ')', 'warning');
+                    }
+                    originLink.classList.remove('disabled');
+                    update();
+                    return;
+                }
+                var it = group.items[i];
+                CSM.post(group.endpoint, { path: it.path, key: it.key }).then(function(data) {
+                    if (data && data.success) ok++;
+                    else { failed++; if (data && data.error) errs.push(data.error); }
+                    next(i + 1);
+                }).catch(function(e) {
+                    failed++;
+                    errs.push(String(e));
+                    next(i + 1);
+                });
+            }
+            next(0);
         }).catch(function() { /* cancelled */ });
     }
 
@@ -288,7 +370,7 @@
                                 var spacer = document.createElement('div');
                                 spacer.className = 'ms-auto';
                                 header.appendChild(spacer);
-                                header.appendChild(buildActionDropdown(action));
+                                header.appendChild(buildActionButton(action));
                             }
 
                             item.appendChild(header);
@@ -308,6 +390,7 @@
                             findingsEl.appendChild(item);
                         }
                     }
+                    renderBulkActions(findings);
                 }
             })
             .catch(function(err) {
