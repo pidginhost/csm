@@ -87,17 +87,18 @@ func IncidentCorrelator() *incident.Correlator {
 				BlockAtSeverity:    cfg.Incidents.SpraySuppression.BlockAtSeverity,
 			}
 			// Only wire the firewall hand-off when block-on-spray is
-			// configured AND the operator has auto-response + block_ips
-			// engaged AND the daemon has a blocker installed. Any missing
-			// piece keeps the spray detector detection-only so a stray
-			// BlockAtSeverity setting cannot block traffic from a
-			// half-configured host.
-			if spray.BlockAtSeverity != "" && incidentSprayBlocker != nil &&
-				cfg.AutoResponse.Enabled && cfg.AutoResponse.BlockIPs {
+			// configured and the daemon has a blocker installed. The live
+			// auto_response gate is checked at decision time so SIGHUP
+			// changes to enabled/block_ips take effect without rebuilding
+			// the singleton.
+			if spray.BlockAtSeverity != "" && incidentSprayBlocker != nil {
 				blocker := incidentSprayBlocker
-				expiryStr := cfg.AutoResponse.BlockExpiry
 				onSprayBlock = func(ip, reason string) {
-					timeout, perr := time.ParseDuration(expiryStr)
+					cfg := globalCfgForIncidents()
+					if cfg == nil || !cfg.AutoResponse.Enabled || !cfg.AutoResponse.BlockIPs {
+						return
+					}
+					timeout, perr := time.ParseDuration(cfg.AutoResponse.BlockExpiry)
 					if perr != nil || timeout <= 0 {
 						timeout = 24 * time.Hour
 					}
@@ -134,7 +135,11 @@ func IncidentCorrelator() *incident.Correlator {
 			OpenThreshold:    incidentOpenThreshold,
 			SpraySuppression: spray,
 			IsWhitelisted:    whitelisted,
-			OnSprayBlock:     onSprayBlock,
+			CanSprayBlock: func() bool {
+				cfg := globalCfgForIncidents()
+				return cfg != nil && cfg.AutoResponse.Enabled && cfg.AutoResponse.BlockIPs
+			},
+			OnSprayBlock: onSprayBlock,
 		})
 		if db != nil {
 			if list, err := db.ListIncidents(); err == nil {
@@ -301,6 +306,7 @@ func resetIncidentForTestWithThreshold(threshold int) {
 	incidentOnce = sync.Once{}
 	incidentRegistry = metrics.NewRegistry
 	globalCfgForIncidents = func() *config.Config { return nil }
+	incidentSprayBlocker = nil
 	// Most tests assert that one finding lands in one incident; the
 	// production threshold of 2 would defer creation to the second
 	// correlated event and break those wiring assertions. Pin to the

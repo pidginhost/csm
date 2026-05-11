@@ -330,11 +330,6 @@ func (d *Daemon) Run() error {
 	// captures the Daemon to pick up reloaded configs without restart.
 	SetIncidentConfigSource(func() *config.Config { return d.currentCfg() })
 
-	// Construct the incident correlator early so state is restored and
-	// metrics are registered before any finding is dispatched. Singleton;
-	// safe to call multiple times.
-	_ = IncidentCorrelator()
-
 	// Initialize the findings broadcast bus so passive observers (SSE, etc.)
 	// can subscribe before any findings are dispatched.
 	d.findingBus = broadcast.NewBus(64)
@@ -466,6 +461,12 @@ func (d *Daemon) Run() error {
 
 	// Start firewall engine if enabled
 	d.startFirewall()
+
+	// Construct the incident correlator after the firewall starts so the
+	// credential_spray block hand-off is installed before the singleton
+	// captures its config. This still happens before any finding is
+	// dispatched.
+	_ = IncidentCorrelator()
 
 	// Start challenge server if enabled (gray listing)
 	d.startChallengeServer()

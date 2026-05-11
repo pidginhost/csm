@@ -1,10 +1,14 @@
 package daemon
 
 import (
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/incident"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -91,6 +95,81 @@ func TestIncidentCorrelatorCriticalBypassesThreshold(t *testing.T) {
 	}
 	if got := c.OpenCount(); got != 1 {
 		t.Fatalf("OpenCount = %d, want 1", got)
+	}
+}
+
+func TestIncidentCorrelatorSprayBlockerHonorsLiveAutoResponseConfig(t *testing.T) {
+	resetIncidentForTest()
+	t.Cleanup(resetIncidentForTest)
+
+	cfg := &config.Config{}
+	cfg.AutoResponse.BlockIPs = true
+	cfg.AutoResponse.BlockExpiry = "15m"
+	cfg.Incidents.SpraySuppression.Enabled = true
+	cfg.Incidents.SpraySuppression.DryRun = false
+	cfg.Incidents.SpraySuppression.DistinctMailboxes = 3
+	cfg.Incidents.SpraySuppression.SeverityEscalateAt = 6
+	cfg.Incidents.SpraySuppression.PerCheck = []string{"email_auth_failure_realtime"}
+	cfg.Incidents.SpraySuppression.BlockAtSeverity = "high"
+	SetIncidentConfigSource(func() *config.Config { return cfg })
+
+	type blockCall struct {
+		ip      string
+		reason  string
+		timeout time.Duration
+	}
+	var (
+		mu    sync.Mutex
+		calls []blockCall
+	)
+	SetIncidentSprayBlocker(func(ip, reason string, timeout time.Duration) error {
+		mu.Lock()
+		defer mu.Unlock()
+		calls = append(calls, blockCall{ip: ip, reason: reason, timeout: timeout})
+		return nil
+	})
+
+	c := IncidentCorrelator()
+	feedSpray(t, c, "192.0.2.80", 3)
+	mu.Lock()
+	gotDisabled := len(calls)
+	mu.Unlock()
+	if gotDisabled != 0 {
+		t.Fatalf("spray blocker fired %d times while auto_response.enabled=false; want 0", gotDisabled)
+	}
+
+	cfg.AutoResponse.Enabled = true
+	feedSpray(t, c, "192.0.2.81", 3)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 1 {
+		t.Fatalf("spray blocker calls = %d, want 1 after auto_response enabled", len(calls))
+	}
+	if calls[0].ip != "192.0.2.81" {
+		t.Errorf("spray block IP = %q, want 192.0.2.81", calls[0].ip)
+	}
+	if !strings.Contains(calls[0].reason, "CSM credential_spray: credential_spray: 3 distinct mailboxes") {
+		t.Errorf("spray block reason = %q, want CSM credential_spray prefix and mailbox count", calls[0].reason)
+	}
+	if calls[0].timeout != 15*time.Minute {
+		t.Errorf("spray block timeout = %s, want 15m", calls[0].timeout)
+	}
+}
+
+func feedSpray(t *testing.T, c *incident.Correlator, ip string, count int) {
+	t.Helper()
+	now := time.Unix(1_700_000_000, 0)
+	for i := 0; i < count; i++ {
+		_, _, err := c.OnFinding(alert.Finding{
+			Check:     "email_auth_failure_realtime",
+			Severity:  alert.High,
+			SourceIP:  ip,
+			Mailbox:   "user" + strconv.Itoa(i) + "@example.com",
+			Timestamp: now.Add(time.Duration(i) * time.Minute),
+		})
+		if err != nil {
+			t.Fatalf("OnFinding: %v", err)
+		}
 	}
 }
 

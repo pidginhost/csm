@@ -50,13 +50,19 @@ type CorrelatorConfig struct {
 	// nil short-circuits to "no IPs whitelisted".
 	IsWhitelisted func(ip string) bool
 
+	// CanSprayBlock is consulted immediately before recording a
+	// credential_spray block request. nil means "allowed" when
+	// OnSprayBlock is present. Implementations must be quick and must
+	// not call back into the correlator.
+	CanSprayBlock func() bool
+
 	// OnSprayBlock is invoked once per IP when the credential_spray
 	// detector decides the IP should be hard-blocked, based on
-	// SpraySuppression.BlockAtSeverity. The callback runs while the
-	// correlator mutex is held, so implementations must return quickly
-	// and never call back into the correlator. nil disables the
-	// hand-off; the spray super-incident still opens and escalates,
-	// but no firewall action fires.
+	// SpraySuppression.BlockAtSeverity. The callback runs after the
+	// correlator mutex is released so firewall or verdict latency does
+	// not stall incident ingestion. nil disables the hand-off; the spray
+	// super-incident still opens and escalates, but no firewall action
+	// fires.
 	OnSprayBlock func(ip, reason string)
 }
 
@@ -128,8 +134,14 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 	if key.IsEmpty() {
 		return "", false, nil
 	}
+	var afterUnlock func()
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	defer func() {
+		c.mu.Unlock()
+		if afterUnlock != nil {
+			afterUnlock()
+		}
+	}()
 
 	keyStr := keyString(key)
 	now := c.now()
@@ -148,7 +160,7 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 			c.spray.BindIncident(f.SourceIP, id)
 			c.counters.sprayOpenedTotal.Add(1)
 			if c.sprayShouldBlockOpen() {
-				c.triggerSprayBlockLocked(c.incidents[id], f.SourceIP, hits, now, "spray opened")
+				afterUnlock = c.triggerSprayBlockLocked(c.incidents[id], f.SourceIP, hits, now, "spray opened")
 			}
 			return id, true, nil
 		case sprayDecisionSuppress:
@@ -167,7 +179,7 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 					})
 					c.persistLocked(*inc)
 					if c.sprayShouldBlockEscalate() {
-						c.triggerSprayBlockLocked(inc, f.SourceIP, hits, now, "spray escalated to critical")
+						afterUnlock = c.triggerSprayBlockLocked(inc, f.SourceIP, hits, now, "spray escalated to critical")
 					}
 				}
 				c.counters.spraySuppressedTotal.Add(1)
@@ -753,7 +765,7 @@ func newIncidentID() string {
 // fires at the moment the spray detector trips (DistinctMailboxes
 // crossed for the first time).
 func (c *Correlator) sprayShouldBlockOpen() bool {
-	if c.spray == nil || c.cfg.OnSprayBlock == nil {
+	if c.spray == nil || c.cfg.OnSprayBlock == nil || !c.sprayBlockAllowed() {
 		return false
 	}
 	return strings.EqualFold(c.spray.cfg.BlockAtSeverity, "high")
@@ -763,7 +775,7 @@ func (c *Correlator) sprayShouldBlockOpen() bool {
 // once the spray escalates to CRITICAL (SeverityEscalateAt distinct
 // mailboxes sustained).
 func (c *Correlator) sprayShouldBlockEscalate() bool {
-	if c.spray == nil || c.cfg.OnSprayBlock == nil {
+	if c.spray == nil || c.cfg.OnSprayBlock == nil || !c.sprayBlockAllowed() {
 		return false
 	}
 	switch strings.ToLower(c.spray.cfg.BlockAtSeverity) {
@@ -776,18 +788,23 @@ func (c *Correlator) sprayShouldBlockEscalate() bool {
 	return false
 }
 
+func (c *Correlator) sprayBlockAllowed() bool {
+	return c.cfg.CanSprayBlock == nil || c.cfg.CanSprayBlock()
+}
+
 // triggerSprayBlockLocked invokes the operator-supplied OnSprayBlock
-// callback at most once per spray incident and appends an audit action
-// to the incident. Caller holds c.mu. Idempotent: a second call against
-// the same incident is a no-op so the open + escalate paths can both
-// arm without producing duplicate firewall calls.
-func (c *Correlator) triggerSprayBlockLocked(inc *Incident, ip string, hits int, now time.Time, why string) {
+// callback at most once per spray incident and appends an audit action to
+// the incident. Caller holds c.mu. The returned callback must be invoked
+// after unlocking. Idempotent: a second call against the same incident is
+// a no-op so the open + escalate paths can both arm without producing
+// duplicate firewall calls.
+func (c *Correlator) triggerSprayBlockLocked(inc *Incident, ip string, hits int, now time.Time, why string) func() {
 	if inc == nil || c.cfg.OnSprayBlock == nil {
-		return
+		return nil
 	}
 	for _, a := range inc.Actions {
 		if a.Action == "credential_spray_block_requested" {
-			return
+			return nil
 		}
 	}
 	reason := "credential_spray: " + strconv.Itoa(hits) + " distinct mailboxes (" + why + ")"
@@ -798,5 +815,8 @@ func (c *Correlator) triggerSprayBlockLocked(inc *Incident, ip string, hits int,
 		Details: ip + " " + reason,
 	})
 	c.persistLocked(*inc)
-	c.cfg.OnSprayBlock(ip, reason)
+	onSprayBlock := c.cfg.OnSprayBlock
+	return func() {
+		onSprayBlock(ip, reason)
+	}
 }

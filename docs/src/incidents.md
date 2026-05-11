@@ -83,11 +83,12 @@ incidents:
 ```
 
 Setting `block_at_severity` hands the source IP to the firewall as soon
-as the spray detector trips at the chosen tier. The detector requires
-`auto_response.enabled` and `auto_response.block_ips`; the firewall
-still honors `auto_response.dry_run`, so a dry-run host logs the
-would-be block without applying nftables rules. Each block request is
-recorded on the incident timeline as a
+as the spray detector trips at the chosen tier, once
+`spray_suppression.dry_run` is false. The detector also requires
+`auto_response.enabled` and `auto_response.block_ips`; the firewall still
+honors `auto_response.dry_run`, so a dry-run host logs the would-be block
+without applying nftables rules. Each block request is recorded on the
+incident timeline as a
 `credential_spray_block_requested` action and is idempotent per
 incident, so the open and escalation paths never produce duplicate
 firewall calls for the same source IP.

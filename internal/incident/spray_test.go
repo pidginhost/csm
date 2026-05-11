@@ -361,6 +361,47 @@ func TestSprayBlockAtHighFiresOnOpen(t *testing.T) {
 	}
 }
 
+func TestSprayBlockCallbackRunsAfterCorrelatorUnlock(t *testing.T) {
+	cfg := sprayTestConfig(true, false)
+	cfg.BlockAtSeverity = "high"
+	cfg.DistinctMailboxes = 1
+	cfg.SeverityEscalateAt = 2
+	called := make(chan struct{})
+	var c *Correlator
+	c = NewCorrelator(CorrelatorConfig{
+		SpraySuppression: cfg,
+		OnSprayBlock: func(_, _ string) {
+			if got := c.OpenCount(); got != 1 {
+				t.Errorf("OpenCount from block callback = %d, want 1", got)
+			}
+			close(called)
+		},
+	})
+	c.openThreshold = 1
+	now := time.Unix(1_700_000_000, 0)
+	c.now = func() time.Time { return now }
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 1; i++ {
+			mb := "user" + strconv.Itoa(i) + "@example.com"
+			_, _, _ = c.OnFinding(sprayFinding(mb, "192.0.2.11", now.Add(time.Duration(i)*time.Minute)))
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("OnFinding deadlocked; block callback likely ran under correlator lock")
+	}
+	select {
+	case <-called:
+	default:
+		t.Fatal("OnSprayBlock was not called")
+	}
+}
+
 func TestSprayBlockAtCriticalSkipsOpenFiresOnEscalation(t *testing.T) {
 	cfg := sprayTestConfig(true, false)
 	cfg.BlockAtSeverity = "critical"
