@@ -448,6 +448,8 @@ WatchdogSec=300
 
 StateDirectory=csm
 StateDirectoryMode=0700
+RuntimeDirectory=csm
+RuntimeDirectoryMode=0755
 ConfigurationDirectory=csm
 ConfigurationDirectoryMode=0750
 

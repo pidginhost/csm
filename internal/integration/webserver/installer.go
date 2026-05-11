@@ -10,12 +10,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
+	"text/template"
 
+	"github.com/pidginhost/csm/internal/challenge"
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/platform"
 )
 
@@ -25,6 +28,26 @@ import (
 // "CSM owns this file". Manual edits that wipe or change the header
 // trip ErrManualEdits at upgrade time and the file is left untouched.
 const templateHeaderPrefix = "# csm-managed-version: "
+
+const (
+	defaultChallengeListenAddr = "127.0.0.1"
+	defaultChallengeListenPort = 8439
+)
+
+// RenderConfig contains the daemon settings that have to be baked
+// into webserver snippets. Values come from csm.yaml at install time
+// where they are operator-configurable.
+type RenderConfig struct {
+	ChallengeMapPath    string
+	ChallengeListenAddr string
+	ChallengeListenPort int
+}
+
+type templateData struct {
+	ChallengeMapPath string
+	BackendHostPort  string
+	BackendURL       string
+}
 
 // Result is the structured outcome of an installer run. JSON-friendly
 // shape so the CLI can render either human text or `--json` output.
@@ -43,6 +66,8 @@ type Result struct {
 // against a temp tree without touching real webserver paths.
 type Installer struct {
 	Handler  Handler
+	Config   RenderConfig
+	MkdirAll func(path string, mode os.FileMode) error
 	WriteAt  func(path string, data []byte, mode os.FileMode) error
 	ReadAt   func(path string) ([]byte, error)
 	StatAt   func(path string) (os.FileInfo, error)
@@ -53,13 +78,15 @@ type Installer struct {
 // New returns an Installer wired for live operation: real filesystem
 // reads, atomic writes, real exec runner. The handler is auto-selected
 // from platform.Detect(); pass info to override for tests.
-func New(info platform.Info) (*Installer, error) {
+func New(info platform.Info, cfg *config.Config) (*Installer, error) {
 	h, err := pickHandler(info, realCmdRunner{})
 	if err != nil {
 		return nil, err
 	}
 	return &Installer{
 		Handler:  h,
+		Config:   renderConfigFrom(cfg),
+		MkdirAll: os.MkdirAll,
 		WriteAt:  atomicWrite,
 		ReadAt:   os.ReadFile,
 		StatAt:   os.Stat,
@@ -88,7 +115,6 @@ func (i *Installer) Install() (Result, error) {
 		ShippedVer:  TemplateVersion,
 	}
 
-	rendered := i.renderTemplate()
 	prevBytes, prevExists, prevVer, err := i.readSnippet()
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		res.Status = "fail"
@@ -101,6 +127,19 @@ func (i *Installer) Install() (Result, error) {
 		res.Status = "fail"
 		res.Message = ErrManualEdits.Error() + ": " + i.Handler.SnippetPath()
 		return res, ErrManualEdits
+	}
+
+	if err := i.ensureChallengeMapFiles(); err != nil {
+		res.Status = "fail"
+		res.Message = "runtime files: " + err.Error()
+		return res, err
+	}
+
+	rendered, err := i.renderTemplate()
+	if err != nil {
+		res.Status = "fail"
+		res.Message = "render: " + err.Error()
+		return res, err
 	}
 
 	if prevExists && bytes.Equal(prevBytes, rendered) {
@@ -258,16 +297,96 @@ func (i *Installer) Validate() (Result, error) {
 
 // renderTemplate prefixes the handler's body with the version marker
 // the installer reads back at status/upgrade time.
-func (i *Installer) renderTemplate() []byte {
+func (i *Installer) renderTemplate() ([]byte, error) {
+	tpl, err := template.New(i.Handler.Kind()).Parse(i.Handler.Template())
+	if err != nil {
+		return nil, err
+	}
 	var b strings.Builder
 	b.WriteString(templateHeaderPrefix)
 	b.WriteString(strconv.Itoa(TemplateVersion))
 	b.WriteByte('\n')
-	b.WriteString("# Last write: ")
-	b.WriteString(time.Now().UTC().Format(time.RFC3339))
-	b.WriteByte('\n')
-	b.WriteString(i.Handler.Template())
-	return []byte(b.String())
+	if err := tpl.Execute(&b, i.templateData()); err != nil {
+		return nil, err
+	}
+	return []byte(b.String()), nil
+}
+
+func renderConfigFrom(cfg *config.Config) RenderConfig {
+	rc := RenderConfig{
+		ChallengeMapPath:    challenge.DefaultMapPath,
+		ChallengeListenAddr: defaultChallengeListenAddr,
+		ChallengeListenPort: defaultChallengeListenPort,
+	}
+	if cfg == nil {
+		return rc
+	}
+	if strings.TrimSpace(cfg.Challenge.ListenAddr) != "" {
+		rc.ChallengeListenAddr = strings.TrimSpace(cfg.Challenge.ListenAddr)
+	}
+	if cfg.Challenge.ListenPort > 0 {
+		rc.ChallengeListenPort = cfg.Challenge.ListenPort
+	}
+	return rc
+}
+
+func (i *Installer) templateData() templateData {
+	mapPath := strings.TrimSpace(i.Config.ChallengeMapPath)
+	if mapPath == "" {
+		mapPath = challenge.DefaultMapPath
+	}
+	port := i.Config.ChallengeListenPort
+	if port <= 0 {
+		port = defaultChallengeListenPort
+	}
+	host := challengeBackendHost(i.Config.ChallengeListenAddr)
+	backendHostPort := net.JoinHostPort(host, strconv.Itoa(port))
+	return templateData{
+		ChallengeMapPath: mapPath,
+		BackendHostPort:  backendHostPort,
+		BackendURL:       "http://" + backendHostPort + "/challenge",
+	}
+}
+
+func challengeBackendHost(addr string) string {
+	addr = strings.Trim(strings.TrimSpace(addr), "[]")
+	switch addr {
+	case "", "0.0.0.0", "::":
+		return defaultChallengeListenAddr
+	default:
+		return addr
+	}
+}
+
+func (i *Installer) ensureChallengeMapFiles() error {
+	data := i.templateData()
+	mkdirAll := i.MkdirAll
+	if mkdirAll == nil {
+		mkdirAll = os.MkdirAll
+	}
+	if err := mkdirAll(filepath.Dir(data.ChallengeMapPath), 0o755); err != nil {
+		return err
+	}
+	for _, f := range []struct {
+		path string
+		body []byte
+	}{
+		{path: data.ChallengeMapPath, body: []byte("# Generated by CSM.\n")},
+	} {
+		statAt := i.StatAt
+		if statAt == nil {
+			statAt = os.Stat
+		}
+		if _, err := statAt(f.path); err == nil {
+			continue
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err := i.WriteAt(f.path, f.body, 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // readSnippet parses the on-disk snippet header to recover the

@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- New `csm webserver-integration {install|upgrade|status|validate|remove}` subcommand drops a webserver-specific snippet (Apache / LSWS / Nginx, auto-detected) that gates challenge-listed IPs through the existing webserver's TLS. Every change is validated via the webserver's own configtest before reload, with atomic write-or-revert so a bad template never takes the site down.
+- New `csm webserver-integration {install|upgrade|status|validate|remove}` subcommand drops a webserver-specific challenge reverse-proxy snippet for the detected stack. Apache and LSWS are wired directly; Nginx installs the shared upstream and documented per-vhost gate. Every change is configtested before reload and rolled back on failure.
 - Performance Findings page offers per-row Actions for two safe automated fixes: truncate a bloated error_log in place (preserves the inode) and disable display_errors by commenting the directive and appending an Off override at end of `.user.ini` / `php.ini` / `.htaccess`. Admin-only, sandboxed to per-account web roots; symlinks and unsupported file types are refused.
 - Credential-spray super-incidents can hand the source IP to the firewall once the spray trips or escalates to CRITICAL. New `incidents.spray_suppression.block_at_severity` knob (`""`, `high`, `critical`); defaults to detection-only so existing operators see no behavior change. `auto_response.dry_run` and `block_ips` still gate the actual block.
 - Dashboard right rail gains a Components matrix listing every registered watcher with its attached state, time since last state change, and the most recent finding it produced. New /api/v1/components endpoint backs the view; read-scope tokens can call it.
@@ -45,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Challenge webserver integration now renders snippets from the configured challenge port, keeps no-op upgrades stable, writes the Apache/LSWS map to a webserver-readable runtime path, and uses a live Nginx challenge gate instead of a stale generated map.
 - Challenge server now serves HTTPS when `challenge.tls_cert` + `challenge.tls_key` are set, and direct/public listeners can fall back to `webui.tls_cert` / `webui.tls_key`. Loopback listeners stay plain HTTP by default for the reverse-proxy upstream.
 - Challenge routing no longer targets post-auth audit events (cPanel/webmail logins, file uploads, multi-IP login, WHM) or non-browser protocols (SSH, FTP, DNS recursion, outbound, API). Customers logging in from non-trusted countries no longer get hard-blocked 30 minutes after a normal cPanel login.
 - A daemon restart no longer orphans an open credential_spray incident and opens a duplicate super-incident for the same attacker IP. On startup the spray detector's in-memory binding is rehydrated from the persisted open incidents, so the suppress path keeps routing new findings into the existing incident instead of re-tripping at the distinct-mailbox threshold.

@@ -625,6 +625,30 @@ func TestExtractIPUntrustedPeerIgnoresXFF(t *testing.T) {
 	}
 }
 
+func TestHandleGateReflectsChallengeList(t *testing.T) {
+	cfg := baseCfg()
+	cfg.Challenge.TrustedProxies = []string{"127.0.0.1"}
+	l := NewIPList(t.TempDir())
+	l.Add("203.0.113.44", "test", time.Hour)
+	s := New(cfg, nil, l)
+
+	req := httptest.NewRequest(http.MethodGet, "/challenge/gate", nil)
+	req.RemoteAddr = "127.0.0.1:1234"
+	req.Header.Set("X-Forwarded-For", "203.0.113.44")
+	rec := httptest.NewRecorder()
+	s.handleGate(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("listed IP gate status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+
+	l.Remove("203.0.113.44")
+	rec = httptest.NewRecorder()
+	s.handleGate(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("removed IP gate status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+}
+
 // --- CleanExpired on Server.verified map -----------------------------
 
 func TestServerCleanExpired(t *testing.T) {

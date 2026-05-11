@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/integration/webserver"
 	"github.com/pidginhost/csm/internal/platform"
 )
@@ -40,8 +41,14 @@ func runWebserverIntegration() {
 		webserverIntegrationUsage(os.Stderr)
 		os.Exit(2)
 	}
+	if !validWebserverIntegrationVerb(verb) {
+		fmt.Fprintf(os.Stderr, "webserver-integration: unknown verb %q\n", verb)
+		webserverIntegrationUsage(os.Stderr)
+		os.Exit(2)
+	}
 
-	inst, err := webserver.New(platform.Detect())
+	info := platform.Detect()
+	inst, err := webserver.New(info, nil)
 	if err != nil {
 		if errors.Is(err, webserver.ErrUnknownWebserver) {
 			// Skipped (not failed) so package post-install hooks on
@@ -56,6 +63,13 @@ func runWebserverIntegration() {
 		}
 		fmt.Fprintf(os.Stderr, "webserver-integration: %v\n", err)
 		os.Exit(1)
+	}
+	if cfg := loadWebserverIntegrationConfig(verb); cfg != nil {
+		inst, err = webserver.New(info, cfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "webserver-integration: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	var (
@@ -73,15 +87,29 @@ func runWebserverIntegration() {
 		res, op = inst.Validate()
 	case "remove":
 		res, op = inst.Remove()
-	default:
-		fmt.Fprintf(os.Stderr, "webserver-integration: unknown verb %q\n", verb)
-		webserverIntegrationUsage(os.Stderr)
-		os.Exit(2)
 	}
 
 	emitResult(asJSON, res)
 	if op != nil {
 		os.Exit(1)
+	}
+}
+
+func validWebserverIntegrationVerb(verb string) bool {
+	switch verb {
+	case "install", "upgrade", "status", "validate", "remove":
+		return true
+	default:
+		return false
+	}
+}
+
+func loadWebserverIntegrationConfig(verb string) *config.Config {
+	switch verb {
+	case "install", "upgrade":
+		return loadConfigLite()
+	default:
+		return nil
 	}
 }
 

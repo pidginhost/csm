@@ -23,9 +23,9 @@ type Handler interface {
 	Kind() string
 	// SnippetPath returns the canonical path the integration writes to.
 	SnippetPath() string
-	// Template returns the rendered snippet content for the current
-	// CSM binary. Includes the version marker the installer reads
-	// back to decide if an upgrade is needed.
+	// Template returns the snippet body for the current CSM binary.
+	// The installer renders daemon-specific values and adds the version
+	// marker it reads back to decide if an upgrade is needed.
 	Template() string
 	// Validate runs the webserver's own configtest with the snippet
 	// already in place. Returns nil on pass, error with captured

@@ -6,7 +6,7 @@ import _ "embed"
 // version embedded in the on-disk snippet's header to this constant to
 // decide whether `upgrade` needs to rewrite the file. Increment in
 // lockstep with template content changes.
-const TemplateVersion = 1
+const TemplateVersion = 2
 
 //go:embed templates/apache.conf
 var apacheTemplate string

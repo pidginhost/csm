@@ -108,15 +108,17 @@ Without `trusted_proxies`, X-Forwarded-For is ignored to prevent IP spoofing.
 When a client passes the challenge:
 1. The IP is temporarily allowed through the firewall for 4 hours
 2. A verification cookie is set
-3. The IP is removed from the challenge list (Apache stops redirecting)
+3. The IP is removed from the challenge list so the webserver stops
+   sending that visitor to the challenge flow
 
 ## Webserver Integration
 
 The challenge listener is reachable only on loopback by default; the
 host's webserver redirects challenge-listed IPs to `/__csm_challenge`
-on the same vhost and reverse-proxies that path to CSM. A small
-snippet per webserver handles both moves and is installed by CSM
-itself with a write-validate-reload-or-revert flow.
+on the same vhost and reverse-proxies that path to CSM. For Apache
+and LSWS, one installed snippet handles both moves. For Nginx, CSM
+installs the shared upstream and documents the per-server
+`auth_request` block that operators include in each gated vhost.
 
 ```bash
 csm webserver-integration install     # initial wire-up
@@ -136,6 +138,13 @@ The installer auto-detects the active webserver via
 | RHEL family Apache (httpd)  | `/etc/httpd/conf.d/csm-challenge.conf`              |
 | LiteSpeed (LSWS)            | `/usr/local/lsws/conf/templates/csm-challenge.conf` |
 | Nginx (plain + Engintron + phpanel) | `/etc/nginx/conf.d/csm-challenge.conf`      |
+
+The snippets are rendered from the effective CSM config, including
+`challenge.listen_port`. Apache and LSWS read their RewriteMap from
+`/run/csm/challenge_ips.txt` so the private state directory can remain
+mode 0700. Reverse-proxy deployments must list the loopback proxy in
+`challenge.trusted_proxies` so CSM can trust the `X-Forwarded-For`
+client IP supplied by the webserver.
 
 On every run, the installer:
 

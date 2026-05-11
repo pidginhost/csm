@@ -1825,7 +1825,7 @@ func (d *Daemon) startChallengeServer() {
 
 	unblocker := challenge.IPUnblocker(d.fwEngine)
 
-	d.ipList = challenge.NewIPList(d.cfg.StatePath)
+	d.ipList = challenge.NewIPListWithMapPath(d.cfg.StatePath, challenge.DefaultMapPath)
 	checks.SetChallengeIPList(d.ipList)
 	srv := challenge.New(d.cfg, unblocker, d.ipList)
 	d.challengeServer = srv

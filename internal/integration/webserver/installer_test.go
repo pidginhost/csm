@@ -51,6 +51,8 @@ func newTestInstaller(t *testing.T, h *fakeHandler) *Installer {
 	}
 	return &Installer{
 		Handler:  h,
+		Config:   RenderConfig{ChallengeMapPath: dir + "/run/challenge_ips.txt", ChallengeListenAddr: "127.0.0.1", ChallengeListenPort: 8439},
+		MkdirAll: os.MkdirAll,
 		WriteAt:  os.WriteFile,
 		ReadAt:   os.ReadFile,
 		StatAt:   os.Stat,
@@ -82,6 +84,85 @@ func TestInstallFreshWritesSnippetAndReloads(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "RewriteEngine On") {
 		t.Errorf("snippet missing body content")
+	}
+	if _, err := os.Stat(i.Config.ChallengeMapPath); err != nil {
+		t.Fatalf("challenge map not created: %v", err)
+	}
+}
+
+func TestInstallRendersConfiguredPathsAndBackend(t *testing.T) {
+	h := &fakeHandler{
+		kind: "apache",
+		body: "map={{ .ChallengeMapPath }} backend={{ .BackendURL }} hostport={{ .BackendHostPort }}\n",
+	}
+	i := newTestInstaller(t, h)
+	i.Config.ChallengeMapPath = t.TempDir() + "/challenge_ips.txt"
+	i.Config.ChallengeListenPort = 18439
+
+	if _, err := i.Install(); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	data, err := os.ReadFile(h.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(data)
+	if !strings.Contains(body, "map="+i.Config.ChallengeMapPath) {
+		t.Fatalf("rendered map path not based on config: %s", body)
+	}
+	if !strings.Contains(body, "backend=http://127.0.0.1:18439/challenge") {
+		t.Fatalf("rendered backend URL not based on config: %s", body)
+	}
+	if !strings.Contains(body, "hostport=127.0.0.1:18439") {
+		t.Fatalf("rendered backend hostport not based on config: %s", body)
+	}
+}
+
+func TestShippedTemplatesRenderRuntimeConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "apache", body: apacheTemplate},
+		{name: "lsws", body: lswsTemplate},
+		{name: "nginx", body: nginxTemplate},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &fakeHandler{kind: tc.name, body: tc.body}
+			i := newTestInstaller(t, h)
+			i.Config.ChallengeMapPath = "/run/custom-csm/challenge_ips.txt"
+			i.Config.ChallengeListenPort = 18439
+			rendered, err := i.renderTemplate()
+			if err != nil {
+				t.Fatalf("renderTemplate: %v", err)
+			}
+			body := string(rendered)
+			if strings.Contains(body, "/opt/csm/state") {
+				t.Fatalf("template still hardcodes legacy state path: %s", body)
+			}
+			if strings.Contains(body, "127.0.0.1:8439") {
+				t.Fatalf("template still hardcodes default challenge port: %s", body)
+			}
+			if !strings.Contains(body, "127.0.0.1:18439") {
+				t.Fatalf("template did not render configured challenge port: %s", body)
+			}
+		})
+	}
+}
+
+func TestRenderTemplateIsStableForNoOpCompare(t *testing.T) {
+	h := &fakeHandler{kind: "apache", body: "RewriteEngine On\n"}
+	i := newTestInstaller(t, h)
+	first, err := i.renderTemplate()
+	if err != nil {
+		t.Fatalf("first render: %v", err)
+	}
+	second, err := i.renderTemplate()
+	if err != nil {
+		t.Fatalf("second render: %v", err)
+	}
+	if string(first) != string(second) {
+		t.Fatalf("rendered template changed between identical inputs:\nfirst=%s\nsecond=%s", first, second)
 	}
 }
 

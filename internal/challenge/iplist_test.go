@@ -3,6 +3,7 @@ package challenge
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -85,5 +86,26 @@ func TestIPListFlushWritesFile(t *testing.T) {
 	}
 	if len(data) == 0 {
 		t.Error("file should not be empty")
+	}
+}
+
+func TestNewIPListWithMapPathClearsStaleMap(t *testing.T) {
+	dir := t.TempDir()
+	mapPath := filepath.Join(dir, "run", "challenge_ips.txt")
+	if err := os.MkdirAll(filepath.Dir(mapPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mapPath, []byte("203.0.113.8 challenge\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	NewIPListWithMapPath(dir, mapPath)
+
+	data, err := os.ReadFile(mapPath)
+	if err != nil {
+		t.Fatalf("map not rewritten: %v", err)
+	}
+	if strings.Contains(string(data), "203.0.113.8 challenge") {
+		t.Fatalf("stale challenge entry remained after new list: %s", data)
 	}
 }

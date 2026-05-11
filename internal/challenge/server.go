@@ -110,6 +110,7 @@ func New(cfg *config.Config, unblocker IPUnblocker, ipList *IPList) *Server {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/challenge", s.handleChallenge)
+	mux.HandleFunc("/challenge/gate", s.handleGate)
 	mux.HandleFunc("/challenge/verify", s.handleVerify)
 	mux.HandleFunc("/challenge/captcha-verify", s.handleCaptchaVerify)
 	mux.HandleFunc("/challenge/admin-token", s.handleAdminToken)
@@ -217,6 +218,23 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	// captchaBlock is constructed from configured site keys (operator
 	// supplied) plus hex token/nonce; it never includes attacker input.
 	fmt.Fprintf(w, challengePageHTML, ip, captchaBlock, nonce, token, difficulty, difficulty)
+}
+
+func (s *Server) handleGate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	ip := s.extractIP(r)
+	if s.bypassByAdminCookie(r, ip) || s.bypassByVerifiedCrawler(r.Context(), ip) {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if s.ipList == nil || !s.ipList.Contains(ip) {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	w.WriteHeader(http.StatusUnauthorized)
 }
 
 // bypassByAdminCookie returns true when the visitor presents a valid

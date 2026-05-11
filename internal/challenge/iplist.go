@@ -9,6 +9,11 @@ import (
 	"time"
 )
 
+// DefaultMapPath is the webserver-readable Apache / LSWS RewriteMap.
+// It lives under /run rather than state_path because state_path is mode
+// 0700 and must stay private to CSM's bbolt database.
+const DefaultMapPath = "/run/csm/challenge_ips.txt"
+
 // challengeEntry stores the challenge metadata for a single IP.
 type challengeEntry struct {
 	ExpiresAt time.Time
@@ -31,10 +36,21 @@ type IPList struct {
 
 // NewIPList creates an IP list writer.
 func NewIPList(statePath string) *IPList {
-	return &IPList{
-		path: filepath.Join(statePath, "challenge_ips.txt"),
+	return NewIPListWithMapPath(statePath, filepath.Join(statePath, "challenge_ips.txt"))
+}
+
+// NewIPListWithMapPath creates an IP list writer with an explicit
+// webserver-facing map path.
+func NewIPListWithMapPath(statePath, mapPath string) *IPList {
+	if strings.TrimSpace(mapPath) == "" {
+		mapPath = filepath.Join(statePath, "challenge_ips.txt")
+	}
+	l := &IPList{
+		path: mapPath,
 		ips:  make(map[string]challengeEntry),
 	}
+	l.flush()
+	return l
 }
 
 // Add marks an IP for challenge with the given reason.
@@ -99,9 +115,12 @@ func (l *IPList) flush() {
 		fmt.Fprintf(&sb, "%s challenge\n", ip)
 	}
 
+	if err := os.MkdirAll(filepath.Dir(l.path), 0o755); err != nil {
+		return
+	}
 	tmpPath := l.path + ".tmp"
 	// #nosec G306 -- Apache uses this file as a RewriteMap source; it has
-	// to be readable by the webserver user. No sensitive data — only a
+	// to be readable by the webserver user. No sensitive data; only a
 	// list of IPs that must re-solve the PoW challenge.
 	if err := os.WriteFile(tmpPath, []byte(sb.String()), 0644); err != nil {
 		return
