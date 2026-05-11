@@ -1,9 +1,9 @@
 package checks
 
 import (
-	"bufio"
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,11 +21,18 @@ var fixPerfAllowedRoots = []string{"/home"}
 // open/reopen race; this is also the safest action because nothing in
 // the host needs the historical lines to keep serving traffic.
 func FixErrorLogBloat(path string) RemediationResult {
+	return FixErrorLogBloatInRoots(path, fixPerfAllowedRoots)
+}
+
+// FixErrorLogBloatInRoots is FixErrorLogBloat with caller-supplied roots.
+// The Web UI uses this to include configured account_roots while tests can
+// keep writes under t.TempDir().
+func FixErrorLogBloatInRoots(path string, allowedRoots []string) RemediationResult {
 	if path == "" {
 		return RemediationResult{Error: "could not extract file path from finding"}
 	}
 
-	resolved, info, err := resolveExistingFixPath(path, fixPerfAllowedRoots)
+	resolved, info, err := resolveExistingFixPath(path, allowedRoots)
 	if err != nil {
 		return RemediationResult{Error: err.Error()}
 	}
@@ -37,7 +44,7 @@ func FixErrorLogBloat(path string) RemediationResult {
 	}
 
 	oldSize := info.Size()
-	if err := os.Truncate(resolved, 0); err != nil {
+	if err := truncateFilePreservingIdentity(resolved, info); err != nil {
 		return RemediationResult{Error: fmt.Sprintf("truncate failed: %v", err)}
 	}
 
@@ -58,11 +65,17 @@ func FixErrorLogBloat(path string) RemediationResult {
 // other PHP source files require code-level edits this routine does not
 // attempt. The caller (web UI) should not advertise the fix for those.
 func FixDisplayErrorsOn(path string) RemediationResult {
+	return FixDisplayErrorsOnInRoots(path, fixPerfAllowedRoots)
+}
+
+// FixDisplayErrorsOnInRoots is FixDisplayErrorsOn with caller-supplied
+// roots. The Web UI uses this to honor account_roots outside /home.
+func FixDisplayErrorsOnInRoots(path string, allowedRoots []string) RemediationResult {
 	if path == "" {
 		return RemediationResult{Error: "could not extract file path from finding"}
 	}
 
-	resolved, info, err := resolveExistingFixPath(path, fixPerfAllowedRoots)
+	resolved, info, err := resolveExistingFixPath(path, allowedRoots)
 	if err != nil {
 		return RemediationResult{Error: err.Error()}
 	}
@@ -87,8 +100,8 @@ func FixDisplayErrorsOn(path string) RemediationResult {
 	}
 
 	// #nosec G304 -- path was validated by resolveExistingFixPath against
-	// fixPerfAllowedRoots; symlinks already rejected.
-	data, err := os.ReadFile(resolved)
+	// the supplied remediation roots; symlinks already rejected.
+	data, err := readFilePreservingIdentity(resolved, info)
 	if err != nil {
 		return RemediationResult{Error: fmt.Sprintf("read failed: %v", err)}
 	}
@@ -107,7 +120,7 @@ func FixDisplayErrorsOn(path string) RemediationResult {
 	// Preserve ownership + mode. Write atomically via a sibling temp file +
 	// rename so a partial write does not leave the operator with a broken
 	// config.
-	if err := writeFilePreservingOwner(resolved, rewritten, info.Mode().Perm()); err != nil {
+	if err := writeFilePreservingOwner(resolved, rewritten, info); err != nil {
 		return RemediationResult{Error: err.Error()}
 	}
 
@@ -128,33 +141,30 @@ func FixDisplayErrorsOn(path string) RemediationResult {
 func commentDisplayErrorsLines(data []byte) ([]byte, int) {
 	var out bytes.Buffer
 	changed := 0
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	// Allow long lines; .htaccess values can be wider than the default 64KiB.
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	first := true
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !first {
-			out.WriteByte('\n')
+	for _, raw := range bytes.SplitAfter(data, []byte("\n")) {
+		if len(raw) == 0 {
+			continue
 		}
-		first = false
-		trimmed := strings.TrimSpace(line)
+		line := raw
+		newline := []byte(nil)
+		if bytes.HasSuffix(raw, []byte("\n")) {
+			line = raw[:len(raw)-1]
+			newline = []byte("\n")
+		}
+		lineText := string(line)
+		trimmed := strings.TrimSpace(lineText)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, ";") {
-			out.WriteString(line)
+			out.Write(raw)
 			continue
 		}
 		if !strings.Contains(strings.ToLower(trimmed), "display_errors") {
-			out.WriteString(line)
+			out.Write(raw)
 			continue
 		}
 		out.WriteString("# csm: disabled by remediation -- ")
-		out.WriteString(line)
+		out.WriteString(lineText)
+		out.Write(newline)
 		changed++
-	}
-	// Preserve the trailing newline if the original had one so editors do
-	// not flag the file as missing the final newline.
-	if len(data) > 0 && data[len(data)-1] == '\n' {
-		out.WriteByte('\n')
 	}
 	return out.Bytes(), changed
 }
@@ -182,12 +192,41 @@ func appendOverrideLine(data []byte, directive, marker string) []byte {
 	return out.Bytes()
 }
 
-// writeFilePreservingOwner replaces a file via a same-directory temp file
-// + rename. Original UID/GID/mode are copied onto the new file before the
-// rename so the cPanel-owned config does not flip to root after the
-// remediation runs. The rename is atomic on the same filesystem, so a
-// crash mid-write leaves the original file intact.
-func writeFilePreservingOwner(path string, data []byte, mode os.FileMode) error {
+// These helpers re-check the target inode after the initial path validation
+// so a file swap between validation and mutation fails closed.
+func truncateFilePreservingIdentity(path string, expected os.FileInfo) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if !sameFileIdentity(info, expected) {
+		return fmt.Errorf("file changed during remediation")
+	}
+	return f.Truncate(0)
+}
+
+func readFilePreservingIdentity(path string, expected os.FileInfo) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !sameFileIdentity(info, expected) {
+		return nil, fmt.Errorf("file changed during remediation")
+	}
+	return io.ReadAll(f)
+}
+
+func writeFilePreservingOwner(path string, data []byte, original os.FileInfo) error {
 	dir := filepath.Dir(path)
 	tmp, createErr := os.CreateTemp(dir, ".csm-perf-fix-*")
 	if createErr != nil {
@@ -204,7 +243,7 @@ func writeFilePreservingOwner(path string, data []byte, mode os.FileMode) error 
 		cleanup()
 		return fmt.Errorf("close temp: %v", cerr)
 	}
-	if merr := os.Chmod(tmpPath, mode); merr != nil {
+	if merr := os.Chmod(tmpPath, original.Mode().Perm()); merr != nil {
 		cleanup()
 		return fmt.Errorf("chmod temp: %v", merr)
 	}
@@ -212,6 +251,14 @@ func writeFilePreservingOwner(path string, data []byte, mode os.FileMode) error 
 	if statErr != nil {
 		cleanup()
 		return fmt.Errorf("stat original: %v", statErr)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		cleanup()
+		return fmt.Errorf("original became a symlink during remediation")
+	}
+	if !sameFileIdentity(info, original) {
+		cleanup()
+		return fmt.Errorf("file changed during remediation")
 	}
 	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
 		if chownErr := os.Chown(tmpPath, int(stat.Uid), int(stat.Gid)); chownErr != nil {
@@ -224,4 +271,16 @@ func writeFilePreservingOwner(path string, data []byte, mode os.FileMode) error 
 		return fmt.Errorf("rename: %v", renameErr)
 	}
 	return nil
+}
+
+func sameFileIdentity(a, b os.FileInfo) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	if os.SameFile(a, b) {
+		return true
+	}
+	as, aok := a.Sys().(*syscall.Stat_t)
+	bs, bok := b.Sys().(*syscall.Stat_t)
+	return aok && bok && as.Dev == bs.Dev && as.Ino == bs.Ino
 }

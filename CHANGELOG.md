@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Performance remediation actions now honor configured account roots, clear fixed rows immediately, and fail closed if the target file changes during the edit.
 - Shared detail panel now closes on Escape and on click anywhere outside it; the X button was the only way to dismiss before.
 - Firewall page drops the disabled "Unblock selected IPs" button on the Danger subview; per-row Unblock and Flush blocked IPs cover the workflow.
 - Credential-spray firewall hand-off now wires after firewall startup and releases the incident lock before calling the firewall. The auto-response gate is checked at block time so SIGHUP changes to `enabled`, `block_ips`, or `block_expiry` apply to spray blocks too.

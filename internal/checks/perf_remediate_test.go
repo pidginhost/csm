@@ -137,6 +137,37 @@ func TestFixDisplayErrorsOnRewritesUserIni(t *testing.T) {
 	}
 }
 
+func TestFixDisplayErrorsOnPreservesContentAfterLongLine(t *testing.T) {
+	root := realTempDir(t)
+	withPerfFixRoots(t, root)
+	acct := filepath.Join(root, "alice", "public_html")
+	if err := os.MkdirAll(acct, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(acct, ".user.ini")
+	longLine := strings.Repeat("a", 2*1024*1024)
+	original := "display_errors = On\n" + longLine + "\n"
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res := FixDisplayErrorsOn(path)
+	if !res.Success {
+		t.Fatalf("expected success, got %+v", res)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(data)
+	if !strings.Contains(out, longLine) {
+		t.Fatal("long config line after display_errors was lost")
+	}
+	if !strings.Contains(out, "display_errors = Off") {
+		t.Fatalf("Off override not appended: %q", out[len(out)-80:])
+	}
+}
+
 func TestFixDisplayErrorsOnRewritesHtaccess(t *testing.T) {
 	root := realTempDir(t)
 	withPerfFixRoots(t, root)
@@ -201,6 +232,68 @@ func TestFixDisplayErrorsOnRefusesWPConfig(t *testing.T) {
 	}
 	if !strings.Contains(res.Error, "supports") {
 		t.Errorf("error message = %q, want supported-files explanation", res.Error)
+	}
+}
+
+func TestPerfRemediationRejectsChangedFileBeforeTruncate(t *testing.T) {
+	root := realTempDir(t)
+	path := filepath.Join(root, "error_log")
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	original, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp := filepath.Join(root, "replacement")
+	if err := os.WriteFile(tmp, []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		t.Fatal(err)
+	}
+
+	err = truncateFilePreservingIdentity(path, original)
+	if err == nil {
+		t.Fatal("expected changed-file rejection")
+	}
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(data) != "new" {
+		t.Fatalf("changed file was truncated or modified: %q", string(data))
+	}
+}
+
+func TestPerfRemediationRejectsChangedFileBeforeRename(t *testing.T) {
+	root := realTempDir(t)
+	path := filepath.Join(root, ".user.ini")
+	if err := os.WriteFile(path, []byte("display_errors = On\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	original, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp := filepath.Join(root, "replacement.ini")
+	if err := os.WriteFile(tmp, []byte("memory_limit = 128M\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		t.Fatal(err)
+	}
+
+	err = writeFilePreservingOwner(path, []byte("display_errors = Off\n"), original)
+	if err == nil {
+		t.Fatal("expected changed-file rejection")
+	}
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(data) != "memory_limit = 128M\n" {
+		t.Fatalf("changed file was overwritten: %q", string(data))
 	}
 }
 

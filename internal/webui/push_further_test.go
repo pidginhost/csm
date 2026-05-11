@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -53,6 +54,143 @@ func TestAPIPerformanceReturnsPerfFindings(t *testing.T) {
 	if len(resp.Findings) >= 1 && resp.Findings[0].Check != "perf_load" {
 		t.Errorf("first finding check = %q, want perf_load (highest severity)", resp.Findings[0].Check)
 	}
+}
+
+func TestAPIPerformanceIncludesFindingKey(t *testing.T) {
+	s := newTestServer(t, "tok")
+	f := alert.Finding{
+		Severity:  alert.Warning,
+		Check:     "perf_error_logs",
+		Message:   "Bloated error_log: /home/alice/public_html/error_log",
+		Timestamp: time.Now(),
+	}
+	s.store.SetLatestFindings([]alert.Finding{f})
+
+	w := httptest.NewRecorder()
+	s.apiPerformance(w, httptest.NewRequest("GET", "/", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	var resp perfResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	if len(resp.Findings) != 1 {
+		t.Fatalf("findings = %d, want 1", len(resp.Findings))
+	}
+	if resp.Findings[0].Key != f.Key() {
+		t.Fatalf("finding key = %q, want %q", resp.Findings[0].Key, f.Key())
+	}
+}
+
+func TestAPIPerfFixErrorLogUsesAccountRootsAndDismissesFinding(t *testing.T) {
+	s := newTestServer(t, "tok")
+	root := realWebUITempDir(t)
+	s.cfg.AccountRoots = []string{root}
+	logPath := filepath.Join(root, "error_log")
+	if err := os.WriteFile(logPath, []byte("noise"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := alert.Finding{
+		Severity:  alert.Warning,
+		Check:     "perf_error_logs",
+		Message:   "Bloated error_log: " + logPath,
+		Timestamp: time.Now(),
+	}
+	s.store.SetLatestFindings([]alert.Finding{f})
+	body, err := json.Marshal(map[string]string{"path": logPath, "key": f.Key()})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	s.apiPerfFixErrorLog(w, httptest.NewRequest("POST", "/", bytes.NewReader(body)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	info, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != 0 {
+		t.Fatalf("error_log size = %d, want 0", info.Size())
+	}
+	if got := s.store.LatestFindings(); len(got) != 0 {
+		t.Fatalf("latest findings still contains fixed row: %+v", got)
+	}
+}
+
+func TestAPIPerfFixDisplayErrorsUsesAccountRootsAndDismissesFinding(t *testing.T) {
+	s := newTestServer(t, "tok")
+	root := realWebUITempDir(t)
+	s.cfg.AccountRoots = []string{root}
+	iniPath := filepath.Join(root, ".user.ini")
+	if err := os.WriteFile(iniPath, []byte("display_errors = On\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := alert.Finding{
+		Severity:  alert.Warning,
+		Check:     "perf_wp_config",
+		Message:   "display_errors enabled in production for alice",
+		Details:   "File: " + iniPath + ", Value: On",
+		Timestamp: time.Now(),
+	}
+	s.store.SetLatestFindings([]alert.Finding{f})
+	body, err := json.Marshal(map[string]string{"path": iniPath, "key": f.Key()})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	s.apiPerfFixDisplayErrors(w, httptest.NewRequest("POST", "/", bytes.NewReader(body)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	data, err := os.ReadFile(iniPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "display_errors = Off") {
+		t.Fatalf("display_errors override missing: %q", string(data))
+	}
+	if got := s.store.LatestFindings(); len(got) != 0 {
+		t.Fatalf("latest findings still contains fixed row: %+v", got)
+	}
+}
+
+func TestPerfFixAllowedRootsUsesConfiguredWebRootsOnly(t *testing.T) {
+	s := newTestServer(t, "tok")
+	root := realWebUITempDir(t)
+	s.cfg.AccountRoots = []string{root}
+
+	got := s.perfFixAllowedRoots()
+	if len(got) != 1 || got[0] != root {
+		t.Fatalf("allowed roots = %#v, want only %q", got, root)
+	}
+}
+
+func TestAPIPerfFixRejectsGET(t *testing.T) {
+	s := newTestServer(t, "tok")
+	w := httptest.NewRecorder()
+	s.apiPerfFixErrorLog(w, httptest.NewRequest("GET", "/", nil))
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET fix-error-log = %d, want 405", w.Code)
+	}
+
+	w = httptest.NewRecorder()
+	s.apiPerfFixDisplayErrors(w, httptest.NewRequest("GET", "/", nil))
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET fix-display-errors = %d, want 405", w.Code)
+	}
+}
+
+func realWebUITempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	return dir
 }
 
 // Limit truncation when perf findings exceed the requested limit.

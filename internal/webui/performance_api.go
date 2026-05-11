@@ -3,7 +3,6 @@ package webui
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -58,6 +57,7 @@ type perfFindingView struct {
 	Check     string `json:"check"`
 	Message   string `json:"message"`
 	Details   string `json:"details,omitempty"`
+	Key       string `json:"key"`
 	FirstSeen string `json:"first_seen"`
 	LastSeen  string `json:"last_seen"`
 }
@@ -401,12 +401,14 @@ func (s *Server) apiPerformance(w http.ResponseWriter, r *http.Request) {
 			firstSeen = entry.FirstSeen
 			lastSeen = entry.LastSeen
 		}
+		key := f.Key()
 		views = append(views, perfFindingView{
 			Severity:  int(f.Severity),
 			SevClass:  severityClass(f.Severity),
 			Check:     f.Check,
 			Message:   f.Message,
 			Details:   f.Details,
+			Key:       key,
 			FirstSeen: firstSeen.Format(time.RFC3339),
 			LastSeen:  lastSeen.Format(time.RFC3339),
 		})
@@ -430,22 +432,28 @@ func (s *Server) apiPerformance(w http.ResponseWriter, r *http.Request) {
 // apiPerfFixErrorLog truncates an account-owned error_log identified by
 // the perf_error_logs finding. Admin scope; CSRF enforced at the route.
 func (s *Server) apiPerfFixErrorLog(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	var req struct {
 		Path string `json:"path"`
+		Key  string `json:"key"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<14)).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if err := decodeJSONBodyLimited(w, r, 1<<14, &req); err != nil {
+		writeJSONError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
 	if req.Path == "" {
-		http.Error(w, "path is required", http.StatusBadRequest)
+		writeJSONError(w, "path is required", http.StatusBadRequest)
 		return
 	}
-	res := checks.FixErrorLogBloat(req.Path)
+	res := checks.FixErrorLogBloatInRoots(req.Path, s.perfFixAllowedRoots())
 	if !res.Success {
 		writeJSON(w, res)
 		return
 	}
+	s.dismissPerfFinding(req.Key)
 	s.auditLog(r, "perf_fix_error_log", req.Path, res.Description)
 	writeJSON(w, res)
 }
@@ -454,28 +462,48 @@ func (s *Server) apiPerfFixErrorLog(w http.ResponseWriter, r *http.Request) {
 // .user.ini / php.ini / .htaccess identified by the perf_wp_config
 // finding's Details field. Admin scope; CSRF enforced at the route.
 //
-// clearer per-action than a switch.
-//
-//nolint:dupl // mirrors apiPerfFixErrorLog; the small dispatcher is
+//nolint:dupl // mirrors apiPerfFixErrorLog; separate handlers keep audit actions explicit.
 func (s *Server) apiPerfFixDisplayErrors(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	var req struct {
 		Path string `json:"path"`
+		Key  string `json:"key"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<14)).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if err := decodeJSONBodyLimited(w, r, 1<<14, &req); err != nil {
+		writeJSONError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
 	if req.Path == "" {
-		http.Error(w, "path is required", http.StatusBadRequest)
+		writeJSONError(w, "path is required", http.StatusBadRequest)
 		return
 	}
-	res := checks.FixDisplayErrorsOn(req.Path)
+	res := checks.FixDisplayErrorsOnInRoots(req.Path, s.perfFixAllowedRoots())
 	if !res.Success {
 		writeJSON(w, res)
 		return
 	}
+	s.dismissPerfFinding(req.Key)
 	s.auditLog(r, "perf_fix_display_errors", req.Path, res.Description)
 	writeJSON(w, res)
+}
+
+func (s *Server) perfFixAllowedRoots() []string {
+	if s.cfg == nil {
+		return []string{"/home"}
+	}
+	return checks.ResolveWebRoots(s.cfg)
+}
+
+func (s *Server) dismissPerfFinding(key string) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return
+	}
+	s.store.DismissFinding(key)
+	s.store.DismissLatestFinding(key)
 }
 
 // handlePerformance renders the performance dashboard page.

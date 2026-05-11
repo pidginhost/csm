@@ -30,6 +30,17 @@ The **Performance** page (`/performance`) shows real-time metrics:
 - MySQL and Redis health
 - WordPress performance indicators
 
+The findings list also exposes admin-only actions for two low-risk fixes:
+
+- `perf_error_logs`: truncate a bloated `error_log` in place. The inode is
+  preserved so running PHP processes keep writing to the same file.
+- `perf_wp_config`: disable `display_errors` in `.user.ini`, `php.ini`, or
+  `.htaccess` by commenting the matched line and appending an Off override.
+
+These actions are limited to configured account roots, reject symlinks and
+unsupported file types, and remove the fixed row from the active findings
+view after a successful edit.
+
 ### MySQL telemetry auth
 
 The MySQL panel runs `mysql -e "SHOW STATUS LIKE 'Threads_connected'"` from
@@ -55,4 +66,6 @@ credentials on its own.
 
 ```
 GET /api/v1/performance    Current performance metrics snapshot
+POST /api/v1/perf/fix-error-log
+POST /api/v1/perf/fix-display-errors
 ```

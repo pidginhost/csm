@@ -50,6 +50,7 @@
             return {
                 endpoint: '/api/v1/perf/fix-error-log',
                 path: path,
+                key: f.key || '',
                 label: 'Empty log file',
                 icon: 'ti-eraser',
                 confirm: 'Truncate ' + path + ' to zero bytes? The file stays in place so PHP keeps writing to it.'
@@ -64,6 +65,7 @@
             return {
                 endpoint: '/api/v1/perf/fix-display-errors',
                 path: p,
+                key: f.key || '',
                 label: 'Disable display_errors',
                 icon: 'ti-shield-off',
                 confirm: 'Comment the display_errors line in ' + p + ' and append an Off override at end of file?'
@@ -106,7 +108,7 @@
     function runPerfAction(action, originBtn) {
         CSM.confirm(action.confirm).then(function() {
             originBtn.classList.add('disabled');
-            CSM.post(action.endpoint, { path: action.path }).then(function(data) {
+            CSM.post(action.endpoint, { path: action.path, key: action.key || '' }).then(function(data) {
                 if (data && data.success) {
                     CSM.toast(data.description || 'Fix applied', 'success');
                     update();

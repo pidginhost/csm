@@ -60,6 +60,9 @@ GET  /api/v1/audit               UI audit log
 GET  /api/v1/export              Export state (suppressions, whitelist)
 GET  /api/v1/incident            Incident timeline (?ip=&account=&hours=)
 GET  /api/v1/performance         Performance metrics snapshot
+POST /api/v1/perf/fix-error-log  Truncate a fixed-row error_log finding
+POST /api/v1/perf/fix-display-errors
+                                  Disable display_errors for a fixed-row config finding
 GET  /api/v1/hardening           Last stored hardening audit report
 ```
 
