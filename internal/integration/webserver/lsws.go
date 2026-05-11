@@ -28,9 +28,14 @@ func (h *lswsHandler) Template() string { return lswsTemplate }
 func (h *lswsHandler) Validate() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	out, err := h.cmdRunner.Run(ctx, "/usr/local/lsws/bin/lswsctrl", "conftest")
+	// LSWS has no `lswsctrl conftest` verb (the documented surface is
+	// start|stop|restart|reload|condrestart|try-restart|status). The
+	// equivalent configtest is `lshttpd -t`, which parses the active
+	// config and exits non-zero on syntax errors without touching the
+	// running listener.
+	out, err := h.cmdRunner.Run(ctx, "/usr/local/lsws/bin/lshttpd", "-t")
 	if err != nil {
-		return fmt.Errorf("lsws conftest failed: %v\n%s", err, out)
+		return fmt.Errorf("lsws lshttpd -t failed: %v\n%s", err, out)
 	}
 	return nil
 }
