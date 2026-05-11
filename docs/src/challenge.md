@@ -48,6 +48,22 @@ Confirmed malware (webshells, YARA/signature matches), C2 connections, backdoor 
 
 If an IP doesn't solve the PoW challenge within 30 minutes, it is automatically escalated to a hard firewall block.
 
+### Bind address
+
+The listener binds to `127.0.0.1` by default. The production path is to
+reverse-proxy `/__csm_challenge*` from the host's webserver
+(Apache / Nginx / LSWS); the webserver terminates TLS with the SNI cert
+it already owns for the customer vhost and proxies plain HTTP to CSM on
+loopback. Operators that want to expose the listener directly to the
+internet set `challenge.listen_addr: 0.0.0.0` and provide TLS material
+via `challenge.tls_cert` / `tls_key` (see below).
+
+```yaml
+challenge:
+  listen_addr: 127.0.0.1   # default - reachable only from loopback
+  listen_port: 8439
+```
+
 ### TLS
 
 The challenge listener serves HTTPS when TLS material is configured.

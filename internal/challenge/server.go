@@ -113,8 +113,16 @@ func New(cfg *config.Config, unblocker IPUnblocker, ipList *IPList) *Server {
 	mux.HandleFunc("/challenge/captcha-verify", s.handleCaptchaVerify)
 	mux.HandleFunc("/challenge/admin-token", s.handleAdminToken)
 
+	bindAddr := cfg.Challenge.ListenAddr
+	if bindAddr == "" {
+		// Defaults are applied during config.Load, but tests construct
+		// Server directly with an empty config; default to loopback so
+		// the production safety guarantee (never bind public by default)
+		// holds even on those paths.
+		bindAddr = "127.0.0.1"
+	}
 	s.srv = &http.Server{
-		Addr:              fmt.Sprintf(":%d", cfg.Challenge.ListenPort),
+		Addr:              fmt.Sprintf("%s:%d", bindAddr, cfg.Challenge.ListenPort),
 		Handler:           mux,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,

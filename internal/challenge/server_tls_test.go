@@ -48,6 +48,28 @@ func TestResolveTLSMaterialEmptyWhenNothingConfigured(t *testing.T) {
 // resolution tier rather than crash ListenAndServeTLS. The order is
 // preserved: challenge.cert without challenge.key falls back to webui;
 // webui.cert without webui.key returns empty.
+// Listener binds loopback by default so a misconfigured deployment
+// does not accidentally expose the PoW listener to the internet.
+// Operator must explicitly set listen_addr to opt-in to public exposure.
+func TestServerBindsLoopbackByDefault(t *testing.T) {
+	cfg := baseCfg()
+	cfg.Challenge.ListenPort = 18439
+	s, _, _ := newTestServer(t, cfg)
+	if got := s.srv.Addr; got != "127.0.0.1:18439" {
+		t.Fatalf("server bound to %q; want 127.0.0.1:18439 by default", got)
+	}
+}
+
+func TestServerHonorsExplicitListenAddr(t *testing.T) {
+	cfg := baseCfg()
+	cfg.Challenge.ListenAddr = "0.0.0.0"
+	cfg.Challenge.ListenPort = 18439
+	s, _, _ := newTestServer(t, cfg)
+	if got := s.srv.Addr; got != "0.0.0.0:18439" {
+		t.Fatalf("server bound to %q; want 0.0.0.0:18439", got)
+	}
+}
+
 func TestResolveTLSMaterialPartialChallengePairFallsBack(t *testing.T) {
 	cfg := baseCfg()
 	cfg.Challenge.TLSCert = "/etc/csm/chal.crt" // key missing

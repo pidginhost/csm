@@ -43,6 +43,36 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.StatePath != "/var/lib/csm/state" {
 		t.Errorf("state_path = %q, want '/var/lib/csm/state'", cfg.StatePath)
 	}
+	// Challenge listener defaults to loopback so a fresh install never
+	// exposes the PoW listener to the public internet without an
+	// operator's deliberate opt-in via listen_addr: 0.0.0.0.
+	if cfg.Challenge.ListenAddr != "127.0.0.1" {
+		t.Errorf("challenge.listen_addr = %q, want '127.0.0.1'", cfg.Challenge.ListenAddr)
+	}
+	if cfg.Challenge.ListenPort != 8439 {
+		t.Errorf("challenge.listen_port = %d, want 8439", cfg.Challenge.ListenPort)
+	}
+}
+
+func TestChallengeListenAddrHonorsOperatorOverride(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "csm-config-*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile.Name())
+	_, err = tmpFile.WriteString("challenge:\n  listen_addr: 0.0.0.0\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpFile.Close()
+
+	cfg, err := Load(tmpFile.Name())
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.Challenge.ListenAddr != "0.0.0.0" {
+		t.Errorf("operator override lost; got %q want 0.0.0.0", cfg.Challenge.ListenAddr)
+	}
 }
 
 func TestIncidentAutoCloseDefaultThresholdsUseIncidentKinds(t *testing.T) {

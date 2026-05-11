@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Challenge listener now binds to `127.0.0.1` by default; expose it publicly only by setting `challenge.listen_addr: 0.0.0.0` (and supplying TLS material). The production path is to reverse-proxy the listener from the customer-facing webserver, so loopback-only is the right default.
 - Performance Findings rows render the remediation as a single button per row; the card header gains a Bulk fix dropdown that applies the matching action across every affected row of a check type with one confirmation.
 - Dashboard drops the Recent activity feed and the duplicate Fanotify / Signatures / log-watchers chips; runtime watcher state and feature flags now live in one Components card. Desktop critical-finding notifications still fire.
 - Firewall page drops the dedicated Lookup tab. The Inspect IP form on Overview now renders the lookup result inline below it; per-row Inspect buttons in Blocks, Allow Rules, and Audit jump back to Overview instead of a second copy of the same form.

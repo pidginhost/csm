@@ -330,8 +330,15 @@ type Config struct {
 	} `yaml:"bpf_enforcement" hotreload:"safe"`
 
 	Challenge struct {
-		Enabled        bool     `yaml:"enabled"`         // enable challenge pages instead of hard block for some IPs
-		ListenPort     int      `yaml:"listen_port"`     // port for challenge server (default: 8439)
+		Enabled    bool   `yaml:"enabled"`     // enable challenge pages instead of hard block for some IPs
+		ListenAddr string `yaml:"listen_addr"` // bind address for the challenge listener (default: 127.0.0.1)
+		ListenPort int    `yaml:"listen_port"` // port for challenge server (default: 8439)
+		// ListenAddr defaults to loopback because the production path
+		// is to reverse-proxy /__csm_challenge from the host's webserver
+		// (Apache / Nginx / LSWS) which already terminates TLS with the
+		// right SNI cert. Operators who deliberately want the listener
+		// reachable from the internet set "0.0.0.0" plus TLS material
+		// via challenge.tls_cert / tls_key (or webui fallback).
 		Secret         string   `yaml:"secret"`          // HMAC secret for challenge tokens (auto-generated if empty)
 		Difficulty     int      `yaml:"difficulty"`      // proof-of-work difficulty 0-5 (default: 2)
 		TrustedProxies []string `yaml:"trusted_proxies"` // IPs allowed to set X-Forwarded-For (empty = trust RemoteAddr only)
@@ -937,6 +944,9 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.Alerts.MaxPerHour == 0 {
 		cfg.Alerts.MaxPerHour = 30
+	}
+	if cfg.Challenge.ListenAddr == "" {
+		cfg.Challenge.ListenAddr = "127.0.0.1"
 	}
 	if cfg.Challenge.ListenPort == 0 {
 		cfg.Challenge.ListenPort = 8439
