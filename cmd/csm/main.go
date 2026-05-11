@@ -144,6 +144,8 @@ func main() {
 		runBackup()
 	case "restore":
 		runRestore()
+	case "webserver-integration":
+		runWebserverIntegration()
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
 		printUsage()

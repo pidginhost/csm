@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- New `csm webserver-integration {install|upgrade|status|validate|remove}` subcommand drops a webserver-specific snippet (Apache / LSWS / Nginx, auto-detected) that gates challenge-listed IPs through the existing webserver's TLS. Every change is validated via the webserver's own configtest before reload, with atomic write-or-revert so a bad template never takes the site down.
 - Performance Findings page offers per-row Actions for two safe automated fixes: truncate a bloated error_log in place (preserves the inode) and disable display_errors by commenting the directive and appending an Off override at end of `.user.ini` / `php.ini` / `.htaccess`. Admin-only, sandboxed to per-account web roots; symlinks and unsupported file types are refused.
 - Credential-spray super-incidents can hand the source IP to the firewall once the spray trips or escalates to CRITICAL. New `incidents.spray_suppression.block_at_severity` knob (`""`, `high`, `critical`); defaults to detection-only so existing operators see no behavior change. `auto_response.dry_run` and `block_ips` still gate the actual block.
 - Dashboard right rail gains a Components matrix listing every registered watcher with its attached state, time since last state change, and the most recent finding it produced. New /api/v1/components endpoint backs the view; read-scope tokens can call it.

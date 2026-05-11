@@ -110,6 +110,54 @@ When a client passes the challenge:
 2. A verification cookie is set
 3. The IP is removed from the challenge list (Apache stops redirecting)
 
+## Webserver Integration
+
+The challenge listener is reachable only on loopback by default; the
+host's webserver redirects challenge-listed IPs to `/__csm_challenge`
+on the same vhost and reverse-proxies that path to CSM. A small
+snippet per webserver handles both moves and is installed by CSM
+itself with a write-validate-reload-or-revert flow.
+
+```bash
+csm webserver-integration install     # initial wire-up
+csm webserver-integration upgrade     # re-apply after a CSM upgrade
+csm webserver-integration status      # show detected stack + version drift
+csm webserver-integration validate    # run the webserver's configtest
+csm webserver-integration remove      # uninstall the snippet
+```
+
+The installer auto-detects the active webserver via
+`internal/platform`. Supported stacks and snippet paths:
+
+| Stack                       | Snippet path                                        |
+|-----------------------------|-----------------------------------------------------|
+| cPanel + Apache (EasyApache)| `/etc/apache2/conf.d/csm-challenge.conf`            |
+| Debian/Ubuntu Apache        | `/etc/apache2/conf-enabled/csm-challenge.conf`      |
+| RHEL family Apache (httpd)  | `/etc/httpd/conf.d/csm-challenge.conf`              |
+| LiteSpeed (LSWS)            | `/usr/local/lsws/conf/templates/csm-challenge.conf` |
+| Nginx (plain + Engintron + phpanel) | `/etc/nginx/conf.d/csm-challenge.conf`      |
+
+On every run, the installer:
+
+1. Writes the new snippet to a sibling temp file and renames it into
+   place atomically.
+2. Runs the webserver's own configtest (`apachectl configtest`,
+   `nginx -t`, `lswsctrl conftest`).
+3. On pass: reloads the webserver gracefully and exits 0.
+4. On fail: restores the previous snippet bytes (or removes the file
+   if it did not exist before) and exits non-zero with the captured
+   configtest output. The webserver is never reloaded with a broken
+   config.
+
+The snippet header carries a version marker; `upgrade` is a no-op when
+the on-disk version matches the shipped version. Hand-edited files
+(missing or mismatched marker) trip a "modified" status and the
+installer refuses to overwrite them - remove or rename first.
+
+Hosts with no detectable webserver exit with `status=skipped` so
+package post-install hooks succeed cleanly on, e.g., a plain phpanel
+worker that doesn't run nginx locally.
+
 ## Bypass Paths
 
 Three opt-in bypass mechanisms let legitimate traffic skip the PoW page entirely. All default off; an upgraded csm.yaml with no new blocks behaves exactly as before.
