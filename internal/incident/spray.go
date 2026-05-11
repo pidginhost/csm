@@ -222,6 +222,26 @@ func (d *sprayDetector) BindIncident(ip, id string) {
 	}
 }
 
+// Rehydrate seeds the perIP map at daemon startup so an open
+// credential_spray incident restored from bbolt continues to suppress
+// new per-mailbox fan-out instead of allowing a duplicate super-incident
+// to open. The seeded state carries no per-mailbox set: the operator
+// already saw the trip on the open incident, and the suppress path only
+// reads state.incident. lastSeen is set so the existing window-expiry
+// check can age this entry out naturally once the attacker quiets down.
+// Caller holds the correlator mutex.
+func (d *sprayDetector) Rehydrate(ip, id string, lastSeen time.Time) {
+	if d == nil || ip == "" || id == "" {
+		return
+	}
+	d.perIP[ip] = &ipSprayState{
+		mailboxes: make(map[string]struct{}),
+		firstSeen: lastSeen,
+		lastSeen:  lastSeen,
+		incident:  id,
+	}
+}
+
 // IncidentForIP returns the bound spray incident id for ip, or "" if no
 // spray is currently bound. Used by Decide's suppress path to tell the
 // caller which incident to merge the finding into.

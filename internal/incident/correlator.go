@@ -684,8 +684,20 @@ func (c *Correlator) Restore(incidents []Incident) {
 	for i := range incidents {
 		inc := incidents[i]
 		c.incidents[inc.ID] = &inc
-		if inc.Status == StatusOpen || inc.Status == StatusContained {
-			c.bindLocked(&inc)
+		if inc.Status != StatusOpen && inc.Status != StatusContained {
+			continue
+		}
+		c.bindLocked(&inc)
+		// credential_spray super-incidents persist in bbolt but the spray
+		// detector's perIP map is in-memory only. Without this rehydration
+		// step a daemon restart while an attacker is mid-spray causes the
+		// detector to re-trip and open a duplicate super-incident even
+		// though the original is still active.
+		if c.spray != nil && inc.Kind == KindCredentialSpray && inc.CorrelationKey != nil {
+			ip := inc.CorrelationKey.RemoteIP
+			if ip != "" {
+				c.spray.Rehydrate(ip, inc.ID, inc.UpdatedAt)
+			}
 		}
 	}
 }

@@ -518,3 +518,78 @@ func TestSprayLRUEvictsOldestIPs(t *testing.T) {
 		t.Errorf("tracked IPs after eviction = %d, want 3 (cap)", got)
 	}
 }
+
+// TestRestoreRebindsOpenSprayIncident proves the daemon-restart regression
+// where the in-memory spray state was lost while the open credential_spray
+// incident remained in bbolt. After Restore() the detector must already
+// know the IP is bound to the open incident so the next finding routes via
+// suppress instead of opening a duplicate incident.
+//
+// Reproducer for cluster6 incident on 2026-05-11 where IP 213.177.179.12
+// produced two open credential_spray incidents bracketing a daemon restart.
+func TestRestoreRebindsOpenSprayIncident(t *testing.T) {
+	c1 := newSprayCorrelator(t, true, false)
+	base := time.Unix(1_700_000_000, 0)
+	attackerIP := "203.0.113.7"
+
+	// Drive enough findings on c1 to trip the spray detector and open
+	// an incident.
+	for i := 0; i < 3; i++ {
+		mb := "user" + strconv.Itoa(i) + "@example.com"
+		_, _, err := c1.OnFinding(sprayFinding(mb, attackerIP, base.Add(time.Duration(i)*time.Second)))
+		if err != nil {
+			t.Fatalf("OnFinding %d: %v", i, err)
+		}
+	}
+
+	var sprayID string
+	for _, inc := range c1.Snapshot() {
+		if inc.Kind == KindCredentialSpray {
+			sprayID = inc.ID
+		}
+	}
+	if sprayID == "" {
+		t.Fatal("setup failed: no credential_spray incident opened on c1")
+	}
+	snapshot := c1.Snapshot()
+
+	// Simulate a daemon restart: brand new correlator, brand new spray
+	// detector (perIP empty), then Restore the persisted incidents.
+	c2 := newSprayCorrelator(t, true, false)
+	// Advance the clock past the c1 activity but still inside the spray
+	// window so the rehydration must keep the binding alive.
+	postRestart := base.Add(2 * time.Minute)
+	c2.now = func() time.Time { return postRestart }
+	if c2.spray != nil {
+		c2.spray.now = c2.now
+	}
+	c2.Restore(snapshot)
+
+	// One new spray-class finding from the same attacker, different mailbox.
+	_, opened, err := c2.OnFinding(sprayFinding("victim@example.com", attackerIP, postRestart))
+	if err != nil {
+		t.Fatalf("OnFinding after restart: %v", err)
+	}
+	if opened {
+		t.Error("post-restart finding opened a NEW incident; expected merge into restored spray incident")
+	}
+
+	sprayCount := 0
+	for _, inc := range c2.Snapshot() {
+		if inc.Kind == KindCredentialSpray {
+			sprayCount++
+			if inc.ID != sprayID {
+				t.Errorf("unexpected credential_spray incident id %q after restart (want %q)", inc.ID, sprayID)
+			}
+		}
+	}
+	if sprayCount != 1 {
+		t.Errorf("credential_spray incident count after restart = %d, want 1", sprayCount)
+	}
+
+	// The detector must report the IP as still bound so subsequent
+	// suppression decisions short-circuit without re-counting mailboxes.
+	if got := c2.spray.IncidentForIP(attackerIP); got != sprayID {
+		t.Errorf("spray.IncidentForIP(%s) = %q, want %q", attackerIP, got, sprayID)
+	}
+}
