@@ -198,6 +198,10 @@ func sortedIPKeys(ips map[string]challengeEntry) []string {
 }
 
 func writeMapFileIfChanged(path string, data []byte) (bool, error) {
+	// #nosec G304 -- path is the daemon-owned challenge map under /run/csm
+	// (DefaultNginxMapPath or operator-set via SetNginxMap), never
+	// attacker-controlled. Read only to diff the rendered map and skip
+	// rewrite when content is unchanged.
 	if current, err := os.ReadFile(path); err == nil && bytes.Equal(current, data) {
 		return false, nil
 	}
