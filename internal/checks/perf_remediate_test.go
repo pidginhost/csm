@@ -246,11 +246,11 @@ func TestPerfRemediationRejectsChangedFileBeforeTruncate(t *testing.T) {
 		t.Fatal(err)
 	}
 	tmp := filepath.Join(root, "replacement")
-	if err := os.WriteFile(tmp, []byte("new"), 0o644); err != nil {
-		t.Fatal(err)
+	if werr := os.WriteFile(tmp, []byte("new"), 0o644); werr != nil {
+		t.Fatal(werr)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		t.Fatal(err)
+	if rerr := os.Rename(tmp, path); rerr != nil {
+		t.Fatal(rerr)
 	}
 
 	err = truncateFilePreservingIdentity(path, original)
@@ -277,11 +277,11 @@ func TestPerfRemediationRejectsChangedFileBeforeRename(t *testing.T) {
 		t.Fatal(err)
 	}
 	tmp := filepath.Join(root, "replacement.ini")
-	if err := os.WriteFile(tmp, []byte("memory_limit = 128M\n"), 0o644); err != nil {
-		t.Fatal(err)
+	if werr := os.WriteFile(tmp, []byte("memory_limit = 128M\n"), 0o644); werr != nil {
+		t.Fatal(werr)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		t.Fatal(err)
+	if rerr := os.Rename(tmp, path); rerr != nil {
+		t.Fatal(rerr)
 	}
 
 	err = writeFilePreservingOwner(path, []byte("display_errors = Off\n"), original)

@@ -195,6 +195,9 @@ func appendOverrideLine(data []byte, directive, marker string) []byte {
 // These helpers re-check the target inode after the initial path validation
 // so a file swap between validation and mutation fails closed.
 func truncateFilePreservingIdentity(path string, expected os.FileInfo) error {
+	// #nosec G304 -- path was validated by resolveExistingFixPath against
+	// the per-account remediation roots; the open uses O_NOFOLLOW and the
+	// subsequent sameFileIdentity check fails closed on inode swap.
 	f, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return err
@@ -211,6 +214,9 @@ func truncateFilePreservingIdentity(path string, expected os.FileInfo) error {
 }
 
 func readFilePreservingIdentity(path string, expected os.FileInfo) ([]byte, error) {
+	// #nosec G304 -- path was validated by resolveExistingFixPath against
+	// the per-account remediation roots; the open uses O_NOFOLLOW and the
+	// subsequent sameFileIdentity check fails closed on inode swap.
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, err
