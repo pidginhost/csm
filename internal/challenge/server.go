@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -122,7 +123,7 @@ func New(cfg *config.Config, unblocker IPUnblocker, ipList *IPList) *Server {
 		bindAddr = "127.0.0.1"
 	}
 	s.srv = &http.Server{
-		Addr:              fmt.Sprintf("%s:%d", bindAddr, cfg.Challenge.ListenPort),
+		Addr:              net.JoinHostPort(bindAddr, strconv.Itoa(cfg.Challenge.ListenPort)),
 		Handler:           mux,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
@@ -132,41 +133,52 @@ func New(cfg *config.Config, unblocker IPUnblocker, ipList *IPList) *Server {
 	return s
 }
 
-// Start begins serving challenge pages. When TLS material is configured
-// the listener speaks HTTPS; otherwise it serves plain HTTP and logs a
-// startup warning, which is the right loud-fail behavior because HSTS
-// on the parent web-control-panel domain makes browsers auto-upgrade
-// any port on the same host and the plain-HTTP listener then returns
-// ERR_SSL_PROTOCOL_ERROR.
+// Start begins serving challenge pages. Explicit challenge TLS makes the
+// listener HTTPS. Direct/public listeners can reuse the WebUI TLS pair.
+// Loopback listeners stay plain HTTP by default because the production path
+// is a local reverse proxy that terminates TLS at the webserver.
 //
 // Resolution order:
 //  1. challenge.tls_cert + challenge.tls_key      (explicit per-service)
-//  2. webui.tls_cert + webui.tls_key              (shared cert; cPanel
-//     mycpanel.pem default)
-//  3. plain HTTP + warning                        (still functional, but
-//     external browsers will
-//     fail when HSTS auto-
-//     upgrades the URL)
+//  2. webui.tls_cert + webui.tls_key              (direct/public binds only)
+//  3. plain HTTP                                  (loopback reverse proxy)
 func (s *Server) Start() error {
 	cert, key := s.resolveTLSMaterial()
 	if cert == "" || key == "" {
-		fmt.Fprintf(os.Stderr,
-			"[%s] WARNING: challenge server has no TLS cert configured (challenge.tls_cert / webui.tls_cert both empty); HSTS-pinned domains will fail with ERR_SSL_PROTOCOL_ERROR\n",
-			time.Now().Format("2006-01-02 15:04:05"))
+		if !isLoopbackListenAddr(s.cfg.Challenge.ListenAddr) {
+			fmt.Fprintf(os.Stderr,
+				"[%s] WARNING: public challenge listener has no complete TLS cert/key configured; HSTS-pinned domains will fail with ERR_SSL_PROTOCOL_ERROR\n",
+				time.Now().Format("2006-01-02 15:04:05"))
+		}
 		return s.srv.ListenAndServe()
 	}
 	return s.srv.ListenAndServeTLS(cert, key)
 }
 
 // resolveTLSMaterial picks the cert / key pair the challenge listener
-// should present, falling back to the webui pair so single-cert hosts
-// (cPanel mycpanel.pem) need zero extra config. Empty pair means the
-// caller should fall back to plain HTTP.
+// should present. The WebUI fallback is only safe for direct/public binds;
+// loopback reverse-proxy deployments must keep a plain-HTTP upstream unless
+// challenge TLS is explicitly configured.
 func (s *Server) resolveTLSMaterial() (cert, key string) {
 	if c, k := s.cfg.Challenge.TLSCert, s.cfg.Challenge.TLSKey; c != "" && k != "" {
 		return c, k
 	}
-	return s.cfg.WebUI.TLSCert, s.cfg.WebUI.TLSKey
+	if isLoopbackListenAddr(s.cfg.Challenge.ListenAddr) {
+		return "", ""
+	}
+	if c, k := s.cfg.WebUI.TLSCert, s.cfg.WebUI.TLSKey; c != "" && k != "" {
+		return c, k
+	}
+	return "", ""
+}
+
+func isLoopbackListenAddr(addr string) bool {
+	addr = strings.TrimSpace(addr)
+	if addr == "" || strings.EqualFold(addr, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(addr)
+	return ip != nil && ip.IsLoopback()
 }
 
 // Shutdown gracefully stops the server.

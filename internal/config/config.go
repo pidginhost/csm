@@ -338,16 +338,15 @@ type Config struct {
 		// (Apache / Nginx / LSWS) which already terminates TLS with the
 		// right SNI cert. Operators who deliberately want the listener
 		// reachable from the internet set "0.0.0.0" plus TLS material
-		// via challenge.tls_cert / tls_key (or webui fallback).
+		// via challenge.tls_cert / tls_key, or the webui TLS fallback.
 		Secret         string   `yaml:"secret"`          // HMAC secret for challenge tokens (auto-generated if empty)
 		Difficulty     int      `yaml:"difficulty"`      // proof-of-work difficulty 0-5 (default: 2)
 		TrustedProxies []string `yaml:"trusted_proxies"` // IPs allowed to set X-Forwarded-For (empty = trust RemoteAddr only)
 		// TLSCert / TLSKey activate HTTPS on the challenge listener. Empty
-		// values fall back to webui.tls_cert / webui.tls_key so single-cert
-		// hosts (cPanel mycpanel.pem) need no extra config. When both the
-		// challenge and webui blocks are empty the server serves plain HTTP
-		// and logs a startup warning; browsers will hit ERR_SSL_PROTOCOL_ERROR
-		// if the parent domain is HSTS-pinned.
+		// values keep loopback listeners on plain HTTP for reverse-proxy
+		// upstreams. Direct/public listeners fall back to webui.tls_cert /
+		// webui.tls_key so single-cert hosts can opt in without duplicating
+		// paths.
 		TLSCert string `yaml:"tls_cert"`
 		TLSKey  string `yaml:"tls_key"`
 

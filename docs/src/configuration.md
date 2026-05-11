@@ -226,7 +226,10 @@ detection:
 # --- Challenge Pages ---
 challenge:
   enabled: false                        # enable PoW challenge pages instead of hard block
+  listen_addr: 127.0.0.1                # bind address; loopback is the reverse-proxy default
   listen_port: 8439                     # port for challenge server (default: 8439)
+  tls_cert: ""                          # optional HTTPS cert for direct/public challenge listener
+  tls_key: ""                           # optional HTTPS key for direct/public challenge listener
   secret: ""                            # HMAC secret for tokens (auto-generated if empty)
   difficulty: 2                         # SHA-256 proof-of-work difficulty 0-5 (default: 2)
   captcha_fallback:                     # widget for JS-disabled visitors (default off)

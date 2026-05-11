@@ -25,6 +25,7 @@ func TestResolveTLSMaterialPrefersChallengePair(t *testing.T) {
 
 func TestResolveTLSMaterialFallsBackToWebUI(t *testing.T) {
 	cfg := baseCfg()
+	cfg.Challenge.ListenAddr = "0.0.0.0"
 	cfg.WebUI.TLSCert = "/etc/csm/webui.crt"
 	cfg.WebUI.TLSKey = "/etc/csm/webui.key"
 
@@ -32,6 +33,18 @@ func TestResolveTLSMaterialFallsBackToWebUI(t *testing.T) {
 	cert, key := s.resolveTLSMaterial()
 	if cert != "/etc/csm/webui.crt" || key != "/etc/csm/webui.key" {
 		t.Fatalf("got (%q, %q); want webui pair", cert, key)
+	}
+}
+
+func TestResolveTLSMaterialLoopbackDoesNotFallbackToWebUI(t *testing.T) {
+	cfg := baseCfg()
+	cfg.WebUI.TLSCert = "/etc/csm/webui.crt"
+	cfg.WebUI.TLSKey = "/etc/csm/webui.key"
+
+	s, _, _ := newTestServer(t, cfg)
+	cert, key := s.resolveTLSMaterial()
+	if cert != "" || key != "" {
+		t.Fatalf("loopback listener must stay plain HTTP without explicit challenge TLS; got (%q, %q)", cert, key)
 	}
 }
 
@@ -44,10 +57,6 @@ func TestResolveTLSMaterialEmptyWhenNothingConfigured(t *testing.T) {
 	}
 }
 
-// Partial pairs (only cert or only key) must fall through to the next
-// resolution tier rather than crash ListenAndServeTLS. The order is
-// preserved: challenge.cert without challenge.key falls back to webui;
-// webui.cert without webui.key returns empty.
 // Listener binds loopback by default so a misconfigured deployment
 // does not accidentally expose the PoW listener to the internet.
 // Operator must explicitly set listen_addr to opt-in to public exposure.
@@ -70,8 +79,23 @@ func TestServerHonorsExplicitListenAddr(t *testing.T) {
 	}
 }
 
+func TestServerHonorsExplicitIPv6ListenAddr(t *testing.T) {
+	cfg := baseCfg()
+	cfg.Challenge.ListenAddr = "::1"
+	cfg.Challenge.ListenPort = 18439
+	s, _, _ := newTestServer(t, cfg)
+	if got := s.srv.Addr; got != "[::1]:18439" {
+		t.Fatalf("server bound to %q; want [::1]:18439", got)
+	}
+}
+
+// Partial pairs (only cert or only key) must fall through to the next
+// resolution tier rather than crash ListenAndServeTLS. The webui fallback
+// only applies to direct/public listeners; loopback listeners stay HTTP for
+// the reverse-proxy upstream unless challenge TLS is explicit.
 func TestResolveTLSMaterialPartialChallengePairFallsBack(t *testing.T) {
 	cfg := baseCfg()
+	cfg.Challenge.ListenAddr = "0.0.0.0"
 	cfg.Challenge.TLSCert = "/etc/csm/chal.crt" // key missing
 	cfg.WebUI.TLSCert = "/etc/csm/webui.crt"
 	cfg.WebUI.TLSKey = "/etc/csm/webui.key"
@@ -80,5 +104,17 @@ func TestResolveTLSMaterialPartialChallengePairFallsBack(t *testing.T) {
 	cert, key := s.resolveTLSMaterial()
 	if cert != "/etc/csm/webui.crt" || key != "/etc/csm/webui.key" {
 		t.Fatalf("partial challenge pair must fall back to webui; got (%q, %q)", cert, key)
+	}
+}
+
+func TestResolveTLSMaterialPartialWebUIPairReturnsEmpty(t *testing.T) {
+	cfg := baseCfg()
+	cfg.Challenge.ListenAddr = "0.0.0.0"
+	cfg.WebUI.TLSCert = "/etc/csm/webui.crt" // key missing
+
+	s, _, _ := newTestServer(t, cfg)
+	cert, key := s.resolveTLSMaterial()
+	if cert != "" || key != "" {
+		t.Fatalf("partial webui pair must not enable TLS; got (%q, %q)", cert, key)
 	}
 }

@@ -51,7 +51,7 @@ If an IP doesn't solve the PoW challenge within 30 minutes, it is automatically 
 ### Bind address
 
 The listener binds to `127.0.0.1` by default. The production path is to
-reverse-proxy `/__csm_challenge*` from the host's webserver
+reverse-proxy challenged requests to `/challenge` from the host's webserver
 (Apache / Nginx / LSWS); the webserver terminates TLS with the SNI cert
 it already owns for the customer vhost and proxies plain HTTP to CSM on
 loopback. Operators that want to expose the listener directly to the
@@ -66,16 +66,21 @@ challenge:
 
 ### TLS
 
-The challenge listener serves HTTPS when TLS material is configured.
+The challenge listener serves HTTPS when challenge-specific TLS material is
+configured. Loopback listeners stay on plain HTTP by default, even when the
+Web UI has TLS configured, because the webserver reverse proxy is the TLS
+endpoint. Direct/public listeners can reuse the Web UI cert.
+
 Resolution order:
 
 1. `challenge.tls_cert` + `challenge.tls_key` (explicit per-service).
 2. `webui.tls_cert` + `webui.tls_key` (shared cert; cPanel
    `mycpanel.pem` covers both webui and the challenge port without
-   extra config).
-3. Plain HTTP with a startup warning when both pairs are empty.
+   extra config) only when `challenge.listen_addr` is not loopback.
+3. Plain HTTP. This is expected for the default loopback reverse-proxy path.
+   Public listeners without TLS log a startup warning.
    HSTS-pinned parent domains (cPanel, phpanel, customer apex) will
-   then fail with `ERR_SSL_PROTOCOL_ERROR` because the browser auto-
+   fail with `ERR_SSL_PROTOCOL_ERROR` because the browser auto-
    upgrades the URL to https; ship TLS material in production.
 
 ```yaml
