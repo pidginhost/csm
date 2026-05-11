@@ -593,3 +593,70 @@ func TestRestoreRebindsOpenSprayIncident(t *testing.T) {
 		t.Errorf("spray.IncidentForIP(%s) = %q, want %q", attackerIP, got, sprayID)
 	}
 }
+
+// TestSprayBlockFiresOnSuppressAfterCriticalArmedLater is the cluster6
+// reproducer for the second half of the bug: an operator enables
+// block_at_severity=critical AFTER an open spray incident has already
+// escalated to CRITICAL. Previously the firewall hand-off fired only at
+// the moment of severity transition, so the existing CRITICAL incident
+// kept ingesting findings without ever triggering a block. The fix
+// re-evaluates on every suppressed merge; idempotency is provided by
+// triggerSprayBlockLocked's existing action-presence check.
+func TestSprayBlockFiresOnSuppressAfterCriticalArmedLater(t *testing.T) {
+	cfg := sprayTestConfig(true, false)
+	cfg.BlockAtSeverity = "critical"
+	var cap blockCapture
+	c := NewCorrelator(CorrelatorConfig{
+		SpraySuppression: cfg,
+		OnSprayBlock:     cap.record,
+	})
+	c.openThreshold = 1
+	base := time.Unix(1_700_000_000, 0)
+	c.now = func() time.Time { return base }
+	if c.spray != nil {
+		c.spray.now = c.now
+	}
+
+	// Seed a pre-existing CRITICAL spray incident with no block action,
+	// matching the state of inc_10917814920d on cluster6 the moment the
+	// operator added block_at_severity to csm.yaml.
+	attackerIP := "203.0.113.42"
+	existing := Incident{
+		ID:             "inc_preexisting01",
+		Kind:           KindCredentialSpray,
+		Status:         StatusOpen,
+		Severity:       alert.Critical,
+		CorrelationKey: &Key{RemoteIP: attackerIP},
+		CreatedAt:      base.Add(-10 * time.Minute),
+		UpdatedAt:      base.Add(-1 * time.Minute),
+		Actions: []IncidentAction{
+			{Time: base.Add(-9 * time.Minute), Action: "credential_spray_opened", Result: "ok"},
+			{Time: base.Add(-5 * time.Minute), Action: "incident_severity_changed", Result: "ok"},
+		},
+	}
+	c.Restore([]Incident{existing})
+
+	// One more spray finding arrives after the config change. Should
+	// fire the block exactly once and stamp the audit action on the
+	// existing incident, not open a new one.
+	_, opened, err := c.OnFinding(sprayFinding("victim@example.com", attackerIP, base))
+	if err != nil {
+		t.Fatalf("OnFinding: %v", err)
+	}
+	if opened {
+		t.Fatal("new incident opened; expected merge into preexisting CRITICAL spray")
+	}
+	if got := cap.len(); got != 1 {
+		t.Fatalf("OnSprayBlock called %d times, want 1 after first post-arm finding", got)
+	}
+	if cap.calls[0].IP != attackerIP {
+		t.Errorf("block IP = %q, want %q", cap.calls[0].IP, attackerIP)
+	}
+
+	// A second finding must not re-trigger the block: the existing
+	// credential_spray_block_requested action gates re-entry.
+	_, _, _ = c.OnFinding(sprayFinding("victim2@example.com", attackerIP, base.Add(time.Second)))
+	if got := cap.len(); got != 1 {
+		t.Errorf("OnSprayBlock fired %d times after second post-arm finding; want 1 (idempotent)", got)
+	}
+}

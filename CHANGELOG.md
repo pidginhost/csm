@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A daemon restart no longer orphans an open credential_spray incident and opens a duplicate super-incident for the same attacker IP. On startup the spray detector's in-memory binding is rehydrated from the persisted open incidents, so the suppress path keeps routing new findings into the existing incident instead of re-tripping at the distinct-mailbox threshold.
+- Credential-spray firewall hand-off now re-evaluates on every merged finding instead of only at the severity-transition moment. An operator who arms `block_at_severity` after an incident has already reached the configured severity now gets a block on the next matching finding rather than waiting for the attacker to open a fresh incident.
 - Performance remediation actions now honor configured account roots, clear fixed rows immediately, and fail closed if the target file changes during the edit.
 - Shared detail panel now closes on Escape and on click anywhere outside it; the X button was the only way to dismiss before.
 - Firewall page drops the disabled "Unblock selected IPs" button on the Danger subview; per-row Unblock and Flush blocked IPs cover the workflow.

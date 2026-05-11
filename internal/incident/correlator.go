@@ -159,8 +159,8 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 			id := c.createSprayIncidentLocked(sprayKey, f, now, hits)
 			c.spray.BindIncident(f.SourceIP, id)
 			c.counters.sprayOpenedTotal.Add(1)
-			if c.sprayShouldBlockOpen() {
-				afterUnlock = c.triggerSprayBlockLocked(c.incidents[id], f.SourceIP, hits, now, "spray opened")
+			if cb := c.maybeBlockSprayLocked(c.incidents[id], f.SourceIP, hits, now, "spray opened"); cb != nil {
+				afterUnlock = cb
 			}
 			return id, true, nil
 		case sprayDecisionSuppress:
@@ -178,9 +178,15 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 						Details: from.String() + " -> CRITICAL: spray sustained " + strconv.Itoa(hits) + " mailboxes",
 					})
 					c.persistLocked(*inc)
-					if c.sprayShouldBlockEscalate() {
-						afterUnlock = c.triggerSprayBlockLocked(inc, f.SourceIP, hits, now, "spray escalated to critical")
-					}
+				}
+				// Re-evaluate the block gate on every merged finding. The
+				// configured BlockAtSeverity may have been armed AFTER the
+				// incident was opened or escalated, in which case the
+				// transition-time hook already fired without effect; the
+				// helper is idempotent via triggerSprayBlockLocked's
+				// action-presence check so a no-op call is harmless.
+				if cb := c.maybeBlockSprayLocked(inc, f.SourceIP, hits, now, "spray ongoing"); cb != nil {
+					afterUnlock = cb
 				}
 				c.counters.spraySuppressedTotal.Add(1)
 				return id, false, nil
@@ -773,31 +779,36 @@ func newIncidentID() string {
 	return "inc_" + hex.EncodeToString(buf[:])
 }
 
-// sprayShouldBlockOpen reports whether the configured BlockAtSeverity
-// fires at the moment the spray detector trips (DistinctMailboxes
-// crossed for the first time).
-func (c *Correlator) sprayShouldBlockOpen() bool {
-	if c.spray == nil || c.cfg.OnSprayBlock == nil || !c.sprayBlockAllowed() {
-		return false
-	}
-	return strings.EqualFold(c.spray.cfg.BlockAtSeverity, "high")
-}
-
-// sprayShouldBlockEscalate reports whether BlockAtSeverity fires only
-// once the spray escalates to CRITICAL (SeverityEscalateAt distinct
-// mailboxes sustained).
-func (c *Correlator) sprayShouldBlockEscalate() bool {
-	if c.spray == nil || c.cfg.OnSprayBlock == nil || !c.sprayBlockAllowed() {
-		return false
+// maybeBlockSprayLocked is the single decision point for the
+// credential_spray firewall hand-off. Unlike a transition-only hook,
+// this runs on every spray decision (open, merge, escalate) so an
+// operator who arms BlockAtSeverity AFTER an incident has already
+// reached the configured severity still gets a block on the next
+// matching finding. Idempotency is provided by
+// triggerSprayBlockLocked's existing action-presence guard, so calling
+// this helper repeatedly against the same incident emits exactly one
+// firewall call.
+//
+// Returns the callback that the caller must invoke after releasing
+// c.mu (matches the existing sprayDecisionOpen contract), or nil when
+// no block is owed.
+func (c *Correlator) maybeBlockSprayLocked(inc *Incident, ip string, hits int, now time.Time, reason string) func() {
+	if inc == nil || c.spray == nil || c.cfg.OnSprayBlock == nil || !c.sprayBlockAllowed() {
+		return nil
 	}
 	switch strings.ToLower(c.spray.cfg.BlockAtSeverity) {
-	case "critical", "high":
-		// "high" callers already blocked at open; the escalation path is
-		// idempotent below so a second invocation is harmless. Treating
-		// "critical" and "high" the same here keeps the detector simple.
-		return true
+	case "high":
+		if inc.Severity < alert.High {
+			return nil
+		}
+	case "critical":
+		if inc.Severity < alert.Critical {
+			return nil
+		}
+	default:
+		return nil
 	}
-	return false
+	return c.triggerSprayBlockLocked(inc, ip, hits, now, reason)
 }
 
 func (c *Correlator) sprayBlockAllowed() bool {
