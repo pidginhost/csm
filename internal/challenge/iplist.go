@@ -115,6 +115,10 @@ func (l *IPList) flush() {
 		fmt.Fprintf(&sb, "%s challenge\n", ip)
 	}
 
+	// #nosec G301 -- /run/csm must be world-readable so the webserver
+	// user (www-data / nobody / lsws) can stat + read the RewriteMap
+	// underneath. The directory holds no sensitive data; only the
+	// CSM-owned IP file lives inside.
 	if err := os.MkdirAll(filepath.Dir(l.path), 0o755); err != nil {
 		return
 	}
