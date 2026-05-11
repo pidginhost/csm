@@ -100,18 +100,20 @@ function currentAuditURL() {
     return url + '&' + params.join('&');
 }
 
-function inspectIP(ip) {
-    if (!ip) return;
-    var lookupInput = document.getElementById('lookup-ip');
-    var commandInput = document.getElementById('fw-command-ip');
-    if (lookupInput) lookupInput.value = ip;
-    if (commandInput) commandInput.value = ip;
-    switchFirewallView('lookup');
-    loadLookup(ip);
-}
-
 function switchFirewallView(name) {
     _fwSetView(name, true);
+}
+
+// inspectIP is the cross-view shortcut wired to per-row Inspect buttons
+// (Blocks, Allow Rules, audit table). The Inspect IP form on the Overview
+// card calls loadLookup directly; this helper only matters when the user is
+// on a different subview and wants to jump back to Overview's lookup panel.
+function inspectIP(ip) {
+    if (!ip) return;
+    var input = document.getElementById('lookup-ip');
+    if (input) input.value = ip;
+    switchFirewallView('overview');
+    loadLookup(ip);
 }
 
 // closeAuditExpansion removes any open audit inspect expansion row.
@@ -1010,22 +1012,8 @@ document.getElementById('lookup-form').addEventListener('submit', function(e) {
         CSM.toast('Invalid IP address format', 'error');
         return;
     }
-    inspectIP(ip);
+    loadLookup(ip);
 });
-
-var commandForm = document.getElementById('fw-command-form');
-if (commandForm) {
-    commandForm.addEventListener('submit', function(e) {
-        e.preventDefault();
-        var ip = document.getElementById('fw-command-ip').value.trim();
-        if (!ip) return;
-        if (!CSM.validateIP(ip)) {
-            CSM.toast('Invalid IP address format', 'error');
-            return;
-        }
-        inspectIP(ip);
-    });
-}
 
 var bulkUnblockBtn = document.getElementById('bulk-unblock-btn');
 if (bulkUnblockBtn) bulkUnblockBtn.addEventListener('click', bulkUnblock);

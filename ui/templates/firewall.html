@@ -21,9 +21,6 @@
         <button type="button" class="btn btn-ghost-secondary active" data-fw-nav="overview" aria-pressed="true" title="Status cards and coverage chips">
             <i class="ti ti-layout-dashboard"></i>&nbsp;Overview
         </button>
-        <button type="button" class="btn btn-ghost-secondary" data-fw-nav="lookup" aria-pressed="false" title="Inspect a single IP">
-            <i class="ti ti-search"></i>&nbsp;Lookup
-        </button>
         <button type="button" class="btn btn-ghost-secondary" data-fw-nav="blocks" aria-pressed="false" title="Blocked IPs and subnets">
             <i class="ti ti-shield-off"></i>&nbsp;Blocks
         </button>
@@ -48,10 +45,10 @@
                 <h3 class="card-title"><i class="ti ti-search"></i>&nbsp;Inspect IP</h3>
             </div>
             <div class="card-body">
-                <form id="fw-command-form" class="row g-2 align-items-end">
+                <form id="lookup-form" class="row g-2 align-items-end mb-3">
                     <div class="col-lg-9">
-                        <label class="form-label mb-1" for="fw-command-ip">IP address</label>
-                        <input type="text" id="fw-command-ip" class="form-control font-monospace" placeholder="203.0.113.10">
+                        <label class="form-label mb-1" for="lookup-ip">IP address</label>
+                        <input type="text" id="lookup-ip" class="form-control font-monospace" placeholder="203.0.113.10">
                     </div>
                     <div class="col-lg-3 d-grid">
                         <button type="submit" class="btn btn-primary">
@@ -59,6 +56,9 @@
                         </button>
                     </div>
                 </form>
+                <div id="lookup-result" class="csm-firewall-result text-muted">
+                    Enter an IP to check direct blocks, subnet coverage, and cPanel lockout status.
+                </div>
             </div>
         </div>
 
@@ -116,31 +116,6 @@
             </div>
             <div class="card-body">
                 <div class="d-flex flex-wrap gap-2" id="fw-highlights"></div>
-            </div>
-        </div>
-    </section>
-
-    <!-- Lookup ----------------------------------------------------------- -->
-    <section data-fw-view="lookup" hidden>
-        <div class="card mb-3">
-            <div class="card-header">
-                <h3 class="card-title"><i class="ti ti-search"></i>&nbsp;Lookup &amp; Response</h3>
-            </div>
-            <div class="card-body">
-                <form id="lookup-form" class="row g-2 align-items-end mb-3">
-                    <div class="col-md-8">
-                        <label class="form-label mb-1" for="lookup-ip">IP address</label>
-                        <input type="text" id="lookup-ip" class="form-control font-monospace" placeholder="203.0.113.10">
-                    </div>
-                    <div class="col-md-4">
-                        <button type="submit" class="btn btn-primary w-100">
-                            <i class="ti ti-radar-2"></i>&nbsp;Inspect
-                        </button>
-                    </div>
-                </form>
-                <div id="lookup-result" class="csm-firewall-result text-muted">
-                    Enter an IP to check direct blocks, subnet coverage, and cPanel lockout status.
-                </div>
             </div>
         </div>
     </section>

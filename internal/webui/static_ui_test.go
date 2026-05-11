@@ -710,7 +710,8 @@ func TestFirewallPageSplitIntoSubviews(t *testing.T) {
 	for _, want := range []string{
 		`class="csm-page-header`,
 		`id="fw-subview-nav"`,
-		`id="fw-command-form"`,
+		`id="lookup-form"`,
+		`id="lookup-result"`,
 		`class="csm-danger-zone`,
 		`href="/settings#firewall"`,
 	} {
@@ -719,7 +720,7 @@ func TestFirewallPageSplitIntoSubviews(t *testing.T) {
 		}
 	}
 
-	for _, view := range []string{"overview", "lookup", "blocks", "allow", "config", "audit", "danger"} {
+	for _, view := range []string{"overview", "blocks", "allow", "config", "audit", "danger"} {
 		section := `data-fw-view="` + view + `"`
 		if !strings.Contains(text, section) {
 			t.Errorf("firewall.html missing subview section %s", section)
@@ -750,7 +751,7 @@ func TestFirewallPageSplitIntoSubviews(t *testing.T) {
 		`URLSearchParams(window.location.search)`,
 		`history.replaceState`,
 		`data-fw-view`,
-		`switchFirewallView('lookup')`,
+		`switchFirewallView('overview')`,
 		`confirmDangerAction(msg, 'FLUSH')`,
 		`confirmDangerAction(msg, 'UNBLOCK')`,
 	} {
