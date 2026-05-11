@@ -32,6 +32,7 @@ type IPList struct {
 	path string
 	ips  map[string]challengeEntry
 	mu   sync.Mutex
+	gate PortGate
 }
 
 // NewIPList creates an IP list writer.
@@ -53,6 +54,16 @@ func NewIPListWithMapPath(statePath, mapPath string) *IPList {
 	return l
 }
 
+// SetPortGate attaches a PortGate so every Add/Remove also opens or
+// closes the kernel-level allow. Nil is a no-op (callers don't have to
+// branch on whether the gate is configured). Safe to call before any
+// Add/Remove; not safe to swap a non-nil gate for another at runtime.
+func (l *IPList) SetPortGate(g PortGate) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.gate = g
+}
+
 // Add marks an IP for challenge with the given reason.
 func (l *IPList) Add(ip string, reason string, duration time.Duration) {
 	l.mu.Lock()
@@ -62,6 +73,11 @@ func (l *IPList) Add(ip string, reason string, duration time.Duration) {
 		Reason:    reason,
 	}
 	l.flush()
+	if l.gate != nil {
+		if err := l.gate.Allow(ip, duration); err != nil {
+			fmt.Fprintf(os.Stderr, "challenge: port-gate allow %s: %v\n", ip, err)
+		}
+	}
 }
 
 // Remove stops challenging an IP (passed or manually removed).
@@ -70,6 +86,11 @@ func (l *IPList) Remove(ip string) {
 	defer l.mu.Unlock()
 	delete(l.ips, ip)
 	l.flush()
+	if l.gate != nil {
+		if err := l.gate.Revoke(ip); err != nil {
+			fmt.Fprintf(os.Stderr, "challenge: port-gate revoke %s: %v\n", ip, err)
+		}
+	}
 }
 
 // Contains returns true if the IP is currently on the challenge list.

@@ -40,6 +40,15 @@ challenge:
   tls_cert: ""
   tls_key: ""
   public_url: ""  # e.g. https://cpanel.example.com:8439/challenge
+  # port_gate.enabled installs an nftables chain that drops every
+  # connection to listen_port except from loopback, infra_ips, and IPs
+  # the daemon has just flagged. Only meaningful when listen_addr is
+  # non-loopback; on loopback the gate would have no effect and is
+  # silently skipped. Make sure infra_ips covers your management /
+  # healthcheck / phpanel networks before enabling, or you will lose
+  # access to the listener.
+  port_gate:
+    enabled: false
 
 integrity:
   binary_hash: ""

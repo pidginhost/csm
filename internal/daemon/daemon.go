@@ -67,6 +67,7 @@ type Daemon struct {
 	webServer        *webui.Server
 	challengeServer  *challenge.Server
 	ipList           *challenge.IPList
+	challengeGate    challenge.PortGate
 	fwEngine         *firewall.Engine
 	baselineMu       sync.Mutex // serialises CmdBaseline handler runs
 	geoipDB          *geoip.DB
@@ -810,6 +811,12 @@ func (d *Daemon) Run() error {
 	}
 	if d.challengeServer != nil {
 		d.challengeServer.Shutdown()
+	}
+	if d.challengeGate != nil {
+		if err := d.challengeGate.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "[%s] challenge port-gate close: %v\n", ts(), err)
+		}
+		d.challengeGate = nil
 	}
 	if d.fileMonitor != nil {
 		d.fileMonitor.Stop()
@@ -1826,6 +1833,7 @@ func (d *Daemon) startChallengeServer() {
 	unblocker := challenge.IPUnblocker(d.fwEngine)
 
 	d.ipList = challenge.NewIPListWithMapPath(d.cfg.StatePath, challenge.DefaultMapPath)
+	d.attachChallengePortGate()
 	checks.SetChallengeIPList(d.ipList)
 	srv := challenge.New(d.cfg, unblocker, d.ipList)
 	d.challengeServer = srv
@@ -1837,6 +1845,33 @@ func (d *Daemon) startChallengeServer() {
 			csmlog.Error("challenge server error", "err", err)
 		}
 	})
+}
+
+// attachChallengePortGate installs the nftables port-gate for the
+// challenge listener when the operator opts in. The gate is silently
+// absent when the listener is loopback-only (no off-host traffic can
+// reach it anyway) or on non-Linux builds.
+func (d *Daemon) attachChallengePortGate() {
+	if !d.cfg.Challenge.PortGate.Enabled {
+		return
+	}
+	gate, err := challenge.NewPortGate(challenge.PortGateConfig{
+		ListenAddr: d.cfg.Challenge.ListenAddr,
+		ListenPort: d.cfg.Challenge.ListenPort,
+		InfraCIDRs: d.cfg.InfraIPs,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] challenge port-gate install failed: %v (listener stays publicly reachable)\n", ts(), err)
+		return
+	}
+	if gate == nil {
+		csmlog.Info("challenge port-gate skipped (loopback listener or non-Linux build)",
+			"listen_addr", d.cfg.Challenge.ListenAddr)
+		return
+	}
+	d.challengeGate = gate
+	d.ipList.SetPortGate(gate)
+	csmlog.Info("challenge port-gate active", "port", d.cfg.Challenge.ListenPort)
 }
 
 func (d *Daemon) challengeEscalator() {

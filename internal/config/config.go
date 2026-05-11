@@ -388,6 +388,18 @@ type Config struct {
 			Providers []string      `yaml:"providers"` // names: googlebot | bingbot
 			CacheTTL  time.Duration `yaml:"cache_ttl"` // default: 15m
 		} `yaml:"verified_crawlers"`
+
+		// PortGate locks the challenge listener TCP port to specific
+		// source IPs via nftables. Enabled implies the daemon owns a
+		// dedicated `csm_chal` inet table whose chain drops all traffic
+		// to challenge.listen_port except: loopback, operator infra_ips,
+		// and IPs the IPList has just flagged. The set entry carries
+		// the same TTL as the challenge entry, so nftables expires the
+		// allow even if the daemon dies before calling Revoke. Auto-off
+		// when listen_addr is loopback (gate has no effect there).
+		PortGate struct {
+			Enabled bool `yaml:"enabled"`
+		} `yaml:"port_gate"`
 	} `yaml:"challenge" hotreload:"restart"`
 
 	PHPShield struct {
