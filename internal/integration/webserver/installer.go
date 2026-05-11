@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -29,25 +28,28 @@ import (
 // trip ErrManualEdits at upgrade time and the file is left untouched.
 const templateHeaderPrefix = "# csm-managed-version: "
 
-const (
-	defaultChallengeListenAddr = "127.0.0.1"
-	defaultChallengeListenPort = 8439
-)
-
 // RenderConfig contains the daemon settings that have to be baked
 // into webserver snippets. Values come from csm.yaml at install time
 // where they are operator-configurable.
 type RenderConfig struct {
-	ChallengeMapPath    string
-	ChallengeListenAddr string
-	ChallengeListenPort int
+	ChallengeMapPath string
+	// ChallengePublicURL is the fully-qualified redirect target the
+	// webserver snippet emits. Required on install; empty value blocks
+	// the installer with a clear error. Operator typically points it at
+	// the host's TLS-valid control-panel domain on a CSM-owned port,
+	// e.g. https://cluster6.example.com:8439/challenge.
+	ChallengePublicURL string
 }
 
 type templateData struct {
-	ChallengeMapPath string
-	BackendHostPort  string
-	BackendURL       string
+	ChallengeMapPath   string
+	ChallengePublicURL string
 }
+
+// ErrMissingPublicURL is returned by Install when challenge.public_url
+// is empty. The webserver snippet has no fallback redirect target so
+// the integration cannot function without it.
+var ErrMissingPublicURL = errors.New("webserver integration: challenge.public_url is not set")
 
 // Result is the structured outcome of an installer run. JSON-friendly
 // shape so the CLI can render either human text or `--json` output.
@@ -117,6 +119,12 @@ func (i *Installer) Install() (Result, error) {
 		Webserver:   i.Handler.Kind(),
 		SnippetPath: i.Handler.SnippetPath(),
 		ShippedVer:  TemplateVersion,
+	}
+
+	if strings.TrimSpace(i.Config.ChallengePublicURL) == "" {
+		res.Status = "fail"
+		res.Message = ErrMissingPublicURL.Error()
+		return res, ErrMissingPublicURL
 	}
 
 	prevBytes, prevExists, prevVer, err := i.readSnippet()
@@ -319,19 +327,12 @@ func (i *Installer) renderTemplate() ([]byte, error) {
 
 func renderConfigFrom(cfg *config.Config) RenderConfig {
 	rc := RenderConfig{
-		ChallengeMapPath:    challenge.DefaultMapPath,
-		ChallengeListenAddr: defaultChallengeListenAddr,
-		ChallengeListenPort: defaultChallengeListenPort,
+		ChallengeMapPath: challenge.DefaultMapPath,
 	}
 	if cfg == nil {
 		return rc
 	}
-	if strings.TrimSpace(cfg.Challenge.ListenAddr) != "" {
-		rc.ChallengeListenAddr = strings.TrimSpace(cfg.Challenge.ListenAddr)
-	}
-	if cfg.Challenge.ListenPort > 0 {
-		rc.ChallengeListenPort = cfg.Challenge.ListenPort
-	}
+	rc.ChallengePublicURL = strings.TrimSpace(cfg.Challenge.PublicURL)
 	return rc
 }
 
@@ -340,26 +341,9 @@ func (i *Installer) templateData() templateData {
 	if mapPath == "" {
 		mapPath = challenge.DefaultMapPath
 	}
-	port := i.Config.ChallengeListenPort
-	if port <= 0 {
-		port = defaultChallengeListenPort
-	}
-	host := challengeBackendHost(i.Config.ChallengeListenAddr)
-	backendHostPort := net.JoinHostPort(host, strconv.Itoa(port))
 	return templateData{
-		ChallengeMapPath: mapPath,
-		BackendHostPort:  backendHostPort,
-		BackendURL:       "http://" + backendHostPort + "/challenge",
-	}
-}
-
-func challengeBackendHost(addr string) string {
-	addr = strings.Trim(strings.TrimSpace(addr), "[]")
-	switch addr {
-	case "", "0.0.0.0", "::":
-		return defaultChallengeListenAddr
-	default:
-		return addr
+		ChallengeMapPath:   mapPath,
+		ChallengePublicURL: strings.TrimSpace(i.Config.ChallengePublicURL),
 	}
 }
 

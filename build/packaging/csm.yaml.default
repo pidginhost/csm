@@ -28,6 +28,19 @@ webui:
   tls_key: ""
   ui_dir: "/opt/csm/ui"
 
+# CSM challenge listener serves an interstitial PoW + redirect page for
+# IPs the daemon has flagged as suspicious. The webserver integration
+# (`csm webserver-integration install`) redirects flagged traffic to
+# this URL. Point public_url at a TLS-valid host:port the operator
+# already controls (typically the cPanel admin domain on a CSM-owned
+# port). The installer refuses to run when public_url is empty.
+challenge:
+  listen_addr: "127.0.0.1"
+  listen_port: 8439
+  tls_cert: ""
+  tls_key: ""
+  public_url: ""  # e.g. https://cpanel.example.com:8439/challenge
+
 integrity:
   binary_hash: ""
   config_hash: ""

@@ -51,8 +51,11 @@ func newTestInstaller(t *testing.T, h *fakeHandler) *Installer {
 		h.path = dir + "/csm-challenge.conf"
 	}
 	return &Installer{
-		Handler:  h,
-		Config:   RenderConfig{ChallengeMapPath: dir + "/run/challenge_ips.txt", ChallengeListenAddr: "127.0.0.1", ChallengeListenPort: 8439},
+		Handler: h,
+		Config: RenderConfig{
+			ChallengeMapPath:   dir + "/run/challenge_ips.txt",
+			ChallengePublicURL: "https://challenge.example.com:8439/challenge",
+		},
 		MkdirAll: os.MkdirAll,
 		WriteAt:  os.WriteFile,
 		ReadAt:   os.ReadFile,
@@ -91,14 +94,14 @@ func TestInstallFreshWritesSnippetAndReloads(t *testing.T) {
 	}
 }
 
-func TestInstallRendersConfiguredPathsAndBackend(t *testing.T) {
+func TestInstallRendersConfiguredPathsAndPublicURL(t *testing.T) {
 	h := &fakeHandler{
 		kind: "apache",
-		body: "map={{ .ChallengeMapPath }} backend={{ .BackendURL }} hostport={{ .BackendHostPort }}\n",
+		body: "map={{ .ChallengeMapPath }} url={{ .ChallengePublicURL }}\n",
 	}
 	i := newTestInstaller(t, h)
 	i.Config.ChallengeMapPath = t.TempDir() + "/challenge_ips.txt"
-	i.Config.ChallengeListenPort = 18439
+	i.Config.ChallengePublicURL = "https://chal.example.net:8439/challenge"
 
 	if _, err := i.Install(); err != nil {
 		t.Fatalf("Install: %v", err)
@@ -111,28 +114,46 @@ func TestInstallRendersConfiguredPathsAndBackend(t *testing.T) {
 	if !strings.Contains(body, "map="+i.Config.ChallengeMapPath) {
 		t.Fatalf("rendered map path not based on config: %s", body)
 	}
-	if !strings.Contains(body, "backend=http://127.0.0.1:18439/challenge") {
-		t.Fatalf("rendered backend URL not based on config: %s", body)
+	if !strings.Contains(body, "url=https://chal.example.net:8439/challenge") {
+		t.Fatalf("rendered public URL not based on config: %s", body)
 	}
-	if !strings.Contains(body, "hostport=127.0.0.1:18439") {
-		t.Fatalf("rendered backend hostport not based on config: %s", body)
+}
+
+func TestInstallRequiresPublicURL(t *testing.T) {
+	h := &fakeHandler{kind: "apache", body: "body\n"}
+	i := newTestInstaller(t, h)
+	i.Config.ChallengePublicURL = ""
+
+	res, err := i.Install()
+	if !errors.Is(err, ErrMissingPublicURL) {
+		t.Fatalf("err = %v, want ErrMissingPublicURL", err)
+	}
+	if res.Status != "fail" {
+		t.Fatalf("status = %q, want fail", res.Status)
+	}
+	if _, statErr := os.Stat(h.path); statErr == nil {
+		t.Fatal("snippet must not be written when public_url is missing")
+	}
+	if h.validates.Load() != 0 || h.reloads.Load() != 0 {
+		t.Fatalf("no webserver action expected; got %d/%d", h.validates.Load(), h.reloads.Load())
 	}
 }
 
 func TestShippedTemplatesRenderRuntimeConfig(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		body string
+		name        string
+		body        string
+		wantMapPath bool // nginx loads a separately-formatted map, not the apache RewriteMap path
 	}{
-		{name: "apache", body: apacheTemplate},
-		{name: "lsws", body: lswsTemplate},
-		{name: "nginx", body: nginxTemplate},
+		{name: "apache", body: apacheTemplate, wantMapPath: true},
+		{name: "lsws", body: lswsTemplate, wantMapPath: true},
+		{name: "nginx", body: nginxTemplate, wantMapPath: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := &fakeHandler{kind: tc.name, body: tc.body}
 			i := newTestInstaller(t, h)
 			i.Config.ChallengeMapPath = "/run/custom-csm/challenge_ips.txt"
-			i.Config.ChallengeListenPort = 18439
+			i.Config.ChallengePublicURL = "https://chal.example.net:8439/challenge"
 			rendered, err := i.renderTemplate()
 			if err != nil {
 				t.Fatalf("renderTemplate: %v", err)
@@ -141,11 +162,11 @@ func TestShippedTemplatesRenderRuntimeConfig(t *testing.T) {
 			if strings.Contains(body, "/opt/csm/state") {
 				t.Fatalf("template still hardcodes legacy state path: %s", body)
 			}
-			if strings.Contains(body, "127.0.0.1:8439") {
-				t.Fatalf("template still hardcodes default challenge port: %s", body)
+			if tc.wantMapPath && !strings.Contains(body, "/run/custom-csm/challenge_ips.txt") {
+				t.Fatalf("template did not render configured map path: %s", body)
 			}
-			if !strings.Contains(body, "127.0.0.1:18439") {
-				t.Fatalf("template did not render configured challenge port: %s", body)
+			if !strings.Contains(body, "https://chal.example.net:8439/challenge") {
+				t.Fatalf("template did not render configured public URL: %s", body)
 			}
 		})
 	}
