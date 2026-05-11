@@ -94,11 +94,11 @@ func IncidentCorrelator() *incident.Correlator {
 			if spray.BlockAtSeverity != "" && incidentSprayBlocker != nil {
 				blocker := incidentSprayBlocker
 				onSprayBlock = func(ip, reason string) {
-					cfg := globalCfgForIncidents()
-					if cfg == nil || !cfg.AutoResponse.Enabled || !cfg.AutoResponse.BlockIPs {
+					liveCfg := globalCfgForIncidents()
+					if liveCfg == nil || !liveCfg.AutoResponse.Enabled || !liveCfg.AutoResponse.BlockIPs {
 						return
 					}
-					timeout, perr := time.ParseDuration(cfg.AutoResponse.BlockExpiry)
+					timeout, perr := time.ParseDuration(liveCfg.AutoResponse.BlockExpiry)
 					if perr != nil || timeout <= 0 {
 						timeout = 24 * time.Hour
 					}
