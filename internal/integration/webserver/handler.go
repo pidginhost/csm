@@ -33,4 +33,10 @@ type Handler interface {
 	Validate() error
 	// Reload performs a graceful reload of the webserver.
 	Reload() error
+	// PostInstallInstructions returns optional operator-facing setup
+	// notes the installer emits after a successful install. Empty
+	// string means the integration is fully automatic. Non-empty means
+	// the operator must complete a manual step (e.g. LSWS External App
+	// definition) before the integration functions at runtime.
+	PostInstallInstructions() string
 }

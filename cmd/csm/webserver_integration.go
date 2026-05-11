@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/integration/webserver"
@@ -132,6 +133,13 @@ func emitResult(asJSON bool, res webserver.Result) {
 	}
 	if res.Message != "" {
 		fmt.Printf("  message:   %s\n", res.Message)
+	}
+	if res.FollowUp != "" {
+		fmt.Println()
+		fmt.Println("Manual setup required:")
+		for _, line := range strings.Split(res.FollowUp, "\n") {
+			fmt.Println("  " + line)
+		}
 	}
 }
 

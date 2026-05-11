@@ -59,6 +59,10 @@ type Result struct {
 	OnDiskVer   int    `json:"on_disk_version,omitempty"`
 	ShippedVer  int    `json:"shipped_version,omitempty"`
 	Message     string `json:"message,omitempty"`
+	// FollowUp is the operator-facing setup the integration could not
+	// automate on this stack. Empty when install is fully automatic.
+	// The CLI prints it after the result block on successful install.
+	FollowUp string `json:"follow_up,omitempty"`
 }
 
 // Installer drives the install / upgrade / status / remove flow. All
@@ -177,6 +181,7 @@ func (i *Installer) Install() (Result, error) {
 	} else {
 		res.Message = fmt.Sprintf("snippet installed (v%d)", TemplateVersion)
 	}
+	res.FollowUp = i.Handler.PostInstallInstructions()
 	return res, nil
 }
 

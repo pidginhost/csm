@@ -58,6 +58,28 @@ func (h *lswsHandler) Validate() error {
 	return nil
 }
 
+// PostInstallInstructions returns the LSWS WebAdmin Console steps the
+// operator must complete one time so the snippet's [P] proxy flag has
+// a worker to hit. LSWS's Apache emulation does not honor <Location>
+// + ProxyPass at server scope; the External App + named proxy worker
+// is the documented native equivalent.
+func (h *lswsHandler) PostInstallInstructions() string {
+	return `LSWS detected. One-time operator setup required before the integration fires:
+  1. Open WebAdmin Console -> Server -> External App -> Add.
+  2. Type: Web Server.
+  3. Name: csm_challenge
+     Address: 127.0.0.1:8439   (or wherever challenge.listen_addr:listen_port points)
+     Max Connections: 100
+     Initial Request Timeout: 60
+     Retry Timeout: 0
+     Persistent Connection: Yes
+     Response Buffering: No
+  4. Save, then "Graceful Restart".
+  5. Verify with: curl -sk https://<any-customer-vhost>/__csm_challenge
+The snippet drops a server-scope RewriteRule whose [P] flag routes
+/__csm_challenge through the External App you just created.`
+}
+
 func (h *lswsHandler) Reload() error {
 	// LSWS does not have a graceful reload equivalent; `restart` is the
 	// supported way to pick up new config without dropping established

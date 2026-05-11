@@ -41,9 +41,10 @@ func newApacheHandler(info platform.Info, r cmdRunner) *apacheHandler {
 	return h
 }
 
-func (h *apacheHandler) Kind() string        { return "apache" }
-func (h *apacheHandler) SnippetPath() string { return h.snippetPath }
-func (h *apacheHandler) Template() string    { return apacheTemplate }
+func (h *apacheHandler) Kind() string                    { return "apache" }
+func (h *apacheHandler) SnippetPath() string             { return h.snippetPath }
+func (h *apacheHandler) Template() string                { return apacheTemplate }
+func (h *apacheHandler) PostInstallInstructions() string { return "" }
 
 func (h *apacheHandler) Validate() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

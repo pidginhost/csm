@@ -19,9 +19,10 @@ func newNginxHandler(r cmdRunner) *nginxHandler {
 	return &nginxHandler{cmdRunner: r}
 }
 
-func (h *nginxHandler) Kind() string        { return "nginx" }
-func (h *nginxHandler) SnippetPath() string { return "/etc/nginx/conf.d/csm-challenge.conf" }
-func (h *nginxHandler) Template() string    { return nginxTemplate }
+func (h *nginxHandler) Kind() string                    { return "nginx" }
+func (h *nginxHandler) SnippetPath() string             { return "/etc/nginx/conf.d/csm-challenge.conf" }
+func (h *nginxHandler) Template() string                { return nginxTemplate }
+func (h *nginxHandler) PostInstallInstructions() string { return "" }
 
 func (h *nginxHandler) Validate() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

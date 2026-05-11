@@ -25,9 +25,10 @@ type fakeHandler struct {
 	reloads     atomic.Int32
 }
 
-func (h *fakeHandler) Kind() string        { return h.kind }
-func (h *fakeHandler) SnippetPath() string { return h.path }
-func (h *fakeHandler) Template() string    { return h.body }
+func (h *fakeHandler) Kind() string                    { return h.kind }
+func (h *fakeHandler) SnippetPath() string             { return h.path }
+func (h *fakeHandler) Template() string                { return h.body }
+func (h *fakeHandler) PostInstallInstructions() string { return "" }
 func (h *fakeHandler) Validate() error {
 	idx := h.validates.Add(1) - 1
 	if int(idx) < len(h.validateErr) {
