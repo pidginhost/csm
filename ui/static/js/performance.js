@@ -36,6 +36,91 @@
         return 'text-success';
     }
 
+    // Pull a file path out of a perf finding when the check has a
+    // remediation. Returns null when the check cannot be fixed from the
+    // UI; the caller hides the Actions dropdown in that case.
+    function describePerfAction(f) {
+        if (!f) return null;
+        if (f.check === 'perf_error_logs') {
+            var prefix = 'Bloated error_log: ';
+            var msg = f.message || '';
+            if (msg.indexOf(prefix) !== 0) return null;
+            var path = msg.slice(prefix.length).trim();
+            if (!path) return null;
+            return {
+                endpoint: '/api/v1/perf/fix-error-log',
+                path: path,
+                label: 'Empty log file',
+                icon: 'ti-eraser',
+                confirm: 'Truncate ' + path + ' to zero bytes? The file stays in place so PHP keeps writing to it.'
+            };
+        }
+        if (f.check === 'perf_wp_config' && (f.message || '').indexOf('display_errors enabled') === 0) {
+            var details = f.details || '';
+            var match = /File:\s*([^,]+),\s*Value:\s*On/i.exec(details);
+            if (!match) return null;
+            var p = match[1].trim();
+            if (!p) return null;
+            return {
+                endpoint: '/api/v1/perf/fix-display-errors',
+                path: p,
+                label: 'Disable display_errors',
+                icon: 'ti-shield-off',
+                confirm: 'Comment the display_errors line in ' + p + ' and append an Off override at end of file?'
+            };
+        }
+        return null;
+    }
+
+    function buildActionDropdown(action) {
+        var wrap = document.createElement('div');
+        wrap.className = 'dropdown';
+        var toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'btn btn-sm btn-outline-secondary dropdown-toggle';
+        toggle.setAttribute('data-bs-toggle', 'dropdown');
+        toggle.setAttribute('aria-expanded', 'false');
+        var ti = document.createElement('i');
+        ti.className = 'ti ti-tools me-1';
+        toggle.appendChild(ti);
+        toggle.appendChild(document.createTextNode('Actions'));
+        var menu = document.createElement('div');
+        menu.className = 'dropdown-menu dropdown-menu-end';
+        var link = document.createElement('a');
+        link.className = 'dropdown-item';
+        link.href = '#';
+        var icon = document.createElement('i');
+        icon.className = 'ti ' + action.icon + ' me-2';
+        link.appendChild(icon);
+        link.appendChild(document.createTextNode(action.label));
+        link.addEventListener('click', function(e) {
+            e.preventDefault();
+            runPerfAction(action, link);
+        });
+        menu.appendChild(link);
+        wrap.appendChild(toggle);
+        wrap.appendChild(menu);
+        return wrap;
+    }
+
+    function runPerfAction(action, originBtn) {
+        CSM.confirm(action.confirm).then(function() {
+            originBtn.classList.add('disabled');
+            CSM.post(action.endpoint, { path: action.path }).then(function(data) {
+                if (data && data.success) {
+                    CSM.toast(data.description || 'Fix applied', 'success');
+                    update();
+                } else {
+                    CSM.toast((data && data.error) || 'Fix failed', 'error');
+                    originBtn.classList.remove('disabled');
+                }
+            }).catch(function(err) {
+                CSM.toast('Error: ' + err, 'error');
+                originBtn.classList.remove('disabled');
+            });
+        }).catch(function() { /* cancelled */ });
+    }
+
     function update() {
         fetch(CSM.apiUrl('/api/v1/performance'), { credentials: 'same-origin' })
             .then(function(r) { return r.json(); })
@@ -192,6 +277,18 @@
                             name.textContent = checkName;
                             header.appendChild(name);
 
+                            // Actions dropdown (right-aligned). Only rendered
+                            // when the finding carries a path we know how to
+                            // remediate; perf checks without a path or with
+                            // an unsupported file type stay informational.
+                            var action = describePerfAction(f);
+                            if (action) {
+                                var spacer = document.createElement('div');
+                                spacer.className = 'ms-auto';
+                                header.appendChild(spacer);
+                                header.appendChild(buildActionDropdown(action));
+                            }
+
                             item.appendChild(header);
 
                             var msgDiv = document.createElement('div');
@@ -201,8 +298,7 @@
 
                             if (f.details) {
                                 var detailsDiv = document.createElement('div');
-                                detailsDiv.className = 'small text-muted mt-1';
-                                detailsDiv.style.whiteSpace = 'pre-wrap';
+                                detailsDiv.className = 'small text-muted mt-1 csm-detail';
                                 detailsDiv.textContent = f.details;
                                 item.appendChild(detailsDiv);
                             }

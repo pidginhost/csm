@@ -3,6 +3,7 @@ package webui
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/pidginhost/csm/internal/checks"
 )
 
 // --- Local response types ---
@@ -422,6 +425,57 @@ func (s *Server) apiPerformance(w http.ResponseWriter, r *http.Request) {
 		Metrics:  metrics,
 		Findings: views,
 	})
+}
+
+// apiPerfFixErrorLog truncates an account-owned error_log identified by
+// the perf_error_logs finding. Admin scope; CSRF enforced at the route.
+func (s *Server) apiPerfFixErrorLog(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<14)).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.Path == "" {
+		http.Error(w, "path is required", http.StatusBadRequest)
+		return
+	}
+	res := checks.FixErrorLogBloat(req.Path)
+	if !res.Success {
+		writeJSON(w, res)
+		return
+	}
+	s.auditLog(r, "perf_fix_error_log", req.Path, res.Description)
+	writeJSON(w, res)
+}
+
+// apiPerfFixDisplayErrors disables display_errors in an account-owned
+// .user.ini / php.ini / .htaccess identified by the perf_wp_config
+// finding's Details field. Admin scope; CSRF enforced at the route.
+//
+// clearer per-action than a switch.
+//
+//nolint:dupl // mirrors apiPerfFixErrorLog; the small dispatcher is
+func (s *Server) apiPerfFixDisplayErrors(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<14)).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.Path == "" {
+		http.Error(w, "path is required", http.StatusBadRequest)
+		return
+	}
+	res := checks.FixDisplayErrorsOn(req.Path)
+	if !res.Success {
+		writeJSON(w, res)
+		return
+	}
+	s.auditLog(r, "perf_fix_display_errors", req.Path, res.Description)
+	writeJSON(w, res)
 }
 
 // handlePerformance renders the performance dashboard page.

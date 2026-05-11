@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Performance Findings page offers per-row Actions for two safe automated fixes: truncate a bloated error_log in place (preserves the inode) and disable display_errors by commenting the directive and appending an Off override at end of `.user.ini` / `php.ini` / `.htaccess`. Admin-only, sandboxed to per-account web roots; symlinks and unsupported file types are refused.
 - Credential-spray super-incidents can hand the source IP to the firewall once the spray trips or escalates to CRITICAL. New `incidents.spray_suppression.block_at_severity` knob (`""`, `high`, `critical`); defaults to detection-only so existing operators see no behavior change. `auto_response.dry_run` and `block_ips` still gate the actual block.
 - Dashboard right rail gains a Components matrix listing every registered watcher with its attached state, time since last state change, and the most recent finding it produced. New /api/v1/components endpoint backs the view; read-scope tokens can call it.
 - Performance load check now also flags sustained pressure: when the 5-minute and 15-minute load averages both exceed 70% of the high threshold (even though the 1-minute load is calm) a Warning is emitted. Catches the "load 9 on 40 cores for 15 minutes" shape that a spike-only check misses.
