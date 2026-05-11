@@ -361,16 +361,10 @@
             <p class="text-muted small mb-3">These operations affect many entries at once. Read the warning before clicking.</p>
             <div class="d-flex flex-column gap-3">
                 <div>
-                    <button class="btn btn-outline-danger" id="bulk-unblock-btn" disabled title="Remove firewall blocks for selected rows from the Blocks subview">
-                        <i class="ti ti-eraser"></i>&nbsp;Unblock selected IPs
-                    </button>
-                    <div class="text-muted small mt-2">Removes dynamic blocks for rows selected in the Blocks subview. This does not add allow rules or whitelist entries.</div>
-                </div>
-                <div>
                     <button class="btn btn-outline-danger" id="flush-blocked-btn">
                         <i class="ti ti-trash"></i>&nbsp;Flush blocked IPs
                     </button>
-                    <div class="text-muted small mt-2">Removes every dynamic IP block at once. Subnet bans, allow rules, and whitelist entries stay intact. Use this only after confirming a previous block sweep was wrong.</div>
+                    <div class="text-muted small mt-2">Removes every dynamic IP block at once. Subnet bans, allow rules, and whitelist entries stay intact. Use this only after confirming a previous block sweep was wrong. For one or a few IPs, use the per-row Unblock action on the Blocks subview instead.</div>
                 </div>
             </div>
         </div>

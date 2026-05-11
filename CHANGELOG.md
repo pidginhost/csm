@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Shared detail panel now closes on Escape and on click anywhere outside it; the X button was the only way to dismiss before.
+- Firewall page drops the disabled "Unblock selected IPs" button on the Danger subview; per-row Unblock and Flush blocked IPs cover the workflow.
 - Credential-spray firewall hand-off now wires after firewall startup and releases the incident lock before calling the firewall. The auto-response gate is checked at block time so SIGHUP changes to `enabled`, `block_ips`, or `block_expiry` apply to spray blocks too.
 - `systemctl restart csm` no longer waits 30 to 60 seconds. The sd_notify READY signal and the systemd watchdog notifier now fire as soon as the real-time watchers and control surfaces are attached, instead of blocking on the initial baseline scan and the kernel-state probes. The baseline scan still runs inline and the alert dispatcher remains gated behind it.
 - Auto-block now hard-blocks only confirmed attacker-IP mail findings and keeps single mailbox auth failures, account-spray visibility findings, and account-only mail alerts out of firewall action. This avoids blocking a legitimate user after one failed login while preserving thresholded brute-force blocks.

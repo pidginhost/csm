@@ -210,6 +210,54 @@ CSM.applyProgressBars = function(root) {
 CSM.detailPanel = (function() {
     var instance = null;
     var panelEl  = null;
+    var dismissBound = false;
+    var api = null;
+
+    function isOpen() {
+        return panelEl && panelEl.classList.contains('show');
+    }
+
+    function onKey(e) {
+        if (!isOpen()) return;
+        if (e.key === 'Escape' || e.key === 'Esc' || e.keyCode === 27) {
+            e.preventDefault();
+            api.close();
+        }
+    }
+
+    function onOutsideClick(e) {
+        if (!isOpen()) return;
+        if (panelEl.contains(e.target)) return;
+        // Triggers that toggle the panel themselves rely on their own
+        // click handler running first; closing here would reopen a beat
+        // later and feel like a flash. Skip the click when the target is
+        // a button/anchor inside a modal trigger group.
+        if (e.target.closest && e.target.closest('[data-bs-toggle], .modal, .modal-dialog')) {
+            return;
+        }
+        api.close();
+    }
+
+    function bindDismissShortcuts() {
+        if (dismissBound) return;
+        dismissBound = true;
+        // Defer one tick so the click event that opened the panel finishes
+        // propagating before the outside-click listener attaches; otherwise
+        // the open-triggering click would itself match "outside" and
+        // immediately close the panel.
+        setTimeout(function() {
+            if (!dismissBound) return;
+            document.addEventListener('keydown', onKey);
+            document.addEventListener('mousedown', onOutsideClick);
+        }, 0);
+    }
+
+    function unbindDismissShortcuts() {
+        if (!dismissBound) return;
+        dismissBound = false;
+        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('mousedown', onOutsideClick);
+    }
 
     function ensureMount() {
         if (panelEl) return panelEl;
@@ -234,11 +282,7 @@ CSM.detailPanel = (function() {
         // wiring on dynamically mounted nodes). Bind explicitly so the X
         // button always closes the panel.
         close.addEventListener('click', function() {
-            if (instance) {
-                instance.hide();
-            } else if (panelEl) {
-                panelEl.classList.remove('show');
-            }
+            api.close();
         });
         header.appendChild(title);
         header.appendChild(close);
@@ -250,10 +294,14 @@ CSM.detailPanel = (function() {
         panelEl.appendChild(body);
         panelEl.appendChild(footer);
         document.body.appendChild(panelEl);
+        // hidden.bs.offcanvas runs after the backdrop click handler so we
+        // can lean on it to drop the global listeners even when the close
+        // happens through Bootstrap's own backdrop or ESC path.
+        panelEl.addEventListener('hidden.bs.offcanvas', unbindDismissShortcuts);
         return panelEl;
     }
 
-    return {
+    api = {
         open: function(opts) {
             var el = ensureMount();
             opts = opts || {};
@@ -286,8 +334,10 @@ CSM.detailPanel = (function() {
             } else {
                 el.classList.add('show');
             }
+            bindDismissShortcuts();
         },
         close: function() {
+            unbindDismissShortcuts();
             if (instance) {
                 instance.hide();
             } else if (panelEl) {
@@ -296,4 +346,5 @@ CSM.detailPanel = (function() {
         },
         element: function() { return panelEl; }
     };
+    return api;
 })();

@@ -737,9 +737,10 @@ func TestFirewallPageSplitIntoSubviews(t *testing.T) {
 	if dangerStart < 0 || flushIdx < 0 || flushIdx < dangerStart {
 		t.Fatal("flush-blocked-btn must live under the danger subview, not the overview")
 	}
-	bulkIdx := strings.Index(text, `id="bulk-unblock-btn"`)
-	if dangerStart < 0 || bulkIdx < 0 || bulkIdx < dangerStart {
-		t.Fatal("bulk-unblock-btn must live under the danger subview, not the blocks table")
+	// The Unblock-selected-IPs orphan button was removed: per-row Unblock
+	// covers single-IP cases and Flush blocked IPs covers the bulk case.
+	if strings.Contains(text, `id="bulk-unblock-btn"`) {
+		t.Fatal("bulk-unblock-btn must not be reintroduced; per-row Unblock and Flush blocked IPs cover the workflow")
 	}
 
 	js, err := os.ReadFile("../../ui/static/js/firewall.js")
@@ -753,7 +754,6 @@ func TestFirewallPageSplitIntoSubviews(t *testing.T) {
 		`data-fw-view`,
 		`switchFirewallView('overview')`,
 		`confirmDangerAction(msg, 'FLUSH')`,
-		`confirmDangerAction(msg, 'UNBLOCK')`,
 	} {
 		if !strings.Contains(jsText, want) {
 			t.Errorf("firewall.js missing subview switcher hook %q", want)

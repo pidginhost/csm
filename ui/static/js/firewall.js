@@ -304,7 +304,6 @@ function loadBlocked() {
             if (!ips || ips.length === 0) {
                 _fwBlockedData = [];
                 el.innerHTML = '<div class="card-body text-center text-muted py-3">No blocked IPs.</div>';
-                updateBulkUnblock();
                 return;
             }
 
@@ -320,7 +319,6 @@ function loadBlocked() {
             });
 
             var h = '<div class="table-responsive"><table class="table table-vcenter card-table table-sm" id="blocked-table"><thead><tr>';
-            h += '<th><input type="checkbox" class="form-check-input" id="blocked-select-all"></th>';
             h += '<th>IP</th><th>Location</th><th>Reason</th><th>Blocked</th><th>Expires</th><th>Action</th></tr></thead><tbody>';
 
             for (var i = 0; i < ips.length; i++) {
@@ -328,7 +326,6 @@ function loadBlocked() {
                 var source = ips[i].source || 'unknown';
                 var lifetime = classifyLifetime(ips[i]);
                 h += '<tr data-source="' + CSM.esc(source) + '" data-lifetime="' + lifetime + '">';
-                h += '<td><input type="checkbox" class="form-check-input blocked-cb" data-ip="' + CSM.esc(ips[i].ip) + '"></td>';
                 h += '<td><code class="csm-copy" title="Click to copy">' + CSM.esc(ips[i].ip) + '</code></td>';
                 h += '<td class="small text-muted text-nowrap geo-cell" data-ip="' + CSM.esc(ips[i].ip) + '"></td>';
                 h += '<td class="small"><div>' + formatReason(ips[i].reason, 'Blocked via CSM') + '</div><div class="mt-1">' + sourceBadge(source) + '</div></td>';
@@ -359,8 +356,7 @@ function loadBlocked() {
                 filters: [
                     { id: 'blocked-lifetime-filter', attr: 'data-lifetime' },
                     { id: 'blocked-source-filter', attr: 'data-source' }
-                ],
-                onRender: updateBulkUnblock
+                ]
             });
             if (document.getElementById('blocked-search').value) {
                 document.getElementById('blocked-search').dispatchEvent(new Event('input', { bubbles: true }));
@@ -404,20 +400,6 @@ function loadBlocked() {
                 });
             });
 
-            var selectAll = document.getElementById('blocked-select-all');
-            if (selectAll) {
-                selectAll.addEventListener('change', function() {
-                    var checked = this.checked;
-                    el.querySelectorAll('.blocked-cb').forEach(function(cb) {
-                        if (cb.closest('tr').style.display !== 'none') cb.checked = checked;
-                    });
-                    updateBulkUnblock();
-                });
-            }
-            el.querySelectorAll('.blocked-cb').forEach(function(cb) {
-                cb.addEventListener('change', updateBulkUnblock);
-            });
-            updateBulkUnblock();
         })
         .catch(function() {
             CSM.loadError(document.getElementById('blocked-content'), loadBlocked);
@@ -716,22 +698,6 @@ function unbanEverywhere(ip) {
     });
 }
 
-function bulkUnblock() {
-    var checked = getVisibleChecked();
-    if (checked.length === 0) return;
-    var ips = [];
-    checked.forEach(function(cb) { ips.push(cb.dataset.ip); });
-    var msg = 'This removes dynamic firewall blocks for ' + ips.length + ' selected IPs. It does not add allow rules or whitelist entries.';
-    confirmDangerAction(msg, 'UNBLOCK').then(function() {
-        CSM.post('/api/v1/unblock-bulk', { ips: ips }).then(function(data) {
-            CSM.toast('Unblocked ' + (data.succeeded || 0) + ' of ' + (data.total || 0) + ' IPs', 'success');
-            refreshFirewallData();
-        }).catch(function(e) { CSM.toast('Error: ' + e, 'error'); });
-    }).catch(function(err) {
-        if (err) CSM.toast(err.message || 'Request failed', 'error');
-    });
-}
-
 function removeAllowRule(ip) {
     CSM.confirm('Remove allow rule for ' + ip + '?').then(function() {
         CSM.post('/api/v1/firewall/remove-allow', { ip: ip }).then(function() {
@@ -830,25 +796,6 @@ function refreshFirewallData() {
     loadSubnets();
     loadWhitelist();
     loadAudit();
-}
-
-function getVisibleChecked() {
-    var all = document.querySelectorAll('.blocked-cb:checked');
-    var visible = [];
-    all.forEach(function(cb) {
-        if (cb.closest('tr').style.display !== 'none') visible.push(cb);
-    });
-    return visible;
-}
-
-function updateBulkUnblock() {
-    var checked = getVisibleChecked();
-    var btn = document.getElementById('bulk-unblock-btn');
-    if (!btn) return;
-    btn.disabled = checked.length === 0;
-    btn.innerHTML = checked.length === 0
-        ? '<i class="ti ti-eraser"></i>&nbsp;Unblock selected IPs'
-        : '<i class="ti ti-eraser"></i>&nbsp;Unblock ' + checked.length + ' selected IPs';
 }
 
 function enrichGeoIP(container) {
@@ -1014,9 +961,6 @@ document.getElementById('lookup-form').addEventListener('submit', function(e) {
     }
     loadLookup(ip);
 });
-
-var bulkUnblockBtn = document.getElementById('bulk-unblock-btn');
-if (bulkUnblockBtn) bulkUnblockBtn.addEventListener('click', bulkUnblock);
 
 var flushBtn = document.getElementById('flush-blocked-btn');
 if (flushBtn) flushBtn.addEventListener('click', flushBlocked);
