@@ -33,7 +33,8 @@ webui:
 # (`csm webserver-integration install`) redirects flagged traffic to
 # this URL. Point public_url at a TLS-valid host:port the operator
 # already controls (typically the cPanel admin domain on a CSM-owned
-# port). The installer refuses to run when public_url is empty.
+# port). The installer refuses to run when public_url is empty or
+# listen_addr is still loopback.
 challenge:
   listen_addr: "127.0.0.1"
   listen_port: 8439

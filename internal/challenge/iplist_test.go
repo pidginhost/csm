@@ -109,3 +109,49 @@ func TestNewIPListWithMapPathClearsStaleMap(t *testing.T) {
 		t.Fatalf("stale challenge entry remained after new list: %s", data)
 	}
 }
+
+func TestIPListWritesNginxMapAndReloadsOnChanges(t *testing.T) {
+	dir := t.TempDir()
+	mapPath := filepath.Join(dir, "run", "challenge_ips.txt")
+	nginxMapPath := filepath.Join(dir, "run", "challenge_ips.nginx.map")
+	l := NewIPListWithMapPath(dir, mapPath)
+
+	reloads := 0
+	l.SetNginxMap(nginxMapPath, func() error {
+		reloads++
+		return nil
+	})
+	if reloads != 1 {
+		t.Fatalf("initial stale-map clear reloads = %d, want 1", reloads)
+	}
+	reloads = 0
+
+	l.Add("203.0.113.5", "test", time.Hour)
+	if reloads != 1 {
+		t.Fatalf("reloads after Add = %d, want 1", reloads)
+	}
+	data, err := os.ReadFile(nginxMapPath)
+	if err != nil {
+		t.Fatalf("nginx map not written: %v", err)
+	}
+	if !strings.Contains(string(data), "203.0.113.5 1;") {
+		t.Fatalf("nginx map missing challenged IP: %s", data)
+	}
+
+	l.Add("203.0.113.5", "test", time.Hour)
+	if reloads != 1 {
+		t.Fatalf("unchanged Add reloads = %d, want 1", reloads)
+	}
+
+	l.Remove("203.0.113.5")
+	if reloads != 2 {
+		t.Fatalf("reloads after Remove = %d, want 2", reloads)
+	}
+	data, err = os.ReadFile(nginxMapPath)
+	if err != nil {
+		t.Fatalf("nginx map not readable after Remove: %v", err)
+	}
+	if strings.Contains(string(data), "203.0.113.5 1;") {
+		t.Fatalf("nginx map kept removed IP: %s", data)
+	}
+}

@@ -39,7 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Challenge listener now binds to `127.0.0.1` by default; expose it publicly only by setting `challenge.listen_addr: 0.0.0.0` (and supplying TLS material). The production path is to reverse-proxy the listener from the customer-facing webserver, so loopback-only is the right default.
+- Challenge listener now binds to `127.0.0.1` by default; webserver-integrated direct redirects require `challenge.listen_addr: 0.0.0.0` and a `challenge.public_url` ending in `/challenge`. `challenge.port_gate.enabled` can keep the public port limited to flagged IPs and operator infra.
 - Incidents Grouped tab no longer caps its content panel at 480 px with an inner scrollbar. On hosts with thousands of groups the previous layout showed only the first eight rows inside a small box; the list now flows to its natural height and the page scrolls normally.
 - Performance Findings rows render the remediation as a single button per row; the card header gains a Bulk fix dropdown that applies the matching action across every affected row of a check type with one confirmation.
 - Dashboard drops the Recent activity feed and the duplicate Fanotify / Signatures / log-watchers chips; runtime watcher state and feature flags now live in one Components card. Desktop critical-finding notifications still fire.
@@ -47,8 +47,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Challenge webserver integration now renders snippets from the configured challenge port, keeps no-op upgrades stable, writes the Apache/LSWS map to a webserver-readable runtime path, and uses a live Nginx challenge gate instead of a stale generated map.
-- Challenge server now serves HTTPS when `challenge.tls_cert` + `challenge.tls_key` are set, and direct/public listeners can fall back to `webui.tls_cert` / `webui.tls_key`. Loopback listeners stay plain HTTP by default for the reverse-proxy upstream.
+- Challenge webserver integration now renders snippets from the configured challenge port, keeps no-op upgrades stable, writes Apache/LSWS and Nginx maps to webserver-readable runtime paths, validates direct public URLs, and opens the listener in CSM firewall when port-gate is enabled.
+- Challenge server now serves HTTPS when `challenge.tls_cert` + `challenge.tls_key` are set, and direct/public listeners can fall back to `webui.tls_cert` / `webui.tls_key`. Loopback listeners stay plain HTTP by default.
 - Challenge routing no longer targets post-auth audit events (cPanel/webmail logins, file uploads, multi-IP login, WHM) or non-browser protocols (SSH, FTP, DNS recursion, outbound, API). Customers logging in from non-trusted countries no longer get hard-blocked 30 minutes after a normal cPanel login.
 - A daemon restart no longer orphans an open credential_spray incident and opens a duplicate super-incident for the same attacker IP. On startup the spray detector's in-memory binding is rehydrated from the persisted open incidents, so the suppress path keeps routing new findings into the existing incident instead of re-tripping at the distinct-mailbox threshold.
 - Credential-spray firewall hand-off now re-evaluates on every merged finding instead of only at the severity-transition moment. An operator who arms `block_at_severity` after an incident has already reached the configured severity now gets a block on the next matching finding rather than waiting for the attacker to open a fresh incident.

@@ -35,7 +35,7 @@ should respect the challenge:
     server {
         ...
         if ($csm_challenged) {
-            return 302 https://<challenge.public_url host>/challenge?dest=$scheme://$host$request_uri;
+            return 302 <challenge.public_url>?dest=$scheme://$host$request_uri;
         }
     }
 

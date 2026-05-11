@@ -53,8 +53,10 @@ func newTestInstaller(t *testing.T, h *fakeHandler) *Installer {
 	return &Installer{
 		Handler: h,
 		Config: RenderConfig{
-			ChallengeMapPath:   dir + "/run/challenge_ips.txt",
-			ChallengePublicURL: "https://challenge.example.com:8439/challenge",
+			ChallengeMapPath:      dir + "/run/challenge_ips.txt",
+			ChallengeNginxMapPath: dir + "/run/challenge_ips.nginx.map",
+			ChallengeListenAddr:   "0.0.0.0",
+			ChallengePublicURL:    "https://challenge.example.com:8439/challenge",
 		},
 		MkdirAll: os.MkdirAll,
 		WriteAt:  os.WriteFile,
@@ -92,15 +94,19 @@ func TestInstallFreshWritesSnippetAndReloads(t *testing.T) {
 	if _, err := os.Stat(i.Config.ChallengeMapPath); err != nil {
 		t.Fatalf("challenge map not created: %v", err)
 	}
+	if _, err := os.Stat(i.Config.ChallengeNginxMapPath); err != nil {
+		t.Fatalf("nginx challenge map not created: %v", err)
+	}
 }
 
 func TestInstallRendersConfiguredPathsAndPublicURL(t *testing.T) {
 	h := &fakeHandler{
 		kind: "apache",
-		body: "map={{ .ChallengeMapPath }} url={{ .ChallengePublicURL }}\n",
+		body: "map={{ .ChallengeMapPath }} nginx={{ .ChallengeNginxMapPath }} url={{ .ChallengePublicURL }}\n",
 	}
 	i := newTestInstaller(t, h)
 	i.Config.ChallengeMapPath = t.TempDir() + "/challenge_ips.txt"
+	i.Config.ChallengeNginxMapPath = t.TempDir() + "/challenge_ips.nginx.map"
 	i.Config.ChallengePublicURL = "https://chal.example.net:8439/challenge"
 
 	if _, err := i.Install(); err != nil {
@@ -113,6 +119,9 @@ func TestInstallRendersConfiguredPathsAndPublicURL(t *testing.T) {
 	body := string(data)
 	if !strings.Contains(body, "map="+i.Config.ChallengeMapPath) {
 		t.Fatalf("rendered map path not based on config: %s", body)
+	}
+	if !strings.Contains(body, "nginx="+i.Config.ChallengeNginxMapPath) {
+		t.Fatalf("rendered nginx map path not based on config: %s", body)
 	}
 	if !strings.Contains(body, "url=https://chal.example.net:8439/challenge") {
 		t.Fatalf("rendered public URL not based on config: %s", body)
@@ -139,20 +148,71 @@ func TestInstallRequiresPublicURL(t *testing.T) {
 	}
 }
 
+func TestInstallRejectsInvalidPublicURL(t *testing.T) {
+	cases := []struct {
+		name string
+		url  string
+	}{
+		{name: "relative", url: "chal.example.net:8439/challenge"},
+		{name: "ftp", url: "ftp://chal.example.net/challenge"},
+		{name: "wrong-path", url: "https://chal.example.net/not-challenge"},
+		{name: "query", url: "https://chal.example.net/challenge?x=1"},
+		{name: "fragment", url: "https://chal.example.net/challenge#x"},
+		{name: "localhost", url: "https://127.0.0.1:8439/challenge"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &fakeHandler{kind: "apache", body: "body\n"}
+			i := newTestInstaller(t, h)
+			i.Config.ChallengePublicURL = tc.url
+
+			res, err := i.Install()
+			if !errors.Is(err, ErrInvalidPublicURL) {
+				t.Fatalf("err = %v, want ErrInvalidPublicURL", err)
+			}
+			if res.Status != "fail" {
+				t.Fatalf("status = %q, want fail", res.Status)
+			}
+			if _, statErr := os.Stat(h.path); statErr == nil {
+				t.Fatal("snippet must not be written for invalid public_url")
+			}
+		})
+	}
+}
+
+func TestInstallRejectsLoopbackListenerForPublicRedirect(t *testing.T) {
+	h := &fakeHandler{kind: "apache", body: "body\n"}
+	i := newTestInstaller(t, h)
+	i.Config.ChallengeListenAddr = "127.0.0.1"
+
+	res, err := i.Install()
+	if !errors.Is(err, ErrLoopbackPublicURL) {
+		t.Fatalf("err = %v, want ErrLoopbackPublicURL", err)
+	}
+	if res.Status != "fail" {
+		t.Fatalf("status = %q, want fail", res.Status)
+	}
+	if _, statErr := os.Stat(h.path); statErr == nil {
+		t.Fatal("snippet must not be written when listener is loopback")
+	}
+}
+
 func TestShippedTemplatesRenderRuntimeConfig(t *testing.T) {
 	for _, tc := range []struct {
-		name        string
-		body        string
-		wantMapPath bool // nginx loads a separately-formatted map, not the apache RewriteMap path
+		name          string
+		body          string
+		wantMapPath   string
+		rejectMapPath string
 	}{
-		{name: "apache", body: apacheTemplate, wantMapPath: true},
-		{name: "lsws", body: lswsTemplate, wantMapPath: true},
-		{name: "nginx", body: nginxTemplate, wantMapPath: false},
+		{name: "apache", body: apacheTemplate, wantMapPath: "/run/custom-csm/challenge_ips.txt", rejectMapPath: "/run/custom-csm/challenge_ips.nginx.map"},
+		{name: "lsws", body: lswsTemplate, wantMapPath: "/run/custom-csm/challenge_ips.txt", rejectMapPath: "/run/custom-csm/challenge_ips.nginx.map"},
+		{name: "nginx", body: nginxTemplate, wantMapPath: "/run/custom-csm/challenge_ips.nginx.map", rejectMapPath: "/run/custom-csm/challenge_ips.txt"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := &fakeHandler{kind: tc.name, body: tc.body}
 			i := newTestInstaller(t, h)
 			i.Config.ChallengeMapPath = "/run/custom-csm/challenge_ips.txt"
+			i.Config.ChallengeNginxMapPath = "/run/custom-csm/challenge_ips.nginx.map"
 			i.Config.ChallengePublicURL = "https://chal.example.net:8439/challenge"
 			rendered, err := i.renderTemplate()
 			if err != nil {
@@ -162,8 +222,11 @@ func TestShippedTemplatesRenderRuntimeConfig(t *testing.T) {
 			if strings.Contains(body, "/opt/csm/state") {
 				t.Fatalf("template still hardcodes legacy state path: %s", body)
 			}
-			if tc.wantMapPath && !strings.Contains(body, "/run/custom-csm/challenge_ips.txt") {
+			if !strings.Contains(body, tc.wantMapPath) {
 				t.Fatalf("template did not render configured map path: %s", body)
+			}
+			if strings.Contains(body, tc.rejectMapPath) {
+				t.Fatalf("template rendered wrong map path: %s", body)
 			}
 			if !strings.Contains(body, "https://chal.example.net:8439/challenge") {
 				t.Fatalf("template did not render configured public URL: %s", body)

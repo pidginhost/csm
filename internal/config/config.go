@@ -334,19 +334,18 @@ type Config struct {
 		ListenAddr string `yaml:"listen_addr"` // bind address for the challenge listener (default: 127.0.0.1)
 		ListenPort int    `yaml:"listen_port"` // port for challenge server (default: 8439)
 		// ListenAddr defaults to loopback because the production path
-		// is to reverse-proxy /__csm_challenge from the host's webserver
-		// (Apache / Nginx / LSWS) which already terminates TLS with the
-		// right SNI cert. Operators who deliberately want the listener
-		// reachable from the internet set "0.0.0.0" plus TLS material
-		// via challenge.tls_cert / tls_key, or the webui TLS fallback.
+		// keeps the listener private until an operator deliberately
+		// exposes it. The webserver integration redirects browsers to
+		// challenge.public_url, so installed direct mode needs a
+		// non-loopback listen address plus TLS material via
+		// challenge.tls_cert / tls_key, or the webui TLS fallback.
 		Secret         string   `yaml:"secret"`          // HMAC secret for challenge tokens (auto-generated if empty)
 		Difficulty     int      `yaml:"difficulty"`      // proof-of-work difficulty 0-5 (default: 2)
 		TrustedProxies []string `yaml:"trusted_proxies"` // IPs allowed to set X-Forwarded-For (empty = trust RemoteAddr only)
 		// TLSCert / TLSKey activate HTTPS on the challenge listener. Empty
-		// values keep loopback listeners on plain HTTP for reverse-proxy
-		// upstreams. Direct/public listeners fall back to webui.tls_cert /
-		// webui.tls_key so single-cert hosts can opt in without duplicating
-		// paths.
+		// values keep loopback listeners on plain HTTP. Direct/public
+		// listeners fall back to webui.tls_cert / webui.tls_key so
+		// single-cert hosts can opt in without duplicating paths.
 		TLSCert string `yaml:"tls_cert"`
 		TLSKey  string `yaml:"tls_key"`
 		// PublicURL is the external URL the webserver redirect target

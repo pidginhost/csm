@@ -1833,6 +1833,9 @@ func (d *Daemon) startChallengeServer() {
 	unblocker := challenge.IPUnblocker(d.fwEngine)
 
 	d.ipList = challenge.NewIPListWithMapPath(d.cfg.StatePath, challenge.DefaultMapPath)
+	if platform.Detect().WebServer == platform.WSNginx {
+		d.ipList.SetNginxMap(challenge.DefaultNginxMapPath, d.reloadChallengeNginxMap)
+	}
 	d.attachChallengePortGate()
 	checks.SetChallengeIPList(d.ipList)
 	srv := challenge.New(d.cfg, unblocker, d.ipList)
@@ -1872,6 +1875,15 @@ func (d *Daemon) attachChallengePortGate() {
 	d.challengeGate = gate
 	d.ipList.SetPortGate(gate)
 	csmlog.Info("challenge port-gate active", "port", d.cfg.Challenge.ListenPort)
+}
+
+func (d *Daemon) reloadChallengeNginxMap() error {
+	// #nosec G204 -- static binary and arguments; no operator input is passed.
+	out, err := exec.Command("nginx", "-s", "reload").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("nginx -s reload: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func (d *Daemon) challengeEscalator() {
@@ -2059,6 +2071,7 @@ func (d *Daemon) startFirewall() {
 	// turns into a spurious warning.
 	mergedFirewall := *d.cfg.Firewall
 	mergedFirewall.InfraIPs = mergeInfraIPs(d.cfg.InfraIPs, d.cfg.Firewall.InfraIPs)
+	ensureChallengePortGateFirewallAccess(d.cfg, &mergedFirewall)
 
 	engine, err := firewall.NewEngine(&mergedFirewall, d.cfg.StatePath)
 	if err != nil {
@@ -2129,6 +2142,60 @@ func (d *Daemon) startFirewall() {
 		obs.Go("cloudflare-refresh", d.cloudflareRefreshLoop)
 		csmlog.Info("cloudflare IP whitelist enabled", "refresh_hours", d.cfg.Cloudflare.RefreshHours)
 	}
+}
+
+func ensureChallengePortGateFirewallAccess(cfg *config.Config, fw *firewall.FirewallConfig) {
+	if cfg == nil || fw == nil {
+		return
+	}
+	if !cfg.Challenge.Enabled || !cfg.Challenge.PortGate.Enabled {
+		return
+	}
+	if cfg.Challenge.ListenPort <= 0 || challengeListenAddrIsLoopback(cfg.Challenge.ListenAddr) {
+		return
+	}
+	fw.TCPIn = appendUniquePort(fw.TCPIn, cfg.Challenge.ListenPort)
+	fw.RestrictedTCP = removePort(fw.RestrictedTCP, cfg.Challenge.ListenPort)
+}
+
+func challengeListenAddrIsLoopback(addr string) bool {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return true
+	}
+	host := addr
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func appendUniquePort(ports []int, port int) []int {
+	for _, p := range ports {
+		if p == port {
+			return ports
+		}
+	}
+	out := append([]int(nil), ports...)
+	return append(out, port)
+}
+
+func removePort(ports []int, port int) []int {
+	out := make([]int, 0, len(ports))
+	for _, p := range ports {
+		if p != port {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func (d *Daemon) askVerdictCallback(ctx context.Context, ip, reason string) (string, string, string, error) {

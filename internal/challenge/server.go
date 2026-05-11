@@ -136,13 +136,12 @@ func New(cfg *config.Config, unblocker IPUnblocker, ipList *IPList) *Server {
 
 // Start begins serving challenge pages. Explicit challenge TLS makes the
 // listener HTTPS. Direct/public listeners can reuse the WebUI TLS pair.
-// Loopback listeners stay plain HTTP by default because the production path
-// is a local reverse proxy that terminates TLS at the webserver.
+// Loopback listeners stay plain HTTP by default.
 //
 // Resolution order:
 //  1. challenge.tls_cert + challenge.tls_key      (explicit per-service)
 //  2. webui.tls_cert + webui.tls_key              (direct/public binds only)
-//  3. plain HTTP                                  (loopback reverse proxy)
+//  3. plain HTTP                                  (loopback-only default)
 func (s *Server) Start() error {
 	cert, key := s.resolveTLSMaterial()
 	if cert == "" || key == "" {
@@ -158,8 +157,8 @@ func (s *Server) Start() error {
 
 // resolveTLSMaterial picks the cert / key pair the challenge listener
 // should present. The WebUI fallback is only safe for direct/public binds;
-// loopback reverse-proxy deployments must keep a plain-HTTP upstream unless
-// challenge TLS is explicitly configured.
+// loopback listeners stay plain HTTP unless challenge TLS is explicitly
+// configured.
 func (s *Server) resolveTLSMaterial() (cert, key string) {
 	if c, k := s.cfg.Challenge.TLSCert, s.cfg.Challenge.TLSKey; c != "" && k != "" {
 		return c, k

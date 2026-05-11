@@ -50,26 +50,32 @@ If an IP doesn't solve the PoW challenge within 30 minutes, it is automatically 
 
 ### Bind address
 
-The listener binds to `127.0.0.1` by default. The production path is to
-reverse-proxy challenged requests to `/challenge` from the host's webserver
-(Apache / Nginx / LSWS); the webserver terminates TLS with the SNI cert
-it already owns for the customer vhost and proxies plain HTTP to CSM on
-loopback. Operators that want to expose the listener directly to the
-internet set `challenge.listen_addr: 0.0.0.0` and provide TLS material
-via `challenge.tls_cert` / `tls_key` (see below).
+The listener binds to `127.0.0.1` by default, so enabling the challenge
+server alone does not expose a new public port. The webserver integration
+uses direct redirects to `challenge.public_url`; installed direct mode
+therefore needs a non-loopback listener and a public URL ending in
+`/challenge`.
 
 ```yaml
 challenge:
-  listen_addr: 127.0.0.1   # default - reachable only from loopback
+  enabled: true
+  listen_addr: 0.0.0.0
   listen_port: 8439
+  public_url: https://cpanel.example.com:8439/challenge
+  tls_cert: /var/cpanel/ssl/cpanel/mycpanel.pem
+  tls_key:  /var/cpanel/ssl/cpanel/mycpanel.pem
 ```
+
+When CSM's firewall is enabled and `challenge.port_gate.enabled` is true,
+the daemon also opens `challenge.listen_port` in the main firewall rules.
+The port-gate chain still drops traffic to that port unless the source is
+loopback, an `infra_ips` entry, or an IP currently on the challenge list.
 
 ### TLS
 
 The challenge listener serves HTTPS when challenge-specific TLS material is
-configured. Loopback listeners stay on plain HTTP by default, even when the
-Web UI has TLS configured, because the webserver reverse proxy is the TLS
-endpoint. Direct/public listeners can reuse the Web UI cert.
+configured. Loopback listeners stay on plain HTTP by default. Direct/public
+listeners can reuse the Web UI cert.
 
 Resolution order:
 
@@ -77,7 +83,7 @@ Resolution order:
 2. `webui.tls_cert` + `webui.tls_key` (shared cert; cPanel
    `mycpanel.pem` covers both webui and the challenge port without
    extra config) only when `challenge.listen_addr` is not loopback.
-3. Plain HTTP. This is expected for the default loopback reverse-proxy path.
+3. Plain HTTP. This is expected for the default loopback-only path.
    Public listeners without TLS log a startup warning.
    HSTS-pinned parent domains (cPanel, phpanel, customer apex) will
    fail with `ERR_SSL_PROTOCOL_ERROR` because the browser auto-
@@ -91,7 +97,11 @@ challenge:
 
 ### Trusted Proxies
 
-By default, the challenge server uses `RemoteAddr` to identify clients. If deployed behind a reverse proxy (e.g. Apache with `mod_rewrite`), configure `trusted_proxies` so X-Forwarded-For is trusted only from those IPs:
+By default, the challenge server uses `RemoteAddr` to identify clients.
+The shipped webserver integration redirects browsers directly to
+`challenge.public_url`, so it does not need `trusted_proxies`. Configure
+trusted proxies only for a custom proxy deployment where CSM receives
+traffic from a proxy and must trust `X-Forwarded-For` from that proxy.
 
 ```yaml
 challenge:
@@ -113,12 +123,10 @@ When a client passes the challenge:
 
 ## Webserver Integration
 
-The challenge listener is reachable only on loopback by default; the
-host's webserver redirects challenge-listed IPs to `/__csm_challenge`
-on the same vhost and reverse-proxies that path to CSM. For Apache
-and LSWS, one installed snippet handles both moves. For Nginx, CSM
-installs the shared upstream and documents the per-server
-`auth_request` block that operators include in each gated vhost.
+The webserver integration redirects challenge-listed IPs to
+`challenge.public_url`. The installer refuses to run until that URL is
+an absolute `http` or `https` URL ending in `/challenge`, and the
+configured challenge listener is non-loopback.
 
 ```bash
 csm webserver-integration install     # initial wire-up
@@ -139,12 +147,12 @@ The installer auto-detects the active webserver via
 | LiteSpeed (LSWS)            | `/usr/local/lsws/conf/templates/csm-challenge.conf` |
 | Nginx (plain + Engintron + phpanel) | `/etc/nginx/conf.d/csm-challenge.conf`      |
 
-The snippets are rendered from the effective CSM config, including
-`challenge.listen_port`. Apache and LSWS read their RewriteMap from
-`/run/csm/challenge_ips.txt` so the private state directory can remain
-mode 0700. Reverse-proxy deployments must list the loopback proxy in
-`challenge.trusted_proxies` so CSM can trust the `X-Forwarded-For`
-client IP supplied by the webserver.
+The snippets are rendered from the effective CSM config. Apache and LSWS
+read their RewriteMap from `/run/csm/challenge_ips.txt`; Nginx reads a
+native map include from `/run/csm/challenge_ips.nginx.map`. Both live
+outside the private state directory so the webserver user can read them.
+CSM rewrites the Nginx include on challenge-list changes and reloads
+Nginx only when the file content changes.
 
 On every run, the installer:
 
