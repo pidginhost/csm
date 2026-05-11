@@ -129,17 +129,17 @@ func (i *Installer) Install() (Result, error) {
 		return res, ErrManualEdits
 	}
 
-	if err := i.ensureChallengeMapFiles(); err != nil {
+	if mapErr := i.ensureChallengeMapFiles(); mapErr != nil {
 		res.Status = "fail"
-		res.Message = "runtime files: " + err.Error()
-		return res, err
+		res.Message = "runtime files: " + mapErr.Error()
+		return res, mapErr
 	}
 
-	rendered, err := i.renderTemplate()
-	if err != nil {
+	rendered, rerr := i.renderTemplate()
+	if rerr != nil {
 		res.Status = "fail"
-		res.Message = "render: " + err.Error()
-		return res, err
+		res.Message = "render: " + rerr.Error()
+		return res, rerr
 	}
 
 	if prevExists && bytes.Equal(prevBytes, rendered) {
