@@ -195,7 +195,17 @@
                             <option value="unknown">Unknown / legacy</option>
                         </select>
                     </div>
-                    <div class="col-md-4 col-xl-6">
+                    <div class="col-md-2 col-xl-2">
+                        <label class="form-label mb-1" for="blocked-perpage">Page size</label>
+                        <select id="blocked-perpage" class="form-select form-select-sm">
+                            <option value="25">25</option>
+                            <option value="50">50</option>
+                            <option value="100">100</option>
+                            <option value="250">250</option>
+                            <option value="0">All</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2 col-xl-4">
                         <div class="text-muted small">Safer response actions are available per row: clear state without whitelisting, clear and allow for 24h, permanent whitelist, or cPHulk-only cleanup.</div>
                     </div>
                 </div>

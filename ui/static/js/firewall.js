@@ -351,6 +351,8 @@ function loadBlocked() {
             new CSM.Table({
                 tableId: 'blocked-table',
                 perPage: 25,
+                perPageSelectId: 'blocked-perpage',
+                stateKey: 'csm-firewall-blocked',
                 searchId: 'blocked-search',
                 sortable: true,
                 filters: [

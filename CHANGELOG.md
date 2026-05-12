@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Challenge hardening now rejects invalid listener ports early, lets visitors retry after a failed CAPTCHA response, and keeps IPv6-only port gates from touching IPv4 entries.
+- Firewall Blocked IPs view now offers 25/50/100/250/All page sizes with persisted selection so deployments with hundreds of blocks no longer get capped at the first 25 rows.
 
 ## [3.3.2] - 2026-05-12
 
