@@ -185,6 +185,9 @@ func (g *linuxPortGate) Allow(ip string, ttl time.Duration) error {
 	if ttl <= 0 {
 		ttl = 30 * time.Minute
 	}
+	if !portGateFamilyAcceptsIP(g.family, parsed) {
+		return nil
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -213,6 +216,9 @@ func (g *linuxPortGate) Revoke(ip string) error {
 	parsed := net.ParseIP(ip)
 	if parsed == nil {
 		return fmt.Errorf("port-gate: invalid ip %q", ip)
+	}
+	if !portGateFamilyAcceptsIP(g.family, parsed) {
+		return nil
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()

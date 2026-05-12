@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Challenge hardening now rejects invalid listener ports early, lets visitors retry after a failed CAPTCHA response, and keeps IPv6-only port gates from touching IPv4 entries.
+
 ## [3.3.2] - 2026-05-12
 
 Replaces 3.3.1 (tag withdrawn before public release).

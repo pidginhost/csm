@@ -70,6 +70,9 @@ When CSM's firewall is enabled and `challenge.port_gate.enabled` is true,
 the daemon also opens `challenge.listen_port` in the main firewall rules.
 The port-gate chain still drops traffic to that port unless the source is
 loopback, an `infra_ips` entry, or an IP currently on the challenge list.
+Port-gate rules follow the configured listener address family. An IPv6-only
+listener gates only IPv6 clients; IPv4 challenge entries stay in the
+webserver map but are ignored by the IPv6 nftables set.
 
 ### TLS
 
@@ -182,6 +185,8 @@ Three opt-in bypass mechanisms let legitimate traffic skip the PoW page entirely
 ### CAPTCHA Fallback (JS-Disabled Visitors)
 
 The PoW solver requires JavaScript. Visitors with JS off (older mobile browsers, accessibility tooling, text browsers, scripted integrations) would otherwise be locked out. When configured, CSM renders a Cloudflare Turnstile or hCaptcha widget inside a `<noscript>` block; on completion the form posts to `/challenge/captcha-verify` and CSM validates the token server-side against the provider's `siteverify` endpoint.
+Provider rejections do not spend the page nonce, so a visitor can retry the
+same challenge page after a mistyped, expired, or failed widget response.
 
 ```yaml
 challenge:

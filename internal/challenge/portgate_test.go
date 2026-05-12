@@ -1,6 +1,7 @@
 package challenge
 
 import (
+	"net"
 	"sync"
 	"testing"
 	"time"
@@ -41,6 +42,30 @@ func TestFamilyForListenAddrPicksRight(t *testing.T) {
 			t.Errorf("familyForListenAddr(%q) = {v4=%v v6=%v}, want {v4=%v v6=%v}",
 				c.addr, got.v4, got.v6, c.wantV4, c.wantV6)
 		}
+	}
+}
+
+func TestPortGateFamilyAcceptsOnlyConfiguredIPFamilies(t *testing.T) {
+	cases := []struct {
+		name string
+		fam  portGateFamily
+		ip   string
+		want bool
+	}{
+		{name: "v4 listener accepts v4", fam: portGateFamily{v4: true}, ip: "203.0.113.5", want: true},
+		{name: "v4 listener ignores v6", fam: portGateFamily{v4: true}, ip: "2001:db8::5", want: false},
+		{name: "v6 listener ignores v4", fam: portGateFamily{v6: true}, ip: "203.0.113.5", want: false},
+		{name: "v6 listener accepts v6", fam: portGateFamily{v6: true}, ip: "2001:db8::5", want: true},
+		{name: "dual listener accepts v4", fam: portGateFamily{v4: true, v6: true}, ip: "203.0.113.5", want: true},
+		{name: "dual listener accepts v6", fam: portGateFamily{v4: true, v6: true}, ip: "2001:db8::5", want: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := portGateFamilyAcceptsIP(c.fam, net.ParseIP(c.ip))
+			if got != c.want {
+				t.Fatalf("portGateFamilyAcceptsIP(%+v, %s) = %v, want %v", c.fam, c.ip, got, c.want)
+			}
+		})
 	}
 }
 

@@ -322,13 +322,27 @@ func (s *Server) handleCaptchaVerify(w http.ResponseWriter, r *http.Request) {
 	token := r.FormValue("token")
 	captchaToken := r.FormValue("captcha-token")
 
-	// Same HMAC + replay checks PoW does -- a CAPTCHA bypass without
-	// nonce binding would let a single completed CAPTCHA grant cookies
-	// to an attacker.
+	// Bind the CAPTCHA submission to the page token before asking the
+	// provider. The nonce is spent only after the provider accepts, so a
+	// rejected widget token can be retried from the same page.
 	if expected := s.makeToken(ip, nonce); token != expected {
 		http.Error(w, "Invalid token", http.StatusForbidden)
 		return
 	}
+	s.verifiedMu.Lock()
+	_, seen := s.verified[nonce]
+	s.verifiedMu.Unlock()
+	if seen {
+		http.Error(w, "Token already used", http.StatusForbidden)
+		return
+	}
+
+	ok, err := s.captcha.Verify(r.Context(), captchaToken, ip)
+	if err != nil || !ok {
+		http.Error(w, "CAPTCHA verification failed", http.StatusForbidden)
+		return
+	}
+
 	s.verifiedMu.Lock()
 	if _, seen := s.verified[nonce]; seen {
 		s.verifiedMu.Unlock()
@@ -337,12 +351,6 @@ func (s *Server) handleCaptchaVerify(w http.ResponseWriter, r *http.Request) {
 	}
 	s.verified[nonce] = time.Now()
 	s.verifiedMu.Unlock()
-
-	ok, err := s.captcha.Verify(r.Context(), captchaToken, ip)
-	if err != nil || !ok {
-		http.Error(w, "CAPTCHA verification failed", http.StatusForbidden)
-		return
-	}
 
 	s.markVerified(w, r, ip, "passed captcha", r.FormValue("dest"))
 }

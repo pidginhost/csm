@@ -205,6 +205,9 @@ func Validate(cfg *Config) []ValidationResult {
 	if cfg.Challenge.Difficulty < 0 || cfg.Challenge.Difficulty > 5 {
 		results = append(results, ValidationResult{"error", "challenge.difficulty", fmt.Sprintf("difficulty must be 0-5, got %d", cfg.Challenge.Difficulty)})
 	}
+	if cfg.Challenge.ListenPort < 0 || cfg.Challenge.ListenPort > 65535 {
+		results = append(results, ValidationResult{"error", "challenge.listen_port", fmt.Sprintf("listen_port must be 0-65535, got %d", cfg.Challenge.ListenPort)})
+	}
 
 	// --- EmailAV ---
 	if cfg.EmailAV.Enabled && cfg.EmailAV.MaxAttachmentSize <= 0 {

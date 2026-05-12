@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -262,6 +263,60 @@ func TestHandleCaptchaVerifyProviderRejectsToken(t *testing.T) {
 	}
 	if unblocker.calls != 0 {
 		t.Errorf("unblocker called for failed CAPTCHA (%d times)", unblocker.calls)
+	}
+}
+
+func TestHandleCaptchaVerifyProviderRejectDoesNotConsumeNonce(t *testing.T) {
+	s, unblocker := newServerForTest(t)
+	var success atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]bool{"success": success.Load()})
+	}))
+	t.Cleanup(srv.Close)
+	prev := providerEndpoint["turnstile"]
+	providerEndpoint["turnstile"] = srv.URL
+	t.Cleanup(func() { providerEndpoint["turnstile"] = prev })
+
+	s.cfg.Challenge.CaptchaFallback.Provider = "turnstile"
+	s.cfg.Challenge.CaptchaFallback.SiteKey = "test-site-key"
+	s.cfg.Challenge.CaptchaFallback.SecretKey = "test-secret"
+	s.cfg.Challenge.CaptchaFallback.Timeout = 2 * time.Second
+	p, err := NewCaptchaProvider("turnstile", "test-secret", 2*time.Second)
+	if err != nil {
+		t.Fatalf("NewCaptchaProvider: %v", err)
+	}
+	s.captcha = p
+
+	ip := "1.2.3.4"
+	nonce := generateNonce()
+	token := s.makeToken(ip, nonce)
+	post := func(captchaToken string) *httptest.ResponseRecorder {
+		form := url.Values{}
+		form.Set("nonce", nonce)
+		form.Set("token", token)
+		form.Set("captcha-token", captchaToken)
+		req := httptest.NewRequest(http.MethodPost, "/challenge/captcha-verify", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.RemoteAddr = ip + ":55000"
+		rr := httptest.NewRecorder()
+		s.handleCaptchaVerify(rr, req)
+		return rr
+	}
+
+	if rr := post("bad-token"); rr.Code != http.StatusForbidden {
+		t.Fatalf("failed CAPTCHA status = %d, want 403", rr.Code)
+	}
+	if unblocker.calls != 0 {
+		t.Fatalf("unblocker calls after failed CAPTCHA = %d, want 0", unblocker.calls)
+	}
+
+	success.Store(true)
+	if rr := post("visitor-token"); rr.Code != http.StatusOK {
+		t.Fatalf("retry after failed CAPTCHA status = %d, body=%s", rr.Code, rr.Body.String())
+	}
+	if unblocker.calls != 1 {
+		t.Fatalf("unblocker calls after retry = %d, want 1", unblocker.calls)
 	}
 }
 

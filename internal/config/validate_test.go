@@ -384,6 +384,24 @@ func TestValidateChallenge(t *testing.T) {
 			t.Errorf("expected error for difficulty=-1; results=%v", results)
 		}
 	})
+
+	t.Run("listen_port negative", func(t *testing.T) {
+		cfg := base()
+		cfg.Challenge.ListenPort = -1
+		results := Validate(cfg)
+		if !hasResult(results, "error", "challenge.listen_port") {
+			t.Errorf("expected error for listen_port=-1; results=%v", results)
+		}
+	})
+
+	t.Run("listen_port above tcp range", func(t *testing.T) {
+		cfg := base()
+		cfg.Challenge.ListenPort = 65536
+		results := Validate(cfg)
+		if !hasResult(results, "error", "challenge.listen_port") {
+			t.Errorf("expected error for listen_port=65536; results=%v", results)
+		}
+	})
 }
 
 func TestValidateEmailAV(t *testing.T) {

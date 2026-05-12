@@ -81,3 +81,13 @@ func familyForListenAddr(addr string) portGateFamily {
 	}
 	return portGateFamily{v6: true}
 }
+
+func portGateFamilyAcceptsIP(fam portGateFamily, ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	if ip.To4() != nil {
+		return fam.v4
+	}
+	return fam.v6
+}
