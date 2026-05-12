@@ -108,10 +108,13 @@ func TestDiffAllSafeFieldsClassifiedSafe(t *testing.T) {
 	}{
 		{"thresholds", func(c *Config) { c.Thresholds.MailQueueWarn++ }},
 		{"alerts", func(c *Config) { c.Alerts.MaxPerHour++ }},
+		{"detection", func(c *Config) { c.Detection.DirectSMTPEgress.Enabled = true }},
 		{"suppressions", func(c *Config) { c.Suppressions.TrustedCountries = append(c.Suppressions.TrustedCountries, "RO") }},
 		{"auto_response", func(c *Config) { c.AutoResponse.NetBlockThreshold++ }},
+		{"bpf_enforcement", func(c *Config) { c.BPFEnforcement.DirectSMTPEgress = true }},
 		{"reputation", func(c *Config) { c.Reputation.Whitelist = append(c.Reputation.Whitelist, "10.0.0.1") }},
 		{"email_protection", func(c *Config) { c.EmailProtection.RateWindowMin++ }},
+		{"disabled_checks", func(c *Config) { c.DisabledChecks = append(c.DisabledChecks, "webshell") }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -129,6 +132,71 @@ func TestDiffAllSafeFieldsClassifiedSafe(t *testing.T) {
 				t.Errorf("%s should not require restart", tc.name)
 			}
 		})
+	}
+}
+
+func TestHotReloadManifestMatchesConfiguredPolicy(t *testing.T) {
+	got := map[string]ReloadPolicy{}
+	for _, policy := range HotReloadManifest() {
+		got[policy.Field] = policy
+	}
+	wantSafe := []string{
+		"alerts",
+		"thresholds",
+		"detection",
+		"suppressions",
+		"auto_response",
+		"bpf_enforcement",
+		"reputation",
+		"email_protection",
+		"disabled_checks",
+	}
+	for _, field := range wantSafe {
+		policy, ok := got[field]
+		if !ok {
+			t.Fatalf("safe field %q missing from manifest", field)
+		}
+		if policy.Tag != TagSafe || policy.RestartRequired {
+			t.Errorf("manifest[%s] = %+v, want safe without restart", field, policy)
+		}
+	}
+
+	wantRestart := []string{
+		"hostname",
+		"infra_ips",
+		"state_path",
+		"challenge",
+		"php_shield",
+		"signatures",
+		"webui",
+		"email_av",
+		"firewall",
+		"geoip",
+		"modsec_error_log",
+		"modsec",
+		"web_server",
+		"account_roots",
+		"performance",
+		"cloudflare",
+		"c2_blocklist",
+		"backdoor_ports",
+		"retention",
+		"sentry",
+		"mail_logs",
+		"updates",
+		"incidents",
+	}
+	if len(got) != len(wantSafe)+len(wantRestart) {
+		t.Fatalf("manifest field count = %d, want %d: %+v", len(got), len(wantSafe)+len(wantRestart), got)
+	}
+	for _, field := range wantRestart {
+		policy, ok := got[field]
+		if !ok {
+			t.Fatalf("restart field %q missing from manifest", field)
+		}
+		if policy.Tag != TagRestart || !policy.RestartRequired {
+			t.Errorf("manifest[%s] = %+v, want restart required", field, policy)
+		}
 	}
 }
 

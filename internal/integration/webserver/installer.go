@@ -355,6 +355,12 @@ func renderConfigFrom(cfg *config.Config) RenderConfig {
 	return rc
 }
 
+// RenderConfigFromConfig exposes the daemon-to-template projection for
+// diagnostics that need to validate the same inputs before install.
+func RenderConfigFromConfig(cfg *config.Config) RenderConfig {
+	return renderConfigFrom(cfg)
+}
+
 func (i *Installer) templateData() templateData {
 	mapPath := strings.TrimSpace(i.Config.ChallengeMapPath)
 	if mapPath == "" {
@@ -425,6 +431,12 @@ func validateChallengePublicURL(rc RenderConfig) error {
 		return ErrLoopbackPublicURL
 	}
 	return nil
+}
+
+// ValidateChallengePublicURL applies the same direct-redirect validation used
+// by Install so diagnostics and tests do not drift from installer behavior.
+func ValidateChallengePublicURL(rc RenderConfig) error {
+	return validateChallengePublicURL(rc)
 }
 
 func isLoopbackListenAddr(addr string) bool {

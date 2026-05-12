@@ -29,11 +29,41 @@ type Snapshot struct {
 	// Non-zero only when dry_run has been active since the last daemon start.
 	DryRunBlocks int `json:"dry_run_blocks,omitempty"`
 
+	// Automation is the operator-facing safety surface for automatic action
+	// rollout. It groups dry-run state, challenge routing, pending firewall
+	// rollback, and the last recorded automation action in one stable payload.
+	Automation AutomationStatus `json:"automation,omitempty"`
+
 	// Update reports whether a newer CSM release is available upstream.
 	// Populated by internal/updatecheck. Zero value means the checker has
 	// not yet completed a poll (very early startup) or is disabled in
 	// config.
 	Update UpdateInfo `json:"update,omitempty"`
+}
+
+// AutomationStatus summarizes the live automation safety state. It is
+// intentionally compact so status clients can decide whether the host is
+// observe-only, actively mutating the firewall, or waiting for operator
+// confirmation after a tentative firewall apply.
+type AutomationStatus struct {
+	AutoResponseEnabled           bool              `json:"auto_response_enabled"`
+	AutoResponseBlockIPs          bool              `json:"auto_response_block_ips"`
+	AutoResponseDryRun            bool              `json:"auto_response_dry_run"`
+	DryRunBlocks                  int               `json:"dry_run_blocks"`
+	ChallengeEnabled              bool              `json:"challenge_enabled"`
+	ChallengePortGateEnabled      bool              `json:"challenge_port_gate_enabled"`
+	ChallengePortGateActive       bool              `json:"challenge_port_gate_active"`
+	ChallengePending              int               `json:"challenge_pending"`
+	FirewallRollbackPending       bool              `json:"firewall_rollback_pending"`
+	FirewallRollbackSecondsRemain int64             `json:"firewall_rollback_seconds_remaining,omitempty"`
+	LastAction                    *AutomationAction `json:"last_action,omitempty"`
+}
+
+// AutomationAction is the newest action-like finding CSM recorded.
+type AutomationAction struct {
+	Check     string    `json:"check"`
+	Message   string    `json:"message"`
+	Timestamp time.Time `json:"timestamp"`
 }
 
 // UpdateInfo mirrors updatecheck.Info for the health snapshot. Kept

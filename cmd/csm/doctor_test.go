@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -122,4 +124,115 @@ func TestBuildDoctorReport_EmptyWatcherRegistryFails(t *testing.T) {
 	if !strings.Contains(report.Human(), "watchers registered") {
 		t.Fatalf("expected watcher registry failure, got %s", report.Human())
 	}
+}
+
+func TestBuildChallengeDoctorReport_DisabledWarnsWithoutLiveChecks(t *testing.T) {
+	called := false
+	report := buildChallengeDoctorReport(
+		func() (*config.Config, error) { return &config.Config{}, nil },
+		func(*config.Config) []DoctorCheck {
+			called = true
+			return nil
+		},
+		func(*config.Config) DoctorCheck {
+			called = true
+			return DoctorCheck{}
+		},
+	)
+	if called {
+		t.Fatal("disabled challenge should not probe webserver or gate")
+	}
+	if report.OverallStatus != "warn" {
+		t.Fatalf("OverallStatus = %q, want warn", report.OverallStatus)
+	}
+}
+
+func TestBuildChallengeDoctorReport_OK(t *testing.T) {
+	cert := writeDoctorTempFile(t, "cert.pem")
+	key := writeDoctorTempFile(t, "key.pem")
+	cfg := &config.Config{}
+	cfg.Challenge.Enabled = true
+	cfg.Challenge.ListenAddr = "0.0.0.0"
+	cfg.Challenge.ListenPort = 8439
+	cfg.Challenge.PublicURL = "https://server.example.com:8439/challenge"
+	cfg.Challenge.TLSCert = cert
+	cfg.Challenge.TLSKey = key
+	cfg.Challenge.PortGate.Enabled = true
+
+	report := buildChallengeDoctorReport(
+		func() (*config.Config, error) { return cfg, nil },
+		func(*config.Config) []DoctorCheck {
+			return []DoctorCheck{
+				{Name: "challenge webserver snippet", Status: "ok"},
+				{Name: "challenge webserver configtest", Status: "ok"},
+			}
+		},
+		func(*config.Config) DoctorCheck {
+			return DoctorCheck{Name: "challenge gate endpoint", Status: "ok"}
+		},
+	)
+	if report.OverallStatus != "ok" {
+		t.Fatalf("OverallStatus = %q, want ok\n%s", report.OverallStatus, report.Human())
+	}
+}
+
+func TestBuildChallengeDoctorReport_PublicURLFailureIsFatal(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Challenge.Enabled = true
+	cfg.Challenge.ListenAddr = "0.0.0.0"
+	cfg.Challenge.ListenPort = 8439
+	cfg.Challenge.PortGate.Enabled = true
+
+	report := buildChallengeDoctorReport(
+		func() (*config.Config, error) { return cfg, nil },
+		func(*config.Config) []DoctorCheck { return nil },
+		func(*config.Config) DoctorCheck { return DoctorCheck{Name: "challenge gate endpoint", Status: "ok"} },
+	)
+	if report.OverallStatus != "fail" {
+		t.Fatalf("OverallStatus = %q, want fail", report.OverallStatus)
+	}
+	if !strings.Contains(report.Human(), "challenge public URL") {
+		t.Fatalf("expected public URL failure, got %s", report.Human())
+	}
+}
+
+func TestChallengeGateProbeURLUsesConfiguredTLS(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Challenge.ListenAddr = "::"
+	cfg.Challenge.ListenPort = 8439
+	cfg.Challenge.TLSCert = "/tmp/cert.pem"
+	cfg.Challenge.TLSKey = "/tmp/key.pem"
+
+	got, err := challengeGateProbeURL(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "https://[::1]:8439/challenge/gate" {
+		t.Fatalf("probe URL = %q, want https://[::1]:8439/challenge/gate", got)
+	}
+}
+
+func TestChallengeGateProbeURLIgnoresWebUITLSOnLoopback(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Challenge.ListenAddr = "127.0.0.1"
+	cfg.Challenge.ListenPort = 8439
+	cfg.WebUI.TLSCert = "/tmp/webui-cert.pem"
+	cfg.WebUI.TLSKey = "/tmp/webui-key.pem"
+
+	got, err := challengeGateProbeURL(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "http://127.0.0.1:8439/challenge/gate" {
+		t.Fatalf("probe URL = %q, want http://127.0.0.1:8439/challenge/gate", got)
+	}
+}
+
+func writeDoctorTempFile(t *testing.T, name string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte("test"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

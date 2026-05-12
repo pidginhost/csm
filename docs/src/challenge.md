@@ -74,6 +74,11 @@ Port-gate rules follow the configured listener address family. An IPv6-only
 listener gates only IPv6 clients; IPv4 challenge entries stay in the
 webserver map but are ignored by the IPv6 nftables set.
 
+Run `csm doctor challenge` after changing these fields. The command checks
+the public URL shape, TLS files, port-gate setting, installed webserver
+snippet version, webserver configtest, and the live `/challenge/gate`
+endpoint. Add `--json` for automation.
+
 ### TLS
 
 The challenge listener serves HTTPS when challenge-specific TLS material is

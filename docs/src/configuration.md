@@ -526,9 +526,10 @@ depending on which fields you touch.
 
 ### Fast path: SIGHUP reload (safe fields only)
 
-For fields tagged as hot-reload-safe (`thresholds`, `alerts`,
-`suppressions`, `auto_response`, `reputation`, `email_protection`),
-the daemon can accept the change without a restart:
+For fields tagged as hot-reload-safe (`alerts`, `thresholds`,
+`detection`, `suppressions`, `auto_response`, `bpf_enforcement`,
+`reputation`, `email_protection`, `disabled_checks`), the daemon can
+accept the change without a restart:
 
 ```bash
 sudo cp /etc/csm/csm.yaml /etc/csm/csm.yaml.bak-$(date +%s)
@@ -547,12 +548,15 @@ the live config and re-signs `integrity.config_hash` on disk. The
 next check tick sees the new thresholds; fanotify marks are not
 dropped.
 
-The tagged-safe top-level fields are `thresholds`, `alerts`,
-`suppressions`, `auto_response`, `reputation`, and
-`email_protection`. Changes to their sub-keys are picked up on the
-next tick by the periodic scanners, the auto-response helpers
-(block/kill/quarantine/challenge/permission-fix), alert dispatch,
-and the heartbeat.
+The tagged-safe top-level fields are `alerts`, `thresholds`,
+`detection`, `suppressions`, `auto_response`, `bpf_enforcement`,
+`reputation`, `email_protection`, and `disabled_checks`. The Settings
+API derives its restart hints from the same manifest that drives
+`config.Diff`, so UI hints and SIGHUP behavior cannot drift silently.
+Changes to their sub-keys are picked up on the next tick by the
+periodic scanners, the auto-response helpers
+(block/kill/quarantine/challenge/permission-fix), alert dispatch, and
+the heartbeat.
 
 Two sub-keys are exceptions. They live under a safe-tagged parent
 but seed a long-lived in-memory structure at daemon startup; the

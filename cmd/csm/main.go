@@ -187,7 +187,7 @@ Commands:
   incidents     List, show, and update correlated security incidents
   enable        Enable optional features (--php-shield)
   disable       Disable optional features (--php-shield)
-  doctor        Run a config + daemon + watchers + store sanity check (--json for machine output)
+  doctor        Run health diagnostics (add "challenge" for challenge setup; --json for machine output)
   backup <out>  Bundle csm.yaml + /etc/csm/conf.d + state into a tar.gz archive
   restore <archive>  Extract backup archive into csm.yaml + conf.d + state
   webserver-integration  Install/upgrade/remove challenge reverse-proxy snippets
@@ -606,6 +606,27 @@ func printStatusHuman(s control.StatusResult) {
 	fmt.Printf("latest findings:  %d\n", s.LatestFindings)
 	fmt.Printf("history count:    %d\n", s.HistoryCount)
 	fmt.Printf("dropped alerts:   %d\n", s.DroppedAlerts)
+	if s.Snapshot != nil {
+		printAutomationStatusHuman(s.Snapshot.Automation)
+	}
+}
+
+func printAutomationStatusHuman(a health.AutomationStatus) {
+	fmt.Printf("auto-response:    enabled=%t block_ips=%t dry_run=%t dry_run_blocks=%d\n",
+		a.AutoResponseEnabled, a.AutoResponseBlockIPs, a.AutoResponseDryRun, a.DryRunBlocks)
+	fmt.Printf("challenge:        enabled=%t pending=%d port_gate=%t active=%t\n",
+		a.ChallengeEnabled, a.ChallengePending, a.ChallengePortGateEnabled, a.ChallengePortGateActive)
+	if a.FirewallRollbackPending {
+		fmt.Printf("firewall rollback: pending (%ds remaining)\n", a.FirewallRollbackSecondsRemain)
+	} else {
+		fmt.Println("firewall rollback: none")
+	}
+	if a.LastAction != nil {
+		fmt.Printf("last automation:  %s at %s - %s\n",
+			a.LastAction.Check,
+			a.LastAction.Timestamp.UTC().Format(time.RFC3339),
+			a.LastAction.Message)
+	}
 }
 
 func emitOfflineSnapshot() {

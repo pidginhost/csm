@@ -155,6 +155,8 @@ func (s *Server) handleHistoryRedirect(w http.ResponseWriter, r *http.Request) {
 	if qs := r.URL.RawQuery; qs != "" {
 		target = "/findings?tab=history&" + qs
 	}
+	// #nosec G710 -- target always starts with the fixed same-origin
+	// /findings path; the incoming query can only add parameters.
 	http.Redirect(w, r, target, http.StatusFound)
 }
 

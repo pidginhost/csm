@@ -17,6 +17,7 @@ type fakeProvider struct {
 	bpfEnforcementActive bool
 	historyCount         int
 	dryRunBlocks         int
+	automation           AutomationStatus
 }
 
 func (f *fakeProvider) Hostname() string                 { return f.hostname }
@@ -34,7 +35,13 @@ func (f *fakeProvider) BaselineAt() time.Time            { return time.Time{} }
 func (f *fakeProvider) ConfigHash() string               { return "abc" }
 func (f *fakeProvider) BinaryHash() string               { return "def" }
 func (f *fakeProvider) DryRunBlocksCount() int           { return f.dryRunBlocks }
-func (f *fakeProvider) UpdateInfo() UpdateInfo           { return UpdateInfo{} }
+func (f *fakeProvider) AutomationStatus() AutomationStatus {
+	if f.automation == (AutomationStatus{}) {
+		return AutomationStatus{DryRunBlocks: f.dryRunBlocks}
+	}
+	return f.automation
+}
+func (f *fakeProvider) UpdateInfo() UpdateInfo { return UpdateInfo{} }
 
 func TestBuild_PopulatesAllFields(t *testing.T) {
 	p := &fakeProvider{
@@ -47,6 +54,12 @@ func TestBuild_PopulatesAllFields(t *testing.T) {
 		blocklist:     17,
 		incidentsOpen: 5,
 		dryRunBlocks:  4,
+		automation: AutomationStatus{
+			AutoResponseEnabled: true,
+			AutoResponseDryRun:  true,
+			DryRunBlocks:        4,
+			ChallengePending:    2,
+		},
 	}
 	snap := Build(p, "2.12.0", []string{"webhook.phpanel"})
 	if snap.Hostname != "test.host" {
@@ -69,6 +82,9 @@ func TestBuild_PopulatesAllFields(t *testing.T) {
 	}
 	if snap.DryRunBlocks != 4 {
 		t.Fatalf("dry-run block count mismatch: %d", snap.DryRunBlocks)
+	}
+	if !snap.Automation.AutoResponseEnabled || snap.Automation.ChallengePending != 2 {
+		t.Fatalf("automation status not propagated: %+v", snap.Automation)
 	}
 }
 

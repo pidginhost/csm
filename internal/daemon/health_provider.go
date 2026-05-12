@@ -2,10 +2,12 @@ package daemon
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/bpf"
+	"github.com/pidginhost/csm/internal/firewall/rollback"
 	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/integrity"
 	csmlog "github.com/pidginhost/csm/internal/log"
@@ -154,6 +156,73 @@ func (d *Daemon) DryRunBlocksCount() int {
 		return 0
 	}
 	return s.DryRunBlocksCount()
+}
+
+// AutomationStatus implements health.Provider.
+func (d *Daemon) AutomationStatus() health.AutomationStatus {
+	cfg := d.currentCfg()
+	out := health.AutomationStatus{
+		DryRunBlocks: d.DryRunBlocksCount(),
+		LastAction:   d.lastAutomationAction(),
+	}
+	if cfg != nil {
+		out.AutoResponseEnabled = cfg.AutoResponse.Enabled
+		out.AutoResponseBlockIPs = cfg.AutoResponse.BlockIPs
+		out.AutoResponseDryRun = cfg.AutoResponseDryRunEnabled()
+		out.ChallengeEnabled = cfg.Challenge.Enabled
+		out.ChallengePortGateEnabled = cfg.Challenge.PortGate.Enabled
+	}
+	if d.ipList != nil {
+		out.ChallengePending = d.ipList.Count()
+	}
+	out.ChallengePortGateActive = d.challengeGate != nil
+	if mgr := rollback.Global(); mgr != nil {
+		st := mgr.Status()
+		out.FirewallRollbackPending = st.Pending
+		out.FirewallRollbackSecondsRemain = st.SecondsRemaining
+	}
+	return out
+}
+
+func (d *Daemon) lastAutomationAction() *health.AutomationAction {
+	if d.store == nil {
+		return nil
+	}
+	var (
+		best alert.Finding
+		ok   bool
+	)
+	consider := func(findings []alert.Finding) {
+		for _, f := range findings {
+			if !isAutomationActionCheck(f.Check) {
+				continue
+			}
+			if !ok || f.Timestamp.After(best.Timestamp) {
+				best = f
+				ok = true
+			}
+		}
+	}
+	consider(d.store.LatestFindings())
+	if history, _ := d.store.ReadHistory(100, 0); len(history) > 0 {
+		consider(history)
+	}
+	if !ok {
+		return nil
+	}
+	return &health.AutomationAction{
+		Check:     best.Check,
+		Message:   best.Message,
+		Timestamp: best.Timestamp,
+	}
+}
+
+func isAutomationActionCheck(check string) bool {
+	switch check {
+	case "auto_block", "auto_response", "challenge_route":
+		return true
+	}
+	return strings.HasPrefix(check, "email_php_relay_action_")
 }
 
 // UpdateInfo implements health.Provider. Returns the latest cached

@@ -37,6 +37,26 @@ func TestEverySectionHasYAMLPath(t *testing.T) {
 	}
 }
 
+func TestSettingsRestartHintsMatchHotReloadManifest(t *testing.T) {
+	policies := map[string]config.ReloadPolicy{}
+	for _, policy := range config.HotReloadManifest() {
+		policies[policy.Field] = policy
+	}
+
+	for _, section := range AllSettingsSections() {
+		policy, ok := policies[section.YAMLPath]
+		if !ok {
+			continue
+		}
+		if section.ReloadTag != policy.Tag {
+			t.Errorf("%s reload_tag = %q, want %q", section.ID, section.ReloadTag, policy.Tag)
+		}
+		if section.Restart != policy.RestartRequired {
+			t.Errorf("%s restart_hint = %v, want %v", section.ID, section.Restart, policy.RestartRequired)
+		}
+	}
+}
+
 func TestSchemaCoversAllInScopeConfigFields(t *testing.T) {
 	inScope := map[string]string{
 		"alerts": "alerts", "thresholds": "thresholds",

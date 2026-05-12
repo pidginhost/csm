@@ -56,6 +56,47 @@ type Change struct {
 	Tag string
 }
 
+// ReloadPolicy is the top-level hot-reload manifest exposed to tests and
+// operator surfaces that need to explain whether a Settings section can be
+// applied live or waits for a restart.
+type ReloadPolicy struct {
+	Field           string
+	Tag             string
+	RestartRequired bool
+}
+
+// HotReloadManifest returns every operator-owned top-level Config field with
+// its effective reload policy. Fields without an explicit supported tag are
+// classified restart-required, matching Diff and RestartRequired.
+func HotReloadManifest() []ReloadPolicy {
+	cfgType := reflect.TypeOf(Config{})
+	policies := make([]ReloadPolicy, 0, cfgType.NumField())
+	for i := 0; i < cfgType.NumField(); i++ {
+		field := cfgType.Field(i)
+		if !field.IsExported() || isReloadManifestIgnoredRoot(field) {
+			continue
+		}
+		name := yamlFieldName(field)
+		if name == "" || name == "-" {
+			continue
+		}
+		tag := field.Tag.Get("hotreload")
+		if tag != TagSafe && tag != TagRestart {
+			tag = TagRestart
+		}
+		policies = append(policies, ReloadPolicy{
+			Field:           name,
+			Tag:             tag,
+			RestartRequired: tag != TagSafe,
+		})
+	}
+	return policies
+}
+
+func isReloadManifestIgnoredRoot(field reflect.StructField) bool {
+	return field.Name == "ConfigFile" || field.Name == "ConfigDir" || field.Name == "Integrity"
+}
+
 // Diff reports which Config fields differ between old and new,
 // classified by hotreload tag.
 //
@@ -105,7 +146,7 @@ func diffStruct(oldV, newV reflect.Value, parentPath, parentTag string) []Change
 		}
 		// ConfigFile / ConfigDir / Integrity are daemon-managed process
 		// metadata, not operator policy fields.
-		if parentPath == "" && (field.Name == "ConfigFile" || field.Name == "ConfigDir" || field.Name == "Integrity") {
+		if parentPath == "" && isReloadManifestIgnoredRoot(field) {
 			continue
 		}
 

@@ -33,8 +33,8 @@
 | `csm uninstall` | Clean removal |
 | `csm baseline` | Full server scan via the daemon, records current state as known-good. Takes 5-10 min on large servers. Required on first install. Add `--confirm` when existing history would be cleared. The daemon must be running. |
 | `csm rehash` | Update binary/config hashes without scanning. Use after config edits. Run twice (circular hash). |
-| `csm status` | Show current state, last run, active findings. Add `--json` for the full health snapshot (watchers, severity counts, store health, blocklist size, capabilities, version, hashes). |
-| `csm doctor` | Config + daemon + watchers + store sanity check. Emits suggested-fix strings for each failed step. Add `--json` for machine-readable output. |
+| `csm status` | Show current state, last run, active findings, and automation rollout state. Add `--json` for the full health snapshot (watchers, severity counts, store health, blocklist size, capabilities, version, hashes, automation). |
+| `csm doctor` | Config + daemon + watchers + store sanity check. `csm doctor challenge` checks challenge public URL, TLS, port gate, webserver snippets, configtest, and the live `/challenge/gate` endpoint. Add `--json` for machine-readable output. |
 | `csm validate` | Validate config (`--deep` for connectivity probes) |
 | `csm config show` | Display config with secrets redacted |
 | `csm config schema --json` | Print a JSON Schema reflected from the `Config` struct. Use for CI validation of conf.d drop-ins or panel-side editor schemas. |

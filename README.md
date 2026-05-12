@@ -120,8 +120,9 @@ YARA-X (`-tags yara`), email AV tooling, MaxMind GeoIP data.
 ```
 csm daemon                    run the daemon
 csm check                     one-shot scan, no auto-response
-csm status [--json]           current state and findings
+csm status [--json]           current state, findings, automation rollout state
 csm doctor [--json]           config + daemon + watchers + store sanity check
+csm doctor challenge [--json] challenge setup, snippets, and gate endpoint check
 csm baseline                  mark current state as known-good via the daemon
 csm scan <user>               scan a single cPanel account
 csm firewall ...              IP/subnet bans, port allows, GeoIP

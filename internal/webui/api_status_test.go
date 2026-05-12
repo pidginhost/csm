@@ -12,13 +12,16 @@ import (
 
 type statusFakeProvider struct {
 	bpfEnforcementActive bool
+	latestScan           time.Time
+	baselineAt           time.Time
+	automation           health.AutomationStatus
 	update               health.UpdateInfo
 }
 
 func (statusFakeProvider) Hostname() string                 { return "h" }
 func (statusFakeProvider) StartedAt() time.Time             { return time.Now().Add(-time.Hour) }
-func (statusFakeProvider) LatestScan() time.Time            { return time.Time{} }
-func (statusFakeProvider) BaselineAt() time.Time            { return time.Time{} }
+func (f statusFakeProvider) LatestScan() time.Time          { return f.latestScan }
+func (f statusFakeProvider) BaselineAt() time.Time          { return f.baselineAt }
 func (statusFakeProvider) WatcherStatuses() map[string]bool { return map[string]bool{"fanotify": true} }
 func (statusFakeProvider) StoreHealthy() bool               { return true }
 func (statusFakeProvider) StoreSizeMB() float64             { return 1.5 }
@@ -30,7 +33,13 @@ func (statusFakeProvider) HistoryCount() int                { return 100 }
 func (statusFakeProvider) ConfigHash() string               { return "cfg" }
 func (statusFakeProvider) BinaryHash() string               { return "bin" }
 func (statusFakeProvider) DryRunBlocksCount() int           { return 3 }
-func (f statusFakeProvider) UpdateInfo() health.UpdateInfo  { return f.update }
+func (f statusFakeProvider) AutomationStatus() health.AutomationStatus {
+	if f.automation == (health.AutomationStatus{}) {
+		return health.AutomationStatus{AutoResponseDryRun: true, DryRunBlocks: 3}
+	}
+	return f.automation
+}
+func (f statusFakeProvider) UpdateInfo() health.UpdateInfo { return f.update }
 
 var _ health.Provider = statusFakeProvider{}
 
@@ -74,6 +83,13 @@ func TestApiStatus_FullSnapshot(t *testing.T) {
 	}
 	if got["dry_run_blocks"].(float64) != 3 {
 		t.Fatalf("expected dry_run_blocks=3, got %v", got["dry_run_blocks"])
+	}
+	automation, ok := got["automation"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected automation field present, got %T", got["automation"])
+	}
+	if automation["auto_response_dry_run"] != true || automation["dry_run_blocks"].(float64) != 3 {
+		t.Fatalf("unexpected automation payload: %#v", automation)
 	}
 	update, ok := got["update"].(map[string]interface{})
 	if !ok {

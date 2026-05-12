@@ -34,7 +34,10 @@ func (s *stubComponentsProvider) HistoryCount() int              { return 0 }
 func (s *stubComponentsProvider) ConfigHash() string             { return "" }
 func (s *stubComponentsProvider) BinaryHash() string             { return "" }
 func (s *stubComponentsProvider) DryRunBlocksCount() int         { return 0 }
-func (s *stubComponentsProvider) UpdateInfo() health.UpdateInfo  { return health.UpdateInfo{} }
+func (s *stubComponentsProvider) AutomationStatus() health.AutomationStatus {
+	return health.AutomationStatus{}
+}
+func (s *stubComponentsProvider) UpdateInfo() health.UpdateInfo { return health.UpdateInfo{} }
 
 // componentsTestServer wires a test Server with a stub provider and the
 // supplied watcher state. Findings seeded via the latest set so the

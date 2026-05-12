@@ -130,6 +130,13 @@ func (l *IPList) Contains(ip string) bool {
 	return ok
 }
 
+// Count returns the number of IPs currently waiting on a challenge.
+func (l *IPList) Count() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.ips)
+}
+
 // ExpiredEntries removes and returns all expired entries for escalation.
 // The caller is expected to hard-block these IPs.
 func (l *IPList) ExpiredEntries() []ExpiredEntry {

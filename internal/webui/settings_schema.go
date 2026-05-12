@@ -1,5 +1,7 @@
 package webui
 
+import "github.com/pidginhost/csm/internal/config"
+
 // OptionGroup is an ordered label + values pair used to render grouped
 // multi-select options (e.g. "Authentication & Login" → [cpanel_login, ...]).
 type OptionGroup struct {
@@ -44,13 +46,14 @@ type SettingsField struct {
 // "bell" for "ti ti-bell"); Group is the nav category the section lives
 // in ("Alerting", "Detection", "Integrations", "Ops").
 type SettingsSection struct {
-	ID       string          `json:"id"`
-	Title    string          `json:"title"`
-	YAMLPath string          `json:"yaml_path"`
-	Restart  bool            `json:"restart_hint"`
-	Icon     string          `json:"icon,omitempty"`
-	Group    string          `json:"group,omitempty"`
-	Fields   []SettingsField `json:"fields"`
+	ID        string          `json:"id"`
+	Title     string          `json:"title"`
+	YAMLPath  string          `json:"yaml_path"`
+	Restart   bool            `json:"restart_hint"`
+	ReloadTag string          `json:"reload_tag,omitempty"`
+	Icon      string          `json:"icon,omitempty"`
+	Group     string          `json:"group,omitempty"`
+	Fields    []SettingsField `json:"fields"`
 }
 
 // Section groups for the sidebar. Order here defines order in the UI.
@@ -463,7 +466,7 @@ func SettingsSectionIDs() []string {
 func LookupSettingsSection(id string) (SettingsSection, bool) {
 	for _, s := range settingsSections {
 		if s.ID == id {
-			return s, true
+			return withReloadPolicy(s), true
 		}
 	}
 	return SettingsSection{}, false
@@ -473,6 +476,19 @@ func LookupSettingsSection(id string) (SettingsSection, bool) {
 // read-only consumers such as the dashboard navigation.
 func AllSettingsSections() []SettingsSection {
 	out := make([]SettingsSection, len(settingsSections))
-	copy(out, settingsSections)
+	for i, s := range settingsSections {
+		out[i] = withReloadPolicy(s)
+	}
 	return out
+}
+
+func withReloadPolicy(section SettingsSection) SettingsSection {
+	for _, policy := range config.HotReloadManifest() {
+		if policy.Field == section.YAMLPath {
+			section.Restart = policy.RestartRequired
+			section.ReloadTag = policy.Tag
+			break
+		}
+	}
+	return section
 }

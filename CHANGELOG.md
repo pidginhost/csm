@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `csm doctor challenge` checks challenge public URL, TLS files, port-gate setup, webserver snippets, configtest, and the live gate endpoint.
+- Status health now includes automation rollout state: dry-run block count, challenge pending count, port-gate activity, pending firewall rollback, and the last automation action.
+
+### Changed
+
+- Settings restart hints now come from the same hot-reload manifest used by config diffing, and API contract tests cover the phpanel-facing status, components, email groups, and ModSecurity JSON shapes.
+
 ### Fixed
 
 - Challenge hardening now rejects invalid listener ports early, lets visitors retry after a failed CAPTCHA response, and keeps IPv6-only port gates from touching IPv4 entries.
