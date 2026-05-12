@@ -682,6 +682,48 @@ func TestAutoBlock_SuspiciousGeoDoesNotHardBlockLoginIP(t *testing.T) {
 	}
 }
 
+// A single direct cPanel login from a non-infra IP is a Warning-level
+// audit row, not brute evidence. Even with block_cpanel_logins=true the
+// auto-blocker must not slam the firewall on one event; that turns a
+// legitimate customer logging in from a new country into a 24h lockout.
+// Thresholded checks (multi_ip_login, webmail/api bruteforce, etc.)
+// stay blockable under block_cpanel_logins.
+func TestAutoBlock_CpanelLoginRealtimeDoesNotBlockSingleLogin(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.AutoResponse.BlockCpanelLogins = true
+	cfg.StatePath = t.TempDir()
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := fwBlocker
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+
+	findings := []alert.Finding{
+		{
+			Check:    "cpanel_login_realtime",
+			Message:  "cPanel direct login from non-infra IP: 203.0.113.7 (account: bob, method: direct form login)",
+			SourceIP: "203.0.113.7",
+			TenantID: "bob",
+		},
+		{
+			Check:    "cpanel_login",
+			Message:  "cPanel direct login from non-infra IP: 198.51.100.9 (account: alice)",
+			SourceIP: "198.51.100.9",
+			TenantID: "alice",
+		},
+	}
+	actions := AutoBlockIPs(cfg, findings)
+
+	if len(blocker.blocked) != 0 {
+		t.Fatalf("single cpanel_login finding blocked IPs = %v, want none", blocker.blocked)
+	}
+	if len(actions) != 0 {
+		t.Fatalf("single cpanel_login findings actions = %+v, want none", actions)
+	}
+}
+
 func TestAutoBlock_AccountSprayFindingsRemainVisibilityOnly(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.AutoResponse.Enabled = true

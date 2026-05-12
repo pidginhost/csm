@@ -19,8 +19,8 @@ import (
 //
 // The realtime watcher in cloud_relay.go only catches traffic arriving
 // AFTER CSM starts. A credential-abuse spam run can go for weeks before
-// an operator notices (see: cluster6 Apr 2026 incident — wizard-design
-// ran 230 sends over 20 days before being flagged). This scanner replays
+// an operator notices (a real incident saw 230 outbound sends from one
+// compromised account over 20 days before being flagged). This scanner replays
 // the last N hours of exim_mainlog through the same rule, so on CSM
 // startup any in-progress or recent compromise is surfaced immediately.
 //

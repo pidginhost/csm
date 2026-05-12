@@ -9,8 +9,8 @@ import (
 )
 
 // incidentGroupsDefaultLimit / Max bound how many group rows the UI
-// receives. The cluster6 prod data point is ~12 attacker-IP rows; the
-// cap of 200 leaves headroom for the long tail without unbounded
+// receives. A typical busy production host emits ~12 attacker-IP rows;
+// the cap of 200 leaves headroom for the long tail without unbounded
 // payload size.
 const (
 	incidentGroupsDefaultLimit = 50

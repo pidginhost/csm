@@ -188,7 +188,7 @@ auto_response:
   block_ips: false                      # block attacker IPs via firewall
   block_expiry: "24h"                   # duration for temp blocks (e.g. "24h", "12h")
   enforce_permissions: false            # auto-chmod 644 world/group-writable PHP files
-  block_cpanel_logins: false            # block IPs on cPanel/webmail login alerts
+  block_cpanel_logins: false            # block IPs on cPanel/webmail/FTP/API thresholded brute findings (multi-IP login, webmail/API brute, FTP brute). Single direct cPanel form logins stay audit-only regardless of this flag.
   netblock: false                       # auto-block /24 subnets
   netblock_threshold: 3                 # IPs from same /24 before subnet block
   permblock: false                      # promote temp blocks to permanent

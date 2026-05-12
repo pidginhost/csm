@@ -205,7 +205,7 @@ func TestCheckWAFStatusCPanelLiteSpeedVendorDirBackstopsEmptyWhmapi1(t *testing.
 	}
 }
 
-// Regression for the cluster6 false positive at 01:10:27. Same race as
+// Regression for the production false positive at 01:10:27. Same race as
 // the LiteSpeed-backstop test, but the filesystem ALSO returned empty
 // during cPanel's modsec_assemble window (vendor dir is rewritten in
 // place, no temp-rename atomicity). On cPanel+LiteSpeed the check

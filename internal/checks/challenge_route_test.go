@@ -154,8 +154,8 @@ func TestChallengeRoute_AdminPanelIsHardBlocked(t *testing.T) {
 // Regression guard: routing post-auth audit events or non-browser
 // protocols to the PoW challenge produces guaranteed timeout
 // hard-blocks because the IP has no browser session for the gate to
-// catch. Real-world fallout on cluster6 (2026-05-11): legitimate
-// customer cPanel logins from non-RO IPs and recursive DNS resolver
+// catch. Real-world fallout observed in production: legitimate
+// customer cPanel logins from non-local IPs and recursive DNS resolver
 // IPs both ended up in 24h temporary blocks.
 func TestChallengeRoute_AuditAndNonBrowserChecksAreNotChallengeable(t *testing.T) {
 	for _, check := range []string{

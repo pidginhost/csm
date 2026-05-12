@@ -561,10 +561,12 @@ func TestAutoBlockIPs_CpanelLoginBlockEnabled(t *testing.T) {
 	cfg.AutoResponse.BlockIPs = true
 	cfg.AutoResponse.BlockCpanelLogins = true
 	cfg.AutoResponse.BlockExpiry = "1h"
-	findings := []alert.Finding{{Check: "cpanel_login", Severity: alert.Critical, Message: "Suspicious cPanel login from 203.0.113.50"}}
+	// cpanel_multi_ip_login is a thresholded brute signal so the block_cpanel_logins
+	// branch is the right gate; single-event cpanel_login is intentionally not blockable.
+	findings := []alert.Finding{{Check: "cpanel_multi_ip_login", Severity: alert.Critical, Message: "Multi-IP cPanel brute-force from 203.0.113.50"}}
 	actions := AutoBlockIPs(cfg, findings)
 	if len(actions) == 0 {
-		t.Fatal("expected at least 1 auto-block action for cpanel_login")
+		t.Fatal("expected at least 1 auto-block action for cpanel_multi_ip_login")
 	}
 	if !blocker.blocked["203.0.113.50"] {
 		t.Error("expected IP 203.0.113.50 to be blocked")

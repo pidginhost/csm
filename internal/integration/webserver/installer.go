@@ -41,7 +41,7 @@ type RenderConfig struct {
 	// webserver snippet emits. Required on install; empty value blocks
 	// the installer with a clear error. Operator typically points it at
 	// the host's TLS-valid control-panel domain on a CSM-owned port,
-	// e.g. https://cluster6.example.com:8439/challenge.
+	// e.g. https://server.example.com:8439/challenge.
 	ChallengePublicURL string
 }
 

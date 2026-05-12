@@ -67,7 +67,7 @@ func CheckWAFStatus(ctx context.Context, _ *config.Config, _ *state.Store) []ale
 
 	// cPanel+LiteSpeed: cPanel's nightly modsec_assemble rewrites the
 	// vendor tree in place, so for ~6-10s both `whmapi1
-	// modsec_get_vendors` and the vendor dir return empty. The cluster6
+	// modsec_get_vendors` and the vendor dir return empty. A production
 	// false positive at 01:10:27 fired 6s after the rewrite. Re-probe
 	// once after a short delay before alerting; on a host that really
 	// has no rules, the re-probe is still negative and we alert in the

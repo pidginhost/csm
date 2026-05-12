@@ -8,9 +8,7 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/user"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1000,26 +998,13 @@ func (e *Engine) createOutputChain() error {
 		},
 	})
 
-	// SMTP block - restrict outbound mail to allowed users only
+	// SMTP block - restrict outbound mail to allowed users only.
+	// resolveSMTPAllowedUIDs unconditionally includes root and mailnull
+	// (exim's queue runner); without mailnull on the allow list queued
+	// mail is silently dropped while CSM still reports healthy.
 	smtpBlocked := make(map[int]bool)
 	if e.cfg.SMTPBlock && len(e.cfg.SMTPPorts) > 0 {
-		// Resolve usernames to UIDs
-		var allowedUIDs []uint32
-		for _, username := range e.cfg.SMTPAllowUsers {
-			u, err := user.Lookup(username)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "firewall: smtp_allow_users: unknown user %q\n", username)
-				continue
-			}
-			uid, parseErr := strconv.ParseUint(u.Uid, 10, 32)
-			if parseErr != nil {
-				fmt.Fprintf(os.Stderr, "firewall: smtp_allow_users: invalid uid for %s: %v\n", username, parseErr)
-				continue
-			}
-			allowedUIDs = append(allowedUIDs, uint32(uid))
-		}
-		// Always allow root
-		allowedUIDs = append(allowedUIDs, 0)
+		allowedUIDs := resolveSMTPAllowedUIDs(e.cfg.SMTPAllowUsers)
 
 		for _, port := range e.cfg.SMTPPorts {
 			smtpBlocked[port] = true

@@ -834,9 +834,9 @@ func TestScanForPhishingSkipsKnownSafeDir(t *testing.T) {
 
 // --- quickPhishingCheck content-shape requirements --------------------
 //
-// Real cluster6 false positive: a developer's tutorial dump at
-//   /home/echipamentefrig/birou.servicefrig.ro/temp/JavaScript Login/vers-1
-// shipped a login.html that posted to its own page, hardcoded fake
+// Real-world production false positive: a developer's tutorial dump
+// under a customer account's webroot shipped a login.html that posted
+// to its own page, hardcoded fake
 // "user1/user2/user3" + "pass1/pass2/pass3" credentials in JavaScript,
 // and carried no brand impersonation. quickPhishingCheck used to flag
 // any HTML with `<form>` plus the words "email" or "password" -- which
@@ -853,8 +853,8 @@ func TestScanForPhishingSkipsKnownSafeDir(t *testing.T) {
 func TestQuickPhishingCheckRejectsTutorialLogin(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "login.html")
-	// Shape mirrors temp/JavaScript Login/vers-1/login.html on cluster6:
-	// trivial credential form, no brand, no external action, no inline
+	// Shape mirrors the production tutorial login.html: trivial
+	// credential form, no brand, no external action, no inline
 	// styling. Hardcoded fake creds in JS + comment about insecurity.
 	content := `<html><head></head><body>
 <script type="text/javascript">

@@ -351,7 +351,7 @@ type Config struct {
 		// PublicURL is the external URL the webserver redirect target
 		// points at. Operators put it on an existing TLS-valid host so
 		// the integration does not need a new DNS record or cert.
-		// Example: https://cluster6.host.tld:8439/challenge with
+		// Example: https://server.example.com:8439/challenge with
 		// listen_addr=0.0.0.0, tls_cert/tls_key set to the host's
 		// cpanel cert.
 		// When empty the webserver-integration installer refuses to

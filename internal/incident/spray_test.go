@@ -525,8 +525,8 @@ func TestSprayLRUEvictsOldestIPs(t *testing.T) {
 // know the IP is bound to the open incident so the next finding routes via
 // suppress instead of opening a duplicate incident.
 //
-// Reproducer for cluster6 incident on 2026-05-11 where IP 213.177.179.12
-// produced two open credential_spray incidents bracketing a daemon restart.
+// Reproducer for the field scenario where the same attacker IP produced
+// two open credential_spray incidents bracketing a daemon restart.
 func TestRestoreRebindsOpenSprayIncident(t *testing.T) {
 	c1 := newSprayCorrelator(t, true, false)
 	base := time.Unix(1_700_000_000, 0)
@@ -594,14 +594,14 @@ func TestRestoreRebindsOpenSprayIncident(t *testing.T) {
 	}
 }
 
-// TestSprayBlockFiresOnSuppressAfterCriticalArmedLater is the cluster6
-// reproducer for the second half of the bug: an operator enables
-// block_at_severity=critical AFTER an open spray incident has already
-// escalated to CRITICAL. Previously the firewall hand-off fired only at
-// the moment of severity transition, so the existing CRITICAL incident
-// kept ingesting findings without ever triggering a block. The fix
-// re-evaluates on every suppressed merge; idempotency is provided by
-// triggerSprayBlockLocked's existing action-presence check.
+// TestSprayBlockFiresOnSuppressAfterCriticalArmedLater reproduces the
+// second half of the bug: an operator enables block_at_severity=critical
+// AFTER an open spray incident has already escalated to CRITICAL.
+// Previously the firewall hand-off fired only at the moment of severity
+// transition, so the existing CRITICAL incident kept ingesting findings
+// without ever triggering a block. The fix re-evaluates on every
+// suppressed merge; idempotency is provided by triggerSprayBlockLocked's
+// existing action-presence check.
 func TestSprayBlockFiresOnSuppressAfterCriticalArmedLater(t *testing.T) {
 	cfg := sprayTestConfig(true, false)
 	cfg.BlockAtSeverity = "critical"
@@ -618,8 +618,9 @@ func TestSprayBlockFiresOnSuppressAfterCriticalArmedLater(t *testing.T) {
 	}
 
 	// Seed a pre-existing CRITICAL spray incident with no block action,
-	// matching the state of inc_10917814920d on cluster6 the moment the
-	// operator added block_at_severity to csm.yaml.
+	// matching the field state at the moment an operator adds
+	// block_at_severity to csm.yaml after the incident has already
+	// escalated.
 	attackerIP := "203.0.113.42"
 	existing := Incident{
 		ID:             "inc_preexisting01",

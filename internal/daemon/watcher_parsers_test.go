@@ -200,6 +200,72 @@ func TestParseEximLogLine_OutgoingMailHoldDedup(t *testing.T) {
 	})
 }
 
+// TestParseEximLogLine_OutgoingMailHoldDoesNotReapplyHold guards against
+// the feedback loop where cPanel sets OUTGOING_MAIL_HOLD on a domain whose
+// outbound mail happens to land on a few unreachable upstream prefixes,
+// every queued retry then logs "Domain X has an outgoing mail hold"
+// through exim's enforce_mail_permissions router, and CSM amplifies each
+// retry by calling `whmapi1 hold_outgoing_email` again -- so an operator
+// who clears the false-positive hold sees it reappear within seconds.
+//
+// cPanel's TailWatch::Eximstats is the authoritative source for these
+// holds. CSM must alert on the rejection (so the operator sees the
+// account is held) without re-issuing the hold itself.
+func TestParseEximLogLine_OutgoingMailHoldDoesNotReapplyHold(t *testing.T) {
+	withGlobalStore(t, func(_ *store.DB) {
+		prevHook := autoSuspendOutgoingMail
+		var suspendCalls []string
+		var mu sync.Mutex
+		autoSuspendOutgoingMail = func(target string) {
+			mu.Lock()
+			suspendCalls = append(suspendCalls, target)
+			mu.Unlock()
+		}
+		t.Cleanup(func() { autoSuspendOutgoingMail = prevHook })
+
+		cfg := &config.Config{}
+		line := `2026-04-11 12:00:00 Sender office@example.com has an outgoing mail hold`
+
+		findings := parseEximLogLine(line, cfg)
+		if len(suspendCalls) != 0 {
+			t.Fatalf("autoSuspendOutgoingMail invoked %d time(s) from the outgoing-mail-hold rejection path: %v -- re-applying the hold causes a feedback loop against operator-cleared false positives", len(suspendCalls), suspendCalls)
+		}
+		if len(findings) != 1 || findings[0].Check != "email_compromised_account" {
+			t.Fatalf("expected one email_compromised_account finding, got %v", findings)
+		}
+	})
+}
+
+// TestParseEximLogLine_MaxDefersStillSuspends asserts the OTHER cPanel
+// trigger -- the actual "Domain X has exceeded the max defers and failures
+// per hour" threshold-trip line -- still calls autoSuspendOutgoingMail.
+// That line is emitted at most once per trip (cPanel rate-limits it), so
+// amplifying it does not create the feedback loop above.
+func TestParseEximLogLine_MaxDefersStillSuspends(t *testing.T) {
+	withGlobalStore(t, func(_ *store.DB) {
+		prevHook := autoSuspendOutgoingMail
+		var suspendCalls []string
+		var mu sync.Mutex
+		autoSuspendOutgoingMail = func(target string) {
+			mu.Lock()
+			suspendCalls = append(suspendCalls, target)
+			mu.Unlock()
+		}
+		t.Cleanup(func() { autoSuspendOutgoingMail = prevHook })
+
+		cfg := &config.Config{}
+		line := `2026-04-11 12:00:00 1abc23-000456-AB ** user@example.com R=enforce_mail_permissions : Domain example.com has exceeded the max defers and failures per hour (15/15 (100%)) allowed. Message discarded.`
+
+		findings := parseEximLogLine(line, cfg)
+		if len(suspendCalls) != 1 || suspendCalls[0] != "example.com" {
+			t.Fatalf("autoSuspendOutgoingMail calls = %v, want one call with domain=example.com", suspendCalls)
+		}
+		if len(findings) == 0 || findings[0].Check != "email_spam_outbreak" {
+			t.Fatalf("expected email_spam_outbreak finding, got %v", findings)
+		}
+	})
+}
+
 func TestParseEximLogLine_EmailRateIntegration(t *testing.T) {
 	resetEmailRateState()
 

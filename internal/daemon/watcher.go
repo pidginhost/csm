@@ -287,11 +287,20 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 		})
 	}
 
-	// 2. Outgoing mail hold - account suspended for spam
+	// 2. Outgoing mail hold - account is held by cPanel.
 	// Format: "Sender office@example.com has an outgoing mail hold"
 	// or: "Domain example.org has an outgoing mail hold"
-	// Dedup: only alert once per domain per hour (exim retries held messages
-	// every few minutes, generating the same log line each time)
+	//
+	// Exim emits this rejection from the enforce_mail_permissions router on
+	// EVERY queued-message retry while the hold is active, so re-applying the
+	// hold here creates a feedback loop: an operator who clears a
+	// false-positive hold (e.g. caused by external transit defers like the
+	// 2026-05-11 Microsoft edge outage) sees CSM re-set the hold within
+	// seconds because old queued messages keep retrying. cPanel's
+	// TailWatch::Eximstats is the authoritative source -- if the original
+	// hold was real abuse, cPanel will reapply it via its own analyzer
+	// (which CSM amplifies through path #3 on the "max defers and failures
+	// per hour" trigger line, not from these per-retry rejections).
 	if strings.Contains(line, "outgoing mail hold") {
 		sender := extractMailHoldSender(line)
 		if sender == "" {
@@ -302,10 +311,6 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 			domain = sender // may already be a bare domain
 		}
 
-		// Auto-suspend regardless of dedup - idempotent, ensures hold stays on
-		if sender != "" {
-			autoSuspendOutgoingMail(sender)
-		}
 		if domain != "" {
 			RecordCompromisedDomain(domain)
 		}
@@ -321,7 +326,7 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 				findings = append(findings, alert.Finding{
 					Severity: alert.Critical,
 					Check:    "email_compromised_account",
-					Message:  fmt.Sprintf("Account %s has outgoing mail hold - outgoing mail auto-suspended", sender),
+					Message:  fmt.Sprintf("Account %s is on cPanel outgoing mail hold", sender),
 					Details:  truncateDaemon(line, 300),
 					Mailbox:  mailboxOnly(sender),
 					Domain:   domain,
@@ -632,9 +637,9 @@ func mergeInfraIPs(topLevel, fwSpecific []string) []string {
 }
 
 // autoSuspendOutgoingMail calls whmapi1 to hold outgoing mail for the cPanel
-// account that owns the given domain or email address. This is safe to call
-// on confirmed spam (cPanel already flagged it via mail hold or max defers).
-func autoSuspendOutgoingMail(domainOrEmail string) {
+// account that owns the given domain or email address. Declared as var so
+// tests can swap in a recorder without spawning whmapi1.
+var autoSuspendOutgoingMail = func(domainOrEmail string) {
 	if domainOrEmail == "" {
 		return
 	}

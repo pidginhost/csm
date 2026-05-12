@@ -129,10 +129,13 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		"email_cloud_relay_abuse":     true,
 	}
 
-	// Only blockable when block_cpanel_logins is enabled (disabled by default)
+	// Only blockable when block_cpanel_logins is enabled (disabled by default).
+	// cpanel_login / cpanel_login_realtime are deliberately absent: those
+	// fire as Warning-level audit on every direct form login from a non-
+	// infra IP and a single event is not brute-force evidence. Blocking on
+	// one Warning turns a legitimate customer logging in from a new country
+	// into a 24h lockout. Thresholded brute checks below stay blockable.
 	cpanelWebmailChecks := map[string]bool{
-		"cpanel_login":                true,
-		"cpanel_login_realtime":       true,
 		"cpanel_multi_ip_login":       true,
 		"cpanel_file_upload_realtime": true,
 		"api_auth_failure":            true,

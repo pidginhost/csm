@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.1] - 2026-05-12
+
+### Fixed
+
+- Firewall `smtp_block` allow-list always includes the mailnull UID alongside root. Exim's queue runner switches to mailnull for delivery, so the previous code silently dropped queued mail unless the operator remembered to list mailnull under `smtp_allow_users`. The omission caused outbound SMTP to stall in SYN-SENT until the operator manually added mailnull, so the safe default is to bake it in.
+- Exim "outgoing mail hold" rejection lines no longer re-apply the hold. The rejection fires on every queued-message retry while the hold is set, so amplifying it caused a feedback loop where an operator who cleared a false-positive hold saw it reappear within seconds. cPanel's TailWatch::Eximstats stays the authoritative source; CSM still amplifies the underlying threshold trip via the "max defers and failures per hour" path and via the cloud-relay / credential-leak / compromised-account detectors when real abuse is present.
+- Single direct cPanel form login from a non-infra IP no longer triggers an auto-block when `auto_response.block_cpanel_logins` is enabled. One Warning-level audit row is not brute evidence; legitimate customers logging in from a new country were getting 24h lockouts. Thresholded brute checks (multi-IP login, webmail/API brute, FTP brute) still respect the same knob.
+
 ## [3.3.0] - 2026-05-11
 
 ### Added
