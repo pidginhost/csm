@@ -188,6 +188,17 @@ func (d *Daemon) lastAutomationAction() *health.AutomationAction {
 	if d.store == nil {
 		return nil
 	}
+	d.automationActionMu.Lock()
+	defer d.automationActionMu.Unlock()
+	if !d.automationActionCached.IsZero() && time.Since(d.automationActionCached) < lastAutomationActionTTL {
+		return d.automationActionCache
+	}
+	d.automationActionCache = d.computeLastAutomationAction()
+	d.automationActionCached = time.Now()
+	return d.automationActionCache
+}
+
+func (d *Daemon) computeLastAutomationAction() *health.AutomationAction {
 	var (
 		best alert.Finding
 		ok   bool

@@ -27,6 +27,7 @@ import (
 	"github.com/pidginhost/csm/internal/firewall"
 	"github.com/pidginhost/csm/internal/firewall/rollback"
 	"github.com/pidginhost/csm/internal/geoip"
+	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/integrity"
 	csmlog "github.com/pidginhost/csm/internal/log"
 	"github.com/pidginhost/csm/internal/maillog"
@@ -133,7 +134,16 @@ type Daemon struct {
 	// when updates.check_enabled is true (default). Nil when disabled
 	// or before Run starts; UpdateInfo() handles that.
 	updateChecker *updatecheck.Checker
+
+	// lastAutomationActionCache memoises the newest automation-emitted
+	// finding so /api/v1/status does not run a 100-row history cursor on
+	// every poll. Invalidated after lastAutomationActionTTL elapses.
+	automationActionMu     sync.Mutex
+	automationActionCache  *health.AutomationAction
+	automationActionCached time.Time
 }
+
+const lastAutomationActionTTL = 5 * time.Second
 
 // New creates a new daemon instance.
 func New(cfg *config.Config, store *state.Store, lock *state.LockFile, binaryPath string) *Daemon {

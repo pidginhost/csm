@@ -36,7 +36,9 @@ The legacy single-token `webui.auth_token:` is migrated automatically to a `lega
 ```
 GET  /api/v1/status              Full health snapshot: version, uptime, watchers, severity counts,
                                  store health, blocklist size, capabilities[], config_hash, binary_hash,
-                                 automation rollout state, challenge pending count, rollback state
+                                 automation rollout state, challenge pending count, rollback state.
+                                 `latest_scan` is the canonical last-scan timestamp; `last_scan_time`
+                                 is a legacy alias kept for older clients and will be removed.
 GET  /api/v1/capabilities        Static feature list (e.g. `confd.dropins.v1`, `events.sse.v1`,
                                  `webhook.phpanel.v1`, `sd_notify.ready`). Use for orchestrator feature-detect.
 GET  /api/v1/events              Server-Sent Events stream of findings as they dispatch.

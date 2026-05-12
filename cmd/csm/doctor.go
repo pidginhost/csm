@@ -366,11 +366,15 @@ func defaultChallengeGateProbe(cfg *config.Config) DoctorCheck {
 	}
 	client := &http.Client{Timeout: 2 * time.Second}
 	if strings.HasPrefix(rawURL, "https://") {
-		tr := http.DefaultTransport.(*http.Transport).Clone()
-		// #nosec G402 -- csm doctor probes the local listener for reachability;
-		// it does not authenticate remote data or send secrets.
-		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
-		client.Transport = tr
+		// Fresh transport rather than cloning http.DefaultTransport: the
+		// default may be wrapped (tracing, proxy) and the type assertion
+		// would panic.
+		client.Transport = &http.Transport{
+			// #nosec G402 -- csm doctor probes the local listener for
+			// reachability; it does not authenticate remote data or send
+			// secrets.
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
 	}
 	req, err := http.NewRequest(http.MethodHead, rawURL, nil)
 	if err != nil {
@@ -386,6 +390,9 @@ func defaultChallengeGateProbe(cfg *config.Config) DoctorCheck {
 		}
 	}
 	defer resp.Body.Close()
+	// handleGate returns 204 when the probe IP is not currently challenged
+	// (the loopback case used here) and 401 when it is. Either response
+	// proves the handler is reachable on the configured listener.
 	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusUnauthorized {
 		return DoctorCheck{Name: "challenge gate endpoint", Status: "ok", Message: rawURL}
 	}

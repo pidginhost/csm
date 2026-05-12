@@ -387,6 +387,7 @@ func TestValidateChallenge(t *testing.T) {
 
 	t.Run("listen_port negative", func(t *testing.T) {
 		cfg := base()
+		cfg.Challenge.Enabled = true
 		cfg.Challenge.ListenPort = -1
 		results := Validate(cfg)
 		if !hasResult(results, "error", "challenge.listen_port") {
@@ -394,8 +395,29 @@ func TestValidateChallenge(t *testing.T) {
 		}
 	})
 
+	t.Run("listen_port zero when enabled", func(t *testing.T) {
+		cfg := base()
+		cfg.Challenge.Enabled = true
+		cfg.Challenge.ListenPort = 0
+		results := Validate(cfg)
+		if !hasResult(results, "error", "challenge.listen_port") {
+			t.Errorf("expected error for listen_port=0 when enabled; results=%v", results)
+		}
+	})
+
+	t.Run("listen_port zero when disabled is fine", func(t *testing.T) {
+		cfg := base()
+		cfg.Challenge.Enabled = false
+		cfg.Challenge.ListenPort = 0
+		results := Validate(cfg)
+		if hasResult(results, "error", "challenge.listen_port") {
+			t.Errorf("did not expect listen_port error when challenge disabled; results=%v", results)
+		}
+	})
+
 	t.Run("listen_port above tcp range", func(t *testing.T) {
 		cfg := base()
+		cfg.Challenge.Enabled = true
 		cfg.Challenge.ListenPort = 65536
 		results := Validate(cfg)
 		if !hasResult(results, "error", "challenge.listen_port") {
