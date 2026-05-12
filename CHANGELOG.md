@@ -19,10 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Challenge hardening now rejects invalid listener ports early, lets visitors retry after a failed CAPTCHA response, and keeps IPv6-only port gates from touching IPv4 entries.
-- Firewall Blocked IPs view now offers 25/50/100/250/All page sizes with persisted selection so deployments with hundreds of blocks no longer get capped at the first 25 rows.
-- `challenge.listen_port` now rejects 0 when challenge is enabled so the kernel never picks a random port that the firewall opens and `public_url` cannot reach.
+- Firewall Blocked IPs view now lets operators choose and persist page size so large block lists are not capped at the first page.
+- `challenge.listen_port` now rejects empty listener ports when challenge mode is enabled, while still rejecting out-of-range ports before enablement.
 - `csm doctor challenge` HTTPS probe no longer type-asserts the default HTTP transport, removing a panic risk if the default is ever wrapped.
-- `/api/v1/status` caches the last automation action for 5s so dashboard polling no longer runs a 100-row bbolt history cursor on every request.
+- `/api/v1/status` caches the last automation action briefly so dashboard polling no longer opens a bbolt history cursor on every request.
 
 ## [3.3.2] - 2026-05-12
 

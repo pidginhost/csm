@@ -58,19 +58,19 @@ func (s *Server) apiStatus(w http.ResponseWriter, _ *http.Request) {
 
 	snap := health.Build(provider, s.version, health.Capabilities())
 	resp := map[string]interface{}{
-		"hostname":               snap.Hostname,
-		"version":                snap.Version,
-		"uptime":                 time.Duration(snap.UptimeSec * int64(time.Second)).String(),
-		"uptime_sec":             snap.UptimeSec,
-		"started_at":             snap.StartedAt.Format(time.RFC3339),
-		"rules_loaded":           s.sigCount,
-		"scan_running":           scanning,
+		"hostname":     snap.Hostname,
+		"version":      snap.Version,
+		"uptime":       time.Duration(snap.UptimeSec * int64(time.Second)).String(),
+		"uptime_sec":   snap.UptimeSec,
+		"started_at":   snap.StartedAt.Format(time.RFC3339),
+		"rules_loaded": s.sigCount,
+		"scan_running": scanning,
 		// last_scan_time is the legacy key kept for older clients
 		// (cphulk dashboard, status_check.go). latest_scan mirrors the
 		// health.Snapshot JSON tag and is the canonical name for new
 		// clients. Drop last_scan_time once the legacy consumers move.
-		"last_scan_time": snap.LatestScan.Format(time.RFC3339),
-		"latest_scan":    formatRFC3339OrEmpty(snap.LatestScan),
+		"last_scan_time":         snap.LatestScan.Format(time.RFC3339),
+		"latest_scan":            formatRFC3339OrEmpty(snap.LatestScan),
 		"baseline_at":            formatRFC3339OrEmpty(snap.BaselineAt),
 		"blocklist_size":         snap.BlocklistSize,
 		"incidents_open":         snap.IncidentsOpen,

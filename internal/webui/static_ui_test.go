@@ -200,6 +200,10 @@ func TestSharedUIPrimitivesPresent(t *testing.T) {
 			t.Errorf("table.js missing extension hook %s", want)
 		}
 	}
+	restoreIdx := strings.Index(tblText, "this._restoreState(opts);")
+	if restoreIdx < 0 || !strings.Contains(tblText[restoreIdx:], "this._syncPerPageSelect(opts);") {
+		t.Error("table.js must sync per-page select after restoring persisted state")
+	}
 }
 
 // TestSidebarNavCoversEveryVisiblePage asserts the sidebar exposes every

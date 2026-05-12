@@ -114,7 +114,7 @@ CSM.Table = function(opts) {
         var perPageEl = document.getElementById(opts.perPageSelectId);
         if (perPageEl) {
             var perPageSelf = this;
-            if (this.perPage) perPageEl.value = String(this.perPage);
+            this._syncPerPageSelect(opts);
             perPageEl.addEventListener('change', function() {
                 var n = parseInt(this.value, 10);
                 perPageSelf.perPage = (isFinite(n) && n > 0) ? n : 0;
@@ -197,6 +197,7 @@ CSM.Table = function(opts) {
 
     // Restore saved state before initial render
     this._restoreState(opts);
+    this._syncPerPageSelect(opts);
 
     // Initial render
     this.applyFilters();
@@ -482,4 +483,10 @@ CSM.Table.prototype._restoreState = function(opts) {
             if (searchEl) searchEl.value = state.search;
         }
     } catch (e) { /* ignore parse errors */ }
+};
+
+CSM.Table.prototype._syncPerPageSelect = function(opts) {
+    if (!opts.perPageSelectId) return;
+    var perPageEl = document.getElementById(opts.perPageSelectId);
+    if (perPageEl) perPageEl.value = String(this.perPage || 0);
 };
