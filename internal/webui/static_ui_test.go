@@ -464,6 +464,29 @@ func TestIncidentPageHasGroupedTab(t *testing.T) {
 	}
 }
 
+func TestIncidentFirewallStatusGuardsAsyncPanelUpdates(t *testing.T) {
+	js, err := os.ReadFile("../../ui/static/js/incident.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsText := string(js)
+	for _, want := range []string{
+		"data-csm-fw-ip",
+		"data-csm-fw-base-class",
+		"function setFirewallStatus",
+		"setFirewallStatus(target, requestedIP",
+		"groupedPageTotal = 0",
+		"groupedPageReturned = 0",
+	} {
+		if !strings.Contains(jsText, want) {
+			t.Errorf("incident.js missing firewall-status regression hook %q", want)
+		}
+	}
+	if strings.Contains(jsText, "className = 'col-8 text-") {
+		t.Fatal("incident.js must not replace firewall status layout classes with grouped-detail classes")
+	}
+}
+
 // TestInventoryPagesAdoptCsmToolbar asserts the secondary cleanup pass
 // migrated card-action filter rows on inventory pages onto the canonical
 // csm-toolbar primitive so toolbars look consistent across the UI.

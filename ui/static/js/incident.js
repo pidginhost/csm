@@ -93,46 +93,55 @@
         return best;
     }
 
+    function firewallStatusClass(baseClass, tone) {
+        var classes = (baseClass || '').split(/\s+/).filter(function(cls) {
+            return cls && cls !== 'text-muted' && cls !== 'text-danger'
+                && cls !== 'text-warning' && cls !== 'text-success';
+        });
+        classes.push('text-' + tone);
+        return classes.join(' ');
+    }
+
+    function setFirewallStatus(target, expectedIP, text, tone) {
+        if (!target || target.getAttribute('data-csm-fw-ip') !== expectedIP) return;
+        target.textContent = text;
+        target.className = firewallStatusClass(target.getAttribute('data-csm-fw-base-class') || '', tone);
+    }
+
     function attachFirewallStatus(targetID, ip) {
         var el = document.getElementById(targetID);
         if (!el) return;
-        if (!ip) {
-            el.textContent = 'no source IP';
-            el.className = 'col-8 text-muted';
+        var requestedIP = ip || '';
+        el.setAttribute('data-csm-fw-ip', requestedIP);
+        el.setAttribute('data-csm-fw-base-class', el.className || '');
+        if (!requestedIP) {
+            setFirewallStatus(el, requestedIP, 'no source IP', 'muted');
             return;
         }
         CSM.get('/api/v1/firewall/check?ip=' + encodeURIComponent(ip))
             .then(function(r) {
                 var target = document.getElementById(targetID);
-                if (!target) return;
                 if (!r || r.success === false) {
-                    target.textContent = 'lookup failed';
-                    target.className = 'col-8 text-muted';
+                    setFirewallStatus(target, requestedIP, 'lookup failed', 'muted');
                     return;
                 }
                 if (r.permanent) {
-                    target.textContent = 'Blocked (permanent) -- ' + r.permanent;
-                    target.className = 'col-8 text-danger';
+                    setFirewallStatus(target, requestedIP, 'Blocked (permanent) -- ' + r.permanent, 'danger');
                     return;
                 }
                 if (r.temporary) {
-                    target.textContent = 'Blocked (temporary) -- ' + r.temporary;
-                    target.className = 'col-8 text-danger';
+                    setFirewallStatus(target, requestedIP, 'Blocked (temporary) -- ' + r.temporary, 'danger');
                     return;
                 }
                 if (r.cphulk) {
-                    target.textContent = 'cPanel hulk blocked';
-                    target.className = 'col-8 text-warning';
+                    setFirewallStatus(target, requestedIP, 'cPanel hulk blocked', 'warning');
                     return;
                 }
-                target.textContent = 'Not blocked';
-                target.className = 'col-8 text-success';
+                setFirewallStatus(target, requestedIP, 'Not blocked', 'success');
             })
             .catch(function() {
                 var target = document.getElementById(targetID);
-                if (!target) return;
-                target.textContent = 'lookup failed';
-                target.className = 'col-8 text-muted';
+                setFirewallStatus(target, requestedIP, 'lookup failed', 'muted');
             });
     }
 
@@ -168,6 +177,8 @@
                 renderGroupedPagination();
             })
             .catch(function() {
+                groupedPageTotal = 0;
+                groupedPageReturned = 0;
                 content.replaceChildren();
                 var empty = document.createElement('div');
                 empty.className = 'csm-empty';
