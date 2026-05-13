@@ -1,6 +1,7 @@
 package state
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -505,6 +506,61 @@ func (s *Store) ReadHistorySince(since time.Time) []alert.Finding {
 		}
 	}
 	return out
+}
+
+// SearchHistorySince returns up to limit matching findings since the given
+// time, newest-first.
+func (s *Store) SearchHistorySince(since time.Time, limit int, match func(alert.Finding) bool) []alert.Finding {
+	if limit <= 0 {
+		return nil
+	}
+	if db := store.Global(); db != nil {
+		return db.SearchHistorySince(since, limit, match)
+	}
+	return s.searchHistoryFileSince(since, limit, match)
+}
+
+func (s *Store) searchHistoryFileSince(since time.Time, limit int, match func(alert.Finding) bool) []alert.Finding {
+	historyPath := filepath.Join(s.path, "history.jsonl")
+	// #nosec G304 -- {s.path}/history.jsonl; s.path from operator config.
+	data, err := os.ReadFile(historyPath)
+	if err != nil {
+		return nil
+	}
+
+	var results []alert.Finding
+	end := len(data)
+	for end > 0 && len(results) < limit {
+		for end > 0 && (data[end-1] == '\n' || data[end-1] == '\r') {
+			end--
+		}
+		if end == 0 {
+			break
+		}
+
+		start := bytes.LastIndexByte(data[:end], '\n') + 1
+		line := data[start:end]
+		if start == 0 {
+			end = 0
+		} else {
+			end = start - 1
+		}
+
+		var f alert.Finding
+		if err := json.Unmarshal(line, &f); err != nil {
+			continue
+		}
+		// The JSONL fallback appends findings in chronological order, so
+		// once a reverse scan reaches an old row the remaining rows are older.
+		if f.Timestamp.Before(since) {
+			break
+		}
+		if match != nil && !match(f) {
+			continue
+		}
+		results = append(results, f)
+	}
+	return results
 }
 
 // AggregateByHour returns 24 hourly severity buckets for the last 24 hours.

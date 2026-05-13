@@ -1,6 +1,7 @@
 package state
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -62,6 +63,30 @@ func TestReadHistorySinceNoBbolt(t *testing.T) {
 	got := s.ReadHistorySince(time.Now().Add(-1 * time.Hour))
 	if got != nil {
 		t.Errorf("no bbolt should return nil, got %v", got)
+	}
+}
+
+func TestSearchHistorySinceNoBboltUsesJSONLNewestFirst(t *testing.T) {
+	store.SetGlobal(nil)
+	t.Cleanup(func() { store.SetGlobal(nil) })
+
+	s := openTestStore(t)
+	base := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
+	s.appendHistoryFile([]alert.Finding{
+		{Severity: alert.Warning, Check: "test", Message: "needle-before-cutoff", Timestamp: base},
+		{Severity: alert.High, Check: "test", Message: "needle-oldest", Timestamp: base.Add(time.Minute)},
+		{Severity: alert.High, Check: "test", Message: "ordinary", Timestamp: base.Add(2 * time.Minute)},
+		{Severity: alert.Critical, Check: "test", Message: "needle-newest", Timestamp: base.Add(3 * time.Minute)},
+	})
+
+	got := s.SearchHistorySince(base.Add(30*time.Second), 1, func(f alert.Finding) bool {
+		return strings.Contains(f.Message, "needle")
+	})
+	if len(got) != 1 {
+		t.Fatalf("len(got) = %d, want 1", len(got))
+	}
+	if got[0].Message != "needle-newest" {
+		t.Errorf("got[0].Message = %q, want needle-newest", got[0].Message)
 	}
 }
 

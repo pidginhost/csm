@@ -1,6 +1,7 @@
 package store
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -96,6 +97,39 @@ func TestReadHistoryPagination(t *testing.T) {
 	last, _ := db.ReadHistory(3, 9)
 	if len(last) != 1 {
 		t.Errorf("last page len = %d, want 1", len(last))
+	}
+}
+
+func TestSearchHistorySinceLimitsNewestMatches(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	base := time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC)
+	findings := []alert.Finding{
+		{Severity: alert.Warning, Check: "test", Message: "needle-before-cutoff", Timestamp: base},
+		{Severity: alert.High, Check: "test", Message: "needle-oldest", Timestamp: base.Add(time.Minute)},
+		{Severity: alert.High, Check: "test", Message: "ordinary", Timestamp: base.Add(2 * time.Minute)},
+		{Severity: alert.High, Check: "test", Message: "needle-newer", Timestamp: base.Add(3 * time.Minute)},
+		{Severity: alert.Critical, Check: "test", Message: "needle-newest", Timestamp: base.Add(4 * time.Minute)},
+	}
+	if err := db.AppendHistory(findings); err != nil {
+		t.Fatalf("AppendHistory: %v", err)
+	}
+
+	got := db.SearchHistorySince(base.Add(30*time.Second), 2, func(f alert.Finding) bool {
+		return strings.Contains(f.Message, "needle")
+	})
+	if len(got) != 2 {
+		t.Fatalf("len(got) = %d, want 2", len(got))
+	}
+	if got[0].Message != "needle-newest" {
+		t.Errorf("got[0].Message = %q, want needle-newest", got[0].Message)
+	}
+	if got[1].Message != "needle-newer" {
+		t.Errorf("got[1].Message = %q, want needle-newer", got[1].Message)
 	}
 }
 

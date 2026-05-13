@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/incident"
 )
 
@@ -19,6 +20,8 @@ type timelineEvent struct {
 	Details   string `json:"details,omitempty"`
 	Source    string `json:"source"` // "history", "audit", "firewall"
 }
+
+const incidentTimelineEventLimit = 200
 
 func (s *Server) handleIncident(w http.ResponseWriter, _ *http.Request) {
 	s.renderTemplate(w, "incident.html", map[string]string{
@@ -51,16 +54,11 @@ func (s *Server) apiIncident(w http.ResponseWriter, r *http.Request) {
 		searchTerms = append(searchTerms, "/home/"+account+"/", account)
 	}
 
-	// Search finding history. ReadHistorySince walks the bbolt history
-	// bucket from the cutoff forward instead of capping the read at a
-	// fixed row count, so the operator-supplied `hours` actually bounds
-	// the search instead of being silently truncated by a 3000-row cap.
 	dedup := make(map[string]struct{})
 	dedupKey := func(t time.Time, summary string) string {
 		return t.UTC().Format(time.RFC3339Nano) + "|" + summary
 	}
-	allHistory := s.store.ReadHistorySince(cutoff)
-	for _, f := range allHistory {
+	matchesHistoryQuery := func(f alert.Finding) bool {
 		matched := false
 		for _, term := range searchTerms {
 			if strings.Contains(f.Message, term) || strings.Contains(f.Details, term) {
@@ -69,14 +67,24 @@ func (s *Server) apiIncident(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if !matched {
-			continue
+			return false
 		}
+
 		summary := f.Check + ": " + f.Message
 		key := dedupKey(f.Timestamp, summary)
 		if _, seen := dedup[key]; seen {
-			continue
+			return false
 		}
 		dedup[key] = struct{}{}
+		return true
+	}
+
+	// Search newest-first and stop once the timeline has enough matching
+	// history rows. Busy hosts can retain large 30-day windows, so response
+	// size alone is not a safe bound for the read path.
+	allHistory := s.store.SearchHistorySince(cutoff, incidentTimelineEventLimit, matchesHistoryQuery)
+	for _, f := range allHistory {
+		summary := f.Check + ": " + f.Message
 		events = append(events, timelineEvent{
 			Timestamp: f.Timestamp.Format(time.RFC3339),
 			Type:      "finding",
@@ -165,9 +173,8 @@ func (s *Server) apiIncident(w http.ResponseWriter, r *http.Request) {
 		return events[i].Timestamp > events[j].Timestamp
 	})
 
-	// Limit to 200 events
-	if len(events) > 200 {
-		events = events[:200]
+	if len(events) > incidentTimelineEventLimit {
+		events = events[:incidentTimelineEventLimit]
 	}
 
 	writeJSON(w, map[string]interface{}{

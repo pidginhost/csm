@@ -130,6 +130,42 @@ func (db *DB) ReadHistorySince(since time.Time) []alert.Finding {
 	return results
 }
 
+// SearchHistorySince returns up to limit findings since the given time,
+// newest-first. The matcher runs while the bbolt cursor walks backward so
+// callers that only need a bounded result set do not materialize the whole
+// time window first.
+func (db *DB) SearchHistorySince(since time.Time, limit int, match func(alert.Finding) bool) []alert.Finding {
+	if limit <= 0 {
+		return nil
+	}
+
+	cutoffKey := timeKeyLowerBound(since)
+	var results []alert.Finding
+	_ = db.bolt.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("history"))
+		if b == nil {
+			return nil
+		}
+
+		c := b.Cursor()
+		for k, v := c.Last(); k != nil && len(results) < limit; k, v = c.Prev() {
+			if string(k) < cutoffKey {
+				break
+			}
+			var f alert.Finding
+			if err := json.Unmarshal(v, &f); err != nil {
+				continue
+			}
+			if match != nil && !match(f) {
+				continue
+			}
+			results = append(results, f)
+		}
+		return nil
+	})
+	return results
+}
+
 // AggregateByDay returns 30 daily buckets (oldest first) for the last 30 days.
 // Reads from the pre-aggregated stats:daily bucket so the trend chart is
 // not affected by history pruning.
