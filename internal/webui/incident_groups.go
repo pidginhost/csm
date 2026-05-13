@@ -31,9 +31,14 @@ func (s *Server) apiIncidentGroups(w http.ResponseWriter, r *http.Request) {
 	if limit <= 0 || limit > incidentGroupsMaxLimit {
 		limit = incidentGroupsDefaultLimit
 	}
+	offset := queryInt(r, "offset", 0)
+	if offset < 0 {
+		offset = 0
+	}
 
 	filter := incident.GroupFilter{
 		Kind:      incident.Kind(strings.TrimSpace(q.Get("kind"))),
+		Offset:    offset,
 		MaxGroups: limit,
 	}
 

@@ -207,12 +207,16 @@ See [api.md](api.md) for endpoint detail.
 Open **Monitor -> Incidents**. The page has three tabs:
 
 - **Correlated** -- the default flat list of incidents with status
-  filter, page size, and detail panel.
+  filter, page size, and detail panel. The detail panel shows the
+  current firewall block state for the incident's source IP (permanent,
+  temporary, cphulk, or not blocked) when an IP is known.
 - **Grouped** -- rolls up incidents by `(kind, source)` so a credential
   spray that produced thousands of mailbox_takeover incidents shows as
-  one row per attacker IP. Click a group to see member incidents in
-  the detail panel; clicking a sample id jumps back to the Correlated
-  tab focused on that incident.
+  one row per attacker IP. Pageable with the same page-size selector
+  as Correlated. Click a group to see member incidents in the detail
+  panel, which also surfaces the source IP's firewall block state;
+  clicking a sample id jumps back to the Correlated tab focused on
+  that incident.
 - **Timeline Search** -- the older IP/account history search across
   the audit log.
 

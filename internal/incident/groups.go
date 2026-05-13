@@ -50,6 +50,9 @@ type GroupFilter struct {
 	StatusSet []Status
 	// Kind, when non-empty, restricts incidents to a specific kind.
 	Kind Kind
+	// Offset is the starting index into the sorted group list. Used by
+	// the UI to page through groups when TotalGroups exceeds MaxGroups.
+	Offset int
 	// MaxGroups caps the returned slice. Zero or negative means "no
 	// cap"; the handler still applies a sane upper bound.
 	MaxGroups int
@@ -176,6 +179,13 @@ func BuildGroups(incidents []Incident, filter GroupFilter) GroupsResponse {
 	})
 
 	totalGroups := len(out)
+	if filter.Offset > 0 {
+		if filter.Offset >= len(out) {
+			out = out[:0]
+		} else {
+			out = out[filter.Offset:]
+		}
+	}
 	if filter.MaxGroups > 0 && len(out) > filter.MaxGroups {
 		out = out[:filter.MaxGroups]
 	}

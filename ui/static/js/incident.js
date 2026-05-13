@@ -18,6 +18,9 @@
     var pendingIncidentID = '';
     var pageOffset = 0;
     var pageTotal = 0;
+    var groupedPageOffset = 0;
+    var groupedPageTotal = 0;
+    var groupedPageReturned = 0;
 
     function currentHours() {
         var active = document.querySelector('.incident-hours-btn.active');
@@ -71,18 +74,98 @@
         return 0;
     }
 
+    function incidentSourceIP(inc) {
+        if (!inc) return '';
+        if (inc.correlation_key && inc.correlation_key.remote_ip) return inc.correlation_key.remote_ip;
+        var counts = {};
+        var best = '';
+        var bestCount = 0;
+        var tl = inc.timeline || [];
+        for (var i = 0; i < tl.length; i++) {
+            var ip = tl[i].remote_ip;
+            if (!ip) continue;
+            counts[ip] = (counts[ip] || 0) + 1;
+            if (counts[ip] > bestCount || (counts[ip] === bestCount && (best === '' || ip < best))) {
+                best = ip;
+                bestCount = counts[ip];
+            }
+        }
+        return best;
+    }
+
+    function attachFirewallStatus(targetID, ip) {
+        var el = document.getElementById(targetID);
+        if (!el) return;
+        if (!ip) {
+            el.textContent = 'no source IP';
+            el.className = 'col-8 text-muted';
+            return;
+        }
+        CSM.get('/api/v1/firewall/check?ip=' + encodeURIComponent(ip))
+            .then(function(r) {
+                var target = document.getElementById(targetID);
+                if (!target) return;
+                if (!r || r.success === false) {
+                    target.textContent = 'lookup failed';
+                    target.className = 'col-8 text-muted';
+                    return;
+                }
+                if (r.permanent) {
+                    target.textContent = 'Blocked (permanent) -- ' + r.permanent;
+                    target.className = 'col-8 text-danger';
+                    return;
+                }
+                if (r.temporary) {
+                    target.textContent = 'Blocked (temporary) -- ' + r.temporary;
+                    target.className = 'col-8 text-danger';
+                    return;
+                }
+                if (r.cphulk) {
+                    target.textContent = 'cPanel hulk blocked';
+                    target.className = 'col-8 text-warning';
+                    return;
+                }
+                target.textContent = 'Not blocked';
+                target.className = 'col-8 text-success';
+            })
+            .catch(function() {
+                var target = document.getElementById(targetID);
+                if (!target) return;
+                target.textContent = 'lookup failed';
+                target.className = 'col-8 text-muted';
+            });
+    }
+
+
+    function currentGroupedPageSize() {
+        var sel = document.getElementById('grouped-page-size');
+        var n = parseInt(sel ? sel.value : '50', 10);
+        return n > 0 ? n : 50;
+    }
+
     function loadGroups() {
         var content = document.getElementById('grouped-content');
         var footer = document.getElementById('grouped-footer');
         if (!content) return;
         var status = (document.getElementById('grouped-status-filter') || {}).value || 'active';
         var kind = (document.getElementById('grouped-kind-filter') || {}).value || '';
-        var qs = 'status=' + encodeURIComponent(status) + '&limit=200';
+        var limit = currentGroupedPageSize();
+        var qs = 'status=' + encodeURIComponent(status)
+            + '&limit=' + encodeURIComponent(limit)
+            + '&offset=' + encodeURIComponent(groupedPageOffset);
         if (kind) qs += '&kind=' + encodeURIComponent(kind);
         fetch(CSM.apiUrl('/api/v1/incidents/groups?' + qs), { credentials: 'same-origin' })
             .then(function(r) { return r.json(); })
             .then(function(data) {
+                groupedPageTotal = (data && typeof data.total_groups === 'number') ? data.total_groups : 0;
+                groupedPageReturned = (data && Array.isArray(data.groups)) ? data.groups.length : 0;
+                if (groupedPageTotal > 0 && groupedPageReturned === 0 && groupedPageOffset >= groupedPageTotal) {
+                    groupedPageOffset = lastGroupedPageOffset();
+                    loadGroups();
+                    return;
+                }
                 renderGroups(data, content, footer);
+                renderGroupedPagination();
             })
             .catch(function() {
                 content.replaceChildren();
@@ -92,7 +175,42 @@
                     + '<div class="csm-empty__reason">Could not load groups.</div>';
                 content.appendChild(empty);
                 if (footer) footer.textContent = '';
+                renderGroupedPagination();
             });
+    }
+
+    function lastGroupedPageOffset() {
+        var limit = currentGroupedPageSize();
+        if (groupedPageTotal <= 0) return 0;
+        return Math.floor((groupedPageTotal - 1) / limit) * limit;
+    }
+
+    function setGroupedPageOffset(off) {
+        groupedPageOffset = Math.max(0, off);
+        loadGroups();
+    }
+
+    function renderGroupedPagination() {
+        var footer = document.getElementById('grouped-pagination');
+        if (!footer) return;
+        var limit = currentGroupedPageSize();
+        if (groupedPageTotal <= 0) {
+            footer.classList.add('d-none');
+            return;
+        }
+        footer.classList.remove('d-none');
+        var pageNum = Math.floor(groupedPageOffset / limit) + 1;
+        var totalPages = Math.max(1, Math.ceil(groupedPageTotal / limit));
+        var first = groupedPageOffset + 1;
+        var last = Math.min(groupedPageOffset + groupedPageReturned, groupedPageTotal);
+        var summary = document.getElementById('grouped-page-summary');
+        if (summary) summary.textContent = 'Showing ' + first + '-' + last + ' of ' + groupedPageTotal;
+        var indicator = document.getElementById('grouped-page-indicator');
+        if (indicator) indicator.textContent = pageNum + ' / ' + totalPages;
+        var pf = document.getElementById('grouped-page-first'); if (pf) pf.disabled = groupedPageOffset === 0;
+        var pp = document.getElementById('grouped-page-prev');  if (pp) pp.disabled = groupedPageOffset === 0;
+        var pn = document.getElementById('grouped-page-next');  if (pn) pn.disabled = groupedPageOffset + limit >= groupedPageTotal;
+        var pl = document.getElementById('grouped-page-last');  if (pl) pl.disabled = groupedPageOffset + limit >= groupedPageTotal;
     }
 
     function renderGroups(data, content, footer) {
@@ -149,6 +267,9 @@
         bodyHTML += '<dt class="col-4 text-muted">Severity max</dt><dd class="col-8">' + CSM.esc(g.severity_max) + '</dd>';
         bodyHTML += '<dt class="col-4 text-muted">First seen</dt><dd class="col-8">' + CSM.fmtDate(g.first_seen) + '</dd>';
         bodyHTML += '<dt class="col-4 text-muted">Last seen</dt><dd class="col-8">' + CSM.fmtDate(g.last_seen) + '</dd>';
+        if (g.source_kind === 'ip' && g.source) {
+            bodyHTML += '<dt class="col-4 text-muted">Firewall</dt><dd class="col-8 text-muted" id="csm-group-fw-status">Checking...</dd>';
+        }
         bodyHTML += '</dl>';
         if (g.sample_ids && g.sample_ids.length > 0) {
             bodyHTML += '<div class="mb-2"><div class="subheader">Sample incidents</div>';
@@ -162,6 +283,9 @@
             title: 'Group: ' + (g.source || '(unkeyed)'),
             bodyHTML: bodyHTML,
         });
+        if (g.source_kind === 'ip' && g.source) {
+            attachFirewallStatus('csm-group-fw-status', g.source);
+        }
         var panel = CSM.detailPanel.element();
         if (panel) {
             var links = panel.querySelectorAll('[data-csm-incident-id]');
@@ -357,10 +481,14 @@
         var owner = inc.mailbox || inc.domain || inc.account || keySummary(inc.correlation_key) || 'unknown';
         var html = '';
         html += '<div class="row g-3 mb-3">';
+        var incSourceIP = incidentSourceIP(inc);
         html += statBlock('Status', inc.status);
         html += statBlock('Severity', inc.severity || 'UNKNOWN');
         html += statBlock('Owner', owner);
         html += statBlock('Updated', CSM.fmtDate(inc.updated_at, {tz: true}));
+        if (incSourceIP) {
+            html += '<div class="col-sm-6 col-lg-3"><div class="subheader">Firewall</div><div class="h3 m-0 text-muted" id="csm-incident-fw-status">Checking...</div><div class="text-muted small font-monospace">' + CSM.esc(incSourceIP) + '</div></div>';
+        }
         html += '</div>';
         html += '<div class="timeline-list">';
         var events = (inc.timeline || []).slice().sort(function(a, b) {
@@ -387,6 +515,9 @@
             footerHTML: footer
         });
         CSM.initTimeAgo();
+        if (incSourceIP) {
+            attachFirewallStatus('csm-incident-fw-status', incSourceIP);
+        }
         var panel = CSM.detailPanel.element();
         panel.querySelectorAll('[data-status-target]').forEach(function(btn) {
             btn.addEventListener('click', function() {
@@ -536,9 +667,19 @@
     var groupedRefresh = document.getElementById('grouped-refresh-btn');
     if (groupedRefresh) groupedRefresh.addEventListener('click', loadGroups);
     var groupedStatus = document.getElementById('grouped-status-filter');
-    if (groupedStatus) groupedStatus.addEventListener('change', loadGroups);
+    if (groupedStatus) groupedStatus.addEventListener('change', function() { groupedPageOffset = 0; loadGroups(); });
     var groupedKind = document.getElementById('grouped-kind-filter');
-    if (groupedKind) groupedKind.addEventListener('change', loadGroups);
+    if (groupedKind) groupedKind.addEventListener('change', function() { groupedPageOffset = 0; loadGroups(); });
+    var groupedPageSize = document.getElementById('grouped-page-size');
+    if (groupedPageSize) groupedPageSize.addEventListener('change', function() { groupedPageOffset = 0; loadGroups(); });
+    var gpf = document.getElementById('grouped-page-first');
+    if (gpf) gpf.addEventListener('click', function() { setGroupedPageOffset(0); });
+    var gpp = document.getElementById('grouped-page-prev');
+    if (gpp) gpp.addEventListener('click', function() { setGroupedPageOffset(groupedPageOffset - currentGroupedPageSize()); });
+    var gpn = document.getElementById('grouped-page-next');
+    if (gpn) gpn.addEventListener('click', function() { setGroupedPageOffset(groupedPageOffset + currentGroupedPageSize()); });
+    var gpl = document.getElementById('grouped-page-last');
+    if (gpl) gpl.addEventListener('click', function() { setGroupedPageOffset(lastGroupedPageOffset()); });
     document.getElementById('incidents-refresh-btn').addEventListener('click', loadIncidents);
     document.getElementById('incident-status-filter').addEventListener('change', function() {
         selectedID = '';

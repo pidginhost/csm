@@ -213,3 +213,46 @@ func TestBuildGroupsMaxGroupsCap(t *testing.T) {
 		t.Errorf("TotalGroups = %d, want 5 (pre-cap)", resp.TotalGroups)
 	}
 }
+
+func TestBuildGroupsOffsetPaginates(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	var in []Incident
+	for i := 0; i < 5; i++ {
+		// Distinct incident counts per IP so sort order is deterministic:
+		// IP .1 -> 5 incidents, .2 -> 4, .3 -> 3, .4 -> 2, .5 -> 1.
+		count := 5 - i
+		for j := 0; j < count; j++ {
+			id := "ip" + strconv.Itoa(i+1) + "-" + strconv.Itoa(j)
+			in = append(in, incForGroup(id, KindMailboxTakeover, StatusOpen, alert.High, "192.0.2."+strconv.Itoa(i+1), "", "", "x", now))
+		}
+	}
+
+	first := BuildGroups(in, GroupFilter{Offset: 0, MaxGroups: 2})
+	if first.TotalGroups != 5 {
+		t.Fatalf("page 1 TotalGroups = %d, want 5", first.TotalGroups)
+	}
+	if len(first.Groups) != 2 || first.Groups[0].Source != "192.0.2.1" || first.Groups[1].Source != "192.0.2.2" {
+		t.Fatalf("page 1 sources = %+v, want [.1 .2]", first.Groups)
+	}
+
+	second := BuildGroups(in, GroupFilter{Offset: 2, MaxGroups: 2})
+	if second.TotalGroups != 5 {
+		t.Fatalf("page 2 TotalGroups = %d, want 5", second.TotalGroups)
+	}
+	if len(second.Groups) != 2 || second.Groups[0].Source != "192.0.2.3" || second.Groups[1].Source != "192.0.2.4" {
+		t.Fatalf("page 2 sources = %+v, want [.3 .4]", second.Groups)
+	}
+
+	third := BuildGroups(in, GroupFilter{Offset: 4, MaxGroups: 2})
+	if len(third.Groups) != 1 || third.Groups[0].Source != "192.0.2.5" {
+		t.Fatalf("page 3 sources = %+v, want [.5]", third.Groups)
+	}
+
+	past := BuildGroups(in, GroupFilter{Offset: 99, MaxGroups: 2})
+	if len(past.Groups) != 0 {
+		t.Fatalf("offset past end returned %d groups, want 0", len(past.Groups))
+	}
+	if past.TotalGroups != 5 {
+		t.Fatalf("past TotalGroups = %d, want 5 (offset does not change total)", past.TotalGroups)
+	}
+}

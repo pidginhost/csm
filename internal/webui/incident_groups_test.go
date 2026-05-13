@@ -99,6 +99,31 @@ func TestAPIIncidentGroupsReadScopeAccess(t *testing.T) {
 	}
 }
 
+func TestAPIIncidentGroupsHonorsOffset(t *testing.T) {
+	c := incident.NewCorrelator(incident.CorrelatorConfig{})
+	// Three IPs with distinct counts (.1=3, .2=2, .3=1) for deterministic order.
+	seedSprayIncidents(t, c, "192.0.2.1", 3)
+	seedSprayIncidents(t, c, "192.0.2.2", 2)
+	seedSprayIncidents(t, c, "192.0.2.3", 1)
+
+	srv := newTestServerWithIncidentCorrelator(t, c)
+	w := httptest.NewRecorder()
+	srv.apiIncidentGroups(w, httptest.NewRequest(http.MethodGet, "/api/v1/incidents/groups?offset=1&limit=1", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var resp incident.GroupsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v\nbody: %s", err, w.Body.String())
+	}
+	if resp.TotalGroups != 3 {
+		t.Fatalf("TotalGroups = %d, want 3 (pre-pagination)", resp.TotalGroups)
+	}
+	if len(resp.Groups) != 1 || resp.Groups[0].Source != "192.0.2.2" {
+		t.Fatalf("offset=1 limit=1 returned %+v, want single group .2", resp.Groups)
+	}
+}
+
 func TestAPIIncidentGroupsActiveFilterDefault(t *testing.T) {
 	c := incident.NewCorrelator(incident.CorrelatorConfig{})
 	now := time.Now()

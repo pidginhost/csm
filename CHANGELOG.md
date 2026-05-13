@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `csm doctor challenge` checks challenge public URL, TLS files, port-gate setup, webserver snippets, configtest, and the live gate endpoint.
 - Status health now includes automation rollout state: dry-run block count, challenge pending count, port-gate activity, pending firewall rollback, and the last automation action.
 - Production reference config at `configs/csm.yaml.production.example` covers the fields operators routinely tune (auto-response, firewall, spray suppression, retention) so a new install can start from a known-good profile.
+- Incidents Grouped tab now paginates with the same page-size selector as Correlated, and both detail panels surface the current firewall block state for the incident's source IP so operators can see at a glance whether the source is already blocked.
 
 ### Docs
 
