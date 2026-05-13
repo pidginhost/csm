@@ -98,6 +98,22 @@ whitelist updated via the Web UI) are skipped from spray detection so
 internal mail relays, NAT egresses, and known-good infrastructure
 never produce a spray incident.
 
+Choosing `block_at_severity`:
+
+- `""` (default) -- detection-only. Spray incidents open, no firewall
+  hand-off. Use during dry-run validation and on hosts where blocking
+  is owned by a separate system.
+- `high` -- block at the `distinct_mailboxes` trip. Recommended once
+  the dry-run counter looks clean. Trips on the first sustained
+  burst, so a paced attacker that spreads activity across the 15-min
+  merge window still gets blocked on the next open.
+- `critical` -- block only after severity escalates, i.e. one IP hits
+  `severity_escalate_at` distinct mailboxes inside a single 15-min
+  window. A scripted attacker that rate-limits to fewer mailboxes per
+  window never escalates and never blocks. Pick this only when you
+  have strong shared-NAT exposure and accept that paced sprayers
+  evade the gate.
+
 Rollout:
 
 1. Ship the daemon with `enabled: false, dry_run: true`. The detector
@@ -110,6 +126,10 @@ Rollout:
 3. Flip `enabled: true, dry_run: false`. New attacker IPs route
    through the spray path; existing per-mailbox backlog drains via the
    auto-close path.
+4. After another 24h, set `block_at_severity: high`. The firewall
+   hand-off runs on every spray decision (open + merge), so an
+   incident opened before the flag was armed still blocks on the
+   next finding from the same IP.
 
 Metrics: `csm_credential_spray_opened_total`,
 `csm_credential_spray_suppressed_mailbox_takeover_total`,

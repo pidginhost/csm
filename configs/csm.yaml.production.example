@@ -1,0 +1,337 @@
+# Continuous Security Monitor -- production reference config
+#
+# Drop-in profile for a cPanel/WHM mail host running CSM in
+# enforcing mode (live IP blocks, live spray suppression, live
+# auto-response). Copy to /opt/csm/csm.yaml, edit every
+# SET_* placeholder, run `csm rehash` then
+# `systemctl restart csm`.
+#
+# Companion to the shipped default at
+# /usr/share/csm/csm.yaml.default. Comments only call out the
+# values that differ from the shipped default or that operators
+# routinely tune in production. Read the default for the full
+# field list.
+
+hostname: "SET_FQDN_HERE"
+
+alerts:
+  email:
+    enabled: true
+    to:
+      - "SET_ONCALL_EMAIL_HERE"
+    from: "csm@SET_FQDN_HERE"
+    smtp: "localhost:25"
+    # Production noise filters. Drop alerts that are either
+    # already actioned by other channels (cpanel_login, perf_*)
+    # or known-fragile (challenge_route, dns_zone_change).
+    # Re-enable individually when you want a particular check
+    # paging on this host.
+    disabled_checks:
+      - email_spam_outbreak
+      - email_compromised_account
+      - perf_memory
+      - perf_php_processes
+      - api_auth_failure_realtime
+      - challenge_route
+      - cpanel_login_realtime
+      - cpanel_login
+      - dns_zone_change
+  webhook:
+    enabled: false
+    url: ""
+    type: "slack"
+  heartbeat:
+    enabled: false
+    url: ""
+  max_per_hour: 100
+
+webui:
+  enabled: true
+  listen: "0.0.0.0:9443"
+  auth_token: ""
+  tls_cert: ""
+  tls_key: ""
+  ui_dir: "/opt/csm/ui"
+
+challenge:
+  listen_addr: "0.0.0.0"
+  listen_port: 8439
+  tls_cert: "/etc/letsencrypt/live/SET_FQDN_HERE/fullchain.pem"
+  tls_key: "/etc/letsencrypt/live/SET_FQDN_HERE/privkey.pem"
+  public_url: "https://SET_FQDN_HERE:8439/challenge"
+  port_gate:
+    enabled: true
+
+integrity:
+  binary_hash: ""
+  config_hash: ""
+  immutable: true
+
+signatures:
+  rules_dir: "/opt/csm/rules"
+  auto_update: true
+  update_url: ""
+  signing_key: ""
+  yara_forge:
+    enabled: false
+    tier: "core"
+    update_interval: "168h"
+    download_url: ""
+
+thresholds:
+  mail_queue_warn: 500
+  mail_queue_crit: 2000
+  state_expiry_hours: 24
+  deep_scan_interval_min: 60
+  wp_core_check_interval_min: 60
+  webshell_scan_interval_min: 30
+  filesystem_scan_interval_min: 30
+  multi_ip_login_threshold: 3
+  multi_ip_login_window_min: 60
+  # Mail brute / spray detector tuning. Defaults are
+  # cPanel-mail-host-tested; lower the bruteforce_threshold for
+  # smaller hosts, raise it for hosts behind shared NAT.
+  smtp_bruteforce_threshold: 5
+  smtp_bruteforce_window_min: 10
+  smtp_bruteforce_suppress_min: 60
+  smtp_bruteforce_subnet_threshold: 8
+  smtp_account_spray_threshold: 12
+  smtp_bruteforce_max_tracked: 20000
+  mail_bruteforce_threshold: 5
+  mail_bruteforce_window_min: 10
+  mail_bruteforce_suppress_min: 60
+  mail_bruteforce_subnet_threshold: 8
+  mail_account_spray_threshold: 12
+  mail_bruteforce_max_tracked: 20000
+
+state_path: "/opt/csm/state"
+
+# Management network, monitoring probes, phpanel agent, and
+# anything else you do NOT want CSM to ever firewall. Hostnames
+# resolve on the DynDNS schedule and emit
+# `infra_ips_unresolvable` if they go dark.
+infra_ips:
+  - "SET_MGMT_CIDR_HERE"
+  # - "10.0.0.0/8"
+  # - "phpanel.example.com"
+
+suppressions:
+  upcp_window_start: "00:30"
+  upcp_window_end: "02:00"
+  known_api_tokens: []
+  ignore_paths:
+    - "*/imunify-security/*"
+    - "*/cache/*"
+    - "*/vendor/*"
+  suppress_webmail_alerts: true
+  suppress_cpanel_login_alerts: false
+  suppress_blocked_alerts: true
+  # ISO country codes whose traffic is downgraded from auto-block
+  # to alert-only. Keep your operator country here so a misclick
+  # from the office never locks you out.
+  trusted_countries:
+    - "RO"
+
+auto_response:
+  enabled: true
+  dry_run: false              # FLIP AFTER VALIDATION
+  kill_processes: true
+  quarantine_files: true
+  block_ips: true
+  block_expiry: "24h"
+  enforce_permissions: true
+  block_cpanel_logins: true
+  netblock: false
+  netblock_threshold: 3
+  permblock: false
+  permblock_count: 4
+  permblock_interval: "24h"
+  verdict_callback:
+    enabled: false
+    url: ""
+    hmac_secret: ""
+    hmac_secret_env: ""
+    timeout_sec: 2
+
+firewall:
+  enabled: true
+  # SSH (port 22) is intentionally absent. cPanel hosts typically
+  # move sshd to 2087 or a custom port. Uncomment the right entry
+  # before enabling or you will lock yourself out.
+  tcp_in:
+    - 20
+    - 21
+    # - 22
+    - 25
+    - 26
+    - 53
+    - 80
+    - 110
+    - 143
+    - 443
+    - 465
+    - 587
+    - 853
+    - 993
+    - 995
+    - 2077
+    - 2078
+    - 2079
+    - 2080
+    - 2082
+    - 2083
+    - 2091
+    - 2095
+    - 2096
+  tcp_out:
+    - 20
+    - 21
+    - 25
+    - 26
+    - 37
+    - 43
+    - 53
+    - 80
+    - 110
+    - 113
+    - 443
+    - 465
+    - 587
+    - 853
+    - 873
+    - 993
+    - 995
+    - 2082
+    - 2083
+    - 2086
+    - 2087
+    - 2089
+    - 2195
+    - 2325
+    - 2703
+  udp_in:
+    - 53
+    - 443
+    - 853
+  udp_out:
+    - 53
+    - 113
+    - 123
+    - 443
+    - 853
+    - 873
+    - 6277
+    - 24441
+  restricted_tcp:
+    - 2086
+    - 2087
+    - 2325
+    - 9443
+  passive_ftp_start: 49152
+  passive_ftp_end: 65534
+  # 200/min and conn_limit 400 are CGNAT-tolerant. Lower if your
+  # customer base is not behind shared NAT and you want tighter
+  # caps.
+  conn_rate_limit: 200
+  syn_flood_protection: true
+  conn_limit: 400
+  port_flood:
+    - port: 25
+      proto: tcp
+      hits: 600
+      seconds: 300
+    - port: 465
+      proto: tcp
+      hits: 600
+      seconds: 300
+    - port: 587
+      proto: tcp
+      hits: 600
+      seconds: 300
+  udp_flood: true
+  udp_flood_rate: 100
+  udp_flood_burst: 500
+  drop_nolog:
+    - 23
+    - 67
+    - 68
+    - 111
+    - 113
+    - 135
+    - 136
+    - 137
+    - 138
+    - 139
+    - 445
+    - 500
+    - 513
+    - 520
+  deny_ip_limit: 3000
+  deny_temp_ip_limit: 500
+  smtp_block: false
+  smtp_allow_users:
+    - cpanel
+    - mailman
+  smtp_ports:
+    - 25
+    - 465
+    - 587
+  log_dropped: true
+  log_rate: 5
+
+c2_blocklist: []
+backdoor_ports:
+  - 4444
+  - 5555
+  - 55553
+  - 55555
+  - 31337
+
+retention:
+  enabled: true
+  findings_days: 90
+  history_days: 30
+  reputation_days: 180
+  sweep_interval: 24h
+  compact_min_size_mb: 128
+  compact_fill_ratio: 0.5
+
+updates:
+  check_enabled: true
+  interval: "24h"
+  package_name: "csm"
+
+sentry:
+  enabled: false
+  dsn: ""
+  environment: "production"
+  sample_rate: 1.0
+  debug: false
+
+incidents:
+  auto_close:
+    enabled: true
+    dry_run: false
+    by_kind:
+      mailbox_takeover: 24h
+      credential_spray: 24h
+      web_account_compromise: 168h
+
+  # Credential-spray super-incident. Production tuning:
+  # block_at_severity=high so the firewall hand-off fires on the
+  # first sustained burst (distinct_mailboxes inside the 15m
+  # merge window). The "critical" tier is a trap on paced
+  # attackers -- a script that rate-limits below
+  # severity_escalate_at per window never escalates and never
+  # blocks. See docs/incidents for the full trade-off.
+  spray_suppression:
+    enabled: true
+    dry_run: false              # FLIP AFTER 24H DRY-RUN VALIDATION
+    distinct_mailboxes: 10
+    severity_escalate_at: 20
+    per_check:
+      - email_auth_failure_realtime
+      - pam_auth_failure
+      - ssh_bruteforce
+    max_tracked_ips: 20000
+    block_at_severity: "high"
