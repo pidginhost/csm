@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-05-13
+
 ### Added
 
 - `csm doctor challenge` checks challenge public URL, TLS files, port-gate setup, webserver snippets, configtest, and the live gate endpoint.
