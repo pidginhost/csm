@@ -64,6 +64,53 @@ type CorrelatorConfig struct {
 	// super-incident still opens and escalates, but no firewall action
 	// fires.
 	OnSprayBlock func(ip, reason string)
+
+	// AutoBlock turns on the generic incident-driven firewall hand-off
+	// for non-spray kinds. Independent of SpraySuppression; applies to
+	// any incident whose CorrelationKey.RemoteIP is set and whose kind
+	// is allowed by AutoBlock.Kinds (empty = any). Default-zero means
+	// the path is dormant.
+	AutoBlock IncidentAutoBlockConfig
+
+	// CanIncidentBlock is consulted immediately before recording a
+	// generic incident block request. nil means "allowed" when
+	// OnIncidentBlock is present. Lets the daemon recheck
+	// auto_response.enabled / block_ips at decision time so SIGHUP
+	// edits take effect without rebuilding the correlator.
+	CanIncidentBlock func() bool
+
+	// OnIncidentBlock fires once per incident when the generic
+	// auto-block gate trips. The callback runs after the correlator
+	// mutex is released. nil disables the path even when AutoBlock is
+	// configured.
+	OnIncidentBlock func(ip, reason string)
+}
+
+// IncidentAutoBlockConfig drives the generic incident-driven firewall
+// hand-off independent of credential-spray suppression. Operators turn
+// it on once they have validated that incident severity is trustworthy
+// (the daemon does not promote a finding to High/Critical without
+// either an explicit per-check signal or the correlator's threshold
+// gate).
+type IncidentAutoBlockConfig struct {
+	Enabled bool
+	// BlockAtSeverity is the minimum incident severity that triggers
+	// a firewall hand-off. "" / "high" / "critical". Comparison is
+	// case-insensitive. Any other value is ignored so operator typos
+	// cannot accidentally engage blocking.
+	BlockAtSeverity string
+	// Kinds, when non-empty, restricts the auto-block path to the
+	// listed incident kinds. Empty means "every kind that carries a
+	// remote_ip". Credential_spray is implicitly excluded since the
+	// dedicated spray hand-off owns it.
+	Kinds map[Kind]bool
+}
+
+// IsZero reports whether the config is unset; the correlator treats a
+// zero value as "generic auto-block disabled" without touching
+// defaults.
+func (c IncidentAutoBlockConfig) IsZero() bool {
+	return !c.Enabled && c.BlockAtSeverity == "" && len(c.Kinds) == 0
 }
 
 // counters holds the atomic tallies exposed via RegisterMetrics. Kept
@@ -205,6 +252,9 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 		if inc, exists := c.incidents[id]; exists && now.Sub(inc.UpdatedAt) <= incidentMergeWindow {
 			c.mergeLocked(inc, f, now, true)
 			delete(c.pending, keyStr)
+			if cb := c.maybeBlockIncidentLocked(inc, now, "merge"); cb != nil {
+				afterUnlock = cb
+			}
 			return id, false, nil
 		}
 		// Stale binding -- the incident is older than the merge window.
@@ -224,6 +274,9 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 			id := c.createIncidentLocked(key, keyStr, pf.finding, pf.at)
 			inc := c.incidents[id]
 			c.mergeLocked(inc, f, now, true)
+			if cb := c.maybeBlockIncidentLocked(inc, now, "threshold promote"); cb != nil {
+				afterUnlock = cb
+			}
 			return id, true, nil
 		}
 		c.pending[keyStr] = pendingFinding{finding: f, at: now}
@@ -232,6 +285,9 @@ func (c *Correlator) OnFinding(f alert.Finding) (string, bool, error) {
 
 	id := c.createIncidentLocked(key, keyStr, f, now)
 	delete(c.pending, keyStr)
+	if cb := c.maybeBlockIncidentLocked(c.incidents[id], now, "incident opened"); cb != nil {
+		afterUnlock = cb
+	}
 	return id, true, nil
 }
 
@@ -813,6 +869,80 @@ func (c *Correlator) maybeBlockSprayLocked(inc *Incident, ip string, hits int, n
 
 func (c *Correlator) sprayBlockAllowed() bool {
 	return c.cfg.CanSprayBlock == nil || c.cfg.CanSprayBlock()
+}
+
+// maybeBlockIncidentLocked is the decision point for the generic
+// incident-driven firewall hand-off. Runs on every create / merge so
+// an operator who arms AutoBlock AFTER an incident has already crossed
+// the gate still gets a block on the next finding. Idempotent via
+// triggerIncidentBlockLocked's action-presence guard.
+//
+// Skips credential_spray incidents -- the dedicated spray hand-off owns
+// those so we avoid double-firing.
+//
+// Returns the callback that the caller must invoke after releasing
+// c.mu, or nil when no block is owed.
+func (c *Correlator) maybeBlockIncidentLocked(inc *Incident, now time.Time, why string) func() {
+	if inc == nil || c.cfg.OnIncidentBlock == nil || !c.cfg.AutoBlock.Enabled {
+		return nil
+	}
+	if inc.Kind == KindCredentialSpray {
+		return nil
+	}
+	if !c.incidentBlockAllowed() {
+		return nil
+	}
+	if inc.CorrelationKey == nil || inc.CorrelationKey.RemoteIP == "" {
+		return nil
+	}
+	if len(c.cfg.AutoBlock.Kinds) > 0 && !c.cfg.AutoBlock.Kinds[inc.Kind] {
+		return nil
+	}
+	switch strings.ToLower(c.cfg.AutoBlock.BlockAtSeverity) {
+	case "high":
+		if inc.Severity < alert.High {
+			return nil
+		}
+	case "critical":
+		if inc.Severity < alert.Critical {
+			return nil
+		}
+	default:
+		return nil
+	}
+	return c.triggerIncidentBlockLocked(inc, inc.CorrelationKey.RemoteIP, now, why)
+}
+
+func (c *Correlator) incidentBlockAllowed() bool {
+	return c.cfg.CanIncidentBlock == nil || c.cfg.CanIncidentBlock()
+}
+
+// triggerIncidentBlockLocked is the per-incident emit point for the
+// generic auto-block path. Mirrors triggerSprayBlockLocked: appends an
+// "incident_block_requested" action, persists, and returns the deferred
+// callback. Idempotent via the action-presence check so repeated calls
+// against the same incident emit exactly one firewall request.
+func (c *Correlator) triggerIncidentBlockLocked(inc *Incident, ip string, now time.Time, why string) func() {
+	if inc == nil || c.cfg.OnIncidentBlock == nil {
+		return nil
+	}
+	for _, a := range inc.Actions {
+		if a.Action == "incident_block_requested" {
+			return nil
+		}
+	}
+	reason := "incident " + string(inc.Kind) + " " + inc.Severity.String() + " (" + why + ")"
+	inc.Actions = append(inc.Actions, IncidentAction{
+		Time:    now,
+		Action:  "incident_block_requested",
+		Result:  "ok",
+		Details: ip + " " + reason,
+	})
+	c.persistLocked(*inc)
+	onBlock := c.cfg.OnIncidentBlock
+	return func() {
+		onBlock(ip, reason)
+	}
 }
 
 // triggerSprayBlockLocked invokes the operator-supplied OnSprayBlock

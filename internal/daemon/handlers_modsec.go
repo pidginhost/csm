@@ -30,11 +30,30 @@ var (
 )
 
 const (
-	modsecDedupTTL       = 60 * time.Second
-	modsecEscalationWin  = 10 * time.Minute
-	modsecEscalationHits = 3
-	modsecEvictInterval  = 10 * time.Minute
+	modsecDedupTTL              = 60 * time.Second
+	modsecEvictInterval         = 10 * time.Minute
+	modsecDefaultEscalationWin  = 10 * time.Minute
+	modsecDefaultEscalationHits = 3
 )
+
+// modsecEscalationParams returns the operator-tuned (hits, window) pair,
+// falling back to the shipped defaults when either is unset or
+// non-positive. nil cfg returns the defaults so test wiring without a
+// config still behaves predictably.
+func modsecEscalationParams(cfg *config.Config) (int, time.Duration) {
+	hits := modsecDefaultEscalationHits
+	win := modsecDefaultEscalationWin
+	if cfg == nil {
+		return hits, win
+	}
+	if cfg.Thresholds.ModSecEscalationHits > 0 {
+		hits = cfg.Thresholds.ModSecEscalationHits
+	}
+	if cfg.Thresholds.ModSecEscalationWindowMin > 0 {
+		win = time.Duration(cfg.Thresholds.ModSecEscalationWindowMin) * time.Minute
+	}
+	return hits, win
+}
 
 // parseModSecLogLine parses a ModSecurity log line from Apache or LiteSpeed
 // error logs and returns findings for blocked requests or warnings.
@@ -288,7 +307,8 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 	}
 
 	if isBlock && ip != "" && ruleID != "" && !noEscalate {
-		if recordModSecDeny(ip, now) {
+		hits, win := modsecEscalationParams(cfg)
+		if recordModSecDeny(ip, now, hits, win) {
 			check := "modsec_block_escalation"
 			label := "ModSecurity"
 			if isCSM {
@@ -298,7 +318,7 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 			results = append(results, alert.Finding{
 				Severity: alert.Critical,
 				Check:    check,
-				Message:  fmt.Sprintf("%s escalation: %d+ denies from %s within %v", label, modsecEscalationHits, ip, modsecEscalationWin),
+				Message:  fmt.Sprintf("%s escalation: %d+ denies from %s within %v", label, hits, ip, win),
 				Details:  truncateDaemon(line, 400),
 				SourceIP: ip,
 			})
@@ -322,10 +342,12 @@ func parseModSecLogLineDeduped(line string, cfg *config.Config) []alert.Finding 
 	return results
 }
 
-// recordModSecDeny records a deny event for the given IP and returns true if the
-// escalation threshold has been reached (>= modsecEscalationHits within the
-// escalation window).
-func recordModSecDeny(ip string, now time.Time) bool {
+// recordModSecDeny records a deny event for the given IP and returns true
+// if the escalation threshold has been reached (>= hits within window).
+// hits and window are operator-configurable knobs; recordModSecDeny does
+// no defaulting -- callers pull defaults via modsecEscalationParams so
+// every code path uses the same fallback rule.
+func recordModSecDeny(ip string, now time.Time, hits int, window time.Duration) bool {
 	val, _ := modsecBlockCount.LoadOrStore(ip, &modsecIPCounter{})
 	ctr := val.(*modsecIPCounter)
 
@@ -333,7 +355,7 @@ func recordModSecDeny(ip string, now time.Time) bool {
 	defer ctr.mu.Unlock()
 
 	// Prune entries older than the escalation window.
-	cutoff := now.Add(-modsecEscalationWin)
+	cutoff := now.Add(-window)
 	recent := ctr.times[:0]
 	for _, t := range ctr.times {
 		if !t.Before(cutoff) {
@@ -343,7 +365,7 @@ func recordModSecDeny(ip string, now time.Time) bool {
 	recent = append(recent, now)
 	ctr.times = recent
 
-	if len(recent) >= modsecEscalationHits && !ctr.escalated {
+	if len(recent) >= hits && !ctr.escalated {
 		ctr.escalated = true
 		return true
 	}
@@ -352,8 +374,13 @@ func recordModSecDeny(ip string, now time.Time) bool {
 
 // StartModSecEviction starts a background goroutine that prunes expired dedup
 // and counter entries every modsecEvictInterval to prevent unbounded memory
-// growth. It returns when stopCh is closed.
-func StartModSecEviction(stopCh <-chan struct{}) {
+// growth. It returns when stopCh is closed. cfgFn supplies the live
+// thresholds at each tick so SIGHUP edits to the escalation window take
+// effect without restarting the evictor.
+func StartModSecEviction(stopCh <-chan struct{}, cfgFn func() *config.Config) {
+	if cfgFn == nil {
+		cfgFn = func() *config.Config { return nil }
+	}
 	obs.Go("modsec-eviction", func() {
 		ticker := time.NewTicker(modsecEvictInterval)
 		defer ticker.Stop()
@@ -362,7 +389,8 @@ func StartModSecEviction(stopCh <-chan struct{}) {
 			case <-stopCh:
 				return
 			case now := <-ticker.C:
-				evictModSecState(now)
+				hits, win := modsecEscalationParams(cfgFn())
+				evictModSecState(now, hits, win)
 			}
 		}
 	})
@@ -390,7 +418,9 @@ func firstExistingPath(candidates []string) string {
 }
 
 // evictModSecState prunes expired entries from modsecDedup and modsecBlockCount.
-func evictModSecState(now time.Time) {
+// hits and window mirror the live thresholds so the cooldown reset matches
+// what recordModSecDeny would compute on the next event.
+func evictModSecState(now time.Time, hits int, window time.Duration) {
 	// Prune dedup entries older than modsecDedupTTL.
 	modsecDedup.Range(func(key, value any) bool {
 		if now.Sub(value.(time.Time)) >= modsecDedupTTL {
@@ -400,7 +430,7 @@ func evictModSecState(now time.Time) {
 	})
 
 	// Prune counter entries.
-	cutoff := now.Add(-modsecEscalationWin)
+	cutoff := now.Add(-window)
 	modsecBlockCount.Range(func(key, value any) bool {
 		ctr := value.(*modsecIPCounter)
 		ctr.mu.Lock()
@@ -412,7 +442,7 @@ func evictModSecState(now time.Time) {
 		}
 		ctr.times = recent
 		empty := len(recent) == 0
-		if len(recent) < modsecEscalationHits {
+		if len(recent) < hits {
 			ctr.escalated = false // reset cooldown when counter drops below threshold
 		}
 		ctr.mu.Unlock()

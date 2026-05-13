@@ -1466,7 +1466,7 @@ func (d *Daemon) startLogWatchers() {
 	}
 
 	// Start background eviction for modsec dedup/escalation state
-	StartModSecEviction(d.stopCh)
+	StartModSecEviction(d.stopCh, func() *config.Config { return d.cfg })
 
 	// Start background eviction for access log brute force state
 	StartAccessLogEviction(d.stopCh)

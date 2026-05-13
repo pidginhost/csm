@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Status health now includes automation rollout state: dry-run block count, challenge pending count, port-gate activity, pending firewall rollback, and the last automation action.
 - Production reference config at `configs/csm.yaml.production.example` covers the fields operators routinely tune (auto-response, firewall, spray suppression, retention) so a new install can start from a known-good profile.
 - Incidents Grouped tab now paginates with the same page-size selector as Correlated, and both detail panels surface the current firewall block state for the incident's source IP so operators can see at a glance whether the source is already blocked.
+- Generic incident-driven firewall hand-off `incidents.auto_block` blocks the source IP when any non-spray incident reaches the configured severity, catching low-and-slow attackers that never trip per-detector windows.
+- ModSecurity escalation hits and window are now operator-tunable via `thresholds.modsec_escalation_hits` and `thresholds.modsec_escalation_window_min`, so paced scanners spreading denies across hours can be caught by raising the window without lowering the hit floor.
 
 ### Docs
 

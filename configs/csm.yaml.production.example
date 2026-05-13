@@ -107,6 +107,12 @@ thresholds:
   mail_bruteforce_subnet_threshold: 8
   mail_account_spray_threshold: 12
   mail_bruteforce_max_tracked: 20000
+  # ModSecurity escalation. Defaults of 3 hits / 10m miss low-and-slow
+  # scanners that spread denies across hours. Raising the window to 4h
+  # while keeping hits at 3 catches paced attackers without triggering
+  # on isolated false-positives.
+  modsec_escalation_hits: 3
+  modsec_escalation_window_min: 240
 
 state_path: "/opt/csm/state"
 
@@ -338,3 +344,14 @@ incidents:
       - ssh_bruteforce
     max_tracked_ips: 20000
     block_at_severity: "high"
+
+  # Generic incident-driven auto-block. Catches paced attackers that
+  # never trip per-detector windows (e.g. modsec hits spread across
+  # hours). Blocks at CRITICAL because the correlator only promotes an
+  # incident to CRITICAL on strong signals (modsec escalation, account
+  # compromise, cloud-relay abuse). credential_spray is excluded -- the
+  # spray_suppression hand-off owns it.
+  auto_block:
+    enabled: true
+    block_at_severity: "critical"
+    kinds: []

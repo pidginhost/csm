@@ -136,6 +136,42 @@ Metrics: `csm_credential_spray_opened_total`,
 `csm_credential_spray_dry_run_total`,
 `csm_credential_spray_tracked_ips`.
 
+## Incident auto-block
+
+`spray_suppression` only handles the credential_spray super-incident
+kind. Low-and-slow scanners that never trip a per-detector window
+(modsec escalation, mail brute-force, smtp probe) still produce
+mailbox_takeover or web_account_compromise incidents but never get
+firewalled. The `incidents.auto_block` block adds a generic
+incident-driven firewall hand-off:
+
+```yaml
+incidents:
+  auto_block:
+    enabled: false           # default OFF; opt-in
+    block_at_severity: ""    # "" / "high" / "critical"
+    kinds: []                # empty = any non-spray kind with a remote_ip
+```
+
+When the gate trips, the correlator records an
+`incident_block_requested` action on the incident and hands the source
+IP to the firewall through the same dry-run / block_ips gate as the
+spray path. Idempotent per incident; the open and merge paths both
+re-evaluate so an operator who arms `auto_block` AFTER an incident has
+already crossed the gate still gets a block on the next finding.
+
+credential_spray is explicitly excluded from this path; the dedicated
+spray hand-off owns it. Set `kinds` to narrow the surface (e.g. only
+`web_account_compromise`) if you do not want every CRITICAL
+mailbox_takeover incident to block its source IP.
+
+This pairs naturally with the ModSecurity escalation thresholds
+(`thresholds.modsec_escalation_hits`,
+`thresholds.modsec_escalation_window_min`) -- raising the window from
+the shipped default of 10 minutes to e.g. 4 hours lets the modsec
+detector promote paced scanners to a Critical escalation finding,
+which then trips the generic auto_block gate.
+
 ## Kinds
 
 - `web_account_compromise` -- default for findings attributable to a

@@ -44,7 +44,7 @@ func TestEvictModSecStateRemovesOld(t *testing.T) {
 	modsecDedup.Store("203.0.113.5:920420", old)
 	defer modsecDedup.Delete("203.0.113.5:920420")
 
-	evictModSecState(time.Now())
+	evictModSecState(time.Now(), 3, 10*time.Minute)
 
 	if _, loaded := modsecDedup.Load("203.0.113.5:920420"); loaded {
 		t.Error("old dedup entry should be evicted")

@@ -484,7 +484,7 @@ func TestLogWatcher_ReadNewLines_ChannelFull(t *testing.T) {
 
 func TestStartModSecEviction_StopsOnSignal(t *testing.T) {
 	stopCh := make(chan struct{})
-	StartModSecEviction(stopCh)
+	StartModSecEviction(stopCh, func() *config.Config { return nil })
 	close(stopCh)
 	// Give goroutine time to exit. No assertion beyond "doesn't hang."
 	time.Sleep(50 * time.Millisecond)

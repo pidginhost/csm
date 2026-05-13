@@ -141,6 +141,18 @@ type Config struct {
 		//   - builtin:postfix-sasl           - match `sasl_username=<...>`
 		//   - regex:<pattern>                - capture group 1 is the account
 		MailBruteAccountKey string `yaml:"mail_brute_account_key,omitempty"`
+
+		// ModSecEscalationHits is the number of ModSecurity denies from a
+		// single source IP, inside ModSecEscalationWindowMin, that
+		// promote the IP from "logged" to "escalated" (Critical finding
+		// + firewall hand-off). Default 3. Lower it on hosts where
+		// low-and-slow scanners go below the floor for too long.
+		ModSecEscalationHits int `yaml:"modsec_escalation_hits"`
+		// ModSecEscalationWindowMin is the sliding-window size for the
+		// hit counter. Default 10. Bumping it (e.g. to 60-240) catches
+		// paced attackers that spread denies across hours without
+		// changing the trip count.
+		ModSecEscalationWindowMin int `yaml:"modsec_escalation_window_min"`
 	} `yaml:"thresholds" hotreload:"safe"`
 
 	InfraIPs []string `yaml:"infra_ips" hotreload:"restart"`
@@ -701,6 +713,18 @@ type Config struct {
 			// gate the actual firewall call.
 			BlockAtSeverity string `yaml:"block_at_severity"`
 		} `yaml:"spray_suppression"`
+
+		// AutoBlock is the generic incident-driven firewall hand-off.
+		// Independent of SpraySuppression; applies to any non-spray
+		// incident kind that carries a remote_ip in its correlation
+		// key. Default-OFF so the path is dormant until an operator
+		// opts in. Block requests still respect auto_response.enabled
+		// and auto_response.block_ips at decision time.
+		AutoBlock struct {
+			Enabled         bool     `yaml:"enabled"`
+			BlockAtSeverity string   `yaml:"block_at_severity"`
+			Kinds           []string `yaml:"kinds"`
+		} `yaml:"auto_block"`
 	} `yaml:"incidents" hotreload:"restart"`
 }
 
@@ -776,6 +800,20 @@ func defaultIncidentAutoCloseThresholds() map[string]time.Duration {
 		"credential_spray":       24 * time.Hour,
 		"web_account_compromise": 7 * 24 * time.Hour,
 	}
+}
+
+// IncidentsAutoBlockKinds returns the configured kinds set in the shape
+// the correlator expects. Empty result means "any non-spray kind".
+func (cfg *Config) IncidentsAutoBlockKinds() map[string]bool {
+	src := cfg.Incidents.AutoBlock.Kinds
+	out := make(map[string]bool, len(src))
+	for _, k := range src {
+		if k == "" {
+			continue
+		}
+		out[k] = true
+	}
+	return out
 }
 
 // IncidentsSpraySuppressionPerCheck returns the configured per-check map
@@ -913,6 +951,12 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.Thresholds.BruteForceWindow == 0 {
 		cfg.Thresholds.BruteForceWindow = 5000
+	}
+	if cfg.Thresholds.ModSecEscalationHits == 0 {
+		cfg.Thresholds.ModSecEscalationHits = 3
+	}
+	if cfg.Thresholds.ModSecEscalationWindowMin == 0 {
+		cfg.Thresholds.ModSecEscalationWindowMin = 10
 	}
 	if cfg.Thresholds.SMTPBruteForceThreshold == 0 {
 		cfg.Thresholds.SMTPBruteForceThreshold = 5

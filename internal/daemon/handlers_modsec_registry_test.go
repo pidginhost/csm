@@ -109,7 +109,7 @@ func TestLiteSpeedPassActionDoesNotEscalate(t *testing.T) {
 	installModSecRegistryForTest(t, map[int]string{210710: "pass"})
 
 	cfg := &config.Config{}
-	for i := 0; i < modsecEscalationHits+1; i++ {
+	for i := 0; i < modsecDefaultEscalationHits+1; i++ {
 		findings := parseModSecLogLineDeduped(liteSpeedTriggerLine210710, cfg)
 		for _, f := range findings {
 			if f.Check == "modsec_block_escalation" || f.Check == "modsec_csm_block_escalation" {
@@ -143,7 +143,7 @@ func TestLiteSpeedDenyActionStillEscalates(t *testing.T) {
 
 	cfg := &config.Config{}
 	escalated := false
-	for i := 0; i < modsecEscalationHits+1; i++ {
+	for i := 0; i < modsecDefaultEscalationHits+1; i++ {
 		findings := parseModSecLogLineDeduped(liteSpeedTriggerLine949110, cfg)
 		for _, f := range findings {
 			if f.Check == "modsec_block_escalation" {

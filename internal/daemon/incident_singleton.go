@@ -74,8 +74,10 @@ func IncidentCorrelator() *incident.Correlator {
 		// Resolve spray-suppression knobs from the active config. nil
 		// config (early test wiring) leaves the detector disabled.
 		var spray incident.SpraySuppressionConfig
+		var autoBlock incident.IncidentAutoBlockConfig
 		var whitelisted func(string) bool
 		var onSprayBlock func(ip, reason string)
+		var onIncidentBlock func(ip, reason string)
 		if cfg := globalCfgForIncidents(); cfg != nil {
 			spray = incident.SpraySuppressionConfig{
 				Enabled:            cfg.Incidents.SpraySuppression.Enabled,
@@ -107,6 +109,35 @@ func IncidentCorrelator() *incident.Correlator {
 					}
 				}
 			}
+			// Generic incident-driven auto-block. Reuses the same firewall
+			// blocker as the spray path; the reason prefix differs so audit
+			// log rows distinguish which detector triggered the block.
+			kindsRaw := cfg.IncidentsAutoBlockKinds()
+			kinds := make(map[incident.Kind]bool, len(kindsRaw))
+			for k := range kindsRaw {
+				kinds[incident.Kind(k)] = true
+			}
+			autoBlock = incident.IncidentAutoBlockConfig{
+				Enabled:         cfg.Incidents.AutoBlock.Enabled,
+				BlockAtSeverity: cfg.Incidents.AutoBlock.BlockAtSeverity,
+				Kinds:           kinds,
+			}
+			if autoBlock.Enabled && autoBlock.BlockAtSeverity != "" && incidentSprayBlocker != nil {
+				blocker := incidentSprayBlocker
+				onIncidentBlock = func(ip, reason string) {
+					liveCfg := globalCfgForIncidents()
+					if liveCfg == nil || !liveCfg.AutoResponse.Enabled || !liveCfg.AutoResponse.BlockIPs {
+						return
+					}
+					timeout, perr := time.ParseDuration(liveCfg.AutoResponse.BlockExpiry)
+					if perr != nil || timeout <= 0 {
+						timeout = 24 * time.Hour
+					}
+					if err := blocker(ip, "CSM incident: "+reason, timeout); err != nil {
+						csmlog.Warn("incident auto-block failed", "ip", ip, "err", err)
+					}
+				}
+			}
 			// Whitelist accessor: prefer the bbolt-backed live whitelist
 			// (operators add IPs at runtime), fall back to the static
 			// reputation.whitelist list. db nil-check inside the closure
@@ -134,12 +165,18 @@ func IncidentCorrelator() *incident.Correlator {
 			Persist:          persist,
 			OpenThreshold:    incidentOpenThreshold,
 			SpraySuppression: spray,
+			AutoBlock:        autoBlock,
 			IsWhitelisted:    whitelisted,
 			CanSprayBlock: func() bool {
 				cfg := globalCfgForIncidents()
 				return cfg != nil && cfg.AutoResponse.Enabled && cfg.AutoResponse.BlockIPs
 			},
-			OnSprayBlock: onSprayBlock,
+			CanIncidentBlock: func() bool {
+				cfg := globalCfgForIncidents()
+				return cfg != nil && cfg.AutoResponse.Enabled && cfg.AutoResponse.BlockIPs
+			},
+			OnSprayBlock:    onSprayBlock,
+			OnIncidentBlock: onIncidentBlock,
 		})
 		if db != nil {
 			if list, err := db.ListIncidents(); err == nil {

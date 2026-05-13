@@ -227,7 +227,7 @@ func TestModSecWarningDoesNotEscalate(t *testing.T) {
 	cfg := &config.Config{}
 	line := `2026-04-01 17:13:53.887905 [NOTICE] [2288689] [T1] [122.9.114.57:41920-13#APVH_*_server.example.com] [MODSEC] mod_security rule [id "920170"] matched`
 
-	for i := 0; i < modsecEscalationHits+1; i++ {
+	for i := 0; i < modsecDefaultEscalationHits+1; i++ {
 		findings := parseModSecLogLineDeduped(line, cfg)
 		for _, f := range findings {
 			if f.Check == "modsec_block_escalation" || f.Check == "modsec_csm_block_escalation" {
@@ -243,7 +243,7 @@ func TestModSecBlockWithoutRuleIDDoesNotEscalate(t *testing.T) {
 	cfg := &config.Config{}
 	line := `[Wed Apr 01 15:15:05 2026] [error] [client 10.20.30.41] ModSecurity: Access denied with code 403, [msg "missing rule id"] [hostname "example.com"] [uri "/test"]`
 
-	for i := 0; i < modsecEscalationHits+1; i++ {
+	for i := 0; i < modsecDefaultEscalationHits+1; i++ {
 		findings := parseModSecLogLineDeduped(line, cfg)
 		for _, f := range findings {
 			if f.Check == "modsec_block_escalation" || f.Check == "modsec_csm_block_escalation" {
