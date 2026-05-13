@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"sort"
 	"strconv"
 	"strings"
@@ -66,10 +67,10 @@ type CorrelatorConfig struct {
 	OnSprayBlock func(ip, reason string)
 
 	// AutoBlock turns on the generic incident-driven firewall hand-off
-	// for non-spray kinds. Independent of SpraySuppression; applies to
-	// any incident whose CorrelationKey.RemoteIP is set and whose kind
-	// is allowed by AutoBlock.Kinds (empty = any). Default-zero means
-	// the path is dormant.
+	// for non-spray kinds. Independent of SpraySuppression; applies when
+	// an incident has exactly one unambiguous remote IP and its kind is
+	// allowed by AutoBlock.Kinds (empty = any). Default-zero means the
+	// path is dormant.
 	AutoBlock IncidentAutoBlockConfig
 
 	// CanIncidentBlock is consulted immediately before recording a
@@ -79,11 +80,13 @@ type CorrelatorConfig struct {
 	// edits take effect without rebuilding the correlator.
 	CanIncidentBlock func() bool
 
-	// OnIncidentBlock fires once per incident when the generic
-	// auto-block gate trips. The callback runs after the correlator
-	// mutex is released. nil disables the path even when AutoBlock is
-	// configured.
-	OnIncidentBlock func(ip, reason string)
+	// OnIncidentBlock fires when the generic auto-block gate trips. The
+	// callback runs after the correlator mutex is released and returns
+	// true only when a live block request was accepted. Dry-run,
+	// disabled, and failed attempts must return false so the correlator
+	// can retry on the next finding instead of permanently latching the
+	// incident. nil disables the path even when AutoBlock is configured.
+	OnIncidentBlock func(ip, reason string) bool
 }
 
 // IncidentAutoBlockConfig drives the generic incident-driven firewall
@@ -100,9 +103,9 @@ type IncidentAutoBlockConfig struct {
 	// cannot accidentally engage blocking.
 	BlockAtSeverity string
 	// Kinds, when non-empty, restricts the auto-block path to the
-	// listed incident kinds. Empty means "every kind that carries a
-	// remote_ip". Credential_spray is implicitly excluded since the
-	// dedicated spray hand-off owns it.
+	// listed incident kinds. Empty means "every kind that carries one
+	// unambiguous remote IP". Credential_spray is implicitly excluded
+	// since the dedicated spray hand-off owns it.
 	Kinds map[Kind]bool
 }
 
@@ -132,15 +135,16 @@ type counters struct {
 // Correlator groups findings into incidents. In-memory state; the
 // daemon is responsible for wiring it to a store via CorrelatorConfig.Persist.
 type Correlator struct {
-	mu            sync.Mutex
-	cfg           CorrelatorConfig
-	incidents     map[string]*Incident
-	byKey         map[string]string
-	pending       map[string]pendingFinding
-	openThreshold int
-	now           func() time.Time
-	counters      counters
-	spray         *sprayDetector
+	mu                    sync.Mutex
+	cfg                   CorrelatorConfig
+	incidents             map[string]*Incident
+	byKey                 map[string]string
+	pending               map[string]pendingFinding
+	pendingIncidentBlocks map[string]struct{}
+	openThreshold         int
+	now                   func() time.Time
+	counters              counters
+	spray                 *sprayDetector
 }
 
 // pendingFinding is a finding seen for a key that has not yet met the
@@ -159,12 +163,13 @@ func NewCorrelator(cfg CorrelatorConfig) *Correlator {
 		threshold = 1
 	}
 	c := &Correlator{
-		cfg:           cfg,
-		incidents:     map[string]*Incident{},
-		byKey:         map[string]string{},
-		pending:       map[string]pendingFinding{},
-		openThreshold: threshold,
-		now:           time.Now,
+		cfg:                   cfg,
+		incidents:             map[string]*Incident{},
+		byKey:                 map[string]string{},
+		pending:               map[string]pendingFinding{},
+		pendingIncidentBlocks: map[string]struct{}{},
+		openThreshold:         threshold,
+		now:                   time.Now,
 	}
 	c.spray = newSprayDetector(cfg.SpraySuppression, incidentMergeWindow, func() time.Time { return c.now() }, cfg.IsWhitelisted)
 	return c
@@ -874,8 +879,8 @@ func (c *Correlator) sprayBlockAllowed() bool {
 // maybeBlockIncidentLocked is the decision point for the generic
 // incident-driven firewall hand-off. Runs on every create / merge so
 // an operator who arms AutoBlock AFTER an incident has already crossed
-// the gate still gets a block on the next finding. Idempotent via
-// triggerIncidentBlockLocked's action-presence guard.
+// the gate still gets a block on the next finding. Idempotent via the
+// action-presence and in-flight guards in triggerIncidentBlockLocked.
 //
 // Skips credential_spray incidents -- the dedicated spray hand-off owns
 // those so we avoid double-firing.
@@ -889,10 +894,14 @@ func (c *Correlator) maybeBlockIncidentLocked(inc *Incident, now time.Time, why 
 	if inc.Kind == KindCredentialSpray {
 		return nil
 	}
+	if c.sprayOwnsIncident(inc) {
+		return nil
+	}
 	if !c.incidentBlockAllowed() {
 		return nil
 	}
-	if inc.CorrelationKey == nil || inc.CorrelationKey.RemoteIP == "" {
+	ip := incidentBlockCandidate(inc)
+	if ip == "" {
 		return nil
 	}
 	if len(c.cfg.AutoBlock.Kinds) > 0 && !c.cfg.AutoBlock.Kinds[inc.Kind] {
@@ -910,7 +919,7 @@ func (c *Correlator) maybeBlockIncidentLocked(inc *Incident, now time.Time, why 
 	default:
 		return nil
 	}
-	return c.triggerIncidentBlockLocked(inc, inc.CorrelationKey.RemoteIP, now, why)
+	return c.triggerIncidentBlockLocked(inc, ip, now, why)
 }
 
 func (c *Correlator) incidentBlockAllowed() bool {
@@ -918,31 +927,113 @@ func (c *Correlator) incidentBlockAllowed() bool {
 }
 
 // triggerIncidentBlockLocked is the per-incident emit point for the
-// generic auto-block path. Mirrors triggerSprayBlockLocked: appends an
-// "incident_block_requested" action, persists, and returns the deferred
-// callback. Idempotent via the action-presence check so repeated calls
-// against the same incident emit exactly one firewall request.
+// generic auto-block path. It marks the incident as in-flight, returns
+// the deferred callback, then appends "incident_block_requested" only
+// when the callback reports a live block request. Dry-run attempts are
+// intentionally not latched so a later finding can retry after the
+// operator disables dry-run.
 func (c *Correlator) triggerIncidentBlockLocked(inc *Incident, ip string, now time.Time, why string) func() {
 	if inc == nil || c.cfg.OnIncidentBlock == nil {
 		return nil
 	}
-	for _, a := range inc.Actions {
-		if a.Action == "incident_block_requested" {
-			return nil
-		}
+	if hasIncidentAction(inc.Actions, "incident_block_requested") {
+		return nil
 	}
+	if _, ok := c.pendingIncidentBlocks[inc.ID]; ok {
+		return nil
+	}
+	c.pendingIncidentBlocks[inc.ID] = struct{}{}
+	incidentID := inc.ID
 	reason := "incident " + string(inc.Kind) + " " + inc.Severity.String() + " (" + why + ")"
-	inc.Actions = append(inc.Actions, IncidentAction{
-		Time:    now,
-		Action:  "incident_block_requested",
-		Result:  "ok",
-		Details: ip + " " + reason,
-	})
-	c.persistLocked(*inc)
 	onBlock := c.cfg.OnIncidentBlock
 	return func() {
-		onBlock(ip, reason)
+		live := onBlock(ip, reason)
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		delete(c.pendingIncidentBlocks, incidentID)
+		if !live {
+			return
+		}
+		current, ok := c.incidents[incidentID]
+		if !ok || hasIncidentAction(current.Actions, "incident_block_requested") {
+			return
+		}
+		current.Actions = append(current.Actions, IncidentAction{
+			Time:    now,
+			Action:  "incident_block_requested",
+			Result:  "ok",
+			Details: ip + " " + reason,
+		})
+		c.persistLocked(*current)
 	}
+}
+
+func incidentBlockCandidate(inc *Incident) string {
+	if inc == nil {
+		return ""
+	}
+	if inc.CorrelationKey != nil {
+		if ip := normalizeIncidentRemoteIP(inc.CorrelationKey.RemoteIP); ip != "" {
+			return ip
+		}
+	}
+	var candidate string
+	for _, ev := range inc.Timeline {
+		ip := normalizeIncidentRemoteIP(ev.RemoteIP)
+		if ip == "" {
+			continue
+		}
+		if candidate == "" {
+			candidate = ip
+			continue
+		}
+		if candidate != ip {
+			return ""
+		}
+	}
+	return candidate
+}
+
+func (c *Correlator) sprayOwnsIncident(inc *Incident) bool {
+	if c == nil || c.spray == nil || inc == nil {
+		return false
+	}
+	owned := false
+	for _, ev := range inc.Timeline {
+		if ev.RemoteIP == "" {
+			continue
+		}
+		if !c.spray.cfg.PerCheck[ev.Check] {
+			return false
+		}
+		owned = true
+	}
+	return owned
+}
+
+func normalizeIncidentRemoteIP(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(raw); err == nil {
+		raw = host
+	}
+	raw = strings.Trim(raw, "[]")
+	ip := net.ParseIP(raw)
+	if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
+		return ""
+	}
+	return ip.String()
+}
+
+func hasIncidentAction(actions []IncidentAction, action string) bool {
+	for _, a := range actions {
+		if a.Action == action {
+			return true
+		}
+	}
+	return false
 }
 
 // triggerSprayBlockLocked invokes the operator-supplied OnSprayBlock
@@ -955,10 +1046,8 @@ func (c *Correlator) triggerSprayBlockLocked(inc *Incident, ip string, hits int,
 	if inc == nil || c.cfg.OnSprayBlock == nil {
 		return nil
 	}
-	for _, a := range inc.Actions {
-		if a.Action == "credential_spray_block_requested" {
-			return nil
-		}
+	if hasIncidentAction(inc.Actions, "credential_spray_block_requested") {
+		return nil
 	}
 	reason := "credential_spray: " + strconv.Itoa(hits) + " distinct mailboxes (" + why + ")"
 	inc.Actions = append(inc.Actions, IncidentAction{

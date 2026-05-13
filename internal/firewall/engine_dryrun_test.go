@@ -5,6 +5,8 @@ package firewall
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -115,6 +117,36 @@ func TestBlockIP_DryRunPreservesInfraSafetyCheck(t *testing.T) {
 	}
 	if recorded {
 		t.Fatal("dry-run recorder was called for an IP live blocking would refuse")
+	}
+}
+
+func TestBlockIPAlreadyBlockedNoopsBeforeNftablesAndAudit(t *testing.T) {
+	dir := t.TempDir()
+	e := &Engine{
+		cfg:           &FirewallConfig{Enabled: true, DenyTempIPLimit: 1},
+		statePath:     dir,
+		dryRunEnabled: func() bool { return false },
+	}
+	e.saveBlockedEntry(BlockedEntry{
+		IP:        "192.0.2.4",
+		Reason:    "first block",
+		BlockedAt: time.Now().Add(-time.Minute),
+		ExpiresAt: time.Now().Add(time.Hour),
+	})
+
+	if err := e.BlockIP("192.0.2.4", "duplicate block", time.Hour); err != nil {
+		t.Fatalf("duplicate BlockIP returned error: %v", err)
+	}
+
+	state := e.loadStateFile()
+	if len(state.Blocked) != 1 {
+		t.Fatalf("blocked state entries = %d, want 1", len(state.Blocked))
+	}
+	if state.Blocked[0].Reason != "first block" {
+		t.Fatalf("blocked reason = %q, want first block", state.Blocked[0].Reason)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "audit.jsonl")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("duplicate block wrote audit log or unexpected stat error: %v", err)
 	}
 }
 

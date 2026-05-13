@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Incident auto-block now retries after dry-run, uses a single source IP from mailbox/account incidents, and avoids duplicate firewall mutations when the legacy auto-block path already blocked the IP.
 - Challenge hardening now rejects invalid listener ports early, lets visitors retry after a failed CAPTCHA response, and keeps IPv6-only port gates from touching IPv4 entries.
 - Firewall Blocked IPs view now lets operators choose and persist page size so large block lists are not capped at the first page.
 - `challenge.listen_port` now rejects empty listener ports when challenge mode is enabled, while still rejecting out-of-range ports before enablement.

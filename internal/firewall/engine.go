@@ -1256,8 +1256,12 @@ func (e *Engine) BlockIP(ip string, reason string, timeout time.Duration) error 
 	// Local safety checks always run before consulting the external callback.
 	// The callback can downgrade a block decision, but it cannot bypass
 	// malformed-IP, IPv6-disabled, infra-IP, or block-limit guards.
-	if err := e.validateBlockIP(ip, timeout); err != nil {
+	alreadyBlocked, err := e.validateBlockIP(ip, timeout, true)
+	if err != nil {
 		return err
+	}
+	if alreadyBlocked {
+		return nil
 	}
 
 	// Verdict gate: consult the panel after local validation and before the
@@ -1289,7 +1293,7 @@ func (e *Engine) BlockIP(ip string, reason string, timeout time.Duration) error 
 		e.recordDryRunBlock(ip, reason, timeout)
 		return nil
 	}
-	return e.blockIPLocked(ip, reason, timeout)
+	return e.blockIPLocked(ip, reason, timeout, true)
 }
 
 func (e *Engine) autoResponseDryRunEnabled() bool {
@@ -1303,7 +1307,7 @@ func (e *Engine) autoResponseDryRunEnabled() bool {
 // auto_response.dry_run gate. Use this for operator-initiated commands (CLI,
 // Web UI manual block) where the operator has explicitly decided to block.
 func (e *Engine) BlockIPForce(ip string, reason string, timeout time.Duration) error {
-	return e.blockIPLocked(ip, reason, timeout)
+	return e.blockIPLocked(ip, reason, timeout, false)
 }
 
 // recordDryRunBlock persists a dry-run record through the daemon-installed
@@ -1319,13 +1323,16 @@ func (e *Engine) recordDryRunBlock(ip, reason string, timeout time.Duration) {
 }
 
 // blockIPLocked is the real implementation called by both BlockIP and BlockIPForce.
-func (e *Engine) blockIPLocked(ip string, reason string, timeout time.Duration) error {
+func (e *Engine) blockIPLocked(ip string, reason string, timeout time.Duration, skipExisting bool) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	targetSet, key, err := e.blockIPTarget(ip, timeout)
+	targetSet, key, alreadyBlocked, err := e.blockIPTarget(ip, timeout, skipExisting)
 	if err != nil {
 		return err
+	}
+	if alreadyBlocked {
+		return nil
 	}
 
 	elem := []nftables.SetElement{{Key: key, Timeout: timeout}}
@@ -1352,17 +1359,17 @@ func (e *Engine) blockIPLocked(ip string, reason string, timeout time.Duration) 
 	return nil
 }
 
-func (e *Engine) validateBlockIP(ip string, timeout time.Duration) error {
+func (e *Engine) validateBlockIP(ip string, timeout time.Duration, skipExisting bool) (bool, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	_, _, err := e.blockIPTarget(ip, timeout)
-	return err
+	_, _, alreadyBlocked, err := e.blockIPTarget(ip, timeout, skipExisting)
+	return alreadyBlocked, err
 }
 
-func (e *Engine) blockIPTarget(ip string, timeout time.Duration) (*nftables.Set, []byte, error) {
+func (e *Engine) blockIPTarget(ip string, timeout time.Duration, skipExisting bool) (*nftables.Set, []byte, bool, error) {
 	targetSet, key, err := e.resolveIPSet(ip, e.setBlocked, e.setBlocked6)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
 	parsed := net.ParseIP(ip)
 
@@ -1371,18 +1378,22 @@ func (e *Engine) blockIPTarget(ip string, timeout time.Duration) (*nftables.Set,
 		_, network, cidrErr := net.ParseCIDR(cidr)
 		if cidrErr != nil {
 			if cidr == ip {
-				return nil, nil, fmt.Errorf("refusing to block infra IP: %s", ip)
+				return nil, nil, false, fmt.Errorf("refusing to block infra IP: %s", ip)
 			}
 			continue
 		}
 		if network.Contains(parsed) {
-			return nil, nil, fmt.Errorf("refusing to block infra IP: %s (in %s)", ip, cidr)
+			return nil, nil, false, fmt.Errorf("refusing to block infra IP: %s (in %s)", ip, cidr)
 		}
+	}
+
+	st := e.loadStateFile()
+	if skipExisting && firewallStateHasBlocked(st, ip) {
+		return targetSet, key, true, nil
 	}
 
 	// Enforce deny IP limits
 	if e.cfg.DenyIPLimit > 0 || e.cfg.DenyTempIPLimit > 0 {
-		st := e.loadStateFile()
 		perm, temp := 0, 0
 		for _, b := range st.Blocked {
 			if b.ExpiresAt.IsZero() {
@@ -1392,14 +1403,23 @@ func (e *Engine) blockIPTarget(ip string, timeout time.Duration) (*nftables.Set,
 			}
 		}
 		if timeout == 0 && e.cfg.DenyIPLimit > 0 && perm >= e.cfg.DenyIPLimit {
-			return nil, nil, fmt.Errorf("permanent deny limit reached (%d)", e.cfg.DenyIPLimit)
+			return nil, nil, false, fmt.Errorf("permanent deny limit reached (%d)", e.cfg.DenyIPLimit)
 		}
 		if timeout > 0 && e.cfg.DenyTempIPLimit > 0 && temp >= e.cfg.DenyTempIPLimit {
-			return nil, nil, fmt.Errorf("temporary deny limit reached (%d)", e.cfg.DenyTempIPLimit)
+			return nil, nil, false, fmt.Errorf("temporary deny limit reached (%d)", e.cfg.DenyTempIPLimit)
 		}
 	}
 
-	return targetSet, key, nil
+	return targetSet, key, false, nil
+}
+
+func firewallStateHasBlocked(state FirewallState, ip string) bool {
+	for _, entry := range state.Blocked {
+		if entry.IP == ip {
+			return true
+		}
+	}
+	return false
 }
 
 // UnblockIP removes an IP from the blocked set and state.

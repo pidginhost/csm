@@ -9,6 +9,11 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 )
 
+func (b *blockCapture) recordOK(ip, reason string) bool {
+	b.record(ip, reason)
+	return true
+}
+
 func TestAutoBlockFiresOnCriticalIncidentWithRemoteIP(t *testing.T) {
 	var cap blockCapture
 	c := NewCorrelator(CorrelatorConfig{
@@ -17,7 +22,7 @@ func TestAutoBlockFiresOnCriticalIncidentWithRemoteIP(t *testing.T) {
 			Enabled:         true,
 			BlockAtSeverity: "critical",
 		},
-		OnIncidentBlock: cap.record,
+		OnIncidentBlock: cap.recordOK,
 	})
 	now := time.Unix(1_700_000_000, 0)
 	c.now = func() time.Time { return now }
@@ -47,7 +52,7 @@ func TestAutoBlockSkipsBelowSeverityGate(t *testing.T) {
 			Enabled:         true,
 			BlockAtSeverity: "critical",
 		},
-		OnIncidentBlock: cap.record,
+		OnIncidentBlock: cap.recordOK,
 	})
 	now := time.Unix(1_700_000_000, 0)
 	c.now = func() time.Time { return now }
@@ -66,10 +71,9 @@ func TestAutoBlockSkipsBelowSeverityGate(t *testing.T) {
 	}
 }
 
-func TestAutoBlockBlocksOnNextFindingAfterArming(t *testing.T) {
-	// An operator who enables AutoBlock after a Critical incident is
-	// already open still expects the next finding for that IP to fire a
-	// block, because the helper re-evaluates on every merge.
+func TestAutoBlockFiresOncePerIncident(t *testing.T) {
+	// Repeated findings in the same incident must not emit duplicate
+	// generic block callbacks after one live request has been recorded.
 	var cap blockCapture
 	cfg := CorrelatorConfig{
 		OpenThreshold: 1,
@@ -77,7 +81,7 @@ func TestAutoBlockBlocksOnNextFindingAfterArming(t *testing.T) {
 			Enabled:         true,
 			BlockAtSeverity: "critical",
 		},
-		OnIncidentBlock: cap.record,
+		OnIncidentBlock: cap.recordOK,
 	}
 	c := NewCorrelator(cfg)
 	now := time.Unix(1_700_000_000, 0)
@@ -131,7 +135,7 @@ func TestAutoBlockSkipsCredentialSprayKind(t *testing.T) {
 			BlockAtSeverity: "high",
 		},
 		OnSprayBlock:    sprayCap.record,
-		OnIncidentBlock: incCap.record,
+		OnIncidentBlock: incCap.recordOK,
 	})
 	now := time.Unix(1_700_000_000, 0)
 	c.now = func() time.Time { return now }
@@ -169,7 +173,7 @@ func TestAutoBlockHonorsKindsFilter(t *testing.T) {
 			BlockAtSeverity: "high",
 			Kinds:           map[Kind]bool{KindWebAccountCompromise: true},
 		},
-		OnIncidentBlock: cap.record,
+		OnIncidentBlock: cap.recordOK,
 	})
 	now := time.Unix(1_700_000_000, 0)
 	c.now = func() time.Time { return now }
@@ -213,7 +217,7 @@ func TestAutoBlockSkipsWhenRemoteIPMissing(t *testing.T) {
 			Enabled:         true,
 			BlockAtSeverity: "high",
 		},
-		OnIncidentBlock: cap.record,
+		OnIncidentBlock: cap.recordOK,
 	})
 	now := time.Unix(1_700_000_000, 0)
 	c.now = func() time.Time { return now }
@@ -242,7 +246,7 @@ func TestAutoBlockHonorsCanIncidentBlockGate(t *testing.T) {
 			BlockAtSeverity: "high",
 		},
 		CanIncidentBlock: func() bool { return allow },
-		OnIncidentBlock:  cap.record,
+		OnIncidentBlock:  cap.recordOK,
 	})
 	now := time.Unix(1_700_000_000, 0)
 	c.now = func() time.Time { return now }
@@ -276,5 +280,106 @@ func TestAutoBlockHonorsCanIncidentBlockGate(t *testing.T) {
 	}
 	if !strings.Contains(cap.calls[0].Reason, "incident") {
 		t.Errorf("reason = %q, want 'incident' prefix", cap.calls[0].Reason)
+	}
+}
+
+func TestAutoBlockRetriesWhenCallbackReportsNoLiveBlock(t *testing.T) {
+	var cap blockCapture
+	live := false
+	c := NewCorrelator(CorrelatorConfig{
+		OpenThreshold: 1,
+		AutoBlock: IncidentAutoBlockConfig{
+			Enabled:         true,
+			BlockAtSeverity: "critical",
+		},
+		OnIncidentBlock: func(ip, reason string) bool {
+			cap.record(ip, reason)
+			return live
+		},
+	})
+	now := time.Unix(1_700_000_000, 0)
+	c.now = func() time.Time { return now }
+
+	f1 := alert.Finding{
+		Check:     "modsec_csm_block_escalation",
+		Severity:  alert.Critical,
+		SourceIP:  "192.0.2.57",
+		Timestamp: now,
+	}
+	id, _, err := c.OnFinding(f1)
+	if err != nil {
+		t.Fatalf("OnFinding first: %v", err)
+	}
+	if got := cap.len(); got != 1 {
+		t.Fatalf("dry-run callback attempts = %d, want 1", got)
+	}
+	inc, ok := c.Get(id)
+	if !ok {
+		t.Fatal("created incident not found")
+	}
+	if hasIncidentAction(inc.Actions, "incident_block_requested") {
+		t.Fatal("dry-run callback latched incident_block_requested")
+	}
+
+	live = true
+	f2 := alert.Finding{
+		Check:     "modsec_csm_block_escalation",
+		Severity:  alert.Critical,
+		SourceIP:  "192.0.2.57",
+		Timestamp: now.Add(time.Minute),
+	}
+	c.now = func() time.Time { return now.Add(time.Minute) }
+	if _, _, err := c.OnFinding(f2); err != nil {
+		t.Fatalf("OnFinding second: %v", err)
+	}
+	if got := cap.len(); got != 2 {
+		t.Fatalf("live retry attempts = %d, want 2 total", got)
+	}
+	inc, ok = c.Get(id)
+	if !ok {
+		t.Fatal("incident not found after retry")
+	}
+	if !hasIncidentAction(inc.Actions, "incident_block_requested") {
+		t.Fatal("live retry did not record incident_block_requested")
+	}
+}
+
+func TestAutoBlockUsesTimelineRemoteIPForMailboxIncident(t *testing.T) {
+	var cap blockCapture
+	c := NewCorrelator(CorrelatorConfig{
+		OpenThreshold: 1,
+		AutoBlock: IncidentAutoBlockConfig{
+			Enabled:         true,
+			BlockAtSeverity: "critical",
+			Kinds:           map[Kind]bool{KindMailboxTakeover: true},
+		},
+		OnIncidentBlock: cap.recordOK,
+	})
+	now := time.Unix(1_700_000_000, 0)
+	c.now = func() time.Time { return now }
+
+	f := alert.Finding{
+		Check:     "email_compromised_account",
+		Severity:  alert.Critical,
+		Mailbox:   "victim@example.com",
+		SourceIP:  "192.0.2.58",
+		Timestamp: now,
+	}
+	id, _, err := c.OnFinding(f)
+	if err != nil {
+		t.Fatalf("OnFinding: %v", err)
+	}
+	if got := cap.len(); got != 1 {
+		t.Fatalf("OnIncidentBlock fired %d times, want 1", got)
+	}
+	if cap.calls[0].IP != "192.0.2.58" {
+		t.Errorf("block IP = %q, want 192.0.2.58", cap.calls[0].IP)
+	}
+	inc, ok := c.Get(id)
+	if !ok {
+		t.Fatal("created incident not found")
+	}
+	if inc.CorrelationKey == nil || inc.CorrelationKey.RemoteIP != "" {
+		t.Fatalf("mailbox incident correlation key = %+v, want mailbox key without RemoteIP", inc.CorrelationKey)
 	}
 }

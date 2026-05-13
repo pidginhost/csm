@@ -77,7 +77,7 @@ func IncidentCorrelator() *incident.Correlator {
 		var autoBlock incident.IncidentAutoBlockConfig
 		var whitelisted func(string) bool
 		var onSprayBlock func(ip, reason string)
-		var onIncidentBlock func(ip, reason string)
+		var onIncidentBlock func(ip, reason string) bool
 		if cfg := globalCfgForIncidents(); cfg != nil {
 			spray = incident.SpraySuppressionConfig{
 				Enabled:            cfg.Incidents.SpraySuppression.Enabled,
@@ -124,18 +124,21 @@ func IncidentCorrelator() *incident.Correlator {
 			}
 			if autoBlock.Enabled && autoBlock.BlockAtSeverity != "" && incidentSprayBlocker != nil {
 				blocker := incidentSprayBlocker
-				onIncidentBlock = func(ip, reason string) {
+				onIncidentBlock = func(ip, reason string) bool {
 					liveCfg := globalCfgForIncidents()
 					if liveCfg == nil || !liveCfg.AutoResponse.Enabled || !liveCfg.AutoResponse.BlockIPs {
-						return
+						return false
 					}
 					timeout, perr := time.ParseDuration(liveCfg.AutoResponse.BlockExpiry)
 					if perr != nil || timeout <= 0 {
 						timeout = 24 * time.Hour
 					}
+					dryRun := liveCfg.AutoResponseDryRunEnabled()
 					if err := blocker(ip, "CSM incident: "+reason, timeout); err != nil {
 						csmlog.Warn("incident auto-block failed", "ip", ip, "err", err)
+						return false
 					}
+					return !dryRun
 				}
 			}
 			// Whitelist accessor: prefer the bbolt-backed live whitelist
