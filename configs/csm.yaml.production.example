@@ -49,6 +49,10 @@ webui:
   enabled: true
   listen: "0.0.0.0:9443"
   auth_token: ""
+  tokens:
+    - name: "admin"
+      token: "SET_WEBUI_ADMIN_TOKEN_HERE"
+      scope: "admin"
   tls_cert: ""
   tls_key: ""
   ui_dir: "/opt/csm/ui"
@@ -319,11 +323,10 @@ incidents:
 
   # Credential-spray super-incident. Production tuning:
   # block_at_severity=high so the firewall hand-off fires on the
-  # first sustained burst (distinct_mailboxes inside the 15m
-  # merge window). The "critical" tier is a trap on paced
-  # attackers -- a script that rate-limits below
-  # severity_escalate_at per window never escalates and never
-  # blocks. See docs/incidents for the full trade-off.
+  # first sustained burst (distinct_mailboxes before the source IP
+  # is idle for more than the merge window). The "critical" tier can
+  # miss low-and-slow attackers that stay below severity_escalate_at
+  # before each idle reset. See docs/incidents for the full trade-off.
   spray_suppression:
     enabled: true
     dry_run: false              # FLIP AFTER 24H DRY-RUN VALIDATION

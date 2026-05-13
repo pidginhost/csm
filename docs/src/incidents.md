@@ -105,14 +105,14 @@ Choosing `block_at_severity`:
   is owned by a separate system.
 - `high` -- block at the `distinct_mailboxes` trip. Recommended once
   the dry-run counter looks clean. Trips on the first sustained
-  burst, so a paced attacker that spreads activity across the 15-min
-  merge window still gets blocked on the next open.
+  burst before the source IP goes idle for longer than the merge
+  window.
 - `critical` -- block only after severity escalates, i.e. one IP hits
-  `severity_escalate_at` distinct mailboxes inside a single 15-min
-  window. A scripted attacker that rate-limits to fewer mailboxes per
-  window never escalates and never blocks. Pick this only when you
-  have strong shared-NAT exposure and accept that paced sprayers
-  evade the gate.
+  `severity_escalate_at` distinct mailboxes before the source IP is
+  idle for more than the merge window. A low-and-slow attacker that
+  stays below that count before each idle reset never escalates and
+  never blocks. Pick this only when you have strong shared-NAT exposure
+  and accept that slow sprayers evade the gate.
 
 Rollout:
 

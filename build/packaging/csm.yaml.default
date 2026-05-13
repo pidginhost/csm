@@ -293,10 +293,11 @@ incidents:
     #   high     - block on incident open (distinct_mailboxes crossed).
     #              Recommended for production once dry_run is validated.
     #   critical - block only on severity escalation (severity_escalate_at
-    #              distinct mailboxes inside a single 15m window).
-    #              A paced attacker that spreads activity across windows
-    #              never escalates and never blocks; choose only when
-    #              shared-NAT exposure outweighs that gap.
+    #              distinct mailboxes before the source IP is idle for more
+    #              than the merge window). A low-and-slow attacker that
+    #              stays below that count before each idle reset never
+    #              escalates and never blocks; choose only when shared-NAT
+    #              exposure outweighs that gap.
     # Requires auto_response.enabled and auto_response.block_ips. The
     # firewall engine still honors auto_response.dry_run, so a dry-run
     # host logs the would-be block without applying nftables rules.
