@@ -122,7 +122,7 @@
         <div class="card-header">
             <h3 class="card-title"><i class="ti ti-timeline-event"></i>&nbsp;Incident Timeline</h3>
             <div class="card-actions d-flex gap-2 align-items-center flex-wrap">
-                <input type="text" id="incident-query" class="form-control form-control-sm csm-input-lg" placeholder="IP or account name...">
+                <input type="text" id="incident-query" class="form-control form-control-sm csm-input-lg" placeholder="e.g. 203.0.113.5 or jdoe">
                 <div class="btn-group btn-group-sm" role="group" aria-label="Time range">
                     <button type="button" class="btn btn-outline-secondary incident-hours-btn" data-hours="24">24h</button>
                     <button type="button" class="btn btn-outline-secondary incident-hours-btn active" data-hours="72">3d</button>
@@ -133,9 +133,15 @@
             </div>
         </div>
         <div id="incident-content">
-            <div class="card-body text-center text-muted py-4">
-                <div class="mb-2">Enter an IP address or cPanel account name to view the incident timeline.</div>
-                <div class="small">Examples: <code>192.168.1.1</code>, <code>2001:db8::1</code>, <code>username</code></div>
+            <div class="card-body text-muted py-4">
+                <div class="mb-2 fw-bold text-center">Search across finding history, incident timelines, and UI audit log for a source IP or cPanel account.</div>
+                <ul class="small mb-2 ps-4">
+                    <li><strong>Finding history</strong> -- raw findings stored in bbolt. Rotates aggressively on busy hosts; older entries fall off first.</li>
+                    <li><strong>Incident timelines</strong> -- structured per-incident events that survive even when the underlying findings have rotated out of history.</li>
+                    <li><strong>UI audit log</strong> -- operator actions (manual blocks, dismissals, status changes) keyed by IP or account.</li>
+                </ul>
+                <div class="small mb-1">Tip: an IP that appears in the Grouped tab but returns no rows here at the 3d default is usually past the finding-history window. Switch the range button to 7d or 30d -- incident timelines are kept until the per-kind auto-close threshold fires.</div>
+                <div class="small">Examples: <code>203.0.113.5</code>, <code>2001:db8::1</code>, <code>jdoe</code></div>
             </div>
         </div>
     </div>

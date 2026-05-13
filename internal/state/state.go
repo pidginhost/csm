@@ -490,11 +490,21 @@ func (s *Store) ReadHistory(limit, offset int) ([]alert.Finding, int) {
 
 // ReadHistorySince returns all findings since the given time.
 // Uses bbolt cursor seeking for efficiency. Results are newest-first.
+// Falls back to the JSONL store with a linear cutoff filter when bbolt
+// is unavailable so test wiring and migration-pending hosts still get
+// time-bounded search results.
 func (s *Store) ReadHistorySince(since time.Time) []alert.Finding {
 	if db := store.Global(); db != nil {
 		return db.ReadHistorySince(since)
 	}
-	return nil
+	all, _ := s.ReadHistory(1<<30, 0)
+	out := all[:0]
+	for _, f := range all {
+		if !f.Timestamp.Before(since) {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // AggregateByHour returns 24 hourly severity buckets for the last 24 hours.

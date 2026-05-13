@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Settings restart hints now come from the same hot-reload manifest used by config diffing, and API contract tests cover the phpanel-facing status, components, email groups, and ModSecurity JSON shapes.
+- Incidents Timeline Search now reads incident timelines in addition to finding history and the UI audit log, so an IP that has rotated out of the finding-history bucket but is still attached to an open or recently resolved incident still surfaces. The empty-state help text lists each data source and the retention behavior.
 
 ### Fixed
 

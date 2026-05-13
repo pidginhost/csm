@@ -51,12 +51,16 @@ func (s *Server) apiIncident(w http.ResponseWriter, r *http.Request) {
 		searchTerms = append(searchTerms, "/home/"+account+"/", account)
 	}
 
-	// Search finding history
-	allHistory, _ := s.store.ReadHistory(3000, 0)
+	// Search finding history. ReadHistorySince walks the bbolt history
+	// bucket from the cutoff forward instead of capping the read at a
+	// fixed row count, so the operator-supplied `hours` actually bounds
+	// the search instead of being silently truncated by a 3000-row cap.
+	dedup := make(map[string]struct{})
+	dedupKey := func(t time.Time, summary string) string {
+		return t.UTC().Format(time.RFC3339Nano) + "|" + summary
+	}
+	allHistory := s.store.ReadHistorySince(cutoff)
 	for _, f := range allHistory {
-		if f.Timestamp.Before(cutoff) {
-			continue
-		}
 		matched := false
 		for _, term := range searchTerms {
 			if strings.Contains(f.Message, term) || strings.Contains(f.Details, term) {
@@ -67,14 +71,67 @@ func (s *Server) apiIncident(w http.ResponseWriter, r *http.Request) {
 		if !matched {
 			continue
 		}
+		summary := f.Check + ": " + f.Message
+		key := dedupKey(f.Timestamp, summary)
+		if _, seen := dedup[key]; seen {
+			continue
+		}
+		dedup[key] = struct{}{}
 		events = append(events, timelineEvent{
 			Timestamp: f.Timestamp.Format(time.RFC3339),
 			Type:      "finding",
 			Severity:  int(f.Severity),
-			Summary:   f.Check + ": " + f.Message,
+			Summary:   summary,
 			Details:   f.Details,
 			Source:    "history",
 		})
+	}
+
+	// Fold in events from the incident correlator. The finding history
+	// bucket rotates aggressively on busy hosts so a Critical incident
+	// from two days ago may have no surviving history row, but the
+	// incident object still carries the full timeline. Walk every
+	// incident, match by RemoteIP for IP queries or by Account / Mailbox /
+	// Domain for account queries, and emit each matching timeline event.
+	if s.incidentCorrelator != nil {
+		for _, inc := range s.incidentCorrelator.Snapshot() {
+			incMatches := incidentMatchesAccount(inc, account)
+			for _, ev := range inc.Timeline {
+				if ev.Time.Before(cutoff) {
+					continue
+				}
+				match := false
+				if ip != "" && ev.RemoteIP == ip {
+					match = true
+				}
+				if !match && incMatches {
+					match = true
+				}
+				if !match {
+					continue
+				}
+				summary := ev.Check
+				if ev.Message != "" {
+					if summary != "" {
+						summary += ": "
+					}
+					summary += ev.Message
+				}
+				key := dedupKey(ev.Time, summary)
+				if _, seen := dedup[key]; seen {
+					continue
+				}
+				dedup[key] = struct{}{}
+				events = append(events, timelineEvent{
+					Timestamp: ev.Time.Format(time.RFC3339),
+					Type:      "finding",
+					Severity:  int(inc.Severity),
+					Summary:   summary,
+					Details:   "From incident " + inc.ID + " (" + string(inc.Kind) + ", " + string(inc.Status) + ")",
+					Source:    "incident:" + inc.ID,
+				})
+			}
+		}
 	}
 
 	// Search UI audit log
@@ -120,6 +177,16 @@ func (s *Server) apiIncident(w http.ResponseWriter, r *http.Request) {
 		"query_account": account,
 		"hours":         hours,
 	})
+}
+
+// incidentMatchesAccount reports whether an incident's identity fields
+// match the account search term. Empty account never matches so an
+// IP-only query does not pull in unrelated incidents.
+func incidentMatchesAccount(inc incident.Incident, account string) bool {
+	if account == "" {
+		return false
+	}
+	return inc.Account == account || inc.Mailbox == account || inc.Domain == account
 }
 
 // maxIncidentPageSize caps the page size a client may request so a
