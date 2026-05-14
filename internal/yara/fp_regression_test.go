@@ -299,3 +299,109 @@ curl_exec($ch);
 		t.Error("dropper_discord_webhook YARA regression: shell_exec C2 with Discord callback was not detected")
 	}
 }
+
+// FP reconstruction for the 2026-05-14 cPanel 009-phpconf hook re-touch.
+//
+// cPanel's 009-phpconf hook rewrites PHP-handler directives in every vhost
+// .htaccess on PHP/EasyApache changes. That re-touch triggered a realtime
+// YARA rescan and surfaced two long-standing FP classes on hosts running
+// stock WordPress security plugins.
+
+// Really Simple Security (formerly Really Simple SSL) installs an
+// auto_prepend_file directive pointing at wp-content/advanced-headers.php
+// to enforce hardening headers before WordPress boots. The directive is
+// the plugin's contract with PHP-FPM; it ships on every active install.
+// Treat it like the Wordfence/iThemes/Sucuri exclusions: anchor on the
+// product-specific path tail so an attacker cannot drop a shell anywhere
+// just by calling it advanced-headers.php.
+func TestBackdoorHtaccessAutoPrepend_ReallySimpleSecurityPlugin(t *testing.T) {
+	scanner := loadRepoYaraScanner(t)
+
+	// Verbatim shape from a production .htaccess: real .htaccess (no PHP
+	// tag) with the Really Simple Security prepend block. Directive
+	// target is the plugin's own wp-content/advanced-headers.php file.
+	legit := []byte(`# BEGIN LSCACHE
+<IfModule LiteSpeed>
+CacheLookup on
+</IfModule>
+# END LSCACHE
+#Begin Really Simple Auto Prepend File
+<IfModule mod_php7.c>
+php_value auto_prepend_file /home/site/public_html/wp-content/advanced-headers.php
+</IfModule>
+<IfModule mod_php.c>
+php_value auto_prepend_file /home/site/public_html/wp-content/advanced-headers.php
+</IfModule>
+<Files ".user.ini">
+<IfModule mod_authz_core.c>
+Require all denied
+</IfModule>
+</Files>
+#End Really Simple Auto Prepend File
+`)
+	if hasYaraRule(scanner.ScanBytes(legit), "backdoor_htaccess_auto_prepend") {
+		t.Error("backdoor_htaccess_auto_prepend FP: matched Really Simple Security advanced-headers.php prepend block (legitimate WP plugin contract)")
+	}
+
+	// Attacker tries to bypass by naming the dropped shell advanced-headers.php
+	// in a path outside wp-content. The exclusion is anchored to
+	// /wp-content/advanced-headers.php so the attempt still fires.
+	bypass := []byte(`php_value auto_prepend_file "/tmp/advanced-headers.php"
+`)
+	if !hasYaraRule(scanner.ScanBytes(bypass), "backdoor_htaccess_auto_prepend") {
+		t.Error("backdoor_htaccess_auto_prepend regression: attacker-named advanced-headers.php outside /wp-content must still fire")
+	}
+
+	// Real .htaccess attack: dropped shell, unrelated name.
+	malicious := []byte(`php_value auto_prepend_file "/home/victim/public_html/.cache/.x.php"
+`)
+	if !hasYaraRule(scanner.ScanBytes(malicious), "backdoor_htaccess_auto_prepend") {
+		t.Error("backdoor_htaccess_auto_prepend regression: real shell drop must keep firing")
+	}
+}
+
+// Anti-scraper UA lists plus the standard WordPress HTTPS-force redirect
+// (RewriteRule ^(.*)$ https://%{HTTP_HOST}/$1) are not cloaked spam.
+// Real cloak kits redirect bot user-agents to an external spam host via
+// R=30x. Require both signals (external host + redirect flag) so the rule
+// distinguishes cloak from same-host SSL force or [F] block lists.
+func TestSpamHtaccessRedirect_WPHTTPSForceAndBotBlockNoLongerFire(t *testing.T) {
+	scanner := loadRepoYaraScanner(t)
+
+	// Verbatim shape from a production .htaccess: anti-scraper bot block
+	// (bingbot in a [F] block list) plus WordPress HTTPS-force redirect.
+	// Both patterns are legitimate and unrelated to spam cloaking.
+	legit := []byte(`<IfModule mod_rewrite.c>
+RewriteEngine On
+RewriteCond %{HTTP_USER_AGENT} (?i)bingbot|ahrefs|semrush|mj12bot|dotbot [OR]
+RewriteCond %{HTTP_USER_AGENT} (?i)crawler|bot|spider
+RewriteCond %{QUERY_STRING} (^|&)filter_ [NC]
+RewriteRule ^ - [F]
+</IfModule>
+
+<IfModule mod_rewrite.c>
+RewriteEngine On
+RewriteCond %{HTTPS} off
+RewriteRule ^(.*)$ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+</IfModule>
+`)
+	if hasYaraRule(scanner.ScanBytes(legit), "spam_htaccess_redirect") {
+		t.Error("spam_htaccess_redirect FP: matched anti-scraper [F] block list combined with same-host HTTPS-force (no external redirect host, no cloak)")
+	}
+
+	// Real cloak: bot UA targeted, redirect to external spam TLD with R=30x.
+	malicious := []byte(`RewriteCond %{HTTP_USER_AGENT} (Googlebot|bingbot) [NC]
+RewriteRule ^(.*)$ http://viagra-cheap.xyz/buy [R=302,L]
+`)
+	if !hasYaraRule(scanner.ScanBytes(malicious), "spam_htaccess_redirect") {
+		t.Error("spam_htaccess_redirect regression: bot-UA cloak redirect to external spam host must keep firing")
+	}
+
+	// Real cloak via 301 with subdomain host.
+	malicious301 := []byte(`RewriteCond %{HTTP_USER_AGENT} Googlebot [NC]
+RewriteRule ^(.*)$ https://buy.pharma-spam.top/ad [R=301,L]
+`)
+	if !hasYaraRule(scanner.ScanBytes(malicious301), "spam_htaccess_redirect") {
+		t.Error("spam_htaccess_redirect regression: 301 cloak with subdomain host must keep firing")
+	}
+}
