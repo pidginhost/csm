@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- YARA rule `backdoor_htaccess_auto_prepend` no longer fires on the Really Simple Security plugin's `advanced-headers.php` auto-prepend block, matching the existing exclusions for Wordfence, iThemes Security, and Sucuri.
-- YARA rule `spam_htaccess_redirect` now requires an external redirect host with an `R=30x` flag, so WordPress HTTPS-force redirects and anti-scraper `[F]` block lists no longer trip a critical alert.
+- YARA rule `backdoor_htaccess_auto_prepend` no longer fires on the generated Really Simple Security auto-prepend block, while standalone same-path directives still alert.
+- YARA rule `spam_htaccess_redirect` now requires an external redirect host with an Apache redirect flag, so WordPress HTTPS-force redirects and anti-scraper `[F]` block lists no longer trip a critical alert.
 
 ## [3.4.0] - 2026-05-13
 

@@ -344,12 +344,29 @@ Require all denied
 	}
 
 	// Attacker tries to bypass by naming the dropped shell advanced-headers.php
-	// in a path outside wp-content. The exclusion is anchored to
-	// /wp-content/advanced-headers.php so the attempt still fires.
+	// in a path outside wp-content. The generated-block guard must not hide it.
 	bypass := []byte(`php_value auto_prepend_file "/tmp/advanced-headers.php"
 `)
 	if !hasYaraRule(scanner.ScanBytes(bypass), "backdoor_htaccess_auto_prepend") {
 		t.Error("backdoor_htaccess_auto_prepend regression: attacker-named advanced-headers.php outside /wp-content must still fire")
+	}
+
+	// The path alone is not trusted. Without the generated Really Simple
+	// Auto Prepend File block around it, an attacker choosing the plugin
+	// target path must still fire.
+	exactPathNoBlock := []byte(`php_value auto_prepend_file "/home/site/public_html/wp-content/advanced-headers.php"
+`)
+	if !hasYaraRule(scanner.ScanBytes(exactPathNoBlock), "backdoor_htaccess_auto_prepend") {
+		t.Error("backdoor_htaccess_auto_prepend regression: standalone advanced-headers.php path must still fire")
+	}
+
+	// A legitimate generated block does not suppress a second suspicious
+	// prepend elsewhere in the same .htaccess.
+	mixed := append([]byte{}, legit...)
+	mixed = append(mixed, []byte(`php_value auto_prepend_file "/home/victim/public_html/.cache/.x.php"
+`)...)
+	if !hasYaraRule(scanner.ScanBytes(mixed), "backdoor_htaccess_auto_prepend") {
+		t.Error("backdoor_htaccess_auto_prepend regression: malicious prepend alongside RSSSL block must still fire")
 	}
 
 	// Real .htaccess attack: dropped shell, unrelated name.
@@ -363,7 +380,7 @@ Require all denied
 // Anti-scraper UA lists plus the standard WordPress HTTPS-force redirect
 // (RewriteRule ^(.*)$ https://%{HTTP_HOST}/$1) are not cloaked spam.
 // Real cloak kits redirect bot user-agents to an external spam host via
-// R=30x. Require both signals (external host + redirect flag) so the rule
+// Apache redirect flags. Require both signals (external host + redirect flag) so the rule
 // distinguishes cloak from same-host SSL force or [F] block lists.
 func TestSpamHtaccessRedirect_WPHTTPSForceAndBotBlockNoLongerFire(t *testing.T) {
 	scanner := loadRepoYaraScanner(t)
@@ -403,5 +420,21 @@ RewriteRule ^(.*)$ https://buy.pharma-spam.top/ad [R=301,L]
 `)
 	if !hasYaraRule(scanner.ScanBytes(malicious301), "spam_htaccess_redirect") {
 		t.Error("spam_htaccess_redirect regression: 301 cloak with subdomain host must keep firing")
+	}
+
+	// Bare [R] is a redirect too. Apache defaults it to a temporary 302.
+	maliciousBareR := []byte(`RewriteCond %{HTTP_USER_AGENT} bingbot [NC]
+RewriteRule ^(.*)$ http://doorway-spam.example/$1 [R,L]
+`)
+	if !hasYaraRule(scanner.ScanBytes(maliciousBareR), "spam_htaccess_redirect") {
+		t.Error("spam_htaccess_redirect regression: bare [R] cloak redirect must keep firing")
+	}
+
+	// Long-form redirect flags are equivalent to R/R=30x.
+	maliciousRedirectFlag := []byte(`RewriteCond %{HTTP_USER_AGENT} Baidu [NC]
+RewriteRule ^(.*)$ https://spam-doorway.example/p [redirect=permanent,L]
+`)
+	if !hasYaraRule(scanner.ScanBytes(maliciousRedirectFlag), "spam_htaccess_redirect") {
+		t.Error("spam_htaccess_redirect regression: long-form redirect cloak must keep firing")
 	}
 }
