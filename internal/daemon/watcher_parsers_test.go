@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -293,6 +294,94 @@ func TestParseEximLogLine_MaxDefersAfterRecentHoldDoesNotReportOutbreak(t *testi
 			t.Fatalf("autoSuspendOutgoingMail calls = %v, want none for held-domain retry-limit line", suspendCalls)
 		}
 	})
+}
+
+// TestParseEximLogLine_MaxDefersRecordsHoldDedup guards against the
+// production feedback loop where every retry hour exim re-emits the
+// "exceeded max defers/failures" line for an already-held domain and
+// CSM re-invokes whmapi1 hold_outgoing_email per retry. The max-defers
+// branch must record the hold-seen marker so subsequent identical lines
+// fall through the existing 2-hour dedup window.
+func TestParseEximLogLine_MaxDefersRecordsHoldDedup(t *testing.T) {
+	withGlobalStore(t, func(db *store.DB) {
+		prevHook := autoSuspendOutgoingMail
+		var suspendCalls []string
+		var mu sync.Mutex
+		autoSuspendOutgoingMail = func(target string) {
+			mu.Lock()
+			suspendCalls = append(suspendCalls, target)
+			mu.Unlock()
+		}
+		t.Cleanup(func() { autoSuspendOutgoingMail = prevHook })
+
+		cfg := &config.Config{}
+		line := `2026-04-11 12:00:00 1abc23-000456-AB ** user@example.com R=enforce_mail_permissions : Domain example.com has exceeded the max defers and failures per hour (15/15 (100%)) allowed. Message discarded.`
+
+		first := parseEximLogLine(line, cfg)
+		if len(first) == 0 || first[0].Check != "email_spam_outbreak" {
+			t.Fatalf("first max-defers line should fire spam outbreak, got %v", first)
+		}
+		if len(suspendCalls) != 1 {
+			t.Fatalf("first call should auto-suspend once, got %d calls", len(suspendCalls))
+		}
+		if got := db.GetMetaString("email_hold_seen:example.com"); got == "" {
+			t.Fatal("max-defers branch must record hold-seen marker for dedup")
+		}
+
+		second := parseEximLogLine(line, cfg)
+		if len(second) != 0 {
+			t.Fatalf("second identical max-defers line within window should be suppressed, got %v", second)
+		}
+		if len(suspendCalls) != 1 {
+			t.Fatalf("second max-defers line must not re-invoke autoSuspendOutgoingMail, got %d calls", len(suspendCalls))
+		}
+	})
+}
+
+// TestAutoSuspendOutgoingMail_SkipsWhenUserAlreadyHeld verifies that
+// the helper does not invoke whmapi1 when /etc/outgoing_mail_hold_users
+// already lists the cPanel user. This is the authoritative cPanel-side
+// state and re-issuing the hold is a no-op that produces noise in
+// monitor.log and triggers an unnecessary whmapi1 subprocess.
+func TestAutoSuspendOutgoingMail_SkipsWhenUserAlreadyHeld(t *testing.T) {
+	tmp := t.TempDir()
+
+	udPath := tmp + "/userdomains"
+	if err := os.WriteFile(udPath, []byte("example.com: holdy\n"), 0o644); err != nil {
+		t.Fatalf("write userdomains: %v", err)
+	}
+	prevUD := userdomainsPath
+	userdomainsPath = udPath
+	t.Cleanup(func() { userdomainsPath = prevUD })
+
+	holdPath := tmp + "/outgoing_mail_hold_users"
+	if err := os.WriteFile(holdPath, []byte("holdy\nother\n"), 0o644); err != nil {
+		t.Fatalf("write hold users: %v", err)
+	}
+	prevHP := outgoingMailHoldUsersPath
+	outgoingMailHoldUsersPath = holdPath
+	t.Cleanup(func() { outgoingMailHoldUsersPath = prevHP })
+
+	var execCalls int
+	prevExec := whmapi1HoldExec
+	whmapi1HoldExec = func(_ string) ([]byte, error) {
+		execCalls++
+		return nil, nil
+	}
+	t.Cleanup(func() { whmapi1HoldExec = prevExec })
+
+	autoSuspendOutgoingMailReal("example.com")
+	if execCalls != 0 {
+		t.Fatalf("whmapi1 hold_outgoing_email must not run when user already on hold, got %d calls", execCalls)
+	}
+
+	if err := os.WriteFile(holdPath, []byte("other\n"), 0o644); err != nil {
+		t.Fatalf("rewrite hold users: %v", err)
+	}
+	autoSuspendOutgoingMailReal("example.com")
+	if execCalls != 1 {
+		t.Fatalf("whmapi1 hold_outgoing_email must run when user not yet held, got %d calls", execCalls)
+	}
 }
 
 func TestParseEximLogLine_MaxDefersAfterStaleHoldStillSuspends(t *testing.T) {

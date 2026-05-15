@@ -343,6 +343,14 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 		if recentOutgoingMailHold(domain) {
 			return findings
 		}
+		// Record the hold-seen marker so subsequent retries of the same
+		// "exceeded max defers/failures" line (cPanel keeps emitting it
+		// every retry hour while the hold is active and queued bounces
+		// keep the ratio above threshold) hit the dedup above instead of
+		// firing a fresh whmapi1 hold and finding per retry cycle.
+		if domain != "" {
+			recordRecentOutgoingMailHold(domain)
+		}
 		// Auto-suspend: confirmed spam outbreak
 		autoSuspendOutgoingMail(domain)
 		findings = append(findings, alert.Finding{
@@ -641,10 +649,49 @@ func mergeInfraIPs(topLevel, fwSpecific []string) []string {
 	return merged
 }
 
+// outgoingMailHoldUsersPath is the cPanel file listing users currently
+// under OUTGOING_MAIL_HOLD. Read-only; cPanel/WHM owns mutation. var
+// (not const) so tests can point it at a fixture.
+var outgoingMailHoldUsersPath = "/etc/outgoing_mail_hold_users"
+
+// whmapi1HoldExec invokes `whmapi1 hold_outgoing_email user=<user>`.
+// Declared as var so tests can replace it without spawning whmapi1.
+var whmapi1HoldExec = func(user string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// #nosec G204 -- whmapi1 is the cPanel API binary; user is a cPanel
+	// account name resolved from /etc/userdomains (cpanel-managed).
+	return exec.CommandContext(ctx, "whmapi1", "hold_outgoing_email", "user="+user).CombinedOutput()
+}
+
+// userOnOutgoingMailHold reports whether the cPanel user already appears
+// in /etc/outgoing_mail_hold_users. Used to short-circuit redundant
+// whmapi1 calls when exim re-emits "exceeded max defers/failures" every
+// retry hour while the hold is already active.
+func userOnOutgoingMailHold(user string) bool {
+	if user == "" {
+		return false
+	}
+	f, err := os.Open(outgoingMailHoldUsersPath)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		if strings.TrimSpace(scanner.Text()) == user {
+			return true
+		}
+	}
+	return false
+}
+
 // autoSuspendOutgoingMail calls whmapi1 to hold outgoing mail for the cPanel
 // account that owns the given domain or email address. Declared as var so
 // tests can swap in a recorder without spawning whmapi1.
-var autoSuspendOutgoingMail = func(domainOrEmail string) {
+var autoSuspendOutgoingMail = autoSuspendOutgoingMailReal
+
+func autoSuspendOutgoingMailReal(domainOrEmail string) {
 	if domainOrEmail == "" {
 		return
 	}
@@ -660,12 +707,15 @@ var autoSuspendOutgoingMail = func(domainOrEmail string) {
 			time.Now().Format("2006-01-02 15:04:05"), domain)
 		return
 	}
-	// Hold outgoing mail
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	// #nosec G204 -- whmapi1 is the cPanel API binary; user is a cPanel
-	// account name validated upstream (cpuser regex in the caller).
-	out, err := exec.CommandContext(ctx, "whmapi1", "hold_outgoing_email", "user="+user).CombinedOutput()
+	// Skip if cPanel already lists this user as held. Re-issuing the
+	// hold has no operational effect, but on a sustained exim retry
+	// loop (queued bounces keep the defer/fail ratio above threshold
+	// hour after hour) the redundant whmapi1 calls produce a stream
+	// of "AUTO-SUSPEND" log lines that look like a fresh incident.
+	if userOnOutgoingMailHold(user) {
+		return
+	}
+	out, err := whmapi1HoldExec(user)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] auto-suspend: whmapi1 hold_outgoing_email failed for %s: %v\n%s\n",
 			time.Now().Format("2006-01-02 15:04:05"), user, err, string(out))
