@@ -37,6 +37,24 @@ import (
 type SchemaTarget struct {
 	Schema      string
 	TablePrefix string
+	ConfigPath  string
+}
+
+// DiscoveryAudit records why a snapshot captured the targets it did.
+// It is written into the manifest so operators can validate the
+// evidence boundary without inspecting the host again.
+type DiscoveryAudit struct {
+	AccountRoot          string
+	PrivatePathsExcluded bool
+	PrivateTopPaths      []string
+	SkippedPaths         []SkippedPath
+}
+
+// SkippedPath records one discovery path that was not safe or useful
+// to capture.
+type SkippedPath struct {
+	Path   string
+	Reason string
 }
 
 // Sources lets the caller swap each I/O dependency for a test double.
@@ -54,19 +72,20 @@ type Sources struct {
 // are required; Sources is required when running outside the default
 // production wiring (see cmd/csm for the defaults).
 type Snapshot struct {
-	Account   string
-	OutPath   string
-	Timestamp time.Time
-	Sources   Sources
+	Account        string
+	OutPath        string
+	Timestamp      time.Time
+	DiscoveryAudit DiscoveryAudit
+	Sources        Sources
 }
 
 var accountNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
 var schemaNamePattern = regexp.MustCompile(`^[A-Za-z0-9_@]+$`)
 var tablePrefixPattern = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
 
-// accountNameValid keeps the account string conservative enough to use
+// AccountNameValid keeps the account string conservative enough to use
 // in archive entry names, manifest keys, and shell-free SQL queries.
-func accountNameValid(name string) bool {
+func AccountNameValid(name string) bool {
 	return accountNamePattern.MatchString(name)
 }
 
@@ -82,13 +101,13 @@ func tablePrefixValid(name string) bool {
 // returning the archive path and the SHA256 hex digest. Errors abort
 // before any partial state is written.
 func (s Snapshot) Write() (string, string, error) {
-	if !accountNameValid(s.Account) {
+	if !AccountNameValid(s.Account) {
 		return "", "", fmt.Errorf("invalid account name: %q", s.Account)
 	}
 	if s.OutPath == "" {
 		return "", "", errors.New("forensic snapshot: OutPath required")
 	}
-	if err := validateOutPath(s.Account, s.OutPath); err != nil {
+	if err := ValidateOutPath(s.Account, s.OutPath); err != nil {
 		return "", "", err
 	}
 	if s.Sources.DiscoverTargets == nil {
@@ -111,9 +130,16 @@ func (s Snapshot) Write() (string, string, error) {
 	fmt.Fprintf(&manifestB, "account=%s\n", s.Account)
 	fmt.Fprintf(&manifestB, "timestamp=%s\n", ts.UTC().Format(time.RFC3339))
 	fmt.Fprintf(&manifestB, "schema_count=%d\n", len(targets))
+	writeDiscoveryAudit(&manifestB, s.DiscoveryAudit)
 
+	var validTargets, invalidTargets int
+	var dumpOK, dumpErr int
+	var adminsOK, adminsErr int
+	var sessionsOK, sessionsErr int
+	recentStatus := "disabled"
 	for i, tgt := range targets {
 		if !schemaNameValid(tgt.Schema) || !tablePrefixValid(tgt.TablePrefix) {
+			invalidTargets++
 			fmt.Fprintf(&manifestB, "invalid_target=%d schema=%q table_prefix=%q\n", i, tgt.Schema, tgt.TablePrefix)
 			name := "schema/invalid-target-" + strconv.Itoa(i) + ".err"
 			data := []byte(fmt.Sprintf("invalid schema target: schema=%q table_prefix=%q\n", tgt.Schema, tgt.TablePrefix))
@@ -122,15 +148,23 @@ func (s Snapshot) Write() (string, string, error) {
 			}
 			continue
 		}
-		fmt.Fprintf(&manifestB, "schema=%s table_prefix=%s\n", tgt.Schema, tgt.TablePrefix)
+		validTargets++
+		fmt.Fprintf(&manifestB, "schema=%s table_prefix=%s", tgt.Schema, tgt.TablePrefix)
+		if tgt.ConfigPath != "" {
+			fmt.Fprintf(&manifestB, " config_path=%q", tgt.ConfigPath)
+		}
+		fmt.Fprint(&manifestB, "\n")
 
 		// Schema dump.
 		if s.Sources.DumpSchema != nil {
 			data, err := s.Sources.DumpSchema(tgt.Schema)
 			name := "schema/" + tgt.Schema + "-routines.sql"
 			if err != nil {
+				dumpErr++
 				name += ".err"
 				data = []byte(err.Error() + "\n")
+			} else {
+				dumpOK++
 			}
 			if werr := writeArchiveEntry(tw, name, data, ts); werr != nil {
 				return "", "", werr
@@ -142,8 +176,11 @@ func (s Snapshot) Write() (string, string, error) {
 			data, err := s.Sources.ListAdmins(tgt.Schema, tgt.TablePrefix)
 			name := "schema/" + tgt.Schema + "-admins.tsv"
 			if err != nil {
+				adminsErr++
 				name += ".err"
 				data = []byte(err.Error() + "\n")
+			} else {
+				adminsOK++
 			}
 			if werr := writeArchiveEntry(tw, name, data, ts); werr != nil {
 				return "", "", werr
@@ -155,8 +192,11 @@ func (s Snapshot) Write() (string, string, error) {
 			data, err := s.Sources.ListSessions(tgt.Schema, tgt.TablePrefix)
 			name := "schema/" + tgt.Schema + "-sessions.tsv"
 			if err != nil {
+				sessionsErr++
 				name += ".err"
 				data = []byte(err.Error() + "\n")
+			} else {
+				sessionsOK++
 			}
 			if werr := writeArchiveEntry(tw, name, data, ts); werr != nil {
 				return "", "", werr
@@ -169,13 +209,25 @@ func (s Snapshot) Write() (string, string, error) {
 		data, err := s.Sources.ListRecentFiles("/home/"+s.Account, ts.Add(-7*24*time.Hour))
 		name := "files/recent-mtimes.tsv"
 		if err != nil {
+			recentStatus = "error"
 			name += ".err"
 			data = []byte(err.Error() + "\n")
+		} else {
+			recentStatus = "ok"
 		}
 		if werr := writeArchiveEntry(tw, name, data, ts); werr != nil {
 			return "", "", werr
 		}
 	}
+	fmt.Fprintf(&manifestB, "valid_target_count=%d\n", validTargets)
+	fmt.Fprintf(&manifestB, "invalid_target_count=%d\n", invalidTargets)
+	fmt.Fprintf(&manifestB, "dump_success_count=%d\n", dumpOK)
+	fmt.Fprintf(&manifestB, "dump_error_count=%d\n", dumpErr)
+	fmt.Fprintf(&manifestB, "admins_success_count=%d\n", adminsOK)
+	fmt.Fprintf(&manifestB, "admins_error_count=%d\n", adminsErr)
+	fmt.Fprintf(&manifestB, "sessions_success_count=%d\n", sessionsOK)
+	fmt.Fprintf(&manifestB, "sessions_error_count=%d\n", sessionsErr)
+	fmt.Fprintf(&manifestB, "recent_mtimes_status=%s\n", recentStatus)
 
 	// Manifest last so the schema list reflects what was actually
 	// processed.
@@ -203,10 +255,30 @@ func (s Snapshot) Write() (string, string, error) {
 	return s.OutPath, hexSum, nil
 }
 
-// validateOutPath rejects destinations that would land inside the
+func writeDiscoveryAudit(b *strings.Builder, audit DiscoveryAudit) {
+	if audit.AccountRoot != "" {
+		fmt.Fprintf(b, "discovery_root=%q\n", audit.AccountRoot)
+	}
+	if audit.PrivatePathsExcluded {
+		fmt.Fprintln(b, "private_paths_excluded=true")
+	}
+	if len(audit.PrivateTopPaths) > 0 {
+		paths := append([]string(nil), audit.PrivateTopPaths...)
+		sort.Strings(paths)
+		fmt.Fprintf(b, "private_top_excluded=%q\n", strings.Join(paths, ","))
+	}
+	for i, skipped := range audit.SkippedPaths {
+		fmt.Fprintf(b, "skipped_path=%d path=%q reason=%q\n", i, skipped.Path, skipped.Reason)
+	}
+}
+
+// ValidateOutPath rejects destinations that would land inside the
 // target account's home directory. Writing forensic evidence somewhere
 // the suspect user can read defeats the point.
-func validateOutPath(account, outPath string) error {
+func ValidateOutPath(account, outPath string) error {
+	if !AccountNameValid(account) {
+		return fmt.Errorf("invalid account name: %q", account)
+	}
 	abs, err := filepath.Abs(outPath)
 	if err != nil {
 		return fmt.Errorf("resolving out path: %w", err)

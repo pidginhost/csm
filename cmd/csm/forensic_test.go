@@ -98,16 +98,21 @@ func TestDiscoverForensicTargetsFindsNestedWordPressRoots(t *testing.T) {
 		}
 	}
 
-	targets := discoverForensicTargetsInRoot(root)
+	targets, audit := discoverForensicTargetsInRootWithAudit(root)
 	got := map[string]string{}
+	paths := map[string]string{}
 	for _, target := range targets {
 		got[target.Schema] = target.TablePrefix
+		paths[target.Schema] = target.ConfigPath
 	}
 	if got["alice_main"] != "wp_" {
 		t.Fatalf("main install missing from targets: %v", targets)
 	}
 	if got["alice_nested"] != "shop_" {
 		t.Fatalf("nested install missing from targets: %v", targets)
+	}
+	if paths["alice_nested"] != filepath.Join(root, "public_html/agroshop.ro/wp-config.php") {
+		t.Fatalf("nested install config path = %q", paths["alice_nested"])
 	}
 	for _, skipped := range []string{"leaked_mail", "leaked_cagefs"} {
 		if _, ok := got[skipped]; ok {
@@ -116,6 +121,65 @@ func TestDiscoverForensicTargetsFindsNestedWordPressRoots(t *testing.T) {
 	}
 	if len(targets) != 2 {
 		t.Fatalf("got %d targets, want 2 unique public schemas: %v", len(targets), targets)
+	}
+	if !audit.PrivatePathsExcluded {
+		t.Fatal("audit should record private path exclusion policy")
+	}
+	if audit.AccountRoot != root {
+		t.Fatalf("audit root = %q, want %q", audit.AccountRoot, root)
+	}
+	reasons := map[string]string{}
+	for _, skipped := range audit.SkippedPaths {
+		reasons[filepath.Base(skipped.Path)] = skipped.Reason
+	}
+	if reasons["mail"] != "private-account-path" {
+		t.Fatalf("mail root skip missing from audit: %+v", audit.SkippedPaths)
+	}
+	if reasons[".cagefs"] != "private-account-path" {
+		t.Fatalf(".cagefs root skip missing from audit: %+v", audit.SkippedPaths)
+	}
+	if reasons["wp-config.php"] != "duplicate-schema" {
+		t.Fatalf("duplicate wp-config skip missing from audit: %+v", audit.SkippedPaths)
+	}
+}
+
+func TestDiscoverForensicTargetsAuditsInvalidConfigs(t *testing.T) {
+	root := t.TempDir()
+	configs := map[string]string{
+		"missing-db/wp-config.php":     "define('AUTH_KEY', 'x');\n$table_prefix = 'wp_';\n",
+		"bad-schema/wp-config.php":     "define('DB_NAME', '../escape');\n$table_prefix = 'wp_';\n",
+		"bad-prefix/wp-config.php":     "define('DB_NAME', 'alice_prefix');\n$table_prefix = 'bad@prefix_';\n",
+		"default-prefix/wp-config.php": "define('DB_NAME', 'alice_default');\n",
+	}
+	for rel, body := range configs {
+		path := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+
+	targets, audit := discoverForensicTargetsInRootWithAudit(root)
+	if len(targets) != 1 {
+		t.Fatalf("got targets %v, want one valid default-prefix target", targets)
+	}
+	if targets[0].Schema != "alice_default" || targets[0].TablePrefix != "wp_" {
+		t.Fatalf("default prefix target = %+v", targets[0])
+	}
+	reasons := map[string]string{}
+	for _, skipped := range audit.SkippedPaths {
+		reasons[filepath.Base(filepath.Dir(skipped.Path))] = skipped.Reason
+	}
+	for dir, want := range map[string]string{
+		"missing-db": "missing-db-name",
+		"bad-schema": "invalid-schema",
+		"bad-prefix": "invalid-table-prefix",
+	} {
+		if reasons[dir] != want {
+			t.Fatalf("skip reason for %s = %q, want %q; audit=%+v", dir, reasons[dir], want, audit.SkippedPaths)
+		}
 	}
 }
 

@@ -279,6 +279,75 @@ func TestSnapshot_Write_ContinuesWhenSchemaDumpFails(t *testing.T) {
 	}
 }
 
+func TestSnapshot_Write_ManifestIncludesSelfAudit(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "snap.tar.gz")
+	s := Snapshot{
+		Account:   "alice",
+		OutPath:   out,
+		Timestamp: time.Date(2026, 5, 15, 12, 0, 0, 0, time.UTC),
+		DiscoveryAudit: DiscoveryAudit{
+			AccountRoot:          "/home/alice",
+			PrivatePathsExcluded: true,
+			PrivateTopPaths:      []string{"mail", ".cpanel"},
+			SkippedPaths: []SkippedPath{
+				{Path: "/home/alice/mail", Reason: "private-account-path"},
+				{Path: "/home/alice/public_html/copy/wp-config.php", Reason: "duplicate-schema"},
+			},
+		},
+		Sources: Sources{
+			DiscoverTargets: func(string) []SchemaTarget {
+				return []SchemaTarget{
+					{Schema: "alice_bad", TablePrefix: "../bad", ConfigPath: "/home/alice/public_html/bad/wp-config.php"},
+					{Schema: "alice_wp", TablePrefix: "wp_", ConfigPath: "/home/alice/public_html/wp-config.php"},
+					{Schema: "alice_wp2", TablePrefix: "wp2_", ConfigPath: "/home/alice/public_html/shop/wp-config.php"},
+				}
+			},
+			DumpSchema: func(schema string) ([]byte, error) {
+				if schema == "alice_wp2" {
+					return nil, &errString{"mysqldump exited 1"}
+				}
+				return []byte("dump\n"), nil
+			},
+			ListAdmins: func(schema, _ string) ([]byte, error) {
+				if schema == "alice_wp2" {
+					return nil, &errString{"admins query failed"}
+				}
+				return []byte("admin\n"), nil
+			},
+			ListSessions: func(string, string) ([]byte, error) { return []byte("sessions\n"), nil },
+			ListRecentFiles: func(string, time.Time) ([]byte, error) {
+				return nil, &errString{"walk timed out"}
+			},
+		},
+	}
+	if _, _, err := s.Write(); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	manifest := string(readArchiveEntries(t, out)["manifest.txt"])
+	for _, want := range []string{
+		`discovery_root="/home/alice"`,
+		"private_paths_excluded=true",
+		`private_top_excluded=".cpanel,mail"`,
+		`skipped_path=0 path="/home/alice/mail" reason="private-account-path"`,
+		`skipped_path=1 path="/home/alice/public_html/copy/wp-config.php" reason="duplicate-schema"`,
+		`schema=alice_wp table_prefix=wp_ config_path="/home/alice/public_html/wp-config.php"`,
+		`schema=alice_wp2 table_prefix=wp2_ config_path="/home/alice/public_html/shop/wp-config.php"`,
+		"valid_target_count=2",
+		"invalid_target_count=1",
+		"dump_success_count=1",
+		"dump_error_count=1",
+		"admins_success_count=1",
+		"admins_error_count=1",
+		"sessions_success_count=2",
+		"sessions_error_count=0",
+		"recent_mtimes_status=error",
+	} {
+		if !strings.Contains(manifest, want) {
+			t.Fatalf("manifest missing %q:\n%s", want, manifest)
+		}
+	}
+}
+
 func TestSnapshot_Write_SchemaNameWithAtSignIsArchived(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "snap.tar.gz")
 	schema := "wowlabro_0r1ent@l"
@@ -387,17 +456,17 @@ func TestSnapshot_Write_RejectsTraversalInAccountName(t *testing.T) {
 }
 
 func TestBytesContainsOnlyASCII(t *testing.T) {
-	// Helper sanity for accountValid().
-	if !accountNameValid("alice") {
+	// Helper sanity for AccountNameValid().
+	if !AccountNameValid("alice") {
 		t.Error("alice must be valid")
 	}
-	if !accountNameValid("alice123") {
+	if !AccountNameValid("alice123") {
 		t.Error("alphanumeric must be valid")
 	}
-	if accountNameValid("") {
+	if AccountNameValid("") {
 		t.Error("empty must be invalid")
 	}
-	if accountNameValid("../etc") {
+	if AccountNameValid("../etc") {
 		t.Error("path traversal must be invalid")
 	}
 }

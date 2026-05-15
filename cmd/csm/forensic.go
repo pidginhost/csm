@@ -56,13 +56,23 @@ func runForensicSnapshot() {
 		printForensicUsage()
 		os.Exit(2)
 	}
+	if !forensic.AccountNameValid(account) {
+		fmt.Fprintf(os.Stderr, "csm forensic-snapshot: invalid account name: %q\n", account)
+		os.Exit(1)
+	}
+	if err := forensic.ValidateOutPath(account, out); err != nil {
+		fmt.Fprintf(os.Stderr, "csm forensic-snapshot: %v\n", err)
+		os.Exit(1)
+	}
 
+	targets, audit := discoverForensicTargetsWithAudit(account)
 	snap := forensic.Snapshot{
-		Account:   account,
-		OutPath:   out,
-		Timestamp: time.Now().UTC(),
+		Account:        account,
+		OutPath:        out,
+		Timestamp:      time.Now().UTC(),
+		DiscoveryAudit: audit,
 		Sources: forensic.Sources{
-			DiscoverTargets: discoverForensicTargets,
+			DiscoverTargets: func(string) []forensic.SchemaTarget { return targets },
 			DumpSchema:      mysqldumpSchema,
 			ListAdmins:      listForensicAdmins,
 			ListSessions:    listForensicSessions,
@@ -98,18 +108,30 @@ Flags:
 // discoverForensicTargets walks /home/<account> for wp-config.php files and
 // extracts the DB_NAME and $table_prefix pair from each file. Used in
 // production wiring; tests inject a fixed slice.
-func discoverForensicTargets(account string) []forensic.SchemaTarget {
-	return discoverForensicTargetsInRoot("/home/" + account)
+func discoverForensicTargetsWithAudit(account string) ([]forensic.SchemaTarget, forensic.DiscoveryAudit) {
+	return discoverForensicTargetsInRootWithAudit("/home/" + account)
 }
 
-func discoverForensicTargetsInRoot(accountRoot string) []forensic.SchemaTarget {
+func discoverForensicTargetsInRootWithAudit(accountRoot string) ([]forensic.SchemaTarget, forensic.DiscoveryAudit) {
 	var matches []string
+	audit := forensic.DiscoveryAudit{
+		AccountRoot:          accountRoot,
+		PrivatePathsExcluded: true,
+		PrivateTopPaths:      forensicPrivateTopPaths(),
+	}
+	// #nosec G703 -- production callers build accountRoot as /home/<validated cPanel account>; tests pass t.TempDir.
 	_ = filepath.WalkDir(accountRoot, func(p string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil //nolint:nilerr // skip unreadable account paths without aborting the snapshot.
 		}
 		if entry.IsDir() {
 			if p != accountRoot && forensicSkipPrivatePath(accountRoot, p) {
+				if forensicPathDepth(accountRoot, p) == 0 {
+					audit.SkippedPaths = append(audit.SkippedPaths, forensic.SkippedPath{
+						Path:   p,
+						Reason: "private-account-path",
+					})
+				}
 				return filepath.SkipDir
 			}
 			return nil
@@ -133,16 +155,41 @@ func discoverForensicTargetsInRoot(accountRoot string) []forensic.SchemaTarget {
 	seen := map[string]bool{}
 	for _, p := range matches {
 		schema, prefix := parseWPConfigForensic(p)
-		if schema == "" || seen[schema] {
+		if schema == "" {
+			audit.SkippedPaths = append(audit.SkippedPaths, forensic.SkippedPath{
+				Path:   p,
+				Reason: "missing-db-name",
+			})
 			continue
 		}
-		seen[schema] = true
+		if !forensicSchemaValid(schema) {
+			audit.SkippedPaths = append(audit.SkippedPaths, forensic.SkippedPath{
+				Path:   p,
+				Reason: "invalid-schema",
+			})
+			continue
+		}
 		if prefix == "" {
 			prefix = "wp_"
 		}
-		out = append(out, forensic.SchemaTarget{Schema: schema, TablePrefix: prefix})
+		if !forensicTablePrefixValid(prefix) {
+			audit.SkippedPaths = append(audit.SkippedPaths, forensic.SkippedPath{
+				Path:   p,
+				Reason: "invalid-table-prefix",
+			})
+			continue
+		}
+		if seen[schema] {
+			audit.SkippedPaths = append(audit.SkippedPaths, forensic.SkippedPath{
+				Path:   p,
+				Reason: "duplicate-schema",
+			})
+			continue
+		}
+		seen[schema] = true
+		out = append(out, forensic.SchemaTarget{Schema: schema, TablePrefix: prefix, ConfigPath: p})
 	}
-	return out
+	return out, audit
 }
 
 func forensicPathDepth(root, path string) int {
@@ -159,7 +206,7 @@ var (
 )
 
 func parseWPConfigForensic(path string) (string, string) {
-	data, err := os.ReadFile(path) // #nosec G304 -- operator-supplied account name discovered via filepath.Glob.
+	data, err := os.ReadFile(path) // #nosec G304 -- path discovered under /home/<validated cPanel account>.
 	if err != nil {
 		return "", ""
 	}
@@ -275,21 +322,32 @@ func forensicSkipPrivatePath(accountRoot, path string) bool {
 		return false
 	}
 	first, _, _ := strings.Cut(rel, "/")
-	privateTop := map[string]bool{
-		".cagefs":       true,
-		".cpanel":       true,
-		".spamassassin": true,
-		".trash":        true,
-		"access-logs":   true,
-		"etc":           true,
-		"homedir":       true,
-		"logs":          true,
-		"lscache":       true,
-		"mail":          true,
-		"ssl":           true,
-		"tmp":           true,
+	for _, private := range forensicPrivateTopNames {
+		if first == private {
+			return true
+		}
 	}
-	return privateTop[first] || strings.HasPrefix(first, ".")
+	return strings.HasPrefix(first, ".")
+}
+
+var forensicPrivateTopNames = []string{
+	".cagefs",
+	".cpanel",
+	".spamassassin",
+	".trash",
+	"access-logs",
+	"etc",
+	"homedir",
+	"logs",
+	"lscache",
+	"mail",
+	"ssl",
+	"tmp",
+}
+
+func forensicPrivateTopPaths() []string {
+	paths := append([]string(nil), forensicPrivateTopNames...)
+	return append(paths, "top-level dotfiles")
 }
 
 var forensicSchemaRe = regexp.MustCompile(`^[A-Za-z0-9_@]+$`)
