@@ -111,6 +111,8 @@ func (c *ControlListener) dispatch(line []byte) control.Response {
 		result, err = c.handleIncidentsShow(req.Args)
 	case control.CmdIncidentsStatus:
 		result, err = c.handleIncidentsStatus(req.Args)
+	case control.CmdIncidentsBulkStatus:
+		result, err = c.handleIncidentsBulkStatus(req.Args)
 	default:
 		return control.Response{OK: false, Error: fmt.Sprintf("unknown command: %q", req.Cmd)}
 	}

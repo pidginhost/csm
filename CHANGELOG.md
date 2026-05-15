@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - After a malicious trigger that gates on `display_name LIKE '%<token>%'` is found, CSM automatically scans the WordPress users table for accounts whose display name still carries the token and emits a `db_magic_token_user` Critical finding per match, giving operators a list of accounts that may have been silently promoted.
 - Cross-account administrator overlap is tracked between scans in a new `admin:emails` bucket, and emits `admin_cross_account_overlap` Warning when the same WordPress administrator email appears on the threshold number of distinct cPanel accounts (default 2, configurable via `detection.admin_overlap_min_accounts`). Catches the shared-hosting compromise pattern where a single contractor credential leak blasts across multiple customer sites.
 - New `csm forensic-snapshot <account> --out <archive.tar.gz>` bundles incident-response evidence for one cPanel account: per-schema mysqldump of triggers, events, and routines; administrator roster; active session metadata; and the last-7-days file mtime list under document roots. Writes a deterministic archive plus a `<out>.sha256` sidecar; refuses destinations inside the target account's home directory and excludes credentials by design.
+- `csm incidents bulk-status` previews stale incident status changes with age, last-seen, kind, domain, account, and mailbox filters. Live updates require explicit apply and confirmation flags.
 
 ### Fixed
 

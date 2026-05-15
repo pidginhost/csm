@@ -131,3 +131,91 @@ func TestHandleIncidentsStatusUpdates(t *testing.T) {
 		t.Errorf("status: %v", got.Status)
 	}
 }
+
+func TestHandleIncidentsBulkStatusDefaultsToDryRun(t *testing.T) {
+	resetIncidentForTest()
+	c := IncidentCorrelator()
+	id, _, _ := c.OnFinding(alert.Finding{Check: "x", Severity: alert.High, TenantID: "alice", Timestamp: time.Now()})
+
+	args, _ := json.Marshal(control.IncidentBulkStatusArgs{
+		Status:         "open",
+		To:             "resolved",
+		LastSeenBefore: time.Now().Add(time.Hour),
+		Limit:          10,
+	})
+	cl := &ControlListener{}
+	res, err := cl.handleIncidentsBulkStatus(args)
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	b, _ := json.Marshal(res)
+	var out control.IncidentBulkStatusResult
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !out.DryRun || out.Matched != 1 || out.Updated != 0 || len(out.Items) != 1 {
+		t.Fatalf("result = %+v, want one dry-run match", out)
+	}
+	got, _ := c.Get(id)
+	if got.Status != incident.StatusOpen {
+		t.Fatalf("dry run changed status to %s", got.Status)
+	}
+}
+
+func TestHandleIncidentsBulkStatusAppliesWithConfirm(t *testing.T) {
+	resetIncidentForTest()
+	c := IncidentCorrelator()
+	id, _, _ := c.OnFinding(alert.Finding{Check: "x", Severity: alert.High, TenantID: "alice", Timestamp: time.Now()})
+
+	args, _ := json.Marshal(control.IncidentBulkStatusArgs{
+		Status:         "open",
+		To:             "resolved",
+		LastSeenBefore: time.Now().Add(time.Hour),
+		Limit:          10,
+		Apply:          true,
+		Confirm:        true,
+		Details:        "confirmed cleanup",
+	})
+	cl := &ControlListener{}
+	res, err := cl.handleIncidentsBulkStatus(args)
+	if err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	b, _ := json.Marshal(res)
+	var out control.IncidentBulkStatusResult
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.DryRun || out.Matched != 1 || out.Updated != 1 || len(out.Items) != 1 {
+		t.Fatalf("result = %+v, want one live update", out)
+	}
+	got, _ := c.Get(id)
+	if got.Status != incident.StatusResolved || got.ClosedBy != "operator" {
+		t.Fatalf("incident = %+v, want operator-resolved", got)
+	}
+}
+
+func TestHandleIncidentsBulkStatusRequiresAgeGuard(t *testing.T) {
+	resetIncidentForTest()
+	_ = IncidentCorrelator()
+	args, _ := json.Marshal(control.IncidentBulkStatusArgs{Status: "open", To: "resolved"})
+	cl := &ControlListener{}
+	if _, err := cl.handleIncidentsBulkStatus(args); err == nil {
+		t.Fatal("expected missing age guard error")
+	}
+}
+
+func TestHandleIncidentsBulkStatusApplyRequiresConfirm(t *testing.T) {
+	resetIncidentForTest()
+	_ = IncidentCorrelator()
+	args, _ := json.Marshal(control.IncidentBulkStatusArgs{
+		Status:         "open",
+		To:             "resolved",
+		LastSeenBefore: time.Now().Add(time.Hour),
+		Apply:          true,
+	})
+	cl := &ControlListener{}
+	if _, err := cl.handleIncidentsBulkStatus(args); err == nil {
+		t.Fatal("expected confirmation error")
+	}
+}

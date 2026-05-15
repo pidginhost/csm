@@ -72,9 +72,10 @@ const (
 	CmdPHPRelayThaw         = "phprelay.thaw"
 
 	// Phase 2 incident correlation.
-	CmdIncidentsList   = "incidents.list"
-	CmdIncidentsShow   = "incidents.show"
-	CmdIncidentsStatus = "incidents.status"
+	CmdIncidentsList       = "incidents.list"
+	CmdIncidentsShow       = "incidents.show"
+	CmdIncidentsStatus     = "incidents.status"
+	CmdIncidentsBulkStatus = "incidents.bulk_status"
 )
 
 // Request is the single JSON object the client sends per connection.
@@ -392,4 +393,35 @@ type IncidentStatusArgs struct {
 	ID      string `json:"id"`
 	Status  string `json:"status"` // open / contained / resolved / dismissed
 	Details string `json:"details,omitempty"`
+}
+
+// IncidentBulkStatusArgs previews or applies the same status transition
+// to stale incidents matching the supplied exact filters.
+type IncidentBulkStatusArgs struct {
+	Status           string    `json:"status,omitempty"` // active / open / contained
+	To               string    `json:"to,omitempty"`     // resolved / dismissed
+	OlderThanSeconds int64     `json:"older_than_seconds,omitempty"`
+	LastSeenBefore   time.Time `json:"last_seen_before,omitempty"`
+	Kind             string    `json:"kind,omitempty"`
+	Domain           string    `json:"domain,omitempty"`
+	Account          string    `json:"account,omitempty"`
+	Mailbox          string    `json:"mailbox,omitempty"`
+	Limit            int       `json:"limit,omitempty"`
+	Apply            bool      `json:"apply,omitempty"`
+	Confirm          bool      `json:"confirm,omitempty"`
+	Details          string    `json:"details,omitempty"`
+}
+
+// IncidentBulkStatusResult reports the full match count plus the
+// bounded set of incidents that were previewed or changed.
+type IncidentBulkStatusResult struct {
+	DryRun           bool                      `json:"dry_run"`
+	Matched          int                       `json:"matched"`
+	Updated          int                       `json:"updated"`
+	Limit            int                       `json:"limit"`
+	Status           string                    `json:"status"`
+	To               string                    `json:"to"`
+	OlderThanSeconds int64                     `json:"older_than_seconds,omitempty"`
+	LastSeenBefore   time.Time                 `json:"last_seen_before,omitempty"`
+	Items            []incident.BulkStatusItem `json:"items"`
 }

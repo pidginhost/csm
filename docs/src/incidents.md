@@ -265,11 +265,17 @@ resolved / dismissed); read-scope tokens can browse all three tabs.
 csm incidents list [--status all|active|open|contained|resolved|dismissed] [--limit N] [--offset N] [--all]
 csm incidents show <id>
 csm incidents status <id> <open|contained|resolved|dismissed> [details]
+csm incidents bulk-status --older-than 24h [--last-seen-before RFC3339] [--status active|open|contained] [--kind K] [--domain D] [--account A] [--mailbox M] [--limit N] [--to resolved|dismissed] [--apply --confirm]
 ```
 
 `csm incidents list` returns the first 100 incidents by default. Use
 `--offset` for the next page, `--status active` for open + contained
 incidents, or `--all` for an explicit full dump.
+
+`csm incidents bulk-status` defaults to dry-run. It prints the total
+match count and a bounded preview of the incidents that would change.
+At least one age guard is required: `--older-than`, `--last-seen-before`,
+or both. To mutate incidents, pass both `--apply` and `--confirm`.
 
 ## Metrics
 
