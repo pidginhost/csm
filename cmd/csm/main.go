@@ -142,6 +142,8 @@ func main() {
 		runDoctor()
 	case "backup":
 		runBackup()
+	case "forensic-snapshot":
+		runForensicSnapshot()
 	case "restore":
 		runRestore()
 	case "webserver-integration":
@@ -189,6 +191,7 @@ Commands:
   disable       Disable optional features (--php-shield)
   doctor        Run health diagnostics (add "challenge" for challenge setup; --json for machine output)
   backup <out>  Bundle csm.yaml + /etc/csm/conf.d + state into a tar.gz archive
+  forensic-snapshot <account> --out <archive.tar.gz>  Evidence archive for incident handoff (triggers/admins/sessions/mtimes)
   restore <archive>  Extract backup archive into csm.yaml + conf.d + state
   webserver-integration  Install/upgrade/remove challenge reverse-proxy snippets
   version       Version info + build hash

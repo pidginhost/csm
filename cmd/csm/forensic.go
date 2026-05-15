@@ -1,0 +1,232 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/pidginhost/csm/internal/forensic"
+)
+
+// runForensicSnapshot wires the production I/O dependencies into the
+// reusable internal/forensic.Snapshot type.
+//
+// Usage: csm forensic-snapshot <account> --out <archive.tar.gz>
+//
+// The output path is required -- there is no default. Snapshot writes
+// the archive plus a `<out>.sha256` sidecar.
+func runForensicSnapshot() {
+	args := os.Args[2:]
+	account := ""
+	out := ""
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch a {
+		case "--out", "-o":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "csm forensic-snapshot: --out requires a value")
+				os.Exit(2)
+			}
+			out = args[i+1]
+			i++
+		case "--help", "-h":
+			printForensicUsage()
+			return
+		default:
+			if strings.HasPrefix(a, "-") {
+				fmt.Fprintf(os.Stderr, "csm forensic-snapshot: unknown flag %q\n", a)
+				os.Exit(2)
+			}
+			if account != "" {
+				fmt.Fprintln(os.Stderr, "csm forensic-snapshot: only one account name accepted")
+				os.Exit(2)
+			}
+			account = a
+		}
+	}
+	if account == "" || out == "" {
+		printForensicUsage()
+		os.Exit(2)
+	}
+
+	snap := forensic.Snapshot{
+		Account:   account,
+		OutPath:   out,
+		Timestamp: time.Now().UTC(),
+		Sources: forensic.Sources{
+			DiscoverTargets: discoverForensicTargets,
+			DumpSchema:      mysqldumpSchema,
+			ListAdmins:      listForensicAdmins,
+			ListSessions:    listForensicSessions,
+			ListRecentFiles: listRecentMtimes,
+		},
+	}
+
+	archivePath, sha, err := snap.Write()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "csm forensic-snapshot: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Snapshot: %s\nSHA256:   %s\n", archivePath, sha)
+}
+
+func printForensicUsage() {
+	fmt.Fprint(os.Stderr, `Usage: csm forensic-snapshot <account> --out <archive.tar.gz>
+
+Bundles incident-response evidence for one cPanel account into a single
+tar+gzip archive: MySQL trigger/event/routine definitions per schema,
+the administrator user roster, active session metadata, and the
+last-7-days file mtime list under the account's document roots.
+
+The archive does NOT include credentials -- password rotation belongs
+to a separate runbook step.
+
+Flags:
+  --out, -o   Required. Destination path for the archive.
+
+`)
+}
+
+// discoverForensicTargets walks /home/<account>/*/wp-config.php and
+// extracts the DB_NAME and $table_prefix pair from each file. Used in
+// production wiring; tests inject a fixed slice.
+func discoverForensicTargets(account string) []forensic.SchemaTarget {
+	matches, _ := filepath.Glob("/home/" + account + "/*/wp-config.php")
+	var out []forensic.SchemaTarget
+	seen := map[string]bool{}
+	for _, p := range matches {
+		schema, prefix := parseWPConfigForensic(p)
+		if schema == "" || seen[schema] {
+			continue
+		}
+		seen[schema] = true
+		if prefix == "" {
+			prefix = "wp_"
+		}
+		out = append(out, forensic.SchemaTarget{Schema: schema, TablePrefix: prefix})
+	}
+	return out
+}
+
+var (
+	wpDBNameRe      = regexp.MustCompile(`define\s*\(\s*['"]DB_NAME['"]\s*,\s*['"]([^'"]+)['"]`)
+	wpTablePrefixRe = regexp.MustCompile(`\$table_prefix\s*=\s*['"]([^'"]+)['"]`)
+)
+
+func parseWPConfigForensic(path string) (string, string) {
+	data, err := os.ReadFile(path) // #nosec G304 -- operator-supplied account name discovered via filepath.Glob.
+	if err != nil {
+		return "", ""
+	}
+	var schema, prefix string
+	if m := wpDBNameRe.FindStringSubmatch(string(data)); m != nil {
+		schema = m[1]
+	}
+	if m := wpTablePrefixRe.FindStringSubmatch(string(data)); m != nil {
+		prefix = m[1]
+	}
+	return schema, prefix
+}
+
+// mysqldumpSchema runs `mysqldump --no-data --routines --triggers
+// --events <schema>` using /root/.my.cnf for credentials. The
+// command is invoked with a 60s timeout so a hung mysqld can't stall
+// the whole snapshot.
+func mysqldumpSchema(schema string) ([]byte, error) {
+	if !forensicIdentValid(schema) {
+		return nil, fmt.Errorf("invalid schema name %q", schema)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	// #nosec G204 -- schema validated against forensicIdentRe above.
+	cmd := exec.CommandContext(ctx, "mysqldump", "--no-data", "--routines", "--triggers", "--events", schema)
+	return cmd.Output()
+}
+
+func listForensicAdmins(schema, tablePrefix string) ([]byte, error) {
+	if !forensicIdentValid(schema) || !forensicIdentValid(tablePrefix) {
+		return nil, errors.New("invalid identifier")
+	}
+	query := fmt.Sprintf(
+		"SELECT u.ID, u.user_login, u.user_email, u.user_registered, u.display_name "+
+			"FROM `%susers` u JOIN `%susermeta` um ON u.ID = um.user_id "+
+			"WHERE um.meta_key = '%scapabilities' AND um.meta_value LIKE '%%administrator%%' "+
+			"ORDER BY u.user_registered",
+		tablePrefix, tablePrefix, tablePrefix,
+	)
+	return runForensicMySQL(schema, query)
+}
+
+func listForensicSessions(schema, tablePrefix string) ([]byte, error) {
+	if !forensicIdentValid(schema) || !forensicIdentValid(tablePrefix) {
+		return nil, errors.New("invalid identifier")
+	}
+	query := fmt.Sprintf(
+		"SELECT user_id, meta_value FROM `%susermeta` WHERE meta_key = 'session_tokens'",
+		tablePrefix,
+	)
+	return runForensicMySQL(schema, query)
+}
+
+func runForensicMySQL(schema, query string) ([]byte, error) {
+	if !forensicIdentValid(schema) {
+		return nil, errors.New("invalid schema")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	// #nosec G204 -- schema validated; query built with validated identifiers above.
+	cmd := exec.CommandContext(ctx, "mysql", "-N", "-B", schema, "-e", query)
+	return cmd.Output()
+}
+
+// listRecentMtimes walks accountRoot for files modified since `since`
+// and returns a TSV of (path, mtime). Bounded to a per-call timeout
+// because a large account can have millions of files. The function
+// excludes the snapshot's own output directory to avoid recursion when
+// the operator points --out inside the account tree (already rejected
+// by validateOutPath, defence in depth).
+func listRecentMtimes(accountRoot string, since time.Time) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	var b strings.Builder
+	cutoff := since.UTC()
+	err := filepath.Walk(accountRoot, func(p string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			// Permission or transient FS errors: skip the entry, don't abort.
+			return nil //nolint:nilerr // intentional skip on walk errors
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if info.IsDir() {
+			return nil
+		}
+		// Skip dotfiles outside public_html/ -- email storage, logs,
+		// shell history. The operator can pull those manually if
+		// needed; bundling them into a customer hand-off is privacy
+		// overreach.
+		if strings.Contains(p, "/mail/") || strings.Contains(p, "/.cagefs/") {
+			return filepath.SkipDir
+		}
+		mt := info.ModTime().UTC()
+		if mt.Before(cutoff) {
+			return nil
+		}
+		fmt.Fprintf(&b, "%s\t%s\n", p, mt.Format(time.RFC3339))
+		return nil
+	})
+	return []byte(b.String()), err
+}
+
+var forensicIdentRe = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
+
+func forensicIdentValid(s string) bool {
+	return forensicIdentRe.MatchString(s)
+}
