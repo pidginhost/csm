@@ -12,11 +12,21 @@ func TestListRecentMtimesSkipsPrivateMailAndCageFSDirs(t *testing.T) {
 	root := t.TempDir()
 	now := time.Now().UTC()
 	files := map[string]string{
-		"public_html/index.php":      "public",
-		"public_html/mailchimp.php":  "public name containing mail",
-		"public_html/mail/index.php": "public mail path",
-		"mail/cur/msg":               "private mail",
-		".cagefs/tmp/cache":          "private cagefs",
+		"public_html/.htaccess":               "public dotfile",
+		"public_html/index.php":               "public",
+		"public_html/mailchimp.php":           "public name containing mail",
+		"public_html/mail/index.php":          "public mail path",
+		"store.example/wp-content/cache.php":  "addon document root",
+		".cagefs/tmp/cache":                   "private cagefs",
+		".cpanel/email_accounts.json":         "private cpanel metadata",
+		".lastlogin":                          "private top-level dotfile",
+		"etc/example.test/shadow":             "private account metadata",
+		"homedir/alice/public_html/index.php": "private migration backup",
+		"logs/example.test-May-2026.gz":       "private access logs",
+		"lscache/0/0/1/cache-entry":           "private cache",
+		"mail/cur/msg":                        "private mail",
+		"ssl/certs/example.test.crt":          "private ssl metadata",
+		"tmp/session":                         "private temp",
 	}
 	for rel, body := range files {
 		path := filepath.Join(root, rel)
@@ -45,7 +55,24 @@ func TestListRecentMtimesSkipsPrivateMailAndCageFSDirs(t *testing.T) {
 	if !strings.Contains(text, "public_html/mail/index.php") {
 		t.Fatalf("public mail path under document root should remain:\n%s", text)
 	}
-	for _, private := range []string{"mail/cur/msg", ".cagefs/tmp/cache"} {
+	if !strings.Contains(text, "public_html/.htaccess") {
+		t.Fatalf("public .htaccess should remain:\n%s", text)
+	}
+	if !strings.Contains(text, "store.example/wp-content/cache.php") {
+		t.Fatalf("addon document root file should remain:\n%s", text)
+	}
+	for _, private := range []string{
+		"mail/cur/msg",
+		".cagefs/tmp/cache",
+		".cpanel/email_accounts.json",
+		".lastlogin",
+		"etc/example.test/shadow",
+		"homedir/alice/public_html/index.php",
+		"logs/example.test-May-2026.gz",
+		"lscache/0/0/1/cache-entry",
+		"ssl/certs/example.test.crt",
+		"tmp/session",
+	} {
 		if strings.Contains(text, private) {
 			t.Fatalf("private path %q leaked into output:\n%s", private, text)
 		}

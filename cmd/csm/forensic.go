@@ -249,10 +249,9 @@ func listRecentMtimes(accountRoot string, since time.Time) ([]byte, error) {
 			}
 			return nil
 		}
-		// Skip dotfiles outside public_html/ -- email storage, logs,
-		// shell history. The operator can pull those manually if
-		// needed; bundling them into a customer hand-off is privacy
-		// overreach.
+		// Skip account-private storage. The operator can pull those
+		// paths manually if needed; bundling them into a customer
+		// hand-off archive is privacy overreach.
 		if forensicSkipPrivatePath(accountRoot, p) {
 			return nil
 		}
@@ -272,8 +271,25 @@ func forensicSkipPrivatePath(accountRoot, path string) bool {
 		return false
 	}
 	rel = filepath.ToSlash(filepath.Clean(rel))
+	if rel == "." {
+		return false
+	}
 	first, _, _ := strings.Cut(rel, "/")
-	return first == "mail" || first == ".cagefs"
+	privateTop := map[string]bool{
+		".cagefs":       true,
+		".cpanel":       true,
+		".spamassassin": true,
+		".trash":        true,
+		"access-logs":   true,
+		"etc":           true,
+		"homedir":       true,
+		"logs":          true,
+		"lscache":       true,
+		"mail":          true,
+		"ssl":           true,
+		"tmp":           true,
+	}
+	return privateTop[first] || strings.HasPrefix(first, ".")
 }
 
 var forensicSchemaRe = regexp.MustCompile(`^[A-Za-z0-9_@]+$`)
