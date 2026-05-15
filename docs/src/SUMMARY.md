@@ -18,6 +18,7 @@
 - [Deep Checks](detection-deep.md)
 - [Auto-Response](auto-response.md)
 - [Incidents](incidents.md)
+- [Incident Response Runbook](incident-response-runbook.md)
 
 # Hardening
 
