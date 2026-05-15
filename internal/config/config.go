@@ -180,6 +180,16 @@ type Config struct {
 		// pattern hits always fire.
 		DBObjectAllowlist []string `yaml:"db_object_allowlist"`
 
+		// AdminOverlapMinAccounts is the threshold at which the
+		// cross-account admin email correlator emits a finding. Default
+		// 2 matches the most common compromise pattern on shared hosting
+		// -- a contractor account used across multiple customer cPanels
+		// is a single credential leak away from compromising every site
+		// they touch. Operators with deliberately shared internal admin
+		// emails (e.g. one ops team across many sites) can raise the
+		// threshold to silence the routine overlap.
+		AdminOverlapMinAccounts int `yaml:"admin_overlap_min_accounts"`
+
 		// RescanOnSignatureUpdate fires a forced full-tree deep
 		// scan the next time any file under cfg.Signatures.RulesDir
 		// has its mtime advance. Tri-state *bool: nil = default-on,

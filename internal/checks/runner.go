@@ -140,6 +140,7 @@ func buildFindingNameToRunnerNames() map[string][]string {
 }
 
 var runnerFindingNames = map[string][]string{
+	"admin_overlap":         {"admin_cross_account_overlap"},
 	"af_alg_enforcement":    {"af_alg_enforcement_corrected"},
 	"af_alg_socket_use":     {"af_alg_socket_use"},
 	"api_auth_failures":     {"api_auth_failure"},
@@ -153,7 +154,7 @@ var runnerFindingNames = map[string][]string{
 	"db_content_joomla":     {"joomla_admin_injection", "joomla_content_injection", "joomla_extensions_injection"},
 	"db_content_magento":    {"magento_admin_injection", "magento_content_injection", "magento_settings_injection"},
 	"db_content_opencart":   {"opencart_admin_injection", "opencart_content_injection", "opencart_settings_injection"},
-	"db_objects":            {"db_malicious_event", "db_malicious_function", "db_malicious_procedure", "db_malicious_trigger", "db_unexpected_event", "db_unexpected_function", "db_unexpected_procedure", "db_unexpected_trigger"},
+	"db_objects":            {"db_magic_token_user", "db_malicious_event", "db_malicious_function", "db_malicious_procedure", "db_malicious_trigger", "db_unexpected_event", "db_unexpected_function", "db_unexpected_procedure", "db_unexpected_trigger"},
 	"dns_connections":       {"dns_connection"},
 	"dns_zones":             {"dns_zone_change"},
 	"email_content":         {"email_phishing_content"},
@@ -300,6 +301,7 @@ func deepChecks() []namedCheck {
 		{"db_content_magento", CheckMagentoContent},
 		{"db_content_opencart", CheckOpenCartContent},
 		{"db_objects", CheckDatabaseObjects},
+		{"admin_overlap", CheckAdminEmailOverlap},
 		{"email_content", CheckOutboundEmailContent},
 		{"outdated_plugins", CheckOutdatedPlugins},
 		{"email_weak_password", CheckEmailPasswords},
@@ -331,6 +333,7 @@ func reducedDeepChecks() []namedCheck {
 		{"db_content_magento", CheckMagentoContent},
 		{"db_content_opencart", CheckOpenCartContent},
 		{"db_objects", CheckDatabaseObjects},
+		{"admin_overlap", CheckAdminEmailOverlap},
 		{"email_content", CheckOutboundEmailContent},
 		{"outdated_plugins", CheckOutdatedPlugins},
 		{"email_weak_password", CheckEmailPasswords},
