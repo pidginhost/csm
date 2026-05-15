@@ -31,6 +31,7 @@ CACHE_DIR ?= $(CURDIR)/.cache
 GOCACHE ?= $(CACHE_DIR)/go-build
 GOMODCACHE ?= $(CACHE_DIR)/go-mod
 GOLANGCI_LINT_CACHE ?= $(CACHE_DIR)/golangci-lint
+GOFILES := $(shell git ls-files '*.go')
 
 export GOCACHE
 export GOMODCACHE
@@ -104,12 +105,12 @@ vet:
 
 # Format code
 fmt:
-	gofmt -w -s .
-	@test -f $(GOBIN)/goimports && $(GOBIN)/goimports -w -local github.com/pidginhost/csm . || true
+	gofmt -w -s $(GOFILES)
+	@test -f $(GOBIN)/goimports && $(GOBIN)/goimports -w -local github.com/pidginhost/csm $(GOFILES) || true
 
 # Check formatting (fails if not formatted)
 fmt-check:
-	@test -z "$$(gofmt -l .)" || (echo "Files not formatted:" && gofmt -l . && exit 1)
+	@test -z "$$(gofmt -l $(GOFILES))" || (echo "Files not formatted:" && gofmt -l $(GOFILES) && exit 1)
 
 # check-fixtures fails CI if any testdata fixture contains a non-RFC-5737
 # IPv4 literal. Guards against unsanitised customer data leaking into the

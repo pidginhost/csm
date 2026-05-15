@@ -106,7 +106,7 @@ func discoverForensicTargetsInRoot(accountRoot string) []forensic.SchemaTarget {
 	var matches []string
 	_ = filepath.WalkDir(accountRoot, func(p string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			return nil
+			return nil //nolint:nilerr // skip unreadable account paths without aborting the snapshot.
 		}
 		if entry.IsDir() {
 			if p != accountRoot && forensicSkipPrivatePath(accountRoot, p) {

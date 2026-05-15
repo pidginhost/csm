@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Deep file indexing now preserves cached nested entries during incremental scans, preventing safe-skip loops on busy WordPress hosts.
 - DB magic-token detection now requires high-entropy activation strings, avoiding Critical findings for ordinary display-name word filters.
 - Forensic snapshots now discover nested WordPress roots, reject unsafe schema archive names, preserve valid cPanel database names that contain `@`, and keep mail / CageFS private paths out of the recent-file list.
+- Local CI formatting now checks tracked Go source files only, so warm tool caches under the repo do not break `make ci`.
 - `csm incidents list` now returns the first page by default and still offers an explicit full dump, preventing busy hosts from overflowing the local control response.
 - YARA rule `backdoor_htaccess_auto_prepend` no longer fires on the generated Really Simple Security auto-prepend block, while standalone same-path directives still alert.
 - YARA rule `spam_htaccess_redirect` now requires an external redirect host with an Apache redirect flag, so WordPress HTTPS-force redirects and anti-scraper `[F]` block lists no longer trip a critical alert.
