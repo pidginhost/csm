@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 
@@ -31,14 +32,37 @@ func printIncidentsUsage() {
 	fmt.Fprintln(os.Stderr, `csm incidents - manage correlated security incidents
 
 Usage:
-  csm incidents list                    List every incident, newest first.
+  csm incidents list [--status all|active|open|contained|resolved|dismissed] [--limit N] [--offset N] [--all]
+                                        List incidents newest first. Defaults to the first 100.
   csm incidents show <id>               Show one incident.
   csm incidents status <id> <state> [details]
                                         Set status: open, contained, resolved, dismissed.`)
 }
 
 func incidentsList() {
-	raw, err := sendControl(control.CmdIncidentsList, nil)
+	fs := flag.NewFlagSet("csm incidents list", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	status := fs.String("status", "all", "incident status filter: all, active, open, contained, resolved, dismissed")
+	limit := fs.Int("limit", 100, "maximum incidents to return")
+	offset := fs.Int("offset", 0, "starting offset")
+	all := fs.Bool("all", false, "return every matching incident")
+	fs.Usage = func() {
+		fmt.Fprintln(os.Stderr, "usage: csm incidents list [--status all|active|open|contained|resolved|dismissed] [--limit N] [--offset N] [--all]")
+	}
+	if err := fs.Parse(os.Args[3:]); err != nil {
+		os.Exit(2)
+	}
+	if fs.NArg() != 0 {
+		fs.Usage()
+		os.Exit(2)
+	}
+
+	raw, err := sendControl(control.CmdIncidentsList, control.IncidentListArgs{
+		Limit:  *limit,
+		Offset: *offset,
+		Status: *status,
+		All:    *all,
+	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "incidents list: %v\n", err)
 		os.Exit(1)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"time"
@@ -35,6 +36,11 @@ const controlReadTimeout = 5 * time.Minute
 // is not intended as a "wait for a deadlocked daemon" pathway (an
 // operator who sees run-deep idle for an hour will ^C regardless).
 const controlReadTimeoutTierRun = 60 * time.Minute
+
+// controlMaxResponseBytes caps one line-framed response. Normal
+// commands are far smaller; the ceiling is high enough for explicit
+// export-style commands without letting a wedged daemon stream forever.
+const controlMaxResponseBytes = 128 * 1024 * 1024
 
 // controlSocketPath is the Unix socket to dial. In production it
 // defaults to the daemon's well-known path; tests replace it with a
@@ -97,32 +103,59 @@ func sendControlWithTimeout(cmd string, args any, readTimeout time.Duration) (js
 	reqBytes = append(reqBytes, '\n')
 
 	_ = conn.SetWriteDeadline(time.Now().Add(controlDialTimeout))
-	if _, err := conn.Write(reqBytes); err != nil {
-		return nil, fmt.Errorf("writing request: %w", err)
+	if _, writeErr := conn.Write(reqBytes); writeErr != nil {
+		return nil, fmt.Errorf("writing request: %w", writeErr)
 	}
 
 	_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
-	scanner := bufio.NewScanner(conn)
-	// Mirror the daemon-side buffer cap so paginated history and
-	// dry-run tier-run findings fit without truncation. The socket is
-	// root-only 0600 so the original 1 MiB DoS guard no longer
-	// applies — cap at 16 MiB so large finding lists round-trip.
-	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-	if !scanner.Scan() {
-		if err := scanner.Err(); err != nil {
-			return nil, fmt.Errorf("reading response: %w", err)
+	line, readErr := readControlResponseLine(bufio.NewReader(conn), controlMaxResponseBytes)
+	if readErr != nil {
+		if errors.Is(readErr, io.EOF) {
+			return nil, fmt.Errorf("empty response from daemon")
 		}
+		return nil, fmt.Errorf("reading response: %w", readErr)
+	}
+	if len(line) == 0 {
 		return nil, fmt.Errorf("empty response from daemon")
 	}
 
 	var resp control.Response
-	if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
+	if err := json.Unmarshal(line, &resp); err != nil {
 		return nil, fmt.Errorf("decoding response: %w", err)
 	}
 	if !resp.OK {
 		return nil, fmt.Errorf("daemon: %s", resp.Error)
 	}
 	return resp.Result, nil
+}
+
+func readControlResponseLine(r *bufio.Reader, maxBytes int) ([]byte, error) {
+	if maxBytes <= 0 {
+		return nil, fmt.Errorf("invalid response limit")
+	}
+	var out []byte
+	for {
+		chunk, err := r.ReadSlice('\n')
+		if len(chunk) > 0 {
+			if len(out)+len(chunk) > maxBytes {
+				return nil, fmt.Errorf("response exceeds %d bytes", maxBytes)
+			}
+			out = append(out, chunk...)
+		}
+		switch {
+		case err == nil:
+			return out, nil
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		case errors.Is(err, io.EOF):
+			if len(out) == 0 {
+				return nil, io.EOF
+			}
+			return out, nil
+		default:
+			return nil, err
+		}
+	}
 }
 
 // requireDaemon translates sendControl errors into a clean operator

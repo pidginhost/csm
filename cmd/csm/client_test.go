@@ -114,6 +114,33 @@ func TestSendControl_ReturnsDaemonOKResult(t *testing.T) {
 	}
 }
 
+func TestSendControlReadsLargeResponseLine(t *testing.T) {
+	large := strings.Repeat("x", 17*1024*1024)
+	largeJSON, err := json.Marshal(large)
+	if err != nil {
+		t.Fatalf("marshal large payload: %v", err)
+	}
+	cleanup := fakeDaemon(t, func(req control.Request) control.Response {
+		if req.Cmd != "status" {
+			t.Errorf("daemon received unexpected cmd %q", req.Cmd)
+		}
+		return control.Response{OK: true, Result: largeJSON}
+	})
+	defer cleanup()
+
+	result, err := sendControl("status", nil)
+	if err != nil {
+		t.Fatalf("sendControl: %v", err)
+	}
+	var got string
+	if err := json.Unmarshal(result, &got); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if len(got) != len(large) {
+		t.Errorf("large result len = %d, want %d", len(got), len(large))
+	}
+}
+
 func TestSendControl_ReturnsDaemonError(t *testing.T) {
 	cleanup := fakeDaemon(t, func(control.Request) control.Response {
 		return control.Response{OK: false, Error: "boom"}

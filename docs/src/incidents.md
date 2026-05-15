@@ -262,10 +262,14 @@ resolved / dismissed); read-scope tokens can browse all three tabs.
 ## Control socket
 
 ```
-csm incidents list
+csm incidents list [--status all|active|open|contained|resolved|dismissed] [--limit N] [--offset N] [--all]
 csm incidents show <id>
 csm incidents status <id> <open|contained|resolved|dismissed> [details]
 ```
+
+`csm incidents list` returns the first 100 incidents by default. Use
+`--offset` for the next page, `--status active` for open + contained
+incidents, or `--all` for an explicit full dump.
 
 ## Metrics
 

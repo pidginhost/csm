@@ -11,6 +11,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/health"
+	"github.com/pidginhost/csm/internal/incident"
 )
 
 // DefaultSocketPath is the Unix socket the daemon binds and the client
@@ -364,6 +365,26 @@ type PHPRelayThawResponse struct {
 // IncidentShowArgs targets a single incident by id.
 type IncidentShowArgs struct {
 	ID string `json:"id"`
+}
+
+// IncidentListArgs pages CmdIncidentsList. All=true returns every
+// matching incident and should be reserved for offline export-style use.
+type IncidentListArgs struct {
+	Limit  int    `json:"limit,omitempty"`
+	Offset int    `json:"offset,omitempty"`
+	Status string `json:"status,omitempty"` // all / active / open / contained / resolved / dismissed
+	All    bool   `json:"all,omitempty"`
+}
+
+// IncidentListResult is the bounded list envelope returned by
+// CmdIncidentsList. Total is computed before paging so the CLI can show
+// the next offset without a second command.
+type IncidentListResult struct {
+	Items  []incident.Incident `json:"items"`
+	Total  int                 `json:"total"`
+	Offset int                 `json:"offset"`
+	Limit  int                 `json:"limit"`
+	Status string              `json:"status"`
 }
 
 // IncidentStatusArgs transitions an incident's status.
