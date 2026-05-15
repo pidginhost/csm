@@ -61,7 +61,8 @@ type Snapshot struct {
 }
 
 var accountNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
-var targetIdentPattern = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
+var schemaNamePattern = regexp.MustCompile(`^[A-Za-z0-9_@]+$`)
+var tablePrefixPattern = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
 
 // accountNameValid keeps the account string conservative enough to use
 // in archive entry names, manifest keys, and shell-free SQL queries.
@@ -69,8 +70,12 @@ func accountNameValid(name string) bool {
 	return accountNamePattern.MatchString(name)
 }
 
-func targetIdentValid(name string) bool {
-	return targetIdentPattern.MatchString(name)
+func schemaNameValid(name string) bool {
+	return schemaNamePattern.MatchString(name)
+}
+
+func tablePrefixValid(name string) bool {
+	return tablePrefixPattern.MatchString(name)
 }
 
 // Write builds the archive at s.OutPath and a `<out>.sha256` sidecar,
@@ -108,7 +113,7 @@ func (s Snapshot) Write() (string, string, error) {
 	fmt.Fprintf(&manifestB, "schema_count=%d\n", len(targets))
 
 	for i, tgt := range targets {
-		if !targetIdentValid(tgt.Schema) || !targetIdentValid(tgt.TablePrefix) {
+		if !schemaNameValid(tgt.Schema) || !tablePrefixValid(tgt.TablePrefix) {
 			fmt.Fprintf(&manifestB, "invalid_target=%d schema=%q table_prefix=%q\n", i, tgt.Schema, tgt.TablePrefix)
 			name := "schema/invalid-target-" + strconv.Itoa(i) + ".err"
 			data := []byte(fmt.Sprintf("invalid schema target: schema=%q table_prefix=%q\n", tgt.Schema, tgt.TablePrefix))

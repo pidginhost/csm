@@ -279,6 +279,40 @@ func TestSnapshot_Write_ContinuesWhenSchemaDumpFails(t *testing.T) {
 	}
 }
 
+func TestSnapshot_Write_SchemaNameWithAtSignIsArchived(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "snap.tar.gz")
+	schema := "wowlabro_0r1ent@l"
+	s := Snapshot{
+		Account:   "wowlabro",
+		OutPath:   out,
+		Timestamp: time.Now(),
+		Sources: Sources{
+			DiscoverTargets: func(string) []SchemaTarget {
+				return []SchemaTarget{{Schema: schema, TablePrefix: "wp_"}}
+			},
+			DumpSchema: func(got string) ([]byte, error) {
+				if got != schema {
+					t.Fatalf("DumpSchema schema = %q, want %q", got, schema)
+				}
+				return []byte("ok\n"), nil
+			},
+			ListAdmins:      func(string, string) ([]byte, error) { return []byte("admin\n"), nil },
+			ListSessions:    func(string, string) ([]byte, error) { return []byte{}, nil },
+			ListRecentFiles: func(string, time.Time) ([]byte, error) { return []byte{}, nil },
+		},
+	}
+	if _, _, err := s.Write(); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	entries := readArchiveEntries(t, out)
+	if _, ok := entries["schema/"+schema+"-routines.sql"]; !ok {
+		t.Fatalf("archive missing at-sign schema dump; entries=%v", keysOf(entries))
+	}
+	if _, ok := entries["schema/invalid-target-0.err"]; ok {
+		t.Fatalf("at-sign schema was treated as invalid; entries=%v", keysOf(entries))
+	}
+}
+
 func TestSnapshot_Write_InvalidSchemaTargetCannotCreateTraversalEntry(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "snap.tar.gz")
 	s := Snapshot{

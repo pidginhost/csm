@@ -139,7 +139,7 @@ func parseWPConfigForensic(path string) (string, string) {
 // command is invoked with a 60s timeout so a hung mysqld can't stall
 // the whole snapshot.
 func mysqldumpSchema(schema string) ([]byte, error) {
-	if !forensicIdentValid(schema) {
+	if !forensicSchemaValid(schema) {
 		return nil, fmt.Errorf("invalid schema name %q", schema)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -150,7 +150,7 @@ func mysqldumpSchema(schema string) ([]byte, error) {
 }
 
 func listForensicAdmins(schema, tablePrefix string) ([]byte, error) {
-	if !forensicIdentValid(schema) || !forensicIdentValid(tablePrefix) {
+	if !forensicSchemaValid(schema) || !forensicTablePrefixValid(tablePrefix) {
 		return nil, errors.New("invalid identifier")
 	}
 	query := fmt.Sprintf(
@@ -164,7 +164,7 @@ func listForensicAdmins(schema, tablePrefix string) ([]byte, error) {
 }
 
 func listForensicSessions(schema, tablePrefix string) ([]byte, error) {
-	if !forensicIdentValid(schema) || !forensicIdentValid(tablePrefix) {
+	if !forensicSchemaValid(schema) || !forensicTablePrefixValid(tablePrefix) {
 		return nil, errors.New("invalid identifier")
 	}
 	query := fmt.Sprintf(
@@ -175,7 +175,7 @@ func listForensicSessions(schema, tablePrefix string) ([]byte, error) {
 }
 
 func runForensicMySQL(schema, query string) ([]byte, error) {
-	if !forensicIdentValid(schema) {
+	if !forensicSchemaValid(schema) {
 		return nil, errors.New("invalid schema")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -237,8 +237,13 @@ func forensicSkipPrivatePath(accountRoot, path string) bool {
 	return first == "mail" || first == ".cagefs"
 }
 
-var forensicIdentRe = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
+var forensicSchemaRe = regexp.MustCompile(`^[A-Za-z0-9_@]+$`)
+var forensicTablePrefixRe = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
 
-func forensicIdentValid(s string) bool {
-	return forensicIdentRe.MatchString(s)
+func forensicSchemaValid(s string) bool {
+	return forensicSchemaRe.MatchString(s)
+}
+
+func forensicTablePrefixValid(s string) bool {
+	return forensicTablePrefixRe.MatchString(s)
 }

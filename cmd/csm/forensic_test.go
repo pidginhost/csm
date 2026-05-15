@@ -51,3 +51,17 @@ func TestListRecentMtimesSkipsPrivateMailAndCageFSDirs(t *testing.T) {
 		}
 	}
 }
+
+func TestForensicSchemaValidatorAllowsAtSignOnlyForSchema(t *testing.T) {
+	if !forensicSchemaValid("wowlabro_0r1ent@l") {
+		t.Fatal("schema names with @ should be valid")
+	}
+	if forensicTablePrefixValid("bad@prefix_") {
+		t.Fatal("table prefixes with @ must stay invalid because they are interpolated into SQL identifiers")
+	}
+	for _, bad := range []string{"../escape", "bad/name", "bad`name", "bad name"} {
+		if forensicSchemaValid(bad) {
+			t.Fatalf("unsafe schema %q should be invalid", bad)
+		}
+	}
+}
