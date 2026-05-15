@@ -150,3 +150,55 @@ func TestCheckAdminEmailOverlap_ConfigurableThresholdSilencesTwoAccountCase(t *t
 		t.Errorf("threshold=3 must silence two-account overlap, got %d", len(findings))
 	}
 }
+
+func TestCheckAdminEmailOverlap_TrustedEmailSilencesOverlap(t *testing.T) {
+	withFreshStore(t)
+	now := time.Now()
+	db := store.Global()
+	_ = db.RecordAdminEmail("Admin@Dev.Example.test", "alice", "alice_wp", now)
+	_ = db.RecordAdminEmail("admin@dev.example.test", "bob", "bob_wp", now)
+	_ = db.RecordAdminEmail("admin@dev.example.test", "carol", "carol_wp", now)
+
+	cfg := &config.Config{}
+	cfg.Detection.AdminOverlapMinAccounts = 2
+	cfg.Detection.AdminOverlapTrustedEmails = []string{"admin@dev.example.test"}
+
+	findings := CheckAdminEmailOverlap(context.Background(), cfg, nil)
+	if len(findings) != 0 {
+		t.Fatalf("trusted admin email must silence overlap, got %v", findings)
+	}
+}
+
+func TestCheckAdminEmailOverlap_TrustedDomainSilencesOverlap(t *testing.T) {
+	withFreshStore(t)
+	now := time.Now()
+	db := store.Global()
+	_ = db.RecordAdminEmail("ops@dev.example.test", "alice", "alice_wp", now)
+	_ = db.RecordAdminEmail("ops@dev.example.test", "bob", "bob_wp", now)
+
+	cfg := &config.Config{}
+	cfg.Detection.AdminOverlapMinAccounts = 2
+	cfg.Detection.AdminOverlapTrustedDomains = []string{"DEV.EXAMPLE.TEST"}
+
+	findings := CheckAdminEmailOverlap(context.Background(), cfg, nil)
+	if len(findings) != 0 {
+		t.Fatalf("trusted admin domain must silence overlap, got %v", findings)
+	}
+}
+
+func TestCheckAdminEmailOverlap_TrustedDomainDoesNotSilenceDifferentDomain(t *testing.T) {
+	withFreshStore(t)
+	now := time.Now()
+	db := store.Global()
+	_ = db.RecordAdminEmail("ops@contractor.example.test", "alice", "alice_wp", now)
+	_ = db.RecordAdminEmail("ops@contractor.example.test", "bob", "bob_wp", now)
+
+	cfg := &config.Config{}
+	cfg.Detection.AdminOverlapMinAccounts = 2
+	cfg.Detection.AdminOverlapTrustedDomains = []string{"dev.example.test"}
+
+	findings := CheckAdminEmailOverlap(context.Background(), cfg, nil)
+	if len(findings) != 1 {
+		t.Fatalf("different domain must still alert, got %v", findings)
+	}
+}

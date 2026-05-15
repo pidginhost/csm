@@ -236,11 +236,9 @@ func TestParseEximLogLine_OutgoingMailHoldDoesNotReapplyHold(t *testing.T) {
 	})
 }
 
-// TestParseEximLogLine_MaxDefersStillSuspends asserts the OTHER cPanel
-// trigger -- the actual "Domain X has exceeded the max defers and failures
-// per hour" threshold-trip line -- still calls autoSuspendOutgoingMail.
-// That line is emitted at most once per trip (cPanel rate-limits it), so
-// amplifying it does not create the feedback loop above.
+// TestParseEximLogLine_MaxDefersStillSuspends asserts that a max-defers
+// threshold line still escalates when CSM has not recently seen cPanel hold
+// the domain already.
 func TestParseEximLogLine_MaxDefersStillSuspends(t *testing.T) {
 	withGlobalStore(t, func(_ *store.DB) {
 		prevHook := autoSuspendOutgoingMail
@@ -252,6 +250,67 @@ func TestParseEximLogLine_MaxDefersStillSuspends(t *testing.T) {
 			mu.Unlock()
 		}
 		t.Cleanup(func() { autoSuspendOutgoingMail = prevHook })
+
+		cfg := &config.Config{}
+		line := `2026-04-11 12:00:00 1abc23-000456-AB ** user@example.com R=enforce_mail_permissions : Domain example.com has exceeded the max defers and failures per hour (15/15 (100%)) allowed. Message discarded.`
+
+		findings := parseEximLogLine(line, cfg)
+		if len(suspendCalls) != 1 || suspendCalls[0] != "example.com" {
+			t.Fatalf("autoSuspendOutgoingMail calls = %v, want one call with domain=example.com", suspendCalls)
+		}
+		if len(findings) == 0 || findings[0].Check != "email_spam_outbreak" {
+			t.Fatalf("expected email_spam_outbreak finding, got %v", findings)
+		}
+	})
+}
+
+func TestParseEximLogLine_MaxDefersAfterRecentHoldDoesNotReportOutbreak(t *testing.T) {
+	withGlobalStore(t, func(_ *store.DB) {
+		prevHook := autoSuspendOutgoingMail
+		var suspendCalls []string
+		var mu sync.Mutex
+		autoSuspendOutgoingMail = func(target string) {
+			mu.Lock()
+			suspendCalls = append(suspendCalls, target)
+			mu.Unlock()
+		}
+		t.Cleanup(func() { autoSuspendOutgoingMail = prevHook })
+
+		cfg := &config.Config{}
+		holdLine := `2026-04-11 12:00:00 1abc23-000456-AB == user@example.com R=enforce_mail_permissions defer (-1): "Domain example.com has an outgoing mail hold. Message will be reattempted later"`
+		maxDefersLine := `2026-04-11 12:15:00 1abc23-000456-AB ** user@example.com R=enforce_mail_permissions : Domain example.com has exceeded the max defers and failures per hour (15/15 (100%)) allowed. Message discarded.`
+
+		holdFindings := parseEximLogLine(holdLine, cfg)
+		if len(holdFindings) != 1 || holdFindings[0].Check != "email_compromised_account" {
+			t.Fatalf("expected hold finding before retry-limit line, got %v", holdFindings)
+		}
+
+		findings := parseEximLogLine(maxDefersLine, cfg)
+		if len(findings) != 0 {
+			t.Fatalf("expected held-domain retry-limit line to be suppressed, got %v", findings)
+		}
+		if len(suspendCalls) != 0 {
+			t.Fatalf("autoSuspendOutgoingMail calls = %v, want none for held-domain retry-limit line", suspendCalls)
+		}
+	})
+}
+
+func TestParseEximLogLine_MaxDefersAfterStaleHoldStillSuspends(t *testing.T) {
+	withGlobalStore(t, func(db *store.DB) {
+		prevHook := autoSuspendOutgoingMail
+		var suspendCalls []string
+		var mu sync.Mutex
+		autoSuspendOutgoingMail = func(target string) {
+			mu.Lock()
+			suspendCalls = append(suspendCalls, target)
+			mu.Unlock()
+		}
+		t.Cleanup(func() { autoSuspendOutgoingMail = prevHook })
+
+		stale := time.Now().Add(-recentOutgoingMailHoldWindow - time.Minute).Format(time.RFC3339)
+		if err := db.SetMetaString("email_hold_seen:example.com", stale); err != nil {
+			t.Fatalf("SetMetaString: %v", err)
+		}
 
 		cfg := &config.Config{}
 		line := `2026-04-11 12:00:00 1abc23-000456-AB ** user@example.com R=enforce_mail_permissions : Domain example.com has exceeded the max defers and failures per hour (15/15 (100%)) allowed. Message discarded.`

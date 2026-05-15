@@ -221,6 +221,9 @@ detection:
   # CLI keeps working for operator-driven cleanup.
   # db_object_scanning: true
   db_object_allowlist: []               # entries: <account>:<schema>:<type>:<name> -- suppresses db_unexpected_* warnings only
+  admin_overlap_min_accounts: 2         # raise only if routine shared-admin accounts are expected on this host
+  admin_overlap_trusted_emails: []       # exact reviewed admin emails that may manage multiple cPanel accounts
+  admin_overlap_trusted_domains: []      # exact reviewed email domains for developer or reseller admin accounts
   # rescan_on_signature_update: true    # tri-state; omit for default-on, false to disable retroactive sweeps
 
 # --- Challenge Pages ---

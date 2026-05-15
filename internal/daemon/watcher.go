@@ -18,6 +18,8 @@ import (
 	"github.com/pidginhost/csm/internal/store"
 )
 
+const recentOutgoingMailHoldWindow = 2 * time.Hour
+
 // LogLineHandler parses a log line and returns findings (if any).
 type LogLineHandler func(line string, cfg *config.Config) []alert.Finding
 
@@ -297,10 +299,9 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 	// false-positive hold (e.g. caused by external transit defers like the
 	// 2026-05-11 Microsoft edge outage) sees CSM re-set the hold within
 	// seconds because old queued messages keep retrying. cPanel's
-	// TailWatch::Eximstats is the authoritative source -- if the original
-	// hold was real abuse, cPanel will reapply it via its own analyzer
-	// (which CSM amplifies through path #3 on the "max defers and failures
-	// per hour" trigger line, not from these per-retry rejections).
+	// TailWatch::Eximstats is the authoritative source for setting
+	// the hold. CSM records the hold so later retry-limit noise from
+	// the held domain is not promoted to a fresh spam outbreak.
 	if strings.Contains(line, "outgoing mail hold") {
 		sender := extractMailHoldSender(line)
 		if sender == "" {
@@ -312,6 +313,7 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 		}
 
 		if domain != "" {
+			recordRecentOutgoingMailHold(domain)
 			RecordCompromisedDomain(domain)
 		}
 
@@ -338,6 +340,9 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 	// 3. Max defers/failures exceeded - active spam outbreak
 	if strings.Contains(line, "max defers and failures per hour") {
 		domain := extractEximDomain(line)
+		if recentOutgoingMailHold(domain) {
+			return findings
+		}
 		// Auto-suspend: confirmed spam outbreak
 		autoSuspendOutgoingMail(domain)
 		findings = append(findings, alert.Finding{
@@ -723,6 +728,29 @@ func extractMailHoldSender(line string) string {
 		return rest
 	}
 	return ""
+}
+
+func recordRecentOutgoingMailHold(domain string) {
+	if domain == "" {
+		return
+	}
+	db := store.Global()
+	if db == nil {
+		return
+	}
+	_ = db.SetMetaString("email_hold_seen:"+domain, time.Now().Format(time.RFC3339))
+}
+
+func recentOutgoingMailHold(domain string) bool {
+	if domain == "" {
+		return false
+	}
+	db := store.Global()
+	if db == nil {
+		return false
+	}
+	stored := db.GetMetaString("email_hold_seen:" + domain)
+	return stored != "" && !isDedupExpired(stored, recentOutgoingMailHoldWindow)
 }
 
 // extractBracketedIP extracts an IP from [IP]:port or [IP] format in exim logs.

@@ -77,6 +77,7 @@ func CheckAdminEmailOverlap(ctx context.Context, cfg *config.Config, _ *state.St
 	if err != nil || len(overlaps) == 0 {
 		return nil
 	}
+	overlaps = filterTrustedAdminOverlaps(overlaps, cfg)
 	return buildAdminOverlapFindings(overlaps)
 }
 
@@ -137,4 +138,48 @@ func buildAdminOverlapFindings(overlaps map[string][]store.AdminEmailEntry) []al
 		})
 	}
 	return out
+}
+
+func filterTrustedAdminOverlaps(overlaps map[string][]store.AdminEmailEntry, cfg *config.Config) map[string][]store.AdminEmailEntry {
+	if cfg == nil || (len(cfg.Detection.AdminOverlapTrustedEmails) == 0 && len(cfg.Detection.AdminOverlapTrustedDomains) == 0) {
+		return overlaps
+	}
+	out := make(map[string][]store.AdminEmailEntry, len(overlaps))
+	for email, owners := range overlaps {
+		if trustedAdminOverlapEmail(email, cfg) {
+			continue
+		}
+		out[email] = owners
+	}
+	return out
+}
+
+func trustedAdminOverlapEmail(email string, cfg *config.Config) bool {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" {
+		return false
+	}
+	for _, trusted := range cfg.Detection.AdminOverlapTrustedEmails {
+		if email == strings.ToLower(strings.TrimSpace(trusted)) {
+			return true
+		}
+	}
+	domain := adminEmailDomain(email)
+	if domain == "" {
+		return false
+	}
+	for _, trusted := range cfg.Detection.AdminOverlapTrustedDomains {
+		if domain == strings.ToLower(strings.TrimSpace(trusted)) {
+			return true
+		}
+	}
+	return false
+}
+
+func adminEmailDomain(email string) string {
+	at := strings.LastIndexByte(email, '@')
+	if at < 0 || at == len(email)-1 {
+		return ""
+	}
+	return email[at+1:]
 }

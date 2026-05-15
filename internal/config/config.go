@@ -189,6 +189,13 @@ type Config struct {
 		// emails (e.g. one ops team across many sites) can raise the
 		// threshold to silence the routine overlap.
 		AdminOverlapMinAccounts int `yaml:"admin_overlap_min_accounts"`
+		// AdminOverlapTrustedEmails suppresses cross-account admin
+		// overlap findings for exact, operator-reviewed email addresses.
+		AdminOverlapTrustedEmails []string `yaml:"admin_overlap_trusted_emails"`
+		// AdminOverlapTrustedDomains suppresses cross-account admin
+		// overlap findings for exact email domains used by trusted
+		// developer or reseller admin accounts.
+		AdminOverlapTrustedDomains []string `yaml:"admin_overlap_trusted_domains"`
 
 		// RescanOnSignatureUpdate fires a forced full-tree deep
 		// scan the next time any file under cfg.Signatures.RulesDir
