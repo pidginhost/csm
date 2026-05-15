@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -93,11 +95,40 @@ Flags:
 `)
 }
 
-// discoverForensicTargets walks /home/<account>/*/wp-config.php and
+// discoverForensicTargets walks /home/<account> for wp-config.php files and
 // extracts the DB_NAME and $table_prefix pair from each file. Used in
 // production wiring; tests inject a fixed slice.
 func discoverForensicTargets(account string) []forensic.SchemaTarget {
-	matches, _ := filepath.Glob("/home/" + account + "/*/wp-config.php")
+	return discoverForensicTargetsInRoot("/home/" + account)
+}
+
+func discoverForensicTargetsInRoot(accountRoot string) []forensic.SchemaTarget {
+	var matches []string
+	_ = filepath.WalkDir(accountRoot, func(p string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if entry.IsDir() {
+			if p != accountRoot && forensicSkipPrivatePath(accountRoot, p) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if entry.Name() != "wp-config.php" {
+			return nil
+		}
+		matches = append(matches, p)
+		return nil
+	})
+	sort.Slice(matches, func(i, j int) bool {
+		di := forensicPathDepth(accountRoot, matches[i])
+		dj := forensicPathDepth(accountRoot, matches[j])
+		if di != dj {
+			return di < dj
+		}
+		return matches[i] < matches[j]
+	})
+
 	var out []forensic.SchemaTarget
 	seen := map[string]bool{}
 	for _, p := range matches {
@@ -112,6 +143,14 @@ func discoverForensicTargets(account string) []forensic.SchemaTarget {
 		out = append(out, forensic.SchemaTarget{Schema: schema, TablePrefix: prefix})
 	}
 	return out
+}
+
+func forensicPathDepth(root, path string) int {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return strings.Count(filepath.ToSlash(path), "/")
+	}
+	return strings.Count(filepath.ToSlash(rel), "/")
 }
 
 var (
