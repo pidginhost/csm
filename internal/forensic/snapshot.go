@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -60,11 +61,16 @@ type Snapshot struct {
 }
 
 var accountNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
+var targetIdentPattern = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
 
 // accountNameValid keeps the account string conservative enough to use
 // in archive entry names, manifest keys, and shell-free SQL queries.
 func accountNameValid(name string) bool {
 	return accountNamePattern.MatchString(name)
+}
+
+func targetIdentValid(name string) bool {
+	return targetIdentPattern.MatchString(name)
 }
 
 // Write builds the archive at s.OutPath and a `<out>.sha256` sidecar,
@@ -101,7 +107,16 @@ func (s Snapshot) Write() (string, string, error) {
 	fmt.Fprintf(&manifestB, "timestamp=%s\n", ts.UTC().Format(time.RFC3339))
 	fmt.Fprintf(&manifestB, "schema_count=%d\n", len(targets))
 
-	for _, tgt := range targets {
+	for i, tgt := range targets {
+		if !targetIdentValid(tgt.Schema) || !targetIdentValid(tgt.TablePrefix) {
+			fmt.Fprintf(&manifestB, "invalid_target=%d schema=%q table_prefix=%q\n", i, tgt.Schema, tgt.TablePrefix)
+			name := "schema/invalid-target-" + strconv.Itoa(i) + ".err"
+			data := []byte(fmt.Sprintf("invalid schema target: schema=%q table_prefix=%q\n", tgt.Schema, tgt.TablePrefix))
+			if err := writeArchiveEntry(tw, name, data, ts); err != nil {
+				return "", "", err
+			}
+			continue
+		}
 		fmt.Fprintf(&manifestB, "schema=%s table_prefix=%s\n", tgt.Schema, tgt.TablePrefix)
 
 		// Schema dump.
@@ -192,16 +207,42 @@ func validateOutPath(account, outPath string) error {
 		return fmt.Errorf("resolving out path: %w", err)
 	}
 	home := filepath.Clean("/home/" + account)
-	if abs == home || strings.HasPrefix(abs, home+string(filepath.Separator)) {
-		return fmt.Errorf("out path must not be inside /home/%s/", account)
+	homes := []string{home}
+	if realHome, err := filepath.EvalSymlinks(home); err == nil {
+		homes = append(homes, realHome)
+	}
+	paths := []string{abs}
+	if realAbs, err := filepath.EvalSymlinks(abs); err == nil {
+		paths = append(paths, realAbs)
+	}
+	if realParent, err := filepath.EvalSymlinks(filepath.Dir(abs)); err == nil {
+		paths = append(paths, filepath.Join(realParent, filepath.Base(abs)))
+	}
+	for _, h := range homes {
+		for _, p := range paths {
+			if pathWithin(h, p) {
+				return fmt.Errorf("out path must not be inside /home/%s/", account)
+			}
+		}
 	}
 	return nil
+}
+
+func pathWithin(root, path string) bool {
+	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
 }
 
 // writeArchiveEntry adds a single file to the tar stream with a fixed
 // mtime so identical inputs produce byte-identical archives. The mode
 // is 0600 because forensic content is operator-only.
 func writeArchiveEntry(tw *tar.Writer, name string, data []byte, ts time.Time) error {
+	if unsafeArchiveEntryName(name) {
+		return fmt.Errorf("unsafe archive entry name: %q", name)
+	}
 	hdr := &tar.Header{
 		Name:    name,
 		Size:    int64(len(data)),
@@ -215,4 +256,12 @@ func writeArchiveEntry(tw *tar.Writer, name string, data []byte, ts time.Time) e
 		return fmt.Errorf("tar body %s: %w", name, err)
 	}
 	return nil
+}
+
+func unsafeArchiveEntryName(name string) bool {
+	if name == "" || filepath.IsAbs(name) || strings.Contains(name, `\`) {
+		return true
+	}
+	clean := filepath.Clean(name)
+	return clean != name || clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator))
 }

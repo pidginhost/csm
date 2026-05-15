@@ -279,6 +279,50 @@ func TestSnapshot_Write_ContinuesWhenSchemaDumpFails(t *testing.T) {
 	}
 }
 
+func TestSnapshot_Write_InvalidSchemaTargetCannotCreateTraversalEntry(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "snap.tar.gz")
+	s := Snapshot{
+		Account:   "alice",
+		OutPath:   out,
+		Timestamp: time.Now(),
+		Sources: Sources{
+			DiscoverTargets: func(string) []SchemaTarget {
+				return []SchemaTarget{{Schema: "../escape", TablePrefix: "wp_"}}
+			},
+			DumpSchema: func(string) ([]byte, error) {
+				return []byte("must not be called\n"), nil
+			},
+			ListAdmins:   func(string, string) ([]byte, error) { return []byte("must not be called\n"), nil },
+			ListSessions: func(string, string) ([]byte, error) { return []byte("must not be called\n"), nil },
+		},
+	}
+	if _, _, err := s.Write(); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	entries := readArchiveEntries(t, out)
+	if _, ok := entries["schema/../escape-routines.sql"]; ok {
+		t.Fatal("archive contains traversal entry for invalid schema")
+	}
+	if _, ok := entries["schema/invalid-target-0.err"]; !ok {
+		t.Fatalf("archive missing invalid target marker; entries=%v", keysOf(entries))
+	}
+	for name := range entries {
+		if strings.Contains(name, "..") || strings.HasPrefix(name, "/") {
+			t.Fatalf("unsafe archive entry %q", name)
+		}
+	}
+}
+
+func TestWriteArchiveEntryRejectsUnsafeNames(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for _, name := range []string{"../escape", "/abs/path", "schema/../../escape", `schema\escape`} {
+		if err := writeArchiveEntry(tw, name, []byte("x"), time.Now()); err == nil {
+			t.Errorf("writeArchiveEntry(%q) succeeded, want error", name)
+		}
+	}
+}
+
 type errString struct{ s string }
 
 func (e *errString) Error() string { return e.s }

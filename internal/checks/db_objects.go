@@ -42,12 +42,11 @@ var dbPersistenceMalwarePatterns = []string{
 	"load data infile",
 }
 
-// magicTokenRegex extracts secret activation tokens from trigger bodies
-// that gate privileged actions on `display_name LIKE '%<token>%'`. The
-// extracted token feeds the user retro-scan (scanMagicTokenUsers) so
-// the incident report carries the list of users whose display_name
-// still matches.
-var magicTokenRegex = regexp.MustCompile(`(?i)display_name\s+like\s+['"]%([A-Za-z0-9_-]{6,32})%['"]`)
+// magicTokenRegex extracts high-entropy activation tokens from trigger
+// bodies that gate privileged actions on `display_name LIKE
+// '%<token>%'`. Common display-name filters such as "%administrator%"
+// must not escalate a merely unexpected trigger into Critical.
+var magicTokenRegex = regexp.MustCompile(`(?i)display_name\s+like\s+['"]%([A-Za-z0-9_-]{10,32})%['"]`)
 
 // validTablePrefix matches the character class WordPress accepts for
 // $table_prefix (alphanumerics and underscore). Untrusted prefixes
@@ -57,10 +56,9 @@ var magicTokenRegex = regexp.MustCompile(`(?i)display_name\s+like\s+['"]%([A-Za-
 var validTablePrefix = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
 
 // dbPersistenceMalwareRegexes catches multi-token shapes that no
-// substring set can match cleanly: role-escalation writes, magic-token
-// gating on user-controllable fields, password-hash exfiltration reads.
-// Pre-compiled at package init time -- a regex parse error here is a
-// build-time bug, not a runtime one.
+// substring set can match cleanly: role-escalation writes and
+// password-hash exfiltration reads. Pre-compiled at package init time
+// -- a regex parse error here is a build-time bug, not a runtime one.
 //
 // Patterns intentionally case-insensitive ((?i) prefix) and tolerant of
 // whitespace / line breaks across MySQL trigger bodies. The role-write
@@ -72,10 +70,6 @@ var dbPersistenceMalwareRegexes = []*regexp.Regexp{
 	// The (?s) flag lets `.` match newlines so multi-line trigger
 	// bodies with the UPDATE split across lines still hit.
 	regexp.MustCompile(`(?is)update\s+` + "`?" + `\w*usermeta` + "`?" + `\s+set\s+meta_value\s*=.*?(?:s:13:["\x60]administrator["\x60]|["\x60]administrator["\x60])`),
-	// Magic-token activation: gating any branch on `display_name LIKE
-	// '%<6-32 alnum>%'`. Public profile fields are never legitimate
-	// privilege-decision inputs.
-	regexp.MustCompile(`(?i)display_name\s+like\s+['"]%[A-Za-z0-9_-]{6,32}%['"]`),
 	// Password-hash exfil read: SELECT user_pass FROM <users-like>
 	// table. Real WP code goes through wp_check_password() in PHP, never
 	// raw SELECT user_pass from SQL.
@@ -240,9 +234,9 @@ func classifyDBObject(account, schema string, kind dbObjectKind, name, body stri
 //
 //  1. dbMalwarePatterns / dbPersistenceMalwarePatterns: substring tokens
 //     for OS-exec UDFs and file-IO sinks (sys_exec, INTO OUTFILE, etc.).
-//  2. dbPersistenceMalwareRegexes: multi-token shapes for role-escalation
-//     writes, magic-token gating on user-controllable fields, and
-//     password-hash exfiltration reads.
+//  2. extractMagicTokens: high-entropy display_name activation gates.
+//  3. dbPersistenceMalwareRegexes: multi-token shapes for role-escalation
+//     writes and password-hash exfiltration reads.
 //
 // Substring matching stays case-insensitive via ToLower; the regex tier
 // keeps its own `(?i)` flags so its semantics travel with the pattern.
@@ -257,6 +251,9 @@ func bodyHasMalwarePattern(body string) bool {
 		if strings.Contains(lower, p) {
 			return true
 		}
+	}
+	if len(extractMagicTokens(body)) > 0 {
+		return true
 	}
 	for _, re := range dbPersistenceMalwareRegexes {
 		if re.MatchString(body) {
@@ -366,12 +363,11 @@ func IsDBObjectKind(s string) bool {
 }
 
 // extractMagicTokens returns the secret activation tokens referenced in
-// a trigger body's `display_name LIKE '%<token>%'` clauses. The trigger
-// body classifier already flags these shapes as malicious (see
-// dbPersistenceMalwareRegexes); this helper exists so the user retro
-// scan can pull the tokens back out and search the *_users table for
-// matches. Tokens are deduplicated to keep query count bounded when a
-// trigger references the same token across multiple branches.
+// a trigger body's `display_name LIKE '%<token>%'` clauses. The body
+// classifier uses the same helper, and the user retro scan reuses the
+// returned tokens to search the *_users table for matches. Tokens are
+// deduplicated to keep query count bounded when a trigger references
+// the same token across multiple branches.
 //
 // Returns nil for benign bodies so callers can skip MySQL entirely.
 func extractMagicTokens(body string) []string {
@@ -386,6 +382,9 @@ func extractMagicTokens(body string) []string {
 			continue
 		}
 		tok := m[1]
+		if !validMagicToken(tok) {
+			continue
+		}
 		if _, ok := seen[tok]; ok {
 			continue
 		}
@@ -393,6 +392,27 @@ func extractMagicTokens(body string) []string {
 		out = append(out, tok)
 	}
 	return out
+}
+
+func validMagicToken(tok string) bool {
+	if len(tok) < 10 || len(tok) > 32 {
+		return false
+	}
+	hasUpper, hasLower, hasDigit := false, false, false
+	for _, r := range tok {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			hasUpper = true
+		case r >= 'a' && r <= 'z':
+			hasLower = true
+		case r >= '0' && r <= '9':
+			hasDigit = true
+		case r == '_' || r == '-':
+		default:
+			return false
+		}
+	}
+	return hasUpper && hasLower && hasDigit
 }
 
 // scanMagicTokenUsers searches the WordPress users table for accounts
@@ -403,17 +423,20 @@ func extractMagicTokens(body string) []string {
 // surfaced as Critical.
 //
 // The function is conservative about query construction. Tokens are
-// guaranteed to match [A-Za-z0-9_-]{6,32} by extractMagicTokens, and
-// the table prefix is validated against [A-Za-z0-9_]+ before
-// concatenation. Anything outside those character classes causes the
-// scan to skip the query entirely rather than emit a half-built SQL
-// statement against an untrusted prefix.
+// guaranteed to be high-entropy [A-Za-z0-9_-]{10,32} strings by
+// extractMagicTokens, and the table prefix is validated against
+// [A-Za-z0-9_]+ before concatenation. Anything outside those character
+// classes causes the scan to skip the query entirely rather than emit a
+// half-built SQL statement against an untrusted prefix.
 func scanMagicTokenUsers(account, schema, tablePrefix string, tokens []string) []alert.Finding {
 	if len(tokens) == 0 || tablePrefix == "" || !validTablePrefix.MatchString(tablePrefix) {
 		return nil
 	}
 	var findings []alert.Finding
 	for _, tok := range tokens {
+		if !validMagicToken(tok) {
+			continue
+		}
 		query := fmt.Sprintf(
 			"SELECT ID, user_login, user_email, display_name FROM `%susers` WHERE display_name LIKE '%%%s%%'",
 			tablePrefix, tok,

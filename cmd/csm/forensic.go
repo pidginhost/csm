@@ -188,9 +188,8 @@ func runForensicMySQL(schema, query string) ([]byte, error) {
 // listRecentMtimes walks accountRoot for files modified since `since`
 // and returns a TSV of (path, mtime). Bounded to a per-call timeout
 // because a large account can have millions of files. The function
-// excludes the snapshot's own output directory to avoid recursion when
-// the operator points --out inside the account tree (already rejected
-// by validateOutPath, defence in depth).
+// skips private account storage that does not belong in a customer
+// hand-off archive.
 func listRecentMtimes(accountRoot string, since time.Time) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -206,14 +205,17 @@ func listRecentMtimes(accountRoot string, since time.Time) ([]byte, error) {
 			return ctx.Err()
 		}
 		if info.IsDir() {
+			if forensicSkipPrivatePath(accountRoot, p) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		// Skip dotfiles outside public_html/ -- email storage, logs,
 		// shell history. The operator can pull those manually if
 		// needed; bundling them into a customer hand-off is privacy
 		// overreach.
-		if strings.Contains(p, "/mail/") || strings.Contains(p, "/.cagefs/") {
-			return filepath.SkipDir
+		if forensicSkipPrivatePath(accountRoot, p) {
+			return nil
 		}
 		mt := info.ModTime().UTC()
 		if mt.Before(cutoff) {
@@ -223,6 +225,16 @@ func listRecentMtimes(accountRoot string, since time.Time) ([]byte, error) {
 		return nil
 	})
 	return []byte(b.String()), err
+}
+
+func forensicSkipPrivatePath(accountRoot, path string) bool {
+	rel, err := filepath.Rel(accountRoot, path)
+	if err != nil {
+		return false
+	}
+	rel = filepath.ToSlash(filepath.Clean(rel))
+	first, _, _ := strings.Cut(rel, "/")
+	return first == "mail" || first == ".cagefs"
 }
 
 var forensicIdentRe = regexp.MustCompile(`^[A-Za-z0-9_]+$`)

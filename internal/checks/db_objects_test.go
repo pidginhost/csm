@@ -373,6 +373,20 @@ END`
 	}
 }
 
+func TestBodyHasMalwarePattern_DisplayNameWordFilterStaysWarningTier(t *testing.T) {
+	body := `BEGIN
+    IF NEW.display_name LIKE '%administrator%' THEN
+        INSERT INTO audit_log VALUES (NEW.ID);
+    END IF;
+END`
+	if bodyHasMalwarePattern(body) {
+		t.Error("plain display_name word filter must not classify as malicious")
+	}
+	if got := extractMagicTokens(body); got != nil {
+		t.Errorf("plain display_name word filter extracted tokens: %v", got)
+	}
+}
+
 func TestBodyHasMalwarePattern_RoleEscalationVariants(t *testing.T) {
 	cases := []struct {
 		name string
@@ -506,10 +520,23 @@ func TestExtractMagicTokens_NoMatchReturnsNil(t *testing.T) {
 }
 
 func TestExtractMagicTokens_RejectsShortPatterns(t *testing.T) {
-	// 5-character substring must not match (lower bound is 6).
+	// 5-character substring must not match (lower bound is 10).
 	body := `display_name LIKE '%abcde%'`
 	if got := extractMagicTokens(body); got != nil {
-		t.Errorf("expected nil for 5-char token (below 6-char floor), got %v", got)
+		t.Errorf("expected nil for 5-char token (below 10-char floor), got %v", got)
+	}
+}
+
+func TestExtractMagicTokens_RejectsLowEntropyWords(t *testing.T) {
+	cases := []string{
+		`display_name LIKE '%administrator%'`,
+		`display_name LIKE '%customer123%'`,
+		`display_name LIKE '%UPPERCASE123%'`,
+	}
+	for _, body := range cases {
+		if got := extractMagicTokens(body); got != nil {
+			t.Errorf("expected nil for low-entropy token in %q, got %v", body, got)
+		}
 	}
 }
 
@@ -563,6 +590,24 @@ func TestScanMagicTokenUsers_NoTokensSkipsQuery(t *testing.T) {
 	findings := scanMagicTokenUsers("alice", "alice_wp", "wp_", nil)
 	if called {
 		t.Error("MySQL must not be queried when token list is empty")
+	}
+	if len(findings) != 0 {
+		t.Errorf("got %d findings, want 0", len(findings))
+	}
+}
+
+func TestScanMagicTokenUsers_InvalidTokenSkipsQuery(t *testing.T) {
+	called := false
+	withMockCmd(t, &mockCmd{
+		run: func(string, ...string) ([]byte, error) {
+			called = true
+			return nil, nil
+		},
+	})
+
+	findings := scanMagicTokenUsers("alice", "alice_wp", "wp_", []string{"abc12345", "x%' OR 1=1 --"})
+	if called {
+		t.Error("MySQL must not be queried for invalid token input")
 	}
 	if len(findings) != 0 {
 		t.Errorf("got %d findings, want 0", len(findings))

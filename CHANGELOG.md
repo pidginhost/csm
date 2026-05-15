@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- DB magic-token detection now requires high-entropy activation strings, avoiding Critical findings for ordinary display-name word filters.
+- Forensic snapshots now reject unsafe schema archive names and keep mail / CageFS private paths out of the recent-file list.
 - `csm incidents list` now returns the first page by default and still offers an explicit full dump, preventing busy hosts from overflowing the local control response.
 - YARA rule `backdoor_htaccess_auto_prepend` no longer fires on the generated Really Simple Security auto-prepend block, while standalone same-path directives still alert.
 - YARA rule `spam_htaccess_redirect` now requires an external redirect host with an Apache redirect flag, so WordPress HTTPS-force redirects and anti-scraper `[F]` block lists no longer trip a critical alert.
