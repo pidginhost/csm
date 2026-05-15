@@ -42,6 +42,20 @@ var dbPersistenceMalwarePatterns = []string{
 	"load data infile",
 }
 
+// magicTokenRegex extracts secret activation tokens from trigger bodies
+// that gate privileged actions on `display_name LIKE '%<token>%'`. The
+// extracted token feeds the user retro-scan (scanMagicTokenUsers) so
+// the incident report carries the list of users whose display_name
+// still matches.
+var magicTokenRegex = regexp.MustCompile(`(?i)display_name\s+like\s+['"]%([A-Za-z0-9_-]{6,32})%['"]`)
+
+// validTablePrefix matches the character class WordPress accepts for
+// $table_prefix (alphanumerics and underscore). Untrusted prefixes
+// from a malformed wp-config.php fail this check, which keeps
+// scanMagicTokenUsers from concatenating attacker-controlled data into
+// its SQL literal.
+var validTablePrefix = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
+
 // dbPersistenceMalwareRegexes catches multi-token shapes that no
 // substring set can match cleanly: role-escalation writes, magic-token
 // gating on user-controllable fields, password-hash exfiltration reads.
@@ -130,6 +144,20 @@ func CheckDatabaseObjects(ctx context.Context, cfg *config.Config, _ *state.Stor
 				continue
 			}
 			findings = append(findings, h.toFinding())
+		}
+		// Retro-scan: when a trigger gates a privileged action on a
+		// secret token in display_name, find users whose display_name
+		// still carries the token. Zero matches is itself useful for
+		// the incident report ("no evidence the backdoor fired").
+		for _, h := range hits {
+			if h.Kind != dbObjectTrigger {
+				continue
+			}
+			tokens := extractMagicTokens(h.Body)
+			if len(tokens) == 0 {
+				continue
+			}
+			findings = append(findings, scanMagicTokenUsers(account, creds.dbName, creds.tablePrefix, tokens)...)
 		}
 	}
 	return findings
@@ -335,4 +363,76 @@ func IsDBObjectKind(s string) bool {
 		}
 	}
 	return false
+}
+
+// extractMagicTokens returns the secret activation tokens referenced in
+// a trigger body's `display_name LIKE '%<token>%'` clauses. The trigger
+// body classifier already flags these shapes as malicious (see
+// dbPersistenceMalwareRegexes); this helper exists so the user retro
+// scan can pull the tokens back out and search the *_users table for
+// matches. Tokens are deduplicated to keep query count bounded when a
+// trigger references the same token across multiple branches.
+//
+// Returns nil for benign bodies so callers can skip MySQL entirely.
+func extractMagicTokens(body string) []string {
+	matches := magicTokenRegex.FindAllStringSubmatch(body, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(matches))
+	var out []string
+	for _, m := range matches {
+		if len(m) < 2 {
+			continue
+		}
+		tok := m[1]
+		if _, ok := seen[tok]; ok {
+			continue
+		}
+		seen[tok] = struct{}{}
+		out = append(out, tok)
+	}
+	return out
+}
+
+// scanMagicTokenUsers searches the WordPress users table for accounts
+// whose display_name carries a backdoor activation token. A match is
+// forensic evidence that the trigger fired against that user -- they
+// may still be administrator, or the attacker may have demoted them
+// after promotion. Either way the user requires manual review and is
+// surfaced as Critical.
+//
+// The function is conservative about query construction. Tokens are
+// guaranteed to match [A-Za-z0-9_-]{6,32} by extractMagicTokens, and
+// the table prefix is validated against [A-Za-z0-9_]+ before
+// concatenation. Anything outside those character classes causes the
+// scan to skip the query entirely rather than emit a half-built SQL
+// statement against an untrusted prefix.
+func scanMagicTokenUsers(account, schema, tablePrefix string, tokens []string) []alert.Finding {
+	if len(tokens) == 0 || tablePrefix == "" || !validTablePrefix.MatchString(tablePrefix) {
+		return nil
+	}
+	var findings []alert.Finding
+	for _, tok := range tokens {
+		query := fmt.Sprintf(
+			"SELECT ID, user_login, user_email, display_name FROM `%susers` WHERE display_name LIKE '%%%s%%'",
+			tablePrefix, tok,
+		)
+		rows := runMySQLQueryRoot(schema, query)
+		for _, row := range rows {
+			parts := strings.SplitN(row, "\t", 4)
+			if len(parts) < 4 {
+				continue
+			}
+			userID, userLogin, userEmail, displayName := parts[0], parts[1], parts[2], parts[3]
+			findings = append(findings, alert.Finding{
+				Severity:  alert.Critical,
+				Check:     "db_magic_token_user",
+				Message:   fmt.Sprintf("User %s (ID %s) carries backdoor activation token in %s.%susers", userLogin, userID, account, tablePrefix),
+				Details:   fmt.Sprintf("Account: %s\nSchema: %s\nToken: %s\nUser ID: %s\nUser login: %s\nUser email: %s\nDisplay name: %s", account, schema, tok, userID, userLogin, userEmail, displayName),
+				Timestamp: time.Now(),
+			})
+		}
+	}
+	return findings
 }

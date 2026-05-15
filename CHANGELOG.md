@@ -10,9 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Database trigger / event / routine bodies are now classified Critical when they match role-escalation writes (UPDATE on `*_usermeta` granting administrator caps), magic-token gating on user-controllable profile fields, or raw `user_pass` reads. The 2026-05-15 incident shape now fires `db_malicious_trigger` instead of the generic `db_unexpected_trigger` Warning.
+- After a malicious trigger that gates on `display_name LIKE '%<token>%'` is found, CSM automatically scans the WordPress users table for accounts whose display name still carries the token and emits a `db_magic_token_user` Critical finding per match, giving operators a list of accounts that may have been silently promoted.
 
 ### Fixed
 
+- `csm incidents list` now pages results by default and still offers an explicit full dump, preventing busy hosts from overflowing the local control response.
 - YARA rule `backdoor_htaccess_auto_prepend` no longer fires on the generated Really Simple Security auto-prepend block, while standalone same-path directives still alert.
 - YARA rule `spam_htaccess_redirect` now requires an external redirect host with an Apache redirect flag, so WordPress HTTPS-force redirects and anti-scraper `[F]` block lists no longer trip a critical alert.
 

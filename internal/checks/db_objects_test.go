@@ -457,3 +457,153 @@ func TestDBObjectFindingToFinding_RoleEscalationBecomesCriticalTrigger(t *testin
 		t.Errorf("check = %q, want db_malicious_trigger", f.Check)
 	}
 }
+
+// --- Magic-token user retro scan -----------------------------------------
+//
+// When a malicious trigger gates a privileged action on
+// `display_name LIKE '%<token>%'`, the matching token is forensic
+// evidence that the trigger may have fired against real users. The
+// retro-scan pulls users whose display_name still carries the token
+// (the attacker may have cleared it after promotion, but checking is
+// cheap and zero matches is itself a useful "no evidence of execution"
+// statement for the incident report).
+
+func TestExtractMagicTokens_FromTodaysTrigger(t *testing.T) {
+	tokens := extractMagicTokens(todaysRoleEscalationTrigger)
+	if len(tokens) != 1 || tokens[0] != "Lei5pahtebue" {
+		t.Errorf("got %v, want [Lei5pahtebue]", tokens)
+	}
+}
+
+func TestExtractMagicTokens_MultipleDistinctTokens(t *testing.T) {
+	body := `BEGIN
+    IF NEW.display_name LIKE '%TokenAlpha1%' THEN x;
+    IF NEW.display_name LIKE '%TokenBeta22%' THEN y;
+END`
+	tokens := extractMagicTokens(body)
+	if len(tokens) != 2 {
+		t.Fatalf("got %d tokens, want 2: %v", len(tokens), tokens)
+	}
+	have := map[string]bool{tokens[0]: true, tokens[1]: true}
+	if !have["TokenAlpha1"] || !have["TokenBeta22"] {
+		t.Errorf("missing expected tokens: %v", tokens)
+	}
+}
+
+func TestExtractMagicTokens_DedupesRepeatedToken(t *testing.T) {
+	body := `display_name LIKE '%SameToken1%' OR display_name LIKE '%SameToken1%'`
+	tokens := extractMagicTokens(body)
+	if len(tokens) != 1 || tokens[0] != "SameToken1" {
+		t.Errorf("expected single deduplicated token, got %v", tokens)
+	}
+}
+
+func TestExtractMagicTokens_NoMatchReturnsNil(t *testing.T) {
+	body := `BEGIN INSERT INTO audit VALUES (NEW.id); END`
+	if got := extractMagicTokens(body); got != nil {
+		t.Errorf("expected nil, got %v", got)
+	}
+}
+
+func TestExtractMagicTokens_RejectsShortPatterns(t *testing.T) {
+	// 5-character substring must not match (lower bound is 6).
+	body := `display_name LIKE '%abcde%'`
+	if got := extractMagicTokens(body); got != nil {
+		t.Errorf("expected nil for 5-char token (below 6-char floor), got %v", got)
+	}
+}
+
+func TestScanMagicTokenUsers_MatchEmitsCriticalFinding(t *testing.T) {
+	withMockCmd(t, &mockCmd{
+		run: fakeMySQL(map[string][]byte{
+			"WHERE display_name LIKE": []byte(
+				"42\tbob\tbob@example.com\tBob Lei5pahtebue grant\n",
+			),
+		}),
+	})
+
+	findings := scanMagicTokenUsers("alice", "alice_wp", "wp_", []string{"Lei5pahtebue"})
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1", len(findings))
+	}
+	f := findings[0]
+	if f.Severity != alert.Critical {
+		t.Errorf("severity = %v, want Critical", f.Severity)
+	}
+	if f.Check != "db_magic_token_user" {
+		t.Errorf("check = %q, want db_magic_token_user", f.Check)
+	}
+	if !strings.Contains(f.Message, "bob") || !strings.Contains(f.Details, "Lei5pahtebue") {
+		t.Errorf("finding missing identifying details: msg=%q details=%q", f.Message, f.Details)
+	}
+}
+
+func TestScanMagicTokenUsers_NoMatchNoFinding(t *testing.T) {
+	withMockCmd(t, &mockCmd{
+		run: fakeMySQL(map[string][]byte{
+			"WHERE display_name LIKE": []byte(""),
+		}),
+	})
+
+	findings := scanMagicTokenUsers("alice", "alice_wp", "wp_", []string{"Lei5pahtebue"})
+	if len(findings) != 0 {
+		t.Errorf("got %d findings, want 0", len(findings))
+	}
+}
+
+func TestScanMagicTokenUsers_NoTokensSkipsQuery(t *testing.T) {
+	called := false
+	withMockCmd(t, &mockCmd{
+		run: func(string, ...string) ([]byte, error) {
+			called = true
+			return nil, nil
+		},
+	})
+
+	findings := scanMagicTokenUsers("alice", "alice_wp", "wp_", nil)
+	if called {
+		t.Error("MySQL must not be queried when token list is empty")
+	}
+	if len(findings) != 0 {
+		t.Errorf("got %d findings, want 0", len(findings))
+	}
+}
+
+func TestScanMagicTokenUsers_EmptyPrefixSkipsQuery(t *testing.T) {
+	called := false
+	withMockCmd(t, &mockCmd{
+		run: func(string, ...string) ([]byte, error) {
+			called = true
+			return nil, nil
+		},
+	})
+
+	findings := scanMagicTokenUsers("alice", "alice_wp", "", []string{"abc12345"})
+	if called {
+		t.Error("MySQL must not be queried when table prefix is empty")
+	}
+	if len(findings) != 0 {
+		t.Errorf("got %d findings, want 0", len(findings))
+	}
+}
+
+func TestScanMagicTokenUsers_RejectsInvalidPrefixWithoutQuery(t *testing.T) {
+	// Prefix is concatenated into the SQL literal directly. The function
+	// must refuse anything outside [A-Za-z0-9_] to keep the query safe
+	// even when wp-config parsing returns junk.
+	called := false
+	withMockCmd(t, &mockCmd{
+		run: func(string, ...string) ([]byte, error) {
+			called = true
+			return nil, nil
+		},
+	})
+
+	findings := scanMagicTokenUsers("alice", "alice_wp", "wp';--", []string{"abc12345"})
+	if called {
+		t.Error("MySQL must not be queried for an invalid prefix")
+	}
+	if len(findings) != 0 {
+		t.Errorf("got %d findings, want 0", len(findings))
+	}
+}
