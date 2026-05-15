@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -39,6 +40,32 @@ var dbPersistenceMalwarePatterns = []string{
 	"into dumpfile",
 	"load_file(",
 	"load data infile",
+}
+
+// dbPersistenceMalwareRegexes catches multi-token shapes that no
+// substring set can match cleanly: role-escalation writes, magic-token
+// gating on user-controllable fields, password-hash exfiltration reads.
+// Pre-compiled at package init time -- a regex parse error here is a
+// build-time bug, not a runtime one.
+//
+// Patterns intentionally case-insensitive ((?i) prefix) and tolerant of
+// whitespace / line breaks across MySQL trigger bodies. The role-write
+// pattern requires the literal string "administrator" inside the
+// serialized capabilities payload -- promotion to subscriber/customer
+// is the legitimate WP-signup shape and must not match.
+var dbPersistenceMalwareRegexes = []*regexp.Regexp{
+	// Role escalation: UPDATE on *_usermeta writing administrator caps.
+	// The (?s) flag lets `.` match newlines so multi-line trigger
+	// bodies with the UPDATE split across lines still hit.
+	regexp.MustCompile(`(?is)update\s+` + "`?" + `\w*usermeta` + "`?" + `\s+set\s+meta_value\s*=.*?(?:s:13:["\x60]administrator["\x60]|["\x60]administrator["\x60])`),
+	// Magic-token activation: gating any branch on `display_name LIKE
+	// '%<6-32 alnum>%'`. Public profile fields are never legitimate
+	// privilege-decision inputs.
+	regexp.MustCompile(`(?i)display_name\s+like\s+['"]%[A-Za-z0-9_-]{6,32}%['"]`),
+	// Password-hash exfil read: SELECT user_pass FROM <users-like>
+	// table. Real WP code goes through wp_check_password() in PHP, never
+	// raw SELECT user_pass from SQL.
+	regexp.MustCompile(`(?i)select\s+user_pass\s+from\s+` + "`?" + `\w*users`),
 }
 
 // dbObjectKind names the four MySQL object types this scanner
@@ -180,9 +207,17 @@ func classifyDBObject(account, schema string, kind dbObjectKind, name, body stri
 	}
 }
 
-// bodyHasMalwarePattern returns true when the SQL body contains any
-// pattern from dbMalwarePatterns (existing) or
-// dbPersistenceMalwarePatterns (new). Matching is case-insensitive.
+// bodyHasMalwarePattern returns true when the SQL body matches any of
+// the three classifier tiers:
+//
+//  1. dbMalwarePatterns / dbPersistenceMalwarePatterns: substring tokens
+//     for OS-exec UDFs and file-IO sinks (sys_exec, INTO OUTFILE, etc.).
+//  2. dbPersistenceMalwareRegexes: multi-token shapes for role-escalation
+//     writes, magic-token gating on user-controllable fields, and
+//     password-hash exfiltration reads.
+//
+// Substring matching stays case-insensitive via ToLower; the regex tier
+// keeps its own `(?i)` flags so its semantics travel with the pattern.
 func bodyHasMalwarePattern(body string) bool {
 	lower := strings.ToLower(body)
 	for _, p := range dbMalwarePatterns {
@@ -192,6 +227,11 @@ func bodyHasMalwarePattern(body string) bool {
 	}
 	for _, p := range dbPersistenceMalwarePatterns {
 		if strings.Contains(lower, p) {
+			return true
+		}
+	}
+	for _, re := range dbPersistenceMalwareRegexes {
+		if re.MatchString(body) {
 			return true
 		}
 	}
