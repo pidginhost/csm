@@ -85,8 +85,8 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 	// Load caches
 	dirCache := loadDirCache(indexDir)
 
-	// Build a set of previous entries grouped by their top-level scan dir,
-	// so unchanged dirs can carry forward their entries without ReadDir.
+	// Build a set of previous entries grouped by directory ancestry, so
+	// unchanged dirs can carry forward their whole subtree without ReadDir.
 	previousEntries := loadIndex(previousPath)
 	prevByDir := groupEntriesByUploadDir(previousEntries)
 
@@ -259,14 +259,15 @@ func classifySensitiveDirPHP(path, name string) (alert.Severity, string, string)
 		fmt.Sprintf("New PHP file in %s (content clean): %s", locLabel, path)
 }
 
-// groupEntriesByUploadDir groups index entries by their containing scan root.
-// Used to carry forward entries from unchanged directories.
+// groupEntriesByUploadDir groups index entries by each ancestor directory.
+// Used to carry forward the whole cached subtree when an unchanged directory
+// is skipped before walking into its children.
 func groupEntriesByUploadDir(entries []string) map[string][]string {
 	grouped := make(map[string][]string)
 	for _, path := range entries {
-		// Find the scan root: uploads dir, .config dir, or tmp dir
-		dir := filepath.Dir(path)
-		grouped[dir] = append(grouped[dir], path)
+		for dir := filepath.Dir(path); dir != "." && dir != string(filepath.Separator); dir = filepath.Dir(dir) {
+			grouped[dir] = append(grouped[dir], path)
+		}
 	}
 	return grouped
 }

@@ -180,18 +180,19 @@ func TestCopyFileMissingSrc(t *testing.T) {
 // --- groupEntriesByUploadDir ------------------------------------------
 
 func TestGroupEntriesByUploadDir(t *testing.T) {
+	uploadsDir := "/home/u/public_html/wp-content/uploads"
+	nestedUploadsDir := filepath.Join(uploadsDir, "2026")
 	entries := []string{
 		"/home/u/public_html/wp-content/uploads/evil.php",
-		"/home/u/public_html/wp-content/uploads/2024/bad.php",
+		filepath.Join(nestedUploadsDir, "bad.php"),
 		"/home/u/public_html/.config/miner",
 	}
 	grouped := groupEntriesByUploadDir(entries)
-	if len(grouped) != 3 {
-		t.Errorf("got %d groups, want 3", len(grouped))
+	if len(grouped[uploadsDir]) != 2 {
+		t.Errorf("uploads group got %d, want both direct and nested entries", len(grouped[uploadsDir]))
 	}
-	uploadsDir := "/home/u/public_html/wp-content/uploads"
-	if len(grouped[uploadsDir]) != 1 {
-		t.Errorf("uploads group got %d, want 1", len(grouped[uploadsDir]))
+	if len(grouped[nestedUploadsDir]) != 1 {
+		t.Errorf("nested uploads group got %d, want 1", len(grouped[nestedUploadsDir]))
 	}
 }
 
@@ -242,6 +243,32 @@ func TestScanDirForPHPCarriesForwardUnchanged(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected carried-forward entry, got %v", e2)
+	}
+}
+
+func TestScanDirForPHPCarriesForwardNestedEntriesWhenRootUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	nestedUpload := filepath.Join(dir, "2026", "05", "shell.php")
+	nestedLanguage := filepath.Join(dir, "themes", "theme-ro_RO.l10n.php")
+	prev := groupEntriesByUploadDir([]string{nestedUpload, nestedLanguage})
+	cache := dirMtimeCache{dir: info.ModTime().Unix()}
+
+	var entries []string
+	scanDirForPHP(dir, 6, cache, prev, false, &entries)
+
+	got := map[string]bool{}
+	for _, entry := range entries {
+		got[entry] = true
+	}
+	for _, want := range []string{nestedUpload, nestedLanguage} {
+		if !got[want] {
+			t.Errorf("expected cached nested entry %q to be carried forward, got %v", want, entries)
+		}
 	}
 }
 
