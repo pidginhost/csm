@@ -18,7 +18,7 @@ require (
 
 require (
 	github.com/google/go-cmp v0.7.0 // indirect
-	github.com/mdlayher/netlink v1.11.1 // indirect
+	github.com/mdlayher/netlink v1.11.2 // indirect
 	github.com/mdlayher/socket v0.6.0 // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect
 	golang.org/x/sync v0.20.0 // indirect
