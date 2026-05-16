@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.5.0] - 2026-05-16
+
 ### Added
 
 - Database trigger / event / routine bodies are now classified Critical when they match role-escalation writes (UPDATE on `*_usermeta` granting administrator caps), magic-token gating on user-controllable profile fields, or raw `user_pass` reads. The 2026-05-15 incident shape now fires `db_malicious_trigger` instead of the generic `db_unexpected_trigger` Warning.
