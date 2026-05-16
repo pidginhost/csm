@@ -217,10 +217,11 @@ func TestParseEximLogLine_OutgoingMailHoldDoesNotReapplyHold(t *testing.T) {
 		prevHook := autoSuspendOutgoingMail
 		var suspendCalls []string
 		var mu sync.Mutex
-		autoSuspendOutgoingMail = func(target string) {
+		autoSuspendOutgoingMail = func(target string) bool {
 			mu.Lock()
 			suspendCalls = append(suspendCalls, target)
 			mu.Unlock()
+			return true
 		}
 		t.Cleanup(func() { autoSuspendOutgoingMail = prevHook })
 
@@ -245,10 +246,11 @@ func TestParseEximLogLine_MaxDefersStillSuspends(t *testing.T) {
 		prevHook := autoSuspendOutgoingMail
 		var suspendCalls []string
 		var mu sync.Mutex
-		autoSuspendOutgoingMail = func(target string) {
+		autoSuspendOutgoingMail = func(target string) bool {
 			mu.Lock()
 			suspendCalls = append(suspendCalls, target)
 			mu.Unlock()
+			return true
 		}
 		t.Cleanup(func() { autoSuspendOutgoingMail = prevHook })
 
@@ -270,10 +272,11 @@ func TestParseEximLogLine_MaxDefersAfterRecentHoldDoesNotReportOutbreak(t *testi
 		prevHook := autoSuspendOutgoingMail
 		var suspendCalls []string
 		var mu sync.Mutex
-		autoSuspendOutgoingMail = func(target string) {
+		autoSuspendOutgoingMail = func(target string) bool {
 			mu.Lock()
 			suspendCalls = append(suspendCalls, target)
 			mu.Unlock()
+			return true
 		}
 		t.Cleanup(func() { autoSuspendOutgoingMail = prevHook })
 
@@ -307,10 +310,11 @@ func TestParseEximLogLine_MaxDefersRecordsHoldDedup(t *testing.T) {
 		prevHook := autoSuspendOutgoingMail
 		var suspendCalls []string
 		var mu sync.Mutex
-		autoSuspendOutgoingMail = func(target string) {
+		autoSuspendOutgoingMail = func(target string) bool {
 			mu.Lock()
 			suspendCalls = append(suspendCalls, target)
 			mu.Unlock()
+			return true
 		}
 		t.Cleanup(func() { autoSuspendOutgoingMail = prevHook })
 
@@ -334,6 +338,40 @@ func TestParseEximLogLine_MaxDefersRecordsHoldDedup(t *testing.T) {
 		}
 		if len(suspendCalls) != 1 {
 			t.Fatalf("second max-defers line must not re-invoke autoSuspendOutgoingMail, got %d calls", len(suspendCalls))
+		}
+	})
+}
+
+func TestParseEximLogLine_MaxDefersDoesNotRecordHoldDedupWhenSuspendFails(t *testing.T) {
+	withGlobalStore(t, func(db *store.DB) {
+		prevHook := autoSuspendOutgoingMail
+		var suspendCalls []string
+		var mu sync.Mutex
+		autoSuspendOutgoingMail = func(target string) bool {
+			mu.Lock()
+			suspendCalls = append(suspendCalls, target)
+			mu.Unlock()
+			return false
+		}
+		t.Cleanup(func() { autoSuspendOutgoingMail = prevHook })
+
+		cfg := &config.Config{}
+		line := `2026-04-11 12:00:00 1abc23-000456-AB ** user@example.com R=enforce_mail_permissions : Domain example.com has exceeded the max defers and failures per hour (15/15 (100%)) allowed. Message discarded.`
+
+		first := parseEximLogLine(line, cfg)
+		if len(first) == 0 || first[0].Check != "email_spam_outbreak" {
+			t.Fatalf("first max-defers line should fire spam outbreak, got %v", first)
+		}
+		if got := db.GetMetaString("email_hold_seen:example.com"); got != "" {
+			t.Fatalf("failed auto-suspend must not record hold-seen marker, got %q", got)
+		}
+
+		second := parseEximLogLine(line, cfg)
+		if len(second) == 0 || second[0].Check != "email_spam_outbreak" {
+			t.Fatalf("second max-defers line should still alert after failed auto-suspend, got %v", second)
+		}
+		if len(suspendCalls) != 2 {
+			t.Fatalf("failed auto-suspend should be retried, got %d calls", len(suspendCalls))
 		}
 	})
 }
@@ -370,7 +408,9 @@ func TestAutoSuspendOutgoingMail_SkipsWhenUserAlreadyHeld(t *testing.T) {
 	}
 	t.Cleanup(func() { whmapi1HoldExec = prevExec })
 
-	autoSuspendOutgoingMailReal("example.com")
+	if ok := autoSuspendOutgoingMailReal("example.com"); !ok {
+		t.Fatal("already-held user should return success")
+	}
 	if execCalls != 0 {
 		t.Fatalf("whmapi1 hold_outgoing_email must not run when user already on hold, got %d calls", execCalls)
 	}
@@ -378,9 +418,41 @@ func TestAutoSuspendOutgoingMail_SkipsWhenUserAlreadyHeld(t *testing.T) {
 	if err := os.WriteFile(holdPath, []byte("other\n"), 0o644); err != nil {
 		t.Fatalf("rewrite hold users: %v", err)
 	}
-	autoSuspendOutgoingMailReal("example.com")
+	if ok := autoSuspendOutgoingMailReal("example.com"); !ok {
+		t.Fatal("successful whmapi1 hold should return success")
+	}
 	if execCalls != 1 {
 		t.Fatalf("whmapi1 hold_outgoing_email must run when user not yet held, got %d calls", execCalls)
+	}
+}
+
+func TestAutoSuspendOutgoingMail_ReturnsFalseWhenHoldFails(t *testing.T) {
+	tmp := t.TempDir()
+
+	udPath := tmp + "/userdomains"
+	if err := os.WriteFile(udPath, []byte("example.com: holdy\n"), 0o644); err != nil {
+		t.Fatalf("write userdomains: %v", err)
+	}
+	prevUD := userdomainsPath
+	userdomainsPath = udPath
+	t.Cleanup(func() { userdomainsPath = prevUD })
+
+	holdPath := tmp + "/outgoing_mail_hold_users"
+	if err := os.WriteFile(holdPath, []byte("other\n"), 0o644); err != nil {
+		t.Fatalf("write hold users: %v", err)
+	}
+	prevHP := outgoingMailHoldUsersPath
+	outgoingMailHoldUsersPath = holdPath
+	t.Cleanup(func() { outgoingMailHoldUsersPath = prevHP })
+
+	prevExec := whmapi1HoldExec
+	whmapi1HoldExec = func(_ string) ([]byte, error) {
+		return []byte("denied"), os.ErrPermission
+	}
+	t.Cleanup(func() { whmapi1HoldExec = prevExec })
+
+	if ok := autoSuspendOutgoingMailReal("example.com"); ok {
+		t.Fatal("failed whmapi1 hold should return false")
 	}
 }
 
@@ -389,10 +461,11 @@ func TestParseEximLogLine_MaxDefersAfterStaleHoldStillSuspends(t *testing.T) {
 		prevHook := autoSuspendOutgoingMail
 		var suspendCalls []string
 		var mu sync.Mutex
-		autoSuspendOutgoingMail = func(target string) {
+		autoSuspendOutgoingMail = func(target string) bool {
 			mu.Lock()
 			suspendCalls = append(suspendCalls, target)
 			mu.Unlock()
+			return true
 		}
 		t.Cleanup(func() { autoSuspendOutgoingMail = prevHook })
 

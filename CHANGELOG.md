@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - YARA rule `spam_htaccess_redirect` now requires an external redirect host with an Apache redirect flag, so WordPress HTTPS-force redirects and anti-scraper `[F]` block lists no longer trip a critical alert.
 - cPanel max-defer retry noise after an existing outgoing mail hold no longer opens a fresh spam-outbreak alert.
 - Outgoing-mail-hold auto-suspend now short-circuits when the cPanel user already appears in `/etc/outgoing_mail_hold_users`, and the "exceeded max defers/failures" branch records the hold-seen marker so a sustained exim retry loop cannot trigger fresh whmapi1 holds every retry hour.
+- Outgoing-mail-hold retry suppression now starts only after CSM confirms the hold was applied or already active, so failed whmapi1 calls keep retrying and alerting.
 - Known developer or reseller administrator emails can now be marked trusted for the cross-account admin overlap check without raising the global threshold.
 
 ## [3.4.0] - 2026-05-13

@@ -343,16 +343,12 @@ func parseEximLogLine(line string, cfg *config.Config) []alert.Finding {
 		if recentOutgoingMailHold(domain) {
 			return findings
 		}
-		// Record the hold-seen marker so subsequent retries of the same
-		// "exceeded max defers/failures" line (cPanel keeps emitting it
-		// every retry hour while the hold is active and queued bounces
-		// keep the ratio above threshold) hit the dedup above instead of
-		// firing a fresh whmapi1 hold and finding per retry cycle.
-		if domain != "" {
+		// Record the hold-seen marker only after CSM confirms the hold was
+		// applied or already active. If lookup or whmapi1 fails, later
+		// max-defers lines must still retry and alert.
+		if autoSuspendOutgoingMail(domain) {
 			recordRecentOutgoingMailHold(domain)
 		}
-		// Auto-suspend: confirmed spam outbreak
-		autoSuspendOutgoingMail(domain)
 		findings = append(findings, alert.Finding{
 			Severity: alert.Critical,
 			Check:    "email_spam_outbreak",
@@ -687,13 +683,14 @@ func userOnOutgoingMailHold(user string) bool {
 }
 
 // autoSuspendOutgoingMail calls whmapi1 to hold outgoing mail for the cPanel
-// account that owns the given domain or email address. Declared as var so
-// tests can swap in a recorder without spawning whmapi1.
+// account that owns the given domain or email address. It returns true when
+// the hold is applied or already active. Declared as var so tests can swap in
+// a recorder without spawning whmapi1.
 var autoSuspendOutgoingMail = autoSuspendOutgoingMailReal
 
-func autoSuspendOutgoingMailReal(domainOrEmail string) {
+func autoSuspendOutgoingMailReal(domainOrEmail string) bool {
 	if domainOrEmail == "" {
-		return
+		return false
 	}
 	// Extract domain from email if needed
 	domain := domainOrEmail
@@ -705,7 +702,7 @@ func autoSuspendOutgoingMailReal(domainOrEmail string) {
 	if user == "" {
 		fmt.Fprintf(os.Stderr, "[%s] auto-suspend: could not find cPanel user for domain %s\n",
 			time.Now().Format("2006-01-02 15:04:05"), domain)
-		return
+		return false
 	}
 	// Skip if cPanel already lists this user as held. Re-issuing the
 	// hold has no operational effect, but on a sustained exim retry
@@ -713,16 +710,17 @@ func autoSuspendOutgoingMailReal(domainOrEmail string) {
 	// hour after hour) the redundant whmapi1 calls produce a stream
 	// of "AUTO-SUSPEND" log lines that look like a fresh incident.
 	if userOnOutgoingMailHold(user) {
-		return
+		return true
 	}
 	out, err := whmapi1HoldExec(user)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] auto-suspend: whmapi1 hold_outgoing_email failed for %s: %v\n%s\n",
 			time.Now().Format("2006-01-02 15:04:05"), user, err, string(out))
-		return
+		return false
 	}
 	fmt.Fprintf(os.Stderr, "[%s] AUTO-SUSPEND: outgoing mail held for cPanel user %s (domain: %s)\n",
 		time.Now().Format("2006-01-02 15:04:05"), user, domain)
+	return true
 }
 
 // userdomainsPath is the cPanel domain→user map file. var (not const)
