@@ -442,6 +442,14 @@ func TestTimeoutForDefaultChecksKeepStandardBudget(t *testing.T) {
 	}
 }
 
+func TestCheckDurationBucketsCoverHeavyTimeout(t *testing.T) {
+	want := heavyCheckTimeout.Seconds()
+	got := checkDurationBuckets[len(checkDurationBuckets)-1]
+	if got != want {
+		t.Fatalf("last check-duration bucket = %.0fs, want %.0fs", got, want)
+	}
+}
+
 // TestRunParallelTimeoutMessageReflectsCheckBudget guards against the
 // previous bug where the timeout finding's message hard-coded the
 // global 5-minute string, hiding the fact that heavy checks now get a

@@ -114,8 +114,9 @@ curl -sk -H "Authorization: Bearer $METRICS_TOKEN" \
 - `csm_check_duration_seconds{name,tier}` (histogram): wall-clock
   time each check takes to complete. Label `name` is one of the 62
   checks (`fake_kernel_threads`, `webshells`, ...); label `tier` is
-  `critical`, `deep`, or `all`. Buckets: 0.01 s .. 300 s (300 s is
-  the per-check timeout ceiling). Useful aggregations:
+  `critical`, `deep`, or `all`. Buckets: 0.01 s .. 900 s. Most checks
+  keep the 300 s timeout ceiling; heavy filesystem checks can run up to
+  900 s. Useful aggregations:
 
   ```
   # p95 of the slowest check in the critical tier:

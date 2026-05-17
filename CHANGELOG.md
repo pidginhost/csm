@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Heavy filesystem checks (`webshells`, `php_content`, `filesystem`, `htaccess`, `file_index`, `phishing`) now get a 15-minute timeout instead of the 5-minute default. Busy shared hosts with hundreds of WordPress installs legitimately exceed 5 minutes walking every account's document roots, and the prior cap surfaced as noisy `check_timeout` warnings.
+- Heavy filesystem checks (`webshells`, `php_content`, `filesystem`, `htaccess`, `file_index`, `phishing`) now get a 15-minute timeout instead of the 5-minute default, and the check-duration metric has finite buckets through that ceiling. Busy shared hosts with hundreds of WordPress installs can exceed 5 minutes walking every account's document roots, so the prior cap surfaced noisy `check_timeout` warnings and hid slow successful scans in metrics.
+- `sensitive_file_modified` periodic hash-diff findings now carry the file path and a real timestamp; the prior emitter left both unset, so alerts rendered the modification time as `0001-01-01 00:00:00`.
 
 ## [3.5.0] - 2026-05-16
 

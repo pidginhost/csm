@@ -40,12 +40,14 @@ func observeAutoResponse(action string, n int) {
 // checkDuration is the per-check latency histogram for /metrics.
 // Labelled by check name and tier so scrapers can spot a single check
 // regressing without scanning logs. Buckets span the observed range
-// from ~millisecond process-list passes up to the five-minute timeout
+// from ~millisecond process-list passes up to the heavy-check timeout
 // ceiling.
 var (
 	checkDuration     *metrics.HistogramVec
 	checkDurationOnce sync.Once
 )
+
+var checkDurationBuckets = []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 180, 300, 600, 900}
 
 func observeCheckDuration(name, tier string, d time.Duration) {
 	checkDurationOnce.Do(func() {
@@ -53,7 +55,7 @@ func observeCheckDuration(name, tier string, d time.Duration) {
 			"csm_check_duration_seconds",
 			"Wall-clock time for each security check to complete. Label `name` is a check runner name; label `tier` is critical|deep|all. Use p95 across name to spot a single check regressing, and sum across name to track per-cycle pressure.",
 			[]string{"name", "tier"},
-			[]float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300},
+			checkDurationBuckets,
 		)
 		metrics.MustRegister("csm_check_duration_seconds", checkDuration)
 	})

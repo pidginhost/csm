@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -109,5 +110,56 @@ func TestCheckSensitiveFilesAlertsOnNewGlobAfterBaseline(t *testing.T) {
 	}
 	if got[0].Check != "sensitive_file_modified" {
 		t.Fatalf("Check = %q, want sensitive_file_modified", got[0].Check)
+	}
+}
+
+// TestCheckSensitiveFilesHashDiffSetsTimestampAndPath guards against the
+// previous bug where the periodic hash-change emitter left Timestamp
+// unset (rendered as `0001-01-01 00:00:00` in alerts) and FilePath empty,
+// preventing alert renderers and downstream correlators from grouping
+// the finding alongside other modifications of the same path.
+func TestCheckSensitiveFilesHashDiffSetsTimestampAndPath(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "etc/shadow")
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("root:x:0:0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	oldWatchset := sensitiveWatchset
+	sensitiveWatchset = []string{target}
+	t.Cleanup(func() { sensitiveWatchset = oldWatchset })
+
+	st, err := state.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := CheckSensitiveFiles(context.Background(), &config.Config{}, st); len(got) != 0 {
+		t.Fatalf("baseline run emitted findings: %+v", got)
+	}
+
+	if err := os.WriteFile(target, []byte("root:!:0:0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	before := time.Now()
+	got := CheckSensitiveFiles(context.Background(), &config.Config{}, st)
+	after := time.Now()
+
+	if len(got) != 1 {
+		t.Fatalf("hash diff should emit one finding, got %d: %+v", len(got), got)
+	}
+	f := got[0]
+	if f.Timestamp.IsZero() {
+		t.Errorf("Timestamp must be set, got zero value (renders as 0001-01-01 00:00:00 in alerts)")
+	}
+	if f.Timestamp.Before(before) || f.Timestamp.After(after) {
+		t.Errorf("Timestamp %s outside test window [%s, %s]", f.Timestamp, before, after)
+	}
+	if f.FilePath != target {
+		t.Errorf("FilePath = %q, want %q", f.FilePath, target)
 	}
 }

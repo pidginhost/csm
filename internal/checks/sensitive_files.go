@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -156,10 +157,12 @@ func CheckSensitiveFiles(_ context.Context, _ *config.Config, store *state.Store
 		}
 		store.SetRaw(key, hashHex)
 		findings = append(findings, alert.Finding{
-			Severity: alert.High,
-			Check:    "sensitive_file_modified",
-			Message:  fmt.Sprintf("Periodic check: content hash changed for %s", path),
-			Details:  fmt.Sprintf("Previous: %s, Current: %s", prev, hashHex),
+			Severity:  alert.High,
+			Check:     "sensitive_file_modified",
+			Message:   fmt.Sprintf("Periodic check: content hash changed for %s", path),
+			Details:   fmt.Sprintf("Previous: %s, Current: %s", prev, hashHex),
+			FilePath:  path,
+			Timestamp: time.Now(),
 		})
 	}
 	if !baselineComplete {
