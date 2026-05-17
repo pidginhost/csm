@@ -236,6 +236,40 @@ const (
 
 const checkTimeout = 5 * time.Minute
 
+// heavyCheckTimeout applies to filesystem walks that traverse every WP
+// install on the host. On busy shared servers (300+ WP installs, tens of
+// thousands of plugin/theme PHP files) these legitimately run longer than
+// the default 5-minute budget, so they get a wider window to avoid
+// noisy check_timeout warnings while leaving fast checks aggressive.
+const heavyCheckTimeout = 15 * time.Minute
+
+// heavyChecks names the deep-tier checks that walk every account's
+// document roots. Keep this list short and explicit; only checks that
+// observably blow past 5 minutes on production hosts belong here.
+var heavyChecks = map[string]bool{
+	"filesystem":  true,
+	"webshells":   true,
+	"htaccess":    true,
+	"php_content": true,
+	"file_index":  true,
+	"phishing":    true,
+}
+
+// timeoutFor returns the per-check execution budget. Heavy filesystem
+// scans get heavyCheckTimeout, everything else gets checkTimeout.
+// Indirected through timeoutForFunc so tests can shrink budgets
+// without mutating the const.
+func timeoutFor(name string) time.Duration {
+	return timeoutForFunc(name)
+}
+
+var timeoutForFunc = func(name string) time.Duration {
+	if heavyChecks[name] {
+		return heavyCheckTimeout
+	}
+	return checkTimeout
+}
+
 func criticalChecks() []namedCheck {
 	return []namedCheck{
 		{"fake_kernel_threads", CheckFakeKernelThreads},
@@ -562,7 +596,8 @@ func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck, ti
 			defer func() { <-sem }()
 
 			// Run with cancellable context so timed-out checks stop
-			ctx, cancel := context.WithTimeout(context.Background(), checkTimeout)
+			budget := timeoutFor(c.name)
+			ctx, cancel := context.WithTimeout(context.Background(), budget)
 			done := make(chan []alert.Finding, 1)
 			start := time.Now()
 			obs.SafeGo("check-exec", func() {
@@ -585,7 +620,7 @@ func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck, ti
 				findings = append(findings, alert.Finding{
 					Severity:  alert.Warning,
 					Check:     "check_timeout",
-					Message:   fmt.Sprintf("Check '%s' timed out after %s", c.name, checkTimeout),
+					Message:   fmt.Sprintf("Check '%s' timed out after %s", c.name, budget),
 					Timestamp: time.Now(),
 				})
 				mu.Unlock()

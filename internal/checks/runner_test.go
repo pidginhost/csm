@@ -3,8 +3,10 @@ package checks
 import (
 	"context"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -411,5 +413,97 @@ func TestRunParallelThrottledCheckSkippedAndExcludedFromPurge(t *testing.T) {
 	}
 	if containsFindingCheck(findings2, "test_throttled") {
 		t.Fatalf("second cycle: throttled-out check must not emit findings: %+v", findings2)
+	}
+}
+
+// --- Per-check timeout budgets ---------------------------------------
+
+// TestTimeoutForHeavyChecksGetExpandedBudget pins the heavy-filesystem
+// checks (webshells, php_content, filesystem, htaccess, file_index,
+// phishing) to a longer execution budget than the default 5 minutes.
+// On busy shared hosts these legitimately exceed 5 minutes on hundreds
+// of WP installs, generating noisy check_timeout warnings even when the
+// scan would have completed cleanly given another minute or two.
+func TestTimeoutForHeavyChecksGetExpandedBudget(t *testing.T) {
+	for _, name := range []string{"webshells", "php_content", "filesystem", "htaccess", "file_index", "phishing"} {
+		got := timeoutFor(name)
+		if got != heavyCheckTimeout {
+			t.Errorf("timeoutFor(%q) = %s, want %s", name, got, heavyCheckTimeout)
+		}
+	}
+}
+
+func TestTimeoutForDefaultChecksKeepStandardBudget(t *testing.T) {
+	for _, name := range []string{"crontabs", "ssh_logins", "mail_queue", "wp_bruteforce", "unknown_runner"} {
+		got := timeoutFor(name)
+		if got != checkTimeout {
+			t.Errorf("timeoutFor(%q) = %s, want %s", name, got, checkTimeout)
+		}
+	}
+}
+
+// TestRunParallelTimeoutMessageReflectsCheckBudget guards against the
+// previous bug where the timeout finding's message hard-coded the
+// global 5-minute string, hiding the fact that heavy checks now get a
+// different ceiling.
+func TestRunParallelTimeoutMessageReflectsCheckBudget(t *testing.T) {
+	// Use a sub-second timeout via a check that blocks past its budget.
+	// timeoutFor is hit from runParallel, so we plant a heavy-name entry
+	// that we know returns heavyCheckTimeout, and a normal-name entry
+	// that returns checkTimeout. The check functions block on ctx.Done
+	// to force the timeout path deterministically; we then assert the
+	// emitted message names the right budget.
+	heavyName := "webshells"
+	normalName := "ssh_logins"
+	checks := []namedCheck{
+		{heavyName, func(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+			<-ctx.Done()
+			return nil
+		}},
+		{normalName, func(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+			<-ctx.Done()
+			return nil
+		}},
+	}
+
+	// Shrink the live budgets just for this test by swapping the
+	// vars/consts indirectly: the runner reads timeoutFor(), which
+	// reads heavyChecks + the two constants. We avoid mutating consts
+	// and instead time-bound the test by overriding the func pointer.
+	prevHeavy := timeoutForFunc
+	t.Cleanup(func() { timeoutForFunc = prevHeavy })
+	timeoutForFunc = func(name string) time.Duration {
+		if name == heavyName {
+			return 30 * time.Millisecond
+		}
+		return 10 * time.Millisecond
+	}
+
+	cfg := &config.Config{}
+	findings, _ := runParallel(cfg, nil, checks, "test")
+
+	var saw [2]string
+	for _, f := range findings {
+		if f.Check != "check_timeout" {
+			continue
+		}
+		switch {
+		case strings.Contains(f.Message, "'"+heavyName+"'"):
+			saw[0] = f.Message
+		case strings.Contains(f.Message, "'"+normalName+"'"):
+			saw[1] = f.Message
+		}
+	}
+	if saw[0] == "" {
+		t.Fatalf("expected check_timeout finding for %s, got %+v", heavyName, findings)
+	}
+	if !strings.Contains(saw[0], "30ms") {
+		t.Errorf("heavy check timeout message must name 30ms budget, got %q", saw[0])
+	}
+	if saw[1] == "" {
+		t.Fatalf("expected check_timeout finding for %s, got %+v", normalName, findings)
+	}
+	if !strings.Contains(saw[1], "10ms") {
+		t.Errorf("normal check timeout message must name 10ms budget, got %q", saw[1])
 	}
 }
