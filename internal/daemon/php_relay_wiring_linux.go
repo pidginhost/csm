@@ -12,6 +12,11 @@ import (
 	"github.com/pidginhost/csm/internal/store"
 )
 
+// phpRelayAuditPath is the production audit file. Linux-only because the
+// writer is only attached from startPHPRelayLinux; tests pass t.TempDir
+// paths directly to eximAuditWriterAt.
+const phpRelayAuditPath = "/var/log/csm/php_relay_audit.jsonl"
+
 // startPHPRelayLinux completes the PHP-relay wiring after the platform
 // gate (in startPHPRelay) has confirmed cPanel + located exim. It is
 // split out from daemon.go so the heavy linux-only types stay in this
