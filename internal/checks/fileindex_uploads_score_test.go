@@ -31,6 +31,40 @@ class PxlBreadcrumb_Widget extends Pxltheme_Core_Widget_Base{
 	}
 }
 
+func TestScorePHPUploadSeverityBenignUsesBoundedAnalyzerRead(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "class-generated.php")
+	body := `<?php
+
+class Generated_Widget {
+    public function render() {
+        return '<div>ok</div>';
+    }
+}
+`
+	if err := os.WriteFile(target, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldOS := osFS
+	osFS = noReadFileOS{t: t}
+	t.Cleanup(func() { osFS = oldOS })
+
+	if got := scorePHPUploadSeverity(target); got != alert.Warning {
+		t.Errorf("benign class file -> got %v, want Warning", got)
+	}
+}
+
+type noReadFileOS struct {
+	realOS
+	t *testing.T
+}
+
+func (fs noReadFileOS) ReadFile(name string) ([]byte, error) {
+	fs.t.Fatalf("scorePHPUploadSeverity must not re-read full clean upload %q", name)
+	return nil, nil
+}
+
 func TestScorePHPUploadSeverityObfuscatedKeepsHigh(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "x.php")

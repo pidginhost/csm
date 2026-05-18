@@ -24,17 +24,8 @@ func scorePHPUploadSeverity(path string) alert.Severity {
 	if r.severity >= alert.High {
 		return alert.High
 	}
-	if r.severity < 0 {
-		// -1 means "could not analyze" OR "no indicators". analyzePHPContent
-		// returns -1 in two distinct cases: Open failed / read produced 0
-		// bytes (cannot inspect), AND content read but no indicators fired
-		// (clean). Re-open here to disambiguate: a successful read with no
-		// indicators is the clean case that earns the demote.
-		data, err := osFS.ReadFile(path)
-		if err != nil || len(data) == 0 {
-			return alert.High
-		}
+	if r.readOK {
 		return alert.Warning
 	}
-	return alert.Warning
+	return alert.High
 }

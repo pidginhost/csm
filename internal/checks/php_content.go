@@ -143,10 +143,11 @@ type phpAnalysisResult struct {
 	check    string
 	message  string
 	details  string
+	readOK   bool
 }
 
-// analyzePHPContent reads the first 8KB of a PHP file and checks for
-// obfuscation and malicious patterns.
+// analyzePHPContent reads the first phpContentReadSize bytes of a PHP file
+// and checks for obfuscation and malicious patterns.
 func analyzePHPContent(path string) phpAnalysisResult {
 	f, err := osFS.Open(path)
 	if err != nil {
@@ -396,7 +397,7 @@ func analyzePHPContent(path string) phpAnalysisResult {
 
 	// --- Determine severity based on indicators ---
 	if len(indicators) == 0 {
-		return phpAnalysisResult{severity: -1}
+		return phpAnalysisResult{severity: -1, readOK: true}
 	}
 
 	// Auto-quarantine in autoresponse.AutoQuarantineFiles acts only on
@@ -414,6 +415,7 @@ func analyzePHPContent(path string) phpAnalysisResult {
 			check:    "obfuscated_php",
 			message:  "Obfuscated/malicious PHP detected",
 			details:  fmt.Sprintf("Indicators found:\n- %s", strings.Join(indicators, "\n- ")),
+			readOK:   true,
 		}
 	}
 
@@ -422,6 +424,7 @@ func analyzePHPContent(path string) phpAnalysisResult {
 		check:    "suspicious_php_content",
 		message:  "Suspicious PHP content detected",
 		details:  fmt.Sprintf("Indicators found:\n- %s", strings.Join(indicators, "\n- ")),
+		readOK:   true,
 	}
 }
 
