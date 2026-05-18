@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Upload PHP scoring now reuses the bounded PHP-content read result instead of re-reading clean files in full, avoiding avoidable memory spikes on large uploads.
 - State prune no longer evicts internal housekeeping entries (throttle counters, per-file content-hash baselines, the baseline-complete sentinel). The prior sweep deleted them after 24 hours of unchanged content and re-armed CheckSensitiveFiles' "appeared" path on stable files like `/etc/shadow`, `/etc/passwd`, and `/etc/group`, producing spurious HIGH alerts on hosts where these files had not changed in a day.
 - `sensitive_file_modified` "appeared" findings now carry a real timestamp; the prior emitter left it unset so the alert rendered the modification time as `0001-01-01 00:00:00`.
-- The PHP-relay action audit log is no longer created when `auto_response.php_relay.freeze` is off. Operators who left the safe default no longer see a permanent zero-byte `/var/log/csm/php_relay_audit.jsonl` and assume audit is broken; the file appears only once freeze is enabled and there is something to record.
+- The PHP-relay action audit log is no longer created at startup when `auto_response.php_relay.freeze` is off, while manual thaw actions still create and write their audit entry. Operators who left the safe default no longer see a permanent zero-byte `/var/log/csm/php_relay_audit.jsonl` and assume audit is broken.
 
 ## [3.5.1] - 2026-05-17
 
