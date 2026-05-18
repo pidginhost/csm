@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/emailspool"
 	"github.com/pidginhost/csm/internal/store"
 )
@@ -88,7 +89,7 @@ func startPHPRelayLinux(d *Daemon) {
 	// 8. Controller (constructed before the freezer so DryRunFn can
 	// thread the runtime/bbolt/yaml precedence into freeze decisions).
 	runner := defaultRunner{}
-	auditor := newStructuredAuditor(eximAuditWriter())
+	auditor := newStructuredAuditor(eximAuditWriterAt(d.cfg, phpRelayAuditPath))
 	controller := &PHPRelayController{
 		eng:          eng,
 		msgIndex:     idx,
@@ -226,17 +227,27 @@ func emitPHPRelayFinding(d *Daemon, sev alert.Severity, check, msg string) {
 	}
 }
 
-// eximAuditWriter returns the writer used by the structured JSONL auditor.
-// Defaults to /var/log/csm/php_relay_audit.jsonl on linux; the file is
-// opened in append mode at startup. If the open fails (e.g. /var/log/csm
-// not writable) the audit trail goes to stderr so we never silently lose
-// it.
-func eximAuditWriter() io.Writer {
-	const path = "/var/log/csm/php_relay_audit.jsonl"
+// phpRelayAuditPath is the production audit file. Tests pass their own
+// temp path via eximAuditWriterAt.
+const phpRelayAuditPath = "/var/log/csm/php_relay_audit.jsonl"
+
+// eximAuditWriterAt returns the writer used by the structured JSONL auditor.
+// Returns io.Discard when auto-freeze is disabled so we don't leave a 0-byte
+// orphan log file confusing operators -- the only call sites that produce
+// entries are gated on cfg.PHPRelayFreezeEnabled() in autoFreezer.Apply, so
+// a writer is never needed otherwise. When enabled, opens path in append
+// mode; falls back to stderr on open failure so an unwritable /var/log/csm
+// never silently loses an action record.
+func eximAuditWriterAt(cfg *config.Config, path string) io.Writer {
+	if cfg == nil || !cfg.PHPRelayFreezeEnabled() {
+		return io.Discard
+	}
 	// #nosec G302 -- 0640 is intentional; SIEM log shippers (Vector, Filebeat,
 	// Fluentbit) commonly run as a non-root user that needs group-read access.
 	// 0600 would force the shipper to run as root. Same rationale as
 	// internal/alert/audit_jsonl.go.
+	// #nosec G304 -- path is the compile-time constant phpRelayAuditPath in
+	// production; tests pass t.TempDir-derived paths.
 	if f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0640); err == nil {
 		return f
 	}
