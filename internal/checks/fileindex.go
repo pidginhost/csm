@@ -167,7 +167,7 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 			if LooksLikeWPOptimizeProbeByPath(path) {
 				continue
 			}
-			severity = alert.High
+			severity = scorePHPUploadSeverity(path)
 			check = "new_php_in_uploads"
 			message = fmt.Sprintf("New PHP file in uploads: %s", path)
 		}
