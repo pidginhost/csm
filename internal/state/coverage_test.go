@@ -269,6 +269,31 @@ func TestUpdatePreservesBaselineEntries(t *testing.T) {
 	}
 }
 
+func TestUpdatePreservesInternalUnderscoreKeys(t *testing.T) {
+	// Internal housekeeping keys (prefix "_") are written via SetRaw / throttles
+	// and never appear in the findings stream passed to Update. The previous
+	// prune unconditionally evicted them after 24h, which silently re-armed
+	// CheckSensitiveFiles' "appeared" path on stable system files (/etc/shadow,
+	// /etc/passwd, /etc/group) and produced spurious HIGH alerts.
+	s := openTestStore(t)
+	s.SetRaw("_sensitive_file_hash:/etc/shadow", "deadbeef")
+	s.SetRaw("_sensitive_file_hash:__baseline_complete", "1")
+
+	s.mu.Lock()
+	s.entries["_sensitive_file_hash:/etc/shadow"].LastSeen = time.Now().Add(-48 * time.Hour)
+	s.entries["_sensitive_file_hash:__baseline_complete"].LastSeen = time.Now().Add(-48 * time.Hour)
+	s.mu.Unlock()
+
+	s.Update([]alert.Finding{{Check: "x", Message: "y"}})
+
+	if _, ok := s.GetRaw("_sensitive_file_hash:/etc/shadow"); !ok {
+		t.Error("internal _sensitive_file_hash key must survive prune even when stale")
+	}
+	if _, ok := s.GetRaw("_sensitive_file_hash:__baseline_complete"); !ok {
+		t.Error("baseline-complete sentinel must survive prune even when stale")
+	}
+}
+
 func TestSetBaselineReplacesAllEntries(t *testing.T) {
 	s := openTestStore(t)
 	s.Update([]alert.Finding{{Check: "old", Message: "m"}})

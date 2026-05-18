@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - BPF process-tree matching now recognizes unattended-upgrade during sensitive-file scoring, preventing unattended updates from staying High when other package-manager writes are downgraded.
+- State prune no longer evicts internal housekeeping entries (throttle counters, per-file content-hash baselines, the baseline-complete sentinel). The prior sweep deleted them after 24 hours of unchanged content and re-armed CheckSensitiveFiles' "appeared" path on stable files like `/etc/shadow`, `/etc/passwd`, and `/etc/group`, producing spurious HIGH alerts on hosts where these files had not changed in a day.
+- `sensitive_file_modified` "appeared" findings now carry a real timestamp; the prior emitter left it unset so the alert rendered the modification time as `0001-01-01 00:00:00`.
 
 ## [3.5.1] - 2026-05-17
 

@@ -216,8 +216,15 @@ func (s *Store) Update(findings []alert.Finding) {
 		}
 	}
 
-	// Clean up entries that are no longer found
+	// Clean up entries that are no longer found. Keys with a leading
+	// underscore are internal housekeeping written via SetRaw (throttles,
+	// per-file content-hash baselines, sentinel flags) and never appear in
+	// the findings stream, so the !seen branch would always evict them and
+	// silently re-arm one-shot detectors that gate on their presence.
 	for key, entry := range s.entries {
+		if strings.HasPrefix(key, "_") {
+			continue
+		}
 		if !seen[key] && !entry.IsBaseline {
 			if time.Since(entry.LastSeen) > 24*time.Hour {
 				delete(s.entries, key)

@@ -115,18 +115,20 @@ func EvaluateSensitiveFileAppearance(path string) (alert.Finding, bool) {
 	if kind == "" {
 		return alert.Finding{}, false
 	}
+	now := time.Now()
 	f := alert.Finding{
-		Severity: alert.High,
-		Check:    "sensitive_file_modified",
-		Message:  fmt.Sprintf("New sensitive system file appeared: %s", path),
-		Details:  fmt.Sprintf("Class: %s", kind),
-		FilePath: path,
+		Severity:  alert.High,
+		Check:     "sensitive_file_modified",
+		Message:   fmt.Sprintf("New sensitive system file appeared: %s", path),
+		Details:   fmt.Sprintf("Class: %s", kind),
+		FilePath:  path,
+		Timestamp: now,
 	}
 	var content []byte
 	if kind == "cron" {
 		content, _ = osFS.ReadFile(path)
 	}
-	return rescoreSensitive(f, kind, content, 0, time.Now()), true
+	return rescoreSensitive(f, kind, content, 0, now), true
 }
 
 // CheckSensitiveFiles is the periodic safety-net that runs when the BPF

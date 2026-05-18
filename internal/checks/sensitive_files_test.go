@@ -73,12 +73,23 @@ func TestEvaluateSensitiveFileWrite(t *testing.T) {
 }
 
 func TestEvaluateSensitiveFileAppearance(t *testing.T) {
+	before := time.Now()
 	f, ok := EvaluateSensitiveFileAppearance("/etc/cron.d/evil")
+	after := time.Now()
 	if !ok {
 		t.Fatal("expected finding for new cron drop-in")
 	}
 	if f.Check != "sensitive_file_modified" || f.Severity != alert.High {
 		t.Fatalf("unexpected finding: %+v", f)
+	}
+	if f.FilePath != "/etc/cron.d/evil" {
+		t.Errorf("FilePath = %q, want /etc/cron.d/evil", f.FilePath)
+	}
+	if f.Timestamp.IsZero() {
+		t.Error("Timestamp must be set, got zero value (renders as 0001-01-01 00:00:00 in alerts)")
+	}
+	if f.Timestamp.Before(before) || f.Timestamp.After(after) {
+		t.Errorf("Timestamp %s outside test window [%s, %s]", f.Timestamp, before, after)
 	}
 }
 
