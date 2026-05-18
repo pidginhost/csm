@@ -44,7 +44,21 @@ func TestSensitiveWatchsetGlobsExpand(t *testing.T) {
 	}
 }
 
+func disableSensitiveProvenanceForTest(t *testing.T) {
+	t.Helper()
+	oldLogs := pkgManagerLogs
+	oldProbe := AncestryProbe
+	pkgManagerLogs = []string{filepath.Join(t.TempDir(), "missing-package-manager.log")}
+	AncestryProbe = nil
+	t.Cleanup(func() {
+		pkgManagerLogs = oldLogs
+		AncestryProbe = oldProbe
+	})
+}
+
 func TestEvaluateSensitiveFileWrite(t *testing.T) {
+	disableSensitiveProvenanceForTest(t)
+
 	cases := []struct {
 		name        string
 		uid         uint32
@@ -73,6 +87,8 @@ func TestEvaluateSensitiveFileWrite(t *testing.T) {
 }
 
 func TestEvaluateSensitiveFileAppearance(t *testing.T) {
+	disableSensitiveProvenanceForTest(t)
+
 	before := time.Now()
 	f, ok := EvaluateSensitiveFileAppearance("/etc/cron.d/evil")
 	after := time.Now()
