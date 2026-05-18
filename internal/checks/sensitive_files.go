@@ -82,7 +82,8 @@ func classifySensitive(path string) string {
 }
 
 // EvaluateSensitiveFileWrite returns a populated alert.Finding and true when
-// the BPF live backend observed a write to a watchset path. Pure: no IO.
+// the BPF live backend observed a write to a watchset path. Pure: no IO
+// beyond the provenance probe used to demote vendor package activity.
 // Returns false for paths classifySensitive does not recognise -- the BPF
 // program already filters via its dev+inode map, but this guards against
 // stale map entries pointing at unrelated files.
@@ -95,27 +96,37 @@ func EvaluateSensitiveFileWrite(path string, uid, pid uint32, comm string) (aler
 	if uid != 0 {
 		sev = alert.Critical
 	}
-	return alert.Finding{
+	f := alert.Finding{
 		Severity: sev,
 		Check:    "sensitive_file_modified",
 		Message:  fmt.Sprintf("Write to sensitive system file: %s (uid=%d)", path, uid),
 		Details:  fmt.Sprintf("Class: %s, PID: %d, Comm: %s, User: %s", kind, pid, comm, LookupUser(uid)),
-	}, true
+		FilePath: path,
+	}
+	return rescoreSensitive(f, kind, nil, pid, time.Now()), true
 }
 
 // EvaluateSensitiveFileAppearance returns a finding when a new file appears
-// inside a sensitive glob directory between live watchset refreshes.
+// inside a sensitive glob directory between live watchset refreshes. Reads
+// the file content (when accessible) so the cron-content heuristic can veto
+// a package-window demote on obvious persistence payloads.
 func EvaluateSensitiveFileAppearance(path string) (alert.Finding, bool) {
 	kind := classifySensitive(path)
 	if kind == "" {
 		return alert.Finding{}, false
 	}
-	return alert.Finding{
+	f := alert.Finding{
 		Severity: alert.High,
 		Check:    "sensitive_file_modified",
 		Message:  fmt.Sprintf("New sensitive system file appeared: %s", path),
 		Details:  fmt.Sprintf("Class: %s", kind),
-	}, true
+		FilePath: path,
+	}
+	var content []byte
+	if kind == "cron" {
+		content, _ = osFS.ReadFile(path)
+	}
+	return rescoreSensitive(f, kind, content, 0, time.Now()), true
 }
 
 // CheckSensitiveFiles is the periodic safety-net that runs when the BPF
@@ -156,14 +167,20 @@ func CheckSensitiveFiles(_ context.Context, _ *config.Config, store *state.Store
 			continue
 		}
 		store.SetRaw(key, hashHex)
-		findings = append(findings, alert.Finding{
+		kind := classifySensitive(path)
+		var contentForScore []byte
+		if kind == "cron" {
+			contentForScore = data
+		}
+		hashChange := alert.Finding{
 			Severity:  alert.High,
 			Check:     "sensitive_file_modified",
 			Message:   fmt.Sprintf("Periodic check: content hash changed for %s", path),
 			Details:   fmt.Sprintf("Previous: %s, Current: %s", prev, hashHex),
 			FilePath:  path,
 			Timestamp: time.Now(),
-		})
+		}
+		findings = append(findings, rescoreSensitive(hashChange, kind, contentForScore, 0, time.Now()))
 	}
 	if !baselineComplete {
 		store.SetRaw(sensitiveFileBaselineKey, "1")

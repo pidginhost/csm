@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `sensitive_file_modified` now demotes High to Warning when a package-manager log was touched in the last 2 minutes or, on BPF hosts, when the writer's process tree contains a package manager. A cron drop-in containing obvious persistence tokens (curl|sh, base64 decode, /tmp/, eval) keeps High regardless, so CloudLinux upgrades stop paging without giving attackers a quiet path.
+
 ## [3.5.1] - 2026-05-17
 
 ### Fixed

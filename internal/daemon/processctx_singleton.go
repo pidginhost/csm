@@ -41,6 +41,7 @@ func ProcessCtx() (*processctx.Cache, *processctx.Enricher) {
 		})
 		processctx.RegisterMetrics(processCtxRegistry(), processCtxCache, processCtxEnr)
 		processCtxEnr.Start()
+		wireAncestryProbeIfAvailable(processCtxCache)
 	})
 	return processCtxCache, processCtxEnr
 }

