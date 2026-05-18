@@ -20,6 +20,52 @@ type Policies struct {
 	suspiciousMail []string
 	safeMail       []string
 	proxyNets      []*net.IPNet
+	// selfIPs are the host's own interface addresses. PHP-relay Path 4
+	// (HTTP-IP fanout) treats them as proxy-equivalent so WordPress cron
+	// and any other local loopback-to-public traffic does not page on
+	// "one IP triggered N scripts". Populated by RefreshSelfIPs.
+	selfIPs []net.IP
+}
+
+// hostIPsFunc returns the set of non-loopback host IPs to treat as self.
+// Package-level so tests can inject deterministic addresses.
+var hostIPsFunc = enumerateHostIPs
+
+// enumerateHostIPs reads every IPv4/IPv6 address bound to a non-loopback
+// interface. Errors from net.InterfaceAddrs (extremely rare; only on syscall
+// failure) drop us to an empty list; loopback fallback in IsProxyIP still
+// covers 127/8 and ::1.
+func enumerateHostIPs() []net.IP {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil
+	}
+	out := make([]net.IP, 0, len(addrs))
+	for _, a := range addrs {
+		var ip net.IP
+		switch v := a.(type) {
+		case *net.IPNet:
+			ip = v.IP
+		case *net.IPAddr:
+			ip = v.IP
+		}
+		if ip == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+			continue
+		}
+		out = append(out, ip)
+	}
+	return out
+}
+
+// RefreshSelfIPs re-enumerates host addresses and replaces the cached set.
+// Safe to call concurrently with IsProxyIP. LoadPolicies / Reload call this
+// automatically so SIGHUP picks up cPanel alias IP additions without code
+// changes to callers; exposed for tests and the daemon Flow E ticker.
+func (p *Policies) RefreshSelfIPs() {
+	ips := hostIPsFunc()
+	p.mu.Lock()
+	p.selfIPs = ips
+	p.mu.Unlock()
 }
 
 type mailerClassesYAML struct {
@@ -47,6 +93,9 @@ func LoadPolicies(dir string) (*Policies, error) {
 
 func (p *Policies) load(dir string) error {
 	p.mu.Lock()
+	// Refresh self IPs alongside file-backed policies so SIGHUP picks up
+	// any cPanel alias IP additions that landed since startup.
+	p.selfIPs = hostIPsFunc()
 	defer p.mu.Unlock()
 
 	var firstErr error
@@ -136,8 +185,10 @@ func (p *Policies) MailerSafe(xMailer string) bool {
 	return false
 }
 
-// IsProxyIP reports whether ip falls within any configured CDN/proxy CIDR.
-// Used by Path 4 to skip fanout counting for IPs that are CDN front IPs.
+// IsProxyIP reports whether ip falls within any configured CDN/proxy CIDR,
+// is one of the host's own interface addresses, or is a loopback address.
+// Used by Path 4 to skip fanout counting for IPs that are CDN front IPs,
+// the local host (WordPress cron, panel-internal callbacks), or 127/::1.
 func (p *Policies) IsProxyIP(ip string) bool {
 	if ip == "" {
 		return false
@@ -146,10 +197,18 @@ func (p *Policies) IsProxyIP(ip string) bool {
 	if parsed == nil {
 		return false
 	}
+	if parsed.IsLoopback() {
+		return true
+	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	for _, n := range p.proxyNets {
 		if n.Contains(parsed) {
+			return true
+		}
+	}
+	for _, self := range p.selfIPs {
+		if self.Equal(parsed) {
 			return true
 		}
 	}
