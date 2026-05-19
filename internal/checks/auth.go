@@ -379,31 +379,58 @@ func CheckAPITokens(ctx context.Context, cfg *config.Config, store *state.Store)
 	return findings
 }
 
-// isInfraShadowChange checks the cPanel session log for recent password
-// change PURGE events from infra IPs. This is more reliable than the
-// access log because it captures the actual IP that triggered the change.
+// shadowMutatingWHMEndpoints lists WHM JSON-API endpoints whose handlers
+// rewrite /etc/shadow as a side effect:
+//   - suspendacct/unsuspendacct: lock/unlock password field, swap login shell
+//   - passwd/forcepasswordchange: set or expire user password
+//   - createacct/removeacct: add or remove the shadow entry entirely
 //
-// Returns true only if ALL recent password purges came from infra IPs.
-// If any came from non-infra → returns false (possible attack).
+// Hits on these endpoints from infra IPs explain shadow mtime changes
+// without involving an attacker; hits from non-infra IPs do not.
+var shadowMutatingWHMEndpoints = []string{
+	"/json-api/suspendacct",
+	"/json-api/unsuspendacct",
+	"/json-api/passwd",
+	"/json-api/forcepasswordchange",
+	"/json-api/createacct",
+	"/json-api/removeacct",
+}
+
+// isInfraShadowChange reports whether every recent log signal that could
+// explain a /etc/shadow modification was originated by an infra IP. It
+// fuses two sources:
+//
+//  1. session_log PURGE password_change events (WHM/cPanel sets a new
+//     password, which goes through the session machinery).
+//  2. api_tokens_log entries for shadow-mutating WHM JSON-API endpoints
+//     (suspendacct, passwd, createacct, ...). The cPanel session log does
+//     NOT record these because they are not session events, so the older
+//     session-only check fired on every internal `suspendacct` call.
+//
+// Returns true only if at least one such event was seen AND every event in
+// both sources came from an infra IP (or loopback / "internal"). Any
+// external IP touching either signal short-circuits to false so a stolen
+// token or compromised neighbour does not get a free suppression.
 func isInfraShadowChange(cfg *config.Config) bool {
+	sessFound, sessAllInfra := scanSessionLogShadow(cfg)
+	tokFound, tokAllInfra := scanAPITokensLogShadow(cfg)
+	return (sessFound || tokFound) && sessAllInfra && tokAllInfra
+}
+
+// scanSessionLogShadow walks the cPanel session log for PURGE password_change
+// events and reports whether any were seen and whether every non-loopback,
+// non-"internal" source IP belonged to the infra allowlist.
+func scanSessionLogShadow(cfg *config.Config) (foundAny, allInfra bool) {
+	allInfra = true
 	lines := tailFile("/usr/local/cpanel/logs/session_log", 100)
-
-	foundAny := false
-	allInfra := true
-
-	// Check recent PURGE password_change events (last ~5 minutes of log)
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := lines[i]
-
 		if !strings.Contains(line, "PURGE") || !strings.Contains(line, "password_change") {
 			continue
 		}
-
 		foundAny = true
 
-		// Extract IP from session log
-		// Format: [timestamp] info [xml-api] IP PURGE account:token password_change
-		// Format: [timestamp] info [whostmgr] IP PURGE account:token password_change
+		// Format: [ts] info [xml-api|whostmgr|security] IP PURGE account:token password_change
 		var ip string
 		for _, tag := range []string{"[xml-api]", "[whostmgr]", "[security]"} {
 			if idx := strings.Index(line, tag); idx >= 0 {
@@ -415,18 +442,66 @@ func isInfraShadowChange(cfg *config.Config) bool {
 				break
 			}
 		}
-
 		if ip == "" || ip == "internal" {
-			continue // internal events are safe
+			continue
 		}
-
 		if !isInfraIP(ip, cfg.InfraIPs) && ip != "127.0.0.1" {
 			allInfra = false
-			break // found a non-infra password change - don't suppress
+			return
 		}
 	}
+	return
+}
 
-	return foundAny && allInfra
+// scanAPITokensLogShadow walks the WHM api_tokens_log for recent calls to
+// JSON-API endpoints that rewrite /etc/shadow. Returns (foundAny, allInfra)
+// with the same semantics as scanSessionLogShadow.
+func scanAPITokensLogShadow(cfg *config.Config) (foundAny, allInfra bool) {
+	allInfra = true
+	lines := tailFile("/usr/local/cpanel/logs/api_tokens_log", 200)
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := lines[i]
+		if !lineHitsShadowEndpoint(line) {
+			continue
+		}
+		foundAny = true
+		ip := extractAPITokensHost(line)
+		if ip == "" || ip == "internal" {
+			continue
+		}
+		if !isInfraIP(ip, cfg.InfraIPs) && ip != "127.0.0.1" {
+			allInfra = false
+			return
+		}
+	}
+	return
+}
+
+func lineHitsShadowEndpoint(line string) bool {
+	for _, ep := range shadowMutatingWHMEndpoints {
+		if strings.Contains(line, ep) {
+			return true
+		}
+	}
+	return false
+}
+
+// extractAPITokensHost pulls the source IP out of the api_tokens_log line
+// shape used by whostmgrd:
+//
+//	[ts] info [whostmgrd] Host: ['<ip>'] HTTP Status: [...], ...
+func extractAPITokensHost(line string) string {
+	const marker = "Host: ['"
+	idx := strings.Index(line, marker)
+	if idx < 0 {
+		return ""
+	}
+	rest := line[idx+len(marker):]
+	end := strings.Index(rest, "']")
+	if end < 0 {
+		return ""
+	}
+	return rest[:end]
 }
 
 func parseTimeMin(s string) int {
