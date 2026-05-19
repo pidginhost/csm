@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `shadow_change` suppression now also consults the WHM api tokens log, so admin-initiated suspend, unsuspend, password reset, and account create/remove calls from infra IPs no longer page operators. The session-log only path missed every suspendacct, treating each billing-system suspension as a critical incident; non-infra IPs hitting the same endpoints still defeat suppression.
+- `shadow_change` suppression now also consults successful WHM api tokens log entries, so admin-initiated suspend, unsuspend, password reset, and account create/remove calls from infra IPs no longer page operators. The session-log only path missed every suspendacct, treating each billing-system suspension as a critical incident; failed calls are ignored and successful non-infra calls still defeat suppression.
 - BPF process-tree matching now recognizes unattended-upgrade during sensitive-file scoring, preventing unattended updates from staying High when other package-manager writes are downgraded.
 - Upload PHP scoring now reuses the bounded PHP-content read result instead of re-reading clean files in full, avoiding avoidable memory spikes on large uploads.
 - State prune no longer evicts internal housekeeping entries (throttle counters, per-file content-hash baselines, the baseline-complete sentinel). The prior sweep deleted them after 24 hours of unchanged content and re-armed CheckSensitiveFiles' "appeared" path on stable files like `/etc/shadow`, `/etc/passwd`, and `/etc/group`, producing spurious HIGH alerts on hosts where these files had not changed in a day.

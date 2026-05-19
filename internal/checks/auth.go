@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"path/filepath"
 	"strings"
 	"time"
@@ -383,7 +384,7 @@ func CheckAPITokens(ctx context.Context, cfg *config.Config, store *state.Store)
 // rewrite /etc/shadow as a side effect:
 //   - suspendacct/unsuspendacct: lock/unlock password field, swap login shell
 //   - passwd/forcepasswordchange: set or expire user password
-//   - createacct/removeacct: add or remove the shadow entry entirely
+//   - createacct/removeacct/killacct: add or remove the shadow entry entirely
 //
 // Hits on these endpoints from infra IPs explain shadow mtime changes
 // without involving an attacker; hits from non-infra IPs do not.
@@ -394,6 +395,7 @@ var shadowMutatingWHMEndpoints = []string{
 	"/json-api/forcepasswordchange",
 	"/json-api/createacct",
 	"/json-api/removeacct",
+	"/json-api/killacct",
 }
 
 // isInfraShadowChange reports whether every recent log signal that could
@@ -402,15 +404,15 @@ var shadowMutatingWHMEndpoints = []string{
 //
 //  1. session_log PURGE password_change events (WHM/cPanel sets a new
 //     password, which goes through the session machinery).
-//  2. api_tokens_log entries for shadow-mutating WHM JSON-API endpoints
+//  2. successful api_tokens_log entries for shadow-mutating WHM JSON-API endpoints
 //     (suspendacct, passwd, createacct, ...). The cPanel session log does
 //     NOT record these because they are not session events, so the older
 //     session-only check fired on every internal `suspendacct` call.
 //
 // Returns true only if at least one such event was seen AND every event in
 // both sources came from an infra IP (or loopback / "internal"). Any
-// external IP touching either signal short-circuits to false so a stolen
-// token or compromised neighbour does not get a free suppression.
+// successful external API call or unparseable source short-circuits to false
+// so a stolen token or compromised neighbour does not get a free suppression.
 func isInfraShadowChange(cfg *config.Config) bool {
 	sessFound, sessAllInfra := scanSessionLogShadow(cfg)
 	tokFound, tokAllInfra := scanAPITokensLogShadow(cfg)
@@ -442,10 +444,10 @@ func scanSessionLogShadow(cfg *config.Config) (foundAny, allInfra bool) {
 				break
 			}
 		}
-		if ip == "" || ip == "internal" {
+		if ip == "internal" {
 			continue
 		}
-		if !isInfraIP(ip, cfg.InfraIPs) && ip != "127.0.0.1" {
+		if !isTrustedShadowSource(ip, cfg) {
 			allInfra = false
 			return
 		}
@@ -464,12 +466,15 @@ func scanAPITokensLogShadow(cfg *config.Config) (foundAny, allInfra bool) {
 		if !lineHitsShadowEndpoint(line) {
 			continue
 		}
-		foundAny = true
-		ip := extractAPITokensHost(line)
-		if ip == "" || ip == "internal" {
+		if !apiTokensHTTPStatusOK(line) {
 			continue
 		}
-		if !isInfraIP(ip, cfg.InfraIPs) && ip != "127.0.0.1" {
+		foundAny = true
+		ip := extractAPITokensHost(line)
+		if ip == "internal" {
+			continue
+		}
+		if !isTrustedShadowSource(ip, cfg) {
 			allInfra = false
 			return
 		}
@@ -478,12 +483,21 @@ func scanAPITokensLogShadow(cfg *config.Config) (foundAny, allInfra bool) {
 }
 
 func lineHitsShadowEndpoint(line string) bool {
+	path := extractAPITokensRequestPath(line)
+	if path == "" {
+		return false
+	}
 	for _, ep := range shadowMutatingWHMEndpoints {
-		if strings.Contains(line, ep) {
+		if path == ep {
 			return true
 		}
 	}
 	return false
+}
+
+func apiTokensHTTPStatusOK(line string) bool {
+	status := extractAPITokensField(line, "HTTP Status: ['")
+	return strings.HasPrefix(status, "2")
 }
 
 // extractAPITokensHost pulls the source IP out of the api_tokens_log line
@@ -491,7 +505,23 @@ func lineHitsShadowEndpoint(line string) bool {
 //
 //	[ts] info [whostmgrd] Host: ['<ip>'] HTTP Status: [...], ...
 func extractAPITokensHost(line string) string {
-	const marker = "Host: ['"
+	return extractAPITokensField(line, "Host: ['")
+}
+
+func extractAPITokensRequestPath(line string) string {
+	request := extractAPITokensField(line, "Request: ['")
+	fields := strings.Fields(request)
+	if len(fields) < 2 {
+		return ""
+	}
+	path := fields[1]
+	if idx := strings.IndexByte(path, '?'); idx >= 0 {
+		path = path[:idx]
+	}
+	return path
+}
+
+func extractAPITokensField(line, marker string) string {
 	idx := strings.Index(line, marker)
 	if idx < 0 {
 		return ""
@@ -502,6 +532,14 @@ func extractAPITokensHost(line string) string {
 		return ""
 	}
 	return rest[:end]
+}
+
+func isTrustedShadowSource(ip string, cfg *config.Config) bool {
+	parsed := net.ParseIP(ip)
+	if parsed != nil && parsed.IsLoopback() {
+		return true
+	}
+	return isInfraIP(ip, cfg.InfraIPs)
 }
 
 func parseTimeMin(s string) int {

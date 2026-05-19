@@ -96,6 +96,16 @@ func TestIsInfraShadowChange_RemoveAcctFromInfraIP(t *testing.T) {
 	}
 }
 
+func TestIsInfraShadowChange_KillAcctFromInfraIP(t *testing.T) {
+	apiTokens := `[2026-05-19 09:30:00 +0300] info [whostmgrd] Host: ['10.0.0.1'] HTTP Status: ['200'], User: ['root'], Token Name: ['phclient'], Request: ['GET /json-api/killacct?user=olduser&api.version=1 HTTP/1.1']` + "\n"
+	mockShadowLogs(t, "", apiTokens)
+
+	cfg := &config.Config{InfraIPs: []string{"10.0.0.0/8"}}
+	if !isInfraShadowChange(cfg) {
+		t.Fatal("expected true: killacct from infra IP must suppress (removes shadow entry)")
+	}
+}
+
 func TestIsInfraShadowChange_MixedInfraSessionExternalToken(t *testing.T) {
 	sessionLog := `[2026-05-19 10:00:00 +0300] info [whostmgr] 10.0.0.1 PURGE admin:abcdefghijklmnop password_change` + "\n"
 	apiTokens := `[2026-05-19 10:01:10 +0300] info [whostmgrd] Host: ['203.0.113.5'] HTTP Status: ['200'], User: ['attacker'], Token Name: ['stolen'], Request: ['GET /json-api/suspendacct?user=victim&reason=evil&api.version=1 HTTP/1.1']` + "\n"
@@ -104,6 +114,16 @@ func TestIsInfraShadowChange_MixedInfraSessionExternalToken(t *testing.T) {
 	cfg := &config.Config{InfraIPs: []string{"10.0.0.0/8"}}
 	if isInfraShadowChange(cfg) {
 		t.Fatal("expected false: external suspendacct present alongside infra password_change must NOT suppress")
+	}
+}
+
+func TestIsInfraShadowChange_MalformedSessionSourceDoesNotSuppress(t *testing.T) {
+	sessionLog := `[2026-05-19 10:00:00 +0300] info [whostmgr] PURGE admin:abcdefghijklmnop password_change` + "\n"
+	mockShadowLogs(t, sessionLog, "")
+
+	cfg := &config.Config{InfraIPs: []string{"10.0.0.0/8"}}
+	if isInfraShadowChange(cfg) {
+		t.Fatal("expected false: session password_change without a source IP must not suppress")
 	}
 }
 
@@ -127,6 +147,46 @@ func TestIsInfraShadowChange_SuspendAcctLoopback(t *testing.T) {
 	cfg := &config.Config{InfraIPs: []string{"10.0.0.0/8"}}
 	if !isInfraShadowChange(cfg) {
 		t.Fatal("expected true: suspendacct over loopback must suppress")
+	}
+}
+
+func TestIsInfraShadowChange_SuspendAcctIPv6Loopback(t *testing.T) {
+	apiTokens := `[2026-05-19 10:01:10 +0300] info [whostmgrd] Host: ['::1'] HTTP Status: ['200'], User: ['root'], Token Name: ['localcron'], Request: ['GET /json-api/suspendacct?user=foo&reason=Suspend&api.version=1 HTTP/1.1']` + "\n"
+	mockShadowLogs(t, "", apiTokens)
+
+	cfg := &config.Config{InfraIPs: []string{"10.0.0.0/8"}}
+	if !isInfraShadowChange(cfg) {
+		t.Fatal("expected true: suspendacct over IPv6 loopback must suppress")
+	}
+}
+
+func TestIsInfraShadowChange_FailedSuspendAcctDoesNotSuppress(t *testing.T) {
+	apiTokens := `[2026-05-19 10:01:10 +0300] info [whostmgrd] Host: ['10.0.0.1'] HTTP Status: ['403'], User: ['root'], Token Name: ['phclient'], Request: ['GET /json-api/suspendacct?user=foo&reason=Suspend&api.version=1 HTTP/1.1']` + "\n"
+	mockShadowLogs(t, "", apiTokens)
+
+	cfg := &config.Config{InfraIPs: []string{"10.0.0.0/8"}}
+	if isInfraShadowChange(cfg) {
+		t.Fatal("expected false: failed suspendacct must not suppress an unrelated shadow_change")
+	}
+}
+
+func TestIsInfraShadowChange_MissingAPITokenHostDoesNotSuppress(t *testing.T) {
+	apiTokens := `[2026-05-19 10:01:10 +0300] info [whostmgrd] HTTP Status: ['200'], User: ['root'], Token Name: ['phclient'], Request: ['GET /json-api/suspendacct?user=foo&reason=Suspend&api.version=1 HTTP/1.1']` + "\n"
+	mockShadowLogs(t, "", apiTokens)
+
+	cfg := &config.Config{InfraIPs: []string{"10.0.0.0/8"}}
+	if isInfraShadowChange(cfg) {
+		t.Fatal("expected false: successful API token line without host must not suppress")
+	}
+}
+
+func TestIsInfraShadowChange_EndpointMustMatchRequestPath(t *testing.T) {
+	apiTokens := `[2026-05-19 10:01:10 +0300] info [whostmgrd] Host: ['10.0.0.1'] HTTP Status: ['200'], User: ['root'], Token Name: ['phclient'], Request: ['GET /json-api/passwdless?user=foo&api.version=1 HTTP/1.1']` + "\n"
+	mockShadowLogs(t, "", apiTokens)
+
+	cfg := &config.Config{InfraIPs: []string{"10.0.0.0/8"}}
+	if isInfraShadowChange(cfg) {
+		t.Fatal("expected false: endpoint substring matches must not suppress")
 	}
 }
 
