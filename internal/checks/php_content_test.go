@@ -660,6 +660,28 @@ func TestIsBenignPHPStubDieTerminator(t *testing.T) {
 	}
 }
 
+func TestIsBenignPHPStubRejectsExitWithExecutableArgument(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "exit-arg.php")
+	if err := os.WriteFile(path, []byte("<?php exit(system($_GET['c']));"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if IsBenignPHPStub(path) {
+		t.Error("exit() argument executes before termination and must not be accepted as a stub")
+	}
+}
+
+func TestIsBenignPHPStubRejectsDieWithArgument(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "die-arg.php")
+	if err := os.WriteFile(path, []byte("<?php die($_POST['message']);"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if IsBenignPHPStub(path) {
+		t.Error("die() with an argument evaluates an expression and must not be accepted as a stub")
+	}
+}
+
 func TestIsBenignPHPStubBlockComments(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "stub.php")
@@ -753,6 +775,18 @@ func TestIsBenignPHPStubRejectsClosingTagEscape(t *testing.T) {
 	}
 }
 
+func TestIsBenignPHPStubRejectsLineCommentCloseTagEscape(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "escape.php")
+	content := "<?php // harmless ?><?php system($_POST['c']);"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if IsBenignPHPStub(path) {
+		t.Error("PHP line comments end at ?>, so close-tag re-entry must be rejected")
+	}
+}
+
 func TestIsBenignPHPStubRejectsReturnArray(t *testing.T) {
 	// <?php return [...]; evaluates when include()'d. Not a stub.
 	dir := t.TempDir()
@@ -843,9 +877,27 @@ func TestIsBenignPHPStubRejectsMissingFile(t *testing.T) {
 	}
 }
 
+func TestIsBenignPHPStubRejectsLargeCommentPrefixWithPayloadAfterScan(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "large.php")
+	content := "<?php //" + strings.Repeat("a", benignPHPStubMaxScan) + "\n<?php system($_POST['c']);"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if IsBenignPHPStub(path) {
+		t.Error("comment-only acceptance must require EOF; payload after scan window must not be suppressed")
+	}
+}
+
 func TestIsBenignPHPStubBytesAcceptsBOMAlone(t *testing.T) {
 	if !IsBenignPHPStubBytes([]byte("\xEF\xBB\xBF<?php // bom\n")) {
 		t.Error("BOM + <?php + comment via buffer entrypoint must be accepted")
+	}
+}
+
+func TestIsBenignPHPStubBytesRejectsIncompleteCommentOnlyBuffer(t *testing.T) {
+	if IsBenignPHPStubBytesComplete([]byte("<?php // comment continues"), false) {
+		t.Error("incomplete comment-only buffers must be rejected because executable code may follow")
 	}
 }
 

@@ -614,8 +614,8 @@ func containsAny(strs []string, substrs ...string) bool {
 const benignPHPStubMaxScan = 4 * 1024 * 1024
 
 // IsBenignPHPStub reports whether the reachable code region of a PHP
-// file consists only of whitespace and comments, or terminates with an
-// unconditional die / exit / __halt_compiler before any other statement.
+// file consists only of whitespace and comments, or terminates with a
+// no-argument die / exit / __halt_compiler before any other statement.
 // Files matching either shape cannot execute attacker-controlled code
 // via a web request: PHP either runs to EOF emitting nothing, or hits
 // the terminator and stops with the remaining bytes unreachable.
@@ -644,7 +644,9 @@ func IsBenignPHPStub(path string) bool {
 	if n == 0 {
 		return false
 	}
-	return IsBenignPHPStubBytes(buf[:n])
+	info, err := f.Stat()
+	complete := err == nil && info.Size() <= int64(n)
+	return IsBenignPHPStubBytesComplete(buf[:n], complete)
 }
 
 // IsBenignPHPStubBytes is the buffer-only variant. The realtime fanotify
@@ -659,20 +661,30 @@ func IsBenignPHPStub(path string) bool {
 //     The short-echo opener "<?=" is rejected because it emits output.
 //     A "<?phpfoo" run-together opener is rejected because PHP requires
 //     whitespace (or EOF) after the tag.
-//   - Repeatedly accept whitespace, line comments ("//..." or "#..."),
-//     and balanced block comments ("/* ... */"). A "/*" without a
-//     matching "*/" inside the scanned window is rejected -- we cannot
-//     prove the rest of the file is comment.
-//   - Accept the identifiers die, exit, __halt_compiler as terminators.
-//     Once seen, the rest of the buffer is treated as unreachable.
+//   - Repeatedly accept whitespace, line comments ("//..." or "#..." up to
+//     newline or "?>"), and balanced block comments ("/* ... */"). A "/*"
+//     without a matching "*/" inside the scanned window is rejected -- we
+//     cannot prove the rest of the file is comment.
+//   - Accept the no-argument forms of die, exit, and __halt_compiler as
+//     terminators. Once seen, the rest of the buffer is treated as
+//     unreachable.
 //   - Reject any closing "?>" tag (would allow HTML escape and a later
 //     "<?php" re-entry that this gate does not analyse).
 //   - Reject any other identifier (return, if, system, eval, function,
 //     class, ...) and any stray punctuation ("$", "(", "=", ";", ...).
 //     Those are statements we cannot prove benign.
-//   - If the loop reaches EOF having only seen whitespace and comments,
-//     accept: PHP outputs nothing and executes nothing.
+//   - If the loop reaches EOF in a complete buffer having only seen
+//     whitespace and comments, accept: PHP outputs nothing and executes
+//     nothing.
 func IsBenignPHPStubBytes(buf []byte) bool {
+	return IsBenignPHPStubBytesComplete(buf, true)
+}
+
+// IsBenignPHPStubBytesComplete is like IsBenignPHPStubBytes, but complete
+// tells the parser whether buf contains the entire file. Comment-only stubs
+// require a complete buffer; no-argument terminators do not, because bytes
+// after them are unreachable to PHP.
+func IsBenignPHPStubBytesComplete(buf []byte, complete bool) bool {
 	if len(buf) >= 3 && buf[0] == 0xEF && buf[1] == 0xBB && buf[2] == 0xBF {
 		buf = buf[3:]
 	}
@@ -695,15 +707,11 @@ func IsBenignPHPStubBytes(buf []byte) bool {
 			continue
 		}
 		if c == '#' {
-			for i < len(buf) && buf[i] != '\n' {
-				i++
-			}
+			i = skipPHPLineComment(buf, i)
 			continue
 		}
 		if c == '/' && i+1 < len(buf) && buf[i+1] == '/' {
-			for i < len(buf) && buf[i] != '\n' {
-				i++
-			}
+			i = skipPHPLineComment(buf, i)
 			continue
 		}
 		if c == '/' && i+1 < len(buf) && buf[i+1] == '*' {
@@ -724,14 +732,14 @@ func IsBenignPHPStubBytes(buf []byte) bool {
 				i++
 			}
 			word := strings.ToLower(string(buf[start:i]))
-			if word == "die" || word == "exit" || word == "__halt_compiler" {
+			if isNoArgPHPTerminator(buf, i, word, complete) {
 				return true
 			}
 			return false
 		}
 		return false
 	}
-	return true
+	return complete
 }
 
 func isPHPSpace(c byte) bool {
@@ -744,4 +752,79 @@ func isIdentStart(c byte) bool {
 
 func isIdentCont(c byte) bool {
 	return isIdentStart(c) || (c >= '0' && c <= '9')
+}
+
+func skipPHPSpace(buf []byte, i int) int {
+	for i < len(buf) && isPHPSpace(buf[i]) {
+		i++
+	}
+	return i
+}
+
+func skipPHPLineComment(buf []byte, i int) int {
+	for i < len(buf) {
+		if buf[i] == '\n' {
+			return i
+		}
+		if buf[i] == '?' && i+1 < len(buf) && buf[i+1] == '>' {
+			return i
+		}
+		i++
+	}
+	return i
+}
+
+func isNoArgPHPTerminator(buf []byte, i int, word string, complete bool) bool {
+	if word != "die" && word != "exit" && word != "__halt_compiler" {
+		return false
+	}
+	i = skipPHPSpace(buf, i)
+
+	if word == "__halt_compiler" {
+		next, ok := consumeEmptyPHPParens(buf, i)
+		if !ok {
+			return false
+		}
+		return phpTerminatorStatementEnds(buf, next, complete)
+	}
+
+	if i >= len(buf) {
+		return complete
+	}
+	if buf[i] == ';' {
+		return true
+	}
+	if buf[i] == '?' && i+1 < len(buf) && buf[i+1] == '>' {
+		return true
+	}
+	if buf[i] != '(' {
+		return false
+	}
+	next, ok := consumeEmptyPHPParens(buf, i)
+	if !ok {
+		return false
+	}
+	return phpTerminatorStatementEnds(buf, next, complete)
+}
+
+func consumeEmptyPHPParens(buf []byte, i int) (int, bool) {
+	if i >= len(buf) || buf[i] != '(' {
+		return i, false
+	}
+	i = skipPHPSpace(buf, i+1)
+	if i >= len(buf) || buf[i] != ')' {
+		return i, false
+	}
+	return skipPHPSpace(buf, i+1), true
+}
+
+func phpTerminatorStatementEnds(buf []byte, i int, complete bool) bool {
+	i = skipPHPSpace(buf, i)
+	if i >= len(buf) {
+		return complete
+	}
+	if buf[i] == ';' {
+		return true
+	}
+	return buf[i] == '?' && i+1 < len(buf) && buf[i+1] == '>'
 }

@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `new_php_in_uploads` and `php_in_uploads_realtime` now suppress files whose reachable PHP code is only whitespace and comments, or that terminate with `die`/`exit`/`__halt_compiler` before any statement runs. Plugins that write transient state files into upload trees (e.g. BackWPup's per-job working and folder-cache files) no longer page on every backup; suppression is decided from file content under PHP execution semantics, not from path or filename, so a payload reusing a known-plugin name is still flagged.
+- `new_php_in_uploads` and `php_in_uploads_realtime` now suppress only PHP upload stubs whose full reachable code is comments/whitespace or a no-argument terminator. BackWPup-style working files stop paging, while truncated files, line-comment close-tag escapes, and `die`/`exit` calls with arguments stay visible.
 - `shadow_change` suppression now also consults successful WHM api tokens log entries, so admin-initiated suspend, unsuspend, password reset, and account create/remove calls from infra IPs no longer page operators. The session-log only path missed every suspendacct, treating each billing-system suspension as a critical incident; failed calls are ignored and successful non-infra calls still defeat suppression.
 - BPF process-tree matching now recognizes unattended-upgrade during sensitive-file scoring, preventing unattended updates from staying High when other package-manager writes are downgraded.
 - Upload PHP scoring now reuses the bounded PHP-content read result instead of re-reading clean files in full, avoiding avoidable memory spikes on large uploads.

@@ -983,7 +983,12 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 					// signature/YARA pass and the path-only warning
 					// below are the layers that fire on real droppers;
 					// a structurally inert stub adds no signal.
-					if checks.IsBenignPHPStubBytes(data) {
+					completePHPRead := false
+					var st unix.Stat_t
+					if err := unix.Fstat(event.fd, &st); err == nil {
+						completePHPRead = st.Size <= int64(len(data))
+					}
+					if checks.IsBenignPHPStubBytesComplete(data, completePHPRead) {
 						return
 					}
 					fm.sendAlertWithPath(alert.Warning, "php_in_uploads_realtime",
