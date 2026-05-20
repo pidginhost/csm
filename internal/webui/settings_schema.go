@@ -88,6 +88,7 @@ const (
 	FieldGroupLimits          = "Limits"
 
 	FieldGroupScanIntervals  = "Scan intervals"
+	FieldGroupWebBruteForce  = "Web brute force"
 	FieldGroupMailBruteForce = "Mail brute force"
 	FieldGroupSMTPBruteForce = "SMTP brute force"
 	FieldGroupAccountSpray   = "Account spray"
@@ -139,7 +140,8 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "multi_ip_login_threshold", Type: "int", Label: "Multi-IP login threshold", Min: int64p(1), FieldGroup: FieldGroupAccountSpray},
 			{YAMLPath: "multi_ip_login_window_min", Type: "int", Label: "Multi-IP login window (min)", Min: int64p(1), FieldGroup: FieldGroupAccountSpray},
 			{YAMLPath: "plugin_check_interval_min", Type: "int", Label: "Plugin check interval (min)", Min: int64p(1), FieldGroup: FieldGroupScanIntervals},
-			{YAMLPath: "brute_force_window", Type: "int", Label: "Brute force window", Min: int64p(1), FieldGroup: FieldGroupMailBruteForce},
+			{YAMLPath: "brute_force_window", Type: "int", Label: "Brute force window", Min: int64p(1), FieldGroup: FieldGroupWebBruteForce},
+			{YAMLPath: "domlog_max_files", Type: "int", Label: "Domlog max files", Min: int64p(1), Max: int64p(100000), FieldGroup: FieldGroupWebBruteForce},
 			{YAMLPath: "smtp_bruteforce_threshold", Type: "int", Label: "SMTP bruteforce threshold", Min: int64p(1), FieldGroup: FieldGroupSMTPBruteForce},
 			{YAMLPath: "smtp_bruteforce_window_min", Type: "int", Label: "SMTP bruteforce window (min)", Min: int64p(1), FieldGroup: FieldGroupSMTPBruteForce},
 			{YAMLPath: "smtp_bruteforce_suppress_min", Type: "int", Label: "SMTP bruteforce suppress (min)", Min: int64p(1), FieldGroup: FieldGroupSMTPBruteForce},

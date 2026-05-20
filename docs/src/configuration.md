@@ -128,6 +128,7 @@ thresholds:
   multi_ip_login_window_min: 60         # time window for multi-IP check (default: 60)
   plugin_check_interval_min: 1440       # WordPress plugin check interval (default: 1440)
   brute_force_window: 5000              # failed auth attempts window (default: 5000)
+  domlog_max_files: 500                 # per-domain access logs per WP brute-force scan (default: 500)
 
   # SMTP brute-force tracker (Exim mainlog, dovecot SASL on submission ports)
   smtp_bruteforce_threshold: 5            # per-IP failed auths before block (default: 5)

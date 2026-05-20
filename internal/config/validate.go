@@ -303,6 +303,9 @@ func Validate(cfg *Config) []ValidationResult {
 
 	// --- SMTP brute-force thresholds ---
 	t := cfg.Thresholds
+	if t.DomlogMaxFiles != 0 && (t.DomlogMaxFiles < 1 || t.DomlogMaxFiles > 100000) {
+		results = append(results, ValidationResult{"error", "thresholds.domlog_max_files", "domlog_max_files must be between 1 and 100000"})
+	}
 	if t.SMTPBruteForceThreshold != 0 && (t.SMTPBruteForceThreshold < 2 || t.SMTPBruteForceThreshold > 50) {
 		results = append(results, ValidationResult{"error", "thresholds.smtp_bruteforce_threshold", "smtp_bruteforce_threshold must be between 2 and 50"})
 	}

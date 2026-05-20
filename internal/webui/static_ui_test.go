@@ -800,6 +800,7 @@ func TestSettingsSchemaCarriesFieldGroups(t *testing.T) {
 	text := string(src)
 	for _, want := range []string{
 		`FieldGroup string`,
+		`YAMLPath: "domlog_max_files"`,
 		"FieldGroupAccessPorts",
 		"FieldGroupRateLimits",
 		"FieldGroupFloodProtection",
@@ -808,6 +809,7 @@ func TestSettingsSchemaCarriesFieldGroups(t *testing.T) {
 		"FieldGroupLogging",
 		"FieldGroupLimits",
 		"FieldGroupScanIntervals",
+		"FieldGroupWebBruteForce",
 		"FieldGroupMailBruteForce",
 		"FieldGroupSMTPBruteForce",
 		"FieldGroupAccountSpray",

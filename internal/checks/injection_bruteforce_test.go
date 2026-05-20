@@ -11,7 +11,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
-// countBruteForce is pure-go — exercise every branch with a synthetic
+// countBruteForce is pure-go; exercise every branch with a synthetic
 // combined-log corpus.
 
 func TestCountBruteForceAllBranches(t *testing.T) {
@@ -69,7 +69,7 @@ func TestCountBruteForceAllBranches(t *testing.T) {
 	}
 }
 
-// scanDomlogs — dedupe symlinks, skip stale logs, respect file cap.
+// scanDomlogs: dedupe symlinks, skip stale logs, respect file cap.
 
 func TestScanDomlogsDeduplicatesSymlinks(t *testing.T) {
 	tmp := t.TempDir()
@@ -218,9 +218,8 @@ func mustChtimes(t *testing.T, path string, when time.Time) {
 }
 
 // Most-recently-active sites must be preferred when the file cap chops the
-// list. The pre-fix code consumed the alphabetically-first matches, which on
-// a server with thousands of domains hides brute force directed at the tail
-// of the alphabet.
+// list. Alphabetical match order can otherwise hide brute force directed at
+// late-alphabet domains on hosts with thousands of vhosts.
 func TestScanDomlogsSortsByMtimeDescBeforeCap(t *testing.T) {
 	tmp := t.TempDir()
 	older := filepath.Join(tmp, "older.log")
@@ -249,10 +248,10 @@ func TestScanDomlogsSortsByMtimeDescBeforeCap(t *testing.T) {
 		t.Fatalf("cap=2 expected 2 files scanned, got %d", scanned)
 	}
 	if wpLogin["203.0.113.30"] != 1 {
-		t.Errorf("newest log must be scanned under mtime DESC cap")
+		t.Errorf("newest log must be scanned under mtime-desc cap")
 	}
 	if wpLogin["203.0.113.20"] != 1 {
-		t.Errorf("second-newest log must be scanned under mtime DESC cap")
+		t.Errorf("second-newest log must be scanned under mtime-desc cap")
 	}
 	if wpLogin["203.0.113.10"] != 0 {
 		t.Errorf("oldest log must be dropped by cap; got %d", wpLogin["203.0.113.10"])
@@ -293,23 +292,24 @@ func TestScanDomlogsStaleDoesNotBurnCapBudget(t *testing.T) {
 	}
 }
 
-// A cancelled context short-circuits the per-file tail loop so that a
-// shutdown signal does not have to wait for thousands of remaining files.
+// A cancelled context short-circuits discovery so shutdown does not have to
+// wait for glob/stat/tail work over thousands of remaining files.
 func TestScanDomlogsHonorsCancelledContext(t *testing.T) {
-	tmp := t.TempDir()
-	a := filepath.Join(tmp, "a.log")
-	b := filepath.Join(tmp, "b.log")
-	writeWPLoginLine(t, a, "203.0.113.50")
-	writeWPLoginLine(t, b, "203.0.113.51")
-
-	now := time.Now()
-	mustChtimes(t, a, now.Add(-1*time.Minute))
-	mustChtimes(t, b, now.Add(-2*time.Minute))
+	globCalled := false
 
 	withMockOS(t, &mockOS{
-		glob: func(string) ([]string, error) { return []string{a, b}, nil },
-		stat: os.Stat,
-		open: os.Open,
+		glob: func(string) ([]string, error) {
+			globCalled = true
+			return []string{"/must/not/be/scanned"}, nil
+		},
+		stat: func(string) (os.FileInfo, error) {
+			t.Fatal("cancelled context must not stat domlogs")
+			return nil, os.ErrNotExist
+		},
+		open: func(string) (*os.File, error) {
+			t.Fatal("cancelled context must not open domlogs")
+			return nil, os.ErrNotExist
+		},
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -319,6 +319,9 @@ func TestScanDomlogsHonorsCancelledContext(t *testing.T) {
 	scanned := scanDomlogs(ctx, nil, 0, wpLogin, map[string]int{}, map[string]int{})
 	if scanned != 0 {
 		t.Errorf("cancelled context must short-circuit; got scanned=%d", scanned)
+	}
+	if globCalled {
+		t.Errorf("cancelled context must skip glob discovery")
 	}
 	if len(wpLogin) != 0 {
 		t.Errorf("cancelled context must produce no hits; got %v", wpLogin)

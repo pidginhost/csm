@@ -37,6 +37,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Thresholds.DeepScanIntervalMin != 60 {
 		t.Errorf("deep_scan_interval = %d, want 60", cfg.Thresholds.DeepScanIntervalMin)
 	}
+	if cfg.Thresholds.DomlogMaxFiles != 500 {
+		t.Errorf("domlog_max_files = %d, want 500", cfg.Thresholds.DomlogMaxFiles)
+	}
 	if cfg.Alerts.MaxPerHour != 30 {
 		t.Errorf("max_per_hour = %d, want 30", cfg.Alerts.MaxPerHour)
 	}

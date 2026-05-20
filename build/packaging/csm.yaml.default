@@ -77,6 +77,8 @@ thresholds:
   filesystem_scan_interval_min: 30
   multi_ip_login_threshold: 3
   multi_ip_login_window_min: 60
+  brute_force_window: 5000
+  domlog_max_files: 500
   # ModSecurity escalation: how many denies from a single IP inside the
   # window promote the IP from "logged" to a Critical "escalation"
   # finding (and a firewall hand-off when auto_block is enabled).

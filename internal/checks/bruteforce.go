@@ -49,13 +49,13 @@ func CheckWPBruteForce(ctx context.Context, cfg *config.Config, _ *state.Store) 
 	xmlrpc := make(map[string]int)
 	userEnum := make(map[string]int)
 
-	// 1. Per-domain domlogs — primary source on LiteSpeed.
+	// 1. Per-domain domlogs - primary source on LiteSpeed.
 	// Glob both SSL and non-SSL logs: attackers may use HTTP.
 	scanned := scanDomlogs(ctx, cfg.InfraIPs, cfg.Thresholds.DomlogMaxFiles, wpLogin, xmlrpc, userEnum)
 
-	// 2. Central access log — supplement for non-vhost traffic.
+	// 2. Central access log - supplement for non-vhost traffic.
 	// On LiteSpeed this mostly has WHM/server-level requests.
-	// On Apache it duplicates domlog data — minor double-counting is
+	// On Apache it duplicates domlog data - minor double-counting is
 	// acceptable since thresholds are high enough.
 	for _, p := range []string{
 		"/usr/local/apache/logs/access_log",
@@ -110,12 +110,12 @@ func CheckWPBruteForce(ctx context.Context, cfg *config.Config, _ *state.Store) 
 
 // scanDomlogs globs per-domain access logs, deduplicates symlinks, drops
 // stale files, ranks survivors most-recent-first, then tails up to maxFiles
-// of them. The mtime-DESC sort + cap is what protects late-alphabet domains
+// of them. The mtime-desc sort + cap is what protects late-alphabet domains
 // on hosts with thousands of vhosts: lexical glob order would otherwise
 // hide brute force against domains beyond the cap.
 //
-// maxFiles == 0 means "use built-in default". A cancelled ctx stops the
-// per-file tail loop before the next file is opened.
+// maxFiles <= 0 means "use built-in default". A cancelled ctx stops before
+// expensive discovery work and before opening the next file.
 func scanDomlogs(ctx context.Context, infraIPs []string, maxFiles int, wpLogin, xmlrpc, userEnum map[string]int) int {
 	if maxFiles <= 0 {
 		maxFiles = domlogMaxFiles
@@ -123,12 +123,18 @@ func scanDomlogs(ctx context.Context, infraIPs []string, maxFiles int, wpLogin, 
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := ctx.Err(); err != nil {
+		return 0
+	}
 
 	var domlogs []string
 	for _, pattern := range []string{
 		"/home/*/access-logs/*-ssl_log",
 		"/home/*/access-logs/*_log",
 	} {
+		if err := ctx.Err(); err != nil {
+			return 0
+		}
 		matches, _ := osFS.Glob(pattern)
 		domlogs = append(domlogs, matches...)
 	}
@@ -142,7 +148,11 @@ func scanDomlogs(ctx context.Context, infraIPs []string, maxFiles int, wpLogin, 
 	cutoff := time.Now().Add(-domlogMaxAge)
 
 	for _, dl := range domlogs {
-		// Resolve symlinks first — cPanel often symlinks SSL and non-SSL
+		if err := ctx.Err(); err != nil {
+			return 0
+		}
+
+		// Resolve symlinks first - cPanel often symlinks SSL and non-SSL
 		// logs to the same backing file, so we dedupe on the real path.
 		real, err := filepath.EvalSymlinks(dl)
 		if err != nil {
@@ -163,8 +173,15 @@ func scanDomlogs(ctx context.Context, infraIPs []string, maxFiles int, wpLogin, 
 		fresh = append(fresh, domlogEntry{path: real, mtime: info.ModTime()})
 	}
 
-	// Rank by mtime DESC so the cap chops the least-recently-active tail.
+	if err := ctx.Err(); err != nil {
+		return 0
+	}
+
+	// Rank by mtime desc so the cap chops the least-recently-active tail.
 	sort.Slice(fresh, func(i, j int) bool {
+		if fresh[i].mtime.Equal(fresh[j].mtime) {
+			return fresh[i].path < fresh[j].path
+		}
 		return fresh[i].mtime.After(fresh[j].mtime)
 	})
 	if len(fresh) > maxFiles {

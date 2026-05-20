@@ -732,10 +732,7 @@ func IsBenignPHPStubBytesComplete(buf []byte, complete bool) bool {
 				i++
 			}
 			word := strings.ToLower(string(buf[start:i]))
-			if isNoArgPHPTerminator(buf, i, word, complete) {
-				return true
-			}
-			return false
+			return isNoArgPHPTerminator(buf, i, word, complete)
 		}
 		return false
 	}

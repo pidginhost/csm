@@ -728,6 +728,38 @@ func TestValidate_MailBruteForceRanges(t *testing.T) {
 	}
 }
 
+func TestValidate_DomlogMaxFilesRange(t *testing.T) {
+	cases := []struct {
+		name    string
+		value   int
+		wantErr bool
+	}{
+		{"zero uses default", 0, false},
+		{"minimum accepted", 1, false},
+		{"maximum accepted", 100000, false},
+		{"negative rejected", -1, true},
+		{"above maximum rejected", 100001, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{Hostname: "test"}
+			cfg.Alerts.Email.Enabled = true
+			cfg.Alerts.Email.To = []string{"admin@test.com"}
+			cfg.Alerts.Email.SMTP = "localhost:25"
+			cfg.Alerts.Email.From = "csm@test.com"
+			cfg.Alerts.MaxPerHour = 10
+			cfg.Thresholds.DomlogMaxFiles = tc.value
+
+			results := Validate(cfg)
+			hasErr := hasResult(results, "error", "thresholds.domlog_max_files")
+			if hasErr != tc.wantErr {
+				t.Errorf("hasErr = %v, want %v (results=%v)", hasErr, tc.wantErr, results)
+			}
+		})
+	}
+}
+
 func TestValidateDeepSectionAlertsOnlyProbesAlerts(t *testing.T) {
 	cfg := &Config{}
 	cfg.Alerts.Email.Enabled = true
