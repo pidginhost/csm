@@ -112,6 +112,12 @@ type Config struct {
 		PluginCheckIntervalMin    int `yaml:"plugin_check_interval_min"`
 		BruteForceWindow          int `yaml:"brute_force_window"`
 
+		// DomlogMaxFiles caps how many per-domain access logs the WP brute
+		// force check scans per cycle. Sites are ranked by recent mtime so
+		// the cap chops least-active domains. Default 500. Bump on hosts
+		// with many active domains so late-alphabet sites are not skipped.
+		DomlogMaxFiles int `yaml:"domlog_max_files"`
+
 		SMTPBruteForceThreshold    int `yaml:"smtp_bruteforce_threshold"`
 		SMTPBruteForceWindowMin    int `yaml:"smtp_bruteforce_window_min"`
 		SMTPBruteForceSuppressMin  int `yaml:"smtp_bruteforce_suppress_min"`
@@ -968,6 +974,9 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.Thresholds.BruteForceWindow == 0 {
 		cfg.Thresholds.BruteForceWindow = 5000
+	}
+	if cfg.Thresholds.DomlogMaxFiles == 0 {
+		cfg.Thresholds.DomlogMaxFiles = 500
 	}
 	if cfg.Thresholds.ModSecEscalationHits == 0 {
 		cfg.Thresholds.ModSecEscalationHits = 3

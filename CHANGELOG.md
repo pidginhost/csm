@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- WP brute force domlog scan now ranks per-domain access logs by recent activity before applying the file cap, so late-alphabet domains on hosts with thousands of vhosts are no longer hidden from the login, xmlrpc, and user-enumeration counters. The cap is operator-tunable and the scan stops promptly on shutdown.
 - `sensitive_file_modified` now demotes High to Warning when a package-manager log was touched in the last 2 minutes or, on BPF hosts, when the writer's process tree contains a package manager. A cron drop-in containing obvious persistence tokens (curl|sh, base64 decode, /tmp/, eval) keeps High regardless, so CloudLinux upgrades stop paging without giving attackers a quiet path.
 - `new_php_in_uploads` now demotes High to Warning when the dropped file's content shows no obfuscation, remote-payload, or shell-execution indicators. Files that fail to read, are empty, or trip any heuristic stay High, and the deep-tier PHP content scanner still emits its own finding independently, so a real webshell still surfaces at the original severity.
 
