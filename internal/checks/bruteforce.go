@@ -66,7 +66,7 @@ func CheckWPBruteForce(ctx context.Context, cfg *config.Config, _ *state.Store) 
 			if !ok {
 				continue
 			}
-			stats.scan(rec, cfg, staticAllowlistClassifier{})
+			stats.scan(rec, cfg, currentBotClassifier(cfg))
 		}
 		break
 	}
@@ -172,7 +172,7 @@ func scanDomlogsStats(ctx context.Context, cfg *config.Config, stats *domlogStat
 			if !ok {
 				continue
 			}
-			stats.scan(rec, cfg, staticAllowlistClassifier{})
+			stats.scan(rec, cfg, currentBotClassifier(cfg))
 		}
 		scanned++
 	}

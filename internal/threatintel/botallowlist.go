@@ -88,7 +88,9 @@ func (r *BotRanges) IPInBot(ip net.IP, bot string) bool {
 }
 
 // ClaimedBotFromUA returns the lower-case bot identity if the UA looks
-// like a known bot. Empty string otherwise.
+// like a known bot. Empty string otherwise. Identities match BotDomains
+// keys in botverify.go so the async verifier can look up the right
+// DNS suffix list.
 func ClaimedBotFromUA(ua string) string {
 	low := strings.ToLower(ua)
 	switch {
@@ -98,6 +100,21 @@ func ClaimedBotFromUA(ua string) string {
 		return "bingbot"
 	case strings.Contains(low, "applebot"):
 		return "applebot"
+	// Appendix A bots: no published static IP range.
+	case strings.Contains(low, "duckduckbot"):
+		return "duckduckbot"
+	case strings.Contains(low, "amazonbot"):
+		return "amazonbot"
+	case strings.Contains(low, "gptbot"), strings.Contains(low, "chatgpt-user"):
+		return "gptbot"
+	case strings.Contains(low, "claudebot"), strings.Contains(low, "claude-searchbot"):
+		return "claudebot"
+	case strings.Contains(low, "perplexitybot"):
+		return "perplexitybot"
+	case strings.Contains(low, "meta-externalagent"), strings.Contains(low, "meta-webindexer"):
+		return "facebookbot"
+	case strings.Contains(low, "bravebot"):
+		return "bravebot"
 	default:
 		return ""
 	}

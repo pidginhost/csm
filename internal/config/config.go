@@ -495,6 +495,11 @@ type Config struct {
 			CacheTTLMin int    `yaml:"cache_ttl_min"`
 			TimeoutSec  int    `yaml:"timeout_sec"`
 		} `yaml:"upstream"`
+		// BotVerifyEnabled controls async PTR+forward-A verification of
+		// claimed search-engine bot IPs. *bool so an explicit false
+		// survives SIGHUP reload without being overwritten by applyDefaults.
+		// Default true.
+		BotVerifyEnabled *bool `yaml:"bot_verify_enabled"`
 	} `yaml:"reputation" hotreload:"safe"`
 
 	Signatures struct {
@@ -941,6 +946,16 @@ func (c *Config) BPFEnforcementDryRunEnabled() bool {
 		return true
 	}
 	return *c.BPFEnforcement.DryRun
+}
+
+// BotVerifyEnabled reports whether async PTR+forward-A verification of
+// claimed search-engine bots is on. Default true; explicit false is
+// honored so operators on air-gapped networks can disable DNS calls.
+func (c *Config) BotVerifyEnabled() bool {
+	if c.Reputation.BotVerifyEnabled == nil {
+		return true
+	}
+	return *c.Reputation.BotVerifyEnabled
 }
 
 type defaultPresence struct {

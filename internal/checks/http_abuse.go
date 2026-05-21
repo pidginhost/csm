@@ -9,6 +9,7 @@ package checks
 import (
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -137,11 +138,20 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 
 		kind := classifyUA(rec.UserAgent, rec.Method)
 		if kind == uaKindClaimedBot {
-			// Static allowlist hits caused an early return through
-			// IsVerifiedBot above. Unknown claimed bots fail open until
-			// Task 5 can confirm a negative rDNS result; treat them as
-			// ordinary browsers so they do not fire http_ua_spoof yet.
-			kind = uaKindBrowser
+			// Static allowlist hits returned early through IsVerifiedBot
+			// above. For IPs outside the static range, check whether the
+			// async rDNS verifier has confirmed a negative result. Only
+			// promote to uaKindClaimedBotNegative when the cache has a
+			// definitive negative; otherwise fail open (treat as browser)
+			// so a new-to-us legitimate bot IP does not fire ua_spoof on
+			// the first scan after it appears.
+			if cv, ok := bot.(interface {
+				ConfirmedNegative(ip, ua string) bool
+			}); ok && cv.ConfirmedNegative(ip, rec.UserAgent) {
+				kind = uaKindClaimedBotNegative
+			} else {
+				kind = uaKindBrowser
+			}
 		}
 		if _, ok := s.uaCat[ip]; !ok {
 			s.uaCat[ip] = make(map[uaKind]int)
@@ -220,6 +230,12 @@ func (s *domlogStats) emit(cfg *config.Config) []alert.Finding {
 			threshold = 30
 		}
 		for ip, byKind := range s.uaCat {
+			if hits, ok := byKind[uaKindClaimedBotNegative]; ok && hits > 0 {
+				out = append(out, makeUASpoofFinding(ip,
+					"claimed search-engine bot failed rDNS verification",
+					s.samples[ip], hits))
+				continue
+			}
 			if hits, ok := byKind[uaKindKnownScanner]; ok && hits > 0 {
 				out = append(out, makeUASpoofFinding(ip, "known scanner UA",
 					s.samples[ip], hits))
@@ -556,6 +572,9 @@ var (
 	claimedBotSubstrings = []string{
 		"googlebot", "bingbot", "applebot", "duckduckbot", "yandexbot",
 		"baiduspider", "facebookexternalhit", "twitterbot",
+		// Appendix A bots: no published static IP range; rDNS-verified.
+		"amazonbot", "gptbot", "chatgpt-user", "claudebot", "claude-searchbot",
+		"perplexitybot", "meta-externalagent", "meta-webindexer", "bravebot",
 	}
 	headlessSubstrings = []string{
 		"headlesschrome", "phantomjs", "puppeteer", "playwright",
@@ -569,8 +588,8 @@ var (
 // staticAllowlistClassifier consults the embedded static IP ranges only.
 // If the source IP falls inside a published bot range for the claimed bot
 // identity, the request is treated as verified and excluded from all
-// counters. rDNS verification for IPs outside the static ranges arrives
-// in Task 5 via verifyingClassifier.
+// counters. rDNS verification for IPs outside the static ranges is
+// handled by verifyingClassifier.
 type staticAllowlistClassifier struct{}
 
 func (staticAllowlistClassifier) IsVerifiedBot(ipStr, ua string) bool {
@@ -583,4 +602,87 @@ func (staticAllowlistClassifier) IsVerifiedBot(ipStr, ua string) bool {
 		return false
 	}
 	return threatintel.DefaultRanges().IPInBot(ip, bot)
+}
+
+// verifyingClassifier consults the static allowlist first, then the
+// rDNS verify cache. Cache misses enqueue an async job and return
+// false (treat as unverified for this scan cycle).
+type verifyingClassifier struct {
+	async    *threatintel.AsyncBotVerifier
+	cacheGet func(net.IP, string) (bool, bool)
+}
+
+func newVerifyingClassifier(async *threatintel.AsyncBotVerifier,
+	cacheGet func(net.IP, string) (bool, bool)) verifyingClassifier {
+	return verifyingClassifier{async: async, cacheGet: cacheGet}
+}
+
+func (c verifyingClassifier) IsVerifiedBot(ipStr, ua string) bool {
+	bot := threatintel.ClaimedBotFromUA(ua)
+	if bot == "" {
+		return false
+	}
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return false
+	}
+	// Static range is the fast positive path.
+	if threatintel.DefaultRanges().IPInBot(ip, bot) {
+		return true
+	}
+	// Cache lookup: valid positive -> verified, valid negative -> false
+	// (ConfirmedNegative handles it), no entry -> enqueue and fail open.
+	if c.cacheGet != nil {
+		if verified, valid := c.cacheGet(ip, bot); valid {
+			return verified
+		}
+	}
+	// Enqueue async verification; treat as unverified for this scan.
+	if c.async != nil {
+		c.async.Enqueue(ip, bot)
+	}
+	return false
+}
+
+// ConfirmedNegative reports whether the rDNS cache has a definitive
+// negative result for this IP+UA pair. Called from scan() to decide
+// whether to promote uaKindClaimedBot to uaKindClaimedBotNegative.
+func (c verifyingClassifier) ConfirmedNegative(ipStr, ua string) bool {
+	bot := threatintel.ClaimedBotFromUA(ua)
+	if bot == "" {
+		return false
+	}
+	ip := net.ParseIP(ipStr)
+	if ip == nil || c.cacheGet == nil {
+		return false
+	}
+	verified, valid := c.cacheGet(ip, bot)
+	return valid && !verified
+}
+
+var (
+	globalBotVerifier *threatintel.AsyncBotVerifier
+	globalBotGet      func(net.IP, string) (bool, bool)
+	botMu             sync.RWMutex
+)
+
+// SetBotVerifier installs the daemon-lifetime async verifier and cache
+// reader. Called from daemon.go after the store and goroutine are ready.
+func SetBotVerifier(v *threatintel.AsyncBotVerifier, get func(net.IP, string) (bool, bool)) {
+	botMu.Lock()
+	defer botMu.Unlock()
+	globalBotVerifier = v
+	globalBotGet = get
+}
+
+// currentBotClassifier returns the appropriate botClassifier based on
+// config. When bot_verify_enabled is false, falls back to the
+// static-only classifier so DNS calls are never made.
+func currentBotClassifier(cfg *config.Config) botClassifier {
+	if cfg == nil || !cfg.BotVerifyEnabled() {
+		return staticAllowlistClassifier{}
+	}
+	botMu.RLock()
+	defer botMu.RUnlock()
+	return newVerifyingClassifier(globalBotVerifier, globalBotGet)
 }

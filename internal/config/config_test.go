@@ -1054,3 +1054,19 @@ func TestConfig_BPFEnforcementDefaultsAllOff(t *testing.T) {
 		t.Errorf("default DirectSMTPEgress must be false")
 	}
 }
+
+func TestBotVerifyEnabled_DefaultTrue(t *testing.T) {
+	cfg := &Config{}
+	if !cfg.BotVerifyEnabled() {
+		t.Error("default must be true")
+	}
+}
+
+func TestBotVerifyEnabled_ExplicitFalse(t *testing.T) {
+	f := false
+	cfg := &Config{}
+	cfg.Reputation.BotVerifyEnabled = &f
+	if cfg.BotVerifyEnabled() {
+		t.Error("explicit false must be honored")
+	}
+}

@@ -39,6 +39,7 @@ import (
 	"github.com/pidginhost/csm/internal/signatures"
 	"github.com/pidginhost/csm/internal/state"
 	"github.com/pidginhost/csm/internal/store"
+	"github.com/pidginhost/csm/internal/threatintel"
 	"github.com/pidginhost/csm/internal/updatecheck"
 	"github.com/pidginhost/csm/internal/verdict"
 	"github.com/pidginhost/csm/internal/webui"
@@ -665,6 +666,22 @@ func (d *Daemon) Run() error {
 
 	d.wg.Add(1)
 	obs.Go("deep-scanner", d.deepScanner)
+
+	// Async bot-rDNS verifier: runs PTR+forward-A verification for
+	// claimed search-engine bot IPs that are not in a static range.
+	// Gated on reputation.bot_verify_enabled (default true) and on a
+	// non-nil store so the result can be persisted.
+	if d.cfg.BotVerifyEnabled() {
+		if db := store.Global(); db != nil {
+			bv := threatintel.NewAsyncBotVerifier(db.PutBotVerify)
+			d.wg.Add(1)
+			obs.Go("bot-verify", func() {
+				defer d.wg.Done()
+				bv.Run(d.stopCh)
+			})
+			checks.SetBotVerifier(bv, db.GetBotVerify)
+		}
+	}
 
 	// Live AF_ALG listener (Copy Fail / CVE-2026-31431) — only started
 	// when the kernel is actually exploitable. Hosts with a KernelCare

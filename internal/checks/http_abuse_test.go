@@ -297,3 +297,69 @@ func TestClaimedBot_OutsideStaticRangeDoesNotEmitYet(t *testing.T) {
 		}
 	}
 }
+
+// pendingVerifyClassifier simulates a verifyingClassifier whose cache is
+// empty -- the async job has been enqueued but has not completed yet.
+type pendingVerifyClassifier struct{}
+
+func (pendingVerifyClassifier) IsVerifiedBot(string, string) bool { return false }
+
+func TestClaimedBot_PendingVerifyStillCountsForFlood(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Thresholds.HTTPFloodThreshold = 50
+
+	stats := newDomlogStatsAt(time.Date(2026, 5, 20, 18, 5, 0, 0, time.FixedZone("EEST", 3*3600)))
+	line := `203.0.113.99 - - [20/May/2026:18:00:00 +0300] "GET /robots.txt HTTP/1.1" 200 100 "-" "Googlebot/2.1 fake"`
+	rec, ok := parseAccessLogRecord(line)
+	if !ok {
+		t.Fatal("parse failed")
+	}
+	for i := 0; i < 75; i++ {
+		stats.scan(rec, cfg, pendingVerifyClassifier{})
+	}
+	got := stats.emit(cfg)
+	floodSeen := false
+	uaSpoofSeen := false
+	for _, f := range got {
+		if f.Check == "http_request_flood" {
+			floodSeen = true
+		}
+		if f.Check == "http_ua_spoof" {
+			uaSpoofSeen = true
+		}
+	}
+	if !floodSeen {
+		t.Error("flood must still emit while verify is pending")
+	}
+	if uaSpoofSeen {
+		t.Error("ua_spoof must NOT emit while verify is pending (fail-open)")
+	}
+}
+
+// negativeVerifyClassifier simulates a cache-confirmed negative: the IP
+// sent a claimed-bot UA but PTR+forward-A verification failed.
+type negativeVerifyClassifier struct{}
+
+func (negativeVerifyClassifier) IsVerifiedBot(string, string) bool     { return false }
+func (negativeVerifyClassifier) ConfirmedNegative(string, string) bool { return true }
+
+func TestClaimedBot_ConfirmedNegativeEmitsUASpoof(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Thresholds.HTTPFloodThreshold = 0
+	cfg.Thresholds.HTTPUASpoofThreshold = 30
+
+	stats := newDomlogStatsAt(time.Date(2026, 5, 20, 18, 5, 0, 0, time.FixedZone("EEST", 3*3600)))
+	line := `203.0.113.100 - - [20/May/2026:18:05:00 +0300] "GET /robots.txt HTTP/1.1" 200 100 "-" "Googlebot/2.1 fake"`
+	rec, ok := parseAccessLogRecord(line)
+	if !ok {
+		t.Fatal("parse failed")
+	}
+	stats.scan(rec, cfg, negativeVerifyClassifier{})
+	got := stats.emit(cfg)
+	for _, f := range got {
+		if f.Check == "http_ua_spoof" {
+			return
+		}
+	}
+	t.Fatalf("confirmed negative claimed bot did not emit ua spoof: %+v", got)
+}

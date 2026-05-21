@@ -38,6 +38,7 @@ var bucketNames = []string{
 	"incidents",
 	"fw:rollback",
 	adminEmailsBucket,
+	"botverify",
 }
 
 // DB wraps a bbolt database.
