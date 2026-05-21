@@ -88,7 +88,7 @@ const (
 	FieldGroupLimits          = "Limits"
 
 	FieldGroupScanIntervals  = "Scan intervals"
-	FieldGroupWebBruteForce  = "Web brute force"
+	FieldGroupWebBruteForce  = "Web brute force" // #nosec G101 -- UI label, not a credential.
 	FieldGroupMailBruteForce = "Mail brute force"
 	FieldGroupSMTPBruteForce = "SMTP brute force"
 	FieldGroupAccountSpray   = "Account spray"

@@ -494,18 +494,23 @@ func clientIPForRecord(rec accessLogRecord, cfg *config.Config) string {
 // isTrustedProxy returns true when addr matches any entry in proxies (exact
 // IP or CIDR). Entries that fail to parse are skipped.
 func isTrustedProxy(addr string, proxies []string) bool {
+	addr = strings.TrimSpace(addr)
 	parsed := net.ParseIP(addr)
 	if parsed == nil {
 		return false
 	}
 	for _, entry := range proxies {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
 		if _, cidr, err := net.ParseCIDR(entry); err == nil {
 			if cidr.Contains(parsed) {
 				return true
 			}
 			continue
 		}
-		if net.ParseIP(entry) != nil && entry == addr {
+		if ip := net.ParseIP(entry); ip != nil && ip.Equal(parsed) {
 			return true
 		}
 	}

@@ -246,9 +246,9 @@ thresholds:
   filesystem_scan_interval_min: 30
   brute_force_window: 5000
   domlog_max_files: 500
-  # HTTP request flood detector. 0 disables. Sample baseline traffic
-  # before raising; recommended starting value for most shared hosts
-  # is 550 (p99.9 req/5min * 1.5 on a typical cPanel workload).
+  # HTTP request flood detector. 0 disables. Sample local baseline
+  # traffic before raising; CDN and carrier NAT traffic can concentrate
+  # many visitors behind one source IP.
   http_flood_threshold: 0
   http_flood_window_min: 5
   http_ua_spoof_threshold: 30

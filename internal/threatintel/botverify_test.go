@@ -67,12 +67,27 @@ func TestVerify_PTRMismatch(t *testing.T) {
 	}
 }
 
-func TestVerify_PTRError(t *testing.T) {
-	res := &mockResolver{err: errors.New("nx")}
+func TestVerify_PTRTransientErrorFailsOpen(t *testing.T) {
+	res := &mockResolver{err: errors.New("temporary resolver failure")}
 	v := newVerifier(res, []string{"googlebot.com"})
-	ok, _ := v.verify(context.Background(), net.ParseIP("203.0.113.10"), "googlebot")
+	ok, err := v.verify(context.Background(), net.ParseIP("203.0.113.10"), "googlebot")
+	if err == nil {
+		t.Fatal("expected resolver error")
+	}
 	if ok {
-		t.Error("resolver error must verify-fail")
+		t.Error("resolver error must not verify true")
+	}
+}
+
+func TestVerify_PTRNotFoundIsNegative(t *testing.T) {
+	res := &mockResolver{err: &net.DNSError{IsNotFound: true}}
+	v := newVerifier(res, []string{"googlebot.com"})
+	ok, err := v.verify(context.Background(), net.ParseIP("203.0.113.10"), "googlebot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Error("DNS not-found must verify-fail")
 	}
 }
 
@@ -84,5 +99,20 @@ func TestVerify_DeadlineHonored(t *testing.T) {
 	_, err := v.verify(ctx, net.ParseIP("66.249.66.99"), "googlebot")
 	if err == nil {
 		t.Error("expected context deadline error")
+	}
+}
+
+func TestAsyncBotVerifier_DoesNotCacheTransientErrors(t *testing.T) {
+	var puts int
+	a := NewAsyncBotVerifier(func(net.IP, string, bool, time.Time) error {
+		puts++
+		return nil
+	})
+	a.v["googlebot"] = newVerifier(&mockResolver{err: errors.New("temporary resolver failure")}, []string{"googlebot.com"})
+
+	a.process(verifyJob{IP: net.ParseIP("203.0.113.10"), Bot: "googlebot"})
+
+	if puts != 0 {
+		t.Fatalf("transient resolver error wrote %d cache entries, want 0", puts)
 	}
 }

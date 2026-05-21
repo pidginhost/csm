@@ -171,6 +171,45 @@ func TestHTTPRequestFlood_IgnoresRecordsOutsideWindow(t *testing.T) {
 	}
 }
 
+func TestClientIPForRecord_RequiresTrustedProxy(t *testing.T) {
+	rec := accessLogRecord{
+		RemoteIP: "198.51.100.10",
+		XFF:      "203.0.113.10, 10.0.0.1",
+	}
+
+	if got := clientIPForRecord(rec, &config.Config{}); got != "198.51.100.10" {
+		t.Fatalf("untrusted proxy used XFF: got %q", got)
+	}
+
+	cfg := &config.Config{}
+	cfg.WebServer.TrustedProxies = []string{"198.51.100.0/24"}
+	if got := clientIPForRecord(rec, cfg); got != "203.0.113.10" {
+		t.Fatalf("trusted proxy client IP=%q, want 203.0.113.10", got)
+	}
+}
+
+func TestClientIPForRecord_TrimsTrustedProxyEntries(t *testing.T) {
+	rec := accessLogRecord{RemoteIP: "198.51.100.10", XFF: "203.0.113.10"}
+	cfg := &config.Config{}
+	cfg.WebServer.TrustedProxies = []string{" 198.51.100.10 "}
+
+	if got := clientIPForRecord(rec, cfg); got != "203.0.113.10" {
+		t.Fatalf("trusted proxy client IP=%q, want 203.0.113.10", got)
+	}
+}
+
+func TestParseAccessLogRecord_CPanelVhostNotXFF(t *testing.T) {
+	line := `192.0.2.60 - - [20/May/2026:18:00:00 +0300] "GET /index.html HTTP/1.1" 200 100 "-" "Mozilla/5.0" "example.com:443"`
+
+	rec, ok := parseAccessLogRecord(line)
+	if !ok {
+		t.Fatal("parse failed")
+	}
+	if rec.XFF != "" {
+		t.Fatalf("cPanel vhost extension parsed as XFF: %q", rec.XFF)
+	}
+}
+
 func TestClassifyUA(t *testing.T) {
 	cases := []struct {
 		ua     string

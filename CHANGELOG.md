@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Optional HTTP request-flood and User-Agent spoof detection on web traffic. Both ship disabled (threshold 0) and verify search-engine bots by reverse DNS before flagging, so legitimate crawlers are not blocked.
+- Optional HTTP request-flood and User-Agent spoof detection on web traffic. Request-flood detection ships disabled until an operator sets a threshold, and User-Agent spoofing verifies search-engine bots by reverse DNS before flagging.
 
 ### Changed
 

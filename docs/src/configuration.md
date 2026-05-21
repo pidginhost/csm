@@ -136,11 +136,8 @@ thresholds:
   #
   # http_flood_threshold: minimum per-IP request count inside the window
   # that emits http_request_flood. 0 disables the detector. The detector
-  # ships disabled so operators can sample baseline traffic first. On a
-  # typical cPanel shared host the p99.9 of requests per 5-minute bucket
-  # from any single IP is around 358; a recommended starting threshold is
-  # 550 (p99.9 * 1.5, rounded to the nearest 50). Adjust up for CDNs or
-  # CGNAT-heavy visitor pools before enabling.
+  # ships disabled so operators can sample local baseline traffic first.
+  # Adjust up for CDNs or CGNAT-heavy visitor pools before enabling.
   http_flood_threshold: 0              # 0 = disabled; set after sampling baseline traffic
   http_flood_window_min: 5             # rate window in minutes (default: 5)
 
@@ -303,7 +300,8 @@ reputation:
   # Async PTR + forward-A verification for IPs that claim search-engine
   # bot UAs (Googlebot, Bingbot, Applebot). When an IP claims a bot UA
   # but reverse DNS does not confirm it, the request counts toward
-  # http_ua_spoof. Set false only if your resolver is unreliable. See
+  # http_ua_spoof. Transient DNS lookup failures fail open and are
+  # retried later. Set false only if your resolver is unreliable. See
   # docs/src/auto-response.md for the always-block behavior.
   bot_verify_enabled: true              # default: true
   rspamd:

@@ -2,6 +2,7 @@ package threatintel
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strings"
 	"sync"
@@ -32,15 +33,18 @@ func newVerifier(r resolver, domains []string) *verifier {
 // (true, nil) on success, (false, nil) on a definitive negative, and
 // (false, err) on context cancellation or resolver error that
 // short-circuits the lookup. DNS NXDOMAIN is treated as negative, not
-// as an error, so transient DNS issues only produce false negatives,
-// never false positives.
+// as an error, but transient resolver failures return an error so the
+// caller can fail open instead of caching a false negative.
 func (v *verifier) verify(ctx context.Context, ip net.IP, bot string) (bool, error) {
 	names, err := v.res.LookupAddr(ctx, ip.String())
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return false, ctxErr
 		}
-		return false, nil
+		if isDNSNotFound(err) {
+			return false, nil
+		}
+		return false, err
 	}
 	matched := ""
 	for _, n := range names {
@@ -63,7 +67,10 @@ func (v *verifier) verify(ctx context.Context, ip net.IP, bot string) (bool, err
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return false, ctxErr
 		}
-		return false, nil
+		if isDNSNotFound(err) {
+			return false, nil
+		}
+		return false, err
 	}
 	for _, a := range addrs {
 		if a.Equal(ip) {
@@ -71,6 +78,11 @@ func (v *verifier) verify(ctx context.Context, ip net.IP, bot string) (bool, err
 		}
 	}
 	return false, nil
+}
+
+func isDNSNotFound(err error) bool {
+	var dnsErr *net.DNSError
+	return errors.As(err, &dnsErr) && dnsErr.IsNotFound && !dnsErr.IsTemporary && !dnsErr.IsTimeout
 }
 
 // AsyncBotVerifier runs PTR+forward-A verify in a single background
@@ -153,20 +165,25 @@ func (a *AsyncBotVerifier) Run(stopCh <-chan struct{}) {
 		case <-stopCh:
 			return
 		case job := <-a.ch:
-			v, ok := a.v[job.Bot]
-			if !ok {
-				a.finish(job)
-				continue
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			result, _ := v.verify(ctx, job.IP, job.Bot)
-			cancel()
-			if a.put != nil {
-				_ = a.put(job.IP, job.Bot, result, time.Now().Add(24*time.Hour))
-			}
-			a.finish(job)
+			a.process(job)
 		}
 	}
+}
+
+func (a *AsyncBotVerifier) process(job verifyJob) {
+	defer a.finish(job)
+
+	v, ok := a.v[job.Bot]
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	result, err := v.verify(ctx, job.IP, job.Bot)
+	cancel()
+	if err != nil || a.put == nil {
+		return
+	}
+	_ = a.put(job.IP, job.Bot, result, time.Now().Add(24*time.Hour))
 }
 
 func (a *AsyncBotVerifier) finish(job verifyJob) {

@@ -71,7 +71,8 @@ reputation:
   # Async PTR + forward-A verification for claimed search-engine bots
   # (Googlebot, Bingbot, Applebot). When an IP claims a bot UA but
   # reverse DNS does not confirm it, the request is counted for
-  # http_ua_spoof. Set false to disable rDNS verification and trust UA
+  # http_ua_spoof. Transient DNS lookup failures fail open and are
+  # retried later. Set false to disable rDNS verification and trust UA
   # strings as-is.
   bot_verify_enabled: true
 
@@ -89,10 +90,8 @@ thresholds:
   domlog_max_files: 500
   # HTTP request flood: per-source-IP request count inside the window
   # that emits http_request_flood. 0 disables the detector. Sample
-  # baseline traffic before raising; a busy WP shop sees 200-600
-  # req/5min from any single visitor IP at peak. Recommended starting
-  # value on most shared hosts is 550 (derived from p99.9 * 1.5 of a
-  # typical cPanel production workload).
+  # local baseline traffic before raising; high-traffic sites, CDNs,
+  # and carrier NAT can make one visitor IP much busier than average.
   http_flood_threshold: 0
   http_flood_window_min: 5
   # User-Agent spoof: per-IP per-window count for non-browser UA kinds
