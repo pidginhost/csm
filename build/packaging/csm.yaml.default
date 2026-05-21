@@ -67,6 +67,14 @@ signatures:
     update_interval: "168h"
     download_url: "" # signed ZIP URL/template; supports {tier} and {version}
 
+reputation:
+  # Async PTR + forward-A verification for claimed search-engine bots
+  # (Googlebot, Bingbot, Applebot). When an IP claims a bot UA but
+  # reverse DNS does not confirm it, the request is counted for
+  # http_ua_spoof. Set false to disable rDNS verification and trust UA
+  # strings as-is.
+  bot_verify_enabled: true
+
 thresholds:
   mail_queue_warn: 500
   mail_queue_crit: 2000
@@ -79,6 +87,26 @@ thresholds:
   multi_ip_login_window_min: 60
   brute_force_window: 5000
   domlog_max_files: 500
+  # HTTP request flood: per-source-IP request count inside the window
+  # that emits http_request_flood. 0 disables the detector. Sample
+  # baseline traffic before raising; a busy WP shop sees 200-600
+  # req/5min from any single visitor IP at peak. Recommended starting
+  # value on most shared hosts is 550 (derived from p99.9 * 1.5 of a
+  # typical cPanel production workload).
+  http_flood_threshold: 0
+  http_flood_window_min: 5
+  # User-Agent spoof: per-IP per-window count for non-browser UA kinds
+  # (scripting, headless, empty) that emits http_ua_spoof. Default 30.
+  # Unverified claimed bots (e.g. Googlebot from a non-Google IP) fire
+  # after rDNS confirmation regardless of this threshold.
+  http_ua_spoof_threshold: 30
+  # Opt-in to flag IPs whose UA looks like a scripting language, headless
+  # browser, or has no UA at all. These patterns appear on many legitimate
+  # monitoring agents; leave disabled unless you have confirmed the noise
+  # floor is acceptable on this host.
+  http_ua_scripting_enabled: false
+  http_ua_headless_enabled: false
+  http_ua_empty_enabled: false
   # ModSecurity escalation: how many denies from a single IP inside the
   # window promote the IP from "logged" to a Critical "escalation"
   # finding (and a firewall hand-off when auto_block is enabled).
@@ -89,11 +117,21 @@ thresholds:
 
 state_path: "/var/lib/csm/state"
 
-# Infrastructure IPs — traffic from these CIDRs is trusted and never blocked.
+# Infrastructure IPs -- traffic from these CIDRs is trusted and never blocked.
 # IMPORTANT: Set these to YOUR management/monitoring network ranges.
 infra_ips: []
   # - "10.0.0.0/8"
   # - "172.16.0.0/12"
+
+# Web server overrides. Leave empty to use the auto-detected paths for
+# the running platform.
+web_server:
+  # Override the per-vhost access-log globs. Empty uses the detected
+  # default for the panel (cPanel, Plesk, DirectAdmin, bare Apache/Nginx).
+  domlog_globs: []
+  # IPs or CIDRs whose X-Forwarded-For header is trusted for client-IP
+  # extraction. Leave empty to ignore XFF and use RemoteIP as-is.
+  trusted_proxies: []
 
 suppressions:
   upcp_window_start: "00:30"   # cPanel nightly update window (suppress noise)

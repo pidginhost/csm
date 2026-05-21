@@ -41,6 +41,7 @@
 | Check | Description |
 |-------|-------------|
 | `wp_bruteforce` | WordPress login brute force (wp-login.php, xmlrpc.php) |
+| `http_ua_spoof` | IP claiming a search-engine bot UA (Googlebot, Bingbot, Applebot) that fails reverse-DNS verification, or exceeding the per-IP spoof threshold for scripting/headless/empty UAs when those opt-in flags are enabled |
 | `ftp_logins` | FTP access patterns and failed auth |
 | `webmail_logins` | Roundcube/Horde access anomalies |
 | `api_auth_failures` | API authentication failure patterns |

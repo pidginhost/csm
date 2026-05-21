@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Optional HTTP request-flood and User-Agent spoof detection on web traffic. Both ship disabled (threshold 0) and verify search-engine bots by reverse DNS before flagging, so legitimate crawlers are not blocked.
+
 ### Changed
 
 - WP brute force domlog scan now ranks per-domain access logs by recent activity before applying the file cap, so late-alphabet domains on hosts with thousands of vhosts are no longer hidden from the login, xmlrpc, and user-enumeration counters. The cap is operator-tunable and the scan stops promptly on shutdown.

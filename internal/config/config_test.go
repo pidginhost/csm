@@ -46,6 +46,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Thresholds.HTTPFloodThreshold != 0 {
 		t.Errorf("http_flood_threshold = %d, want 0 (disabled by default)", cfg.Thresholds.HTTPFloodThreshold)
 	}
+	if cfg.Thresholds.HTTPUASpoofThreshold != 30 {
+		t.Errorf("http_ua_spoof_threshold = %d, want 30", cfg.Thresholds.HTTPUASpoofThreshold)
+	}
 	if cfg.Alerts.MaxPerHour != 30 {
 		t.Errorf("max_per_hour = %d, want 30", cfg.Alerts.MaxPerHour)
 	}

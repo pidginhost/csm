@@ -130,6 +130,33 @@ thresholds:
   brute_force_window: 5000              # failed auth attempts window (default: 5000)
   domlog_max_files: 500                 # per-domain access logs per WP brute-force scan (default: 500)
 
+  # HTTP request flood and User-Agent spoof detection.
+  # Both detectors scan the same per-vhost access-log stream as the WP
+  # brute-force scanner; no extra log tailer is needed.
+  #
+  # http_flood_threshold: minimum per-IP request count inside the window
+  # that emits http_request_flood. 0 disables the detector. The detector
+  # ships disabled so operators can sample baseline traffic first. On a
+  # typical cPanel shared host the p99.9 of requests per 5-minute bucket
+  # from any single IP is around 358; a recommended starting threshold is
+  # 550 (p99.9 * 1.5, rounded to the nearest 50). Adjust up for CDNs or
+  # CGNAT-heavy visitor pools before enabling.
+  http_flood_threshold: 0              # 0 = disabled; set after sampling baseline traffic
+  http_flood_window_min: 5             # rate window in minutes (default: 5)
+
+  # http_ua_spoof_threshold: per-IP per-window count for non-browser UA
+  # kinds before http_ua_spoof fires. Claimed search-engine bots (Googlebot,
+  # Bingbot, Applebot) that fail reverse-DNS confirmation fire regardless of
+  # this threshold once the rDNS cache confirms the IP is not the real bot.
+  http_ua_spoof_threshold: 30          # default: 30
+
+  # These three opt-in flags extend UA spoof detection to additional UA
+  # classes. Leave disabled on busy shared hosts; scripting-language agents
+  # and headless browsers appear on many legitimate monitoring stacks.
+  http_ua_scripting_enabled: false     # flag curl/wget/python-requests/Go-http style UAs
+  http_ua_headless_enabled: false      # flag Puppeteer/Playwright/PhantomJS UAs
+  http_ua_empty_enabled: false         # flag requests with no UA at all
+
   # SMTP brute-force tracker (Exim mainlog, dovecot SASL on submission ports)
   smtp_bruteforce_threshold: 5            # per-IP failed auths before block (default: 5)
   smtp_bruteforce_window_min: 10          # sliding window in minutes (default: 10)
@@ -153,6 +180,17 @@ thresholds:
   mail_account_spray_threshold: 12        # unique IPs targeting one mailbox before visibility finding (default: 12)
   mail_bruteforce_max_tracked: 20000      # soft cap on tracked entries; oldest evicted (default: 20000)
   mail_brute_account_key: "builtin:dovecot-user" # builtin:dovecot-user | builtin:postfix-sasl | regex:<capture>
+
+# --- Web server overrides ---
+# Leave these empty to use auto-detected paths for the running platform.
+web_server:
+  # Override the per-vhost access-log glob patterns. Empty uses the
+  # auto-detected default for the panel (cPanel, Plesk, DirectAdmin,
+  # bare Apache, or bare Nginx).
+  domlog_globs: []
+  # IPs or CIDRs whose X-Forwarded-For header is trusted for client-IP
+  # extraction. Leave empty to ignore XFF and use RemoteIP as-is.
+  trusted_proxies: []
 
 # --- Infrastructure ---
 infra_ips: []                           # management/monitoring CIDRs - never blocked
@@ -262,6 +300,12 @@ php_shield:
 reputation:
   abuseipdb_key: ""                     # AbuseIPDB API key for IP reputation lookups
   whitelist: []                         # IPs to never flag as malicious
+  # Async PTR + forward-A verification for IPs that claim search-engine
+  # bot UAs (Googlebot, Bingbot, Applebot). When an IP claims a bot UA
+  # but reverse DNS does not confirm it, the request counts toward
+  # http_ua_spoof. Set false only if your resolver is unreliable. See
+  # docs/src/auto-response.md for the always-block behavior.
+  bot_verify_enabled: true              # default: true
   rspamd:
     enabled: false                      # include rspamd rolling history in IP reputation
     url: "http://127.0.0.1:11334"       # rspamd controller URL

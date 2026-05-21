@@ -246,10 +246,26 @@ thresholds:
   filesystem_scan_interval_min: 30
   brute_force_window: 5000
   domlog_max_files: 500
+  # HTTP request flood detector. 0 disables. Sample baseline traffic
+  # before raising; recommended starting value for most shared hosts
+  # is 550 (p99.9 req/5min * 1.5 on a typical cPanel workload).
+  http_flood_threshold: 0
+  http_flood_window_min: 5
+  http_ua_spoof_threshold: 30
+  http_ua_scripting_enabled: false
+  http_ua_headless_enabled: false
+  http_ua_empty_enabled: false
 
 infra_ips:
   # Add your infrastructure IPs or CIDRs here.
   # - "203.0.113.0/24"
+
+web_server:
+  domlog_globs: []
+  trusted_proxies: []
+
+reputation:
+  bot_verify_enabled: true
 
 suppressions:
   upcp_window_start: "00:30"
