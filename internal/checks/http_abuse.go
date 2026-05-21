@@ -131,6 +131,14 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 		s.userEnum[ip]++
 	}
 
+	// HTTP request flood counter -- all methods, all URIs, after the
+	// infra-IP and verified-bot gates above. Only parsed timestamps
+	// inside thresholds.http_flood_window_min count; malformed timestamp
+	// lines still feed legacy POST counters but not rate findings.
+	if withinHTTPFloodWindow(rec.Time, cfg, s.scanTime) {
+		s.httpReqs[ip]++
+	}
+
 	if _, ok := s.samples[ip]; !ok {
 		s.samples[ip] = httpSample{Method: rec.Method, URI: rec.URI, UA: rec.UserAgent}
 	}
@@ -172,6 +180,47 @@ func (s *domlogStats) emitLegacy(_ *config.Config) []alert.Finding {
 		}
 	}
 	return out
+}
+
+// emit produces all finding kinds from a single populated domlogStats.
+// Legacy three kinds come first (so existing callers still get them when
+// running through emit), then http_request_flood. http_ua_spoof lands in
+// Task 4.
+func (s *domlogStats) emit(cfg *config.Config) []alert.Finding {
+	out := s.emitLegacy(cfg)
+
+	if cfg != nil && cfg.Thresholds.HTTPFloodThreshold > 0 {
+		for ip, count := range s.httpReqs {
+			if count < cfg.Thresholds.HTTPFloodThreshold {
+				continue
+			}
+			sample := s.samples[ip]
+			out = append(out, alert.Finding{
+				Severity: alert.High,
+				Check:    "http_request_flood",
+				SourceIP: ip,
+				Message:  "HTTP request flood from " + ip + ": " + itoa(count) + " requests",
+				Details:  "Sample: " + sample.Method + " " + sample.URI + " UA=" + truncate(sample.UA, 120),
+			})
+		}
+	}
+	return out
+}
+
+// withinHTTPFloodWindow reports whether a log timestamp falls inside the
+// configured flood rate window relative to the scan start time. Timestamps
+// in the future (up to one clock-skew minute) are accepted. Zero timestamps
+// from malformed lines return false so they do not contribute to rate counts.
+func withinHTTPFloodWindow(ts time.Time, cfg *config.Config, now time.Time) bool {
+	if ts.IsZero() || cfg == nil {
+		return false
+	}
+	windowMin := cfg.Thresholds.HTTPFloodWindowMin
+	if windowMin <= 0 {
+		windowMin = 5
+	}
+	cutoff := now.Add(-time.Duration(windowMin) * time.Minute)
+	return !ts.Before(cutoff) && !ts.After(now.Add(time.Minute))
 }
 
 func formatLegacyMessage(kind, ip string, n int, unit string) string {

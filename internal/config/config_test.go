@@ -40,6 +40,12 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Thresholds.DomlogMaxFiles != 500 {
 		t.Errorf("domlog_max_files = %d, want 500", cfg.Thresholds.DomlogMaxFiles)
 	}
+	if cfg.Thresholds.HTTPFloodWindowMin != 5 {
+		t.Errorf("http_flood_window_min = %d, want 5", cfg.Thresholds.HTTPFloodWindowMin)
+	}
+	if cfg.Thresholds.HTTPFloodThreshold != 0 {
+		t.Errorf("http_flood_threshold = %d, want 0 (disabled by default)", cfg.Thresholds.HTTPFloodThreshold)
+	}
 	if cfg.Alerts.MaxPerHour != 30 {
 		t.Errorf("max_per_hour = %d, want 30", cfg.Alerts.MaxPerHour)
 	}

@@ -86,6 +86,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "whm_unauth_scripts_realtime", Category: CategoryAuth},
 
 	// --- Brute Force -----------------------------------------------------
+	{Name: "http_request_flood", Category: CategoryBruteForce},
 	{Name: "mail_account_compromised", Category: CategoryBruteForce},
 	{Name: "mail_account_spray", Category: CategoryBruteForce},
 	{Name: "mail_bruteforce", Category: CategoryBruteForce},

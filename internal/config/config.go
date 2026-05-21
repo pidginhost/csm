@@ -159,6 +159,15 @@ type Config struct {
 		// paced attackers that spread denies across hours without
 		// changing the trip count.
 		ModSecEscalationWindowMin int `yaml:"modsec_escalation_window_min"`
+
+		// HTTPFloodThreshold is the minimum requests per http_flood_window_min
+		// from one source IP that emits http_request_flood. 0 (default) disables
+		// the detector. Operators should sample baseline traffic before setting
+		// a nonzero value.
+		HTTPFloodThreshold int `yaml:"http_flood_threshold"`
+		// HTTPFloodWindowMin is the rate window in minutes for HTTPFloodThreshold
+		// counting. Default 5.
+		HTTPFloodWindowMin int `yaml:"http_flood_window_min"`
 	} `yaml:"thresholds" hotreload:"safe"`
 
 	InfraIPs []string `yaml:"infra_ips" hotreload:"restart"`
@@ -994,6 +1003,11 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	if cfg.Thresholds.ModSecEscalationWindowMin == 0 {
 		cfg.Thresholds.ModSecEscalationWindowMin = 10
 	}
+	if cfg.Thresholds.HTTPFloodWindowMin <= 0 {
+		cfg.Thresholds.HTTPFloodWindowMin = 5
+	}
+	// HTTPFloodThreshold has no nonzero default: 0 means disabled and
+	// that is the shipped behavior.
 	if cfg.Thresholds.SMTPBruteForceThreshold == 0 {
 		cfg.Thresholds.SMTPBruteForceThreshold = 5
 	}
