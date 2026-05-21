@@ -364,6 +364,7 @@ func (d *Daemon) Run() error {
 		AccessLogPaths:      d.cfg.WebServer.AccessLogs,
 		ErrorLogPaths:       d.cfg.WebServer.ErrorLogs,
 		ModSecAuditLogPaths: d.cfg.WebServer.ModSecAudits,
+		DomlogGlobs:         d.cfg.WebServer.DomlogGlobs,
 	})
 
 	// Log detected platform as a structured record. In text mode this

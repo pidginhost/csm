@@ -586,6 +586,11 @@ type Config struct {
 		// the connecting IP is not in this list, XFF is ignored and
 		// RemoteIP is used as-is.
 		TrustedProxies []string `yaml:"trusted_proxies"` // IP/CIDR sources allowed to supply X-Forwarded-For
+		// DomlogGlobs overrides the auto-detected per-vhost access-log glob
+		// patterns. When set, the platform default for the detected panel/OS
+		// is discarded and only these patterns are used. Leave empty to use
+		// the auto-detected globs.
+		DomlogGlobs []string `yaml:"domlog_globs"` // per-vhost access-log globs
 	} `yaml:"web_server" hotreload:"restart"`
 
 	// AccountRoots lets operators point the account-scan based checks at

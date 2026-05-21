@@ -10,6 +10,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -127,16 +128,26 @@ func scanDomlogs(ctx context.Context, infraIPs []string, maxFiles int, wpLogin, 
 		return 0
 	}
 
+	globs := platform.Detect().DomlogGlobs
 	var domlogs []string
-	for _, pattern := range []string{
-		"/home/*/access-logs/*-ssl_log",
-		"/home/*/access-logs/*_log",
-	} {
+	for _, pattern := range globs {
 		if err := ctx.Err(); err != nil {
 			return 0
 		}
 		matches, _ := osFS.Glob(pattern)
 		domlogs = append(domlogs, matches...)
+	}
+
+	// Exclude central access logs -- they are scanned separately by
+	// CheckWPBruteForce so counting them here would double-count traffic.
+	// Go's filepath.Glob has no negation, so we filter after expansion.
+	excluded := map[string]bool{
+		"/var/log/apache2/access.log":     true,
+		"/var/log/apache2/access_log":     true,
+		"/var/log/httpd/access.log":       true,
+		"/var/log/httpd/access_log":       true,
+		"/var/log/nginx/access.log":       true,
+		"/usr/local/lsws/logs/access.log": true,
 	}
 
 	type domlogEntry struct {
@@ -152,7 +163,7 @@ func scanDomlogs(ctx context.Context, infraIPs []string, maxFiles int, wpLogin, 
 			return 0
 		}
 
-		// Resolve symlinks first - cPanel often symlinks SSL and non-SSL
+		// Resolve symlinks first -- cPanel often symlinks SSL and non-SSL
 		// logs to the same backing file, so we dedupe on the real path.
 		real, err := filepath.EvalSymlinks(dl)
 		if err != nil {
@@ -162,6 +173,10 @@ func scanDomlogs(ctx context.Context, infraIPs []string, maxFiles int, wpLogin, 
 			continue
 		}
 		seen[real] = true
+
+		if excluded[real] {
+			continue
+		}
 
 		// Inactive sites add no signal; filter before the cap so they
 		// cannot crowd active sites out of the budget.

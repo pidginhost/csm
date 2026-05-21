@@ -194,3 +194,91 @@ func TestApplyOverrides_NilWebServerLeavesAutoDetected(t *testing.T) {
 		t.Errorf("nil WebServer override should preserve auto-detected apache, got %q", overridden.WebServer)
 	}
 }
+
+func TestPopulatePaths_DomlogGlobs(t *testing.T) {
+	cases := []struct {
+		name string
+		info Info
+		want []string
+	}{
+		{
+			name: "cpanel",
+			info: Info{OS: OSCloudLinux, Panel: PanelCPanel, WebServer: WSApache},
+			want: []string{
+				"/home/*/access-logs/*-ssl_log",
+				"/home/*/access-logs/*_log",
+			},
+		},
+		{
+			name: "plesk",
+			info: Info{OS: OSDebian, Panel: PanelPlesk, WebServer: WSApache},
+			want: []string{
+				"/var/www/vhosts/*/logs/access_ssl_log",
+				"/var/www/vhosts/*/logs/access_log",
+				"/var/www/vhosts/*/logs/proxy_access_ssl_log",
+			},
+		},
+		{
+			name: "directadmin",
+			info: Info{OS: OSAlma, Panel: PanelDA, WebServer: WSApache},
+			want: []string{"/var/log/httpd/domains/*.log"},
+		},
+		{
+			name: "bare apache debian",
+			info: Info{OS: OSDebian, Panel: PanelNone, WebServer: WSApache},
+			want: []string{
+				"/var/log/apache2/*-access.log",
+				"/var/log/apache2/*_access.log",
+			},
+		},
+		{
+			name: "bare apache rhel",
+			info: Info{OS: OSAlma, Panel: PanelNone, WebServer: WSApache},
+			want: []string{
+				"/var/log/httpd/*-access_log",
+				"/var/log/httpd/*_access_log",
+			},
+		},
+		{
+			name: "bare nginx",
+			info: Info{OS: OSDebian, Panel: PanelNone, WebServer: WSNginx},
+			want: []string{
+				"/var/log/nginx/*.access.log",
+				"/var/log/nginx/*-access.log",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			i := tc.info
+			populatePaths(&i)
+			if !equalStringSlices(i.DomlogGlobs, tc.want) {
+				t.Errorf("DomlogGlobs = %v, want %v", i.DomlogGlobs, tc.want)
+			}
+		})
+	}
+}
+
+func TestDomlogGlobs_OverrideReplaces(t *testing.T) {
+	base := Info{OS: OSCloudLinux, Panel: PanelCPanel, WebServer: WSApache}
+	populatePaths(&base)
+	got := applyOverrides(base, Overrides{
+		DomlogGlobs: []string{"/tmp/csm-test/*.log"},
+	})
+	want := []string{"/tmp/csm-test/*.log"}
+	if !equalStringSlices(got.DomlogGlobs, want) {
+		t.Errorf("DomlogGlobs = %v, want %v", got.DomlogGlobs, want)
+	}
+}
+
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

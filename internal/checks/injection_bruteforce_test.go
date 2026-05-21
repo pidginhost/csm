@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
 // countBruteForce is pure-go; exercise every branch with a synthetic
@@ -72,6 +73,9 @@ func TestCountBruteForceAllBranches(t *testing.T) {
 // scanDomlogs: dedupe symlinks, skip stale logs, respect file cap.
 
 func TestScanDomlogsDeduplicatesSymlinks(t *testing.T) {
+	platform.ResetForTest()
+	platform.SetOverrides(platform.Overrides{DomlogGlobs: []string{"/home/*/access-logs/*-ssl_log", "/home/*/access-logs/*_log"}})
+	t.Cleanup(platform.ResetForTest)
 	tmp := t.TempDir()
 	// Two log paths pointing at the same target via symlink.
 	target := filepath.Join(tmp, "real.log")
@@ -161,6 +165,9 @@ func TestScanDomlogsNoMatches(t *testing.T) {
 }
 
 func TestScanDomlogsFeedsAllCounters(t *testing.T) {
+	platform.ResetForTest()
+	platform.SetOverrides(platform.Overrides{DomlogGlobs: []string{"/home/*/access-logs/*-ssl_log", "/home/*/access-logs/*_log"}})
+	t.Cleanup(platform.ResetForTest)
 	tmp := t.TempDir()
 	log := filepath.Join(tmp, "access.log")
 	entries := []string{
@@ -221,6 +228,9 @@ func mustChtimes(t *testing.T, path string, when time.Time) {
 // list. Alphabetical match order can otherwise hide brute force directed at
 // late-alphabet domains on hosts with thousands of vhosts.
 func TestScanDomlogsSortsByMtimeDescBeforeCap(t *testing.T) {
+	platform.ResetForTest()
+	platform.SetOverrides(platform.Overrides{DomlogGlobs: []string{"/home/*/access-logs/*-ssl_log", "/home/*/access-logs/*_log"}})
+	t.Cleanup(platform.ResetForTest)
 	tmp := t.TempDir()
 	older := filepath.Join(tmp, "older.log")
 	middle := filepath.Join(tmp, "middle.log")
@@ -261,6 +271,9 @@ func TestScanDomlogsSortsByMtimeDescBeforeCap(t *testing.T) {
 // Stale logs are filtered before the cap budget applies, so they cannot
 // crowd out fresh logs that would otherwise be scanned.
 func TestScanDomlogsStaleDoesNotBurnCapBudget(t *testing.T) {
+	platform.ResetForTest()
+	platform.SetOverrides(platform.Overrides{DomlogGlobs: []string{"/home/*/access-logs/*-ssl_log", "/home/*/access-logs/*_log"}})
+	t.Cleanup(platform.ResetForTest)
 	tmp := t.TempDir()
 	stale := filepath.Join(tmp, "stale.log")
 	fresh := filepath.Join(tmp, "fresh.log")
@@ -331,6 +344,9 @@ func TestScanDomlogsHonorsCancelledContext(t *testing.T) {
 // CheckWPBruteForce routes cfg.Thresholds.DomlogMaxFiles into scanDomlogs.
 // Setting it to 1 must drop the older of two fresh logs.
 func TestCheckWPBruteForceRespectsDomlogMaxFiles(t *testing.T) {
+	platform.ResetForTest()
+	platform.SetOverrides(platform.Overrides{DomlogGlobs: []string{"/home/*/access-logs/*-ssl_log", "/home/*/access-logs/*_log"}})
+	t.Cleanup(platform.ResetForTest)
 	tmp := t.TempDir()
 	older := filepath.Join(tmp, "older.log")
 	newer := filepath.Join(tmp, "newer.log")
