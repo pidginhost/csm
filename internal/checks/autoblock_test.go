@@ -786,3 +786,57 @@ func TestAutoBlock_CredentialSprayIncidentKindIsNotFindingCheck(t *testing.T) {
 		t.Fatalf("credential_spray finding actions = %+v, want none", actions)
 	}
 }
+
+func TestAutoBlock_HTTPRequestFlood(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.StatePath = t.TempDir()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+
+	rb := &recordingIPBlocker{}
+	oldBlocker := fwBlocker
+	SetIPBlocker(rb)
+	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+
+	oldChallengeList := GetChallengeIPList()
+	SetChallengeIPList(nil)
+	t.Cleanup(func() { SetChallengeIPList(oldChallengeList) })
+
+	f := []alert.Finding{{
+		Check:    "http_request_flood",
+		Severity: alert.High,
+		SourceIP: "192.0.2.200",
+		Message:  "HTTP request flood from 192.0.2.200: 250 requests",
+	}}
+	AutoBlockIPs(cfg, f)
+	if len(rb.blocked) != 1 || rb.blocked[0] != "192.0.2.200" {
+		t.Fatalf("blocked=%v want [192.0.2.200]", rb.blocked)
+	}
+}
+
+func TestAutoBlock_HTTPUASpoof(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.StatePath = t.TempDir()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+
+	rb := &recordingIPBlocker{}
+	oldBlocker := fwBlocker
+	SetIPBlocker(rb)
+	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+
+	oldChallengeList := GetChallengeIPList()
+	SetChallengeIPList(nil)
+	t.Cleanup(func() { SetChallengeIPList(oldChallengeList) })
+
+	f := []alert.Finding{{
+		Check:    "http_ua_spoof",
+		Severity: alert.Critical,
+		SourceIP: "203.0.113.200",
+		Message:  "UA spoof",
+	}}
+	AutoBlockIPs(cfg, f)
+	if len(rb.blocked) != 1 || rb.blocked[0] != "203.0.113.200" {
+		t.Fatalf("blocked=%v want [203.0.113.200]", rb.blocked)
+	}
+}
