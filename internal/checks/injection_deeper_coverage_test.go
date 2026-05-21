@@ -10,6 +10,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -1044,6 +1045,15 @@ func TestMakeAccountBackdoorCheckDefunctDat(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCheckWPBruteForceGeneratesAllFindingTypes(t *testing.T) {
+	platform.ResetForTest()
+	t.Cleanup(platform.ResetForTest)
+	platform.SetOverrides(platform.Overrides{
+		DomlogGlobs: []string{
+			"/home/*/access-logs/*-ssl_log",
+			"/home/*/access-logs/*_log",
+		},
+	})
+
 	var lines []string
 	// 25 wp-login POSTs from 203.0.113.5
 	for i := 0; i < 25; i++ {
@@ -1123,6 +1133,12 @@ func TestCheckWPBruteForceCustomWindow(t *testing.T) {
 }
 
 func TestCheckWPBruteForceFallbackAccessLog(t *testing.T) {
+	platform.ResetForTest()
+	t.Cleanup(platform.ResetForTest)
+	platform.SetOverrides(platform.Overrides{
+		AccessLogPaths: []string{"/usr/local/apache/logs/access_log"},
+	})
+
 	// No domlogs, but the central access_log has data
 	var lines []string
 	for i := 0; i < 25; i++ {
