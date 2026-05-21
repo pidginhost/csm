@@ -37,6 +37,18 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Thresholds.DeepScanIntervalMin != 60 {
 		t.Errorf("deep_scan_interval = %d, want 60", cfg.Thresholds.DeepScanIntervalMin)
 	}
+	if cfg.Thresholds.DomlogMaxFiles != 500 {
+		t.Errorf("domlog_max_files = %d, want 500", cfg.Thresholds.DomlogMaxFiles)
+	}
+	if cfg.Thresholds.HTTPFloodWindowMin != 5 {
+		t.Errorf("http_flood_window_min = %d, want 5", cfg.Thresholds.HTTPFloodWindowMin)
+	}
+	if cfg.Thresholds.HTTPFloodThreshold != 0 {
+		t.Errorf("http_flood_threshold = %d, want 0 (disabled by default)", cfg.Thresholds.HTTPFloodThreshold)
+	}
+	if cfg.Thresholds.HTTPUASpoofThreshold != 30 {
+		t.Errorf("http_ua_spoof_threshold = %d, want 30", cfg.Thresholds.HTTPUASpoofThreshold)
+	}
 	if cfg.Alerts.MaxPerHour != 30 {
 		t.Errorf("max_per_hour = %d, want 30", cfg.Alerts.MaxPerHour)
 	}
@@ -1043,5 +1055,21 @@ func TestConfig_BPFEnforcementDefaultsAllOff(t *testing.T) {
 	}
 	if cfg.BPFEnforcement.DirectSMTPEgress {
 		t.Errorf("default DirectSMTPEgress must be false")
+	}
+}
+
+func TestBotVerifyEnabled_DefaultTrue(t *testing.T) {
+	cfg := &Config{}
+	if !cfg.BotVerifyEnabled() {
+		t.Error("default must be true")
+	}
+}
+
+func TestBotVerifyEnabled_ExplicitFalse(t *testing.T) {
+	f := false
+	cfg := &Config{}
+	cfg.Reputation.BotVerifyEnabled = &f
+	if cfg.BotVerifyEnabled() {
+		t.Error("explicit false must be honored")
 	}
 }

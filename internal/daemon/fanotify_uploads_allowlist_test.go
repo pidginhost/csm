@@ -5,6 +5,7 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -210,5 +211,35 @@ func TestAnalyzeFile_WPOptimizeProbe_StillFiresOnWebshellContent(t *testing.T) {
 		}
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("expected Critical alert for webshell content under /uploads/wpo/")
+	}
+}
+
+func TestAnalyzeFile_PHPInUploadsIncompleteCommentStubStillWarns(t *testing.T) {
+	wpRoot := t.TempDir()
+	uploadsDir := filepath.Join(wpRoot, "wp-content", "uploads", "2026")
+	if err := os.MkdirAll(uploadsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(uploadsDir, "large.php")
+	body := "<?php //" + strings.Repeat("a", 70000) + "\n<?php echo 'reachable';"
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	fd := openRawFd(t, path)
+
+	ch := make(chan alert.Finding, 8)
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+	fm.analyzeFile(fileEvent{path: path, fd: fd})
+
+	select {
+	case a := <-ch:
+		if a.Check != "php_in_uploads_realtime" {
+			t.Errorf("Check = %q, want php_in_uploads_realtime", a.Check)
+		}
+		if a.Severity != alert.Warning {
+			t.Errorf("Severity = %v, want Warning", a.Severity)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("expected php_in_uploads_realtime warning for incomplete comment-only stub read")
 	}
 }

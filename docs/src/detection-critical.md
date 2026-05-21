@@ -41,6 +41,7 @@
 | Check | Description |
 |-------|-------------|
 | `wp_bruteforce` | WordPress login brute force (wp-login.php, xmlrpc.php) |
+| `http_ua_spoof` | IP claiming a search-engine bot UA (Googlebot, Bingbot, Applebot) that fails reverse-DNS verification, or exceeding the per-IP spoof threshold for scripting/headless/empty UAs when those opt-in flags are enabled |
 | `ftp_logins` | FTP access patterns and failed auth |
 | `webmail_logins` | Roundcube/Horde access anomalies |
 | `api_auth_failures` | API authentication failure patterns |
@@ -90,7 +91,7 @@ Runs on every supported platform unless noted below. The daemon auto-detects OS 
 **cPanel-only** (skipped on plain Ubuntu/AlmaLinux):
 
 - `api_tokens`, `whm_access`, `cpanel_logins`, `cpanel_filemanager` -- read WHM API and cPanel session logs
-- `wp_bruteforce` -- iterates `/home/*/public_html/*/wp-login.php` and per-domain access logs
+- `wp_bruteforce` -- iterates `/home/*/public_html/*/wp-login.php` and per-domain access logs. The domlog pass ranks recent logs first and honors `thresholds.domlog_max_files`.
 - `webmail_logins` -- parses cPanel Roundcube/Horde logs
 - `mail_queue`, `mail_per_account` -- read Exim queue and `/var/log/exim_mainlog`
 

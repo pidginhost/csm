@@ -167,6 +167,19 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 			if LooksLikeWPOptimizeProbeByPath(path) {
 				continue
 			}
+			// Content-shape gate. Plugins that write transient PHP
+			// state files into upload trees (BackWPup writes
+			// "<?php //<json>" working files and "<?php\n//path..."
+			// folder caches) produced standing FPs every backup run.
+			// The recogniser accepts only files whose reachable code
+			// is whitespace+comments, or that terminate with
+			// die/exit/__halt_compiler before any statement. Both
+			// shapes are inert under PHP execution semantics; a
+			// payload dropped under a "known-safe" filename fails the
+			// gate the moment it includes any non-comment statement.
+			if IsBenignPHPStub(path) {
+				continue
+			}
 			severity = scorePHPUploadSeverity(path)
 			check = "new_php_in_uploads"
 			message = fmt.Sprintf("New PHP file in uploads: %s", path)

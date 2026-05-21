@@ -59,6 +59,10 @@ type Info struct {
 	ErrorLogPaths       []string
 	ModSecAuditLogPaths []string
 
+	// DomlogGlobs is the list of glob patterns used to enumerate
+	// per-vhost access logs. Populated per panel + OS in populatePaths.
+	DomlogGlobs []string
+
 	// Binary paths useful for reload/control.
 	ApacheBinary string
 	NginxBinary  string
@@ -106,6 +110,7 @@ type Overrides struct {
 	AccessLogPaths      []string
 	ErrorLogPaths       []string
 	ModSecAuditLogPaths []string
+	DomlogGlobs         []string
 	ApacheConfigDir     string
 	NginxConfigDir      string
 }
@@ -186,7 +191,7 @@ func applyOverrides(info Info, o Overrides) Info {
 		info.Panel = *o.Panel
 	}
 	if o.WebServer != nil {
-		// Web server type changed → rebuild paths from scratch unless the
+		// Web server type changed -- rebuild paths from scratch unless the
 		// operator also supplied path overrides below. Same nil-vs-pointer
 		// semantics as Panel: a pointer at WSNone forces "no web server"
 		// instead of being silently ignored.
@@ -196,6 +201,13 @@ func applyOverrides(info Info, o Overrides) Info {
 		info.ModSecAuditLogPaths = nil
 		populatePaths(&info)
 	}
+	// When Panel or WebServer changed, recompute DomlogGlobs so the globs
+	// stay consistent with the new panel/web-server combination. Explicit
+	// DomlogGlobs override below wins over this recompute.
+	if o.Panel != nil || o.WebServer != nil {
+		info.DomlogGlobs = nil
+		populateDomlogGlobs(&info)
+	}
 	if len(o.AccessLogPaths) > 0 {
 		info.AccessLogPaths = append([]string(nil), o.AccessLogPaths...)
 	}
@@ -204,6 +216,9 @@ func applyOverrides(info Info, o Overrides) Info {
 	}
 	if len(o.ModSecAuditLogPaths) > 0 {
 		info.ModSecAuditLogPaths = append([]string(nil), o.ModSecAuditLogPaths...)
+	}
+	if len(o.DomlogGlobs) > 0 {
+		info.DomlogGlobs = append([]string(nil), o.DomlogGlobs...)
 	}
 	if o.ApacheConfigDir != "" {
 		info.ApacheConfigDir = o.ApacheConfigDir
@@ -419,6 +434,51 @@ func populatePaths(i *Info) {
 			"/usr/local/apache/logs/modsec_audit.log",
 			"/var/log/modsec_audit.log",
 		}, i.ModSecAuditLogPaths...)
+	}
+
+	populateDomlogGlobs(i)
+}
+
+// populateDomlogGlobs sets DomlogGlobs based on panel type and, for
+// bare-metal installs, the web server + OS family. Panel takes
+// precedence over web server because panel-specific layouts write
+// per-vhost logs to panel-owned directories regardless of what web
+// server is running underneath.
+func populateDomlogGlobs(i *Info) {
+	switch i.Panel {
+	case PanelCPanel:
+		i.DomlogGlobs = []string{
+			"/home/*/access-logs/*-ssl_log",
+			"/home/*/access-logs/*_log",
+		}
+	case PanelPlesk:
+		i.DomlogGlobs = []string{
+			"/var/www/vhosts/*/logs/access_ssl_log",
+			"/var/www/vhosts/*/logs/access_log",
+			"/var/www/vhosts/*/logs/proxy_access_ssl_log",
+		}
+	case PanelDA:
+		i.DomlogGlobs = []string{"/var/log/httpd/domains/*.log"}
+	default:
+		switch i.WebServer {
+		case WSApache:
+			if i.IsDebianFamily() {
+				i.DomlogGlobs = []string{
+					"/var/log/apache2/*-access.log",
+					"/var/log/apache2/*_access.log",
+				}
+			} else if i.IsRHELFamily() {
+				i.DomlogGlobs = []string{
+					"/var/log/httpd/*-access_log",
+					"/var/log/httpd/*_access_log",
+				}
+			}
+		case WSNginx:
+			i.DomlogGlobs = []string{
+				"/var/log/nginx/*.access.log",
+				"/var/log/nginx/*-access.log",
+			}
+		}
 	}
 }
 

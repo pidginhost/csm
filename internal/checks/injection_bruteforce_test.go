@@ -1,14 +1,18 @@
 package checks
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/platform"
 )
 
-// countBruteForce is pure-go — exercise every branch with a synthetic
+// countBruteForce is pure-go; exercise every branch with a synthetic
 // combined-log corpus.
 
 func TestCountBruteForceAllBranches(t *testing.T) {
@@ -66,9 +70,12 @@ func TestCountBruteForceAllBranches(t *testing.T) {
 	}
 }
 
-// scanDomlogs — dedupe symlinks, skip stale logs, respect file cap.
+// scanDomlogs: dedupe symlinks, skip stale logs, respect file cap.
 
 func TestScanDomlogsDeduplicatesSymlinks(t *testing.T) {
+	platform.ResetForTest()
+	platform.SetOverrides(platform.Overrides{DomlogGlobs: []string{"/home/*/access-logs/*-ssl_log", "/home/*/access-logs/*_log"}})
+	t.Cleanup(platform.ResetForTest)
 	tmp := t.TempDir()
 	// Two log paths pointing at the same target via symlink.
 	target := filepath.Join(tmp, "real.log")
@@ -89,7 +96,7 @@ func TestScanDomlogsDeduplicatesSymlinks(t *testing.T) {
 	})
 
 	wpLogin := map[string]int{}
-	scanned := scanDomlogs(nil, wpLogin, map[string]int{}, map[string]int{})
+	scanned := scanDomlogs(context.Background(), nil, 0, wpLogin, map[string]int{}, map[string]int{})
 	if scanned != 1 {
 		t.Errorf("expected 1 file scanned (symlink deduped), got %d", scanned)
 	}
@@ -117,7 +124,7 @@ func TestScanDomlogsSkipsStaleLogs(t *testing.T) {
 	})
 
 	wpLogin := map[string]int{}
-	scanned := scanDomlogs(nil, wpLogin, map[string]int{}, map[string]int{})
+	scanned := scanDomlogs(context.Background(), nil, 0, wpLogin, map[string]int{}, map[string]int{})
 	if scanned != 0 {
 		t.Errorf("stale log should be skipped, got scanned=%d", scanned)
 	}
@@ -141,7 +148,7 @@ func TestScanDomlogsBrokenSymlinkSkipped(t *testing.T) {
 	})
 
 	wpLogin := map[string]int{}
-	scanned := scanDomlogs(nil, wpLogin, map[string]int{}, map[string]int{})
+	scanned := scanDomlogs(context.Background(), nil, 0, wpLogin, map[string]int{}, map[string]int{})
 	if scanned != 0 {
 		t.Errorf("broken symlink should yield 0 scanned, got %d", scanned)
 	}
@@ -152,12 +159,15 @@ func TestScanDomlogsNoMatches(t *testing.T) {
 		glob: func(string) ([]string, error) { return nil, nil },
 	})
 	wpLogin := map[string]int{}
-	if scanned := scanDomlogs(nil, wpLogin, map[string]int{}, map[string]int{}); scanned != 0 {
+	if scanned := scanDomlogs(context.Background(), nil, 0, wpLogin, map[string]int{}, map[string]int{}); scanned != 0 {
 		t.Errorf("no matches should yield 0 scanned, got %d", scanned)
 	}
 }
 
 func TestScanDomlogsFeedsAllCounters(t *testing.T) {
+	platform.ResetForTest()
+	platform.SetOverrides(platform.Overrides{DomlogGlobs: []string{"/home/*/access-logs/*-ssl_log", "/home/*/access-logs/*_log"}})
+	t.Cleanup(platform.ResetForTest)
 	tmp := t.TempDir()
 	log := filepath.Join(tmp, "access.log")
 	entries := []string{
@@ -182,7 +192,7 @@ func TestScanDomlogsFeedsAllCounters(t *testing.T) {
 	wpLogin := map[string]int{}
 	xmlrpc := map[string]int{}
 	userEnum := map[string]int{}
-	scanned := scanDomlogs(nil, wpLogin, xmlrpc, userEnum)
+	scanned := scanDomlogs(context.Background(), nil, 0, wpLogin, xmlrpc, userEnum)
 	if scanned != 1 {
 		t.Fatalf("expected 1 file scanned, got %d", scanned)
 	}
@@ -194,5 +204,201 @@ func TestScanDomlogsFeedsAllCounters(t *testing.T) {
 	}
 	if userEnum["203.0.113.9"] != 1 {
 		t.Errorf("expected 1 author-enum hit, got %d", userEnum["203.0.113.9"])
+	}
+}
+
+// writeWPLoginLine drops a single POST /wp-login.php Combined-Log line for the
+// given source IP into path. Used by the mtime/cap/ctx test cases.
+func writeWPLoginLine(t *testing.T, path, srcIP string) {
+	t.Helper()
+	line := srcIP + ` - - [14/Apr/2026:10:00:00 +0000] "POST /wp-login.php HTTP/1.1" 401 0 "-" "-"` + "\n"
+	if err := os.WriteFile(path, []byte(line), 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustChtimes(t *testing.T, path string, when time.Time) {
+	t.Helper()
+	if err := os.Chtimes(path, when, when); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Most-recently-active sites must be preferred when the file cap chops the
+// list. Alphabetical match order can otherwise hide brute force directed at
+// late-alphabet domains on hosts with thousands of vhosts.
+func TestScanDomlogsSortsByMtimeDescBeforeCap(t *testing.T) {
+	platform.ResetForTest()
+	platform.SetOverrides(platform.Overrides{DomlogGlobs: []string{"/home/*/access-logs/*-ssl_log", "/home/*/access-logs/*_log"}})
+	t.Cleanup(platform.ResetForTest)
+	tmp := t.TempDir()
+	older := filepath.Join(tmp, "older.log")
+	middle := filepath.Join(tmp, "middle.log")
+	newer := filepath.Join(tmp, "newer.log")
+	writeWPLoginLine(t, older, "203.0.113.10")
+	writeWPLoginLine(t, middle, "203.0.113.20")
+	writeWPLoginLine(t, newer, "203.0.113.30")
+
+	now := time.Now()
+	mustChtimes(t, older, now.Add(-20*time.Minute))
+	mustChtimes(t, middle, now.Add(-10*time.Minute))
+	mustChtimes(t, newer, now.Add(-1*time.Minute))
+
+	withMockOS(t, &mockOS{
+		glob: func(string) ([]string, error) {
+			return []string{older, middle, newer}, nil
+		},
+		stat: os.Stat,
+		open: os.Open,
+	})
+
+	wpLogin := map[string]int{}
+	scanned := scanDomlogs(context.Background(), nil, 2, wpLogin, map[string]int{}, map[string]int{})
+	if scanned != 2 {
+		t.Fatalf("cap=2 expected 2 files scanned, got %d", scanned)
+	}
+	if wpLogin["203.0.113.30"] != 1 {
+		t.Errorf("newest log must be scanned under mtime-desc cap")
+	}
+	if wpLogin["203.0.113.20"] != 1 {
+		t.Errorf("second-newest log must be scanned under mtime-desc cap")
+	}
+	if wpLogin["203.0.113.10"] != 0 {
+		t.Errorf("oldest log must be dropped by cap; got %d", wpLogin["203.0.113.10"])
+	}
+}
+
+// Stale logs are filtered before the cap budget applies, so they cannot
+// crowd out fresh logs that would otherwise be scanned.
+func TestScanDomlogsStaleDoesNotBurnCapBudget(t *testing.T) {
+	platform.ResetForTest()
+	platform.SetOverrides(platform.Overrides{DomlogGlobs: []string{"/home/*/access-logs/*-ssl_log", "/home/*/access-logs/*_log"}})
+	t.Cleanup(platform.ResetForTest)
+	tmp := t.TempDir()
+	stale := filepath.Join(tmp, "stale.log")
+	fresh := filepath.Join(tmp, "fresh.log")
+	writeWPLoginLine(t, stale, "203.0.113.40")
+	writeWPLoginLine(t, fresh, "203.0.113.41")
+
+	now := time.Now()
+	mustChtimes(t, stale, now.Add(-2*time.Hour))
+	mustChtimes(t, fresh, now.Add(-1*time.Minute))
+
+	withMockOS(t, &mockOS{
+		glob: func(string) ([]string, error) {
+			return []string{stale, fresh}, nil
+		},
+		stat: os.Stat,
+		open: os.Open,
+	})
+
+	wpLogin := map[string]int{}
+	scanned := scanDomlogs(context.Background(), nil, 1, wpLogin, map[string]int{}, map[string]int{})
+	if scanned != 1 {
+		t.Fatalf("cap=1 with one fresh + one stale: expected scanned=1, got %d", scanned)
+	}
+	if wpLogin["203.0.113.41"] != 1 {
+		t.Errorf("fresh log must contribute; got %d", wpLogin["203.0.113.41"])
+	}
+	if wpLogin["203.0.113.40"] != 0 {
+		t.Errorf("stale log must not contribute; got %d", wpLogin["203.0.113.40"])
+	}
+}
+
+// A cancelled context short-circuits discovery so shutdown does not have to
+// wait for glob/stat/tail work over thousands of remaining files.
+func TestScanDomlogsHonorsCancelledContext(t *testing.T) {
+	globCalled := false
+
+	withMockOS(t, &mockOS{
+		glob: func(string) ([]string, error) {
+			globCalled = true
+			return []string{"/must/not/be/scanned"}, nil
+		},
+		stat: func(string) (os.FileInfo, error) {
+			t.Fatal("cancelled context must not stat domlogs")
+			return nil, os.ErrNotExist
+		},
+		open: func(string) (*os.File, error) {
+			t.Fatal("cancelled context must not open domlogs")
+			return nil, os.ErrNotExist
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	wpLogin := map[string]int{}
+	scanned := scanDomlogs(ctx, nil, 0, wpLogin, map[string]int{}, map[string]int{})
+	if scanned != 0 {
+		t.Errorf("cancelled context must short-circuit; got scanned=%d", scanned)
+	}
+	if globCalled {
+		t.Errorf("cancelled context must skip glob discovery")
+	}
+	if len(wpLogin) != 0 {
+		t.Errorf("cancelled context must produce no hits; got %v", wpLogin)
+	}
+}
+
+// CheckWPBruteForce routes cfg.Thresholds.DomlogMaxFiles into scanDomlogs.
+// Setting it to 1 must drop the older of two fresh logs.
+func TestCheckWPBruteForceRespectsDomlogMaxFiles(t *testing.T) {
+	platform.ResetForTest()
+	platform.SetOverrides(platform.Overrides{DomlogGlobs: []string{"/home/*/access-logs/*-ssl_log", "/home/*/access-logs/*_log"}})
+	t.Cleanup(platform.ResetForTest)
+	tmp := t.TempDir()
+	older := filepath.Join(tmp, "older.log")
+	newer := filepath.Join(tmp, "newer.log")
+	// 25 wp-login POSTs in each -- enough to cross wpLoginThreshold (20).
+	var older25, newer25 []string
+	for i := 0; i < 25; i++ {
+		older25 = append(older25, `203.0.113.60 - - [14/Apr/2026:10:00:00 +0000] "POST /wp-login.php HTTP/1.1" 401 0 "-" "-"`)
+		newer25 = append(newer25, `203.0.113.61 - - [14/Apr/2026:10:00:00 +0000] "POST /wp-login.php HTTP/1.1" 401 0 "-" "-"`)
+	}
+	if err := os.WriteFile(older, []byte(strings.Join(older25, "\n")+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newer, []byte(strings.Join(newer25, "\n")+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now()
+	mustChtimes(t, older, now.Add(-10*time.Minute))
+	mustChtimes(t, newer, now.Add(-1*time.Minute))
+
+	withMockOS(t, &mockOS{
+		glob: func(string) ([]string, error) {
+			return []string{older, newer}, nil
+		},
+		stat: os.Stat,
+		open: func(name string) (*os.File, error) {
+			// Block central access_log fallback so the assertion only
+			// reflects the domlog path.
+			if strings.Contains(name, "/apache/") || strings.Contains(name, "apache2") {
+				return nil, os.ErrNotExist
+			}
+			return os.Open(name)
+		},
+	})
+
+	cfg := &config.Config{}
+	cfg.Thresholds.DomlogMaxFiles = 1
+
+	findings := CheckWPBruteForce(context.Background(), cfg, nil)
+	var ips []string
+	for _, f := range findings {
+		if f.Check == "wp_login_bruteforce" {
+			ips = append(ips, f.Message)
+		}
+	}
+	if len(ips) != 1 {
+		t.Fatalf("expected exactly one wp_login_bruteforce finding under DomlogMaxFiles=1, got %d (%v)", len(ips), ips)
+	}
+	if !strings.Contains(ips[0], "203.0.113.61") {
+		t.Errorf("DomlogMaxFiles=1 must pick the newer log; got %q", ips[0])
+	}
+	if strings.Contains(ips[0], "203.0.113.60") {
+		t.Errorf("older log must be dropped by cap; got %q", ips[0])
 	}
 }

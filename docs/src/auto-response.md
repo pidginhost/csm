@@ -81,6 +81,31 @@ CSM fails open on hook errors (timeout, non-2xx, malformed body): the block cont
 
 `firewall.dyndns_hosts` (resolved every 5 min into the `infra_ips` set) protects management hostnames from auto-block. If a hostname stops resolving, the daemon now emits an `infra_ips_unresolvable` Warning finding and keeps the **last known** addresses in the infra set during a grace period (default 10 min) instead of silently dropping protection. The finding auto-clears when resolution recovers.
 
+## Findings that always trigger IP block
+
+When `auto_response.block_ips: true`, the source IP is blocked for every finding in this list regardless of other configuration. The dry-run gate still applies if `dry_run: true`.
+
+| Finding | Description |
+|---------|-------------|
+| `wp_login_bruteforce` | WordPress login flood via wp-login.php |
+| `xmlrpc_abuse` | XML-RPC endpoint flood |
+| `http_request_flood` | Per-IP HTTP request volume exceeds threshold (disabled by default; enable by setting `thresholds.http_flood_threshold > 0`) |
+| `http_ua_spoof` | IP spoofing a search-engine bot UA or exceeding the UA anomaly threshold (periodic; see configuration.md for opt-in flags) |
+| `ftp_bruteforce` | FTP authentication flood |
+| `smtp_bruteforce` | SMTP authentication flood |
+| `smtp_probe_abuse` | Raw SMTP connect-rate flood before AUTH |
+| `mail_bruteforce` | IMAP/POP3/ManageSieve authentication flood |
+| `mail_account_compromised` | Successful login from an IP that just failed auth on the same mailbox |
+| `admin_panel_bruteforce` | phpMyAdmin or Joomla admin POST flood |
+| `ssh_login_unknown_ip` | SSH login from an IP with no prior history |
+| `ssh_login_realtime` | SSH login anomaly detected by realtime watcher |
+| `c2_connection` | Outbound connection to a known C2 server |
+| `ip_reputation` | IP flagged by AbuseIPDB / rspamd / upstream threat-intel |
+| `local_threat_score` | IP crosses the aggregated internal attack-history threshold |
+| `modsec_block_escalation` | ModSecurity deny escalation |
+| `email_compromised_account` | Email account compromise indicator |
+| `email_cloud_relay_abuse` | Cloud relay abuse |
+
 ## Safety Guards
 
 - Never kills root processes, system daemons, or cPanel services

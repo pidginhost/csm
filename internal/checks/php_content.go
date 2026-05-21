@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"path/filepath"
@@ -602,4 +603,225 @@ func containsAny(strs []string, substrs ...string) bool {
 		}
 	}
 	return false
+}
+
+// benignPHPStubMaxScan caps how many bytes of a candidate stub the
+// recogniser will read. Stub files in the wild (BackWPup folder.php
+// caches at ~160 KB, WP "silence is golden" index.php at ~30 B, plugin
+// 404-stub headers under 1 KB) fit comfortably under this bound;
+// anything larger must surface for normal alerting rather than be
+// accepted on faith.
+const benignPHPStubMaxScan = 4 * 1024 * 1024
+
+// IsBenignPHPStub reports whether the reachable code region of a PHP
+// file consists only of whitespace and comments, or terminates with a
+// no-argument die / exit / __halt_compiler before any other statement.
+// Files matching either shape cannot execute attacker-controlled code
+// via a web request: PHP either runs to EOF emitting nothing, or hits
+// the terminator and stops with the remaining bytes unreachable.
+//
+// The recogniser is content-shape only -- it does not look at the path,
+// filename, parent directory, or whether a plugin is installed. An
+// attacker cannot bypass it by naming a payload to mimic a known-plugin
+// file because the gate fails the moment any executable statement
+// appears before a terminator. Conversely a legitimate plugin that
+// writes a stub-shaped working file (BackWPup writes
+// "<?php //<json>" for job state and "<?php\n//path1\n//path2..." for
+// folder caches) is recognised regardless of where it puts the file.
+//
+// Other detectors -- signature scans, YARA, suspicious filename, the
+// webshell name list -- still run on the file in their own pipelines.
+// Only the path-only "anomalous PHP location" warning is suppressed
+// for files that this recogniser accepts.
+func IsBenignPHPStub(path string) bool {
+	f, err := osFS.Open(path)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+	buf := make([]byte, benignPHPStubMaxScan)
+	n, _ := f.Read(buf)
+	if n == 0 {
+		return false
+	}
+	info, err := f.Stat()
+	complete := err == nil && info.Size() <= int64(n)
+	return IsBenignPHPStubBytesComplete(buf[:n], complete)
+}
+
+// IsBenignPHPStubBytes is the buffer-only variant. The realtime fanotify
+// path uses it on the bytes it already read from the file descriptor;
+// IsBenignPHPStub provides the path-based entry point for the polled
+// fileindex scan. Both rely on the same parser so realtime and scheduled
+// scans agree on which files are stubs.
+//
+// The parser tokenises the leading region of the buffer:
+//
+//   - Optional UTF-8 BOM and whitespace, then the literal "<?php" opener.
+//     The short-echo opener "<?=" is rejected because it emits output.
+//     A "<?phpfoo" run-together opener is rejected because PHP requires
+//     whitespace (or EOF) after the tag.
+//   - Repeatedly accept whitespace, line comments ("//..." or "#..." up to
+//     newline or "?>"), and balanced block comments ("/* ... */"). A "/*"
+//     without a matching "*/" inside the scanned window is rejected -- we
+//     cannot prove the rest of the file is comment.
+//   - Accept the no-argument forms of die, exit, and __halt_compiler as
+//     terminators. Once seen, the rest of the buffer is treated as
+//     unreachable.
+//   - Reject any closing "?>" tag (would allow HTML escape and a later
+//     "<?php" re-entry that this gate does not analyse).
+//   - Reject any other identifier (return, if, system, eval, function,
+//     class, ...) and any stray punctuation ("$", "(", "=", ";", ...).
+//     Those are statements we cannot prove benign.
+//   - If the loop reaches EOF in a complete buffer having only seen
+//     whitespace and comments, accept: PHP outputs nothing and executes
+//     nothing.
+func IsBenignPHPStubBytes(buf []byte) bool {
+	return IsBenignPHPStubBytesComplete(buf, true)
+}
+
+// IsBenignPHPStubBytesComplete is like IsBenignPHPStubBytes, but complete
+// tells the parser whether buf contains the entire file. Comment-only stubs
+// require a complete buffer; no-argument terminators do not, because bytes
+// after them are unreachable to PHP.
+func IsBenignPHPStubBytesComplete(buf []byte, complete bool) bool {
+	if len(buf) >= 3 && buf[0] == 0xEF && buf[1] == 0xBB && buf[2] == 0xBF {
+		buf = buf[3:]
+	}
+	i := 0
+	for i < len(buf) && isPHPSpace(buf[i]) {
+		i++
+	}
+	const opener = "<?php"
+	if !bytes.HasPrefix(buf[i:], []byte(opener)) {
+		return false
+	}
+	i += len(opener)
+	if i < len(buf) && !isPHPSpace(buf[i]) {
+		return false
+	}
+	for i < len(buf) {
+		c := buf[i]
+		if isPHPSpace(c) {
+			i++
+			continue
+		}
+		if c == '#' {
+			i = skipPHPLineComment(buf, i)
+			continue
+		}
+		if c == '/' && i+1 < len(buf) && buf[i+1] == '/' {
+			i = skipPHPLineComment(buf, i)
+			continue
+		}
+		if c == '/' && i+1 < len(buf) && buf[i+1] == '*' {
+			i += 2
+			end := bytes.Index(buf[i:], []byte("*/"))
+			if end < 0 {
+				return false
+			}
+			i += end + 2
+			continue
+		}
+		if c == '?' && i+1 < len(buf) && buf[i+1] == '>' {
+			return false
+		}
+		if isIdentStart(c) {
+			start := i
+			for i < len(buf) && isIdentCont(buf[i]) {
+				i++
+			}
+			word := strings.ToLower(string(buf[start:i]))
+			return isNoArgPHPTerminator(buf, i, word, complete)
+		}
+		return false
+	}
+	return complete
+}
+
+func isPHPSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f'
+}
+
+func isIdentStart(c byte) bool {
+	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+func isIdentCont(c byte) bool {
+	return isIdentStart(c) || (c >= '0' && c <= '9')
+}
+
+func skipPHPSpace(buf []byte, i int) int {
+	for i < len(buf) && isPHPSpace(buf[i]) {
+		i++
+	}
+	return i
+}
+
+func skipPHPLineComment(buf []byte, i int) int {
+	for i < len(buf) {
+		if buf[i] == '\n' {
+			return i
+		}
+		if buf[i] == '?' && i+1 < len(buf) && buf[i+1] == '>' {
+			return i
+		}
+		i++
+	}
+	return i
+}
+
+func isNoArgPHPTerminator(buf []byte, i int, word string, complete bool) bool {
+	if word != "die" && word != "exit" && word != "__halt_compiler" {
+		return false
+	}
+	i = skipPHPSpace(buf, i)
+
+	if word == "__halt_compiler" {
+		next, ok := consumeEmptyPHPParens(buf, i)
+		if !ok {
+			return false
+		}
+		return phpTerminatorStatementEnds(buf, next, complete)
+	}
+
+	if i >= len(buf) {
+		return complete
+	}
+	if buf[i] == ';' {
+		return true
+	}
+	if buf[i] == '?' && i+1 < len(buf) && buf[i+1] == '>' {
+		return true
+	}
+	if buf[i] != '(' {
+		return false
+	}
+	next, ok := consumeEmptyPHPParens(buf, i)
+	if !ok {
+		return false
+	}
+	return phpTerminatorStatementEnds(buf, next, complete)
+}
+
+func consumeEmptyPHPParens(buf []byte, i int) (int, bool) {
+	if i >= len(buf) || buf[i] != '(' {
+		return i, false
+	}
+	i = skipPHPSpace(buf, i+1)
+	if i >= len(buf) || buf[i] != ')' {
+		return i, false
+	}
+	return skipPHPSpace(buf, i+1), true
+}
+
+func phpTerminatorStatementEnds(buf []byte, i int, complete bool) bool {
+	i = skipPHPSpace(buf, i)
+	if i >= len(buf) {
+		return complete
+	}
+	if buf[i] == ';' {
+		return true
+	}
+	return buf[i] == '?' && i+1 < len(buf) && buf[i+1] == '>'
 }

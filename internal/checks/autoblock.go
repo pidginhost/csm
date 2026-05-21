@@ -112,6 +112,8 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	alwaysBlock := map[string]bool{
 		"wp_login_bruteforce":         true,
 		"xmlrpc_abuse":                true,
+		"http_request_flood":          true,
+		"http_ua_spoof":               true,
 		"ftp_bruteforce":              true,
 		"smtp_bruteforce":             true,
 		"smtp_probe_abuse":            true,

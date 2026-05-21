@@ -166,3 +166,13 @@ func TestFinding_BackwardCompat_ZeroValues(t *testing.T) {
 		t.Fatalf("zero-value Finding must keep php_relay fields empty: %+v", f)
 	}
 }
+
+func TestFindingKeyHTTPAbuseNewChecksUseStructuredSourceIP(t *testing.T) {
+	for _, check := range []string{"http_request_flood", "http_ua_spoof"} {
+		a := Finding{Check: check, SourceIP: "203.0.113.88", Message: "sample A"}
+		b := Finding{Check: check, SourceIP: "203.0.113.88", Message: "sample B"}
+		if a.Key() != b.Key() {
+			t.Fatalf("%s key changed with message text: %q vs %q", check, a.Key(), b.Key())
+		}
+	}
+}

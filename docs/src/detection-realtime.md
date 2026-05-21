@@ -156,6 +156,10 @@ Caveats:
   refinement could resolve the socket inode to a PID via `/proc/<pid>/fd`,
   but that is out of scope for Phase 1.
 
+## HTTP Flood and UA Spoof
+
+`http_request_flood` and `http_ua_spoof` are **periodic**, not real-time. They run inside the same `wp_bruteforce` scheduled check that scans per-vhost access logs every 10 minutes. A real-time inotify tailer would need to hold per-IP state across log rotations and is out of scope for the initial release (see the plan non-goals). For attack types where sub-minute response matters, the access-log inotify watcher already covers wp_login_bruteforce and xmlrpc_abuse; the periodic scan adds volume-based rate enforcement on top.
+
 ## Direct SMTP Egress
 
 Outbound connections to SMTP ports from non-MTA local processes

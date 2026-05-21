@@ -41,7 +41,7 @@ func TestScanDomlogsSkipsStaleFiles(t *testing.T) {
 		stat: os.Stat,
 	})
 
-	scanned := scanDomlogs(nil, wpLogin, xmlrpc, userEnum)
+	scanned := scanDomlogs(context.Background(), nil, 0, wpLogin, xmlrpc, userEnum)
 	if scanned != 0 {
 		t.Errorf("stale files should be skipped; got scanned=%d", scanned)
 	}
@@ -60,7 +60,7 @@ func TestScanDomlogsEvalSymlinksError(t *testing.T) {
 		},
 	})
 
-	scanned := scanDomlogs(nil, wpLogin, xmlrpc, userEnum)
+	scanned := scanDomlogs(context.Background(), nil, 0, wpLogin, xmlrpc, userEnum)
 	if scanned != 0 {
 		t.Errorf("EvalSymlinks errors should skip; got scanned=%d", scanned)
 	}
@@ -77,7 +77,7 @@ func TestScanDomlogsNoGlobMatches(t *testing.T) {
 		},
 	})
 
-	scanned := scanDomlogs(nil, wpLogin, xmlrpc, userEnum)
+	scanned := scanDomlogs(context.Background(), nil, 0, wpLogin, xmlrpc, userEnum)
 	if scanned != 0 {
 		t.Errorf("expected 0 scanned with no globs, got %d", scanned)
 	}

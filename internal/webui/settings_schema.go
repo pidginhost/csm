@@ -88,6 +88,7 @@ const (
 	FieldGroupLimits          = "Limits"
 
 	FieldGroupScanIntervals  = "Scan intervals"
+	FieldGroupWebBruteForce  = "Web brute force" // #nosec G101 -- UI label, not a credential.
 	FieldGroupMailBruteForce = "Mail brute force"
 	FieldGroupSMTPBruteForce = "SMTP brute force"
 	FieldGroupAccountSpray   = "Account spray"
@@ -139,7 +140,11 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "multi_ip_login_threshold", Type: "int", Label: "Multi-IP login threshold", Min: int64p(1), FieldGroup: FieldGroupAccountSpray},
 			{YAMLPath: "multi_ip_login_window_min", Type: "int", Label: "Multi-IP login window (min)", Min: int64p(1), FieldGroup: FieldGroupAccountSpray},
 			{YAMLPath: "plugin_check_interval_min", Type: "int", Label: "Plugin check interval (min)", Min: int64p(1), FieldGroup: FieldGroupScanIntervals},
-			{YAMLPath: "brute_force_window", Type: "int", Label: "Brute force window", Min: int64p(1), FieldGroup: FieldGroupMailBruteForce},
+			{YAMLPath: "brute_force_window", Type: "int", Label: "Brute force window", Min: int64p(1), FieldGroup: FieldGroupWebBruteForce},
+			{YAMLPath: "domlog_max_files", Type: "int", Label: "Domlog max files", Min: int64p(1), Max: int64p(100000), FieldGroup: FieldGroupWebBruteForce},
+			{YAMLPath: "http_flood_threshold", Type: "int", Label: "HTTP flood threshold", Min: int64p(0), FieldGroup: FieldGroupWebBruteForce, Help: "Per-IP requests per window that emits http_request_flood. 0 disables. Sample baseline first."},
+			{YAMLPath: "http_flood_window_min", Type: "int", Label: "HTTP flood window (min)", Min: int64p(1), FieldGroup: FieldGroupWebBruteForce},
+			{YAMLPath: "http_ua_spoof_threshold", Type: "int", Label: "UA spoof threshold", Min: int64p(1), FieldGroup: FieldGroupWebBruteForce},
 			{YAMLPath: "smtp_bruteforce_threshold", Type: "int", Label: "SMTP bruteforce threshold", Min: int64p(1), FieldGroup: FieldGroupSMTPBruteForce},
 			{YAMLPath: "smtp_bruteforce_window_min", Type: "int", Label: "SMTP bruteforce window (min)", Min: int64p(1), FieldGroup: FieldGroupSMTPBruteForce},
 			{YAMLPath: "smtp_bruteforce_suppress_min", Type: "int", Label: "SMTP bruteforce suppress (min)", Min: int64p(1), FieldGroup: FieldGroupSMTPBruteForce},
@@ -211,6 +216,7 @@ var settingsSections = []SettingsSection{
 		Fields: []SettingsField{
 			{YAMLPath: "abuseipdb_key", Type: "string", Label: "AbuseIPDB API key", Secret: true},
 			{YAMLPath: "whitelist", Type: "[]string", Label: "Whitelisted IPs", Help: "Never flagged as malicious"},
+			{YAMLPath: "bot_verify_enabled", Type: "bool", Label: "Verify search-engine bots via rDNS", Nullable: true},
 			{YAMLPath: "rspamd.enabled", Type: "bool", Label: "Rspamd threat-intel"},
 			{YAMLPath: "rspamd.url", Type: "string", Label: "Rspamd controller URL"},
 			{YAMLPath: "rspamd.token", Type: "string", Label: "Rspamd controller password", Secret: true},

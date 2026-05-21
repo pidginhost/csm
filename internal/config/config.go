@@ -112,6 +112,12 @@ type Config struct {
 		PluginCheckIntervalMin    int `yaml:"plugin_check_interval_min"`
 		BruteForceWindow          int `yaml:"brute_force_window"`
 
+		// DomlogMaxFiles caps how many per-domain access logs the WP brute
+		// force check scans per cycle. Sites are ranked by recent mtime so
+		// the cap chops least-active domains. Default 500. Bump on hosts
+		// with many active domains so late-alphabet sites are not skipped.
+		DomlogMaxFiles int `yaml:"domlog_max_files"`
+
 		SMTPBruteForceThreshold    int `yaml:"smtp_bruteforce_threshold"`
 		SMTPBruteForceWindowMin    int `yaml:"smtp_bruteforce_window_min"`
 		SMTPBruteForceSuppressMin  int `yaml:"smtp_bruteforce_suppress_min"`
@@ -153,6 +159,34 @@ type Config struct {
 		// paced attackers that spread denies across hours without
 		// changing the trip count.
 		ModSecEscalationWindowMin int `yaml:"modsec_escalation_window_min"`
+
+		// HTTPFloodThreshold is the minimum requests per http_flood_window_min
+		// from one source IP that emits http_request_flood. 0 (default) disables
+		// the detector. Operators should sample baseline traffic before setting
+		// a nonzero value.
+		HTTPFloodThreshold int `yaml:"http_flood_threshold"`
+		// HTTPFloodWindowMin is the rate window in minutes for HTTPFloodThreshold
+		// counting. Default 5.
+		HTTPFloodWindowMin int `yaml:"http_flood_window_min"`
+
+		// HTTPUASpoofThreshold is the minimum per-IP per-window count
+		// of WPSpoofPingback, ScriptingLang, Headless, or Empty UA
+		// requests that emits http_ua_spoof. KnownScanner and
+		// cache-confirmed negative ClaimedBot emit on count=1.
+		// Default 30.
+		HTTPUASpoofThreshold int `yaml:"http_ua_spoof_threshold"`
+
+		// HTTPUAScriptingEnabled opts in to flagging scripting-language
+		// UA strings (curl, python-requests, wget, etc.) as spoof candidates.
+		// Off by default: many legitimate API integrations use these.
+		HTTPUAScriptingEnabled bool `yaml:"http_ua_scripting_enabled"`
+		// HTTPUAHeadlessEnabled opts in to flagging headless-browser UA
+		// strings (HeadlessChrome, PhantomJS, Playwright, etc.). Off by
+		// default: headless browsers are used by legitimate monitoring tools.
+		HTTPUAHeadlessEnabled bool `yaml:"http_ua_headless_enabled"`
+		// HTTPUAEmptyEnabled opts in to flagging requests with an empty or
+		// dash User-Agent. Off by default: some CDN health checks omit UA.
+		HTTPUAEmptyEnabled bool `yaml:"http_ua_empty_enabled"`
 	} `yaml:"thresholds" hotreload:"safe"`
 
 	InfraIPs []string `yaml:"infra_ips" hotreload:"restart"`
@@ -461,6 +495,11 @@ type Config struct {
 			CacheTTLMin int    `yaml:"cache_ttl_min"`
 			TimeoutSec  int    `yaml:"timeout_sec"`
 		} `yaml:"upstream"`
+		// BotVerifyEnabled controls async PTR+forward-A verification of
+		// claimed search-engine bot IPs. *bool so an explicit false
+		// survives SIGHUP reload without being overwritten by applyDefaults.
+		// Default true.
+		BotVerifyEnabled *bool `yaml:"bot_verify_enabled"`
 	} `yaml:"reputation" hotreload:"safe"`
 
 	Signatures struct {
@@ -570,11 +609,21 @@ type Config struct {
 	// custom layout (reverse proxy in front of a second daemon, non-standard
 	// package locations, chroot, etc.).
 	WebServer struct {
-		Type         string   `yaml:"type"`              // "apache", "nginx", "litespeed" — overrides auto-detect
+		Type         string   `yaml:"type"`              // "apache", "nginx", "litespeed" -- overrides auto-detect
 		ConfigDir    string   `yaml:"config_dir"`        // e.g. /etc/apache2 or /etc/nginx
 		AccessLogs   []string `yaml:"access_logs"`       // candidate access-log paths, tried in order
 		ErrorLogs    []string `yaml:"error_logs"`        // candidate error-log paths (used for modsec denies)
 		ModSecAudits []string `yaml:"modsec_audit_logs"` // candidate ModSecurity audit-log paths
+		// TrustedProxies is the list of IP addresses or CIDR ranges whose
+		// X-Forwarded-For header is trusted for client IP extraction. When
+		// the connecting IP is not in this list, XFF is ignored and
+		// RemoteIP is used as-is.
+		TrustedProxies []string `yaml:"trusted_proxies"` // IP/CIDR sources allowed to supply X-Forwarded-For
+		// DomlogGlobs overrides the auto-detected per-vhost access-log glob
+		// patterns. When set, the platform default for the detected panel/OS
+		// is discarded and only these patterns are used. Leave empty to use
+		// the auto-detected globs.
+		DomlogGlobs []string `yaml:"domlog_globs"` // per-vhost access-log globs
 	} `yaml:"web_server" hotreload:"restart"`
 
 	// AccountRoots lets operators point the account-scan based checks at
@@ -899,6 +948,16 @@ func (c *Config) BPFEnforcementDryRunEnabled() bool {
 	return *c.BPFEnforcement.DryRun
 }
 
+// BotVerifyEnabled reports whether async PTR+forward-A verification of
+// claimed search-engine bots is on. Default true; explicit false is
+// honored so operators on air-gapped networks can disable DNS calls.
+func (c *Config) BotVerifyEnabled() bool {
+	if c.Reputation.BotVerifyEnabled == nil {
+		return true
+	}
+	return *c.Reputation.BotVerifyEnabled
+}
+
 type defaultPresence struct {
 	smtpProbeThreshold bool
 }
@@ -969,11 +1028,22 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	if cfg.Thresholds.BruteForceWindow == 0 {
 		cfg.Thresholds.BruteForceWindow = 5000
 	}
+	if cfg.Thresholds.DomlogMaxFiles == 0 {
+		cfg.Thresholds.DomlogMaxFiles = 500
+	}
 	if cfg.Thresholds.ModSecEscalationHits == 0 {
 		cfg.Thresholds.ModSecEscalationHits = 3
 	}
 	if cfg.Thresholds.ModSecEscalationWindowMin == 0 {
 		cfg.Thresholds.ModSecEscalationWindowMin = 10
+	}
+	if cfg.Thresholds.HTTPFloodWindowMin <= 0 {
+		cfg.Thresholds.HTTPFloodWindowMin = 5
+	}
+	// HTTPFloodThreshold has no nonzero default: 0 means disabled and
+	// that is the shipped behavior.
+	if cfg.Thresholds.HTTPUASpoofThreshold <= 0 {
+		cfg.Thresholds.HTTPUASpoofThreshold = 30
 	}
 	if cfg.Thresholds.SMTPBruteForceThreshold == 0 {
 		cfg.Thresholds.SMTPBruteForceThreshold = 5

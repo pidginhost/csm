@@ -575,3 +575,337 @@ func TestAnalyzePHPContentHexPlusConcatStillFires(t *testing.T) {
 		t.Fatal("hex>20 + concat>10 obfuscation must still fire")
 	}
 }
+
+// --- IsBenignPHPStub ----------------------------------------------------
+//
+// Content-shape recogniser for PHP files whose reachable code region is
+// only whitespace and comments (or that terminate with die/exit/__halt_
+// compiler before any statement runs). Replaces the previous instinct to
+// allowlist BackWPup-style working files by path or filename, which an
+// attacker could mimic. Acceptance is decided purely by what PHP would
+// actually execute, so a payload that drops shell code under any
+// "known-safe" name is rejected, and a legitimate stub is recognised no
+// matter where it lives.
+
+func TestIsBenignPHPStubBackWPupWorking(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "working.php")
+	content := `<?php //{"jobid":1,"step":"CREATE","steps_done":[],"steps_data":{"hash":"abc"}}`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !IsBenignPHPStub(path) {
+		t.Error("BackWPup working file shape (<?php //JSON) must be accepted -- exact output of class-job.php write_running_file")
+	}
+}
+
+func TestIsBenignPHPStubBackWPupFolderCache(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "folder.php")
+	var b strings.Builder
+	b.WriteString("<?php\n")
+	for i := 0; i < 200; i++ {
+		fmt.Fprintf(&b, "//home/user/dir%d/subdir\n", i)
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !IsBenignPHPStub(path) {
+		t.Error("BackWPup folder-cache shape (<?php\\n//path lines) must be accepted -- exact output of class-job.php add_folders_to_backup")
+	}
+}
+
+func TestIsBenignPHPStubSilenceIsGolden(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "index.php")
+	if err := os.WriteFile(path, []byte("<?php\n// Silence is golden.\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !IsBenignPHPStub(path) {
+		t.Error("WP silence-is-golden index.php must be accepted")
+	}
+}
+
+func TestIsBenignPHPStubHaltCompilerWithBinaryTrailer(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "data.php")
+	content := []byte("<?php __halt_compiler();\x00\x01\x02\xff\xfeopaque binary trailer")
+	if err := os.WriteFile(path, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !IsBenignPHPStub(path) {
+		t.Error("__halt_compiler() with opaque binary tail must be accepted (PHP makes tail unreachable)")
+	}
+}
+
+func TestIsBenignPHPStubExitTerminator(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stub.php")
+	if err := os.WriteFile(path, []byte("<?php\n// 404 stub\nexit;"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !IsBenignPHPStub(path) {
+		t.Error("exit; terminator must be accepted")
+	}
+}
+
+func TestIsBenignPHPStubDieTerminator(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stub.php")
+	if err := os.WriteFile(path, []byte("<?php die();\nopaque-payload"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !IsBenignPHPStub(path) {
+		t.Error("die() terminator must be accepted")
+	}
+}
+
+func TestIsBenignPHPStubRejectsExitWithExecutableArgument(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "exit-arg.php")
+	if err := os.WriteFile(path, []byte("<?php exit(system($_GET['c']));"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if IsBenignPHPStub(path) {
+		t.Error("exit() argument executes before termination and must not be accepted as a stub")
+	}
+}
+
+func TestIsBenignPHPStubRejectsDieWithArgument(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "die-arg.php")
+	if err := os.WriteFile(path, []byte("<?php die($_POST['message']);"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if IsBenignPHPStub(path) {
+		t.Error("die() with an argument evaluates an expression and must not be accepted as a stub")
+	}
+}
+
+func TestIsBenignPHPStubBlockComments(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stub.php")
+	if err := os.WriteFile(path, []byte("<?php\n/* line one */\n/* line two */\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !IsBenignPHPStub(path) {
+		t.Error("file with only block comments after <?php must be accepted")
+	}
+}
+
+func TestIsBenignPHPStubHashComment(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stub.php")
+	if err := os.WriteFile(path, []byte("<?php\n# hash comment\n# another\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !IsBenignPHPStub(path) {
+		t.Error("hash-style PHP comments must be accepted")
+	}
+}
+
+func TestIsBenignPHPStubLeadingBOM(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stub.php")
+	content := append([]byte{0xEF, 0xBB, 0xBF}, []byte("<?php // bom-prefixed stub\n")...)
+	if err := os.WriteFile(path, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !IsBenignPHPStub(path) {
+		t.Error("UTF-8 BOM prefix must not block recognition")
+	}
+}
+
+func TestIsBenignPHPStubLeadingWhitespace(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stub.php")
+	if err := os.WriteFile(path, []byte("\n  \t<?php // comment\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !IsBenignPHPStub(path) {
+		t.Error("whitespace before <?php must not block recognition")
+	}
+}
+
+func TestIsBenignPHPStubRejectsWebshellBeforeTerminator(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "shell.php")
+	// system() before die() -- primary bypass vector for any structural recogniser.
+	body := "<?php system($_POST['c']); die();"
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if IsBenignPHPStub(path) {
+		t.Error("any statement before terminator must be rejected -- structural bypass vector")
+	}
+}
+
+func TestIsBenignPHPStubRejectsEvalChain(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "evil.php")
+	body := "<?php ev" + "al(base64_decode($_POST['x'])); exit;"
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if IsBenignPHPStub(path) {
+		t.Error("eval call before terminator must be rejected")
+	}
+}
+
+func TestIsBenignPHPStubRejectsConditionalDie(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "trick.php")
+	if err := os.WriteFile(path, []byte("<?php if (false) die(); system($_GET['c']);"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if IsBenignPHPStub(path) {
+		t.Error("conditional die() that may not run must be rejected -- 'if' is not an accepted token")
+	}
+}
+
+func TestIsBenignPHPStubRejectsClosingTagEscape(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "escape.php")
+	content := "<?php /* harmless */ ?><html><?php system($_POST['c']);"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if IsBenignPHPStub(path) {
+		t.Error("?> in pre-terminator region must be rejected -- allows HTML escape and a second <?php block")
+	}
+}
+
+func TestIsBenignPHPStubRejectsLineCommentCloseTagEscape(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "escape.php")
+	content := "<?php // harmless ?><?php system($_POST['c']);"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if IsBenignPHPStub(path) {
+		t.Error("PHP line comments end at ?>, so close-tag re-entry must be rejected")
+	}
+}
+
+func TestIsBenignPHPStubRejectsReturnArray(t *testing.T) {
+	// <?php return [...]; evaluates when include()'d. Not a stub.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "data.php")
+	if err := os.WriteFile(path, []byte("<?php return array('key' => 'value');"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if IsBenignPHPStub(path) {
+		t.Error("return statement is not a stub -- file content is evaluated when included from elsewhere")
+	}
+}
+
+func TestIsBenignPHPStubRejectsMissingOpener(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "no-opener.php")
+	if err := os.WriteFile(path, []byte("<html><?php system($_POST['c']); ?>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if IsBenignPHPStub(path) {
+		t.Error("file not opening with <?php (HTML prefix) must be rejected -- mixed-content files can execute")
+	}
+}
+
+func TestIsBenignPHPStubRejectsShortEcho(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "echo.php")
+	if err := os.WriteFile(path, []byte("<?= $_POST['x'] ?>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if IsBenignPHPStub(path) {
+		t.Error("<?= short-echo opener must be rejected (emits output from expression)")
+	}
+}
+
+func TestIsBenignPHPStubRejectsRuntogetherOpener(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rt.php")
+	if err := os.WriteFile(path, []byte("<?phpfoo();"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if IsBenignPHPStub(path) {
+		t.Error("<?phpfoo run-together opener must be rejected -- PHP requires whitespace after <?php")
+	}
+}
+
+func TestIsBenignPHPStubRejectsUnterminatedBlockComment(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bad.php")
+	if err := os.WriteFile(path, []byte("<?php /* never closes"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if IsBenignPHPStub(path) {
+		t.Error("/* without matching */ in scan window must be rejected -- we cannot prove the rest is comment")
+	}
+}
+
+func TestIsBenignPHPStubRejectsHeaderCall(t *testing.T) {
+	// header() is harmless to PHP execution flow but a stub recogniser
+	// that accepts function calls opens the door to header($_POST[...])
+	// header injection and to mis-classifying any header(...); echo ...;
+	// die(); shape as benign. Keep the gate strictly to comments +
+	// terminator; legitimate 404-stub plugins always include die() so
+	// they still pass via the terminator branch.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hdr.php")
+	if err := os.WriteFile(path, []byte("<?php header('Status: 404');"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if IsBenignPHPStub(path) {
+		t.Error("header() call without a terminator must be rejected -- only comments and terminator are accepted statements")
+	}
+}
+
+func TestIsBenignPHPStubRejectsEmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "empty.php")
+	if err := os.WriteFile(path, []byte(""), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if IsBenignPHPStub(path) {
+		t.Error("empty file is not a PHP stub (no <?php opener)")
+	}
+}
+
+func TestIsBenignPHPStubRejectsMissingFile(t *testing.T) {
+	if IsBenignPHPStub(filepath.Join(t.TempDir(), "does-not-exist.php")) {
+		t.Error("missing file must be rejected -- open error => false")
+	}
+}
+
+func TestIsBenignPHPStubRejectsLargeCommentPrefixWithPayloadAfterScan(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "large.php")
+	content := "<?php //" + strings.Repeat("a", benignPHPStubMaxScan) + "\n<?php system($_POST['c']);"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if IsBenignPHPStub(path) {
+		t.Error("comment-only acceptance must require EOF; payload after scan window must not be suppressed")
+	}
+}
+
+func TestIsBenignPHPStubBytesAcceptsBOMAlone(t *testing.T) {
+	if !IsBenignPHPStubBytes([]byte("\xEF\xBB\xBF<?php // bom\n")) {
+		t.Error("BOM + <?php + comment via buffer entrypoint must be accepted")
+	}
+}
+
+func TestIsBenignPHPStubBytesRejectsIncompleteCommentOnlyBuffer(t *testing.T) {
+	if IsBenignPHPStubBytesComplete([]byte("<?php // comment continues"), false) {
+		t.Error("incomplete comment-only buffers must be rejected because executable code may follow")
+	}
+}
+
+func TestIsBenignPHPStubBytesRejectsEmpty(t *testing.T) {
+	if IsBenignPHPStubBytes(nil) {
+		t.Error("nil buffer must be rejected")
+	}
+	if IsBenignPHPStubBytes([]byte{}) {
+		t.Error("empty buffer must be rejected")
+	}
+}
