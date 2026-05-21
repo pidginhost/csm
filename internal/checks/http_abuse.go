@@ -1,9 +1,9 @@
-// HTTP abuse detection (Task 1: aggregator + parser only).
+// HTTP abuse detection.
 //
 // This file holds the access-log line parser, the per-scan aggregator
-// struct (domlogStats), and the bot-classifier interface used by tests
-// and (later) by the rDNS verify path. The new check kinds
-// http_request_flood and http_ua_spoof are wired in later tasks.
+// struct (domlogStats), the UA classifier, the bot-classifier interface,
+// and the static allowlist classifier that consults embedded bot IP ranges.
+// The rDNS verifying classifier arrives in Task 5.
 package checks
 
 import (
@@ -13,6 +13,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/threatintel"
 )
 
 // accessLogRecord is the parsed shape of one access-log line. Combined
@@ -32,13 +33,10 @@ type accessLogRecord struct {
 	XFF       string // optional; only trusted when RemoteIP is a trusted proxy
 }
 
-// uaKind is the User-Agent classification used by domlogStats.scan and
-// by the http_ua_spoof emit logic. Defined here so the type signature
-// of botClassifier is stable across tasks. Task 4 wires these into scan
-// and emit; the linter sees them as unused until then.
+// uaKind is the User-Agent classification produced by classifyUA and
+// consumed by domlogStats.scan and the http_ua_spoof emit logic.
 type uaKind int
 
-//nolint:unused // wired in Task 4 UA classifier
 const (
 	uaKindBrowser uaKind = iota
 	uaKindClaimedBot
@@ -78,8 +76,8 @@ type domlogStats struct {
 	wpLogin  map[string]int
 	xmlrpc   map[string]int
 	userEnum map[string]int
-	httpReqs map[string]int            // Task 3
-	uaCat    map[string]map[uaKind]int // Task 4
+	httpReqs map[string]int
+	uaCat    map[string]map[uaKind]int
 	samples  map[string]httpSample
 	scanTime time.Time
 }
@@ -131,12 +129,24 @@ func (s *domlogStats) scan(rec accessLogRecord, cfg *config.Config, bot botClass
 		s.userEnum[ip]++
 	}
 
-	// HTTP request flood counter -- all methods, all URIs, after the
-	// infra-IP and verified-bot gates above. Only parsed timestamps
-	// inside thresholds.http_flood_window_min count; malformed timestamp
-	// lines still feed legacy POST counters but not rate findings.
+	// Rate and UA counters only fire for requests that fall inside the
+	// flood window. Malformed timestamp lines still feed the legacy POST
+	// counters above but not rate or UA findings.
 	if withinHTTPFloodWindow(rec.Time, cfg, s.scanTime) {
 		s.httpReqs[ip]++
+
+		kind := classifyUA(rec.UserAgent, rec.Method)
+		if kind == uaKindClaimedBot {
+			// Static allowlist hits caused an early return through
+			// IsVerifiedBot above. Unknown claimed bots fail open until
+			// Task 5 can confirm a negative rDNS result; treat them as
+			// ordinary browsers so they do not fire http_ua_spoof yet.
+			kind = uaKindBrowser
+		}
+		if _, ok := s.uaCat[ip]; !ok {
+			s.uaCat[ip] = make(map[uaKind]int)
+		}
+		s.uaCat[ip][kind]++
 	}
 
 	if _, ok := s.samples[ip]; !ok {
@@ -184,8 +194,7 @@ func (s *domlogStats) emitLegacy(_ *config.Config) []alert.Finding {
 
 // emit produces all finding kinds from a single populated domlogStats.
 // Legacy three kinds come first (so existing callers still get them when
-// running through emit), then http_request_flood. http_ua_spoof lands in
-// Task 4.
+// running through emit), then http_request_flood, then http_ua_spoof.
 func (s *domlogStats) emit(cfg *config.Config) []alert.Finding {
 	out := s.emitLegacy(cfg)
 
@@ -204,7 +213,60 @@ func (s *domlogStats) emit(cfg *config.Config) []alert.Finding {
 			})
 		}
 	}
+
+	if cfg != nil {
+		threshold := cfg.Thresholds.HTTPUASpoofThreshold
+		if threshold <= 0 {
+			threshold = 30
+		}
+		for ip, byKind := range s.uaCat {
+			if hits, ok := byKind[uaKindKnownScanner]; ok && hits > 0 {
+				out = append(out, makeUASpoofFinding(ip, "known scanner UA",
+					s.samples[ip], hits))
+				continue
+			}
+			if hits := byKind[uaKindWPSpoofPingback]; hits >= threshold {
+				out = append(out, makeUASpoofFinding(ip,
+					"WordPress/<ver> UA on GET (pingback spoof)",
+					s.samples[ip], hits))
+				continue
+			}
+			if cfg.Thresholds.HTTPUAScriptingEnabled {
+				if hits := byKind[uaKindScriptingLang]; hits >= threshold {
+					out = append(out, makeUASpoofFinding(ip,
+						"scripting-language UA (curl/python/etc.)",
+						s.samples[ip], hits))
+					continue
+				}
+			}
+			if cfg.Thresholds.HTTPUAHeadlessEnabled {
+				if hits := byKind[uaKindHeadless]; hits >= threshold {
+					out = append(out, makeUASpoofFinding(ip,
+						"headless browser UA", s.samples[ip], hits))
+					continue
+				}
+			}
+			if cfg.Thresholds.HTTPUAEmptyEnabled {
+				if hits := byKind[uaKindEmpty]; hits >= threshold {
+					out = append(out, makeUASpoofFinding(ip,
+						"empty/dash User-Agent", s.samples[ip], hits))
+					continue
+				}
+			}
+		}
+	}
 	return out
+}
+
+func makeUASpoofFinding(ip, reason string, sample httpSample, hits int) alert.Finding {
+	return alert.Finding{
+		Severity: alert.Critical,
+		Check:    "http_ua_spoof",
+		SourceIP: ip,
+		Message:  "User-Agent spoof from " + ip + ": " + reason,
+		Details: "Hits: " + itoa(hits) + ", Sample: " + sample.Method + " " +
+			sample.URI + " UA=" + truncate(sample.UA, 200),
+	}
 }
 
 // withinHTTPFloodWindow reports whether a log timestamp falls inside the
@@ -441,4 +503,84 @@ func looksLikeXFF(raw string) bool {
 		}
 	}
 	return false
+}
+
+// classifyUA maps a User-Agent string to a uaKind. Matching is performed
+// on a lower-cased copy of the UA because scanner and impersonation tools
+// routinely vary case. Precedence order follows spec section 6: scanner
+// signatures win over claimed-bot, claimed-bot wins over headless, etc.
+func classifyUA(ua, method string) uaKind {
+	const maxUALen = 512
+	if len(ua) > maxUALen {
+		ua = ua[:maxUALen]
+	}
+	if ua == "" || ua == "-" {
+		return uaKindEmpty
+	}
+	low := strings.ToLower(ua)
+
+	for _, s := range knownScannerSubstrings {
+		if strings.Contains(low, s) {
+			return uaKindKnownScanner
+		}
+	}
+	// WordPress pingback UA on a GET request is illegal: legitimate
+	// pingback clients always POST. A GET with this UA is a content
+	// scraper or probe spoofing the pingback agent.
+	if method == "GET" && strings.HasPrefix(low, "wordpress/") {
+		return uaKindWPSpoofPingback
+	}
+	for _, s := range claimedBotSubstrings {
+		if strings.Contains(low, s) {
+			return uaKindClaimedBot
+		}
+	}
+	for _, s := range headlessSubstrings {
+		if strings.Contains(low, s) {
+			return uaKindHeadless
+		}
+	}
+	for _, s := range scriptingSubstrings {
+		if strings.Contains(low, s) {
+			return uaKindScriptingLang
+		}
+	}
+	return uaKindBrowser
+}
+
+var (
+	knownScannerSubstrings = []string{
+		"nikto", "sqlmap", "acunetix", "nmap ", "masscan", "wpscan",
+		"nuclei", "dirbuster", "gobuster", "feroxbuster",
+	}
+	claimedBotSubstrings = []string{
+		"googlebot", "bingbot", "applebot", "duckduckbot", "yandexbot",
+		"baiduspider", "facebookexternalhit", "twitterbot",
+	}
+	headlessSubstrings = []string{
+		"headlesschrome", "phantomjs", "puppeteer", "playwright",
+	}
+	scriptingSubstrings = []string{
+		"python-requests/", "curl/", "go-http-client/", "java/", "wget/",
+		"libwww-perl/", "node-fetch/",
+	}
+)
+
+// staticAllowlistClassifier consults the embedded static IP ranges only.
+// If the source IP falls inside a published bot range for the claimed bot
+// identity, the request is treated as verified and excluded from all
+// counters. rDNS verification for IPs outside the static ranges arrives
+// in Task 5 via verifyingClassifier.
+type staticAllowlistClassifier struct{}
+
+func (staticAllowlistClassifier) IsVerifiedBot(ipStr, ua string) bool {
+	bot := threatintel.ClaimedBotFromUA(ua)
+	if bot == "" {
+		return false
+	}
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return false
+	}
+	return threatintel.DefaultRanges().IPInBot(ip, bot)
 }

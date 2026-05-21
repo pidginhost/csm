@@ -170,3 +170,130 @@ func TestHTTPRequestFlood_IgnoresRecordsOutsideWindow(t *testing.T) {
 		t.Fatalf("old request emitted findings: %+v", got)
 	}
 }
+
+func TestClassifyUA(t *testing.T) {
+	cases := []struct {
+		ua     string
+		method string
+		want   uaKind
+	}{
+		{"", "GET", uaKindEmpty},
+		{"-", "GET", uaKindEmpty},
+		{"Mozilla/5.0 nikto/2.5", "GET", uaKindKnownScanner},
+		{"sqlmap/1.7", "POST", uaKindKnownScanner},
+		{"WordPress/6.9.4; https://example.com", "GET", uaKindWPSpoofPingback},
+		{"WordPress/6.9.4; https://example.com", "POST", uaKindBrowser}, // POST is legit pingback
+		{"Googlebot/2.1 (+http://www.google.com/bot.html)", "GET", uaKindClaimedBot},
+		{"python-requests/2.31.0", "GET", uaKindScriptingLang},
+		{"curl/8.4.0", "POST", uaKindScriptingLang},
+		{"HeadlessChrome/120.0", "GET", uaKindHeadless},
+		{"Mozilla/5.0 (Windows NT 10.0)", "GET", uaKindBrowser},
+	}
+	for _, c := range cases {
+		got := classifyUA(c.ua, c.method)
+		if got != c.want {
+			t.Errorf("classifyUA(%q,%q)=%v want %v", c.ua, c.method, got, c.want)
+		}
+	}
+}
+
+func TestHTTPUASpoof_KnownScannerImmediate(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Thresholds.HTTPUASpoofThreshold = 30 // not used for scanner
+
+	stats := newDomlogStats()
+	stats.samples["192.0.2.70"] = httpSample{Method: "GET", URI: "/wp-admin/", UA: "nikto/2.5"}
+	stats.uaCat["192.0.2.70"] = map[uaKind]int{uaKindKnownScanner: 1}
+
+	got := stats.emit(cfg)
+	found := false
+	for _, f := range got {
+		if f.Check == "http_ua_spoof" {
+			found = true
+			if f.Severity != alert.Critical {
+				t.Errorf("severity=%v want Critical", f.Severity)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("scanner UA did not emit http_ua_spoof: %+v", got)
+	}
+}
+
+func TestHTTPUASpoof_WPPingbackBelowThreshold(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Thresholds.HTTPUASpoofThreshold = 30
+	stats := newDomlogStats()
+	stats.uaCat["192.0.2.71"] = map[uaKind]int{uaKindWPSpoofPingback: 29}
+	got := stats.emit(cfg)
+	for _, f := range got {
+		if f.Check == "http_ua_spoof" {
+			t.Fatalf("emitted below threshold: %+v", f)
+		}
+	}
+}
+
+func TestHTTPUASpoof_WPPingbackAtThreshold(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Thresholds.HTTPUASpoofThreshold = 30
+	stats := newDomlogStats()
+	stats.samples["192.0.2.72"] = httpSample{
+		Method: "GET", URI: "/wp-content/plugins/x.js?ver=1",
+		UA: "WordPress/6.9.4; https://victim.example",
+	}
+	stats.uaCat["192.0.2.72"] = map[uaKind]int{uaKindWPSpoofPingback: 30}
+	got := stats.emit(cfg)
+	found := false
+	for _, f := range got {
+		if f.Check == "http_ua_spoof" && f.SourceIP == "192.0.2.72" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("WP pingback spoof at threshold did not emit: %+v", got)
+	}
+}
+
+func TestClaimedBot_StaticAllowlistSkips(t *testing.T) {
+	// IP inside a known Googlebot range -> verified by static list ->
+	// stats.scan should NOT count this request into httpReqs or uaCat.
+	cfg := &config.Config{}
+	cfg.Thresholds.HTTPFloodThreshold = 50
+
+	bot := &staticAllowlistClassifier{}
+	stats := newDomlogStatsAt(time.Date(2026, 5, 20, 18, 5, 0, 0, time.FixedZone("EEST", 3*3600)))
+	line := `66.249.66.1 - - [20/May/2026:18:00:00 +0300] "GET /robots.txt HTTP/1.1" 200 100 "-" ` +
+		`"Googlebot/2.1 (+http://www.google.com/bot.html)"`
+	rec, ok := parseAccessLogRecord(line)
+	if !ok {
+		t.Fatal("parse failed")
+	}
+	for i := 0; i < 200; i++ {
+		stats.scan(rec, cfg, bot)
+	}
+	if stats.httpReqs["66.249.66.1"] != 0 {
+		t.Errorf("verified Googlebot got counted: %d", stats.httpReqs["66.249.66.1"])
+	}
+	if len(stats.uaCat["66.249.66.1"]) != 0 {
+		t.Errorf("verified Googlebot UA categories got counted: %v", stats.uaCat["66.249.66.1"])
+	}
+}
+
+func TestClaimedBot_OutsideStaticRangeDoesNotEmitYet(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Thresholds.HTTPUASpoofThreshold = 1
+
+	stats := newDomlogStatsAt(time.Date(2026, 5, 20, 18, 5, 0, 0, time.FixedZone("EEST", 3*3600)))
+	line := `203.0.113.77 - - [20/May/2026:18:05:00 +0300] "GET /robots.txt HTTP/1.1" 200 100 "-" ` +
+		`"Googlebot/2.1 fake"`
+	rec, ok := parseAccessLogRecord(line)
+	if !ok {
+		t.Fatal("parse failed")
+	}
+	stats.scan(rec, cfg, staticAllowlistClassifier{})
+	for _, f := range stats.emit(cfg) {
+		if f.Check == "http_ua_spoof" {
+			t.Fatalf("claimed bot must fail open until rDNS confirms negative: %+v", f)
+		}
+	}
+}

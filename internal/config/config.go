@@ -168,6 +168,25 @@ type Config struct {
 		// HTTPFloodWindowMin is the rate window in minutes for HTTPFloodThreshold
 		// counting. Default 5.
 		HTTPFloodWindowMin int `yaml:"http_flood_window_min"`
+
+		// HTTPUASpoofThreshold is the minimum per-IP per-window count
+		// of WPSpoofPingback, ScriptingLang, Headless, or Empty UA
+		// requests that emits http_ua_spoof. KnownScanner and
+		// cache-confirmed negative ClaimedBot emit on count=1.
+		// Default 30.
+		HTTPUASpoofThreshold int `yaml:"http_ua_spoof_threshold"`
+
+		// HTTPUAScriptingEnabled opts in to flagging scripting-language
+		// UA strings (curl, python-requests, wget, etc.) as spoof candidates.
+		// Off by default: many legitimate API integrations use these.
+		HTTPUAScriptingEnabled bool `yaml:"http_ua_scripting_enabled"`
+		// HTTPUAHeadlessEnabled opts in to flagging headless-browser UA
+		// strings (HeadlessChrome, PhantomJS, Playwright, etc.). Off by
+		// default: headless browsers are used by legitimate monitoring tools.
+		HTTPUAHeadlessEnabled bool `yaml:"http_ua_headless_enabled"`
+		// HTTPUAEmptyEnabled opts in to flagging requests with an empty or
+		// dash User-Agent. Off by default: some CDN health checks omit UA.
+		HTTPUAEmptyEnabled bool `yaml:"http_ua_empty_enabled"`
 	} `yaml:"thresholds" hotreload:"safe"`
 
 	InfraIPs []string `yaml:"infra_ips" hotreload:"restart"`
@@ -1008,6 +1027,9 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	// HTTPFloodThreshold has no nonzero default: 0 means disabled and
 	// that is the shipped behavior.
+	if cfg.Thresholds.HTTPUASpoofThreshold <= 0 {
+		cfg.Thresholds.HTTPUASpoofThreshold = 30
+	}
 	if cfg.Thresholds.SMTPBruteForceThreshold == 0 {
 		cfg.Thresholds.SMTPBruteForceThreshold = 5
 	}
