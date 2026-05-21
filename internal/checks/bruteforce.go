@@ -202,41 +202,20 @@ func scanDomlogs(ctx context.Context, infraIPs []string, maxFiles int, wpLogin, 
 }
 
 // countBruteForce parses Combined Log Format lines and increments per-IP
-// counters for wp-login.php, xmlrpc.php, and user enumeration attacks.
+// counters via the shared domlogStats aggregator. Kept as a thin
+// shim so CheckWPBruteForce keeps its old structure.
 func countBruteForce(lines []string, infraIPs []string, wpLogin, xmlrpc, userEnum map[string]int) {
+	cfg := &config.Config{InfraIPs: infraIPs}
+	stats := newDomlogStats()
+	stats.wpLogin = wpLogin
+	stats.xmlrpc = xmlrpc
+	stats.userEnum = userEnum
 	for _, line := range lines {
-		fields := strings.Fields(line)
-		if len(fields) < 7 {
+		rec, ok := parseAccessLogRecord(line)
+		if !ok {
 			continue
 		}
-		ip := fields[0]
-
-		// Skip localhost (wp-cron self-requests), placeholder, and infra IPs.
-		if ip == "127.0.0.1" || ip == "::1" || ip == "-" {
-			continue
-		}
-		if isInfraIP(ip, infraIPs) {
-			continue
-		}
-
-		method := strings.Trim(fields[5], "\"")
-		uri := fields[6]
-
-		if method == "POST" {
-			if strings.Contains(uri, "wp-login.php") {
-				wpLogin[ip]++
-			}
-			if strings.Contains(uri, "xmlrpc.php") {
-				xmlrpc[ip]++
-			}
-		}
-		// User enumeration — only exclude /users/me (authenticated self-check).
-		if strings.Contains(uri, "?author=") {
-			userEnum[ip]++
-		} else if strings.Contains(uri, "/wp-json/wp/v2/users") &&
-			!strings.Contains(uri, "/users/me") {
-			userEnum[ip]++
-		}
+		stats.scan(rec, cfg, nopBotClassifier{})
 	}
 }
 

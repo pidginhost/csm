@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -155,5 +156,32 @@ func FuzzParseDBFindingDetails(f *testing.F) {
 	f.Add("")
 	f.Fuzz(func(t *testing.T, details string) {
 		_, _ = parseDBFindingDetails(details)
+	})
+}
+
+func FuzzParseAccessLogRecord(f *testing.F) {
+	// Baseline Combined Log Format line (RFC 5737 IPs).
+	f.Add(`192.0.2.1 - - [14/Apr/2026:10:00:00 +0000] "POST /wp-login.php HTTP/1.1" 401 123 "-" "curl/8"`)
+	// cPanel variant with quoted vhost extension.
+	f.Add(`198.51.100.5 - - [14/Apr/2026:10:00:01 +0000] "GET / HTTP/1.1" 200 500 "https://example.com/" "Mozilla/5.0" "example.com:2083"`)
+	// Quoted XFF extension after UA.
+	f.Add(`203.0.113.7 - - [14/Apr/2026:10:00:02 +0000] "GET /index.html HTTP/1.1" 200 100 "-" "Go-http-client/1.1" "192.0.2.99, 10.0.0.1"`)
+	// 1 MiB User-Agent -- parser must cap and not panic.
+	f.Add("192.0.2.2 - - [14/Apr/2026:10:00:03 +0000] \"GET / HTTP/1.1\" 200 0 \"-\" \"" + strings.Repeat("A", 1<<20) + "\"")
+	// Embedded NUL in quoted field.
+	f.Add("192.0.2.3 - - [14/Apr/2026:10:00:04 +0000] \"GET /\x00path HTTP/1.1\" 200 0 \"-\" \"-\"")
+	// CRLF in UA field.
+	f.Add("192.0.2.4 - - [14/Apr/2026:10:00:05 +0000] \"GET / HTTP/1.1\" 200 0 \"-\" \"UA\r\ninjected\"")
+	// Truncated below minimum field count.
+	f.Add("192.0.2.5 - -")
+	f.Add("")
+	f.Add("short")
+	// Unclosed bracket in time.
+	f.Add("192.0.2.6 - - [14/Apr/2026:10:00:06 +0000 \"GET / HTTP/1.1\" 200 0 \"-\" \"-\"")
+	// Unclosed quote in request.
+	f.Add("192.0.2.7 - - [14/Apr/2026:10:00:07 +0000] \"GET / HTTP/1.1 200 0 \"-\" \"-\"")
+	f.Fuzz(func(t *testing.T, line string) {
+		// Only assert no panic; output correctness is verified by table tests.
+		_, _ = parseAccessLogRecord(line)
 	})
 }

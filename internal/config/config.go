@@ -576,11 +576,16 @@ type Config struct {
 	// custom layout (reverse proxy in front of a second daemon, non-standard
 	// package locations, chroot, etc.).
 	WebServer struct {
-		Type         string   `yaml:"type"`              // "apache", "nginx", "litespeed" — overrides auto-detect
+		Type         string   `yaml:"type"`              // "apache", "nginx", "litespeed" -- overrides auto-detect
 		ConfigDir    string   `yaml:"config_dir"`        // e.g. /etc/apache2 or /etc/nginx
 		AccessLogs   []string `yaml:"access_logs"`       // candidate access-log paths, tried in order
 		ErrorLogs    []string `yaml:"error_logs"`        // candidate error-log paths (used for modsec denies)
 		ModSecAudits []string `yaml:"modsec_audit_logs"` // candidate ModSecurity audit-log paths
+		// TrustedProxies is the list of IP addresses or CIDR ranges whose
+		// X-Forwarded-For header is trusted for client IP extraction. When
+		// the connecting IP is not in this list, XFF is ignored and
+		// RemoteIP is used as-is.
+		TrustedProxies []string `yaml:"trusted_proxies"` // IP/CIDR sources allowed to supply X-Forwarded-For
 	} `yaml:"web_server" hotreload:"restart"`
 
 	// AccountRoots lets operators point the account-scan based checks at
