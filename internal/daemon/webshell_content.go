@@ -19,13 +19,11 @@ func looksLikePHPWebshell(data []byte) bool {
 	if len(data) == 0 {
 		return false
 	}
-	// No inner byte cap. The caller owns the read window (fanotify
-	// callers cap via readFromFd; signature scanners cap upstream too)
-	// and csm_realtime_content_scan_truncated_total exposes when that
-	// window is hit. A duplicate cap here would silently shorten any
-	// future caller that legitimately passed a larger buffer, hiding
-	// the truncation telemetry without adding any RE2 protection beyond
-	// what the upstream readers already enforce.
+	// No inner byte cap. The fanotify callers own the read window and
+	// record when that window is hit. A duplicate cap here would silently
+	// shorten any caller that legitimately passed a larger buffer, hiding
+	// truncation from that caller without adding protection beyond the
+	// upstream reader limit.
 	for _, re := range webshellContentRegexes {
 		if re.Match(data) {
 			return true
