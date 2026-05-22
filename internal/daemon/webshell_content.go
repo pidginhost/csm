@@ -19,12 +19,13 @@ func looksLikePHPWebshell(data []byte) bool {
 	if len(data) == 0 {
 		return false
 	}
-	// Cap the regex sweep at 64 KiB; webshells are tiny and we already
-	// only read 65536 bytes from the fd. Keeps RE2 cost bounded on huge
-	// legitimate files that happened to land here.
-	if len(data) > 65536 {
-		data = data[:65536]
-	}
+	// No inner byte cap. The caller owns the read window (fanotify
+	// callers cap via readFromFd; signature scanners cap upstream too)
+	// and csm_realtime_content_scan_truncated_total exposes when that
+	// window is hit. A duplicate cap here would silently shorten any
+	// future caller that legitimately passed a larger buffer, hiding
+	// the truncation telemetry without adding any RE2 protection beyond
+	// what the upstream readers already enforce.
 	for _, re := range webshellContentRegexes {
 		if re.Match(data) {
 			return true

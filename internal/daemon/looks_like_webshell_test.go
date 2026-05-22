@@ -76,3 +76,20 @@ func TestLooksLikePHPWebshell_EmptyOrTinyInput(t *testing.T) {
 		t.Error("phpinfo() alone should not match (no superglobal flow)")
 	}
 }
+
+// looksLikePHPWebshell must not silently truncate input. The caller
+// owns the read window. Place a real webshell marker past the old
+// 64 KiB inner cap and verify it is still detected. If a future change
+// reintroduces the inner trim this test fails first.
+func TestLooksLikePHPWebshell_NoInnerByteCap(t *testing.T) {
+	padding := make([]byte, 100_000)
+	for i := range padding {
+		padding[i] = ' '
+	}
+	marker := "ev" + "al($_POST['cmd']);"
+	payload := append([]byte("<?php\n"), padding...)
+	payload = append(payload, []byte(marker)...)
+	if !looksLikePHPWebshell(payload) {
+		t.Errorf("marker at offset %d (past 64 KiB) was not detected -- inner cap regressed", len(payload)-len(marker))
+	}
+}
