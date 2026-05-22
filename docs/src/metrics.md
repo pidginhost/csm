@@ -121,11 +121,14 @@ curl -sk -H "Authorization: Bearer $METRICS_TOKEN" \
   larger than the main read window, so the full-rule pass saw only
   the leading window. The read cap protects RE2 cost on huge files;
   sustained growth on a label means full-rule coverage is capped on
-  large PHP files. Labels currently emitted: `phpcontent_inline` (known
-  webshell filename), `phpcontent_uploads` (PHP in uploads), and
-  `php_check` (generic PHP content scan). Compare against
-  finding history for `webshell_content_realtime` to judge whether a
-  raised cap would surface real findings.
+  large files. Labels currently emitted: `phpcontent_inline` (known
+  webshell filename), `phpcontent_uploads` (PHP in uploads),
+  `php_check` (generic PHP content scan), `crontab` (per-user
+  /var/spool/cron write), `htaccess` (per-vhost .htaccess write),
+  and `user_ini` (per-vhost .user.ini write). Compare against
+  finding history for `webshell_content_realtime` (or the matching
+  check name for non-PHP labels) to judge whether a raised cap would
+  surface real findings.
 
 ### Periodic check runner
 
