@@ -118,6 +118,14 @@ type Config struct {
 		// with many active domains so late-alphabet sites are not skipped.
 		DomlogMaxFiles int `yaml:"domlog_max_files"`
 
+		// DomlogTailLines is how many trailing lines the WP brute force
+		// check reads from each per-domain access log per cycle. Default
+		// 500 covers roughly 10 minutes of traffic on a busy site. Raise
+		// on hosts where slow-burn attacks against high-volume domains
+		// spread across more than 500 lines per scan interval, so the
+		// per-IP counter window is wide enough to trip a threshold.
+		DomlogTailLines int `yaml:"domlog_tail_lines"`
+
 		SMTPBruteForceThreshold    int `yaml:"smtp_bruteforce_threshold"`
 		SMTPBruteForceWindowMin    int `yaml:"smtp_bruteforce_window_min"`
 		SMTPBruteForceSuppressMin  int `yaml:"smtp_bruteforce_suppress_min"`
@@ -1030,6 +1038,9 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.Thresholds.DomlogMaxFiles == 0 {
 		cfg.Thresholds.DomlogMaxFiles = 500
+	}
+	if cfg.Thresholds.DomlogTailLines == 0 {
+		cfg.Thresholds.DomlogTailLines = 500
 	}
 	if cfg.Thresholds.ModSecEscalationHits == 0 {
 		cfg.Thresholds.ModSecEscalationHits = 3

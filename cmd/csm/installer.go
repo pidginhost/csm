@@ -246,6 +246,7 @@ thresholds:
   filesystem_scan_interval_min: 30
   brute_force_window: 5000
   domlog_max_files: 500
+  domlog_tail_lines: 500
   # HTTP request flood detector. 0 disables. Sample local baseline
   # traffic before raising; CDN and carrier NAT traffic can concentrate
   # many visitors behind one source IP.

@@ -760,6 +760,39 @@ func TestValidate_DomlogMaxFilesRange(t *testing.T) {
 	}
 }
 
+func TestValidate_DomlogTailLinesRange(t *testing.T) {
+	cases := []struct {
+		name    string
+		value   int
+		wantErr bool
+	}{
+		{"zero uses default", 0, false},
+		{"too small rejected", 9, true},
+		{"minimum accepted", 10, false},
+		{"maximum accepted", 100000, false},
+		{"negative rejected", -1, true},
+		{"above maximum rejected", 100001, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{Hostname: "test"}
+			cfg.Alerts.Email.Enabled = true
+			cfg.Alerts.Email.To = []string{"admin@test.com"}
+			cfg.Alerts.Email.SMTP = "localhost:25"
+			cfg.Alerts.Email.From = "csm@test.com"
+			cfg.Alerts.MaxPerHour = 10
+			cfg.Thresholds.DomlogTailLines = tc.value
+
+			results := Validate(cfg)
+			hasErr := hasResult(results, "error", "thresholds.domlog_tail_lines")
+			if hasErr != tc.wantErr {
+				t.Errorf("hasErr = %v, want %v (results=%v)", hasErr, tc.wantErr, results)
+			}
+		})
+	}
+}
+
 func TestValidateDeepSectionAlertsOnlyProbesAlerts(t *testing.T) {
 	cfg := &Config{}
 	cfg.Alerts.Email.Enabled = true

@@ -129,6 +129,7 @@ thresholds:
   plugin_check_interval_min: 1440       # WordPress plugin check interval (default: 1440)
   brute_force_window: 5000              # failed auth attempts window (default: 5000)
   domlog_max_files: 500                 # per-domain access logs per WP brute-force scan (default: 500)
+  domlog_tail_lines: 500                # trailing lines tailed from each domlog per scan (default: 500)
 
   # HTTP request flood and User-Agent spoof detection.
   # Both detectors scan the same per-vhost access-log stream as the WP

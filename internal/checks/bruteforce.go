@@ -21,8 +21,10 @@ const (
 	webmailThreshold = 10
 	apiFailThreshold = 10
 
-	// domlogTailLines is how many lines to read from each domlog.
-	// 500 lines covers ~10 minutes of traffic on a busy site.
+	// domlogTailLines is the built-in default for how many trailing lines
+	// to read from each domlog. Operators can override via
+	// cfg.Thresholds.DomlogTailLines. 500 covers ~10 minutes of traffic
+	// on a busy site.
 	domlogTailLines = 500
 
 	// domlogMaxAge skips domlogs not modified recently (inactive sites).
@@ -210,6 +212,15 @@ func addCentralAccessLog(out map[string]bool, path string) {
 	}
 }
 
+// effectiveDomlogTailLines returns the operator-configured
+// thresholds.domlog_tail_lines value or the built-in default when unset.
+func effectiveDomlogTailLines(cfg *config.Config) int {
+	if cfg == nil || cfg.Thresholds.DomlogTailLines <= 0 {
+		return domlogTailLines
+	}
+	return cfg.Thresholds.DomlogTailLines
+}
+
 // scanDomlogsStats tails the discovered per-vhost logs and feeds each
 // parsed record into stats. Returns the number of files actually tailed.
 func scanDomlogsStats(ctx context.Context, cfg *config.Config, stats *domlogStats) int {
@@ -218,6 +229,7 @@ func scanDomlogsStats(ctx context.Context, cfg *config.Config, stats *domlogStat
 	}
 	paths := discoverFreshDomlogs(ctx, cfg.Thresholds.DomlogMaxFiles)
 	classifier := currentBotClassifier(cfg)
+	tailLines := effectiveDomlogTailLines(cfg)
 	scanned := 0
 	for _, p := range paths {
 		if ctx != nil {
@@ -225,7 +237,7 @@ func scanDomlogsStats(ctx context.Context, cfg *config.Config, stats *domlogStat
 				break
 			}
 		}
-		for _, line := range tailFile(p, domlogTailLines) {
+		for _, line := range tailFile(p, tailLines) {
 			rec, ok := parseAccessLogRecord(line)
 			if !ok {
 				continue
@@ -241,7 +253,9 @@ func scanDomlogsStats(ctx context.Context, cfg *config.Config, stats *domlogStat
 // caller-owned wpLogin / xmlrpc / userEnum counters via countBruteForce.
 // Returns the number of files actually tailed.
 //
-// maxFiles <= 0 falls back to the built-in domlogMaxFiles default.
+// maxFiles <= 0 falls back to the built-in domlogMaxFiles default. Tail
+// length is the built-in default; the typed wrapper scanDomlogsStats
+// honours cfg.Thresholds.DomlogTailLines when called from production.
 func scanDomlogs(ctx context.Context, infraIPs []string, maxFiles int, wpLogin, xmlrpc, userEnum map[string]int) int {
 	paths := discoverFreshDomlogs(ctx, maxFiles)
 	scanned := 0

@@ -142,6 +142,7 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "plugin_check_interval_min", Type: "int", Label: "Plugin check interval (min)", Min: int64p(1), FieldGroup: FieldGroupScanIntervals},
 			{YAMLPath: "brute_force_window", Type: "int", Label: "Brute force window", Min: int64p(1), FieldGroup: FieldGroupWebBruteForce},
 			{YAMLPath: "domlog_max_files", Type: "int", Label: "Domlog max files", Min: int64p(1), Max: int64p(100000), FieldGroup: FieldGroupWebBruteForce},
+			{YAMLPath: "domlog_tail_lines", Type: "int", Label: "Domlog tail lines", Min: int64p(10), Max: int64p(100000), FieldGroup: FieldGroupWebBruteForce, Help: "Trailing lines tailed from each per-domain access log per WP brute-force cycle. Default 500 covers ~10 minutes of traffic on a busy site."},
 			{YAMLPath: "http_flood_threshold", Type: "int", Label: "HTTP flood threshold", Min: int64p(0), FieldGroup: FieldGroupWebBruteForce, Help: "Per-IP requests per window that emits http_request_flood. 0 disables. Sample baseline first."},
 			{YAMLPath: "http_flood_window_min", Type: "int", Label: "HTTP flood window (min)", Min: int64p(1), FieldGroup: FieldGroupWebBruteForce},
 			{YAMLPath: "http_ua_spoof_threshold", Type: "int", Label: "UA spoof threshold", Min: int64p(1), FieldGroup: FieldGroupWebBruteForce},
