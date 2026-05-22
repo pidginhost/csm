@@ -802,6 +802,7 @@ func TestSettingsSchemaCarriesFieldGroups(t *testing.T) {
 		`FieldGroup string`,
 		`YAMLPath: "domlog_max_files"`,
 		`YAMLPath: "domlog_tail_lines"`,
+		`YAMLPath: "domlog_max_age_min"`,
 		"FieldGroupAccessPorts",
 		"FieldGroupRateLimits",
 		"FieldGroupFloodProtection",

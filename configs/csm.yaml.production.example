@@ -95,6 +95,7 @@ thresholds:
   brute_force_window: 5000
   domlog_max_files: 500
   domlog_tail_lines: 500
+  domlog_max_age_min: 30
   # Mail brute / spray detector tuning. Defaults are
   # cPanel-mail-host-tested; lower the bruteforce_threshold for
   # smaller hosts, raise it for hosts behind shared NAT.

@@ -123,20 +123,24 @@ var knownCentralAccessLogPaths = []string{
 // discoverFreshDomlogs returns per-vhost access-log paths ready to tail.
 // It globs platform.DomlogGlobs, dedupes by resolved-symlink real path,
 // excludes the well-known central logs (so they are not double-counted),
-// drops files untouched in the last domlogMaxAge, ranks survivors
+// drops files untouched in the last maxAge, ranks survivors
 // most-recent-first, and caps the result at maxFiles.
 //
 // Mtime-desc + cap is the fairness invariant: lexical glob order plus a
 // hard cap would systematically hide brute force on late-alphabet
 // domains. maxFiles <= 0 falls back to the built-in domlogMaxFiles
-// default. A canceled ctx returns nil and stops before any further work.
+// default; maxAge <= 0 falls back to the built-in domlogMaxAge default.
+// A canceled ctx returns nil and stops before any further work.
 //
 // Shared by scanDomlogs and scanDomlogsStats so the discovery semantics
 // stay locked together; each caller layers its own per-line aggregator
 // on top.
-func discoverFreshDomlogs(ctx context.Context, maxFiles int) []string {
+func discoverFreshDomlogs(ctx context.Context, maxFiles int, maxAge time.Duration) []string {
 	if maxFiles <= 0 {
 		maxFiles = domlogMaxFiles
+	}
+	if maxAge <= 0 {
+		maxAge = domlogMaxAge
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -163,7 +167,7 @@ func discoverFreshDomlogs(ctx context.Context, maxFiles int) []string {
 	}
 	fresh := make([]domlogEntry, 0, len(domlogs))
 	seen := make(map[string]bool)
-	cutoff := time.Now().Add(-domlogMaxAge)
+	cutoff := time.Now().Add(-maxAge)
 
 	for _, dl := range domlogs {
 		if err := ctx.Err(); err != nil {
@@ -250,13 +254,23 @@ func effectiveDomlogTailLines(cfg *config.Config) int {
 	return cfg.Thresholds.DomlogTailLines
 }
 
+// effectiveDomlogMaxAge returns the operator-configured
+// thresholds.domlog_max_age_min as a Duration, or the built-in default
+// when unset.
+func effectiveDomlogMaxAge(cfg *config.Config) time.Duration {
+	if cfg == nil || cfg.Thresholds.DomlogMaxAgeMin <= 0 {
+		return domlogMaxAge
+	}
+	return time.Duration(cfg.Thresholds.DomlogMaxAgeMin) * time.Minute
+}
+
 // scanDomlogsStats tails the discovered per-vhost logs and feeds each
 // parsed record into stats. Returns the number of files actually tailed.
 func scanDomlogsStats(ctx context.Context, cfg *config.Config, stats *domlogStats) int {
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
-	paths := discoverFreshDomlogs(ctx, cfg.Thresholds.DomlogMaxFiles)
+	paths := discoverFreshDomlogs(ctx, cfg.Thresholds.DomlogMaxFiles, effectiveDomlogMaxAge(cfg))
 	classifier := currentBotClassifier(cfg)
 	tailLines := effectiveDomlogTailLines(cfg)
 	scanned := 0
@@ -286,7 +300,7 @@ func scanDomlogsStats(ctx context.Context, cfg *config.Config, stats *domlogStat
 // length is the built-in default; the typed wrapper scanDomlogsStats
 // honours cfg.Thresholds.DomlogTailLines when called from production.
 func scanDomlogs(ctx context.Context, infraIPs []string, maxFiles int, wpLogin, xmlrpc, userEnum map[string]int) int {
-	paths := discoverFreshDomlogs(ctx, maxFiles)
+	paths := discoverFreshDomlogs(ctx, maxFiles, 0)
 	scanned := 0
 	for _, p := range paths {
 		if ctx != nil {

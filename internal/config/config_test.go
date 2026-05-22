@@ -43,6 +43,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Thresholds.DomlogTailLines != 500 {
 		t.Errorf("domlog_tail_lines = %d, want 500", cfg.Thresholds.DomlogTailLines)
 	}
+	if cfg.Thresholds.DomlogMaxAgeMin != 30 {
+		t.Errorf("domlog_max_age_min = %d, want 30", cfg.Thresholds.DomlogMaxAgeMin)
+	}
 	if cfg.Thresholds.HTTPFloodWindowMin != 5 {
 		t.Errorf("http_flood_window_min = %d, want 5", cfg.Thresholds.HTTPFloodWindowMin)
 	}

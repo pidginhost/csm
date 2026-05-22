@@ -63,7 +63,7 @@ func TestDiscoverFreshDomlogs_RanksFreshOverStaleAndAppliesCap(t *testing.T) {
 		stat: os.Stat,
 	})
 
-	got := discoverFreshDomlogs(context.Background(), 0)
+	got := discoverFreshDomlogs(context.Background(), 0, 0)
 	if len(got) != 2 {
 		t.Fatalf("want 2 (stale dropped), got %d: %v", len(got), got)
 	}
@@ -73,7 +73,7 @@ func TestDiscoverFreshDomlogs_RanksFreshOverStaleAndAppliesCap(t *testing.T) {
 		t.Errorf("ranking wrong; got %v want [%s %s]", got, wantFresh, wantFreshish)
 	}
 
-	capped := discoverFreshDomlogs(context.Background(), 1)
+	capped := discoverFreshDomlogs(context.Background(), 1, 0)
 	if len(capped) != 1 || capped[0] != wantFresh {
 		t.Errorf("cap=1 must keep most-recent only; got %v", capped)
 	}
@@ -145,7 +145,7 @@ func TestDiscoverFreshDomlogs_ExcludesConfiguredCentralAccessLogs(t *testing.T) 
 		stat: os.Stat,
 	})
 
-	got := discoverFreshDomlogs(context.Background(), 0)
+	got := discoverFreshDomlogs(context.Background(), 0, 0)
 	wantVhost := resolveReal(t, vhost)
 	if len(got) != 1 || got[0] != wantVhost {
 		t.Errorf("central log not excluded; got %v want only %s", got, wantVhost)

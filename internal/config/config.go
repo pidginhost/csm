@@ -126,6 +126,14 @@ type Config struct {
 		// per-IP counter window is wide enough to trip a threshold.
 		DomlogTailLines int `yaml:"domlog_tail_lines"`
 
+		// DomlogMaxAgeMin is how many minutes back the WP brute force
+		// scanner accepts a per-domain access log as "fresh enough to
+		// scan." Logs whose mtime is older than this are skipped. Default
+		// 30 keeps the scan focused on currently-active vhosts. Raise on
+		// low-traffic hosts where a slow-burn dictionary attack against
+		// a quiet domain still needs to fall inside the window.
+		DomlogMaxAgeMin int `yaml:"domlog_max_age_min"`
+
 		SMTPBruteForceThreshold    int `yaml:"smtp_bruteforce_threshold"`
 		SMTPBruteForceWindowMin    int `yaml:"smtp_bruteforce_window_min"`
 		SMTPBruteForceSuppressMin  int `yaml:"smtp_bruteforce_suppress_min"`
@@ -1041,6 +1049,9 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.Thresholds.DomlogTailLines == 0 {
 		cfg.Thresholds.DomlogTailLines = 500
+	}
+	if cfg.Thresholds.DomlogMaxAgeMin == 0 {
+		cfg.Thresholds.DomlogMaxAgeMin = 30
 	}
 	if cfg.Thresholds.ModSecEscalationHits == 0 {
 		cfg.Thresholds.ModSecEscalationHits = 3

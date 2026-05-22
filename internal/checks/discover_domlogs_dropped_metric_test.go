@@ -39,7 +39,7 @@ func TestDiscoverFreshDomlogs_SilentDropsHaveTelemetry(t *testing.T) {
 
 	beforeBroken := scrapeDomlogDropReasons(t)
 
-	got := discoverFreshDomlogs(context.Background(), 0)
+	got := discoverFreshDomlogs(context.Background(), 0, 0)
 	if len(got) != 1 {
 		t.Errorf("expected 1 surviving log, got %d (%v)", len(got), got)
 	}
@@ -71,7 +71,7 @@ func TestDiscoverFreshDomlogs_StatErrorsCounted(t *testing.T) {
 	})
 
 	before := scrapeDomlogDropReasons(t)
-	if got := discoverFreshDomlogs(context.Background(), 0); len(got) != 0 {
+	if got := discoverFreshDomlogs(context.Background(), 0, 0); len(got) != 0 {
 		t.Errorf("stat failure must drop the entry, got %v", got)
 	}
 	after := scrapeDomlogDropReasons(t)
@@ -100,7 +100,7 @@ func TestDiscoverFreshDomlogs_StaleDropsNotCounted(t *testing.T) {
 	})
 
 	before := scrapeDomlogDropReasons(t)
-	_ = discoverFreshDomlogs(context.Background(), 0)
+	_ = discoverFreshDomlogs(context.Background(), 0, 0)
 	after := scrapeDomlogDropReasons(t)
 	for reason, want := range before {
 		if after[reason] != want {
