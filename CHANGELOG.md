@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Per-account scanners (SSH key audit, cPanel API token audit, Dovecot mailbox password audit, the Magento, Joomla, Drupal, and OpenCart database content scanners, the MySQL persistence-object scanner, the mail forwarder / vfilter audit, and the filesystem backdoor + hidden-file scanner) now rank recently modified accounts first and stop sooner on scan cancellation, so late-alphabet accounts are no longer systematically hidden when a check timeout cuts iteration short.
+- Per-account scanners (SSH key audit, cPanel API token audit, Dovecot mailbox password audit, the Magento, Joomla, Drupal, and OpenCart database content scanners, the MySQL persistence-object scanner, the mail forwarder / vfilter audit, the filesystem backdoor + hidden-file scanner, and the crontab + cron.d auditor) now rank recently modified accounts first and stop sooner on scan cancellation, so late-alphabet accounts are no longer systematically hidden when a check timeout cuts iteration short.
 - WP brute-force domlog discovery is now consolidated in one helper shared by both scanners. Resolved central access-log targets are excluded from the per-vhost pass to avoid duplicate counting when paths overlap.
 - Large access logs now honor the requested tail depth instead of stopping at a fixed byte window, so raised domlog limits work on high-volume domains.
 
