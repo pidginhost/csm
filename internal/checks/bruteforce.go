@@ -81,113 +81,34 @@ func CheckWPBruteForce(ctx context.Context, cfg *config.Config, _ *state.Store) 
 	return findings
 }
 
-// scanDomlogsStats globs per-domain access logs, deduplicates symlinks, drops
-// stale files, ranks survivors most-recent-first, then tails up to maxFiles
-// of them and feeds each parsed record into stats. The mtime-desc sort + cap
-// protects late-alphabet domains on hosts with thousands of vhosts.
-//
-// Separated from scanDomlogs so tests that rely on scanDomlogs' map-based API
-// keep compiling; both functions share the same file-discovery behaviour.
-func scanDomlogsStats(ctx context.Context, cfg *config.Config, stats *domlogStats) int {
-	if cfg == nil {
-		cfg = &config.Config{}
-	}
-	maxFiles := cfg.Thresholds.DomlogMaxFiles
-	if maxFiles <= 0 {
-		maxFiles = domlogMaxFiles
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if err := ctx.Err(); err != nil {
-		return 0
-	}
-
-	globs := platform.Detect().DomlogGlobs
-	var domlogs []string
-	for _, pattern := range globs {
-		if err := ctx.Err(); err != nil {
-			return 0
-		}
-		matches, _ := osFS.Glob(pattern)
-		domlogs = append(domlogs, matches...)
-	}
-
-	// Exclude central access logs -- scanned separately to avoid double-counting.
-	excluded := map[string]bool{
-		"/var/log/apache2/access.log":     true,
-		"/var/log/apache2/access_log":     true,
-		"/var/log/httpd/access.log":       true,
-		"/var/log/httpd/access_log":       true,
-		"/var/log/nginx/access.log":       true,
-		"/usr/local/lsws/logs/access.log": true,
-	}
-
-	type domlogEntry struct {
-		path  string
-		mtime time.Time
-	}
-	var fresh []domlogEntry
-	seen := make(map[string]bool)
-	cutoff := time.Now().Add(-domlogMaxAge)
-
-	for _, dl := range domlogs {
-		if err := ctx.Err(); err != nil {
-			return 0
-		}
-		real, err := filepath.EvalSymlinks(dl)
-		if err != nil || seen[real] || excluded[real] {
-			continue
-		}
-		seen[real] = true
-		info, err := osFS.Stat(real)
-		if err != nil || info.ModTime().Before(cutoff) {
-			continue
-		}
-		fresh = append(fresh, domlogEntry{path: real, mtime: info.ModTime()})
-	}
-
-	if err := ctx.Err(); err != nil {
-		return 0
-	}
-
-	sort.Slice(fresh, func(i, j int) bool {
-		if fresh[i].mtime.Equal(fresh[j].mtime) {
-			return fresh[i].path < fresh[j].path
-		}
-		return fresh[i].mtime.After(fresh[j].mtime)
-	})
-	if len(fresh) > maxFiles {
-		fresh = fresh[:maxFiles]
-	}
-
-	scanned := 0
-	for _, e := range fresh {
-		if err := ctx.Err(); err != nil {
-			break
-		}
-		lines := tailFile(e.path, domlogTailLines)
-		for _, line := range lines {
-			rec, ok := parseAccessLogRecord(line)
-			if !ok {
-				continue
-			}
-			stats.scan(rec, cfg, currentBotClassifier(cfg))
-		}
-		scanned++
-	}
-	return scanned
+// centralAccessLogs lists the well-known central web-server log paths that
+// CheckWPBruteForce tails on its own pass. Per-vhost discovery must filter
+// these out, otherwise busy hosts that symlink central logs into a
+// per-vhost path would have the same lines counted twice.
+var centralAccessLogs = map[string]bool{
+	"/var/log/apache2/access.log":     true,
+	"/var/log/apache2/access_log":     true,
+	"/var/log/httpd/access.log":       true,
+	"/var/log/httpd/access_log":       true,
+	"/var/log/nginx/access.log":       true,
+	"/usr/local/lsws/logs/access.log": true,
 }
 
-// scanDomlogs globs per-domain access logs, deduplicates symlinks, drops
-// stale files, ranks survivors most-recent-first, then tails up to maxFiles
-// of them. The mtime-desc sort + cap is what protects late-alphabet domains
-// on hosts with thousands of vhosts: lexical glob order would otherwise
-// hide brute force against domains beyond the cap.
+// discoverFreshDomlogs returns per-vhost access-log paths ready to tail.
+// It globs platform.DomlogGlobs, dedupes by resolved-symlink real path,
+// excludes the well-known central logs (so they are not double-counted),
+// drops files untouched in the last domlogMaxAge, ranks survivors
+// most-recent-first, and caps the result at maxFiles.
 //
-// maxFiles <= 0 means "use built-in default". A cancelled ctx stops before
-// expensive discovery work and before opening the next file.
-func scanDomlogs(ctx context.Context, infraIPs []string, maxFiles int, wpLogin, xmlrpc, userEnum map[string]int) int {
+// Mtime-desc + cap is the fairness invariant: lexical glob order plus a
+// hard cap would systematically hide brute force on late-alphabet
+// domains. maxFiles <= 0 falls back to the built-in domlogMaxFiles
+// default. A canceled ctx returns nil and stops before any further work.
+//
+// Shared by scanDomlogs and scanDomlogsStats so the discovery semantics
+// stay locked together; each caller layers its own per-line aggregator
+// on top.
+func discoverFreshDomlogs(ctx context.Context, maxFiles int) []string {
 	if maxFiles <= 0 {
 		maxFiles = domlogMaxFiles
 	}
@@ -195,58 +116,42 @@ func scanDomlogs(ctx context.Context, infraIPs []string, maxFiles int, wpLogin, 
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
-		return 0
+		return nil
 	}
 
 	globs := platform.Detect().DomlogGlobs
 	var domlogs []string
 	for _, pattern := range globs {
 		if err := ctx.Err(); err != nil {
-			return 0
+			return nil
 		}
 		matches, _ := osFS.Glob(pattern)
 		domlogs = append(domlogs, matches...)
-	}
-
-	// Exclude central access logs -- they are scanned separately by
-	// CheckWPBruteForce so counting them here would double-count traffic.
-	// Go's filepath.Glob has no negation, so we filter after expansion.
-	excluded := map[string]bool{
-		"/var/log/apache2/access.log":     true,
-		"/var/log/apache2/access_log":     true,
-		"/var/log/httpd/access.log":       true,
-		"/var/log/httpd/access_log":       true,
-		"/var/log/nginx/access.log":       true,
-		"/usr/local/lsws/logs/access.log": true,
 	}
 
 	type domlogEntry struct {
 		path  string
 		mtime time.Time
 	}
-	var fresh []domlogEntry
+	fresh := make([]domlogEntry, 0, len(domlogs))
 	seen := make(map[string]bool)
 	cutoff := time.Now().Add(-domlogMaxAge)
 
 	for _, dl := range domlogs {
 		if err := ctx.Err(); err != nil {
-			return 0
+			return nil
 		}
 
-		// Resolve symlinks first -- cPanel often symlinks SSL and non-SSL
-		// logs to the same backing file, so we dedupe on the real path.
+		// Resolve symlinks first -- cPanel symlinks SSL and non-SSL
+		// logs to the same backing file; dedupe on the real path.
 		real, err := filepath.EvalSymlinks(dl)
 		if err != nil {
 			continue
 		}
-		if seen[real] {
+		if seen[real] || centralAccessLogs[real] {
 			continue
 		}
 		seen[real] = true
-
-		if excluded[real] {
-			continue
-		}
 
 		// Inactive sites add no signal; filter before the cap so they
 		// cannot crowd active sites out of the budget.
@@ -259,10 +164,9 @@ func scanDomlogs(ctx context.Context, infraIPs []string, maxFiles int, wpLogin, 
 	}
 
 	if err := ctx.Err(); err != nil {
-		return 0
+		return nil
 	}
 
-	// Rank by mtime desc so the cap chops the least-recently-active tail.
 	sort.Slice(fresh, func(i, j int) bool {
 		if fresh[i].mtime.Equal(fresh[j].mtime) {
 			return fresh[i].path < fresh[j].path
@@ -273,16 +177,58 @@ func scanDomlogs(ctx context.Context, infraIPs []string, maxFiles int, wpLogin, 
 		fresh = fresh[:maxFiles]
 	}
 
+	out := make([]string, len(fresh))
+	for i, e := range fresh {
+		out[i] = e.path
+	}
+	return out
+}
+
+// scanDomlogsStats tails the discovered per-vhost logs and feeds each
+// parsed record into stats. Returns the number of files actually tailed.
+func scanDomlogsStats(ctx context.Context, cfg *config.Config, stats *domlogStats) int {
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	paths := discoverFreshDomlogs(ctx, cfg.Thresholds.DomlogMaxFiles)
+	classifier := currentBotClassifier(cfg)
 	scanned := 0
-	for _, e := range fresh {
-		if err := ctx.Err(); err != nil {
-			break
+	for _, p := range paths {
+		if ctx != nil {
+			if err := ctx.Err(); err != nil {
+				break
+			}
 		}
-		lines := tailFile(e.path, domlogTailLines)
+		for _, line := range tailFile(p, domlogTailLines) {
+			rec, ok := parseAccessLogRecord(line)
+			if !ok {
+				continue
+			}
+			stats.scan(rec, cfg, classifier)
+		}
+		scanned++
+	}
+	return scanned
+}
+
+// scanDomlogs tails the discovered per-vhost logs and increments the
+// caller-owned wpLogin / xmlrpc / userEnum counters via countBruteForce.
+// Returns the number of files actually tailed.
+//
+// maxFiles <= 0 falls back to the built-in domlogMaxFiles default.
+func scanDomlogs(ctx context.Context, infraIPs []string, maxFiles int, wpLogin, xmlrpc, userEnum map[string]int) int {
+	paths := discoverFreshDomlogs(ctx, maxFiles)
+	scanned := 0
+	for _, p := range paths {
+		if ctx != nil {
+			if err := ctx.Err(); err != nil {
+				break
+			}
+		}
+		lines := tailFile(p, domlogTailLines)
 		countBruteForce(lines, infraIPs, wpLogin, xmlrpc, userEnum)
 		scanned++
 	}
-
 	return scanned
 }
 

@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Per-account scanners (SSH key audit, cPanel API token audit, Dovecot mailbox password audit, and the Magento, Joomla, Drupal, and OpenCart database content scanners) now rank recently modified accounts first and stop sooner on scan cancellation, so late-alphabet accounts are no longer systematically hidden when a check timeout cuts iteration short.
+- WP brute-force domlog discovery is now consolidated in one helper shared by both the legacy map-based and the newer per-scan-stats scanners, so the dedupe, freshness, ranking, and cap rules cannot drift between the two callers.
 
 ## [3.6.0] - 2026-05-22
 
