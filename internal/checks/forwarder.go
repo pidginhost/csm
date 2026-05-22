@@ -153,6 +153,9 @@ func fileContentHash(path string) (string, error) {
 // patterns. Uses internal throttle: skips if last refresh was less than
 // password_check_interval_min ago (reuses the same interval).
 func CheckForwarders(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	db := store.Global()
 	if db == nil {
 		return nil
@@ -174,9 +177,13 @@ func CheckForwarders(ctx context.Context, cfg *config.Config, _ *state.Store) []
 	localDomains := loadLocalDomains()
 	var findings []alert.Finding
 
-	// Audit valiases
+	// Audit valiases. Rank by mtime desc so recently-changed mail
+	// domains process first when the check timeout cuts iteration short.
 	valiasFiles, _ := osFS.Glob("/etc/valiases/*")
-	for _, path := range valiasFiles {
+	for _, path := range rankPathsByMtimeDesc(ctx, valiasFiles, 0) {
+		if ctx.Err() != nil {
+			return findings
+		}
 		domain := filepath.Base(path)
 		entries := auditValiasFile(path, domain, localDomains, cfg)
 		findings = append(findings, entries...)
@@ -190,7 +197,10 @@ func CheckForwarders(ctx context.Context, cfg *config.Config, _ *state.Store) []
 
 	// Audit vfilters
 	vfilterFiles, _ := osFS.Glob("/etc/vfilters/*")
-	for _, path := range vfilterFiles {
+	for _, path := range rankPathsByMtimeDesc(ctx, vfilterFiles, 0) {
+		if ctx.Err() != nil {
+			return findings
+		}
 		domain := filepath.Base(path)
 		entries := auditVfilterFile(path, domain, localDomains, cfg)
 		findings = append(findings, entries...)
