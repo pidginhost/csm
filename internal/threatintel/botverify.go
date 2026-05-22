@@ -29,6 +29,16 @@ func newVerifier(r resolver, domains []string) *verifier {
 	return &verifier{res: r, domains: low}
 }
 
+// LogicVersion identifies the current shape of the bot-verifier logic
+// (BotDomains suffix list, ClaimedBotFromUA mapping, no-PTR semantics).
+// Bump this whenever a change here would invalidate cache entries
+// written by an older build -- for example, adding a new domain suffix
+// that turns prior negatives into positives, or adding a new UA -> bot
+// identity mapping. The daemon calls store.DB.EnsureBotVerifyLogicVersion
+// at startup with this value; a mismatch wipes the botverify bucket so
+// the next scan re-verifies every IP under the new rules.
+const LogicVersion = 2
+
 // ErrUnverifiable signals that the resolver returned no usable PTR for
 // the source IP, so the verifier cannot prove or disprove the claimed
 // bot identity. Callers treat this as fail-open: do not cache, do not

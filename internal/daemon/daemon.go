@@ -673,6 +673,12 @@ func (d *Daemon) Run() error {
 	// non-nil store so the result can be persisted.
 	if d.cfg.BotVerifyEnabled() {
 		if db := store.Global(); db != nil {
+			if dropped, err := db.EnsureBotVerifyLogicVersion(threatintel.LogicVersion); err != nil {
+				csmlog.Warn("bot-verify cache version check failed", "err", err)
+			} else if dropped {
+				csmlog.Info("bot-verify cache dropped after logic upgrade",
+					"logic_version", threatintel.LogicVersion)
+			}
 			bv := threatintel.NewAsyncBotVerifier(db.PutBotVerify)
 			d.wg.Add(1)
 			obs.Go("bot-verify", func() {

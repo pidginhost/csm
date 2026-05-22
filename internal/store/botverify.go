@@ -55,6 +55,52 @@ func (db *DB) PutBotVerify(ip net.IP, bot string, verified bool, expiresAt time.
 	})
 }
 
+// EnsureBotVerifyLogicVersion compares the stored cache logic version
+// with version and, on mismatch (or when no marker exists yet), drops
+// the entire botverify bucket and records the new version. The marker
+// lives in the "meta" bucket under botverify:logic_version. Returns
+// true when the bucket was dropped.
+//
+// Use this from daemon startup so that any change to the verifier
+// logic (BotDomains suffix list, ClaimedBotFromUA mapping, etc.)
+// automatically invalidates entries written under the old rules.
+// Operators do not need to know about the cache.
+func (db *DB) EnsureBotVerifyLogicVersion(version int) (bool, error) {
+	var dropped bool
+	err := db.bolt.Update(func(tx *bolt.Tx) error {
+		meta, mErr := tx.CreateBucketIfNotExists([]byte("meta"))
+		if mErr != nil {
+			return mErr
+		}
+		var stored int64 = -1
+		if raw := meta.Get([]byte("botverify:logic_version")); len(raw) == 8 {
+			stored = int64(binary.BigEndian.Uint64(raw))
+		}
+		if stored == int64(version) {
+			return nil
+		}
+		if b := tx.Bucket([]byte("botverify")); b != nil {
+			if dErr := tx.DeleteBucket([]byte("botverify")); dErr != nil {
+				return dErr
+			}
+		}
+		if _, cErr := tx.CreateBucket([]byte("botverify")); cErr != nil {
+			return cErr
+		}
+		var buf [8]byte
+		binary.BigEndian.PutUint64(buf[:], uint64(version)) // #nosec G115 -- logic version is a small positive integer
+		if pErr := meta.Put([]byte("botverify:logic_version"), buf[:]); pErr != nil {
+			return pErr
+		}
+		dropped = true
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return dropped, nil
+}
+
 // ResetBotVerify drops every cached PTR+forward-A result. Returns the
 // number of entries cleared. Use after a verifier-logic upgrade that
 // would invalidate prior negative cache entries (e.g., a domain suffix

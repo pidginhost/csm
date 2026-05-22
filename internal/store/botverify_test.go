@@ -90,6 +90,90 @@ func TestResetBotVerify_EmptyBucket(t *testing.T) {
 	}
 }
 
+func TestEnsureBotVerifyLogicVersion_MatchingVersionIsNoOp(t *testing.T) {
+	tmp := t.TempDir()
+	db, err := Open(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// First call: marker missing -- treat as a logic bump, marker stored.
+	if _, vErr := db.EnsureBotVerifyLogicVersion(2); vErr != nil {
+		t.Fatalf("first call: %v", vErr)
+	}
+	// Populate the bucket and re-call with the same version: cache stays.
+	exp := time.Now().Add(24 * time.Hour)
+	if perr := db.PutBotVerify(net.ParseIP("66.249.66.99"), "googlebot", true, exp); perr != nil {
+		t.Fatal(perr)
+	}
+	dropped, vErr := db.EnsureBotVerifyLogicVersion(2)
+	if vErr != nil {
+		t.Fatalf("re-call: %v", vErr)
+	}
+	if dropped {
+		t.Error("matching version must not drop bucket")
+	}
+	if _, valid := db.GetBotVerify(net.ParseIP("66.249.66.99"), "googlebot"); !valid {
+		t.Error("cache wiped despite matching version")
+	}
+}
+
+func TestEnsureBotVerifyLogicVersion_DropsOnMismatch(t *testing.T) {
+	tmp := t.TempDir()
+	db, err := Open(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	if _, vErr := db.EnsureBotVerifyLogicVersion(1); vErr != nil {
+		t.Fatal(vErr)
+	}
+	exp := time.Now().Add(24 * time.Hour)
+	if perr := db.PutBotVerify(net.ParseIP("198.51.100.5"), "facebookbot", false, exp); perr != nil {
+		t.Fatal(perr)
+	}
+
+	dropped, vErr := db.EnsureBotVerifyLogicVersion(2)
+	if vErr != nil {
+		t.Fatalf("EnsureBotVerifyLogicVersion(2): %v", vErr)
+	}
+	if !dropped {
+		t.Error("version mismatch should drop bucket")
+	}
+	if _, valid := db.GetBotVerify(net.ParseIP("198.51.100.5"), "facebookbot"); valid {
+		t.Error("entry survived version bump")
+	}
+}
+
+func TestEnsureBotVerifyLogicVersion_EvictsLegacyUnstampedCache(t *testing.T) {
+	tmp := t.TempDir()
+	db, err := Open(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	// Simulate a pre-versioning deploy: cache entries exist but no
+	// version marker is stored in the meta bucket.
+	exp := time.Now().Add(24 * time.Hour)
+	if perr := db.PutBotVerify(net.ParseIP("198.51.100.6"), "amazonbot", false, exp); perr != nil {
+		t.Fatal(perr)
+	}
+
+	dropped, vErr := db.EnsureBotVerifyLogicVersion(2)
+	if vErr != nil {
+		t.Fatalf("EnsureBotVerifyLogicVersion: %v", vErr)
+	}
+	if !dropped {
+		t.Error("legacy cache without version marker must be dropped on first run")
+	}
+	if _, valid := db.GetBotVerify(net.ParseIP("198.51.100.6"), "amazonbot"); valid {
+		t.Error("legacy entry survived version migration")
+	}
+}
+
 func TestBotVerifyCache_Expired(t *testing.T) {
 	tmp := t.TempDir()
 	db, err := Open(tmp)
