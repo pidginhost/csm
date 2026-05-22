@@ -28,7 +28,7 @@ func observeCrontabBase64Truncation() {
 	crontabBase64TruncatedOnce.Do(func() {
 		crontabBase64Truncated = metrics.NewCounter(
 			"csm_checks_crontab_base64_truncated_total",
-			"Crontab base64 candidates that exceeded the per-blob decode cap and were truncated before MatchCrontabPatterns ran on the decoded bytes. Sustained growth means the cap is hiding part of a real payload; raise crontabBase64BlobMaxBytes or split the scanner.",
+			"Crontab base64 candidates that exceeded the per-blob decode cap before decoded-content pattern matching ran. Sustained growth means the scanner inspected only the leading decoded window of large encoded cron content.",
 		)
 		metrics.MustRegister("csm_checks_crontab_base64_truncated_total", crontabBase64Truncated)
 	})

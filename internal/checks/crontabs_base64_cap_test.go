@@ -28,6 +28,12 @@ func TestMatchCrontabPatternsDeep_CatchesMaliciousInsideCappedBlob(t *testing.T)
 	}
 }
 
+func TestCrontabBase64BlobCapRemainsDecodeAligned(t *testing.T) {
+	if crontabBase64BlobMaxBytes%4 != 0 {
+		t.Fatalf("crontabBase64BlobMaxBytes=%d must stay divisible by 4", crontabBase64BlobMaxBytes)
+	}
+}
+
 // A blob padded past the cap is recorded in the truncation counter so
 // operators can spot the evasion attempt before it lands silently.
 func TestMatchCrontabPatternsDeep_OverCapBlobIncrementsCounter(t *testing.T) {
@@ -39,11 +45,9 @@ func TestMatchCrontabPatternsDeep_OverCapBlobIncrementsCounter(t *testing.T) {
 
 	cron := "* * * * * echo " + encoded + "\n"
 
-	before := scrapeSum(t, "csm_checks_crontab_truncated_total") +
-		scrapeSum(t, "csm_checks_crontab_base64_truncated_total")
+	before := scrapeSum(t, "csm_checks_crontab_base64_truncated_total")
 	_ = MatchCrontabPatternsDeep(cron)
-	after := scrapeSum(t, "csm_checks_crontab_truncated_total") +
-		scrapeSum(t, "csm_checks_crontab_base64_truncated_total")
+	after := scrapeSum(t, "csm_checks_crontab_base64_truncated_total")
 
 	if after-before < 1 {
 		t.Errorf("over-cap blob must increment truncation counter; before=%g after=%g", before, after)
