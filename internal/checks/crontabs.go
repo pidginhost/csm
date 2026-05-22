@@ -7,11 +7,33 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/state"
 )
+
+// crontabBase64Truncated counts base64 candidates that hit
+// crontabBase64BlobMaxBytes. Sustained growth means an attacker is
+// padding outer blobs to push the real payload past the decode window;
+// raise the cap or split the scanner.
+var (
+	crontabBase64Truncated     *metrics.Counter
+	crontabBase64TruncatedOnce sync.Once
+)
+
+func observeCrontabBase64Truncation() {
+	crontabBase64TruncatedOnce.Do(func() {
+		crontabBase64Truncated = metrics.NewCounter(
+			"csm_checks_crontab_base64_truncated_total",
+			"Crontab base64 candidates that exceeded the per-blob decode cap and were truncated before MatchCrontabPatterns ran on the decoded bytes. Sustained growth means the cap is hiding part of a real payload; raise crontabBase64BlobMaxBytes or split the scanner.",
+		)
+		metrics.MustRegister("csm_checks_crontab_base64_truncated_total", crontabBase64Truncated)
+	})
+	crontabBase64Truncated.Inc()
+}
 
 func CheckCrontabs(ctx context.Context, _ *config.Config, store *state.Store) []alert.Finding {
 	var findings []alert.Finding
@@ -115,9 +137,14 @@ func matchCrontabPatterns(content string) []string {
 }
 
 // crontabBase64BlobMaxBytes caps a single base64 candidate before decoding.
-// 8192 encoded bytes -> ~6KB decoded; comfortably fits any realistic cron
-// payload while bounding work on adversarial input.
-const crontabBase64BlobMaxBytes = 8192
+// 16384 encoded bytes -> ~12KB decoded; comfortably fits any realistic cron
+// payload while bounding work on adversarial input. An attacker padding
+// past this cap is metered via csm_checks_crontab_base64_truncated_total
+// so operators can spot and raise it.
+//
+// Must stay a multiple of 4 -- standard base64 needs aligned input or
+// DecodeString errors and the candidate is silently skipped.
+const crontabBase64BlobMaxBytes = 16384
 
 // crontabBase64BlobMaxCount caps the number of base64 candidates examined
 // per crontab. A realistic gsocket cron entry has one outer blob; we
@@ -144,6 +171,7 @@ func MatchCrontabPatternsDeep(content string) []string {
 	candidates := crontabBase64BlobRE.FindAllString(content, crontabBase64BlobMaxCount)
 	for _, blob := range candidates {
 		if len(blob) > crontabBase64BlobMaxBytes {
+			observeCrontabBase64Truncation()
 			blob = blob[:crontabBase64BlobMaxBytes]
 		}
 		decoded, err := base64.StdEncoding.DecodeString(blob)

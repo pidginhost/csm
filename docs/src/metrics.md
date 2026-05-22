@@ -108,6 +108,12 @@ curl -sk -H "Authorization: Bearer $METRICS_TOKEN" \
   directories and rescan recent files. Buckets: 0.01 s .. 60 s.
   Watch p95: reconcile stealing tens of seconds means bulk events
   are piling up faster than the walker can keep up.
+- `csm_checks_crontab_base64_truncated_total` (counter):
+  crontab base64 candidates that exceeded the per-blob decode cap
+  and were truncated before the decoded-content pattern match ran.
+  Sustained growth means the cap is hiding part of a real payload;
+  raise `crontabBase64BlobMaxBytes` (or split the scanner) and
+  redeploy.
 - `csm_checks_domlog_discovery_dropped_total{reason}` (counter):
   per-vhost access-log paths the WP brute-force domlog discovery
   helper dropped before scanning. Labels: `reason` is

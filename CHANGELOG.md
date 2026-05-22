@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New `thresholds.domlog_tail_lines` knob (default 500) controls how many trailing lines the WP brute-force scanner reads from each per-domain access log. Raise on hosts where slow-burn attacks against high-volume domains spread across more than 500 lines per scan interval.
 - Added real-time PHP content-scan truncation telemetry so operators can see when large files exceed the scan window before tuning limits.
 - Added domlog discovery drop telemetry so operators can see when broken symlinks or stat failures silently shrink the per-vhost scan set.
+- Added crontab base64 decode-cap telemetry; the per-blob decode window also doubled from 8 KiB to 16 KiB so realistic gsocket-style payloads keep landing inside the scanned region.
 
 ## [3.6.0] - 2026-05-22
 
