@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- Closed the CodeQL findings backlog: hardened zip-slip containment on archive import, HTML-escaped the IP echoed back on the challenge page, sanitised quarantine paths before logging, fixed off-by-one bounds in two string scanners, capped allocation hints driven by config size, and ensured signed-narrowing checks on values parsed out of /proc.
+- Closed the CodeQL findings backlog with stricter archive import containment, safe challenge and quarantine logging output, bounded parser/allocation paths, and safe numeric handling for proc-derived values.
 
 ## [3.6.0] - 2026-05-22
 

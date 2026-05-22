@@ -139,6 +139,16 @@ func humanBytes(b int64) string {
 	}
 }
 
+const maxInt64Value = int64(1<<63 - 1)
+
+func kibToDisplayBytes(kib uint64) int64 {
+	const maxKiBForInt64Bytes = uint64(maxInt64Value / 1024)
+	if kib > maxKiBForInt64Bytes {
+		return maxInt64Value
+	}
+	return int64(kib) * 1024
+}
+
 // CheckLoadAverage compares load averages against per-core thresholds
 // from config. The 1-minute load drives the Critical / High findings;
 // when 1-minute is below the High threshold we additionally check the
@@ -356,25 +366,11 @@ func CheckSwapAndOOM(ctx context.Context, cfg *config.Config, _ *state.Store) []
 		usagePct := float64(swapUsed) / float64(swapTotal) * 100
 
 		if usagePct > 50 {
-			// Both swap counts are in KiB. Cap before *1024 conversion to
-			// keep the int64 multiplication well inside the signed range
-			// (any real swap configuration is many orders of magnitude
-			// below this); caps elide the CodeQL overflow warning while
-			// keeping operator-visible numbers exact for realistic input.
-			const swapKiBCap = int64(1) << 50 // 1 PiB worth of KiB
-			swapUsedI := int64(swapUsed)
-			swapTotalI := int64(swapTotal)
-			if swapUsed > 1<<62 {
-				swapUsedI = swapKiBCap
-			}
-			if swapTotal > 1<<62 {
-				swapTotalI = swapKiBCap
-			}
 			findings = append(findings, alert.Finding{
 				Severity:  alert.High,
 				Check:     "perf_memory",
 				Message:   "High swap usage",
-				Details:   fmt.Sprintf("Swap used: %s / %s (%.0f%%)", humanBytes(swapUsedI*1024), humanBytes(swapTotalI*1024), usagePct),
+				Details:   fmt.Sprintf("Swap used: %s / %s (%.0f%%)", humanBytes(kibToDisplayBytes(swapUsed)), humanBytes(kibToDisplayBytes(swapTotal)), usagePct),
 				Timestamp: time.Now(),
 			})
 		}

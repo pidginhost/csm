@@ -98,6 +98,15 @@ func TestParseHexAddrShortIP(t *testing.T) {
 	}
 }
 
+func TestParseHexAddrMalformedPort(t *testing.T) {
+	for _, input := range []string{"0100007F:10000", "0100007F:00GG", "0100007F:"} {
+		ip, port := parseHexAddr(input)
+		if ip != "127.0.0.1" || port != 0 {
+			t.Errorf("parseHexAddr(%q) = (%q, %d), want (127.0.0.1, 0)", input, ip, port)
+		}
+	}
+}
+
 // --- parseHex6Addr (connections.go) ------------------------------------
 
 func TestParseHex6AddrMalformed(t *testing.T) {

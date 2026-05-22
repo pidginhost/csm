@@ -95,6 +95,18 @@ func TestScanProcNetTCPStillFlagsRealOutboundConnect(t *testing.T) {
 	}
 }
 
+func TestScanProcNetTCPSkipsMalformedPorts(t *testing.T) {
+	cfg := &config.Config{}
+	data := []byte(`  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0A0200C0:C350 387100CB:10000 01 00000000:00000000 00:00000000 00000000  1001        0 33333 1 0000000000000000
+   1: 0A0200C0:10000 387100CB:115C 01 00000000:00000000 00:00000000 00000000  1001        0 33334 1 0000000000000000
+`)
+
+	if findings := scanProcNetTCP(cfg, data, false); len(findings) != 0 {
+		t.Fatalf("malformed port rows must be skipped, got %+v", findings)
+	}
+}
+
 func TestScanProcNetTCPDoesNotSuppressSamePortDifferentLocalAddress(t *testing.T) {
 	cfg := &config.Config{}
 

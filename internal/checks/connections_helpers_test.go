@@ -37,6 +37,19 @@ func TestParseHex6AddrShortHex(t *testing.T) {
 	}
 }
 
+func TestParseHex6AddrMalformedPort(t *testing.T) {
+	for _, input := range []string{
+		"00000000000000000000000001000000:10000",
+		"00000000000000000000000001000000:00GG",
+		"00000000000000000000000001000000:",
+	} {
+		ip, port := parseHex6Addr(input)
+		if ip != nil || port != 0 {
+			t.Errorf("parseHex6Addr(%q) = (%s, %d), want nil/0", input, ip, port)
+		}
+	}
+}
+
 // --- readFileHead (connections.go) ------------------------------------
 
 func TestReadFileHead(t *testing.T) {

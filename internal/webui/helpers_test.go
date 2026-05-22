@@ -10,6 +10,16 @@ import (
 	"time"
 )
 
+func TestSafeLogStringQuotesControlBytes(t *testing.T) {
+	got := safeLogString("/tmp/restored\nname\r.php")
+	if strings.ContainsAny(got, "\n\r") {
+		t.Fatalf("safeLogString left raw control bytes in %q", got)
+	}
+	if !strings.Contains(got, `\n`) || !strings.Contains(got, `\r`) {
+		t.Fatalf("safeLogString(%q) = %q, want escaped controls", "/tmp/restored\nname\r.php", got)
+	}
+}
+
 // --- validateAccountName ---
 
 func TestValidateAccountName_Valid(t *testing.T) {

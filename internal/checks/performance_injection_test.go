@@ -3,6 +3,7 @@ package checks
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/config"
@@ -65,6 +66,41 @@ func TestCheckSwapAndOOMWithData(t *testing.T) {
 
 	findings := CheckSwapAndOOM(context.Background(), &config.Config{}, nil)
 	_ = findings
+}
+
+func TestCheckSwapAndOOMHugeSwapUsageDoesNotOverflowDisplay(t *testing.T) {
+	withMockOS(t, &mockOS{
+		open: func(name string) (*os.File, error) {
+			if name == "/proc/meminfo" {
+				tmp := t.TempDir() + "/meminfo"
+				data := "MemTotal: 4096000 kB\nMemAvailable: 2048000 kB\nSwapTotal: 18014398509481984 kB\nSwapFree: 0 kB\n"
+				_ = os.WriteFile(tmp, []byte(data), 0644)
+				return os.Open(tmp)
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+	withMockCmd(t, &mockCmd{
+		run: func(name string, args ...string) ([]byte, error) {
+			return []byte(""), nil
+		},
+	})
+
+	findings := CheckSwapAndOOM(context.Background(), &config.Config{}, nil)
+	wantDisplay := humanBytes(maxInt64Value)
+	for _, f := range findings {
+		if f.Message != "High swap usage" {
+			continue
+		}
+		if strings.Contains(f.Details, "0B / 0B") {
+			t.Fatalf("huge swap display overflowed to zero: %q", f.Details)
+		}
+		if !strings.Contains(f.Details, wantDisplay+" / "+wantDisplay) {
+			t.Fatalf("huge swap display = %q, want saturated %q values", f.Details, wantDisplay)
+		}
+		return
+	}
+	t.Fatalf("expected high swap usage finding, got %+v", findings)
 }
 
 // --- CheckMySQLConfig with mysql output ------------------------------

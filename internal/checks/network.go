@@ -184,20 +184,26 @@ func parseHexAddr(hexAddr string) (string, int) {
 	}
 	ip := net.IPv4(octets[0], octets[1], octets[2], octets[3]).String()
 
-	port := 0
-	for _, c := range hexPort {
-		// #nosec G115 -- hexPort is ASCII hex from /proc/net/*; rune→byte is lossless.
-		port = port*16 + hexVal(byte(c))
-	}
-	// /proc/net/{tcp,tcp6,udp,udp6} encodes the port as 4 hex chars, so
-	// 0..0xFFFF is the only legal range. Anything else is a malformed
-	// /proc line; surface it as port 0 so callers drop the entry rather
-	// than feeding an out-of-range value into a uint16.
-	if port < 0 || port > 0xFFFF {
+	port, ok := parseProcNetHexPort(hexPort)
+	if !ok {
 		return ip, 0
 	}
-
 	return ip, port
+}
+
+func parseProcNetHexPort(hexPort string) (int, bool) {
+	if len(hexPort) != 4 {
+		return 0, false
+	}
+	port := 0
+	for i := 0; i < len(hexPort); i++ {
+		c := hexPort[i]
+		if !isHexDigit(c) {
+			return 0, false
+		}
+		port = port*16 + hexVal(c)
+	}
+	return port, true
 }
 
 func hexToByte(s string) byte {

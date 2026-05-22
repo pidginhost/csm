@@ -168,6 +168,9 @@ func scanProcNetTCP(cfg *config.Config, data []byte, ipv6 bool) []alert.Finding 
 			dstIP = net.ParseIP(remoteIP)
 			dstPort = remotePort
 		}
+		if localIP == nil || dstIP == nil || localPort <= 0 || dstPort <= 0 {
+			continue
+		}
 
 		if listeners.has(localIP, localPort) {
 			continue
@@ -277,7 +280,10 @@ func parseHex6Addr(s string) (net.IP, int) {
 		return nil, 0
 	}
 
-	port, _ := strconv.ParseInt(hexPort, 16, 32)
+	port, ok := parseProcNetHexPort(hexPort)
+	if !ok {
+		return nil, 0
+	}
 
 	// Parse as 4 little-endian 32-bit words
 	ip := make(net.IP, 16)
@@ -293,7 +299,7 @@ func parseHex6Addr(s string) (net.IP, int) {
 		ip[i*4+2] = b[1]
 		ip[i*4+3] = b[0]
 	}
-	return ip, int(port)
+	return ip, port
 }
 
 // CheckSSHDConfig monitors sshd_config for dangerous changes.

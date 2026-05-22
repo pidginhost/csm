@@ -1185,7 +1185,7 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 		_ = dst.Close()
 		if copyErr != nil {
 			if err := os.Remove(restorePath); err != nil && !os.IsNotExist(err) {
-				log.Printf("webui: failed to remove %s: %v", restorePath, err)
+				log.Printf("webui: failed to remove %s: %v", safeLogString(restorePath), err)
 			}
 			writeJSONError(w, fmt.Sprintf("Cannot write restored file: %v", copyErr), http.StatusInternalServerError)
 			return
