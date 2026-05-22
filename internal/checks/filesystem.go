@@ -36,24 +36,35 @@ func CheckFilesystem(ctx context.Context, _ *config.Config, _ *state.Store) []al
 			return findings
 		}
 		matches, _ := osFS.Glob(pattern)
-		for _, path := range rankPathsByMtimeDesc(ctx, matches, 0) {
+		candidates := make([]string, 0, len(matches))
+		for _, path := range matches {
 			if ctx.Err() != nil {
 				return findings
 			}
 			if backdoorNames[filepath.Base(path)] {
-				info, _ := osFS.Stat(path)
-				var details string
-				if info != nil {
-					details = fmt.Sprintf("Size: %d bytes, Mtime: %s", info.Size(), info.ModTime().Format("2006-01-02 15:04:05"))
-				}
-				findings = append(findings, alert.Finding{
-					Severity: alert.Critical,
-					Check:    "backdoor_binary",
-					Message:  fmt.Sprintf("Backdoor binary found: %s", path),
-					Details:  details,
-					FilePath: path,
-				})
+				candidates = append(candidates, path)
 			}
+		}
+		ranked := rankPathsByMtimeDesc(ctx, candidates, 0)
+		if ctx.Err() != nil {
+			return findings
+		}
+		for _, path := range ranked {
+			if ctx.Err() != nil {
+				return findings
+			}
+			info, _ := osFS.Stat(path)
+			var details string
+			if info != nil {
+				details = fmt.Sprintf("Size: %d bytes, Mtime: %s", info.Size(), info.ModTime().Format("2006-01-02 15:04:05"))
+			}
+			findings = append(findings, alert.Finding{
+				Severity: alert.Critical,
+				Check:    "backdoor_binary",
+				Message:  fmt.Sprintf("Backdoor binary found: %s", path),
+				Details:  details,
+				FilePath: path,
+			})
 		}
 	}
 
@@ -67,13 +78,10 @@ func CheckFilesystem(ctx context.Context, _ *config.Config, _ *state.Store) []al
 			return findings
 		}
 		matches, _ := osFS.Glob(pattern)
-		for _, match := range rankPathsByMtimeDesc(ctx, matches, 0) {
+		candidates := make([]string, 0, len(matches))
+		for _, match := range matches {
 			if ctx.Err() != nil {
 				return findings
-			}
-			info, err := osFS.Stat(match)
-			if err != nil || info.IsDir() {
-				continue
 			}
 			base := filepath.Base(match)
 			safe := false
@@ -84,6 +92,20 @@ func CheckFilesystem(ctx context.Context, _ *config.Config, _ *state.Store) []al
 				}
 			}
 			if safe {
+				continue
+			}
+			candidates = append(candidates, match)
+		}
+		ranked := rankPathsByMtimeDesc(ctx, candidates, 0)
+		if ctx.Err() != nil {
+			return findings
+		}
+		for _, match := range ranked {
+			if ctx.Err() != nil {
+				return findings
+			}
+			info, err := osFS.Stat(match)
+			if err != nil || info.IsDir() {
 				continue
 			}
 			findings = append(findings, alert.Finding{
@@ -98,10 +120,16 @@ func CheckFilesystem(ctx context.Context, _ *config.Config, _ *state.Store) []al
 
 	// SUID binaries in tmp dirs - ReadDir + stat (small dirs, fast)
 	for _, dir := range []string{"/tmp", "/var/tmp", "/dev/shm"} {
+		if ctx.Err() != nil {
+			return findings
+		}
 		scanForSUID(ctx, dir, 3, &findings)
 	}
 
 	// SUID in /home - shallow scan only
+	if ctx.Err() != nil {
+		return findings
+	}
 	homeDirs, _ := GetScanHomeDirs()
 	for _, entry := range homeDirs {
 		if ctx.Err() != nil {

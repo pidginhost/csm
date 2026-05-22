@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Filesystem backdoor and hidden-file ranking now filters unreportable glob matches before mtime work, so unrelated or safe entries cannot consume the cancellation budget before suspicious candidates are checked.
 - Canceled mail forwarder audits no longer mark the scan as fresh before finishing, so the next cycle can retry skipped domains.
 
 ## [3.6.0] - 2026-05-22
