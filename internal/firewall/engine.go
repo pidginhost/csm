@@ -2070,7 +2070,8 @@ func (e *Engine) ensureStateCacheLocked() {
 	}
 
 	var fresh FirewallState
-	if statErr == nil {
+	switch {
+	case statErr == nil:
 		// #nosec G304 -- filepath.Join under operator-configured statePath.
 		data, readErr := os.ReadFile(stateFile)
 		if readErr != nil {
@@ -2082,9 +2083,9 @@ func (e *Engine) ensureStateCacheLocked() {
 			return
 		}
 		e.stateCacheKey = stateFileCacheKeyFromInfo(info)
-	} else if os.IsNotExist(statErr) {
+	case os.IsNotExist(statErr):
 		e.stateCacheKey = stateFileCacheKey{}
-	} else if e.stateCache != nil {
+	case e.stateCache != nil:
 		// Transient stat error (permission, EIO). Keep the prior
 		// cache rather than dropping all blocks.
 		e.applyExpiryLocked()
