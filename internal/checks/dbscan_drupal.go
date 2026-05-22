@@ -93,6 +93,9 @@ func (c drupalCreds) asWPDBCreds() wpDBCreds {
 // distinct enough that a generic dispatcher would be more
 // abstraction than a 4-CMS pipeline calls for.
 func CheckDrupalContent(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var findings []alert.Finding
 
 	settings, _ := osFS.Glob("/home/*/public_html/sites/default/settings.php")
@@ -100,8 +103,8 @@ func CheckDrupalContent(ctx context.Context, _ *config.Config, _ *state.Store) [
 		return nil
 	}
 
-	// Rank by mtime desc: under check_timeout pressure, the most recently
-	// active Drupal sites must win. Same fairness invariant as scanDomlogs.
+	// Rank by mtime desc so recently touched Drupal sites are processed
+	// first when the check timeout cuts iteration short.
 	for _, path := range rankPathsByMtimeDesc(ctx, settings, 0) {
 		if ctx.Err() != nil {
 			return findings

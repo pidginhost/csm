@@ -119,11 +119,25 @@ func capitalizeFirst(s string) string {
 // verifyDoveadm checks a candidate password against a stored hash.
 // Returns true if the password matches.
 func verifyDoveadm(hash, candidate string) bool {
-	doveadmSemaphore <- struct{}{}
+	return verifyDoveadmContext(context.Background(), hash, candidate)
+}
+
+func verifyDoveadmContext(ctx context.Context, hash, candidate string) bool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case doveadmSemaphore <- struct{}{}:
+	case <-ctx.Done():
+		return false
+	}
 	defer func() { <-doveadmSemaphore }()
+	if ctx.Err() != nil {
+		return false
+	}
 
 	// Routed through cmdExec so tests can mock doveadm without a real install.
-	_, err := cmdExec.Run("doveadm", "pw", "-t", hash, "-p", candidate)
+	_, err := cmdExec.RunContext(ctx, "doveadm", "pw", "-t", hash, "-p", candidate)
 	return err == nil
 }
 
@@ -158,13 +172,27 @@ func parseHIBPCount(body, suffix string) int {
 // checkHIBP queries the HIBP Pwned Passwords API for a plaintext password.
 // Returns the breach count (0 if not found or on error).
 func checkHIBP(plaintext string) int {
+	return checkHIBPWithContext(context.Background(), plaintext)
+}
+
+func checkHIBPWithContext(ctx context.Context, plaintext string) int {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return 0
+	}
 	// #nosec G401 -- SHA1 is mandated by the HIBP Pwned Passwords range API; see import comment.
 	h := sha1.Sum([]byte(plaintext))
 	hex := fmt.Sprintf("%X", h[:])
 	prefix := hex[:5]
 	suffix := hex[5:]
 
-	resp, err := hibpClient.Get(hibpEndpoint + prefix) //nolint:noctx
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, hibpEndpoint+prefix, nil)
+	if err != nil {
+		return 0
+	}
+	resp, err := hibpClient.Do(req)
 	if err != nil {
 		return 0
 	}
@@ -196,10 +224,8 @@ type mailboxEntry struct {
 }
 
 // discoverShadowFiles finds all Dovecot shadow files under /home/*/etc/*/shadow.
-// Results are ranked by mtime desc so the most recently active mailboxes
-// are inspected first; on hosts where downstream throttling cuts work
-// short, late-alphabet accounts must not be the systematic loser. Same
-// fairness invariant as the May 2026 scanDomlogs fix.
+// Results are ranked by mtime desc so recently touched mailbox password files
+// are inspected first when the check timeout cuts work short.
 func discoverShadowFiles(ctx context.Context) []shadowFile {
 	matches, _ := osFS.Glob("/home/*/etc/*/shadow")
 	ranked := rankPathsByMtimeDesc(ctx, matches, 0)
@@ -274,8 +300,18 @@ func loadWeakPasswords() []string {
 // checkWordlist tests a hash against the bundled weak passwords list.
 // Returns the matched password or empty string.
 func checkWordlist(hash string) string {
+	return checkWordlistContext(context.Background(), hash)
+}
+
+func checkWordlistContext(ctx context.Context, hash string) string {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	for _, word := range loadWeakPasswords() {
-		if verifyDoveadm(hash, word) {
+		if ctx.Err() != nil {
+			return ""
+		}
+		if verifyDoveadmContext(ctx, hash, word) {
 			return word
 		}
 	}
@@ -286,6 +322,9 @@ func checkWordlist(hash string) string {
 // patterns. Uses internal throttle: skips if last refresh was less than
 // password_check_interval_min ago.
 func CheckEmailPasswords(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	db := store.Global()
 	if db == nil {
 		return nil
@@ -308,7 +347,13 @@ func CheckEmailPasswords(ctx context.Context, cfg *config.Config, _ *state.Store
 	// Collect all mailbox entries
 	var allEntries []mailboxEntry
 	for _, sf := range shadowFiles {
+		if ctx.Err() != nil {
+			return nil
+		}
 		allEntries = append(allEntries, readShadowFile(sf)...)
+	}
+	if ctx.Err() != nil {
+		return nil
 	}
 
 	if len(allEntries) == 0 {
@@ -323,11 +368,21 @@ func CheckEmailPasswords(ctx context.Context, cfg *config.Config, _ *state.Store
 	// Process each mailbox concurrently (bounded by semaphore)
 	sem := make(chan struct{}, 5)
 	for _, entry := range allEntries {
+		if ctx.Err() != nil {
+			break
+		}
 		wg.Add(1)
 		go func(e mailboxEntry) {
 			defer wg.Done()
-			sem <- struct{}{}
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
 			defer func() { <-sem }()
+			if ctx.Err() != nil {
+				return
+			}
 
 			fullMailbox := e.mailbox + "@" + e.domain
 			storeKey := fmt.Sprintf("email:pwaudit:%s:%s", e.account, fullMailbox)
@@ -343,7 +398,10 @@ func CheckEmailPasswords(ctx context.Context, cfg *config.Config, _ *state.Store
 			var matched string
 			var matchType string
 			for _, c := range candidates {
-				if verifyDoveadm(e.hash, c) {
+				if ctx.Err() != nil {
+					return
+				}
+				if verifyDoveadmContext(ctx, e.hash, c) {
 					matched = c
 					matchType = "heuristic"
 					break
@@ -352,7 +410,10 @@ func CheckEmailPasswords(ctx context.Context, cfg *config.Config, _ *state.Store
 
 			// Layer 2: Common wordlist (skip if layer 1 matched)
 			if matched == "" {
-				if w := checkWordlist(e.hash); w != "" {
+				if ctx.Err() != nil {
+					return
+				}
+				if w := checkWordlistContext(ctx, e.hash); w != "" {
 					matched = w
 					matchType = "wordlist"
 				}
@@ -363,7 +424,7 @@ func CheckEmailPasswords(ctx context.Context, cfg *config.Config, _ *state.Store
 					e.account, fullMailbox, matchType, matched)
 
 				// Layer 3: HIBP enrichment (only for confirmed matches)
-				breachCount := checkHIBP(matched)
+				breachCount := checkHIBPWithContext(ctx, matched)
 				if breachCount > 0 {
 					details += fmt.Sprintf("\nHIBP: password found in %d data breaches", breachCount)
 				}
@@ -381,11 +442,17 @@ func CheckEmailPasswords(ctx context.Context, cfg *config.Config, _ *state.Store
 			}
 
 			// Record fingerprint so we don't re-audit until hash changes
+			if ctx.Err() != nil {
+				return
+			}
 			_ = db.SetMetaString(storeKey, fp)
 		}(entry)
 	}
 
 	wg.Wait()
+	if ctx.Err() != nil {
+		return findings
+	}
 	_ = db.SetEmailPWLastRefresh(time.Now())
 
 	return findings

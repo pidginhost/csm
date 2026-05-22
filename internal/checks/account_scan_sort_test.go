@@ -191,6 +191,21 @@ func TestRankPathsByMtimeDesc_CanceledCtxReturnsNil(t *testing.T) {
 	}
 }
 
+func TestRankPathsByMtimeDesc_CanceledDuringFinalStatReturnsNil(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	withMockOS(t, &mockOS{
+		stat: func(name string) (os.FileInfo, error) {
+			cancel()
+			return statWithMtime{name: name, modTime: time.Now()}, nil
+		},
+	})
+
+	got := rankPathsByMtimeDesc(ctx, []string{"/only"}, 0)
+	if got != nil {
+		t.Errorf("got = %v, want nil when context is canceled during final stat", got)
+	}
+}
+
 func TestRankPathsByMtimeDesc_NilCtxDefaultsToBackground(t *testing.T) {
 	times := map[string]time.Time{"/a": time.Now(), "/b": time.Now().Add(-time.Minute)}
 	withMockOS(t, &mockOS{stat: mtimesByPath(times)})

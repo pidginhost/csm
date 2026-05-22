@@ -274,6 +274,9 @@ func CheckUID0Accounts(ctx context.Context, _ *config.Config, _ *state.Store) []
 }
 
 func CheckSSHKeys(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var findings []alert.Finding
 
 	// Check root authorized_keys
@@ -293,10 +296,8 @@ func CheckSSHKeys(ctx context.Context, cfg *config.Config, store *state.Store) [
 	}
 
 	// Check for new authorized_keys in /home. Rank by mtime desc so
-	// recently-touched accounts are processed first; on busy hosts where
-	// the surrounding check_timeout cuts iteration short, late-alphabet
-	// accounts must not be the systematic loser. Same fairness invariant
-	// as the May 2026 scanDomlogs fix.
+	// recently-touched accounts are processed first when the check timeout
+	// cuts iteration short.
 	homes, _ := osFS.Glob("/home/*/.ssh/authorized_keys")
 	for _, keyFile := range rankPathsByMtimeDesc(ctx, homes, 0) {
 		if ctx.Err() != nil {
@@ -322,6 +323,9 @@ func CheckSSHKeys(ctx context.Context, cfg *config.Config, store *state.Store) [
 }
 
 func CheckAPITokens(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var findings []alert.Finding
 
 	// WHM root API tokens
@@ -343,9 +347,8 @@ func CheckAPITokens(ctx context.Context, cfg *config.Config, store *state.Store)
 
 	// User API tokens - read directly from disk instead of spawning uapi per user.
 	// Token files are JSON at /home/<user>/.cpanel/api_tokens/<token_name>.
-	// Rank account dirs by mtime desc so the most recently active accounts
-	// are inspected first; protects late-alphabet accounts from being the
-	// systematic loser when check_timeout cuts iteration short.
+	// Rank account dirs by mtime desc so recently touched accounts are processed
+	// first when the check timeout cuts iteration short.
 	tokenDirs, _ := osFS.Glob("/home/*/.cpanel/api_tokens")
 	for _, tokenDir := range rankPathsByMtimeDesc(ctx, tokenDirs, 0) {
 		if ctx.Err() != nil {
@@ -354,6 +357,9 @@ func CheckAPITokens(ctx context.Context, cfg *config.Config, store *state.Store)
 		user := filepath.Base(filepath.Dir(filepath.Dir(tokenDir)))
 		tokenFiles, _ := osFS.Glob(filepath.Join(tokenDir, "*"))
 		for _, tokenFile := range tokenFiles {
+			if ctx.Err() != nil {
+				return findings
+			}
 			tokenName := filepath.Base(tokenFile)
 			data, err := osFS.ReadFile(tokenFile)
 			if err != nil {

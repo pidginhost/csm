@@ -68,6 +68,9 @@ func (c opencartCreds) asWPDBCreds() wpDBCreds {
 // scanners; the discovery and credentials parsing are the only
 // OC-specific bits.
 func CheckOpenCartContent(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var findings []alert.Finding
 
 	configs, _ := osFS.Glob("/home/*/public_html/config.php")
@@ -75,8 +78,8 @@ func CheckOpenCartContent(ctx context.Context, _ *config.Config, _ *state.Store)
 		return nil
 	}
 
-	// Rank by mtime desc: under check_timeout pressure, the most recently
-	// active OpenCart installs must win. Same fairness invariant as scanDomlogs.
+	// Rank by mtime desc so recently touched OpenCart installs are processed
+	// first when the check timeout cuts iteration short.
 	for _, path := range rankPathsByMtimeDesc(ctx, configs, 0) {
 		if ctx.Err() != nil {
 			return findings

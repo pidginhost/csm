@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Per-account scanners (SSH key audit, cPanel API token audit, Dovecot mailbox password audit, and the Magento, Joomla, Drupal, and OpenCart database content scanners) now visit accounts in most-recently-modified order and honor scan cancellation, so late-alphabet accounts are no longer the systematic loser when a check timeout cuts iteration short. Same fairness fix the WP brute-force domlog scan received earlier this cycle.
+- Per-account scanners (SSH key audit, cPanel API token audit, Dovecot mailbox password audit, and the Magento, Joomla, Drupal, and OpenCart database content scanners) now rank recently modified accounts first and stop sooner on scan cancellation, so late-alphabet accounts are no longer systematically hidden when a check timeout cuts iteration short.
 
 ## [3.6.0] - 2026-05-22
 

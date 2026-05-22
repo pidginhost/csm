@@ -115,12 +115,15 @@ var (
 // this, a half-migrated host with both env.php and stale local.xml
 // would scan the database twice with different credential sets.
 func CheckMagentoContent(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var findings []alert.Finding
 	seenAccounts := map[string]bool{}
 
-	// M2 discovery first (active version). Rank by mtime desc so the
-	// most recently active installs win when a downstream timeout cuts
-	// iteration short -- same fairness invariant as scanDomlogs.
+	// M2 discovery first (active version). Rank by mtime desc so recently
+	// touched installs are processed first when the check timeout cuts
+	// iteration short.
 	m2Files, _ := osFS.Glob("/home/*/public_html/app/etc/env.php")
 	for _, path := range rankPathsByMtimeDesc(ctx, m2Files, 0) {
 		if ctx.Err() != nil {

@@ -18,10 +18,9 @@ import (
 )
 
 // rankPathsByMtimeDesc orders paths most-recent-first and optionally caps
-// the result at maxFiles. Mirrors the scanDomlogs treatment: lexical glob
-// order plus a downstream check_timeout would otherwise keep cutting
-// iteration off at the same prefix every cycle, hiding indicators on
-// late-alphabet accounts.
+// the result at maxFiles. Lexical glob order plus a downstream check timeout
+// would otherwise keep cutting iteration off at the same prefix every cycle,
+// hiding indicators on late-alphabet accounts.
 //
 // Stat failures are tolerated: the path is kept with a zero mtime so it
 // sorts to the end, letting the cap chop it first when present.
@@ -53,12 +52,18 @@ func rankPathsByMtimeDesc(ctx context.Context, paths []string, maxFiles int) []s
 		}
 		ranked = append(ranked, entry{path: p, mtime: mt})
 	}
+	if err := ctx.Err(); err != nil {
+		return nil
+	}
 	sort.Slice(ranked, func(i, j int) bool {
 		if ranked[i].mtime.Equal(ranked[j].mtime) {
 			return ranked[i].path < ranked[j].path
 		}
 		return ranked[i].mtime.After(ranked[j].mtime)
 	})
+	if err := ctx.Err(); err != nil {
+		return nil
+	}
 	if maxFiles > 0 && len(ranked) > maxFiles {
 		ranked = ranked[:maxFiles]
 	}

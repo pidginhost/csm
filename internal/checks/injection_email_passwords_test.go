@@ -212,3 +212,49 @@ func TestCheckEmailPasswordsSkipsUnchangedHash(t *testing.T) {
 		t.Errorf("expected 0 doveadm calls when hash unchanged, got %d", doveadmCalls)
 	}
 }
+
+func TestCheckEmailPasswordsStopsBeforeDoveadmWhenContextCanceledAfterRead(t *testing.T) {
+	db := withTestStore(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	shadowContent := "user:{CRYPT}$6$salt$hash\n"
+	withMockOS(t, &mockOS{
+		glob: func(p string) ([]string, error) {
+			if strings.Contains(p, "shadow") {
+				return []string{"/home/alice/etc/example.com/shadow"}, nil
+			}
+			return nil, nil
+		},
+		open: func(name string) (*os.File, error) {
+			tmp := t.TempDir() + "/shadow"
+			if err := os.WriteFile(tmp, []byte(shadowContent), 0644); err != nil {
+				t.Fatal(err)
+			}
+			f, err := os.Open(tmp)
+			cancel()
+			return f, err
+		},
+	})
+
+	doveadmCalls := 0
+	withMockCmd(t, &mockCmd{
+		runContext: func(context.Context, string, ...string) ([]byte, error) {
+			doveadmCalls++
+			return nil, nil
+		},
+	})
+
+	cfg := &config.Config{}
+	cfg.EmailProtection.PasswordCheckIntervalMin = 60
+
+	findings := CheckEmailPasswords(ctx, cfg, nil)
+	if len(findings) != 0 {
+		t.Errorf("canceled scan should not emit findings, got %v", findings)
+	}
+	if doveadmCalls != 0 {
+		t.Errorf("doveadm called after context cancellation: %d", doveadmCalls)
+	}
+	if got := db.GetEmailPWLastRefresh(); !got.IsZero() {
+		t.Errorf("canceled scan recorded refresh timestamp: %s", got)
+	}
+}
