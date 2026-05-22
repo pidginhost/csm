@@ -248,6 +248,8 @@ thresholds:
   domlog_max_files: 500
   domlog_tail_lines: 500
   domlog_max_age_min: 30
+  mail_log_tail_lines: 500
+  syslog_messages_tail_lines: 200
   # HTTP request flood detector. 0 disables. Sample local baseline
   # traffic before raising; CDN and carrier NAT traffic can concentrate
   # many visitors behind one source IP.

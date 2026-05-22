@@ -760,6 +760,62 @@ func TestValidate_DomlogMaxFilesRange(t *testing.T) {
 	}
 }
 
+func TestValidate_MailLogTailLinesRange(t *testing.T) {
+	cases := []struct {
+		name    string
+		value   int
+		wantErr bool
+	}{
+		{"zero uses default", 0, false},
+		{"minimum accepted", 10, false},
+		{"too small rejected", 9, true},
+		{"maximum accepted", 100000, false},
+		{"above maximum rejected", 100001, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{Hostname: "test"}
+			cfg.Alerts.Email.Enabled = true
+			cfg.Alerts.Email.To = []string{"admin@test.com"}
+			cfg.Alerts.Email.SMTP = "localhost:25"
+			cfg.Alerts.Email.From = "csm@test.com"
+			cfg.Alerts.MaxPerHour = 10
+			cfg.Thresholds.MailLogTailLines = tc.value
+			if got := hasResult(Validate(cfg), "error", "thresholds.mail_log_tail_lines"); got != tc.wantErr {
+				t.Errorf("hasErr = %v, want %v", got, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidate_SyslogMessagesTailLinesRange(t *testing.T) {
+	cases := []struct {
+		name    string
+		value   int
+		wantErr bool
+	}{
+		{"zero uses default", 0, false},
+		{"minimum accepted", 10, false},
+		{"too small rejected", 9, true},
+		{"maximum accepted", 100000, false},
+		{"above maximum rejected", 100001, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{Hostname: "test"}
+			cfg.Alerts.Email.Enabled = true
+			cfg.Alerts.Email.To = []string{"admin@test.com"}
+			cfg.Alerts.Email.SMTP = "localhost:25"
+			cfg.Alerts.Email.From = "csm@test.com"
+			cfg.Alerts.MaxPerHour = 10
+			cfg.Thresholds.SyslogMessagesTailLines = tc.value
+			if got := hasResult(Validate(cfg), "error", "thresholds.syslog_messages_tail_lines"); got != tc.wantErr {
+				t.Errorf("hasErr = %v, want %v", got, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidate_DomlogMaxAgeMinRange(t *testing.T) {
 	cases := []struct {
 		name    string

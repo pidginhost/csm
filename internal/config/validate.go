@@ -312,6 +312,12 @@ func Validate(cfg *Config) []ValidationResult {
 	if t.DomlogMaxAgeMin != 0 && (t.DomlogMaxAgeMin < 1 || t.DomlogMaxAgeMin > 1440) {
 		results = append(results, ValidationResult{"error", "thresholds.domlog_max_age_min", "domlog_max_age_min must be between 1 and 1440"})
 	}
+	if t.MailLogTailLines != 0 && (t.MailLogTailLines < 10 || t.MailLogTailLines > 100000) {
+		results = append(results, ValidationResult{"error", "thresholds.mail_log_tail_lines", "mail_log_tail_lines must be between 10 and 100000"})
+	}
+	if t.SyslogMessagesTailLines != 0 && (t.SyslogMessagesTailLines < 10 || t.SyslogMessagesTailLines > 100000) {
+		results = append(results, ValidationResult{"error", "thresholds.syslog_messages_tail_lines", "syslog_messages_tail_lines must be between 10 and 100000"})
+	}
 	if t.SMTPBruteForceThreshold != 0 && (t.SMTPBruteForceThreshold < 2 || t.SMTPBruteForceThreshold > 50) {
 		results = append(results, ValidationResult{"error", "thresholds.smtp_bruteforce_threshold", "smtp_bruteforce_threshold must be between 2 and 50"})
 	}

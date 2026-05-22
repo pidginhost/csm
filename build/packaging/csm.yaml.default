@@ -90,6 +90,8 @@ thresholds:
   domlog_max_files: 500
   domlog_tail_lines: 500
   domlog_max_age_min: 30
+  mail_log_tail_lines: 500
+  syslog_messages_tail_lines: 200
   # HTTP request flood: per-source-IP request count inside the window
   # that emits http_request_flood. 0 disables the detector. Sample
   # local baseline traffic before raising; high-traffic sites, CDNs,

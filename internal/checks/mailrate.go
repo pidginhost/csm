@@ -12,12 +12,21 @@ import (
 
 const perAccountMailThreshold = 100 // emails per recent log window
 
+// mailLogTailLinesDefault is the built-in fallback for how many trailing
+// lines of /var/log/exim_mainlog CheckMailPerAccount tails per cycle.
+// Operator override: cfg.Thresholds.MailLogTailLines.
+const mailLogTailLinesDefault = 500
+
 // CheckMailPerAccount reads the tail of exim_mainlog and counts outbound
 // emails per cPanel account. Alerts if a single account exceeds the threshold.
-func CheckMailPerAccount(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+func CheckMailPerAccount(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	lines := tailFile("/var/log/exim_mainlog", 500)
+	tailLines := mailLogTailLinesDefault
+	if cfg != nil && cfg.Thresholds.MailLogTailLines > 0 {
+		tailLines = cfg.Thresholds.MailLogTailLines
+	}
+	lines := tailFile("/var/log/exim_mainlog", tailLines)
 
 	// Count emails per sender domain/user
 	// Exim log format: "... <= user@domain.com ..." for outgoing

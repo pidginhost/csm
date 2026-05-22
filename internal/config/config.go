@@ -134,6 +134,19 @@ type Config struct {
 		// a quiet domain still needs to fall inside the window.
 		DomlogMaxAgeMin int `yaml:"domlog_max_age_min"`
 
+		// MailLogTailLines is how many trailing lines CheckMailPerAccount
+		// reads from /var/log/exim_mainlog per cycle. Default 500. Raise
+		// on busy mail hosts where a single account's spam burst spreads
+		// across more than 500 lines per cycle.
+		MailLogTailLines int `yaml:"mail_log_tail_lines"`
+
+		// SyslogMessagesTailLines is how many trailing lines CheckFTPLogins
+		// reads from /var/log/messages per cycle. Default 200. Raise on
+		// hosts that share /var/log/messages with noisy services (e.g.
+		// systemd-resolved chatter) so pure-ftpd failure lines do not
+		// fall outside the window.
+		SyslogMessagesTailLines int `yaml:"syslog_messages_tail_lines"`
+
 		SMTPBruteForceThreshold    int `yaml:"smtp_bruteforce_threshold"`
 		SMTPBruteForceWindowMin    int `yaml:"smtp_bruteforce_window_min"`
 		SMTPBruteForceSuppressMin  int `yaml:"smtp_bruteforce_suppress_min"`
@@ -1052,6 +1065,12 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.Thresholds.DomlogMaxAgeMin == 0 {
 		cfg.Thresholds.DomlogMaxAgeMin = 30
+	}
+	if cfg.Thresholds.MailLogTailLines == 0 {
+		cfg.Thresholds.MailLogTailLines = 500
+	}
+	if cfg.Thresholds.SyslogMessagesTailLines == 0 {
+		cfg.Thresholds.SyslogMessagesTailLines = 200
 	}
 	if cfg.Thresholds.ModSecEscalationHits == 0 {
 		cfg.Thresholds.ModSecEscalationHits = 3

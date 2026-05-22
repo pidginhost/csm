@@ -333,11 +333,20 @@ func countBruteForce(lines []string, infraIPs []string, wpLogin, xmlrpc, userEnu
 	}
 }
 
+// syslogMessagesTailLinesDefault is the built-in fallback for how many
+// trailing lines of /var/log/messages CheckFTPLogins tails per cycle.
+// Operator override: cfg.Thresholds.SyslogMessagesTailLines.
+const syslogMessagesTailLinesDefault = 200
+
 // CheckFTPLogins parses /var/log/messages or pure-ftpd log for FTP brute force.
 func CheckFTPLogins(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	lines := tailFile("/var/log/messages", 200)
+	tailLines := syslogMessagesTailLinesDefault
+	if cfg != nil && cfg.Thresholds.SyslogMessagesTailLines > 0 {
+		tailLines = cfg.Thresholds.SyslogMessagesTailLines
+	}
+	lines := tailFile("/var/log/messages", tailLines)
 	if len(lines) == 0 {
 		return nil
 	}
