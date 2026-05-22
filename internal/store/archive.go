@@ -316,6 +316,13 @@ func Import(opts ImportOptions) (*ImportResult, error) {
 			return nil, fmt.Errorf("%w: unsafe entry name %q", ErrCorruptArchive, nextHdr.Name)
 		}
 		dst := filepath.Join(stage, clean)
+		// Defence in depth against zip-slip: confirm the joined path still
+		// resolves inside the staging dir even after symlinks / unusual
+		// path elements in the archive header.
+		rel, relErr := filepath.Rel(stage, dst)
+		if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+			return nil, fmt.Errorf("%w: unsafe entry name %q", ErrCorruptArchive, nextHdr.Name)
+		}
 		if mkErr := os.MkdirAll(filepath.Dir(dst), 0700); mkErr != nil {
 			return nil, fmt.Errorf("staging dir: %w", mkErr)
 		}

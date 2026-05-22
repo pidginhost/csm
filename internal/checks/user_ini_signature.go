@@ -64,23 +64,31 @@ func isCpanelManagedUserIni(data []byte) bool {
 	}
 	blanks := 0
 	start := 0
-	for i := 0; i <= len(data); i++ {
-		if i < len(data) && data[i] != '\n' {
-			continue
-		}
-		line := data[start:i]
-		// Strip CR from CRLF, then whitespace on both sides.
+	check := func(line []byte) (matched bool, terminate bool) {
 		line = bytes.TrimRight(line, "\r")
 		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
 			blanks++
 			if blanks > cpanelUserIniMaxLeadingBlanks {
-				return false
+				return false, true
 			}
-			start = i + 1
+			return false, false
+		}
+		return bytes.Contains(line, []byte(cpanelUserIniSignature)), true
+	}
+	for i := 0; i < len(data); i++ {
+		if data[i] != '\n' {
 			continue
 		}
-		return bytes.Contains(line, []byte(cpanelUserIniSignature))
+		matched, terminate := check(data[start:i])
+		if terminate {
+			return matched
+		}
+		start = i + 1
+	}
+	if start < len(data) {
+		matched, _ := check(data[start:])
+		return matched
 	}
 	return false
 }

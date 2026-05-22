@@ -183,6 +183,13 @@ func (db *DB) AggregateByDayN(days int) []DayBucket {
 	if days > dailyRetentionDays {
 		days = dailyRetentionDays
 	}
+	// Hard cap so a future bump to dailyRetentionDays cannot accidentally
+	// drive a huge slice allocation here. Daily aggregation over more than
+	// a decade is not a real workload for this surface.
+	const aggregateBucketHardCap = 4096
+	if days > aggregateBucketHardCap {
+		days = aggregateBucketHardCap
+	}
 
 	now := time.Now()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)

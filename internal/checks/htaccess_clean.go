@@ -943,18 +943,18 @@ func longestCommonAlnumRun(a, b string) int {
 func splitAlnumTokens(s string) []string {
 	var out []string
 	start := -1
-	for i := 0; i <= len(s); i++ {
-		var c byte
-		if i < len(s) {
-			c = s[i]
-		}
-		isAlnum := i < len(s) && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		isAlnum := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
 		if isAlnum && start == -1 {
 			start = i
 		} else if !isAlnum && start != -1 {
 			out = append(out, s[start:i])
 			start = -1
 		}
+	}
+	if start != -1 {
+		out = append(out, s[start:])
 	}
 	return out
 }

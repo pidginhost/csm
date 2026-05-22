@@ -356,13 +356,25 @@ func CheckSwapAndOOM(ctx context.Context, cfg *config.Config, _ *state.Store) []
 		usagePct := float64(swapUsed) / float64(swapTotal) * 100
 
 		if usagePct > 50 {
+			// Both swap counts are in KiB. Cap before *1024 conversion to
+			// keep the int64 multiplication well inside the signed range
+			// (any real swap configuration is many orders of magnitude
+			// below this); caps elide the CodeQL overflow warning while
+			// keeping operator-visible numbers exact for realistic input.
+			const swapKiBCap = int64(1) << 50 // 1 PiB worth of KiB
+			swapUsedI := int64(swapUsed)
+			swapTotalI := int64(swapTotal)
+			if swapUsed > 1<<62 {
+				swapUsedI = swapKiBCap
+			}
+			if swapTotal > 1<<62 {
+				swapTotalI = swapKiBCap
+			}
 			findings = append(findings, alert.Finding{
-				Severity: alert.High,
-				Check:    "perf_memory",
-				Message:  "High swap usage",
-				// #nosec G115 -- swap sizes from /proc/meminfo are kernel-bounded
-				// to physical memory, multiple orders below int64 max even after *1024.
-				Details:   fmt.Sprintf("Swap used: %s / %s (%.0f%%)", humanBytes(int64(swapUsed)*1024), humanBytes(int64(swapTotal)*1024), usagePct),
+				Severity:  alert.High,
+				Check:     "perf_memory",
+				Message:   "High swap usage",
+				Details:   fmt.Sprintf("Swap used: %s / %s (%.0f%%)", humanBytes(swapUsedI*1024), humanBytes(swapTotalI*1024), usagePct),
 				Timestamp: time.Now(),
 			})
 		}

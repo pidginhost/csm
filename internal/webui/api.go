@@ -692,6 +692,10 @@ func csvEscape(s string) string {
 	return s
 }
 
+// safeLogString renders a caller-controlled string into a log entry without
+// allowing embedded CR/LF/control bytes to forge a separate log line.
+func safeLogString(s string) string { return strconv.Quote(s) }
+
 // apiFix applies a known remediation action for a finding.
 // POST /api/v1/fix  body: {"check": "check_type", "message": "...", "details": "..."}
 func (s *Server) apiFix(w http.ResponseWriter, r *http.Request) {
@@ -1187,7 +1191,7 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := os.Remove(entry.ItemPath); err != nil && !os.IsNotExist(err) {
-			log.Printf("webui: failed to remove %s: %v", entry.ItemPath, err)
+			log.Printf("webui: failed to remove %s: %v", safeLogString(entry.ItemPath), err)
 		}
 	}
 
@@ -1198,7 +1202,7 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 
 	// Remove metadata sidecar
 	if err := os.Remove(entry.MetaPath); err != nil && !os.IsNotExist(err) {
-		log.Printf("webui: failed to remove %s: %v", entry.MetaPath, err)
+		log.Printf("webui: failed to remove %s: %v", safeLogString(entry.MetaPath), err)
 	}
 
 	s.auditLog(r, "restore", restorePath, "quarantine restore")
@@ -1276,7 +1280,7 @@ func (s *Server) apiQuarantineBulkDelete(w http.ResponseWriter, r *http.Request)
 			continue
 		}
 		if err := os.Remove(entry.MetaPath); err != nil && !os.IsNotExist(err) {
-			log.Printf("webui: failed to remove quarantine meta %s: %v", entry.MetaPath, err)
+			log.Printf("webui: failed to remove quarantine meta %s: %v", safeLogString(entry.MetaPath), err)
 		}
 	}
 	s.auditLog(r, "quarantine_bulk_delete", fmt.Sprintf("%d files", count), "")

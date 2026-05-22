@@ -189,6 +189,13 @@ func parseHexAddr(hexAddr string) (string, int) {
 		// #nosec G115 -- hexPort is ASCII hex from /proc/net/*; rune→byte is lossless.
 		port = port*16 + hexVal(byte(c))
 	}
+	// /proc/net/{tcp,tcp6,udp,udp6} encodes the port as 4 hex chars, so
+	// 0..0xFFFF is the only legal range. Anything else is a malformed
+	// /proc line; surface it as port 0 so callers drop the entry rather
+	// than feeding an out-of-range value into a uint16.
+	if port < 0 || port > 0xFFFF {
+		return ip, 0
+	}
 
 	return ip, port
 }

@@ -85,7 +85,9 @@ func RestoreBackupArchive(archive string, dst BackupSources) (err error) {
 			return err
 		}
 		if _, copyErr := io.CopyN(out, tr, hdr.Size); copyErr != nil {
-			out.Close()
+			if closeErr := out.Close(); closeErr != nil {
+				return fmt.Errorf("%w (also: close %s: %v)", copyErr, target, closeErr)
+			}
 			return copyErr
 		}
 		if closeErr := out.Close(); closeErr != nil {

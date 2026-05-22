@@ -216,7 +216,10 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	// are hex.EncodeToString output (0-9, a-f only); difficulty is an int.
 	// captchaBlock is constructed from configured site keys (operator
 	// supplied) plus hex token/nonce; it never includes attacker input.
-	fmt.Fprintf(w, challengePageHTML, ip, captchaBlock, nonce, token, difficulty, difficulty)
+	// html.EscapeString on ip is defence-in-depth so static analysers can
+	// see the request-derived value is rendered safe even if a future
+	// change to extractIP loosened validation.
+	fmt.Fprintf(w, challengePageHTML, html.EscapeString(ip), captchaBlock, nonce, token, difficulty, difficulty)
 }
 
 func (s *Server) handleGate(w http.ResponseWriter, r *http.Request) {

@@ -30,8 +30,16 @@ var smtpAllowlistLookupUser = user.Lookup
 // reported to stderr (matching the legacy behavior in createOutputChain)
 // and skipped, so a typo in the YAML does not crash the firewall engine.
 func resolveSMTPAllowedUIDs(allowUsers []string) []uint32 {
-	seen := make(map[uint32]struct{}, len(allowUsers)+2)
-	out := make([]uint32, 0, len(allowUsers)+2)
+	// Cap the size hint so a pathological config (or future caller bug)
+	// cannot drive a multi-gigabyte allocation; the +2 covers root and
+	// mailnull which are added unconditionally below.
+	const smtpAllowHintCap = 1 << 16
+	hint := len(allowUsers)
+	if hint > smtpAllowHintCap {
+		hint = smtpAllowHintCap
+	}
+	seen := make(map[uint32]struct{}, hint+2)
+	out := make([]uint32, 0, hint+2)
 	add := func(uid uint32) {
 		if _, ok := seen[uid]; ok {
 			return
