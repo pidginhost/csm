@@ -108,6 +108,14 @@ curl -sk -H "Authorization: Bearer $METRICS_TOKEN" \
   directories and rescan recent files. Buckets: 0.01 s .. 60 s.
   Watch p95: reconcile stealing tens of seconds means bulk events
   are piling up faster than the walker can keep up.
+- `csm_checks_domlog_discovery_dropped_total{reason}` (counter):
+  per-vhost access-log paths the WP brute-force domlog discovery
+  helper dropped before scanning. Labels: `reason` is
+  `evalsymlinks_error` (broken symlink, attacker-removed log file)
+  or `stat_error` (file vanished between glob and stat, permission
+  regression on the log directory). Steady growth means a real chunk
+  of vhosts is being silently skipped each cycle. Stale-mtime
+  drops are intentional filtering and are NOT counted here.
 - `csm_realtime_content_scan_truncated_total{check}` (counter):
   cumulative real-time content checks where the underlying file was
   larger than the main read window, so the full-rule pass saw only

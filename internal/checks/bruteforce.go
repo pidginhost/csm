@@ -6,13 +6,37 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/metrics"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/state"
 )
+
+// domlogDiscoveryDropped counts per-vhost log paths the discovery helper
+// dropped silently (broken symlink, Stat failure). Same family of
+// hidden-input bug as the lex-order issue scanDomlogs already fixed:
+// without telemetry, operators have no way to notice when discovery
+// loses a sizable fraction of the vhosts they expected to scan.
+var (
+	domlogDiscoveryDropped     *metrics.CounterVec
+	domlogDiscoveryDroppedOnce sync.Once
+)
+
+func observeDomlogDrop(reason string) {
+	domlogDiscoveryDroppedOnce.Do(func() {
+		domlogDiscoveryDropped = metrics.NewCounterVec(
+			"csm_checks_domlog_discovery_dropped_total",
+			"Per-vhost access-log paths the WP brute-force domlog discovery helper dropped before scanning. Labels: reason (evalsymlinks_error|stat_error). Steady growth means a chunk of vhosts is being silently skipped each cycle -- usually a broken symlink farm or a permissions regression on the log directory. Stale-mtime drops are intentional filtering, not counted here.",
+			[]string{"reason"},
+		)
+		metrics.MustRegister("csm_checks_domlog_discovery_dropped_total", domlogDiscoveryDropped)
+	})
+	domlogDiscoveryDropped.With(reason).Inc()
+}
 
 const (
 	wpLoginThreshold = 20 // attempts per IP across all logs
@@ -150,6 +174,7 @@ func discoverFreshDomlogs(ctx context.Context, maxFiles int) []string {
 		// logs to the same backing file; dedupe on the real path.
 		real, err := filepath.EvalSymlinks(dl)
 		if err != nil {
+			observeDomlogDrop("evalsymlinks_error")
 			continue
 		}
 		if seen[real] || centralLogs[real] {
@@ -160,7 +185,11 @@ func discoverFreshDomlogs(ctx context.Context, maxFiles int) []string {
 		// Inactive sites add no signal; filter before the cap so they
 		// cannot crowd active sites out of the budget.
 		info, err := osFS.Stat(real)
-		if err != nil || info.ModTime().Before(cutoff) {
+		if err != nil {
+			observeDomlogDrop("stat_error")
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
 			continue
 		}
 
