@@ -15,9 +15,14 @@ import (
 // CheckFilesystem uses globs and targeted ReadDir to check for backdoors,
 // hidden files, and SUID binaries. No `find` command needed.
 func CheckFilesystem(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var findings []alert.Finding
 
-	// GSocket / backdoor binaries in .config dirs - glob (instant)
+	// GSocket / backdoor binaries in .config dirs - glob (instant).
+	// Rank by mtime desc so recently-touched accounts process first
+	// when the check timeout cuts iteration short.
 	backdoorNames := map[string]bool{
 		"defunct": true, "defunct.dat": true, "gs-netcat": true,
 		"gs-sftp": true, "gs-mount": true, "gsocket": true,
@@ -31,7 +36,10 @@ func CheckFilesystem(ctx context.Context, _ *config.Config, _ *state.Store) []al
 			return findings
 		}
 		matches, _ := osFS.Glob(pattern)
-		for _, path := range matches {
+		for _, path := range rankPathsByMtimeDesc(ctx, matches, 0) {
+			if ctx.Err() != nil {
+				return findings
+			}
 			if backdoorNames[filepath.Base(path)] {
 				info, _ := osFS.Stat(path)
 				var details string
@@ -59,7 +67,10 @@ func CheckFilesystem(ctx context.Context, _ *config.Config, _ *state.Store) []al
 			return findings
 		}
 		matches, _ := osFS.Glob(pattern)
-		for _, match := range matches {
+		for _, match := range rankPathsByMtimeDesc(ctx, matches, 0) {
+			if ctx.Err() != nil {
+				return findings
+			}
 			info, err := osFS.Stat(match)
 			if err != nil || info.IsDir() {
 				continue
