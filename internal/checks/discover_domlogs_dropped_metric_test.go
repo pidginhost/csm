@@ -4,16 +4,15 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/pidginhost/csm/internal/platform"
 )
 
-// Discovery must report broken symlinks and stat failures through
-// csm_checks_domlog_discovery_dropped_total so operators can spot a
-// silently-shrinking scan set. The roadmap calls this out as the same
-// hidden-input bug class the lex-order fix closed.
+// Discovery must report broken symlinks and stat failures through the
+// dropped-domlog counter so operators can spot a shrinking scan set.
 func TestDiscoverFreshDomlogs_SilentDropsHaveTelemetry(t *testing.T) {
 	tmp := t.TempDir()
 	// One real fresh log so the scrape has a baseline working scan.
@@ -38,16 +37,19 @@ func TestDiscoverFreshDomlogs_SilentDropsHaveTelemetry(t *testing.T) {
 		stat: os.Stat,
 	})
 
-	beforeBroken := scrapeSum(t, "csm_checks_domlog_discovery_dropped_total")
+	beforeBroken := scrapeDomlogDropReasons(t)
 
 	got := discoverFreshDomlogs(context.Background(), 0)
 	if len(got) != 1 {
 		t.Errorf("expected 1 surviving log, got %d (%v)", len(got), got)
 	}
 
-	afterBroken := scrapeSum(t, "csm_checks_domlog_discovery_dropped_total")
-	if afterBroken-beforeBroken < 1 {
-		t.Errorf("broken symlink must increment dropped counter: before=%g after=%g", beforeBroken, afterBroken)
+	afterBroken := scrapeDomlogDropReasons(t)
+	if got := afterBroken["evalsymlinks_error"] - beforeBroken["evalsymlinks_error"]; got != 1 {
+		t.Errorf("broken symlink must increment evalsymlinks_error once, got delta %g", got)
+	}
+	if got := afterBroken["stat_error"] - beforeBroken["stat_error"]; got != 0 {
+		t.Errorf("broken symlink must not increment stat_error, got delta %g", got)
 	}
 }
 
@@ -68,13 +70,16 @@ func TestDiscoverFreshDomlogs_StatErrorsCounted(t *testing.T) {
 		stat: func(string) (os.FileInfo, error) { return nil, os.ErrPermission },
 	})
 
-	before := scrapeSum(t, "csm_checks_domlog_discovery_dropped_total")
+	before := scrapeDomlogDropReasons(t)
 	if got := discoverFreshDomlogs(context.Background(), 0); len(got) != 0 {
 		t.Errorf("stat failure must drop the entry, got %v", got)
 	}
-	after := scrapeSum(t, "csm_checks_domlog_discovery_dropped_total")
-	if after-before < 1 {
-		t.Errorf("stat error must increment dropped counter: before=%g after=%g", before, after)
+	after := scrapeDomlogDropReasons(t)
+	if got := after["stat_error"] - before["stat_error"]; got != 1 {
+		t.Errorf("stat error must increment stat_error once, got delta %g", got)
+	}
+	if got := after["evalsymlinks_error"] - before["evalsymlinks_error"]; got != 0 {
+		t.Errorf("stat error must not increment evalsymlinks_error, got delta %g", got)
 	}
 }
 
@@ -94,10 +99,45 @@ func TestDiscoverFreshDomlogs_StaleDropsNotCounted(t *testing.T) {
 		stat: os.Stat,
 	})
 
-	before := scrapeSum(t, "csm_checks_domlog_discovery_dropped_total")
+	before := scrapeDomlogDropReasons(t)
 	_ = discoverFreshDomlogs(context.Background(), 0)
-	after := scrapeSum(t, "csm_checks_domlog_discovery_dropped_total")
-	if after != before {
-		t.Errorf("stale mtime must not be counted as a silent drop: before=%g after=%g", before, after)
+	after := scrapeDomlogDropReasons(t)
+	for reason, want := range before {
+		if after[reason] != want {
+			t.Errorf("stale mtime must not increment %s: before=%g after=%g", reason, want, after[reason])
+		}
 	}
+}
+
+func scrapeDomlogDropReasons(t *testing.T) map[string]float64 {
+	t.Helper()
+	out := map[string]float64{
+		"evalsymlinks_error": 0,
+		"stat_error":         0,
+	}
+	for _, line := range strings.Split(scrape(t), "\n") {
+		if !strings.HasPrefix(line, `csm_checks_domlog_discovery_dropped_total{reason=`) {
+			continue
+		}
+		open := strings.Index(line, `"`)
+		if open < 0 {
+			continue
+		}
+		rest := line[open+1:]
+		end := strings.Index(rest, `"`)
+		if end < 0 {
+			continue
+		}
+		reason := rest[:end]
+		after := strings.TrimSpace(strings.TrimPrefix(rest[end+1:], "}"))
+		if after == "" {
+			continue
+		}
+		value, err := parseScraperFloat(after)
+		if err != nil {
+			continue
+		}
+		out[reason] = value
+	}
+	return out
 }
