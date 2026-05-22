@@ -20,6 +20,8 @@ func TestClaimedBotFromUA(t *testing.T) {
 		"Googlebot/2.1": "googlebot",
 		"bingbot/2.0":   "bingbot",
 		"Mozilla/5.0":   "",
+		"facebookexternalhit/1.1 (+http://www.facebook.com/externalhit...)": "facebookbot",
+		"meta-externalagent/1.1": "facebookbot",
 	}
 	for ua, want := range cases {
 		if got := ClaimedBotFromUA(ua); got != want {

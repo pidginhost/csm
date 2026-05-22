@@ -128,7 +128,7 @@ var BotDomains = map[string][]string{
 	"gptbot":        {"openai.com"},
 	"claudebot":     {"anthropic.com"},
 	"perplexitybot": {"perplexity.ai"},
-	"facebookbot":   {"facebook.com"},
+	"facebookbot":   {"fbsv.net", "tfbnw.net", "facebook.com"},
 	"bravebot":      {"brave.com"},
 }
 

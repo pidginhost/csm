@@ -147,6 +147,24 @@ func TestVerify_EmptyPTRListIsUnverifiable(t *testing.T) {
 	}
 }
 
+// Real Meta crawler IPs use fbsv.net for reverse DNS (e.g.,
+// fwdproxy-ncg-116.fbsv.net.), not facebook.com.
+func TestVerify_FacebookbotFbsvNetSuffix(t *testing.T) {
+	ip := "69.63.184.116"
+	res := &mockResolver{
+		ptr: map[string][]string{ip: {"fwdproxy-ncg-116.fbsv.net."}},
+		a:   map[string][]net.IP{"fwdproxy-ncg-116.fbsv.net": {net.ParseIP(ip)}},
+	}
+	v := newVerifier(res, BotDomains["facebookbot"])
+	ok, err := v.verify(context.Background(), net.ParseIP(ip), "facebookbot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Error("Meta fwdproxy.fbsv.net FCrDNS must verify positive")
+	}
+}
+
 // Real Amazonbot rDNS uses Amazon's .amazon gTLD (e.g.,
 // 35-172-125-172.crawl.amazonbot.amazon.), not amazon.com.
 func TestVerify_AmazonbotDotAmazonSuffix(t *testing.T) {

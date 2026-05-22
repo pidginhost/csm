@@ -111,7 +111,9 @@ func ClaimedBotFromUA(ua string) string {
 		return "claudebot"
 	case strings.Contains(low, "perplexitybot"):
 		return "perplexitybot"
-	case strings.Contains(low, "meta-externalagent"), strings.Contains(low, "meta-webindexer"):
+	case strings.Contains(low, "meta-externalagent"),
+		strings.Contains(low, "meta-webindexer"),
+		strings.Contains(low, "facebookexternalhit"):
 		return "facebookbot"
 	case strings.Contains(low, "bravebot"):
 		return "bravebot"
