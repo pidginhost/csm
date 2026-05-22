@@ -432,3 +432,102 @@ be reverted in isolation.
 ### Estimated size
 
 2-3 engineering days for the six commits plus reviews.
+
+---
+
+## 6. Second-pass scanner audit follow-ups
+
+**Status:** planned
+**Drives / unblocks:** the same fairness, telemetry, and silent-error
+hygiene roadmap item 5 closed, applied to the scanners item 5 did not
+reach. A second audit pass against the same bug classes turned up nine
+real-world instances.
+
+### Why
+
+The item 5 audit was scoped to the scanners that the May 2026
+`scanDomlogs` fix made obvious peers. A follow-up grep against the
+same bug-class patterns (lex-order globs, silent EvalSymlinks/Stat
+drops, hardcoded scan windows, hardcoded byte caps inside content
+checks) turned up more callers that share the same primitive. Closing
+them is mechanical now that the helpers exist.
+
+### Decision
+
+Nine discrete sub-items. Each a separate commit so a regression can
+be reverted in isolation.
+
+1. **`CheckDatabaseObjects` mtime fairness (`6.1`).** `db_objects.go`
+   iterates `/home/*/public_html/wp-config.php` in lex order. Already
+   has `ctx.Err()` per iteration but no mtime rank. Same primitive
+   as 5.1.
+
+2. **`CheckForwarders` ctx + mtime fairness (`6.2`).** `forwarder.go`
+   iterates `/etc/valiases/*` and `/etc/vfilters/*` per mail domain.
+   No `ctx.Err()` inside either loop, no mtime rank. Hosts with many
+   mail domains hit this on every scan cycle.
+
+3. **`CheckFilesystem` mtime fairness (`6.3`).** `filesystem.go`
+   iterates `/home/*/.config/*/*` for backdoor binaries with a
+   per-pattern ctx check but no per-match one and no mtime rank.
+
+4. **`CheckCrontabs` honour ctx + mtime fairness (`6.4`).**
+   `crontabs.go` accepts `ctx` and ignores it. Per-user
+   `/var/spool/cron/*` iter is unbounded. On hosts with many cron
+   users a stuck `MatchCrontabPatternsDeep` could starve the cycle.
+
+5. **`looksLikePHPWebshell` inner 64 KiB cap consistency (`6.5`).**
+   The function still trims its own input to 64 KiB even after the
+   upstream metering work in 5.4 covered the actual fd reads. If a
+   future caller passes a larger buffer the inner trim silently
+   truncates without any signal. Either remove the inner trim and
+   let the caller own the cap, or wire the same
+   `csm_realtime_content_scan_truncated_total` counter through it.
+
+6. **`fanotify.go` other read sites get truncation metric (`6.6`).**
+   `checkHtaccess` (16 KiB), `checkUserINI` (4 KiB), and
+   `checkCrontab` (64 KiB) read from the event fd without
+   `recordReadTruncation`. Files are usually small, but the same
+   telemetry rationale that drove 5.4 applies.
+
+7. **`validateReleaseSpoolDir` EvalSymlinks fallback hardening
+   (`6.7`).** `emailav/quarantine.go` falls back to the cleaned
+   (unresolved) path when `filepath.EvalSymlinks` errors on either
+   the input or an allowed entry. Different shape from 5.5 but the
+   same "silent error -> unsafe default" smell: a path containment
+   check that does not verify the real on-disk identity is doing
+   defence in name only. Decide: fail-closed on resolve errors, or
+   document the operator-side preconditions.
+
+8. **`domlogMaxAge` operator-tunable (`6.8`).** `bruteforce.go`
+   hardcodes 30 min as the freshness cutoff. Same class as 5.3 (a
+   scan window an operator might legitimately need to widen on
+   low-traffic hosts so a slow-burn dictionary attack still falls
+   inside the window).
+
+9. **Targeted `tailFile` scan windows operator-tunable (`6.9`).**
+   Most `tailFile(path, N)` sites in `internal/checks/` are
+   one-shot polling helpers where the hardcoded N is fine. Two
+   stand out as worth tuning: `mailrate.go`'s 500-line Exim window
+   on busy mail hosts, and `bruteforce.go`'s 200-line
+   `/var/log/messages` window on hosts that share that log with
+   noisy services. Add config knobs only for those two.
+
+### Acceptance criteria
+
+- Each sub-item: TDD where applicable (the helper-style and
+  metering work was test-driven in item 5; mirror the pattern).
+- No behaviour change at the defaults; only changes what happens
+  at the boundary or under load.
+- `make ci` clean; no new `gosec` findings.
+
+### Out of scope
+
+- Reworking the global check-runner timeout model.
+- Per-account asynchronous walks.
+- Changing the upstream fd read sizes; the metering work proves
+  whether that is needed first.
+
+### Estimated size
+
+2-3 engineering days for the nine commits plus reviews.
