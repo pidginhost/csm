@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Optional HTTP request-flood and User-Agent spoof detection on web traffic. Request-flood detection ships disabled until an operator sets a threshold, and User-Agent spoofing verifies search-engine bots by reverse DNS before flagging.
+- `csm store reset-bot-verify` drops every cached PTR+forward-A result so the next scan re-runs reverse DNS verification for each crawler. Use after a verifier-logic upgrade that would invalidate prior negative cache entries (for example, adding a new bot domain suffix). Requires the daemon to be stopped, same as `csm store compact` and `csm store import`.
 
 ### Changed
 

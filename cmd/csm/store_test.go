@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -129,6 +130,63 @@ func TestRunStoreCompact_RefusesWhenStoreLocked(t *testing.T) {
 
 func TestRunStoreCompact_MissingStatePath(t *testing.T) {
 	_, err := runStoreCompact("", StoreCompactOptions{})
+	if err == nil {
+		t.Error("empty state path should error")
+	}
+}
+
+func TestRunStoreResetBotVerify_ClearsCachedEntries(t *testing.T) {
+	statePath := t.TempDir()
+	db, err := store.Open(statePath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	exp := time.Now().Add(24 * time.Hour)
+	if perr := db.PutBotVerify(net.ParseIP("198.51.100.1"), "facebookbot", false, exp); perr != nil {
+		t.Fatalf("PutBotVerify: %v", perr)
+	}
+	if perr := db.PutBotVerify(net.ParseIP("198.51.100.2"), "amazonbot", false, exp); perr != nil {
+		t.Fatalf("PutBotVerify: %v", perr)
+	}
+	if cerr := db.Close(); cerr != nil {
+		t.Fatalf("Close: %v", cerr)
+	}
+
+	n, err := runStoreResetBotVerify(statePath)
+	if err != nil {
+		t.Fatalf("runStoreResetBotVerify: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("cleared %d, want 2", n)
+	}
+}
+
+func TestRunStoreResetBotVerify_RefusesWhenStoreLocked(t *testing.T) {
+	statePath := t.TempDir()
+	// Open once so the bbolt file exists, then re-open with another
+	// handle to simulate a running daemon.
+	first, err := store.Open(statePath)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	_ = first.Close()
+	holder, err := bolt.Open(filepath.Join(statePath, "csm.db"), 0600, &bolt.Options{Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("lock holder open: %v", err)
+	}
+	defer func() { _ = holder.Close() }()
+
+	_, err = runStoreResetBotVerify(statePath)
+	if err == nil {
+		t.Fatal("runStoreResetBotVerify should fail when the DB is locked")
+	}
+	if !strings.Contains(err.Error(), "daemon") && !strings.Contains(err.Error(), "locked") && !strings.Contains(err.Error(), "timeout") {
+		t.Errorf("error should mention the daemon or lock; got: %v", err)
+	}
+}
+
+func TestRunStoreResetBotVerify_MissingStatePath(t *testing.T) {
+	_, err := runStoreResetBotVerify("")
 	if err == nil {
 		t.Error("empty state path should error")
 	}

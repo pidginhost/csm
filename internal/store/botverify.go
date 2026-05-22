@@ -55,6 +55,31 @@ func (db *DB) PutBotVerify(ip net.IP, bot string, verified bool, expiresAt time.
 	})
 }
 
+// ResetBotVerify drops every cached PTR+forward-A result. Returns the
+// number of entries cleared. Use after a verifier-logic upgrade that
+// would invalidate prior negative cache entries (e.g., a domain suffix
+// fix that turns prior false-spoof entries into positives). Safe to
+// call when the bucket is missing or empty.
+func (db *DB) ResetBotVerify() (int, error) {
+	var cleared int
+	err := db.bolt.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("botverify"))
+		if b == nil {
+			return nil
+		}
+		cleared = b.Stats().KeyN
+		if err := tx.DeleteBucket([]byte("botverify")); err != nil {
+			return err
+		}
+		_, err := tx.CreateBucket([]byte("botverify"))
+		return err
+	})
+	if err != nil {
+		return 0, err
+	}
+	return cleared, nil
+}
+
 // GetBotVerify returns (verified, valid). valid=false means no
 // non-expired entry exists; the caller should treat the IP as
 // unverified and (optionally) enqueue an async verify job.

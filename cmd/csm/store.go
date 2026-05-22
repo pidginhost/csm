@@ -165,7 +165,7 @@ holds an exclusive file lock while the daemon runs.`)
 // runStoreCLI dispatches `csm store <subcommand>`.
 func runStoreCLI() {
 	if len(os.Args) < 3 {
-		fmt.Fprintln(os.Stderr, "csm store: missing subcommand (try `csm store compact|export|import`)")
+		fmt.Fprintln(os.Stderr, "csm store: missing subcommand (try `csm store compact|export|import|reset-bot-verify`)")
 		os.Exit(2)
 	}
 	switch os.Args[2] {
@@ -175,12 +175,72 @@ func runStoreCLI() {
 		runStoreExportCLI()
 	case "import":
 		runStoreImportCLI()
+	case "reset-bot-verify":
+		runStoreResetBotVerifyCLI()
 	case "--help", "-h", "help":
 		printStoreUsage()
 	default:
 		fmt.Fprintf(os.Stderr, "csm store: unknown subcommand %q\n", os.Args[2])
 		os.Exit(2)
 	}
+}
+
+// runStoreResetBotVerify opens the bbolt store at statePath and drops
+// every cached PTR+forward-A result. Returns the number of entries
+// removed. The daemon must be stopped because bbolt holds an exclusive
+// file lock while it runs; the function translates the lock-timeout
+// error so operators know what to do.
+func runStoreResetBotVerify(statePath string) (int, error) {
+	if statePath == "" {
+		return 0, errors.New("state path is empty")
+	}
+	if err := os.MkdirAll(statePath, 0700); err != nil {
+		return 0, fmt.Errorf("state dir %q: %w", statePath, err)
+	}
+	db, err := store.Open(statePath)
+	if err != nil {
+		if strings.Contains(err.Error(), "timeout") {
+			return 0, fmt.Errorf("state DB is locked (daemon likely running); stop with `systemctl stop csm` and retry: %w", err)
+		}
+		return 0, fmt.Errorf("opening state DB: %w", err)
+	}
+	defer func() { _ = db.Close() }()
+	return db.ResetBotVerify()
+}
+
+func runStoreResetBotVerifyCLI() {
+	for _, arg := range os.Args[3:] {
+		switch arg {
+		case "--help", "-h":
+			printStoreResetBotVerifyUsage()
+			return
+		default:
+			fmt.Fprintf(os.Stderr, "csm store reset-bot-verify: unknown flag %q\n", arg)
+			printStoreResetBotVerifyUsage()
+			os.Exit(2)
+		}
+	}
+	cfg := loadConfigLite()
+	n, err := runStoreResetBotVerify(cfg.StatePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "csm store reset-bot-verify: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("reset-bot-verify done: cleared %d cached PTR results\n", n)
+}
+
+func printStoreResetBotVerifyUsage() {
+	fmt.Fprintln(os.Stderr, `csm store reset-bot-verify - drop the cached PTR+forward-A results
+
+Usage:
+  csm store reset-bot-verify
+
+Removes every entry in the botverify bucket so the next scan re-runs
+reverse DNS verification for each crawler IP it sees. Useful after a
+verifier-logic upgrade that would invalidate prior negative cache
+entries (for example, adding a new bot domain suffix). Requires the
+daemon to be stopped (systemctl stop csm) because bbolt holds an
+exclusive file lock while the daemon runs.`)
 }
 
 func printStoreUsage() {
@@ -190,6 +250,7 @@ Subcommands:
   compact            Reclaim unused space (daemon must be stopped)
   export <path>      Write a backup archive (daemon must be running)
   import <path>      Restore from a backup archive (daemon must be stopped)
+  reset-bot-verify   Drop cached PTR+forward-A results (daemon must be stopped)
 
 Run "csm store <subcommand> --help" for details.`)
 }
