@@ -134,6 +134,7 @@ csm backup <path>             tar.gz of csm.yaml + conf.d + state
 csm restore <archive>         extract a backup archive
 csm store compact             reclaim bbolt free pages
 csm store export <path>       backup daemon state to tar.zst
+csm store reset-bot-verify    clear bot PTR verification cache
 csm export --since <when>     SIEM backfill in JSONL
 csm config schema --json      JSON Schema reflected from the Config struct
 csm validate                  dry-run config

@@ -19,7 +19,7 @@ Rolls back automatically on failure.
 
 ## Troubleshooting
 
-**"store: opening bbolt: timeout"** -- Most operator commands that need live state now route through the control socket at `/var/run/csm/control.sock`. This error should only appear from commands that intentionally open the bbolt file directly, such as `csm store compact`, `csm store import`, `csm db-clean --drop-object`, or a second daemon start while one daemon already owns the database.
+**"store: opening bbolt: timeout"** -- Most operator commands that need live state now route through the control socket at `/var/run/csm/control.sock`. This error should only appear from commands that intentionally open the bbolt file directly, such as `csm store compact`, `csm store import`, `csm store reset-bot-verify`, `csm db-clean --drop-object`, or a second daemon start while one daemon already owns the database.
 
 Fix: stop the daemon before direct-store maintenance commands, then retry:
 ```bash

@@ -72,11 +72,12 @@ func (db *DB) EnsureBotVerifyLogicVersion(version int) (bool, error) {
 		if mErr != nil {
 			return mErr
 		}
-		var stored int64 = -1
+		current := uint64(version) // #nosec G115 -- logic version is a small positive internal constant
+		stored := ^uint64(0)
 		if raw := meta.Get([]byte("botverify:logic_version")); len(raw) == 8 {
-			stored = int64(binary.BigEndian.Uint64(raw))
+			stored = binary.BigEndian.Uint64(raw)
 		}
-		if stored == int64(version) {
+		if stored == current {
 			return nil
 		}
 		if b := tx.Bucket([]byte("botverify")); b != nil {
@@ -88,7 +89,7 @@ func (db *DB) EnsureBotVerifyLogicVersion(version int) (bool, error) {
 			return cErr
 		}
 		var buf [8]byte
-		binary.BigEndian.PutUint64(buf[:], uint64(version)) // #nosec G115 -- logic version is a small positive integer
+		binary.BigEndian.PutUint64(buf[:], current)
 		if pErr := meta.Put([]byte("botverify:logic_version"), buf[:]); pErr != nil {
 			return pErr
 		}
