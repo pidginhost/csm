@@ -189,8 +189,14 @@ func mailLogMock(t *testing.T, content string) *mockOS {
 		open: func(name string) (*os.File, error) {
 			if strings.Contains(name, "exim_mainlog") {
 				tmp := t.TempDir() + "/exim_mainlog"
-				_ = os.WriteFile(tmp, []byte(content), 0644)
-				return os.Open(tmp)
+				if err := os.WriteFile(tmp, []byte(content), 0644); err != nil {
+					t.Fatalf("write mock exim log: %v", err)
+				}
+				f, err := os.Open(tmp)
+				if err != nil {
+					t.Fatalf("open mock exim log: %v", err)
+				}
+				return f, nil
 			}
 			return nil, os.ErrNotExist
 		},
@@ -242,6 +248,34 @@ func TestCheckMailPerAccountAboveThreshold(t *testing.T) {
 	}
 	if !strings.Contains(findings[0].Message, "120") {
 		t.Errorf("message should contain count, got %q", findings[0].Message)
+	}
+}
+
+func TestCheckMailPerAccountUsesConfiguredTailLines(t *testing.T) {
+	var lines strings.Builder
+	for i := 0; i < perAccountMailThreshold; i++ {
+		fmt.Fprintf(&lines, "2026-04-13 10:00:%02d 1abc%03d-000abc-XX <= spam@wide-window.test H=relay U=mailnull\n", i%60, i)
+	}
+	for i := 0; i < mailLogTailLinesDefault; i++ {
+		fmt.Fprintf(&lines, "2026-04-13 10:10:%02d Completed\n", i%60)
+	}
+	withMockOS(t, mailLogMock(t, lines.String()))
+
+	defaultFindings := CheckMailPerAccount(context.Background(), &config.Config{}, nil)
+	for _, finding := range defaultFindings {
+		if finding.Check == "mail_per_account" && finding.Domain == "wide-window.test" {
+			t.Fatalf("default tail window should not include the older burst, got finding %q", finding.Message)
+		}
+	}
+
+	cfg := &config.Config{}
+	cfg.Thresholds.MailLogTailLines = mailLogTailLinesDefault + perAccountMailThreshold
+	findings := CheckMailPerAccount(context.Background(), cfg, nil)
+	if len(findings) != 1 {
+		t.Fatalf("configured tail window should include older burst, got %d findings", len(findings))
+	}
+	if findings[0].Domain != "wide-window.test" {
+		t.Errorf("finding domain = %q, want wide-window.test", findings[0].Domain)
 	}
 }
 

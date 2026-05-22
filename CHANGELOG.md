@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - New `thresholds.domlog_tail_lines` knob (default 500) controls how many trailing lines the WP brute-force scanner reads from each per-domain access log. Raise on hosts where slow-burn attacks against high-volume domains spread across more than 500 lines per scan interval.
 - New `thresholds.domlog_max_age_min` knob (default 30) controls how many minutes back the WP brute-force scanner accepts a per-domain access log as fresh. Raise on low-traffic hosts where a slow-burn dictionary attack against a quiet domain still needs to fall inside the window.
-- New `thresholds.mail_log_tail_lines` (default 500) and `thresholds.syslog_messages_tail_lines` (default 200) expose the trailing-line windows the per-account mail-rate and FTP brute-force scanners use, so busy mail hosts and hosts that share /var/log/messages with noisy services can widen the scan window without a rebuild.
+- Mail-rate and FTP login scanners now let operators tune how much recent log history is read per cycle, so busy hosts can keep burst activity visible without a rebuild.
 - Added real-time PHP content-scan truncation telemetry so operators can see when large files exceed the scan window before tuning limits. The same counter now also covers per-user crontab, per-vhost .htaccess, per-vhost .user.ini, HTML phishing, and CGI-script real-time checks.
 - Added domlog discovery drop telemetry so operators can see when broken symlinks or stat failures silently shrink the per-vhost scan set.
 - Added crontab base64 truncation telemetry and raised the per-blob decode window so operators can spot large encoded cron content that needs follow-up.

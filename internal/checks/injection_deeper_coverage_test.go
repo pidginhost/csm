@@ -117,8 +117,14 @@ func TestCheckFTPLoginsBruteForceThreshold(t *testing.T) {
 	withMockOS(t, &mockOS{
 		open: func(name string) (*os.File, error) {
 			tmp := t.TempDir() + "/messages"
-			_ = os.WriteFile(tmp, []byte(logContent), 0644)
-			return os.Open(tmp)
+			if err := os.WriteFile(tmp, []byte(logContent), 0644); err != nil {
+				t.Fatalf("write mock messages log: %v", err)
+			}
+			f, err := os.Open(tmp)
+			if err != nil {
+				t.Fatalf("open mock messages log: %v", err)
+			}
+			return f, nil
 		},
 	})
 
@@ -132,6 +138,51 @@ func TestCheckFTPLoginsBruteForceThreshold(t *testing.T) {
 	}
 	if !hasBrute {
 		t.Error("expected ftp_bruteforce finding for 203.0.113.5 after 15 failures")
+	}
+}
+
+func TestCheckFTPLoginsUsesConfiguredTailLines(t *testing.T) {
+	var lines []string
+	for i := 0; i < ftpFailThreshold; i++ {
+		lines = append(lines, `Apr 12 10:00:00 server pure-ftpd: 203.0.113.44 [WARNING] Authentication failed for user alice`)
+	}
+	for i := 0; i < syslogMessagesTailLinesDefault; i++ {
+		lines = append(lines, fmt.Sprintf("Apr 12 10:10:%02d server systemd[1]: noisy service line", i%60))
+	}
+	logContent := strings.Join(lines, "\n") + "\n"
+
+	withMockOS(t, &mockOS{
+		open: func(name string) (*os.File, error) {
+			tmp := t.TempDir() + "/messages"
+			if err := os.WriteFile(tmp, []byte(logContent), 0644); err != nil {
+				t.Fatalf("write mock messages log: %v", err)
+			}
+			f, err := os.Open(tmp)
+			if err != nil {
+				t.Fatalf("open mock messages log: %v", err)
+			}
+			return f, nil
+		},
+	})
+
+	defaultFindings := CheckFTPLogins(context.Background(), &config.Config{}, nil)
+	for _, finding := range defaultFindings {
+		if finding.Check == "ftp_bruteforce" && strings.Contains(finding.Message, "203.0.113.44") {
+			t.Fatalf("default tail window should not include the older failures, got finding %q", finding.Message)
+		}
+	}
+
+	cfg := &config.Config{}
+	cfg.Thresholds.SyslogMessagesTailLines = syslogMessagesTailLinesDefault + ftpFailThreshold
+	findings := CheckFTPLogins(context.Background(), cfg, nil)
+	hasBrute := false
+	for _, finding := range findings {
+		if finding.Check == "ftp_bruteforce" && strings.Contains(finding.Message, "203.0.113.44") {
+			hasBrute = true
+		}
+	}
+	if !hasBrute {
+		t.Fatal("configured tail window should include older pure-ftpd failures")
 	}
 }
 
