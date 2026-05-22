@@ -32,8 +32,9 @@ func newVerifier(r resolver, domains []string) *verifier {
 // ErrUnverifiable signals that the resolver returned no usable PTR for
 // the source IP, so the verifier cannot prove or disprove the claimed
 // bot identity. Callers treat this as fail-open: do not cache, do not
-// flag as spoof. A genuine spoof signal -- PTR present but pointing
-// outside the bot's domain suffix list -- still returns (false, nil).
+// flag as spoof. Genuine spoof signals -- PTR present but outside the
+// bot's domain suffix list, or forward-confirm mismatch -- still return
+// (false, nil).
 var ErrUnverifiable = errors.New("bot verify: no PTR record for source IP")
 
 // verify performs Google's official PTR + forward-A method. Returns

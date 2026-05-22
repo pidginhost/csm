@@ -9,14 +9,19 @@ import (
 )
 
 type mockResolver struct {
-	ptr map[string][]string
-	a   map[string][]net.IP
-	err error
+	ptr     map[string][]string
+	a       map[string][]net.IP
+	err     error
+	addrErr error
+	ipErr   error
 }
 
 func (m *mockResolver) LookupAddr(ctx context.Context, ip string) ([]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if m.addrErr != nil {
+		return nil, m.addrErr
 	}
 	if m.err != nil {
 		return nil, m.err
@@ -27,6 +32,9 @@ func (m *mockResolver) LookupAddr(ctx context.Context, ip string) ([]string, err
 func (m *mockResolver) LookupIP(ctx context.Context, network, host string) ([]net.IP, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if m.ipErr != nil {
+		return nil, m.ipErr
 	}
 	if m.err != nil {
 		return nil, m.err
@@ -79,6 +87,38 @@ func TestVerify_PTRTransientErrorFailsOpen(t *testing.T) {
 	}
 }
 
+func TestVerify_ForwardNotFoundIsDefinitiveNegative(t *testing.T) {
+	ip := "66.249.66.99"
+	res := &mockResolver{
+		ptr:   map[string][]string{ip: {"crawl-66-249-66-99.googlebot.com."}},
+		ipErr: &net.DNSError{IsNotFound: true},
+	}
+	v := newVerifier(res, []string{"googlebot.com"})
+	ok, err := v.verify(context.Background(), net.ParseIP(ip), "googlebot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Error("forward not-found must verify-fail")
+	}
+}
+
+func TestVerify_ForwardTransientErrorFailsOpen(t *testing.T) {
+	ip := "66.249.66.99"
+	res := &mockResolver{
+		ptr:   map[string][]string{ip: {"crawl-66-249-66-99.googlebot.com."}},
+		ipErr: errors.New("temporary resolver failure"),
+	}
+	v := newVerifier(res, []string{"googlebot.com"})
+	ok, err := v.verify(context.Background(), net.ParseIP(ip), "googlebot")
+	if err == nil {
+		t.Fatal("expected resolver error")
+	}
+	if ok {
+		t.Error("resolver error must not verify true")
+	}
+}
+
 // IPs without a PTR record are unverifiable, not a confirmed spoof signal.
 // Returning a negative here would mark every legitimate crawler IP without
 // reverse DNS (Meta meta-externalagent, ClaudeBot on AWS) as a spoof.
@@ -86,8 +126,8 @@ func TestVerify_PTRNotFoundIsUnverifiable(t *testing.T) {
 	res := &mockResolver{err: &net.DNSError{IsNotFound: true}}
 	v := newVerifier(res, []string{"googlebot.com"})
 	ok, err := v.verify(context.Background(), net.ParseIP("203.0.113.10"), "googlebot")
-	if err == nil {
-		t.Fatal("expected unverifiable error for missing PTR")
+	if !errors.Is(err, ErrUnverifiable) {
+		t.Fatalf("error = %v, want ErrUnverifiable", err)
 	}
 	if ok {
 		t.Error("no-PTR must not verify true")
@@ -99,8 +139,8 @@ func TestVerify_EmptyPTRListIsUnverifiable(t *testing.T) {
 	res := &mockResolver{ptr: map[string][]string{ip: nil}}
 	v := newVerifier(res, []string{"googlebot.com"})
 	ok, err := v.verify(context.Background(), net.ParseIP(ip), "googlebot")
-	if err == nil {
-		t.Fatal("expected unverifiable error for empty PTR list")
+	if !errors.Is(err, ErrUnverifiable) {
+		t.Fatalf("error = %v, want ErrUnverifiable", err)
 	}
 	if ok {
 		t.Error("empty PTR must not verify true")
