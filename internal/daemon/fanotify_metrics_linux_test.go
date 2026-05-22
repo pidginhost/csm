@@ -15,7 +15,7 @@ import (
 // TestFanotifyRegisterMetricsExposesExpectedNames bypasses
 // NewFileMonitor (which needs CAP_SYS_ADMIN to call fanotify_init),
 // constructs a FileMonitor struct directly, and confirms that
-// registerMetrics publishes the three expected metric names into the
+// registerMetrics publishes the expected metric names into the
 // scrape output.
 //
 // The previous fanotify tests in the package use the same struct-
@@ -37,6 +37,7 @@ func TestFanotifyRegisterMetricsExposesExpectedNames(t *testing.T) {
 		"csm_fanotify_queue_depth",
 		"csm_fanotify_events_dropped_total",
 		"csm_fanotify_reconcile_latency_seconds",
+		"csm_realtime_content_scan_truncated_total",
 	} {
 		if !strings.Contains(body, "# TYPE "+name+" ") {
 			t.Errorf("scrape missing TYPE line for %s:\n%s", name, body)

@@ -67,6 +67,38 @@ func TestRecordReadTruncationIncrementsCounterWhenFileExceedsCap(t *testing.T) {
 	}
 }
 
+func TestCheckPHPContentRecordsTruncationMetric(t *testing.T) {
+	ch := make(chan alert.Finding, 1)
+	fm := &FileMonitor{
+		cfg:        &config.Config{},
+		alertCh:    ch,
+		analyzerCh: make(chan fileEvent, 4000),
+	}
+	fm.registerMetrics()
+
+	path := filepath.Join(t.TempDir(), "large.php")
+	data := []byte("<?php\n" + strings.Repeat("// filler\n", 5000))
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	before := readLabelledCounter(scrapeBody(t),
+		"csm_realtime_content_scan_truncated_total", "check", "php_check")
+
+	fm.checkPHPContent(int(f.Fd()), path, "pid=1 cmd=php")
+
+	after := readLabelledCounter(scrapeBody(t),
+		"csm_realtime_content_scan_truncated_total", "check", "php_check")
+	if after-before != 1 {
+		t.Errorf("checkPHPContent truncation counter delta: got %g want 1", after-before)
+	}
+}
+
 // readLabelledCounter returns the value of a single sample of a labelled
 // counter, 0 if not present. Matches the line shape OpenMetrics emits:
 //

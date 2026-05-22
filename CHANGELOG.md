@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - New `thresholds.domlog_tail_lines` knob (default 500) controls how many trailing lines the WP brute-force scanner reads from each per-domain access log. Raise on hosts where slow-burn attacks against high-volume domains spread across more than 500 lines per scan interval.
-- New `csm_realtime_content_scan_truncated_total{check}` counter exposes how often the real-time PHP content scanner sees only a prefix of a file because the file is larger than the read window. Visibility into how often legitimate large files crowd up against the 32-64 KiB read caps without changing default behaviour.
+- Added real-time PHP content-scan truncation telemetry so operators can see when large files exceed the scan window before tuning limits.
 
 ## [3.6.0] - 2026-05-22
 

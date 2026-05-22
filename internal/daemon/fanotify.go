@@ -198,7 +198,7 @@ func (fm *FileMonitor) registerMetrics() {
 
 			contentScanTruncated = metrics.NewCounterVec(
 				"csm_realtime_content_scan_truncated_total",
-				"Real-time fanotify content checks whose file was larger than the read window, so the scanner saw only a prefix. Sustained growth on a label means real payloads land past the read cap; raise the cap or split the scanner. Labels: check (phpcontent_inline, phpcontent_uploads, php_check).",
+				"Real-time fanotify content checks whose file was larger than the main read window, so the full-rule pass saw only the leading window. Labels: check (phpcontent_inline, phpcontent_uploads, php_check).",
 				[]string{"check"},
 			)
 			metrics.MustRegister("csm_realtime_content_scan_truncated_total", contentScanTruncated)
