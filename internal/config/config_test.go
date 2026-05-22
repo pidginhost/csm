@@ -93,6 +93,29 @@ func TestChallengeListenAddrHonorsOperatorOverride(t *testing.T) {
 	}
 }
 
+func TestDomlogMaxAgeMinHonorsOperatorOverride(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "csm-config-*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile.Name())
+	_, err = tmpFile.WriteString("thresholds:\n  domlog_max_age_min: 90\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(tmpFile.Name())
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.Thresholds.DomlogMaxAgeMin != 90 {
+		t.Errorf("domlog_max_age_min override = %d, want 90", cfg.Thresholds.DomlogMaxAgeMin)
+	}
+}
+
 func TestIncidentAutoCloseDefaultThresholdsUseIncidentKinds(t *testing.T) {
 	got := defaultIncidentAutoCloseThresholds()
 	want := map[string]time.Duration{

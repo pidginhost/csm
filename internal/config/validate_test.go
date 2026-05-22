@@ -767,7 +767,6 @@ func TestValidate_DomlogMaxAgeMinRange(t *testing.T) {
 		wantErr bool
 	}{
 		{"zero uses default", 0, false},
-		{"too small rejected", 0, false},
 		{"minimum accepted", 1, false},
 		{"common production value accepted", 30, false},
 		{"maximum accepted", 1440, false},
