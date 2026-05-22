@@ -125,7 +125,9 @@ curl -sk -H "Authorization: Bearer $METRICS_TOKEN" \
   webshell filename), `phpcontent_uploads` (PHP in uploads),
   `php_check` (generic PHP content scan), `crontab` (per-user
   /var/spool/cron write), `htaccess` (per-vhost .htaccess write),
-  and `user_ini` (per-vhost .user.ini write). Compare against
+  `user_ini` (per-vhost .user.ini write), `html_phishing` (HTML
+  phishing heuristic), and `cgi_backdoor` (CGI backdoor heuristic).
+  Compare against
   finding history for `webshell_content_realtime` (or the matching
   check name for non-PHP labels) to judge whether a raised cap would
   surface real findings.

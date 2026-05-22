@@ -198,7 +198,7 @@ func (fm *FileMonitor) registerMetrics() {
 
 			contentScanTruncated = metrics.NewCounterVec(
 				"csm_realtime_content_scan_truncated_total",
-				"Real-time fanotify content checks whose file was larger than the main read window, so the full-rule pass saw only the leading window. Labels: check (phpcontent_inline, phpcontent_uploads, php_check, crontab, htaccess, user_ini).",
+				"Real-time fanotify content checks whose file was larger than the main read window, so the full-rule pass saw only the leading window. Labels: check (phpcontent_inline, phpcontent_uploads, php_check, crontab, htaccess, user_ini, html_phishing, cgi_backdoor).",
 				[]string{"check"},
 			)
 			metrics.MustRegister("csm_realtime_content_scan_truncated_total", contentScanTruncated)
@@ -1457,6 +1457,7 @@ func (fm *FileMonitor) checkHTMLPhishing(fd int, path, procInfo string) {
 		return
 	}
 
+	recordReadTruncation(fd, 16384, "html_phishing")
 	data := readFromFd(fd, 16384)
 	if data == nil {
 		return
@@ -1879,6 +1880,7 @@ func isCGIExtension(nameLower string) bool {
 // checkCGIBackdoor reads a CGI script and checks for backdoor patterns.
 // Detects Perl/Python/Bash backdoors like the LEVIATHAN toolkit.
 func (fm *FileMonitor) checkCGIBackdoor(fd int, path, procInfo string) {
+	recordReadTruncation(fd, 32768, "cgi_backdoor")
 	data := readFromFd(fd, 32768)
 	if data == nil {
 		return
