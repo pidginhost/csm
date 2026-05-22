@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance
+
+- Firewall engine now caches the parsed `state.json` in memory and answers blocked-IP and blocked-subnet lookups from an index map instead of re-reading and re-parsing the 325 KiB state file on every call. Eliminates the per-call full file load that dominated steady-state CPU on busy hosts.
+
 ### Security
 
 - Closed the CodeQL findings backlog with stricter archive import containment, safe challenge and quarantine logging output, bounded parser/allocation paths, and safe numeric handling for proc-derived values.

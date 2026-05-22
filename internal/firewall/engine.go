@@ -70,6 +70,27 @@ type Engine struct {
 	meterPortFlood6 map[string]*nftables.Set
 
 	statePath string
+
+	// Cached parsed firewall state. Population is lazy: the first call
+	// to loadStateFile under e.mu reads + parses state.json once, then
+	// subsequent calls return a deep copy from the in-memory cache as
+	// long as the on-disk mtime is unchanged.
+	//
+	// Before this cache existed, every single mutator (BlockIP,
+	// AllowIP, saveBlockedEntry, etc.) reloaded and re-parsed the full
+	// 325 KiB state.json from disk, and every IsBlocked / IsAllowed
+	// call did a linear scan over the parsed slices. On cluster6 that
+	// meant ~72 state.json opens per second steady state, which showed
+	// up as the dominant CPU hot spot in roadmap audit 7.1.
+	//
+	// All four fields are written only while e.mu is held. The index
+	// maps are rebuilt every time stateCache is repopulated so
+	// O(1) lookups stay coherent with the cached slices.
+	stateCache       *FirewallState
+	stateCacheMtime  time.Time
+	blockedIPIndex   map[string]struct{}
+	allowedIPIndex   map[string]struct{}
+	blockedCIDRIndex map[string]struct{}
 }
 
 // BlockedEntry represents a blocked IP with metadata.
@@ -1447,17 +1468,17 @@ func (e *Engine) UnblockIP(ip string) error {
 
 // IsBlocked returns true if the IP is currently in the engine's blocked state.
 // Uses the persisted state file (which is cleaned of expired entries on load).
+//
+// The lookup is O(1) via the blockedIPIndex map populated from the
+// cached state. Linear scans over the parsed slice are gone -- on
+// hosts with hundreds of persisted blocks the scan was the dominant
+// cost of every connection-handler IsBlocked check.
 func (e *Engine) IsBlocked(ip string) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-
-	st := e.loadStateFile()
-	for _, entry := range st.Blocked {
-		if entry.IP == ip {
-			return true
-		}
-	}
-	return false
+	e.ensureStateCacheLocked()
+	_, ok := e.blockedIPIndex[ip]
+	return ok
 }
 
 // AllowIP adds an IP to the allowed set and persists it.
@@ -1836,7 +1857,14 @@ func (e *Engine) resolveSubnetSet(network *net.IPNet) (*nftables.Set, net.IP, ne
 }
 
 // Status returns current firewall statistics.
+//
+// Takes e.mu so the cached state can be read coherently. Before the
+// cache existed loadStateFile was lock-free because every call did its
+// own ReadFile + Unmarshal; now that loadStateFile mutates the shared
+// cache + index, the lock is required.
 func (e *Engine) Status() map[string]interface{} {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	state := e.loadStateFile()
 	return map[string]interface{}{
 		"enabled":     e.cfg.Enabled,
@@ -1971,51 +1999,210 @@ func (e *Engine) addElementsChunked(s *nftables.Set, elems []nftables.SetElement
 	}
 }
 
+// loadStateFile returns a deep copy of the cached firewall state with
+// expired entries pruned. The on-disk state.json is re-read only when
+// the file mtime differs from the cached mtime (or the cache is empty).
+//
+// All callers must hold e.mu. The returned value is safe to mutate
+// without affecting the cache; mutators write back via saveState which
+// rebuilds the cache from the passed-in struct.
+//
+// Hot read paths (IsBlocked, IsSubnetBlocked, IsAllowed) bypass this
+// allocation by consulting the index maps directly.
 func (e *Engine) loadStateFile() FirewallState {
-	var state FirewallState
-	stateFile := filepath.Join(e.statePath, "state.json")
-	if !fileExistsFirewall(stateFile) {
-		return state
+	e.ensureStateCacheLocked()
+	if e.stateCache == nil {
+		return FirewallState{}
 	}
-	// #nosec G304 -- filepath.Join under operator-configured statePath.
-	data, _ := os.ReadFile(stateFile)
-	_ = json.Unmarshal(data, &state)
-
-	// Clean expired entries
-	now := time.Now()
-	var active []BlockedEntry
-	for _, entry := range state.Blocked {
-		if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
-			active = append(active, entry)
-		}
+	s := e.stateCache
+	return FirewallState{
+		Blocked:     append([]BlockedEntry(nil), s.Blocked...),
+		BlockedNet:  append([]SubnetEntry(nil), s.BlockedNet...),
+		Allowed:     append([]AllowedEntry(nil), s.Allowed...),
+		PortAllowed: append([]PortAllowEntry(nil), s.PortAllowed...),
 	}
-	state.Blocked = active
-
-	var activeNets []SubnetEntry
-	for _, entry := range state.BlockedNet {
-		if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
-			activeNets = append(activeNets, entry)
-		}
-	}
-	state.BlockedNet = activeNets
-
-	var activeAllowed []AllowedEntry
-	for _, entry := range state.Allowed {
-		if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
-			activeAllowed = append(activeAllowed, entry)
-		}
-	}
-	state.Allowed = activeAllowed
-
-	return state
 }
 
+// ensureStateCacheLocked populates or refreshes e.stateCache. Cheap on
+// cache-hit (one stat). On cache-miss it does the full ReadFile +
+// json.Unmarshal that the pre-cache implementation did on every call.
+//
+// Expired entries are pruned in-place after load so IsBlocked and the
+// other index-backed lookups never report a stale block. Pruning
+// updates the index maps via rebuildIndexLocked.
+func (e *Engine) ensureStateCacheLocked() {
+	stateFile := filepath.Join(e.statePath, "state.json")
+	info, statErr := os.Stat(stateFile)
+	if statErr == nil && e.stateCache != nil && info.ModTime().Equal(e.stateCacheMtime) {
+		e.applyExpiryLocked()
+		return
+	}
+
+	var fresh FirewallState
+	if statErr == nil {
+		// #nosec G304 -- filepath.Join under operator-configured statePath.
+		if data, readErr := os.ReadFile(stateFile); readErr == nil {
+			_ = json.Unmarshal(data, &fresh)
+		}
+		e.stateCacheMtime = info.ModTime()
+	} else if os.IsNotExist(statErr) {
+		e.stateCacheMtime = time.Time{}
+	} else if e.stateCache != nil {
+		// Transient stat error (permission, EIO). Keep the prior
+		// cache rather than dropping all blocks.
+		e.applyExpiryLocked()
+		return
+	}
+
+	e.stateCache = &fresh
+	e.applyExpiryLocked()
+	e.rebuildIndexLocked()
+}
+
+// applyExpiryLocked prunes expired entries from the cached state in
+// place. Returns whether anything changed; the index maps are rebuilt
+// when something did.
+func (e *Engine) applyExpiryLocked() {
+	if e.stateCache == nil {
+		return
+	}
+	now := time.Now()
+	s := e.stateCache
+	changed := false
+	if pruned, dropped := pruneBlocked(s.Blocked, now); dropped {
+		s.Blocked = pruned
+		changed = true
+	}
+	if pruned, dropped := pruneBlockedNet(s.BlockedNet, now); dropped {
+		s.BlockedNet = pruned
+		changed = true
+	}
+	if pruned, dropped := pruneAllowed(s.Allowed, now); dropped {
+		s.Allowed = pruned
+		changed = true
+	}
+	if changed {
+		e.rebuildIndexLocked()
+	}
+}
+
+// rebuildIndexLocked refreshes the three lookup maps from the cached
+// state. Must be called any time e.stateCache is mutated.
+func (e *Engine) rebuildIndexLocked() {
+	if e.stateCache == nil {
+		e.blockedIPIndex = nil
+		e.allowedIPIndex = nil
+		e.blockedCIDRIndex = nil
+		return
+	}
+	s := e.stateCache
+	blocked := make(map[string]struct{}, len(s.Blocked))
+	for _, entry := range s.Blocked {
+		blocked[entry.IP] = struct{}{}
+	}
+	e.blockedIPIndex = blocked
+	allowed := make(map[string]struct{}, len(s.Allowed))
+	for _, entry := range s.Allowed {
+		allowed[entry.IP] = struct{}{}
+	}
+	e.allowedIPIndex = allowed
+	subnets := make(map[string]struct{}, len(s.BlockedNet))
+	for _, entry := range s.BlockedNet {
+		subnets[entry.CIDR] = struct{}{}
+	}
+	e.blockedCIDRIndex = subnets
+}
+
+// pruneBlocked returns the list with expired blocked-IP entries removed
+// and a flag indicating whether anything was dropped. Returns the
+// original slice when no entries expired so we avoid pointless
+// allocations on the steady-state hot path.
+func pruneBlocked(in []BlockedEntry, now time.Time) ([]BlockedEntry, bool) {
+	expired := 0
+	for _, entry := range in {
+		if !entry.ExpiresAt.IsZero() && !entry.ExpiresAt.After(now) {
+			expired++
+		}
+	}
+	if expired == 0 {
+		return in, false
+	}
+	out := make([]BlockedEntry, 0, len(in)-expired)
+	for _, entry := range in {
+		if !entry.ExpiresAt.IsZero() && !entry.ExpiresAt.After(now) {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out, true
+}
+
+func pruneBlockedNet(in []SubnetEntry, now time.Time) ([]SubnetEntry, bool) {
+	expired := 0
+	for _, entry := range in {
+		if !entry.ExpiresAt.IsZero() && !entry.ExpiresAt.After(now) {
+			expired++
+		}
+	}
+	if expired == 0 {
+		return in, false
+	}
+	out := make([]SubnetEntry, 0, len(in)-expired)
+	for _, entry := range in {
+		if !entry.ExpiresAt.IsZero() && !entry.ExpiresAt.After(now) {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out, true
+}
+
+func pruneAllowed(in []AllowedEntry, now time.Time) ([]AllowedEntry, bool) {
+	expired := 0
+	for _, entry := range in {
+		if !entry.ExpiresAt.IsZero() && !entry.ExpiresAt.After(now) {
+			expired++
+		}
+	}
+	if expired == 0 {
+		return in, false
+	}
+	out := make([]AllowedEntry, 0, len(in)-expired)
+	for _, entry := range in {
+		if !entry.ExpiresAt.IsZero() && !entry.ExpiresAt.After(now) {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out, true
+}
+
+// saveState writes the firewall state to disk atomically (write to .tmp,
+// rename into place) and rebuilds the in-memory cache to reflect the
+// just-written snapshot. Callers must hold e.mu.
+//
+// The cache rebuild deep-copies the input slices so a caller that
+// keeps mutating the local FirewallState after saveState returns cannot
+// corrupt the cache.
 func (e *Engine) saveState(state *FirewallState) {
 	path := filepath.Join(e.statePath, "state.json")
 	data, _ := json.MarshalIndent(state, "", "  ")
 	tmpPath := path + ".tmp"
 	_ = os.WriteFile(tmpPath, data, 0600)
 	_ = os.Rename(tmpPath, path)
+
+	e.stateCache = &FirewallState{
+		Blocked:     append([]BlockedEntry(nil), state.Blocked...),
+		BlockedNet:  append([]SubnetEntry(nil), state.BlockedNet...),
+		Allowed:     append([]AllowedEntry(nil), state.Allowed...),
+		PortAllowed: append([]PortAllowEntry(nil), state.PortAllowed...),
+	}
+	if info, err := os.Stat(path); err == nil {
+		e.stateCacheMtime = info.ModTime()
+	} else {
+		e.stateCacheMtime = time.Time{}
+	}
+	e.rebuildIndexLocked()
 }
 
 func (e *Engine) saveBlockedEntry(entry BlockedEntry) {
@@ -2116,13 +2303,9 @@ func (e *Engine) saveSubnetEntry(entry SubnetEntry) {
 }
 
 func (e *Engine) isSubnetBlockedStateLocked(cidr string) bool {
-	state := e.loadStateFile()
-	for _, existing := range state.BlockedNet {
-		if existing.CIDR == cidr {
-			return true
-		}
-	}
-	return false
+	e.ensureStateCacheLocked()
+	_, ok := e.blockedCIDRIndex[cidr]
+	return ok
 }
 
 func (e *Engine) removeSubnetState(cidr string) {
