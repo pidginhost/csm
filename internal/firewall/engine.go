@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/google/nftables"
@@ -74,7 +75,7 @@ type Engine struct {
 	// Cached parsed firewall state. Population is lazy: the first call
 	// to loadStateFile under e.mu reads + parses state.json once, then
 	// subsequent calls return a deep copy from the in-memory cache as
-	// long as the on-disk mtime is unchanged.
+	// long as the on-disk metadata key is unchanged.
 	//
 	// Before this cache existed, every single mutator (BlockIP,
 	// AllowIP, saveBlockedEntry, etc.) reloaded and re-parsed the full
@@ -87,10 +88,40 @@ type Engine struct {
 	// maps are rebuilt every time stateCache is repopulated so
 	// O(1) lookups stay coherent with the cached slices.
 	stateCache       *FirewallState
-	stateCacheMtime  time.Time
+	stateCacheKey    stateFileCacheKey
 	blockedIPIndex   map[string]struct{}
 	allowedIPIndex   map[string]struct{}
 	blockedCIDRIndex map[string]struct{}
+}
+
+type stateFileCacheKey struct {
+	modTime    time.Time
+	changeTime time.Time
+	size       int64
+	dev        uint64
+	ino        uint64
+}
+
+func stateFileCacheKeyFromInfo(info os.FileInfo) stateFileCacheKey {
+	key := stateFileCacheKey{
+		modTime: info.ModTime(),
+		size:    info.Size(),
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+		key.changeTime = time.Unix(stat.Ctim.Sec, stat.Ctim.Nsec)
+		key.dev = uint64(stat.Dev)
+		key.ino = uint64(stat.Ino)
+	}
+	return key
+}
+
+func (k stateFileCacheKey) matches(info os.FileInfo) bool {
+	other := stateFileCacheKeyFromInfo(info)
+	return k.size == other.size &&
+		k.dev == other.dev &&
+		k.ino == other.ino &&
+		k.modTime.Equal(other.modTime) &&
+		k.changeTime.Equal(other.changeTime)
 }
 
 // BlockedEntry represents a blocked IP with metadata.
@@ -2001,7 +2032,7 @@ func (e *Engine) addElementsChunked(s *nftables.Set, elems []nftables.SetElement
 
 // loadStateFile returns a deep copy of the cached firewall state with
 // expired entries pruned. The on-disk state.json is re-read only when
-// the file mtime differs from the cached mtime (or the cache is empty).
+// the file metadata key differs from the cached key (or the cache is empty).
 //
 // All callers must hold e.mu. The returned value is safe to mutate
 // without affecting the cache; mutators write back via saveState which
@@ -2033,7 +2064,7 @@ func (e *Engine) loadStateFile() FirewallState {
 func (e *Engine) ensureStateCacheLocked() {
 	stateFile := filepath.Join(e.statePath, "state.json")
 	info, statErr := os.Stat(stateFile)
-	if statErr == nil && e.stateCache != nil && info.ModTime().Equal(e.stateCacheMtime) {
+	if statErr == nil && e.stateCache != nil && e.stateCacheKey.matches(info) {
 		e.applyExpiryLocked()
 		return
 	}
@@ -2041,12 +2072,18 @@ func (e *Engine) ensureStateCacheLocked() {
 	var fresh FirewallState
 	if statErr == nil {
 		// #nosec G304 -- filepath.Join under operator-configured statePath.
-		if data, readErr := os.ReadFile(stateFile); readErr == nil {
-			_ = json.Unmarshal(data, &fresh)
+		data, readErr := os.ReadFile(stateFile)
+		if readErr != nil {
+			e.keepPriorStateCacheLocked()
+			return
 		}
-		e.stateCacheMtime = info.ModTime()
+		if err := json.Unmarshal(data, &fresh); err != nil {
+			e.keepPriorStateCacheLocked()
+			return
+		}
+		e.stateCacheKey = stateFileCacheKeyFromInfo(info)
 	} else if os.IsNotExist(statErr) {
-		e.stateCacheMtime = time.Time{}
+		e.stateCacheKey = stateFileCacheKey{}
 	} else if e.stateCache != nil {
 		// Transient stat error (permission, EIO). Keep the prior
 		// cache rather than dropping all blocks.
@@ -2056,6 +2093,16 @@ func (e *Engine) ensureStateCacheLocked() {
 
 	e.stateCache = &fresh
 	e.applyExpiryLocked()
+	e.rebuildIndexLocked()
+}
+
+func (e *Engine) keepPriorStateCacheLocked() {
+	if e.stateCache != nil {
+		e.applyExpiryLocked()
+		return
+	}
+	e.stateCache = &FirewallState{}
+	e.stateCacheKey = stateFileCacheKey{}
 	e.rebuildIndexLocked()
 }
 
@@ -2188,8 +2235,19 @@ func (e *Engine) saveState(state *FirewallState) {
 	path := filepath.Join(e.statePath, "state.json")
 	data, _ := json.MarshalIndent(state, "", "  ")
 	tmpPath := path + ".tmp"
-	_ = os.WriteFile(tmpPath, data, 0600)
-	_ = os.Rename(tmpPath, path)
+	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
+		e.clearStateCacheLocked()
+		return
+	}
+	var cacheKey stateFileCacheKey
+	if info, err := os.Stat(tmpPath); err == nil {
+		cacheKey = stateFileCacheKeyFromInfo(info)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		e.clearStateCacheLocked()
+		return
+	}
 
 	e.stateCache = &FirewallState{
 		Blocked:     append([]BlockedEntry(nil), state.Blocked...),
@@ -2197,11 +2255,13 @@ func (e *Engine) saveState(state *FirewallState) {
 		Allowed:     append([]AllowedEntry(nil), state.Allowed...),
 		PortAllowed: append([]PortAllowEntry(nil), state.PortAllowed...),
 	}
-	if info, err := os.Stat(path); err == nil {
-		e.stateCacheMtime = info.ModTime()
-	} else {
-		e.stateCacheMtime = time.Time{}
-	}
+	e.stateCacheKey = cacheKey
+	e.rebuildIndexLocked()
+}
+
+func (e *Engine) clearStateCacheLocked() {
+	e.stateCache = nil
+	e.stateCacheKey = stateFileCacheKey{}
 	e.rebuildIndexLocked()
 }
 

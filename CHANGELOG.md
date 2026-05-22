@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Firewall state cache now detects external state replacements even when timestamps are preserved and keeps the last valid snapshot during malformed rewrites, avoiding stale or empty block answers.
 - Crontab and cron.d change baselines now ignore unreadable files instead of treating read failures as empty content, avoiding false change alerts during delete or permission races.
 - Filesystem backdoor and hidden-file ranking now filters unreportable glob matches before mtime work, so unrelated or safe entries cannot consume the cancellation budget before suspicious candidates are checked.
 - Canceled mail forwarder audits no longer mark the scan as fresh before finishing, so the next cycle can retry skipped domains.

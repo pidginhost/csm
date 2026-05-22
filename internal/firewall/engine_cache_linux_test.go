@@ -100,6 +100,89 @@ func TestEngine_IsBlockedReloadsOnMtimeChange(t *testing.T) {
 	}
 }
 
+// Atomic external writers can preserve mtime while replacing the inode.
+// The cache key must include more than mtime or the daemon keeps serving
+// stale blocked-IP answers until another write changes the timestamp.
+func TestEngine_IsBlockedReloadsAfterAtomicReplaceWithPreservedMtime(t *testing.T) {
+	dir := t.TempDir()
+	e := &Engine{statePath: dir}
+	stateFile := filepath.Join(dir, "state.json")
+
+	writeState := func(path, ip string) {
+		t.Helper()
+		state := FirewallState{
+			Blocked: []BlockedEntry{{IP: ip, Reason: "test", BlockedAt: time.Now()}},
+		}
+		data, err := json.MarshalIndent(&state, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	writeState(stateFile, "192.0.2.10")
+	if !e.IsBlocked("192.0.2.10") {
+		t.Fatal("first IsBlocked should see the seeded IP")
+	}
+	firstInfo, err := os.Stat(stateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tmpPath := stateFile + ".next"
+	writeState(tmpPath, "192.0.2.11")
+	if err := os.Rename(tmpPath, stateFile); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(stateFile, firstInfo.ModTime(), firstInfo.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+
+	if e.IsBlocked("192.0.2.10") {
+		t.Errorf("after same-mtime atomic rewrite, old IP must no longer be reported as blocked")
+	}
+	if !e.IsBlocked("192.0.2.11") {
+		t.Errorf("after same-mtime atomic rewrite, new IP should be reported as blocked")
+	}
+}
+
+// A malformed external rewrite should not poison the cache as an empty
+// firewall state. Keeping the prior parsed state is safer and retries the
+// disk read on the next metadata change.
+func TestEngine_IsBlockedKeepsPriorCacheOnInvalidRewrite(t *testing.T) {
+	dir := t.TempDir()
+	e := &Engine{statePath: dir}
+	stateFile := filepath.Join(dir, "state.json")
+
+	state := FirewallState{
+		Blocked: []BlockedEntry{{IP: "192.0.2.10", Reason: "test", BlockedAt: time.Now()}},
+	}
+	data, err := json.MarshalIndent(&state, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stateFile, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !e.IsBlocked("192.0.2.10") {
+		t.Fatal("first IsBlocked should see the seeded IP")
+	}
+
+	if err := os.WriteFile(stateFile, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	later := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(stateFile, later, later); err != nil {
+		t.Fatal(err)
+	}
+
+	if !e.IsBlocked("192.0.2.10") {
+		t.Errorf("malformed external rewrite should keep prior cached blocked state")
+	}
+}
+
 // Expired blocks must never appear in the IsBlocked answer even when
 // the on-disk state.json still carries them. The cache mirror applies
 // expiry on every refresh.
