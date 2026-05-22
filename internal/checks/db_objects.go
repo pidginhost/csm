@@ -123,7 +123,9 @@ func CheckDatabaseObjects(ctx context.Context, cfg *config.Config, _ *state.Stor
 
 	allowlist := dbObjectAllowlistMap(cfg)
 
-	for _, wpConfig := range wpConfigs {
+	// Rank by mtime desc so recently touched WP installs are processed
+	// first when the check timeout cuts iteration short.
+	for _, wpConfig := range rankPathsByMtimeDesc(ctx, wpConfigs, 0) {
 		if ctx.Err() != nil {
 			return findings
 		}
