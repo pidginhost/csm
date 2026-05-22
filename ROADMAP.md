@@ -531,3 +531,74 @@ be reverted in isolation.
 ### Estimated size
 
 2-3 engineering days for the nine commits plus reviews.
+
+---
+
+## 7. CSM CPU hot-spot cleanup
+
+**Status:** planned
+**Drives / unblocks:** the steady-state CPU footprint operators
+observed on cluster6 (CSM at 70-80% of one core within a minute of
+start, dominated by JSON round-trips and serial network queries).
+
+### Why
+
+A live audit of cluster6 turned up four concrete hot spots:
+
+1. `internal/firewall/engine.go` `loadStateFile()` and `saveState()`
+   read and rewrite the entire 325 KiB `state.json` (975+ entries) on
+   every single-IP operation. `IsBlocked` also runs a linear scan on
+   each call. `strace` recorded 725 opens of `firewall/state.json`
+   over a 10-second window (~72 ops/s).
+2. `CheckIPReputation` averages 3.6 s per run because the five
+   AbuseIPDB lookups per cycle run serially.
+3. Go runtime emits a tight loop of `epoll_ctl EPERM` (693 calls in
+   5 seconds, all failing) -- some caller is handing the netpoller
+   a non-pollable fd. Producer not yet pinpointed.
+4. Many short-lived child processes (libc/libpthread/librt loads
+   followed by exit) suggest repeated `os/exec.Command` for the same
+   tool. Pooling or replacing one or two of the heaviest calls would
+   help.
+
+### Decision
+
+Four discrete sub-items, each a separate commit.
+
+1. **`7.1` Firewall in-memory cache + map-indexed reads.** Keep the
+   parsed `FirewallState` in memory under `e.mu`, invalidate on
+   mtime change, expose `IsBlocked` via a `map[string]struct{}` for
+   O(1) lookup. Mutators still go through `saveState` synchronously
+   so crash semantics are unchanged; the win comes from killing the
+   per-call 325 KiB read + parse + linear scan.
+2. **`7.2` Parallel AbuseIPDB queries.** Replace the sequential loop
+   in `CheckIPReputation` with a small worker pool. Five queries fan
+   out at once; per-cycle wall clock drops from ~3.6 s to
+   ~max(single-call latency).
+3. **`7.3` Trace and fix the `epoll_ctl EPERM` producer.**
+   Investigate which code path passes a regular-file fd (or other
+   non-pollable type) to a Go I/O primitive that registers it with
+   the netpoller. Fix the producer; the EPERM stops.
+4. **`7.4` Subprocess churn.** Identify the dominant short-lived
+   subprocess and either cache its output for the typical cycle or
+   replace the shell-out with an in-process equivalent.
+
+### Acceptance criteria
+
+- After each sub-item: re-measure on cluster6, confirm the targeted
+  syscall pattern shrinks (state.json open rate, AbuseIPDB wall
+  clock, EPERM rate, fork rate).
+- No behaviour change: same blocked-IP set, same findings, same
+  alerts. The fix targets cost, not semantics.
+- `make ci` clean, including the race detector and `gosec`.
+
+### Out of scope
+
+- Replacing the JSON file with bbolt for firewall state (a separate
+  larger migration; the cache + indexing closes the immediate CPU
+  cost without rewriting the storage layer).
+- Async batched persistence (defer until cache benchmarks show the
+  synchronous write is the next bottleneck).
+
+### Estimated size
+
+2-3 engineering days for the four commits plus reviews.
