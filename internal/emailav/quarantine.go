@@ -247,16 +247,30 @@ func (q *Quarantine) validateReleaseSpoolDir(spoolDir string) (string, error) {
 	if cleanDir == "" || !filepath.IsAbs(cleanDir) {
 		return "", fmt.Errorf("invalid original spool directory")
 	}
-	resolvedDir := cleanDir
-	if dir, err := filepath.EvalSymlinks(cleanDir); err == nil {
-		resolvedDir = dir
+	// Fail closed when the supplied path will not resolve. The previous
+	// behaviour fell back to the unresolved literal, which let a path
+	// that does not currently exist on disk still match an allowed-list
+	// entry that also does not exist (e.g. on a host where only one of
+	// the default exim spool defaults is installed). A release that
+	// targets a path we cannot resolve cannot have its identity
+	// confirmed, so it must not proceed.
+	resolvedDir, err := filepath.EvalSymlinks(cleanDir)
+	if err != nil {
+		return "", fmt.Errorf("resolving original spool directory %q: %w", cleanDir, err)
 	}
 
 	for _, allowed := range q.allowedSpoolDirs {
 		cleanAllowed := filepath.Clean(allowed)
-		resolvedAllowed := cleanAllowed
-		if dir, err := filepath.EvalSymlinks(cleanAllowed); err == nil {
-			resolvedAllowed = dir
+		// Allowed entries are operator-config trusted defaults; the
+		// shipped list intentionally covers both exim and exim4, so a
+		// host that only has one of them must silently skip the
+		// non-installed entry rather than falling back to the literal
+		// (which would silently widen the trust boundary). The input
+		// path was already required to resolve above, so a missing
+		// allowed entry can never alias the resolved input.
+		resolvedAllowed, err := filepath.EvalSymlinks(cleanAllowed)
+		if err != nil {
+			continue
 		}
 		if resolvedDir == resolvedAllowed {
 			return resolvedDir, nil

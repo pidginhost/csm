@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - Closed the CodeQL findings backlog with stricter archive import containment, safe challenge and quarantine logging output, bounded parser/allocation paths, and safe numeric handling for proc-derived values.
+- Email quarantine release now fails closed when the original spool directory cannot be resolved on disk, instead of falling back to comparing unresolved literals against the allowed list.
 
 ### Changed
 

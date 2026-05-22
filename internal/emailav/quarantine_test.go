@@ -290,3 +290,42 @@ func TestReleaseMessageRejectsTamperedOriginalSpoolDir(t *testing.T) {
 		t.Fatalf("quarantine -H file should remain in place: %v", err)
 	}
 }
+
+// A path that fails to resolve (typically: directory does not exist on
+// this host) must be rejected up front. The previous behaviour fell
+// back to the unresolved literal, which would silently "match" an
+// allowed-list entry that also did not exist on disk -- widening the
+// trust boundary instead of narrowing it.
+func TestValidateReleaseSpoolDirFailsClosedOnResolveError(t *testing.T) {
+	qDir := filepath.Join(t.TempDir(), "quarantine", "email")
+	q := NewQuarantine(qDir)
+	q.allowedSpoolDirs = []string{"/var/spool/exim/input", "/var/spool/exim4/input"}
+
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	if _, err := q.validateReleaseSpoolDir(missing); err == nil {
+		t.Errorf("validateReleaseSpoolDir(%q) = nil error, want fail-closed on resolve failure", missing)
+	}
+}
+
+// Operator defaults that do not exist on this host (Debian ships only
+// exim4, RHEL only exim) must silently skip without breaking releases
+// for the installed default.
+func TestValidateReleaseSpoolDirAcceptsRealDirEvenWhenSomeAllowedMissing(t *testing.T) {
+	qDir := filepath.Join(t.TempDir(), "quarantine", "email")
+	q := NewQuarantine(qDir)
+
+	real := t.TempDir()
+	q.allowedSpoolDirs = []string{
+		"/var/spool/does-not-exist-on-this-host",
+		real,
+	}
+
+	got, err := q.validateReleaseSpoolDir(real)
+	if err != nil {
+		t.Fatalf("validateReleaseSpoolDir(%q) err = %v, want nil", real, err)
+	}
+	resolved, _ := filepath.EvalSymlinks(real)
+	if got != resolved {
+		t.Errorf("validateReleaseSpoolDir returned %q, want resolved %q", got, resolved)
+	}
+}
