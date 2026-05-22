@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Closed the CodeQL findings backlog with stricter archive import containment, safe challenge and quarantine logging output, bounded parser/allocation paths, and safe numeric handling for proc-derived values.
 - Email quarantine release now fails closed when the original spool directory cannot be resolved on disk, instead of falling back to comparing unresolved literals against the allowed list.
+- Bumped `golang.org/x/net` 0.54.0 -> 0.55.0 to close `GO-2026-5026` (idna ASCII Punycode label handling) which `govulncheck` flagged via `internal/emailspool/parser.go`.
 
 ### Changed
 
