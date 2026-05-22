@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -83,7 +84,29 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 	utcDay := now.UTC().Format("2006-01-02")
 	quotaExhausted := !abuseQuotaReady(sdb, now)
 
-	checked := 0
+	// Two-pass design so the slow AbuseIPDB HTTP queries can run in
+	// parallel:
+	//
+	//   Pass 1 (serial): walk every IP and resolve via tier 1/2/3 plus
+	//   the supplemental aggregator. Collect the IPs that genuinely
+	//   need a tier-4 HTTP lookup into pendingQueries.
+	//
+	//   Pass 2 (parallel, up to maxQueriesPerCycle workers): fan out
+	//   queryAbuseIPDB and collect results.
+	//
+	//   Pass 3 (serial): apply results back into the cache and emit
+	//   findings.
+	//
+	// Pre-cache, all five HTTP queries ran in a serial loop, so a
+	// cycle paid ~5x worst-case AbuseIPDB latency. cluster6 saw
+	// ip_reputation averaging ~3.6 s per run because of this; the fan
+	// out brings that down to ~max(single-call latency).
+	type pendingQuery struct {
+		ip     string
+		source string
+	}
+	var pendingQueries []pendingQuery
+
 	for ip, source := range ips {
 		// Tier 1: Skip if already blocked
 		if alreadyBlocked[ip] {
@@ -119,69 +142,123 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 			}
 		}
 
-		// Tier 4: Query AbuseIPDB - skip if no key, quota exhausted, or limit reached
-		if cfg.Reputation.AbuseIPDBKey == "" || quotaExhausted || checked >= maxQueriesPerCycle {
+		// Tier 4 candidate; defer the HTTP call to pass 2 unless the
+		// quota / config gates already preclude querying.
+		if cfg.Reputation.AbuseIPDBKey == "" || quotaExhausted || len(pendingQueries) >= maxQueriesPerCycle {
 			if score, src, ok := supplementalThreatScore(ctx, supplementalAgg, ip); ok && score >= abuseConfidenceThreshold {
 				appendReputationFinding(&findings, ip, source, src, score, strings.ToLower(src)+" history")
 			}
 			continue
 		}
 
-		// Count the attempt before the call so a crash or network hang
-		// still consumes a slot against the daily cap.
+		pendingQueries = append(pendingQueries, pendingQuery{ip: ip, source: source})
+	}
+
+	// Pass 2: reserve daily quota slots up front (one IncrementAbuseQueryCount
+	// per intended query) and fan out the HTTP calls. The pre-reservation
+	// matches the prior "count the attempt before the call so a crash or
+	// network hang still consumes a slot" guarantee.
+	type queryResult struct {
+		score    int
+		category string
+		err      error
+	}
+	results := make(map[string]queryResult, len(pendingQueries))
+	if len(pendingQueries) > 0 {
 		if sdb != nil {
-			if count := sdb.IncrementAbuseQueryCount(utcDay); count >= maxDailyAbuseQueries {
-				quotaExhausted = true
+			for range pendingQueries {
+				// The per-call return is intentionally ignored: the
+				// cycle-local quotaExhausted flag is no longer read
+				// after this point (the workers fan out unconditionally
+				// over the pre-classified pendingQueries), and the
+				// persisted day counter is what gates the NEXT cycle's
+				// classification via abuseQuotaReady.
+				_ = sdb.IncrementAbuseQueryCount(utcDay)
 			}
 		}
 
-		score, category, err := queryAbuseIPDB(client, ip, cfg.Reputation.AbuseIPDBKey)
-		if err != nil {
-			if strings.Contains(err.Error(), "429") || strings.Contains(err.Error(), "402") {
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		workers := len(pendingQueries)
+		if workers > maxQueriesPerCycle {
+			workers = maxQueriesPerCycle
+		}
+		jobs := make(chan pendingQuery, len(pendingQueries))
+		for _, q := range pendingQueries {
+			jobs <- q
+		}
+		close(jobs)
+		for i := 0; i < workers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for q := range jobs {
+					score, category, err := queryAbuseIPDB(client, q.ip, cfg.Reputation.AbuseIPDBKey)
+					mu.Lock()
+					results[q.ip] = queryResult{score: score, category: category, err: err}
+					mu.Unlock()
+				}
+			}()
+		}
+		wg.Wait()
+	}
+
+	// Pass 3: apply each tier-4 result back into cache + findings.
+	// Serial so cache writes and quota-exhaustion handling stay
+	// consistent regardless of which worker observed which HTTP error.
+	for _, q := range pendingQueries {
+		res, ok := results[q.ip]
+		if !ok {
+			continue
+		}
+		if res.err != nil {
+			if strings.Contains(res.err.Error(), "429") || strings.Contains(res.err.Error(), "402") {
 				resetAt := nextUTCMidnight(time.Now())
 				fmt.Fprintf(os.Stderr, "abuseipdb: quota exhausted (%v), pausing lookups until %s\n",
-					err, resetAt.Format(time.RFC3339))
-				quotaExhausted = true
+					res.err, resetAt.Format(time.RFC3339))
+				// Persisted backoff is the load-bearing signal for the
+				// next cycle's classifier; the cycle-local quotaExhausted
+				// flag has no further reader past this loop.
 				if sdb != nil {
 					_ = sdb.SetAbuseQuotaExhaustedUntil(resetAt)
 				}
-				if supplemental, src, ok := supplementalThreatScore(ctx, supplementalAgg, ip); ok && supplemental >= abuseConfidenceThreshold {
-					appendReputationFinding(&findings, ip, source, src, supplemental, strings.ToLower(src)+" history")
+				if supplemental, src, ok := supplementalThreatScore(ctx, supplementalAgg, q.ip); ok && supplemental >= abuseConfidenceThreshold {
+					appendReputationFinding(&findings, q.ip, q.source, src, supplemental, strings.ToLower(src)+" history")
 				}
 				continue
 			}
-			cache.Entries[ip] = &reputationEntry{
+			cache.Entries[q.ip] = &reputationEntry{
 				Score:    -1,
-				Category: fmt.Sprintf("error: %v", err),
+				Category: fmt.Sprintf("error: %v", res.err),
 				// CheckedAt is shifted into the past so time.Since returns
 				// ~(cacheExpiry-errorCacheExpiry) immediately; the Tier-3
 				// freshness check then flips false after a further
 				// errorCacheExpiry, giving a real ~1h TTL on error entries.
 				CheckedAt: time.Now().Add(-(cacheExpiry - errorCacheExpiry)),
 			}
-			checked++
-			if supplemental, src, ok := supplementalThreatScore(ctx, supplementalAgg, ip); ok && supplemental >= abuseConfidenceThreshold {
-				appendReputationFinding(&findings, ip, source, src, supplemental, strings.ToLower(src)+" history")
+			if supplemental, src, ok := supplementalThreatScore(ctx, supplementalAgg, q.ip); ok && supplemental >= abuseConfidenceThreshold {
+				appendReputationFinding(&findings, q.ip, q.source, src, supplemental, strings.ToLower(src)+" history")
 			}
 			continue
 		}
-		checked++
 
-		cache.Entries[ip] = &reputationEntry{
-			Score:     score,
-			Category:  category,
+		cache.Entries[q.ip] = &reputationEntry{
+			Score:     res.score,
+			Category:  res.category,
 			CheckedAt: time.Now(),
 		}
 
+		score := res.score
+		category := res.category
 		provider := "AbuseIPDB"
-		if supplemental, src, ok := supplementalThreatScore(ctx, supplementalAgg, ip); ok && supplemental > score {
+		if supplemental, src, ok := supplementalThreatScore(ctx, supplementalAgg, q.ip); ok && supplemental > score {
 			score = supplemental
 			category = strings.ToLower(src) + " history"
 			provider = src
 		}
 
 		if score >= abuseConfidenceThreshold {
-			appendReputationFinding(&findings, ip, source, provider, score, category)
+			appendReputationFinding(&findings, q.ip, q.source, provider, score, category)
 		}
 	}
 

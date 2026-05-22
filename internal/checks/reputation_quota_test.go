@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -115,15 +116,21 @@ func TestAbuseQuotaReady(t *testing.T) {
 	}
 }
 
-// TestCheckIPReputationPersistsQuotaOn429 verifies a 429 response both
-// halts the current cycle AND persists a quota-exhausted-until timestamp
-// so subsequent cycles skip the API without making any calls.
+// TestCheckIPReputationPersistsQuotaOn429 verifies a 429 response
+// persists a quota-exhausted-until timestamp so subsequent cycles skip
+// the API entirely.
+//
+// CheckIPReputation now fans out up to maxQueriesPerCycle tier-4
+// AbuseIPDB queries in parallel (roadmap item 7.2), so the first cycle
+// fires one call per pending IP (here: 2) before any worker observes
+// the 429. The second cycle must then skip the API; that is the load
+// bearing invariant for billing safety.
 func TestCheckIPReputationPersistsQuotaOn429(t *testing.T) {
 	sdb := withGlobalStore(t)
 
-	calls := 0
+	var calls atomic.Int64
 	withTestAbuseIPDB(t, func(w http.ResponseWriter, r *http.Request) {
-		calls++
+		calls.Add(1)
 		w.WriteHeader(http.StatusTooManyRequests)
 	})
 
@@ -137,8 +144,9 @@ func TestCheckIPReputationPersistsQuotaOn429(t *testing.T) {
 	cfg.Reputation.AbuseIPDBKey = "test-key"
 
 	_ = CheckIPReputation(context.Background(), cfg, nil)
-	if calls != 1 {
-		t.Fatalf("first cycle: expected 1 call before 429 halts, got %d", calls)
+	first := calls.Load()
+	if first < 1 || first > 2 {
+		t.Fatalf("first cycle: want 1..2 calls (parallel fan-out across 2 pending IPs), got %d", first)
 	}
 
 	until := sdb.AbuseQuotaExhaustedUntil()
@@ -149,13 +157,11 @@ func TestCheckIPReputationPersistsQuotaOn429(t *testing.T) {
 		t.Fatalf("AbuseQuotaExhaustedUntil = %v, want future time", until)
 	}
 
-	// Second cycle: the cycle-local `quotaExhausted` flag resets to false
-	// at function entry, so the only thing that can block Tier-4 calls is
-	// the persisted AbuseQuotaExhaustedUntil read by abuseQuotaReady.
-	// If no additional calls are made, the persistence is working.
+	// Second cycle: persisted AbuseQuotaExhaustedUntil short-circuits
+	// abuseQuotaReady so zero additional calls should reach the API.
 	_ = CheckIPReputation(context.Background(), cfg, nil)
-	if calls != 1 {
-		t.Fatalf("second cycle: expected 0 additional calls (persisted backoff), got %d total", calls)
+	if calls.Load() != first {
+		t.Fatalf("second cycle: expected 0 additional calls (persisted backoff), got %d total (was %d)", calls.Load(), first)
 	}
 }
 

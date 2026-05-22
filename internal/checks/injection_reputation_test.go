@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -263,15 +264,18 @@ func TestCheckIPReputationRspamdEmitsWhenAbuseErrors(t *testing.T) {
 // --- CheckIPReputation: AbuseIPDB returns 429 → quota exhausted -----
 
 func TestCheckIPReputationQuotaExhaustedStopsLookups(t *testing.T) {
-	calls := 0
+	// AbuseIPDB queries fan out up to maxQueriesPerCycle in parallel
+	// (roadmap item 7.2). Three pending IPs may all see a 429 before
+	// any worker sets the in-cycle quota flag, but the per-cycle cap
+	// still bounds the total. The atomic counter is required because
+	// the handler is now hit concurrently.
+	var calls atomic.Int64
 	withTestAbuseIPDB(t, func(w http.ResponseWriter, r *http.Request) {
-		calls++
+		calls.Add(1)
 		w.WriteHeader(http.StatusTooManyRequests)
 	})
 
 	statePath := t.TempDir()
-	// Multiple distinct IPs surface; once 429 is detected the loop sets
-	// quotaExhausted=true and skips further queries.
 	logContent := strings.Join([]string{
 		"Apr 14 10:00:00 host sshd[1]: Accepted publickey for x from 198.51.100.1 port 22 ssh2",
 		"Apr 14 10:00:01 host sshd[1]: Accepted publickey for x from 198.51.100.2 port 22 ssh2",
@@ -283,17 +287,20 @@ func TestCheckIPReputationQuotaExhaustedStopsLookups(t *testing.T) {
 	cfg.Reputation.AbuseIPDBKey = "test-key"
 
 	_ = CheckIPReputation(context.Background(), cfg, nil)
-	if calls != 1 {
-		t.Errorf("expected exactly 1 AbuseIPDB call before quota detection halts further queries, got %d", calls)
+	if got := calls.Load(); got < 1 || got > maxQueriesPerCycle {
+		t.Errorf("expected 1..%d AbuseIPDB calls under parallel fan-out, got %d", maxQueriesPerCycle, got)
 	}
 }
 
 // --- CheckIPReputation: respects per-cycle query limit --------------
 
 func TestCheckIPReputationRespectsPerCycleLimit(t *testing.T) {
-	calls := 0
+	// AbuseIPDB queries now run in parallel (roadmap item 7.2), so the
+	// test handler must use an atomic counter; a plain int++ would
+	// trigger the race detector once two workers hit the server.
+	var calls atomic.Int64
 	withTestAbuseIPDB(t, func(w http.ResponseWriter, r *http.Request) {
-		calls++
+		calls.Add(1)
 		_, _ = fmt.Fprintln(w, `{"data":{"abuseConfidenceScore":10}}`)
 	})
 
@@ -309,7 +316,7 @@ func TestCheckIPReputationRespectsPerCycleLimit(t *testing.T) {
 	cfg.Reputation.AbuseIPDBKey = "test-key"
 
 	_ = CheckIPReputation(context.Background(), cfg, nil)
-	if calls > maxQueriesPerCycle {
-		t.Errorf("expected ≤ %d API calls per cycle, got %d", maxQueriesPerCycle, calls)
+	if got := calls.Load(); got > maxQueriesPerCycle {
+		t.Errorf("expected <= %d API calls per cycle, got %d", maxQueriesPerCycle, got)
 	}
 }
