@@ -299,11 +299,11 @@ func TestReleaseMessageRejectsTamperedOriginalSpoolDir(t *testing.T) {
 func TestValidateReleaseSpoolDirFailsClosedOnResolveError(t *testing.T) {
 	qDir := filepath.Join(t.TempDir(), "quarantine", "email")
 	q := NewQuarantine(qDir)
-	q.allowedSpoolDirs = []string{"/var/spool/exim/input", "/var/spool/exim4/input"}
 
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
-	if _, err := q.validateReleaseSpoolDir(missing); err == nil {
-		t.Errorf("validateReleaseSpoolDir(%q) = nil error, want fail-closed on resolve failure", missing)
+	q.allowedSpoolDirs = []string{missing}
+	if got, err := q.validateReleaseSpoolDir(missing); err == nil {
+		t.Errorf("validateReleaseSpoolDir(%q) = %q, nil error; want fail-closed on unresolved allowed path", missing, got)
 	}
 }
 
