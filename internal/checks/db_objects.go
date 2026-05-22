@@ -114,6 +114,9 @@ func CheckDatabaseObjects(ctx context.Context, cfg *config.Config, _ *state.Stor
 	if !dbObjectScanningEnabled(cfg) {
 		return nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	var findings []alert.Finding
 	wpConfigs, _ := osFS.Glob("/home/*/public_html/wp-config.php")

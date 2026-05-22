@@ -2,8 +2,11 @@ package checks
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
@@ -309,6 +312,79 @@ func TestCheckDatabaseObjectsRespectsKillSwitch(t *testing.T) {
 	got := CheckDatabaseObjects(context.Background(), cfg, nil)
 	if got != nil {
 		t.Errorf("disabled scanner returned %d findings, want nil", len(got))
+	}
+}
+
+func TestCheckDatabaseObjectsRanksWPConfigsByMtime(t *testing.T) {
+	now := time.Now()
+	paths := []string{
+		"/home/aaa/public_html/wp-config.php",
+		"/home/zzz/public_html/wp-config.php",
+	}
+	realFiles := map[string]string{}
+	tmpDir := t.TempDir()
+	for _, path := range paths {
+		realPath := filepath.Join(tmpDir, strings.TrimPrefix(path, "/"))
+		if err := os.MkdirAll(filepath.Dir(realPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		schema := extractUser(filepath.Dir(path)) + "_wp"
+		body := "define('DB_NAME','" + schema + "');\ndefine('DB_USER','" + schema + "');\n"
+		if err := os.WriteFile(realPath, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		realFiles[path] = realPath
+	}
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if pattern != "/home/*/public_html/wp-config.php" {
+				t.Fatalf("unexpected glob pattern %q", pattern)
+			}
+			return paths, nil
+		},
+		stat: mtimesByPath(map[string]time.Time{
+			paths[0]: now.Add(-24 * time.Hour),
+			paths[1]: now,
+		}),
+		open: func(name string) (*os.File, error) {
+			realPath, ok := realFiles[name]
+			if !ok {
+				return nil, os.ErrNotExist
+			}
+			return os.Open(realPath)
+		},
+	})
+
+	var triggerSchemaOrder []string
+	withMockCmd(t, &mockCmd{
+		run: func(_ string, args ...string) ([]byte, error) {
+			joined := strings.Join(args, " ")
+			if strings.Contains(joined, "INFORMATION_SCHEMA.TRIGGERS") {
+				triggerSchemaOrder = append(triggerSchemaOrder, args[2])
+			}
+			return nil, nil
+		},
+	})
+
+	CheckDatabaseObjects(context.Background(), nil, nil)
+
+	want := []string{"zzz_wp", "aaa_wp"}
+	if len(triggerSchemaOrder) != len(want) {
+		t.Fatalf("trigger schema order = %v, want %v", triggerSchemaOrder, want)
+	}
+	for i := range want {
+		if triggerSchemaOrder[i] != want[i] {
+			t.Errorf("triggerSchemaOrder[%d] = %q, want %q (full=%v)", i, triggerSchemaOrder[i], want[i], triggerSchemaOrder)
+		}
+	}
+}
+
+func TestCheckDatabaseObjectsNilContextDoesNotPanic(t *testing.T) {
+	withMockOS(t, &mockOS{glob: func(string) ([]string, error) { return nil, nil }})
+
+	got := CheckDatabaseObjects(nil, nil, nil) //nolint:staticcheck // SA1012: check entrypoint accepts nil as background
+	if got != nil {
+		t.Errorf("got %d findings, want nil", len(got))
 	}
 }
 
