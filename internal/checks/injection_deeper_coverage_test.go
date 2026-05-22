@@ -1047,11 +1047,16 @@ func TestMakeAccountBackdoorCheckDefunctDat(t *testing.T) {
 func TestCheckWPBruteForceGeneratesAllFindingTypes(t *testing.T) {
 	platform.ResetForTest()
 	t.Cleanup(platform.ResetForTest)
+	// Mocked domlog paths cannot survive a real filepath.EvalSymlinks
+	// call, so the per-vhost scan is empty and the test actually
+	// exercises the central access-log fallback. Pin both surfaces so
+	// the runner's panel/web-server detection cannot leave them empty.
 	platform.SetOverrides(platform.Overrides{
 		DomlogGlobs: []string{
 			"/home/*/access-logs/*-ssl_log",
 			"/home/*/access-logs/*_log",
 		},
+		AccessLogPaths: []string{"/usr/local/apache/logs/access_log"},
 	})
 
 	var lines []string
