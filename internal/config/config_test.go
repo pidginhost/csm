@@ -103,8 +103,8 @@ func TestDomlogMaxAgeMinHonorsOperatorOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := tmpFile.Close(); err != nil {
-		t.Fatal(err)
+	if closeErr := tmpFile.Close(); closeErr != nil {
+		t.Fatal(closeErr)
 	}
 
 	cfg, err := Load(tmpFile.Name())
