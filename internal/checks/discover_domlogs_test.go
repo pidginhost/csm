@@ -117,36 +117,31 @@ func TestScanDomlogsAndScanDomlogsStatsTouchSameFiles(t *testing.T) {
 	}
 }
 
-// Central logs in the well-known set are excluded from per-vhost
-// discovery so CheckWPBruteForce's separate central-log pass does
-// not double-count traffic.
-func TestDiscoverFreshDomlogs_ExcludesCentralAccessLogs(t *testing.T) {
+// A configured central access log is excluded from per-vhost discovery so
+// CheckWPBruteForce's separate central-log pass does not double-count
+// traffic when an operator override overlaps a broad domlog glob.
+func TestDiscoverFreshDomlogs_ExcludesConfiguredCentralAccessLogs(t *testing.T) {
 	tmp := t.TempDir()
 	now := time.Now()
 
-	// Use a real path that EvalSymlinks resolves to itself; we want
-	// the excluded check (not the symlink dedupe) to drop it. The
-	// excluded set is keyed on the resolved path, so we have to
-	// arrange for one of our temp paths to compare equal to a
-	// known central log key.
 	vhost := filepath.Join(tmp, "vhost/access.log")
 	writeAccessLog(t, vhost, now)
+	centralReal := filepath.Join(tmp, "central/real-access.log")
+	writeAccessLog(t, centralReal, now)
+	centralConfigured := filepath.Join(tmp, "configured-access.log")
+	if err := os.Symlink(centralReal, centralConfigured); err != nil {
+		t.Fatal(err)
+	}
 
 	platform.ResetForTest()
-	platform.SetOverrides(platform.Overrides{DomlogGlobs: []string{tmp + "/*/access.log"}})
+	platform.SetOverrides(platform.Overrides{
+		AccessLogPaths: []string{centralConfigured},
+		DomlogGlobs:    []string{tmp + "/*/access.log"},
+	})
 	t.Cleanup(platform.ResetForTest)
 
-	// Inject a fake central path into the lookup map for the
-	// duration of this test, then point the glob at it. The exclusion
-	// is keyed on EvalSymlinks-resolved real paths.
-	fakeCentral := filepath.Join(tmp, "central/access.log")
-	writeAccessLog(t, fakeCentral, now)
-	realCentral := resolveReal(t, fakeCentral)
-	centralAccessLogs[realCentral] = true
-	t.Cleanup(func() { delete(centralAccessLogs, realCentral) })
-
 	withMockOS(t, &mockOS{
-		glob: func(string) ([]string, error) { return []string{vhost, fakeCentral}, nil },
+		glob: func(string) ([]string, error) { return []string{vhost, centralReal}, nil },
 		stat: os.Stat,
 	})
 

@@ -81,17 +81,17 @@ func CheckWPBruteForce(ctx context.Context, cfg *config.Config, _ *state.Store) 
 	return findings
 }
 
-// centralAccessLogs lists the well-known central web-server log paths that
-// CheckWPBruteForce tails on its own pass. Per-vhost discovery must filter
-// these out, otherwise busy hosts that symlink central logs into a
-// per-vhost path would have the same lines counted twice.
-var centralAccessLogs = map[string]bool{
-	"/var/log/apache2/access.log":     true,
-	"/var/log/apache2/access_log":     true,
-	"/var/log/httpd/access.log":       true,
-	"/var/log/httpd/access_log":       true,
-	"/var/log/nginx/access.log":       true,
-	"/usr/local/lsws/logs/access.log": true,
+// knownCentralAccessLogPaths lists central web-server log paths that may
+// appear in broad per-vhost glob patterns. CheckWPBruteForce tails these on
+// its own pass, so per-vhost discovery filters them to avoid counting the
+// same lines twice.
+var knownCentralAccessLogPaths = []string{
+	"/var/log/apache2/access.log",
+	"/var/log/apache2/access_log",
+	"/var/log/httpd/access.log",
+	"/var/log/httpd/access_log",
+	"/var/log/nginx/access.log",
+	"/usr/local/lsws/logs/access.log",
 }
 
 // discoverFreshDomlogs returns per-vhost access-log paths ready to tail.
@@ -119,7 +119,9 @@ func discoverFreshDomlogs(ctx context.Context, maxFiles int) []string {
 		return nil
 	}
 
-	globs := platform.Detect().DomlogGlobs
+	platformInfo := platform.Detect()
+	globs := platformInfo.DomlogGlobs
+	centralLogs := centralAccessLogSet(platformInfo.AccessLogPaths)
 	var domlogs []string
 	for _, pattern := range globs {
 		if err := ctx.Err(); err != nil {
@@ -148,7 +150,7 @@ func discoverFreshDomlogs(ctx context.Context, maxFiles int) []string {
 		if err != nil {
 			continue
 		}
-		if seen[real] || centralAccessLogs[real] {
+		if seen[real] || centralLogs[real] {
 			continue
 		}
 		seen[real] = true
@@ -182,6 +184,30 @@ func discoverFreshDomlogs(ctx context.Context, maxFiles int) []string {
 		out[i] = e.path
 	}
 	return out
+}
+
+func centralAccessLogSet(configured []string) map[string]bool {
+	out := make(map[string]bool, len(knownCentralAccessLogPaths)+len(configured))
+	for _, p := range knownCentralAccessLogPaths {
+		addCentralAccessLog(out, p)
+	}
+	// Multiple AccessLogPaths are fallback candidates; CheckWPBruteForce
+	// tails only the first one with data, so excluding every candidate here
+	// would drop later logs that were never scanned centrally.
+	if len(configured) == 1 {
+		addCentralAccessLog(out, configured[0])
+	}
+	return out
+}
+
+func addCentralAccessLog(out map[string]bool, path string) {
+	if path == "" {
+		return
+	}
+	out[path] = true
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		out[real] = true
+	}
 }
 
 // scanDomlogsStats tails the discovered per-vhost logs and feeds each
