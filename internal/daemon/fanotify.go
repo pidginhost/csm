@@ -161,6 +161,7 @@ const (
 var (
 	fanotifyDroppedTotal *metrics.Counter
 	fanotifyReconcileDur *metrics.Histogram
+	contentScanTruncated *metrics.CounterVec
 )
 
 // registerFanotifyMetrics is called once per FileMonitor via
@@ -194,8 +195,32 @@ func (fm *FileMonitor) registerMetrics() {
 					return float64(len(fm.analyzerCh))
 				},
 			)
+
+			contentScanTruncated = metrics.NewCounterVec(
+				"csm_realtime_content_scan_truncated_total",
+				"Real-time fanotify content checks whose file was larger than the read window, so the scanner saw only a prefix. Sustained growth on a label means real payloads land past the read cap; raise the cap or split the scanner. Labels: check (phpcontent_inline, phpcontent_uploads, php_check).",
+				[]string{"check"},
+			)
+			metrics.MustRegister("csm_realtime_content_scan_truncated_total", contentScanTruncated)
 		})
 	})
+}
+
+// recordReadTruncation increments csm_realtime_content_scan_truncated_total
+// when the file behind fd is larger than maxBytes. Cheap fstat per scan.
+// No-op if the counter has not been registered (test setups that skip
+// registerMetrics).
+func recordReadTruncation(fd int, maxBytes int, check string) {
+	if contentScanTruncated == nil {
+		return
+	}
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return
+	}
+	if st.Size > int64(maxBytes) {
+		contentScanTruncated.With(check).Inc()
+	}
 }
 
 type fileEvent struct {
@@ -853,6 +878,7 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 	// (request superglobal flowing into a dangerous function, or an
 	// eval/assert wrapping a base64/gzinflate decoder).
 	if knownWebshells[nameLower] {
+		recordReadTruncation(event.fd, 65536, "phpcontent_inline")
 		if data := readFromFd(event.fd, 65536); looksLikePHPWebshell(data) {
 			fm.sendAlertWithPath(alert.Critical, "webshell_realtime",
 				fmt.Sprintf("Webshell file created: %s", path), "", path, procInfo)
@@ -952,6 +978,7 @@ func (fm *FileMonitor) analyzeFile(event fileEvent) {
 				// direct webshell markers, otherwise run the broader PHP
 				// content/signature/YARA path before downgrading clean PHP to
 				// a Warning.
+				recordReadTruncation(event.fd, 65536, "phpcontent_uploads")
 				data := readFromFd(event.fd, 65536)
 				if looksLikePHPWebshell(data) {
 					fm.sendAlertWithPath(alert.Critical, "php_in_uploads_realtime",
@@ -1212,6 +1239,7 @@ func (fm *FileMonitor) checkUserINI(fd int, path, procInfo string) {
 // checkPHPContent reads PHP content from the event fd and checks for malicious patterns.
 // C3 - reads from fd, not path. M4 - 32KB scan size.
 func (fm *FileMonitor) checkPHPContent(fd int, path, procInfo string) bool {
+	recordReadTruncation(fd, 32768, "php_check")
 	data := readFromFd(fd, 32768)
 	if data == nil {
 		return false

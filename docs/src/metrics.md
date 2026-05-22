@@ -108,6 +108,16 @@ curl -sk -H "Authorization: Bearer $METRICS_TOKEN" \
   directories and rescan recent files. Buckets: 0.01 s .. 60 s.
   Watch p95: reconcile stealing tens of seconds means bulk events
   are piling up faster than the walker can keep up.
+- `csm_realtime_content_scan_truncated_total{check}` (counter):
+  cumulative real-time content checks where the underlying file was
+  larger than the read window, so the scanner saw only a prefix. The
+  read cap protects RE2 cost on huge files; sustained growth on a
+  label means real PHP payloads are landing past the cap and may go
+  undetected. Labels currently emitted: `phpcontent_inline` (known
+  webshell filename), `phpcontent_uploads` (PHP in uploads), and
+  `php_check` (generic PHP content scan). Compare against
+  `rate(csm_findings_total{check="webshell_content_realtime"}[5m])`
+  to judge whether a raised cap would surface real findings.
 
 ### Periodic check runner
 
