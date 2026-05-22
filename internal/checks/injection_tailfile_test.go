@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,10 +9,10 @@ import (
 )
 
 // tailFile semantics:
-//   - missing file → nil
-//   - small file (< 1 MB) → reads all, returns last maxLines lines
-//   - large file (>= 1 MB) → seeks back ~256 KB, returns last maxLines lines
-//   - file with fewer lines than maxLines → returns all lines
+//   - missing file -> nil
+//   - small file (< 1 MB) -> reads all, returns last maxLines lines
+//   - large file (>= 1 MB) -> reads backward until it can return maxLines lines
+//   - file with fewer lines than maxLines -> returns all lines
 
 func TestTailFileMissingFileReturnsNil(t *testing.T) {
 	withMockOS(t, &mockOS{
@@ -85,6 +86,36 @@ func TestTailFileLargeFileSeeksToTail(t *testing.T) {
 	last := got[len(got)-1]
 	if last != "MARKER_LAST_LINE" {
 		t.Errorf("expected last line to be MARKER_LAST_LINE, got %q", last)
+	}
+}
+
+func TestTailFileLargeFileHonorsRequestedLineCount(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "big-window.log")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 7000; i++ {
+		if _, err := fmt.Fprintf(f, "LINE-%04d %s\n", i, strings.Repeat("X", 180)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	withMockOS(t, &mockOS{open: func(string) (*os.File, error) { return os.Open(path) }})
+
+	got := tailFile("/anything", 3000)
+	if len(got) != 3000 {
+		t.Fatalf("expected 3000 lines from large-file tail, got %d", len(got))
+	}
+	if !strings.HasPrefix(got[0], "LINE-4001 ") {
+		t.Errorf("first retained line = %q, want LINE-4001", got[0])
+	}
+	if !strings.HasPrefix(got[len(got)-1], "LINE-7000 ") {
+		t.Errorf("last retained line = %q, want LINE-7000", got[len(got)-1])
 	}
 }
 

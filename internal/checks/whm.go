@@ -2,8 +2,11 @@ package checks
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -127,6 +130,10 @@ func CheckSSHLogins(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 
 // tailFile reads the last N lines of a file efficiently.
 func tailFile(path string, maxLines int) []string {
+	if maxLines <= 0 {
+		return nil
+	}
+
 	f, err := osFS.Open(path)
 	if err != nil {
 		return nil
@@ -144,22 +151,59 @@ func tailFile(path string, maxLines int) []string {
 		return readAllLines(f, maxLines)
 	}
 
-	// For large files, read last 256KB (enough for ~2000 lines)
-	readSize := int64(256 * 1024)
-	if readSize > info.Size() {
-		readSize = info.Size()
-	}
-
-	_, err = f.Seek(-readSize, 2) // seek from end
+	data, err := readTailWindow(f, info.Size(), maxLines)
 	if err != nil {
 		return readAllLines(f, maxLines)
 	}
 
-	return readAllLines(f, maxLines)
+	return readAllLines(bytes.NewReader(data), maxLines)
 }
 
-func readAllLines(f *os.File, maxLines int) []string {
-	scanner := bufio.NewScanner(f)
+func readTailWindow(f *os.File, size int64, maxLines int) ([]byte, error) {
+	const chunkSize int64 = 256 * 1024
+
+	offset := size
+	newlines := 0
+	chunks := make([][]byte, 0, 4)
+	for offset > 0 && newlines <= maxLines {
+		n := chunkSize
+		if offset < n {
+			n = offset
+		}
+		offset -= n
+
+		chunk := make([]byte, n)
+		read, err := f.ReadAt(chunk, offset)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return nil, err
+		}
+		chunk = chunk[:read]
+		newlines += bytes.Count(chunk, []byte{'\n'})
+		chunks = append(chunks, chunk)
+	}
+
+	total := 0
+	for _, chunk := range chunks {
+		total += len(chunk)
+	}
+	data := make([]byte, 0, total)
+	for i := len(chunks) - 1; i >= 0; i-- {
+		data = append(data, chunks[i]...)
+	}
+	if offset > 0 {
+		if firstNewline := bytes.IndexByte(data, '\n'); firstNewline >= 0 {
+			data = data[firstNewline+1:]
+		}
+	}
+	return data, nil
+}
+
+func readAllLines(r io.Reader, maxLines int) []string {
+	if maxLines <= 0 {
+		return nil
+	}
+
+	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
 
 	var lines []string
