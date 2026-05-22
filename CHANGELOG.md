@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added domlog discovery drop telemetry so operators can see when broken symlinks or stat failures silently shrink the per-vhost scan set.
 - Added crontab base64 truncation telemetry and raised the per-blob decode window so operators can spot large encoded cron content that needs follow-up.
 
+### Fixed
+
+- Canceled mail forwarder audits no longer mark the scan as fresh before finishing, so the next cycle can retry skipped domains.
+
 ## [3.6.0] - 2026-05-22
 
 ### Added

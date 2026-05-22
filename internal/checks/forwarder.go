@@ -173,14 +173,24 @@ func CheckForwarders(ctx context.Context, cfg *config.Config, _ *state.Store) []
 			}
 		}
 	}
+	if ctx.Err() != nil {
+		return nil
+	}
 
 	localDomains := loadLocalDomains()
 	var findings []alert.Finding
 
 	// Audit valiases. Rank by mtime desc so recently-changed mail
 	// domains process first when the check timeout cuts iteration short.
+	if ctx.Err() != nil {
+		return findings
+	}
 	valiasFiles, _ := osFS.Glob("/etc/valiases/*")
-	for _, path := range rankPathsByMtimeDesc(ctx, valiasFiles, 0) {
+	rankedValiasFiles := rankPathsByMtimeDesc(ctx, valiasFiles, 0)
+	if ctx.Err() != nil {
+		return findings
+	}
+	for _, path := range rankedValiasFiles {
 		if ctx.Err() != nil {
 			return findings
 		}
@@ -196,8 +206,15 @@ func CheckForwarders(ctx context.Context, cfg *config.Config, _ *state.Store) []
 	}
 
 	// Audit vfilters
+	if ctx.Err() != nil {
+		return findings
+	}
 	vfilterFiles, _ := osFS.Glob("/etc/vfilters/*")
-	for _, path := range rankPathsByMtimeDesc(ctx, vfilterFiles, 0) {
+	rankedVfilterFiles := rankPathsByMtimeDesc(ctx, vfilterFiles, 0)
+	if ctx.Err() != nil {
+		return findings
+	}
+	for _, path := range rankedVfilterFiles {
 		if ctx.Err() != nil {
 			return findings
 		}
@@ -211,6 +228,9 @@ func CheckForwarders(ctx context.Context, cfg *config.Config, _ *state.Store) []
 		}
 	}
 
+	if ctx.Err() != nil {
+		return findings
+	}
 	_ = db.SetMetaString("email:fwd_last_refresh", time.Now().Format(time.RFC3339))
 
 	return findings

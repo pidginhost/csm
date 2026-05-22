@@ -1,7 +1,13 @@
 package checks
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/pidginhost/csm/internal/config"
 )
 
 func TestParseValiasLine(t *testing.T) {
@@ -174,5 +180,96 @@ func TestIsKnownForwarder(t *testing.T) {
 			t.Errorf("isKnownForwarder(%q, %q, %q) = %v, want %v",
 				tt.localPart, tt.domain, tt.dest, got, tt.known)
 		}
+	}
+}
+
+func TestCheckForwardersCanceledDuringMtimeRankDoesNotRefreshThrottle(t *testing.T) {
+	db := withTestStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if pattern == "/etc/valiases/*" {
+				return []string{"/etc/valiases/example.com"}, nil
+			}
+			return nil, nil
+		},
+		stat: func(name string) (os.FileInfo, error) {
+			cancel()
+			return statWithMtime{name: filepath.Base(name), modTime: now}, nil
+		},
+		readFile: func(name string) ([]byte, error) {
+			if name == "/etc/localdomains" {
+				return []byte("example.com\n"), nil
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	findings := CheckForwarders(ctx, &config.Config{}, nil)
+	if len(findings) != 0 {
+		t.Fatalf("len(findings) = %d, want 0", len(findings))
+	}
+	if got := db.GetMetaString("email:fwd_last_refresh"); got != "" {
+		t.Fatalf("email:fwd_last_refresh = %q, want empty after canceled rank", got)
+	}
+}
+
+func TestCheckForwardersRanksValiasesByMtime(t *testing.T) {
+	withTestStore(t)
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	oldPath := "/etc/valiases/aaa-old.test"
+	recentPath := "/etc/valiases/zzz-recent.test"
+	contents := map[string]string{
+		oldPath:    "info: |/usr/bin/old-forwarder\n",
+		recentPath: "info: |/usr/bin/recent-forwarder\n",
+	}
+	var opened []string
+
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if pattern == "/etc/valiases/*" {
+				return []string{oldPath, recentPath}, nil
+			}
+			return nil, nil
+		},
+		stat: mtimesByPath(map[string]time.Time{
+			oldPath:    now.Add(-time.Hour),
+			recentPath: now,
+		}),
+		open: func(name string) (*os.File, error) {
+			content, ok := contents[name]
+			if !ok {
+				return nil, os.ErrNotExist
+			}
+			opened = append(opened, name)
+			path := filepath.Join(t.TempDir(), filepath.Base(name))
+			if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+				t.Fatal(err)
+			}
+			return os.Open(path)
+		},
+		readFile: func(name string) ([]byte, error) {
+			if name == "/etc/localdomains" {
+				return []byte("old.test\nrecent.test\n"), nil
+			}
+			content, ok := contents[name]
+			if !ok {
+				return nil, os.ErrNotExist
+			}
+			return []byte(content), nil
+		},
+	})
+
+	findings := CheckForwarders(context.Background(), &config.Config{}, nil)
+	if len(findings) != 2 {
+		t.Fatalf("len(findings) = %d, want 2", len(findings))
+	}
+	if len(opened) != 2 {
+		t.Fatalf("opened = %v, want two valiases files", opened)
+	}
+	if opened[0] != recentPath || opened[1] != oldPath {
+		t.Fatalf("opened = %v, want [%s %s]", opened, recentPath, oldPath)
 	}
 }
