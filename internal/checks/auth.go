@@ -292,9 +292,16 @@ func CheckSSHKeys(ctx context.Context, cfg *config.Config, store *state.Store) [
 		store.SetRaw(key, hash)
 	}
 
-	// Check for new authorized_keys in /home
+	// Check for new authorized_keys in /home. Rank by mtime desc so
+	// recently-touched accounts are processed first; on busy hosts where
+	// the surrounding check_timeout cuts iteration short, late-alphabet
+	// accounts must not be the systematic loser. Same fairness invariant
+	// as the May 2026 scanDomlogs fix.
 	homes, _ := osFS.Glob("/home/*/.ssh/authorized_keys")
-	for _, keyFile := range homes {
+	for _, keyFile := range rankPathsByMtimeDesc(ctx, homes, 0) {
+		if ctx.Err() != nil {
+			break
+		}
 		hash, err := hashFileContent(keyFile)
 		if err != nil {
 			continue
@@ -334,10 +341,16 @@ func CheckAPITokens(ctx context.Context, cfg *config.Config, store *state.Store)
 		store.SetRaw(key, hash)
 	}
 
-	// User API tokens - read directly from disk instead of spawning uapi per user
-	// Token files are JSON at /home/<user>/.cpanel/api_tokens/<token_name>
+	// User API tokens - read directly from disk instead of spawning uapi per user.
+	// Token files are JSON at /home/<user>/.cpanel/api_tokens/<token_name>.
+	// Rank account dirs by mtime desc so the most recently active accounts
+	// are inspected first; protects late-alphabet accounts from being the
+	// systematic loser when check_timeout cuts iteration short.
 	tokenDirs, _ := osFS.Glob("/home/*/.cpanel/api_tokens")
-	for _, tokenDir := range tokenDirs {
+	for _, tokenDir := range rankPathsByMtimeDesc(ctx, tokenDirs, 0) {
+		if ctx.Err() != nil {
+			break
+		}
 		user := filepath.Base(filepath.Dir(filepath.Dir(tokenDir)))
 		tokenFiles, _ := osFS.Glob(filepath.Join(tokenDir, "*"))
 		for _, tokenFile := range tokenFiles {

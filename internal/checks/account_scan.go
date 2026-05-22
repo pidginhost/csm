@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +16,58 @@ import (
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/state"
 )
+
+// rankPathsByMtimeDesc orders paths most-recent-first and optionally caps
+// the result at maxFiles. Mirrors the scanDomlogs treatment: lexical glob
+// order plus a downstream check_timeout would otherwise keep cutting
+// iteration off at the same prefix every cycle, hiding indicators on
+// late-alphabet accounts.
+//
+// Stat failures are tolerated: the path is kept with a zero mtime so it
+// sorts to the end, letting the cap chop it first when present.
+// Best-effort ranking is the goal -- dropping silently here would
+// reintroduce the same hidden-input bug class the helper exists to close.
+// Downstream readers handle the missing-file case on their own.
+//
+// A canceled ctx returns nil; nil ctx is treated as Background.
+// maxFiles <= 0 disables the cap; the sort still runs.
+func rankPathsByMtimeDesc(ctx context.Context, paths []string, maxFiles int) []string {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil
+	}
+	type entry struct {
+		path  string
+		mtime time.Time
+	}
+	ranked := make([]entry, 0, len(paths))
+	for _, p := range paths {
+		if err := ctx.Err(); err != nil {
+			return nil
+		}
+		var mt time.Time
+		if info, err := osFS.Stat(p); err == nil {
+			mt = info.ModTime()
+		}
+		ranked = append(ranked, entry{path: p, mtime: mt})
+	}
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].mtime.Equal(ranked[j].mtime) {
+			return ranked[i].path < ranked[j].path
+		}
+		return ranked[i].mtime.After(ranked[j].mtime)
+	})
+	if maxFiles > 0 && len(ranked) > maxFiles {
+		ranked = ranked[:maxFiles]
+	}
+	out := make([]string, len(ranked))
+	for i, e := range ranked {
+		out[i] = e.path
+	}
+	return out
+}
 
 // ScanAccount restricts filesystem-based checks to a single account.
 // Protected by scanMu - concurrent scans are serialized to prevent scope bleed.

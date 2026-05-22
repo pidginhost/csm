@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -841,7 +842,7 @@ func TestDiscoverShadowFilesShortPath(t *testing.T) {
 			return nil, nil
 		},
 	})
-	files := discoverShadowFiles()
+	files := discoverShadowFiles(context.Background())
 	if len(files) != 0 {
 		t.Errorf("short path should be skipped, got %d files", len(files))
 	}
@@ -859,7 +860,7 @@ func TestDiscoverShadowFilesValidPaths(t *testing.T) {
 			return nil, nil
 		},
 	})
-	files := discoverShadowFiles()
+	files := discoverShadowFiles(context.Background())
 	if len(files) != 2 {
 		t.Fatalf("expected 2 files, got %d", len(files))
 	}

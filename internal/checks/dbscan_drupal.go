@@ -92,7 +92,7 @@ func (c drupalCreds) asWPDBCreds() wpDBCreds {
 // without sharing code -- the credential layout and table set are
 // distinct enough that a generic dispatcher would be more
 // abstraction than a 4-CMS pipeline calls for.
-func CheckDrupalContent(_ context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+func CheckDrupalContent(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	settings, _ := osFS.Glob("/home/*/public_html/sites/default/settings.php")
@@ -100,7 +100,12 @@ func CheckDrupalContent(_ context.Context, _ *config.Config, _ *state.Store) []a
 		return nil
 	}
 
-	for _, path := range settings {
+	// Rank by mtime desc: under check_timeout pressure, the most recently
+	// active Drupal sites must win. Same fairness invariant as scanDomlogs.
+	for _, path := range rankPathsByMtimeDesc(ctx, settings, 0) {
+		if ctx.Err() != nil {
+			return findings
+		}
 		// public_html is three dirs up from sites/default/settings.php.
 		publicHTML := filepath.Dir(filepath.Dir(filepath.Dir(path)))
 		if !looksLikeDrupal8Plus(publicHTML) {

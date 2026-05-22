@@ -170,7 +170,7 @@ func TestDiscoverShadowFilesWithGlob(t *testing.T) {
 		},
 	})
 
-	files := discoverShadowFiles()
+	files := discoverShadowFiles(context.Background())
 	if len(files) != 1 {
 		t.Errorf("got %d, want 1", len(files))
 	}

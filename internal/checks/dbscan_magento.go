@@ -114,13 +114,18 @@ var (
 // where M2 found zero malware findings (a clean install). Without
 // this, a half-migrated host with both env.php and stale local.xml
 // would scan the database twice with different credential sets.
-func CheckMagentoContent(_ context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+func CheckMagentoContent(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 	seenAccounts := map[string]bool{}
 
-	// M2 discovery first (active version).
+	// M2 discovery first (active version). Rank by mtime desc so the
+	// most recently active installs win when a downstream timeout cuts
+	// iteration short -- same fairness invariant as scanDomlogs.
 	m2Files, _ := osFS.Glob("/home/*/public_html/app/etc/env.php")
-	for _, path := range m2Files {
+	for _, path := range rankPathsByMtimeDesc(ctx, m2Files, 0) {
+		if ctx.Err() != nil {
+			return findings
+		}
 		account := magentoAccountFromPath(path)
 		creds := parseMagentoM2(path)
 		if creds.dbName == "" {
@@ -132,7 +137,10 @@ func CheckMagentoContent(_ context.Context, _ *config.Config, _ *state.Store) []
 
 	// M1 fallback for hosts where env.php is absent or unparseable.
 	m1Files, _ := osFS.Glob("/home/*/public_html/app/etc/local.xml")
-	for _, path := range m1Files {
+	for _, path := range rankPathsByMtimeDesc(ctx, m1Files, 0) {
+		if ctx.Err() != nil {
+			return findings
+		}
 		account := magentoAccountFromPath(path)
 		if seenAccounts[account] {
 			continue

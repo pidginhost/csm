@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Closed the CodeQL findings backlog with stricter archive import containment, safe challenge and quarantine logging output, bounded parser/allocation paths, and safe numeric handling for proc-derived values.
 
+### Changed
+
+- Per-account scanners (SSH key audit, cPanel API token audit, Dovecot mailbox password audit, and the Magento, Joomla, Drupal, and OpenCart database content scanners) now visit accounts in most-recently-modified order and honor scan cancellation, so late-alphabet accounts are no longer the systematic loser when a check timeout cuts iteration short. Same fairness fix the WP brute-force domlog scan received earlier this cycle.
+
 ## [3.6.0] - 2026-05-22
 
 ### Added

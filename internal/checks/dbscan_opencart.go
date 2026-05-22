@@ -67,7 +67,7 @@ func (c opencartCreds) asWPDBCreds() wpDBCreds {
 // four canonical attacker-touched tables. Mirrors the other CMS
 // scanners; the discovery and credentials parsing are the only
 // OC-specific bits.
-func CheckOpenCartContent(_ context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+func CheckOpenCartContent(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
 	configs, _ := osFS.Glob("/home/*/public_html/config.php")
@@ -75,7 +75,12 @@ func CheckOpenCartContent(_ context.Context, _ *config.Config, _ *state.Store) [
 		return nil
 	}
 
-	for _, path := range configs {
+	// Rank by mtime desc: under check_timeout pressure, the most recently
+	// active OpenCart installs must win. Same fairness invariant as scanDomlogs.
+	for _, path := range rankPathsByMtimeDesc(ctx, configs, 0) {
+		if ctx.Err() != nil {
+			return findings
+		}
 		if !looksLikeOpenCart(path) {
 			continue
 		}

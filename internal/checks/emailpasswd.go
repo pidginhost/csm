@@ -196,10 +196,15 @@ type mailboxEntry struct {
 }
 
 // discoverShadowFiles finds all Dovecot shadow files under /home/*/etc/*/shadow.
-func discoverShadowFiles() []shadowFile {
+// Results are ranked by mtime desc so the most recently active mailboxes
+// are inspected first; on hosts where downstream throttling cuts work
+// short, late-alphabet accounts must not be the systematic loser. Same
+// fairness invariant as the May 2026 scanDomlogs fix.
+func discoverShadowFiles(ctx context.Context) []shadowFile {
 	matches, _ := osFS.Glob("/home/*/etc/*/shadow")
-	var results []shadowFile
-	for _, m := range matches {
+	ranked := rankPathsByMtimeDesc(ctx, matches, 0)
+	results := make([]shadowFile, 0, len(ranked))
+	for _, m := range ranked {
 		parts := strings.Split(m, "/")
 		// /home/{account}/etc/{domain}/shadow
 		if len(parts) >= 5 {
@@ -295,7 +300,7 @@ func CheckEmailPasswords(ctx context.Context, cfg *config.Config, _ *state.Store
 		}
 	}
 
-	shadowFiles := discoverShadowFiles()
+	shadowFiles := discoverShadowFiles(ctx)
 	if len(shadowFiles) == 0 {
 		return nil
 	}
