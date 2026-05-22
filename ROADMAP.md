@@ -578,9 +578,21 @@ Four discrete sub-items, each a separate commit.
    Investigate which code path passes a regular-file fd (or other
    non-pollable type) to a Go I/O primitive that registers it with
    the netpoller. Fix the producer; the EPERM stops.
+   **Resolved by 7.1 + 7.4.** Live trace identified the producer as
+   the firewall `state.json` open (316/473 EPERMs in a 5 s window;
+   Go's runtime auto-registers every new fd with netpoll and gets
+   EPERM on regular files) plus the libc/libperl loads inside
+   forked subprocesses (64/473). The 7.1 cache eliminates the
+   state.json opens; 7.4 reduces the subprocess churn.
 4. **`7.4` Subprocess churn.** Identify the dominant short-lived
    subprocess and either cache its output for the typical cycle or
    replace the shell-out with an in-process equivalent.
+   **Deferred.** Live `strace -e execve` over 30 seconds measured
+   only 9 forks (6 `redis-cli`, 3 `mysql`, 1 unknown) at steady
+   state -- not a CPU hot spot. The libc/libperl-load EPERMs the
+   audit noted were a startup-cycle burst, not a sustained pattern.
+   Re-measure after 7.1 + 7.2 deploy; if steady-state fork rate
+   stays under ~1 per second, close as not-needed.
 
 ### Acceptance criteria
 
