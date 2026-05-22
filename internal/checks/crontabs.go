@@ -45,15 +45,28 @@ func CheckCrontabs(ctx context.Context, _ *config.Config, store *state.Store) []
 	// when the check timeout cuts iteration short. The /var/spool/cron
 	// list is small on most hosts; the rank cost is negligible and the
 	// fairness invariant matches the rest of the per-account scanners.
+	if ctx.Err() != nil {
+		return findings
+	}
 	crontabs, _ := osFS.Glob("/var/spool/cron/*")
-	for _, path := range rankPathsByMtimeDesc(ctx, crontabs, 0) {
+	rankedCrontabs := rankPathsByMtimeDesc(ctx, crontabs, 0)
+	if ctx.Err() != nil {
+		return findings
+	}
+	for _, path := range rankedCrontabs {
 		if ctx.Err() != nil {
 			return findings
 		}
 		user := filepath.Base(path)
 		if user == "root" {
 			// Track root crontab changes via hash
-			hash, _ := hashFileContent(path)
+			hash, err := hashFileContent(path)
+			if err != nil {
+				continue
+			}
+			if ctx.Err() != nil {
+				return findings
+			}
 			key := "_crontab_root_hash"
 			prev, exists := store.GetRaw(key)
 			if exists && prev != hash {
@@ -72,6 +85,9 @@ func CheckCrontabs(ctx context.Context, _ *config.Config, store *state.Store) []
 		if err != nil {
 			continue
 		}
+		if ctx.Err() != nil {
+			return findings
+		}
 		content := string(data)
 		for _, pattern := range MatchCrontabPatternsDeep(content) {
 			findings = append(findings, alert.Finding{
@@ -84,12 +100,25 @@ func CheckCrontabs(ctx context.Context, _ *config.Config, store *state.Store) []
 	}
 
 	// Check /etc/cron.d for new files
+	if ctx.Err() != nil {
+		return findings
+	}
 	cronDFiles, _ := osFS.Glob("/etc/cron.d/*")
-	for _, path := range rankPathsByMtimeDesc(ctx, cronDFiles, 0) {
+	rankedCronDFiles := rankPathsByMtimeDesc(ctx, cronDFiles, 0)
+	if ctx.Err() != nil {
+		return findings
+	}
+	for _, path := range rankedCronDFiles {
 		if ctx.Err() != nil {
 			return findings
 		}
-		hash, _ := hashFileContent(path)
+		hash, err := hashFileContent(path)
+		if err != nil {
+			continue
+		}
+		if ctx.Err() != nil {
+			return findings
+		}
 		key := fmt.Sprintf("_crond:%s", filepath.Base(path))
 		prev, exists := store.GetRaw(key)
 		if exists && prev != hash {
