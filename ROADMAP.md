@@ -333,3 +333,102 @@ The plugin:
 
 0.5 engineering days for the contract documentation in this repo;
 the plugin itself is ~2 days in the separate repo.
+
+---
+
+## 5. Per-account scanner mtime fairness and scan-cap hygiene
+
+**Status:** planned
+**Drives / unblocks:** detection equity on busy multi-tenant hosts;
+removes the same bug class the May 2026 `domlog_max_files` fix closed
+for WP brute-force from the rest of the scanner surface.
+
+### Why
+
+The May 2026 `scanDomlogs` fix landed three commits (`b30b9a25`,
+`e4150436`, `c0cda5e4`) closing a class of bug where
+`filepath.Glob` returned lexical order, a downstream cap or
+`check_timeout` cut the iteration short, and late-alphabet vhosts
+escaped detection. Several other scanners in `internal/checks/` use
+the same pattern (`/home/*/...` glob, no mtime ranking, no
+explicit cap, sometimes no `ctx.Err()` gate inside the loop), so the
+same primitive applies: pick an account name that sorts late, evade
+the scanner under load.
+
+Adjacent hygiene gaps surfaced during the audit are bundled here so
+they ride the same release rather than landing one at a time.
+
+### Decision
+
+Six discrete sub-items, each a separate commit so a regression can
+be reverted in isolation.
+
+1. **Per-account scanner fairness (`5.1`).** Apply the `scanDomlogs`
+   recipe (mtime-desc sort + `ctx.Err()` gate inside the per-match
+   loop + explicit cap) to:
+   - `internal/checks/auth.go` (SSH `authorized_keys` glob, cPanel
+     API token glob).
+   - `internal/checks/emailpasswd.go` (Dovecot shadow glob).
+   - `internal/checks/dbscan_magento.go`,
+     `dbscan_joomla.go`, `dbscan_drupal.go`,
+     `dbscan_opencart.go` (CMS config globs).
+   Bound iteration with a new `thresholds.account_scan_max_files`
+   (default high enough that typical hosts hit no cap, capped at the
+   same 100000 ceiling as `domlog_max_files`).
+   Add late-alphabet equity tests that prove a late-sorted account
+   under load still produces a finding.
+
+2. **Consolidate `scanDomlogs` and `scanDomlogsStats` (`5.2`).** The
+   two functions in `bruteforce.go` duplicate ~85 lines of
+   discovery+dedup+stale-filter+mtime-sort+cap. Extract one
+   `discoverFreshDomlogs(ctx, cfg)` helper; rebuild both callers as
+   thin wrappers over it. Parity test pins identical file selection
+   under fixed fixtures.
+
+3. **Promote `domlogTailLines` to config (`5.3`).** Hardcoded `500`
+   in `bruteforce.go:26`. Move to
+   `thresholds.domlog_tail_lines` with the same plumbing pattern as
+   `domlog_max_files` (default 500, validate range, default config,
+   installer, production example, docs, webui schema).
+
+4. **Webshell-scan truncation visibility (`5.4`).**
+   `internal/daemon/webshell_content.go:26` silently truncates input
+   at 64 KiB. Add `csm_webshell_truncated_total` counter and a
+   Warning finding when truncation actually drops content the scanner
+   would otherwise see. If real-world payloads cluster above 64 KiB,
+   raise the cap; the visibility is the prerequisite for that data.
+
+5. **Log `EvalSymlinks` silent drops (`5.5`).** `bruteforce.go:238`
+   and `scanDomlogsStats` discard files whose `filepath.EvalSymlinks`
+   fails. Same class as the original lex-order bug: silently dropped
+   inputs hide detection gaps. Add a debug counter
+   `csm_domlog_evalsymlinks_dropped_total{reason}` so operators can
+   correlate a sudden drop in scanned-domlog count with an unrelated
+   permissions or symlink-loop change.
+
+6. **Audit `crontabBase64BlobMaxBytes` cap (`5.6`).** Current cap is
+   8192 bytes in `crontabs.go:120`. Confirm by sampling production
+   that no realistic suspicious crontab payload exceeds it, otherwise
+   raise or make configurable. Low priority but cheap.
+
+### Acceptance criteria
+
+- For each sub-item: a TDD-style test demonstrating the bug pre-fix
+  (late-alphabet account misses; truncation hides indicator;
+  silent symlink drop unaccounted), then the code change, then the
+  CHANGELOG entry and any operator docs in the same commit.
+- No behaviour change for hosts under the bounds; only changes
+  what happens at the boundary.
+- `make ci` clean; no new `gosec` findings.
+
+### Out of scope
+
+- Rewriting any scanner to walk asynchronously per-account
+  (would change the daemon's execution model; separate roadmap item
+  if measurement shows it needed).
+- Changing default cap values that already match production load.
+- Backport to v3.6.x: ships in next minor only.
+
+### Estimated size
+
+2-3 engineering days for the six commits plus reviews.
