@@ -160,6 +160,37 @@ func (db *DB) IncrementAbuseQueryCount(utcDate string) int {
 	return count
 }
 
+// ReserveAbuseQuerySlots atomically reserves up to requested AbuseIPDB
+// query slots for utcDate without increasing the daily counter beyond max.
+func (db *DB) ReserveAbuseQuerySlots(utcDate string, requested, max int) int {
+	if requested <= 0 || max <= 0 {
+		return 0
+	}
+
+	var reserved int
+	_ = db.bolt.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("meta"))
+		key := []byte(abuseDailyCountPrefix + utcDate)
+
+		count := 0
+		if v := b.Get(key); v != nil {
+			_, _ = fmt.Sscanf(string(v), "%d", &count)
+		}
+		if count >= max {
+			return nil
+		}
+
+		remaining := max - count
+		reserved = requested
+		if reserved > remaining {
+			reserved = remaining
+		}
+		count += reserved
+		return b.Put(key, []byte(fmt.Sprintf("%d", count)))
+	})
+	return reserved
+}
+
 // AbuseQueryCount returns the AbuseIPDB query count for the given UTC date.
 func (db *DB) AbuseQueryCount(utcDate string) int {
 	var count int

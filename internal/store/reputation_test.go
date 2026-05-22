@@ -155,6 +155,36 @@ func TestAbuseQueryCount(t *testing.T) {
 	}
 }
 
+func TestReserveAbuseQuerySlotsCapsAtMax(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	day := "2026-04-18"
+	if got := db.ReserveAbuseQuerySlots(day, 3, 5); got != 3 {
+		t.Fatalf("first reserve = %d, want 3", got)
+	}
+	if got := db.AbuseQueryCount(day); got != 3 {
+		t.Fatalf("count after first reserve = %d, want 3", got)
+	}
+
+	if got := db.ReserveAbuseQuerySlots(day, 5, 5); got != 2 {
+		t.Fatalf("second reserve = %d, want 2 remaining slots", got)
+	}
+	if got := db.AbuseQueryCount(day); got != 5 {
+		t.Fatalf("count after second reserve = %d, want 5", got)
+	}
+
+	if got := db.ReserveAbuseQuerySlots(day, 1, 5); got != 0 {
+		t.Fatalf("reserve at cap = %d, want 0", got)
+	}
+	if got := db.AbuseQueryCount(day); got != 5 {
+		t.Fatalf("count after capped reserve = %d, want 5", got)
+	}
+}
+
 func TestReputationMaxCap(t *testing.T) {
 	db, err := Open(t.TempDir())
 	if err != nil {

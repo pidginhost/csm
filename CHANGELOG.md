@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- AbuseIPDB fan-out now stops at the remaining daily quota slots before sending requests, so a cycle near the cap cannot spend past the circuit breaker.
 - Firewall state cache now detects external state replacements even when timestamps are preserved and keeps the last valid snapshot during malformed rewrites, avoiding stale or empty block answers.
 - Crontab and cron.d change baselines now ignore unreadable files instead of treating read failures as empty content, avoiding false change alerts during delete or permission races.
 - Filesystem backdoor and hidden-file ranking now filters unreportable glob matches before mtime work, so unrelated or safe entries cannot consume the cancellation budget before suspicious candidates are checked.

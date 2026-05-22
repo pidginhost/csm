@@ -28,13 +28,10 @@ const (
 	maxCacheEntries          = 5000 // cap cache size
 )
 
-// maxDailyAbuseQueries is a hard daily circuit-breaker below the 1000/day
-// free-tier ceiling. The 100-slot cushion below 1000 is intentional:
-// abuseQuotaReady reads the counter without a lock, so two concurrent
-// cycles (e.g. scheduled critical tier + an operator-triggered
-// `csm check`) can each pass the gate at count=899 and both increment,
-// overshooting by one. The cushion keeps that overshoot under the
-// real ceiling. Declared as a var (not const) so tests can lower it
+// maxDailyAbuseQueries is the store-backed daily circuit-breaker below
+// the 1000/day free-tier ceiling. The 100-slot cushion below 1000 leaves
+// room for API-side accounting differences and fallback paths that cannot
+// share the store counter. Declared as a var (not const) so tests can lower it
 // without burning seconds on 900 bbolt transactions. Production callers
 // must not modify this.
 var maxDailyAbuseQueries = 900
@@ -154,29 +151,32 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 		pendingQueries = append(pendingQueries, pendingQuery{ip: ip, source: source})
 	}
 
-	// Pass 2: reserve daily quota slots up front (one IncrementAbuseQueryCount
-	// per intended query) and fan out the HTTP calls. The pre-reservation
-	// matches the prior "count the attempt before the call so a crash or
-	// network hang still consumes a slot" guarantee.
+	// Pass 2: reserve daily quota slots up front and fan out the HTTP
+	// calls. The pre-reservation matches the prior "count the attempt
+	// before the call so a crash or network hang still consumes a slot"
+	// guarantee, while keeping near-cap cycles from spending more slots
+	// than the store can reserve.
 	type queryResult struct {
 		score    int
 		category string
 		err      error
 	}
-	results := make(map[string]queryResult, len(pendingQueries))
 	if len(pendingQueries) > 0 {
 		if sdb != nil {
-			for range pendingQueries {
-				// The per-call return is intentionally ignored: the
-				// cycle-local quotaExhausted flag is no longer read
-				// after this point (the workers fan out unconditionally
-				// over the pre-classified pendingQueries), and the
-				// persisted day counter is what gates the NEXT cycle's
-				// classification via abuseQuotaReady.
-				_ = sdb.IncrementAbuseQueryCount(utcDay)
+			reserved := sdb.ReserveAbuseQuerySlots(utcDay, len(pendingQueries), maxDailyAbuseQueries)
+			if reserved < len(pendingQueries) {
+				for _, q := range pendingQueries[reserved:] {
+					if supplemental, src, ok := supplementalThreatScore(ctx, supplementalAgg, q.ip); ok && supplemental >= abuseConfidenceThreshold {
+						appendReputationFinding(&findings, q.ip, q.source, src, supplemental, strings.ToLower(src)+" history")
+					}
+				}
+				pendingQueries = pendingQueries[:reserved]
 			}
 		}
+	}
 
+	results := make(map[string]queryResult, len(pendingQueries))
+	if len(pendingQueries) > 0 {
 		var mu sync.Mutex
 		var wg sync.WaitGroup
 		workers := len(pendingQueries)
