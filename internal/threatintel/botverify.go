@@ -29,12 +29,21 @@ func newVerifier(r resolver, domains []string) *verifier {
 	return &verifier{res: r, domains: low}
 }
 
+// ErrUnverifiable signals that the resolver returned no usable PTR for
+// the source IP, so the verifier cannot prove or disprove the claimed
+// bot identity. Callers treat this as fail-open: do not cache, do not
+// flag as spoof. A genuine spoof signal -- PTR present but pointing
+// outside the bot's domain suffix list -- still returns (false, nil).
+var ErrUnverifiable = errors.New("bot verify: no PTR record for source IP")
+
 // verify performs Google's official PTR + forward-A method. Returns
-// (true, nil) on success, (false, nil) on a definitive negative, and
-// (false, err) on context cancellation or resolver error that
-// short-circuits the lookup. DNS NXDOMAIN is treated as negative, not
-// as an error, but transient resolver failures return an error so the
-// caller can fail open instead of caching a false negative.
+// (true, nil) on success, (false, nil) on a definitive negative
+// (PTR resolves but does not belong to the claimed bot's domain, or
+// forward-A fails to round-trip the IP), (false, ErrUnverifiable) when
+// the IP has no PTR at all, and (false, err) on context cancellation
+// or transient resolver failure. Both error paths cause the async
+// worker to skip the cache write so unverifiable IPs do not get pinned
+// as spoof for the TTL window.
 func (v *verifier) verify(ctx context.Context, ip net.IP, bot string) (bool, error) {
 	names, err := v.res.LookupAddr(ctx, ip.String())
 	if err != nil {
@@ -42,9 +51,12 @@ func (v *verifier) verify(ctx context.Context, ip net.IP, bot string) (bool, err
 			return false, ctxErr
 		}
 		if isDNSNotFound(err) {
-			return false, nil
+			return false, ErrUnverifiable
 		}
 		return false, err
+	}
+	if len(names) == 0 {
+		return false, ErrUnverifiable
 	}
 	matched := ""
 	for _, n := range names {
@@ -111,7 +123,7 @@ var BotDomains = map[string][]string{
 	"bingbot":       {"search.msn.com"},
 	"applebot":      {"applebot.apple.com", "apple.com"},
 	"duckduckbot":   {"duckduckgo.com"},
-	"amazonbot":     {"amazon.com", "developer.amazon.com"},
+	"amazonbot":     {"amazonbot.amazon", "amazon.com", "developer.amazon.com"},
 	"gptbot":        {"openai.com"},
 	"claudebot":     {"anthropic.com"},
 	"perplexitybot": {"perplexity.ai"},
