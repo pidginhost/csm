@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rule files list gained a search box and a YAML / YARA type filter.
 - Findings history pager now shows numbered pages instead of only previous and next, so deep ranges are reachable in one click.
 - ModSecurity blocked-IP and recent-events tables, and the email findings table, now render a friendly empty state when no rows match the active search or filter.
+- Firewall subnet / allowed / whitelist tables, the audit log table, and the threat intelligence attackers table now persist their pagination, sort, and search state across reloads and stack rows as cards on narrow viewports, matching the other CSM.Table-driven pages.
+- Cleanup history bulk restore and bulk delete now disable their trigger button for the duration of the request, preventing double-submits that would clone work or double-delete rows.
 - Added a hot-reloadable account scanner cap so large hosts can bound account-scoped and mail-domain file iteration without relying on check timeouts. The new threshold is available in the sample config and settings UI.
 - New `thresholds.crontab_base64_blob_max_bytes` operator override for the crontab deep-scan base64 decoder cap (default 16384). Lets operators raise the cap on hosts where `csm_checks_crontab_base64_truncated_total` shows recurring truncation without rebuilding the daemon.
 

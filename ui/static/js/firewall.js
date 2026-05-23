@@ -284,7 +284,7 @@ function loadSubnets() {
             h += '</tbody></table></div>';
             el.innerHTML = h;
 
-            new CSM.Table({ tableId: 'subnets-table', searchId: 'subnet-search', sortable: true, perPage: 10 });
+            new CSM.Table({ tableId: 'subnets-table', searchId: 'subnet-search', sortable: true, perPage: 10, stateKey: 'csm-firewall-subnets', mobileRowCard: true });
             enrichGeoIP(el);
             el.querySelectorAll('.remove-subnet-btn').forEach(function(btn) {
                 btn.addEventListener('click', function() { removeSubnet(this.getAttribute('data-cidr')); });
@@ -464,7 +464,7 @@ function loadAllowed() {
 
             el.innerHTML = h;
             if (allowed.length > 0) {
-                new CSM.Table({ tableId: 'allowed-table', perPage: 15, searchId: 'allowed-search', sortable: true });
+                new CSM.Table({ tableId: 'allowed-table', perPage: 15, searchId: 'allowed-search', sortable: true, stateKey: 'csm-firewall-allowed', mobileRowCard: true });
                 el.querySelectorAll('.remove-allow-btn').forEach(function(btn) {
                     btn.addEventListener('click', function() { removeAllowRule(this.getAttribute('data-ip')); });
                 });
@@ -505,7 +505,7 @@ function loadWhitelist() {
             h += '</tbody></table></div>';
             el.innerHTML = h;
 
-            new CSM.Table({ tableId: 'whitelist-table', searchId: 'whitelist-search', sortable: true, perPage: 15 });
+            new CSM.Table({ tableId: 'whitelist-table', searchId: 'whitelist-search', sortable: true, perPage: 15, stateKey: 'csm-firewall-whitelist', mobileRowCard: true });
             el.querySelectorAll('.wl-remove-btn').forEach(function(btn) {
                 btn.addEventListener('click', function() { removeWhitelist(this.getAttribute('data-ip')); });
             });

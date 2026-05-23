@@ -169,7 +169,7 @@ fetch(CSM.apiUrl('/api/v1/threat/top-attackers?limit=50'),{credentials:'same-ori
         html+='</tr>';
     }
     tbody.innerHTML=html;
-    new CSM.Table({ tableId: 'attackers-table', perPage: 25, searchId: 'attackers-search', sortable: true });
+    new CSM.Table({ tableId: 'attackers-table', perPage: 25, searchId: 'attackers-search', sortable: true, stateKey: 'csm-threat-attackers', mobileRowCard: true });
     // Click row to lookup
     document.querySelectorAll('.ip-row').forEach(function(row){
         row.addEventListener('click',function(){

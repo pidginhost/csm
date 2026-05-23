@@ -212,23 +212,38 @@
         return ids;
     }
 
+    function withButton(id, label, fn) {
+        var btn = document.getElementById(id);
+        if (!btn) return fn();
+        if (btn.disabled) return;
+        var origText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = label;
+        return Promise.resolve(fn()).finally(function() {
+            btn.disabled = false;
+            btn.textContent = origText;
+        });
+    }
+
     function restoreSelectedFileBackups() {
         var ids = selectedFileIDs();
         if (ids.length === 0) return;
         CSM.confirm('Restore ' + ids.length + ' file backup(s)? A re-scan is recommended after restore.').then(function() {
-            var chain = Promise.resolve();
-            var succeeded = 0;
-            var failed = 0;
-            ids.forEach(function(id) {
-                chain = chain.then(function() {
-                    return CSM.post('/api/v1/quarantine-restore', { id: id })
-                        .then(function() { succeeded++; })
-                        .catch(function() { failed++; });
+            withButton('cleanup-files-restore-btn', 'Restoring...', function() {
+                var chain = Promise.resolve();
+                var succeeded = 0;
+                var failed = 0;
+                ids.forEach(function(id) {
+                    chain = chain.then(function() {
+                        return CSM.post('/api/v1/quarantine-restore', { id: id })
+                            .then(function() { succeeded++; })
+                            .catch(function() { failed++; });
+                    });
                 });
-            });
-            chain.then(function() {
-                CSM.toast('Restored ' + succeeded + ' of ' + (succeeded + failed), failed ? 'warning' : 'success');
-                loadFileBackups();
+                return chain.then(function() {
+                    CSM.toast('Restored ' + succeeded + ' of ' + (succeeded + failed), failed ? 'warning' : 'success');
+                    loadFileBackups();
+                });
             });
         }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
     }
@@ -237,11 +252,13 @@
         var ids = selectedFileIDs();
         if (ids.length === 0) return;
         CSM.confirm('Permanently delete ' + ids.length + ' file backup(s)?').then(function() {
-            CSM.post('/api/v1/quarantine/bulk-delete', { ids: ids }).then(function(data) {
-                CSM.toast('Deleted ' + data.count + ' file backup(s)', 'success');
-                loadFileBackups();
-            }).catch(function(e) {
-                CSM.toast('Delete failed: ' + e.message, 'error');
+            withButton('cleanup-files-delete-btn', 'Deleting...', function() {
+                return CSM.post('/api/v1/quarantine/bulk-delete', { ids: ids }).then(function(data) {
+                    CSM.toast('Deleted ' + data.count + ' file backup(s)', 'success');
+                    loadFileBackups();
+                }).catch(function(e) {
+                    CSM.toast('Delete failed: ' + e.message, 'error');
+                });
             });
         }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
     }
