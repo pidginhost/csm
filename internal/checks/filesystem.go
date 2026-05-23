@@ -14,7 +14,7 @@ import (
 
 // CheckFilesystem uses globs and targeted ReadDir to check for backdoors,
 // hidden files, and SUID binaries. No `find` command needed.
-func CheckFilesystem(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+func CheckFilesystem(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -45,7 +45,7 @@ func CheckFilesystem(ctx context.Context, _ *config.Config, _ *state.Store) []al
 				candidates = append(candidates, path)
 			}
 		}
-		ranked := rankPathsByMtimeDesc(ctx, candidates, 0)
+		ranked := rankPathsByMtimeDesc(ctx, candidates, effectiveAccountScanMaxFiles(cfg))
 		if ctx.Err() != nil {
 			return findings
 		}
@@ -96,7 +96,7 @@ func CheckFilesystem(ctx context.Context, _ *config.Config, _ *state.Store) []al
 			}
 			candidates = append(candidates, match)
 		}
-		ranked := rankPathsByMtimeDesc(ctx, candidates, 0)
+		ranked := rankPathsByMtimeDesc(ctx, candidates, effectiveAccountScanMaxFiles(cfg))
 		if ctx.Err() != nil {
 			return findings
 		}

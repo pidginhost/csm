@@ -186,7 +186,7 @@ func CheckForwarders(ctx context.Context, cfg *config.Config, _ *state.Store) []
 		return findings
 	}
 	valiasFiles, _ := osFS.Glob("/etc/valiases/*")
-	rankedValiasFiles := rankPathsByMtimeDesc(ctx, valiasFiles, 0)
+	rankedValiasFiles := rankPathsByMtimeDesc(ctx, valiasFiles, effectiveAccountScanMaxFiles(cfg))
 	if ctx.Err() != nil {
 		return findings
 	}
@@ -210,7 +210,7 @@ func CheckForwarders(ctx context.Context, cfg *config.Config, _ *state.Store) []
 		return findings
 	}
 	vfilterFiles, _ := osFS.Glob("/etc/vfilters/*")
-	rankedVfilterFiles := rankPathsByMtimeDesc(ctx, vfilterFiles, 0)
+	rankedVfilterFiles := rankPathsByMtimeDesc(ctx, vfilterFiles, effectiveAccountScanMaxFiles(cfg))
 	if ctx.Err() != nil {
 		return findings
 	}

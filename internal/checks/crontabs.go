@@ -35,7 +35,7 @@ func observeCrontabBase64Truncation() {
 	crontabBase64Truncated.Inc()
 }
 
-func CheckCrontabs(ctx context.Context, _ *config.Config, store *state.Store) []alert.Finding {
+func CheckCrontabs(ctx context.Context, cfg *config.Config, store *state.Store) []alert.Finding {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -49,7 +49,7 @@ func CheckCrontabs(ctx context.Context, _ *config.Config, store *state.Store) []
 		return findings
 	}
 	crontabs, _ := osFS.Glob("/var/spool/cron/*")
-	rankedCrontabs := rankPathsByMtimeDesc(ctx, crontabs, 0)
+	rankedCrontabs := rankPathsByMtimeDesc(ctx, crontabs, effectiveAccountScanMaxFiles(cfg))
 	if ctx.Err() != nil {
 		return findings
 	}
@@ -104,7 +104,7 @@ func CheckCrontabs(ctx context.Context, _ *config.Config, store *state.Store) []
 		return findings
 	}
 	cronDFiles, _ := osFS.Glob("/etc/cron.d/*")
-	rankedCronDFiles := rankPathsByMtimeDesc(ctx, cronDFiles, 0)
+	rankedCronDFiles := rankPathsByMtimeDesc(ctx, cronDFiles, effectiveAccountScanMaxFiles(cfg))
 	if ctx.Err() != nil {
 		return findings
 	}
