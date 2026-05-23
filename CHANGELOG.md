@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- New `thresholds.account_scan_max_files` knob (default 10000, range 1-100000) bounds per-account scanner iteration. Closes the same bug class the May 2026 `domlog_max_files` fix closed for WP brute-force: on hosts with very large account counts, the per-account scanners (SSH `authorized_keys`, cPanel API tokens, Dovecot shadow, Magento / Joomla / Drupal / OpenCart DB content) now apply an explicit cap on top of the existing mtime-desc rank so late-mtime accounts stay scannable under load.
+- Added a hot-reloadable account scanner cap so large hosts can bound account-scoped file iteration without relying on check timeouts. The new threshold is available in the sample config and settings UI.
 
 ## [3.7.0] - 2026-05-23
 

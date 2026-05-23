@@ -17,6 +17,15 @@ import (
 	"github.com/pidginhost/csm/internal/state"
 )
 
+const accountScanMaxFilesDefault = 10000
+
+func effectiveAccountScanMaxFiles(cfg *config.Config) int {
+	if cfg == nil || cfg.Thresholds.AccountScanMaxFiles <= 0 {
+		return accountScanMaxFilesDefault
+	}
+	return cfg.Thresholds.AccountScanMaxFiles
+}
+
 // rankPathsByMtimeDesc orders paths most-recent-first and optionally caps
 // the result at maxFiles. Lexical glob order plus a downstream check timeout
 // would otherwise keep cutting iteration off at the same prefix every cycle,

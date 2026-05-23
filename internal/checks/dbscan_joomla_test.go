@@ -2,8 +2,10 @@ package checks
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/state"
@@ -254,6 +256,57 @@ func TestCheckJoomlaContentEmitsExtensionsAndContentFindings(t *testing.T) {
 	}
 	if categories["joomla_admin_injection"] != 1 {
 		t.Errorf("joomla_admin_injection = %d, want 1", categories["joomla_admin_injection"])
+	}
+}
+
+func TestCheckJoomlaContentRespectsAccountScanMaxFiles(t *testing.T) {
+	now := time.Now()
+	oldPath := "/home/aaa-customer/public_html/configuration.php"
+	recentPath := "/home/zzz-customer/public_html/configuration.php"
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if strings.Contains(pattern, "configuration.php") {
+				return []string{oldPath, recentPath}, nil
+			}
+			return nil, nil
+		},
+		stat: mtimesByPath(map[string]time.Time{
+			oldPath:    now.Add(-24 * time.Hour),
+			recentPath: now.Add(-1 * time.Minute),
+		}),
+		readFile: func(name string) ([]byte, error) {
+			switch name {
+			case oldPath, recentPath:
+				return []byte(canonicalJConfigBody("jos_")), nil
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+	})
+
+	withMockCmd(t, &mockCmd{
+		runWithEnv: func(name string, args []string, _ ...string) ([]byte, error) {
+			if strings.Contains(strings.Join(args, " "), "FROM jos_extensions") {
+				return []byte("system\t" + evalToken + "(base64_decode('cGF5bG9hZA=='));\n"), nil
+			}
+			return nil, nil
+		},
+	})
+
+	cfg := &config.Config{}
+	cfg.Thresholds.AccountScanMaxFiles = 1
+
+	got := CheckJoomlaContent(context.Background(), cfg, &state.Store{})
+	if len(got) == 0 {
+		t.Fatal("expected a finding from the recent late-alphabet Joomla config")
+	}
+	for _, f := range got {
+		if strings.Contains(f.Message, "aaa-customer") || strings.Contains(f.Details, "aaa-customer") {
+			t.Fatalf("old lex-first account was scanned despite account_scan_max_files=1: %+v", f)
+		}
+		if !strings.Contains(f.Message, "zzz-customer") && !strings.Contains(f.Details, "zzz-customer") {
+			t.Fatalf("finding does not reference the recent late-alphabet account: %+v", f)
+		}
 	}
 }
 

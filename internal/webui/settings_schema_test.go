@@ -135,6 +135,26 @@ func TestAlertsWebhookTypeIncludesPhpanel(t *testing.T) {
 	t.Fatalf("webhook.type options = %v, want phpanel", f.Options)
 }
 
+func TestThresholdsSchemaIncludesAccountScanMaxFiles(t *testing.T) {
+	s, _ := LookupSettingsSection("thresholds")
+	f := findSchemaField(s, "account_scan_max_files")
+	if f == nil {
+		t.Fatal("account_scan_max_files field missing")
+	}
+	if f.Type != "int" {
+		t.Fatalf("account_scan_max_files type = %q, want int", f.Type)
+	}
+	if f.Min == nil || *f.Min != 1 {
+		t.Fatalf("account_scan_max_files min = %v, want 1", f.Min)
+	}
+	if f.Max == nil || *f.Max != 100000 {
+		t.Fatalf("account_scan_max_files max = %v, want 100000", f.Max)
+	}
+	if f.FieldGroup != FieldGroupLimits {
+		t.Fatalf("account_scan_max_files group = %q, want %q", f.FieldGroup, FieldGroupLimits)
+	}
+}
+
 func TestEnumArrayFieldsCarryOptionsSource(t *testing.T) {
 	cases := []struct {
 		section, field, source string

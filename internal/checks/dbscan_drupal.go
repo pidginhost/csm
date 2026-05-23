@@ -105,7 +105,7 @@ func CheckDrupalContent(ctx context.Context, cfg *config.Config, _ *state.Store)
 
 	// Rank by mtime desc so recently touched Drupal sites are processed
 	// first when the check timeout cuts iteration short.
-	for _, path := range rankPathsByMtimeDesc(ctx, settings, cfg.Thresholds.AccountScanMaxFiles) {
+	for _, path := range rankPathsByMtimeDesc(ctx, settings, effectiveAccountScanMaxFiles(cfg)) {
 		if ctx.Err() != nil {
 			return findings
 		}
