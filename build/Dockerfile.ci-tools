@@ -1,0 +1,54 @@
+# CSM CI tools image -- pre-installs every Go-based helper that the
+# pipeline used to `go install` on every run. The k8s runner has no
+# distributed cache and no PVC for /cache or /go, so each `go install`
+# in a job pod re-downloads modules and re-compiles binaries into a
+# fresh emptyDir that dies with the pod. Pre-baking those binaries
+# into a tagged image moves the writes onto a container image layer
+# that the node's containerd caches once and reuses across pipelines.
+#
+# Also bundles the apt packages that integration:'s before_script
+# installs on every run (openssh-client, jq) for the same reason.
+#
+# Tag: registry.pidginhost.cloud/csm/ci-tools:go-1.26.3-r1
+# Build: docker build -f build/Dockerfile.ci-tools \
+#          -t registry.pidginhost.cloud/csm/ci-tools:go-1.26.3-r1 .
+# Push: triggered manually by build-ci-tools-image job in .gitlab-ci.yml
+#
+# Bump the tag (-r1 -> -r2) whenever a pinned tool version changes
+# or a new tool needs to be added. The .gitlab-ci.yml CSM_CI_TOOLS_TAG
+# variable points at the tag that pipelines should pull.
+
+FROM golang:1.26.3-bookworm
+
+# Versions kept in sync with the install commands that previously
+# lived inline in .gitlab-ci.yml. When bumping any of these, bump
+# the image tag in .gitlab-ci.yml CSM_CI_TOOLS_TAG so the next
+# pipeline pulls the rebuilt image instead of the stale one.
+ARG GOVULNCHECK_VERSION=v1.2.0
+ARG GOCOVER_COBERTURA_VERSION=v1.2.0
+ARG GOCOVMERGE_VERSION=v0.0.0-20160331181800-b5bfa59ec0ad
+ARG PHCTL_VERSION=v0.6.2
+
+# openssh-client + jq + ca-certificates are the only system packages
+# integration: needs at runtime. Doing this in the image saves a
+# per-job `apt-get update && apt-get install` cycle (~20 MB of
+# index + package writes onto the job pod's emptyDir each run).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        openssh-client \
+        jq \
+        ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# Pre-install every Go helper that pipeline jobs used to compile
+# from source on every run. The golang base image already puts
+# /go/bin on PATH so the binaries are callable by bare name.
+#
+# phctl needs GONOSUMCHECK + GOFLAGS=-mod=mod because the previous
+# integration: invocation set them; preserve that contract here.
+RUN go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION} \
+ && go install github.com/boumenot/gocover-cobertura@${GOCOVER_COBERTURA_VERSION} \
+ && go install github.com/wadey/gocovmerge@${GOCOVMERGE_VERSION} \
+ && GONOSUMCHECK='*' GOFLAGS=-mod=mod \
+        go install github.com/pidginhost/phctl@${PHCTL_VERSION} \
+ && rm -rf /root/.cache/go-build /go/pkg/mod
