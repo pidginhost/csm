@@ -164,9 +164,8 @@ func loadBlockedAlertState(statePath string) (map[string]bool, map[string]bool) 
 }
 
 func loadFirewallStateFile(statePath string, now time.Time, ips map[string]bool) {
-	// #nosec G304 -- filepath.Join under operator-configured statePath.
 	fwPath := filepath.Join(statePath, "firewall", "state.json")
-	fwData, err := os.ReadFile(fwPath)
+	fwData, err := os.ReadFile(fwPath) // #nosec G304 -- filepath.Join under operator-configured statePath.
 	if err != nil {
 		return
 	}
@@ -230,9 +229,8 @@ func loadBlockFileEntries(statePath string, now time.Time, ips map[string]bool, 
 }
 
 func loadBlockFile(statePath string, sections blockFileSection) (blockFile, bool) {
-	// #nosec G304 -- filepath.Join under operator-configured statePath.
 	blockedPath := filepath.Join(statePath, "blocked_ips.json")
-	data, err := os.ReadFile(blockedPath)
+	data, err := os.ReadFile(blockedPath) // #nosec G304 -- filepath.Join under operator-configured statePath.
 	if err != nil {
 		return blockFile{}, false
 	}
