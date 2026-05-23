@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- In-process MySQL database scans now honor configured host, port, and socket targets, and root credential loading no longer stalls.
 - Redis performance telemetry keeps using the inherited `REDISCLI_AUTH` password when local Redis requires authentication.
 - Realtime crontab alerts now honor the configured base64 decode cap, and the settings UI exposes the same control as the sample configs.
 - Account scanner caps no longer hide root or system cron baselines, global hidden temp files, or duplicate filesystem backdoor paths when globs overlap.

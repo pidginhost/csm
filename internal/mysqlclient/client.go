@@ -12,7 +12,8 @@
 //     file and returns a *sql.DB pointed at unix-socket auth.
 //
 //   - Per-account: the caller passes explicit user / password / host
-//     / dbname / port via DSN. PerAccountQuery opens, runs, closes.
+//     / dbname / port / socket via DSN. PerAccountQuery opens,
+//     runs, closes.
 //
 // Output shape mirrors the previous `mysql -N -B -e` shell-out: rows
 // are returned as []string where each entry is the tab-joined column
@@ -49,6 +50,7 @@ type Creds struct {
 	Password string
 	Host     string
 	Port     int
+	Socket   string
 	DBName   string
 }
 
@@ -66,19 +68,58 @@ func (c Creds) dsn() string {
 	cfg.WriteTimeout = 5 * time.Second
 	cfg.Loc = time.Local
 
-	host := c.Host
-	if host == "" || host == "localhost" {
-		cfg.Net = "unix"
-		cfg.Addr = defaultUnixSocket()
-		return cfg.FormatDSN()
-	}
-	cfg.Net = "tcp"
-	port := c.Port
-	if port == 0 {
-		port = 3306
-	}
-	cfg.Addr = net.JoinHostPort(host, strconv.Itoa(port))
+	cfg.Net, cfg.Addr = c.networkAddr()
 	return cfg.FormatDSN()
+}
+
+func (c Creds) networkAddr() (string, string) {
+	host := strings.TrimSpace(c.Host)
+	socket := strings.TrimSpace(c.Socket)
+	if socket != "" && (host == "" || host == "localhost") {
+		return "unix", socket
+	}
+	if strings.HasPrefix(host, "/") {
+		return "unix", host
+	}
+	if _, socket, ok := splitHostSocket(host); ok {
+		return "unix", socket
+	}
+	if host == "" || host == "localhost" {
+		return "unix", defaultUnixSocket()
+	}
+
+	host, port := splitHostPort(host, c.Port)
+	return "tcp", net.JoinHostPort(host, strconv.Itoa(port))
+}
+
+func splitHostSocket(host string) (string, string, bool) {
+	idx := strings.LastIndex(host, ":/")
+	if idx < 0 || idx == len(host)-1 {
+		return "", "", false
+	}
+	return host[:idx], host[idx+1:], true
+}
+
+func splitHostPort(host string, fallbackPort int) (string, int) {
+	if h, p, err := net.SplitHostPort(host); err == nil {
+		if port, perr := strconv.Atoi(p); perr == nil {
+			return trimIPv6Brackets(h), port
+		}
+	}
+	if strings.Count(host, ":") == 1 {
+		h, p, _ := strings.Cut(host, ":")
+		if port, err := strconv.Atoi(p); err == nil {
+			return h, port
+		}
+	}
+	if fallbackPort == 0 {
+		fallbackPort = 3306
+	}
+	return trimIPv6Brackets(host), fallbackPort
+}
+
+func trimIPv6Brackets(host string) string {
+	return strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
 }
 
 // defaultUnixSocket returns the first known mysql socket path that
@@ -216,11 +257,18 @@ func SetRootCnfPath(p string) {
 // historical `mysql -N -B -e <query>` invocation that picked up
 // /root/.my.cnf implicitly. The connection is pooled across calls.
 func RootQuery(ctx context.Context, query string, args ...any) ([]string, error) {
-	db, err := rootSingleton()
+	db, err := RootDB()
 	if err != nil {
 		return nil, err
 	}
 	return runQuery(ctx, db, query, args...)
+}
+
+// RootDB returns the pooled root MySQL handle backed by /root/.my.cnf
+// (or the path set via SetRootCnfPath). sql.Open does not contact the
+// server until the first query.
+func RootDB() (*sql.DB, error) {
+	return rootSingleton()
 }
 
 // RootQuerySchema runs a query against an explicit schema using root
@@ -236,10 +284,12 @@ func RootQuerySchema(ctx context.Context, schema, query string, args ...any) ([]
 
 func rootSingleton() (*sql.DB, error) {
 	rootMu.Lock()
-	defer rootMu.Unlock()
 	if rootDB != nil {
+		defer rootMu.Unlock()
 		return rootDB, nil
 	}
+	rootMu.Unlock()
+
 	creds, err := loadRootCreds()
 	if err != nil {
 		return nil, err
@@ -253,6 +303,13 @@ func rootSingleton() (*sql.DB, error) {
 	db.SetMaxOpenConns(2)
 	db.SetMaxIdleConns(1)
 	db.SetConnMaxLifetime(5 * time.Minute)
+
+	rootMu.Lock()
+	defer rootMu.Unlock()
+	if rootDB != nil {
+		_ = db.Close()
+		return rootDB, nil
+	}
 	rootDB = db
 	return rootDB, nil
 }
@@ -312,10 +369,7 @@ func loadRootCreds() (Creds, error) {
 				creds.Port = p
 			}
 		case "socket":
-			// Caller can override via SetRootCnfPath if a non-default
-			// socket needs explicit handling.
-			creds.Host = "localhost"
-			_ = val // socket path is honoured by defaultUnixSocket()
+			creds.Socket = val
 		}
 	}
 	if err := scanner.Err(); err != nil {
