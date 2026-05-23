@@ -94,3 +94,14 @@ func TestClientUsesRedisCLIAuthEnvironment(t *testing.T) {
 		t.Fatalf("password = %q, want env-secret", got)
 	}
 }
+
+func TestExplicitPasswordOverridesRedisCLIAuthEnvironment(t *testing.T) {
+	resetRedisInfoForTest(t)
+	t.Setenv("REDISCLI_AUTH", "env-secret")
+
+	SetAddr(defaultAddr, "explicit-secret")
+	c := client()
+	if got := c.Options().Password; got != "explicit-secret" {
+		t.Fatalf("password = %q, want explicit-secret", got)
+	}
+}
