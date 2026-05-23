@@ -24,6 +24,52 @@ func TestSharedEscapeHelperEscapesQuotedAttributes(t *testing.T) {
 	}
 }
 
+func TestSharedFormattingHelpersHandleMissingValues(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/csrf.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, fragment := range []string{
+		`if (n == null || (typeof n === 'string' && n.trim() === '')) return '';`,
+		`if (v == null || (typeof v === 'string' && v.trim() === '')) return '';`,
+		`d = Math.min(20, Math.floor(d));`,
+		`parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Fatalf("csrf.js missing formatter guard fragment %q", fragment)
+		}
+	}
+}
+
+func TestWebUIToastCallsUseSupportedErrorType(t *testing.T) {
+	files := webUISourceFiles(t, "../../ui/static/js/*.js", "../../ui/templates/*.html")
+	dangerToast := regexp.MustCompile(`(?s)\b(?:CSM\.)?toast\s*\([^;]*,\s*['"]danger['"]`)
+	for _, path := range files {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if dangerToast.Match(src) {
+			t.Errorf("%s passes unsupported danger type to CSM.toast; use error", path)
+		}
+	}
+}
+
+func TestRulesSuppressionCreatedAtUsesSharedDateFormat(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/rules.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	if strings.Contains(text, "new Date(s.created_at).toLocaleString()") {
+		t.Fatal("rules.js still formats suppression creation dates with browser locale")
+	}
+	if !strings.Contains(text, "var created = CSM.fmtDate(s.created_at);") {
+		t.Fatal("rules.js must format suppression creation dates with CSM.fmtDate")
+	}
+}
+
 func TestThreatIntelBulkCheckboxUsesCSPCompliantListener(t *testing.T) {
 	src, err := os.ReadFile("../../ui/static/js/threat.js")
 	if err != nil {

@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Web UI error toasts shown by the global request helpers, the email release / delete actions, and the hardening audit error path now render with the danger styling. They were previously passing an unrecognized type string and falling back to the info color, hiding their severity.
 - Rules page suppression list now formats the created-at timestamp through the shared `CSM.fmtDate` helper so the format matches every other timestamp in the UI.
+- Shared Web UI number and percent formatters now leave missing values blank instead of displaying them as zero.
 - ModSecurity rule table filters now track staged enable and escalation changes, and table filter selections persist across reloads.
 - Web UI refresh buttons now use a single ghost-secondary style across pages instead of the mix of info, outline, and ghost variants that drifted in earlier releases.
 - Audit log page export is now a CSV / JSON dropdown matching the export control on findings, firewall, threat, and email.

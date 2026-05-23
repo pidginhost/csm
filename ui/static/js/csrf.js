@@ -111,25 +111,29 @@ CSM.formatSize = function(bytes) {
     return (bytes / 1048576).toFixed(1) + ' MB';
 };
 
-// Format integer with locale thousands separator. Falls back to a manual
-// regex for very old engines so the helper still returns a string.
+// Format number with locale thousands separator. Missing values stay blank.
 CSM.formatNumber = function(n) {
+    if (n == null || (typeof n === 'string' && n.trim() === '')) return '';
     var v = Number(n);
-    if (!isFinite(v)) return String(n != null ? n : '');
+    if (!isFinite(v)) return String(n);
     try {
         return v.toLocaleString();
     } catch (e) {
-        var s = String(Math.trunc(v));
-        return s.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+        var parts = String(v).split('.');
+        parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+        return parts.join('.');
     }
 };
 
 // Format ratio (0..1 or 0..100) as a percentage. round = decimals to keep.
 CSM.formatPercent = function(v, round) {
+    if (v == null || (typeof v === 'string' && v.trim() === '')) return '';
     var n = Number(v);
     if (!isFinite(n)) return '';
     if (n <= 1 && n >= -1) n = n * 100;
-    var d = (round == null) ? 0 : Math.max(0, round);
+    var d = (round == null) ? 0 : Number(round);
+    if (!isFinite(d) || d < 0) d = 0;
+    d = Math.min(20, Math.floor(d));
     return n.toFixed(d) + '%';
 };
 
