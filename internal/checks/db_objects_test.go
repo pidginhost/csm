@@ -379,6 +379,66 @@ func TestCheckDatabaseObjectsRanksWPConfigsByMtime(t *testing.T) {
 	}
 }
 
+func TestCheckDatabaseObjectsUsesAccountScanMaxFilesAfterMtimeRank(t *testing.T) {
+	now := time.Now()
+	paths := []string{
+		"/home/aaa/public_html/wp-config.php",
+		"/home/zzz/public_html/wp-config.php",
+	}
+	realFiles := map[string]string{}
+	tmpDir := t.TempDir()
+	for _, path := range paths {
+		realPath := filepath.Join(tmpDir, strings.TrimPrefix(path, "/"))
+		if err := os.MkdirAll(filepath.Dir(realPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		schema := extractUser(filepath.Dir(path)) + "_wp"
+		body := "define('DB_NAME','" + schema + "');\ndefine('DB_USER','" + schema + "');\n"
+		if err := os.WriteFile(realPath, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		realFiles[path] = realPath
+	}
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if pattern != "/home/*/public_html/wp-config.php" {
+				t.Fatalf("unexpected glob pattern %q", pattern)
+			}
+			return paths, nil
+		},
+		stat: mtimesByPath(map[string]time.Time{
+			paths[0]: now.Add(-24 * time.Hour),
+			paths[1]: now,
+		}),
+		open: func(name string) (*os.File, error) {
+			realPath, ok := realFiles[name]
+			if !ok {
+				return nil, os.ErrNotExist
+			}
+			return os.Open(realPath)
+		},
+	})
+
+	var triggerSchemaOrder []string
+	withMockCmd(t, &mockCmd{
+		run: func(_ string, args ...string) ([]byte, error) {
+			joined := strings.Join(args, " ")
+			if strings.Contains(joined, "INFORMATION_SCHEMA.TRIGGERS") {
+				triggerSchemaOrder = append(triggerSchemaOrder, args[2])
+			}
+			return nil, nil
+		},
+	})
+
+	cfg := &config.Config{}
+	cfg.Thresholds.AccountScanMaxFiles = 1
+	CheckDatabaseObjects(context.Background(), cfg, nil)
+
+	if len(triggerSchemaOrder) != 1 || triggerSchemaOrder[0] != "zzz_wp" {
+		t.Fatalf("trigger schema order = %v, want [zzz_wp]", triggerSchemaOrder)
+	}
+}
+
 func TestCheckDatabaseObjectsNilContextDoesNotPanic(t *testing.T) {
 	withMockOS(t, &mockOS{glob: func(string) ([]string, error) { return nil, nil }})
 

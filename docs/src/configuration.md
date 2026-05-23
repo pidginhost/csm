@@ -133,7 +133,7 @@ thresholds:
   domlog_max_age_min: 30                # skip per-domain access logs untouched in this many minutes (default: 30)
   mail_log_tail_lines: 500              # trailing lines of /var/log/exim_mainlog read by the mail-per-account scanner (default: 500)
   syslog_messages_tail_lines: 200       # trailing lines of /var/log/messages read by the FTP login scanner (default: 200)
-  account_scan_max_files: 10000         # account-scoped paths per scanner cycle (default: 10000)
+  account_scan_max_files: 10000         # account and mail-domain paths per scanner cycle (default: 10000)
 
   # HTTP request flood and User-Agent spoof detection.
   # Both detectors scan the same per-vhost access-log stream as the WP

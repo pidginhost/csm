@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -271,5 +272,66 @@ func TestCheckForwardersRanksValiasesByMtime(t *testing.T) {
 	}
 	if opened[0] != recentPath || opened[1] != oldPath {
 		t.Fatalf("opened = %v, want [%s %s]", opened, recentPath, oldPath)
+	}
+}
+
+func TestCheckForwardersUsesAccountScanMaxFilesAfterMtimeRank(t *testing.T) {
+	withTestStore(t)
+	now := time.Date(2026, 5, 22, 12, 0, 0, 0, time.UTC)
+	oldPath := "/etc/valiases/aaa-old.test"
+	recentPath := "/etc/valiases/zzz-recent.test"
+	contents := map[string]string{
+		oldPath:    "info: |/usr/bin/old-forwarder\n",
+		recentPath: "info: |/usr/bin/recent-forwarder\n",
+	}
+	var opened []string
+
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if pattern == "/etc/valiases/*" {
+				return []string{oldPath, recentPath}, nil
+			}
+			return nil, nil
+		},
+		stat: mtimesByPath(map[string]time.Time{
+			oldPath:    now.Add(-time.Hour),
+			recentPath: now,
+		}),
+		open: func(name string) (*os.File, error) {
+			content, ok := contents[name]
+			if !ok {
+				return nil, os.ErrNotExist
+			}
+			opened = append(opened, name)
+			path := filepath.Join(t.TempDir(), filepath.Base(name))
+			if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+				t.Fatal(err)
+			}
+			return os.Open(path)
+		},
+		readFile: func(name string) ([]byte, error) {
+			if name == "/etc/localdomains" {
+				return []byte("old.test\nrecent.test\n"), nil
+			}
+			content, ok := contents[name]
+			if !ok {
+				return nil, os.ErrNotExist
+			}
+			return []byte(content), nil
+		},
+	})
+
+	cfg := &config.Config{}
+	cfg.Thresholds.AccountScanMaxFiles = 1
+	findings := CheckForwarders(context.Background(), cfg, nil)
+
+	if len(findings) != 1 {
+		t.Fatalf("len(findings) = %d, want 1: %+v", len(findings), findings)
+	}
+	if len(opened) != 1 || opened[0] != recentPath {
+		t.Fatalf("opened = %v, want only %s", opened, recentPath)
+	}
+	if !strings.Contains(findings[0].Message, "recent-forwarder") {
+		t.Fatalf("finding = %+v, want recent valiases file", findings[0])
 	}
 }

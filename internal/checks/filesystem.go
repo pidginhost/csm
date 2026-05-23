@@ -31,41 +31,48 @@ func CheckFilesystem(ctx context.Context, cfg *config.Config, _ *state.Store) []
 		"/home/*/.config/htop/*",
 		"/home/*/.config/*/*",
 	}
+	// The htop glob is a subset of the wider .config glob. Deduplicate
+	// before ranking so the per-account cap applies to this scanner once.
+	configCandidates := make([]string, 0)
+	seenConfigCandidate := make(map[string]struct{})
 	for _, pattern := range configGlobs {
 		if ctx.Err() != nil {
 			return findings
 		}
 		matches, _ := osFS.Glob(pattern)
-		candidates := make([]string, 0, len(matches))
 		for _, path := range matches {
 			if ctx.Err() != nil {
 				return findings
 			}
 			if backdoorNames[filepath.Base(path)] {
-				candidates = append(candidates, path)
+				if _, seen := seenConfigCandidate[path]; seen {
+					continue
+				}
+				seenConfigCandidate[path] = struct{}{}
+				configCandidates = append(configCandidates, path)
 			}
 		}
-		ranked := rankPathsByMtimeDesc(ctx, candidates, effectiveAccountScanMaxFiles(cfg))
+	}
+	rankedConfigCandidates := rankPathsByMtimeDesc(ctx, configCandidates, effectiveAccountScanMaxFiles(cfg))
+	if ctx.Err() != nil {
+		return findings
+	}
+	for _, path := range rankedConfigCandidates {
 		if ctx.Err() != nil {
 			return findings
 		}
-		for _, path := range ranked {
-			if ctx.Err() != nil {
-				return findings
-			}
-			info, _ := osFS.Stat(path)
-			var details string
-			if info != nil {
-				details = fmt.Sprintf("Size: %d bytes, Mtime: %s", info.Size(), info.ModTime().Format("2006-01-02 15:04:05"))
-			}
-			findings = append(findings, alert.Finding{
-				Severity: alert.Critical,
-				Check:    "backdoor_binary",
-				Message:  fmt.Sprintf("Backdoor binary found: %s", path),
-				Details:  details,
-				FilePath: path,
-			})
+		info, _ := osFS.Stat(path)
+		var details string
+		if info != nil {
+			details = fmt.Sprintf("Size: %d bytes, Mtime: %s", info.Size(), info.ModTime().Format("2006-01-02 15:04:05"))
 		}
+		findings = append(findings, alert.Finding{
+			Severity: alert.Critical,
+			Check:    "backdoor_binary",
+			Message:  fmt.Sprintf("Backdoor binary found: %s", path),
+			Details:  details,
+			FilePath: path,
+		})
 	}
 
 	// Hidden files in /tmp, /dev/shm, /var/tmp - glob (instant)
@@ -96,7 +103,9 @@ func CheckFilesystem(ctx context.Context, cfg *config.Config, _ *state.Store) []
 			}
 			candidates = append(candidates, match)
 		}
-		ranked := rankPathsByMtimeDesc(ctx, candidates, effectiveAccountScanMaxFiles(cfg))
+		// These are global temp locations, not account paths; do not let
+		// account_scan_max_files hide older suspicious files here.
+		ranked := rankPathsByMtimeDesc(ctx, candidates, 0)
 		if ctx.Err() != nil {
 			return findings
 		}

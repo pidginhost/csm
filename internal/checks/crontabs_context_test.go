@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -56,6 +57,106 @@ func TestCheckCrontabs_RanksUserCrontabsByMtime(t *testing.T) {
 	want := []string{paths[1], paths[0]}
 	if !reflect.DeepEqual(readOrder, want) {
 		t.Fatalf("read order = %v, want %v", readOrder, want)
+	}
+}
+
+func TestCheckCrontabsAccountCapDoesNotDropRoot(t *testing.T) {
+	store := newCrontabTestStore(t)
+	now := time.Now()
+	rootPath := "/var/spool/cron/root"
+	recentPath := "/var/spool/cron/zzz-customer"
+	store.SetRaw("_crontab_root_hash", hashBytes([]byte("old root\n")))
+
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			switch pattern {
+			case "/var/spool/cron/*":
+				return []string{rootPath, recentPath}, nil
+			case "/etc/cron.d/*":
+				return nil, nil
+			default:
+				return nil, nil
+			}
+		},
+		stat: mtimesByPath(map[string]time.Time{
+			rootPath:   now.Add(-24 * time.Hour),
+			recentPath: now.Add(-1 * time.Minute),
+		}),
+		readFile: func(name string) ([]byte, error) {
+			switch name {
+			case rootPath:
+				return []byte("new root\n"), nil
+			case recentPath:
+				return []byte("MAILTO=\"\"\n0 0 * * * /usr/bin/true\n"), nil
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+	})
+
+	cfg := &config.Config{}
+	cfg.Thresholds.AccountScanMaxFiles = 1
+	findings := CheckCrontabs(context.Background(), cfg, store)
+
+	foundRootChange := false
+	for _, finding := range findings {
+		if finding.Check == "crontab_change" {
+			foundRootChange = true
+			break
+		}
+	}
+	if !foundRootChange {
+		t.Fatalf("root crontab change was hidden by account_scan_max_files=1: %+v", findings)
+	}
+}
+
+func TestCheckCrontabsCronDIsNotAccountCapped(t *testing.T) {
+	store := newCrontabTestStore(t)
+	now := time.Now()
+	oldPath := "/etc/cron.d/aaa-old"
+	recentPath := "/etc/cron.d/zzz-recent"
+	store.SetRaw("_crond:aaa-old", hashBytes([]byte("old job\n")))
+
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			switch pattern {
+			case "/var/spool/cron/*":
+				return nil, nil
+			case "/etc/cron.d/*":
+				return []string{oldPath, recentPath}, nil
+			default:
+				return nil, nil
+			}
+		},
+		stat: mtimesByPath(map[string]time.Time{
+			oldPath:    now.Add(-24 * time.Hour),
+			recentPath: now.Add(-1 * time.Minute),
+		}),
+		readFile: func(name string) ([]byte, error) {
+			switch name {
+			case oldPath:
+				return []byte("changed job\n"), nil
+			case recentPath:
+				return []byte("new job\n"), nil
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+	})
+
+	cfg := &config.Config{}
+	cfg.Thresholds.AccountScanMaxFiles = 1
+	findings := CheckCrontabs(context.Background(), cfg, store)
+
+	foundOldCronDChange := false
+	for _, finding := range findings {
+		if finding.Check == "crond_change" && finding.Message == "Cron.d file modified: "+oldPath {
+			foundOldCronDChange = true
+			break
+		}
+	}
+	if !foundOldCronDChange {
+		t.Fatalf("cron.d change was hidden by account_scan_max_files=1: %+v", findings)
 	}
 }
 

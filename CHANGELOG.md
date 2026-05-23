@@ -9,7 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Added a hot-reloadable account scanner cap so large hosts can bound account-scoped file iteration without relying on check timeouts. The new threshold is available in the sample config and settings UI.
+- Added a hot-reloadable account scanner cap so large hosts can bound account-scoped and mail-domain file iteration without relying on check timeouts. The new threshold is available in the sample config and settings UI.
+
+### Fixed
+
+- Account scanner caps no longer hide root or system cron baselines, global hidden temp files, or duplicate filesystem backdoor paths when globs overlap.
 
 ## [3.7.0] - 2026-05-23
 

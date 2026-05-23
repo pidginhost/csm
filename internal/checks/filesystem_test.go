@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/config"
 )
 
 func TestCheckFilesystemBackdoorRankingFiltersNonCandidateBeforeStat(t *testing.T) {
@@ -73,6 +74,73 @@ func TestCheckFilesystemHiddenRankingSkipsSafePrefixesBeforeStat(t *testing.T) {
 	}
 }
 
+func TestCheckFilesystemBackdoorCapAppliesAcrossConfigGlobs(t *testing.T) {
+	now := time.Date(2026, 5, 22, 18, 0, 0, 0, time.UTC)
+	oldPath := "/home/aaa-customer/.config/htop/defunct"
+	recentPath := "/home/zzz-customer/.config/gsocket/gs-netcat"
+
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			switch pattern {
+			case "/home/*/.config/htop/*":
+				return []string{oldPath}, nil
+			case "/home/*/.config/*/*":
+				return []string{oldPath, recentPath}, nil
+			default:
+				return nil, nil
+			}
+		},
+		stat: mtimesByPath(map[string]time.Time{
+			oldPath:    now.Add(-24 * time.Hour),
+			recentPath: now.Add(-1 * time.Minute),
+		}),
+		readDir: func(name string) ([]os.DirEntry, error) { return nil, os.ErrNotExist },
+	})
+
+	cfg := &config.Config{}
+	cfg.Thresholds.AccountScanMaxFiles = 1
+	findings := CheckFilesystem(context.Background(), cfg, nil)
+
+	backdoorPaths := findingPaths(findings, "backdoor_binary")
+	if len(backdoorPaths) != 1 {
+		t.Fatalf("backdoor findings = %v, want exactly [%s]", backdoorPaths, recentPath)
+	}
+	if backdoorPaths[0] != recentPath {
+		t.Fatalf("backdoor findings = %v, want recent late-alphabet path %s", backdoorPaths, recentPath)
+	}
+}
+
+func TestCheckFilesystemHiddenFilesIgnoreAccountScanCap(t *testing.T) {
+	now := time.Date(2026, 5, 22, 18, 0, 0, 0, time.UTC)
+	oldPath := "/tmp/.old_payload"
+	recentPath := "/tmp/.recent_payload"
+
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			if pattern == "/tmp/.*" {
+				return []string{oldPath, recentPath}, nil
+			}
+			return nil, nil
+		},
+		stat: mtimesByPath(map[string]time.Time{
+			oldPath:    now.Add(-24 * time.Hour),
+			recentPath: now.Add(-1 * time.Minute),
+		}),
+		readDir: func(name string) ([]os.DirEntry, error) { return nil, os.ErrNotExist },
+	})
+
+	cfg := &config.Config{}
+	cfg.Thresholds.AccountScanMaxFiles = 1
+	findings := CheckFilesystem(context.Background(), cfg, nil)
+
+	if !hasFindingPath(findings, "suspicious_file", oldPath) {
+		t.Fatalf("old global hidden file was capped by account_scan_max_files: %+v", findings)
+	}
+	if !hasFindingPath(findings, "suspicious_file", recentPath) {
+		t.Fatalf("recent global hidden file missing: %+v", findings)
+	}
+}
+
 func TestCheckFilesystemCanceledDuringFinalHiddenRankDoesNotReadHome(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	suspicious := "/var/tmp/.malware_payload"
@@ -113,4 +181,14 @@ func hasFindingPath(findings []alert.Finding, check, path string) bool {
 		}
 	}
 	return false
+}
+
+func findingPaths(findings []alert.Finding, check string) []string {
+	var paths []string
+	for _, finding := range findings {
+		if finding.Check == check {
+			paths = append(paths, finding.FilePath)
+		}
+	}
+	return paths
 }

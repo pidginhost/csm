@@ -118,12 +118,14 @@ type Config struct {
 		// with many active domains so late-alphabet sites are not skipped.
 		DomlogMaxFiles int `yaml:"domlog_max_files"`
 
-		// AccountScanMaxFiles caps how many per-account paths the per-account
-		// scanners (SSH authorized_keys, cPanel API tokens, Dovecot shadow,
-		// CMS DB-content scanners) iterate per cycle. Paths are ranked by
-		// mtime desc so the cap chops least-active accounts. Default 10000
-		// covers typical cPanel hosts with no cap effect. Raise on very
-		// large multi-tenant hosts where late-mtime accounts get skipped.
+		// AccountScanMaxFiles caps how many account and mail-domain paths
+		// account-scoped scanners iterate per cycle. This covers SSH keys,
+		// cPanel API tokens, Dovecot shadow files, CMS DB scans, forwarders,
+		// user crontabs, and account .config backdoor paths. Paths are
+		// ranked by mtime desc so the cap chops least-active accounts.
+		// Default 10000 covers typical cPanel hosts with no cap effect.
+		// Raise on very large multi-tenant hosts where late-mtime accounts
+		// get skipped.
 		AccountScanMaxFiles int `yaml:"account_scan_max_files"`
 
 		// DomlogTailLines is how many trailing lines the WP brute force

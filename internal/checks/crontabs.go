@@ -41,15 +41,51 @@ func CheckCrontabs(ctx context.Context, cfg *config.Config, store *state.Store) 
 	}
 	var findings []alert.Finding
 
-	// Rank by mtime desc so recently-touched crontabs process first
-	// when the check timeout cuts iteration short. The /var/spool/cron
-	// list is small on most hosts; the rank cost is negligible and the
-	// fairness invariant matches the rest of the per-account scanners.
+	// Rank account crontabs by mtime desc so recently-touched users
+	// process first when the check timeout cuts iteration short. Keep
+	// root outside the account cap; it is a system baseline, not an
+	// account-scoped path.
 	if ctx.Err() != nil {
 		return findings
 	}
 	crontabs, _ := osFS.Glob("/var/spool/cron/*")
-	rankedCrontabs := rankPathsByMtimeDesc(ctx, crontabs, effectiveAccountScanMaxFiles(cfg))
+	var rootCrontabs []string
+	accountCrontabs := make([]string, 0, len(crontabs))
+	for _, path := range crontabs {
+		if filepath.Base(path) == "root" {
+			rootCrontabs = append(rootCrontabs, path)
+			continue
+		}
+		accountCrontabs = append(accountCrontabs, path)
+	}
+	rankedRootCrontabs := rankPathsByMtimeDesc(ctx, rootCrontabs, 0)
+	if ctx.Err() != nil {
+		return findings
+	}
+	for _, path := range rankedRootCrontabs {
+		if ctx.Err() != nil {
+			return findings
+		}
+		hash, err := hashFileContent(path)
+		if err != nil {
+			continue
+		}
+		if ctx.Err() != nil {
+			return findings
+		}
+		key := "_crontab_root_hash"
+		prev, exists := store.GetRaw(key)
+		if exists && prev != hash {
+			findings = append(findings, alert.Finding{
+				Severity: alert.High,
+				Check:    "crontab_change",
+				Message:  "Root crontab modified",
+				Details:  "Review with: crontab -l",
+			})
+		}
+		store.SetRaw(key, hash)
+	}
+	rankedCrontabs := rankPathsByMtimeDesc(ctx, accountCrontabs, effectiveAccountScanMaxFiles(cfg))
 	if ctx.Err() != nil {
 		return findings
 	}
@@ -58,29 +94,6 @@ func CheckCrontabs(ctx context.Context, cfg *config.Config, store *state.Store) 
 			return findings
 		}
 		user := filepath.Base(path)
-		if user == "root" {
-			// Track root crontab changes via hash
-			hash, err := hashFileContent(path)
-			if err != nil {
-				continue
-			}
-			if ctx.Err() != nil {
-				return findings
-			}
-			key := "_crontab_root_hash"
-			prev, exists := store.GetRaw(key)
-			if exists && prev != hash {
-				findings = append(findings, alert.Finding{
-					Severity: alert.High,
-					Check:    "crontab_change",
-					Message:  "Root crontab modified",
-					Details:  "Review with: crontab -l",
-				})
-			}
-			store.SetRaw(key, hash)
-			continue
-		}
-
 		data, err := osFS.ReadFile(path)
 		if err != nil {
 			continue
@@ -99,12 +112,13 @@ func CheckCrontabs(ctx context.Context, cfg *config.Config, store *state.Store) 
 		}
 	}
 
-	// Check /etc/cron.d for new files
+	// Check /etc/cron.d for new files. This is a system directory, so
+	// account_scan_max_files must not hide older cron.d baselines.
 	if ctx.Err() != nil {
 		return findings
 	}
 	cronDFiles, _ := osFS.Glob("/etc/cron.d/*")
-	rankedCronDFiles := rankPathsByMtimeDesc(ctx, cronDFiles, effectiveAccountScanMaxFiles(cfg))
+	rankedCronDFiles := rankPathsByMtimeDesc(ctx, cronDFiles, 0)
 	if ctx.Err() != nil {
 		return findings
 	}
