@@ -62,6 +62,12 @@ If neither is configured, the MYSQL card renders `n/a / n/a` instead of a
 misleading `0 conn`. csm makes no attempt to connect over TCP or store
 credentials on its own.
 
+### Redis telemetry auth
+
+The Redis panel connects to local Redis at `127.0.0.1:6379`. If Redis
+requires a password, set `REDISCLI_AUTH` in the csm daemon environment.
+The dashboard uses that password for its in-process Redis client.
+
 ## API
 
 ```

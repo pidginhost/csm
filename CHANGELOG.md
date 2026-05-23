@@ -15,9 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The performance dashboard now reads Redis memory and keyspace stats via the in-process `redis/go-redis` client instead of shelling out to `redis-cli` twice per poll. Eliminates two forks per sampler cycle on hosts that surface the dashboard. Fail-fast timeouts (500 ms) preserve the previous behaviour when redis is absent.
+- The CMS database content scanners (WordPress / Joomla / Drupal / Magento / OpenCart) now run their per-account MySQL queries through the in-process `database/sql` + `go-sql-driver/mysql` pair instead of forking the `mysql` CLI with `MYSQL_PWD` env. Same per-account credentials, same row output shape, no subprocess per query.
 
 ### Fixed
 
+- Redis performance telemetry keeps using the inherited `REDISCLI_AUTH` password when local Redis requires authentication.
 - Realtime crontab alerts now honor the configured base64 decode cap, and the settings UI exposes the same control as the sample configs.
 - Account scanner caps no longer hide root or system cron baselines, global hidden temp files, or duplicate filesystem backdoor paths when globs overlap.
 - Blocked-IP alert suppression now logs corrupt state once per filter pass and still uses valid queued-block entries when another state section is malformed.

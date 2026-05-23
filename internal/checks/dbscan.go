@@ -10,6 +10,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/mysqlclient"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -294,30 +295,34 @@ func extractPHPString(s string) string {
 	return ""
 }
 
-// runMySQLQuery executes a MySQL query and returns the output lines.
+// runMySQLQuery executes a MySQL query via the in-process database/sql
+// driver and returns each row tab-joined, matching the legacy
+// `mysql -N -B -e <query>` output shape so existing tab-split callers
+// keep working unchanged. Returns nil on any open / query / scan
+// error (the legacy implementation swallowed errors the same way).
 func runMySQLQuery(creds wpDBCreds, query string) []string {
-	args := []string{
-		"-N", "-B", // no headers, tab-separated
-		"-u", creds.dbUser,
-		"-h", creds.dbHost,
-		creds.dbName,
-		"-e", query,
-	}
-
-	// Set password via environment to avoid command-line exposure
-	out, err := runCmdWithEnv("mysql", args, "MYSQL_PWD="+creds.dbPass)
-	if err != nil || out == nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	rows, err := mysqlclient.PerAccountQuery(ctx, mysqlclient.Creds{
+		User:     creds.dbUser,
+		Password: creds.dbPass,
+		Host:     creds.dbHost,
+		DBName:   creds.dbName,
+	}, query)
+	if err != nil {
 		return nil
 	}
-
-	var lines []string
-	for _, line := range strings.Split(string(out), "\n") {
+	out := make([]string, 0, len(rows))
+	for _, line := range rows {
 		line = strings.TrimSpace(line)
 		if line != "" {
-			lines = append(lines, line)
+			out = append(out, line)
 		}
 	}
-	return lines
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // checkWPOptions checks for siteurl/home hijacking and injected JavaScript.

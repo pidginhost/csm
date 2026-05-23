@@ -4,7 +4,10 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/mysqlclient"
 )
 
 // ---------------------------------------------------------------------------
@@ -208,6 +211,41 @@ func withMockCmd(t *testing.T, m CmdRunner) {
 	old := cmdExec
 	cmdExec = m
 	t.Cleanup(func() { cmdExec = old })
+
+	// Bridge: runMySQLQuery now routes through internal/mysqlclient
+	// (database/sql) instead of exec'ing the mysql CLI. Tests that
+	// mock mysql via `mockCmd{runWithEnv: ...}` predate that
+	// migration; reroute the new sql path through the same mock so
+	// the existing assertions keep working without touching every
+	// dbscan/db_clean test fixture.
+	if mc, ok := m.(*mockCmd); ok && (mc.runWithEnv != nil || mc.run != nil) {
+		mysqlclient.SetPerAccountQueryForTest(func(_ context.Context, creds mysqlclient.Creds, query string, _ ...any) ([]string, error) {
+			// Reconstruct the historical CLI argv so existing
+			// mock callbacks (which switch on `args[i]`) match.
+			args := []string{
+				"-N", "-B",
+				"-u", creds.User,
+				"-h", creds.Host,
+				creds.DBName,
+				"-e", query,
+			}
+			out, err := mc.RunWithEnv("mysql", args, "MYSQL_PWD="+creds.Password)
+			if err != nil {
+				return nil, err
+			}
+			if len(out) == 0 {
+				return nil, nil
+			}
+			var lines []string
+			for _, line := range strings.Split(string(out), "\n") {
+				if line = strings.TrimSpace(line); line != "" {
+					lines = append(lines, line)
+				}
+			}
+			return lines, nil
+		})
+		t.Cleanup(func() { mysqlclient.SetPerAccountQueryForTest(nil) })
+	}
 }
 
 // ---------------------------------------------------------------------------

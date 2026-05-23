@@ -13,13 +13,17 @@
 //
 //	127.0.0.1:6379, no password, db 0
 //
+// When REDISCLI_AUTH is set, the client uses it as the password so
+// daemon environments that previously made redis-cli work keep working.
 // Hosts running redis on a non-default socket can override by calling
-// SetAddr before the first MemoryUsage / Keyspace call.
+// SetAddr before the first MemoryUsage / Keyspace call. Absolute
+// paths are treated as Unix sockets.
 package redisinfo
 
 import (
 	"context"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,12 +32,14 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+const defaultAddr = "127.0.0.1:6379"
+
 var (
-	mu        sync.Mutex
-	addrOnce  sync.Once
-	defaultDB *redis.Client
-	addr      = "127.0.0.1:6379"
-	password  = ""
+	mu          sync.Mutex
+	defaultDB   *redis.Client
+	clientBuilt bool
+	addr        = defaultAddr
+	password    = ""
 )
 
 // SetAddr overrides the connection target before the singleton opens.
@@ -43,6 +49,9 @@ var (
 func SetAddr(a, pwd string) {
 	mu.Lock()
 	defer mu.Unlock()
+	if clientBuilt {
+		return
+	}
 	addr = a
 	password = pwd
 }
@@ -55,40 +64,44 @@ func SetClientForTest(c *redis.Client) {
 	mu.Lock()
 	defer mu.Unlock()
 	defaultDB = c
-	if c != nil {
-		// Mark addrOnce as "done" so client() does not stomp the
-		// injected client on first real call.
-		addrOnce.Do(func() {})
-	}
+	clientBuilt = c != nil
 }
 
 func client() *redis.Client {
-	addrOnce.Do(func() {
-		mu.Lock()
-		defer mu.Unlock()
-		if defaultDB == nil {
-			defaultDB = redis.NewClient(&redis.Options{
-				Addr:     addr,
-				Password: password,
-				DB:       0,
-				// Fail fast when redis is absent: this client only
-				// serves the metrics dashboard, never a hot path.
-				// Default MaxRetries=3 + ReadTimeout=3s would block
-				// the perfMetrics sampler for >9s on a host without
-				// redis (a normal config -- CSM does not require
-				// redis to run).
-				DialTimeout:  500 * time.Millisecond,
-				ReadTimeout:  500 * time.Millisecond,
-				WriteTimeout: 500 * time.Millisecond,
-				MaxRetries:   -1, // disable retries entirely
-				PoolTimeout:  500 * time.Millisecond,
-				PoolSize:     2,
-			})
-		}
-	})
 	mu.Lock()
 	defer mu.Unlock()
+	if defaultDB == nil {
+		defaultDB = redis.NewClient(redisOptions(addr, password))
+		clientBuilt = true
+	}
 	return defaultDB
+}
+
+func redisOptions(target, pwd string) *redis.Options {
+	network := "tcp"
+	if strings.HasPrefix(target, "/") {
+		network = "unix"
+	}
+	if pwd == "" {
+		pwd = os.Getenv("REDISCLI_AUTH")
+	}
+	return &redis.Options{
+		Network:  network,
+		Addr:     target,
+		Password: pwd,
+		DB:       0,
+		// Fail fast when redis is absent: this client only serves the
+		// metrics dashboard, never a hot path. Default MaxRetries=3 +
+		// ReadTimeout=3s would block the perfMetrics sampler for >9s on
+		// a host without redis (a normal config -- CSM does not require
+		// redis to run).
+		DialTimeout:  500 * time.Millisecond,
+		ReadTimeout:  500 * time.Millisecond,
+		WriteTimeout: 500 * time.Millisecond,
+		MaxRetries:   -1, // disable retries entirely
+		PoolTimeout:  500 * time.Millisecond,
+		PoolSize:     2,
+	}
 }
 
 // MemoryUsage returns the redis used_memory and maxmemory values
@@ -103,6 +116,11 @@ func MemoryUsage(ctx context.Context) (used, max uint64, err error) {
 	if err != nil {
 		return 0, 0, err
 	}
+	used, max = parseMemoryInfo(raw)
+	return used, max, nil
+}
+
+func parseMemoryInfo(raw string) (used, max uint64) {
 	for _, line := range strings.Split(raw, "\n") {
 		line = strings.TrimSpace(line)
 		switch {
@@ -112,7 +130,7 @@ func MemoryUsage(ctx context.Context) (used, max uint64, err error) {
 			max, _ = strconv.ParseUint(strings.TrimSpace(strings.TrimPrefix(line, "maxmemory:")), 10, 64)
 		}
 	}
-	return used, max, nil
+	return used, max
 }
 
 // Keyspace returns the sum of `keys=N` across every db<n> line in
@@ -126,6 +144,10 @@ func Keyspace(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	return parseKeyspaceInfo(raw), nil
+}
+
+func parseKeyspaceInfo(raw string) int64 {
 	var total int64
 	for _, line := range strings.Split(raw, "\n") {
 		line = strings.TrimSpace(line)
@@ -143,5 +165,5 @@ func Keyspace(ctx context.Context) (int64, error) {
 			}
 		}
 	}
-	return total, nil
+	return total
 }

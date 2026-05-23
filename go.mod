@@ -7,6 +7,7 @@ require (
 	github.com/cilium/ebpf v0.21.0
 	github.com/coreos/go-systemd/v22 v22.7.0
 	github.com/getsentry/sentry-go v0.46.2
+	github.com/go-sql-driver/mysql v1.10.0
 	github.com/google/nftables v0.3.0
 	github.com/klauspost/compress v1.18.6
 	github.com/oschwald/maxminddb-golang/v2 v2.2.0
@@ -18,6 +19,7 @@ require (
 )
 
 require (
+	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/mdlayher/netlink v1.11.2 // indirect
