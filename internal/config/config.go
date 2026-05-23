@@ -128,6 +128,16 @@ type Config struct {
 		// get skipped.
 		AccountScanMaxFiles int `yaml:"account_scan_max_files"`
 
+		// CrontabBase64BlobMaxBytes caps a single base64 candidate before
+		// decoding in MatchCrontabPatternsDeep. Default 16384 encoded
+		// bytes (~12 KiB decoded) comfortably fits any realistic gsocket
+		// or `base64 -d|bash` payload while bounding work on adversarial
+		// input. Raise on hosts where csm_checks_crontab_base64_truncated_total
+		// shows recurring truncation. Must be a multiple of 4: standard
+		// base64 requires aligned input or the decode fails and the
+		// candidate is silently skipped.
+		CrontabBase64BlobMaxBytes int `yaml:"crontab_base64_blob_max_bytes"`
+
 		// DomlogTailLines is how many trailing lines the WP brute force
 		// check reads from each per-domain access log per cycle. Default
 		// 500 covers roughly 10 minutes of traffic on a busy site. Raise
@@ -1072,6 +1082,9 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.Thresholds.AccountScanMaxFiles == 0 {
 		cfg.Thresholds.AccountScanMaxFiles = 10000
+	}
+	if cfg.Thresholds.CrontabBase64BlobMaxBytes == 0 {
+		cfg.Thresholds.CrontabBase64BlobMaxBytes = 16384
 	}
 	if cfg.Thresholds.DomlogTailLines == 0 {
 		cfg.Thresholds.DomlogTailLines = 500

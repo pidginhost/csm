@@ -102,7 +102,7 @@ func CheckCrontabs(ctx context.Context, cfg *config.Config, store *state.Store) 
 			return findings
 		}
 		content := string(data)
-		for _, pattern := range MatchCrontabPatternsDeep(content) {
+		for _, pattern := range MatchCrontabPatternsDeep(content, cfg) {
 			findings = append(findings, alert.Finding{
 				Severity: alert.Critical,
 				Check:    "suspicious_crontab",
@@ -192,15 +192,26 @@ func matchCrontabPatterns(content string) []string {
 	return matched
 }
 
-// crontabBase64BlobMaxBytes caps a single base64 candidate before decoding.
-// 16384 encoded bytes -> ~12KB decoded; comfortably fits any realistic cron
-// payload while bounding work on adversarial input. An attacker padding
-// past this cap is metered via csm_checks_crontab_base64_truncated_total
-// so operators can spot and raise it.
+// crontabBase64BlobMaxBytesDefault is the built-in fallback cap for a
+// single base64 candidate before decoding. 16384 encoded bytes
+// (~12 KiB decoded) comfortably fits any realistic gsocket /
+// `base64 -d|bash` payload while bounding work on adversarial input.
+// Operator override: cfg.Thresholds.CrontabBase64BlobMaxBytes.
 //
 // Must stay a multiple of 4 -- standard base64 needs aligned input or
-// DecodeString errors and the candidate is silently skipped.
-const crontabBase64BlobMaxBytes = 16384
+// DecodeString errors and the candidate is silently skipped. The
+// validator rejects non-aligned operator values.
+const crontabBase64BlobMaxBytesDefault = 16384
+
+// effectiveCrontabBase64BlobMaxBytes returns the operator-configured cap
+// or the built-in default when unset. The validator enforces multiple-of-4
+// alignment so this returns a safe value without further checks.
+func effectiveCrontabBase64BlobMaxBytes(cfg *config.Config) int {
+	if cfg == nil || cfg.Thresholds.CrontabBase64BlobMaxBytes <= 0 {
+		return crontabBase64BlobMaxBytesDefault
+	}
+	return cfg.Thresholds.CrontabBase64BlobMaxBytes
+}
 
 // crontabBase64BlobMaxCount caps the number of base64 candidates examined
 // per crontab. A realistic gsocket cron entry has one outer blob; we
@@ -217,8 +228,10 @@ var crontabBase64BlobRE = regexp.MustCompile(`[A-Za-z0-9+/]{40,}={0,2}`)
 // pattern matching on the decoded bytes. Catches attackers who wrap the
 // `base64 -d|bash` pipe chain in an outer base64 layer so the literal
 // markers never appear in the cron file as written. Single decode depth;
-// no recursion.
-func MatchCrontabPatternsDeep(content string) []string {
+// no recursion. cfg nil uses the built-in defaults; pass the live
+// operator config to honour `thresholds.crontab_base64_blob_max_bytes`.
+func MatchCrontabPatternsDeep(content string, cfg *config.Config) []string {
+	maxBytes := effectiveCrontabBase64BlobMaxBytes(cfg)
 	matched := matchCrontabPatterns(content)
 	seen := make(map[string]bool, len(matched))
 	for _, m := range matched {
@@ -226,9 +239,9 @@ func MatchCrontabPatternsDeep(content string) []string {
 	}
 	candidates := crontabBase64BlobRE.FindAllString(content, crontabBase64BlobMaxCount)
 	for _, blob := range candidates {
-		if len(blob) > crontabBase64BlobMaxBytes {
+		if len(blob) > maxBytes {
 			observeCrontabBase64Truncation()
-			blob = blob[:crontabBase64BlobMaxBytes]
+			blob = blob[:maxBytes]
 		}
 		decoded, err := base64.StdEncoding.DecodeString(blob)
 		if err != nil {

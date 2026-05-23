@@ -108,6 +108,12 @@ thresholds:
   mail_log_tail_lines: 500
   syslog_messages_tail_lines: 200
   account_scan_max_files: 10000
+  # crontab_base64_blob_max_bytes caps the encoded length of a single
+  # base64 candidate before decoding inside the crontab deep-scan
+  # decoder. Must be a multiple of 4. Raise on hosts where
+  # csm_checks_crontab_base64_truncated_total shows recurring
+  # truncation and the source is not an attacker padding past the cap.
+  crontab_base64_blob_max_bytes: 16384
   # HTTP request flood: per-source-IP request count inside the window
   # that emits http_request_flood. 0 disables the detector. Sample
   # local baseline before raising; busy WP shops can see 200-600 req

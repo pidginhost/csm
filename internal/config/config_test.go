@@ -44,6 +44,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Thresholds.AccountScanMaxFiles != 10000 {
 		t.Errorf("account_scan_max_files = %d, want 10000", cfg.Thresholds.AccountScanMaxFiles)
 	}
+	if cfg.Thresholds.CrontabBase64BlobMaxBytes != 16384 {
+		t.Errorf("crontab_base64_blob_max_bytes = %d, want 16384", cfg.Thresholds.CrontabBase64BlobMaxBytes)
+	}
 	if cfg.Thresholds.DomlogTailLines != 500 {
 		t.Errorf("domlog_tail_lines = %d, want 500", cfg.Thresholds.DomlogTailLines)
 	}

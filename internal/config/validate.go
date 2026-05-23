@@ -309,6 +309,13 @@ func Validate(cfg *Config) []ValidationResult {
 	if t.AccountScanMaxFiles != 0 && (t.AccountScanMaxFiles < 1 || t.AccountScanMaxFiles > 100000) {
 		results = append(results, ValidationResult{"error", "thresholds.account_scan_max_files", "account_scan_max_files must be between 1 and 100000"})
 	}
+	if t.CrontabBase64BlobMaxBytes != 0 {
+		if t.CrontabBase64BlobMaxBytes < 1024 || t.CrontabBase64BlobMaxBytes > 1048576 {
+			results = append(results, ValidationResult{"error", "thresholds.crontab_base64_blob_max_bytes", "crontab_base64_blob_max_bytes must be between 1024 and 1048576"})
+		} else if t.CrontabBase64BlobMaxBytes%4 != 0 {
+			results = append(results, ValidationResult{"error", "thresholds.crontab_base64_blob_max_bytes", "crontab_base64_blob_max_bytes must be a multiple of 4 (standard base64 alignment)"})
+		}
+	}
 	if t.DomlogTailLines != 0 && (t.DomlogTailLines < 10 || t.DomlogTailLines > 100000) {
 		results = append(results, ValidationResult{"error", "thresholds.domlog_tail_lines", "domlog_tail_lines must be between 10 and 100000"})
 	}

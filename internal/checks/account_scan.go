@@ -298,7 +298,7 @@ func makeAccountSSHKeyCheck(account string) CheckFunc {
 
 // makeAccountCrontabCheck creates a check for a specific account's crontab.
 func makeAccountCrontabCheck(account string) CheckFunc {
-	return func(_ context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+	return func(_ context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 		var findings []alert.Finding
 		crontabFile := filepath.Join("/var/spool/cron", account)
 		data, err := osFS.ReadFile(crontabFile)
@@ -307,7 +307,7 @@ func makeAccountCrontabCheck(account string) CheckFunc {
 		}
 
 		content := string(data)
-		for _, pattern := range MatchCrontabPatternsDeep(content) {
+		for _, pattern := range MatchCrontabPatternsDeep(content, cfg) {
 			findings = append(findings, alert.Finding{
 				Severity: alert.Critical,
 				Check:    "suspicious_crontab",

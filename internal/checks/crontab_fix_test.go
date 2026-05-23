@@ -103,7 +103,7 @@ func TestMatchCrontabPatterns_BenignNoMatch(t *testing.T) {
 	if matched := matchCrontabPatterns(string(data)); len(matched) > 0 {
 		t.Errorf("benign crontab matched literal patterns %v (false positive)", matched)
 	}
-	if matched := MatchCrontabPatternsDeep(string(data)); len(matched) > 0 {
+	if matched := MatchCrontabPatternsDeep(string(data), nil); len(matched) > 0 {
 		t.Errorf("benign crontab matched deep patterns %v (false positive)", matched)
 	}
 }
@@ -120,7 +120,7 @@ func TestMatchCrontabPatternsDeep_FindsViaBase64(t *testing.T) {
 	if literal := matchCrontabPatterns(string(data)); len(literal) > 0 {
 		t.Fatalf("literal matcher should miss this fixture (no surface markers); got %v", literal)
 	}
-	deep := MatchCrontabPatternsDeep(string(data))
+	deep := MatchCrontabPatternsDeep(string(data), nil)
 	if len(deep) == 0 {
 		t.Fatal("deep matcher should find markers in the base64 payload, got none")
 	}
@@ -145,7 +145,7 @@ func TestMatchCrontabPatternsDeep_LiteralStillMatches(t *testing.T) {
 		t.Fatalf("read fixture: %v", err)
 	}
 	literal := matchCrontabPatterns(string(data))
-	deep := MatchCrontabPatternsDeep(string(data))
+	deep := MatchCrontabPatternsDeep(string(data), nil)
 	if len(deep) < len(literal) {
 		t.Errorf("deep returned %d patterns, literal returned %d; deep must be a superset",
 			len(deep), len(literal))
@@ -169,7 +169,7 @@ func TestMatchCrontabPatternsDeep_LiteralStillMatches(t *testing.T) {
 // strings must not panic, leak time, or produce findings.
 func TestMatchCrontabPatternsDeep_InvalidBase64NoCrash(t *testing.T) {
 	junk := "0 * * * * /usr/bin/echo " + strings.Repeat("XYZ!!!@@@notbase64notbase64notbase64", 50)
-	matched := MatchCrontabPatternsDeep(junk)
+	matched := MatchCrontabPatternsDeep(junk, nil)
 	if len(matched) > 0 {
 		t.Errorf("expected no matches on garbage input, got %v", matched)
 	}

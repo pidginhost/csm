@@ -16,37 +16,37 @@ func TestMatchCrontabPatternsDeep_CatchesMaliciousInsideCappedBlob(t *testing.T)
 	// would have chopped the trailing marker.
 	body := strings.Repeat("legit-cron-comment-line\n", 500) + "base64 -d|bash"
 	encoded := base64.StdEncoding.EncodeToString([]byte(body))
-	if len(encoded) > crontabBase64BlobMaxBytes {
-		t.Fatalf("encoded length %d exceeds cap %d; rebalance the test fixture", len(encoded), crontabBase64BlobMaxBytes)
+	if len(encoded) > crontabBase64BlobMaxBytesDefault {
+		t.Fatalf("encoded length %d exceeds cap %d; rebalance the test fixture", len(encoded), crontabBase64BlobMaxBytesDefault)
 	}
 
 	cron := "* * * * * echo " + encoded + " | base64 -d | bash\n"
 
-	matched := MatchCrontabPatternsDeep(cron)
+	matched := MatchCrontabPatternsDeep(cron, nil)
 	if !containsPattern(matched, "base64 -d|bash") {
 		t.Errorf("decode pass missed marker inside %d-byte blob: matched=%v", len(encoded), matched)
 	}
 }
 
 func TestCrontabBase64BlobCapRemainsDecodeAligned(t *testing.T) {
-	if crontabBase64BlobMaxBytes%4 != 0 {
-		t.Fatalf("crontabBase64BlobMaxBytes=%d must stay divisible by 4", crontabBase64BlobMaxBytes)
+	if crontabBase64BlobMaxBytesDefault%4 != 0 {
+		t.Fatalf("crontabBase64BlobMaxBytesDefault=%d must stay divisible by 4", crontabBase64BlobMaxBytesDefault)
 	}
 }
 
 // A blob padded past the cap is recorded in the truncation counter so
 // operators can spot the evasion attempt before it lands silently.
 func TestMatchCrontabPatternsDeep_OverCapBlobIncrementsCounter(t *testing.T) {
-	body := strings.Repeat("X", crontabBase64BlobMaxBytes*2)
+	body := strings.Repeat("X", crontabBase64BlobMaxBytesDefault*2)
 	encoded := base64.StdEncoding.EncodeToString([]byte(body))
-	if len(encoded) <= crontabBase64BlobMaxBytes {
-		t.Fatalf("test fixture too small: encoded=%d cap=%d", len(encoded), crontabBase64BlobMaxBytes)
+	if len(encoded) <= crontabBase64BlobMaxBytesDefault {
+		t.Fatalf("test fixture too small: encoded=%d cap=%d", len(encoded), crontabBase64BlobMaxBytesDefault)
 	}
 
 	cron := "* * * * * echo " + encoded + "\n"
 
 	before := scrapeSum(t, "csm_checks_crontab_base64_truncated_total")
-	_ = MatchCrontabPatternsDeep(cron)
+	_ = MatchCrontabPatternsDeep(cron, nil)
 	after := scrapeSum(t, "csm_checks_crontab_base64_truncated_total")
 
 	if after-before < 1 {
