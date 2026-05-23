@@ -945,8 +945,8 @@ func captureAlertLogs(t *testing.T, fn func()) string {
 
 	fn()
 
-	if err := w.Close(); err != nil {
-		t.Fatal(err)
+	if closeErr := w.Close(); closeErr != nil {
+		t.Fatal(closeErr)
 	}
 	wClosed = true
 	os.Stderr = origStderr

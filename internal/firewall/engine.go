@@ -80,9 +80,10 @@ type Engine struct {
 	// Before this cache existed, every single mutator (BlockIP,
 	// AllowIP, saveBlockedEntry, etc.) reloaded and re-parsed the full
 	// 325 KiB state.json from disk, and every IsBlocked / IsAllowed
-	// call did a linear scan over the parsed slices. On cluster6 that
-	// meant ~72 state.json opens per second steady state, which showed
-	// up as the dominant CPU hot spot in roadmap audit 7.1.
+	// call did a linear scan over the parsed slices. On a busy
+	// production host that meant ~72 state.json opens per second
+	// steady state, which showed up as the dominant CPU hot spot in
+	// roadmap audit 7.1.
 	//
 	// All four fields are written only while e.mu is held. The index
 	// maps are rebuilt every time stateCache is repopulated so

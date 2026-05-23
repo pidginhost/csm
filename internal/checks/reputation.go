@@ -95,9 +95,9 @@ func CheckIPReputation(ctx context.Context, cfg *config.Config, _ *state.Store) 
 	//   findings.
 	//
 	// Pre-cache, all five HTTP queries ran in a serial loop, so a
-	// cycle paid ~5x worst-case AbuseIPDB latency. cluster6 saw
-	// ip_reputation averaging ~3.6 s per run because of this; the fan
-	// out brings that down to ~max(single-call latency).
+	// cycle paid ~5x worst-case AbuseIPDB latency. A busy production
+	// host saw ip_reputation averaging ~3.6 s per run because of
+	// this; the fan-out brings that down to ~max(single-call latency).
 	type pendingQuery struct {
 		ip     string
 		source string
