@@ -108,7 +108,7 @@ function loadSuppressions() {
         html += '<thead><tr><th>Check</th><th>Path Pattern</th><th>Reason</th><th>Created</th><th>Actions</th></tr></thead><tbody>';
         for (var i = 0; i < data.length; i++) {
             var s = data[i];
-            var created = s.created_at ? new Date(s.created_at).toLocaleString() : '-';
+            var created = CSM.fmtDate(s.created_at);
             html += '<tr>';
             html += '<td><code>' + CSM.esc(s.check) + '</code></td>';
             html += '<td class="font-monospace small">' + CSM.esc(s.path_pattern || '(all)') + '</td>';

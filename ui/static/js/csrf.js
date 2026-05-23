@@ -111,6 +111,28 @@ CSM.formatSize = function(bytes) {
     return (bytes / 1048576).toFixed(1) + ' MB';
 };
 
+// Format integer with locale thousands separator. Falls back to a manual
+// regex for very old engines so the helper still returns a string.
+CSM.formatNumber = function(n) {
+    var v = Number(n);
+    if (!isFinite(v)) return String(n != null ? n : '');
+    try {
+        return v.toLocaleString();
+    } catch (e) {
+        var s = String(Math.trunc(v));
+        return s.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    }
+};
+
+// Format ratio (0..1 or 0..100) as a percentage. round = decimals to keep.
+CSM.formatPercent = function(v, round) {
+    var n = Number(v);
+    if (!isFinite(n)) return '';
+    if (n <= 1 && n >= -1) n = n * 100;
+    var d = (round == null) ? 0 : Math.max(0, round);
+    return n.toFixed(d) + '%';
+};
+
 // Format ISO timestamp to "YYYY-MM-DD HH:MM" in browser-local timezone.
 // Pass { tz: true } as opts to append timezone abbreviation.
 CSM.fmtDate = function(ts, opts) {
@@ -189,9 +211,9 @@ CSM.request = function(url, options) {
     }).catch(function(err) {
         clearTimeout(timeoutId);
         if (err.name === 'AbortError') {
-            CSM.toast('Request timed out', 'danger');
+            CSM.toast('Request timed out', 'error');
         } else {
-            CSM.toast('Request failed: ' + err.message, 'danger');
+            CSM.toast('Request failed: ' + err.message, 'error');
         }
         throw err;
     });

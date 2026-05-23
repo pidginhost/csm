@@ -167,7 +167,7 @@
             .catch(function(err) {
                 btn.disabled = false;
                 btn.innerHTML = '<i class="ti ti-player-play"></i>&nbsp;Run Audit';
-                if (typeof CSM.toast === 'function') CSM.toast(err.message || 'Audit failed', 'danger');
+                if (typeof CSM.toast === 'function') CSM.toast(err.message || 'Audit failed', 'error');
             });
     }
 

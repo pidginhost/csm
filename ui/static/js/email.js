@@ -712,7 +712,7 @@
         CSM.confirm('Release this message back to the mail queue? Only do this for confirmed false positives.').then(function() {
             CSM.post('/api/v1/email/quarantine/' + encodeURIComponent(msgID) + '/release', {})
                 .then(function() { loadQuarantine(); loadAVStatus(); })
-                .catch(function(err) { CSM.toast('Release failed: ' + (err.message || ''), 'danger'); });
+                .catch(function(err) { CSM.toast('Release failed: ' + (err.message || ''), 'error'); });
         }).catch(function() { /* cancelled */ });
     }
 
@@ -720,7 +720,7 @@
         CSM.confirm('Permanently delete this quarantined message?').then(function() {
             CSM.delete('/api/v1/email/quarantine/' + encodeURIComponent(msgID))
                 .then(function() { loadQuarantine(); loadAVStatus(); })
-                .catch(function(err) { CSM.toast('Delete failed: ' + (err.message || ''), 'danger'); });
+                .catch(function(err) { CSM.toast('Delete failed: ' + (err.message || ''), 'error'); });
         }).catch(function() { /* cancelled */ });
     }
 
