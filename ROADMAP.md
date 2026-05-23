@@ -165,14 +165,14 @@ deploy soak.
 
 ### Why
 
-Item 7 audit on cluster6 saw libc/libpthread/librt loads followed
-by exit (suggesting `os/exec.Command` churn). Live `strace -e
-execve` over 30 s post-fix measured only 9 forks (6 `redis-cli`, 3
-`mysql`, 1 unknown) at steady state. Below threshold for action.
+Item 7 audit on a production host saw libc/libpthread/librt loads
+followed by exit (suggesting `os/exec.Command` churn). Live `strace
+-e execve` over 30 s post-fix measured only 9 forks (6 `redis-cli`,
+3 `mysql`, 1 unknown) at steady state. Below threshold for action.
 
 ### Decision
 
-Re-measure on cluster6 in production after 3.7.0 soak. If
+Re-measure on the same production host after 3.7.0 soak. If
 sustained fork rate stays under ~1/s, close as not-needed. If
 above: replace `redis-cli` with `redis/go-redis` and `mysql` CLI
 with `database/sql` MySQL driver.
