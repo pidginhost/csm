@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Account scanner caps no longer hide root or system cron baselines, global hidden temp files, or duplicate filesystem backdoor paths when globs overlap.
+- Blocked-IP alert suppression now logs corrupt state once per filter pass and still uses valid queued-block entries when another state section is malformed.
 
 ## [3.7.0] - 2026-05-23
 

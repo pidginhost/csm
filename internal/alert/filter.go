@@ -12,16 +12,11 @@ import (
 	csmlog "github.com/pidginhost/csm/internal/log"
 )
 
-// fail-closed audit (2026-05-23): the JSON state files this package
-// reads (`blocked_ips.json`, firewall `state.json`) drive suppression
-// of reputation and auto-block alerts. When parsing fails, the loaders
-// return an empty map, which causes FilterBlockedAlerts to suppress
-// nothing -- alerts still reach the operator. That is the right
-// failure mode (no false-negatives on the operator-facing channel),
-// but the silence on json.Unmarshal failures hides corruption that an
-// operator would want to know about. The Unmarshal errors now log via
-// csmlog.Warn. Read errors stay silent because absent state files are
-// the normal pre-first-block state, not corruption.
+// State files drive suppression of reputation and auto-block alerts.
+// Parse failures must degrade open so corrupt state never hides
+// operator-facing findings; warning logs keep the corruption visible.
+// Missing state files stay silent because they are normal before the
+// first block.
 
 // FilterBlockedAlerts removes reputation and auto-block alerts for IPs
 // that are currently blocked in CSM firewall (either just blocked or previously blocked).
@@ -30,8 +25,8 @@ func FilterBlockedAlerts(cfg *config.Config, findings []Finding) []Finding {
 		return findings
 	}
 
-	// Load all currently blocked IPs from state
-	blockedIPs := loadBlockedIPs(cfg.StatePath)
+	// Load all currently blocked IPs and queued blocks from state.
+	blockedIPs, pendingIPs := loadBlockedAlertState(cfg.StatePath)
 
 	// Also collect IPs and subnets blocked in this batch.
 	var blockedSubnets []*net.IPNet
@@ -56,7 +51,7 @@ func FilterBlockedAlerts(cfg *config.Config, findings []Finding) []Finding {
 
 	// Also suppress alerts for IPs queued for blocking (rate-limited).
 	// These will be blocked once the rate limit resets - no need to alert.
-	for ip := range loadPendingIPs(cfg.StatePath) {
+	for ip := range pendingIPs {
 		blockedIPs[ip] = true
 	}
 
@@ -127,27 +122,20 @@ func extractIPFromFindingMessage(msg string) net.IP {
 // loadPendingIPs reads IPs queued for blocking from blocked_ips.json.
 func loadPendingIPs(statePath string) map[string]bool {
 	ips := make(map[string]bool)
-	type pending struct {
-		IP string `json:"ip"`
-	}
-	type blockFile struct {
-		Pending []pending `json:"pending"`
-	}
-	// #nosec G304 -- filepath.Join under operator-configured statePath.
-	pendingPath := filepath.Join(statePath, "blocked_ips.json")
-	data, err := os.ReadFile(pendingPath)
-	if err == nil {
-		var bf blockFile
-		if unmErr := json.Unmarshal(data, &bf); unmErr == nil {
-			for _, p := range bf.Pending {
-				ips[p.IP] = true
-			}
-		} else {
-			csmlog.Warn("alert filter: blocked_ips.json (pending) unparseable, suppression degraded",
-				"path", pendingPath, "err", unmErr)
-		}
-	}
+	loadBlockFileEntries(statePath, time.Time{}, nil, ips, blockFilePendingSection)
 	return ips
+}
+
+func loadBlockedIPSource(statePath string, now time.Time, ips map[string]bool) {
+	// Use injected loader (bbolt-backed) when available.
+	if BlockedIPsFunc != nil {
+		for ip, v := range BlockedIPsFunc() {
+			ips[ip] = v
+		}
+		return
+	}
+
+	loadFirewallStateFile(statePath, now, ips)
 }
 
 // BlockedIPsFunc is an optional callback that returns currently blocked IPs.
@@ -161,59 +149,117 @@ var BlockedIPsFunc func() map[string]bool
 func loadBlockedIPs(statePath string) map[string]bool {
 	ips := make(map[string]bool)
 	now := time.Now()
+	loadBlockedIPSource(statePath, now, ips)
+	loadBlockFileEntries(statePath, now, ips, nil, blockFileIPsSection)
+	return ips
+}
 
-	// Use injected loader (bbolt-backed) when available.
-	if BlockedIPsFunc != nil {
-		for ip, v := range BlockedIPsFunc() {
-			ips[ip] = v
-		}
-	} else {
-		// Fallback: read from firewall engine state.json (nftables) flat file.
-		// #nosec G304 -- filepath.Join under operator-configured statePath.
-		fwPath := filepath.Join(statePath, "firewall", "state.json")
-		if fwData, err := os.ReadFile(fwPath); err == nil {
-			var fwState struct {
-				Blocked []struct {
-					IP        string    `json:"ip"`
-					ExpiresAt time.Time `json:"expires_at"`
-				} `json:"blocked"`
-			}
-			if unmErr := json.Unmarshal(fwData, &fwState); unmErr == nil {
-				for _, entry := range fwState.Blocked {
-					if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
-						ips[entry.IP] = true
-					}
-				}
-			} else {
-				csmlog.Warn("alert filter: firewall state.json unparseable, suppression degraded",
-					"path", fwPath, "err", unmErr)
-			}
-		}
+func loadBlockedAlertState(statePath string) (map[string]bool, map[string]bool) {
+	ips := make(map[string]bool)
+	pending := make(map[string]bool)
+	now := time.Now()
+	loadBlockedIPSource(statePath, now, ips)
+	loadBlockFileEntries(statePath, now, ips, pending, blockFileIPsSection|blockFilePendingSection)
+	return ips, pending
+}
+
+func loadFirewallStateFile(statePath string, now time.Time, ips map[string]bool) {
+	// #nosec G304 -- filepath.Join under operator-configured statePath.
+	fwPath := filepath.Join(statePath, "firewall", "state.json")
+	fwData, err := os.ReadFile(fwPath)
+	if err != nil {
+		return
 	}
 
-	// Also read from blocked_ips.json (CSM auto-block)
-	type blockFile struct {
-		IPs []struct {
+	var fwState struct {
+		Blocked []struct {
 			IP        string    `json:"ip"`
 			ExpiresAt time.Time `json:"expires_at"`
-		} `json:"ips"`
+		} `json:"blocked"`
+	}
+	if err := json.Unmarshal(fwData, &fwState); err != nil {
+		csmlog.Warn("alert filter: firewall state.json unparseable, suppression degraded",
+			"path", fwPath, "err", err)
+		return
 	}
 
+	for _, entry := range fwState.Blocked {
+		if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
+			ips[entry.IP] = true
+		}
+	}
+}
+
+type blockFile struct {
+	IPs     []blockFileIP
+	Pending []blockFilePendingIP
+}
+
+type blockFileIP struct {
+	IP        string    `json:"ip"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+type blockFilePendingIP struct {
+	IP string `json:"ip"`
+}
+
+type blockFileSection uint8
+
+const (
+	blockFileIPsSection blockFileSection = 1 << iota
+	blockFilePendingSection
+)
+
+func loadBlockFileEntries(statePath string, now time.Time, ips map[string]bool, pending map[string]bool, sections blockFileSection) {
+	bf, ok := loadBlockFile(statePath, sections)
+	if !ok {
+		return
+	}
+
+	for _, entry := range bf.IPs {
+		if ips != nil && (entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt)) {
+			ips[entry.IP] = true
+		}
+	}
+	for _, entry := range bf.Pending {
+		if pending != nil {
+			pending[entry.IP] = true
+		}
+	}
+}
+
+func loadBlockFile(statePath string, sections blockFileSection) (blockFile, bool) {
 	// #nosec G304 -- filepath.Join under operator-configured statePath.
 	blockedPath := filepath.Join(statePath, "blocked_ips.json")
-	if data, err := os.ReadFile(blockedPath); err == nil {
-		var bf blockFile
-		if unmErr := json.Unmarshal(data, &bf); unmErr == nil {
-			for _, entry := range bf.IPs {
-				if entry.ExpiresAt.IsZero() || now.Before(entry.ExpiresAt) {
-					ips[entry.IP] = true
-				}
-			}
-		} else {
-			csmlog.Warn("alert filter: blocked_ips.json unparseable, suppression degraded",
-				"path", blockedPath, "err", unmErr)
+	data, err := os.ReadFile(blockedPath)
+	if err != nil {
+		return blockFile{}, false
+	}
+
+	var raw struct {
+		IPs     json.RawMessage `json:"ips"`
+		Pending json.RawMessage `json:"pending"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		csmlog.Warn("alert filter: blocked_ips.json unparseable, suppression degraded",
+			"path", blockedPath, "err", err)
+		return blockFile{}, false
+	}
+
+	var bf blockFile
+	if sections&blockFileIPsSection != 0 && len(raw.IPs) > 0 && string(raw.IPs) != "null" {
+		if err := json.Unmarshal(raw.IPs, &bf.IPs); err != nil {
+			csmlog.Warn("alert filter: blocked_ips.json blocked entries unparseable, suppression degraded",
+				"path", blockedPath, "err", err)
+		}
+	}
+	if sections&blockFilePendingSection != 0 && len(raw.Pending) > 0 && string(raw.Pending) != "null" {
+		if err := json.Unmarshal(raw.Pending, &bf.Pending); err != nil {
+			csmlog.Warn("alert filter: blocked_ips.json pending entries unparseable, suppression degraded",
+				"path", blockedPath, "err", err)
 		}
 	}
 
-	return ips
+	return bf, true
 }

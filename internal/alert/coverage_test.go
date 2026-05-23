@@ -14,7 +14,10 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/config"
+	csmlog "github.com/pidginhost/csm/internal/log"
 )
+
+var alertLogCaptureMu sync.Mutex
 
 // --- Severity.String unknown value --------------------------------------
 
@@ -700,9 +703,100 @@ func TestLoadBlockedIPsMalformed(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "blocked_ips.json"), []byte("not json"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	ips := loadBlockedIPs(dir)
+	var ips map[string]bool
+	logs := captureAlertLogs(t, func() {
+		ips = loadBlockedIPs(dir)
+	})
 	if len(ips) != 0 {
 		t.Errorf("malformed file should yield empty, got %v", ips)
+	}
+	if !strings.Contains(logs, "blocked_ips.json unparseable") {
+		t.Fatalf("missing blocked_ips.json warning: %q", logs)
+	}
+}
+
+func TestFilterBlockedAlertsMalformedBlockedFileWarnsOnceAndKeepsFinding(t *testing.T) {
+	orig := BlockedIPsFunc
+	BlockedIPsFunc = nil
+	t.Cleanup(func() { BlockedIPsFunc = orig })
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "blocked_ips.json"), []byte("not json"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{StatePath: dir}
+	cfg.Suppressions.SuppressBlockedAlerts = true
+	findings := []Finding{{Check: "ip_reputation", Message: "5.5.5.5 flagged"}}
+
+	var got []Finding
+	logs := captureAlertLogs(t, func() {
+		got = FilterBlockedAlerts(cfg, findings)
+	})
+
+	if len(got) != 1 || got[0].Message != findings[0].Message {
+		t.Fatalf("malformed state must keep finding visible, got %+v", got)
+	}
+	if count := strings.Count(logs, "suppression degraded"); count != 1 {
+		t.Fatalf("degraded-suppression warning count = %d, want 1; logs: %q", count, logs)
+	}
+	if !strings.Contains(logs, "suppression degraded") {
+		t.Fatalf("warning did not explain degraded suppression: %q", logs)
+	}
+}
+
+func TestLoadBlockedIPsMalformedFirewallStateWarns(t *testing.T) {
+	orig := BlockedIPsFunc
+	BlockedIPsFunc = nil
+	t.Cleanup(func() { BlockedIPsFunc = orig })
+
+	dir := t.TempDir()
+	fwDir := filepath.Join(dir, "firewall")
+	if err := os.MkdirAll(fwDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fwDir, "state.json"), []byte("not json"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	var ips map[string]bool
+	logs := captureAlertLogs(t, func() {
+		ips = loadBlockedIPs(dir)
+	})
+
+	if len(ips) != 0 {
+		t.Fatalf("malformed firewall state should yield empty map, got %v", ips)
+	}
+	if !strings.Contains(logs, "firewall state.json unparseable") {
+		t.Fatalf("missing firewall-state warning: %q", logs)
+	}
+}
+
+func TestFilterBlockedAlertsMalformedBlockedEntriesStillUsesPendingEntries(t *testing.T) {
+	orig := BlockedIPsFunc
+	BlockedIPsFunc = nil
+	t.Cleanup(func() { BlockedIPsFunc = orig })
+
+	dir := t.TempDir()
+	body := `{"ips":[{"ip":"5.5.5.5","expires_at":"not-a-time"}],"pending":[{"ip":"8.8.8.8"}]}`
+	if err := os.WriteFile(filepath.Join(dir, "blocked_ips.json"), []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{StatePath: dir}
+	cfg.Suppressions.SuppressBlockedAlerts = true
+	findings := []Finding{{Check: "ip_reputation", Message: "8.8.8.8 queued for block"}}
+
+	var got []Finding
+	logs := captureAlertLogs(t, func() {
+		got = FilterBlockedAlerts(cfg, findings)
+	})
+
+	if len(got) != 0 {
+		t.Fatalf("valid pending entry should still suppress finding, got %+v", got)
+	}
+	if !strings.Contains(logs, "blocked entries unparseable") {
+		t.Fatalf("missing blocked-entry warning: %q", logs)
 	}
 }
 
@@ -802,6 +896,69 @@ func TestFilter_SubnetBlockSuppressesReputationInSameBatch(t *testing.T) {
 	if !kept {
 		t.Errorf("ip_reputation for 10.20.30.40 must not be suppressed (outside blocked /24)")
 	}
+}
+
+func captureAlertLogs(t *testing.T, fn func()) string {
+	t.Helper()
+
+	alertLogCaptureMu.Lock()
+	defer alertLogCaptureMu.Unlock()
+
+	origStderr := os.Stderr
+	oldFormat, hadFormat := os.LookupEnv("CSM_LOG_FORMAT")
+	oldLevel, hadLevel := os.LookupEnv("CSM_LOG_LEVEL")
+	restoreEnv := func() {
+		if hadFormat {
+			_ = os.Setenv("CSM_LOG_FORMAT", oldFormat)
+		} else {
+			_ = os.Unsetenv("CSM_LOG_FORMAT")
+		}
+		if hadLevel {
+			_ = os.Setenv("CSM_LOG_LEVEL", oldLevel)
+		} else {
+			_ = os.Unsetenv("CSM_LOG_LEVEL")
+		}
+	}
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	os.Stderr = w
+	_ = os.Setenv("CSM_LOG_FORMAT", "text")
+	_ = os.Setenv("CSM_LOG_LEVEL", "warn")
+	csmlog.Init()
+	wClosed := false
+	restored := false
+	defer func() {
+		if !wClosed {
+			_ = w.Close()
+		}
+		if !restored {
+			os.Stderr = origStderr
+			restoreEnv()
+			csmlog.Init()
+		}
+	}()
+
+	fn()
+
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	wClosed = true
+	os.Stderr = origStderr
+	restoreEnv()
+	csmlog.Init()
+	restored = true
+
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
 }
 
 // --- httpClient helper ------------------------------------------------
