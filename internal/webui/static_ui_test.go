@@ -625,6 +625,29 @@ func TestInventoryPagesAdoptCsmToolbar(t *testing.T) {
 	}
 }
 
+func TestCleanupHistoryBulkButtonsLockTogether(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/cleanup-history.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, want := range []string{
+		`var buttonIDs = ['cleanup-files-restore-btn', 'cleanup-files-delete-btn'];`,
+		`states.push({ btn: btn, disabled: btn.disabled, html: btn.innerHTML });`,
+		`btn.disabled = true;`,
+		`activeBtn.innerHTML = busyHTML;`,
+		`state.btn.innerHTML = state.html;`,
+		`updateFileBulkButtons();`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("cleanup-history.js missing bulk-button lock fragment %q", want)
+		}
+	}
+	if strings.Contains(text, `var origText = btn.textContent`) || strings.Contains(text, `btn.textContent = label`) {
+		t.Error("cleanup-history.js must preserve button HTML; textContent drops the action icons")
+	}
+}
+
 // TestModSecPageUsesPhase8Primitives asserts the modsec workbench leads
 // with the WAF pressure summary list and the side summaries, and that
 // modsec.js wires up the new shared helpers.
