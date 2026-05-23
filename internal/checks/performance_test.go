@@ -4,9 +4,11 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/redisinfo"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -114,6 +116,37 @@ func TestPerfEnabled(t *testing.T) {
 			t.Error("expected perfEnabled to return true when Enabled is true")
 		}
 	})
+}
+
+func TestCheckRedisConfigUsesRawUint64ForHeadroomRatio(t *testing.T) {
+	redisinfo.SetMemoryUsageForTest(func(context.Context) (uint64, uint64, error) {
+		return 1 << 63, (1 << 63) + (1 << 62), nil
+	})
+	redisinfo.SetKeyspaceStatsForTest(func(context.Context) (redisinfo.KeyspaceStat, error) {
+		return redisinfo.KeyspaceStat{}, nil
+	})
+	redisinfo.SetConfigGetForTest(func(_ context.Context, name string) (string, error) {
+		switch name {
+		case "maxmemory":
+			return "1", nil
+		case "maxmemory-policy":
+			return "allkeys-lru", nil
+		default:
+			return "", nil
+		}
+	})
+	t.Cleanup(func() {
+		redisinfo.SetMemoryUsageForTest(nil)
+		redisinfo.SetKeyspaceStatsForTest(nil)
+		redisinfo.SetConfigGetForTest(nil)
+	})
+
+	findings := CheckRedisConfig(context.Background(), testPerfConfig(), nil)
+	for _, finding := range findings {
+		if strings.Contains(finding.Message, "Redis used memory") {
+			t.Fatalf("unexpected Redis memory headroom finding for 66.7%% usage: %+v", finding)
+		}
+	}
 }
 
 func TestCheckLoadAverage_Disabled(t *testing.T) {

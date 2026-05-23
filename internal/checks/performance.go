@@ -121,16 +121,29 @@ func parseMemInfo() (total, available, swapTotal, swapFree uint64) {
 	return
 }
 
-// uint64ToInt64Clamped narrows a uint64 to int64, clamping at
-// math.MaxInt64 instead of wrapping to a negative value. Used for
-// redis used_memory / maxmemory bytes where realistic values fit
-// comfortably in int64 but gosec G115 flags the bare conversion.
+const (
+	maxInt64Value  = int64(1<<63 - 1)
+	maxUint64Value = ^uint64(0)
+)
+
+// uint64ToInt64Clamped narrows a uint64 to int64 for byte display.
 func uint64ToInt64Clamped(v uint64) int64 {
-	const maxInt64 uint64 = 1<<63 - 1
-	if v > maxInt64 {
-		return int64(maxInt64)
+	if v > uint64(maxInt64Value) {
+		return maxInt64Value
 	}
 	return int64(v)
+}
+
+func redisLargeDatasetThresholdBytes(gb int) uint64 {
+	if gb <= 0 {
+		return 0
+	}
+	const gbBytes uint64 = 1024 * 1024 * 1024
+	thresholdGB := uint64(gb)
+	if thresholdGB > maxUint64Value/gbBytes {
+		return maxUint64Value
+	}
+	return thresholdGB * gbBytes
 }
 
 // humanBytes formats a byte count as a human-readable string.
@@ -152,8 +165,6 @@ func humanBytes(b int64) string {
 		return "0B"
 	}
 }
-
-const maxInt64Value = int64(1<<63 - 1)
 
 func kibToDisplayBytes(kib uint64) int64 {
 	const maxKiBForInt64Bytes = uint64(maxInt64Value / 1024)
@@ -692,13 +703,11 @@ func CheckRedisConfig(ctx context.Context, cfg *config.Config, _ *state.Store) [
 	// --- bgsave interval vs dataset size ---
 	saveSpec, _ := redisinfo.ConfigGet(ctx, "save")
 	usedBytes, _, _ := redisinfo.MemoryUsage(ctx)
-	usedMemoryBytes := uint64ToInt64Clamped(usedBytes)
 
-	const gbBytes = 1024 * 1024 * 1024
-	largeDatasetBytes := int64(cfg.Performance.RedisLargeDatasetGB) * gbBytes
+	largeDatasetBytes := redisLargeDatasetThresholdBytes(cfg.Performance.RedisLargeDatasetGB)
 	bgsaveMinInterval := cfg.Performance.RedisBgsaveMinInterval
 
-	if usedMemoryBytes > largeDatasetBytes && saveSpec != "" {
+	if usedBytes > largeDatasetBytes && saveSpec != "" {
 		// `CONFIG GET save` returns the spec as a single space-separated
 		// string of alternating "<seconds> <changes>" pairs, e.g.
 		// "900 1 300 10 60 10000". Walk the seconds tokens (every
@@ -719,8 +728,8 @@ func CheckRedisConfig(ctx context.Context, cfg *config.Config, _ *state.Store) [
 				Message:  "Redis bgsave interval too aggressive for dataset size",
 				Details: fmt.Sprintf(
 					"Used memory: %s, Threshold: %s, Minimum safe bgsave interval: %ds",
-					humanBytes(usedMemoryBytes),
-					humanBytes(largeDatasetBytes),
+					humanBytes(uint64ToInt64Clamped(usedBytes)),
+					humanBytes(uint64ToInt64Clamped(largeDatasetBytes)),
 					bgsaveMinInterval,
 				),
 				Timestamp: time.Now(),
@@ -734,24 +743,33 @@ func CheckRedisConfig(ctx context.Context, cfg *config.Config, _ *state.Store) [
 	// the eviction policy is about to start churning hot keys; at 90%
 	// noeviction-policy instances start returning OOM errors.
 	_, maxBytes, _ := redisinfo.MemoryUsage(ctx)
-	maxMemoryBytes := uint64ToInt64Clamped(maxBytes)
-	if maxMemoryBytes > 0 && usedMemoryBytes > 0 {
-		pct := float64(usedMemoryBytes) / float64(maxMemoryBytes) * 100
+	if maxBytes > 0 && usedBytes > 0 {
+		pct := float64(usedBytes) / float64(maxBytes) * 100
 		switch {
 		case pct >= 90:
 			findings = append(findings, alert.Finding{
-				Severity:  alert.High,
-				Check:     "perf_redis_config",
-				Message:   "Redis used memory >= 90% of maxmemory",
-				Details:   fmt.Sprintf("Used: %s / Max: %s (%.1f%%)", humanBytes(usedMemoryBytes), humanBytes(maxMemoryBytes), pct),
+				Severity: alert.High,
+				Check:    "perf_redis_config",
+				Message:  "Redis used memory >= 90% of maxmemory",
+				Details: fmt.Sprintf(
+					"Used: %s / Max: %s (%.1f%%)",
+					humanBytes(uint64ToInt64Clamped(usedBytes)),
+					humanBytes(uint64ToInt64Clamped(maxBytes)),
+					pct,
+				),
 				Timestamp: time.Now(),
 			})
 		case pct >= 80:
 			findings = append(findings, alert.Finding{
-				Severity:  alert.Warning,
-				Check:     "perf_redis_config",
-				Message:   "Redis used memory >= 80% of maxmemory",
-				Details:   fmt.Sprintf("Used: %s / Max: %s (%.1f%%)", humanBytes(usedMemoryBytes), humanBytes(maxMemoryBytes), pct),
+				Severity: alert.Warning,
+				Check:    "perf_redis_config",
+				Message:  "Redis used memory >= 80% of maxmemory",
+				Details: fmt.Sprintf(
+					"Used: %s / Max: %s (%.1f%%)",
+					humanBytes(uint64ToInt64Clamped(usedBytes)),
+					humanBytes(uint64ToInt64Clamped(maxBytes)),
+					pct,
+				),
 				Timestamp: time.Now(),
 			})
 		}

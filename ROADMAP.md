@@ -155,26 +155,3 @@ existing `state.json`, writes bbolt buckets, renames the JSON to
 Replacing the in-memory cache (item 7.1 result stands).
 
 ### Size: 2-3 days.
-
----
-
-## 10. Subprocess churn (item 7.4 follow-through)
-
-**Status:** deferred pending re-measurement after item 7.1 + 7.2
-deploy soak.
-
-### Why
-
-Item 7 audit on a production host saw libc/libpthread/librt loads
-followed by exit (suggesting `os/exec.Command` churn). Live `strace
--e execve` over 30 s post-fix measured only 9 forks (6 `redis-cli`,
-3 `mysql`, 1 unknown) at steady state. Below threshold for action.
-
-### Decision
-
-Re-measure on the same production host after 3.7.0 soak. If
-sustained fork rate stays under ~1/s, close as not-needed. If
-above: replace `redis-cli` with `redis/go-redis` and `mysql` CLI
-with `database/sql` MySQL driver.
-
-### Size: 0 (close) or 1-2 days (implement).
