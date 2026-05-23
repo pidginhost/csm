@@ -11,7 +11,15 @@
         <div class="csm-toolbar">
             <input type="text" id="audit-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search audit log..." aria-label="Search audit log">
             <span class="csm-toolbar__spacer"></span>
-            <button class="btn btn-ghost-secondary btn-sm" id="audit-export-csv" title="Export as CSV"><i class="ti ti-download"></i>&nbsp;CSV</button>
+            <div class="dropdown csm-toolbar__actions">
+                <button class="btn btn-ghost-secondary btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-label="Export current view" title="Export current view">
+                    <i class="ti ti-download"></i>&nbsp;Export
+                </button>
+                <div class="dropdown-menu dropdown-menu-end">
+                    <a class="dropdown-item" href="#" data-export="csv"><i class="ti ti-file-spreadsheet me-2"></i>CSV</a>
+                    <a class="dropdown-item" href="#" data-export="json"><i class="ti ti-braces me-2"></i>JSON</a>
+                </div>
+            </div>
         </div>
         <div id="audit-content">
             <div class="card-body text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</div>

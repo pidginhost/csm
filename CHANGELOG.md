@@ -27,6 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - ModSecurity rule table filters now track staged enable and escalation changes, and table filter selections persist across reloads.
 - Web UI refresh buttons now use a single ghost-secondary style across pages instead of the mix of info, outline, and ghost variants that drifted in earlier releases.
+- Audit log page export is now a CSV / JSON dropdown matching the export control on findings, firewall, threat, and email.
+- Firewall configuration tables now render with the same card-table styling as the other firewall tables instead of plain defaults.
+- Firewall Flush blocked IPs button uses the solid danger style so destructive-action colors are consistent across the UI.
 - Web UI sidebar uses the full page title "Threat Intelligence" instead of the abbreviation.
 - History tab deep links no longer assume Bootstrap is loaded and still open the History view when the tab helper is unavailable.
 - Firewall audit filter row no longer relies on an invisible spacer label for alignment.

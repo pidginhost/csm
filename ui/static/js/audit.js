@@ -41,29 +41,53 @@ function loadAudit() {
 
 loadAudit();
 
-var auditExportBtn = document.getElementById('audit-export-csv');
-if (auditExportBtn) {
-    auditExportBtn.addEventListener('click', function() {
-        var rows = document.querySelectorAll('#audit-table tbody tr');
-        if (!rows.length) { CSM.toast('No data to export', 'warning'); return; }
-        var lines = ['Time,Action,Target,Details,Admin IP'];
-        rows.forEach(function(r) {
-            if (r.style.display === 'none') return;
-            var cells = r.querySelectorAll('td');
-            if (cells.length < 5) return;
-            lines.push([
-                '"' + (cells[0].textContent.trim()).replace(/"/g, '""') + '"',
-                '"' + (cells[1].textContent.trim()).replace(/"/g, '""') + '"',
-                '"' + (cells[2].textContent.trim()).replace(/"/g, '""') + '"',
-                '"' + (cells[3].textContent.trim()).replace(/"/g, '""') + '"',
-                '"' + (cells[4].textContent.trim()).replace(/"/g, '""') + '"'
-            ].join(','));
+function exportAuditRows() {
+    var rows = document.querySelectorAll('#audit-table tbody tr');
+    var headers = ['Time', 'Action', 'Target', 'Details', 'Admin IP'];
+    var out = [];
+    rows.forEach(function(r) {
+        if (r.style.display === 'none') return;
+        var cells = r.querySelectorAll('td');
+        if (cells.length < 5) return;
+        out.push({
+            time:     cells[0].textContent.trim(),
+            action:   cells[1].textContent.trim(),
+            target:   cells[2].textContent.trim(),
+            details:  cells[3].textContent.trim(),
+            admin_ip: cells[4].textContent.trim()
         });
-        var blob = new Blob([lines.join('\n')], {type: 'text/csv'});
-        var url = URL.createObjectURL(blob);
-        var a = document.createElement('a');
-        a.href = url; a.download = 'csm-audit-' + new Date().toISOString().slice(0,10) + '.csv';
-        document.body.appendChild(a); a.click(); document.body.removeChild(a);
-        URL.revokeObjectURL(url);
     });
+    return { headers: headers, rows: out };
 }
+
+function downloadBlob(content, mime, ext) {
+    var blob = new Blob([content], {type: mime});
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = 'csm-audit-' + new Date().toISOString().slice(0,10) + '.' + ext;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+document.querySelectorAll('[data-export]').forEach(function(el) {
+    el.addEventListener('click', function(e) {
+        e.preventDefault();
+        var format = this.getAttribute('data-export');
+        var data = exportAuditRows();
+        if (!data.rows.length) { CSM.toast('No data to export', 'warning'); return; }
+        if (format === 'csv') {
+            var lines = [data.headers.join(',')];
+            data.rows.forEach(function(r) {
+                lines.push([r.time, r.action, r.target, r.details, r.admin_ip].map(function(v) {
+                    return '"' + String(v).replace(/"/g, '""') + '"';
+                }).join(','));
+            });
+            downloadBlob(lines.join('\n'), 'text/csv', 'csv');
+        } else if (format === 'json') {
+            downloadBlob(JSON.stringify(data.rows, null, 2), 'application/json', 'json');
+        }
+    });
+});
