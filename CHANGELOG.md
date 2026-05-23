@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added a hot-reloadable account scanner cap so large hosts can bound account-scoped and mail-domain file iteration without relying on check timeouts. The new threshold is available in the sample config and settings UI.
 - New `thresholds.crontab_base64_blob_max_bytes` operator override for the crontab deep-scan base64 decoder cap (default 16384). Lets operators raise the cap on hosts where `csm_checks_crontab_base64_truncated_total` shows recurring truncation without rebuilding the daemon.
 
+### Changed
+
+- The performance dashboard now reads Redis memory and keyspace stats via the in-process `redis/go-redis` client instead of shelling out to `redis-cli` twice per poll. Eliminates two forks per sampler cycle on hosts that surface the dashboard. Fail-fast timeouts (500 ms) preserve the previous behaviour when redis is absent.
+
 ### Fixed
 
 - Realtime crontab alerts now honor the configured base64 decode cap, and the settings UI exposes the same control as the sample configs.

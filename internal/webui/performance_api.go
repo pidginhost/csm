@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/redisinfo"
 )
 
 // --- Local response types ---
@@ -298,44 +299,16 @@ func sampleMetrics() *perfMetrics {
 		}
 	}
 
-	// Redis: memory + keyspace
+	// Redis: memory + keyspace via in-process client (no redis-cli fork).
 	{
-		memOut, err := runCmdQuick("redis-cli", "info", "memory")
-		if err == nil && len(memOut) > 0 {
-			for _, line := range strings.Split(string(memOut), "\n") {
-				line = strings.TrimSpace(line)
-				if strings.HasPrefix(line, "used_memory:") {
-					val := strings.TrimPrefix(line, "used_memory:")
-					bytes, _ := strconv.ParseUint(strings.TrimSpace(val), 10, 64)
-					m.RedisMemMB = bytes / (1024 * 1024)
-				} else if strings.HasPrefix(line, "maxmemory:") {
-					val := strings.TrimPrefix(line, "maxmemory:")
-					bytes, _ := strconv.ParseUint(strings.TrimSpace(val), 10, 64)
-					m.RedisMaxMB = bytes / (1024 * 1024)
-				}
-			}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if used, max, err := redisinfo.MemoryUsage(ctx); err == nil {
+			m.RedisMemMB = used / (1024 * 1024)
+			m.RedisMaxMB = max / (1024 * 1024)
 		}
-		ksOut, err := runCmdQuick("redis-cli", "info", "keyspace")
-		if err == nil && len(ksOut) > 0 {
-			var totalKeys int64
-			for _, line := range strings.Split(string(ksOut), "\n") {
-				line = strings.TrimSpace(line)
-				// Lines like: db0:keys=1234,expires=5,avg_ttl=0
-				if !strings.HasPrefix(line, "db") {
-					continue
-				}
-				parts := strings.SplitN(line, ":", 2)
-				if len(parts) < 2 {
-					continue
-				}
-				for _, kv := range strings.Split(parts[1], ",") {
-					if strings.HasPrefix(kv, "keys=") {
-						n, _ := strconv.ParseInt(strings.TrimPrefix(kv, "keys="), 10, 64)
-						totalKeys += n
-					}
-				}
-			}
-			m.RedisKeys = totalKeys
+		if total, err := redisinfo.Keyspace(ctx); err == nil {
+			m.RedisKeys = total
 		}
 	}
 

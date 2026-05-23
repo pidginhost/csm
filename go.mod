@@ -10,6 +10,7 @@ require (
 	github.com/google/nftables v0.3.0
 	github.com/klauspost/compress v1.18.6
 	github.com/oschwald/maxminddb-golang/v2 v2.2.0
+	github.com/redis/go-redis/v9 v9.19.0
 	go.etcd.io/bbolt v1.4.3
 	golang.org/x/net v0.55.0
 	golang.org/x/sys v0.45.0
@@ -17,10 +18,12 @@ require (
 )
 
 require (
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/mdlayher/netlink v1.11.2 // indirect
 	github.com/mdlayher/socket v0.6.0 // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect
+	go.uber.org/atomic v1.11.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
