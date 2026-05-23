@@ -1,8 +1,13 @@
 package mysqlclient
 
 import (
+	"context"
+	"database/sql"
+	"database/sql/driver"
+	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -96,6 +101,60 @@ func TestLoadRootCredsHonorsSocket(t *testing.T) {
 	}
 }
 
+func TestLoadRootCredsFallsBackToRootWhenConfigMissing(t *testing.T) {
+	resetRootForTest(t)
+	SetRootCnfPath(filepath.Join(t.TempDir(), "missing.cnf"))
+
+	creds, err := loadRootCreds()
+	if err != nil {
+		t.Fatalf("loadRootCreds: %v", err)
+	}
+	if creds.User != "root" {
+		t.Fatalf("user = %q, want root", creds.User)
+	}
+	if creds.Password != "" {
+		t.Fatalf("password = %q, want empty", creds.Password)
+	}
+}
+
+func TestLoadRootCredsKeepsRootDefaultWhenUserOmitted(t *testing.T) {
+	resetRootForTest(t)
+	path := filepath.Join(t.TempDir(), ".my.cnf")
+	writeRootCnf(t, path, "[client]\npassword='secret'\nsocket=/tmp/custom-mysql.sock\n")
+	SetRootCnfPath(path)
+
+	creds, err := loadRootCreds()
+	if err != nil {
+		t.Fatalf("loadRootCreds: %v", err)
+	}
+	if creds.User != "root" {
+		t.Fatalf("user = %q, want root", creds.User)
+	}
+	if creds.Password != "secret" {
+		t.Fatalf("password = %q, want secret", creds.Password)
+	}
+}
+
+func TestRunQueryEscapesLikeMySQLBatchMode(t *testing.T) {
+	db := openBatchDB(t, [][]driver.Value{{
+		"line\nbreak\tback\\slash\rcarriage\x00nul",
+		nil,
+	}})
+	defer func() { _ = db.Close() }()
+
+	rows, err := runQuery(context.Background(), db, "SELECT value")
+	if err != nil {
+		t.Fatalf("runQuery: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %v, want one row", rows)
+	}
+	want := "line\\nbreak\\tback\\\\slash\\rcarriage\\0nul\tNULL"
+	if rows[0] != want {
+		t.Fatalf("row = %q, want %q", rows[0], want)
+	}
+}
+
 func TestRootSingletonDoesNotDeadlockLoadingCreds(t *testing.T) {
 	resetRootForTest(t)
 	path := filepath.Join(t.TempDir(), ".my.cnf")
@@ -123,4 +182,91 @@ func writeRootCnf(t *testing.T, path, body string) {
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+var (
+	batchDriverOnce sync.Once
+	batchDriverMu   sync.Mutex
+	batchDriverRows [][]driver.Value
+)
+
+func openBatchDB(t *testing.T, rows [][]driver.Value) *sql.DB {
+	t.Helper()
+	batchDriverOnce.Do(func() {
+		sql.Register("csm_mysqlclient_batch_test", batchDriver{})
+	})
+	batchDriverMu.Lock()
+	batchDriverRows = cloneDriverRows(rows)
+	batchDriverMu.Unlock()
+
+	db, err := sql.Open("csm_mysqlclient_batch_test", "")
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	return db
+}
+
+func cloneDriverRows(rows [][]driver.Value) [][]driver.Value {
+	out := make([][]driver.Value, len(rows))
+	for i := range rows {
+		out[i] = append([]driver.Value(nil), rows[i]...)
+	}
+	return out
+}
+
+type batchDriver struct{}
+
+func (batchDriver) Open(string) (driver.Conn, error) {
+	return batchConn{}, nil
+}
+
+type batchConn struct{}
+
+func (batchConn) Prepare(string) (driver.Stmt, error) {
+	return nil, driver.ErrSkip
+}
+
+func (batchConn) Close() error {
+	return nil
+}
+
+func (batchConn) Begin() (driver.Tx, error) {
+	return nil, driver.ErrSkip
+}
+
+func (batchConn) QueryContext(context.Context, string, []driver.NamedValue) (driver.Rows, error) {
+	batchDriverMu.Lock()
+	rows := cloneDriverRows(batchDriverRows)
+	batchDriverMu.Unlock()
+	cols := make([]string, 0)
+	if len(rows) > 0 {
+		cols = make([]string, len(rows[0]))
+		for i := range cols {
+			cols[i] = "c"
+		}
+	}
+	return &batchRows{cols: cols, rows: rows}, nil
+}
+
+type batchRows struct {
+	cols []string
+	rows [][]driver.Value
+	idx  int
+}
+
+func (r *batchRows) Columns() []string {
+	return r.cols
+}
+
+func (r *batchRows) Close() error {
+	return nil
+}
+
+func (r *batchRows) Next(dest []driver.Value) error {
+	if r.idx >= len(r.rows) {
+		return io.EOF
+	}
+	copy(dest, r.rows[r.idx])
+	r.idx++
+	return nil
 }

@@ -8,8 +8,10 @@
 // Two cred modes are supported:
 //
 //   - Root: implicit, mirrors the historical `mysql` CLI behaviour
-//     that reads /root/.my.cnf [client] section. RootDB parses that
-//     file and returns a *sql.DB pointed at unix-socket auth.
+//     that reads /root/.my.cnf [client] section when present. RootDB
+//     parses that file and returns a *sql.DB pointed at unix-socket
+//     auth, falling back to the mysql CLI's root socket-auth default
+//     when absent.
 //
 //   - Per-account: the caller passes explicit user / password / host
 //     / dbname / port / socket via DSN. PerAccountQuery opens,
@@ -17,15 +19,14 @@
 //
 // Output shape mirrors the previous `mysql -N -B -e` shell-out: rows
 // are returned as []string where each entry is the tab-joined column
-// values of one result row, with leading/trailing whitespace already
-// trimmed. Existing scanner code paths consume this format unchanged.
+// values of one result row, with MySQL batch-mode escaping applied.
+// Existing scanner code paths consume this format unchanged.
 package mysqlclient
 
 import (
 	"bufio"
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -215,7 +216,7 @@ func runQuery(ctx context.Context, db *sql.DB, query string, args ...any) ([]str
 		parts := make([]string, len(cols))
 		for i, v := range raw {
 			if v.Valid {
-				parts[i] = v.String
+				parts[i] = mysqlBatchEscape(v.String)
 			} else {
 				// `mysql -N -B` prints NULL for SQL NULL; preserve
 				// that so legacy parsers that key off the literal
@@ -229,6 +230,27 @@ func runQuery(ctx context.Context, db *sql.DB, query string, args ...any) ([]str
 		return nil, fmt.Errorf("mysqlclient: iterate: %w", err)
 	}
 	return out, nil
+}
+
+func mysqlBatchEscape(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case 0:
+			b.WriteString(`\0`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		case '\\':
+			b.WriteString(`\\`)
+		default:
+			b.WriteByte(s[i])
+		}
+	}
+	return b.String()
 }
 
 // --- Root creds via /root/.my.cnf ---------------------------------------
@@ -368,8 +390,9 @@ func getRootExecMock() RootExecFunc {
 }
 
 // RootDB returns the pooled root MySQL handle backed by /root/.my.cnf
-// (or the path set via SetRootCnfPath). sql.Open does not contact the
-// server until the first query.
+// when present (or the path set via SetRootCnfPath), falling back to
+// the mysql CLI's root socket-auth default. sql.Open does not contact
+// the server until the first query.
 func RootDB() (*sql.DB, error) {
 	return rootSingleton()
 }
@@ -421,27 +444,32 @@ func rootSingleton() (*sql.DB, error) {
 }
 
 // loadRootCreds parses /root/.my.cnf's [client] section (or the
-// path set via SetRootCnfPath). The format is the same INI subset
-// mysql_config_editor / the official client honour: section header
-// in `[client]`, key=value pairs (values may be unquoted, single
-// quoted, or double quoted; matching quote is stripped).
+// path set via SetRootCnfPath) when the file exists. The format is the
+// same INI subset mysql_config_editor / the official client honour:
+// section header in `[client]`, key=value pairs (values may be
+// unquoted, single quoted, or double quoted; matching quote is
+// stripped).
 //
-// Returns an error if the file is missing or the [client] section
-// has no user. Empty password is allowed (socket-auth setups).
+// Missing files and omitted user keys fall back to user=root with an
+// empty password so Unix socket-auth setups keep matching `mysql -e`.
 func loadRootCreds() (Creds, error) {
 	rootMu.Lock()
 	path := rootPath
 	rootMu.Unlock()
 
+	creds := Creds{User: "root"}
+
 	// #nosec G304 -- path is operator-configured at init time, not
 	// attacker-controlled.
 	f, err := os.Open(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return creds, nil
+		}
 		return Creds{}, fmt.Errorf("mysqlclient: open %s: %w", path, err)
 	}
 	defer f.Close()
 
-	creds := Creds{}
 	inClient := false
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 4096), 1<<20)
@@ -465,7 +493,9 @@ func loadRootCreds() (Creds, error) {
 		val = unquote(strings.TrimSpace(val))
 		switch strings.ToLower(key) {
 		case "user":
-			creds.User = val
+			if val != "" {
+				creds.User = val
+			}
 		case "password", "pass":
 			creds.Password = val
 		case "host":
@@ -480,9 +510,6 @@ func loadRootCreds() (Creds, error) {
 	}
 	if err := scanner.Err(); err != nil {
 		return Creds{}, fmt.Errorf("mysqlclient: read %s: %w", path, err)
-	}
-	if creds.User == "" {
-		return Creds{}, errors.New("mysqlclient: [client] section missing 'user' key")
 	}
 	return creds, nil
 }
