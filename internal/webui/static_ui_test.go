@@ -242,6 +242,40 @@ func TestModsecRuleFiltersTrackToggleState(t *testing.T) {
 	}
 }
 
+func TestAuditExportDropdownCoversCSVAndJSON(t *testing.T) {
+	tmpl, err := os.ReadFile("../../ui/templates/audit.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	templateText := string(tmpl)
+	for _, want := range []string{
+		`data-bs-toggle="dropdown"`,
+		`data-export="csv"`,
+		`data-export="json"`,
+	} {
+		if !strings.Contains(templateText, want) {
+			t.Errorf("audit.html missing export dropdown hook %q", want)
+		}
+	}
+
+	js, err := os.ReadFile("../../ui/static/js/audit.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsText := string(js)
+	for _, want := range []string{
+		`function exportAuditRows()`,
+		`document.querySelectorAll('[data-export]')`,
+		`format === 'csv'`,
+		`format === 'json'`,
+		`admin_ip`,
+	} {
+		if !strings.Contains(jsText, want) {
+			t.Errorf("audit.js missing export handler fragment %q", want)
+		}
+	}
+}
+
 // TestSidebarNavCoversEveryVisiblePage asserts the sidebar exposes every
 // page that is part of the operator workflow. /history and /account are
 // reached from deep links and are intentionally not in the sidebar; if
