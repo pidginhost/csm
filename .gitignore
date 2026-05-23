@@ -6,6 +6,7 @@ state/state.json
 .superpowers/
 /csm
 .cache/
+graphify-out/
 
 # Internal planning / local-only files
 CLAUDE.md
