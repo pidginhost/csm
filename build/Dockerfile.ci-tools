@@ -9,14 +9,14 @@
 # Also bundles the apt packages that integration:'s before_script
 # installs on every run (openssh-client, jq) for the same reason.
 #
-# Tag: registry.pidginhost.cloud/csm/ci-tools:go-1.26.3-r1
+# Tag: registry.pidginhost.cloud/csm/ci-tools:go-1.26.3-r2
 # Build: docker build -f build/Dockerfile.ci-tools \
-#          -t registry.pidginhost.cloud/csm/ci-tools:go-1.26.3-r1 .
+#          -t registry.pidginhost.cloud/csm/ci-tools:go-1.26.3-r2 .
 # Push: triggered manually by build-ci-tools-image job in .gitlab-ci.yml
 #
-# Bump the tag (-r1 -> -r2) whenever a pinned tool version changes
-# or a new tool needs to be added. The .gitlab-ci.yml CSM_CI_TOOLS_TAG
-# variable points at the tag that pipelines should pull.
+# Bump the tag suffix whenever a pinned tool version changes or a new
+# tool needs to be added. The .gitlab-ci.yml CSM_CI_TOOLS_TAG variable
+# points at the tag that pipelines should pull.
 
 FROM golang:1.26.3-bookworm
 
@@ -27,6 +27,7 @@ FROM golang:1.26.3-bookworm
 ARG GOVULNCHECK_VERSION=v1.2.0
 ARG GOCOVER_COBERTURA_VERSION=v1.2.0
 ARG GOCOVMERGE_VERSION=v0.0.0-20160331181800-b5bfa59ec0ad
+ARG GOSEC_VERSION=v2.25.0
 ARG PHCTL_VERSION=v0.6.2
 
 # openssh-client + jq + ca-certificates are the only system packages
@@ -49,6 +50,7 @@ RUN apt-get update \
 RUN go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION} \
  && go install github.com/boumenot/gocover-cobertura@${GOCOVER_COBERTURA_VERSION} \
  && go install github.com/wadey/gocovmerge@${GOCOVMERGE_VERSION} \
+ && go install github.com/securego/gosec/v2/cmd/gosec@${GOSEC_VERSION} \
  && GONOSUMCHECK='*' GOFLAGS=-mod=mod \
         go install github.com/pidginhost/phctl@${PHCTL_VERSION} \
  && rm -rf /root/.cache/go-build /go/pkg/mod
