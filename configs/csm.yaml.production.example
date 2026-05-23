@@ -82,6 +82,13 @@ signatures:
     update_interval: "168h"
     download_url: ""
 
+reputation:
+  # Async PTR + forward-A verification for claimed search-engine bots
+  # (Googlebot, Bingbot, Applebot). Unverified claimed bots count
+  # toward http_ua_spoof. Set false on air-gapped hosts to disable
+  # outbound DNS.
+  bot_verify_enabled: true
+
 thresholds:
   mail_queue_warn: 500
   mail_queue_crit: 2000
@@ -99,6 +106,22 @@ thresholds:
   mail_log_tail_lines: 500
   syslog_messages_tail_lines: 200
   account_scan_max_files: 10000
+  # HTTP request flood: per-source-IP request count inside the window
+  # that emits http_request_flood. 0 disables the detector. Sample
+  # local baseline before raising; busy WP shops can see 200-600 req
+  # per IP per 5m at peak, and carrier NAT / CDN exits skew higher.
+  http_flood_threshold: 0
+  http_flood_window_min: 5
+  # User-Agent spoof: per-IP per-window count for non-browser UA kinds
+  # (scripting, headless, empty) that emits http_ua_spoof. Default 30.
+  # Claimed search-engine bots that fail rDNS confirmation fire
+  # regardless of this threshold.
+  http_ua_spoof_threshold: 30
+  # Opt-in UA classes. These match many legitimate monitoring agents;
+  # leave disabled unless the noise floor is known.
+  http_ua_scripting_enabled: false
+  http_ua_headless_enabled: false
+  http_ua_empty_enabled: false
   # Mail brute / spray detector tuning. Defaults are
   # cPanel-mail-host-tested; lower the bruteforce_threshold for
   # smaller hosts, raise it for hosts behind shared NAT.
