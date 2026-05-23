@@ -159,32 +159,43 @@
         if (totalPages <= 1) { pager.textContent = ''; return; }
 
         pager.textContent = '';
+        var start = page * perPage + 1;
+        var end = Math.min((page + 1) * perPage, total);
         var info = document.createElement('div');
         info.className = 'text-muted small';
-        info.title = 'Showing ' + perPage + ' entries per page';
-        info.textContent = 'Page ' + (page + 1) + ' of ' + totalPages;
+        info.textContent = 'Showing ' + start + '–' + end + ' of ' + total;
         pager.appendChild(info);
 
         var btnGroup = document.createElement('div');
-        btnGroup.className = 'btn-group btn-group-sm';
+        btnGroup.className = 'd-flex gap-1';
 
-        var prev = document.createElement('button');
-        prev.className = 'btn btn-ghost-secondary';
-        prev.id = 'pager-prev';
-        prev.title = 'Previous page';
-        prev.textContent = 'Prev';
-        if (page === 0) prev.disabled = true;
-        prev.addEventListener('click', function() { if (page > 0) { page--; loadHistory(); } });
-        btnGroup.appendChild(prev);
+        function pageBtn(label, target, opts) {
+            var b = document.createElement('button');
+            var cls = 'btn btn-sm ' + ((opts && opts.active) ? 'btn-primary' : 'btn-ghost-secondary');
+            b.className = cls;
+            b.textContent = label;
+            if (opts && opts.disabled) b.disabled = true;
+            if (!opts || !opts.disabled) {
+                b.addEventListener('click', function() {
+                    if (target < 0 || target >= totalPages) return;
+                    page = target;
+                    loadHistory();
+                });
+            }
+            return b;
+        }
 
-        var next = document.createElement('button');
-        next.className = 'btn btn-ghost-secondary';
-        next.id = 'pager-next';
-        next.title = 'Next page';
-        next.textContent = 'Next';
-        if (page >= totalPages - 1) next.disabled = true;
-        next.addEventListener('click', function() { if (page < totalPages - 1) { page++; loadHistory(); } });
-        btnGroup.appendChild(next);
+        if (page > 0) btnGroup.appendChild(pageBtn('Previous', page - 1));
+
+        // Sliding window of up to 7 page numbers around the current page
+        var startPage = Math.max(0, page - 3);
+        var endPage = Math.min(totalPages - 1, startPage + 6);
+        startPage = Math.max(0, endPage - 6);
+        for (var p = startPage; p <= endPage; p++) {
+            btnGroup.appendChild(pageBtn(String(p + 1), p, { active: p === page, disabled: p === page }));
+        }
+
+        if (page < totalPages - 1) btnGroup.appendChild(pageBtn('Next', page + 1));
 
         pager.appendChild(btnGroup);
     }

@@ -6,6 +6,7 @@
 var _rules = [];
 var _originalEnabled = {}; // ruleID → original enabled state
 var _pendingChanges = {};  // ruleID → new enabled state (only if changed)
+var _rulesTable = null;    // CSM.Table instance
 
 function loadRules() {
     fetch(CSM.apiUrl('/api/v1/modsec/rules'), {credentials: 'same-origin'})
@@ -58,8 +59,14 @@ function renderTable() {
             : '<span class="badge bg-warning">' + r.action + '</span>';
 
         var lastHit = r.last_hit ? CSM.timeAgo(r.last_hit) : '\u2014';
+        var lastHitTS = r.last_hit ? CSM.attr(r.last_hit) : '';
+        var statusAttr = r.enabled ? 'enabled' : 'disabled';
+        var escalateAttr = r.escalate ? 'yes' : 'no';
 
-        html += '<tr id="rule-row-' + r.id + '" data-id="' + r.id + '">';
+        html += '<tr id="rule-row-' + r.id + '" data-id="' + r.id +
+            '" data-status="' + statusAttr +
+            '" data-action="' + CSM.attr(r.action || '') +
+            '" data-escalate="' + escalateAttr + '">';
         html += '<td><label class="form-check form-switch mb-0"><input type="checkbox" class="form-check-input enable-toggle" data-id="' + r.id + '"' + (r.enabled ? ' checked' : '') + '></label></td>';
         html += '<td><code>' + r.id + '</code></td>';
         html += '<td>' + CSM.esc(r.description) + '</td>';
@@ -67,11 +74,30 @@ function renderTable() {
         html += '<td>' + r.phase + '</td>';
         html += '<td>' + (r.hits_24h || 0) + '</td>';
         html += '<td><label class="form-check form-switch mb-0"><input type="checkbox" class="form-check-input escalate-toggle" data-id="' + r.id + '"' + (r.escalate ? ' checked' : '') + '></label></td>';
-        html += '<td class="text-muted small">' + lastHit + '</td>';
+        html += '<td class="text-muted small" data-timestamp="' + lastHitTS + '">' + lastHit + '</td>';
         html += '</tr>';
     }
 
     tbody.innerHTML = html;
+
+    _rulesTable = new CSM.Table({
+        tableId: 'rules-table',
+        perPage: 50,
+        searchId: 'rules-search',
+        sortable: true,
+        countTargetId: 'rules-count',
+        stateKey: 'csm-modsec-rules-table',
+        filters: [
+            { id: 'rules-status-filter', attr: 'data-status' },
+            { id: 'rules-action-filter', attr: 'data-action' },
+            { id: 'rules-escalate-filter', attr: 'data-escalate' }
+        ],
+        emptyState: {
+            icon: 'list-search',
+            title: 'No rules match',
+            reason: 'Try clearing the search or filter selections.'
+        }
+    });
 
     // Bind enable/disable toggles (staged)
     document.querySelectorAll('.enable-toggle').forEach(function(toggle) {

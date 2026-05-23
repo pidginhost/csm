@@ -30,14 +30,28 @@ function loadFiles() {
             var typeBadge = f.type === 'yara'
                 ? '<span class="badge bg-purple-lt">YARA</span>'
                 : '<span class="badge bg-blue-lt">YAML</span>';
-            html += '<tr>';
+            html += '<tr data-type="' + CSM.attr(f.type || 'yaml') + '">';
             html += '<td><code class="font-monospace">' + CSM.esc(f.name) + '</code></td>';
             html += '<td>' + typeBadge + '</td>';
             html += '<td class="text-muted">' + fmtSize(f.size) + '</td>';
             html += '</tr>';
         }
         tbody.innerHTML = html;
-        new CSM.Table({ tableId: 'rules-table', sortable: true });
+        new CSM.Table({
+            tableId: 'rules-table',
+            sortable: true,
+            searchId: 'rule-files-search',
+            countTargetId: 'rule-files-count',
+            stateKey: 'csm-rule-files-table',
+            filters: [
+                { id: 'rule-files-type-filter', attr: 'data-type' }
+            ],
+            emptyState: {
+                icon: 'list-search',
+                title: 'No files match',
+                reason: 'Try clearing the search or type filter.'
+            }
+        });
     }).catch(function() { CSM.loadError(document.getElementById('rules-tbody').parentElement.parentElement.parentElement, loadFiles); });
 }
 

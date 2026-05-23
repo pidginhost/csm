@@ -646,7 +646,13 @@
             sortable: true,
             detailRows: true,
             mobileRowCard: true,
-            stateKey: 'csm-email-table'
+            stateKey: 'csm-email-table',
+            countTargetId: 'email-total-label',
+            emptyState: {
+                icon: 'mail-search',
+                title: 'No findings match',
+                reason: 'Try clearing the search or filter selections.'
+            }
         });
         if (CSM.initTimeAgo) CSM.initTimeAgo();
     }

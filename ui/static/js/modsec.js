@@ -346,6 +346,11 @@
             stickyHeader: true,
             stateKey: 'csm-modsec-blocked',
             countTargetId: 'modsec-blocked-count',
+            emptyState: {
+                icon: 'shield-check',
+                title: 'No blocked IPs match',
+                reason: 'Try clearing the search or status filter.'
+            },
             onRowClick: function(rowEl) {
                 var ip = rowEl.getAttribute('data-csm-modsec-ip');
                 var rule = rowEl.getAttribute('data-csm-modsec-rule') || '';
@@ -409,6 +414,12 @@
             sortable: true,
             stickyHeader: true,
             countTargetId: 'modsec-events-count',
+            mobileRowCard: true,
+            emptyState: {
+                icon: 'list-search',
+                title: 'No events match',
+                reason: 'Try clearing the search to see all recent events.'
+            }
         });
         if (CSM.applyTruncateMiddle) CSM.applyTruncateMiddle(el);
     }

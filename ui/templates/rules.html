@@ -46,6 +46,16 @@
     <!-- Rule Files Table -->
     <div class="card">
         <div class="card-header"><h3 class="card-title"><i class="ti ti-file-code"></i>&nbsp;Rule Files</h3></div>
+        <div class="csm-toolbar">
+            <input type="text" id="rule-files-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search by file name..." aria-label="Search rule files">
+            <select id="rule-files-type-filter" class="form-select form-select-sm csm-auto-width" aria-label="Type">
+                <option value="all">All types</option>
+                <option value="yaml">YAML</option>
+                <option value="yara">YARA</option>
+            </select>
+            <span class="csm-toolbar__spacer"></span>
+            <span class="csm-toolbar__count" id="rule-files-count"></span>
+        </div>
         <div class="table-responsive">
             <table class="table table-vcenter card-table table-sm" id="rules-table">
                 <thead>
