@@ -277,8 +277,7 @@
 
     // If tab=history is in URL, activate the History tab on load
     if (params.get('tab') === 'history') {
-        if (historyTabLink) {
-            // Use Bootstrap Tab API to switch
+        if (historyTabLink && typeof bootstrap !== 'undefined' && bootstrap.Tab) {
             var bsTab = new bootstrap.Tab(historyTabLink);
             bsTab.show();
         }

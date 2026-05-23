@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Web UI refresh buttons now use a single ghost-secondary style across pages instead of the mix of info, outline, and ghost variants that drifted in earlier releases.
+- Web UI sidebar uses the full page title "Threat Intelligence" instead of the abbreviation.
+- History tab activation no longer assumes Bootstrap is loaded; the deep-link path guards the call.
+- Firewall audit filter row no longer relies on an invisible spacer label for alignment.
 - Redis performance headroom alerts now calculate percentages from the raw Redis counters before display clamping, avoiding false high-usage alerts on very large memory values.
 - In-process MySQL database scans now honor configured host, port, and socket targets, and root credential loading no longer stalls.
 - Redis performance telemetry keeps using the inherited `REDISCLI_AUTH` password when local Redis requires authentication.
