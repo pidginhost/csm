@@ -715,11 +715,18 @@ func TestFindingsPageUsesPhase4Primitives(t *testing.T) {
 	for _, want := range []string{
 		`params.get('tab') === 'history'`,
 		`params.get('severity')`,
-		`new bootstrap.Tab(historyTabLink)`,
+		`window.bootstrap && window.bootstrap.Tab`,
+		`window.bootstrap.Tab.getOrCreateInstance(historyTabLink)`,
+		`activateHistoryTabFallback`,
+		`historyPane.classList.add('active', 'show')`,
+		`initHistory();`,
 	} {
 		if !strings.Contains(historyText, want) {
 			t.Errorf("history.js missing history URL restore hook %q", want)
 		}
+	}
+	if strings.Contains(historyText, `typeof bootstrap`) || strings.Contains(historyText, `new bootstrap.Tab`) {
+		t.Error("history.js should use window.bootstrap and keep the no-Bootstrap fallback path")
 	}
 }
 

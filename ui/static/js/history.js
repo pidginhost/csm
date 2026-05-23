@@ -275,11 +275,28 @@
         historyTabLink.addEventListener('shown.bs.tab', initHistory);
     }
 
+    function activateHistoryTabFallback() {
+        var activeTabLink = document.querySelector('[href="#tab-active"]');
+        var activePane = document.getElementById('tab-active');
+        var historyPane = document.getElementById('tab-history');
+
+        // Bootstrap normally owns these classes; keep deep links useful if the bundle is absent.
+        if (activeTabLink) activeTabLink.classList.remove('active');
+        historyTabLink.classList.add('active');
+        if (activePane) activePane.classList.remove('active', 'show');
+        if (historyPane) historyPane.classList.add('active', 'show');
+        initHistory();
+    }
+
     // If tab=history is in URL, activate the History tab on load
     if (params.get('tab') === 'history') {
-        if (historyTabLink && typeof bootstrap !== 'undefined' && bootstrap.Tab) {
-            var bsTab = new bootstrap.Tab(historyTabLink);
+        if (historyTabLink && window.bootstrap && window.bootstrap.Tab) {
+            var bsTab = window.bootstrap.Tab.getOrCreateInstance
+                ? window.bootstrap.Tab.getOrCreateInstance(historyTabLink)
+                : new window.bootstrap.Tab(historyTabLink);
             bsTab.show();
+        } else if (historyTabLink) {
+            activateHistoryTabFallback();
         }
     }
 })();
