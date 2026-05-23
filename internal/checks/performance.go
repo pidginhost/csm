@@ -14,6 +14,8 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/mysqlclient"
+	"github.com/pidginhost/csm/internal/redisinfo"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -462,8 +464,9 @@ func CheckMySQLConfig(ctx context.Context, cfg *config.Config, _ *state.Store) [
 	var findings []alert.Finding
 
 	// --- Global variables ---
-	varOut, err := runCmd("mysql", "-N", "-B", "-e",
+	varRows, err := mysqlclient.RootQuery(ctx,
 		"SHOW GLOBAL VARIABLES WHERE Variable_name IN ('join_buffer_size','wait_timeout','interactive_timeout','max_user_connections','slow_query_log')")
+	varOut := []byte(strings.Join(varRows, "\n"))
 	if err == nil && len(varOut) > 0 {
 		joinBufThresholdBytes := int64(cfg.Performance.MySQLJoinBufferMaxMB) * 1024 * 1024
 		waitTimeoutMax := cfg.Performance.MySQLWaitTimeoutMax
@@ -535,8 +538,9 @@ func CheckMySQLConfig(ctx context.Context, cfg *config.Config, _ *state.Store) [
 	}
 
 	// --- InnoDB buffer pool hit ratio + temporary disk tables ---
-	statusOut, err := runCmd("mysql", "-N", "-B", "-e",
+	statusRows, err := mysqlclient.RootQuery(ctx,
 		"SHOW GLOBAL STATUS WHERE Variable_name IN ('Innodb_buffer_pool_read_requests','Innodb_buffer_pool_reads','Created_tmp_disk_tables','Created_tmp_tables')")
+	statusOut := []byte(strings.Join(statusRows, "\n"))
 	if err == nil && len(statusOut) > 0 {
 		var readRequests, reads, tmpDiskTables, tmpTables int64
 		for _, line := range strings.Split(string(statusOut), "\n") {
@@ -586,10 +590,10 @@ func CheckMySQLConfig(ctx context.Context, cfg *config.Config, _ *state.Store) [
 	}
 
 	// --- Per-user connection counts ---
-	plOut, err := runCmd("mysql", "-N", "-B", "-e", "SHOW PROCESSLIST")
-	if err == nil && len(plOut) > 0 {
+	plRows, err := mysqlclient.RootQuery(ctx, "SHOW PROCESSLIST")
+	if err == nil && len(plRows) > 0 {
 		userCounts := make(map[string]int)
-		for _, line := range strings.Split(string(plOut), "\n") {
+		for _, line := range plRows {
 			fields := strings.Fields(line)
 			// SHOW PROCESSLIST columns: Id, User, Host, db, Command, Time, State, Info
 			if len(fields) < 2 {
@@ -626,139 +630,71 @@ func CheckRedisConfig(ctx context.Context, cfg *config.Config, _ *state.Store) [
 		return nil
 	}
 
-	// Locate redis-cli
-	redisCLI := ""
-	for _, candidate := range []string{"/usr/bin/redis-cli", "/usr/local/bin/redis-cli"} {
-		if _, err := osFS.Stat(candidate); err == nil {
-			redisCLI = candidate
-			break
-		}
-	}
-	if redisCLI == "" {
+	// Skip on hosts without a local redis: peek at the redisinfo
+	// client by trying a fast INFO server. Any error short-circuits
+	// the whole check (matches the historical behaviour where a
+	// missing redis-cli binary made every redis check a no-op).
+	if _, _, err := redisinfo.MemoryUsage(ctx); err != nil {
 		return nil
 	}
 
 	var findings []alert.Finding
 
 	// --- maxmemory ---
-	maxMemOut, err := runCmd(redisCLI, "config", "get", "maxmemory")
-	if err == nil && len(maxMemOut) > 0 {
-		lines := strings.Fields(string(maxMemOut))
-		// redis config get returns two tokens: key value
-		if len(lines) >= 2 && lines[1] == "0" {
-			findings = append(findings, alert.Finding{
-				Severity:  alert.Critical,
-				Check:     "perf_redis_config",
-				Message:   "Redis maxmemory is not set",
-				Details:   "maxmemory=0 means Redis will use all available system memory without bound",
-				Timestamp: time.Now(),
-			})
-		}
+	if maxMem, err := redisinfo.ConfigGet(ctx, "maxmemory"); err == nil && maxMem == "0" {
+		findings = append(findings, alert.Finding{
+			Severity:  alert.Critical,
+			Check:     "perf_redis_config",
+			Message:   "Redis maxmemory is not set",
+			Details:   "maxmemory=0 means Redis will use all available system memory without bound",
+			Timestamp: time.Now(),
+		})
 	}
 
 	// --- maxmemory-policy ---
-	policyOut, err := runCmd(redisCLI, "config", "get", "maxmemory-policy")
-	if err == nil && len(policyOut) > 0 {
-		lines := strings.Fields(string(policyOut))
-		if len(lines) >= 2 && strings.ToLower(lines[1]) == "noeviction" {
-			findings = append(findings, alert.Finding{
-				Severity:  alert.High,
-				Check:     "perf_redis_config",
-				Message:   "Redis maxmemory-policy is noeviction",
-				Details:   "noeviction causes Redis to return errors when memory is full instead of evicting keys",
-				Timestamp: time.Now(),
-			})
-		}
+	if policy, err := redisinfo.ConfigGet(ctx, "maxmemory-policy"); err == nil && strings.ToLower(policy) == "noeviction" {
+		findings = append(findings, alert.Finding{
+			Severity:  alert.High,
+			Check:     "perf_redis_config",
+			Message:   "Redis maxmemory-policy is noeviction",
+			Details:   "noeviction causes Redis to return errors when memory is full instead of evicting keys",
+			Timestamp: time.Now(),
+		})
 	}
 
 	// --- Non-expiring keys ratio via keyspace ---
-	keyspaceOut, err := runCmd(redisCLI, "info", "keyspace")
-	if err == nil && len(keyspaceOut) > 0 {
-		var totalKeys, totalExpires int64
-		for _, line := range strings.Split(string(keyspaceOut), "\n") {
-			line = strings.TrimSpace(line)
-			if !strings.HasPrefix(line, "db") {
-				continue
-			}
-			// format: db0:keys=123,expires=45,avg_ttl=...
-			parts := strings.SplitN(line, ":", 2)
-			if len(parts) < 2 {
-				continue
-			}
-			for _, kv := range strings.Split(parts[1], ",") {
-				kv = strings.TrimSpace(kv)
-				kvParts := strings.SplitN(kv, "=", 2)
-				if len(kvParts) != 2 {
-					continue
-				}
-				v, convErr := strconv.ParseInt(kvParts[1], 10, 64)
-				if convErr != nil {
-					continue
-				}
-				switch kvParts[0] {
-				case "keys":
-					totalKeys += v
-				case "expires":
-					totalExpires += v
-				}
-			}
-		}
-		if totalKeys > 0 {
-			nonExpiring := totalKeys - totalExpires
-			ratio := float64(nonExpiring) / float64(totalKeys) * 100
-			if ratio > 95.0 {
-				findings = append(findings, alert.Finding{
-					Severity:  alert.Warning,
-					Check:     "perf_redis_config",
-					Message:   "Redis has excessive non-expiring keys",
-					Details:   fmt.Sprintf("Non-expiring: %d / %d total keys (%.1f%%)", nonExpiring, totalKeys, ratio),
-					Timestamp: time.Now(),
-				})
-			}
+	if stats, err := redisinfo.KeyspaceStats(ctx); err == nil && stats.TotalKeys > 0 {
+		nonExpiring := stats.TotalKeys - stats.TotalExpires
+		ratio := float64(nonExpiring) / float64(stats.TotalKeys) * 100
+		if ratio > 95.0 {
+			findings = append(findings, alert.Finding{
+				Severity:  alert.Warning,
+				Check:     "perf_redis_config",
+				Message:   "Redis has excessive non-expiring keys",
+				Details:   fmt.Sprintf("Non-expiring: %d / %d total keys (%.1f%%)", nonExpiring, stats.TotalKeys, ratio),
+				Timestamp: time.Now(),
+			})
 		}
 	}
 
 	// --- bgsave interval vs dataset size ---
-	saveOut, _ := runCmd(redisCLI, "config", "get", "save")
-	infoOut, _ := runCmd(redisCLI, "info", "memory")
-
-	var usedMemoryBytes int64
-	if len(infoOut) > 0 {
-		for _, line := range strings.Split(string(infoOut), "\n") {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "used_memory:") {
-				parts := strings.SplitN(line, ":", 2)
-				if len(parts) == 2 {
-					v, convErr := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
-					if convErr == nil {
-						usedMemoryBytes = v
-					}
-				}
-				break
-			}
-		}
-	}
+	saveSpec, _ := redisinfo.ConfigGet(ctx, "save")
+	usedBytes, _, _ := redisinfo.MemoryUsage(ctx)
+	usedMemoryBytes := int64(usedBytes)
 
 	const gbBytes = 1024 * 1024 * 1024
 	largeDatasetBytes := int64(cfg.Performance.RedisLargeDatasetGB) * gbBytes
 	bgsaveMinInterval := cfg.Performance.RedisBgsaveMinInterval
 
-	if usedMemoryBytes > largeDatasetBytes && len(saveOut) > 0 {
-		// save config output: "save\n<seconds> <changes>\n<seconds> <changes>\n..."
-		lines := strings.Split(string(saveOut), "\n")
+	if usedMemoryBytes > largeDatasetBytes && saveSpec != "" {
+		// `CONFIG GET save` returns the spec as a single space-separated
+		// string of alternating "<seconds> <changes>" pairs, e.g.
+		// "900 1 300 10 60 10000". Walk the seconds tokens (every
+		// other field) and flag any below the configured floor.
+		fields := strings.Fields(saveSpec)
 		aggressiveSave := false
-		for _, line := range lines {
-			line = strings.TrimSpace(line)
-			fields := strings.Fields(line)
-			if len(fields) < 1 {
-				continue
-			}
-			// Skip the "save" key line itself
-			if fields[0] == "save" {
-				continue
-			}
-			// Each remaining line is "<seconds> <changes>" or a combined token
-			seconds, convErr := strconv.Atoi(fields[0])
+		for i := 0; i < len(fields); i += 2 {
+			seconds, convErr := strconv.Atoi(fields[i])
 			if convErr == nil && seconds < bgsaveMinInterval {
 				aggressiveSave = true
 				break
@@ -784,17 +720,9 @@ func CheckRedisConfig(ctx context.Context, cfg *config.Config, _ *state.Store) [
 	// The maxmemory==0 branch above flags the unset case. When maxmemory
 	// IS set, used/max ratio is the operator-meaningful signal: at 80%
 	// the eviction policy is about to start churning hot keys; at 90%
-	// noeviction-policy instances start returning OOM errors. Reuses
-	// the maxmemory bytes already fetched at the top of the function.
-	var maxMemoryBytes int64
-	if len(maxMemOut) > 0 {
-		fields := strings.Fields(string(maxMemOut))
-		if len(fields) >= 2 {
-			if v, convErr := strconv.ParseInt(fields[1], 10, 64); convErr == nil {
-				maxMemoryBytes = v
-			}
-		}
-	}
+	// noeviction-policy instances start returning OOM errors.
+	_, maxBytes, _ := redisinfo.MemoryUsage(ctx)
+	maxMemoryBytes := int64(maxBytes)
 	if maxMemoryBytes > 0 && usedMemoryBytes > 0 {
 		pct := float64(usedMemoryBytes) / float64(maxMemoryBytes) * 100
 		switch {
@@ -1206,20 +1134,17 @@ func findWPTransients(dir string, cfg *config.Config, warnBytes, critBytes int64
 			warnBytes,
 		)
 
-		args := []string{
-			"-N", "-B",
-			"-h", info.dbHost,
-			"-u", info.dbUser,
-			info.dbName,
-			"-e", query,
-		}
-
-		out, runErr := runCmdWithEnv("mysql", args, "MYSQL_PWD="+info.dbPass)
-		if runErr != nil || len(out) == 0 {
+		rows, runErr := mysqlclient.PerAccountQuery(context.Background(), mysqlclient.Creds{
+			User:     info.dbUser,
+			Password: info.dbPass,
+			Host:     info.dbHost,
+			DBName:   info.dbName,
+		}, query)
+		if runErr != nil || len(rows) == 0 {
 			continue
 		}
 
-		for _, line := range strings.Split(string(out), "\n") {
+		for _, line := range rows {
 			fields := strings.Fields(line)
 			if len(fields) < 2 {
 				continue

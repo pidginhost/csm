@@ -107,7 +107,12 @@ func redisOptions(target, pwd string) *redis.Options {
 // MemoryUsage returns the redis used_memory and maxmemory values
 // from `INFO memory`, in bytes. Either may be zero if the server
 // omits the field. err non-nil only on connection / protocol error.
+//
+// Tests can intercept via SetMemoryUsageForTest.
 func MemoryUsage(ctx context.Context) (used, max uint64, err error) {
+	if fn := getMemoryUsageMock(); fn != nil {
+		return fn(ctx)
+	}
 	c := client()
 	if c == nil {
 		return 0, 0, fmt.Errorf("redisinfo: client not initialised")
@@ -118,6 +123,64 @@ func MemoryUsage(ctx context.Context) (used, max uint64, err error) {
 	}
 	used, max = parseMemoryInfo(raw)
 	return used, max, nil
+}
+
+// MemoryUsageFunc is the signature SetMemoryUsageForTest accepts.
+type MemoryUsageFunc func(ctx context.Context) (used, max uint64, err error)
+
+// KeyspaceStatsFunc is the signature SetKeyspaceStatsForTest accepts.
+type KeyspaceStatsFunc func(ctx context.Context) (KeyspaceStat, error)
+
+// ConfigGetFunc is the signature SetConfigGetForTest accepts.
+type ConfigGetFunc func(ctx context.Context, name string) (string, error)
+
+var (
+	mockMu     sync.RWMutex
+	memMock    MemoryUsageFunc
+	keyMock    KeyspaceStatsFunc
+	configMock ConfigGetFunc
+)
+
+// SetMemoryUsageForTest installs an interceptor for MemoryUsage. Pass
+// nil to clear. Production code paths must NOT call this.
+func SetMemoryUsageForTest(fn MemoryUsageFunc) {
+	mockMu.Lock()
+	defer mockMu.Unlock()
+	memMock = fn
+}
+
+// SetKeyspaceStatsForTest installs an interceptor for KeyspaceStats
+// (and Keyspace, which proxies to it). Pass nil to clear.
+func SetKeyspaceStatsForTest(fn KeyspaceStatsFunc) {
+	mockMu.Lock()
+	defer mockMu.Unlock()
+	keyMock = fn
+}
+
+// SetConfigGetForTest installs an interceptor for ConfigGet. Pass nil
+// to clear.
+func SetConfigGetForTest(fn ConfigGetFunc) {
+	mockMu.Lock()
+	defer mockMu.Unlock()
+	configMock = fn
+}
+
+func getMemoryUsageMock() MemoryUsageFunc {
+	mockMu.RLock()
+	defer mockMu.RUnlock()
+	return memMock
+}
+
+func getKeyspaceStatsMock() KeyspaceStatsFunc {
+	mockMu.RLock()
+	defer mockMu.RUnlock()
+	return keyMock
+}
+
+func getConfigGetMock() ConfigGetFunc {
+	mockMu.RLock()
+	defer mockMu.RUnlock()
+	return configMock
 }
 
 func parseMemoryInfo(raw string) (used, max uint64) {
@@ -136,19 +199,68 @@ func parseMemoryInfo(raw string) (used, max uint64) {
 // Keyspace returns the sum of `keys=N` across every db<n> line in
 // `INFO keyspace`. err non-nil only on connection / protocol error.
 func Keyspace(ctx context.Context) (int64, error) {
-	c := client()
-	if c == nil {
-		return 0, fmt.Errorf("redisinfo: client not initialised")
-	}
-	raw, err := c.Info(ctx, "keyspace").Result()
+	stats, err := KeyspaceStats(ctx)
 	if err != nil {
 		return 0, err
 	}
-	return parseKeyspaceInfo(raw), nil
+	return stats.TotalKeys, nil
+}
+
+// KeyspaceStat is the aggregated breakdown of `INFO keyspace`. Keys
+// counts all keys across all dbs; Expires counts the subset with a
+// TTL applied.
+type KeyspaceStat struct {
+	TotalKeys    int64
+	TotalExpires int64
+}
+
+// KeyspaceStats returns the per-db sums from `INFO keyspace`.
+//
+// Tests can intercept via SetKeyspaceStatsForTest.
+func KeyspaceStats(ctx context.Context) (KeyspaceStat, error) {
+	if fn := getKeyspaceStatsMock(); fn != nil {
+		return fn(ctx)
+	}
+	c := client()
+	if c == nil {
+		return KeyspaceStat{}, fmt.Errorf("redisinfo: client not initialised")
+	}
+	raw, err := c.Info(ctx, "keyspace").Result()
+	if err != nil {
+		return KeyspaceStat{}, err
+	}
+	return parseKeyspaceStats(raw), nil
+}
+
+// ConfigGet returns the value of a single CONFIG GET parameter (e.g.
+// "maxmemory", "save", "maxmemory-policy"). Empty result returns
+// ("", nil) so callers can distinguish "unset" from "connection error".
+//
+// Tests can intercept via SetConfigGetForTest.
+func ConfigGet(ctx context.Context, name string) (string, error) {
+	if fn := getConfigGetMock(); fn != nil {
+		return fn(ctx, name)
+	}
+	c := client()
+	if c == nil {
+		return "", fmt.Errorf("redisinfo: client not initialised")
+	}
+	m, err := c.ConfigGet(ctx, name).Result()
+	if err != nil {
+		return "", err
+	}
+	if v, ok := m[name]; ok {
+		return v, nil
+	}
+	return "", nil
 }
 
 func parseKeyspaceInfo(raw string) int64 {
-	var total int64
+	return parseKeyspaceStats(raw).TotalKeys
+}
+
+func parseKeyspaceStats(raw string) KeyspaceStat {
+	var stat KeyspaceStat
 	for _, line := range strings.Split(raw, "\n") {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "db") {
@@ -159,11 +271,22 @@ func parseKeyspaceInfo(raw string) int64 {
 			continue
 		}
 		for _, kv := range strings.Split(parts[1], ",") {
-			if strings.HasPrefix(kv, "keys=") {
-				n, _ := strconv.ParseInt(strings.TrimPrefix(kv, "keys="), 10, 64)
-				total += n
+			kv = strings.TrimSpace(kv)
+			eq := strings.IndexByte(kv, '=')
+			if eq < 0 {
+				continue
+			}
+			val, perr := strconv.ParseInt(kv[eq+1:], 10, 64)
+			if perr != nil {
+				continue
+			}
+			switch kv[:eq] {
+			case "keys":
+				stat.TotalKeys += val
+			case "expires":
+				stat.TotalExpires += val
 			}
 		}
 	}
-	return total
+	return stat
 }

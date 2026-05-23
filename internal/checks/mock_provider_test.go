@@ -4,10 +4,12 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/mysqlclient"
+	"github.com/pidginhost/csm/internal/redisinfo"
 )
 
 // ---------------------------------------------------------------------------
@@ -233,19 +235,131 @@ func withMockCmd(t *testing.T, m CmdRunner) {
 			if err != nil {
 				return nil, err
 			}
-			if len(out) == 0 {
-				return nil, nil
-			}
-			var lines []string
-			for _, line := range strings.Split(string(out), "\n") {
-				if line = strings.TrimSpace(line); line != "" {
-					lines = append(lines, line)
-				}
-			}
-			return lines, nil
+			return splitMockMySQLOutput(out), nil
 		})
-		t.Cleanup(func() { mysqlclient.SetPerAccountQueryForTest(nil) })
+		mysqlclient.SetRootQueryForTest(func(_ context.Context, schema, query string, _ ...any) ([]string, error) {
+			// Root MySQL had no -u/-h/MYSQL_PWD; the historical
+			// argv was just `mysql -N -B [<schema>] -e <query>`.
+			args := []string{"-N", "-B"}
+			if schema != "" {
+				args = append(args, schema)
+			}
+			args = append(args, "-e", query)
+			out, err := mc.Run("mysql", args...)
+			if err != nil {
+				return nil, err
+			}
+			return splitMockMySQLOutput(out), nil
+		})
+		mysqlclient.SetRootExecForTest(func(_ context.Context, schema, stmt string, _ ...any) (int64, error) {
+			args := []string{"-N", "-B"}
+			if schema != "" {
+				args = append(args, schema)
+			}
+			args = append(args, "-e", stmt)
+			_, err := mc.Run("mysql", args...)
+			return 0, err
+		})
+		// Redis bridge: redisinfo now goes through go-redis instead of
+		// shelling redis-cli. Tests that stub redis-cli via mockCmd
+		// continue to drive the new helpers through these hooks.
+		redisinfo.SetMemoryUsageForTest(func(_ context.Context) (uint64, uint64, error) {
+			out, err := mc.Run("/usr/bin/redis-cli", "info", "memory")
+			if err != nil || len(out) == 0 {
+				return 0, 0, err
+			}
+			return parseMockRedisMemory(out), parseMockRedisField(out, "maxmemory:"), nil
+		})
+		redisinfo.SetKeyspaceStatsForTest(func(_ context.Context) (redisinfo.KeyspaceStat, error) {
+			out, err := mc.Run("/usr/bin/redis-cli", "info", "keyspace")
+			if err != nil || len(out) == 0 {
+				return redisinfo.KeyspaceStat{}, err
+			}
+			return parseMockRedisKeyspace(out), nil
+		})
+		redisinfo.SetConfigGetForTest(func(_ context.Context, name string) (string, error) {
+			out, err := mc.Run("/usr/bin/redis-cli", "config", "get", name)
+			if err != nil || len(out) == 0 {
+				return "", err
+			}
+			// `redis-cli config get <key>` prints two tokens:
+			// "<key>\n<value>\n" -- pluck the second.
+			fields := strings.Fields(string(out))
+			if len(fields) >= 2 {
+				return strings.Join(fields[1:], " "), nil
+			}
+			return "", nil
+		})
+		t.Cleanup(func() {
+			mysqlclient.SetPerAccountQueryForTest(nil)
+			mysqlclient.SetRootQueryForTest(nil)
+			mysqlclient.SetRootExecForTest(nil)
+			redisinfo.SetMemoryUsageForTest(nil)
+			redisinfo.SetKeyspaceStatsForTest(nil)
+			redisinfo.SetConfigGetForTest(nil)
+		})
 	}
+}
+
+func splitMockMySQLOutput(out []byte) []string {
+	if len(out) == 0 {
+		return nil
+	}
+	var lines []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+func parseMockRedisMemory(out []byte) uint64 {
+	return parseMockRedisField(out, "used_memory:")
+}
+
+func parseMockRedisField(out []byte, prefix string) uint64 {
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		v, _ := strconv.ParseUint(strings.TrimSpace(strings.TrimPrefix(line, prefix)), 10, 64)
+		return v
+	}
+	return 0
+}
+
+func parseMockRedisKeyspace(out []byte) redisinfo.KeyspaceStat {
+	var stat redisinfo.KeyspaceStat
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "db") {
+			continue
+		}
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) < 2 {
+			continue
+		}
+		for _, kv := range strings.Split(parts[1], ",") {
+			kv = strings.TrimSpace(kv)
+			eq := strings.IndexByte(kv, '=')
+			if eq < 0 {
+				continue
+			}
+			v, perr := strconv.ParseInt(kv[eq+1:], 10, 64)
+			if perr != nil {
+				continue
+			}
+			switch kv[:eq] {
+			case "keys":
+				stat.TotalKeys += v
+			case "expires":
+				stat.TotalExpires += v
+			}
+		}
+	}
+	return stat
 }
 
 // ---------------------------------------------------------------------------

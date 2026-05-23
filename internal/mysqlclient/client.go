@@ -256,12 +256,115 @@ func SetRootCnfPath(p string) {
 // /root/.my.cnf (or the path set via SetRootCnfPath). It mirrors the
 // historical `mysql -N -B -e <query>` invocation that picked up
 // /root/.my.cnf implicitly. The connection is pooled across calls.
+//
+// Tests can intercept via SetRootQueryForTest.
 func RootQuery(ctx context.Context, query string, args ...any) ([]string, error) {
+	if fn := getRootQueryMock(); fn != nil {
+		return fn(ctx, "", query, args...)
+	}
 	db, err := RootDB()
 	if err != nil {
 		return nil, err
 	}
 	return runQuery(ctx, db, query, args...)
+}
+
+// RootExec runs a non-SELECT statement (DDL/DML) as root and returns
+// the affected-row count plus any error. Mirrors `mysql -e <stmt>` for
+// callers that previously relied on exit code only.
+//
+// Tests can intercept via SetRootExecForTest.
+func RootExec(ctx context.Context, stmt string, args ...any) (int64, error) {
+	if fn := getRootExecMock(); fn != nil {
+		return fn(ctx, "", stmt, args...)
+	}
+	db, err := RootDB()
+	if err != nil {
+		return 0, err
+	}
+	cctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+	res, err := db.ExecContext(cctx, stmt, args...)
+	if err != nil {
+		return 0, fmt.Errorf("mysqlclient: exec: %w", err)
+	}
+	rows, _ := res.RowsAffected()
+	return rows, nil
+}
+
+// RootExecSchema runs a non-SELECT statement against an explicit schema
+// using root creds. Mirrors `mysql <schema> -e <stmt>`.
+func RootExecSchema(ctx context.Context, schema, stmt string, args ...any) (int64, error) {
+	if fn := getRootExecMock(); fn != nil {
+		return fn(ctx, schema, stmt, args...)
+	}
+	creds, err := loadRootCreds()
+	if err != nil {
+		return 0, err
+	}
+	creds.DBName = schema
+	db, err := sql.Open("mysql", creds.dsn())
+	if err != nil {
+		return 0, fmt.Errorf("mysqlclient: open %s: %w", schema, err)
+	}
+	defer func() { _ = db.Close() }()
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(0)
+	db.SetConnMaxLifetime(queryTimeout)
+
+	cctx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+	res, err := db.ExecContext(cctx, stmt, args...)
+	if err != nil {
+		return 0, fmt.Errorf("mysqlclient: exec %s: %w", schema, err)
+	}
+	rows, _ := res.RowsAffected()
+	return rows, nil
+}
+
+// RootQueryFunc is the signature SetRootQueryForTest accepts. schema is
+// empty for RootQuery, non-empty for RootQuerySchema.
+type RootQueryFunc func(ctx context.Context, schema, query string, args ...any) ([]string, error)
+
+// RootExecFunc is the signature SetRootExecForTest accepts. schema is
+// empty for RootExec, non-empty for RootExecSchema.
+type RootExecFunc func(ctx context.Context, schema, stmt string, args ...any) (int64, error)
+
+var (
+	rootQueryMockMu sync.RWMutex
+	rootQueryMock   RootQueryFunc
+	rootExecMockMu  sync.RWMutex
+	rootExecMock    RootExecFunc
+)
+
+// SetRootQueryForTest installs an interceptor for RootQuery /
+// RootQuerySchema. Pass nil to clear and restore the real database/sql
+// path. Production code paths must NOT call this.
+func SetRootQueryForTest(fn RootQueryFunc) {
+	rootQueryMockMu.Lock()
+	defer rootQueryMockMu.Unlock()
+	rootQueryMock = fn
+}
+
+// SetRootExecForTest installs an interceptor for RootExec /
+// RootExecSchema. Pass nil to clear and restore the real database/sql
+// path. Production code paths must NOT call this.
+func SetRootExecForTest(fn RootExecFunc) {
+	rootExecMockMu.Lock()
+	defer rootExecMockMu.Unlock()
+	rootExecMock = fn
+}
+
+func getRootQueryMock() RootQueryFunc {
+	rootQueryMockMu.RLock()
+	defer rootQueryMockMu.RUnlock()
+	return rootQueryMock
+}
+
+func getRootExecMock() RootExecFunc {
+	rootExecMockMu.RLock()
+	defer rootExecMockMu.RUnlock()
+	return rootExecMock
 }
 
 // RootDB returns the pooled root MySQL handle backed by /root/.my.cnf
@@ -274,6 +377,9 @@ func RootDB() (*sql.DB, error) {
 // RootQuerySchema runs a query against an explicit schema using root
 // creds. Mirrors `mysql <schema> -e <query>`.
 func RootQuerySchema(ctx context.Context, schema, query string, args ...any) ([]string, error) {
+	if fn := getRootQueryMock(); fn != nil {
+		return fn(ctx, schema, query, args...)
+	}
 	creds, err := loadRootCreds()
 	if err != nil {
 		return nil, err

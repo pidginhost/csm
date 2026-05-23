@@ -51,10 +51,6 @@ func runCmdCombinedContext(parent context.Context, name string, args ...string) 
 	return cmdExec.RunContext(parent, name, args...)
 }
 
-func runCmdWithEnv(name string, args []string, extraEnv ...string) ([]byte, error) {
-	return cmdExec.RunWithEnv(name, args, extraEnv...)
-}
-
 func lookupSystemCommand(name string) (string, error) {
 	if strings.ContainsRune(name, os.PathSeparator) {
 		return exec.LookPath(name)

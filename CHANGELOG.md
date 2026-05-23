@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The performance dashboard now reads Redis memory and keyspace stats via the in-process `redis/go-redis` client instead of shelling out to `redis-cli` twice per poll. Eliminates two forks per sampler cycle on hosts that surface the dashboard. Fail-fast timeouts (500 ms) preserve the previous behaviour when redis is absent.
 - The CMS database content scanners (WordPress / Joomla / Drupal / Magento / OpenCart) now run their per-account MySQL queries through the in-process `database/sql` + `go-sql-driver/mysql` pair instead of forking the `mysql` CLI with `MYSQL_PWD` env. Same per-account credentials, same row output shape, no subprocess per query.
+- The root-credential MySQL checks (MySQL superuser audit, MySQL global variable / status / processlist performance audits, the WordPress transient-bloat scan, the database-object cleaner, the forensic SQL dump path, and the performance-dashboard connection counter) now run through the same in-process `database/sql` pair. Root credentials are read once from `/root/.my.cnf` and the connection is pooled across calls.
+- The Redis performance audit (maxmemory / maxmemory-policy / keyspace / save / used-memory headroom) now uses the in-process `redis/go-redis` client instead of forking `redis-cli` four times per cycle.
 
 ### Fixed
 

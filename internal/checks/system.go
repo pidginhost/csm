@@ -9,6 +9,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/mysqlclient"
 	"github.com/pidginhost/csm/internal/platform"
 	"github.com/pidginhost/csm/internal/state"
 )
@@ -246,16 +247,17 @@ func isCriticalSystemPath(path string) bool {
 func CheckMySQLUsers(ctx context.Context, _ *config.Config, store *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	out, err := runCmd("mysql", "-N", "-B", "-e",
+	rows, err := mysqlclient.RootQuery(ctx,
 		"SELECT user, host FROM mysql.user WHERE Super_priv='Y' AND user NOT IN ('root','mysql.session','mysql.sys','mysql.infoschema','debian-sys-maint')")
-	if err != nil || out == nil {
+	if err != nil || len(rows) == 0 {
 		return nil
 	}
 
-	output := strings.TrimSpace(string(out))
+	output := strings.TrimSpace(strings.Join(rows, "\n"))
 	if output == "" {
 		return nil
 	}
+	out := []byte(output)
 
 	// Track known MySQL superusers
 	hash := hashBytes(out)

@@ -1,10 +1,13 @@
 package checks
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/pidginhost/csm/internal/mysqlclient"
 )
 
 // DBCleanResult describes the outcome of a database cleanup operation.
@@ -341,29 +344,19 @@ func findCredsForAccount(account string) (wpDBCreds, string) {
 // a zero exit + empty stdout, which runMySQLQueryRoot misclassifies
 // as "no output, treat as failure".
 func runMySQLExecRoot(dbName, stmt string) error {
-	args := []string{
-		"-N", "-B",
-		dbName,
-		"-e", stmt,
-	}
-	_, err := runCmd("mysql", args...)
+	_, err := mysqlclient.RootExecSchema(context.Background(), dbName, stmt)
 	return err
 }
 
 // runMySQLQueryRoot runs a MySQL query using root credentials from
 // /root/.my.cnf (no explicit user/password args).
 func runMySQLQueryRoot(dbName, query string) []string {
-	args := []string{
-		"-N", "-B",
-		dbName,
-		"-e", query,
-	}
-	out, err := runCmd("mysql", args...)
-	if err != nil || out == nil {
+	rows, err := mysqlclient.RootQuerySchema(context.Background(), dbName, query)
+	if err != nil || len(rows) == 0 {
 		return nil
 	}
 	var lines []string
-	for _, line := range strings.Split(string(out), "\n") {
+	for _, line := range rows {
 		line = strings.TrimSpace(line)
 		if line != "" {
 			lines = append(lines, line)

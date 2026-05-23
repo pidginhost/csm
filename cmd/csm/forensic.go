@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/forensic"
+	"github.com/pidginhost/csm/internal/mysqlclient"
 )
 
 // runForensicSnapshot wires the production I/O dependencies into the
@@ -266,9 +267,18 @@ func runForensicMySQL(schema, query string) ([]byte, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	// #nosec G204 -- schema validated; query built with validated identifiers above.
-	cmd := exec.CommandContext(ctx, "mysql", "-N", "-B", schema, "-e", query)
-	return cmd.Output()
+	rows, err := mysqlclient.RootQuerySchema(ctx, schema, query)
+	if err != nil {
+		return nil, err
+	}
+	// Match the historical `mysql -N -B` byte stream: tab-joined rows
+	// already produced by mysqlclient, plus a trailing newline per row.
+	var b strings.Builder
+	for _, line := range rows {
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return []byte(b.String()), nil
 }
 
 // listRecentMtimes walks accountRoot for files modified since `since`

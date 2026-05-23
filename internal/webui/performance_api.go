@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/mysqlclient"
 	"github.com/pidginhost/csm/internal/redisinfo"
 )
 
@@ -285,12 +286,14 @@ func sampleMetrics() *perfMetrics {
 				}
 			}
 		}
-		// Connection count. mysql client exits non-zero on auth failure,
-		// missing socket, or absent server -- in every such case we leave
-		// MySQLConns nil rather than reporting a fake 0.
-		out, err := runCmdQuick("mysql", "-N", "-B", "-e", "SHOW STATUS LIKE 'Threads_connected'")
-		if err == nil && len(out) > 0 {
-			fields := strings.Fields(string(out))
+		// Connection count. mysqlclient open returns nil on auth failure,
+		// missing socket, or absent server -- in every such case we
+		// leave MySQLConns nil rather than reporting a fake 0.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		rows, err := mysqlclient.RootQuery(ctx, "SHOW STATUS LIKE 'Threads_connected'")
+		cancel()
+		if err == nil && len(rows) > 0 {
+			fields := strings.Fields(rows[0])
 			if len(fields) >= 2 {
 				if n, perr := strconv.Atoi(fields[1]); perr == nil {
 					m.MySQLConns = &n
