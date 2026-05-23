@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.7.0] - 2026-05-23
+
 ### Performance
 
 - Firewall engine now caches the parsed `state.json` in memory and answers blocked-IP and blocked-subnet lookups from an index map instead of re-reading and re-parsing the 325 KiB state file on every call. Eliminates the per-call full file load that dominated steady-state CPU on busy hosts.
