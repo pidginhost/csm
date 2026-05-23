@@ -121,6 +121,18 @@ func parseMemInfo() (total, available, swapTotal, swapFree uint64) {
 	return
 }
 
+// uint64ToInt64Clamped narrows a uint64 to int64, clamping at
+// math.MaxInt64 instead of wrapping to a negative value. Used for
+// redis used_memory / maxmemory bytes where realistic values fit
+// comfortably in int64 but gosec G115 flags the bare conversion.
+func uint64ToInt64Clamped(v uint64) int64 {
+	const maxInt64 uint64 = 1<<63 - 1
+	if v > maxInt64 {
+		return int64(maxInt64)
+	}
+	return int64(v)
+}
+
 // humanBytes formats a byte count as a human-readable string.
 // Thresholds: >=1G → "1.0G", >=1M → "1M", >=1K → "1K", else "0B".
 func humanBytes(b int64) string {
@@ -680,7 +692,7 @@ func CheckRedisConfig(ctx context.Context, cfg *config.Config, _ *state.Store) [
 	// --- bgsave interval vs dataset size ---
 	saveSpec, _ := redisinfo.ConfigGet(ctx, "save")
 	usedBytes, _, _ := redisinfo.MemoryUsage(ctx)
-	usedMemoryBytes := int64(usedBytes)
+	usedMemoryBytes := uint64ToInt64Clamped(usedBytes)
 
 	const gbBytes = 1024 * 1024 * 1024
 	largeDatasetBytes := int64(cfg.Performance.RedisLargeDatasetGB) * gbBytes
@@ -722,7 +734,7 @@ func CheckRedisConfig(ctx context.Context, cfg *config.Config, _ *state.Store) [
 	// the eviction policy is about to start churning hot keys; at 90%
 	// noeviction-policy instances start returning OOM errors.
 	_, maxBytes, _ := redisinfo.MemoryUsage(ctx)
-	maxMemoryBytes := int64(maxBytes)
+	maxMemoryBytes := uint64ToInt64Clamped(maxBytes)
 	if maxMemoryBytes > 0 && usedMemoryBytes > 0 {
 		pct := float64(usedMemoryBytes) / float64(maxMemoryBytes) * 100
 		switch {
