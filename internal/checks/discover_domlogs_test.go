@@ -2,8 +2,10 @@ package checks
 
 import (
 	"context"
+	"maps"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +22,19 @@ func writeAccessLog(t *testing.T, path string, mtime time.Time) {
 	}
 	line := "203.0.113.5 - - [14/Apr/2026:10:00:00 +0000] \"POST /wp-login.php HTTP/1.1\" 401 0 \"-\" \"-\"\n"
 	if err := os.WriteFile(path, []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeAccessLogLines(t *testing.T, path string, mtime time.Time, lines ...string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chtimes(path, mtime, mtime); err != nil {
@@ -114,6 +129,62 @@ func TestScanDomlogsAndScanDomlogsStatsTouchSameFiles(t *testing.T) {
 	}
 	if mapScanned != 3 {
 		t.Errorf("expected 3 fresh logs scanned, got %d", mapScanned)
+	}
+}
+
+func TestScanDomlogsAndScanDomlogsStatsAggregateSameLegacyCounters(t *testing.T) {
+	tmp := t.TempDir()
+	now := time.Now()
+
+	one := filepath.Join(tmp, "one/access.log")
+	two := filepath.Join(tmp, "two/access.log")
+	writeAccessLogLines(t, one, now.Add(-1*time.Minute),
+		`203.0.113.10 - - [14/Apr/2026:10:00:00 +0000] "POST /wp-login.php HTTP/1.1" 401 0 "-" "-"`,
+		`203.0.113.10 - - [14/Apr/2026:10:00:01 +0000] "POST /wp-login.php HTTP/1.1" 401 0 "-" "-"`,
+		`203.0.113.20 - - [14/Apr/2026:10:00:02 +0000] "POST /xmlrpc.php HTTP/1.1" 200 0 "-" "-"`,
+	)
+	writeAccessLogLines(t, two, now.Add(-2*time.Minute),
+		`203.0.113.30 - - [14/Apr/2026:10:00:03 +0000] "GET /?author=2 HTTP/1.1" 200 500 "-" "-"`,
+		`203.0.113.31 - - [14/Apr/2026:10:00:04 +0000] "GET /wp-json/wp/v2/users HTTP/1.1" 200 500 "-" "-"`,
+		`203.0.113.32 - - [14/Apr/2026:10:00:05 +0000] "GET /wp-json/wp/v2/users/me HTTP/1.1" 200 50 "-" "-"`,
+		`192.168.1.2 - - [14/Apr/2026:10:00:06 +0000] "POST /wp-login.php HTTP/1.1" 401 0 "-" "-"`,
+	)
+
+	platform.ResetForTest()
+	platform.SetOverrides(platform.Overrides{DomlogGlobs: []string{tmp + "/*/access.log"}})
+	t.Cleanup(platform.ResetForTest)
+
+	withMockOS(t, &mockOS{
+		glob: func(string) ([]string, error) { return []string{two, one}, nil },
+		stat: os.Stat,
+		open: os.Open,
+	})
+
+	infraIPs := []string{"192.168.1.0/24"}
+	wpLogin := map[string]int{}
+	xmlrpc := map[string]int{}
+	userEnum := map[string]int{}
+	mapScanned := scanDomlogs(context.Background(), infraIPs, 0, wpLogin, xmlrpc, userEnum)
+
+	stats := newDomlogStats()
+	statsScanned := scanDomlogsStats(context.Background(), &config.Config{InfraIPs: infraIPs}, stats)
+
+	if mapScanned != 2 || statsScanned != 2 {
+		t.Fatalf("scanned files = scanDomlogs:%d scanDomlogsStats:%d, want both 2",
+			mapScanned, statsScanned)
+	}
+	assertIntMap(t, "scanDomlogs wpLogin", wpLogin, map[string]int{"203.0.113.10": 2})
+	assertIntMap(t, "scanDomlogs xmlrpc", xmlrpc, map[string]int{"203.0.113.20": 1})
+	assertIntMap(t, "scanDomlogs userEnum", userEnum, map[string]int{"203.0.113.30": 1, "203.0.113.31": 1})
+	assertIntMap(t, "scanDomlogsStats wpLogin", stats.wpLogin, wpLogin)
+	assertIntMap(t, "scanDomlogsStats xmlrpc", stats.xmlrpc, xmlrpc)
+	assertIntMap(t, "scanDomlogsStats userEnum", stats.userEnum, userEnum)
+}
+
+func assertIntMap(t *testing.T, name string, got, want map[string]int) {
+	t.Helper()
+	if !maps.Equal(got, want) {
+		t.Errorf("%s = %v, want %v", name, got, want)
 	}
 }
 

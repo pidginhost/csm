@@ -11,10 +11,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Added a hot-reloadable account scanner cap so large hosts can bound account-scoped file iteration without relying on check timeouts. The new threshold is available in the sample config and settings UI.
 
-### Changed
-
-- The WP brute-force domlog scanners (`scanDomlogs` and `scanDomlogsStats`) now share a single tail-and-aggregate loop on top of the existing `discoverFreshDomlogs` helper, so the per-file ctx gate, parse-or-skip behaviour, and scanned-file counter cannot drift between the two callers.
-
 ## [3.7.0] - 2026-05-23
 
 ### Performance
