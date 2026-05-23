@@ -264,15 +264,14 @@ func effectiveDomlogMaxAge(cfg *config.Config) time.Duration {
 	return time.Duration(cfg.Thresholds.DomlogMaxAgeMin) * time.Minute
 }
 
-// scanDomlogsStats tails the discovered per-vhost logs and feeds each
-// parsed record into stats. Returns the number of files actually tailed.
-func scanDomlogsStats(ctx context.Context, cfg *config.Config, stats *domlogStats) int {
-	if cfg == nil {
-		cfg = &config.Config{}
-	}
-	paths := discoverFreshDomlogs(ctx, cfg.Thresholds.DomlogMaxFiles, effectiveDomlogMaxAge(cfg))
-	classifier := currentBotClassifier(cfg)
-	tailLines := effectiveDomlogTailLines(cfg)
+// tailDomlogsInto tails each discovered path and feeds every parsed
+// access-log record into stats. Returns the number of files actually
+// tailed (loop exits early if ctx is cancelled mid-pass).
+//
+// Single tail-and-aggregate loop shared by every domlog scanner so the
+// per-file ctx gate, the parse-or-skip behaviour, and the scanned
+// counter cannot drift between callers.
+func tailDomlogsInto(ctx context.Context, paths []string, cfg *config.Config, stats *domlogStats, classifier botClassifier, tailLines int) int {
 	scanned := 0
 	for _, p := range paths {
 		if ctx != nil {
@@ -292,32 +291,37 @@ func scanDomlogsStats(ctx context.Context, cfg *config.Config, stats *domlogStat
 	return scanned
 }
 
-// scanDomlogs tails the discovered per-vhost logs and increments the
-// caller-owned wpLogin / xmlrpc / userEnum counters via countBruteForce.
-// Returns the number of files actually tailed.
-//
-// maxFiles <= 0 falls back to the built-in domlogMaxFiles default. Tail
-// length is the built-in default; the typed wrapper scanDomlogsStats
-// honours cfg.Thresholds.DomlogTailLines when called from production.
-func scanDomlogs(ctx context.Context, infraIPs []string, maxFiles int, wpLogin, xmlrpc, userEnum map[string]int) int {
-	paths := discoverFreshDomlogs(ctx, maxFiles, 0)
-	scanned := 0
-	for _, p := range paths {
-		if ctx != nil {
-			if err := ctx.Err(); err != nil {
-				break
-			}
-		}
-		lines := tailFile(p, domlogTailLines)
-		countBruteForce(lines, infraIPs, wpLogin, xmlrpc, userEnum)
-		scanned++
+// scanDomlogsStats discovers per-vhost logs honouring the operator's
+// thresholds and feeds each parsed record into stats. Production entry
+// point used by CheckWPBruteForce. Returns the number of files actually
+// tailed.
+func scanDomlogsStats(ctx context.Context, cfg *config.Config, stats *domlogStats) int {
+	if cfg == nil {
+		cfg = &config.Config{}
 	}
-	return scanned
+	paths := discoverFreshDomlogs(ctx, cfg.Thresholds.DomlogMaxFiles, effectiveDomlogMaxAge(cfg))
+	return tailDomlogsInto(ctx, paths, cfg, stats, currentBotClassifier(cfg), effectiveDomlogTailLines(cfg))
+}
+
+// scanDomlogs is the legacy infra-IPs-only entry kept for test fixtures
+// that drive the brute-force counters directly. Production code calls
+// scanDomlogsStats. Both share discoverFreshDomlogs + tailDomlogsInto so
+// path selection and per-file ctx semantics cannot diverge.
+//
+// maxFiles <= 0 falls back to the built-in domlogMaxFiles default.
+func scanDomlogs(ctx context.Context, infraIPs []string, maxFiles int, wpLogin, xmlrpc, userEnum map[string]int) int {
+	cfg := &config.Config{InfraIPs: infraIPs}
+	stats := newDomlogStats()
+	stats.wpLogin = wpLogin
+	stats.xmlrpc = xmlrpc
+	stats.userEnum = userEnum
+	paths := discoverFreshDomlogs(ctx, maxFiles, 0)
+	return tailDomlogsInto(ctx, paths, cfg, stats, nopBotClassifier{}, domlogTailLines)
 }
 
 // countBruteForce parses Combined Log Format lines and increments per-IP
-// counters via the shared domlogStats aggregator. Kept as a thin
-// shim so CheckWPBruteForce keeps its old structure.
+// counters via the shared domlogStats aggregator. Kept as a thin shim
+// for tests that feed lines directly (no file discovery / tail step).
 func countBruteForce(lines []string, infraIPs []string, wpLogin, xmlrpc, userEnum map[string]int) {
 	cfg := &config.Config{InfraIPs: infraIPs}
 	stats := newDomlogStats()
