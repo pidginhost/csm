@@ -83,10 +83,12 @@ signatures:
     download_url: ""
 
 reputation:
-  # Async PTR + forward-A verification for claimed search-engine bots
-  # (Googlebot, Bingbot, Applebot). Unverified claimed bots count
-  # toward http_ua_spoof. Set false on air-gapped hosts to disable
-  # outbound DNS.
+  # Async PTR + forward-A verification for claimed bot User-Agents.
+  # Static ranges are trusted first. DNS cache misses and transient
+  # resolver failures fail open; confirmed PTR/forward-A mismatches
+  # emit http_ua_spoof on a later scan that still sees the request.
+  # Set false only if outbound DNS is unavailable and you accept
+  # trusting UA strings.
   bot_verify_enabled: true
 
 thresholds:
@@ -114,7 +116,7 @@ thresholds:
   http_flood_window_min: 5
   # User-Agent spoof: per-IP per-window count for non-browser UA kinds
   # (scripting, headless, empty) that emits http_ua_spoof. Default 30.
-  # Claimed search-engine bots that fail rDNS confirmation fire
+  # Claimed bot UAs with confirmed PTR/forward-A mismatches fire
   # regardless of this threshold.
   http_ua_spoof_threshold: 30
   # Opt-in UA classes. These match many legitimate monitoring agents;

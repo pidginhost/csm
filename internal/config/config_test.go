@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/firewall"
+	"gopkg.in/yaml.v3"
 )
 
 func TestLoadDefaults(t *testing.T) {
@@ -366,6 +367,53 @@ func TestPackagedDefaultFirewallMatchesRuntimeDefaults(t *testing.T) {
 		if cfg.Firewall.PortFlood[i] != want.PortFlood[i] {
 			t.Errorf("packaged port_flood[%d] = %+v, want %+v", i, cfg.Firewall.PortFlood[i], want.PortFlood[i])
 		}
+	}
+}
+
+func TestProductionReferenceConfigExposesHTTPAbuseKnobs(t *testing.T) {
+	data, err := os.ReadFile("../../configs/csm.yaml.production.example")
+	if err != nil {
+		t.Skipf("production reference config not readable from this layout: %v", err)
+	}
+
+	cfg, err := LoadBytes(data)
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	if cfg.Thresholds.HTTPFloodWindowMin != 5 {
+		t.Errorf("http_flood_window_min = %d, want 5", cfg.Thresholds.HTTPFloodWindowMin)
+	}
+	if cfg.Thresholds.HTTPFloodThreshold != 0 {
+		t.Errorf("http_flood_threshold = %d, want 0", cfg.Thresholds.HTTPFloodThreshold)
+	}
+	if cfg.Thresholds.HTTPUASpoofThreshold != 30 {
+		t.Errorf("http_ua_spoof_threshold = %d, want 30", cfg.Thresholds.HTTPUASpoofThreshold)
+	}
+	if cfg.Reputation.BotVerifyEnabled == nil || !*cfg.Reputation.BotVerifyEnabled {
+		t.Fatal("reputation.bot_verify_enabled must be explicitly true in production reference config")
+	}
+
+	var raw struct {
+		Thresholds map[string]yaml.Node `yaml:"thresholds"`
+		Reputation map[string]yaml.Node `yaml:"reputation"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("yaml.Unmarshal: %v", err)
+	}
+	for _, key := range []string{
+		"http_flood_threshold",
+		"http_flood_window_min",
+		"http_ua_spoof_threshold",
+		"http_ua_scripting_enabled",
+		"http_ua_headless_enabled",
+		"http_ua_empty_enabled",
+	} {
+		if _, ok := raw.Thresholds[key]; !ok {
+			t.Errorf("production reference config missing thresholds.%s", key)
+		}
+	}
+	if _, ok := raw.Reputation["bot_verify_enabled"]; !ok {
+		t.Error("production reference config missing reputation.bot_verify_enabled")
 	}
 }
 
