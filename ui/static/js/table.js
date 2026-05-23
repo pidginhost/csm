@@ -158,6 +158,7 @@ CSM.Table = function(opts) {
                     tbl.filterValues[filter.id] = this.value;
                     tbl.currentPage = 1;
                     tbl.applyFilters();
+                    tbl._saveState();
                 });
             }
         })(this.filters[f], this);
@@ -443,12 +444,19 @@ CSM.Table.prototype.toggleDetail = function(row) {
 CSM.Table.prototype._saveState = function() {
     if (!this.stateKey) return;
     try {
+        var filters = {};
+        for (var f = 0; f < this.filters.length; f++) {
+            var id = this.filters[f].id;
+            var val = this.filterValues[id];
+            if (val && val !== 'all') filters[id] = val;
+        }
         var state = {
             page: this.currentPage,
             perPage: this.perPage,
             sortCol: this.sortColumn,
             sortAsc: this.sortAsc,
-            search: this.searchText
+            search: this.searchText,
+            filters: filters
         };
         localStorage.setItem(this.stateKey, JSON.stringify(state));
     } catch (e) { /* localStorage may be unavailable */ }
@@ -481,6 +489,19 @@ CSM.Table.prototype._restoreState = function(opts) {
             // Also set the search input value
             var searchEl = opts.searchId ? document.getElementById(opts.searchId) : null;
             if (searchEl) searchEl.value = state.search;
+        }
+        if (state.filters && typeof state.filters === 'object') {
+            for (var f = 0; f < this.filters.length; f++) {
+                var id = this.filters[f].id;
+                if (!Object.prototype.hasOwnProperty.call(state.filters, id)) continue;
+                var val = String(state.filters[id] || '');
+                var el = document.getElementById(id);
+                if (el) {
+                    el.value = val;
+                    val = el.value;
+                }
+                if (val && val !== 'all') this.filterValues[id] = val;
+            }
         }
     } catch (e) { /* ignore parse errors */ }
 };

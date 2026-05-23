@@ -206,6 +206,42 @@ func TestSharedUIPrimitivesPresent(t *testing.T) {
 	}
 }
 
+func TestSharedTablePersistsFilterState(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/table.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, want := range []string{
+		"tbl._saveState();",
+		"filters: filters",
+		"state.filters && typeof state.filters === 'object'",
+		"this.filterValues[id] = val;",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("table.js missing filter-state persistence fragment %q", want)
+		}
+	}
+}
+
+func TestModsecRuleFiltersTrackToggleState(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/modsec-rules.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, want := range []string{
+		"setRowAttr(id, 'data-status', newEnabled ? 'enabled' : 'disabled')",
+		"row.setAttribute('data-status', original ? 'enabled' : 'disabled');",
+		"setRowAttr(id, 'data-escalate', escalate ? 'yes' : 'no')",
+		"refreshRulesTable();",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("modsec-rules.js missing live filter-state update fragment %q", want)
+		}
+	}
+}
+
 // TestSidebarNavCoversEveryVisiblePage asserts the sidebar exposes every
 // page that is part of the operator workflow. /history and /account are
 // reached from deep links and are intentionally not in the sidebar; if

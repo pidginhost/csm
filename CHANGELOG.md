@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- ModSecurity rule table filters now track staged enable and escalation changes, and table filter selections persist across reloads.
 - Web UI refresh buttons now use a single ghost-secondary style across pages instead of the mix of info, outline, and ghost variants that drifted in earlier releases.
 - Web UI sidebar uses the full page title "Threat Intelligence" instead of the abbreviation.
 - History tab deep links no longer assume Bootstrap is loaded and still open the History view when the tab helper is unavailable.

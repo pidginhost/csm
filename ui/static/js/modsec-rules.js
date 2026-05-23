@@ -8,6 +8,18 @@ var _originalEnabled = {}; // ruleID → original enabled state
 var _pendingChanges = {};  // ruleID → new enabled state (only if changed)
 var _rulesTable = null;    // CSM.Table instance
 
+function setRowAttr(id, attr, value) {
+    var row = document.getElementById('rule-row-' + id);
+    if (row) row.setAttribute(attr, value);
+    return row;
+}
+
+function refreshRulesTable() {
+    if (_rulesTable && typeof _rulesTable.applyFilters === 'function') {
+        _rulesTable.applyFilters();
+    }
+}
+
 function loadRules() {
     fetch(CSM.apiUrl('/api/v1/modsec/rules'), {credentials: 'same-origin'})
         .then(function(r) { return r.json(); })
@@ -104,15 +116,16 @@ function renderTable() {
         toggle.addEventListener('change', function() {
             var id = parseInt(this.getAttribute('data-id'), 10);
             var newEnabled = this.checked;
-            var row = document.getElementById('rule-row-' + id);
+            var row = setRowAttr(id, 'data-status', newEnabled ? 'enabled' : 'disabled');
 
             if (newEnabled === _originalEnabled[id]) {
                 delete _pendingChanges[id];
-                row.style.backgroundColor = '';
+                if (row) row.style.backgroundColor = '';
             } else {
                 _pendingChanges[id] = newEnabled;
-                row.style.backgroundColor = 'rgba(255, 193, 7, 0.1)';
+                if (row) row.style.backgroundColor = 'rgba(255, 193, 7, 0.1)';
             }
+            refreshRulesTable();
             updateApplyBar();
         });
     });
@@ -134,7 +147,12 @@ function renderTable() {
                             for (var i = 0; i < _rules.length; i++) {
                                 if (_rules[i].id === id) _rules[i].escalate = escalate;
                             }
+                            setRowAttr(id, 'data-escalate', escalate ? 'yes' : 'no');
+                            refreshRulesTable();
                             renderStats({total: _rules.length, active: countActive()});
+                        } else {
+                            CSM.toast('Failed to update escalation for rule ' + id + ': ' + (data.error || 'unknown'), 'error');
+                            self.checked = !escalate;
                         }
                     })
                     .catch(function(e) {
@@ -215,11 +233,16 @@ document.getElementById('btn-apply').addEventListener('click', function() {
                     // Revert toggles
                     for (var id in _pendingChanges) {
                         var toggle = document.querySelector('.enable-toggle[data-id="' + id + '"]');
-                        if (toggle) toggle.checked = _originalEnabled[parseInt(id, 10)];
+                        var original = _originalEnabled[parseInt(id, 10)];
+                        if (toggle) toggle.checked = original;
                         var row = document.getElementById('rule-row-' + id);
-                        if (row) row.style.backgroundColor = '';
+                        if (row) {
+                            row.style.backgroundColor = '';
+                            row.setAttribute('data-status', original ? 'enabled' : 'disabled');
+                        }
                     }
                     _pendingChanges = {};
+                    refreshRulesTable();
                     updateApplyBar();
                 }
             }
@@ -236,11 +259,16 @@ document.getElementById('btn-apply').addEventListener('click', function() {
 document.getElementById('btn-discard').addEventListener('click', function() {
     for (var id in _pendingChanges) {
         var toggle = document.querySelector('.enable-toggle[data-id="' + id + '"]');
-        if (toggle) toggle.checked = _originalEnabled[parseInt(id, 10)];
+        var original = _originalEnabled[parseInt(id, 10)];
+        if (toggle) toggle.checked = original;
         var row = document.getElementById('rule-row-' + id);
-        if (row) row.style.backgroundColor = '';
+        if (row) {
+            row.style.backgroundColor = '';
+            row.setAttribute('data-status', original ? 'enabled' : 'disabled');
+        }
     }
     _pendingChanges = {};
+    refreshRulesTable();
     updateApplyBar();
 });
 
