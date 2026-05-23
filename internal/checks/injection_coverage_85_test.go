@@ -842,7 +842,7 @@ func TestDiscoverShadowFilesShortPath(t *testing.T) {
 			return nil, nil
 		},
 	})
-	files := discoverShadowFiles(context.Background())
+	files := discoverShadowFiles(context.Background(), 0)
 	if len(files) != 0 {
 		t.Errorf("short path should be skipped, got %d files", len(files))
 	}
@@ -860,7 +860,7 @@ func TestDiscoverShadowFilesValidPaths(t *testing.T) {
 			return nil, nil
 		},
 	})
-	files := discoverShadowFiles(context.Background())
+	files := discoverShadowFiles(context.Background(), 0)
 	if len(files) != 2 {
 		t.Fatalf("expected 2 files, got %d", len(files))
 	}

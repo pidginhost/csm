@@ -415,7 +415,7 @@ func TestDiscoverShadowFiles_SkipsShortPaths(t *testing.T) {
 			return []string{"/home/shadow"}, nil
 		},
 	})
-	got := discoverShadowFiles(context.Background())
+	got := discoverShadowFiles(context.Background(), 0)
 	if len(got) != 0 {
 		t.Errorf("malformed path should be skipped, got %v", got)
 	}

@@ -118,6 +118,14 @@ type Config struct {
 		// with many active domains so late-alphabet sites are not skipped.
 		DomlogMaxFiles int `yaml:"domlog_max_files"`
 
+		// AccountScanMaxFiles caps how many per-account paths the per-account
+		// scanners (SSH authorized_keys, cPanel API tokens, Dovecot shadow,
+		// CMS DB-content scanners) iterate per cycle. Paths are ranked by
+		// mtime desc so the cap chops least-active accounts. Default 10000
+		// covers typical cPanel hosts with no cap effect. Raise on very
+		// large multi-tenant hosts where late-mtime accounts get skipped.
+		AccountScanMaxFiles int `yaml:"account_scan_max_files"`
+
 		// DomlogTailLines is how many trailing lines the WP brute force
 		// check reads from each per-domain access log per cycle. Default
 		// 500 covers roughly 10 minutes of traffic on a busy site. Raise
@@ -1059,6 +1067,9 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.Thresholds.DomlogMaxFiles == 0 {
 		cfg.Thresholds.DomlogMaxFiles = 500
+	}
+	if cfg.Thresholds.AccountScanMaxFiles == 0 {
+		cfg.Thresholds.AccountScanMaxFiles = 10000
 	}
 	if cfg.Thresholds.DomlogTailLines == 0 {
 		cfg.Thresholds.DomlogTailLines = 500

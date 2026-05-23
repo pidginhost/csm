@@ -87,7 +87,7 @@ func (c jConfigCreds) asWPDBCreds() wpDBCreds {
 // CheckDatabaseContent without sharing code -- the credentials and
 // table layout differ enough that a generic dispatcher is more
 // abstraction than this point in the codebase needs.
-func CheckJoomlaContent(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+func CheckJoomlaContent(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -100,7 +100,7 @@ func CheckJoomlaContent(ctx context.Context, _ *config.Config, _ *state.Store) [
 
 	// Rank by mtime desc so recently touched Joomla installs are processed
 	// first when the check timeout cuts iteration short.
-	for _, path := range rankPathsByMtimeDesc(ctx, configs, 0) {
+	for _, path := range rankPathsByMtimeDesc(ctx, configs, cfg.Thresholds.AccountScanMaxFiles) {
 		if ctx.Err() != nil {
 			return findings
 		}

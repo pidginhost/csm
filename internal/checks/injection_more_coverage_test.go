@@ -617,7 +617,7 @@ func TestDiscoverShadowFiles_SkipsTooShortPaths(t *testing.T) {
 			}, nil
 		},
 	})
-	got := discoverShadowFiles(context.Background())
+	got := discoverShadowFiles(context.Background(), 0)
 	if len(got) != 1 {
 		t.Fatalf("got %d, want 1; %+v", len(got), got)
 	}

@@ -184,7 +184,7 @@ func TestDiscoverShadowFiles_Found(t *testing.T) {
 			return nil, nil
 		},
 	})
-	files := discoverShadowFiles(context.Background())
+	files := discoverShadowFiles(context.Background(), 0)
 	if len(files) != 2 {
 		t.Fatalf("expected 2, got %d", len(files))
 	}
@@ -195,7 +195,7 @@ func TestDiscoverShadowFiles_Found(t *testing.T) {
 
 func TestDiscoverShadowFiles_Empty(t *testing.T) {
 	withMockOS(t, &mockOS{glob: func(string) ([]string, error) { return nil, nil }})
-	if files := discoverShadowFiles(context.Background()); len(files) != 0 {
+	if files := discoverShadowFiles(context.Background(), 0); len(files) != 0 {
 		t.Errorf("expected empty, got %d", len(files))
 	}
 }

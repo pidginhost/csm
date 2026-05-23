@@ -13,6 +13,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/integrity"
 	"github.com/pidginhost/csm/internal/metrics"
+	"gopkg.in/yaml.v3"
 )
 
 // seedConfigAtPath writes cfg to path and re-signs integrity.config_hash
@@ -572,7 +573,19 @@ func TestReloadConfigUsesConfDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Contains(mainBytes, []byte("300")) {
+	// Parse main YAML and confirm the drop-in's mail_queue_warn=300
+	// did not get persisted back into it. A naive bytes.Contains
+	// check on "300" matches incidentally inside the regenerated
+	// integrity.config_hash hex digest, which is not the test's intent.
+	var parsed struct {
+		Thresholds struct {
+			MailQueueWarn int `yaml:"mail_queue_warn"`
+		} `yaml:"thresholds"`
+	}
+	if err := yaml.Unmarshal(mainBytes, &parsed); err != nil {
+		t.Fatalf("parse main yaml: %v", err)
+	}
+	if parsed.Thresholds.MailQueueWarn == 300 {
 		t.Fatalf("drop-in threshold was written back to main config:\n%s", mainBytes)
 	}
 	select {

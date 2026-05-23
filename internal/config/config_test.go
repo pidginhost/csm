@@ -40,6 +40,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Thresholds.DomlogMaxFiles != 500 {
 		t.Errorf("domlog_max_files = %d, want 500", cfg.Thresholds.DomlogMaxFiles)
 	}
+	if cfg.Thresholds.AccountScanMaxFiles != 10000 {
+		t.Errorf("account_scan_max_files = %d, want 10000", cfg.Thresholds.AccountScanMaxFiles)
+	}
 	if cfg.Thresholds.DomlogTailLines != 500 {
 		t.Errorf("domlog_tail_lines = %d, want 500", cfg.Thresholds.DomlogTailLines)
 	}

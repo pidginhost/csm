@@ -98,6 +98,7 @@ thresholds:
   domlog_max_age_min: 30
   mail_log_tail_lines: 500
   syslog_messages_tail_lines: 200
+  account_scan_max_files: 10000
   # Mail brute / spray detector tuning. Defaults are
   # cPanel-mail-host-tested; lower the bruteforce_threshold for
   # smaller hosts, raise it for hosts behind shared NAT.

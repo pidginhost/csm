@@ -92,7 +92,7 @@ func (c drupalCreds) asWPDBCreds() wpDBCreds {
 // without sharing code -- the credential layout and table set are
 // distinct enough that a generic dispatcher would be more
 // abstraction than a 4-CMS pipeline calls for.
-func CheckDrupalContent(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+func CheckDrupalContent(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -105,7 +105,7 @@ func CheckDrupalContent(ctx context.Context, _ *config.Config, _ *state.Store) [
 
 	// Rank by mtime desc so recently touched Drupal sites are processed
 	// first when the check timeout cuts iteration short.
-	for _, path := range rankPathsByMtimeDesc(ctx, settings, 0) {
+	for _, path := range rankPathsByMtimeDesc(ctx, settings, cfg.Thresholds.AccountScanMaxFiles) {
 		if ctx.Err() != nil {
 			return findings
 		}

@@ -1448,7 +1448,7 @@ func TestDiscoverShadowFiles_NoMatches(t *testing.T) {
 			return nil, nil
 		},
 	})
-	files := discoverShadowFiles(context.Background())
+	files := discoverShadowFiles(context.Background(), 0)
 	if len(files) != 0 {
 		t.Errorf("expected empty, got %d files", len(files))
 	}
@@ -1466,7 +1466,7 @@ func TestDiscoverShadowFiles_ParsesAccountAndDomain(t *testing.T) {
 			return nil, nil
 		},
 	})
-	files := discoverShadowFiles(context.Background())
+	files := discoverShadowFiles(context.Background(), 0)
 	if len(files) != 2 {
 		t.Fatalf("expected 2, got %d", len(files))
 	}
@@ -1484,7 +1484,7 @@ func TestDiscoverShadowFiles_ShortPath(t *testing.T) {
 			return []string{"/home/shadow"}, nil
 		},
 	})
-	files := discoverShadowFiles(context.Background())
+	files := discoverShadowFiles(context.Background(), 0)
 	if len(files) != 0 {
 		t.Errorf("short path should be skipped, got %d", len(files))
 	}

@@ -92,6 +92,12 @@ thresholds:
   domlog_max_age_min: 30
   mail_log_tail_lines: 500
   syslog_messages_tail_lines: 200
+  # account_scan_max_files caps the number of per-account paths the
+  # per-account scanners (SSH authorized_keys, cPanel API tokens,
+  # Dovecot shadow, CMS DB-content scanners) iterate per cycle. Paths
+  # ranked by mtime desc so the cap chops least-active accounts.
+  # Raise on very large multi-tenant hosts.
+  account_scan_max_files: 10000
   # HTTP request flood: per-source-IP request count inside the window
   # that emits http_request_flood. 0 disables the detector. Sample
   # local baseline traffic before raising; high-traffic sites, CDNs,
