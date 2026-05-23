@@ -155,6 +155,29 @@ func TestThresholdsSchemaIncludesAccountScanMaxFiles(t *testing.T) {
 	}
 }
 
+func TestThresholdsSchemaIncludesCrontabBase64BlobMaxBytes(t *testing.T) {
+	s, _ := LookupSettingsSection("thresholds")
+	f := findSchemaField(s, "crontab_base64_blob_max_bytes")
+	if f == nil {
+		t.Fatal("crontab_base64_blob_max_bytes field missing")
+	}
+	if f.Type != "int" {
+		t.Fatalf("crontab_base64_blob_max_bytes type = %q, want int", f.Type)
+	}
+	if f.Min == nil || *f.Min != 1024 {
+		t.Fatalf("crontab_base64_blob_max_bytes min = %v, want 1024", f.Min)
+	}
+	if f.Max == nil || *f.Max != 1048576 {
+		t.Fatalf("crontab_base64_blob_max_bytes max = %v, want 1048576", f.Max)
+	}
+	if f.FieldGroup != FieldGroupLimits {
+		t.Fatalf("crontab_base64_blob_max_bytes group = %q, want %q", f.FieldGroup, FieldGroupLimits)
+	}
+	if !strings.Contains(f.Help, "multiple of 4") {
+		t.Fatalf("crontab_base64_blob_max_bytes help = %q, want multiple-of-4 guidance", f.Help)
+	}
+}
+
 func TestEnumArrayFieldsCarryOptionsSource(t *testing.T) {
 	cases := []struct {
 		section, field, source string

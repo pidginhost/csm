@@ -3,8 +3,10 @@
 package daemon
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -109,6 +111,45 @@ func TestCheckCrontab_Base64WrappedFires(t *testing.T) {
 		}
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("expected suspicious_crontab alert from base64-wrapped variant, none arrived")
+	}
+}
+
+func TestCheckCrontabUsesActiveConfigBlobCap(t *testing.T) {
+	prev := config.Active()
+	config.SetActive(nil)
+	t.Cleanup(func() { config.SetActive(prev) })
+
+	dir := t.TempDir()
+	withCronSpoolDir(t, dir)
+
+	body := strings.Repeat("padding\n", 2500) + "base64 -d|bash"
+	encoded := base64.StdEncoding.EncodeToString([]byte(body))
+	if len(encoded) <= 16384 || len(encoded) > 32768 {
+		t.Fatalf("encoded length %d must sit between default and configured caps", len(encoded))
+	}
+
+	target := filepath.Join(dir, "victim3")
+	payload := []byte("* * * * * echo " + encoded + "\n")
+	if err := os.WriteFile(target, payload, 0600); err != nil {
+		t.Fatalf("stage: %v", err)
+	}
+	fd := openRawFd(t, target)
+
+	active := &config.Config{}
+	active.Thresholds.CrontabBase64BlobMaxBytes = 32768
+	config.SetActive(active)
+
+	ch := make(chan alert.Finding, 4)
+	fm := &FileMonitor{cfg: &config.Config{}, alertCh: ch}
+	fm.checkCrontab(fd, target, "test")
+
+	select {
+	case got := <-ch:
+		if got.Check != "suspicious_crontab" {
+			t.Errorf("Check = %q, want suspicious_crontab", got.Check)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("expected suspicious_crontab alert using active crontab cap, none arrived")
 	}
 }
 

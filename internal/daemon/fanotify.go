@@ -229,6 +229,16 @@ type fileEvent struct {
 	pid  int32
 }
 
+func (fm *FileMonitor) currentCfg() *config.Config {
+	if cfg := config.Active(); cfg != nil {
+		return cfg
+	}
+	if fm == nil {
+		return nil
+	}
+	return fm.cfg
+}
+
 // NewFileMonitor creates a fanotify-based file monitor.
 // Returns error if the kernel doesn't support the required features.
 func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMonitor, error) {
@@ -1117,7 +1127,7 @@ func (fm *FileMonitor) checkCrontab(fd int, path, procInfo string) {
 	if data == nil {
 		return
 	}
-	matched := checks.MatchCrontabPatternsDeep(string(data))
+	matched := checks.MatchCrontabPatternsDeep(string(data), fm.currentCfg())
 	if len(matched) == 0 {
 		return
 	}

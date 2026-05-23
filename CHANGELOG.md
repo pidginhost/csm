@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Realtime crontab alerts now honor the configured base64 decode cap, and the settings UI exposes the same control as the sample configs.
 - Account scanner caps no longer hide root or system cron baselines, global hidden temp files, or duplicate filesystem backdoor paths when globs overlap.
 - Blocked-IP alert suppression now logs corrupt state once per filter pass and still uses valid queued-block entries when another state section is malformed.
 

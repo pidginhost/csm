@@ -373,7 +373,7 @@ func TestPackagedDefaultFirewallMatchesRuntimeDefaults(t *testing.T) {
 	}
 }
 
-func TestProductionReferenceConfigExposesHTTPAbuseKnobs(t *testing.T) {
+func TestProductionReferenceConfigExposesTunableThresholds(t *testing.T) {
 	data, err := os.ReadFile("../../configs/csm.yaml.production.example")
 	if err != nil {
 		t.Skipf("production reference config not readable from this layout: %v", err)
@@ -410,6 +410,7 @@ func TestProductionReferenceConfigExposesHTTPAbuseKnobs(t *testing.T) {
 		"http_ua_scripting_enabled",
 		"http_ua_headless_enabled",
 		"http_ua_empty_enabled",
+		"crontab_base64_blob_max_bytes",
 	} {
 		if _, ok := raw.Thresholds[key]; !ok {
 			t.Errorf("production reference config missing thresholds.%s", key)

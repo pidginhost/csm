@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"strings"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/config"
 )
 
 // Decode pass must catch the malicious marker even when the attacker
@@ -31,6 +33,32 @@ func TestMatchCrontabPatternsDeep_CatchesMaliciousInsideCappedBlob(t *testing.T)
 func TestCrontabBase64BlobCapRemainsDecodeAligned(t *testing.T) {
 	if crontabBase64BlobMaxBytesDefault%4 != 0 {
 		t.Fatalf("crontabBase64BlobMaxBytesDefault=%d must stay divisible by 4", crontabBase64BlobMaxBytesDefault)
+	}
+}
+
+func TestMatchCrontabPatternsDeep_HonorsConfiguredBlobCap(t *testing.T) {
+	body := strings.Repeat("padding\n", 2500) + "base64 -d|bash"
+	encoded := base64.StdEncoding.EncodeToString([]byte(body))
+	if len(encoded) <= crontabBase64BlobMaxBytesDefault {
+		t.Fatalf("encoded length %d must exceed default cap %d", len(encoded), crontabBase64BlobMaxBytesDefault)
+	}
+
+	cfg := &config.Config{}
+	cfg.Thresholds.CrontabBase64BlobMaxBytes = 32768
+	if len(encoded) > cfg.Thresholds.CrontabBase64BlobMaxBytes {
+		t.Fatalf("encoded length %d exceeds configured cap %d", len(encoded), cfg.Thresholds.CrontabBase64BlobMaxBytes)
+	}
+
+	cron := "* * * * * echo " + encoded + "\n"
+
+	defaultMatched := MatchCrontabPatternsDeep(cron, nil)
+	if containsPattern(defaultMatched, "base64 -d|bash") {
+		t.Fatalf("default cap unexpectedly reached late marker: matched=%v", defaultMatched)
+	}
+
+	matched := MatchCrontabPatternsDeep(cron, cfg)
+	if !containsPattern(matched, "base64 -d|bash") {
+		t.Errorf("configured cap did not reach late marker: matched=%v", matched)
 	}
 }
 
