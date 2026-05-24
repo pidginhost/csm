@@ -2135,11 +2135,15 @@ func TestBulkHelperWired(t *testing.T) {
 	text := string(js)
 	for _, fragment := range []string{
 		`CSM.bulk = function(opts) {`,
-		`selectAllEl.indeterminate = (n > 0 && n < total);`,
-		`b.el.textContent = b.labelTemplate.replace('{n}', n);`,
+		`var selectAllSelector = opts.selectAllSelector || '';`,
+		`function resolveSelectAll() {`,
+		`selectAll.indeterminate = (n > 0 && n < total);`,
+		`b.el.textContent = b.labelTemplate.replace(/\{n\}/g, n);`,
 		`b.el.disabled = (n === 0);`,
 		`b.el.classList.toggle('d-none', n === 0);`,
 		`if (cb.dataset.csmBulkBound === '1') return;`,
+		`function bindSelectAllListener() {`,
+		`if (selectAllEl.dataset.csmBulkSelectAllBound === '1') return;`,
 		`selectedValues: function() {`,
 		`selectedCount: function() {`,
 		`clear: function() {`,
@@ -2155,9 +2159,21 @@ func TestBulkHelperWired(t *testing.T) {
 		t.Fatal(err)
 	}
 	qText := string(q)
+	emptyIdx := strings.Index(qText, `if (!files || files.length === 0) {`)
+	if emptyIdx < 0 {
+		t.Fatal("quarantine.js missing empty quarantine branch")
+	}
+	emptyUpdateIdx := strings.Index(qText[emptyIdx:], `updateBulkRestore();`)
+	emptyReturnIdx := strings.Index(qText[emptyIdx:], `return;`)
+	if emptyUpdateIdx < 0 || emptyReturnIdx < 0 || emptyUpdateIdx > emptyReturnIdx {
+		t.Fatal("quarantine.js must repaint bulk buttons before returning from the empty quarantine branch")
+	}
 	for _, fragment := range []string{
 		`_quarBulk = CSM.bulk({`,
+		`if (!_quarBulk && !selectAll && !document.querySelector('.q-cb')) {`,
+		`btn.disabled = true;`,
 		`rowCheckboxSelector: '.q-cb',`,
+		`selectAllSelector: '#q-select-all',`,
 		`labelTemplate: 'Restore {n} file(s)'`,
 		`labelTemplate: 'Delete {n} file(s)'`,
 		`_quarBulk.selectedValues();`,

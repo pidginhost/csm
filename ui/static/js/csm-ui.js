@@ -213,6 +213,7 @@ CSM.applyProgressBars = function(root) {
 //   var bulk = CSM.bulk({
 //       rowCheckboxSelector: '.q-cb',
 //       selectAllEl: document.getElementById('q-select-all'),
+//       selectAllSelector: '#q-select-all', // optional, for re-rendered tables
 //       valueAttr: 'data-id', // attribute to read for selectedValues()
 //       buttons: [
 //           { el: btn1, labelTemplate: 'Restore {n} file(s)' },
@@ -220,7 +221,7 @@ CSM.applyProgressBars = function(root) {
 //       ],
 //       onChange: function(count, values) { ... } // optional
 //   });
-//   bulk.selectedValues();  // → ['id-a', 'id-b']
+//   bulk.selectedValues();  // returns ['id-a', 'id-b']
 //   bulk.clear();           // unchecks every row + select-all + refreshes labels
 //   bulk.refresh();         // re-reads checkboxes (call after re-render)
 //
@@ -231,12 +232,28 @@ CSM.bulk = function(opts) {
     opts = opts || {};
     var rowSel = opts.rowCheckboxSelector;
     var selectAllEl = opts.selectAllEl || null;
+    var selectAllSelector = opts.selectAllSelector || '';
+    var selectAllID = selectAllEl && selectAllEl.id ? selectAllEl.id : '';
     var valueAttr = opts.valueAttr || 'data-id';
     var buttons = opts.buttons || [];
     var changeCb = (typeof opts.onChange === 'function') ? opts.onChange : function() {};
 
+    function resolveSelectAll() {
+        var el = null;
+        if (selectAllSelector) {
+            selectAllEl = document.querySelector(selectAllSelector);
+            return selectAllEl;
+        } else if (selectAllID) {
+            el = document.getElementById(selectAllID);
+        }
+        if (el) {
+            selectAllEl = el;
+        }
+        return selectAllEl;
+    }
+
     function checked() {
-        return Array.prototype.slice.call(document.querySelectorAll(rowSel + ':checked'));
+        return all().filter(function(cb) { return cb.checked; });
     }
     function all() {
         return Array.prototype.slice.call(document.querySelectorAll(rowSel));
@@ -246,15 +263,16 @@ CSM.bulk = function(opts) {
         var sel = checked();
         var total = all().length;
         var n = sel.length;
-        if (selectAllEl) {
-            selectAllEl.checked = (n > 0 && n === total);
-            selectAllEl.indeterminate = (n > 0 && n < total);
+        var selectAll = resolveSelectAll();
+        if (selectAll) {
+            selectAll.checked = (n > 0 && n === total);
+            selectAll.indeterminate = (n > 0 && n < total);
         }
         for (var i = 0; i < buttons.length; i++) {
             var b = buttons[i];
             if (!b || !b.el) continue;
             if (b.labelTemplate) {
-                b.el.textContent = b.labelTemplate.replace('{n}', n);
+                b.el.textContent = b.labelTemplate.replace(/\{n\}/g, n);
             }
             b.el.disabled = (n === 0);
             b.el.classList.toggle('d-none', n === 0);
@@ -271,13 +289,18 @@ CSM.bulk = function(opts) {
         });
     }
 
-    if (selectAllEl) {
+    function bindSelectAllListener() {
+        selectAllEl = resolveSelectAll();
+        if (!selectAllEl) return;
+        if (selectAllEl.dataset.csmBulkSelectAllBound === '1') return;
+        selectAllEl.dataset.csmBulkSelectAllBound = '1';
         selectAllEl.addEventListener('change', function() {
             var v = this.checked;
             all().forEach(function(cb) { cb.checked = v; });
             paint();
         });
     }
+    bindSelectAllListener();
     bindRowListeners();
     paint();
 
@@ -288,10 +311,12 @@ CSM.bulk = function(opts) {
         selectedCount: function() { return checked().length; },
         clear: function() {
             all().forEach(function(cb) { cb.checked = false; });
-            if (selectAllEl) { selectAllEl.checked = false; selectAllEl.indeterminate = false; }
+            var selectAll = resolveSelectAll();
+            if (selectAll) { selectAll.checked = false; selectAll.indeterminate = false; }
             paint();
         },
         refresh: function() {
+            bindSelectAllListener();
             bindRowListeners();
             paint();
         }

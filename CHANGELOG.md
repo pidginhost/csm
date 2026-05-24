@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Quarantine bulk actions now reset after a list refresh, so select-all and the action buttons do not point at stale rows.
 - URL-bound web UI search inputs now clear stale saved table filters when a shared link has no search query, and they reapply state after browser history navigation.
 - Shared Web UI table sorting now reorders rows before paginating, so sorted pages display in the requested order.
 - Shared web UI path safety checks now continue resolving traversal through missing path segments, keeping later symlink escapes blocked.

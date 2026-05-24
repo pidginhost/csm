@@ -5,7 +5,11 @@ function loadQuarantine() {
         var el = document.getElementById('quarantine-content');
         var title = document.querySelector('.card-title');
         if (title) title.innerHTML = '<i class="ti ti-lock"></i>&nbsp;Quarantined Files (' + (files ? files.length : 0) + ')';
-        if (!files || files.length === 0) { el.innerHTML = '<div class="card-body text-center text-muted py-4"><i class="ti ti-circle-check"></i> No quarantined files.</div>'; return; }
+        if (!files || files.length === 0) {
+            el.innerHTML = '<div class="card-body text-center text-muted py-4"><i class="ti ti-circle-check"></i> No quarantined files.</div>';
+            updateBulkRestore();
+            return;
+        }
         var html = '<div class="table-responsive"><table class="table table-vcenter card-table" id="quarantine-table"><thead><tr><th><input type="checkbox" class="form-check-input" id="q-select-all"></th><th>Original Path</th><th>Size</th><th>Quarantined</th><th>Reason</th><th>Action</th></tr></thead><tbody>';
         for (var i = 0; i < files.length; i++) {
             var f = files[i];
@@ -109,14 +113,23 @@ var formatSize = CSM.formatSize;
 // the two action handlers.
 var _quarBulk = null;
 function updateBulkRestore() {
-    if (_quarBulk) { _quarBulk.refresh(); return; }
     var restoreBtn = document.getElementById('bulk-restore-btn');
     var deleteBtn  = document.getElementById('bulk-delete-btn');
     var selectAll  = document.getElementById('q-select-all');
+    if (!_quarBulk && !selectAll && !document.querySelector('.q-cb')) {
+        [restoreBtn, deleteBtn].forEach(function(btn) {
+            if (!btn) return;
+            btn.disabled = true;
+            btn.classList.add('d-none');
+        });
+        return;
+    }
+    if (_quarBulk) { _quarBulk.refresh(); return; }
     if (!restoreBtn && !deleteBtn) return;
     _quarBulk = CSM.bulk({
         rowCheckboxSelector: '.q-cb',
         selectAllEl: selectAll,
+        selectAllSelector: '#q-select-all',
         valueAttr: 'data-id',
         buttons: [
             { el: restoreBtn, labelTemplate: 'Restore {n} file(s)' },
