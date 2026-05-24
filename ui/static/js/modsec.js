@@ -5,6 +5,7 @@
 
     var _modsecBlocks = [];
     var _modsecPoller = null;
+    var _modsecBulk = null;
     var eventsLoaded = false;
 
     window.addEventListener('beforeunload', function() {
@@ -103,6 +104,42 @@
     function statusBadgeHTML(block) {
         var cls = block.escalated ? 'bg-red-lt' : 'bg-yellow-lt';
         return '<span class="badge ' + cls + '">' + CSM.esc(statusLabel(block)) + '</span>';
+    }
+
+    function modsecRuleID(ruleID) {
+        var raw = String(ruleID == null ? '' : ruleID).trim();
+        if (!raw) return null;
+        var id = parseInt(raw, 10);
+        if (!isFinite(id) || String(id) !== raw) return null;
+        if (id < 900000 || id > 900999) return null;
+        return id;
+    }
+
+    function selectedModSecRuleIDs() {
+        var ruleSet = Object.create(null);
+        document.querySelectorAll('.modsec-block-cb:checked:not(:disabled)').forEach(function(cb) {
+            var id = modsecRuleID(cb.getAttribute('data-rule'));
+            if (id !== null) ruleSet[id] = true;
+        });
+        return Object.keys(ruleSet).map(function(k) { return parseInt(k, 10); }).sort(function(a, b) { return a - b; });
+    }
+
+    function syncModSecBulkButton(btn) {
+        if (!btn) return;
+        var n = selectedModSecRuleIDs().length;
+        btn.replaceChildren();
+        var icon = document.createElement('i');
+        icon.className = 'ti ti-circle-off';
+        btn.appendChild(icon);
+        btn.appendChild(document.createTextNode(n > 0 ? ' Disable ' + n + ' ' + (n === 1 ? 'rule' : 'rules') : ' Disable Selected'));
+        btn.disabled = (n === 0);
+        btn.classList.toggle('d-none', n === 0);
+    }
+
+    function resetModSecBulkButton() {
+        var btn = document.getElementById('modsec-bulk-disable');
+        if (_modsecBulk) _modsecBulk.clear();
+        syncModSecBulkButton(btn);
     }
 
     function ruleSeverity(block) {
@@ -292,6 +329,7 @@
             })
             .catch(function(e) {
                 document.getElementById('modsec-content').innerHTML = '<div class="card-body text-center text-danger py-3">Failed to load blocks</div>';
+                resetModSecBulkButton();
                 var p = document.getElementById('modsec-pressure');
                 if (p) {
                     p.replaceChildren();
@@ -312,18 +350,22 @@
             container.innerHTML = '<div class="card-body text-center text-muted py-3">No ModSecurity blocks match the current filter.</div>';
             var c = document.getElementById('modsec-blocked-count');
             if (c) c.textContent = '0';
+            resetModSecBulkButton();
             return;
         }
         var h = '<div class="table-responsive"><table class="table table-vcenter card-table table-sm csm-table-rowcard csm-table-sticky" id="modsec-table">';
         h += '<thead><tr>';
-        h += '<th class="csm-w-narrow"><input type="checkbox" class="form-check-input" id="modsec-select-all" aria-label="Select all visible rules"></th>';
+        h += '<th class="csm-w-narrow"><input type="checkbox" class="form-check-input" id="modsec-select-all" aria-label="Select all CSM custom rules"></th>';
         h += '<th>IP</th><th>Location</th><th>Rule</th><th>Description</th><th>Domains</th><th>Hits</th><th>Last Seen</th><th>Status</th>';
         h += '</tr></thead><tbody>';
         for (var i = 0; i < filtered.length; i++) {
             var b = filtered[i];
             var domains = domainListText(b);
+            var selectableRuleID = modsecRuleID(b.rule_id);
+            var selectableRuleText = selectableRuleID === null ? '' : String(selectableRuleID);
+            var disabledAttrs = selectableRuleID === null ? ' disabled title="Only CSM custom rules can be disabled here"' : '';
             h += '<tr data-csm-modsec-ip="' + CSM.attr(b.ip) + '" data-csm-modsec-rule="' + CSM.attr(b.rule_id || '') + '">';
-            h += '<td><input type="checkbox" class="form-check-input modsec-block-cb" data-rule="' + CSM.attr(b.rule_id || '') + '" aria-label="Select rule"' + (b.rule_id ? '' : ' disabled') + '></td>';
+            h += '<td><input type="checkbox" class="form-check-input modsec-block-cb" data-rule="' + CSM.attr(selectableRuleText) + '" aria-label="Select CSM rule"' + disabledAttrs + '></td>';
             h += '<td data-label="IP"><code>' + CSM.esc(b.ip) + '</code></td>';
             h += '<td data-label="Location" class="geo-cell" data-ip="' + CSM.attr(b.ip) + '"><span class="text-muted">--</span></td>';
             h += '<td data-label="Rule"><code>' + CSM.esc(b.rule_id || '') + '</code></td>';
@@ -358,35 +400,59 @@
                 if (b) openBlockDetail(b);
             }
         });
-        // WEB_ROADMAP P3.7: bulk-disable across selected rule IDs. The
-        // blocks table is rule-by-rule across IPs, so dedupe the
-        // selection by rule_id before sending the apply request.
+        // The apply endpoint replaces the whole override file, so preserve
+        // existing disabled rules and add the selected CSM rule IDs.
         var modsecBulkBtn = document.getElementById('modsec-bulk-disable');
         if (modsecBulkBtn) {
-            CSM.bulk({
-                rowCheckboxSelector: '.modsec-block-cb',
-                selectAllEl: document.getElementById('modsec-select-all'),
-                valueAttr: 'data-rule',
-                buttons: [{ el: modsecBulkBtn, labelTemplate: 'Disable {n} rule(s)' }]
-            });
+            if (!_modsecBulk) {
+                _modsecBulk = CSM.bulk({
+                    rowCheckboxSelector: '.modsec-block-cb:not(:disabled)',
+                    selectAllEl: document.getElementById('modsec-select-all'),
+                    selectAllSelector: '#modsec-select-all',
+                    valueAttr: 'data-rule',
+                    onChange: function() { syncModSecBulkButton(modsecBulkBtn); }
+                });
+            } else {
+                _modsecBulk.refresh();
+            }
+            syncModSecBulkButton(modsecBulkBtn);
             if (!modsecBulkBtn.dataset.csmBound) {
                 modsecBulkBtn.dataset.csmBound = '1';
                 modsecBulkBtn.addEventListener('click', function() {
-                    var checked = document.querySelectorAll('.modsec-block-cb:checked');
-                    var ruleSet = {};
-                    checked.forEach(function(cb) {
-                        var r = cb.getAttribute('data-rule');
-                        if (r) ruleSet[r] = true;
-                    });
-                    var rules = Object.keys(ruleSet);
+                    var rules = selectedModSecRuleIDs();
                     if (rules.length === 0) return;
                     CSM.confirm('Disable ' + rules.length + ' ModSecurity rule(s)?\n\nThis writes the override and reloads ModSecurity.').then(function() {
-                        CSM.post('/api/v1/modsec/rules/apply', { disabled: rules })
-                            .then(function() {
+                        modsecBulkBtn.disabled = true;
+                        CSM.get('/api/v1/modsec/rules', { silent: true })
+                            .then(function(data) {
+                                if (!data.configured) {
+                                    throw new Error('ModSecurity rule management is not configured');
+                                }
+                                var disabledSet = Object.create(null);
+                                (data.rules || []).forEach(function(rule) {
+                                    var id = modsecRuleID(rule.id);
+                                    if (id !== null && rule.enabled === false) disabledSet[id] = true;
+                                });
+                                rules.forEach(function(id) { disabledSet[id] = true; });
+                                var disabled = Object.keys(disabledSet)
+                                    .map(function(k) { return parseInt(k, 10); })
+                                    .sort(function(a, b) { return a - b; });
+                                return CSM.post('/api/v1/modsec/rules/apply', { disabled: disabled });
+                            })
+                            .then(function(data) {
+                                if (!data.ok) {
+                                    var msg = 'Apply failed: ' + (data.error || 'unknown');
+                                    if (data.rolled_back) msg += ' (changes rolled back)';
+                                    throw new Error(msg);
+                                }
                                 CSM.toast('Disabled ' + rules.length + ' rule(s)', 'success');
+                                resetModSecBulkButton();
                                 loadBlocked();
                             })
-                            .catch(function(err) { CSM.toast('Apply failed: ' + (err.message || ''), 'error'); });
+                            .catch(function(err) {
+                                CSM.toast(err.message || 'Apply failed', 'error');
+                                syncModSecBulkButton(modsecBulkBtn);
+                            });
                     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
                 });
             }

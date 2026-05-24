@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Quarantine page gained account, detector, and from/to date filters in addition to its existing path search. Account and detector dropdowns are populated from the current quarantine contents and all five filters persist in the URL.
 - Email quarantine tab gained a toolbar with sender / recipient / subject search, direction filter, date range, and bulk release / delete buttons backed by the shared selection helper.
 - Threat intelligence top-attackers table now supports country, verdict, and last-seen date-range filters. Country choices are derived from the visible attacker list and all filters persist in the URL.
-- ModSecurity blocked-IPs tab gained per-row checkboxes and a bulk-disable button that writes a rule override and reloads ModSecurity in one click, so operators can clear noisy rules straight from the blocks view.
+- ModSecurity blocked-IPs tab gained per-row checkboxes and a bulk-disable button that writes CSM custom rule overrides and reloads ModSecurity in one click, so operators can clear noisy CSM rules straight from the blocks view.
 - New `thresholds.crontab_base64_blob_max_bytes` operator override for the crontab deep-scan base64 decoder cap (default 16384). Lets operators raise the cap on hosts where `csm_checks_crontab_base64_truncated_total` shows recurring truncation without rebuilding the daemon.
 
 ### Changed
@@ -57,6 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rules page suppression list now formats the created-at timestamp through the shared `CSM.fmtDate` helper so the format matches every other timestamp in the UI.
 - Shared Web UI number and percent formatters now leave missing values blank instead of displaying them as zero.
 - ModSecurity rule table filters now track staged enable and escalation changes, and table filter selections persist across reloads.
+- ModSecurity blocked-IPs bulk disable now preserves existing disabled rules and reports reload rollback failures instead of showing success.
 - Web UI refresh buttons now use a single ghost-secondary style across pages instead of the mix of info, outline, and ghost variants that drifted in earlier releases.
 - Audit log page export is now a CSV / JSON dropdown matching the export control on findings, firewall, threat, and email.
 - Firewall configuration tables now render with the same card-table styling as the other firewall tables instead of plain defaults.

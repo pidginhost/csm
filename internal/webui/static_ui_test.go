@@ -2548,16 +2548,32 @@ func TestModSecBlocksBulkToggle(t *testing.T) {
 	}
 	jsText := string(js)
 	for _, fragment := range []string{
+		`function modsecRuleID(ruleID) {`,
+		`if (id < 900000 || id > 900999) return null;`,
+		`function selectedModSecRuleIDs() {`,
 		`id="modsec-select-all"`,
 		`class="form-check-input modsec-block-cb"`,
-		`data-rule="' + CSM.attr(b.rule_id || '') + '"`,
-		`rowCheckboxSelector: '.modsec-block-cb',`,
+		`data-rule="' + CSM.attr(selectableRuleText) + '"`,
+		`rowCheckboxSelector: '.modsec-block-cb:not(:disabled)',`,
+		`selectAllSelector: '#modsec-select-all',`,
 		`valueAttr: 'data-rule',`,
-		`labelTemplate: 'Disable {n} rule(s)' }`,
-		`CSM.post('/api/v1/modsec/rules/apply', { disabled: rules })`,
+		`CSM.get('/api/v1/modsec/rules', { silent: true })`,
+		`if (id !== null && rule.enabled === false) disabledSet[id] = true;`,
+		`rules.forEach(function(id) { disabledSet[id] = true; });`,
+		`return CSM.post('/api/v1/modsec/rules/apply', { disabled: disabled });`,
+		`if (!data.ok) {`,
 	} {
 		if !strings.Contains(jsText, fragment) {
 			t.Fatalf("modsec.js missing P3.7 fragment %q", fragment)
+		}
+	}
+	for _, bad := range []string{
+		`data-rule="' + CSM.attr(b.rule_id || '') + '"`,
+		`CSM.post('/api/v1/modsec/rules/apply', { disabled: rules })`,
+		`var ruleSet = {};`,
+	} {
+		if strings.Contains(jsText, bad) {
+			t.Fatalf("modsec.js still contains unsafe P3.7 fragment %q", bad)
 		}
 	}
 }
