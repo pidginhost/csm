@@ -259,8 +259,8 @@ CSM.get('/api/v1/threat/top-attackers?limit=50').then(function(data){
     // Click row to lookup
     document.querySelectorAll('.ip-row').forEach(function(row){
         row.addEventListener('click',function(){
-            document.getElementById('lookup-ip').value=this.getAttribute('data-ip');
-            document.getElementById('lookup-form').dispatchEvent(new Event('submit'));
+            document.getElementById('tr-lookup-ip').value=this.getAttribute('data-ip');
+            document.getElementById('tr-lookup-form').dispatchEvent(new Event('submit'));
         });
     });
     // Inline action buttons
@@ -285,12 +285,12 @@ CSM.get('/api/v1/threat/top-attackers?limit=50').then(function(data){
 }).catch(function(err){ console.error('top-attackers:', err); CSM.loadError(document.getElementById('attackers-tbody').parentElement.parentElement.parentElement, function(){ location.reload(); }); });
 
 // IP Lookup
-document.getElementById('lookup-form').addEventListener('submit',function(e){
+document.getElementById('tr-lookup-form').addEventListener('submit',function(e){
     e.preventDefault();
-    var ip=document.getElementById('lookup-ip').value.trim();
+    var ip=document.getElementById('tr-lookup-ip').value.trim();
     if(!ip)return;
     var status=document.getElementById('lookup-status');
-    var result=document.getElementById('lookup-result');
+    var result=document.getElementById('tr-lookup-result');
     status.textContent='Looking up...';status.className='text-muted small';
     result.classList.add('d-none');
 
@@ -424,7 +424,7 @@ function blockIP(ip) {
         CSM.post('/api/v1/threat/block-ip',{ip:ip}).then(function(data){
             if(data.error){CSM.toast('Error: '+data.error,'error');return;}
             CSM.toast('IP '+ip+' blocked for 24h.\n\nActions: '+(data.actions||[]).join(', '),'success');
-            document.getElementById('lookup-form').dispatchEvent(new Event('submit'));
+            document.getElementById('tr-lookup-form').dispatchEvent(new Event('submit'));
         }).catch(function(e){CSM.toast('Error: '+e,'error')});
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
@@ -434,7 +434,7 @@ function clearIP(ip) {
         CSM.post('/api/v1/threat/clear-ip',{ip:ip}).then(function(data){
             if(data.error){CSM.toast('Error: '+data.error,'error');return;}
             CSM.toast('IP '+ip+' cleared.\n\nActions: '+(data.actions||[]).join(', '),'success');
-            document.getElementById('lookup-form').dispatchEvent(new Event('submit'));
+            document.getElementById('tr-lookup-form').dispatchEvent(new Event('submit'));
         }).catch(function(e){CSM.toast('Error: '+e,'error')});
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
@@ -447,7 +447,7 @@ function tempWhitelistIP(ip) {
             if(data.error){CSM.toast('Error: '+data.error,'error');return;}
             CSM.toast('IP '+ip+' temp-whitelisted for '+data.hours+'h.\n\nActions: '+(data.actions||[]).join(', '),'success');
             loadWhitelist();
-            document.getElementById('lookup-form').dispatchEvent(new Event('submit'));
+            document.getElementById('tr-lookup-form').dispatchEvent(new Event('submit'));
         }).catch(function(e){CSM.toast('Error: '+e,'error')});
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
@@ -458,7 +458,7 @@ function whitelistIP(ip) {
             if(data.error){CSM.toast('Error: '+data.error,'error');return;}
             CSM.toast('IP '+ip+' permanently whitelisted.\n\nActions: '+(data.actions||[]).join(', '),'success');
             loadWhitelist();
-            document.getElementById('lookup-form').dispatchEvent(new Event('submit'));
+            document.getElementById('tr-lookup-form').dispatchEvent(new Event('submit'));
         }).catch(function(e){CSM.toast('Error: '+e,'error')});
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }

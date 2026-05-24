@@ -81,7 +81,7 @@ function extractLookupIP(target) {
 }
 
 function setAuditSearch(value) {
-    var el = document.getElementById('audit-search');
+    var el = document.getElementById('fw-audit-search');
     if (!el) return;
     el.value = value || '';
     el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -90,8 +90,8 @@ function setAuditSearch(value) {
 function currentAuditURL() {
     var url = '/api/v1/firewall/audit?limit=50';
     var params = [];
-    var search = document.getElementById('audit-search');
-    var action = document.getElementById('audit-action-filter');
+    var search = document.getElementById('fw-audit-search');
+    var action = document.getElementById('fw-audit-action-filter');
     var source = document.getElementById('audit-source-filter');
     if (search && search.value.trim()) params.push('search=' + encodeURIComponent(search.value.trim()));
     if (action && action.value && action.value !== 'all') params.push('action=' + encodeURIComponent(action.value));
@@ -120,7 +120,7 @@ function inspectIP(ip) {
 // Called when the audit table is filtered, searched, or reloaded so the
 // expansion can't end up orphaned below a now-hidden parent row.
 function closeAuditExpansion() {
-    var el = document.getElementById('audit-content');
+    var el = document.getElementById('fw-audit-content');
     if (!el) return;
     var rows = el.querySelectorAll('tr.audit-inspect-row');
     for (var i = 0; i < rows.length; i++) {
@@ -513,7 +513,7 @@ function loadWhitelist() {
 function loadAudit() {
     CSM.get(currentAuditURL())
         .then(function(entries) {
-            var el = document.getElementById('audit-content');
+            var el = document.getElementById('fw-audit-content');
             removeTableControls('firewall-audit-table-controls');
             if (!entries || entries.length === 0) {
                 el.innerHTML = '<div class="card-body text-center text-muted py-3">No recent firewall activity.</div>';
@@ -539,19 +539,19 @@ function loadAudit() {
             new CSM.Table({
                 tableId: 'firewall-audit-table',
                 perPage: 12,
-                searchId: 'audit-search',
+                searchId: 'fw-audit-search',
                 sortable: true,
                 controlsId: 'firewall-audit-table-controls',
                 filters: [
-                    { id: 'audit-action-filter', attr: 'data-action' },
+                    { id: 'fw-audit-action-filter', attr: 'data-action' },
                     { id: 'audit-source-filter', attr: 'data-source' }
                 ]
             });
-            if (document.getElementById('audit-search').value) {
-                document.getElementById('audit-search').dispatchEvent(new Event('input', { bubbles: true }));
+            if (document.getElementById('fw-audit-search').value) {
+                document.getElementById('fw-audit-search').dispatchEvent(new Event('input', { bubbles: true }));
             }
-            if (document.getElementById('audit-action-filter').value !== 'all') {
-                document.getElementById('audit-action-filter').dispatchEvent(new Event('change', { bubbles: true }));
+            if (document.getElementById('fw-audit-action-filter').value !== 'all') {
+                document.getElementById('fw-audit-action-filter').dispatchEvent(new Event('change', { bubbles: true }));
             }
             if (document.getElementById('audit-source-filter').value !== 'all') {
                 document.getElementById('audit-source-filter').dispatchEvent(new Event('change', { bubbles: true }));
@@ -563,7 +563,7 @@ function loadAudit() {
             });
         })
         .catch(function() {
-            CSM.loadError(document.getElementById('audit-content'), loadAudit);
+            CSM.loadError(document.getElementById('fw-audit-content'), loadAudit);
         });
 }
 
@@ -973,11 +973,11 @@ var auditResetBtn = document.getElementById('audit-reset-btn');
 if (auditResetBtn) {
     auditResetBtn.addEventListener('click', function() {
         closeAuditExpansion();
-        document.getElementById('audit-search').value = '';
-        document.getElementById('audit-action-filter').value = 'all';
+        document.getElementById('fw-audit-search').value = '';
+        document.getElementById('fw-audit-action-filter').value = 'all';
         document.getElementById('audit-source-filter').value = 'all';
-        document.getElementById('audit-search').dispatchEvent(new Event('input', { bubbles: true }));
-        document.getElementById('audit-action-filter').dispatchEvent(new Event('change', { bubbles: true }));
+        document.getElementById('fw-audit-search').dispatchEvent(new Event('input', { bubbles: true }));
+        document.getElementById('fw-audit-action-filter').dispatchEvent(new Event('change', { bubbles: true }));
         document.getElementById('audit-source-filter').dispatchEvent(new Event('change', { bubbles: true }));
     });
 }
@@ -987,11 +987,11 @@ if (auditResetBtn) {
 // which would leave the expansion row orphaned and visually inconsistent.
 // Listening on capture phase so we beat the Table module's own handler.
 (function() {
-    var searchEl = document.getElementById('audit-search');
+    var searchEl = document.getElementById('fw-audit-search');
     if (searchEl) {
         searchEl.addEventListener('input', closeAuditExpansion);
     }
-    var actionFilterEl = document.getElementById('audit-action-filter');
+    var actionFilterEl = document.getElementById('fw-audit-action-filter');
     if (actionFilterEl) {
         actionFilterEl.addEventListener('change', closeAuditExpansion);
     }

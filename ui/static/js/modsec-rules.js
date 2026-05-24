@@ -57,7 +57,7 @@ function renderStats(data) {
 }
 
 function renderTable() {
-    var tbody = document.getElementById('rules-tbody');
+    var tbody = document.getElementById('modsec-rules-tbody');
     var html = '';
     _pendingChanges = {};
 
@@ -92,7 +92,7 @@ function renderTable() {
     tbody.innerHTML = html;
 
     _rulesTable = new CSM.Table({
-        tableId: 'rules-table',
+        tableId: 'modsec-rules-table',
         perPage: 50,
         searchId: 'rules-search',
         sortable: true,

@@ -2616,3 +2616,58 @@ func TestSettingsPageUsesQueryStringDeepLink(t *testing.T) {
 		t.Fatal("settings.js still always writes #hash on section change; move to CSM.urlState")
 	}
 }
+
+// TestNoCrossTemplateDuplicateIDs pins WEB_ROADMAP P4.1: prior audit
+// found duplicate element IDs across templates (audit-search /
+// audit-content in firewall+audit, lookup-form / lookup-ip /
+// lookup-result in firewall+threat, rules-table / rules-tbody in
+// rules+modsec-rules). Each page loads independently so no live
+// breakage existed, but the dup IDs were a known foot-gun for
+// future SPA work. After P4.1 each ID lives on only one template;
+// cross-template collisions fail the test.
+func TestNoCrossTemplateDuplicateIDs(t *testing.T) {
+	files, err := filepath.Glob("../../ui/templates/*.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	idRe := regexp.MustCompile(`id="([a-zA-Z0-9_-]+)"`)
+	// owners[id] = path that first declared it; second declaration is
+	// the regression.
+	owners := map[string]string{}
+	collisions := []string{}
+	// IDs that legitimately appear in layout.html and every page (e.g.
+	// shared modal / toast containers). Allowlisted to keep the lint
+	// focused on page-scope IDs.
+	allow := map[string]bool{
+		"csm-confirm-modal": true, "csm-confirm-body": true,
+		"csm-confirm-ok": true, "csm-confirm-cancel": true,
+	}
+	for _, path := range files {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(src)
+		seenInFile := map[string]bool{}
+		for _, m := range idRe.FindAllStringSubmatch(text, -1) {
+			id := m[1]
+			if allow[id] {
+				continue
+			}
+			if seenInFile[id] {
+				continue
+			}
+			seenInFile[id] = true
+			if prev, ok := owners[id]; ok && prev != path {
+				collisions = append(collisions, id+" in "+filepath.Base(prev)+" and "+filepath.Base(path))
+			} else {
+				owners[id] = path
+			}
+		}
+	}
+	if len(collisions) > 0 {
+		for _, c := range collisions {
+			t.Errorf("duplicate cross-template id: %s", c)
+		}
+	}
+}
