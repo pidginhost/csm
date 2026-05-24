@@ -44,6 +44,7 @@ CSM.Table = function(opts) {
     this.sortAsc = true;
     this.hasDetailRows = opts.detailRows || false;
     this.filters = opts.filters || [];
+    this.rowFilter = opts.rowFilter || null;
     this.stateKey = opts.stateKey || null;
     this.persistPerPage = opts.persistPerPage !== false;
     this.onRender = opts.onRender || null;
@@ -245,6 +246,11 @@ CSM.Table.prototype.applyFilters = function() {
                 }
                 if (rowVal !== val) return false;
             }
+        }
+        // Caller-supplied predicate for filters CSM.Table's built-in
+        // exact-match logic can't express (date ranges, regex etc.).
+        if (typeof self.rowFilter === 'function' && !self.rowFilter(item.row)) {
+            return false;
         }
         return true;
     });

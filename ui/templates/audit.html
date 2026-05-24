@@ -10,6 +10,19 @@
     <div class="card">
         <div class="csm-toolbar">
             <input type="text" id="audit-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search audit log..." aria-label="Search audit log">
+            <select id="audit-action-filter" class="form-select form-select-sm csm-toolbar__filter" aria-label="Filter by action type">
+                <option value="">All actions</option>
+                <option value="block_ip">Block IP</option>
+                <option value="unblock_ip">Unblock IP</option>
+                <option value="whitelist_ip">Whitelist IP</option>
+                <option value="temp_whitelist_ip">Temp whitelist</option>
+                <option value="clear_ip">Clear IP</option>
+                <option value="dismiss">Dismiss</option>
+                <option value="fix">Fix</option>
+                <option value="restore">Restore</option>
+            </select>
+            <input type="date" id="audit-from" class="form-control form-control-sm csm-toolbar__filter" aria-label="From date">
+            <input type="date" id="audit-to" class="form-control form-control-sm csm-toolbar__filter" aria-label="To date">
             <span class="csm-toolbar__spacer"></span>
             <div class="dropdown csm-toolbar__actions">
                 <button class="btn btn-ghost-secondary btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-label="Export current view" title="Export current view">

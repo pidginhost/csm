@@ -1816,7 +1816,7 @@ func TestAuditAndThreatPagesBindSearchToURLState(t *testing.T) {
 	for _, tc := range []struct{ path, fragment string }{
 		{
 			"../../ui/static/js/audit.js",
-			`CSM.urlState.bind({ inputs: { q: document.getElementById('audit-search') } });`,
+			`q: document.getElementById('audit-search'),`,
 		},
 		{
 			"../../ui/static/js/threat.js",
@@ -2180,6 +2180,63 @@ func TestBulkHelperWired(t *testing.T) {
 	} {
 		if !strings.Contains(qText, fragment) {
 			t.Fatalf("quarantine.js missing CSM.bulk fragment %q", fragment)
+		}
+	}
+}
+
+// TestAuditPageHasFilterPack pins WEB_ROADMAP P3.1: audit page exposes
+// an action-type dropdown and from/to date inputs, both wired to
+// CSM.Table (action via filters[], date via rowFilter) and persisted
+// to URL state through CSM.urlState.bind.
+func TestAuditPageHasFilterPack(t *testing.T) {
+	tmpl, err := os.ReadFile("../../ui/templates/audit.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmplText := string(tmpl)
+	for _, fragment := range []string{
+		`id="audit-action-filter"`,
+		`id="audit-from"`,
+		`id="audit-to"`,
+		`<option value="block_ip">Block IP</option>`,
+		`<option value="dismiss">Dismiss</option>`,
+	} {
+		if !strings.Contains(tmplText, fragment) {
+			t.Fatalf("audit.html missing P3.1 filter fragment %q", fragment)
+		}
+	}
+
+	js, err := os.ReadFile("../../ui/static/js/audit.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsText := string(js)
+	for _, fragment := range []string{
+		`data-action="' + CSM.attr(e.action`,
+		`data-timestamp="' + CSM.attr(e.timestamp`,
+		`filters: [{ id: 'audit-action-filter', attr: 'data-action' }],`,
+		`rowFilter: _auditDateInRange`,
+		`function _auditDateInRange(row) {`,
+		`action: document.getElementById('audit-action-filter'),`,
+		`from: _auditFromInput,`,
+		`to: _auditToInput`,
+	} {
+		if !strings.Contains(jsText, fragment) {
+			t.Fatalf("audit.js missing P3.1 fragment %q", fragment)
+		}
+	}
+
+	table, err := os.ReadFile("../../ui/static/js/table.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tText := string(table)
+	for _, fragment := range []string{
+		`this.rowFilter = opts.rowFilter || null;`,
+		`if (typeof self.rowFilter === 'function' && !self.rowFilter(item.row)) {`,
+	} {
+		if !strings.Contains(tText, fragment) {
+			t.Fatalf("table.js missing rowFilter hook %q", fragment)
 		}
 	}
 }
