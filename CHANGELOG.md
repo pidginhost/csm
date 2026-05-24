@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cleanup history bulk restore and bulk delete now disable their trigger button for the duration of the request, preventing double-submits that would clone work or double-delete rows.
 - Added a hot-reloadable account scanner cap so large hosts can bound account-scoped and mail-domain file iteration without relying on check timeouts. The new threshold is available in the sample config and settings UI.
 - Web UI audit log and threat intelligence search boxes now persist to the URL, so filtered views are bookmarkable and shareable.
-- Account detail tabs (findings, quarantine, history) and the correlated incidents list now support column sort, pagination, and persistent state, matching every other CSM table.
+- Account detail tabs now support column sort, pagination, and persistent state, and the correlated incidents list uses shared table sorting while keeping its server-side pager.
 - New `thresholds.crontab_base64_blob_max_bytes` operator override for the crontab deep-scan base64 decoder cap (default 16384). Lets operators raise the cap on hosts where `csm_checks_crontab_base64_truncated_total` shows recurring truncation without rebuilding the daemon.
 
 ### Changed
@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - URL-bound web UI search inputs now clear stale saved table filters when a shared link has no search query, and they reapply state after browser history navigation.
+- Shared Web UI table sorting now reorders rows before paginating, so sorted pages display in the requested order.
 - Shared web UI path safety checks now continue resolving traversal through missing path segments, keeping later symlink escapes blocked.
 - Threat intelligence IP lookup now escapes account names before listing them, and country flag rendering ignores malformed country codes instead of breaking the page.
 - Every web UI page now routes its API calls through the shared request helper, so a hung backend can no longer freeze a tab indefinitely. GET, POST, DELETE, and live-data poll requests share the same 30-second timeout.

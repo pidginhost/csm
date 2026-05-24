@@ -1826,14 +1826,14 @@ func TestAuditAndThreatPagesBindSearchToURLState(t *testing.T) {
 // TestAccountAndIncidentTabsUseCSMTable pins WEB_ROADMAP P2.2: tables
 // that previously rendered as plain HTML (account findings / quarantine
 // / history tabs, incident correlated tab) now mount through CSM.Table
-// so sort / search / per-page / state persistence behave the same as on
-// every other CSM table.
+// so sort / per-page / state persistence use the same helper as the
+// other CSM tables.
 func TestAccountAndIncidentTabsUseCSMTable(t *testing.T) {
-	for _, tc := range []struct{ path, tableID, stateKey string }{
-		{"../../ui/static/js/account.js", "account-findings-table", "csm-account-findings"},
-		{"../../ui/static/js/account.js", "account-quarantine-table", "csm-account-quarantine"},
-		{"../../ui/static/js/account.js", "account-history-table", "csm-account-history"},
-		{"../../ui/static/js/incident.js", "incidents-correlated-table", "csm-incidents-correlated"},
+	for _, tc := range []struct{ path, tableID, stateKey, initFragment string }{
+		{"../../ui/static/js/account.js", "account-findings-table", "csm-account-findings", `tableId: 'account-findings-table', perPage: 25, search: false, sortable: true, stateKey: 'csm-account-findings'`},
+		{"../../ui/static/js/account.js", "account-quarantine-table", "csm-account-quarantine", `tableId: 'account-quarantine-table', perPage: 25, search: false, sortable: true, stateKey: 'csm-account-quarantine'`},
+		{"../../ui/static/js/account.js", "account-history-table", "csm-account-history", `tableId: 'account-history-table', perPage: 25, search: false, sortable: true, stateKey: 'csm-account-history'`},
+		{"../../ui/static/js/incident.js", "incidents-correlated-table", "csm-incidents-correlated", `tableId: 'incidents-correlated-table'`},
 	} {
 		src, err := os.ReadFile(tc.path)
 		if err != nil {
@@ -1846,8 +1846,84 @@ func TestAccountAndIncidentTabsUseCSMTable(t *testing.T) {
 		if !strings.Contains(text, `tableId: '`+tc.tableID+`'`) {
 			t.Errorf("%s missing CSM.Table init for %q", tc.path, tc.tableID)
 		}
+		if !strings.Contains(text, tc.initFragment) {
+			t.Errorf("%s missing expected CSM.Table options for %q", tc.path, tc.tableID)
+		}
 		if !strings.Contains(text, `stateKey: '`+tc.stateKey+`'`) {
 			t.Errorf("%s missing stateKey %q", tc.path, tc.stateKey)
+		}
+	}
+}
+
+func TestSharedTableSortReordersDOMRows(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/table.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, fragment := range []string{
+		`this._orderRows();`,
+		`document.createDocumentFragment()`,
+		`fragment.appendChild(item.row);`,
+		`if (item.detail) fragment.appendChild(item.detail);`,
+		`this.tbody.appendChild(fragment);`,
+		`getAttribute('data-sort')`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Errorf("table.js missing DOM sort-order fragment %q", fragment)
+		}
+	}
+}
+
+func TestAccountTablesUseSortableNumericColumns(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/account.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, fragment := range []string{
+		`data-sort="' + Number(f.severity || 0) + '"`,
+		`data-sort="' + size + '"`,
+		`data-sort="' + Number(e.severity || 0) + '"`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Errorf("account.js missing numeric sort fragment %q", fragment)
+		}
+	}
+}
+
+func TestIncidentCSMTableDoesNotShadowServerPagination(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/incident.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, fragment := range []string{
+		`perPage: 0`,
+		`search: false`,
+		`controls: false`,
+		`persistPerPage: false`,
+		`data-sort="' + severityNumber(inc.severity) + '"`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Errorf("incident.js missing server-pagination-safe CSM.Table fragment %q", fragment)
+		}
+	}
+
+	table, err := os.ReadFile("../../ui/static/js/table.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tableText := string(table)
+	for _, fragment := range []string{
+		`this.perPage = typeof opts.perPage === 'number' ? opts.perPage : 25;`,
+		`if (opts.controls === false)`,
+		`if (!this.controlsEl) return;`,
+		`opts.persistPerPage !== false`,
+		`state.search && opts.search !== false && opts.searchId`,
+	} {
+		if !strings.Contains(tableText, fragment) {
+			t.Errorf("table.js missing server-pagination support fragment %q", fragment)
 		}
 	}
 }

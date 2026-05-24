@@ -6,14 +6,16 @@
  *     tableId: 'my-table',          // ID of <table> element
  *     perPage: 25,                  // rows per page (default 25)
  *     search: true,                 // enable search (default true)
- *     searchId: 'my-search',        // ID of search <input> (auto-created if missing)
+ *     searchId: 'my-search',        // ID of existing search <input> (optional)
  *     filters: [                    // optional filters
  *       { id: 'sev-filter', column: 0, attr: 'data-sev' }
  *     ],
  *     sortable: true,               // enable column sorting (default true)
  *     detailRows: true,             // rows with class 'details-row' are expandable
  *     controlsId: 'my-controls',    // ID of div for pagination controls (auto-created)
+ *     controls: false,              // disable auto-created pagination controls
  *     stateKey: 'my-table-state',   // localStorage key for persistent state (optional)
+ *     persistPerPage: false,        // do not save/restore perPage in localStorage
  *     density: 'compact',           // 'comfortable' (default) or 'compact' (adds table-sm)
  *     emptyState: {                 // optional: rendered when filteredRows is empty
  *       icon: 'circle-check',
@@ -34,7 +36,7 @@ CSM.Table = function(opts) {
     this.tbody = this.table.querySelector('tbody');
     if (!this.tbody) return;
 
-    this.perPage = opts.perPage || 25;
+    this.perPage = typeof opts.perPage === 'number' ? opts.perPage : 25;
     this.currentPage = 1;
     this.searchText = '';
     this.filterValues = {};
@@ -43,6 +45,7 @@ CSM.Table = function(opts) {
     this.hasDetailRows = opts.detailRows || false;
     this.filters = opts.filters || [];
     this.stateKey = opts.stateKey || null;
+    this.persistPerPage = opts.persistPerPage !== false;
     this.onRender = opts.onRender || null;
     this.opts = opts;
     this.emptyState = opts.emptyState || null;
@@ -205,6 +208,10 @@ CSM.Table = function(opts) {
 };
 
 CSM.Table.prototype._buildControls = function(opts) {
+    if (opts.controls === false) {
+        this.controlsEl = null;
+        return;
+    }
     var controlsId = opts.controlsId || opts.tableId + '-controls';
     var controls = document.getElementById(controlsId);
     if (!controls) {
@@ -266,8 +273,10 @@ CSM.Table.prototype.applySort = function() {
             }
         }
 
-        var valA = cellA.textContent.trim().toLowerCase();
-        var valB = cellB.textContent.trim().toLowerCase();
+        var sortElA = cellA.getAttribute('data-sort') !== null ? cellA : cellA.querySelector('[data-sort]');
+        var sortElB = cellB.getAttribute('data-sort') !== null ? cellB : cellB.querySelector('[data-sort]');
+        var valA = (sortElA ? sortElA.getAttribute('data-sort') : cellA.textContent).trim().toLowerCase();
+        var valB = (sortElB ? sortElB.getAttribute('data-sort') : cellB.textContent).trim().toLowerCase();
         // Try numeric sort - only if the entire value is a number
         var numA = parseFloat(valA), numB = parseFloat(valB);
         if (!isNaN(numA) && !isNaN(numB) && String(numA) === valA && String(numB) === valB) {
@@ -292,6 +301,7 @@ CSM.Table.prototype.render = function() {
         this.allRows[i].row.style.display = 'none';
         if (this.allRows[i].detail) this.allRows[i].detail.style.display = 'none';
     }
+    this._orderRows();
 
     // Show only current page rows
     for (var j = start; j < end; j++) {
@@ -312,6 +322,26 @@ CSM.Table.prototype.render = function() {
     if (this.onRender) this.onRender();
 };
 
+CSM.Table.prototype._orderRows = function() {
+    if (!this.tbody || !this.allRows) return;
+    this._removeEmptyState();
+    var fragment = document.createDocumentFragment();
+    var seen = [];
+    var appendItem = function(item) {
+        if (!item || seen.indexOf(item) >= 0) return;
+        seen.push(item);
+        fragment.appendChild(item.row);
+        if (item.detail) fragment.appendChild(item.detail);
+    };
+    for (var i = 0; i < this.filteredRows.length; i++) {
+        appendItem(this.filteredRows[i]);
+    }
+    for (var j = 0; j < this.allRows.length; j++) {
+        appendItem(this.allRows[j]);
+    }
+    this.tbody.appendChild(fragment);
+};
+
 CSM.Table.prototype._renderControls = function(total, totalPages) {
     var self = this;
     var showAll = !this.perPage;
@@ -323,6 +353,7 @@ CSM.Table.prototype._renderControls = function(total, totalPages) {
     if (this.countTargetEl) {
         this.countTargetEl.textContent = countText;
     }
+    if (!this.controlsEl) return;
     var html = '<span class="text-muted small">' + countText + '</span>';
 
     if (totalPages > 1) {
@@ -452,12 +483,12 @@ CSM.Table.prototype._saveState = function() {
         }
         var state = {
             page: this.currentPage,
-            perPage: this.perPage,
             sortCol: this.sortColumn,
             sortAsc: this.sortAsc,
             search: this.searchText,
             filters: filters
         };
+        if (this.persistPerPage) state.perPage = this.perPage;
         localStorage.setItem(this.stateKey, JSON.stringify(state));
     } catch (e) { /* localStorage may be unavailable */ }
 };
@@ -472,7 +503,7 @@ CSM.Table.prototype._restoreState = function(opts) {
         if (typeof state.page === 'number' && state.page > 0) {
             this.currentPage = state.page;
         }
-        if (typeof state.perPage === 'number' && state.perPage >= 0) {
+        if (opts.persistPerPage !== false && typeof state.perPage === 'number' && state.perPage >= 0) {
             this.perPage = state.perPage;
         }
         if (typeof state.sortCol === 'number' && state.sortCol >= 0) {
@@ -484,7 +515,7 @@ CSM.Table.prototype._restoreState = function(opts) {
                 headers[state.sortCol].classList.add(this.sortAsc ? 'sort-asc' : 'sort-desc');
             }
         }
-        if (state.search) {
+        if (state.search && opts.search !== false && opts.searchId) {
             this.searchText = state.search;
             // Also set the search input value
             var searchEl = opts.searchId ? document.getElementById(opts.searchId) : null;

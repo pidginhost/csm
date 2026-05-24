@@ -62,7 +62,7 @@
             html += '<div class="table-responsive"><table class="table table-vcenter card-table table-sm" id="account-findings-table"><thead><tr><th>Severity</th><th>Check</th><th>Message</th></tr></thead><tbody>';
             for (var i = 0; i < findings.length; i++) {
                 var f = findings[i];
-                html += '<tr><td><span class="badge badge-' + (sevClasses[f.severity] || 'warning') + '">' + (sevLabels[f.severity] || 'WARNING') + '</span></td>';
+                html += '<tr><td data-sort="' + Number(f.severity || 0) + '"><span class="badge badge-' + (sevClasses[f.severity] || 'warning') + '">' + (sevLabels[f.severity] || 'WARNING') + '</span></td>';
                 html += '<td><code>' + CSM.esc(f.check) + '</code></td><td>' + CSM.esc(f.message) + '</td></tr>';
             }
             html += '</tbody></table></div>';
@@ -72,7 +72,7 @@
         html += '</div>';
         content.innerHTML = html;
         if (findings.length > 0) {
-            new CSM.Table({ tableId: 'account-findings-table', perPage: 25, sortable: true, stateKey: 'csm-account-findings' });
+            new CSM.Table({ tableId: 'account-findings-table', perPage: 25, search: false, sortable: true, stateKey: 'csm-account-findings' });
         }
     }
 
@@ -81,8 +81,9 @@
         if (quarantined.length > 0) {
             html += '<div class="table-responsive"><table class="table table-vcenter card-table table-sm" id="account-quarantine-table"><thead><tr><th>Path</th><th>Size</th><th>Reason</th></tr></thead><tbody>';
             for (var q = 0; q < quarantined.length; q++) {
+                var size = Number(quarantined[q].size || 0);
                 html += '<tr><td><code>' + CSM.esc(quarantined[q].original_path) + '</code></td>';
-                html += '<td>' + CSM.formatSize(quarantined[q].size) + '</td>';
+                html += '<td data-sort="' + size + '">' + CSM.formatSize(quarantined[q].size) + '</td>';
                 html += '<td class="small">' + CSM.esc(quarantined[q].reason) + '</td></tr>';
             }
             html += '</tbody></table></div>';
@@ -92,7 +93,7 @@
         html += '</div>';
         content.innerHTML = html;
         if (quarantined.length > 0) {
-            new CSM.Table({ tableId: 'account-quarantine-table', perPage: 25, sortable: true, stateKey: 'csm-account-quarantine' });
+            new CSM.Table({ tableId: 'account-quarantine-table', perPage: 25, search: false, sortable: true, stateKey: 'csm-account-quarantine' });
         }
     }
 
@@ -102,7 +103,7 @@
             html += '<div class="table-responsive"><table class="table table-vcenter card-table table-sm" id="account-history-table"><thead><tr><th>Severity</th><th>Check</th><th>Message</th><th>Time</th></tr></thead><tbody>';
             for (var h = 0; h < history.length; h++) {
                 var e = history[h];
-                html += '<tr><td><span class="badge badge-' + (sevClasses[e.severity] || 'warning') + '">' + (sevLabels[e.severity] || 'WARNING') + '</span></td>';
+                html += '<tr><td data-sort="' + Number(e.severity || 0) + '"><span class="badge badge-' + (sevClasses[e.severity] || 'warning') + '">' + (sevLabels[e.severity] || 'WARNING') + '</span></td>';
                 html += '<td><code>' + CSM.esc(e.check) + '</code></td><td>' + CSM.esc(e.message) + '</td>';
                 html += '<td class="text-nowrap"><span class="text-muted small" data-timestamp="' + CSM.esc(e.timestamp) + '">' + CSM.esc(CSM.timeAgo(e.timestamp)) + '</span></td></tr>';
             }
@@ -113,7 +114,7 @@
         html += '</div>';
         content.innerHTML = html;
         if (history.length > 0) {
-            new CSM.Table({ tableId: 'account-history-table', perPage: 25, sortable: true, stateKey: 'csm-account-history' });
+            new CSM.Table({ tableId: 'account-history-table', perPage: 25, search: false, sortable: true, stateKey: 'csm-account-history' });
         }
     }
 
