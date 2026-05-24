@@ -1822,3 +1822,32 @@ func TestAuditAndThreatPagesBindSearchToURLState(t *testing.T) {
 		}
 	}
 }
+
+// TestAccountAndIncidentTabsUseCSMTable pins WEB_ROADMAP P2.2: tables
+// that previously rendered as plain HTML (account findings / quarantine
+// / history tabs, incident correlated tab) now mount through CSM.Table
+// so sort / search / per-page / state persistence behave the same as on
+// every other CSM table.
+func TestAccountAndIncidentTabsUseCSMTable(t *testing.T) {
+	for _, tc := range []struct{ path, tableID, stateKey string }{
+		{"../../ui/static/js/account.js", "account-findings-table", "csm-account-findings"},
+		{"../../ui/static/js/account.js", "account-quarantine-table", "csm-account-quarantine"},
+		{"../../ui/static/js/account.js", "account-history-table", "csm-account-history"},
+		{"../../ui/static/js/incident.js", "incidents-correlated-table", "csm-incidents-correlated"},
+	} {
+		src, err := os.ReadFile(tc.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(src)
+		if !strings.Contains(text, `id="`+tc.tableID+`"`) {
+			t.Errorf("%s missing table id %q", tc.path, tc.tableID)
+		}
+		if !strings.Contains(text, `tableId: '`+tc.tableID+`'`) {
+			t.Errorf("%s missing CSM.Table init for %q", tc.path, tc.tableID)
+		}
+		if !strings.Contains(text, `stateKey: '`+tc.stateKey+`'`) {
+			t.Errorf("%s missing stateKey %q", tc.path, tc.stateKey)
+		}
+	}
+}

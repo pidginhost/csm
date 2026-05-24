@@ -429,7 +429,7 @@
             return;
         }
 
-        var html = '<div class="table-responsive"><table class="table table-vcenter card-table">';
+        var html = '<div class="table-responsive"><table class="table table-vcenter card-table" id="incidents-correlated-table">';
         html += '<thead><tr><th>Status</th><th>Severity</th><th>Kind</th><th>Owner</th><th>Findings</th><th>Updated</th></tr></thead><tbody>';
         for (var i = 0; i < rows.length; i++) {
             var inc = rows[i];
@@ -446,6 +446,13 @@
         }
         html += '</tbody></table></div>';
         container.innerHTML = html;
+        new CSM.Table({
+            tableId: 'incidents-correlated-table',
+            perPage: 25,
+            sortable: true,
+            stateKey: 'csm-incidents-correlated',
+            mobileRowCard: true
+        });
         CSM.initTimeAgo();
 
         var trs = container.querySelectorAll('tr[data-incident-id]');

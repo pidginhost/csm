@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cleanup history bulk restore and bulk delete now disable their trigger button for the duration of the request, preventing double-submits that would clone work or double-delete rows.
 - Added a hot-reloadable account scanner cap so large hosts can bound account-scoped and mail-domain file iteration without relying on check timeouts. The new threshold is available in the sample config and settings UI.
 - Web UI audit log and threat intelligence search boxes now persist to the URL, so filtered views are bookmarkable and shareable.
+- Account detail tabs (findings, quarantine, history) and the correlated incidents list now support column sort, pagination, and persistent state, matching every other CSM table.
 - New `thresholds.crontab_base64_blob_max_bytes` operator override for the crontab deep-scan base64 decoder cap (default 16384). Lets operators raise the cap on hosts where `csm_checks_crontab_base64_truncated_total` shows recurring truncation without rebuilding the daemon.
 
 ### Changed
