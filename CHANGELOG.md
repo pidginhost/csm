@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Threat intelligence attacker filters now match clean verdicts and keep bookmarked filter state even when no attackers are listed.
 - Email quarantine toolbar filters now stay separate from findings filters, bulk select-all survives empty-to-populated reloads, and relative timestamp refresh no longer collapses message rows.
 - Quarantine page filters now keep search scoped to file paths, clear stale dropdowns after the list empties, and use calendar-day date bounds so local DST changes do not hide rows.
 - Quarantine bulk actions now reset after a list refresh, so select-all and the action buttons do not point at stale rows.

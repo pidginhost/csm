@@ -28,6 +28,55 @@ function typeBadges(counts){
     return html||'-';
 }
 
+function threatLocalDateMillis(value, endExclusive) {
+    if (!value) return null;
+    var parts = String(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!parts) return null;
+    var year = Number(parts[1]);
+    var month = Number(parts[2]) - 1;
+    var day = Number(parts[3]);
+    var d = new Date(year, month, day);
+    if (isNaN(d.getTime())) return null;
+    if (d.getFullYear() !== year || d.getMonth() !== month || d.getDate() !== day) return null;
+    if (endExclusive) d.setDate(d.getDate() + 1);
+    return d.getTime();
+}
+
+function attackerURLInputs(countrySel, fromEl, toEl) {
+    return {
+        q: document.getElementById('attackers-search'),
+        country: countrySel,
+        verdict: document.getElementById('attackers-verdict'),
+        from: fromEl,
+        to: toEl
+    };
+}
+
+function populateAttackerCountryFilter(rows) {
+    var countrySel = document.getElementById('attackers-country');
+    if (!countrySel) return null;
+    var countries = Object.create(null);
+    for (var ci = 0; ci < (rows || []).length; ci++) {
+        var c = (rows[ci].country || '').toUpperCase();
+        if (c) countries[c] = true;
+    }
+    var selected = CSM.urlState.get('country') || countrySel.value || '';
+    while (countrySel.options.length > 1) countrySel.remove(1);
+    var added = Object.create(null);
+    function addCountry(c) {
+        c = String(c || '');
+        if (!c || added[c]) return;
+        added[c] = true;
+        var opt = document.createElement('option');
+        opt.value = c;
+        opt.textContent = c;
+        countrySel.appendChild(opt);
+    }
+    Object.keys(countries).sort().forEach(addCountry);
+    addCountry(selected);
+    return countrySel;
+}
+
 function getJSONAllowError(url) {
     return CSM.get(url, { allowNonOK: true, silent: true });
 }
@@ -141,7 +190,14 @@ CSM.get('/api/v1/threat/stats').then(function(data){
 // Load top attackers
 CSM.get('/api/v1/threat/top-attackers?limit=50').then(function(data){
     var tbody=document.getElementById('attackers-tbody');
-    if(!data||data.length===0){tbody.innerHTML='<tr><td colspan="11" class="text-center text-muted">No attack data recorded yet</td></tr>';return;}
+    var fromEl = document.getElementById('attackers-from');
+    var toEl = document.getElementById('attackers-to');
+    var countrySel = populateAttackerCountryFilter(data || []);
+    if(!data||data.length===0){
+        tbody.innerHTML='<tr><td colspan="11" class="text-center text-muted">No attack data recorded yet</td></tr>';
+        CSM.urlState.bind({ inputs: attackerURLInputs(countrySel, fromEl, toEl) });
+        return;
+    }
     _threatAttackerData = data.map(function(r) {
         return { ip: r.ip, hits: r.event_count, score: r.unified_score, country: r.country || '', blocked: r.currently_blocked ? 'Yes' : 'No' };
     });
@@ -171,40 +227,15 @@ CSM.get('/api/v1/threat/top-attackers?limit=50').then(function(data){
         html+='</tr>';
     }
     tbody.innerHTML=html;
-    // WEB_ROADMAP P3.5: populate country filter from observed rows so
-    // operators only see countries actually present in the attacker list.
-    var countrySel = document.getElementById('attackers-country');
-    if (countrySel) {
-        var seen = {};
-        for (var ci = 0; ci < data.length; ci++) {
-            var c = (data[ci].country || '').toUpperCase();
-            if (c) seen[c] = true;
-        }
-        var prevC = countrySel.value;
-        while (countrySel.options.length > 1) countrySel.remove(1);
-        Object.keys(seen).sort().forEach(function(c) {
-            var opt = document.createElement('option');
-            opt.value = c;
-            opt.textContent = c;
-            countrySel.appendChild(opt);
-        });
-        if (prevC) countrySel.value = prevC;
-    }
-    var fromEl = document.getElementById('attackers-from');
-    var toEl = document.getElementById('attackers-to');
     function _attackerInRange(row) {
         var raw = row.getAttribute('data-last-seen') || '';
         if (!raw) return true;
         var ts = new Date(raw.replace(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})/, '$1T$2')).getTime();
         if (isNaN(ts)) return true;
-        if (fromEl && fromEl.value) {
-            var f = new Date(fromEl.value + 'T00:00:00').getTime();
-            if (!isNaN(f) && ts < f) return false;
-        }
-        if (toEl && toEl.value) {
-            var to = new Date(toEl.value + 'T00:00:00').getTime();
-            if (!isNaN(to) && ts >= to + 86400000) return false;
-        }
+        var from = fromEl ? threatLocalDateMillis(fromEl.value, false) : null;
+        var to = toEl ? threatLocalDateMillis(toEl.value, true) : null;
+        if (from !== null && ts < from) return false;
+        if (to !== null && ts >= to) return false;
         return true;
     }
     var attackersTable = new CSM.Table({
@@ -224,13 +255,7 @@ CSM.get('/api/v1/threat/top-attackers?limit=50').then(function(data){
     if (fromEl) fromEl.addEventListener('change', _onAttackerDate);
     if (toEl) toEl.addEventListener('change', _onAttackerDate);
     // WEB_ROADMAP P2.1 / P3.5: persist all filter state to URL.
-    CSM.urlState.bind({ inputs: {
-        q: document.getElementById('attackers-search'),
-        country: countrySel,
-        verdict: document.getElementById('attackers-verdict'),
-        from: fromEl,
-        to: toEl
-    } });
+    CSM.urlState.bind({ inputs: attackerURLInputs(countrySel, fromEl, toEl) });
     // Click row to lookup
     document.querySelectorAll('.ip-row').forEach(function(row){
         row.addEventListener('click',function(){

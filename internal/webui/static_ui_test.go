@@ -2468,10 +2468,14 @@ func TestThreatAttackersFilterPack(t *testing.T) {
 		`id="attackers-from"`,
 		`id="attackers-to"`,
 		`<option value="malicious">Malicious</option>`,
+		`<option value="clean">Clean</option>`,
 	} {
 		if !strings.Contains(tmplText, fragment) {
 			t.Fatalf("threat.html missing P3.5 fragment %q", fragment)
 		}
+	}
+	if strings.Contains(tmplText, `<option value="benign">`) {
+		t.Fatal("threat verdict filter must use the API's clean verdict value, not benign")
 	}
 
 	js, err := os.ReadFile("../../ui/static/js/threat.js")
@@ -2483,8 +2487,19 @@ func TestThreatAttackersFilterPack(t *testing.T) {
 		`data-country="'+CSM.attr((r.country||'').toUpperCase())+'"`,
 		`data-verdict="'+CSM.attr((r.verdict||'').toLowerCase())+'"`,
 		`data-last-seen="'+CSM.attr(r.last_seen||'')+'"`,
+		`function attackerURLInputs(countrySel, fromEl, toEl) {`,
+		`function populateAttackerCountryFilter(rows) {`,
+		`var selected = CSM.urlState.get('country') || countrySel.value || '';`,
+		`Object.keys(countries).sort().forEach(addCountry);`,
+		`var countrySel = populateAttackerCountryFilter(data || []);`,
 		`{ id: 'attackers-country', attr: 'data-country' },`,
 		`{ id: 'attackers-verdict', attr: 'data-verdict' }`,
+		`function threatLocalDateMillis(value, endExclusive) {`,
+		`if (d.getFullYear() !== year || d.getMonth() !== month || d.getDate() !== day) return null;`,
+		`if (endExclusive) d.setDate(d.getDate() + 1);`,
+		`var from = fromEl ? threatLocalDateMillis(fromEl.value, false) : null;`,
+		`var to = toEl ? threatLocalDateMillis(toEl.value, true) : null;`,
+		`if (to !== null && ts >= to) return false;`,
 		`rowFilter: _attackerInRange`,
 		`country: countrySel,`,
 		`verdict: document.getElementById('attackers-verdict'),`,
@@ -2492,5 +2507,18 @@ func TestThreatAttackersFilterPack(t *testing.T) {
 		if !strings.Contains(jsText, fragment) {
 			t.Fatalf("threat.js missing P3.5 fragment %q", fragment)
 		}
+	}
+	if strings.Contains(jsText, `86400000`) || strings.Contains(jsText, `new Date(fromEl.value + 'T00:00:00')`) {
+		t.Fatal("threat.js must use validated calendar-day bounds instead of fixed 24-hour date math")
+	}
+	emptyIdx := strings.Index(jsText, `if(!data||data.length===0){`)
+	if emptyIdx < 0 {
+		t.Fatal("threat.js missing no-attack-data branch")
+	}
+	emptyBody := jsText[emptyIdx:]
+	emptyBindIdx := strings.Index(emptyBody, `CSM.urlState.bind({ inputs: attackerURLInputs(countrySel, fromEl, toEl) });`)
+	emptyReturnIdx := strings.Index(emptyBody, `return;`)
+	if emptyBindIdx < 0 || emptyReturnIdx < 0 || emptyBindIdx > emptyReturnIdx {
+		t.Fatal("threat.js must bind top-attackers URL state before returning from the empty-data branch")
 	}
 }
