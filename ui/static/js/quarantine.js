@@ -22,18 +22,9 @@ function loadQuarantine() {
         el.querySelectorAll('.view-btn').forEach(function(btn) {
             btn.addEventListener('click', function() { viewFile(this.getAttribute('data-id'), this.getAttribute('data-path')); });
         });
-        // Bulk restore: select-all and per-row checkboxes
-        var selectAll = document.getElementById('q-select-all');
-        if (selectAll) {
-            selectAll.addEventListener('change', function() {
-                var checked = this.checked;
-                el.querySelectorAll('.q-cb').forEach(function(cb) { cb.checked = checked; });
-                updateBulkRestore();
-            });
-        }
-        el.querySelectorAll('.q-cb').forEach(function(cb) {
-            cb.addEventListener('change', updateBulkRestore);
-        });
+        // CSM.bulk owns the select-all and per-row checkbox listeners
+        // (re-bind is idempotent via the data-csm-bulk-bound flag).
+        updateBulkRestore();
     }).catch(function(){ CSM.loadError(document.getElementById('quarantine-content'), loadQuarantine); });
 }
 function restoreFile(id) {
@@ -113,27 +104,33 @@ function viewFile(id, path) {
 }
 var formatSize = CSM.formatSize;
 
+// WEB_ROADMAP P2.5: shared CSM.bulk owns selection state, button
+// labels, and the select-all indeterminate. Quarantine just registers
+// the two action handlers.
+var _quarBulk = null;
 function updateBulkRestore() {
-    var checked = document.querySelectorAll('.q-cb:checked');
-    var btn = document.getElementById('bulk-restore-btn');
-    if (btn) {
-        btn.classList.toggle('d-none', checked.length === 0);
-        btn.textContent = 'Restore ' + checked.length + ' file(s)';
-    }
-    var delBtn = document.getElementById('bulk-delete-btn');
-    if (delBtn) {
-        delBtn.classList.toggle('d-none', checked.length === 0);
-        delBtn.textContent = 'Delete ' + checked.length + ' file(s)';
-    }
+    if (_quarBulk) { _quarBulk.refresh(); return; }
+    var restoreBtn = document.getElementById('bulk-restore-btn');
+    var deleteBtn  = document.getElementById('bulk-delete-btn');
+    var selectAll  = document.getElementById('q-select-all');
+    if (!restoreBtn && !deleteBtn) return;
+    _quarBulk = CSM.bulk({
+        rowCheckboxSelector: '.q-cb',
+        selectAllEl: selectAll,
+        valueAttr: 'data-id',
+        buttons: [
+            { el: restoreBtn, labelTemplate: 'Restore {n} file(s)' },
+            { el: deleteBtn,  labelTemplate: 'Delete {n} file(s)' }
+        ]
+    });
 }
 
 var bulkRestoreBtn = document.getElementById('bulk-restore-btn');
 if (bulkRestoreBtn) {
     bulkRestoreBtn.addEventListener('click', function() {
-        var checked = document.querySelectorAll('.q-cb:checked');
-        if (checked.length === 0) return;
-        var ids = [];
-        checked.forEach(function(cb) { ids.push(cb.dataset.id); });
+        if (!_quarBulk) return;
+        var ids = _quarBulk.selectedValues();
+        if (ids.length === 0) return;
         CSM.confirm('Restore ' + ids.length + ' file(s)? A re-scan is recommended after restore.').then(function() {
             var succeeded = 0, failed = 0;
             var chain = Promise.resolve();
@@ -155,10 +152,9 @@ if (bulkRestoreBtn) {
 var bulkDeleteBtn = document.getElementById('bulk-delete-btn');
 if (bulkDeleteBtn) {
     bulkDeleteBtn.addEventListener('click', function() {
-        var checked = document.querySelectorAll('.q-cb:checked');
-        if (checked.length === 0) return;
-        var ids = [];
-        checked.forEach(function(cb) { ids.push(cb.dataset.id); });
+        if (!_quarBulk) return;
+        var ids = _quarBulk.selectedValues();
+        if (ids.length === 0) return;
         CSM.confirm('Permanently delete ' + ids.length + ' quarantined file(s)?').then(function() {
             CSM.post('/api/v1/quarantine/bulk-delete', { ids: ids }).then(function(data) {
                 CSM.toast('Deleted ' + data.count + ' file(s)', 'success');

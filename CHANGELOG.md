@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Account detail tabs now support column sort, pagination, and persistent state, and the correlated incidents list uses shared table sorting while keeping its server-side pager.
 - Web UI header shows a shared "Updated Xs ago" pill with manual refresh and auto-refresh pause/resume controls, so operators can freeze background refresh while still fetching on demand.
 - Web UI hardening audit, performance monitor, account detail tabs, and ModSecurity rules listing now expose CSV / JSON export through the same dropdown style used elsewhere, and the audit log uses the same helper. CSV cells are guarded for spreadsheet safety.
+- Web UI bulk-action bars share a new helper that tracks selection state, drives the select-all indeterminate, syncs per-button labels ("Restore 3 file(s)"), and disables / hides the buttons when nothing is selected. Quarantine page migrated as the first consumer.
 - New `thresholds.crontab_base64_blob_max_bytes` operator override for the crontab deep-scan base64 decoder cap (default 16384). Lets operators raise the cap on hosts where `csm_checks_crontab_base64_truncated_total` shows recurring truncation without rebuilding the daemon.
 
 ### Changed

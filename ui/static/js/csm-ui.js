@@ -205,6 +205,99 @@ CSM.applyProgressBars = function(root) {
     }
 };
 
+// Bulk-action wiring (WEB_ROADMAP P2.5). Centralizes select-all
+// indeterminate state, per-button enable/disable, and count-aware
+// labels so every page with a row-checkbox bulk bar uses the same
+// behavior. Returns a small handle:
+//
+//   var bulk = CSM.bulk({
+//       rowCheckboxSelector: '.q-cb',
+//       selectAllEl: document.getElementById('q-select-all'),
+//       valueAttr: 'data-id', // attribute to read for selectedValues()
+//       buttons: [
+//           { el: btn1, labelTemplate: 'Restore {n} file(s)' },
+//           { el: btn2, labelTemplate: 'Delete {n} file(s)' }
+//       ],
+//       onChange: function(count, values) { ... } // optional
+//   });
+//   bulk.selectedValues();  // → ['id-a', 'id-b']
+//   bulk.clear();           // unchecks every row + select-all + refreshes labels
+//   bulk.refresh();         // re-reads checkboxes (call after re-render)
+//
+// labelTemplate placeholders: {n} = selected count. When n===0 the
+// button gets the d-none class and disabled=true so a stale click
+// during a re-render can't fire on the previous selection.
+CSM.bulk = function(opts) {
+    opts = opts || {};
+    var rowSel = opts.rowCheckboxSelector;
+    var selectAllEl = opts.selectAllEl || null;
+    var valueAttr = opts.valueAttr || 'data-id';
+    var buttons = opts.buttons || [];
+    var changeCb = (typeof opts.onChange === 'function') ? opts.onChange : function() {};
+
+    function checked() {
+        return Array.prototype.slice.call(document.querySelectorAll(rowSel + ':checked'));
+    }
+    function all() {
+        return Array.prototype.slice.call(document.querySelectorAll(rowSel));
+    }
+
+    function paint() {
+        var sel = checked();
+        var total = all().length;
+        var n = sel.length;
+        if (selectAllEl) {
+            selectAllEl.checked = (n > 0 && n === total);
+            selectAllEl.indeterminate = (n > 0 && n < total);
+        }
+        for (var i = 0; i < buttons.length; i++) {
+            var b = buttons[i];
+            if (!b || !b.el) continue;
+            if (b.labelTemplate) {
+                b.el.textContent = b.labelTemplate.replace('{n}', n);
+            }
+            b.el.disabled = (n === 0);
+            b.el.classList.toggle('d-none', n === 0);
+        }
+        var values = sel.map(function(cb) { return cb.getAttribute(valueAttr); });
+        changeCb(n, values);
+    }
+
+    function bindRowListeners() {
+        all().forEach(function(cb) {
+            if (cb.dataset.csmBulkBound === '1') return;
+            cb.dataset.csmBulkBound = '1';
+            cb.addEventListener('change', paint);
+        });
+    }
+
+    if (selectAllEl) {
+        selectAllEl.addEventListener('change', function() {
+            var v = this.checked;
+            all().forEach(function(cb) { cb.checked = v; });
+            paint();
+        });
+    }
+    bindRowListeners();
+    paint();
+
+    return {
+        selectedValues: function() {
+            return checked().map(function(cb) { return cb.getAttribute(valueAttr); });
+        },
+        selectedCount: function() { return checked().length; },
+        clear: function() {
+            all().forEach(function(cb) { cb.checked = false; });
+            if (selectAllEl) { selectAllEl.checked = false; selectAllEl.indeterminate = false; }
+            paint();
+        },
+        refresh: function() {
+            bindRowListeners();
+            paint();
+        }
+    };
+};
+
 // Detail panel helper. Thin wrapper around the Bootstrap offcanvas that
 // ships with Tabler. Mounts a single shared offcanvas element on first use
 // so callers do not need page-specific markup.

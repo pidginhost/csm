@@ -2122,3 +2122,48 @@ func TestSharedExportTableEscapesSpreadsheetFormulaCells(t *testing.T) {
 		}
 	}
 }
+
+// TestBulkHelperWired pins WEB_ROADMAP P2.5: csm-ui.js exposes CSM.bulk
+// with the documented surface (selectedValues / selectedCount / clear /
+// refresh, labelTemplate-driven button copy, indeterminate select-all)
+// and quarantine.js drives its bulk bar through it.
+func TestBulkHelperWired(t *testing.T) {
+	js, err := os.ReadFile("../../ui/static/js/csm-ui.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(js)
+	for _, fragment := range []string{
+		`CSM.bulk = function(opts) {`,
+		`selectAllEl.indeterminate = (n > 0 && n < total);`,
+		`b.el.textContent = b.labelTemplate.replace('{n}', n);`,
+		`b.el.disabled = (n === 0);`,
+		`b.el.classList.toggle('d-none', n === 0);`,
+		`if (cb.dataset.csmBulkBound === '1') return;`,
+		`selectedValues: function() {`,
+		`selectedCount: function() {`,
+		`clear: function() {`,
+		`refresh: function() {`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Fatalf("csm-ui.js missing CSM.bulk fragment %q", fragment)
+		}
+	}
+
+	q, err := os.ReadFile("../../ui/static/js/quarantine.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	qText := string(q)
+	for _, fragment := range []string{
+		`_quarBulk = CSM.bulk({`,
+		`rowCheckboxSelector: '.q-cb',`,
+		`labelTemplate: 'Restore {n} file(s)'`,
+		`labelTemplate: 'Delete {n} file(s)'`,
+		`_quarBulk.selectedValues();`,
+	} {
+		if !strings.Contains(qText, fragment) {
+			t.Fatalf("quarantine.js missing CSM.bulk fragment %q", fragment)
+		}
+	}
+}
