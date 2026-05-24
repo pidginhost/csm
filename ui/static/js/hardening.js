@@ -147,7 +147,7 @@
     }
 
     function loadReport() {
-        CSM.get('/api/v1/hardening')
+        CSM.get('/api/v1/hardening', { silent: true })
             .then(renderReport)
             .catch(function() {});
     }

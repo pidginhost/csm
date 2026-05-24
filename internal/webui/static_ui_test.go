@@ -1295,9 +1295,115 @@ func TestCSMRequestExposesAllowNonOKAndSilent(t *testing.T) {
 		`delete opts.timeoutMs;`,
 		`delete opts.allowNonOK;`,
 		`delete opts.silent;`,
+		`CSM.get = function(url, options) {`,
+		`var opts = Object.assign({}, options || {});`,
+		`opts.headers = Object.assign({ Accept: 'application/json' }, opts.headers || {});`,
+		`return CSM.fetch(url, opts);`,
 	} {
 		if !strings.Contains(text, fragment) {
 			t.Fatalf("csrf.js missing CSM.request option fragment %q", fragment)
+		}
+	}
+}
+
+// TestCSMWriteHelpersUseCSMRequest pins the helper stack: POST and DELETE
+// must inherit the shared timeout / AbortController path too. They stay
+// silent because action handlers already render their own success/failure
+// toast messages.
+func TestCSMWriteHelpersUseCSMRequest(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/csrf.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, tc := range []struct {
+		name        string
+		mustHave    []string
+		mustNotHave string
+	}{
+		{
+			name: "CSM.post",
+			mustHave: []string{
+				`return CSM.request(url, {`,
+				`method: 'POST',`,
+				`'X-CSRF-Token': CSM.csrfToken`,
+				`silent: true`,
+				`}).then(function(r) { return r.json(); });`,
+			},
+			mustNotHave: `fetch(`,
+		},
+		{
+			name: "CSM.delete",
+			mustHave: []string{
+				`method: 'DELETE',`,
+				`'X-CSRF-Token': CSM.csrfToken`,
+				`silent: true`,
+				`return CSM.request(url, opts).then(function(r) { return r.json(); });`,
+			},
+			mustNotHave: `fetch(`,
+		},
+	} {
+		start := strings.Index(text, tc.name+" = function")
+		if start == -1 {
+			t.Fatalf("csrf.js missing %s definition", tc.name)
+		}
+		end := strings.Index(text[start:], "\n};")
+		if end == -1 {
+			t.Fatalf("csrf.js %s has no terminator", tc.name)
+		}
+		body := text[start : start+end]
+		for _, fragment := range tc.mustHave {
+			if !strings.Contains(body, fragment) {
+				t.Fatalf("csrf.js %s missing fragment %q", tc.name, fragment)
+			}
+		}
+		if strings.Contains(body, tc.mustNotHave) {
+			t.Fatalf("csrf.js %s must route through CSM.request, not fetch()", tc.name)
+		}
+	}
+}
+
+func TestOptionalJSONErrorCallersStaySilent(t *testing.T) {
+	for _, tc := range []struct {
+		path      string
+		fragments []string
+	}{
+		{
+			path: "../../ui/static/js/layout.js",
+			fragments: []string{
+				`CSM.request('/api/v1/status', { headers: { Accept: 'application/json' }, allowNonOK: true, silent: true })`,
+				`return r.ok ? r.json() : null;`,
+			},
+		},
+		{
+			path: "../../ui/static/js/firewall.js",
+			fragments: []string{
+				`CSM.get('/api/v1/geoip?ip=' + encodeURIComponent(ip), { allowNonOK: true, silent: true })`,
+			},
+		},
+		{
+			path: "../../ui/static/js/quarantine.js",
+			fragments: []string{
+				`CSM.get('/api/v1/quarantine-preview?id=' + encodeURIComponent(id), { allowNonOK: true, silent: true })`,
+			},
+		},
+		{
+			path: "../../ui/static/js/threat.js",
+			fragments: []string{
+				`return CSM.get(url, { allowNonOK: true, silent: true });`,
+				`getJSONAllowError('/api/v1/threat/ip?ip='+encodeURIComponent(ip))`,
+			},
+		},
+	} {
+		src, err := os.ReadFile(tc.path)
+		if err != nil {
+			t.Fatalf("read %s: %v", tc.path, err)
+		}
+		text := string(src)
+		for _, fragment := range tc.fragments {
+			if !strings.Contains(text, fragment) {
+				t.Fatalf("%s missing silent optional/error-handling fragment %q", tc.path, fragment)
+			}
 		}
 	}
 }

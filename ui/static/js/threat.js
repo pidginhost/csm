@@ -28,6 +28,10 @@ function typeBadges(counts){
     return html||'-';
 }
 
+function getJSONAllowError(url) {
+    return CSM.get(url, { allowNonOK: true, silent: true });
+}
+
 // Load stats
 CSM.get('/api/v1/threat/stats').then(function(data){
     document.getElementById('stat-total-ips').textContent=data.total_ips||0;
@@ -207,8 +211,8 @@ document.getElementById('lookup-form').addEventListener('submit',function(e){
     result.classList.add('d-none');
 
     Promise.all([
-        CSM.get('/api/v1/threat/ip?ip='+encodeURIComponent(ip)),
-        CSM.get('/api/v1/threat/events?ip='+encodeURIComponent(ip)+'&limit=20')
+        getJSONAllowError('/api/v1/threat/ip?ip='+encodeURIComponent(ip)),
+        getJSONAllowError('/api/v1/threat/events?ip='+encodeURIComponent(ip)+'&limit=20')
     ]).then(function(results){
         var intel=results[0], events=results[1];
         if(intel.error){status.textContent=intel.error;status.className='text-danger small';return;}

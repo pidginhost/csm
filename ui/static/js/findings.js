@@ -505,7 +505,7 @@ document.getElementById('scan-form').addEventListener('submit', function(e) {
 });
 
 // Load account list for scan autocomplete dropdown
-CSM.get('/api/v1/accounts').then(function(accounts) {
+CSM.get('/api/v1/accounts', { silent: true }).then(function(accounts) {
     var dl = document.getElementById('account-list');
     (accounts||[]).forEach(function(a) {
         var opt = document.createElement('option');

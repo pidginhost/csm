@@ -46,7 +46,7 @@ function restoreFile(id) {
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 function viewFile(id, path) {
-    CSM.get('/api/v1/quarantine-preview?id=' + encodeURIComponent(id))
+    CSM.get('/api/v1/quarantine-preview?id=' + encodeURIComponent(id), { allowNonOK: true, silent: true })
         .then(function(data) {
             if (data.error) { CSM.toast('Error: ' + data.error, 'error'); return; }
             var info = data.truncated ? ' (first 8KB of ' + formatSize(data.total_size) + ')' : '';

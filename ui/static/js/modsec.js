@@ -58,7 +58,7 @@
     // ---------- Stats ----------
 
     function loadStats() {
-        CSM.get('/api/v1/modsec/stats')
+        CSM.get('/api/v1/modsec/stats', { silent: true })
             .then(function(d) {
                 _strip.stats = d;
                 refreshStatusStrip();

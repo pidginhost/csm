@@ -187,7 +187,7 @@ document.getElementById('suppression-form').addEventListener('submit', function(
 
 // Populate check-type datalist from active findings
 function loadCheckTypes() {
-    CSM.get('/api/v1/findings').then(function(findings) {
+    CSM.get('/api/v1/findings', { silent: true }).then(function(findings) {
         var types = {};
         for (var i = 0; i < findings.length; i++) {
             if (findings[i].check) types[findings[i].check] = true;
@@ -207,7 +207,7 @@ function loadCheckTypes() {
 var _modsecRules = [];
 
 function loadModSecEscalation() {
-    CSM.get('/api/v1/rules/modsec-escalation')
+    CSM.get('/api/v1/rules/modsec-escalation', { silent: true })
         .then(function(data) {
             _modsecRules = data.rules || [];
             renderModSecEscalation();

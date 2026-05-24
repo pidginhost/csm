@@ -150,8 +150,8 @@ if (_themeBtn) _themeBtn.addEventListener('click', toggleTheme);
     var banner = document.getElementById('csm-update-banner');
     if (!banner) return;
 
-    CSM.get('/api/v1/status')
-        .catch(function() { return null; })
+    CSM.request('/api/v1/status', { headers: { Accept: 'application/json' }, allowNonOK: true, silent: true })
+        .then(function(r) { return r.ok ? r.json() : null; })
         .then(function(snap) {
             if (!snap || !snap.update || !snap.update.available || !snap.update.latest_version) return;
             var verEl = document.getElementById('csm-update-version');
@@ -171,5 +171,5 @@ if (_themeBtn) _themeBtn.addEventListener('click', toggleTheme);
             }
             banner.classList.remove('d-none');
         })
-        .catch(function() { /* network errors are handled by csm-connection-lost */ });
+        .catch(function() { /* optional update banner */ });
 })();

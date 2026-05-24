@@ -269,7 +269,7 @@
     }
 
     function loadBlockedIPCount() {
-        CSM.get('/api/v1/blocked-ips')
+        CSM.get('/api/v1/blocked-ips', { silent: true })
             .then(function(data) {
                 var ips = data.ips || data || [];
                 var count = 0;
@@ -335,7 +335,7 @@
     // ---------- AV status (right column dots) ----------
 
     function loadAVStatus() {
-        CSM.get('/api/v1/email/av/status')
+        CSM.get('/api/v1/email/av/status', { silent: true })
             .then(function(data) {
                 _strip.av = data;
                 refreshStatusStrip();

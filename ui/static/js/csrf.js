@@ -7,43 +7,29 @@ CSM.csrfToken = (document.querySelector('meta[name="csrf-token"]') || {}).conten
 
 // Wrapper for POST requests with CSRF token
 CSM.post = function(url, body) {
-    var resolvedUrl = (typeof CSM.apiUrl === 'function') ? CSM.apiUrl(url) : url;
-    return fetch(resolvedUrl, {
+    return CSM.request(url, {
         method: 'POST',
-        credentials: 'same-origin',
         headers: {
             'Content-Type': 'application/json',
             'X-CSRF-Token': CSM.csrfToken
         },
-        body: JSON.stringify(body)
-    }).then(function(r) {
-        if (!r.ok) {
-            return r.json().catch(function() { throw new Error('HTTP ' + r.status); })
-                .then(function(body) { throw new Error(body.error || 'HTTP ' + r.status); });
-        }
-        return r.json();
-    });
+        body: JSON.stringify(body),
+        silent: true
+    }).then(function(r) { return r.json(); });
 };
 
 // Wrapper for DELETE requests with CSRF token
 CSM.delete = function(url, body) {
-    var resolvedUrl = (typeof CSM.apiUrl === 'function') ? CSM.apiUrl(url) : url;
     var opts = {
         method: 'DELETE',
-        credentials: 'same-origin',
         headers: {
             'Content-Type': 'application/json',
             'X-CSRF-Token': CSM.csrfToken
-        }
+        },
+        silent: true
     };
     if (body !== undefined) { opts.body = JSON.stringify(body); }
-    return fetch(resolvedUrl, opts).then(function(r) {
-        if (!r.ok) {
-            return r.json().catch(function() { throw new Error('HTTP ' + r.status); })
-                .then(function(body) { throw new Error(body.error || 'HTTP ' + r.status); });
-        }
-        return r.json();
-    });
+    return CSM.request(url, opts).then(function(r) { return r.json(); });
 };
 
 // Shared HTML-escape helper used across all pages. Safe for both text nodes
@@ -253,8 +239,10 @@ CSM.fetch = function(url, options) {
     return CSM.request(url, options).then(function(r) { return r.json(); });
 };
 
-CSM.get = function(url) {
-    return CSM.fetch(url, { headers: { Accept: 'application/json' } });
+CSM.get = function(url, options) {
+    var opts = Object.assign({}, options || {});
+    opts.headers = Object.assign({ Accept: 'application/json' }, opts.headers || {});
+    return CSM.fetch(url, opts);
 };
 
 // Connection-lost banner: tracks consecutive fetch failures

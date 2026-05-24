@@ -589,7 +589,7 @@ function renderIPDetails(ip, targetEl) {
 
     Promise.all([
         CSM.get('/api/v1/firewall/check?ip=' + encodeURIComponent(ip)),
-        CSM.get('/api/v1/geoip?ip=' + encodeURIComponent(ip)).catch(function() { return {}; })
+        CSM.get('/api/v1/geoip?ip=' + encodeURIComponent(ip), { allowNonOK: true, silent: true }).catch(function() { return {}; })
     ]).then(function(results) {
         var data = results[0] || {};
         var geo = results[1] || {};
@@ -833,7 +833,7 @@ function enrichGeoIPFallback(cells) {
             next();
             return;
         }
-        CSM.get('/api/v1/geoip?ip=' + encodeURIComponent(ip))
+        CSM.get('/api/v1/geoip?ip=' + encodeURIComponent(ip), { allowNonOK: true, silent: true })
             .then(function(geo) { cell.innerHTML = formatGeo(geo); })
             .catch(function() { cell.textContent = '-'; })
             .finally(function() { setTimeout(next, 50); });
