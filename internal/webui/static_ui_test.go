@@ -2837,3 +2837,48 @@ func TestShortcutsHelpModalFocusContract(t *testing.T) {
 		t.Fatal("shortcuts.js must handle the visible modal before the input-focus guard so focus cannot escape behind it")
 	}
 }
+
+// TestWhatsNewBadgeWired pins WEB_ROADMAP P5.7: layout exposes a
+// "What's new" header button with a notification dot, and layout.js
+// shows/clears the dot based on whether the running daemon version
+// differs from the acknowledged version stored in localStorage.
+func TestWhatsNewBadgeWired(t *testing.T) {
+	tmpl, err := os.ReadFile("../../ui/templates/layout.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmplText := string(tmpl)
+	for _, fragment := range []string{
+		`id="csm-whats-new"`,
+		`class="csm-whats-new-dot position-absolute"`,
+		`href="https://github.com/pidginhost/csm/releases"`,
+	} {
+		if !strings.Contains(tmplText, fragment) {
+			t.Fatalf("layout.html missing P5.7 fragment %q", fragment)
+		}
+	}
+
+	js, err := os.ReadFile("../../ui/static/js/layout.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsText := string(js)
+	for _, fragment := range []string{
+		`var btn = document.getElementById('csm-whats-new');`,
+		`var STORAGE_KEY = 'csm-whatsnew-ack';`,
+		`if (acknowledged !== current) {`,
+		`localStorage.setItem(STORAGE_KEY, current);`,
+	} {
+		if !strings.Contains(jsText, fragment) {
+			t.Fatalf("layout.js missing P5.7 fragment %q", fragment)
+		}
+	}
+
+	css, err := os.ReadFile("../../ui/static/css/csm.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(css), ".csm-whats-new-dot {") {
+		t.Fatal("csm.css missing .csm-whats-new-dot rule")
+	}
+}

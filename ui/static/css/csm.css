@@ -999,3 +999,15 @@ body.theme-dark { background-color: #1a2234; }
 @media (max-width: 991.98px) {
     .csm-sidebar-brand-rest { display: none; }
 }
+
+
+/* WEB_ROADMAP P5.7: notification dot on the "What's new" header button. */
+.csm-whats-new-dot {
+    top: 6px;
+    right: 6px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--csm-critical, #d63939);
+    box-shadow: 0 0 0 2px var(--csm-bg-card, #fff);
+}

@@ -227,3 +227,31 @@ if (_themeBtn) _themeBtn.addEventListener('click', toggleTheme);
     nowBtn.addEventListener('click', function() { CSM.refresh.manual(); });
     toggleBtn.addEventListener('click', function() { CSM.refresh.setEnabled(!CSM.refresh.enabled); });
 })();
+
+// What's new badge (WEB_ROADMAP P5.7). Shows a notification dot on a
+// header button whenever the running daemon version differs from the
+// version the operator has acknowledged in localStorage. Clicking the
+// button opens the GitHub releases page in a new tab and records the
+// current version as acknowledged so the dot clears.
+(function() {
+    var btn = document.getElementById('csm-whats-new');
+    if (!btn) return;
+    var current = (typeof CSM_CONFIG !== 'undefined' && CSM_CONFIG.version) ? String(CSM_CONFIG.version) : '';
+    if (!current) return;
+    var STORAGE_KEY = 'csm-whatsnew-ack';
+    var acknowledged = '';
+    try { acknowledged = localStorage.getItem(STORAGE_KEY) || ''; } catch (e) { /* localStorage unavailable */ }
+    var dot = btn.querySelector('.csm-whats-new-dot');
+    btn.classList.remove('d-none');
+    if (acknowledged !== current) {
+        if (dot) dot.style.display = '';
+        btn.setAttribute('title', "What's new in v" + current);
+        btn.setAttribute('aria-label', "What's new in v" + current);
+    } else if (dot) {
+        dot.style.display = 'none';
+    }
+    btn.addEventListener('click', function() {
+        try { localStorage.setItem(STORAGE_KEY, current); } catch (e) { /* ignore */ }
+        if (dot) dot.style.display = 'none';
+    });
+})();
