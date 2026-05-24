@@ -2738,17 +2738,38 @@ func TestRulesImportStateHasInFlightUX(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	tmpl, err := os.ReadFile("../../ui/templates/rules.html")
+	if err != nil {
+		t.Fatal(err)
+	}
 	text := string(src)
 	for _, fragment := range []string{
 		`label.classList.add('disabled');`,
 		`label.setAttribute('aria-busy', 'true');`,
-		`label.textContent = ' Importing...';`,
+		`label.setAttribute('aria-disabled', 'true');`,
+		`input.disabled = true;`,
+		`labelText.textContent = 'Importing...';`,
 		`function restore() {`,
+		`input.disabled = false;`,
+		`labelText.textContent = origText || 'Import State';`,
 		`}).finally(restore);`,
 		`reader.onerror = function() {`,
+		`} catch(ex) {`,
+		`} finally {`,
 	} {
 		if !strings.Contains(text, fragment) {
 			t.Fatalf("rules.js missing P4.4 fragment %q", fragment)
+		}
+	}
+	if strings.Contains(text, `label.textContent =`) {
+		t.Fatal("rules.js must not replace the whole import label; that detaches the file input while an import is in flight")
+	}
+	for _, fragment := range []string{
+		`data-import-label-icon`,
+		`data-import-label-text`,
+	} {
+		if !strings.Contains(string(tmpl), fragment) {
+			t.Fatalf("rules.html missing import label fragment %q", fragment)
 		}
 	}
 }

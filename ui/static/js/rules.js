@@ -145,28 +145,27 @@ if (importFile) {
         var input = this;
         var file = input.files[0];
         if (!file) return;
-        // WEB_ROADMAP P4.4: explicit in-flight UX so the operator
-        // doesn't think a slow import froze the page. The label parent
-        // visually owns the click, so we toggle its disabled-look
-        // state and put a busy attribute on the input.
         var label = input.closest('label');
-        var origText = label ? label.textContent.trim() : '';
+        var labelText = label ? label.querySelector('[data-import-label-text]') : null;
+        var labelIcon = label ? label.querySelector('[data-import-label-icon]') : null;
+        var origText = labelText ? labelText.textContent : 'Import State';
+        var origIcon = labelIcon ? labelIcon.className : '';
         if (label) {
             label.classList.add('disabled');
             label.setAttribute('aria-busy', 'true');
-            label.textContent = ' Importing...';
+            label.setAttribute('aria-disabled', 'true');
+            input.disabled = true;
+            if (labelIcon) labelIcon.className = 'ti ti-loader';
+            if (labelText) labelText.textContent = 'Importing...';
         }
         function restore() {
             if (!label) return;
             label.classList.remove('disabled');
             label.removeAttribute('aria-busy');
-            // Rebuild the original label content (icon + text + hidden input).
-            label.textContent = '';
-            var icon = document.createElement('i');
-            icon.className = 'ti ti-upload';
-            label.appendChild(icon);
-            label.appendChild(document.createTextNode(' ' + (origText || 'Import State')));
-            label.appendChild(input);
+            label.removeAttribute('aria-disabled');
+            input.disabled = false;
+            if (labelIcon) labelIcon.className = origIcon || 'ti ti-upload';
+            if (labelText) labelText.textContent = origText || 'Import State';
         }
         var reader = new FileReader();
         reader.onerror = function() {
@@ -187,8 +186,14 @@ if (importFile) {
                 restore();
             }
         };
-        reader.readAsText(file);
-        input.value = '';
+        try {
+            reader.readAsText(file);
+        } catch(ex) {
+            CSM.toast('Could not read file', 'error');
+            restore();
+        } finally {
+            input.value = '';
+        }
     });
 }
 
