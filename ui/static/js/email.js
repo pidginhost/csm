@@ -655,15 +655,71 @@
 
     var _emailQuarBulk = null;
     var _emailQuarTable = null;
+    var _emailQuarURLUnbind = null;
+    var _emailQuarDateListenersBound = false;
+
+    function _emailQuarLocalDateMillis(value, endExclusive) {
+        if (!value) return null;
+        var parts = String(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (!parts) return null;
+        var year = Number(parts[1]);
+        var month = Number(parts[2]) - 1;
+        var day = Number(parts[3]);
+        var d = new Date(year, month, day);
+        if (isNaN(d.getTime())) return null;
+        if (d.getFullYear() !== year || d.getMonth() !== month || d.getDate() !== day) return null;
+        if (endExclusive) d.setDate(d.getDate() + 1);
+        return d.getTime();
+    }
+
+    function _emailQuarURLInputs(fromEl, toEl) {
+        return {
+            email_quar_q: document.getElementById('email-quar-search'),
+            email_quar_dir: document.getElementById('email-quar-dir'),
+            email_quar_from: fromEl,
+            email_quar_to: toEl
+        };
+    }
+
+    function _bindEmailQuarURLState(fromEl, toEl) {
+        if (_emailQuarURLUnbind) _emailQuarURLUnbind();
+        _emailQuarURLUnbind = CSM.urlState.bind({ inputs: _emailQuarURLInputs(fromEl, toEl) });
+    }
+
+    function _resetEmailQuarTable() {
+        if (_emailQuarTable) {
+            if (_emailQuarTable._searchDebounce && _emailQuarTable._searchDebounce.cancel) _emailQuarTable._searchDebounce.cancel();
+            _emailQuarTable.controlsEl = null;
+            _emailQuarTable.countTargetEl = null;
+            _emailQuarTable.allRows = [];
+            _emailQuarTable.filteredRows = [];
+            _emailQuarTable.tbody = null;
+            _emailQuarTable.table = null;
+            _emailQuarTable.rowFilter = null;
+            _emailQuarTable = null;
+        }
+        var controls = document.getElementById('email-quar-table-controls');
+        if (controls) controls.remove();
+    }
+
     function _emailQuarUpdateBulk() {
         var releaseBtn = document.getElementById('email-quar-bulk-release');
         var deleteBtn = document.getElementById('email-quar-bulk-delete');
         var selectAll = document.getElementById('email-quar-select-all');
+        if (!_emailQuarBulk && !selectAll && !document.querySelector('.email-quar-cb')) {
+            [releaseBtn, deleteBtn].forEach(function(btn) {
+                if (!btn) return;
+                btn.disabled = true;
+                btn.classList.add('d-none');
+            });
+            return;
+        }
         if (_emailQuarBulk) { _emailQuarBulk.refresh(); return; }
         if (!releaseBtn && !deleteBtn) return;
         _emailQuarBulk = CSM.bulk({
             rowCheckboxSelector: '.email-quar-cb',
             selectAllEl: selectAll,
+            selectAllSelector: '#email-quar-select-all',
             valueAttr: 'data-id',
             buttons: [
                 { el: releaseBtn, labelTemplate: 'Release {n} message(s)' },
@@ -672,13 +728,30 @@
         });
     }
 
+    function _bindEmailQuarDateFilters(fromEl, toEl) {
+        if (_emailQuarDateListenersBound) return;
+        function onDate() {
+            if (_emailQuarTable) {
+                _emailQuarTable.currentPage = 1;
+                _emailQuarTable.applyFilters();
+            }
+        }
+        if (fromEl) fromEl.addEventListener('change', onDate);
+        if (toEl) toEl.addEventListener('change', onDate);
+        _emailQuarDateListenersBound = true;
+    }
+
     function loadQuarantine() {
         quarantineLoaded = true;
         CSM.get('/api/v1/email/quarantine')
             .then(function(data) {
                 var container = document.getElementById('quarantine-table');
                 if (!container) return;
+                var fromEl = document.getElementById('email-quar-from');
+                var toEl = document.getElementById('email-quar-to');
+                _resetEmailQuarTable();
                 if (!data || data.length === 0) {
+                    _bindEmailQuarURLState(fromEl, toEl);
                     container.innerHTML = '<p class="text-muted">No quarantined messages.</p>';
                     _emailQuarUpdateBulk();
                     return;
@@ -702,9 +775,9 @@
                     // shared search input matches against just these
                     // (instead of the whole DOM text including badges).
                     var searchBlob = String(msg.from || '') + ' ' + String(to || '') + ' ' + String(msg.subject || '');
-                    html += '<tr data-direction="' + CSM.attr(msg.direction || '') + '" data-timestamp="' + CSM.attr(msg.quarantined_at || '') + '" data-search="' + CSM.attr(searchBlob.toLowerCase()) + '">';
+                    html += '<tr data-direction="' + CSM.attr(msg.direction || '') + '" data-quar-timestamp="' + CSM.attr(msg.quarantined_at || '') + '" data-search="' + CSM.attr(searchBlob.toLowerCase()) + '">';
                     html += '<td><input type="checkbox" class="form-check-input email-quar-cb" data-id="' + msgID + '"></td>';
-                    html += '<td data-label="Time">' + time + '</td>';
+                    html += '<td data-label="Time" data-timestamp="' + CSM.attr(msg.quarantined_at || '') + '">' + CSM.esc(time) + '</td>';
                     html += '<td data-label="Dir">' + dir + '</td>';
                     html += '<td data-label="From">' + CSM.esc(msg.from) + '</td>';
                     html += '<td data-label="To">' + CSM.esc(to) + '</td>';
@@ -718,21 +791,15 @@
                 }
                 html += '</tbody></table></div>';
                 container.innerHTML = html;
-                var fromEl = document.getElementById('email-quar-from');
-                var toEl = document.getElementById('email-quar-to');
                 function _inRange(row) {
-                    var raw = row.getAttribute('data-timestamp') || '';
+                    var raw = row.getAttribute('data-quar-timestamp') || '';
                     if (!raw) return true;
                     var ts = new Date(raw.replace(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})/, '$1T$2')).getTime();
                     if (isNaN(ts)) return true;
-                    if (fromEl && fromEl.value) {
-                        var f = new Date(fromEl.value + 'T00:00:00').getTime();
-                        if (!isNaN(f) && ts < f) return false;
-                    }
-                    if (toEl && toEl.value) {
-                        var to = new Date(toEl.value + 'T00:00:00').getTime();
-                        if (!isNaN(to) && ts >= to + 86400000) return false;
-                    }
+                    var from = fromEl ? _emailQuarLocalDateMillis(fromEl.value, false) : null;
+                    var to = toEl ? _emailQuarLocalDateMillis(toEl.value, true) : null;
+                    if (from !== null && ts < from) return false;
+                    if (to !== null && ts >= to) return false;
                     return true;
                 }
                 _emailQuarTable = new CSM.Table({
@@ -746,15 +813,8 @@
                     filters: [{ id: 'email-quar-dir', attr: 'data-direction' }],
                     rowFilter: _inRange
                 });
-                function _onDate() { if (_emailQuarTable) { _emailQuarTable.currentPage = 1; _emailQuarTable.applyFilters(); } }
-                if (fromEl) fromEl.addEventListener('change', _onDate);
-                if (toEl) toEl.addEventListener('change', _onDate);
-                CSM.urlState.bind({ inputs: {
-                    q: document.getElementById('email-quar-search'),
-                    dir: document.getElementById('email-quar-dir'),
-                    from: fromEl,
-                    to: toEl
-                } });
+                _bindEmailQuarDateFilters(fromEl, toEl);
+                _bindEmailQuarURLState(fromEl, toEl);
                 _emailQuarUpdateBulk();
             })
             .catch(function() {

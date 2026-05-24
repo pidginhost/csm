@@ -2429,15 +2429,25 @@ func TestEmailQuarantineToolbar(t *testing.T) {
 		`searchAttr: 'data-search',`,
 		`filters: [{ id: 'email-quar-dir', attr: 'data-direction' }],`,
 		`rowCheckboxSelector: '.email-quar-cb',`,
+		`selectAllSelector: '#email-quar-select-all',`,
 		`labelTemplate: 'Release {n} message(s)' }`,
 		`labelTemplate: 'Delete {n} message(s)' }`,
 		`data-direction="' + CSM.attr(msg.direction || '') + '"`,
-		`data-timestamp="' + CSM.attr(msg.quarantined_at || '') + '"`,
+		`data-quar-timestamp="' + CSM.attr(msg.quarantined_at || '') + '"`,
+		`<td data-label="Time" data-timestamp="' + CSM.attr(msg.quarantined_at || '') + '">' + CSM.esc(time) + '</td>`,
 		`data-search="' + CSM.attr(searchBlob.toLowerCase()) + '"`,
-		`dir: document.getElementById('email-quar-dir'),`,
+		`var _emailQuarURLUnbind = null;`,
+		`email_quar_q: document.getElementById('email-quar-search'),`,
+		`email_quar_dir: document.getElementById('email-quar-dir'),`,
+		`email_quar_from: fromEl,`,
+		`email_quar_to: toEl`,
+		`_bindEmailQuarURLState(fromEl, toEl);`,
 	} {
 		if !strings.Contains(jsText, fragment) {
 			t.Fatalf("email.js missing P3.4 fragment %q", fragment)
 		}
+	}
+	if strings.Contains(jsText, `<tr data-direction="' + CSM.attr(msg.direction || '') + '" data-timestamp=`) {
+		t.Fatal("email quarantine rows must not use data-timestamp; CSM.initTimeAgo rewrites matching elements")
 	}
 }
