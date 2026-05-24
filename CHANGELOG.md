@@ -30,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Threat intelligence IP lookup now escapes account names before listing them, and country flag rendering ignores malformed country codes instead of breaking the page.
 - Every web UI page now routes its API calls through the shared request helper, so a hung backend can no longer freeze a tab indefinitely. GET, POST, DELETE, and live-data poll requests share the same 30-second timeout.
 - Web UI live-data poller no longer wedges when a page's handler throws or the request helper itself fails, preserves error backoff across tab hide/show cycles, and ignores stale timer callbacks after the tab is hidden.
-- Web UI event stream now applies a finite per-write deadline so a stuck client cannot block daemon shutdown indefinitely.
+- Web UI event stream now exits when shutdown starts and bounds each write, so active or stuck clients cannot hold daemon shutdown open.
 - Web UI error toasts shown by the global request helpers, the email release / delete actions, and the hardening audit error path now render with the danger styling. They were previously passing an unrecognized type string and falling back to the info color, hiding their severity.
 - Rules page suppression list now formats the created-at timestamp through the shared `CSM.fmtDate` helper so the format matches every other timestamp in the UI.
 - Shared Web UI number and percent formatters now leave missing values blank instead of displaying them as zero.

@@ -89,7 +89,7 @@ type Server struct {
 	mu         sync.RWMutex
 	findingBus *broadcast.Bus // set by Daemon via SetFindingBus
 
-	// Graceful shutdown signal for background goroutines
+	// Graceful shutdown signal for background goroutines and streaming handlers.
 	pruneDone chan struct{}
 
 	// restartDaemon is called by apiSettingsRestart. Tests override this.

@@ -8,13 +8,9 @@ import (
 )
 
 // sseWriteTimeout caps how long each SSE write is allowed to block on a
-// slow or stuck client. Previously the handler set an infinite write
-// deadline, which blocked graceful daemon shutdown indefinitely whenever
-// any client was attached: the goroutine sat in flusher.Flush() until
-// the OS eventually noticed the socket was dead. With a finite timeout
-// the next keepalive write fails fast, the handler returns, and
-// http.Server.Shutdown can complete.
-const sseWriteTimeout = 30 * time.Second
+// slow or stuck client. It must stay below the daemon's WebUI shutdown
+// budget so an in-flight flush cannot outlive graceful shutdown.
+const sseWriteTimeout = 3 * time.Second
 
 // apiEvents streams findings to the client over Server-Sent Events. A
 // subscriber connects once and receives a `data: {...}\n\n` block per
@@ -37,14 +33,22 @@ func (s *Server) apiEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	rc := http.NewResponseController(w)
+	setWriteDeadline := func() error {
+		return rc.SetWriteDeadline(time.Now().Add(sseWriteTimeout))
+	}
+	if err := setWriteDeadline(); err != nil {
+		http.Error(w, "streaming write deadlines unsupported", http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no") // nginx won't buffer
 
-	rc := http.NewResponseController(w)
 	writeFrame := func(format string, args ...any) error {
-		if err := rc.SetWriteDeadline(time.Now().Add(sseWriteTimeout)); err != nil {
+		if err := setWriteDeadline(); err != nil {
 			return err
 		}
 		if _, err := fmt.Fprintf(w, format, args...); err != nil {
@@ -65,10 +69,13 @@ func (s *Server) apiEvents(w http.ResponseWriter, r *http.Request) {
 
 	keepalive := time.NewTicker(25 * time.Second)
 	defer keepalive.Stop()
+	shutdownDone := s.pruneDone
 
 	for {
 		select {
 		case <-r.Context().Done():
+			return
+		case <-shutdownDone:
 			return
 		case <-keepalive.C:
 			if err := writeFrame(": keepalive\n\n"); err != nil {
