@@ -172,6 +172,8 @@ CSM.get('/api/v1/threat/top-attackers?limit=50').then(function(data){
     }
     tbody.innerHTML=html;
     new CSM.Table({ tableId: 'attackers-table', perPage: 25, searchId: 'attackers-search', sortable: true, stateKey: 'csm-threat-attackers', mobileRowCard: true });
+    // WEB_ROADMAP P2.1: persist attackers-search to URL for bookmark / share.
+    CSM.urlState.bind({ inputs: { q: document.getElementById('attackers-search') } });
     // Click row to lookup
     document.querySelectorAll('.ip-row').forEach(function(row){
         row.addEventListener('click',function(){

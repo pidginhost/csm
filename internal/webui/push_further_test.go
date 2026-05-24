@@ -428,7 +428,7 @@ func TestAPIEmailQuarantineActionDeleteRealMessage(t *testing.T) {
 }
 
 // Path with traversal attempt: /api/v1/email/quarantine/../../etc/passwd
-// filepath.Base sanitizes it to "passwd", which then 404s as not found.
+// must not resolve to a quarantined message.
 func TestAPIEmailQuarantineActionTraversalSanitized(t *testing.T) {
 	s := newTestServer(t, "tok")
 	dir := t.TempDir()
@@ -437,7 +437,6 @@ func TestAPIEmailQuarantineActionTraversalSanitized(t *testing.T) {
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/api/v1/email/quarantine/../../etc/passwd", nil)
 	s.apiEmailQuarantineAction(w, req)
-	// Should not succeed — path sanitization ensures lookup targets a benign name
 	if w.Code == http.StatusOK {
 		t.Errorf("traversal succeeded unexpectedly: code = %d", w.Code)
 	}

@@ -278,15 +278,13 @@ func TestAPIEmailQuarantineActionPUTRejected(t *testing.T) {
 	}
 }
 
-// apiEmailQuarantineAction with bare msgID == "." (filepath.Base of "./")
-// is rejected with 400.
+// apiEmailQuarantineAction with bare msgID == "." is rejected with 400.
 func TestAPIEmailQuarantineActionDotMsgID(t *testing.T) {
 	s := newTestServer(t, "tok")
 	dir := t.TempDir()
 	s.emailQuarantine = emailav.NewQuarantine(dir)
 
 	w := httptest.NewRecorder()
-	// Path resolves to "." which the handler explicitly rejects.
 	req := httptest.NewRequest("GET", "/api/v1/email/quarantine/.", nil)
 	s.apiEmailQuarantineAction(w, req)
 	if w.Code != http.StatusBadRequest {

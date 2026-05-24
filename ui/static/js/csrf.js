@@ -467,10 +467,25 @@ CSM.exportTable = function(data, columns, format, filename) {
     URL.revokeObjectURL(url);
 };
 
-// URL state helper: read/write filter state to URL query parameters for deep linking
+// URL state helpers (WEB_ROADMAP P2.1). Convention:
+//   - Query string carries filter / search / paging state so the
+//     browser back/forward stack and bookmarks survive reloads.
+//   - Hash fragment carries in-page anchors only (settings section,
+//     incident id, expanded row id).
+//
+// Pages that need to persist filter state call CSM.urlState.bind to
+// wire one or more inputs declaratively; ad-hoc callers use get / set
+// / replace / clear / subscribe.
 CSM.urlState = {
     get: function(key) {
         return new URLSearchParams(window.location.search).get(key) || '';
+    },
+    getAll: function() {
+        var out = {};
+        new URLSearchParams(window.location.search).forEach(function(value, key) {
+            out[key] = value;
+        });
+        return out;
     },
     set: function(params) {
         var url = new URL(window.location);
@@ -479,5 +494,68 @@ CSM.urlState = {
             else url.searchParams.delete(k);
         });
         history.replaceState(null, '', url);
+    },
+    clear: function(keys) {
+        var url = new URL(window.location);
+        (keys || []).forEach(function(k) { url.searchParams.delete(k); });
+        history.replaceState(null, '', url);
+    },
+    replace: function(params) {
+        var url = new URL(window.location);
+        Array.from(url.searchParams.keys()).forEach(function(k) {
+            url.searchParams.delete(k);
+        });
+        Object.keys(params || {}).forEach(function(k) {
+            if (params[k]) url.searchParams.set(k, params[k]);
+        });
+        history.replaceState(null, '', url);
+    },
+    // subscribe(fn) calls fn(getAll()) on popstate (back/forward) so the
+    // page can re-apply state after the browser walks history. Returns an
+    // unsubscribe function.
+    subscribe: function(fn) {
+        function handler() { fn(CSM.urlState.getAll()); }
+        window.addEventListener('popstate', handler);
+        return function() { window.removeEventListener('popstate', handler); };
+    },
+    // bind({ inputs: { paramName: el, ... }, defaults: { paramName: 'x' } })
+    // wires each input two-way to URL state:
+    //   - on load, sets input.value from the URL (or defaults if absent);
+    //   - on input/change, writes the input value back to the URL,
+    //     omitting the param when the value matches its default.
+    // Returns an unsubscribe function that removes the listeners.
+    bind: function(opts) {
+        opts = opts || {};
+        var inputs = opts.inputs || {};
+        var defaults = opts.defaults || {};
+        var debounceMs = (opts.debounceMs == null) ? 200 : opts.debounceMs;
+        var current = CSM.urlState.getAll();
+        var listeners = [];
+        Object.keys(inputs).forEach(function(name) {
+            var el = inputs[name];
+            if (!el) return;
+            var initial = (current[name] != null && current[name] !== '')
+                ? current[name]
+                : (defaults[name] != null ? defaults[name] : '');
+            if (initial !== '' && el.value !== initial) {
+                el.value = initial;
+                // Dispatch so dependent table / chart listeners pick up
+                // the restored value during their own page-load wiring.
+                var initEvt = (el.tagName === 'SELECT') ? 'change' : 'input';
+                el.dispatchEvent(new Event(initEvt, { bubbles: true }));
+            }
+            var sync = CSM.debounce(function() {
+                var v = el.value || '';
+                var patch = {};
+                patch[name] = (v && v !== (defaults[name] || '')) ? v : '';
+                CSM.urlState.set(patch);
+            }, debounceMs);
+            var evt = (el.tagName === 'SELECT') ? 'change' : 'input';
+            el.addEventListener(evt, sync);
+            listeners.push({ el: el, evt: evt, fn: sync });
+        });
+        return function() {
+            listeners.forEach(function(l) { l.el.removeEventListener(l.evt, l.fn); });
+        };
     }
 };

@@ -106,15 +106,14 @@ func mustBeWithin(root, candidate string) (string, error) {
 }
 
 func rootRelativeCandidate(candidate string) string {
-	cleaned := filepath.Clean(candidate)
-	if volume := filepath.VolumeName(cleaned); volume != "" {
-		cleaned = strings.TrimPrefix(cleaned, volume)
+	if volume := filepath.VolumeName(candidate); volume != "" {
+		candidate = strings.TrimPrefix(candidate, volume)
 	}
-	cleaned = strings.TrimLeft(cleaned, string(filepath.Separator))
-	if cleaned == "" {
+	candidate = strings.TrimLeft(candidate, string(filepath.Separator))
+	if candidate == "" {
 		return "."
 	}
-	return cleaned
+	return candidate
 }
 
 func resolvePathUnderRoot(root, rel string) (string, error) {

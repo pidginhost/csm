@@ -736,6 +736,9 @@ func TestMustBeWithinRejectsEscapes(t *testing.T) {
 	if _, err := mustBeWithin(root, "/etc/passwd"); err != nil {
 		t.Errorf("absolute-style candidate rejected: %v", err)
 	}
+	if _, err := mustBeWithin(root, "/../../etc/passwd"); err == nil {
+		t.Error("absolute-style traversal accepted")
+	}
 	if _, err := mustBeWithin(root, "."); err != nil {
 		t.Errorf("root itself rejected: %v", err)
 	}
@@ -746,6 +749,9 @@ func TestMustBeWithinRejectsEscapes(t *testing.T) {
 	}
 	if _, err := mustBeWithin(root, "outside-link/new-file"); err == nil {
 		t.Error("missing leaf under symlink escape accepted")
+	}
+	if _, err := mustBeWithin(root, "outside-link/../new-file"); err == nil {
+		t.Error("symlink traversal order escape accepted")
 	}
 
 	inside := filepath.Join(root, "inside")

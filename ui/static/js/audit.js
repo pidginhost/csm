@@ -36,6 +36,8 @@ function loadAudit() {
         html += '</tbody></table></div>';
         el.innerHTML = html;
         new CSM.Table({ tableId: 'audit-table', perPage: 25, searchId: 'audit-search', sortable: true, stateKey: 'csm-audit-table', mobileRowCard: true });
+        // WEB_ROADMAP P2.1: persist audit-search to URL for bookmark / share.
+        CSM.urlState.bind({ inputs: { q: document.getElementById('audit-search') } });
     }).catch(function(){ CSM.loadError(document.getElementById('audit-content'), loadAudit); });
 }
 

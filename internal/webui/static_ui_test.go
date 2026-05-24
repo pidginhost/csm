@@ -1746,3 +1746,56 @@ func TestCSRFEnforcedAtRuntime(t *testing.T) {
 		})
 	}
 }
+
+// TestURLStateHelperExposesP21Surface pins WEB_ROADMAP P2.1: CSM.urlState
+// must expose get, getAll, set, clear, replace, subscribe, and bind so
+// page scripts can persist filter state to the URL declaratively. The
+// per-input bind is the new affordance: pages call CSM.urlState.bind to
+// wire a search / select to a query string key without writing custom
+// load+sync code.
+func TestURLStateHelperExposesP21Surface(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/csrf.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, fragment := range []string{
+		`get: function(key) {`,
+		`getAll: function() {`,
+		`set: function(params) {`,
+		`clear: function(keys) {`,
+		`replace: function(params) {`,
+		`subscribe: function(fn) {`,
+		`bind: function(opts) {`,
+		`window.addEventListener('popstate', handler);`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Fatalf("csrf.js missing CSM.urlState fragment %q", fragment)
+		}
+	}
+}
+
+// TestAuditAndThreatPagesBindSearchToURLState pins WEB_ROADMAP P2.1: the
+// two pages that previously had zero URL state (audit, threat) now
+// persist their search input through CSM.urlState.bind so operators can
+// bookmark and share filtered views.
+func TestAuditAndThreatPagesBindSearchToURLState(t *testing.T) {
+	for _, tc := range []struct{ path, fragment string }{
+		{
+			"../../ui/static/js/audit.js",
+			`CSM.urlState.bind({ inputs: { q: document.getElementById('audit-search') } });`,
+		},
+		{
+			"../../ui/static/js/threat.js",
+			`CSM.urlState.bind({ inputs: { q: document.getElementById('attackers-search') } });`,
+		},
+	} {
+		src, err := os.ReadFile(tc.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(src), tc.fragment) {
+			t.Errorf("%s missing URL-state bind fragment %q", tc.path, tc.fragment)
+		}
+	}
+}
