@@ -18,19 +18,36 @@ CSM.shortcuts = (function() {
         b: '/firewall'
     };
 
-    // All shortcut descriptions for help modal
-    var _descriptions = [
-        { keys: '?', desc: 'Show this help' },
-        { keys: '/', desc: 'Focus search input' },
-        { keys: 'g d', desc: 'Go to Dashboard' },
-        { keys: 'g f', desc: 'Go to Findings' },
-        { keys: 'g h', desc: 'Go to Findings > History tab' },
-        { keys: 'g t', desc: 'Go to Threat Intel' },
-        { keys: 'g r', desc: 'Go to Rules' },
-        { keys: 'g b', desc: 'Go to Blocked IPs (Firewall)' },
-        { keys: 'j / k', desc: 'Move selection down / up (Findings)' },
-        { keys: 'd', desc: 'Dismiss selected finding (Findings)' },
-        { keys: 'f', desc: 'Fix selected finding (Findings)' }
+    // Shortcuts grouped by context (WEB_ROADMAP P5.5). Each group renders
+    // its own section heading in the help overlay so operators can scan
+    // by what they're trying to do, not by the keystroke alphabet.
+    var _shortcutGroups = [
+        {
+            label: 'General',
+            items: [
+                { keys: '?', desc: 'Show this help' },
+                { keys: '/', desc: 'Focus search input' }
+            ]
+        },
+        {
+            label: 'Navigate',
+            items: [
+                { keys: 'g d', desc: 'Go to Dashboard' },
+                { keys: 'g f', desc: 'Go to Findings' },
+                { keys: 'g h', desc: 'Go to Findings > History tab' },
+                { keys: 'g t', desc: 'Go to Threat Intel' },
+                { keys: 'g r', desc: 'Go to Rules' },
+                { keys: 'g b', desc: 'Go to Blocked IPs (Firewall)' }
+            ]
+        },
+        {
+            label: 'Findings page',
+            items: [
+                { keys: 'j / k', desc: 'Move selection down / up' },
+                { keys: 'd', desc: 'Dismiss selected finding' },
+                { keys: 'f', desc: 'Fix selected finding' }
+            ]
+        }
     ];
 
     function _isInputFocused() {
@@ -73,6 +90,9 @@ CSM.shortcuts = (function() {
 
         _helpOverlay = document.createElement('div');
         _helpOverlay.id = 'csm-shortcuts-help';
+        _helpOverlay.setAttribute('role', 'dialog');
+        _helpOverlay.setAttribute('aria-modal', 'true');
+        _helpOverlay.setAttribute('aria-label', 'Keyboard shortcuts');
         _helpOverlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:10000;display:flex;align-items:center;justify-content:center;';
 
         var box = document.createElement('div');
@@ -83,30 +103,37 @@ CSM.shortcuts = (function() {
         title.textContent = 'Keyboard Shortcuts';
         box.appendChild(title);
 
-        var table = document.createElement('table');
-        table.style.cssText = 'width:100%;border-collapse:collapse;';
+        for (var g = 0; g < _shortcutGroups.length; g++) {
+            var group = _shortcutGroups[g];
+            var groupHeader = document.createElement('div');
+            groupHeader.style.cssText = 'margin:' + (g === 0 ? '0' : '14px') + ' 0 6px 0;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:#64748b;';
+            groupHeader.textContent = group.label;
+            box.appendChild(groupHeader);
 
-        for (var i = 0; i < _descriptions.length; i++) {
-            var tr = document.createElement('tr');
-            tr.style.cssText = 'border-bottom:1px solid #2d3a4e;';
-            var tdKey = document.createElement('td');
-            tdKey.style.cssText = 'padding:6px 12px 6px 0;white-space:nowrap;';
-            var parts = _descriptions[i].keys.split(' / ');
-            for (var p = 0; p < parts.length; p++) {
-                if (p > 0) tdKey.appendChild(document.createTextNode(' / '));
-                var kbd = document.createElement('kbd');
-                kbd.style.cssText = 'background:#334155;border:1px solid #475569;border-radius:3px;padding:2px 6px;font-size:12px;font-family:monospace;';
-                kbd.textContent = parts[p].trim();
-                tdKey.appendChild(kbd);
+            var table = document.createElement('table');
+            table.style.cssText = 'width:100%;border-collapse:collapse;';
+            for (var i = 0; i < group.items.length; i++) {
+                var tr = document.createElement('tr');
+                tr.style.cssText = 'border-bottom:1px solid #2d3a4e;';
+                var tdKey = document.createElement('td');
+                tdKey.style.cssText = 'padding:6px 12px 6px 0;white-space:nowrap;';
+                var parts = group.items[i].keys.split(' / ');
+                for (var p = 0; p < parts.length; p++) {
+                    if (p > 0) tdKey.appendChild(document.createTextNode(' / '));
+                    var kbd = document.createElement('kbd');
+                    kbd.style.cssText = 'background:#334155;border:1px solid #475569;border-radius:3px;padding:2px 6px;font-size:12px;font-family:monospace;';
+                    kbd.textContent = parts[p].trim();
+                    tdKey.appendChild(kbd);
+                }
+                var tdDesc = document.createElement('td');
+                tdDesc.style.cssText = 'padding:6px 0;color:#94a3b8;font-size:13px;';
+                tdDesc.textContent = group.items[i].desc;
+                tr.appendChild(tdKey);
+                tr.appendChild(tdDesc);
+                table.appendChild(tr);
             }
-            var tdDesc = document.createElement('td');
-            tdDesc.style.cssText = 'padding:6px 0;color:#94a3b8;font-size:13px;';
-            tdDesc.textContent = _descriptions[i].desc;
-            tr.appendChild(tdKey);
-            tr.appendChild(tdDesc);
-            table.appendChild(tr);
+            box.appendChild(table);
         }
-        box.appendChild(table);
 
         var hint = document.createElement('div');
         hint.style.cssText = 'margin-top:16px;text-align:center;color:#64748b;font-size:12px;';

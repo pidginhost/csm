@@ -2773,3 +2773,32 @@ func TestRulesImportStateHasInFlightUX(t *testing.T) {
 		}
 	}
 }
+
+// TestShortcutsHelpGrouped pins WEB_ROADMAP P5.5: the ? help overlay
+// now renders shortcuts grouped by context ("General", "Navigate",
+// "Findings page") so operators scan by what they're trying to do,
+// not by the keystroke alphabet. Overlay also carries role=dialog +
+// aria-modal so screen readers announce it correctly.
+func TestShortcutsHelpGrouped(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/shortcuts.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, fragment := range []string{
+		`var _shortcutGroups = [`,
+		`label: 'General',`,
+		`label: 'Navigate',`,
+		`label: 'Findings page',`,
+		`for (var g = 0; g < _shortcutGroups.length; g++) {`,
+		`_helpOverlay.setAttribute('role', 'dialog');`,
+		`_helpOverlay.setAttribute('aria-modal', 'true');`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Fatalf("shortcuts.js missing P5.5 fragment %q", fragment)
+		}
+	}
+	if strings.Contains(text, "var _descriptions = [") {
+		t.Fatal("shortcuts.js still uses flat _descriptions; switch to grouped _shortcutGroups")
+	}
+}
