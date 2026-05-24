@@ -1857,11 +1857,11 @@ func TestAuditAndThreatPagesBindSearchToURLState(t *testing.T) {
 // so sort / per-page / state persistence use the same helper as the
 // other CSM tables.
 func TestAccountAndIncidentTabsUseCSMTable(t *testing.T) {
-	for _, tc := range []struct{ path, tableID, stateKey, initFragment string }{
-		{"../../ui/static/js/account.js", "account-findings-table", "csm-account-findings", `tableId: 'account-findings-table', perPage: 25, search: false, sortable: true, stateKey: 'csm-account-findings'`},
-		{"../../ui/static/js/account.js", "account-quarantine-table", "csm-account-quarantine", `tableId: 'account-quarantine-table', perPage: 25, search: false, sortable: true, stateKey: 'csm-account-quarantine'`},
-		{"../../ui/static/js/account.js", "account-history-table", "csm-account-history", `tableId: 'account-history-table', perPage: 25, search: false, sortable: true, stateKey: 'csm-account-history'`},
-		{"../../ui/static/js/incident.js", "incidents-correlated-table", "csm-incidents-correlated", `tableId: 'incidents-correlated-table'`},
+	for _, tc := range []struct{ path, tableID, stateKey string }{
+		{"../../ui/static/js/account.js", "account-findings-table", "csm-account-findings"},
+		{"../../ui/static/js/account.js", "account-quarantine-table", "csm-account-quarantine"},
+		{"../../ui/static/js/account.js", "account-history-table", "csm-account-history"},
+		{"../../ui/static/js/incident.js", "incidents-correlated-table", "csm-incidents-correlated"},
 	} {
 		src, err := os.ReadFile(tc.path)
 		if err != nil {
@@ -1873,9 +1873,6 @@ func TestAccountAndIncidentTabsUseCSMTable(t *testing.T) {
 		}
 		if !strings.Contains(text, `tableId: '`+tc.tableID+`'`) {
 			t.Errorf("%s missing CSM.Table init for %q", tc.path, tc.tableID)
-		}
-		if !strings.Contains(text, tc.initFragment) {
-			t.Errorf("%s missing expected CSM.Table options for %q", tc.path, tc.tableID)
 		}
 		if !strings.Contains(text, `stateKey: '`+tc.stateKey+`'`) {
 			t.Errorf("%s missing stateKey %q", tc.path, tc.stateKey)
@@ -2270,6 +2267,40 @@ func TestAuditPageHasFilterPack(t *testing.T) {
 	} {
 		if !strings.Contains(tText, fragment) {
 			t.Fatalf("table.js missing rowFilter hook %q", fragment)
+		}
+	}
+}
+
+// TestAccountPerTabFilters pins WEB_ROADMAP P3.2: each account tab
+// renders its own toolbar (search + severity / check / date filters
+// scoped per tab) and feeds them into CSM.Table via filters[] and the
+// rowFilter hook so users can drill into just one severity or a
+// specific window.
+func TestAccountPerTabFilters(t *testing.T) {
+	js, err := os.ReadFile("../../ui/static/js/account.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(js)
+	for _, fragment := range []string{
+		`id="account-findings-search"`,
+		`id="account-findings-sev"`,
+		`id="account-findings-check"`,
+		`id="account-quarantine-search"`,
+		`id="account-history-search"`,
+		`id="account-history-sev"`,
+		`id="account-history-from"`,
+		`id="account-history-to"`,
+		`data-severity="' + String(f.severity || 0) + '"`,
+		`data-check="' + CSM.attr(f.check || '') + '"`,
+		`data-timestamp="' + CSM.attr(e.timestamp || '') + '"`,
+		`{ id: 'account-findings-sev',   attr: 'data-severity' }`,
+		`{ id: 'account-findings-check', attr: 'data-check' }`,
+		`{ id: 'account-history-sev', attr: 'data-severity' }`,
+		`rowFilter: _inRange`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Fatalf("account.js missing P3.2 fragment %q", fragment)
 		}
 	}
 }

@@ -58,13 +58,37 @@
         }
     }
 
+    function _buildFindingsToolbar(checkTypes) {
+        var bar = '<div class="csm-toolbar">';
+        bar += '<input type="text" id="account-findings-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search findings..." aria-label="Search findings">';
+        bar += '<select id="account-findings-sev" class="form-select form-select-sm csm-toolbar__filter" aria-label="Filter by severity">';
+        bar += '<option value="">All severities</option>';
+        bar += '<option value="2">Critical</option>';
+        bar += '<option value="1">High</option>';
+        bar += '<option value="0">Warning</option>';
+        bar += '</select>';
+        bar += '<select id="account-findings-check" class="form-select form-select-sm csm-toolbar__filter" aria-label="Filter by check">';
+        bar += '<option value="">All checks</option>';
+        for (var i = 0; i < checkTypes.length; i++) {
+            bar += '<option value="' + CSM.attr(checkTypes[i]) + '">' + CSM.esc(checkTypes[i]) + '</option>';
+        }
+        bar += '</select>';
+        bar += '</div>';
+        return bar;
+    }
+
     function renderFindings(findings) {
+        var checkTypes = {};
+        findings.forEach(function(f) { if (f.check) checkTypes[f.check] = true; });
+        var checkList = Object.keys(checkTypes).sort();
         var html = '<div class="card mb-3"><div class="card-header"><h3 class="card-title">Active Findings (' + findings.length + ')</h3></div>';
+        html += _buildFindingsToolbar(checkList);
         if (findings.length > 0) {
             html += '<div class="table-responsive"><table class="table table-vcenter card-table table-sm" id="account-findings-table"><thead><tr><th>Severity</th><th>Check</th><th>Message</th></tr></thead><tbody>';
             for (var i = 0; i < findings.length; i++) {
                 var f = findings[i];
-                html += '<tr><td data-sort="' + Number(f.severity || 0) + '"><span class="badge badge-' + (sevClasses[f.severity] || 'warning') + '">' + (sevLabels[f.severity] || 'WARNING') + '</span></td>';
+                html += '<tr data-severity="' + String(f.severity || 0) + '" data-check="' + CSM.attr(f.check || '') + '">';
+                html += '<td data-sort="' + Number(f.severity || 0) + '"><span class="badge badge-' + (sevClasses[f.severity] || 'warning') + '">' + (sevLabels[f.severity] || 'WARNING') + '</span></td>';
                 html += '<td><code>' + CSM.esc(f.check) + '</code></td><td>' + CSM.esc(f.message) + '</td></tr>';
             }
             html += '</tbody></table></div>';
@@ -74,12 +98,23 @@
         html += '</div>';
         content.innerHTML = html;
         if (findings.length > 0) {
-            new CSM.Table({ tableId: 'account-findings-table', perPage: 25, search: false, sortable: true, stateKey: 'csm-account-findings' });
+            new CSM.Table({
+                tableId: 'account-findings-table',
+                perPage: 25,
+                searchId: 'account-findings-search',
+                sortable: true,
+                stateKey: 'csm-account-findings',
+                filters: [
+                    { id: 'account-findings-sev',   attr: 'data-severity' },
+                    { id: 'account-findings-check', attr: 'data-check' }
+                ]
+            });
         }
     }
 
     function renderQuarantine(quarantined) {
         var html = '<div class="card mb-3"><div class="card-header"><h3 class="card-title">Quarantined Files (' + quarantined.length + ')</h3></div>';
+        html += '<div class="csm-toolbar"><input type="text" id="account-quarantine-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search by path..." aria-label="Search quarantined files"></div>';
         if (quarantined.length > 0) {
             html += '<div class="table-responsive"><table class="table table-vcenter card-table table-sm" id="account-quarantine-table"><thead><tr><th>Path</th><th>Size</th><th>Reason</th></tr></thead><tbody>';
             for (var q = 0; q < quarantined.length; q++) {
@@ -95,17 +130,34 @@
         html += '</div>';
         content.innerHTML = html;
         if (quarantined.length > 0) {
-            new CSM.Table({ tableId: 'account-quarantine-table', perPage: 25, search: false, sortable: true, stateKey: 'csm-account-quarantine' });
+            new CSM.Table({ tableId: 'account-quarantine-table', perPage: 25, searchId: 'account-quarantine-search', sortable: true, stateKey: 'csm-account-quarantine' });
         }
+    }
+
+    function _buildHistoryToolbar() {
+        var bar = '<div class="csm-toolbar">';
+        bar += '<input type="text" id="account-history-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search history..." aria-label="Search history">';
+        bar += '<select id="account-history-sev" class="form-select form-select-sm csm-toolbar__filter" aria-label="Filter by severity">';
+        bar += '<option value="">All severities</option>';
+        bar += '<option value="2">Critical</option>';
+        bar += '<option value="1">High</option>';
+        bar += '<option value="0">Warning</option>';
+        bar += '</select>';
+        bar += '<input type="date" id="account-history-from" class="form-control form-control-sm csm-toolbar__filter" aria-label="From date">';
+        bar += '<input type="date" id="account-history-to" class="form-control form-control-sm csm-toolbar__filter" aria-label="To date">';
+        bar += '</div>';
+        return bar;
     }
 
     function renderHistory(history) {
         var html = '<div class="card mb-3"><div class="card-header"><h3 class="card-title">Recent History (' + history.length + ')</h3></div>';
+        html += _buildHistoryToolbar();
         if (history.length > 0) {
             html += '<div class="table-responsive"><table class="table table-vcenter card-table table-sm" id="account-history-table"><thead><tr><th>Severity</th><th>Check</th><th>Message</th><th>Time</th></tr></thead><tbody>';
             for (var h = 0; h < history.length; h++) {
                 var e = history[h];
-                html += '<tr><td data-sort="' + Number(e.severity || 0) + '"><span class="badge badge-' + (sevClasses[e.severity] || 'warning') + '">' + (sevLabels[e.severity] || 'WARNING') + '</span></td>';
+                html += '<tr data-severity="' + String(e.severity || 0) + '" data-timestamp="' + CSM.attr(e.timestamp || '') + '">';
+                html += '<td data-sort="' + Number(e.severity || 0) + '"><span class="badge badge-' + (sevClasses[e.severity] || 'warning') + '">' + (sevLabels[e.severity] || 'WARNING') + '</span></td>';
                 html += '<td><code>' + CSM.esc(e.check) + '</code></td><td>' + CSM.esc(e.message) + '</td>';
                 html += '<td class="text-nowrap"><span class="text-muted small" data-timestamp="' + CSM.esc(e.timestamp) + '">' + CSM.esc(CSM.timeAgo(e.timestamp)) + '</span></td></tr>';
             }
@@ -116,7 +168,35 @@
         html += '</div>';
         content.innerHTML = html;
         if (history.length > 0) {
-            new CSM.Table({ tableId: 'account-history-table', perPage: 25, search: false, sortable: true, stateKey: 'csm-account-history' });
+            var fromEl = document.getElementById('account-history-from');
+            var toEl = document.getElementById('account-history-to');
+            function _inRange(row) {
+                var raw = row.getAttribute('data-timestamp') || '';
+                if (!raw) return true;
+                var ts = new Date(raw.replace(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})/, '$1T$2')).getTime();
+                if (isNaN(ts)) return true;
+                if (fromEl && fromEl.value) {
+                    var f = new Date(fromEl.value + 'T00:00:00').getTime();
+                    if (!isNaN(f) && ts < f) return false;
+                }
+                if (toEl && toEl.value) {
+                    var to = new Date(toEl.value + 'T00:00:00').getTime();
+                    if (!isNaN(to) && ts >= to + 86400000) return false;
+                }
+                return true;
+            }
+            var historyTable = new CSM.Table({
+                tableId: 'account-history-table',
+                perPage: 25,
+                searchId: 'account-history-search',
+                sortable: true,
+                stateKey: 'csm-account-history',
+                filters: [{ id: 'account-history-sev', attr: 'data-severity' }],
+                rowFilter: _inRange
+            });
+            function _onDate() { if (historyTable) { historyTable.currentPage = 1; historyTable.applyFilters(); } }
+            if (fromEl) fromEl.addEventListener('change', _onDate);
+            if (toEl) toEl.addEventListener('change', _onDate);
         }
     }
 
