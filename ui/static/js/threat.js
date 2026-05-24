@@ -151,7 +151,7 @@ CSM.get('/api/v1/threat/top-attackers?limit=50').then(function(data){
         var statusBadge=r.currently_blocked?'<span class="badge bg-danger text-white">Blocked</span>':
                         r.in_threat_db?'<span class="badge bg-warning text-dark">Threat DB</span>':
                         '<span class="text-muted">\u2014</span>';
-        html+='<tr class="ip-row feed-item" data-ip="'+CSM.esc(r.ip)+'">';
+        html+='<tr class="ip-row feed-item" data-ip="'+CSM.esc(r.ip)+'" data-country="'+CSM.attr((r.country||'').toUpperCase())+'" data-verdict="'+CSM.attr((r.verdict||'').toLowerCase())+'" data-last-seen="'+CSM.attr(r.last_seen||'')+'">';
         html+='<td><input type="checkbox" class="form-check-input bulk-ip-cb" data-ip="'+CSM.esc(r.ip)+'"></td>';
         html+='<td><code class="font-monospace csm-copy" title="Click to copy">'+CSM.esc(r.ip)+'</code></td>';
         html+='<td class="text-nowrap">'+(r.country?countryFlag(r.country)+' '+CSM.esc(r.country):'')+(r.as_org?' <span class="text-muted small">'+CSM.esc(r.as_org)+'</span>':'')+'</td>';
@@ -171,9 +171,66 @@ CSM.get('/api/v1/threat/top-attackers?limit=50').then(function(data){
         html+='</tr>';
     }
     tbody.innerHTML=html;
-    new CSM.Table({ tableId: 'attackers-table', perPage: 25, searchId: 'attackers-search', sortable: true, stateKey: 'csm-threat-attackers', mobileRowCard: true });
-    // WEB_ROADMAP P2.1: persist attackers-search to URL for bookmark / share.
-    CSM.urlState.bind({ inputs: { q: document.getElementById('attackers-search') } });
+    // WEB_ROADMAP P3.5: populate country filter from observed rows so
+    // operators only see countries actually present in the attacker list.
+    var countrySel = document.getElementById('attackers-country');
+    if (countrySel) {
+        var seen = {};
+        for (var ci = 0; ci < data.length; ci++) {
+            var c = (data[ci].country || '').toUpperCase();
+            if (c) seen[c] = true;
+        }
+        var prevC = countrySel.value;
+        while (countrySel.options.length > 1) countrySel.remove(1);
+        Object.keys(seen).sort().forEach(function(c) {
+            var opt = document.createElement('option');
+            opt.value = c;
+            opt.textContent = c;
+            countrySel.appendChild(opt);
+        });
+        if (prevC) countrySel.value = prevC;
+    }
+    var fromEl = document.getElementById('attackers-from');
+    var toEl = document.getElementById('attackers-to');
+    function _attackerInRange(row) {
+        var raw = row.getAttribute('data-last-seen') || '';
+        if (!raw) return true;
+        var ts = new Date(raw.replace(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})/, '$1T$2')).getTime();
+        if (isNaN(ts)) return true;
+        if (fromEl && fromEl.value) {
+            var f = new Date(fromEl.value + 'T00:00:00').getTime();
+            if (!isNaN(f) && ts < f) return false;
+        }
+        if (toEl && toEl.value) {
+            var to = new Date(toEl.value + 'T00:00:00').getTime();
+            if (!isNaN(to) && ts >= to + 86400000) return false;
+        }
+        return true;
+    }
+    var attackersTable = new CSM.Table({
+        tableId: 'attackers-table',
+        perPage: 25,
+        searchId: 'attackers-search',
+        sortable: true,
+        stateKey: 'csm-threat-attackers',
+        mobileRowCard: true,
+        filters: [
+            { id: 'attackers-country', attr: 'data-country' },
+            { id: 'attackers-verdict', attr: 'data-verdict' }
+        ],
+        rowFilter: _attackerInRange
+    });
+    function _onAttackerDate() { if (attackersTable) { attackersTable.currentPage = 1; attackersTable.applyFilters(); } }
+    if (fromEl) fromEl.addEventListener('change', _onAttackerDate);
+    if (toEl) toEl.addEventListener('change', _onAttackerDate);
+    // WEB_ROADMAP P2.1 / P3.5: persist all filter state to URL.
+    CSM.urlState.bind({ inputs: {
+        q: document.getElementById('attackers-search'),
+        country: countrySel,
+        verdict: document.getElementById('attackers-verdict'),
+        from: fromEl,
+        to: toEl
+    } });
     // Click row to lookup
     document.querySelectorAll('.ip-row').forEach(function(row){
         row.addEventListener('click',function(){

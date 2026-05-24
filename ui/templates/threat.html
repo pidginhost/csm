@@ -85,6 +85,18 @@
         </div>
         <div class="csm-toolbar">
             <input type="text" id="attackers-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search attackers..." aria-label="Search top attackers">
+            <select id="attackers-country" class="form-select form-select-sm csm-toolbar__filter" aria-label="Filter by country">
+                <option value="">All countries</option>
+            </select>
+            <select id="attackers-verdict" class="form-select form-select-sm csm-toolbar__filter" aria-label="Filter by verdict">
+                <option value="">All verdicts</option>
+                <option value="malicious">Malicious</option>
+                <option value="suspicious">Suspicious</option>
+                <option value="blocked">Blocked</option>
+                <option value="benign">Benign</option>
+            </select>
+            <input type="date" id="attackers-from" class="form-control form-control-sm csm-toolbar__filter" aria-label="Last seen from">
+            <input type="date" id="attackers-to" class="form-control form-control-sm csm-toolbar__filter" aria-label="Last seen to">
             <span class="csm-toolbar__spacer"></span>
             <div class="csm-toolbar__actions">
                 <button class="btn btn-danger btn-sm d-none" id="bulk-block-btn"><i class="ti ti-shield-lock"></i>&nbsp;Block Selected</button>

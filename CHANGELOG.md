@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Account detail tabs now each render their own toolbar: findings can be filtered by severity and check type, quarantine by path, history by severity and date range, and exports follow the active filters.
 - Quarantine page gained account, detector, and from/to date filters in addition to its existing path search. Account and detector dropdowns are populated from the current quarantine contents and all five filters persist in the URL.
 - Email quarantine tab gained a toolbar with sender / recipient / subject search, direction filter, date range, and bulk release / delete buttons backed by the shared selection helper.
+- Threat intelligence top-attackers table now supports country, verdict, and last-seen date-range filters. Country choices are derived from the visible attacker list and all filters persist in the URL.
 - New `thresholds.crontab_base64_blob_max_bytes` operator override for the crontab deep-scan base64 decoder cap (default 16384). Lets operators raise the cap on hosts where `csm_checks_crontab_base64_truncated_total` shows recurring truncation without rebuilding the daemon.
 
 ### Changed

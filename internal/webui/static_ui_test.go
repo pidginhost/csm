@@ -1838,7 +1838,7 @@ func TestAuditAndThreatPagesBindSearchToURLState(t *testing.T) {
 		},
 		{
 			"../../ui/static/js/threat.js",
-			`CSM.urlState.bind({ inputs: { q: document.getElementById('attackers-search') } });`,
+			`q: document.getElementById('attackers-search'),`,
 		},
 	} {
 		src, err := os.ReadFile(tc.path)
@@ -2449,5 +2449,48 @@ func TestEmailQuarantineToolbar(t *testing.T) {
 	}
 	if strings.Contains(jsText, `<tr data-direction="' + CSM.attr(msg.direction || '') + '" data-timestamp=`) {
 		t.Fatal("email quarantine rows must not use data-timestamp; CSM.initTimeAgo rewrites matching elements")
+	}
+}
+
+// TestThreatAttackersFilterPack pins WEB_ROADMAP P3.5: threat
+// intelligence top-attackers table gains country, verdict, and
+// last-seen date-range filters in addition to the existing search.
+// Country dropdown is populated from observed rows.
+func TestThreatAttackersFilterPack(t *testing.T) {
+	tmpl, err := os.ReadFile("../../ui/templates/threat.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmplText := string(tmpl)
+	for _, fragment := range []string{
+		`id="attackers-country"`,
+		`id="attackers-verdict"`,
+		`id="attackers-from"`,
+		`id="attackers-to"`,
+		`<option value="malicious">Malicious</option>`,
+	} {
+		if !strings.Contains(tmplText, fragment) {
+			t.Fatalf("threat.html missing P3.5 fragment %q", fragment)
+		}
+	}
+
+	js, err := os.ReadFile("../../ui/static/js/threat.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsText := string(js)
+	for _, fragment := range []string{
+		`data-country="'+CSM.attr((r.country||'').toUpperCase())+'"`,
+		`data-verdict="'+CSM.attr((r.verdict||'').toLowerCase())+'"`,
+		`data-last-seen="'+CSM.attr(r.last_seen||'')+'"`,
+		`{ id: 'attackers-country', attr: 'data-country' },`,
+		`{ id: 'attackers-verdict', attr: 'data-verdict' }`,
+		`rowFilter: _attackerInRange`,
+		`country: countrySel,`,
+		`verdict: document.getElementById('attackers-verdict'),`,
+	} {
+		if !strings.Contains(jsText, fragment) {
+			t.Fatalf("threat.js missing P3.5 fragment %q", fragment)
+		}
 	}
 }
