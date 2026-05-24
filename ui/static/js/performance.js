@@ -398,13 +398,20 @@
     }
 
     update();
-    var _perfInterval = setInterval(update, 10000);
+    var _perfInterval = CSM.refresh.interval(update, 10000);
+    function _stopPerfInterval() {
+        if (_perfInterval) {
+            _perfInterval.stop();
+            _perfInterval = null;
+        }
+    }
+
     document.addEventListener('visibilitychange', function() {
         if (document.hidden) {
-            clearInterval(_perfInterval);
+            _stopPerfInterval();
         } else {
             update();
-            _perfInterval = setInterval(update, 10000);
+            _perfInterval = CSM.refresh.interval(update, 10000);
         }
     });
 })();

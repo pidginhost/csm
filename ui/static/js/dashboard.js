@@ -5,11 +5,14 @@
     var _intervals = [];
     var _pollers = [];
 
-    function _trackInterval(id) { _intervals.push(id); return id; }
+    function _trackInterval(handle) { _intervals.push(handle); return handle; }
+    function _stopIntervals() {
+        for (var i = 0; i < _intervals.length; i++) _intervals[i].stop();
+        _intervals = [];
+    }
 
     function _cleanup() {
-        for (var i = 0; i < _intervals.length; i++) clearInterval(_intervals[i]);
-        _intervals = [];
+        _stopIntervals();
         for (var j = 0; j < _pollers.length; j++) _pollers[j].stop();
         _pollers = [];
     }
@@ -17,8 +20,7 @@
     window.addEventListener('beforeunload', _cleanup);
     document.addEventListener('visibilitychange', function() {
         if (document.hidden) {
-            for (var i = 0; i < _intervals.length; i++) clearInterval(_intervals[i]);
-            _intervals = [];
+            _stopIntervals();
         } else {
             // Restart intervals on visibility restore
             _startPolling();
@@ -401,12 +403,12 @@
             try { pollFindings(); } catch(e) { console.error('fastPoll:', e); }
         }
         fastPoll();
-        _trackInterval(setInterval(fastPoll, 10000));
+        _trackInterval(CSM.refresh.interval(fastPoll, 10000));
 
         // Slow cadence (60s): stats + health pill
         refreshStats();
         loadHealthPill();
-        _trackInterval(setInterval(function() {
+        _trackInterval(CSM.refresh.interval(function() {
             try { refreshStats(); } catch(e) { console.error('refreshStats:', e); }
             try { loadHealthPill(); } catch(e) { console.error('loadHealthPill:', e); }
         }, 60000));
@@ -918,6 +920,11 @@
     // --- Load all charts and set up auto-refresh ---
     var _chartIntervals = [];
 
+    function _stopChartIntervals() {
+        for (var i = 0; i < _chartIntervals.length; i++) _chartIntervals[i].stop();
+        _chartIntervals = [];
+    }
+
     // Restore saved trend period and wire the 7/30/90 selector.
     (function wireTrendPeriod() {
         var current = currentTrendDays();
@@ -952,13 +959,13 @@
         loadPriorityQueue();
 
         // Refresh charts every 60 seconds
-        _chartIntervals.push(setInterval(function() {
+        _chartIntervals.push(CSM.refresh.interval(function() {
             try { loadTimeline(); } catch(e) { console.error('loadTimeline:', e); }
             try { loadAttackTypes(); } catch(e) { console.error('loadAttackTypes:', e); }
         }, 60000));
 
         // Refresh trend every 5 minutes (daily data doesn't change fast)
-        _chartIntervals.push(setInterval(function() {
+        _chartIntervals.push(CSM.refresh.interval(function() {
             try { loadTrend(); } catch(e) { console.error('loadTrend:', e); }
         }, 300000));
 
@@ -966,14 +973,13 @@
     }
 
     function _startPriorityQueueInterval() {
-        _chartIntervals.push(setInterval(function() {
+        _chartIntervals.push(CSM.refresh.interval(function() {
             try { loadPriorityQueue(); } catch(e) { console.error('loadPriorityQueue:', e); }
         }, 60000));
     }
 
     function _cleanupCharts() {
-        for (var i = 0; i < _chartIntervals.length; i++) clearInterval(_chartIntervals[i]);
-        _chartIntervals = [];
+        _stopChartIntervals();
         if (timelineChart) { timelineChart.destroy(); timelineChart = null; }
         if (attackChart) { attackChart.destroy(); attackChart = null; }
         if (trendChart) { trendChart.destroy(); trendChart = null; }
@@ -982,15 +988,14 @@
     window.addEventListener('beforeunload', _cleanupCharts);
     document.addEventListener('visibilitychange', function() {
         if (document.hidden) {
-            for (var i = 0; i < _chartIntervals.length; i++) clearInterval(_chartIntervals[i]);
-            _chartIntervals = [];
+            _stopChartIntervals();
         } else {
             // Restart refresh intervals (charts survive tab switches)
-            _chartIntervals.push(setInterval(function() {
+            _chartIntervals.push(CSM.refresh.interval(function() {
                 try { loadTimeline(); } catch(e) {}
                 try { loadAttackTypes(); } catch(e) {}
             }, 60000));
-            _chartIntervals.push(setInterval(function() {
+            _chartIntervals.push(CSM.refresh.interval(function() {
                 try { loadTrend(); } catch(e) {}
             }, 300000));
             _startPriorityQueueInterval();
@@ -1262,7 +1267,7 @@
     if (_compBtn) _compBtn.addEventListener('click', loadComponents);
     try { renderFeatureFlags(); } catch (e) {}
     try { loadComponents(); } catch (e) {}
-    setInterval(loadComponents, 30000);
+    CSM.refresh.interval(loadComponents, 30000);
 
     _startChartPolling();
 })();

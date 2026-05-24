@@ -190,13 +190,13 @@ if (_themeBtn) _themeBtn.addEventListener('click', toggleTheme);
     toggleBtn.classList.remove('d-none');
 
     function ageLabel(ms) {
-        if (!ms) return 'never';
+        if (!ms) return 'Never updated';
         var diff = Math.max(0, Math.floor((Date.now() - ms) / 1000));
-        if (diff < 5) return 'just now';
-        if (diff < 60) return diff + 's ago';
-        if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
-        if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
-        return Math.floor(diff / 86400) + 'd ago';
+        if (diff < 5) return 'Updated just now';
+        if (diff < 60) return 'Updated ' + diff + 's ago';
+        if (diff < 3600) return 'Updated ' + Math.floor(diff / 60) + 'm ago';
+        if (diff < 86400) return 'Updated ' + Math.floor(diff / 3600) + 'h ago';
+        return 'Updated ' + Math.floor(diff / 86400) + 'd ago';
     }
 
     function paintAge() {
@@ -209,6 +209,8 @@ if (_themeBtn) _themeBtn.addEventListener('click', toggleTheme);
         var icon = toggleBtn.querySelector('i');
         if (icon) icon.className = enabled ? 'ti ti-player-pause' : 'ti ti-player-play';
         toggleBtn.title = enabled ? 'Auto-refresh: on (click to pause)' : 'Auto-refresh: paused (click to resume)';
+        toggleBtn.setAttribute('aria-label', enabled ? 'Pause auto-refresh' : 'Resume auto-refresh');
+        pill.classList.toggle('text-muted', enabled);
         pill.classList.toggle('text-warning', !enabled);
     }
 

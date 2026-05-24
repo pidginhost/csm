@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added a hot-reloadable account scanner cap so large hosts can bound account-scoped and mail-domain file iteration without relying on check timeouts. The new threshold is available in the sample config and settings UI.
 - Web UI audit log and threat intelligence search boxes now persist to the URL, so filtered views are bookmarkable and shareable.
 - Account detail tabs now support column sort, pagination, and persistent state, and the correlated incidents list uses shared table sorting while keeping its server-side pager.
-- Web UI header shows a shared "Updated Xs ago" pill with manual refresh and auto-refresh pause/resume controls, so operators always know how fresh the page is and can freeze a noisy auto-refresh while triaging.
+- Web UI header shows a shared "Updated Xs ago" pill with manual refresh and auto-refresh pause/resume controls, so operators can freeze background refresh while still fetching on demand.
 - New `thresholds.crontab_base64_blob_max_bytes` operator override for the crontab deep-scan base64 decoder cap (default 16384). Lets operators raise the cap on hosts where `csm_checks_crontab_base64_truncated_total` shows recurring truncation without rebuilding the daemon.
 
 ### Changed

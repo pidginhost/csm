@@ -854,14 +854,19 @@
 
     // Polling: refresh stats / groups / findings every 30s when tab is visible.
     var _emailIntervals = [];
+    function _stopEmailIntervals() {
+        for (var i = 0; i < _emailIntervals.length; i++) _emailIntervals[i].stop();
+        _emailIntervals = [];
+    }
+
     function _startEmailPolling() {
-        _emailIntervals.push(setInterval(function() {
+        _emailIntervals.push(CSM.refresh.interval(function() {
             try { loadEmailStats(); } catch(e) {}
         }, 30000));
-        _emailIntervals.push(setInterval(function() {
+        _emailIntervals.push(CSM.refresh.interval(function() {
             try { loadAVStatus(); } catch(e) {}
         }, 30000));
-        _emailIntervals.push(setInterval(function() {
+        _emailIntervals.push(CSM.refresh.interval(function() {
             try { loadActionGroups(); } catch(e) {}
         }, 60000));
     }
@@ -869,15 +874,13 @@
 
     document.addEventListener('visibilitychange', function() {
         if (document.hidden) {
-            for (var i = 0; i < _emailIntervals.length; i++) clearInterval(_emailIntervals[i]);
-            _emailIntervals = [];
+            _stopEmailIntervals();
         } else {
             _startEmailPolling();
         }
     });
     window.addEventListener('beforeunload', function() {
-        for (var i = 0; i < _emailIntervals.length; i++) clearInterval(_emailIntervals[i]);
-        _emailIntervals = [];
+        _stopEmailIntervals();
     });
 
     var subtitle = document.getElementById('email-subtitle');

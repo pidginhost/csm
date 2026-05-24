@@ -1472,17 +1472,18 @@ func TestCSMPollHasStateMachineAndSurvivesCallbackThrow(t *testing.T) {
 	for _, fragment := range []string{
 		`var state = 'scheduled';`,
 		`var timerSeq = 0;`,
-		`var poller = { onVisibility: onVisibility, onResume: onResume };`,
+		`var poller = { onVisibility: onVisibility, onPause: onPause, onResume: onResume, onRefreshNow: onRefreshNow };`,
 		`function clearTimer() {`,
-		`function scheduleNext(delayMs) {`,
+		`function scheduleNext(delayMs, force) {`,
 		`if (state === 'stopped' || document.hidden) {`,
+		`if (!force && CSM.refresh && !CSM.refresh.enabled) {`,
 		`var seq = ++timerSeq;`,
-		`timerId = setTimeout(function() { run(seq); }, delayMs);`,
+		`timerId = setTimeout(function() { run(seq, !!force); }, delayMs);`,
 		`function emit(err, data) {`,
 		`try { callback(err, data); } catch (_cbErr) { /* swallow callback throw */ }`,
 		`function fail(err) {`,
 		`currentInterval = Math.min(currentInterval * 2, maxInterval);`,
-		`function run(seq) {`,
+		`function run(seq, force) {`,
 		`if (seq !== timerSeq) return;`,
 		`if (document.hidden) { state = 'idle'; return; }`,
 		`state = 'running';`,
@@ -1490,6 +1491,9 @@ func TestCSMPollHasStateMachineAndSurvivesCallbackThrow(t *testing.T) {
 		`emit(null, data);`,
 		`} else if (state === 'idle') {`,
 		`scheduleNext(100);`,
+		`function onPause() {`,
+		`function onRefreshNow() {`,
+		`scheduleNext(0, true);`,
 		`state = 'stopped';`,
 		`removePoller(poller);`,
 	} {
@@ -1518,9 +1522,9 @@ func TestCSMPollVisibilityKeepsBackoffAndInvalidatesQueuedTimers(t *testing.T) {
 	}
 	visibilityTail := pollBody[visibilityStart:]
 	// onVisibility ends at the next `\n        }\n` whose following
-	// line is not part of the same function. With onResume added, the
-	// first such break is the `\n        function onResume` marker.
-	visibilityEnd := strings.Index(visibilityTail, "\n        }\n\n        // Re-enter the scheduled state")
+	// line is not part of the same function. With pause/resume helpers,
+	// the first such break is the `function onPause` marker.
+	visibilityEnd := strings.Index(visibilityTail, "\n        }\n\n        function onPause")
 	if visibilityEnd == -1 {
 		visibilityEnd = strings.Index(visibilityTail, "\n        }\n\n        addPoller(poller);")
 	}
@@ -1949,15 +1953,21 @@ func TestAutoRefreshPillWired(t *testing.T) {
 		`CSM.refresh = (function() {`,
 		`var STORAGE_KEY = 'csm-autorefresh';`,
 		`enabled = raw !== 'off';`,
+		`function createInterval(fn, interval) {`,
 		`bump: function() {`,
 		`manual: function() {`,
+		`interval: function(fn, interval) {`,
 		`setEnabled: function(next) {`,
 		`window.dispatchEvent(new CustomEvent('csm:refresh-toggle'`,
 		`if (CSM.refresh) CSM.refresh.bump();`,
-		`if (CSM.refresh && !CSM.refresh.enabled) { state = 'idle'; return; }`,
+		`if (!force && CSM.refresh && !CSM.refresh.enabled) { state = 'idle'; return; }`,
+		`function onPause() {`,
 		`function onResume() {`,
+		`function onRefreshNow() {`,
+		`scheduleNext(0, true);`,
 		`window.addEventListener('csm:refresh-toggle', function(ev) {`,
 		`window.addEventListener('csm:refresh-now', function() {`,
+		`snapshot[i].onRefreshNow();`,
 	} {
 		if !strings.Contains(text, fragment) {
 			t.Fatalf("csrf.js missing CSM.refresh fragment %q", fragment)
@@ -1974,6 +1984,8 @@ func TestAutoRefreshPillWired(t *testing.T) {
 		`nowBtn.addEventListener('click', function() { CSM.refresh.manual(); });`,
 		`toggleBtn.addEventListener('click', function() { CSM.refresh.setEnabled(!CSM.refresh.enabled); });`,
 		`window.addEventListener('csm:refresh-bump', paintAge);`,
+		`return 'Updated ' + diff + 's ago';`,
+		`toggleBtn.setAttribute('aria-label', enabled ? 'Pause auto-refresh' : 'Resume auto-refresh');`,
 	} {
 		if !strings.Contains(layoutText, fragment) {
 			t.Fatalf("layout.js missing refresh-pill fragment %q", fragment)
@@ -1988,11 +2000,35 @@ func TestAutoRefreshPillWired(t *testing.T) {
 	for _, fragment := range []string{
 		`id="csm-refresh-pill"`,
 		`id="csm-refresh-age"`,
+		`Never updated`,
 		`id="csm-refresh-now"`,
 		`id="csm-refresh-toggle"`,
+		`aria-label="Pause auto-refresh"`,
 	} {
 		if !strings.Contains(layoutHTML, fragment) {
 			t.Fatalf("layout.html missing refresh-pill id %q", fragment)
+		}
+	}
+}
+
+func TestAutoRefreshDataIntervalsUseSharedToggle(t *testing.T) {
+	allowedDirectSetInterval := map[string]bool{
+		"csrf.js":     true, // relative timestamp labels
+		"findings.js": true, // per-finding countdown labels
+		"layout.js":   true, // refresh-age label tick
+		"settings.js": true, // firewall rollback countdown
+	}
+	for _, path := range webUISourceFiles(t, "../../ui/static/js/*.js") {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if !strings.Contains(string(src), "setInterval(") {
+			continue
+		}
+		base := filepath.Base(path)
+		if !allowedDirectSetInterval[base] {
+			t.Errorf("%s starts a data refresh interval outside CSM.refresh.interval", path)
 		}
 	}
 }

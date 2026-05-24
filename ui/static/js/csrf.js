@@ -249,19 +249,92 @@ CSM.get = function(url, options) {
     return CSM.fetch(url, opts);
 };
 
-// Shared refresh tracker (WEB_ROADMAP P2.3). Every successful
-// CSM.request bump()s the lastFetchAt timestamp; the layout pill polls
-// CSM.refresh.lastFetchAt to render "Updated 12s ago". Pages and the
-// CSM.poll lifecycle observe enabled to decide whether to fire the next
-// scheduled tick. Pressing the layout refresh button dispatches the
-// 'csm:refresh-now' window event; pages listen and re-fetch.
+// Shared refresh tracker. Successful CSM.request calls bump() to keep
+// lastFetchAt current, while background refresh loops observe enabled
+// so the layout pause control can stop scheduled fetches.
 CSM.refresh = (function() {
     var STORAGE_KEY = 'csm-autorefresh';
+    var timers = [];
     var raw = null;
     try { raw = localStorage.getItem(STORAGE_KEY); } catch (e) { /* localStorage may be unavailable */ }
     // Default ON unless user explicitly turned it off.
     var enabled = raw !== 'off';
     var lastFetchAt = 0;
+
+    function addTimer(timer) {
+        timers.push(timer);
+    }
+
+    function removeTimer(timer) {
+        for (var i = timers.length - 1; i >= 0; i--) {
+            if (timers[i] === timer) {
+                timers.splice(i, 1);
+                return;
+            }
+        }
+    }
+
+    function eachTimer(fn) {
+        var snapshot = timers.slice();
+        for (var i = 0; i < snapshot.length; i++) {
+            fn(snapshot[i]);
+        }
+    }
+
+    function invokeTimer(fn) {
+        try {
+            fn();
+        } catch (e) {
+            setTimeout(function() { throw e; }, 0);
+        }
+    }
+
+    function createInterval(fn, interval) {
+        var timerId = null;
+        var stopped = false;
+        var delay = Math.max(0, Number(interval) || 0);
+
+        function clearTimer() {
+            if (timerId) {
+                clearTimeout(timerId);
+                timerId = null;
+            }
+        }
+
+        function schedule() {
+            clearTimer();
+            if (stopped || document.hidden || !enabled) return;
+            timerId = setTimeout(function() {
+                timerId = null;
+                if (stopped || document.hidden || !enabled) return;
+                invokeTimer(fn);
+                schedule();
+            }, delay);
+        }
+
+        function runNow() {
+            if (stopped || document.hidden) return;
+            clearTimer();
+            invokeTimer(fn);
+            schedule();
+        }
+
+        var timer = {
+            pause: clearTimer,
+            schedule: schedule,
+            runNow: runNow,
+            stop: function() {
+                if (stopped) return;
+                stopped = true;
+                clearTimer();
+                removeTimer(timer);
+            }
+        };
+        addTimer(timer);
+        schedule();
+        return { stop: timer.stop };
+    }
+
     var api = {
         get enabled() { return enabled; },
         get lastFetchAt() { return lastFetchAt; },
@@ -276,8 +349,32 @@ CSM.refresh = (function() {
         },
         manual: function() {
             window.dispatchEvent(new CustomEvent('csm:refresh-now'));
+        },
+        interval: function(fn, interval) {
+            return createInterval(fn, interval);
         }
     };
+
+    window.addEventListener('csm:refresh-toggle', function(ev) {
+        if (ev.detail && ev.detail.enabled) {
+            eachTimer(function(timer) { timer.schedule(); });
+            return;
+        }
+        eachTimer(function(timer) { timer.pause(); });
+    });
+
+    window.addEventListener('csm:refresh-now', function() {
+        eachTimer(function(timer) { timer.runNow(); });
+    });
+
+    document.addEventListener('visibilitychange', function() {
+        if (document.hidden) {
+            eachTimer(function(timer) { timer.pause(); });
+            return;
+        }
+        eachTimer(function(timer) { timer.schedule(); });
+    });
+
     return api;
 })();
 
@@ -342,23 +439,27 @@ CSM.refresh = (function() {
         }
     });
 
-    // Resume idle pollers when the user re-enables auto-refresh at the
-    // layout pill. Without this, pausing then unpausing would leave
-    // pollers parked until the next visibilitychange.
+    // Pause/resume pollers when the user flips the layout auto-refresh
+    // toggle. Scheduled timers are cleared while paused; in-flight
+    // requests finish and park before scheduling the next cycle.
     window.addEventListener('csm:refresh-toggle', function(ev) {
-        if (!ev.detail || !ev.detail.enabled) return;
+        var enabled = ev.detail && ev.detail.enabled;
         var snapshot = pollers.slice();
         for (var i = 0; i < snapshot.length; i++) {
-            snapshot[i].onResume();
+            if (enabled) {
+                snapshot[i].onResume();
+            } else {
+                snapshot[i].onPause();
+            }
         }
     });
 
-    // Manual refresh fires every poller's onResume so the user gets
-    // immediate data even if the next tick was minutes away.
+    // Manual refresh forces a one-shot fetch even while auto-refresh is
+    // paused, then returns the poller to the normal enabled/paused state.
     window.addEventListener('csm:refresh-now', function() {
         var snapshot = pollers.slice();
         for (var i = 0; i < snapshot.length; i++) {
-            snapshot[i].onResume();
+            snapshot[i].onRefreshNow();
         }
     });
 
@@ -369,7 +470,7 @@ CSM.refresh = (function() {
         var timerId = null;
         var timerSeq = 0;
         var state = 'scheduled';
-        var poller = { onVisibility: onVisibility, onResume: onResume };
+        var poller = { onVisibility: onVisibility, onPause: onPause, onResume: onResume, onRefreshNow: onRefreshNow };
 
         function clearTimer() {
             if (timerId) {
@@ -379,15 +480,20 @@ CSM.refresh = (function() {
             }
         }
 
-        function scheduleNext(delayMs) {
+        function scheduleNext(delayMs, force) {
             if (state === 'stopped' || document.hidden) {
                 if (state !== 'stopped') state = 'idle';
+                return;
+            }
+            if (!force && CSM.refresh && !CSM.refresh.enabled) {
+                clearTimer();
+                state = 'idle';
                 return;
             }
             clearTimer();
             state = 'scheduled';
             var seq = ++timerSeq;
-            timerId = setTimeout(function() { run(seq); }, delayMs);
+            timerId = setTimeout(function() { run(seq, !!force); }, delayMs);
         }
 
         function emit(err, data) {
@@ -401,16 +507,13 @@ CSM.refresh = (function() {
             emit(err, null);
         }
 
-        function run(seq) {
+        function run(seq, force) {
             if (seq !== timerSeq) return;
             timerId = null;
             if (state === 'stopped') return;
             if (document.hidden) { state = 'idle'; return; }
             if (state !== 'scheduled') return;
-            // Auto-refresh paused at the layout pill: stay idle and wait
-            // for the user to toggle back on (the toggle dispatches
-            // csm:refresh-toggle which scheduleNext picks up).
-            if (CSM.refresh && !CSM.refresh.enabled) { state = 'idle'; return; }
+            if (!force && CSM.refresh && !CSM.refresh.enabled) { state = 'idle'; return; }
             state = 'running';
             var promise;
             try {
@@ -442,14 +545,28 @@ CSM.refresh = (function() {
             }
         }
 
-        // Re-enter the scheduled state from idle. Used by the layout
-        // refresh button and the auto-refresh toggle so users can wake
-        // a parked poller without waiting for the next tab show.
+        function onPause() {
+            if (state === 'stopped') return;
+            if (state === 'scheduled') {
+                clearTimer();
+                state = 'idle';
+            }
+        }
+
+        // Re-enter from idle or an existing timer so resuming does not
+        // wait for a stale scheduled delay.
         function onResume() {
             if (state === 'stopped' || document.hidden) return;
-            if (state !== 'idle') return;
+            if (state !== 'idle' && state !== 'scheduled') return;
             currentInterval = baseInterval;
             scheduleNext(100);
+        }
+
+        function onRefreshNow() {
+            if (state === 'stopped' || document.hidden) return;
+            if (state === 'running') return;
+            currentInterval = baseInterval;
+            scheduleNext(0, true);
         }
 
         addPoller(poller);
