@@ -4,6 +4,7 @@ var CSM = CSM || {};
 CSM.shortcuts = (function() {
     var _helpVisible = false;
     var _helpOverlay = null;
+    var _helpReturnFocus = null;
     var _pendingChord = null;
     var _chordTimer = null;
     var _selectedRowIndex = -1;
@@ -18,9 +19,8 @@ CSM.shortcuts = (function() {
         b: '/firewall'
     };
 
-    // Shortcuts grouped by context (WEB_ROADMAP P5.5). Each group renders
-    // its own section heading in the help overlay so operators can scan
-    // by what they're trying to do, not by the keystroke alphabet.
+    // The help overlay mirrors the operator workflow instead of listing
+    // every key in one flat table.
     var _shortcutGroups = [
         {
             label: 'General',
@@ -90,27 +90,32 @@ CSM.shortcuts = (function() {
 
         _helpOverlay = document.createElement('div');
         _helpOverlay.id = 'csm-shortcuts-help';
+        _helpOverlay.tabIndex = -1;
         _helpOverlay.setAttribute('role', 'dialog');
         _helpOverlay.setAttribute('aria-modal', 'true');
-        _helpOverlay.setAttribute('aria-label', 'Keyboard shortcuts');
+        _helpOverlay.setAttribute('aria-labelledby', 'csm-shortcuts-title');
         _helpOverlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:10000;display:flex;align-items:center;justify-content:center;';
 
         var box = document.createElement('div');
         box.style.cssText = 'background:#1e293b;color:#c8d3e0;border-radius:8px;padding:24px 32px;max-width:420px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,0.4);';
 
         var title = document.createElement('h3');
+        title.id = 'csm-shortcuts-title';
         title.style.cssText = 'margin:0 0 16px 0;font-size:16px;font-weight:600;';
         title.textContent = 'Keyboard Shortcuts';
         box.appendChild(title);
 
         for (var g = 0; g < _shortcutGroups.length; g++) {
             var group = _shortcutGroups[g];
-            var groupHeader = document.createElement('div');
-            groupHeader.style.cssText = 'margin:' + (g === 0 ? '0' : '14px') + ' 0 6px 0;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:#64748b;';
+            var groupID = 'csm-shortcuts-group-' + g;
+            var groupHeader = document.createElement('h4');
+            groupHeader.id = groupID;
+            groupHeader.style.cssText = 'margin:' + (g === 0 ? '0' : '14px') + ' 0 6px 0;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0;color:#64748b;';
             groupHeader.textContent = group.label;
             box.appendChild(groupHeader);
 
             var table = document.createElement('table');
+            table.setAttribute('aria-labelledby', groupID);
             table.style.cssText = 'width:100%;border-collapse:collapse;';
             for (var i = 0; i < group.items.length; i++) {
                 var tr = document.createElement('tr');
@@ -151,14 +156,22 @@ CSM.shortcuts = (function() {
     }
 
     function _showHelp() {
+        if (!_helpVisible && document.activeElement && document.activeElement !== document.body) {
+            _helpReturnFocus = document.activeElement;
+        }
         _buildHelpOverlay();
         _helpOverlay.style.display = 'flex';
         _helpVisible = true;
+        _helpOverlay.focus();
     }
 
     function _hideHelp() {
         if (_helpOverlay) _helpOverlay.style.display = 'none';
         _helpVisible = false;
+        if (_helpReturnFocus && document.contains(_helpReturnFocus) && typeof _helpReturnFocus.focus === 'function') {
+            _helpReturnFocus.focus();
+        }
+        _helpReturnFocus = null;
     }
 
     function _cancelChord() {
@@ -182,14 +195,24 @@ CSM.shortcuts = (function() {
             return;
         }
 
-        // Don't activate shortcuts when typing in form elements
-        if (_isInputFocused()) {
+        // If help is visible, keep focus inside the modal overlay and only
+        // accept its close shortcuts.
+        if (_helpVisible) {
+            if (e.key === '?') { _hideHelp(); e.preventDefault(); return; }
+            if (e.key === 'Tab') {
+                e.preventDefault();
+                if (_helpOverlay) _helpOverlay.focus();
+                return;
+            }
+            e.preventDefault();
+            if (_helpOverlay && document.activeElement !== _helpOverlay) {
+                _helpOverlay.focus();
+            }
             return;
         }
 
-        // If help is visible, only ? or Escape closes it
-        if (_helpVisible) {
-            if (e.key === '?') { _hideHelp(); e.preventDefault(); }
+        // Don't activate shortcuts when typing in form elements
+        if (_isInputFocused()) {
             return;
         }
 

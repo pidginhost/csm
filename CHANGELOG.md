@@ -31,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Page templates now use unique element IDs across the whole UI: firewall, audit, threat, and ModSecurity rules pages were each assigning the same id to different inputs / tables / forms, which is a latent foot-gun if any of those pages ever load alongside another.
 - Web UI accessibility: account tabs now wire `aria-controls`, the threat attackers "select all" checkbox carries an `aria-label`, the performance findings list is marked `aria-busy` while loading, error toasts announce with `aria-live="assertive"`, and the shared detail panel traps `Tab` focus while open so keyboard users do not lose context to the page behind it.
 - Rules page "Import State" upload now shows an "Importing..." status with `aria-busy` while the import POST is in flight, then restores after success, failure, or parse error so a slow import no longer looks like a frozen page.
-- Keyboard shortcut help overlay (`?`) now groups shortcuts by context (General / Navigate / Findings page) and carries `role="dialog"` + `aria-modal` so screen readers announce it correctly.
+- Keyboard shortcut help overlay (`?`) now groups shortcuts by context (General / Navigate / Findings page), opens as a labelled modal dialog, and keeps keyboard focus inside it while visible.
 - New `thresholds.crontab_base64_blob_max_bytes` operator override for the crontab deep-scan base64 decoder cap (default 16384). Lets operators raise the cap on hosts where `csm_checks_crontab_base64_truncated_total` shows recurring truncation without rebuilding the daemon.
 
 ### Changed

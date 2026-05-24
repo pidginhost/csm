@@ -53,17 +53,29 @@ admin-only navigation entries such as Configuration and ModSec Rules.
 
 ## Keyboard Shortcuts
 
+### General
+
 | Key | Action |
 |-----|--------|
 | `?` | Show shortcut help |
 | `/` | Focus search input |
+
+### Navigate
+
+| Key | Action |
+|-----|--------|
 | `g d` | Go to Dashboard |
 | `g f` | Go to Findings |
 | `g h` | Go to Findings > History tab |
 | `g t` | Go to Threat Intel |
 | `g r` | Go to Rules |
-| `g b` | Go to Firewall |
-| `j / k` | Move selection down/up (Findings) |
+| `g b` | Go to Blocked IPs (Firewall) |
+
+### Findings page
+
+| Key | Action |
+|-----|--------|
+| `j / k` | Move selection down/up |
 | `d` | Dismiss selected finding |
 | `f` | Fix selected finding |
 

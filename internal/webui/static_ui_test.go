@@ -2793,6 +2793,10 @@ func TestShortcutsHelpGrouped(t *testing.T) {
 		`for (var g = 0; g < _shortcutGroups.length; g++) {`,
 		`_helpOverlay.setAttribute('role', 'dialog');`,
 		`_helpOverlay.setAttribute('aria-modal', 'true');`,
+		`_helpOverlay.setAttribute('aria-labelledby', 'csm-shortcuts-title');`,
+		`title.id = 'csm-shortcuts-title';`,
+		`var groupHeader = document.createElement('h4');`,
+		`table.setAttribute('aria-labelledby', groupID);`,
 	} {
 		if !strings.Contains(text, fragment) {
 			t.Fatalf("shortcuts.js missing P5.5 fragment %q", fragment)
@@ -2800,5 +2804,36 @@ func TestShortcutsHelpGrouped(t *testing.T) {
 	}
 	if strings.Contains(text, "var _descriptions = [") {
 		t.Fatal("shortcuts.js still uses flat _descriptions; switch to grouped _shortcutGroups")
+	}
+}
+
+func TestShortcutsHelpModalFocusContract(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/shortcuts.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, fragment := range []string{
+		`var _helpReturnFocus = null;`,
+		`_helpOverlay.tabIndex = -1;`,
+		`_helpReturnFocus = document.activeElement;`,
+		`_helpOverlay.focus();`,
+		`_helpReturnFocus.focus();`,
+		`if (e.key === 'Tab') {`,
+		`if (_helpOverlay) _helpOverlay.focus();`,
+		`if (_helpOverlay && document.activeElement !== _helpOverlay) {`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Fatalf("shortcuts.js missing modal focus fragment %q", fragment)
+		}
+	}
+
+	helpVisibleIdx := strings.Index(text, `if (_helpVisible) {`)
+	inputGuardIdx := strings.Index(text, `if (_isInputFocused()) {`)
+	if helpVisibleIdx < 0 || inputGuardIdx < 0 {
+		t.Fatal("shortcuts.js missing help-visible or input-focus guard")
+	}
+	if helpVisibleIdx > inputGuardIdx {
+		t.Fatal("shortcuts.js must handle the visible modal before the input-focus guard so focus cannot escape behind it")
 	}
 }
