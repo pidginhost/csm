@@ -1535,3 +1535,34 @@ func TestCSMPollVisibilityKeepsBackoffAndInvalidatesQueuedTimers(t *testing.T) {
 		}
 	}
 }
+
+// TestMemoryBoundedHandlersPinCaps pins WEB_ROADMAP P1.5: the three
+// previously-unbounded JSON handlers (history filtered scan, incident
+// timeline snapshot walk, modsec aggregate map) carry explicit caps in
+// the source so a future refactor cannot silently remove them. The
+// caps are checked by name to keep this lint cheap; the runtime tests
+// for each handler live in their _test.go siblings.
+func TestMemoryBoundedHandlersPinCaps(t *testing.T) {
+	for _, tc := range []struct {
+		path     string
+		fragment string
+	}{
+		{"../../internal/webui/api.go", "const historyFilterScanCap = 5000"},
+		{"../../internal/webui/api.go", "historyTruncated := len(allFindings) >= historyFilterScanCap"},
+		{"../../internal/webui/api.go", `w.Header().Set("X-CSM-Truncated", "1")`},
+		{"../../internal/webui/incident_api.go", "const incidentSnapshotScanCap = 1000"},
+		{"../../internal/webui/incident_api.go", "snap = snap[:incidentSnapshotScanCap]"},
+		{"../../internal/webui/incident_api.go", `w.Header().Set("X-CSM-Truncated", "1")`},
+		{"../../internal/webui/modsec_api.go", "const modsecBlocksMaxAggregates = 50000"},
+		{"../../internal/webui/modsec_api.go", "if len(byBlock) >= modsecBlocksMaxAggregates {"},
+		{"../../internal/webui/modsec_api.go", `w.Header().Set("X-CSM-Truncated", "1")`},
+	} {
+		src, err := os.ReadFile(tc.path)
+		if err != nil {
+			t.Fatalf("read %s: %v", tc.path, err)
+		}
+		if !strings.Contains(string(src), tc.fragment) {
+			t.Errorf("%s missing memory-cap fragment %q", tc.path, tc.fragment)
+		}
+	}
+}

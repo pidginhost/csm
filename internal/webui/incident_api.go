@@ -23,6 +23,16 @@ type timelineEvent struct {
 
 const incidentTimelineEventLimit = 200
 
+// incidentSnapshotScanCap bounds how many incidents the timeline walk
+// will inspect from the correlator snapshot per request. Correlators on
+// hot hosts can hold thousands of open + recently-closed incidents and
+// each one carries a full event timeline; without this cap a single
+// /api/v1/incident call can walk hundreds of thousands of timeline
+// events before paginating down to incidentTimelineEventLimit. The cap
+// is generous (most timelines hit the 200-event ceiling well before the
+// 1000-incident ceiling) but bounds worst-case wall time and memory.
+const incidentSnapshotScanCap = 1000
+
 func (s *Server) handleIncident(w http.ResponseWriter, _ *http.Request) {
 	s.renderTemplate(w, "incident.html", map[string]string{
 		"Hostname": s.cfg.Hostname,
@@ -101,8 +111,14 @@ func (s *Server) apiIncident(w http.ResponseWriter, r *http.Request) {
 	// incident object still carries the full timeline. Walk every
 	// incident, match by RemoteIP for IP queries or by Account / Mailbox /
 	// Domain for account queries, and emit each matching timeline event.
+	truncated := false
 	if s.incidentCorrelator != nil {
-		for _, inc := range s.incidentCorrelator.Snapshot() {
+		snap := s.incidentCorrelator.Snapshot()
+		if len(snap) > incidentSnapshotScanCap {
+			snap = snap[:incidentSnapshotScanCap]
+			truncated = true
+		}
+		for _, inc := range snap {
 			incMatches := incidentMatchesAccount(inc, account)
 			for _, ev := range inc.Timeline {
 				if ev.Time.Before(cutoff) {
@@ -175,14 +191,19 @@ func (s *Server) apiIncident(w http.ResponseWriter, r *http.Request) {
 
 	if len(events) > incidentTimelineEventLimit {
 		events = events[:incidentTimelineEventLimit]
+		truncated = true
 	}
 
+	if truncated {
+		w.Header().Set("X-CSM-Truncated", "1")
+	}
 	writeJSON(w, map[string]interface{}{
 		"events":        events,
 		"total":         len(events),
 		"query_ip":      ip,
 		"query_account": account,
 		"hours":         hours,
+		"truncated":     truncated,
 	})
 }
 

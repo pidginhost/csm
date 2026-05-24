@@ -98,6 +98,15 @@ func (s *Server) apiModSecStats(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+// modsecBlocksMaxAggregates caps the IP+rule aggregation map so a host
+// with millions of unique ModSec rule hits cannot OOM the daemon by
+// asking for /api/v1/modsec/blocks. Existing aggregates keep updating
+// after the cap is reached; new IP+rule keys past the cap are dropped
+// silently with the X-CSM-Truncated response header set so monitoring
+// can flag the condition. Default sized for ~50 MB peak: 50000 entries
+// times a few hundred bytes per aggregate.
+const modsecBlocksMaxAggregates = 50000
+
 // apiModSecBlocks returns aggregated blocks per IP+rule for the last 24h.
 func (s *Server) apiModSecBlocks(w http.ResponseWriter, _ *http.Request) {
 	findings := deduplicateModSecFindings(s.modsecFindings24h())
@@ -117,6 +126,7 @@ func (s *Server) apiModSecBlocks(w http.ResponseWriter, _ *http.Request) {
 
 	byBlock := make(map[string]*blockAgg)
 	escalatedIPs := make(map[string]bool)
+	truncated := false
 
 	blockKey := func(ip, rule string) string {
 		return ip + "\x00" + rule
@@ -144,6 +154,10 @@ func (s *Server) apiModSecBlocks(w http.ResponseWriter, _ *http.Request) {
 		key := blockKey(ip, rule)
 		agg, ok := byBlock[key]
 		if !ok {
+			if len(byBlock) >= modsecBlocksMaxAggregates {
+				truncated = true
+				continue
+			}
 			agg = &blockAgg{
 				ip:          ip,
 				ruleID:      rule,
@@ -199,6 +213,10 @@ func (s *Server) apiModSecBlocks(w http.ResponseWriter, _ *http.Request) {
 			}
 		}
 		if !hasBlock {
+			if len(byBlock) >= modsecBlocksMaxAggregates {
+				truncated = true
+				continue
+			}
 			byBlock[blockKey(ip, "")] = &blockAgg{
 				ip:        ip,
 				escalated: true,
@@ -268,6 +286,9 @@ func (s *Server) apiModSecBlocks(w http.ResponseWriter, _ *http.Request) {
 		return result[i].RuleID < result[j].RuleID
 	})
 
+	if truncated {
+		w.Header().Set("X-CSM-Truncated", "1")
+	}
 	writeJSON(w, result)
 }
 

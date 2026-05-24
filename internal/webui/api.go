@@ -350,7 +350,12 @@ func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	searchLower := strings.ToLower(searchStr)
 
-	allFindings, _ := s.store.ReadHistory(5000, 0)
+	// Read up to historyFilterScanCap rows for the filtered path. When the
+	// cap is reached the response carries truncated=true so the UI can
+	// surface a "showing X most recent matches" hint instead of silently
+	// pretending the older rows don't exist.
+	allFindings, _ := s.store.ReadHistory(historyFilterScanCap, 0)
+	historyTruncated := len(allFindings) >= historyFilterScanCap
 	var filtered []alert.Finding
 	for _, f := range allFindings {
 		if !fromDate.IsZero() && f.Timestamp.Before(fromDate) {
@@ -386,13 +391,24 @@ func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if historyTruncated {
+		w.Header().Set("X-CSM-Truncated", "1")
+	}
 	writeJSON(w, map[string]interface{}{
-		"findings": filtered,
-		"total":    total,
-		"limit":    limit,
-		"offset":   offset,
+		"findings":  filtered,
+		"total":     total,
+		"limit":     limit,
+		"offset":    offset,
+		"truncated": historyTruncated,
 	})
 }
+
+// historyFilterScanCap bounds how many history rows the filtered path
+// loads into memory before filtering and paginating. The unfiltered
+// path reads directly from the store with native offset/limit and is
+// not affected. The cap is sized so the worst case (5000 Findings at
+// ~1 KB each) is comfortably under 10 MB peak per request.
+const historyFilterScanCap = 5000
 
 // var (not const) so tests can redirect to t.TempDir(). Production
 // callers must not mutate at runtime.
