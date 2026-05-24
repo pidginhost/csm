@@ -653,6 +653,25 @@
 
     // ---------- Quarantine tab ----------
 
+    var _emailQuarBulk = null;
+    var _emailQuarTable = null;
+    function _emailQuarUpdateBulk() {
+        var releaseBtn = document.getElementById('email-quar-bulk-release');
+        var deleteBtn = document.getElementById('email-quar-bulk-delete');
+        var selectAll = document.getElementById('email-quar-select-all');
+        if (_emailQuarBulk) { _emailQuarBulk.refresh(); return; }
+        if (!releaseBtn && !deleteBtn) return;
+        _emailQuarBulk = CSM.bulk({
+            rowCheckboxSelector: '.email-quar-cb',
+            selectAllEl: selectAll,
+            valueAttr: 'data-id',
+            buttons: [
+                { el: releaseBtn, labelTemplate: 'Release {n} message(s)' },
+                { el: deleteBtn,  labelTemplate: 'Delete {n} message(s)' }
+            ]
+        });
+    }
+
     function loadQuarantine() {
         quarantineLoaded = true;
         CSM.get('/api/v1/email/quarantine')
@@ -661,10 +680,11 @@
                 if (!container) return;
                 if (!data || data.length === 0) {
                     container.innerHTML = '<p class="text-muted">No quarantined messages.</p>';
+                    _emailQuarUpdateBulk();
                     return;
                 }
-                var html = '<div class="table-responsive"><table class="table table-vcenter card-table table-sm csm-table-rowcard">';
-                html += '<thead><tr><th>Time</th><th>Dir</th><th>From</th><th>To</th><th>Subject</th><th>Threat</th><th>Actions</th></tr></thead><tbody>';
+                var html = '<div class="table-responsive"><table class="table table-vcenter card-table table-sm csm-table-rowcard" id="email-quar-table">';
+                html += '<thead><tr><th><input type="checkbox" class="form-check-input" id="email-quar-select-all"></th><th>Time</th><th>Dir</th><th>From</th><th>To</th><th>Subject</th><th>Threat</th><th>Actions</th></tr></thead><tbody>';
                 for (var i = 0; i < data.length; i++) {
                     var msg = data[i];
                     var time = CSM.timeAgo ? CSM.timeAgo(msg.quarantined_at) : CSM.esc(msg.quarantined_at);
@@ -678,7 +698,12 @@
                     }
                     var to = (msg.to || []).join(', ');
                     var msgID = CSM.attr(msg.message_id);
-                    html += '<tr>';
+                    // Stash search-relevant fields on the row so the
+                    // shared search input matches against just these
+                    // (instead of the whole DOM text including badges).
+                    var searchBlob = String(msg.from || '') + ' ' + String(to || '') + ' ' + String(msg.subject || '');
+                    html += '<tr data-direction="' + CSM.attr(msg.direction || '') + '" data-timestamp="' + CSM.attr(msg.quarantined_at || '') + '" data-search="' + CSM.attr(searchBlob.toLowerCase()) + '">';
+                    html += '<td><input type="checkbox" class="form-check-input email-quar-cb" data-id="' + msgID + '"></td>';
                     html += '<td data-label="Time">' + time + '</td>';
                     html += '<td data-label="Dir">' + dir + '</td>';
                     html += '<td data-label="From">' + CSM.esc(msg.from) + '</td>';
@@ -693,12 +718,100 @@
                 }
                 html += '</tbody></table></div>';
                 container.innerHTML = html;
+                var fromEl = document.getElementById('email-quar-from');
+                var toEl = document.getElementById('email-quar-to');
+                function _inRange(row) {
+                    var raw = row.getAttribute('data-timestamp') || '';
+                    if (!raw) return true;
+                    var ts = new Date(raw.replace(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})/, '$1T$2')).getTime();
+                    if (isNaN(ts)) return true;
+                    if (fromEl && fromEl.value) {
+                        var f = new Date(fromEl.value + 'T00:00:00').getTime();
+                        if (!isNaN(f) && ts < f) return false;
+                    }
+                    if (toEl && toEl.value) {
+                        var to = new Date(toEl.value + 'T00:00:00').getTime();
+                        if (!isNaN(to) && ts >= to + 86400000) return false;
+                    }
+                    return true;
+                }
+                _emailQuarTable = new CSM.Table({
+                    tableId: 'email-quar-table',
+                    perPage: 25,
+                    searchId: 'email-quar-search',
+                    searchAttr: 'data-search',
+                    sortable: true,
+                    stateKey: 'csm-email-quarantine',
+                    mobileRowCard: true,
+                    filters: [{ id: 'email-quar-dir', attr: 'data-direction' }],
+                    rowFilter: _inRange
+                });
+                function _onDate() { if (_emailQuarTable) { _emailQuarTable.currentPage = 1; _emailQuarTable.applyFilters(); } }
+                if (fromEl) fromEl.addEventListener('change', _onDate);
+                if (toEl) toEl.addEventListener('change', _onDate);
+                CSM.urlState.bind({ inputs: {
+                    q: document.getElementById('email-quar-search'),
+                    dir: document.getElementById('email-quar-dir'),
+                    from: fromEl,
+                    to: toEl
+                } });
+                _emailQuarUpdateBulk();
             })
             .catch(function() {
                 quarantineLoaded = false;
                 var container = document.getElementById('quarantine-table');
                 if (container) container.innerHTML = '<p class="text-danger">Failed to load quarantine.</p>';
             });
+    }
+
+    // Bulk release / delete wired through CSM.bulk's selectedValues.
+    var _bulkReleaseBtn = document.getElementById('email-quar-bulk-release');
+    if (_bulkReleaseBtn) {
+        _bulkReleaseBtn.addEventListener('click', function() {
+            if (!_emailQuarBulk) return;
+            var ids = _emailQuarBulk.selectedValues();
+            if (ids.length === 0) return;
+            CSM.confirm('Release ' + ids.length + ' message(s) back to the mail queue?').then(function() {
+                var succeeded = 0, failed = 0;
+                var chain = Promise.resolve();
+                ids.forEach(function(id) {
+                    chain = chain.then(function() {
+                        return CSM.post('/api/v1/email/quarantine/' + encodeURIComponent(id) + '/release', {})
+                            .then(function() { succeeded++; })
+                            .catch(function() { failed++; });
+                    });
+                });
+                chain.then(function() {
+                    CSM.toast('Released ' + succeeded + ' of ' + (succeeded + failed), failed > 0 ? 'warning' : 'success');
+                    loadQuarantine();
+                    loadAVStatus();
+                });
+            }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
+        });
+    }
+    var _bulkDeleteBtn = document.getElementById('email-quar-bulk-delete');
+    if (_bulkDeleteBtn) {
+        _bulkDeleteBtn.addEventListener('click', function() {
+            if (!_emailQuarBulk) return;
+            var ids = _emailQuarBulk.selectedValues();
+            if (ids.length === 0) return;
+            CSM.confirm('Permanently delete ' + ids.length + ' quarantined message(s)?').then(function() {
+                var succeeded = 0, failed = 0;
+                var chain = Promise.resolve();
+                ids.forEach(function(id) {
+                    chain = chain.then(function() {
+                        return CSM.delete('/api/v1/email/quarantine/' + encodeURIComponent(id))
+                            .then(function() { succeeded++; })
+                            .catch(function() { failed++; });
+                    });
+                });
+                chain.then(function() {
+                    CSM.toast('Deleted ' + succeeded + ' of ' + (succeeded + failed), failed > 0 ? 'warning' : 'success');
+                    loadQuarantine();
+                    loadAVStatus();
+                });
+            }).catch(function() { /* cancelled */ });
+        });
     }
 
     function releaseMessage(msgID) {

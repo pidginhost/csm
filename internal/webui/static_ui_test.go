@@ -2393,3 +2393,51 @@ func TestQuarantinePageHasFilterPack(t *testing.T) {
 		t.Fatal("quarantine.js must use validated calendar-day bounds instead of fixed 24-hour date math")
 	}
 }
+
+// TestEmailQuarantineToolbar pins WEB_ROADMAP P3.4: email quarantine
+// pane gains search / direction / date-range filters and bulk
+// release+delete via CSM.bulk. Search scope is limited to
+// from/to/subject through searchAttr so badges and table chrome don't
+// pollute matches.
+func TestEmailQuarantineToolbar(t *testing.T) {
+	tmpl, err := os.ReadFile("../../ui/templates/email.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmplText := string(tmpl)
+	for _, fragment := range []string{
+		`id="email-quar-search"`,
+		`id="email-quar-dir"`,
+		`id="email-quar-from"`,
+		`id="email-quar-to"`,
+		`id="email-quar-bulk-release"`,
+		`id="email-quar-bulk-delete"`,
+	} {
+		if !strings.Contains(tmplText, fragment) {
+			t.Fatalf("email.html missing P3.4 fragment %q", fragment)
+		}
+	}
+
+	js, err := os.ReadFile("../../ui/static/js/email.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsText := string(js)
+	for _, fragment := range []string{
+		`tableId: 'email-quar-table',`,
+		`searchId: 'email-quar-search',`,
+		`searchAttr: 'data-search',`,
+		`filters: [{ id: 'email-quar-dir', attr: 'data-direction' }],`,
+		`rowCheckboxSelector: '.email-quar-cb',`,
+		`labelTemplate: 'Release {n} message(s)' }`,
+		`labelTemplate: 'Delete {n} message(s)' }`,
+		`data-direction="' + CSM.attr(msg.direction || '') + '"`,
+		`data-timestamp="' + CSM.attr(msg.quarantined_at || '') + '"`,
+		`data-search="' + CSM.attr(searchBlob.toLowerCase()) + '"`,
+		`dir: document.getElementById('email-quar-dir'),`,
+	} {
+		if !strings.Contains(jsText, fragment) {
+			t.Fatalf("email.js missing P3.4 fragment %q", fragment)
+		}
+	}
+}

@@ -193,6 +193,21 @@
 
             <!-- Quarantine tab (full width) -->
             <div class="tab-pane fade" id="email-pane-quarantine" role="tabpanel" aria-labelledby="email-tab-quarantine" tabindex="0">
+                <div class="csm-toolbar">
+                    <input type="text" id="email-quar-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search sender / recipient / subject..." aria-label="Search email quarantine">
+                    <select id="email-quar-dir" class="form-select form-select-sm csm-toolbar__filter" aria-label="Filter by direction">
+                        <option value="">All directions</option>
+                        <option value="inbound">Inbound</option>
+                        <option value="outbound">Outbound</option>
+                    </select>
+                    <input type="date" id="email-quar-from" class="form-control form-control-sm csm-toolbar__filter" aria-label="From date">
+                    <input type="date" id="email-quar-to" class="form-control form-control-sm csm-toolbar__filter" aria-label="To date">
+                    <span class="csm-toolbar__spacer"></span>
+                    <div class="csm-toolbar__actions">
+                        <button class="btn btn-warning btn-sm d-none" id="email-quar-bulk-release"><i class="ti ti-mail-forward"></i>&nbsp;Release Selected</button>
+                        <button class="btn btn-danger btn-sm d-none" id="email-quar-bulk-delete"><i class="ti ti-trash"></i>&nbsp;Delete Selected</button>
+                    </div>
+                </div>
                 <div class="card-body">
                     <div id="quarantine-table"></div>
                 </div>
