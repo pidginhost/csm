@@ -1,5 +1,51 @@
 // CSM Quarantine page
 
+// WEB_ROADMAP P3.3: extract /home/<account>/ from the quarantine entry's
+// original_path so the account filter dropdown works without a server
+// schema change. Returns '' for system paths so they fall under "All".
+function _quarAccountFromPath(path) {
+    if (!path) return '';
+    var m = String(path).match(/^\/home\/([^\/]+)\//);
+    return m ? m[1] : '';
+}
+
+// Detectors carry a short label as the first colon-delimited segment of
+// the reason field (e.g. "YARA rule match: foo", "WordPress upload",
+// "ModSec...:"). Use the prefix before the first colon (or the whole
+// reason when no colon) as a stable bucket.
+function _quarDetectorFromReason(reason) {
+    if (!reason) return '';
+    var s = String(reason).trim();
+    var c = s.indexOf(':');
+    return (c > 0 ? s.slice(0, c) : s).trim();
+}
+
+function _populateQuarFilterOptions(files) {
+    var accounts = {}, detectors = {};
+    for (var i = 0; i < files.length; i++) {
+        var a = _quarAccountFromPath(files[i].original_path);
+        if (a) accounts[a] = true;
+        var d = _quarDetectorFromReason(files[i].reason);
+        if (d) detectors[d] = true;
+    }
+    function fill(id, values) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        var prev = el.value;
+        // Drop existing options beyond the "All ..." first one.
+        while (el.options.length > 1) el.remove(1);
+        Object.keys(values).sort().forEach(function(v) {
+            var opt = document.createElement('option');
+            opt.value = v;
+            opt.textContent = v;
+            el.appendChild(opt);
+        });
+        if (prev) el.value = prev;
+    }
+    fill('quarantine-account-filter', accounts);
+    fill('quarantine-source-filter', detectors);
+}
+
 function loadQuarantine() {
     CSM.get('/api/v1/quarantine').then(function(files){
         var el = document.getElementById('quarantine-content');
@@ -10,15 +56,58 @@ function loadQuarantine() {
             updateBulkRestore();
             return;
         }
+        _populateQuarFilterOptions(files);
         var html = '<div class="table-responsive"><table class="table table-vcenter card-table" id="quarantine-table"><thead><tr><th><input type="checkbox" class="form-check-input" id="q-select-all"></th><th>Original Path</th><th>Size</th><th>Quarantined</th><th>Reason</th><th>Action</th></tr></thead><tbody>';
         for (var i = 0; i < files.length; i++) {
             var f = files[i];
-            html += '<tr><td><input type="checkbox" class="form-check-input q-cb" data-id="'+CSM.esc(f.id)+'"></td><td><code>'+CSM.esc(f.original_path)+'</code></td><td>'+formatSize(f.size)+'</td><td class="text-nowrap"><span class="text-muted small">'+CSM.esc(f.quarantined_at)+'</span></td><td class="small">'+CSM.esc(f.reason)+'</td><td><button class="btn btn-sm btn-ghost-secondary me-1 view-btn" data-id="'+CSM.esc(f.id)+'" data-path="'+CSM.esc(f.original_path)+'">View</button><button class="btn btn-sm btn-warning restore-btn" data-id="'+CSM.esc(f.id)+'">Restore</button></td></tr>';
+            var acct = _quarAccountFromPath(f.original_path);
+            var det = _quarDetectorFromReason(f.reason);
+            html += '<tr data-account="' + CSM.attr(acct) + '" data-source="' + CSM.attr(det) + '" data-timestamp="' + CSM.attr(f.quarantined_at || '') + '">';
+            html += '<td><input type="checkbox" class="form-check-input q-cb" data-id="'+CSM.esc(f.id)+'"></td><td><code>'+CSM.esc(f.original_path)+'</code></td><td>'+formatSize(f.size)+'</td><td class="text-nowrap"><span class="text-muted small">'+CSM.esc(f.quarantined_at)+'</span></td><td class="small">'+CSM.esc(f.reason)+'</td><td><button class="btn btn-sm btn-ghost-secondary me-1 view-btn" data-id="'+CSM.esc(f.id)+'" data-path="'+CSM.esc(f.original_path)+'">View</button><button class="btn btn-sm btn-warning restore-btn" data-id="'+CSM.esc(f.id)+'">Restore</button></td></tr>';
         }
         html += '</tbody></table></div>';
         el.innerHTML = html;
+        var fromEl = document.getElementById('quarantine-from');
+        var toEl = document.getElementById('quarantine-to');
+        function _inRange(row) {
+            var raw = row.getAttribute('data-timestamp') || '';
+            if (!raw) return true;
+            var ts = new Date(raw.replace(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})/, '$1T$2')).getTime();
+            if (isNaN(ts)) return true;
+            if (fromEl && fromEl.value) {
+                var f = new Date(fromEl.value + 'T00:00:00').getTime();
+                if (!isNaN(f) && ts < f) return false;
+            }
+            if (toEl && toEl.value) {
+                var to = new Date(toEl.value + 'T00:00:00').getTime();
+                if (!isNaN(to) && ts >= to + 86400000) return false;
+            }
+            return true;
+        }
         // Initialize table component after DOM is ready
-        new CSM.Table({ tableId: 'quarantine-table', perPage: 25, searchId: 'quarantine-search', sortable: true, stateKey: 'csm-quarantine-table' });
+        var quarTable = new CSM.Table({
+            tableId: 'quarantine-table',
+            perPage: 25,
+            searchId: 'quarantine-search',
+            sortable: true,
+            stateKey: 'csm-quarantine-table',
+            filters: [
+                { id: 'quarantine-account-filter', attr: 'data-account' },
+                { id: 'quarantine-source-filter',  attr: 'data-source' }
+            ],
+            rowFilter: _inRange
+        });
+        function _onDate() { if (quarTable) { quarTable.currentPage = 1; quarTable.applyFilters(); } }
+        if (fromEl) fromEl.addEventListener('change', _onDate);
+        if (toEl) toEl.addEventListener('change', _onDate);
+        // WEB_ROADMAP P2.1 / P3.3: persist all filters to URL.
+        CSM.urlState.bind({ inputs: {
+            q: document.getElementById('quarantine-search'),
+            account: document.getElementById('quarantine-account-filter'),
+            source: document.getElementById('quarantine-source-filter'),
+            from: fromEl,
+            to: toEl
+        } });
         // Bind restore and view buttons after DOM insertion
         el.querySelectorAll('.restore-btn').forEach(function(btn) {
             btn.addEventListener('click', function() { restoreFile(this.getAttribute('data-id')); });

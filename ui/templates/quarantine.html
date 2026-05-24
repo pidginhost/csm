@@ -13,6 +13,14 @@
         </div>
         <div class="csm-toolbar">
             <input type="text" id="quarantine-search" class="form-control form-control-sm csm-toolbar__search" placeholder="Search quarantine..." aria-label="Search quarantine">
+            <select id="quarantine-account-filter" class="form-select form-select-sm csm-toolbar__filter" aria-label="Filter by account">
+                <option value="">All accounts</option>
+            </select>
+            <select id="quarantine-source-filter" class="form-select form-select-sm csm-toolbar__filter" aria-label="Filter by detector">
+                <option value="">All detectors</option>
+            </select>
+            <input type="date" id="quarantine-from" class="form-control form-control-sm csm-toolbar__filter" aria-label="From date">
+            <input type="date" id="quarantine-to" class="form-control form-control-sm csm-toolbar__filter" aria-label="To date">
             <span class="csm-toolbar__spacer"></span>
             <div class="csm-toolbar__actions">
                 <button class="btn btn-warning btn-sm d-none" id="bulk-restore-btn"><i class="ti ti-restore"></i>&nbsp;Restore Selected</button>

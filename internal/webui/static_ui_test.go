@@ -2333,3 +2333,48 @@ func TestAccountPerTabFilters(t *testing.T) {
 		}
 	}
 }
+
+// TestQuarantinePageHasFilterPack pins WEB_ROADMAP P3.3: quarantine
+// page exposes account / detector / date-range filters in addition to
+// the existing path search, all persisted to URL via CSM.urlState.bind.
+// Account and detector dropdowns are populated from observed rows so
+// the lists stay aligned to actual quarantine contents.
+func TestQuarantinePageHasFilterPack(t *testing.T) {
+	tmpl, err := os.ReadFile("../../ui/templates/quarantine.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmplText := string(tmpl)
+	for _, fragment := range []string{
+		`id="quarantine-account-filter"`,
+		`id="quarantine-source-filter"`,
+		`id="quarantine-from"`,
+		`id="quarantine-to"`,
+	} {
+		if !strings.Contains(tmplText, fragment) {
+			t.Fatalf("quarantine.html missing P3.3 filter fragment %q", fragment)
+		}
+	}
+
+	js, err := os.ReadFile("../../ui/static/js/quarantine.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsText := string(js)
+	for _, fragment := range []string{
+		`function _quarAccountFromPath(path) {`,
+		`function _quarDetectorFromReason(reason) {`,
+		`data-account="' + CSM.attr(acct) + '"`,
+		`data-source="' + CSM.attr(det) + '"`,
+		`data-timestamp="' + CSM.attr(f.quarantined_at || '') + '"`,
+		`{ id: 'quarantine-account-filter', attr: 'data-account' },`,
+		`{ id: 'quarantine-source-filter',  attr: 'data-source' }`,
+		`rowFilter: _inRange`,
+		`account: document.getElementById('quarantine-account-filter'),`,
+		`source: document.getElementById('quarantine-source-filter'),`,
+	} {
+		if !strings.Contains(jsText, fragment) {
+			t.Fatalf("quarantine.js missing P3.3 fragment %q", fragment)
+		}
+	}
+}
