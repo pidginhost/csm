@@ -2728,3 +2728,27 @@ func TestPhase4A11yPatchesPresent(t *testing.T) {
 		}
 	}
 }
+
+// TestRulesImportStateHasInFlightUX pins WEB_ROADMAP P4.4: the rules
+// page "Import State" upload now disables its label and surfaces
+// "Importing..." text with aria-busy while the POST is in flight, and
+// always restores the label after success / failure / parse error.
+func TestRulesImportStateHasInFlightUX(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/rules.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, fragment := range []string{
+		`label.classList.add('disabled');`,
+		`label.setAttribute('aria-busy', 'true');`,
+		`label.textContent = ' Importing...';`,
+		`function restore() {`,
+		`}).finally(restore);`,
+		`reader.onerror = function() {`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Fatalf("rules.js missing P4.4 fragment %q", fragment)
+		}
+	}
+}

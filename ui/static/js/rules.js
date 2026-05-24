@@ -142,22 +142,53 @@ function loadSuppressions() {
 var importFile = document.getElementById('import-file');
 if (importFile) {
     importFile.addEventListener('change', function() {
-        var file = this.files[0];
+        var input = this;
+        var file = input.files[0];
         if (!file) return;
+        // WEB_ROADMAP P4.4: explicit in-flight UX so the operator
+        // doesn't think a slow import froze the page. The label parent
+        // visually owns the click, so we toggle its disabled-look
+        // state and put a busy attribute on the input.
+        var label = input.closest('label');
+        var origText = label ? label.textContent.trim() : '';
+        if (label) {
+            label.classList.add('disabled');
+            label.setAttribute('aria-busy', 'true');
+            label.textContent = ' Importing...';
+        }
+        function restore() {
+            if (!label) return;
+            label.classList.remove('disabled');
+            label.removeAttribute('aria-busy');
+            // Rebuild the original label content (icon + text + hidden input).
+            label.textContent = '';
+            var icon = document.createElement('i');
+            icon.className = 'ti ti-upload';
+            label.appendChild(icon);
+            label.appendChild(document.createTextNode(' ' + (origText || 'Import State')));
+            label.appendChild(input);
+        }
         var reader = new FileReader();
+        reader.onerror = function() {
+            CSM.toast('Could not read file', 'error');
+            restore();
+        };
         reader.onload = function(e) {
             try {
                 var data = JSON.parse(e.target.result);
                 CSM.post('/api/v1/import', data).then(function(result) {
                     CSM.toast('Import complete: ' + (result.summary || 'done'), 'success');
                     loadSuppressions();
-                }).catch(function(err) { CSM.toast('Import failed: ' + err, 'error'); });
+                }).catch(function(err) {
+                    CSM.toast('Import failed: ' + err, 'error');
+                }).finally(restore);
             } catch(ex) {
                 CSM.toast('Invalid JSON file', 'error');
+                restore();
             }
         };
         reader.readAsText(file);
-        this.value = '';
+        input.value = '';
     });
 }
 
