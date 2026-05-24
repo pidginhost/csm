@@ -1775,6 +1775,29 @@ func TestURLStateHelperExposesP21Surface(t *testing.T) {
 	}
 }
 
+func TestURLStateBindKeepsQueryAuthoritative(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/csrf.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, fragment := range []string{
+		`function hasURLValue(value) {`,
+		`return value !== undefined && value !== null && String(value) !== '';`,
+		`function stateValue(state, defaults, name) {`,
+		`if (own(state, name)) return state[name] == null ? '' : String(state[name]);`,
+		`if (el.value !== desired) {`,
+		`el.dispatchEvent(new Event(eventName(el), { bubbles: true }));`,
+		`var unsubscribePopstate = CSM.urlState.subscribe(function(state) { applyState(state); });`,
+		`if (applying) return;`,
+		`if (l.cancel) l.cancel();`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Fatalf("csrf.js missing URL-state authority fragment %q", fragment)
+		}
+	}
+}
+
 // TestAuditAndThreatPagesBindSearchToURLState pins WEB_ROADMAP P2.1: the
 // two pages that previously had zero URL state (audit, threat) now
 // persist their search input through CSM.urlState.bind so operators can

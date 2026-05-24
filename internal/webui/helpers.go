@@ -138,10 +138,8 @@ func resolvePathUnderRoot(root, rel string) (string, error) {
 		info, err := os.Lstat(next)
 		if err != nil {
 			if os.IsNotExist(err) {
-				for _, remaining := range parts[i:] {
-					current = filepath.Join(current, remaining)
-				}
-				return filepath.Clean(current), nil
+				current = next
+				continue
 			}
 			return "", fmt.Errorf("stat candidate: %w", err)
 		}

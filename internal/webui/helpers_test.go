@@ -742,6 +742,9 @@ func TestMustBeWithinRejectsEscapes(t *testing.T) {
 	if _, err := mustBeWithin(root, "."); err != nil {
 		t.Errorf("root itself rejected: %v", err)
 	}
+	if _, err := mustBeWithin(root, "missing/../new-file"); err != nil {
+		t.Errorf("missing path segment with parent traversal rejected: %v", err)
+	}
 
 	outside := t.TempDir()
 	if err := os.Symlink(outside, filepath.Join(root, "outside-link")); err != nil {
@@ -752,6 +755,9 @@ func TestMustBeWithinRejectsEscapes(t *testing.T) {
 	}
 	if _, err := mustBeWithin(root, "outside-link/../new-file"); err == nil {
 		t.Error("symlink traversal order escape accepted")
+	}
+	if _, err := mustBeWithin(root, "missing/../outside-link/new-file"); err == nil {
+		t.Error("missing segment traversal hid symlink escape")
 	}
 
 	inside := filepath.Join(root, "inside")
