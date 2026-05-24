@@ -171,5 +171,35 @@
     }
 
     document.getElementById('btn-run-audit').addEventListener('click', runAudit);
+
+    // WEB_ROADMAP P2.4: shared exporter for the current audit report.
+    var _hardeningExportRows = [];
+    var _hardeningExportCols = [
+        {key: 'category', label: 'Category'},
+        {key: 'status',   label: 'Status'},
+        {key: 'title',    label: 'Check'},
+        {key: 'message',  label: 'Message'},
+        {key: 'fix',      label: 'Suggested Fix'}
+    ];
+    var origRenderReport = renderReport;
+    renderReport = function(report) {
+        origRenderReport(report);
+        _hardeningExportRows = ((report && report.results) || []).map(function(r) {
+            return {
+                category: categoryNames[r.category] || r.category || '',
+                status:   r.status || '',
+                title:    r.title || '',
+                message:  r.message || '',
+                fix:      r.fix || ''
+            };
+        });
+    };
+    document.querySelectorAll('[data-export]').forEach(function(el) {
+        el.addEventListener('click', function(e) {
+            e.preventDefault();
+            CSM.exportTable(_hardeningExportRows, _hardeningExportCols, this.getAttribute('data-export'), 'csm-hardening');
+        });
+    });
+
     loadReport();
 })();

@@ -7,6 +7,15 @@
             <div class="csm-page-header__subtitle" id="audit-timestamp"></div>
         </div>
         <div class="csm-page-header__actions">
+            <div class="btn-group">
+                <button type="button" class="btn btn-ghost-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Export hardening audit">
+                    <i class="ti ti-download"></i>&nbsp;Export
+                </button>
+                <div class="dropdown-menu dropdown-menu-end">
+                    <a class="dropdown-item" href="#" data-export="csv">CSV</a>
+                    <a class="dropdown-item" href="#" data-export="json">JSON</a>
+                </div>
+            </div>
             <button class="btn btn-primary btn-sm" id="btn-run-audit">
                 <i class="ti ti-player-play"></i>&nbsp;Run Audit
             </button>

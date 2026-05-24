@@ -43,9 +43,17 @@ function loadAudit() {
 
 loadAudit();
 
-function exportAuditRows() {
+// Export audit rows via shared CSM.exportTable (WEB_ROADMAP P2.4).
+var _auditExportCols = [
+    {key: 'time',     label: 'Time'},
+    {key: 'action',   label: 'Action'},
+    {key: 'target',   label: 'Target'},
+    {key: 'details',  label: 'Details'},
+    {key: 'admin_ip', label: 'Admin IP'}
+];
+
+function _auditExportRows() {
     var rows = document.querySelectorAll('#audit-table tbody tr');
-    var headers = ['Time', 'Action', 'Target', 'Details', 'Admin IP'];
     var out = [];
     rows.forEach(function(r) {
         if (r.style.display === 'none') return;
@@ -59,37 +67,12 @@ function exportAuditRows() {
             admin_ip: cells[4].textContent.trim()
         });
     });
-    return { headers: headers, rows: out };
-}
-
-function downloadBlob(content, mime, ext) {
-    var blob = new Blob([content], {type: mime});
-    var url = URL.createObjectURL(blob);
-    var a = document.createElement('a');
-    a.href = url;
-    a.download = 'csm-audit-' + new Date().toISOString().slice(0,10) + '.' + ext;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    return out;
 }
 
 document.querySelectorAll('[data-export]').forEach(function(el) {
     el.addEventListener('click', function(e) {
         e.preventDefault();
-        var format = this.getAttribute('data-export');
-        var data = exportAuditRows();
-        if (!data.rows.length) { CSM.toast('No data to export', 'warning'); return; }
-        if (format === 'csv') {
-            var lines = [data.headers.join(',')];
-            data.rows.forEach(function(r) {
-                lines.push([r.time, r.action, r.target, r.details, r.admin_ip].map(function(v) {
-                    return '"' + String(v).replace(/"/g, '""') + '"';
-                }).join(','));
-            });
-            downloadBlob(lines.join('\n'), 'text/csv', 'csv');
-        } else if (format === 'json') {
-            downloadBlob(JSON.stringify(data.rows, null, 2), 'application/json', 'json');
-        }
+        CSM.exportTable(_auditExportRows(), _auditExportCols, this.getAttribute('data-export'), 'csm-audit');
     });
 });

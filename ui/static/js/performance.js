@@ -2,6 +2,8 @@
 (function() {
     'use strict';
 
+    var _perfLastFindings = [];
+
     var _fallbackNames = {
         'perf_load': 'Load',
         'perf_php_processes': 'PHP Processes',
@@ -210,6 +212,7 @@
             .then(function(data) {
                 var m = data.metrics || {};
                 var findings = data.findings || [];
+                _perfLastFindings = findings;
                 var cores = m.cpu_cores || 1;
 
                 // --- Load Average ---
@@ -413,5 +416,30 @@
             update();
             _perfInterval = CSM.refresh.interval(update, 10000);
         }
+    });
+
+    // WEB_ROADMAP P2.4: shared CSV/JSON export of current performance
+    // findings. _perfLastFindings is refreshed on every update().
+    var _perfExportCols = [
+        {key: 'severity', label: 'Severity'},
+        {key: 'check',    label: 'Check'},
+        {key: 'message',  label: 'Message'},
+        {key: 'details',  label: 'Details'},
+        {key: 'path',     label: 'Path'}
+    ];
+    document.querySelectorAll('[data-export]').forEach(function(el) {
+        el.addEventListener('click', function(e) {
+            e.preventDefault();
+            var rows = (_perfLastFindings || []).map(function(f) {
+                return {
+                    severity: sevLabel(f.severity),
+                    check:    CHECK_NAMES[f.check] || f.check || '',
+                    message:  f.message || '',
+                    details:  f.details || '',
+                    path:     f.path || f.file_path || ''
+                };
+            });
+            CSM.exportTable(rows, _perfExportCols, this.getAttribute('data-export'), 'csm-performance');
+        });
     });
 })();

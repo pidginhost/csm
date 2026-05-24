@@ -8,6 +8,7 @@
     var tabs = document.querySelectorAll('#account-tabs [data-tab]');
     var content = document.getElementById('account-tab-content');
     var cachedData = null;
+    var currentTab = 'findings';
 
     var sevLabels = { 2: 'CRITICAL', 1: 'HIGH', 0: 'WARNING' };
     var sevClasses = { 2: 'critical', 1: 'high', 0: 'warning' };
@@ -24,6 +25,7 @@
     }
 
     function loadTab(tab) {
+        currentTab = tab;
         setActiveTab(tab);
 
         if (cachedData) {
@@ -120,6 +122,56 @@
 
     tabs.forEach(function(t) {
         t.addEventListener('click', function() { loadTab(t.dataset.tab); });
+    });
+
+    // WEB_ROADMAP P2.4: export the active tab's rows via the shared
+    // CSM.exportTable helper. Columns are tab-scoped because each tab
+    // has a different shape.
+    var _accountExportCols = {
+        findings: [
+            {key: 'severity', label: 'Severity'},
+            {key: 'check',    label: 'Check'},
+            {key: 'message',  label: 'Message'}
+        ],
+        quarantine: [
+            {key: 'original_path', label: 'Path'},
+            {key: 'size',          label: 'Size'},
+            {key: 'reason',        label: 'Reason'}
+        ],
+        history: [
+            {key: 'severity',  label: 'Severity'},
+            {key: 'check',     label: 'Check'},
+            {key: 'message',   label: 'Message'},
+            {key: 'timestamp', label: 'Time'}
+        ]
+    };
+    document.querySelectorAll('[data-export]').forEach(function(el) {
+        el.addEventListener('click', function(e) {
+            e.preventDefault();
+            if (!cachedData) { CSM.toast('Account data still loading', 'warning'); return; }
+            var rows = [];
+            if (currentTab === 'findings') {
+                rows = (cachedData.findings || []).map(function(f) {
+                    return {
+                        severity: sevLabels[f.severity] || 'WARNING',
+                        check:    f.check || '',
+                        message:  f.message || ''
+                    };
+                });
+            } else if (currentTab === 'quarantine') {
+                rows = cachedData.quarantined || [];
+            } else if (currentTab === 'history') {
+                rows = (cachedData.history || []).map(function(h) {
+                    return {
+                        severity:  sevLabels[h.severity] || 'WARNING',
+                        check:     h.check || '',
+                        message:   h.message || '',
+                        timestamp: h.timestamp || ''
+                    };
+                });
+            }
+            CSM.exportTable(rows, _accountExportCols[currentTab] || [], this.getAttribute('data-export'), 'csm-account-' + currentTab);
+        });
     });
 
     loadTab('findings');

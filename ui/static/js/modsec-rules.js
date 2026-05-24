@@ -271,6 +271,32 @@ document.getElementById('btn-discard').addEventListener('click', function() {
     updateApplyBar();
 });
 
+// WEB_ROADMAP P2.4: shared export of the loaded rules.
+var _modsecRulesExportCols = [
+    {key: 'id',           label: 'Rule ID'},
+    {key: 'description',  label: 'Description'},
+    {key: 'enabled',      label: 'Enabled'},
+    {key: 'action',       label: 'Action'},
+    {key: 'escalate',     label: 'Escalates'},
+    {key: 'category',     label: 'Category'}
+];
+document.querySelectorAll('[data-export]').forEach(function(el) {
+    el.addEventListener('click', function(e) {
+        e.preventDefault();
+        var rows = (_rules || []).map(function(r) {
+            return {
+                id:          r.id || '',
+                description: r.description || '',
+                enabled:     r.enabled ? 'yes' : 'no',
+                action:      r.action || '',
+                escalate:    r.escalate ? 'yes' : 'no',
+                category:    r.category || ''
+            };
+        });
+        CSM.exportTable(rows, _modsecRulesExportCols, this.getAttribute('data-export'), 'csm-modsec-rules');
+    });
+});
+
 loadRules();
 
 })();

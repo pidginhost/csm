@@ -6,6 +6,17 @@
         <h1 class="csm-page-header__title"><i class="ti ti-user"></i>&nbsp;Account: <code>{{.AccountName}}</code></h1>
         <div class="csm-page-header__subtitle"><span class="text-muted font-monospace">{{.HomeDir}}</span></div>
     </div>
+    <div class="csm-page-header__actions">
+        <div class="btn-group">
+            <button type="button" class="btn btn-ghost-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Export active tab">
+                <i class="ti ti-download"></i>&nbsp;Export
+            </button>
+            <div class="dropdown-menu dropdown-menu-end">
+                <a class="dropdown-item" href="#" data-export="csv">CSV</a>
+                <a class="dropdown-item" href="#" data-export="json">JSON</a>
+            </div>
+        </div>
+    </div>
 </div>
 
 <ul class="nav nav-tabs mb-3" id="account-tabs" role="tablist">

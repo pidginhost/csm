@@ -6,6 +6,15 @@
         <h1 class="csm-page-header__title"><i class="ti ti-list-check"></i>&nbsp;ModSecurity Rule Configuration</h1>
     </div>
     <div class="csm-page-header__actions">
+        <div class="btn-group">
+            <button type="button" class="btn btn-ghost-secondary btn-sm dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Export ModSec rules">
+                <i class="ti ti-download"></i>&nbsp;Export
+            </button>
+            <div class="dropdown-menu dropdown-menu-end">
+                <a class="dropdown-item" href="#" data-export="csv">CSV</a>
+                <a class="dropdown-item" href="#" data-export="json">JSON</a>
+            </div>
+        </div>
         <a href="/modsec" class="btn btn-ghost-secondary btn-sm"><i class="ti ti-arrow-left"></i>&nbsp;Back to ModSecurity</a>
     </div>
 </div>

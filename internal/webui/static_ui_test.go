@@ -312,10 +312,10 @@ func TestAuditExportDropdownCoversCSVAndJSON(t *testing.T) {
 	}
 	jsText := string(js)
 	for _, want := range []string{
-		`function exportAuditRows()`,
+		`function _auditExportRows()`,
 		`document.querySelectorAll('[data-export]')`,
-		`format === 'csv'`,
-		`format === 'json'`,
+		`CSM.exportTable(_auditExportRows(),`,
+		`'csm-audit'`,
 		`admin_ip`,
 	} {
 		if !strings.Contains(jsText, want) {
@@ -2029,6 +2029,77 @@ func TestAutoRefreshDataIntervalsUseSharedToggle(t *testing.T) {
 		base := filepath.Base(path)
 		if !allowedDirectSetInterval[base] {
 			t.Errorf("%s starts a data refresh interval outside CSM.refresh.interval", path)
+		}
+	}
+}
+
+// TestSharedExportTableWired pins WEB_ROADMAP P2.4: pages that
+// previously had no CSV/JSON export (hardening, performance, account
+// per-tab, ModSec rules) now expose a dropdown wired to CSM.exportTable.
+// Audit page migrated off its bespoke exporter onto the same helper.
+// Pages with their own export rows keep a stable filename prefix so
+// downloaded files are recognizable.
+func TestSharedExportTableWired(t *testing.T) {
+	cases := []struct {
+		path        string
+		jsFragments []string
+	}{
+		{
+			"../../ui/static/js/audit.js",
+			[]string{`CSM.exportTable(_auditExportRows(),`, `'csm-audit'`},
+		},
+		{
+			"../../ui/static/js/hardening.js",
+			[]string{`CSM.exportTable(_hardeningExportRows,`, `'csm-hardening'`, `_hardeningExportCols`},
+		},
+		{
+			"../../ui/static/js/performance.js",
+			[]string{`CSM.exportTable(rows, _perfExportCols,`, `'csm-performance'`, `_perfLastFindings = findings;`},
+		},
+		{
+			"../../ui/static/js/account.js",
+			[]string{`CSM.exportTable(rows, _accountExportCols[currentTab]`, `'csm-account-' + currentTab`},
+		},
+		{
+			"../../ui/static/js/modsec-rules.js",
+			[]string{`CSM.exportTable(rows, _modsecRulesExportCols,`, `'csm-modsec-rules'`},
+		},
+	}
+	for _, tc := range cases {
+		src, err := os.ReadFile(tc.path)
+		if err != nil {
+			t.Fatalf("read %s: %v", tc.path, err)
+		}
+		text := string(src)
+		for _, fragment := range tc.jsFragments {
+			if !strings.Contains(text, fragment) {
+				t.Errorf("%s missing export fragment %q", tc.path, fragment)
+			}
+		}
+	}
+
+	// Templates must expose the dropdown so the JS handler has something
+	// to bind against.
+	tmplCases := []struct{ path string }{
+		{"../../ui/templates/hardening.html"},
+		{"../../ui/templates/performance.html"},
+		{"../../ui/templates/account.html"},
+		{"../../ui/templates/modsec-rules.html"},
+	}
+	for _, tc := range tmplCases {
+		src, err := os.ReadFile(tc.path)
+		if err != nil {
+			t.Fatalf("read %s: %v", tc.path, err)
+		}
+		text := string(src)
+		for _, want := range []string{
+			`data-export="csv"`,
+			`data-export="json"`,
+			`data-bs-toggle="dropdown"`,
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s missing export dropdown hook %q", tc.path, want)
+			}
 		}
 	}
 }
