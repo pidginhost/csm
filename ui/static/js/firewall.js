@@ -186,8 +186,7 @@ function toggleAuditInspect(btn, ip) {
 }
 
 function loadStatus() {
-    fetch(CSM.apiUrl('/api/v1/firewall/status'), { credentials: 'same-origin' })
-        .then(function(r) { return r.json(); })
+    CSM.get('/api/v1/firewall/status')
         .then(function(d) {
             var allowedTotal = (d.allowed_count || 0) + (d.port_allow_count || 0);
             var countryCount = (d.country_block || []).length;
@@ -258,8 +257,7 @@ function loadStatus() {
 }
 
 function loadSubnets() {
-    fetch(CSM.apiUrl('/api/v1/firewall/subnets'), { credentials: 'same-origin' })
-        .then(function(r) { return r.json(); })
+    CSM.get('/api/v1/firewall/subnets')
         .then(function(subs) {
             var el = document.getElementById('subnet-content');
             removeTableControls('subnets-table-controls');
@@ -296,8 +294,7 @@ function loadSubnets() {
 }
 
 function loadBlocked() {
-    fetch(CSM.apiUrl('/api/v1/blocked-ips'), { credentials: 'same-origin' })
-        .then(function(r) { return r.json(); })
+    CSM.get('/api/v1/blocked-ips')
         .then(function(ips) {
             var el = document.getElementById('blocked-content');
             removeTableControls('blocked-table-controls');
@@ -409,8 +406,7 @@ function loadBlocked() {
 }
 
 function loadAllowed() {
-    fetch(CSM.apiUrl('/api/v1/firewall/allowed'), { credentials: 'same-origin' })
-        .then(function(r) { return r.json(); })
+    CSM.get('/api/v1/firewall/allowed')
         .then(function(data) {
             var el = document.getElementById('allowed-content');
             var allowed = data.allowed || [];
@@ -477,8 +473,7 @@ function loadAllowed() {
 }
 
 function loadWhitelist() {
-    fetch(CSM.apiUrl('/api/v1/threat/whitelist'), { credentials: 'same-origin' })
-        .then(function(r) { return r.json(); })
+    CSM.get('/api/v1/threat/whitelist')
         .then(function(ips) {
             var el = document.getElementById('whitelist-content');
             removeTableControls('whitelist-table-controls');
@@ -516,8 +511,7 @@ function loadWhitelist() {
 }
 
 function loadAudit() {
-    fetch(CSM.apiUrl(currentAuditURL()), { credentials: 'same-origin' })
-        .then(function(r) { return r.json(); })
+    CSM.get(currentAuditURL())
         .then(function(entries) {
             var el = document.getElementById('audit-content');
             removeTableControls('firewall-audit-table-controls');
@@ -594,8 +588,8 @@ function renderIPDetails(ip, targetEl) {
     targetEl.innerHTML = '<div class="text-muted"><span class="spinner-border spinner-border-sm me-2"></span>Checking firewall and GeoIP status</div>';
 
     Promise.all([
-        fetch(CSM.apiUrl('/api/v1/firewall/check?ip=' + encodeURIComponent(ip)), { credentials: 'same-origin' }).then(function(r) { return r.json(); }),
-        fetch(CSM.apiUrl('/api/v1/geoip?ip=' + encodeURIComponent(ip)), { credentials: 'same-origin' }).then(function(r) { return r.json(); }).catch(function() { return {}; })
+        CSM.get('/api/v1/firewall/check?ip=' + encodeURIComponent(ip)),
+        CSM.get('/api/v1/geoip?ip=' + encodeURIComponent(ip)).catch(function() { return {}; })
     ]).then(function(results) {
         var data = results[0] || {};
         var geo = results[1] || {};
@@ -839,8 +833,7 @@ function enrichGeoIPFallback(cells) {
             next();
             return;
         }
-        fetch(CSM.apiUrl('/api/v1/geoip?ip=' + encodeURIComponent(ip)), { credentials: 'same-origin' })
-            .then(function(r) { return r.json(); })
+        CSM.get('/api/v1/geoip?ip=' + encodeURIComponent(ip))
             .then(function(geo) { cell.innerHTML = formatGeo(geo); })
             .catch(function() { cell.textContent = '-'; })
             .finally(function() { setTimeout(next, 50); });

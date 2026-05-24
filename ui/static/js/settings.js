@@ -862,14 +862,16 @@
         }
         let resp;
         try {
-            resp = await fetch(CSM.apiUrl("/api/v1/settings/" + encodeURIComponent(currentSection)), {
+            resp = await CSM.request("/api/v1/settings/" + encodeURIComponent(currentSection), {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
                     "If-Match": currentETag,
                     "X-CSRF-Token": csrfToken()
                 },
-                body: JSON.stringify({changes: changes})
+                body: JSON.stringify({changes: changes}),
+                allowNonOK: true,
+                silent: true
             });
         } catch (e) {
             toast("Network error: " + (e && e.message ? e.message : "request failed"), "error");
@@ -934,9 +936,11 @@
         sp.appendChild(document.createTextNode("Restarting…"));
         banner.appendChild(sp);
         try {
-            const resp = await fetch(CSM.apiUrl("/api/v1/settings/restart"), {
+            const resp = await CSM.request("/api/v1/settings/restart", {
                 method: "POST",
-                headers: {"X-CSRF-Token": csrfToken()}
+                headers: {"X-CSRF-Token": csrfToken()},
+                allowNonOK: true,
+                silent: true
             });
             if (resp.status === 202) {
                 await pollHealth();
@@ -981,14 +985,16 @@
         btn.disabled = true;
         let resp;
         try {
-            resp = await fetch(CSM.apiUrl("/api/v1/settings/firewall/tentative-apply"), {
+            resp = await CSM.request("/api/v1/settings/firewall/tentative-apply", {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
                     "If-Match": currentETag,
                     "X-CSRF-Token": csrfToken()
                 },
-                body: JSON.stringify({changes: changes, timeout_min: minutes})
+                body: JSON.stringify({changes: changes, timeout_min: minutes}),
+                allowNonOK: true,
+                silent: true
             });
         } catch (e) {
             toast("Network error: " + (e && e.message ? e.message : "request failed"), "error");
@@ -1080,7 +1086,7 @@
         const deadline = Date.now() + 60000;
         while (Date.now() < deadline) {
             try {
-                const resp = await fetch(CSM.apiUrl("/api/v1/settings/firewall/rollback"), {cache: "no-store"});
+                const resp = await CSM.request("/api/v1/settings/firewall/rollback", {cache: "no-store", allowNonOK: true, silent: true});
                 if (resp.ok) {
                     const data = await resp.json();
                     if (!data.pending) {
@@ -1096,9 +1102,11 @@
     }
 
     async function confirmRollback() {
-        const resp = await fetch(CSM.apiUrl("/api/v1/settings/firewall/confirm"), {
+        const resp = await CSM.request("/api/v1/settings/firewall/confirm", {
             method: "POST",
-            headers: {"X-CSRF-Token": csrfToken()}
+            headers: {"X-CSRF-Token": csrfToken()},
+            allowNonOK: true,
+            silent: true
         });
         if (resp.ok) {
             if (rollbackTimer) { clearInterval(rollbackTimer); rollbackTimer = null; }
@@ -1116,9 +1124,11 @@
 
     async function revertRollback() {
         if (!window.confirm("Revert firewall changes now? The daemon will restart with the previous config.")) return;
-        const resp = await fetch(CSM.apiUrl("/api/v1/settings/firewall/revert"), {
+        const resp = await CSM.request("/api/v1/settings/firewall/revert", {
             method: "POST",
-            headers: {"X-CSRF-Token": csrfToken()}
+            headers: {"X-CSRF-Token": csrfToken()},
+            allowNonOK: true,
+            silent: true
         });
         if (resp.ok) {
             if (rollbackTimer) { clearInterval(rollbackTimer); rollbackTimer = null; }
@@ -1133,7 +1143,7 @@
 
     async function checkPendingRollbackOnLoad() {
         try {
-            const resp = await fetch(CSM.apiUrl("/api/v1/settings/firewall/rollback"), {cache: "no-store"});
+            const resp = await CSM.request("/api/v1/settings/firewall/rollback", {cache: "no-store", allowNonOK: true, silent: true});
             if (!resp.ok) return;
             const data = await resp.json();
             if (data && data.pending) renderRollbackBanner(data);
@@ -1144,7 +1154,7 @@
         const deadline = Date.now() + 60000;
         while (Date.now() < deadline) {
             try {
-                const resp = await fetch(CSM.apiUrl("/api/v1/health"), {cache: "no-store"});
+                const resp = await CSM.request("/api/v1/health", {cache: "no-store", allowNonOK: true, silent: true});
                 if (resp.ok) return;
             } catch (e) { /* keep polling */ }
             await new Promise(function (r) { setTimeout(r, 1000); });

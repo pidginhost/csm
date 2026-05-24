@@ -3,7 +3,7 @@
 var fmtSize = CSM.formatSize;
 
 function loadStatus() {
-    fetch(CSM.apiUrl('/api/v1/rules/status'), {credentials: 'same-origin'}).then(function(r) { return r.json(); }).then(function(data) {
+    CSM.get('/api/v1/rules/status').then(function(data) {
         document.getElementById('stat-yaml').textContent = data.yaml_rules || 0;
         document.getElementById('stat-yara').textContent = data.yara_available ? (data.yara_rules || 0) : 'N/A';
         if (!data.yara_available) {
@@ -18,7 +18,7 @@ function loadStatus() {
 }
 
 function loadFiles() {
-    fetch(CSM.apiUrl('/api/v1/rules/list'), {credentials: 'same-origin'}).then(function(r) { return r.json(); }).then(function(data) {
+    CSM.get('/api/v1/rules/list').then(function(data) {
         var tbody = document.getElementById('rules-tbody');
         if (!data || data.length === 0) {
             tbody.innerHTML = '<tr><td colspan="3" class="text-center text-muted">No rule files found</td></tr>';
@@ -98,7 +98,7 @@ document.getElementById('btn-test-alert').addEventListener('click', function() {
 });
 
 function loadSuppressions() {
-    fetch(CSM.apiUrl('/api/v1/suppressions'), {credentials: 'same-origin'}).then(function(r) { return r.json(); }).then(function(data) {
+    CSM.get('/api/v1/suppressions').then(function(data) {
         var container = document.getElementById('suppressions-content');
         if (!data || data.length === 0) {
             container.innerHTML = '<div class="card-body text-center text-muted py-4">No suppression rules configured.</div>';
@@ -187,7 +187,7 @@ document.getElementById('suppression-form').addEventListener('submit', function(
 
 // Populate check-type datalist from active findings
 function loadCheckTypes() {
-    fetch(CSM.apiUrl('/api/v1/findings'), {credentials: 'same-origin'}).then(function(r) { return r.json(); }).then(function(findings) {
+    CSM.get('/api/v1/findings').then(function(findings) {
         var types = {};
         for (var i = 0; i < findings.length; i++) {
             if (findings[i].check) types[findings[i].check] = true;
@@ -207,8 +207,7 @@ function loadCheckTypes() {
 var _modsecRules = [];
 
 function loadModSecEscalation() {
-    fetch(CSM.apiUrl('/api/v1/rules/modsec-escalation'), {credentials: 'same-origin'})
-        .then(function(r) { return r.json(); })
+    CSM.get('/api/v1/rules/modsec-escalation')
         .then(function(data) {
             _modsecRules = data.rules || [];
             renderModSecEscalation();

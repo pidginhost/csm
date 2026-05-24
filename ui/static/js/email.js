@@ -142,8 +142,7 @@
     // ---------- Mail protection state column ----------
 
     function loadEmailStats() {
-        fetch(CSM.apiUrl('/api/v1/email/stats'), { credentials: 'same-origin' })
-            .then(function(r) { return r.json(); })
+        CSM.get('/api/v1/email/stats')
             .then(function(data) {
                 _strip.stats = data;
                 refreshStatusStrip();
@@ -270,8 +269,7 @@
     }
 
     function loadBlockedIPCount() {
-        fetch(CSM.apiUrl('/api/v1/blocked-ips'), { credentials: 'same-origin' })
-            .then(function(r) { return r.json(); })
+        CSM.get('/api/v1/blocked-ips')
             .then(function(data) {
                 var ips = data.ips || data || [];
                 var count = 0;
@@ -337,8 +335,7 @@
     // ---------- AV status (right column dots) ----------
 
     function loadAVStatus() {
-        fetch(CSM.apiUrl('/api/v1/email/av/status'), { credentials: 'same-origin' })
-            .then(function(r) { return r.json(); })
+        CSM.get('/api/v1/email/av/status')
             .then(function(data) {
                 _strip.av = data;
                 refreshStatusStrip();
@@ -383,8 +380,7 @@
 
     function loadActionGroups() {
         var qs = emailDateQuery('limit=50');
-        fetch(CSM.apiUrl('/api/v1/email/groups?' + qs), { credentials: 'same-origin' })
-            .then(function(r) { return r.json(); })
+        CSM.get('/api/v1/email/groups?' + qs)
             .then(function(data) {
                 renderActionGroups(data.groups || []);
             })
@@ -509,8 +505,7 @@
     function loadAuthGroups() {
         if (authGroupsLoaded) return;
         authGroupsLoaded = true;
-        fetch(CSM.apiUrl('/api/v1/email/groups?' + emailDateQuery('kind=auth_failure&limit=200')), { credentials: 'same-origin' })
-            .then(function(r) { return r.json(); })
+        CSM.get('/api/v1/email/groups?' + emailDateQuery('kind=auth_failure&limit=200'))
             .then(function(data) {
                 var el = document.getElementById('email-auth-groups');
                 if (!el) return;
@@ -553,8 +548,7 @@
         if (from) params += '&from=' + encodeURIComponent(from);
         if (to)   params += '&to=' + encodeURIComponent(to);
         if (sev)  params += '&severity=' + encodeURIComponent(sev);
-        fetch(CSM.apiUrl('/api/v1/history?' + params), { credentials: 'same-origin' })
-            .then(function(r) { return r.json(); })
+        CSM.get('/api/v1/history?' + params)
             .then(function(data) {
                 var findings = data.findings || [];
                 renderFindingsTable(findings);
@@ -661,8 +655,7 @@
 
     function loadQuarantine() {
         quarantineLoaded = true;
-        fetch(CSM.apiUrl('/api/v1/email/quarantine'), { credentials: 'same-origin' })
-            .then(function(r) { return r.json(); })
+        CSM.get('/api/v1/email/quarantine')
             .then(function(data) {
                 var container = document.getElementById('quarantine-table');
                 if (!container) return;

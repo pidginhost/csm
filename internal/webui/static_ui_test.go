@@ -1249,3 +1249,82 @@ func TestNoRawObjectInterpolationInDOMWrites(t *testing.T) {
 		}
 	}
 }
+
+// TestAllJSFetchesGoThroughCSMRequest pins WEB_ROADMAP P1.2: every page
+// script must call the shared CSM.request / CSM.get / CSM.fetch / CSM.poll
+// / CSM.post / CSM.delete helpers so the 30s timeout, AbortController, and
+// CSRF token wiring stay uniform. csrf.js is the only file allowed to call
+// the global `fetch` builtin directly (it is the wrapper).
+func TestAllJSFetchesGoThroughCSMRequest(t *testing.T) {
+	files := webUISourceFiles(t, "../../ui/static/js/*.js")
+	// `\bfetch\(` would match `CSM.fetch(`, so require a leading
+	// non-identifier (or start-of-line / whitespace) before the bareword.
+	bareFetch := regexp.MustCompile(`(?:^|[^A-Za-z0-9_.])fetch\s*\(`)
+	for _, path := range files {
+		if filepath.Base(path) == "csrf.js" {
+			continue
+		}
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		for i, line := range strings.Split(string(src), "\n") {
+			if bareFetch.MatchString(line) {
+				t.Errorf("%s:%d: raw fetch() call; route through CSM.request / CSM.get / CSM.post / CSM.poll: %s",
+					path, i+1, strings.TrimSpace(line))
+			}
+		}
+	}
+}
+
+// TestCSMRequestExposesAllowNonOKAndSilent pins WEB_ROADMAP P1.2: the
+// shared request helper must accept allowNonOK (settings.js depends on
+// inspecting 412 / 422 status codes directly) and silent (CSM.poll
+// suppresses the auto-toast so it can surface its own errors).
+func TestCSMRequestExposesAllowNonOKAndSilent(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/csrf.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, fragment := range []string{
+		`var allowNonOK = !!options.allowNonOK;`,
+		`var silent = !!options.silent;`,
+		`if (allowNonOK) return r;`,
+		`if (!silent) {`,
+		`delete opts.timeoutMs;`,
+		`delete opts.allowNonOK;`,
+		`delete opts.silent;`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Fatalf("csrf.js missing CSM.request option fragment %q", fragment)
+		}
+	}
+}
+
+// TestCSMPollUsesCSMRequest pins WEB_ROADMAP P1.2: the polling utility
+// must route its fetch through CSM.request(silent:true) so the 30s
+// timeout applies and pollers cannot hang indefinitely on a stuck
+// backend.
+func TestCSMPollUsesCSMRequest(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/csrf.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	pollStart := strings.Index(text, "CSM.poll = function(url, interval, callback) {")
+	if pollStart == -1 {
+		t.Fatal("csrf.js missing CSM.poll definition")
+	}
+	pollEnd := strings.Index(text[pollStart:], "\n};")
+	if pollEnd == -1 {
+		t.Fatal("csrf.js CSM.poll has no terminator")
+	}
+	pollBody := text[pollStart : pollStart+pollEnd]
+	if !strings.Contains(pollBody, "CSM.request(url, { silent: true })") {
+		t.Fatal("CSM.poll must route through CSM.request(silent:true)")
+	}
+	if strings.Contains(pollBody, "fetch((typeof CSM.apiUrl") || strings.Contains(pollBody, "fetch(CSM.apiUrl") {
+		t.Fatal("CSM.poll must not call fetch directly anymore")
+	}
+}

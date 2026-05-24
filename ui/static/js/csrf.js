@@ -200,24 +200,49 @@ CSM.apiUrl = function(path) {
     return path;
 };
 
+// Single fetch primitive. All other helpers (CSM.get, CSM.fetch, CSM.poll,
+// CSM.post, CSM.delete) call this and inherit its 30s timeout + abort
+// signal. Direct `fetch()` calls from page scripts are forbidden and
+// enforced by a static_ui_test.go regression.
+//
+// Options:
+//   timeoutMs   number   default 30000; pass 0 to disable.
+//   allowNonOK  bool     default false. When true the resolved promise
+//                        carries the raw Response even for !r.ok status
+//                        codes; the caller is responsible for inspecting
+//                        r.status (used by settings.js for 412/422 paths).
+//   silent      bool     default false. Suppresses the auto-toast on
+//                        failure (used by background pollers that have
+//                        their own error UI).
+// All other keys are forwarded to fetch() unchanged.
 CSM.request = function(url, options) {
     var resolvedUrl = (typeof CSM.apiUrl === 'function') ? CSM.apiUrl(url) : url;
+    options = options || {};
+    var timeoutMs = (options.timeoutMs == null) ? 30000 : options.timeoutMs;
+    var allowNonOK = !!options.allowNonOK;
+    var silent = !!options.silent;
     var controller = new AbortController();
-    var timeoutId = setTimeout(function() { controller.abort(); }, 30000);
-    var opts = Object.assign({}, options || {}, { signal: controller.signal, credentials: 'same-origin' });
+    var timeoutId = (timeoutMs > 0) ? setTimeout(function() { controller.abort(); }, timeoutMs) : null;
+    var opts = Object.assign({}, options, { signal: controller.signal, credentials: 'same-origin' });
+    delete opts.timeoutMs;
+    delete opts.allowNonOK;
+    delete opts.silent;
     return fetch(resolvedUrl, opts).then(function(r) {
-        clearTimeout(timeoutId);
+        if (timeoutId) clearTimeout(timeoutId);
+        if (allowNonOK) return r;
         if (!r.ok) {
             return r.json().catch(function() { throw new Error('HTTP ' + r.status); })
                 .then(function(body) { throw new Error(body.error || 'HTTP ' + r.status); });
         }
         return r;
     }).catch(function(err) {
-        clearTimeout(timeoutId);
-        if (err.name === 'AbortError') {
-            CSM.toast('Request timed out', 'error');
-        } else {
-            CSM.toast('Request failed: ' + err.message, 'error');
+        if (timeoutId) clearTimeout(timeoutId);
+        if (!silent) {
+            if (err.name === 'AbortError') {
+                CSM.toast('Request timed out', 'error');
+            } else {
+                CSM.toast('Request failed: ' + err.message, 'error');
+            }
         }
         throw err;
     });
@@ -255,7 +280,10 @@ CSM.get = function(url) {
     };
 })();
 
-// Polling utility with visibility-pause and exponential backoff
+// Polling utility with visibility-pause and exponential backoff. Routes
+// the fetch through CSM.request so the 30s timeout and AbortController
+// apply uniformly; silent:true keeps the auto-toast off so the callback
+// can decide how to surface errors.
 CSM.poll = function(url, interval, callback) {
     var baseInterval = interval;
     var currentInterval = interval;
@@ -265,11 +293,8 @@ CSM.poll = function(url, interval, callback) {
 
     function run() {
         if (stopped) return;
-        fetch((typeof CSM.apiUrl === 'function') ? CSM.apiUrl(url) : url, { credentials: 'same-origin' })
-            .then(function(r) {
-                if (!r.ok) throw new Error('HTTP ' + r.status);
-                return r.json();
-            })
+        CSM.request(url, { silent: true })
+            .then(function(r) { return r.json(); })
             .then(function(data) {
                 currentInterval = baseInterval; // reset on success
                 callback(null, data);

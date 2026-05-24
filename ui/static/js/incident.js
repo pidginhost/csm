@@ -163,8 +163,7 @@
             + '&limit=' + encodeURIComponent(limit)
             + '&offset=' + encodeURIComponent(groupedPageOffset);
         if (kind) qs += '&kind=' + encodeURIComponent(kind);
-        fetch(CSM.apiUrl('/api/v1/incidents/groups?' + qs), { credentials: 'same-origin' })
-            .then(function(r) { return r.json(); })
+        CSM.get('/api/v1/incidents/groups?' + qs)
             .then(function(data) {
                 groupedPageTotal = (data && typeof data.total_groups === 'number') ? data.total_groups : 0;
                 groupedPageReturned = (data && Array.isArray(data.groups)) ? data.groups.length : 0;
@@ -606,8 +605,7 @@
         var container = document.getElementById('incident-content');
         container.innerHTML = '<div class="card-body text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Searching...</div>';
 
-        fetch(CSM.apiUrl(url), { credentials: 'same-origin' })
-            .then(function(r) { return r.json(); })
+        CSM.get(url)
             .then(function(data) { renderTimeline(data); })
             .catch(function() { CSM.loadError(container, loadTimeline); });
     }

@@ -21,8 +21,7 @@ function refreshRulesTable() {
 }
 
 function loadRules() {
-    fetch(CSM.apiUrl('/api/v1/modsec/rules'), {credentials: 'same-origin'})
-        .then(function(r) { return r.json(); })
+    CSM.get('/api/v1/modsec/rules')
         .then(function(data) {
             document.getElementById('modsec-rules-loading').classList.add('d-none');
 

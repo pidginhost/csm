@@ -147,8 +147,7 @@
     }
 
     function loadReport() {
-        fetch(CSM.apiUrl('/api/v1/hardening'), { credentials: 'same-origin' })
-            .then(function(r) { return r.json(); })
+        CSM.get('/api/v1/hardening')
             .then(renderReport)
             .catch(function() {});
     }

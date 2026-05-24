@@ -206,8 +206,7 @@
     }
 
     function update() {
-        fetch(CSM.apiUrl('/api/v1/performance'), { credentials: 'same-origin' })
-            .then(function(r) { return r.json(); })
+        CSM.get('/api/v1/performance')
             .then(function(data) {
                 var m = data.metrics || {};
                 var findings = data.findings || [];

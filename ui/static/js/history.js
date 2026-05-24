@@ -35,8 +35,7 @@
         if (sevFilter !== 'all') url += '&severity=' + sevFilter;
         if (searchTerm) url += '&search=' + encodeURIComponent(searchTerm);
 
-        fetch(CSM.apiUrl(url), { credentials: 'same-origin' })
-            .then(function(r) { return r.json(); })
+        CSM.get(url)
             .then(function(data) {
                 renderTable(data.findings || [], data.total || 0);
                 renderPager(data.total || 0);

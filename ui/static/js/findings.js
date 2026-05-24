@@ -8,11 +8,7 @@ var findingsTable = null;
 
 // --- Fetch and render findings from enriched API ---
 function loadFindings() {
-    fetch(CSM.apiUrl('/api/v1/findings/enriched'), { credentials: 'same-origin' })
-        .then(function(r) {
-            if (!r.ok) throw new Error('HTTP ' + r.status);
-            return r.json();
-        })
+    CSM.get('/api/v1/findings/enriched')
         .then(function(data) {
             if (data.error) throw new Error(data.error);
             renderFindings(data);
@@ -509,7 +505,7 @@ document.getElementById('scan-form').addEventListener('submit', function(e) {
 });
 
 // Load account list for scan autocomplete dropdown
-fetch(CSM.apiUrl('/api/v1/accounts'), {credentials:'same-origin'}).then(function(r){return r.json()}).then(function(accounts) {
+CSM.get('/api/v1/accounts').then(function(accounts) {
     var dl = document.getElementById('account-list');
     (accounts||[]).forEach(function(a) {
         var opt = document.createElement('option');
@@ -723,9 +719,7 @@ function toggleFindingDetail(row) {
         bodyHTML: '<div class="text-center text-muted py-4"><span class="spinner-border spinner-border-sm"></span> Loading...</div>'
     });
 
-    fetch(CSM.apiUrl('/api/v1/finding-detail?check=' + encodeURIComponent(check) + '&message=' + encodeURIComponent(message)),
-        { credentials: 'same-origin' })
-        .then(function(r) { return r.json(); })
+    CSM.get('/api/v1/finding-detail?check=' + encodeURIComponent(check) + '&message=' + encodeURIComponent(message))
         .then(function(data) {
             var html = '<div class="csm-fs-sm">';
             if (account) html += '<div class="mb-2"><strong>Account:</strong> <code>' + CSM.esc(account) + '</code></div>';

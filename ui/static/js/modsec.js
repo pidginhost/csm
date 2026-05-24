@@ -58,8 +58,7 @@
     // ---------- Stats ----------
 
     function loadStats() {
-        fetch(CSM.apiUrl('/api/v1/modsec/stats'), { credentials: 'same-origin' })
-            .then(function(r) { return r.json(); })
+        CSM.get('/api/v1/modsec/stats')
             .then(function(d) {
                 _strip.stats = d;
                 refreshStatusStrip();
@@ -284,8 +283,7 @@
     // ---------- Blocked IPs tab (full table) ----------
 
     function loadBlocked() {
-        fetch(CSM.apiUrl('/api/v1/modsec/blocks'), { credentials: 'same-origin' })
-            .then(function(r) { return r.json(); })
+        CSM.get('/api/v1/modsec/blocks')
             .then(function(blocks) {
                 _modsecBlocks = blocks || [];
                 renderActiveWAFPressure(_modsecBlocks);
@@ -366,8 +364,7 @@
     function loadEvents() {
         if (eventsLoaded) return;
         eventsLoaded = true;
-        fetch(CSM.apiUrl('/api/v1/modsec/events?limit=100'), { credentials: 'same-origin' })
-            .then(function(r) { return r.json(); })
+        CSM.get('/api/v1/modsec/events?limit=100')
             .then(function(events) {
                 _strip.latest = events && events.length > 0 ? events[0].time : '';
                 refreshStatusStrip();

@@ -150,8 +150,8 @@ if (_themeBtn) _themeBtn.addEventListener('click', toggleTheme);
     var banner = document.getElementById('csm-update-banner');
     if (!banner) return;
 
-    fetch('/api/v1/status', { credentials: 'same-origin' })
-        .then(function(r) { return r.ok ? r.json() : null; })
+    CSM.get('/api/v1/status')
+        .catch(function() { return null; })
         .then(function(snap) {
             if (!snap || !snap.update || !snap.update.available || !snap.update.latest_version) return;
             var verEl = document.getElementById('csm-update-version');

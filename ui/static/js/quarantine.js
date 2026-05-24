@@ -1,7 +1,7 @@
 // CSM Quarantine page
 
 function loadQuarantine() {
-    fetch(CSM.apiUrl('/api/v1/quarantine'), {credentials:'same-origin'}).then(function(r){return r.json()}).then(function(files){
+    CSM.get('/api/v1/quarantine').then(function(files){
         var el = document.getElementById('quarantine-content');
         var title = document.querySelector('.card-title');
         if (title) title.innerHTML = '<i class="ti ti-lock"></i>&nbsp;Quarantined Files (' + (files ? files.length : 0) + ')';
@@ -46,8 +46,7 @@ function restoreFile(id) {
     }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
 }
 function viewFile(id, path) {
-    fetch(CSM.apiUrl('/api/v1/quarantine-preview?id=' + encodeURIComponent(id)), { credentials: 'same-origin' })
-        .then(function(r) { return r.json(); })
+    CSM.get('/api/v1/quarantine-preview?id=' + encodeURIComponent(id))
         .then(function(data) {
             if (data.error) { CSM.toast('Error: ' + data.error, 'error'); return; }
             var info = data.truncated ? ' (first 8KB of ' + formatSize(data.total_size) + ')' : '';

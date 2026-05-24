@@ -91,8 +91,7 @@
     }
 
     function pollFindings() {
-        fetch(CSM.apiUrl('/api/v1/history?limit=10&offset=0'), { credentials: 'same-origin' })
-            .then(function(r) { return r.json(); })
+        CSM.get('/api/v1/history?limit=10&offset=0')
             .then(function(data) {
                 var findings = data.findings || [];
                 var maxTs = lastNotifTimestamp;
@@ -138,8 +137,8 @@
     }
     function loadHealthPill() {
         Promise.all([
-            fetch(CSM.apiUrl('/api/v1/health'), { credentials: 'same-origin' }).then(function(r) { return r.json(); }),
-            fetch(CSM.apiUrl('/api/v1/status'), { credentials: 'same-origin' }).then(function(r) { return r.json(); })
+            CSM.get('/api/v1/health'),
+            CSM.get('/api/v1/status')
         ]).then(function(res) {
             var health = res[0] || {};
             var status = res[1] || {};
@@ -177,11 +176,7 @@
 
     // Auto-refresh stats every 60 seconds
     function refreshStats() {
-        fetch(CSM.apiUrl('/api/v1/stats'), { credentials: 'same-origin' })
-            .then(function(r) {
-                if (!r.ok) throw new Error('HTTP ' + r.status);
-                return r.json();
-            })
+        CSM.get('/api/v1/stats')
             .then(function(data) {
                 if (!data.last_24h) return;
                 var s = data.last_24h;
@@ -476,11 +471,7 @@
         var canvas = document.getElementById('timeline-chart');
         if (!canvas) return;
 
-        fetch(CSM.apiUrl('/api/v1/stats/timeline'), { credentials: 'same-origin' })
-            .then(function(r) {
-                if (!r.ok) throw new Error('HTTP ' + r.status);
-                return r.json();
-            })
+        CSM.get('/api/v1/stats/timeline')
             .then(function(hours) {
                 if (!hours || !hours.length) return;
                 var prevErr = canvas.parentElement && canvas.parentElement.querySelector('.chart-error');
@@ -643,11 +634,7 @@
         var canvas = document.getElementById('attack-types-chart');
         if (!canvas) return;
 
-        fetch(CSM.apiUrl('/api/v1/threat/stats'), { credentials: 'same-origin' })
-            .then(function(r) {
-                if (!r.ok) throw new Error('HTTP ' + r.status);
-                return r.json();
-            })
+        CSM.get('/api/v1/threat/stats')
             .then(function(data) {
                 var prevErr = canvas.parentElement && canvas.parentElement.querySelector('.chart-error');
                 if (prevErr) { prevErr.remove(); canvas.style.display = ''; }
@@ -799,11 +786,7 @@
         var title = document.getElementById('trend-title');
         if (title) title.textContent = days + '-Day Trend';
 
-        fetch(CSM.apiUrl('/api/v1/stats/trend?days=' + days), { credentials: 'same-origin' })
-            .then(function(r) {
-                if (!r.ok) throw new Error('HTTP ' + r.status);
-                return r.json();
-            })
+        CSM.get('/api/v1/stats/trend?days=' + days)
             .then(function(rows) {
                 if (!rows || !rows.length) return;
                 var prevErr = canvas.parentElement && canvas.parentElement.querySelector('.chart-error');
@@ -1249,11 +1232,7 @@
     function loadComponents() {
         var el = document.getElementById('components-matrix');
         if (!el) return;
-        fetch(CSM.apiUrl('/api/v1/components'), { credentials: 'same-origin' })
-            .then(function(r) {
-                if (!r.ok) throw new Error('HTTP ' + r.status);
-                return r.json();
-            })
+        CSM.get('/api/v1/components')
             .then(function(rows) {
                 if (!rows || rows.length === 0) {
                     el.innerHTML = '<div class="csm-empty py-3"><div class="csm-empty__reason text-muted text-center">No watchers registered</div></div>';

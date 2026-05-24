@@ -4,14 +4,10 @@
 
     var formatSize = CSM.formatSize;
 
+    // Thin alias preserved so the rest of the file reads naturally; routes
+    // through the shared CSM.get so timeouts and error toasts stay uniform.
     function getJSON(url) {
-        return fetch(CSM.apiUrl(url), { credentials: 'same-origin' }).then(function(r) {
-            if (!r.ok) {
-                return r.json().catch(function() { throw new Error('HTTP ' + r.status); })
-                    .then(function(body) { throw new Error(body.error || 'HTTP ' + r.status); });
-            }
-            return r.json();
-        });
+        return CSM.get(url);
     }
 
     function removeEl(id) {
