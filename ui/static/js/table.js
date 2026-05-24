@@ -7,6 +7,7 @@
  *     perPage: 25,                  // rows per page (default 25)
  *     search: true,                 // enable search (default true)
  *     searchId: 'my-search',        // ID of existing search <input> (optional)
+ *     searchAttr: 'data-search',    // row attribute to search instead of all text (optional)
  *     filters: [                    // optional filters
  *       { id: 'sev-filter', column: 0, attr: 'data-sev' }
  *     ],
@@ -74,7 +75,11 @@ CSM.Table = function(opts) {
             if (this.hasDetailRows && rows[i+1] && rows[i+1].classList.contains('details-row')) {
                 detailRow = rows[i+1];
             }
-            this.allRows.push({ row: rows[i], detail: detailRow, text: rows[i].textContent.toLowerCase() });
+            var rowText = rows[i].textContent;
+            if (opts.searchAttr) {
+                rowText = rows[i].getAttribute(opts.searchAttr) || '';
+            }
+            this.allRows.push({ row: rows[i], detail: detailRow, text: String(rowText || '').toLowerCase() });
         }
     }
     if (opts.mobileRowCard) {

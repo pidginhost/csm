@@ -1953,6 +1953,24 @@ func TestIncidentCSMTableDoesNotShadowServerPagination(t *testing.T) {
 	}
 }
 
+func TestSharedTableCanSearchByRowAttribute(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/table.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, fragment := range []string{
+		`searchAttr: 'data-search'`,
+		`if (opts.searchAttr) {`,
+		`rowText = rows[i].getAttribute(opts.searchAttr) || '';`,
+		`String(rowText || '').toLowerCase()`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Fatalf("table.js missing searchAttr fragment %q", fragment)
+		}
+	}
+}
+
 // TestAutoRefreshPillWired pins WEB_ROADMAP P2.3: the shared CSM.refresh
 // module exposes enabled / lastFetchAt / bump / manual / setEnabled,
 // CSM.request bumps the timestamp on every successful response, CSM.poll
@@ -2291,13 +2309,24 @@ func TestAccountPerTabFilters(t *testing.T) {
 		`id="account-history-sev"`,
 		`id="account-history-from"`,
 		`id="account-history-to"`,
+		`data-index="' + i + '" data-severity="' + String(f.severity || 0) + '"`,
 		`data-severity="' + String(f.severity || 0) + '"`,
 		`data-check="' + CSM.attr(f.check || '') + '"`,
+		`data-path="' + CSM.attr(quarantined[q].original_path || '') + '"`,
 		`data-timestamp="' + CSM.attr(e.timestamp || '') + '"`,
 		`{ id: 'account-findings-sev',   attr: 'data-severity' }`,
 		`{ id: 'account-findings-check', attr: 'data-check' }`,
 		`{ id: 'account-history-sev', attr: 'data-severity' }`,
+		`searchAttr: 'data-path'`,
+		`function _localDateMillis(value, endExclusive) {`,
+		`if (endExclusive) d.setDate(d.getDate() + 1);`,
 		`rowFilter: _inRange`,
+		`function _filteredRowsForTab(tab, rows) {`,
+		`tabTables[tab]`,
+		`table.filteredRows`,
+		`_filteredRowsForTab('findings', cachedData.findings || [])`,
+		`_filteredRowsForTab('quarantine', cachedData.quarantined || [])`,
+		`_filteredRowsForTab('history', cachedData.history || [])`,
 	} {
 		if !strings.Contains(text, fragment) {
 			t.Fatalf("account.js missing P3.2 fragment %q", fragment)
