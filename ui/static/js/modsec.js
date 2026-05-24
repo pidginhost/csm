@@ -316,12 +316,14 @@
         }
         var h = '<div class="table-responsive"><table class="table table-vcenter card-table table-sm csm-table-rowcard csm-table-sticky" id="modsec-table">';
         h += '<thead><tr>';
+        h += '<th class="csm-w-narrow"><input type="checkbox" class="form-check-input" id="modsec-select-all" aria-label="Select all visible rules"></th>';
         h += '<th>IP</th><th>Location</th><th>Rule</th><th>Description</th><th>Domains</th><th>Hits</th><th>Last Seen</th><th>Status</th>';
         h += '</tr></thead><tbody>';
         for (var i = 0; i < filtered.length; i++) {
             var b = filtered[i];
             var domains = domainListText(b);
             h += '<tr data-csm-modsec-ip="' + CSM.attr(b.ip) + '" data-csm-modsec-rule="' + CSM.attr(b.rule_id || '') + '">';
+            h += '<td><input type="checkbox" class="form-check-input modsec-block-cb" data-rule="' + CSM.attr(b.rule_id || '') + '" aria-label="Select rule"' + (b.rule_id ? '' : ' disabled') + '></td>';
             h += '<td data-label="IP"><code>' + CSM.esc(b.ip) + '</code></td>';
             h += '<td data-label="Location" class="geo-cell" data-ip="' + CSM.attr(b.ip) + '"><span class="text-muted">--</span></td>';
             h += '<td data-label="Rule"><code>' + CSM.esc(b.rule_id || '') + '</code></td>';
@@ -356,6 +358,39 @@
                 if (b) openBlockDetail(b);
             }
         });
+        // WEB_ROADMAP P3.7: bulk-disable across selected rule IDs. The
+        // blocks table is rule-by-rule across IPs, so dedupe the
+        // selection by rule_id before sending the apply request.
+        var modsecBulkBtn = document.getElementById('modsec-bulk-disable');
+        if (modsecBulkBtn) {
+            CSM.bulk({
+                rowCheckboxSelector: '.modsec-block-cb',
+                selectAllEl: document.getElementById('modsec-select-all'),
+                valueAttr: 'data-rule',
+                buttons: [{ el: modsecBulkBtn, labelTemplate: 'Disable {n} rule(s)' }]
+            });
+            if (!modsecBulkBtn.dataset.csmBound) {
+                modsecBulkBtn.dataset.csmBound = '1';
+                modsecBulkBtn.addEventListener('click', function() {
+                    var checked = document.querySelectorAll('.modsec-block-cb:checked');
+                    var ruleSet = {};
+                    checked.forEach(function(cb) {
+                        var r = cb.getAttribute('data-rule');
+                        if (r) ruleSet[r] = true;
+                    });
+                    var rules = Object.keys(ruleSet);
+                    if (rules.length === 0) return;
+                    CSM.confirm('Disable ' + rules.length + ' ModSecurity rule(s)?\n\nThis writes the override and reloads ModSecurity.').then(function() {
+                        CSM.post('/api/v1/modsec/rules/apply', { disabled: rules })
+                            .then(function() {
+                                CSM.toast('Disabled ' + rules.length + ' rule(s)', 'success');
+                                loadBlocked();
+                            })
+                            .catch(function(err) { CSM.toast('Apply failed: ' + (err.message || ''), 'error'); });
+                    }).catch(function(err) { if (err) CSM.toast(err.message || 'Request failed', 'error'); });
+                });
+            }
+        }
         enrichGeoIP(container);
     }
 

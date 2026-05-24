@@ -2522,3 +2522,42 @@ func TestThreatAttackersFilterPack(t *testing.T) {
 		t.Fatal("threat.js must bind top-attackers URL state before returning from the empty-data branch")
 	}
 }
+
+// TestModSecBlocksBulkToggle pins WEB_ROADMAP P3.7: blocked-IPs tab on
+// the ModSecurity page gains per-row checkboxes (keyed by rule_id) and
+// a bulk-disable button wired through CSM.bulk + the existing
+// /api/v1/modsec/rules/apply endpoint.
+func TestModSecBlocksBulkToggle(t *testing.T) {
+	tmpl, err := os.ReadFile("../../ui/templates/modsec.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmplText := string(tmpl)
+	for _, fragment := range []string{
+		`id="modsec-bulk-disable"`,
+		`Disable Selected`,
+	} {
+		if !strings.Contains(tmplText, fragment) {
+			t.Fatalf("modsec.html missing P3.7 fragment %q", fragment)
+		}
+	}
+
+	js, err := os.ReadFile("../../ui/static/js/modsec.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsText := string(js)
+	for _, fragment := range []string{
+		`id="modsec-select-all"`,
+		`class="form-check-input modsec-block-cb"`,
+		`data-rule="' + CSM.attr(b.rule_id || '') + '"`,
+		`rowCheckboxSelector: '.modsec-block-cb',`,
+		`valueAttr: 'data-rule',`,
+		`labelTemplate: 'Disable {n} rule(s)' }`,
+		`CSM.post('/api/v1/modsec/rules/apply', { disabled: rules })`,
+	} {
+		if !strings.Contains(jsText, fragment) {
+			t.Fatalf("modsec.js missing P3.7 fragment %q", fragment)
+		}
+	}
+}
