@@ -2577,3 +2577,32 @@ func TestModSecBlocksBulkToggle(t *testing.T) {
 		}
 	}
 }
+
+// TestSettingsPageUsesQueryStringDeepLink pins WEB_ROADMAP P3.8: the
+// settings page navigates between sections via ?section= so bookmarks
+// and external links land on the right section without a reload. The
+// legacy #hash form still resolves on first load so old links keep
+// working.
+func TestSettingsPageUsesQueryStringDeepLink(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/settings.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, fragment := range []string{
+		`CSM.urlState.set({section: id});`,
+		`CSM.urlState.get("section")`,
+		`isKnown(qsSection) ? qsSection`,
+		`window.addEventListener("popstate", function () {`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Fatalf("settings.js missing P3.8 fragment %q", fragment)
+		}
+	}
+	// loadSection() must no longer unconditionally write to
+	// window.location.hash; the legacy assignment lives only in the
+	// CSM-unavailable fallback branch.
+	if strings.Contains(text, "window.location.hash = \"#\" + id;\n\n        const panel") {
+		t.Fatal("settings.js still always writes #hash on section change; move to CSM.urlState")
+	}
+}

@@ -232,7 +232,15 @@
     // ---- Section loader --------------------------------------------------
     async function loadSection(id) {
         setActiveNav(id);
-        window.location.hash = "#" + id;
+        // WEB_ROADMAP P3.8: settings nav now uses ?section= so
+        // bookmarks + external links land on the right section without
+        // a reload. CSM.urlState writes the param and leaves any other
+        // existing query keys untouched.
+        if (typeof CSM !== "undefined" && CSM.urlState) {
+            CSM.urlState.set({section: id});
+        } else {
+            window.location.hash = "#" + id;
+        }
 
         const panel = byId("settings-panel");
         clearNode(panel);
@@ -1175,11 +1183,24 @@
             renderNav();
             const search = byId("settings-search");
             if (search) filterNav(search.value);
+            // Read the requested section: ?section= wins (P3.8), then
+            // legacy #hash for old bookmarks, then the first section.
+            const qsSection = (typeof CSM !== "undefined" && CSM.urlState) ? CSM.urlState.get("section") : "";
             const hash = window.location.hash.replace(/^#/, "");
             const first = sections.length > 0 ? sections[0].id : "alerts";
-            const target = sections.some(function (s) { return s.id === hash; }) ? hash : first;
+            function isKnown(id) { return id && sections.some(function (s) { return s.id === id; }); }
+            const target = isKnown(qsSection) ? qsSection
+                : (isKnown(hash) ? hash : first);
             loadSection(target);
             checkPendingRollbackOnLoad();
+            // Browser back/forward: pop the new ?section= into view
+            // without forcing a reload so unsaved fields aren't lost.
+            window.addEventListener("popstate", function () {
+                const next = (typeof CSM !== "undefined" && CSM.urlState) ? CSM.urlState.get("section") : "";
+                if (isKnown(next) && next !== currentSection) {
+                    loadSection(next);
+                }
+            });
         }).catch(function (e) {
             renderError("Failed to load settings metadata: " + (e && e.message ? e.message : "request failed"));
         });
