@@ -2696,3 +2696,31 @@ func TestTemplateLabelsReferenceExistingIDs(t *testing.T) {
 		}
 	}
 }
+
+// TestPhase4A11yPatchesPresent pins WEB_ROADMAP P4.2: account tab
+// buttons carry aria-controls, threat select-all has an aria-label,
+// performance findings region is aria-busy + aria-live, error toasts
+// promote to role=alert + aria-live=assertive, and the shared detail
+// panel traps Tab focus while open.
+func TestPhase4A11yPatchesPresent(t *testing.T) {
+	for _, tc := range []struct{ path, fragment string }{
+		{"../../ui/templates/account.html", `aria-controls="account-tab-content"`},
+		{"../../ui/templates/account.html", `id="account-tabbtn-findings"`},
+		{"../../ui/templates/account.html", `role="tabpanel" aria-live="polite"`},
+		{"../../ui/templates/threat.html", `id="select-all-attackers" aria-label="Select all visible attackers"`},
+		{"../../ui/templates/performance.html", `id="perf-findings" aria-busy="true" aria-live="polite"`},
+		{"../../ui/static/js/performance.js", `findingsEl.removeAttribute('aria-busy');`},
+		{"../../ui/static/js/toast.js", `toast.setAttribute('role', type === 'error' ? 'alert' : 'status');`},
+		{"../../ui/static/js/toast.js", `toast.setAttribute('aria-live', type === 'error' ? 'assertive' : 'polite');`},
+		{"../../ui/static/js/csm-ui.js", `if (e.key === 'Tab' && panelEl) {`},
+		{"../../ui/static/js/csm-ui.js", `if (e.shiftKey && document.activeElement === first) {`},
+	} {
+		src, err := os.ReadFile(tc.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(src), tc.fragment) {
+			t.Errorf("%s missing P4.2 fragment %q", tc.path, tc.fragment)
+		}
+	}
+}

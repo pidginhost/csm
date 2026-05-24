@@ -350,6 +350,7 @@
                 var findingsEl = document.getElementById('perf-findings');
                 if (findingsEl) {
                     findingsEl.textContent = '';
+                    findingsEl.removeAttribute('aria-busy');
                     if (findings.length === 0) {
                         var noItem = document.createElement('div');
                         noItem.className = 'list-group-item text-muted';

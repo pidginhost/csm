@@ -348,6 +348,25 @@ CSM.detailPanel = (function() {
         if (e.key === 'Escape' || e.key === 'Esc' || e.keyCode === 27) {
             e.preventDefault();
             api.close();
+            return;
+        }
+        // WEB_ROADMAP P4.2: focus trap. Cycle Tab through focusable
+        // descendants so keyboard users don't lose focus to the page
+        // behind the panel while it's open.
+        if (e.key === 'Tab' && panelEl) {
+            var focusables = panelEl.querySelectorAll(
+                'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+            );
+            if (focusables.length === 0) return;
+            var first = focusables[0];
+            var last = focusables[focusables.length - 1];
+            if (e.shiftKey && document.activeElement === first) {
+                e.preventDefault();
+                last.focus();
+            } else if (!e.shiftKey && document.activeElement === last) {
+                e.preventDefault();
+                first.focus();
+            }
         }
     }
 

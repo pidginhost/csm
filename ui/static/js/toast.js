@@ -30,7 +30,12 @@
 
         var toast = document.createElement('div');
         toast.className = 'alert ' + bgClass + ' ' + textClass + ' d-flex align-items-center mb-2';
-        toast.setAttribute('role', 'alert');
+        // WEB_ROADMAP P4.2: errors interrupt with assertive so screen
+        // readers announce them immediately; success/warning/info use
+        // polite so they don't preempt the user mid-utterance.
+        toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
+        toast.setAttribute('aria-live', type === 'error' ? 'assertive' : 'polite');
+        toast.setAttribute('aria-atomic', 'true');
         toast.style.cssText = 'min-width:280px;max-width:400px;box-shadow:0 4px 12px rgba(0,0,0,.25);opacity:0;transition:opacity .25s ease;word-break:break-word;padding:.75rem 1rem;margin:0 0 .5rem 0;border:0;border-radius:.375rem;';
 
         var msgSpan = document.createElement('span');

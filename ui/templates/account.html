@@ -21,17 +21,17 @@
 
 <ul class="nav nav-tabs mb-3" id="account-tabs" role="tablist">
     <li class="nav-item" role="presentation">
-        <button class="nav-link active" data-tab="findings" role="tab" aria-selected="true">Findings</button>
+        <button class="nav-link active" data-tab="findings" role="tab" aria-selected="true" aria-controls="account-tab-content" id="account-tabbtn-findings">Findings</button>
     </li>
     <li class="nav-item" role="presentation">
-        <button class="nav-link" data-tab="quarantine" role="tab" aria-selected="false">Quarantine</button>
+        <button class="nav-link" data-tab="quarantine" role="tab" aria-selected="false" aria-controls="account-tab-content" id="account-tabbtn-quarantine">Quarantine</button>
     </li>
     <li class="nav-item" role="presentation">
-        <button class="nav-link" data-tab="history" role="tab" aria-selected="false">History</button>
+        <button class="nav-link" data-tab="history" role="tab" aria-selected="false" aria-controls="account-tab-content" id="account-tabbtn-history">History</button>
     </li>
 </ul>
 
-<div id="account-tab-content">
+<div id="account-tab-content" role="tabpanel" aria-live="polite">
     <div class="card-body text-center text-muted py-4">
         <span class="spinner-border spinner-border-sm"></span> Loading...
     </div>
