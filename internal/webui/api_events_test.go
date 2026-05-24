@@ -5,6 +5,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -78,4 +79,33 @@ func TestApiEvents_NilBusReturns503(t *testing.T) {
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503, got %d", resp.StatusCode)
 	}
+}
+
+// TestApiEvents_HasFiniteWriteDeadline pins WEB_ROADMAP P1.4: the SSE
+// handler used to call SetWriteDeadline(time.Time{}), which blocked
+// graceful daemon shutdown indefinitely whenever any client stayed
+// connected. The handler must now wrap every write in a finite deadline
+// so a stuck client fails fast instead of pinning the goroutine.
+func TestApiEvents_HasFiniteWriteDeadline(t *testing.T) {
+	src, err := readSource("api_events.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	if strings.Contains(text, "SetWriteDeadline(time.Time{})") {
+		t.Fatal("api_events.go still sets an infinite write deadline; client hang blocks graceful shutdown")
+	}
+	for _, fragment := range []string{
+		"const sseWriteTimeout = 30 * time.Second",
+		"rc.SetWriteDeadline(time.Now().Add(sseWriteTimeout))",
+		"writeFrame := func(format string, args ...any) error {",
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Fatalf("api_events.go missing finite-deadline fragment %q", fragment)
+		}
+	}
+}
+
+func readSource(path string) ([]byte, error) {
+	return os.ReadFile(path)
 }

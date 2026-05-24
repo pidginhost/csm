@@ -71,14 +71,17 @@ test asserts pollers survive injected errors and unbind on `stop()`.
 ### Step 1.4: SSE deadline + reconnect
 
 `api_events.go` sets `WriteDeadline = time.Time{}` (infinite),
-blocking graceful shutdown. Set a periodic deadline tied to the
-heartbeat interval, drop dead connections, and let the client
-auto-reconnect with exponential backoff. JS side: add a "stream
-disconnected, retrying" banner so operators see staleness.
+blocking graceful shutdown whenever any client is attached. Set a
+finite per-write deadline so a stuck client fails fast.
 
-**Acceptance:** server shuts down within 5s with active SSE clients;
-client reconnects after a forced server restart; reconnect attempts
-back off (1s, 2s, 4s, capped at 30s).
+Client-side reconnect + "stream disconnected, retrying" banner is
+deferred: no JS consumer exists for `/api/v1/events` today (the
+dashboard polls instead). Wire when an `EventSource` consumer lands,
+likely alongside the SSE health pill in Step 5.6.
+
+**Acceptance:** server shuts down within `sseWriteTimeout` seconds
+with active SSE clients; `TestApiEvents_HasFiniteWriteDeadline` pins
+the finite-deadline contract.
 
 ### Step 1.5: Bound memory on history/incident/modsec handlers
 
