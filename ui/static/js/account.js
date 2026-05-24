@@ -19,10 +19,14 @@
     }
 
     function setActiveTab(tab) {
+        var activeID = '';
         tabs.forEach(function(t) {
-            t.classList.toggle('active', t.dataset.tab === tab);
-            t.setAttribute('aria-selected', t.dataset.tab === tab ? 'true' : 'false');
+            var active = t.dataset.tab === tab;
+            t.classList.toggle('active', active);
+            t.setAttribute('aria-selected', active ? 'true' : 'false');
+            if (active) activeID = t.id || '';
         });
+        if (activeID) content.setAttribute('aria-labelledby', activeID);
     }
 
     function loadTab(tab) {

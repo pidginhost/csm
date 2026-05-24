@@ -357,9 +357,18 @@ CSM.detailPanel = (function() {
             var focusables = panelEl.querySelectorAll(
                 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
             );
-            if (focusables.length === 0) return;
+            if (focusables.length === 0) {
+                e.preventDefault();
+                panelEl.focus();
+                return;
+            }
             var first = focusables[0];
             var last = focusables[focusables.length - 1];
+            if (!panelEl.contains(document.activeElement)) {
+                e.preventDefault();
+                (e.shiftKey ? last : first).focus();
+                return;
+            }
             if (e.shiftKey && document.activeElement === first) {
                 e.preventDefault();
                 last.focus();

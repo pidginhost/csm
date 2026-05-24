@@ -3,6 +3,7 @@
     'use strict';
 
     var _perfLastFindings = [];
+    var _perfUpdateSeq = 0;
 
     var _fallbackNames = {
         'perf_load': 'Load',
@@ -221,9 +222,32 @@
         }).catch(function() { /* cancelled */ });
     }
 
+    function setFindingsBusy(busy) {
+        var findingsEl = document.getElementById('perf-findings');
+        if (findingsEl) {
+            findingsEl.setAttribute('aria-busy', busy ? 'true' : 'false');
+        }
+        return findingsEl;
+    }
+
+    function renderPerformanceError() {
+        var findingsEl = setFindingsBusy(false);
+        if (findingsEl) {
+            findingsEl.textContent = '';
+            var item = document.createElement('div');
+            item.className = 'list-group-item text-danger';
+            item.textContent = 'Failed to load performance findings';
+            findingsEl.appendChild(item);
+        }
+        renderBulkActions([]);
+    }
+
     function update() {
+        var updateSeq = ++_perfUpdateSeq;
+        setFindingsBusy(true);
         CSM.get('/api/v1/performance')
             .then(function(data) {
+                if (updateSeq !== _perfUpdateSeq) return;
                 var m = data.metrics || {};
                 var findings = data.findings || [];
                 _perfLastFindings = findings;
@@ -350,7 +374,7 @@
                 var findingsEl = document.getElementById('perf-findings');
                 if (findingsEl) {
                     findingsEl.textContent = '';
-                    findingsEl.removeAttribute('aria-busy');
+                    setFindingsBusy(false);
                     if (findings.length === 0) {
                         var noItem = document.createElement('div');
                         noItem.className = 'list-group-item text-muted';
@@ -411,7 +435,9 @@
                 }
             })
             .catch(function(err) {
+                if (updateSeq !== _perfUpdateSeq) return;
                 console.error('performance update:', err);
+                renderPerformanceError();
             });
     }
 
