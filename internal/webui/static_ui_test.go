@@ -2630,7 +2630,7 @@ func TestNoCrossTemplateDuplicateIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	idRe := regexp.MustCompile(`id="([a-zA-Z0-9_-]+)"`)
+	idRe := regexp.MustCompile(`\bid=["']([a-zA-Z0-9_-]+)["']`)
 	// owners[id] = path that first declared it; second declaration is
 	// the regression.
 	owners := map[string]string{}
@@ -2668,6 +2668,31 @@ func TestNoCrossTemplateDuplicateIDs(t *testing.T) {
 	if len(collisions) > 0 {
 		for _, c := range collisions {
 			t.Errorf("duplicate cross-template id: %s", c)
+		}
+	}
+}
+
+func TestTemplateLabelsReferenceExistingIDs(t *testing.T) {
+	files, err := filepath.Glob("../../ui/templates/*.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	idRe := regexp.MustCompile(`\bid=["']([a-zA-Z0-9_-]+)["']`)
+	labelRe := regexp.MustCompile(`<label\b[^>]*\bfor=["']([a-zA-Z0-9_-]+)["']`)
+	for _, path := range files {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(src)
+		ids := map[string]bool{}
+		for _, m := range idRe.FindAllStringSubmatch(text, -1) {
+			ids[m[1]] = true
+		}
+		for _, m := range labelRe.FindAllStringSubmatch(text, -1) {
+			if !ids[m[1]] {
+				t.Errorf("%s label for %q has no matching id", filepath.Base(path), m[1])
+			}
 		}
 	}
 }
