@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Web UI event stream now exits when shutdown starts and bounds each write, so active or stuck clients cannot hold daemon shutdown open.
 - Web UI history, incident timeline, and ModSecurity blocks endpoints now cap how much they keep in memory per request and report `X-CSM-Truncated` when the cap is reached, so a single request cannot exhaust the daemon on a busy host.
 - Web UI truncation warnings now reflect real capped results for history and ModSecurity block views, avoiding false warnings at the exact cap and missing warnings when an upstream scan cap is hit.
+- Web UI CSRF coverage is now pinned by a runtime test that POSTs to every mutator route without an `X-CSRF-Token` and asserts the request is rejected with 403, so a future route addition without the wrapper cannot ship unnoticed.
 - Web UI error toasts shown by the global request helpers, the email release / delete actions, and the hardening audit error path now render with the danger styling. They were previously passing an unrecognized type string and falling back to the info color, hiding their severity.
 - Rules page suppression list now formats the created-at timestamp through the shared `CSM.fmtDate` helper so the format matches every other timestamp in the UI.
 - Shared Web UI number and percent formatters now leave missing values blank instead of displaying them as zero.

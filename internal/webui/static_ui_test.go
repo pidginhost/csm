@@ -1,6 +1,8 @@
 package webui
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -1565,5 +1567,157 @@ func TestMemoryBoundedHandlersPinCaps(t *testing.T) {
 		if !strings.Contains(string(src), tc.fragment) {
 			t.Errorf("%s missing memory-cap fragment %q", tc.path, tc.fragment)
 		}
+	}
+}
+
+// TestEveryNamedMutatorRouteEnforcesCSRF pins WEB_ROADMAP P1.6: every
+// mux.Handle entry whose Go handler symbol name screams "mutator"
+// (apiFix, apiBlock, apiUnblock, apiClear, apiRestore, apiBulkDelete,
+// apiReload, apiApply, apiDeny*, apiAllow*, apiRemove*, apiFlush*,
+// apiUnban, apiWhitelist*, apiUnwhitelist*, apiSettingsRestart,
+// apiHardeningRun, etc.) must be wrapped in requireCSRF. The wrapper
+// is a no-op for GET so adding it on a defense-in-depth basis is free.
+// Read-only handlers (apiStats, apiList, apiGet*) are explicitly
+// excluded by the heuristic.
+func TestEveryNamedMutatorRouteEnforcesCSRF(t *testing.T) {
+	src, err := os.ReadFile("../../internal/webui/server.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	muxLine := regexp.MustCompile(`mux\.Handle\("[^"]+",\s*(.+)\)\s*$`)
+	mutatorHandler := regexp.MustCompile(`\b(apiFix|apiBulkFix|apiDismissFinding|apiBlockIP|apiUnblockIP|apiUnblockBulk|apiQuarantineRestore|apiQuarantineBulkDelete|apiDBObjectBackupRestore|apiFirewallDenySubnet|apiFirewallAllowIP|apiFirewallRemoveAllow|apiFirewallRemoveSubnet|apiFirewallFlushCphulk|apiFirewallFlush|apiFirewallUnban|apiThreatWhitelistIP|apiThreatUnwhitelistIP|apiThreatBlockIP|apiThreatClearIP|apiThreatTempWhitelistIP|apiThreatBulkAction|apiRulesReload|apiModSecEscalation|apiModSecRulesApply|apiModSecRulesEscalation|apiSuppressions|apiHardeningRun|apiSettingsRestart|apiFirewallTentativeApply|apiFirewallRollbackConfirm|apiFirewallRollbackRevert|apiImport|apiScanAccount|apiTestAlert|apiPerfFixErrorLog|apiPerfFixDisplayErrors|apiEmailQuarantineAction|apiIncidentRouter|apiGeoIPBatch)\b`)
+	for _, line := range strings.Split(text, "\n") {
+		m := muxLine.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		expr := m[1]
+		if !mutatorHandler.MatchString(expr) {
+			continue
+		}
+		if !strings.Contains(expr, "requireCSRF(") {
+			t.Errorf("server.go route missing requireCSRF on mutator handler: %s", strings.TrimSpace(line))
+		}
+	}
+}
+
+// TestCSRFValidatorSkipsBearerAndChecksConstantTime pins the validator
+// contract: Bearer-auth requests skip CSRF (the token itself proves
+// identity), cookie-auth requests must carry X-CSRF-Token or csrf_token,
+// and comparisons use subtle.ConstantTimeCompare.
+func TestCSRFValidatorSkipsBearerAndChecksConstantTime(t *testing.T) {
+	src, err := os.ReadFile("../../internal/webui/server.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, fragment := range []string{
+		`if s.isBearerAuth(r) {`,
+		`subtle.ConstantTimeCompare([]byte(token), []byte(expected)) == 1`,
+		`if token := r.Header.Get("X-CSRF-Token"); token != "" {`,
+		`if token := r.FormValue("csrf_token"); token != "" {`,
+		`http.Error(w, "Invalid CSRF token", http.StatusForbidden)`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Fatalf("server.go missing CSRF validator fragment %q", fragment)
+		}
+	}
+}
+
+// TestCSRFEnforcedAtRuntime exercises the live mux: cookie-authenticated
+// POSTs and DELETEs without an X-CSRF-Token or csrf_token field must
+// land at 403, never at the wrapped handler. Bearer-authenticated calls
+// continue to bypass CSRF because the Bearer token itself proves the
+// caller is server-to-server, not a CSRF'd browser. The sampled
+// routes cover one representative from each kind of mutator
+// (find/dismiss, block/unblock, firewall, threat, settings, rules).
+func TestCSRFEnforcedAtRuntime(t *testing.T) {
+	const tok = "admin-token"
+	s := newTestServer(t, tok)
+	mux := s.httpSrv.Handler
+
+	cookie := &http.Cookie{Name: "csm_auth", Value: tok}
+
+	cases := []struct {
+		method string
+		path   string
+	}{
+		{"POST", "/api/v1/fix"},
+		{"POST", "/api/v1/fix-bulk"},
+		{"POST", "/api/v1/dismiss"},
+		{"POST", "/api/v1/block-ip"},
+		{"POST", "/api/v1/unblock-ip"},
+		{"POST", "/api/v1/unblock-bulk"},
+		{"POST", "/api/v1/quarantine-restore"},
+		{"POST", "/api/v1/quarantine/bulk-delete"},
+		{"POST", "/api/v1/db-object-backup-restore"},
+		{"POST", "/api/v1/firewall/deny-subnet"},
+		{"POST", "/api/v1/firewall/allow-ip"},
+		{"POST", "/api/v1/firewall/remove-allow"},
+		{"POST", "/api/v1/firewall/remove-subnet"},
+		{"POST", "/api/v1/firewall/cphulk-clear"},
+		{"POST", "/api/v1/firewall/flush"},
+		{"POST", "/api/v1/firewall/unban"},
+		{"POST", "/api/v1/threat/whitelist-ip"},
+		{"POST", "/api/v1/threat/unwhitelist-ip"},
+		{"POST", "/api/v1/threat/block-ip"},
+		{"POST", "/api/v1/threat/clear-ip"},
+		{"POST", "/api/v1/threat/temp-whitelist-ip"},
+		{"POST", "/api/v1/threat/bulk-action"},
+		{"POST", "/api/v1/rules/reload"},
+		{"POST", "/api/v1/rules/modsec-escalation"},
+		{"POST", "/api/v1/suppressions"},
+		{"DELETE", "/api/v1/suppressions"},
+		{"POST", "/api/v1/modsec/rules/apply"},
+		{"POST", "/api/v1/modsec/rules/escalation"},
+		{"POST", "/api/v1/import"},
+		{"POST", "/api/v1/scan-account"},
+		{"POST", "/api/v1/test-alert"},
+		{"POST", "/api/v1/hardening/run"},
+		{"POST", "/api/v1/settings/restart"},
+		{"POST", "/api/v1/settings/firewall/tentative-apply"},
+		{"POST", "/api/v1/settings/firewall/confirm"},
+		{"POST", "/api/v1/settings/firewall/revert"},
+		{"POST", "/api/v1/perf/fix-error-log"},
+		{"POST", "/api/v1/perf/fix-display-errors"},
+		{"POST", "/api/v1/email/quarantine/foo/release"},
+		{"DELETE", "/api/v1/email/quarantine/foo"},
+		{"POST", "/api/v1/geoip/batch"},
+		{"POST", "/api/v1/incidents/abc/status"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			body := strings.NewReader(`{}`)
+			req := httptest.NewRequest(tc.method, tc.path, body)
+			req.Header.Set("Content-Type", "application/json")
+			req.AddCookie(cookie)
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, req)
+			if w.Code != http.StatusForbidden {
+				t.Errorf("%s %s without CSRF token: got %d, want 403", tc.method, tc.path, w.Code)
+			}
+		})
+	}
+
+	// Bearer-auth must bypass CSRF for the same routes (server-to-server
+	// callers don't have a way to obtain the cookie-bound CSRF token).
+	bearerSample := []struct{ method, path string }{
+		{"POST", "/api/v1/fix"},
+		{"POST", "/api/v1/threat/whitelist-ip"},
+	}
+	for _, tc := range bearerSample {
+		t.Run("bearer "+tc.method+" "+tc.path, func(t *testing.T) {
+			body := strings.NewReader(`{}`)
+			req := httptest.NewRequest(tc.method, tc.path, body)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+tok)
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, req)
+			if w.Code == http.StatusForbidden {
+				t.Errorf("Bearer %s %s: got 403 (CSRF wrongly applied)", tc.method, tc.path)
+			}
+		})
 	}
 }

@@ -884,8 +884,28 @@ func (s *Server) csrfSecret() string {
 	return ""
 }
 
-// validateCSRF checks the CSRF token on POST requests.
-// Checks X-CSRF-Token header (for API calls) or csrf_token form field (for form posts).
+// CSRF contract (WEB_ROADMAP P1.6, pinned by
+// TestCSRFEnforcedAtRuntime, TestEveryNamedMutatorRouteEnforcesCSRF,
+// and TestCSRFValidatorSkipsBearerAndChecksConstantTime in
+// static_ui_test.go):
+//
+//   - Every mutator route (POST or DELETE that changes server state)
+//     must be wrapped in requireCSRF. The wrapper is a no-op for
+//     GET/HEAD/OPTIONS so it's free defense-in-depth on mixed-method
+//     handlers.
+//   - Cookie-authenticated browser sessions must carry either an
+//     X-CSRF-Token header (JS clients) or a csrf_token form field
+//     (template form posts). Comparisons use subtle.ConstantTimeCompare.
+//   - Bearer-authenticated requests skip CSRF: the bearer token itself
+//     proves the caller is server-to-server, not a CSRF'd browser, and
+//     it cannot be smuggled from another origin without script access
+//     to the bearer token.
+//   - When a CSRF check fails, the wrapper returns 403 with an
+//     "Invalid CSRF token" body before the handler runs.
+//
+// validateCSRF checks the CSRF token on POST/DELETE requests. It returns
+// true (allow) for safe methods, Bearer-auth requests, and requests
+// whose X-CSRF-Token / csrf_token matches the server-side secret.
 func (s *Server) validateCSRF(r *http.Request) bool {
 	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
 		return true // only validate POST and DELETE
