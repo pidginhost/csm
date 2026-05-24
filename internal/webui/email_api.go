@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -113,7 +112,7 @@ func (s *Server) apiEmailQuarantineList(w http.ResponseWriter, r *http.Request) 
 // apiEmailQuarantineAction handles GET, POST (release), and DELETE operations on
 // individual quarantined messages at /api/v1/email/quarantine/{msgID}.
 func (s *Server) apiEmailQuarantineAction(w http.ResponseWriter, r *http.Request) {
-	// Extract everything after the prefix, e.g. "abc123" or "abc123/release"
+	// Extract everything after the prefix, e.g. "abc123" or "abc123/release".
 	tail := strings.TrimPrefix(r.URL.Path, "/api/v1/email/quarantine/")
 	if tail == "" {
 		writeJSONError(w, "Missing message ID", http.StatusBadRequest)
@@ -121,7 +120,7 @@ func (s *Server) apiEmailQuarantineAction(w http.ResponseWriter, r *http.Request
 	}
 
 	parts := strings.SplitN(tail, "/", 2)
-	msgID := filepath.Base(parts[0]) // strip any path components first
+	msgID := parts[0]
 	action := ""
 	if len(parts) == 2 {
 		action = parts[1]
@@ -139,6 +138,10 @@ func (s *Server) apiEmailQuarantineAction(w http.ResponseWriter, r *http.Request
 
 	switch r.Method {
 	case http.MethodGet:
+		if action != "" {
+			writeJSONError(w, "Unknown action", http.StatusBadRequest)
+			return
+		}
 		meta, err := s.emailQuarantine.GetMessage(msgID)
 		if err != nil {
 			writeJSONError(w, "Message not found", http.StatusNotFound)
@@ -158,6 +161,10 @@ func (s *Server) apiEmailQuarantineAction(w http.ResponseWriter, r *http.Request
 		writeJSON(w, map[string]string{"status": "released", "message_id": msgID})
 
 	case http.MethodDelete:
+		if action != "" {
+			writeJSONError(w, "Unknown action", http.StatusBadRequest)
+			return
+		}
 		if err := s.emailQuarantine.DeleteMessage(msgID); err != nil {
 			writeJSONError(w, "Failed to delete message: "+err.Error(), http.StatusInternalServerError)
 			return

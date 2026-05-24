@@ -31,14 +31,24 @@ func TestHandleLoginPOSTSuccess(t *testing.T) {
 		t.Errorf("successful login = %d, want 302", w.Code)
 	}
 	cookies := w.Result().Cookies()
-	found := false
+	var authCookie *http.Cookie
 	for _, c := range cookies {
 		if c.Name == "csm_auth" && c.Value == "test-secret" {
-			found = true
+			authCookie = c
 		}
 	}
-	if !found {
+	if authCookie == nil {
 		t.Error("csm_auth cookie not set")
+		return
+	}
+	if !authCookie.HttpOnly {
+		t.Error("csm_auth cookie must be HttpOnly")
+	}
+	if !authCookie.Secure {
+		t.Error("csm_auth cookie must be Secure")
+	}
+	if authCookie.SameSite != http.SameSiteStrictMode {
+		t.Errorf("csm_auth SameSite = %v, want Strict", authCookie.SameSite)
 	}
 }
 

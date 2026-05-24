@@ -731,16 +731,41 @@ func TestMustBeWithinRejectsEscapes(t *testing.T) {
 	if _, err := mustBeWithin(root, "foo/../../etc"); err == nil {
 		t.Error("embedded traversal accepted")
 	}
-	// filepath.Join treats absolute candidates as relative (strips the
-	// leading "/"), so "/etc/passwd" lands at root/etc/passwd. The
-	// helper still returns the joined path because the prefix check
-	// holds; the security guarantee is that no candidate can resolve
-	// outside root, not that absolute candidates are rejected.
+	// Absolute-looking fragments are interpreted relative to root. The
+	// security guarantee is that no candidate can resolve outside root.
 	if _, err := mustBeWithin(root, "/etc/passwd"); err != nil {
 		t.Errorf("absolute-style candidate rejected: %v", err)
 	}
 	if _, err := mustBeWithin(root, "."); err != nil {
 		t.Errorf("root itself rejected: %v", err)
+	}
+
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "outside-link")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mustBeWithin(root, "outside-link/new-file"); err == nil {
+		t.Error("missing leaf under symlink escape accepted")
+	}
+
+	inside := filepath.Join(root, "inside")
+	if err := os.Mkdir(inside, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("inside", filepath.Join(root, "inside-link")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := mustBeWithin(root, "inside-link/new-file")
+	if err != nil {
+		t.Fatalf("inside symlink rejected: %v", err)
+	}
+	resolvedInside, err := filepath.EvalSymlinks(inside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(resolvedInside, "new-file")
+	if got != want {
+		t.Fatalf("inside symlink resolved to %q, want %q", got, want)
 	}
 }
 
@@ -749,56 +774,49 @@ func TestEmailQuarantineActionRejectsTraversalMessageID(t *testing.T) {
 	dir := t.TempDir()
 	s.emailQuarantine = emailav.NewQuarantine(dir)
 
-	for _, bad := range []string{
-		"..",
-		"foo.bar",
-		"foo%00bar",
-		"weird;rm",
+	for _, tc := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodDelete, ".."},
+		{http.MethodDelete, "foo.bar"},
+		{http.MethodDelete, "foo%00bar"},
+		{http.MethodDelete, "weird;rm"},
+		{http.MethodDelete, "abc123/extra"},
+		{http.MethodGet, "abc123/extra"},
+		{http.MethodPost, "abc123/extra"},
+		{http.MethodPost, "abc123/release/extra"},
 	} {
 		w := httptest.NewRecorder()
-		req := httptest.NewRequest("DELETE", "/api/v1/email/quarantine/"+bad, nil)
+		req := httptest.NewRequest(tc.method, "/api/v1/email/quarantine/"+tc.path, nil)
 		s.apiEmailQuarantineAction(w, req)
 		if w.Code != http.StatusBadRequest {
-			t.Errorf("DELETE %q = %d, want 400", bad, w.Code)
-		}
-	}
-}
-
-func TestSessionCookieFlagsHardened(t *testing.T) {
-	src, err := os.ReadFile("../../internal/webui/server.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(src)
-	for _, fragment := range []string{
-		`Name:     "csm_auth"`,
-		`HttpOnly: true`,
-		`Secure:   true`,
-		`SameSite: http.SameSiteStrictMode`,
-	} {
-		// Each fragment must appear at least twice: once in login set,
-		// once in logout clear. The test reads the raw source so any
-		// future refactor that drops one of the flags is caught.
-		count := strings.Count(text, fragment)
-		if count < 2 {
-			t.Errorf("session cookie missing hardened flag %q (found %d / want >= 2)", fragment, count)
+			t.Errorf("%s %q = %d, want 400", tc.method, tc.path, w.Code)
 		}
 	}
 }
 
 func TestFlushCphulkRevalidatesIP(t *testing.T) {
-	src, err := os.ReadFile("../../internal/webui/api.go")
+	binDir := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "whmapi1.args")
+	script := "#!/bin/sh\nprintf 'ran\\n' > \"$CSM_TEST_MARKER\"\nprintf '%s\\n' \"$@\" >> \"$CSM_TEST_MARKER\"\n"
+	if err := os.WriteFile(filepath.Join(binDir, "whmapi1"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CSM_TEST_MARKER", marker)
+
+	flushCphulk("203.0.113.5;touch /tmp/pwned")
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("invalid IP executed whmapi1, stat err = %v", err)
+	}
+
+	flushCphulk("203.0.113.5")
+	got, err := os.ReadFile(marker)
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(src)
-	for _, fragment := range []string{
-		"func flushCphulk(ip string) {",
-		`if _, err := parseAndValidateIP(ip); err != nil {`,
-		`return`,
-	} {
-		if !strings.Contains(text, fragment) {
-			t.Errorf("flushCphulk missing defense-in-depth fragment %q", fragment)
-		}
+	if !strings.Contains(string(got), "flush_cphulk_login_history_for_ips\nip=203.0.113.5") {
+		t.Fatalf("whmapi1 args = %q", string(got))
 	}
 }

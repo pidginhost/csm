@@ -632,14 +632,24 @@ func TestHandleLogoutClearsCookie(t *testing.T) {
 	}
 	// csm_auth cookie should be cleared (MaxAge < 0).
 	cookies := w.Result().Cookies()
-	var found bool
+	var authCookie *http.Cookie
 	for _, c := range cookies {
 		if c.Name == "csm_auth" && c.MaxAge < 0 {
-			found = true
+			authCookie = c
 		}
 	}
-	if !found {
+	if authCookie == nil {
 		t.Error("csm_auth cookie not cleared")
+		return
+	}
+	if !authCookie.HttpOnly {
+		t.Error("cleared csm_auth cookie must be HttpOnly")
+	}
+	if !authCookie.Secure {
+		t.Error("cleared csm_auth cookie must be Secure")
+	}
+	if authCookie.SameSite != http.SameSiteStrictMode {
+		t.Errorf("cleared csm_auth SameSite = %v, want Strict", authCookie.SameSite)
 	}
 }
 

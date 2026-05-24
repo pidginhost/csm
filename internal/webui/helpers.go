@@ -90,27 +90,105 @@ func mustBeWithin(root, candidate string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve root: %w", err)
 	}
-	// EvalSymlinks the root too so prefix comparison is apples-to-apples
-	// on macOS / containers where /tmp and /var are symlinks (otherwise a
-	// legitimate root-relative candidate would look like an escape).
-	if resolved, err := filepath.EvalSymlinks(absRoot); err == nil {
-		absRoot = resolved
-	}
-	joined := filepath.Join(absRoot, candidate)
-	abs, err := filepath.Abs(filepath.Clean(joined))
+	absRoot, err = filepath.EvalSymlinks(absRoot)
 	if err != nil {
-		return "", fmt.Errorf("resolve candidate: %w", err)
+		return "", fmt.Errorf("resolve root symlinks: %w", err)
 	}
-	// EvalSymlinks may fail for paths that do not exist yet (creation
-	// paths). Fall back to the cleaned absolute path; the prefix check
-	// still catches `..` escapes.
-	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-		abs = resolved
+
+	abs, err := resolvePathUnderRoot(absRoot, rootRelativeCandidate(candidate))
+	if err != nil {
+		return "", err
 	}
-	if abs != absRoot && !strings.HasPrefix(abs, absRoot+string(filepath.Separator)) {
+	if !isPathWithin(abs, absRoot) {
 		return "", fmt.Errorf("path %q escapes root %q", candidate, absRoot)
 	}
 	return abs, nil
+}
+
+func rootRelativeCandidate(candidate string) string {
+	cleaned := filepath.Clean(candidate)
+	if volume := filepath.VolumeName(cleaned); volume != "" {
+		cleaned = strings.TrimPrefix(cleaned, volume)
+	}
+	cleaned = strings.TrimLeft(cleaned, string(filepath.Separator))
+	if cleaned == "" {
+		return "."
+	}
+	return cleaned
+}
+
+func resolvePathUnderRoot(root, rel string) (string, error) {
+	parts := pathParts(rel)
+	current := root
+	symlinkCount := 0
+
+	for i := 0; i < len(parts); i++ {
+		part := parts[i]
+		switch part {
+		case ".", "":
+			continue
+		case "..":
+			current = filepath.Dir(current)
+			if !isPathWithin(current, root) {
+				return "", fmt.Errorf("path %q escapes root %q", rel, root)
+			}
+			continue
+		}
+
+		next := filepath.Join(current, part)
+		info, err := os.Lstat(next)
+		if err != nil {
+			if os.IsNotExist(err) {
+				for _, remaining := range parts[i:] {
+					current = filepath.Join(current, remaining)
+				}
+				return filepath.Clean(current), nil
+			}
+			return "", fmt.Errorf("stat candidate: %w", err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			current = next
+			continue
+		}
+
+		symlinkCount++
+		if symlinkCount > 255 {
+			return "", fmt.Errorf("too many symlinks resolving %q", rel)
+		}
+		target, err := os.Readlink(next)
+		if err != nil {
+			return "", fmt.Errorf("read symlink: %w", err)
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(next), target)
+		}
+		target = filepath.Clean(target)
+		targetRel, err := filepath.Rel(root, target)
+		if err != nil {
+			return "", fmt.Errorf("resolve symlink target: %w", err)
+		}
+		nextParts := append([]string{}, pathParts(targetRel)...)
+		nextParts = append(nextParts, parts[i+1:]...)
+		parts = nextParts
+		current = root
+		i = -1
+	}
+
+	return filepath.Clean(current), nil
+}
+
+func pathParts(path string) []string {
+	if path == "" || path == "." {
+		return nil
+	}
+	raw := strings.Split(path, string(filepath.Separator))
+	parts := make([]string, 0, len(raw))
+	for _, part := range raw {
+		if part != "" && part != "." {
+			parts = append(parts, part)
+		}
+	}
+	return parts
 }
 
 // validateAccountName checks that name is a valid cPanel account name:
