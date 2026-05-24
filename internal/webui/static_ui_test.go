@@ -2364,17 +2364,32 @@ func TestQuarantinePageHasFilterPack(t *testing.T) {
 	for _, fragment := range []string{
 		`function _quarAccountFromPath(path) {`,
 		`function _quarDetectorFromReason(reason) {`,
-		`data-account="' + CSM.attr(acct) + '"`,
+		`function _quarLocalDateMillis(value, endExclusive) {`,
+		`if (d.getFullYear() !== year || d.getMonth() !== month || d.getDate() !== day) return null;`,
+		`if (endExclusive) d.setDate(d.getDate() + 1);`,
+		`var accounts = Object.create(null), detectors = Object.create(null);`,
+		`_resetQuarTable();`,
+		`_populateQuarFilterOptions(files || []);`,
+		`_bindQuarURLState(fromEl, toEl);`,
+		`data-path="' + CSM.attr(f.original_path || '') + '" data-account="' + CSM.attr(acct) + '"`,
 		`data-source="' + CSM.attr(det) + '"`,
 		`data-timestamp="' + CSM.attr(f.quarantined_at || '') + '"`,
+		`var from = fromEl ? _quarLocalDateMillis(fromEl.value, false) : null;`,
+		`var to = toEl ? _quarLocalDateMillis(toEl.value, true) : null;`,
+		`if (to !== null && ts >= to) return false;`,
+		`searchAttr: 'data-path',`,
 		`{ id: 'quarantine-account-filter', attr: 'data-account' },`,
 		`{ id: 'quarantine-source-filter',  attr: 'data-source' }`,
 		`rowFilter: _inRange`,
+		`_bindQuarDateFilters(fromEl, toEl);`,
 		`account: document.getElementById('quarantine-account-filter'),`,
 		`source: document.getElementById('quarantine-source-filter'),`,
 	} {
 		if !strings.Contains(jsText, fragment) {
 			t.Fatalf("quarantine.js missing P3.3 fragment %q", fragment)
 		}
+	}
+	if strings.Contains(jsText, `86400000`) || strings.Contains(jsText, `new Date(fromEl.value + 'T00:00:00')`) {
+		t.Fatal("quarantine.js must use validated calendar-day bounds instead of fixed 24-hour date math")
 	}
 }

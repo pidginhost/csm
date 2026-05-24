@@ -1,5 +1,9 @@
 // CSM Quarantine page
 
+var _quarTable = null;
+var _quarURLUnbind = null;
+var _quarDateListenersBound = false;
+
 // WEB_ROADMAP P3.3: extract /home/<account>/ from the quarantine entry's
 // original_path so the account filter dropdown works without a server
 // schema change. Returns '' for system paths so they fall under "All".
@@ -20,8 +24,67 @@ function _quarDetectorFromReason(reason) {
     return (c > 0 ? s.slice(0, c) : s).trim();
 }
 
+function _quarLocalDateMillis(value, endExclusive) {
+    if (!value) return null;
+    var parts = String(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!parts) return null;
+    var year = Number(parts[1]);
+    var month = Number(parts[2]) - 1;
+    var day = Number(parts[3]);
+    var d = new Date(year, month, day);
+    if (isNaN(d.getTime())) return null;
+    if (d.getFullYear() !== year || d.getMonth() !== month || d.getDate() !== day) return null;
+    if (endExclusive) d.setDate(d.getDate() + 1);
+    return d.getTime();
+}
+
+function _quarURLInputs(fromEl, toEl) {
+    return {
+        q: document.getElementById('quarantine-search'),
+        account: document.getElementById('quarantine-account-filter'),
+        source: document.getElementById('quarantine-source-filter'),
+        from: fromEl,
+        to: toEl
+    };
+}
+
+function _bindQuarURLState(fromEl, toEl) {
+    if (_quarURLUnbind) _quarURLUnbind();
+    _quarURLUnbind = CSM.urlState.bind({ inputs: _quarURLInputs(fromEl, toEl) });
+}
+
+function _resetQuarTable() {
+    if (_quarTable) {
+        if (_quarTable._searchDebounce && _quarTable._searchDebounce.cancel) _quarTable._searchDebounce.cancel();
+        _quarTable.controlsEl = null;
+        _quarTable.countTargetEl = null;
+        _quarTable.allRows = [];
+        _quarTable.filteredRows = [];
+        _quarTable.tbody = null;
+        _quarTable.table = null;
+        _quarTable.rowFilter = null;
+        _quarTable = null;
+    }
+    var controls = document.getElementById('quarantine-table-controls');
+    if (controls) controls.remove();
+}
+
+function _bindQuarDateFilters(fromEl, toEl) {
+    if (_quarDateListenersBound) return;
+    function onDate() {
+        if (_quarTable) {
+            _quarTable.currentPage = 1;
+            _quarTable.applyFilters();
+        }
+    }
+    if (fromEl) fromEl.addEventListener('change', onDate);
+    if (toEl) toEl.addEventListener('change', onDate);
+    _quarDateListenersBound = true;
+}
+
 function _populateQuarFilterOptions(files) {
-    var accounts = {}, detectors = {};
+    var accounts = Object.create(null), detectors = Object.create(null);
+    files = files || [];
     for (var i = 0; i < files.length; i++) {
         var a = _quarAccountFromPath(files[i].original_path);
         if (a) accounts[a] = true;
@@ -49,46 +112,45 @@ function _populateQuarFilterOptions(files) {
 function loadQuarantine() {
     CSM.get('/api/v1/quarantine').then(function(files){
         var el = document.getElementById('quarantine-content');
+        var fromEl = document.getElementById('quarantine-from');
+        var toEl = document.getElementById('quarantine-to');
         var title = document.querySelector('.card-title');
         if (title) title.innerHTML = '<i class="ti ti-lock"></i>&nbsp;Quarantined Files (' + (files ? files.length : 0) + ')';
+        _resetQuarTable();
+        _populateQuarFilterOptions(files || []);
         if (!files || files.length === 0) {
+            _bindQuarURLState(fromEl, toEl);
             el.innerHTML = '<div class="card-body text-center text-muted py-4"><i class="ti ti-circle-check"></i> No quarantined files.</div>';
             updateBulkRestore();
             return;
         }
-        _populateQuarFilterOptions(files);
         var html = '<div class="table-responsive"><table class="table table-vcenter card-table" id="quarantine-table"><thead><tr><th><input type="checkbox" class="form-check-input" id="q-select-all"></th><th>Original Path</th><th>Size</th><th>Quarantined</th><th>Reason</th><th>Action</th></tr></thead><tbody>';
         for (var i = 0; i < files.length; i++) {
             var f = files[i];
             var acct = _quarAccountFromPath(f.original_path);
             var det = _quarDetectorFromReason(f.reason);
-            html += '<tr data-account="' + CSM.attr(acct) + '" data-source="' + CSM.attr(det) + '" data-timestamp="' + CSM.attr(f.quarantined_at || '') + '">';
+            html += '<tr data-path="' + CSM.attr(f.original_path || '') + '" data-account="' + CSM.attr(acct) + '" data-source="' + CSM.attr(det) + '" data-timestamp="' + CSM.attr(f.quarantined_at || '') + '">';
             html += '<td><input type="checkbox" class="form-check-input q-cb" data-id="'+CSM.esc(f.id)+'"></td><td><code>'+CSM.esc(f.original_path)+'</code></td><td>'+formatSize(f.size)+'</td><td class="text-nowrap"><span class="text-muted small">'+CSM.esc(f.quarantined_at)+'</span></td><td class="small">'+CSM.esc(f.reason)+'</td><td><button class="btn btn-sm btn-ghost-secondary me-1 view-btn" data-id="'+CSM.esc(f.id)+'" data-path="'+CSM.esc(f.original_path)+'">View</button><button class="btn btn-sm btn-warning restore-btn" data-id="'+CSM.esc(f.id)+'">Restore</button></td></tr>';
         }
         html += '</tbody></table></div>';
         el.innerHTML = html;
-        var fromEl = document.getElementById('quarantine-from');
-        var toEl = document.getElementById('quarantine-to');
         function _inRange(row) {
             var raw = row.getAttribute('data-timestamp') || '';
             if (!raw) return true;
             var ts = new Date(raw.replace(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})/, '$1T$2')).getTime();
             if (isNaN(ts)) return true;
-            if (fromEl && fromEl.value) {
-                var f = new Date(fromEl.value + 'T00:00:00').getTime();
-                if (!isNaN(f) && ts < f) return false;
-            }
-            if (toEl && toEl.value) {
-                var to = new Date(toEl.value + 'T00:00:00').getTime();
-                if (!isNaN(to) && ts >= to + 86400000) return false;
-            }
+            var from = fromEl ? _quarLocalDateMillis(fromEl.value, false) : null;
+            var to = toEl ? _quarLocalDateMillis(toEl.value, true) : null;
+            if (from !== null && ts < from) return false;
+            if (to !== null && ts >= to) return false;
             return true;
         }
         // Initialize table component after DOM is ready
-        var quarTable = new CSM.Table({
+        _quarTable = new CSM.Table({
             tableId: 'quarantine-table',
             perPage: 25,
             searchId: 'quarantine-search',
+            searchAttr: 'data-path',
             sortable: true,
             stateKey: 'csm-quarantine-table',
             filters: [
@@ -97,17 +159,9 @@ function loadQuarantine() {
             ],
             rowFilter: _inRange
         });
-        function _onDate() { if (quarTable) { quarTable.currentPage = 1; quarTable.applyFilters(); } }
-        if (fromEl) fromEl.addEventListener('change', _onDate);
-        if (toEl) toEl.addEventListener('change', _onDate);
+        _bindQuarDateFilters(fromEl, toEl);
         // WEB_ROADMAP P2.1 / P3.3: persist all filters to URL.
-        CSM.urlState.bind({ inputs: {
-            q: document.getElementById('quarantine-search'),
-            account: document.getElementById('quarantine-account-filter'),
-            source: document.getElementById('quarantine-source-filter'),
-            from: fromEl,
-            to: toEl
-        } });
+        _bindQuarURLState(fromEl, toEl);
         // Bind restore and view buttons after DOM insertion
         el.querySelectorAll('.restore-btn').forEach(function(btn) {
             btn.addEventListener('click', function() { restoreFile(this.getAttribute('data-id')); });

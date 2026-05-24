@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Quarantine page filters now keep search scoped to file paths, clear stale dropdowns after the list empties, and use calendar-day date bounds so local DST changes do not hide rows.
 - Quarantine bulk actions now reset after a list refresh, so select-all and the action buttons do not point at stale rows.
 - URL-bound web UI search inputs now clear stale saved table filters when a shared link has no search query, and they reapply state after browser history navigation.
 - Shared Web UI table sorting now reorders rows before paginating, so sorted pages display in the requested order.
