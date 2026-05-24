@@ -26,6 +26,7 @@
 
     function byId(id) { return document.getElementById(id); }
     function clearNode(el) { while (el && el.firstChild) el.removeChild(el.firstChild); }
+    function hasURLState() { return typeof CSM !== "undefined" && CSM.urlState; }
 
     function iconEl(name, extraClass) {
         const i = document.createElement("i");
@@ -43,6 +44,27 @@
 
     function toast(msg, type) {
         if (window.CSM && CSM.toast) { CSM.toast(msg, type || "info"); }
+    }
+
+    function sectionHref(id) {
+        const url = new URL(window.location);
+        url.searchParams.set("section", id);
+        url.hash = "";
+        return url.pathname + url.search;
+    }
+
+    function updateSectionURL(id, mode) {
+        if (mode === "none") return;
+        if (hasURLState()) {
+            const opts = {clearHash: true};
+            if (mode === "push" && CSM.urlState.push) {
+                CSM.urlState.push({section: id}, opts);
+            } else {
+                CSM.urlState.set({section: id}, opts);
+            }
+            return;
+        }
+        window.location.hash = "#" + id;
     }
 
     // ---- Section list ----------------------------------------------------
@@ -69,7 +91,7 @@
             inGroup.forEach(function (s) {
                 const item = document.createElement("a");
                 item.className = "settings-nav-link";
-                item.href = "#" + s.id;
+                item.href = sectionHref(s.id);
                 item.dataset.section = s.id;
                 item.dataset.search = sectionSearchText(s);
                 item.appendChild(iconEl("ti-" + s.icon));
@@ -84,7 +106,7 @@
                 item.addEventListener("click", function (ev) {
                     ev.preventDefault();
                     if (!confirmLeaveIfDirty()) return;
-                    loadSection(s.id);
+                    loadSection(s.id, {urlMode: "push"});
                 });
                 nav.appendChild(item);
             });
@@ -230,17 +252,10 @@
     }
 
     // ---- Section loader --------------------------------------------------
-    async function loadSection(id) {
+    async function loadSection(id, opts) {
+        opts = opts || {};
         setActiveNav(id);
-        // WEB_ROADMAP P3.8: settings nav now uses ?section= so
-        // bookmarks + external links land on the right section without
-        // a reload. CSM.urlState writes the param and leaves any other
-        // existing query keys untouched.
-        if (typeof CSM !== "undefined" && CSM.urlState) {
-            CSM.urlState.set({section: id});
-        } else {
-            window.location.hash = "#" + id;
-        }
+        updateSectionURL(id, opts.urlMode || "replace");
 
         const panel = byId("settings-panel");
         clearNode(panel);
@@ -383,7 +398,7 @@
         btnReset.addEventListener("click", function () {
             if (!dirty) return;
             if (!confirmLeaveIfDirty()) return;
-            loadSection(currentSection);
+            loadSection(currentSection, {urlMode: "replace"});
         });
         footer.appendChild(btn);
         if (currentSection === "firewall") {
@@ -889,7 +904,7 @@
         btn.disabled = false;
         if (resp.status === 412) {
             toast("Config changed externally; reloading…", "warning");
-            loadSection(currentSection);
+            loadSection(currentSection, {urlMode: "replace"});
             return;
         }
         if (resp.status === 422) {
@@ -911,7 +926,7 @@
         } else {
             toast("Saved. Applied live.", "success");
         }
-        loadSection(currentSection);
+        loadSection(currentSection, {urlMode: "replace"});
     }
 
     // ---- Restart banner --------------------------------------------------
@@ -1183,22 +1198,32 @@
             renderNav();
             const search = byId("settings-search");
             if (search) filterNav(search.value);
-            // Read the requested section: ?section= wins (P3.8), then
-            // legacy #hash for old bookmarks, then the first section.
-            const qsSection = (typeof CSM !== "undefined" && CSM.urlState) ? CSM.urlState.get("section") : "";
+            // Query-string sections win over legacy hash bookmarks.
+            const qsSection = hasURLState() ? CSM.urlState.get("section") : "";
             const hash = window.location.hash.replace(/^#/, "");
             const first = sections.length > 0 ? sections[0].id : "alerts";
             function isKnown(id) { return id && sections.some(function (s) { return s.id === id; }); }
+            function requestedSection() {
+                const nextQSSection = hasURLState() ? CSM.urlState.get("section") : "";
+                const nextHash = window.location.hash.replace(/^#/, "");
+                return isKnown(nextQSSection) ? nextQSSection
+                    : (isKnown(nextHash) ? nextHash : first);
+            }
             const target = isKnown(qsSection) ? qsSection
                 : (isKnown(hash) ? hash : first);
-            loadSection(target);
+            loadSection(target, {urlMode: "replace"});
             checkPendingRollbackOnLoad();
-            // Browser back/forward: pop the new ?section= into view
-            // without forcing a reload so unsaved fields aren't lost.
+            // Back/forward changes the visible section without a full page
+            // reload, but dirty fields still get the same discard prompt as
+            // sidebar navigation.
             window.addEventListener("popstate", function () {
-                const next = (typeof CSM !== "undefined" && CSM.urlState) ? CSM.urlState.get("section") : "";
-                if (isKnown(next) && next !== currentSection) {
-                    loadSection(next);
+                const next = requestedSection();
+                if (next && next !== currentSection) {
+                    if (!confirmLeaveIfDirty()) {
+                        updateSectionURL(currentSection, "push");
+                        return;
+                    }
+                    loadSection(next, {urlMode: "none"});
                 }
             });
         }).catch(function (e) {

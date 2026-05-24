@@ -888,7 +888,7 @@ func TestFirewallPageSplitIntoSubviews(t *testing.T) {
 		`id="lookup-form"`,
 		`id="lookup-result"`,
 		`class="csm-danger-zone`,
-		`href="/settings#firewall"`,
+		`href="/settings?section=firewall"`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("firewall.html missing phase-5 hook %q", want)
@@ -1758,7 +1758,7 @@ func TestCSRFEnforcedAtRuntime(t *testing.T) {
 }
 
 // TestURLStateHelperExposesP21Surface pins WEB_ROADMAP P2.1: CSM.urlState
-// must expose get, getAll, set, clear, replace, subscribe, and bind so
+// must expose get, getAll, set, push, clear, replace, subscribe, and bind so
 // page scripts can persist filter state to the URL declaratively. The
 // per-input bind is the new affordance: pages call CSM.urlState.bind to
 // wire a search / select to a query string key without writing custom
@@ -1772,9 +1772,10 @@ func TestURLStateHelperExposesP21Surface(t *testing.T) {
 	for _, fragment := range []string{
 		`get: function(key) {`,
 		`getAll: function() {`,
-		`set: function(params) {`,
-		`clear: function(keys) {`,
-		`replace: function(params) {`,
+		`set: function(params, opts) {`,
+		`push: function(params, opts) {`,
+		`clear: function(keys, opts) {`,
+		`replace: function(params, opts) {`,
 		`subscribe: function(fn) {`,
 		`bind: function(opts) {`,
 		`window.addEventListener('popstate', handler);`,
@@ -2590,14 +2591,23 @@ func TestSettingsPageUsesQueryStringDeepLink(t *testing.T) {
 	}
 	text := string(src)
 	for _, fragment := range []string{
-		`CSM.urlState.set({section: id});`,
+		`item.href = sectionHref(s.id);`,
+		`loadSection(s.id, {urlMode: "push"});`,
+		`CSM.urlState.push({section: id}, opts);`,
+		`CSM.urlState.set({section: id}, opts);`,
 		`CSM.urlState.get("section")`,
-		`isKnown(qsSection) ? qsSection`,
+		`url.hash = "";`,
+		`loadSection(target, {urlMode: "replace"});`,
+		`loadSection(next, {urlMode: "none"});`,
+		`if (!confirmLeaveIfDirty()) {`,
 		`window.addEventListener("popstate", function () {`,
 	} {
 		if !strings.Contains(text, fragment) {
 			t.Fatalf("settings.js missing P3.8 fragment %q", fragment)
 		}
+	}
+	if strings.Contains(text, `item.href = "#" + s.id;`) {
+		t.Fatal("settings.js still renders hash-only section links; use ?section=")
 	}
 	// loadSection() must no longer unconditionally write to
 	// window.location.hash; the legacy assignment lives only in the

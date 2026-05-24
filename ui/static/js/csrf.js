@@ -662,12 +662,12 @@ CSM.exportTable = function(data, columns, format, filename) {
 // URL state helpers. Convention:
 //   - Query string carries filter / search / paging state so the
 //     browser back/forward stack and bookmarks survive reloads.
-//   - Hash fragment carries in-page anchors only (settings section,
-//     incident id, expanded row id).
+//   - Hash fragment carries legacy in-page anchors only (incident id,
+//     expanded row id).
 //
 // Pages that need to persist filter state call CSM.urlState.bind to
 // wire one or more inputs declaratively; ad-hoc callers use get / set
-// / replace / clear / subscribe.
+// / push / replace / clear / subscribe.
 CSM.urlState = (function() {
     function hasURLValue(value) {
         return value !== undefined && value !== null && String(value) !== '';
@@ -690,6 +690,18 @@ CSM.urlState = (function() {
         if (own(defaults, name)) return defaults[name] == null ? '' : String(defaults[name]);
         return '';
     }
+    function clearHashIfRequested(url, opts) {
+        if (opts && opts.clearHash) url.hash = '';
+    }
+    function writeParams(params, push, opts) {
+        var url = new URL(window.location);
+        Object.keys(params || {}).forEach(function(k) {
+            setParam(url, k, params[k]);
+        });
+        clearHashIfRequested(url, opts);
+        if (push) history.pushState(null, '', url);
+        else history.replaceState(null, '', url);
+    }
 
     return {
         get: function(key) {
@@ -702,19 +714,19 @@ CSM.urlState = (function() {
             });
             return out;
         },
-        set: function(params) {
-            var url = new URL(window.location);
-            Object.keys(params || {}).forEach(function(k) {
-                setParam(url, k, params[k]);
-            });
-            history.replaceState(null, '', url);
+        set: function(params, opts) {
+            writeParams(params, false, opts);
         },
-        clear: function(keys) {
+        push: function(params, opts) {
+            writeParams(params, true, opts);
+        },
+        clear: function(keys, opts) {
             var url = new URL(window.location);
             (keys || []).forEach(function(k) { url.searchParams.delete(k); });
+            clearHashIfRequested(url, opts);
             history.replaceState(null, '', url);
         },
-        replace: function(params) {
+        replace: function(params, opts) {
             var url = new URL(window.location);
             Array.from(url.searchParams.keys()).forEach(function(k) {
                 url.searchParams.delete(k);
@@ -722,6 +734,7 @@ CSM.urlState = (function() {
             Object.keys(params || {}).forEach(function(k) {
                 setParam(url, k, params[k]);
             });
+            clearHashIfRequested(url, opts);
             history.replaceState(null, '', url);
         },
         // subscribe(fn) calls fn(getAll()) on popstate (back/forward) so the
