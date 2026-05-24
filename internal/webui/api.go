@@ -354,8 +354,8 @@ func (s *Server) apiHistory(w http.ResponseWriter, r *http.Request) {
 	// cap is reached the response carries truncated=true so the UI can
 	// surface a "showing X most recent matches" hint instead of silently
 	// pretending the older rows don't exist.
-	allFindings, _ := s.store.ReadHistory(historyFilterScanCap, 0)
-	historyTruncated := len(allFindings) >= historyFilterScanCap
+	allFindings, historyTotal := s.store.ReadHistory(historyFilterScanCap, 0)
+	historyTruncated := historyTotal > len(allFindings)
 	var filtered []alert.Finding
 	for _, f := range allFindings {
 		if !fromDate.IsZero() && f.Timestamp.Before(fromDate) {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -133,5 +134,64 @@ func TestAPIIncidentSearchHonorsCutoff(t *testing.T) {
 	}
 	if resp.Total != 0 {
 		t.Fatalf("hours=1 returned %d events for a 48h-old event; want 0", resp.Total)
+	}
+}
+
+func TestAPIIncidentSearchReportsSnapshotCap(t *testing.T) {
+	srv := newTestServer(t, "tok")
+	c := incident.NewCorrelator(incident.CorrelatorConfig{OpenThreshold: 1})
+	base := time.Now().Add(-time.Hour)
+	incidents := make([]incident.Incident, 0, incidentSnapshotScanCap+1)
+	queryIP := ""
+	for i := 0; i < incidentSnapshotScanCap+1; i++ {
+		suffix := strconv.Itoa(i)
+		account := "acct-cap-" + suffix
+		ip := "192.0.2." + suffix
+		at := base.Add(time.Duration(i) * time.Second)
+		if i == incidentSnapshotScanCap {
+			queryIP = ip
+		}
+		incidents = append(incidents, incident.Incident{
+			ID:             "inc-cap-" + suffix,
+			Kind:           incident.KindMailboxTakeover,
+			Status:         incident.StatusOpen,
+			Severity:       alert.High,
+			Account:        account,
+			CorrelationKey: &incident.Key{Account: account},
+			CreatedAt:      at,
+			UpdatedAt:      at,
+			Timeline: []incident.IncidentEvent{{
+				Time:     at,
+				Check:    "email_auth_failure_realtime",
+				Message:  "failure from " + ip,
+				RemoteIP: ip,
+			}},
+		})
+	}
+	c.Restore(incidents)
+	srv.incidentCorrelator = c
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/incident?ip="+queryIP+"&hours=24", nil)
+	w := httptest.NewRecorder()
+	srv.apiIncident(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("X-CSM-Truncated"); got != "1" {
+		t.Fatalf("X-CSM-Truncated = %q, want 1 when incident snapshot scan cap is hit", got)
+	}
+	var resp struct {
+		Events    []timelineEvent `json:"events"`
+		Total     int             `json:"total"`
+		Truncated bool            `json:"truncated"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.Truncated {
+		t.Fatal("truncated = false, want true when incident snapshot scan cap is hit")
+	}
+	if resp.Total == 0 || len(resp.Events) == 0 {
+		t.Fatalf("query IP from capped page returned no events: %s", w.Body.String())
 	}
 }

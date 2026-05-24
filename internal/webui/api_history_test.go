@@ -181,6 +181,43 @@ func TestAPIHistoryLargeLimit(t *testing.T) {
 	}
 }
 
+func TestAPIHistoryFilteredExactScanCapIsNotMarkedTruncated(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	base := time.Now().Add(-time.Hour)
+	findings := make([]alert.Finding, 0, historyFilterScanCap)
+	for i := 0; i < historyFilterScanCap; i++ {
+		findings = append(findings, alert.Finding{
+			Severity:  alert.Warning,
+			Check:     "scan_cap_exact",
+			Message:   "cap-row",
+			Timestamp: base.Add(time.Duration(i) * time.Millisecond),
+		})
+	}
+	s.store.AppendHistory(findings)
+
+	w := httptest.NewRecorder()
+	s.apiHistory(w, httptest.NewRequest("GET", "/?search=cap-row&limit=1", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("X-CSM-Truncated"); got != "" {
+		t.Fatalf("X-CSM-Truncated = %q, want unset when history count exactly equals scan cap", got)
+	}
+	var resp struct {
+		Total     int  `json:"total"`
+		Truncated bool `json:"truncated"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Total != historyFilterScanCap {
+		t.Fatalf("total = %d, want %d", resp.Total, historyFilterScanCap)
+	}
+	if resp.Truncated {
+		t.Fatal("truncated = true, want false when no rows were omitted")
+	}
+}
+
 func TestAPIBlockedIPsWithBbolt(t *testing.T) {
 	s := newTestServerWithBbolt(t, "tok")
 	sdb := store.Global()

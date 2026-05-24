@@ -216,3 +216,25 @@ func TestModSecBlocksReadScopeAccess(t *testing.T) {
 		t.Errorf("response body missing seeded IP: %s", w.Body.String())
 	}
 }
+
+func TestModSecBlocksReportsHistoryScanTruncation(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	sdb := store.Global()
+	now := time.Now().Add(-time.Minute)
+	findings := make([]alert.Finding, 0, modsecFindingsScanCap+1)
+	for i := 0; i < modsecFindingsScanCap+1; i++ {
+		findings = append(findings, modsecBlock("198.51.100.99", "site.test", "/wp-login.php", "900113", now))
+	}
+	if err := sdb.AppendHistory(findings); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	s.apiModSecBlocks(w, httptest.NewRequest(http.MethodGet, "/api/v1/modsec/blocks", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("X-CSM-Truncated"); got != "1" {
+		t.Fatalf("X-CSM-Truncated = %q, want 1 when ModSec history scan cap is hit", got)
+	}
+}

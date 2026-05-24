@@ -1548,12 +1548,13 @@ func TestMemoryBoundedHandlersPinCaps(t *testing.T) {
 		fragment string
 	}{
 		{"../../internal/webui/api.go", "const historyFilterScanCap = 5000"},
-		{"../../internal/webui/api.go", "historyTruncated := len(allFindings) >= historyFilterScanCap"},
+		{"../../internal/webui/api.go", "historyTruncated := historyTotal > len(allFindings)"},
 		{"../../internal/webui/api.go", `w.Header().Set("X-CSM-Truncated", "1")`},
 		{"../../internal/webui/incident_api.go", "const incidentSnapshotScanCap = 1000"},
-		{"../../internal/webui/incident_api.go", "snap = snap[:incidentSnapshotScanCap]"},
+		{"../../internal/webui/incident_api.go", "SnapshotPageStatuses(nil, 0, incidentSnapshotScanCap)"},
 		{"../../internal/webui/incident_api.go", `w.Header().Set("X-CSM-Truncated", "1")`},
-		{"../../internal/webui/modsec_api.go", "const modsecBlocksMaxAggregates = 50000"},
+		{"../../internal/webui/modsec_api.go", "modsecFindingsScanCap = 10000"},
+		{"../../internal/webui/modsec_api.go", "modsecBlocksMaxAggregates = 50000"},
 		{"../../internal/webui/modsec_api.go", "if len(byBlock) >= modsecBlocksMaxAggregates {"},
 		{"../../internal/webui/modsec_api.go", `w.Header().Set("X-CSM-Truncated", "1")`},
 	} {

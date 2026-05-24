@@ -98,18 +98,27 @@ func (s *Server) apiModSecStats(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-// modsecBlocksMaxAggregates caps the IP+rule aggregation map so a host
-// with millions of unique ModSec rule hits cannot OOM the daemon by
-// asking for /api/v1/modsec/blocks. Existing aggregates keep updating
-// after the cap is reached; new IP+rule keys past the cap are dropped
-// silently with the X-CSM-Truncated response header set so monitoring
-// can flag the condition. Default sized for ~50 MB peak: 50000 entries
-// times a few hundred bytes per aggregate.
-const modsecBlocksMaxAggregates = 50000
+const (
+	// modsecFindingsScanCap bounds the 24h history read before per-IP
+	// aggregation starts. The aggregate map has its own cap below, but
+	// the handler still needs a findings cap for hosts seeing one or two
+	// hot IP+rule pairs millions of times.
+	modsecFindingsScanCap = 10000
+
+	// modsecBlocksMaxAggregates caps the IP+rule aggregation map so a host
+	// with millions of unique ModSec rule hits cannot OOM the daemon by
+	// asking for /api/v1/modsec/blocks. Existing aggregates keep updating
+	// after the cap is reached; new IP+rule keys past the cap are dropped
+	// silently with the X-CSM-Truncated response header set so monitoring
+	// can flag the condition. Default sized for ~50 MB peak: 50000 entries
+	// times a few hundred bytes per aggregate.
+	modsecBlocksMaxAggregates = 50000
+)
 
 // apiModSecBlocks returns aggregated blocks per IP+rule for the last 24h.
 func (s *Server) apiModSecBlocks(w http.ResponseWriter, _ *http.Request) {
-	findings := deduplicateModSecFindings(s.modsecFindings24h())
+	findings, truncated := s.modsecFindings24hWithTruncation()
+	findings = deduplicateModSecFindings(findings)
 
 	type blockAgg struct {
 		ip          string
@@ -126,7 +135,6 @@ func (s *Server) apiModSecBlocks(w http.ResponseWriter, _ *http.Request) {
 
 	byBlock := make(map[string]*blockAgg)
 	escalatedIPs := make(map[string]bool)
-	truncated := false
 
 	blockKey := func(ip, rule string) string {
 		return ip + "\x00" + rule
@@ -361,24 +369,24 @@ func isModSecEscalation(check string) bool {
 
 // modsecFindings24h returns all modsec findings from the last 24 hours.
 func (s *Server) modsecFindings24h() []alert.Finding {
+	findings, _ := s.modsecFindings24hWithTruncation()
+	return findings
+}
+
+func (s *Server) modsecFindings24hWithTruncation() ([]alert.Finding, bool) {
 	db := store.Global()
 	if db == nil {
-		return nil
+		return nil, false
 	}
 
-	// ReadHistoryFiltered expects "YYYY-MM-DD" for the from parameter.
-	// Use yesterday's date to ensure we cover the full 24h window.
 	cutoff := time.Now().Add(-24 * time.Hour)
-	all, _ := db.ReadHistoryFiltered(10000, 0, cutoff.Format("2006-01-02"), "", -1, "modsec_")
-
-	// Further filter to exact 24h window (from prefix is date-level granularity)
-	var filtered []alert.Finding
-	for _, f := range all {
-		if f.Timestamp.After(cutoff) {
-			filtered = append(filtered, f)
-		}
+	findings := db.SearchHistorySince(cutoff, modsecFindingsScanCap+1, func(f alert.Finding) bool {
+		return strings.HasPrefix(f.Check, "modsec_")
+	})
+	if len(findings) > modsecFindingsScanCap {
+		return findings[:modsecFindingsScanCap], true
 	}
-	return filtered
+	return findings, false
 }
 
 // --- Field extraction from finding Details ---

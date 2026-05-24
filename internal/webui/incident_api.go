@@ -113,11 +113,8 @@ func (s *Server) apiIncident(w http.ResponseWriter, r *http.Request) {
 	// Domain for account queries, and emit each matching timeline event.
 	truncated := false
 	if s.incidentCorrelator != nil {
-		snap := s.incidentCorrelator.Snapshot()
-		if len(snap) > incidentSnapshotScanCap {
-			snap = snap[:incidentSnapshotScanCap]
-			truncated = true
-		}
+		snap, totalIncidents := s.incidentCorrelator.SnapshotPageStatuses(nil, 0, incidentSnapshotScanCap)
+		truncated = totalIncidents > len(snap)
 		for _, inc := range snap {
 			incMatches := incidentMatchesAccount(inc, account)
 			for _, ev := range inc.Timeline {
