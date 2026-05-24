@@ -246,7 +246,7 @@ document.getElementById('lookup-form').addEventListener('submit',function(e){
             var rec=intel.attack_record;
             html+='<tr><td class="text-muted">Events</td><td>'+rec.event_count+'</td></tr>';
             html+='<tr><td class="text-muted">Attack Types</td><td>'+typeBadges(rec.attack_counts)+'</td></tr>';
-            html+='<tr><td class="text-muted">Accounts Targeted</td><td>'+(rec.accounts?Object.keys(rec.accounts).join(', '):'-')+'</td></tr>';
+            html+='<tr><td class="text-muted">Accounts Targeted</td><td>'+(rec.accounts?Object.keys(rec.accounts).map(CSM.esc).join(', '):'-')+'</td></tr>';
             html+='<tr><td class="text-muted">First Seen</td><td>'+fmtDate(rec.first_seen)+'</td></tr>';
             html+='<tr><td class="text-muted">Last Seen</td><td>'+fmtDate(rec.last_seen)+'</td></tr>';
         }

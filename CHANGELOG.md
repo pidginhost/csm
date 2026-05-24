@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Threat intelligence IP lookup now escapes account names before listing them in the "Accounts Targeted" cell, and the shared country-flag helper validates its input before reaching String.fromCodePoint. Regression tests pin both fixes.
 - Web UI error toasts shown by the global request helpers, the email release / delete actions, and the hardening audit error path now render with the danger styling. They were previously passing an unrecognized type string and falling back to the info color, hiding their severity.
 - Rules page suppression list now formats the created-at timestamp through the shared `CSM.fmtDate` helper so the format matches every other timestamp in the UI.
 - Shared Web UI number and percent formatters now leave missing values blank instead of displaying them as zero.

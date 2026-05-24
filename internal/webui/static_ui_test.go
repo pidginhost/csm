@@ -1108,3 +1108,128 @@ func TestSettingsIntArraySubmitsRawTokens(t *testing.T) {
 		t.Fatal("settings.js should keep malformed []int tokens for backend validation")
 	}
 }
+
+// TestThreatAccountListEscapesAccountNames pins WEB_ROADMAP P1.1: the
+// "Accounts Targeted" cell in the IP lookup card joined account names raw
+// into the table HTML. Account identifiers can contain "<" / ">" / "&" once
+// custom-username modules are enabled, opening a stored XSS on whoever
+// opens that detail card.
+func TestThreatAccountListEscapesAccountNames(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/threat.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	if strings.Contains(text, "Object.keys(rec.accounts).join(") {
+		t.Fatal("threat.js still joins account names without CSM.esc; XSS regression")
+	}
+	if !strings.Contains(text, "Object.keys(rec.accounts).map(CSM.esc).join(") {
+		t.Fatal("threat.js must escape every account name before joining for the IP lookup card")
+	}
+}
+
+// TestCountryFlagRejectsMalformedInput pins WEB_ROADMAP P1.1: the unbounded
+// String.fromCodePoint.apply path could throw RangeError on non-2-char
+// input or smuggle non-regional-indicator code points into the document.
+// The hardened version validates ASCII letters before reaching
+// fromCodePoint.
+func TestCountryFlagRejectsMalformedInput(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/csm-ui.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	if strings.Contains(text, "String.fromCodePoint.apply(null,") {
+		t.Fatal("csm-ui.js still uses fromCodePoint.apply; switch to validated direct call")
+	}
+	for _, fragment := range []string{
+		`if (typeof code !== 'string' || code.length !== 2) return '';`,
+		`if (a < 65 || a > 90 || b < 65 || b > 90) return '';`,
+		`return String.fromCodePoint(127397 + a, 127397 + b);`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Fatalf("csm-ui.js missing countryFlag guard fragment %q", fragment)
+		}
+	}
+}
+
+// TestNoRawObjectInterpolationInDOMWrites pins WEB_ROADMAP P1.1: each line
+// that writes raw HTML to a DOM node must wrap interpolated object fields
+// in CSM.esc / CSM.attr / CSM.fmtDate / CSM.timeAgo / CSM.formatSize /
+// CSM.formatNumber / CSM.formatPercent / CSM.countryFlag, or use a
+// pre-built helper (statusBadgeHTML, formatExpiresBadge, ...) that does
+// its own escaping. Numeric primitives (count / size / length suffixes)
+// are allowed because the API contracts type them as numbers.
+//
+// The regex is intentionally narrow: it catches "<literal>" + ident.field
+// + "<literal>" patterns that immediately surround the interpolation with
+// HTML. Multi-step builds where the field is first formatted into a local
+// variable get past this lint by design; those cases are caught by the
+// per-page tests above.
+func TestNoRawObjectInterpolationInDOMWrites(t *testing.T) {
+	files := webUISourceFiles(t, "../../ui/static/js/*.js")
+	risky := regexp.MustCompile(`\+\s*([a-zA-Z_]\w*\.[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*)\s*\+`)
+	allowedWrappers := []string{
+		"CSM.esc(", "CSM.attr(", "CSM.fmtDate(", "CSM.timeAgo(",
+		"CSM.formatSize(", "CSM.formatNumber(", "CSM.formatPercent(",
+		"CSM.countryFlag(", "encodeURIComponent(", "String(",
+		"parseInt(", "parseFloat(", "Number(",
+	}
+	numericSuffixes := []string{
+		".length", ".size", ".count", ".total", ".hits", ".event_count",
+		".unique_ips", ".blocked_count", ".port_allow_count",
+		".allowed_count", ".infra_count", ".port_flood_rules",
+		".conn_limit", ".conn_rate_limit", ".deny_ip_limit",
+		".blocked_temporary", ".blocked_permanent", ".allow_temporary",
+		".blocked_net_count", ".body_bytes", ".total_size",
+		".critical_count", ".high_count", ".warning_count",
+		".local_score", ".unified_score", ".abuse_score", ".asn",
+		".domain_count", ".succeeded", ".failed",
+	}
+	domToken := regexp.MustCompile(`\.(innerHTML|outerHTML)\s*=`)
+	isAllowed := func(line string) bool {
+		for _, m := range risky.FindAllStringSubmatch(line, -1) {
+			field := m[1]
+			ok := false
+			for _, suf := range numericSuffixes {
+				if strings.HasSuffix(field, suf) {
+					ok = true
+					break
+				}
+			}
+			if ok {
+				continue
+			}
+			wrapped := false
+			for _, w := range allowedWrappers {
+				if strings.Contains(line, w+field) {
+					wrapped = true
+					break
+				}
+			}
+			if !wrapped {
+				return false
+			}
+		}
+		return true
+	}
+	for _, path := range files {
+		src, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		for i, line := range strings.Split(string(src), "\n") {
+			if !domToken.MatchString(line) {
+				continue
+			}
+			if !risky.MatchString(line) {
+				continue
+			}
+			if isAllowed(line) {
+				continue
+			}
+			t.Errorf("%s:%d: DOM write interpolates a field without CSM.esc/CSM.attr/known formatter: %s",
+				path, i+1, strings.TrimSpace(line))
+		}
+	}
+}

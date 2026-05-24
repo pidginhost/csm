@@ -37,10 +37,16 @@ CSM.emptyState = function(message, colspan) {
     return '<div class="text-muted text-center py-3">' + CSM.esc(message) + '</div>';
 };
 
-// Country flag emoji from 2-letter ISO code (e.g. "US" → 🇺🇸)
+// Country flag emoji from 2-letter ISO code (e.g. "US" → 🇺🇸).
+// Returns '' for anything other than two ASCII letters so a malformed
+// payload from the API cannot throw RangeError out of String.fromCodePoint
+// or smuggle surrogate code points into the regional-indicator range.
 CSM.countryFlag = function(code) {
-    if (!code || code.length !== 2) return '';
-    return String.fromCodePoint.apply(null, [].map.call(code.toUpperCase(), function(c) { return 127397 + c.charCodeAt(0); }));
+    if (typeof code !== 'string' || code.length !== 2) return '';
+    var up = code.toUpperCase();
+    var a = up.charCodeAt(0), b = up.charCodeAt(1);
+    if (a < 65 || a > 90 || b < 65 || b > 90) return '';
+    return String.fromCodePoint(127397 + a, 127397 + b);
 };
 
 // Make a non-table element keyboard-accessible (tabindex + Enter/Space activation)
