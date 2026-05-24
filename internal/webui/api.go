@@ -1395,12 +1395,17 @@ func parseModeString(s string) os.FileMode {
 }
 
 // flushCphulk removes brute-force login history for an IP from cPanel's cphulk.
-// Callers must pre-validate `ip` with parseAndValidateIP before invoking.
+// Callers should pre-validate `ip` with parseAndValidateIP. This function
+// re-validates as defense-in-depth so a future caller that forgets cannot
+// expose a shell-execution surface even if exec.Command itself does not
+// invoke a shell.
 func flushCphulk(ip string) {
-	// #nosec G204 -- whmapi1 hardcoded; `ip` is pre-validated with
-	// parseAndValidateIP in every caller (firewall_api.go, threat_api.go).
-	// exec.Command passes args directly to execve without shell
-	// interpolation, so no shell-meta risk even if validation slipped.
+	if _, err := parseAndValidateIP(ip); err != nil {
+		return
+	}
+	// #nosec G204 -- whmapi1 hardcoded; `ip` is validated above with
+	// parseAndValidateIP. exec.Command passes args directly to execve
+	// without shell interpolation, so no shell-meta risk either way.
 	_, _ = exec.Command("whmapi1", "flush_cphulk_login_history_for_ips", "ip="+ip).Output()
 }
 

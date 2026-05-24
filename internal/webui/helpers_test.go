@@ -3,11 +3,15 @@ package webui
 import (
 	"encoding/json"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pidginhost/csm/internal/emailav"
 )
 
 func TestSafeLogStringQuotesControlBytes(t *testing.T) {
@@ -684,5 +688,117 @@ func TestJSONForScript_FailsSafeOnMarshalError(t *testing.T) {
 	got := string(jsonForScript(make(chan int)))
 	if got != "null" {
 		t.Errorf("marshal-error fallback = %q, want %q", got, "null")
+	}
+}
+
+func TestValidateEximMessageIDRejectsTraversal(t *testing.T) {
+	for _, bad := range []string{
+		"",
+		"..",
+		"../etc",
+		"foo/bar",
+		"foo\\bar",
+		"foo.bar",
+		"a/b",
+		"foo\x00bar",
+		"too-long-1234567890123456789012345",
+		"weird;rm",
+	} {
+		if err := validateEximMessageID(bad); err == nil {
+			t.Errorf("validateEximMessageID(%q) = nil, want error", bad)
+		}
+	}
+	for _, ok := range []string{
+		"abc",
+		"1tBzCo-0007Lc-Vx",
+		"AaZz09-AaZz09-12",
+		"testmsg123",
+	} {
+		if err := validateEximMessageID(ok); err != nil {
+			t.Errorf("validateEximMessageID(%q) = %v, want nil", ok, err)
+		}
+	}
+}
+
+func TestMustBeWithinRejectsEscapes(t *testing.T) {
+	root := t.TempDir()
+	if _, err := mustBeWithin(root, "foo/bar"); err != nil {
+		t.Errorf("plain subpath rejected: %v", err)
+	}
+	if _, err := mustBeWithin(root, "../etc/passwd"); err == nil {
+		t.Error("traversal escape accepted")
+	}
+	if _, err := mustBeWithin(root, "foo/../../etc"); err == nil {
+		t.Error("embedded traversal accepted")
+	}
+	// filepath.Join treats absolute candidates as relative (strips the
+	// leading "/"), so "/etc/passwd" lands at root/etc/passwd. The
+	// helper still returns the joined path because the prefix check
+	// holds; the security guarantee is that no candidate can resolve
+	// outside root, not that absolute candidates are rejected.
+	if _, err := mustBeWithin(root, "/etc/passwd"); err != nil {
+		t.Errorf("absolute-style candidate rejected: %v", err)
+	}
+	if _, err := mustBeWithin(root, "."); err != nil {
+		t.Errorf("root itself rejected: %v", err)
+	}
+}
+
+func TestEmailQuarantineActionRejectsTraversalMessageID(t *testing.T) {
+	s := newTestServer(t, "tok")
+	dir := t.TempDir()
+	s.emailQuarantine = emailav.NewQuarantine(dir)
+
+	for _, bad := range []string{
+		"..",
+		"foo.bar",
+		"foo%00bar",
+		"weird;rm",
+	} {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest("DELETE", "/api/v1/email/quarantine/"+bad, nil)
+		s.apiEmailQuarantineAction(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("DELETE %q = %d, want 400", bad, w.Code)
+		}
+	}
+}
+
+func TestSessionCookieFlagsHardened(t *testing.T) {
+	src, err := os.ReadFile("../../internal/webui/server.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, fragment := range []string{
+		`Name:     "csm_auth"`,
+		`HttpOnly: true`,
+		`Secure:   true`,
+		`SameSite: http.SameSiteStrictMode`,
+	} {
+		// Each fragment must appear at least twice: once in login set,
+		// once in logout clear. The test reads the raw source so any
+		// future refactor that drops one of the flags is caught.
+		count := strings.Count(text, fragment)
+		if count < 2 {
+			t.Errorf("session cookie missing hardened flag %q (found %d / want >= 2)", fragment, count)
+		}
+	}
+}
+
+func TestFlushCphulkRevalidatesIP(t *testing.T) {
+	src, err := os.ReadFile("../../internal/webui/api.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, fragment := range []string{
+		"func flushCphulk(ip string) {",
+		`if _, err := parseAndValidateIP(ip); err != nil {`,
+		`return`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Errorf("flushCphulk missing defense-in-depth fragment %q", fragment)
+		}
 	}
 }

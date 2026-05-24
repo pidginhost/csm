@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Web UI history, incident timeline, and ModSecurity blocks endpoints now cap how much they keep in memory per request and report `X-CSM-Truncated` when the cap is reached, so a single request cannot exhaust the daemon on a busy host.
 - Web UI truncation warnings now reflect real capped results for history and ModSecurity block views, avoiding false warnings at the exact cap and missing warnings when an upstream scan cap is hit.
 - Web UI CSRF coverage is now pinned by runtime checks that exercise every mutating API route without a CSRF token and assert the request is rejected, so a future route addition without the guard cannot ship unnoticed.
+- Email quarantine release / delete now rejects malformed message ids (path traversal, dots, control chars) at the handler, and the cphulk flush helper re-validates its IP argument as defense-in-depth before exec.
 - Web UI error toasts shown by the global request helpers, the email release / delete actions, and the hardening audit error path now render with the danger styling. They were previously passing an unrecognized type string and falling back to the info color, hiding their severity.
 - Rules page suppression list now formats the created-at timestamp through the shared `CSM.fmtDate` helper so the format matches every other timestamp in the UI.
 - Shared Web UI number and percent formatters now leave missing values blank instead of displaying them as zero.

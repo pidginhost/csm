@@ -55,6 +55,64 @@ func decodeJSONBodyLimited(w http.ResponseWriter, r *http.Request, limit int64, 
 	return nil
 }
 
+// validateEximMessageID rejects message ids that would be unsafe to
+// interpolate into filesystem paths. Real Exim ids are of the form
+// `[a-zA-Z0-9]{6}-[a-zA-Z0-9]{6}-[a-zA-Z0-9]{2,3}`; the validator
+// accepts anything with the same character class so callers can use
+// shorter fixtures in tests while still blocking `..`, `/`, `\`, dots,
+// NUL bytes, and other shell / path-traversal metacharacters even if
+// the inner Quarantine layer's filepath.Base() guard regresses.
+func validateEximMessageID(id string) error {
+	if id == "" {
+		return fmt.Errorf("message id is required")
+	}
+	if len(id) > 32 {
+		return fmt.Errorf("message id too long (%d chars, max 32)", len(id))
+	}
+	for _, c := range id {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' {
+			return fmt.Errorf("message id contains invalid character: %q", c)
+		}
+	}
+	return nil
+}
+
+// mustBeWithin resolves candidate against root and reports whether the
+// result still lives inside root after symlink and `..` resolution.
+// Returns the cleaned absolute path on success. Defense-in-depth for any
+// handler that takes a user-supplied path fragment, joins it under a
+// trusted root, and hands the result to os.Remove / os.RemoveAll / etc.
+func mustBeWithin(root, candidate string) (string, error) {
+	if root == "" {
+		return "", fmt.Errorf("root is required")
+	}
+	absRoot, err := filepath.Abs(filepath.Clean(root))
+	if err != nil {
+		return "", fmt.Errorf("resolve root: %w", err)
+	}
+	// EvalSymlinks the root too so prefix comparison is apples-to-apples
+	// on macOS / containers where /tmp and /var are symlinks (otherwise a
+	// legitimate root-relative candidate would look like an escape).
+	if resolved, err := filepath.EvalSymlinks(absRoot); err == nil {
+		absRoot = resolved
+	}
+	joined := filepath.Join(absRoot, candidate)
+	abs, err := filepath.Abs(filepath.Clean(joined))
+	if err != nil {
+		return "", fmt.Errorf("resolve candidate: %w", err)
+	}
+	// EvalSymlinks may fail for paths that do not exist yet (creation
+	// paths). Fall back to the cleaned absolute path; the prefix check
+	// still catches `..` escapes.
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		abs = resolved
+	}
+	if abs != absRoot && !strings.HasPrefix(abs, absRoot+string(filepath.Separator)) {
+		return "", fmt.Errorf("path %q escapes root %q", candidate, absRoot)
+	}
+	return abs, nil
+}
+
 // validateAccountName checks that name is a valid cPanel account name:
 // 1-64 characters, alphanumeric and underscore only.
 func validateAccountName(name string) error {

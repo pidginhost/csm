@@ -121,14 +121,14 @@ func (s *Server) apiEmailQuarantineAction(w http.ResponseWriter, r *http.Request
 	}
 
 	parts := strings.SplitN(tail, "/", 2)
-	msgID := filepath.Base(parts[0]) // sanitize path traversal
+	msgID := filepath.Base(parts[0]) // strip any path components first
 	action := ""
 	if len(parts) == 2 {
 		action = parts[1]
 	}
 
-	if msgID == "" || msgID == "." {
-		writeJSONError(w, "Invalid message ID", http.StatusBadRequest)
+	if err := validateEximMessageID(msgID); err != nil {
+		writeJSONError(w, "Invalid message ID: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
