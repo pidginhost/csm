@@ -1808,6 +1808,24 @@ func TestURLStateBindKeepsQueryAuthoritative(t *testing.T) {
 	}
 }
 
+func TestURLStateBindUsesChangeForDateInputs(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/csrf.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, fragment := range []string{
+		`var type = String(el.type || '').toLowerCase();`,
+		`type === 'date'`,
+		`type === 'datetime-local'`,
+		`return 'change';`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Fatalf("csrf.js missing date input URL-state event fragment %q", fragment)
+		}
+	}
+}
+
 // TestAuditAndThreatPagesBindSearchToURLState pins WEB_ROADMAP P2.1: the
 // two pages that previously had zero URL state (audit, threat) now
 // persist their search input through CSM.urlState.bind so operators can
@@ -2214,16 +2232,31 @@ func TestAuditPageHasFilterPack(t *testing.T) {
 	for _, fragment := range []string{
 		`data-action="' + CSM.attr(e.action`,
 		`data-timestamp="' + CSM.attr(e.timestamp`,
+		`function populateAuditActionFilter(entries) {`,
+		`var current = CSM.urlState.get('action') || select.value || '';`,
+		`var opt = document.createElement('option');`,
+		`addOption(current);`,
+		`populateAuditActionFilter(entries);`,
+		`function auditURLInputs(fromInput, toInput) {`,
+		`CSM.urlState.bind({ inputs: auditURLInputs(_auditFromInput, _auditToInput) });`,
+		`function auditLocalDateMillis(value, endExclusive) {`,
+		`if (d.getFullYear() !== year || d.getMonth() !== month || d.getDate() !== day) return null;`,
+		`if (endExclusive) d.setDate(d.getDate() + 1);`,
+		`if (to !== null && ts >= to) return false;`,
 		`filters: [{ id: 'audit-action-filter', attr: 'data-action' }],`,
 		`rowFilter: _auditDateInRange`,
 		`function _auditDateInRange(row) {`,
+		`_auditTable.currentPage = 1;`,
 		`action: document.getElementById('audit-action-filter'),`,
-		`from: _auditFromInput,`,
-		`to: _auditToInput`,
+		`from: fromInput,`,
+		`to: toInput`,
 	} {
 		if !strings.Contains(jsText, fragment) {
 			t.Fatalf("audit.js missing P3.1 fragment %q", fragment)
 		}
+	}
+	if strings.Contains(jsText, `select.value = current`) {
+		t.Fatal("audit.js must let URL-state binding set the action select after CSM.Table listeners are installed")
 	}
 
 	table, err := os.ReadFile("../../ui/static/js/table.js")

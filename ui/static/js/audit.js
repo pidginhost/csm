@@ -11,13 +11,69 @@ var actionBadges = {
     temp_whitelist_ip: 'bg-purple'
 };
 
+function auditActionLabel(action) {
+    return String(action || '').replace(/[_-]+/g, ' ').replace(/\b\w/g, function(ch) {
+        return ch.toUpperCase();
+    });
+}
+
+function populateAuditActionFilter(entries) {
+    var select = document.getElementById('audit-action-filter');
+    if (!select) return;
+    var current = CSM.urlState.get('action') || select.value || '';
+    var seen = {};
+    for (var i = 0; i < select.options.length; i++) {
+        seen[select.options[i].value] = true;
+    }
+    function addOption(action) {
+        action = String(action || '');
+        if (!action || seen[action]) return;
+        seen[action] = true;
+        var opt = document.createElement('option');
+        opt.value = action;
+        opt.textContent = auditActionLabel(action);
+        select.appendChild(opt);
+    }
+    for (var j = 0; j < (entries || []).length; j++) {
+        addOption(entries[j].action);
+    }
+    addOption(current);
+}
+
+function auditURLInputs(fromInput, toInput) {
+    return {
+        q: document.getElementById('audit-search'),
+        action: document.getElementById('audit-action-filter'),
+        from: fromInput,
+        to: toInput
+    };
+}
+
+function auditLocalDateMillis(value, endExclusive) {
+    if (!value) return null;
+    var parts = String(value).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!parts) return null;
+    var year = Number(parts[1]);
+    var month = Number(parts[2]) - 1;
+    var day = Number(parts[3]);
+    var d = new Date(year, month, day);
+    if (isNaN(d.getTime())) return null;
+    if (d.getFullYear() !== year || d.getMonth() !== month || d.getDate() !== day) return null;
+    if (endExclusive) d.setDate(d.getDate() + 1);
+    return d.getTime();
+}
+
 function loadAudit() {
     CSM.get('/api/v1/audit').then(function(entries){
         var el = document.getElementById('audit-content');
+        var _auditFromInput = document.getElementById('audit-from');
+        var _auditToInput = document.getElementById('audit-to');
         // Update card title with count
         var title = document.querySelector('.card-title');
         if (title) title.innerHTML = '<i class="ti ti-clipboard-list"></i>&nbsp;Audit Log (' + (entries ? entries.length : 0) + ')';
         if (!entries || entries.length === 0) {
+            populateAuditActionFilter(entries);
+            CSM.urlState.bind({ inputs: auditURLInputs(_auditFromInput, _auditToInput) });
             el.innerHTML = '<div class="card-body text-center text-muted py-4"><i class="ti ti-clipboard-check"></i> No audit entries yet.</div>';
             return;
         }
@@ -35,21 +91,20 @@ function loadAudit() {
         }
         html += '</tbody></table></div>';
         el.innerHTML = html;
+        populateAuditActionFilter(entries);
         // WEB_ROADMAP P3.1: action dropdown and date-range inputs are
         // filtered via CSM.Table\'s filter array and a row-level
         // predicate respectively. Row markup carries data-action and
         // data-timestamp so both filters work without extra DOM lookups.
-        var _auditFromInput = document.getElementById('audit-from');
-        var _auditToInput = document.getElementById('audit-to');
         function _auditDateInRange(row) {
             var raw = row.getAttribute('data-timestamp') || '';
             if (!raw) return true;
             var ts = new Date(raw.replace(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})/, '$1T$2')).getTime();
             if (isNaN(ts)) return true;
-            var from = _auditFromInput && _auditFromInput.value ? new Date(_auditFromInput.value + 'T00:00:00').getTime() : null;
-            var to = _auditToInput && _auditToInput.value ? new Date(_auditToInput.value + 'T23:59:59').getTime() : null;
+            var from = _auditFromInput ? auditLocalDateMillis(_auditFromInput.value, false) : null;
+            var to = _auditToInput ? auditLocalDateMillis(_auditToInput.value, true) : null;
             if (from !== null && ts < from) return false;
-            if (to !== null && ts > to) return false;
+            if (to !== null && ts >= to) return false;
             return true;
         }
         var _auditTable = new CSM.Table({
@@ -64,18 +119,14 @@ function loadAudit() {
         });
         function _auditDateChange() {
             if (_auditTable && typeof _auditTable.applyFilters === 'function') {
+                _auditTable.currentPage = 1;
                 _auditTable.applyFilters();
             }
         }
         if (_auditFromInput) _auditFromInput.addEventListener('change', _auditDateChange);
         if (_auditToInput) _auditToInput.addEventListener('change', _auditDateChange);
         // WEB_ROADMAP P2.1: persist audit-search + filters to URL.
-        CSM.urlState.bind({ inputs: {
-            q: document.getElementById('audit-search'),
-            action: document.getElementById('audit-action-filter'),
-            from: _auditFromInput,
-            to: _auditToInput
-        } });
+        CSM.urlState.bind({ inputs: auditURLInputs(_auditFromInput, _auditToInput) });
     }).catch(function(){ CSM.loadError(document.getElementById('audit-content'), loadAudit); });
 }
 

@@ -680,7 +680,10 @@ CSM.urlState = (function() {
         return Object.prototype.hasOwnProperty.call(obj, key);
     }
     function eventName(el) {
-        return String(el.tagName || '').toUpperCase() === 'SELECT' ? 'change' : 'input';
+        if (String(el.tagName || '').toUpperCase() === 'SELECT') return 'change';
+        var type = String(el.type || '').toLowerCase();
+        if (type === 'date' || type === 'time' || type === 'datetime-local' || type === 'month' || type === 'week') return 'change';
+        return 'input';
     }
     function stateValue(state, defaults, name) {
         if (own(state, name)) return state[name] == null ? '' : String(state[name]);
