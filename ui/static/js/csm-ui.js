@@ -43,9 +43,11 @@ CSM.emptyState = function(message, colspan) {
 // or smuggle surrogate code points into the regional-indicator range.
 CSM.countryFlag = function(code) {
     if (typeof code !== 'string' || code.length !== 2) return '';
-    var up = code.toUpperCase();
-    var a = up.charCodeAt(0), b = up.charCodeAt(1);
-    if (a < 65 || a > 90 || b < 65 || b > 90) return '';
+    var a = code.charCodeAt(0), b = code.charCodeAt(1);
+    if (a >= 97 && a <= 122) a -= 32;
+    else if (a < 65 || a > 90) return '';
+    if (b >= 97 && b <= 122) b -= 32;
+    else if (b < 65 || b > 90) return '';
     return String.fromCodePoint(127397 + a, 127397 + b);
 };
 

@@ -1131,25 +1131,41 @@ func TestThreatAccountListEscapesAccountNames(t *testing.T) {
 // TestCountryFlagRejectsMalformedInput pins WEB_ROADMAP P1.1: the unbounded
 // String.fromCodePoint.apply path could throw RangeError on non-2-char
 // input or smuggle non-regional-indicator code points into the document.
-// The hardened version validates ASCII letters before reaching
-// fromCodePoint.
+// The hardened version validates the original input as ASCII letters
+// before Unicode case folding or fromCodePoint.
 func TestCountryFlagRejectsMalformedInput(t *testing.T) {
 	src, err := os.ReadFile("../../ui/static/js/csm-ui.js")
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(src)
+	start := strings.Index(text, "CSM.countryFlag = function(code) {")
+	if start == -1 {
+		t.Fatal("csm-ui.js missing countryFlag helper")
+	}
+	end := strings.Index(text[start:], "\n};")
+	if end == -1 {
+		t.Fatal("csm-ui.js countryFlag helper has no function terminator")
+	}
+	countryFlagBody := text[start : start+end]
 	if strings.Contains(text, "String.fromCodePoint.apply(null,") {
 		t.Fatal("csm-ui.js still uses fromCodePoint.apply; switch to validated direct call")
 	}
 	for _, fragment := range []string{
 		`if (typeof code !== 'string' || code.length !== 2) return '';`,
-		`if (a < 65 || a > 90 || b < 65 || b > 90) return '';`,
+		`var a = code.charCodeAt(0), b = code.charCodeAt(1);`,
+		`if (a >= 97 && a <= 122) a -= 32;`,
+		`else if (a < 65 || a > 90) return '';`,
+		`if (b >= 97 && b <= 122) b -= 32;`,
+		`else if (b < 65 || b > 90) return '';`,
 		`return String.fromCodePoint(127397 + a, 127397 + b);`,
 	} {
 		if !strings.Contains(text, fragment) {
 			t.Fatalf("csm-ui.js missing countryFlag guard fragment %q", fragment)
 		}
+	}
+	if strings.Contains(countryFlagBody, "toUpperCase") {
+		t.Fatal("countryFlag must not rely on Unicode case folding before ASCII validation")
 	}
 }
 
