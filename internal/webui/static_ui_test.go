@@ -1292,7 +1292,7 @@ func TestCSMRequestExposesAllowNonOKAndSilent(t *testing.T) {
 	for _, fragment := range []string{
 		`var allowNonOK = !!options.allowNonOK;`,
 		`var silent = !!options.silent;`,
-		`if (allowNonOK) return r;`,
+		`if (allowNonOK) {`,
 		`if (!silent) {`,
 		`delete opts.timeoutMs;`,
 		`delete opts.allowNonOK;`,
@@ -1472,7 +1472,7 @@ func TestCSMPollHasStateMachineAndSurvivesCallbackThrow(t *testing.T) {
 	for _, fragment := range []string{
 		`var state = 'scheduled';`,
 		`var timerSeq = 0;`,
-		`var poller = { onVisibility: onVisibility };`,
+		`var poller = { onVisibility: onVisibility, onResume: onResume };`,
 		`function clearTimer() {`,
 		`function scheduleNext(delayMs) {`,
 		`if (state === 'stopped' || document.hidden) {`,
@@ -1517,7 +1517,13 @@ func TestCSMPollVisibilityKeepsBackoffAndInvalidatesQueuedTimers(t *testing.T) {
 		t.Fatal("CSM.poll missing onVisibility")
 	}
 	visibilityTail := pollBody[visibilityStart:]
-	visibilityEnd := strings.Index(visibilityTail, "\n        }\n\n        addPoller(poller);")
+	// onVisibility ends at the next `\n        }\n` whose following
+	// line is not part of the same function. With onResume added, the
+	// first such break is the `\n        function onResume` marker.
+	visibilityEnd := strings.Index(visibilityTail, "\n        }\n\n        // Re-enter the scheduled state")
+	if visibilityEnd == -1 {
+		visibilityEnd = strings.Index(visibilityTail, "\n        }\n\n        addPoller(poller);")
+	}
 	if visibilityEnd == -1 {
 		t.Fatal("CSM.poll onVisibility has no terminator")
 	}
@@ -1924,6 +1930,69 @@ func TestIncidentCSMTableDoesNotShadowServerPagination(t *testing.T) {
 	} {
 		if !strings.Contains(tableText, fragment) {
 			t.Errorf("table.js missing server-pagination support fragment %q", fragment)
+		}
+	}
+}
+
+// TestAutoRefreshPillWired pins WEB_ROADMAP P2.3: the shared CSM.refresh
+// module exposes enabled / lastFetchAt / bump / manual / setEnabled,
+// CSM.request bumps the timestamp on every successful response, CSM.poll
+// gates on enabled, the layout template carries the pill + buttons, and
+// layout.js wires them up.
+func TestAutoRefreshPillWired(t *testing.T) {
+	js, err := os.ReadFile("../../ui/static/js/csrf.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(js)
+	for _, fragment := range []string{
+		`CSM.refresh = (function() {`,
+		`var STORAGE_KEY = 'csm-autorefresh';`,
+		`enabled = raw !== 'off';`,
+		`bump: function() {`,
+		`manual: function() {`,
+		`setEnabled: function(next) {`,
+		`window.dispatchEvent(new CustomEvent('csm:refresh-toggle'`,
+		`if (CSM.refresh) CSM.refresh.bump();`,
+		`if (CSM.refresh && !CSM.refresh.enabled) { state = 'idle'; return; }`,
+		`function onResume() {`,
+		`window.addEventListener('csm:refresh-toggle', function(ev) {`,
+		`window.addEventListener('csm:refresh-now', function() {`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Fatalf("csrf.js missing CSM.refresh fragment %q", fragment)
+		}
+	}
+
+	layoutJS, err := os.ReadFile("../../ui/static/js/layout.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	layoutText := string(layoutJS)
+	for _, fragment := range []string{
+		`var pill = document.getElementById('csm-refresh-pill');`,
+		`nowBtn.addEventListener('click', function() { CSM.refresh.manual(); });`,
+		`toggleBtn.addEventListener('click', function() { CSM.refresh.setEnabled(!CSM.refresh.enabled); });`,
+		`window.addEventListener('csm:refresh-bump', paintAge);`,
+	} {
+		if !strings.Contains(layoutText, fragment) {
+			t.Fatalf("layout.js missing refresh-pill fragment %q", fragment)
+		}
+	}
+
+	layout, err := os.ReadFile("../../ui/templates/layout.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	layoutHTML := string(layout)
+	for _, fragment := range []string{
+		`id="csm-refresh-pill"`,
+		`id="csm-refresh-age"`,
+		`id="csm-refresh-now"`,
+		`id="csm-refresh-toggle"`,
+	} {
+		if !strings.Contains(layoutHTML, fragment) {
+			t.Fatalf("layout.html missing refresh-pill id %q", fragment)
 		}
 	}
 }

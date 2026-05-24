@@ -215,11 +215,15 @@ CSM.request = function(url, options) {
     delete opts.silent;
     return fetch(resolvedUrl, opts).then(function(r) {
         if (timeoutId) clearTimeout(timeoutId);
-        if (allowNonOK) return r;
+        if (allowNonOK) {
+            if (r.ok && CSM.refresh) CSM.refresh.bump();
+            return r;
+        }
         if (!r.ok) {
             return r.json().catch(function() { throw new Error('HTTP ' + r.status); })
                 .then(function(body) { throw new Error(body.error || 'HTTP ' + r.status); });
         }
+        if (CSM.refresh) CSM.refresh.bump();
         return r;
     }).catch(function(err) {
         if (timeoutId) clearTimeout(timeoutId);
@@ -244,6 +248,38 @@ CSM.get = function(url, options) {
     opts.headers = Object.assign({ Accept: 'application/json' }, opts.headers || {});
     return CSM.fetch(url, opts);
 };
+
+// Shared refresh tracker (WEB_ROADMAP P2.3). Every successful
+// CSM.request bump()s the lastFetchAt timestamp; the layout pill polls
+// CSM.refresh.lastFetchAt to render "Updated 12s ago". Pages and the
+// CSM.poll lifecycle observe enabled to decide whether to fire the next
+// scheduled tick. Pressing the layout refresh button dispatches the
+// 'csm:refresh-now' window event; pages listen and re-fetch.
+CSM.refresh = (function() {
+    var STORAGE_KEY = 'csm-autorefresh';
+    var raw = null;
+    try { raw = localStorage.getItem(STORAGE_KEY); } catch (e) { /* localStorage may be unavailable */ }
+    // Default ON unless user explicitly turned it off.
+    var enabled = raw !== 'off';
+    var lastFetchAt = 0;
+    var api = {
+        get enabled() { return enabled; },
+        get lastFetchAt() { return lastFetchAt; },
+        setEnabled: function(next) {
+            enabled = !!next;
+            try { localStorage.setItem(STORAGE_KEY, enabled ? 'on' : 'off'); } catch (e) { /* ignore */ }
+            window.dispatchEvent(new CustomEvent('csm:refresh-toggle', { detail: { enabled: enabled } }));
+        },
+        bump: function() {
+            lastFetchAt = Date.now();
+            window.dispatchEvent(new CustomEvent('csm:refresh-bump', { detail: { at: lastFetchAt } }));
+        },
+        manual: function() {
+            window.dispatchEvent(new CustomEvent('csm:refresh-now'));
+        }
+    };
+    return api;
+})();
 
 // Connection-lost banner: tracks consecutive fetch failures
 (function() {
@@ -306,6 +342,26 @@ CSM.get = function(url, options) {
         }
     });
 
+    // Resume idle pollers when the user re-enables auto-refresh at the
+    // layout pill. Without this, pausing then unpausing would leave
+    // pollers parked until the next visibilitychange.
+    window.addEventListener('csm:refresh-toggle', function(ev) {
+        if (!ev.detail || !ev.detail.enabled) return;
+        var snapshot = pollers.slice();
+        for (var i = 0; i < snapshot.length; i++) {
+            snapshot[i].onResume();
+        }
+    });
+
+    // Manual refresh fires every poller's onResume so the user gets
+    // immediate data even if the next tick was minutes away.
+    window.addEventListener('csm:refresh-now', function() {
+        var snapshot = pollers.slice();
+        for (var i = 0; i < snapshot.length; i++) {
+            snapshot[i].onResume();
+        }
+    });
+
     CSM.poll = function(url, interval, callback) {
         var baseInterval = interval;
         var currentInterval = interval;
@@ -313,7 +369,7 @@ CSM.get = function(url, options) {
         var timerId = null;
         var timerSeq = 0;
         var state = 'scheduled';
-        var poller = { onVisibility: onVisibility };
+        var poller = { onVisibility: onVisibility, onResume: onResume };
 
         function clearTimer() {
             if (timerId) {
@@ -351,6 +407,10 @@ CSM.get = function(url, options) {
             if (state === 'stopped') return;
             if (document.hidden) { state = 'idle'; return; }
             if (state !== 'scheduled') return;
+            // Auto-refresh paused at the layout pill: stay idle and wait
+            // for the user to toggle back on (the toggle dispatches
+            // csm:refresh-toggle which scheduleNext picks up).
+            if (CSM.refresh && !CSM.refresh.enabled) { state = 'idle'; return; }
             state = 'running';
             var promise;
             try {
@@ -380,6 +440,16 @@ CSM.get = function(url, options) {
             } else if (state === 'idle') {
                 scheduleNext(100);
             }
+        }
+
+        // Re-enter the scheduled state from idle. Used by the layout
+        // refresh button and the auto-refresh toggle so users can wake
+        // a parked poller without waiting for the next tab show.
+        function onResume() {
+            if (state === 'stopped' || document.hidden) return;
+            if (state !== 'idle') return;
+            currentInterval = baseInterval;
+            scheduleNext(100);
         }
 
         addPoller(poller);

@@ -173,3 +173,55 @@ if (_themeBtn) _themeBtn.addEventListener('click', toggleTheme);
         })
         .catch(function() { /* optional update banner */ });
 })();
+
+// Auto-refresh pill: shows "Updated Ns ago" and lets the user pause or
+// trigger a manual refresh. Wired against CSM.refresh which receives
+// bump() calls from CSM.request on every successful response, so the
+// pill stays accurate without per-page wiring.
+(function() {
+    var pill = document.getElementById('csm-refresh-pill');
+    var ageEl = document.getElementById('csm-refresh-age');
+    var nowBtn = document.getElementById('csm-refresh-now');
+    var toggleBtn = document.getElementById('csm-refresh-toggle');
+    if (!pill || !ageEl || !nowBtn || !toggleBtn || typeof CSM === 'undefined' || !CSM.refresh) return;
+
+    pill.classList.remove('d-none');
+    nowBtn.classList.remove('d-none');
+    toggleBtn.classList.remove('d-none');
+
+    function ageLabel(ms) {
+        if (!ms) return 'never';
+        var diff = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+        if (diff < 5) return 'just now';
+        if (diff < 60) return diff + 's ago';
+        if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+        if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+        return Math.floor(diff / 86400) + 'd ago';
+    }
+
+    function paintAge() {
+        ageEl.textContent = ageLabel(CSM.refresh.lastFetchAt);
+    }
+
+    function paintToggle() {
+        var enabled = CSM.refresh.enabled;
+        toggleBtn.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+        var icon = toggleBtn.querySelector('i');
+        if (icon) icon.className = enabled ? 'ti ti-player-pause' : 'ti ti-player-play';
+        toggleBtn.title = enabled ? 'Auto-refresh: on (click to pause)' : 'Auto-refresh: paused (click to resume)';
+        pill.classList.toggle('text-warning', !enabled);
+    }
+
+    paintAge();
+    paintToggle();
+
+    // Tick once a second so "Ns ago" stays current without waiting for
+    // the next fetch.
+    var tickId = setInterval(paintAge, 1000);
+    window.addEventListener('beforeunload', function() { clearInterval(tickId); });
+    window.addEventListener('csm:refresh-bump', paintAge);
+    window.addEventListener('csm:refresh-toggle', paintToggle);
+
+    nowBtn.addEventListener('click', function() { CSM.refresh.manual(); });
+    toggleBtn.addEventListener('click', function() { CSM.refresh.setEnabled(!CSM.refresh.enabled); });
+})();
