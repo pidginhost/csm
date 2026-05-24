@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Web UI audit log and threat intelligence search boxes now persist to the URL, so filtered views are bookmarkable and shareable.
 - Account detail tabs now support column sort, pagination, and persistent state, and the correlated incidents list uses shared table sorting while keeping its server-side pager.
 - Web UI header shows a shared "Updated Xs ago" pill with manual refresh and auto-refresh pause/resume controls, so operators can freeze background refresh while still fetching on demand.
-- Web UI hardening audit, performance monitor, account detail tabs, and ModSecurity rules listing now expose CSV / JSON export through the same dropdown style used everywhere else. Audit log moved off its bespoke exporter onto the shared helper.
+- Web UI hardening audit, performance monitor, account detail tabs, and ModSecurity rules listing now expose CSV / JSON export through the same dropdown style used elsewhere, and the audit log uses the same helper. CSV cells are guarded for spreadsheet safety.
 - New `thresholds.crontab_base64_blob_max_bytes` operator override for the crontab deep-scan base64 decoder cap (default 16384). Lets operators raise the cap on hosts where `csm_checks_crontab_base64_truncated_total` shows recurring truncation without rebuilding the daemon.
 
 ### Changed

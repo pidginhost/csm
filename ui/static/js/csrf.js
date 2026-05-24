@@ -618,25 +618,30 @@ CSM.debounce = function(fn, delay) {
     return debounced;
 };
 
+function csmCSVCell(value) {
+    var val = value != null ? String(value) : '';
+    if (/^[\t\r\n=+\-@]/.test(val) || /^\s+[=+\-@]/.test(val)) {
+        val = "'" + val;
+    }
+    return '"' + val.replace(/"/g, '""') + '"';
+}
+
 // Client-side table export (CSV / JSON)
 CSM.exportTable = function(data, columns, format, filename) {
     var content, mime;
     if (format === 'json') {
         var filtered = data.map(function(row) {
             var obj = {};
-            columns.forEach(function(col) { obj[col.key] = row[col.key]; });
+            columns.forEach(function(col) { obj[col.key] = row[col.key] != null ? row[col.key] : ''; });
             return obj;
         });
         content = JSON.stringify(filtered, null, 2);
         mime = 'application/json';
     } else {
-        var lines = [columns.map(function(c) {
-            return '"' + (c.label || c.key).replace(/"/g, '""') + '"';
-        }).join(',')];
+        var lines = [columns.map(function(c) { return csmCSVCell(c.label || c.key); }).join(',')];
         data.forEach(function(row) {
             lines.push(columns.map(function(c) {
-                var val = row[c.key] != null ? String(row[c.key]) : '';
-                return '"' + val.replace(/"/g, '""') + '"';
+                return csmCSVCell(row[c.key]);
             }).join(','));
         });
         content = lines.join('\n');

@@ -78,6 +78,20 @@
         return null;
     }
 
+    function perfFindingPath(f) {
+        if (!f) return '';
+        if (f.path || f.file_path) return f.path || f.file_path;
+        var action = describePerfAction(f);
+        if (action && action.path) return action.path;
+        var details = f.details || '';
+        var fileMatch = /File:\s*([^,\n]+)/i.exec(details);
+        if (fileMatch && fileMatch[1]) return fileMatch[1].trim();
+        var prefix = 'Bloated error_log: ';
+        var msg = f.message || '';
+        if (msg.indexOf(prefix) === 0) return msg.slice(prefix.length).trim();
+        return '';
+    }
+
     // Per-row direct action button. Each perf finding currently has at
     // most one supported remediation; a dropdown wrapper buys nothing
     // here, so render a plain button labeled with the action verb.
@@ -436,7 +450,7 @@
                     check:    CHECK_NAMES[f.check] || f.check || '',
                     message:  f.message || '',
                     details:  f.details || '',
-                    path:     f.path || f.file_path || ''
+                    path:     perfFindingPath(f)
                 };
             });
             CSM.exportTable(rows, _perfExportCols, this.getAttribute('data-export'), 'csm-performance');

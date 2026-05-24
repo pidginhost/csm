@@ -2054,7 +2054,7 @@ func TestSharedExportTableWired(t *testing.T) {
 		},
 		{
 			"../../ui/static/js/performance.js",
-			[]string{`CSM.exportTable(rows, _perfExportCols,`, `'csm-performance'`, `_perfLastFindings = findings;`},
+			[]string{`CSM.exportTable(rows, _perfExportCols,`, `'csm-performance'`, `_perfLastFindings = findings;`, `path:     perfFindingPath(f)`},
 		},
 		{
 			"../../ui/static/js/account.js",
@@ -2062,7 +2062,7 @@ func TestSharedExportTableWired(t *testing.T) {
 		},
 		{
 			"../../ui/static/js/modsec-rules.js",
-			[]string{`CSM.exportTable(rows, _modsecRulesExportCols,`, `'csm-modsec-rules'`},
+			[]string{`CSM.exportTable(rows, _modsecRulesExportCols,`, `'csm-modsec-rules'`, `currentRuleEnabled(r)`, `hits_24h`},
 		},
 	}
 	for _, tc := range cases {
@@ -2100,6 +2100,25 @@ func TestSharedExportTableWired(t *testing.T) {
 			if !strings.Contains(text, want) {
 				t.Errorf("%s missing export dropdown hook %q", tc.path, want)
 			}
+		}
+	}
+}
+
+func TestSharedExportTableEscapesSpreadsheetFormulaCells(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/csrf.js")
+	if err != nil {
+		t.Fatalf("read csrf.js: %v", err)
+	}
+	text := string(src)
+	for _, want := range []string{
+		`function csmCSVCell(value)`,
+		`/^[\t\r\n=+\-@]/.test(val)`,
+		`/^\s+[=+\-@]/.test(val)`,
+		`val = "'" + val;`,
+		`obj[col.key] = row[col.key] != null ? row[col.key] : '';`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("csrf.js missing CSV export guard fragment %q", want)
 		}
 	}
 }

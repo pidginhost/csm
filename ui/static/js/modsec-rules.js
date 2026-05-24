@@ -169,10 +169,30 @@ function countActive() {
     var active = 0;
     for (var i = 0; i < _rules.length; i++) {
         var id = _rules[i].id;
-        var enabled = (id in _pendingChanges) ? _pendingChanges[id] : _originalEnabled[id];
+        var enabled = currentRuleEnabled(_rules[i]);
         if (enabled) active++;
     }
     return active;
+}
+
+function currentRuleEnabled(rule) {
+    if (!rule) return false;
+    var id = String(rule.id);
+    if (Object.prototype.hasOwnProperty.call(_pendingChanges, id)) {
+        return _pendingChanges[id];
+    }
+    if (Object.prototype.hasOwnProperty.call(_originalEnabled, id)) {
+        return _originalEnabled[id];
+    }
+    return !!rule.enabled;
+}
+
+function formatRuleAction(rule) {
+    if (!rule) return '';
+    if (rule.action === 'deny' && rule.status_code) {
+        return rule.action + '/' + rule.status_code;
+    }
+    return rule.action || '';
 }
 
 function updateApplyBar() {
@@ -277,8 +297,10 @@ var _modsecRulesExportCols = [
     {key: 'description',  label: 'Description'},
     {key: 'enabled',      label: 'Enabled'},
     {key: 'action',       label: 'Action'},
+    {key: 'phase',        label: 'Phase'},
+    {key: 'hits_24h',     label: 'Hits (24h)'},
     {key: 'escalate',     label: 'Escalates'},
-    {key: 'category',     label: 'Category'}
+    {key: 'last_hit',     label: 'Last Hit'}
 ];
 document.querySelectorAll('[data-export]').forEach(function(el) {
     el.addEventListener('click', function(e) {
@@ -287,10 +309,12 @@ document.querySelectorAll('[data-export]').forEach(function(el) {
             return {
                 id:          r.id || '',
                 description: r.description || '',
-                enabled:     r.enabled ? 'yes' : 'no',
-                action:      r.action || '',
+                enabled:     currentRuleEnabled(r) ? 'yes' : 'no',
+                action:      formatRuleAction(r),
+                phase:       r.phase || '',
+                hits_24h:    r.hits_24h || 0,
                 escalate:    r.escalate ? 'yes' : 'no',
-                category:    r.category || ''
+                last_hit:    r.last_hit || ''
             };
         });
         CSM.exportTable(rows, _modsecRulesExportCols, this.getAttribute('data-export'), 'csm-modsec-rules');
