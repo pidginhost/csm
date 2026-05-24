@@ -1408,6 +1408,22 @@ func TestOptionalJSONErrorCallersStaySilent(t *testing.T) {
 	}
 }
 
+func csmPollBody(t *testing.T, text string) string {
+	t.Helper()
+	pollStart := strings.Index(text, "CSM.poll = function(url, interval, callback) {")
+	if pollStart == -1 {
+		t.Fatal("csrf.js missing CSM.poll definition")
+	}
+	tail := text[pollStart:]
+	for _, terminator := range []string{"\n    };\n})();", "\n};"} {
+		if pollEnd := strings.Index(tail, terminator); pollEnd != -1 {
+			return tail[:pollEnd]
+		}
+	}
+	t.Fatal("csrf.js CSM.poll has no terminator")
+	return ""
+}
+
 // TestCSMPollUsesCSMRequest pins WEB_ROADMAP P1.2: the polling utility
 // must route its fetch through CSM.request(silent:true) so the 30s
 // timeout applies and pollers cannot hang indefinitely on a stuck
@@ -1418,15 +1434,7 @@ func TestCSMPollUsesCSMRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(src)
-	pollStart := strings.Index(text, "CSM.poll = function(url, interval, callback) {")
-	if pollStart == -1 {
-		t.Fatal("csrf.js missing CSM.poll definition")
-	}
-	pollEnd := strings.Index(text[pollStart:], "\n};")
-	if pollEnd == -1 {
-		t.Fatal("csrf.js CSM.poll has no terminator")
-	}
-	pollBody := text[pollStart : pollStart+pollEnd]
+	pollBody := csmPollBody(t, text)
 	if !strings.Contains(pollBody, "CSM.request(url, { silent: true })") {
 		t.Fatal("CSM.poll must route through CSM.request(silent:true)")
 	}
@@ -1447,26 +1455,41 @@ func TestCSMPollHasStateMachineAndSurvivesCallbackThrow(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(src)
-	pollStart := strings.Index(text, "CSM.poll = function(url, interval, callback) {")
-	if pollStart == -1 {
-		t.Fatal("csrf.js missing CSM.poll definition")
+	pollBody := csmPollBody(t, text)
+	for _, fragment := range []string{
+		`var pollers = [];`,
+		`function addPoller(poller) {`,
+		`function removePoller(poller) {`,
+		`document.addEventListener('visibilitychange', function() {`,
+		`snapshot[i].onVisibility();`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Fatalf("csrf.js missing poller registry fragment %q", fragment)
+		}
 	}
-	pollEnd := strings.Index(text[pollStart:], "\n};")
-	if pollEnd == -1 {
-		t.Fatal("csrf.js CSM.poll has no terminator")
-	}
-	pollBody := text[pollStart : pollStart+pollEnd]
 	for _, fragment := range []string{
 		`var state = 'scheduled';`,
+		`var timerSeq = 0;`,
+		`var poller = { onVisibility: onVisibility };`,
+		`function clearTimer() {`,
 		`function scheduleNext(delayMs) {`,
 		`if (state === 'stopped' || document.hidden) {`,
+		`var seq = ++timerSeq;`,
+		`timerId = setTimeout(function() { run(seq); }, delayMs);`,
+		`function emit(err, data) {`,
+		`try { callback(err, data); } catch (_cbErr) { /* swallow callback throw */ }`,
+		`function fail(err) {`,
+		`currentInterval = Math.min(currentInterval * 2, maxInterval);`,
+		`function run(seq) {`,
+		`if (seq !== timerSeq) return;`,
+		`if (document.hidden) { state = 'idle'; return; }`,
 		`state = 'running';`,
-		`try { callback(null, data); } catch (_cbErr) { /* swallow callback throw */ }`,
-		`try { callback(err, null); } catch (_cbErr) { /* swallow callback throw */ }`,
-		`try { callback(e, null); } catch (_cbErr) { /* swallow callback throw */ }`,
+		`fail(e);`,
+		`emit(null, data);`,
 		`} else if (state === 'idle') {`,
+		`scheduleNext(100);`,
 		`state = 'stopped';`,
-		`document.removeEventListener('visibilitychange', onVisibility);`,
+		`removePoller(poller);`,
 	} {
 		if !strings.Contains(pollBody, fragment) {
 			t.Fatalf("CSM.poll missing lifecycle fragment %q", fragment)
@@ -1478,5 +1501,37 @@ func TestCSMPollHasStateMachineAndSurvivesCallbackThrow(t *testing.T) {
 	// drifts.
 	if strings.Contains(pollBody, "fetch(") {
 		t.Fatal("CSM.poll must route exclusively through CSM.request")
+	}
+}
+
+func TestCSMPollVisibilityKeepsBackoffAndInvalidatesQueuedTimers(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/csrf.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pollBody := csmPollBody(t, string(src))
+	visibilityStart := strings.Index(pollBody, "function onVisibility() {")
+	if visibilityStart == -1 {
+		t.Fatal("CSM.poll missing onVisibility")
+	}
+	visibilityTail := pollBody[visibilityStart:]
+	visibilityEnd := strings.Index(visibilityTail, "\n        }\n\n        addPoller(poller);")
+	if visibilityEnd == -1 {
+		t.Fatal("CSM.poll onVisibility has no terminator")
+	}
+	visibilityBody := visibilityTail[:visibilityEnd]
+	if strings.Contains(visibilityBody, "currentInterval = baseInterval") {
+		t.Fatal("CSM.poll must not reset exponential backoff on tab visibility restore")
+	}
+	for _, fragment := range []string{
+		`clearTimer();`,
+		`if (state === 'scheduled') state = 'idle';`,
+		`scheduleNext(100);`,
+		`if (seq !== timerSeq) return;`,
+		`if (document.hidden) { state = 'idle'; return; }`,
+	} {
+		if !strings.Contains(pollBody, fragment) {
+			t.Fatalf("CSM.poll missing visibility safety fragment %q", fragment)
+		}
 	}
 }

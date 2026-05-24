@@ -279,74 +279,122 @@ CSM.get = function(url, options) {
 // scheduleNext() runs from a finally-equivalent that wraps the entire
 // dispatch in try/catch as a last resort. While document.hidden the
 // scheduled timer is cleared; when visibility returns and the poller
-// is idle, the next run fires immediately, never if one is already in
-// flight.
-CSM.poll = function(url, interval, callback) {
-    var baseInterval = interval;
-    var currentInterval = interval;
-    var maxInterval = 300000; // 5 minutes
-    var timerId = null;
-    var state = 'scheduled';
+// is idle, the next run fires immediately without resetting an existing
+// error backoff. One document-level visibility listener dispatches to
+// active pollers, so creating and stopping pollers cannot leak per-poller
+// listeners.
+(function() {
+    var pollers = [];
 
-    function scheduleNext(delayMs) {
-        if (state === 'stopped' || document.hidden) {
-            if (state !== 'stopped') state = 'idle';
-            return;
-        }
-        if (timerId) clearTimeout(timerId);
-        state = 'scheduled';
-        timerId = setTimeout(run, delayMs);
+    function addPoller(poller) {
+        pollers.push(poller);
     }
 
-    function run() {
-        timerId = null;
-        if (state === 'stopped') return;
-        state = 'running';
-        var promise;
-        try {
-            promise = CSM.request(url, { silent: true })
-                .then(function(r) { return r.json(); });
-        } catch (e) {
-            // CSM.request returned synchronously (should not happen, but
-            // a future regression here must not silently kill the poller).
+    function removePoller(poller) {
+        for (var i = pollers.length - 1; i >= 0; i--) {
+            if (pollers[i] === poller) {
+                pollers.splice(i, 1);
+                return;
+            }
+        }
+    }
+
+    document.addEventListener('visibilitychange', function() {
+        var snapshot = pollers.slice();
+        for (var i = 0; i < snapshot.length; i++) {
+            snapshot[i].onVisibility();
+        }
+    });
+
+    CSM.poll = function(url, interval, callback) {
+        var baseInterval = interval;
+        var currentInterval = interval;
+        var maxInterval = 300000; // 5 minutes
+        var timerId = null;
+        var timerSeq = 0;
+        var state = 'scheduled';
+        var poller = { onVisibility: onVisibility };
+
+        function clearTimer() {
+            if (timerId) {
+                clearTimeout(timerId);
+                timerId = null;
+                timerSeq++;
+            }
+        }
+
+        function scheduleNext(delayMs) {
+            if (state === 'stopped' || document.hidden) {
+                if (state !== 'stopped') state = 'idle';
+                return;
+            }
+            clearTimer();
+            state = 'scheduled';
+            var seq = ++timerSeq;
+            timerId = setTimeout(function() { run(seq); }, delayMs);
+        }
+
+        function emit(err, data) {
+            if (state === 'stopped') return;
+            try { callback(err, data); } catch (_cbErr) { /* swallow callback throw */ }
+        }
+
+        function fail(err) {
+            if (state === 'stopped') return;
             currentInterval = Math.min(currentInterval * 2, maxInterval);
-            try { callback(e, null); } catch (_cbErr) { /* swallow callback throw */ }
-            scheduleNext(currentInterval + Math.random() * currentInterval * 0.3);
-            return;
+            emit(err, null);
         }
-        promise.then(function(data) {
-            currentInterval = baseInterval;
-            try { callback(null, data); } catch (_cbErr) { /* swallow callback throw */ }
-        }).catch(function(err) {
-            currentInterval = Math.min(currentInterval * 2, maxInterval);
-            try { callback(err, null); } catch (_cbErr) { /* swallow callback throw */ }
-        }).finally(function() {
-            scheduleNext(currentInterval + Math.random() * currentInterval * 0.3);
-        });
-    }
 
-    function onVisibility() {
-        if (state === 'stopped') return;
-        if (document.hidden) {
-            if (timerId) { clearTimeout(timerId); timerId = null; }
-            if (state === 'scheduled') state = 'idle';
-        } else if (state === 'idle') {
-            currentInterval = baseInterval;
-            scheduleNext(100);
+        function run(seq) {
+            if (seq !== timerSeq) return;
+            timerId = null;
+            if (state === 'stopped') return;
+            if (document.hidden) { state = 'idle'; return; }
+            if (state !== 'scheduled') return;
+            state = 'running';
+            var promise;
+            try {
+                promise = CSM.request(url, { silent: true })
+                    .then(function(r) { return r.json(); });
+            } catch (e) {
+                fail(e);
+                scheduleNext(currentInterval + Math.random() * currentInterval * 0.3);
+                return;
+            }
+            promise.then(function(data) {
+                if (state === 'stopped') return;
+                currentInterval = baseInterval;
+                emit(null, data);
+            }).catch(function(err) {
+                fail(err);
+            }).finally(function() {
+                scheduleNext(currentInterval + Math.random() * currentInterval * 0.3);
+            });
         }
-    }
 
-    document.addEventListener('visibilitychange', onVisibility);
-    scheduleNext(currentInterval);
-
-    return {
-        stop: function() {
-            state = 'stopped';
-            if (timerId) { clearTimeout(timerId); timerId = null; }
-            document.removeEventListener('visibilitychange', onVisibility);
+        function onVisibility() {
+            if (state === 'stopped') return;
+            if (document.hidden) {
+                clearTimer();
+                if (state === 'scheduled') state = 'idle';
+            } else if (state === 'idle') {
+                scheduleNext(100);
+            }
         }
+
+        addPoller(poller);
+        scheduleNext(currentInterval);
+
+        return {
+            stop: function() {
+                if (state === 'stopped') return;
+                state = 'stopped';
+                clearTimer();
+                removePoller(poller);
+            }
+        };
     };
-};
+})();
 
 // Client-side IP format validator (IPv4 and IPv6)
 CSM.validateIP = function(s) {
