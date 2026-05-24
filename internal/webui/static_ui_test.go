@@ -1570,23 +1570,33 @@ func TestMemoryBoundedHandlersPinCaps(t *testing.T) {
 	}
 }
 
-// TestEveryNamedMutatorRouteEnforcesCSRF pins WEB_ROADMAP P1.6: every
-// mux.Handle entry whose Go handler symbol name screams "mutator"
+// TestEveryNamedMutatorRouteEnforcesCSRF checks every mux.Handle entry
+// whose Go handler symbol name identifies a mutator
 // (apiFix, apiBlock, apiUnblock, apiClear, apiRestore, apiBulkDelete,
 // apiReload, apiApply, apiDeny*, apiAllow*, apiRemove*, apiFlush*,
 // apiUnban, apiWhitelist*, apiUnwhitelist*, apiSettingsRestart,
 // apiHardeningRun, etc.) must be wrapped in requireCSRF. The wrapper
 // is a no-op for GET so adding it on a defense-in-depth basis is free.
-// Read-only handlers (apiStats, apiList, apiGet*) are explicitly
-// excluded by the heuristic.
+// Dispatching handlers that serve both GET and POST must enforce CSRF
+// before calling the mutating branch. Read-only handlers (apiStats,
+// apiList, apiGet*) are explicitly excluded by the heuristic.
 func TestEveryNamedMutatorRouteEnforcesCSRF(t *testing.T) {
 	src, err := os.ReadFile("../../internal/webui/server.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(src)
-	muxLine := regexp.MustCompile(`mux\.Handle\("[^"]+",\s*(.+)\)\s*$`)
-	mutatorHandler := regexp.MustCompile(`\b(apiFix|apiBulkFix|apiDismissFinding|apiBlockIP|apiUnblockIP|apiUnblockBulk|apiQuarantineRestore|apiQuarantineBulkDelete|apiDBObjectBackupRestore|apiFirewallDenySubnet|apiFirewallAllowIP|apiFirewallRemoveAllow|apiFirewallRemoveSubnet|apiFirewallFlushCphulk|apiFirewallFlush|apiFirewallUnban|apiThreatWhitelistIP|apiThreatUnwhitelistIP|apiThreatBlockIP|apiThreatClearIP|apiThreatTempWhitelistIP|apiThreatBulkAction|apiRulesReload|apiModSecEscalation|apiModSecRulesApply|apiModSecRulesEscalation|apiSuppressions|apiHardeningRun|apiSettingsRestart|apiFirewallTentativeApply|apiFirewallRollbackConfirm|apiFirewallRollbackRevert|apiImport|apiScanAccount|apiTestAlert|apiPerfFixErrorLog|apiPerfFixDisplayErrors|apiEmailQuarantineAction|apiIncidentRouter|apiGeoIPBatch)\b`)
+	settingsSrc, err := os.ReadFile("../../internal/webui/settings_api.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	allText := text + "\n" + string(settingsSrc)
+	muxLine := regexp.MustCompile(`mux\.Handle\("[^"]+",\s*(.+)\)\s*(?://.*)?$`)
+	mutatorHandler := regexp.MustCompile(`\b(apiFix|apiBulkFix|apiDismissFinding|apiBlockIP|apiUnblockIP|apiUnblockBulk|apiQuarantineRestore|apiQuarantineBulkDelete|apiDBObjectBackupRestore|apiFirewallDenySubnet|apiFirewallAllowIP|apiFirewallRemoveAllow|apiFirewallRemoveSubnet|apiFirewallFlushCphulk|apiFirewallFlush|apiFirewallUnban|apiThreatWhitelistIP|apiThreatUnwhitelistIP|apiThreatBlockIP|apiThreatClearIP|apiThreatTempWhitelistIP|apiThreatBulkAction|apiRulesReload|apiModSecEscalation|apiModSecRulesApply|apiModSecRulesEscalation|apiSuppressions|apiHardeningRun|apiSettings|apiSettingsRestart|apiFirewallTentativeApply|apiFirewallRollbackConfirm|apiFirewallRollbackRevert|apiImport|apiScanAccount|apiTestAlert|apiPerfFixErrorLog|apiPerfFixDisplayErrors|apiEmailQuarantineAction|apiIncidentRouter|apiGeoIPBatch)\b`)
+	handlerSymbol := regexp.MustCompile(`s\.(api[A-Za-z0-9]+)`)
+	internalCSRF := map[string]string{
+		"apiSettings": "s.requireCSRF(http.HandlerFunc(s.apiSettingsPost)).ServeHTTP(w, r)",
+	}
 	for _, line := range strings.Split(text, "\n") {
 		m := muxLine.FindStringSubmatch(line)
 		if m == nil {
@@ -1596,7 +1606,18 @@ func TestEveryNamedMutatorRouteEnforcesCSRF(t *testing.T) {
 		if !mutatorHandler.MatchString(expr) {
 			continue
 		}
-		if !strings.Contains(expr, "requireCSRF(") {
+		if strings.Contains(expr, "requireCSRF(") {
+			continue
+		}
+		hasInternalCSRF := false
+		for _, symbol := range handlerSymbol.FindAllStringSubmatch(expr, -1) {
+			fragment, ok := internalCSRF[symbol[1]]
+			if ok && strings.Contains(allText, fragment) {
+				hasInternalCSRF = true
+				break
+			}
+		}
+		if !hasInternalCSRF {
 			t.Errorf("server.go route missing requireCSRF on mutator handler: %s", strings.TrimSpace(line))
 		}
 	}
@@ -1628,10 +1649,10 @@ func TestCSRFValidatorSkipsBearerAndChecksConstantTime(t *testing.T) {
 // TestCSRFEnforcedAtRuntime exercises the live mux: cookie-authenticated
 // POSTs and DELETEs without an X-CSRF-Token or csrf_token field must
 // land at 403, never at the wrapped handler. Bearer-authenticated calls
-// continue to bypass CSRF because the Bearer token itself proves the
-// caller is server-to-server, not a CSRF'd browser. The sampled
-// routes cover one representative from each kind of mutator
-// (find/dismiss, block/unblock, firewall, threat, settings, rules).
+// continue to bypass CSRF because the bearer token is not sent by a
+// cross-origin browser form. The table covers
+// each mutating API route, including dispatchers that enforce CSRF
+// inside their POST branch.
 func TestCSRFEnforcedAtRuntime(t *testing.T) {
 	const tok = "admin-token"
 	s := newTestServer(t, tok)
@@ -1675,6 +1696,7 @@ func TestCSRFEnforcedAtRuntime(t *testing.T) {
 		{"POST", "/api/v1/scan-account"},
 		{"POST", "/api/v1/test-alert"},
 		{"POST", "/api/v1/hardening/run"},
+		{"POST", "/api/v1/settings/alerts"},
 		{"POST", "/api/v1/settings/restart"},
 		{"POST", "/api/v1/settings/firewall/tentative-apply"},
 		{"POST", "/api/v1/settings/firewall/confirm"},
@@ -1698,6 +1720,9 @@ func TestCSRFEnforcedAtRuntime(t *testing.T) {
 			if w.Code != http.StatusForbidden {
 				t.Errorf("%s %s without CSRF token: got %d, want 403", tc.method, tc.path, w.Code)
 			}
+			if !strings.Contains(w.Body.String(), "Invalid CSRF token") {
+				t.Errorf("%s %s without CSRF token: body %q, want CSRF rejection", tc.method, tc.path, w.Body.String())
+			}
 		})
 	}
 
@@ -1715,8 +1740,8 @@ func TestCSRFEnforcedAtRuntime(t *testing.T) {
 			req.Header.Set("Authorization", "Bearer "+tok)
 			w := httptest.NewRecorder()
 			mux.ServeHTTP(w, req)
-			if w.Code == http.StatusForbidden {
-				t.Errorf("Bearer %s %s: got 403 (CSRF wrongly applied)", tc.method, tc.path)
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("Bearer %s %s: got %d, want 400 from wrapped handler", tc.method, tc.path, w.Code)
 			}
 		})
 	}

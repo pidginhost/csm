@@ -884,28 +884,10 @@ func (s *Server) csrfSecret() string {
 	return ""
 }
 
-// CSRF contract (WEB_ROADMAP P1.6, pinned by
-// TestCSRFEnforcedAtRuntime, TestEveryNamedMutatorRouteEnforcesCSRF,
-// and TestCSRFValidatorSkipsBearerAndChecksConstantTime in
-// static_ui_test.go):
-//
-//   - Every mutator route (POST or DELETE that changes server state)
-//     must be wrapped in requireCSRF. The wrapper is a no-op for
-//     GET/HEAD/OPTIONS so it's free defense-in-depth on mixed-method
-//     handlers.
-//   - Cookie-authenticated browser sessions must carry either an
-//     X-CSRF-Token header (JS clients) or a csrf_token form field
-//     (template form posts). Comparisons use subtle.ConstantTimeCompare.
-//   - Bearer-authenticated requests skip CSRF: the bearer token itself
-//     proves the caller is server-to-server, not a CSRF'd browser, and
-//     it cannot be smuggled from another origin without script access
-//     to the bearer token.
-//   - When a CSRF check fails, the wrapper returns 403 with an
-//     "Invalid CSRF token" body before the handler runs.
-//
-// validateCSRF checks the CSRF token on POST/DELETE requests. It returns
-// true (allow) for safe methods, Bearer-auth requests, and requests
-// whose X-CSRF-Token / csrf_token matches the server-side secret.
+// validateCSRF enforces the browser-session CSRF boundary on state-changing
+// routes. Bearer-authenticated requests skip the check because cross-origin
+// browser requests cannot attach the Authorization header without script access
+// to the bearer token.
 func (s *Server) validateCSRF(r *http.Request) bool {
 	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
 		return true // only validate POST and DELETE
@@ -932,7 +914,7 @@ func (s *Server) validateCSRF(r *http.Request) bool {
 	return false
 }
 
-// requireCSRF wraps a handler to validate CSRF on POST requests.
+// requireCSRF wraps a handler to validate CSRF on POST and DELETE requests.
 func (s *Server) requireCSRF(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Skip CSRF for Bearer token auth (API-to-API calls don't need CSRF protection)
