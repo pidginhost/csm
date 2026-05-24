@@ -272,48 +272,76 @@ CSM.get = function(url, options) {
 // the fetch through CSM.request so the 30s timeout and AbortController
 // apply uniformly; silent:true keeps the auto-toast off so the callback
 // can decide how to surface errors.
+//
+// Lifecycle is an explicit state machine: idle -> scheduled -> running ->
+// (scheduled | stopped). Synchronous throws (in the helper, in the
+// callback, anywhere along the chain) cannot wedge the poller because
+// scheduleNext() runs from a finally-equivalent that wraps the entire
+// dispatch in try/catch as a last resort. While document.hidden the
+// scheduled timer is cleared; when visibility returns and the poller
+// is idle, the next run fires immediately, never if one is already in
+// flight.
 CSM.poll = function(url, interval, callback) {
     var baseInterval = interval;
     var currentInterval = interval;
     var maxInterval = 300000; // 5 minutes
     var timerId = null;
-    var stopped = false;
+    var state = 'scheduled';
+
+    function scheduleNext(delayMs) {
+        if (state === 'stopped' || document.hidden) {
+            if (state !== 'stopped') state = 'idle';
+            return;
+        }
+        if (timerId) clearTimeout(timerId);
+        state = 'scheduled';
+        timerId = setTimeout(run, delayMs);
+    }
 
     function run() {
-        if (stopped) return;
-        CSM.request(url, { silent: true })
-            .then(function(r) { return r.json(); })
-            .then(function(data) {
-                currentInterval = baseInterval; // reset on success
-                callback(null, data);
-            })
-            .catch(function(err) {
-                currentInterval = Math.min(currentInterval * 2, maxInterval);
-                callback(err, null);
-            })
-            .finally(function() {
-                if (!stopped && !document.hidden) {
-                    var jitter = Math.random() * currentInterval * 0.3;
-                    timerId = setTimeout(run, currentInterval + jitter);
-                }
-            });
+        timerId = null;
+        if (state === 'stopped') return;
+        state = 'running';
+        var promise;
+        try {
+            promise = CSM.request(url, { silent: true })
+                .then(function(r) { return r.json(); });
+        } catch (e) {
+            // CSM.request returned synchronously (should not happen, but
+            // a future regression here must not silently kill the poller).
+            currentInterval = Math.min(currentInterval * 2, maxInterval);
+            try { callback(e, null); } catch (_cbErr) { /* swallow callback throw */ }
+            scheduleNext(currentInterval + Math.random() * currentInterval * 0.3);
+            return;
+        }
+        promise.then(function(data) {
+            currentInterval = baseInterval;
+            try { callback(null, data); } catch (_cbErr) { /* swallow callback throw */ }
+        }).catch(function(err) {
+            currentInterval = Math.min(currentInterval * 2, maxInterval);
+            try { callback(err, null); } catch (_cbErr) { /* swallow callback throw */ }
+        }).finally(function() {
+            scheduleNext(currentInterval + Math.random() * currentInterval * 0.3);
+        });
     }
 
     function onVisibility() {
+        if (state === 'stopped') return;
         if (document.hidden) {
             if (timerId) { clearTimeout(timerId); timerId = null; }
-        } else if (!stopped) {
+            if (state === 'scheduled') state = 'idle';
+        } else if (state === 'idle') {
             currentInterval = baseInterval;
-            if (!timerId) { timerId = setTimeout(run, 100); }
+            scheduleNext(100);
         }
     }
 
     document.addEventListener('visibilitychange', onVisibility);
-    timerId = setTimeout(run, currentInterval);
+    scheduleNext(currentInterval);
 
     return {
         stop: function() {
-            stopped = true;
+            state = 'stopped';
             if (timerId) { clearTimeout(timerId); timerId = null; }
             document.removeEventListener('visibilitychange', onVisibility);
         }

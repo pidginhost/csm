@@ -1434,3 +1434,49 @@ func TestCSMPollUsesCSMRequest(t *testing.T) {
 		t.Fatal("CSM.poll must not call fetch directly anymore")
 	}
 }
+
+// TestCSMPollHasStateMachineAndSurvivesCallbackThrow pins WEB_ROADMAP
+// P1.3: CSM.poll uses an explicit state machine and wraps callback
+// invocations in try/catch so a single page's broken handler cannot
+// silently kill the next poll cycle. The synchronous-throw path around
+// CSM.request also reschedules so a regression in the request helper
+// cannot wedge every poller.
+func TestCSMPollHasStateMachineAndSurvivesCallbackThrow(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/csrf.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	pollStart := strings.Index(text, "CSM.poll = function(url, interval, callback) {")
+	if pollStart == -1 {
+		t.Fatal("csrf.js missing CSM.poll definition")
+	}
+	pollEnd := strings.Index(text[pollStart:], "\n};")
+	if pollEnd == -1 {
+		t.Fatal("csrf.js CSM.poll has no terminator")
+	}
+	pollBody := text[pollStart : pollStart+pollEnd]
+	for _, fragment := range []string{
+		`var state = 'scheduled';`,
+		`function scheduleNext(delayMs) {`,
+		`if (state === 'stopped' || document.hidden) {`,
+		`state = 'running';`,
+		`try { callback(null, data); } catch (_cbErr) { /* swallow callback throw */ }`,
+		`try { callback(err, null); } catch (_cbErr) { /* swallow callback throw */ }`,
+		`try { callback(e, null); } catch (_cbErr) { /* swallow callback throw */ }`,
+		`} else if (state === 'idle') {`,
+		`state = 'stopped';`,
+		`document.removeEventListener('visibilitychange', onVisibility);`,
+	} {
+		if !strings.Contains(pollBody, fragment) {
+			t.Fatalf("CSM.poll missing lifecycle fragment %q", fragment)
+		}
+	}
+	// The fetch primitive may only appear via CSM.request, never as a
+	// direct fetch() call — pinned by TestCSMPollUsesCSMRequest too, but
+	// repeated here so the state-machine test fails if the regression
+	// drifts.
+	if strings.Contains(pollBody, "fetch(") {
+		t.Fatal("CSM.poll must route exclusively through CSM.request")
+	}
+}
