@@ -141,10 +141,8 @@ state_path: "/var/lib/csm/state"
 # layouts need source: journal and the journal build tag (make build JOURNAL=1).
 mail_logs:
   source: auto              # auto | file | journal
-  # file: ""                # override the platform default
-  units:
-    - postfix
-    - dovecot
+  file: ""                  # override the platform default when non-empty
+  units: []                 # empty/omitted = postfix, dovecot
 
 # Detection knobs that are off by default. Each subsection is a separate
 # detector; flipping enabled: true picks it up on the next reload.

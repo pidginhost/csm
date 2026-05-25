@@ -110,6 +110,37 @@ func TestLoadWithDir_PackagedPHPPanelProfile(t *testing.T) {
 	}
 }
 
+func TestLoadWithDir_PackagedDefaultDoesNotPreseedMailLogUnits(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "csm.yaml")
+	confd := filepath.Join(dir, "conf.d")
+	must(t, os.MkdirAll(confd, 0o700))
+
+	defaultPath := filepath.Join("..", "..", "build", "packaging", "csm.yaml.default")
+	defaultConfig, err := os.ReadFile(defaultPath)
+	if err != nil {
+		t.Fatalf("read packaged default: %v", err)
+	}
+	must(t, os.WriteFile(main, defaultConfig, 0o600))
+	must(t, os.WriteFile(filepath.Join(confd, "10-mail-logs.yaml"), []byte(`
+mail_logs:
+  source: journal
+  units:
+    - custom-postfix
+`), 0o600))
+
+	cfg, err := LoadWithDir(main, confd)
+	if err != nil {
+		t.Fatalf("LoadWithDir: %v", err)
+	}
+	if cfg.MailLogs.Source != "journal" {
+		t.Fatalf("MailLogs.Source = %q, want journal", cfg.MailLogs.Source)
+	}
+	if len(cfg.MailLogs.Units) != 1 || cfg.MailLogs.Units[0] != "custom-postfix" {
+		t.Fatalf("MailLogs.Units = %v, want [custom-postfix]", cfg.MailLogs.Units)
+	}
+}
+
 func must(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {

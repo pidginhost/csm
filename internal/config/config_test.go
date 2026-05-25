@@ -373,6 +373,60 @@ func TestPackagedDefaultFirewallMatchesRuntimeDefaults(t *testing.T) {
 	}
 }
 
+func TestPackagedDefaultFeatureSamplesPreserveEffectiveDefaults(t *testing.T) {
+	data, err := os.ReadFile("../../build/packaging/csm.yaml.default")
+	if err != nil {
+		t.Skipf("packaged default config not readable from this layout: %v", err)
+	}
+	cfg, err := LoadBytes(data)
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+
+	if cfg.MailLogs.Source != "auto" {
+		t.Errorf("mail_logs.source = %q, want auto", cfg.MailLogs.Source)
+	}
+	if cfg.MailLogs.File != "" {
+		t.Errorf("mail_logs.file = %q, want empty", cfg.MailLogs.File)
+	}
+	if want := []string{"postfix", "dovecot"}; !reflect.DeepEqual(cfg.MailLogs.Units, want) {
+		t.Errorf("mail_logs.units = %v, want %v", cfg.MailLogs.Units, want)
+	}
+
+	direct := cfg.Detection.DirectSMTPEgress
+	if direct.Enabled {
+		t.Fatal("detection.direct_smtp_egress.enabled must stay false in the packaged default")
+	}
+	if direct.Backend != "auto" {
+		t.Errorf("detection.direct_smtp_egress.backend = %q, want auto", direct.Backend)
+	}
+	if direct.DryRun == nil || !*direct.DryRun {
+		t.Fatalf("detection.direct_smtp_egress.dry_run = %v, want explicit true", direct.DryRun)
+	}
+	if !cfg.DirectSMTPEgressDryRunEnabled() {
+		t.Fatal("direct SMTP egress sample must remain effectively dry-run")
+	}
+	if want := []int{25, 465, 587}; !reflect.DeepEqual(direct.Ports, want) {
+		t.Errorf("detection.direct_smtp_egress.ports = %v, want %v", direct.Ports, want)
+	}
+
+	if cfg.BPFEnforcement.Enabled {
+		t.Fatal("bpf_enforcement.enabled must stay false in the packaged default")
+	}
+	if cfg.BPFEnforcement.DirectSMTPEgress {
+		t.Fatal("bpf_enforcement.direct_smtp_egress must stay false in the packaged default")
+	}
+	if cfg.BPFEnforcement.VerdictCallback {
+		t.Fatal("bpf_enforcement.verdict_callback must stay false in the packaged default")
+	}
+	if cfg.BPFEnforcement.DryRun == nil || !*cfg.BPFEnforcement.DryRun {
+		t.Fatalf("bpf_enforcement.dry_run = %v, want explicit true", cfg.BPFEnforcement.DryRun)
+	}
+	if !cfg.BPFEnforcementDryRunEnabled() {
+		t.Fatal("BPF enforcement sample must remain effectively dry-run")
+	}
+}
+
 func TestProductionReferenceConfigExposesTunableThresholds(t *testing.T) {
 	data, err := os.ReadFile("../../configs/csm.yaml.production.example")
 	if err != nil {
@@ -1103,6 +1157,22 @@ bpf_enforcement:
 	}
 	if !cfg.BPFEnforcementDryRunEnabled() {
 		t.Errorf("DryRun should default true (safety) when omitted")
+	}
+}
+
+func TestConfig_BPFEnforcementDryRunExplicitTrueUnmarshalsPointer(t *testing.T) {
+	cfg, err := LoadBytes([]byte(`
+bpf_enforcement:
+  dry_run: true
+`))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	if cfg.BPFEnforcement.DryRun == nil {
+		t.Fatal("bpf_enforcement.dry_run=true must unmarshal to a non-nil pointer")
+	}
+	if !*cfg.BPFEnforcement.DryRun {
+		t.Fatal("bpf_enforcement.dry_run=true must preserve true")
 	}
 }
 
