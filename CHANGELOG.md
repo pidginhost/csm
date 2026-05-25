@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.8.0] - 2026-05-25
+
 ### Added
 
 - ModSecurity rule management table gained search, status / action / escalation filters, sortable columns, pagination, persistent state, and an empty-state placeholder so operators with many custom rules can find a specific entry without scrolling the full list.
