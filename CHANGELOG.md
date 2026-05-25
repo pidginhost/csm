@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Web UI gained per-operator preferences (table density, timestamp display, default auto-refresh) saved server-side under the operator's token, so settings follow operators across browsers. Accessible from a new gear button in the topbar.
 - Web UI gained per-page named filter views. Filter / search / pagination state on findings, firewall, audit, threat, incident, quarantine, email, and ModSecurity pages can be captured under a chosen name and reapplied later from the topbar dropdown. Views are stored server-side, scoped to the operator.
 - Bulk threat block / whitelist and bulk firewall unblock actions now surface a 30-second "Undo" banner. Clicking it dispatches the inverse operation through the daemon and records it in the audit log.
+- Settings UI exposes the mail-log source / file / journal-units selector and the dovecot-postfix account-key extractor. Hosts on Debian-family or journald layouts can now switch sources without hand-editing `csm.yaml`.
 
 ### Changed
 

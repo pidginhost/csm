@@ -163,6 +163,20 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "mail_bruteforce_subnet_threshold", Type: "int", Label: "Mail bruteforce /24 threshold", Min: int64p(1), FieldGroup: FieldGroupMailBruteForce},
 			{YAMLPath: "mail_account_spray_threshold", Type: "int", Label: "Mail account spray threshold", Min: int64p(1), FieldGroup: FieldGroupAccountSpray},
 			{YAMLPath: "mail_bruteforce_max_tracked", Type: "int", Label: "Mail bruteforce max tracked", Min: int64p(100), FieldGroup: FieldGroupStateRetention},
+			{YAMLPath: "mail_brute_account_key", Type: "string", Label: "Mail brute account-key extractor", FieldGroup: FieldGroupMailBruteForce, Placeholder: "builtin:dovecot-user", Help: "How to derive the account from a dovecot/postfix log line: builtin:dovecot-user (default), builtin:postfix-sasl, or regex:<pattern> where group 1 is the account."},
+		},
+	},
+	{
+		ID:       "mail_logs",
+		Title:    "Mail logs",
+		YAMLPath: "mail_logs",
+		Icon:     "mail",
+		Group:    SectionGroupDetection,
+		Restart:  true,
+		Fields: []SettingsField{
+			{YAMLPath: "source", Type: "enum", Label: "Log source", Options: []string{"auto", "file", "journal"}, Help: "auto: try platform default file then fall back to journal. file: require log file. journal: read systemd-journald (needs journal build tag)."},
+			{YAMLPath: "file", Type: "string", Label: "Log file override", Placeholder: "/var/log/maillog", Help: "Override the platform-default file path. Leave blank to keep the default."},
+			{YAMLPath: "units", Type: "[]string", Label: "Journal units", Help: "Systemd units to match when source=journal. One per line (e.g. postfix, dovecot)."},
 		},
 	},
 	{

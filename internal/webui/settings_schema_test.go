@@ -11,7 +11,7 @@ import (
 func TestSettingsSectionsAreStable(t *testing.T) {
 	got := SettingsSectionIDs()
 	want := []string{
-		"alerts", "thresholds", "suppressions", "auto_response",
+		"alerts", "thresholds", "mail_logs", "suppressions", "auto_response",
 		"reputation", "email_protection", "challenge", "php_shield",
 		"signatures", "email_av", "modsec", "performance", "cloudflare",
 		"geoip", "infra_ips", "disabled_checks", "sentry", "firewall",
