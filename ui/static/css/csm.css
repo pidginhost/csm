@@ -614,6 +614,16 @@ body.theme-dark { background-color: #1a2234; }
     flex-wrap: wrap;
 }
 
+/* WEB_ROADMAP P6.1: narrow-viewport tweaks. The topbar's chatty pills
+   crowd the logout button on phones, so hide the labels there and keep
+   the action buttons reachable. Page header tightens its padding too. */
+@media (max-width: 575.98px) {
+    #csm-sse-pill .csm-sse-pill__label,
+    #csm-refresh-pill { display: none !important; }
+    .csm-page-header { padding: 0.75rem 0.75rem; }
+    .csm-page-header__title { font-size: 1.15rem; }
+}
+
 /* Status strip ------------------------------------------------------------- */
 .csm-status-strip {
     display: flex;

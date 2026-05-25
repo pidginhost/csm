@@ -2840,6 +2840,41 @@ func TestShortcutsHelpModalFocusContract(t *testing.T) {
 	}
 }
 
+// TestResponsivePolish pins WEB_ROADMAP P6.1: firewall config tables
+// are wrapped in table-responsive so they don't overflow on phones,
+// and the topbar's chatty pills hide their labels below 576px so the
+// action buttons stay reachable.
+func TestResponsivePolish(t *testing.T) {
+	tmpl, err := os.ReadFile("../../ui/templates/firewall.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmplText := string(tmpl)
+	for _, fragment := range []string{
+		`<div class="table-responsive"><table class="table table-vcenter card-table table-sm" id="fw-config-table">`,
+		`<div class="table-responsive"><table class="table table-vcenter card-table table-sm" id="fw-config-table2">`,
+	} {
+		if !strings.Contains(tmplText, fragment) {
+			t.Fatalf("firewall.html missing P6.1 responsive wrap %q", fragment)
+		}
+	}
+
+	css, err := os.ReadFile("../../ui/static/css/csm.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cssText := string(css)
+	for _, fragment := range []string{
+		`@media (max-width: 575.98px) {`,
+		`#csm-sse-pill .csm-sse-pill__label,`,
+		`#csm-refresh-pill { display: none !important; }`,
+	} {
+		if !strings.Contains(cssText, fragment) {
+			t.Fatalf("csm.css missing P6.1 fragment %q", fragment)
+		}
+	}
+}
+
 // TestDarkModeContrastPalette pins WEB_ROADMAP P6.4: severity badges,
 // outline buttons, and muted text are recolored so WCAG AA contrast
 // holds in dark mode. Pastel dark-mode backgrounds need dark text, and
