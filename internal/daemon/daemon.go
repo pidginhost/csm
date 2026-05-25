@@ -326,6 +326,9 @@ func (d *Daemon) registerFirewallMetrics() {
 // Run starts the daemon and blocks until stopped.
 func (d *Daemon) Run() error {
 	d.startTime = time.Now()
+	if d.store != nil {
+		d.store.EnsureBaseline(d.startTime)
+	}
 
 	// Initialize structured logging from environment (CSM_LOG_FORMAT,
 	// CSM_LOG_LEVEL). The default text handler preserves the legacy

@@ -39,10 +39,15 @@ func (d *Daemon) LatestScan() time.Time {
 	return d.store.LatestScanTime()
 }
 
-// BaselineAt implements health.Provider.
-// TODO: track baseline timestamp distinctly in state.Store so this can return the real time.
+// BaselineAt implements health.Provider. Returns the persisted first-start
+// timestamp recorded by EnsureBaseline on the daemon's first successful
+// boot against this state directory. Reinstalls and upgrades preserve
+// the original value.
 func (d *Daemon) BaselineAt() time.Time {
-	return time.Time{}
+	if d.store == nil {
+		return time.Time{}
+	}
+	return d.store.BaselineAt()
 }
 
 // StoreHealthy implements health.Provider.

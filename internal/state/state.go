@@ -772,6 +772,33 @@ func (s *Store) LatestScanTime() time.Time {
 	return s.latestScanTime
 }
 
+const baselineAtMetaKey = "__baseline_at"
+
+// EnsureBaseline records the first-start timestamp the first time it is
+// called against a fresh state directory. Subsequent calls preserve the
+// original value so reinstalls / upgrades do not reset the baseline. Safe
+// to call from the daemon boot path on every start.
+func (s *Store) EnsureBaseline(now time.Time) {
+	if _, ok := s.GetRaw(baselineAtMetaKey); ok {
+		return
+	}
+	s.SetRaw(baselineAtMetaKey, now.UTC().Format(time.RFC3339Nano))
+}
+
+// BaselineAt returns the persisted baseline timestamp, or the zero time
+// when EnsureBaseline has not been called yet.
+func (s *Store) BaselineAt() time.Time {
+	raw, ok := s.GetRaw(baselineAtMetaKey)
+	if !ok {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
 // DismissLatestFinding removes a finding from the latest scan results.
 func (s *Store) DismissLatestFinding(key string) {
 	s.latestMu.Lock()
