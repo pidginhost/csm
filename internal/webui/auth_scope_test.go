@@ -91,6 +91,32 @@ func TestRequireReadRejectsWriteMethods(t *testing.T) {
 	}
 }
 
+func TestRequireCSRFDoesNotLetReadBearerBypassAdminCookie(t *testing.T) {
+	s := newTestServer(t, "")
+	s.cfg.WebUI.Tokens = []config.WebUIToken{
+		{Name: "admin", Token: "admin-secret", Scope: "admin"},
+		{Name: "read", Token: "read-secret", Scope: "read"},
+	}
+	called := false
+	handler := s.requireAuth(s.requireCSRF(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	})))
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/prefs/user", nil)
+	req.AddCookie(&http.Cookie{Name: "csm_auth", Value: "admin-secret"})
+	req.Header.Set("Authorization", "Bearer read-secret")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if called {
+		t.Fatal("handler ran without CSRF")
+	}
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("code = %d, want 403", rec.Code)
+	}
+}
+
 func TestRequireScope_LegacyAuthTokenStillWorks(t *testing.T) {
 	// Backward compat: a config with only the legacy auth_token (migrated by
 	// applyDefaults into Tokens) must still authenticate.

@@ -3,6 +3,7 @@ package webui
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -57,7 +58,7 @@ func (s *Server) recordUndoEntry(r *http.Request, action, inverse, summary strin
 		Summary: summary,
 	})
 	if err != nil {
-		fmt.Printf("webui: record undo entry: %v\n", err)
+		log.Printf("webui: record undo entry: %v", err)
 		return ""
 	}
 	return entry.ID
@@ -202,7 +203,11 @@ func (s *Server) runUndoEntry(r *http.Request, entry store.UndoEntry) (undoRunRe
 		if reason == "" {
 			reason = "Undo: re-block via CSM Web UI"
 		}
-		resp.Count = s.undoBulkReblock(payload.IPs, reason, timeout)
+		count, err := s.undoBulkReblock(payload.IPs, reason, timeout)
+		if err != nil {
+			return undoRunResponse{}, err
+		}
+		resp.Count = count
 	case undoInverseThreatWhitelist:
 		resp.Count = s.undoBulkWhitelist(payload.IPs)
 	case undoInverseThreatUnwhitelist:
@@ -216,7 +221,11 @@ func (s *Server) runUndoEntry(r *http.Request, entry store.UndoEntry) (undoRunRe
 		if timeout == 0 {
 			timeout = 24 * time.Hour
 		}
-		resp.Count = s.undoBulkReblock(payload.IPs, reason, timeout)
+		count, err := s.undoBulkReblock(payload.IPs, reason, timeout)
+		if err != nil {
+			return undoRunResponse{}, err
+		}
+		resp.Count = count
 	default:
 		return undoRunResponse{}, fmt.Errorf("unknown inverse action %q", entry.Inverse)
 	}
@@ -241,20 +250,21 @@ func (s *Server) undoBulkBlock(ips []string) int {
 	return count
 }
 
-func (s *Server) undoBulkReblock(ips []string, reason string, timeout time.Duration) int {
+func (s *Server) undoBulkReblock(ips []string, reason string, timeout time.Duration) (int, error) {
+	if s.blocker == nil {
+		return 0, fmt.Errorf("firewall engine not available")
+	}
 	count := 0
 	for _, ip := range ips {
 		if _, err := parseAndValidateIP(ip); err != nil {
 			continue
 		}
-		if s.blocker != nil {
-			if err := blockIPForOperator(s.blocker, ip, reason, timeout); err != nil {
-				continue
-			}
+		if err := blockIPForOperator(s.blocker, ip, reason, timeout); err != nil {
+			continue
 		}
 		count++
 	}
-	return count
+	return count, nil
 }
 
 func (s *Server) undoBulkWhitelist(ips []string) int {

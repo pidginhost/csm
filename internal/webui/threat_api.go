@@ -452,6 +452,10 @@ func (s *Server) apiThreatBulkAction(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "Action must be 'block' or 'whitelist'", http.StatusBadRequest)
 		return
 	}
+	if req.Action == "block" && s.blocker == nil {
+		writeJSONError(w, "firewall engine not available", http.StatusServiceUnavailable)
+		return
+	}
 
 	count := 0
 	succeeded := make([]string, 0, len(req.IPs))

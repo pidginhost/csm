@@ -191,9 +191,9 @@ CSM.savedViews = (function() {
             });
         };
         if (CSM && CSM.confirm) {
-            CSM.confirm('Delete saved view "' + view.name + '"?').then(function(ok) {
-                if (ok) go();
-            });
+            CSM.confirm('Delete saved view "' + view.name + '"?').then(function() {
+                go();
+            }).catch(function() {});
         } else if (window.confirm('Delete saved view "' + view.name + '"?')) {
             go();
         }

@@ -142,7 +142,8 @@ CSM.prefs = (function() {
         if (!(d instanceof Date)) return '';
         var tz = state.timezone || 'local';
         var opts = { year: 'numeric', month: '2-digit', day: '2-digit',
-                     hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
+                     hour: '2-digit', minute: '2-digit', second: '2-digit',
+                     hour12: false, hourCycle: 'h23' };
         if (tz === 'server') {
             var server = document.documentElement.getAttribute('data-csm-server-tz') || 'UTC';
             opts.timeZone = server;
@@ -150,7 +151,12 @@ CSM.prefs = (function() {
             opts.timeZone = tz;
         }
         try {
-            return new Intl.DateTimeFormat('en-GB', opts).format(d).replace(',', '');
+            var parts = {};
+            new Intl.DateTimeFormat('en-GB', opts).formatToParts(d).forEach(function(part) {
+                parts[part.type] = part.value;
+            });
+            return parts.year + '-' + parts.month + '-' + parts.day + ' ' +
+                   parts.hour + ':' + parts.minute + ':' + parts.second;
         } catch (e) {
             return d.toString();
         }

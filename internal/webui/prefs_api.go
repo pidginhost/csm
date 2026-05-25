@@ -21,18 +21,14 @@ func nowUnix() int64 { return time.Now().UTC().Unix() }
 // is used as the per-operator partition key for the preferences store. The
 // store never sees the raw token; only its hash.
 //
-// Returns "" when no credential is present (handlers below run after
-// requireAuth, so this only happens in unit tests that bypass middleware).
+// Returns "" when no admin credential is present (handlers below run after
+// requireAuth, so this normally only happens in tests that bypass middleware).
 func (s *Server) operatorKey(r *http.Request) string {
-	if c, err := r.Cookie("csm_auth"); err == nil && c.Value != "" {
-		return hashOperatorToken(c.Value)
+	if bearer, ok := s.bearerTokenWithScope(r, "admin"); ok {
+		return hashOperatorToken(bearer)
 	}
-	auth := r.Header.Get("Authorization")
-	if strings.HasPrefix(auth, "Bearer ") {
-		bearer := strings.TrimPrefix(auth, "Bearer ")
-		if bearer != "" {
-			return hashOperatorToken(bearer)
-		}
+	if cookie, ok := s.cookieTokenWithScope(r, "admin"); ok {
+		return hashOperatorToken(cookie)
 	}
 	return ""
 }

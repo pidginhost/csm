@@ -585,29 +585,43 @@ func (s *Server) csmConfig() map[string]interface{} {
 // session uses the admin login form, which only matches admin tokens).
 func (s *Server) tokenHasScope(r *http.Request, want string) bool {
 	// Browser cookie session
-	if c, err := r.Cookie("csm_auth"); err == nil && c.Value != "" {
-		for _, tok := range s.cfg.WebUI.Tokens {
-			if webUITokenMatches(c.Value, tok) {
-				return webUITokenAllows(tok, want)
-			}
-		}
+	if _, ok := s.cookieTokenWithScope(r, want); ok {
+		return true
 	}
 
 	// Bearer token
+	_, ok := s.bearerTokenWithScope(r, want)
+	return ok
+}
+
+func (s *Server) cookieTokenWithScope(r *http.Request, want string) (string, bool) {
+	c, err := r.Cookie("csm_auth")
+	if err != nil || c.Value == "" {
+		return "", false
+	}
+	for _, tok := range s.cfg.WebUI.Tokens {
+		if webUITokenMatches(c.Value, tok) && webUITokenAllows(tok, want) {
+			return c.Value, true
+		}
+	}
+	return "", false
+}
+
+func (s *Server) bearerTokenWithScope(r *http.Request, want string) (string, bool) {
 	auth := r.Header.Get("Authorization")
 	if !strings.HasPrefix(auth, "Bearer ") {
-		return false
+		return "", false
 	}
 	supplied := strings.TrimPrefix(auth, "Bearer ")
 	if supplied == "" {
-		return false
+		return "", false
 	}
 	for _, tok := range s.cfg.WebUI.Tokens {
-		if webUITokenMatches(supplied, tok) {
-			return webUITokenAllows(tok, want)
+		if webUITokenMatches(supplied, tok) && webUITokenAllows(tok, want) {
+			return supplied, true
 		}
 	}
-	return false
+	return "", false
 }
 
 func webUITokenMatches(supplied string, tok config.WebUIToken) bool {
@@ -898,12 +912,14 @@ func (s *Server) csrfSecret() string {
 // to the bearer token.
 func (s *Server) validateCSRF(r *http.Request) bool {
 	if !isUnsafeCSRFMethod(r.Method) {
-		return true // only validate POST, PUT, and DELETE
+		return true // only validate state-changing methods
 	}
 
-	// Skip CSRF for Bearer token auth - the token itself proves identity.
+	// Skip CSRF only when the bearer token itself grants admin writes. A
+	// read-scope bearer presented alongside an admin cookie must not turn
+	// the cookie-authenticated request into a CSRF-exempt API call.
 	// CSRF protection is only needed for cookie-based browser sessions.
-	if s.isBearerAuth(r) {
+	if s.isAdminBearerAuth(r) {
 		return true
 	}
 
@@ -922,13 +938,15 @@ func (s *Server) validateCSRF(r *http.Request) bool {
 	return false
 }
 
-// requireCSRF wraps a handler to validate CSRF on POST, PUT, and DELETE
+// requireCSRF wraps a handler to validate CSRF on POST, PUT, PATCH, and DELETE
 // requests. PUT joined the unsafe set when /api/v1/prefs/user landed; the
 // existing list pre-dates that endpoint.
 func (s *Server) requireCSRF(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Skip CSRF for Bearer token auth (API-to-API calls don't need CSRF protection)
-		if isUnsafeCSRFMethod(r.Method) && !s.isBearerAuth(r) && !s.validateCSRF(r) {
+		// Skip CSRF for admin Bearer token auth. API-to-API callers do not
+		// need CSRF protection, but read-scope bearer tokens never authorize
+		// mutating handlers on their own.
+		if isUnsafeCSRFMethod(r.Method) && !s.isAdminBearerAuth(r) && !s.validateCSRF(r) {
 			http.Error(w, "Invalid CSRF token", http.StatusForbidden)
 			return
 		}
@@ -946,20 +964,13 @@ func isUnsafeCSRFMethod(method string) bool {
 }
 
 func (s *Server) isBearerAuth(r *http.Request) bool {
-	auth := r.Header.Get("Authorization")
-	if !strings.HasPrefix(auth, "Bearer ") {
-		return false
-	}
-	supplied := strings.TrimPrefix(auth, "Bearer ")
-	if supplied == "" {
-		return false
-	}
-	for _, tok := range s.cfg.WebUI.Tokens {
-		if webUITokenMatches(supplied, tok) {
-			return true
-		}
-	}
-	return false
+	_, ok := s.bearerTokenWithScope(r, "read")
+	return ok
+}
+
+func (s *Server) isAdminBearerAuth(r *http.Request) bool {
+	_, ok := s.bearerTokenWithScope(r, "admin")
+	return ok
 }
 
 // --- Logout ---

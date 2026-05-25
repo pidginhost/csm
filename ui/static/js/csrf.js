@@ -123,21 +123,39 @@ CSM.formatPercent = function(v, round) {
     return n.toFixed(d) + '%';
 };
 
-// Format ISO timestamp to "YYYY-MM-DD HH:MM" in browser-local timezone.
+// Format ISO timestamp to "YYYY-MM-DD HH:MM" using the operator timezone.
 // Pass { tz: true } as opts to append timezone abbreviation.
 CSM.fmtDate = function(ts, opts) {
     if (!ts) return '\u2014';
     var d = new Date(ts);
     if (isNaN(d.getTime())) return '\u2014';
-    var y = d.getFullYear();
-    var m = String(d.getMonth() + 1).padStart(2, '0');
-    var day = String(d.getDate()).padStart(2, '0');
-    var h = String(d.getHours()).padStart(2, '0');
-    var min = String(d.getMinutes()).padStart(2, '0');
-    var result = y + '-' + m + '-' + day + ' ' + h + ':' + min;
+    var result = '';
+    if (CSM.prefs && typeof CSM.prefs.formatDateTime === 'function') {
+        result = CSM.prefs.formatDateTime(d).replace(/:\d{2}$/, '');
+    }
+    if (!result) {
+        var y = d.getFullYear();
+        var m = String(d.getMonth() + 1).padStart(2, '0');
+        var day = String(d.getDate()).padStart(2, '0');
+        var h = String(d.getHours()).padStart(2, '0');
+        var min = String(d.getMinutes()).padStart(2, '0');
+        result = y + '-' + m + '-' + day + ' ' + h + ':' + min;
+    }
     if (opts && opts.tz) {
-        var tz = d.toLocaleTimeString('en-us', { timeZoneName: 'short' }).split(' ').pop();
-        result += ' ' + tz;
+        try {
+            var pref = CSM.prefs && CSM.prefs.get ? CSM.prefs.get().timezone : 'local';
+            var fmtOpts = { timeZoneName: 'short' };
+            if (pref === 'server') {
+                var server = document.documentElement.getAttribute('data-csm-server-tz') || 'UTC';
+                fmtOpts.timeZone = server;
+            } else if (pref && pref !== 'local') {
+                fmtOpts.timeZone = pref;
+            }
+            var tz = d.toLocaleTimeString('en-us', fmtOpts).split(' ').pop();
+            result += ' ' + tz;
+        } catch (e) {
+            result += ' ' + d.toLocaleTimeString('en-us', { timeZoneName: 'short' }).split(' ').pop();
+        }
     }
     return result;
 };

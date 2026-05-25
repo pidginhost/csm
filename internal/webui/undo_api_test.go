@@ -157,6 +157,23 @@ func TestUndoRunDispatchesInverseReblock(t *testing.T) {
 	}
 }
 
+func TestUndoRunReblockRequiresFirewallEngine(t *testing.T) {
+	s := newTestServerWithBbolt(t, "tok")
+	id := s.recordUndoEntry(bearerRequest("POST", "/api/v1/undo/run", nil),
+		"firewall_bulk_unblock", undoInverseFirewallUnblock,
+		"Unblocked 1 IP", undoPayloadIPs{IPs: []string{"203.0.113.12"}})
+
+	body, _ := json.Marshal(undoRunRequest{ID: id})
+	rec := httptest.NewRecorder()
+	s.apiUndoRun(rec, bearerRequest("POST", "/api/v1/undo/run", body))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("run status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "firewall engine not available") {
+		t.Fatalf("body %q does not explain missing firewall engine", rec.Body.String())
+	}
+}
+
 func TestUndoRunRejectsExpiredEntry(t *testing.T) {
 	s := newTestServerWithBbolt(t, "tok")
 	sdb := store.Global()

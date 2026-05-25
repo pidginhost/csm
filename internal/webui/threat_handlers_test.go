@@ -181,3 +181,14 @@ func TestAPIThreatBulkActionGetRejected(t *testing.T) {
 		t.Errorf("GET bulk-action = %d, want 405", w.Code)
 	}
 }
+
+func TestAPIThreatBulkActionBlockRequiresFirewallEngine(t *testing.T) {
+	s := newTestServer(t, "tok")
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/", strings.NewReader(`{"ips":["203.0.113.5"],"action":"block"}`))
+	req.Header.Set("Content-Type", "application/json")
+	s.apiThreatBulkAction(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}

@@ -65,6 +65,12 @@
         toast._csmTimer = timer;
     };
 
+    ['success', 'error', 'warning', 'info'].forEach(function(type) {
+        CSM.toast[type] = function(message) {
+            CSM.toast(message, type);
+        };
+    });
+
     function removeToast(el) {
         if (el._csmRemoved) return;
         el._csmRemoved = true;

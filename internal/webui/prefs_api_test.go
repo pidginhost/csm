@@ -7,10 +7,13 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/pidginhost/csm/internal/config"
 )
 
 func TestOperatorKeyHashesCookie(t *testing.T) {
-	s := newTestServer(t, "tok")
+	s := newTestServer(t, "alpha")
+	s.cfg.WebUI.Tokens = append(s.cfg.WebUI.Tokens, config.WebUIToken{Name: "beta", Token: "beta", Scope: "admin"})
 	req := httptest.NewRequest("GET", "/", nil)
 	req.AddCookie(&http.Cookie{Name: "csm_auth", Value: "alpha"})
 	first := s.operatorKey(req)
@@ -36,6 +39,21 @@ func TestOperatorKeyHashesCookie(t *testing.T) {
 	req4 := httptest.NewRequest("GET", "/", nil)
 	if got := s.operatorKey(req4); got != "" {
 		t.Fatalf("missing credential should return empty key, got %q", got)
+	}
+}
+
+func TestOperatorKeyUsesValidatedBearerBeforeStaleCookie(t *testing.T) {
+	s := newTestServer(t, "current")
+	req := httptest.NewRequest("GET", "/", nil)
+	req.AddCookie(&http.Cookie{Name: "csm_auth", Value: "deleted-token"})
+	req.Header.Set("Authorization", "Bearer current")
+
+	got := s.operatorKey(req)
+	if got != hashOperatorToken("current") {
+		t.Fatalf("operatorKey = %q, want current bearer hash", got)
+	}
+	if got == hashOperatorToken("deleted-token") {
+		t.Fatal("operatorKey used stale cookie despite authenticated bearer")
 	}
 }
 
@@ -94,6 +112,7 @@ func TestSanitizeUserPrefsAcceptsKnownTimezones(t *testing.T) {
 
 func TestUserPrefsRoundTrip(t *testing.T) {
 	s := newTestServerWithBbolt(t, "tok")
+	s.cfg.WebUI.Tokens = append(s.cfg.WebUI.Tokens, config.WebUIToken{Name: "other", Token: "different-token", Scope: "admin"})
 
 	authReq := func(method, path string, body []byte) *http.Request {
 		var br *http.Request
@@ -133,9 +152,6 @@ func TestUserPrefsRoundTrip(t *testing.T) {
 	rec = httptest.NewRecorder()
 	other := authReq("GET", "/api/v1/prefs/user", nil)
 	other.Header.Set("Authorization", "Bearer different-token")
-	// Make different-token an admin token to pass requireAuth in real wiring;
-	// we call the handler directly so requireAuth is bypassed but operatorKey
-	// still hashes whatever credential the request carries.
 	s.apiPrefsUser(rec, other)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("other GET status=%d", rec.Code)

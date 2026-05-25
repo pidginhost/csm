@@ -41,6 +41,7 @@ func TestSharedFormattingHelpersHandleMissingValues(t *testing.T) {
 		`if (v == null || (typeof v === 'string' && v.trim() === '')) return '';`,
 		`d = Math.min(20, Math.floor(d));`,
 		`parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');`,
+		`CSM.prefs && typeof CSM.prefs.formatDateTime === 'function'`,
 	} {
 		if !strings.Contains(text, fragment) {
 			t.Fatalf("csrf.js missing formatter guard fragment %q", fragment)
@@ -58,6 +59,23 @@ func TestWebUIToastCallsUseSupportedErrorType(t *testing.T) {
 		}
 		if dangerToast.Match(src) {
 			t.Errorf("%s passes unsupported danger type to CSM.toast; use error", path)
+		}
+	}
+}
+
+func TestToastConvenienceMethodsExist(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/toast.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, fragment := range []string{
+		`['success', 'error', 'warning', 'info'].forEach(function(type) {`,
+		`CSM.toast[type] = function(message) {`,
+		`CSM.toast(message, type);`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Fatalf("toast.js missing convenience method fragment %q", fragment)
 		}
 	}
 }
@@ -1637,18 +1655,19 @@ func TestEveryNamedMutatorRouteEnforcesCSRF(t *testing.T) {
 	}
 }
 
-// TestCSRFValidatorSkipsBearerAndChecksConstantTime pins the validator
-// contract: Bearer-auth requests skip CSRF (the token itself proves
-// identity), cookie-auth requests must carry X-CSRF-Token or csrf_token,
+// TestCSRFValidatorSkipsAdminBearerAndChecksConstantTime pins the validator
+// contract: admin Bearer-auth requests skip CSRF (the token itself proves
+// write identity), cookie-auth requests must carry X-CSRF-Token or csrf_token,
 // and comparisons use subtle.ConstantTimeCompare.
-func TestCSRFValidatorSkipsBearerAndChecksConstantTime(t *testing.T) {
+func TestCSRFValidatorSkipsAdminBearerAndChecksConstantTime(t *testing.T) {
 	src, err := os.ReadFile("../../internal/webui/server.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(src)
 	for _, fragment := range []string{
-		`if s.isBearerAuth(r) {`,
+		`if s.isAdminBearerAuth(r) {`,
+		`!s.isAdminBearerAuth(r) && !s.validateCSRF(r)`,
 		`subtle.ConstantTimeCompare([]byte(token), []byte(expected)) == 1`,
 		`if token := r.Header.Get("X-CSRF-Token"); token != "" {`,
 		`if token := r.FormValue("csrf_token"); token != "" {`,
