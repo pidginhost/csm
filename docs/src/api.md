@@ -1,6 +1,6 @@
 # API Reference
 
-Machine-readable HTTPS API. All endpoints require token authentication. POST mutations require CSRF token.
+Machine-readable HTTPS API. All endpoints require token authentication. State-changing POST, PUT, PATCH, and DELETE requests require CSRF protection for browser cookie sessions.
 
 ## Authentication
 
@@ -12,7 +12,7 @@ curl -H "Authorization: Bearer YOUR_TOKEN" https://server:9443/api/v1/status
 curl -b "csm_auth=YOUR_TOKEN" https://server:9443/api/v1/status
 ```
 
-POST requests require the `X-CSRF-Token` header (obtained from the login response or page meta tag).
+Cookie-authenticated state-changing requests require the `X-CSRF-Token` header (obtained from the login response or page meta tag). Admin-scope Bearer requests are CSRF-exempt because the `Authorization` header is the write credential.
 
 ### Token scopes
 
@@ -189,14 +189,15 @@ Per-operator state (UI density, timestamp display, default auto-refresh,
 saved filter views) is keyed server-side by SHA-256 of the auth token,
 so preferences follow the operator across browsers and devices without
 the daemon ever storing the raw credential. Capability flag:
-`webui.prefs.v1`.
+`webui.prefs.v1`. These endpoints require admin scope because they read
+or mutate operator-private UI state.
 
 ```
 GET    /api/v1/prefs/user        Read this operator's UI preferences
 PUT    /api/v1/prefs/user        Replace the prefs blob (CSRF on cookie sessions)
 GET    /api/v1/prefs/views       List saved views; `?page=findings` filters by page
-PUT    /api/v1/prefs/views       Upsert one view {page, name, params}
-DELETE /api/v1/prefs/views       Delete one view {page, name}
+PUT    /api/v1/prefs/views       Upsert one view {page, name, params} (CSRF on cookie sessions)
+DELETE /api/v1/prefs/views       Delete one view {page, name} (CSRF on cookie sessions)
 ```
 
 Response shape for `GET /api/v1/prefs/user`:
@@ -211,32 +212,67 @@ Response shape for `GET /api/v1/prefs/user`:
 ```
 
 `density` is `comfortable` or `compact`. `timezone` is `server`, `local`,
-or an IANA zone (e.g. `Europe/Bucharest`). `auto_refresh` is `on` or
-`off`. Server-side sanitisation drops any other value. Saved views are
-operator-scoped, capped at 200 per operator and 64 KiB per entry; the
-`params` map must use simple-identifier keys and string values <= 256
-characters.
+or an IANA-shaped zone string (e.g. `Europe/Bucharest`). `auto_refresh`
+is `on` or `off`. Server-side sanitisation drops any other value. Unset
+prefs encode as empty strings; the UI applies `comfortable`, `local`, and
+`on` defaults.
+
+Response shape for `GET /api/v1/prefs/views`:
+
+```json
+[
+  {
+    "name": "Critical SSH",
+    "page": "findings",
+    "params": { "severity": "critical", "check": "smtp_bruteforce" },
+    "updated": 1779743255
+  }
+]
+```
+
+Saved views are operator-scoped and capped at 200 per operator. The saved
+view collection is stored as one 64 KiB preference blob. `page` and
+`params` keys must be simple identifiers: ASCII letters, digits,
+underscore, hyphen, or dot, up to 64 bytes. Each view has at most 32
+params, and param string values are capped at 256 bytes. `name` must be
+1-80 bytes with no control characters. `PUT` and `DELETE` return
+`{"status":"ok"}` on success.
 
 ## Bulk-action undo
 
-Bulk threat block / whitelist and bulk firewall unblock responses now
-return an `undo_token` and queue an inverse operation server-side for
-30 seconds. The UI surfaces a banner with the same TTL; CLI callers
+Bulk threat block / whitelist and bulk firewall unblock responses return
+an `undo_token` when the daemon queues an inverse operation server-side
+for 30 seconds. The UI surfaces a banner with the same TTL; CLI callers
 can act on the token through the endpoints below. Each successful undo
 writes an `undo_<original_action>` audit entry. Capability flag:
-`webui.undo.v1`.
+`webui.undo.v1`. These endpoints require admin scope because they read
+or mutate operator-private action state.
 
 ```
 GET  /api/v1/undo/pending    Latest pending undo entry for this operator (empty object if none)
-POST /api/v1/undo/run        Consume an entry and dispatch its inverse {id}
+POST /api/v1/undo/run        Consume an entry and dispatch its inverse {id}; empty id uses latest
+```
+
+Non-empty response shape for `GET /api/v1/undo/pending`:
+
+```json
+{
+  "id": "188d1f2a6c8b0000",
+  "action": "threat_bulk_block",
+  "inverse": "threat_bulk_unblock",
+  "summary": "Blocked 2 IPs",
+  "recorded_at": "2026-05-26T00:07:09Z",
+  "expires_at": "2026-05-26T00:07:39Z"
+}
 ```
 
 `POST /api/v1/undo/run` returns `{status, action, inverse, count}` on
-success, or `410 Gone` when the entry has already been consumed or its
-30-second TTL has elapsed. Recognised inverse actions cover threat
-block, threat unblock, threat whitelist, threat unwhitelist, and
-firewall bulk unblock. Other bulk actions (quarantine delete, generic
-fix) do not surface an undo token because they have no clean inverse.
+success, or `410 Gone` when the entry is missing, already consumed, or
+past its 30-second TTL. Recognised inverse action keys are
+`threat_bulk_unblock`, `threat_bulk_block`, `threat_bulk_unwhitelist`,
+`threat_bulk_whitelist`, and `firewall_bulk_reblock`. Other bulk actions
+(quarantine delete, generic fix) do not surface an undo token because
+they have no clean inverse.
 
 ## Finding fields
 
