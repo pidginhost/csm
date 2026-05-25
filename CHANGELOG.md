@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Live updates now ignore callbacks from stale SSE streams during reconnects, so a late event from a closed stream cannot repaint the header with the wrong state.
 - Web UI gained a Ctrl-K / Cmd-K command palette that fuzzy-matches every sidebar page, navigates with arrow keys, and traps focus while open. The shortcut is listed in the help overlay.
 - Web UI ships a print stylesheet so the incident, audit, and findings pages render as static evidence: nav / topbar / toasts / toolbars are hidden, tables expand to show every row, and a "Printed from URL on TIMESTAMP" footer is stamped at the bottom of the printed output.
+- Web UI dark mode: severity badges and outline-button hover states now use dark text on the lighter pastel backgrounds so they pass WCAG AA contrast (white-on-pastel was ≤2.3:1), and muted helper text was lifted from `#6b7a8d` (≈3:1 on the dark page) to `#8d99ad` (≈4.5:1) so it reaches AA for normal-size text.
 - New `thresholds.crontab_base64_blob_max_bytes` operator override for the crontab deep-scan base64 decoder cap (default 16384). Lets operators raise the cap on hosts where `csm_checks_crontab_base64_truncated_total` shows recurring truncation without rebuilding the daemon.
 
 ### Changed

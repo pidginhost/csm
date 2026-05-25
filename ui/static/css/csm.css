@@ -43,14 +43,22 @@
 .theme-dark .footer { border-color: #2d3a4e; }
 .theme-dark .form-control, .theme-dark .form-select { background-color: #1a2234; border-color: #2d3a4e; color: #c8d3e0; }
 .theme-dark .list-group-item { background-color: #1e293b; border-color: #2d3a4e; color: #c8d3e0; }
-.theme-dark .text-muted { color: #6b7a8d !important; }
-.theme-dark .subheader { color: #6b7a8d; }
+/* WEB_ROADMAP P6.4: dark-mode muted text lifted from #6b7a8d (≈3.1:1 on
+   #1a2234, fails WCAG AA normal) to #8d99ad (≈4.5:1, passes AA normal). */
+.theme-dark .text-muted { color: #8d99ad !important; }
+.theme-dark .subheader { color: #8d99ad; }
 .theme-dark code { color: #7ec8e3; }
 
 /* --- layout.html: severity badges & text --------------------------------- */
+/* WEB_ROADMAP P6.4: badge text colors picked for WCAG AA contrast on
+   the per-theme background pastels. Light bg #f76707/#f59f00 and dark
+   bg #ff6b6b/#ff922b/#ffd43b all fail white-text contrast (<4.5), so
+   high/warning use dark text in both themes and critical switches to
+   dark text in dark mode where the bg becomes #ff6b6b. */
 .badge-critical { background: var(--csm-critical); color: #fff; }
-.badge-high { background: var(--csm-high); color: #fff; }
-.badge-warning { background: var(--csm-warning); color: #fff; }
+.badge-high { background: var(--csm-high); color: #1a1a1a; }
+.badge-warning { background: var(--csm-warning); color: #1a1a1a; }
+.theme-dark .badge-critical { color: #1a1a1a; }
 .text-critical { color: var(--csm-critical); }
 .text-high { color: var(--csm-high); }
 .text-warning { color: var(--csm-warning); }
@@ -237,8 +245,10 @@ body.theme-dark { background-color: #1a2234; }
 .btn-outline-high     { color: var(--csm-high);     border-color: var(--csm-high);     background: transparent; }
 .btn-outline-warning  { color: var(--csm-warning);  border-color: var(--csm-warning);  background: transparent; }
 .btn-outline-critical:hover, .btn-outline-critical.active { background: var(--csm-critical); color: #fff; }
-.btn-outline-high:hover,     .btn-outline-high.active     { background: var(--csm-high);     color: #fff; }
+.btn-outline-high:hover,     .btn-outline-high.active     { background: var(--csm-high);     color: #1a1a1a; }
 .btn-outline-warning:hover,  .btn-outline-warning.active  { background: var(--csm-warning);  color: #1a1a1a; }
+.theme-dark .btn-outline-critical:hover,
+.theme-dark .btn-outline-critical.active { color: #1a1a1a; }
 .feed-sev-chip:not(.active) { opacity: 0.45; }
 
 /* --- dashboard.html: system health pill ---------------------------------- */

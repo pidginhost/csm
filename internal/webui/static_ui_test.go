@@ -2838,6 +2838,36 @@ func TestShortcutsHelpModalFocusContract(t *testing.T) {
 	}
 }
 
+// TestDarkModeContrastPalette pins WEB_ROADMAP P6.4: severity badges,
+// outline buttons, and muted text are recolored so WCAG AA contrast
+// holds in dark mode. Pastel dark-mode backgrounds need dark text, and
+// the previous muted #6b7a8d on the #1a2234 page background was
+// borderline 3:1 (lifted to #8d99ad for ≈4.5:1).
+func TestDarkModeContrastPalette(t *testing.T) {
+	css, err := os.ReadFile("../../ui/static/css/csm.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cssText := string(css)
+	for _, fragment := range []string{
+		`.badge-high { background: var(--csm-high); color: #1a1a1a; }`,
+		`.badge-warning { background: var(--csm-warning); color: #1a1a1a; }`,
+		`.theme-dark .badge-critical { color: #1a1a1a; }`,
+		`.theme-dark .btn-outline-critical:hover,`,
+		`.theme-dark .text-muted { color: #8d99ad !important; }`,
+	} {
+		if !strings.Contains(cssText, fragment) {
+			t.Fatalf("csm.css missing P6.4 fragment %q", fragment)
+		}
+	}
+	if strings.Contains(cssText, ".badge-high { background: var(--csm-high); color: #fff; }") {
+		t.Fatal("csm.css still uses white text on .badge-high background; WCAG AA fail")
+	}
+	if strings.Contains(cssText, `.theme-dark .text-muted { color: #6b7a8d !important; }`) {
+		t.Fatal("csm.css still uses borderline #6b7a8d muted text in dark theme")
+	}
+}
+
 // TestPrintStylesheetWired pins the static-evidence print path: chrome and
 // controls are hidden, current filtered tables print without client-side
 // pagination, open detail panels stay printable, and the footer stamp is
