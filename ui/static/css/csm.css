@@ -727,6 +727,11 @@ body.theme-dark { background-color: #1a2234; }
 }
 .theme-dark .csm-toolbar { border-bottom-color: #2d3a4e; }
 .csm-toolbar__search  { flex: 1 1 200px; max-width: 320px; }
+/* Bug fix: Bootstrap form-control / form-select default to width:100% so
+   without an explicit flex-basis they wrap to their own row in the flex
+   toolbar. Size selects and date inputs to fit their content. */
+.csm-toolbar__filter { flex: 0 1 auto; width: auto; min-width: 140px; }
+.csm-toolbar__filter[type="date"] { min-width: 160px; }
 .csm-toolbar__spacer  { flex: 1; }
 .csm-toolbar__actions {
     display: flex;

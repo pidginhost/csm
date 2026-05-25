@@ -2842,6 +2842,28 @@ func TestShortcutsHelpModalFocusContract(t *testing.T) {
 	}
 }
 
+// TestToolbarFilterHasFlexWidth pins the fix for the
+// stacked-filter bug: .csm-toolbar__filter must declare an explicit
+// flex-basis / width otherwise Bootstrap's form-control / form-select
+// width:100% rule makes every filter wrap onto its own row inside the
+// flex toolbar, breaking the inline layout on quarantine, audit, email,
+// threat, and any future toolbar page.
+func TestToolbarFilterHasFlexWidth(t *testing.T) {
+	css, err := os.ReadFile("../../ui/static/css/csm.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cssText := string(css)
+	for _, fragment := range []string{
+		`.csm-toolbar__filter { flex: 0 1 auto; width: auto; min-width: 140px; }`,
+		`.csm-toolbar__filter[type="date"] { min-width: 160px; }`,
+	} {
+		if !strings.Contains(cssText, fragment) {
+			t.Fatalf("csm.css missing toolbar-filter sizing %q", fragment)
+		}
+	}
+}
+
 // TestCSPScriptPolicyStrict pins WEB_ROADMAP P6.3: the runtime CSP keeps
 // executable scripts same-origin only. Templates may carry inert JSON data
 // blocks, but not inline executable script bodies.
