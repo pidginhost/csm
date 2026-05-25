@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `/api/v1/status` now reports a real `baseline_at` for the daemon's first-start timestamp instead of the epoch. Persists across restarts and upgrades.
+- `/api/v1/status` now reports a real `baseline_at` for the daemon's first-start timestamp instead of the epoch. It stays stable across restarts, upgrades, and baseline resets.
 - Settings saves now reject invalid mail-log source and account-key extractor values before writing the config.
 - Web UI saved-view deletion, timestamp preferences, undo re-blocks, and CSRF checks now behave correctly with mixed credentials and missing firewall engines.
 

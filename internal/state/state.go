@@ -270,6 +270,11 @@ func (s *Store) SetBaseline(findings []alert.Finding) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.dirty = true
+	var baselineAt *Entry
+	if entry, ok := s.entries[baselineAtMetaKey]; ok {
+		entryCopy := *entry
+		baselineAt = &entryCopy
+	}
 	s.entries = make(map[string]*Entry)
 	now := time.Now()
 
@@ -282,6 +287,9 @@ func (s *Store) SetBaseline(findings []alert.Finding) {
 			LastSeen:   now,
 			IsBaseline: true,
 		}
+	}
+	if baselineAt != nil {
+		s.entries[baselineAtMetaKey] = baselineAt
 	}
 
 	if err := s.save(); err != nil {

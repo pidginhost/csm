@@ -3,6 +3,8 @@ package state
 import (
 	"testing"
 	"time"
+
+	"github.com/pidginhost/csm/internal/alert"
 )
 
 func TestEnsureBaselinePersistsFirstStart(t *testing.T) {
@@ -51,5 +53,42 @@ func TestBaselineAtSurvivesReopen(t *testing.T) {
 	got := s2.BaselineAt()
 	if !got.Equal(first) {
 		t.Fatalf("BaselineAt after reopen = %v, want %v", got, first)
+	}
+}
+
+func TestBaselineAtSurvivesPruneAndBaselineReset(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	first := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Millisecond)
+	s.EnsureBaseline(first)
+
+	s.mu.Lock()
+	s.entries[baselineAtMetaKey].LastSeen = time.Now().Add(-48 * time.Hour)
+	s.mu.Unlock()
+	s.Update([]alert.Finding{{Check: "new", Message: "finding"}})
+	if got := s.BaselineAt(); !got.Equal(first) {
+		t.Fatalf("BaselineAt after prune = %v, want %v", got, first)
+	}
+
+	s.SetBaseline([]alert.Finding{{Check: "baseline", Message: "known"}})
+	if got := s.BaselineAt(); !got.Equal(first) {
+		t.Fatalf("BaselineAt after SetBaseline = %v, want %v", got, first)
+	}
+}
+
+func TestBaselineAtHiddenFromEntries(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	s.EnsureBaseline(time.Now())
+	if _, ok := s.Entries()[baselineAtMetaKey]; ok {
+		t.Fatalf("%s should not appear in public entries", baselineAtMetaKey)
 	}
 }
