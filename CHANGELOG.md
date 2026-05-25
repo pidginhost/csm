@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Package upgrades no longer fail or drop the CSM binary's immutable hardening on hosts where the previous version had locked the binary down. Closes #14.
+
 ## [3.8.0] - 2026-05-25
 
 ### Added

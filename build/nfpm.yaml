@@ -115,9 +115,14 @@ contents:
       mode: 0700
 
 scripts:
+  preinstall: build/packaging/scripts/preinstall.sh
   postinstall: build/packaging/scripts/postinstall.sh
   preremove: build/packaging/scripts/preremove.sh
   postremove: build/packaging/scripts/postremove.sh
+
+rpm:
+  scripts:
+    posttrans: build/packaging/scripts/posttrans.sh
 
 overrides:
   rpm:

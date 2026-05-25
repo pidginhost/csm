@@ -1,4 +1,15 @@
 #!/bin/bash
+# Post-removal hook.
+#
+# rpm passes $1=0 on full uninstall and $1=1 on upgrade-leftover. deb passes
+# "remove" / "purge" / "upgrade". On upgrade the old package's postremove
+# runs AFTER the new package's postinstall, so deleting plugin files, audit
+# rules, the install marker, and announcing "CSM removed" would corrupt the
+# freshly-installed version.
+if [ "${1:-}" = "1" ] || [ "${1:-}" = "upgrade" ]; then
+    exit 0
+fi
+
 systemctl daemon-reload 2>/dev/null || true
 
 # Reload auditd (rules file already removed by package manager)
