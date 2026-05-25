@@ -26,7 +26,7 @@ func TestRunParallelObservesCheckDuration(t *testing.T) {
 			return nil
 		}},
 	}
-	_, _ = runParallel(&config.Config{}, nil, stub, "critical")
+	_, _ = runParallel(&config.Config{}, nil, stub, "critical", false)
 
 	after := scrapeSum(t, "csm_check_duration_seconds_count")
 	if after-before < 1 {

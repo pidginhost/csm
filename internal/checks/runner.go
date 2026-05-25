@@ -223,10 +223,6 @@ type namedCheck struct {
 // ForceAll forces all checks to run regardless of throttle (used by baseline).
 var ForceAll bool
 
-// DryRun disables auto-response actions (kill, quarantine, block).
-// Used by `check` (read-only) and `baseline` commands.
-var DryRun bool
-
 // Tier identifies which set of checks to run.
 type Tier string
 
@@ -527,8 +523,18 @@ func latestPurgeCheckNamesForChecks(toScan []namedCheck) []string {
 // checks that actually executed this cycle); pass it to
 // StoreLatestScanFindings so throttled-out checks keep their prior
 // findings.
+//
+// Passes the requested dry-run state into runParallel via a scoped
+// parameter rather than the previous package-level toggle, so concurrent
+// periodic scanners no longer race with a manual `csm check` invocation.
 func RunTier(cfg *config.Config, store *state.Store, tier Tier) ([]alert.Finding, []string) {
-	return runParallel(cfg, store, checksForTier(tier), string(tier))
+	return runParallel(cfg, store, checksForTier(tier), string(tier), false)
+}
+
+// RunTierDryRun is the dry-run variant of RunTier: auto-response actions
+// are skipped. Used by `csm check*` socket commands and the legacy CLI.
+func RunTierDryRun(cfg *config.Config, store *state.Store, tier Tier) ([]alert.Finding, []string) {
+	return runParallel(cfg, store, checksForTier(tier), string(tier), true)
 }
 
 // RunReducedDeep runs only the deep checks that fanotify can't replace.
@@ -542,20 +548,27 @@ func RunTier(cfg *config.Config, store *state.Store, tier Tier) ([]alert.Finding
 // The second return value is the per-scan purge name list scoped to the
 // checks that actually executed this cycle.
 func RunReducedDeep(cfg *config.Config, store *state.Store) ([]alert.Finding, []string) {
-	return runParallel(cfg, store, reducedDeepChecks(), string(TierDeep))
+	return runParallel(cfg, store, reducedDeepChecks(), string(TierDeep), false)
 }
 
 // RunAll runs critical checks always. Deep checks run if throttle allows or
 // ForceAll is set. The second return value is the per-scan purge name list
 // scoped to the checks that actually executed this cycle.
 func RunAll(cfg *config.Config, store *state.Store) ([]alert.Finding, []string) {
-	toRun := criticalChecks()
+	return runAll(cfg, store, false)
+}
 
+// RunAllDryRun is the dry-run variant of RunAll for `csm baseline`.
+func RunAllDryRun(cfg *config.Config, store *state.Store) ([]alert.Finding, []string) {
+	return runAll(cfg, store, true)
+}
+
+func runAll(cfg *config.Config, store *state.Store, dryRun bool) ([]alert.Finding, []string) {
+	toRun := criticalChecks()
 	if ForceAll || store.ShouldRunThrottled("deep_scan", cfg.Thresholds.DeepScanIntervalMin) {
 		toRun = append(toRun, deepChecks()...)
 	}
-
-	return runParallel(cfg, store, toRun, string(TierAll))
+	return runParallel(cfg, store, toRun, string(TierAll), dryRun)
 }
 
 // runParallel executes the supplied checks concurrently. It returns the
@@ -563,7 +576,7 @@ func RunAll(cfg *config.Config, store *state.Store) ([]alert.Finding, []string) 
 // window has not elapsed stay out of the purge list so the previous cycle's
 // findings persist. Disabled checks do not run, but their names stay in the
 // purge list so disabling a check clears any findings it previously owned.
-func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck, tier string) ([]alert.Finding, []string) {
+func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck, tier string, dryRun bool) ([]alert.Finding, []string) {
 	enabledChecks, disabledChecks := splitDisabledChecks(cfg, checks)
 
 	var mu sync.Mutex
@@ -648,8 +661,9 @@ func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck, ti
 	}
 	findings = append(findings, extra...)
 
-	// Auto-response: skip when DryRun is set (check/baseline commands)
-	if !DryRun {
+	// Auto-response: skip when the caller requested a dry run
+	// (check/baseline commands).
+	if !dryRun {
 		killActions := AutoKillProcesses(cfg, findings)
 		for i := range killActions {
 			if killActions[i].Timestamp.IsZero() {

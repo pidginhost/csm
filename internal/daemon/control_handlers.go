@@ -187,22 +187,18 @@ func (c *ControlListener) handleTierRun(argsRaw json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("integrity verify failed: %w", vErr)
 	}
 
-	// Dry-run mode: suppress auto-response globally for the duration
-	// of this call. Mirrors the pre-phase-2 behaviour of `csm check*`
-	// which set checks.DryRun=true before running. The toggle races
-	// with the daemon's periodic scanners; during a long `csm check-deep`
-	// a concurrent critical tick briefly sees DryRun=true and may
-	// suppress auto-response for that tick.
-	// TODO(phase-3): thread dry-run through checks.RunTier as a
-	// parameter so concurrent scans don't clobber each other.
-	if dryRun {
-		prev := checks.DryRun
-		checks.DryRun = true
-		defer func() { checks.DryRun = prev }()
-	}
-
+	// Dry-run threads through RunTierDryRun, so a concurrent periodic
+	// scanner running in live mode never sees this caller's dry-run state.
 	start := time.Now()
-	findings, purgeChecks := checks.RunTier(c.d.currentCfg(), c.d.store, tier)
+	var (
+		findings    []alert.Finding
+		purgeChecks []string
+	)
+	if dryRun {
+		findings, purgeChecks = checks.RunTierDryRun(c.d.currentCfg(), c.d.store, tier)
+	} else {
+		findings, purgeChecks = checks.RunTier(c.d.currentCfg(), c.d.store, tier)
+	}
 
 	checks.StoreLatestScanFindings(c.d.store, purgeChecks, findings)
 	if args.Alerts {

@@ -41,17 +41,15 @@ func (c *ControlListener) handleBaseline(argsRaw json.RawMessage) (any, error) {
 		}, nil
 	}
 
-	// Scoped toggle of the globals so a panic in checks.RunAll still
-	// restores them. These are read by the periodic scanners too; the
-	// window is narrow but real. Out of scope for this change.
-	prevForceAll, prevDryRun := checks.ForceAll, checks.DryRun
-	checks.ForceAll, checks.DryRun = true, true
-	defer func() {
-		checks.ForceAll, checks.DryRun = prevForceAll, prevDryRun
-	}()
+	// Force-all bypasses throttles for the baseline sweep. Dry-run threads
+	// through RunAllDryRun so a concurrent periodic scanner running in live
+	// mode is never silenced by this caller.
+	prevForceAll := checks.ForceAll
+	checks.ForceAll = true
+	defer func() { checks.ForceAll = prevForceAll }()
 
 	cfg := c.d.currentCfg()
-	findings, _ := checks.RunAll(cfg, c.d.store)
+	findings, _ := checks.RunAllDryRun(cfg, c.d.store)
 	c.d.store.SetBaseline(findings)
 
 	binaryHash, err := integrity.HashFile(c.d.binaryPath)

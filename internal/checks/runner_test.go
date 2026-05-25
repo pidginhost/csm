@@ -203,7 +203,7 @@ func TestRunParallelSkipsDisabledChecks(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.DisabledChecks = []string{"check_a", "check_c"}
 
-	findings, _ := runParallel(cfg, nil, checks, "test")
+	findings, _ := runParallel(cfg, nil, checks, "test", false)
 
 	if ranA {
 		t.Error("check_a should have been skipped (in DisabledChecks)")
@@ -249,7 +249,7 @@ func TestRunParallelSkipsDisabledFindingNameAliases(t *testing.T) {
 
 			cfg := &config.Config{DisabledChecks: []string{tt.disabled}}
 
-			findings, _ := runParallel(cfg, nil, checks, "test")
+			findings, _ := runParallel(cfg, nil, checks, "test", false)
 
 			if got := ranDisabled.Load(); got != 0 {
 				t.Fatalf("%s ran %d time(s), want skipped", tt.runner, got)
@@ -290,7 +290,7 @@ func TestRunParallelDisabledFindingAliasPurgesStoredFindings(t *testing.T) {
 	}
 
 	cfg := &config.Config{DisabledChecks: []string{"waf_rules"}}
-	findings, purge := runParallel(cfg, st, checks, "test")
+	findings, purge := runParallel(cfg, st, checks, "test", false)
 	if got := ranDisabled.Load(); got != 0 {
 		t.Fatalf("disabled runner executed %d time(s), want 0", got)
 	}
@@ -323,7 +323,7 @@ func TestRunParallelDisabledChecksEmptyRunsAll(t *testing.T) {
 
 	cfg := &config.Config{} // DisabledChecks unset
 
-	_, _ = runParallel(cfg, nil, checks, "test")
+	_, _ = runParallel(cfg, nil, checks, "test", false)
 	if got := ran.Load(); got != 2 {
 		t.Errorf("with empty DisabledChecks all checks should run, got ran=%d want 2", got)
 	}
@@ -345,7 +345,7 @@ func TestRunParallelDisabledChecksTrimsAndIgnoresBlanks(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.DisabledChecks = []string{"  check_a  ", "", "   "}
 
-	_, _ = runParallel(cfg, nil, checks, "test")
+	_, _ = runParallel(cfg, nil, checks, "test", false)
 
 	if ranA {
 		t.Error("whitespace-padded check_a should still be treated as disabled")
@@ -391,7 +391,7 @@ func TestRunParallelThrottledCheckSkippedAndExcludedFromPurge(t *testing.T) {
 	cfg := &config.Config{}
 
 	// First cycle: throttle entry absent, check runs and is in purge list.
-	findings1, purge1 := runParallel(cfg, store, checks, "test")
+	findings1, purge1 := runParallel(cfg, store, checks, "test", false)
 	if ran.Load() != 1 {
 		t.Fatalf("first cycle: throttled check should have run once, got %d", ran.Load())
 	}
@@ -404,7 +404,7 @@ func TestRunParallelThrottledCheckSkippedAndExcludedFromPurge(t *testing.T) {
 
 	// Second cycle within the throttle window: check skipped, purge list
 	// must exclude it so the prior finding stays in the latest set.
-	findings2, purge2 := runParallel(cfg, store, checks, "test")
+	findings2, purge2 := runParallel(cfg, store, checks, "test", false)
 	if ran.Load() != 1 {
 		t.Fatalf("second cycle: throttled check should NOT have re-run, ran=%d", ran.Load())
 	}
@@ -488,7 +488,7 @@ func TestRunParallelTimeoutMessageReflectsCheckBudget(t *testing.T) {
 	}
 
 	cfg := &config.Config{}
-	findings, _ := runParallel(cfg, nil, checks, "test")
+	findings, _ := runParallel(cfg, nil, checks, "test", false)
 
 	var saw [2]string
 	for _, f := range findings {
