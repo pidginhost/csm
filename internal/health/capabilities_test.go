@@ -58,6 +58,15 @@ func TestBPFEnforcementAvailableCapabilityAlwaysPresent(t *testing.T) {
 	}
 }
 
+func TestPrefsAndUndoCapabilitiesAlwaysPresent(t *testing.T) {
+	caps := Capabilities()
+	for _, want := range []string{"webui.prefs.v1", "webui.undo.v1"} {
+		if !contains(caps, want) {
+			t.Errorf("%s capability missing", want)
+		}
+	}
+}
+
 // TestConnectionTrackerCapabilityWhenBPFActive asserts the per-feature
 // "bpf-connection-tracker" string appears iff the connection_tracker
 // backend has been set to BPF.

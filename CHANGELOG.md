@@ -16,14 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - CSRF protection now covers PUT and PATCH in addition to POST and DELETE for cookie-authenticated browser sessions. Bearer-token API callers continue to bypass CSRF, unchanged.
+- `/api/v1/capabilities` now advertises `webui.prefs.v1` and `webui.undo.v1` so phpanel can feature-detect the new operator preferences, saved views, and bulk-undo endpoints without sniffing the daemon version.
 
 ### Fixed
 
 - Web UI saved-view deletion, timestamp preferences, undo re-blocks, and CSRF checks now behave correctly with mixed credentials and missing firewall engines.
-
-### Removed
-
-- Internal `WEB_ROADMAP.md` retired now that every step has shipped. Future Web UI work tracks alongside daemon work in `ROADMAP.md`. Historical `WEB_ROADMAP item N` references in commits and the CHANGELOG remain resolvable via `git log`.
 
 ## [3.8.1] - 2026-05-25
 

@@ -37,6 +37,8 @@ func Capabilities() []string {
 		"systemd.dropin.example.v1", // P7
 		"incidents.v1",
 		"bpf_enforcement.available.v1",
+		"webui.prefs.v1", // operator preferences + saved views
+		"webui.undo.v1",  // bulk-action undo
 	}
 	if maillog.JournalSupported() {
 		caps = append(caps, "mail.source.journal.v1")
