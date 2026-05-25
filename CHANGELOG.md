@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rules page "Import State" upload now shows an "Importing..." status with `aria-busy` while the import POST is in flight, then restores after success, failure, or parse error so a slow import no longer looks like a frozen page.
 - Keyboard shortcut help overlay (`?`) now groups shortcuts by context (General / Navigate / Findings page), opens as a labelled modal dialog, and keeps keyboard focus inside it while visible.
 - Web UI header gained a "What's new" button with a notification dot whenever the running daemon version differs from the version the operator last acknowledged. Clicking it opens the GitHub releases page and clears the dot.
+- Web UI header shows a "Live updates" status pill backed by the existing `/api/v1/events` SSE stream, with connecting / connected / reconnecting / offline states, capped exponential reconnect, and a tab-hidden close so dropped streams are visible at a glance.
 - New `thresholds.crontab_base64_blob_max_bytes` operator override for the crontab deep-scan base64 decoder cap (default 16384). Lets operators raise the cap on hosts where `csm_checks_crontab_base64_truncated_total` shows recurring truncation without rebuilding the daemon.
 
 ### Changed

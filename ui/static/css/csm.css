@@ -1011,3 +1011,38 @@ body.theme-dark { background-color: #1a2234; }
     background: var(--csm-critical, #d63939);
     box-shadow: 0 0 0 2px var(--csm-bg-card, #fff);
 }
+
+/* WEB_ROADMAP P5.6: live-stream connection state pill in the header. */
+.csm-sse-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 8px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--tblr-secondary, #6c757d);
+    user-select: none;
+}
+.csm-sse-pill__dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #6c757d;
+}
+.csm-sse-pill.is-connecting .csm-sse-pill__dot,
+.csm-sse-pill.is-reconnecting .csm-sse-pill__dot {
+    background: var(--csm-warning, #f59f00);
+    animation: csm-sse-pulse 1.2s ease-in-out infinite;
+}
+.csm-sse-pill.is-connected .csm-sse-pill__dot {
+    background: var(--csm-success, #2fb344);
+}
+.csm-sse-pill.is-disconnected .csm-sse-pill__dot {
+    background: var(--csm-secondary, #6c757d);
+}
+@keyframes csm-sse-pulse {
+    0% { opacity: 0.4; }
+    50% { opacity: 1; }
+    100% { opacity: 0.4; }
+}

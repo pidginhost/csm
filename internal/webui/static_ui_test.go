@@ -2838,6 +2838,67 @@ func TestShortcutsHelpModalFocusContract(t *testing.T) {
 	}
 }
 
+// TestSSEHealthPillWired pins WEB_ROADMAP P5.6: layout exposes a
+// "Live updates" header pill, CSM.sse owns the EventSource lifecycle
+// and broadcasts state on csm:sse-state, and layout.js subscribes and
+// repaints the pill. Without this wiring operators have no signal that
+// the finding stream has dropped.
+func TestSSEHealthPillWired(t *testing.T) {
+	tmpl, err := os.ReadFile("../../ui/templates/layout.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmplText := string(tmpl)
+	for _, fragment := range []string{
+		`id="csm-sse-pill"`,
+		`class="csm-sse-pill__dot"`,
+		`class="csm-sse-pill__label"`,
+	} {
+		if !strings.Contains(tmplText, fragment) {
+			t.Fatalf("layout.html missing P5.6 fragment %q", fragment)
+		}
+	}
+
+	csrf, err := os.ReadFile("../../ui/static/js/csrf.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	csrfText := string(csrf)
+	for _, fragment := range []string{
+		`CSM.sse = (function()`,
+		`new EventSource(url)`,
+		`'csm:sse-state'`,
+		`'/api/v1/events'`,
+	} {
+		if !strings.Contains(csrfText, fragment) {
+			t.Fatalf("csrf.js missing P5.6 fragment %q", fragment)
+		}
+	}
+
+	js, err := os.ReadFile("../../ui/static/js/layout.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsText := string(js)
+	for _, fragment := range []string{
+		`document.getElementById('csm-sse-pill')`,
+		`window.addEventListener('csm:sse-state'`,
+		`CSM.sse.start();`,
+	} {
+		if !strings.Contains(jsText, fragment) {
+			t.Fatalf("layout.js missing P5.6 fragment %q", fragment)
+		}
+	}
+
+	css, err := os.ReadFile("../../ui/static/css/csm.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(css), ".csm-sse-pill {") {
+		t.Fatal("csm.css missing .csm-sse-pill rule")
+	}
+}
+
 // TestWhatsNewBadgeWired pins WEB_ROADMAP P5.7: layout exposes a
 // "What's new" header button with a notification dot, and layout.js
 // shows/clears the dot based on whether the running daemon version

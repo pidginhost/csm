@@ -228,6 +228,42 @@ if (_themeBtn) _themeBtn.addEventListener('click', toggleTheme);
     toggleBtn.addEventListener('click', function() { CSM.refresh.setEnabled(!CSM.refresh.enabled); });
 })();
 
+// Live updates pill (WEB_ROADMAP P5.6). Subscribes to CSM.sse state
+// transitions and repaints the header pill so operators see at a glance
+// whether the daemon's finding stream is connected, reconnecting, or
+// offline. The actual EventSource lifecycle (open, retry, close on
+// hidden tab) lives in CSM.sse.
+(function() {
+    var pill = document.getElementById('csm-sse-pill');
+    if (!pill || typeof CSM === 'undefined' || !CSM.sse) return;
+    var labelEl = pill.querySelector('.csm-sse-pill__label');
+    var titles = {
+        connecting: 'Live updates: connecting',
+        connected: 'Live updates: connected',
+        reconnecting: 'Live updates: reconnecting',
+        disconnected: 'Live updates: offline'
+    };
+    var labels = {
+        connecting: 'Connecting',
+        connected: 'Live',
+        reconnecting: 'Reconnecting',
+        disconnected: 'Offline'
+    };
+    function paint(state) {
+        pill.classList.remove('is-connecting', 'is-connected', 'is-reconnecting', 'is-disconnected');
+        pill.classList.add('is-' + state);
+        if (labelEl) labelEl.textContent = labels[state] || labels.disconnected;
+        pill.setAttribute('title', titles[state] || titles.disconnected);
+        pill.setAttribute('aria-label', titles[state] || titles.disconnected);
+    }
+    pill.classList.remove('d-none');
+    paint(CSM.sse.state);
+    window.addEventListener('csm:sse-state', function(ev) {
+        if (ev.detail && ev.detail.state) paint(ev.detail.state);
+    });
+    CSM.sse.start();
+})();
+
 // What's new badge (WEB_ROADMAP P5.7). Shows a notification dot on a
 // header button whenever the running daemon version differs from the
 // version the operator has acknowledged in localStorage. Clicking the

@@ -378,6 +378,111 @@ CSM.refresh = (function() {
     return api;
 })();
 
+// CSM.sse: thin EventSource wrapper that powers the "Live updates"
+// header pill. Tracks four states (connecting | connected | reconnecting
+// | disconnected), reopens with capped exponential backoff after errors,
+// closes the stream while the tab is hidden, and broadcasts state
+// transitions on the `csm:sse-state` window event. Browser-native
+// auto-retries are kept (we never call close() unless readyState is
+// already CLOSED or the tab is hidden) so transient blips don't drop
+// the subscription.
+CSM.sse = (function() {
+    var STATES = { connecting: 'connecting', connected: 'connected', reconnecting: 'reconnecting', disconnected: 'disconnected' };
+    var state = STATES.disconnected;
+    var es = null;
+    var retryDelay = 0;
+    var retryTimer = null;
+    var baseDelay = 1000;
+    var maxDelay = 30000;
+    var url = '/api/v1/events';
+    var started = false;
+
+    function setState(next) {
+        if (state === next) return;
+        state = next;
+        window.dispatchEvent(new CustomEvent('csm:sse-state', { detail: { state: next } }));
+    }
+
+    function clearRetry() {
+        if (retryTimer) {
+            clearTimeout(retryTimer);
+            retryTimer = null;
+        }
+    }
+
+    function closeStream() {
+        if (es) {
+            try { es.close(); } catch (e) { /* ignore */ }
+            es = null;
+        }
+        clearRetry();
+    }
+
+    function scheduleReconnect() {
+        clearRetry();
+        retryDelay = retryDelay ? Math.min(retryDelay * 2, maxDelay) : baseDelay;
+        var jitter = retryDelay * (0.5 + Math.random() * 0.5);
+        retryTimer = setTimeout(function() { retryTimer = null; connect(); }, jitter);
+    }
+
+    function connect() {
+        if (typeof EventSource === 'undefined') {
+            setState(STATES.disconnected);
+            return;
+        }
+        closeStream();
+        setState(state === STATES.connected ? STATES.reconnecting : STATES.connecting);
+        try {
+            es = new EventSource(url);
+        } catch (e) {
+            scheduleReconnect();
+            return;
+        }
+        es.onopen = function() {
+            retryDelay = 0;
+            setState(STATES.connected);
+        };
+        es.onerror = function() {
+            if (!es) return;
+            if (es.readyState === EventSource.CLOSED) {
+                closeStream();
+                setState(STATES.reconnecting);
+                scheduleReconnect();
+            } else {
+                setState(STATES.reconnecting);
+            }
+        };
+        es.onmessage = function(ev) {
+            window.dispatchEvent(new CustomEvent('csm:sse-message', { detail: { raw: ev.data } }));
+        };
+    }
+
+    document.addEventListener('visibilitychange', function() {
+        if (!started) return;
+        if (document.hidden) {
+            closeStream();
+            setState(STATES.disconnected);
+        } else {
+            retryDelay = 0;
+            connect();
+        }
+    });
+
+    return {
+        get state() { return state; },
+        start: function(u) {
+            if (u) url = u;
+            started = true;
+            if (!document.hidden) connect();
+        },
+        stop: function() {
+            started = false;
+            closeStream();
+            setState(STATES.disconnected);
+        }
+    };
+})();
+
 // Connection-lost banner: tracks consecutive fetch failures
 (function() {
     var failCount = 0;
