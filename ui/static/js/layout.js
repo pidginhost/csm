@@ -228,11 +228,8 @@ if (_themeBtn) _themeBtn.addEventListener('click', toggleTheme);
     toggleBtn.addEventListener('click', function() { CSM.refresh.setEnabled(!CSM.refresh.enabled); });
 })();
 
-// Live updates pill (WEB_ROADMAP P5.6). Subscribes to CSM.sse state
-// transitions and repaints the header pill so operators see at a glance
-// whether the daemon's finding stream is connected, reconnecting, or
-// offline. The actual EventSource lifecycle (open, retry, close on
-// hidden tab) lives in CSM.sse.
+// Live updates pill. CSM.sse owns the EventSource lifecycle; this only
+// reflects its state in the header.
 (function() {
     var pill = document.getElementById('csm-sse-pill');
     if (!pill || typeof CSM === 'undefined' || !CSM.sse) return;

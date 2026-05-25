@@ -378,14 +378,9 @@ CSM.refresh = (function() {
     return api;
 })();
 
-// CSM.sse: thin EventSource wrapper that powers the "Live updates"
-// header pill. Tracks four states (connecting | connected | reconnecting
-// | disconnected), reopens with capped exponential backoff after errors,
-// closes the stream while the tab is hidden, and broadcasts state
-// transitions on the `csm:sse-state` window event. Browser-native
-// auto-retries are kept (we never call close() unless readyState is
-// already CLOSED or the tab is hidden) so transient blips don't drop
-// the subscription.
+// Tracks the EventSource connection used by the header pill. Handlers guard
+// against stale sources because browser callbacks can arrive after close()
+// while a replacement stream is already active.
 CSM.sse = (function() {
     var STATES = { connecting: 'connecting', connected: 'connected', reconnecting: 'reconnecting', disconnected: 'disconnected' };
     var state = STATES.disconnected;
@@ -420,31 +415,38 @@ CSM.sse = (function() {
 
     function scheduleReconnect() {
         clearRetry();
+        if (!started || document.hidden) return;
         retryDelay = retryDelay ? Math.min(retryDelay * 2, maxDelay) : baseDelay;
         var jitter = retryDelay * (0.5 + Math.random() * 0.5);
         retryTimer = setTimeout(function() { retryTimer = null; connect(); }, jitter);
     }
 
     function connect() {
+        if (!started || document.hidden) return;
         if (typeof EventSource === 'undefined') {
             setState(STATES.disconnected);
             return;
         }
         closeStream();
         setState(state === STATES.connected ? STATES.reconnecting : STATES.connecting);
+        var resolvedUrl = (typeof CSM.apiUrl === 'function') ? CSM.apiUrl(url) : url;
+        var source = null;
         try {
-            es = new EventSource(url);
+            source = new EventSource(resolvedUrl);
         } catch (e) {
+            setState(STATES.reconnecting);
             scheduleReconnect();
             return;
         }
-        es.onopen = function() {
+        es = source;
+        source.onopen = function() {
+            if (source !== es) return;
             retryDelay = 0;
             setState(STATES.connected);
         };
-        es.onerror = function() {
-            if (!es) return;
-            if (es.readyState === EventSource.CLOSED) {
+        source.onerror = function() {
+            if (source !== es) return;
+            if (source.readyState === EventSource.CLOSED) {
                 closeStream();
                 setState(STATES.reconnecting);
                 scheduleReconnect();
@@ -452,7 +454,8 @@ CSM.sse = (function() {
                 setState(STATES.reconnecting);
             }
         };
-        es.onmessage = function(ev) {
+        source.onmessage = function(ev) {
+            if (source !== es) return;
             window.dispatchEvent(new CustomEvent('csm:sse-message', { detail: { raw: ev.data } }));
         };
     }

@@ -2866,7 +2866,7 @@ func TestSSEHealthPillWired(t *testing.T) {
 	csrfText := string(csrf)
 	for _, fragment := range []string{
 		`CSM.sse = (function()`,
-		`new EventSource(url)`,
+		`new EventSource(resolvedUrl)`,
 		`'csm:sse-state'`,
 		`'/api/v1/events'`,
 	} {
@@ -2897,6 +2897,45 @@ func TestSSEHealthPillWired(t *testing.T) {
 	if !strings.Contains(string(css), ".csm-sse-pill {") {
 		t.Fatal("csm.css missing .csm-sse-pill rule")
 	}
+}
+
+func TestSSEWrapperIgnoresStaleSources(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/csrf.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := csmSSEBody(t, string(src))
+	for _, fragment := range []string{
+		`if (!started || document.hidden) return;`,
+		`var resolvedUrl = (typeof CSM.apiUrl === 'function') ? CSM.apiUrl(url) : url;`,
+		`var source = null;`,
+		`source = new EventSource(resolvedUrl);`,
+		`es = source;`,
+		`source.onopen = function() {`,
+		`source.onerror = function() {`,
+		`source.onmessage = function(ev) {`,
+	} {
+		if !strings.Contains(body, fragment) {
+			t.Fatalf("CSM.sse missing stale-source guard fragment %q", fragment)
+		}
+	}
+	if got := strings.Count(body, `if (source !== es) return;`); got != 3 {
+		t.Fatalf("CSM.sse should guard open/error/message handlers against stale sources, got %d guards", got)
+	}
+}
+
+func csmSSEBody(t *testing.T, text string) string {
+	t.Helper()
+	start := strings.Index(text, "CSM.sse = (function() {")
+	if start == -1 {
+		t.Fatal("csrf.js missing CSM.sse definition")
+	}
+	tail := text[start:]
+	end := strings.Index(tail, "\n})();\n\n// Connection-lost banner")
+	if end == -1 {
+		t.Fatal("csrf.js CSM.sse has no terminator")
+	}
+	return tail[:end]
 }
 
 // TestWhatsNewBadgeWired pins WEB_ROADMAP P5.7: layout exposes a
