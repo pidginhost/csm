@@ -271,7 +271,14 @@ commit body.
 
 **Goal:** Move from "good ops UI" to "one of the best".
 
+**Status:** P5.1, P5.5, P5.6, P5.7 landed (commits ed712030, 227e3f9a,
+ebbf08be, fb0146ab and their codex fixups). P5.2, P5.3, P5.4 are
+deferred — each needs a server-side operator-preferences store that
+does not exist yet, so they are tracked separately in `ROADMAP.md`.
+
 ### Step 5.1: Command palette (Ctrl-K)
+
+**Status:** done (commits ed712030, 9bb038e3).
 
 Global jump: page navigation + entity search (account, IP, finding
 ID, ModSec rule ID). Reuses `shortcuts.js`.
@@ -295,14 +302,20 @@ table state for these.
 
 ### Step 5.5: Keyboard shortcut overlay
 
+**Status:** done (commits 227e3f9a, e05deb80).
+
 `?` opens a modal listing every shortcut, grouped by context.
 
 ### Step 5.6: SSE health pill
+
+**Status:** done (commits ebbf08be, d5346f41).
 
 Tied to step 1.4: show connected / reconnecting / disconnected state
 in header.
 
 ### Step 5.7: What's new badge
+
+**Status:** done (commit fb0146ab; codex review clean).
 
 Read CHANGELOG `[Unreleased]` block (or last tag) and surface a small
 notification dot until acknowledged.
@@ -317,23 +330,38 @@ notification dot until acknowledged.
 
 **Goal:** Reach environments outside desktop Chrome.
 
+**Status:** all four steps landed.
+
 ### Step 6.1: Responsive tables + nav
+
+**Status:** done (commits a85a3912, 0b5a1c2a).
 
 Horizontal scroll wrappers, collapsible sidebar at small breakpoints,
 verified at 360px / 768px / 1024px.
 
 ### Step 6.2: Print stylesheet
 
+**Status:** done (commits 057589f7, f376aca1).
+
 Incident and audit pages used as evidence. Print CSS hides nav,
 expands tables, includes timestamps + URL footer.
 
 ### Step 6.3: CSP nonces
+
+**Status:** done (commits b85c8a12, 24e4af3e). The page already
+shipped with `script-src 'self'` and the only inline `<script>` is a
+`type="application/json"` data block (not executed by browsers), so no
+nonce was needed. Closed the runtime `<style>` injection in
+`shortcuts.js` and added regression coverage that parses the live CSP
+header plus HTML templates.
 
 Move every inline `<script>` to either an external file or a
 nonce-tagged inline. Add `Content-Security-Policy` header in
 `server.go` with `script-src 'self' 'nonce-...'`.
 
 ### Step 6.4: Dark mode contrast audit
+
+**Status:** done (commits b397b63c, 15471f6d).
 
 Run badge palette through WCAG AA contrast check in dark theme; fix
 failing combinations.
