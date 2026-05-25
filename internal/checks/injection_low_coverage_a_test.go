@@ -10,6 +10,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/redisinfo"
 	"github.com/pidginhost/csm/internal/state"
 )
 
@@ -558,31 +559,32 @@ func TestCheckRedisConfigAllBranches(t *testing.T) {
 			return nil, os.ErrNotExist
 		},
 	})
-	withMockCmd(t, &mockCmd{
-		run: func(name string, args ...string) ([]byte, error) {
-			if name != "/usr/bin/redis-cli" {
-				return nil, nil
-			}
-			if len(args) >= 3 {
-				switch args[2] {
-				case "maxmemory":
-					return []byte("maxmemory\n0\n"), nil
-				case "maxmemory-policy":
-					return []byte("maxmemory-policy\nnoeviction\n"), nil
-				case "save":
-					return []byte("save\n60 1000\n"), nil
-				}
-			}
-			if len(args) >= 2 {
-				switch args[1] {
-				case "keyspace":
-					return []byte("# Keyspace\ndb0:keys=10000,expires=100,avg_ttl=5000\n"), nil
-				case "memory":
-					return []byte("used_memory:5368709120\nused_memory_human:5.00G\n"), nil
-				}
-			}
-			return nil, nil
-		},
+	// CheckRedisConfig drives the in-process redisinfo client (the shellout
+	// to redis-cli was retired). Stub redisinfo through the documented test
+	// hooks so the assertions exercise the real branch the production code
+	// takes instead of leaning on a default-config redis happening to be up
+	// on the developer's machine.
+	redisinfo.SetMemoryUsageForTest(func(_ context.Context) (used, max uint64, err error) {
+		return 5 * 1024 * 1024 * 1024, 0, nil
+	})
+	redisinfo.SetKeyspaceStatsForTest(func(_ context.Context) (redisinfo.KeyspaceStat, error) {
+		return redisinfo.KeyspaceStat{TotalKeys: 10000, TotalExpires: 100}, nil
+	})
+	redisinfo.SetConfigGetForTest(func(_ context.Context, name string) (string, error) {
+		switch name {
+		case "maxmemory":
+			return "0", nil
+		case "maxmemory-policy":
+			return "noeviction", nil
+		case "save":
+			return "60 1000", nil
+		}
+		return "", fmt.Errorf("unexpected ConfigGet name: %q", name)
+	})
+	t.Cleanup(func() {
+		redisinfo.SetMemoryUsageForTest(nil)
+		redisinfo.SetKeyspaceStatsForTest(nil)
+		redisinfo.SetConfigGetForTest(nil)
 	})
 
 	store, err := state.Open(t.TempDir())

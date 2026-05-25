@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Manual check and baseline scans now keep dry-run state local to that scan, so they cannot mute live auto-response from daemon ticks.
 - Settings saves now reject invalid mail-log source and account-key extractor values before writing the config.
 - Web UI saved-view deletion, timestamp preferences, undo re-blocks, and CSRF checks now behave correctly with mixed credentials and missing firewall engines.
+- Redis performance check test now stubs the in-process redisinfo client through its documented test hooks instead of relying on a default-config redis being present on the developer's machine. The dead redis-cli shellout fixture is gone.
 
 ### Removed
 
