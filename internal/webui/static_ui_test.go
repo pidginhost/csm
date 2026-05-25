@@ -1,11 +1,13 @@
 package webui
 
 import (
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -2842,30 +2844,185 @@ func TestShortcutsHelpModalFocusContract(t *testing.T) {
 // outline buttons, and muted text are recolored so WCAG AA contrast
 // holds in dark mode. Pastel dark-mode backgrounds need dark text, and
 // the previous muted #6b7a8d on the #1a2234 page background was
-// borderline 3:1 (lifted to #8d99ad for ≈4.5:1).
+// below the threshold.
 func TestDarkModeContrastPalette(t *testing.T) {
 	css, err := os.ReadFile("../../ui/static/css/csm.css")
 	if err != nil {
 		t.Fatal(err)
 	}
-	cssText := string(css)
-	for _, fragment := range []string{
-		`.badge-high { background: var(--csm-high); color: #1a1a1a; }`,
-		`.badge-warning { background: var(--csm-warning); color: #1a1a1a; }`,
-		`.theme-dark .badge-critical { color: #1a1a1a; }`,
-		`.theme-dark .btn-outline-critical:hover,`,
-		`.theme-dark .text-muted { color: #8d99ad !important; }`,
-	} {
-		if !strings.Contains(cssText, fragment) {
-			t.Fatalf("csm.css missing P6.4 fragment %q", fragment)
+
+	rules := parseCSSRules(string(css))
+	lightVars := cssVariables(rules[":root"])
+	darkVars := cssVariables(rules[".theme-dark"])
+	for name, value := range lightVars {
+		if _, ok := darkVars[name]; !ok {
+			darkVars[name] = value
 		}
 	}
-	if strings.Contains(cssText, ".badge-high { background: var(--csm-high); color: #fff; }") {
-		t.Fatal("csm.css still uses white text on .badge-high background; WCAG AA fail")
+
+	color := func(selector, property string, vars map[string]string) string {
+		t.Helper()
+		return resolveCSSColor(t, cssDeclaration(t, rules, selector, property), vars)
 	}
-	if strings.Contains(cssText, `.theme-dark .text-muted { color: #6b7a8d !important; }`) {
-		t.Fatal("csm.css still uses borderline #6b7a8d muted text in dark theme")
+	assertContrast := func(name, foreground, background string) {
+		t.Helper()
+		const wcagAANormalText = 4.5
+		if ratio := contrastRatio(t, foreground, background); ratio < wcagAANormalText {
+			t.Fatalf("%s contrast %.2f:1 for %s on %s, want at least %.1f:1", name, ratio, foreground, background, wcagAANormalText)
+		}
 	}
+
+	pageDark := color(".theme-dark", "background-color", darkVars)
+	cardDark := color(".theme-dark .card", "background-color", darkVars)
+	for _, tc := range []struct {
+		name       string
+		foreground string
+		background string
+	}{
+		{"light critical badge", color(".badge-critical", "color", lightVars), color(".badge-critical", "background", lightVars)},
+		{"light high badge", color(".badge-high", "color", lightVars), color(".badge-high", "background", lightVars)},
+		{"light warning badge", color(".badge-warning", "color", lightVars), color(".badge-warning", "background", lightVars)},
+		{"dark critical badge", color(".theme-dark .badge-critical", "color", darkVars), color(".badge-critical", "background", darkVars)},
+		{"dark high badge", color(".badge-high", "color", darkVars), color(".badge-high", "background", darkVars)},
+		{"dark warning badge", color(".badge-warning", "color", darkVars), color(".badge-warning", "background", darkVars)},
+		{"light high outline", color(".btn-outline-high", "color", lightVars), "#ffffff"},
+		{"light warning outline", color(".btn-outline-warning", "color", lightVars), "#ffffff"},
+		{"dark high outline on page", color(".btn-outline-high", "color", darkVars), pageDark},
+		{"dark warning outline on page", color(".btn-outline-warning", "color", darkVars), pageDark},
+		{"dark high outline on card", color(".btn-outline-high", "color", darkVars), cardDark},
+		{"dark warning outline on card", color(".btn-outline-warning", "color", darkVars), cardDark},
+		{"light critical outline hover", color(".btn-outline-critical:hover", "color", lightVars), color(".btn-outline-critical:hover", "background", lightVars)},
+		{"light high outline hover", color(".btn-outline-high:hover", "color", lightVars), color(".btn-outline-high:hover", "background", lightVars)},
+		{"light warning outline hover", color(".btn-outline-warning:hover", "color", lightVars), color(".btn-outline-warning:hover", "background", lightVars)},
+		{"dark critical outline hover", color(".theme-dark .btn-outline-critical:hover", "color", darkVars), color(".btn-outline-critical:hover", "background", darkVars)},
+		{"dark high outline hover", color(".btn-outline-high:hover", "color", darkVars), color(".btn-outline-high:hover", "background", darkVars)},
+		{"dark warning outline hover", color(".btn-outline-warning:hover", "color", darkVars), color(".btn-outline-warning:hover", "background", darkVars)},
+		{"dark muted text on page", color(".theme-dark .text-muted", "color", darkVars), pageDark},
+		{"dark muted text on card", color(".theme-dark .text-muted", "color", darkVars), cardDark},
+		{"dark subheader on page", color(".theme-dark .subheader", "color", darkVars), pageDark},
+		{"dark subheader on card", color(".theme-dark .subheader", "color", darkVars), cardDark},
+	} {
+		assertContrast(tc.name, tc.foreground, tc.background)
+	}
+}
+
+func parseCSSRules(cssText string) map[string]map[string]string {
+	commentPattern := regexp.MustCompile(`(?s)/\*.*?\*/`)
+	cssText = commentPattern.ReplaceAllString(cssText, "")
+	rulePattern := regexp.MustCompile(`(?s)([^{}]+)\{([^{}]+)\}`)
+	rules := make(map[string]map[string]string)
+	for _, match := range rulePattern.FindAllStringSubmatch(cssText, -1) {
+		declarations := parseCSSDeclarations(match[2])
+		for _, selector := range strings.Split(match[1], ",") {
+			selector = strings.Join(strings.Fields(selector), " ")
+			if selector == "" || strings.HasPrefix(selector, "@") {
+				continue
+			}
+			if _, ok := rules[selector]; !ok {
+				rules[selector] = make(map[string]string)
+			}
+			for property, value := range declarations {
+				rules[selector][property] = value
+			}
+		}
+	}
+	return rules
+}
+
+func parseCSSDeclarations(body string) map[string]string {
+	declarations := make(map[string]string)
+	for _, part := range strings.Split(body, ";") {
+		property, value, ok := strings.Cut(part, ":")
+		if !ok {
+			continue
+		}
+		declarations[strings.TrimSpace(property)] = strings.TrimSpace(value)
+	}
+	return declarations
+}
+
+func cssVariables(declarations map[string]string) map[string]string {
+	vars := make(map[string]string)
+	for property, value := range declarations {
+		if strings.HasPrefix(property, "--") {
+			vars[property] = value
+		}
+	}
+	return vars
+}
+
+func cssDeclaration(t *testing.T, rules map[string]map[string]string, selector, property string) string {
+	t.Helper()
+	declarations, ok := rules[selector]
+	if !ok {
+		t.Fatalf("csm.css missing selector %s", selector)
+	}
+	value, ok := declarations[property]
+	if !ok {
+		t.Fatalf("csm.css selector %s missing property %s", selector, property)
+	}
+	return value
+}
+
+func resolveCSSColor(t *testing.T, value string, vars map[string]string) string {
+	t.Helper()
+	value = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(value), "!important"))
+	if strings.HasPrefix(value, "var(") && strings.HasSuffix(value, ")") {
+		name := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(value, "var("), ")"))
+		resolved, ok := vars[name]
+		if !ok {
+			t.Fatalf("csm.css variable %s is not defined", name)
+		}
+		return resolveCSSColor(t, resolved, vars)
+	}
+	return normalizeHexColor(t, value)
+}
+
+func normalizeHexColor(t *testing.T, value string) string {
+	t.Helper()
+	if !strings.HasPrefix(value, "#") {
+		t.Fatalf("unsupported CSS color %q", value)
+	}
+	hex := strings.TrimPrefix(value, "#")
+	switch len(hex) {
+	case 3:
+		hex = strings.Repeat(hex[0:1], 2) + strings.Repeat(hex[1:2], 2) + strings.Repeat(hex[2:3], 2)
+	case 6:
+	default:
+		t.Fatalf("unsupported hex color %q", value)
+	}
+	return "#" + strings.ToLower(hex)
+}
+
+func contrastRatio(t *testing.T, foreground, background string) float64 {
+	t.Helper()
+	foregroundLum := relativeLuminance(t, foreground)
+	backgroundLum := relativeLuminance(t, background)
+	lighter := math.Max(foregroundLum, backgroundLum)
+	darker := math.Min(foregroundLum, backgroundLum)
+	return (lighter + 0.05) / (darker + 0.05)
+}
+
+func relativeLuminance(t *testing.T, hex string) float64 {
+	t.Helper()
+	hex = strings.TrimPrefix(normalizeHexColor(t, hex), "#")
+	red := srgbChannel(t, hex[0:2])
+	green := srgbChannel(t, hex[2:4])
+	blue := srgbChannel(t, hex[4:6])
+	return 0.2126*red + 0.7152*green + 0.0722*blue
+}
+
+func srgbChannel(t *testing.T, hex string) float64 {
+	t.Helper()
+	n, err := strconv.ParseUint(hex, 16, 8)
+	if err != nil {
+		t.Fatalf("parse CSS color channel %q: %v", hex, err)
+	}
+	v := float64(n) / 255
+	if v <= 0.04045 {
+		return v / 12.92
+	}
+	return math.Pow((v+0.055)/1.055, 2.4)
 }
 
 // TestPrintStylesheetWired pins the static-evidence print path: chrome and

@@ -9,6 +9,8 @@
   --csm-warning: #f59f00;
   --csm-info: #4299e1;
   --csm-low: #2fb344;
+  --csm-high-outline-text: #9a4d00;
+  --csm-warning-outline-text: #7a4f00;
   --csm-text: #1e293b;
   --csm-text-muted: #64748b;
   --csm-bg-card: #ffffff;
@@ -21,6 +23,8 @@
   --csm-warning: #ffd43b;
   --csm-info: #74c0fc;
   --csm-low: #51cf66;
+  --csm-high-outline-text: var(--csm-high);
+  --csm-warning-outline-text: var(--csm-warning);
   --csm-text: #e2e8f0;
   --csm-text-muted: #94a3b8;
   --csm-bg-card: #1e293b;
@@ -43,18 +47,15 @@
 .theme-dark .footer { border-color: #2d3a4e; }
 .theme-dark .form-control, .theme-dark .form-select { background-color: #1a2234; border-color: #2d3a4e; color: #c8d3e0; }
 .theme-dark .list-group-item { background-color: #1e293b; border-color: #2d3a4e; color: #c8d3e0; }
-/* WEB_ROADMAP P6.4: dark-mode muted text lifted from #6b7a8d (≈3.1:1 on
-   #1a2234, fails WCAG AA normal) to #8d99ad (≈4.5:1, passes AA normal). */
+/* WEB_ROADMAP P6.4: muted text must pass WCAG AA on both the dark page
+   background and dark card surfaces. */
 .theme-dark .text-muted { color: #8d99ad !important; }
 .theme-dark .subheader { color: #8d99ad; }
 .theme-dark code { color: #7ec8e3; }
 
 /* --- layout.html: severity badges & text --------------------------------- */
-/* WEB_ROADMAP P6.4: badge text colors picked for WCAG AA contrast on
-   the per-theme background pastels. Light bg #f76707/#f59f00 and dark
-   bg #ff6b6b/#ff922b/#ffd43b all fail white-text contrast (<4.5), so
-   high/warning use dark text in both themes and critical switches to
-   dark text in dark mode where the bg becomes #ff6b6b. */
+/* WEB_ROADMAP P6.4: badge text colors need WCAG AA contrast on the
+   per-theme severity backgrounds. */
 .badge-critical { background: var(--csm-critical); color: #fff; }
 .badge-high { background: var(--csm-high); color: #1a1a1a; }
 .badge-warning { background: var(--csm-warning); color: #1a1a1a; }
@@ -242,8 +243,8 @@ body.theme-dark { background-color: #1a2234; }
 
 /* --- dashboard.html: severity-colored outline buttons for feed chips ---- */
 .btn-outline-critical { color: var(--csm-critical); border-color: var(--csm-critical); background: transparent; }
-.btn-outline-high     { color: var(--csm-high);     border-color: var(--csm-high);     background: transparent; }
-.btn-outline-warning  { color: var(--csm-warning);  border-color: var(--csm-warning);  background: transparent; }
+.btn-outline-high     { color: var(--csm-high-outline-text);     border-color: var(--csm-high);     background: transparent; }
+.btn-outline-warning  { color: var(--csm-warning-outline-text);  border-color: var(--csm-warning);  background: transparent; }
 .btn-outline-critical:hover, .btn-outline-critical.active { background: var(--csm-critical); color: #fff; }
 .btn-outline-high:hover,     .btn-outline-high.active     { background: var(--csm-high);     color: #1a1a1a; }
 .btn-outline-warning:hover,  .btn-outline-warning.active  { background: var(--csm-warning);  color: #1a1a1a; }
