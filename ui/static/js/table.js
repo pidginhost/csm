@@ -30,6 +30,50 @@
  */
 var CSM = CSM || {};
 
+CSM._tableInstances = CSM._tableInstances || [];
+
+CSM.printTables = CSM.printTables || (function() {
+    var snapshots = [];
+
+    function liveTables() {
+        var out = [];
+        for (var i = 0; i < CSM._tableInstances.length; i++) {
+            var tbl = CSM._tableInstances[i];
+            if (tbl && tbl.table && document.documentElement.contains(tbl.table)) {
+                out.push(tbl);
+            }
+        }
+        CSM._tableInstances = out;
+        return out;
+    }
+
+    return {
+        prepare: function() {
+            this.restore();
+            var tables = liveTables();
+            for (var i = 0; i < tables.length; i++) {
+                var tbl = tables[i];
+                if (!tbl.perPage) continue;
+                snapshots.push({ table: tbl, perPage: tbl.perPage, currentPage: tbl.currentPage });
+                tbl.perPage = 0;
+                tbl.currentPage = 1;
+                tbl.render();
+            }
+        },
+        restore: function() {
+            for (var i = snapshots.length - 1; i >= 0; i--) {
+                var snap = snapshots[i];
+                if (!snap.table || !snap.table.table || !document.documentElement.contains(snap.table.table)) continue;
+                snap.table.perPage = snap.perPage;
+                snap.table.currentPage = snap.currentPage;
+                snap.table.render();
+            }
+            snapshots = [];
+            liveTables();
+        }
+    };
+})();
+
 CSM.Table = function(opts) {
     this.table = document.getElementById(opts.tableId);
     if (!this.table) return;
@@ -87,6 +131,7 @@ CSM.Table = function(opts) {
     }
 
     this.filteredRows = this.allRows.slice();
+    CSM._tableInstances.push(this);
 
     // Build controls
     this._buildControls(opts);

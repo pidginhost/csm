@@ -1138,10 +1138,7 @@ body.theme-dark { background-color: #1a2234; }
     text-align: right;
 }
 
-/* WEB_ROADMAP P6.2: print stylesheet. Strips interactive chrome so the
-   page renders as a static evidence document, expands tables so every
-   row is visible without pagination, and stamps a footer with the
-   source URL and print timestamp populated by layout.js. */
+/* Print stylesheet for static evidence pages. */
 @media print {
     @page { margin: 1.6cm 1.4cm 2cm 1.4cm; }
     html, body {
@@ -1162,13 +1159,13 @@ body.theme-dark { background-color: #1a2234; }
     #csm-update-banner,
     #csm-connection-lost,
     .csm-page-header__actions,
+    .card-actions,
     .csm-toolbar,
     .nav-tabs,
-    .csm-bulk-bar,
+    .csm-sticky-actions,
     .csm-pagination,
     .pagination,
     .dropdown-menu,
-    .csm-detail-panel,
     .btn,
     .csm-palette,
     #csm-shortcuts-help { display: none !important; }
@@ -1183,10 +1180,12 @@ body.theme-dark { background-color: #1a2234; }
         margin: 0 !important;
         padding: 0 !important;
     }
+    .table-responsive { overflow: visible !important; }
 
     table.table {
         width: 100% !important;
         border-collapse: collapse !important;
+        break-inside: auto;
         page-break-inside: auto;
     }
     table.table th,
@@ -1198,26 +1197,56 @@ body.theme-dark { background-color: #1a2234; }
         font-size: 10pt !important;
     }
     table.table thead th { background: #eee !important; }
-    tr { page-break-inside: avoid; }
+    tr {
+        break-inside: avoid;
+        page-break-inside: avoid;
+    }
     thead { display: table-header-group; }
     tfoot { display: table-footer-group; }
 
     .card {
         border: 1px solid #999 !important;
         box-shadow: none !important;
-        page-break-inside: avoid;
+        break-inside: auto;
+        page-break-inside: auto;
         margin-bottom: 12pt !important;
     }
     .card-header {
         background: #f2f2f2 !important;
         color: #000 !important;
         border-bottom: 1px solid #999 !important;
+        break-after: avoid;
+        page-break-after: avoid;
     }
+
+    .csm-detail-panel:not(.show) { display: none !important; }
+    .csm-detail-panel.show {
+        display: block !important;
+        position: static !important;
+        visibility: visible !important;
+        transform: none !important;
+        width: 100% !important;
+        max-width: none !important;
+        border: 1px solid #999 !important;
+        box-shadow: none !important;
+        margin: 12pt 0 !important;
+    }
+    .csm-detail-panel__header {
+        background: #f2f2f2 !important;
+        color: #000 !important;
+        border-bottom: 1px solid #999 !important;
+    }
+    .csm-detail-panel__body {
+        padding: 10pt !important;
+    }
+    .csm-detail-panel__footer,
+    .csm-detail-panel .btn-close,
+    .offcanvas-backdrop { display: none !important; }
 
     a, a:visited { color: #000 !important; text-decoration: none !important; }
     .csm-page-header__title { font-size: 16pt !important; }
 
-    body::after {
+    body[data-csm-print-url][data-csm-print-at]::after {
         content: "Printed from " attr(data-csm-print-url) " on " attr(data-csm-print-at);
         display: block;
         margin-top: 14pt;

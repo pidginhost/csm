@@ -2838,10 +2838,10 @@ func TestShortcutsHelpModalFocusContract(t *testing.T) {
 	}
 }
 
-// TestPrintStylesheetWired pins WEB_ROADMAP P6.2: csm.css contains a
-// print-media block that hides interactive chrome, expands tables for
-// static-page output, and stamps a "Printed from URL on TIMESTAMP"
-// footer populated by layout.js on the beforeprint event.
+// TestPrintStylesheetWired pins the static-evidence print path: chrome and
+// controls are hidden, current filtered tables print without client-side
+// pagination, open detail panels stay printable, and the footer stamp is
+// scoped to pages where layout.js populated the metadata attributes.
 func TestPrintStylesheetWired(t *testing.T) {
 	css, err := os.ReadFile("../../ui/static/css/csm.css")
 	if err != nil {
@@ -2853,13 +2853,24 @@ func TestPrintStylesheetWired(t *testing.T) {
 		".csm-sidebar,",
 		".csm-topbar,",
 		".csm-page-header__actions,",
-		"body::after",
+		".card-actions,",
+		".csm-sticky-actions,",
+		".table-responsive { overflow: visible !important; }",
+		".csm-detail-panel.show",
+		".offcanvas-backdrop",
+		"body[data-csm-print-url][data-csm-print-at]::after",
 		"data-csm-print-url",
 		"data-csm-print-at",
 	} {
 		if !strings.Contains(cssText, fragment) {
-			t.Fatalf("csm.css missing P6.2 fragment %q", fragment)
+			t.Fatalf("csm.css missing print fragment %q", fragment)
 		}
+	}
+	if strings.Contains(cssText, ".csm-bulk-bar") {
+		t.Fatal("csm.css hides stale .csm-bulk-bar selector instead of the real .csm-sticky-actions bulk bar")
+	}
+	if strings.Contains(cssText, ".csm-detail-panel,\n") {
+		t.Fatal("csm.css must keep an open detail panel printable instead of hiding every detail panel")
 	}
 
 	js, err := os.ReadFile("../../ui/static/js/layout.js")
@@ -2868,12 +2879,34 @@ func TestPrintStylesheetWired(t *testing.T) {
 	}
 	jsText := string(js)
 	for _, fragment := range []string{
-		`addEventListener('beforeprint'`,
+		`addEventListener('beforeprint', preparePrint)`,
+		`addEventListener('afterprint', restorePrint)`,
+		`CSM.printTables.prepare()`,
+		`CSM.printTables.restore()`,
 		`'data-csm-print-url'`,
 		`'data-csm-print-at'`,
+		`return 'UTC' + sign`,
 	} {
 		if !strings.Contains(jsText, fragment) {
-			t.Fatalf("layout.js missing P6.2 fragment %q", fragment)
+			t.Fatalf("layout.js missing print fragment %q", fragment)
+		}
+	}
+
+	table, err := os.ReadFile("../../ui/static/js/table.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tableText := string(table)
+	for _, fragment := range []string{
+		`CSM.printTables`,
+		`prepare: function()`,
+		`tbl.perPage = 0;`,
+		`tbl.currentPage = 1;`,
+		`snap.table.perPage = snap.perPage;`,
+		`CSM._tableInstances.push(this);`,
+	} {
+		if !strings.Contains(tableText, fragment) {
+			t.Fatalf("table.js missing print pagination fragment %q", fragment)
 		}
 	}
 }

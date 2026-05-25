@@ -48,6 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Web UI print output now includes all rows from the current filtered table view, hides the findings bulk bar, and keeps an open evidence detail panel in the printed page.
 - Web UI command palette no longer lets Ctrl-K / Cmd-K also trigger page shortcuts behind the overlay, and it ignores keys already handled by another open modal.
 - Threat intelligence attacker filters now match clean verdicts and keep bookmarked filter state even when no attackers are listed.
 - Email quarantine toolbar filters now stay separate from findings filters, bulk select-all survives empty-to-populated reloads, and relative timestamp refresh no longer collapses message rows.
