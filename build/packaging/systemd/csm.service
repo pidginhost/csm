@@ -18,6 +18,40 @@ RuntimeDirectory=csm
 RuntimeDirectoryMode=0755
 ConfigurationDirectory=csm
 ConfigurationDirectoryMode=0750
+LogsDirectory=csm
+LogsDirectoryMode=0750
+
+# Sandboxing. CSM runs as root because fanotify, BPF cgroup attach, and
+# firewall mutation all need root capabilities. Everything below restricts
+# the blast radius of a compromised daemon without dropping the privileges
+# the legitimate workload needs.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/csm /var/log/csm /etc/csm /opt/csm/quarantine /opt/csm/policies
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+# /tmp scanning needs the host's real /tmp so PrivateTmp must stay off.
+PrivateTmp=no
+# BPF cgroup-sock attach writes to cgroupfs, so cgroup access must remain
+# writable. Leaving ProtectControlGroups disabled is intentional.
+ProtectControlGroups=no
+# AF_UNIX for the control socket, AF_INET/AF_INET6 for HTTP + outbound
+# threat-intel, AF_NETLINK for fanotify and nftables, AF_PACKET kept for
+# future raw-socket needs.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET
+SystemCallArchitectures=native
+SystemCallFilter=@system-service @network-io @file-system
+SystemCallFilter=~@reboot ~@swap ~@module ~@raw-io ~@mount ~@cpu-emulation ~@debug
 
 [Install]
 WantedBy=multi-user.target
