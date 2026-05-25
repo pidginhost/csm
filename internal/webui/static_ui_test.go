@@ -2842,8 +2842,9 @@ func TestShortcutsHelpModalFocusContract(t *testing.T) {
 
 // TestResponsivePolish pins WEB_ROADMAP P6.1: firewall config tables
 // are wrapped in table-responsive so they don't overflow on phones,
-// and the topbar's chatty pills hide their labels below 576px so the
-// action buttons stay reachable.
+// and the topbar's chatty pills visually hide their labels below 576px
+// so the action buttons stay reachable while live status text remains
+// available to assistive tech.
 func TestResponsivePolish(t *testing.T) {
 	tmpl, err := os.ReadFile("../../ui/templates/firewall.html")
 	if err != nil {
@@ -2867,11 +2868,17 @@ func TestResponsivePolish(t *testing.T) {
 	for _, fragment := range []string{
 		`@media (max-width: 575.98px) {`,
 		`#csm-sse-pill .csm-sse-pill__label,`,
-		`#csm-refresh-pill { display: none !important; }`,
+		`#csm-refresh-pill {`,
+		`position: absolute !important;`,
+		`clip: rect(0, 0, 0, 0) !important;`,
+		`white-space: nowrap !important;`,
 	} {
 		if !strings.Contains(cssText, fragment) {
 			t.Fatalf("csm.css missing P6.1 fragment %q", fragment)
 		}
+	}
+	if strings.Contains(cssText, `#csm-refresh-pill { display: none !important; }`) {
+		t.Fatal("small-screen refresh status must be visually hidden, not display:none, so aria-live updates remain available")
 	}
 }
 
