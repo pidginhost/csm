@@ -173,7 +173,7 @@ POST /api/v1/import                   Import state bundle (suppressions, whiteli
 ```
 GET  /api/v1/settings             List editable config sections
 GET  /api/v1/settings/<section>   Read a config section (secrets redacted)
-POST /api/v1/settings/<section>   Update a config section (hot-reload-safe sections only)
+POST /api/v1/settings/<section>   Update a config section (safe fields reload, restart fields queue)
 POST /api/v1/settings/restart     Request a daemon restart (after editing restart-required fields)
 POST /api/v1/settings/firewall/tentative-apply  Save firewall config, restart, and arm rollback timer
 GET  /api/v1/settings/firewall/rollback         Read pending rollback state
@@ -181,7 +181,7 @@ POST /api/v1/settings/firewall/confirm          Confirm tentative firewall chang
 POST /api/v1/settings/firewall/revert           Revert tentative firewall changes now
 ```
 
-Sections map to top-level config keys: `alerts`, `auto_response`, `challenge`, `reputation`, `performance`, `infra_ips`, `sentry`, etc. Writes persist to `csm.yaml`, re-sign the integrity hash, and hot-reload where possible; restart-required changes are queued for `/api/v1/settings/restart`. Firewall tentative apply is restart-class by design: it snapshots the previous config, writes the new one, restarts the daemon, and auto-reverts unless the operator confirms before the timer expires.
+Sections map to top-level config keys: `alerts`, `auto_response`, `challenge`, `reputation`, `performance`, `infra_ips`, `sentry`, etc. Writes persist to `csm.yaml`, re-sign the integrity hash, and hot-reload where possible; restart-required changes are queued for `/api/v1/settings/restart`. Invalid field values return 422 and do not touch disk. Firewall tentative apply is restart-class by design: it snapshots the previous config, writes the new one, restarts the daemon, and auto-reverts unless the operator confirms before the timer expires.
 
 ## Finding fields
 

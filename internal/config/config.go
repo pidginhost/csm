@@ -1528,37 +1528,47 @@ func validateWebUITokens(cfg *Config) error {
 	return nil
 }
 
-func validateMailLogs(cfg *Config) error {
+func validateMailLogsField(cfg *Config) (string, error) {
 	switch cfg.MailLogs.Source {
-	case "auto", "file", "journal":
+	case "", "auto", "file", "journal":
 	default:
-		return fmt.Errorf("mail_logs.source: must be auto, file, or journal (got %q)", cfg.MailLogs.Source)
+		return "mail_logs.source", fmt.Errorf("mail_logs.source: must be auto, file, or journal (got %q)", cfg.MailLogs.Source)
 	}
 	for i, unit := range cfg.MailLogs.Units {
 		if strings.TrimSpace(unit) == "" {
-			return fmt.Errorf("mail_logs.units[%d]: empty unit", i)
+			return "mail_logs.units", fmt.Errorf("mail_logs.units[%d]: empty unit", i)
 		}
 	}
-	return nil
+	return "", nil
 }
 
-func validateMailBruteAccountKey(cfg *Config) error {
+func validateMailLogs(cfg *Config) error {
+	_, err := validateMailLogsField(cfg)
+	return err
+}
+
+func validateMailBruteAccountKeyField(cfg *Config) (string, error) {
 	key := cfg.Thresholds.MailBruteAccountKey
 	switch {
-	case key == "builtin:dovecot-user", key == "builtin:postfix-sasl":
+	case key == "", key == "builtin:dovecot-user", key == "builtin:postfix-sasl":
 		// ok
 	case strings.HasPrefix(key, "regex:"):
 		re, err := regexp.Compile(strings.TrimPrefix(key, "regex:"))
 		if err != nil {
-			return fmt.Errorf("mail_brute_account_key: invalid regex: %w", err)
+			return "thresholds.mail_brute_account_key", fmt.Errorf("mail_brute_account_key: invalid regex: %w", err)
 		}
 		if re.NumSubexp() < 1 {
-			return fmt.Errorf("mail_brute_account_key: regex must contain at least one capture group")
+			return "thresholds.mail_brute_account_key", fmt.Errorf("mail_brute_account_key: regex must contain at least one capture group")
 		}
 	default:
-		return fmt.Errorf("mail_brute_account_key: %q must be builtin:* or regex:*", key)
+		return "thresholds.mail_brute_account_key", fmt.Errorf("mail_brute_account_key: %q must be builtin:* or regex:*", key)
 	}
-	return nil
+	return "", nil
+}
+
+func validateMailBruteAccountKey(cfg *Config) error {
+	_, err := validateMailBruteAccountKeyField(cfg)
+	return err
 }
 
 func Load(path string) (*Config, error) {

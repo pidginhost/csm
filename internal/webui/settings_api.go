@@ -390,6 +390,13 @@ func buildChangeSet(section SettingsSection, clone *config.Config, changes map[s
 			}
 		}
 
+		if field.Type == "enum" {
+			if badValue, ok := validateEnumScalar(field, raw); !ok {
+				errs = append(errs, fieldError{Field: key, Message: "unknown value: " + badValue})
+				continue
+			}
+		}
+
 		if field.Type == "[]int" {
 			normalised, badValues, perr := normaliseIntArray(field, raw)
 			if perr != nil {
@@ -431,6 +438,23 @@ func buildChangeSet(section SettingsSection, clone *config.Config, changes map[s
 		}
 	}
 	return out, errs
+}
+
+func validateEnumScalar(field *SettingsField, raw json.RawMessage) (bad string, ok bool) {
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "(not a string)", false
+	}
+	resolved := resolvedOptionsForField(field)
+	if len(resolved) == 0 {
+		return "", true
+	}
+	for _, opt := range resolved {
+		if value == opt {
+			return "", true
+		}
+	}
+	return value, false
 }
 
 // validateEnumArray checks that raw is a JSON array of strings, each of

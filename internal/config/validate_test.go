@@ -39,6 +39,18 @@ func hasResult(results []ValidationResult, level, field string) bool {
 	return false
 }
 
+func baseValidationConfig() *Config {
+	cfg := &Config{Hostname: "test"}
+	cfg.Alerts.Email.Enabled = true
+	cfg.Alerts.Email.To = []string{"a@b.com"}
+	cfg.Alerts.Email.SMTP = "localhost:25"
+	cfg.Alerts.Email.From = "csm@test.com"
+	cfg.Alerts.MaxPerHour = 10
+	cfg.MailLogs.Source = "auto"
+	cfg.Thresholds.MailBruteAccountKey = "builtin:dovecot-user"
+	return cfg
+}
+
 func TestValidateHostname(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -249,6 +261,24 @@ func TestValidateTrustedCountries(t *testing.T) {
 	results := Validate(cfg)
 	if !hasResult(results, "error", "suppressions.trusted_countries") {
 		t.Errorf("expected error for invalid country code; results=%v", results)
+	}
+}
+
+func TestValidateMailLogsSource(t *testing.T) {
+	cfg := baseValidationConfig()
+	cfg.MailLogs.Source = "kafka"
+	results := Validate(cfg)
+	if !hasResult(results, "error", "mail_logs.source") {
+		t.Fatalf("expected error for invalid mail log source; results=%v", results)
+	}
+}
+
+func TestValidateMailBruteAccountKey(t *testing.T) {
+	cfg := baseValidationConfig()
+	cfg.Thresholds.MailBruteAccountKey = `regex:user=[^,\s]+`
+	results := Validate(cfg)
+	if !hasResult(results, "error", "thresholds.mail_brute_account_key") {
+		t.Fatalf("expected error for regex without capture group; results=%v", results)
 	}
 }
 

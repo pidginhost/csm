@@ -376,6 +376,14 @@ func Validate(cfg *Config) []ValidationResult {
 	if t.MailBruteForceMaxTracked != 0 && (t.MailBruteForceMaxTracked < 1000 || t.MailBruteForceMaxTracked > 200000) {
 		results = append(results, ValidationResult{"error", "thresholds.mail_bruteforce_max_tracked", "mail_bruteforce_max_tracked must be between 1000 and 200000"})
 	}
+	if field, err := validateMailBruteAccountKeyField(cfg); err != nil {
+		results = append(results, ValidationResult{"error", field, err.Error()})
+	}
+
+	// --- Mail log source ---
+	if field, err := validateMailLogsField(cfg); err != nil {
+		results = append(results, ValidationResult{"error", field, err.Error()})
+	}
 
 	// --- Reputation.Rspamd ---
 	if cfg.Reputation.Rspamd.Enabled {

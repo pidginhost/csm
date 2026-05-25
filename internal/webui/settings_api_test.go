@@ -868,6 +868,110 @@ alerts:
 	}
 }
 
+func TestSettingsPOSTMailLogsRejectsUnknownSource(t *testing.T) {
+	body := `hostname: t.example.com
+alerts:
+  email:
+    enabled: true
+    to: ["ops@t.example.com"]
+    from: csm@t.example.com
+    smtp: "127.0.0.1:1"
+  max_per_hour: 20
+mail_logs:
+  source: auto
+  units: ["postfix", "dovecot"]
+`
+	s, _ := newSettingsTestServer(t, "tok", body)
+
+	getReq := settingsAuthedReq("GET", "/api/v1/settings/mail_logs", "tok", "")
+	getW := httptest.NewRecorder()
+	s.apiSettingsGet(getW, getReq)
+	etag := getW.Header().Get("ETag")
+
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/mail_logs", "tok",
+		`{"changes":{"source":"kafka"}}`)
+	postReq.Header.Set("If-Match", etag)
+	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	postW := httptest.NewRecorder()
+	s.apiSettingsPost(postW, postReq)
+
+	if postW.Code != 422 {
+		t.Fatalf("code = %d, want 422, body = %s", postW.Code, postW.Body.String())
+	}
+	if !strings.Contains(postW.Body.String(), "kafka") {
+		t.Errorf("response should name the bad source, got %s", postW.Body.String())
+	}
+}
+
+func TestSettingsPOSTThresholdsPreservesRegexAccountExtractor(t *testing.T) {
+	body := `hostname: t.example.com
+alerts:
+  email:
+    enabled: true
+    to: ["ops@t.example.com"]
+    from: csm@t.example.com
+    smtp: "127.0.0.1:1"
+  max_per_hour: 20
+`
+	s, cfgPath := newSettingsTestServer(t, "tok", body)
+
+	getReq := settingsAuthedReq("GET", "/api/v1/settings/thresholds", "tok", "")
+	getW := httptest.NewRecorder()
+	s.apiSettingsGet(getW, getReq)
+	etag := getW.Header().Get("ETag")
+
+	want := `regex:user=([^,\s]+)`
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/thresholds", "tok",
+		`{"changes":{"mail_brute_account_key":"regex:user=([^,\\s]+)"}}`)
+	postReq.Header.Set("If-Match", etag)
+	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	postW := httptest.NewRecorder()
+	s.apiSettingsPost(postW, postReq)
+
+	if postW.Code != 200 {
+		t.Fatalf("code = %d, body = %s", postW.Code, postW.Body.String())
+	}
+	loaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Thresholds.MailBruteAccountKey != want {
+		t.Fatalf("mail_brute_account_key = %q, want %q", loaded.Thresholds.MailBruteAccountKey, want)
+	}
+}
+
+func TestSettingsPOSTThresholdsRejectsInvalidAccountExtractor(t *testing.T) {
+	body := `hostname: t.example.com
+alerts:
+  email:
+    enabled: true
+    to: ["ops@t.example.com"]
+    from: csm@t.example.com
+    smtp: "127.0.0.1:1"
+  max_per_hour: 20
+`
+	s, _ := newSettingsTestServer(t, "tok", body)
+
+	getReq := settingsAuthedReq("GET", "/api/v1/settings/thresholds", "tok", "")
+	getW := httptest.NewRecorder()
+	s.apiSettingsGet(getW, getReq)
+	etag := getW.Header().Get("ETag")
+
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/thresholds", "tok",
+		`{"changes":{"mail_brute_account_key":"regex:user=[^,\\s]+"}}`)
+	postReq.Header.Set("If-Match", etag)
+	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	postW := httptest.NewRecorder()
+	s.apiSettingsPost(postW, postReq)
+
+	if postW.Code != 422 {
+		t.Fatalf("code = %d, want 422, body = %s", postW.Code, postW.Body.String())
+	}
+	if !strings.Contains(postW.Body.String(), "capture group") {
+		t.Errorf("response should explain missing capture group, got %s", postW.Body.String())
+	}
+}
+
 // firewallSettingsTestYAML returns a minimal config with the firewall section
 // populated so the settings endpoints have something to roundtrip through.
 func firewallSettingsTestYAML() string {

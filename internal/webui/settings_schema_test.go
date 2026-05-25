@@ -60,6 +60,7 @@ func TestSettingsRestartHintsMatchHotReloadManifest(t *testing.T) {
 func TestSchemaCoversAllInScopeConfigFields(t *testing.T) {
 	inScope := map[string]string{
 		"alerts": "alerts", "thresholds": "thresholds",
+		"mail_logs":    "mail_logs",
 		"suppressions": "suppressions", "auto_response": "auto_response",
 		"reputation": "reputation", "email_protection": "email_protection",
 		"challenge": "challenge", "php_shield": "php_shield",
@@ -135,6 +136,32 @@ func TestAlertsWebhookTypeIncludesPhpanel(t *testing.T) {
 	t.Fatalf("webhook.type options = %v, want phpanel", f.Options)
 }
 
+func TestMailLogsSchemaUsesEnumSource(t *testing.T) {
+	s, _ := LookupSettingsSection("mail_logs")
+	if !s.Restart {
+		t.Fatal("mail_logs should be marked restart-required")
+	}
+	source := findSchemaField(s, "source")
+	if source == nil {
+		t.Fatal("mail_logs.source field missing")
+	}
+	if source.Type != "enum" {
+		t.Fatalf("mail_logs.source type = %q, want enum", source.Type)
+	}
+	for _, want := range []string{"auto", "file", "journal"} {
+		if !hasOption(source.Options, want) {
+			t.Fatalf("mail_logs.source options = %v, missing %q", source.Options, want)
+		}
+	}
+	units := findSchemaField(s, "units")
+	if units == nil {
+		t.Fatal("mail_logs.units field missing")
+	}
+	if units.Type != "[]string" {
+		t.Fatalf("mail_logs.units type = %q, want []string", units.Type)
+	}
+}
+
 func TestThresholdsSchemaIncludesAccountScanMaxFiles(t *testing.T) {
 	s, _ := LookupSettingsSection("thresholds")
 	f := findSchemaField(s, "account_scan_max_files")
@@ -175,6 +202,23 @@ func TestThresholdsSchemaIncludesCrontabBase64BlobMaxBytes(t *testing.T) {
 	}
 	if !strings.Contains(f.Help, "multiple of 4") {
 		t.Fatalf("crontab_base64_blob_max_bytes help = %q, want multiple-of-4 guidance", f.Help)
+	}
+}
+
+func TestThresholdsSchemaIncludesMailBruteAccountKey(t *testing.T) {
+	s, _ := LookupSettingsSection("thresholds")
+	f := findSchemaField(s, "mail_brute_account_key")
+	if f == nil {
+		t.Fatal("mail_brute_account_key field missing")
+	}
+	if f.Type != "string" {
+		t.Fatalf("mail_brute_account_key type = %q, want string", f.Type)
+	}
+	if f.FieldGroup != FieldGroupMailBruteForce {
+		t.Fatalf("mail_brute_account_key group = %q, want %q", f.FieldGroup, FieldGroupMailBruteForce)
+	}
+	if f.Placeholder != "builtin:dovecot-user" {
+		t.Fatalf("mail_brute_account_key placeholder = %q", f.Placeholder)
 	}
 }
 
