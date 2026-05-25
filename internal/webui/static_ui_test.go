@@ -2871,7 +2871,7 @@ func TestRefreshManualHasFallback(t *testing.T) {
 		}
 	}
 
-	// The two pages from the bug report should wire onRefresh so they
+	// The pages from the bug report should wire onRefresh so they
 	// refresh in-place instead of reloading, preserving filter state.
 	for _, path := range []string{"quarantine.js", "audit.js", "firewall.js"} {
 		body, err := os.ReadFile("../../ui/static/js/" + path)
@@ -2880,6 +2880,64 @@ func TestRefreshManualHasFallback(t *testing.T) {
 		}
 		if !strings.Contains(string(body), "CSM.refresh.onRefresh(") {
 			t.Fatalf("%s does not register a refresh-now handler", path)
+		}
+	}
+
+	tableJS, err := os.ReadFile("../../ui/static/js/table.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tableText := string(tableJS)
+	for _, fragment := range []string{
+		`function csmTableListen(tbl, el, eventName, fn)`,
+		`tbl._listeners.push({ el: el, eventName: eventName, fn: fn });`,
+		`CSM.Table.prototype.destroy = function() {`,
+		`l.el.removeEventListener(l.eventName, l.fn);`,
+		`if (CSM._tableInstances[j] === this) CSM._tableInstances.splice(j, 1);`,
+	} {
+		if !strings.Contains(tableText, fragment) {
+			t.Fatalf("table.js missing refresh teardown fragment %q", fragment)
+		}
+	}
+
+	for _, tc := range []struct {
+		path      string
+		fragments []string
+	}{
+		{
+			path: "../../ui/static/js/audit.js",
+			fragments: []string{
+				`var _auditURLUnbind = null;`,
+				`resetAuditTable();`,
+				`_auditTable = new CSM.Table({`,
+				`_auditURLUnbind = CSM.urlState.bind({ inputs: auditURLInputs(_auditFromInput, _auditToInput) });`,
+			},
+		},
+		{
+			path: "../../ui/static/js/quarantine.js",
+			fragments: []string{
+				`if (typeof _quarTable.destroy === 'function') _quarTable.destroy();`,
+			},
+		},
+		{
+			path: "../../ui/static/js/firewall.js",
+			fragments: []string{
+				`var _fwTables = {};`,
+				`function resetFirewallTable(name, controlsId)`,
+				`resetFirewallTable('blocked', 'blocked-table-controls');`,
+				`_fwTables.audit = new CSM.Table({`,
+			},
+		},
+	} {
+		body, err := os.ReadFile(tc.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(body)
+		for _, fragment := range tc.fragments {
+			if !strings.Contains(text, fragment) {
+				t.Fatalf("%s missing refresh teardown fragment %q", tc.path, fragment)
+			}
 		}
 	}
 }

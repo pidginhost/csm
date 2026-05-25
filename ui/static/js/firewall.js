@@ -2,10 +2,19 @@
 
 var _fwBlockedData = [];
 var _fwSetView = function() {};
+var _fwTables = {};
 
 function removeTableControls(id) {
     var el = document.getElementById(id);
     if (el) el.remove();
+}
+
+function resetFirewallTable(name, controlsId) {
+    if (_fwTables[name] && typeof _fwTables[name].destroy === 'function') {
+        _fwTables[name].destroy();
+    }
+    _fwTables[name] = null;
+    if (controlsId) removeTableControls(controlsId);
 }
 
 function formatReason(reason, fallback) {
@@ -260,7 +269,7 @@ function loadSubnets() {
     CSM.get('/api/v1/firewall/subnets')
         .then(function(subs) {
             var el = document.getElementById('subnet-content');
-            removeTableControls('subnets-table-controls');
+            resetFirewallTable('subnets', 'subnets-table-controls');
             if (!subs || subs.length === 0) {
                 el.innerHTML = '<div class="card-body text-center text-muted py-3">No blocked subnets.</div>';
                 return;
@@ -282,7 +291,7 @@ function loadSubnets() {
             h += '</tbody></table></div>';
             el.innerHTML = h;
 
-            new CSM.Table({ tableId: 'subnets-table', searchId: 'subnet-search', sortable: true, perPage: 10, stateKey: 'csm-firewall-subnets', mobileRowCard: true });
+            _fwTables.subnets = new CSM.Table({ tableId: 'subnets-table', searchId: 'subnet-search', sortable: true, perPage: 10, stateKey: 'csm-firewall-subnets', mobileRowCard: true });
             enrichGeoIP(el);
             el.querySelectorAll('.remove-subnet-btn').forEach(function(btn) {
                 btn.addEventListener('click', function() { removeSubnet(this.getAttribute('data-cidr')); });
@@ -297,7 +306,7 @@ function loadBlocked() {
     CSM.get('/api/v1/blocked-ips')
         .then(function(ips) {
             var el = document.getElementById('blocked-content');
-            removeTableControls('blocked-table-controls');
+            resetFirewallTable('blocked', 'blocked-table-controls');
             if (!ips || ips.length === 0) {
                 _fwBlockedData = [];
                 el.innerHTML = '<div class="card-body text-center text-muted py-3">No blocked IPs.</div>';
@@ -345,7 +354,7 @@ function loadBlocked() {
             h += '</tbody></table></div>';
             el.innerHTML = h;
 
-            new CSM.Table({
+            _fwTables.blocked = new CSM.Table({
                 tableId: 'blocked-table',
                 perPage: 25,
                 perPageSelectId: 'blocked-perpage',
@@ -411,7 +420,7 @@ function loadAllowed() {
             var el = document.getElementById('allowed-content');
             var allowed = data.allowed || [];
             var portAllowed = data.port_allowed || [];
-            removeTableControls('allowed-table-controls');
+            resetFirewallTable('allowed', 'allowed-table-controls');
 
             if (allowed.length === 0 && portAllowed.length === 0) {
                 el.innerHTML = '<div class="card-body text-center text-muted py-3">No active allow rules.</div>';
@@ -460,7 +469,7 @@ function loadAllowed() {
 
             el.innerHTML = h;
             if (allowed.length > 0) {
-                new CSM.Table({ tableId: 'allowed-table', perPage: 15, searchId: 'allowed-search', sortable: true, stateKey: 'csm-firewall-allowed', mobileRowCard: true });
+                _fwTables.allowed = new CSM.Table({ tableId: 'allowed-table', perPage: 15, searchId: 'allowed-search', sortable: true, stateKey: 'csm-firewall-allowed', mobileRowCard: true });
                 el.querySelectorAll('.remove-allow-btn').forEach(function(btn) {
                     btn.addEventListener('click', function() { removeAllowRule(this.getAttribute('data-ip')); });
                 });
@@ -476,7 +485,7 @@ function loadWhitelist() {
     CSM.get('/api/v1/threat/whitelist')
         .then(function(ips) {
             var el = document.getElementById('whitelist-content');
-            removeTableControls('whitelist-table-controls');
+            resetFirewallTable('whitelist', 'whitelist-table-controls');
             if (!ips || ips.length === 0) {
                 el.innerHTML = '<div class="card-body text-center text-muted py-3">No whitelisted IPs.</div>';
                 return;
@@ -500,7 +509,7 @@ function loadWhitelist() {
             h += '</tbody></table></div>';
             el.innerHTML = h;
 
-            new CSM.Table({ tableId: 'whitelist-table', searchId: 'whitelist-search', sortable: true, perPage: 15, stateKey: 'csm-firewall-whitelist', mobileRowCard: true });
+            _fwTables.whitelist = new CSM.Table({ tableId: 'whitelist-table', searchId: 'whitelist-search', sortable: true, perPage: 15, stateKey: 'csm-firewall-whitelist', mobileRowCard: true });
             el.querySelectorAll('.wl-remove-btn').forEach(function(btn) {
                 btn.addEventListener('click', function() { removeWhitelist(this.getAttribute('data-ip')); });
             });
@@ -514,7 +523,7 @@ function loadAudit() {
     CSM.get(currentAuditURL())
         .then(function(entries) {
             var el = document.getElementById('fw-audit-content');
-            removeTableControls('firewall-audit-table-controls');
+            resetFirewallTable('audit', 'firewall-audit-table-controls');
             if (!entries || entries.length === 0) {
                 el.innerHTML = '<div class="card-body text-center text-muted py-3">No recent firewall activity.</div>';
                 return;
@@ -536,7 +545,7 @@ function loadAudit() {
             }
             h += '</tbody></table></div>';
             el.innerHTML = h;
-            new CSM.Table({
+            _fwTables.audit = new CSM.Table({
                 tableId: 'firewall-audit-table',
                 perPage: 12,
                 searchId: 'fw-audit-search',

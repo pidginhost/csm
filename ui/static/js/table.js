@@ -74,6 +74,12 @@ CSM.printTables = CSM.printTables || (function() {
     };
 })();
 
+function csmTableListen(tbl, el, eventName, fn) {
+    if (!el) return;
+    el.addEventListener(eventName, fn);
+    tbl._listeners.push({ el: el, eventName: eventName, fn: fn });
+}
+
 CSM.Table = function(opts) {
     this.table = document.getElementById(opts.tableId);
     if (!this.table) return;
@@ -97,6 +103,8 @@ CSM.Table = function(opts) {
     this.emptyState = opts.emptyState || null;
     this._searchInput = null;
     this._searchDebounce = null;
+    this._listeners = [];
+    this._createdControls = false;
 
     if (opts.density === 'compact') {
         this.table.classList.add('table-sm');
@@ -148,7 +156,7 @@ CSM.Table = function(opts) {
                 self.applyFilters();
                 self._saveState();
             }, 300);
-            searchEl.addEventListener('input', function() {
+            csmTableListen(this, searchEl, 'input', function() {
                 self._searchDebounce(this.value.toLowerCase());
             });
         }
@@ -159,7 +167,7 @@ CSM.Table = function(opts) {
         var clearEl = document.getElementById(opts.clearFiltersId);
         if (clearEl) {
             var clearSelf = this;
-            clearEl.addEventListener('click', function() { clearSelf.clearFilters(); });
+            csmTableListen(this, clearEl, 'click', function() { clearSelf.clearFilters(); });
         }
     }
 
@@ -169,7 +177,7 @@ CSM.Table = function(opts) {
         if (perPageEl) {
             var perPageSelf = this;
             this._syncPerPageSelect(opts);
-            perPageEl.addEventListener('change', function() {
+            csmTableListen(this, perPageEl, 'change', function() {
                 var n = parseInt(this.value, 10);
                 perPageSelf.perPage = (isFinite(n) && n > 0) ? n : 0;
                 perPageSelf.currentPage = 1;
@@ -182,7 +190,7 @@ CSM.Table = function(opts) {
     // Optional row-click handler -> caller opens detail panel
     if (this.onRowClick) {
         var rowClickSelf = this;
-        this.tbody.addEventListener('click', function(ev) {
+        csmTableListen(this, this.tbody, 'click', function(ev) {
             // Ignore clicks that originated on interactive children (buttons,
             // checkboxes, links, form controls) so the row hook does not
             // hijack their default action.
@@ -208,7 +216,7 @@ CSM.Table = function(opts) {
         (function(filter, tbl) {
             var el = document.getElementById(filter.id);
             if (el) {
-                el.addEventListener('change', function() {
+                csmTableListen(tbl, el, 'change', function() {
                     tbl.filterValues[filter.id] = this.value;
                     tbl.currentPage = 1;
                     tbl.applyFilters();
@@ -229,7 +237,7 @@ CSM.Table = function(opts) {
 
                 header.style.cursor = 'pointer';
                 header.title = 'Click to sort';
-                header.addEventListener('click', function() {
+                csmTableListen(tbl, header, 'click', function() {
                     if (tbl.sortColumn === idx) {
                         tbl.sortAsc = !tbl.sortAsc;
                     } else {
@@ -272,8 +280,35 @@ CSM.Table.prototype._buildControls = function(opts) {
         // Append to card level so controls don't end up inside table-responsive overflow
         var card = this.table.closest('.card');
         (card || this.table.parentNode).appendChild(controls);
+        this._createdControls = true;
     }
     this.controlsEl = controls;
+};
+
+CSM.Table.prototype.destroy = function() {
+    if (this._searchDebounce && this._searchDebounce.cancel) this._searchDebounce.cancel();
+    for (var i = 0; i < (this._listeners || []).length; i++) {
+        var l = this._listeners[i];
+        l.el.removeEventListener(l.eventName, l.fn);
+    }
+    this._listeners = [];
+    if (this.controlsEl) {
+        if (this._createdControls && this.controlsEl.parentNode) {
+            this.controlsEl.parentNode.removeChild(this.controlsEl);
+        } else {
+            this.controlsEl.innerHTML = '';
+        }
+    }
+    for (var j = CSM._tableInstances.length - 1; j >= 0; j--) {
+        if (CSM._tableInstances[j] === this) CSM._tableInstances.splice(j, 1);
+    }
+    this.controlsEl = null;
+    this.countTargetEl = null;
+    this.allRows = [];
+    this.filteredRows = [];
+    this.tbody = null;
+    this.table = null;
+    this.rowFilter = null;
 };
 
 CSM.Table.prototype.applyFilters = function() {

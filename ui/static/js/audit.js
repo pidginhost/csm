@@ -11,6 +11,25 @@ var actionBadges = {
     temp_whitelist_ip: 'bg-purple'
 };
 
+var _auditTable = null;
+var _auditURLUnbind = null;
+var _auditDateUnbind = null;
+
+function resetAuditTable() {
+    if (_auditTable && typeof _auditTable.destroy === 'function') _auditTable.destroy();
+    _auditTable = null;
+    if (_auditURLUnbind) {
+        _auditURLUnbind();
+        _auditURLUnbind = null;
+    }
+    if (_auditDateUnbind) {
+        _auditDateUnbind();
+        _auditDateUnbind = null;
+    }
+    var controls = document.getElementById('audit-table-controls');
+    if (controls) controls.remove();
+}
+
 function auditActionLabel(action) {
     return String(action || '').replace(/[_-]+/g, ' ').replace(/\b\w/g, function(ch) {
         return ch.toUpperCase();
@@ -68,12 +87,13 @@ function loadAudit() {
         var el = document.getElementById('audit-content');
         var _auditFromInput = document.getElementById('audit-from');
         var _auditToInput = document.getElementById('audit-to');
+        resetAuditTable();
         // Update card title with count
         var title = document.querySelector('.card-title');
         if (title) title.innerHTML = '<i class="ti ti-clipboard-list"></i>&nbsp;Audit Log (' + (entries ? entries.length : 0) + ')';
         if (!entries || entries.length === 0) {
             populateAuditActionFilter(entries);
-            CSM.urlState.bind({ inputs: auditURLInputs(_auditFromInput, _auditToInput) });
+            _auditURLUnbind = CSM.urlState.bind({ inputs: auditURLInputs(_auditFromInput, _auditToInput) });
             el.innerHTML = '<div class="card-body text-center text-muted py-4"><i class="ti ti-clipboard-check"></i> No audit entries yet.</div>';
             return;
         }
@@ -107,7 +127,7 @@ function loadAudit() {
             if (to !== null && ts >= to) return false;
             return true;
         }
-        var _auditTable = new CSM.Table({
+        _auditTable = new CSM.Table({
             tableId: 'audit-table',
             perPage: 25,
             searchId: 'audit-search',
@@ -125,8 +145,12 @@ function loadAudit() {
         }
         if (_auditFromInput) _auditFromInput.addEventListener('change', _auditDateChange);
         if (_auditToInput) _auditToInput.addEventListener('change', _auditDateChange);
+        _auditDateUnbind = function() {
+            if (_auditFromInput) _auditFromInput.removeEventListener('change', _auditDateChange);
+            if (_auditToInput) _auditToInput.removeEventListener('change', _auditDateChange);
+        };
         // WEB_ROADMAP P2.1: persist audit-search + filters to URL.
-        CSM.urlState.bind({ inputs: auditURLInputs(_auditFromInput, _auditToInput) });
+        _auditURLUnbind = CSM.urlState.bind({ inputs: auditURLInputs(_auditFromInput, _auditToInput) });
     }).catch(function(){ CSM.loadError(document.getElementById('audit-content'), loadAudit); });
 }
 

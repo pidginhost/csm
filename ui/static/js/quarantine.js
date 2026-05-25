@@ -55,14 +55,7 @@ function _bindQuarURLState(fromEl, toEl) {
 
 function _resetQuarTable() {
     if (_quarTable) {
-        if (_quarTable._searchDebounce && _quarTable._searchDebounce.cancel) _quarTable._searchDebounce.cancel();
-        _quarTable.controlsEl = null;
-        _quarTable.countTargetEl = null;
-        _quarTable.allRows = [];
-        _quarTable.filteredRows = [];
-        _quarTable.tbody = null;
-        _quarTable.table = null;
-        _quarTable.rowFilter = null;
+        if (typeof _quarTable.destroy === 'function') _quarTable.destroy();
         _quarTable = null;
     }
     var controls = document.getElementById('quarantine-table-controls');
