@@ -746,6 +746,7 @@ body.theme-dark { background-color: #1a2234; }
     padding: 0.25rem 0.5rem;
     border-top: 1px solid var(--csm-border);
 }
+.csm-idle-watchers > summary::marker { content: ""; }
 .csm-idle-watchers > summary::-webkit-details-marker { display: none; }
 .csm-idle-watchers > summary::before {
     content: "\25B8";

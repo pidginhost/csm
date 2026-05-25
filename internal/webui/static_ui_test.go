@@ -2868,8 +2868,16 @@ func TestIdleWatchersCollapsed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(css), ".csm-idle-watchers > summary {") {
+	cssText := string(css)
+	if !strings.Contains(cssText, ".csm-idle-watchers > summary {") {
 		t.Fatal("csm.css missing .csm-idle-watchers summary styling")
+	}
+	rules := parseCSSRules(cssText)
+	if got := cssDeclaration(t, rules, ".csm-idle-watchers > summary::marker", "content"); got != `""` {
+		t.Fatalf("idle watcher summary native marker content = %q, want empty", got)
+	}
+	if got := cssDeclaration(t, rules, ".csm-idle-watchers > summary::-webkit-details-marker", "display"); got != "none" {
+		t.Fatalf("idle watcher summary WebKit marker display = %q, want none", got)
 	}
 }
 
@@ -2905,9 +2913,9 @@ func TestRefreshManualHasFallback(t *testing.T) {
 	// The pages from the bug report should wire onRefresh so they
 	// refresh in-place instead of reloading, preserving filter state.
 	for _, path := range []string{"quarantine.js", "audit.js", "firewall.js"} {
-		body, err := os.ReadFile("../../ui/static/js/" + path)
-		if err != nil {
-			t.Fatal(err)
+		body, readErr := os.ReadFile("../../ui/static/js/" + path)
+		if readErr != nil {
+			t.Fatal(readErr)
 		}
 		if !strings.Contains(string(body), "CSM.refresh.onRefresh(") {
 			t.Fatalf("%s does not register a refresh-now handler", path)
