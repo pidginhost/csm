@@ -1721,6 +1721,10 @@ func TestCSRFEnforcedAtRuntime(t *testing.T) {
 		{"DELETE", "/api/v1/email/quarantine/foo"},
 		{"POST", "/api/v1/geoip/batch"},
 		{"POST", "/api/v1/incidents/abc/status"},
+		{"PUT", "/api/v1/prefs/user"},
+		{"PUT", "/api/v1/prefs/views"},
+		{"DELETE", "/api/v1/prefs/views"},
+		{"POST", "/api/v1/undo/run"},
 	}
 
 	for _, tc := range cases {
@@ -1995,7 +1999,7 @@ func TestAutoRefreshPillWired(t *testing.T) {
 		`bump: function() {`,
 		`manual: function() {`,
 		`interval: function(fn, interval) {`,
-		`setEnabled: function(next) {`,
+		`setEnabled: function(next, opts) {`,
 		`window.dispatchEvent(new CustomEvent('csm:refresh-toggle'`,
 		`if (CSM.refresh) CSM.refresh.bump();`,
 		`if (!force && CSM.refresh && !CSM.refresh.enabled) { state = 'idle'; return; }`,
@@ -2055,6 +2059,7 @@ func TestAutoRefreshDataIntervalsUseSharedToggle(t *testing.T) {
 		"findings.js": true, // per-finding countdown labels
 		"layout.js":   true, // refresh-age label tick
 		"settings.js": true, // firewall rollback countdown
+		"undo.js":     true, // undo banner countdown label
 	}
 	for _, path := range webUISourceFiles(t, "../../ui/static/js/*.js") {
 		src, err := os.ReadFile(path)

@@ -264,6 +264,7 @@ CSM.refresh = (function() {
     try { raw = localStorage.getItem(STORAGE_KEY); } catch (e) { /* localStorage may be unavailable */ }
     // Default ON unless user explicitly turned it off.
     var enabled = raw !== 'off';
+    var hasPersistedChoice = (raw === 'on' || raw === 'off');
     var lastFetchAt = 0;
 
     function addTimer(timer) {
@@ -345,9 +346,14 @@ CSM.refresh = (function() {
     var api = {
         get enabled() { return enabled; },
         get lastFetchAt() { return lastFetchAt; },
-        setEnabled: function(next) {
+        get hasPersistedChoice() { return hasPersistedChoice; },
+        setEnabled: function(next, opts) {
             enabled = !!next;
-            try { localStorage.setItem(STORAGE_KEY, enabled ? 'on' : 'off'); } catch (e) { /* ignore */ }
+            opts = opts || {};
+            if (!opts.transient) {
+                hasPersistedChoice = true;
+                try { localStorage.setItem(STORAGE_KEY, enabled ? 'on' : 'off'); } catch (e) { /* ignore */ }
+            }
             window.dispatchEvent(new CustomEvent('csm:refresh-toggle', { detail: { enabled: enabled } }));
         },
         bump: function() {

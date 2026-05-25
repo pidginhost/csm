@@ -295,6 +295,14 @@ func New(cfg *config.Config, store *state.Store) (*Server, error) {
 	mux.Handle("/api/v1/firewall/flush", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiFirewallFlush))))
 	mux.Handle("/api/v1/firewall/unban", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiFirewallUnban))))
 
+	// Operator preferences (P5.2 saved views, P5.4 user prefs).
+	mux.Handle("/api/v1/prefs/user", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiPrefsUser))))
+	mux.Handle("/api/v1/prefs/views", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiPrefsViews))))
+
+	// Bulk-action undo (P5.3).
+	mux.Handle("/api/v1/undo/pending", s.requireAuth(http.HandlerFunc(s.apiUndoPending)))
+	mux.Handle("/api/v1/undo/run", s.requireAuth(s.requireCSRF(http.HandlerFunc(s.apiUndoRun))))
+
 	// Logout (clears cookie, requires auth to prevent logout CSRF)
 	mux.Handle("/logout", s.requireAuth(http.HandlerFunc(s.handleLogout)))
 
@@ -889,8 +897,8 @@ func (s *Server) csrfSecret() string {
 // browser requests cannot attach the Authorization header without script access
 // to the bearer token.
 func (s *Server) validateCSRF(r *http.Request) bool {
-	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
-		return true // only validate POST and DELETE
+	if !isUnsafeCSRFMethod(r.Method) {
+		return true // only validate POST, PUT, and DELETE
 	}
 
 	// Skip CSRF for Bearer token auth - the token itself proves identity.
@@ -914,16 +922,27 @@ func (s *Server) validateCSRF(r *http.Request) bool {
 	return false
 }
 
-// requireCSRF wraps a handler to validate CSRF on POST and DELETE requests.
+// requireCSRF wraps a handler to validate CSRF on POST, PUT, and DELETE
+// requests. PUT joined the unsafe set when /api/v1/prefs/user landed; the
+// existing list pre-dates that endpoint.
 func (s *Server) requireCSRF(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Skip CSRF for Bearer token auth (API-to-API calls don't need CSRF protection)
-		if (r.Method == http.MethodPost || r.Method == http.MethodDelete) && !s.isBearerAuth(r) && !s.validateCSRF(r) {
+		if isUnsafeCSRFMethod(r.Method) && !s.isBearerAuth(r) && !s.validateCSRF(r) {
 			http.Error(w, "Invalid CSRF token", http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func isUnsafeCSRFMethod(method string) bool {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) isBearerAuth(r *http.Request) bool {

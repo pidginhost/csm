@@ -187,6 +187,10 @@
                         <button id="shortcuts-help-btn" class="btn btn-ghost-secondary btn-sm d-none d-md-inline-flex" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
                             <i class="ti ti-keyboard"></i>
                         </button>
+                        <div id="csm-saved-views-host" class="csm-saved-views d-none" data-csm-saved-views-auto="1"></div>
+                        <button id="csm-prefs-open" class="btn btn-ghost-secondary btn-sm" title="Preferences" aria-label="Open preferences">
+                            <i class="ti ti-user-cog"></i>
+                        </button>
                         <button id="theme-toggle" class="btn btn-ghost-secondary btn-sm" title="Toggle dark/light mode" aria-label="Toggle dark/light mode">
                             <i class="ti ti-sun-moon"></i>
                         </button>
@@ -227,13 +231,58 @@
             </div>
         </div>
     </div>
+    <div class="modal fade" id="csm-prefs-modal" tabindex="-1" aria-hidden="true" aria-labelledby="csm-prefs-title">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3 class="modal-title" id="csm-prefs-title">Operator preferences</h3>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <form id="csm-prefs-form">
+                    <div class="modal-body">
+                        <p class="text-muted small">Preferences are saved against your auth token and follow you across browsers.</p>
+                        <div class="mb-3">
+                            <label class="form-label" for="csm-prefs-density">Table density</label>
+                            <select id="csm-prefs-density" name="density" class="form-select form-select-sm">
+                                <option value="comfortable">Comfortable</option>
+                                <option value="compact">Compact</option>
+                            </select>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label" for="csm-prefs-timezone">Timestamp display</label>
+                            <select id="csm-prefs-timezone" name="timezone" class="form-select form-select-sm">
+                                <option value="local">Local (browser)</option>
+                                <option value="server">Server time</option>
+                                <option value="UTC">UTC</option>
+                            </select>
+                        </div>
+                        <div class="mb-1">
+                            <label class="form-label" for="csm-prefs-auto-refresh">Auto-refresh default</label>
+                            <select id="csm-prefs-auto-refresh" name="auto_refresh" class="form-select form-select-sm">
+                                <option value="on">On for new devices</option>
+                                <option value="off">Off for new devices</option>
+                            </select>
+                            <div class="form-hint">Applies to browsers that have not toggled auto-refresh yet. Use the topbar pause button for ad-hoc overrides.</div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-ghost-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="submit" class="btn btn-primary" id="csm-prefs-save">Save preferences</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
     <script src="/static/js/tabler.min.js"></script>
     <script src="/static/js/toast.js"></script>
     <script src="/static/js/csrf.js"></script>
     <script src="/static/js/csm-ui.js"></script>
+    <script src="/static/js/prefs.js"></script>
     <script src="/static/js/table.js"></script>
     <script src="/static/js/shortcuts.js"></script>
     <script src="/static/js/palette.js"></script>
+    <script src="/static/js/views.js"></script>
+    <script src="/static/js/undo.js"></script>
     <script src="/static/js/layout.js"></script>
     {{template "scripts" .}}
 </body>

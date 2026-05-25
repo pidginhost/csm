@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Web UI gained per-operator preferences (table density, timestamp display, default auto-refresh) saved server-side under the operator's token, so settings follow operators across browsers. Accessible from a new gear button in the topbar.
+- Web UI gained per-page named filter views. Filter / search / pagination state on findings, firewall, audit, threat, incident, quarantine, email, and ModSecurity pages can be captured under a chosen name and reapplied later from the topbar dropdown. Views are stored server-side, scoped to the operator.
+- Bulk threat block / whitelist and bulk firewall unblock actions now surface a 30-second "Undo" banner. Clicking it dispatches the inverse operation through the daemon and records it in the audit log.
+
+### Changed
+
+- CSRF protection now covers PUT and PATCH in addition to POST and DELETE for cookie-authenticated browser sessions. Bearer-token API callers continue to bypass CSRF, unchanged.
+
+### Removed
+
+- Internal `WEB_ROADMAP.md` retired now that every step has shipped. Future Web UI work tracks alongside daemon work in `ROADMAP.md`. Historical `WEB_ROADMAP item N` references in commits and the CHANGELOG remain resolvable via `git log`.
+
 ## [3.8.1] - 2026-05-25
 
 ### Fixed

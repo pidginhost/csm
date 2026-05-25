@@ -454,6 +454,7 @@ func (s *Server) apiThreatBulkAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	count := 0
+	succeeded := make([]string, 0, len(req.IPs))
 	for _, ipStr := range req.IPs {
 		if _, err := parseAndValidateIP(ipStr); err != nil {
 			continue
@@ -473,6 +474,7 @@ func (s *Server) apiThreatBulkAction(w http.ResponseWriter, r *http.Request) {
 			if adb := attackdb.Global(); adb != nil {
 				adb.MarkBlocked(ipStr)
 			}
+			succeeded = append(succeeded, ipStr)
 			count++
 
 		case "whitelist":
@@ -493,12 +495,31 @@ func (s *Server) apiThreatBulkAction(w http.ResponseWriter, r *http.Request) {
 				adb.RemoveIP(ipStr)
 			}
 			flushCphulk(ipStr)
+			succeeded = append(succeeded, ipStr)
 			count++
 		}
 	}
 
 	s.auditLog(r, "threat_bulk_"+req.Action, fmt.Sprintf("%d IPs", count), "")
-	writeJSON(w, map[string]interface{}{"ok": true, "count": count})
+
+	var undoToken string
+	if count > 0 {
+		inverse := undoInverseThreatBlock
+		summary := fmt.Sprintf("Blocked %d IPs", count)
+		action := "threat_bulk_block"
+		if req.Action == "whitelist" {
+			inverse = undoInverseThreatWhitelist
+			summary = fmt.Sprintf("Whitelisted %d IPs", count)
+			action = "threat_bulk_whitelist"
+		}
+		undoToken = s.recordUndoEntry(r, action, inverse, summary, undoPayloadIPs{IPs: succeeded})
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"ok":         true,
+		"count":      count,
+		"undo_token": undoToken,
+	})
 }
 
 // writeJSON is defined in api.go

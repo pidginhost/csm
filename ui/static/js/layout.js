@@ -289,6 +289,72 @@ if (_themeBtn) _themeBtn.addEventListener('click', toggleTheme);
     });
 })();
 
+// Operator preferences modal (WEB_ROADMAP P5.4). Lets the operator pick
+// table density, timezone display, and default auto-refresh; saves through
+// /api/v1/prefs/user. CSM.prefs handles applying values on load.
+(function() {
+    var openBtn = document.getElementById('csm-prefs-open');
+    var modalEl = document.getElementById('csm-prefs-modal');
+    var form = document.getElementById('csm-prefs-form');
+    if (!openBtn || !modalEl || !form || typeof CSM === 'undefined' || !CSM.prefs) return;
+
+    var density = document.getElementById('csm-prefs-density');
+    var timezone = document.getElementById('csm-prefs-timezone');
+    var auto = document.getElementById('csm-prefs-auto-refresh');
+    var saveBtn = document.getElementById('csm-prefs-save');
+
+    function ensureTimezoneOption(value) {
+        if (!value) return;
+        for (var i = 0; i < timezone.options.length; i++) {
+            if (timezone.options[i].value === value) return;
+        }
+        var opt = document.createElement('option');
+        opt.value = value;
+        opt.textContent = value;
+        timezone.appendChild(opt);
+    }
+
+    function syncFormFromState() {
+        var current = CSM.prefs.get();
+        density.value = current.density || 'comfortable';
+        ensureTimezoneOption(current.timezone || 'local');
+        timezone.value = current.timezone || 'local';
+        auto.value = current.auto_refresh || 'on';
+    }
+
+    function getModal() {
+        if (window.bootstrap && window.bootstrap.Modal) {
+            return window.bootstrap.Modal.getOrCreateInstance(modalEl);
+        }
+        return null;
+    }
+
+    openBtn.addEventListener('click', function() {
+        CSM.prefs.load().then(syncFormFromState).catch(syncFormFromState);
+        var modal = getModal();
+        if (modal) modal.show();
+    });
+
+    form.addEventListener('submit', function(ev) {
+        ev.preventDefault();
+        saveBtn.disabled = true;
+        var patch = {
+            density: density.value,
+            timezone: timezone.value,
+            auto_refresh: auto.value
+        };
+        CSM.prefs.save(patch).then(function() {
+            if (CSM.toast) CSM.toast.success('Preferences saved');
+            var modal = getModal();
+            if (modal) modal.hide();
+        }).catch(function() {
+            if (CSM.toast) CSM.toast.error('Could not save preferences');
+        }).then(function() {
+            saveBtn.disabled = false;
+        });
+    });
+})();
+
 // Print metadata. Populates the body attributes the print stylesheet's
 // body::after rule reads.
 (function() {

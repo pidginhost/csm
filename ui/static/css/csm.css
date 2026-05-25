@@ -1325,3 +1325,40 @@ body.theme-dark { background-color: #1a2234; }
         text-align: center;
     }
 }
+
+/* WEB_ROADMAP P5.2 - saved views dropdown */
+.csm-saved-views { position: relative; display: inline-flex; }
+.csm-saved-views .dropdown-toggle { display: inline-flex; align-items: center; }
+.csm-saved-views__menu { min-width: 16rem; max-width: 22rem; }
+.csm-saved-views__menu .dropdown-item { white-space: normal; }
+
+/* WEB_ROADMAP P5.3 - bulk undo banner */
+.csm-undo-banner {
+    position: fixed;
+    bottom: 1rem;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 1080;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.5rem 0.75rem;
+    background: var(--tblr-card-bg, #1a2235);
+    color: var(--tblr-body-color, #fff);
+    border: 1px solid var(--tblr-border-color, #2c3a52);
+    border-radius: 0.5rem;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+    max-width: 90vw;
+}
+.csm-undo-banner.d-none { display: none; }
+.csm-undo-banner__icon { color: var(--tblr-primary, #4f9cf9); }
+.csm-undo-banner__label { font-weight: 500; }
+.csm-undo-banner__timer { font-variant-numeric: tabular-nums; }
+
+/* WEB_ROADMAP P5.4 - operator density preference */
+html[data-csm-density="compact"] .table > :not(caption) > * > * {
+    padding-top: 0.25rem;
+    padding-bottom: 0.25rem;
+}
+html[data-csm-density="compact"] .card-body { padding-top: 0.75rem; padding-bottom: 0.75rem; }
+html[data-csm-density="compact"] .csm-summary-list__item { padding-top: 0.35rem; padding-bottom: 0.35rem; }

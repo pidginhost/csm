@@ -951,6 +951,7 @@ func (s *Server) apiUnblockBulk(w http.ResponseWriter, r *http.Request) {
 	}
 
 	succeeded := 0
+	unblocked := make([]string, 0, len(req.IPs))
 	for _, ip := range req.IPs {
 		if _, err := parseAndValidateIP(ip); err != nil {
 			continue
@@ -960,13 +961,22 @@ func (s *Server) apiUnblockBulk(w http.ResponseWriter, r *http.Request) {
 		}
 		flushCphulk(ip)
 		s.auditLog(r, "unblock_ip", ip, "bulk unblock via UI")
+		unblocked = append(unblocked, ip)
 		succeeded++
 	}
 
+	var undoToken string
+	if succeeded > 0 {
+		undoToken = s.recordUndoEntry(r, "firewall_bulk_unblock", undoInverseFirewallUnblock,
+			fmt.Sprintf("Unblocked %d IPs", succeeded),
+			undoPayloadIPs{IPs: unblocked, Reason: "Undo: re-block via CSM Web UI", Timeout: "24h"})
+	}
+
 	writeJSON(w, map[string]interface{}{
-		"status":    "completed",
-		"total":     len(req.IPs),
-		"succeeded": succeeded,
+		"status":     "completed",
+		"total":      len(req.IPs),
+		"succeeded":  succeeded,
+		"undo_token": undoToken,
 	})
 }
 

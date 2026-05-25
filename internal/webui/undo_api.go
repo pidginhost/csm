@@ -1,0 +1,286 @@
+package webui
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"time"
+
+	"github.com/pidginhost/csm/internal/checks"
+	"github.com/pidginhost/csm/internal/store"
+)
+
+// Recognised inverse-action keys. Each handler that records an undo entry
+// sets one of these on the entry; apiUndoRun dispatches based on the value.
+const (
+	undoInverseThreatBlock       = "threat_bulk_unblock"
+	undoInverseThreatUnblock     = "threat_bulk_block"
+	undoInverseThreatWhitelist   = "threat_bulk_unwhitelist"
+	undoInverseThreatUnwhitelist = "threat_bulk_whitelist"
+	undoInverseFirewallUnblock   = "firewall_bulk_reblock"
+)
+
+// undoPayloadIPs is the payload schema for every undo entry we currently
+// generate: a list of IPs plus an optional reason and timeout. Future undo
+// kinds can add their own payload structs alongside this one.
+type undoPayloadIPs struct {
+	IPs     []string `json:"ips"`
+	Reason  string   `json:"reason,omitempty"`
+	Timeout string   `json:"timeout,omitempty"` // ParseDuration-compatible
+}
+
+// recordUndoEntry persists an undo entry for the operator who issued r and
+// returns the new entry's ID. The ID lets the calling handler surface the
+// undo token to the client in the same response. Any store error is logged
+// and swallowed so a bulk action never fails just because the undo queue
+// could not be written.
+func (s *Server) recordUndoEntry(r *http.Request, action, inverse, summary string, payload undoPayloadIPs) string {
+	if r == nil {
+		return ""
+	}
+	opkey := s.operatorKey(r)
+	if opkey == "" {
+		return ""
+	}
+	sdb := store.Global()
+	if sdb == nil {
+		return ""
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	entry, err := sdb.AppendUndoEntry(opkey, store.UndoEntry{
+		Action:  action,
+		Inverse: inverse,
+		Payload: raw,
+		Summary: summary,
+	})
+	if err != nil {
+		fmt.Printf("webui: record undo entry: %v\n", err)
+		return ""
+	}
+	return entry.ID
+}
+
+// undoPendingView is the JSON shape returned to the client. The payload is
+// stripped because the client only needs identity + summary to render the
+// banner; the server keeps the payload for the actual undo run.
+type undoPendingView struct {
+	ID         string    `json:"id"`
+	Action     string    `json:"action"`
+	Inverse    string    `json:"inverse"`
+	Summary    string    `json:"summary"`
+	RecordedAt time.Time `json:"recorded_at"`
+	ExpiresAt  time.Time `json:"expires_at"`
+}
+
+// apiUndoPending returns the latest non-expired undo entry for the operator,
+// or an empty object when no entry is queued.
+func (s *Server) apiUndoPending(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	opkey := s.operatorKey(r)
+	if opkey == "" {
+		writeJSONError(w, "Unauthenticated", http.StatusUnauthorized)
+		return
+	}
+	sdb := store.Global()
+	if sdb == nil {
+		writeJSON(w, map[string]interface{}{})
+		return
+	}
+	entry, ok, err := sdb.LatestUndoEntry(opkey)
+	if err != nil {
+		writeJSONError(w, "Store error", http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		writeJSON(w, map[string]interface{}{})
+		return
+	}
+	writeJSON(w, undoPendingView{
+		ID:         entry.ID,
+		Action:     entry.Action,
+		Inverse:    entry.Inverse,
+		Summary:    entry.Summary,
+		RecordedAt: entry.RecordedAt,
+		ExpiresAt:  entry.RecordedAt.Add(store.UndoTTL),
+	})
+}
+
+type undoRunRequest struct {
+	ID string `json:"id"`
+}
+
+type undoRunResponse struct {
+	Status  string `json:"status"`
+	Action  string `json:"action"`
+	Inverse string `json:"inverse"`
+	Count   int    `json:"count"`
+}
+
+// apiUndoRun consumes the named undo entry (or the most recent one when id
+// is empty) and dispatches its inverse. Each successful undo also writes a
+// "undo_<original>" audit entry so the trail records the reversal.
+func (s *Server) apiUndoRun(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	opkey := s.operatorKey(r)
+	if opkey == "" {
+		writeJSONError(w, "Unauthenticated", http.StatusUnauthorized)
+		return
+	}
+	var req undoRunRequest
+	if err := decodeJSONBodyLimited(w, r, 4*1024, &req); err != nil {
+		writeJSONError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	sdb := store.Global()
+	if sdb == nil {
+		writeJSONError(w, "Store unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var (
+		entry store.UndoEntry
+		ok    bool
+		err   error
+	)
+	if req.ID == "" {
+		entry, ok, err = sdb.LatestUndoEntry(opkey)
+		if err == nil && ok {
+			_, _, err = sdb.ConsumeUndoEntry(opkey, entry.ID)
+		}
+	} else {
+		entry, ok, err = sdb.ConsumeUndoEntry(opkey, req.ID)
+	}
+	if err != nil {
+		writeJSONError(w, "Store error", http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		writeJSONError(w, "Undo window expired", http.StatusGone)
+		return
+	}
+
+	resp, runErr := s.runUndoEntry(r, entry)
+	if runErr != nil {
+		writeJSONError(w, runErr.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.auditLog(r, "undo_"+entry.Action, fmt.Sprintf("%d items", resp.Count), entry.Summary)
+	writeJSON(w, resp)
+}
+
+func (s *Server) runUndoEntry(r *http.Request, entry store.UndoEntry) (undoRunResponse, error) {
+	var payload undoPayloadIPs
+	if len(entry.Payload) > 0 {
+		if err := json.Unmarshal(entry.Payload, &payload); err != nil {
+			return undoRunResponse{}, fmt.Errorf("decode payload: %w", err)
+		}
+	}
+	resp := undoRunResponse{
+		Status:  "ok",
+		Action:  entry.Action,
+		Inverse: entry.Inverse,
+	}
+	switch entry.Inverse {
+	case undoInverseThreatBlock:
+		// Original action blocked IPs; inverse unblocks them.
+		resp.Count = s.undoBulkBlock(payload.IPs)
+	case undoInverseThreatUnblock:
+		// Original unblocked IPs; inverse re-blocks them with the saved reason.
+		timeout := parseDuration(payload.Timeout)
+		if timeout == 0 {
+			timeout = 24 * time.Hour
+		}
+		reason := payload.Reason
+		if reason == "" {
+			reason = "Undo: re-block via CSM Web UI"
+		}
+		resp.Count = s.undoBulkReblock(payload.IPs, reason, timeout)
+	case undoInverseThreatWhitelist:
+		resp.Count = s.undoBulkWhitelist(payload.IPs)
+	case undoInverseThreatUnwhitelist:
+		resp.Count = s.undoBulkUnwhitelist(payload.IPs)
+	case undoInverseFirewallUnblock:
+		reason := payload.Reason
+		if reason == "" {
+			reason = "Undo: re-block via CSM Web UI"
+		}
+		timeout := parseDuration(payload.Timeout)
+		if timeout == 0 {
+			timeout = 24 * time.Hour
+		}
+		resp.Count = s.undoBulkReblock(payload.IPs, reason, timeout)
+	default:
+		return undoRunResponse{}, fmt.Errorf("unknown inverse action %q", entry.Inverse)
+	}
+	return resp, nil
+}
+
+func (s *Server) undoBulkBlock(ips []string) int {
+	count := 0
+	for _, ip := range ips {
+		if _, err := parseAndValidateIP(ip); err != nil {
+			continue
+		}
+		if s.blocker != nil {
+			_ = s.blocker.UnblockIP(ip)
+		}
+		if tdb := checks.GetThreatDB(); tdb != nil {
+			tdb.RemovePermanent(ip)
+		}
+		flushCphulk(ip)
+		count++
+	}
+	return count
+}
+
+func (s *Server) undoBulkReblock(ips []string, reason string, timeout time.Duration) int {
+	count := 0
+	for _, ip := range ips {
+		if _, err := parseAndValidateIP(ip); err != nil {
+			continue
+		}
+		if s.blocker != nil {
+			if err := blockIPForOperator(s.blocker, ip, reason, timeout); err != nil {
+				continue
+			}
+		}
+		count++
+	}
+	return count
+}
+
+func (s *Server) undoBulkWhitelist(ips []string) int {
+	count := 0
+	for _, ip := range ips {
+		if _, err := parseAndValidateIP(ip); err != nil {
+			continue
+		}
+		if tdb := checks.GetThreatDB(); tdb != nil {
+			tdb.RemoveWhitelist(ip)
+		}
+		count++
+	}
+	return count
+}
+
+func (s *Server) undoBulkUnwhitelist(ips []string) int {
+	count := 0
+	for _, ip := range ips {
+		if _, err := parseAndValidateIP(ip); err != nil {
+			continue
+		}
+		if tdb := checks.GetThreatDB(); tdb != nil {
+			tdb.AddWhitelist(ip)
+		}
+		count++
+	}
+	return count
+}
