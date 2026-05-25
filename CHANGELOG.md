@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Web UI gained per-page named filter views. Filter / search / pagination state on findings, firewall, audit, threat, incident, quarantine, email, and ModSecurity pages can be captured under a chosen name and reapplied later from the topbar dropdown. Views are stored server-side, scoped to the operator.
 - Bulk threat block / whitelist and bulk firewall unblock actions now surface a 30-second "Undo" banner. Clicking it dispatches the inverse operation through the daemon and records it in the audit log.
 - Settings UI exposes the mail-log source / file / journal-units selector and the dovecot-postfix account-key extractor. Hosts on Debian-family or journald layouts can now switch sources without hand-editing `csm.yaml`.
+- Default `csm.yaml` template ships sample `mail_logs`, `detection.direct_smtp_egress`, and `bpf_enforcement` blocks so operators can discover those features without reading source. Every sample stays inert (`enabled: false`, `dry_run: true`) to preserve existing safe defaults.
 
 ### Changed
 

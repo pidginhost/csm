@@ -135,6 +135,42 @@ thresholds:
 
 state_path: "/var/lib/csm/state"
 
+# Mail log source. Controls where the postfix/dovecot brute-force scanner
+# reads its lines from. Most cPanel hosts keep the default file at
+# /var/log/maillog. Debian-family hosts get /var/log/mail.log. journald-only
+# layouts need source: journal and the journal build tag (make build JOURNAL=1).
+mail_logs:
+  source: auto              # auto | file | journal
+  # file: ""                # override the platform default
+  units:
+    - postfix
+    - dovecot
+
+# Detection knobs that are off by default. Each subsection is a separate
+# detector; flipping enabled: true picks it up on the next reload.
+detection:
+  # Phase 3 of the BPF Incident Response Roadmap: flags non-MTA local
+  # processes opening outbound SMTP connections. Detection-only here;
+  # Phase 4 binds the auto-response action through bpf_enforcement.
+  direct_smtp_egress:
+    enabled: false
+    backend: auto           # auto | bpf | legacy | none
+    dry_run: true           # report only; Phase 4 acts when this is false
+    # ports:                # restrict to specific dst ports; empty = 25/465/587
+    #   - 25
+    #   - 465
+    #   - 587
+
+# Optional in-kernel deny path for matched outbound connections.
+# Phase 4 of the BPF Incident Response Roadmap. Defaults are all-safe:
+# enforcement off, dry-run on. Operators should keep dry-run on and review
+# telemetry before flipping live denial.
+bpf_enforcement:
+  enabled: false
+  dry_run: true             # log intended denials, allow the connect
+  direct_smtp_egress: false # in-kernel deny for the detection above
+  verdict_callback: false   # advisory ALLOW override from auto_response.verdict_callback
+
 # Infrastructure IPs -- traffic from these CIDRs is trusted and never blocked.
 # IMPORTANT: Set these to YOUR management/monitoring network ranges.
 infra_ips: []
