@@ -53,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Web UI toolbar filters now keep a compact inline layout on pages with multiple dropdown and date filters instead of stretching or overflowing the row.
 - Web UI topbar "Refresh now" now updates one-shot pages instead of silently doing nothing, falling back to a full reload when the page has no in-place refresh handler. Repeated in-place refreshes no longer leave stale table filter handlers behind.
+- Dashboard Components matrix collapses idle watchers (attached but no events in the 7-day lookback) into a single "N watchers idle" disclosure so degraded and active rows stay prominent. Idle is the normal state on hosts that simply have not generated those events yet.
 - Web UI print output now includes all rows from the current filtered table view, hides the findings bulk bar, and keeps an open evidence detail panel in the printed page.
 - Web UI command palette no longer lets Ctrl-K / Cmd-K also trigger page shortcuts behind the overlay, and it ignores keys already handled by another open modal.
 - Threat intelligence attacker filters now match clean verdicts and keep bookmarked filter state even when no attackers are listed.

@@ -1243,15 +1243,53 @@
                     el.innerHTML = '<div class="csm-empty py-3"><div class="csm-empty__reason text-muted text-center">No watchers registered</div></div>';
                     return;
                 }
-                var html = '<div class="table-responsive"><table class="table table-sm card-table mb-0">' +
-                    '<thead><tr>' +
-                        '<th>Component</th>' +
-                        '<th>Status</th>' +
-                        '<th>Since</th>' +
-                        '<th>Last event</th>' +
-                    '</tr></thead><tbody>';
-                rows.forEach(function(row) { html += _componentRow(row); });
-                html += '</tbody></table></div>';
+                // Split rows by status so degraded / ok watchers stay
+                // prominent and "idle" (attached, no events in 7d) collapse
+                // behind a single summary. Idle is the normal state for
+                // platform-specific watchers on hosts that simply have not
+                // generated those events yet, so listing every one of them
+                // at full weight made the card look noisier than it is.
+                var nonIdle = [];
+                var idle = [];
+                rows.forEach(function(row) {
+                    if (row.status === 'idle') {
+                        idle.push(row);
+                    } else {
+                        nonIdle.push(row);
+                    }
+                });
+
+                var html = '';
+                if (nonIdle.length > 0) {
+                    html += '<div class="table-responsive"><table class="table table-sm card-table mb-0">' +
+                        '<thead><tr>' +
+                            '<th>Component</th>' +
+                            '<th>Status</th>' +
+                            '<th>Since</th>' +
+                            '<th>Last event</th>' +
+                        '</tr></thead><tbody>';
+                    nonIdle.forEach(function(row) { html += _componentRow(row); });
+                    html += '</tbody></table></div>';
+                }
+                if (idle.length > 0) {
+                    var label = CSM.esc(String(idle.length)) + ' watcher' + (idle.length === 1 ? '' : 's') +
+                        ' idle <span class="text-muted small">&middot; no events in 7 days</span>';
+                    var idleHTML = '<details class="csm-idle-watchers small mt-2">' +
+                        '<summary class="text-muted py-2">' + label + '</summary>' +
+                        '<div class="table-responsive"><table class="table table-sm card-table mb-0">' +
+                            '<thead><tr>' +
+                                '<th>Component</th>' +
+                                '<th>Status</th>' +
+                                '<th>Since</th>' +
+                                '<th>Last event</th>' +
+                            '</tr></thead><tbody>';
+                    idle.forEach(function(row) { idleHTML += _componentRow(row); });
+                    idleHTML += '</tbody></table></div></details>';
+                    html += idleHTML;
+                }
+                if (!html) {
+                    html = '<div class="csm-empty py-3"><div class="csm-empty__reason text-muted text-center">No watchers registered</div></div>';
+                }
                 el.innerHTML = html;
             })
             .catch(function(err) {

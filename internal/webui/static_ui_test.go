@@ -2842,6 +2842,37 @@ func TestShortcutsHelpModalFocusContract(t *testing.T) {
 	}
 }
 
+// TestIdleWatchersCollapsed pins the fix for the noisy
+// Components matrix: idle rows (attached watcher, no events in the 7d
+// lookback) collapse behind a <details> summary instead of taking up
+// dashboard real estate next to degraded / ok rows.
+func TestIdleWatchersCollapsed(t *testing.T) {
+	js, err := os.ReadFile("../../ui/static/js/dashboard.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsText := string(js)
+	for _, fragment := range []string{
+		`if (row.status === 'idle') {`,
+		`var nonIdle = [];`,
+		`var idle = [];`,
+		`'<details class="csm-idle-watchers`,
+		`no events in 7 days`,
+	} {
+		if !strings.Contains(jsText, fragment) {
+			t.Fatalf("dashboard.js missing idle-watcher fragment %q", fragment)
+		}
+	}
+
+	css, err := os.ReadFile("../../ui/static/css/csm.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(css), ".csm-idle-watchers > summary {") {
+		t.Fatal("csm.css missing .csm-idle-watchers summary styling")
+	}
+}
+
 // TestRefreshManualHasFallback pins the fix for the
 // dead-Refresh-button bug: CSM.refresh.manual must either dispatch the
 // event (when at least one subscriber is registered) or fall back to a

@@ -736,6 +736,24 @@ body.theme-dark { background-color: #1a2234; }
     max-width: 220px;
 }
 .csm-toolbar__filter[type="date"] { min-width: 160px; }
+
+/* Components matrix idle-watcher disclosure. Collapsed by default so
+   the prominent rows stay degraded / ok only; the summary is keyboard
+   focusable via <details>. */
+.csm-idle-watchers > summary {
+    cursor: pointer;
+    list-style: none;
+    padding: 0.25rem 0.5rem;
+    border-top: 1px solid var(--csm-border);
+}
+.csm-idle-watchers > summary::-webkit-details-marker { display: none; }
+.csm-idle-watchers > summary::before {
+    content: "\25B8";
+    display: inline-block;
+    width: 1em;
+    transition: transform 0.15s ease;
+}
+.csm-idle-watchers[open] > summary::before { transform: rotate(90deg); }
 .csm-toolbar__spacer  { flex: 1; }
 .csm-toolbar__actions {
     display: flex;
