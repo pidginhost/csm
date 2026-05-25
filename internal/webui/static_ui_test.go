@@ -2838,6 +2838,51 @@ func TestShortcutsHelpModalFocusContract(t *testing.T) {
 	}
 }
 
+// TestCommandPaletteWired pins WEB_ROADMAP P5.1: a Ctrl/Cmd+K command
+// palette ships in palette.js, is loaded by the layout, lists the
+// shortcut in the help overlay, and ships its overlay CSS.
+func TestCommandPaletteWired(t *testing.T) {
+	js, err := os.ReadFile("../../ui/static/js/palette.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsText := string(js)
+	for _, fragment := range []string{
+		`CSM.palette = (function()`,
+		`(ev.key === 'k' || ev.key === 'K')`,
+		`document.querySelectorAll('#csm-nav [data-csm-route]')`,
+		`'Jump to page'`,
+	} {
+		if !strings.Contains(jsText, fragment) {
+			t.Fatalf("palette.js missing P5.1 fragment %q", fragment)
+		}
+	}
+
+	layout, err := os.ReadFile("../../ui/templates/layout.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(layout), `<script src="/static/js/palette.js"></script>`) {
+		t.Fatal("layout.html does not load palette.js")
+	}
+
+	shortcuts, err := os.ReadFile("../../ui/static/js/shortcuts.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(shortcuts), `Open command palette`) {
+		t.Fatal("shortcuts.js does not advertise the command palette")
+	}
+
+	css, err := os.ReadFile("../../ui/static/css/csm.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(css), ".csm-palette {") {
+		t.Fatal("csm.css missing .csm-palette rule")
+	}
+}
+
 // TestSSEHealthPillWired pins WEB_ROADMAP P5.6: layout exposes a
 // "Live updates" header pill, CSM.sse owns the EventSource lifecycle
 // and broadcasts state on csm:sse-state, and layout.js subscribes and

@@ -26,7 +26,8 @@ CSM.shortcuts = (function() {
             label: 'General',
             items: [
                 { keys: '?', desc: 'Show this help' },
-                { keys: '/', desc: 'Focus search input' }
+                { keys: '/', desc: 'Focus search input' },
+                { keys: 'Ctrl-K / Cmd-K', desc: 'Open command palette' }
             ]
         },
         {

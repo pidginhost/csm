@@ -1046,3 +1046,94 @@ body.theme-dark { background-color: #1a2234; }
     50% { opacity: 1; }
     100% { opacity: 0.4; }
 }
+
+/* WEB_ROADMAP P5.1: command palette overlay (Ctrl/Cmd-K). */
+.csm-palette {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.55);
+    z-index: 10010;
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    padding-top: 12vh;
+}
+.csm-palette__box {
+    width: min(560px, 92vw);
+    max-height: 70vh;
+    background: var(--csm-bg-card, #1e293b);
+    color: var(--csm-text, #c8d3e0);
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
+    display: flex;
+    flex-direction: column;
+}
+.csm-palette__inputwrap {
+    display: flex;
+    align-items: center;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    padding: 8px 12px;
+}
+.csm-palette__searchicon {
+    color: #94a3b8;
+    margin-right: 8px;
+    font-size: 16px;
+}
+.csm-palette__input {
+    flex: 1;
+    background: transparent;
+    border: 0;
+    outline: 0;
+    color: inherit;
+    font-size: 14px;
+    padding: 6px 0;
+}
+.csm-palette__list {
+    overflow-y: auto;
+    padding: 6px;
+    flex: 1 1 auto;
+    min-height: 60px;
+}
+.csm-palette__row {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    border-radius: 4px;
+    text-align: left;
+    cursor: pointer;
+}
+.csm-palette__row.is-selected {
+    background: rgba(32, 107, 196, 0.18);
+    color: #fff;
+}
+.csm-palette__rowicon { font-size: 16px; color: #94a3b8; }
+.csm-palette__row.is-selected .csm-palette__rowicon { color: #fff; }
+.csm-palette__rowlabel { flex: 1; }
+.csm-palette__rowgroup {
+    font-size: 11px;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.csm-palette__empty {
+    padding: 16px;
+    text-align: center;
+    color: #64748b;
+    font-size: 13px;
+}
+.csm-palette__hint {
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    padding: 6px 12px;
+    font-size: 11px;
+    color: #64748b;
+    text-align: right;
+}
