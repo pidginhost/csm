@@ -1073,3 +1073,6 @@ if (auditResetBtn) {
 })();
 
 refreshFirewallData();
+if (CSM.refresh && typeof CSM.refresh.onRefresh === 'function') {
+    CSM.refresh.onRefresh(refreshFirewallData);
+}

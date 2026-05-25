@@ -2842,6 +2842,48 @@ func TestShortcutsHelpModalFocusContract(t *testing.T) {
 	}
 }
 
+// TestRefreshManualHasFallback pins the fix for the
+// dead-Refresh-button bug: CSM.refresh.manual must either dispatch the
+// event (when at least one subscriber is registered) or fall back to a
+// full window.location.reload so pages that fetch data once at load
+// never leave the operator wondering why the icon spun without effect.
+// The static-asset check is conservative; the contract is enforced by
+// requiring the reload literal, the subscribers counter, the
+// onRefresh helper, and the cross-IIFE _bumpSubscriber bridge from
+// CSM.poll so pollers do not get treated as no-subscriber pages.
+func TestRefreshManualHasFallback(t *testing.T) {
+	js, err := os.ReadFile("../../ui/static/js/csrf.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsText := string(js)
+	for _, fragment := range []string{
+		`var subscribers = 0;`,
+		`if (subscribers === 0) {`,
+		`window.location.reload();`,
+		`onRefresh: function(fn)`,
+		`_bumpSubscriber: function() { subscribers++; }`,
+		`_dropSubscriber: function() { subscribers = Math.max(0, subscribers - 1); }`,
+		`CSM.refresh._bumpSubscriber()`,
+	} {
+		if !strings.Contains(jsText, fragment) {
+			t.Fatalf("csrf.js missing refresh-fallback fragment %q", fragment)
+		}
+	}
+
+	// The two pages from the bug report should wire onRefresh so they
+	// refresh in-place instead of reloading, preserving filter state.
+	for _, path := range []string{"quarantine.js", "audit.js", "firewall.js"} {
+		body, err := os.ReadFile("../../ui/static/js/" + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(body), "CSM.refresh.onRefresh(") {
+			t.Fatalf("%s does not register a refresh-now handler", path)
+		}
+	}
+}
+
 // TestToolbarFilterHasBoundedFlexWidth pins the toolbar filter sizing contract:
 // Bootstrap form controls default to width:100%, while data-derived option
 // labels can be longer than the intended toolbar slot. Filters need explicit

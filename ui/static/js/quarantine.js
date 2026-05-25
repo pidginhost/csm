@@ -321,3 +321,6 @@ if (bulkDeleteBtn) {
 }
 
 loadQuarantine();
+if (CSM.refresh && typeof CSM.refresh.onRefresh === 'function') {
+    CSM.refresh.onRefresh(loadQuarantine);
+}

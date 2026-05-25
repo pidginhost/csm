@@ -52,6 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Web UI toolbar filters now keep a compact inline layout on pages with multiple dropdown and date filters instead of stretching or overflowing the row.
+- Web UI topbar "Refresh now" button now always refreshes the visible page. Quarantine, audit, and firewall pages re-fetch in place (preserving filter and selection state) by registering a `CSM.refresh.onRefresh` handler, and any page that never registered a poller / interval / handler falls back to a full reload so the click is never a silent no-op.
 - Web UI print output now includes all rows from the current filtered table view, hides the findings bulk bar, and keeps an open evidence detail panel in the printed page.
 - Web UI command palette no longer lets Ctrl-K / Cmd-K also trigger page shortcuts behind the overlay, and it ignores keys already handled by another open modal.
 - Threat intelligence attacker filters now match clean verdicts and keep bookmarked filter state even when no attackers are listed.

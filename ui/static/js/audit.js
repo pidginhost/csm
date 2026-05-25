@@ -131,6 +131,9 @@ function loadAudit() {
 }
 
 loadAudit();
+if (CSM.refresh && typeof CSM.refresh.onRefresh === 'function') {
+    CSM.refresh.onRefresh(loadAudit);
+}
 
 // Export audit rows via shared CSM.exportTable (WEB_ROADMAP P2.4).
 var _auditExportCols = [

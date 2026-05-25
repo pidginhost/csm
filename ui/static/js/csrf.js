@@ -255,6 +255,11 @@ CSM.get = function(url, options) {
 CSM.refresh = (function() {
     var STORAGE_KEY = 'csm-autorefresh';
     var timers = [];
+    // subscribers counts every poller / interval / explicit listener so
+    // manual() can fall back to window.location.reload() on pages that
+    // never registered a refreshable callback - otherwise the topbar
+    // Refresh button is a no-op there.
+    var subscribers = 0;
     var raw = null;
     try { raw = localStorage.getItem(STORAGE_KEY); } catch (e) { /* localStorage may be unavailable */ }
     // Default ON unless user explicitly turned it off.
@@ -293,6 +298,7 @@ CSM.refresh = (function() {
         var timerId = null;
         var stopped = false;
         var delay = Math.max(0, Number(interval) || 0);
+        subscribers++;
 
         function clearTimer() {
             if (timerId) {
@@ -326,6 +332,7 @@ CSM.refresh = (function() {
             stop: function() {
                 if (stopped) return;
                 stopped = true;
+                subscribers = Math.max(0, subscribers - 1);
                 clearTimer();
                 removeTimer(timer);
             }
@@ -349,7 +356,29 @@ CSM.refresh = (function() {
         },
         manual: function() {
             window.dispatchEvent(new CustomEvent('csm:refresh-now'));
+            // No interval / poller / explicit subscriber means the page
+            // fetched its data once at load and ignores the event, so the
+            // operator would see the refresh icon "spin" with no effect.
+            // Fall back to a full reload so the click is never a no-op.
+            if (subscribers === 0) {
+                window.location.reload();
+            }
         },
+        onRefresh: function(fn) {
+            if (typeof fn !== 'function') return function() {};
+            subscribers++;
+            var wrapped = function() { try { fn(); } catch (e) { /* swallow */ } };
+            window.addEventListener('csm:refresh-now', wrapped);
+            var unsubscribed = false;
+            return function() {
+                if (unsubscribed) return;
+                unsubscribed = true;
+                subscribers = Math.max(0, subscribers - 1);
+                window.removeEventListener('csm:refresh-now', wrapped);
+            };
+        },
+        _bumpSubscriber: function() { subscribers++; },
+        _dropSubscriber: function() { subscribers = Math.max(0, subscribers - 1); },
         interval: function(fn, interval) {
             return createInterval(fn, interval);
         }
@@ -529,12 +558,21 @@ CSM.sse = (function() {
 
     function addPoller(poller) {
         pollers.push(poller);
+        // CSM.poll counts toward the manual-refresh subscriber tally so
+        // the Refresh button does not fall back to a full page reload
+        // when a poller is the one keeping the page fresh.
+        if (CSM.refresh && typeof CSM.refresh._bumpSubscriber === 'function') {
+            CSM.refresh._bumpSubscriber();
+        }
     }
 
     function removePoller(poller) {
         for (var i = pollers.length - 1; i >= 0; i--) {
             if (pollers[i] === poller) {
                 pollers.splice(i, 1);
+                if (CSM.refresh && typeof CSM.refresh._dropSubscriber === 'function') {
+                    CSM.refresh._dropSubscriber();
+                }
                 return;
             }
         }
