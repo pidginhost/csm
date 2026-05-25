@@ -2842,25 +2842,43 @@ func TestShortcutsHelpModalFocusContract(t *testing.T) {
 	}
 }
 
-// TestToolbarFilterHasFlexWidth pins the fix for the
-// stacked-filter bug: .csm-toolbar__filter must declare an explicit
-// flex-basis / width otherwise Bootstrap's form-control / form-select
-// width:100% rule makes every filter wrap onto its own row inside the
-// flex toolbar, breaking the inline layout on quarantine, audit, email,
-// threat, and any future toolbar page.
-func TestToolbarFilterHasFlexWidth(t *testing.T) {
+// TestToolbarFilterHasBoundedFlexWidth pins the toolbar filter sizing contract:
+// Bootstrap form controls default to width:100%, while data-derived option
+// labels can be longer than the intended toolbar slot. Filters need explicit
+// flex sizing plus a max width so they stay inline without overflowing.
+func TestToolbarFilterHasBoundedFlexWidth(t *testing.T) {
 	css, err := os.ReadFile("../../ui/static/css/csm.css")
 	if err != nil {
 		t.Fatal(err)
 	}
 	cssText := string(css)
-	for _, fragment := range []string{
-		`.csm-toolbar__filter { flex: 0 1 auto; width: auto; min-width: 140px; }`,
-		`.csm-toolbar__filter[type="date"] { min-width: 160px; }`,
-	} {
-		if !strings.Contains(cssText, fragment) {
-			t.Fatalf("csm.css missing toolbar-filter sizing %q", fragment)
-		}
+	filterRule := cssRule(t, cssText, `.csm-toolbar__filter`)
+	assertCSSDeclaration(t, filterRule, "flex", "0 1 auto")
+	assertCSSDeclaration(t, filterRule, "width", "auto")
+	assertCSSDeclaration(t, filterRule, "min-width", "140px")
+	assertCSSDeclaration(t, filterRule, "max-width", "220px")
+
+	dateRule := cssRule(t, cssText, `.csm-toolbar__filter[type="date"]`)
+	assertCSSDeclaration(t, dateRule, "min-width", "160px")
+}
+
+func cssRule(t *testing.T, cssText, selector string) string {
+	t.Helper()
+
+	rulePattern := regexp.MustCompile(regexp.QuoteMeta(selector) + `\s*\{([^}]*)\}`)
+	match := rulePattern.FindStringSubmatch(cssText)
+	if len(match) != 2 {
+		t.Fatalf("csm.css missing rule for %s", selector)
+	}
+	return match[1]
+}
+
+func assertCSSDeclaration(t *testing.T, rule, property, value string) {
+	t.Helper()
+
+	declarationPattern := regexp.MustCompile(`(?:^|;)\s*` + regexp.QuoteMeta(property) + `\s*:\s*` + regexp.QuoteMeta(value) + `\s*(?:;|$)`)
+	if !declarationPattern.MatchString(rule) {
+		t.Fatalf("CSS rule %q missing %s: %s", rule, property, value)
 	}
 }
 
