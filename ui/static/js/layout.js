@@ -288,3 +288,20 @@ if (_themeBtn) _themeBtn.addEventListener('click', toggleTheme);
         if (dot) dot.style.display = 'none';
     });
 })();
+
+// Print metadata (WEB_ROADMAP P6.2). Populates the body attributes the
+// print stylesheet's body::after rule reads. `beforeprint` fires before
+// the rendering snapshot in Chrome / Firefox / Safari so the stamp
+// stays accurate even when the user prints minutes after page load.
+(function() {
+    function pad(n) { return String(n).padStart(2, '0'); }
+    function refreshPrintMeta() {
+        document.body.setAttribute('data-csm-print-url', window.location.href);
+        var d = new Date();
+        var ts = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+                 ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+        document.body.setAttribute('data-csm-print-at', ts);
+    }
+    window.addEventListener('beforeprint', refreshPrintMeta);
+    refreshPrintMeta();
+})();

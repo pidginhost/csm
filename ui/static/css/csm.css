@@ -1137,3 +1137,94 @@ body.theme-dark { background-color: #1a2234; }
     color: #64748b;
     text-align: right;
 }
+
+/* WEB_ROADMAP P6.2: print stylesheet. Strips interactive chrome so the
+   page renders as a static evidence document, expands tables so every
+   row is visible without pagination, and stamps a footer with the
+   source URL and print timestamp populated by layout.js. */
+@media print {
+    @page { margin: 1.6cm 1.4cm 2cm 1.4cm; }
+    html, body {
+        background: #fff !important;
+        color: #000 !important;
+    }
+    body {
+        font-size: 11pt;
+        line-height: 1.35;
+    }
+
+    .csm-sidebar,
+    .csm-topbar,
+    .footer,
+    #csm-toasts,
+    .modal,
+    .modal-backdrop,
+    #csm-update-banner,
+    #csm-connection-lost,
+    .csm-page-header__actions,
+    .csm-toolbar,
+    .nav-tabs,
+    .csm-bulk-bar,
+    .csm-pagination,
+    .pagination,
+    .dropdown-menu,
+    .csm-detail-panel,
+    .btn,
+    .csm-palette,
+    #csm-shortcuts-help { display: none !important; }
+
+    .page,
+    .page-wrapper,
+    .page-body { display: block !important; margin: 0 !important; padding: 0 !important; }
+    .container-xl,
+    .container-fluid {
+        max-width: none !important;
+        width: 100% !important;
+        margin: 0 !important;
+        padding: 0 !important;
+    }
+
+    table.table {
+        width: 100% !important;
+        border-collapse: collapse !important;
+        page-break-inside: auto;
+    }
+    table.table th,
+    table.table td {
+        border: 1px solid #999 !important;
+        padding: 4px 6px !important;
+        background: #fff !important;
+        color: #000 !important;
+        font-size: 10pt !important;
+    }
+    table.table thead th { background: #eee !important; }
+    tr { page-break-inside: avoid; }
+    thead { display: table-header-group; }
+    tfoot { display: table-footer-group; }
+
+    .card {
+        border: 1px solid #999 !important;
+        box-shadow: none !important;
+        page-break-inside: avoid;
+        margin-bottom: 12pt !important;
+    }
+    .card-header {
+        background: #f2f2f2 !important;
+        color: #000 !important;
+        border-bottom: 1px solid #999 !important;
+    }
+
+    a, a:visited { color: #000 !important; text-decoration: none !important; }
+    .csm-page-header__title { font-size: 16pt !important; }
+
+    body::after {
+        content: "Printed from " attr(data-csm-print-url) " on " attr(data-csm-print-at);
+        display: block;
+        margin-top: 14pt;
+        padding-top: 6pt;
+        border-top: 1px solid #999;
+        font-size: 9pt;
+        color: #333;
+        text-align: center;
+    }
+}

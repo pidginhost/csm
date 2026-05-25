@@ -2838,6 +2838,46 @@ func TestShortcutsHelpModalFocusContract(t *testing.T) {
 	}
 }
 
+// TestPrintStylesheetWired pins WEB_ROADMAP P6.2: csm.css contains a
+// print-media block that hides interactive chrome, expands tables for
+// static-page output, and stamps a "Printed from URL on TIMESTAMP"
+// footer populated by layout.js on the beforeprint event.
+func TestPrintStylesheetWired(t *testing.T) {
+	css, err := os.ReadFile("../../ui/static/css/csm.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cssText := string(css)
+	for _, fragment := range []string{
+		"@media print {",
+		".csm-sidebar,",
+		".csm-topbar,",
+		".csm-page-header__actions,",
+		"body::after",
+		"data-csm-print-url",
+		"data-csm-print-at",
+	} {
+		if !strings.Contains(cssText, fragment) {
+			t.Fatalf("csm.css missing P6.2 fragment %q", fragment)
+		}
+	}
+
+	js, err := os.ReadFile("../../ui/static/js/layout.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsText := string(js)
+	for _, fragment := range []string{
+		`addEventListener('beforeprint'`,
+		`'data-csm-print-url'`,
+		`'data-csm-print-at'`,
+	} {
+		if !strings.Contains(jsText, fragment) {
+			t.Fatalf("layout.js missing P6.2 fragment %q", fragment)
+		}
+	}
+}
+
 // TestCommandPaletteWired pins WEB_ROADMAP P5.1: a Ctrl/Cmd+K command
 // palette ships in palette.js, is loaded by the layout, lists the
 // shortcut in the help overlay, and ships its overlay CSS.

@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Web UI header shows a "Live updates" status pill backed by the existing `/api/v1/events` SSE stream, with connecting / connected / reconnecting / offline states, capped exponential reconnect, and a tab-hidden close so dropped streams are visible at a glance.
 - Live updates now ignore callbacks from stale SSE streams during reconnects, so a late event from a closed stream cannot repaint the header with the wrong state.
 - Web UI gained a Ctrl-K / Cmd-K command palette that fuzzy-matches every sidebar page, navigates with arrow keys, and traps focus while open. The shortcut is listed in the help overlay.
+- Web UI ships a print stylesheet so the incident, audit, and findings pages render as static evidence: nav / topbar / toasts / toolbars are hidden, tables expand to show every row, and a "Printed from URL on TIMESTAMP" footer is stamped at the bottom of the printed output.
 - New `thresholds.crontab_base64_blob_max_bytes` operator override for the crontab deep-scan base64 decoder cap (default 16384). Lets operators raise the cap on hosts where `csm_checks_crontab_base64_truncated_total` shows recurring truncation without rebuilding the daemon.
 
 ### Changed
