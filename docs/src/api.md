@@ -183,6 +183,61 @@ POST /api/v1/settings/firewall/revert           Revert tentative firewall change
 
 Sections map to top-level config keys: `alerts`, `auto_response`, `challenge`, `reputation`, `performance`, `infra_ips`, `sentry`, etc. Writes persist to `csm.yaml`, re-sign the integrity hash, and hot-reload where possible; restart-required changes are queued for `/api/v1/settings/restart`. Invalid field values return 422 and do not touch disk. Firewall tentative apply is restart-class by design: it snapshots the previous config, writes the new one, restarts the daemon, and auto-reverts unless the operator confirms before the timer expires.
 
+## Operator preferences
+
+Per-operator state (UI density, timestamp display, default auto-refresh,
+saved filter views) is keyed server-side by SHA-256 of the auth token,
+so preferences follow the operator across browsers and devices without
+the daemon ever storing the raw credential. Capability flag:
+`webui.prefs.v1`.
+
+```
+GET    /api/v1/prefs/user        Read this operator's UI preferences
+PUT    /api/v1/prefs/user        Replace the prefs blob (CSRF on cookie sessions)
+GET    /api/v1/prefs/views       List saved views; `?page=findings` filters by page
+PUT    /api/v1/prefs/views       Upsert one view {page, name, params}
+DELETE /api/v1/prefs/views       Delete one view {page, name}
+```
+
+Response shape for `GET /api/v1/prefs/user`:
+
+```json
+{
+  "density":       "comfortable",
+  "timezone":      "local",
+  "auto_refresh":  "on",
+  "table_columns": { "findings-table": ["check","severity","when"] }
+}
+```
+
+`density` is `comfortable` or `compact`. `timezone` is `server`, `local`,
+or an IANA zone (e.g. `Europe/Bucharest`). `auto_refresh` is `on` or
+`off`. Server-side sanitisation drops any other value. Saved views are
+operator-scoped, capped at 200 per operator and 64 KiB per entry; the
+`params` map must use simple-identifier keys and string values <= 256
+characters.
+
+## Bulk-action undo
+
+Bulk threat block / whitelist and bulk firewall unblock responses now
+return an `undo_token` and queue an inverse operation server-side for
+30 seconds. The UI surfaces a banner with the same TTL; CLI callers
+can act on the token through the endpoints below. Each successful undo
+writes an `undo_<original_action>` audit entry. Capability flag:
+`webui.undo.v1`.
+
+```
+GET  /api/v1/undo/pending    Latest pending undo entry for this operator (empty object if none)
+POST /api/v1/undo/run        Consume an entry and dispatch its inverse {id}
+```
+
+`POST /api/v1/undo/run` returns `{status, action, inverse, count}` on
+success, or `410 Gone` when the entry has already been consumed or its
+30-second TTL has elapsed. Recognised inverse actions cover threat
+block, threat unblock, threat whitelist, threat unwhitelist, and
+firewall bulk unblock. Other bulk actions (quarantine delete, generic
+fix) do not surface an undo token because they have no clean inverse.
+
 ## Finding fields
 
 Every finding in `/api/v1/findings`, `/api/v1/events`, and the JSONL audit log carries optional correlation fields when CSM can attribute them:
