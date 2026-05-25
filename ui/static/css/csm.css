@@ -1122,7 +1122,7 @@ body.theme-dark { background-color: #1a2234; }
     font-size: 11px;
     color: #64748b;
     text-transform: uppercase;
-    letter-spacing: 0.04em;
+    letter-spacing: 0;
 }
 .csm-palette__empty {
     padding: 16px;

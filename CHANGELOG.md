@@ -47,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Web UI command palette no longer lets Ctrl-K / Cmd-K also trigger page shortcuts behind the overlay, and it ignores keys already handled by another open modal.
 - Threat intelligence attacker filters now match clean verdicts and keep bookmarked filter state even when no attackers are listed.
 - Email quarantine toolbar filters now stay separate from findings filters, bulk select-all survives empty-to-populated reloads, and relative timestamp refresh no longer collapses message rows.
 - Quarantine page filters now keep search scoped to file paths, clear stale dropdowns after the list empties, and use calendar-day date bounds so local DST changes do not hide rows.

@@ -2851,6 +2851,8 @@ func TestCommandPaletteWired(t *testing.T) {
 		`CSM.palette = (function()`,
 		`(ev.key === 'k' || ev.key === 'K')`,
 		`document.querySelectorAll('#csm-nav [data-csm-route]')`,
+		`item.closest('[data-csm-admin-only][hidden]')`,
+		`if (ev.defaultPrevented && !visible) return;`,
 		`'Jump to page'`,
 	} {
 		if !strings.Contains(jsText, fragment) {
@@ -2880,6 +2882,34 @@ func TestCommandPaletteWired(t *testing.T) {
 	}
 	if !strings.Contains(string(css), ".csm-palette {") {
 		t.Fatal("csm.css missing .csm-palette rule")
+	}
+}
+
+func TestCommandPaletteShortcutDoesNotFallThroughToPageShortcuts(t *testing.T) {
+	shortcuts, err := os.ReadFile("../../ui/static/js/shortcuts.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(shortcuts)
+	for _, fragment := range []string{
+		`function _hasNonShiftModifier(e) {`,
+		`return e.metaKey || e.ctrlKey || e.altKey;`,
+		`if (_hasNonShiftModifier(e)) {`,
+		`_cancelChord();`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Fatalf("shortcuts.js missing modified-key guard fragment %q", fragment)
+		}
+	}
+
+	modifierGuardIdx := strings.Index(text, `if (_hasNonShiftModifier(e)) {`)
+	chordIdx := strings.Index(text, `if (_pendingChord === 'g') {`)
+	findingsIdx := strings.Index(text, `if (_isFindingsPage()) {`)
+	if modifierGuardIdx < 0 || chordIdx < 0 || findingsIdx < 0 {
+		t.Fatal("shortcuts.js missing modifier guard, chord handler, or findings shortcut block")
+	}
+	if modifierGuardIdx > chordIdx || modifierGuardIdx > findingsIdx {
+		t.Fatal("shortcuts.js must ignore Ctrl/Cmd/Alt-modified keys before page shortcuts can handle them")
 	}
 }
 

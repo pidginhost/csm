@@ -18,10 +18,14 @@ CSM.palette = (function() {
     var visible = false;
     var returnFocus = null;
 
+    function isVisibleRoute(item) {
+        return !item.hidden && !item.closest('[data-csm-admin-only][hidden]');
+    }
+
     function collectEntries() {
         var items = document.querySelectorAll('#csm-nav [data-csm-route]');
         for (var i = 0; i < items.length; i++) {
-            if (items[i].hidden) continue;
+            if (!isVisibleRoute(items[i])) continue;
             var link = items[i].querySelector('a.nav-link');
             if (!link) continue;
             var labelEl = link.querySelector('.nav-link-title');
@@ -76,7 +80,7 @@ CSM.palette = (function() {
 
         hintEl = document.createElement('div');
         hintEl.className = 'csm-palette__hint';
-        hintEl.textContent = 'Up Down Navigate · Enter Open · Esc Close';
+        hintEl.textContent = 'Up/Down Navigate | Enter Open | Esc Close';
         box.appendChild(hintEl);
 
         overlay.appendChild(box);
@@ -211,6 +215,7 @@ CSM.palette = (function() {
     function isVisible() { return visible; }
 
     document.addEventListener('keydown', function(ev) {
+        if (ev.defaultPrevented && !visible) return;
         var mod = ev.metaKey || ev.ctrlKey;
         if (mod && (ev.key === 'k' || ev.key === 'K')) {
             ev.preventDefault();

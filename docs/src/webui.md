@@ -59,6 +59,7 @@ admin-only navigation entries such as Configuration and ModSec Rules.
 |-----|--------|
 | `?` | Show shortcut help |
 | `/` | Focus search input |
+| `Ctrl-K / Cmd-K` | Open command palette |
 
 ### Navigate
 

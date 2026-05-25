@@ -58,6 +58,10 @@ CSM.shortcuts = (function() {
         return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable;
     }
 
+    function _hasNonShiftModifier(e) {
+        return e.metaKey || e.ctrlKey || e.altKey;
+    }
+
     function _isFindingsPage() {
         return !!document.getElementById('findings-table');
     }
@@ -214,6 +218,11 @@ CSM.shortcuts = (function() {
 
         // Don't activate shortcuts when typing in form elements
         if (_isInputFocused()) {
+            return;
+        }
+
+        if (_hasNonShiftModifier(e)) {
+            _cancelChord();
             return;
         }
 
