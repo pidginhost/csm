@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Web UI saved-view deletion, timestamp preferences, undo re-blocks, and CSRF checks now behave correctly with mixed credentials and missing firewall engines.
 
+### Removed
+
+- Internal `WEB_ROADMAP.md` retired now that every step has shipped. Future Web UI work tracks alongside daemon work in `ROADMAP.md`. Historical `WEB_ROADMAP item N` references in commits and the CHANGELOG remain resolvable via `git log`.
+
 ## [3.8.1] - 2026-05-25
 
 ### Fixed

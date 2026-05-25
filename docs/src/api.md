@@ -40,7 +40,7 @@ GET  /api/v1/status              Full health snapshot: version, uptime, watchers
                                  `latest_scan` is the canonical last-scan timestamp; `last_scan_time`
                                  is a legacy alias kept for older clients and will be removed.
 GET  /api/v1/capabilities        Static feature list (e.g. `confd.dropins.v1`, `events.sse.v1`,
-                                 `webhook.phpanel.v1`, `sd_notify.ready`). Use for orchestrator feature-detect.
+                                 `webhook.phpanel.v1`, `webui.prefs.v1`, `webui.undo.v1`). Use for orchestrator feature-detect.
 GET  /api/v1/events              Server-Sent Events stream of findings as they dispatch.
                                  Read-scope token sufficient. One JSON event per `data:` line.
 GET  /api/v1/health              Daemon health (fanotify, watchers, engines)
