@@ -146,9 +146,9 @@ func parseTier(s string) (checks.Tier, error) {
 // flow mirrors Daemon.runPeriodicChecks: integrity verify, RunTier,
 // purge-and-merge, then hand findings to the alert pipeline. When
 // Alerts=false the handler absorbs the old `csm check*` behaviour:
-// flip checks.DryRun to suppress auto-response for the duration of the
-// run, append the raw findings to history, and return them in the
-// response body so the CLI can render them verbatim.
+// skip auto-response for this run, append the raw findings to history,
+// and return them in the response body so the CLI can render them
+// verbatim.
 func (c *ControlListener) handleTierRun(argsRaw json.RawMessage) (any, error) {
 	var args control.TierRunArgs
 	if len(argsRaw) > 0 {
@@ -161,8 +161,8 @@ func (c *ControlListener) handleTierRun(argsRaw json.RawMessage) (any, error) {
 		return nil, err
 	}
 
-	// dryRun ties together the three Alerts=false side effects: the
-	// checks.DryRun toggle, the post-run history append, and the
+	// dryRun ties together the three Alerts=false side effects:
+	// auto-response suppression, the post-run history append, and the
 	// FindingList in the response. Hoisting it makes the invariant
 	// "these three happen together" visually obvious.
 	dryRun := !args.Alerts

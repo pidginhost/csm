@@ -355,6 +355,84 @@ func TestRunParallelDisabledChecksTrimsAndIgnoresBlanks(t *testing.T) {
 	}
 }
 
+func TestRunParallelDryRunSkipsAutoResponse(t *testing.T) {
+	cfg := &config.Config{StatePath: t.TempDir()}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := fwBlocker
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+
+	oldChallengeList := GetChallengeIPList()
+	SetChallengeIPList(nil)
+	t.Cleanup(func() { SetChallengeIPList(oldChallengeList) })
+
+	checks := []namedCheck{{
+		"synthetic_bruteforce",
+		func(_ context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+			return []alert.Finding{{
+				Check:    "wp_login_bruteforce",
+				Severity: alert.Critical,
+				Message:  "WordPress brute force from 203.0.113.77",
+			}}
+		},
+	}}
+
+	findings, _ := runParallel(cfg, nil, checks, "test", true)
+
+	if len(blocker.blocked) != 0 {
+		t.Fatalf("dry-run runParallel called BlockIP: %v", blocker.blocked)
+	}
+	if containsFindingCheck(findings, "auto_block") {
+		t.Fatalf("dry-run runParallel emitted auto-response findings: %+v", findings)
+	}
+	stored := loadBlockState(cfg.StatePath)
+	if len(stored.IPs) != 0 || len(stored.Pending) != 0 {
+		t.Fatalf("dry-run runParallel wrote block state: %+v", stored)
+	}
+}
+
+func TestRunParallelLiveInvokesAutoResponse(t *testing.T) {
+	cfg := &config.Config{StatePath: t.TempDir()}
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := fwBlocker
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+
+	oldChallengeList := GetChallengeIPList()
+	SetChallengeIPList(nil)
+	t.Cleanup(func() { SetChallengeIPList(oldChallengeList) })
+
+	checks := []namedCheck{{
+		"synthetic_bruteforce",
+		func(_ context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+			return []alert.Finding{{
+				Check:    "wp_login_bruteforce",
+				Severity: alert.Critical,
+				Message:  "WordPress brute force from 203.0.113.78",
+			}}
+		},
+	}}
+
+	findings, _ := runParallel(cfg, nil, checks, "test", false)
+
+	if len(blocker.blocked) != 1 || blocker.blocked[0] != "203.0.113.78" {
+		t.Fatalf("live runParallel BlockIP calls = %v, want [203.0.113.78]", blocker.blocked)
+	}
+	if !containsFindingCheck(findings, "auto_block") {
+		t.Fatalf("live runParallel did not append auto_block finding: %+v", findings)
+	}
+	stored := loadBlockState(cfg.StatePath)
+	if len(stored.IPs) != 1 || stored.IPs[0].IP != "203.0.113.78" {
+		t.Fatalf("live runParallel block state = %+v, want 203.0.113.78", stored)
+	}
+}
+
 // A throttled check that gets skipped in cycle N must NOT appear in the
 // per-scan purge list, otherwise StoreLatestScanFindings wipes the
 // findings emitted during cycle N-1 (when the throttle window had not

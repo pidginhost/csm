@@ -15,9 +15,8 @@ import (
 // runs inside the daemon so no external lock coordination is needed.
 //
 // Concurrency: a sync.Mutex on the daemon serialises baselines against
-// each other. Race with the periodic critical/deep scanners through the
-// checks.ForceAll / checks.DryRun globals is a pre-existing quirk
-// documented in the phase 2 plan; not addressed here.
+// each other. The baseline sweep still uses checks.ForceAll to bypass
+// throttles; dry-run state is scoped to RunAllDryRun.
 func (c *ControlListener) handleBaseline(argsRaw json.RawMessage) (any, error) {
 	var args control.BaselineArgs
 	if len(argsRaw) > 0 {

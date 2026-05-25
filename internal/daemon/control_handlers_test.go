@@ -506,13 +506,11 @@ func TestDispatchUnknownPhase2Commands(t *testing.T) {
 	}
 }
 
-// Unit-test coverage for the FindingList / DryRun / AppendHistory
-// branches inside handleTierRun would require stubbing checks.RunTier,
-// which the package does not support (newListenerForFuzz documents the
-// same limitation: a real tier.run spins up host scans and hangs CI for
-// several minutes). Those behaviours are verified by the dispatch-wiring
-// test above, by code inspection, and by the e2e smoke run at the end
-// of phase 2.
+// Unit-test coverage for the FindingList / AppendHistory branches inside
+// handleTierRun would require stubbing checks.RunTier, which the package
+// does not support (newListenerForFuzz documents the same limitation: a
+// real tier.run spins up host scans and hangs CI for several minutes).
+// The scoped dry-run behaviour is covered at the checks runner level.
 
 // newListenerForFuzz is the f.Fuzz-compatible twin of
 // newListenerForTest. Unlike the direct handler tests, the fuzzer
