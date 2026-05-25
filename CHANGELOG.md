@@ -39,7 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Web UI ships a print stylesheet so the incident, audit, and findings pages render as static evidence: nav / topbar / toasts / toolbars are hidden, tables expand to show every row, and a "Printed from URL on TIMESTAMP" footer is stamped at the bottom of the printed output.
 - Web UI contrast: severity badges, outline-button states, and muted helper text now meet WCAG AA contrast in light and dark themes.
 - Web UI narrow-viewport polish: firewall config tables are wrapped in `table-responsive` so they don't overflow on phones, and the topbar's "Live updates" / "Updated Ns ago" labels visually collapse below 576px while keeping status updates available to assistive tech.
-- Web UI CSP audit: pinned `script-src 'self'` (no `'unsafe-inline'`, no `'unsafe-eval'`, no wildcards) with a regression test that also rejects inline executable `<script>` tags in any template. The keyboard-shortcut row outline was lifted out of a runtime `<style>` injection in `shortcuts.js` into `csm.css` so the page no longer needs `style-src 'unsafe-inline'` on its account.
+- Web UI CSP audit now pins executable scripts to same-origin static assets and rejects inline executable script tags in templates. The keyboard shortcut row highlight now lives in the static stylesheet instead of a runtime style block.
 - New `thresholds.crontab_base64_blob_max_bytes` operator override for the crontab deep-scan base64 decoder cap (default 16384). Lets operators raise the cap on hosts where `csm_checks_crontab_base64_truncated_total` shows recurring truncation without rebuilding the daemon.
 
 ### Changed

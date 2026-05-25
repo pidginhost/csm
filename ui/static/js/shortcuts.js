@@ -187,9 +187,8 @@ CSM.shortcuts = (function() {
         }
     }
 
-    // CSM-kbd-selected row outline lives in csm.css (WEB_ROADMAP P6.3)
-    // so the runtime <style> injection doesn't depend on
-    // `style-src 'unsafe-inline'` and the CSP can tighten later.
+    // The selected-row outline lives in csm.css so keyboard navigation
+    // does not create a runtime style block.
 
     document.addEventListener('keydown', function(e) {
         // Close help on Escape

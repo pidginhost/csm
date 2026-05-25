@@ -35,9 +35,8 @@
 .csm-copy { cursor: pointer; }
 .csm-copy:hover { text-decoration: underline dotted; }
 
-/* WEB_ROADMAP P6.3: keyboard-selected finding-row outline, lifted out
-   of a runtime <style> injection in shortcuts.js so the page no longer
-   depends on `style-src 'unsafe-inline'`. */
+/* WEB_ROADMAP P6.3: keyboard-selected finding-row outline. Keeping this in
+   the static stylesheet avoids a runtime style block for this shortcut. */
 .csm-kbd-selected {
     outline: 2px solid #206bc4;
     outline-offset: -2px;

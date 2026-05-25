@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"golang.org/x/net/html"
 )
 
 func TestSharedEscapeHelperEscapesQuotedAttributes(t *testing.T) {
@@ -2840,60 +2842,39 @@ func TestShortcutsHelpModalFocusContract(t *testing.T) {
 	}
 }
 
-// TestCSPScriptPolicyStrict pins WEB_ROADMAP P6.3: the CSP header keeps
-// `script-src 'self'` with no `'unsafe-inline'`, no `'unsafe-eval'`, and
-// no wildcard origins. Templates ship no inline executable `<script>`
-// blocks — the JSON data block uses `type="application/json"` which is
-// not executed by browsers and so is allowed under strict CSP — and the
-// runtime style injection in shortcuts.js was lifted into csm.css.
+// TestCSPScriptPolicyStrict pins WEB_ROADMAP P6.3: the runtime CSP keeps
+// executable scripts same-origin only. Templates may carry inert JSON data
+// blocks, but not inline executable script bodies.
 func TestCSPScriptPolicyStrict(t *testing.T) {
-	srv, err := os.ReadFile("../../internal/webui/server.go")
-	if err != nil {
-		t.Fatal(err)
+	csp := webUISecurityHeader(t, "Content-Security-Policy")
+	directives := parseCSPDirectives(csp)
+	scriptSrc, ok := directives["script-src"]
+	if !ok {
+		t.Fatalf("CSP header missing script-src directive: %q", csp)
 	}
-	srvText := string(srv)
-	if !strings.Contains(srvText, `script-src 'self'`) {
-		t.Fatal("server.go CSP must declare script-src 'self'")
+	if len(scriptSrc) != 1 || scriptSrc[0] != "'self'" {
+		t.Fatalf("script-src = %q, want exactly ['self']", strings.Join(scriptSrc, " "))
 	}
-	for _, bad := range []string{
-		`script-src 'self' 'unsafe-inline'`,
-		`script-src 'self' 'unsafe-eval'`,
-		`script-src *`,
-	} {
-		if strings.Contains(srvText, bad) {
-			t.Fatalf("server.go CSP must not contain %q", bad)
+
+	for _, name := range []string{"script-src", "script-src-elem", "script-src-attr"} {
+		if sources, ok := directives[name]; ok {
+			assertCSPDirectiveHasNoScriptRelaxation(t, name, sources)
 		}
 	}
 
-	tmplGlob, err := filepath.Glob("../../ui/templates/*.html")
-	if err != nil {
-		t.Fatal(err)
+	for _, p := range webUISourceFiles(t, "../../ui/templates/*.html") {
+		assertNoInlineExecutableScripts(t, p)
 	}
-	for _, p := range tmplGlob {
-		body, err := os.ReadFile(p)
+
+	styleTagCreation := regexp.MustCompile(`document\.createElement\(\s*['"]style['"]\s*\)`)
+	for _, p := range webUISourceFiles(t, "../../ui/static/js/*.js") {
+		src, err := os.ReadFile(p)
 		if err != nil {
 			t.Fatal(err)
 		}
-		text := string(body)
-		// Match <script ...> opening tags. Any tag without src= and without
-		// type="application/json" is an inline executable script and would
-		// require `'unsafe-inline'` or a nonce in the CSP.
-		re := regexp.MustCompile(`(?i)<script\b[^>]*>`)
-		for _, m := range re.FindAllString(text, -1) {
-			hasSrc := strings.Contains(m, "src=")
-			hasJSONType := strings.Contains(m, `type="application/json"`)
-			if !hasSrc && !hasJSONType {
-				t.Fatalf("%s contains inline executable <script> tag %q which requires CSP relaxation", p, m)
-			}
+		if styleTagCreation.Match(src) {
+			t.Fatalf("%s creates a runtime <style> tag; keep static styles in csm.css", p)
 		}
-	}
-
-	shortcuts, err := os.ReadFile("../../ui/static/js/shortcuts.js")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(shortcuts), `style.textContent = '.csm-kbd-selected`) {
-		t.Fatal("shortcuts.js still injects an inline <style> for .csm-kbd-selected; move it to csm.css for CSP strictness")
 	}
 
 	css, err := os.ReadFile("../../ui/static/css/csm.css")
@@ -2903,6 +2884,91 @@ func TestCSPScriptPolicyStrict(t *testing.T) {
 	if !strings.Contains(string(css), ".csm-kbd-selected {") {
 		t.Fatal("csm.css missing .csm-kbd-selected rule lifted from shortcuts.js")
 	}
+}
+
+func webUISecurityHeader(t *testing.T, name string) string {
+	t.Helper()
+
+	rr := httptest.NewRecorder()
+	handler := (&Server{}).securityHeaders(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/dashboard", nil))
+
+	value := rr.Header().Get(name)
+	if value == "" {
+		t.Fatalf("missing %s header", name)
+	}
+	return value
+}
+
+func parseCSPDirectives(csp string) map[string][]string {
+	directives := make(map[string][]string)
+	for _, rawDirective := range strings.Split(csp, ";") {
+		fields := strings.Fields(strings.TrimSpace(rawDirective))
+		if len(fields) == 0 {
+			continue
+		}
+		directives[strings.ToLower(fields[0])] = fields[1:]
+	}
+	return directives
+}
+
+func assertCSPDirectiveHasNoScriptRelaxation(t *testing.T, name string, sources []string) {
+	t.Helper()
+
+	for _, source := range sources {
+		switch source {
+		case "'unsafe-inline'", "'unsafe-eval'":
+			t.Fatalf("%s must not allow %s", name, source)
+		}
+		if strings.Contains(source, "*") {
+			t.Fatalf("%s must not allow wildcard source %s", name, source)
+		}
+	}
+}
+
+func assertNoInlineExecutableScripts(t *testing.T, path string) {
+	t.Helper()
+
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := html.Parse(strings.NewReader(string(body)))
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode && strings.EqualFold(n.Data, "script") {
+			attrs := htmlNodeAttrs(n)
+			if src, hasSrc := attrs["src"]; hasSrc {
+				if !strings.HasPrefix(src, "/static/js/") {
+					t.Errorf("%s contains non-static script source %q", path, src)
+				}
+			} else if !isAllowedNonExecutableScriptType(attrs["type"]) {
+				t.Errorf("%s contains inline executable <script> tag", path)
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(root)
+}
+
+func htmlNodeAttrs(n *html.Node) map[string]string {
+	attrs := make(map[string]string, len(n.Attr))
+	for _, attr := range n.Attr {
+		attrs[strings.ToLower(attr.Key)] = strings.TrimSpace(attr.Val)
+	}
+	return attrs
+}
+
+func isAllowedNonExecutableScriptType(scriptType string) bool {
+	return strings.EqualFold(strings.TrimSpace(scriptType), "application/json")
 }
 
 // TestResponsivePolish pins WEB_ROADMAP P6.1: firewall config tables
