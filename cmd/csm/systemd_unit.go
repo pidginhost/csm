@@ -1,11 +1,16 @@
-[Unit]
+package main
+
+import "fmt"
+
+func systemdServiceUnit(binaryPath string) string {
+	return fmt.Sprintf(`[Unit]
 Description=CSM - Continuous Security Monitor Daemon
 After=network.target
 
 [Service]
 Type=notify
 NotifyAccess=main
-ExecStart=/opt/csm/csm daemon
+ExecStart=%s daemon
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=10
@@ -63,3 +68,5 @@ SystemCallErrorNumber=EPERM
 
 [Install]
 WantedBy=multi-user.target
+`, binaryPath)
+}

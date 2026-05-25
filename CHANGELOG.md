@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - CSRF protection now covers PUT and PATCH in addition to POST and DELETE for cookie-authenticated browser sessions. Bearer-token API callers continue to bypass CSRF, unchanged.
 - `/api/v1/capabilities` now advertises `webui.prefs.v1` and `webui.undo.v1` so phpanel can feature-detect the new operator preferences, saved views, and bulk-undo endpoints without sniffing the daemon version.
-- The shipped systemd unit now applies standard sandboxing (NoNewPrivileges, ProtectSystem=strict, ProtectHome=read-only, ProtectKernelTunables/Modules/Logs, RestrictNamespaces, RestrictSUIDSGID, LockPersonality, a narrow RestrictAddressFamilies set, and a SystemCallFilter that drops reboot / module / mount / raw-io). PrivateTmp and ProtectControlGroups stay off because CSM must scan the real /tmp and attach BPF programs to cgroupfs.
+- Packaged and standalone installs now use the same sandboxed systemd unit while preserving required host access for CSM monitors and remediation paths.
 
 ### Fixed
 

@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -65,5 +66,26 @@ func TestEnsurePHPShieldEventLogCreatesReachableWriteOnlyPath(t *testing.T) {
 	}
 	if got := logInfo.Mode().Perm(); got != 0622 {
 		t.Fatalf("event log permissions = %v, want 0622", got)
+	}
+}
+
+func TestInstallerRuntimeDirsCreateSandboxRequiredPaths(t *testing.T) {
+	installRoot := filepath.Join(t.TempDir(), "opt", "csm")
+	statePath := filepath.Join(t.TempDir(), "var", "lib", "csm", "state")
+	logPath := filepath.Join(t.TempDir(), "var", "log", "csm", "monitor.log")
+
+	got := installerRuntimeDirs(installRoot, statePath, logPath)
+	for _, want := range []string{
+		installRoot,
+		statePath,
+		filepath.Dir(logPath),
+		filepath.Join(installRoot, "quarantine"),
+		filepath.Join(installRoot, "rules"),
+		filepath.Join(installRoot, "policies"),
+		filepath.Join(installRoot, "policies", "php_relay"),
+	} {
+		if !slices.Contains(got, want) {
+			t.Errorf("installerRuntimeDirs missing %s", want)
+		}
 	}
 }

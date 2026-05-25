@@ -109,6 +109,14 @@ contents:
     type: dir
     file_info:
       mode: 0700
+  - dst: /opt/csm/policies
+    type: dir
+    file_info:
+      mode: 0700
+  - dst: /opt/csm/policies/php_relay
+    type: dir
+    file_info:
+      mode: 0700
   - dst: /var/log/csm
     type: dir
     file_info:

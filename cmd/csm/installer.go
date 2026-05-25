@@ -28,12 +28,7 @@ func (inst *Installer) Install() error {
 	}
 
 	// Create directories
-	dirs := []string{
-		filepath.Dir(inst.BinaryPath),
-		inst.StatePath,
-		filepath.Dir(inst.LogPath),
-	}
-	for _, d := range dirs {
+	for _, d := range installerRuntimeDirs(filepath.Dir(inst.BinaryPath), inst.StatePath, inst.LogPath) {
 		if err := os.MkdirAll(d, 0700); err != nil {
 			return fmt.Errorf("creating directory %s: %w", d, err)
 		}
@@ -203,6 +198,18 @@ func (inst *Installer) Uninstall() error {
 	fmt.Printf("  Config preserved at %s (remove manually if desired)\n", inst.ConfigPath)
 	fmt.Println("Uninstall complete")
 	return nil
+}
+
+func installerRuntimeDirs(installRoot, statePath, logPath string) []string {
+	return []string{
+		installRoot,
+		statePath,
+		filepath.Dir(logPath),
+		filepath.Join(installRoot, "quarantine"),
+		filepath.Join(installRoot, "rules"),
+		filepath.Join(installRoot, "policies"),
+		filepath.Join(installRoot, "policies", "php_relay"),
+	}
 }
 
 func deployDefaultConfig(path string) error {
@@ -455,30 +462,7 @@ func deploySystemdTimer() error {
 	os.Remove("/etc/systemd/system/csm.timer")
 
 	// Deploy daemon service unit (the only unit CSM ships now)
-	daemonService := fmt.Sprintf(`[Unit]
-Description=CSM - Continuous Security Monitor Daemon
-After=network.target
-
-[Service]
-Type=notify
-NotifyAccess=main
-ExecStart=%s daemon
-ExecReload=/bin/kill -HUP $MAINPID
-Restart=always
-RestartSec=10
-TimeoutStartSec=120
-WatchdogSec=300
-
-StateDirectory=csm
-StateDirectoryMode=0700
-RuntimeDirectory=csm
-RuntimeDirectoryMode=0755
-ConfigurationDirectory=csm
-ConfigurationDirectoryMode=0750
-
-[Install]
-WantedBy=multi-user.target
-`, "/opt/csm/csm")
+	daemonService := systemdServiceUnit("/opt/csm/csm")
 	// #nosec G306 -- systemd unit; standard 0644.
 	if err := os.WriteFile("/etc/systemd/system/csm.service", []byte(daemonService), 0644); err != nil {
 		return err
