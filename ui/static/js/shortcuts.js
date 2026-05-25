@@ -187,10 +187,9 @@ CSM.shortcuts = (function() {
         }
     }
 
-    // Inject CSS for selected row highlight
-    var style = document.createElement('style');
-    style.textContent = '.csm-kbd-selected { outline: 2px solid #206bc4; outline-offset: -2px; background-color: rgba(32,107,196,0.08) !important; }';
-    document.head.appendChild(style);
+    // CSM-kbd-selected row outline lives in csm.css (WEB_ROADMAP P6.3)
+    // so the runtime <style> injection doesn't depend on
+    // `style-src 'unsafe-inline'` and the CSP can tighten later.
 
     document.addEventListener('keydown', function(e) {
         // Close help on Escape

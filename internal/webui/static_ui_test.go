@@ -2840,6 +2840,71 @@ func TestShortcutsHelpModalFocusContract(t *testing.T) {
 	}
 }
 
+// TestCSPScriptPolicyStrict pins WEB_ROADMAP P6.3: the CSP header keeps
+// `script-src 'self'` with no `'unsafe-inline'`, no `'unsafe-eval'`, and
+// no wildcard origins. Templates ship no inline executable `<script>`
+// blocks — the JSON data block uses `type="application/json"` which is
+// not executed by browsers and so is allowed under strict CSP — and the
+// runtime style injection in shortcuts.js was lifted into csm.css.
+func TestCSPScriptPolicyStrict(t *testing.T) {
+	srv, err := os.ReadFile("../../internal/webui/server.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srvText := string(srv)
+	if !strings.Contains(srvText, `script-src 'self'`) {
+		t.Fatal("server.go CSP must declare script-src 'self'")
+	}
+	for _, bad := range []string{
+		`script-src 'self' 'unsafe-inline'`,
+		`script-src 'self' 'unsafe-eval'`,
+		`script-src *`,
+	} {
+		if strings.Contains(srvText, bad) {
+			t.Fatalf("server.go CSP must not contain %q", bad)
+		}
+	}
+
+	tmplGlob, err := filepath.Glob("../../ui/templates/*.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range tmplGlob {
+		body, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(body)
+		// Match <script ...> opening tags. Any tag without src= and without
+		// type="application/json" is an inline executable script and would
+		// require `'unsafe-inline'` or a nonce in the CSP.
+		re := regexp.MustCompile(`(?i)<script\b[^>]*>`)
+		for _, m := range re.FindAllString(text, -1) {
+			hasSrc := strings.Contains(m, "src=")
+			hasJSONType := strings.Contains(m, `type="application/json"`)
+			if !hasSrc && !hasJSONType {
+				t.Fatalf("%s contains inline executable <script> tag %q which requires CSP relaxation", p, m)
+			}
+		}
+	}
+
+	shortcuts, err := os.ReadFile("../../ui/static/js/shortcuts.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(shortcuts), `style.textContent = '.csm-kbd-selected`) {
+		t.Fatal("shortcuts.js still injects an inline <style> for .csm-kbd-selected; move it to csm.css for CSP strictness")
+	}
+
+	css, err := os.ReadFile("../../ui/static/css/csm.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(css), ".csm-kbd-selected {") {
+		t.Fatal("csm.css missing .csm-kbd-selected rule lifted from shortcuts.js")
+	}
+}
+
 // TestResponsivePolish pins WEB_ROADMAP P6.1: firewall config tables
 // are wrapped in table-responsive so they don't overflow on phones,
 // and the topbar's chatty pills visually hide their labels below 576px
