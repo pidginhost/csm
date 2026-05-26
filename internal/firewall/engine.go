@@ -1297,24 +1297,34 @@ func (e *Engine) addOutboundPortRule(port int, tcp bool) {
 // BlockIP adds an IP to the blocked set with optional timeout.
 // timeout 0 = permanent block.
 //
-// This is the AUTO-RESPONSE entry point. When auto_response.dry_run is true
-// (or absent, which defaults to true for safety), the call is logged and
-// persisted to the dry_run_blocks store bucket but nftables is NOT mutated.
-// This allows operators to review "what would have been blocked" before
-// enabling live blocking.
+// Thin wrapper over BlockIPOutcome that discards the outcome. Existing
+// callers that only need success/error semantics keep working; auto-
+// response callers should use BlockIPOutcome so they can suppress local
+// side effects (state mutation, AUTO-BLOCK alert) when the kernel was
+// not actually touched.
+func (e *Engine) BlockIP(ip string, reason string, timeout time.Duration) error {
+	_, err := e.BlockIPOutcome(ip, reason, timeout)
+	return err
+}
+
+// BlockIPOutcome is the AUTO-RESPONSE entry point. It performs the same
+// guards, verdict-callback consultation, and dry-run gating as BlockIP,
+// but additionally reports which path was taken via BlockOutcome so the
+// caller can decide whether to record local state. See the BlockOutcome
+// godoc for the meaning of each return value.
 //
 // Operator-initiated commands (csm firewall block, Web UI manual block) must
 // call BlockIPForce instead, which skips the dry-run gate unconditionally.
-func (e *Engine) BlockIP(ip string, reason string, timeout time.Duration) error {
+func (e *Engine) BlockIPOutcome(ip string, reason string, timeout time.Duration) (BlockOutcome, error) {
 	// Local safety checks always run before consulting the external callback.
 	// The callback can downgrade a block decision, but it cannot bypass
 	// malformed-IP, IPv6-disabled, infra-IP, or block-limit guards.
 	alreadyBlocked, err := e.validateBlockIP(ip, timeout, true)
 	if err != nil {
-		return err
+		return BlockOutcomeNoop, err
 	}
 	if alreadyBlocked {
-		return nil
+		return BlockOutcomeNoop, nil
 	}
 
 	// Verdict gate: consult the panel after local validation and before the
@@ -1330,7 +1340,7 @@ func (e *Engine) BlockIP(ip string, reason string, timeout time.Duration) error 
 		case v == "allow":
 			fmt.Fprintf(os.Stderr, "[%s] verdict callback returned allow for %s (tenant=%q note=%q) - not blocking\n",
 				time.Now().Format("2006-01-02 15:04:05"), ip, tenant, note)
-			return nil
+			return BlockOutcomeAllowed, nil
 		case tenant != "" || note != "":
 			fmt.Fprintf(os.Stderr, "[%s] verdict callback returned block for %s (tenant=%q note=%q) - proceeding with default block\n",
 				time.Now().Format("2006-01-02 15:04:05"), ip, tenant, note)
@@ -1344,9 +1354,12 @@ func (e *Engine) BlockIP(ip string, reason string, timeout time.Duration) error 
 		fmt.Fprintf(os.Stderr, "[%s] auto_response dry_run: would have blocked %s (%s)\n",
 			time.Now().Format("2006-01-02 15:04:05"), ip, reason)
 		e.recordDryRunBlock(ip, reason, timeout)
-		return nil
+		return BlockOutcomeDryRun, nil
 	}
-	return e.blockIPLocked(ip, reason, timeout, true)
+	if err := e.blockIPLocked(ip, reason, timeout, true); err != nil {
+		return BlockOutcomeNoop, err
+	}
+	return BlockOutcomeLive, nil
 }
 
 func (e *Engine) autoResponseDryRunEnabled() bool {

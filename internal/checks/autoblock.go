@@ -12,6 +12,7 @@ import (
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/firewall"
 )
 
 const (
@@ -26,6 +27,18 @@ type IPBlocker interface {
 	BlockIP(ip string, reason string, timeout time.Duration) error
 	UnblockIP(ip string) error
 	IsBlocked(ip string) bool
+}
+
+// outcomeBlocker is satisfied by engines that report what they actually
+// did. When the wired IPBlocker supports it, the auto-block path uses the
+// outcome to decide whether to apply local side effects: a dry-run or
+// verdict-allowed call must not mutate blocked_ips.json, must not bump the
+// hourly counter, and must not emit the operator-facing "AUTO-BLOCK"
+// finding (which would falsely claim a real block landed). The plain
+// IPBlocker interface stays as a back-compat fallback for tests and any
+// legacy implementation.
+type outcomeBlocker interface {
+	BlockIPOutcome(ip, reason string, timeout time.Duration) (firewall.BlockOutcome, error)
 }
 
 type subnetBlocker interface {
@@ -243,10 +256,37 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			fmt.Fprintf(os.Stderr, "auto-block: firewall engine not available, skipping %s\n", ip)
 			continue
 		}
-		if err := fwBlocker.BlockIP(ip, blockReason, expiry); err != nil {
+		outcome, err := callBlockIP(fwBlocker, ip, blockReason, expiry)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "auto-block: error blocking %s: %v\n", ip, err)
 			continue
 		}
+
+		switch outcome {
+		case firewall.BlockOutcomeDryRun:
+			// dry-run intercepted: nft was NOT mutated. Do not record a real
+			// block locally or in the permanent threat DB; emit a Warning
+			// notice instead so operators see what would have been blocked.
+			actions = append(actions, alert.Finding{
+				Severity:  alert.Warning,
+				Check:     "auto_block",
+				Message:   fmt.Sprintf("AUTO-BLOCK [dry-run]: %s would be blocked (expires in %s)", ip, expiry),
+				Details:   fmt.Sprintf("Reason: %s", reason),
+				Timestamp: time.Now(),
+			})
+			continue
+		case firewall.BlockOutcomeAllowed:
+			// Verdict callback returned "allow": CSM intentionally did not
+			// block. Stay silent at finding level - the panel already knows
+			// it downgraded the decision and the engine logged it to stderr.
+			continue
+		case firewall.BlockOutcomeNoop:
+			// Already-blocked, deny-limit, or other guard rejected the call.
+			// No local state to record.
+			continue
+		}
+		// firewall.BlockOutcomeLive (or legacy IPBlocker that returns nil err):
+		// nft was mutated. Record the real block.
 		if fwBlocker.IsBlocked(ip) {
 			fmt.Fprintf(os.Stderr, "[%s] AUTO-BLOCK: %s blocked (expires in %s)\n", time.Now().Format("2006-01-02 15:04:05"), ip, expiry)
 		}
@@ -285,7 +325,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			}
 			if checkPermBlockEscalation(cfg.StatePath, ip, count, interval) {
 				permReason := fmt.Sprintf("PERMBLOCK: %d temp blocks within %s", count, interval)
-				if err := fwBlocker.BlockIP(ip, permReason, 0); err == nil {
+				if permOutcome, err := callBlockIP(fwBlocker, ip, permReason, 0); err == nil && permOutcome == firewall.BlockOutcomeLive {
 					actions = append(actions, alert.Finding{
 						Severity:  alert.Critical,
 						Check:     "auto_block",
@@ -348,6 +388,21 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	saveBlockState(cfg.StatePath, state)
 
 	return actions
+}
+
+// callBlockIP dispatches to the outcome-reporting interface when the
+// underlying blocker implements it, otherwise falls back to the legacy
+// IPBlocker interface and assumes the call landed live (the behaviour
+// every IPBlocker had before BlockIPOutcome existed). This keeps tests
+// and any third-party implementations of IPBlocker working unchanged.
+func callBlockIP(b IPBlocker, ip, reason string, timeout time.Duration) (firewall.BlockOutcome, error) {
+	if ob, ok := b.(outcomeBlocker); ok {
+		return ob.BlockIPOutcome(ip, reason, timeout)
+	}
+	if err := b.BlockIP(ip, reason, timeout); err != nil {
+		return firewall.BlockOutcomeNoop, err
+	}
+	return firewall.BlockOutcomeLive, nil
 }
 
 func isSubnetAlreadyBlocked(cidr string) bool {

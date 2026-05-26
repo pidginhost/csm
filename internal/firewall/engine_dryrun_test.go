@@ -242,6 +242,72 @@ func TestBlockIP_VerdictNotCalledWhenLocalValidationFails(t *testing.T) {
 	}
 }
 
+func TestBlockIPOutcome_DryRunReturnsDryRun(t *testing.T) {
+	recorded := false
+	e := &Engine{
+		cfg:           &FirewallConfig{Enabled: true},
+		statePath:     t.TempDir(),
+		dryRunEnabled: func() bool { return true },
+		dryRunRecorder: func(ip, reason string, timeout time.Duration) {
+			recorded = true
+		},
+	}
+
+	outcome, err := e.BlockIPOutcome("192.0.2.5", "test", time.Hour)
+	if err != nil {
+		t.Fatalf("BlockIPOutcome dry-run err = %v, want nil", err)
+	}
+	if outcome != BlockOutcomeDryRun {
+		t.Errorf("BlockIPOutcome dry-run outcome = %q, want %q", outcome, BlockOutcomeDryRun)
+	}
+	if !recorded {
+		t.Error("dry-run recorder not called")
+	}
+}
+
+func TestBlockIPOutcome_VerdictAllowReturnsAllowed(t *testing.T) {
+	called := 0
+	e := &Engine{
+		cfg:       &FirewallConfig{Enabled: true},
+		statePath: t.TempDir(),
+		verdictAsker: func(_ context.Context, ip, reason string) (string, string, string, error) {
+			called++
+			return "allow", "tenant", "note", nil
+		},
+		dryRunEnabled: func() bool { return true }, // dry-run on, must NOT reach
+		dryRunRecorder: func(ip, reason string, timeout time.Duration) {
+			t.Error("dry-run recorder called after verdict allow")
+		},
+	}
+
+	outcome, err := e.BlockIPOutcome("192.0.2.6", "test", 0)
+	if err != nil {
+		t.Fatalf("BlockIPOutcome verdict-allow err = %v, want nil", err)
+	}
+	if outcome != BlockOutcomeAllowed {
+		t.Errorf("BlockIPOutcome verdict-allow outcome = %q, want %q", outcome, BlockOutcomeAllowed)
+	}
+	if called != 1 {
+		t.Fatalf("verdict asker called %d times, want 1", called)
+	}
+}
+
+func TestBlockIPOutcome_InfraIPReturnsNoopWithError(t *testing.T) {
+	e := &Engine{
+		cfg:           &FirewallConfig{Enabled: true, InfraIPs: []string{"192.0.2.0/24"}},
+		statePath:     t.TempDir(),
+		dryRunEnabled: func() bool { return true },
+	}
+
+	outcome, err := e.BlockIPOutcome("192.0.2.7", "test", 0)
+	if err == nil || !strings.Contains(err.Error(), "refusing to block infra IP") {
+		t.Fatalf("expected infra refusal, got outcome=%q err=%v", outcome, err)
+	}
+	if outcome != BlockOutcomeNoop {
+		t.Errorf("infra-refusal outcome = %q, want %q", outcome, BlockOutcomeNoop)
+	}
+}
+
 func TestBlockIP_VerdictAllowDoesNotHideInvalidIP(t *testing.T) {
 	called := false
 	e := &Engine{
