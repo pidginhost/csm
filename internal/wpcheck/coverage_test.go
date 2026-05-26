@@ -240,13 +240,8 @@ func TestPersistChecksumsFailsOnUnwritableState(t *testing.T) {
 
 // --- fetchWithRetry happy path -----------------------------------------
 //
-// Note: the retry branch (fetchWithRetry on error) is intentionally not
-// exercised here because it schedules a time.AfterFunc timer with a
-// 1-minute minimum backoff that cannot be cancelled from the test.
-// Covering it without a code change would either require waiting 60+
-// seconds for the timer to fire (unreliable + slow) or leaking a
-// goroutine across the test boundary (not production-grade).
-// See the remediation plan in the summary at end of this batch.
+// Retry scheduling and cancellation have dedicated coverage in
+// retry_cancel_test.go; this test stays focused on the success path.
 
 func TestFetchWithRetrySuccessPopulatesCache(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -391,11 +386,9 @@ func TestIsVerifiedCoreFileMissingVersionFileReturnsFalse(t *testing.T) {
 
 func TestIsVerifiedCoreFileNoCachedChecksumsReturnsFalse(t *testing.T) {
 	// WP root with valid version.php, but no checksums cached — triggers
-	// startBackgroundFetch and returns false. We use an httptest server
-	// that returns a permanent error so the background fetch doesn't
-	// persist anything, but it also schedules a retry (see note about
-	// retry branch above). Use an empty cache state and rely on the
-	// in-flight dedupe flag to keep things quiet.
+	// startBackgroundFetch and returns false. Pre-marking the key in flight
+	// keeps this test focused on the cache-miss return value without
+	// spawning a background fetch.
 	dir := t.TempDir()
 	root := filepath.Join(dir, "public_html")
 	if err := os.MkdirAll(filepath.Join(root, "wp-includes"), 0755); err != nil {

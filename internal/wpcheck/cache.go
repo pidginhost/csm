@@ -157,6 +157,9 @@ func (c *Cache) invalidateRoot(root string) {
 }
 
 func (c *Cache) startBackgroundFetch(version, locale string) {
+	if c.isStopped() {
+		return
+	}
 	key := cacheKey(version, locale)
 	c.mu.Lock()
 	if c.fetching[key] {
@@ -170,6 +173,12 @@ func (c *Cache) startBackgroundFetch(version, locale string) {
 
 func (c *Cache) fetchWithRetry(version, locale string, attempt int) {
 	backoffs := []time.Duration{1 * time.Minute, 5 * time.Minute, 15 * time.Minute, 1 * time.Hour}
+	key := cacheKey(version, locale)
+
+	if c.isStopped() {
+		c.clearFetching(key)
+		return
+	}
 
 	rawJSON, checksums, err := FetchChecksums(version, locale)
 	if err != nil {
@@ -181,6 +190,8 @@ func (c *Cache) fetchWithRetry(version, locale string, attempt int) {
 			version, locale, delay, err)
 		c.scheduleRetry(delay, func() {
 			c.fetchWithRetry(version, locale, attempt+1)
+		}, func() {
+			c.clearFetching(key)
 		})
 		return
 	}
@@ -189,9 +200,7 @@ func (c *Cache) fetchWithRetry(version, locale string, attempt int) {
 		fmt.Fprintf(os.Stderr, "wpcheck: persist failed for WP %s (%s): %v\n", version, locale, err)
 	}
 
-	c.mu.Lock()
-	delete(c.fetching, cacheKey(version, locale))
-	c.mu.Unlock()
+	c.clearFetching(key)
 
 	fmt.Fprintf(os.Stderr, "wpcheck: cached %d checksums for WP %s (%s)\n", len(checksums), version, locale)
 }

@@ -231,6 +231,9 @@ func (c *Cache) isPluginNotFound(slug, version string) bool {
 }
 
 func (c *Cache) startBackgroundPluginFetch(slug, version string) {
+	if c.isStopped() {
+		return
+	}
 	// wp.org has already told us this slug+version does not exist;
 	// suppress the fetch entirely until the marker expires. Without this
 	// gate every cache miss for a non-wp.org plugin would re-arm the
@@ -266,30 +269,29 @@ func (c *Cache) fetchPluginWithRetry(slug, version string, attempt int) {
 	backoffs := []time.Duration{1 * time.Minute, 5 * time.Minute, 15 * time.Minute, 1 * time.Hour}
 	key := pluginKey(slug, version)
 
+	if c.isStopped() {
+		c.clearFetching(key)
+		return
+	}
+
 	checksums, err := FetchPluginChecksums(slug, version)
 	if err == nil {
 		c.setPluginChecksums(slug, version, checksums)
-		c.mu.Lock()
-		delete(c.fetching, key)
-		c.mu.Unlock()
+		c.clearFetching(key)
 		fmt.Fprintf(os.Stderr, "wpcheck: cached %d checksums for plugin %s %s\n", len(checksums), slug, version)
 		return
 	}
 
 	if errors.Is(err, ErrPluginNotInWPOrg) {
 		c.markPluginNotFound(slug, version, pluginNotFoundTTL)
-		c.mu.Lock()
-		delete(c.fetching, key)
-		c.mu.Unlock()
+		c.clearFetching(key)
 		fmt.Fprintf(os.Stderr, "wpcheck: plugin %s %s not in wp.org repository, suppressing retries for %s\n",
 			slug, version, pluginNotFoundTTL)
 		return
 	}
 
 	if attempt >= len(backoffs) {
-		c.mu.Lock()
-		delete(c.fetching, key)
-		c.mu.Unlock()
+		c.clearFetching(key)
 		fmt.Fprintf(os.Stderr, "wpcheck: plugin fetch abandoned for %s %s after %d attempts: %v\n",
 			slug, version, attempt+1, err)
 		return
@@ -299,6 +301,8 @@ func (c *Cache) fetchPluginWithRetry(slug, version string, attempt int) {
 		slug, version, delay, err)
 	c.scheduleRetry(delay, func() {
 		c.fetchPluginWithRetry(slug, version, attempt+1)
+	}, func() {
+		c.clearFetching(key)
 	})
 }
 

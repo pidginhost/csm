@@ -99,10 +99,8 @@ func TestStartBackgroundPluginFetchDedupesInFlight(t *testing.T) {
 // --- fetchPluginWithRetry happy path ----------------------------------
 
 // Success on the first attempt populates the cache and clears the
-// fetching flag. The retry scheduling branch stays uncovered — it uses
-// time.AfterFunc with a 1-minute minimum backoff we can't cancel from
-// the test (same constraint documented in the core fetchWithRetry
-// test).
+// fetching flag. Retry scheduling and cancellation have dedicated
+// coverage in retry_cancel_test.go.
 func TestFetchPluginWithRetrySuccessPopulatesCache(t *testing.T) {
 	slug := "acme"
 	version := "3.1.4"
@@ -145,7 +143,7 @@ func TestFetchPluginWithRetrySuccessPopulatesCache(t *testing.T) {
 
 // Exhaustion branch: when attempt already equals len(backoffs), the
 // function clears the flag and returns WITHOUT scheduling a retry —
-// no time.AfterFunc leak.
+// no retry timer leak.
 func TestFetchPluginWithRetryExhaustionClearsFlag(t *testing.T) {
 	// Route plugin fetch through a server that always 500s so the
 	// first attempt fails. With attempt=len(backoffs) the function
@@ -190,16 +188,9 @@ func keysOf[K comparable, V any](m map[K]V) []K {
 
 // --- Plugin not-on-WP.org caching ------------------------------------
 //
-// The retry loop in fetchPluginWithRetry treats every error the same:
-// 4 backoffs (1m, 5m, 15m, 1h) then give up. For a plugin that simply
-// is not in the wp.org repository (Pro Elements, paid forks, custom
-// internal plugins) every cache-miss arms a fresh 4-attempt cycle that
-// will never succeed. The fix: when wp.org returns HTTP 404, mark the
-// slug+version "not in WP.org" with a 72h TTL and short-circuit further
-// fetch attempts during that window. Network errors and 5xx responses
-// keep their normal retry behaviour - only an explicit 404 from the
-// wp.org repository server is treated as a definitive missing-plugin
-// signal.
+// A wp.org 404 means the slug+version is not in the repository, so cache
+// misses should suppress retries until the TTL expires. Network errors and
+// 5xx responses keep normal retry behavior because wp.org may be down.
 
 func TestFetchPluginChecksums_404IsErrPluginNotInWPOrg(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -310,7 +301,7 @@ func TestStartBackgroundPluginFetch_SkipsWhenNotFoundMarkerFresh(t *testing.T) {
 func TestFetchPluginWithRetry_404SetsNotFoundMarkerNoRetry(t *testing.T) {
 	// One wp.org 404 must (a) set the marker, (b) clear the in-flight
 	// flag, (c) NOT schedule a retry. Counting hits across a 200ms
-	// window catches a regression that schedules time.AfterFunc.
+	// window catches a regression that arms a retry timer.
 	var hits int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits++
