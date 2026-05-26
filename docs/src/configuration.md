@@ -687,10 +687,11 @@ Config-management workflows (Ansible, Puppet, Chef) should:
 
 ## conf.d drop-ins
 
-Files matching `/etc/csm/conf.d/*.yaml` are loaded after the main config and **deep-merged** on top of it. Override with `--config-dir <path>` or `CSM_CONFIG_DIR`.
+Files matching `/etc/csm/conf.d/*.yaml` are loaded after the main config and **deep-merged** on top of it. Override with `--config-dir <path>` or `CSM_CONFIG_DIR`; the flag wins when both are set.
 
 - **Order:** lexicographic by filename. Scalar keys in `20-overrides.yaml` override the same keys in `10-base.yaml`. Use a numeric prefix.
 - **Merge semantics:** maps merge recursively; scalars replace the value from the main file; lists append in fragment order.
+- **Trust:** override directories must be absolute, must exist, and must be owned by root or the running process. The directory and every loaded fragment must not be group- or world-writable. Safe symlinked fragments are allowed, so packaged profiles can still be linked into `/etc/csm/conf.d/`.
 - **Hash:** `integrity.config_hash` covers the **main file only**. Drop-in changes are picked up on restart (or SIGHUP, where the field is hot-reload-safe) without a `csm rehash`.
 - **Use cases:** packaged integration profiles (e.g. `/usr/lib/csm/profiles/phpanel-agent.yaml` symlinked into `conf.d/`), per-host automation that should not touch the operator's `csm.yaml`, secret material rendered from a vault.
 

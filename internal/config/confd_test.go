@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -57,6 +58,40 @@ func TestLoadConfDir_RejectsUnknownFields(t *testing.T) {
 	}
 	if len(frags) != 1 {
 		t.Fatalf("expected 1 fragment, got %d", len(frags))
+	}
+}
+
+func TestLoadConfDir_RejectsWritableFragment(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "10.yaml")
+	must(t, os.WriteFile(path, []byte("hostname: unsafe\n"), 0o600))
+	must(t, os.Chmod(path, 0o666))
+
+	_, err := LoadConfDir(dir)
+	if err == nil {
+		t.Fatal("world-writable fragment must be rejected")
+	}
+	if !strings.Contains(err.Error(), "conf.d fragment") || !strings.Contains(err.Error(), "writable") {
+		t.Fatalf("error = %v, want writable fragment refusal", err)
+	}
+}
+
+func TestLoadConfDir_AcceptsSafeSymlinkFragment(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(t.TempDir(), "profile.yaml")
+	must(t, os.WriteFile(target, []byte("hostname: symlink-profile\n"), 0o600))
+	must(t, os.Symlink(target, filepath.Join(dir, "10-profile.yaml")))
+
+	frags, err := LoadConfDir(dir)
+	if err != nil {
+		t.Fatalf("LoadConfDir: %v", err)
+	}
+	if len(frags) != 1 {
+		t.Fatalf("fragments = %d, want 1", len(frags))
+	}
+	root := frags[0].Content[0]
+	if root.Content[1].Value != "symlink-profile" {
+		t.Fatalf("hostname = %q, want symlink-profile", root.Content[1].Value)
 	}
 }
 

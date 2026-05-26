@@ -5,7 +5,7 @@
 | Flag | Description |
 |---------|-------------|
 | `--config <path>` | Override the main config path. Default: `/etc/csm/csm.yaml`, with fallback to `/opt/csm/csm.yaml` on legacy installs. |
-| `--config-dir <path>` | Override the conf.d directory. Default: `/etc/csm/conf.d`. Also `CSM_CONFIG_DIR` env var. Fragments are merged on top of the main file in lexicographic order; scalars override and lists append. |
+| `--config-dir <path>` | Override the conf.d directory. Default: `/etc/csm/conf.d`. Wins over `CSM_CONFIG_DIR` when both are set. Override paths must be absolute, trusted, and not group- or world-writable; loaded fragments must meet the same write-safety check. |
 
 ## Daemon
 

@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- `CSM_CONFIG_DIR` and `--config-dir` are now validated before CSM loads any YAML fragments. The path must be absolute, exist as a directory, not be group- or world-writable, and be owned by root or the running process. Refused values fail startup so an attacker who can set the env or pass the flag cannot point CSM at a dir they control to disable detectors.
+- `CSM_CONFIG_DIR` and `--config-dir` are now validated before CSM loads any YAML fragments. Override directories must be absolute and trusted, and both directories and fragments must not be writable by group or world; refused values fail startup so an attacker cannot point CSM at fragments they control.
 - Verdict-callback responses are now HMAC-signed. CSM rejects unsigned or forged replies whenever a secret is configured, preventing on-path downgrades to "allow"; operators can temporarily accept unsigned replies during staged panel rollouts.
 
 ### Fixed

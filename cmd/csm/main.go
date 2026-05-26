@@ -41,24 +41,6 @@ const (
 	binaryPath          = "/opt/csm/csm"
 )
 
-// resolveConfDir returns the conf.d directory honoring CSM_CONFIG_DIR env
-// override, falling back to defaultConfDir. The env-provided path is
-// validated via validateConfDir; an unsafe override (relative path,
-// non-existent dir, group/world writable, foreign-owned) is fatal so an
-// attacker who controls the env cannot disable detectors by pointing CSM
-// at a YAML dir they can write to.
-func resolveConfDir() string {
-	v := os.Getenv("CSM_CONFIG_DIR")
-	if v == "" {
-		return defaultConfDir
-	}
-	if err := validateConfDir(v); err != nil {
-		fmt.Fprintf(os.Stderr, "CSM_CONFIG_DIR refused: %v\n", err)
-		os.Exit(1)
-	}
-	return v
-}
-
 // ensureHomeEnv sets HOME from os/user.Current().HomeDir when systemd has
 // not provided one. The mysql client looks up ~/.my.cnf via $HOME, so a
 // system service started without HOME falls back to unauthenticated
@@ -261,14 +243,9 @@ func tryLoadConfigLite() (*config.Config, error) {
 	if pathErr != nil {
 		return nil, pathErr
 	}
-	confDir := resolveConfDir()
-	for i, arg := range os.Args {
-		if arg == "--config-dir" && i+1 < len(os.Args) {
-			if err := validateConfDir(os.Args[i+1]); err != nil {
-				return nil, fmt.Errorf("--config-dir refused: %w", err)
-			}
-			confDir = os.Args[i+1]
-		}
+	confDir, err := resolveConfDirFromArgs(os.Args)
+	if err != nil {
+		return nil, err
 	}
 	return config.LoadWithDir(cfgPath, confDir)
 }
