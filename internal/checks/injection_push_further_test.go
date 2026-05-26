@@ -853,10 +853,30 @@ func TestAnalyzePHPContent_VarFuncDecoderAssignment(t *testing.T) {
 		"$decoder = \"base64_decode\";\n" +
 		"$runner = \"eval\";\n" +
 		"$runner($decoder('" + payload + "'));\n"
-	_ = os.WriteFile(path, []byte(content), 0644)
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	result := analyzePHPContent(path)
 	if result.check == "" {
 		t.Errorf("expected detection of variable-function decoder call, got %+v", result)
+	}
+}
+
+func TestAnalyzePHPContent_VarFuncUppercaseDecoderAssignment(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "varfunc-uppercase.php")
+	payload := strings.Repeat("A", 80)
+	content := "<?php\n" +
+		"$decoder = \"Base64_Decode\";\n" +
+		"$runner = \"EVAL\";\n" +
+		"$runner($decoder('" + payload + "'));\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result := analyzePHPContent(path)
+	if result.check == "" {
+		t.Errorf("expected detection of case-varied variable-function call, got %+v", result)
 	}
 }

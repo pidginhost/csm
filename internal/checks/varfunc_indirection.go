@@ -1,65 +1,429 @@
 package checks
 
 import (
-	"regexp"
+	"strings"
 )
 
-// dangerousIndirectNames is the closed set of PHP identifiers that, when
-// bound to a variable and invoked indirectly, indicate code execution
-// the static-string detectors would otherwise miss. Decoder names cover
-// the eval(base64_decode("...")) bypass; the exec primitives cover the
-// "$r = 'system'; $r($_GET['c']);" pattern that command-runs without
-// ever writing the literal call.
-var dangerousIndirectNames = map[string]struct{}{
-	"base64_decode":   {},
-	"gzinflate":       {},
-	"gzuncompress":    {},
-	"gzdecode":        {},
-	"bzdecompress":    {},
-	"str_rot13":       {},
-	"rawurldecode":    {},
-	"eval":            {},
-	"assert":          {},
-	"system":          {},
-	"passthru":        {},
-	"exec":            {},
-	"shell_exec":      {},
-	"popen":           {},
-	"proc_open":       {},
-	"pcntl_exec":      {},
-	"create_function": {},
+type indirectFuncKind uint8
+
+const (
+	indirectDecoder indirectFuncKind = 1 << iota
+	indirectEval
+	indirectShell
+)
+
+var indirectFuncKinds = map[string]indirectFuncKind{
+	"base64_decode":   indirectDecoder,
+	"gzinflate":       indirectDecoder,
+	"gzuncompress":    indirectDecoder,
+	"gzdecode":        indirectDecoder,
+	"bzdecompress":    indirectDecoder,
+	"str_rot13":       indirectDecoder,
+	"rawurldecode":    indirectDecoder,
+	"eval":            indirectEval,
+	"assert":          indirectEval,
+	"create_function": indirectEval,
+	"system":          indirectShell,
+	"passthru":        indirectShell,
+	"exec":            indirectShell,
+	"shell_exec":      indirectShell,
+	"popen":           indirectShell,
+	"proc_open":       indirectShell,
+	"pcntl_exec":      indirectShell,
 }
 
-// varAssignRe captures `$NAME = "VALUE"` or `$NAME = 'VALUE'`. It does
-// not understand concatenation, encoded literals, or multi-line strings
-// - the goal is to catch the common attacker shape, not every possible
-// PHP escape. False negatives degrade gracefully; false positives are
-// bounded by the dangerousIndirectNames allowlist below.
-var varAssignRe = regexp.MustCompile(`\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*["']([A-Za-z_][A-Za-z0-9_]*)["']`)
+type indirectAssignment struct {
+	kind indirectFuncKind
+	pos  int
+}
 
-// varCallRe captures `$NAME(`. Matches either a direct invocation or
-// the inner call of `eval($NAME(` / `$other($NAME(` patterns.
-var varCallRe = regexp.MustCompile(`\$([A-Za-z_][A-Za-z0-9_]*)\s*\(`)
+type indirectCall struct {
+	variable  string
+	kind      indirectFuncKind
+	pos       int
+	lineStart int
+	lineEnd   int
+	line      string
+}
 
 // detectVarFuncDangerousAssignment returns true when content contains a
-// `$var = "dangerous_name"` assignment AND a corresponding `$var(`
-// invocation. Both can sit on different lines. The check is bounded by
-// the closed dangerousIndirectNames set so it does not light up on
-// arbitrary string-keyed callables in legitimate code.
+// `$var = "dangerous_name"` assignment followed by a corresponding
+// `$var(` invocation that forms an execution sink. Decoder-only
+// callbacks are not enough; direct base64_decode() calls are common in
+// legitimate plugins, and indirect callbacks need the same restraint.
 func detectVarFuncDangerousAssignment(content string) bool {
-	bindings := map[string]struct{}{}
-	for _, m := range varAssignRe.FindAllStringSubmatch(content, -1) {
-		if _, ok := dangerousIndirectNames[m[2]]; ok {
-			bindings[m[1]] = struct{}{}
-		}
-	}
-	if len(bindings) == 0 {
+	code := stripPHPCommentsFromCode(content)
+	assignments := findIndirectAssignments(code)
+	if len(assignments) == 0 {
 		return false
 	}
-	for _, m := range varCallRe.FindAllStringSubmatch(content, -1) {
-		if _, ok := bindings[m[1]]; ok {
+	calls := findIndirectCalls(code, assignments)
+	if len(calls) == 0 {
+		return false
+	}
+
+	for _, call := range calls {
+		switch {
+		case call.kind&indirectShell != 0:
+			if lineContainsRequestVar(call.line) {
+				return true
+			}
+		case call.kind&indirectEval != 0:
+			if lineContainsRequestVar(call.line) ||
+				lineContainsDirectDecoderCall(call.line) ||
+				lineContainsIndirectCallKind(calls, call.lineStart, call.lineEnd, indirectDecoder) {
+				return true
+			}
+		case call.kind&indirectDecoder != 0:
+			if lineContainsDirectEvalCall(call.line) ||
+				lineContainsIndirectCallKind(calls, call.lineStart, call.lineEnd, indirectEval) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func findIndirectAssignments(code string) map[string][]indirectAssignment {
+	assignments := map[string][]indirectAssignment{}
+	for i := 0; i < len(code); i++ {
+		if isPHPQuote(code[i]) {
+			i = skipPHPString(code, i)
+			continue
+		}
+		if code[i] != '$' {
+			continue
+		}
+		variable, next, ok := readPHPVariableName(code, i)
+		if !ok {
+			continue
+		}
+		j := skipPHPWhitespace(code, next)
+		if j >= len(code) || code[j] != '=' || (j+1 < len(code) && (code[j+1] == '=' || code[j+1] == '>')) {
+			i = next - 1
+			continue
+		}
+
+		assignment := indirectAssignment{pos: j + 1}
+		valueStart := skipPHPWhitespace(code, j+1)
+		if valueStart < len(code) && isPHPQuote(code[valueStart]) {
+			value, valueEnd, valueOK := readPHPFunctionString(code, valueStart)
+			assignment.pos = valueEnd
+			if valueOK {
+				assignment.kind = indirectFuncKinds[value]
+			}
+		}
+		assignments[variable] = append(assignments[variable], assignment)
+		i = next - 1
+	}
+	return assignments
+}
+
+func findIndirectCalls(code string, assignments map[string][]indirectAssignment) []indirectCall {
+	var calls []indirectCall
+	for i := 0; i < len(code); i++ {
+		if isPHPQuote(code[i]) {
+			i = skipPHPString(code, i)
+			continue
+		}
+		if code[i] != '$' {
+			continue
+		}
+		variable, next, ok := readPHPVariableName(code, i)
+		if !ok {
+			continue
+		}
+		j := skipPHPWhitespace(code, next)
+		if j >= len(code) || code[j] != '(' {
+			i = next - 1
+			continue
+		}
+		kind, ok := indirectKindAt(assignments[variable], i)
+		if !ok {
+			i = next - 1
+			continue
+		}
+		lineStart, lineEnd := phpLineBounds(code, i)
+		calls = append(calls, indirectCall{
+			variable:  variable,
+			kind:      kind,
+			pos:       i,
+			lineStart: lineStart,
+			lineEnd:   lineEnd,
+			line:      code[lineStart:lineEnd],
+		})
+		i = next - 1
+	}
+	return calls
+}
+
+func indirectKindAt(assignments []indirectAssignment, callPos int) (indirectFuncKind, bool) {
+	var last indirectFuncKind
+	found := false
+	for _, assignment := range assignments {
+		if assignment.pos > callPos {
+			break
+		}
+		last = assignment.kind
+		found = true
+	}
+	return last, found && last != 0
+}
+
+func lineContainsDirectDecoderCall(line string) bool {
+	codeLine := strings.ToLower(stripPHPStringsFromCode(line))
+	for name, kind := range indirectFuncKinds {
+		if kind&indirectDecoder != 0 && containsStandaloneFunc(codeLine, name+"(") {
 			return true
 		}
 	}
 	return false
+}
+
+func lineContainsDirectEvalCall(line string) bool {
+	codeLine := strings.ToLower(stripPHPStringsFromCode(line))
+	for name, kind := range indirectFuncKinds {
+		if kind&indirectEval != 0 && containsStandaloneFunc(codeLine, name+"(") {
+			return true
+		}
+	}
+	return false
+}
+
+func lineContainsRequestVar(line string) bool {
+	codeLine := strings.ToLower(stripPHPStringsFromCode(line))
+	for _, requestVar := range []string{"$_request", "$_post", "$_get", "$_cookie", "$_server"} {
+		if strings.Contains(codeLine, requestVar) {
+			return true
+		}
+	}
+	return false
+}
+
+func lineContainsIndirectCallKind(calls []indirectCall, lineStart, lineEnd int, kind indirectFuncKind) bool {
+	for _, call := range calls {
+		if call.lineStart == lineStart && call.lineEnd == lineEnd && call.kind&kind != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func stripPHPCommentsFromCode(code string) string {
+	var b strings.Builder
+	b.Grow(len(code))
+	for i := 0; i < len(code); i++ {
+		if isPHPQuote(code[i]) {
+			i = copyPHPString(&b, code, i)
+			continue
+		}
+		if code[i] == '/' && i+1 < len(code) && code[i+1] == '*' {
+			b.WriteString("  ")
+			i += 2
+			for i < len(code) {
+				if code[i] == '*' && i+1 < len(code) && code[i+1] == '/' {
+					b.WriteString("  ")
+					i++
+					break
+				}
+				writeCommentReplacementByte(&b, code[i])
+				i++
+			}
+			continue
+		}
+		if code[i] == '/' && i+1 < len(code) && code[i+1] == '/' {
+			b.WriteString("  ")
+			i += 2
+			for i < len(code) {
+				if code[i] == '\n' || code[i] == '\r' {
+					b.WriteByte(code[i])
+					break
+				}
+				b.WriteByte(' ')
+				i++
+			}
+			continue
+		}
+		if code[i] == '#' {
+			b.WriteByte(' ')
+			i++
+			for i < len(code) {
+				if code[i] == '\n' || code[i] == '\r' {
+					b.WriteByte(code[i])
+					break
+				}
+				b.WriteByte(' ')
+				i++
+			}
+			continue
+		}
+		b.WriteByte(code[i])
+	}
+	return b.String()
+}
+
+func stripPHPStringsFromCode(code string) string {
+	var b strings.Builder
+	b.Grow(len(code))
+	for i := 0; i < len(code); i++ {
+		if isPHPQuote(code[i]) {
+			i = replacePHPString(&b, code, i)
+			continue
+		}
+		b.WriteByte(code[i])
+	}
+	return b.String()
+}
+
+func copyPHPString(b *strings.Builder, code string, start int) int {
+	quote := code[start]
+	b.WriteByte(code[start])
+	for i := start + 1; i < len(code); i++ {
+		b.WriteByte(code[i])
+		if code[i] == '\\' && i+1 < len(code) {
+			i++
+			b.WriteByte(code[i])
+			continue
+		}
+		if code[i] == quote {
+			return i
+		}
+	}
+	return len(code) - 1
+}
+
+func replacePHPString(b *strings.Builder, code string, start int) int {
+	quote := code[start]
+	b.WriteByte(' ')
+	for i := start + 1; i < len(code); i++ {
+		if code[i] == '\n' || code[i] == '\r' {
+			b.WriteByte(code[i])
+		} else {
+			b.WriteByte(' ')
+		}
+		if code[i] == '\\' && i+1 < len(code) {
+			i++
+			if code[i] == '\n' || code[i] == '\r' {
+				b.WriteByte(code[i])
+			} else {
+				b.WriteByte(' ')
+			}
+			continue
+		}
+		if code[i] == quote {
+			return i
+		}
+	}
+	return len(code) - 1
+}
+
+func writeCommentReplacementByte(b *strings.Builder, c byte) {
+	if c == '\n' || c == '\r' {
+		b.WriteByte(c)
+		return
+	}
+	b.WriteByte(' ')
+}
+
+func readPHPVariableName(code string, dollar int) (string, int, bool) {
+	if dollar+1 >= len(code) || !isPHPIdentifierStart(code[dollar+1]) {
+		return "", dollar + 1, false
+	}
+	i := dollar + 2
+	for i < len(code) && isPHPIdentifierPart(code[i]) {
+		i++
+	}
+	return code[dollar+1 : i], i, true
+}
+
+func readPHPFunctionString(code string, start int) (string, int, bool) {
+	quote := code[start]
+	var b strings.Builder
+	for i := start + 1; i < len(code); i++ {
+		if code[i] == '\\' && i+1 < len(code) {
+			if code[i+1] == quote || code[i+1] == '\\' {
+				i++
+				b.WriteByte(code[i])
+				continue
+			}
+			b.WriteByte(code[i])
+			continue
+		}
+		if code[i] == quote {
+			value, ok := normalizeIndirectFunctionName(b.String())
+			return value, i + 1, ok
+		}
+		b.WriteByte(code[i])
+	}
+	return "", len(code), false
+}
+
+func normalizeIndirectFunctionName(value string) (string, bool) {
+	value = strings.TrimLeft(value, "\\")
+	if !isPHPIdentifier(value) {
+		return "", false
+	}
+	return strings.ToLower(value), true
+}
+
+func skipPHPString(code string, start int) int {
+	quote := code[start]
+	for i := start + 1; i < len(code); i++ {
+		if code[i] == '\\' && i+1 < len(code) {
+			i++
+			continue
+		}
+		if code[i] == quote {
+			return i
+		}
+	}
+	return len(code) - 1
+}
+
+func skipPHPWhitespace(code string, start int) int {
+	for start < len(code) {
+		switch code[start] {
+		case ' ', '\t', '\n', '\r', '\f', '\v':
+			start++
+		default:
+			return start
+		}
+	}
+	return start
+}
+
+func phpLineBounds(code string, pos int) (int, int) {
+	start := pos
+	for start > 0 && code[start-1] != '\n' && code[start-1] != '\r' {
+		start--
+	}
+	end := pos
+	for end < len(code) && code[end] != '\n' && code[end] != '\r' {
+		end++
+	}
+	return start, end
+}
+
+func isPHPQuote(c byte) bool {
+	return c == '\'' || c == '"'
+}
+
+func isPHPIdentifier(value string) bool {
+	if value == "" || !isPHPIdentifierStart(value[0]) {
+		return false
+	}
+	for i := 1; i < len(value); i++ {
+		if !isPHPIdentifierPart(value[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func isPHPIdentifierStart(c byte) bool {
+	return c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+}
+
+func isPHPIdentifierPart(c byte) bool {
+	return isPHPIdentifierStart(c) || (c >= '0' && c <= '9')
 }

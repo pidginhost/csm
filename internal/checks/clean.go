@@ -347,33 +347,11 @@ func removeInlineEvalInjections(content string) (string, []string) {
 	return strings.Join(clean, "\n"), removals
 }
 
-// stripPHPComments removes /* ... */ block comments and // / # line
-// tails from a single line. Conservative: it operates on a flat string
-// and does not understand multi-line block comments or strings that
-// contain comment-like substrings. That is fine for the inline-
-// injection cleaner: the input is one trimmed line, and false hits on
-// quoted comment-like text are still bounded by the length gate and
-// the regex that runs after this.
+// stripPHPComments removes PHP comments while leaving quoted strings
+// intact, so comment-looking payload data does not change the code the
+// cleaner evaluates.
 func stripPHPComments(line string) string {
-	for {
-		start := strings.Index(line, "/*")
-		if start < 0 {
-			break
-		}
-		end := strings.Index(line[start+2:], "*/")
-		if end < 0 {
-			line = line[:start]
-			break
-		}
-		line = line[:start] + line[start+2+end+2:]
-	}
-	if i := strings.Index(line, "//"); i >= 0 {
-		line = line[:i]
-	}
-	if i := strings.Index(line, "#"); i >= 0 {
-		line = line[:i]
-	}
-	return strings.TrimSpace(line)
+	return strings.TrimSpace(stripPHPCommentsFromCode(line))
 }
 
 // --- Helper functions ---
