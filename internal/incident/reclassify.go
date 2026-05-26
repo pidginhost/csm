@@ -1,6 +1,8 @@
 package incident
 
 import (
+	"strings"
+
 	"github.com/pidginhost/csm/internal/alert"
 )
 
@@ -13,7 +15,23 @@ var kindRank = map[Kind]int{
 	KindMailboxTakeover:      2,
 	KindPostExploitProcess:   3,
 	KindHostIntegrityRisk:    4,
-	KindCredentialSpray:      3, // peer of post-exploit; never reached here in practice
+	KindCredentialSpray:      3,
+}
+
+var compoundPostExploitWebChecks = map[string]struct{}{
+	"webshell":                  {},
+	"webshell_realtime":         {},
+	"webshell_content_realtime": {},
+	"new_webshell_file":         {},
+	"obfuscated_php":            {},
+	"obfuscated_php_realtime":   {},
+	"php_shield_webshell":       {},
+}
+
+var compoundPostExploitNetworkChecks = map[string]struct{}{
+	"c2_connection":          {},
+	"backdoor_port":          {},
+	"backdoor_port_outbound": {},
 }
 
 // maybeReclassifyKind upgrades inc.Kind in place when the new finding
@@ -29,7 +47,7 @@ func maybeReclassifyKind(inc *Incident, f alert.Finding) {
 	if newKind := ClassifyKind(f); kindRank[newKind] > kindRank[inc.Kind] {
 		inc.Kind = newKind
 	}
-	if inc.Kind != KindPostExploitProcess && hasCompoundPostExploit(inc.Timeline, f) {
+	if kindRank[KindPostExploitProcess] > kindRank[inc.Kind] && hasCompoundPostExploit(inc.Timeline, f) {
 		inc.Kind = KindPostExploitProcess
 	}
 }
@@ -42,16 +60,12 @@ func hasCompoundPostExploit(events []IncidentEvent, f alert.Finding) bool {
 	seenWebshell := false
 	seenC2 := false
 	checkScan := func(check string) {
-		switch check {
-		case "webshell",
-			"webshell_realtime",
-			"webshell_content_realtime",
-			"new_webshell_file",
-			"obfuscated_php_realtime":
+		check = strings.ToLower(strings.TrimSpace(check))
+		if _, ok := compoundPostExploitWebChecks[check]; ok {
 			seenWebshell = true
-		case "c2_connection",
-			"backdoor_port",
-			"backdoor_port_outbound":
+			return
+		}
+		if _, ok := compoundPostExploitNetworkChecks[check]; ok {
 			seenC2 = true
 		}
 	}

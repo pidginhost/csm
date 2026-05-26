@@ -55,6 +55,19 @@ func TestMaybeReclassifyKind_DoesNotDowngrade(t *testing.T) {
 	}
 }
 
+func TestMaybeReclassifyKind_CompoundDoesNotDowngradeHostIntegrity(t *testing.T) {
+	inc := &Incident{
+		Kind: KindHostIntegrityRisk,
+		Timeline: []IncidentEvent{
+			{Check: "webshell"},
+		},
+	}
+	maybeReclassifyKind(inc, alert.Finding{Check: "c2_connection", SourceIP: "203.0.113.5"})
+	if inc.Kind != KindHostIntegrityRisk {
+		t.Errorf("Kind downgraded to %q, want %q", inc.Kind, KindHostIntegrityRisk)
+	}
+}
+
 // TestMaybeReclassifyKind_CompoundWebshellPlusC2: a chain of
 // webshell + outbound C2 connection upgrades the incident to a
 // post-exploit kind so operators see it as an active attack,
@@ -69,6 +82,19 @@ func TestMaybeReclassifyKind_CompoundWebshellPlusC2(t *testing.T) {
 	maybeReclassifyKind(inc, alert.Finding{Check: "c2_connection", SourceIP: "203.0.113.5"})
 	if inc.Kind != KindPostExploitProcess {
 		t.Errorf("Kind = %q, want %q (compound webshell + c2 should promote)", inc.Kind, KindPostExploitProcess)
+	}
+}
+
+func TestMaybeReclassifyKind_CompoundRecognizesOfflineObfuscatedPHP(t *testing.T) {
+	inc := &Incident{
+		Kind: KindWebAccountCompromise,
+		Timeline: []IncidentEvent{
+			{Check: "obfuscated_php"},
+		},
+	}
+	maybeReclassifyKind(inc, alert.Finding{Check: "backdoor_port_outbound", SourceIP: "203.0.113.5"})
+	if inc.Kind != KindPostExploitProcess {
+		t.Errorf("Kind = %q, want %q (offline obfuscated_php + outbound backdoor should promote)", inc.Kind, KindPostExploitProcess)
 	}
 }
 
