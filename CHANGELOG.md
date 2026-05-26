@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - File quarantine now hardlinks or copies from a verified descriptor before unlinking the source, defeating the swap-the-file race and symlink-substitution attempts.
 - Operator-supplied config-fragment directories are validated before any fragments load; refused paths fail startup so an attacker cannot redirect CSM at untrusted fragments.
 - CSM requires signed verdict-callback responses by default when a secret is configured, preventing forged block-decision downgrades; operators can opt out during staged panel rollouts.
+- Backup restore refuses to follow pre-existing symlinks anywhere along an archive entry's destination path, defeating attacker-planted redirections to system files.
 
 ### Fixed
 

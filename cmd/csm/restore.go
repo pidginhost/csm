@@ -9,6 +9,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 const maxRestoreEntrySize = 1 << 30
@@ -60,14 +61,17 @@ func RestoreBackupArchive(archive string, dst BackupSources) (err error) {
 		}
 		clean := path.Clean(rawName)
 
-		var target string
+		var target, anchor string
 		switch {
 		case clean == "csm.yaml":
 			target = dst.ConfigPath
+			anchor = filepath.Dir(dst.ConfigPath)
 		case strings.HasPrefix(clean, "conf.d/"):
 			target = filepath.Join(dst.ConfDir, strings.TrimPrefix(clean, "conf.d/"))
+			anchor = dst.ConfDir
 		case strings.HasPrefix(clean, "state/"):
 			target = filepath.Join(dst.StateDir, strings.TrimPrefix(clean, "state/"))
+			anchor = dst.StateDir
 		case clean == "manifest.txt":
 			continue // metadata only
 		default:
@@ -77,10 +81,16 @@ func RestoreBackupArchive(archive string, dst BackupSources) (err error) {
 			continue // destination path not configured for this entry kind
 		}
 
+		if symErr := refuseSymlinkBelow(anchor, target); symErr != nil {
+			return fmt.Errorf("rejecting archive entry %q: %w", hdr.Name, symErr)
+		}
 		if mkdirErr := os.MkdirAll(filepath.Dir(target), 0o700); mkdirErr != nil {
 			return mkdirErr
 		}
-		out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) // #nosec G304 -- target derived from sanitized archive entry
+		// O_NOFOLLOW protects against a symlink planted at target itself
+		// between the refuseSymlinkBelow probe and the open; refuseSymlinkBelow
+		// covers every intermediate component above target.
+		out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0o600) // #nosec G304 -- target derived from sanitized archive entry
 		if err != nil {
 			return err
 		}
@@ -94,6 +104,45 @@ func RestoreBackupArchive(archive string, dst BackupSources) (err error) {
 			return closeErr
 		}
 	}
+}
+
+// refuseSymlinkBelow walks the path from anchor down to target and returns
+// an error if any existing component is a symlink. Combined with O_NOFOLLOW
+// on the final OpenFile this prevents a pre-existing symlink (planted by an
+// earlier attacker with write access to the destination tree) from
+// redirecting the restored bytes outside the controlled directories.
+func refuseSymlinkBelow(anchor, target string) error {
+	if anchor == "" {
+		return fmt.Errorf("anchor unset for %q", target)
+	}
+	rel, err := filepath.Rel(anchor, target)
+	if err != nil {
+		return fmt.Errorf("relative path: %w", err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return fmt.Errorf("target %q escapes anchor %q", target, anchor)
+	}
+	p := anchor
+	if info, err := os.Lstat(p); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("anchor %s is a symlink", p)
+	}
+	for _, seg := range strings.Split(filepath.ToSlash(rel), "/") {
+		if seg == "" || seg == "." {
+			continue
+		}
+		p = filepath.Join(p, seg)
+		info, err := os.Lstat(p)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to traverse symlink at %s", p)
+		}
+	}
+	return nil
 }
 
 func unsafeArchiveName(name string) bool {
