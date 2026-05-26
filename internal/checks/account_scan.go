@@ -348,6 +348,7 @@ func makeAccountBackdoorCheck(account string) CheckFunc {
 						Check:    "backdoor_binary",
 						Message:  fmt.Sprintf("Backdoor binary found: %s", path),
 						Details:  details,
+						FilePath: path,
 					})
 				}
 			}

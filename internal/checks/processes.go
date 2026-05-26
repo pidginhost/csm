@@ -3,14 +3,32 @@ package checks
 import (
 	"context"
 	"fmt"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/processctx"
 	"github.com/pidginhost/csm/internal/state"
 )
+
+// accountForUID resolves a numeric UID to a username via NSS. Returns ""
+// when lookup fails (nonexistent uid, sandboxed test env). Used to
+// populate Process.Account on findings so the incident correlator can
+// group repeat events from the same cPanel user without leaning on PID
+// (which rotates per restart) or UID (numeric, less searchable).
+func accountForUID(uid int) string {
+	if uid < 0 {
+		return ""
+	}
+	u, err := user.LookupId(strconv.Itoa(uid))
+	if err != nil {
+		return ""
+	}
+	return u.Username
+}
 
 // suspiciousExeNames flags processes whose exe basename contains any of
 // these substrings. Shared between the periodic CheckSuspiciousProcesses
@@ -258,6 +276,7 @@ func CheckPHPProcesses(ctx context.Context, _ *config.Config, _ *state.Store) []
 						}
 					}
 				}
+				uidInt, _ := strconv.Atoi(uid)
 
 				findings = append(findings, alert.Finding{
 					Severity: alert.Critical,
@@ -265,6 +284,11 @@ func CheckPHPProcesses(ctx context.Context, _ *config.Config, _ *state.Store) []
 					Message:  fmt.Sprintf("PHP executing from suspicious path: %s", sus),
 					Details:  fmt.Sprintf("PID: %s, UID: %s, cmdline: %s", pid, uid, strings.TrimSpace(cmdStr)),
 					PID:      pidInt,
+					Process: &processctx.ProcessContext{
+						PID:     pidInt,
+						UID:     uidInt,
+						Account: accountForUID(uidInt),
+					},
 				})
 				break
 			}

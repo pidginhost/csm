@@ -57,6 +57,7 @@ func CheckOutboundConnections(ctx context.Context, cfg *config.Config, _ *state.
 					Check:    "c2_connection",
 					Message:  fmt.Sprintf("Connection to known C2 IP: %s:%d", remoteIP, remotePort),
 					Details:  fmt.Sprintf("Local port: %d", localPort),
+					SourceIP: remoteIP,
 				})
 			}
 		}
@@ -69,6 +70,7 @@ func CheckOutboundConnections(ctx context.Context, cfg *config.Config, _ *state.
 					Severity: alert.Critical,
 					Check:    "backdoor_port",
 					Message:  fmt.Sprintf("Listening on known backdoor port %d, connected from %s:%d", localPort, remoteIP, remotePort),
+					SourceIP: remoteIP,
 				})
 			}
 		}
@@ -96,6 +98,7 @@ func CheckOutboundConnections(ctx context.Context, cfg *config.Config, _ *state.
 					Check:    "backdoor_port_outbound",
 					Message:  fmt.Sprintf("Outbound connection to backdoor port: %s:%d", remoteIP, remotePort),
 					Details:  fmt.Sprintf("Local port: %d", localPort),
+					SourceIP: remoteIP,
 				})
 			}
 		}
