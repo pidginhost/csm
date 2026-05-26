@@ -37,10 +37,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Web UI modal, tab, and detail-panel actions now initialize correctly with the bundled Tabler scripts.
 - PAM packaging now builds the module before nFPM runs, and uninstall only removes CSM-managed hook lines.
 
-### Removed
-
-- Internal `WEB_ROADMAP.md` retired now that every step has shipped. Future Web UI work tracks alongside daemon work in `ROADMAP.md`. Historical `WEB_ROADMAP item N` references in commits and the CHANGELOG remain resolvable via `git log`.
-
 ## [3.8.1] - 2026-05-25
 
 ### Fixed
