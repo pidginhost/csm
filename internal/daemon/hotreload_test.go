@@ -303,6 +303,51 @@ func TestReloadConfigIntegrityVerifyPassesAfterReload(t *testing.T) {
 	}
 }
 
+func TestPeriodicIntegrityVerifyRetriesReloadedConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "csm.yaml")
+
+	binPath := filepath.Join(dir, "bin")
+	if err := os.WriteFile(binPath, []byte("stand-in"), 0o600); err != nil {
+		t.Fatalf("write bin: %v", err)
+	}
+	bh, err := integrity.HashFile(binPath)
+	if err != nil {
+		t.Fatalf("hash bin: %v", err)
+	}
+
+	orig := &config.Config{}
+	orig.Thresholds.MailQueueWarn = 100
+	orig.Integrity.BinaryHash = bh
+	seedConfigAtPath(t, cfgPath, orig)
+
+	loaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load original: %v", err)
+	}
+	d := newDaemonForReloadTest(t, loaded)
+	d.binaryPath = binPath
+
+	edited := &config.Config{}
+	edited.Thresholds.MailQueueWarn = 777
+	edited.Integrity = loaded.Integrity
+	seedConfigAtPath(t, cfgPath, edited)
+
+	reloaded, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("load reloaded: %v", err)
+	}
+	config.SetActive(reloaded)
+
+	got, err := d.verifyPeriodicIntegritySnapshot(loaded)
+	if err != nil {
+		t.Fatalf("verifyPeriodicIntegritySnapshot returned error: %v", err)
+	}
+	if got != reloaded {
+		t.Fatal("verifyPeriodicIntegritySnapshot should switch to the reloaded config after a stale snapshot mismatch")
+	}
+}
+
 // TestReloadConfigRestartRequiredKeepsIntegrityConsistent guards
 // against a regression where, when reload classified the edit as
 // restart_required (a restart-tagged field changed), the on-disk

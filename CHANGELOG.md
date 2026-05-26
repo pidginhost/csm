@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - Periodic and initial scans now snapshot the live config once per tick, so a SIGHUP landing mid-tick can no longer split detection and auto-response between old and new policy.
+- Periodic integrity checks no longer raise a tamper alert when a valid config reload finishes while the check is hashing the old snapshot.
 - PAM service files are edited atomically without changing existing permissions or final symlinks, so a concurrent sshd or login no longer reads a truncated file mid-write during install or uninstall.
 - YARA rule directory and every rule file are now perm-checked before compilation. CSM refuses to load rules a third party could overwrite, so an attacker cannot disable detection by dropping a no-op rule.
 - Email attachment scanning now treats a YARA-X backend loss or scan error as an incomplete scan. In tempfail mode, CSM defers the message instead of delivering it as scanned clean.

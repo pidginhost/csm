@@ -1236,8 +1236,12 @@ func (d *Daemon) runPeriodicChecks(tier checks.Tier) {
 	// integrity.config_hash on disk and updates config.Active; using
 	// d.cfg (the startup snapshot) here would fire a Critical tamper
 	// alert on every tick after a successful reload because the stored
-	// hash in d.cfg is stale.
-	if err := integrity.Verify(d.binaryPath, cfg); err != nil {
+	// hash in d.cfg is stale. If a reload completes while Verify is
+	// hashing, retry once against the latest live config to avoid a
+	// false tamper alert from a stale snapshot.
+	var err error
+	cfg, err = d.verifyPeriodicIntegritySnapshot(cfg)
+	if err != nil {
 		select {
 		case d.alertCh <- alert.Finding{
 			Severity:  alert.Critical,
@@ -1266,6 +1270,21 @@ func (d *Daemon) runPeriodicChecks(tier checks.Tier) {
 			fmt.Fprintf(os.Stderr, "[%s] alert channel full, dropping periodic finding: %s\n", ts(), f.Check)
 		}
 	}
+}
+
+func (d *Daemon) verifyPeriodicIntegritySnapshot(cfg *config.Config) (*config.Config, error) {
+	if err := integrity.Verify(d.binaryPath, cfg); err != nil {
+		latest := d.currentCfg()
+		if latest != nil && latest != cfg {
+			retryErr := integrity.Verify(d.binaryPath, latest)
+			if retryErr == nil {
+				return latest, nil
+			}
+			return latest, retryErr
+		}
+		return cfg, err
+	}
+	return cfg, nil
 }
 
 // heartbeat sends periodic pings to dead man's switch.
