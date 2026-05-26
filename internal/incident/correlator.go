@@ -553,6 +553,19 @@ func (c *Correlator) mergeLocked(inc *Incident, f alert.Finding, now time.Time, 
 	if merged {
 		c.counters.findingsMergedTotal.Add(1)
 	}
+	// Re-classify before appending so timeline-aware compound rules
+	// see the unchanged history; the new finding is passed in
+	// explicitly so its Check participates in the compound check.
+	priorKind := inc.Kind
+	maybeReclassifyKind(inc, f)
+	if inc.Kind != priorKind {
+		inc.Actions = append(inc.Actions, IncidentAction{
+			Time:    now,
+			Action:  "incident_kind_changed",
+			Result:  "ok",
+			Details: string(priorKind) + " -> " + string(inc.Kind),
+		})
+	}
 	inc.Findings = appendCappedFingerprint(inc.Findings, f.Fingerprint())
 	ev := IncidentEvent{
 		Time:    f.Timestamp,
