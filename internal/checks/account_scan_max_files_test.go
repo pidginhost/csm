@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/state"
 )
@@ -29,6 +30,46 @@ func TestEffectiveAccountScanMaxFiles(t *testing.T) {
 	cfg.Thresholds.AccountScanMaxFiles = 42
 	if got := effectiveAccountScanMaxFiles(cfg); got != 42 {
 		t.Errorf("configured cfg -> %d, want 42", got)
+	}
+}
+
+func TestRunParallelReturnsAccountScanTruncationFinding(t *testing.T) {
+	now := time.Now()
+	paths := []string{
+		"/home/aaa-customer/wp-config.php",
+		"/home/bbb-customer/wp-config.php",
+		"/home/zzz-customer/wp-config.php",
+	}
+	withMockOS(t, &mockOS{stat: mtimesByPath(map[string]time.Time{
+		paths[0]: now.Add(-24 * time.Hour),
+		paths[1]: now.Add(-12 * time.Hour),
+		paths[2]: now.Add(-1 * time.Minute),
+	})})
+
+	checks := []namedCheck{{
+		name: "unit_account_scan_cap",
+		fn: func(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
+			got := rankPathsByMtimeDesc(ctx, paths, 1)
+			if len(got) != 1 || got[0] != paths[2] {
+				t.Fatalf("ranked paths = %v, want only %q", got, paths[2])
+			}
+			return nil
+		},
+	}}
+
+	findings, _ := runParallel(&config.Config{}, nil, checks, "unit", true)
+	if len(findings) != 1 {
+		t.Fatalf("len(findings) = %d, want 1: %+v", len(findings), findings)
+	}
+	f := findings[0]
+	if f.Check != "account_scan_truncated" || f.Severity != alert.Warning {
+		t.Fatalf("finding = %+v, want warning account_scan_truncated", f)
+	}
+	if !strings.Contains(f.Message, "2 file(s) skipped past cap of 1") {
+		t.Fatalf("message = %q, want skipped count and cap", f.Message)
+	}
+	if f.Timestamp.IsZero() {
+		t.Fatal("timestamp is zero")
 	}
 }
 

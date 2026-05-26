@@ -79,7 +79,7 @@ func rankPathsByMtimeDesc(ctx context.Context, paths []string, maxFiles int) []s
 		ranked = ranked[:maxFiles]
 	}
 	if dropped > 0 {
-		emitAccountScanTruncated(dropped, maxFiles)
+		recordAccountScanTruncated(ctx, dropped, maxFiles)
 	}
 	out := make([]string, len(ranked))
 	for i, e := range ranked {
@@ -143,6 +143,7 @@ func RunAccountScan(cfg *config.Config, store *state.Store, account string) []al
 	// Run with bounded parallelism - filesystem checks all walk the same
 	// directory tree, so too many concurrent checks starve each other on
 	// loaded servers with slow I/O.
+	scanCtx, truncations := withAccountScanTruncationCollector(context.Background())
 	var mu sync.Mutex
 	var findings []alert.Finding
 	var wg sync.WaitGroup
@@ -155,7 +156,7 @@ func RunAccountScan(cfg *config.Config, store *state.Store, account string) []al
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			ctx, cancel := context.WithTimeout(context.Background(), checkTimeout)
+			ctx, cancel := context.WithTimeout(scanCtx, checkTimeout)
 			done := make(chan []alert.Finding, 1)
 			go func() {
 				done <- c.fn(ctx, cfg, store)
@@ -186,6 +187,7 @@ func RunAccountScan(cfg *config.Config, store *state.Store, account string) []al
 	wg.Wait()
 
 	now := time.Now()
+	findings = append(findings, truncations.findings(now)...)
 	for i := range findings {
 		if findings[i].Timestamp.IsZero() {
 			findings[i].Timestamp = now

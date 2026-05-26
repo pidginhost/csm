@@ -131,12 +131,13 @@ func TestLatestPurgeCheckNamesForReducedDeepSkipsFanotifyReplacedChecks(t *testi
 	}
 }
 
-func TestStoreLatestScanFindingsFiltersActionsAndRefreshesCorrelation(t *testing.T) {
+func TestStoreLatestScanFindingsFiltersVolatileAndRefreshesCorrelation(t *testing.T) {
 	st, err := state.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	st.SetLatestFindings([]alert.Finding{
+		{Check: "account_scan_truncated", Message: "old truncation"},
 		{Check: "auto_block", Message: "old block"},
 		{Check: "auto_response", Message: "old action"},
 		{Check: "cross_account_malware", Message: "old correlation"},
@@ -145,14 +146,15 @@ func TestStoreLatestScanFindingsFiltersActionsAndRefreshesCorrelation(t *testing
 	StoreLatestScanFindings(st, []string{"webshell"}, []alert.Finding{
 		{Severity: alert.Critical, Check: "webshell", Message: "Found in /home/alice/public_html/a.php"},
 		{Severity: alert.Critical, Check: "webshell", Message: "Found in /home/bob/public_html/b.php"},
+		{Severity: alert.Warning, Check: "account_scan_truncated", Message: "new truncation"},
 		{Severity: alert.Critical, Check: "auto_block", Message: "new block"},
 		{Severity: alert.Critical, Check: "auto_response", Message: "new action"},
 	})
 
 	got := st.LatestFindings()
 	for _, f := range got {
-		if f.Check == "auto_block" || f.Check == "auto_response" {
-			t.Fatalf("volatile action stored in latest findings: %+v", f)
+		if f.Check == "account_scan_truncated" || f.Check == "auto_block" || f.Check == "auto_response" {
+			t.Fatalf("volatile finding stored in latest findings: %+v", f)
 		}
 	}
 	if !containsFindingCheck(got, "webshell") {

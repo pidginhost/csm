@@ -424,6 +424,7 @@ func LatestPurgeCheckNamesForReducedDeep() []string {
 }
 
 var latestVolatileCheckNames = []string{
+	"account_scan_truncated",
 	"auto_block",
 	"auto_response",
 }
@@ -579,6 +580,7 @@ func runAll(cfg *config.Config, store *state.Store, dryRun bool) ([]alert.Findin
 func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck, tier string, dryRun bool) ([]alert.Finding, []string) {
 	enabledChecks, disabledChecks := splitDisabledChecks(cfg, checks)
 
+	scanCtx, truncations := withAccountScanTruncationCollector(context.Background())
 	var mu sync.Mutex
 	var findings []alert.Finding
 	var wg sync.WaitGroup
@@ -612,7 +614,7 @@ func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck, ti
 
 			// Run with cancellable context so timed-out checks stop
 			budget := timeoutFor(c.name)
-			ctx, cancel := context.WithTimeout(context.Background(), budget)
+			ctx, cancel := context.WithTimeout(scanCtx, budget)
 			done := make(chan []alert.Finding, 1)
 			start := time.Now()
 			obs.SafeGo("check-exec", func() {
@@ -646,6 +648,7 @@ func runParallel(cfg *config.Config, store *state.Store, checks []namedCheck, ti
 	wg.Wait()
 
 	now := time.Now()
+	findings = append(findings, truncations.findings(now)...)
 	for i := range findings {
 		if findings[i].Timestamp.IsZero() {
 			findings[i].Timestamp = now

@@ -40,7 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Account-scanner cap emits an `account_scan_truncated` warning when it clips recent files, so operators see a Finding instead of only a stderr line.
+- Account-scanner cap warnings now follow scan alert mode, so manual dry-run checks show the coverage warning without sending daemon alerts.
 - BPF-backed live monitors now emit a `bpf_unavailable` finding when the kernel cannot run the requested program, and the finding says whether CSM fell back or lost live coverage.
 - Incident persistence is now serialised across concurrent merges, so the disk record can no longer be overwritten by an older snapshot when two threads race.
 - Incident auto-block now skips incidents closed before the block decision, preventing stale firewall hand-offs after an operator resolve or dismiss.
