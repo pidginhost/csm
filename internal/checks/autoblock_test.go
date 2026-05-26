@@ -125,7 +125,7 @@ func TestAutoBlockIPs_QueuesIPsWhenRateLimited(t *testing.T) {
 	cfg.AutoResponse.BlockIPs = true
 
 	saveBlockState(cfg.StatePath, &blockState{
-		BlocksThisHour: maxBlocksPerHour,
+		BlocksThisHour: defaultMaxBlocksPerHour,
 		HourKey:        time.Now().Format("2006-01-02T15"),
 	})
 
@@ -289,7 +289,7 @@ func TestAutoBlockIPs_DrainsPendingQueueAfterRateLimitWindow(t *testing.T) {
 	cfg.AutoResponse.BlockIPs = true
 
 	saveBlockState(cfg.StatePath, &blockState{
-		BlocksThisHour: maxBlocksPerHour,
+		BlocksThisHour: defaultMaxBlocksPerHour,
 		HourKey:        time.Now().Add(-2 * time.Hour).Format("2006-01-02T15"),
 		Pending: []pendingIP{
 			{IP: "9.8.7.6", Reason: "queued brute force"},
@@ -620,7 +620,7 @@ func TestAutoBlock_SMTPSubnetSprayBypassesPerIPRateLimit(t *testing.T) {
 
 	state := loadBlockState(cfg.StatePath)
 	state.HourKey = time.Now().Format("2006-01-02T15")
-	state.BlocksThisHour = maxBlocksPerHour
+	state.BlocksThisHour = defaultMaxBlocksPerHour
 	saveBlockState(cfg.StatePath, state)
 
 	findings := []alert.Finding{{

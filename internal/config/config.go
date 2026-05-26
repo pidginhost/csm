@@ -366,15 +366,21 @@ type Config struct {
 	} `yaml:"suppressions" hotreload:"safe"`
 
 	AutoResponse struct {
-		Enabled             bool   `yaml:"enabled"`
-		KillProcesses       bool   `yaml:"kill_processes"`
-		QuarantineFiles     bool   `yaml:"quarantine_files"`
-		BlockIPs            bool   `yaml:"block_ips"`
-		BlockExpiry         string `yaml:"block_expiry"`           // e.g. "24h", "12h"
-		EnforcePermissions  bool   `yaml:"enforce_permissions"`    // auto-chmod 644 world/group-writable PHP files (default false)
-		BlockCpanelLogins   bool   `yaml:"block_cpanel_logins"`    // block IPs on cPanel/webmail login alerts (default false)
-		NetBlock            bool   `yaml:"netblock"`               // auto-block /24 when threshold IPs from same subnet
-		NetBlockThreshold   int    `yaml:"netblock_threshold"`     // IPs from same /24 before subnet block (default 3)
+		Enabled            bool   `yaml:"enabled"`
+		KillProcesses      bool   `yaml:"kill_processes"`
+		QuarantineFiles    bool   `yaml:"quarantine_files"`
+		BlockIPs           bool   `yaml:"block_ips"`
+		BlockExpiry        string `yaml:"block_expiry"`        // e.g. "24h", "12h"
+		EnforcePermissions bool   `yaml:"enforce_permissions"` // auto-chmod 644 world/group-writable PHP files (default false)
+		BlockCpanelLogins  bool   `yaml:"block_cpanel_logins"` // block IPs on cPanel/webmail login alerts (default false)
+		NetBlock           bool   `yaml:"netblock"`            // auto-block /24 when threshold IPs from same subnet
+		NetBlockThreshold  int    `yaml:"netblock_threshold"`  // IPs from same /24 before subnet block (default 3)
+		// MaxBlocksPerHour caps per-IP auto-blocks the autoresponder will
+		// commit in a rolling hour bucket. Blocks beyond the cap queue
+		// into state.Pending and drain on subsequent ticks. Default 50;
+		// raise on hosts under sustained attack where the queue otherwise
+		// grows faster than it drains.
+		MaxBlocksPerHour    int    `yaml:"max_blocks_per_hour"`
 		PermBlock           bool   `yaml:"permblock"`              // auto-promote to permanent after N temp blocks
 		PermBlockCount      int    `yaml:"permblock_count"`        // temp blocks before permanent (default 4)
 		PermBlockInterval   string `yaml:"permblock_interval"`     // window for counting temp blocks (default "24h")
@@ -1240,6 +1246,9 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 	if cfg.AutoResponse.PHPRelay.MaxActionsPerMinute == 0 {
 		cfg.AutoResponse.PHPRelay.MaxActionsPerMinute = 60
+	}
+	if cfg.AutoResponse.MaxBlocksPerHour == 0 {
+		cfg.AutoResponse.MaxBlocksPerHour = 50
 	}
 
 	// Performance defaults.

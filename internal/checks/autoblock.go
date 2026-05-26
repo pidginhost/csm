@@ -17,9 +17,12 @@ import (
 )
 
 const (
-	maxBlocksPerHour   = 50
-	defaultBlockExpiry = "24h"
-	blockStateFile     = "blocked_ips.json"
+	// defaultMaxBlocksPerHour is the fallback when cfg.AutoResponse
+	// .MaxBlocksPerHour is unset (presents as zero). Operators raise
+	// it through config; callers should not reference the constant.
+	defaultMaxBlocksPerHour = 50
+	defaultBlockExpiry      = "24h"
+	blockStateFile          = "blocked_ips.json"
 )
 
 // IPBlocker abstracts the firewall engine for auto-blocking.
@@ -283,9 +286,13 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 
 	// Block IPs - queue any that can't be blocked due to rate limit
 	expiry := parseExpiry(cfg.AutoResponse.BlockExpiry)
+	maxPerHour := cfg.AutoResponse.MaxBlocksPerHour
+	if maxPerHour <= 0 {
+		maxPerHour = defaultMaxBlocksPerHour
+	}
 	rateLimited := false
 	for ip, reason := range ipsToBlock {
-		if state.BlocksThisHour >= maxBlocksPerHour {
+		if state.BlocksThisHour >= maxPerHour {
 			// Queue for next cycle instead of dropping
 			state.Pending = append(state.Pending, pendingIP{IP: ip, Reason: reason})
 			rateLimited = true
@@ -386,7 +393,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		actions = append(actions, alert.Finding{
 			Severity:  alert.Warning,
 			Check:     "auto_block",
-			Message:   fmt.Sprintf("Auto-block rate limit reached (%d/hour), %d IPs queued for next cycle", maxBlocksPerHour, len(state.Pending)),
+			Message:   fmt.Sprintf("Auto-block rate limit reached (%d/hour), %d IPs queued for next cycle", maxPerHour, len(state.Pending)),
 			Timestamp: time.Now(),
 		})
 	}

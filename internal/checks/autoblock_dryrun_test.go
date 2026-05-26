@@ -295,6 +295,33 @@ func TestAutoBlockIPs_ReblocksWhenLiveSetLostCachedBlock(t *testing.T) {
 	}
 }
 
+// TestAutoBlockIPs_MaxBlocksPerHourHonorsConfigOverride asserts the
+// hourly rate cap moved from a compile-time constant to
+// cfg.AutoResponse.MaxBlocksPerHour. Bumping the value lets a host
+// under sustained attack drain its queue faster without a rebuild.
+func TestAutoBlockIPs_MaxBlocksPerHourHonorsConfigOverride(t *testing.T) {
+	cfg := newAutoBlockTestConfig(t)
+	cfg.AutoResponse.MaxBlocksPerHour = 2
+	blocker := &outcomeIPBlocker{outcome: firewall.BlockOutcomeLive}
+	swapBlocker(t, blocker)
+
+	findings := []alert.Finding{
+		{Check: "wp_login_bruteforce", Message: "WP brute from 192.0.2.71", Timestamp: time.Now()},
+		{Check: "wp_login_bruteforce", Message: "WP brute from 192.0.2.72", Timestamp: time.Now()},
+		{Check: "wp_login_bruteforce", Message: "WP brute from 192.0.2.73", Timestamp: time.Now()},
+		{Check: "wp_login_bruteforce", Message: "WP brute from 192.0.2.74", Timestamp: time.Now()},
+	}
+	_ = AutoBlockIPs(cfg, findings)
+
+	state := loadBlockState(cfg.StatePath)
+	if state.BlocksThisHour != 2 {
+		t.Errorf("BlocksThisHour = %d, want 2 (cap)", state.BlocksThisHour)
+	}
+	if len(state.Pending) != 2 {
+		t.Errorf("Pending = %d, want 2 (queued past cap)", len(state.Pending))
+	}
+}
+
 // TestAutoBlockIPs_LegacyBlockerStillSupported keeps the back-compat path
 // honest: a blocker that only implements IPBlocker (no BlockIPOutcome)
 // should behave as before (Live semantics, state mutated).
