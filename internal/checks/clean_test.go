@@ -313,6 +313,28 @@ func TestRemoveChrPackInjectionsPackHexSafe(t *testing.T) {
 	}
 }
 
+func TestRemoveChrPackInjectionsPackHexDangerous(t *testing.T) {
+	input := "<?php\n$f = pack(\"H*\", \"73797374656d\"); $f($_POST[\"cmd\"]);\necho 1;\n"
+	out, removed := removeChrPackInjections(input)
+	if len(removed) == 0 {
+		t.Fatal("expected pack() code construction to be removed")
+	}
+	if !strings.Contains(out, "echo 1") {
+		t.Error("legitimate code was removed")
+	}
+}
+
+func TestRemoveChrPackInjectionsBacktickFormatKept(t *testing.T) {
+	input := "<?php\n$data = pack(`H*`, \"48656c6c6f\"); echo $_POST[\"label\"];\n"
+	out, removed := removeChrPackInjections(input)
+	if len(removed) != 0 {
+		t.Errorf("backtick expression is not a quoted pack format and should be kept: %v", removed)
+	}
+	if out != input {
+		t.Error("content should be unchanged")
+	}
+}
+
 // --- removeHexVarInjections -------------------------------------------
 
 func TestRemoveHexVarInjectionsWithDangerousOp(t *testing.T) {

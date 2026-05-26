@@ -21,6 +21,25 @@ type CleanResult struct {
 	Error      string
 }
 
+var (
+	cleanRegexpMaliciousInclude = regexp.MustCompile(
+		`(?i)^\s*@include\s*\(\s*(?:` +
+			`['"](?:/tmp/|/dev/shm/|/var/tmp/)` +
+			`|base64_decode\s*\(` +
+			`|str_rot13\s*\(` +
+			`|gzinflate\s*\(` +
+			`)`)
+	cleanRegexpVarInclude = regexp.MustCompile(`(?i)^\s*@include\s*\(\s*\$[a-zA-Z_]+\s*\)`)
+	cleanRegexpCloseOpen  = regexp.MustCompile(`\?>\s*<\?php`)
+	cleanRegexpInlineEval = regexp.MustCompile(
+		`(?i)^\s*(?:@?)eval\s*\(\s*(?:base64_decode|gzinflate|gzuncompress|str_rot13)\s*\(`)
+	cleanRegexpMultiB64   = regexp.MustCompile(`(?i)(?:base64_decode\s*\(\s*){2,}`)
+	cleanRegexpChainedB64 = regexp.MustCompile(`(?i)\$\w+\s*=\s*base64_decode\s*\(\s*base64_decode`)
+	cleanRegexpChrChain   = regexp.MustCompile(`(?i)(?:chr\s*\(\s*\d+\s*\)\s*\.?\s*){5,}`)
+	cleanRegexpPackHex    = regexp.MustCompile(`(?i)pack\s*\(\s*["']H\*["']\s*,`)
+	cleanRegexpHexVar     = regexp.MustCompile(`(?:"\x5c\x78[0-9a-fA-F]{2}){3,}|(?:\\x[0-9a-fA-F]{2}){3,}`)
+)
+
 // CleanInfectedFile attempts to surgically remove malicious code from a PHP file
 // while preserving the legitimate content. Always creates a backup first.
 //
@@ -29,17 +48,6 @@ type CleanResult struct {
 // 2. Prepend injection - remove malicious code blocks at start of file (entropy-validated)
 // 3. Append injection - remove malicious code after closing ?> or end of PSR-12 file
 // 4. Inline eval injection - remove eval(base64_decode(...)) single-line injections
-
-// Module-level regex cache: these patterns ran per-call in malware
-// cleaning hot paths, recompiling on every infected-file remediation.
-var cleanRegexpVarInclude = regexp.MustCompile(`(?i)^\s*@include\s*\(\s*\$[a-zA-Z_]+\s*\)`)
-var cleanRegexpCloseOpen = regexp.MustCompile(`\?>\s*<\?php`)
-var cleanRegexpMultiB64 = regexp.MustCompile(`(?i)(?:base64_decode\s*\(\s*){2,}`)
-var cleanRegexpChainedB64 = regexp.MustCompile(`(?i)\$\w+\s*=\s*base64_decode\s*\(\s*base64_decode`)
-var cleanRegexpChrChain = regexp.MustCompile(`(?i)(?:chr\s*\(\s*\d+\s*\)\s*\.?\s*){5,}`)
-var cleanRegexpPackHex = regexp.MustCompile(`(?i)pack\s*\(\s*["\x60']H\*["\x60']\s*,`)
-var cleanRegexpHexVar = regexp.MustCompile(`(?:"\x5c\x78[0-9a-fA-F]{2}){3,}|(?:\\x[0-9a-fA-F]{2}){3,}`)
-
 func CleanInfectedFile(path string) CleanResult {
 	result := CleanResult{Path: path}
 
@@ -173,27 +181,14 @@ func removeIncludeInjections(content string) (string, []string) {
 	lines := strings.Split(content, "\n")
 	var clean []string
 
-	// Pattern 1: @include with literal malicious paths or encoding functions
-	maliciousInclude := regexp.MustCompile(
-		`(?i)^\s*@include\s*\(\s*(?:` +
-			`['"](?:/tmp/|/dev/shm/|/var/tmp/)` + // include from temp dirs
-			`|base64_decode\s*\(` + // include with base64
-			`|str_rot13\s*\(` + // include with rot13
-			`|gzinflate\s*\(` + // include with gzip
-			`)`)
-
-	// Pattern 2: @include($variable) - suspicious variable-based include
-	// Only flag if the variable is defined nearby with concatenation/obfuscation
-	varInclude := cleanRegexpVarInclude
-
 	for i, line := range lines {
-		if maliciousInclude.MatchString(line) {
+		if cleanRegexpMaliciousInclude.MatchString(line) {
 			removals = append(removals, fmt.Sprintf("removed @include injection: %s", strings.TrimSpace(line)))
 			continue
 		}
 
 		// Variable-based @include - check surrounding context for obfuscation
-		if varInclude.MatchString(line) {
+		if cleanRegexpVarInclude.MatchString(line) {
 			context := getLineContext(lines, i, 3)
 			contextLower := strings.ToLower(context)
 			isObfuscated := strings.Contains(contextLower, "base64_decode") ||
@@ -225,8 +220,7 @@ func removePrependInjection(content string) (string, []string) {
 	}
 
 	// Find if there's a malicious block at the start followed by ?><?php
-	closeOpen := cleanRegexpCloseOpen
-	loc := closeOpen.FindStringIndex(content)
+	loc := cleanRegexpCloseOpen.FindStringIndex(content)
 	if loc == nil {
 		return content, nil
 	}
@@ -332,10 +326,6 @@ func removeInlineEvalInjections(content string) (string, []string) {
 	lines := strings.Split(content, "\n")
 	var clean []string
 
-	// Matches standalone eval(base64_decode("...")) or eval(gzinflate(base64_decode("...")))
-	evalInject := regexp.MustCompile(
-		`(?i)^\s*(?:@?)eval\s*\(\s*(?:base64_decode|gzinflate|gzuncompress|str_rot13)\s*\(`)
-
 	for _, line := range lines {
 		trimmedLine := strings.TrimSpace(line)
 		// Strip /* ... */ block comments and trailing // / # comments
@@ -344,7 +334,7 @@ func removeInlineEvalInjections(content string) (string, []string) {
 		// past a strict regex; the cleaner has to see the line the way
 		// the PHP tokenizer does, not byte-for-byte.
 		normalized := stripPHPComments(trimmedLine)
-		if evalInject.MatchString(normalized) {
+		if cleanRegexpInlineEval.MatchString(normalized) {
 			// Length gate stays on the ORIGINAL line so a short legitimate
 			// eval() does not get sucked into the removal path.
 			if len(trimmedLine) > 50 {
@@ -394,8 +384,29 @@ func shannonEntropy(s string) float64 {
 // containsLongEncodedString checks if the text contains a long base64-like
 // string (alphanumeric + /+ without spaces).
 func containsLongEncodedString(s string, minLength int) bool {
-	encoded := regexp.MustCompile(`[A-Za-z0-9+/=]{` + fmt.Sprintf("%d", minLength) + `,}`)
-	return encoded.MatchString(s)
+	if minLength <= 0 {
+		return true
+	}
+
+	run := 0
+	for i := 0; i < len(s); i++ {
+		if isEncodedStringByte(s[i]) {
+			run++
+			if run >= minLength {
+				return true
+			}
+			continue
+		}
+		run = 0
+	}
+	return false
+}
+
+func isEncodedStringByte(b byte) bool {
+	return b >= 'A' && b <= 'Z' ||
+		b >= 'a' && b <= 'z' ||
+		b >= '0' && b <= '9' ||
+		b == '+' || b == '/' || b == '='
 }
 
 // getLineContext returns N lines before and after the given line index.
@@ -437,18 +448,13 @@ func removeMultiLayerBase64(content string) (string, []string) {
 	lines := strings.Split(content, "\n")
 	var clean []string
 
-	// Multi-layer base64: 2+ nested base64_decode calls on one line
-	multiB64 := cleanRegexpMultiB64
-	// Chained base64 across variables: $x = base64_decode(...); eval($x);
-	chainedB64 := cleanRegexpChainedB64
-
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if len(trimmed) < 80 {
 			clean = append(clean, line)
 			continue
 		}
-		if multiB64.MatchString(trimmed) || chainedB64.MatchString(trimmed) {
+		if cleanRegexpMultiB64.MatchString(trimmed) || cleanRegexpChainedB64.MatchString(trimmed) {
 			removals = append(removals, fmt.Sprintf("removed multi-layer base64 chain (%d chars)", len(trimmed)))
 			continue
 		}
@@ -466,20 +472,15 @@ func removeChrPackInjections(content string) (string, []string) {
 	lines := strings.Split(content, "\n")
 	var clean []string
 
-	// 5+ chr() calls concatenated - building function names from char codes
-	chrChain := cleanRegexpChrChain
-	// pack("H*", ...) - hex string to function name construction
-	packHex := cleanRegexpPackHex
-
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 
-		if chrChain.MatchString(trimmed) {
+		if cleanRegexpChrChain.MatchString(trimmed) {
 			removals = append(removals, fmt.Sprintf("removed chr() chain injection (line %d, %d chars)", i+1, len(trimmed)))
 			continue
 		}
 
-		if packHex.MatchString(trimmed) {
+		if cleanRegexpPackHex.MatchString(trimmed) {
 			lower := strings.ToLower(trimmed)
 			// Only remove if combined with execution
 			if strings.Contains(lower, "eval") || strings.Contains(lower, "$_") ||
@@ -503,9 +504,6 @@ func removeHexVarInjections(content string) (string, []string) {
 	lines := strings.Split(content, "\n")
 	var clean []string
 
-	// Variable names built from hex: $GLOBALS["\x41\x42\x43"]
-	hexVar := cleanRegexpHexVar
-
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if len(trimmed) < 30 {
@@ -513,7 +511,7 @@ func removeHexVarInjections(content string) (string, []string) {
 			continue
 		}
 
-		if hexVar.MatchString(trimmed) {
+		if cleanRegexpHexVar.MatchString(trimmed) {
 			lower := strings.ToLower(trimmed)
 			// Only remove if combined with dangerous operations
 			if strings.Contains(lower, "eval") || strings.Contains(lower, "system(") ||
