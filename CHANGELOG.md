@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Settings UI exposes the mail-log source / file / journal-units selector and the dovecot-postfix account-key extractor. Hosts on Debian-family or journald layouts can now switch sources without hand-editing `csm.yaml`.
 - Default `csm.yaml` template ships sample `mail_logs`, `detection.direct_smtp_egress`, and `bpf_enforcement` blocks so operators can discover those features without reading source. Every sample stays inert (`enabled: false`, `dry_run: true`) to preserve existing safe defaults.
 - API reference documents the new `/api/v1/prefs/*` and `/api/v1/undo/*` endpoints, including payload shape, scope, sanitisation caps, and the 30-second undo TTL.
+- Dashboard Components matrix now distinguishes "deaf" watchers (attached but no upstream feeding them, e.g. PAM listener with no PAM hook installed) from healthy quiet "idle" rows. The PAM listener surfaces a deaf verdict with a tooltip pointing to the missing `pam_csm.so` install.
 
 ### Changed
 

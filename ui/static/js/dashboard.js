@@ -1206,15 +1206,20 @@
     }
 
     // --- Components matrix ---------------------------------------------------
-    function _componentBadge(status) {
+    function _componentBadge(status, reason) {
         var map = {
             ok:       { cls: 'bg-success-lt', label: 'ok' },
             idle:     { cls: 'bg-secondary-lt', label: 'idle' },
+            deaf:     { cls: 'bg-warning-lt', label: 'deaf' },
             degraded: { cls: 'bg-danger-lt', label: 'degraded' },
             unknown:  { cls: 'bg-secondary-lt', label: 'unknown' }
         };
         var entry = map[status] || map.unknown;
-        return '<span class="badge ' + entry.cls + '">' + entry.label + '</span>';
+        var titleAttr = '';
+        if (reason) {
+            titleAttr = ' title="' + CSM.attr(reason) + '"';
+        }
+        return '<span class="badge ' + entry.cls + '"' + titleAttr + '>' + entry.label + '</span>';
     }
 
     function _componentRow(row) {
@@ -1228,7 +1233,7 @@
         var lastEventISO = lastEventTitle ? ' title="' + CSM.attr(lastEventTitle) + '"' : '';
         return '<tr>' +
             '<td class="csm-component-name text-truncate" title="' + CSM.attr(row.name) + '">' + CSM.esc(row.label || row.name) + '</td>' +
-            '<td>' + _componentBadge(row.status) + '</td>' +
+            '<td>' + _componentBadge(row.status, row.upstream_reason) + '</td>' +
             '<td class="text-muted small"' + sinceISO + '>' + CSM.esc(since) + '</td>' +
             '<td class="text-muted small"' + lastEventISO + '>' + CSM.esc(lastEvent) + '</td>' +
             '</tr>';
@@ -1249,6 +1254,9 @@
                 // platform-specific watchers on hosts that simply have not
                 // generated those events yet, so listing every one of them
                 // at full weight made the card look noisier than it is.
+                // "deaf" rows stay in the prominent table alongside ok /
+                // degraded; only true "idle" (attached, no events, upstream
+                // either alive or unprobed) collapses behind the disclosure.
                 var nonIdle = [];
                 var idle = [];
                 rows.forEach(function(row) {

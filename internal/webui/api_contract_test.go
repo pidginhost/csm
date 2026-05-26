@@ -80,6 +80,10 @@ func TestAPIComponentsContract(t *testing.T) {
 			{Check: "webshell_realtime", Severity: alert.High, Message: "event", Timestamp: now},
 		},
 	)
+	stub := s.provider.(*stubComponentsProvider)
+	stub.upstream = map[string]health.UpstreamResult{
+		"fanotify": {Fresh: false, LastActivity: now.Add(-2 * time.Hour), Reason: "no marks"},
+	}
 
 	rec := httptest.NewRecorder()
 	s.apiComponents(rec, httptest.NewRequest(http.MethodGet, "/api/v1/components", nil))

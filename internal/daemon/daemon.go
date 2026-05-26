@@ -126,6 +126,12 @@ type Daemon struct {
 	watcherMu        sync.RWMutex
 	watcherStatus    map[string]bool
 	watcherChangedAt map[string]time.Time
+	// watcherUpstream maps a watcher name to a probe function that reports
+	// whether the upstream feeding the watcher is still active. The probe
+	// runs at most once per /api/v1/components scrape; results compose with
+	// WatcherStatuses to surface "deaf" (attached but no upstream traffic)
+	// distinct from "idle" (attached and quiet) in the dashboard.
+	watcherUpstream map[string]UpstreamProbe
 
 	// findingBus fans out dispatched findings to passive observers like
 	// the SSE event stream. Initialized in Run(); closed on shutdown.
@@ -230,6 +236,47 @@ func (d *Daemon) WatcherChangedAt() map[string]time.Time {
 	out := make(map[string]time.Time, len(d.watcherChangedAt))
 	for k, v := range d.watcherChangedAt {
 		out[k] = v
+	}
+	return out
+}
+
+// UpstreamProbe reports whether a watcher's upstream input source is
+// still feeding it. Return Fresh=false when the watcher is attached but
+// can no longer hear from its source (PAM module not installed, log file
+// rotated and never reappeared, fanotify marks lost, etc.) so the
+// dashboard can surface "deaf" instead of conflating it with "idle".
+type UpstreamProbe func() health.UpstreamResult
+
+// RegisterUpstreamProbe wires a probe for a named watcher. Safe to call
+// from any watcher's startup path; repeated calls overwrite the previous
+// probe. Probes run on the request thread of /api/v1/components, so they
+// must be cheap (single stat / atomic load, not a syscall storm).
+func (d *Daemon) RegisterUpstreamProbe(name string, probe UpstreamProbe) {
+	d.watcherMu.Lock()
+	defer d.watcherMu.Unlock()
+	if d.watcherUpstream == nil {
+		d.watcherUpstream = make(map[string]UpstreamProbe)
+	}
+	d.watcherUpstream[name] = probe
+}
+
+// WatcherUpstream returns a snapshot of every probed watcher's upstream
+// state. Watchers without a registered probe are absent from the map; the
+// components API treats absence as "no probe wired, do not surface a
+// deaf verdict for this watcher".
+func (d *Daemon) WatcherUpstream() map[string]health.UpstreamResult {
+	d.watcherMu.RLock()
+	probes := make(map[string]UpstreamProbe, len(d.watcherUpstream))
+	for k, v := range d.watcherUpstream {
+		probes[k] = v
+	}
+	d.watcherMu.RUnlock()
+	out := make(map[string]health.UpstreamResult, len(probes))
+	for name, probe := range probes {
+		if probe == nil {
+			continue
+		}
+		out[name] = probe()
 	}
 	return out
 }
@@ -1670,6 +1717,7 @@ func (d *Daemon) startPAMListener() {
 	}
 	d.pamListener = pl
 	d.MarkWatcher("pamlistener", true)
+	d.RegisterUpstreamProbe("pamlistener", pl.UpstreamResult)
 	d.wg.Add(1)
 	obs.Go("pam-listener", func() {
 		defer d.wg.Done()

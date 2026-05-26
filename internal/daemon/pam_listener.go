@@ -7,10 +7,12 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
+	"github.com/pidginhost/csm/internal/health"
 	"github.com/pidginhost/csm/internal/obs"
 )
 
@@ -24,6 +26,15 @@ type PAMListener struct {
 	listener net.Listener
 	mu       sync.Mutex
 	failures map[string]*pamFailureTracker
+	// startedAt anchors the upstream-probe verdict so the dashboard does
+	// not flag a freshly-started daemon as "deaf" before the PAM module
+	// has had a chance to emit anything. Compared against lastPeerNanos
+	// to decide whether silence is informative.
+	startedAt time.Time
+	// lastPeerNanos is an atomic UnixNano timestamp updated on every
+	// inbound connection (regardless of payload validity). Used by the
+	// upstream probe to detect a missing PAM module hook.
+	lastPeerNanos atomic.Int64
 }
 
 type pamFailureTracker struct {
@@ -55,12 +66,53 @@ func NewPAMListener(cfg *config.Config, alertCh chan<- alert.Finding) (*PAMListe
 	_ = os.Chmod(pamSocketPath, 0600)
 
 	return &PAMListener{
-		cfg:      cfg,
-		alertCh:  alertCh,
-		listener: listener,
-		failures: make(map[string]*pamFailureTracker),
+		cfg:       cfg,
+		alertCh:   alertCh,
+		listener:  listener,
+		failures:  make(map[string]*pamFailureTracker),
+		startedAt: time.Now(),
 	}, nil
 }
+
+// UpstreamProbe returns an UpstreamResult describing whether the PAM
+// module hook is feeding the socket. The probe is cheap (single atomic
+// load + clock read) so it is safe to wire into the components API.
+//
+// Fresh verdict:
+//   - At least one inbound connection within pamUpstreamFreshWindow.
+//   - Or the daemon has been up for less than pamUpstreamGracePeriod
+//     (so a freshly-started daemon is not flagged before the first
+//     real auth happens).
+//
+// LastActivity is the most recent connection time, or the daemon start
+// time when no connection has arrived. Reason explains a !Fresh verdict
+// to operators.
+func (p *PAMListener) UpstreamResult() health.UpstreamResult {
+	last := time.Unix(0, p.lastPeerNanos.Load())
+	if p.lastPeerNanos.Load() == 0 && time.Since(p.startedAt) < pamUpstreamGracePeriod {
+		return health.UpstreamResult{Fresh: true, LastActivity: p.startedAt}
+	}
+	if p.lastPeerNanos.Load() != 0 && time.Since(last) < pamUpstreamFreshWindow {
+		return health.UpstreamResult{Fresh: true, LastActivity: last}
+	}
+	reason := "no PAM module hook feeding the socket; install pam_csm.so and add `session optional pam_csm.so` to the relevant /etc/pam.d/ files"
+	activity := last
+	if p.lastPeerNanos.Load() == 0 {
+		activity = p.startedAt
+	}
+	return health.UpstreamResult{Fresh: false, LastActivity: activity, Reason: reason}
+}
+
+const (
+	// pamUpstreamFreshWindow is how recently a peer connection must have
+	// arrived before the upstream is considered alive. Sized to comfortably
+	// span the longest realistic gap between auth events on a host that
+	// has the PAM module installed.
+	pamUpstreamFreshWindow = 24 * time.Hour
+	// pamUpstreamGracePeriod is the post-start window during which a
+	// silent socket is not yet flagged as deaf.
+	pamUpstreamGracePeriod = 15 * time.Minute
+)
 
 // Run accepts connections and processes PAM events.
 func (p *PAMListener) Run(stopCh <-chan struct{}) {
@@ -96,6 +148,11 @@ func (p *PAMListener) Stop() {
 
 func (p *PAMListener) handleConnection(conn net.Conn) {
 	defer func() { _ = conn.Close() }()
+	// Record the connection moment regardless of peer trust so the
+	// upstream probe can distinguish "PAM hook not installed" (no
+	// connections at all) from "PAM hook present but rejected as
+	// untrusted" (connections happen but never deliver payload).
+	p.lastPeerNanos.Store(time.Now().UnixNano())
 	if !isTrustedPAMPeer(conn) {
 		return
 	}

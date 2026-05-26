@@ -13,10 +13,14 @@ import (
 type stubComponentsProvider struct {
 	statuses map[string]bool
 	changed  map[string]time.Time
+	upstream map[string]health.UpstreamResult
 }
 
 func (s *stubComponentsProvider) WatcherStatuses() map[string]bool       { return s.statuses }
 func (s *stubComponentsProvider) WatcherChangedAt() map[string]time.Time { return s.changed }
+func (s *stubComponentsProvider) WatcherUpstream() map[string]health.UpstreamResult {
+	return s.upstream
+}
 
 // All other health.Provider methods are unused by apiComponents; the
 // handler casts to componentsProvider so we satisfy that surface only.

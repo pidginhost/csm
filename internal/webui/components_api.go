@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"sort"
 	"time"
+
+	"github.com/pidginhost/csm/internal/health"
 )
 
 // componentsProvider is the optional capability surface the daemon
@@ -14,17 +16,27 @@ type componentsProvider interface {
 	WatcherChangedAt() map[string]time.Time
 }
 
+// componentsUpstreamProvider is the optional capability surface the
+// daemon adds when it has per-watcher upstream probes wired. Returning
+// nil / absent for a watcher means "no probe, do not flag deaf".
+type componentsUpstreamProvider interface {
+	WatcherUpstream() map[string]health.UpstreamResult
+}
+
 // componentRow is the JSON shape returned per watcher.
 type componentRow struct {
-	Name           string `json:"name"`
-	Label          string `json:"label"`
-	Status         string `json:"status"` // "ok" | "degraded" | "idle" | "unknown"
-	Attached       bool   `json:"attached"`
-	ChangedAtISO   string `json:"changed_at_iso,omitempty"`
-	ChangedAgo     string `json:"changed_ago,omitempty"`
-	LastEventISO   string `json:"last_event_iso,omitempty"`
-	LastEventAgo   string `json:"last_event_ago,omitempty"`
-	LastEventCheck string `json:"last_event_check,omitempty"`
+	Name            string `json:"name"`
+	Label           string `json:"label"`
+	Status          string `json:"status"` // "ok" | "degraded" | "deaf" | "idle" | "unknown"
+	Attached        bool   `json:"attached"`
+	ChangedAtISO    string `json:"changed_at_iso,omitempty"`
+	ChangedAgo      string `json:"changed_ago,omitempty"`
+	LastEventISO    string `json:"last_event_iso,omitempty"`
+	LastEventAgo    string `json:"last_event_ago,omitempty"`
+	LastEventCheck  string `json:"last_event_check,omitempty"`
+	UpstreamFresh   *bool  `json:"upstream_fresh,omitempty"`
+	UpstreamReason  string `json:"upstream_reason,omitempty"`
+	UpstreamSeenISO string `json:"upstream_seen_iso,omitempty"`
 }
 
 // componentLabels maps the short watcher name to the operator-facing label.
@@ -132,6 +144,10 @@ func (s *Server) apiComponents(w http.ResponseWriter, _ *http.Request) {
 	statuses := cp.WatcherStatuses()
 	changed := cp.WatcherChangedAt()
 	lastEvents := s.lastEventByWatcher(7 * 24 * time.Hour)
+	var upstream map[string]health.UpstreamResult
+	if up, ok := s.provider.(componentsUpstreamProvider); ok {
+		upstream = up.WatcherUpstream()
+	}
 
 	rows := make([]componentRow, 0, len(statuses))
 	for name, attached := range statuses {
@@ -149,7 +165,17 @@ func (s *Server) apiComponents(w http.ResponseWriter, _ *http.Request) {
 			row.LastEventAgo = timeAgo(ev.at)
 			row.LastEventCheck = ev.check
 		}
-		row.Status = componentStatus(attached, lastEvents[name].at)
+		var upstreamFresh *bool
+		if up, ok := upstream[name]; ok {
+			fresh := up.Fresh
+			upstreamFresh = &fresh
+			row.UpstreamFresh = upstreamFresh
+			row.UpstreamReason = up.Reason
+			if !up.LastActivity.IsZero() {
+				row.UpstreamSeenISO = up.LastActivity.Format(time.RFC3339)
+			}
+		}
+		row.Status = componentStatus(attached, lastEvents[name].at, upstreamFresh)
 		rows = append(rows, row)
 	}
 
@@ -215,12 +241,19 @@ func componentLabel(name string) string {
 
 // componentStatus collapses the per-row state into a UI bucket.
 //   - degraded: watcher detached (attempted setup, failed or fell off)
+//   - deaf:     attached but the upstream feeding it has gone silent
+//     (probe registered, returned Fresh=false). Operator action needed
+//     before this watcher will ever produce events again.
 //   - ok:       attached AND has produced at least one event recently
-//   - idle:     attached but no events recorded yet (or none in window)
+//   - idle:     attached, no events in window, and either no probe is
+//     wired or the probe still confirms the upstream is alive
 //   - unknown:  not attached and no record either way (reserved)
-func componentStatus(attached bool, lastEvent time.Time) string {
+func componentStatus(attached bool, lastEvent time.Time, upstreamFresh *bool) string {
 	if !attached {
 		return "degraded"
+	}
+	if upstreamFresh != nil && !*upstreamFresh {
+		return "deaf"
 	}
 	if lastEvent.IsZero() {
 		return "idle"
@@ -232,11 +265,13 @@ func componentStatusRank(status string) int {
 	switch status {
 	case "degraded":
 		return 0
-	case "idle":
+	case "deaf":
 		return 1
-	case "ok":
+	case "idle":
 		return 2
-	default:
+	case "ok":
 		return 3
+	default:
+		return 4
 	}
 }
