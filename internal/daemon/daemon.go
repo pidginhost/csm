@@ -640,6 +640,10 @@ func (d *Daemon) Run() error {
 		newFindings = append(newFindings, permActions...)
 		newFindings = append(newFindings, challengeActions...)
 		newFindings = append(newFindings, blockActions...)
+		// Cross-account correlation runs on the initial batch too, not
+		// just on subsequent ticks. Otherwise three account compromises
+		// landing in the first scan slip past with no synthetic alert.
+		newFindings = expandWithCorrelation(newFindings, time.Now())
 		co := IncidentCorrelator()
 		for _, f := range newFindings {
 			_, _, _ = co.OnFinding(f)
@@ -1081,14 +1085,7 @@ func (d *Daemon) dispatchBatch(findings []alert.Finding) {
 	newFindings = append(newFindings, dbCleanActions...)
 
 	// Correlation
-	extra := checks.CorrelateFindings(newFindings)
-	now := time.Now()
-	for i := range extra {
-		if extra[i].Timestamp.IsZero() {
-			extra[i].Timestamp = now
-		}
-	}
-	newFindings = append(newFindings, extra...)
+	newFindings = expandWithCorrelation(newFindings, time.Now())
 
 	co := IncidentCorrelator()
 	for _, f := range newFindings {
