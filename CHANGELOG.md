@@ -40,7 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Webhook dispatcher now shares a single HTTP transport across calls, so hundreds of alerts per hour reuse keepalive connections instead of paying a fresh TCP/TLS handshake every time.
+- Webhook dispatcher now drains small HTTP responses and shares one transport, so repeated alerts can reuse keepalive connections instead of opening a new TCP/TLS session each time.
 - Access-log tracker eviction now trims least-recently-seen live entries after a unique-IP burst crosses the soft cap, so the map does not wait for stale entries before shrinking.
 - Malware-cleaning matchers are now reused during infected-file remediation without broadening surgical-clean matches, cutting CPU and GC pressure on hosts under sustained webshell load.
 - Account-scanner cap warnings now follow scan alert mode, so manual dry-run checks show the coverage warning without sending daemon alerts.

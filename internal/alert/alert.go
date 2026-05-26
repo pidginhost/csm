@@ -489,5 +489,5 @@ func SendHeartbeat(cfg *config.Config) {
 		fmt.Fprintf(os.Stderr, "Heartbeat failed: %v\n", err)
 		return
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeWebhookResponseBody(resp)
 }

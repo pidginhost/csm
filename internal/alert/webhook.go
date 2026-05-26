@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"time"
@@ -25,6 +26,8 @@ import (
 // pool that would shadow Go's HTTP/2 / proxy plumbing.
 var webhookTransport http.RoundTripper = http.DefaultTransport
 
+const maxWebhookResponseDrainBytes int64 = 512 << 10
+
 // httpClient returns a webhook client with the requested timeout
 // backed by the shared transport, so the keepalive pool is shared
 // across dispatches without losing per-call timeout configurability.
@@ -39,6 +42,16 @@ func SetWebhookTransportForTest(rt http.RoundTripper) (restore func()) {
 	prev := webhookTransport
 	webhookTransport = rt
 	return func() { webhookTransport = prev }
+}
+
+func closeWebhookResponseBody(resp *http.Response) {
+	if resp == nil || resp.Body == nil {
+		return
+	}
+	if resp.ContentLength >= 0 && resp.ContentLength <= maxWebhookResponseDrainBytes {
+		_, _ = io.Copy(io.Discard, resp.Body)
+	}
+	_ = resp.Body.Close()
 }
 
 func SendWebhook(cfg *config.Config, subject, body string) error {
@@ -74,7 +87,7 @@ func SendWebhook(cfg *config.Config, subject, body string) error {
 	if err != nil {
 		return fmt.Errorf("webhook POST: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeWebhookResponseBody(resp)
 
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("webhook returned %d", resp.StatusCode)
@@ -122,7 +135,7 @@ func SendPhpanelWebhookFinding(cfg *config.Config, f Finding) error {
 	if err != nil {
 		return fmt.Errorf("phpanel webhook POST: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeWebhookResponseBody(resp)
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("phpanel webhook HTTP %d", resp.StatusCode)
 	}

@@ -387,6 +387,47 @@ func TestSendWebhookDialFailure(t *testing.T) {
 	}
 }
 
+func TestSendWebhookReusesTransportConnectionAfterResponseDrain(t *testing.T) {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	restore := SetWebhookTransportForTest(tr)
+	t.Cleanup(func() {
+		restore()
+		tr.CloseIdleConnections()
+	})
+
+	var mu sync.Mutex
+	conns := map[net.Conn]struct{}{}
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Length", "2")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	srv.Config.ConnState = func(c net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			mu.Lock()
+			conns[c] = struct{}{}
+			mu.Unlock()
+		}
+	}
+	srv.Start()
+	defer srv.Close()
+
+	cfg := &config.Config{}
+	cfg.Alerts.Webhook.URL = srv.URL
+	for i := 0; i < 2; i++ {
+		if err := SendWebhook(cfg, "subject", "body"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mu.Lock()
+	got := len(conns)
+	mu.Unlock()
+	if got != 1 {
+		t.Fatalf("new TCP connections = %d, want 1", got)
+	}
+}
+
 // --- Dispatch ----------------------------------------------------------
 
 func TestDispatchAllDisabledIsNoOp(t *testing.T) {
