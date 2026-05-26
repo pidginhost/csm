@@ -88,7 +88,7 @@ CSM fails open on hook errors (timeout, non-2xx, malformed body): the block cont
 
 ### Infrastructure IP DNS guard
 
-`firewall.dyndns_hosts` (resolved every 5 min into the `infra_ips` set) protects management hostnames from auto-block. If a hostname stops resolving, the daemon now emits an `infra_ips_unresolvable` Warning finding and keeps the **last known** addresses in the infra set during a grace period (default 10 min) instead of silently dropping protection. The finding auto-clears when resolution recovers.
+Hostnames listed in top-level `infra_ips` or `firewall.infra_ips` are resolved every 5 minutes and their current addresses feed the infra auto-block guard. If a hostname stops resolving, the daemon emits an `infra_ips_unresolvable` Warning finding and keeps the last known addresses protected during the grace period (default 10 min). The finding auto-clears when resolution recovers.
 
 ## Findings that always trigger IP block
 

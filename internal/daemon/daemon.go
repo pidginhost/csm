@@ -2204,7 +2204,7 @@ func (d *Daemon) startFirewall() {
 	// DNS-refreshed into the engine's infra-block guard; otherwise the
 	// hostname entries would only protect operators whose IPs never
 	// move, which defeats the point of listing them by name.
-	infraHosts := infraHostnames(d.cfg.InfraIPs)
+	infraHosts := infraHostnames(mergedFirewall.InfraIPs)
 	dynHosts := append([]string{}, d.cfg.Firewall.DynDNSHosts...)
 	for _, h := range infraHosts {
 		if !containsString(dynHosts, h) {
@@ -2325,7 +2325,7 @@ func dynDNSUnresolvableFinding(host string) alert.Finding {
 		Check:     "infra_ips_unresolvable",
 		Severity:  alert.Warning,
 		Message:   fmt.Sprintf("dynamic firewall host %s has not resolved within grace period", host),
-		Details:   "Verify DNS for the host or remove it from firewall.dyndns_hosts. While unresolvable, the previous allowed IP remains in place and a rotated IP will not be protected.",
+		Details:   "Verify DNS for the host or remove it from infra_ips or firewall.dyndns_hosts. While unresolvable, the previous resolved IP remains protected and a rotated IP will not be protected.",
 		Timestamp: time.Now(),
 	}
 }

@@ -269,7 +269,7 @@ thresholds:
   http_ua_empty_enabled: false
 
 infra_ips:
-  # Add your infrastructure IPs or CIDRs here.
+  # Add your infrastructure IPs, CIDRs, or hostnames here.
   # - "203.0.113.0/24"
 
 web_server:

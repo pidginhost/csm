@@ -111,7 +111,7 @@ firewall:
   conn_limit: 400              # max concurrent connections per IP (0 = disabled)
   smtp_block: false            # restrict outbound SMTP
   log_dropped: true
-  dyndns_hosts:                # resolved every 5 min into the infra set
+  dyndns_hosts:                # resolved every 5 min and whitelisted
     - "monitoring.example.com"
 ```
 
@@ -133,4 +133,4 @@ Auto-block calls go through the firewall engine, but the engine consults two pol
 
 ## Infrastructure IP DNS guard
 
-Hostnames listed in `firewall.dyndns_hosts` are resolved into the `infra_ips` set every 5 minutes so the addresses they currently point at are never auto-blocked. If a hostname stops resolving, the daemon emits an `infra_ips_unresolvable` Warning finding and keeps the **last known** addresses in the infra set during a grace period (default 10 min). This prevents a transient DNS outage from deprotecting the management plane. The finding auto-clears when resolution recovers.
+Hostnames listed in top-level `infra_ips` or `firewall.infra_ips` are resolved every 5 minutes and their current addresses feed the infra auto-block guard. If a hostname stops resolving, the daemon emits an `infra_ips_unresolvable` Warning finding and keeps the last known addresses protected during the grace period (default 10 min). This prevents a transient DNS outage from deprotecting the management plane. The finding auto-clears when resolution recovers.

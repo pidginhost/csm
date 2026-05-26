@@ -169,11 +169,12 @@ bpf_enforcement:
   direct_smtp_egress: false # in-kernel deny for the detection above
   verdict_callback: false   # advisory ALLOW override from auto_response.verdict_callback
 
-# Infrastructure IPs -- traffic from these CIDRs is trusted and never blocked.
+# Infrastructure IPs, CIDRs, or hostnames. These are trusted and never blocked.
 # IMPORTANT: Set these to YOUR management/monitoring network ranges.
 infra_ips: []
   # - "10.0.0.0/8"
   # - "172.16.0.0/12"
+  # - "panel.example.com"
 
 # Web server overrides. Leave empty to use the auto-detected paths for
 # the running platform.

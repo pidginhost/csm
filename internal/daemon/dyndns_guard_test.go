@@ -21,7 +21,7 @@ func TestDynDNSUnresolvableFindingIsWarning(t *testing.T) {
 	if !strings.Contains(f.Message, "panel.example.com") {
 		t.Fatalf("message does not include host: %q", f.Message)
 	}
-	if !strings.Contains(f.Details, "firewall.dyndns_hosts") {
+	if !strings.Contains(f.Details, "infra_ips") || !strings.Contains(f.Details, "firewall.dyndns_hosts") {
 		t.Fatalf("details should point at the configured host list, got %q", f.Details)
 	}
 }

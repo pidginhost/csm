@@ -196,6 +196,23 @@ func TestMergeInfraIPs_OnlyFirewall(t *testing.T) {
 	}
 }
 
+func TestInfraHostnamesIncludesFirewallSpecificAfterMerge(t *testing.T) {
+	merged := mergeInfraIPs(
+		[]string{"198.51.100.10", "panel.example.net"},
+		[]string{"2001:db8::/32", "bastion.example.net"},
+	)
+	got := infraHostnames(merged)
+	want := []string{"panel.example.net", "bastion.example.net"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("index %d: got %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // truncateDaemon
 // ---------------------------------------------------------------------------

@@ -200,8 +200,12 @@ func (d *DynDNSResolver) resolveHost(host string) {
 		oldSet[ip] = true
 	}
 	newSet := make(map[string]bool)
+	var infraIPs []string
 	for _, ip := range newIPs {
 		newSet[ip] = true
+		if parsed := net.ParseIP(ip); parsed != nil {
+			infraIPs = append(infraIPs, parsed.String())
+		}
 	}
 
 	// Remove IPs no longer in DNS (only remove the dyndns source entry)
@@ -238,11 +242,11 @@ func (d *DynDNSResolver) resolveHost(host string) {
 	infraEngine := d.infraEngine
 	d.mu.Unlock()
 
-	// Infra mode: also push the resolved IPs into the engine's infra
-	// guard so blockIPTarget refuses to block them. Skip when no infra
-	// engine is wired (operator did not opt in to that pathway).
+	// Infra mode feeds the block guard from DNS itself, not from the
+	// allow-list mutation result. A transient nftables write failure
+	// should not make a resolved management hostname blockable.
 	if isInfra && infraEngine != nil {
-		infraEngine.UpdateInfraResolved(host, successIPs)
+		infraEngine.UpdateInfraResolved(host, infraIPs)
 	}
 
 	// Successful resolution: clear any guard state.

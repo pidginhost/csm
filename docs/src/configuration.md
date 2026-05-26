@@ -196,7 +196,7 @@ web_server:
   trusted_proxies: []
 
 # --- Infrastructure ---
-infra_ips: []                           # management/monitoring CIDRs - never blocked
+infra_ips: []                           # management IPs/CIDRs/hostnames - never blocked
 
 # --- Mail Logs ---
 # Packaged releases include journald support. Custom builds need
@@ -423,7 +423,7 @@ firewall:
   passive_ftp_start: 49152
   passive_ftp_end: 65534
 
-  # Infra IPs for firewall rules
+  # Infra IPs/CIDRs/hostnames for firewall rules
   infra_ips: []
 
   # Rate limiting

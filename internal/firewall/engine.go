@@ -1981,12 +1981,6 @@ func (e *Engine) resolveSubnetSet(network *net.IPNet) (*nftables.Set, net.IP, ne
 	return nil, nil, nil
 }
 
-// Status returns current firewall statistics.
-//
-// Takes e.mu so the cached state can be read coherently. Before the
-// cache existed loadStateFile was lock-free because every call did its
-// own ReadFile + Unmarshal; now that loadStateFile mutates the shared
-// cache + index, the lock is required.
 // UpdateInfraResolved records the IP set last resolved for an infra
 // hostname. Replaces any previous entry for that host so the resolver's
 // per-tick refresh leaves no stale ghost IPs. Pass an empty ips slice
@@ -2051,6 +2045,12 @@ func (e *Engine) BlockedCount() int {
 	return len(e.loadStateFile().Blocked)
 }
 
+// Status returns current firewall statistics.
+//
+// Takes e.mu so the cached state can be read coherently. Before the
+// cache existed loadStateFile was lock-free because every call did its
+// own ReadFile + Unmarshal; now that loadStateFile mutates the shared
+// cache + index, the lock is required.
 func (e *Engine) Status() map[string]interface{} {
 	e.mu.Lock()
 	defer e.mu.Unlock()
