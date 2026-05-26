@@ -388,17 +388,17 @@ func accessLogIPMethodPath(line string) (ip, method, path string, ok bool) {
 		fields[f] = line[start:i]
 	}
 	method = fields[5]
-	if len(method) > 0 && method[0] == '"' {
+	for len(method) > 0 && method[0] == '"' {
 		method = method[1:]
 	}
-	if l := len(method); l > 0 && method[l-1] == '"' {
-		method = method[:l-1]
+	for len(method) > 0 && method[len(method)-1] == '"' {
+		method = method[:len(method)-1]
 	}
 	return fields[0], method, fields[6], true
 }
 
 func isAccessLogSpace(b byte) bool {
-	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
+	return b == ' ' || b == '\t' || b == '\n' || b == '\v' || b == '\f' || b == '\r'
 }
 
 // isAdminPanelPath returns true for high-confidence non-WP admin panel login

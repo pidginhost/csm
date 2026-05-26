@@ -39,6 +39,22 @@ func TestAccessLogIPMethodPath(t *testing.T) {
 			wantOK:     true,
 		},
 		{
+			name:       "form-feed fields tolerated like strings fields",
+			line:       "10.0.0.2\f-\f-\f[11/Apr/2026:12:00:00\f+0000]\f\"POST\f/form\fHTTP/1.1\"\f200\f1\f\"-\"\f\"x\"",
+			wantIP:     "10.0.0.2",
+			wantMethod: "POST",
+			wantPath:   "/form",
+			wantOK:     true,
+		},
+		{
+			name:       "method quote trimming matches old parser",
+			line:       `10.0.0.3 - - [11/Apr/2026:12:00:00 +0000] """POST"" /quoted HTTP/1.1" 200 1 "-" "x"`,
+			wantIP:     "10.0.0.3",
+			wantMethod: "POST",
+			wantPath:   "/quoted",
+			wantOK:     true,
+		},
+		{
 			name:       "extra leading spaces",
 			line:       `   198.51.100.7 - - [11/Apr/2026:12:00:00 +0000] "DELETE /x HTTP/1.1" 200 1 "-" "y"`,
 			wantIP:     "198.51.100.7",
