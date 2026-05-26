@@ -88,15 +88,12 @@ func rankPathsByMtimeDesc(ctx context.Context, paths []string, maxFiles int) []s
 	return out
 }
 
-// ScanAccount restricts filesystem-based checks to a single account.
-// Protected by scanMu - concurrent scans are serialized to prevent scope bleed.
-var (
-	ScanAccount string
-	scanMu      sync.Mutex
-)
-
 // RunAccountScan runs all applicable checks scoped to a single cPanel account.
 // Returns findings for that account only. Does NOT trigger auto-response actions.
+//
+// Scope is propagated through ctx via ContextWithAccountScope, so parallel
+// scans of different accounts no longer block on a single process-wide
+// mutex and never bleed scope into each other.
 func RunAccountScan(cfg *config.Config, store *state.Store, account string) []alert.Finding {
 	// Verify account exists
 	homeDir := filepath.Join("/home", account)
@@ -108,14 +105,6 @@ func RunAccountScan(cfg *config.Config, store *state.Store, account string) []al
 			Timestamp: time.Now(),
 		}}
 	}
-
-	// Acquire scan lock - only one account scan at a time to prevent scope bleed
-	scanMu.Lock()
-	ScanAccount = account
-	defer func() {
-		ScanAccount = ""
-		scanMu.Unlock()
-	}()
 
 	// Account-scoped checks (filesystem + account-specific)
 	accountChecks := []namedCheck{
@@ -144,6 +133,7 @@ func RunAccountScan(cfg *config.Config, store *state.Store, account string) []al
 	// directory tree, so too many concurrent checks starve each other on
 	// loaded servers with slow I/O.
 	scanCtx, truncations := withAccountScanTruncationCollector(context.Background())
+	scanCtx = ContextWithAccountScope(scanCtx, account)
 	var mu sync.Mutex
 	var findings []alert.Finding
 	var wg sync.WaitGroup
@@ -210,13 +200,11 @@ func RunAccountScan(cfg *config.Config, store *state.Store, account string) []al
 }
 
 // GetScanHomeDirs returns the list of home directories to scan.
-// If ScanAccount is set, returns only that account. Otherwise returns all.
-func GetScanHomeDirs() ([]os.DirEntry, error) {
-	scanMu.Lock()
-	account := ScanAccount
-	scanMu.Unlock()
-	if account != "" {
-		// Return a single synthetic DirEntry for the target account
+// When ctx carries an account scope (via ContextWithAccountScope), only
+// that account is returned. Otherwise every entry under /home is read.
+// Nil ctx is tolerated for legacy callers and treated as host-wide.
+func GetScanHomeDirs(ctx context.Context) ([]os.DirEntry, error) {
+	if account := AccountFromContext(ctx); account != "" {
 		info, err := osFS.Stat(filepath.Join("/home", account))
 		if err != nil {
 			return nil, err

@@ -11,19 +11,12 @@ import (
 	"github.com/pidginhost/csm/internal/state"
 )
 
-// resetScanAccount clears the global ScanAccount (set by RunAccountScan)
-// between tests that exercise GetScanHomeDirs through CheckFoo dispatchers.
+// resetScanAccount is retained as a no-op test helper. Account scope
+// used to live on a package global guarded by scanMu; it now travels via
+// context.Context so per-test reset is unnecessary, but call sites stay
+// for documentation of intent.
 func resetScanAccount(t *testing.T) {
 	t.Helper()
-	scanMu.Lock()
-	prev := ScanAccount
-	ScanAccount = ""
-	scanMu.Unlock()
-	t.Cleanup(func() {
-		scanMu.Lock()
-		ScanAccount = prev
-		scanMu.Unlock()
-	})
 }
 
 // --- CheckPHPContent ---------------------------------------------------

@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -21,7 +22,7 @@ func TestBuildFileIndexGetScanHomeDirsFailsReturnsNil(t *testing.T) {
 	withMockOS(t, &mockOS{
 		readDir: func(string) ([]os.DirEntry, error) { return nil, os.ErrPermission },
 	})
-	got := buildFileIndex(dirMtimeCache{}, nil, false)
+	got := buildFileIndex(context.Background(), dirMtimeCache{}, nil, false)
 	if got != nil {
 		t.Errorf("GetScanHomeDirs error should yield nil, got %d entries", len(got))
 	}
@@ -42,7 +43,7 @@ func TestBuildFileIndexSkipsNonDirEntries(t *testing.T) {
 			return nil, os.ErrNotExist
 		},
 	})
-	got := buildFileIndex(dirMtimeCache{}, nil, false)
+	got := buildFileIndex(context.Background(), dirMtimeCache{}, nil, false)
 	if len(got) != 0 {
 		t.Errorf("regular-file entry should not produce index entries, got %v", got)
 	}
@@ -98,7 +99,7 @@ func TestBuildFileIndexFindsUploadsPHPFile(t *testing.T) {
 		},
 	})
 
-	got := buildFileIndex(dirMtimeCache{}, nil, true)
+	got := buildFileIndex(context.Background(), dirMtimeCache{}, nil, true)
 	found := false
 	for _, e := range got {
 		if filepath.Base(e) == "shell.php" {
@@ -139,7 +140,7 @@ func TestBuildFileIndexSkipsMailEtcLogsSslTmpDirs(t *testing.T) {
 	// Just verify no panic. The exact entries depend on whether
 	// public_html's uploads/.config/etc existed — we didn't mock those so
 	// they all return ErrNotExist and produce no entries.
-	got := buildFileIndex(dirMtimeCache{}, nil, true)
+	got := buildFileIndex(context.Background(), dirMtimeCache{}, nil, true)
 	if len(got) != 0 {
 		t.Errorf("unmocked paths should yield empty index, got %v", got)
 	}

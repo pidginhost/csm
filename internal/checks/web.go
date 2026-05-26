@@ -67,7 +67,7 @@ func CheckHtaccess(ctx context.Context, cfg *config.Config, _ *state.Store) []al
 	}
 
 	// Scan each user's document roots
-	homeDirs, _ := GetScanHomeDirs()
+	homeDirs, _ := GetScanHomeDirs(ctx)
 	for _, homeEntry := range homeDirs {
 		if ctx.Err() != nil {
 			return findings

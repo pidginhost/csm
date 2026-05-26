@@ -1348,17 +1348,7 @@ func TestGetScanHomeDirsDefaultAll(t *testing.T) {
 			return nil, os.ErrNotExist
 		},
 	})
-	scanMu.Lock()
-	old := ScanAccount
-	ScanAccount = ""
-	scanMu.Unlock()
-	defer func() {
-		scanMu.Lock()
-		ScanAccount = old
-		scanMu.Unlock()
-	}()
-
-	entries, err := GetScanHomeDirs()
+	entries, err := GetScanHomeDirs(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1377,17 +1367,8 @@ func TestGetScanHomeDirsSingleAccount(t *testing.T) {
 		},
 	})
 
-	scanMu.Lock()
-	old := ScanAccount
-	ScanAccount = "alice"
-	scanMu.Unlock()
-	defer func() {
-		scanMu.Lock()
-		ScanAccount = old
-		scanMu.Unlock()
-	}()
-
-	entries, err := GetScanHomeDirs()
+	ctx := ContextWithAccountScope(context.Background(), "alice")
+	entries, err := GetScanHomeDirs(ctx)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1406,17 +1387,8 @@ func TestGetScanHomeDirsSingleAccountNotFound(t *testing.T) {
 		},
 	})
 
-	scanMu.Lock()
-	old := ScanAccount
-	ScanAccount = "nonexistent"
-	scanMu.Unlock()
-	defer func() {
-		scanMu.Lock()
-		ScanAccount = old
-		scanMu.Unlock()
-	}()
-
-	_, err := GetScanHomeDirs()
+	ctx := ContextWithAccountScope(context.Background(), "nonexistent")
+	_, err := GetScanHomeDirs(ctx)
 	if err == nil {
 		t.Error("nonexistent account should return error")
 	}

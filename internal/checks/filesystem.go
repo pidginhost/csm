@@ -139,7 +139,7 @@ func CheckFilesystem(ctx context.Context, cfg *config.Config, _ *state.Store) []
 	if ctx.Err() != nil {
 		return findings
 	}
-	homeDirs, _ := GetScanHomeDirs()
+	homeDirs, _ := GetScanHomeDirs(ctx)
 	for _, entry := range homeDirs {
 		if ctx.Err() != nil {
 			return findings
@@ -209,7 +209,7 @@ func CheckWebshells(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 	}
 
 	// Scan each user's public_html and addon domains
-	homeDirs, _ := GetScanHomeDirs()
+	homeDirs, _ := GetScanHomeDirs(ctx)
 	for _, homeEntry := range homeDirs {
 		if ctx.Err() != nil {
 			return findings

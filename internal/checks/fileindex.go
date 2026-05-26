@@ -91,7 +91,7 @@ func CheckFileIndex(ctx context.Context, cfg *config.Config, _ *state.Store) []a
 	prevByDir := groupEntriesByUploadDir(previousEntries)
 
 	// Build current index
-	currentEntries := buildFileIndex(dirCache, prevByDir, forceFullScan)
+	currentEntries := buildFileIndex(ctx, dirCache, prevByDir, forceFullScan)
 
 	// Save updated dir cache
 	saveDirCache(indexDir, dirCache)
@@ -289,10 +289,10 @@ func groupEntriesByUploadDir(entries []string) map[string][]string {
 // Skips directories whose mtime hasn't changed - carries forward
 // their entries from the previous index instead.
 // If forceFullScan is true, all directories are re-scanned regardless of mtime.
-func buildFileIndex(dirCache dirMtimeCache, prevByDir map[string][]string, forceFullScan bool) []string {
+func buildFileIndex(ctx context.Context, dirCache dirMtimeCache, prevByDir map[string][]string, forceFullScan bool) []string {
 	var entries []string
 
-	homeDirs, err := GetScanHomeDirs()
+	homeDirs, err := GetScanHomeDirs(ctx)
 	if err != nil {
 		return nil
 	}

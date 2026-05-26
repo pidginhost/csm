@@ -65,16 +65,6 @@ func TestRunAccountScanMissingHomeReturnsWarning(t *testing.T) {
 // --- GetScanHomeDirs ----------------------------------------------------
 
 func TestGetScanHomeDirsReturnsAllWhenNoScanAccount(t *testing.T) {
-	scanMu.Lock()
-	prev := ScanAccount
-	ScanAccount = ""
-	scanMu.Unlock()
-	t.Cleanup(func() {
-		scanMu.Lock()
-		ScanAccount = prev
-		scanMu.Unlock()
-	})
-
 	called := false
 	withMockOS(t, &mockOS{
 		readDir: func(name string) ([]os.DirEntry, error) {
@@ -88,7 +78,7 @@ func TestGetScanHomeDirsReturnsAllWhenNoScanAccount(t *testing.T) {
 			return nil, os.ErrNotExist
 		},
 	})
-	got, err := GetScanHomeDirs()
+	got, err := GetScanHomeDirs(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,16 +91,6 @@ func TestGetScanHomeDirsReturnsAllWhenNoScanAccount(t *testing.T) {
 }
 
 func TestGetScanHomeDirsRestrictsWhenScanAccountSet(t *testing.T) {
-	scanMu.Lock()
-	prev := ScanAccount
-	ScanAccount = "alice"
-	scanMu.Unlock()
-	t.Cleanup(func() {
-		scanMu.Lock()
-		ScanAccount = prev
-		scanMu.Unlock()
-	})
-
 	withMockOS(t, &mockOS{
 		stat: func(name string) (os.FileInfo, error) {
 			if name == "/home/alice" {
@@ -119,7 +99,8 @@ func TestGetScanHomeDirsRestrictsWhenScanAccountSet(t *testing.T) {
 			return nil, os.ErrNotExist
 		},
 	})
-	got, err := GetScanHomeDirs()
+	ctx := ContextWithAccountScope(context.Background(), "alice")
+	got, err := GetScanHomeDirs(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,20 +110,11 @@ func TestGetScanHomeDirsRestrictsWhenScanAccountSet(t *testing.T) {
 }
 
 func TestGetScanHomeDirsScanAccountStatErrorPropagates(t *testing.T) {
-	scanMu.Lock()
-	prev := ScanAccount
-	ScanAccount = "ghost"
-	scanMu.Unlock()
-	t.Cleanup(func() {
-		scanMu.Lock()
-		ScanAccount = prev
-		scanMu.Unlock()
-	})
-
 	withMockOS(t, &mockOS{
 		stat: func(string) (os.FileInfo, error) { return nil, errors.New("boom") },
 	})
-	_, err := GetScanHomeDirs()
+	ctx := ContextWithAccountScope(context.Background(), "ghost")
+	_, err := GetScanHomeDirs(ctx)
 	if err == nil {
 		t.Error("expected error to propagate from Stat")
 	}

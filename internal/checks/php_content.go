@@ -25,7 +25,7 @@ const phpContentReadSize = 32768 // Read first 32KB for analysis
 func CheckPHPContent(ctx context.Context, cfg *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	homeDirs, err := GetScanHomeDirs()
+	homeDirs, err := GetScanHomeDirs(ctx)
 	if err != nil {
 		return nil
 	}
