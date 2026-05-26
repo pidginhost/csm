@@ -3,6 +3,7 @@
 package firewall
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -1524,6 +1525,34 @@ func (e *Engine) IsBlocked(ip string) bool {
 	e.ensureStateCacheLocked()
 	_, ok := e.blockedIPIndex[ip]
 	return ok
+}
+
+// IsBlockedLive queries the live nftables set, not the in-memory cache
+// built from state.json. The cache can drift from the kernel when nft
+// auto-expires entries faster than CSM rewrites state.json (or when an
+// out-of-band flush happens). Reconcile loops should consult this method
+// so the local tracker shrinks in lock-step with the kernel; per-packet
+// hot paths should stay on IsBlocked since this issues a netlink RTT.
+//
+// Returns false when the IP is malformed, the netlink query fails, or
+// the entry is genuinely absent.
+func (e *Engine) IsBlockedLive(ip string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	set, key, err := e.resolveIPSet(ip, e.setBlocked, e.setBlocked6)
+	if err != nil || set == nil {
+		return false
+	}
+	elements, err := e.conn.GetSetElements(set)
+	if err != nil {
+		return false
+	}
+	for _, el := range elements {
+		if bytes.Equal(el.Key, key) {
+			return true
+		}
+	}
+	return false
 }
 
 // AllowIP adds an IP to the allowed set and persists it.

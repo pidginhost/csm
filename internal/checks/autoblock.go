@@ -41,6 +41,17 @@ type outcomeBlocker interface {
 	BlockIPOutcome(ip, reason string, timeout time.Duration) (firewall.BlockOutcome, error)
 }
 
+// liveBlocker is satisfied by engines that can query the live kernel
+// firewall state, not just an in-memory cache built from state.json.
+// The tracker reconcile loop prefers this because the cache can drift
+// when nft auto-expires entries faster than CSM rewrites state.json,
+// or when an out-of-band flush dropped entries the cache still claims
+// are live. Falls back to IPBlocker.IsBlocked when the engine cannot
+// query the kernel.
+type liveBlocker interface {
+	IsBlockedLive(ip string) bool
+}
+
 type subnetBlocker interface {
 	BlockSubnet(cidr string, reason string, timeout time.Duration) error
 }
@@ -93,11 +104,14 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 
 	// Prune IPs that the firewall engine no longer has blocked.
 	// The engine handles expiry natively via nftables timeouts -
-	// we just sync our state to match.
+	// we just sync our state to match. Use the live nftables query
+	// when the engine supports it so the tracker stays in lock-step
+	// with the kernel; the in-memory cache (IsBlocked) can lag when
+	// the kernel expires entries before state.json is rewritten.
 	var stillBlocked []blockedIP
 	for _, b := range state.IPs {
 		if fwBlocker != nil {
-			if !fwBlocker.IsBlocked(b.IP) {
+			if !isBlockedLiveOrCached(fwBlocker, b.IP) {
 				// Engine expired this block - clean up our state
 				fmt.Fprintf(os.Stderr, "[%s] AUTO-UNBLOCK: %s removed (engine expired)\n", time.Now().Format("2006-01-02 15:04:05"), b.IP)
 				continue
@@ -391,6 +405,18 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	saveBlockState(cfg.StatePath, state)
 
 	return actions
+}
+
+// isBlockedLiveOrCached returns the live nftables status when the
+// blocker supports it, otherwise falls back to the cached IsBlocked
+// view. The reconcile loop relies on this to prune blocked_ips.json
+// entries the kernel has already expired even when state.json has not
+// caught up yet.
+func isBlockedLiveOrCached(b IPBlocker, ip string) bool {
+	if lb, ok := b.(liveBlocker); ok {
+		return lb.IsBlockedLive(ip)
+	}
+	return b.IsBlocked(ip)
 }
 
 // callBlockIP dispatches to the outcome-reporting interface when the

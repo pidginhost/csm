@@ -184,6 +184,57 @@ func TestAutoBlockIPs_LiveOutcome_MutatesState(t *testing.T) {
 	}
 }
 
+// liveOnlyBlocker implements IPBlocker plus the optional liveBlocker
+// shape. The reconcile loop should prefer IsBlockedLive over IsBlocked,
+// so a tracker entry whose live counterpart has expired must be pruned
+// even when the cached IsBlocked view still claims it is blocked.
+type liveOnlyBlocker struct {
+	cachedSays bool
+	liveSays   bool
+	liveCalls  int
+}
+
+func (b *liveOnlyBlocker) BlockIP(ip, reason string, timeout time.Duration) error { return nil }
+func (b *liveOnlyBlocker) UnblockIP(ip string) error                              { return nil }
+func (b *liveOnlyBlocker) IsBlocked(ip string) bool                               { return b.cachedSays }
+func (b *liveOnlyBlocker) IsBlockedLive(ip string) bool {
+	b.liveCalls++
+	return b.liveSays
+}
+
+// TestAutoBlockIPs_ReconcilePrefersLiveStatus regression-guards F10:
+// blocked_ips.json must shrink to match the live kernel set, not the
+// possibly-stale state.json cache the engine exposes via IsBlocked.
+func TestAutoBlockIPs_ReconcilePrefersLiveStatus(t *testing.T) {
+	cfg := newAutoBlockTestConfig(t)
+	cfg.AutoResponse.Enabled = false // keep block path inert; only test the reconcile prune
+	cfg.AutoResponse.BlockIPs = false
+
+	// Seed a tracker entry directly on disk.
+	seed := &blockState{
+		IPs: []blockedIP{{IP: "192.0.2.55", Reason: "test", BlockedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)}},
+	}
+	saveBlockState(cfg.StatePath, seed)
+
+	// Cached view still says "blocked"; live view says "expired".
+	blocker := &liveOnlyBlocker{cachedSays: true, liveSays: false}
+	swapBlocker(t, blocker)
+
+	// Re-enable the reconcile-only branch by flipping back on for the call.
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+
+	_ = AutoBlockIPs(cfg, nil)
+
+	state := loadBlockState(cfg.StatePath)
+	if len(state.IPs) != 0 {
+		t.Errorf("expected tracker pruned by live kernel state, still holds %+v", state.IPs)
+	}
+	if blocker.liveCalls == 0 {
+		t.Error("reconcile loop should have consulted IsBlockedLive at least once")
+	}
+}
+
 // TestAutoBlockIPs_LegacyBlockerStillSupported keeps the back-compat path
 // honest: a blocker that only implements IPBlocker (no BlockIPOutcome)
 // should behave as before (Live semantics, state mutated).
