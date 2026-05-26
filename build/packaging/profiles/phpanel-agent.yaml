@@ -88,13 +88,15 @@ reputation:
 #
 # Verdict callback: phpanel can observe each block decision before it's
 # applied. Disabled by default; the agent flips on after the panel
-# endpoint is deployed. Token resolves from CSM_VERDICT_HMAC at call time.
+# endpoint verifies requests and signs responses. Token resolves from
+# CSM_VERDICT_HMAC at call time.
 auto_response:
   enabled: true
   block_ips: true
   dry_run: true
   verdict_callback:
-    enabled: false                       # operator/agent flips on after panel verdict endpoint is deployed
+    enabled: false                       # operator/agent flips on after response signing is deployed
     # url: https://panel.example.com/api/csm/verdict
     hmac_secret_env: CSM_VERDICT_HMAC
+    require_response_signature: true
     timeout_sec: 2

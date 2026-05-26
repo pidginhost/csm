@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- Verdict-callback responses are now HMAC-signed. CSM rejects unsigned or forged `X-CSM-Signature` values whenever a secret is configured, preventing a MITM or compromised panel from downgrading every block decision to "allow". Operators mid-rollout can set `auto_response.verdict_callback.require_response_signature: false` to temporarily accept unsigned responses; the default is `true`.
+- Verdict-callback responses are now HMAC-signed. CSM rejects unsigned or forged replies whenever a secret is configured, preventing on-path downgrades to "allow"; operators can temporarily accept unsigned replies during staged panel rollouts.
 
 ### Fixed
 

@@ -223,6 +223,7 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "verdict_callback.url", Type: "string", Label: "Verdict callback URL"},
 			{YAMLPath: "verdict_callback.hmac_secret", Type: "string", Label: "Verdict callback HMAC secret", Secret: true},
 			{YAMLPath: "verdict_callback.hmac_secret_env", Type: "string", Label: "Verdict callback HMAC secret env"},
+			{YAMLPath: "verdict_callback.require_response_signature", Type: "bool", Label: "Require signed verdict response"},
 			{YAMLPath: "verdict_callback.timeout_sec", Type: "int", Label: "Verdict callback timeout (sec)", Min: int64p(1), Max: int64p(30)},
 		},
 	},

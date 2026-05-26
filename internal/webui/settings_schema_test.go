@@ -122,6 +122,17 @@ func TestSecretFieldsAreMarkedSecret(t *testing.T) {
 	}
 }
 
+func TestAutoResponseSchemaIncludesVerdictResponseSignatureToggle(t *testing.T) {
+	s, _ := LookupSettingsSection("auto_response")
+	f := findSchemaField(s, "verdict_callback.require_response_signature")
+	if f == nil {
+		t.Fatal("verdict response signature toggle missing")
+	}
+	if f.Type != "bool" {
+		t.Fatalf("response signature toggle type = %q, want bool", f.Type)
+	}
+}
+
 func TestAlertsWebhookTypeIncludesPhpanel(t *testing.T) {
 	s, _ := LookupSettingsSection("alerts")
 	f := findSchemaField(s, "webhook.type")

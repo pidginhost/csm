@@ -954,6 +954,24 @@ auto_response:
 	}
 }
 
+func TestVerdictCallback_AcceptsResponseSignatureOptOut(t *testing.T) {
+	cfg, err := LoadBytes([]byte(`
+auto_response:
+  verdict_callback:
+    enabled: true
+    url: https://panel.example.com/api/csm/verdict
+    hmac_secret_env: CSM_VERDICT_HMAC
+    require_response_signature: false
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cfg.AutoResponse.VerdictCallback.RequireResponseSignature
+	if got == nil || *got {
+		t.Fatalf("RequireResponseSignature = %v, want explicit false", got)
+	}
+}
+
 func TestVerdictCallback_RejectsEnabledWithoutURL(t *testing.T) {
 	_, err := LoadBytes([]byte(`
 auto_response:

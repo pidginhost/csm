@@ -243,6 +243,7 @@ auto_response:
     url: ""                             # POST target for verdict requests
     hmac_secret: ""                     # signing secret, or use hmac_secret_env
     hmac_secret_env: ""                 # env var read at call time
+    require_response_signature: true    # reject unsigned callback replies
     timeout_sec: 2                      # callback request timeout
 
   # PHP-relay auto-freeze. Off by default; only kicks in on cPanel hosts

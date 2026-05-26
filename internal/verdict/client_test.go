@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -29,7 +30,7 @@ func TestClient_PostsSignedRequest(t *testing.T) {
 			Verdict:  "block",
 			TenantID: "tenant-99",
 		})
-		w.Header().Set("X-CSM-Signature", signResponse(secret, body))
+		w.Header().Set("X-CSM-Signature", signPayload(secret, body))
 		_, _ = w.Write(body)
 	}))
 	defer srv.Close()
@@ -98,7 +99,7 @@ func TestClient_ResolvesSecretFromEnv(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sigHeader = r.Header.Get("X-CSM-Signature")
 		body, _ := json.Marshal(Response{Verdict: "block"})
-		w.Header().Set("X-CSM-Signature", signResponse("from-env", body))
+		w.Header().Set("X-CSM-Signature", signPayload("from-env", body))
 		_, _ = w.Write(body)
 	}))
 	defer srv.Close()
@@ -110,6 +111,30 @@ func TestClient_ResolvesSecretFromEnv(t *testing.T) {
 	}
 	if sigHeader == "" {
 		t.Fatal("expected signature header from env-resolved secret")
+	}
+}
+
+func TestClient_UsesSameResolvedSecretForRequestAndResponse(t *testing.T) {
+	const envVar = "TEST_VERDICT_HMAC_ROTATE"
+	t.Setenv(envVar, "first-secret")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqBody, _ := io.ReadAll(r.Body)
+		if got, want := r.Header.Get("X-CSM-Signature"), signPayload("first-secret", reqBody); got != want {
+			t.Fatalf("request signature = %q, want %q", got, want)
+		}
+		body, _ := json.Marshal(Response{Verdict: "block"})
+		if err := os.Setenv(envVar, "rotated-secret"); err != nil {
+			t.Fatalf("rotate env: %v", err)
+		}
+		w.Header().Set("X-CSM-Signature", signPayload("first-secret", body))
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	c := New(Config{URL: srv.URL, HMACSecretEnv: envVar, Timeout: time.Second})
+	if _, err := c.Ask(context.Background(), Request{IP: "1.2.3.4"}); err != nil {
+		t.Fatalf("response verification must use request secret, got %v", err)
 	}
 }
 
@@ -183,9 +208,7 @@ func TestClient_RejectsTrailingJSON(t *testing.T) {
 	}
 }
 
-// signResponse mirrors the X-CSM-Signature scheme over the response body.
-// Tests reuse it to fake a well-signed panel reply.
-func signResponse(secret string, body []byte) string {
+func signPayload(secret string, body []byte) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(body)
 	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
@@ -197,7 +220,7 @@ func TestClient_AcceptsSignedResponse(t *testing.T) {
 	secret := "panel-secret"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		body, _ := json.Marshal(Response{Verdict: "allow", TenantID: "t-9"})
-		w.Header().Set("X-CSM-Signature", signResponse(secret, body))
+		w.Header().Set("X-CSM-Signature", signPayload(secret, body))
 		_, _ = w.Write(body)
 	}))
 	defer srv.Close()
@@ -213,7 +236,7 @@ func TestClient_AcceptsSignedResponse(t *testing.T) {
 }
 
 // TestClient_RejectsUnsignedResponseWhenSecretSet: when an HMAC secret is
-// configured, an unsigned response must be rejected to prevent MITM
+// configured, an unsigned response must be rejected to prevent on-path
 // downgrade from block to allow.
 func TestClient_RejectsUnsignedResponseWhenSecretSet(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -236,8 +259,8 @@ func TestClient_RejectsUnsignedResponseWhenSecretSet(t *testing.T) {
 func TestClient_RejectsForgedResponseSignature(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		body, _ := json.Marshal(Response{Verdict: "allow"})
-		// Sign with the WRONG secret, simulating MITM.
-		w.Header().Set("X-CSM-Signature", signResponse("not-the-real-secret", body))
+		// Sign with the wrong secret, simulating an on-path attacker.
+		w.Header().Set("X-CSM-Signature", signPayload("not-the-real-secret", body))
 		_, _ = w.Write(body)
 	}))
 	defer srv.Close()
@@ -271,7 +294,8 @@ func TestClient_OptOutSkipsResponseSignatureCheck(t *testing.T) {
 
 // TestClient_NoSecretSkipsResponseSignatureCheck: when no HMAC secret is
 // configured at all there is no key to verify against; the client cannot
-// distinguish panel from MITM and proceeds (matches request-side semantics).
+// distinguish panel from an on-path attacker and proceeds (matches
+// request-side semantics).
 func TestClient_NoSecretSkipsResponseSignatureCheck(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(Response{Verdict: "block"})

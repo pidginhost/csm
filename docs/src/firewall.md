@@ -121,7 +121,13 @@ Full firewall reference: [Configuration - Firewall](configuration.md#full-refere
 
 Auto-block calls go through the firewall engine, but the engine consults two policy hooks first:
 
-1. **`auto_response.verdict_callback`** - when enabled, the engine POSTs a signed JSON request to the panel after local validation and infra-IP safety checks. The panel can downgrade to `allow` (audit-only), attach `tenant_id` for downstream correlation, or add a note. CSM fails open on hook errors. Wire contract: [`docs/verdict-callback-contract.md`](../verdict-callback-contract.md).
+1. **`auto_response.verdict_callback`** - when enabled, the engine
+   POSTs a signed JSON request to the panel after local validation and
+   infra-IP safety checks. When a secret is configured, CSM rejects
+   unsigned callback replies by default. The panel can downgrade to
+   `allow` (audit-only), attach `tenant_id` for downstream correlation,
+   or add a note. CSM fails open on hook errors. Wire contract:
+   [`docs/verdict-callback-contract.md`](../verdict-callback-contract.md).
 
 2. **`auto_response.dry_run`** - when true (or absent; safety default), `BlockIP()` records the intended block to bbolt and returns success without touching nftables. Manual `csm firewall ...` operator commands bypass via `BlockIPForce` and always apply. Verify with `csm firewall status` after policy changes; "Recently Blocked" timestamps newer than the last restart confirm live mode. See [Auto-response - Dry-run safety default](auto-response.md#dry-run-safety-default).
 

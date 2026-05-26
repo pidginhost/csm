@@ -11,7 +11,6 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -32,12 +31,11 @@ const verdictMaxResponseBytes = 64 << 10 // 64 KB - verdict response is small JS
 // RequireResponseSignature controls whether the panel must sign its
 // response body with the same HMAC scheme used on the request
 // (X-CSM-Signature header). Default is true: when a secret is configured,
-// CSM rejects unsigned or forged responses to prevent a MITM (or a
-// compromised panel) from silently downgrading a block to "allow". Set
-// the pointer to a false value only during phpanel-side rollouts that
-// have not yet implemented response signing. When no HMAC secret is
-// configured at all, response signing is skipped because there is no key
-// to verify against.
+// CSM rejects unsigned or forged responses to prevent an on-path attacker
+// from silently downgrading a block to "allow". Set the pointer to a
+// false value only during phpanel-side rollouts that have not yet
+// implemented response signing. When no HMAC secret is configured at all,
+// response signing is skipped because there is no key to verify against.
 type Config struct {
 	URL                      string
 	HMACSecret               string
@@ -105,7 +103,7 @@ func (c *Client) resolveSecret() string {
 // verifyResponseSignature checks that header carries a well-formed
 // X-CSM-Signature header (sha256=<hex>) over body, computed with secret.
 // Returns a descriptive error on missing, malformed, or mismatched values
-// using crypto/subtle for constant-time comparison.
+// using a constant-time comparison.
 func verifyResponseSignature(secret string, body []byte, header string) error {
 	if header == "" {
 		return fmt.Errorf("verdict callback response missing signature header (X-CSM-Signature)")
@@ -122,7 +120,7 @@ func verifyResponseSignature(secret string, body []byte, header string) error {
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(body)
 	want := mac.Sum(nil)
-	if subtle.ConstantTimeCompare(got, want) != 1 {
+	if !hmac.Equal(got, want) {
 		return fmt.Errorf("verdict callback response signature mismatch")
 	}
 	return nil
@@ -151,13 +149,14 @@ func (c *Client) Ask(ctx context.Context, req Request) (Response, error) {
 	if err != nil {
 		return Response{}, err
 	}
+	secret := c.resolveSecret()
 	r, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, bytes.NewReader(body))
 	if err != nil {
 		return Response{}, err
 	}
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Accept", "application/json")
-	if secret := c.resolveSecret(); secret != "" {
+	if secret != "" {
 		mac := hmac.New(sha256.New, []byte(secret))
 		mac.Write(body)
 		r.Header.Set("X-CSM-Signature", "sha256="+hex.EncodeToString(mac.Sum(nil)))
@@ -179,12 +178,11 @@ func (c *Client) Ask(ctx context.Context, req Request) (Response, error) {
 	if int64(len(data)) > verdictMaxResponseBytes {
 		return Response{}, fmt.Errorf("verdict callback response exceeds %d bytes", verdictMaxResponseBytes)
 	}
-	if secret := c.resolveSecret(); secret != "" && c.cfg.requireResponseSig() {
+	if secret != "" && c.cfg.requireResponseSig() {
 		// Verify the panel signed its response with the same secret used
-		// on the request. Without this check a network attacker or a
-		// compromised panel could downgrade block to allow on every call.
-		// Fail-closed: an error here surfaces to the engine, which falls
-		// open into the default block.
+		// on the request. Without this check a network attacker could
+		// downgrade block to allow on every call. Rejecting the reply keeps
+		// the engine on its default block path.
 		if err := verifyResponseSignature(secret, data, resp.Header.Get("X-CSM-Signature")); err != nil {
 			return Response{}, err
 		}

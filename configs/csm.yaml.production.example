@@ -199,6 +199,7 @@ auto_response:
     url: ""
     hmac_secret: ""
     hmac_secret_env: ""
+    require_response_signature: true
     timeout_sec: 2
 
 firewall:
