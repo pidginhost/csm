@@ -46,6 +46,49 @@ func TestWriteFileAtomic_OverwritesExisting(t *testing.T) {
 	if string(got) != "NEW" {
 		t.Errorf("content = %q, want NEW", got)
 	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if info.Mode().Perm() != 0640 {
+		t.Errorf("mode = %04o, want 0640", info.Mode().Perm())
+	}
+}
+
+func TestWriteFileAtomic_FollowsFinalSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.conf")
+	link := filepath.Join(dir, "service.conf")
+	if err := os.WriteFile(target, []byte("OLD"), 0600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	if err := writeFileAtomic(link, []byte("NEW"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	linkInfo, err := os.Lstat(link)
+	if err != nil {
+		t.Fatalf("lstat link: %v", err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("link was replaced with mode %s", linkInfo.Mode())
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if string(got) != "NEW" {
+		t.Errorf("target content = %q, want NEW", got)
+	}
+	targetInfo, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("stat target: %v", err)
+	}
+	if targetInfo.Mode().Perm() != 0600 {
+		t.Errorf("target mode = %04o, want 0600", targetInfo.Mode().Perm())
+	}
 }
 
 // TestWriteFileAtomic_DoesNotLeakTempOnRenameSuccess asserts that no
@@ -70,19 +113,16 @@ func TestWriteFileAtomic_DoesNotLeakTempOnRenameSuccess(t *testing.T) {
 	}
 }
 
-func TestWriteFileAtomic_FailsOnUnwritableDir(t *testing.T) {
-	// A directory the process cannot create files in must surface the
-	// failure, not silently no-op.
+func TestWriteFileAtomic_FailsWhenParentIsNotDirectory(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0555); err != nil {
-		t.Fatalf("chmod ro: %v", err)
+	parent := filepath.Join(dir, "not-a-dir")
+	if err := os.WriteFile(parent, []byte("x"), 0644); err != nil {
+		t.Fatalf("seed parent: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0755) })
-	path := filepath.Join(dir, "wont-write")
+	path := filepath.Join(parent, "wont-write")
 	if err := writeFileAtomic(path, []byte("x"), 0644); err == nil {
-		t.Fatal("expected error writing to read-only dir, got nil")
+		t.Fatal("expected error writing under a non-directory parent, got nil")
 	}
-	// No partial target file should exist.
 	if _, err := os.Stat(path); err == nil {
 		t.Error("target file appeared despite write failure")
 	}

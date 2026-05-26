@@ -177,6 +177,30 @@ func TestPamEnsureLinesAddsNewlineBeforeDirectives(t *testing.T) {
 	}
 }
 
+func TestPamEnsureLinesPreservesExistingMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sshd")
+	writePAMFile(t, path, "#%PAM-1.0\nauth required pam_unix.so\n")
+	if err := os.Chmod(path, 0600); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+
+	changed, err := pamEnsureLines(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected missing directives to be added")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("mode = %04o, want 0600", info.Mode().Perm())
+	}
+}
+
 func TestPamRemoveLinesStripsManagedDirectives(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sshd")
@@ -235,6 +259,33 @@ func TestPamRemoveLinesKeepsOperatorAuthoredDirectives(t *testing.T) {
 	}
 	if strings.Contains(out, pamMarker) {
 		t.Fatalf("managed directive still present:\n%s", out)
+	}
+}
+
+func TestPamRemoveLinesPreservesExistingMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sshd")
+	body := "#%PAM-1.0\n" +
+		"auth     optional   pam_csm.so # managed-by-csm\n" +
+		"auth required pam_unix.so\n"
+	writePAMFile(t, path, body)
+	if err := os.Chmod(path, 0600); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+
+	removed, err := pamRemoveLines(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1", removed)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("mode = %04o, want 0600", info.Mode().Perm())
 	}
 }
 

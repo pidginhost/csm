@@ -73,7 +73,7 @@ func checkYaraEntryTrust(path string, info os.FileInfo) error {
 	if !ok {
 		return nil
 	}
-	selfUID := uint32(os.Geteuid())
+	selfUID := uint32(os.Geteuid()) // #nosec G115 -- Linux uid_t is uint32; os.Geteuid returns a non-negative process uid.
 	if sys.Uid != 0 && sys.Uid != selfUID {
 		return fmt.Errorf("rules path %s owner uid=%d is neither root nor process uid=%d; refusing to load untrusted rules", path, sys.Uid, selfUID)
 	}

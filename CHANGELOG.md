@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- PAM service files are edited atomically, so a concurrent sshd or login no longer reads a truncated file mid-write during install or uninstall.
+- PAM service files are edited atomically without changing existing permissions or final symlinks, so a concurrent sshd or login no longer reads a truncated file mid-write during install or uninstall.
 - YARA rule directory and every rule file are now perm-checked before compilation. CSM refuses to load rules a third party could overwrite, so an attacker cannot disable detection by dropping a no-op rule.
 - Email attachment scanning now treats a YARA-X backend loss or scan error as an incomplete scan. In tempfail mode, CSM defers the message instead of delivering it as scanned clean.
 - Hostnames in top-level or firewall `infra_ips` are DNS-refreshed into the firewall guard, so management hosts declared by name stay protected as addresses rotate.
