@@ -308,6 +308,7 @@ func NewFileMonitor(cfg *config.Config, alertCh chan<- alert.Finding) (*FileMoni
 	}
 
 	fm.wpCache = wpcheck.NewCache(cfg.StatePath)
+	fm.wpCache.SetStopCh(fm.stopCh)
 
 	return fm, nil
 }

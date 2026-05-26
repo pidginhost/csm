@@ -297,7 +297,7 @@ func (c *Cache) fetchPluginWithRetry(slug, version string, attempt int) {
 	delay := backoffs[attempt]
 	fmt.Fprintf(os.Stderr, "wpcheck: plugin fetch failed for %s %s, retry in %v: %v\n",
 		slug, version, delay, err)
-	time.AfterFunc(delay, func() {
+	c.scheduleRetry(delay, func() {
 		c.fetchPluginWithRetry(slug, version, attempt+1)
 	})
 }

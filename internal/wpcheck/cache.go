@@ -28,6 +28,13 @@ type Cache struct {
 	// retry cycle on every cache miss. The TTL ensures wp.org adding
 	// a plugin later still gets picked up.
 	pluginNotFoundUntil map[string]time.Time
+
+	// stopCh, when non-nil and closed, signals pending retry timers to
+	// drop their scheduled fetch instead of firing. Wired by the daemon
+	// to the FileMonitor stopCh so checksum-retry chains do not survive
+	// daemon shutdown.
+	stopMu sync.RWMutex
+	stopCh <-chan struct{}
 }
 
 type rootEntry struct {
@@ -172,7 +179,7 @@ func (c *Cache) fetchWithRetry(version, locale string, attempt int) {
 		}
 		fmt.Fprintf(os.Stderr, "wpcheck: fetch failed for WP %s (%s), retry in %v: %v\n",
 			version, locale, delay, err)
-		time.AfterFunc(delay, func() {
+		c.scheduleRetry(delay, func() {
 			c.fetchWithRetry(version, locale, attempt+1)
 		})
 		return
