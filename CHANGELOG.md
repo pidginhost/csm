@@ -40,7 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Access-log tracker map now triggers eager eviction once the live entry count crosses a soft cap, so a unique-IP burst can no longer grow the map into the hundreds of thousands of entries between the 5-minute prune ticks.
+- Access-log tracker eviction now trims least-recently-seen live entries after a unique-IP burst crosses the soft cap, so the map does not wait for stale entries before shrinking.
 - Malware-cleaning matchers are now reused during infected-file remediation without broadening surgical-clean matches, cutting CPU and GC pressure on hosts under sustained webshell load.
 - Account-scanner cap warnings now follow scan alert mode, so manual dry-run checks show the coverage warning without sending daemon alerts.
 - BPF-backed live monitors now emit a `bpf_unavailable` finding when the kernel cannot run the requested program, and the finding says whether CSM fell back or lost live coverage.

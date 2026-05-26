@@ -13,6 +13,14 @@ import (
 
 func resetAccessLogTrackerState() {
 	accessLogTrackers = sync.Map{}
+	accessLogTrackerCount.Store(0)
+	for {
+		select {
+		case <-accessLogEagerEvictTrip:
+		default:
+			return
+		}
+	}
 }
 
 func resetPurgeTrackerState() {
@@ -478,4 +486,48 @@ func TestAccessLog_HotPathSkipsAfterAlert(t *testing.T) {
 	if finalLen != postAlertLen {
 		t.Errorf("wpLoginTimes grew during alerted burst: postAlert=%d, after 1000 more POSTs=%d (want unchanged — alerted flag should short-circuit append)", postAlertLen, finalLen)
 	}
+}
+
+func TestAccessLogEviction_EnforcesCapForFreshUniqueIPs(t *testing.T) {
+	resetAccessLogTrackerState()
+	defer resetAccessLogTrackerState()
+
+	now := time.Date(2026, 5, 26, 12, 0, 0, 0, time.UTC)
+	const cap int64 = 10
+	for i := 1; i <= 15; i++ {
+		seen := now.Add(time.Duration(i) * time.Second)
+		ip := fmt.Sprintf("203.0.113.%d", i)
+		accessLogTrackers.Store(ip, &accessLogTracker{
+			lastSeen:     seen,
+			generation:   1,
+			wpLoginTimes: []time.Time{seen},
+		})
+		accessLogTrackerCount.Add(1)
+	}
+
+	evictAccessLogStateWithCap(now.Add(20*time.Second), cap)
+
+	got := countAccessLogTrackersForTest()
+	want := int(cap * accessLogEvictTargetPercent / 100)
+	if got != want {
+		t.Fatalf("tracked entries after cap eviction = %d, want %d", got, want)
+	}
+	if count := accessLogTrackerCount.Load(); count != int64(got) {
+		t.Fatalf("accessLogTrackerCount = %d, want actual map count %d", count, got)
+	}
+	if _, ok := accessLogTrackers.Load("203.0.113.1"); ok {
+		t.Fatalf("oldest fresh tracker should be evicted when cap is exceeded")
+	}
+	if _, ok := accessLogTrackers.Load("203.0.113.15"); !ok {
+		t.Fatalf("newest fresh tracker should be retained when cap is exceeded")
+	}
+}
+
+func countAccessLogTrackersForTest() int {
+	var count int
+	accessLogTrackers.Range(func(_, _ any) bool {
+		count++
+		return true
+	})
+	return count
 }

@@ -854,8 +854,8 @@ func TestEvictEmailRateWindows_ResetsAlertedOnEmpty(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEvictAccessLogState_ResetsAlertFlagsAfterCooldown(t *testing.T) {
-	accessLogTrackers = sync.Map{}
-	defer func() { accessLogTrackers = sync.Map{} }()
+	resetAccessLogTrackerState()
+	defer resetAccessLogTrackerState()
 
 	// Create a tracker that was alerted and has remaining timestamps.
 	now := time.Now()
@@ -883,8 +883,8 @@ func TestEvictAccessLogState_ResetsAlertFlagsAfterCooldown(t *testing.T) {
 }
 
 func TestEvictAccessLogState_DoesNotResetAlertFlagBeforeCooldown(t *testing.T) {
-	accessLogTrackers = sync.Map{}
-	defer func() { accessLogTrackers = sync.Map{} }()
+	resetAccessLogTrackerState()
+	defer resetAccessLogTrackerState()
 
 	now := time.Now()
 	tracker := &accessLogTracker{

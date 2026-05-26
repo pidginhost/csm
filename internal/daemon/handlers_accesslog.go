@@ -3,6 +3,7 @@ package daemon
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -49,6 +50,8 @@ type accessLogTracker struct {
 	xmlrpcAlerted     bool
 	adminPanelAlerted bool
 	lastSeen          time.Time
+	generation        uint64
+	evicting          bool
 }
 
 // accessLogTrackers holds per-IP state. sync.Map for concurrent handler access.
@@ -59,9 +62,7 @@ var accessLogTrackers sync.Map // key: IP string → value: *accessLogTracker
 // counter is the canonical workaround. Used to trigger eager
 // eviction during a DDoS burst, where the 5-min timer alone would
 // let the map grow into the hundreds of thousands of unique IPs
-// before the next prune. Counter drifts slightly under contention
-// (multiple goroutines may race the same LoadOrStore inserted-flag
-// branch) but only over-counts; the next eviction pass corrects it.
+// before the next prune.
 var (
 	accessLogTrackerCount   atomic.Int64
 	accessLogEagerEvictTrip = make(chan struct{}, 1)
@@ -72,7 +73,17 @@ var (
 // 5-min ticker. Picked to be well below typical memory limits even
 // at the worst per-tracker size (~256 bytes) so a 100k entry
 // burst stays under 32 MB.
-const accessLogEvictSoftCap = 50000
+const (
+	accessLogEvictSoftCap       int64 = 50000
+	accessLogEvictTargetPercent int64 = 95
+)
+
+type accessLogEvictionCandidate struct {
+	key        string
+	tracker    *accessLogTracker
+	lastSeen   time.Time
+	generation uint64
+}
 
 // discoverAccessLogPath returns the first access log path that exists,
 // consulting the platform detector for OS/web-server specific candidates.
@@ -124,21 +135,11 @@ func parseAccessLogBruteForce(line string, cfg *config.Config) []alert.Finding {
 	}
 
 	now := time.Now()
-	val, loaded := accessLogTrackers.LoadOrStore(ip, &accessLogTracker{})
-	tracker := val.(*accessLogTracker)
-	if !loaded {
-		if accessLogTrackerCount.Add(1) > accessLogEvictSoftCap {
-			select {
-			case accessLogEagerEvictTrip <- struct{}{}:
-			default:
-			}
-		}
-	}
-
-	tracker.mu.Lock()
+	tracker := loadAccessLogTracker(ip, now)
 	defer tracker.mu.Unlock()
 
 	tracker.lastSeen = now
+	tracker.generation++
 	cutoff := now.Add(-accessLogWindow)
 
 	var results []alert.Finding
@@ -205,6 +206,33 @@ func parseAccessLogBruteForce(line string, cfg *config.Config) []alert.Finding {
 	return results
 }
 
+func loadAccessLogTracker(ip string, now time.Time) *accessLogTracker {
+	for {
+		val, loaded := accessLogTrackers.LoadOrStore(ip, &accessLogTracker{lastSeen: now})
+		tracker := val.(*accessLogTracker)
+		if !loaded && accessLogTrackerCount.Add(1) > accessLogEvictSoftCap {
+			signalAccessLogEagerEviction()
+		}
+
+		tracker.mu.Lock()
+		if !tracker.evicting {
+			return tracker
+		}
+		tracker.mu.Unlock()
+
+		if accessLogTrackers.CompareAndDelete(ip, tracker) {
+			decrementAccessLogTrackerCount()
+		}
+	}
+}
+
+func signalAccessLogEagerEviction() {
+	select {
+	case accessLogEagerEvictTrip <- struct{}{}:
+	default:
+	}
+}
+
 // pruneAndAppend removes entries older than cutoff and appends now.
 func pruneAndAppend(times []time.Time, cutoff, now time.Time) []time.Time {
 	recent := times[:0]
@@ -241,12 +269,22 @@ func StartAccessLogEviction(stopCh <-chan struct{}) {
 }
 
 func evictAccessLogState(now time.Time) {
+	evictAccessLogStateWithCap(now, accessLogEvictSoftCap)
+}
+
+func evictAccessLogStateWithCap(now time.Time, cap int64) {
 	cutoff := now.Add(-accessLogWindow)
 	cooldownCutoff := now.Add(-accessLogBlockCooldown)
+	candidates := make([]accessLogEvictionCandidate, 0)
 
 	accessLogTrackers.Range(func(key, value any) bool {
+		ip := key.(string)
 		tracker := value.(*accessLogTracker)
 		tracker.mu.Lock()
+		if tracker.evicting {
+			tracker.mu.Unlock()
+			return true
+		}
 
 		// Prune old timestamps.
 		tracker.wpLoginTimes = pruneSlice(tracker.wpLoginTimes, cutoff)
@@ -268,14 +306,68 @@ func evictAccessLogState(now time.Time) {
 		empty := len(tracker.wpLoginTimes) == 0 && len(tracker.xmlrpcTimes) == 0 &&
 			len(tracker.adminPanelTimes) == 0 && tracker.lastSeen.Before(cooldownCutoff)
 
-		tracker.mu.Unlock()
-
 		if empty {
-			accessLogTrackers.Delete(key)
-			accessLogTrackerCount.Add(-1)
+			deleteAccessLogTrackerLocked(ip, tracker)
+		} else {
+			candidates = append(candidates, accessLogEvictionCandidate{
+				key:        ip,
+				tracker:    tracker,
+				lastSeen:   tracker.lastSeen,
+				generation: tracker.generation,
+			})
 		}
+		tracker.mu.Unlock()
 		return true
 	})
+
+	enforceAccessLogTrackerCap(candidates, cap)
+}
+
+func enforceAccessLogTrackerCap(candidates []accessLogEvictionCandidate, cap int64) {
+	if cap <= 0 || accessLogTrackerCount.Load() <= cap {
+		return
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].lastSeen.Before(candidates[j].lastSeen)
+	})
+
+	target := cap * accessLogEvictTargetPercent / 100
+	for _, candidate := range candidates {
+		if accessLogTrackerCount.Load() <= target {
+			return
+		}
+
+		tracker := candidate.tracker
+		tracker.mu.Lock()
+		if !tracker.evicting &&
+			tracker.generation == candidate.generation &&
+			tracker.lastSeen.Equal(candidate.lastSeen) {
+			deleteAccessLogTrackerLocked(candidate.key, tracker)
+		}
+		tracker.mu.Unlock()
+	}
+}
+
+func deleteAccessLogTrackerLocked(key string, tracker *accessLogTracker) bool {
+	tracker.evicting = true
+	if accessLogTrackers.CompareAndDelete(key, tracker) {
+		decrementAccessLogTrackerCount()
+		return true
+	}
+	return false
+}
+
+func decrementAccessLogTrackerCount() {
+	for {
+		current := accessLogTrackerCount.Load()
+		if current <= 0 {
+			return
+		}
+		if accessLogTrackerCount.CompareAndSwap(current, current-1) {
+			return
+		}
+	}
 }
 
 // isAdminPanelPath returns true for high-confidence non-WP admin panel login

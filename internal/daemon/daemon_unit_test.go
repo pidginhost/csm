@@ -798,8 +798,8 @@ func TestParseModSecLogLineDeduped_NonModSecReturnsNil(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestParseAccessLogBruteForce_InfraIPCIDRSkipped(t *testing.T) {
-	accessLogTrackers = sync.Map{}
-	defer func() { accessLogTrackers = sync.Map{} }()
+	resetAccessLogTrackerState()
+	defer resetAccessLogTrackerState()
 
 	cfg := &config.Config{InfraIPs: []string{"10.0.0.0/8"}}
 	line := `10.1.2.3 - - [12/Apr/2026:10:00:00 +0000] "POST /wp-login.php HTTP/1.1" 200 1234`
@@ -811,8 +811,8 @@ func TestParseAccessLogBruteForce_InfraIPCIDRSkipped(t *testing.T) {
 }
 
 func TestParseAccessLogBruteForce_IPv6LoopbackSkipped(t *testing.T) {
-	accessLogTrackers = sync.Map{}
-	defer func() { accessLogTrackers = sync.Map{} }()
+	resetAccessLogTrackerState()
+	defer resetAccessLogTrackerState()
 
 	cfg := &config.Config{}
 	line := `::1 - - [12/Apr/2026:10:00:00 +0000] "POST /wp-login.php HTTP/1.1" 200 1234`

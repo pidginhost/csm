@@ -1010,8 +1010,8 @@ func TestExtractPureFTPDClientIP_EmptyAddr(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEvictAccessLogState_DeletesStaleEntries(t *testing.T) {
-	accessLogTrackers = sync.Map{}
-	defer func() { accessLogTrackers = sync.Map{} }()
+	resetAccessLogTrackerState()
+	defer resetAccessLogTrackerState()
 
 	now := time.Now()
 	stale := &accessLogTracker{
@@ -1027,8 +1027,8 @@ func TestEvictAccessLogState_DeletesStaleEntries(t *testing.T) {
 }
 
 func TestEvictAccessLogState_KeepsActive(t *testing.T) {
-	accessLogTrackers = sync.Map{}
-	defer func() { accessLogTrackers = sync.Map{} }()
+	resetAccessLogTrackerState()
+	defer resetAccessLogTrackerState()
 
 	now := time.Now()
 	active := &accessLogTracker{
@@ -1297,8 +1297,8 @@ func TestParseEximLogLine_SuspiciousSMTPPasswordSubject(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestParseAccessLogBruteForce_NonPOSTRejected(t *testing.T) {
-	accessLogTrackers = sync.Map{}
-	defer func() { accessLogTrackers = sync.Map{} }()
+	resetAccessLogTrackerState()
+	defer resetAccessLogTrackerState()
 
 	cfg := &config.Config{}
 	line := `198.51.100.5 - - [12/Apr/2026:10:00:00 +0000] "GET /wp-login.php HTTP/1.1" 200 1234`
@@ -1309,8 +1309,8 @@ func TestParseAccessLogBruteForce_NonPOSTRejected(t *testing.T) {
 }
 
 func TestParseAccessLogBruteForce_ShortLine(t *testing.T) {
-	accessLogTrackers = sync.Map{}
-	defer func() { accessLogTrackers = sync.Map{} }()
+	resetAccessLogTrackerState()
+	defer resetAccessLogTrackerState()
 
 	cfg := &config.Config{}
 	line := `198.51.100.5 POST short`
@@ -1321,8 +1321,8 @@ func TestParseAccessLogBruteForce_ShortLine(t *testing.T) {
 }
 
 func TestParseAccessLogBruteForce_NonTargetPath(t *testing.T) {
-	accessLogTrackers = sync.Map{}
-	defer func() { accessLogTrackers = sync.Map{} }()
+	resetAccessLogTrackerState()
+	defer resetAccessLogTrackerState()
 
 	cfg := &config.Config{}
 	line := `198.51.100.5 - - [12/Apr/2026:10:00:00 +0000] "POST /contact-form HTTP/1.1" 200 1234`
@@ -1333,8 +1333,8 @@ func TestParseAccessLogBruteForce_NonTargetPath(t *testing.T) {
 }
 
 func TestParseAccessLogBruteForce_LoopbackSkipped(t *testing.T) {
-	accessLogTrackers = sync.Map{}
-	defer func() { accessLogTrackers = sync.Map{} }()
+	resetAccessLogTrackerState()
+	defer resetAccessLogTrackerState()
 
 	cfg := &config.Config{}
 	line := `127.0.0.1 - - [12/Apr/2026:10:00:00 +0000] "POST /wp-login.php HTTP/1.1" 200 1234`
@@ -1345,8 +1345,8 @@ func TestParseAccessLogBruteForce_LoopbackSkipped(t *testing.T) {
 }
 
 func TestParseAccessLogBruteForce_XMLRPCThreshold(t *testing.T) {
-	accessLogTrackers = sync.Map{}
-	defer func() { accessLogTrackers = sync.Map{} }()
+	resetAccessLogTrackerState()
+	defer resetAccessLogTrackerState()
 
 	cfg := &config.Config{}
 	for i := 0; i < accessLogXMLRPCThreshold; i++ {
@@ -1368,8 +1368,8 @@ func TestParseAccessLogBruteForce_XMLRPCThreshold(t *testing.T) {
 }
 
 func TestParseAccessLogBruteForce_WPLoginThreshold(t *testing.T) {
-	accessLogTrackers = sync.Map{}
-	defer func() { accessLogTrackers = sync.Map{} }()
+	resetAccessLogTrackerState()
+	defer resetAccessLogTrackerState()
 
 	cfg := &config.Config{}
 	for i := 0; i < accessLogWPLoginThreshold; i++ {
