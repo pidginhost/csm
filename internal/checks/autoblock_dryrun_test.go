@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -191,15 +192,20 @@ func TestAutoBlockIPs_LiveOutcome_MutatesState(t *testing.T) {
 type liveOnlyBlocker struct {
 	cachedSays bool
 	liveSays   bool
+	liveErr    error
 	liveCalls  int
+	blocks     int
 }
 
-func (b *liveOnlyBlocker) BlockIP(ip, reason string, timeout time.Duration) error { return nil }
-func (b *liveOnlyBlocker) UnblockIP(ip string) error                              { return nil }
-func (b *liveOnlyBlocker) IsBlocked(ip string) bool                               { return b.cachedSays }
-func (b *liveOnlyBlocker) IsBlockedLive(ip string) bool {
+func (b *liveOnlyBlocker) BlockIP(ip, reason string, timeout time.Duration) error {
+	b.blocks++
+	return nil
+}
+func (b *liveOnlyBlocker) UnblockIP(ip string) error { return nil }
+func (b *liveOnlyBlocker) IsBlocked(ip string) bool  { return b.cachedSays }
+func (b *liveOnlyBlocker) IsBlockedLive(ip string) (bool, error) {
 	b.liveCalls++
-	return b.liveSays
+	return b.liveSays, b.liveErr
 }
 
 // TestAutoBlockIPs_ReconcilePrefersLiveStatus regression-guards F10:
@@ -232,6 +238,60 @@ func TestAutoBlockIPs_ReconcilePrefersLiveStatus(t *testing.T) {
 	}
 	if blocker.liveCalls == 0 {
 		t.Error("reconcile loop should have consulted IsBlockedLive at least once")
+	}
+}
+
+func TestAutoBlockIPs_ReconcileFallsBackToCachedStatusOnLiveError(t *testing.T) {
+	cfg := newAutoBlockTestConfig(t)
+
+	seed := &blockState{
+		IPs: []blockedIP{{IP: "192.0.2.56", Reason: "test", BlockedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)}},
+	}
+	saveBlockState(cfg.StatePath, seed)
+
+	blocker := &liveOnlyBlocker{
+		cachedSays: true,
+		liveErr:    errors.New("netlink unavailable"),
+	}
+	swapBlocker(t, blocker)
+
+	_ = AutoBlockIPs(cfg, nil)
+
+	state := loadBlockState(cfg.StatePath)
+	if len(state.IPs) != 1 || state.IPs[0].IP != "192.0.2.56" {
+		t.Fatalf("live lookup error should keep cached tracker entry, got %+v", state.IPs)
+	}
+	if blocker.liveCalls == 0 {
+		t.Fatal("reconcile loop should have attempted the live lookup")
+	}
+}
+
+func TestAutoBlockIPs_ReblocksWhenLiveSetLostCachedBlock(t *testing.T) {
+	cfg := newAutoBlockTestConfig(t)
+
+	seed := &blockState{
+		IPs: []blockedIP{{IP: "192.0.2.57", Reason: "old", BlockedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)}},
+	}
+	saveBlockState(cfg.StatePath, seed)
+
+	blocker := &liveOnlyBlocker{cachedSays: true, liveSays: false}
+	swapBlocker(t, blocker)
+
+	actions := AutoBlockIPs(cfg, []alert.Finding{{
+		Check:     "wp_login_bruteforce",
+		Message:   "WordPress brute force from 192.0.2.57",
+		Timestamp: time.Now(),
+	}})
+
+	if blocker.blocks != 1 {
+		t.Fatalf("cached stale block should be re-applied once, block calls = %d", blocker.blocks)
+	}
+	state := loadBlockState(cfg.StatePath)
+	if len(state.IPs) != 1 || state.IPs[0].IP != "192.0.2.57" {
+		t.Fatalf("expected tracker to contain re-blocked IP, got %+v", state.IPs)
+	}
+	if len(actions) != 1 || !strings.HasPrefix(actions[0].Message, "AUTO-BLOCK:") {
+		t.Fatalf("expected one live auto-block action, got %+v", actions)
 	}
 }
 

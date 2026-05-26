@@ -94,6 +94,8 @@ type Engine struct {
 	blockedIPIndex   map[string]struct{}
 	allowedIPIndex   map[string]struct{}
 	blockedCIDRIndex map[string]struct{}
+
+	liveBlockLookup func(set *nftables.Set, key []byte) (bool, error)
 }
 
 type stateFileCacheKey struct {
@@ -1455,14 +1457,22 @@ func (e *Engine) blockIPTarget(ip string, timeout time.Duration, skipExisting bo
 	}
 
 	st := e.loadStateFile()
+	cachedBlockMissingLive := false
 	if skipExisting && firewallStateHasBlocked(st, ip) {
-		return targetSet, key, true, nil
+		liveBlocked, liveErr := e.isBlockedLiveLocked(ip)
+		if liveErr != nil || liveBlocked {
+			return targetSet, key, true, nil
+		}
+		cachedBlockMissingLive = true
 	}
 
 	// Enforce deny IP limits
 	if e.cfg.DenyIPLimit > 0 || e.cfg.DenyTempIPLimit > 0 {
 		perm, temp := 0, 0
 		for _, b := range st.Blocked {
+			if cachedBlockMissingLive && b.IP == ip {
+				continue
+			}
 			if b.ExpiresAt.IsZero() {
 				perm++
 			} else {
@@ -1527,32 +1537,57 @@ func (e *Engine) IsBlocked(ip string) bool {
 	return ok
 }
 
-// IsBlockedLive queries the live nftables set, not the in-memory cache
-// built from state.json. The cache can drift from the kernel when nft
-// auto-expires entries faster than CSM rewrites state.json (or when an
-// out-of-band flush happens). Reconcile loops should consult this method
-// so the local tracker shrinks in lock-step with the kernel; per-packet
-// hot paths should stay on IsBlocked since this issues a netlink RTT.
+// IsBlockedLive queries the live nftables set, not the in-memory cache built
+// from state.json. The cache can drift from the kernel when nft auto-expires
+// entries faster than CSM rewrites state.json, or when an out-of-band flush
+// happens. Reconcile loops should consult this method so the local tracker
+// shrinks in lock-step with the kernel; per-packet hot paths should stay on
+// IsBlocked since this issues a netlink RTT.
 //
-// Returns false when the IP is malformed, the netlink query fails, or
-// the entry is genuinely absent.
-func (e *Engine) IsBlockedLive(ip string) bool {
+// Malformed IPs are reported as absent. Netlink and engine-initialization
+// failures are returned so callers can keep their cached answer instead of
+// deleting local state on a transient lookup failure.
+func (e *Engine) IsBlockedLive(ip string) (bool, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	set, key, err := e.resolveIPSet(ip, e.setBlocked, e.setBlocked6)
-	if err != nil || set == nil {
-		return false
+	return e.isBlockedLiveLocked(ip)
+}
+
+func (e *Engine) isBlockedLiveLocked(ip string) (bool, error) {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return false, nil
+	}
+	var (
+		set *nftables.Set
+		key []byte
+	)
+	if ip4 := parsed.To4(); ip4 != nil {
+		set = e.setBlocked
+		key = ip4
+	} else {
+		set = e.setBlocked6
+		key = parsed.To16()
+	}
+	if set == nil {
+		return false, fmt.Errorf("blocked set unavailable for %s", ip)
+	}
+	if e.liveBlockLookup != nil {
+		return e.liveBlockLookup(set, key)
+	}
+	if e.conn == nil {
+		return false, fmt.Errorf("nftables connection unavailable")
 	}
 	elements, err := e.conn.GetSetElements(set)
 	if err != nil {
-		return false
+		return false, fmt.Errorf("listing blocked set: %w", err)
 	}
 	for _, el := range elements {
 		if bytes.Equal(el.Key, key) {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // AllowIP adds an IP to the allowed set and persists it.

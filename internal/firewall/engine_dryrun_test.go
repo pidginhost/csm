@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/nftables"
 )
 
 func TestBlockIP_DryRunDoesNotCallRecorder_WhenDryRunOff(t *testing.T) {
@@ -147,6 +149,33 @@ func TestBlockIPAlreadyBlockedNoopsBeforeNftablesAndAudit(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "audit.jsonl")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("duplicate block wrote audit log or unexpected stat error: %v", err)
+	}
+}
+
+func TestBlockIPOutcome_CachedBlockMissingLiveReachesDryRun(t *testing.T) {
+	dir := t.TempDir()
+	e := &Engine{
+		cfg:           &FirewallConfig{Enabled: true},
+		statePath:     dir,
+		setBlocked:    &nftables.Set{Name: "blocked_ips"},
+		dryRunEnabled: func() bool { return true },
+		liveBlockLookup: func(set *nftables.Set, key []byte) (bool, error) {
+			return false, nil
+		},
+	}
+	e.saveBlockedEntry(BlockedEntry{
+		IP:        "192.0.2.44",
+		Reason:    "stale cache",
+		BlockedAt: time.Now().Add(-time.Minute),
+		ExpiresAt: time.Now().Add(time.Hour),
+	})
+
+	outcome, err := e.BlockIPOutcome("192.0.2.44", "repeat finding", time.Hour)
+	if err != nil {
+		t.Fatalf("BlockIPOutcome returned error: %v", err)
+	}
+	if outcome != BlockOutcomeDryRun {
+		t.Fatalf("cached entry missing from live set should not return noop, got %q", outcome)
 	}
 }
 

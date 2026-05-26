@@ -41,15 +41,14 @@ type outcomeBlocker interface {
 	BlockIPOutcome(ip, reason string, timeout time.Duration) (firewall.BlockOutcome, error)
 }
 
-// liveBlocker is satisfied by engines that can query the live kernel
-// firewall state, not just an in-memory cache built from state.json.
-// The tracker reconcile loop prefers this because the cache can drift
-// when nft auto-expires entries faster than CSM rewrites state.json,
-// or when an out-of-band flush dropped entries the cache still claims
-// are live. Falls back to IPBlocker.IsBlocked when the engine cannot
-// query the kernel.
+// liveBlocker is satisfied by engines that can query the live kernel firewall
+// state, not just an in-memory cache built from state.json. The tracker
+// reconcile loop prefers this because the cache can drift when nft
+// auto-expires entries faster than CSM rewrites state.json, or when an
+// out-of-band flush dropped entries the cache still claims are live. Falls
+// back to IPBlocker.IsBlocked when the live query is unavailable.
 type liveBlocker interface {
-	IsBlockedLive(ip string) bool
+	IsBlockedLive(ip string) (bool, error)
 }
 
 type subnetBlocker interface {
@@ -240,8 +239,8 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			continue
 		}
 
-		// Don't re-block already blocked IPs
-		if isAlreadyBlocked(state, ip) || (fwBlocker != nil && fwBlocker.IsBlocked(ip)) {
+		// Don't re-block already blocked IPs.
+		if isAlreadyBlocked(state, ip) || (fwBlocker != nil && isBlockedLiveOrCached(fwBlocker, ip)) {
 			continue
 		}
 
@@ -411,10 +410,14 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 // blocker supports it, otherwise falls back to the cached IsBlocked
 // view. The reconcile loop relies on this to prune blocked_ips.json
 // entries the kernel has already expired even when state.json has not
-// caught up yet.
+// caught up yet. Live lookup errors keep the cached answer so transient
+// netlink failures do not erase the local tracker.
 func isBlockedLiveOrCached(b IPBlocker, ip string) bool {
 	if lb, ok := b.(liveBlocker); ok {
-		return lb.IsBlockedLive(ip)
+		blocked, err := lb.IsBlockedLive(ip)
+		if err == nil {
+			return blocked
+		}
 	}
 	return b.IsBlocked(ip)
 }

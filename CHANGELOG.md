@@ -31,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Auto-block tracker (`blocked_ips.json`) now reconciles against the live nftables set instead of the in-memory state cache. Entries the kernel has already expired no longer linger in the tracker until state.json is rewritten, so `csm firewall status` and the auto-unblock log stay in lock-step with the kernel.
+- Auto-block reconciliation now checks the live nftables set before pruning its tracker, falls back to cached firewall state when the live query is unavailable, and re-blocks repeat findings when a cached entry is no longer present in the kernel.
 - C2, backdoor, and suspicious PHP execution findings now carry stable actor keys so repeat events group into one incident; PHP process grouping no longer splits on rotating PIDs or falls back to root when UID data is missing.
 - Initial baseline dispatch now keeps scan-produced cross-account correlation alerts from being duplicated before notification.
 - Auto-block no longer records a real block, bumps the hourly counter, writes the permanent threat database, or emits a Critical "AUTO-BLOCK" finding when `auto_response.dry_run` intercepted the call or the verdict callback returned "allow". Dry-run intercepts now surface as a Warning-level "AUTO-BLOCK [dry-run]" notice so operators can still see what would have happened.
