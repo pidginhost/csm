@@ -2290,10 +2290,11 @@ func (d *Daemon) askVerdictCallback(ctx context.Context, ip, reason string) (str
 	}
 	vcCfg := cfg.AutoResponse.VerdictCallback
 	vc := verdict.New(verdict.Config{
-		URL:           vcCfg.URL,
-		HMACSecret:    vcCfg.HMACSecret,
-		HMACSecretEnv: vcCfg.HMACSecretEnv,
-		Timeout:       time.Duration(vcCfg.TimeoutSec) * time.Second,
+		URL:                      vcCfg.URL,
+		HMACSecret:               vcCfg.HMACSecret,
+		HMACSecretEnv:            vcCfg.HMACSecretEnv,
+		RequireResponseSignature: vcCfg.RequireResponseSignature,
+		Timeout:                  time.Duration(vcCfg.TimeoutSec) * time.Second,
 	})
 	resp, err := vc.Ask(ctx, verdict.Request{
 		IP:       ip,

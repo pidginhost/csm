@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `/api/v1/capabilities` now advertises `webui.prefs.v1` and `webui.undo.v1` so phpanel can feature-detect the new operator preferences, saved views, and bulk-undo endpoints without sniffing the daemon version.
 - Packaged and standalone installs now use the same sandboxed systemd unit while preserving required host access for CSM monitors and remediation paths.
 
+### Security
+
+- Verdict-callback responses are now HMAC-signed. CSM rejects unsigned or forged `X-CSM-Signature` values whenever a secret is configured, preventing a MITM or compromised panel from downgrading every block decision to "allow". Operators mid-rollout can set `auto_response.verdict_callback.require_response_signature: false` to temporarily accept unsigned responses; the default is `true`.
+
 ### Fixed
 
 - Auto-block no longer records a real block, bumps the hourly counter, writes the permanent threat database, or emits a Critical "AUTO-BLOCK" finding when `auto_response.dry_run` intercepted the call or the verdict callback returned "allow". Dry-run intercepts now surface as a Warning-level "AUTO-BLOCK [dry-run]" notice so operators can still see what would have happened.

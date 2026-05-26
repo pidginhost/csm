@@ -31,8 +31,22 @@ the env var is non-empty, it wins over the static `hmac_secret` field.
 This lets operators rotate the secret via env without restarting the
 daemon.
 
-The server SHOULD verify the signature with constant-time compare and
+The server MUST verify the signature with constant-time compare and
 reject unsigned or invalid requests with 401.
+
+### Response signing (required by default)
+
+The server MUST sign its response body with the same HMAC-SHA256 scheme
+(same secret, same `X-CSM-Signature: sha256=<hex>` header). CSM verifies
+the response signature with constant-time compare before parsing the
+verdict; an unsigned or forged response is rejected and CSM falls back
+to its default block. Without this check a MITM (or a compromised
+panel) could downgrade every "block" decision to "allow".
+
+If the server cannot sign responses yet (e.g. mid-rollout), operators
+can set `auto_response.verdict_callback.require_response_signature:
+false` in `csm.yaml` to temporarily accept unsigned responses. The
+default is `true` and there is no other way to disable the check.
 
 ## Request body
 
@@ -66,10 +80,11 @@ reject unsigned or invalid requests with 401.
 
 ## Failure semantics
 
-- Network error / timeout / non-200 HTTP response: CSM logs a warning and **proceeds with the default block**. The hook is fail-open.
+- Network error / timeout / non-200 HTTP response: CSM logs a warning and **proceeds with the default block**. The hook is fail-open at the transport level.
 - 200 OK with `verdict: "allow"`: CSM does **not** modify nftables; logs the override to stderr.
 - 200 OK with `verdict: "block"` or omitted: standard block path runs (which still honors `auto_response.dry_run` if set).
 - 200 OK with unknown `verdict` string: rejected; treated as fail-open (default block).
+- 200 OK with missing or invalid `X-CSM-Signature` (and `require_response_signature` not turned off): rejected as forged; treated as fail-open (default block). Operators see the rejection in stderr; recurring rejections indicate either a panel-side rollout gap or an active MITM.
 
 ## Limits
 
@@ -92,9 +107,13 @@ http.HandleFunc("/api/csm/verdict", func(w http.ResponseWriter, r *http.Request)
     if isPanelInfra(req.IP) {            // never block our own infra
         verdict = "allow"
     }
-    json.NewEncoder(w).Encode(map[string]string{
+    respBody, _ := json.Marshal(map[string]string{
         "verdict": verdict, "tenant_id": tenant,
     })
+    mac := hmac.New(sha256.New, []byte(secret))
+    mac.Write(respBody)
+    w.Header().Set("X-CSM-Signature", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+    _, _ = w.Write(respBody)
 })
 ```
 

@@ -25,10 +25,12 @@ func TestClient_PostsSignedRequest(t *testing.T) {
 		atomic.AddInt32(&hits, 1)
 		captured, _ = io.ReadAll(r.Body)
 		sigHeader = r.Header.Get("X-CSM-Signature")
-		_ = json.NewEncoder(w).Encode(Response{
+		body, _ := json.Marshal(Response{
 			Verdict:  "block",
 			TenantID: "tenant-99",
 		})
+		w.Header().Set("X-CSM-Signature", signResponse(secret, body))
+		_, _ = w.Write(body)
 	}))
 	defer srv.Close()
 
@@ -95,7 +97,9 @@ func TestClient_ResolvesSecretFromEnv(t *testing.T) {
 	var sigHeader string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sigHeader = r.Header.Get("X-CSM-Signature")
-		_ = json.NewEncoder(w).Encode(Response{Verdict: "block"})
+		body, _ := json.Marshal(Response{Verdict: "block"})
+		w.Header().Set("X-CSM-Signature", signResponse("from-env", body))
+		_, _ = w.Write(body)
 	}))
 	defer srv.Close()
 
@@ -176,5 +180,106 @@ func TestClient_RejectsTrailingJSON(t *testing.T) {
 	c := New(Config{URL: srv.URL, Timeout: time.Second})
 	if _, err := c.Ask(context.Background(), Request{IP: "1.2.3.4"}); err == nil {
 		t.Fatal("expected trailing JSON error")
+	}
+}
+
+// signResponse mirrors the X-CSM-Signature scheme over the response body.
+// Tests reuse it to fake a well-signed panel reply.
+func signResponse(secret string, body []byte) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+// TestClient_AcceptsSignedResponse: with a secret configured and a panel
+// that signs its response body, the client accepts the verdict.
+func TestClient_AcceptsSignedResponse(t *testing.T) {
+	secret := "panel-secret"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		body, _ := json.Marshal(Response{Verdict: "allow", TenantID: "t-9"})
+		w.Header().Set("X-CSM-Signature", signResponse(secret, body))
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	c := New(Config{URL: srv.URL, HMACSecret: secret, Timeout: time.Second})
+	resp, err := c.Ask(context.Background(), Request{IP: "1.2.3.4"})
+	if err != nil {
+		t.Fatalf("expected accept on signed response, got %v", err)
+	}
+	if resp.Verdict != "allow" || resp.TenantID != "t-9" {
+		t.Fatalf("unexpected response %+v", resp)
+	}
+}
+
+// TestClient_RejectsUnsignedResponseWhenSecretSet: when an HMAC secret is
+// configured, an unsigned response must be rejected to prevent MITM
+// downgrade from block to allow.
+func TestClient_RejectsUnsignedResponseWhenSecretSet(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(Response{Verdict: "allow", TenantID: "tenant-attacker"})
+	}))
+	defer srv.Close()
+
+	c := New(Config{URL: srv.URL, HMACSecret: "panel-secret", Timeout: time.Second})
+	_, err := c.Ask(context.Background(), Request{IP: "1.2.3.4"})
+	if err == nil {
+		t.Fatal("expected rejection of unsigned response when secret is configured")
+	}
+	if !strings.Contains(err.Error(), "signature") {
+		t.Fatalf("error must mention signature for operators, got %v", err)
+	}
+}
+
+// TestClient_RejectsForgedResponseSignature: wrong signature must be
+// rejected (constant-time compare).
+func TestClient_RejectsForgedResponseSignature(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		body, _ := json.Marshal(Response{Verdict: "allow"})
+		// Sign with the WRONG secret, simulating MITM.
+		w.Header().Set("X-CSM-Signature", signResponse("not-the-real-secret", body))
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	c := New(Config{URL: srv.URL, HMACSecret: "panel-secret", Timeout: time.Second})
+	_, err := c.Ask(context.Background(), Request{IP: "1.2.3.4"})
+	if err == nil {
+		t.Fatal("expected rejection of forged response signature")
+	}
+}
+
+// TestClient_OptOutSkipsResponseSignatureCheck: operators can set
+// RequireResponseSignature=false during phpanel rollout to keep accepting
+// unsigned responses temporarily.
+func TestClient_OptOutSkipsResponseSignatureCheck(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(Response{Verdict: "block"})
+	}))
+	defer srv.Close()
+
+	optOut := false
+	c := New(Config{URL: srv.URL, HMACSecret: "panel-secret", RequireResponseSignature: &optOut, Timeout: time.Second})
+	resp, err := c.Ask(context.Background(), Request{IP: "1.2.3.4"})
+	if err != nil {
+		t.Fatalf("expected opt-out to skip verify, got %v", err)
+	}
+	if resp.Verdict != "block" {
+		t.Fatalf("unexpected response %+v", resp)
+	}
+}
+
+// TestClient_NoSecretSkipsResponseSignatureCheck: when no HMAC secret is
+// configured at all there is no key to verify against; the client cannot
+// distinguish panel from MITM and proceeds (matches request-side semantics).
+func TestClient_NoSecretSkipsResponseSignatureCheck(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(Response{Verdict: "block"})
+	}))
+	defer srv.Close()
+
+	c := New(Config{URL: srv.URL, Timeout: time.Second})
+	if _, err := c.Ask(context.Background(), Request{IP: "1.2.3.4"}); err != nil {
+		t.Fatalf("no-secret path must skip verify, got %v", err)
 	}
 }

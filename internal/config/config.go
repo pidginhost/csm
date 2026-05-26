@@ -421,6 +421,15 @@ type Config struct {
 			HMACSecret    string `yaml:"hmac_secret,omitempty"`
 			HMACSecretEnv string `yaml:"hmac_secret_env,omitempty"`
 			TimeoutSec    int    `yaml:"timeout_sec"`
+			// RequireResponseSignature controls whether the panel must sign
+			// its response body with the same HMAC scheme used on the
+			// request (X-CSM-Signature header). Default true: when a secret
+			// is configured, CSM rejects unsigned or forged responses to
+			// prevent a MITM or compromised panel from downgrading block to
+			// allow. Set false only during a phpanel rollout that has not
+			// yet implemented response signing - in that window the path
+			// reverts to the pre-3.x advisory contract.
+			RequireResponseSignature *bool `yaml:"require_response_signature,omitempty"`
 		} `yaml:"verdict_callback"`
 	} `yaml:"auto_response" hotreload:"safe"`
 
