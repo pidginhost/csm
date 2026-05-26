@@ -133,6 +133,20 @@ func TestAutoResponseSchemaIncludesVerdictResponseSignatureToggle(t *testing.T) 
 	}
 }
 
+func TestAutoResponseSchemaIncludesMaxBlocksPerHour(t *testing.T) {
+	s, _ := LookupSettingsSection("auto_response")
+	f := findSchemaField(s, "max_blocks_per_hour")
+	if f == nil {
+		t.Fatal("max_blocks_per_hour field missing")
+	}
+	if f.Type != "int" {
+		t.Fatalf("max_blocks_per_hour type = %q, want int", f.Type)
+	}
+	if f.Min == nil || *f.Min != 0 {
+		t.Fatalf("max_blocks_per_hour min = %v, want 0", f.Min)
+	}
+}
+
 func TestAlertsWebhookTypeIncludesPhpanel(t *testing.T) {
 	s, _ := LookupSettingsSection("alerts")
 	f := findSchemaField(s, "webhook.type")

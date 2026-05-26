@@ -311,7 +311,7 @@ func TestAutoBlockIPs_MaxBlocksPerHourHonorsConfigOverride(t *testing.T) {
 		{Check: "wp_login_bruteforce", Message: "WP brute from 192.0.2.73", Timestamp: time.Now()},
 		{Check: "wp_login_bruteforce", Message: "WP brute from 192.0.2.74", Timestamp: time.Now()},
 	}
-	_ = AutoBlockIPs(cfg, findings)
+	actions := AutoBlockIPs(cfg, findings)
 
 	state := loadBlockState(cfg.StatePath)
 	if state.BlocksThisHour != 2 {
@@ -319,6 +319,15 @@ func TestAutoBlockIPs_MaxBlocksPerHourHonorsConfigOverride(t *testing.T) {
 	}
 	if len(state.Pending) != 2 {
 		t.Errorf("Pending = %d, want 2 (queued past cap)", len(state.Pending))
+	}
+	if blocker.outcomeHits != 2 {
+		t.Errorf("BlockIPOutcome calls = %d, want 2", blocker.outcomeHits)
+	}
+	if len(actions) != 3 {
+		t.Fatalf("actions count = %d, want 3 (two blocks plus rate-limit warning): %+v", len(actions), actions)
+	}
+	if !strings.Contains(actions[len(actions)-1].Message, "2/hour") {
+		t.Errorf("rate-limit message = %q, want configured cap", actions[len(actions)-1].Message)
 	}
 }
 

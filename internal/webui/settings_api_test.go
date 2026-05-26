@@ -198,6 +198,7 @@ auto_response:
   enabled: true
   block_ips: false
   netblock_threshold: 3
+  max_blocks_per_hour: 50
 `
 	s, cfgPath := newSettingsTestServer(t, "tok", body)
 
@@ -209,7 +210,7 @@ auto_response:
 		t.Fatal("missing ETag from GET")
 	}
 
-	postReq := settingsAuthedReq("POST", "/api/v1/settings/auto_response", "tok", `{"changes":{"block_ips":true,"netblock_threshold":5}}`)
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/auto_response", "tok", `{"changes":{"block_ips":true,"netblock_threshold":5,"max_blocks_per_hour":75}}`)
 	postReq.Header.Set("If-Match", etag)
 	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
 	postW := httptest.NewRecorder()
@@ -237,9 +238,15 @@ auto_response:
 	if live.AutoResponse.NetBlockThreshold != 5 {
 		t.Errorf("NetBlockThreshold = %d", live.AutoResponse.NetBlockThreshold)
 	}
+	if live.AutoResponse.MaxBlocksPerHour != 75 {
+		t.Errorf("MaxBlocksPerHour = %d, want 75", live.AutoResponse.MaxBlocksPerHour)
+	}
 	loaded, _ := config.Load(cfgPath)
 	if !loaded.AutoResponse.BlockIPs {
 		t.Error("disk not updated")
+	}
+	if loaded.AutoResponse.MaxBlocksPerHour != 75 {
+		t.Errorf("disk MaxBlocksPerHour = %d, want 75", loaded.AutoResponse.MaxBlocksPerHour)
 	}
 	if loaded.Integrity.ConfigHash != resp.NewETag {
 		t.Errorf("disk config_hash = %q, new_etag = %q", loaded.Integrity.ConfigHash, resp.NewETag)

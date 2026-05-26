@@ -1112,6 +1112,13 @@ func TestValidate_PHPRelayBounds(t *testing.T) {
 	if !hasErrorOnField(res, "auto_response.php_relay.max_actions_per_minute") {
 		t.Errorf("max_actions_per_minute=5000 must be invalid (>600), got %+v", res)
 	}
+	cfg.AutoResponse.PHPRelay.MaxActionsPerMinute = 60
+
+	cfg.AutoResponse.MaxBlocksPerHour = -1
+	res = Validate(cfg)
+	if !hasErrorOnField(res, "auto_response.max_blocks_per_hour") {
+		t.Errorf("max_blocks_per_hour=-1 must be invalid, got %+v", res)
+	}
 }
 
 // ValidationResult exposes a Field, not a Key. Match the existing struct

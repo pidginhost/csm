@@ -17,12 +17,8 @@ import (
 )
 
 const (
-	// defaultMaxBlocksPerHour is the fallback when cfg.AutoResponse
-	// .MaxBlocksPerHour is unset (presents as zero). Operators raise
-	// it through config; callers should not reference the constant.
-	defaultMaxBlocksPerHour = 50
-	defaultBlockExpiry      = "24h"
-	blockStateFile          = "blocked_ips.json"
+	defaultBlockExpiry = "24h"
+	blockStateFile     = "blocked_ips.json"
 )
 
 // IPBlocker abstracts the firewall engine for auto-blocking.
@@ -288,7 +284,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	expiry := parseExpiry(cfg.AutoResponse.BlockExpiry)
 	maxPerHour := cfg.AutoResponse.MaxBlocksPerHour
 	if maxPerHour <= 0 {
-		maxPerHour = defaultMaxBlocksPerHour
+		maxPerHour = config.DefaultMaxBlocksPerHour
 	}
 	rateLimited := false
 	for ip, reason := range ipsToBlock {

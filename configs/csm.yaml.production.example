@@ -187,6 +187,7 @@ auto_response:
   quarantine_files: true
   block_ips: true
   block_expiry: "24h"
+  max_blocks_per_hour: 50
   enforce_permissions: true
   block_cpanel_logins: true
   netblock: false

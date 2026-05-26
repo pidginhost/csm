@@ -210,6 +210,7 @@ var settingsSections = []SettingsSection{
 			{YAMLPath: "quarantine_files", Type: "bool", Label: "Quarantine malicious files"},
 			{YAMLPath: "block_ips", Type: "bool", Label: "Block attacker IPs"},
 			{YAMLPath: "block_expiry", Type: "string", Label: "Block expiry", Placeholder: "24h"},
+			{YAMLPath: "max_blocks_per_hour", Type: "int", Label: "Max IP blocks per hour", Min: int64p(0), Help: "0 uses the default 50/hour cap."},
 			{YAMLPath: "enforce_permissions", Type: "bool", Label: "Auto-chmod 644 world/group-writable PHP"},
 			{YAMLPath: "block_cpanel_logins", Type: "bool", Label: "Block on cPanel/webmail login alerts"},
 			{YAMLPath: "netblock", Type: "bool", Label: "Auto-block /24 on threshold"},

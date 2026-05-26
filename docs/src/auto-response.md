@@ -8,7 +8,7 @@ When enabled, CSM automatically responds to detected threats. All actions are lo
 |--------|-------------|
 | **Kill processes** | Fake kernel threads, reverse shells, GSocket. Never kills root or system processes. |
 | **Quarantine files** | Moves webshells, backdoors, phishing to `/opt/csm/quarantine/` with full metadata (owner, permissions, mtime). Restoreable from the web UI. |
-| **Block IPs** | Adds attacker IPs to the nftables firewall with configurable expiry. Rate-limited to 50 blocks/hour. |
+| **Block IPs** | Adds attacker IPs to the nftables firewall with configurable expiry. Rate-limited by `auto_response.max_blocks_per_hour` (default 50/hour). |
 | **Clean malware** | 7 strategies: @include removal, prepend/append stripping, inline eval removal, base64 chain decoding, chr/pack cleanup, hex injection removal, DB spam cleanup. |
 | **PHP shield** | Blocks PHP execution from uploads/tmp directories, detects webshell parameters. |
 | **PAM blocking** | Instant IP block on brute force threshold breach. |
@@ -25,6 +25,7 @@ auto_response:
   quarantine_files: true
   block_ips: true
   block_expiry: "24h"         # default temp block duration
+  max_blocks_per_hour: 50     # per-IP blocks per hour; 0/omitted uses default
   netblock: true              # enable subnet blocking
   netblock_threshold: 3       # IPs from same /24 before subnet block
   permblock: true             # promote temp blocks to permanent
@@ -121,7 +122,7 @@ When `auto_response.block_ips: true`, the source IP is blocked for every finding
 - Infrastructure IPs (`infra_ips` in config) are never blocked
 - Quarantined files preserve full metadata for restoration
 - Auto-quarantine requires high confidence: category match (webshell/backdoor/dropper) + entropy >= 4.8 or hex density > 20%. This prevents legitimate WordPress plugins from being quarantined.
-- IP block rate limited to 50/hour to prevent runaway blocking
+- IP block rate limited by `auto_response.max_blocks_per_hour` (default 50/hour) to prevent runaway blocking
 - CRITICAL alerts always bypass the email rate limit (default 30/hour)
 - Trusted countries (`trusted_countries`) suppress login alerts from expected geolocations
 

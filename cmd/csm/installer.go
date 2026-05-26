@@ -295,6 +295,7 @@ auto_response:
   quarantine_files: false     # auto-move webshells/backdoors to /opt/csm/quarantine/
   block_ips: false            # auto-block attacker IPs via nftables
   block_expiry: "24h"         # how long IPs stay blocked
+  max_blocks_per_hour: 50     # per-IP block cap; 0/omitted uses the default
   block_cpanel_logins: false  # block IPs on cPanel/webmail login alerts (enable after portal-only login)
   netblock: false             # auto-block /24 subnet when threshold IPs from same range
   netblock_threshold: 3       # IPs from same /24 before subnet auto-block

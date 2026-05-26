@@ -24,6 +24,10 @@ type WebUIToken struct {
 	Scope string `yaml:"scope"`
 }
 
+// DefaultMaxBlocksPerHour is the safe hourly cap used when the operator
+// leaves auto_response.max_blocks_per_hour unset or sets it to 0.
+const DefaultMaxBlocksPerHour = 50
+
 // MailLogsConfig controls how postfix/dovecot logs are read.
 //
 //	source: auto    - try file first; fall back to journal if file absent.
@@ -375,11 +379,8 @@ type Config struct {
 		BlockCpanelLogins  bool   `yaml:"block_cpanel_logins"` // block IPs on cPanel/webmail login alerts (default false)
 		NetBlock           bool   `yaml:"netblock"`            // auto-block /24 when threshold IPs from same subnet
 		NetBlockThreshold  int    `yaml:"netblock_threshold"`  // IPs from same /24 before subnet block (default 3)
-		// MaxBlocksPerHour caps per-IP auto-blocks the autoresponder will
-		// commit in a rolling hour bucket. Blocks beyond the cap queue
-		// into state.Pending and drain on subsequent ticks. Default 50;
-		// raise on hosts under sustained attack where the queue otherwise
-		// grows faster than it drains.
+		// MaxBlocksPerHour caps per-IP auto-blocks per wall-clock hour.
+		// 0 uses DefaultMaxBlocksPerHour.
 		MaxBlocksPerHour    int    `yaml:"max_blocks_per_hour"`
 		PermBlock           bool   `yaml:"permblock"`              // auto-promote to permanent after N temp blocks
 		PermBlockCount      int    `yaml:"permblock_count"`        // temp blocks before permanent (default 4)
@@ -1248,7 +1249,7 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 		cfg.AutoResponse.PHPRelay.MaxActionsPerMinute = 60
 	}
 	if cfg.AutoResponse.MaxBlocksPerHour == 0 {
-		cfg.AutoResponse.MaxBlocksPerHour = 50
+		cfg.AutoResponse.MaxBlocksPerHour = DefaultMaxBlocksPerHour
 	}
 
 	// Performance defaults.

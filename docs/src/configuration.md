@@ -229,6 +229,7 @@ auto_response:
   quarantine_files: false               # move malware to quarantine
   block_ips: false                      # block attacker IPs via firewall
   block_expiry: "24h"                   # duration for temp blocks (e.g. "24h", "12h")
+  max_blocks_per_hour: 50               # per-IP blocks per hour; 0/omitted uses default
   enforce_permissions: false            # auto-chmod 644 world/group-writable PHP files
   block_cpanel_logins: false            # block IPs on cPanel/webmail/FTP/API thresholded brute findings (multi-IP login, webmail/API brute, FTP brute). Single direct cPanel form logins stay audit-only regardless of this flag.
   netblock: false                       # auto-block /24 subnets

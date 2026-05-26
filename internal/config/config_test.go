@@ -449,10 +449,14 @@ func TestProductionReferenceConfigExposesTunableThresholds(t *testing.T) {
 	if cfg.Reputation.BotVerifyEnabled == nil || !*cfg.Reputation.BotVerifyEnabled {
 		t.Fatal("reputation.bot_verify_enabled must be explicitly true in production reference config")
 	}
+	if cfg.AutoResponse.MaxBlocksPerHour != DefaultMaxBlocksPerHour {
+		t.Errorf("auto_response.max_blocks_per_hour = %d, want %d", cfg.AutoResponse.MaxBlocksPerHour, DefaultMaxBlocksPerHour)
+	}
 
 	var raw struct {
-		Thresholds map[string]yaml.Node `yaml:"thresholds"`
-		Reputation map[string]yaml.Node `yaml:"reputation"`
+		Thresholds   map[string]yaml.Node `yaml:"thresholds"`
+		Reputation   map[string]yaml.Node `yaml:"reputation"`
+		AutoResponse map[string]yaml.Node `yaml:"auto_response"`
 	}
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		t.Fatalf("yaml.Unmarshal: %v", err)
@@ -472,6 +476,9 @@ func TestProductionReferenceConfigExposesTunableThresholds(t *testing.T) {
 	}
 	if _, ok := raw.Reputation["bot_verify_enabled"]; !ok {
 		t.Error("production reference config missing reputation.bot_verify_enabled")
+	}
+	if _, ok := raw.AutoResponse["max_blocks_per_hour"]; !ok {
+		t.Error("production reference config missing auto_response.max_blocks_per_hour")
 	}
 }
 
@@ -500,6 +507,9 @@ func TestLoadBytesAppliesSameDefaultsAsLoad(t *testing.T) {
 	}
 	if fromBytes.StatePath != "/var/lib/csm/state" {
 		t.Errorf("default StatePath not applied: %q", fromBytes.StatePath)
+	}
+	if fromBytes.AutoResponse.MaxBlocksPerHour != DefaultMaxBlocksPerHour {
+		t.Errorf("default AutoResponse.MaxBlocksPerHour = %d, want %d", fromBytes.AutoResponse.MaxBlocksPerHour, DefaultMaxBlocksPerHour)
 	}
 }
 
