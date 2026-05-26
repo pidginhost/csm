@@ -65,6 +65,10 @@ On older kernels or default builds without the BPF tag,
 work when `detection.direct_smtp_egress.backend` is `auto` or
 `legacy`, but BPF enforcement is inactive.
 
+When CSM attempts BPF and cannot start it, it emits a
+`bpf_unavailable` finding. The message reports whether the daemon is
+running on a fallback backend or has no live fallback active.
+
 ## Metrics
 
 - `csm_bpf_enforcement_decisions_total{decision="allow|dry_run|deny"}`

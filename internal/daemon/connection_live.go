@@ -41,21 +41,23 @@ func StartConnectionTracker(alertCh chan<- alert.Finding, cfg *config.Config) bp
 		return nil
 	}
 
+	var bpfErr error
 	if choice == bpf.BackendAuto || choice == bpf.BackendBPF {
 		if b, err := tryStartConnectionBPFFn(context.Background(), alertCh, cfg); err == nil && b != nil {
 			csmlog.Info("connection_tracker", "backend", "bpf", "choice", choice)
 			bpf.SetActive("connection_tracker", bpf.BackendBPF)
 			return b
 		} else if err != nil {
+			bpfErr = err
 			level := "bpf-unsupported"
 			if errors.Is(err, bpf.ErrNotBuilt) {
 				level = "bpf-not-built"
 			}
 			csmlog.Info("connection_tracker: BPF unavailable", "state", level, "reason", err.Error(), "choice", choice)
-			emitBPFUnavailableFinding(alertCh, "connection_tracker", choice, err)
 			if choice == bpf.BackendBPF {
 				csmlog.Warn("connection_tracker: backend=bpf but BPF unavailable; no live tracker", "reason", err.Error())
 				bpf.SetActive("connection_tracker", bpf.BackendNone)
+				emitBPFUnavailableFinding(alertCh, "connection_tracker", choice, "", err)
 				return nil
 			}
 		}
@@ -64,6 +66,9 @@ func StartConnectionTracker(alertCh chan<- alert.Finding, cfg *config.Config) bp
 	poller := newConnectionPoller(cfg, alertCh)
 	csmlog.Info("connection_tracker", "backend", "legacy", "choice", choice)
 	bpf.SetActive("connection_tracker", bpf.BackendLegacy)
+	if bpfErr != nil {
+		emitBPFUnavailableFinding(alertCh, "connection_tracker", choice, bpf.BackendLegacy, bpfErr)
+	}
 	return poller
 }
 

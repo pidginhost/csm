@@ -41,21 +41,23 @@ func StartExecMonitor(alertCh chan<- alert.Finding, cfg *config.Config) bpf.Back
 		return nil
 	}
 
+	var bpfErr error
 	if choice == bpf.BackendAuto || choice == bpf.BackendBPF {
 		if b, err := tryStartExecBPFFn(context.Background(), alertCh, cfg); err == nil && b != nil {
 			csmlog.Info("exec_monitor", "backend", "bpf", "choice", choice)
 			bpf.SetActive("exec_monitor", bpf.BackendBPF)
 			return b
 		} else if err != nil {
+			bpfErr = err
 			level := "bpf-unsupported"
 			if errors.Is(err, bpf.ErrNotBuilt) {
 				level = "bpf-not-built"
 			}
 			csmlog.Info("exec_monitor: BPF unavailable", "state", level, "reason", err.Error(), "choice", choice)
-			emitBPFUnavailableFinding(alertCh, "exec_monitor", choice, err)
 			if choice == bpf.BackendBPF {
 				csmlog.Warn("exec_monitor: backend=bpf but BPF unavailable; no live monitor", "reason", err.Error())
 				bpf.SetActive("exec_monitor", bpf.BackendNone)
+				emitBPFUnavailableFinding(alertCh, "exec_monitor", choice, "", err)
 				return nil
 			}
 		}
@@ -64,6 +66,9 @@ func StartExecMonitor(alertCh chan<- alert.Finding, cfg *config.Config) bpf.Back
 	poller := newExecPoller(cfg, alertCh)
 	csmlog.Info("exec_monitor", "backend", "legacy", "choice", choice)
 	bpf.SetActive("exec_monitor", bpf.BackendLegacy)
+	if bpfErr != nil {
+		emitBPFUnavailableFinding(alertCh, "exec_monitor", choice, bpf.BackendLegacy, bpfErr)
+	}
 	return poller
 }
 

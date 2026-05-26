@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 
@@ -92,23 +93,25 @@ func StartAFAlgLiveMonitor(alertCh chan<- alert.Finding, cfg *config.Config) AFA
 		return nil
 	}
 
+	var bpfErr error
 	if choice == AFAlgBackendAuto || choice == AFAlgBackendBPF {
 		if mon, err := tryStartBPFLSMFn(context.Background(), alertCh, cfg); err == nil && mon != nil {
 			csmlog.Info("af_alg live monitor", "backend", "bpf-lsm", "choice", choice)
 			setAFAlgBackendMetric("bpf-lsm")
 			return mon
 		} else if err != nil {
+			bpfErr = err
 			csmlog.Info("af_alg live monitor: BPF LSM unavailable",
 				"state", "bpf-lsm-unsupported",
 				"reason", err.Error(),
 				"choice", choice,
 			)
-			emitBPFUnavailableFinding(alertCh, "af_alg", choice, err)
 			if choice == AFAlgBackendBPF {
 				csmlog.Warn("af_alg live monitor: af_alg_backend=bpf but BPF unavailable; no live detection",
 					"reason", err.Error(),
 				)
 				setAFAlgBackendMetric("none")
+				emitBPFUnavailableFinding(alertCh, "af_alg", choice, "", err)
 				return nil
 			}
 		}
@@ -118,10 +121,16 @@ func StartAFAlgLiveMonitor(alertCh chan<- alert.Finding, cfg *config.Config) AFA
 	if err != nil {
 		csmlog.Warn("af_alg live monitor: auditd fallback unavailable", "err", err)
 		setAFAlgBackendMetric("none")
+		if bpfErr != nil {
+			emitBPFUnavailableFinding(alertCh, "af_alg", choice, "", fmt.Errorf("BPF unavailable: %w; audit fallback unavailable: %w", bpfErr, err))
+		}
 		return nil
 	}
 	csmlog.Info("af_alg live monitor", "backend", "auditd-tail", "choice", choice)
 	setAFAlgBackendMetric("auditd-tail")
+	if bpfErr != nil {
+		emitBPFUnavailableFinding(alertCh, "af_alg", choice, "auditd-tail", bpfErr)
+	}
 	return listener
 }
 

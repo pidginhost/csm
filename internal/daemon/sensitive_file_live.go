@@ -41,21 +41,23 @@ func StartSensitiveFileMonitor(alertCh chan<- alert.Finding, cfg *config.Config,
 		return nil
 	}
 
+	var bpfErr error
 	if choice == bpf.BackendAuto || choice == bpf.BackendBPF {
 		if b, err := tryStartSensitiveFileBPFFn(context.Background(), alertCh, cfg); err == nil && b != nil {
 			csmlog.Info("sensitive_files", "backend", "bpf", "choice", choice)
 			bpf.SetActive("sensitive_files", bpf.BackendBPF)
 			return b
 		} else if err != nil {
+			bpfErr = err
 			level := "bpf-unsupported"
 			if errors.Is(err, bpf.ErrNotBuilt) {
 				level = "bpf-not-built"
 			}
 			csmlog.Info("sensitive_files: BPF unavailable", "state", level, "reason", err.Error(), "choice", choice)
-			emitBPFUnavailableFinding(alertCh, "sensitive_files", choice, err)
 			if choice == bpf.BackendBPF {
 				csmlog.Warn("sensitive_files: backend=bpf but BPF unavailable; no live monitor", "reason", err.Error())
 				bpf.SetActive("sensitive_files", bpf.BackendNone)
+				emitBPFUnavailableFinding(alertCh, "sensitive_files", choice, "", err)
 				return nil
 			}
 		}
@@ -64,6 +66,9 @@ func StartSensitiveFileMonitor(alertCh chan<- alert.Finding, cfg *config.Config,
 	poller := newSensitiveFilePoller(cfg, store, alertCh)
 	csmlog.Info("sensitive_files", "backend", "legacy", "choice", choice)
 	bpf.SetActive("sensitive_files", bpf.BackendLegacy)
+	if bpfErr != nil {
+		emitBPFUnavailableFinding(alertCh, "sensitive_files", choice, bpf.BackendLegacy, bpfErr)
+	}
 	return poller
 }
 

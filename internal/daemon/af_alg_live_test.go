@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -31,9 +32,21 @@ func TestStartAFAlgLiveMonitor_NoBackendOnHostWithoutAuditLog(t *testing.T) {
 	auditLogPath = "/nonexistent/audit.log"
 	t.Cleanup(func() { auditLogPath = original })
 
-	got := StartAFAlgLiveMonitor(make(chan alert.Finding, 1), &config.Config{})
+	withFakeBPFProbe(t, func(_ context.Context, _ chan<- alert.Finding, _ *config.Config) (AFAlgLiveMonitor, error) {
+		return nil, errors.New("kernel too old")
+	})
+
+	ch := make(chan alert.Finding, 1)
+	got := StartAFAlgLiveMonitor(ch, &config.Config{})
 	if got != nil {
 		t.Fatalf("expected nil monitor when no backend available, got mode=%s", got.Mode())
+	}
+	f := receiveBPFUnavailableFinding(t, ch)
+	if f.Severity != alert.High {
+		t.Errorf("Severity = %v, want High when no live AF_ALG fallback is active", f.Severity)
+	}
+	if !strings.Contains(f.Message, "no live fallback active") {
+		t.Errorf("Message = %q, want no live fallback active", f.Message)
 	}
 }
 
@@ -50,6 +63,10 @@ func TestStartAFAlgLiveMonitor_FallsBackToAuditWhenBPFUnavailable(t *testing.T) 
 	if err := os.WriteFile(tmp, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
+
+	withFakeBPFProbe(t, func(_ context.Context, _ chan<- alert.Finding, _ *config.Config) (AFAlgLiveMonitor, error) {
+		return nil, errors.New("BPF support not compiled in")
+	})
 
 	got := StartAFAlgLiveMonitor(make(chan alert.Finding, 1), &config.Config{})
 	if got == nil {
@@ -85,12 +102,20 @@ func TestStartAFAlgLiveMonitor_ProbeFailFallsBackToAudit(t *testing.T) {
 		return nil, errors.New("synthetic kernel-too-old")
 	})
 
-	got := StartAFAlgLiveMonitor(make(chan alert.Finding, 1), &config.Config{})
+	ch := make(chan alert.Finding, 1)
+	got := StartAFAlgLiveMonitor(ch, &config.Config{})
 	if got == nil {
 		t.Fatal("expected audit fallback after BPF probe failure, got nil")
 	}
 	if got.Mode() != "auditd-tail" {
 		t.Fatalf("expected auditd-tail after probe failure, got %s", got.Mode())
+	}
+	f := receiveBPFUnavailableFinding(t, ch)
+	if f.Severity != alert.Warning {
+		t.Errorf("Severity = %v, want Warning with audit fallback active", f.Severity)
+	}
+	if !strings.Contains(f.Message, "running on auditd-tail fallback") {
+		t.Errorf("Message = %q, want auditd-tail fallback", f.Message)
 	}
 }
 
@@ -171,8 +196,30 @@ func TestStartAFAlgLiveMonitor_ConfigBPFNoFallbackWhenUnavailable(t *testing.T) 
 	cfg := &config.Config{}
 	cfg.Detection.AFAlgBackend = AFAlgBackendBPF
 
-	got := StartAFAlgLiveMonitor(make(chan alert.Finding, 1), cfg)
+	ch := make(chan alert.Finding, 1)
+	got := StartAFAlgLiveMonitor(ch, cfg)
 	if got != nil {
 		t.Fatalf("expected nil under strict bpf mode when BPF unavailable, got mode=%s", got.Mode())
+	}
+	f := receiveBPFUnavailableFinding(t, ch)
+	if f.Severity != alert.High {
+		t.Errorf("Severity = %v, want High under strict bpf mode", f.Severity)
+	}
+	if !strings.Contains(f.Message, "no live fallback active") {
+		t.Errorf("Message = %q, want no live fallback active", f.Message)
+	}
+}
+
+func receiveBPFUnavailableFinding(t *testing.T, ch <-chan alert.Finding) alert.Finding {
+	t.Helper()
+	select {
+	case f := <-ch:
+		if f.Check != "bpf_unavailable" {
+			t.Fatalf("Check = %q, want bpf_unavailable", f.Check)
+		}
+		return f
+	default:
+		t.Fatal("expected bpf_unavailable finding")
+		return alert.Finding{}
 	}
 }

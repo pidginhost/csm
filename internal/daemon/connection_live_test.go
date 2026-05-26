@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -51,6 +52,37 @@ func TestStartConnectionTrackerBackendSelection(t *testing.T) {
 				t.Fatalf("Mode = %q, want %q", b.Mode(), tc.wantMode)
 			}
 		})
+	}
+}
+
+func TestStartConnectionTrackerEmitsFallbackFindingAfterLegacySelected(t *testing.T) {
+	oldFn := tryStartConnectionBPFFn
+	tryStartConnectionBPFFn = func(_ context.Context, _ chan<- alert.Finding, _ *config.Config) (bpf.Backend, error) {
+		return nil, bpf.ErrUnsupported
+	}
+	defer func() { tryStartConnectionBPFFn = oldFn }()
+
+	cfg := &config.Config{}
+	cfg.Detection.ConnectionTrackerBackend = bpf.BackendAuto
+	ch := make(chan alert.Finding, 1)
+	b := StartConnectionTracker(ch, cfg)
+	if b == nil || b.Mode() != bpf.BackendLegacy {
+		t.Fatalf("backend = %#v, want legacy fallback", b)
+	}
+	var f alert.Finding
+	select {
+	case f = <-ch:
+	default:
+		t.Fatal("expected bpf_unavailable finding")
+	}
+	if f.Check != "bpf_unavailable" {
+		t.Fatalf("Check = %q, want bpf_unavailable", f.Check)
+	}
+	if f.Severity != alert.Warning {
+		t.Errorf("Severity = %v, want Warning", f.Severity)
+	}
+	if !strings.Contains(f.Message, "running on legacy fallback") {
+		t.Errorf("Message = %q, want legacy fallback", f.Message)
 	}
 }
 
