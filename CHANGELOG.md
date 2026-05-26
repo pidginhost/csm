@@ -40,7 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Firewall startup wires dry-run and verdict callbacks before applying nftables and before the engine is exposed to auto-response, closing a boot-time window where a block could land live despite dry-run being on.
+- Firewall startup wires dry-run and verdict callbacks before applying nftables and keeps the dry-run safety default from depending on startup ordering.
 - Auto-block now installs the firewall engine via an atomic pointer and keeps IP and subnet decisions on one scan snapshot, so a SIGHUP rewire cannot split a scan across two engines.
 - Auto-block tracker reconciles against the live kernel firewall before pruning cached state, so stale entries no longer suppress re-blocking after an IP expires.
 - C2, backdoor, and suspicious PHP execution findings now carry stable actor keys, so repeat events group into one incident instead of splitting by process restart or missing UID.

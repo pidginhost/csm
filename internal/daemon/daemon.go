@@ -2201,12 +2201,7 @@ func (d *Daemon) startFirewall() {
 			db.RecordDryRunBlock(ip, reason, timeout)
 		}
 	})
-	engine.SetDryRunEnabledFunc(func() bool {
-		if cfg := config.Active(); cfg != nil {
-			return cfg.AutoResponseDryRunEnabled()
-		}
-		return false
-	})
+	engine.SetDryRunEnabledFunc(d.autoResponseDryRunEnabled)
 	engine.SetVerdictAsker(d.askVerdictCallback)
 
 	if err := engine.Apply(); err != nil {
@@ -2325,6 +2320,10 @@ func removePort(ports []int, port int) []int {
 		}
 	}
 	return out
+}
+
+func (d *Daemon) autoResponseDryRunEnabled() bool {
+	return d.activeOrStartupCfg().AutoResponseDryRunEnabled()
 }
 
 func (d *Daemon) askVerdictCallback(ctx context.Context, ip, reason string) (string, string, string, error) {

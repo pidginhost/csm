@@ -1359,8 +1359,9 @@ func (e *Engine) BlockIPOutcome(ip string, reason string, timeout time.Duration)
 		// "block" / empty / error -> proceed with default flow.
 	}
 
-	// Dry-run gate: the daemon callback reads config.Active() at call time so
-	// a SIGHUP takes effect without a daemon restart. Nil callback means live.
+	// Dry-run gate: the daemon callback reads the current daemon config at
+	// call time so a SIGHUP takes effect without a daemon restart. Nil
+	// callback means live.
 	if e.autoResponseDryRunEnabled() {
 		fmt.Fprintf(os.Stderr, "[%s] auto_response dry_run: would have blocked %s (%s)\n",
 			time.Now().Format("2006-01-02 15:04:05"), ip, reason)

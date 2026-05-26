@@ -189,6 +189,41 @@ func TestStartFirewall_DisabledDoesNothing(t *testing.T) {
 	}
 }
 
+func TestAutoResponseDryRunEnabledUsesStartupConfigBeforeActive(t *testing.T) {
+	prev := config.Active()
+	config.SetActive(nil)
+	t.Cleanup(func() { config.SetActive(prev) })
+
+	cfg := &config.Config{}
+	d := New(cfg, nil, nil, "")
+
+	if !d.autoResponseDryRunEnabled() {
+		t.Fatal("dry-run must default to true before config.Active is published")
+	}
+
+	live := false
+	cfg.AutoResponse.DryRun = &live
+	if d.autoResponseDryRunEnabled() {
+		t.Fatal("startup config dry_run=false must be honored before config.Active is published")
+	}
+}
+
+func TestAutoResponseDryRunEnabledUsesActiveConfigAfterReload(t *testing.T) {
+	prev := config.Active()
+	t.Cleanup(func() { config.SetActive(prev) })
+
+	cfg := &config.Config{}
+	d := New(cfg, nil, nil, "")
+	live := false
+	active := &config.Config{}
+	active.AutoResponse.DryRun = &live
+	config.SetActive(active)
+
+	if d.autoResponseDryRunEnabled() {
+		t.Fatal("active config dry_run=false must override startup config after reload")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // alertDispatcher — stop signal flushes and exits
 // ---------------------------------------------------------------------------
