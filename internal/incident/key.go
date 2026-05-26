@@ -23,11 +23,11 @@ func (k Key) IsEmpty() bool {
 	return k.Account == "" && k.Domain == "" && k.Mailbox == "" && k.UID == 0 && k.PID == 0 && k.RemoteIP == ""
 }
 
-// KeyFor extracts a correlation key from a Finding. Sources, in priority
-// order: TenantID, Process.Account/UID, CPUser (php-relay attribution), and
-// a /home[N]/<account>/ heuristic for fanotify findings. SourceIP and
-// process PID are fallback identities: they should not split
-// mailbox/account/UID incidents.
+// KeyFor extracts a correlation key from a Finding. TenantID,
+// Process.Account, CPUser, and a /home[N]/<account>/ heuristic provide
+// account attribution. Domain and Mailbox come directly from the finding.
+// Process UID/PID and SourceIP are fallback identities: they should not
+// split account/domain/mailbox incidents.
 //
 // Mailbox + Domain are canonicalised so emitters that set either the
 // full local@domain form or the split (Mailbox=local, Domain=site)
@@ -41,22 +41,8 @@ func KeyFor(f alert.Finding) Key {
 		Domain:  domain,
 		Mailbox: mailbox,
 	}
-	if f.Process != nil {
-		if f.Process.Account != "" && k.Account == "" {
-			k.Account = f.Process.Account
-		}
-		// UID is only a primary key when no stronger actor identifier
-		// is available. Otherwise findings about the same mailbox or
-		// account observed from different processes would split into
-		// separate incidents - the threshold gate then stalls at
-		// "still waiting for more sightings of THIS uid" while the
-		// real attack runs many processes against one victim.
-		if f.Process.UID != 0 && k.Account == "" && k.Mailbox == "" {
-			k.UID = f.Process.UID
-		}
-		if k.Account == "" && k.Mailbox == "" && k.UID == 0 {
-			k.PID = f.Process.PID
-		}
+	if f.Process != nil && f.Process.Account != "" && k.Account == "" {
+		k.Account = f.Process.Account
 	}
 	if k.Account == "" && f.CPUser != "" {
 		k.Account = f.CPUser
@@ -64,10 +50,22 @@ func KeyFor(f alert.Finding) Key {
 	if k.Account == "" {
 		k.Account = accountFromHomePath(f.FilePath)
 	}
+	if f.Process != nil && !hasStableActor(k) {
+		if f.Process.UID != 0 {
+			k.UID = f.Process.UID
+		}
+		if k.UID == 0 {
+			k.PID = f.Process.PID
+		}
+	}
 	if k.Account == "" && k.Domain == "" && k.Mailbox == "" && k.UID == 0 && k.PID == 0 {
 		k.RemoteIP = f.SourceIP
 	}
 	return k
+}
+
+func hasStableActor(k Key) bool {
+	return k.Account != "" || k.Domain != "" || k.Mailbox != ""
 }
 
 // canonicalizeMailboxDomain merges Mailbox+Domain into a stable

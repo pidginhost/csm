@@ -40,7 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Process UID no longer splits a mailbox or account incident, so multiple worker processes attacking one victim feed the same correlation key instead of stalling the open-threshold gate.
+- Process identity no longer splits mailbox, domain, or account incidents, so multiple workers attacking one victim now count toward the same incident threshold.
 - Mailbox findings are canonicalised before correlation, so the same actor lands in one incident whether the emitter set the full local@domain form or split it into Mailbox + Domain.
 - Mailbox incident grouping now keeps the site context visible while merging mixed emitter formats across restarts and spray detection.
 - Long-running incidents now cap their persisted finding fingerprints and operator-visible timeline, so a low-severity sustained event no longer grows memory and persistence payloads without bound.

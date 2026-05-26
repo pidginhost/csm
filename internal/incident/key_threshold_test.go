@@ -43,14 +43,102 @@ func TestKeyFor_ProcessUIDDoesNotSplitAccountKey(t *testing.T) {
 	}
 }
 
-// TestKeyFor_ProcessUIDStillKeysWhenNoAccountOrMailbox: when no
+// TestKeyFor_ProcessUIDStillKeysWhenNoStableActor: when no
 // other actor is available, UID still serves as the primary key. We
 // only drop UID as a "splitter" when stronger identifiers exist.
-func TestKeyFor_ProcessUIDStillKeysWhenNoAccountOrMailbox(t *testing.T) {
+func TestKeyFor_ProcessUIDStillKeysWhenNoStableActor(t *testing.T) {
 	k := KeyFor(alert.Finding{
 		Process: &processctx.ProcessContext{UID: 1001},
 	})
 	if k.UID != 1001 {
 		t.Fatalf("UID-only key lost UID: %+v", k)
+	}
+}
+
+func TestKeyFor_ProcessIdentityDoesNotSplitStableActorKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		a    alert.Finding
+		b    alert.Finding
+	}{
+		{
+			name: "domain drops uid",
+			a: alert.Finding{
+				Domain:  "example.com",
+				Process: &processctx.ProcessContext{UID: 1001, PID: 1234},
+			},
+			b: alert.Finding{
+				Domain:  "example.com",
+				Process: &processctx.ProcessContext{UID: 1002, PID: 5678},
+			},
+		},
+		{
+			name: "domain drops pid",
+			a: alert.Finding{
+				Domain:  "example.com",
+				Process: &processctx.ProcessContext{PID: 1234},
+			},
+			b: alert.Finding{
+				Domain:  "example.com",
+				Process: &processctx.ProcessContext{PID: 5678},
+			},
+		},
+		{
+			name: "cpuser drops uid",
+			a: alert.Finding{
+				CPUser:  "alice",
+				Process: &processctx.ProcessContext{UID: 1001, PID: 1234},
+			},
+			b: alert.Finding{
+				CPUser:  "alice",
+				Process: &processctx.ProcessContext{UID: 1002, PID: 5678},
+			},
+		},
+		{
+			name: "cpuser drops pid",
+			a: alert.Finding{
+				CPUser:  "alice",
+				Process: &processctx.ProcessContext{PID: 1234},
+			},
+			b: alert.Finding{
+				CPUser:  "alice",
+				Process: &processctx.ProcessContext{PID: 5678},
+			},
+		},
+		{
+			name: "home path drops uid",
+			a: alert.Finding{
+				FilePath: "/home/alice/public_html/shell.php",
+				Process:  &processctx.ProcessContext{UID: 1001, PID: 1234},
+			},
+			b: alert.Finding{
+				FilePath: "/home/alice/public_html/other.php",
+				Process:  &processctx.ProcessContext{UID: 1002, PID: 5678},
+			},
+		},
+		{
+			name: "home path drops pid",
+			a: alert.Finding{
+				FilePath: "/home/alice/public_html/shell.php",
+				Process:  &processctx.ProcessContext{PID: 1234},
+			},
+			b: alert.Finding{
+				FilePath: "/home/alice/public_html/other.php",
+				Process:  &processctx.ProcessContext{PID: 5678},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := KeyFor(tt.a)
+			b := KeyFor(tt.b)
+			if keyString(a) != keyString(b) {
+				t.Fatalf("process identity split stable actor key: a=%q b=%q", keyString(a), keyString(b))
+			}
+			if a.UID != 0 || a.PID != 0 || b.UID != 0 || b.PID != 0 {
+				t.Fatalf("process identity leaked into stable actor key: a=%+v b=%+v", a, b)
+			}
+		})
 	}
 }
