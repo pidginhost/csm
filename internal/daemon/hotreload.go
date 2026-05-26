@@ -10,6 +10,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/integrity"
 	"github.com/pidginhost/csm/internal/metrics"
+	"github.com/pidginhost/csm/internal/store"
 )
 
 // Reload outcome labels for csm_config_reloads_total. Keep these in
@@ -142,6 +143,22 @@ func (d *Daemon) reloadConfig() {
 	}
 	config.SetActive(newCfg)
 	recordReloadResult(reloadResultSuccess)
+
+	// When the operator flips auto_response.dry_run from on to off
+	// (going live), purge the dry_run_blocks bucket so the status
+	// surface stops reporting a stale count from the previous
+	// dry-run window. Going the other way (live -> dry-run) does
+	// not purge; existing entries from a prior dry-run window stay
+	// addressable until the periodic prune ages them out.
+	if oldCfg != nil &&
+		oldCfg.AutoResponseDryRunEnabled() &&
+		!newCfg.AutoResponseDryRunEnabled() {
+		if sdb := store.Global(); sdb != nil {
+			if removed := sdb.PurgeAllDryRunBlocks(); removed > 0 {
+				fmt.Fprintf(os.Stderr, "[%s] SIGHUP: purged %d dry_run_blocks records (dry-run -> live)\n", ts(), removed)
+			}
+		}
+	}
 
 	var names []string
 	for _, c := range changes {

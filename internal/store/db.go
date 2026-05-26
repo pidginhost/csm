@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -277,6 +278,79 @@ func (db *DB) RecordDryRunBlock(ip, reason string, timeout time.Duration) {
 			ip, reason, int(timeout.Seconds())))
 		return b.Put(key, val)
 	})
+}
+
+// PurgeAllDryRunBlocks deletes every record from the dry_run_blocks
+// bucket and returns the number removed. Called when the operator
+// flips auto_response.dry_run from true to false so /api/v1/status no
+// longer reports a stale count from the previous dry-run window. A
+// later periodic prune handles the slow accumulation case via
+// PurgeDryRunBlocksOlderThan.
+func (db *DB) PurgeAllDryRunBlocks() int {
+	if db == nil || db.bolt == nil {
+		return 0
+	}
+	removed := 0
+	_ = db.bolt.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("dry_run_blocks"))
+		if b == nil {
+			return nil
+		}
+		removed = b.Stats().KeyN
+		return tx.DeleteBucket([]byte("dry_run_blocks"))
+	})
+	return removed
+}
+
+// PurgeDryRunBlocksOlderThan removes every dry_run_blocks record
+// whose timestamp prefix is strictly older than cutoff. Returns the
+// number removed. Key format is "<RFC3339Nano>:<ip>"; entries with a
+// key that does not parse as a timestamp are left in place so a
+// future key-format change does not silently drop records.
+func (db *DB) PurgeDryRunBlocksOlderThan(cutoff time.Time) int {
+	if db == nil || db.bolt == nil {
+		return 0
+	}
+	removed := 0
+	_ = db.bolt.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket([]byte("dry_run_blocks"))
+		if b == nil {
+			return nil
+		}
+		var stale [][]byte
+		_ = b.ForEach(func(k, _ []byte) error {
+			s := string(k)
+			// RecordDryRunBlock writes UTC timestamps which always
+			// end in `Z`, so the first `Z:` reliably separates the
+			// timestamp from the IP (the IP itself can contain
+			// colons in v6 form, ruling out a naive first-colon
+			// split).
+			idx := strings.Index(s, "Z:")
+			if idx < 0 {
+				return nil
+			}
+			ts, err := time.Parse(time.RFC3339Nano, s[:idx+1])
+			if err != nil {
+				// Forward-compat: unrecognised key format is left
+				// in place rather than treated as stale, so a
+				// future schema change does not silently drop
+				// records during the rolling upgrade window.
+				return nil //nolint:nilerr // intentional skip
+			}
+			if ts.Before(cutoff) {
+				keyCopy := append([]byte(nil), k...)
+				stale = append(stale, keyCopy)
+			}
+			return nil
+		})
+		for _, k := range stale {
+			if err := b.Delete(k); err == nil {
+				removed++
+			}
+		}
+		return nil
+	})
+	return removed
 }
 
 // DryRunBlocksCount returns the number of recorded dry-run block entries.

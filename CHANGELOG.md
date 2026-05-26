@@ -40,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Dry-run-block records are now purged when the operator flips auto-response to live and aged out after a week, so the status surface no longer reports a stale count from a long-ago dry-run window.
 - Auto-block hourly rate cap is now configurable via `auto_response.max_blocks_per_hour`, exposed in Settings, and documented in shipped config templates.
 - Firewall startup wires dry-run and verdict callbacks before applying nftables and keeps the dry-run safety default from depending on startup ordering.
 - Auto-block now installs the firewall engine via an atomic pointer and keeps IP and subnet decisions on one scan snapshot, so a SIGHUP rewire cannot split a scan across two engines.
