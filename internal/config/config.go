@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"regexp"
@@ -1437,7 +1438,29 @@ func validateReputation(cfg *Config) error {
 	if parsed.Host == "" {
 		return fmt.Errorf("reputation.upstream.url must include host")
 	}
+	if parsed.Scheme == "http" && !isLoopbackHost(parsed.Hostname()) {
+		return fmt.Errorf("reputation.upstream.url must use https for non-loopback hosts (bearer token would otherwise leak in plaintext)")
+	}
 	return nil
+}
+
+// isLoopbackHost reports whether host resolves to a loopback address
+// for the purposes of allowing http:// URLs on same-host panel
+// deployments. Treats "localhost" as loopback by convention, and parses
+// IPv4 / IPv6 literals via net.ParseIP. Returns false on any unparseable
+// host so the caller fails closed.
+func isLoopbackHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback()
 }
 
 func validateVerdictCallback(cfg *Config) error {

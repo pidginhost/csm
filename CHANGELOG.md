@@ -28,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - YARA rule directory and every rule file are now perm-checked before compilation. CSM refuses to load rules a third party could overwrite, so an attacker cannot disable detection by dropping a no-op rule.
 - Email attachment scanning now treats a YARA-X backend loss or scan error as an incomplete scan. In tempfail mode, CSM defers the message instead of delivering it as scanned clean.
-- Infra hostnames are DNS-refreshed into the firewall lockout guard, so management hosts declared by name stay protected as the underlying address rotates.
+- Hostnames in top-level or firewall `infra_ips` are DNS-refreshed into the firewall guard, so management hosts declared by name stay protected as addresses rotate.
 - Inline code-injection cleaner now sees through comment-based evasions, and the PHP content detector flags indirect eval and shell-exec sinks without false positives on benign decoder callbacks.
 - File quarantine now hardlinks or copies from a verified descriptor before unlinking the source, defeating the swap-the-file race and symlink-substitution attempts.
 - Operator-supplied config-fragment directories are validated before any fragments load; refused paths fail startup so an attacker cannot redirect CSM at untrusted fragments.
