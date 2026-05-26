@@ -2189,15 +2189,13 @@ func (d *Daemon) startFirewall() {
 		return
 	}
 
-	if err := engine.Apply(); err != nil {
-		fmt.Fprintf(os.Stderr, "[%s] Firewall apply error: %v\n", ts(), err)
-		return
-	}
-
-	d.fwEngine = engine
-
-	// Wire dry-run recorder so BlockIP can persist intercepted blocks to the
-	// store without creating an import cycle (firewall -> store).
+	// Wire dry-run + verdict callbacks BEFORE Apply() and before the
+	// engine is exposed via d.fwEngine / checks.SetIPBlocker. The
+	// auto_response.dry_run safety default is "on": if any code path
+	// reaches engine.BlockIP while these callbacks are still nil, the
+	// engine treats dry-run as off and the block lands live, defeating
+	// the operator's stated intent. Wiring before exposure removes the
+	// boot-time race window entirely.
 	engine.SetDryRunRecorder(func(ip, reason string, timeout time.Duration) {
 		if db := store.Global(); db != nil {
 			db.RecordDryRunBlock(ip, reason, timeout)
@@ -2209,8 +2207,14 @@ func (d *Daemon) startFirewall() {
 		}
 		return false
 	})
-
 	engine.SetVerdictAsker(d.askVerdictCallback)
+
+	if err := engine.Apply(); err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] Firewall apply error: %v\n", ts(), err)
+		return
+	}
+
+	d.fwEngine = engine
 
 	// Set firewall engine for auto-blocking
 	checks.SetIPBlocker(engine)
