@@ -28,16 +28,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Email attachment scanning now treats a YARA-X backend loss or scan error as an incomplete scan. In tempfail mode, CSM defers the message instead of delivering it as scanned clean.
 - Infra hostnames are DNS-refreshed into the firewall lockout guard, so management hosts declared by name stay protected as the underlying address rotates.
-- Inline code-injection cleaner now sees through comment-based evasions, and the PHP content detector flags indirect eval and shell-exec sinks without false-positives on benign decoder callbacks.
-- File quarantine uses a descriptor-based move that defeats the classic swap-the-file race between detection and remediation, including symlink-substitution attempts.
-- Operator-supplied config-fragment directories are validated before any YAML loads; refused paths fail startup so an attacker cannot redirect CSM at untrusted fragments.
-- Verdict-callback responses are HMAC-signed by default, so an on-path attacker cannot downgrade a block decision; operators can opt out during staged panel rollouts.
+- Inline code-injection cleaner now sees through comment-based evasions, and the PHP content detector flags indirect eval and shell-exec sinks without false positives on benign decoder callbacks.
+- File quarantine now hardlinks or copies from a verified descriptor before unlinking the source, defeating the swap-the-file race and symlink-substitution attempts.
+- Operator-supplied config-fragment directories are validated before any fragments load; refused paths fail startup so an attacker cannot redirect CSM at untrusted fragments.
+- CSM requires signed verdict-callback responses by default when a secret is configured, preventing forged block-decision downgrades; operators can opt out during staged panel rollouts.
 
 ### Fixed
 
-- Auto-block tracker reconciles against the live kernel firewall, so stale cached entries no longer suppress re-blocking after the kernel has expired an IP.
-- Connection-tracking and process-execution findings now carry stable actor keys, so repeat events from the same source group into one incident instead of fanning out per process restart.
-- Cross-account correlation runs on the initial baseline scan, so the first batch after a daemon restart no longer slips past with no coordinated-attack alert.
+- Auto-block tracker reconciles against the live kernel firewall before pruning cached state, so stale entries no longer suppress re-blocking after an IP expires.
+- C2, backdoor, and suspicious PHP execution findings now carry stable actor keys, so repeat events group into one incident instead of splitting by process restart or missing UID.
+- Initial baseline dispatch no longer double-notifies scan-produced cross-account correlation alerts.
 - Auto-block no longer credits dry-run intercepts or verdict-callback allow responses as real blocks; dry-run intercepts surface as a Warning-level notice instead.
 - Auto-block ignores unknown firewall result codes instead of treating them as successful blocks.
 - Firewall blocklist size reported via the status API now reflects the live kernel count, so the panel agrees with the CLI.

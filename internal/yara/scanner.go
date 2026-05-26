@@ -37,6 +37,15 @@ func (s *Scanner) Reload() error {
 		return nil
 	}
 
+	// Refuse to compile rules from a directory or file that a third
+	// party could overwrite. An attacker who can drop a blank rule
+	// silently disables every detection downstream of YARA - the
+	// scanner stays "Available" with rule_count > 0 while matching
+	// nothing.
+	if err := validateRulesDir(s.rulesDir); err != nil {
+		return err
+	}
+
 	entries, err := os.ReadDir(s.rulesDir)
 	if err != nil {
 		if os.IsNotExist(err) {
