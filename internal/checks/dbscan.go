@@ -49,7 +49,7 @@ var dbMalwarePatterns = []struct {
 func CheckDatabaseContent(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
 	var findings []alert.Finding
 
-	wpConfigs, _ := osFS.Glob("/home/*/public_html/wp-config.php")
+	wpConfigs, _ := homeGlob(ctx, "public_html", "wp-config.php")
 	if len(wpConfigs) == 0 {
 		return nil
 	}

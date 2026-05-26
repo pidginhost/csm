@@ -1,6 +1,9 @@
 package checks
 
-import "context"
+import (
+	"context"
+	"path/filepath"
+)
 
 type accountScopeKey struct{}
 
@@ -27,4 +30,15 @@ func AccountFromContext(ctx context.Context) string {
 	}
 	v, _ := ctx.Value(accountScopeKey{}).(string)
 	return v
+}
+
+func homeGlob(ctx context.Context, elem ...string) ([]string, error) {
+	parts := []string{"/home"}
+	if account := AccountFromContext(ctx); account != "" {
+		parts = append(parts, account)
+	} else {
+		parts = append(parts, "*")
+	}
+	parts = append(parts, elem...)
+	return osFS.Glob(filepath.Join(parts...))
 }

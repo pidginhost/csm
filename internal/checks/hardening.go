@@ -24,11 +24,15 @@ func CheckOpenBasedir(ctx context.Context, _ *config.Config, _ *state.Store) []a
 	// Get list of disabled CageFS users (if mode is "Enable All", check exceptions)
 	disabledUsers := getCageFSDisabledUsers(cageFSMode)
 
-	// For users without CageFS, check if open_basedir is set
-	userDirs, _ := osFS.ReadDir("/var/cpanel/users")
-	for _, userEntry := range userDirs {
-		user := userEntry.Name()
+	users := cPanelUsersForOpenBasedirScan(ctx)
+	if cageFSMode == "unknown" && len(disabledUsers) == 0 {
+		for _, user := range users {
+			disabledUsers[user] = true
+		}
+	}
 
+	// For users without CageFS, check if open_basedir is set
+	for _, user := range users {
 		// Skip if CageFS is active for this user
 		if !disabledUsers[user] {
 			continue
@@ -46,6 +50,22 @@ func CheckOpenBasedir(ctx context.Context, _ *config.Config, _ *state.Store) []a
 	}
 
 	return findings
+}
+
+func cPanelUsersForOpenBasedirScan(ctx context.Context) []string {
+	if account := AccountFromContext(ctx); account != "" {
+		if _, err := osFS.Stat(filepath.Join("/var/cpanel/users", account)); err != nil {
+			return nil
+		}
+		return []string{account}
+	}
+
+	userDirs, _ := osFS.ReadDir("/var/cpanel/users")
+	users := make([]string, 0, len(userDirs))
+	for _, userEntry := range userDirs {
+		users = append(users, userEntry.Name())
+	}
+	return users
 }
 
 func getCageFSMode() string {

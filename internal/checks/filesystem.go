@@ -27,9 +27,9 @@ func CheckFilesystem(ctx context.Context, cfg *config.Config, _ *state.Store) []
 		"defunct": true, "defunct.dat": true, "gs-netcat": true,
 		"gs-sftp": true, "gs-mount": true, "gsocket": true,
 	}
-	configGlobs := []string{
-		"/home/*/.config/htop/*",
-		"/home/*/.config/*/*",
+	configGlobs := [][]string{
+		{".config", "htop", "*"},
+		{".config", "*", "*"},
 	}
 	// The htop glob is a subset of the wider .config glob. Deduplicate
 	// before ranking so the per-account cap applies to this scanner once.
@@ -39,7 +39,7 @@ func CheckFilesystem(ctx context.Context, cfg *config.Config, _ *state.Store) []
 		if ctx.Err() != nil {
 			return findings
 		}
-		matches, _ := osFS.Glob(pattern)
+		matches, _ := homeGlob(ctx, pattern...)
 		for _, path := range matches {
 			if ctx.Err() != nil {
 				return findings
@@ -75,64 +75,66 @@ func CheckFilesystem(ctx context.Context, cfg *config.Config, _ *state.Store) []
 		})
 	}
 
-	// Hidden files in /tmp, /dev/shm, /var/tmp - glob (instant)
-	safeHiddenPrefixes := []string{
-		".s.PGSQL", ".font-unix", ".ICE-unix", ".X11-unix",
-		".XIM-unix", ".crontab.", ".Test-unix",
-	}
-	for _, pattern := range []string{"/tmp/.*", "/dev/shm/.*", "/var/tmp/.*"} {
-		if ctx.Err() != nil {
-			return findings
+	if AccountFromContext(ctx) == "" {
+		// Hidden files in /tmp, /dev/shm, /var/tmp - glob (instant)
+		safeHiddenPrefixes := []string{
+			".s.PGSQL", ".font-unix", ".ICE-unix", ".X11-unix",
+			".XIM-unix", ".crontab.", ".Test-unix",
 		}
-		matches, _ := osFS.Glob(pattern)
-		candidates := make([]string, 0, len(matches))
-		for _, match := range matches {
+		for _, pattern := range []string{"/tmp/.*", "/dev/shm/.*", "/var/tmp/.*"} {
 			if ctx.Err() != nil {
 				return findings
 			}
-			base := filepath.Base(match)
-			safe := false
-			for _, prefix := range safeHiddenPrefixes {
-				if strings.HasPrefix(base, prefix) {
-					safe = true
-					break
+			matches, _ := osFS.Glob(pattern)
+			candidates := make([]string, 0, len(matches))
+			for _, match := range matches {
+				if ctx.Err() != nil {
+					return findings
 				}
+				base := filepath.Base(match)
+				safe := false
+				for _, prefix := range safeHiddenPrefixes {
+					if strings.HasPrefix(base, prefix) {
+						safe = true
+						break
+					}
+				}
+				if safe {
+					continue
+				}
+				candidates = append(candidates, match)
 			}
-			if safe {
-				continue
-			}
-			candidates = append(candidates, match)
-		}
-		// These are global temp locations, not account paths; do not let
-		// account_scan_max_files hide older suspicious files here.
-		ranked := rankPathsByMtimeDesc(ctx, candidates, 0)
-		if ctx.Err() != nil {
-			return findings
-		}
-		for _, match := range ranked {
+			// These are global temp locations, not account paths; do not let
+			// account_scan_max_files hide older suspicious files here.
+			ranked := rankPathsByMtimeDesc(ctx, candidates, 0)
 			if ctx.Err() != nil {
 				return findings
 			}
-			info, err := osFS.Stat(match)
-			if err != nil || info.IsDir() {
-				continue
+			for _, match := range ranked {
+				if ctx.Err() != nil {
+					return findings
+				}
+				info, err := osFS.Stat(match)
+				if err != nil || info.IsDir() {
+					continue
+				}
+				findings = append(findings, alert.Finding{
+					Severity: alert.High,
+					Check:    "suspicious_file",
+					Message:  fmt.Sprintf("Suspicious hidden file: %s", match),
+					Details:  fmt.Sprintf("Size: %d, Mtime: %s", info.Size(), info.ModTime()),
+					FilePath: match,
+				})
 			}
-			findings = append(findings, alert.Finding{
-				Severity: alert.High,
-				Check:    "suspicious_file",
-				Message:  fmt.Sprintf("Suspicious hidden file: %s", match),
-				Details:  fmt.Sprintf("Size: %d, Mtime: %s", info.Size(), info.ModTime()),
-				FilePath: match,
-			})
 		}
-	}
 
-	// SUID binaries in tmp dirs - ReadDir + stat (small dirs, fast)
-	for _, dir := range []string{"/tmp", "/var/tmp", "/dev/shm"} {
-		if ctx.Err() != nil {
-			return findings
+		// SUID binaries in tmp dirs - ReadDir + stat (small dirs, fast)
+		for _, dir := range []string{"/tmp", "/var/tmp", "/dev/shm"} {
+			if ctx.Err() != nil {
+				return findings
+			}
+			scanForSUID(ctx, dir, 3, &findings)
 		}
-		scanForSUID(ctx, dir, 3, &findings)
 	}
 
 	// SUID in /home - shallow scan only

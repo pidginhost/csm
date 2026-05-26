@@ -348,9 +348,11 @@ func buildFileIndex(ctx context.Context, dirCache dirMtimeCache, prevByDir map[s
 		scanDirForExecutables(configDir, 3, dirCache, prevByDir, forceFullScan, &entries)
 	}
 
-	// Scan tmp dirs
-	for _, tmpDir := range []string{"/tmp", "/dev/shm", "/var/tmp"} {
-		scanDirForSuspiciousExt(tmpDir, 2, dirCache, prevByDir, forceFullScan, &entries)
+	if AccountFromContext(ctx) == "" {
+		// Scan tmp dirs
+		for _, tmpDir := range []string{"/tmp", "/dev/shm", "/var/tmp"} {
+			scanDirForSuspiciousExt(tmpDir, 2, dirCache, prevByDir, forceFullScan, &entries)
+		}
 	}
 
 	sort.Strings(entries)

@@ -288,7 +288,7 @@ func CheckGroupWritablePHP(ctx context.Context, _ *config.Config, _ *state.Store
 		return nil
 	}
 
-	homeDirs, _ := osFS.ReadDir("/home")
+	homeDirs, _ := GetScanHomeDirs(ctx)
 	for _, homeEntry := range homeDirs {
 		if !homeEntry.IsDir() {
 			continue

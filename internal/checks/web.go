@@ -297,7 +297,7 @@ func checkHtaccessFile(path string, suspicious, safe []string, findings *[]alert
 // GlobalCMSCache so the real-time scanner can skip signature matches
 // on known-clean CMS files.
 func CheckWPCore(ctx context.Context, _ *config.Config, _ *state.Store) []alert.Finding {
-	wpConfigs, _ := osFS.Glob("/home/*/public_html/wp-config.php")
+	wpConfigs, _ := homeGlob(ctx, "public_html", "wp-config.php")
 	if len(wpConfigs) == 0 {
 		return nil
 	}

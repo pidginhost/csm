@@ -8,11 +8,9 @@ import (
 
 // TestAccountScopeConcurrentDoesNotBleed validates that two parallel
 // goroutines each reading a context-scoped account never see each
-// other's scope. Before P4, RunAccountScan wrote to a single global
-// (`ScanAccount`) and held a process-wide mutex for the entire scan
-// to keep scope coherent; that serialised every operator-driven
-// account scan. With context-scoped scope the global is gone and
-// scans can run in parallel.
+// other's scope. Account scope used to live in a single process-wide
+// value, which forced account scans to serialize. With context-scoped
+// scope, each scan carries its own immutable account value.
 func TestAccountScopeConcurrentDoesNotBleed(t *testing.T) {
 	const iterations = 500
 	var wg sync.WaitGroup

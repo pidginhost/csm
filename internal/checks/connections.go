@@ -369,7 +369,7 @@ func CheckNulledPlugins(ctx context.Context, _ *config.Config, _ *state.Store) [
 		"@remove_license", "null_license",
 	}
 
-	homeDirs, _ := osFS.ReadDir("/home")
+	homeDirs, _ := GetScanHomeDirs(ctx)
 	for _, homeEntry := range homeDirs {
 		if !homeEntry.IsDir() {
 			continue
