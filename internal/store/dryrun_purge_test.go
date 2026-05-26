@@ -46,8 +46,8 @@ func TestPurgeDryRunBlocksOlderThan(t *testing.T) {
 	// Inject one fresh + one stale entry directly through the same
 	// bucket so we can control the timestamp prefix without waiting.
 	now := time.Now().UTC()
-	freshKey := now.Format(time.RFC3339Nano) + ":198.51.100.10"
-	staleKey := now.Add(-30*24*time.Hour).Format(time.RFC3339Nano) + ":198.51.100.11"
+	freshKey := now.Format(time.RFC3339Nano) + ":2001:db8::10"
+	staleKey := now.Add(-30*24*time.Hour).Format(time.RFC3339Nano) + ":2001:db8::11"
 	if err := db.bolt.Update(func(tx *bolt.Tx) error {
 		b, err := tx.CreateBucketIfNotExists([]byte("dry_run_blocks"))
 		if err != nil {

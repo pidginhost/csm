@@ -13,6 +13,7 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/integrity"
 	"github.com/pidginhost/csm/internal/metrics"
+	"github.com/pidginhost/csm/internal/store"
 	"gopkg.in/yaml.v3"
 )
 
@@ -60,6 +61,61 @@ func newDaemonForReloadTest(t *testing.T, cfg *config.Config) *Daemon {
 	config.SetActive(cfg)
 	t.Cleanup(func() { config.SetActive(nil) })
 	return d
+}
+
+func TestPublishActiveConfigPurgesDryRunBlocksInLiveMode(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	prevStore := store.Global()
+	prevActive := config.Active()
+	store.SetGlobal(db)
+	t.Cleanup(func() {
+		config.SetActive(prevActive)
+		store.SetGlobal(prevStore)
+		_ = db.Close()
+	})
+
+	db.RecordDryRunBlock("198.51.100.50", "test", time.Hour)
+	if got := db.DryRunBlocksCount(); got != 1 {
+		t.Fatalf("seed dry_run_blocks = %d, want 1", got)
+	}
+
+	live := false
+	cfg := &config.Config{}
+	cfg.AutoResponse.DryRun = &live
+	publishActiveConfig(cfg, "test")
+
+	if got := config.Active(); got != cfg {
+		t.Fatal("publishActiveConfig did not install the active config")
+	}
+	if got := db.DryRunBlocksCount(); got != 0 {
+		t.Fatalf("dry_run_blocks after live publish = %d, want 0", got)
+	}
+}
+
+func TestPublishActiveConfigKeepsDryRunBlocksInDryRunMode(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	prevStore := store.Global()
+	prevActive := config.Active()
+	store.SetGlobal(db)
+	t.Cleanup(func() {
+		config.SetActive(prevActive)
+		store.SetGlobal(prevStore)
+		_ = db.Close()
+	})
+
+	db.RecordDryRunBlock("198.51.100.51", "test", time.Hour)
+	cfg := &config.Config{}
+	publishActiveConfig(cfg, "test")
+
+	if got := db.DryRunBlocksCount(); got != 1 {
+		t.Fatalf("dry_run_blocks after dry-run publish = %d, want 1", got)
+	}
 }
 
 func drainAlert(t *testing.T, d *Daemon, within time.Duration) alert.Finding {

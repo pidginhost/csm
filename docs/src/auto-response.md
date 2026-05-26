@@ -62,7 +62,7 @@ auto_response:
 
 ### Dry-run safety default
 
-`auto_response.dry_run` defaults to `true` when the key is **absent**. This is deliberate: an operator who turns on `block_ips: true` without thinking through policy gets recorded-but-not-applied blocks. The dry-run count surfaces in `csm status --json` and `/api/v1/status` so dashboards can verify the policy before flipping live.
+`auto_response.dry_run` defaults to `true` when the key is **absent**. This is deliberate: an operator who turns on `block_ips: true` without thinking through policy gets recorded-but-not-applied blocks. The dry-run count surfaces in `csm status --json` and `/api/v1/status` so dashboards can verify the policy before flipping live. CSM clears those records when auto-response starts or reloads in live mode, and ages out records older than a week while dry-run remains enabled.
 
 Verify dry-run state explicitly:
 

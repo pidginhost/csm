@@ -113,7 +113,7 @@ func (d *Daemon) reloadConfig() {
 			resynced.Integrity.ConfigHash = newCfg.Integrity.ConfigHash
 			resynced.ConfigFile = cfgPath
 			resynced.ConfigDir = oldCfg.ConfigDir
-			config.SetActive(&resynced)
+			publishActiveConfig(&resynced, "SIGHUP")
 		} else {
 			fmt.Fprintf(os.Stderr, "[%s] config_reload_restart_required: re-sign failed (%v); file and live hash remain mismatched until operator runs `csm rehash`\n",
 				ts(), err)
@@ -141,24 +141,8 @@ func (d *Daemon) reloadConfig() {
 			fmt.Sprintf("SIGHUP reload: account extractor update failed: %v; live config unchanged", err))
 		return
 	}
-	config.SetActive(newCfg)
+	publishActiveConfig(newCfg, "SIGHUP")
 	recordReloadResult(reloadResultSuccess)
-
-	// When the operator flips auto_response.dry_run from on to off
-	// (going live), purge the dry_run_blocks bucket so the status
-	// surface stops reporting a stale count from the previous
-	// dry-run window. Going the other way (live -> dry-run) does
-	// not purge; existing entries from a prior dry-run window stay
-	// addressable until the periodic prune ages them out.
-	if oldCfg != nil &&
-		oldCfg.AutoResponseDryRunEnabled() &&
-		!newCfg.AutoResponseDryRunEnabled() {
-		if sdb := store.Global(); sdb != nil {
-			if removed := sdb.PurgeAllDryRunBlocks(); removed > 0 {
-				fmt.Fprintf(os.Stderr, "[%s] SIGHUP: purged %d dry_run_blocks records (dry-run -> live)\n", ts(), removed)
-			}
-		}
-	}
 
 	var names []string
 	for _, c := range changes {
@@ -187,6 +171,22 @@ func (d *Daemon) activeOrStartupCfg() *config.Config {
 // ROADMAP item 7 for the threshold-tuning motivation.
 func (d *Daemon) currentCfg() *config.Config {
 	return d.activeOrStartupCfg()
+}
+
+func publishActiveConfig(cfg *config.Config, source string) {
+	config.SetActive(cfg)
+	purgeDryRunBlocksIfAutoResponseLive(cfg, source)
+}
+
+func purgeDryRunBlocksIfAutoResponseLive(cfg *config.Config, source string) {
+	if cfg == nil || cfg.AutoResponseDryRunEnabled() {
+		return
+	}
+	if sdb := store.Global(); sdb != nil {
+		if removed := sdb.PurgeAllDryRunBlocks(); removed > 0 {
+			fmt.Fprintf(os.Stderr, "[%s] %s: purged %d dry_run_blocks records (auto-response live)\n", ts(), source, removed)
+		}
+	}
 }
 
 // signAndSaveReloadedConfig re-computes integrity.config_hash for the main

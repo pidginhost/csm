@@ -26,7 +26,8 @@ type Snapshot struct {
 	Capabilities         []string        `json:"capabilities,omitempty"`
 	// DryRunBlocks is the count of firewall blocks that were intercepted by
 	// auto_response.dry_run and logged rather than applied to nftables.
-	// Non-zero only when dry_run has been active since the last daemon start.
+	// Cleared whenever auto-response is live; dry-run mode keeps a recent
+	// rolling window for operator review.
 	DryRunBlocks int `json:"dry_run_blocks,omitempty"`
 
 	// Automation is the operator-facing safety surface for automatic action

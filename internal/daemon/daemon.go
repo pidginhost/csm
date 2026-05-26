@@ -473,7 +473,7 @@ func (d *Daemon) Run() error {
 	// Hot paths (check ticks, alert dispatch, etc.) call
 	// config.Active() to pick up the current snapshot so a SIGHUP
 	// reload is visible on the next call without restart.
-	config.SetActive(d.cfg)
+	publishActiveConfig(d.cfg, "startup")
 
 	// Install the mail-brute account-key extractor selected by config.
 	// Validation in config.Load() already rejected invalid specs, so the
