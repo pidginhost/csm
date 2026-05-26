@@ -308,6 +308,9 @@ func TestMakeAccountBackdoorCheckFlagsKnownNames(t *testing.T) {
 	if got[0].Check != "backdoor_binary" || got[0].Severity != alert.Critical {
 		t.Errorf("unexpected finding: %+v", got[0])
 	}
+	if got[0].FilePath != "/home/alice/.config/htop/defunct" {
+		t.Errorf("FilePath = %q, want /home/alice/.config/htop/defunct", got[0].FilePath)
+	}
 }
 
 func TestMakeAccountBackdoorCheckIgnoresUnknownNames(t *testing.T) {

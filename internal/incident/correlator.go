@@ -820,8 +820,8 @@ func cloneKey(k Key) *Key {
 }
 
 // keyString serializes a Key into a stable string for the byKey map.
-// All identifying fields must be encoded so distinct findings (e.g.
-// different PIDs with no Account, or different remote IPs) do not
+// All fields selected by KeyFor must be encoded so distinct findings
+// (e.g. different PID-only processes or different remote IPs) do not
 // collapse to the same bucket and falsely merge.
 func keyString(k Key) string {
 	return fmt.Sprintf("%d:%s|%d:%s|%d:%s|%d|%d|%d:%s",

@@ -147,6 +147,9 @@ func TestCheckOutboundConnectionsC2Detection(t *testing.T) {
 			if f.Severity != alert.Critical {
 				t.Errorf("C2 severity = %v, want Critical", f.Severity)
 			}
+			if f.SourceIP != c2IP {
+				t.Errorf("C2 SourceIP = %q, want %q", f.SourceIP, c2IP)
+			}
 			if !strings.Contains(f.Message, c2IP) {
 				t.Errorf("C2 message should contain IP, got %q", f.Message)
 			}
@@ -181,6 +184,9 @@ func TestCheckOutboundConnectionsBackdoorLocalPort(t *testing.T) {
 			found = true
 			if f.Severity != alert.Critical {
 				t.Errorf("backdoor severity = %v, want Critical", f.Severity)
+			}
+			if f.SourceIP != "203.0.113.5" {
+				t.Errorf("backdoor SourceIP = %q, want 203.0.113.5", f.SourceIP)
 			}
 			if !strings.Contains(f.Message, "31337") {
 				t.Errorf("message should contain port 31337, got %q", f.Message)
@@ -217,6 +223,9 @@ func TestCheckOutboundConnectionsBackdoorOutbound(t *testing.T) {
 			found = true
 			if f.Severity != alert.High {
 				t.Errorf("outbound backdoor severity = %v, want High", f.Severity)
+			}
+			if f.SourceIP != "203.0.113.5" {
+				t.Errorf("outbound backdoor SourceIP = %q, want 203.0.113.5", f.SourceIP)
 			}
 			if !strings.Contains(f.Message, "4444") {
 				t.Errorf("message should contain port 4444, got %q", f.Message)

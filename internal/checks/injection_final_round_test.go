@@ -161,6 +161,7 @@ func TestCheckForwardersValiasAndVfilterDetection(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCheckPHPProcessesDetectsSuspiciousPath(t *testing.T) {
+	withMockPasswd(t, "alice:x:1001:1001::/home/alice:/bin/bash\n")
 	withMockOS(t, &mockOS{
 		glob: func(pattern string) ([]string, error) {
 			return []string{"/proc/4242/cmdline", "/proc/4243/cmdline"}, nil
@@ -190,6 +191,18 @@ func TestCheckPHPProcessesDetectsSuspiciousPath(t *testing.T) {
 	if findings[0].PID != 4242 {
 		t.Errorf("pid=%d, want 4242", findings[0].PID)
 	}
+	if findings[0].Process == nil {
+		t.Fatal("expected process context for suspicious lsphp")
+	}
+	if findings[0].Process.PID != 4242 {
+		t.Errorf("process pid=%d, want 4242", findings[0].Process.PID)
+	}
+	if findings[0].Process.UID != 1001 {
+		t.Errorf("process uid=%d, want 1001", findings[0].Process.UID)
+	}
+	if findings[0].Process.Account != "alice" {
+		t.Errorf("process account=%q, want alice", findings[0].Process.Account)
+	}
 }
 
 func TestCheckPHPProcessesSkipsBenignLsphp(t *testing.T) {
@@ -209,6 +222,28 @@ func TestCheckPHPProcessesSkipsBenignLsphp(t *testing.T) {
 	findings := CheckPHPProcesses(context.Background(), &config.Config{}, nil)
 	if len(findings) != 0 {
 		t.Errorf("benign lsphp should produce 0 findings, got %d", len(findings))
+	}
+}
+
+func TestCheckPHPProcessesDoesNotAttributeMissingUIDToRoot(t *testing.T) {
+	withMockOS(t, &mockOS{
+		glob: func(pattern string) ([]string, error) {
+			return []string{"/proc/4242/cmdline"}, nil
+		},
+		readFile: func(name string) ([]byte, error) {
+			if strings.HasSuffix(name, "/4242/cmdline") {
+				return []byte("lsphp\x00/tmp/evil.php\x00"), nil
+			}
+			return nil, os.ErrNotExist
+		},
+	})
+
+	findings := CheckPHPProcesses(context.Background(), &config.Config{}, nil)
+	if len(findings) != 1 {
+		t.Fatalf("expected one suspicious lsphp finding, got %d", len(findings))
+	}
+	if findings[0].Process != nil {
+		t.Fatalf("missing status UID should not fabricate process context: %+v", findings[0].Process)
 	}
 }
 

@@ -56,8 +56,19 @@ func TestKeyForProcessFinding(t *testing.T) {
 	if k.UID != 1001 {
 		t.Errorf("UID: want 1001, got %d", k.UID)
 	}
+	if k.PID != 0 {
+		t.Errorf("PID should not split account/UID key, got %d", k.PID)
+	}
+}
+
+func TestKeyForProcessPIDFallback(t *testing.T) {
+	f := alert.Finding{
+		Check:   "outbound_connection",
+		Process: &processctx.ProcessContext{PID: 4242},
+	}
+	k := KeyFor(f)
 	if k.PID != 4242 {
-		t.Errorf("PID: want 4242, got %d", k.PID)
+		t.Errorf("PID fallback: want 4242, got %d", k.PID)
 	}
 }
 

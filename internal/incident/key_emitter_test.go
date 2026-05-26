@@ -62,7 +62,7 @@ func TestKeyFor_BackdoorPortOutboundHasNonEmptyKey(t *testing.T) {
 }
 
 func TestKeyFor_PHPSuspiciousExecutionHasNonEmptyKey(t *testing.T) {
-	// processes.go::CheckSuspiciousProcesses emits this when lsphp runs
+	// processes.go::CheckPHPProcesses emits this when lsphp runs
 	// from /tmp / /dev/shm / hidden config. UID is the actor of
 	// interest because the same compromised cPanel user re-executes
 	// from various tmp paths. Without Process the only key bait is
@@ -79,6 +79,9 @@ func TestKeyFor_PHPSuspiciousExecutionHasNonEmptyKey(t *testing.T) {
 	}
 	if k := KeyFor(f); k.Account != "alice" {
 		t.Errorf("expected Account=alice from Process.Account, got %q", k.Account)
+	}
+	if k := KeyFor(f); k.PID != 0 {
+		t.Errorf("process PID should not split PHP execution incidents, got %d", k.PID)
 	}
 }
 

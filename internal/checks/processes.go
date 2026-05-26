@@ -3,7 +3,7 @@ package checks
 import (
 	"context"
 	"fmt"
-	"os/user"
+	"math"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -14,20 +14,30 @@ import (
 	"github.com/pidginhost/csm/internal/state"
 )
 
-// accountForUID resolves a numeric UID to a username via NSS. Returns ""
-// when lookup fails (nonexistent uid, sandboxed test env). Used to
-// populate Process.Account on findings so the incident correlator can
-// group repeat events from the same cPanel user without leaning on PID
-// (which rotates per restart) or UID (numeric, less searchable).
-func accountForUID(uid int) string {
-	if uid < 0 {
-		return ""
+func processStatusUID(data []byte) (int, bool) {
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "Uid:\t") {
+			fields := strings.Fields(strings.TrimPrefix(line, "Uid:\t"))
+			if len(fields) == 0 {
+				return 0, false
+			}
+			uid, err := strconv.Atoi(fields[0])
+			return uid, err == nil && uid >= 0
+		}
 	}
-	u, err := user.LookupId(strconv.Itoa(uid))
-	if err != nil {
-		return ""
+	return 0, false
+}
+
+func processIdentityForUID(uid int) (string, string) {
+	if uid < 0 || uid > math.MaxUint32 {
+		return "", ""
 	}
-	return u.Username
+	// #nosec G115 -- uid is range-checked against math.MaxUint32 above.
+	user := LookupUser(uint32(uid))
+	if uid >= 1000 && user != "" && !strings.HasPrefix(user, "uid:") {
+		return user, user
+	}
+	return user, ""
 }
 
 // suspiciousExeNames flags processes whose exe basename contains any of
@@ -267,28 +277,27 @@ func CheckPHPProcesses(ctx context.Context, _ *config.Config, _ *state.Store) []
 		for _, sus := range suspiciousPHPPaths {
 			if strings.Contains(cmdStr, sus) {
 				statusData, _ := osFS.ReadFile(filepath.Join("/proc", pid, "status"))
-				var uid string
-				for _, line := range strings.Split(string(statusData), "\n") {
-					if strings.HasPrefix(line, "Uid:\t") {
-						fields := strings.Fields(strings.TrimPrefix(line, "Uid:\t"))
-						if len(fields) > 0 {
-							uid = fields[0]
-						}
+				uid, uidOK := processStatusUID(statusData)
+				uidText := ""
+				var proc *processctx.ProcessContext
+				if uidOK {
+					uidText = strconv.Itoa(uid)
+					userName, account := processIdentityForUID(uid)
+					proc = &processctx.ProcessContext{
+						PID:     pidInt,
+						UID:     uid,
+						User:    userName,
+						Account: account,
 					}
 				}
-				uidInt, _ := strconv.Atoi(uid)
 
 				findings = append(findings, alert.Finding{
 					Severity: alert.Critical,
 					Check:    "php_suspicious_execution",
 					Message:  fmt.Sprintf("PHP executing from suspicious path: %s", sus),
-					Details:  fmt.Sprintf("PID: %s, UID: %s, cmdline: %s", pid, uid, strings.TrimSpace(cmdStr)),
+					Details:  fmt.Sprintf("PID: %s, UID: %s, cmdline: %s", pid, uidText, strings.TrimSpace(cmdStr)),
 					PID:      pidInt,
-					Process: &processctx.ProcessContext{
-						PID:     pidInt,
-						UID:     uidInt,
-						Account: accountForUID(uidInt),
-					},
+					Process:  proc,
 				})
 				break
 			}

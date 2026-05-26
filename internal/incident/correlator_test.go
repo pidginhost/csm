@@ -145,6 +145,34 @@ func TestCorrelatorProcessOnlyFindingsDoNotCollide(t *testing.T) {
 	}
 }
 
+func TestCorrelatorMergesSameUIDAcrossRotatingProcessPID(t *testing.T) {
+	c := newTestCorrelator()
+	f1 := alert.Finding{
+		Check:     "php_suspicious_execution",
+		Severity:  alert.Critical,
+		Process:   &processctx.ProcessContext{PID: 4242, UID: 1001},
+		Timestamp: time.Unix(1_700_000_000, 0),
+	}
+	id1, created1, _ := c.OnFinding(f1)
+	if !created1 {
+		t.Fatal("setup")
+	}
+
+	f2 := alert.Finding{
+		Check:     "php_suspicious_execution",
+		Severity:  alert.Critical,
+		Process:   &processctx.ProcessContext{PID: 5555, UID: 1001},
+		Timestamp: time.Unix(1_700_000_000+60, 0),
+	}
+	id2, created2, _ := c.OnFinding(f2)
+	if created2 {
+		t.Errorf("same UID with a new PID must merge, not create")
+	}
+	if id1 != id2 {
+		t.Errorf("ids must match for same UID across PIDs: %q vs %q", id1, id2)
+	}
+}
+
 func TestCorrelatorRemoteIPOnlyFindingsDoNotCollide(t *testing.T) {
 	c := newTestCorrelator()
 	f1 := alert.Finding{

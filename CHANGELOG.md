@@ -31,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `c2_connection`, `backdoor_port`, `backdoor_port_outbound`, `backdoor_binary`, and `php_suspicious_execution` findings now carry the attacker IP, file path, or process actor so the incident correlator groups repeat events from the same source instead of dropping each one as un-keyable.
+- C2, backdoor, and suspicious PHP execution findings now carry stable actor keys so repeat events group into one incident; PHP process grouping no longer splits on rotating PIDs or falls back to root when UID data is missing.
 - Initial baseline dispatch now keeps scan-produced cross-account correlation alerts from being duplicated before notification.
 - Auto-block no longer records a real block, bumps the hourly counter, writes the permanent threat database, or emits a Critical "AUTO-BLOCK" finding when `auto_response.dry_run` intercepted the call or the verdict callback returned "allow". Dry-run intercepts now surface as a Warning-level "AUTO-BLOCK [dry-run]" notice so operators can still see what would have happened.
 - Auto-block now ignores unexpected firewall result reports instead of treating them as successful blocks.
