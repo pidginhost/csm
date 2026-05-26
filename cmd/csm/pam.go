@@ -268,6 +268,9 @@ func pamEnsureLines(path string, dryRun bool) (bool, error) {
 		out.WriteString(line)
 		out.WriteByte('\n')
 	}
+	// #nosec G306 -- /etc/pam.d service files are standard 0644 so libpam
+	// can read them under every PAM-aware stack; tightening to 0600 would
+	// break authentication on services that resolve PAM as non-root.
 	if err := os.WriteFile(path, out.Bytes(), 0o644); err != nil {
 		return false, fmt.Errorf("writing %s after backup %s: %w", path, backup, err)
 	}
@@ -340,6 +343,8 @@ func pamRemoveLines(path string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	// #nosec G306 -- /etc/pam.d service files are standard 0644; see the
+	// matching annotation in pamEnsureLines above.
 	if err := os.WriteFile(path, out.Bytes(), 0o644); err != nil {
 		return 0, fmt.Errorf("writing %s after backup %s: %w", path, backup, err)
 	}
