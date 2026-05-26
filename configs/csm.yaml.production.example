@@ -200,6 +200,7 @@ auto_response:
     url: ""
     hmac_secret: ""
     hmac_secret_env: ""
+    allow_unsigned: false
     require_response_signature: true
     timeout_sec: 2
 

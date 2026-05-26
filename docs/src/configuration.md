@@ -244,6 +244,7 @@ auto_response:
     url: ""                             # POST target for verdict requests
     hmac_secret: ""                     # signing secret, or use hmac_secret_env
     hmac_secret_env: ""                 # env var read at call time
+    allow_unsigned: false               # true only for staged unsigned rollouts
     require_response_signature: true    # reject unsigned callback replies
     timeout_sec: 2                      # callback request timeout
 

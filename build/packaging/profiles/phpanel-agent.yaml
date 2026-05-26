@@ -98,5 +98,6 @@ auto_response:
     enabled: false                       # operator/agent flips on after response signing is deployed
     # url: https://panel.example.com/api/csm/verdict
     hmac_secret_env: CSM_VERDICT_HMAC
+    allow_unsigned: false
     require_response_signature: true
     timeout_sec: 2

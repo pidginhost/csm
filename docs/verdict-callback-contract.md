@@ -32,6 +32,11 @@ static `hmac_secret` field. This lets operators rotate the secret via
 env without restarting the daemon while keeping request and response
 verification on the same key for that exchange.
 
+CSM refuses to enable the callback without a non-empty `hmac_secret` or
+resolved `hmac_secret_env` value. Operators can set
+`allow_unsigned: true` only for staged rollouts that intentionally send
+unsigned requests.
+
 The server MUST verify the signature with constant-time compare and
 reject unsigned or invalid requests with 401.
 

@@ -194,6 +194,37 @@ func TestValidatePhpanelWebhookAcceptsHMACSecretEnv(t *testing.T) {
 	}
 }
 
+func TestValidateVerdictCallbackRequiresSecret(t *testing.T) {
+	t.Setenv("CSM_VERDICT_HMAC_TEST", "")
+	cfg := baseValidationConfig()
+	cfg.AutoResponse.VerdictCallback.Enabled = true
+	cfg.AutoResponse.VerdictCallback.URL = "https://panel.example.com/api/csm/verdict"
+	cfg.AutoResponse.VerdictCallback.HMACSecretEnv = "CSM_VERDICT_HMAC_TEST"
+
+	results := Validate(cfg)
+	if !hasResult(results, "error", "auto_response.verdict_callback.hmac_secret_env") {
+		t.Fatalf("expected error for missing verdict callback HMAC env secret; results=%v", results)
+	}
+	if hasResult(results, "warn", "auto_response.verdict_callback.hmac_secret") {
+		t.Fatalf("missing verdict callback secret must be a blocking error, not a warning; results=%v", results)
+	}
+}
+
+func TestValidateVerdictCallbackAllowsExplicitUnsignedOptIn(t *testing.T) {
+	t.Setenv("CSM_VERDICT_HMAC_TEST", "")
+	cfg := baseValidationConfig()
+	cfg.AutoResponse.VerdictCallback.Enabled = true
+	cfg.AutoResponse.VerdictCallback.URL = "https://panel.example.com/api/csm/verdict"
+	cfg.AutoResponse.VerdictCallback.HMACSecretEnv = "CSM_VERDICT_HMAC_TEST"
+	cfg.AutoResponse.VerdictCallback.AllowUnsigned = true
+
+	results := Validate(cfg)
+	if hasResult(results, "error", "auto_response.verdict_callback.hmac_secret_env") ||
+		hasResult(results, "warn", "auto_response.verdict_callback.hmac_secret") {
+		t.Fatalf("explicit allow_unsigned should not report missing verdict callback secret; results=%v", results)
+	}
+}
+
 func TestValidateHeartbeat(t *testing.T) {
 	cfg := &Config{Hostname: "test"}
 	cfg.Alerts.Heartbeat.Enabled = true

@@ -48,6 +48,7 @@ auto_response:
     url: ""                            # POST target
     hmac_secret: ""                    # signing secret, or use hmac_secret_env
     hmac_secret_env: ""
+    allow_unsigned: false              # true only for staged unsigned rollouts
     require_response_signature: true   # reject unsigned callback replies
     timeout_sec: 2
 
@@ -76,10 +77,12 @@ To go live: set `dry_run: false`, run `csm rehash` (twice, due to the circular h
 ### Verdict callback (advisory)
 
 When `verdict_callback.enabled: true`, every auto-block call POSTs a
-signed JSON request to the panel before mutating nftables. When a
-secret is configured, CSM also requires the panel to sign the response
-body unless `require_response_signature: false` is set for a staged
-rollout. The panel can return `{"verdict": "block"}` (apply),
+signed JSON request to the panel before mutating nftables. CSM refuses
+to start without `hmac_secret` or a non-empty `hmac_secret_env` value
+unless `allow_unsigned: true` is set for a staged unsigned rollout.
+When a secret is configured, CSM also requires the panel to sign the
+response body unless `require_response_signature: false` is set for a
+staged rollout. The panel can return `{"verdict": "block"}` (apply),
 `{"verdict": "allow"}` (audit-only; CSM logs the decision and skips
 nftables), or attach metadata (`tenant_id`, `note`). The callback runs
 after local validation and infra-IP safety checks, and before the

@@ -415,16 +415,8 @@ func Validate(cfg *Config) []ValidationResult {
 	}
 
 	// --- AutoResponse.VerdictCallback ---
-	if cfg.AutoResponse.VerdictCallback.Enabled {
-		secret := cfg.AutoResponse.VerdictCallback.HMACSecret
-		if cfg.AutoResponse.VerdictCallback.HMACSecretEnv != "" {
-			if v := os.Getenv(cfg.AutoResponse.VerdictCallback.HMACSecretEnv); v != "" {
-				secret = v
-			}
-		}
-		if secret == "" {
-			results = append(results, ValidationResult{"warn", "auto_response.verdict_callback.hmac_secret", "verdict callback enabled but no HMAC secret configured (panel will reject unsigned requests)"})
-		}
+	if field, err := validateVerdictCallbackField(cfg); err != nil {
+		results = append(results, ValidationResult{"error", field, err.Error()})
 	}
 
 	// --- Warnings ---

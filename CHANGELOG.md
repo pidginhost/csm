@@ -42,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Verdict-callback settings validation now blocks unsigned enabled configs unless `allow_unsigned: true` is set, matching daemon startup checks.
 - Webhook dispatcher now drains small HTTP responses and shares one transport, so repeated alerts can reuse keepalive connections instead of opening a new TCP/TLS session each time.
 - Access-log brute-force handler parses each line with a zero-allocation scanner instead of splitting into a string slice, halving CPU time and removing per-line garbage during sustained POST floods.
 - Access-log scanner now preserves the previous field handling for unusual whitespace and malformed quoted methods.

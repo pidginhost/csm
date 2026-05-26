@@ -1476,35 +1476,40 @@ func isLoopbackHost(host string) bool {
 }
 
 func validateVerdictCallback(cfg *Config) error {
+	_, err := validateVerdictCallbackField(cfg)
+	return err
+}
+
+func validateVerdictCallbackField(cfg *Config) (string, error) {
 	vc := cfg.AutoResponse.VerdictCallback
 	if vc.TimeoutSec != 0 && (vc.TimeoutSec < 1 || vc.TimeoutSec > 30) {
-		return fmt.Errorf("auto_response.verdict_callback.timeout_sec must be between 1 and 30")
+		return "auto_response.verdict_callback.timeout_sec", fmt.Errorf("auto_response.verdict_callback.timeout_sec must be between 1 and 30")
 	}
 	if !vc.Enabled {
-		return nil
+		return "", nil
 	}
 	rawURL := strings.TrimSpace(vc.URL)
 	if rawURL == "" {
-		return fmt.Errorf("auto_response.verdict_callback.enabled=true but url is empty")
+		return "auto_response.verdict_callback.url", fmt.Errorf("auto_response.verdict_callback.enabled=true but url is empty")
 	}
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return fmt.Errorf("auto_response.verdict_callback.url: %w", err)
+		return "auto_response.verdict_callback.url", fmt.Errorf("auto_response.verdict_callback.url: %w", err)
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return fmt.Errorf("auto_response.verdict_callback.url must use http or https")
+		return "auto_response.verdict_callback.url", fmt.Errorf("auto_response.verdict_callback.url must use http or https")
 	}
 	if parsed.Host == "" {
-		return fmt.Errorf("auto_response.verdict_callback.url must include host")
+		return "auto_response.verdict_callback.url", fmt.Errorf("auto_response.verdict_callback.url must include host")
 	}
 	if err := validateVerdictCallbackSecret(verdictCallbackForValidation{
 		HMACSecret:    vc.HMACSecret,
 		HMACSecretEnv: vc.HMACSecretEnv,
 		AllowUnsigned: vc.AllowUnsigned,
 	}); err != nil {
-		return err
+		return verdictCallbackSecretField(vc.HMACSecretEnv), err
 	}
-	return nil
+	return "", nil
 }
 
 // validateVerdictCallbackSecret enforces fail-closed posture on the
@@ -1539,6 +1544,13 @@ type verdictCallbackForValidation struct {
 	HMACSecret    string
 	HMACSecretEnv string
 	AllowUnsigned bool
+}
+
+func verdictCallbackSecretField(hmacSecretEnv string) string {
+	if hmacSecretEnv != "" {
+		return "auto_response.verdict_callback.hmac_secret_env"
+	}
+	return "auto_response.verdict_callback.hmac_secret"
 }
 
 func validateDirectSMTPEgress(cfg *Config) error {

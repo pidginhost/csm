@@ -388,6 +388,48 @@ alerts:
 	}
 }
 
+func TestSettingsPOSTRejectsVerdictCallbackWithoutSecret(t *testing.T) {
+	body := `hostname: t.example.com
+alerts:
+  email:
+    enabled: true
+    to: ["ops@example.com"]
+    from: csm@example.com
+    smtp: smtp.example.com:587
+auto_response:
+  enabled: true
+`
+	s, _ := newSettingsTestServer(t, "tok", body)
+	getReq := settingsAuthedReq("GET", "/api/v1/settings/auto_response", "tok", "")
+	getW := httptest.NewRecorder()
+	s.apiSettingsGet(getW, getReq)
+	etag := getW.Header().Get("ETag")
+
+	postReq := settingsAuthedReq("POST", "/api/v1/settings/auto_response", "tok", `{"changes":{"verdict_callback.enabled":true,"verdict_callback.url":"https://panel.example.com/api/csm/verdict"}}`)
+	postReq.Header.Set("If-Match", etag)
+	postReq.Header.Set("X-CSRF-Token", s.csrfToken())
+	postW := httptest.NewRecorder()
+	s.apiSettingsPost(postW, postReq)
+
+	if postW.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("code = %d, want 422, body = %s", postW.Code, postW.Body.String())
+	}
+	var resp struct {
+		Errors []struct {
+			Field string `json:"field"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(postW.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	for _, e := range resp.Errors {
+		if e.Field == "auto_response.verdict_callback.hmac_secret" {
+			return
+		}
+	}
+	t.Fatalf("expected verdict callback HMAC error, got %s", postW.Body.String())
+}
+
 func TestSettingsPOSTNullForNonNullableField422(t *testing.T) {
 	body := `hostname: t.example.com
 alerts:

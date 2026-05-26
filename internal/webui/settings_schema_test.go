@@ -133,6 +133,17 @@ func TestAutoResponseSchemaIncludesVerdictResponseSignatureToggle(t *testing.T) 
 	}
 }
 
+func TestAutoResponseSchemaIncludesVerdictUnsignedOptIn(t *testing.T) {
+	s, _ := LookupSettingsSection("auto_response")
+	f := findSchemaField(s, "verdict_callback.allow_unsigned")
+	if f == nil {
+		t.Fatal("verdict unsigned opt-in field missing")
+	}
+	if f.Type != "bool" {
+		t.Fatalf("verdict unsigned opt-in type = %q, want bool", f.Type)
+	}
+}
+
 func TestAutoResponseSchemaIncludesMaxBlocksPerHour(t *testing.T) {
 	s, _ := LookupSettingsSection("auto_response")
 	f := findSchemaField(s, "max_blocks_per_hour")
