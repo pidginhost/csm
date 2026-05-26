@@ -34,5 +34,6 @@ type ScanResult struct {
 	PartialExtraction bool      `json:"partial_extraction"`
 	FailedEngines     []string  `json:"failed_engines,omitempty"`
 	TimedOutEngines   []string  `json:"-"` // engines that timed out (for finding emission, not persisted)
+	ErroredEngines    []string  `json:"-"` // engines that returned scan errors (for finding emission, not persisted)
 	AllEnginesDown    bool      `json:"-"` // true if no engines were available
 }

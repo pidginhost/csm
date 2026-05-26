@@ -55,9 +55,10 @@ func (o *Orchestrator) ScanParts(messageID string, parts []emime.ExtractedPart, 
 
 	// Scan each part with all available engines
 	for _, part := range parts {
-		findings, timedOut := o.scanPart(part, available)
+		findings, timedOut, errored := o.scanPart(part, available)
 		result.Findings = append(result.Findings, findings...)
 		result.TimedOutEngines = append(result.TimedOutEngines, timedOut...)
+		result.ErroredEngines = append(result.ErroredEngines, errored...)
 	}
 
 	result.Infected = len(result.Findings) > 0
@@ -65,8 +66,8 @@ func (o *Orchestrator) ScanParts(messageID string, parts []emime.ExtractedPart, 
 }
 
 // scanPart scans a single part with all available engines concurrently.
-// Returns findings and a list of engine names that timed out.
-func (o *Orchestrator) scanPart(part emime.ExtractedPart, scanners []Scanner) ([]Finding, []string) {
+// Returns findings and lists of engine names that timed out or errored.
+func (o *Orchestrator) scanPart(part emime.ExtractedPart, scanners []Scanner) ([]Finding, []string, []string) {
 	type scanResult struct {
 		engine   string
 		verdict  Verdict
@@ -107,11 +108,14 @@ func (o *Orchestrator) scanPart(part emime.ExtractedPart, scanners []Scanner) ([
 
 	var findings []Finding
 	var timedOut []string
+	var errored []string
 	for r := range results {
 		if r.err != nil {
 			fmt.Fprintf(os.Stderr, "[emailav] %s scan error on %s: %v\n", r.engine, part.Filename, r.err)
 			if r.timedOut {
 				timedOut = append(timedOut, r.engine)
+			} else {
+				errored = append(errored, r.engine)
 			}
 			continue // fail-open
 		}
@@ -129,5 +133,5 @@ func (o *Orchestrator) scanPart(part emime.ExtractedPart, scanners []Scanner) ([
 		}
 	}
 
-	return findings, timedOut
+	return findings, timedOut, errored
 }

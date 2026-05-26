@@ -364,6 +364,15 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 			return
 		}
 	}
+	if len(result.ErroredEngines) > 0 {
+		sw.emitFinding("email_av_scan_error", alert.Warning,
+			fmt.Sprintf("Scan error for message %s on engine(s): %s", msgID, strings.Join(result.ErroredEngines, ", ")))
+		if shouldTempfailEmailDelivery(tempfail, result, nil) {
+			sw.emitDegradedWarning(fmt.Sprintf("Incomplete AV scan - message %s deferred after engine error", msgID))
+			response = FAN_DENY
+			return
+		}
+	}
 
 	if !result.Infected {
 		return // Clean - allow

@@ -194,6 +194,7 @@ var checkRegistry = []CheckInfo{
 	{Name: "email_av_degraded", Category: CategoryEmail},
 	{Name: "email_av_parse_error", Category: CategoryEmail},
 	{Name: "email_av_quarantine_error", Category: CategoryEmail},
+	{Name: "email_av_scan_error", Category: CategoryEmail},
 	{Name: "email_av_timeout", Category: CategoryEmail},
 	{Name: "email_compromised_account", Category: CategoryEmail},
 	{Name: "email_credential_leak", Category: CategoryEmail},

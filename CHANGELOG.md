@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- emailav YARA scanner no longer silently reports "clean" when the backend dies mid-scan. The adapter now confirms the backend is still healthy after every empty result and returns an error otherwise, so the orchestrator can route the message conservatively instead of shipping a possibly-malicious attachment as scanned-clean.
+- Email attachment scanning now treats a YARA-X backend loss or scan error as an incomplete scan. In tempfail mode, CSM defers the message instead of delivering it as scanned clean.
 - Hostnames in top-level or firewall `infra_ips:` are now DNS-refreshed by the same loop that services `dyndns_hosts:` and their resolved IPs feed the firewall's infra-block guard. Operators can list panel and bastion hosts by name and they stay lockout-protected as the underlying address rotates.
 - Inline code-injection cleaner now strips block / line comments before matching, catching evasions like `@eval/*x*/(base64_decode(...))` that previously slipped through; the PHP content detector also flags indirect eval / shell sinks without alerting on decoder-only callbacks.
 - Quarantine now moves files via an fd-based hardlink rather than a path-based rename, defeating the classic detect-then-quarantine race where an attacker swaps a malware file out for a legitimate one (or a symlink to a sensitive file) between scan and remediation. When hardlinking is unavailable, CSM copies from the same verified file descriptor before removing the source.

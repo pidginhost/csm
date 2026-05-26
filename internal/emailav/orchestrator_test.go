@@ -187,4 +187,10 @@ func TestOrchestratorScanError(t *testing.T) {
 	if result.Infected {
 		t.Error("fail-open: scan error should not mark as infected")
 	}
+	if len(result.ErroredEngines) != 1 || result.ErroredEngines[0] != "clamav" {
+		t.Errorf("ErroredEngines = %v, want [clamav]", result.ErroredEngines)
+	}
+	if len(result.TimedOutEngines) != 0 {
+		t.Errorf("TimedOutEngines = %v, want none", result.TimedOutEngines)
+	}
 }
