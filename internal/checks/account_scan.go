@@ -73,8 +73,13 @@ func rankPathsByMtimeDesc(ctx context.Context, paths []string, maxFiles int) []s
 	if err := ctx.Err(); err != nil {
 		return nil
 	}
+	dropped := 0
 	if maxFiles > 0 && len(ranked) > maxFiles {
+		dropped = len(ranked) - maxFiles
 		ranked = ranked[:maxFiles]
+	}
+	if dropped > 0 {
+		emitAccountScanTruncated(dropped, maxFiles)
 	}
 	out := make([]string, len(ranked))
 	for i, e := range ranked {

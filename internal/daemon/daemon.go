@@ -509,6 +509,19 @@ func (d *Daemon) Run() error {
 		fmt.Fprintf(os.Stderr, "[%s] YARA backend init: %v\n", ts(), err)
 	}
 	checks.InitThreatDB(d.cfg.StatePath, d.cfg.Reputation.Whitelist)
+
+	// Wire the account-scanner truncation emitter so operators see a
+	// Warning finding when scanner caps clip recent files. Without
+	// this the cap only shows up in stderr, which many sites do not
+	// collect; detection gaps then go unnoticed.
+	checks.SetAccountScanTruncatedSink(func(f alert.Finding) {
+		select {
+		case d.alertCh <- f:
+		default:
+			atomic.AddInt64(&d.droppedAlerts, 1)
+		}
+	})
+
 	if db := checks.GetThreatDB(); db != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Threat DB initialized (%d entries)\n", ts(), db.Count())
 	}
