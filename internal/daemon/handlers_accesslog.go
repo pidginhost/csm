@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -52,6 +53,26 @@ type accessLogTracker struct {
 
 // accessLogTrackers holds per-IP state. sync.Map for concurrent handler access.
 var accessLogTrackers sync.Map // key: IP string → value: *accessLogTracker
+
+// accessLogTrackerCount approximates the live entry count in
+// accessLogTrackers. sync.Map exposes no Len(); maintaining a side
+// counter is the canonical workaround. Used to trigger eager
+// eviction during a DDoS burst, where the 5-min timer alone would
+// let the map grow into the hundreds of thousands of unique IPs
+// before the next prune. Counter drifts slightly under contention
+// (multiple goroutines may race the same LoadOrStore inserted-flag
+// branch) but only over-counts; the next eviction pass corrects it.
+var (
+	accessLogTrackerCount   atomic.Int64
+	accessLogEagerEvictTrip = make(chan struct{}, 1)
+)
+
+// accessLogEvictSoftCap is the live-entry threshold above which the
+// hot path nudges the eviction goroutine to run sooner than the
+// 5-min ticker. Picked to be well below typical memory limits even
+// at the worst per-tracker size (~256 bytes) so a 100k entry
+// burst stays under 32 MB.
+const accessLogEvictSoftCap = 50000
 
 // discoverAccessLogPath returns the first access log path that exists,
 // consulting the platform detector for OS/web-server specific candidates.
@@ -103,8 +124,16 @@ func parseAccessLogBruteForce(line string, cfg *config.Config) []alert.Finding {
 	}
 
 	now := time.Now()
-	val, _ := accessLogTrackers.LoadOrStore(ip, &accessLogTracker{})
+	val, loaded := accessLogTrackers.LoadOrStore(ip, &accessLogTracker{})
 	tracker := val.(*accessLogTracker)
+	if !loaded {
+		if accessLogTrackerCount.Add(1) > accessLogEvictSoftCap {
+			select {
+			case accessLogEagerEvictTrip <- struct{}{}:
+			default:
+			}
+		}
+	}
 
 	tracker.mu.Lock()
 	defer tracker.mu.Unlock()
@@ -200,6 +229,12 @@ func StartAccessLogEviction(stopCh <-chan struct{}) {
 				return
 			case now := <-ticker.C:
 				evictAccessLogState(now)
+			case <-accessLogEagerEvictTrip:
+				// Soft-cap signal from the hot path. Run an
+				// immediate eviction so a DDoS burst of unique
+				// IPs cannot grow the tracker map past memory
+				// budget before the next 5-min tick.
+				evictAccessLogState(time.Now())
 			}
 		}
 	})
@@ -237,6 +272,7 @@ func evictAccessLogState(now time.Time) {
 
 		if empty {
 			accessLogTrackers.Delete(key)
+			accessLogTrackerCount.Add(-1)
 		}
 		return true
 	})
