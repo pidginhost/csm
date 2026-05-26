@@ -150,7 +150,14 @@ type counters struct {
 // Correlator groups findings into incidents. In-memory state; the
 // daemon is responsible for wiring it to a store via CorrelatorConfig.Persist.
 type Correlator struct {
-	mu                    sync.Mutex
+	mu sync.Mutex
+	// persistMu serializes Persist callbacks so that two concurrent
+	// merges, each having mutated the in-memory incident under mu
+	// and then released mu to call Persist, cannot race their disk
+	// writes out of order. Without this, the second-to-finish disk
+	// write could carry the older snapshot and overwrite the newer
+	// one, leaving disk state behind memory state.
+	persistMu             sync.Mutex
 	cfg                   CorrelatorConfig
 	incidents             map[string]*Incident
 	byKey                 map[string]string
@@ -751,6 +758,13 @@ func (c *Correlator) persistLocked(snap Incident) {
 		return
 	}
 	snap = cloneIncident(snap)
+	// Acquire the persist lock BEFORE releasing c.mu so two
+	// concurrent mergeLocked calls cannot interleave their Persist
+	// invocations and write older state on top of newer state. The
+	// order (persistMu, then unlock mu) keeps the in-memory snapshot
+	// linearized with the disk write.
+	c.persistMu.Lock()
+	defer c.persistMu.Unlock()
 	c.mu.Unlock()
 	defer c.mu.Lock()
 	c.cfg.Persist(snap)
