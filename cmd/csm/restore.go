@@ -9,7 +9,8 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
-	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 const maxRestoreEntrySize = 1 << 30
@@ -19,8 +20,9 @@ const maxRestoreEntrySize = 1 << 30
 // stopping the daemon first - we don't try to detect a live bbolt
 // handle (the daemon would be holding the lock anyway).
 //
-// Defends against path traversal: archive entries with `../` components
-// or absolute paths are rejected.
+// Defends against path traversal and planted symlinks: archive entries
+// with `../` components or absolute paths are rejected, and existing
+// symlinks under the configured destination trees are not followed.
 func RestoreBackupArchive(archive string, dst BackupSources) (err error) {
 	f, err := os.Open(archive) // #nosec G304 G703 -- operator-supplied archive path.
 	if err != nil {
@@ -81,18 +83,9 @@ func RestoreBackupArchive(archive string, dst BackupSources) (err error) {
 			continue // destination path not configured for this entry kind
 		}
 
-		if symErr := refuseSymlinkBelow(anchor, target); symErr != nil {
-			return fmt.Errorf("rejecting archive entry %q: %w", hdr.Name, symErr)
-		}
-		if mkdirErr := os.MkdirAll(filepath.Dir(target), 0o700); mkdirErr != nil {
-			return mkdirErr
-		}
-		// O_NOFOLLOW protects against a symlink planted at target itself
-		// between the refuseSymlinkBelow probe and the open; refuseSymlinkBelow
-		// covers every intermediate component above target.
-		out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0o600) // #nosec G304 -- target derived from sanitized archive entry
+		out, err := openRestoreTarget(anchor, target)
 		if err != nil {
-			return err
+			return fmt.Errorf("rejecting archive entry %q: %w", hdr.Name, err)
 		}
 		if _, copyErr := io.CopyN(out, tr, hdr.Size); copyErr != nil {
 			if closeErr := out.Close(); closeErr != nil {
@@ -106,43 +99,76 @@ func RestoreBackupArchive(archive string, dst BackupSources) (err error) {
 	}
 }
 
-// refuseSymlinkBelow walks the path from anchor down to target and returns
-// an error if any existing component is a symlink. Combined with O_NOFOLLOW
-// on the final OpenFile this prevents a pre-existing symlink (planted by an
-// earlier attacker with write access to the destination tree) from
-// redirecting the restored bytes outside the controlled directories.
-func refuseSymlinkBelow(anchor, target string) error {
+// openRestoreTarget creates missing directories under anchor and opens target
+// through pinned directory descriptors, so a symlink swap under anchor cannot
+// redirect the final write outside the configured restore tree.
+func openRestoreTarget(anchor, target string) (*os.File, error) {
 	if anchor == "" {
-		return fmt.Errorf("anchor unset for %q", target)
+		return nil, fmt.Errorf("anchor unset for %q", target)
 	}
 	rel, err := filepath.Rel(anchor, target)
 	if err != nil {
-		return fmt.Errorf("relative path: %w", err)
+		return nil, fmt.Errorf("relative path: %w", err)
 	}
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return fmt.Errorf("target %q escapes anchor %q", target, anchor)
+		return nil, fmt.Errorf("target %q escapes anchor %q", target, anchor)
 	}
-	p := anchor
-	if info, err := os.Lstat(p); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("anchor %s is a symlink", p)
+	dirRel, fileName := filepath.Split(rel)
+	if fileName == "" || fileName == "." || fileName == ".." {
+		return nil, fmt.Errorf("invalid target filename %q", target)
 	}
-	for _, seg := range strings.Split(filepath.ToSlash(rel), "/") {
+
+	if mkdirErr := os.MkdirAll(anchor, 0o700); mkdirErr != nil {
+		return nil, mkdirErr
+	}
+	dirFD, err := unix.Open(anchor, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open anchor %s: %w", anchor, err)
+	}
+	defer func() {
+		if dirFD >= 0 {
+			_ = unix.Close(dirFD)
+		}
+	}()
+
+	for _, seg := range strings.Split(filepath.ToSlash(dirRel), "/") {
 		if seg == "" || seg == "." {
 			continue
 		}
-		p = filepath.Join(p, seg)
-		info, err := os.Lstat(p)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil
-			}
-			return err
+		if seg == ".." {
+			return nil, fmt.Errorf("invalid parent component in %q", target)
 		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("refusing to traverse symlink at %s", p)
+		nextFD, childErr := openRestoreChildDir(dirFD, seg)
+		if childErr != nil {
+			return nil, childErr
 		}
+		_ = unix.Close(dirFD)
+		dirFD = nextFD
 	}
-	return nil
+
+	fd, err := unix.Openat(dirFD, fileName, unix.O_WRONLY|unix.O_CREAT|unix.O_TRUNC|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open target %s: %w", target, err)
+	}
+	return os.NewFile(uintptr(fd), target), nil
+}
+
+func openRestoreChildDir(parentFD int, name string) (int, error) {
+	fd, err := unix.Openat(parentFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err == nil {
+		return fd, nil
+	}
+	if err != unix.ENOENT {
+		return -1, fmt.Errorf("open directory %s: %w", name, err)
+	}
+	if mkdirErr := unix.Mkdirat(parentFD, name, 0o700); mkdirErr != nil && mkdirErr != unix.EEXIST {
+		return -1, fmt.Errorf("create directory %s: %w", name, mkdirErr)
+	}
+	fd, err = unix.Openat(parentFD, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return -1, fmt.Errorf("open directory %s: %w", name, err)
+	}
+	return fd, nil
 }
 
 func unsafeArchiveName(name string) bool {

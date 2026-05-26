@@ -99,3 +99,41 @@ func TestRestoreArchive_RejectsSymlinkInIntermediateDir(t *testing.T) {
 		t.Fatal("symlink escape succeeded; payload landed outside destination")
 	}
 }
+
+func TestRestoreArchive_RejectsNestedSymlinkInIntermediateDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink behaviour is POSIX-specific")
+	}
+
+	src := t.TempDir()
+	dst := t.TempDir()
+
+	outside := filepath.Join(dst, "..attacker")
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dst, "conf.d"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dst, "conf.d", "nested")); err != nil {
+		t.Fatal(err)
+	}
+
+	archive := filepath.Join(src, "backup.tar.gz")
+	if err := writeArchiveEntry(archive, "conf.d/nested/10.yaml", 4, []byte("PWND")); err != nil {
+		t.Fatal(err)
+	}
+
+	err := RestoreBackupArchive(archive, BackupSources{
+		ConfigPath: dst + "/csm.yaml",
+		ConfDir:    dst + "/conf.d",
+		StateDir:   dst + "/state",
+	})
+	if err == nil {
+		t.Fatal("restore must reject nested symlinked intermediate directory")
+	}
+
+	if _, statErr := os.Stat(filepath.Join(outside, "10.yaml")); statErr == nil {
+		t.Fatal("nested symlink escape succeeded; payload landed outside destination")
+	}
+}

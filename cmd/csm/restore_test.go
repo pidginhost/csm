@@ -56,6 +56,29 @@ func TestRestoreArchive_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestRestoreArchive_CreatesNestedDestinationParents(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	archive := filepath.Join(src, "backup.tar.gz")
+	if err := writeArchiveEntry(archive, "conf.d/nested/10.yaml", 5, []byte("k: v\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RestoreBackupArchive(archive, BackupSources{
+		ConfigPath: dst + "/csm.yaml", ConfDir: dst + "/conf.d", StateDir: dst + "/state",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(dst, "conf.d", "nested", "10.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "k: v\n" {
+		t.Fatalf("nested config fragment not restored, got %q", got)
+	}
+}
+
 func TestRestoreArchive_MissingArchiveErrors(t *testing.T) {
 	dir := t.TempDir()
 	if err := RestoreBackupArchive(filepath.Join(dir, "nope.tar.gz"), BackupSources{
