@@ -907,8 +907,6 @@ reputation:
 }
 
 func TestUpstreamTI_DefaultsApply(t *testing.T) {
-	// Loopback URL keeps the test self-contained (no network) while
-	// honouring the non-loopback-https requirement enforced below.
 	cfg, err := LoadBytes([]byte(`
 reputation:
   upstream:
@@ -927,8 +925,6 @@ reputation:
 }
 
 func TestUpstreamTI_RejectsNonLoopbackHTTP(t *testing.T) {
-	// A bearer token sent over plain http to a remote panel leaks on
-	// every hop. Operators must use https for any non-loopback URL.
 	_, err := LoadBytes([]byte(`
 reputation:
   upstream:
@@ -941,12 +937,10 @@ reputation:
 }
 
 func TestUpstreamTI_AcceptsLoopbackHTTP(t *testing.T) {
-	// Loopback http stays on-host (no wire), so the bearer token is
-	// not exposed even without TLS. The loopback exception keeps
-	// development and same-host-panel deployments working.
 	for _, addr := range []string{
 		"http://127.0.0.1:8080/ti",
 		"http://localhost:8080/ti",
+		"http://LOCALHOST:8080/ti",
 		"http://[::1]:8080/ti",
 	} {
 		t.Run(addr, func(t *testing.T) {

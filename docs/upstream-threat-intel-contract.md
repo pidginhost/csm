@@ -11,8 +11,9 @@ can implement it; phpanel's reference implementation lives in
 GET <reputation.upstream.url>/lookup?ip=<ip>
 ```
 
-`reputation.upstream.url` must be an `http://` or `https://` URL with a
-host. CSM appends `/lookup` to that base URL.
+`reputation.upstream.url` must be an `https://` URL with a host. Plain
+`http://` is accepted only for loopback hosts such as `127.0.0.1`,
+`[::1]`, or `localhost`. CSM appends `/lookup` to that base URL.
 
 ## Authentication
 

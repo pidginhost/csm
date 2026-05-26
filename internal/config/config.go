@@ -1444,16 +1444,12 @@ func validateReputation(cfg *Config) error {
 	return nil
 }
 
-// isLoopbackHost reports whether host resolves to a loopback address
-// for the purposes of allowing http:// URLs on same-host panel
-// deployments. Treats "localhost" as loopback by convention, and parses
-// IPv4 / IPv6 literals via net.ParseIP. Returns false on any unparseable
-// host so the caller fails closed.
+// isLoopbackHost keeps plain HTTP limited to same-host panel deployments.
 func isLoopbackHost(host string) bool {
 	if host == "" {
 		return false
 	}
-	if host == "localhost" {
+	if strings.EqualFold(host, "localhost") {
 		return true
 	}
 	ip := net.ParseIP(host)

@@ -318,7 +318,7 @@ reputation:
     token_env: ""                       # env var read at query time
   upstream:
     enabled: false                      # include panel-side threat-intel cache scores
-    url: ""                             # base URL; CSM appends /lookup
+    url: ""                             # HTTPS base URL; HTTP only allowed for loopback
     token: ""                           # bearer token, or use token_env
     token_env: ""                       # env var read at query time
     cache_ttl_min: 15                   # local cache TTL for upstream scores
