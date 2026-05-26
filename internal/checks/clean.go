@@ -29,6 +29,17 @@ type CleanResult struct {
 // 2. Prepend injection - remove malicious code blocks at start of file (entropy-validated)
 // 3. Append injection - remove malicious code after closing ?> or end of PSR-12 file
 // 4. Inline eval injection - remove eval(base64_decode(...)) single-line injections
+
+// Module-level regex cache: these patterns ran per-call in malware
+// cleaning hot paths, recompiling on every infected-file remediation.
+var cleanRegexpVarInclude = regexp.MustCompile(`(?i)^\s*@include\s*\(\s*\$[a-zA-Z_]+\s*\)`)
+var cleanRegexpCloseOpen = regexp.MustCompile(`\?>\s*<\?php`)
+var cleanRegexpMultiB64 = regexp.MustCompile(`(?i)(?:base64_decode\s*\(\s*){2,}`)
+var cleanRegexpChainedB64 = regexp.MustCompile(`(?i)\$\w+\s*=\s*base64_decode\s*\(\s*base64_decode`)
+var cleanRegexpChrChain = regexp.MustCompile(`(?i)(?:chr\s*\(\s*\d+\s*\)\s*\.?\s*){5,}`)
+var cleanRegexpPackHex = regexp.MustCompile(`(?i)pack\s*\(\s*["\x60']H\*["\x60']\s*,`)
+var cleanRegexpHexVar = regexp.MustCompile(`(?:"\x5c\x78[0-9a-fA-F]{2}){3,}|(?:\\x[0-9a-fA-F]{2}){3,}`)
+
 func CleanInfectedFile(path string) CleanResult {
 	result := CleanResult{Path: path}
 
@@ -173,7 +184,7 @@ func removeIncludeInjections(content string) (string, []string) {
 
 	// Pattern 2: @include($variable) - suspicious variable-based include
 	// Only flag if the variable is defined nearby with concatenation/obfuscation
-	varInclude := regexp.MustCompile(`(?i)^\s*@include\s*\(\s*\$[a-zA-Z_]+\s*\)`)
+	varInclude := cleanRegexpVarInclude
 
 	for i, line := range lines {
 		if maliciousInclude.MatchString(line) {
@@ -214,7 +225,7 @@ func removePrependInjection(content string) (string, []string) {
 	}
 
 	// Find if there's a malicious block at the start followed by ?><?php
-	closeOpen := regexp.MustCompile(`\?>\s*<\?php`)
+	closeOpen := cleanRegexpCloseOpen
 	loc := closeOpen.FindStringIndex(content)
 	if loc == nil {
 		return content, nil
@@ -427,9 +438,9 @@ func removeMultiLayerBase64(content string) (string, []string) {
 	var clean []string
 
 	// Multi-layer base64: 2+ nested base64_decode calls on one line
-	multiB64 := regexp.MustCompile(`(?i)(?:base64_decode\s*\(\s*){2,}`)
+	multiB64 := cleanRegexpMultiB64
 	// Chained base64 across variables: $x = base64_decode(...); eval($x);
-	chainedB64 := regexp.MustCompile(`(?i)\$\w+\s*=\s*base64_decode\s*\(\s*base64_decode`)
+	chainedB64 := cleanRegexpChainedB64
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -456,9 +467,9 @@ func removeChrPackInjections(content string) (string, []string) {
 	var clean []string
 
 	// 5+ chr() calls concatenated - building function names from char codes
-	chrChain := regexp.MustCompile(`(?i)(?:chr\s*\(\s*\d+\s*\)\s*\.?\s*){5,}`)
+	chrChain := cleanRegexpChrChain
 	// pack("H*", ...) - hex string to function name construction
-	packHex := regexp.MustCompile(`(?i)pack\s*\(\s*["']H\*["']\s*,`)
+	packHex := cleanRegexpPackHex
 
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -493,7 +504,7 @@ func removeHexVarInjections(content string) (string, []string) {
 	var clean []string
 
 	// Variable names built from hex: $GLOBALS["\x41\x42\x43"]
-	hexVar := regexp.MustCompile(`(?:"\x5c\x78[0-9a-fA-F]{2}){3,}|(?:\\x[0-9a-fA-F]{2}){3,}`)
+	hexVar := cleanRegexpHexVar
 
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
