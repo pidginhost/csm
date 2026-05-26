@@ -438,6 +438,12 @@ type Config struct {
 			// implemented response signing - in that window the path reverts
 			// to the pre-3.x advisory contract.
 			RequireResponseSignature *bool `yaml:"require_response_signature,omitempty"`
+			// AllowUnsigned opts out of the default fail-closed posture and
+			// permits the verdict callback to fire without an HMAC secret.
+			// Only set true while bootstrapping a new panel or during local
+			// testing; production deployments must keep this false so the
+			// daemon refuses to start when the secret env var is empty.
+			AllowUnsigned bool `yaml:"allow_unsigned,omitempty"`
 		} `yaml:"verdict_callback"`
 	} `yaml:"auto_response" hotreload:"safe"`
 
@@ -1491,7 +1497,48 @@ func validateVerdictCallback(cfg *Config) error {
 	if parsed.Host == "" {
 		return fmt.Errorf("auto_response.verdict_callback.url must include host")
 	}
+	if err := validateVerdictCallbackSecret(verdictCallbackForValidation{
+		HMACSecret:    vc.HMACSecret,
+		HMACSecretEnv: vc.HMACSecretEnv,
+		AllowUnsigned: vc.AllowUnsigned,
+	}); err != nil {
+		return err
+	}
 	return nil
+}
+
+// validateVerdictCallbackSecret enforces fail-closed posture on the
+// outbound HMAC: when the callback is enabled, either hmac_secret or the
+// hmac_secret_env-named env var must resolve to a non-empty value, OR
+// the operator must explicitly set allow_unsigned: true to acknowledge
+// that the channel will run without integrity protection.
+//
+// Without this check a misconfigured deployment (env var typoed, secret
+// not yet rotated in) silently emits unsigned POSTs while the daemon
+// keeps reporting healthy, and any on-path actor can forge or replay
+// block decisions.
+func validateVerdictCallbackSecret(vc verdictCallbackForValidation) error {
+	if vc.AllowUnsigned {
+		return nil
+	}
+	if strings.TrimSpace(vc.HMACSecret) != "" {
+		return nil
+	}
+	if vc.HMACSecretEnv != "" {
+		if strings.TrimSpace(os.Getenv(vc.HMACSecretEnv)) != "" {
+			return nil
+		}
+		return fmt.Errorf("auto_response.verdict_callback.enabled=true but env var %q is empty or unset; set the secret, or opt in with allow_unsigned: true", vc.HMACSecretEnv)
+	}
+	return fmt.Errorf("auto_response.verdict_callback.enabled=true requires hmac_secret or hmac_secret_env (or allow_unsigned: true to acknowledge unsigned posts)")
+}
+
+// verdictCallbackForValidation isolates the fields validateVerdictCallbackSecret
+// needs without re-spelling the anonymous struct literal in config.go.
+type verdictCallbackForValidation struct {
+	HMACSecret    string
+	HMACSecretEnv string
+	AllowUnsigned bool
 }
 
 func validateDirectSMTPEgress(cfg *Config) error {

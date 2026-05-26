@@ -977,6 +977,7 @@ func TestVerdictCallback_DisabledByDefault(t *testing.T) {
 }
 
 func TestVerdictCallback_AcceptsURLAndSecret(t *testing.T) {
+	t.Setenv("CSM_VERDICT_HMAC", "test-secret")
 	cfg, err := LoadBytes([]byte(`
 auto_response:
   verdict_callback:
@@ -997,6 +998,7 @@ auto_response:
 }
 
 func TestVerdictCallback_AcceptsResponseSignatureOptOut(t *testing.T) {
+	t.Setenv("CSM_VERDICT_HMAC", "test-secret")
 	cfg, err := LoadBytes([]byte(`
 auto_response:
   verdict_callback:
@@ -1011,6 +1013,47 @@ auto_response:
 	got := cfg.AutoResponse.VerdictCallback.RequireResponseSignature
 	if got == nil || *got {
 		t.Fatalf("RequireResponseSignature = %v, want explicit false", got)
+	}
+}
+
+func TestVerdictCallback_RejectsEnabledWithoutSecret(t *testing.T) {
+	t.Setenv("CSM_VERDICT_HMAC", "")
+	_, err := LoadBytes([]byte(`
+auto_response:
+  verdict_callback:
+    enabled: true
+    url: https://panel.example.com/api/csm/verdict
+    hmac_secret_env: CSM_VERDICT_HMAC
+`))
+	if err == nil {
+		t.Fatal("verdict callback with empty env secret must be rejected")
+	}
+}
+
+func TestVerdictCallback_AllowsExplicitUnsignedOptIn(t *testing.T) {
+	t.Setenv("CSM_VERDICT_HMAC", "")
+	_, err := LoadBytes([]byte(`
+auto_response:
+  verdict_callback:
+    enabled: true
+    url: https://panel.example.com/api/csm/verdict
+    hmac_secret_env: CSM_VERDICT_HMAC
+    allow_unsigned: true
+`))
+	if err != nil {
+		t.Fatalf("explicit allow_unsigned should permit empty secret, got %v", err)
+	}
+}
+
+func TestVerdictCallback_RejectsEnabledWithoutAnySecretConfig(t *testing.T) {
+	_, err := LoadBytes([]byte(`
+auto_response:
+  verdict_callback:
+    enabled: true
+    url: https://panel.example.com/api/csm/verdict
+`))
+	if err == nil {
+		t.Fatal("verdict callback without hmac_secret or hmac_secret_env must be rejected")
 	}
 }
 

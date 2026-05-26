@@ -38,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Operator-supplied config-fragment directories are validated before any fragments load; refused paths fail startup so an attacker cannot redirect CSM at untrusted fragments.
 - CSM requires signed verdict-callback responses by default when a secret is configured, preventing forged block-decision downgrades; operators can opt out during staged panel rollouts.
 - Backup restore refuses to follow pre-existing symlinks under configured restore destinations, defeating attacker-planted redirections to system files.
+- Verdict-callback startup now refuses to enable an unsigned channel by default; the daemon errors when the configured HMAC secret env var is missing unless operators explicitly opt in with `allow_unsigned: true`.
 
 ### Fixed
 
