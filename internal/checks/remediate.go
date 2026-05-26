@@ -2,6 +2,7 @@ package checks
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -186,20 +187,26 @@ func fixQuarantine(path string) RemediationResult {
 	ts := time.Now().Format("20060102-150405")
 	qPath := filepath.Join(quarantineDir, fmt.Sprintf("%s_%s", ts, safeName))
 
-	if err := os.Rename(path, qPath); err != nil {
-		// Cross-device fallback for files
-		if !info.IsDir() {
-			data, readErr := osFS.ReadFile(path)
-			if readErr != nil {
-				return RemediationResult{Error: fmt.Sprintf("cannot read file: %v", readErr)}
-			}
-			if writeErr := os.WriteFile(qPath, data, 0600); writeErr != nil {
-				return RemediationResult{Error: fmt.Sprintf("cannot write quarantine: %v", writeErr)}
-			}
-			os.Remove(path)
-		} else {
+	// Directories use the standard rename (they're rare in quarantine
+	// remediation and harder to TOCTOU-swap atomically). Regular files
+	// go through the fd-based safe path which closes the detect-then-
+	// rename race window.
+	if info.IsDir() {
+		if err := os.Rename(path, qPath); err != nil {
 			return RemediationResult{Error: fmt.Sprintf("cannot quarantine directory: %v", err)}
 		}
+	} else if err := quarantineFileTOCTOUSafe(path, qPath, info); err != nil {
+		if !errors.Is(err, syscall.EXDEV) {
+			return RemediationResult{Error: err.Error()}
+		}
+		data, readErr := osFS.ReadFile(path)
+		if readErr != nil {
+			return RemediationResult{Error: fmt.Sprintf("cannot read file: %v", readErr)}
+		}
+		if writeErr := os.WriteFile(qPath, data, 0600); writeErr != nil {
+			return RemediationResult{Error: fmt.Sprintf("cannot write quarantine: %v", writeErr)}
+		}
+		os.Remove(path)
 	}
 
 	// Write metadata sidecar for restore
