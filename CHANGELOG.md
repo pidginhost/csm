@@ -40,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Auto-block hourly rate cap is now configurable via `auto_response.max_blocks_per_hour`, so hosts under sustained attack can raise the throttle without a rebuild.
 - Firewall startup wires dry-run and verdict callbacks before applying nftables and keeps the dry-run safety default from depending on startup ordering.
 - Auto-block now installs the firewall engine via an atomic pointer and keeps IP and subnet decisions on one scan snapshot, so a SIGHUP rewire cannot split a scan across two engines.
 - Auto-block tracker reconciles against the live kernel firewall before pruning cached state, so stale entries no longer suppress re-blocking after an IP expires.
