@@ -107,24 +107,19 @@ func parseAccessLogBruteForce(line string, cfg *config.Config) []alert.Finding {
 		return nil
 	}
 
-	fields := strings.Fields(line)
-	if len(fields) < 7 {
+	ip, method, path, ok := accessLogIPMethodPath(line)
+	if !ok {
 		return nil
 	}
-
-	ip := fields[0]
 
 	// Skip infra IPs and loopback.
 	if ip == "127.0.0.1" || ip == "::1" || isInfraIPDaemon(ip, cfg.InfraIPs) {
 		return nil
 	}
 
-	method := strings.Trim(fields[5], "\"")
 	if method != "POST" {
 		return nil
 	}
-
-	path := fields[6]
 
 	isWPLogin := strings.Contains(path, "wp-login.php")
 	isXMLRPC := strings.Contains(path, "xmlrpc.php")
@@ -368,6 +363,42 @@ func decrementAccessLogTrackerCount() {
 			return
 		}
 	}
+}
+
+// accessLogIPMethodPath extracts client IP, request method, and request path
+// from an Apache/LiteSpeed Combined Log Format line without allocating a
+// string slice. Hot path: each domlog line that survives the "POST" prefilter
+// hits this. strings.Fields allocates len(fields)+1 strings per call; this
+// scanner only returns sub-strings that share the input's backing array.
+func accessLogIPMethodPath(line string) (ip, method, path string, ok bool) {
+	var fields [7]string
+	n := len(line)
+	i := 0
+	for f := 0; f < 7; f++ {
+		for i < n && isAccessLogSpace(line[i]) {
+			i++
+		}
+		if i >= n {
+			return "", "", "", false
+		}
+		start := i
+		for i < n && !isAccessLogSpace(line[i]) {
+			i++
+		}
+		fields[f] = line[start:i]
+	}
+	method = fields[5]
+	if len(method) > 0 && method[0] == '"' {
+		method = method[1:]
+	}
+	if l := len(method); l > 0 && method[l-1] == '"' {
+		method = method[:l-1]
+	}
+	return fields[0], method, fields[6], true
+}
+
+func isAccessLogSpace(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
 }
 
 // isAdminPanelPath returns true for high-confidence non-WP admin panel login

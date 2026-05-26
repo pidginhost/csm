@@ -14,11 +14,10 @@ import (
 func parseAccessLogLineEnhanced(line string, cfg *config.Config) []alert.Finding {
 	var findings []alert.Finding
 
-	fields := strings.Fields(line)
-	if len(fields) < 7 {
+	ip, _, _, ok := accessLogIPMethodPath(line)
+	if !ok {
 		return nil
 	}
-	ip := fields[0]
 
 	if isInfraIPDaemon(ip, cfg.InfraIPs) || ip == "127.0.0.1" {
 		return nil
