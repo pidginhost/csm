@@ -1,3 +1,14 @@
+// Tabler v1.4+ exposes its bundled Bootstrap component classes on
+// `window.tabler` (e.g. tabler.Modal, tabler.Tab, tabler.Offcanvas) and
+// no longer populates the legacy `window.bootstrap` global. Every page
+// script and shared helper in this UI still calls window.bootstrap.X,
+// so alias the namespace once at load time instead of touching every
+// call site. Safe to run when bootstrap is already defined (preserves
+// any standalone bootstrap.bundle.min.js operators may add later).
+if (typeof window !== 'undefined' && !window.bootstrap && window.tabler) {
+    window.bootstrap = window.tabler;
+}
+
 // Parse CSM_CONFIG from JSON data block (avoids inline script for CSP compliance)
 var CSM_CONFIG = JSON.parse(document.getElementById('csm-config').textContent);
 
