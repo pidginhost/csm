@@ -330,8 +330,8 @@ func pamRemoveLines(path string) (int, error) {
 		out.WriteString(line)
 		out.WriteByte('\n')
 	}
-	if err := scanner.Err(); err != nil {
-		return 0, err
+	if scanErr := scanner.Err(); scanErr != nil {
+		return 0, scanErr
 	}
 	if removed == 0 {
 		return 0, nil
