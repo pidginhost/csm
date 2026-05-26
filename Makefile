@@ -1,4 +1,4 @@
-.PHONY: build build-yara build-linux build-all clean test lint sec vuln fmt fmt-check vet ci tools sync-embedded check-embedded check-fixtures bpf-gen
+.PHONY: build build-yara build-linux build-all build-pam clean test lint sec vuln fmt fmt-check vet ci tools sync-embedded check-embedded check-fixtures bpf-gen
 
 # Pinned tool versions -- bump deliberately, keep in sync with .gitlab-ci.yml
 GOLANGCI_LINT_VERSION := v2.11.4
@@ -77,6 +77,15 @@ build-linux: sync-embedded
 # Build all local stub targets.
 build-all: build-linux
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build $(GOBUILDTAGS) -ldflags "$(LDFLAGS)" -o dist/$(BINARY_NAME)-linux-arm64 ./cmd/csm/
+
+# Build the pam_csm.so PAM module. Requires libpam-devel (RHEL) or
+# libpam0g-dev (Debian). Packaging copies dist/pam_csm.so to
+# /usr/lib/csm/pam/pam_csm.so on the target host; `csm pam install`
+# stages it from there into the platform security dir.
+build-pam:
+	$(MAKE) -C build/pam
+	mkdir -p dist
+	cp build/pam/pam_csm.so dist/pam_csm.so
 
 # Run tests with race detector
 test:

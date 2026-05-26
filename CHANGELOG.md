@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Default `csm.yaml` template ships sample `mail_logs`, `detection.direct_smtp_egress`, and `bpf_enforcement` blocks so operators can discover those features without reading source. Every sample stays inert (`enabled: false`, `dry_run: true`) to preserve existing safe defaults.
 - API reference documents the new `/api/v1/prefs/*` and `/api/v1/undo/*` endpoints, including payload shape, scope, sanitisation caps, and the 30-second undo TTL.
 - Dashboard Components matrix now distinguishes "deaf" watchers (attached but no upstream feeding them, e.g. PAM listener with no PAM hook installed) from healthy quiet "idle" rows. The PAM listener surfaces a deaf verdict with a tooltip pointing to the missing `pam_csm.so` install.
+- Package now ships a CSM PAM module (`pam_csm.so` + C source + Makefile) plus a `csm pam install/uninstall/status` subcommand that stages the module into the platform security dir and adds the optional `auth`/`session` lines to the standard PAM service files. Every edit creates a timestamped backup. Operator guide in `docs/operator-pam-install.md`.
 
 ### Changed
 

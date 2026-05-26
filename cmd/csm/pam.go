@@ -1,0 +1,377 @@
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"time"
+)
+
+// runPAM dispatches `csm pam <subcommand>`. Subcommands:
+//
+//	status    - report whether pam_csm.so is installed and which /etc/pam.d
+//	            files reference it.
+//	install   - copy build/pam/pam_csm.so to the platform's security dir
+//	            and append the optional session/auth lines to the
+//	            standard PAM service files. Idempotent; refuses to run
+//	            without a backup of every file it edits.
+//	uninstall - remove the lines added by install and (optionally) the
+//	            shipped pam_csm.so binary.
+//
+// Wraps the privileged side of the "Phase B" PAM rollout. The C source
+// and Makefile live under build/pam/; the package install drops the
+// compiled .so into /usr/lib/csm/pam/pam_csm.so so this command can
+// stage it without re-running gcc on the host.
+func runPAM() {
+	args := os.Args[2:]
+	if len(args) == 0 {
+		pamUsage()
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "status":
+		exitOnError(pamStatus(os.Stdout))
+	case "install":
+		fs := flag.NewFlagSet("pam install", flag.ExitOnError)
+		dryRun := fs.Bool("dry-run", false, "preview the files that would be edited, do not write")
+		modulePath := fs.String("module", "", "override the source pam_csm.so path (defaults to /usr/lib/csm/pam/pam_csm.so)")
+		_ = fs.Parse(args[1:])
+		exitOnError(pamInstall(os.Stdout, *modulePath, *dryRun))
+	case "uninstall":
+		fs := flag.NewFlagSet("pam uninstall", flag.ExitOnError)
+		keepModule := fs.Bool("keep-module", false, "remove only the /etc/pam.d edits, leave pam_csm.so in place")
+		_ = fs.Parse(args[1:])
+		exitOnError(pamUninstall(os.Stdout, *keepModule))
+	case "--help", "-h", "help":
+		pamUsage()
+	default:
+		fmt.Fprintf(os.Stderr, "csm pam: unknown subcommand %q\n\n", args[0])
+		pamUsage()
+		os.Exit(2)
+	}
+}
+
+func pamUsage() {
+	fmt.Fprintln(os.Stderr, `csm pam - PAM hook management
+
+Usage: csm pam <subcommand> [options]
+
+Subcommands:
+  status               Report pam_csm.so install state and the /etc/pam.d files referencing it.
+  install [--dry-run] [--module <path>]
+                       Copy pam_csm.so into the platform security dir and append
+                       "session optional pam_csm.so" + "auth optional pam_csm.so"
+                       to the standard PAM service files. --dry-run only previews.
+  uninstall [--keep-module]
+                       Remove the lines this command added. --keep-module leaves
+                       the shipped pam_csm.so binary in place.
+
+WARNING: Authentication runs through PAM. A malformed edit can lock you
+out. install creates a timestamped .csm-backup of every file before
+touching it. If you lose access, revert by renaming the backup back.`)
+}
+
+// pamServiceFiles lists the standard /etc/pam.d entries we touch. Order
+// matches the typical RHEL + Debian layout: edit the service-specific
+// file first (sshd / su / sudo) and the shared auth stack last.
+var pamServiceFiles = []string{
+	"/etc/pam.d/sshd",
+	"/etc/pam.d/su",
+	"/etc/pam.d/sudo",
+	"/etc/pam.d/password-auth", // RHEL
+	"/etc/pam.d/common-auth",   // Debian
+}
+
+const (
+	// pamModuleSource is the on-disk staging location the CSM package
+	// drops pam_csm.so into. install copies from here to the platform
+	// security dir below.
+	pamModuleSource = "/usr/lib/csm/pam/pam_csm.so"
+	// pamMarker is appended as the trailing comment of every line this
+	// command writes so uninstall can find them again without grep
+	// false positives against operator-authored lines.
+	pamMarker = "# managed-by-csm"
+)
+
+// pamSecurityDirs lists candidate destination directories in priority
+// order. The first that exists on the host wins.
+var pamSecurityDirs = []string{
+	"/lib64/security",
+	"/usr/lib64/security",
+	"/lib/x86_64-linux-gnu/security",
+	"/usr/lib/x86_64-linux-gnu/security",
+	"/lib/aarch64-linux-gnu/security",
+	"/usr/lib/aarch64-linux-gnu/security",
+	"/lib/security",
+}
+
+func resolvePAMSecurityDir() (string, error) {
+	for _, dir := range pamSecurityDirs {
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			return dir, nil
+		}
+	}
+	return "", fmt.Errorf("no PAM security directory found; install libpam first")
+}
+
+// pamStatus prints the current install state. Returns nil on success;
+// surfaces errors so operators can pipe `csm pam status; echo $?` into
+// a healthcheck.
+func pamStatus(w io.Writer) error {
+	if runtime.GOOS != "linux" {
+		fmt.Fprintln(w, "csm pam: PAM management only available on Linux hosts")
+		return nil
+	}
+	dir, err := resolvePAMSecurityDir()
+	if err != nil {
+		fmt.Fprintf(w, "PAM security dir: NOT FOUND (%v)\n", err)
+	} else {
+		modPath := filepath.Join(dir, "pam_csm.so")
+		if _, err := os.Stat(modPath); err == nil {
+			fmt.Fprintf(w, "Module:           installed at %s\n", modPath)
+		} else {
+			fmt.Fprintf(w, "Module:           NOT installed (looked under %s)\n", dir)
+		}
+	}
+	for _, path := range pamServiceFiles {
+		fmt.Fprintf(w, "%-32s: %s\n", path, pamFileState(path))
+	}
+	return nil
+}
+
+func pamFileState(path string) string {
+	data, err := os.ReadFile(path) // #nosec G304 -- caller controls path; only iterates pamServiceFiles.
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "absent"
+		}
+		return fmt.Sprintf("error reading: %v", err)
+	}
+	if bytes.Contains(data, []byte("pam_csm.so")) {
+		return "hooked"
+	}
+	return "not hooked"
+}
+
+// pamInstall copies the module and edits each pam.d service file that
+// exists. Refuses if the source module is missing. Every edit creates a
+// timestamped backup so operators can roll back without losing host
+// access.
+func pamInstall(w io.Writer, srcOverride string, dryRun bool) error {
+	if runtime.GOOS != "linux" {
+		return fmt.Errorf("csm pam install: only supported on Linux hosts (got %s)", runtime.GOOS)
+	}
+	src := srcOverride
+	if src == "" {
+		src = pamModuleSource
+	}
+	if _, err := os.Stat(src); err != nil {
+		return fmt.Errorf("pam_csm.so not found at %s: %w (rebuild from build/pam or reinstall the CSM package)", src, err)
+	}
+	dir, err := resolvePAMSecurityDir()
+	if err != nil {
+		return err
+	}
+	dst := filepath.Join(dir, "pam_csm.so")
+
+	if dryRun {
+		fmt.Fprintf(w, "[dry-run] would copy %s -> %s\n", src, dst)
+	} else {
+		if err := copyFileMode(src, dst, 0o755); err != nil {
+			return fmt.Errorf("copying module: %w", err)
+		}
+		fmt.Fprintf(w, "installed %s -> %s\n", src, dst)
+	}
+
+	for _, path := range pamServiceFiles {
+		info, err := os.Stat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				fmt.Fprintf(w, "skip %s (not present)\n", path)
+				continue
+			}
+			return fmt.Errorf("stat %s: %w", path, err)
+		}
+		if !info.Mode().IsRegular() {
+			fmt.Fprintf(w, "skip %s (not a regular file)\n", path)
+			continue
+		}
+		changed, err := pamEnsureLines(path, dryRun)
+		if err != nil {
+			return fmt.Errorf("editing %s: %w", path, err)
+		}
+		switch {
+		case dryRun && changed:
+			fmt.Fprintf(w, "[dry-run] would add pam_csm.so lines to %s\n", path)
+		case changed:
+			fmt.Fprintf(w, "added pam_csm.so lines to %s\n", path)
+		default:
+			fmt.Fprintf(w, "no change to %s (already hooked)\n", path)
+		}
+	}
+	if !dryRun {
+		fmt.Fprintln(w, "")
+		fmt.Fprintln(w, "Test from a SECOND terminal before closing this one. If SSH login")
+		fmt.Fprintln(w, "or sudo breaks, the backups end in .csm-backup-<timestamp>.")
+	}
+	return nil
+}
+
+// pamEnsureLines appends the two CSM-managed PAM directives to path if
+// they are not already present. Returns whether the file was modified.
+// In dry-run mode the file is left untouched.
+func pamEnsureLines(path string, dryRun bool) (bool, error) {
+	data, err := os.ReadFile(path) // #nosec G304 -- pamServiceFiles allowlisted above.
+	if err != nil {
+		return false, err
+	}
+	wants := []string{
+		"auth     optional   pam_csm.so " + pamMarker,
+		"session  optional   pam_csm.so " + pamMarker,
+	}
+	missing := []string{}
+	text := string(data)
+	for _, line := range wants {
+		if strings.Contains(text, line) {
+			continue
+		}
+		// A bare "pam_csm.so" reference from an operator-authored line
+		// counts as already hooked; do not stack a second copy.
+		marker := strings.SplitN(line, " ", 2)[0] + " optional   pam_csm.so"
+		if strings.Contains(text, marker) {
+			continue
+		}
+		missing = append(missing, line)
+	}
+	if len(missing) == 0 {
+		return false, nil
+	}
+	if dryRun {
+		return true, nil
+	}
+	backup := fmt.Sprintf("%s.csm-backup-%s", path, time.Now().UTC().Format("20060102T150405Z"))
+	if err := os.WriteFile(backup, data, 0o600); err != nil {
+		return false, fmt.Errorf("writing backup %s: %w", backup, err)
+	}
+	out := bytes.NewBuffer(make([]byte, 0, len(data)+128))
+	if _, err := out.Write(data); err != nil {
+		return false, err
+	}
+	if !bytes.HasSuffix(data, []byte("\n")) {
+		out.WriteByte('\n')
+	}
+	for _, line := range missing {
+		out.WriteString(line)
+		out.WriteByte('\n')
+	}
+	if err := os.WriteFile(path, out.Bytes(), 0o644); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// pamUninstall reverses install. Leaves backups in place so operators
+// can restore manually if pamUninstall itself misbehaves.
+func pamUninstall(w io.Writer, keepModule bool) error {
+	if runtime.GOOS != "linux" {
+		return fmt.Errorf("csm pam uninstall: only supported on Linux hosts (got %s)", runtime.GOOS)
+	}
+	for _, path := range pamServiceFiles {
+		removed, err := pamRemoveLines(path)
+		if err != nil {
+			return fmt.Errorf("editing %s: %w", path, err)
+		}
+		if removed > 0 {
+			fmt.Fprintf(w, "removed %d pam_csm.so line(s) from %s\n", removed, path)
+		}
+	}
+	if keepModule {
+		fmt.Fprintln(w, "--keep-module: leaving pam_csm.so in place")
+		return nil
+	}
+	dir, dirErr := resolvePAMSecurityDir()
+	if dirErr != nil {
+		// PAM security dir is gone (libpam uninstalled, for example);
+		// surface the absence to the operator but treat it as success
+		// because there is nothing left to clean up.
+		fmt.Fprintf(w, "PAM security dir not found (%v); skipping module removal\n", dirErr)
+		return nil
+	}
+	target := filepath.Join(dir, "pam_csm.so")
+	if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing %s: %w", target, err)
+	}
+	fmt.Fprintf(w, "removed %s\n", target)
+	return nil
+}
+
+func pamRemoveLines(path string) (int, error) {
+	data, err := os.ReadFile(path) // #nosec G304 -- pamServiceFiles allowlisted.
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	out := bytes.NewBuffer(make([]byte, 0, len(data)))
+	removed := 0
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.Contains(line, pamMarker) || (strings.Contains(line, "pam_csm.so") && strings.HasPrefix(strings.TrimSpace(line), "auth") || strings.HasPrefix(strings.TrimSpace(line), "session")) && strings.Contains(line, "pam_csm.so") {
+			removed++
+			continue
+		}
+		out.WriteString(line)
+		out.WriteByte('\n')
+	}
+	if err := scanner.Err(); err != nil {
+		return 0, err
+	}
+	if removed == 0 {
+		return 0, nil
+	}
+	backup := fmt.Sprintf("%s.csm-backup-%s", path, time.Now().UTC().Format("20060102T150405Z"))
+	if err := os.WriteFile(backup, data, 0o600); err != nil {
+		return 0, fmt.Errorf("writing backup %s: %w", backup, err)
+	}
+	return removed, os.WriteFile(path, out.Bytes(), 0o644)
+}
+
+func copyFileMode(src, dst string, mode os.FileMode) error {
+	in, err := os.Open(src) // #nosec G304 -- caller restricts src to packaged pamModuleSource.
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+	tmp := dst + ".csm-staging"
+	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, dst)
+}
+
+func exitOnError(err error) {
+	if err == nil {
+		return
+	}
+	fmt.Fprintln(os.Stderr, err)
+	os.Exit(1)
+}

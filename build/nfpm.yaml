@@ -104,6 +104,26 @@ contents:
     file_info:
       mode: 0644
 
+  # PAM module staging. The package drops the compiled pam_csm.so under
+  # /usr/lib/csm/pam/ so `csm pam install` can copy it into the platform
+  # security dir without the operator running gcc on a production host.
+  - dst: /usr/lib/csm/pam
+    type: dir
+    file_info:
+      mode: 0755
+  - src: dist/pam_csm.so
+    dst: /usr/lib/csm/pam/pam_csm.so
+    file_info:
+      mode: 0755
+  - src: build/pam/pam_csm.c
+    dst: /usr/lib/csm/pam/pam_csm.c
+    file_info:
+      mode: 0644
+  - src: build/pam/Makefile
+    dst: /usr/lib/csm/pam/Makefile
+    file_info:
+      mode: 0644
+
   # Legacy runtime paths kept on disk for old helper scripts and quarantine.
   - dst: /opt/csm/quarantine
     type: dir
