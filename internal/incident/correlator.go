@@ -352,14 +352,18 @@ func (c *Correlator) createSprayIncidentLocked(key Key, f alert.Finding, now tim
 // invocations, avoiding double-fire on create.
 func (c *Correlator) createIncidentLocked(key Key, keyStr string, f alert.Finding, now time.Time) string {
 	id := newIncidentID()
+	displayMailbox, displayDomain := displayMailboxDomain(f.Mailbox, f.Domain)
+	if displayMailbox == "" && displayDomain == "" {
+		displayMailbox, displayDomain = key.Mailbox, key.Domain
+	}
 	inc := &Incident{
 		ID:             id,
 		Kind:           ClassifyKind(f),
 		Status:         StatusOpen,
 		Severity:       f.Severity,
 		Account:        key.Account,
-		Domain:         key.Domain,
-		Mailbox:        key.Mailbox,
+		Domain:         displayDomain,
+		Mailbox:        displayMailbox,
 		CorrelationKey: cloneKey(key),
 		Findings:       []string{},
 		Timeline:       []IncidentEvent{},
@@ -946,9 +950,10 @@ func (c *Correlator) unbindLocked(id string) {
 
 func incidentKey(inc Incident) (Key, bool) {
 	if inc.CorrelationKey != nil && !inc.CorrelationKey.IsEmpty() {
-		return *inc.CorrelationKey, true
+		return canonicalizeKey(*inc.CorrelationKey), true
 	}
 	key := Key{Account: inc.Account, Domain: inc.Domain, Mailbox: inc.Mailbox}
+	key = canonicalizeKey(key)
 	if key.IsEmpty() {
 		return Key{}, false
 	}

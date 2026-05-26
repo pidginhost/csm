@@ -16,6 +16,7 @@ func TestKeyFor_CanonicalizesMailboxAndDomain(t *testing.T) {
 	full := KeyFor(alert.Finding{Mailbox: "alice@example.com"})
 	split := KeyFor(alert.Finding{Mailbox: "alice", Domain: "example.com"})
 	both := KeyFor(alert.Finding{Mailbox: "alice@example.com", Domain: "example.com"})
+	mixedCase := KeyFor(alert.Finding{Mailbox: "alice@Example.COM"})
 
 	if full.Mailbox != "alice@example.com" {
 		t.Errorf("full-form mailbox not preserved: %q", full.Mailbox)
@@ -31,6 +32,9 @@ func TestKeyFor_CanonicalizesMailboxAndDomain(t *testing.T) {
 	}
 	if keyString(full) != keyString(both) {
 		t.Errorf("full and both keys disagree: %q vs %q", keyString(full), keyString(both))
+	}
+	if keyString(full) != keyString(mixedCase) {
+		t.Errorf("full and mixed-case-domain keys disagree: %q vs %q", keyString(full), keyString(mixedCase))
 	}
 }
 

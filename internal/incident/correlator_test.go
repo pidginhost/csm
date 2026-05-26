@@ -223,6 +223,116 @@ func TestCorrelatorMergesSameMailboxAcrossSourceIPs(t *testing.T) {
 	}
 }
 
+func TestCorrelatorPreservesMailboxDomainMetadata(t *testing.T) {
+	c := newTestCorrelator()
+	id, created, err := c.OnFinding(alert.Finding{
+		Check:     "email_auth_failure_realtime",
+		Severity:  alert.High,
+		Mailbox:   "alice@example.com",
+		Domain:    "example.com",
+		SourceIP:  "203.0.113.10",
+		Timestamp: time.Unix(1_700_000_000, 0),
+	})
+	if err != nil {
+		t.Fatalf("OnFinding: %v", err)
+	}
+	if !created {
+		t.Fatal("setup did not create incident")
+	}
+
+	inc, ok := c.Get(id)
+	if !ok {
+		t.Fatal("incident not found")
+	}
+	if inc.Mailbox != "alice@example.com" {
+		t.Errorf("Mailbox = %q, want alice@example.com", inc.Mailbox)
+	}
+	if inc.Domain != "example.com" {
+		t.Errorf("Domain = %q, want example.com", inc.Domain)
+	}
+	if inc.CorrelationKey == nil {
+		t.Fatal("CorrelationKey missing")
+	}
+	if inc.CorrelationKey.Mailbox != "alice@example.com" || inc.CorrelationKey.Domain != "" {
+		t.Errorf("CorrelationKey = %+v, want mailbox-only canonical key", inc.CorrelationKey)
+	}
+}
+
+func TestCorrelatorRestoreCanonicalizesLegacyMailboxDomainKeys(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	cases := []struct {
+		name  string
+		prior Incident
+	}{
+		{
+			name: "legacy full mailbox plus domain key",
+			prior: Incident{
+				ID:             "inc_legacy_full",
+				Kind:           KindMailboxTakeover,
+				Status:         StatusOpen,
+				Severity:       alert.High,
+				Domain:         "example.com",
+				Mailbox:        "alice@example.com",
+				CorrelationKey: &Key{Domain: "example.com", Mailbox: "alice@example.com"},
+				CreatedAt:      base,
+				UpdatedAt:      base,
+			},
+		},
+		{
+			name: "legacy split mailbox key",
+			prior: Incident{
+				ID:             "inc_legacy_split",
+				Kind:           KindMailboxTakeover,
+				Status:         StatusOpen,
+				Severity:       alert.High,
+				Domain:         "example.com",
+				Mailbox:        "alice",
+				CorrelationKey: &Key{Domain: "example.com", Mailbox: "alice"},
+				CreatedAt:      base,
+				UpdatedAt:      base,
+			},
+		},
+		{
+			name: "legacy top-level fields without correlation key",
+			prior: Incident{
+				ID:        "inc_legacy_fields",
+				Kind:      KindMailboxTakeover,
+				Status:    StatusOpen,
+				Severity:  alert.High,
+				Domain:    "example.com",
+				Mailbox:   "alice",
+				CreatedAt: base,
+				UpdatedAt: base,
+			},
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newTestCorrelator()
+			c.Restore([]Incident{tt.prior})
+			c.now = func() time.Time { return base.Add(5 * time.Minute) }
+
+			id, created, err := c.OnFinding(alert.Finding{
+				Check:     "email_auth_failure_realtime",
+				Severity:  alert.High,
+				Mailbox:   "alice@example.com",
+				Domain:    "example.com",
+				Timestamp: base.Add(5 * time.Minute),
+			})
+			if err != nil {
+				t.Fatalf("OnFinding: %v", err)
+			}
+			if created {
+				t.Fatal("restored legacy mailbox key was not rebound")
+			}
+			if id != tt.prior.ID {
+				t.Fatalf("id after restore = %q, want %q", id, tt.prior.ID)
+			}
+		})
+	}
+}
+
 func TestCorrelatorMergesCPUserAcrossSourceIPs(t *testing.T) {
 	c := newTestCorrelator()
 	f1 := alert.Finding{

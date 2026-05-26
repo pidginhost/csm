@@ -146,7 +146,7 @@ func (d *sprayDetector) Decide(f alert.Finding) (decision sprayDecision, hitCoun
 	// to tenant id (per-account brute force); fall back to cPanel user
 	// (php-relay attribution); fall back to message text so two findings
 	// without any structured identity still count as distinct attempts.
-	target := f.Mailbox
+	target, _ := canonicalizeMailboxDomain(f.Mailbox, f.Domain)
 	if target == "" {
 		target = f.TenantID
 	}

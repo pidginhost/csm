@@ -25,9 +25,9 @@ func (k Key) IsEmpty() bool {
 
 // KeyFor extracts a correlation key from a Finding. Sources, in priority
 // order: TenantID, Process.Account/UID, CPUser (php-relay attribution), and
-// a /home[N]/<account>/ heuristic for fanotify findings. Domain and Mailbox
-// are taken verbatim from the finding. SourceIP and process PID are fallback
-// identities: they should not split mailbox/account/UID incidents.
+// a /home[N]/<account>/ heuristic for fanotify findings. SourceIP and
+// process PID are fallback identities: they should not split
+// mailbox/account/UID incidents.
 //
 // Mailbox + Domain are canonicalised so emitters that set either the
 // full local@domain form or the split (Mailbox=local, Domain=site)
@@ -65,7 +65,7 @@ func KeyFor(f alert.Finding) Key {
 }
 
 // canonicalizeMailboxDomain merges Mailbox+Domain into a stable
-// (Mailbox, Domain) pair regardless of which emit convention the
+// (Mailbox, Domain) key pair regardless of which emit convention the
 // caller used. Rules:
 //
 //   - If Mailbox already contains "@", treat it as authoritative;
@@ -73,14 +73,18 @@ func KeyFor(f alert.Finding) Key {
 //   - If Mailbox lacks "@" and Domain is set, splice them into the
 //     full form. Domain is then dropped from the key (it's already
 //     encoded in Mailbox).
-//   - Domain-only findings (no Mailbox) pass through unchanged.
+//   - Domain-only findings (no Mailbox) keep the domain as the key.
 //
-// Pure string ops; no validation of email syntax beyond the @-marker.
+// Domain names are case-insensitive, so only the domain component is
+// lower-cased. The local part is left intact.
 func canonicalizeMailboxDomain(mailbox, domain string) (string, string) {
 	mailbox = strings.TrimSpace(mailbox)
-	domain = strings.TrimSpace(domain)
+	domain = normalizeDomainForKey(domain)
 	if mailbox == "" {
 		return "", domain
+	}
+	if local, mailboxDomain := splitMailboxForKey(mailbox); mailboxDomain != "" {
+		return local + "@" + mailboxDomain, ""
 	}
 	if strings.Contains(mailbox, "@") {
 		return mailbox, ""
@@ -89,6 +93,42 @@ func canonicalizeMailboxDomain(mailbox, domain string) (string, string) {
 		return mailbox, ""
 	}
 	return mailbox + "@" + domain, ""
+}
+
+func canonicalizeKey(k Key) Key {
+	k.Mailbox, k.Domain = canonicalizeMailboxDomain(k.Mailbox, k.Domain)
+	return k
+}
+
+func displayMailboxDomain(mailbox, domain string) (string, string) {
+	mailbox = strings.TrimSpace(mailbox)
+	domain = strings.TrimSpace(domain)
+	if mailbox == "" {
+		return "", domain
+	}
+	if local, mailboxDomain := splitMailboxForKey(mailbox); mailboxDomain != "" {
+		return local + "@" + mailboxDomain, mailboxDomain
+	}
+	if domain == "" {
+		return mailbox, ""
+	}
+	if strings.Contains(mailbox, "@") {
+		return mailbox, domain
+	}
+	normalizedDomain := normalizeDomainForKey(domain)
+	return mailbox + "@" + normalizedDomain, normalizedDomain
+}
+
+func splitMailboxForKey(mailbox string) (string, string) {
+	at := strings.LastIndexByte(mailbox, '@')
+	if at <= 0 || at == len(mailbox)-1 {
+		return "", ""
+	}
+	return mailbox[:at], normalizeDomainForKey(mailbox[at+1:])
+}
+
+func normalizeDomainForKey(domain string) string {
+	return strings.ToLower(strings.TrimSpace(domain))
 }
 
 // accountFromHomePath parses /home[N]/<account>/... paths. Returns the

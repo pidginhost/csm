@@ -71,6 +71,36 @@ func TestSprayBelowThresholdDoesNotOpenSpray(t *testing.T) {
 	}
 }
 
+func TestSprayCanonicalizesMailboxDomainForDistinctSet(t *testing.T) {
+	c := newSprayCorrelator(t, true, false)
+	now := time.Unix(1_700_000_000, 0)
+	ip := "192.0.2.1"
+
+	findings := []alert.Finding{
+		sprayFinding("alice@example.com", ip, now),
+		sprayFinding("alice", ip, now.Add(time.Minute)),
+		sprayFinding("bob@example.com", ip, now.Add(2*time.Minute)),
+	}
+	findings[0].Domain = "Example.COM"
+	findings[1].Domain = "example.com"
+	findings[2].Domain = "example.com"
+
+	for _, f := range findings {
+		if _, _, err := c.OnFinding(f); err != nil {
+			t.Fatalf("OnFinding: %v", err)
+		}
+	}
+
+	if got := c.counters.sprayOpenedTotal.Load(); got != 0 {
+		t.Fatalf("sprayOpenedTotal = %d, want 0 when full and split forms name the same mailbox", got)
+	}
+	for _, inc := range c.Snapshot() {
+		if inc.Kind == KindCredentialSpray {
+			t.Fatalf("duplicate mailbox forms opened credential_spray incident: %+v", inc)
+		}
+	}
+}
+
 func TestSprayAtThresholdOpensSprayIncident(t *testing.T) {
 	c := newSprayCorrelator(t, true, false)
 	now := time.Unix(1_700_000_000, 0)
