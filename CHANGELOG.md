@@ -29,7 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Settings saves now reject invalid mail-log source and account-key extractor values before writing the config.
 - Web UI saved-view deletion, timestamp preferences, undo re-blocks, and CSRF checks now behave correctly with mixed credentials and missing firewall engines.
 - Redis performance check test now stubs the in-process redisinfo client through its documented test hooks instead of relying on a default-config redis being present on the developer's machine. The dead redis-cli shellout fixture is gone.
-- Operator preferences button, history-tab restore, email-tab switch, cleanup-history confirm, and the detail panel now work again on Tabler v1.4 bundles. Tabler moved its Bootstrap component classes from `window.bootstrap` to `window.tabler`; a single shim in `csrf.js` re-aliases the namespace so every existing `window.bootstrap.Modal/Tab/Offcanvas` caller resolves.
+- Web UI modal, tab, and detail-panel actions now initialize correctly with the bundled Tabler scripts.
 
 ### Removed
 

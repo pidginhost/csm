@@ -4,7 +4,7 @@
 // script and shared helper in this UI still calls window.bootstrap.X,
 // so alias the namespace once at load time instead of touching every
 // call site. Safe to run when bootstrap is already defined (preserves
-// any standalone bootstrap.bundle.min.js operators may add later).
+// any standalone bootstrap.bundle.min.js operators already loaded).
 if (typeof window !== 'undefined' && !window.bootstrap && window.tabler) {
     window.bootstrap = window.tabler;
 }

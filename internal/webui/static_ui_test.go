@@ -466,14 +466,95 @@ func TestSharedUIScriptsLoadBeforeTableExtensions(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(tmpl)
+	tablerIdx := strings.Index(text, `/static/js/tabler.min.js`)
 	csrfIdx := strings.Index(text, `/static/js/csrf.js`)
+	toastIdx := strings.Index(text, `/static/js/toast.js`)
 	uiIdx := strings.Index(text, `/static/js/csm-ui.js`)
 	tableIdx := strings.Index(text, `/static/js/table.js`)
-	if csrfIdx < 0 || uiIdx < 0 || tableIdx < 0 {
+	if tablerIdx < 0 || csrfIdx < 0 || toastIdx < 0 || uiIdx < 0 || tableIdx < 0 {
 		t.Fatal("layout.html missing shared Web UI scripts")
 	}
-	if csrfIdx >= uiIdx || uiIdx >= tableIdx {
-		t.Fatal("layout.html must load csrf.js, then csm-ui.js, then table.js")
+	if tablerIdx >= csrfIdx || csrfIdx >= toastIdx || toastIdx >= uiIdx || uiIdx >= tableIdx {
+		t.Fatal("layout.html must load tabler.min.js, csrf.js, toast.js, csm-ui.js, then table.js")
+	}
+}
+
+func TestBootstrapAliasRunsBeforeSharedScriptConsumers(t *testing.T) {
+	tmpl, err := os.ReadFile("../../ui/templates/layout.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	matches := regexp.MustCompile(`<script src="/static/js/([^"]+\.js)"></script>`).FindAllStringSubmatch(string(tmpl), -1)
+	if len(matches) == 0 {
+		t.Fatal("layout.html missing shared script tags")
+	}
+	order := make(map[string]int, len(matches))
+	for i, match := range matches {
+		order[match[1]] = i
+	}
+	csrfOrder, ok := order["csrf.js"]
+	if !ok {
+		t.Fatal("layout.html missing csrf.js")
+	}
+	tablerOrder, ok := order["tabler.min.js"]
+	if !ok {
+		t.Fatal("layout.html missing tabler.min.js")
+	}
+	if tablerOrder >= csrfOrder {
+		t.Fatal("csrf.js must run after tabler.min.js so the Tabler namespace exists")
+	}
+	for name, idx := range order {
+		if name == "tabler.min.js" || name == "csrf.js" {
+			continue
+		}
+		src, err := os.ReadFile(filepath.Join("../../ui/static/js", name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		text := string(src)
+		if idx < csrfOrder && (strings.Contains(text, "window.bootstrap") || strings.Contains(text, "typeof bootstrap") || strings.Contains(text, "bootstrap.")) {
+			t.Fatalf("%s consumes Bootstrap globals before csrf.js installs the Tabler alias", name)
+		}
+	}
+}
+
+func TestCSRFInstallsTablerBootstrapAlias(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/csrf.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, fragment := range []string{
+		`if (typeof window !== 'undefined' && !window.bootstrap && window.tabler) {`,
+		`window.bootstrap = window.tabler;`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Fatalf("csrf.js missing Tabler bootstrap alias fragment %q", fragment)
+		}
+	}
+	if strings.Index(text, `!window.bootstrap`) > strings.Index(text, `window.bootstrap = window.tabler;`) {
+		t.Fatal("csrf.js must guard an existing bootstrap bundle before assigning the Tabler alias")
+	}
+}
+
+func TestBundledTablerExportsBootstrapComponents(t *testing.T) {
+	src, err := os.ReadFile("../../ui/static/js/tabler.min.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	for _, fragment := range []string{
+		`Tabler v1.4.0`,
+		`t.Modal=`,
+		`t.Offcanvas=`,
+		`t.Tab=`,
+	} {
+		if !strings.Contains(text, fragment) {
+			t.Fatalf("tabler.min.js missing Bootstrap component export fragment %q", fragment)
+		}
+	}
+	if strings.Contains(text, `window.bootstrap`) {
+		t.Fatal("tabler.min.js unexpectedly exports window.bootstrap; csrf.js should own the compatibility alias")
 	}
 }
 
