@@ -1256,6 +1256,15 @@ func (d *Daemon) runPeriodicChecks(tier checks.Tier) {
 		return
 	}
 
+	// Age out stale dry-run-block records so the status surface
+	// reflects recent activity instead of months-old entries left
+	// over from a previous dry-run window. Keeping a 7-day rolling
+	// window matches the operator workflow of reviewing a week of
+	// would-have-been-blocks before flipping to live.
+	if sdb := store.Global(); sdb != nil {
+		sdb.PurgeDryRunBlocksOlderThan(time.Now().Add(-7 * 24 * time.Hour))
+	}
+
 	findings, purgeChecks := checks.RunTier(cfg, d.store, tier)
 	// Atomically purge stale findings owned by this scan and merge new ones.
 	checks.StoreLatestScanFindings(d.store, purgeChecks, findings)
