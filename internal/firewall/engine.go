@@ -1494,7 +1494,7 @@ func (e *Engine) blockIPTarget(ip string, timeout time.Duration, skipExisting bo
 	// against the cap. Fall back to the cached state.json count
 	// (existing behaviour) if the live query is unavailable.
 	if e.cfg.DenyIPLimit > 0 || e.cfg.DenyTempIPLimit > 0 {
-		perm, temp, ok := e.livePermTempCountsLocked()
+		perm, temp, ok := e.livePermTempCountsLocked(st)
 		if !ok {
 			perm, temp = 0, 0
 			for _, b := range st.Blocked {
@@ -1582,16 +1582,18 @@ func (e *Engine) IsBlockedLive(ip string) (bool, error) {
 	return e.isBlockedLiveLocked(ip)
 }
 
-// livePermTempCountsLocked returns the count of permanent (Timeout==0)
-// and temporary (Timeout>0) entries across the blocked v4 + v6 nft
-// sets. Used by blockIPTarget so the deny limits trip against the
-// kernel's actual state instead of stale state.json entries that the
-// kernel already expired. Returns ok=false when neither set can be
-// queried; callers fall back to the cached count in that case.
+// livePermTempCountsLocked returns the count of permanent and temporary
+// entries across the blocked v4 + v6 nft sets. Used by blockIPTarget so
+// the deny limits trip against the kernel's actual state instead of
+// stale state.json entries that the kernel already expired. Live keys
+// that still exist in CSM state are classified from state because nft
+// timeout attributes can reflect inherited/default set behaviour rather
+// than the operator's block intent. Out-of-state live keys fall back to
+// the kernel expiration attributes.
 //
 // Must be called with e.mu held; blockIPTarget already holds the lock
 // at the only call site.
-func (e *Engine) livePermTempCountsLocked() (perm, temp int, ok bool) {
+func (e *Engine) livePermTempCountsLocked(state FirewallState) (perm, temp int, ok bool) {
 	if e.liveBlockCounts != nil {
 		p, t, err := e.liveBlockCounts()
 		if err != nil {
@@ -1602,6 +1604,7 @@ func (e *Engine) livePermTempCountsLocked() (perm, temp int, ok bool) {
 	if e.conn == nil {
 		return 0, 0, false
 	}
+	stateTempByIP := blockedStateTempByIP(state)
 	gotAny := false
 	for _, set := range []*nftables.Set{e.setBlocked, e.setBlocked6} {
 		if set == nil {
@@ -1612,18 +1615,61 @@ func (e *Engine) livePermTempCountsLocked() (perm, temp int, ok bool) {
 			return 0, 0, false
 		}
 		gotAny = true
-		for _, el := range elements {
-			if el.Timeout == 0 {
-				perm++
-			} else {
-				temp++
-			}
-		}
+		p, t := countLiveBlockElements(elements, stateTempByIP)
+		perm += p
+		temp += t
 	}
 	if !gotAny {
 		return 0, 0, false
 	}
 	return perm, temp, true
+}
+
+func blockedStateTempByIP(state FirewallState) map[string]bool {
+	byIP := make(map[string]bool, len(state.Blocked)*2)
+	for _, entry := range state.Blocked {
+		if entry.IP == "" {
+			continue
+		}
+		temp := !entry.ExpiresAt.IsZero()
+		byIP[entry.IP] = temp
+		if parsed := net.ParseIP(entry.IP); parsed != nil {
+			byIP[parsed.String()] = temp
+		}
+	}
+	return byIP
+}
+
+func countLiveBlockElements(elements []nftables.SetElement, stateTempByIP map[string]bool) (perm, temp int) {
+	for _, el := range elements {
+		if ip, ok := setElementIPString(el.Key); ok {
+			if stateTemp, found := stateTempByIP[ip]; found {
+				if stateTemp {
+					temp++
+				} else {
+					perm++
+				}
+				continue
+			}
+		}
+		if el.Timeout > 0 || el.Expires > 0 {
+			temp++
+		} else {
+			perm++
+		}
+	}
+	return perm, temp
+}
+
+func setElementIPString(key []byte) (string, bool) {
+	switch len(key) {
+	case net.IPv4len:
+		return net.IP(key).String(), true
+	case net.IPv6len:
+		return net.IP(key).String(), true
+	default:
+		return "", false
+	}
 }
 
 func (e *Engine) isBlockedLiveLocked(ip string) (bool, error) {

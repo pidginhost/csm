@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Firewall deny-limit cap now counts from the live kernel set, so an entry the kernel already expired no longer trips the cap and refuses a fresh block.
+- Firewall deny-limit caps now preserve whether a live block was requested as permanent or temporary, so inherited nft timeout metadata cannot charge it to the wrong cap.
 - Dry-run-block records are now purged whenever auto-response is live at startup or after reload, and stale dry-run records are aged out after a week so status does not report old dry-run windows.
 - Auto-block hourly rate cap is now configurable via `auto_response.max_blocks_per_hour`, exposed in Settings, and documented in shipped config templates.
 - Firewall startup wires dry-run and verdict callbacks before applying nftables and keeps the dry-run safety default from depending on startup ordering.
