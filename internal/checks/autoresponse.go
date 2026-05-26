@@ -2,7 +2,6 @@ package checks
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -208,28 +207,11 @@ func AutoQuarantineFiles(cfg *config.Config, findings []alert.Finding) []alert.F
 			}
 		} else {
 			// Move file to quarantine via the TOCTOU-safe path: fd open,
-			// fstat-verify, hardlink-by-fd, unlink. Falls back to a
-			// read-and-rewrite cross-device path on EXDEV.
+			// fstat-verify, hardlink-by-fd, unlink. If hardlinking is
+			// unavailable, copy from the same verified fd.
 			if err := quarantineFileTOCTOUSafe(path, qPath, info); err != nil {
-				// EXDEV requires a copy + delete since hardlinks cannot
-				// cross filesystems. Mirror the original behaviour but
-				// keep the inode-identity check via osFS before reading.
-				if !errors.Is(err, syscall.EXDEV) {
-					fmt.Fprintf(os.Stderr, "autoresponse: refused quarantine of %s: %v\n", path, err)
-					continue
-				}
-				data, readErr := osFS.ReadFile(path)
-				if readErr != nil {
-					continue
-				}
-				if writeErr := os.WriteFile(qPath, data, 0600); writeErr != nil {
-					continue
-				}
-				if rmErr := os.Remove(path); rmErr != nil {
-					os.Remove(qPath)
-					fmt.Fprintf(os.Stderr, "autoresponse: cross-device quarantine failed, cannot remove original %s: %v\n", path, rmErr)
-					continue
-				}
+				fmt.Fprintf(os.Stderr, "autoresponse: refused quarantine of %s: %v\n", path, err)
+				continue
 			}
 		}
 

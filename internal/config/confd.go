@@ -146,6 +146,8 @@ func validateConfPathTrust(kind, path string, info os.FileInfo) error {
 	if !ok {
 		return nil
 	}
+	// #nosec G115 -- Linux uid_t is uint32; os.Geteuid returns the kernel
+	// effective UID and cannot overflow that type on supported hosts.
 	selfUID := uint32(os.Geteuid())
 	if sys.Uid != 0 && sys.Uid != selfUID {
 		return fmt.Errorf("%s %s owner uid=%d is neither root (0) nor process uid=%d; refusing to load untrusted YAML", kind, path, sys.Uid, selfUID)

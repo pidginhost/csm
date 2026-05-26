@@ -2,7 +2,6 @@ package checks
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -196,17 +195,7 @@ func fixQuarantine(path string) RemediationResult {
 			return RemediationResult{Error: fmt.Sprintf("cannot quarantine directory: %v", err)}
 		}
 	} else if err := quarantineFileTOCTOUSafe(path, qPath, info); err != nil {
-		if !errors.Is(err, syscall.EXDEV) {
-			return RemediationResult{Error: err.Error()}
-		}
-		data, readErr := osFS.ReadFile(path)
-		if readErr != nil {
-			return RemediationResult{Error: fmt.Sprintf("cannot read file: %v", readErr)}
-		}
-		if writeErr := os.WriteFile(qPath, data, 0600); writeErr != nil {
-			return RemediationResult{Error: fmt.Sprintf("cannot write quarantine: %v", writeErr)}
-		}
-		os.Remove(path)
+		return RemediationResult{Error: err.Error()}
 	}
 
 	// Write metadata sidecar for restore

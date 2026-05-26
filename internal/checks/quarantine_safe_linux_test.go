@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -116,5 +117,59 @@ func TestQuarantineFileTOCTOUSafe_DetectsFileSwap(t *testing.T) {
 	}
 	if _, err := os.Stat(dst); err == nil {
 		t.Error("attacker-controlled file ended up in quarantine")
+	}
+}
+
+func TestQuarantineFileTOCTOUSafe_LinkFallbackUsesOpenFD(t *testing.T) {
+	for name, linkErr := range map[string]error{
+		"cross_device": syscall.EXDEV,
+		"link_denied":  syscall.EPERM,
+	} {
+		t.Run(name, func(t *testing.T) {
+			tmp := t.TempDir()
+			src := filepath.Join(tmp, "drop.php")
+			original := []byte("<?php /* original malware */")
+			if err := os.WriteFile(src, original, 0644); err != nil {
+				t.Fatalf("write src: %v", err)
+			}
+			info, err := os.Lstat(src)
+			if err != nil {
+				t.Fatalf("lstat: %v", err)
+			}
+			dst := filepath.Join(tmp, "q", "out.php")
+			if err := os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+
+			oldLink := quarantineLinkByFD
+			quarantineLinkByFD = func(_ *os.File, _ string) error {
+				if err := os.Remove(src); err != nil {
+					return err
+				}
+				if err := os.WriteFile(src, []byte("replacement"), 0644); err != nil {
+					return err
+				}
+				return linkErr
+			}
+			t.Cleanup(func() { quarantineLinkByFD = oldLink })
+
+			if err := quarantineFileTOCTOUSafe(src, dst, info); err != nil {
+				t.Fatalf("quarantine: %v", err)
+			}
+			got, err := os.ReadFile(dst)
+			if err != nil {
+				t.Fatalf("read dst: %v", err)
+			}
+			if string(got) != string(original) {
+				t.Fatalf("dst content = %q, want original malware", got)
+			}
+			replacement, err := os.ReadFile(src)
+			if err != nil {
+				t.Fatalf("replacement path should be left alone: %v", err)
+			}
+			if string(replacement) != "replacement" {
+				t.Fatalf("source replacement = %q, want replacement", replacement)
+			}
+		})
 	}
 }

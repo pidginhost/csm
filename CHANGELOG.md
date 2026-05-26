@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- Quarantine now moves files via an fd-based hardlink rather than a path-based rename, defeating the classic detect-then-quarantine race where an attacker swaps a malware file out for a legitimate one (or a symlink to a sensitive file) between scan and remediation. Cross-device targets still fall back to copy-and-delete.
+- Quarantine now moves files via an fd-based hardlink rather than a path-based rename, defeating the classic detect-then-quarantine race where an attacker swaps a malware file out for a legitimate one (or a symlink to a sensitive file) between scan and remediation. When hardlinking is unavailable, CSM copies from the same verified file descriptor before removing the source.
 - `CSM_CONFIG_DIR` and `--config-dir` are now validated before CSM loads any YAML fragments. Override directories must be absolute and trusted, and both directories and fragments must not be writable by group or world; refused values fail startup so an attacker cannot point CSM at fragments they control.
 - Verdict-callback responses are now HMAC-signed. CSM rejects unsigned or forged replies whenever a secret is configured, preventing on-path downgrades to "allow"; operators can temporarily accept unsigned replies during staged panel rollouts.
 
