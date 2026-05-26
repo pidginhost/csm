@@ -151,13 +151,11 @@ type counters struct {
 // daemon is responsible for wiring it to a store via CorrelatorConfig.Persist.
 type Correlator struct {
 	mu sync.Mutex
-	// persistMu serializes Persist callbacks so that two concurrent
-	// merges, each having mutated the in-memory incident under mu
-	// and then released mu to call Persist, cannot race their disk
-	// writes out of order. Without this, the second-to-finish disk
-	// write could carry the older snapshot and overwrite the newer
-	// one, leaving disk state behind memory state.
+	// persistMu protects persistTail. Persist callbacks wait on the
+	// previously queued write instead of holding this lock, so re-entrant
+	// callbacks can still take c.mu while later writers are queued.
 	persistMu             sync.Mutex
+	persistTail           chan struct{}
 	cfg                   CorrelatorConfig
 	incidents             map[string]*Incident
 	byKey                 map[string]string
@@ -186,6 +184,7 @@ func NewCorrelator(cfg CorrelatorConfig) *Correlator {
 	}
 	c := &Correlator{
 		cfg:                   cfg,
+		persistTail:           closedPersistTail(),
 		incidents:             map[string]*Incident{},
 		byKey:                 map[string]string{},
 		pending:               map[string]pendingFinding{},
@@ -195,6 +194,12 @@ func NewCorrelator(cfg CorrelatorConfig) *Correlator {
 	}
 	c.spray = newSprayDetector(cfg.SpraySuppression, incidentMergeWindow, func() time.Time { return c.now() }, cfg.IsWhitelisted)
 	return c
+}
+
+func closedPersistTail() chan struct{} {
+	done := make(chan struct{})
+	close(done)
+	return done
 }
 
 // OnFinding ingests a Finding. Returns the incident id (if attributable)
@@ -748,26 +753,53 @@ func timelineTruncationMarker(count int, at time.Time) IncidentEvent {
 	}
 }
 
-// persistLocked invokes the Persist callback while temporarily releasing
-// the correlator mutex so a re-entrant Persist (which may call Get or
-// any other Correlator method that takes mu) does not deadlock. The
-// caller MUST already hold c.mu; the deferred re-Lock keeps the
-// "mu held on return" contract that mergeLocked's callers rely on.
-func (c *Correlator) persistLocked(snap Incident) {
-	if c.cfg.Persist == nil {
-		return
+type queuedPersist struct {
+	previous <-chan struct{}
+	done     chan struct{}
+	snap     Incident
+	persist  func(Incident)
+}
+
+// queuePersistLocked reserves this write's place in mutation order while
+// c.mu is still held. The returned callback must run after c.mu is released.
+func (c *Correlator) queuePersistLocked(snap Incident) (queuedPersist, bool) {
+	persist := c.cfg.Persist
+	if persist == nil {
+		return queuedPersist{}, false
 	}
 	snap = cloneIncident(snap)
-	// Acquire the persist lock BEFORE releasing c.mu so two
-	// concurrent mergeLocked calls cannot interleave their Persist
-	// invocations and write older state on top of newer state. The
-	// order (persistMu, then unlock mu) keeps the in-memory snapshot
-	// linearized with the disk write.
+	done := make(chan struct{})
 	c.persistMu.Lock()
-	defer c.persistMu.Unlock()
+	previous := c.persistTail
+	c.persistTail = done
+	c.persistMu.Unlock()
+	return queuedPersist{
+		previous: previous,
+		done:     done,
+		snap:     snap,
+		persist:  persist,
+	}, true
+}
+
+func (c *Correlator) runQueuedPersist(req queuedPersist) {
+	<-req.previous
+	defer close(req.done)
+	req.persist(req.snap)
+}
+
+// persistLocked invokes the Persist callback while temporarily releasing
+// the correlator mutex so a re-entrant Persist that reads Correlator
+// state does not deadlock. The caller MUST already hold c.mu; the
+// deferred re-Lock keeps the "mu held on return" contract that
+// mergeLocked's callers rely on.
+func (c *Correlator) persistLocked(snap Incident) {
+	req, ok := c.queuePersistLocked(snap)
+	if !ok {
+		return
+	}
 	c.mu.Unlock()
 	defer c.mu.Lock()
-	c.cfg.Persist(snap)
+	c.runQueuedPersist(req)
 }
 
 // SetStatus transitions an incident's status. On Resolved/Dismissed
@@ -833,7 +865,7 @@ func (c *Correlator) CloseStale(now time.Time, idleThresholds map[Kind]time.Dura
 	if len(idleThresholds) == 0 {
 		return 0, 0, 0
 	}
-	var persist []Incident
+	var persist []queuedPersist
 	c.mu.Lock()
 	for id, inc := range c.incidents {
 		if inc.Status != StatusOpen && inc.Status != StatusContained {
@@ -867,15 +899,15 @@ func (c *Correlator) CloseStale(now time.Time, idleThresholds map[Kind]time.Dura
 		c.counters.statusChangedTotal.Add(1)
 		c.counters.autoClosedTotal.Add(1)
 		c.unbindLocked(id)
-		if c.cfg.Persist != nil {
-			persist = append(persist, cloneIncident(*inc))
+		if req, ok := c.queuePersistLocked(*inc); ok {
+			persist = append(persist, req)
 		}
 		closed++
 	}
 	c.mu.Unlock()
 
-	for _, snap := range persist {
-		c.cfg.Persist(snap)
+	for _, req := range persist {
+		c.runQueuedPersist(req)
 	}
 	return closed, dryRunCount, scanned
 }

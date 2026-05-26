@@ -1,6 +1,7 @@
 package incident
 
 import (
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -451,6 +452,169 @@ func TestCorrelatorPersistRunsOutsideLock(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("OnFinding deadlocked under reentrant Persist")
+	}
+}
+
+func TestCorrelatorPersistReentrantReadDoesNotDeadlockBehindQueuedWriter(t *testing.T) {
+	c := NewCorrelator(CorrelatorConfig{})
+	base := time.Unix(1_700_000_000, 0)
+	var nowCalls atomic.Int32
+	secondHoldingMu := make(chan struct{})
+	releaseSecond := make(chan struct{})
+	c.now = func() time.Time {
+		n := nowCalls.Add(1)
+		if n == 2 {
+			close(secondHoldingMu)
+			<-releaseSecond
+		}
+		return base.Add(time.Duration(n) * time.Second)
+	}
+
+	firstPersist := make(chan struct{})
+	allowFirstRead := make(chan struct{})
+	var persistCalls atomic.Int32
+	c.cfg.Persist = func(inc Incident) {
+		if persistCalls.Add(1) != 1 {
+			return
+		}
+		close(firstPersist)
+		<-allowFirstRead
+		if _, ok := c.Get(inc.ID); !ok {
+			t.Errorf("Persist re-entry could not read incident %q", inc.ID)
+		}
+	}
+
+	firstDone := make(chan struct{})
+	go func() {
+		_, _, _ = c.OnFinding(alert.Finding{Check: "first", Severity: alert.High, TenantID: "alice", Timestamp: base})
+		close(firstDone)
+	}()
+	waitForTestSignal(t, firstPersist, "first Persist did not start")
+
+	secondDone := make(chan struct{})
+	go func() {
+		_, _, _ = c.OnFinding(alert.Finding{Check: "second", Severity: alert.High, TenantID: "alice", Timestamp: base.Add(time.Second)})
+		close(secondDone)
+	}()
+	waitForTestSignal(t, secondHoldingMu, "second finding did not enter correlator")
+
+	close(releaseSecond)
+	close(allowFirstRead)
+	waitForTestSignal(t, firstDone, "first finding deadlocked in Persist")
+	waitForTestSignal(t, secondDone, "second finding deadlocked behind Persist")
+}
+
+func TestCorrelatorDeferredStatusPersistenceWaitsForEarlierWrites(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(*testing.T, *Correlator)
+	}{
+		{
+			name: "bulk status",
+			run: func(t *testing.T, c *Correlator) {
+				_, err := c.BulkSetStatus(BulkStatusFilter{
+					FromStatuses: []Status{StatusOpen},
+					To:           StatusResolved,
+					OlderThan:    time.Second,
+					Limit:        1,
+					Now:          time.Unix(1_700_000_060, 0),
+					Details:      "test close",
+				})
+				if err != nil {
+					t.Errorf("BulkSetStatus returned error: %v", err)
+				}
+			},
+		},
+		{
+			name: "stale close",
+			run: func(t *testing.T, c *Correlator) {
+				c.CloseStale(
+					time.Unix(1_700_000_060, 0),
+					map[Kind]time.Duration{KindWebAccountCompromise: time.Second},
+					false,
+				)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := NewCorrelator(CorrelatorConfig{})
+			c.now = func() time.Time { return time.Unix(1_700_000_000, 0) }
+
+			firstPersist := make(chan struct{})
+			releaseFirst := make(chan struct{})
+			laterPersist := make(chan struct{}, 1)
+			var calls atomic.Int32
+			c.cfg.Persist = func(_ Incident) {
+				if calls.Add(1) == 1 {
+					close(firstPersist)
+					<-releaseFirst
+					return
+				}
+				select {
+				case laterPersist <- struct{}{}:
+				default:
+				}
+			}
+
+			createDone := make(chan struct{})
+			go func() {
+				_, _, _ = c.OnFinding(alert.Finding{
+					Check:     "x",
+					Severity:  alert.High,
+					TenantID:  "alice",
+					Timestamp: time.Unix(1_700_000_000, 0),
+				})
+				close(createDone)
+			}()
+			waitForTestSignal(t, firstPersist, "initial Persist did not start")
+
+			opDone := make(chan struct{})
+			go func() {
+				tc.run(t, c)
+				close(opDone)
+			}()
+
+			waitForTestCondition(t, func() bool {
+				snap := c.Snapshot()
+				return len(snap) == 1 && snap[0].Status == StatusResolved
+			}, "status operation did not update incident")
+
+			select {
+			case <-opDone:
+				close(releaseFirst)
+				t.Fatal("status operation returned before the earlier Persist completed")
+			case <-laterPersist:
+				close(releaseFirst)
+				t.Fatal("later Persist ran before the earlier Persist completed")
+			case <-time.After(50 * time.Millisecond):
+			}
+
+			close(releaseFirst)
+			waitForTestSignal(t, createDone, "initial finding did not finish")
+			waitForTestSignal(t, opDone, "status operation did not finish")
+			waitForTestSignal(t, laterPersist, "status operation did not persist")
+		})
+	}
+}
+
+func waitForTestCondition(t *testing.T, ok func() bool, message string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if ok() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal(message)
+}
+
+func waitForTestSignal(t *testing.T, ch <-chan struct{}, message string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatal(message)
 	}
 }
 

@@ -75,7 +75,7 @@ func (c *Correlator) BulkSetStatus(filter BulkStatusFilter) (BulkStatusResult, e
 		return BulkStatusResult{}, fmt.Errorf("incident: bulk status requires a source status")
 	}
 
-	var persist []Incident
+	var persist []queuedPersist
 	result := BulkStatusResult{Items: make([]BulkStatusItem, 0, filter.Limit)}
 
 	c.mu.Lock()
@@ -114,15 +114,15 @@ func (c *Correlator) BulkSetStatus(filter BulkStatusFilter) (BulkStatusResult, e
 		})
 		c.counters.statusChangedTotal.Add(1)
 		c.unbindLocked(inc.ID)
-		if c.cfg.Persist != nil {
-			persist = append(persist, cloneIncident(*inc))
+		if req, ok := c.queuePersistLocked(*inc); ok {
+			persist = append(persist, req)
 		}
 		result.Updated++
 	}
 	c.mu.Unlock()
 
-	for _, snap := range persist {
-		c.cfg.Persist(snap)
+	for _, req := range persist {
+		c.runQueuedPersist(req)
 	}
 	return result, nil
 }
