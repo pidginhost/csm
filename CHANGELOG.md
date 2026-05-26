@@ -44,6 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Access-log brute-force handler parses each line with a zero-allocation scanner instead of splitting into a string slice, halving CPU time and removing per-line garbage during sustained POST floods.
 - Access-log scanner now preserves the previous field handling for unusual whitespace and malformed quoted methods.
 - WordPress checksum-fetch retry timers now observe the file-monitor stop channel, so daemon shutdown cancels pending wp.org retries instead of letting an hour-long backoff fire against torn-down state.
+- Auto-block bookkeeping no longer rescans the full blocked-IP list to deduplicate each new entry, cutting persistence cost from linear to constant on hosts that already track thousands of blocks.
 - Access-log tracker eviction now trims least-recently-seen live entries after a unique-IP burst crosses the soft cap, so the map does not wait for stale entries before shrinking.
 - Malware-cleaning matchers are now reused during infected-file remediation without broadening surgical-clean matches, cutting CPU and GC pressure on hosts under sustained webshell load.
 - Account-scanner cap warnings now follow scan alert mode, so manual dry-run checks show the coverage warning without sending daemon alerts.

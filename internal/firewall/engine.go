@@ -88,10 +88,12 @@ type Engine struct {
 	//
 	// All four fields are written only while e.mu is held. The index
 	// maps are rebuilt every time stateCache is repopulated so
-	// O(1) lookups stay coherent with the cached slices.
+	// O(1) lookups stay coherent with the cached slices. blockedIPIndex
+	// stores the slice position for each IP so saveBlockedEntry can
+	// update in place without a linear dedup scan.
 	stateCache       *FirewallState
 	stateCacheKey    stateFileCacheKey
-	blockedIPIndex   map[string]struct{}
+	blockedIPIndex   map[string]int
 	allowedIPIndex   map[string]struct{}
 	blockedCIDRIndex map[string]struct{}
 
@@ -2423,9 +2425,9 @@ func (e *Engine) rebuildIndexLocked() {
 		return
 	}
 	s := e.stateCache
-	blocked := make(map[string]struct{}, len(s.Blocked))
-	for _, entry := range s.Blocked {
-		blocked[entry.IP] = struct{}{}
+	blocked := make(map[string]int, len(s.Blocked))
+	for i, entry := range s.Blocked {
+		blocked[entry.IP] = i
 	}
 	e.blockedIPIndex = blocked
 	allowed := make(map[string]struct{}, len(s.Allowed))
@@ -2550,13 +2552,12 @@ func (e *Engine) saveBlockedEntry(entry BlockedEntry) {
 		entry.Source = InferProvenance("block", entry.Reason)
 	}
 	state := e.loadStateFile()
-	// Deduplicate
-	for i, existing := range state.Blocked {
-		if existing.IP == entry.IP {
-			state.Blocked[i] = entry
-			e.saveState(&state)
-			return
-		}
+	// Position index makes dedup O(1) instead of a linear scan over every
+	// blocked entry per call. Hot during correlator-driven block bursts.
+	if i, ok := e.blockedIPIndex[entry.IP]; ok && i >= 0 && i < len(state.Blocked) && state.Blocked[i].IP == entry.IP {
+		state.Blocked[i] = entry
+		e.saveState(&state)
+		return
 	}
 	state.Blocked = append(state.Blocked, entry)
 	e.saveState(&state)
