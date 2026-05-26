@@ -91,7 +91,8 @@ without applying nftables rules. Each block request is recorded on the
 incident timeline as a
 `credential_spray_block_requested` action and is idempotent per
 incident, so the open and escalation paths never produce duplicate
-firewall calls for the same source IP.
+firewall calls for the same source IP. Resolved and dismissed spray
+incidents do not make new block decisions.
 
 Whitelisted IPs (entries in `reputation.whitelist` and the live bbolt
 whitelist updated via the Web UI) are skipped from spray detection so
@@ -158,7 +159,8 @@ through the same dry-run / block_ips gate as the spray path. A live
 accepted request records `incident_block_requested`; dry-run attempts do
 not latch the incident, so an operator who arms `auto_block` AFTER an
 incident has already crossed the gate still gets a block on the next
-finding. Incidents with multiple source IPs are left for manual review.
+finding while the incident is open or contained. Incidents with multiple
+source IPs are left for manual review.
 If a long-running incident's timeline was truncated and the source IP is
 not part of the incident key, auto-block also stays off because the
 remaining visible timeline may not contain every source IP.

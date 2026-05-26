@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Incident persistence is now serialised across concurrent merges, so the disk record can no longer be overwritten by an older snapshot when two threads race.
+- Incident auto-block now skips incidents closed before the block decision, preventing stale firewall hand-offs after an operator resolve or dismiss.
 - Ordered incident writes now cover bulk and stale closes without blocking re-entrant incident reads.
 - Incident kind reclassification now promotes active post-exploit chains on merge without weakening higher-risk incidents.
 - Process identity no longer splits mailbox, domain, or account incidents, so multiple workers attacking one victim now count toward the same incident threshold.

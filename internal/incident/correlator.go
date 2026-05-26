@@ -924,6 +924,10 @@ func validStatus(s Status) bool {
 	return false
 }
 
+func incidentStatusActive(s Status) bool {
+	return s == StatusOpen || s == StatusContained
+}
+
 // IncrementCompactedTotal bumps the compaction counter by n. Called
 // from the daemon-side retention scheduler after store.CompactIncidents
 // removes records. Negative inputs are ignored so a buggy caller cannot
@@ -1074,7 +1078,13 @@ func newIncidentID() string {
 // c.mu (matches the existing sprayDecisionOpen contract), or nil when
 // no block is owed.
 func (c *Correlator) maybeBlockSprayLocked(inc *Incident, ip string, hits int, now time.Time, reason string) func() {
-	if inc == nil || c.spray == nil || c.cfg.OnSprayBlock == nil || !c.sprayBlockAllowed() {
+	if inc == nil || c.spray == nil || c.cfg.OnSprayBlock == nil {
+		return nil
+	}
+	if !incidentStatusActive(inc.Status) {
+		return nil
+	}
+	if !c.sprayBlockAllowed() {
 		return nil
 	}
 	switch strings.ToLower(c.spray.cfg.BlockAtSeverity) {
@@ -1109,6 +1119,9 @@ func (c *Correlator) sprayBlockAllowed() bool {
 // c.mu, or nil when no block is owed.
 func (c *Correlator) maybeBlockIncidentLocked(inc *Incident, now time.Time, why string) func() {
 	if inc == nil || c.cfg.OnIncidentBlock == nil || !c.cfg.AutoBlock.Enabled {
+		return nil
+	}
+	if !incidentStatusActive(inc.Status) {
 		return nil
 	}
 	if inc.Kind == KindCredentialSpray {

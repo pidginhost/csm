@@ -1,6 +1,7 @@
 package incident
 
 import (
+	"runtime"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -17,7 +18,13 @@ import (
 // while OnFinding is mid-merge, leading to stale-pointer writes or
 // map corruption. Run with -race.
 func TestCorrelator_ConcurrentOnFindingAndSetStatusRaceSafe(t *testing.T) {
-	c := NewCorrelator(CorrelatorConfig{})
+	var persistCalls int64
+	c := NewCorrelator(CorrelatorConfig{
+		Persist: func(Incident) {
+			atomic.AddInt64(&persistCalls, 1)
+			runtime.Gosched()
+		},
+	})
 
 	// Seed a handful of incidents so SetStatus has live targets.
 	var seeded []string
@@ -33,6 +40,7 @@ func TestCorrelator_ConcurrentOnFindingAndSetStatusRaceSafe(t *testing.T) {
 		}
 		seeded = append(seeded, id)
 	}
+	atomic.StoreInt64(&persistCalls, 0)
 
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
@@ -84,7 +92,116 @@ func TestCorrelator_ConcurrentOnFindingAndSetStatusRaceSafe(t *testing.T) {
 	if atomic.LoadInt64(&onCalls) == 0 || atomic.LoadInt64(&setCalls) == 0 {
 		t.Fatalf("stress test made no progress: on=%d set=%d", onCalls, setCalls)
 	}
+	if atomic.LoadInt64(&persistCalls) == 0 {
+		t.Fatal("stress test never exercised Persist unlock path")
+	}
 	if got := c.OpenCount(); got < 0 {
 		t.Fatalf("OpenCount returned nonsense after stress: %d", got)
+	}
+}
+
+func TestCorrelator_ConcurrentCloseSkipsStaleAutoBlock(t *testing.T) {
+	var c *Correlator
+	var cap blockCapture
+	blockPersist := make(chan struct{})
+	persistEntered := make(chan struct{})
+	releasePersist := make(chan struct{})
+	var blockOnce sync.Once
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() {
+			close(releasePersist)
+		})
+	}
+	c = NewCorrelator(CorrelatorConfig{
+		Persist: func(Incident) {
+			select {
+			case <-blockPersist:
+				blockOnce.Do(func() {
+					close(persistEntered)
+					<-releasePersist
+				})
+			default:
+			}
+		},
+		AutoBlock: IncidentAutoBlockConfig{
+			Enabled:         true,
+			BlockAtSeverity: "critical",
+			Kinds:           map[Kind]bool{KindMailboxTakeover: true},
+		},
+		OnIncidentBlock: cap.recordOK,
+	})
+
+	now := time.Unix(1_700_000_000, 0)
+	c.now = func() time.Time { return now }
+	id, _, err := c.OnFinding(alert.Finding{
+		Check:     "email_compromised_account",
+		Severity:  alert.High,
+		Mailbox:   "victim@example.com",
+		SourceIP:  "192.0.2.60",
+		Timestamp: now,
+	})
+	if err != nil {
+		t.Fatalf("seed OnFinding: %v", err)
+	}
+
+	close(blockPersist)
+	mergeDone := make(chan error, 1)
+	c.now = func() time.Time { return now.Add(time.Minute) }
+	go func() {
+		_, _, err := c.OnFinding(alert.Finding{
+			Check:     "email_compromised_account",
+			Severity:  alert.Critical,
+			Mailbox:   "victim@example.com",
+			SourceIP:  "192.0.2.60",
+			Timestamp: now.Add(time.Minute),
+		})
+		mergeDone <- err
+	}()
+
+	<-persistEntered
+	statusDone := make(chan error, 1)
+	go func() {
+		statusDone <- c.SetStatus(id, StatusResolved, "operator")
+	}()
+	defer release()
+	waitForIncidentStatus(t, c, id, StatusResolved)
+	release()
+	if err := <-statusDone; err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+	if err := <-mergeDone; err != nil {
+		t.Fatalf("merge OnFinding: %v", err)
+	}
+	if got := cap.len(); got != 0 {
+		t.Fatalf("OnIncidentBlock fired %d times after concurrent resolve; want 0", got)
+	}
+	inc, ok := c.Get(id)
+	if !ok {
+		t.Fatal("incident disappeared")
+	}
+	if hasIncidentAction(inc.Actions, "incident_block_requested") {
+		t.Fatal("resolved incident recorded incident_block_requested")
+	}
+}
+
+func waitForIncidentStatus(t *testing.T, c *Correlator, id string, status Status) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		inc, ok := c.Get(id)
+		if ok && inc.Status == status {
+			return
+		}
+		select {
+		case <-deadline:
+			if !ok {
+				t.Fatalf("incident %s not found while waiting for %s", id, status)
+			}
+			t.Fatalf("incident %s status = %s, want %s", id, inc.Status, status)
+		case <-ticker.C:
+		}
 	}
 }
