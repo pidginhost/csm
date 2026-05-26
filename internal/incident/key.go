@@ -28,11 +28,18 @@ func (k Key) IsEmpty() bool {
 // a /home[N]/<account>/ heuristic for fanotify findings. Domain and Mailbox
 // are taken verbatim from the finding. SourceIP and process PID are fallback
 // identities: they should not split mailbox/account/UID incidents.
+//
+// Mailbox + Domain are canonicalised so emitters that set either the
+// full local@domain form or the split (Mailbox=local, Domain=site)
+// form land on the same key. Without that, two findings about the
+// same mailbox split into two incidents whenever the emitters use
+// different conventions.
 func KeyFor(f alert.Finding) Key {
+	mailbox, domain := canonicalizeMailboxDomain(f.Mailbox, f.Domain)
 	k := Key{
 		Account: f.TenantID,
-		Domain:  f.Domain,
-		Mailbox: f.Mailbox,
+		Domain:  domain,
+		Mailbox: mailbox,
 	}
 	if f.Process != nil {
 		if f.Process.Account != "" && k.Account == "" {
@@ -55,6 +62,33 @@ func KeyFor(f alert.Finding) Key {
 		k.RemoteIP = f.SourceIP
 	}
 	return k
+}
+
+// canonicalizeMailboxDomain merges Mailbox+Domain into a stable
+// (Mailbox, Domain) pair regardless of which emit convention the
+// caller used. Rules:
+//
+//   - If Mailbox already contains "@", treat it as authoritative;
+//     drop Domain to avoid double-keying on conflicting site.
+//   - If Mailbox lacks "@" and Domain is set, splice them into the
+//     full form. Domain is then dropped from the key (it's already
+//     encoded in Mailbox).
+//   - Domain-only findings (no Mailbox) pass through unchanged.
+//
+// Pure string ops; no validation of email syntax beyond the @-marker.
+func canonicalizeMailboxDomain(mailbox, domain string) (string, string) {
+	mailbox = strings.TrimSpace(mailbox)
+	domain = strings.TrimSpace(domain)
+	if mailbox == "" {
+		return "", domain
+	}
+	if strings.Contains(mailbox, "@") {
+		return mailbox, ""
+	}
+	if domain == "" {
+		return mailbox, ""
+	}
+	return mailbox + "@" + domain, ""
 }
 
 // accountFromHomePath parses /home[N]/<account>/... paths. Returns the

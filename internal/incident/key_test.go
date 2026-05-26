@@ -35,8 +35,11 @@ func TestKeyForMailboxFinding(t *testing.T) {
 	if k.Mailbox != "alice@example.com" {
 		t.Errorf("Mailbox: %q", k.Mailbox)
 	}
-	if k.Domain != "example.com" {
-		t.Errorf("Domain: %q", k.Domain)
+	// Domain is intentionally dropped when Mailbox already includes
+	// it (or is the full @-form), so the canonical key matches
+	// regardless of which emit convention the caller used.
+	if k.Domain != "" {
+		t.Errorf("Domain expected dropped after canonicalisation, got %q", k.Domain)
 	}
 }
 
@@ -138,7 +141,9 @@ func TestKeyForSourceIPDoesNotSplitMailboxKey(t *testing.T) {
 	if k.RemoteIP != "" {
 		t.Errorf("RemoteIP should be empty when mailbox/domain identify the incident, got %q", k.RemoteIP)
 	}
-	if k.Mailbox != "alice@example.com" || k.Domain != "example.com" {
+	// Mailbox keeps the full @-form; Domain is dropped because it is
+	// already encoded in Mailbox after canonicalisation.
+	if k.Mailbox != "alice@example.com" || k.Domain != "" {
 		t.Errorf("mail key = %+v", k)
 	}
 }
