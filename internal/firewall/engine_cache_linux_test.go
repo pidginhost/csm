@@ -270,3 +270,37 @@ func TestEngine_SaveStateRefreshesCache(t *testing.T) {
 		t.Errorf("saveState must refresh cache so IsSubnetBlocked sees newly written CIDR")
 	}
 }
+
+func TestEngine_SaveStateCacheKeyMatchesRenamedFile(t *testing.T) {
+	dir := t.TempDir()
+	e := &Engine{statePath: dir}
+
+	e.mu.Lock()
+	e.saveState(&FirewallState{
+		Blocked: []BlockedEntry{{IP: "10.0.0.1", BlockedAt: time.Now()}},
+	})
+	cachedBefore := e.stateCache
+	e.mu.Unlock()
+
+	stateFile := filepath.Join(dir, "state.json")
+	info, err := os.Stat(stateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.mu.Lock()
+	cacheKeyMatches := e.stateCacheKey.matches(info)
+	e.mu.Unlock()
+	if !cacheKeyMatches {
+		t.Fatalf("saveState cache key does not match renamed state.json")
+	}
+
+	if !e.IsBlocked("10.0.0.1") {
+		t.Fatal("saved block should be visible")
+	}
+	e.mu.Lock()
+	cachedAfter := e.stateCache
+	e.mu.Unlock()
+	if cachedAfter != cachedBefore {
+		t.Fatal("IsBlocked reparsed state.json immediately after saveState")
+	}
+}

@@ -2521,14 +2521,14 @@ func (e *Engine) saveState(state *FirewallState) {
 		e.clearStateCacheLocked()
 		return
 	}
-	var cacheKey stateFileCacheKey
-	if info, err := os.Stat(tmpPath); err == nil {
-		cacheKey = stateFileCacheKeyFromInfo(info)
-	}
 	if err := os.Rename(tmpPath, path); err != nil {
 		_ = os.Remove(tmpPath)
 		e.clearStateCacheLocked()
 		return
+	}
+	var cacheKey stateFileCacheKey
+	if info, err := os.Stat(path); err == nil {
+		cacheKey = stateFileCacheKeyFromInfo(info)
 	}
 
 	e.stateCache = &FirewallState{
