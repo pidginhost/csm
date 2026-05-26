@@ -230,6 +230,44 @@ func TestRemoveInlineEvalInjectionsShortKept(t *testing.T) {
 	}
 }
 
+// TestRemoveInlineEvalInjectionsCommentBetweenTokens covers the
+// "eval/* */(base64_decode(" evasion: an attacker inserts a block
+// comment between the eval keyword and the open paren to slip past a
+// strict regex. The cleaner must still recognise the injection after
+// stripping line/block comments.
+func TestRemoveInlineEvalInjectionsCommentBetweenTokens(t *testing.T) {
+	payload := strings.Repeat("A", 60)
+	input := "<?php\n@eval/*x*/(base64_decode('" + payload + "'));\necho 1;\n"
+	out, removed := removeInlineEvalInjections(input)
+	if len(removed) == 0 {
+		t.Fatalf("cleaner missed comment-obfuscated injection in %q", input)
+	}
+	if strings.Contains(out, "eval") {
+		t.Errorf("injection line still present after cleaning: %q", out)
+	}
+	if !strings.Contains(out, "echo 1") {
+		t.Error("legitimate code was removed alongside injection")
+	}
+}
+
+// TestRemoveInlineEvalInjectionsWhitespaceVariants documents the
+// already-tolerated whitespace forms (tabs, line-internal spaces) so
+// future regex tightening cannot silently regress them.
+func TestRemoveInlineEvalInjectionsWhitespaceVariants(t *testing.T) {
+	payload := strings.Repeat("A", 60)
+	cases := []string{
+		"<?php\neval (base64_decode('" + payload + "'));\n",
+		"<?php\neval\t(base64_decode('" + payload + "'));\n",
+		"<?php\n@eval  (\tgzinflate(base64_decode('" + payload + "')));\n",
+	}
+	for _, in := range cases {
+		_, removed := removeInlineEvalInjections(in)
+		if len(removed) == 0 {
+			t.Errorf("whitespace variant slipped past cleaner: %q", in)
+		}
+	}
+}
+
 // --- removeMultiLayerBase64 -------------------------------------------
 
 func TestRemoveMultiLayerBase64Nested(t *testing.T) {

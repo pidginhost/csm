@@ -837,3 +837,26 @@ func TestFixDescription_HtaccessInjectionNoPath(t *testing.T) {
 		t.Errorf("expected empty description without path, got %q", got)
 	}
 }
+
+// TestAnalyzePHPContent_VarFuncDecoderAssignment guards against the
+// classic variable-function-name evasion: instead of calling a
+// dangerous function by its real name, the attacker assigns the name
+// to a variable on one line and invokes it on a later line. CSM's
+// string-search detectors miss this because no line contains the
+// literal "base64_decode(...)" form. The new heuristic must catch
+// at least the inline "$x = 'base64_decode'; eval($x(...))" shape.
+func TestAnalyzePHPContent_VarFuncDecoderAssignment(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "varfunc.php")
+	payload := strings.Repeat("A", 80)
+	content := "<?php\n" +
+		"$decoder = \"base64_decode\";\n" +
+		"$runner = \"eval\";\n" +
+		"$runner($decoder('" + payload + "'));\n"
+	_ = os.WriteFile(path, []byte(content), 0644)
+
+	result := analyzePHPContent(path)
+	if result.check == "" {
+		t.Errorf("expected detection of variable-function decoder call, got %+v", result)
+	}
+}

@@ -298,6 +298,22 @@ func analyzePHPContent(path string) phpAnalysisResult {
 	// function-name obfuscation always pairs concat with hex escapes
 	// and is still caught by the combined branch above.
 
+	// --- Critical: variable-function indirection that resolves to a
+	// decoder. Attackers slip past the literal "eval(base64_decode("
+	// detector by binding the dangerous name to a variable on one line
+	// and calling it on another:
+	//     $d = "base64_decode";
+	//     $r = "eval";
+	//     $r($d("AAAA"));
+	// The heuristic looks for an assignment $var = "decoder_or_exec"
+	// followed by a $var( invocation in the same file. Hits must
+	// reference at least one decoder OR one shell-exec primitive,
+	// since plain variable function calls show up in legitimate
+	// metaprogramming.
+	if detectVarFuncDangerousAssignment(content) {
+		indicators = append(indicators, "variable function name resolves to decoder or exec primitive")
+	}
+
 	// --- High: Variable function calls with obfuscated names ---
 	// call_user_func + decoder alone is too broad - Elementor, WooCommerce, and
 	// dozens of plugins use call_user_func_array with base64_decode legitimately.

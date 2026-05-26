@@ -327,9 +327,15 @@ func removeInlineEvalInjections(content string) (string, []string) {
 
 	for _, line := range lines {
 		trimmedLine := strings.TrimSpace(line)
-		if evalInject.MatchString(trimmedLine) {
-			// Verify it's a standalone injection (not part of legitimate code)
-			// Standalone injections are long (encoded payload) - short eval() is likely legitimate
+		// Strip /* ... */ block comments and trailing // / # comments
+		// before matching. Attackers wedge comments between the keyword
+		// and the open paren ("@eval/*x*/(base64_decode(...))") to slip
+		// past a strict regex; the cleaner has to see the line the way
+		// the PHP tokenizer does, not byte-for-byte.
+		normalized := stripPHPComments(trimmedLine)
+		if evalInject.MatchString(normalized) {
+			// Length gate stays on the ORIGINAL line so a short legitimate
+			// eval() does not get sucked into the removal path.
 			if len(trimmedLine) > 50 {
 				removals = append(removals, fmt.Sprintf("removed inline eval injection (%d chars)", len(trimmedLine)))
 				continue
@@ -339,6 +345,35 @@ func removeInlineEvalInjections(content string) (string, []string) {
 	}
 
 	return strings.Join(clean, "\n"), removals
+}
+
+// stripPHPComments removes /* ... */ block comments and // / # line
+// tails from a single line. Conservative: it operates on a flat string
+// and does not understand multi-line block comments or strings that
+// contain comment-like substrings. That is fine for the inline-
+// injection cleaner: the input is one trimmed line, and false hits on
+// quoted comment-like text are still bounded by the length gate and
+// the regex that runs after this.
+func stripPHPComments(line string) string {
+	for {
+		start := strings.Index(line, "/*")
+		if start < 0 {
+			break
+		}
+		end := strings.Index(line[start+2:], "*/")
+		if end < 0 {
+			line = line[:start]
+			break
+		}
+		line = line[:start] + line[start+2+end+2:]
+	}
+	if i := strings.Index(line, "//"); i >= 0 {
+		line = line[:i]
+	}
+	if i := strings.Index(line, "#"); i >= 0 {
+		line = line[:i]
+	}
+	return strings.TrimSpace(line)
 }
 
 // --- Helper functions ---
