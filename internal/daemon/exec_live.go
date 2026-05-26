@@ -52,6 +52,7 @@ func StartExecMonitor(alertCh chan<- alert.Finding, cfg *config.Config) bpf.Back
 				level = "bpf-not-built"
 			}
 			csmlog.Info("exec_monitor: BPF unavailable", "state", level, "reason", err.Error(), "choice", choice)
+			emitBPFUnavailableFinding(alertCh, "exec_monitor", choice, err)
 			if choice == bpf.BackendBPF {
 				csmlog.Warn("exec_monitor: backend=bpf but BPF unavailable; no live monitor", "reason", err.Error())
 				bpf.SetActive("exec_monitor", bpf.BackendNone)

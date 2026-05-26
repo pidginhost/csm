@@ -52,6 +52,7 @@ func StartConnectionTracker(alertCh chan<- alert.Finding, cfg *config.Config) bp
 				level = "bpf-not-built"
 			}
 			csmlog.Info("connection_tracker: BPF unavailable", "state", level, "reason", err.Error(), "choice", choice)
+			emitBPFUnavailableFinding(alertCh, "connection_tracker", choice, err)
 			if choice == bpf.BackendBPF {
 				csmlog.Warn("connection_tracker: backend=bpf but BPF unavailable; no live tracker", "reason", err.Error())
 				bpf.SetActive("connection_tracker", bpf.BackendNone)

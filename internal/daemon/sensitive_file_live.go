@@ -52,6 +52,7 @@ func StartSensitiveFileMonitor(alertCh chan<- alert.Finding, cfg *config.Config,
 				level = "bpf-not-built"
 			}
 			csmlog.Info("sensitive_files: BPF unavailable", "state", level, "reason", err.Error(), "choice", choice)
+			emitBPFUnavailableFinding(alertCh, "sensitive_files", choice, err)
 			if choice == bpf.BackendBPF {
 				csmlog.Warn("sensitive_files: backend=bpf but BPF unavailable; no live monitor", "reason", err.Error())
 				bpf.SetActive("sensitive_files", bpf.BackendNone)

@@ -269,6 +269,7 @@ var checkRegistry = []CheckInfo{
 	// --- System Integrity ------------------------------------------------
 	{Name: "af_alg_enforcement_corrected", Category: CategorySystem},
 	{Name: "af_alg_socket_use", Category: CategorySystem},
+	{Name: "bpf_unavailable", Category: CategorySystem},
 	{Name: "crond_change", Category: CategorySystem},
 	{Name: "crontab_change", Category: CategorySystem},
 	{Name: "dpkg_integrity", Category: CategorySystem},

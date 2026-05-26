@@ -40,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- BPF-backed live monitors now emit a `bpf_unavailable` finding when the kernel cannot run the requested program, so operators see degraded live-detection coverage instead of having to read stderr to discover the daemon fell back to the slower path.
 - Incident persistence is now serialised across concurrent merges, so the disk record can no longer be overwritten by an older snapshot when two threads race.
 - Incident auto-block now skips incidents closed before the block decision, preventing stale firewall hand-offs after an operator resolve or dismiss.
 - Ordered incident writes now cover bulk and stale closes without blocking re-entrant incident reads.

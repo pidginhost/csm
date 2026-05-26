@@ -103,6 +103,7 @@ func StartAFAlgLiveMonitor(alertCh chan<- alert.Finding, cfg *config.Config) AFA
 				"reason", err.Error(),
 				"choice", choice,
 			)
+			emitBPFUnavailableFinding(alertCh, "af_alg", choice, err)
 			if choice == AFAlgBackendBPF {
 				csmlog.Warn("af_alg live monitor: af_alg_backend=bpf but BPF unavailable; no live detection",
 					"reason", err.Error(),
