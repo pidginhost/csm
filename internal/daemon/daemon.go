@@ -598,9 +598,16 @@ func (d *Daemon) Run() error {
 	}
 	_, _ = sdnotify.Status(fmt.Sprintf("watchers attached: %d", countAttachedWatchers(d.WatcherStatuses())))
 
+	// Snapshot the live config ONCE for the entire initial-scan tick
+	// (detection + auto-response). Earlier code called d.currentCfg()
+	// for RunTier and then again later for the auto-response batch;
+	// a SIGHUP landing between the two reads split the same tick
+	// across old detection policy and new response policy.
+	initialCfg := d.currentCfg()
+
 	// Run initial scan synchronously (before dispatcher starts)
 	fmt.Fprintf(os.Stderr, "[%s] Running initial baseline scan...\n", ts())
-	initialFindings, initialPurge := checks.RunTier(d.currentCfg(), d.store, checks.TierCritical)
+	initialFindings, initialPurge := checks.RunTier(initialCfg, d.store, checks.TierCritical)
 
 	// Seed the attack database with initial scan findings
 	if adb := attackdb.Global(); adb != nil {
@@ -617,11 +624,6 @@ func (d *Daemon) Run() error {
 		initialAutoResponseFindings = filterUnsuppressedFindings(d.store, initialFindings, suppressions)
 		newFindings = filterUnsuppressedFindings(d.store, newFindings, suppressions)
 	}
-
-	// Snapshot the live config for the initial-scan batch. Same reasoning
-	// as dispatchBatch: a SIGHUP mid-initial-scan must not split the
-	// auto-response between old and new policy.
-	initialCfg := d.currentCfg()
 
 	// Permission auto-fix runs on ALL findings (not just new) because
 	// it's safe/idempotent and should fix baseline findings too.
@@ -1223,12 +1225,19 @@ func (d *Daemon) deepScanner() {
 }
 
 func (d *Daemon) runPeriodicChecks(tier checks.Tier) {
-	// Verify integrity against the CURRENT live config. A SIGHUP
-	// reload re-signs integrity.config_hash on disk and updates
-	// config.Active; using d.cfg (the startup snapshot) here would
-	// fire a Critical tamper alert on every tick after a successful
-	// reload because the stored hash in d.cfg is stale.
-	if err := integrity.Verify(d.binaryPath, d.currentCfg()); err != nil {
+	// Snapshot the live config ONCE for the whole tick. Calling
+	// d.currentCfg() twice (once for integrity, once for RunTier)
+	// lets a SIGHUP land between the two reads and split the tick
+	// between old-policy integrity verification and new-policy
+	// detection. Matches the snapshot pattern in dispatchBatch.
+	cfg := d.currentCfg()
+
+	// Verify integrity against the snapshot. A SIGHUP reload re-signs
+	// integrity.config_hash on disk and updates config.Active; using
+	// d.cfg (the startup snapshot) here would fire a Critical tamper
+	// alert on every tick after a successful reload because the stored
+	// hash in d.cfg is stale.
+	if err := integrity.Verify(d.binaryPath, cfg); err != nil {
 		select {
 		case d.alertCh <- alert.Finding{
 			Severity:  alert.Critical,
@@ -1243,7 +1252,7 @@ func (d *Daemon) runPeriodicChecks(tier checks.Tier) {
 		return
 	}
 
-	findings, purgeChecks := checks.RunTier(d.currentCfg(), d.store, tier)
+	findings, purgeChecks := checks.RunTier(cfg, d.store, tier)
 	// Atomically purge stale findings owned by this scan and merge new ones.
 	checks.StoreLatestScanFindings(d.store, purgeChecks, findings)
 	for _, f := range findings {
