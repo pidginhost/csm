@@ -327,12 +327,23 @@ func (e *Engine) verdictAskerFn() func(ctx context.Context, ip, reason string) (
 }
 
 // Apply builds and atomically applies the complete nftables ruleset.
-// All operations (delete old table + create new table/rules) are batched
-// into a single netlink transaction. If the flush fails, the kernel keeps
-// whatever ruleset was running before - the server is never left without a firewall.
+// All operations (delete old table + create new table/rules +
+// populate persisted block/allow entries) are batched into a single
+// netlink transaction. If the flush fails, the kernel keeps whatever
+// ruleset was running before - the server is never left without a
+// firewall. Equally important: the new ruleset never appears with
+// EMPTY blocked sets between the table-swap and the persisted-state
+// load; an attacker IP from state.json is blocked from the moment
+// the new table becomes the live one.
 func (e *Engine) Apply() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
+	// Compute the elements to seed each set from persisted state
+	// BEFORE touching nft. Pure computation; if state.json is
+	// missing or malformed the slices stay empty and the new table
+	// still applies (no firewall regression on a fresh install).
+	initial := e.computeInitialBlockStateLocked()
 
 	// Check if existing CSM table needs replacing.
 	// If so, include the delete in the same atomic batch as the new table.
@@ -363,14 +374,17 @@ func (e *Engine) Apply() error {
 		return fmt.Errorf("creating output chain: %w", err)
 	}
 
+	// Queue initial set elements from persisted state into the same
+	// netlink batch as the table+set+chain creation above. Without
+	// this, Apply previously Flushed an empty-set ruleset, then a
+	// separate loadState() Flush populated the sets - leaving a
+	// brief window where the new table existed without the
+	// persisted blocks.
+	e.queueInitialBlockStateLocked(initial)
+
 	// Apply atomically - if this fails, nftables keeps whatever was running before
 	if err := e.conn.Flush(); err != nil {
 		return fmt.Errorf("applying ruleset: %w", err)
-	}
-
-	// Populate sets from persisted state
-	if err := e.loadState(); err != nil {
-		fmt.Fprintf(os.Stderr, "firewall: warning loading state: %v\n", err)
 	}
 
 	return nil
@@ -2172,6 +2186,107 @@ func (e *Engine) Status() map[string]interface{} {
 }
 
 // --- State persistence ---
+
+// initialBlockState is the pre-computed pool of nft set elements to
+// seed a freshly-built csm table from persisted state. Populated by
+// computeInitialBlockStateLocked and consumed by
+// queueInitialBlockStateLocked.
+type initialBlockState struct {
+	blocked4, blocked6       []nftables.SetElement
+	allowed4, allowed6       []nftables.SetElement
+	blockedNet4, blockedNet6 []nftables.SetElement
+}
+
+// computeInitialBlockStateLocked reads state.json and returns the
+// nft elements needed to repopulate the blocked / allowed / blocked-
+// net sets. Pure computation; does not touch nft. Safe to call from
+// Apply before any AddTable / AddSet so the result can be queued
+// into the same atomic netlink batch.
+func (e *Engine) computeInitialBlockStateLocked() initialBlockState {
+	state := e.loadStateFile()
+	now := time.Now()
+	var ibs initialBlockState
+	for _, entry := range state.Blocked {
+		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
+			continue
+		}
+		parsed := net.ParseIP(entry.IP)
+		if parsed == nil {
+			continue
+		}
+		timeout := time.Duration(0)
+		if !entry.ExpiresAt.IsZero() {
+			timeout = time.Until(entry.ExpiresAt)
+		}
+		if ip4 := parsed.To4(); ip4 != nil {
+			ibs.blocked4 = append(ibs.blocked4, nftables.SetElement{Key: ip4, Timeout: timeout})
+		} else if e.cfg.IPv6 {
+			ibs.blocked6 = append(ibs.blocked6, nftables.SetElement{Key: parsed.To16(), Timeout: timeout})
+		}
+	}
+	restoredAllowed := make(map[string]bool)
+	for _, entry := range state.Allowed {
+		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
+			continue
+		}
+		if restoredAllowed[entry.IP] {
+			continue
+		}
+		parsed := net.ParseIP(entry.IP)
+		if parsed == nil {
+			continue
+		}
+		if ip4 := parsed.To4(); ip4 != nil {
+			ibs.allowed4 = append(ibs.allowed4, nftables.SetElement{Key: ip4})
+		} else if e.cfg.IPv6 {
+			ibs.allowed6 = append(ibs.allowed6, nftables.SetElement{Key: parsed.To16()})
+		}
+		restoredAllowed[entry.IP] = true
+	}
+	for _, entry := range state.BlockedNet {
+		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
+			continue
+		}
+		_, network, err := net.ParseCIDR(entry.CIDR)
+		if err != nil {
+			continue
+		}
+		end := lastIPInRange(network)
+		if end == nil {
+			continue
+		}
+		if start := network.IP.To4(); start != nil {
+			ibs.blockedNet4 = append(ibs.blockedNet4,
+				nftables.SetElement{Key: start},
+				nftables.SetElement{Key: nextIP(end), IntervalEnd: true},
+			)
+		} else if e.cfg.IPv6 {
+			ibs.blockedNet6 = append(ibs.blockedNet6,
+				nftables.SetElement{Key: network.IP.To16()},
+				nftables.SetElement{Key: nextIP(end), IntervalEnd: true},
+			)
+		}
+	}
+	return ibs
+}
+
+// queueInitialBlockStateLocked queues the previously-computed
+// elements into the still-pending Apply netlink batch. Apply Flushes
+// the whole batch as one transaction. No Flush here.
+func (e *Engine) queueInitialBlockStateLocked(ibs initialBlockState) {
+	e.addElementsChunked(e.setBlocked, ibs.blocked4)
+	if e.setBlocked6 != nil {
+		e.addElementsChunked(e.setBlocked6, ibs.blocked6)
+	}
+	e.addElementsChunked(e.setAllowed, ibs.allowed4)
+	if e.setAllowed6 != nil {
+		e.addElementsChunked(e.setAllowed6, ibs.allowed6)
+	}
+	e.addElementsChunked(e.setBlockedNet, ibs.blockedNet4)
+	if e.setBlockedNet6 != nil {
+		e.addElementsChunked(e.setBlockedNet6, ibs.blockedNet6)
+	}
+}
 
 func (e *Engine) loadState() error {
 	// Each SetAddElements call queues a separate netlink message whose ack

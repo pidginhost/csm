@@ -40,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Firewall Apply now seeds persisted blocked and allowed entries into the same atomic netlink transaction as the table swap, removing a brief window where the new ruleset existed with empty deny sets.
 - Firewall deny-limit cap now counts from the live kernel set, so an entry the kernel already expired no longer trips the cap and refuses a fresh block.
 - Firewall deny-limit caps now preserve whether a live block was requested as permanent or temporary, so inherited nft timeout metadata cannot charge it to the wrong cap.
 - Dry-run-block records are now purged whenever auto-response is live at startup or after reload, and stale dry-run records are aged out after a week so status does not report old dry-run windows.
