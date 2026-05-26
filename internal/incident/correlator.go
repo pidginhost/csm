@@ -29,8 +29,10 @@ var ErrIncidentNotFound = errors.New("incident: not found")
 // reflects current activity). Operators reading the timeline see a
 // gap marker via the appended IncidentEvent that the cap fires.
 const (
-	maxIncidentFindings = 5000
-	maxIncidentTimeline = 500
+	maxIncidentFindings              = 5000
+	maxIncidentTimeline              = 500
+	incidentFingerprintTruncatedMark = "...truncated:"
+	incidentTimelineTruncatedKind    = "truncated"
 )
 
 // incidentMergeWindow is the time gap inside which two findings with the
@@ -590,10 +592,26 @@ func appendCappedFingerprint(fps []string, fp string) []string {
 	if len(fps) <= maxIncidentFindings {
 		return fps
 	}
+
+	real := make([]string, 0, len(fps))
+	elided := 0
+	for _, existing := range fps {
+		if n, ok := fingerprintTruncationCount(existing); ok {
+			elided += n
+			continue
+		}
+		real = append(real, existing)
+	}
+	if len(real) <= maxIncidentFindings {
+		return fingerprintsWithTruncationMarker(real, elided)
+	}
+
 	half := maxIncidentFindings / 2
-	head := append([]string(nil), fps[:half]...)
-	tail := append([]string(nil), fps[len(fps)-half:]...)
-	gap := []string{"...truncated:" + strconv.Itoa(len(fps)-2*half) + " findings elided"}
+	tailLen := maxIncidentFindings - half
+	elided += len(real) - half - tailLen
+	head := append([]string(nil), real[:half]...)
+	tail := append([]string(nil), real[len(real)-tailLen:]...)
+	gap := []string{formatFingerprintTruncation(elided)}
 	return append(append(head, gap...), tail...)
 }
 
@@ -606,15 +624,104 @@ func appendCappedTimeline(events []IncidentEvent, ev IncidentEvent) []IncidentEv
 	if len(events) <= maxIncidentTimeline {
 		return events
 	}
+
+	real := make([]IncidentEvent, 0, len(events))
+	elided := 0
+	var markerTime time.Time
+	for _, existing := range events {
+		if n, ok := timelineTruncationCount(existing); ok {
+			elided += n
+			if markerTime.IsZero() || existing.Time.Before(markerTime) {
+				markerTime = existing.Time
+			}
+			continue
+		}
+		real = append(real, existing)
+	}
+	if len(real) <= maxIncidentTimeline {
+		return timelineWithTruncationMarker(real, elided, markerTime)
+	}
+
 	half := maxIncidentTimeline / 2
-	head := append([]IncidentEvent(nil), events[:half]...)
-	tail := append([]IncidentEvent(nil), events[len(events)-half:]...)
-	gap := []IncidentEvent{{
-		Time:    events[half].Time,
-		Kind:    "truncated",
-		Message: strconv.Itoa(len(events)-2*half) + " events elided to cap incident size",
-	}}
+	tailLen := maxIncidentTimeline - half
+	if markerTime.IsZero() {
+		markerTime = real[half].Time
+	}
+	elided += len(real) - half - tailLen
+	head := append([]IncidentEvent(nil), real[:half]...)
+	tail := append([]IncidentEvent(nil), real[len(real)-tailLen:]...)
+	gap := []IncidentEvent{timelineTruncationMarker(elided, markerTime)}
 	return append(append(head, gap...), tail...)
+}
+
+func fingerprintsWithTruncationMarker(fps []string, elided int) []string {
+	if elided == 0 {
+		return fps
+	}
+	half := len(fps) / 2
+	out := make([]string, 0, len(fps)+1)
+	out = append(out, fps[:half]...)
+	out = append(out, formatFingerprintTruncation(elided))
+	out = append(out, fps[half:]...)
+	return out
+}
+
+func fingerprintTruncationCount(fp string) (int, bool) {
+	if !strings.HasPrefix(fp, incidentFingerprintTruncatedMark) {
+		return 0, false
+	}
+	rest := strings.TrimPrefix(fp, incidentFingerprintTruncatedMark)
+	fields := strings.Fields(rest)
+	if len(fields) == 0 {
+		return 1, true
+	}
+	n, err := strconv.Atoi(fields[0])
+	if err != nil || n < 1 {
+		return 1, true
+	}
+	return n, true
+}
+
+func formatFingerprintTruncation(count int) string {
+	return incidentFingerprintTruncatedMark + strconv.Itoa(count) + " findings elided"
+}
+
+func timelineWithTruncationMarker(events []IncidentEvent, elided int, markerTime time.Time) []IncidentEvent {
+	if elided == 0 {
+		return events
+	}
+	if markerTime.IsZero() && len(events) > 0 {
+		markerTime = events[len(events)/2].Time
+	}
+	half := len(events) / 2
+	out := make([]IncidentEvent, 0, len(events)+1)
+	out = append(out, events[:half]...)
+	out = append(out, timelineTruncationMarker(elided, markerTime))
+	out = append(out, events[half:]...)
+	return out
+}
+
+func timelineTruncationCount(ev IncidentEvent) (int, bool) {
+	if ev.Kind != incidentTimelineTruncatedKind {
+		return 0, false
+	}
+	fields := strings.Fields(ev.Message)
+	if len(fields) == 0 {
+		return 1, true
+	}
+	n, err := strconv.Atoi(fields[0])
+	if err != nil || n < 1 {
+		return 1, true
+	}
+	return n, true
+}
+
+func timelineTruncationMarker(count int, at time.Time) IncidentEvent {
+	return IncidentEvent{
+		Time:    at,
+		Kind:    incidentTimelineTruncatedKind,
+		Message: strconv.Itoa(count) + " events elided to cap incident size",
+	}
 }
 
 // persistLocked invokes the Persist callback while temporarily releasing
@@ -1028,6 +1135,9 @@ func incidentBlockCandidate(inc *Incident) string {
 	}
 	var candidate string
 	for _, ev := range inc.Timeline {
+		if ev.Kind == incidentTimelineTruncatedKind {
+			return ""
+		}
 		ip := normalizeIncidentRemoteIP(ev.RemoteIP)
 		if ip == "" {
 			continue

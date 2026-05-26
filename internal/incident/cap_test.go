@@ -1,6 +1,7 @@
 package incident
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -67,4 +68,86 @@ func TestAppendCappedFingerprint_BelowCapIsIdentity(t *testing.T) {
 	if len(fps) != 10 {
 		t.Errorf("below-cap append produced len=%d, want 10", len(fps))
 	}
+}
+
+func TestAppendCappedFingerprint_TruncationCountAccumulates(t *testing.T) {
+	var fps []string
+	total := maxIncidentFindings * 2
+	for i := 0; i < total; i++ {
+		fps = appendCappedFingerprint(fps, "fp-"+strconv.Itoa(i))
+	}
+
+	count, markers := fingerprintTruncationCountForTest(t, fps)
+	if markers != 1 {
+		t.Fatalf("truncation markers = %d, want 1", markers)
+	}
+	if want := total - maxIncidentFindings; count != want {
+		t.Fatalf("truncation count = %d, want %d", count, want)
+	}
+}
+
+func TestAppendCappedTimeline_TruncationCountAccumulates(t *testing.T) {
+	var events []IncidentEvent
+	total := maxIncidentTimeline * 3
+	for i := 0; i < total; i++ {
+		events = appendCappedTimeline(events, IncidentEvent{
+			Time:  time.Unix(int64(i), 0),
+			Kind:  "finding",
+			Check: "probe",
+		})
+	}
+
+	count, markers := timelineTruncationCountForTest(t, events)
+	if markers != 1 {
+		t.Fatalf("truncation markers = %d, want 1", markers)
+	}
+	if want := total - maxIncidentTimeline; count != want {
+		t.Fatalf("truncation count = %d, want %d", count, want)
+	}
+}
+
+func fingerprintTruncationCountForTest(t *testing.T, fps []string) (int, int) {
+	t.Helper()
+	const prefix = "...truncated:"
+	count := 0
+	markers := 0
+	for _, fp := range fps {
+		if !strings.HasPrefix(fp, prefix) {
+			continue
+		}
+		markers++
+		rest := strings.TrimPrefix(fp, prefix)
+		fields := strings.Fields(rest)
+		if len(fields) == 0 {
+			t.Fatalf("truncation marker has no count: %q", fp)
+		}
+		n, err := strconv.Atoi(fields[0])
+		if err != nil {
+			t.Fatalf("truncation count parse failed for %q: %v", fp, err)
+		}
+		count += n
+	}
+	return count, markers
+}
+
+func timelineTruncationCountForTest(t *testing.T, events []IncidentEvent) (int, int) {
+	t.Helper()
+	count := 0
+	markers := 0
+	for _, ev := range events {
+		if ev.Kind != "truncated" {
+			continue
+		}
+		markers++
+		fields := strings.Fields(ev.Message)
+		if len(fields) == 0 {
+			t.Fatalf("truncation marker has no count: %+v", ev)
+		}
+		n, err := strconv.Atoi(fields[0])
+		if err != nil {
+			t.Fatalf("truncation count parse failed for %+v: %v", ev, err)
+		}
+		count += n
+	}
+	return count, markers
 }

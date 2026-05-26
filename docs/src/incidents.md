@@ -159,6 +159,9 @@ accepted request records `incident_block_requested`; dry-run attempts do
 not latch the incident, so an operator who arms `auto_block` AFTER an
 incident has already crossed the gate still gets a block on the next
 finding. Incidents with multiple source IPs are left for manual review.
+If a long-running incident's timeline was truncated and the source IP is
+not part of the incident key, auto-block also stays off because the
+remaining visible timeline may not contain every source IP.
 
 credential_spray is explicitly excluded from this path; the dedicated
 spray hand-off owns it. Set `kinds` to narrow the surface (e.g. only

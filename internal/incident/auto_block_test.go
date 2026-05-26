@@ -383,3 +383,60 @@ func TestAutoBlockUsesTimelineRemoteIPForMailboxIncident(t *testing.T) {
 		t.Fatalf("mailbox incident correlation key = %+v, want mailbox key without RemoteIP", inc.CorrelationKey)
 	}
 }
+
+func TestAutoBlockSkipsTruncatedTimelineWithoutRemoteIPKey(t *testing.T) {
+	var cap blockCapture
+	c := NewCorrelator(CorrelatorConfig{
+		OpenThreshold: 1,
+		AutoBlock: IncidentAutoBlockConfig{
+			Enabled:         true,
+			BlockAtSeverity: "critical",
+			Kinds:           map[Kind]bool{KindMailboxTakeover: true},
+		},
+		OnIncidentBlock: cap.recordOK,
+	})
+	base := time.Unix(1_700_000_000, 0)
+	var id string
+	for i := 0; i < maxIncidentTimeline*3; i++ {
+		now := base.Add(time.Duration(i) * time.Second)
+		c.now = func() time.Time { return now }
+		ip := "192.0.2.58"
+		if i == maxIncidentTimeline {
+			ip = "192.0.2.59"
+		}
+		sev := alert.Warning
+		if i == maxIncidentTimeline*3-1 {
+			sev = alert.Critical
+		}
+		gotID, _, err := c.OnFinding(alert.Finding{
+			Check:     "email_compromised_account",
+			Severity:  sev,
+			Mailbox:   "victim@example.com",
+			SourceIP:  ip,
+			Timestamp: now,
+		})
+		if err != nil {
+			t.Fatalf("OnFinding %d: %v", i, err)
+		}
+		if gotID != "" {
+			id = gotID
+		}
+	}
+
+	if got := cap.len(); got != 0 {
+		t.Fatalf("OnIncidentBlock fired %d times for truncated non-IP-keyed timeline; want 0", got)
+	}
+	inc, ok := c.Get(id)
+	if !ok {
+		t.Fatal("created incident not found")
+	}
+	if inc.CorrelationKey == nil || inc.CorrelationKey.RemoteIP != "" {
+		t.Fatalf("mailbox incident correlation key = %+v, want mailbox key without RemoteIP", inc.CorrelationKey)
+	}
+	if _, markers := timelineTruncationCountForTest(t, inc.Timeline); markers != 1 {
+		t.Fatalf("truncation markers = %d, want 1", markers)
+	}
+	if candidate := incidentBlockCandidate(&inc); candidate != "" {
+		t.Fatalf("incidentBlockCandidate = %q, want empty for truncated non-IP-keyed timeline", candidate)
+	}
+}
