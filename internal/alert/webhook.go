@@ -14,8 +14,31 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
+// webhookTransport is the shared *http.Transport reused across every
+// webhook dispatch. Reusing one transport keeps the underlying TCP /
+// TLS connections in its keepalive pool so hosts that fire hundreds
+// of webhooks per hour avoid a new handshake per alert. Per-call
+// timeouts stay configurable via httpClient: each call wraps the
+// shared transport in a fresh *http.Client carrying the requested
+// timeout. http.DefaultTransport already configures sensible
+// defaults; reuse it directly rather than instantiating a separate
+// pool that would shadow Go's HTTP/2 / proxy plumbing.
+var webhookTransport http.RoundTripper = http.DefaultTransport
+
+// httpClient returns a webhook client with the requested timeout
+// backed by the shared transport, so the keepalive pool is shared
+// across dispatches without losing per-call timeout configurability.
 func httpClient(timeout time.Duration) *http.Client {
-	return &http.Client{Timeout: timeout}
+	return &http.Client{Timeout: timeout, Transport: webhookTransport}
+}
+
+// SetWebhookTransportForTest lets tests inject a fake RoundTripper.
+// Not safe for concurrent calls; tests should set up before parallel
+// dispatch and restore after.
+func SetWebhookTransportForTest(rt http.RoundTripper) (restore func()) {
+	prev := webhookTransport
+	webhookTransport = rt
+	return func() { webhookTransport = prev }
 }
 
 func SendWebhook(cfg *config.Config, subject, body string) error {
