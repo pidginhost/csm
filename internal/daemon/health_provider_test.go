@@ -7,6 +7,13 @@ import (
 	"github.com/pidginhost/csm/internal/config"
 )
 
+func TestBlocklistSize_NilEngineReturnsZero(t *testing.T) {
+	d := &Daemon{}
+	if got := d.BlocklistSize(); got != 0 {
+		t.Errorf("BlocklistSize with nil fwEngine = %d, want 0", got)
+	}
+}
+
 func TestBPFEnforcementActiveRequiresBPFConnectionBackend(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.BPFEnforcement.Enabled = true

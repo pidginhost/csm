@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Auto-block no longer records a real block, bumps the hourly counter, writes the permanent threat database, or emits a Critical "AUTO-BLOCK" finding when `auto_response.dry_run` intercepted the call or the verdict callback returned "allow". Dry-run intercepts now surface as a Warning-level "AUTO-BLOCK [dry-run]" notice so operators can still see what would have happened.
 - Auto-block now ignores unexpected firewall result reports instead of treating them as successful blocks.
+- `/api/v1/status.blocklist_size` and the health snapshot now report the live count of blocked IPs from the firewall engine instead of an unused bbolt bucket, so phpanel sees the same number as `csm firewall status`.
 - `/api/v1/status` now reports a real `baseline_at` for the daemon's first-start timestamp instead of the epoch. It stays stable across restarts, upgrades, and baseline resets.
 - Manual check and baseline scans now keep dry-run state local to that scan, so they cannot mute live auto-response from daemon ticks.
 - Settings saves now reject invalid mail-log source and account-key extractor values before writing the config.

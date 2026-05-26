@@ -89,12 +89,18 @@ func (d *Daemon) SeverityCounts() map[string]int {
 }
 
 // BlocklistSize implements health.Provider.
+//
+// The firewall engine is the authoritative source: production code never
+// writes the parallel bbolt `fw:blocked` bucket the previous implementation
+// read, so /api/v1/status reported a stale count (cluster6 showed 25
+// against 909 in the real engine state). Engine.BlockedCount() reads the
+// same state file Status() and `csm firewall status` use, with expired
+// entries pruned.
 func (d *Daemon) BlocklistSize() int {
-	s := store.Global()
-	if s == nil {
+	if d.fwEngine == nil {
 		return 0
 	}
-	return len(s.LoadFirewallState().Blocked)
+	return d.fwEngine.BlockedCount()
 }
 
 // IncidentsOpen implements health.Provider. Returns the count of

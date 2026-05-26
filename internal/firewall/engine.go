@@ -1907,6 +1907,16 @@ func (e *Engine) resolveSubnetSet(network *net.IPNet) (*nftables.Set, net.IP, ne
 // cache existed loadStateFile was lock-free because every call did its
 // own ReadFile + Unmarshal; now that loadStateFile mutates the shared
 // cache + index, the lock is required.
+// BlockedCount returns the number of live blocked IP entries the engine
+// is enforcing. Sourced from the same state file Status() uses, so
+// `/api/v1/status` and `csm firewall status` agree on the number. Expired
+// entries are pruned by loadStateFile before being counted.
+func (e *Engine) BlockedCount() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.loadStateFile().Blocked)
+}
+
 func (e *Engine) Status() map[string]interface{} {
 	e.mu.Lock()
 	defer e.mu.Unlock()
