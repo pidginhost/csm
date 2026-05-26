@@ -20,6 +20,19 @@ import (
 // target an unknown incident id.
 var ErrIncidentNotFound = errors.New("incident: not found")
 
+// maxIncidentFindings and maxIncidentTimeline cap the per-incident
+// fingerprint slice and operator-visible timeline so a long-running
+// open incident with sustained low-severity traffic does not grow
+// memory and persistence payloads without bound. Eviction keeps the
+// first half (incident-opening context an operator needs to root-
+// cause the incident) and the most recent half (so the timeline
+// reflects current activity). Operators reading the timeline see a
+// gap marker via the appended IncidentEvent that the cap fires.
+const (
+	maxIncidentFindings = 5000
+	maxIncidentTimeline = 500
+)
+
 // incidentMergeWindow is the time gap inside which two findings with the
 // same correlation key are considered the same incident. Named constant
 // per project convention; config exposure deferred until operators ask.
@@ -534,7 +547,7 @@ func (c *Correlator) mergeLocked(inc *Incident, f alert.Finding, now time.Time, 
 	if merged {
 		c.counters.findingsMergedTotal.Add(1)
 	}
-	inc.Findings = append(inc.Findings, f.Fingerprint())
+	inc.Findings = appendCappedFingerprint(inc.Findings, f.Fingerprint())
 	ev := IncidentEvent{
 		Time:    f.Timestamp,
 		Kind:    "finding",
@@ -552,7 +565,7 @@ func (c *Correlator) mergeLocked(inc *Incident, f alert.Finding, now time.Time, 
 	if f.SourceIP != "" {
 		ev.RemoteIP = f.SourceIP
 	}
-	inc.Timeline = append(inc.Timeline, ev)
+	inc.Timeline = appendCappedTimeline(inc.Timeline, ev)
 	if f.Severity > inc.Severity {
 		from := inc.Severity
 		inc.Severity = f.Severity
@@ -566,6 +579,42 @@ func (c *Correlator) mergeLocked(inc *Incident, f alert.Finding, now time.Time, 
 	}
 	inc.UpdatedAt = now
 	c.persistLocked(*inc)
+}
+
+// appendCappedFingerprint appends fp to fps and trims to
+// maxIncidentFindings via first-half + last-half retention when the
+// cap is crossed. Keeps the original opening signals plus the most
+// recent traffic, dropping the middle.
+func appendCappedFingerprint(fps []string, fp string) []string {
+	fps = append(fps, fp)
+	if len(fps) <= maxIncidentFindings {
+		return fps
+	}
+	half := maxIncidentFindings / 2
+	head := append([]string(nil), fps[:half]...)
+	tail := append([]string(nil), fps[len(fps)-half:]...)
+	gap := []string{"...truncated:" + strconv.Itoa(len(fps)-2*half) + " findings elided"}
+	return append(append(head, gap...), tail...)
+}
+
+// appendCappedTimeline behaves the same as appendCappedFingerprint
+// for the operator-visible IncidentEvent slice; the truncation marker
+// is rendered as a synthetic "truncated" event so the UI can show a
+// "X events elided" row.
+func appendCappedTimeline(events []IncidentEvent, ev IncidentEvent) []IncidentEvent {
+	events = append(events, ev)
+	if len(events) <= maxIncidentTimeline {
+		return events
+	}
+	half := maxIncidentTimeline / 2
+	head := append([]IncidentEvent(nil), events[:half]...)
+	tail := append([]IncidentEvent(nil), events[len(events)-half:]...)
+	gap := []IncidentEvent{{
+		Time:    events[half].Time,
+		Kind:    "truncated",
+		Message: strconv.Itoa(len(events)-2*half) + " events elided to cap incident size",
+	}}
+	return append(append(head, gap...), tail...)
 }
 
 // persistLocked invokes the Persist callback while temporarily releasing
