@@ -122,6 +122,32 @@ func TestAutoBlockIPs_VerdictAllowOutcome_DoesNotMutateState(t *testing.T) {
 	}
 }
 
+func TestAutoBlockIPs_UnknownOutcome_DoesNotMutateState(t *testing.T) {
+	cfg := newAutoBlockTestConfig(t)
+	blocker := &outcomeIPBlocker{outcome: firewall.BlockOutcome("")}
+	swapBlocker(t, blocker)
+
+	actions := AutoBlockIPs(cfg, []alert.Finding{{
+		Check:     "wp_login_bruteforce",
+		Message:   "WordPress brute force from 192.0.2.25",
+		Timestamp: time.Now(),
+	}})
+
+	if blocker.outcomeHits != 1 {
+		t.Fatalf("BlockIPOutcome calls = %d, want 1", blocker.outcomeHits)
+	}
+	state := loadBlockState(cfg.StatePath)
+	if len(state.IPs) != 0 {
+		t.Errorf("state.IPs grew on unknown outcome: %+v", state.IPs)
+	}
+	if state.BlocksThisHour != 0 {
+		t.Errorf("state.BlocksThisHour = %d on unknown outcome, want 0", state.BlocksThisHour)
+	}
+	if len(actions) != 0 {
+		t.Fatalf("actions count = %d, want 0 for unknown outcome: %+v", len(actions), actions)
+	}
+}
+
 // TestAutoBlockIPs_LiveOutcome_MutatesState verifies the happy path is
 // unchanged: a Live outcome causes state.IPs to grow, BlocksThisHour to
 // increment, and the existing Critical "AUTO-BLOCK: X blocked" finding to

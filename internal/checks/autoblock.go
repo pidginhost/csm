@@ -263,6 +263,8 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		}
 
 		switch outcome {
+		case firewall.BlockOutcomeLive:
+			// nft was mutated. Record the real block below.
 		case firewall.BlockOutcomeDryRun:
 			// dry-run intercepted: nft was NOT mutated. Do not record a real
 			// block locally or in the permanent threat DB; emit a Warning
@@ -284,9 +286,10 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			// Already-blocked, deny-limit, or other guard rejected the call.
 			// No local state to record.
 			continue
+		default:
+			fmt.Fprintf(os.Stderr, "auto-block: unknown block outcome %q for %s, skipping local state\n", outcome, ip)
+			continue
 		}
-		// firewall.BlockOutcomeLive (or legacy IPBlocker that returns nil err):
-		// nft was mutated. Record the real block.
 		if fwBlocker.IsBlocked(ip) {
 			fmt.Fprintf(os.Stderr, "[%s] AUTO-BLOCK: %s blocked (expires in %s)\n", time.Now().Format("2006-01-02 15:04:05"), ip, expiry)
 		}
