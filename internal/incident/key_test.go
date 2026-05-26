@@ -56,8 +56,11 @@ func TestKeyForProcessFinding(t *testing.T) {
 	if k.Account != "alice" {
 		t.Errorf("Account from Process.Account: %q", k.Account)
 	}
-	if k.UID != 1001 {
-		t.Errorf("UID: want 1001, got %d", k.UID)
+	// UID is dropped from the key when Account is set so two
+	// findings about the same account from different processes do
+	// not split into separate incidents.
+	if k.UID != 0 {
+		t.Errorf("UID expected dropped when Account is set, got %d", k.UID)
 	}
 	if k.PID != 0 {
 		t.Errorf("PID should not split account/UID key, got %d", k.PID)

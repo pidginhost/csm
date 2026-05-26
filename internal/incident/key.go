@@ -45,10 +45,16 @@ func KeyFor(f alert.Finding) Key {
 		if f.Process.Account != "" && k.Account == "" {
 			k.Account = f.Process.Account
 		}
-		if f.Process.UID != 0 {
+		// UID is only a primary key when no stronger actor identifier
+		// is available. Otherwise findings about the same mailbox or
+		// account observed from different processes would split into
+		// separate incidents - the threshold gate then stalls at
+		// "still waiting for more sightings of THIS uid" while the
+		// real attack runs many processes against one victim.
+		if f.Process.UID != 0 && k.Account == "" && k.Mailbox == "" {
 			k.UID = f.Process.UID
 		}
-		if k.Account == "" && k.UID == 0 {
+		if k.Account == "" && k.Mailbox == "" && k.UID == 0 {
 			k.PID = f.Process.PID
 		}
 	}
