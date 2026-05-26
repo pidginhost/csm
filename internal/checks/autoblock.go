@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -59,12 +60,32 @@ type subnetBlockStatus interface {
 	IsSubnetBlocked(cidr string) bool
 }
 
-var fwBlocker IPBlocker
+// fwBlockerSlot wraps an IPBlocker so atomic.Pointer can store it. The
+// extra struct layer is required because atomic.Pointer needs a
+// concrete type and interfaces cannot be stored directly.
+type fwBlockerSlot struct{ b IPBlocker }
+
+var fwBlockerHolder atomic.Pointer[fwBlockerSlot]
 var blockStateMu sync.Mutex
 
-// SetIPBlocker sets the firewall engine for auto-blocking.
+// SetIPBlocker installs the firewall engine for auto-blocking. Safe to
+// call concurrently with AutoBlockIPs: each call publishes the new
+// blocker atomically and any in-flight scan keeps the snapshot it
+// already loaded.
 func SetIPBlocker(b IPBlocker) {
-	fwBlocker = b
+	fwBlockerHolder.Store(&fwBlockerSlot{b: b})
+}
+
+// getIPBlocker returns the current blocker via a single atomic load.
+// Callers should capture the result into a local variable and reuse it
+// for the duration of one operation so a concurrent SetIPBlocker
+// cannot split a single scan across two different engines.
+func getIPBlocker() IPBlocker {
+	slot := fwBlockerHolder.Load()
+	if slot == nil {
+		return nil
+	}
+	return slot.b
 }
 
 type blockedIP struct {
@@ -96,6 +117,14 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	blockStateMu.Lock()
 	defer blockStateMu.Unlock()
 
+	// Snapshot the wired firewall engine ONCE per call. A concurrent
+	// SetIPBlocker (SIGHUP re-wire, test cleanup) can swap the global
+	// mid-scan; reading the atomic pointer once and reusing the
+	// returned value keeps every block decision in this batch routed
+	// to the same engine. The previous unsynchronized read of the
+	// global also tripped the race detector.
+	blocker := getIPBlocker()
+
 	var actions []alert.Finding
 
 	// Load block state
@@ -109,8 +138,8 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	// the kernel expires entries before state.json is rewritten.
 	var stillBlocked []blockedIP
 	for _, b := range state.IPs {
-		if fwBlocker != nil {
-			if !isBlockedLiveOrCached(fwBlocker, b.IP) {
+		if blocker != nil {
+			if !isBlockedLiveOrCached(blocker, b.IP) {
 				// Engine expired this block - clean up our state
 				fmt.Fprintf(os.Stderr, "[%s] AUTO-UNBLOCK: %s removed (engine expired)\n", time.Now().Format("2006-01-02 15:04:05"), b.IP)
 				continue
@@ -193,11 +222,11 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		if cidr == "" {
 			continue
 		}
-		if fwBlocker == nil {
+		if blocker == nil {
 			fmt.Fprintf(os.Stderr, "auto-block: firewall engine not available, skipping subnet %s\n", cidr)
 			continue
 		}
-		sb, ok := fwBlocker.(subnetBlocker)
+		sb, ok := blocker.(subnetBlocker)
 		if !ok {
 			fmt.Fprintf(os.Stderr, "auto-block: firewall engine does not support subnet blocking, skipping %s\n", cidr)
 			continue
@@ -240,7 +269,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		}
 
 		// Don't re-block already blocked IPs.
-		if isAlreadyBlocked(state, ip) || (fwBlocker != nil && isBlockedLiveOrCached(fwBlocker, ip)) {
+		if isAlreadyBlocked(state, ip) || (blocker != nil && isBlockedLiveOrCached(blocker, ip)) {
 			continue
 		}
 
@@ -265,11 +294,11 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 
 		// Block via firewall engine (nftables)
 		blockReason := fmt.Sprintf("CSM auto-block: %s", truncate(reason, 100))
-		if fwBlocker == nil {
+		if blocker == nil {
 			fmt.Fprintf(os.Stderr, "auto-block: firewall engine not available, skipping %s\n", ip)
 			continue
 		}
-		outcome, err := callBlockIP(fwBlocker, ip, blockReason, expiry)
+		outcome, err := callBlockIP(blocker, ip, blockReason, expiry)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "auto-block: error blocking %s: %v\n", ip, err)
 			continue
@@ -303,7 +332,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			fmt.Fprintf(os.Stderr, "auto-block: unknown block outcome %q for %s, skipping local state\n", outcome, ip)
 			continue
 		}
-		if fwBlocker.IsBlocked(ip) {
+		if blocker.IsBlocked(ip) {
 			fmt.Fprintf(os.Stderr, "[%s] AUTO-BLOCK: %s blocked (expires in %s)\n", time.Now().Format("2006-01-02 15:04:05"), ip, expiry)
 		}
 
@@ -330,7 +359,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		})
 
 		// Permanent block escalation: promote to permanent after N temp blocks
-		if cfg.AutoResponse.PermBlock && fwBlocker != nil {
+		if cfg.AutoResponse.PermBlock {
 			count := cfg.AutoResponse.PermBlockCount
 			if count < 2 {
 				count = 4
@@ -341,7 +370,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			}
 			if checkPermBlockEscalation(cfg.StatePath, ip, count, interval) {
 				permReason := fmt.Sprintf("PERMBLOCK: %d temp blocks within %s", count, interval)
-				if permOutcome, err := callBlockIP(fwBlocker, ip, permReason, 0); err == nil && permOutcome == firewall.BlockOutcomeLive {
+				if permOutcome, err := callBlockIP(blocker, ip, permReason, 0); err == nil && permOutcome == firewall.BlockOutcomeLive {
 					actions = append(actions, alert.Finding{
 						Severity:  alert.Critical,
 						Check:     "auto_block",
@@ -363,7 +392,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	}
 
 	// Subnet auto-blocking: detect /24 patterns
-	if cfg.AutoResponse.NetBlock && fwBlocker != nil {
+	if cfg.AutoResponse.NetBlock && blocker != nil { // blocker may be nil if no findings reached the per-IP block path above (e.g. only subnet findings).
 		threshold := cfg.AutoResponse.NetBlockThreshold
 		if threshold < 2 {
 			threshold = 3
@@ -380,7 +409,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		for prefix, count := range subnetCounts {
 			if count >= threshold && !subnetBlocked[prefix] {
 				cidr := prefix + ".0/24"
-				if sb, ok := fwBlocker.(subnetBlocker); ok {
+				if sb, ok := blocker.(subnetBlocker); ok {
 					if isSubnetAlreadyBlocked(cidr) {
 						continue
 					}
@@ -438,7 +467,7 @@ func callBlockIP(b IPBlocker, ip, reason string, timeout time.Duration) (firewal
 }
 
 func isSubnetAlreadyBlocked(cidr string) bool {
-	sb, ok := fwBlocker.(subnetBlockStatus)
+	sb, ok := getIPBlocker().(subnetBlockStatus)
 	return ok && sb.IsSubnetBlocked(cidr)
 }
 

@@ -40,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Auto-block now installs the firewall engine via an atomic pointer, so a SIGHUP re-wire cannot race with a scan in flight and split block decisions across two engines.
 - Auto-block tracker reconciles against the live kernel firewall before pruning cached state, so stale entries no longer suppress re-blocking after an IP expires.
 - C2, backdoor, and suspicious PHP execution findings now carry stable actor keys, so repeat events group into one incident instead of splitting by process restart or missing UID.
 - Initial baseline dispatch no longer double-notifies scan-produced cross-account correlation alerts.

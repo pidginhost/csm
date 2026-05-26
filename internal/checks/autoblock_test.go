@@ -68,7 +68,7 @@ func TestAutoBlockIPs_SkipsChallengeListedIPs(t *testing.T) {
 	cfg.AutoResponse.BlockIPs = true
 
 	blocker := &recordingIPBlocker{}
-	oldBlocker := fwBlocker
+	oldBlocker := getIPBlocker()
 	SetIPBlocker(blocker)
 	t.Cleanup(func() {
 		SetIPBlocker(oldBlocker)
@@ -120,7 +120,7 @@ func TestAutoBlockIPs_QueuesIPsWhenRateLimited(t *testing.T) {
 	})
 
 	blocker := &recordingIPBlocker{}
-	oldBlocker := fwBlocker
+	oldBlocker := getIPBlocker()
 	SetIPBlocker(blocker)
 	t.Cleanup(func() {
 		SetIPBlocker(oldBlocker)
@@ -174,7 +174,7 @@ func TestAutoBlockIPs_SkipsAlreadyBlockedNetblock(t *testing.T) {
 	cfg.AutoResponse.NetBlockThreshold = 2
 
 	blocker := &recordingIPBlocker{blockedSubnet: []string{"198.51.100.0/24"}}
-	oldBlocker := fwBlocker
+	oldBlocker := getIPBlocker()
 	SetIPBlocker(blocker)
 	t.Cleanup(func() {
 		SetIPBlocker(oldBlocker)
@@ -208,7 +208,7 @@ func TestAutoBlockIPs_BlocksGenericModSecEscalation(t *testing.T) {
 	cfg.AutoResponse.BlockIPs = true
 
 	blocker := &recordingIPBlocker{}
-	oldBlocker := fwBlocker
+	oldBlocker := getIPBlocker()
 	SetIPBlocker(blocker)
 	t.Cleanup(func() {
 		SetIPBlocker(oldBlocker)
@@ -248,7 +248,7 @@ func TestAutoBlockIPs_DrainsPendingQueueAfterRateLimitWindow(t *testing.T) {
 	})
 
 	blocker := &recordingIPBlocker{}
-	oldBlocker := fwBlocker
+	oldBlocker := getIPBlocker()
 	SetIPBlocker(blocker)
 	t.Cleanup(func() {
 		SetIPBlocker(oldBlocker)
@@ -322,7 +322,7 @@ func TestAutoBlock_SMTPBruteForceIsInAlwaysBlock(t *testing.T) {
 	cfg.StatePath = t.TempDir()
 
 	blocker := &recordingIPBlocker{}
-	oldBlocker := fwBlocker
+	oldBlocker := getIPBlocker()
 	SetIPBlocker(blocker)
 	t.Cleanup(func() {
 		SetIPBlocker(oldBlocker)
@@ -352,7 +352,7 @@ func TestAutoBlock_SMTPBruteForceUsesStructuredSourceIP(t *testing.T) {
 	cfg.StatePath = t.TempDir()
 
 	blocker := &recordingIPBlocker{}
-	oldBlocker := fwBlocker
+	oldBlocker := getIPBlocker()
 	SetIPBlocker(blocker)
 	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
 
@@ -386,7 +386,7 @@ func TestAutoBlockIPs_PromotesRepeatOffenderToPermanentBlock(t *testing.T) {
 	savePermBlockTracker(cfg.StatePath, tracker)
 
 	blocker := &recordingIPBlocker{}
-	oldBlocker := fwBlocker
+	oldBlocker := getIPBlocker()
 	SetIPBlocker(blocker)
 	t.Cleanup(func() {
 		SetIPBlocker(oldBlocker)
@@ -449,9 +449,9 @@ func TestAutoBlock_SMTPSubnetSprayTriggersBlockSubnet(t *testing.T) {
 	cfg.StatePath = t.TempDir()
 
 	fake := &recordingIPBlocker{}
-	prev := fwBlocker
-	fwBlocker = fake
-	defer func() { fwBlocker = prev }()
+	prev := getIPBlocker()
+	SetIPBlocker(fake)
+	defer func() { SetIPBlocker(prev) }()
 
 	findings := []alert.Finding{{
 		Check:   "smtp_subnet_spray",
@@ -474,7 +474,7 @@ func TestAutoBlock_MailBruteForceTriggersBlockIP(t *testing.T) {
 	cfg.StatePath = t.TempDir()
 
 	blocker := &recordingIPBlocker{}
-	oldBlocker := fwBlocker
+	oldBlocker := getIPBlocker()
 	SetIPBlocker(blocker)
 	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
 
@@ -496,7 +496,7 @@ func TestAutoBlock_MailAccountCompromisedTriggersBlockIP(t *testing.T) {
 	cfg.StatePath = t.TempDir()
 
 	blocker := &recordingIPBlocker{}
-	oldBlocker := fwBlocker
+	oldBlocker := getIPBlocker()
 	SetIPBlocker(blocker)
 	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
 
@@ -518,7 +518,7 @@ func TestAutoBlock_MailSubnetSprayTriggersBlockSubnet(t *testing.T) {
 	cfg.StatePath = t.TempDir()
 
 	blocker := &recordingIPBlocker{}
-	oldBlocker := fwBlocker
+	oldBlocker := getIPBlocker()
 	SetIPBlocker(blocker)
 	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
 
@@ -543,7 +543,7 @@ func TestAutoBlock_AdminPanelBruteForceTriggersBlockIP(t *testing.T) {
 	cfg.StatePath = t.TempDir()
 
 	blocker := &recordingIPBlocker{}
-	oldBlocker := fwBlocker
+	oldBlocker := getIPBlocker()
 	SetIPBlocker(blocker)
 	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
 
@@ -565,9 +565,9 @@ func TestAutoBlock_SMTPSubnetSprayBypassesPerIPRateLimit(t *testing.T) {
 	cfg.StatePath = t.TempDir()
 
 	fake := &recordingIPBlocker{}
-	prev := fwBlocker
-	fwBlocker = fake
-	defer func() { fwBlocker = prev }()
+	prev := getIPBlocker()
+	SetIPBlocker(fake)
+	defer func() { SetIPBlocker(prev) }()
 
 	state := loadBlockState(cfg.StatePath)
 	state.HourKey = time.Now().Format("2006-01-02T15")
@@ -592,7 +592,7 @@ func TestAutoBlock_EmailAuthFailureRealtimeDoesNotBlockSingleFailure(t *testing.
 	cfg.StatePath = t.TempDir()
 
 	blocker := &recordingIPBlocker{}
-	oldBlocker := fwBlocker
+	oldBlocker := getIPBlocker()
 	SetIPBlocker(blocker)
 	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
 
@@ -620,7 +620,7 @@ func TestAutoBlock_AccountOnlyMailFindingsDoNotBlock(t *testing.T) {
 	cfg.StatePath = t.TempDir()
 
 	blocker := &recordingIPBlocker{}
-	oldBlocker := fwBlocker
+	oldBlocker := getIPBlocker()
 	SetIPBlocker(blocker)
 	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
 
@@ -661,7 +661,7 @@ func TestAutoBlock_SuspiciousGeoDoesNotHardBlockLoginIP(t *testing.T) {
 	cfg.StatePath = t.TempDir()
 
 	blocker := &recordingIPBlocker{}
-	oldBlocker := fwBlocker
+	oldBlocker := getIPBlocker()
 	SetIPBlocker(blocker)
 	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
 
@@ -696,7 +696,7 @@ func TestAutoBlock_CpanelLoginRealtimeDoesNotBlockSingleLogin(t *testing.T) {
 	cfg.StatePath = t.TempDir()
 
 	blocker := &recordingIPBlocker{}
-	oldBlocker := fwBlocker
+	oldBlocker := getIPBlocker()
 	SetIPBlocker(blocker)
 	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
 
@@ -731,7 +731,7 @@ func TestAutoBlock_AccountSprayFindingsRemainVisibilityOnly(t *testing.T) {
 	cfg.StatePath = t.TempDir()
 
 	blocker := &recordingIPBlocker{}
-	oldBlocker := fwBlocker
+	oldBlocker := getIPBlocker()
 	SetIPBlocker(blocker)
 	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
 
@@ -768,7 +768,7 @@ func TestAutoBlock_CredentialSprayIncidentKindIsNotFindingCheck(t *testing.T) {
 	cfg.StatePath = t.TempDir()
 
 	blocker := &recordingIPBlocker{}
-	oldBlocker := fwBlocker
+	oldBlocker := getIPBlocker()
 	SetIPBlocker(blocker)
 	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
 
@@ -794,7 +794,7 @@ func TestAutoBlock_HTTPRequestFlood(t *testing.T) {
 	cfg.AutoResponse.BlockIPs = true
 
 	rb := &recordingIPBlocker{}
-	oldBlocker := fwBlocker
+	oldBlocker := getIPBlocker()
 	SetIPBlocker(rb)
 	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
 
@@ -821,7 +821,7 @@ func TestAutoBlock_HTTPUASpoof(t *testing.T) {
 	cfg.AutoResponse.BlockIPs = true
 
 	rb := &recordingIPBlocker{}
-	oldBlocker := fwBlocker
+	oldBlocker := getIPBlocker()
 	SetIPBlocker(rb)
 	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
 

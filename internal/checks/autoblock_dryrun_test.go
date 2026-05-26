@@ -49,7 +49,7 @@ func newAutoBlockTestConfig(t *testing.T) *config.Config {
 
 func swapBlocker(t *testing.T, b IPBlocker) {
 	t.Helper()
-	old := fwBlocker
+	old := getIPBlocker()
 	SetIPBlocker(b)
 	t.Cleanup(func() { SetIPBlocker(old) })
 }

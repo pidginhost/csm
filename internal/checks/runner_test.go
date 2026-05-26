@@ -361,7 +361,7 @@ func TestRunParallelDryRunSkipsAutoResponse(t *testing.T) {
 	cfg.AutoResponse.BlockIPs = true
 
 	blocker := &recordingIPBlocker{}
-	oldBlocker := fwBlocker
+	oldBlocker := getIPBlocker()
 	SetIPBlocker(blocker)
 	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
 
@@ -400,7 +400,7 @@ func TestRunParallelLiveInvokesAutoResponse(t *testing.T) {
 	cfg.AutoResponse.BlockIPs = true
 
 	blocker := &recordingIPBlocker{}
-	oldBlocker := fwBlocker
+	oldBlocker := getIPBlocker()
 	SetIPBlocker(blocker)
 	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
 

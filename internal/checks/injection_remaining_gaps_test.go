@@ -552,9 +552,9 @@ func TestScanForWebshells_WorldWritablePHP(t *testing.T) {
 func TestAutoBlockIPs_CpanelLoginBlockEnabled(t *testing.T) {
 	tmp := t.TempDir()
 	blocker := &fakeBlocker{blocked: make(map[string]bool)}
-	old := fwBlocker
-	fwBlocker = blocker
-	t.Cleanup(func() { fwBlocker = old })
+	old := getIPBlocker()
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(old) })
 
 	cfg := &config.Config{StatePath: tmp}
 	cfg.AutoResponse.Enabled = true
@@ -575,9 +575,9 @@ func TestAutoBlockIPs_CpanelLoginBlockEnabled(t *testing.T) {
 
 func TestAutoBlockIPs_NilBlockerSkipsBlocking(t *testing.T) {
 	tmp := t.TempDir()
-	old := fwBlocker
-	fwBlocker = nil
-	t.Cleanup(func() { fwBlocker = old })
+	old := getIPBlocker()
+	SetIPBlocker(nil)
+	t.Cleanup(func() { SetIPBlocker(old) })
 
 	cfg := &config.Config{StatePath: tmp}
 	cfg.AutoResponse.Enabled = true
@@ -593,9 +593,9 @@ func TestAutoBlockIPs_NilBlockerSkipsBlocking(t *testing.T) {
 func TestAutoBlockIPs_SubnetBlockingTriggered(t *testing.T) {
 	tmp := t.TempDir()
 	blocker := &fakeSubnetBlocker{fakeBlocker: fakeBlocker{blocked: make(map[string]bool)}, subnets: make(map[string]bool)}
-	old := fwBlocker
-	fwBlocker = blocker
-	t.Cleanup(func() { fwBlocker = old })
+	old := getIPBlocker()
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(old) })
 
 	cfg := &config.Config{StatePath: tmp}
 	cfg.AutoResponse.Enabled = true
@@ -623,9 +623,9 @@ func TestAutoBlockIPs_SubnetBlockingTriggered(t *testing.T) {
 func TestAutoBlockIPs_PermBlockEscalation(t *testing.T) {
 	tmp := t.TempDir()
 	blocker := &fakeBlocker{blocked: make(map[string]bool)}
-	old := fwBlocker
-	fwBlocker = blocker
-	t.Cleanup(func() { fwBlocker = old })
+	old := getIPBlocker()
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(old) })
 
 	cfg := &config.Config{StatePath: tmp}
 	cfg.AutoResponse.Enabled = true
@@ -655,9 +655,9 @@ func TestAutoBlockIPs_PermBlockEscalation(t *testing.T) {
 func TestAutoBlockIPs_PrunesExpiredIPs(t *testing.T) {
 	tmp := t.TempDir()
 	blocker := &fakeBlocker{blocked: make(map[string]bool)}
-	old := fwBlocker
-	fwBlocker = blocker
-	t.Cleanup(func() { fwBlocker = old })
+	old := getIPBlocker()
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(old) })
 
 	saveBlockState(tmp, &blockState{
 		IPs: []blockedIP{{IP: "10.0.0.99", Reason: "test", BlockedAt: time.Now().Add(-2 * time.Hour), ExpiresAt: time.Now().Add(-1 * time.Hour)}},
