@@ -5,15 +5,9 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/checks"
 )
 
-// TestExpandWithCorrelation_EmitsCoordinatedAttack: when three or more
-// accounts each have a Critical security event in the same batch, the
-// helper must synthesize a "coordinated_attack" finding. Regression
-// guard against the initial-scan path bypassing cross-account
-// correlation, which let the first batch after restart slip past with
-// no synthetic alert even though three webshells landed on three
-// accounts.
 func TestExpandWithCorrelation_EmitsCoordinatedAttack(t *testing.T) {
 	now := time.Now()
 	findings := []alert.Finding{
@@ -62,6 +56,37 @@ func TestExpandWithCorrelation_StampsMissingTimestamp(t *testing.T) {
 	}
 	if stamped == 0 {
 		t.Fatal("expected at least one stamped synthetic finding")
+	}
+}
+
+func TestExpandWithCorrelation_DoesNotDuplicateExistingSyntheticFindings(t *testing.T) {
+	stamp := time.Date(2026, 5, 26, 15, 0, 0, 0, time.UTC)
+	findings := []alert.Finding{
+		{Severity: alert.Critical, Check: "webshell", Message: "Found in /home/alice/public_html/p.php"},
+		{Severity: alert.Critical, Check: "webshell", Message: "Found in /home/bob/public_html/q.php"},
+		{Severity: alert.Critical, Check: "webshell", Message: "Found in /home/carol/public_html/r.php"},
+	}
+	preCorrelated := append(append([]alert.Finding(nil), findings...), checks.CorrelateFindings(findings)...)
+
+	out := expandWithCorrelation(preCorrelated, stamp)
+
+	if len(out) != len(preCorrelated) {
+		t.Fatalf("pre-correlated batch grew from %d to %d", len(preCorrelated), len(out))
+	}
+	gotCounts := map[string]int{}
+	for _, f := range out {
+		if !isCorrelationFinding(f.Check) {
+			continue
+		}
+		gotCounts[f.Check]++
+		if f.Timestamp.IsZero() {
+			t.Errorf("synthetic finding %q was not timestamped", f.Check)
+		}
+	}
+	for _, check := range []string{"coordinated_attack", "cross_account_malware"} {
+		if gotCounts[check] != 1 {
+			t.Errorf("synthetic finding count for %q = %d, want 1", check, gotCounts[check])
+		}
 	}
 }
 

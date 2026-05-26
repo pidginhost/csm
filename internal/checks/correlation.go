@@ -2,6 +2,7 @@ package checks
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/pidginhost/csm/internal/alert"
@@ -66,6 +67,7 @@ func CorrelateFindings(findings []alert.Finding) []alert.Finding {
 	}
 
 	if affectedAccounts >= 3 {
+		sort.Strings(accountNames)
 		extra = append(extra, alert.Finding{
 			Severity: alert.Critical,
 			Check:    "coordinated_attack",
@@ -88,6 +90,7 @@ func CorrelateFindings(findings []alert.Finding) []alert.Finding {
 	for check, accounts := range malwareByCheck {
 		unique := uniqueStrings(accounts)
 		if len(unique) >= 2 {
+			sort.Strings(unique)
 			extra = append(extra, alert.Finding{
 				Severity: alert.Critical,
 				Check:    "cross_account_malware",

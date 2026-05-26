@@ -31,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Cross-account correlation now runs on the initial baseline scan too, not only on subsequent ticks. Three account compromises landing in the first batch after a daemon restart now emit the `coordinated_attack` synthetic finding as designed instead of slipping past silently.
+- Initial baseline dispatch now keeps scan-produced cross-account correlation alerts from being duplicated before notification.
 - Auto-block no longer records a real block, bumps the hourly counter, writes the permanent threat database, or emits a Critical "AUTO-BLOCK" finding when `auto_response.dry_run` intercepted the call or the verdict callback returned "allow". Dry-run intercepts now surface as a Warning-level "AUTO-BLOCK [dry-run]" notice so operators can still see what would have happened.
 - Auto-block now ignores unexpected firewall result reports instead of treating them as successful blocks.
 - `/api/v1/status.blocklist_size` and the health snapshot now report the live count of blocked IPs from the firewall engine instead of an unused bbolt bucket, so phpanel sees the same number as `csm firewall status`.
