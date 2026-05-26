@@ -2199,9 +2199,24 @@ func (d *Daemon) startFirewall() {
 		"allowed_ips", len(fwState.Allowed),
 	)
 
-	// Start Dynamic DNS resolver if configured
-	if len(d.cfg.Firewall.DynDNSHosts) > 0 {
-		resolver := firewall.NewDynDNSResolver(d.cfg.Firewall.DynDNSHosts, engine)
+	// Start Dynamic DNS resolver if configured. The same resolver
+	// loop also services hostnames listed under infra_ips so they get
+	// DNS-refreshed into the engine's infra-block guard; otherwise the
+	// hostname entries would only protect operators whose IPs never
+	// move, which defeats the point of listing them by name.
+	infraHosts := infraHostnames(d.cfg.InfraIPs)
+	dynHosts := append([]string{}, d.cfg.Firewall.DynDNSHosts...)
+	for _, h := range infraHosts {
+		if !containsString(dynHosts, h) {
+			dynHosts = append(dynHosts, h)
+		}
+	}
+	if len(dynHosts) > 0 {
+		resolver := firewall.NewDynDNSResolver(dynHosts, engine)
+		resolver.SetInfraEngine(engine)
+		for _, h := range infraHosts {
+			resolver.RegisterInfraHost(h)
+		}
 		resolver.SetFindingSink(func(host string) {
 			select {
 			case d.alertCh <- dynDNSUnresolvableFinding(host):
@@ -2215,7 +2230,7 @@ func (d *Daemon) startFirewall() {
 			defer d.wg.Done()
 			resolver.Run(d.stopCh)
 		})
-		csmlog.Info("DynDNS resolver active", "hosts", len(d.cfg.Firewall.DynDNSHosts))
+		csmlog.Info("DynDNS resolver active", "hosts", len(dynHosts), "infra_hosts", len(infraHosts))
 	}
 
 	// Start Cloudflare IP whitelist refresh if configured

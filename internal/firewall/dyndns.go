@@ -22,9 +22,22 @@ type DynDNSResolver struct {
 	mu       sync.Mutex
 	hosts    []string
 	resolved map[string][]string // hostname -> all resolved IPs
-	engine   interface {
+	// infraHosts is the subset of hosts that also feed the engine's
+	// infra-IP guard. When a host appears here, every successful
+	// resolution additionally calls engine.UpdateInfraResolved so the
+	// hostname stays blockable-refusable even when the IP behind it
+	// rotates. Hosts not in this map only feed the allowed-IPs set.
+	infraHosts map[string]struct{}
+	engine     interface {
 		AllowIP(ip string, reason string) error
 		RemoveAllowIPBySource(ip string, source string) error
+	}
+	// infraEngine receives infra-mode updates. Optional - separate
+	// interface so the AllowIP/RemoveAllowIPBySource consumers don't
+	// have to grow when an operator does not declare any infra hosts.
+	infraEngine interface {
+		UpdateInfraResolved(host string, ips []string)
+		DropInfraResolved(host string)
 	}
 
 	// lookupFn is the DNS lookup function; defaults to net.LookupHost.
@@ -62,6 +75,32 @@ func (d *DynDNSResolver) AddHost(host string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.hosts = append(d.hosts, host)
+}
+
+// RegisterInfraHost marks host as an infra hostname. Every subsequent
+// successful resolution will, in addition to AllowIP, call
+// engine.UpdateInfraResolved so the resolved IPs feed the infra-block
+// guard. Idempotent. Wire an infra engine via SetInfraEngine before
+// the resolver's first tick to make this effective.
+func (d *DynDNSResolver) RegisterInfraHost(host string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.infraHosts == nil {
+		d.infraHosts = make(map[string]struct{})
+	}
+	d.infraHosts[host] = struct{}{}
+}
+
+// SetInfraEngine wires the engine that receives infra-mode resolution
+// updates. Setting it to nil disables infra routing without affecting
+// the regular allowed-IPs path.
+func (d *DynDNSResolver) SetInfraEngine(eng interface {
+	UpdateInfraResolved(host string, ips []string)
+	DropInfraResolved(host string)
+}) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.infraEngine = eng
 }
 
 // markLastSuccess seeds the lastSuccess timestamp for a host to now.
@@ -192,7 +231,19 @@ func (d *DynDNSResolver) resolveHost(host string) {
 	// Only update resolved map with successfully allowed IPs
 	d.mu.Lock()
 	d.resolved[host] = successIPs
+	isInfra := false
+	if _, ok := d.infraHosts[host]; ok {
+		isInfra = true
+	}
+	infraEngine := d.infraEngine
 	d.mu.Unlock()
+
+	// Infra mode: also push the resolved IPs into the engine's infra
+	// guard so blockIPTarget refuses to block them. Skip when no infra
+	// engine is wired (operator did not opt in to that pathway).
+	if isInfra && infraEngine != nil {
+		infraEngine.UpdateInfraResolved(host, successIPs)
+	}
 
 	// Successful resolution: clear any guard state.
 	d.updateGuardSuccess(host)

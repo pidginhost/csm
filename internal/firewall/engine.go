@@ -96,6 +96,14 @@ type Engine struct {
 	blockedCIDRIndex map[string]struct{}
 
 	liveBlockLookup func(set *nftables.Set, key []byte) (bool, error)
+
+	// infraResolved maps a hostname declared under cfg.InfraIPs to its
+	// last successfully-resolved set of IPs. blockIPTarget refuses to
+	// block any of these so a transient DNS pause cannot let an
+	// attacker block CSM's own panel hostname into a lockout. Mutated
+	// under e.mu by UpdateInfraResolved / DropInfraResolved from the
+	// DynDNS resolver.
+	infraResolved map[string]map[string]struct{}
 }
 
 type stateFileCacheKey struct {
@@ -1455,6 +1463,14 @@ func (e *Engine) blockIPTarget(ip string, timeout time.Duration, skipExisting bo
 			return nil, nil, false, fmt.Errorf("refusing to block infra IP: %s (in %s)", ip, cidr)
 		}
 	}
+	// Hostnames in cfg.InfraIPs are resolved by the DynDNS loop and
+	// pushed in via UpdateInfraResolved. Without this check a hostname
+	// listed as infra would only be honoured when the operator also
+	// pinned the IP, so a moving panel IP would silently drop out of
+	// the lockout guard.
+	if host, ok := e.infraIPResolvedHostLocked(ip); ok {
+		return nil, nil, false, fmt.Errorf("refusing to block infra IP: %s (resolved from %s)", ip, host)
+	}
 
 	st := e.loadStateFile()
 	cachedBlockMissingLive := false
@@ -1971,6 +1987,60 @@ func (e *Engine) resolveSubnetSet(network *net.IPNet) (*nftables.Set, net.IP, ne
 // cache existed loadStateFile was lock-free because every call did its
 // own ReadFile + Unmarshal; now that loadStateFile mutates the shared
 // cache + index, the lock is required.
+// UpdateInfraResolved records the IP set last resolved for an infra
+// hostname. Replaces any previous entry for that host so the resolver's
+// per-tick refresh leaves no stale ghost IPs. Pass an empty ips slice
+// to remove the host entirely (e.g. when DNS stopped resolving).
+func (e *Engine) UpdateInfraResolved(host string, ips []string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if host == "" {
+		return
+	}
+	if e.infraResolved == nil {
+		e.infraResolved = make(map[string]map[string]struct{})
+	}
+	if len(ips) == 0 {
+		delete(e.infraResolved, host)
+		return
+	}
+	set := make(map[string]struct{}, len(ips))
+	for _, ip := range ips {
+		// Normalise via net.ParseIP so canonical form is stored
+		// (collapses IPv6 forms and drops malformed values).
+		if parsed := net.ParseIP(ip); parsed != nil {
+			set[parsed.String()] = struct{}{}
+		}
+	}
+	if len(set) == 0 {
+		delete(e.infraResolved, host)
+		return
+	}
+	e.infraResolved[host] = set
+}
+
+// DropInfraResolved clears all resolved IPs for a host. Equivalent to
+// UpdateInfraResolved(host, nil); separate name surfaces operator
+// intent at call sites that purposefully retire a hostname.
+func (e *Engine) DropInfraResolved(host string) {
+	e.UpdateInfraResolved(host, nil)
+}
+
+// infraIPResolvedHostLocked reports whether ip matches any IP recorded
+// for any tracked infra hostname. Must be called with e.mu held; the
+// existing blockIPTarget path already does so.
+func (e *Engine) infraIPResolvedHostLocked(ip string) (string, bool) {
+	if e.infraResolved == nil {
+		return "", false
+	}
+	for host, set := range e.infraResolved {
+		if _, ok := set[ip]; ok {
+			return host, true
+		}
+	}
+	return "", false
+}
+
 // BlockedCount returns the number of live blocked IP entries the engine
 // is enforcing. Sourced from the same state file Status() uses, so
 // `/api/v1/status` and `csm firewall status` agree on the number. Expired
