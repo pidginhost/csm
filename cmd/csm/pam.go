@@ -89,15 +89,30 @@ var pamServiceFiles = []string{
 }
 
 const (
-	// pamModuleSource is the on-disk staging location the CSM package
-	// drops pam_csm.so into. install copies from here to the platform
-	// security dir below.
-	pamModuleSource = "/usr/lib/csm/pam/pam_csm.so"
 	// pamMarker is appended as the trailing comment of every line this
 	// command writes so uninstall can find them again without grep
 	// false positives against operator-authored lines.
 	pamMarker = "# managed-by-csm"
 )
+
+// pamModuleSources lists candidate on-disk locations for pam_csm.so in
+// priority order. The first that exists is used as the install source.
+// rpm/deb packages drop the module under /usr/lib/csm/pam/; binary
+// installs via scripts/deploy.sh extract csm-assets.tar.gz into
+// /opt/csm/, which lands the module under /opt/csm/pam/.
+var pamModuleSources = []string{
+	"/usr/lib/csm/pam/pam_csm.so",
+	"/opt/csm/pam/pam_csm.so",
+}
+
+func defaultPAMModuleSource() (string, error) {
+	for _, p := range pamModuleSources {
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("pam_csm.so not found in any of %v; rebuild from build/pam or reinstall the CSM package", pamModuleSources)
+}
 
 // pamSecurityDirs lists candidate destination directories in priority
 // order. The first that exists on the host wins.
@@ -169,7 +184,11 @@ func pamInstall(w io.Writer, srcOverride string, dryRun bool) error {
 	}
 	src := srcOverride
 	if src == "" {
-		src = pamModuleSource
+		resolved, err := defaultPAMModuleSource()
+		if err != nil {
+			return err
+		}
+		src = resolved
 	}
 	if info, err := os.Stat(src); err != nil {
 		return fmt.Errorf("pam_csm.so not found at %s: %w (rebuild from build/pam or reinstall the CSM package)", src, err)
