@@ -40,6 +40,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
@@ -54,6 +55,7 @@
 #define CSM_PAM_SOCKET "/var/run/csm/pam.sock"
 #define CSM_PAM_MAX_VALUE_LEN 128
 #define CSM_PAM_CONNECT_TIMEOUT_MS 250
+#define CSM_PAM_EMITTED_KEY "csm_pam_ok_emitted"
 
 /* Sanitize an operator-controlled string for the wire format. We drop
  * spaces, control bytes, and bytes outside printable ASCII so a forged
@@ -82,10 +84,68 @@ csm_sanitize(const char *in, char *out, size_t len)
     out[i] = '\0';
 }
 
+static void
+csm_data_cleanup(pam_handle_t *pamh, void *data, int error_status)
+{
+    (void)pamh;
+    (void)data;
+    (void)error_status;
+}
+
+static int
+csm_wait_writable(int fd)
+{
+    struct pollfd pfd;
+    int rc;
+    int soerr = 0;
+    socklen_t soerr_len = sizeof(soerr);
+
+    memset(&pfd, 0, sizeof(pfd));
+    pfd.fd = fd;
+    pfd.events = POLLOUT;
+
+    do {
+        rc = poll(&pfd, 1, CSM_PAM_CONNECT_TIMEOUT_MS);
+    } while (rc < 0 && errno == EINTR);
+
+    if (rc <= 0) {
+        return 0;
+    }
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &soerr_len) < 0) {
+        return 0;
+    }
+    return soerr == 0;
+}
+
+static int
+csm_write_all(int fd, const char *buf, size_t len)
+{
+    size_t off = 0;
+
+    while (off < len) {
+        ssize_t n = write(fd, buf + off, len - off);
+        if (n > 0) {
+            off += (size_t)n;
+            continue;
+        }
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (!csm_wait_writable(fd)) {
+                return 0;
+            }
+            continue;
+        }
+        return 0;
+    }
+    return 1;
+}
+
 /* Open a non-blocking connection to the CSM PAM socket and emit one
  * event line. Failures (socket missing, connect refused, partial write)
  * are silently swallowed so auth never breaks. */
-static void
+static int
 csm_emit(const char *verdict, pam_handle_t *pamh)
 {
     int fd = -1;
@@ -100,7 +160,7 @@ csm_emit(const char *verdict, pam_handle_t *pamh)
 
     fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) {
-        return;
+        return 0;
     }
     /* Non-blocking + close-on-exec set via fcntl so the source builds on
      * any libc, not just glibc with SOCK_CLOEXEC / SOCK_NONBLOCK. */
@@ -117,9 +177,11 @@ csm_emit(const char *verdict, pam_handle_t *pamh)
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, CSM_PAM_SOCKET, sizeof(addr.sun_path) - 1);
 
-    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0 && errno != EINPROGRESS) {
-        close(fd);
-        return;
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        if (errno != EINPROGRESS || !csm_wait_writable(fd)) {
+            close(fd);
+            return 0;
+        }
     }
 
     (void)pam_get_item(pamh, PAM_USER, (const void **)&user);
@@ -134,15 +196,34 @@ csm_emit(const char *verdict, pam_handle_t *pamh)
         /* No remote host means a local terminal / cron / systemd path
          * that the daemon ignores anyway; skip the syscall storm. */
         close(fd);
-        return;
+        return 0;
     }
 
     n = snprintf(line, sizeof(line), "%s ip=%s user=%s service=%s\n",
                  verdict, rhost_safe, user_safe, service_safe);
-    if (n > 0 && (size_t)n < sizeof(line)) {
-        (void)write(fd, line, (size_t)n);
+    if (n <= 0 || (size_t)n >= sizeof(line)) {
+        close(fd);
+        return 0;
+    }
+    if (!csm_write_all(fd, line, (size_t)n)) {
+        close(fd);
+        return 0;
     }
     close(fd);
+    return 1;
+}
+
+static void
+csm_emit_ok_once(pam_handle_t *pamh)
+{
+    const void *emitted = NULL;
+
+    if (pam_get_data(pamh, CSM_PAM_EMITTED_KEY, &emitted) == PAM_SUCCESS && emitted != NULL) {
+        return;
+    }
+    if (csm_emit("OK", pamh)) {
+        (void)pam_set_data(pamh, CSM_PAM_EMITTED_KEY, (void *)CSM_PAM_EMITTED_KEY, csm_data_cleanup);
+    }
 }
 
 /* PAM_SM_AUTH hook: pam_authenticate returns PAM_SUCCESS / PAM_AUTH_ERR;
@@ -170,7 +251,7 @@ pam_sm_setcred(pam_handle_t *pamh, int flags, int argc, const char **argv)
     (void)argc;
     (void)argv;
     if (flags & PAM_ESTABLISH_CRED) {
-        csm_emit("OK", pamh);
+        csm_emit_ok_once(pamh);
     } else if (flags & PAM_DELETE_CRED) {
         /* Logout: not interesting to the brute-force tracker. */
     }
@@ -188,7 +269,7 @@ pam_sm_open_session(pam_handle_t *pamh, int flags, int argc, const char **argv)
     (void)flags;
     (void)argc;
     (void)argv;
-    csm_emit("OK", pamh);
+    csm_emit_ok_once(pamh);
     return PAM_SUCCESS;
 }
 

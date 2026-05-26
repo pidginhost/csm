@@ -38,6 +38,7 @@ ARG VERSION=dev
 ARG BUILD_HASH=unknown
 ARG BUILD_TIME=unknown
 ENV CGO_ENABLED=1
+RUN dnf -y install pam-devel && dnf clean all
 # The source tree is copied in rather than mounted so the build is
 # reproducible from whatever buildx staged. go.mod / go.sum are
 # already in the repo.
@@ -48,6 +49,7 @@ RUN CGO_LDFLAGS="$(pkg-config --libs --static yara_x_capi)" go build -tags "yara
             -X main.BuildHash=${BUILD_HASH} \
             -X main.BuildTime=${BUILD_TIME}" \
         -o /csm ./cmd/csm/
+RUN make build-pam
 
 # GLIBC floor check runs INSIDE the Dockerfile (where objdump from
 # binutils is available) because the CI docker:latest runner image
@@ -69,3 +71,4 @@ RUN GLIBC_MAX=$(objdump -T /csm 2>/dev/null | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | 
 FROM scratch AS export
 COPY --from=csmbuild /csm /csm
 COPY --from=csmbuild /csm.glibc-floor /csm.glibc-floor
+COPY --from=csmbuild /workspace/dist/pam_csm.so /pam_csm.so

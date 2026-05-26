@@ -1,10 +1,9 @@
-# Minimal Makefile for the CSM PAM module. The package build invokes
-# `make -C build/pam` to produce pam_csm.so; the nfpm packaging glob
-# picks it up from the same directory.
+# Minimal Makefile for the CSM PAM module. The top-level `make build-pam`
+# invokes this target, then copies pam_csm.so into dist/ for nFPM.
 #
 # Requires libpam-devel (RHEL) or libpam0g-dev (Debian) on the build
-# host. The CI builder image already ships both because the runtime
-# YARA-X cross-compile uses gcc anyway.
+# host. CI installs the matching development package before invoking
+# this target.
 
 CC      ?= gcc
 CFLAGS  ?= -O2 -Wall -Wextra -Wstrict-prototypes -fPIC

@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Web UI saved-view deletion, timestamp preferences, undo re-blocks, and CSRF checks now behave correctly with mixed credentials and missing firewall engines.
 - Redis performance check test now stubs the in-process redisinfo client through its documented test hooks instead of relying on a default-config redis being present on the developer's machine. The dead redis-cli shellout fixture is gone.
 - Web UI modal, tab, and detail-panel actions now initialize correctly with the bundled Tabler scripts.
+- PAM packaging now builds the module before nFPM runs, and uninstall only removes CSM-managed hook lines.
 
 ### Removed
 

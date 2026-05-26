@@ -153,7 +153,7 @@ func pamFileState(path string) string {
 		}
 		return fmt.Sprintf("error reading: %v", err)
 	}
-	if bytes.Contains(data, []byte("pam_csm.so")) {
+	if pamHasActiveCSMHook(data) {
 		return "hooked"
 	}
 	return "not hooked"
@@ -171,8 +171,10 @@ func pamInstall(w io.Writer, srcOverride string, dryRun bool) error {
 	if src == "" {
 		src = pamModuleSource
 	}
-	if _, err := os.Stat(src); err != nil {
+	if info, err := os.Stat(src); err != nil {
 		return fmt.Errorf("pam_csm.so not found at %s: %w (rebuild from build/pam or reinstall the CSM package)", src, err)
+	} else if !info.Mode().IsRegular() {
+		return fmt.Errorf("pam_csm.so source is not a regular file: %s", src)
 	}
 	dir, err := resolvePAMSecurityDir()
 	if err != nil {
@@ -231,23 +233,19 @@ func pamEnsureLines(path string, dryRun bool) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	wants := []string{
-		"auth     optional   pam_csm.so " + pamMarker,
-		"session  optional   pam_csm.so " + pamMarker,
+	wants := []pamDirective{
+		{kind: "auth", line: "auth     optional   pam_csm.so " + pamMarker},
+		{kind: "session", line: "session  optional   pam_csm.so " + pamMarker},
 	}
 	missing := []string{}
-	text := string(data)
-	for _, line := range wants {
-		if strings.Contains(text, line) {
+	for _, want := range wants {
+		// Any active pam_csm.so reference for the same PAM type counts as
+		// already hooked; do not stack a second copy because an operator
+		// used different spacing or control flags.
+		if pamDirectivePresent(data, want.kind) {
 			continue
 		}
-		// A bare "pam_csm.so" reference from an operator-authored line
-		// counts as already hooked; do not stack a second copy.
-		marker := strings.SplitN(line, " ", 2)[0] + " optional   pam_csm.so"
-		if strings.Contains(text, marker) {
-			continue
-		}
-		missing = append(missing, line)
+		missing = append(missing, want.line)
 	}
 	if len(missing) == 0 {
 		return false, nil
@@ -255,9 +253,9 @@ func pamEnsureLines(path string, dryRun bool) (bool, error) {
 	if dryRun {
 		return true, nil
 	}
-	backup := fmt.Sprintf("%s.csm-backup-%s", path, time.Now().UTC().Format("20060102T150405Z"))
-	if err := os.WriteFile(backup, data, 0o600); err != nil {
-		return false, fmt.Errorf("writing backup %s: %w", backup, err)
+	backup, err := writePAMBackup(path, data)
+	if err != nil {
+		return false, err
 	}
 	out := bytes.NewBuffer(make([]byte, 0, len(data)+128))
 	if _, err := out.Write(data); err != nil {
@@ -271,7 +269,7 @@ func pamEnsureLines(path string, dryRun bool) (bool, error) {
 		out.WriteByte('\n')
 	}
 	if err := os.WriteFile(path, out.Bytes(), 0o644); err != nil {
-		return false, err
+		return false, fmt.Errorf("writing %s after backup %s: %w", path, backup, err)
 	}
 	return true, nil
 }
@@ -325,7 +323,7 @@ func pamRemoveLines(path string) (int, error) {
 	removed := 0
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.Contains(line, pamMarker) || (strings.Contains(line, "pam_csm.so") && strings.HasPrefix(strings.TrimSpace(line), "auth") || strings.HasPrefix(strings.TrimSpace(line), "session")) && strings.Contains(line, "pam_csm.so") {
+		if pamManagedLine(line) {
 			removed++
 			continue
 		}
@@ -338,34 +336,133 @@ func pamRemoveLines(path string) (int, error) {
 	if removed == 0 {
 		return 0, nil
 	}
-	backup := fmt.Sprintf("%s.csm-backup-%s", path, time.Now().UTC().Format("20060102T150405Z"))
-	if err := os.WriteFile(backup, data, 0o600); err != nil {
-		return 0, fmt.Errorf("writing backup %s: %w", backup, err)
+	backup, err := writePAMBackup(path, data)
+	if err != nil {
+		return 0, err
 	}
-	return removed, os.WriteFile(path, out.Bytes(), 0o644)
+	if err := os.WriteFile(path, out.Bytes(), 0o644); err != nil {
+		return 0, fmt.Errorf("writing %s after backup %s: %w", path, backup, err)
+	}
+	return removed, nil
 }
 
 func copyFileMode(src, dst string, mode os.FileMode) error {
-	in, err := os.Open(src) // #nosec G304 -- caller restricts src to packaged pamModuleSource.
+	in, err := os.Open(src) // #nosec G304 -- src is the packaged module or an explicit root-only CLI override.
 	if err != nil {
 		return err
 	}
 	defer func() { _ = in.Close() }()
-	tmp := dst + ".csm-staging"
-	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+	tmp, err := os.CreateTemp(filepath.Dir(dst), filepath.Base(dst)+".csm-staging-*") // #nosec G304 -- temp file is created inside the resolved PAM security dir.
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, in); err != nil {
-		_ = out.Close()
-		_ = os.Remove(tmp)
+	tmpName := tmp.Name()
+	removeTmp := true
+	defer func() {
+		if removeTmp {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
 		return err
 	}
-	if err := out.Close(); err != nil {
-		_ = os.Remove(tmp)
+	if _, err := io.Copy(tmp, in); err != nil {
+		_ = tmp.Close()
 		return err
 	}
-	return os.Rename(tmp, dst)
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, dst); err != nil {
+		return err
+	}
+	removeTmp = false
+	return nil
+}
+
+type pamDirective struct {
+	kind string
+	line string
+}
+
+func pamHasActiveCSMHook(data []byte) bool {
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		_, module, ok := parsePAMDirective(scanner.Text())
+		if ok && filepath.Base(module) == "pam_csm.so" {
+			return true
+		}
+	}
+	return false
+}
+
+func pamDirectivePresent(data []byte, kind string) bool {
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		lineKind, module, ok := parsePAMDirective(scanner.Text())
+		if ok && lineKind == kind && filepath.Base(module) == "pam_csm.so" {
+			return true
+		}
+	}
+	return false
+}
+
+func parsePAMDirective(line string) (kind, module string, ok bool) {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+		return "", "", false
+	}
+	fields := strings.Fields(trimmed)
+	if len(fields) < 3 {
+		return "", "", false
+	}
+	moduleIndex := 2
+	if strings.HasPrefix(fields[1], "[") {
+		moduleIndex = -1
+		for i := 1; i < len(fields); i++ {
+			if strings.HasSuffix(fields[i], "]") {
+				moduleIndex = i + 1
+				break
+			}
+		}
+		if moduleIndex < 0 || moduleIndex >= len(fields) {
+			return "", "", false
+		}
+	}
+	return fields[0], fields[moduleIndex], true
+}
+
+func pamManagedLine(line string) bool {
+	return strings.Contains(line, pamMarker) && strings.Contains(line, "pam_csm.so")
+}
+
+func writePAMBackup(path string, data []byte) (string, error) {
+	base := fmt.Sprintf("%s.csm-backup-%s", path, time.Now().UTC().Format("20060102T150405Z"))
+	for i := 0; i < 100; i++ {
+		backup := base
+		if i > 0 {
+			backup = fmt.Sprintf("%s-%02d", base, i)
+		}
+		f, err := os.OpenFile(backup, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- backup path is derived from a fixed PAM service path.
+		if os.IsExist(err) {
+			continue
+		}
+		if err != nil {
+			return "", fmt.Errorf("creating backup %s: %w", backup, err)
+		}
+		if _, err := f.Write(data); err != nil {
+			_ = f.Close()
+			return "", fmt.Errorf("writing backup %s: %w", backup, err)
+		}
+		if err := f.Close(); err != nil {
+			return "", fmt.Errorf("closing backup %s: %w", backup, err)
+		}
+		return backup, nil
+	}
+	return "", fmt.Errorf("creating backup %s: too many timestamp collisions", base)
 }
 
 func exitOnError(err error) {

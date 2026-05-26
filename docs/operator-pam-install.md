@@ -61,9 +61,10 @@ sudo csm pam uninstall       # removes the two lines and the module
 sudo csm pam uninstall --keep-module   # only edits, leave .so in place
 ```
 
-Uninstall is idempotent and creates one fresh `.csm-backup-` per file
-it edits. The PAM listener's dashboard verdict returns to **deaf** the
-next time the dashboard polls.
+Uninstall is idempotent, removes only lines marked `# managed-by-csm`,
+and creates one fresh `.csm-backup-` per file it edits. The PAM
+listener's dashboard verdict returns to **deaf** the next time the
+dashboard polls.
 
 ## What the dashboard tells you
 
