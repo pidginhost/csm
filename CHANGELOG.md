@@ -40,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Mailbox findings are canonicalised before correlation, so the same actor lands in one incident whether the emitter set the full local@domain form or split it into Mailbox + Domain.
 - Long-running incidents now cap their persisted finding fingerprints and operator-visible timeline, so a low-severity sustained event no longer grows memory and persistence payloads without bound.
 - Incident truncation markers now report the full elided count, and generic auto-block no longer trusts a truncated timeline when the source IP is not part of the incident key.
 - Firewall Apply now seeds persisted blocked and allowed entries into the same atomic netlink transaction as the table swap, removing a brief window where the new ruleset existed with empty deny sets.
