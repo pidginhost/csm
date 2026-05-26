@@ -49,6 +49,16 @@ func (b *recordingIPBlocker) IsBlocked(ip string) bool {
 	return false
 }
 
+type swapOnLiveSubnetBlocker struct {
+	*recordingIPBlocker
+	replacement IPBlocker
+}
+
+func (b *swapOnLiveSubnetBlocker) IsBlockedLive(string) (bool, error) {
+	SetIPBlocker(b.replacement)
+	return true, nil
+}
+
 type staticChallengeIPList struct {
 	ips map[string]bool
 }
@@ -198,6 +208,45 @@ func TestAutoBlockIPs_SkipsAlreadyBlockedNetblock(t *testing.T) {
 	}
 	if len(blocker.blockedSubnet) != 1 {
 		t.Fatalf("BlockSubnet call count changed blockedSubnet to %v", blocker.blockedSubnet)
+	}
+}
+
+func TestAutoBlockIPs_SubnetStatusUsesScanSnapshot(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.StatePath = t.TempDir()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+
+	replacement := &recordingIPBlocker{blockedSubnet: []string{"203.0.113.0/24"}}
+	blocker := &swapOnLiveSubnetBlocker{
+		recordingIPBlocker: &recordingIPBlocker{},
+		replacement:        replacement,
+	}
+	oldBlocker := getIPBlocker()
+	SetIPBlocker(blocker)
+	t.Cleanup(func() {
+		SetIPBlocker(oldBlocker)
+	})
+
+	saveBlockState(cfg.StatePath, &blockState{
+		IPs: []blockedIP{{
+			IP:        "198.51.100.44",
+			Reason:    "seed",
+			BlockedAt: time.Now(),
+			ExpiresAt: time.Now().Add(time.Hour),
+		}},
+	})
+
+	AutoBlockIPs(cfg, []alert.Finding{{
+		Check:   "smtp_subnet_spray",
+		Message: "SMTP password spray from 203.0.113.0/24: 8 unique IPs in 10m0s",
+	}})
+
+	if len(blocker.blockedSubnet) != 1 || blocker.blockedSubnet[0] != "203.0.113.0/24" {
+		t.Fatalf("BlockSubnet calls on scan snapshot = %v, want [203.0.113.0/24]", blocker.blockedSubnet)
+	}
+	if len(replacement.blockedSubnet) != 1 {
+		t.Fatalf("replacement blocker should only hold its seeded subnet, got %v", replacement.blockedSubnet)
 	}
 }
 

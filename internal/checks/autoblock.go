@@ -231,7 +231,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			fmt.Fprintf(os.Stderr, "auto-block: firewall engine does not support subnet blocking, skipping %s\n", cidr)
 			continue
 		}
-		if isSubnetAlreadyBlocked(cidr) {
+		if isSubnetAlreadyBlocked(blocker, cidr) {
 			continue
 		}
 		reason := fmt.Sprintf("CSM auto-block (subnet): %s", truncate(f.Message, 100))
@@ -392,7 +392,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 	}
 
 	// Subnet auto-blocking: detect /24 patterns
-	if cfg.AutoResponse.NetBlock && blocker != nil { // blocker may be nil if no findings reached the per-IP block path above (e.g. only subnet findings).
+	if cfg.AutoResponse.NetBlock && blocker != nil {
 		threshold := cfg.AutoResponse.NetBlockThreshold
 		if threshold < 2 {
 			threshold = 3
@@ -410,7 +410,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 			if count >= threshold && !subnetBlocked[prefix] {
 				cidr := prefix + ".0/24"
 				if sb, ok := blocker.(subnetBlocker); ok {
-					if isSubnetAlreadyBlocked(cidr) {
+					if isSubnetAlreadyBlocked(blocker, cidr) {
 						continue
 					}
 					reason := fmt.Sprintf("Auto-netblock: %d IPs from %s", count, cidr)
@@ -466,8 +466,8 @@ func callBlockIP(b IPBlocker, ip, reason string, timeout time.Duration) (firewal
 	return firewall.BlockOutcomeLive, nil
 }
 
-func isSubnetAlreadyBlocked(cidr string) bool {
-	sb, ok := getIPBlocker().(subnetBlockStatus)
+func isSubnetAlreadyBlocked(b IPBlocker, cidr string) bool {
+	sb, ok := b.(subnetBlockStatus)
 	return ok && sb.IsSubnetBlocked(cidr)
 }
 

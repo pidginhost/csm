@@ -6,16 +6,15 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
-	"github.com/pidginhost/csm/internal/config"
 )
 
 // TestAutoBlockIPs_ConcurrentSetIPBlockerIsRaceSafe asserts that the
 // global IP blocker pointer can be swapped (SIGHUP rewire) while a
 // scan is running through AutoBlockIPs. Without atomic semantics the
 // -race detector trips because reads and writes of fwBlocker happen
-// from different goroutines without synchronization. After the F1
-// fix, the holder is updated atomically and AutoBlockIPs picks up
-// one consistent reference per call.
+// from different goroutines without synchronization. The holder is
+// updated atomically and AutoBlockIPs picks up one consistent
+// reference per call.
 func TestAutoBlockIPs_ConcurrentSetIPBlockerIsRaceSafe(t *testing.T) {
 	cfg := newAutoBlockTestConfig(t)
 	old := getIPBlocker()
@@ -46,5 +45,4 @@ func TestAutoBlockIPs_ConcurrentSetIPBlockerIsRaceSafe(t *testing.T) {
 	}()
 	time.AfterFunc(200*time.Millisecond, func() { close(stop) })
 	wg.Wait()
-	_ = config.Active() // keep config import used in test scope
 }
