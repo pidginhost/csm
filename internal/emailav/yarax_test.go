@@ -168,3 +168,41 @@ func TestYaraXScannerNilBackendReturnsError(t *testing.T) {
 		t.Fatal("expected error when backend is nil")
 	}
 }
+
+// TestYaraXScannerErrorsWhenBackendBecomesUnavailableMidScan: when
+// ScanBytes returns no matches, the adapter must also confirm the
+// backend is still healthy. A worker crash mid-scan (RuleCount drops
+// to 0) would otherwise look identical to a clean file, and the
+// caller would route the message as "no malware" while CSM was
+// actually scanning nothing.
+func TestYaraXScannerErrorsWhenBackendBecomesUnavailableMidScan(t *testing.T) {
+	b := &dyingBackend{}
+	s := NewYaraXScanner(b)
+	tmp := filepath.Join(t.TempDir(), "x.bin")
+	if err := os.WriteFile(tmp, []byte("payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Scan(tmp); err == nil {
+		t.Fatal("expected fail-closed error when backend went unavailable during scan")
+	}
+}
+
+// dyingBackend reports healthy at first (so the adapter constructs
+// happily) but flips to RuleCount=0 after ScanBytes is invoked,
+// modelling a worker crash or rule unload while a scan was in flight.
+type dyingBackend struct {
+	scanned int
+}
+
+func (b *dyingBackend) ScanFile(string, int) []yara.Match { return nil }
+func (b *dyingBackend) ScanBytes(_ []byte) []yara.Match {
+	b.scanned++
+	return nil
+}
+func (b *dyingBackend) Reload() error { return nil }
+func (b *dyingBackend) RuleCount() int {
+	if b.scanned > 0 {
+		return 0
+	}
+	return 1
+}

@@ -58,6 +58,17 @@ func (s *YaraXScanner) Scan(path string) (Verdict, error) {
 	}
 	matches := s.backend.ScanBytes(data)
 	if len(matches) == 0 {
+		// Defence against silent fail-open: a healthy backend with zero
+		// matches looks identical from outside to a backend whose
+		// internal scan errored (rules.Scan() returns nil on failure).
+		// If the backend was healthy when the orchestrator dispatched
+		// this work but is no longer reporting any rules now, the worker
+		// almost certainly crashed mid-scan; report an error so the
+		// orchestrator routes the message conservatively instead of
+		// shipping it as "clean".
+		if !s.Available() {
+			return Verdict{}, fmt.Errorf("yara backend became unavailable during scan")
+		}
 		return Verdict{Infected: false}, nil
 	}
 	m := matches[0]
