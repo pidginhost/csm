@@ -97,6 +97,12 @@ type Engine struct {
 
 	liveBlockLookup func(set *nftables.Set, key []byte) (bool, error)
 
+	// liveBlockCounts, when non-nil, returns the live (perm, temp)
+	// element counts across blocked v4 + v6 sets. Tests inject this
+	// to avoid spinning up a real nft connection. Nil falls back to
+	// GetSetElements queries.
+	liveBlockCounts func() (perm, temp int, err error)
+
 	// infraResolved maps a hostname declared under cfg.InfraIPs to its
 	// last successfully-resolved set of IPs. blockIPTarget refuses to
 	// block any of these so a transient DNS pause cannot let an
@@ -1483,17 +1489,23 @@ func (e *Engine) blockIPTarget(ip string, timeout time.Duration, skipExisting bo
 		cachedBlockMissingLive = true
 	}
 
-	// Enforce deny IP limits
+	// Enforce deny IP limits. Prefer counts from the live nft set
+	// so an entry the kernel already expired no longer counts
+	// against the cap. Fall back to the cached state.json count
+	// (existing behaviour) if the live query is unavailable.
 	if e.cfg.DenyIPLimit > 0 || e.cfg.DenyTempIPLimit > 0 {
-		perm, temp := 0, 0
-		for _, b := range st.Blocked {
-			if cachedBlockMissingLive && b.IP == ip {
-				continue
-			}
-			if b.ExpiresAt.IsZero() {
-				perm++
-			} else {
-				temp++
+		perm, temp, ok := e.livePermTempCountsLocked()
+		if !ok {
+			perm, temp = 0, 0
+			for _, b := range st.Blocked {
+				if cachedBlockMissingLive && b.IP == ip {
+					continue
+				}
+				if b.ExpiresAt.IsZero() {
+					perm++
+				} else {
+					temp++
+				}
 			}
 		}
 		if timeout == 0 && e.cfg.DenyIPLimit > 0 && perm >= e.cfg.DenyIPLimit {
@@ -1568,6 +1580,50 @@ func (e *Engine) IsBlockedLive(ip string) (bool, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.isBlockedLiveLocked(ip)
+}
+
+// livePermTempCountsLocked returns the count of permanent (Timeout==0)
+// and temporary (Timeout>0) entries across the blocked v4 + v6 nft
+// sets. Used by blockIPTarget so the deny limits trip against the
+// kernel's actual state instead of stale state.json entries that the
+// kernel already expired. Returns ok=false when neither set can be
+// queried; callers fall back to the cached count in that case.
+//
+// Must be called with e.mu held; blockIPTarget already holds the lock
+// at the only call site.
+func (e *Engine) livePermTempCountsLocked() (perm, temp int, ok bool) {
+	if e.liveBlockCounts != nil {
+		p, t, err := e.liveBlockCounts()
+		if err != nil {
+			return 0, 0, false
+		}
+		return p, t, true
+	}
+	if e.conn == nil {
+		return 0, 0, false
+	}
+	gotAny := false
+	for _, set := range []*nftables.Set{e.setBlocked, e.setBlocked6} {
+		if set == nil {
+			continue
+		}
+		elements, err := e.conn.GetSetElements(set)
+		if err != nil {
+			return 0, 0, false
+		}
+		gotAny = true
+		for _, el := range elements {
+			if el.Timeout == 0 {
+				perm++
+			} else {
+				temp++
+			}
+		}
+	}
+	if !gotAny {
+		return 0, 0, false
+	}
+	return perm, temp, true
 }
 
 func (e *Engine) isBlockedLiveLocked(ip string) (bool, error) {
