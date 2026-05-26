@@ -188,6 +188,134 @@ func TestEngineStatus(t *testing.T) {
 	}
 }
 
+func TestComputeInitialBlockStateRestoresPersistedSets(t *testing.T) {
+	dir := t.TempDir()
+	future := time.Now().Add(time.Hour)
+	past := time.Now().Add(-time.Hour)
+	writeEngineStateFile(t, dir, FirewallState{
+		Blocked: []BlockedEntry{
+			{IP: "203.0.113.5", Reason: "permanent", BlockedAt: time.Now()},
+			{IP: "2001:db8::5", Reason: "temporary", BlockedAt: time.Now(), ExpiresAt: future},
+			{IP: "198.51.100.9", Reason: "expired", BlockedAt: time.Now(), ExpiresAt: past},
+			{IP: "not-an-ip", Reason: "invalid"},
+		},
+		Allowed: []AllowedEntry{
+			{IP: "10.0.0.1", Reason: "manual", Source: SourceCLI},
+			{IP: "10.0.0.1", Reason: "dns", Source: SourceDynDNS},
+			{IP: "2001:db8::10", Reason: "admin"},
+			{IP: "10.0.0.2", Reason: "expired", ExpiresAt: past},
+			{IP: "bad-ip", Reason: "invalid"},
+		},
+		BlockedNet: []SubnetEntry{
+			{CIDR: "198.51.100.0/24", Reason: "v4 net", BlockedAt: time.Now()},
+			{CIDR: "2001:db8:1::/64", Reason: "v6 net", BlockedAt: time.Now()},
+			{CIDR: "203.0.113.0/24", Reason: "expired", BlockedAt: time.Now(), ExpiresAt: past},
+			{CIDR: "not-cidr", Reason: "invalid"},
+		},
+	})
+	e := &Engine{statePath: dir, cfg: &FirewallConfig{IPv6: true}}
+
+	e.mu.Lock()
+	initial := e.computeInitialBlockStateLocked()
+	e.mu.Unlock()
+
+	if len(initial.blocked4) != 1 {
+		t.Fatalf("blocked4 = %d, want 1", len(initial.blocked4))
+	}
+	requireElemKey(t, initial.blocked4[0], "203.0.113.5")
+	if initial.blocked4[0].Timeout != 0 {
+		t.Fatalf("permanent blocked4 timeout = %v, want 0", initial.blocked4[0].Timeout)
+	}
+	if len(initial.blocked6) != 1 {
+		t.Fatalf("blocked6 = %d, want 1", len(initial.blocked6))
+	}
+	requireElemKey(t, initial.blocked6[0], "2001:db8::5")
+	if initial.blocked6[0].Timeout <= 0 {
+		t.Fatalf("temporary blocked6 timeout = %v, want > 0", initial.blocked6[0].Timeout)
+	}
+	if len(initial.allowed4) != 1 {
+		t.Fatalf("allowed4 = %d, want 1", len(initial.allowed4))
+	}
+	requireElemKey(t, initial.allowed4[0], "10.0.0.1")
+	if len(initial.allowed6) != 1 {
+		t.Fatalf("allowed6 = %d, want 1", len(initial.allowed6))
+	}
+	requireElemKey(t, initial.allowed6[0], "2001:db8::10")
+	requireIntervalElems(t, initial.blockedNet4, "198.51.100.0/24")
+	requireIntervalElems(t, initial.blockedNet6, "2001:db8:1::/64")
+}
+
+func TestComputeInitialBlockStateSkipsIPv6WhenDisabled(t *testing.T) {
+	dir := t.TempDir()
+	writeEngineStateFile(t, dir, FirewallState{
+		Blocked: []BlockedEntry{
+			{IP: "203.0.113.5", Reason: "v4", BlockedAt: time.Now()},
+			{IP: "2001:db8::5", Reason: "v6", BlockedAt: time.Now()},
+		},
+		Allowed: []AllowedEntry{
+			{IP: "2001:db8::10", Reason: "v6"},
+		},
+		BlockedNet: []SubnetEntry{
+			{CIDR: "2001:db8:1::/64", Reason: "v6 net", BlockedAt: time.Now()},
+		},
+	})
+	e := &Engine{statePath: dir, cfg: &FirewallConfig{IPv6: false}}
+
+	e.mu.Lock()
+	initial := e.computeInitialBlockStateLocked()
+	e.mu.Unlock()
+
+	if len(initial.blocked4) != 1 {
+		t.Fatalf("blocked4 = %d, want 1", len(initial.blocked4))
+	}
+	requireElemKey(t, initial.blocked4[0], "203.0.113.5")
+	if len(initial.blocked6) != 0 || len(initial.allowed6) != 0 || len(initial.blockedNet6) != 0 {
+		t.Fatalf("IPv6 elements restored while IPv6 disabled: blocked=%d allowed=%d nets=%d",
+			len(initial.blocked6), len(initial.allowed6), len(initial.blockedNet6))
+	}
+}
+
+func writeEngineStateFile(t *testing.T, dir string, state FirewallState) {
+	t.Helper()
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		t.Fatalf("MarshalIndent: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "state.json"), data, 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+}
+
+func requireElemKey(t *testing.T, elem nftables.SetElement, want string) {
+	t.Helper()
+	if !net.IP(elem.Key).Equal(net.ParseIP(want)) {
+		t.Fatalf("element key = %v, want %s", net.IP(elem.Key), want)
+	}
+}
+
+func requireIntervalElems(t *testing.T, elems []nftables.SetElement, cidr string) {
+	t.Helper()
+	_, network, err := net.ParseCIDR(cidr)
+	if err != nil {
+		t.Fatalf("ParseCIDR: %v", err)
+	}
+	if len(elems) != 2 {
+		t.Fatalf("%s elements = %d, want 2", cidr, len(elems))
+	}
+	start := network.IP.To4()
+	if start == nil {
+		start = network.IP.To16()
+	}
+	if !net.IP(elems[0].Key).Equal(start) {
+		t.Fatalf("%s start = %v, want %v", cidr, net.IP(elems[0].Key), start)
+	}
+	wantEnd := nextIP(lastIPInRange(network))
+	if !elems[1].IntervalEnd || !net.IP(elems[1].Key).Equal(wantEnd) {
+		t.Fatalf("%s end = {key:%v interval:%t}, want {key:%v interval:true}",
+			cidr, net.IP(elems[1].Key), elems[1].IntervalEnd, wantEnd)
+	}
+}
+
 // TestResolveSubnetSetMalformedIPReturnsNil guards a defensive nil-end
 // branch. A well-formed ParseCIDR result always yields a 4- or 16-byte
 // IP, so lastIPInRange returns non-nil in normal operation. But a
