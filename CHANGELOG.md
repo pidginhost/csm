@@ -27,20 +27,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - Email attachment scanning now treats a YARA-X backend loss or scan error as an incomplete scan. In tempfail mode, CSM defers the message instead of delivering it as scanned clean.
-- Hostnames in top-level or firewall `infra_ips:` are now DNS-refreshed by the same loop that services `dyndns_hosts:` and their resolved IPs feed the firewall's infra-block guard. Operators can list panel and bastion hosts by name and they stay lockout-protected as the underlying address rotates.
-- Inline code-injection cleaner now strips block / line comments before matching, catching evasions like `@eval/*x*/(base64_decode(...))` that previously slipped through; the PHP content detector also flags indirect eval / shell sinks without alerting on decoder-only callbacks.
-- Quarantine now moves files via an fd-based hardlink rather than a path-based rename, defeating the classic detect-then-quarantine race where an attacker swaps a malware file out for a legitimate one (or a symlink to a sensitive file) between scan and remediation. When hardlinking is unavailable, CSM copies from the same verified file descriptor before removing the source.
-- `CSM_CONFIG_DIR` and `--config-dir` are now validated before CSM loads any YAML fragments. Override directories must be absolute and trusted, and both directories and fragments must not be writable by group or world; refused values fail startup so an attacker cannot point CSM at fragments they control.
-- Verdict-callback responses are now HMAC-signed. CSM rejects unsigned or forged replies whenever a secret is configured, preventing on-path downgrades to "allow"; operators can temporarily accept unsigned replies during staged panel rollouts.
+- Infra hostnames are DNS-refreshed into the firewall lockout guard, so management hosts declared by name stay protected as the underlying address rotates.
+- Inline code-injection cleaner now sees through comment-based evasions, and the PHP content detector flags indirect eval and shell-exec sinks without false-positives on benign decoder callbacks.
+- File quarantine uses a descriptor-based move that defeats the classic swap-the-file race between detection and remediation, including symlink-substitution attempts.
+- Operator-supplied config-fragment directories are validated before any YAML loads; refused paths fail startup so an attacker cannot redirect CSM at untrusted fragments.
+- Verdict-callback responses are HMAC-signed by default, so an on-path attacker cannot downgrade a block decision; operators can opt out during staged panel rollouts.
 
 ### Fixed
 
-- Auto-block reconciliation now checks the live nftables set before pruning its tracker, falls back to cached firewall state when the live query is unavailable, and re-blocks repeat findings when a cached entry is no longer present in the kernel.
-- C2, backdoor, and suspicious PHP execution findings now carry stable actor keys so repeat events group into one incident; PHP process grouping no longer splits on rotating PIDs or falls back to root when UID data is missing.
-- Initial baseline dispatch now keeps scan-produced cross-account correlation alerts from being duplicated before notification.
-- Auto-block no longer records a real block, bumps the hourly counter, writes the permanent threat database, or emits a Critical "AUTO-BLOCK" finding when `auto_response.dry_run` intercepted the call or the verdict callback returned "allow". Dry-run intercepts now surface as a Warning-level "AUTO-BLOCK [dry-run]" notice so operators can still see what would have happened.
-- Auto-block now ignores unexpected firewall result reports instead of treating them as successful blocks.
-- `/api/v1/status.blocklist_size` and the health snapshot now report the live count of blocked IPs from the firewall engine instead of an unused bbolt bucket, so phpanel sees the same number as `csm firewall status`.
+- Auto-block tracker reconciles against the live kernel firewall, so stale cached entries no longer suppress re-blocking after the kernel has expired an IP.
+- Connection-tracking and process-execution findings now carry stable actor keys, so repeat events from the same source group into one incident instead of fanning out per process restart.
+- Cross-account correlation runs on the initial baseline scan, so the first batch after a daemon restart no longer slips past with no coordinated-attack alert.
+- Auto-block no longer credits dry-run intercepts or verdict-callback allow responses as real blocks; dry-run intercepts surface as a Warning-level notice instead.
+- Auto-block ignores unknown firewall result codes instead of treating them as successful blocks.
+- Firewall blocklist size reported via the status API now reflects the live kernel count, so the panel agrees with the CLI.
 - `/api/v1/status` now reports a real `baseline_at` for the daemon's first-start timestamp instead of the epoch. It stays stable across restarts, upgrades, and baseline resets.
 - Manual check and baseline scans now keep dry-run state local to that scan, so they cannot mute live auto-response from daemon ticks.
 - Settings saves now reject invalid mail-log source and account-key extractor values before writing the config.
