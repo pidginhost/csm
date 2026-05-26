@@ -290,7 +290,10 @@ func pamEnsureLines(path string, dryRun bool) (bool, error) {
 	// #nosec G306 -- /etc/pam.d service files are standard 0644 so libpam
 	// can read them under every PAM-aware stack; tightening to 0600 would
 	// break authentication on services that resolve PAM as non-root.
-	if err := os.WriteFile(path, out.Bytes(), 0o644); err != nil {
+	// Atomic write so sshd / login / cron parsing the file mid-edit
+	// always see either the old or the new contents, never a truncated
+	// or partially-written file that would break authentication.
+	if err := writeFileAtomic(path, out.Bytes(), 0o644); err != nil {
 		return false, fmt.Errorf("writing %s after backup %s: %w", path, backup, err)
 	}
 	return true, nil
@@ -364,7 +367,9 @@ func pamRemoveLines(path string) (int, error) {
 	}
 	// #nosec G306 -- /etc/pam.d service files are standard 0644; see the
 	// matching annotation in pamEnsureLines above.
-	if err := os.WriteFile(path, out.Bytes(), 0o644); err != nil {
+	// Atomic write so a concurrent PAM-aware service never reads a
+	// half-written file during uninstall.
+	if err := writeFileAtomic(path, out.Bytes(), 0o644); err != nil {
 		return 0, fmt.Errorf("writing %s after backup %s: %w", path, backup, err)
 	}
 	return removed, nil
