@@ -78,9 +78,26 @@ func (c *ControlListener) Run(stopCh <-chan struct{}) {
 				continue
 			}
 		}
+		// SO_PEERCRED defence-in-depth: socket perms are already 0600
+		// (root-only), but if a future install pattern relaxes that --
+		// or a confused-deputy mount makes the socket reachable from a
+		// non-root namespace -- the kernel-supplied credentials force
+		// us to refuse any non-root caller before reading a byte of
+		// payload. The socket perms remain the primary defence; this
+		// is an extra rejection layer that the kernel cannot lie about.
+		if err := verifyControlPeer(conn); err != nil {
+			csmlog.Warn("control listener rejecting peer", "err", err)
+			_ = conn.Close()
+			continue
+		}
 		obs.SafeGo("control-conn", func() { c.handleConnection(conn) })
 	}
 }
+
+// verifyControlPeer is defined per-OS:
+//   - linux: reads SO_PEERCRED and refuses non-root callers
+//   - other: no-op (the listener is Linux-only in production; macOS dev
+//     builds still need the package to compile)
 
 // Stop closes the listener and removes the socket file. Safe to call
 // after Run has already returned.
