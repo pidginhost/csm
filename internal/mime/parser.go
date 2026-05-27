@@ -78,15 +78,14 @@ func ParseSpoolMessage(headerPath, bodyPath string, limits Limits) (*ExtractionR
 	result.Direction = detectDirection(hdrs)
 
 	maxBodyBytes := bodyReadLimit(limits)
-	if info, statErr := os.Stat(bodyPath); statErr == nil && info.Size() > maxBodyBytes {
+	bodyData, partial, err := readBodyFileLimited(bodyPath, maxBodyBytes)
+	if err != nil {
+		return nil, fmt.Errorf("reading body file: %w", err)
+	}
+	if partial {
 		result.Partial = true
 		result.PartialReason = "message body exceeds parser memory budget"
 		return result, nil
-	}
-
-	bodyData, err := readFileLimited(bodyPath, maxBodyBytes)
-	if err != nil {
-		return nil, fmt.Errorf("reading body file: %w", err)
 	}
 
 	ct := hdrs.Get("Content-Type")
@@ -171,6 +170,31 @@ func readFileLimited(path string, limit int64) ([]byte, error) {
 		return nil, fmt.Errorf("message body exceeds parser memory budget")
 	}
 	return data, nil
+}
+
+// readBodyFileLimited opens the spool body file once and reads up to
+// limit+1 bytes. Returns (data, partial=true, nil) when the file
+// exceeds the limit so the caller can mark the result as partial.
+// Folding the size check into the same file descriptor closes the
+// TOCTOU window: previously the Stat-then-Open sequence let an
+// attacker swap the file for a larger one between the two syscalls
+// and bypass the limit.
+func readBodyFileLimited(path string, limit int64) ([]byte, bool, error) {
+	// #nosec G304 -- path is mail queue file path from scanner walk.
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, false, err
+	}
+	defer f.Close()
+
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if int64(len(data)) > limit {
+		return nil, true, nil
+	}
+	return data, false, nil
 }
 
 func decodeSinglePart(bodyData []byte, cte string, limit int64) ([]byte, bool) {
