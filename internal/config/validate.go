@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -231,11 +232,19 @@ func Validate(cfg *Config) []ValidationResult {
 		results = append(results, ValidationResult{"error", "signatures.yara_forge.download_url",
 			"download_url is required because upstream YARA Forge releases do not publish CSM detached signatures"})
 	}
-	if cfg.Signatures.YaraForge.DownloadURL != "" &&
-		!strings.HasPrefix(cfg.Signatures.YaraForge.DownloadURL, "https://") &&
-		!strings.HasPrefix(cfg.Signatures.YaraForge.DownloadURL, "http://") {
-		results = append(results, ValidationResult{"error", "signatures.yara_forge.download_url",
-			"download_url must be an http or https URL"})
+	if cfg.Signatures.YaraForge.DownloadURL != "" {
+		if !strings.HasPrefix(cfg.Signatures.YaraForge.DownloadURL, "https://") &&
+			!strings.HasPrefix(cfg.Signatures.YaraForge.DownloadURL, "http://") {
+			results = append(results, ValidationResult{"error", "signatures.yara_forge.download_url",
+				"download_url must be an http or https URL"})
+		} else if err := validateSignaturesHost(cfg.Signatures.YaraForge.DownloadURL); err != nil {
+			results = append(results, ValidationResult{"error", "signatures.yara_forge.download_url", err.Error()})
+		}
+	}
+	if cfg.Signatures.UpdateURL != "" {
+		if err := validateSignaturesHost(cfg.Signatures.UpdateURL); err != nil {
+			results = append(results, ValidationResult{"error", "signatures.update_url", err.Error()})
+		}
 	}
 
 	if err := validateDirectSMTPEgress(cfg); err != nil {
@@ -642,6 +651,45 @@ func probeWebhook(url string) []ValidationResult {
 	}
 	resp.Body.Close()
 	return []ValidationResult{{"ok", "alerts.webhook.url", fmt.Sprintf("reachable (HTTP %d)", resp.StatusCode)}}
+}
+
+// validateSignaturesHost rejects signature URLs that point at loopback,
+// link-local, or RFC1918 ranges. The signature update path runs as root,
+// downloads code-shaped content, and relies on detached signatures the
+// operator's signing key is supposed to verify -- a hostile DNS hijack
+// that lands a legitimate-looking URL on a private range still requires
+// signing-key compromise to actually deliver malicious rules, but
+// refusing the obvious internal hosts at config-load time avoids a class
+// of operator misconfiguration where the URL was meant for staging and
+// quietly stayed in production.
+func validateSignaturesHost(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("parse: %w", err)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("missing host in %q", raw)
+	}
+	lower := strings.ToLower(host)
+	if lower == "localhost" || lower == "localhost.localdomain" {
+		return fmt.Errorf("signatures URL host %q is loopback; refuse for production downloads", host)
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() {
+			return fmt.Errorf("signatures URL host %s is loopback", host)
+		}
+		if ip.IsPrivate() {
+			return fmt.Errorf("signatures URL host %s is RFC1918 / ULA private", host)
+		}
+		if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			return fmt.Errorf("signatures URL host %s is link-local", host)
+		}
+		if ip.IsUnspecified() {
+			return fmt.Errorf("signatures URL host %s is unspecified", host)
+		}
+	}
+	return nil
 }
 
 // probeGeoIPDBs checks that expected GeoIP database files exist on disk.
