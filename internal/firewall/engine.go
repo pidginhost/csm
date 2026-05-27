@@ -382,7 +382,9 @@ func (e *Engine) Apply() error {
 	// separate loadState() Flush populated the sets - leaving a
 	// brief window where the new table existed without the
 	// persisted blocks.
-	e.queueInitialBlockStateLocked(initial)
+	if err := e.queueInitialBlockStateLocked(initial); err != nil {
+		return fmt.Errorf("queueing initial firewall state: %w", err)
+	}
 
 	// Apply atomically - if this fails, nftables keeps whatever was running before
 	if err := e.conn.Flush(); err != nil {
@@ -1732,6 +1734,7 @@ func (e *Engine) AllowIP(ip string, reason string) error {
 	if blockedSet != nil {
 		if err := e.conn.SetDeleteElements(blockedSet, []nftables.SetElement{{Key: blockedKey}}); err != nil {
 			logNftSetOpErr("AllowIP remove from blocked", ip, err)
+			return fmt.Errorf("removing from blocked set: %w", err)
 		}
 	}
 	if err := e.conn.SetAddElements(allowedSet, []nftables.SetElement{{Key: allowedKey}}); err != nil {
@@ -1765,6 +1768,7 @@ func (e *Engine) TempAllowIP(ip string, reason string, timeout time.Duration) er
 	if blockedSet != nil {
 		if err := e.conn.SetDeleteElements(blockedSet, []nftables.SetElement{{Key: blockedKey}}); err != nil {
 			logNftSetOpErr("TempAllowIP remove from blocked", ip, err)
+			return fmt.Errorf("removing from blocked set: %w", err)
 		}
 	}
 	if err := e.conn.SetAddElements(allowedSet, []nftables.SetElement{{Key: allowedKey}}); err != nil {
@@ -1792,17 +1796,21 @@ func (e *Engine) CleanExpiredAllows() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	state := e.loadStateFile()
+	state, ok := e.loadStateFileRawLocked()
+	if !ok {
+		return 0
+	}
 	now := time.Now()
 	var active []AllowedEntry
 	expiredIPs := make(map[string]bool)
+	var expired []AllowedEntry
 	removed := 0
 
 	for _, entry := range state.Allowed {
 		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
 			expiredIPs[entry.IP] = true
+			expired = append(expired, entry)
 			removed++
-			AppendAudit(e.statePath, "temp_allow_expired", entry.IP, "", SourceSystem, 0)
 		} else {
 			active = append(active, entry)
 		}
@@ -1814,21 +1822,37 @@ func (e *Engine) CleanExpiredAllows() int {
 		for _, entry := range active {
 			activeIPs[entry.IP] = true
 		}
+		queueFailed := false
+		queuedDeletes := false
 		for ip := range expiredIPs {
 			if !activeIPs[ip] {
 				if set, key, err := e.resolveIPSet(ip, e.setAllowed, e.setAllowed6); err == nil {
 					if err := e.conn.SetDeleteElements(set, []nftables.SetElement{{Key: key}}); err != nil {
 						logNftSetOpErr("CleanExpiredAllows remove", ip, err)
+						queueFailed = true
+					} else {
+						queuedDeletes = true
 					}
 				}
 			}
 		}
+		if queueFailed {
+			if queuedDeletes {
+				if err := e.conn.Flush(); err != nil {
+					fmt.Fprintf(os.Stderr, "firewall: nft flush after failed expired-allow cleanup failed: %v\n", err)
+				}
+			}
+			return 0
+		}
 		if err := e.conn.Flush(); err != nil {
-			fmt.Fprintf(os.Stderr, "firewall: error flushing expired allows: %v\n", err)
+			fmt.Fprintf(os.Stderr, "firewall: nft flush after expired-allow cleanup failed: %v\n", err)
 			return 0 // don't update state; will retry on next tick
 		}
 		state.Allowed = active
 		e.saveState(&state)
+		for _, entry := range expired {
+			AppendAudit(e.statePath, "temp_allow_expired", entry.IP, "", SourceSystem, 0)
+		}
 	}
 	return removed
 }
@@ -1838,10 +1862,16 @@ func (e *Engine) CleanExpiredSubnets() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	state := e.loadStateFile()
+	state, ok := e.loadStateFileRawLocked()
+	if !ok {
+		return 0
+	}
 	now := time.Now()
 	var active []SubnetEntry
+	var expired []SubnetEntry
 	removed := 0
+	queueFailed := false
+	queuedDeletes := false
 
 	for _, entry := range state.BlockedNet {
 		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
@@ -1850,24 +1880,38 @@ func (e *Engine) CleanExpiredSubnets() int {
 					if elements := intervalSetElements(start, end); len(elements) > 0 {
 						if err := e.conn.SetDeleteElements(set, elements); err != nil {
 							logNftSetOpErr("CleanExpiredSubnets remove", entry.CIDR, err)
+							queueFailed = true
+						} else {
+							queuedDeletes = true
 						}
 					}
 				}
 			}
+			expired = append(expired, entry)
 			removed++
-			AppendAudit(e.statePath, "temp_subnet_expired", entry.CIDR, "", SourceSystem, 0)
 			continue
 		}
 		active = append(active, entry)
 	}
 
 	if removed > 0 {
+		if queueFailed {
+			if queuedDeletes {
+				if err := e.conn.Flush(); err != nil {
+					fmt.Fprintf(os.Stderr, "firewall: nft flush after failed expired-subnet cleanup failed: %v\n", err)
+				}
+			}
+			return 0
+		}
 		if err := e.conn.Flush(); err != nil {
-			fmt.Fprintf(os.Stderr, "firewall: flush after expired-subnet cleanup failed: %v\n", err)
+			fmt.Fprintf(os.Stderr, "firewall: nft flush after expired-subnet cleanup failed: %v\n", err)
 			return 0
 		}
 		state.BlockedNet = active
 		e.saveState(&state)
+		for _, entry := range expired {
+			AppendAudit(e.statePath, "temp_subnet_expired", entry.CIDR, "", SourceSystem, 0)
+		}
 	}
 	return removed
 }
@@ -2295,19 +2339,32 @@ func (e *Engine) computeInitialBlockStateLocked() initialBlockState {
 // queueInitialBlockStateLocked queues the previously-computed
 // elements into the still-pending Apply netlink batch. Apply Flushes
 // the whole batch as one transaction. No Flush here.
-func (e *Engine) queueInitialBlockStateLocked(ibs initialBlockState) {
-	e.addElementsChunked(e.setBlocked, ibs.blocked4)
+func (e *Engine) queueInitialBlockStateLocked(ibs initialBlockState) error {
+	if err := e.addElementsChunked(e.setBlocked, ibs.blocked4); err != nil {
+		return err
+	}
 	if e.setBlocked6 != nil {
-		e.addElementsChunked(e.setBlocked6, ibs.blocked6)
+		if err := e.addElementsChunked(e.setBlocked6, ibs.blocked6); err != nil {
+			return err
+		}
 	}
-	e.addElementsChunked(e.setAllowed, ibs.allowed4)
+	if err := e.addElementsChunked(e.setAllowed, ibs.allowed4); err != nil {
+		return err
+	}
 	if e.setAllowed6 != nil {
-		e.addElementsChunked(e.setAllowed6, ibs.allowed6)
+		if err := e.addElementsChunked(e.setAllowed6, ibs.allowed6); err != nil {
+			return err
+		}
 	}
-	e.addElementsChunked(e.setBlockedNet, ibs.blockedNet4)
+	if err := e.addElementsChunked(e.setBlockedNet, ibs.blockedNet4); err != nil {
+		return err
+	}
 	if e.setBlockedNet6 != nil {
-		e.addElementsChunked(e.setBlockedNet6, ibs.blockedNet6)
+		if err := e.addElementsChunked(e.setBlockedNet6, ibs.blockedNet6); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // addElementsChunked issues SetAddElements in fixed-size chunks. A single
@@ -2320,7 +2377,7 @@ func (e *Engine) queueInitialBlockStateLocked(ibs initialBlockState) {
 // The batch size must stay even so interval sets (blocked_net, where each
 // CIDR expands to a consecutive {start, IntervalEnd} pair) never split a
 // pair across chunks.
-func (e *Engine) addElementsChunked(s *nftables.Set, elems []nftables.SetElement) {
+func (e *Engine) addElementsChunked(s *nftables.Set, elems []nftables.SetElement) error {
 	const chunk = 1000
 	for i := 0; i < len(elems); i += chunk {
 		end := i + chunk
@@ -2328,16 +2385,15 @@ func (e *Engine) addElementsChunked(s *nftables.Set, elems []nftables.SetElement
 			end = len(elems)
 		}
 		if err := e.conn.SetAddElements(s, elems[i:end]); err != nil {
-			fmt.Fprintf(os.Stderr, "firewall: addElementsChunked failed on set %q chunk %d-%d: %v\n",
-				s.Name, i, end, err)
+			op := fmt.Sprintf("add elements to set %q chunk %d-%d", s.Name, i, end)
+			logNftSetOpErr(op, "initial restore", err)
+			return fmt.Errorf("adding initial elements to set %q chunk %d-%d: %w", s.Name, i, end, err)
 		}
 	}
+	return nil
 }
 
-// logNftSetOpErr is a single sink for "we hit nft and it returned an
-// error we want to surface but not propagate". Using a helper keeps the
-// log shape consistent so operators can grep for "firewall: nft" and
-// see every silent fallthrough at once.
+// logNftSetOpErr keeps operator-visible nft error logs grep-friendly.
 func logNftSetOpErr(op, target string, err error) {
 	fmt.Fprintf(os.Stderr, "firewall: nft %s for %s failed: %v\n", op, target, err)
 }
@@ -2364,6 +2420,25 @@ func (e *Engine) loadStateFile() FirewallState {
 		Allowed:     append([]AllowedEntry(nil), s.Allowed...),
 		PortAllowed: append([]PortAllowEntry(nil), s.PortAllowed...),
 	}
+}
+
+// loadStateFileRawLocked reads state.json without pruning expired entries.
+// Expiry cleanup needs the stale rows so it can remove matching nftables
+// elements before writing the active state back.
+func (e *Engine) loadStateFileRawLocked() (FirewallState, bool) {
+	stateFile := filepath.Join(e.statePath, "state.json")
+	data, err := os.ReadFile(stateFile) // #nosec G304 -- filepath.Join under operator-configured statePath.
+	if err != nil {
+		if os.IsNotExist(err) {
+			return FirewallState{}, true
+		}
+		return FirewallState{}, false
+	}
+	var state FirewallState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return FirewallState{}, false
+	}
+	return state, true
 }
 
 // ensureStateCacheLocked populates or refreshes e.stateCache. Cheap on
