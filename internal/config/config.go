@@ -1386,6 +1386,19 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 // gigabytes of intermediate state.
 const MaxConfigBytes = 4 * 1024 * 1024
 
+var errConfigTooLarge = errors.New("config input exceeds byte cap")
+
+func readConfigBytesLimited(r io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, MaxConfigBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > MaxConfigBytes {
+		return nil, errConfigTooLarge
+	}
+	return data, nil
+}
+
 // LoadBytes decodes a YAML config body and applies all defaults,
 // matching Load. ConfigFile is left empty; the caller sets it.
 func LoadBytes(data []byte) (*Config, error) {
@@ -1681,7 +1694,15 @@ func validateMailBruteAccountKey(cfg *Config) error {
 
 func Load(path string) (*Config, error) {
 	// #nosec G304 -- path is operator-supplied config file (CLI flag / env).
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading config %s: %w", path, err)
+	}
+	defer f.Close()
+	data, err := readConfigBytesLimited(f)
+	if errors.Is(err, errConfigTooLarge) {
+		return nil, fmt.Errorf("config %s exceeds %d byte cap", path, MaxConfigBytes)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("reading config %s: %w", path, err)
 	}
@@ -1698,12 +1719,17 @@ func Load(path string) (*Config, error) {
 // error. Unknown fields in fragments are rejected (KnownFields=true).
 func LoadWithDir(path, confDir string) (*Config, error) {
 	// #nosec G304 -- path is operator-supplied (CLI flag).
-	mainData, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading config %s: %w", path, err)
 	}
-	if len(mainData) > MaxConfigBytes {
+	defer f.Close()
+	mainData, err := readConfigBytesLimited(f)
+	if errors.Is(err, errConfigTooLarge) {
 		return nil, fmt.Errorf("config %s exceeds %d byte cap", path, MaxConfigBytes)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading config %s: %w", path, err)
 	}
 
 	var merged yaml.Node
