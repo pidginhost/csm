@@ -371,6 +371,40 @@ func TestWritePAMBackupDoesNotOverwriteExistingBackup(t *testing.T) {
 	}
 }
 
+func TestPAMSourceCopiesStayInSync(t *testing.T) {
+	packaged := filepath.Join("..", "..", "build", "pam", "pam_csm.c")
+	standalone := filepath.Join("..", "..", "pam", "pam_csm.c")
+
+	packagedBody, err := os.ReadFile(packaged) // #nosec G304 -- fixed repo path.
+	if err != nil {
+		t.Fatalf("read packaged PAM source: %v", err)
+	}
+	standaloneBody, err := os.ReadFile(standalone) // #nosec G304 -- fixed repo path.
+	if err != nil {
+		t.Fatalf("read standalone PAM source: %v", err)
+	}
+	if !bytes.Equal(packagedBody, standaloneBody) {
+		t.Fatal("pam/pam_csm.c drifted from build/pam/pam_csm.c; update both copies together")
+	}
+	if !bytes.Contains(packagedBody, []byte("MSG_NOSIGNAL")) {
+		t.Fatal("PAM socket writes must suppress SIGPIPE so a closed daemon socket cannot terminate the login process")
+	}
+	if bytes.Contains(packagedBody, []byte("SO_RCVTIMEO")) {
+		t.Fatal("PAM module has no receive path; SO_RCVTIMEO does not bound stalled daemon writes")
+	}
+}
+
+func TestPAMStandaloneMakefileDocumentsSessionHook(t *testing.T) {
+	makefile := filepath.Join("..", "..", "pam", "Makefile")
+	body, err := os.ReadFile(makefile) // #nosec G304 -- fixed repo path.
+	if err != nil {
+		t.Fatalf("read standalone PAM Makefile: %v", err)
+	}
+	if !strings.Contains(string(body), "session optional pam_csm.so") {
+		t.Fatal("standalone PAM install instructions must include the session hook")
+	}
+}
+
 func TestResolvePAMSecurityDirNotFound(t *testing.T) {
 	old := pamSecurityDirs
 	pamSecurityDirs = []string{filepath.Join(t.TempDir(), "missing")}

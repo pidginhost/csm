@@ -1,178 +1,302 @@
 /*
- * pam_csm.c — CSM PAM Module for Real-Time Brute-Force Detection
+ * pam_csm.so - PAM module that forwards authentication outcomes to the
+ * CSM daemon over a Unix socket. The daemon's PAMListener consumes the
+ * lines emitted here to drive PAM-based brute-force detection.
  *
- * Reports authentication events (success/failure) to the CSM daemon
- * via a Unix domain socket. The daemon tracks failures per IP and
- * blocks attackers via CSM auto-blocking after a configurable threshold.
+ * Wire format (one line per event, no trailing newline required):
+ *
+ *     FAIL ip=1.2.3.4 user=root service=sshd
+ *     OK   ip=1.2.3.4 user=root service=sshd
+ *
+ * The socket lives at /var/run/csm/pam.sock and is owned root:root with
+ * mode 0600, so this module must run from a PAM stack that is already
+ * executing as root (sshd, su, sudo, login). Calls from non-root stacks
+ * fail the connect and become a silent no-op; auth is never blocked by
+ * a CSM connectivity problem.
  *
  * Build:
- *   gcc -shared -fPIC -o pam_csm.so pam_csm.c -lpam
  *
- * Install:
- *   cp pam_csm.so /lib64/security/
- *   # Add to /etc/pam.d/sshd, /etc/pam.d/pure-ftpd, etc.:
- *   auth optional pam_csm.so
+ *     gcc -shared -fPIC -Wall -Wextra -O2 -o pam_csm.so pam_csm.c -lpam
  *
- * Protocol (line-based over Unix socket):
- *   FAIL ip=1.2.3.4 user=root service=sshd
- *   OK ip=1.2.3.4 user=root service=sshd
+ * Install (per host operator-handled instructions in
+ * docs/operator-pam-install.md):
  *
- * Safety:
- *   - Uses "optional" in PAM stack — failures in this module don't block login
- *   - Timeout on socket connect (100ms) — doesn't delay login if daemon is down
- *   - Non-blocking, fire-and-forget — sends event and closes immediately
- *   - Emits FAIL during auth attempts; the daemon clears that state on a later OK
- *     for the same IP when account/session success is reached
+ *     install -m 0755 pam_csm.so /usr/lib64/security/pam_csm.so   # RHEL
+ *     install -m 0755 pam_csm.so /lib/x86_64-linux-gnu/security/  # Debian
+ *
+ *     # Append to /etc/pam.d/sshd, /etc/pam.d/su, /etc/pam.d/sudo,
+ *     # /etc/pam.d/password-auth (RHEL) or /etc/pam.d/common-auth (Debian):
+ *     auth     optional   pam_csm.so
+ *     session  optional   pam_csm.so
+ *
+ * The `optional` control flag is mandatory: a CSM outage must not block
+ * authentication, period.
  */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <fcntl.h>
+#define _GNU_SOURCE /* SOCK_CLOEXEC / SOCK_NONBLOCK on glibc */
+
+#define PAM_SM_AUTH
+#define PAM_SM_SESSION
+
 #include <errno.h>
-#include <time.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/un.h>
+#include <unistd.h>
 
+#include <security/pam_appl.h>
 #include <security/pam_modules.h>
-#include <security/pam_ext.h>
 
-#define CSM_SOCKET_PATH "/var/run/csm/pam.sock"
-#define CSM_CONNECT_TIMEOUT_MS 100
-#define CSM_MAX_MSG_LEN 512
+#define CSM_PAM_SOCKET "/var/run/csm/pam.sock"
+#define CSM_PAM_MAX_VALUE_LEN 128
+#define CSM_PAM_CONNECT_TIMEOUT_MS 250
+#define CSM_PAM_EMITTED_KEY "csm_pam_ok_emitted"
 
-/*
- * Send an event to the CSM daemon socket.
- * Returns 0 on success, -1 on failure (which is silently ignored).
- */
-static int csm_send_event(const char *event_type, const char *ip,
-                          const char *user, const char *service) {
-    int fd;
-    struct sockaddr_un addr;
-    char msg[CSM_MAX_MSG_LEN];
-    int len;
-    struct timeval tv;
+/* Sanitize an operator-controlled string for the wire format. We drop
+ * spaces, control bytes, and bytes outside printable ASCII so a forged
+ * username cannot inject extra "key=value" pairs into the daemon's
+ * parser. Replacement character is '_'. Truncates at len. */
+static void
+csm_sanitize(const char *in, char *out, size_t len)
+{
+    size_t i;
 
-    /* Build message */
-    len = snprintf(msg, sizeof(msg), "%s ip=%s user=%s service=%s\n",
-                   event_type, ip ? ip : "-", user ? user : "-",
-                   service ? service : "-");
-    if (len <= 0 || len >= (int)sizeof(msg))
-        return -1;
+    if (!out || len == 0) {
+        return;
+    }
+    if (!in) {
+        out[0] = '\0';
+        return;
+    }
+    for (i = 0; i + 1 < len && in[i]; i++) {
+        unsigned char c = (unsigned char)in[i];
+        if (c < 0x21 || c > 0x7e || c == '=' || c == ' ') {
+            out[i] = '_';
+        } else {
+            out[i] = (char)c;
+        }
+    }
+    out[i] = '\0';
+}
 
-    /* Create socket */
+static void
+csm_data_cleanup(pam_handle_t *pamh, void *data, int error_status)
+{
+    (void)pamh;
+    (void)data;
+    (void)error_status;
+}
+
+static int
+csm_wait_writable(int fd)
+{
+    struct pollfd pfd;
+    int rc;
+    int soerr = 0;
+    socklen_t soerr_len = sizeof(soerr);
+
+    memset(&pfd, 0, sizeof(pfd));
+    pfd.fd = fd;
+    pfd.events = POLLOUT;
+
+    do {
+        rc = poll(&pfd, 1, CSM_PAM_CONNECT_TIMEOUT_MS);
+    } while (rc < 0 && errno == EINTR);
+
+    if (rc <= 0) {
+        return 0;
+    }
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &soerr_len) < 0) {
+        return 0;
+    }
+    return soerr == 0;
+}
+
+static int
+csm_write_all(int fd, const char *buf, size_t len)
+{
+    size_t off = 0;
+
+    while (off < len) {
+        ssize_t n = send(fd, buf + off, len - off, MSG_NOSIGNAL);
+        if (n > 0) {
+            off += (size_t)n;
+            continue;
+        }
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (!csm_wait_writable(fd)) {
+                return 0;
+            }
+            continue;
+        }
+        return 0;
+    }
+    return 1;
+}
+
+/* Open a non-blocking connection to the CSM PAM socket and emit one
+ * event line. Failures (socket missing, connect refused, partial write)
+ * are silently swallowed so auth never breaks. */
+static int
+csm_emit(const char *verdict, pam_handle_t *pamh)
+{
+    int fd = -1;
+    const char *user = NULL;
+    const char *rhost = NULL;
+    const char *service = NULL;
+    char user_safe[CSM_PAM_MAX_VALUE_LEN];
+    char rhost_safe[CSM_PAM_MAX_VALUE_LEN];
+    char service_safe[CSM_PAM_MAX_VALUE_LEN];
+    char line[512];
+    int n;
+
     fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0)
-        return -1;
-
-    /* Set send and receive timeouts. SO_RCVTIMEO bounds connect-blocked
-     * recv() calls that would otherwise hang indefinitely if the daemon
-     * accepted the connection but stalled before reading the message --
-     * a hung daemon must not freeze login. */
-    tv.tv_sec = 0;
-    tv.tv_usec = CSM_CONNECT_TIMEOUT_MS * 1000;
-    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
-    /* Connect */
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, CSM_SOCKET_PATH, sizeof(addr.sun_path) - 1);
-
-    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        close(fd);
-        return -1; /* Daemon not running — silently ignore */
+    if (fd < 0) {
+        return 0;
+    }
+    /* Non-blocking + close-on-exec set via fcntl so the source builds on
+     * any libc, not just glibc with SOCK_CLOEXEC / SOCK_NONBLOCK. */
+    {
+        int flags = fcntl(fd, F_GETFL, 0);
+        if (flags >= 0) {
+            (void)fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+        }
+        (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
     }
 
-    /* Send and close */
-    write(fd, msg, len);
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    strncpy(addr.sun_path, CSM_PAM_SOCKET, sizeof(addr.sun_path) - 1);
+
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        if (errno != EINPROGRESS || !csm_wait_writable(fd)) {
+            close(fd);
+            return 0;
+        }
+    }
+
+    (void)pam_get_item(pamh, PAM_USER, (const void **)&user);
+    (void)pam_get_item(pamh, PAM_RHOST, (const void **)&rhost);
+    (void)pam_get_item(pamh, PAM_SERVICE, (const void **)&service);
+
+    csm_sanitize(user, user_safe, sizeof(user_safe));
+    csm_sanitize(rhost, rhost_safe, sizeof(rhost_safe));
+    csm_sanitize(service, service_safe, sizeof(service_safe));
+
+    if (rhost_safe[0] == '\0') {
+        /* No remote host means a local terminal / cron / systemd path
+         * that the daemon ignores anyway; skip the syscall storm. */
+        close(fd);
+        return 0;
+    }
+
+    n = snprintf(line, sizeof(line), "%s ip=%s user=%s service=%s\n",
+                 verdict, rhost_safe, user_safe, service_safe);
+    if (n <= 0 || (size_t)n >= sizeof(line)) {
+        close(fd);
+        return 0;
+    }
+    if (!csm_write_all(fd, line, (size_t)n)) {
+        close(fd);
+        return 0;
+    }
     close(fd);
-    return 0;
+    return 1;
 }
 
-/*
- * Extract the remote IP from the PAM environment.
- * Tries PAM_RHOST first, then common environment variables.
- */
-static const char *get_remote_ip(pam_handle_t *pamh) {
-    const char *rhost = NULL;
+static void
+csm_emit_ok_once(pam_handle_t *pamh)
+{
+    const void *emitted = NULL;
 
-    /* Standard PAM item */
-    if (pam_get_item(pamh, PAM_RHOST, (const void **)&rhost) == PAM_SUCCESS && rhost && *rhost)
-        return rhost;
-
-    return NULL;
+    if (pam_get_data(pamh, CSM_PAM_EMITTED_KEY, &emitted) == PAM_SUCCESS && emitted != NULL) {
+        return;
+    }
+    if (csm_emit("OK", pamh)) {
+        (void)pam_set_data(pamh, CSM_PAM_EMITTED_KEY, (void *)CSM_PAM_EMITTED_KEY, csm_data_cleanup);
+    }
 }
 
-/*
- * PAM authentication hook — called after authentication attempt.
- * We use pam_sm_setcred (called after auth) to report success/failure.
- */
-PAM_EXTERN int pam_sm_authenticate(pam_handle_t *pamh, int flags,
-                                    int argc, const char **argv) {
-    const char *user = NULL;
-    const char *service = NULL;
-    const char *ip;
-
+/* PAM_SM_AUTH hook: pam_authenticate returns PAM_SUCCESS / PAM_AUTH_ERR;
+ * pam_sm_authenticate runs before that verdict is known. Success reaches
+ * setcred / open_session; failures are covered by the auth log watcher
+ * because failed stacks may not reach a reliable post-auth PAM hook. */
+PAM_EXTERN int
+pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, const char **argv)
+{
     (void)flags;
     (void)argc;
     (void)argv;
+    (void)pamh;
+    /* Intentionally a no-op: emitting at pre-auth time would record a
+     * FAIL for every login attempt before the password was even
+     * checked. The real verdict ships from setcred / open_session. */
+    return PAM_IGNORE;
+}
 
-    pam_get_item(pamh, PAM_USER, (const void **)&user);
-    pam_get_item(pamh, PAM_SERVICE, (const void **)&service);
-    ip = get_remote_ip(pamh);
-
-    if (ip != NULL) {
-        /*
-         * Report the authentication attempt as a FAIL signal up front.
-         * A later successful acct_mgmt event emits OK, which the daemon uses
-         * to clear the pending failure tracker for this IP.
-         */
-        csm_send_event("FAIL", ip, user, service);
+PAM_EXTERN int
+pam_sm_setcred(pam_handle_t *pamh, int flags, int argc, const char **argv)
+{
+    (void)argc;
+    (void)argv;
+    if (flags & PAM_ESTABLISH_CRED) {
+        csm_emit_ok_once(pamh);
+    } else if (flags & PAM_DELETE_CRED) {
+        /* Logout: not interesting to the brute-force tracker. */
     }
-
-    /* We don't do authentication ourselves — never interfere with login flow. */
     return PAM_SUCCESS;
 }
 
-PAM_EXTERN int pam_sm_setcred(pam_handle_t *pamh, int flags,
-                               int argc, const char **argv) {
+/* Account / session hooks: PAM calls pam_sm_acct_mgmt after auth
+ * succeeded, so observing the negative case here is unreliable. The
+ * primary FAIL surface is the auth log watcher; this module supplements
+ * it with a high-fidelity OK signal so the daemon can correlate
+ * successful login -> source IP without log parsing. */
+PAM_EXTERN int
+pam_sm_open_session(pam_handle_t *pamh, int flags, int argc, const char **argv)
+{
+    (void)flags;
+    (void)argc;
+    (void)argv;
+    csm_emit_ok_once(pamh);
     return PAM_SUCCESS;
 }
 
-/*
- * PAM account hook — called to check if account is valid.
- * We hook here to report the auth result.
- */
-PAM_EXTERN int pam_sm_acct_mgmt(pam_handle_t *pamh, int flags,
-                                 int argc, const char **argv) {
-    const char *user = NULL;
-    const char *service = NULL;
-    const char *ip;
-
-    pam_get_item(pamh, PAM_USER, (const void **)&user);
-    pam_get_item(pamh, PAM_SERVICE, (const void **)&service);
-    ip = get_remote_ip(pamh);
-
-    if (ip != NULL) {
-        /* Report successful login */
-        csm_send_event("OK", ip, user, service);
-    }
-
+PAM_EXTERN int
+pam_sm_close_session(pam_handle_t *pamh, int flags, int argc, const char **argv)
+{
+    (void)pamh;
+    (void)flags;
+    (void)argc;
+    (void)argv;
     return PAM_SUCCESS;
 }
 
-/*
- * PAM auth failure notification — called when authentication fails.
- * This is the most reliable way to detect failed login attempts.
- */
-PAM_EXTERN int pam_sm_open_session(pam_handle_t *pamh, int flags,
-                                    int argc, const char **argv) {
-    return PAM_SUCCESS;
+PAM_EXTERN int
+pam_sm_acct_mgmt(pam_handle_t *pamh, int flags, int argc, const char **argv)
+{
+    (void)pamh;
+    (void)flags;
+    (void)argc;
+    (void)argv;
+    return PAM_IGNORE;
 }
 
-PAM_EXTERN int pam_sm_close_session(pam_handle_t *pamh, int flags,
-                                     int argc, const char **argv) {
-    return PAM_SUCCESS;
+PAM_EXTERN int
+pam_sm_chauthtok(pam_handle_t *pamh, int flags, int argc, const char **argv)
+{
+    (void)pamh;
+    (void)flags;
+    (void)argc;
+    (void)argv;
+    return PAM_IGNORE;
 }

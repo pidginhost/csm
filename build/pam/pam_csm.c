@@ -123,7 +123,7 @@ csm_write_all(int fd, const char *buf, size_t len)
     size_t off = 0;
 
     while (off < len) {
-        ssize_t n = write(fd, buf + off, len - off);
+        ssize_t n = send(fd, buf + off, len - off, MSG_NOSIGNAL);
         if (n > 0) {
             off += (size_t)n;
             continue;
@@ -227,11 +227,9 @@ csm_emit_ok_once(pam_handle_t *pamh)
 }
 
 /* PAM_SM_AUTH hook: pam_authenticate returns PAM_SUCCESS / PAM_AUTH_ERR;
- * pam_sm_authenticate runs before that verdict is known. The actual
- * outcome surfaces in pam_sm_setcred (PAM_ESTABLISH_CRED on success) and
- * is implicit on failure (the auth phase never reaches setcred). We
- * emit FAIL eagerly here and OK from open_session so the daemon hears
- * the bad case even when the stack aborts before setcred. */
+ * pam_sm_authenticate runs before that verdict is known. Success reaches
+ * setcred / open_session; failures are covered by the auth log watcher
+ * because failed stacks may not reach a reliable post-auth PAM hook. */
 PAM_EXTERN int
 pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, const char **argv)
 {
