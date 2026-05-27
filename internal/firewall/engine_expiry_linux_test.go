@@ -50,8 +50,8 @@ func captureStderr(t *testing.T, fn func()) string {
 	}()
 
 	fn()
-	if err := w.Close(); err != nil {
-		t.Fatalf("close stderr writer: %v", err)
+	if closeErr := w.Close(); closeErr != nil {
+		t.Fatalf("close stderr writer: %v", closeErr)
 	}
 	out, err := io.ReadAll(r)
 	if err != nil {

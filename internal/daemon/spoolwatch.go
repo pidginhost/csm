@@ -548,17 +548,21 @@ func secureEmailAVTempDir(dir string) error {
 			if euid != 0 {
 				return fmt.Errorf("email AV temp dir %s is owned by uid %d, want uid %d", dir, uid, euid)
 			}
-			if err := os.Chown(dir, euid, os.Getegid()); err != nil {
-				return fmt.Errorf("owning email AV temp dir %s: %w", dir, err)
+			if chownErr := os.Chown(dir, euid, os.Getegid()); chownErr != nil {
+				return fmt.Errorf("owning email AV temp dir %s: %w", dir, chownErr)
 			}
 		} else if gid != os.Getegid() && euid == 0 {
-			if err := os.Chown(dir, euid, os.Getegid()); err != nil {
-				return fmt.Errorf("owning email AV temp dir %s: %w", dir, err)
+			if chownErr := os.Chown(dir, euid, os.Getegid()); chownErr != nil {
+				return fmt.Errorf("owning email AV temp dir %s: %w", dir, chownErr)
 			}
 		}
 	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return fmt.Errorf("chmod email AV temp dir %s: %w", dir, err)
+	// #nosec G302 -- 0700 is the intended directory mode: daemon-only
+	// execute+read+write so unprivileged uids cannot enumerate or race
+	// staged email attachments. gosec's <=0600 rule does not distinguish
+	// directories from regular files.
+	if chmodErr := os.Chmod(dir, 0o700); chmodErr != nil {
+		return fmt.Errorf("chmod email AV temp dir %s: %w", dir, chmodErr)
 	}
 
 	info, err = os.Lstat(dir)

@@ -65,6 +65,9 @@ func AtomicWriteJSON(path string, perm os.FileMode, v any) error {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("rename: %w", err)
 	}
+	// #nosec G304 -- dir is filepath.Dir of caller-owned path; opened
+	// read-only solely to fsync the directory after rename so the
+	// new dentry survives a power-loss.
 	if d, err := os.Open(dir); err == nil {
 		_ = d.Sync()
 		_ = d.Close()
