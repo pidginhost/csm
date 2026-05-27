@@ -25,7 +25,20 @@ type Handler interface {
 // the worker process.
 type ServeOptions struct {
 	ErrorLog func(error)
+	// MaxMessagesPerConn caps how many frames a single connection may
+	// serve before the server force-closes it. Zero applies the
+	// default; a negative value disables the cap. Prevents a malicious
+	// or runaway peer from holding one socket and looping millions of
+	// frames through a single goroutine.
+	MaxMessagesPerConn int
 }
+
+// defaultMaxMessagesPerConn is the per-connection frame budget when
+// the operator does not configure one. Production daemon-to-worker
+// traffic burns a handful of frames per scan; 1e6 is several orders of
+// magnitude above the legitimate ceiling and still catches a wedged
+// peer in finite time.
+const defaultMaxMessagesPerConn = 1_000_000
 
 // Serve accepts connections on ln and dispatches frames to h until ctx
 // is cancelled or ln returns an error. Per-connection goroutines are
@@ -107,7 +120,18 @@ func Serve(ctx context.Context, ln net.Listener, h Handler, opts ServeOptions) e
 
 func serveConn(conn net.Conn, h Handler, opts ServeOptions) {
 	defer func() { _ = conn.Close() }()
+	budget := opts.MaxMessagesPerConn
+	if budget == 0 {
+		budget = defaultMaxMessagesPerConn
+	}
+	served := 0
 	for {
+		if budget > 0 && served >= budget {
+			if opts.ErrorLog != nil {
+				opts.ErrorLog(fmt.Errorf("max messages per connection (%d) reached; closing", budget))
+			}
+			return
+		}
 		req, err := ReadFrame(conn)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
@@ -125,6 +149,7 @@ func serveConn(conn net.Conn, h Handler, opts ServeOptions) {
 			}
 			return
 		}
+		served++
 	}
 }
 

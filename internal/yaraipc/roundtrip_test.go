@@ -289,6 +289,57 @@ func TestClientReconnectsAfterServerClose(t *testing.T) {
 	t.Fatalf("client did not recover after server restart: %v", reconnectErr)
 }
 
+// TestServerEnforcesMaxMessagesPerConn: the server must close the
+// connection after the configured per-connection frame budget so a
+// peer cannot pin one goroutine forever and starve the worker pool.
+func TestServerEnforcesMaxMessagesPerConn(t *testing.T) {
+	h := &fakeHandler{}
+	dir, err := os.MkdirTemp("/tmp", "y")
+	if err != nil {
+		t.Fatalf("mkdir temp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	socketPath := filepath.Join(dir, "cap.sock")
+
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = Serve(ctx, ln, h, ServeOptions{MaxMessagesPerConn: 2})
+	}()
+	defer func() {
+		cancel()
+		_ = ln.Close()
+		<-done
+	}()
+
+	conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+
+	for i := 0; i < 2; i++ {
+		if werr := WriteFrame(conn, Frame{Op: "totally_made_up"}); werr != nil {
+			t.Fatalf("WriteFrame %d: %v", i, werr)
+		}
+		if _, rerr := ReadFrame(conn); rerr != nil {
+			t.Fatalf("ReadFrame %d: %v", i, rerr)
+		}
+	}
+	// Third request: server should have closed the conn.
+	if werr := WriteFrame(conn, Frame{Op: "totally_made_up"}); werr == nil {
+		if _, rerr := ReadFrame(conn); rerr == nil {
+			t.Fatal("expected server to close conn after MaxMessagesPerConn budget reached")
+		}
+	}
+}
+
 func TestServerRejectsUnknownOp(t *testing.T) {
 	h := &fakeHandler{}
 	socketPath, stop := startServer(t, h)
