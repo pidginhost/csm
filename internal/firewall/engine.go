@@ -18,6 +18,8 @@ import (
 	"github.com/google/nftables"
 	"github.com/google/nftables/binaryutil"
 	"github.com/google/nftables/expr"
+
+	"github.com/pidginhost/csm/internal/state"
 )
 
 // Engine manages the nftables firewall ruleset.
@@ -2619,29 +2621,23 @@ func pruneAllowed(in []AllowedEntry, now time.Time) ([]AllowedEntry, bool) {
 // The cache rebuild deep-copies the input slices so a caller that
 // keeps mutating the local FirewallState after saveState returns cannot
 // corrupt the cache.
-func (e *Engine) saveState(state *FirewallState) {
+func (e *Engine) saveState(s *FirewallState) {
 	path := filepath.Join(e.statePath, "state.json")
-	data, _ := json.MarshalIndent(state, "", "  ")
-	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
-		e.clearStateCacheLocked()
-		return
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		_ = os.Remove(tmpPath)
+	if err := state.AtomicWriteJSON(path, 0o600, s); err != nil {
+		fmt.Fprintf(os.Stderr, "firewall: persist state.json failed: %v\n", err)
 		e.clearStateCacheLocked()
 		return
 	}
 	var cacheKey stateFileCacheKey
-	if info, err := os.Stat(path); err == nil {
+	if info, statErr := os.Stat(path); statErr == nil {
 		cacheKey = stateFileCacheKeyFromInfo(info)
 	}
 
 	e.stateCache = &FirewallState{
-		Blocked:     append([]BlockedEntry(nil), state.Blocked...),
-		BlockedNet:  append([]SubnetEntry(nil), state.BlockedNet...),
-		Allowed:     append([]AllowedEntry(nil), state.Allowed...),
-		PortAllowed: append([]PortAllowEntry(nil), state.PortAllowed...),
+		Blocked:     append([]BlockedEntry(nil), s.Blocked...),
+		BlockedNet:  append([]SubnetEntry(nil), s.BlockedNet...),
+		Allowed:     append([]AllowedEntry(nil), s.Allowed...),
+		PortAllowed: append([]PortAllowEntry(nil), s.PortAllowed...),
 	}
 	e.stateCacheKey = cacheKey
 	e.rebuildIndexLocked()

@@ -14,6 +14,7 @@ import (
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
+	"github.com/pidginhost/csm/internal/state"
 )
 
 const (
@@ -549,11 +550,11 @@ func loadBlockState(statePath string) *blockState {
 	return state
 }
 
-func saveBlockState(statePath string, state *blockState) {
-	data, _ := json.MarshalIndent(state, "", "  ")
-	tmpPath := filepath.Join(statePath, blockStateFile+".tmp")
-	_ = os.WriteFile(tmpPath, data, 0600)
-	_ = os.Rename(tmpPath, filepath.Join(statePath, blockStateFile))
+func saveBlockState(statePath string, s *blockState) {
+	path := filepath.Join(statePath, blockStateFile)
+	if err := state.AtomicWriteJSON(path, 0o600, s); err != nil {
+		fmt.Fprintf(os.Stderr, "autoblock: persist %s failed: %v\n", path, err)
+	}
 }
 
 // PendingBlockIPs returns IPs queued for blocking (rate-limited).
@@ -631,10 +632,10 @@ func loadPermBlockTracker(statePath string) *permBlockTracker {
 }
 
 func savePermBlockTracker(statePath string, tracker *permBlockTracker) {
-	data, _ := json.MarshalIndent(tracker, "", "  ")
-	tmpPath := filepath.Join(statePath, "permblock_tracker.json.tmp")
-	_ = os.WriteFile(tmpPath, data, 0600)
-	_ = os.Rename(tmpPath, filepath.Join(statePath, "permblock_tracker.json"))
+	path := filepath.Join(statePath, "permblock_tracker.json")
+	if err := state.AtomicWriteJSON(path, 0o600, tracker); err != nil {
+		fmt.Fprintf(os.Stderr, "autoblock: persist %s failed: %v\n", path, err)
+	}
 }
 
 // extractCIDRFromFinding returns the CIDR appearing in the message after
