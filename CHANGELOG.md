@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Firewall interval-set builders now reject or skip ranges whose end marker would wrap from the all-ones address to all-zeros. Misconfigured top-level CIDRs no longer widen allow or block sets to match every IP.
 - WordPress core and plugin file checksums now compare with a constant-time hash comparison, removing a theoretical side-channel during integrity verification.
 - Verdict callback requests now carry a per-request nonce and timestamp that the panel must echo in its signed reply, and replies whose clock drifts more than five minutes are rejected. Captured "allow" replies can no longer be replayed against a fresh block decision, and nonce-generation failures fall back to the default block path.
+- Firewall nftables set deletes, chunked adds, and post-cleanup flushes now log every kernel rejection with a stable prefix. Operators can grep the daemon log to surface stale block or allow entries that previously failed silently.
 - Compound webshell-plus-C2 incident classification no longer relies on the trimmed timeline. Sticky flags persist on the incident itself so a long, noisy attack still escalates when the matching counterpart arrives much later.
 - Periodic and initial scans now snapshot the live config once per tick, so a SIGHUP landing mid-tick can no longer split detection and auto-response between old and new policy.
 - Periodic integrity checks no longer raise a tamper alert when a valid config reload finishes while the check is hashing the old snapshot.

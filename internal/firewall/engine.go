@@ -1730,7 +1730,9 @@ func (e *Engine) AllowIP(ip string, reason string) error {
 
 	// Remove from blocked set + add to allowed set in same batch
 	if blockedSet != nil {
-		_ = e.conn.SetDeleteElements(blockedSet, []nftables.SetElement{{Key: blockedKey}})
+		if err := e.conn.SetDeleteElements(blockedSet, []nftables.SetElement{{Key: blockedKey}}); err != nil {
+			logNftSetOpErr("AllowIP remove from blocked", ip, err)
+		}
 	}
 	if err := e.conn.SetAddElements(allowedSet, []nftables.SetElement{{Key: allowedKey}}); err != nil {
 		return fmt.Errorf("adding to allowed set: %w", err)
@@ -1761,7 +1763,9 @@ func (e *Engine) TempAllowIP(ip string, reason string, timeout time.Duration) er
 	}
 
 	if blockedSet != nil {
-		_ = e.conn.SetDeleteElements(blockedSet, []nftables.SetElement{{Key: blockedKey}})
+		if err := e.conn.SetDeleteElements(blockedSet, []nftables.SetElement{{Key: blockedKey}}); err != nil {
+			logNftSetOpErr("TempAllowIP remove from blocked", ip, err)
+		}
 	}
 	if err := e.conn.SetAddElements(allowedSet, []nftables.SetElement{{Key: allowedKey}}); err != nil {
 		return fmt.Errorf("adding to allowed set: %w", err)
@@ -1813,7 +1817,9 @@ func (e *Engine) CleanExpiredAllows() int {
 		for ip := range expiredIPs {
 			if !activeIPs[ip] {
 				if set, key, err := e.resolveIPSet(ip, e.setAllowed, e.setAllowed6); err == nil {
-					_ = e.conn.SetDeleteElements(set, []nftables.SetElement{{Key: key}})
+					if err := e.conn.SetDeleteElements(set, []nftables.SetElement{{Key: key}}); err != nil {
+						logNftSetOpErr("CleanExpiredAllows remove", ip, err)
+					}
 				}
 			}
 		}
@@ -1842,7 +1848,9 @@ func (e *Engine) CleanExpiredSubnets() int {
 			if _, network, err := net.ParseCIDR(entry.CIDR); err == nil {
 				if set, start, end := e.resolveSubnetSet(network); set != nil {
 					if elements := intervalSetElements(start, end); len(elements) > 0 {
-						_ = e.conn.SetDeleteElements(set, elements)
+						if err := e.conn.SetDeleteElements(set, elements); err != nil {
+							logNftSetOpErr("CleanExpiredSubnets remove", entry.CIDR, err)
+						}
 					}
 				}
 			}
@@ -1854,7 +1862,10 @@ func (e *Engine) CleanExpiredSubnets() int {
 	}
 
 	if removed > 0 {
-		_ = e.conn.Flush()
+		if err := e.conn.Flush(); err != nil {
+			fmt.Fprintf(os.Stderr, "firewall: flush after expired-subnet cleanup failed: %v\n", err)
+			return 0
+		}
 		state.BlockedNet = active
 		e.saveState(&state)
 	}
@@ -2316,8 +2327,19 @@ func (e *Engine) addElementsChunked(s *nftables.Set, elems []nftables.SetElement
 		if end > len(elems) {
 			end = len(elems)
 		}
-		_ = e.conn.SetAddElements(s, elems[i:end])
+		if err := e.conn.SetAddElements(s, elems[i:end]); err != nil {
+			fmt.Fprintf(os.Stderr, "firewall: addElementsChunked failed on set %q chunk %d-%d: %v\n",
+				s.Name, i, end, err)
+		}
 	}
+}
+
+// logNftSetOpErr is a single sink for "we hit nft and it returned an
+// error we want to surface but not propagate". Using a helper keeps the
+// log shape consistent so operators can grep for "firewall: nft" and
+// see every silent fallthrough at once.
+func logNftSetOpErr(op, target string, err error) {
+	fmt.Fprintf(os.Stderr, "firewall: nft %s for %s failed: %v\n", op, target, err)
 }
 
 // loadStateFile returns a deep copy of the cached firewall state with
