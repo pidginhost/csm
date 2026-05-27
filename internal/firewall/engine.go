@@ -19,7 +19,7 @@ import (
 	"github.com/google/nftables/binaryutil"
 	"github.com/google/nftables/expr"
 
-	"github.com/pidginhost/csm/internal/state"
+	"github.com/pidginhost/csm/internal/atomicio"
 )
 
 // Engine manages the nftables firewall ruleset.
@@ -2623,7 +2623,7 @@ func pruneAllowed(in []AllowedEntry, now time.Time) ([]AllowedEntry, bool) {
 // corrupt the cache.
 func (e *Engine) saveState(s *FirewallState) {
 	path := filepath.Join(e.statePath, "state.json")
-	if err := state.AtomicWriteJSON(path, 0o600, s); err != nil {
+	if err := atomicio.AtomicWriteJSON(path, 0o600, s); err != nil {
 		fmt.Fprintf(os.Stderr, "firewall: persist state.json failed: %v\n", err)
 		e.clearStateCacheLocked()
 		return

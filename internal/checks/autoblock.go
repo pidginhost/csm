@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
+	"github.com/pidginhost/csm/internal/atomicio"
 	"github.com/pidginhost/csm/internal/config"
 	"github.com/pidginhost/csm/internal/firewall"
-	"github.com/pidginhost/csm/internal/state"
 )
 
 const (
@@ -551,7 +551,7 @@ func loadBlockState(statePath string) *blockState {
 
 func saveBlockState(statePath string, s *blockState) {
 	path := filepath.Join(statePath, blockStateFile)
-	if err := state.AtomicWriteJSON(path, 0o600, s); err != nil {
+	if err := atomicio.AtomicWriteJSON(path, 0o600, s); err != nil {
 		fmt.Fprintf(os.Stderr, "autoblock: persist %s failed: %v\n", path, err)
 	}
 }
@@ -647,7 +647,7 @@ func loadPermBlockTracker(statePath string) *permBlockTracker {
 
 func savePermBlockTracker(statePath string, tracker *permBlockTracker) {
 	path := filepath.Join(statePath, "permblock_tracker.json")
-	if err := state.AtomicWriteJSON(path, 0o600, tracker); err != nil {
+	if err := atomicio.AtomicWriteJSON(path, 0o600, tracker); err != nil {
 		fmt.Fprintf(os.Stderr, "autoblock: persist %s failed: %v\n", path, err)
 	}
 }

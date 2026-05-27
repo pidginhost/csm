@@ -1,4 +1,4 @@
-package state
+package atomicio
 
 import (
 	"encoding/json"

@@ -1,4 +1,9 @@
-package state
+// Package atomicio implements atomic file writes used by state-bearing
+// callers (firewall engine, autoblock tracker, etc.). The package is a
+// dependency leaf: it imports only the standard library so any caller
+// can use AtomicWriteJSON without risking an import cycle through the
+// existing state / store packages.
+package atomicio
 
 import (
 	"encoding/json"
