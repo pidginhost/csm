@@ -9,14 +9,14 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+var controlPeerRequiredUID uint32
+
 // verifyControlPeer reads SO_PEERCRED and refuses any caller whose
 // effective uid is not root. Returns nil when the peer is acceptable.
 func verifyControlPeer(conn net.Conn) error {
 	uc, ok := conn.(*net.UnixConn)
-	if !ok {
-		// Tests may inject pipe-backed conns; only enforce on real
-		// Unix sockets where SO_PEERCRED is meaningful.
-		return nil
+	if !ok || uc == nil {
+		return fmt.Errorf("peer credentials: unsupported connection %T", conn)
 	}
 	raw, err := uc.SyscallConn()
 	if err != nil {
@@ -36,8 +36,8 @@ func verifyControlPeer(conn net.Conn) error {
 	if ucred == nil {
 		return fmt.Errorf("peer credentials: empty result")
 	}
-	if ucred.Uid != 0 {
-		return fmt.Errorf("peer uid=%d, want 0 (root)", ucred.Uid)
+	if ucred.Uid != controlPeerRequiredUID {
+		return fmt.Errorf("peer uid=%d, want %d", ucred.Uid, controlPeerRequiredUID)
 	}
 	return nil
 }

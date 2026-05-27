@@ -39,6 +39,7 @@ func redirectControlSocket(t *testing.T) string {
 // the listener-level tests that exercise NewControlListener/Run/Stop.
 func newDaemonForListener(t *testing.T) *Daemon {
 	t.Helper()
+	allowCurrentControlPeerUID(t)
 	st, err := state.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("state.Open: %v", err)
