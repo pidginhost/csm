@@ -385,6 +385,32 @@ func TestAnalyzePHPContentUnicodeEscapeObfuscation(t *testing.T) {
 	}
 }
 
+func TestAnalyzePHPContentCallUserFuncUnicodeEscapesInDataArgIsClean(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "unicode-label.php")
+	content := "<?php\n" +
+		"call_user_func($formatter, \"\\u{2026}\" . \"\\u{2014}\" . \"\\u{00a0}\");\n"
+	_ = os.WriteFile(path, []byte(content), 0644)
+
+	result := analyzePHPContent(path)
+	if result.check != "" {
+		t.Errorf("unicode escapes in call_user_func data argument must not alert; got check=%q details=%q", result.check, result.details)
+	}
+}
+
+func TestAnalyzePHPContentMultipleCallUserFuncScansLaterTarget(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "multi-cuf.php")
+	content := "<?php\n" +
+		"call_user_func($formatter, \"\\u{2026}\" . \"\\u{2014}\" . \"\\u{00a0}\"); call_user_func(\"\\u{63}\" . \"\\u{75}\" . \"\\u{72}\" . \"\\u{6c}\", \"x\");\n"
+	_ = os.WriteFile(path, []byte(content), 0644)
+
+	result := analyzePHPContent(path)
+	if result.check != "suspicious_php_content" {
+		t.Errorf("later obfuscated call_user_func target on same line must alert; got check=%q details=%q", result.check, result.details)
+	}
+}
+
 func TestAnalyzePHPContentTwoIndicatorsEscalateToCritical(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "dropper.php")

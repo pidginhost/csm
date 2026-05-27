@@ -258,23 +258,30 @@ func analyzePHPContent(path string) phpAnalysisResult {
 	// (inc/wpml_zip.php) which declares 20+ ZIP-format signature constants
 	// as hex literals ("\x50\x4b\x03\x04" etc.) and makes a single benign
 	// call_user_func(self::$temp) call to invoke a temp-file factory.
-	// Match the obfuscation on the call_user_func line itself.
+	// Match the obfuscation on the callable target argument itself.
 	if strings.Contains(contentLower, "call_user_func") {
+		foundCallUserFuncObfuscation := false
 		for _, line := range strings.Split(content, "\n") {
 			if !strings.Contains(strings.ToLower(line), "call_user_func") {
 				continue
 			}
-			// PHP 7+ accepts both "\xNN" hex and "\u{NN}" unicode-codepoint
-			// escapes inside double-quoted strings. Treat them as
-			// equivalent obfuscation forms so an attacker cannot bypass
-			// the detector by swapping syntax.
-			lineHex := countOccurrences(line, `"\x`) + countOccurrences(line, `"\u{`)
-			lineConcat := countOccurrences(line, `" . "`) + countOccurrences(line, `"."`)
-			// Typical shortest obfuscated name is 3-4 bytes ("exec", "curl",
-			// "eval"); require >=3 escapes AND >=2 concatenations on the
-			// same call_user_func line.
-			if lineHex >= 3 && lineConcat >= 2 {
-				indicators = append(indicators, "call_user_func with obfuscated function names")
+			for _, targetArg := range phpCallUserFuncTargetArgs(line) {
+				// PHP 7+ accepts both "\xNN" hex and "\u{NN}" unicode-codepoint
+				// escapes inside double-quoted strings. Treat them as
+				// equivalent obfuscation forms so an attacker cannot bypass
+				// the detector by swapping syntax.
+				lineHex := countOccurrences(targetArg, `"\x`) + countOccurrences(targetArg, `"\u{`)
+				lineConcat := countOccurrences(targetArg, `" . "`) + countOccurrences(targetArg, `"."`)
+				// Typical shortest obfuscated name is 3-4 bytes ("exec", "curl",
+				// "eval"); require >=3 escapes AND >=2 concatenations on the
+				// call target argument.
+				if lineHex >= 3 && lineConcat >= 2 {
+					indicators = append(indicators, "call_user_func with obfuscated function names")
+					foundCallUserFuncObfuscation = true
+					break
+				}
+			}
+			if foundCallUserFuncObfuscation {
 				break
 			}
 		}
@@ -529,6 +536,97 @@ func countOccurrences(s, substr string) int {
 		offset += idx + len(substr)
 	}
 	return count
+}
+
+func phpCallUserFuncTargetArgs(line string) []string {
+	lower := strings.ToLower(line)
+	var args []string
+	for _, name := range []string{"call_user_func_array", "call_user_func"} {
+		searchFrom := 0
+		for {
+			pos := strings.Index(lower[searchFrom:], name)
+			if pos < 0 {
+				break
+			}
+			pos += searchFrom
+			next := pos + len(name)
+			searchFrom = next
+			if !isPHPFuncNameBoundary(line, pos, next) {
+				continue
+			}
+			i := skipPHPSpaceString(line, next)
+			if i >= len(line) || line[i] != '(' {
+				continue
+			}
+			if arg, ok := firstPHPCallArgument(line, i+1); ok {
+				args = append(args, arg)
+			}
+		}
+	}
+	return args
+}
+
+func isPHPFuncNameBoundary(s string, start, end int) bool {
+	if start > 0 {
+		prev := s[start-1]
+		if isIdentCont(prev) || prev == '>' || prev == ':' {
+			return false
+		}
+	}
+	return end >= len(s) || !isIdentCont(s[end])
+}
+
+func skipPHPSpaceString(s string, i int) int {
+	for i < len(s) && isPHPSpace(s[i]) {
+		i++
+	}
+	return i
+}
+
+func firstPHPCallArgument(s string, start int) (string, bool) {
+	start = skipPHPSpaceString(s, start)
+	i := start
+	depth := 0
+	var quote byte
+	escaped := false
+	for i < len(s) {
+		c := s[i]
+		if quote != 0 {
+			if escaped {
+				escaped = false
+				i++
+				continue
+			}
+			if c == '\\' {
+				escaped = true
+				i++
+				continue
+			}
+			if c == quote {
+				quote = 0
+			}
+			i++
+			continue
+		}
+
+		switch c {
+		case '"', '\'':
+			quote = c
+		case '(', '[', '{':
+			depth++
+		case ')':
+			if depth == 0 {
+				return s[start:i], true
+			}
+			depth--
+		case ',':
+			if depth == 0 {
+				return s[start:i], true
+			}
+		}
+		i++
+	}
+	return "", false
 }
 
 // containsStandaloneFunc reports whether content contains an occurrence of
