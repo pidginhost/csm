@@ -6,12 +6,11 @@ import (
 	"io"
 	"net"
 	"sync"
+	"syscall"
 	"time"
 )
 
-// ErrWorkerClosed means the worker hung up mid-request. The daemon-side
-// supervisor is expected to restart the worker; the client will dial
-// again on the next call.
+// ErrWorkerClosed means the worker hung up mid-request.
 var ErrWorkerClosed = errors.New("yaraipc: worker connection closed")
 
 // Dialer returns a fresh net.Conn to the worker. Decoupled from
@@ -69,12 +68,21 @@ func (c *Client) dropLocked() error {
 	return err
 }
 
-// roundTrip sends req and returns the response frame. On I/O error or
-// EOF the connection is dropped so the next call reconnects.
+// roundTrip sends req and returns the response frame. A closed socket is
+// retried once because the server may intentionally close idle
+// connections after their message budget is spent.
 func (c *Client) roundTrip(req Frame) (Frame, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	resp, err := c.roundTripLocked(req)
+	if err == nil || !isRetryableClosedConn(err) {
+		return resp, err
+	}
+	return c.roundTripLocked(req)
+}
+
+func (c *Client) roundTripLocked(req Frame) (Frame, error) {
 	conn, err := c.ensureConnLocked()
 	if err != nil {
 		return Frame{}, err
@@ -98,6 +106,16 @@ func (c *Client) roundTrip(req Frame) (Frame, error) {
 		return Frame{}, fmt.Errorf("yaraipc: worker: %s", resp.Error)
 	}
 	return resp, nil
+}
+
+func isRetryableClosedConn(err error) bool {
+	return errors.Is(err, ErrWorkerClosed) ||
+		errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, net.ErrClosed) ||
+		errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.ECONNABORTED)
 }
 
 // ScanFile is the daemon-side shim for OpScanFile.

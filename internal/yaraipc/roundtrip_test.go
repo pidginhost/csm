@@ -61,15 +61,16 @@ func (f *fakeHandler) Ping() (PingResult, error) {
 	return f.pingRes, f.pingErr
 }
 
-// startServer brings up a real Unix-socket listener under t.TempDir so
-// connection lifecycle (dial, EOF, reconnect) is exercised as it will be
-// in production.
 // startServer brings up a real Unix-socket listener so the dial/EOF/
 // reconnect path is exercised the same way as in production. The socket
 // lives under /tmp via a short os.MkdirTemp because macOS caps
 // sun_path at 104 bytes and t.TempDir() paths (/var/folders/...) push
 // right up against that limit once the test name is appended.
 func startServer(t *testing.T, h Handler) (socketPath string, shutdown func()) {
+	return startServerWithOptions(t, h, ServeOptions{})
+}
+
+func startServerWithOptions(t *testing.T, h Handler, opts ServeOptions) (socketPath string, shutdown func()) {
 	t.Helper()
 	dir, err := os.MkdirTemp("/tmp", "y")
 	if err != nil {
@@ -87,7 +88,7 @@ func startServer(t *testing.T, h Handler) (socketPath string, shutdown func()) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = Serve(ctx, ln, h, ServeOptions{})
+		_ = Serve(ctx, ln, h, opts)
 	}()
 
 	return socketPath, func() {
@@ -272,9 +273,8 @@ func TestClientReconnectsAfterServerClose(t *testing.T) {
 		<-done
 	}()
 
-	// The first post-restart call may see the stale conn and error on
-	// write. The retry after drop-and-redial must succeed; this is the
-	// contract the supervisor relies on.
+	// Depending on when the kernel reports the stale socket, reconnect
+	// may happen inside this call or on the next attempt.
 	var reconnectErr error
 	for attempt := 0; attempt < 2; attempt++ {
 		res, err := c.Ping()
@@ -294,28 +294,8 @@ func TestClientReconnectsAfterServerClose(t *testing.T) {
 // peer cannot pin one goroutine forever and starve the worker pool.
 func TestServerEnforcesMaxMessagesPerConn(t *testing.T) {
 	h := &fakeHandler{}
-	dir, err := os.MkdirTemp("/tmp", "y")
-	if err != nil {
-		t.Fatalf("mkdir temp: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	socketPath := filepath.Join(dir, "cap.sock")
-
-	ln, err := net.Listen("unix", socketPath)
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_ = Serve(ctx, ln, h, ServeOptions{MaxMessagesPerConn: 2})
-	}()
-	defer func() {
-		cancel()
-		_ = ln.Close()
-		<-done
-	}()
+	socketPath, stop := startServerWithOptions(t, h, ServeOptions{MaxMessagesPerConn: 2})
+	defer stop()
 
 	conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
 	if err != nil {
@@ -337,6 +317,32 @@ func TestServerEnforcesMaxMessagesPerConn(t *testing.T) {
 		if _, rerr := ReadFrame(conn); rerr == nil {
 			t.Fatal("expected server to close conn after MaxMessagesPerConn budget reached")
 		}
+	}
+}
+
+func TestClientRetriesAfterServerMessageBudgetClose(t *testing.T) {
+	h := &fakeHandler{pingRes: PingResult{Alive: true, RuleCount: 9}}
+	socketPath, stop := startServerWithOptions(t, h, ServeOptions{MaxMessagesPerConn: 2})
+	defer stop()
+
+	c := NewClient(socketPath, 2*time.Second)
+	defer func() { _ = c.Close() }()
+
+	for i := 0; i < 5; i++ {
+		res, err := c.Ping()
+		if err != nil {
+			t.Fatalf("Ping %d: %v", i, err)
+		}
+		if !res.Alive || res.RuleCount != 9 {
+			t.Fatalf("Ping %d result: got %+v", i, res)
+		}
+	}
+
+	h.mu.Lock()
+	got := h.pingCount
+	h.mu.Unlock()
+	if got != 5 {
+		t.Fatalf("handler saw %d pings, want 5", got)
 	}
 }
 
