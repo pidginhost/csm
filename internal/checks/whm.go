@@ -198,24 +198,63 @@ func readTailWindow(f *os.File, size int64, maxLines int) ([]byte, error) {
 	return data, nil
 }
 
+// maxLogLineBytes is the per-line cap for log tailers. Anything above
+// this is truncated; the reader still advances past the line so we
+// keep consuming subsequent lines instead of stopping at the first
+// oversized record (which is what bufio.Scanner did before).
+const maxLogLineBytes = 256 * 1024
+
 func readAllLines(r io.Reader, maxLines int) []string {
 	if maxLines <= 0 {
 		return nil
 	}
 
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
-
+	br := bufio.NewReaderSize(r, 64*1024)
 	var lines []string
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
+	for {
+		line, _, err := readBoundedLineLog(br, maxLogLineBytes)
+		if len(line) > 0 {
+			lines = append(lines, strings.TrimRight(line, "\n"))
+		}
+		if err != nil {
+			break
+		}
 	}
 
-	// Return last N lines
 	if len(lines) > maxLines {
 		return lines[len(lines)-maxLines:]
 	}
 	return lines
+}
+
+// readBoundedLineLog reads up to and including the next '\n'. If the
+// line exceeds maxBytes the returned data is truncated to maxBytes and
+// the reader is advanced past the line's terminating newline so framing
+// stays intact. Returns the same error semantics as
+// bufio.Reader.ReadString.
+func readBoundedLineLog(r *bufio.Reader, maxBytes int) (string, bool, error) {
+	var b strings.Builder
+	truncated := false
+	for {
+		chunk, err := r.ReadSlice('\n')
+		if len(chunk) > 0 {
+			switch {
+			case truncated:
+				// drain remainder so the next line is well-framed
+			case b.Len()+len(chunk) <= maxBytes:
+				b.Write(chunk)
+			default:
+				if room := maxBytes - b.Len(); room > 0 {
+					b.Write(chunk[:room])
+				}
+				truncated = true
+			}
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		return b.String(), truncated, err
+	}
 }
 
 func truncateString(s string, maxLen int) string {

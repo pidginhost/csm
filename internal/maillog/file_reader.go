@@ -3,11 +3,19 @@ package maillog
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 )
+
+// maxLogLineBytes caps a single mail-log line. Real syslog lines top
+// out around 8 KB; 64 KB is generous yet bounded. Without this cap a
+// malformed source could ship a multi-gigabyte "line" and turn the
+// reader into an OOM vector.
+const maxLogLineBytes = 64 * 1024
 
 // FileReader tails a single log file. It uses a 2-second polling loop
 // because rsyslog/syslog-ng don't reliably trigger inotify events on
@@ -32,6 +40,36 @@ func (r *FileReader) Run(ctx context.Context) (<-chan Line, error) {
 	out := make(chan Line, 64)
 	go r.loop(ctx, out, f, reader, ino)
 	return out, nil
+}
+
+// readBoundedLine reads up to and including the next '\n'. If the line
+// exceeds maxBytes, the returned data is truncated to maxBytes, the
+// reader is advanced past the line's terminating newline so framing
+// stays intact for the next call, and truncated=true is returned.
+// Returns the same error semantics as bufio.Reader.ReadString.
+func readBoundedLine(r *bufio.Reader, maxBytes int) (string, bool, error) {
+	var b strings.Builder
+	truncated := false
+	for {
+		chunk, err := r.ReadSlice('\n')
+		if len(chunk) > 0 {
+			switch {
+			case truncated:
+				// drain remainder to align on next newline
+			case b.Len()+len(chunk) <= maxBytes:
+				b.Write(chunk)
+			default:
+				if room := maxBytes - b.Len(); room > 0 {
+					b.Write(chunk[:room])
+				}
+				truncated = true
+			}
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		return b.String(), truncated, err
+	}
 }
 
 func (r *FileReader) open() (*os.File, *bufio.Reader, uint64, error) {
@@ -70,9 +108,12 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, f *os.File, read
 			return
 		case <-poll.C:
 			for {
-				line, err := reader.ReadString('\n')
+				line, truncated, err := readBoundedLine(reader, maxLogLineBytes)
 				if err != nil {
 					break
+				}
+				if truncated {
+					fmt.Fprintf(os.Stderr, "maillog file_reader %s: oversized line truncated at %d bytes\n", r.path, maxLogLineBytes)
 				}
 				select {
 				case out <- Line{Source: "file", Message: line}:

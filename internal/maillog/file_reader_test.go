@@ -1,12 +1,76 @@
 package maillog
 
 import (
+	"bufio"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+// TestReadBoundedLine_TruncatesOversizedLine: a single line larger
+// than maxBytes must yield exactly maxBytes of content with the
+// truncated flag set, and the reader must skip to the next line so
+// framing stays intact. Without this cap an attacker-controlled log
+// source could ship a multi-GB line and OOM the daemon.
+func TestReadBoundedLine_TruncatesOversizedLine(t *testing.T) {
+	max := 16
+	huge := strings.Repeat("a", max*4) + "\nnext\n"
+	r := bufio.NewReader(strings.NewReader(huge))
+
+	got, truncated, err := readBoundedLine(r, max)
+	if err != nil {
+		t.Fatalf("err on first line: %v", err)
+	}
+	if !truncated {
+		t.Error("truncated flag should be true for oversized line")
+	}
+	if len(got) > max {
+		t.Errorf("returned %d bytes, want <= %d", len(got), max)
+	}
+	next, _, err := readBoundedLine(r, max)
+	if err != nil {
+		t.Fatalf("err on second line: %v", err)
+	}
+	if next != "next\n" {
+		t.Errorf("next line = %q, want %q (reader frame misaligned)", next, "next\n")
+	}
+}
+
+// TestReadBoundedLine_PassesNormalLine: a normal-size line passes
+// through unchanged with truncated=false.
+func TestReadBoundedLine_PassesNormalLine(t *testing.T) {
+	r := bufio.NewReader(strings.NewReader("hello world\n"))
+	got, truncated, err := readBoundedLine(r, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if truncated {
+		t.Error("normal line should not be marked truncated")
+	}
+	if got != "hello world\n" {
+		t.Errorf("got %q, want %q", got, "hello world\n")
+	}
+}
+
+// TestReadBoundedLine_EOFWithoutNewline: a final line that lacks a
+// terminating newline returns io.EOF with the data so far.
+func TestReadBoundedLine_EOFWithoutNewline(t *testing.T) {
+	r := bufio.NewReader(strings.NewReader("trailing"))
+	got, truncated, err := readBoundedLine(r, 1024)
+	if err != io.EOF {
+		t.Errorf("err = %v, want EOF", err)
+	}
+	if truncated {
+		t.Error("under-cap trailing data should not be truncated")
+	}
+	if got != "trailing" {
+		t.Errorf("got %q, want %q", got, "trailing")
+	}
+}
 
 func TestFileReader_StreamsLines(t *testing.T) {
 	dir := t.TempDir()
