@@ -53,7 +53,59 @@ func (r *ProcReader) Read(pid int) (processEntry, error) {
 	if target, ok := readlinkWithDeadline(filepath.Join(dir, "exe"), r.perFileDeadline); ok {
 		e.Exe = target
 	}
+	if data, ok := readFileWithDeadline(filepath.Join(dir, "stat"), r.perFileDeadline); ok {
+		if t, ok := r.parseStartedAt(data); ok {
+			e.StartedAt = t
+		}
+	}
 	return e, nil
+}
+
+// procStatStartTime extracts field 22 of /proc/<pid>/stat (starttime in
+// clock ticks since boot). Field positions are deterministic except
+// that the second field (comm) is parenthesized and may contain
+// arbitrary bytes including spaces -- so we anchor on the final ")"
+// before splitting the rest.
+func procStatStartTime(data []byte) (int64, bool) {
+	end := bytes.LastIndexByte(data, ')')
+	if end < 0 || end+1 >= len(data) {
+		return 0, false
+	}
+	rest := strings.TrimSpace(string(data[end+1:]))
+	fields := strings.Fields(rest)
+	// rest starts at field 3 (state); starttime is field 22, i.e. index 19 in rest.
+	const starttimeIdx = 19
+	if len(fields) <= starttimeIdx {
+		return 0, false
+	}
+	v, err := strconv.ParseInt(fields[starttimeIdx], 10, 64)
+	if err != nil || v < 0 {
+		return 0, false
+	}
+	return v, true
+}
+
+// parseStartedAt converts /proc/<pid>/stat's starttime field into an
+// absolute time using the host's boot time. Returns (zero, false) on
+// any parse or btime resolution failure so callers leave the field
+// unset rather than emitting bogus timestamps.
+func (r *ProcReader) parseStartedAt(stat []byte) (time.Time, bool) {
+	ticks, ok := procStatStartTime(stat)
+	if !ok {
+		return time.Time{}, false
+	}
+	boot, ok := r.bootTime()
+	if !ok {
+		return time.Time{}, false
+	}
+	hz := clockTicksPerSecond()
+	if hz <= 0 {
+		return time.Time{}, false
+	}
+	sec := ticks / hz
+	rem := ticks % hz
+	ns := rem * int64(time.Second) / hz
+	return boot.Add(time.Duration(sec)*time.Second + time.Duration(ns)), true
 }
 
 // readFileWithDeadline reads up to 4 KiB from path; returns (data, true) on

@@ -244,3 +244,74 @@ func TestEnricherDoesNotBlockProducer(t *testing.T) {
 		t.Errorf("producer was blocked; took %v", took)
 	}
 }
+
+// TestEnricherRejectsPIDReuseByStartTime: when the detector supplies
+// an event start time and /proc reports a different start time for the
+// same PID, the enricher must drop the finding instead of caching the
+// new process under the old detector's event.
+func TestEnricherRejectsPIDReuseByStartTime(t *testing.T) {
+	c := newTestCache(8, 0)
+	detected := time.Unix(1700000000, 0)
+	reused := detected.Add(time.Hour)
+	reader := procReaderFunc(func(pid int) (processEntry, error) {
+		return processEntry{
+			PID: pid, Comm: "ncat", UID: 1001, UIDKnown: true,
+			ProcRead: true, StartedAt: reused,
+		}, nil
+	})
+	e := NewEnricher(c, reader, EnricherConfig{Workers: 1, QueueCap: 4})
+	e.Start()
+	defer e.Stop()
+
+	if !e.Enqueue(EnrichRequest{
+		PID: 1234, UID: 1001, UIDKnown: true, Comm: "ncat", StartedAt: detected,
+	}) {
+		t.Fatal("enqueue failed")
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if e.Stats().Stale > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, ok := c.Get(1234); ok {
+		t.Fatal("PID-reuse mismatch must not be cached")
+	}
+	if e.Stats().Stale == 0 {
+		t.Fatalf("expected stale counter to move; stats=%+v", e.Stats())
+	}
+}
+
+// TestEnricherAcceptsMatchingStartTime: when /proc reports a start
+// time inside the tolerance window, caching proceeds normally.
+func TestEnricherAcceptsMatchingStartTime(t *testing.T) {
+	c := newTestCache(8, 0)
+	detected := time.Unix(1700000000, 0)
+	matching := detected.Add(200 * time.Millisecond)
+	reader := procReaderFunc(func(pid int) (processEntry, error) {
+		return processEntry{
+			PID: pid, Comm: "ncat", UID: 1001, UIDKnown: true,
+			ProcRead: true, StartedAt: matching,
+		}, nil
+	})
+	e := NewEnricher(c, reader, EnricherConfig{Workers: 1, QueueCap: 4})
+	e.Start()
+	defer e.Stop()
+
+	if !e.Enqueue(EnrichRequest{
+		PID: 1234, UID: 1001, UIDKnown: true, Comm: "ncat", StartedAt: detected,
+	}) {
+		t.Fatal("enqueue failed")
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := c.Get(1234); ok {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, ok := c.Get(1234); !ok {
+		t.Fatalf("matching start time should be cached; stats=%+v", e.Stats())
+	}
+}
