@@ -35,43 +35,62 @@ var compoundPostExploitNetworkChecks = map[string]struct{}{
 }
 
 // maybeReclassifyKind upgrades inc.Kind in place when the new finding
-// classifies as a stronger Kind, or when the timeline now shows a
-// compound pattern that the per-finding classifier cannot see.
-// Compound rules at this time: webshell + outbound C2 connection ->
-// PostExploitProcess. Idempotent: calling with weaker findings is a
-// no-op.
+// classifies as a stronger Kind, or when the incident's sticky
+// CompoundFlags plus the new finding cover a compound pattern that the
+// per-finding classifier cannot see. Compound rules at this time:
+// webshell + outbound C2 connection -> PostExploitProcess. Idempotent:
+// calling with weaker findings is a no-op.
+//
+// CompoundFlags are mutated here so callers do not need a separate
+// pass; they survive timeline trimming so an early webshell still
+// arms the rule when a much later C2 finding arrives.
 func maybeReclassifyKind(inc *Incident, f alert.Finding) {
 	if inc == nil {
 		return
 	}
+	// Hydrate sticky flags from the current timeline so incidents
+	// restored from bbolt (predating sticky flags) or built directly
+	// in tests still arm the compound rule. Timeline scan is bounded
+	// by maxIncidentTimeline so the cost is constant.
+	hydrateCompoundFlagsFromTimeline(&inc.CompoundFlags, inc.Timeline)
+	updateCompoundFlags(&inc.CompoundFlags, f.Check)
 	if newKind := ClassifyKind(f); kindRank[newKind] > kindRank[inc.Kind] {
 		inc.Kind = newKind
 	}
-	if kindRank[KindPostExploitProcess] > kindRank[inc.Kind] && hasCompoundPostExploit(inc.Timeline, f) {
+	if kindRank[KindPostExploitProcess] > kindRank[inc.Kind] && inc.CompoundFlags.Webshell && inc.CompoundFlags.C2 {
 		inc.Kind = KindPostExploitProcess
 	}
 }
 
-// hasCompoundPostExploit reports whether the union of timeline
-// events plus the new finding covers BOTH a webshell-style signal
-// and an outbound-C2 / backdoor-port signal. Either appearing alone
-// is not enough; the combination is the active-attack indicator.
-func hasCompoundPostExploit(events []IncidentEvent, f alert.Finding) bool {
-	seenWebshell := false
-	seenC2 := false
-	checkScan := func(check string) {
-		check = strings.ToLower(strings.TrimSpace(check))
-		if _, ok := compoundPostExploitWebChecks[check]; ok {
-			seenWebshell = true
-			return
-		}
-		if _, ok := compoundPostExploitNetworkChecks[check]; ok {
-			seenC2 = true
-		}
+// hydrateCompoundFlagsFromTimeline OR-merges timeline-derived signals
+// into flags. Used as a one-shot migration for legacy/persisted
+// incidents that have webshell or C2 events in their timeline but no
+// CompoundFlags yet. Trimmed timelines may miss events, but anything
+// still present remains a valid signal.
+func hydrateCompoundFlagsFromTimeline(flags *CompoundFlags, events []IncidentEvent) {
+	if flags == nil || (flags.Webshell && flags.C2) {
+		return
 	}
 	for _, ev := range events {
-		checkScan(ev.Check)
+		updateCompoundFlags(flags, ev.Check)
+		if flags.Webshell && flags.C2 {
+			return
+		}
 	}
-	checkScan(f.Check)
-	return seenWebshell && seenC2
+}
+
+// updateCompoundFlags sets the webshell / C2 flag based on a Finding's
+// check name. Once true a flag stays true so reclassify decisions are
+// not silently disarmed by later trimming.
+func updateCompoundFlags(flags *CompoundFlags, check string) {
+	if flags == nil {
+		return
+	}
+	check = strings.ToLower(strings.TrimSpace(check))
+	if _, ok := compoundPostExploitWebChecks[check]; ok {
+		flags.Webshell = true
+	}
+	if _, ok := compoundPostExploitNetworkChecks[check]; ok {
+		flags.C2 = true
+	}
 }

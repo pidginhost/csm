@@ -64,6 +64,20 @@ type Incident struct {
 	// ClosedBy attributes the close. "operator" for SetStatus calls,
 	// "auto:stale" for CloseStale. Empty for active incidents.
 	ClosedBy string `json:"closed_by,omitempty"`
+	// CompoundFlags carries sticky bits used by the timeline-aware
+	// reclassifier. Once set, they survive timeline trimming so an
+	// early webshell or C2 signal still drives the compound rule when
+	// the matching counterpart arrives much later.
+	CompoundFlags CompoundFlags `json:"compound_flags"`
+}
+
+// CompoundFlags records the union of compound-pattern signals an
+// Incident has ever observed. Fields are sticky once true; they are
+// not derived from the (possibly trimmed) timeline so reclassify is
+// not silently disarmed by head+tail eviction.
+type CompoundFlags struct {
+	Webshell bool `json:"webshell,omitempty"`
+	C2       bool `json:"c2,omitempty"`
 }
 
 // MarshalJSON renders Severity as its uppercase string form

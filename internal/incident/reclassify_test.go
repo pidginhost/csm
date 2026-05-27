@@ -2,6 +2,7 @@ package incident
 
 import (
 	"testing"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/processctx"
@@ -95,6 +96,91 @@ func TestMaybeReclassifyKind_CompoundRecognizesOfflineObfuscatedPHP(t *testing.T
 	maybeReclassifyKind(inc, alert.Finding{Check: "backdoor_port_outbound", SourceIP: "203.0.113.5"})
 	if inc.Kind != KindPostExploitProcess {
 		t.Errorf("Kind = %q, want %q (offline obfuscated_php + outbound backdoor should promote)", inc.Kind, KindPostExploitProcess)
+	}
+}
+
+// TestMaybeReclassifyKind_CompoundSurvivesTimelineEviction: the
+// compound webshell+C2 detection must not depend on the webshell
+// IncidentEvent still being in the timeline. Long-running incidents
+// trim the middle of the timeline (head+tail retention) so an early
+// webshell can be evicted before the C2 finding arrives. Sticky
+// compound markers on the Incident itself ensure reclassify still
+// promotes the Kind.
+func TestMaybeReclassifyKind_CompoundSurvivesTimelineEviction(t *testing.T) {
+	inc := &Incident{
+		Kind:          KindWebAccountCompromise,
+		CompoundFlags: CompoundFlags{Webshell: true},
+		Timeline:      nil,
+	}
+	maybeReclassifyKind(inc, alert.Finding{Check: "c2_connection", SourceIP: "203.0.113.5"})
+	if inc.Kind != KindPostExploitProcess {
+		t.Errorf("Kind = %q, want %q (sticky webshell marker + new C2 should promote even with empty timeline)", inc.Kind, KindPostExploitProcess)
+	}
+}
+
+// TestCorrelator_CompoundSurvivesTimelineCap drives the correlator end
+// to end: an early webshell finding is evicted by timeline trimming
+// after enough subsequent noise, then a C2 finding arrives. Without
+// sticky compound markers the incident kind would stay weak.
+func TestCorrelator_CompoundSurvivesTimelineCap(t *testing.T) {
+	c := NewCorrelator(CorrelatorConfig{OpenThreshold: 1})
+	base := time.Unix(1_700_000_000, 0)
+	c.now = func() time.Time { return base }
+
+	mkFinding := func(check string, i int) alert.Finding {
+		return alert.Finding{
+			Check:     check,
+			Severity:  alert.Warning,
+			TenantID:  "alice",
+			Timestamp: base.Add(time.Duration(i) * time.Second),
+		}
+	}
+
+	id, _, err := c.OnFinding(mkFinding("wp_login_bruteforce", 0))
+	if err != nil {
+		t.Fatalf("OnFinding opener: %v", err)
+	}
+
+	// Push 250 wp_login_bruteforce events so the webshell lands at
+	// timeline slot 251 (beyond the head-retain half once trimmed).
+	for i := 1; i <= 250; i++ {
+		if _, _, err := c.OnFinding(mkFinding("wp_login_bruteforce", i)); err != nil {
+			t.Fatalf("OnFinding noise %d: %v", i, err)
+		}
+	}
+	if _, _, err := c.OnFinding(mkFinding("webshell", 251)); err != nil {
+		t.Fatalf("OnFinding webshell: %v", err)
+	}
+
+	// Push enough more noise to drive trimming so the webshell slot
+	// falls into the elided middle.
+	for i := 252; i <= maxIncidentTimeline+50; i++ {
+		if _, _, err := c.OnFinding(mkFinding("wp_login_bruteforce", i)); err != nil {
+			t.Fatalf("OnFinding noise %d: %v", i, err)
+		}
+	}
+
+	// Confirm webshell event is no longer present in timeline.
+	snap, ok := c.Get(id)
+	if !ok {
+		t.Fatal("incident missing")
+	}
+	for _, ev := range snap.Timeline {
+		if ev.Check == "webshell" {
+			t.Fatalf("test precondition broken: webshell event still in timeline (len=%d); pick larger noise count", len(snap.Timeline))
+		}
+	}
+
+	// Now push the C2 finding -- reclassify must still promote.
+	if _, _, err := c.OnFinding(mkFinding("c2_connection", maxIncidentTimeline+100)); err != nil {
+		t.Fatalf("OnFinding c2: %v", err)
+	}
+	snap, ok = c.Get(id)
+	if !ok {
+		t.Fatal("incident missing after c2")
+	}
+	if snap.Kind != KindPostExploitProcess {
+		t.Errorf("Kind = %q after evicted-webshell + C2, want %q", snap.Kind, KindPostExploitProcess)
 	}
 }
 
