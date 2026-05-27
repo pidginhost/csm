@@ -3170,6 +3170,28 @@ func TestCSPScriptPolicyStrict(t *testing.T) {
 	}
 }
 
+func TestCSPStylePolicyStrict(t *testing.T) {
+	csp := webUISecurityHeader(t, "Content-Security-Policy")
+	directives := parseCSPDirectives(csp)
+	styleSrc, ok := directives["style-src"]
+	if !ok {
+		t.Fatalf("CSP header missing style-src directive: %q", csp)
+	}
+	if len(styleSrc) != 1 || styleSrc[0] != "'self'" {
+		t.Fatalf("style-src = %q, want exactly ['self']", strings.Join(styleSrc, " "))
+	}
+
+	for _, name := range []string{"style-src", "style-src-elem", "style-src-attr"} {
+		if sources, ok := directives[name]; ok {
+			assertCSPDirectiveHasNoStyleRelaxation(t, name, sources)
+		}
+	}
+
+	for _, p := range webUISourceFiles(t, "../../ui/templates/*.html") {
+		assertNoInlineStyleElements(t, p)
+	}
+}
+
 func webUISecurityHeader(t *testing.T, name string) string {
 	t.Helper()
 
@@ -3212,6 +3234,17 @@ func assertCSPDirectiveHasNoScriptRelaxation(t *testing.T, name string, sources 
 	}
 }
 
+func assertCSPDirectiveHasNoStyleRelaxation(t *testing.T, name string, sources []string) {
+	t.Helper()
+
+	for _, source := range sources {
+		switch source {
+		case "'unsafe-inline'", "'unsafe-hashes'":
+			t.Fatalf("%s must not allow %s", name, source)
+		}
+	}
+}
+
 func assertNoInlineExecutableScripts(t *testing.T, path string) {
 	t.Helper()
 
@@ -3235,6 +3268,30 @@ func assertNoInlineExecutableScripts(t *testing.T, path string) {
 			} else if !isAllowedNonExecutableScriptType(attrs["type"]) {
 				t.Errorf("%s contains inline executable <script> tag", path)
 			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(root)
+}
+
+func assertNoInlineStyleElements(t *testing.T, path string) {
+	t.Helper()
+
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := html.Parse(strings.NewReader(string(body)))
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode && strings.EqualFold(n.Data, "style") {
+			t.Errorf("%s contains inline <style> tag", path)
 		}
 		for c := n.FirstChild; c != nil; c = c.NextSibling {
 			walk(c)
