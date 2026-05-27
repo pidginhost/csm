@@ -203,7 +203,9 @@ func TestUpstreamSource_CacheEvictsExpiredEntries(t *testing.T) {
 	src.maxCacheEntries = 16
 	for i := 0; i < 100; i++ {
 		ip := fmt.Sprintf("198.51.100.%d", i%200)
-		_, _ = src.Score(context.Background(), ip)
+		if _, err := src.Score(context.Background(), ip); err != nil {
+			t.Fatalf("Score(%s): %v", ip, err)
+		}
 	}
 	if got := src.cacheLen(); got > 16 {
 		t.Fatalf("cache grew to %d entries, want <= 16", got)
@@ -227,13 +229,95 @@ func TestUpstreamSource_CircuitBreakerSkipsCallsAfterFailures(t *testing.T) {
 	src.breakerCooldown = time.Hour
 
 	for i := 0; i < 3; i++ {
-		_, _ = src.Score(context.Background(), fmt.Sprintf("198.51.100.%d", i))
+		ip := fmt.Sprintf("198.51.100.%d", i)
+		if _, err := src.Score(context.Background(), ip); err == nil {
+			t.Fatalf("expected failure for %s", ip)
+		}
 	}
 	tripHits := atomic.LoadInt32(&hits)
 	for i := 0; i < 10; i++ {
-		_, _ = src.Score(context.Background(), fmt.Sprintf("198.51.100.%d", 100+i))
+		ip := fmt.Sprintf("198.51.100.%d", 100+i)
+		if _, err := src.Score(context.Background(), ip); err == nil {
+			t.Fatalf("expected breaker error for %s", ip)
+		}
 	}
 	if atomic.LoadInt32(&hits) != tripHits {
 		t.Fatalf("breaker did not trip: pre=%d post=%d (each Score should short-circuit)", tripHits, atomic.LoadInt32(&hits))
+	}
+}
+
+func TestUpstreamSource_CircuitBreakerAllowsSingleCooldownProbe(t *testing.T) {
+	var hits int32
+	var phase int32
+	releaseProbe := make(chan struct{})
+	probeEntered := make(chan struct{}, 16)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		if atomic.LoadInt32(&phase) == 0 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		select {
+		case probeEntered <- struct{}{}:
+		default:
+		}
+		<-releaseProbe
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"ip": r.URL.Query().Get("ip"), "score": 50,
+		})
+	}))
+	defer srv.Close()
+
+	src := NewUpstreamSource(UpstreamConfig{URL: srv.URL, CacheTTL: time.Minute, Timeout: time.Second})
+	src.breakerTrip = 1
+	src.breakerCooldown = 10 * time.Millisecond
+
+	if _, err := src.Score(context.Background(), "198.51.100.1"); err == nil {
+		t.Fatal("expected first upstream failure to trip breaker")
+	}
+	atomic.StoreInt32(&phase, 1)
+	time.Sleep(2 * src.breakerCooldown)
+
+	errs := make(chan error, 8)
+	for i := 0; i < cap(errs); i++ {
+		go func(i int) {
+			_, err := src.Score(context.Background(), fmt.Sprintf("198.51.100.%d", 20+i))
+			errs <- err
+		}(i)
+	}
+
+	select {
+	case <-probeEntered:
+	case <-time.After(time.Second):
+		close(releaseProbe)
+		t.Fatal("expected one cooldown probe to reach upstream")
+	}
+	blocked := 0
+	for blocked < cap(errs)-1 {
+		select {
+		case err := <-errs:
+			if err == nil {
+				close(releaseProbe)
+				t.Fatal("unexpected extra probe completed before the first probe was released")
+			}
+			if err.Error() != "upstream breaker probe already running" {
+				close(releaseProbe)
+				t.Fatalf("unexpected breaker error: %v", err)
+			}
+			blocked++
+		case <-time.After(time.Second):
+			close(releaseProbe)
+			t.Fatalf("only %d callers were blocked during half-open probe, want %d", blocked, cap(errs)-1)
+		}
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got := atomic.LoadInt32(&hits); got != 2 {
+		close(releaseProbe)
+		t.Fatalf("cooldown allowed %d upstream calls, want exactly 1 probe after initial failure", got-1)
+	}
+	close(releaseProbe)
+
+	if err := <-errs; err != nil {
+		t.Fatalf("cooldown probe returned error: %v", err)
 	}
 }

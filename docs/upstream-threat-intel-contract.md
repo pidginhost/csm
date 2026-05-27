@@ -72,6 +72,15 @@ CSM caches each (ip, score) pair locally for `cache_ttl_min` minutes
 does not contact the upstream. Bursts of detection events that touch
 the same IP within the TTL window produce a single upstream call.
 
+The local cache is capped at 10,000 IPs. When the cap is reached, CSM
+prunes expired entries first and then removes the entry with the nearest
+expiry time until the cache is back under the cap.
+
+After repeated upstream failures, CSM opens a short circuit breaker and
+temporarily treats the source as "no signal." When the cooldown expires,
+only one probe request is allowed through; concurrent callers keep using
+the fail-open path until that probe succeeds or fails.
+
 ## Sample server stub (Go)
 
 ```go

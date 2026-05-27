@@ -68,6 +68,7 @@ type UpstreamSource struct {
 	breakerMu         sync.Mutex
 	consecutiveErrors int
 	breakerOpenedAt   time.Time
+	breakerProbe      bool
 	breakerTrip       int
 	breakerCooldown   time.Duration
 }
@@ -120,6 +121,9 @@ func (u *UpstreamSource) Score(ctx context.Context, ip string) (int, error) {
 		return v, nil
 	}
 	if open, until := u.breakerOpen(); open {
+		if until.IsZero() {
+			return 0, fmt.Errorf("upstream breaker probe already running")
+		}
 		return 0, fmt.Errorf("upstream breaker open for %s", time.Until(until).Round(time.Second))
 	}
 
@@ -179,11 +183,35 @@ func (u *UpstreamSource) breakerOpen() (bool, time.Time) {
 	if u.breakerOpenedAt.IsZero() {
 		return false, time.Time{}
 	}
-	if time.Since(u.breakerOpenedAt) >= u.breakerCooldown {
-		u.breakerOpenedAt = time.Time{}
-		return false, time.Time{}
+	until := u.breakerOpenedAt.Add(u.breakerCooldown)
+	if time.Now().Before(until) {
+		return true, until
 	}
-	return true, u.breakerOpenedAt.Add(u.breakerCooldown)
+	if u.breakerProbe {
+		return true, time.Time{}
+	}
+	u.breakerProbe = true
+	return false, time.Time{}
+}
+
+func (u *UpstreamSource) resetBreakerLocked() {
+	u.consecutiveErrors = 0
+	u.breakerProbe = false
+	u.breakerOpenedAt = time.Time{}
+}
+
+func (u *UpstreamSource) recordBreakerFailureLocked(now time.Time) {
+	u.breakerProbe = false
+	u.consecutiveErrors++
+	if u.breakerTrip > 0 && u.consecutiveErrors >= u.breakerTrip {
+		u.breakerOpenedAt = now
+	}
+}
+
+func (u *UpstreamSource) closeExpiredBreakerLocked(now time.Time) {
+	if !u.breakerOpenedAt.IsZero() && now.Sub(u.breakerOpenedAt) >= u.breakerCooldown && !u.breakerProbe {
+		u.breakerOpenedAt = time.Time{}
+	}
 }
 
 // breakerObserve records the outcome of an upstream call so the
@@ -193,14 +221,12 @@ func (u *UpstreamSource) breakerObserve(success bool) {
 	u.breakerMu.Lock()
 	defer u.breakerMu.Unlock()
 	if success {
-		u.consecutiveErrors = 0
-		u.breakerOpenedAt = time.Time{}
+		u.resetBreakerLocked()
 		return
 	}
-	u.consecutiveErrors++
-	if u.breakerTrip > 0 && u.consecutiveErrors >= u.breakerTrip {
-		u.breakerOpenedAt = time.Now()
-	}
+	now := time.Now()
+	u.closeExpiredBreakerLocked(now)
+	u.recordBreakerFailureLocked(now)
 }
 
 func (u *UpstreamSource) lookupEndpoint(ip string) (string, error) {
