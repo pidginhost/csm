@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/pidginhost/csm/internal/config"
@@ -174,6 +175,57 @@ func TestApiQuarantineRestoreRestoresRegularFile(t *testing.T) {
 	// Quarantined item should be gone.
 	if _, err := os.Stat(filepath.Join(qdir, id)); !os.IsNotExist(err) {
 		t.Errorf("quarantined file should be removed, stat err=%v", err)
+	}
+}
+
+// TestApiQuarantineRestorePreservesRequestedMode asserts the restored
+// file ends at exactly the mode the metadata sidecar requested even
+// under a hostile umask. Chmod must run before Chown so the new owner
+// never observes a wider-than-intended mode mid-restore.
+func TestApiQuarantineRestorePreservesRequestedMode(t *testing.T) {
+	prev := syscall.Umask(0o077)
+	defer syscall.Umask(prev)
+
+	tmp := t.TempDir()
+	qdir := filepath.Join(tmp, "quarantine")
+	if err := os.MkdirAll(qdir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	restoreRoot := filepath.Join(tmp, "restore-target")
+	if err := os.MkdirAll(restoreRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	withQuarantineDir(t, qdir)
+	withQuarantineRestoreRoots(t, restoreRoot)
+
+	id := "20260527-120000_modecheck.txt"
+	originalPath := filepath.Join(restoreRoot, "alice", "public_html", "modecheck.txt")
+	if err := os.WriteFile(filepath.Join(qdir, id), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	meta := map[string]interface{}{
+		"original_path": originalPath,
+		"owner_uid":     os.Getuid(),
+		"group_gid":     os.Getgid(),
+		"mode":          "-rw-r--r--",
+	}
+	mj, _ := json.Marshal(meta)
+	if err := os.WriteFile(filepath.Join(qdir, id+".meta"), mj, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s := newRestoreServer(t)
+	w := httptest.NewRecorder()
+	s.apiQuarantineRestore(w, newRestoreRequest(t, map[string]string{"id": id}))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	info, err := os.Stat(originalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := info.Mode().Perm(), os.FileMode(0o644); got != want {
+		t.Errorf("restored mode = %o, want %o (umask should not bleed through)", got, want)
 	}
 }
 

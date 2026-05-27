@@ -1221,10 +1221,17 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Restore ownership
-	_ = syscall.Chown(restorePath, meta.Owner, meta.Group)
-	// Restore mode explicitly (WriteFile may be affected by umask)
-	_ = os.Chmod(restorePath, restoredMode)
+	// Restore mode first, then chown. Chmod-before-Chown guarantees the
+	// new owner never observes a wider-than-intended mode during the
+	// race window between the two syscalls. Errors are best-effort:
+	// the file is already restored, ownership/mode mismatch is logged
+	// for the operator but does not roll back the restore.
+	if err := os.Chmod(restorePath, restoredMode); err != nil && !os.IsNotExist(err) {
+		log.Printf("webui: chmod %s after restore failed: %v", safeLogString(restorePath), err)
+	}
+	if err := syscall.Chown(restorePath, meta.Owner, meta.Group); err != nil && !os.IsNotExist(err) {
+		log.Printf("webui: chown %s after restore failed: %v", safeLogString(restorePath), err)
+	}
 
 	// Remove metadata sidecar
 	if err := os.Remove(entry.MetaPath); err != nil && !os.IsNotExist(err) {
