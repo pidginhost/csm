@@ -2,8 +2,6 @@ package wpcheck
 
 import (
 	"crypto/md5" // #nosec G501 -- MD5 is the hash wordpress.org publishes for core file checksums; this is integrity verification against a published reference, not a security primitive.
-	"crypto/subtle"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -254,9 +252,8 @@ func (c *Cache) IsVerifiedCoreFile(fd int, path string) bool {
 	// as the canonical integrity reference for core files. We compare
 	// against their published values, not derive authority from the hash.
 	hash := md5.Sum(data)
-	actualMD5 := hex.EncodeToString(hash[:])
 
-	if subtle.ConstantTimeCompare([]byte(actualMD5), []byte(expectedMD5)) == 1 {
+	if constantTimeHexDigestEqual(hash[:], expectedMD5) {
 		return true
 	}
 
@@ -276,5 +273,5 @@ func (c *Cache) IsVerifiedCoreFile(fd int, path string) bool {
 	if !ok {
 		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(actualMD5), []byte(newExpectedMD5)) == 1
+	return constantTimeHexDigestEqual(hash[:], newExpectedMD5)
 }
