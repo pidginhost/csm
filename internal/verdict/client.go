@@ -62,9 +62,9 @@ func (c Config) requireResponseSig() bool {
 	return *c.RequireResponseSignature
 }
 
-// Request is what CSM asks the panel about. Nonce and Timestamp are
-// populated automatically by Ask when zero; they bind each request to
-// its own reply so an attacker cannot replay an old "allow" verdict.
+// Request is what CSM asks the panel about. Ask sets Nonce and Timestamp
+// for every exchange. They bind each request to its own reply so an
+// attacker cannot replay an old "allow" verdict.
 type Request struct {
 	IP        string `json:"ip"`
 	Reason    string `json:"reason"`
@@ -163,12 +163,12 @@ func (c *Client) Ask(ctx context.Context, req Request) (Response, error) {
 		return Response{}, fmt.Errorf("verdict callback URL must include host")
 	}
 
-	if req.Nonce == "" {
-		req.Nonce = newNonce()
+	nonce, err := newNonce()
+	if err != nil {
+		return Response{}, fmt.Errorf("verdict callback nonce generation: %w", err)
 	}
-	if req.Timestamp == 0 {
-		req.Timestamp = time.Now().Unix()
-	}
+	req.Nonce = nonce
+	req.Timestamp = time.Now().Unix()
 	body, err := json.Marshal(req)
 	if err != nil {
 		return Response{}, err
@@ -253,14 +253,10 @@ func (c *Client) Ask(ctx context.Context, req Request) (Response, error) {
 // newNonce returns a fresh 128-bit hex nonce. crypto/rand is the only
 // acceptable source: math/rand would let an attacker who observes one
 // nonce predict the next and craft a replay reply in advance.
-func newNonce() string {
+func newNonce() (string, error) {
 	var buf [16]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		// rand.Read on Linux only fails if /dev/urandom is unavailable,
-		// which is itself a sign the host is unsafe. Fall back to a
-		// timestamp-derived nonce so we still emit a unique value per
-		// call rather than panicking inside the firewall hot path.
-		return fmt.Sprintf("ts-%d", time.Now().UnixNano())
+	if _, err := io.ReadFull(rand.Reader, buf[:]); err != nil {
+		return "", err
 	}
-	return hex.EncodeToString(buf[:])
+	return hex.EncodeToString(buf[:]), nil
 }

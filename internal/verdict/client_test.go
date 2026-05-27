@@ -3,9 +3,11 @@ package verdict
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -56,6 +58,80 @@ func TestClient_PostsSignedRequest(t *testing.T) {
 	want := "sha256=" + hex.EncodeToString(mac.Sum(nil))
 	if sigHeader != want {
 		t.Fatalf("expected sig %q, got %q", want, sigHeader)
+	}
+
+	var req Request
+	if err := json.Unmarshal(captured, &req); err != nil {
+		t.Fatalf("decode captured request: %v", err)
+	}
+	if len(req.Nonce) != 32 {
+		t.Fatalf("nonce length = %d, want 32 hex chars", len(req.Nonce))
+	}
+	if _, err := hex.DecodeString(req.Nonce); err != nil {
+		t.Fatalf("nonce must be hex: %v", err)
+	}
+	if req.Timestamp == 0 {
+		t.Fatal("request timestamp was not populated")
+	}
+}
+
+func TestClient_FailsClosedWhenNonceGenerationFails(t *testing.T) {
+	orig := rand.Reader
+	rand.Reader = failingRandReader{}
+	t.Cleanup(func() { rand.Reader = orig })
+
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		atomic.AddInt32(&hits, 1)
+	}))
+	defer srv.Close()
+
+	c := New(Config{URL: srv.URL, Timeout: time.Second})
+	_, err := c.Ask(context.Background(), Request{IP: "1.2.3.4"})
+	if err == nil {
+		t.Fatal("expected nonce generation error")
+	}
+	if !strings.Contains(err.Error(), "nonce") {
+		t.Fatalf("error should mention nonce generation, got %v", err)
+	}
+	if atomic.LoadInt32(&hits) != 0 {
+		t.Fatal("callback must not be sent with a fallback nonce")
+	}
+}
+
+func TestClient_OverwritesCallerNonceAndTimestamp(t *testing.T) {
+	secret := "panel-secret"
+	var gotReq Request
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotReq); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		body, _ := json.Marshal(Response{
+			Verdict:   "block",
+			Nonce:     gotReq.Nonce,
+			Timestamp: time.Now().Unix(),
+		})
+		w.Header().Set("X-CSM-Signature", signPayload(secret, body))
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	c := New(Config{URL: srv.URL, HMACSecret: secret, Timeout: time.Second})
+	if _, err := c.Ask(context.Background(), Request{
+		IP:        "1.2.3.4",
+		Nonce:     "caller-controlled",
+		Timestamp: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if gotReq.Nonce == "caller-controlled" {
+		t.Fatal("caller-supplied nonce must not be reused")
+	}
+	if gotReq.Timestamp == 1 {
+		t.Fatal("caller-supplied timestamp must not be reused")
+	}
+	if gotReq.Nonce == "" || gotReq.Timestamp == 0 {
+		t.Fatalf("request replay fields were not populated: %+v", gotReq)
 	}
 }
 
@@ -223,6 +299,12 @@ func signPayload(secret string, body []byte) string {
 	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
 }
 
+type failingRandReader struct{}
+
+func (failingRandReader) Read([]byte) (int, error) {
+	return 0, errors.New("entropy unavailable")
+}
+
 // TestClient_RejectsResponseMissingNonce: when response signing is
 // required, the panel must echo the request nonce so a captured old
 // reply cannot be replayed on a fresh request.
@@ -285,7 +367,7 @@ func TestClient_RejectsResponseTimestampSkew(t *testing.T) {
 	}
 }
 
-// TestClient_AcceptsNonceEcho: the happy path — panel echoes nonce and
+// TestClient_AcceptsNonceEcho: the happy path: panel echoes nonce and
 // timestamps within skew. Verdict applies.
 func TestClient_AcceptsNonceEcho(t *testing.T) {
 	secret := "panel-secret"

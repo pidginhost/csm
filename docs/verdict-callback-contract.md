@@ -95,6 +95,7 @@ default is `true` and there is no other way to disable the check.
 ## Failure semantics
 
 - Network error / timeout / non-200 HTTP response: CSM logs a warning and **proceeds with the default block**. The hook is fail-open at the transport level.
+- Local nonce generation failure: CSM does not send the request and **proceeds with the default block**.
 - 200 OK with `verdict: "allow"`: CSM does **not** modify nftables; logs the override to stderr.
 - 200 OK with `verdict: "block"` or omitted: standard block path runs (which still honors `auto_response.dry_run` if set).
 - 200 OK with unknown `verdict` string: rejected; treated as fail-open (default block).
@@ -114,7 +115,10 @@ http.HandleFunc("/api/csm/verdict", func(w http.ResponseWriter, r *http.Request)
     if !verifySignature(r.Header.Get("X-CSM-Signature"), body, secret) {
         http.Error(w, "bad signature", 401); return
     }
-    var req struct{ IP, Reason, Severity, Source string }
+    var req struct {
+        IP, Reason, Severity, Source string
+        Nonce string
+    }
     _ = json.Unmarshal(body, &req)
 
     tenant := lookupTenantOwning(req.IP) // your impl
@@ -122,8 +126,9 @@ http.HandleFunc("/api/csm/verdict", func(w http.ResponseWriter, r *http.Request)
     if isPanelInfra(req.IP) {            // never block our own infra
         verdict = "allow"
     }
-    respBody, _ := json.Marshal(map[string]string{
+    respBody, _ := json.Marshal(map[string]any{
         "verdict": verdict, "tenant_id": tenant,
+        "nonce": req.Nonce, "timestamp": time.Now().Unix(),
     })
     mac := hmac.New(sha256.New, []byte(secret))
     mac.Write(respBody)
