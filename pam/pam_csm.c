@@ -66,10 +66,14 @@ static int csm_send_event(const char *event_type, const char *ip,
     if (fd < 0)
         return -1;
 
-    /* Set send timeout */
+    /* Set send and receive timeouts. SO_RCVTIMEO bounds connect-blocked
+     * recv() calls that would otherwise hang indefinitely if the daemon
+     * accepted the connection but stalled before reading the message --
+     * a hung daemon must not freeze login. */
     tv.tv_sec = 0;
     tv.tv_usec = CSM_CONNECT_TIMEOUT_MS * 1000;
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     /* Connect */
     memset(&addr, 0, sizeof(addr));
