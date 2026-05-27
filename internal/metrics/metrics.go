@@ -311,10 +311,21 @@ type CounterVec struct {
 	help      string
 	labelKeys []string
 
-	mu       sync.Mutex
-	children map[string]*Counter
-	keys     []string // insertion-ordered; stable for scrape ordering within a vec
+	mu          sync.Mutex
+	children    map[string]*Counter
+	keys        []string // insertion-ordered; stable for scrape ordering within a vec
+	maxChildren int      // 0 = unlimited
 }
+
+// defaultVecCardinalityCap bounds the per-vec child count. Operators
+// can raise the limit per metric via SetMaxChildren. The cap exists
+// because user-controlled labels (per-IP, per-domain) can otherwise
+// grow the children map without bound and exhaust memory.
+const defaultVecCardinalityCap = 1000
+
+// overflowLabelValue collapses all label values past the cap into a
+// single sentinel bucket so cardinality stays bounded.
+const overflowLabelValue = "_overflow_"
 
 // NewCounterVec constructs a vector counter. labelKeys must be non-
 // empty; use NewCounter for an unlabelled counter.
@@ -323,16 +334,37 @@ func NewCounterVec(name, help string, labelKeys []string) *CounterVec {
 		panic(fmt.Sprintf("metrics: counter vec %q needs at least one label key", name))
 	}
 	return &CounterVec{
-		name:      name,
-		help:      help,
-		labelKeys: append([]string{}, labelKeys...),
-		children:  map[string]*Counter{},
+		name:        name,
+		help:        help,
+		labelKeys:   append([]string{}, labelKeys...),
+		children:    map[string]*Counter{},
+		maxChildren: defaultVecCardinalityCap,
 	}
+}
+
+// SetMaxChildren overrides the per-vec cardinality cap. Pass 0 to
+// disable the cap entirely (only safe when label values come from a
+// fixed enum the operator controls).
+func (cv *CounterVec) SetMaxChildren(n int) {
+	cv.mu.Lock()
+	defer cv.mu.Unlock()
+	cv.maxChildren = n
+}
+
+// ChildCount returns the current number of distinct label-value
+// children, including the overflow sentinel if used. Exposed for
+// tests and operator health checks.
+func (cv *CounterVec) ChildCount() int {
+	cv.mu.Lock()
+	defer cv.mu.Unlock()
+	return len(cv.children)
 }
 
 // With returns the child counter for the given label values. Values
 // are identified by the concatenation of label values; caller supplies
-// them in the same order as labelKeys from NewCounterVec.
+// them in the same order as labelKeys from NewCounterVec. Once the cap
+// is reached, additional label-value combinations collapse to a
+// single "_overflow_" bucket so the map stays bounded.
 func (cv *CounterVec) With(values ...string) *Counter {
 	if len(values) != len(cv.labelKeys) {
 		panic(fmt.Sprintf("metrics: counter vec %q: got %d label values, want %d", cv.name, len(values), len(cv.labelKeys)))
@@ -343,10 +375,27 @@ func (cv *CounterVec) With(values ...string) *Counter {
 	if c, ok := cv.children[key]; ok {
 		return c
 	}
+	if cv.maxChildren > 0 && len(cv.children) >= cv.maxChildren {
+		key = joinLabelValues(overflowLabelValuesForArity(len(cv.labelKeys)))
+		if c, ok := cv.children[key]; ok {
+			return c
+		}
+	}
 	c := &Counter{name: cv.name, help: cv.help}
 	cv.children[key] = c
 	cv.keys = append(cv.keys, key)
 	return c
+}
+
+// overflowLabelValuesForArity returns a values slice of length n with
+// every entry set to the overflow sentinel. Used so the cap path
+// produces a single canonical key regardless of arity.
+func overflowLabelValuesForArity(n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = overflowLabelValue
+	}
+	return out
 }
 
 func (cv *CounterVec) writeTo(w *bufferedWriter) {
@@ -377,9 +426,10 @@ type HistogramVec struct {
 	labelKeys []string
 	upper     []float64
 
-	mu       sync.Mutex
-	children map[string]*Histogram
-	keys     []string
+	mu          sync.Mutex
+	children    map[string]*Histogram
+	keys        []string
+	maxChildren int
 }
 
 // NewHistogramVec constructs a vector histogram.
@@ -393,15 +443,31 @@ func NewHistogramVec(name, help string, labelKeys []string, upperBounds []float6
 		}
 	}
 	return &HistogramVec{
-		name:      name,
-		help:      help,
-		labelKeys: append([]string{}, labelKeys...),
-		upper:     append([]float64{}, upperBounds...),
-		children:  map[string]*Histogram{},
+		name:        name,
+		help:        help,
+		labelKeys:   append([]string{}, labelKeys...),
+		upper:       append([]float64{}, upperBounds...),
+		children:    map[string]*Histogram{},
+		maxChildren: defaultVecCardinalityCap,
 	}
 }
 
-// With returns the child histogram for the given label values.
+// SetMaxChildren overrides the per-vec cardinality cap.
+func (hv *HistogramVec) SetMaxChildren(n int) {
+	hv.mu.Lock()
+	defer hv.mu.Unlock()
+	hv.maxChildren = n
+}
+
+// ChildCount returns the current number of distinct label-value children.
+func (hv *HistogramVec) ChildCount() int {
+	hv.mu.Lock()
+	defer hv.mu.Unlock()
+	return len(hv.children)
+}
+
+// With returns the child histogram for the given label values. See
+// CounterVec.With for cap semantics.
 func (hv *HistogramVec) With(values ...string) *Histogram {
 	if len(values) != len(hv.labelKeys) {
 		panic(fmt.Sprintf("metrics: histogram vec %q: got %d label values, want %d", hv.name, len(values), len(hv.labelKeys)))
@@ -411,6 +477,12 @@ func (hv *HistogramVec) With(values ...string) *Histogram {
 	defer hv.mu.Unlock()
 	if h, ok := hv.children[key]; ok {
 		return h
+	}
+	if hv.maxChildren > 0 && len(hv.children) >= hv.maxChildren {
+		key = joinLabelValues(overflowLabelValuesForArity(len(hv.labelKeys)))
+		if h, ok := hv.children[key]; ok {
+			return h
+		}
 	}
 	h := &Histogram{
 		name:      hv.name,
@@ -464,9 +536,10 @@ type GaugeVec struct {
 	help      string
 	labelKeys []string
 
-	mu       sync.Mutex
-	children map[string]*Gauge
-	keys     []string
+	mu          sync.Mutex
+	children    map[string]*Gauge
+	keys        []string
+	maxChildren int
 }
 
 // NewGaugeVec constructs a vector gauge.
@@ -475,14 +548,30 @@ func NewGaugeVec(name, help string, labelKeys []string) *GaugeVec {
 		panic(fmt.Sprintf("metrics: gauge vec %q needs at least one label key", name))
 	}
 	return &GaugeVec{
-		name:      name,
-		help:      help,
-		labelKeys: append([]string{}, labelKeys...),
-		children:  map[string]*Gauge{},
+		name:        name,
+		help:        help,
+		labelKeys:   append([]string{}, labelKeys...),
+		children:    map[string]*Gauge{},
+		maxChildren: defaultVecCardinalityCap,
 	}
 }
 
-// With returns the child gauge for the given label values.
+// SetMaxChildren overrides the per-vec cardinality cap.
+func (gv *GaugeVec) SetMaxChildren(n int) {
+	gv.mu.Lock()
+	defer gv.mu.Unlock()
+	gv.maxChildren = n
+}
+
+// ChildCount returns the current number of distinct label-value children.
+func (gv *GaugeVec) ChildCount() int {
+	gv.mu.Lock()
+	defer gv.mu.Unlock()
+	return len(gv.children)
+}
+
+// With returns the child gauge for the given label values. See
+// CounterVec.With for cap semantics.
 func (gv *GaugeVec) With(values ...string) *Gauge {
 	if len(values) != len(gv.labelKeys) {
 		panic(fmt.Sprintf("metrics: gauge vec %q: got %d label values, want %d", gv.name, len(values), len(gv.labelKeys)))
@@ -492,6 +581,12 @@ func (gv *GaugeVec) With(values ...string) *Gauge {
 	defer gv.mu.Unlock()
 	if g, ok := gv.children[key]; ok {
 		return g
+	}
+	if gv.maxChildren > 0 && len(gv.children) >= gv.maxChildren {
+		key = joinLabelValues(overflowLabelValuesForArity(len(gv.labelKeys)))
+		if g, ok := gv.children[key]; ok {
+			return g
+		}
 	}
 	g := &Gauge{name: gv.name, help: gv.help}
 	gv.children[key] = g

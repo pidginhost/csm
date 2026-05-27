@@ -3,6 +3,7 @@ package metrics
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"sync"
@@ -294,4 +295,43 @@ func TestLabelSeparatorPanicsInValue(t *testing.T) {
 	}()
 	cv := NewCounterVec("x", "", []string{"k"})
 	cv.With("a\x1fb")
+}
+
+// TestCounterVecCardinalityCap: when an attacker can drive a label
+// to unbounded cardinality (e.g. per-IP), the vec must cap the number
+// of distinct children and route overflow into a single "_overflow_"
+// label slot instead of growing the map forever.
+func TestCounterVecCardinalityCap(t *testing.T) {
+	cv := NewCounterVec("test_cap", "test", []string{"src"})
+	cv.SetMaxChildren(8)
+	for i := 0; i < 100; i++ {
+		cv.With(fmt.Sprintf("ip-%d", i)).Inc()
+	}
+	if got := cv.ChildCount(); got > 9 { // 8 explicit + 1 overflow bucket
+		t.Fatalf("ChildCount = %d, want <= 9", got)
+	}
+}
+
+// TestGaugeVecCardinalityCap: same property for GaugeVec.
+func TestGaugeVecCardinalityCap(t *testing.T) {
+	gv := NewGaugeVec("test_gauge_cap", "test", []string{"src"})
+	gv.SetMaxChildren(4)
+	for i := 0; i < 50; i++ {
+		gv.With(fmt.Sprintf("ip-%d", i)).Set(1)
+	}
+	if got := gv.ChildCount(); got > 5 {
+		t.Fatalf("ChildCount = %d, want <= 5", got)
+	}
+}
+
+// TestHistogramVecCardinalityCap: same property for HistogramVec.
+func TestHistogramVecCardinalityCap(t *testing.T) {
+	hv := NewHistogramVec("test_hist_cap", "test", []string{"src"}, []float64{0.1, 1, 10})
+	hv.SetMaxChildren(4)
+	for i := 0; i < 50; i++ {
+		hv.With(fmt.Sprintf("ip-%d", i)).Observe(0.5)
+	}
+	if got := hv.ChildCount(); got > 5 {
+		t.Fatalf("ChildCount = %d, want <= 5", got)
+	}
 }

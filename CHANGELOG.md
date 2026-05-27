@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - PHP content detection now catches Unicode-escape function-name obfuscation while limiting the match to the callable target. Unicode-escaped labels or other callback data no longer raise this alert on their own.
 - Mail-log and access-log tailers now bound tail windows and skip oversized records before continuing. Attackers can no longer use a huge log record to consume unbounded memory, stall tailing, or feed truncated content to detectors.
 - Upstream threat-intel client now caps its per-IP score cache and trips a circuit breaker after consecutive upstream failures. Sustained attack traffic from unique IPs no longer grows the map without bound, and a dead upstream only receives one probe when the cooldown expires.
+- Internal metrics vectors now cap distinct label-value combinations and collapse overflow into a single sentinel bucket. Per-IP or other user-controlled labels can no longer grow the metrics map without bound.
 - Compound webshell-plus-C2 incident classification no longer relies on the trimmed timeline. Sticky flags persist on the incident itself so a long, noisy attack still escalates when the matching counterpart arrives much later.
 - Periodic and initial scans now snapshot the live config once per tick, so a SIGHUP landing mid-tick can no longer split detection and auto-response between old and new policy.
 - Periodic integrity checks no longer raise a tamper alert when a valid config reload finishes while the check is hashing the old snapshot.
