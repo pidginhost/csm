@@ -12,5 +12,8 @@ func shouldTempfailEmailDelivery(tempfail bool, result *emailav.ScanResult, quar
 	if result == nil {
 		return false
 	}
-	return result.AllEnginesDown || len(result.TimedOutEngines) > 0 || len(result.ErroredEngines) > 0
+	return result.PartialExtraction ||
+		result.AllEnginesDown ||
+		len(result.TimedOutEngines) > 0 ||
+		len(result.ErroredEngines) > 0
 }

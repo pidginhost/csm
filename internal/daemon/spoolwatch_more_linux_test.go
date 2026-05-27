@@ -270,6 +270,70 @@ func TestSpoolWatcherHandleSpoolEventNoAttachmentsAllows(t *testing.T) {
 	}
 }
 
+func TestSpoolWatcherHandleSpoolEventPartialExtractionTempfailDenies(t *testing.T) {
+	dir := t.TempDir()
+	msgID := "1aBcDe-PARTIAL-XX"
+	buildMinimalEximSpool(t, dir, msgID)
+	bodyPath := filepath.Join(dir, msgID+"-D")
+	if err := os.WriteFile(bodyPath, bytes.Repeat([]byte("A"), 128), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tmpFd, err := unix.Open(dir, unix.O_RDONLY|unix.O_DIRECTORY, 0)
+	if err != nil {
+		t.Skipf("open dir: %v", err)
+	}
+
+	var respPipe [2]int
+	if pipeErr := unix.Pipe2(respPipe[:], unix.O_CLOEXEC); pipeErr != nil {
+		t.Skipf("pipe2: %v", pipeErr)
+	}
+	defer func() { _ = unix.Close(respPipe[0]) }()
+
+	cfg := &config.Config{}
+	cfg.EmailAV.MaxAttachmentSize = 16
+	cfg.EmailAV.MaxExtractionSize = 16
+	cfg.EmailAV.FailMode = "tempfail"
+
+	ch := make(chan alert.Finding, 4)
+	sw := &SpoolWatcher{
+		cfg:     cfg,
+		alertCh: ch,
+		fd:      respPipe[1],
+		stopCh:  make(chan struct{}),
+	}
+	defer sw.closeFd()
+
+	evt := spoolEvent{
+		path:     bodyPath,
+		fd:       tmpFd,
+		needResp: true,
+	}
+	sw.handleSpoolEvent(evt)
+
+	buf := make([]byte, responseSize)
+	n, err := unix.Read(respPipe[0], buf)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if n != responseSize {
+		t.Fatalf("read %d bytes, want %d", n, responseSize)
+	}
+	got := *(*fanotifyResponse)(unsafe.Pointer(&buf[0]))
+	if got.Response != FAN_DENY {
+		t.Errorf("response = %d, want FAN_DENY", got.Response)
+	}
+
+	select {
+	case f := <-ch:
+		if f.Check != "email_av_degraded" {
+			t.Errorf("Check = %q, want email_av_degraded", f.Check)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected email_av_degraded finding")
+	}
+}
+
 // --- handleSpoolEvent: infected with successful quarantine → FAN_DENY ---
 
 // alwaysInfectedScanner is a minimal Scanner that always reports an infection.

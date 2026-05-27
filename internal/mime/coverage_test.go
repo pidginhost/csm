@@ -71,6 +71,42 @@ func TestReadFileLimitedExceedsLimit(t *testing.T) {
 	}
 }
 
+func TestReadBodyFileLimitedMarksPartial(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "big.txt")
+	if err := os.WriteFile(path, []byte("abcdef"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	data, partial, err := readBodyFileLimited(path, 5)
+	if err != nil {
+		t.Fatalf("readBodyFileLimited: %v", err)
+	}
+	if !partial {
+		t.Fatal("partial = false, want true")
+	}
+	if data != nil {
+		t.Fatalf("data = %q, want nil for partial read", data)
+	}
+}
+
+func TestReadBodyFileLimitedExactLimit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "exact.txt")
+	if err := os.WriteFile(path, []byte("abcde"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	data, partial, err := readBodyFileLimited(path, 5)
+	if err != nil {
+		t.Fatalf("readBodyFileLimited: %v", err)
+	}
+	if partial {
+		t.Fatal("partial = true, want false")
+	}
+	if string(data) != "abcde" {
+		t.Fatalf("data = %q, want abcde", data)
+	}
+}
+
 // --- decodeSinglePart --------------------------------------------------
 
 func TestDecodeSinglePartBase64(t *testing.T) {

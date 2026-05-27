@@ -20,6 +20,9 @@ func TestShouldTempfailEmailDelivery(t *testing.T) {
 	if !shouldTempfailEmailDelivery(true, &emailav.ScanResult{ErroredEngines: []string{"yara-x"}}, nil) {
 		t.Fatal("scan error should deny in tempfail mode")
 	}
+	if !shouldTempfailEmailDelivery(true, &emailav.ScanResult{PartialExtraction: true}, nil) {
+		t.Fatal("partial extraction should deny in tempfail mode")
+	}
 	if !shouldTempfailEmailDelivery(true, &emailav.ScanResult{}, errors.New("quarantine failed")) {
 		t.Fatal("quarantine failure should deny in tempfail mode")
 	}

@@ -39,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Upstream threat-intel client now caps its per-IP score cache and trips a circuit breaker after consecutive upstream failures. Sustained attack traffic from unique IPs no longer grows the map without bound, and a dead upstream only receives one probe when the cooldown expires.
 - Internal metrics vectors now cap distinct label-value combinations and collapse overflow into a single sentinel bucket. Per-IP or other user-controlled labels can no longer grow the metrics map without bound.
 - Mail-spool body parser no longer pre-stats the file before opening it. The size check now reads from the same open descriptor, so an attacker cannot swap the file for a larger one between stat and read to bypass the memory cap.
+- Email AV tempfail mode now defers messages when MIME extraction is partial, including bodies that exceed the parser memory budget before any attachment is scanned.
 - Compound webshell-plus-C2 incident classification no longer relies on the trimmed timeline. Sticky flags persist on the incident itself so a long, noisy attack still escalates when the matching counterpart arrives much later.
 - Periodic and initial scans now snapshot the live config once per tick, so a SIGHUP landing mid-tick can no longer split detection and auto-response between old and new policy.
 - Periodic integrity checks no longer raise a tamper alert when a valid config reload finishes while the check is hashing the old snapshot.

@@ -294,7 +294,7 @@ func (sw *SpoolWatcher) scanWorker() {
 
 func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 	// CRITICAL: deferred FAN_ALLOW - every code path must allow by default.
-	// Only overridden to FAN_DENY on confirmed infection + successful quarantine.
+	// Only overridden to FAN_DENY when policy requires deferral or quarantine.
 	response := uint32(FAN_ALLOW)
 	defer func() {
 		if evt.needResp {
@@ -338,6 +338,16 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 			os.Remove(p.TempPath)
 		}
 	}()
+
+	if extraction.Partial {
+		partialResult := &emailav.ScanResult{PartialExtraction: true}
+		if shouldTempfailEmailDelivery(tempfail, partialResult, nil) {
+			response = FAN_DENY
+			sw.emitDegradedWarning(fmt.Sprintf("Incomplete email attachment extraction for message %s (%s) - delivery deferred (tempfail mode)", msgID, partialExtractionReason(extraction)))
+			return
+		}
+		sw.emitDegradedWarning(fmt.Sprintf("Incomplete email attachment extraction for message %s (%s) - delivery allowed (fail-open mode)", msgID, partialExtractionReason(extraction)))
+	}
 
 	if len(extraction.Parts) == 0 {
 		return // No attachments to scan - allow
@@ -411,6 +421,13 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 		strings.Join(sigNames, ", "), extraction.Subject)
 
 	sw.emitFinding("email_malware", alert.Critical, msg)
+}
+
+func partialExtractionReason(extraction *emime.ExtractionResult) string {
+	if extraction.PartialReason != "" {
+		return extraction.PartialReason
+	}
+	return "partial extraction"
 }
 
 func (sw *SpoolWatcher) writeResponse(fd int32, response uint32) {
