@@ -61,7 +61,9 @@ default is `true` and there is no other way to disable the check.
   "ip": "1.2.3.4",
   "reason": "mail_bruteforce",
   "severity": "auto",
-  "source": "auto_response"
+  "source": "auto_response",
+  "nonce": "9a7e84f0c123ab45e102d4f8b9c1d3e0",
+  "timestamp": 1748345600
 }
 ```
 
@@ -69,6 +71,8 @@ default is `true` and there is no other way to disable the check.
 - `reason` (required): short reason string (`mail_bruteforce`, `wp_login_bruteforce`, etc.).
 - `severity` (optional): `"auto"` for auto-response decisions; reserved for future use.
 - `source` (optional): `"auto_response"` (the only current emitter).
+- `nonce` (required when response signing is on): a 128-bit hex random value unique to this call. The panel MUST echo it verbatim in the response.
+- `timestamp` (required when response signing is on): unix seconds when CSM produced the request. The panel does not need to validate it but MAY use it to reject stale calls.
 
 ## Response body (200 OK)
 
@@ -76,13 +80,17 @@ default is `true` and there is no other way to disable the check.
 {
   "verdict": "block",
   "tenant_id": "tenant-42",
-  "note": "matched dovecot user pattern"
+  "note": "matched dovecot user pattern",
+  "nonce": "9a7e84f0c123ab45e102d4f8b9c1d3e0",
+  "timestamp": 1748345600
 }
 ```
 
 - `verdict`: `"block"` (default; also returned if field omitted) or `"allow"` to override. **Any other string is rejected by CSM as a protocol error**, treated as "no decision" (CSM proceeds with the default block per fail-open semantics).
 - `tenant_id` (optional): attribution string; CSM logs it alongside the decision.
 - `note` (optional): free-form note logged for the verdict.
+- `nonce` (required when response signing is on): MUST equal `request.nonce`. CSM compares with constant-time equality and rejects mismatches as replay attempts.
+- `timestamp` (required when response signing is on): unix seconds when the panel produced the reply. CSM rejects replies whose timestamp drifts more than five minutes from local clock.
 
 ## Failure semantics
 
@@ -91,6 +99,7 @@ default is `true` and there is no other way to disable the check.
 - 200 OK with `verdict: "block"` or omitted: standard block path runs (which still honors `auto_response.dry_run` if set).
 - 200 OK with unknown `verdict` string: rejected; treated as fail-open (default block).
 - 200 OK with missing or invalid `X-CSM-Signature` (and `require_response_signature` not turned off): rejected as forged; treated as fail-open (default block). Operators see the rejection in stderr; recurring rejections indicate either a panel-side rollout gap or an active on-path attack.
+- 200 OK with mismatched `nonce`, missing `timestamp`, or timestamp drift over five minutes (and response signing required): rejected as replay; treated as fail-open (default block).
 
 ## Limits
 

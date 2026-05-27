@@ -10,7 +10,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -22,7 +24,13 @@ import (
 	"time"
 )
 
-const verdictMaxResponseBytes = 64 << 10 // 64 KB - verdict response is small JSON
+const (
+	verdictMaxResponseBytes = 64 << 10 // 64 KB - verdict response is small JSON
+	// verdictMaxResponseSkew bounds how far the panel's reply timestamp
+	// may drift from CSM's clock. Anything older or further into the
+	// future is treated as a replayed or forged response.
+	verdictMaxResponseSkew = 5 * time.Minute
+)
 
 // Config configures the verdict callback client. HMACSecretEnv (if set)
 // is consulted at every Ask call so operators can rotate via env without
@@ -54,24 +62,34 @@ func (c Config) requireResponseSig() bool {
 	return *c.RequireResponseSignature
 }
 
-// Request is what CSM asks the panel about.
+// Request is what CSM asks the panel about. Nonce and Timestamp are
+// populated automatically by Ask when zero; they bind each request to
+// its own reply so an attacker cannot replay an old "allow" verdict.
 type Request struct {
-	IP       string `json:"ip"`
-	Reason   string `json:"reason"`
-	Severity string `json:"severity,omitempty"`
-	Source   string `json:"source,omitempty"` // "auto_response" | "manual"
+	IP        string `json:"ip"`
+	Reason    string `json:"reason"`
+	Severity  string `json:"severity,omitempty"`
+	Source    string `json:"source,omitempty"` // "auto_response" | "manual"
+	Nonce     string `json:"nonce,omitempty"`
+	Timestamp int64  `json:"timestamp,omitempty"`
 }
 
 // Response is what the panel may answer.
 //
-//	verdict   = "block" - CSM proceeds with its default action.
-//	verdict   = "allow" - CSM logs the verdict but does NOT block.
-//	verdict   = "" or missing - equivalent to "block" (default).
-//	tenant_id = optional attribution string CSM logs alongside the decision.
+//	verdict    = "block" - CSM proceeds with its default action.
+//	verdict    = "allow" - CSM logs the verdict but does NOT block.
+//	verdict    = "" or missing - equivalent to "block" (default).
+//	tenant_id  = optional attribution string CSM logs alongside the decision.
+//	nonce      = MUST equal the Request.Nonce. Required when response
+//	             signing is in effect; defeats replay of captured replies.
+//	timestamp  = unix seconds the panel produced the reply. MUST be
+//	             within verdictMaxResponseSkew of CSM's clock.
 type Response struct {
-	Verdict  string `json:"verdict,omitempty"`
-	TenantID string `json:"tenant_id,omitempty"`
-	Note     string `json:"note,omitempty"`
+	Verdict   string `json:"verdict,omitempty"`
+	TenantID  string `json:"tenant_id,omitempty"`
+	Note      string `json:"note,omitempty"`
+	Nonce     string `json:"nonce,omitempty"`
+	Timestamp int64  `json:"timestamp,omitempty"`
 }
 
 // Client posts each block decision to the configured URL and reads the
@@ -145,6 +163,12 @@ func (c *Client) Ask(ctx context.Context, req Request) (Response, error) {
 		return Response{}, fmt.Errorf("verdict callback URL must include host")
 	}
 
+	if req.Nonce == "" {
+		req.Nonce = newNonce()
+	}
+	if req.Timestamp == 0 {
+		req.Timestamp = time.Now().Unix()
+	}
 	body, err := json.Marshal(req)
 	if err != nil {
 		return Response{}, err
@@ -204,5 +228,39 @@ func (c *Client) Ask(ctx context.Context, req Request) (Response, error) {
 	if out.Verdict != "" && out.Verdict != "block" && out.Verdict != "allow" {
 		return Response{}, fmt.Errorf("verdict callback returned unknown verdict %q", out.Verdict)
 	}
+	// Replay protection: when response signing is enforced, the panel
+	// must echo the request nonce and stamp a timestamp inside the
+	// allowed skew. Without these checks a captured "allow" reply
+	// could be replayed against a fresh request.
+	if secret != "" && c.cfg.requireResponseSig() {
+		if subtle.ConstantTimeCompare([]byte(out.Nonce), []byte(req.Nonce)) != 1 {
+			return Response{}, fmt.Errorf("verdict callback response nonce mismatch")
+		}
+		if out.Timestamp == 0 {
+			return Response{}, fmt.Errorf("verdict callback response missing timestamp")
+		}
+		drift := time.Since(time.Unix(out.Timestamp, 0))
+		if drift < 0 {
+			drift = -drift
+		}
+		if drift > verdictMaxResponseSkew {
+			return Response{}, fmt.Errorf("verdict callback response timestamp drift %s exceeds %s", drift, verdictMaxResponseSkew)
+		}
+	}
 	return out, nil
+}
+
+// newNonce returns a fresh 128-bit hex nonce. crypto/rand is the only
+// acceptable source: math/rand would let an attacker who observes one
+// nonce predict the next and craft a replay reply in advance.
+func newNonce() string {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		// rand.Read on Linux only fails if /dev/urandom is unavailable,
+		// which is itself a sign the host is unsafe. Fall back to a
+		// timestamp-derived nonce so we still emit a unique value per
+		// call rather than panicking inside the firewall hot path.
+		return fmt.Sprintf("ts-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(buf[:])
 }

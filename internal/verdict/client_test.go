@@ -26,9 +26,13 @@ func TestClient_PostsSignedRequest(t *testing.T) {
 		atomic.AddInt32(&hits, 1)
 		captured, _ = io.ReadAll(r.Body)
 		sigHeader = r.Header.Get("X-CSM-Signature")
+		var req Request
+		_ = json.Unmarshal(captured, &req)
 		body, _ := json.Marshal(Response{
-			Verdict:  "block",
-			TenantID: "tenant-99",
+			Verdict:   "block",
+			TenantID:  "tenant-99",
+			Nonce:     req.Nonce,
+			Timestamp: time.Now().Unix(),
 		})
 		w.Header().Set("X-CSM-Signature", signPayload(secret, body))
 		_, _ = w.Write(body)
@@ -98,7 +102,10 @@ func TestClient_ResolvesSecretFromEnv(t *testing.T) {
 	var sigHeader string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sigHeader = r.Header.Get("X-CSM-Signature")
-		body, _ := json.Marshal(Response{Verdict: "block"})
+		raw, _ := io.ReadAll(r.Body)
+		var req Request
+		_ = json.Unmarshal(raw, &req)
+		body, _ := json.Marshal(Response{Verdict: "block", Nonce: req.Nonce, Timestamp: time.Now().Unix()})
 		w.Header().Set("X-CSM-Signature", signPayload("from-env", body))
 		_, _ = w.Write(body)
 	}))
@@ -123,7 +130,9 @@ func TestClient_UsesSameResolvedSecretForRequestAndResponse(t *testing.T) {
 		if got, want := r.Header.Get("X-CSM-Signature"), signPayload("first-secret", reqBody); got != want {
 			t.Fatalf("request signature = %q, want %q", got, want)
 		}
-		body, _ := json.Marshal(Response{Verdict: "block"})
+		var req Request
+		_ = json.Unmarshal(reqBody, &req)
+		body, _ := json.Marshal(Response{Verdict: "block", Nonce: req.Nonce, Timestamp: time.Now().Unix()})
 		if err := os.Setenv(envVar, "rotated-secret"); err != nil {
 			t.Fatalf("rotate env: %v", err)
 		}
@@ -214,12 +223,104 @@ func signPayload(secret string, body []byte) string {
 	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
 }
 
+// TestClient_RejectsResponseMissingNonce: when response signing is
+// required, the panel must echo the request nonce so a captured old
+// reply cannot be replayed on a fresh request.
+func TestClient_RejectsResponseMissingNonce(t *testing.T) {
+	secret := "panel-secret"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Panel signs a reply that does NOT echo the nonce.
+		body, _ := json.Marshal(Response{Verdict: "allow"})
+		w.Header().Set("X-CSM-Signature", signPayload(secret, body))
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	c := New(Config{URL: srv.URL, HMACSecret: secret, Timeout: time.Second})
+	if _, err := c.Ask(context.Background(), Request{IP: "1.2.3.4"}); err == nil {
+		t.Fatal("expected replay-protection error when response omits nonce")
+	}
+}
+
+// TestClient_RejectsResponseWithWrongNonce: a captured old reply
+// (with the previous nonce) must be rejected even if its signature is
+// valid against the same secret.
+func TestClient_RejectsResponseWithWrongNonce(t *testing.T) {
+	secret := "panel-secret"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		body, _ := json.Marshal(Response{Verdict: "allow", Nonce: "stale-nonce", Timestamp: time.Now().Unix()})
+		w.Header().Set("X-CSM-Signature", signPayload(secret, body))
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	c := New(Config{URL: srv.URL, HMACSecret: secret, Timeout: time.Second})
+	if _, err := c.Ask(context.Background(), Request{IP: "1.2.3.4"}); err == nil {
+		t.Fatal("expected replay error when response nonce does not match request nonce")
+	}
+}
+
+// TestClient_RejectsResponseTimestampSkew: a reply whose timestamp
+// is too far from CSM's clock is rejected, defeating long-lived replay
+// of a captured allow reply on a fresh request that happens to reuse
+// a nonce.
+func TestClient_RejectsResponseTimestampSkew(t *testing.T) {
+	secret := "panel-secret"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req Request
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		body, _ := json.Marshal(Response{
+			Verdict:   "allow",
+			Nonce:     req.Nonce,
+			Timestamp: time.Now().Add(-10 * time.Minute).Unix(),
+		})
+		w.Header().Set("X-CSM-Signature", signPayload(secret, body))
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	c := New(Config{URL: srv.URL, HMACSecret: secret, Timeout: time.Second})
+	if _, err := c.Ask(context.Background(), Request{IP: "1.2.3.4"}); err == nil {
+		t.Fatal("expected skew error for old timestamp reply")
+	}
+}
+
+// TestClient_AcceptsNonceEcho: the happy path — panel echoes nonce and
+// timestamps within skew. Verdict applies.
+func TestClient_AcceptsNonceEcho(t *testing.T) {
+	secret := "panel-secret"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req Request
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		body, _ := json.Marshal(Response{
+			Verdict:   "allow",
+			Nonce:     req.Nonce,
+			Timestamp: time.Now().Unix(),
+		})
+		w.Header().Set("X-CSM-Signature", signPayload(secret, body))
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	c := New(Config{URL: srv.URL, HMACSecret: secret, Timeout: time.Second})
+	resp, err := c.Ask(context.Background(), Request{IP: "1.2.3.4"})
+	if err != nil {
+		t.Fatalf("happy path: %v", err)
+	}
+	if resp.Verdict != "allow" {
+		t.Errorf("verdict = %q, want allow", resp.Verdict)
+	}
+}
+
 // TestClient_AcceptsSignedResponse: with a secret configured and a panel
 // that signs its response body, the client accepts the verdict.
 func TestClient_AcceptsSignedResponse(t *testing.T) {
 	secret := "panel-secret"
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		body, _ := json.Marshal(Response{Verdict: "allow", TenantID: "t-9"})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var req Request
+		_ = json.Unmarshal(raw, &req)
+		body, _ := json.Marshal(Response{Verdict: "allow", TenantID: "t-9", Nonce: req.Nonce, Timestamp: time.Now().Unix()})
 		w.Header().Set("X-CSM-Signature", signPayload(secret, body))
 		_, _ = w.Write(body)
 	}))
