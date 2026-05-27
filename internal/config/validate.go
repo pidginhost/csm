@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -233,16 +234,12 @@ func Validate(cfg *Config) []ValidationResult {
 			"download_url is required because upstream YARA Forge releases do not publish CSM detached signatures"})
 	}
 	if cfg.Signatures.YaraForge.DownloadURL != "" {
-		if !strings.HasPrefix(cfg.Signatures.YaraForge.DownloadURL, "https://") &&
-			!strings.HasPrefix(cfg.Signatures.YaraForge.DownloadURL, "http://") {
-			results = append(results, ValidationResult{"error", "signatures.yara_forge.download_url",
-				"download_url must be an http or https URL"})
-		} else if err := validateSignaturesHost(cfg.Signatures.YaraForge.DownloadURL); err != nil {
+		if err := validateSignatureURL(cfg.Signatures.YaraForge.DownloadURL, true); err != nil {
 			results = append(results, ValidationResult{"error", "signatures.yara_forge.download_url", err.Error()})
 		}
 	}
 	if cfg.Signatures.UpdateURL != "" {
-		if err := validateSignaturesHost(cfg.Signatures.UpdateURL); err != nil {
+		if err := validateSignatureURL(cfg.Signatures.UpdateURL, false); err != nil {
 			results = append(results, ValidationResult{"error", "signatures.update_url", err.Error()})
 		}
 	}
@@ -653,39 +650,53 @@ func probeWebhook(url string) []ValidationResult {
 	return []ValidationResult{{"ok", "alerts.webhook.url", fmt.Sprintf("reachable (HTTP %d)", resp.StatusCode)}}
 }
 
-// validateSignaturesHost rejects signature URLs that point at loopback,
-// link-local, or RFC1918 ranges. The signature update path runs as root,
-// downloads code-shaped content, and relies on detached signatures the
-// operator's signing key is supposed to verify -- a hostile DNS hijack
-// that lands a legitimate-looking URL on a private range still requires
-// signing-key compromise to actually deliver malicious rules, but
-// refusing the obvious internal hosts at config-load time avoids a class
-// of operator misconfiguration where the URL was meant for staging and
-// quietly stayed in production.
-func validateSignaturesHost(raw string) error {
-	u, err := url.Parse(raw)
+func validateSignatureURL(raw string, allowTemplates bool) error {
+	candidate := strings.TrimSpace(raw)
+	if allowTemplates {
+		candidate = sampleSignatureURLTemplate(candidate)
+	}
+	u, err := url.Parse(candidate)
 	if err != nil {
 		return fmt.Errorf("parse: %w", err)
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+	default:
+		return fmt.Errorf("signatures URL must be an http or https URL")
 	}
 	host := u.Hostname()
 	if host == "" {
 		return fmt.Errorf("missing host in %q", raw)
 	}
-	lower := strings.ToLower(host)
+	return validateSignaturesHost(host)
+}
+
+func sampleSignatureURLTemplate(raw string) string {
+	raw = strings.ReplaceAll(raw, "{tier}", "core")
+	raw = strings.ReplaceAll(raw, "{version}", "v1.0.0")
+	return raw
+}
+
+// validateSignaturesHost rejects URL hosts that point at loopback,
+// link-local, or RFC1918 / ULA ranges. Scoped IPv6 literals are valid URL
+// hosts, so use netip instead of net.ParseIP to keep the zone intact.
+func validateSignaturesHost(host string) error {
+	lower := strings.TrimSuffix(strings.ToLower(host), ".")
 	if lower == "localhost" || lower == "localhost.localdomain" {
 		return fmt.Errorf("signatures URL host %q is loopback; refuse for production downloads", host)
 	}
-	if ip := net.ParseIP(host); ip != nil {
-		if ip.IsLoopback() {
+	if addr, err := netip.ParseAddr(lower); err == nil {
+		addr = addr.Unmap()
+		if addr.IsLoopback() {
 			return fmt.Errorf("signatures URL host %s is loopback", host)
 		}
-		if ip.IsPrivate() {
+		if addr.IsPrivate() {
 			return fmt.Errorf("signatures URL host %s is RFC1918 / ULA private", host)
 		}
-		if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		if addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() {
 			return fmt.Errorf("signatures URL host %s is link-local", host)
 		}
-		if ip.IsUnspecified() {
+		if addr.IsUnspecified() {
 			return fmt.Errorf("signatures URL host %s is unspecified", host)
 		}
 	}

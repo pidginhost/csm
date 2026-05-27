@@ -345,6 +345,7 @@ signatures:
 `signatures.signing_key` is mandatory whenever either `signatures.update_url` is set or `signatures.yara_forge.enabled` is `true`.
 The value must be the hex-encoded Ed25519 public key used to verify detached `.sig` files for downloaded rule bundles.
 It is not a PEM block and not a filesystem path.
+Remote update URLs must use HTTP or HTTPS and must not point at localhost, loopback, link-local, unspecified, or RFC1918 / ULA private addresses.
 
 YARA Forge upstream GitHub releases do not publish CSM detached signatures. To enable automatic Forge updates, mirror the ZIPs, sign each ZIP, publish the signature at the ZIP URL plus `.sig`, and set `yara_forge.download_url` to that signed mirror. If you are not operating a signed remote rule feed yet, leave `update_url` empty and keep `yara_forge.enabled: false`.
 

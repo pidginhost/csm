@@ -548,6 +548,80 @@ func TestValidateSignaturesRequireDownloadURLForForge(t *testing.T) {
 	}
 }
 
+func TestValidateSignaturesRejectUnsafeUpdateURLs(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{name: "bad scheme", url: "ftp://example.com/rules.yml"},
+		{name: "localhost", url: "https://localhost/rules.yml"},
+		{name: "localhost trailing dot", url: "https://localhost./rules.yml"},
+		{name: "loopback IPv4", url: "https://127.0.0.1/rules.yml"},
+		{name: "private IPv4", url: "https://10.1.2.3/rules.yml"},
+		{name: "private IPv6", url: "https://[fd00::1]/rules.yml"},
+		{name: "link local IPv6 zone", url: "https://[fe80::1%25lo0]/rules.yml"},
+		{name: "unspecified IPv4", url: "https://0.0.0.0/rules.yml"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := baseValidationConfig()
+			cfg.Signatures.SigningKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+			cfg.Signatures.UpdateURL = tt.url
+
+			results := Validate(cfg)
+			if !hasResult(results, "error", "signatures.update_url") {
+				t.Fatalf("expected update_url error for %q; results=%v", tt.url, results)
+			}
+		})
+	}
+}
+
+func TestValidateSignaturesRejectUnsafeForgeDownloadURLs(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{name: "bad scheme", url: "ftp://example.com/rules.zip"},
+		{name: "localhost", url: "https://localhost/rules.zip"},
+		{name: "loopback IPv6 zone", url: "https://[::1%25lo0]/rules.zip"},
+		{name: "private IPv4 mapped IPv6", url: "https://[::ffff:10.1.2.3]/rules.zip"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := baseValidationConfig()
+			cfg.Signatures.SigningKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+			cfg.Signatures.YaraForge.DownloadURL = tt.url
+
+			results := Validate(cfg)
+			if !hasResult(results, "error", "signatures.yara_forge.download_url") {
+				t.Fatalf("expected yara_forge.download_url error for %q; results=%v", tt.url, results)
+			}
+		})
+	}
+}
+
+func TestValidateSignaturesAllowsPublicForgeTemplates(t *testing.T) {
+	tests := []string{
+		"HTTPS://rules.example/csm/{version}/yara-forge-rules-{tier}.zip",
+		"https://rules-{tier}.example/csm/{version}/rules.zip",
+	}
+
+	for _, url := range tests {
+		t.Run(url, func(t *testing.T) {
+			cfg := baseValidationConfig()
+			cfg.Signatures.SigningKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+			cfg.Signatures.YaraForge.DownloadURL = url
+
+			results := Validate(cfg)
+			if hasResult(results, "error", "signatures.yara_forge.download_url") {
+				t.Fatalf("unexpected yara_forge.download_url error for %q; results=%v", url, results)
+			}
+		})
+	}
+}
+
 func TestValidateWarningGeoIP(t *testing.T) {
 	cfg := &Config{Hostname: "test"}
 	cfg.Alerts.Email.Enabled = true
