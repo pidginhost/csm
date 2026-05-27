@@ -35,7 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Auto-block tracker, perm-block tracker, and firewall state now use private atomic writes. A daemon crash or power loss mid-write can no longer leave a torn JSON file or reuse stale temp-file permissions.
 - Auto-netblock escalation now handles IPv6 attackers by collapsing per-IP blocks to a /64 CIDR. Previously the prefix extractor only understood IPv4, so IPv6 botnets rotating inside their assignment never triggered the subnet-block path.
 - PHP content detection now catches Unicode-escape function-name obfuscation while limiting the match to the callable target. Unicode-escaped labels or other callback data no longer raise this alert on their own.
-- Mail-log and access-log tailers now cap individual lines and skip past oversized records instead of letting an attacker-controlled multi-megabyte "line" consume unbounded memory or stall the scanner.
+- Mail-log and access-log tailers now bound tail windows and skip oversized records before continuing. Attackers can no longer use a huge log record to consume unbounded memory, stall tailing, or feed truncated content to detectors.
 - Compound webshell-plus-C2 incident classification no longer relies on the trimmed timeline. Sticky flags persist on the incident itself so a long, noisy attack still escalates when the matching counterpart arrives much later.
 - Periodic and initial scans now snapshot the live config once per tick, so a SIGHUP landing mid-tick can no longer split detection and auto-response between old and new policy.
 - Periodic integrity checks no longer raise a tamper alert when a valid config reload finishes while the check is hashing the old snapshot.

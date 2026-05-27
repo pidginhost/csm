@@ -315,6 +315,52 @@ done:
 	}
 }
 
+func TestLogWatcher_ReadNewLines_SkipsOversizedLineAndContinues(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "test.log")
+	if err := os.WriteFile(tmp, nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	alertCh := make(chan alert.Finding, 10)
+	handler := func(line string, _ *config.Config) []alert.Finding {
+		return []alert.Finding{{Check: "test", Message: line}}
+	}
+
+	w, err := NewLogWatcher(tmp, &config.Config{}, handler, alertCh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Stop()
+
+	f, err := os.OpenFile(tmp, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString("before\n")
+	_, _ = f.WriteString(strings.Repeat("A", logWatcherMaxLineBytes+32) + "\n")
+	_, _ = f.WriteString("after\n")
+	_ = f.Close()
+
+	w.readNewLines()
+
+	var msgs []string
+	for {
+		select {
+		case finding := <-alertCh:
+			msgs = append(msgs, finding.Message)
+		default:
+			goto done
+		}
+	}
+done:
+	if len(msgs) != 2 {
+		t.Fatalf("got %d findings, want 2: %v", len(msgs), msgs)
+	}
+	if msgs[0] != "before" || msgs[1] != "after" {
+		t.Fatalf("oversized line was not skipped cleanly: %v", msgs)
+	}
+}
+
 func TestLogWatcher_ReadNewLines_NoNewData(t *testing.T) {
 	tmp := filepath.Join(t.TempDir(), "test.log")
 	if err := os.WriteFile(tmp, []byte("line\n"), 0644); err != nil {

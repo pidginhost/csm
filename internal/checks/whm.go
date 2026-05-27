@@ -151,7 +151,7 @@ func tailFile(path string, maxLines int) []string {
 		return readAllLines(f, maxLines)
 	}
 
-	data, err := readTailWindow(f, info.Size(), maxLines)
+	data, err := readTailWindow(f, info.Size(), maxLines, maxTailWindowBytes)
 	if err != nil {
 		return readAllLines(f, maxLines)
 	}
@@ -159,16 +159,24 @@ func tailFile(path string, maxLines int) []string {
 	return readAllLines(bytes.NewReader(data), maxLines)
 }
 
-func readTailWindow(f *os.File, size int64, maxLines int) ([]byte, error) {
+func readTailWindow(f *os.File, size int64, maxLines int, maxBytes int64) ([]byte, error) {
 	const chunkSize int64 = 256 * 1024
+
+	if maxBytes <= 0 {
+		return nil, nil
+	}
 
 	offset := size
 	newlines := 0
+	var totalRead int64
 	chunks := make([][]byte, 0, 4)
-	for offset > 0 && newlines <= maxLines {
+	for offset > 0 && newlines <= maxLines && totalRead < maxBytes {
 		n := chunkSize
 		if offset < n {
 			n = offset
+		}
+		if remaining := maxBytes - totalRead; remaining < n {
+			n = remaining
 		}
 		offset -= n
 
@@ -178,6 +186,7 @@ func readTailWindow(f *os.File, size int64, maxLines int) ([]byte, error) {
 			return nil, err
 		}
 		chunk = chunk[:read]
+		totalRead += int64(read)
 		newlines += bytes.Count(chunk, []byte{'\n'})
 		chunks = append(chunks, chunk)
 	}
@@ -193,16 +202,24 @@ func readTailWindow(f *os.File, size int64, maxLines int) ([]byte, error) {
 	if offset > 0 {
 		if firstNewline := bytes.IndexByte(data, '\n'); firstNewline >= 0 {
 			data = data[firstNewline+1:]
+		} else {
+			return nil, nil
 		}
 	}
 	return data, nil
 }
 
-// maxLogLineBytes is the per-line cap for log tailers. Anything above
-// this is truncated; the reader still advances past the line so we
-// keep consuming subsequent lines instead of stopping at the first
-// oversized record (which is what bufio.Scanner did before).
-const maxLogLineBytes = 256 * 1024
+const (
+	// maxLogLineBytes is the per-line cap for periodic log tailers.
+	// Oversized records are skipped after the reader advances past the
+	// terminator so a crafted long line cannot poison the next record.
+	maxLogLineBytes = 256 * 1024
+
+	// maxTailWindowBytes bounds the backward seek window before line
+	// parsing starts. Without this, a huge unterminated final record makes
+	// the tail reader cache the whole file while looking for maxLines.
+	maxTailWindowBytes int64 = 32 * 1024 * 1024
+)
 
 func readAllLines(r io.Reader, maxLines int) []string {
 	if maxLines <= 0 {
@@ -212,9 +229,9 @@ func readAllLines(r io.Reader, maxLines int) []string {
 	br := bufio.NewReaderSize(r, 64*1024)
 	var lines []string
 	for {
-		line, _, err := readBoundedLineLog(br, maxLogLineBytes)
-		if len(line) > 0 {
-			lines = append(lines, strings.TrimRight(line, "\n"))
+		line, truncated, err := readBoundedLineLog(br, maxLogLineBytes)
+		if len(line) > 0 && !truncated {
+			lines = append(lines, trimLogLineEnding(line))
 		}
 		if err != nil {
 			break
@@ -225,6 +242,11 @@ func readAllLines(r io.Reader, maxLines int) []string {
 		return lines[len(lines)-maxLines:]
 	}
 	return lines
+}
+
+func trimLogLineEnding(line string) string {
+	line = strings.TrimSuffix(line, "\n")
+	return strings.TrimSuffix(line, "\r")
 }
 
 // readBoundedLineLog reads up to and including the next '\n'. If the

@@ -43,10 +43,10 @@ func (r *FileReader) Run(ctx context.Context) (<-chan Line, error) {
 }
 
 // readBoundedLine reads up to and including the next '\n'. If the line
-// exceeds maxBytes, the returned data is truncated to maxBytes, the
-// reader is advanced past the line's terminating newline so framing
-// stays intact for the next call, and truncated=true is returned.
-// Returns the same error semantics as bufio.Reader.ReadString.
+// exceeds maxBytes, the returned data is capped at maxBytes, the reader
+// is advanced past the line's terminating newline so framing stays
+// intact for the next call, and truncated=true is returned. Callers must
+// treat truncated records as untrusted and skip them.
 func readBoundedLine(r *bufio.Reader, maxBytes int) (string, bool, error) {
 	var b strings.Builder
 	truncated := false
@@ -110,10 +110,14 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, f *os.File, read
 			for {
 				line, truncated, err := readBoundedLine(reader, maxLogLineBytes)
 				if err != nil {
+					if truncated {
+						fmt.Fprintf(os.Stderr, "maillog file_reader %s: oversized line skipped at %d bytes\n", r.path, maxLogLineBytes)
+					}
 					break
 				}
 				if truncated {
-					fmt.Fprintf(os.Stderr, "maillog file_reader %s: oversized line truncated at %d bytes\n", r.path, maxLogLineBytes)
+					fmt.Fprintf(os.Stderr, "maillog file_reader %s: oversized line skipped at %d bytes\n", r.path, maxLogLineBytes)
+					continue
 				}
 				select {
 				case out <- Line{Source: "file", Message: line}:

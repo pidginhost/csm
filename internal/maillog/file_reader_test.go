@@ -28,8 +28,11 @@ func TestReadBoundedLine_TruncatesOversizedLine(t *testing.T) {
 	if !truncated {
 		t.Error("truncated flag should be true for oversized line")
 	}
-	if len(got) > max {
-		t.Errorf("returned %d bytes, want <= %d", len(got), max)
+	if len(got) != max {
+		t.Errorf("returned %d bytes, want %d", len(got), max)
+	}
+	if got != strings.Repeat("a", max) {
+		t.Errorf("got %q, want capped prefix", got)
 	}
 	next, _, err := readBoundedLine(r, max)
 	if err != nil {
@@ -106,6 +109,50 @@ func TestFileReader_StreamsLines(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for line")
+	}
+}
+
+func TestFileReader_SkipsOversizedLineAndContinues(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "maillog")
+	if err := os.WriteFile(path, []byte(""), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewFileReader(path)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+
+	out, err := r.Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Errorf("open append: %v", err)
+			return
+		}
+		defer f.Close()
+		_, _ = f.WriteString(strings.Repeat("A", maxLogLineBytes+32) + "\n")
+		_, _ = f.WriteString("Jan  2 10:00:01 host dovecot: after\n")
+	}()
+
+	select {
+	case line, ok := <-out:
+		if !ok {
+			t.Fatal("channel closed before line received")
+		}
+		if strings.HasPrefix(line.Message, "A") {
+			t.Fatalf("oversized line was emitted instead of skipped: len=%d", len(line.Message))
+		}
+		if line.Message != "Jan  2 10:00:01 host dovecot: after\n" {
+			t.Fatalf("line = %q, want post-oversize line", line.Message)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for post-oversize line")
 	}
 }
 

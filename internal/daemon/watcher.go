@@ -3,6 +3,7 @@ package daemon
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -18,7 +19,10 @@ import (
 	"github.com/pidginhost/csm/internal/store"
 )
 
-const recentOutgoingMailHoldWindow = 2 * time.Hour
+const (
+	recentOutgoingMailHoldWindow = 2 * time.Hour
+	logWatcherMaxLineBytes       = 256 * 1024
+)
 
 // LogLineHandler parses a log line and returns findings (if any).
 type LogLineHandler func(line string, cfg *config.Config) []alert.Finding
@@ -111,26 +115,36 @@ func (w *LogWatcher) readNewLines() {
 		return
 	}
 
-	scanner := bufio.NewScanner(w.file)
-	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
-			continue
+	reader := bufio.NewReaderSize(w.file, 64*1024)
+	for {
+		rawLine, truncated, readErr := readBoundedWatcherLine(reader, logWatcherMaxLineBytes)
+		if truncated {
+			fmt.Fprintf(os.Stderr, "[%s] Warning: skipped oversized log line from %s at %d bytes\n", ts(), w.path, logWatcherMaxLineBytes)
 		}
+		if len(rawLine) > 0 && !truncated {
+			line := trimWatcherLineEnding(rawLine)
+			if line == "" {
+				if readErr != nil {
+					break
+				}
+				continue
+			}
 
-		findings := w.handler(line, w.cfg)
-		for _, f := range findings {
-			if f.Timestamp.IsZero() {
-				f.Timestamp = time.Now()
+			findings := w.handler(line, w.cfg)
+			for _, f := range findings {
+				if f.Timestamp.IsZero() {
+					f.Timestamp = time.Now()
+				}
+				select {
+				case w.alertCh <- f:
+				default:
+					// Channel full - drop (backpressure)
+					fmt.Fprintf(os.Stderr, "[%s] Warning: alert channel full, dropping finding from %s\n", ts(), w.path)
+				}
 			}
-			select {
-			case w.alertCh <- f:
-			default:
-				// Channel full - drop (backpressure)
-				fmt.Fprintf(os.Stderr, "[%s] Warning: alert channel full, dropping finding from %s\n", ts(), w.path)
-			}
+		}
+		if readErr != nil {
+			break
 		}
 	}
 
@@ -139,6 +153,35 @@ func (w *LogWatcher) readNewLines() {
 	if err == nil {
 		w.offset = newOffset
 	}
+}
+
+func readBoundedWatcherLine(r *bufio.Reader, maxBytes int) (string, bool, error) {
+	var b strings.Builder
+	truncated := false
+	for {
+		chunk, err := r.ReadSlice('\n')
+		if len(chunk) > 0 {
+			switch {
+			case truncated:
+			case b.Len()+len(chunk) <= maxBytes:
+				b.Write(chunk)
+			default:
+				if room := maxBytes - b.Len(); room > 0 {
+					b.Write(chunk[:room])
+				}
+				truncated = true
+			}
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		return b.String(), truncated, err
+	}
+}
+
+func trimWatcherLineEnding(line string) string {
+	line = strings.TrimSuffix(line, "\n")
+	return strings.TrimSuffix(line, "\r")
 }
 
 func (w *LogWatcher) reopen() {

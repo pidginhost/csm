@@ -119,6 +119,39 @@ func TestTailFileLargeFileHonorsRequestedLineCount(t *testing.T) {
 	}
 }
 
+func TestTailFileLargeFileCapsTailWindow(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "oversized-tail.log")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if truncateErr := f.Truncate(4096); truncateErr != nil {
+		t.Fatal(truncateErr)
+	}
+
+	data, err := readTailWindow(f, 4096, 10, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) != 0 {
+		t.Fatalf("tail window beginning mid-record should be dropped, got %d bytes", len(data))
+	}
+}
+
+func TestReadAllLinesSkipsOversizedRecordAndContinues(t *testing.T) {
+	content := "safe-before\n" + strings.Repeat("A", maxLogLineBytes+32) + "\nsafe-after\n"
+
+	got := readAllLines(strings.NewReader(content), 10)
+	if len(got) != 2 {
+		t.Fatalf("got %d lines, want 2: %v", len(got), got)
+	}
+	if got[0] != "safe-before" || got[1] != "safe-after" {
+		t.Fatalf("oversized record was not skipped cleanly: %v", got)
+	}
+}
+
 func TestTailFileStatFailureReturnsNil(t *testing.T) {
 	// Open succeeds (we serve a real file) but the file is closed before
 	// Stat by deleting it. On macOS the open fd's Stat still works, so
