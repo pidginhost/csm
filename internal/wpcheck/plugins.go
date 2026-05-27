@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -338,5 +339,5 @@ func (c *Cache) IsVerifiedPluginFile(fd int, path string) bool {
 		return false
 	}
 	h := sha256.Sum256(data[:n])
-	return hex.EncodeToString(h[:]) == expected
+	return subtle.ConstantTimeCompare([]byte(hex.EncodeToString(h[:])), []byte(expected)) == 1
 }
