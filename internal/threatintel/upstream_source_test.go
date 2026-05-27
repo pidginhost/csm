@@ -186,3 +186,54 @@ func TestUpstreamSource_ResolvesTokenFromEnv(t *testing.T) {
 		t.Fatalf("expected env-resolved bearer, got %q", capturedAuth)
 	}
 }
+
+// TestUpstreamSource_CacheEvictsExpiredEntries: cache must not grow
+// unbounded under sustained traffic with unique IPs. Once the cap is
+// reached, the oldest (or expired) entries are evicted instead of the
+// map silently growing forever.
+func TestUpstreamSource_CacheEvictsExpiredEntries(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"ip": r.URL.Query().Get("ip"), "score": 50, "ttl_sec": 1,
+		})
+	}))
+	defer srv.Close()
+
+	src := NewUpstreamSource(UpstreamConfig{URL: srv.URL, CacheTTL: time.Millisecond, Timeout: time.Second})
+	src.maxCacheEntries = 16
+	for i := 0; i < 100; i++ {
+		ip := fmt.Sprintf("198.51.100.%d", i%200)
+		_, _ = src.Score(context.Background(), ip)
+	}
+	if got := src.cacheLen(); got > 16 {
+		t.Fatalf("cache grew to %d entries, want <= 16", got)
+	}
+}
+
+// TestUpstreamSource_CircuitBreakerSkipsCallsAfterFailures: sustained
+// upstream failures must trip a breaker so Score returns immediately
+// for the cooldown window instead of repeatedly stalling on a dead
+// upstream.
+func TestUpstreamSource_CircuitBreakerSkipsCallsAfterFailures(t *testing.T) {
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	src := NewUpstreamSource(UpstreamConfig{URL: srv.URL, CacheTTL: time.Minute, Timeout: 100 * time.Millisecond})
+	src.breakerTrip = 3
+	src.breakerCooldown = time.Hour
+
+	for i := 0; i < 3; i++ {
+		_, _ = src.Score(context.Background(), fmt.Sprintf("198.51.100.%d", i))
+	}
+	tripHits := atomic.LoadInt32(&hits)
+	for i := 0; i < 10; i++ {
+		_, _ = src.Score(context.Background(), fmt.Sprintf("198.51.100.%d", 100+i))
+	}
+	if atomic.LoadInt32(&hits) != tripHits {
+		t.Fatalf("breaker did not trip: pre=%d post=%d (each Score should short-circuit)", tripHits, atomic.LoadInt32(&hits))
+	}
+}
