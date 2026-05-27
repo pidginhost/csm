@@ -47,6 +47,12 @@ type Limits struct {
 	MaxArchiveDepth   int
 	MaxArchiveFiles   int
 	MaxExtractionSize int64
+	// TempDir is the directory CreateTemp uses for extracted parts.
+	// Empty falls back to os.TempDir() (/tmp on Linux). Operators
+	// should set this to a daemon-owned 0700 path so extracted email
+	// attachments are not staged in a world-writable directory where
+	// another local uid can race the scanner via symlink swaps.
+	TempDir string
 }
 
 // DefaultLimits returns the default extraction limits.
@@ -117,7 +123,7 @@ func ParseSpoolMessage(headerPath, bodyPath string, limits Limits) (*ExtractionR
 		decoded, truncated := decodeSinglePart(bodyData, cte, limits.MaxAttachmentSize+1)
 
 		if !truncated && int64(len(decoded)) <= limits.MaxAttachmentSize {
-			tmpFile, tmpErr := os.CreateTemp("", "csm-emailav-single-*")
+			tmpFile, tmpErr := os.CreateTemp(limits.TempDir, "csm-emailav-single-*")
 			if tmpErr == nil {
 				_, _ = tmpFile.Write(decoded)
 				tmpFile.Close()
@@ -377,7 +383,7 @@ func extractMultipart(r io.Reader, boundary string, limits Limits, result *Extra
 		}
 
 		// Write to temp file with size limit
-		tmpFile, err := os.CreateTemp("", "csm-emailav-*")
+		tmpFile, err := os.CreateTemp(limits.TempDir, "csm-emailav-*")
 		if err != nil {
 			return fmt.Errorf("creating temp file: %w", err)
 		}
@@ -457,7 +463,7 @@ func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionRe
 			continue
 		}
 
-		tmpFile, err := os.CreateTemp("", "csm-emailav-zip-*")
+		tmpFile, err := os.CreateTemp(limits.TempDir, "csm-emailav-zip-*")
 		if err != nil {
 			rc.Close()
 			continue
@@ -529,7 +535,7 @@ func extractTarGz(tgzPath, archiveName string, limits Limits, result *Extraction
 		}
 		safeName := sanitizeAttachmentName(hdr.Name)
 
-		tmpFile, err := os.CreateTemp("", "csm-emailav-tgz-*")
+		tmpFile, err := os.CreateTemp(limits.TempDir, "csm-emailav-tgz-*")
 		if err != nil {
 			continue
 		}

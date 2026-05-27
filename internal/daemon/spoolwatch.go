@@ -50,6 +50,13 @@ type SpoolWatcher struct {
 	quarantine     *emailav.Quarantine
 	permissionMode bool // true if using FAN_OPEN_PERM, false if fallback to FAN_CLOSE_WRITE
 
+	// emailAVTempDir is the staging directory CreateTemp uses for
+	// extracted attachments. Established once at watcher construction
+	// (0700, daemon-owned) so an unprivileged local uid cannot race
+	// the scanner via /tmp symlink swaps. Empty falls back to
+	// os.TempDir() so test harnesses still work without setup.
+	emailAVTempDir string
+
 	scanCh    chan spoolEvent
 	pipeFds   [2]int
 	stopOnce  sync.Once
@@ -75,12 +82,13 @@ type spoolEvent struct {
 // FAN_CLASS_NOTIF with FAN_CLOSE_WRITE if permission events are unavailable.
 func NewSpoolWatcher(cfg *config.Config, alertCh chan<- alert.Finding, orch *emailav.Orchestrator, quar *emailav.Quarantine) (*SpoolWatcher, error) {
 	sw := &SpoolWatcher{
-		cfg:          cfg,
-		alertCh:      alertCh,
-		orchestrator: orch,
-		quarantine:   quar,
-		scanCh:       make(chan spoolEvent, 256),
-		stopCh:       make(chan struct{}),
+		cfg:            cfg,
+		alertCh:        alertCh,
+		orchestrator:   orch,
+		quarantine:     quar,
+		emailAVTempDir: resolveEmailAVTempDir(cfg),
+		scanCh:         make(chan spoolEvent, 256),
+		stopCh:         make(chan struct{}),
 	}
 
 	// Try permission-capable class first
@@ -318,6 +326,7 @@ func (sw *SpoolWatcher) handleSpoolEvent(evt spoolEvent) {
 		MaxArchiveDepth:   sw.cfg.EmailAV.MaxArchiveDepth,
 		MaxArchiveFiles:   sw.cfg.EmailAV.MaxArchiveFiles,
 		MaxExtractionSize: sw.cfg.EmailAV.MaxExtractionSize,
+		TempDir:           sw.emailAVTempDir,
 	}
 
 	tempfail := sw.cfg.EmailAV.FailMode == "tempfail" && evt.needResp
@@ -494,6 +503,26 @@ func (sw *SpoolWatcher) drainAndClose() {
 // PermissionMode returns true if using FAN_OPEN_PERM, false if FAN_CLOSE_WRITE fallback.
 func (sw *SpoolWatcher) PermissionMode() bool {
 	return sw.permissionMode
+}
+
+// resolveEmailAVTempDir returns the directory CreateTemp should use
+// for extracted email parts. When StatePath is configured the staging
+// dir lives under it (and is created 0700 on first use); otherwise
+// the function returns "" so os.TempDir() applies, preserving prior
+// behaviour for tests and standalone harnesses.
+func resolveEmailAVTempDir(cfg *config.Config) string {
+	if cfg == nil || cfg.StatePath == "" {
+		return ""
+	}
+	dir := filepath.Join(cfg.StatePath, "emailav-tmp")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] spool watcher: cannot create %s (%v); falling back to system temp\n", ts(), dir, err)
+		return ""
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] spool watcher: cannot chmod %s (%v)\n", ts(), dir, err)
+	}
+	return dir
 }
 
 // Stop signals the event loop to exit.
