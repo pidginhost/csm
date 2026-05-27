@@ -1165,9 +1165,13 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if quarantined item is a directory or file
-	quarInfo, err := os.Stat(entry.ItemPath)
+	quarInfo, err := os.Lstat(entry.ItemPath)
 	if err != nil {
 		writeJSONError(w, fmt.Sprintf("Cannot stat quarantined file: %v", err), http.StatusInternalServerError)
+		return
+	}
+	if quarInfo.Mode()&os.ModeSymlink != 0 {
+		writeJSONError(w, "Cannot restore symlink quarantine entry", http.StatusInternalServerError)
 		return
 	}
 
@@ -1185,6 +1189,13 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, fmt.Sprintf("Cannot inspect restore destination: %v", statErr), http.StatusInternalServerError)
 			return
 		}
+		if err := os.Chmod(entry.ItemPath, restoredMode); err != nil {
+			writeJSONError(w, fmt.Sprintf("Cannot restore directory mode: %v", err), http.StatusInternalServerError)
+			return
+		}
+		if err := syscall.Chown(entry.ItemPath, meta.Owner, meta.Group); err != nil {
+			log.Printf("webui: chown %s before restore failed: %v", safeLogString(entry.ItemPath), err)
+		}
 		// Directory restore: use os.Rename (same device)
 		if err := os.Rename(entry.ItemPath, restorePath); err != nil {
 			writeJSONError(w, fmt.Sprintf("Cannot restore directory: %v", err), http.StatusInternalServerError)
@@ -1200,37 +1211,58 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 		// #nosec G304 -- restorePath was validated with
 		// validateQuarantineRestorePath above (see handler); the O_EXCL|
 		// O_NOFOLLOW flags additionally block TOCTOU replacement.
-		dst, createErr := os.OpenFile(restorePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, restoredMode)
+		dst, createErr := os.OpenFile(restorePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0600)
 		if createErr != nil {
 			_ = src.Close()
 			writeJSONError(w, fmt.Sprintf("Cannot restore - file already exists at original path: %v", createErr), http.StatusConflict)
 			return
 		}
+		if quarantineRestoreAfterCreateForTest != nil {
+			quarantineRestoreAfterCreateForTest(restorePath)
+		}
+		if _, err := ensureOpenFileStillAtPath(dst, restorePath); err != nil {
+			_ = src.Close()
+			_ = dst.Close()
+			writeJSONError(w, "Cannot restore - destination changed during restore", http.StatusConflict)
+			return
+		}
 		_, copyErr := io.Copy(dst, src)
-		_ = src.Close()
-		_ = dst.Close()
+		if closeErr := src.Close(); copyErr == nil && closeErr != nil {
+			copyErr = closeErr
+		}
 		if copyErr != nil {
-			if err := os.Remove(restorePath); err != nil && !os.IsNotExist(err) {
-				log.Printf("webui: failed to remove %s: %v", safeLogString(restorePath), err)
-			}
+			removeRestorePathIfSameOpenFile(dst, restorePath)
+			_ = dst.Close()
 			writeJSONError(w, fmt.Sprintf("Cannot write restored file: %v", copyErr), http.StatusInternalServerError)
+			return
+		}
+		if err := dst.Chmod(restoredMode); err != nil {
+			removeRestorePathIfSameOpenFile(dst, restorePath)
+			_ = dst.Close()
+			writeJSONError(w, fmt.Sprintf("Cannot restore file mode: %v", err), http.StatusInternalServerError)
+			return
+		}
+		if err := dst.Chown(meta.Owner, meta.Group); err != nil {
+			log.Printf("webui: chown %s after restore failed: %v", safeLogString(restorePath), err)
+		}
+		restoredInfo, err := ensureOpenFileStillAtPath(dst, restorePath)
+		if err != nil {
+			_ = dst.Close()
+			writeJSONError(w, "Cannot restore - destination changed during restore", http.StatusConflict)
+			return
+		}
+		if err := dst.Close(); err != nil {
+			removeRestorePathIfSameInfo(restorePath, restoredInfo)
+			writeJSONError(w, fmt.Sprintf("Cannot write restored file: %v", err), http.StatusInternalServerError)
+			return
+		}
+		if err := ensurePathStillNamesInfo(restorePath, restoredInfo); err != nil {
+			writeJSONError(w, "Cannot restore - destination changed during restore", http.StatusConflict)
 			return
 		}
 		if err := os.Remove(entry.ItemPath); err != nil && !os.IsNotExist(err) {
 			log.Printf("webui: failed to remove %s: %v", safeLogString(entry.ItemPath), err)
 		}
-	}
-
-	// Restore mode first, then chown. Chmod-before-Chown guarantees the
-	// new owner never observes a wider-than-intended mode during the
-	// race window between the two syscalls. Errors are best-effort:
-	// the file is already restored, ownership/mode mismatch is logged
-	// for the operator but does not roll back the restore.
-	if err := os.Chmod(restorePath, restoredMode); err != nil && !os.IsNotExist(err) {
-		log.Printf("webui: chmod %s after restore failed: %v", safeLogString(restorePath), err)
-	}
-	if err := syscall.Chown(restorePath, meta.Owner, meta.Group); err != nil && !os.IsNotExist(err) {
-		log.Printf("webui: chown %s after restore failed: %v", safeLogString(restorePath), err)
 	}
 
 	// Remove metadata sidecar
@@ -1244,6 +1276,51 @@ func (s *Server) apiQuarantineRestore(w http.ResponseWriter, r *http.Request) {
 		"path":    restorePath,
 		"warning": "File restored to original location. Re-scan recommended.",
 	})
+}
+
+// quarantineRestoreAfterCreateForTest lets race tests replace the path
+// after O_EXCL creation; nil in production.
+var quarantineRestoreAfterCreateForTest func(string)
+
+func ensureOpenFileStillAtPath(f *os.File, path string) (os.FileInfo, error) {
+	fileInfo, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("cannot stat restored file handle: %w", err)
+	}
+	if err := ensurePathStillNamesInfo(path, fileInfo); err != nil {
+		return nil, err
+	}
+	return fileInfo, nil
+}
+
+func ensurePathStillNamesInfo(path string, fileInfo os.FileInfo) error {
+	pathInfo, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("cannot stat restored file path: %w", err)
+	}
+	if !os.SameFile(fileInfo, pathInfo) {
+		return fmt.Errorf("restore destination changed during restore")
+	}
+	return nil
+}
+
+func removeRestorePathIfSameOpenFile(f *os.File, path string) {
+	fileInfo, err := ensureOpenFileStillAtPath(f, path)
+	if err != nil {
+		log.Printf("webui: not removing changed restore path %s: %v", safeLogString(path), err)
+		return
+	}
+	removeRestorePathIfSameInfo(path, fileInfo)
+}
+
+func removeRestorePathIfSameInfo(path string, fileInfo os.FileInfo) {
+	if err := ensurePathStillNamesInfo(path, fileInfo); err != nil {
+		log.Printf("webui: not removing changed restore path %s: %v", safeLogString(path), err)
+		return
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		log.Printf("webui: failed to remove %s: %v", safeLogString(path), err)
+	}
 }
 
 // apiQuarantinePreview returns the first 8KB of a quarantined file for inspection.

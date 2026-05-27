@@ -29,6 +29,13 @@ func withQuarantineRestoreRoots(t *testing.T, dir string) {
 	t.Cleanup(func() { quarantineRestoreRoots = old })
 }
 
+func withQuarantineRestoreAfterCreateHook(t *testing.T, hook func(string)) {
+	t.Helper()
+	old := quarantineRestoreAfterCreateForTest
+	quarantineRestoreAfterCreateForTest = hook
+	t.Cleanup(func() { quarantineRestoreAfterCreateForTest = old })
+}
+
 // newRestoreRequest builds a POST /api/v1/quarantine-restore with a JSON body.
 func newRestoreRequest(t *testing.T, body map[string]string) *http.Request {
 	t.Helper()
@@ -226,6 +233,73 @@ func TestApiQuarantineRestorePreservesRequestedMode(t *testing.T) {
 	}
 	if got, want := info.Mode().Perm(), os.FileMode(0o644); got != want {
 		t.Errorf("restored mode = %o, want %o (umask should not bleed through)", got, want)
+	}
+}
+
+func TestApiQuarantineRestoreRejectsDestinationReplacementDuringRestore(t *testing.T) {
+	tmp := t.TempDir()
+	qdir := filepath.Join(tmp, "quarantine")
+	if err := os.MkdirAll(qdir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	restoreRoot := filepath.Join(tmp, "restore-target")
+	if err := os.MkdirAll(restoreRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	withQuarantineDir(t, qdir)
+	withQuarantineRestoreRoots(t, restoreRoot)
+
+	id := "20260527-120100_replace.txt"
+	qitem := filepath.Join(qdir, id)
+	qmeta := qitem + ".meta"
+	originalPath := filepath.Join(restoreRoot, "alice", "public_html", "replace.txt")
+	if err := os.WriteFile(qitem, []byte("quarantined"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	meta := map[string]interface{}{
+		"original_path": originalPath,
+		"owner_uid":     os.Getuid(),
+		"group_gid":     os.Getgid(),
+		"mode":          "-rw-r--r--",
+	}
+	mj, _ := json.Marshal(meta)
+	if err := os.WriteFile(qmeta, mj, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	withQuarantineRestoreAfterCreateHook(t, func(path string) {
+		if err := os.Remove(path); err != nil {
+			t.Fatalf("remove just-created restore path: %v", err)
+		}
+		if err := os.WriteFile(path, []byte("replacement"), 0o600); err != nil {
+			t.Fatalf("write replacement restore path: %v", err)
+		}
+	})
+
+	s := newRestoreServer(t)
+	w := httptest.NewRecorder()
+	s.apiQuarantineRestore(w, newRestoreRequest(t, map[string]string{"id": id}))
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for replaced destination, got %d body=%s", w.Code, w.Body.String())
+	}
+	got, err := os.ReadFile(originalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "replacement" {
+		t.Fatalf("replacement file changed: got %q", got)
+	}
+	info, err := os.Stat(originalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := info.Mode().Perm(), os.FileMode(0o600); got != want {
+		t.Errorf("replacement mode = %o, want %o", got, want)
+	}
+	if _, err := os.Stat(qitem); err != nil {
+		t.Errorf("quarantined file should remain after failed restore: %v", err)
+	}
+	if _, err := os.Stat(qmeta); err != nil {
+		t.Errorf("metadata should remain after failed restore: %v", err)
 	}
 }
 
