@@ -19,7 +19,7 @@ const maxLogLineBytes = 64 * 1024
 
 // FileReader tails a single log file. It uses a 2-second polling loop
 // because rsyslog/syslog-ng don't reliably trigger inotify events on
-// every line written, and a 5-minute rotation reopen for log rotation.
+// every line written, and periodic path re-stat checks for log rotation.
 //
 // On context cancel the reader closes the output channel and returns.
 type FileReader struct {
@@ -73,11 +73,19 @@ func readBoundedLine(r *bufio.Reader, maxBytes int) (string, bool, error) {
 }
 
 func (r *FileReader) open() (*os.File, *bufio.Reader, uint64, error) {
+	return r.openAt(0, io.SeekEnd)
+}
+
+func (r *FileReader) openRotated() (*os.File, *bufio.Reader, uint64, error) {
+	return r.openAt(0, io.SeekStart)
+}
+
+func (r *FileReader) openAt(offset int64, whence int) (*os.File, *bufio.Reader, uint64, error) {
 	f, err := os.Open(r.path) // #nosec G304 -- operator-supplied log path
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	if _, seekErr := f.Seek(0, io.SeekEnd); seekErr != nil {
+	if _, seekErr := f.Seek(offset, whence); seekErr != nil {
 		_ = f.Close()
 		return nil, nil, 0, seekErr
 	}
@@ -114,7 +122,7 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, f *os.File, read
 		if inode(st) == lastIno {
 			return
 		}
-		nf, nr, ino, err := r.open()
+		nf, nr, ino, err := r.openRotated()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "maillog file_reader %s reopen: %v\n", r.path, err)
 			return

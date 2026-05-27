@@ -94,9 +94,15 @@ func TestFileReader_StreamsLines(t *testing.T) {
 	go func() {
 		// Give the file reader time to seek and start polling.
 		time.Sleep(150 * time.Millisecond)
-		f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Errorf("open append: %v", err)
+			return
+		}
 		defer f.Close()
-		_, _ = f.WriteString("Jan  2 10:00:00 host postfix: hello\n")
+		if _, err := f.WriteString("Jan  2 10:00:00 host postfix: hello\n"); err != nil {
+			t.Errorf("write log line: %v", err)
+		}
 	}()
 
 	select {
@@ -136,8 +142,13 @@ func TestFileReader_SkipsOversizedLineAndContinues(t *testing.T) {
 			return
 		}
 		defer f.Close()
-		_, _ = f.WriteString(strings.Repeat("A", maxLogLineBytes+32) + "\n")
-		_, _ = f.WriteString("Jan  2 10:00:01 host dovecot: after\n")
+		if _, err := f.WriteString(strings.Repeat("A", maxLogLineBytes+32) + "\n"); err != nil {
+			t.Errorf("write oversized line: %v", err)
+			return
+		}
+		if _, err := f.WriteString("Jan  2 10:00:01 host dovecot: after\n"); err != nil {
+			t.Errorf("write post-oversize line: %v", err)
+		}
 	}()
 
 	select {
@@ -153,6 +164,43 @@ func TestFileReader_SkipsOversizedLineAndContinues(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for post-oversize line")
+	}
+}
+
+func TestFileReader_RotationReadsReplacementFromStart(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "maillog")
+	if err := os.WriteFile(path, []byte("already tailed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewFileReader(path)
+	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
+	defer cancel()
+
+	out, err := r.Run(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Rename(path, path+".1"); err != nil {
+		t.Fatal(err)
+	}
+	want := "Jan  2 10:00:02 host postfix: after rotate\n"
+	if err := os.WriteFile(path, []byte(want), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case line, ok := <-out:
+		if !ok {
+			t.Fatal("channel closed before rotated line received")
+		}
+		if line.Message != want {
+			t.Fatalf("line = %q, want rotated replacement line %q", line.Message, want)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for rotated line")
 	}
 }
 
