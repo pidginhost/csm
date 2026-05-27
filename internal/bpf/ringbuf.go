@@ -14,11 +14,6 @@ import (
 	csmlog "github.com/pidginhost/csm/internal/log"
 )
 
-// dropEventLogStride is how often the drop path logs. 1 logs every
-// drop, large values silence the log. 256 balances visibility with
-// bounded log spam under sustained back-pressure.
-const dropEventLogStride = 256
-
 // Reader wraps cilium/ebpf's ringbuf.Reader with a per-feature decoder
 // callback and a typed Go channel. Each BPF feature defines its own event
 // struct (CSMConnEvent, CSMExecEvent, etc.) plus a decode func, then loops
@@ -93,11 +88,7 @@ func (r *Reader[T]) Run(ctx context.Context) {
 			r.count.Add(1)
 		default:
 			dropped := r.dropped.Add(1)
-			// Operator visibility: silent drops hid back-pressure problems
-			// during incident response. Emit a warn every dropEventLogStride
-			// drops so log volume stays bounded but the counter trend is
-			// auditable in any tail of the daemon log.
-			if dropped%dropEventLogStride == 1 {
+			if shouldLogDroppedEvent(dropped) {
 				csmlog.Warn("bpf ringbuf consumer back-pressure dropped events", "dropped_total", dropped, "events_delivered", r.count.Load())
 			}
 		}
