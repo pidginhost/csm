@@ -16,6 +16,13 @@ type movedFile struct {
 	dst string
 }
 
+// vars so tests can force EXDEV and source swaps without depending on
+// the host filesystem layout.
+var (
+	moveFileRename               = os.Rename
+	moveFileAfterCrossDeviceCopy = func(string, string) error { return nil }
+)
+
 // QuarantineEnvelope holds the email envelope info for quarantine metadata.
 type QuarantineEnvelope struct {
 	From      string
@@ -84,6 +91,14 @@ func (q *Quarantine) QuarantineMessage(msgID, spoolDir string, result *ScanResul
 		src := filepath.Join(spoolDir, msgID+suffix)
 		dst := filepath.Join(msgDir, msgID+suffix)
 		if err := moveFile(src, dst); err != nil {
+			if !os.IsNotExist(err) {
+				rollbackErr := rollbackMovedFiles(moved)
+				_ = os.RemoveAll(msgDir)
+				if rollbackErr != nil {
+					return fmt.Errorf("moving spool file %s: %w (rollback failed: %v)", suffix, err, rollbackErr)
+				}
+				return fmt.Errorf("moving spool file %s: %w", suffix, err)
+			}
 			continue
 		}
 		moved = append(moved, movedFile{src: src, dst: dst})
@@ -225,7 +240,7 @@ func (q *Quarantine) readMetadata(msgID string) (*QuarantineMetadata, error) {
 // attacker who swaps src for a symlink or replaces the file
 // mid-copy is rejected.
 func moveFile(src, dst string) error {
-	if err := os.Rename(src, dst); err == nil {
+	if err := moveFileRename(src, dst); err == nil {
 		return nil
 	} else if !errors.Is(err, syscall.EXDEV) {
 		// Non-EXDEV rename errors are not a cross-device condition;
@@ -266,6 +281,9 @@ func moveFile(src, dst string) error {
 	}
 	if closeErr := dstFile.Close(); closeErr != nil {
 		return fmt.Errorf("cross-device close: %w", closeErr)
+	}
+	if hookErr := moveFileAfterCrossDeviceCopy(src, dst); hookErr != nil {
+		return fmt.Errorf("cross-device post-copy check: %w", hookErr)
 	}
 	pathInfo, err := os.Lstat(src)
 	if err != nil {

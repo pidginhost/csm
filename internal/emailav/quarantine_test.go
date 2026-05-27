@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -249,6 +250,39 @@ func TestQuarantineMessageRollsBackOnMetadataWriteFailure(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(spoolDir, msgID+"-D")); err != nil {
 		t.Errorf("spool -D file should be restored after rollback: %v", err)
+	}
+}
+
+func TestQuarantineMessageRollsBackOnUnexpectedMoveFailure(t *testing.T) {
+	qDir := filepath.Join(t.TempDir(), "quarantine", "email")
+	q := NewQuarantine(qDir)
+	msgID := "2jKPFm-000abc-1X"
+	spoolDir := setupTestSpool(t, msgID)
+	q.allowedSpoolDirs = []string{spoolDir}
+
+	oldRename := moveFileRename
+	moveFileRename = func(src, dst string) error {
+		if filepath.Base(src) == msgID+"-D" {
+			return &os.LinkError{Op: "rename", Old: src, New: dst, Err: syscall.EPERM}
+		}
+		return os.Rename(src, dst)
+	}
+	t.Cleanup(func() { moveFileRename = oldRename })
+
+	result := &ScanResult{MessageID: msgID, Infected: true, Findings: []Finding{{Filename: "f.exe", Engine: "clamav", Signature: "Sig", Severity: "critical"}}}
+	env := QuarantineEnvelope{From: "a@b.com", To: []string{"c@d.com"}, Subject: "test", Direction: "inbound"}
+
+	if err := q.QuarantineMessage(msgID, spoolDir, result, env); err == nil {
+		t.Fatal("QuarantineMessage should fail on unexpected spool move error")
+	}
+	if _, err := os.Stat(filepath.Join(spoolDir, msgID+"-H")); err != nil {
+		t.Fatalf("spool -H file should be restored after rollback: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(spoolDir, msgID+"-D")); err != nil {
+		t.Fatalf("spool -D file should remain in spool: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(qDir, msgID)); !os.IsNotExist(err) {
+		t.Fatalf("quarantine directory should be removed after rollback, got %v", err)
 	}
 }
 
