@@ -3,6 +3,7 @@ package state
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 )
@@ -21,18 +22,30 @@ func AtomicWriteJSON(path string, perm os.FileMode, v any) error {
 		return fmt.Errorf("marshal: %w", err)
 	}
 	dir := filepath.Dir(path)
-	tmp := path + ".tmp"
-	// #nosec G304 -- caller owns the destination path; tmp is derived
-	// from it deterministically and lives in the same operator-owned
-	// state directory.
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	legacyTmp := path + ".tmp"
+	if removeErr := os.Remove(legacyTmp); removeErr != nil && !os.IsNotExist(removeErr) {
+		return fmt.Errorf("remove stale tmp: %w", removeErr)
+	}
+	// #nosec G304 -- caller owns the destination path; tmp lives in
+	// the same operator-owned state directory.
+	f, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
 	if err != nil {
 		return fmt.Errorf("open tmp: %w", err)
 	}
-	if _, err := f.Write(data); err != nil {
+	tmp := f.Name()
+	if err := f.Chmod(perm); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("chmod tmp: %w", err)
+	}
+	if n, err := f.Write(data); err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmp)
 		return fmt.Errorf("write tmp: %w", err)
+	} else if n != len(data) {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("write tmp: %w", io.ErrShortWrite)
 	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close()

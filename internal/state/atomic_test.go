@@ -45,10 +45,34 @@ func TestAtomicWriteJSON_EnforcesMode(t *testing.T) {
 	}
 }
 
+func TestAtomicWriteJSON_ReplacesStaleTmpWithRequestedMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.json")
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(`{"old":true}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := AtomicWriteJSON(path, 0o600, map[string]int{"x": 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o600 {
+		t.Errorf("mode = %o, want 0o600", mode)
+	}
+	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
+		t.Errorf("stale tmp should be removed after successful write, stat err=%v", err)
+	}
+}
+
 func TestAtomicWriteJSON_MarshalError(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.json")
-	bad := func() {} // funcs are unmarshalable
+	bad := func() {} // funcs are not JSON-marshalable
 	if err := AtomicWriteJSON(path, 0o600, bad); err == nil {
 		t.Fatal("expected marshal error")
 	}
