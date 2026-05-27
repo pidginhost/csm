@@ -99,8 +99,31 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, f *os.File, read
 
 	poll := time.NewTicker(2 * time.Second)
 	defer poll.Stop()
-	rotate := time.NewTicker(5 * time.Minute)
+	// Rotation safety-net: even if every poll tick finds zero EOFs (a
+	// continuously-active log), still re-stat once per minute so a
+	// rotation that happens during a sustained write burst is caught
+	// without waiting for the next idle period.
+	rotate := time.NewTicker(time.Minute)
 	defer rotate.Stop()
+
+	reopenOnRotate := func() {
+		st, err := os.Stat(r.path)
+		if err != nil {
+			return
+		}
+		if inode(st) == lastIno {
+			return
+		}
+		nf, nr, ino, err := r.open()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "maillog file_reader %s reopen: %v\n", r.path, err)
+			return
+		}
+		_ = f.Close()
+		f = nf
+		reader = nr
+		lastIno = ino
+	}
 
 	for {
 		select {
@@ -113,6 +136,11 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, f *os.File, read
 					if truncated {
 						fmt.Fprintf(os.Stderr, "maillog file_reader %s: oversized line skipped at %d bytes\n", r.path, maxLogLineBytes)
 					}
+					// Tight rotation detection: every time the reader
+					// hits EOF or any I/O error we re-stat the path so a
+					// post-rotate log is picked up by the next poll tick
+					// rather than waiting for the safety-net ticker.
+					reopenOnRotate()
 					break
 				}
 				if truncated {
@@ -126,19 +154,7 @@ func (r *FileReader) loop(ctx context.Context, out chan<- Line, f *os.File, read
 				}
 			}
 		case <-rotate.C:
-			if st, err := os.Stat(r.path); err == nil {
-				if inode(st) != lastIno {
-					nf, nr, ino, err := r.open()
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "maillog file_reader %s reopen: %v\n", r.path, err)
-						continue
-					}
-					_ = f.Close()
-					f = nf
-					reader = nr
-					lastIno = ino
-				}
-			}
+			reopenOnRotate()
 		}
 	}
 }
