@@ -264,10 +264,14 @@ func analyzePHPContent(path string) phpAnalysisResult {
 			if !strings.Contains(strings.ToLower(line), "call_user_func") {
 				continue
 			}
-			lineHex := countOccurrences(line, `"\x`)
+			// PHP 7+ accepts both "\xNN" hex and "\u{NN}" unicode-codepoint
+			// escapes inside double-quoted strings. Treat them as
+			// equivalent obfuscation forms so an attacker cannot bypass
+			// the detector by swapping syntax.
+			lineHex := countOccurrences(line, `"\x`) + countOccurrences(line, `"\u{`)
 			lineConcat := countOccurrences(line, `" . "`) + countOccurrences(line, `"."`)
 			// Typical shortest obfuscated name is 3-4 bytes ("exec", "curl",
-			// "eval"); require >=3 hex escapes AND >=2 concatenations on the
+			// "eval"); require >=3 escapes AND >=2 concatenations on the
 			// same call_user_func line.
 			if lineHex >= 3 && lineConcat >= 2 {
 				indicators = append(indicators, "call_user_func with obfuscated function names")

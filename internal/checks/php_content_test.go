@@ -367,6 +367,24 @@ func TestAnalyzePHPContentLoneCallUserFuncObfuscationIsHighNotCritical(t *testin
 	}
 }
 
+// TestAnalyzePHPContentUnicodeEscapeObfuscation: PHP 7+ allows
+// "\u{63}" as a string literal that decodes to "c". Attackers swap
+// "\x" hex for "\u{...}" to bypass the call_user_func detector that
+// only counted hex escapes. The detector must treat unicode escapes
+// the same way.
+func TestAnalyzePHPContentUnicodeEscapeObfuscation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cuf-u.php")
+	content := "<?php\n" +
+		"call_user_func(\"\\u{63}\" . \"\\u{75}\" . \"\\u{72}\" . \"\\u{6c}\", \"x\");\n"
+	_ = os.WriteFile(path, []byte(content), 0644)
+
+	result := analyzePHPContent(path)
+	if result.check != "suspicious_php_content" {
+		t.Errorf("unicode-escape call_user_func must alert; got check=%q details=%q", result.check, result.details)
+	}
+}
+
 func TestAnalyzePHPContentTwoIndicatorsEscalateToCritical(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "dropper.php")
