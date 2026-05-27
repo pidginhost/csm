@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- Archive attachment filenames are now stripped to the base name and stripped of control characters before they reach audit logs, alerts, or the web UI. Crafted zip/tar entries can no longer smuggle path-traversal segments or forged log lines through the scanner.
+- Email attachment and archive-entry filenames are now stripped to the base name and stripped of control characters before they reach audit logs, alerts, or the web UI. Crafted zip/tar entries can no longer smuggle path-traversal segments or forged log lines through the scanner.
 - Compound webshell-plus-C2 incident classification no longer relies on the trimmed timeline. Sticky flags persist on the incident itself so a long, noisy attack still escalates when the matching counterpart arrives much later.
 - Periodic and initial scans now snapshot the live config once per tick, so a SIGHUP landing mid-tick can no longer split detection and auto-response between old and new policy.
 - Periodic integrity checks no longer raise a tamper alert when a valid config reload finishes while the check is hashing the old snapshot.
@@ -86,6 +86,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Redis performance check test now stubs the in-process redisinfo client through its documented test hooks instead of relying on a default-config redis being present on the developer's machine. The dead redis-cli shellout fixture is gone.
 - Web UI modal, tab, and detail-panel actions now initialize correctly with the bundled Tabler scripts.
 - PAM packaging now builds the module before nFPM runs, and uninstall only removes CSM-managed hook lines.
+- Oversized files inside tar.gz email attachments now mark extraction as partial, matching zip handling.
 
 ## [3.8.1] - 2026-05-25
 

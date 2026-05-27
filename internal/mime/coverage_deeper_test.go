@@ -276,6 +276,42 @@ func TestExtractZIPInnerFileExceedsMaxSize(t *testing.T) {
 	}
 }
 
+func TestExtractTarGzInnerFileExceedsMaxSizeSetsPartial(t *testing.T) {
+	bigFile := make([]byte, 500)
+	for i := range bigFile {
+		bigFile[i] = 'T'
+	}
+	archive := buildTarGzArchive(t, map[string][]byte{
+		"huge.bin": bigFile,
+	})
+	body := buildMultipartBody("BOUND", "payload.tar.gz", "application/gzip", archive)
+	hPath, dPath := buildEximSpool(t, `multipart/mixed; boundary="BOUND"`, body)
+
+	limits := DefaultLimits()
+	limits.MaxAttachmentSize = 100
+	result, err := ParseSpoolMessage(hPath, dPath, limits)
+	if err != nil {
+		t.Fatalf("ParseSpoolMessage: %v", err)
+	}
+	defer func() {
+		for _, p := range result.Parts {
+			_ = os.Remove(p.TempPath)
+		}
+	}()
+
+	if !result.Partial {
+		t.Error("Partial should be true when tar.gz inner file exceeds max")
+	}
+	if !strings.Contains(result.PartialReason, "huge.bin") {
+		t.Errorf("PartialReason = %q, want sanitized inner file name", result.PartialReason)
+	}
+	for _, p := range result.Parts {
+		if p.Filename == "huge.bin" && p.Nested {
+			t.Error("oversized inner file should not be extracted from tar.gz")
+		}
+	}
+}
+
 // --- extractTarGz: tar.gz totalSize exceeded ----------------------------
 
 func TestExtractTarGzTotalSizeExceeded(t *testing.T) {
@@ -451,6 +487,12 @@ func TestExtractZIPSanitizesEntryName(t *testing.T) {
 			wantBad: []string{"\n"},
 			want:    "good.txt",
 		},
+		{
+			name:    "unicode control injection",
+			entry:   "good.txt\u0085FAKE-LOG-LINE",
+			wantBad: []string{"\u0085"},
+			want:    "good.txt",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -486,6 +528,118 @@ func TestExtractZIPSanitizesEntryName(t *testing.T) {
 				t.Errorf("Filename = %q, want %q", nested.Filename, tc.want)
 			}
 		})
+	}
+}
+
+func TestExtractTarGzSanitizesEntryName(t *testing.T) {
+	archive := buildTarGzArchive(t, map[string][]byte{
+		"..\\..\\report.txt\rFORGED": []byte("payload"),
+	})
+	body := buildMultipartBody("BOUND", "evil.tar.gz", "application/gzip", archive)
+	hPath, dPath := buildEximSpool(t, `multipart/mixed; boundary="BOUND"`, body)
+
+	result, err := ParseSpoolMessage(hPath, dPath, DefaultLimits())
+	if err != nil {
+		t.Fatalf("ParseSpoolMessage: %v", err)
+	}
+	defer func() {
+		for _, p := range result.Parts {
+			_ = os.Remove(p.TempPath)
+		}
+	}()
+
+	var nested *ExtractedPart
+	for i := range result.Parts {
+		if result.Parts[i].Nested {
+			nested = &result.Parts[i]
+			break
+		}
+	}
+	if nested == nil {
+		t.Fatalf("expected one nested part, got %d total parts", len(result.Parts))
+	}
+	if nested.Filename != "report.txt" {
+		t.Errorf("Filename = %q, want report.txt", nested.Filename)
+	}
+	for _, bad := range []string{"..", "\\", "\r"} {
+		if strings.Contains(nested.Filename, bad) {
+			t.Errorf("Filename %q must not contain %q", nested.Filename, bad)
+		}
+	}
+}
+
+func TestExtractMultipartSanitizesAttachmentFilenameAndArchiveName(t *testing.T) {
+	archive := buildZipArchive(t, map[string][]byte{
+		"inner.txt": []byte("payload"),
+	})
+	body := buildMultipartBody("BOUND", "..\\\\..\\\\unsafe.zip", "application/zip", archive)
+	hPath, dPath := buildEximSpool(t, `multipart/mixed; boundary="BOUND"`, body)
+
+	result, err := ParseSpoolMessage(hPath, dPath, DefaultLimits())
+	if err != nil {
+		t.Fatalf("ParseSpoolMessage: %v", err)
+	}
+	defer func() {
+		for _, p := range result.Parts {
+			_ = os.Remove(p.TempPath)
+		}
+	}()
+
+	var outer, nested *ExtractedPart
+	for i := range result.Parts {
+		switch {
+		case !result.Parts[i].Nested && result.Parts[i].Filename == "unsafe.zip":
+			outer = &result.Parts[i]
+		case result.Parts[i].Nested:
+			nested = &result.Parts[i]
+		}
+	}
+	if outer == nil {
+		t.Fatalf("expected sanitized outer archive part, got %+v", result.Parts)
+	}
+	if nested == nil {
+		t.Fatalf("expected nested archive part, got %+v", result.Parts)
+	}
+	if nested.ArchiveName != "unsafe.zip" {
+		t.Errorf("ArchiveName = %q, want unsafe.zip", nested.ArchiveName)
+	}
+	for _, name := range []string{outer.Filename, nested.ArchiveName} {
+		for _, bad := range []string{"..", "\\"} {
+			if strings.Contains(name, bad) {
+				t.Errorf("sanitized name %q must not contain %q", name, bad)
+			}
+		}
+	}
+}
+
+func TestExtractMultipartDetectsArchiveWithControlBeforeExtension(t *testing.T) {
+	archive := buildZipArchive(t, map[string][]byte{
+		"inner.txt": []byte("payload"),
+	})
+	body := buildMultipartBody("BOUND", "payload\u0085.zip", "application/octet-stream", archive)
+	hPath, dPath := buildEximSpool(t, `multipart/mixed; boundary="BOUND"`, body)
+
+	result, err := ParseSpoolMessage(hPath, dPath, DefaultLimits())
+	if err != nil {
+		t.Fatalf("ParseSpoolMessage: %v", err)
+	}
+	defer func() {
+		for _, p := range result.Parts {
+			_ = os.Remove(p.TempPath)
+		}
+	}()
+
+	hasNested := false
+	for _, p := range result.Parts {
+		if p.Nested && p.Filename == "inner.txt" {
+			hasNested = true
+			if strings.Contains(p.ArchiveName, "\u0085") {
+				t.Errorf("ArchiveName %q must not contain control characters", p.ArchiveName)
+			}
+		}
+	}
+	if !hasNested {
+		t.Fatalf("expected nested zip part despite control character before extension, got %+v", result.Parts)
 	}
 }
 

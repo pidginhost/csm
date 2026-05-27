@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 )
 
 // ExtractedPart represents a single extracted attachment.
@@ -125,6 +126,7 @@ func ParseSpoolMessage(headerPath, bodyPath string, limits Limits) (*ExtractionR
 				if filename == "" {
 					filename = "attachment"
 				}
+				filename = sanitizeAttachmentName(filename)
 				result.Parts = append(result.Parts, ExtractedPart{
 					Filename:    filename,
 					ContentType: mediaType,
@@ -337,6 +339,8 @@ func extractMultipart(r io.Reader, boundary string, limits Limits, result *Extra
 			// Non-text without filename - use generic name
 			filename = "unnamed_attachment"
 		}
+		rawFilename := filename
+		filename = sanitizeAttachmentName(filename)
 
 		// Decode the part body based on Content-Transfer-Encoding
 		cte := strings.ToLower(part.Header.Get("Content-Transfer-Encoding"))
@@ -385,11 +389,11 @@ func extractMultipart(r io.Reader, boundary string, limits Limits, result *Extra
 		})
 
 		// Attempt archive extraction
-		lower := strings.ToLower(filename)
 		if depth < limits.MaxArchiveDepth {
-			if strings.HasSuffix(lower, ".zip") {
+			switch archiveKindForAttachmentName(rawFilename, filename) {
+			case "zip":
 				extractZIP(tmpFile.Name(), filename, limits, result, totalSize, depth+1)
-			} else if strings.HasSuffix(lower, ".tar.gz") || strings.HasSuffix(lower, ".tgz") {
+			case "tar.gz":
 				extractTarGz(tmpFile.Name(), filename, limits, result, totalSize, depth+1)
 			}
 		}
@@ -440,7 +444,7 @@ func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionRe
 		tmpFile.Close()
 		rc.Close()
 
-		safeName := sanitizeArchiveEntryName(zf.Name)
+		safeName := sanitizeAttachmentName(zf.Name)
 		if err != nil || n > limits.MaxAttachmentSize {
 			os.Remove(tmpFile.Name())
 			if n > limits.MaxAttachmentSize {
@@ -499,6 +503,7 @@ func extractTarGz(tgzPath, archiveName string, limits Limits, result *Extraction
 			result.PartialReason = fmt.Sprintf("archive %q exceeds max files %d", archiveName, limits.MaxArchiveFiles)
 			return
 		}
+		safeName := sanitizeAttachmentName(hdr.Name)
 
 		tmpFile, err := os.CreateTemp("", "csm-emailav-tgz-*")
 		if err != nil {
@@ -511,6 +516,10 @@ func extractTarGz(tgzPath, archiveName string, limits Limits, result *Extraction
 
 		if err != nil || n > limits.MaxAttachmentSize {
 			os.Remove(tmpFile.Name())
+			if n > limits.MaxAttachmentSize {
+				result.Partial = true
+				result.PartialReason = fmt.Sprintf("file %q in archive exceeds max size", safeName)
+			}
 			continue
 		}
 
@@ -523,7 +532,7 @@ func extractTarGz(tgzPath, archiveName string, limits Limits, result *Extraction
 		}
 
 		result.Parts = append(result.Parts, ExtractedPart{
-			Filename:    sanitizeArchiveEntryName(hdr.Name),
+			Filename:    safeName,
 			ContentType: "application/octet-stream",
 			Size:        n,
 			TempPath:    tmpFile.Name(),
@@ -534,20 +543,16 @@ func extractTarGz(tgzPath, archiveName string, limits Limits, result *Extraction
 	}
 }
 
-// sanitizeArchiveEntryName trims an archive entry to its base name and
-// strips control characters. The result is safe to surface in audit
-// logs, alert messages, and JSON responses without enabling
-// path-traversal or log-injection. Empty or directory-only entries
-// collapse to a stable "_unnamed_" placeholder.
-func sanitizeArchiveEntryName(name string) string {
+// sanitizeAttachmentName trims an attachment or archive-entry name to
+// its base name and truncates at control characters before the name
+// reaches logs, alerts, or JSON responses.
+func sanitizeAttachmentName(name string) string {
 	name = strings.ReplaceAll(name, "\\", "/")
 	name = filepath.Base(name)
 	// Truncate at the first control character so a crafted entry
 	// like "good.txt\nFAKE-LOG-LINE" cannot smuggle a forged log
 	// record past the visible filename.
-	if i := strings.IndexFunc(name, func(r rune) bool {
-		return r < 0x20 || r == 0x7f
-	}); i >= 0 {
+	if i := strings.IndexFunc(name, unicode.IsControl); i >= 0 {
 		name = name[:i]
 	}
 	name = strings.TrimSpace(name)
@@ -556,4 +561,32 @@ func sanitizeArchiveEntryName(name string) string {
 		return "_unnamed_"
 	}
 	return name
+}
+
+func archiveKindForAttachmentName(rawName, safeName string) string {
+	for _, name := range []string{safeName, archiveDetectionName(rawName)} {
+		lower := strings.ToLower(name)
+		switch {
+		case strings.HasSuffix(lower, ".zip"):
+			return "zip"
+		case strings.HasSuffix(lower, ".tar.gz") || strings.HasSuffix(lower, ".tgz"):
+			return "tar.gz"
+		}
+	}
+	return ""
+}
+
+// archiveDetectionName removes controls instead of truncating so a
+// filename like "payload\u0085.zip" still gets unpacked while the
+// public filename remains log-safe.
+func archiveDetectionName(name string) string {
+	name = strings.ReplaceAll(name, "\\", "/")
+	name = filepath.Base(name)
+	name = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, name)
+	return strings.TrimSpace(name)
 }
