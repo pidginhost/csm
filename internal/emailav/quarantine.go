@@ -2,9 +2,12 @@ package emailav
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 )
 
@@ -211,26 +214,87 @@ func (q *Quarantine) readMetadata(msgID string) (*QuarantineMetadata, error) {
 	return &meta, nil
 }
 
-// moveFile renames src to dst, falling back to copy+delete for cross-device
-// moves. Callers construct dst by filepath.Join under the quarantine base dir
+// moveFile renames src to dst, falling back to a fd-bound copy when
+// rename fails (cross-device or other EXDEV-style errors). Callers
+// construct dst by filepath.Join under the quarantine base dir
 // (config-owned) plus a filepath.Base-sanitized identifier.
+//
+// The cross-device path opens src with O_NOFOLLOW, copies content
+// from the open fd into a freshly-created dst, and unlinks src by the
+// path only after verifying the path still names the same inode. An
+// attacker who swaps src for a symlink or replaces the file
+// mid-copy is rejected.
 func moveFile(src, dst string) error {
-	if err := os.Rename(src, dst); err != nil {
-		// Cross-device fallback
-		// #nosec G304 -- src is mail queue path from scanner walk.
-		data, readErr := os.ReadFile(src)
-		if readErr != nil {
-			return readErr
-		}
-		// #nosec G703 -- dst is constructed by the caller under the
-		// quarantine baseDir with filepath.Base applied to any user-
-		// supplied component (see readMetadata above for the pattern).
-		if writeErr := os.WriteFile(dst, data, 0600); writeErr != nil {
-			return writeErr
-		}
-		os.Remove(src)
+	if err := os.Rename(src, dst); err == nil {
+		return nil
+	} else if !errors.Is(err, syscall.EXDEV) {
+		// Non-EXDEV rename errors are not a cross-device condition;
+		// surface them directly so the caller does not silently
+		// fall back to copy semantics for permission or path errors.
+		return err
 	}
+	// #nosec G304 -- src is mail queue path from scanner walk;
+	// O_NOFOLLOW plus the identity check below catch symlink swaps.
+	fd, err := os.OpenFile(src, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return fmt.Errorf("opening cross-device source: %w", err)
+	}
+	defer fd.Close()
+
+	srcInfo, err := fd.Stat()
+	if err != nil {
+		return fmt.Errorf("stat cross-device source: %w", err)
+	}
+	if !srcInfo.Mode().IsRegular() {
+		return fmt.Errorf("refusing cross-device copy of non-regular %s", src)
+	}
+	// #nosec G304 G306 -- dst is constructed under the quarantine baseDir;
+	// 0600 keeps the copy private.
+	dstFile, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("creating cross-device destination: %w", err)
+	}
+	removeDst := true
+	defer func() {
+		if removeDst {
+			_ = os.Remove(dst)
+		}
+	}()
+	if _, copyErr := io.Copy(dstFile, fd); copyErr != nil {
+		_ = dstFile.Close()
+		return fmt.Errorf("cross-device copy body: %w", copyErr)
+	}
+	if closeErr := dstFile.Close(); closeErr != nil {
+		return fmt.Errorf("cross-device close: %w", closeErr)
+	}
+	pathInfo, err := os.Lstat(src)
+	if err != nil {
+		return fmt.Errorf("stat cross-device source path: %w", err)
+	}
+	if !sameUnixInode(srcInfo, pathInfo) {
+		return fmt.Errorf("cross-device source %s changed during copy", src)
+	}
+	if err := os.Remove(src); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing cross-device source: %w", err)
+	}
+	removeDst = false
 	return nil
+}
+
+// sameUnixInode compares two FileInfos via underlying syscall.Stat_t so
+// the cross-device move can verify the source path still names the
+// same inode it opened. Falls back to false if either Sys() does not
+// expose Stat_t (e.g. non-Linux builds).
+func sameUnixInode(a, b os.FileInfo) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	if os.SameFile(a, b) {
+		return true
+	}
+	as, aok := a.Sys().(*syscall.Stat_t)
+	bs, bok := b.Sys().(*syscall.Stat_t)
+	return aok && bok && as.Dev == bs.Dev && as.Ino == bs.Ino
 }
 
 func rollbackMovedFiles(moved []movedFile) error {
