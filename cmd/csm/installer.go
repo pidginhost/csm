@@ -297,8 +297,8 @@ auto_response:
   block_expiry: "24h"         # how long IPs stay blocked
   max_blocks_per_hour: 50     # per-IP block cap; 0/omitted uses the default
   block_cpanel_logins: false  # block IPs on cPanel/webmail login alerts (enable after portal-only login)
-  netblock: false             # auto-block /24 subnet when threshold IPs from same range
-  netblock_threshold: 3       # IPs from same /24 before subnet auto-block
+  netblock: false             # auto-block IPv4 /24 or IPv6 /64 at threshold
+  netblock_threshold: 3       # IPs from same IPv4 /24 or IPv6 /64 before subnet auto-block
   permblock: false            # auto-promote to permanent after N temp blocks
   permblock_count: 4          # temp blocks before permanent
   permblock_interval: "24h"   # window for counting temp blocks

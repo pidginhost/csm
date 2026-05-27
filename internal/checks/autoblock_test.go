@@ -231,21 +231,22 @@ func TestAutoBlockIPs_NetBlockHandlesIPv6(t *testing.T) {
 		SetIPBlocker(oldBlocker)
 	})
 
+	oldChallengeList := GetChallengeIPList()
+	SetChallengeIPList(nil)
+	t.Cleanup(func() {
+		SetChallengeIPList(oldChallengeList)
+	})
+
 	AutoBlockIPs(cfg, []alert.Finding{
 		{Check: "wp_login_bruteforce", Message: "WP brute from 2001:db8:1::10"},
 		{Check: "wp_login_bruteforce", Message: "WP brute from 2001:db8:1::20"},
-		{Check: "wp_login_bruteforce", Message: "WP brute from 2001:db8:1::30"},
 	})
 
-	var got string
-	for _, cidr := range blocker.blockedSubnet {
-		if strings.HasPrefix(cidr, "2001:db8:1::/64") {
-			got = cidr
-			break
-		}
+	if len(blocker.blockedSubnet) != 1 {
+		t.Fatalf("blockedSubnet=%v, want one IPv6 /64 netblock", blocker.blockedSubnet)
 	}
-	if got == "" {
-		t.Fatalf("expected /64 netblock for IPv6 attackers, got blockedSubnet=%v", blocker.blockedSubnet)
+	if blocker.blockedSubnet[0] != "2001:db8:1::/64" {
+		t.Fatalf("blockedSubnet[0]=%q, want 2001:db8:1::/64", blocker.blockedSubnet[0])
 	}
 }
 

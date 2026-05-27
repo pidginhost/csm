@@ -413,27 +413,21 @@ func TestParseExpiryInvalidFallsBack(t *testing.T) {
 	}
 }
 
-// --- extractPrefix24 (autoblock.go) ------------------------------------
+// --- subnetEscalationCIDR (autoblock.go) -------------------------------
 
-func TestExtractPrefix24Standard(t *testing.T) {
-	if got := extractPrefix24("192.0.2.5"); got != "192.0.2" {
-		t.Errorf("got %q", got)
+func TestSubnetEscalationCIDR(t *testing.T) {
+	cases := map[string]string{
+		"192.0.2.5":                 "192.0.2.0/24",
+		"::ffff:192.0.2.44":         "192.0.2.0/24",
+		"2001:db8:abcd:12::1":       "2001:db8:abcd:12::/64",
+		"2001:db8:abcd:12:ffff::99": "2001:db8:abcd:12::/64",
+		"not.an.ip":                 "",
+		"2001:db8:abcd:13::1/64":    "",
 	}
-}
-
-func TestExtractPrefix24Invalid(t *testing.T) {
-	if got := extractPrefix24("not.an.ip"); got != "not.an" {
-		// The function just splits on dots and takes the first 3 — it
-		// doesn't actually validate the IP. This test pins current
-		// behavior so a future stricter implementation breaks this
-		// test loudly.
-		t.Logf("got %q (current loose behavior)", got)
-	}
-}
-
-func TestExtractPrefix24TooFewParts(t *testing.T) {
-	if got := extractPrefix24("1.2"); got != "" {
-		t.Errorf("got %q, want empty", got)
+	for ip, want := range cases {
+		if got := subnetEscalationCIDR(ip); got != want {
+			t.Errorf("subnetEscalationCIDR(%q) = %q, want %q", ip, got, want)
+		}
 	}
 }
 

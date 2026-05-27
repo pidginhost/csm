@@ -12,7 +12,7 @@ When enabled, CSM automatically responds to detected threats. All actions are lo
 | **Clean malware** | 7 strategies: @include removal, prepend/append stripping, inline eval removal, base64 chain decoding, chr/pack cleanup, hex injection removal, DB spam cleanup. |
 | **PHP shield** | Blocks PHP execution from uploads/tmp directories, detects webshell parameters. |
 | **PAM blocking** | Instant IP block on brute force threshold breach. |
-| **Subnet blocking** | Auto-blocks /24 when 3+ IPs from the same range attack. |
+| **Subnet blocking** | Auto-blocks IPv4 /24 or IPv6 /64 when 3+ IPs from the same range attack. |
 | **Permblock escalation** | Promotes temporary blocks to permanent after N repeated offenses. |
 | **Auto-freeze (PHP relay)** | When the email PHP-relay detector fires (Path 1 / 2 / 4), runs `exim -Mf` against the message IDs the offending script is currently sending. Snapshots `activeMsgs` from the per-script window first, falls back to a spool walk if the snapshot was capped or if the finding is a late reputation event. Default dry-run; flip to live with `csm phprelay dry-run off`. Skips `volume_account` (per-cpuser, no scriptKey). Rate-limited to `auto_response.php_relay.max_actions_per_minute` (default 60). cPanel only. See [PHP-relay CLI](cli.md#php-relay-mail-abuse-cpanel-only). |
 
@@ -27,7 +27,7 @@ auto_response:
   block_expiry: "24h"         # default temp block duration
   max_blocks_per_hour: 50     # per-IP blocks per hour; 0/omitted uses default
   netblock: true              # enable subnet blocking
-  netblock_threshold: 3       # IPs from same /24 before subnet block
+  netblock_threshold: 3       # IPs from same IPv4 /24 or IPv6 /64 before subnet block
   permblock: true             # promote temp blocks to permanent
   permblock_count: 4          # temp blocks before promotion
 

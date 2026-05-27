@@ -377,8 +377,8 @@ type Config struct {
 		BlockExpiry        string `yaml:"block_expiry"`        // e.g. "24h", "12h"
 		EnforcePermissions bool   `yaml:"enforce_permissions"` // auto-chmod 644 world/group-writable PHP files (default false)
 		BlockCpanelLogins  bool   `yaml:"block_cpanel_logins"` // block IPs on cPanel/webmail login alerts (default false)
-		NetBlock           bool   `yaml:"netblock"`            // auto-block /24 when threshold IPs from same subnet
-		NetBlockThreshold  int    `yaml:"netblock_threshold"`  // IPs from same /24 before subnet block (default 3)
+		NetBlock           bool   `yaml:"netblock"`            // auto-block IPv4 /24 or IPv6 /64 at threshold
+		NetBlockThreshold  int    `yaml:"netblock_threshold"`  // IPs from same IPv4 /24 or IPv6 /64 before subnet block (default 3)
 		// MaxBlocksPerHour caps per-IP auto-blocks per wall-clock hour.
 		// 0 uses DefaultMaxBlocksPerHour.
 		MaxBlocksPerHour    int    `yaml:"max_blocks_per_hour"`

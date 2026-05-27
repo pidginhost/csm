@@ -232,8 +232,8 @@ auto_response:
   max_blocks_per_hour: 50               # per-IP blocks per hour; 0/omitted uses default
   enforce_permissions: false            # auto-chmod 644 world/group-writable PHP files
   block_cpanel_logins: false            # block IPs on cPanel/webmail/FTP/API thresholded brute findings (multi-IP login, webmail/API brute, FTP brute). Single direct cPanel form logins stay audit-only regardless of this flag.
-  netblock: false                       # auto-block /24 subnets
-  netblock_threshold: 3                 # IPs from same /24 before subnet block
+  netblock: false                       # auto-block IPv4 /24 or IPv6 /64 subnets
+  netblock_threshold: 3                 # IPs from same IPv4 /24 or IPv6 /64 before subnet block
   permblock: false                      # promote temp blocks to permanent
   permblock_count: 4                    # temp blocks before promotion
   permblock_interval: "24h"             # window for counting temp blocks

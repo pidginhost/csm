@@ -395,7 +395,7 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		})
 	}
 
-	// Subnet auto-blocking: detect /24 patterns
+	// Subnet auto-blocking: detect per-family subnet patterns.
 	if cfg.AutoResponse.NetBlock && blocker != nil {
 		threshold := cfg.AutoResponse.NetBlockThreshold
 		if threshold < 2 {
@@ -565,18 +565,6 @@ func PendingBlockIPs(statePath string) map[string]bool {
 		ips[p.IP] = true
 	}
 	return ips
-}
-
-// extractPrefix24 returns the first 3 octets of an IPv4 address (e.g. "1.2.3").
-// Retained for the perm-block escalation tracker which keys on the
-// numeric prefix string. Returns "" for IPv6; callers needing a
-// family-agnostic subnet key must use subnetEscalationCIDR.
-func extractPrefix24(ip string) string {
-	parts := strings.Split(ip, ".")
-	if len(parts) != 4 {
-		return ""
-	}
-	return parts[0] + "." + parts[1] + "." + parts[2]
 }
 
 // subnetEscalationCIDR returns the canonical CIDR used by the
