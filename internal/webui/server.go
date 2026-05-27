@@ -426,6 +426,23 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 // Broadcast is a no-op kept for daemon compatibility; dashboard uses polling.
+// canonicalAllowedOrigin returns the single CORS origin the web UI
+// will accept on /api/ requests. Built from cfg.Hostname plus the
+// listen port so a forged HTTP Host header cannot redirect the check.
+func (s *Server) canonicalAllowedOrigin() string {
+	host := s.cfg.Hostname
+	port := ""
+	if listen := s.cfg.WebUI.Listen; listen != "" {
+		if idx := strings.LastIndex(listen, ":"); idx >= 0 {
+			port = listen[idx+1:]
+		}
+	}
+	if port != "" && port != "443" {
+		host = host + ":" + port
+	}
+	return "https://" + host
+}
+
 func (s *Server) Broadcast(_ []alert.Finding) {}
 
 // SetSigCount sets the loaded signature count for the status API.
@@ -821,25 +838,15 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
 		w.Header().Set("Cache-Control", "no-store")
 
-		// CORS/origin validation: reject cross-origin API requests
+		// CORS/origin validation: reject cross-origin API requests.
+		// The allowed origin is derived from configuration, not from
+		// the request's Host header. Reading r.Host would let a proxy
+		// attacker forge a Host that matches their forged Origin and
+		// trivially pass the equality check.
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			origin := r.Header.Get("Origin")
 			if origin != "" {
-				// Only allow same-origin - use r.Host which includes port
-				host := r.Host
-				if host == "" {
-					// Fallback: build from config (hostname + listen port)
-					host = s.cfg.Hostname
-					if listen := s.cfg.WebUI.Listen; listen != "" {
-						if idx := strings.LastIndex(listen, ":"); idx >= 0 {
-							port := listen[idx+1:]
-							if port != "443" {
-								host = host + ":" + port
-							}
-						}
-					}
-				}
-				allowed := "https://" + host
+				allowed := s.canonicalAllowedOrigin()
 				if origin != allowed {
 					http.Error(w, "Cross-origin request blocked", http.StatusForbidden)
 					return
