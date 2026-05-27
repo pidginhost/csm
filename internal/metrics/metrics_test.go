@@ -307,8 +307,18 @@ func TestCounterVecCardinalityCap(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		cv.With(fmt.Sprintf("ip-%d", i)).Inc()
 	}
-	if got := cv.ChildCount(); got > 9 { // 8 explicit + 1 overflow bucket
-		t.Fatalf("ChildCount = %d, want <= 9", got)
+	if got := cv.ChildCount(); got != 8 { // 7 explicit + 1 overflow bucket
+		t.Fatalf("ChildCount = %d, want 8", got)
+	}
+
+	var buf bytes.Buffer
+	bw := newBufferedWriter(&buf)
+	cv.writeTo(bw)
+	if got := bw.err; got != nil {
+		t.Fatalf("writeTo: %v", got)
+	}
+	if want := `test_cap{src="_overflow_"} 93`; !strings.Contains(buf.String(), want) {
+		t.Fatalf("missing overflow bucket %q:\n%s", want, buf.String())
 	}
 }
 
@@ -319,8 +329,8 @@ func TestGaugeVecCardinalityCap(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		gv.With(fmt.Sprintf("ip-%d", i)).Set(1)
 	}
-	if got := gv.ChildCount(); got > 5 {
-		t.Fatalf("ChildCount = %d, want <= 5", got)
+	if got := gv.ChildCount(); got != 4 {
+		t.Fatalf("ChildCount = %d, want 4", got)
 	}
 }
 
@@ -331,7 +341,7 @@ func TestHistogramVecCardinalityCap(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		hv.With(fmt.Sprintf("ip-%d", i)).Observe(0.5)
 	}
-	if got := hv.ChildCount(); got > 5 {
-		t.Fatalf("ChildCount = %d, want <= 5", got)
+	if got := hv.ChildCount(); got != 4 {
+		t.Fatalf("ChildCount = %d, want 4", got)
 	}
 }

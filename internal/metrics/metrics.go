@@ -375,7 +375,7 @@ func (cv *CounterVec) With(values ...string) *Counter {
 	if c, ok := cv.children[key]; ok {
 		return c
 	}
-	if cv.maxChildren > 0 && len(cv.children) >= cv.maxChildren {
+	if cv.maxChildren > 0 && len(cv.children) >= explicitChildLimit(cv.maxChildren) {
 		key = joinLabelValues(overflowLabelValuesForArity(len(cv.labelKeys)))
 		if c, ok := cv.children[key]; ok {
 			return c
@@ -396,6 +396,13 @@ func overflowLabelValuesForArity(n int) []string {
 		out[i] = overflowLabelValue
 	}
 	return out
+}
+
+func explicitChildLimit(maxChildren int) int {
+	if maxChildren <= 1 {
+		return 0
+	}
+	return maxChildren - 1
 }
 
 func (cv *CounterVec) writeTo(w *bufferedWriter) {
@@ -478,7 +485,7 @@ func (hv *HistogramVec) With(values ...string) *Histogram {
 	if h, ok := hv.children[key]; ok {
 		return h
 	}
-	if hv.maxChildren > 0 && len(hv.children) >= hv.maxChildren {
+	if hv.maxChildren > 0 && len(hv.children) >= explicitChildLimit(hv.maxChildren) {
 		key = joinLabelValues(overflowLabelValuesForArity(len(hv.labelKeys)))
 		if h, ok := hv.children[key]; ok {
 			return h
@@ -582,7 +589,7 @@ func (gv *GaugeVec) With(values ...string) *Gauge {
 	if g, ok := gv.children[key]; ok {
 		return g
 	}
-	if gv.maxChildren > 0 && len(gv.children) >= gv.maxChildren {
+	if gv.maxChildren > 0 && len(gv.children) >= explicitChildLimit(gv.maxChildren) {
 		key = joinLabelValues(overflowLabelValuesForArity(len(gv.labelKeys)))
 		if g, ok := gv.children[key]; ok {
 			return g

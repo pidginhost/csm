@@ -259,6 +259,9 @@ pattern can be added for that one case without affecting the rest.
 - Prometheus label cardinality: per-account and per-IP labels are
   deliberately not exposed. Shared-hosting deployments with 1000+
   cPanel users would otherwise overwhelm a Prometheus server.
+- Metric vectors cap label-value combinations at 1000 children per
+  metric, including the overflow bucket. Once a vector reaches that
+  cap, new combinations are aggregated under `_overflow_`.
 
 ## Not instrumented (yet)
 
