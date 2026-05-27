@@ -51,6 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Config loader now rejects YAML input over a 4 MB cap on the main file and on each `conf.d` fragment. A malformed or attacker-supplied file can no longer force the YAML parser to allocate unbounded memory.
 - Control socket now verifies peer credentials via SO_PEERCRED before reading any payload. The 0600 permission remains the primary defence; this defence-in-depth check refuses any non-root caller even if the socket ever becomes reachable from a less-privileged context.
 - Signature update and YARA Forge download URLs now require HTTP or HTTPS and are rejected if they point at loopback, link-local, or RFC1918 / ULA hosts. A staging URL accidentally left in a production config now fails validation at startup.
+- Web UI CSP no longer allows `unsafe-inline` for styles. Templates and bundled stylesheets contain no inline `style="..."` attributes, so an XSS payload that drops a `<style>` tag is now refused by the browser.
 - Compound webshell-plus-C2 incident classification no longer relies on the trimmed timeline. Sticky flags persist on the incident itself so a long, noisy attack still escalates when the matching counterpart arrives much later.
 - Periodic and initial scans now snapshot the live config once per tick, so a SIGHUP landing mid-tick can no longer split detection and auto-response between old and new policy.
 - Periodic integrity checks no longer raise a tamper alert when a valid config reload finishes while the check is hashing the old snapshot.
