@@ -1378,9 +1378,20 @@ func applyDefaults(cfg *Config, presence defaultPresence) {
 	}
 }
 
+// MaxConfigBytes caps the YAML config body size LoadBytes will parse.
+// Real CSM configs (main + every drop-in fragment) top out near 64 KB
+// even with verbose comments; 4 MB is several orders of magnitude
+// above legitimate use and far below the size at which a malformed
+// or attacker-supplied file would force the YAML parser to allocate
+// gigabytes of intermediate state.
+const MaxConfigBytes = 4 * 1024 * 1024
+
 // LoadBytes decodes a YAML config body and applies all defaults,
 // matching Load. ConfigFile is left empty; the caller sets it.
 func LoadBytes(data []byte) (*Config, error) {
+	if len(data) > MaxConfigBytes {
+		return nil, fmt.Errorf("parsing config: input size %d exceeds %d byte cap", len(data), MaxConfigBytes)
+	}
 	presence, err := defaultPresenceFromYAML(data)
 	if err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
@@ -1690,6 +1701,9 @@ func LoadWithDir(path, confDir string) (*Config, error) {
 	mainData, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading config %s: %w", path, err)
+	}
+	if len(mainData) > MaxConfigBytes {
+		return nil, fmt.Errorf("config %s exceeds %d byte cap", path, MaxConfigBytes)
 	}
 
 	var merged yaml.Node

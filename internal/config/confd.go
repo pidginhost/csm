@@ -131,9 +131,12 @@ func readTrustedConfFragment(path string) ([]byte, error) {
 	if trustErr := validateConfPathTrust("conf.d fragment", path, info); trustErr != nil {
 		return nil, trustErr
 	}
-	data, err := io.ReadAll(f)
+	data, err := io.ReadAll(io.LimitReader(f, MaxConfigBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", path, err)
+	}
+	if int64(len(data)) > MaxConfigBytes {
+		return nil, fmt.Errorf("conf.d fragment %s exceeds %d byte cap", path, MaxConfigBytes)
 	}
 	return data, nil
 }

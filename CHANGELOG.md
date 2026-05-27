@@ -48,6 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Process-context enrichment now checks process start time before using cached or refreshed process details. A PID-reuse race no longer attributes a new process's identity to the original event.
 - YARA IPC now caps frames per connection so a malicious or wedged peer cannot pin one worker goroutine with an endless small-frame stream. The daemon reconnects after a cap close instead of dropping the next scan.
 - Standalone PAM source now mirrors the packaged non-blocking socket path, and PAM writes suppress SIGPIPE. Stalled or closed daemon sockets can no longer hang or kill a login process.
+- Config loader now rejects YAML input over a 4 MB cap on the main file and on each `conf.d` fragment. A malformed or attacker-supplied file can no longer force the YAML parser to allocate unbounded memory.
 - Compound webshell-plus-C2 incident classification no longer relies on the trimmed timeline. Sticky flags persist on the incident itself so a long, noisy attack still escalates when the matching counterpart arrives much later.
 - Periodic and initial scans now snapshot the live config once per tick, so a SIGHUP landing mid-tick can no longer split detection and auto-response between old and new policy.
 - Periodic integrity checks no longer raise a tamper alert when a valid config reload finishes while the check is hashing the old snapshot.
