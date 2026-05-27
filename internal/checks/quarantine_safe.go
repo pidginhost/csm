@@ -65,6 +65,13 @@ func quarantineFileTOCTOUSafe(path, qPath string, originalInfo os.FileInfo) erro
 	if !sameFileIdentity(cur, originalInfo) {
 		return fmt.Errorf("quarantine: file at %s changed between detection and quarantine (TOCTOU)", path)
 	}
+	// Defence against inode reuse: on busy tmpfs / ext4 mounts the kernel
+	// can hand out the freed inode to whatever the attacker wrote next.
+	// A matching inode is necessary but not sufficient — also require the
+	// content shape (size + mtime) to match what the detector recorded.
+	if !sameContentShape(cur, originalInfo) {
+		return fmt.Errorf("quarantine: file at %s changed between detection and quarantine (TOCTOU, inode reused)", path)
+	}
 	// Refuse to quarantine a non-regular file (block, char, socket,
 	// FIFO). The detector only flags regular files, so a non-regular
 	// shape at this point means someone is trying to move CSM at a
@@ -83,6 +90,21 @@ func quarantineFileTOCTOUSafe(path, qPath string, originalInfo os.FileInfo) erro
 		return err
 	}
 	return nil
+}
+
+// sameContentShape verifies that two stats describe a file with the same
+// size and modification time. Used as a defence-in-depth check after
+// sameFileIdentity passes, because inode reuse on tmpfs / ext4 lets an
+// attacker recreate a file under the same path with a fresh ino that
+// happens to match the freed slot.
+func sameContentShape(a, b os.FileInfo) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	if a.Size() != b.Size() {
+		return false
+	}
+	return a.ModTime().Equal(b.ModTime())
 }
 
 func linkQuarantineFileByFD(fd *os.File, qPath string) error {
