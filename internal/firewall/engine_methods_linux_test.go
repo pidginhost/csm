@@ -3,8 +3,11 @@
 package firewall
 
 import (
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/nftables"
 )
 
 // Test state-management wrappers on Engine methods.
@@ -65,6 +68,21 @@ func TestEngineBlockSubnetStateOnly(t *testing.T) {
 	state := e.loadStateFile()
 	if len(state.BlockedNet) != 1 {
 		t.Errorf("blocked_net = %d, want 1", len(state.BlockedNet))
+	}
+}
+
+func TestEngineBlockSubnetRejectsSaturatedCIDRBeforeNetlink(t *testing.T) {
+	e := newTestEngine(t)
+	e.setBlockedNet = &nftables.Set{Name: "blocked_nets"}
+
+	err := e.BlockSubnet("0.0.0.0/0", "bad range", 0)
+	if err == nil || !strings.Contains(err.Error(), "no safe interval end") {
+		t.Fatalf("BlockSubnet saturated CIDR error = %v, want safe interval error", err)
+	}
+
+	state := e.loadStateFile()
+	if len(state.BlockedNet) != 0 {
+		t.Fatalf("saturated CIDR persisted state: %+v", state.BlockedNet)
 	}
 }
 

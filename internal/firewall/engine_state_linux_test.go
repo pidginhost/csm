@@ -316,6 +316,43 @@ func requireIntervalElems(t *testing.T, elems []nftables.SetElement, cidr string
 	}
 }
 
+func TestIntervalSetElementsSkipsSaturatedEnd(t *testing.T) {
+	_, network, err := net.ParseCIDR("0.0.0.0/0")
+	if err != nil {
+		t.Fatalf("ParseCIDR: %v", err)
+	}
+	got := intervalSetElements(network.IP.To4(), lastIPInRange(network))
+	if len(got) != 0 {
+		t.Fatalf("0.0.0.0/0 elements = %d, want 0", len(got))
+	}
+
+	ip := net.ParseIP("255.255.255.255").To4()
+	got = intervalSetElements(ip, ip)
+	if len(got) != 0 {
+		t.Fatalf("255.255.255.255/32 elements = %d, want 0", len(got))
+	}
+}
+
+func TestComputeInitialBlockStateSkipsSaturatedCIDRs(t *testing.T) {
+	dir := t.TempDir()
+	writeEngineStateFile(t, dir, FirewallState{
+		BlockedNet: []SubnetEntry{
+			{CIDR: "0.0.0.0/0", Reason: "bad v4", BlockedAt: time.Now()},
+			{CIDR: "::/0", Reason: "bad v6", BlockedAt: time.Now()},
+			{CIDR: "198.51.100.0/24", Reason: "v4 net", BlockedAt: time.Now()},
+			{CIDR: "2001:db8:1::/64", Reason: "v6 net", BlockedAt: time.Now()},
+		},
+	})
+	e := &Engine{statePath: dir, cfg: &FirewallConfig{IPv6: true}}
+
+	e.mu.Lock()
+	initial := e.computeInitialBlockStateLocked()
+	e.mu.Unlock()
+
+	requireIntervalElems(t, initial.blockedNet4, "198.51.100.0/24")
+	requireIntervalElems(t, initial.blockedNet6, "2001:db8:1::/64")
+}
+
 // TestResolveSubnetSetMalformedIPReturnsNil guards a defensive nil-end
 // branch. A well-formed ParseCIDR result always yields a 4- or 16-byte
 // IP, so lastIPInRange returns non-nil in normal operation. But a

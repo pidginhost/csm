@@ -5,58 +5,47 @@ import (
 	"os"
 )
 
-// nextIP returns the IP address immediately following the given IP,
-// used for nftables interval-set end markers. When ip is the all-ones
-// address for its family (255.255.255.255 or ffff:...:ffff) the
-// successor wraps to all-zeros, which would silently widen an
-// interval set to the entire address space. nextIP clamps in that
-// case so the end marker equals the input; the resulting [start,
-// start) range is empty, which is the safe failure mode (rule
-// matches nothing instead of everything).
+// nextIP returns the IP address immediately following the given IP.
+// When ip is the all-ones address for its family, nextIP clamps to ip
+// instead of wrapping to all-zeros. Callers that construct nftables
+// interval ranges should use nextIPSafe so saturated ends can be
+// skipped rather than encoded as a wrapped interval.
 func nextIP(ip net.IP) net.IP {
-	next := make(net.IP, len(ip))
-	copy(next, ip)
-	for i := len(next) - 1; i >= 0; i-- {
-		next[i]++
-		if next[i] != 0 {
-			break
-		}
-	}
-	if isAllZeroIP(next) && !isAllZeroIP(ip) {
-		copy(next, ip)
-	}
+	next, _ := nextIPSafe(ip)
 	return next
 }
 
-// nextIPSafe is nextIP plus an explicit ok flag so callers that want
-// to *skip* emitting an IntervalEnd marker on saturation (rather than
-// emit an empty range) can do so.
+// nextIPSafe returns the successor of ip plus whether the successor
+// exists in the same address family.
 func nextIPSafe(ip net.IP) (net.IP, bool) {
-	if len(ip) == 0 {
+	next := canonicalIPBytes(ip)
+	if next == nil {
 		return nil, false
 	}
-	allOnes := true
-	for _, b := range ip {
-		if b != 0xff {
-			allOnes = false
-			break
+
+	for i := len(next) - 1; i >= 0; i-- {
+		if next[i] != 0xff {
+			next[i]++
+			return next, true
 		}
+		next[i] = 0
 	}
-	if allOnes {
-		clamp := make(net.IP, len(ip))
-		copy(clamp, ip)
-		return clamp, false
-	}
-	return nextIP(ip), true
+
+	return canonicalIPBytes(ip), false
 }
 
-func isAllZeroIP(ip net.IP) bool {
-	for _, b := range ip {
-		if b != 0 {
-			return false
-		}
+func canonicalIPBytes(ip net.IP) net.IP {
+	if ip4 := ip.To4(); ip4 != nil {
+		out := make(net.IP, net.IPv4len)
+		copy(out, ip4)
+		return out
 	}
-	return len(ip) > 0
+	if ip16 := ip.To16(); ip16 != nil {
+		out := make(net.IP, net.IPv6len)
+		copy(out, ip16)
+		return out
+	}
+	return nil
 }
 
 // lastIPInRange returns the last IP address in a CIDR range.

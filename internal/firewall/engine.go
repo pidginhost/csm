@@ -445,16 +445,10 @@ func (e *Engine) createSets() error {
 				continue
 			}
 			if ip4 := ip.To4(); ip4 != nil {
-				infraElements = append(infraElements,
-					nftables.SetElement{Key: ip4},
-					nftables.SetElement{Key: nextIP(ip4), IntervalEnd: true},
-				)
+				infraElements = appendIntervalSetElements(infraElements, ip4, ip4)
 			} else if e.cfg.IPv6 {
 				ip16 := ip.To16()
-				infra6Elements = append(infra6Elements,
-					nftables.SetElement{Key: ip16},
-					nftables.SetElement{Key: nextIP(ip16), IntervalEnd: true},
-				)
+				infra6Elements = appendIntervalSetElements(infra6Elements, ip16, ip16)
 			}
 			continue
 		}
@@ -462,19 +456,13 @@ func (e *Engine) createSets() error {
 			start := network.IP.To4()
 			end := lastIPInRange(network)
 			if start != nil && end != nil {
-				infraElements = append(infraElements,
-					nftables.SetElement{Key: start},
-					nftables.SetElement{Key: nextIP(end), IntervalEnd: true},
-				)
+				infraElements = appendIntervalSetElements(infraElements, start, end)
 			}
 		} else if e.cfg.IPv6 {
 			start := network.IP.To16()
 			end := lastIPInRange(network)
 			if start != nil && end != nil {
-				infra6Elements = append(infra6Elements,
-					nftables.SetElement{Key: start},
-					nftables.SetElement{Key: nextIP(end), IntervalEnd: true},
-				)
+				infra6Elements = appendIntervalSetElements(infra6Elements, start, end)
 			}
 		}
 	}
@@ -1853,10 +1841,9 @@ func (e *Engine) CleanExpiredSubnets() int {
 		if !entry.ExpiresAt.IsZero() && now.After(entry.ExpiresAt) {
 			if _, network, err := net.ParseCIDR(entry.CIDR); err == nil {
 				if set, start, end := e.resolveSubnetSet(network); set != nil {
-					_ = e.conn.SetDeleteElements(set, []nftables.SetElement{
-						{Key: start},
-						{Key: nextIP(end), IntervalEnd: true},
-					})
+					if elements := intervalSetElements(start, end); len(elements) > 0 {
+						_ = e.conn.SetDeleteElements(set, elements)
+					}
 				}
 			}
 			removed++
@@ -2016,9 +2003,9 @@ func (e *Engine) BlockSubnet(cidr string, reason string, timeout time.Duration) 
 		return fmt.Errorf("no matching set for %s (IPv6 disabled?)", cidr)
 	}
 
-	elements := []nftables.SetElement{
-		{Key: start},
-		{Key: nextIP(end), IntervalEnd: true},
+	elements := intervalSetElements(start, end)
+	if len(elements) == 0 {
+		return fmt.Errorf("CIDR has no safe interval end: %s", network.String())
 	}
 	if err := e.conn.SetAddElements(targetSet, elements); err != nil {
 		return fmt.Errorf("adding to blocked_nets: %w", err)
@@ -2067,9 +2054,11 @@ func (e *Engine) UnblockSubnet(cidr string) error {
 		return fmt.Errorf("no matching set for %s (IPv6 disabled?)", cidr)
 	}
 
-	elements := []nftables.SetElement{
-		{Key: start},
-		{Key: nextIP(end), IntervalEnd: true},
+	elements := intervalSetElements(start, end)
+	if len(elements) == 0 {
+		e.removeSubnetState(network.String())
+		AppendAudit(e.statePath, "unblock_subnet", network.String(), "", "", 0)
+		return nil
 	}
 	if err := e.conn.SetDeleteElements(targetSet, elements); err != nil {
 		return fmt.Errorf("removing from blocked_nets: %w", err)
@@ -2101,6 +2090,29 @@ func (e *Engine) resolveSubnetSet(network *net.IPNet) (*nftables.Set, net.IP, ne
 		return e.setBlockedNet6, network.IP.To16(), end
 	}
 	return nil, nil, nil
+}
+
+func intervalSetElements(start, end net.IP) []nftables.SetElement {
+	if start == nil || end == nil {
+		return nil
+	}
+	return appendIntervalSetElements(nil, start, end)
+}
+
+func appendIntervalSetElements(dst []nftables.SetElement, start, end net.IP) []nftables.SetElement {
+	if start == nil || end == nil {
+		return dst
+	}
+	endMarker, ok := nextIPSafe(end)
+	if !ok {
+		// The interval end marker is exclusive. An all-ones end has no
+		// successor, so encoding it would either wrap or widen the range.
+		return dst
+	}
+	return append(dst,
+		nftables.SetElement{Key: start},
+		nftables.SetElement{Key: endMarker, IntervalEnd: true},
+	)
 }
 
 // UpdateInfraResolved records the IP set last resolved for an infra
@@ -2261,15 +2273,9 @@ func (e *Engine) computeInitialBlockStateLocked() initialBlockState {
 			continue
 		}
 		if start := network.IP.To4(); start != nil {
-			ibs.blockedNet4 = append(ibs.blockedNet4,
-				nftables.SetElement{Key: start},
-				nftables.SetElement{Key: nextIP(end), IntervalEnd: true},
-			)
+			ibs.blockedNet4 = appendIntervalSetElements(ibs.blockedNet4, start, end)
 		} else if e.cfg.IPv6 {
-			ibs.blockedNet6 = append(ibs.blockedNet6,
-				nftables.SetElement{Key: network.IP.To16()},
-				nftables.SetElement{Key: nextIP(end), IntervalEnd: true},
-			)
+			ibs.blockedNet6 = appendIntervalSetElements(ibs.blockedNet6, network.IP.To16(), end)
 		}
 	}
 	return ibs
@@ -2689,10 +2695,7 @@ func loadCountryCIDRs(dbPath, countryCode string) []nftables.SetElement {
 		start := network.IP.To4()
 		end := lastIPInRange(network)
 		if start != nil && end != nil {
-			elements = append(elements,
-				nftables.SetElement{Key: start},
-				nftables.SetElement{Key: nextIP(end), IntervalEnd: true},
-			)
+			elements = appendIntervalSetElements(elements, start, end)
 		}
 	}
 	return elements

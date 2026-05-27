@@ -31,3 +31,14 @@ func TestLoadCountryCIDRsWithData(t *testing.T) {
 		t.Errorf("2 CIDRs should produce 4 elements, got %d", len(elements))
 	}
 }
+
+func TestLoadCountryCIDRsSkipsSaturatedRange(t *testing.T) {
+	dir := t.TempDir()
+	data := []byte("0.0.0.0/0\n198.51.100.0/24\n")
+	if err := os.WriteFile(dir+"/US.cidr", data, 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	elements := loadCountryCIDRs(dir, "US")
+	requireIntervalElems(t, elements, "198.51.100.0/24")
+}

@@ -35,10 +35,7 @@ func (e *Engine) UpdateCloudflareSet(ipv4, ipv6 []string) error {
 		if start == nil || end == nil {
 			continue
 		}
-		elems4 = append(elems4,
-			nftables.SetElement{Key: start},
-			nftables.SetElement{Key: nextIP(end), IntervalEnd: true},
-		)
+		elems4 = appendIntervalSetElements(elems4, start, end)
 	}
 	if len(elems4) > 0 {
 		if err := e.conn.SetAddElements(e.setCFWhitelist, elems4); err != nil {
@@ -58,10 +55,7 @@ func (e *Engine) UpdateCloudflareSet(ipv4, ipv6 []string) error {
 		if start == nil || end == nil {
 			continue
 		}
-		elems6 = append(elems6,
-			nftables.SetElement{Key: start},
-			nftables.SetElement{Key: nextIP(end), IntervalEnd: true},
-		)
+		elems6 = appendIntervalSetElements(elems6, start, end)
 	}
 	if len(elems6) > 0 {
 		if err := e.conn.SetAddElements(e.setCFWhitelist6, elems6); err != nil {

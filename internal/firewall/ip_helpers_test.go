@@ -23,6 +23,17 @@ func TestNextIPv4Overflow(t *testing.T) {
 	}
 }
 
+func TestNextIPv4MappedAddress(t *testing.T) {
+	ip := net.ParseIP("192.168.1.255")
+	got := nextIP(ip)
+	if !got.Equal(net.ParseIP("192.168.2.0").To4()) {
+		t.Errorf("got %s, want 192.168.2.0", got)
+	}
+	if len(got) != net.IPv4len {
+		t.Errorf("got length = %d, want %d", len(got), net.IPv4len)
+	}
+}
+
 func TestNextIPv6(t *testing.T) {
 	ip := net.ParseIP("2001:db8::1")
 	got := nextIP(ip)
@@ -32,12 +43,14 @@ func TestNextIPv6(t *testing.T) {
 }
 
 // TestNextIPv4Broadcast: the all-ones IPv4 address has no successor.
-// nextIP must clamp to 255.255.255.255 (and signal saturation via the
-// second return) so an interval-set end marker never wraps to
-// 0.0.0.0, which would silently widen the range to the entire IPv4
-// space.
+// nextIP must clamp to 255.255.255.255 so an interval-set end marker
+// never wraps to 0.0.0.0, which would silently widen the range to the
+// entire IPv4 space.
 func TestNextIPv4Broadcast(t *testing.T) {
 	ip := net.ParseIP("255.255.255.255").To4()
+	if got := nextIP(ip); !got.Equal(ip) {
+		t.Errorf("nextIP(255.255.255.255) = %s, want 255.255.255.255", got)
+	}
 	got, ok := nextIPSafe(ip)
 	if ok {
 		t.Errorf("nextIPSafe(255.255.255.255) ok = true, want false (saturated)")
@@ -51,6 +64,9 @@ func TestNextIPv4Broadcast(t *testing.T) {
 // at the all-ones address rather than wrap to ::.
 func TestNextIPv6AllOnes(t *testing.T) {
 	ip := net.ParseIP("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff")
+	if got := nextIP(ip); !got.Equal(ip) {
+		t.Errorf("nextIP(all-ones IPv6) = %s, want %s", got, ip)
+	}
 	got, ok := nextIPSafe(ip)
 	if ok {
 		t.Errorf("nextIPSafe(all-ones IPv6) ok = true, want false (saturated)")

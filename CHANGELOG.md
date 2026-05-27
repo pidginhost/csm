@@ -28,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Email attachment and archive-entry filenames are now stripped to the base name and stripped of control characters before they reach audit logs, alerts, or the web UI. Crafted zip/tar entries can no longer smuggle path-traversal segments or forged log lines through the scanner.
 - Quarantine restore now applies restored modes before ownership changes and rejects restore attempts when the destination changes mid-restore.
-- Firewall interval-set end markers no longer wrap to the all-zeros address when the upper bound is the all-ones address. A misconfigured top-level CIDR now collapses to an empty range instead of silently widening the set to match every IP.
+- Firewall interval-set builders now reject or skip ranges whose end marker would wrap from the all-ones address to all-zeros. Misconfigured top-level CIDRs no longer widen allow or block sets to match every IP.
 - Compound webshell-plus-C2 incident classification no longer relies on the trimmed timeline. Sticky flags persist on the incident itself so a long, noisy attack still escalates when the matching counterpart arrives much later.
 - Periodic and initial scans now snapshot the live config once per tick, so a SIGHUP landing mid-tick can no longer split detection and auto-response between old and new policy.
 - Periodic integrity checks no longer raise a tamper alert when a valid config reload finishes while the check is hashing the old snapshot.
