@@ -1,6 +1,9 @@
 package processctx
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestMaterializeStandalone(t *testing.T) {
 	c := newTestCache(8, 0) // ttl=0 disables TTL
@@ -100,6 +103,60 @@ func TestMaterializeVerifiedReportsExecSnapshotNeedsEnrichment(t *testing.T) {
 	pc, needsEnrichment = c.MaterializeVerified(1234, 1001, true, "ncat")
 	if pc == nil {
 		t.Fatal("expected verified cache hit after proc read")
+	}
+	if needsEnrichment {
+		t.Fatal("/proc-populated cache entry should not request enrichment")
+	}
+}
+
+func TestMaterializeVerifiedSnapshotRejectsStartMismatch(t *testing.T) {
+	c := newTestCache(8, 0)
+	startedAt := time.Unix(1700000000, 0)
+	c.PutFromProcStartedAt(1234, 1, 1001, "alice", "alice", "ncat", "/usr/bin/ncat", []string{"ncat"}, startedAt)
+
+	req := EnrichRequest{
+		PID:       1234,
+		UID:       1001,
+		UIDKnown:  true,
+		Comm:      "ncat",
+		StartedAt: startedAt.Add(time.Hour),
+	}
+	if pc, _ := c.MaterializeVerifiedSnapshot(req); pc != nil {
+		t.Fatalf("expected start mismatch to reject cached process, got %+v", pc)
+	}
+}
+
+func TestMaterializeVerifiedSnapshotRejectsMissingCachedStart(t *testing.T) {
+	c := newTestCache(8, 0)
+	c.PutFromProc(1234, 1, 1001, "alice", "alice", "ncat", "/usr/bin/ncat", []string{"ncat"})
+
+	req := EnrichRequest{
+		PID:       1234,
+		UID:       1001,
+		UIDKnown:  true,
+		Comm:      "ncat",
+		StartedAt: time.Unix(1700000000, 0),
+	}
+	if pc, _ := c.MaterializeVerifiedSnapshot(req); pc != nil {
+		t.Fatalf("expected missing cached start to reject cached process, got %+v", pc)
+	}
+}
+
+func TestMaterializeVerifiedSnapshotAcceptsMatchingStart(t *testing.T) {
+	c := newTestCache(8, 0)
+	startedAt := time.Unix(1700000000, 0)
+	c.PutFromProcStartedAt(1234, 1, 1001, "alice", "alice", "ncat", "/usr/bin/ncat", []string{"ncat"}, startedAt)
+
+	req := EnrichRequest{
+		PID:       1234,
+		UID:       1001,
+		UIDKnown:  true,
+		Comm:      "ncat",
+		StartedAt: startedAt,
+	}
+	pc, needsEnrichment := c.MaterializeVerifiedSnapshot(req)
+	if pc == nil {
+		t.Fatal("expected verified cache hit")
 	}
 	if needsEnrichment {
 		t.Fatal("/proc-populated cache entry should not request enrichment")

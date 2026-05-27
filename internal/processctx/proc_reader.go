@@ -61,6 +61,21 @@ func (r *ProcReader) Read(pid int) (processEntry, error) {
 	return e, nil
 }
 
+// ReadStartedAt returns only /proc/<pid>/stat's process start time. It lets
+// detector hot paths capture a lightweight PID-reuse token without reading
+// status, cmdline, exe, or identity data.
+func (r *ProcReader) ReadStartedAt(pid int) (time.Time, bool) {
+	if pid <= 0 {
+		return time.Time{}, false
+	}
+	path := filepath.Join(r.root, strconv.Itoa(pid), "stat")
+	data, ok := readFileWithDeadline(path, r.perFileDeadline)
+	if !ok {
+		return time.Time{}, false
+	}
+	return r.parseStartedAt(data)
+}
+
 // procStatStartTime extracts field 22 of /proc/<pid>/stat (starttime in
 // clock ticks since boot). Field positions are deterministic except
 // that the second field (comm) is parenthesized and may contain
@@ -116,7 +131,7 @@ func (r *ProcReader) parseStartedAt(stat []byte) (time.Time, bool) {
 func readFileWithDeadline(path string, d time.Duration) ([]byte, bool) {
 	return runBytesWithDeadline(d, func() ([]byte, error) {
 		// #nosec G304 -- path is constructed from ProcReader.root + numeric PID;
-		// callers (ProcReader.Read) only pass procfs entries under r.root.
+		// callers only pass procfs entries under r.root.
 		data, err := os.ReadFile(path)
 		if len(data) > 4096 {
 			data = data[:4096]

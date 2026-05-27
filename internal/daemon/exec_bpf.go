@@ -80,9 +80,10 @@ func (e *execBPF) Run(ctx context.Context) {
 				return
 			}
 			e.count.Add(1)
-			populateProcessCtxFromExec(pcCache, ev)
+			req := processctxRequestFromExec(ev)
+			populateProcessCtxFromExec(pcCache, ev, req.StartedAt)
 			if ev.PID != 0 {
-				pcEnr.Enqueue(processctxRequestFromExec(ev))
+				pcEnr.Enqueue(req)
 			}
 			for _, f := range checks.EvaluateExec(ev.UID, ev.PID, ev.Comm, ev.Filename, ev.ParentComm) {
 				attachProcessCtxToExecFinding(pcCache, &f, ev)

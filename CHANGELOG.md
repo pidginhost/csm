@@ -45,7 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Email-quarantine cross-device fallback now opens the source by file descriptor, copies from that descriptor, and verifies the source path still names the same inode before unlinking. A swap of the source mid-copy is rejected.
 - Email quarantine now fails and rolls back when moving one half of a message fails unexpectedly, instead of reporting a partial quarantine as success.
 - Web UI CORS check now derives the allowed origin from configuration instead of the request's Host header. A proxy attacker can no longer pair a forged Host with a matching Origin to bypass the cross-origin check, while equivalent configured origins still work.
-- Process-context enricher now reads `/proc/<pid>/stat` start time and rejects findings whose detector event time disagrees by more than a few seconds. A PID-reuse race between detection and enrichment no longer attributes a new process's identity to the original event.
+- Process-context enrichment now checks process start time before using cached or refreshed process details. A PID-reuse race no longer attributes a new process's identity to the original event.
 - Compound webshell-plus-C2 incident classification no longer relies on the trimmed timeline. Sticky flags persist on the incident itself so a long, noisy attack still escalates when the matching counterpart arrives much later.
 - Periodic and initial scans now snapshot the live config once per tick, so a SIGHUP landing mid-tick can no longer split detection and auto-response between old and new policy.
 - Periodic integrity checks no longer raise a tamper alert when a valid config reload finishes while the check is hashing the old snapshot.

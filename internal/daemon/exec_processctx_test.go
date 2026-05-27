@@ -11,7 +11,7 @@ func TestPopulateProcessCtxFromExecEventStoresEntry(t *testing.T) {
 	resetProcessCtxForTest()
 	cache, _ := ProcessCtx()
 	ev := ExecEvent{UID: 1001, PID: 4242, PPID: 1, Comm: "php-fpm", ParentComm: "init", Filename: "/usr/sbin/php-fpm"}
-	populateProcessCtxFromExec(cache, ev)
+	populateProcessCtxFromExec(cache, ev, time.Time{})
 	pc := cache.Materialize(4242)
 	if pc == nil {
 		t.Fatal("expected materialized entry")
@@ -30,7 +30,7 @@ func TestPopulateProcessCtxFromExecEventStoresEntry(t *testing.T) {
 func TestPopulateProcessCtxFromExecEventWithZeroPIDIsNoop(t *testing.T) {
 	resetProcessCtxForTest()
 	cache, _ := ProcessCtx()
-	populateProcessCtxFromExec(cache, ExecEvent{PID: 0, Comm: "x"})
+	populateProcessCtxFromExec(cache, ExecEvent{PID: 0, Comm: "x"}, time.Time{})
 	if cache.Len() != 0 {
 		t.Errorf("expected empty cache, got %d", cache.Len())
 	}
@@ -40,7 +40,7 @@ func TestAttachProcessCtxToExecFinding(t *testing.T) {
 	resetProcessCtxForTest()
 	cache, _ := ProcessCtx()
 	ev := ExecEvent{UID: 1001, PID: 4242, PPID: 1, Comm: "php-fpm", Filename: "/usr/sbin/php-fpm"}
-	populateProcessCtxFromExec(cache, ev)
+	populateProcessCtxFromExec(cache, ev, time.Time{})
 	f := alert.Finding{Check: "suspicious_process_exec", Message: "test", Timestamp: time.Now()}
 	attachProcessCtxToExecFinding(cache, &f, ev)
 	if f.Process == nil {
@@ -72,5 +72,18 @@ func TestProcessctxRequestFromExecMapsFields(t *testing.T) {
 	}
 	if !req.UIDKnown {
 		t.Errorf("UIDKnown: want true (BPF event always knows UID)")
+	}
+}
+
+func TestPopulateProcessCtxFromExecStoresStartTime(t *testing.T) {
+	resetProcessCtxForTest()
+	cache, _ := ProcessCtx()
+	startedAt := time.Unix(1700000000, 0)
+	ev := ExecEvent{UID: 1001, PID: 4242, PPID: 1, Comm: "php-fpm", Filename: "/usr/sbin/php-fpm"}
+
+	populateProcessCtxFromExec(cache, ev, startedAt)
+	pc := cache.Materialize(4242)
+	if pc == nil || pc.StartedAt == nil || !pc.StartedAt.Equal(startedAt) {
+		t.Fatalf("StartedAt not stored: %+v", pc)
 	}
 }

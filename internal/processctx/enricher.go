@@ -13,7 +13,8 @@ type procReader interface {
 }
 
 // EnrichRequest is the immutable event snapshot queued off the ring-buffer
-// path. UID/Comm are used to reject stale PID reuse before caching /proc data.
+// path. UID/Comm/StartedAt are used to reject stale PID reuse before caching
+// /proc data.
 type EnrichRequest struct {
 	PID       int
 	UID       int
@@ -194,29 +195,35 @@ func (e *Enricher) shouldCache(req EnrichRequest, entry processEntry) bool {
 	if req.Comm != "" && entry.Comm != req.Comm {
 		return false
 	}
-	// PID-reuse guard: when the detector supplied a process start time
-	// (event clock), the /proc-derived start time must match within a
-	// small tolerance. A mismatch means the PID was reused for a
-	// different process between detection and enrichment; caching the
-	// new identity under the old event would attribute findings to the
-	// wrong workload.
-	if !req.StartedAt.IsZero() && !entry.StartedAt.IsZero() {
-		diff := req.StartedAt.Sub(entry.StartedAt)
-		if diff < 0 {
-			diff = -diff
-		}
-		if diff > processStartTimeTolerance {
-			return false
-		}
+	// PID-reuse guard: when the detector supplied a process-start
+	// snapshot, the /proc-derived start time must be present and match
+	// within a small tolerance. A missing or mismatched /proc value means
+	// the enricher cannot prove it is looking at the same process.
+	if !processStartMatches(req.StartedAt, entry.StartedAt) {
+		return false
 	}
 	return true
 }
 
 // processStartTimeTolerance bounds the allowed clock skew between a
-// detector's event timestamp and /proc/<pid>/stat's starttime. Five
-// seconds covers slow enricher pickup under load without letting a
-// PID-reuse race slip past.
+// detector's process-start snapshot and /proc/<pid>/stat's starttime. Five
+// seconds covers clock granularity and slow pickup without letting a PID-reuse
+// race slip past.
 const processStartTimeTolerance = 5 * time.Second
+
+func processStartMatches(want, got time.Time) bool {
+	if want.IsZero() {
+		return true
+	}
+	if got.IsZero() {
+		return false
+	}
+	diff := want.Sub(got)
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff <= processStartTimeTolerance
+}
 
 func (e *Enricher) enrichIdentity(entry *processEntry) {
 	if !entry.UIDKnown {
@@ -259,12 +266,6 @@ func (e *Enricher) worker() {
 			if !e.shouldCache(req, entry) {
 				e.stale.Add(1)
 				continue
-			}
-			// Prefer the detector's event time when /proc could not
-			// derive one (older proc shapes, deadline expiry); otherwise
-			// keep the /proc value as the authoritative answer.
-			if entry.StartedAt.IsZero() && !req.StartedAt.IsZero() {
-				entry.StartedAt = req.StartedAt
 			}
 			e.enrichIdentity(&entry)
 			e.cache.Put(entry)

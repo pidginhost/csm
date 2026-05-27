@@ -121,7 +121,13 @@ func (c *Cache) removeLocked(el *list.Element) {
 // PutFromExec is a minimal constructor for callers that have only
 // PID/UID/comm/exe from an exec event. UIDKnown is true even for UID 0.
 func (c *Cache) PutFromExec(pid, ppid, uid int, comm, exe string) {
-	c.Put(processEntry{PID: pid, PPID: ppid, UID: uid, UIDKnown: true, Comm: comm, Exe: exe})
+	c.PutFromExecStartedAt(pid, ppid, uid, comm, exe, time.Time{})
+}
+
+// PutFromExecStartedAt is PutFromExec with a detector-supplied process start
+// time for PID-reuse validation.
+func (c *Cache) PutFromExecStartedAt(pid, ppid, uid int, comm, exe string, startedAt time.Time) {
+	c.Put(processEntry{PID: pid, PPID: ppid, UID: uid, UIDKnown: true, Comm: comm, Exe: exe, StartedAt: startedAt})
 }
 
 // PutFromProc inserts a fully populated entry from /proc-style data. The
@@ -129,9 +135,14 @@ func (c *Cache) PutFromExec(pid, ppid, uid int, comm, exe string) {
 // public constructor for tests and future non-daemon callers without exposing
 // processEntry.
 func (c *Cache) PutFromProc(pid, ppid, uid int, user, account, comm, exe string, cmdline []string) {
+	c.PutFromProcStartedAt(pid, ppid, uid, user, account, comm, exe, cmdline, time.Time{})
+}
+
+// PutFromProcStartedAt is PutFromProc with a known process start time.
+func (c *Cache) PutFromProcStartedAt(pid, ppid, uid int, user, account, comm, exe string, cmdline []string, startedAt time.Time) {
 	c.Put(processEntry{
 		PID: pid, PPID: ppid, UID: uid, UIDKnown: true,
 		User: user, Account: account,
-		Comm: comm, Exe: exe, Cmdline: cmdline, ProcRead: true,
+		Comm: comm, Exe: exe, Cmdline: cmdline, StartedAt: startedAt, ProcRead: true,
 	})
 }

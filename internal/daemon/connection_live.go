@@ -100,7 +100,7 @@ func attachProcessCtxToFinding(cache *processctx.Cache, enr *processctx.Enricher
 		return
 	}
 	req := processctxRequestFromConnection(ev)
-	if pc, needsEnrichment := cache.MaterializeVerified(req.PID, req.UID, req.UIDKnown, req.Comm); pc != nil {
+	if pc, needsEnrichment := cache.MaterializeVerifiedSnapshot(req); pc != nil {
 		f.Process = pc
 		if pc.Account != "" && (f.Check == "direct_smtp_egress" || f.TenantID == "") {
 			f.TenantID = pc.Account
@@ -114,5 +114,12 @@ func attachProcessCtxToFinding(cache *processctx.Cache, enr *processctx.Enricher
 }
 
 func processctxRequestFromConnection(ev ConnectionEvent) processctx.EnrichRequest {
-	return processctx.EnrichRequest{PID: int(ev.PID), UID: int(ev.UID), UIDKnown: true, Comm: ev.Comm}
+	pid := int(ev.PID)
+	return processctx.EnrichRequest{
+		PID:       pid,
+		UID:       int(ev.UID),
+		UIDKnown:  true,
+		Comm:      ev.Comm,
+		StartedAt: processCtxStartedAt(pid),
+	}
 }

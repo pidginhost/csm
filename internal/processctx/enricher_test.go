@@ -283,6 +283,42 @@ func TestEnricherRejectsPIDReuseByStartTime(t *testing.T) {
 	}
 }
 
+// TestEnricherRejectsPIDReuseWhenProcStartMissing: when a detector captured a
+// process start time but the later /proc read cannot, the enricher must not
+// cache an identity that only matches by PID/UID/comm.
+func TestEnricherRejectsPIDReuseWhenProcStartMissing(t *testing.T) {
+	c := newTestCache(8, 0)
+	detected := time.Unix(1700000000, 0)
+	reader := procReaderFunc(func(pid int) (processEntry, error) {
+		return processEntry{
+			PID: pid, Comm: "ncat", UID: 1001, UIDKnown: true,
+			ProcRead: true,
+		}, nil
+	})
+	e := NewEnricher(c, reader, EnricherConfig{Workers: 1, QueueCap: 4})
+	e.Start()
+	defer e.Stop()
+
+	if !e.Enqueue(EnrichRequest{
+		PID: 1234, UID: 1001, UIDKnown: true, Comm: "ncat", StartedAt: detected,
+	}) {
+		t.Fatal("enqueue failed")
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if e.Stats().Stale > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, ok := c.Get(1234); ok {
+		t.Fatal("unverified start time must not be cached")
+	}
+	if e.Stats().Stale == 0 {
+		t.Fatalf("expected stale counter to move; stats=%+v", e.Stats())
+	}
+}
+
 // TestEnricherAcceptsMatchingStartTime: when /proc reports a start
 // time inside the tolerance window, caching proceeds normally.
 func TestEnricherAcceptsMatchingStartTime(t *testing.T) {

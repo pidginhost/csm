@@ -27,6 +27,20 @@ var (
 	processCtxRegistry = metrics.Default
 )
 
+var processCtxReadStartedAt = defaultProcessCtxReadStartedAt
+
+func defaultProcessCtxReadStartedAt(pid int) (time.Time, bool) {
+	return processctx.NewProcReader(processCtxProcRoot, processCtxProcReadDeadline).ReadStartedAt(pid)
+}
+
+func processCtxStartedAt(pid int) time.Time {
+	t, ok := processCtxReadStartedAt(pid)
+	if !ok {
+		return time.Time{}
+	}
+	return t
+}
+
 // ProcessCtx returns the daemon-wide process-context cache and enricher,
 // constructing them on first call and registering metrics on the default
 // registry. Safe for concurrent callers.
@@ -78,4 +92,5 @@ func resetProcessCtxForTest() {
 	processCtxCache = nil
 	processCtxEnr = nil
 	processCtxRegistry = metrics.NewRegistry
+	processCtxReadStartedAt = defaultProcessCtxReadStartedAt
 }

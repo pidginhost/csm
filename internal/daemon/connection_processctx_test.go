@@ -47,6 +47,50 @@ func TestAttachProcessCtxFromProcCacheHitDoesNotReenqueue(t *testing.T) {
 	}
 }
 
+func TestAttachProcessCtxRejectsSameUIDCommStartMismatch(t *testing.T) {
+	resetProcessCtxForTest()
+	cache, enr := ProcessCtx()
+	oldStartedAt := time.Unix(1700000000, 0)
+	newStartedAt := oldStartedAt.Add(time.Hour)
+	cache.PutFromProcStartedAt(4242, 1, 1001, "alice", "alice", "ncat", "/usr/bin/ncat", []string{"ncat"}, oldStartedAt)
+	processCtxReadStartedAt = func(pid int) (time.Time, bool) {
+		if pid != 4242 {
+			t.Fatalf("unexpected pid %d", pid)
+		}
+		return newStartedAt, true
+	}
+	t.Cleanup(func() { processCtxReadStartedAt = defaultProcessCtxReadStartedAt })
+	before := enr.Stats().Enqueued
+
+	f := alert.Finding{Check: "outbound_connection", Message: "test", Timestamp: time.Now()}
+	ev := ConnectionEvent{UID: 1001, PID: 4242, Family: 2, DstPort: 587, DstIP: net.ParseIP("203.0.113.10").To4(), Comm: "ncat"}
+	attachProcessCtxToFinding(cache, enr, &f, ev)
+
+	if f.Process != nil {
+		t.Fatalf("expected start-time mismatch to reject cache hit, got %+v", f.Process)
+	}
+	if enr.Stats().Enqueued <= before {
+		t.Fatal("start-time mismatch should enqueue refresh")
+	}
+}
+
+func TestProcessctxRequestFromConnectionIncludesStartTime(t *testing.T) {
+	resetProcessCtxForTest()
+	startedAt := time.Unix(1700000000, 0)
+	processCtxReadStartedAt = func(pid int) (time.Time, bool) {
+		if pid != 4242 {
+			t.Fatalf("unexpected pid %d", pid)
+		}
+		return startedAt, true
+	}
+	t.Cleanup(func() { processCtxReadStartedAt = defaultProcessCtxReadStartedAt })
+
+	req := processctxRequestFromConnection(ConnectionEvent{UID: 1001, PID: 4242, Comm: "ncat"})
+	if !req.StartedAt.Equal(startedAt) {
+		t.Fatalf("StartedAt = %v, want %v", req.StartedAt, startedAt)
+	}
+}
+
 func TestAttachProcessCtxOverridesDirectSMTPTenantFromProcessAccount(t *testing.T) {
 	resetProcessCtxForTest()
 	cache, enr := ProcessCtx()

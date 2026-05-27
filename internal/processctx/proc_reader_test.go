@@ -62,6 +62,44 @@ func TestReadProcEntryHappyPath(t *testing.T) {
 	}
 }
 
+func TestReadStartedAtParsesProcStatStartTime(t *testing.T) {
+	root := fakeProcRoot(t, 1234,
+		"Name:\tncat\nPid:\t1234\nPPid:\t1\nUid:\t1001\t1001\t1001\t1001\n",
+		"ncat\x00203.0.113.10\x00587\x00",
+	)
+	if err := os.WriteFile(filepath.Join(root, "stat"), []byte("btime 1700000000\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stat := "1234 (ncat worker) S 1 1 1 0 -1 4194560 0 0 0 0 1 2 3 4 20 0 1 0 12345 0 0\n"
+	if err := os.WriteFile(filepath.Join(root, "1234", "stat"), []byte(stat), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldHZ := clockTicksPerSecondOverride
+	clockTicksPerSecondOverride = 100
+	t.Cleanup(func() { clockTicksPerSecondOverride = oldHZ })
+
+	r := NewProcReader(root, 100*time.Millisecond)
+	got, ok := r.ReadStartedAt(1234)
+	if !ok {
+		t.Fatal("ReadStartedAt failed")
+	}
+	want := time.Unix(1700000000, 0).Add(123*time.Second + 450*time.Millisecond)
+	if !got.Equal(want) {
+		t.Fatalf("StartedAt = %v, want %v", got, want)
+	}
+}
+
+func TestProcStatStartTimeHandlesParenInComm(t *testing.T) {
+	stat := []byte("1234 (worker) pool) S 1 1 1 0 -1 4194560 0 0 0 0 1 2 3 4 20 0 1 0 98765 0 0\n")
+	got, ok := procStatStartTime(stat)
+	if !ok {
+		t.Fatal("procStatStartTime failed")
+	}
+	if got != 98765 {
+		t.Fatalf("starttime = %d, want 98765", got)
+	}
+}
+
 func TestReadProcEntryProcessGoneIsNotError(t *testing.T) {
 	root := t.TempDir() // empty: /proc/<pid> does not exist
 	r := NewProcReader(root, 100*time.Millisecond)

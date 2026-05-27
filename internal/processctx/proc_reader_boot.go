@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// bootTimeCache caches the host boot time per ProcReader instance.
+// bootTimeCache caches the host boot time per proc root.
 // Boot time is invariant for the life of a kernel; rereading /proc/stat
 // on every Read() would only spend syscalls for an unchanging value.
 type bootTimeCache struct {

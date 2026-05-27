@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/bpf"
@@ -85,17 +86,24 @@ func tryStartExecBPF(ctx context.Context, ch chan<- alert.Finding, cfg *config.C
 }
 
 // populateProcessCtxFromExec writes the BPF exec event into the process
-// context cache without doing identity or /proc work in the event loop. Zero
-// PID is ignored (synthetic boot-time noise).
-func populateProcessCtxFromExec(cache *processctx.Cache, ev ExecEvent) {
+// context cache without doing identity work in the event loop. Zero PID is
+// ignored (synthetic boot-time noise).
+func populateProcessCtxFromExec(cache *processctx.Cache, ev ExecEvent, startedAt time.Time) {
 	if ev.PID == 0 {
 		return
 	}
-	cache.PutFromExec(int(ev.PID), int(ev.PPID), int(ev.UID), ev.Comm, ev.Filename)
+	cache.PutFromExecStartedAt(int(ev.PID), int(ev.PPID), int(ev.UID), ev.Comm, ev.Filename, startedAt)
 }
 
 func attachProcessCtxToExecFinding(cache *processctx.Cache, f *alert.Finding, ev ExecEvent) {
-	if pc, _ := cache.MaterializeVerified(int(ev.PID), int(ev.UID), true, ev.Comm); pc != nil {
+	req := processctx.EnrichRequest{
+		PID:       int(ev.PID),
+		UID:       int(ev.UID),
+		UIDKnown:  true,
+		Comm:      ev.Comm,
+		StartedAt: processCtxStartedAt(int(ev.PID)),
+	}
+	if pc, _ := cache.MaterializeVerifiedSnapshot(req); pc != nil {
 		f.Process = pc
 	}
 }
@@ -104,5 +112,12 @@ func attachProcessCtxToExecFinding(cache *processctx.Cache, f *alert.Finding, ev
 // exec consumer. Lives here (no build tag) so unit tests on darwin can verify
 // the field mapping without a Linux+bpf build.
 func processctxRequestFromExec(ev ExecEvent) processctx.EnrichRequest {
-	return processctx.EnrichRequest{PID: int(ev.PID), UID: int(ev.UID), UIDKnown: true, Comm: ev.Comm}
+	pid := int(ev.PID)
+	return processctx.EnrichRequest{
+		PID:       pid,
+		UID:       int(ev.UID),
+		UIDKnown:  true,
+		Comm:      ev.Comm,
+		StartedAt: processCtxStartedAt(pid),
+	}
 }

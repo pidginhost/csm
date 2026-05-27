@@ -27,6 +27,23 @@ func (c *Cache) MaterializeVerified(pid, uid int, uidKnown bool, comm string) (*
 	return c.materializeFromRoot(root), !root.ProcRead
 }
 
+// MaterializeVerifiedSnapshot returns a materialized context only when the
+// cached root entry still matches the full detector snapshot, including the
+// process start time when one was captured.
+func (c *Cache) MaterializeVerifiedSnapshot(req EnrichRequest) (*ProcessContext, bool) {
+	root, ok := c.Get(req.PID)
+	if !ok {
+		return nil, false
+	}
+	if !matchesSnapshot(root, req.UID, req.UIDKnown, req.Comm) {
+		return nil, false
+	}
+	if !processStartMatches(req.StartedAt, root.StartedAt) {
+		return nil, false
+	}
+	return c.materializeFromRoot(root), !root.ProcRead
+}
+
 func (c *Cache) materializeFromRoot(root processEntry) *ProcessContext {
 	visited := map[int]bool{root.PID: true}
 	head := toContext(root)
