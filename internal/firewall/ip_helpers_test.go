@@ -31,6 +31,35 @@ func TestNextIPv6(t *testing.T) {
 	}
 }
 
+// TestNextIPv4Broadcast: the all-ones IPv4 address has no successor.
+// nextIP must clamp to 255.255.255.255 (and signal saturation via the
+// second return) so an interval-set end marker never wraps to
+// 0.0.0.0, which would silently widen the range to the entire IPv4
+// space.
+func TestNextIPv4Broadcast(t *testing.T) {
+	ip := net.ParseIP("255.255.255.255").To4()
+	got, ok := nextIPSafe(ip)
+	if ok {
+		t.Errorf("nextIPSafe(255.255.255.255) ok = true, want false (saturated)")
+	}
+	if !got.Equal(net.ParseIP("255.255.255.255").To4()) {
+		t.Errorf("clamped result = %s, want 255.255.255.255", got)
+	}
+}
+
+// TestNextIPv6AllOnes: same property for IPv6. nextIPSafe must clamp
+// at the all-ones address rather than wrap to ::.
+func TestNextIPv6AllOnes(t *testing.T) {
+	ip := net.ParseIP("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff")
+	got, ok := nextIPSafe(ip)
+	if ok {
+		t.Errorf("nextIPSafe(all-ones IPv6) ok = true, want false (saturated)")
+	}
+	if !got.Equal(ip) {
+		t.Errorf("clamped result = %s, want %s", got, ip)
+	}
+}
+
 func TestLastIPInRangeIPv4(t *testing.T) {
 	_, network, _ := net.ParseCIDR("192.168.1.0/24")
 	got := lastIPInRange(network)
