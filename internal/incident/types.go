@@ -68,7 +68,7 @@ type Incident struct {
 	// reclassifier. Once set, they survive timeline trimming so an
 	// early webshell or C2 signal still drives the compound rule when
 	// the matching counterpart arrives much later.
-	CompoundFlags CompoundFlags `json:"compound_flags"`
+	CompoundFlags CompoundFlags `json:"compound_flags,omitzero"`
 }
 
 // CompoundFlags records the union of compound-pattern signals an

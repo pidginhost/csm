@@ -100,6 +100,22 @@ func TestSaveIncidentRoundTripsTimeline(t *testing.T) {
 	}
 }
 
+func TestSaveIncidentRoundTripsCompoundFlags(t *testing.T) {
+	db := newTestStore(t)
+	want := sampleIncident("inc_flags")
+	want.CompoundFlags = incident.CompoundFlags{Webshell: true}
+	if err := db.SaveIncident(want); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := db.GetIncident("inc_flags")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !got.CompoundFlags.Webshell || got.CompoundFlags.C2 {
+		t.Errorf("CompoundFlags = %+v, want webshell only", got.CompoundFlags)
+	}
+}
+
 func TestListIncidentsByStatusFilters(t *testing.T) {
 	db := newTestStore(t)
 	a := sampleIncident("inc_a")

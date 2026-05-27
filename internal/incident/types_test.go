@@ -16,7 +16,7 @@ func TestIncidentJSONOmitsZeroFields(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	s := string(b)
-	for _, key := range []string{"account", "domain", "mailbox", "summary"} {
+	for _, key := range []string{"account", "domain", "mailbox", "summary", "compound_flags"} {
 		if strings.Contains(s, `"`+key+`"`) {
 			t.Errorf("zero-value Incident should omit %q, got %s", key, s)
 		}
@@ -30,17 +30,18 @@ func TestIncidentJSONOmitsZeroFields(t *testing.T) {
 
 func TestIncidentJSONIncludesPopulatedFields(t *testing.T) {
 	inc := Incident{
-		ID:        "i_abc",
-		Kind:      KindMailboxTakeover,
-		Status:    StatusContained,
-		Severity:  alert.Critical,
-		Account:   "alice",
-		Domain:    "example.com",
-		Mailbox:   "alice@example.com",
-		Summary:   "outbound spam from alice@example.com",
-		Findings:  []string{"f1", "f2"},
-		CreatedAt: time.Unix(1700000000, 0).UTC(),
-		UpdatedAt: time.Unix(1700000600, 0).UTC(),
+		ID:            "i_abc",
+		Kind:          KindMailboxTakeover,
+		Status:        StatusContained,
+		Severity:      alert.Critical,
+		Account:       "alice",
+		Domain:        "example.com",
+		Mailbox:       "alice@example.com",
+		Summary:       "outbound spam from alice@example.com",
+		Findings:      []string{"f1", "f2"},
+		CompoundFlags: CompoundFlags{Webshell: true},
+		CreatedAt:     time.Unix(1700000000, 0).UTC(),
+		UpdatedAt:     time.Unix(1700000600, 0).UTC(),
 	}
 	b, err := json.Marshal(inc)
 	if err != nil {
@@ -52,6 +53,7 @@ func TestIncidentJSONIncludesPopulatedFields(t *testing.T) {
 		`"mailbox":"alice@example.com"`,
 		`"summary":"outbound spam from alice@example.com"`,
 		`"findings":["f1","f2"]`,
+		`"compound_flags":{"webshell":true}`,
 		`"kind":"mailbox_takeover"`,
 		`"status":"contained"`,
 	} {
