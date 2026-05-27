@@ -421,6 +421,74 @@ func TestExtractTarGzSkipsNonRegularFiles(t *testing.T) {
 	}
 }
 
+// TestExtractZIPSanitizesEntryName: a zip whose entry name contains
+// path-traversal segments, an absolute path, or control characters
+// must surface with only the base name. Operators see the sanitized
+// name in audit logs and downstream consumers (UI, webhooks) cannot
+// be tricked into joining the raw name into a path.
+func TestExtractZIPSanitizesEntryName(t *testing.T) {
+	cases := []struct {
+		name    string
+		entry   string
+		wantBad []string
+		want    string
+	}{
+		{
+			name:    "path traversal",
+			entry:   "../../../../etc/passwd",
+			wantBad: []string{"..", "/"},
+			want:    "passwd",
+		},
+		{
+			name:    "absolute path",
+			entry:   "/etc/shadow",
+			wantBad: []string{"/"},
+			want:    "shadow",
+		},
+		{
+			name:    "newline injection",
+			entry:   "good.txt\nFAKE-LOG-LINE",
+			wantBad: []string{"\n"},
+			want:    "good.txt",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			archive := buildZipArchive(t, map[string][]byte{tc.entry: []byte("payload")})
+			body := buildMultipartBody("BOUND", "evil.zip", "application/zip", archive)
+			hPath, dPath := buildEximSpool(t, `multipart/mixed; boundary="BOUND"`, body)
+
+			result, err := ParseSpoolMessage(hPath, dPath, DefaultLimits())
+			if err != nil {
+				t.Fatalf("ParseSpoolMessage: %v", err)
+			}
+			defer func() {
+				for _, p := range result.Parts {
+					_ = os.Remove(p.TempPath)
+				}
+			}()
+			var nested *ExtractedPart
+			for i := range result.Parts {
+				if result.Parts[i].Nested {
+					nested = &result.Parts[i]
+					break
+				}
+			}
+			if nested == nil {
+				t.Fatalf("expected one nested part, got %d total parts", len(result.Parts))
+			}
+			for _, bad := range tc.wantBad {
+				if strings.Contains(nested.Filename, bad) {
+					t.Errorf("Filename %q must not contain %q", nested.Filename, bad)
+				}
+			}
+			if nested.Filename != tc.want {
+				t.Errorf("Filename = %q, want %q", nested.Filename, tc.want)
+			}
+		})
+	}
+}
+
 // --- extractMultipart: depth limit prevents nested archive extraction ---
 
 func TestExtractZIPDepthLimitPreventsNesting(t *testing.T) {

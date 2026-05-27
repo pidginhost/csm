@@ -440,11 +440,12 @@ func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionRe
 		tmpFile.Close()
 		rc.Close()
 
+		safeName := sanitizeArchiveEntryName(zf.Name)
 		if err != nil || n > limits.MaxAttachmentSize {
 			os.Remove(tmpFile.Name())
 			if n > limits.MaxAttachmentSize {
 				result.Partial = true
-				result.PartialReason = fmt.Sprintf("file %q in archive exceeds max size", zf.Name)
+				result.PartialReason = fmt.Sprintf("file %q in archive exceeds max size", safeName)
 			}
 			continue
 		}
@@ -458,7 +459,7 @@ func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionRe
 		}
 
 		result.Parts = append(result.Parts, ExtractedPart{
-			Filename:    zf.Name,
+			Filename:    safeName,
 			ContentType: "application/octet-stream",
 			Size:        n,
 			TempPath:    tmpFile.Name(),
@@ -522,7 +523,7 @@ func extractTarGz(tgzPath, archiveName string, limits Limits, result *Extraction
 		}
 
 		result.Parts = append(result.Parts, ExtractedPart{
-			Filename:    filepath.Base(hdr.Name),
+			Filename:    sanitizeArchiveEntryName(hdr.Name),
 			ContentType: "application/octet-stream",
 			Size:        n,
 			TempPath:    tmpFile.Name(),
@@ -531,4 +532,28 @@ func extractTarGz(tgzPath, archiveName string, limits Limits, result *Extraction
 		})
 		extracted++
 	}
+}
+
+// sanitizeArchiveEntryName trims an archive entry to its base name and
+// strips control characters. The result is safe to surface in audit
+// logs, alert messages, and JSON responses without enabling
+// path-traversal or log-injection. Empty or directory-only entries
+// collapse to a stable "_unnamed_" placeholder.
+func sanitizeArchiveEntryName(name string) string {
+	name = strings.ReplaceAll(name, "\\", "/")
+	name = filepath.Base(name)
+	// Truncate at the first control character so a crafted entry
+	// like "good.txt\nFAKE-LOG-LINE" cannot smuggle a forged log
+	// record past the visible filename.
+	if i := strings.IndexFunc(name, func(r rune) bool {
+		return r < 0x20 || r == 0x7f
+	}); i >= 0 {
+		name = name[:i]
+	}
+	name = strings.TrimSpace(name)
+	switch name {
+	case "", ".", "..", "/":
+		return "_unnamed_"
+	}
+	return name
 }
