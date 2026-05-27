@@ -1500,7 +1500,10 @@ func (e *Engine) blockIPTarget(ip string, timeout time.Duration, skipExisting bo
 	if skipExisting && firewallStateHasBlocked(st, ip) {
 		liveBlocked, liveErr := e.isBlockedLiveLocked(ip)
 		if liveErr != nil || liveBlocked {
-			return targetSet, key, true, nil
+			// Treat a probe error as "still blocked" so we never demote a
+			// cached block on transient netlink trouble. Returning nil
+			// here is intentional and the conservative posture.
+			return targetSet, key, true, nil //nolint:nilerr // intentional fail-safe on netlink probe error
 		}
 		cachedBlockMissingLive = true
 	}

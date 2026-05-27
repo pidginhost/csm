@@ -58,24 +58,24 @@ func TestQuarantineFileTOCTOUSafe_RefusesSymlink(t *testing.T) {
 
 	// Replace bait with a symlink pointing at the victim AFTER the
 	// detector captured info. The TOCTOU defence must refuse.
-	if err := os.Remove(bait); err != nil {
-		t.Fatalf("remove bait: %v", err)
+	if rmErr := os.Remove(bait); rmErr != nil {
+		t.Fatalf("remove bait: %v", rmErr)
 	}
-	if err := os.Symlink(victim, bait); err != nil {
-		t.Fatalf("symlink: %v", err)
+	if linkErr := os.Symlink(victim, bait); linkErr != nil {
+		t.Fatalf("symlink: %v", linkErr)
 	}
 
 	dst := filepath.Join(tmp, "q", "out.php")
-	if err := os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
-		t.Fatalf("mkdir: %v", err)
+	if mkErr := os.MkdirAll(filepath.Dir(dst), 0700); mkErr != nil {
+		t.Fatalf("mkdir: %v", mkErr)
 	}
 
 	err = quarantineFileTOCTOUSafe(bait, dst, info)
 	if err == nil {
 		t.Fatal("expected refusal of symlinked path, got nil error")
 	}
-	if _, err := os.Stat(victim); err != nil {
-		t.Fatalf("victim file deleted during quarantine attempt: %v", err)
+	if _, statErr := os.Stat(victim); statErr != nil {
+		t.Fatalf("victim file deleted during quarantine attempt: %v", statErr)
 	}
 }
 
@@ -96,16 +96,16 @@ func TestQuarantineFileTOCTOUSafe_DetectsFileSwap(t *testing.T) {
 
 	// Swap: remove the original and replace with a different file that
 	// has the same name but a different inode.
-	if err := os.Remove(src); err != nil {
-		t.Fatalf("remove: %v", err)
+	if rmErr := os.Remove(src); rmErr != nil {
+		t.Fatalf("remove: %v", rmErr)
 	}
-	if err := os.WriteFile(src, []byte("attacker-controlled"), 0644); err != nil {
-		t.Fatalf("rewrite: %v", err)
+	if wrErr := os.WriteFile(src, []byte("attacker-controlled"), 0644); wrErr != nil {
+		t.Fatalf("rewrite: %v", wrErr)
 	}
 
 	dst := filepath.Join(tmp, "q", "out.php")
-	if err := os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
-		t.Fatalf("mkdir: %v", err)
+	if mkErr := os.MkdirAll(filepath.Dir(dst), 0700); mkErr != nil {
+		t.Fatalf("mkdir: %v", mkErr)
 	}
 
 	err = quarantineFileTOCTOUSafe(src, dst, info)
@@ -137,24 +137,24 @@ func TestQuarantineFileTOCTOUSafe_LinkFallbackUsesOpenFD(t *testing.T) {
 				t.Fatalf("lstat: %v", err)
 			}
 			dst := filepath.Join(tmp, "q", "out.php")
-			if err := os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
-				t.Fatalf("mkdir: %v", err)
+			if mkErr := os.MkdirAll(filepath.Dir(dst), 0700); mkErr != nil {
+				t.Fatalf("mkdir: %v", mkErr)
 			}
 
 			oldLink := quarantineLinkByFD
 			quarantineLinkByFD = func(_ *os.File, _ string) error {
-				if err := os.Remove(src); err != nil {
-					return err
+				if rmErr := os.Remove(src); rmErr != nil {
+					return rmErr
 				}
-				if err := os.WriteFile(src, []byte("replacement"), 0644); err != nil {
-					return err
+				if wrErr := os.WriteFile(src, []byte("replacement"), 0644); wrErr != nil {
+					return wrErr
 				}
 				return linkErr
 			}
 			t.Cleanup(func() { quarantineLinkByFD = oldLink })
 
-			if err := quarantineFileTOCTOUSafe(src, dst, info); err != nil {
-				t.Fatalf("quarantine: %v", err)
+			if qErr := quarantineFileTOCTOUSafe(src, dst, info); qErr != nil {
+				t.Fatalf("quarantine: %v", qErr)
 			}
 			got, err := os.ReadFile(dst)
 			if err != nil {

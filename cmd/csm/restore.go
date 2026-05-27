@@ -150,6 +150,8 @@ func openRestoreTarget(anchor, target string) (*os.File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open target %s: %w", target, err)
 	}
+	// #nosec G115 -- unix.Openat returns a non-negative fd on success; err
+	// already checked above so the int->uintptr conversion cannot truncate.
 	return os.NewFile(uintptr(fd), target), nil
 }
 
