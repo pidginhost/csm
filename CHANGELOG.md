@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Mail-spool body parser no longer pre-stats the file before opening it. The size check now reads from the same open descriptor, so an attacker cannot swap the file for a larger one between stat and read to bypass the memory cap.
 - Email AV tempfail mode now defers messages when MIME extraction is partial, including bodies that exceed the parser memory budget before any attachment is scanned.
 - Email-attachment extraction now stages temp files under a daemon-owned 0700 directory instead of `/tmp`. An unprivileged local uid can no longer race the scanner via temp-file symlink swaps in a shared directory.
+- Email AV now treats attachment staging failures as incomplete extraction instead of falling back to shared temp or delivering the message as scanned.
 - Compound webshell-plus-C2 incident classification no longer relies on the trimmed timeline. Sticky flags persist on the incident itself so a long, noisy attack still escalates when the matching counterpart arrives much later.
 - Periodic and initial scans now snapshot the live config once per tick, so a SIGHUP landing mid-tick can no longer split detection and auto-response between old and new policy.
 - Periodic integrity checks no longer raise a tamper alert when a valid config reload finishes while the check is hashing the old snapshot.

@@ -125,19 +125,26 @@ func ParseSpoolMessage(headerPath, bodyPath string, limits Limits) (*ExtractionR
 		if !truncated && int64(len(decoded)) <= limits.MaxAttachmentSize {
 			tmpFile, tmpErr := os.CreateTemp(limits.TempDir, "csm-emailav-single-*")
 			if tmpErr == nil {
-				_, _ = tmpFile.Write(decoded)
-				tmpFile.Close()
-				filename := params["name"]
-				if filename == "" {
-					filename = "attachment"
+				n, writeErr := tmpFile.Write(decoded)
+				closeErr := tmpFile.Close()
+				if writeErr != nil || closeErr != nil || n != len(decoded) {
+					os.Remove(tmpFile.Name())
+					markPartial(result, "could not stage single-part attachment for scanning")
+				} else {
+					filename := params["name"]
+					if filename == "" {
+						filename = "attachment"
+					}
+					filename = sanitizeAttachmentName(filename)
+					result.Parts = append(result.Parts, ExtractedPart{
+						Filename:    filename,
+						ContentType: mediaType,
+						Size:        int64(len(decoded)),
+						TempPath:    tmpFile.Name(),
+					})
 				}
-				filename = sanitizeAttachmentName(filename)
-				result.Parts = append(result.Parts, ExtractedPart{
-					Filename:    filename,
-					ContentType: mediaType,
-					Size:        int64(len(decoded)),
-					TempPath:    tmpFile.Name(),
-				})
+			} else {
+				markPartial(result, "could not stage single-part attachment for scanning")
 			}
 		} else {
 			result.Partial = true
@@ -201,6 +208,13 @@ func readBodyFileLimited(path string, limit int64) ([]byte, bool, error) {
 		return nil, true, nil
 	}
 	return data, false, nil
+}
+
+func markPartial(result *ExtractionResult, reason string) {
+	result.Partial = true
+	if result.PartialReason == "" {
+		result.PartialReason = reason
+	}
 }
 
 func decodeSinglePart(bodyData []byte, cte string, limit int64) ([]byte, bool) {
@@ -385,14 +399,16 @@ func extractMultipart(r io.Reader, boundary string, limits Limits, result *Extra
 		// Write to temp file with size limit
 		tmpFile, err := os.CreateTemp(limits.TempDir, "csm-emailav-*")
 		if err != nil {
+			markPartial(result, "could not stage attachment for scanning")
 			return fmt.Errorf("creating temp file: %w", err)
 		}
 
 		limited := io.LimitReader(bodyReader, limits.MaxAttachmentSize+1)
 		n, err := io.Copy(tmpFile, limited)
-		tmpFile.Close()
-		if err != nil {
+		closeErr := tmpFile.Close()
+		if err != nil || closeErr != nil {
 			os.Remove(tmpFile.Name())
+			markPartial(result, "could not stage attachment for scanning")
 			continue // fail-open: skip this part
 		}
 
@@ -458,6 +474,8 @@ func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionRe
 			continue
 		}
 
+		safeName := sanitizeAttachmentName(zf.Name)
+
 		rc, err := zf.Open()
 		if err != nil {
 			continue
@@ -466,20 +484,22 @@ func extractZIP(zipPath, archiveName string, limits Limits, result *ExtractionRe
 		tmpFile, err := os.CreateTemp(limits.TempDir, "csm-emailav-zip-*")
 		if err != nil {
 			rc.Close()
+			markPartial(result, fmt.Sprintf("could not stage file %q in archive for scanning", safeName))
 			continue
 		}
 
 		limited := io.LimitReader(rc, limits.MaxAttachmentSize+1)
 		n, err := io.Copy(tmpFile, limited)
-		tmpFile.Close()
+		closeErr := tmpFile.Close()
 		rc.Close()
 
-		safeName := sanitizeAttachmentName(zf.Name)
-		if err != nil || n > limits.MaxAttachmentSize {
+		if err != nil || closeErr != nil || n > limits.MaxAttachmentSize {
 			os.Remove(tmpFile.Name())
 			if n > limits.MaxAttachmentSize {
 				result.Partial = true
 				result.PartialReason = fmt.Sprintf("file %q in archive exceeds max size", safeName)
+			} else {
+				markPartial(result, fmt.Sprintf("could not stage file %q in archive for scanning", safeName))
 			}
 			continue
 		}
@@ -537,18 +557,21 @@ func extractTarGz(tgzPath, archiveName string, limits Limits, result *Extraction
 
 		tmpFile, err := os.CreateTemp(limits.TempDir, "csm-emailav-tgz-*")
 		if err != nil {
+			markPartial(result, fmt.Sprintf("could not stage file %q in archive for scanning", safeName))
 			continue
 		}
 
 		limited := io.LimitReader(tr, limits.MaxAttachmentSize+1)
 		n, err := io.Copy(tmpFile, limited)
-		tmpFile.Close()
+		closeErr := tmpFile.Close()
 
-		if err != nil || n > limits.MaxAttachmentSize {
+		if err != nil || closeErr != nil || n > limits.MaxAttachmentSize {
 			os.Remove(tmpFile.Name())
 			if n > limits.MaxAttachmentSize {
 				result.Partial = true
 				result.PartialReason = fmt.Sprintf("file %q in archive exceeds max size", safeName)
+			} else {
+				markPartial(result, fmt.Sprintf("could not stage file %q in archive for scanning", safeName))
 			}
 			continue
 		}

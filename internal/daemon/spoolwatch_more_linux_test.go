@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -19,6 +20,62 @@ import (
 	"github.com/pidginhost/csm/internal/emailav"
 	emime "github.com/pidginhost/csm/internal/mime"
 )
+
+func TestResolveEmailAVTempDirCreatesPrivateDirectory(t *testing.T) {
+	stateDir := t.TempDir()
+
+	dir, err := resolveEmailAVTempDir(&config.Config{StatePath: stateDir})
+	if err != nil {
+		t.Fatalf("resolveEmailAVTempDir: %v", err)
+	}
+	if want := filepath.Join(stateDir, "emailav-tmp"); dir != want {
+		t.Fatalf("dir = %q, want %q", dir, want)
+	}
+
+	info, err := os.Lstat(dir)
+	if err != nil {
+		t.Fatalf("lstat temp dir: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("temp dir must not be a symlink")
+	}
+	if !info.IsDir() {
+		t.Fatal("temp path must be a directory")
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Fatalf("mode = %o, want 700", got)
+	}
+	if uid, _, ok := fileOwner(info); ok && uid != os.Geteuid() {
+		t.Fatalf("uid = %d, want %d", uid, os.Geteuid())
+	}
+}
+
+func TestResolveEmailAVTempDirRejectsSymlink(t *testing.T) {
+	stateDir := t.TempDir()
+	target := t.TempDir()
+	link := filepath.Join(stateDir, "emailav-tmp")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	_, err := resolveEmailAVTempDir(&config.Config{StatePath: stateDir})
+	if err == nil {
+		t.Fatal("expected symlink temp dir to be rejected")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("err = %v, want symlink rejection", err)
+	}
+}
+
+func TestResolveEmailAVTempDirRejectsEmptyStatePath(t *testing.T) {
+	_, err := resolveEmailAVTempDir(&config.Config{})
+	if err == nil {
+		t.Fatal("expected empty state_path to be rejected")
+	}
+	if !strings.Contains(err.Error(), "state_path") {
+		t.Fatalf("err = %v, want state_path rejection", err)
+	}
+}
 
 // These tests cover spoolwatch.go branches that aren't already exercised in
 // spoolwatch_linux_test.go, spoolwatch_coverage_linux_test.go, or

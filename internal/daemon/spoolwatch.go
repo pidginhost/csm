@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -53,8 +54,8 @@ type SpoolWatcher struct {
 	// emailAVTempDir is the staging directory CreateTemp uses for
 	// extracted attachments. Established once at watcher construction
 	// (0700, daemon-owned) so an unprivileged local uid cannot race
-	// the scanner via /tmp symlink swaps. Empty falls back to
-	// os.TempDir() so test harnesses still work without setup.
+	// the scanner via /tmp symlink swaps. Empty is only for hand-built
+	// test watchers; production construction requires state_path.
 	emailAVTempDir string
 
 	scanCh    chan spoolEvent
@@ -81,12 +82,16 @@ type spoolEvent struct {
 // Attempts FAN_CLASS_CONTENT with FAN_OPEN_PERM first; falls back to
 // FAN_CLASS_NOTIF with FAN_CLOSE_WRITE if permission events are unavailable.
 func NewSpoolWatcher(cfg *config.Config, alertCh chan<- alert.Finding, orch *emailav.Orchestrator, quar *emailav.Quarantine) (*SpoolWatcher, error) {
+	emailAVTempDir, err := resolveEmailAVTempDir(cfg)
+	if err != nil {
+		return nil, err
+	}
 	sw := &SpoolWatcher{
 		cfg:            cfg,
 		alertCh:        alertCh,
 		orchestrator:   orch,
 		quarantine:     quar,
-		emailAVTempDir: resolveEmailAVTempDir(cfg),
+		emailAVTempDir: emailAVTempDir,
 		scanCh:         make(chan spoolEvent, 256),
 		stopCh:         make(chan struct{}),
 	}
@@ -505,24 +510,82 @@ func (sw *SpoolWatcher) PermissionMode() bool {
 	return sw.permissionMode
 }
 
-// resolveEmailAVTempDir returns the directory CreateTemp should use
-// for extracted email parts. When StatePath is configured the staging
-// dir lives under it (and is created 0700 on first use); otherwise
-// the function returns "" so os.TempDir() applies, preserving prior
-// behaviour for tests and standalone harnesses.
-func resolveEmailAVTempDir(cfg *config.Config) string {
-	if cfg == nil || cfg.StatePath == "" {
-		return ""
+// resolveEmailAVTempDir returns the private directory CreateTemp should use
+// for extracted email parts.
+func resolveEmailAVTempDir(cfg *config.Config) (string, error) {
+	if cfg == nil {
+		return "", fmt.Errorf("email AV temp dir: nil config")
+	}
+	if cfg.StatePath == "" {
+		return "", fmt.Errorf("email AV temp dir: state_path is empty")
 	}
 	dir := filepath.Join(cfg.StatePath, "emailav-tmp")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		fmt.Fprintf(os.Stderr, "[%s] spool watcher: cannot create %s (%v); falling back to system temp\n", ts(), dir, err)
-		return ""
+		return "", fmt.Errorf("creating email AV temp dir %s: %w", dir, err)
+	}
+	if err := secureEmailAVTempDir(dir); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+func secureEmailAVTempDir(dir string) error {
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("checking email AV temp dir %s: %w", dir, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("email AV temp dir %s is a symlink", dir)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("email AV temp dir %s is not a directory", dir)
+	}
+
+	uid, gid, ok := fileOwner(info)
+	if ok {
+		euid := os.Geteuid()
+		if uid != euid {
+			if euid != 0 {
+				return fmt.Errorf("email AV temp dir %s is owned by uid %d, want uid %d", dir, uid, euid)
+			}
+			if err := os.Chown(dir, euid, os.Getegid()); err != nil {
+				return fmt.Errorf("owning email AV temp dir %s: %w", dir, err)
+			}
+		} else if gid != os.Getegid() && euid == 0 {
+			if err := os.Chown(dir, euid, os.Getegid()); err != nil {
+				return fmt.Errorf("owning email AV temp dir %s: %w", dir, err)
+			}
+		}
 	}
 	if err := os.Chmod(dir, 0o700); err != nil {
-		fmt.Fprintf(os.Stderr, "[%s] spool watcher: cannot chmod %s (%v)\n", ts(), dir, err)
+		return fmt.Errorf("chmod email AV temp dir %s: %w", dir, err)
 	}
-	return dir
+
+	info, err = os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("checking email AV temp dir %s after chmod: %w", dir, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("email AV temp dir %s became a symlink", dir)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("email AV temp dir %s is not a directory", dir)
+	}
+	if info.Mode().Perm() != 0o700 {
+		return fmt.Errorf("email AV temp dir %s mode is %o, want 700", dir, info.Mode().Perm())
+	}
+	if uid, _, ok := fileOwner(info); ok && uid != os.Geteuid() {
+		return fmt.Errorf("email AV temp dir %s is owned by uid %d, want uid %d", dir, uid, os.Geteuid())
+	}
+	return nil
+}
+
+func fileOwner(info os.FileInfo) (uid, gid int, ok bool) {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, 0, false
+	}
+	return int(stat.Uid), int(stat.Gid), true
 }
 
 // Stop signals the event loop to exit.

@@ -77,6 +77,53 @@ func TestParseMultipartWithAttachment(t *testing.T) {
 	}
 }
 
+func TestParseMultipartUsesConfiguredTempDir(t *testing.T) {
+	hPath := filepath.Join("testdata", "multipart-H")
+	dPath := filepath.Join("testdata", "multipart-D")
+	tempDir := t.TempDir()
+	limits := DefaultLimits()
+	limits.TempDir = tempDir
+
+	result, err := ParseSpoolMessage(hPath, dPath, limits)
+	if err != nil {
+		t.Fatalf("ParseSpoolMessage failed: %v", err)
+	}
+	defer func() {
+		for _, p := range result.Parts {
+			os.Remove(p.TempPath)
+		}
+	}()
+
+	if len(result.Parts) != 1 {
+		t.Fatalf("Parts = %d, want 1", len(result.Parts))
+	}
+	if got := filepath.Dir(result.Parts[0].TempPath); got != tempDir {
+		t.Fatalf("TempPath dir = %q, want %q", got, tempDir)
+	}
+}
+
+func TestParseMultipartTempDirFailureMarksPartial(t *testing.T) {
+	hPath := filepath.Join("testdata", "multipart-H")
+	dPath := filepath.Join("testdata", "multipart-D")
+	limits := DefaultLimits()
+	limits.TempDir = filepath.Join(t.TempDir(), "missing")
+
+	result, err := ParseSpoolMessage(hPath, dPath, limits)
+	if err != nil {
+		t.Fatalf("ParseSpoolMessage failed: %v", err)
+	}
+
+	if !result.Partial {
+		t.Fatal("Partial = false, want true")
+	}
+	if result.PartialReason != "could not stage attachment for scanning" {
+		t.Fatalf("PartialReason = %q", result.PartialReason)
+	}
+	if len(result.Parts) != 0 {
+		t.Fatalf("Parts = %d, want 0", len(result.Parts))
+	}
+}
+
 func TestParseLimitEnforcement(t *testing.T) {
 	hPath := filepath.Join("testdata", "multipart-H")
 	dPath := filepath.Join("testdata", "multipart-D")
@@ -147,6 +194,28 @@ func TestParseSinglePartAttachment(t *testing.T) {
 	// Cleanup
 	for _, p := range result.Parts {
 		os.Remove(p.TempPath)
+	}
+}
+
+func TestParseSinglePartTempDirFailureMarksPartial(t *testing.T) {
+	hPath := filepath.Join("testdata", "singlepart-H")
+	dPath := filepath.Join("testdata", "singlepart-D")
+	limits := DefaultLimits()
+	limits.TempDir = filepath.Join(t.TempDir(), "missing")
+
+	result, err := ParseSpoolMessage(hPath, dPath, limits)
+	if err != nil {
+		t.Fatalf("ParseSpoolMessage failed: %v", err)
+	}
+
+	if !result.Partial {
+		t.Fatal("Partial = false, want true")
+	}
+	if result.PartialReason != "could not stage single-part attachment for scanning" {
+		t.Fatalf("PartialReason = %q", result.PartialReason)
+	}
+	if len(result.Parts) != 0 {
+		t.Fatalf("Parts = %d, want 0", len(result.Parts))
 	}
 }
 
