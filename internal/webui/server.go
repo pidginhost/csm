@@ -12,6 +12,7 @@ import (
 	"html/template"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -425,24 +426,86 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.httpSrv.Shutdown(ctx)
 }
 
-// Broadcast is a no-op kept for daemon compatibility; dashboard uses polling.
 // canonicalAllowedOrigin returns the single CORS origin the web UI
 // will accept on /api/ requests. Built from cfg.Hostname plus the
 // listen port so a forged HTTP Host header cannot redirect the check.
 func (s *Server) canonicalAllowedOrigin() string {
-	host := s.cfg.Hostname
-	port := ""
-	if listen := s.cfg.WebUI.Listen; listen != "" {
-		if idx := strings.LastIndex(listen, ":"); idx >= 0 {
-			port = listen[idx+1:]
-		}
-	}
+	host := canonicalOriginHost(s.cfg.Hostname)
+	port := webUIListenPort(s.cfg.WebUI.Listen)
 	if port != "" && port != "443" {
-		host = host + ":" + port
+		if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+			host = host[1 : len(host)-1]
+		}
+		host = net.JoinHostPort(host, port)
 	}
 	return "https://" + host
 }
 
+func canonicalOriginHost(host string) string {
+	host = strings.TrimSpace(host)
+	if strings.HasPrefix(host, "[") {
+		if end := strings.Index(host, "]"); end > 0 {
+			if ip := net.ParseIP(host[1:end]); ip != nil {
+				if ip4 := ip.To4(); ip4 != nil {
+					return ip4.String()
+				}
+				return "[" + ip.String() + "]"
+			}
+		}
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if ip4 := ip.To4(); ip4 != nil {
+			return ip4.String()
+		}
+		return "[" + ip.String() + "]"
+	}
+	return strings.ToLower(host)
+}
+
+func webUIListenPort(listen string) string {
+	if _, port, err := net.SplitHostPort(listen); err == nil {
+		return port
+	}
+	if idx := strings.LastIndex(listen, ":"); idx >= 0 {
+		return listen[idx+1:]
+	}
+	return ""
+}
+
+func sameOrigin(got, want string) bool {
+	gotURL, err := url.Parse(got)
+	if err != nil || !originHeaderURL(gotURL) {
+		return false
+	}
+	wantURL, err := url.Parse(want)
+	if err != nil || !originHeaderURL(wantURL) {
+		return false
+	}
+	return strings.EqualFold(gotURL.Scheme, wantURL.Scheme) &&
+		strings.EqualFold(gotURL.Hostname(), wantURL.Hostname()) &&
+		originPort(gotURL) == originPort(wantURL)
+}
+
+func originHeaderURL(u *url.URL) bool {
+	return u.Scheme != "" && u.Host != "" && u.User == nil &&
+		u.Path == "" && u.RawQuery == "" && u.Fragment == ""
+}
+
+func originPort(u *url.URL) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return "443"
+	case "http":
+		return "80"
+	default:
+		return ""
+	}
+}
+
+// Broadcast is a no-op kept for daemon compatibility; dashboard uses polling.
 func (s *Server) Broadcast(_ []alert.Finding) {}
 
 // SetSigCount sets the loaded signature count for the status API.
@@ -847,11 +910,11 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 			origin := r.Header.Get("Origin")
 			if origin != "" {
 				allowed := s.canonicalAllowedOrigin()
-				if origin != allowed {
+				if !sameOrigin(origin, allowed) {
 					http.Error(w, "Cross-origin request blocked", http.StatusForbidden)
 					return
 				}
-				w.Header().Set("Access-Control-Allow-Origin", allowed)
+				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Access-Control-Allow-Credentials", "true")
 			}
 			// Deny CORS preflight from unknown origins

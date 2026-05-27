@@ -63,6 +63,73 @@ func TestSecurityHeadersCORSSameOriginPassesAPI(t *testing.T) {
 	}
 }
 
+func TestSecurityHeadersCORSRejectsForgedHostMatchingOrigin(t *testing.T) {
+	s := newTestServer(t, "tok")
+	s.cfg.WebUI.Listen = ":9443"
+	s.cfg.Hostname = "myhost.example.com"
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("inner handler should not run for forged Host origin")
+	})
+	handler := s.securityHeaders(inner)
+
+	req := httptest.NewRequest("GET", "/api/v1/status", nil)
+	req.Host = "evil.example.com:9443"
+	req.Header.Set("Origin", "https://evil.example.com:9443")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("forged Host matching Origin = %d, want 403", w.Code)
+	}
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("ACAO for rejected origin = %q, want empty", got)
+	}
+}
+
+func TestSecurityHeadersCORSNormalizesConfiguredOrigin(t *testing.T) {
+	s := newTestServer(t, "tok")
+	s.cfg.WebUI.Listen = "[::]:443"
+	s.cfg.Hostname = "MyHost.Example.COM"
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := s.securityHeaders(inner)
+
+	req := httptest.NewRequest("GET", "/api/v1/status", nil)
+	req.Header.Set("Origin", "https://myhost.example.com:443")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("normalized origin = %d, want 200", w.Code)
+	}
+	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "https://myhost.example.com:443" {
+		t.Errorf("ACAO = %q", got)
+	}
+}
+
+func TestSecurityHeadersCORSIPv6Hostname(t *testing.T) {
+	s := newTestServer(t, "tok")
+	s.cfg.WebUI.Listen = "[::]:9443"
+	s.cfg.Hostname = "2001:db8::10"
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := s.securityHeaders(inner)
+
+	req := httptest.NewRequest("GET", "/api/v1/status", nil)
+	req.Header.Set("Origin", "https://[2001:db8::10]:9443")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("IPv6 origin = %d, want 200", w.Code)
+	}
+}
+
 func TestSecurityHeadersOPTIONSReturns204(t *testing.T) {
 	s := newTestServer(t, "tok")
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
