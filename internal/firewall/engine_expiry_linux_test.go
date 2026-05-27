@@ -14,6 +14,17 @@ import (
 	"github.com/google/nftables"
 )
 
+func writeRawFirewallState(t *testing.T, e *Engine, state FirewallState) {
+	t.Helper()
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(e.statePath, "state.json"), data, 0o600); err != nil {
+		t.Fatalf("write state.json: %v", err)
+	}
+}
+
 func readRawFirewallState(t *testing.T, e *Engine) FirewallState {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(e.statePath, "state.json"))
@@ -66,17 +77,16 @@ func TestCleanExpiredAllowsUsesRawStateForMixedSourceExpiry(t *testing.T) {
 		statePath: t.TempDir(),
 		cfg:       &FirewallConfig{},
 	}
-	e.saveAllowedEntry(AllowedEntry{
-		IP:        "10.0.0.42",
-		Reason:    "expired cli",
-		Source:    SourceCLI,
-		ExpiresAt: time.Now().Add(-time.Hour),
-	})
-	e.saveAllowedEntry(AllowedEntry{
-		IP:        "10.0.0.42",
-		Reason:    "active dyndns",
-		Source:    SourceDynDNS,
-		ExpiresAt: time.Now().Add(time.Hour),
+	// Seed state.json directly: saveAllowedEntry calls loadStateFile
+	// which prunes expired entries before append, so the expired row
+	// would never reach disk. CleanExpiredAllows is the function under
+	// test; it needs to see the raw expired row as if a prior daemon
+	// had already written it.
+	writeRawFirewallState(t, e, FirewallState{
+		Allowed: []AllowedEntry{
+			{IP: "10.0.0.42", Reason: "expired cli", Source: SourceCLI, ExpiresAt: time.Now().Add(-time.Hour)},
+			{IP: "10.0.0.42", Reason: "active dyndns", Source: SourceDynDNS, ExpiresAt: time.Now().Add(time.Hour)},
+		},
 	})
 
 	if removed := e.CleanExpiredAllows(); removed != 1 {
