@@ -401,30 +401,29 @@ func AutoBlockIPs(cfg *config.Config, findings []alert.Finding) []alert.Finding 
 		if threshold < 2 {
 			threshold = 3
 		}
-		// Count blocked IPs per /24
+		// Count blocked IPs per subnet (IPv4 /24, IPv6 /64).
 		subnetCounts := make(map[string]int)
 		subnetBlocked := make(map[string]bool)
 		for _, b := range state.IPs {
-			prefix := extractPrefix24(b.IP)
-			if prefix != "" {
-				subnetCounts[prefix]++
+			cidr := subnetEscalationCIDR(b.IP)
+			if cidr != "" {
+				subnetCounts[cidr]++
 			}
 		}
-		for prefix, count := range subnetCounts {
-			if count >= threshold && !subnetBlocked[prefix] {
-				cidr := prefix + ".0/24"
+		for cidr, count := range subnetCounts {
+			if count >= threshold && !subnetBlocked[cidr] {
 				if sb, ok := blocker.(subnetBlocker); ok {
 					if isSubnetAlreadyBlocked(blocker, cidr) {
 						continue
 					}
 					reason := fmt.Sprintf("Auto-netblock: %d IPs from %s", count, cidr)
 					if err := sb.BlockSubnet(cidr, reason, 0); err == nil {
-						subnetBlocked[prefix] = true
-						fmt.Fprintf(os.Stderr, "[%s] AUTO-NETBLOCK: %s blocked (%d IPs from same /24)\n", time.Now().Format("2006-01-02 15:04:05"), cidr, count)
+						subnetBlocked[cidr] = true
+						fmt.Fprintf(os.Stderr, "[%s] AUTO-NETBLOCK: %s blocked (%d IPs from same subnet)\n", time.Now().Format("2006-01-02 15:04:05"), cidr, count)
 						actions = append(actions, alert.Finding{
 							Severity:  alert.Critical,
 							Check:     "auto_block",
-							Message:   fmt.Sprintf("AUTO-NETBLOCK: %s blocked (%d IPs from same /24)", cidr, count),
+							Message:   fmt.Sprintf("AUTO-NETBLOCK: %s blocked (%d IPs from same subnet)", cidr, count),
 							Timestamp: time.Now(),
 						})
 					}
@@ -569,12 +568,39 @@ func PendingBlockIPs(statePath string) map[string]bool {
 }
 
 // extractPrefix24 returns the first 3 octets of an IPv4 address (e.g. "1.2.3").
+// Retained for the perm-block escalation tracker which keys on the
+// numeric prefix string. Returns "" for IPv6; callers needing a
+// family-agnostic subnet key must use subnetEscalationCIDR.
 func extractPrefix24(ip string) string {
 	parts := strings.Split(ip, ".")
 	if len(parts) != 4 {
 		return ""
 	}
 	return parts[0] + "." + parts[1] + "." + parts[2]
+}
+
+// subnetEscalationCIDR returns the canonical CIDR used by the
+// auto-netblock escalation path for the given IP. IPv4 collapses to
+// /24 (the historical block size); IPv6 collapses to /64 because most
+// providers hand out /64 prefixes to end users -- /128 would let
+// attackers rotate addresses inside the same /64 and never escalate,
+// while a wider prefix would risk taking down legitimate neighbours.
+// Returns "" for unparseable input.
+func subnetEscalationCIDR(ip string) string {
+	parsed := net.ParseIP(ip)
+	if parsed == nil {
+		return ""
+	}
+	if ip4 := parsed.To4(); ip4 != nil {
+		return fmt.Sprintf("%d.%d.%d.0/24", ip4[0], ip4[1], ip4[2])
+	}
+	ip16 := parsed.To16()
+	if ip16 == nil {
+		return ""
+	}
+	mask := net.CIDRMask(64, 128)
+	network := ip16.Mask(mask)
+	return (&net.IPNet{IP: network, Mask: mask}).String()
 }
 
 // --- Permanent block escalation (LF_PERMBLOCK) ---

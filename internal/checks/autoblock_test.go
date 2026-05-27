@@ -211,6 +211,44 @@ func TestAutoBlockIPs_SkipsAlreadyBlockedNetblock(t *testing.T) {
 	}
 }
 
+// TestAutoBlockIPs_NetBlockHandlesIPv6: when multiple IPv6 addresses
+// from the same /64 are auto-blocked, the netblock-escalation path
+// must trigger a CIDR block of that /64. Previously the prefix
+// extractor only understood IPv4 and IPv6 attackers escaped the
+// /24-equivalent escalation entirely.
+func TestAutoBlockIPs_NetBlockHandlesIPv6(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.StatePath = t.TempDir()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.AutoResponse.NetBlock = true
+	cfg.AutoResponse.NetBlockThreshold = 2
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := getIPBlocker()
+	SetIPBlocker(blocker)
+	t.Cleanup(func() {
+		SetIPBlocker(oldBlocker)
+	})
+
+	AutoBlockIPs(cfg, []alert.Finding{
+		{Check: "wp_login_bruteforce", Message: "WP brute from 2001:db8:1::10"},
+		{Check: "wp_login_bruteforce", Message: "WP brute from 2001:db8:1::20"},
+		{Check: "wp_login_bruteforce", Message: "WP brute from 2001:db8:1::30"},
+	})
+
+	var got string
+	for _, cidr := range blocker.blockedSubnet {
+		if strings.HasPrefix(cidr, "2001:db8:1::/64") {
+			got = cidr
+			break
+		}
+	}
+	if got == "" {
+		t.Fatalf("expected /64 netblock for IPv6 attackers, got blockedSubnet=%v", blocker.blockedSubnet)
+	}
+}
+
 func TestAutoBlockIPs_SubnetStatusUsesScanSnapshot(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.StatePath = t.TempDir()
