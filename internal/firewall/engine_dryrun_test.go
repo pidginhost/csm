@@ -181,38 +181,6 @@ func TestBlockIP_LocalAddrLookupErrorLeavesPriorCache(t *testing.T) {
 	}
 }
 
-func TestBlockIP_LocalAddrCacheRefreshesOnFreshMiss(t *testing.T) {
-	addrs := []string{"192.0.2.30"}
-	calls := 0
-	recorded := false
-	e := &Engine{
-		cfg:           &FirewallConfig{Enabled: true},
-		statePath:     t.TempDir(),
-		dryRunEnabled: func() bool { return true },
-		dryRunRecorder: func(ip, reason string, timeout time.Duration) {
-			recorded = true
-		},
-		localAddrsLookup: func() ([]string, error) {
-			calls++
-			return append([]string(nil), addrs...), nil
-		},
-	}
-
-	if err := e.BlockIP("192.0.2.30", "warm", 0); err == nil || !strings.Contains(err.Error(), "refusing to block local host IP") {
-		t.Fatalf("warm call: expected local-host refusal, got %v", err)
-	}
-	addrs = []string{"192.0.2.30", "192.0.2.31"}
-	if err := e.BlockIP("192.0.2.31", "new-address", 0); err == nil || !strings.Contains(err.Error(), "refusing to block local host IP") {
-		t.Fatalf("fresh miss: expected refreshed local-host refusal, got %v", err)
-	}
-	if recorded {
-		t.Fatal("dry-run recorder was called for a newly assigned local host IP")
-	}
-	if calls != 2 {
-		t.Fatalf("local address lookup calls = %d, want 2", calls)
-	}
-}
-
 func TestLocalAddrLookupFiltersLoopbackAndLinkLocal(t *testing.T) {
 	e := &Engine{
 		localAddrsLookup: func() ([]string, error) {
@@ -222,7 +190,7 @@ func TestLocalAddrLookupFiltersLoopbackAndLinkLocal(t *testing.T) {
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.refreshLocalAddrsLocked(false)
+	e.refreshLocalAddrsLocked()
 	for _, ip := range []string{"127.0.0.1", "169.254.10.20", "fe80::1"} {
 		if _, ok := e.localAddrs[ip]; ok {
 			t.Fatalf("local address cache kept excluded address %s", ip)
