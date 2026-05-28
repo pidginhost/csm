@@ -212,7 +212,7 @@ func (db *DB) ListPortAllows() []FWPortAllowEntry {
 }
 
 // LoadFirewallState reads all 4 firewall buckets and assembles a FirewallState.
-// Expired blocked entries are filtered out.
+// Expired blocked and allowed entries are filtered out.
 func (db *DB) LoadFirewallState() FirewallState {
 	var state FirewallState
 	now := time.Now()
@@ -232,9 +232,7 @@ func (db *DB) LoadFirewallState() FirewallState {
 			return nil
 		})
 
-		// fw:allowed — mirror the Blocked branch's expiry filter so stale
-		// allows do not leak into csm_firewall_rules_total, /api/v1
-		// blocked-ip endpoints, or the WebUI rule listings.
+		// fw:allowed - filter expired
 		allowed := tx.Bucket([]byte("fw:allowed"))
 		_ = allowed.ForEach(func(k, v []byte) error {
 			var entry FWAllowedEntry

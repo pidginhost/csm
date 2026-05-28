@@ -181,9 +181,9 @@ Registered when `reputation.upstream.enabled: true`.
   `LoadFirewallState` filters those before the gauge reads.
 - `csm_firewall_rules_total` (gauge): total firewall rules across
   all four categories (blocked IPs, allowed IPs, blocked subnets,
-  port-specific allows). Sudden drops are worth investigating; the
-  firewall engine does not prune rules without operator or
-  auto-response action.
+  port-specific allows). Excludes expired temp blocks and allow-list
+  rows. Sudden drops are worth investigating; expected drops happen
+  when temporary block or allow deadlines pass.
 
 ### Config reloads
 

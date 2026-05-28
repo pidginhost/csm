@@ -36,6 +36,9 @@ func TestFirewallMetricsReadLiveStore(t *testing.T) {
 	if err := db.AllowIP("10.0.0.3", "test", time.Time{}); err != nil {
 		t.Fatalf("AllowIP: %v", err)
 	}
+	if err := db.AllowIP("10.0.0.5", "expired", time.Now().Add(-time.Hour)); err != nil {
+		t.Fatalf("AllowIP(expired): %v", err)
+	}
 
 	d := &Daemon{cfg: &config.Config{}}
 	d.registerFirewallMetrics()
@@ -50,7 +53,7 @@ func TestFirewallMetricsReadLiveStore(t *testing.T) {
 		t.Errorf("csm_blocked_ips_total: got %g, want 2 (two BlockIPs seeded)", got)
 	}
 	if got := readGauge(body, "csm_firewall_rules_total"); got != 3 {
-		t.Errorf("csm_firewall_rules_total: got %g, want 3 (2 blocked + 1 allowed)", got)
+		t.Errorf("csm_firewall_rules_total: got %g, want 3 (2 blocked + 1 active allow)", got)
 	}
 
 	// Mutate and re-scrape to prove the gauge is live, not cached.

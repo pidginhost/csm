@@ -31,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - PHP-relay startup replay now skips an oversized malformed log line and continues scanning later mail activity instead of abandoning the pass.
 - Cloud-relay detector now evicts idle per-user windows on a periodic sweep, so the in-memory map no longer grows linearly with every authenticated sender ever seen.
 - Cloud-relay cleanup no longer drops the first new mailbox activity when cleanup and log parsing happen at the same time after a long idle period.
-- Firewall state restore now drops expired allow-list rows the same way it drops expired blocks, so stale entries no longer inflate firewall metrics or appear in the WebUI rule listings.
+- Firewall state reads now ignore expired allow-list rows the same way they ignore expired blocks, so stale entries no longer inflate firewall rule metrics.
 
 ## [3.9.1] - 2026-05-28
 

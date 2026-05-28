@@ -392,19 +392,20 @@ func TestGetBlockedIPPermanentReturnsFound(t *testing.T) {
 	}
 }
 
-// X17: LoadFirewallState filters expired Blocked entries but the Allowed
-// branch returned everything, including entries whose ExpiresAt is in
-// the past. Stale allow rows then leaked into csm_firewall_rules_total,
-// /api/v1/blocked_ips, and any UI rendering the bucket. Mirror the
-// Blocked branch's expiry filter on Allowed.
 func TestLoadFirewallStateFiltersExpiredAllows(t *testing.T) {
 	db := openTestDB(t)
 	past := time.Now().Add(-1 * time.Hour)
 	future := time.Now().Add(24 * time.Hour)
 
-	_ = db.AllowIP("10.0.1.1", "expired", past)
-	_ = db.AllowIP("10.0.1.2", "active", future)
-	_ = db.AllowIP("10.0.1.3", "permanent", time.Time{})
+	if err := db.AllowIP("10.0.1.1", "expired", past); err != nil {
+		t.Fatalf("AllowIP(expired): %v", err)
+	}
+	if err := db.AllowIP("10.0.1.2", "active", future); err != nil {
+		t.Fatalf("AllowIP(active): %v", err)
+	}
+	if err := db.AllowIP("10.0.1.3", "permanent", time.Time{}); err != nil {
+		t.Fatalf("AllowIP(permanent): %v", err)
+	}
 
 	state := db.LoadFirewallState()
 	got := make(map[string]bool)
