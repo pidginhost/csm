@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Closing or auto-resolving a credential-spray incident now releases its attacker tracking state. Later failures from that address are evaluated as new activity instead of mutating the closed incident or reusing old spray counts.
+- Incident list and compaction now skip a corrupt bbolt row instead of aborting the whole pass. A single bad record on disk no longer wipes every restored incident at daemon startup.
 
 ## [3.9.1] - 2026-05-28
 

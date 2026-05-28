@@ -8,6 +8,7 @@ import (
 	bolt "go.etcd.io/bbolt"
 
 	"github.com/pidginhost/csm/internal/incident"
+	csmlog "github.com/pidginhost/csm/internal/log"
 )
 
 const incidentsBucket = "incidents"
@@ -46,14 +47,20 @@ func (db *DB) GetIncident(id string) (incident.Incident, bool, error) {
 }
 
 // ListIncidents returns every stored incident, newest UpdatedAt first.
+// Corrupt rows (torn writes, bit-flips, schema-mismatched legacy
+// records) are skipped with a warn log so the rest of the bucket is
+// still restorable. Aborting on the first bad row would erase every
+// open incident from memory at daemon startup.
 func (db *DB) ListIncidents() ([]incident.Incident, error) {
 	var out []incident.Incident
 	err := db.bolt.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(incidentsBucket))
-		return b.ForEach(func(_, v []byte) error {
+		return b.ForEach(func(k, v []byte) error {
 			var inc incident.Incident
 			if err := json.Unmarshal(v, &inc); err != nil {
-				return err
+				csmlog.Warn("store: skipping corrupt incident row",
+					"bucket", incidentsBucket, "id", string(k), "err", err)
+				return nil
 			}
 			out = append(out, inc)
 			return nil
@@ -96,7 +103,9 @@ func (db *DB) CompactIncidents(now time.Time, retention time.Duration) (int, err
 		err := b.ForEach(func(k, v []byte) error {
 			var inc incident.Incident
 			if err := json.Unmarshal(v, &inc); err != nil {
-				return err
+				csmlog.Warn("store: skipping corrupt incident row",
+					"bucket", incidentsBucket, "id", string(k), "err", err)
+				return nil
 			}
 			if inc.Status != incident.StatusResolved && inc.Status != incident.StatusDismissed {
 				return nil

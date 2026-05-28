@@ -2,8 +2,11 @@ package store
 
 import (
 	"path/filepath"
+	"sort"
 	"testing"
 	"time"
+
+	bolt "go.etcd.io/bbolt"
 
 	"github.com/pidginhost/csm/internal/alert"
 	"github.com/pidginhost/csm/internal/incident"
@@ -176,5 +179,75 @@ func TestCompactIncidentsPrunesOldResolved(t *testing.T) {
 	}
 	if _, ok, _ := db.GetIncident("inc_open_old"); !ok {
 		t.Errorf("inc_open_old (open status) must survive any age")
+	}
+}
+
+// X4: a single corrupt JSON row must not erase every other incident at
+// startup. Before the fix, ListIncidents returned the unmarshal error
+// from b.ForEach, which propagated up through Restore() and left the
+// daemon with zero in-memory incidents until a fresh finding rebuilt
+// one. Sibling buckets already use the skip-and-continue pattern.
+func TestListIncidentsSkipsCorruptRecord(t *testing.T) {
+	db := newTestStore(t)
+
+	good1 := sampleIncident("inc_good1")
+	good2 := sampleIncident("inc_good2")
+	if err := db.SaveIncident(good1); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveIncident(good2); err != nil {
+		t.Fatal(err)
+	}
+
+	// Inject a corrupt row directly via bbolt -- mirrors what would
+	// happen after a torn write or on-disk bit-flip.
+	err := db.bolt.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte(incidentsBucket)).Put([]byte("inc_corrupt"), []byte("not-json{"))
+	})
+	if err != nil {
+		t.Fatalf("inject corrupt row: %v", err)
+	}
+
+	list, err := db.ListIncidents()
+	if err != nil {
+		t.Fatalf("ListIncidents must not fail on a single corrupt row: %v", err)
+	}
+	gotIDs := make([]string, 0, len(list))
+	for _, inc := range list {
+		gotIDs = append(gotIDs, inc.ID)
+	}
+	sort.Strings(gotIDs)
+	if len(gotIDs) != 2 || gotIDs[0] != "inc_good1" || gotIDs[1] != "inc_good2" {
+		t.Errorf("ListIncidents = %v, want [inc_good1 inc_good2]", gotIDs)
+	}
+}
+
+// X4: CompactIncidents shares the same ForEach + Unmarshal shape, so a
+// corrupt row in the incidents bucket must not abort the compaction
+// pass either.
+func TestCompactIncidentsSkipsCorruptRecord(t *testing.T) {
+	db := newTestStore(t)
+	now := time.Unix(1_700_000_000, 0).UTC()
+
+	stale := sampleIncident("inc_stale")
+	stale.Status = incident.StatusResolved
+	stale.UpdatedAt = now.Add(-31 * 24 * time.Hour)
+	if err := db.SaveIncident(stale); err != nil {
+		t.Fatal(err)
+	}
+
+	err := db.bolt.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte(incidentsBucket)).Put([]byte("inc_corrupt"), []byte("{bad"))
+	})
+	if err != nil {
+		t.Fatalf("inject corrupt row: %v", err)
+	}
+
+	pruned, err := db.CompactIncidents(now, 30*24*time.Hour)
+	if err != nil {
+		t.Fatalf("compact must not fail on corrupt row: %v", err)
+	}
+	if pruned != 1 {
+		t.Errorf("pruned = %d, want 1 (only inc_stale)", pruned)
 	}
 }
