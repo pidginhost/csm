@@ -122,6 +122,65 @@ func TestBlockIP_DryRunPreservesInfraSafetyCheck(t *testing.T) {
 	}
 }
 
+func TestBlockIP_RefusesOwnHostIPRegardlessOfConfig(t *testing.T) {
+	e := &Engine{
+		cfg:              &FirewallConfig{Enabled: true},
+		statePath:        t.TempDir(),
+		dryRunEnabled:    func() bool { return false },
+		localAddrsLookup: func() ([]string, error) { return []string{"192.0.2.10"}, nil },
+	}
+
+	err := e.BlockIP("192.0.2.10", "test", 0)
+	if err == nil || !strings.Contains(err.Error(), "refusing to block local host IP") {
+		t.Fatalf("expected refusal for local host IP, got %v", err)
+	}
+}
+
+func TestBlockIP_DryRunPreservesLocalHostSafetyCheck(t *testing.T) {
+	recorded := false
+	e := &Engine{
+		cfg:           &FirewallConfig{Enabled: true},
+		statePath:     t.TempDir(),
+		dryRunEnabled: func() bool { return true },
+		dryRunRecorder: func(ip, reason string, timeout time.Duration) {
+			recorded = true
+		},
+		localAddrsLookup: func() ([]string, error) { return []string{"192.0.2.11"}, nil },
+	}
+
+	err := e.BlockIP("192.0.2.11", "test", 0)
+	if err == nil || !strings.Contains(err.Error(), "refusing to block local host IP") {
+		t.Fatalf("expected local-host safety error in dry-run path, got %v", err)
+	}
+	if recorded {
+		t.Fatal("dry-run recorder was called for an IP live blocking would refuse")
+	}
+}
+
+func TestBlockIP_LocalAddrLookupErrorLeavesPriorCache(t *testing.T) {
+	calls := 0
+	e := &Engine{
+		cfg:           &FirewallConfig{Enabled: true},
+		statePath:     t.TempDir(),
+		dryRunEnabled: func() bool { return false },
+		localAddrsLookup: func() ([]string, error) {
+			calls++
+			if calls == 1 {
+				return []string{"192.0.2.20"}, nil
+			}
+			return nil, errors.New("netlink down")
+		},
+	}
+
+	if err := e.BlockIP("192.0.2.20", "warm", 0); err == nil || !strings.Contains(err.Error(), "refusing to block local host IP") {
+		t.Fatalf("first call: expected local-host refusal, got %v", err)
+	}
+	e.localAddrsExpiresAt = time.Now().Add(-time.Second)
+	if err := e.BlockIP("192.0.2.20", "after-error", 0); err == nil || !strings.Contains(err.Error(), "refusing to block local host IP") {
+		t.Fatalf("second call: expected refusal kept from cached set after lookup error, got %v", err)
+	}
+}
+
 func TestBlockIPAlreadyBlockedNoopsBeforeNftablesAndAudit(t *testing.T) {
 	dir := t.TempDir()
 	e := &Engine{
