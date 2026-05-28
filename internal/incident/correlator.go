@@ -78,8 +78,12 @@ type CorrelatorConfig struct {
 	// correlator mutex is released so firewall or verdict latency does
 	// not stall incident ingestion. nil disables the hand-off; the spray
 	// super-incident still opens and escalates, but no firewall action
-	// fires.
-	OnSprayBlock func(ip, reason string)
+	// fires. The return value reports whether the firewall actually
+	// recorded the block: false means dry-run, transient failure, or an
+	// upstream gate refused, and the audit "credential_spray_block_requested"
+	// action is not appended in that case so operators cannot mistake a
+	// declined request for an enforced block.
+	OnSprayBlock func(ip, reason string) bool
 
 	// AutoBlock turns on the generic incident-driven firewall hand-off
 	// for non-spray kinds. Independent of SpraySuppression; applies when
@@ -1292,10 +1296,11 @@ func hasIncidentAction(actions []IncidentAction, action string) bool {
 }
 
 // triggerSprayBlockLocked invokes the operator-supplied OnSprayBlock
-// callback at most once per spray incident and appends an audit action to
-// the incident. Caller holds c.mu. The returned callback must be invoked
-// after unlocking. Idempotent: a second call against the same incident is
-// a no-op so the open + escalate paths can both arm without producing
+// callback at most once per spray incident and appends an audit action
+// only when the callback reports the firewall actually applied the block.
+// Caller holds c.mu. The returned callback must be invoked after
+// unlocking. Idempotent: a second call against the same incident is a
+// no-op so the open + escalate paths can both arm without producing
 // duplicate firewall calls.
 func (c *Correlator) triggerSprayBlockLocked(inc *Incident, ip string, hits int, now time.Time, why string) func() {
 	if inc == nil || c.cfg.OnSprayBlock == nil {
@@ -1305,15 +1310,25 @@ func (c *Correlator) triggerSprayBlockLocked(inc *Incident, ip string, hits int,
 		return nil
 	}
 	reason := "credential_spray: " + strconv.Itoa(hits) + " distinct mailboxes (" + why + ")"
-	inc.Actions = append(inc.Actions, IncidentAction{
-		Time:    now,
-		Action:  "credential_spray_block_requested",
-		Result:  "ok",
-		Details: ip + " " + reason,
-	})
-	c.persistLocked(*inc)
 	onSprayBlock := c.cfg.OnSprayBlock
+	incidentID := inc.ID
 	return func() {
-		onSprayBlock(ip, reason)
+		live := onSprayBlock(ip, reason)
+		if !live {
+			return
+		}
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		current, ok := c.incidents[incidentID]
+		if !ok || hasIncidentAction(current.Actions, "credential_spray_block_requested") {
+			return
+		}
+		current.Actions = append(current.Actions, IncidentAction{
+			Time:    now,
+			Action:  "credential_spray_block_requested",
+			Result:  "ok",
+			Details: ip + " " + reason,
+		})
+		c.persistLocked(*current)
 	}
 }

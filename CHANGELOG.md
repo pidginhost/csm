@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Aggregated WordPress login brute force, XML-RPC abuse, and user-enumeration findings now carry a validated structured source IP, so the incident correlator keys them under the attacker IP instead of silently dropping the per-IP attribution.
 - Obfuscated-PHP content scanner now recognizes comment-disrupted eval/assert decoder chains more accurately while ignoring examples inside PHP strings.
 - Daemon state files are now fsynced through the same atomic-write helper used by the firewall engine. A power loss between rename and directory sync can no longer leave the state file truncated and skipped by the in-memory hash gate.
+- Credential-spray block audit now records "ok" only after the firewall callback confirms the block actually took effect. Dry-run and failed callbacks no longer log a false success on the incident timeline.
 
 ## [3.9.1] - 2026-05-28
 

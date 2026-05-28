@@ -329,16 +329,27 @@ func TestPruneStaleSprayClearsExpiredEntries(t *testing.T) {
 }
 
 // blockCapture captures the (ip, reason) tuple from OnSprayBlock so a
-// test can assert the callback fired exactly when expected.
+// test can assert the callback fired exactly when expected. Returns true
+// from `record` so the correlator logs the credential_spray_block_requested
+// audit action; tests covering the "callback declined" path use the
+// `recordSkipped` variant which returns false.
 type blockCapture struct {
 	mu    sync.Mutex
 	calls []struct{ IP, Reason string }
 }
 
-func (b *blockCapture) record(ip, reason string) {
+func (b *blockCapture) record(ip, reason string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.calls = append(b.calls, struct{ IP, Reason string }{ip, reason})
+	return true
+}
+
+func (b *blockCapture) recordSkipped(ip, reason string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.calls = append(b.calls, struct{ IP, Reason string }{ip, reason})
+	return false
 }
 
 func (b *blockCapture) len() int {
@@ -396,15 +407,16 @@ func TestSprayBlockCallbackRunsAfterCorrelatorUnlock(t *testing.T) {
 	cfg.BlockAtSeverity = "high"
 	cfg.DistinctMailboxes = 1
 	cfg.SeverityEscalateAt = 2
-	called := make(chan struct{})
+	called := make(chan struct{}, 1)
 	var c *Correlator
 	c = NewCorrelator(CorrelatorConfig{
 		SpraySuppression: cfg,
-		OnSprayBlock: func(_, _ string) {
+		OnSprayBlock: func(_, _ string) bool {
 			if got := c.OpenCount(); got != 1 {
 				t.Errorf("OpenCount from block callback = %d, want 1", got)
 			}
 			close(called)
+			return true
 		},
 	})
 	c.openThreshold = 1
@@ -866,5 +878,44 @@ func TestSprayUnbindIncidentClearsTrackingState(t *testing.T) {
 	}
 	if got := c.spray.TrackedIPs(); got != 0 {
 		t.Errorf("TrackedIPs after UnbindIncident = %d, want 0", got)
+	}
+}
+
+// X12: the credential_spray_block_requested audit must reflect what the
+// firewall actually did, not what we asked it to do. When OnSprayBlock
+// reports the request was skipped (dry-run, transient firewall error,
+// upstream gate refused), no "ok" action should land on the incident.
+func TestSprayBlockAuditOnlyAfterCallbackSuccess(t *testing.T) {
+	cfg := sprayTestConfig(true, false)
+	cfg.BlockAtSeverity = "high"
+	var cap blockCapture
+	c := NewCorrelator(CorrelatorConfig{
+		SpraySuppression: cfg,
+		OnSprayBlock:     cap.recordSkipped,
+	})
+	c.openThreshold = 1
+	now := time.Unix(1_700_000_000, 0)
+	c.now = func() time.Time { return now }
+	if c.spray != nil {
+		c.spray.now = c.now
+	}
+
+	for i := 0; i < 3; i++ {
+		mb := "user" + strconv.Itoa(i) + "@example.com"
+		_, _, _ = c.OnFinding(sprayFinding(mb, "192.0.2.99", now.Add(time.Duration(i)*time.Minute)))
+	}
+
+	if got := cap.len(); got != 1 {
+		t.Fatalf("OnSprayBlock called %d times, want 1", got)
+	}
+	for _, inc := range c.Snapshot() {
+		if inc.Kind != KindCredentialSpray {
+			continue
+		}
+		for _, a := range inc.Actions {
+			if a.Action == "credential_spray_block_requested" {
+				t.Errorf("declined callback must not leave 'ok' audit entry: %+v", a)
+			}
+		}
 	}
 }

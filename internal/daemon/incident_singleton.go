@@ -76,7 +76,7 @@ func IncidentCorrelator() *incident.Correlator {
 		var spray incident.SpraySuppressionConfig
 		var autoBlock incident.IncidentAutoBlockConfig
 		var whitelisted func(string) bool
-		var onSprayBlock func(ip, reason string)
+		var onSprayBlock func(ip, reason string) bool
 		var onIncidentBlock func(ip, reason string) bool
 		if cfg := globalCfgForIncidents(); cfg != nil {
 			spray = incident.SpraySuppressionConfig{
@@ -95,18 +95,21 @@ func IncidentCorrelator() *incident.Correlator {
 			// the singleton.
 			if spray.BlockAtSeverity != "" && incidentSprayBlocker != nil {
 				blocker := incidentSprayBlocker
-				onSprayBlock = func(ip, reason string) {
+				onSprayBlock = func(ip, reason string) bool {
 					liveCfg := globalCfgForIncidents()
 					if liveCfg == nil || !liveCfg.AutoResponse.Enabled || !liveCfg.AutoResponse.BlockIPs {
-						return
+						return false
 					}
 					timeout, perr := time.ParseDuration(liveCfg.AutoResponse.BlockExpiry)
 					if perr != nil || timeout <= 0 {
 						timeout = 24 * time.Hour
 					}
+					dryRun := liveCfg.AutoResponseDryRunEnabled()
 					if err := blocker(ip, "CSM credential_spray: "+reason, timeout); err != nil {
 						csmlog.Warn("credential_spray block failed", "ip", ip, "err", err)
+						return false
 					}
+					return !dryRun
 				}
 			}
 			// Generic incident-driven auto-block. Reuses the same firewall
