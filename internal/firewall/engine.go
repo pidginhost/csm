@@ -2244,38 +2244,39 @@ func (e *Engine) infraIPResolvedHostLocked(ip string) (string, bool) {
 	return "", false
 }
 
-// localAddrsCacheTTL controls how long the host-own-IP cache survives
-// before refreshLocalAddrsLocked re-queries net.InterfaceAddrs. Refreshing
-// is a single getifaddrs syscall; 60s gives us prompt pickup of newly
-// assigned IPs without measurable overhead on the block path.
+// localAddrsCacheTTL controls the normal host-own-IP refresh cadence.
+// Fresh cache misses still re-query once before a block is allowed, so a
+// newly assigned address cannot be blocked inside the TTL window.
 const localAddrsCacheTTL = 60 * time.Second
 
+func (e *Engine) localAddrsFreshLocked(now time.Time) bool {
+	return e.localAddrs != nil && !e.localAddrsExpiresAt.IsZero() && now.Before(e.localAddrsExpiresAt)
+}
+
 // refreshLocalAddrsLocked rebuilds the cache of host-own non-loopback
-// interface addresses when the TTL has expired. Must be called with
-// e.mu held. Failure leaves the previous cache in place so a transient
-// netlink hiccup cannot demote the lockout guard.
-func (e *Engine) refreshLocalAddrsLocked() {
-	if e.localAddrs != nil && !e.localAddrsExpiresAt.IsZero() && time.Now().Before(e.localAddrsExpiresAt) {
-		return
+// interface addresses when forced or when the TTL has expired. Must be
+// called with e.mu held. Failure leaves the previous cache in place so a
+// transient netlink hiccup cannot demote the lockout guard.
+func (e *Engine) refreshLocalAddrsLocked(force bool) bool {
+	now := time.Now()
+	if !force && e.localAddrsFreshLocked(now) {
+		return false
 	}
 	var ips []string
 	if e.localAddrsLookup != nil {
 		got, err := e.localAddrsLookup()
 		if err != nil {
-			return
+			return false
 		}
 		ips = got
 	} else {
 		addrs, err := net.InterfaceAddrs()
 		if err != nil {
-			return
+			return false
 		}
 		for _, addr := range addrs {
 			ipnet, ok := addr.(*net.IPNet)
 			if !ok {
-				continue
-			}
-			if ipnet.IP.IsLoopback() || ipnet.IP.IsLinkLocalUnicast() || ipnet.IP.IsLinkLocalMulticast() {
 				continue
 			}
 			ips = append(ips, ipnet.IP.String())
@@ -2283,14 +2284,34 @@ func (e *Engine) refreshLocalAddrsLocked() {
 	}
 	set := make(map[string]struct{}, len(ips))
 	for _, raw := range ips {
-		parsed := net.ParseIP(raw)
-		if parsed == nil {
+		key, ok := localAddrGuardKey(raw)
+		if !ok {
 			continue
 		}
-		set[parsed.String()] = struct{}{}
+		set[key] = struct{}{}
 	}
 	e.localAddrs = set
-	e.localAddrsExpiresAt = time.Now().Add(localAddrsCacheTTL)
+	e.localAddrsExpiresAt = now.Add(localAddrsCacheTTL)
+	return true
+}
+
+func localAddrGuardKey(raw string) (string, bool) {
+	parsed := net.ParseIP(raw)
+	if parsed == nil {
+		return "", false
+	}
+	if parsed.IsLoopback() || parsed.IsLinkLocalUnicast() || parsed.IsLinkLocalMulticast() {
+		return "", false
+	}
+	return parsed.String(), true
+}
+
+func (e *Engine) localAddrCacheHasLocked(key string) bool {
+	if len(e.localAddrs) == 0 {
+		return false
+	}
+	_, ok := e.localAddrs[key]
+	return ok
 }
 
 // isLocalAddrLocked reports whether ip is one of the daemon's own host
@@ -2300,12 +2321,16 @@ func (e *Engine) isLocalAddrLocked(ip string) bool {
 	if parsed == nil {
 		return false
 	}
-	e.refreshLocalAddrsLocked()
-	if len(e.localAddrs) == 0 {
-		return false
+	key := parsed.String()
+	refreshed := e.refreshLocalAddrsLocked(false)
+	if e.localAddrCacheHasLocked(key) {
+		return true
 	}
-	_, ok := e.localAddrs[parsed.String()]
-	return ok
+	if !refreshed && e.localAddrsFreshLocked(time.Now()) {
+		e.refreshLocalAddrsLocked(true)
+		return e.localAddrCacheHasLocked(key)
+	}
+	return false
 }
 
 // BlockedCount returns the number of live blocked IP entries the engine
