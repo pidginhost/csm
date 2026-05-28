@@ -249,6 +249,57 @@ func TestAlertDispatcher_StopsOnSignal(t *testing.T) {
 	}
 }
 
+// X6 regression: when the daemon stops with findings still buffered in
+// d.alertCh (produced after the last ticker tick), the dispatcher must
+// drain them into the shutdown flush instead of abandoning them. Before
+// the fix, anything in the 500-slot channel after the final ticker
+// vanished on graceful restart.
+func TestAlertDispatcher_DrainsBufferedAlertsOnStop(t *testing.T) {
+	dir := t.TempDir()
+	st, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+
+	d := New(&config.Config{}, st, nil, "")
+
+	queued := []alert.Finding{
+		{Check: "x6_a", Severity: alert.Warning, Message: "a", Timestamp: time.Now()},
+		{Check: "x6_b", Severity: alert.Warning, Message: "b", Timestamp: time.Now()},
+		{Check: "x6_c", Severity: alert.Warning, Message: "c", Timestamp: time.Now()},
+	}
+	for _, f := range queued {
+		d.alertCh <- f
+	}
+
+	d.wg.Add(1)
+	go d.alertDispatcher()
+	close(d.stopCh)
+
+	done := make(chan struct{})
+	go func() {
+		d.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(35 * time.Second):
+		t.Fatal("alertDispatcher did not finish shutdown flush")
+	}
+
+	histPath := filepath.Join(dir, "history.jsonl")
+	data, err := os.ReadFile(histPath)
+	if err != nil {
+		t.Fatalf("read history: %v", err)
+	}
+	for _, want := range queued {
+		if !strings.Contains(string(data), want.Check) {
+			t.Errorf("history missing finding %q after shutdown drain", want.Check)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // LogWatcher — readNewLines with a real temp file
 // ---------------------------------------------------------------------------

@@ -968,6 +968,20 @@ func (d *Daemon) alertDispatcher() {
 	for {
 		select {
 		case <-d.stopCh:
+			// Drain anything still queued on alertCh into the in-memory
+			// batch before the timed flush. Without this, findings
+			// produced after the last ticker tick sit in the buffered
+			// channel and vanish on graceful restart -- no audit, no
+			// dropped-alert counter, no log. Bounded by channel capacity
+			// so a stuck producer cannot hold shutdown open indefinitely.
+			for drain := true; drain; {
+				select {
+				case f := <-d.alertCh:
+					batch = append(batch, f)
+				default:
+					drain = false
+				}
+			}
 			// Flush remaining with a timeout to avoid blocking shutdown
 			if len(batch) > 0 {
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
