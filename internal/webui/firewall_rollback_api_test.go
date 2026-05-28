@@ -196,10 +196,7 @@ func TestScheduleRollbackRevertKeepsOwnRestartContextOnShutdown(t *testing.T) {
 		t.Fatal("revert restart did not run")
 	}
 	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if !mgr.Status().Pending {
-			break
-		}
+	for mgr.Status().Pending {
 		if time.Now().After(deadline) {
 			t.Fatal("rollback record stayed pending after successful revert")
 		}
