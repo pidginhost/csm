@@ -519,6 +519,27 @@ func TestPurgeAndMergeFindingsPurgesWithoutNewFindings(t *testing.T) {
 	}
 }
 
+func TestPurgeAndMergeFindingsUsesAtomicWriter(t *testing.T) {
+	s := openTestStore(t)
+	tmpPath := filepath.Join(s.path, "latest_findings.json.tmp")
+	if err := os.WriteFile(tmpPath, []byte(`[{"check":"stale"}]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s.PurgeAndMergeFindings(nil, []alert.Finding{{Check: "fresh", Message: "kept"}})
+
+	info, err := os.Stat(filepath.Join(s.path, "latest_findings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o600 {
+		t.Fatalf("latest_findings.json mode = %o, want 0600", mode)
+	}
+	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
+		t.Fatalf("legacy tmp should be removed, stat err=%v", err)
+	}
+}
+
 func TestPurgeAndMergeFindingsPurgesOwnedTimeoutOnly(t *testing.T) {
 	s := openTestStore(t)
 	s.SetLatestFindings([]alert.Finding{

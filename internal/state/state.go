@@ -722,10 +722,7 @@ func (s *Store) PurgeAndMergeFindings(purgeChecks []string, findings []alert.Fin
 	s.latestScanTime = time.Now()
 
 	// Persist
-	data, _ := json.Marshal(merged)
-	tmpPath := filepath.Join(s.path, "latest_findings.json.tmp")
-	_ = os.WriteFile(tmpPath, data, 0600)
-	_ = os.Rename(tmpPath, filepath.Join(s.path, "latest_findings.json"))
+	_ = atomicio.AtomicWriteJSON(filepath.Join(s.path, "latest_findings.json"), 0o600, merged)
 }
 
 func shouldPurgeLatestFinding(f alert.Finding, remove map[string]bool) bool {
