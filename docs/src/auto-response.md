@@ -116,6 +116,7 @@ When `auto_response.block_ips: true`, the source IP is blocked for every finding
 | `ip_reputation` | IP flagged by AbuseIPDB / rspamd / upstream threat-intel |
 | `local_threat_score` | IP crosses the aggregated internal attack-history threshold |
 | `modsec_block_escalation` | ModSecurity deny escalation |
+| `waf_attack_blocked` | WAF high-volume attacker |
 | `email_compromised_account` | Email account compromise indicator |
 | `email_cloud_relay_abuse` | Cloud relay abuse |
 

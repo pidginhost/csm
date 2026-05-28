@@ -34,15 +34,14 @@ When `challenge.enabled: true`, CSM routes eligible IPs to the challenge page in
 
 Pre-auth, browser-visible attack signals only: `wp_login_bruteforce`,
 `xmlrpc_abuse`, `wp_user_enumeration`, `webmail_bruteforce`, `ip_reputation`,
-`local_threat_score`, `waf_attack_blocked`. Post-auth audit events (cPanel,
-webmail, file upload, WHM logins) and non-browser protocols (SSH, FTP, DNS
-recursion, outbound traffic, API auth) are excluded - their IPs have no
-browser session to render the PoW page and every match would time out
-into a 24h hard block.
+`local_threat_score`. Post-auth audit events (cPanel, webmail, file upload,
+WHM logins), WAF high-volume attacker findings, and non-browser protocols
+(SSH, FTP, DNS recursion, outbound traffic, API auth) are excluded - their IPs
+have no useful challenge step or no browser session to render the PoW page.
 
 ### Always Hard-Blocked
 
-Confirmed malware (webshells, YARA/signature matches), C2 connections, backdoor ports, phishing pages, database injections, and spam outbreaks are always hard-blocked immediately, even when challenge is enabled.
+Confirmed malware (webshells, YARA/signature matches), WAF high-volume attackers, C2 connections, backdoor ports, phishing pages, database injections, and spam outbreaks are hard-block candidates immediately, even when challenge is enabled.
 
 ### Timeout Escalation
 

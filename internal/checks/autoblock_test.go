@@ -353,6 +353,46 @@ func TestAutoBlockIPs_BlocksWAFAttackBlocked(t *testing.T) {
 	}
 }
 
+func TestAutoBlockIPs_BlocksWAFAttackBlockedWhenChallengeEnabled(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.StatePath = t.TempDir()
+	cfg.AutoResponse.Enabled = true
+	cfg.AutoResponse.BlockIPs = true
+	cfg.Challenge.Enabled = true
+
+	blocker := &recordingIPBlocker{}
+	oldBlocker := getIPBlocker()
+	SetIPBlocker(blocker)
+	t.Cleanup(func() { SetIPBlocker(oldBlocker) })
+
+	challengeList := &staticChallengeIPList{ips: make(map[string]bool)}
+	oldChallengeList := GetChallengeIPList()
+	SetChallengeIPList(challengeList)
+	t.Cleanup(func() { SetChallengeIPList(oldChallengeList) })
+
+	findings := []alert.Finding{{
+		Check:    "waf_attack_blocked",
+		SourceIP: "203.0.113.55",
+		Message:  "WAF blocking high-volume attacker: 203.0.113.55 (42 blocked requests)",
+	}}
+
+	if actions := ChallengeRouteIPs(cfg, findings); len(actions) != 0 {
+		t.Fatalf("challenge actions = %+v, want none for WAF hard-block path", actions)
+	}
+	if challengeList.Contains("203.0.113.55") {
+		t.Fatalf("WAF attacker was placed on challenge list, want direct auto-block")
+	}
+
+	actions := AutoBlockIPs(cfg, findings)
+
+	if len(blocker.blocked) != 1 || blocker.blocked[0] != "203.0.113.55" {
+		t.Fatalf("blocked IPs = %v, want 203.0.113.55", blocker.blocked)
+	}
+	if len(actions) == 0 || !strings.Contains(actions[0].Message, "203.0.113.55") {
+		t.Fatalf("actions = %+v, want auto-block for WAF attacker", actions)
+	}
+}
+
 func TestAutoBlockIPs_DrainsPendingQueueAfterRateLimitWindow(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.StatePath = t.TempDir()

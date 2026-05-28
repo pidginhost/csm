@@ -20,6 +20,7 @@ func TestIsHardBlockCheck(t *testing.T) {
 		"phishing_page",
 		"spam_outbreak",
 		"outgoing_mail_hold",
+		"waf_attack_blocked",
 	}
 	for _, check := range hardChecks {
 		if !isHardBlockCheck(check) {

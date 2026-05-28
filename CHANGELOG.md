@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Web UI firewall rollback now avoids delayed daemon restarts after shutdown without canceling an in-progress manual revert restart.
-- WAF high-volume attacker findings now drive the auto-block firewall path. The detector carries a structured attacker IP, and the auto-block kind list recognises it alongside other confirmed attack signals.
+- WAF high-volume attacker findings now drive the auto-block firewall path, even when challenge routing is enabled. The detector carries a structured attacker IP, and the auto-block kind list recognises it alongside other confirmed attack signals.
 
 ## [3.9.0] - 2026-05-27
 
