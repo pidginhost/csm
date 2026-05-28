@@ -45,6 +45,15 @@ type Engine struct {
 	// package stays free of the internal/verdict import.
 	verdictAsker func(ctx context.Context, ip, reason string) (verdict, tenantID, note string, err error)
 
+	// shutdownCtx, when set, scopes the lifetime of any in-flight verdict
+	// callback to daemon shutdown. Without it, BlockIPOutcome used
+	// context.Background() and a wedged panel callback held e.mu for the
+	// full http.Client.Timeout, which stalled the heartbeat loop's
+	// CleanExpiredAllows behind every late block during a graceful
+	// restart. Nil falls back to context.Background() so unit tests that
+	// build the Engine literal without a daemon keep working.
+	shutdownCtx context.Context
+
 	table    *nftables.Table
 	chainIn  *nftables.Chain
 	chainOut *nftables.Chain
@@ -339,6 +348,26 @@ func (e *Engine) verdictAskerFn() func(ctx context.Context, ip, reason string) (
 	fn := e.verdictAsker
 	e.mu.Unlock()
 	return fn
+}
+
+// SetShutdownContext installs a context whose cancellation aborts any
+// in-flight verdict callback. The daemon ties this to its stopCh so a
+// graceful shutdown does not have to wait for an unresponsive panel
+// callback to return.
+func (e *Engine) SetShutdownContext(ctx context.Context) {
+	e.mu.Lock()
+	e.shutdownCtx = ctx
+	e.mu.Unlock()
+}
+
+func (e *Engine) verdictContext() context.Context {
+	e.mu.Lock()
+	ctx := e.shutdownCtx
+	e.mu.Unlock()
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
 }
 
 // Apply builds and atomically applies the complete nftables ruleset.
@@ -1368,7 +1397,7 @@ func (e *Engine) BlockIPOutcome(ip string, reason string, timeout time.Duration)
 	// Fail-open: errors proceed with the default block. Nil callback skips
 	// the gate entirely.
 	if asker := e.verdictAskerFn(); asker != nil {
-		v, tenant, note, err := asker(context.Background(), ip, reason)
+		v, tenant, note, err := asker(e.verdictContext(), ip, reason)
 		switch {
 		case err != nil:
 			fmt.Fprintf(os.Stderr, "[%s] verdict callback failed for %s: %v - proceeding with default block\n",

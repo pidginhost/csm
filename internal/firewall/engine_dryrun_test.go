@@ -434,3 +434,46 @@ func TestBlockIP_VerdictAllowDoesNotHideInvalidIP(t *testing.T) {
 		t.Fatal("verdict callback was called for invalid IP")
 	}
 }
+
+// X14: a wedged panel verdict callback must unblock when the daemon
+// shutdown context cancels, otherwise BlockIPOutcome holds the engine
+// mutex for the full http.Client.Timeout. Without this, the heartbeat
+// loop's CleanExpiredAllows stalls behind every late block during a
+// graceful restart.
+func TestBlockIP_VerdictAbortsOnShutdownContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	e := &Engine{
+		cfg:       &FirewallConfig{Enabled: true},
+		statePath: t.TempDir(),
+		verdictAsker: func(ctx context.Context, _ string, _ string) (string, string, string, error) {
+			<-ctx.Done()
+			return "", "", "", ctx.Err()
+		},
+		dryRunEnabled: func() bool { return true },
+		dryRunRecorder: func(_ string, _ string, _ time.Duration) {},
+	}
+	e.SetShutdownContext(ctx)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- e.BlockIP("192.0.2.77", "test", 0)
+	}()
+
+	// Give the verdict goroutine a moment to enter the asker.
+	select {
+	case <-done:
+		t.Fatal("BlockIP returned before shutdown ctx cancel; verdict asker was not honored")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected verdict ctx cancel to fail open, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("BlockIP did not unblock after shutdown ctx cancel")
+	}
+}

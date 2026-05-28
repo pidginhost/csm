@@ -71,6 +71,7 @@ func (e *Engine) SetDryRunRecorder(_ func(string, string, time.Duration)) {}
 func (e *Engine) SetDryRunEnabledFunc(_ func() bool)                      {}
 func (e *Engine) SetVerdictAsker(_ func(context.Context, string, string) (string, string, string, error)) {
 }
+func (e *Engine) SetShutdownContext(_ context.Context) {}
 func (e *Engine) UnblockIP(_ string) error                              { return nil }
 func (e *Engine) IsBlocked(_ string) bool                               { return false }
 func (e *Engine) IsBlockedLive(_ string) (bool, error)                  { return false, nil }

@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Incident block audit now uses the firewall outcome, so dry-run, verdict-allow, and no-op attempts no longer look like live blocks.
 - Panic inside an auto-block firewall callback now releases the per-incident in-flight slot, so a single bad integration cannot permanently latch the auto-block path for an open incident.
 - Auto-blocking no longer risks a duplicate firewall callback when another matching finding arrives as a block finishes.
+- Verdict callback now respects daemon shutdown. A wedged panel response can no longer hold the firewall engine mutex past stopCh and stall the heartbeat loop's expiry sweep.
 
 ## [3.9.1] - 2026-05-28
 

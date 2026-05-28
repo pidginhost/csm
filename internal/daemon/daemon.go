@@ -2243,6 +2243,16 @@ func (d *Daemon) startFirewall() {
 	})
 	engine.SetDryRunEnabledFunc(d.autoResponseDryRunEnabled)
 	engine.SetVerdictAsker(d.askVerdictCallback)
+	// Bound the verdict callback to daemon shutdown so a wedged panel
+	// response cannot hold the engine mutex past stopCh close. A
+	// dedicated goroutine fans stopCh into the cancel func so existing
+	// engine call sites do not need to know about stopCh.
+	verdictCtx, cancelVerdict := context.WithCancel(context.Background())
+	go func() {
+		<-d.stopCh
+		cancelVerdict()
+	}()
+	engine.SetShutdownContext(verdictCtx)
 
 	if err := engine.Apply(); err != nil {
 		fmt.Fprintf(os.Stderr, "[%s] Firewall apply error: %v\n", ts(), err)
