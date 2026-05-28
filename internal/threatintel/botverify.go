@@ -118,11 +118,6 @@ type AsyncBotVerifier struct {
 	ch       chan verifyJob
 	v        map[string]*verifier // bot identity -> verifier
 	put      func(net.IP, string, bool, time.Time) error
-	// runCtx is the parent context for in-flight verify jobs. Set in
-	// Run and cancelled when stopCh fires so a slow DNS lookup cannot
-	// outlive daemon shutdown by its own 5s per-job timeout. Read by
-	// process(), which runs in the same Run goroutine -- no mutex.
-	runCtx context.Context
 }
 
 type verifyJob struct {
@@ -194,8 +189,6 @@ func (a *AsyncBotVerifier) Enqueue(ip net.IP, bot string) {
 func (a *AsyncBotVerifier) Run(stopCh <-chan struct{}) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	a.runCtx = ctx
-	defer func() { a.runCtx = nil }()
 
 	bridge := make(chan struct{})
 	go func() {
@@ -216,21 +209,21 @@ func (a *AsyncBotVerifier) Run(stopCh <-chan struct{}) {
 		case <-ctx.Done():
 			return
 		case job := <-a.ch:
-			a.process(job)
+			a.processWithContext(ctx, job)
 		}
 	}
 }
 
 func (a *AsyncBotVerifier) process(job verifyJob) {
+	a.processWithContext(context.Background(), job)
+}
+
+func (a *AsyncBotVerifier) processWithContext(parent context.Context, job verifyJob) {
 	defer a.finish(job)
 
 	v, ok := a.v[job.Bot]
 	if !ok {
 		return
-	}
-	parent := a.runCtx
-	if parent == nil {
-		parent = context.Background()
 	}
 	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	result, err := v.verify(ctx, job.IP, job.Bot)

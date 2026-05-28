@@ -231,9 +231,28 @@ func (b *blockingResolver) LookupIP(ctx context.Context, _, _ string) ([]net.IP,
 	return nil, ctx.Err()
 }
 
+type forwardBlockingResolver struct {
+	started chan struct{}
+	ptr     string
+}
+
+func (f *forwardBlockingResolver) LookupAddr(context.Context, string) ([]string, error) {
+	return []string{f.ptr}, nil
+}
+
+func (f *forwardBlockingResolver) LookupIP(ctx context.Context, _, _ string) ([]net.IP, error) {
+	select {
+	case <-f.started:
+	default:
+		close(f.started)
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
 // A daemon shutdown that closes stopCh must cancel the per-job context
 // of any verify currently mid-LookupAddr, instead of leaving Run blocked
-// for 5 seconds while the in-flight goroutine waits on its own timeout.
+// for 5 seconds while the worker waits on its own timeout.
 func TestAsyncBotVerifier_CancelsInflightOnShutdown(t *testing.T) {
 	started := make(chan struct{})
 	res := &blockingResolver{started: started}
@@ -263,6 +282,41 @@ func TestAsyncBotVerifier_CancelsInflightOnShutdown(t *testing.T) {
 	case <-runDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not exit after stopCh; in-flight verify is not honoring daemon shutdown")
+	}
+}
+
+func TestAsyncBotVerifier_CancelsForwardLookupOnShutdown(t *testing.T) {
+	started := make(chan struct{})
+	res := &forwardBlockingResolver{
+		started: started,
+		ptr:     "crawl-66-249-66-99.googlebot.com.",
+	}
+	a := &AsyncBotVerifier{
+		inflight: make(map[string]struct{}),
+		ch:       make(chan verifyJob, 4),
+		v:        map[string]*verifier{"googlebot": newVerifier(res, []string{"googlebot.com"})},
+		put:      func(net.IP, string, bool, time.Time) error { return nil },
+	}
+
+	stopCh := make(chan struct{})
+	runDone := make(chan struct{})
+	go func() {
+		a.Run(stopCh)
+		close(runDone)
+	}()
+
+	a.Enqueue(net.ParseIP("66.249.66.99"), "googlebot")
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("LookupIP was not called within 1s")
+	}
+
+	close(stopCh)
+	select {
+	case <-runDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not exit after stopCh; forward lookup is not honoring daemon shutdown")
 	}
 }
 
